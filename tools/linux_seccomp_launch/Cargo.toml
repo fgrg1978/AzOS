@@ -1,0 +1,36 @@
+[package]
+name = "linux_seccomp_launch"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "PID 1 for the Linux+seccomp column of vsbench: installs a seccomp-bpf allow-list of exactly the syscalls the vsbench Linux ELF issues, then execs it."
+
+# Built by `tools/vsbench_compare.sh` only, with the target, linker script and
+# build-std passed on the command line. There is deliberately no
+# `.cargo/config.toml` here: the repository root's config carries
+# `-Tkernel/linker.ld` for the same target, cargo joins rustflags arrays across
+# config files, and a manual build would link the launcher at the kernel's
+# address. `RUSTFLAGS` in the environment replaces every config rustflag, which
+# is what the script sets.
+#
+# Host-side checks of the allow-list and the BPF program: `host-tests/`.
+
+[[bin]]
+name = "linux_seccomp_launch"
+path = "src/main.rs"
+test = false
+bench = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
+
+# Own workspace root: not a member of the kernel workspace above (same shape as
+# userspace/bench/vsbench).
+[workspace]
+exclude = ["host-tests"]

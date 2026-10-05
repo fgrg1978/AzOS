@@ -1,0 +1,63 @@
+[package]
+name = "azos_behavior_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the brain wire protocol in domains/robot/behavior/src/brain_protocol.rs. Excluded from workspace."
+
+# Run with:  cd tests/host/behavior-tests && cargo test --release
+
+# `no-ml` mirrors `domains/robot/behavior`'s own feature of the same name so
+# `#[cfg(not(feature = "no-ml"))]` in the `#[path]`-included `layers.rs` /
+# `arbiter.rs` (L1, avoid-obstacle) is a *known* cfg value here too — without
+# this declaration rustc's `unexpected_cfgs` lint fires on both files even
+# though the feature is (correctly) never enabled.
+[features]
+no-ml = []
+ml-fallback-canary = []
+ml-absent-canary = []
+
+[dependencies]
+wcet-macro = { path = "../../../crates/core/wcet-macro" }
+# Real crate: dependency-free leaf, so the degrade ceiling under test is the
+# kernel's own mapping rather than a number this suite made up.
+azos_degrade_policy = { path = "../../../domains/robot/degrade-policy" }
+azos_ipc = { path = "shims/ipc", package = "beh_test_ipc" }
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
+# Real crates: all three build for the host and have their own suites, so the
+# envelope under test uses the kernel's own HMAC, policy and boot-state code
+# rather than stand-ins that could drift from them.
+azos_crypto = { path = "../../../crates/core/crypto" }
+azos_encrypt_link = { path = "../../../crates/net/encrypt-link" }
+azos_ota = { path = "shims/ota", package = "beh_test_ota" }
+beh_test_drivers = { path = "shims/drivers" }
+# The real `domains/robot/robot/src/motor.rs` (+ `pid.rs`), pulled in by its own
+# small shim crate the same way `tests/host/syscall-tests/shims/robot` already
+# does — it needs a `SpinLock::get_mut_unchecked` this crate's own
+# `cap_test_sync` (line above) deliberately omits, so it cannot share the
+# `azos_sync` alias this crate uses for everything else. See
+# `shims/robot`'s own doc. Motor-gate/record suite (Q1.3/Q1.4, 2026-09-25).
+azos_robot = { path = "shims/robot", package = "beh_test_robot" }
+azos_limits = { path = "shims/limits", package = "beh_test_limits" }
+# The flight recorder's `LogStorage` seam is a trait `logger.rs` defines
+# itself now (domains/robot/behavior no longer depends on azos_fs at all -- see
+# tools/tcb_check.sh), so the fault-injecting stand-in that used to impersonate
+# azos_fs's whole API lives directly in this crate as `log_storage_mock`
+# (src/lib.rs) instead of a separate aliased shim crate.
+#
+# `estop_release_authority.rs`'s tests need to SIGN, not just verify —
+# `azos_crypto::ed25519` is deliberately verify-only (see its module doc),
+# so this test crate takes its own direct dependency on the same
+# `ed25519-dalek` version. Cargo unifies features for one dependency graph, so
+# this does not change what `azos_crypto` itself builds with anywhere
+# else (this crate is `Excluded from workspace`, its own separate build).
+# `SigningKey::from_bytes` is deterministic from a raw 32-byte seed, so no
+# `rand_core` feature is needed to produce a signature.
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+
+# Reproduce the kernel's release profile. A suite that does not is testing a
+# different program: overflow-checks is what turns a wrapping length
+# computation into a panic, and panic = "abort" makes that a board reset.
+[profile.release]
+overflow-checks = true

@@ -1,0 +1,28 @@
+[package]
+name = "azos_drv_actuator"
+version = "0.1.0"
+edition = "2021"
+description = "Actuators: PWM, motor PID loop, buzzer."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+# Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel. The buzzer chip
+# logic (crates/drivers/buzzer) runs in the kernel (`buzzer::kernel_host`,
+# its timed steps advanced by a kernel task) instead of behind the ring-3
+# proxy. The kernel's own `buzzer-kernel` forwards here and to the topology.
+buzzer-kernel = []
+
+[dependencies]
+azos_abi           = { workspace = true }
+azos_sync          = { workspace = true }
+azos_limits        = { workspace = true }
+azos_driver_server = { workspace = true }
+azos_buzzer        = { workspace = true }
+azos_drv_api       = { workspace = true }
+azos_drv_base      = { workspace = true }
+azos_drv_irqchip   = { workspace = true }
+azos_drv_sys       = { workspace = true }

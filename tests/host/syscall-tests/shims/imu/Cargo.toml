@@ -1,0 +1,9 @@
+[package]
+name = "syscall_test_imu"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_imu, used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]

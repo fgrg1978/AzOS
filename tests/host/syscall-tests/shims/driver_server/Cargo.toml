@@ -1,0 +1,17 @@
+[package]
+name = "syscall_test_driver_server"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_driver_server, used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+# Added 2026-09-06: the `DRV_KIND_*` constants moved to `crates/core/abi` (they are
+# ABI -- ring 3 passes them in a register) and `driver_server` re-exports them,
+# so the file pulled in by `#[path]` above now names `azos_abi`. Same
+# `../../../abi` the parent crate uses, so Cargo unifies them.
+azos_abi = { path = "../../../../../crates/core/abi" }
+# `crates/drivers/driver_server` otherwise only needs a SpinLock -- reused from
+# tests/host/cap-tests, same reasons as everywhere else in this crate.
+azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }

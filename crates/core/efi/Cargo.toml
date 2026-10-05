@@ -1,0 +1,6 @@
+[package]
+name = "azos_efi"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false

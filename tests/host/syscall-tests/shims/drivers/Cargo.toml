@@ -1,0 +1,31 @@
+[package]
+name = "syscall_test_drivers"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for the driver class crates (azos_drv_*), used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+# platform.rs reads Kconfig TIMER_FREQ through azos_limits (2026-09-26)
+azos_limits = { path = "../../../../../crates/core/limits" }
+# Real, pure, host-buildable (no RISC-V deps) -- the `api` module IS this
+# crate in production too (crates/drivers/api/src/lib.rs re-exports it verbatim).
+azos_drv_api = { path = "../../../../../crates/drivers/api" }
+# Real, pure, host-buildable, zero deps of its own -- `platform.rs` (pulled
+# below) reads `azos_abi::vdso::{VDSO_USER_BASE, ...}` in its per-board
+# `const` asserts (2026-09-22 vDSO placement fix). Same "real crate, not a
+# shim" treatment as `azos_drv_api` above.
+azos_abi = { path = "../../../../../crates/core/abi" }
+# `runtime::registry` is pulled in verbatim below (real code, 15 lines) and
+# needs a SpinLock. Reused from tests/host/cap-tests, same reasons as everywhere
+# else in this crate.
+azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
+
+# `pwm_domain.rs` is pulled in verbatim (real code) and selects its instance
+# shape on a `vf2` cfg the drivers crate declares. Echoed here so the pulled
+# module does not emit `unexpected_cfgs` -- declared rather than silenced, so
+# the condition stays visible in the source. Same treatment, and the same
+# reason, as tests/host/drivers-tests/Cargo.toml.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1"))'] }

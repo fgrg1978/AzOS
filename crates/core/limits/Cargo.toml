@@ -1,0 +1,27 @@
+[package]
+name = "azos_limits"
+version = "0.1.0"
+edition = "2021"
+description = "Generated compile-time constants from .config (RFC-0026 Phase C2)"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+build = "build.rs"
+
+# This crate is no_std — it is a workspace member and participates in
+# cross-compilation to riscv64-none-elf.  The generated.rs file produced
+# by build.rs is written to OUT_DIR and included via include!() in lib.rs.
+
+[lib]
+name = "azos_limits"
+
+[dependencies]
+# No runtime dependencies — this crate only exposes `pub const` values.
+
+[build-dependencies]
+# azos-config is host-only (std); used here only during build.rs execution.
+azos-config = { path = "../azos-config" }
+sha2 = "0.10"
+
+# `nospec.rs` takes the arithmetic mask under `cfg(kani)` (Kani cannot model inline asm).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

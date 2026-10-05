@@ -1,0 +1,19 @@
+[package]
+name = "azos_cam_ring"
+version = "0.1.0"
+edition = "2021"
+description = "Lock-free SPSC frame ring for zero-copy camera pipelines (S1/S6). Pure no_std; no heap. Host-testable via tests/host/cam-ring-tests."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[lib]
+name = "azos_cam_ring"
+
+[features]
+# Exposes FrameRing::with_start_index, a test-only constructor used by
+# tests/host/cam-ring-tests to drive the ring across the usize index-wraparound
+# boundary. Never enabled by the on-target (kernel) build.
+test-util = []
+
+[dependencies]
+# No external dependencies — only core::sync::atomic.

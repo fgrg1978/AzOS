@@ -1,0 +1,89 @@
+/* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
+/* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
+/*
+ * Linker script for AzOS — SpacemiT K1 (BananaPi BPI-F3)
+ *
+ * K1 memory layout with U-Boot + OpenSBI:
+ *   0x00000000 - 0x001FFFFF : OpenSBI firmware (2 MiB, reserved)
+ *   0x00200000 - ...        : Kernel (standard RISC-V load offset)
+ *   DDR size: 4-16 GiB from 0x00000000 (LPDDR4X)
+ *
+ * 8 CPU cores (NUM_CPUS=8 in platform.rs).
+ * K1 has native RVV 1.0 (VLEN=256); --features k1 enables RVV code paths.
+ */
+
+OUTPUT_ARCH(riscv)
+ENTRY(_start)
+
+/* BOOT_STACK_SIZE / BOOT_STACK_REDZONE (B1-01): single source, see
+ * kernel/linker-common.ld. */
+INCLUDE kernel/linker-common.ld
+
+MEMORY
+{
+    RAM (rwx) : ORIGIN = 0x00200000, LENGTH = 256M
+}
+
+SECTIONS
+{
+    . = 0x00200000;
+
+    _text_start = .;
+    .text.boot : ALIGN(4K)
+    {
+        *(.text.boot)
+    } > RAM
+
+    .text : ALIGN(4K)
+    {
+        *(.text .text.*)
+    } > RAM
+    _text_end = .;
+
+    _rodata_start = .;
+    .rodata : ALIGN(4K)
+    {
+        *(.rodata .rodata.*)
+    } > RAM
+    _rodata_end = .;
+
+    _data_start = .;
+    .data : ALIGN(4K)
+    {
+        *(.data .data.*)
+        *(.sdata .sdata.*)
+    } > RAM
+    _data_end = .;
+
+    .bss : ALIGN(4K)
+    {
+        _bss_start = .;
+        *(.bss .bss.*)
+        *(.sbss .sbss.*)
+        *(COMMON)
+        . = ALIGN(8);
+        _bss_end = .;
+    } > RAM
+
+    /* Boot stack inside the image, below _kernel_end: see kernel/linker.ld. */
+    .stack (NOLOAD) : ALIGN(4K)
+    {
+        _stack_redzone = .;
+        . += BOOT_STACK_REDZONE;
+        _stack_start = .;
+        . += BOOT_STACK_SIZE;
+        _stack_end = .;
+    } > RAM
+
+    . = ALIGN(4K);
+    _kernel_end = .;
+
+    /DISCARD/ :
+    {
+        *(.comment)
+        *(.eh_frame)
+        *(.note*)
+    }
+}
+
+ASSERT(_stack_end <= _kernel_end, "Boot stack must lie inside the kernel image")

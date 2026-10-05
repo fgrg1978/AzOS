@@ -1,0 +1,155 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.platform — Board / SoC / platform selection
+#
+# RFC-0026 Phase C1.  Each BOARD_* choice locks in platform-specific
+# hardware addresses, clock frequencies, and RAM layout.
+# Per the RFC, BOARD_VF2/K1 imply ARCH_RISCV64.
+# BOARD_QEMU is ARCH-agnostic (one entry per ISA, but defaults to riscv64).
+
+menu "Platform / Board"
+
+# ---------------------------------------------------------------------------
+# Board choice
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Target board"
+    default BOARD_QEMU
+    help
+      Selects the hardware target.  Each board sets default addresses
+      for UART, interrupt controller, timer, and RAM.  Hardware-specific
+      driver enables are also implied by the board choice.
+
+    config BOARD_QEMU
+        bool "QEMU virt (riscv64/aarch64/x86_64 simulation)"
+        help
+          QEMU virtio machine.  Used for development and CI.
+          Hardware addresses match the QEMU virt device-tree defaults.
+          VirtIO block/net devices replace real hardware drivers.
+
+    config BOARD_VF2
+        bool "StarFive VisionFive 2 (JH7110, RISC-V)"
+        depends on ARCH_RISCV64
+        help
+          StarFive VisionFive 2 SBC with JH7110 SoC.
+          4-core rv64gc @ 1.5 GHz, 8 GiB LPDDR4.
+          MACB Ethernet, StarFive GPIO/PWM/I2C controllers.
+
+    config BOARD_K1
+        bool "SpacemiT K1 / BananaPi BPI-F3 (RISC-V + RVV 1.0)"
+        depends on ARCH_RISCV64
+        help
+          SpacemiT K1 SoC with 8-core rv64gcv @ 1.6 GHz + RVV V1.0 (VLEN=256).
+          Used for ML/CNN inference acceleration paths.
+
+    config BOARD_GENERIC
+        bool "Generic / custom (manually specify all addresses)"
+        help
+          For board bring-up or platforms not yet in this list.
+          Fill in TIMER_FREQ and RAM_SIZE (UART_BASE/PLIC_BASE/RAM_BASE removed 2026-09-26, V2.6 -- crates/drivers/base/src/platform.rs is the source of truth for those)
+          manually in the options below.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Timer frequency
+# ---------------------------------------------------------------------------
+
+config TIMER_FREQ
+    int "Timer frequency (Hz)"
+    # ARMv8 generic timer on QEMU virt (>= 9.0): CNTFRQ_EL0 = 1 GHz. Every
+    # TIMER_FREQ-derived timeout is compile-time; a wrong value here is a
+    # 100x-short DHCP/ARP/safety timeout on that ISA (gate 182c).
+    default 1000000000 if ARCH_AARCH64
+    default 10000000 if BOARD_QEMU
+    default 4000000  if BOARD_VF2
+    default 24000000 if BOARD_K1
+    default 10000000
+    range 1000000 2000000000
+    help
+      Frequency of the hardware timer counter used by the scheduler
+      (CLINT mtime on RISC-V, generic timer on Aarch64).  This is NOT
+      the CPU clock — it is the timer increment rate.
+      QEMU virt: 10 MHz.  JH7110 (VF2): 4 MHz.  K1: 24 MHz.
+      Must match hardware to get correct tick math.
+
+# ---------------------------------------------------------------------------
+# RAM base and size
+# ---------------------------------------------------------------------------
+config RAM_SIZE
+    int "RAM size (MiB)"
+    default 256  if BOARD_QEMU
+    default 8192 if BOARD_VF2
+    default 4096 if BOARD_K1
+    default 256
+    range 1 65536
+    help
+      RAM in MiB the physical memory manager can address: it sizes the
+      PMM bitmap (crates/core/mm/src/pmm.rs MAX_PAGES, RAM_SIZE × 32 bytes of
+      .bss).  At boot the PMM manages the RAM the device tree reports,
+      capped at this value, so a board with less RAM than RAM_SIZE boots
+      the same image; RAM beyond RAM_SIZE is left unused.  The embedded
+      defconfig sets 64 for its 16 and 64 MiB boards.
+
+      Cost: 544 B of RAM per MiB (.bss), the same on riscv64 and aarch64: the
+      PMM bitmap, 32 B, and the copy-on-write reference count, one u16 per 4 KiB
+      page, 512 B.  At the default: QEMU (256) 136 KiB; embedded (64) 34 KiB;
+      BOARD_K1 (4096) 2.1 MiB; BOARD_VF2 (8192) 4.25 MiB.
+
+config PSTORE_SIZE_KB
+    int "Panic record region in RAM (KiB, 0 = off)"
+    default 4 if BOARD_QEMU
+    default 0
+    range 0 1024
+    help
+      Size of the RAM region at the top of the reported RAM range that
+      holds the last kernel panic's crash-log entry across a warm reboot
+      (kernel/src/pstore.rs; the analogue of Linux pstore/ramoops). The
+      panic handler writes it without taking a lock, so a panic inside the
+      filesystem, which skips the /fat/CRASH.LOG write, is still recorded;
+      the next boot checks the record's CRC-32, appends it to
+      /fat/CRASH.LOG and clears it. One entry needs under 1 KiB.
+
+      The region is taken out of the page allocator. It needs a reset
+      that keeps DRAM contents and firmware that leaves the top of RAM
+      alone; QEMU virt keeps both on riscv64 and aarch64. Default 4 on
+      QEMU, 0 elsewhere.
+
+      Cost: no static RAM (+0 B measured for 4 -> 5 and -> 16 KiB, both
+      ISAs: the image does not grow).  The region is PSTORE_SIZE_KB KiB of
+      page-allocator memory taken at boot, so 4 KiB frames removed from the
+      allocator: 1 frame at the QEMU default of 4, 256 at the maximum 1024
+      (1 MiB).  The crash-record code adds a few words of .bss for the
+      region's address and state, and nothing sized by this option.
+
+# ---------------------------------------------------------------------------
+# HDMI framebuffer (VF2 only — DC8200 + Innosilicon HDMI TX)
+# ---------------------------------------------------------------------------
+# Compiled in only with `--features hdmi` (crates/drivers/display) — these values
+# are read by that code but exist regardless of whether the feature is
+# active, same relationship as the WCET (RFC-0027) threshold configs vs
+# the `wcet` Cargo feature.
+
+config HDMI_WIDTH
+    int "HDMI framebuffer width (pixels)"
+    default 640
+    range 64 3840
+    help
+      Fixed output resolution — no EDID negotiation with the monitor
+      (see crates/drivers/display). 640x480 is the safe VESA default: the most
+      universally-supported fallback timing, most likely to work
+      blind on an unknown display. Changing this requires the display
+      timing constants in crates/drivers/display/src/dc8200.rs to match a
+      real, valid mode (arbitrary width/height pairs are not
+      necessarily valid CRTC timings).
+
+config HDMI_HEIGHT
+    int "HDMI framebuffer height (pixels)"
+    default 480
+    range 64 2160
+    help
+      See HDMI_WIDTH — must be changed together with it to match a
+      real display mode, not independently.
+
+endmenu # Platform / Board

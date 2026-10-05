@@ -1,0 +1,429 @@
+[workspace]
+resolver = "2"
+exclude = [
+    "userspace/services/brain_client",
+    "userspace/services/reflex",
+    # uhello — minimal Rust user-space ELF (E11.AQ3 phase-1 de-risk).
+    "userspace/tests/uhello",
+    # gpio_drv — userspace GPIO driver process (E11.AQ3).
+    "userspace/drivers/gpio_drv",
+    # mlsrv — ring-3 ML inference service the behavior task spawns (wave 9).
+    "userspace/services/mlsrv",
+    # buzz_drv / ina_drv — ring-3 buzzer and INA219 drivers (RFC-0040 rule 3).
+    "userspace/drivers/buzz_drv",
+    "userspace/drivers/ina_drv",
+    # captest — ring-3 capability + syscall ABI test. Asserts both halves:
+    # a granted resource works, an ungranted one is still denied.
+    "userspace/tests/captest",
+    # latbench — ring-3 syscall latency microbenchmark.
+    "userspace/bench/latbench",
+    "userspace/tests/abitest",
+    # ipctest — ring-3 IPC probe: fast-path round trip, server impersonation,
+    # and the shm/port/io_ring ownership gates.
+    "userspace/tests/ipctest",
+    # vsbench — the same ring-3 work measured on Azos and on Linux/riscv64.
+    # One shared core, two syscall backends; the binaries differ only in which
+    # kernel they call.
+    "userspace/bench/vsbench",
+    # hello_aarch64 / syscall_test_aarch64 — aarch64 counterparts of hello.S
+    # and test.S (phase 6 prep, aarch64 parity). Not members: like every
+    # other userspace crate here, each carries its own `[workspace]` marker.
+    "userspace/tests/hello",
+    "userspace/tests/syscall_test",
+    # flight-sim is a host-side (std) test crate — run separately:
+    #   cargo test --target aarch64-apple-darwin -p azos_flight_sim
+    # It cannot be a workspace member because the workspace target is riscv64-none-elf.
+    "tests/host/flight-sim",
+    # ota-tests is a host-side test crate for the pure OTA logic (OT01).
+    # Run with:  cd tests/host/ota-tests && cargo test
+    "tests/host/ota-tests",
+    "tests/host/dfu-tests",
+    # msc-tests — host-side tests for USB MSC (DEV03). Same pattern.
+    # Run with:  cd tests/host/msc-tests && cargo test
+    "tests/host/msc-tests",
+    # crypto-tests — host-side NIST/RFC vectors for SHA-256, AES-128,
+    # X25519. Pins current HMAC-stub sig_verify behaviour until task
+    # #212 replaces it with real Ed25519.
+    # Run with:  cd tests/host/crypto-tests && cargo test
+    "tests/host/crypto-tests",
+    # dtb-tests — host-side tests for the Flattened Device Tree parser.
+    # Run with:  cd tests/host/dtb-tests && cargo test
+    "tests/host/dtb-tests",
+    # gguf-tests — host-side tests for the GGUF model-file parser.
+    # Run with:  cd tests/host/gguf-tests && cargo test
+    "tests/host/gguf-tests",
+    # config-tests — host-side tests for INI parser + runtime atomics.
+    # Run with:  cd tests/host/config-tests && cargo test
+    "tests/host/config-tests",
+    # efi-tests — host-side tests for BootInfo + EfiMemoryIter + PE/COFF.
+    # Run with:  cd tests/host/efi-tests && cargo test
+    "tests/host/efi-tests",
+    # arch-api-tests — host-side tests for the cross-ISA trait surface
+    # + PagePerms constants + arch_name strings. Includes a Stub impl
+    # that proves the traits are dyn-compatible and self-consistent.
+    # Run with:  cd tests/host/arch-api-tests && cargo test
+    "tests/host/arch-api-tests",
+    # regression-tests pins specific bug fixes so future refactors can't
+    # silently reintroduce them. Run with:  /bin/zsh tools/test_regression.sh
+    "tests/host/regression-tests",
+    # topology-tests is a host-side test crate for the W2 topology parser.
+    # Run with:  cd tests/host/topology-tests && cargo test
+    "tests/host/topology-tests",
+    # abi-tests is a host-side test crate for the W1 ABI freeze.
+    # Run with:  cd tests/host/abi-tests && cargo +stable test
+    "tests/host/abi-tests",
+    # cap-tests pulls crates/core/ipc/src/cap.rs into a host crate so the
+    # embedded #[cfg(test)] suite runs on the developer host.
+    # Run with:  cd tests/host/cap-tests && cargo +stable test
+    "tests/host/cap-tests",
+    # fs-tests drives the REAL fat32.rs against hand-built volume images, via a
+    # host shim for the RV64-only block device. Same exclusion reason as
+    # cap-tests: it depends on std and on a shim crate that shadows a kernel
+    # crate name.
+    "tests/host/fs-tests",
+    # arch-tests pulls the pure halves of arch-riscv64 (Sv39 arithmetic, PMP
+    # encoding) via #[path]; the rest of that crate is inline asm.
+    "tests/host/arch-tests",
+    # drivers-tests pulls driver modules via #[path]; their `crate::` paths
+    # resolve to the test crate, which provides root-level stand-ins for the
+    # MMIO modules.
+    "tests/host/drivers-tests",
+    "tests/host/drivers-tests/shims/mm",
+    "tests/host/drivers-tests/shims/arch",
+    # mm-tests covers the physical page allocator; its arch shim re-exports the
+    # real Sv39 mmu module rather than stubbing it.
+    "tests/host/behavior-tests",
+    "tests/host/net-tests",
+    "tests/host/behavior-tests/shims/ipc",
+    "tests/host/behavior-tests/shims/drivers",
+    "tests/host/behavior-tests/shims/robot",
+    "tests/host/behavior-tests/shims/robot_sync",
+    "tests/host/behavior-tests/shims/ota",
+    "tests/host/behavior-tests/shims/fs",
+    "tests/host/libsys-tests",
+    # RFC-0055 (wave 11): the user shell's pure modules, and the shell and
+    # tool images themselves (each carries its own `[workspace]` marker).
+    "tests/host/sh-tests",
+    "userspace/services/sh",
+    "userspace/services/toolbox",
+    "userspace/services/power",
+    "tests/host/mm-tests",
+    "tests/host/mm-tests/shims/arch",
+
+    # seccomp-tests covers the syscall filter (AQ11). Its `numbers` shim is
+    # not a stub: it re-exports the REAL crates/core/syscall/src/numbers.rs so the
+    # suite can catch drift against the copies seccomp.rs is forced to keep
+    # (azos_syscall depends on azos_sched, so seccomp.rs cannot
+    # import them without closing a dependency cycle).
+    "tests/host/seccomp-tests",
+    "tests/host/seccomp-tests/shims/numbers",
+    "tests/host/fs-tests/shims/drivers",
+    # sched-policy-tests pulls W4 scheduler sources via #[path] so the
+    # policy + APS suites run on the developer host.
+    # Run with:  cd tests/host/sched-policy-tests && cargo +stable test
+    "tests/host/sched-policy-tests",
+    # drv-api-tests exercises the host-compatible
+    # `azos_drv_api` crate.
+    # Run with:  cd tests/host/drv-api-tests && cargo +stable test \
+    #              --target aarch64-apple-darwin
+    "tests/host/drv-api-tests",
+    # B1.boot — standalone aarch64 boot binary. Excluded because
+    # its own .cargo/config.toml pins it to
+    # aarch64-unknown-none-softfloat which the workspace target
+    # (riscv64gc-unknown-none-elf) cannot build for.
+    # Run with:  make qemu-aarch64-hello
+    # tftp-tests exercises the host-compatible `azos_tftp` crate.
+    # Run with:  cd tests/host/tftp-tests && cargo +stable test \
+    #              --target aarch64-apple-darwin
+    "tests/host/tftp-tests",
+    # flight-math-tests — host-side tests for the pure drone math (D04 trig +
+    # wind estimator). Run with:  cd tests/host/flight-math-tests && cargo test
+    "tests/host/flight-math-tests",
+    # auth-envelope-bench — host-side benchmark for the HMAC-SHA-256 envelope
+    # (domains/robot/behavior/src/auth_envelope.rs wire format). Re-implements the
+    # pure math locally; depends only on azos_crypto (host-buildable).
+    # Run with:  cd tests/host/auth-envelope-bench && cargo +stable test --release -- --nocapture
+    "tests/host/auth-envelope-bench",
+    # aead-link-tests — host-side cross-side compat pin for RFC-0019 AEAD
+    # link. Verifies that frames produced by AzOSRobotBrain/secure_channel.py
+    # decrypt correctly with crates/core/crypto::secure_channel.
+    # Run with:  cd tests/host/aead-link-tests && cargo +stable test --release
+    "tests/host/aead-link-tests",
+    # encrypt-link-tests — host-side cross-side compat pin for the
+    # RFC-0019 handshake state machine in `crates/net/encrypt-link`.
+    # Verifies byte-for-byte agreement with AzOSRobotBrain/secure_channel.py
+    # using deterministic ephemeral keys.
+    # Run with:  cd tests/host/encrypt-link-tests && cargo +stable test --release
+    "tests/host/encrypt-link-tests",
+    # cam-ring-tests — host-side SPSC frame ring tests (S1/S6 multi-stream).
+    # Run with:  cd tests/host/cam-ring-tests && cargo +stable test
+    "tests/host/cam-ring-tests",
+    # multi-stream-tests — host-side RFC-0021 wire format tests.
+    # Run with:  cd tests/host/multi-stream-tests && cargo +stable test
+    "tests/host/multi-stream-tests",
+    # azos-config — build-time Kconfig reader + Rust const emitter (RFC-0026 C1).
+    # Host-only (std); excluded from riscv64-none-elf workspace compilation.
+    # Run with:  cd crates/core/azos-config && cargo test
+    "crates/core/azos-config",
+    # RT7 panic-policy predicate tests (host-only).
+    "tests/host/panic-policy-tests",
+    # wcet-macro — RFC-0027 proc-macro for #[wcet(N_us)] WCET budget annotations.
+    # Host-only (proc-macro); excluded from riscv64-none-elf workspace compilation.
+    # Run with:  cd crates/core/wcet-macro && cargo test
+    "crates/core/wcet-macro",
+    # ── Host suites for the IPC subsystem (audit 2026-08-22) ──
+    # Same pattern as cap-tests: the whole `azos_ipc` crate does not build
+    # for the host (it drags in RV64-only dependencies), so each suite pulls
+    # the module it needs with `#[path]` and runs its `#[cfg(test)] mod tests`.
+    # Run with:  cd crates/<suite> && cargo test
+    "tests/host/ipc-fast-tests",
+    "tests/host/ipc-lease-tests",
+    "tests/host/ipc-chan-tests",
+    "tests/host/sched-wake-tests",
+    # syscall-tests pulls crates/core/syscall/src/handlers.rs whole via #[path] --
+    # host coverage for the errno_for_*_err functions, cap_kind_for_driver,
+    # and socket_access_ok. Same exclusion reason as cap-tests: it depends on
+    # std and on shim crates that shadow kernel crate names.
+    # Run with:  cd tests/host/syscall-tests && cargo test --release
+    "tests/host/syscall-tests",
+    "tests/host/sync-tests",
+    "tests/host/sync-tests/shims/arch",
+    # world-state-tests — host-side tests for the K-C29 fix applied to
+    # domains/robot/behavior/src/world_state.rs's hand-rolled seqlock. Same pattern
+    # as sync-tests: pulls world_state.rs in via #[path], backed by a facade
+    # `azos_sync` that compiles the real preempt.rs/preempt_core.rs.
+    "tests/host/world-state-tests",
+    "tests/host/world-state-tests/shims/sync",
+    # pci-tests / dma-tests / iommu-tests — host-side tests for the new
+    # RFC-0046 stage-1/1b crates (crates/drivers/pci, crates/drivers/dma, crates/drivers/iommu),
+    # same pattern as drivers-tests: pulled #[path] modules + fakes.
+    # Run with:  cd crates/<name> && cargo test --release
+    "tests/host/pci-tests",
+    "tests/host/lx-loader-tests",
+    # The Linux layer (GPL-2.0-only): never a member, so no workspace build
+    # can link it into the kernel or a dual-licensed image.
+    "lx/emul",
+    "tests/host/dma-tests",
+    "tests/host/iommu-tests",
+    "tests/host/shell-tests",
+    # linux-abi-tests: the Linux personality's pure half (RFC-0047).
+    # Run with:  cd tests/host/linux-abi-tests && cargo test --release
+    "tests/host/linux-abi-tests",
+    # RFC-0051 E0-E2: crates/core/energy, the SCHED.TOML energy sections and
+    # the DTB energy tables. Run with:  cd tests/host/energy-tests && cargo test --release
+    "tests/host/energy-tests",
+]
+members = [
+    "kernel",
+    "crates/core/abi",
+    # RFC-0047: the Linux personality's pure half (numbers, layouts).
+    "crates/core/linux-abi",
+    "crates/core/topology",
+    "crates/core/common",
+    "crates/core/arch",
+    "crates/core/sync",
+    "crates/drivers/base",
+    "crates/drivers/irqchip",
+    "crates/drivers/sys",
+    "crates/drivers/gpio",
+    "crates/drivers/bus",
+    "crates/drivers/virtio",
+    "crates/drivers/block",
+    "crates/drivers/net",
+    "crates/drivers/sensor",
+    "crates/drivers/actuator",
+    "crates/drivers/npu",
+    "crates/drivers/power",
+    "crates/drivers/dmac",
+    "domains/robot/drivers",
+    "crates/core/mm",
+    "crates/core/sched",
+    # RFC-0051: utilisation tracking, energy model, scheduler energy seams.
+    "crates/core/energy",
+    "crates/core/syscall",
+    "crates/fs/fs",
+    "crates/net/net",
+    "crates/core/ipc",
+    "crates/core/service",
+    "domains/robot/robot",
+    "crates/core/shell",
+    "domains/robot/bench",
+    "crates/core/ml",
+    "crates/drivers/camera",
+    "crates/drivers/display",
+    "crates/core/config",
+    "crates/drivers/imu",
+    "crates/drivers/baro",
+    "crates/drivers/dtb",
+    "domains/robot/behavior",
+    "crates/core/channel",
+    "domains/robot/ahrs",
+    "crates/drivers/gps",
+    "domains/robot/flight",
+    # Pure no_std drone math (D04 trig + wind), host-tested via flight-math-tests.
+    "domains/robot/flight-math",
+    "domains/robot/telemetry",
+    "domains/robot/nav",
+    "crates/core/libsys",
+    "crates/core/spsc",
+    "crates/core/ota",
+    "crates/core/pubsub",
+    "crates/core/crypto",
+    "crates/core/trace",
+    "crates/core/efi",
+    "crates/drivers/driver_server",
+    # Driver framework API surface (host-testable, no riscv deps).
+    "crates/drivers/api",
+    "crates/drivers/ina219",
+    "crates/drivers/buzzer",
+    # RFC 1350 TFTP client (DEV01 fast-iteration netboot prep).
+    "crates/net/tftp",
+    # DFU 1.1 protocol state machine + USB descriptors (DEV02 recovery mode).
+    "crates/drivers/dfu",
+    # USB MSC gadget — Bulk-Only Transport + minimal SCSI (DEV03 debug mount).
+    "crates/drivers/msc",
+    # RFC-0019 forward-secret link handshake state machine + AEAD wrapper.
+    # Pure no_std, host-buildable. Cross-tested in tests/host/encrypt-link-tests.
+    "crates/net/encrypt-link",
+    # Cross-ISA arch trait surface (B0 — Phase 2 prep for aarch64/x86_64).
+    "crates/core/arch-api",
+    # B1 — aarch64 ISA impl. Real code is cfg(target_arch="aarch64");
+    # on the workspace's riscv64 target this builds as essentially empty.
+    # Item 2 Stage 1/2 — riscv64 ISA impl moved out of crates/core/arch;
+    # crates/core/arch is now a per-target_arch facade re-exporting one of
+    # the per-ISA crates (arch-riscv64, arch-aarch64).
+    "crates/core/arch-riscv64",
+    # aarch64, ARMv8.5 baseline (owner decision 97). Compiles to near-nothing on
+    # riscv64; `tools/ci_check.sh` builds and tests it for aarch64 so it cannot
+    # rot unnoticed the way the parked copy did for a month.
+    "crates/core/arch-aarch64",
+    # S1/S6 — lock-free SPSC camera frame ring for zero-copy pipelines.
+    # Pure no_std; host-tested via tests/host/cam-ring-tests.
+    "crates/drivers/cam-ring",
+    # RFC-0021 — stream-ID-prefixed wire multiplexer for the brain↔kernel link.
+    # Pure no_std; host-tested via tests/host/multi-stream-tests.
+    "crates/net/multi-stream",
+    # RFC-0026 Phase C2 — generated compile-time constants from .config.
+    # no_std; build.rs reads .config via azos-config and emits generated.rs.
+    "crates/core/limits",
+    # RFC-0037 degrade taxonomy + speed-ceiling mapping. Dep-free leaf crate;
+    # owned here so both ipc (TCB) and behavior (safety domain) can depend on it
+    # without putting motor policy in the TCB.
+    "domains/robot/degrade-policy",
+    # RFC-0040 gap 0 — the actuation safety path (gate, e-stop seams, rt-motor,
+    # sys-wdt, flight-ctrl, I-13, WDT feed), out of the kernel composition root.
+    "domains/robot/safety-core",
+    # Wave 11 (DOMAIN): the actuation authority every domain shares (e-stop
+    # latch, release authority, flight recorder, sys-wdt), out of the robot
+    # crates so a non-robot image keeps it.
+    "crates/core/actuation",
+    # RFC-0046 stage 1 — native PCI/ECAM enumeration (bus 0, MSI/MSI-X
+    # capability parse, BAR sizing). no_std, host-tested via tests/host/pci-tests.
+    "crates/drivers/pci",
+    # RFC-0046 stage 1 — DMA mapping API (map/unmap single, coherent pool,
+    # bounce decision). no_std, host-tested via tests/host/dma-tests.
+    "crates/drivers/dma",
+    # RFC-0046 stage 1b — minimal IOMMU support (RISC-V IOMMU + SMMUv3
+    # device-context/fault-record encode-decode). no_std, host-tested via
+    # tests/host/iommu-tests.
+    "crates/drivers/iommu",
+    # RFC-0053 L0b: the relocatable-module loader the Linux server uses.
+    # no_std, no Linux code; host-tested via tests/host/lx-loader-tests.
+    "crates/core/lx-loader",
+]
+
+[workspace.dependencies]
+bitflags = "2"
+log = "0.4"
+static_assertions = "1.1"
+linked_list_allocator = { version = "0.10", default-features = false }
+
+# Internal crates
+azos_abi = { path = "crates/core/abi" }
+azos_linux_abi = { path = "crates/core/linux-abi" }
+azos_spsc = { path = "crates/core/spsc" }
+azos_common = { path = "crates/core/common" }
+azos_arch = { path = "crates/core/arch" }
+azos_sync = { path = "crates/core/sync" }
+azos_drv_base = { path = "crates/drivers/base" }
+azos_drv_irqchip = { path = "crates/drivers/irqchip" }
+azos_drv_sys = { path = "crates/drivers/sys" }
+azos_drv_gpio = { path = "crates/drivers/gpio" }
+azos_drv_bus = { path = "crates/drivers/bus" }
+azos_drv_virtio = { path = "crates/drivers/virtio" }
+azos_drv_block = { path = "crates/drivers/block" }
+azos_drv_net = { path = "crates/drivers/net" }
+azos_drv_sensor = { path = "crates/drivers/sensor" }
+azos_drv_actuator = { path = "crates/drivers/actuator" }
+azos_drv_npu = { path = "crates/drivers/npu" }
+azos_drv_power = { path = "crates/drivers/power" }
+azos_drv_dmac = { path = "crates/drivers/dmac" }
+azos_robot_drivers = { path = "domains/robot/drivers" }
+azos_mm = { path = "crates/core/mm" }
+azos_sched = { path = "crates/core/sched" }
+azos_energy = { path = "crates/core/energy" }
+azos_syscall = { path = "crates/core/syscall" }
+azos_fs = { path = "crates/fs/fs" }
+azos_net = { path = "crates/net/net" }
+azos_ipc = { path = "crates/core/ipc" }
+azos_service = { path = "crates/core/service" }
+azos_robot = { path = "domains/robot/robot" }
+azos_shell  = { path = "crates/core/shell" }
+azos_ml     = { path = "crates/core/ml" }
+azos_camera = { path = "crates/drivers/camera" }
+azos_display = { path = "crates/drivers/display" }
+azos_config = { path = "crates/core/config" }
+azos_imu    = { path = "crates/drivers/imu" }
+azos_baro   = { path = "crates/drivers/baro" }
+azos_dtb      = { path = "crates/drivers/dtb" }
+azos_behavior = { path = "domains/robot/behavior" }
+azos_channel  = { path = "crates/core/channel" }
+azos_ahrs     = { path = "domains/robot/ahrs" }
+azos_gps       = { path = "crates/drivers/gps" }
+azos_flight    = { path = "domains/robot/flight" }
+azos_flight_math = { path = "domains/robot/flight-math" }
+azos_telemetry = { path = "domains/robot/telemetry" }
+azos_nav       = { path = "domains/robot/nav" }
+azos_libsys    = { path = "crates/core/libsys" }
+azos_ota       = { path = "crates/core/ota" }
+azos_dfu       = { path = "crates/drivers/dfu" }
+azos_msc       = { path = "crates/drivers/msc" }
+azos_encrypt_link = { path = "crates/net/encrypt-link" }
+azos_pubsub    = { path = "crates/core/pubsub" }
+azos_trace     = { path = "crates/core/trace" }
+azos_efi       = { path = "crates/core/efi" }
+azos_driver_server = { path = "crates/drivers/driver_server" }
+azos_crypto    = { path = "crates/core/crypto" }
+azos_topology  = { path = "crates/core/topology" }
+azos_drv_api = { path = "crates/drivers/api" }
+azos_ina219      = { path = "crates/drivers/ina219" }
+azos_buzzer      = { path = "crates/drivers/buzzer" }
+azos_tftp        = { path = "crates/net/tftp" }
+azos_arch_api    = { path = "crates/core/arch-api" }
+azos_arch_riscv64 = { path = "crates/core/arch-riscv64" }
+azos_arch_aarch64 = { path = "crates/core/arch-aarch64" }
+azos_cam_ring      = { path = "crates/drivers/cam-ring" }
+azos_multi_stream  = { path = "crates/net/multi-stream" }
+azos_limits        = { path = "crates/core/limits" }
+azos_degrade_policy = { path = "domains/robot/degrade-policy" }
+azos_actuation = { path = "crates/core/actuation" }
+azos_pci    = { path = "crates/drivers/pci" }
+azos_dma    = { path = "crates/drivers/dma" }
+azos_iommu  = { path = "crates/drivers/iommu" }
+
+[profile.release]
+opt-level = 2
+debug = true       # Keep debug info for GDB
+# LTO breaks global_asm sometimes. ALSO load-bearing for correctness:
+# `cap_store::resolve_only_untrusted` (crates/core/ipc/src/cap_store.rs) relies on
+# its two `idx_for_tid` scans surviving as two distinct scans — verified on
+# the release artifact under lto = false. Enabling LTO could let the compiler
+# CSE the confirmation pass into nothing; re-audit that function before
+# flipping this.
+lto = false
+panic = "abort"
+overflow-checks = true   # Detect integer overflow at runtime (safety > speed)
+
+[profile.dev]
+opt-level = 1      # Some optimization even in debug (kernel needs it)
+panic = "abort"

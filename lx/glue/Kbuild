@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# The lx/ base as a Linux external module (RFC-0053 L1), built by
+# tools/lx_kbuild/kbuild-in.sh inside the Kbuild container.
+obj-m += lxbase.o

@@ -1,0 +1,303 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.drivers — Hardware driver enables
+#
+# RFC-0026 Phase C1.  Each option maps to the corresponding driver being
+# compiled in.  Board dependencies are encoded via `depends on BOARD_*`.
+
+menu "Drivers"
+
+# ---------------------------------------------------------------------------
+# Machine learning
+# ---------------------------------------------------------------------------
+
+config DRV_ML_INFERENCE
+    bool "CNN / ML inference engine"
+    default y
+    help
+      Compiled-in INT8 CNN inference engine (crates/core/ml).  Required for
+      on-device object recognition and GMM motion detection.
+      Disable via cargo feature `no-ml` to reduce code size ~200 KiB.
+# ---------------------------------------------------------------------------
+# Ring-3 driver proxy
+# ---------------------------------------------------------------------------
+
+config PROXY_SPIN_US
+    int "Ring-3 driver proxy: spin before blocking on a reply (us)"
+    range 0 1000
+    default 20
+    help
+      How long an in-kernel client of a ring-3 driver polls for the reply
+      before it blocks, and only while the driver is running on another
+      hart (crates/drivers/sys/src/user_driver_proxy.rs, PROXY_SPIN_US;
+      crates/drivers/driver_server/src/reply_wait.rs, wait_for_reply). 0 disables
+      the spin: every wait blocks at once.
+
+      The right value is board-specific: it should sit just above the time
+      a running driver takes to answer, and below what a block + cross-hart
+      wake + switch back costs on that board. Measure it on the board, not
+      under QEMU (-icount serialises the vCPUs, so the spin cannot help there
+      at all):
+        1. Boot the qemu-style image whose autorun is gpio_drv (the image the
+           "userspace: ring-3 GPIO driver" gate row builds) with -smp >= 2
+           and read the kernel line
+             [AQ3] proxy round trip over 32 pings: min=.. median=..us max=.. failed=0 spin=N
+           `spin=N` counts the replies the spin found before any block.
+        2. Rebuild with PROXY_SPIN_US=0 and repeat: that median is the cost
+           of the block path on this board.
+        3. Raise the value until `spin=` stops growing; keep the smallest
+           value that finds most replies while its median stays below the
+           step-2 median. Several boots per value: the numbers are wall
+           clock.
+      20 us is the value measured on QEMU TCG (MTTCG, 4 harts): round trip
+      medians 11-12 us with the spin vs 47-69 us without, 24-31 of 32
+      replies found by the spin (wave 9).
+
+config PROXY_REPLY_TIMEOUT_MS
+    int "Ring-3 driver proxy: reply timeout (ms)"
+    range 1 10000
+    default 100
+    help
+      How long an in-kernel client of a ring-3 driver waits, blocked, for
+      the reply before the request fails with DriverError::Busy
+      (crates/drivers/sys/src/user_driver_proxy.rs,
+      PROXY_REPLY_TIMEOUT_MS).
+
+# ---------------------------------------------------------------------------
+# Console
+# ---------------------------------------------------------------------------
+
+config CONSOLE_TX_RING_BYTES
+    int "Console UART transmit ring (bytes)"
+    range 1024 65536
+    default 4096
+    help
+      Bytes of console output queued for the UART transmit interrupt
+      (crates/drivers/sys/src/uart.rs, TX_RING_BYTES). A ring-3
+      writer that outruns the wire waits for room; a kernel line that
+      does not fit is deferred. 4096 is about 0.36 s of wire at 115200
+      baud. Must stay well above the 256-byte line reserve of
+      console_defer.rs, or every kernel line is deferred.
+
+      Cost: 1 B of RAM per byte (TX, .bss), the same on riscv64 and aarch64:
+      4,136 B at the default.
+
+config CONSOLE_DEFER_BYTES
+    int "Console deferred-line buffer (bytes)"
+    range 1024 65536
+    default 8192
+    help
+      Kernel console lines written while another context owns the UART
+      wait here (crates/drivers/sys/src/uart.rs, DEFER_BYTES). A full
+      buffer drops lines and prints "[CONSOLE] dropped", which fails every
+      gate row. 8192 is 1.9x the largest high-water mark measured
+      (4257 B, aarch64 -smp 2 splice stress, 2026-09-28).
+
+      Cost: 1 B of RAM per byte (DEFER, .bss), the same on riscv64 and aarch64:
+      8,240 B at the default.
+
+config CONSOLE_TX_IRQ_BUDGET
+    int "Console: most bytes one TX interrupt moves to the UART"
+    range 16 4096
+    default 256
+    help
+      crates/drivers/sys/src/uart.rs, TX_IRQ_BUDGET. On a real UART
+      the 16-byte FIFO fills first, so this never binds; under QEMU,
+      which transmits instantly, it is the bound.
+
+# ---------------------------------------------------------------------------
+# Optional drivers and buses (each maps to a kernel cargo feature)
+# ---------------------------------------------------------------------------
+
+config DRV_PCI
+    bool "PCI bus: ECAM enumeration, MSI-X, virtio-pci transport (QEMU virt)"
+    default n
+    depends on BOARD_QEMU
+    help
+      Kernel feature `pci` (crates/drivers/pci; virtio-pci modern transport
+      for virtio-net). QEMU virt only: ECAM from the DTB. Built and booted
+      by the gate's PCI rows on both ISAs. n: the PCI code is not
+      compiled.
+
+config DRV_DISPLAY_HDMI
+    bool "HDMI framebuffer (VF2 DC8200 + HDMI TX)"
+    default n
+    depends on BOARD_VF2
+    help
+      Kernel feature `hdmi` (crates/drivers/display). Fixed resolution
+      (HDMI_WIDTH/HDMI_HEIGHT, "Platform / Board"), no EDID, solid-colour
+      output only. Never validated on hardware: QEMU has no model of this
+      peripheral, and the PHY calibration is placeholder data, so expect
+      no signal on a real monitor. The gate builds it ("hdmi" row); no
+      row boots it.
+
+config DRV_DISPLAY_RAMFB
+    bool "QEMU ramfb framebuffer (test display)"
+    default n
+    depends on BOARD_QEMU && ARCH_RISCV64
+    help
+      Kernel feature `ramfb` (crates/drivers/display/src/ramfb.rs): draws
+      a test pattern on QEMU's ramfb device. Needs `-device ramfb` and a
+      display backend on the QEMU command line. Not the VF2 display
+      driver. riscv64 only: the fw_cfg address it uses is defined for the
+      riscv64 QEMU virt map alone (an aarch64 build does not compile).
+
+config DRV_CAMERA
+    bool "CSI camera brought up at boot (non-robot images)"
+    default n
+    help
+      Kernel feature `camera`: kernel_main brings up the CSI camera
+      (crates/drivers/sensor/src/csi.rs; simulated under QEMU) at boot,
+      and ring 3 reads JPEG frames through SYS_SENSOR_READ_TYPED
+      (SENSOR_TYPE_CAMERA). Implied by DOMAIN_IOT_HMI. A DOMAIN_ROBOT
+      image brings the camera up with its sensors whatever this says.
+      n: the CSI driver is still compiled (it is part of the drivers
+      crate) but never initialised, and a camera read answers not ready.
+
+# ---------------------------------------------------------------------------
+# Driver placement (RFC-0052 section 6.1, wave 11 DRVPLACE)
+# ---------------------------------------------------------------------------
+#
+# One chip-logic source per driver, two hosts: in the kernel (a direct call
+# in the caller's context) or in ring 3 (a driver process behind the
+# kernel's proxy). Chosen per driver here, for the board this .config is
+# for; later also by the signed topology. Only drivers whose chip logic has
+# been separated from its host have a choice (INA219, buzzer).
+#
+# Closed rule (RFC-0040's table): a driver a safety decision reads never
+# goes to ring 3, so it has no choice here and always runs in the kernel:
+# clint/plic, wdt, pwm/gpio/motor/motor_pid/esc (actuation gate, rt_motor,
+# flight control, e-stop pin), rc (flight failsafe), i2c with the IMU
+# (attitude, imu_valid), rangefinder (obstacle check), ads1115 (battery
+# check), uart (console, panic path), virtio-blk/mmc (e-stop latch replay,
+# crash log). tools/kconfig_to_cargo.py refuses a .config that places any
+# of them in ring 3. Drivers of Linux origin always run in ring 3 (none is
+# in the tree yet).
+
+config DRV_RING3_DEFAULT
+    bool "Place drivers that support it in ring 3 by default"
+    default n
+    help
+      The starting value of every DRV_<NAME>_PLACEMENT below becomes
+      `ring3`. Implied by DOMAIN_MICROKERNEL; each driver's choice can
+      still be changed by hand. n: each driver keeps its own default
+      (written in its help). Drivers with no placement choice are not
+      affected (see the closed rule above).
+
+choice DRV_INA219_PLACEMENT
+    prompt "INA219 power monitor: placement"
+    # Every placement choice carries this line first: DRV_RING3_DEFAULT
+    # (the Microkernel domain) starts it in ring 3.
+    default DRV_INA219_PLACEMENT_RING3 if DRV_RING3_DEFAULT
+    # This driver's own default: ring 3 (RFC-0040 rule 3, no safety
+    # decision reads it), the same as a build with no cargo feature.
+    default DRV_INA219_PLACEMENT_RING3
+    help
+      Where the INA219 chip logic (crates/drivers/ina219) runs. Both
+      answer SYS_SENSOR_READ(SENSOR_TYPE_POWER) with the same record.
+      Not read by any safety decision (the battery check reads the
+      ADS1115), so both are allowed.
+
+    config DRV_INA219_PLACEMENT_KERNEL
+        bool "kernel"
+        help
+          Kernel feature `ina219-kernel`: a kernel task samples the chip
+          at 10 Hz and the kernel API reads its last sample directly (no
+          request to a driver process, no wake-up). The topology declares
+          no INADRV.ELF row. A chip fault is a kernel fault.
+
+    config DRV_INA219_PLACEMENT_RING3
+        bool "ring3"
+        help
+          The ring-3 driver INADRV.ELF (userspace/drivers/ina_drv), started
+          from its topology row, supervised and restarted as the row's
+          `restart` key says (on failure by default); the kernel reaches
+          it through the driver proxy (PROXY_SPIN_US, PROXY_REPLY_TIMEOUT_MS). Only images that carry INADRV.ELF and
+          start its row have the driver (today: the QEMU drivers disks).
+
+endchoice
+
+choice DRV_BUZZER_PLACEMENT
+    prompt "Piezo buzzer: placement"
+    default DRV_BUZZER_PLACEMENT_RING3 if DRV_RING3_DEFAULT
+    # This driver's own default: ring 3 (RFC-0040 rule 3, no safety
+    # decision reads it), the same as a build with no cargo feature.
+    default DRV_BUZZER_PLACEMENT_RING3
+    help
+      Where the buzzer chip logic (crates/drivers/buzzer) runs. Both answer
+      SYS_BUZZER_* and the kernel's buzzer calls with the same PWM channel
+      state (channel 5, 50% duty), and return once the first step of the
+      sound has started. Not read by any safety decision, so both are
+      allowed.
+
+    config DRV_BUZZER_PLACEMENT_KERNEL
+        bool "kernel"
+        help
+          Kernel feature `buzzer-kernel`: a call plays through the kernel's
+          PWM driver in the caller's context (no request to a driver
+          process), and a kernel task advances the timed steps. The
+          topology declares no BUZZDRV.ELF row. A fault in the chip logic is
+          a kernel fault.
+
+    config DRV_BUZZER_PLACEMENT_RING3
+        bool "ring3"
+        help
+          The ring-3 driver BUZZDRV.ELF (userspace/drivers/buzz_drv),
+          started from its topology row and supervised; the kernel reaches it
+          through the driver proxy (PROXY_SPIN_US, PROXY_REPLY_TIMEOUT_MS).
+          Only images that carry BUZZDRV.ELF and start its row have the
+          driver (today: the QEMU drivers disks).
+
+endchoice
+
+config STREAM_LIDAR_RING
+    bool "LiDAR scans to ring 3 through a shared-memory ring (stream.lidar)"
+    default n
+    help
+      Wave 11 (SHMRING). Every full LiDAR revolution the LD19 parser
+      completes is published by the kernel into a kernel-owned Cap<Shm>
+      region (crates/core/ipc/src/stream_ring.rs): an SPSC byte ring that
+      never blocks the producer (a full ring drops the NEWEST scan and
+      counts it) and rings the consumer's notify doorbell only when it said
+      it may be asleep. A topology row declaring `Shm stream.lidar` is
+      seeded the capability; holding it is the authority to read the
+      stream, with no per-scan capability check (owner decision
+      2026-10-03). n: no region, the seed is refused, and
+      SYS_SENSOR_READ_TYPED (SENSOR_TYPE_LIDAR) is the only path, as it is
+      today. That path is unchanged either way.
+
+config STREAM_CAMERA_RING
+    bool "Camera frames to ring 3 through a shared-memory ring (stream.camera)"
+    default n
+    depends on DOMAIN_ROBOT || DRV_CAMERA
+    help
+      Wave 11 (SHMRING). A kernel task captures a JPEG frame
+      (csi_capture_jpeg, simulated on QEMU) every
+      STREAM_CAMERA_PERIOD_MS while a task has `stream.camera` mapped, and
+      publishes it into a kernel-owned Cap<Shm> ring, as STREAM_LIDAR_RING
+      does for scans. n: SYS_SENSOR_READ_TYPED (SENSOR_TYPE_CAMERA) is the
+      only path, unchanged.
+
+config STREAM_CAMERA_PERIOD_MS
+    int "Camera stream: milliseconds between frames"
+    default 100
+    range 10 1000
+    help
+      Used only with STREAM_CAMERA_RING.
+
+config LIDAR_SIM
+    bool "Synthetic LD19 LiDAR on QEMU (feeds the real parser)"
+    default n
+    depends on BOARD_QEMU
+    help
+      A kernel task feeds generated LD19 packets (12 points each, a full
+      revolution every 100 ms) to the LD19 parser
+      (crates/drivers/sensor/src/lidar.rs), which nothing feeds otherwise:
+      no board wires the LiDAR's UART to it yet. For the gate's stream
+      rows; each point's distance encodes (revolution, index) so a
+      consumer can check a scan arrived intact and in order.
+
+comment "IOMMU: crates/drivers/iommu is not used by the kernel (feature iommu only adds pci)"
+comment "Always compiled, no switch: FAT32/tmpfs/procfs, the network stack, the CSI driver, native drivers"
+
+endmenu # Drivers

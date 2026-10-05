@@ -1,0 +1,17 @@
+[package]
+name = "azos_sh_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the user shell's pure modules (userspace/services/sh: line editor, parser, path resolution). Excluded from workspace."
+
+# Run with:  cd tests/host/sh-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

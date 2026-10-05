@@ -1,0 +1,20 @@
+[package]
+name = "ina_drv"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Ring-3 host of crates/drivers/ina219 (the INA219 power monitor). Registers DRV_KIND_POWER_MON, polls the chip through Cap<I2c> and serves the SENSOR_TYPE_POWER record. Excluded from workspace; built standalone like gpio_drv."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_ina219 = { path = "../../../crates/drivers/ina219" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Standalone, as gpio_drv: see its Cargo.toml.
+[workspace]

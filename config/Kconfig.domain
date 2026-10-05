@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.domain — Application domain
+#
+# The top-level choice of what the image is for. AZOS is a general-purpose
+# hybrid kernel; a robot is one worked example. The domain decides which
+# crates are linked (DOMAIN_ROBOT -> kernel feature `domain-robot`, emitted by
+# tools/kconfig_to_cargo.py), which menus `make config` shows, and, through
+# `imply` and conditional defaults, the starting value of other options. It
+# never forces one: every implied option can be changed by hand (wave 11).
+
+menu "Application domain"
+
+choice
+    prompt "Application domain"
+    default DOMAIN_GENERIC
+    help
+      What this image is for. Only Robot links the robot crates under
+      domains/robot/ (behavior and the brain link, safety-core, flight,
+      the ESC and RC receiver drivers) plus the IMU / barometer / GPS
+      drivers and the robot shell commands. Every domain links the
+      shared actuation authority (crates/core/actuation: e-stop latch,
+      signed release, flight recorder, system watchdog). The other
+      domains change defaults only, with `imply` or a conditional
+      default, never `select`.
+
+    config DOMAIN_GENERIC
+        bool "Generic"
+        help
+          Default. A general-purpose kernel: scheduler, IPC, file
+          systems, network, drivers, ring-3 services, and the shared
+          actuation authority (e-stop latch, flight recorder, sys-wdt).
+          No robot crate is linked and no robot task is started: built
+          with `--no-default-features` plus the rest of the kernel's
+          default features (tools/kconfig_to_cargo.py). The in-kernel
+          shell answers the robot commands with "needs the Robot domain".
+
+    config DOMAIN_ROBOT
+        bool "Robot"
+        help
+          Links the robot crates (kernel feature `domain-robot`):
+          behavior and the brain link, the motor control loop and the
+          per-robot-type safety envelope (safety-core), IMU / barometer /
+          GPS / AHRS, flight, navigation, telemetry, the robot shell
+          commands and the in-kernel benches, and starts their tasks.
+          Shows the "Robot" menu: robot type, brain link, the
+          safety-layer timers and the motor control loop.
+
+    config DOMAIN_IOT_HMI
+        bool "IoT / HMI (display, touch, camera, battery)"
+        imply DRV_DISPLAY_HDMI
+        imply DRV_DISPLAY_RAMFB
+        imply DRV_CAMERA
+        help
+          Devices with a display, touch input, an optional camera and a
+          battery. Implies (default on, can be turned off under
+          "Drivers"): the display driver of the board (DRV_DISPLAY_HDMI
+          on the VF2, DRV_DISPLAY_RAMFB on QEMU riscv64; neither exists
+          elsewhere) and DRV_CAMERA (CSI camera brought up at boot,
+          frames to ring 3 through SYS_SENSOR_READ_TYPED). The INA219 /
+          ADS1115 drivers that read a supply voltage and current are in
+          every image. There is no touch-controller driver and no
+          battery state-of-charge model in the tree.
+
+    config DOMAIN_GATEWAY
+        bool "Gateway / edge / fleet"
+        help
+          A node that aggregates many downstream devices. On the Edge
+          deployment profile it changes the network defaults (each can be
+          set by hand under "Resource Limits" / "Network"):
+            TCP_MAX_CONNS 8 -> 64, TCP_BUF_SIZE 131072 -> 16384:
+              64 x 38,856 B = 2,486,784 B of TCP tables, against
+              8 x 268,232 B = 2,145,856 B on Edge (+340,928 B);
+            MAX_SOCKETS 16 -> 128 (+112 UDP-sized slots);
+            ARP_CACHE_SIZE 16 -> 64, ARP_PENDING_SIZE 8 -> 16,
+            DNS_CACHE_SIZE 4 -> 16, UDP_RX_SLOTS 4 -> 16.
+          Smaller per-connection buffers for many more connections: a
+          gateway holds many mostly idle links, not a few bulk ones.
+          The Fleet profile (PROFILE_FLEET) keeps its own, larger tables.
+
+    config DOMAIN_INDUSTRIAL
+        bool "Industrial / automotive"
+        help
+          Control equipment with timing and fault-containment needs.
+          Starts the threat model at "Physical access to the device"
+          ("Mitigations"; can be changed there), with what that profile
+          implies. Existing pieces: the CAN
+          driver (crates/drivers/bus/src/can.rs), the control-loop
+          rollback (CONTROL_TXN_TICKS) and lease priority inheritance
+          (LEASE_PRIORITY_INHERITANCE) under "Scheduling, IPC & timing".
+          The production scheduler is the Legacy priority backend; no
+          deadline scheduler runs in a default image.
+
+    config DOMAIN_MICROKERNEL
+        bool "Microkernel (drivers as ring-3 servers)"
+        imply DRV_RING3_DEFAULT
+        help
+          Drivers run as ring-3 server processes, as in a Mach/Hurd-style
+          system. Implies DRV_RING3_DEFAULT (under "Drivers"), which
+          starts every per-driver placement choice (DRV_<NAME>_PLACEMENT)
+          at `ring3`; each can be changed by hand. Drivers a safety
+          decision reads have no placement choice and stay in the kernel
+          (the closed list is in config/Kconfig.drivers). Today the INA219
+          and the buzzer have a placement choice (each defaults to ring3
+          in every domain). The ring-3 drivers are started
+          from their topology rows on BOARD_QEMU only
+          (azos_topology feature ring3-driver-start, from the
+          kernel's `qemu` feature).
+
+endchoice
+
+endmenu # Application domain

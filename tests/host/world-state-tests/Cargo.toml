@@ -1,0 +1,24 @@
+[package]
+name = "azos_world_state_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the K-C29 preemption-control fix applied to domains/robot/behavior/src/world_state.rs's hand-rolled seqlock. Excluded from the kernel workspace."
+
+# Its own workspace root — same reasoning as tests/host/sync-tests's own Cargo.toml:
+# without this, `cargo test` here walks up to the root manifest, finds this
+# package in neither `members` nor `exclude`, and refuses to build. This also
+# makes `shims/sync` a member of *this* workspace.
+[workspace]
+
+[dependencies]
+# Real crate: `world_state.rs` names `azos_sync::{critical_section,
+# PreemptGuard}` by absolute path, so the test crate needs something
+# answering to that name. See shims/sync's own doc for why it cannot be the
+# real azos_sync. The facade also re-exports the arch shim's test-control
+# functions (`set_hart`/`set_sie`/`clear_sstatus_hook`) so this crate does not
+# need a second, separate dependency on that same shim package.
+azos_sync = { path = "shims/sync", package = "ws_test_sync" }
+
+[dev-dependencies]

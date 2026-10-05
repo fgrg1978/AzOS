@@ -1,0 +1,18 @@
+AzOS
+Copyright 2026 Fernando Rodriguez
+
+This product includes software developed by Fernando Rodriguez.
+
+Licensed under the Apache License, Version 2.0 OR the GNU General Public
+License, version 2 only, at your option (SPDX: Apache-2.0 OR GPL-2.0-only).
+The license texts are in the LICENSES/ directory.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under these licenses is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+
+Third-party Rust crates are fetched by Cargo from crates.io and are not
+part of this repository. Each one used by the build is licensed under
+terms that include MIT, BSD or Zlib as an option, so each can be combined
+with either license above; see each crate's own metadata (Cargo.lock lists
+them).

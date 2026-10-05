@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# AZOS Kconfig — root menu
+#
+# RFC-0026 Phase C1 skeleton.  Sources all sub-menus in logical order.
+# Run `make menuconfig` to edit interactively.
+# Run `make defconfig-edge` to load the edge preset.
+#
+# GENERATED OUTPUT: .config (gitignored)
+# SOURCE OF TRUTH:  these Kconfig.* fragments
+#
+# Convention: every option is prefixed CONFIG_ in the generated .config file.
+# Do NOT write CONFIG_ here — kconfiglib adds it automatically.
+
+mainmenu "AZOS Kernel Configuration"
+
+# The application domain comes first: it decides which domain menus are
+# shown (config/Kconfig.robot sources config/Kconfig.brain and is visible only
+# for DOMAIN_ROBOT).
+source "config/Kconfig.domain"
+source "config/Kconfig.robot"
+source "config/Kconfig.arch"
+source "config/Kconfig.platform"
+source "config/Kconfig.profile"
+source "config/Kconfig.limits"
+source "config/Kconfig.timing"
+source "config/Kconfig.network"
+source "config/Kconfig.security"
+source "config/Kconfig.mitigations"
+source "config/Kconfig.drivers"
+source "config/Kconfig.linux"
+source "config/Kconfig.ota"
+source "config/Kconfig.development"

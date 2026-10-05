@@ -1,0 +1,13 @@
+[package]
+name = "azos_tftp"
+version = "0.1.0"
+edition = "2021"
+description = "RFC 1350 TFTP client — pure no_std state machine for DEV01 fast-iteration netboot."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+repository = "https://github.com/azos-project/azos"
+
+[lib]
+name = "azos_tftp"
+
+[dependencies]

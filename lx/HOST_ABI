@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# The lx/ host ABI (RFC-0053 L1): every symbol the Linux driver server
+# (userspace/services/lxsrv) exports to modules. A .ko may import only these
+# and the exports of the modules loaded before it (tools/lx_license_lint.py
+# --ko). Plain scalars and pointers only, no Linux type; the memory functions
+# are the C standard ones. Linux symbols come from lxbase.ko (lx/glue).
+# lxh_hwcap returns the vDSO hwcap word (crates/core/abi/src/vdso.rs:
+# HWCAP_A64_CRC32 = bit 0, HWCAP_RV_ZBC = bit 33, ...).
+lxh_alloc
+lxh_free
+lxh_hwcap
+memcmp
+memcpy
+memmove
+memset

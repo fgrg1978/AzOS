@@ -1,0 +1,20 @@
+[package]
+name = "buzz_drv"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Ring-3 host of crates/drivers/buzzer (the piezo buzzer). Registers DRV_KIND_BUZZER and plays tones on one PWM channel through Cap<Pwm>. Excluded from workspace; built standalone like gpio_drv."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_buzzer = { path = "../../../crates/drivers/buzzer" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Standalone, as gpio_drv: see its Cargo.toml.
+[workspace]

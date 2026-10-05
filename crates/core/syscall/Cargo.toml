@@ -1,0 +1,152 @@
+[package]
+name = "azos_syscall"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_abi = { workspace = true }
+azos_sched = { workspace = true }
+azos_mm = { workspace = true }
+azos_net = { workspace = true }
+azos_ipc = { workspace = true }
+azos_service = { workspace = true }
+azos_robot = { workspace = true, optional = true }
+azos_arch = { workspace = true }
+azos_arch_api = { workspace = true }
+azos_sync = { workspace = true }
+azos_drv_base     = { workspace = true }
+azos_drv_irqchip  = { workspace = true }
+azos_drv_sys      = { workspace = true }
+azos_drv_gpio     = { workspace = true }
+azos_drv_bus      = { workspace = true }
+azos_drv_virtio   = { workspace = true }
+azos_drv_block    = { workspace = true }
+azos_drv_sensor   = { workspace = true }
+azos_drv_actuator = { workspace = true }
+azos_drv_power    = { workspace = true }
+azos_drv_api      = { workspace = true }
+azos_imu = { workspace = true, optional = true }
+azos_gps = { workspace = true, optional = true }
+azos_common = { workspace = true }
+azos_driver_server = { workspace = true }
+# `SYS_SPAWN` seeds the child's capabilities from the topology task named after
+# its image. Core to core (tools/tcb_check.sh), and topology depends on no
+# azos crate that depends on this one.
+azos_topology = { workspace = true }
+# `nospec` (Spectre v1 index masking, Kconfig MITIGATION_SPECTRE_V1_INDEX).
+azos_limits = { workspace = true }
+# RFC-0047: the Linux personality's numbers and layouts (pure, no state).
+azos_linux_abi = { workspace = true }
+# RFC-0053 L0b: SHA-256 of a module for `SYS_MODULE_VERIFY` (`lx-loader` only).
+azos_crypto = { workspace = true, optional = true }
+
+[features]
+# RFC-0047 canary: a forked Linux child is also granted `/fat` read-write,
+# which its row does not declare. The gate's fork row must fail with it.
+linux-abi-fork-canary = []
+# Wave 13 gate canaries, never in a real build: no signal is ever delivered
+# (`linux-signal-canary`); a broken pipe raises no SIGPIPE
+# (`linux-sigpipe-canary`); a Linux console read is end of file again
+# (`linux-console-eof-canary`); `execve` into another row skips the launch
+# grant (`linux-exec-row-canary`).
+linux-signal-canary = []
+linux-sigpipe-canary = []
+linux-console-eof-canary = []
+linux-exec-row-canary = []
+# Wave 13 canaries: a tkill/tgkill is posted as the process's signal (not to
+# its thread); a Linux wait4 reports a signalled child as exited 128 + n.
+linux-tkill-process-canary = []
+linux-wait-exited-canary = []
+# Wave 13 (NATFORK) canaries: a native fork child inherits no descriptor (the
+# abitest "ab" rows go red), or keeps every parent handle the way the reverted
+# 2026-09-21 copy did (the row-only authority rows go red). Never in a real build.
+native-fork-no-inherit-canary = []
+native-fork-copy-canary = []
+# Wave 13 (security) canary: native and Linux `mmap` map read-write whatever
+# `prot` says, and `mprotect` changes nothing (the `mprot:` rows go red).
+mmap-prot-canary = []
+# Wave 13 canaries for the per-row seed template (`natfork`): an entry is
+# edited after the template is sealed (the seal must refuse it: dropped and
+# minted again), and the same with the seal check compiled out (the edited
+# entry is served: the abitest row-capability check fails).
+natfork-template-tamper-canary = []
+natfork-template-noseal-canary = ["natfork-template-tamper-canary"]
+# RFC-0047 stage 3 canaries: a streamed image's copy differs by one byte from
+# what was hashed (the refusal must fire, and be recorded), and the same with
+# the digest check compiled out (the image then runs: the gate row fails).
+stream-hash-flip-canary = []
+stream-hash-nocheck-canary = ["stream-hash-flip-canary"]
+# RFC-0053 L0b: `SYS_MODULE_VERIFY` (630) and `SYS_MODULE_MAP_X` (631), and
+# the module digest table `build/module_hashes*.rs`. Off by default: without
+# it both numbers are unassigned and the default kernel cannot make ring-3
+# memory executable at all. On with Kconfig LINUX_DRIVERS + LX_SERVER_SKELETON
+# (kernel feature `lx-server`).
+lx-loader = ["dep:azos_crypto"]
+# Gate canary only (kernel `lx-verify-canary`): skip the digest compare, so a
+# tampered module under a listed name is granted. Never in a real build.
+lx-verify-canary = ["lx-loader"]
+# Fast-IPC path trace. Off by default: it prints on every CALL/ACCEPT/REPLY,
+# and a UART `write` costs ~160 us per 64 bytes under QEMU, so turning it on
+# completely changes the timing under investigation.
+# Enabled from the kernel with --features ipc-trace.
+# `SYS_IPC_FAST_CALL` (108), the TID-addressed fast IPC. RFC-0040 gap 2
+# replaced it with `SYS_IPC_FAST_CALL_EP` (582), which resolves a
+# `Cap<Endpoint>` instead of trusting a raw TID; 108 checks nothing and can
+# reach any live task. The one remaining caller is `userspace/tests/ipctest`, whose
+# peers are `fork()`ed children with empty capability tables. Gated so a BOARD
+# kernel does not carry the arm at all — the tree's own precedent for
+# compiling test-only authority out (`cap-refusal-canary`).
+legacy-tid-ipc = []
+# Canary for the aarch64 ring-3 IRQ row: `SYS_DRV_IRQ_ACK` leaves the line
+# masked, so `userspace/tests/captest`'s second interrupt never arrives. Hand-run.
+irq-ack-canary = []
+# Wave 11 PIFAST canary: the fast-IPC call never donates its priority to the
+# server. `pifast-smoke`'s loaded phase must then fail its bound.
+pifast-donation-canary = []
+# Canary for the riscv64 ring-3 IRQ route (wave 10 IRQ5): every ring-3 line is
+# routed to the boot hart, whatever its owner's pin. Hand-run.
+irq-route-canary = []
+# Canary for the PORTWAIT gate rows (wave 11): a timer source bind
+# (`SYS_PORT_BIND_TYPED`, type 3) answers 0 and arms nothing, so ipctest's
+# phase P timer wait ends at its 5 s outer deadline and prints
+# `FAIL  P/the timer source fired`. Hand-run and gate canary.
+portwait-timer-canary = []
+ipc-trace = []
+# Periodic census of fast-IPC slot state. Independent of ipc-trace ON
+# PURPOSE: the per-exchange trace perturbs timing enough to hide the very
+# race the census exists to diagnose.
+ipc-census = []
+# vsbench diagnostic: per-phase cost of a spawn (read, SHA-256, policy, ELF and
+# address space, the rest), as `[SPAWN-CENSUS]`: every miss of the verified-image
+# cache, and the average of every 32 hits.
+spawn-census = []
+# Debug output: a successful spawn's `[SPAWN] tid=...` and `[SPAWN][PRIO]`
+# lines (refusals, floors and aborts print without it). Kernel `spawn-log`.
+spawn-log = []
+# Wave 14 (SPAWNCACHE) canaries, host suites only (image_cache.rs):
+#   digest-cache-stale: a cached digest matches whatever the write epoch
+#   digest-recheck:     a hit does not check the stamp held across its read
+digest-cache-stale-canary = []
+digest-recheck-canary = []
+# Marker inside `sys_motor_speed_typed`, for scenarios that must prove ring 3
+# COMMANDED the motors rather than merely reached the code.
+#
+# It has to live in this crate and behind its own feature. The reflex scenario
+# asserted only that the daemon logged, and stubbing this handler to actuate
+# nothing left it GREEN (measured 2026-09-07). A marker at the actuation gate
+# was tried the same day and removed: `rt_motor_task` writes the motors every
+# control tick, so the print fired ~2300 times per boot either way — 2328
+# baseline vs 2308 stubbed. A check on that would always pass, which is worse
+# than no check because it reads as coverage.
+#
+# This handler is reachable ONLY by `ecall`: no kernel task calls it. That is
+# what makes the marker attribute an actuation to ring 3 and never to the
+# kernel's own path, which publishes through a channel.
+actuation-smoke = []
+# The Robot application domain (wave 11): the motor and robot-sensor syscalls
+# reach the real robot crates. Off, they reach `src/no_robot.rs` (no motor,
+# no IMU/GPS) and the robot crates are not linked. The kernel's own
+# `domain-robot` feature turns this on.
+domain-robot = ["dep:azos_robot", "dep:azos_imu", "dep:azos_gps"]

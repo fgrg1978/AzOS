@@ -1,0 +1,6 @@
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []

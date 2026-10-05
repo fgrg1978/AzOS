@@ -1,0 +1,44 @@
+[package]
+name = "azos_drv_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the computation inside the driver class crates, pulled in with #[path] against root-level stand-ins for the MMIO modules. Excluded from workspace."
+
+# Run with:  cd tests/host/drivers-tests && cargo test --release
+
+[dependencies]
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
+azos_mm = { path = "shims/mm", package = "drv_test_mm" }
+azos_arch = { path = "shims/arch", package = "drv_test_arch" }
+# `motor_pid.rs` reads Kconfig `PID_DT_MS` (wave 11); the real crate, as
+# cap-tests uses it.
+azos_limits = { path = "../../../crates/core/limits" }
+# The INA219 chip logic both placements compile (wave 11 DRVPLACE).
+azos_ina219 = { path = "../../../crates/drivers/ina219" }
+azos_buzzer = { path = "../../../crates/drivers/buzzer" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_drv_api = { path = "../../../crates/drivers/api" }
+
+# **Reproduce the kernel's release profile, specifically `overflow-checks`.**
+# Without this the suite compiles arithmetic that silently wraps, so a test
+# written to catch an overflow passes whether or not the overflow exists --
+# verified: restoring the i32 subtraction that once trapped left the test
+# green. The kernel builds with overflow-checks = true and panic = "abort",
+# which is what turns a wrapped subtraction into a board reset, so a suite
+# that does not match it is testing a different program.
+# eth.rs is split by a `vf2` cfg the drivers crate declares, and can.rs by
+# both `vf2` and `k1`. Echoed here so the pulled modules do not emit
+# unexpected_cfgs -- declared rather than silenced, so the condition stays
+# visible in the source.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1"))'] }
+
+[profile.release]
+overflow-checks = true
+
+[features]
+# virtio/mod.rs (pulled via #[path]) gates its PCI transport on `pci`; declared
+# here so the cfg is a known value on the host build (never enabled).
+pci = []

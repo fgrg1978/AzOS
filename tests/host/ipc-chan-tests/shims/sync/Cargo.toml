@@ -1,0 +1,13 @@
+[package]
+name = "azos-sync-hostshim"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_sync::SpinLock, used only by tests/host/ipc-chan-tests."
+
+# The lib is deliberately named `azos_sync` so that the kernel sources
+# pulled in with #[path] resolve `use azos_sync::SpinLock;` unchanged.
+[lib]
+name = "azos_sync"
+path = "src/lib.rs"

@@ -1,0 +1,26 @@
+[package]
+name = "azos_drv_block"
+version = "0.1.0"
+edition = "2021"
+description = "Block devices: backend selection, SD/eMMC, partition tables."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+# QEMU only: compile `mmc.rs` without a board and drive QEMU's `sdhci-pci`
+# through a BAR the kernel assigns (`mmc::mmc_bind_pci_bar`). The block
+# device stays virtio; this exists so `mmc_flush` runs somewhere.
+mmc-pci = ["azos_drv_virtio/pci"]
+# Gate canary only: `mmc_flush` returns Ok at entry, skipping the fault
+# latch and every CMD13. The MMC flush row must go red on it.
+mmc-flush-canary = ["mmc-pci"]
+
+[dependencies]
+azos_sync       = { workspace = true }
+azos_drv_api    = { workspace = true }
+azos_drv_base   = { workspace = true }
+azos_drv_sys    = { workspace = true }
+azos_drv_virtio = { workspace = true }

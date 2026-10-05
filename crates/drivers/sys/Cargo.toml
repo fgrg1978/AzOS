@@ -1,0 +1,60 @@
+[package]
+name = "azos_drv_sys"
+version = "0.1.0"
+edition = "2021"
+description = "System devices: console UART and kprintln!, timebase and timers, watchdog, WCET points, ring-3 driver proxy."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+# Relaxed WCET bounds for QEMU emulated environment.
+qemu    = []
+# RFC-0027: per-function `#[wcet(...)]` runtime telemetry. Default OFF — the
+# per-function WCET CI gate was rejected (RFC-0027 §Results, KILL2: QEMU TCG
+# SMP inflates rdcycle with cross-hart time). The macro-emitted instrumentation
+# (wcet_begin_fn/wcet_end_fn) is a no-op unless this feature is enabled, so the
+# annotations cost nothing in production builds. Enable on real hardware
+# (VF2/K1) bring-up where rdcycle is trustworthy: `--features wcet`.
+wcet    = []
+# Gate row only (`tools/ci_check.sh`, "idle keepalive (simulated WDT)"):
+# `wdt_init` records its timeout as armed on a machine with no watchdog, so
+# hart 0's idle keepalive runs at the derived period under QEMU. The kick is
+# still a no-op. Never in a board build.
+wdt-sim = []
+# Wave 13 canary: `^C` on a console lent to a Linux job is queued as a byte,
+# not turned into SIGINT. Never in a real build.
+console-isig-canary = []
+# Gate-only: registers a `Console` that PREFIXES every write with `CANARY>`.
+# Exists because the console abstraction cannot otherwise be tested — an
+# unapplied registration falls back to the direct path and produces
+# byte-identical output, so "it still works" proves nothing. With this on, a
+# ring-3 write must come out prefixed and the kernel's own `kprintln!` must
+# not. Never enabled in a shipping build.
+console-route-canary = []
+# Gate canary only (wave 13): format every kernel line inside the console
+# lock again (uart.rs `kernel_print`): the masked-window row must go red.
+console-format-in-lock = []
+# Gate-only: measure the ring-3 console writer's lock hold (`uart::
+# ring3_probe`). Pulled by the kernel's `console-splice-smoke`.
+console-splice-smoke = []
+# Gate canary: never switch the console to the TX ring (`uart::enable_tx_irq`
+# becomes a no-op), so every write is the synchronous FIFO-polling one.
+console-tx-sync = []
+
+[dependencies]
+azos_abi           = { workspace = true }
+azos_arch          = { workspace = true }
+azos_sync          = { workspace = true }
+azos_limits        = { workspace = true }
+azos_driver_server = { workspace = true }
+azos_drv_api       = { workspace = true }
+azos_drv_base      = { workspace = true }
+azos_drv_irqchip   = { workspace = true }
+
+[build-dependencies]
+# No external deps — build.rs uses only std (fs, env, path).
+# The scanner that discovers #[wcet(...)] annotations is intentionally
+# dependency-free to keep incremental rebuild cost near zero.

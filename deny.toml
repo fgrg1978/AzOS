@@ -1,0 +1,67 @@
+# cargo-deny configuration — supply-chain policy gates for CI.
+#
+# Run locally:  cargo deny check
+# CI:           NOT wired up. There is no `.github/workflows/` in this repo
+#               (verified 2026-08-20); the only gate that actually runs is
+#               `bash tools/ci_check.sh`, which does not invoke cargo-deny.
+#               Run `cargo deny check` by hand until that changes.
+
+[graph]
+# Multi-target check so a dep that's only-Linux can't sneak in.
+targets = [
+    { triple = "riscv64imac-unknown-none-elf" },
+    { triple = "aarch64-unknown-none-softfloat" },
+    { triple = "x86_64-unknown-none" },
+    { triple = "aarch64-apple-darwin" },
+]
+
+# ── Advisories: block known CVEs + unmaintained crates ────────────
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked  = "deny"
+ignore  = []
+
+# ── Licenses: AzOS is "Apache-2.0 OR GPL-2.0-only", so every dependency
+# must be usable under BOTH. A dependency licensed "Apache-2.0" alone is
+# not (Apache-2.0 cannot be combined with GPL-2.0-only) and is refused;
+# "MIT OR Apache-2.0" passes through its MIT option. Workspace crates are
+# `publish = false` and skipped below.
+[licenses]
+allow = [
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+]
+# Confidence threshold for license detection — 0.8 = high.
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+# ── Bans: enforce no duplicate versions + dep size discipline ─────
+[bans]
+multiple-versions = "warn"
+wildcards         = "deny"
+highlight         = "all"
+
+# Explicit allow list for deps justified by audit comments.
+deny = [
+    # OpenSSL — we ship pure-Rust crypto only.
+    { crate = "openssl",      reason = "Use ed25519-dalek + curve25519-dalek." },
+    { crate = "openssl-sys",  reason = "Same — no C deps in the kernel." },
+    # ring — fine elsewhere, but pulls in asm we'd have to vet per ISA.
+    { crate = "ring",         reason = "ed25519-dalek / curve25519-dalek already cover our needs." },
+]
+
+# ── Sources: only crates.io + this repo's path deps ───────────────
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"
+allow-registry   = ["https://github.com/rust-lang/crates.io-index"]
+allow-git        = []

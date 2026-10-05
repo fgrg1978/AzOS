@@ -1,0 +1,69 @@
+[package]
+name = "azos_fs"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Opt-in end-to-end proof of `/fat/CRASH.LOG` rotation
+# (`crates/fs/fs/src/crash_log.rs`). `tools/ci_check.sh`'s crash-log gate row is
+# the only caller — enabled via `--features azos_fs/crash-log-smoke`, not
+# through `azos_kernel`'s own `[features]` (this crate's file-ownership
+# boundary for this task does not extend to `kernel/Cargo.toml`). See the
+# `#[cfg(feature = "crash-log-smoke")]` `vfs_mount` wrapper in `lib.rs` for
+# why the trigger lives there and not in this crate's `#[path]`-pulled files.
+crash-log-smoke = []
+# Round 48 gate canary: `dup`/`dup2` give the new descriptor a PRIVATE copy
+# of the offset (the behaviour before shared open file descriptions). The
+# shared-offset rows must turn red with it. Never in a real build.
+fd-private-offset-canary = []
+# U09-1 QEMU/board proof: `MAX_FILES + 1` ramfs create+unlink cycles,
+# printed as `[FS] inode probe: ...`. See `crates/fs/fs/src/probe.rs`. The one
+# caller is a one-line hook in `kernel/src/main.rs`'s boot path (delivered
+# as a diff — outside this front's file ownership).
+fs-inode-probe = []
+# Gate rows `pstore: ...` (tools/ci_check.sh): `pstore_smoke_panic_holding_fs_lock`
+# in `lib.rs`. Enabled through the kernel's `pstore-smoke` feature.
+pstore-smoke = []
+# Wave 14 canary: `fat32_read_chain` reads every sector through the sector
+# cache again, one device request per 512 bytes. The fs-tests request-count
+# test must turn red with it. Never in a real build.
+read-chain-sector-canary = []
+# Wave 14 (FATCACHE) canaries, one per coherence path of the block cache
+# (crates/fs/fs/src/fat32.rs). Each must turn an fs-tests `fatcache` test
+# red. Never in a real build.
+#   observer:     external medium writes no longer drop cached sectors
+#   writethrough: FAT32's own writes no longer update a cached line
+#   token:        a run read installs what it read even if a write raced it
+#   run-bypass:   run reads neither hit nor fill the cache (pre-wave-14 path)
+fatcache-observer-canary = []
+fatcache-writethrough-canary = []
+fatcache-token-canary = []
+fatcache-run-bypass-canary = []
+#   ro-stream-off: read-only opens take the whole-file proxy again
+#   write-gen:     writes no longer move FAT32's write generation
+ro-stream-off-canary = []
+write-gen-canary = []
+#   dcache-stale:  the root-entry cache answers whatever the generation
+dcache-stale-canary = []
+# Wave 14 (SPAWNCACHE) canaries:
+#   write-epoch:       writes no longer move the 64-bit write epoch
+#   write-gen-early:   FAT32 bumps the generation before its bytes land
+#   content-stamp-off: no path has a content stamp (nothing is cached)
+write-epoch-canary = []
+write-gen-early-canary = []
+content-stamp-off-canary = []
+# Wave 14 vsbench diagnostic: `crates/fs/fs/src/census.rs` prints where a
+# backend open/read/close goes. Enabled through the kernel's `file-census`.
+file-census = []
+
+[dependencies]
+azos_mm = { workspace = true }
+azos_sync = { workspace = true }
+azos_drv_base  = { workspace = true }
+azos_drv_sys   = { workspace = true }
+azos_drv_block = { workspace = true }
+azos_drv_api   = { workspace = true }
+azos_common = { workspace = true }
+azos_limits = { workspace = true }

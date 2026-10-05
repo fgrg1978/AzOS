@@ -1,0 +1,35 @@
+[package]
+name = "azos_arch"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "target_arch facade re-exporting the active ISA. Both riscv64 and aarch64 boot a real azos_kernel through this facade (see crates/core/arch/src/lib.rs's own module doc for the gate evidence and what is still open)."
+
+[lib]
+name = "azos_arch"
+
+# The riscv feature flags (rvv) are forwarded so existing kernel
+# Cargo.tomls that turn them on via azos_arch still affect the
+# underlying impl.
+[features]
+rvv     = ["azos_arch_riscv64/rvv"]
+# RFC-0046 stage 1a canary: the ITS skips MAPTI, so a device's MSI never
+# becomes an LPI (aarch64 only: the dependency is target-specific, so a riscv64 build never compiles it).
+its-skip-mapti = ["azos_arch_aarch64/its-skip-mapti"]
+tlb-local-only = ["azos_arch_riscv64/tlb-local-only", "azos_arch_aarch64/tlb-local-only"]
+tlb-bound-canary = ["azos_arch_riscv64/tlb-bound-canary"]
+# One-clock canary: CNTVOFF_EL2 left nonzero at the EL2 drop (aarch64 only).
+cntvoff-canary = ["azos_arch_aarch64/cntvoff-canary"]
+# Masked-window tracer (Kconfig `LAT_TRACE`): hooks in both ISA crates.
+lat-trace = ["azos_arch_riscv64/lat-trace", "azos_arch_aarch64/lat-trace"]
+
+# Per-target_arch deps: each is only pulled in for builds whose
+# target arch matches. On riscv64 (the only ISA the kernel boots
+# today) only azos_arch_riscv64 is compiled.
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+azos_arch_riscv64 = { workspace = true }
+
+[target.'cfg(all(target_arch = "aarch64", target_os = "none"))'.dependencies]
+azos_arch_aarch64 = { workspace = true }
+

@@ -1,0 +1,21 @@
+[package]
+name = "azos_arch_api_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_arch_api — PagePerms named constants, ArchId/arch_name round-trip, trait shape pinned via a Stub impl that satisfies all five traits (Cpu/Interrupts/Mmu/Boot/Vector)."
+
+# Run with:  cd tests/host/arch-api-tests && cargo test
+
+[dependencies]
+# `lat-trace`: the masked-window tracer bookkeeping (`lat`), tested below.
+azos_arch_api = { path = "../../../crates/core/arch-api", features = ["lat-trace"] }
+
+# `aarch64_its` (below, pulled via `#[path]`) carries
+# `#[cfg(feature = "its-skip-mapti")]` — declared here too, mirroring
+# `crates/core/arch-aarch64/Cargo.toml`'s own feature of the same name, purely
+# so this crate's `unexpected_cfgs` lint recognizes it (the pulled file
+# never turns the feature on; nothing here sets it).
+[features]
+its-skip-mapti = []

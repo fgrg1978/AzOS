@@ -1,0 +1,15 @@
+[package]
+name = "azos_gps"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_channel = { workspace = true }
+azos_drv_sys = { workspace = true }
+
+[features]
+# A fixed position reported as a fix from `gps_init`, for QEMU, which has no
+# receiver. Enabled by the kernel's `qemu` feature and by nothing a board builds.
+simulated-fix = []

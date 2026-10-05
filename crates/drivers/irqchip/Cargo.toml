@@ -1,0 +1,17 @@
+[package]
+name = "azos_drv_irqchip"
+version = "0.1.0"
+edition = "2021"
+description = "Interrupt controllers: PLIC, APLIC/IMSIC, ring-3 IRQ ownership, CLINT."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1` / `qemu`.
+vf2 = []
+k1  = []
+qemu = []
+
+[dependencies]
+azos_arch     = { workspace = true }
+azos_drv_base = { workspace = true }

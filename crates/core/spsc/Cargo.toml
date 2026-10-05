@@ -1,0 +1,9 @@
+[package]
+name = "azos_spsc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "SPSC rings in a shared-memory region with a suppressed notify doorbell: the layout both a kernel producer and a ring-3 consumer compile."
+
+[dependencies]

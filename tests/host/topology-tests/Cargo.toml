@@ -1,0 +1,86 @@
+[package]
+name = "azos_topology_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the W2 topology parser and the P1 topology->cap_store cap-seed bridge. Excluded from workspace."
+
+# Excluded from workspace; run with:
+#   cd tests/host/topology-tests && cargo test
+#
+# The local .cargo/config.toml overrides the workspace target so this
+# builds for aarch64-apple-darwin (precompiled std/core/alloc).
+
+# `cap.rs` carries `#[cfg(kani)]` proof harnesses; the kernel's own
+# `crates/core/ipc/Cargo.toml` declares the same check-cfg. Without it the host
+# build emits an `unexpected_cfg` warning, and warnings count as failures in
+# this project (see `tests/host/cap-tests/Cargo.toml`, same reason).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[features]
+# `dev-key`: a test build embeds `tools/keys/test_pub.bin` (see
+# `crates/core/topology/build.rs`). A default feature, not a dependency
+# feature, so `--no-default-features` builds topology the way a production
+# build without `TOPOLOGY_PUBKEY_PATH` does: the gate's `topology key` row
+# uses exactly that to watch the build refuse.
+default = ["dev-key"]
+dev-key = ["azos_topology/dev-key"]
+# Mirrors the kernel's `qemu` build. The gate runs this crate BOTH ways:
+# without it (a board topology, which must grant no motor-bound resource)
+# and with it (the canary grants the refusal scenario needs).
+cap-refusal-canary = ["azos_topology/cap-refusal-canary"]
+# The RFC-0048 P3 gate row's grant (`disk.part.1` RW on autorun).
+disk-part-row = ["azos_topology/disk-part-row"]
+ipc-endpoint-canary = ["azos_topology/ipc-endpoint-canary"]
+# The vsbench SQPOLL lane's row (`autorun` may start an SQ poller).
+sqpoll-bench = ["azos_topology/sqpoll-bench"]
+# The deployment profile that declares a drivetrain. The gate's plain run is a
+# GENERIC board and must hold no motor capability at all; the canary run
+# mirrors `qemu` and must hold the pair. See `crates/core/topology/Cargo.toml`.
+profile-actuation = ["azos_topology/profile-actuation"]
+# Which rows the kernel starts at boot (wave 9). Mirrors `qemu`; the plain run
+# is a board, where no row starts.
+ring3-driver-start = ["azos_topology/ring3-driver-start"]
+# Wave 11 (DRVPLACE): the kernel placement of the INA219 (no INADRV.ELF row),
+# and the gate's restart-policy topology.
+ina219-kernel = ["azos_topology/ina219-kernel"]
+buzzer-kernel = ["azos_topology/buzzer-kernel"]
+restart-smoke = ["azos_topology/restart-smoke"]
+# RFC-0055 canaries: shell and tool priorities swapped; POWER.ELF without
+# Cap<Power>. Each must turn its host test red.
+ushell-prio-canary = ["azos_topology/ushell-prio-canary"]
+power-cap-canary = ["azos_topology/power-cap-canary"]
+# Wave 12: the family tools without capabilities, and the drivetrain moved to
+# FLIGHT.ELF (gate rows).
+family-cap-canary = ["azos_topology/family-cap-canary"]
+flight-tool-drivetrain = ["azos_topology/flight-tool-drivetrain"]
+# RFC-0047 (wave 12): the Linux personality's test row (LXHELLO.ELF).
+linux-abi-test = ["azos_topology/linux-abi-test"]
+linux-busybox-test = ["linux-abi-test", "azos_topology/linux-busybox-test"]
+linux-exec-row-test = ["linux-busybox-test", "azos_topology/linux-exec-row-test"]
+# RFC-0053 L0: the Linux driver server skeleton's row (`LXSRV.ELF`).
+lx-server = ["azos_topology/lx-server"]
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+azos_topology = { path = "../../../crates/core/topology" }
+
+# P1 cap-seed bridge suite: `crates/core/ipc/src/{cap,cap_store,gpio_cap,i2c_cap,
+# pwm_cap,motor_cap,cap_seed}.rs` are pulled in via `#[path]` (see
+# `src/lib.rs`), same trick as `tests/host/cap-tests`. `cap.rs` needs these two;
+# `cap_store.rs` needs `azos_sync`/`azos_sched` (shimmed below);
+# `gpio_cap.rs`/`i2c_cap.rs`/`pwm_cap.rs`/`motor_cap.rs` need
+# `azos_drv_*` (shimmed below — the real one is RV64-only).
+wcet-macro = { path = "../../../crates/core/wcet-macro" }
+azos_limits = { path = "../../../crates/core/limits" }
+
+# Host stand-ins for the three RV64-only kernel crates the pulled-in ipc
+# modules call into. Renamed so the module sources compile unmodified — see
+# each shim's crate doc for why the real crate cannot be used on the host.
+azos_sync = { path = "shims/sync", package = "topology_seed_test_sync" }
+azos_sched = { path = "shims/sched", package = "topology_seed_test_sched" }
+topology_seed_test_drivers = { path = "shims/drivers" }
+[dev-dependencies]

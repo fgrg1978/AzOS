@@ -1,0 +1,16 @@
+[package]
+name = "azos_imu"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_drv_sys = { workspace = true }
+azos_drv_bus = { workspace = true }
+azos_config  = { workspace = true }
+
+[features]
+# The stale-sample canary: every reading carries the first reading's
+# acquisition stamp (kernel feature `sensor-ts-freeze`). Never in a board build.
+freeze-acq-stamp = []

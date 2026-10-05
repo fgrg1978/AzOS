@@ -1,0 +1,13 @@
+[package]
+name = "azos_syscall_numbers"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-visible view of the REAL crates/core/syscall/src/numbers.rs. Not a stub."
+
+# `crates/core/syscall/src/numbers.rs` stopped restating literals on 2026-09-06 and
+# now re-exports `azos_abi::syscall_nr`. This shim `#[path]`-includes that
+# file verbatim, so it needs the same crate in scope or it does not compile.
+[dependencies]
+azos_abi = { path = "../../../../../crates/core/abi" }

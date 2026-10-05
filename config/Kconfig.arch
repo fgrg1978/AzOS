@@ -1,0 +1,272 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.arch — ISA / architecture selection
+#
+# RFC-0026 Phase C1.  Controls architecture-specific defaults downstream.
+# Board choices (config/Kconfig.platform) must be consistent with the ISA selected.
+
+menu "Architecture"
+
+# ---------------------------------------------------------------------------
+# ISA choice
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Instruction Set Architecture"
+    default ARCH_RISCV64
+    help
+      Select the target ISA for this kernel build.  All downstream defaults
+      (stack sizes, FP context, page sizes, WCET bounds) adjust automatically.
+      Changing this choice requires a full `cargo clean` before rebuilding.
+
+    config ARCH_RISCV64
+        bool "RISC-V 64-bit (rv64imac / rv64gc)"
+        help
+          RISC-V 64-bit — the primary AZOS target.  Supports all five
+          build profiles (edge/vf2, edge/k1, QEMU virt).
+          ISA base: rv64imac minimum; optional extensions via Kconfig.
+
+    config ARCH_AARCH64
+        bool "Aarch64 (ARMv8.0-A and later)"
+        help
+          64-bit ARM — secondary target, demonstrated on cortex-a72 QEMU.
+          Phase 2 multi-arch support.  Kernel builds but E2E robot loop
+          is deferred to Phase 3 hardware bring-up.
+
+endchoice
+# CONFIG_ARCH_X86_64 removed 2026-09-25 (Q4.1, owner decision): it mapped to
+# a Cargo target (`x86_64-unknown-none`, tools/kconfig_to_cargo.py) with no
+# real port behind it in this tree. Re-add when a port exists.
+
+# ---------------------------------------------------------------------------
+# RISC-V specific options
+# ---------------------------------------------------------------------------
+
+if ARCH_RISCV64
+
+config HAS_RVV
+    bool "RISC-V Vector Extension (V 1.0) present"
+    default y if BOARD_K1
+    default n if BOARD_VF2
+    default n if BOARD_QEMU
+    default n
+    help
+      Enable when the target SoC includes RVV 1.0 hardware (e.g. SpacemiT K1
+      with VLEN=256).  Activates RVV code paths in ml/, camera/, and vector
+      math helpers.  JH7110 (VF2) does NOT have RVV.  QEMU can emulate it
+      with `-cpu rv64,v=true` — opt-in only.
+config NO_MMU
+    bool "No MMU mode (M+U only, no Sv39)"
+    default n
+    help
+      Disables virtual-memory support and builds a flat-address kernel.
+      For targets with no MMU hardware.  Incompatible with
+      PROFILE_EDGE and PROFILE_FLEET.
+
+config LOCKED_HUGE_LEAVES
+    bool "Explicit 2 MiB leaves for big fixed regions of locked rows"
+    depends on !NO_MMU
+    default n
+    help
+      A ring-3 topology row with `mem = "locked"` may declare
+      `mem_huge_mib = N` (N even, 2..512): N MiB of RAM reserved at boot,
+      2 MiB-aligned and physically contiguous, and mapped into the task at
+      exec with level-1 (2 MiB) Sv39 leaves instead of 512 page leaves each.
+      One TLB entry then covers 2 MiB of a model, tensor arena or pipeline
+      buffer (the U74's L1 DTLB has 40 entries; its L2 TLB holds 4 KiB
+      entries only).
+
+      The region is fixed for the task's life: never forked (a locked row
+      cannot fork), never demand-paged, never COW, never returned to the
+      allocator; munmap of any part of it is refused, and it is data only
+      (read-write, not executable). It sits at the bottom of the task's
+      shm/MMIO window (crates/core/sched/src/process.rs,
+      LOCKED_ARENA_VA) and is zeroed at every exec. Memory admission
+      counts it as locked pages (N x 256 topology pages). Only exec
+      (autorun, SYS_EXEC) installs it; spawning such a row is refused.
+
+      With this off, a topology that declares `mem_huge_mib` is refused at
+      boot rather than run without the region. QEMU shows the mapping
+      (page-table walk); it cannot show the TLB effect, which needs the
+      board's DTLB counters.
+
+endif # ARCH_RISCV64
+
+if ARCH_AARCH64
+endif # ARCH_AARCH64
+
+config MM_DEMAND_PAGING
+    bool "Demand-paged anonymous mmap"
+    depends on !NO_MMU
+    default y
+    help
+      Wave 14 (DEMANDPAGE): an anonymous mmap (native SYS_MMAP and the
+      Linux personality's) reserves its range and commits each page on
+      the first touch, from the region's pager (zero-filled anonymous
+      memory; crates/core/mm/src/pager.rs).  The reservation is charged
+      to the task's page budget when it is made (RFC-0049 M1), so a
+      fault never refuses on quota.  A kernel copy into a reserved page
+      (read() into fresh mmap memory) commits it as the fault would.
+
+      Pre-committed regardless: a mapping with MAP_POPULATE (0x8000) or
+      MAP_LOCKED (0x2000), every mapping of a mem = "locked" task (which
+      must take no page fault), and with MM_PRECOMMIT_RT every mapping
+      of a real-time-class task.
+
+      With this off every mmap commits every page at map time, the
+      pre-wave-14 behaviour.  Cost: no static RAM beyond
+      MM_REGIONS_PER_SPACE's table.
+
+config MM_PRECOMMIT_RT
+    bool "Pre-commit mmap for real-time-class tasks"
+    depends on MM_DEMAND_PAGING
+    default y
+    help
+      A task of class SafetyCritical, HardRT or SoftRT gets every mmap
+      page committed at map time, as if it had passed MAP_POPULATE: a
+      control loop never takes a demand fault, whose cost (a page zeroed
+      in the fault path) would land inside its period.  Off: such tasks
+      demand-fault like any other unless they ask for MAP_POPULATE.
+
+# x86_64-specific options (HAS_SSE2, HAS_AVX2, KPTI, SMEP, SMAP) removed
+# 2026-09-25 along with CONFIG_ARCH_X86_64 itself (Q4.1, owner decision):
+# the whole block was unreachable without that arch choice, and KPTI/SMEP/
+# SMAP additionally had zero references anywhere outside this file (see the
+# HAS_SVE/HAS_PAC/HAS_BTI note above — same finding, x86_64 side). Re-add
+# with a real x86_64 port.
+
+# ---------------------------------------------------------------------------
+# Floating-point context
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Floating-point context save format"
+    default FP_HARDFLOAT_D if ARCH_RISCV64
+    default FP_NEON        if ARCH_AARCH64
+    help
+      Selects the FP register save format used in each task's TCB.
+      Larger contexts cost more RAM per task; smaller contexts limit
+      which FP instructions user code can use.
+
+    config FP_SOFTFLOAT
+        bool "No FP save area (soft-float)"
+        help
+          Minimal TCB; valid only if NO userspace code uses FP.
+          Use for deeply embedded targets where FP is emulated in
+          software and context save is unnecessary.
+
+    config FP_HARDFLOAT_F
+        bool "RISC-V F extension (32 × f32 = 128 B)"
+        depends on ARCH_RISCV64
+        help
+          Saves only the 32 single-precision FP registers.  Sufficient
+          if userspace never uses double-precision or vector ops.
+
+    config FP_HARDFLOAT_D
+        bool "RISC-V D extension (32 × f64 = 256 B, default rv64)"
+        depends on ARCH_RISCV64
+        help
+          Saves all 32 double-precision FP registers.  The standard
+          choice for rv64gc targets.  Required for drone attitude math.
+
+    config FP_RVV
+        bool "RISC-V V extension (32 × vlen-bit + control regs)"
+        depends on ARCH_RISCV64 && HAS_RVV
+        help
+          Full RVV save area.  Context size depends on VLEN (K1: 256 bits
+          = 1 KiB; QEMU default 128 bits = 512 B).  Use only when
+          userspace RVV programs need preemptive multitasking.
+
+    config FP_NEON
+        bool "Aarch64 NEON (32 × 128-bit q-regs = 512 B)"
+        depends on ARCH_AARCH64
+        help
+          Standard Aarch64 FP/SIMD save area.  Required for any user-mode
+          code using NEON intrinsics or Rust's SIMD types.
+
+    # FP_SVE's "&& HAS_SVE" dependency dropped 2026-09-25 along with HAS_SVE
+    # itself (Q4.1). FP_SVE has zero Rust consumers of its own (grepped
+    # alongside HAS_SVE) so this is an adjacent, not-yet-audited dead
+    # option in its own right — left selectable on ARCH_AARCH64 alone
+    # rather than deleted outright, since deleting it was not part of this
+    # decision's scope. Worth a follow-up audit pass.
+    config FP_SVE
+        bool "Aarch64 SVE (variable-length, up to 2048-bit per reg)"
+        depends on ARCH_AARCH64
+        help
+          Saves the full SVE register file.  Context size is
+          VLEN-dependent and determined at runtime.  Adds allocation
+          overhead to task creation.
+
+    # FP_XSAVE_SSE / FP_XSAVE_AVX2 / FP_XSAVE_AVX512 removed 2026-09-25
+    # along with CONFIG_ARCH_X86_64 (Q4.1): all three `depends on
+    # ARCH_X86_64`, which no longer exists as a symbol, so they were
+    # permanently unselectable dead entries the moment the arch choice
+    # went. Re-add with a real x86_64 port.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# MMU page size
+# ---------------------------------------------------------------------------
+# riscv64: the base page is 4 KiB and is not a choice — Sv39 has no other
+# base page. Larger translations on riscv64 are explicit level-1 (2 MiB)
+# leaves for named regions, not a different base page (LOCKED_HUGE_LEAVES
+# below).
+#
+# aarch64: VMSAv8-64 has three translation granules and the whole system
+# (kernel and every user image) uses the one chosen here. It reaches the
+# build twice and the kernel refuses to compile if the two disagree: as the
+# cargo feature `page-16k` / `page-64k` (tools/kconfig_to_cargo.py emits it)
+# that sets azos_arch_api::PAGE_SIZE, and as azos_limits::PAGE_SHIFT
+# from this file. User images must be linked for the same granule
+# (`make AARCH64_PAGE_SIZE=16384 ...`, see the Makefile).
+
+choice
+    prompt "Page size (aarch64 translation granule)"
+    depends on ARCH_AARCH64
+    default AARCH64_PAGE_4K
+    help
+      The base page of every mapping, kernel and user. A larger page holds
+      more per TLB entry and needs fewer page-table levels' worth of tables
+      for a dense region; it also rounds every per-task allocation (stack,
+      ELF segment, page table, vDSO page) up to the larger size, so a small
+      task costs more memory. Frame budgets (`mem_pages` in the topology)
+      count pages of this size.
+
+    config AARCH64_PAGE_4K
+        bool "4 KiB (39-bit VA, 3 levels)"
+        help
+          TG0/TG1 = 4 KiB, T0SZ = T1SZ = 25. The default, and the only page
+          size riscv64 has.
+
+    config AARCH64_PAGE_16K
+        bool "16 KiB (39-bit VA, 3 levels)"
+        help
+          TG0/TG1 = 16 KiB with the same 39-bit input range as the 4 KiB
+          build, so every virtual address (user layout, vDSO, the kernel's
+          upper half at 0xFFFF_FF80_0000_0000) is unchanged; the root table
+          has 8 live entries. Level-1 blocks are 32 MiB. The CPU must
+          implement the granule (ID_AA64MMFR0_EL1.TGran16): the kernel stops
+          at boot with a message if it does not. QEMU `-cpu max` does.
+
+    config AARCH64_PAGE_64K
+        bool "64 KiB (48-bit VA, 3 levels)"
+        help
+          TG0/TG1 = 64 KiB. Three levels need a 48-bit input range at this
+          granule (39 bits would walk two), so the kernel's upper half moves
+          to 0xFFFF_0000_0000_0000. Level-1 blocks are 512 MiB. The CPU must
+          implement the granule (ID_AA64MMFR0_EL1.TGran64).
+
+endchoice
+
+config PAGE_SHIFT
+    int
+    default 16 if AARCH64_PAGE_64K
+    default 14 if AARCH64_PAGE_16K
+    default 12
+    help
+      log2 of the base page size, derived from the choice above (12 on
+      riscv64). Exported as azos_limits::PAGE_SHIFT.
+
+endmenu # Architecture

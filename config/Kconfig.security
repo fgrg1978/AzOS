@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.security — Secure boot, link encryption, PMP, stack hardening
+#
+# RFC-0026 Phase C1.  Maps to cargo features `secure-boot-enforced` and
+# the RFC-0019 link-encrypt opt-in flag.
+
+menu "Security"
+
+# ---------------------------------------------------------------------------
+# Secure boot
+# ---------------------------------------------------------------------------
+
+config SECURE_BOOT_ENFORCED
+    bool "Enforce Ed25519 signature verification at boot"
+    default n
+    help
+      When enabled, the bootloader verifies the kernel image signature
+      using the Ed25519 public key embedded at build time (crates/core/ota, was SECURE_BOOT_KEY_FP -- removed 2026-09-26, V2.6, never consumed)
+      before jumping to _start.  If the signature is absent or invalid,
+      boot halts unconditionally.
+      Disable only for development.  MUST be y for any production
+      deployment — enforced by cargo feature `secure-boot-enforced`.
+
+config LINK_AUTH_ENFORCED
+    bool "Refuse to boot without a valid brain-link key (/fat/LINK.KEY)"
+    default n
+    depends on DOMAIN_ROBOT
+    help
+      Robot domain only (wave 11): the brain link exists only there.
+      The brain<->kernel HMAC envelope keys off a 32-byte pre-shared key
+      read from /fat/LINK.KEY at boot.  With this option n, a missing or
+      malformed key file silently downgrades the link to plaintext: no
+      authentication and no replay protection.  That file lives on the
+      FAT volume which the USB mass-storage gadget also exposes, so its
+      absence is a state an attacker can cause.
+      When y, boot halts instead of downgrading -- enforced by cargo
+      feature `link-auth-enforced`, with no runtime override, mirroring
+      SECURE_BOOT_ENFORCED.
+      Note the trade-off: a unit that loses its key file will not boot.
+
+config LINK_ENCRYPT_ENFORCED
+    bool "Refuse any brain-link frame outside an RFC-0019 AEAD session"
+    default n
+    depends on DOMAIN_ROBOT
+    help
+      Robot domain only (wave 11): the brain link exists only there.
+      K-C5.  The per-packet gate in auth_envelope refuses to produce or
+      accept a brain-protocol frame unless it travels inside an
+      established RFC-0019 AEAD session: no plaintext mode and no
+      HMAC-only fallback exist in the build.  Boot also halts when
+      /fat/LINK.KEY is missing or invalid (superset of
+      LINK_AUTH_ENFORCED): a keyless encrypted-only robot can never
+      talk, so the failure surfaces at provisioning, not in the field.
+      Enforced by cargo feature `link-encrypt-enforced`, compile-time
+      only, no runtime override, mirroring SECURE_BOOT_ENFORCED.
+      The handshake runs regardless of the runtime `link_encrypt` key in
+      CONFIG.INI — a file on the USB-exposed FAT volume must not be able
+      to disarm a compiled-in policy.
+config OTA_SIG_MANDATORY
+    bool "OTA images must be signed (refuse unsigned updates)"
+    default n
+    help
+      When y, the OTA subsystem rejects any firmware image that does
+      not carry a valid Ed25519 signature file (KERN_*.SIG on FAT).
+      Recommended: set to y whenever SECURE_BOOT_ENFORCED = y so
+      the signing chain is unbroken end-to-end.
+
+# ---------------------------------------------------------------------------
+# Link layer encryption (RFC-0019)
+# ---------------------------------------------------------------------------
+
+config LINK_AEAD_DEFAULT_ON
+    bool "RFC-0019 AEAD link encryption enabled by default"
+    default y
+    help
+      When y, behavior_task runs the RFC-0019 responder handshake
+      immediately after TCP Established and wraps all subsequent
+      frames in the X25519 + AES-CTR + HMAC envelope.  Both the
+      kernel and the brain server MUST agree on this flag.
+      Default y since 2026-08-23 (decision del usuario): with a key
+      provisioned the link always runs AEAD, which also closes the
+      HMAC-only reboot-replay wedge (the brain resets its envelope
+      Receiver per AEAD connection).  Without a key the brain link is
+      closed, never downgraded to plaintext.  `link_encrypt=0` in
+      CONFIG.INI still disables it at runtime; the non-overridable
+      variant is LINK_ENCRYPT_ENFORCED.
+      Set the runtime key via LINK_PSK_PATH.
+
+config LINK_PSK_PATH
+    string "Path to link pre-shared key file on FAT filesystem"
+    default "/fat/LINK.KEY"
+    help
+      FAT-path to the 32-byte PSK used for the Noise_XXpsk0 handshake.
+      The file must exist before first boot if LINK_AEAD_DEFAULT_ON=y.
+      Rotate annually; overlap period is 24 h (mount new key, reboot,
+      confirm both sides are on new key, then remove old).
+
+# ---------------------------------------------------------------------------
+# PMP / memory protection
+# ---------------------------------------------------------------------------
+
+config PMP_REGIONS_RESERVED
+    int "PMP regions reserved for M-mode kernel use"
+    range 0 12
+    default 4
+    help
+      Number of RISC-V PMP entries the kernel allocates for its own
+      regions (ROM, MMIO, kernel text/data).  The remaining
+      (16 - PMP_REGIONS_RESERVED) entries are available for user-process
+      isolation.  Must leave headroom; current hardware cap is 16.
+      Current codebase: 6 total in use, but 4 is the design budget
+      (crates/core/arch-riscv64/src/pmp.rs N_PMP_REGIONS = 6 current impl).
+
+# MITIGATION_SPECTRE_V1_INDEX, ML_DATA_SIG_REQUIRED and CONSOLE_LOCKDOWN moved
+# to the Mitigations menu (config/Kconfig.mitigations), wave 11.
+
+endmenu # Security

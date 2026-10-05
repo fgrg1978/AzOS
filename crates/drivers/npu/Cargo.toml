@@ -1,0 +1,14 @@
+[package]
+name = "azos_drv_npu"
+version = "0.1.0"
+edition = "2021"
+description = "SpacemiT K1 NPU."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `k1`.
+k1 = []
+
+[dependencies]
+azos_drv_base = { workspace = true }

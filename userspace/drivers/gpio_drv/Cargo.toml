@@ -1,0 +1,26 @@
+[package]
+name = "gpio_drv"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "E11.AQ3 — ring-3 userspace GPIO driver. Registers DRV_KIND_GPIO with the kernel driver-server and serves requests forwarded by the in-kernel UserDriverProxy. Excluded from workspace; built standalone like reflex/uhello."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+# `DRV_KIND_GPIO` only. `crates/core/abi` is dependency-free and frozen by
+# definition, so depending on it does not make this crate depend on the
+# kernel — which is what the mirroring comment in `main.rs` was avoiding.
+azos_abi = { path = "../../../crates/core/abi" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above. The root
+# manifest already excludes it, but that exclusion is relative to the root, so
+# it does not hold when the checkout is nested inside another workspace (a git
+# worktree under .claude/worktrees). Same belt-and-braces shape as
+# tests/host/cam-ring-tests.
+[workspace]

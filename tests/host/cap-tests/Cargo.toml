@@ -1,0 +1,31 @@
+[package]
+name = "azos_cap_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Cap<T> + CapTable logic in crates/core/ipc/src/cap.rs and the slot-reuse/OWNER-wipe behaviour of crates/core/ipc/src/cap_store.rs. Excluded from workspace."
+
+# `cap.rs` carries `#[cfg(kani)]` proof harnesses; the kernel's own
+# `crates/core/ipc/Cargo.toml` declares the same check-cfg. Without it the host
+# build emits an `unexpected_cfg` warning, and warnings count as failures in
+# this project.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+# cap.rs uses wcet_macro::wcet; proc-macro must be available for host compilation.
+wcet-macro = { path = "../../../crates/core/wcet-macro" }
+# cap.rs's `objref` sizes the Channel and Port layouts from MAX_CHANNELS and
+# MAX_PORTS (RFC-0040 gap 1), generated from `.config`.
+azos_limits = { path = "../../../crates/core/limits" }
+
+# Host stand-ins for the two RV64-only kernel crates `cap_store.rs` calls
+# into. Renamed so the module source compiles unmodified — see each shim's
+# crate doc for why the real crate cannot be used on the host, and what the
+# `sched` shim deliberately exposes that the real scheduler does not.
+azos_sync = { path = "shims/sync", package = "cap_test_sync" }
+azos_sched = { path = "shims/sched", package = "cap_test_sched" }
+
+[dev-dependencies]

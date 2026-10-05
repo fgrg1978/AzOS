@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+// RFC-0051 E2 host fixture: energy-2cluster.dts with every `opp-microwatt`
+// removed, otherwise identical.
+// Rebuild: dtc -I dts -O dtb -o energy-nopower.dtb energy-nopower.dts
+/dts-v1/;
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "azos,energy-fixture";
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		idle-states {
+			ret: retention {
+				compatible = "riscv,idle-state";
+				idle-state-name = "retention";
+				entry-latency-us = <20>;
+				exit-latency-us = <40>;
+				min-residency-us = <100>;
+			};
+			off: power-off {
+				compatible = "riscv,idle-state";
+				entry-latency-us = <250>;
+				exit-latency-us = <500>;
+				min-residency-us = <3000>;
+			};
+		};
+		cpu@0 { device_type = "cpu"; reg = <0>; capacity-dmips-mhz = <512>;
+			operating-points-v2 = <&little>; cpu-idle-states = <&ret &off>; };
+		cpu@1 { device_type = "cpu"; reg = <1>; capacity-dmips-mhz = <512>;
+			operating-points-v2 = <&little>; cpu-idle-states = <&ret &off>; };
+		cpu@2 { device_type = "cpu"; reg = <2>; capacity-dmips-mhz = <1024>;
+			operating-points-v2 = <&big>; cpu-idle-states = <&ret>;
+			interrupt-controller { compatible = "riscv,cpu-intc"; }; };
+		cpu@3 { device_type = "cpu"; reg = <3>; capacity-dmips-mhz = <1024>;
+			operating-points-v2 = <&big>; cpu-idle-states = <&ret>; };
+	};
+	little: opp-table-0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		// Out of order on purpose: the binding requires none.
+		opp-1000000000 { opp-hz = /bits/ 64 <1000000000>; };
+		opp-500000000 { opp-hz = /bits/ 64 <500000000>; };
+		opp-750000000 { opp-hz = /bits/ 64 <750000000>; status = "disabled"; };
+	};
+	big: opp-table-1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		opp-1000000000 { opp-hz = /bits/ 64 <1000000000>; };
+		opp-2000000000 { opp-hz = /bits/ 64 <2000000000>; };
+	};
+};

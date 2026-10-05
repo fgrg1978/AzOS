@@ -1,0 +1,25 @@
+[package]
+name = "azos_elf_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "cargo-fuzz (libFuzzer) target for the ELF loader's header walk and PT_LOAD bounds (crates/core/sched/src/elf_bounds.rs). Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "elf_load"
+path = "fuzz_targets/elf_load.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]
+

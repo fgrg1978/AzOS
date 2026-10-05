@@ -1,0 +1,41 @@
+[package]
+name = "mlsrv"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Ring-3 ML inference service: runs the behavior loop's MLP for the kernel over the driver-server queue (DRV_KIND_ML). Hard-float on aarch64. Excluded from workspace; built standalone like gpio_drv."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+# The MLP, its RMLP loader and the GGUF engine, WITHOUT `azos_arch`
+# (kernel code): the dot product is the plain sequential loop the kernels'
+# scalar path runs, so the logits match theirs bit for bit.
+azos_ml = { path = "../../../crates/core/ml", default-features = false }
+# Wave 11: MLP.RML and POLICY.GGF are verified before use against the key
+# and `.SIG` format CAPS.SIG/CONFIG.SIG use (`verify_signature`,
+# `TRUSTED_PUBKEY`), and `azos_limits::ML_DATA_SIG_REQUIRED` is the
+# Kconfig switch. Both crates are no_std; LTO keeps only the verifier.
+azos_topology = { path = "../../../crates/core/topology" }
+azos_limits = { path = "../../../crates/core/limits" }
+
+# 2, the kernel's level, and not the "s" every other ring-3 image uses: the
+# MLP is this image's whole job, and on riscv64imac it is soft-float, whose
+# helpers (compiler-builtins, built with this profile) are the cost. "s"
+# measured 17.4k instructions per inference round trip there, against 5.7k for
+# an empty one (-icount, -smp 1).
+[features]
+# Verify MLP.SIG/POLICY.SIG against the TEST key (`tools/keys/test_pub.bin`)
+# when `TOPOLOGY_PUBKEY_PATH` is not set: the Makefile passes it only then.
+# Without either the build fails (`crates/core/topology/build.rs`).
+dev-key = ["azos_topology/dev-key"]
+
+[profile.release]
+opt-level = 2
+lto = true
+panic = "abort"
+
+# Standalone crate, not a member of the root workspace (see gpio_drv's
+# Cargo.toml for why the marker is here as well as in the root exclude).
+[workspace]

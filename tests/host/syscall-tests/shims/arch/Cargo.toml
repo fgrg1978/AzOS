@@ -1,0 +1,17 @@
+[package]
+name = "syscall_test_arch"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_arch, used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+bitflags = "2"
+# Real crate: pure no_std, no target-specific code (see its own Cargo.toml).
+# `vmm.rs`/`cow.rs`/`demand.rs` (pulled by path into `shims/mm`) now reach
+# the active ISA through `azos_arch::ARCH` + this crate's `Mmu` trait,
+# so the shim needs an `ARCH` singleton satisfying it — see the `Mmu impl`
+# in `src/lib.rs`, which mirrors `arch-riscv64/src/api_impl.rs`'s body over
+# this shim's own (real, path-pulled) `mmu` module.
+azos_arch_api = { path = "../../../../../crates/core/arch-api" }

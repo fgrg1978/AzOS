@@ -1,0 +1,16 @@
+# Pin stable, as every other host-test crate in this tree does — and here the
+# pin is what makes `crates/fs/fs/src/vfs.rs` testable at all.
+#
+# The workspace `rust-toolchain.toml` pins nightly, and the repository's
+# `.cargo/config.toml` carries `[unstable] build-std = ["core", "alloc"]`.
+# Cargo MERGES config arrays, so this crate's own `build-std = []` cannot undo
+# it: the host build then links a second `core`/`alloc` next to the ones `std`
+# already carries and rustc rejects the duplicate lang items (E0152). That is
+# why this suite carried a hand-written MIRROR of the `vfs::FileSystem` trait
+# instead of the real file. Stable does not accept `-Z`, so it skips build-std
+# entirely and the real `vfs.rs` — `extern crate alloc` and all — compiles.
+#
+# These tests intentionally use no nightly features; if you need one, move the
+# test out of this crate first.
+[toolchain]
+channel = "stable"

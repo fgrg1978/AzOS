@@ -1,0 +1,30 @@
+[package]
+name = "brain_client"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+# V1.9 (coordinator decision, 2026-09-26): brain_client verifies the same
+# HMAC envelope the kernel's own brain link uses. `azos_crypto` is
+# already `#[no_std]`, `default-features = false` on its two dalek deps, and
+# already builds for this exact bare-metal target as a kernel dependency —
+# adding it here pulls in no new target requirement.
+azos_crypto = { path = "../../../crates/core/crypto" }
+# Wave 9 (P3): the RFC-0019 handshake and record layer, the same crate the
+# kernel's own brain link runs. Pure `no_std` over `azos_crypto`.
+azos_encrypt_link = { path = "../../../crates/net/encrypt-link" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above. The root
+# manifest already excludes it, but that exclusion is relative to the root, so
+# it does not hold when the checkout is nested inside another workspace (a git
+# worktree under .claude/worktrees). Same belt-and-braces shape as
+# tests/host/cam-ring-tests.
+[workspace]

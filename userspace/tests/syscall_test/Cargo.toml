@@ -1,0 +1,23 @@
+[package]
+name = "syscall_test_aarch64"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "aarch64 counterpart of test.S (phase 6 prep, aarch64 parity). Same five checks as the RISC-V original (getpid, write, brk-get, brk-extend, write-to-allocated-page), issued raw — no libsys, matching test.S's own character. See userspace/tests/hello/Cargo.toml for why this is Rust+rust-lld rather than a hand-assembled .S: no aarch64 GNU cross-assembler is available on this host. RISC-V's syscall_test.elf (built from test.S via $(RISCV_AS)/$(RISCV_LD)) is untouched by this crate's existence."
+
+[[bin]]
+name = "syscall_test_aarch64"
+path = "src/main.rs"
+
+[dependencies]
+# The numbers come from the one definition (tools/ci_check.sh lints for
+# restated ones); azos_abi has no dependencies of its own.
+azos_abi = { path = "../../../crates/core/abi" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+[workspace]

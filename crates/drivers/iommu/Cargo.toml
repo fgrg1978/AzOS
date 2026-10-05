@@ -1,0 +1,22 @@
+[package]
+name = "azos_iommu"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+Minimal IOMMU support for RFC-0046 stage 1b: RISC-V IOMMU (riscv-iommu-pci
+on QEMU virt, 9.2+) device-context encode/decode and fault-record decode;
+SMMUv3 (aarch64 virt, iommu=smmuv3) STE/CD encode/decode and event-record
+decode. One stage, per-device identity-or-single-stage-mapped — no ATS,
+no PASID, no nested translation. no_std, host-tested.
+
+HONESTY NOTE: the exact bit layouts below were written from training
+knowledge of the ratified RISC-V IOMMU spec and the Arm SMMUv3
+architecture spec, NOT cross-checked against the primary spec text or
+QEMU's own model in this session or the integration session that
+followed it (no network access was used to fetch either, in either
+session).
+"""
+
+[dependencies]

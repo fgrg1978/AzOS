@@ -1,0 +1,11 @@
+[package]
+name = "azos_dtb"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# Pure no_std FDT parser — zero external dependencies, zero alloc.
+# Parses a Flattened Device Tree blob from a raw pointer and extracts
+# memory, UART, PLIC, timer-freq, CPU count, and compatible string.
+[dependencies]

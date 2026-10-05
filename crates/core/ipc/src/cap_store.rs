@@ -1,0 +1,512 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! Per-task capability tables, indexed by **task pool slot**.
+//!
+//! Each task gets its own [`crate::cap::CapTable`]; the kernel reaches
+//! it through this module's accessors. The table is **dense**: a fixed
+//! `[SpinLock<CapTable>; MAX_TASKS]` lives in BSS and survives the
+//! lifetime of the kernel.
+//!
+//! Memory cost: `MAX_TASKS × sizeof(CapTable)` ≈ 64 × ~2 KiB = 128 KiB
+//! on default builds; configs that lower `MAX_TASKS` scale down linearly.
+//!
+//! # Why slot-indexed and not TID-indexed (W3-F4)
+//!
+//! These tables used to be indexed by TID, guarded by
+//! `is_valid_tid(tid) = (tid as usize) < MAX_TASKS`. TIDs are **monotone**:
+//! `scheduler.rs` does `NEXT_TID = NEXT_TID.wrapping_add(1)` and never
+//! reissues a low value until it has wrapped 2^32. `MAX_TASKS` is 64. So
+//! from the 64th task creation onward — trivially reached, `fork()` is
+//! unprivileged — every `grant` / `get` / `with_table` returned `None` and
+//! every typed-cap syscall answered `EINVAL`. Fail-closed, so not an
+//! escalation; but it silently *disabled the better mechanism*: the typed
+//! `Cap<T>` path that carries the Kani proofs became unreachable on any
+//! long-running robot, and everything fell back to the legacy global handle
+//! table with its guessable indices.
+//!
+//! The pool slot index (`0..MAX_TASKS`) is the quantity that is actually
+//! bounded by `MAX_TASKS`, so that is what indexes the array. The cost is a
+//! `azos_sched::idx_for_tid` lookup — an O(64) unsynchronised scan of
+//! `TASK_VALID`/`TASKS`, the same scan the APS dispatch path already does —
+//! on every capability operation. No locks and no interrupt toggling, unlike
+//! the legacy handle-table scan it replaces.
+//!
+//! # Slot reuse
+//!
+//! Slot indices, unlike TIDs, *are* recycled. [`OWNER`] records which TID a
+//! slot's table currently belongs to and every accessor lazily wipes the
+//! table when it finds a mismatch — so a new task can never inherit the
+//! previous occupant's caps, even on a path that skips [`reset`]. This is
+//! deliberate belt-and-braces: `crates/core/sched`'s task-creation path cannot be
+//! modified from here, so correctness must not depend on it calling us.
+//!
+//! # Lifecycle
+//!
+//! - Every pool slot has an always-present, initially-empty `CapTable`
+//!   from boot.
+//! - `task_exit` calls [`crate::task_release_all`], which calls [`reset`]
+//!   — see that function's doc for the ordering constraint that makes it
+//!   land on the right slot.
+//! - Any accessor that observes a slot whose recorded owner differs from
+//!   the TID being looked up wipes it first (see above).
+//!
+//! # Concurrency
+//!
+//! One spinlock per slot. Different tasks acquiring different slots
+//! never contend. The same task's syscall path is single-threaded
+//! per CPU, so contention on a single slot is rare.
+
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+use azos_sched::task::MAX_TASKS;
+use azos_sync::spinlock::SpinLock;
+
+use crate::cap::{Cap, CapError, CapHandle, CapPerms, CapTable, CapTarget};
+
+/// Static per-slot capability tables.
+const FRESH_TABLE: SpinLock<CapTable> = SpinLock::new(CapTable::empty());
+static CAP_TABLES: [SpinLock<CapTable>; MAX_TASKS] = [FRESH_TABLE; MAX_TASKS];
+
+/// TID currently owning each slot's table. `NO_OWNER` = never used.
+///
+/// TID 0 is the "no current task" sentinel returned by
+/// `current_task_tid()`, and `NEXT_TID` starts at 1 and skips 0 on wrap, so
+/// 0 can never be a live task's TID and is safe as the vacant marker.
+const NO_OWNER: u32 = 0;
+const FRESH_OWNER: AtomicU32 = AtomicU32::new(NO_OWNER);
+static OWNER: [AtomicU32; MAX_TASKS] = [FRESH_OWNER; MAX_TASKS];
+
+/// What happened to a capability, as the [`CapEventHook`] is told (wave 11,
+/// LEASE3). `slot` is a table's task-pool slot index, the identity a holder
+/// has here; `resource` is the slot's packed resource as stored.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CapEvent {
+    /// The capability left `slot`'s table without moving anywhere: a
+    /// [`revoke`] or a [`revoke_moved`].
+    Revoked { slot: usize, kind: crate::cap::CapKind, resource: u32 },
+    /// The capability moved from `from`'s table into `to`'s ([`move_cap`]).
+    Moved { from: usize, to: usize, kind: crate::cap::CapKind, resource: u32 },
+    /// Every capability in `slot`'s table went: the exit [`reset`], or the
+    /// lazy wipe of a reused slot.
+    Wiped { slot: usize },
+}
+
+/// Told about every [`CapEvent`], with the affected table lock(s) still held,
+/// so no later operation on the same capability can run between the change
+/// and the hook. It may take a pool lock (table → pool is the established
+/// nesting, `port_destroy_cap`'s), must not take a cap-table lock, and must
+/// not block. The kernel registers `port::port_cap_event`: a port binding
+/// made through a capability dies when that capability is revoked and
+/// follows it when it moves.
+pub type CapEventHook = fn(CapEvent);
+
+static CAP_EVENT_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+/// Register the [`CapEventHook`]. Boot, once (host suites per test).
+pub fn set_cap_event_hook(f: CapEventHook) {
+    CAP_EVENT_HOOK.store(f as usize, Ordering::Release);
+}
+
+#[inline]
+fn cap_event(e: CapEvent) {
+    let raw = CAP_EVENT_HOOK.load(Ordering::Acquire);
+    if raw != 0 {
+        // SAFETY: only `set_cap_event_hook` stores here, and it stores a
+        // `CapEventHook`.
+        let f: CapEventHook = unsafe { core::mem::transmute::<usize, CapEventHook>(raw) };
+        f(e);
+    }
+}
+
+/// The task-pool slot `tid`'s table lives in: the binder identity a
+/// [`CapEvent`] names. `None` for a TID with no live task.
+pub fn table_slot(tid: u32) -> Option<usize> {
+    slot_for(tid)
+}
+
+/// Resolve `tid` to its task-pool slot index, wiping the slot's table first
+/// if it still belongs to a previous occupant.
+///
+/// Returns `None` for a TID with no live task — including TID 0 (idle /
+/// "no current task"). That is fail-closed and correct: nothing in
+/// `kernel/src` grants typed caps before the first task exists.
+///
+/// **On the unsynchronised scan.** `idx_for_tid` reads `TASK_VALID`/`TASKS`
+/// without `PoolGuard`, by the same convention the APS dispatch path and
+/// the TID-directed wakes already use — this change puts that read on every
+/// typed-cap syscall, so the reasoning deserves to be written down.
+/// `alloc_slot` sets `TASK_VALID[i] = true` *before* `task.tid` is assigned,
+/// so a concurrent scan can see a claimed slot still carrying its previous
+/// occupant's TID. That is harmless here only because TIDs are **monotone**:
+/// a slot is freed by `do_schedule` after the exiting task is left for good,
+/// so a stale slot value is always a dead TID, and `slot_for` is only ever
+/// called with a live one (`current_task_tid()`, or the exiting TID at hook
+/// time while its slot is still valid). Correctness rests on that
+/// monotonicity, not on the read being atomic — so the 2^32 TID wrap that
+/// `scheduler.rs` already documents as accepted is the one case where a scan
+/// could match the wrong slot.
+///
+/// Was split into a side-effect-free lookup half (`resolve_only`) plus this
+/// claiming half so that the former `delegate` path could cross-check a
+/// caller-chosen target TID before either of its two resolutions was allowed
+/// to wipe a table. `delegate` and `SYS_CAP_GRANT` were removed 2026-09-03
+/// (boot-only caps, RFC-0003); every remaining caller here always names a
+/// live TID it already trusts (`current_task_tid()`, or the exiting TID at
+/// hook time), so the split's reason is gone and the two halves are merged
+/// back.
+fn slot_for(tid: u32) -> Option<usize> {
+    if tid == NO_OWNER {
+        return None;
+    }
+    let idx = azos_sched::idx_for_tid(tid)?;
+    if idx >= MAX_TASKS {
+        return None; // defensive; idx_for_tid already bounds this
+    }
+    // Wave 13 (THREADS): the members of a thread group share their leader's
+    // table. One load while no process has threads; the rest out of line.
+    if azos_sched::group::any_groups() {
+        return slot_for_member(idx, tid);
+    }
+    claim_slot(idx, tid);
+    Some(idx)
+}
+
+/// [`slot_for`] while thread groups exist: a member resolves to its leader's
+/// slot. Out of line so the common path keeps its registers.
+#[inline(never)]
+fn slot_for_member(idx: usize, tid: u32) -> Option<usize> {
+    let lead = azos_sched::group::table_lead_of_idx(idx);
+    let (idx, tid) = if lead != 0 && lead != tid {
+        (azos_sched::idx_for_tid(lead)?, lead)
+    } else {
+        (idx, tid)
+    };
+    if idx >= MAX_TASKS {
+        return None;
+    }
+    claim_slot(idx, tid);
+    Some(idx)
+}
+
+/// Register `tid` as the owner of `idx`, wiping the table if it belonged to a
+/// previous occupant.
+fn claim_slot(idx: usize, tid: u32) {
+    // Lazy reset on slot reuse. `swap` makes the claim atomic against
+    // another hart resolving the same slot concurrently: exactly one caller
+    // observes the stale owner and performs the wipe.
+    let prev = OWNER[idx].swap(tid, Ordering::AcqRel);
+    if prev != tid {
+        wipe_claimed(idx, prev);
+    }
+}
+
+/// The wipe half of [`claim_slot`], out of line: `slot_for` runs on every
+/// typed-capability syscall, and inlining the hook call here grew it on that
+/// path (measured, wave 11 LEASE3: +5 instructions per typed call on
+/// riscv64). Not `#[cold]`, which reshapes the hot caller instead.
+#[inline(never)]
+fn wipe_claimed(idx: usize, prev: u32) {
+    let mut table = CAP_TABLES[idx].lock();
+    *table = CapTable::empty();
+    if prev != NO_OWNER {
+        cap_event(CapEvent::Wiped { slot: idx });
+    }
+}
+
+/// Returns `true` iff `tid` currently maps to a live task-pool slot.
+///
+/// Kept under the historical name so existing callers compile, but the
+/// meaning changed with W3-F4: it is no longer "the integer is small
+/// enough", it is "this TID names a live task".
+#[inline]
+pub fn is_valid_tid(tid: u32) -> bool {
+    slot_for(tid).is_some()
+}
+
+/// Look up a capability for the named task.
+///
+/// Wraps [`CapTable::get`]; returns `Err(CapError::Stale)` if `tid`
+/// does not name a live task.
+pub fn get<T: CapTarget>(
+    tid: u32,
+    cap: Cap<T>,
+    need: CapPerms,
+) -> Result<u32, CapError> {
+    let idx = match slot_for(tid) {
+        Some(i) => i,
+        None => return Err(CapError::Stale),
+    };
+    let table = CAP_TABLES[idx].lock();
+    table.get(cap, need)
+}
+
+/// Mint a new typed capability into `tid`'s table.
+///
+/// Returns `None` if the slot table is full or `tid` names no live task.
+pub fn grant<T: CapTarget>(
+    tid: u32,
+    perms: CapPerms,
+    resource: u32,
+) -> Option<Cap<T>> {
+    let idx = slot_for(tid)?;
+    let mut table = CAP_TABLES[idx].lock();
+    table.grant(perms, resource)
+}
+
+/// Revoke a single cap.
+pub fn revoke<T: CapTarget>(tid: u32, cap: Cap<T>) {
+    let idx = match slot_for(tid) {
+        Some(i) => i,
+        None => return,
+    };
+    let mut table = CAP_TABLES[idx].lock();
+    let held = table.peek_raw(cap.raw());
+    table.revoke(cap);
+    if let Some((kind, _, resource)) = held {
+        cap_event(CapEvent::Revoked { slot: idx, kind, resource });
+    }
+}
+
+/// Wipe the whole table for a task — called from task exit via
+/// [`crate::task_release_all`].
+///
+/// **Ordering constraint (W3-F7):** this resolves `tid` through
+/// `idx_for_tid`, which only succeeds while the task's pool slot is still
+/// `TASK_VALID`. `scheduler::task_exit` fires the exit hook *before* marking
+/// the task `Zombie`, and `do_schedule` is what actually frees the slot —
+/// so the lookup succeeds and the wipe lands on the right slot. If the hook
+/// is ever moved after the slot is freed, this becomes a silent no-op and
+/// typed caps stop being revoked on exit. The [`OWNER`] lazy-reset above is
+/// the backstop for exactly that failure, but do not rely on it: a slot that
+/// is never reused would keep a dead task's caps live indefinitely.
+pub fn reset(tid: u32) {
+    // Wave 13: a thread group member's table is its leader's, wiped when the
+    // leader (the last member) exits, never by a member's exit.
+    if azos_sched::group::shares_tables(tid) {
+        return;
+    }
+    let idx = match slot_for(tid) {
+        Some(i) => i,
+        None => return,
+    };
+    let mut table = CAP_TABLES[idx].lock();
+    *table = CapTable::empty();
+    cap_event(CapEvent::Wiped { slot: idx });
+    // Release the slot claim so the next occupant re-registers cleanly.
+    OWNER[idx].store(NO_OWNER, Ordering::Release);
+}
+
+/// Borrow the cap-table for the given task and run a closure on it.
+///
+/// Used by syscall handlers that need direct access (e.g. to compute
+/// multiple cap_table.get() calls atomically without re-locking).
+pub fn with_table<R>(tid: u32, f: impl FnOnce(&mut CapTable) -> R) -> Option<R> {
+    let idx = slot_for(tid)?;
+    let mut table = CAP_TABLES[idx].lock();
+    Some(f(&mut *table))
+}
+
+/// Move one capability from `from_tid`'s table into `to_tid`'s.
+///
+/// RFC-0040 gap 2 stage 4, under owner decision 38 (2026-09-15): this is a
+/// **move, as `zx_handle_replace` is** — the sender's entry is removed in the
+/// same step that installs the receiver's. Nothing here duplicates a
+/// capability.
+///
+/// # `DUP` gates transfer (owner decision 2026-09-26, O3.4)
+///
+/// A capability whose slot permissions do not include `CapPerms::DUP` cannot
+/// be moved to a DIFFERENT task at all — refused with `MissingPerms` before
+/// either table is touched. This is what makes a fork-minted `Cap<Endpoint>`
+/// (`endpoint_inherit_at_fork`, `WRITE` only, deliberately never `DUP`)
+/// non-transferable: "the child may reach its parent" stays exactly that,
+/// never "and so may anyone the child can reach", so `CAPS.TOML` remains the
+/// whole authority graph. A task moving a capability to itself (`from_tid ==
+/// to_tid`, resolving to the same table slot — the "serves its own endpoint"
+/// case) is not a transfer to anyone new and is exempt.
+///
+/// `rights` is what the receiver gets: `None` keeps the sender's, and
+/// `Some(p)` lowers to exactly `p`. They may be **kept or lowered, never
+/// raised** — a `Some(p)` carrying a bit the sender does not hold is refused
+/// outright rather than silently masked, because a caller asking for authority
+/// it cannot give is a bug in that caller and masking it would hide the bug
+/// behind a working call.
+///
+/// `None` is a distinct intent from `Some(the sender's own perms)` only to the
+/// caller: the syscall path has not read the sender's slot and cannot name
+/// them, and making it peek first would cost a second table round trip on the
+/// path this project measures.
+///
+/// Returns the handle the capability took **in the receiver's table** — a
+/// fresh generation, so the sender's old handle is detectably stale from the
+/// instant this returns.
+///
+/// # The lock order, which is NEW in this file
+///
+/// Every other accessor here takes exactly one table lock; the file's own
+/// rule is "one table lock at a time, never nested". This is the first code
+/// that holds two, so it carries the whole burden of keeping the lock graph
+/// acyclic:
+///
+/// 1. **Ordered acquire.** The two tables are locked by SLOT INDEX, lowest
+///    first, never in caller order. Two harts moving capabilities in opposite
+///    directions therefore cannot cycle.
+/// 2. **No pool lock while both are held.** The established nesting elsewhere
+///    is table → pool (`with_table(tid, |t| port_destroy_cap(t, cap))`).
+///    table → table → pool stays acyclic with it; taking a pool lock in here
+///    would break that, and nothing in this function does.
+/// 3. **The same-slot case is branched before the acquire.** A task moving a
+///    capability to an endpoint it serves itself resolves both TIDs to one
+///    slot, and "lock both" would then take one non-reentrant spinlock twice.
+///    That is not a failed syscall — it is a hung hart, and on this board a
+///    hung hart is a robot that stopped answering.
+///
+/// # Why the receiver is checked first
+///
+/// `has_free_slot` is asked on the receiver **before** the sender's entry is
+/// touched. Decision 38 leaves no half-moved state to roll back from, so the
+/// only way to keep that promise is to refuse before removing anything.
+pub fn move_cap(
+    from_tid: u32,
+    to_tid: u32,
+    handle: CapHandle,
+    rights: Option<CapPerms>,
+) -> Result<CapHandle, CapError> {
+    let from_idx = slot_for(from_tid).ok_or(CapError::Stale)?;
+    let to_idx = slot_for(to_tid).ok_or(CapError::Stale)?;
+
+    // (3) Same table: one lock, or this deadlocks on itself. Taking the
+    // capability out and putting it straight back would also churn a
+    // generation for nothing, so the whole move is a no-op that still has to
+    // validate the handle and the rights — otherwise a self-move would be the
+    // one path that accepts a stale handle or a rights escalation.
+    if from_idx == to_idx {
+        let table = CAP_TABLES[from_idx].lock();
+        let (_, perms, _) = table.peek_raw(handle).ok_or(CapError::Stale)?;
+        if let Some(want) = rights {
+            if !perms.contains(want) {
+                return Err(CapError::MissingPerms);
+            }
+        }
+        return Ok(handle);
+    }
+
+    // (1) Ordered acquire: lowest slot index first, whichever way the
+    // capability is travelling.
+    let (lo, hi) = if from_idx < to_idx { (from_idx, to_idx) } else { (to_idx, from_idx) };
+    let mut lo_tab = CAP_TABLES[lo].lock();
+    let mut hi_tab = CAP_TABLES[hi].lock();
+    let (sender, receiver) = if from_idx == lo {
+        (&mut *lo_tab, &mut *hi_tab)
+    } else {
+        (&mut *hi_tab, &mut *lo_tab)
+    };
+
+    let (kind, perms, resource) = sender.peek_raw(handle).ok_or(CapError::Stale)?;
+    // `DUP` gates transfer to a different task (O3.4): checked before
+    // anything is touched, same as the free-slot check below.
+    if !perms.contains(crate::cap::CapPerms::DUP) {
+        return Err(CapError::MissingPerms);
+    }
+    // Kept or lowered, never raised.
+    let granted = match rights {
+        None => perms,
+        Some(want) if perms.contains(want) => want,
+        Some(_) => return Err(CapError::MissingPerms),
+    };
+    // Refuse before the sender loses anything.
+    if !receiver.has_free_slot() {
+        return Err(CapError::NoSpace);
+    }
+
+    // The single step. `revoke_raw` answering false would mean the slot
+    // changed under a lock we hold, which cannot happen — asserting it here
+    // is how that assumption stops being silent if the locking ever changes.
+    if !sender.revoke_raw(handle) {
+        return Err(CapError::Stale);
+    }
+    let moved = receiver
+        .grant_raw(kind, granted, resource)
+        .ok_or(CapError::NoSpace)?;
+    // Both locks still held: a revoke of the moved capability in the
+    // receiver's table cannot run before its bindings follow it there.
+    cap_event(CapEvent::Moved { from: from_idx, to: to_idx, kind, resource });
+    Ok(moved)
+}
+
+/// Revoke a capability by kind-erased handle.
+///
+/// RFC-0040 gap 2 stage 4. The mover has no `T` to be generic over, for the
+/// same reason [`move_cap`] does not: the capability carries whatever kind the
+/// sender held.
+///
+/// Returns whether a slot was actually cleared. Used when a moved capability
+/// must be destroyed rather than returned — the message it travelled with will
+/// never be delivered and its sender is gone, so there is nobody to move it
+/// back to. Destroying is the fail-closed half of that pair.
+pub fn revoke_moved(tid: u32, handle: CapHandle) -> bool {
+    let idx = match slot_for(tid) {
+        Some(i) => i,
+        None => return false,
+    };
+    let mut table = CAP_TABLES[idx].lock();
+    let held = table.peek_raw(handle);
+    let cleared = table.revoke_raw(handle);
+    if let (true, Some((kind, _, resource))) = (cleared, held) {
+        cap_event(CapEvent::Revoked { slot: idx, kind, resource });
+    }
+    cleared
+}
+
+/// Revoke every capability of `kind` whose packed resource names index `idx`,
+/// walking every per-task table by index. Returns how many were revoked.
+///
+/// **WHY a walk by index (RFC-0040 gap 1, revised).** A per-slot generation
+/// wrap (`objref::sweep_index`) must reach a stale capability at this index
+/// wherever it sits, whichever path minted it. Every other accessor here
+/// resolves a live TID through [`slot_for`], and resolving any TID but the
+/// slot's own occupant wipes that table, so a sweep cannot go through them.
+/// This touches no [`OWNER`] claim: a table of a slot no live task holds may
+/// still carry a previous occupant's capabilities until its next claim wipes
+/// it, and revoking those is harmless.
+///
+/// **Lock order.** One table lock at a time, never nested, and no pool lock
+/// may be held by the caller (`port_destroy_cap` and its siblings take a
+/// table lock and then a pool lock). O(`MAX_TASKS` × `MAX_CAPS_PER_TASK`),
+/// once per generation wrap of one pool slot — not once per generation wrap
+/// of the whole kind, the cost the deleted pool-wide sweep paid.
+pub fn revoke_index_in_every_table(kind: crate::cap::CapKind, idx: u32) -> usize {
+    let mut revoked = 0;
+    for table in CAP_TABLES.iter() {
+        revoked += table.lock().revoke_kind_at_index(kind, idx);
+    }
+    revoked
+}
+
+/// Number of occupied slots for the named task.
+pub fn occupied(tid: u32) -> usize {
+    match slot_for(tid) {
+        Some(idx) => CAP_TABLES[idx].lock().occupied(),
+        None => 0,
+    }
+}
+
+/// Number of occupied slots at a raw pool index, bypassing TID validity.
+///
+/// **Diagnostics only — no production caller should want this.** Every
+/// other accessor in this file resolves a TID through [`slot_for`]
+/// deliberately, so a dead task's leftover table is never read as if it
+/// were live: `scheduler::do_schedule` frees `TASK_VALID` for a Zombie's
+/// slot on the very same context switch that leaves its stack (see that
+/// function's own K-C6 comment) — essentially immediately after
+/// `task_exit`, not after some later reaping pass — so `occupied(tid)`
+/// reads `0` within a few instructions of exit REGARDLESS of whether
+/// `reset()` ever actually ran. That makes `occupied(tid)` useless for
+/// proving the exit hook revoked anything: both "revoked" and "hook never
+/// registered" converge on the same `0`. A caller that captured the pool
+/// index while the task was still alive (`azos_sched::idx_for_tid`)
+/// can use this instead to read the table's true content at that slot,
+/// independent of whether the TID that used to own it still resolves.
+pub fn occupied_at_slot(idx: usize) -> usize {
+    CAP_TABLES[idx].lock().occupied()
+}

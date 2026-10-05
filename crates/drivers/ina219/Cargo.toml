@@ -1,0 +1,16 @@
+[package]
+name = "azos_ina219"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "INA219 chip logic, written once for both placements (RFC-0052 section 6.1): no syscalls, no statics, generic over the environment's I2C `Bus`. Hosted in ring 3 by userspace/drivers/ina_drv and in the kernel by crates/drivers/sensor (feature ina219-kernel)."
+
+build = "build.rs"
+
+[lib]
+name = "azos_ina219"
+
+[dependencies]
+# Path, not `workspace = true`: userspace/drivers/ina_drv builds standalone.
+azos_abi = { path = "../../core/abi" }

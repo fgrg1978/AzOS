@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+
+[package]
+name = "lx_emul"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "RFC-0053 stage L0: the lx_emul base that emulates the Linux kernel core APIs (allocator, locks, timers, workqueues, RCU, printk, device model, kref, symbol table) for the single-threaded lxsrv driver server. no_std, no heap; host-tested."
+
+# Run with:  cd lx/emul && cargo test --release
+
+[dependencies]
+
+[profile.release]
+overflow-checks = true
+
+# Not part of the root workspace: the root builds for a bare-metal target
+# with build-std, while this crate's tests run on the host.
+[workspace]

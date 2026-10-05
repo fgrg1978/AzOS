@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "fixed_points": ["pid_loop", "sensor_read", "ctx_switch", "timer_isr", "actuator_write", "net_send", "cnn_infer", "lidar_scan", "path_plan"],
+  "generated_points": [
+    {"id": 9, "name": "arbiter_arbitrate", "budget_us": 80},
+    {"id": 10, "name": "arp_lookup", "budget_us": 10},
+    {"id": 11, "name": "arp_lookup_solicited", "budget_us": 10},
+    {"id": 12, "name": "auth_envelope_unwrap", "budget_us": 100},
+    {"id": 13, "name": "auth_envelope_unwrap_consuming", "budget_us": 100},
+    {"id": 14, "name": "auth_envelope_wrap", "budget_us": 100},
+    {"id": 15, "name": "brain_protocol_parse_packet", "budget_us": 50},
+    {"id": 16, "name": "cap_get", "budget_us": 20},
+    {"id": 17, "name": "channel_recv", "budget_us": 40},
+    {"id": 18, "name": "channel_send", "budget_us": 40},
+    {"id": 19, "name": "ip_send", "budget_us": 150},
+    {"id": 20, "name": "scheduler_schedule", "budget_us": 30},
+    {"id": 21, "name": "tcp_send_segment", "budget_us": 200}
+  ]
+}

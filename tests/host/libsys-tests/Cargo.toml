@@ -1,0 +1,21 @@
+[package]
+name = "azos_libsys_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the pure helpers in crates/core/libsys. The syscall wrappers themselves are covered from ring 3 by abitest. Excluded from workspace."
+
+# Run with:  cd tests/host/libsys-tests && cargo test --release
+
+# `pure.rs` re-exports the clock conversion from the ABI crate, so the file
+# pulled in below needs it too.
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_spsc = { path = "../../../crates/core/spsc" }
+
+# Reproduce the kernel's release profile: overflow-checks is what turns a
+# wrapping computation into a panic, and the clock conversion below exists
+# precisely to avoid one.
+[profile.release]
+overflow-checks = true

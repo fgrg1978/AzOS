@@ -1,0 +1,32 @@
+[package]
+name = "azos_regression_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side regression tests for kernel bugs found and fixed. Excluded from workspace."
+
+# Excluded from workspace; runs on the host (Apple Silicon) via:
+#   cd tests/host/regression-tests && cargo +stable test --target aarch64-apple-darwin
+#
+# Each module here corresponds to a SPECIFIC bug previously fixed. Adding a
+# new test here is the standard procedure when a bug is discovered: it
+# locks the regression so future refactors can't silently reintroduce it.
+
+[features]
+# Mirrors azos_crypto's `no-bitmanip` (wave 13, L1): `crypto_tests.rs`
+# pulls `crates/core/crypto/src/sha256.rs` by path, and its riscv64-only
+# Zbb/Zknh branches test this feature. Off: the real (bitmanip) build.
+no-bitmanip = []
+
+[dependencies]
+
+[dev-dependencies]
+# TS01 — property-based tests. Generates random inputs to check invariants.
+proptest = "1"
+
+# RFC-0027 — needed because `brain_protocol.rs` (pulled in via `#[path]`)
+# carries `#[wcet(...)]` annotations.  The macro emits cfg-gated calls that
+# resolve to no-ops on the host (target_os = "macos"/"linux"), but the
+# `use wcet_macro::wcet` import still has to satisfy the compiler.
+wcet-macro = { path = "../../../crates/core/wcet-macro" }

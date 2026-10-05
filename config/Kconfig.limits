@@ -1,0 +1,811 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.limits — Resource cap table (subsumes RFC-0023)
+#
+# RFC-0026 Phase C1.  Every static-array bound from across the codebase
+# is declared here with profile-derived defaults.
+# Phase C3 will replace the scattered `pub const` sites with generated.rs.
+
+menu "Resource Limits"
+
+# ---------------------------------------------------------------------------
+# Scheduler
+# ---------------------------------------------------------------------------
+
+config MAX_TASKS
+    int "Maximum schedulable tasks"
+    range 8 16384
+    default 32   if PROFILE_EMBEDDED
+    default 64   if PROFILE_EDGE
+    default 4096 if PROFILE_FLEET
+    help
+      Number of task slots: processes and threads share this one static
+      table.  Everything below is allocated at build time for all MAX_TASKS
+      slots whether or not a task exists, and none of it is heap.  Scheduler
+      walks (per-tick WCET) and the page-table tracker (PT_META) scan linearly
+      in MAX_TASKS.
+
+      Cost: ~38,573 B of RAM per task slot (riscv64), 39,757 B (aarch64), at
+      the edge values of KERNEL_STACK_SIZE_KB = 32 and MAX_CAPS_PER_TASK = 256.
+      Of that: 32,768 B kernel stack (KERNEL_STACK_SIZE_KB, TASK_STACKS);
+      2,052 B capability table (8 B x MAX_CAPS_PER_TASK + 4, CAP_TABLES);
+      2,048 B run queues (MAX_CPUS 8 x NUM_PRIORITIES 32 x one 8-byte slot);
+      the task control block (TASKS), 1,216 B riscv64 / 1,856 B aarch64, and
+      on aarch64 544 B of lazy FP save area; 268 B signal state; 80 B topology
+      slot; 24 B each of notify waiter and vDSO slot; 16 B each of port waiter
+      and page-table tracker slot; 12 B each of lease waiter and exit notice
+      (EXIT_NOTE: one per slot since wave 12, which retired the 32-entry
+      SCHED_EXIT_NOTES); 8 B TID map, nine 4-byte
+      side tables and five 1-byte flags.  All of it is .bss except the
+      topology, port, lease and TID tables, which are in .data.
+      At the default, riscv64 / aarch64: edge (64 tasks) 2.35 / 2.43 MiB;
+      embedded (32 tasks, 32 caps per task) 1.12 / 1.16 MiB; fleet (4096 tasks,
+      512 caps per task) 158.7 / 163.3 MiB.  Measured with
+      tools/limits_cost.py; the costs of the options that size a table per task
+      are in their own help.  The TID map is next_power_of_two(MAX_TASKS) x 8 B,
+      so 64 -> 65 adds 512 B at once.
+
+      Not counted here, taken from the page allocator at run time: one 4 KiB
+      vDSO frame per slot a task has used (kept until reboot; the memory
+      admission reserve counts it), and each ring-3 task's own frames
+      (USER_STACK_SIZE_KB, image, page tables), charged to its mem_pages.
+
+      Ceilings in the code: MAX_TASKS < 65,535 (TID_SLOT and the port waiter
+      lists store slot numbers as u16; compile-time asserts in scheduler.rs and
+      port.rs; resident_histogram.rs asserts < 65,536); the Kconfig range stops
+      at 16,384.  The signed topology keeps its row count in a u8
+      (crates/core/topology/src/types.rs, tasks_len): the 256th declared
+      task row overflows that counter, a panic because the release profile
+      has overflow checks on, however large MAX_TASKS is.
+      The build refuses MAX_FDS_TOTAL < 4 x MAX_TASKS, MAX_CAPS_TOTAL <
+      8 x MAX_TASKS and MAX_SUBS_PER_TOPIC > MAX_TASKS.
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+
+config TCP_MAX_CONNS
+    int "Maximum simultaneous TCP connections"
+    range 1 65536
+    default 4    if PROFILE_EMBEDDED
+    default 64   if DOMAIN_GATEWAY && PROFILE_EDGE
+    default 8    if PROFILE_EDGE
+    default 1024 if PROFILE_FLEET
+    help
+      Static connection-control-block (CCB) array size.  DOMAIN_GATEWAY
+      on the Edge profile starts it at 64, with TCP_BUF_SIZE 16384.  Each entry
+      costs TCP_BUF_SIZE × 2 bytes of buffer memory (RX + TX) plus
+      6,088 B of connection state, 4 × 1,468 B of it the out-of-order
+      queue: size_of::<TcpConn>() (crates/net/net/src/tcp.rs) is 268,232 B
+      at TCP_BUF_SIZE = 131072 and 38,856 B at 16384.  TCP_BUF_SIZE is
+      per profile (config/Kconfig.network), so the static table is
+      4 × 268,232 B embedded, 8 × 268,232 B edge and 1024 × 38,856 B
+      (37.9 MiB) fleet.
+      Must be at most MAX_SOCKETS - 4 (the build refuses less).
+
+      Cost: 2 x TCP_BUF_SIZE + 6,088 B of RAM per connection, the same on
+      riscv64 and aarch64: 268,232 B at the 131072-byte ring, 38,856 B at
+      16384.  At the default: edge (8 connections) 2,145,888 B = 2.05 MiB;
+      embedded (4) 1,072,960 B = 1.02 MiB; fleet (1024, 16384-byte rings)
+      39,788,576 B = 37.9 MiB.  The table is in .data (its initial state is not
+      all zero), so it is in the image file as well as in RAM.  A connection
+      lookup scans the table (with a one-entry hint).  No code ceiling below
+      the Kconfig range.
+
+config MAX_SOCKETS
+    int "Maximum total sockets (TCP + UDP)"
+    range 1 65536
+    default 8    if PROFILE_EMBEDDED
+    default 128  if DOMAIN_GATEWAY && PROFILE_EDGE
+    default 16   if PROFILE_EDGE
+    default 2048 if PROFILE_FLEET
+    help
+      Combined pool for all socket types: the table of socket descriptors.
+      TCP connection state is not in it (see TCP_MAX_CONNS and TCP_BUF_SIZE),
+      and the UDP datagram rings are not in it either: UDP has its own fixed
+      table of 8 sockets (UDP_MAX_SOCKETS, a literal in
+      crates/net/net/src/udp.rs, not a Kconfig symbol), each with
+      UDP_RX_SLOTS datagram slots.
+      DOMAIN_GATEWAY on the Edge profile starts it at 128.
+      Must be at least TCP_MAX_CONNS + 4 (the build refuses less).  One task
+      may hold half of them (MAX_SOCKETS_PER_TASK).
+
+      Cost: 44 B of RAM per socket slot (SOCKS, .data), the same on riscv64 and
+      aarch64.  At the default: edge (16) 708 B; embedded (8) 352 B; fleet
+      (2048) 90,116 B = 88 KiB.  No code ceiling below the Kconfig range.
+
+# ---------------------------------------------------------------------------
+# File descriptors
+# ---------------------------------------------------------------------------
+
+config MAX_FDS_PER_PROC
+    int "File descriptors per process"
+    range 4 4096
+    default 8   if PROFILE_EMBEDDED
+    default 16  if PROFILE_EDGE
+    default 256 if PROFILE_FLEET
+    help
+      Size of the kernel's file-descriptor table, for the WHOLE MACHINE.
+      `crates/fs/fs/src/vfs.rs` aliases this to `MAX_FDS`, the length of the
+      one shared array — the name says "per proc" and the option has never
+      controlled a per-process anything.
+
+      The real per-task ceiling is `MAX_FDS_PER_TASK` in that same file,
+      derived as half of this, mirroring `MAX_SOCKETS_PER_TASK`. Until
+      2026-09-06 there was no per-task ceiling at all and one ring-3
+      program could take every slot.
+
+      Not renamed here: the name reaches `.config` files and the generated
+      constants, so changing it is a separate, mechanical change. The help
+      text is corrected so the next reader is not misled by it.
+
+      Includes FAT32 files and device nodes. NOT sockets — those live in a
+      separate table with a separate size (`MAX_SOCKETS`), which is the
+      other half of why this text misled.
+      Current codebase value: 16 (edge, crates/fs/fs/src/vfs.rs MAX_FDS).
+
+      Cost: 24 B of RAM per slot (KERNEL_FD_TABLE, .data), the same on riscv64
+      and aarch64.  At the default: edge (16) 408 B; embedded (8) 216 B; fleet
+      (256) 6,168 B.  The file-capability resource numbers start at 0x4000_0000
+      (crates/core/ipc/src/file_cap.rs), asserted above this value; the range
+      stops at 4096.
+
+config MAX_FDS_TOTAL
+    int "Global file descriptor table size"
+    range 16 262144
+    default 128   if PROFILE_EMBEDDED
+    default 2048  if PROFILE_EDGE
+    default 16384 if PROFILE_FLEET
+    help
+      System-wide FD table.  The build-time validator in
+      `crates/core/limits/build.rs` enforces:
+          MAX_FDS_TOTAL >= MAX_TASKS * 4
+      (average-case budget: ~4 FDs per task — stdin/stdout/stderr + one
+      socket).  MAX_FDS_PER_PROC is the per-task ceiling and does NOT
+      enter this formula directly.
+
+      Defaults are a budget per profile, not a strict `MAX_TASKS * 4`
+      computation (that formula is only the build.rs FLOOR, checked as
+      `>=`, not the value chosen here):
+        embedded (MAX_TASKS=32)   -> 128    (4x  the floor)
+        edge     (MAX_TASKS=64)   -> 2048   (32x the floor)
+        fleet    (MAX_TASKS=4096) -> 16384  (4x  the floor)
+      A higher value changes nothing but this check. (Fixed
+      2026-09-26, V2.6: this previously said "edge (512 tasks)" against
+      MAX_TASKS' own PROFILE_EDGE default of 64 — stale copy-paste, not a
+      real 512-task edge configuration that ever existed.)
+
+      Cost: none.  No table is sized by this option: it is read only by the
+      build.rs checks above (measured: +0 B of RAM for 2048 -> 2049 and
+      -> 4096, on both ISAs).  The file-descriptor table that exists is the
+      one MAX_FDS_PER_PROC sizes, at 24 B per slot.
+
+# ---------------------------------------------------------------------------
+# IPC
+# ---------------------------------------------------------------------------
+
+config MAX_CHANNELS
+    int "Maximum IPC channels"
+    range 4 65536
+    default 16   if PROFILE_EMBEDDED
+    default 16   if PROFILE_EDGE
+    default 4096 if PROFILE_FLEET
+    help
+      Static channel table size.  Each channel is a fixed-capacity
+      message queue.  Current codebase value: 16 (crates/core/ipc/src/channel.rs).
+      Note: behavior/brain_protocol.rs uses MAX_CHANNELS = 8 for a
+      different purpose — subsumption layer count, not IPC channel count.
+
+      Cost: 572 B of RAM per channel (POOL, .data), the same on riscv64 and
+      aarch64.  At the default: edge and embedded (16) 9,156 B = 8.9 KiB;
+      fleet (4096) 2,342,916 B = 2.23 MiB.  One task may own half of them
+      (MAX_CHANNELS_PER_TASK).  The Cap<Channel> handle packs the slot as
+      ceil(log2(MAX_CHANNELS)) index bits and the rest generation (crates/core/
+      ipc/src/objref.rs, asserted at build): 65,536 channels, the range limit,
+      leave 16 generation bits.
+
+config MAX_PIPES
+    int "Maximum IPC pipes"
+    range 4 65536
+    default 8    if PROFILE_EMBEDDED
+    default 32   if PROFILE_EDGE
+    default 1024 if PROFILE_FLEET
+    help
+      Static pipe (byte-stream IPC) table size.  Each pipe holds a
+      fixed-size ring buffer.  Current codebase value: 32.
+
+      Cost: 4,148 B of RAM per pipe (PIPES: the 4,096-byte ring, PIPE_BUF_SIZE,
+      plus 52 B of state), the same on riscv64 and aarch64.  At the default:
+      edge (32) 132,744 B = 129.6 KiB; embedded (8) 33,192 B = 32.4 KiB; fleet
+      (1024) 4,247,560 B = 4.05 MiB.  The table is in .data, so it is in the
+      image file as well as in RAM.  No code ceiling below the Kconfig range.
+
+config MAX_PORTS
+    int "Maximum IPC ports (rendezvous endpoints)"
+    range 4 65536
+    default 8   if PROFILE_EMBEDDED
+    default 32  if PROFILE_EDGE
+    default 512 if PROFILE_FLEET
+    help
+      Named port table size.  Ports are used for capability-based
+      rendezvous.  Current codebase value: 32 (crates/core/ipc/src/port.rs).
+
+      Cost: 816 B of RAM per port (PORTS, .data), of which 768 B are the two
+      arrays sized by MAX_PORT_SOURCES (48 B x 16 at its default), plus a
+      16-byte waiter slot per task slot that is counted under MAX_TASKS; the
+      same on riscv64 and aarch64.  At the default: edge (32) 27,144 B = 26.5
+      KiB including the waiter slots of 64 tasks; embedded (8) 7,048 B
+      including the waiter slots of 32 tasks; fleet (512) 483,336 B = 472 KiB
+      including the waiter slots of 4096 tasks.  The Cap<Port> handle packs the slot as
+      ceil(log2(MAX_PORTS)) index bits and the rest generation (objref.rs,
+      asserted at build); 65,536 ports leave 16 generation bits.
+
+config MAX_PORT_SOURCES
+    int "Maximum event sources bound to one port"
+    range 2 64
+    default 16
+    help
+      crates/core/ipc/src/port.rs, PORT_MAX_SOURCES: the channel, io_ring
+      and timer sources one port can hold (SYS_PORT_BIND_TYPED answers
+      -EMFILE past it), and the depth of its queue of IRQ events. Each
+      port carries both arrays, 48 bytes per entry: with MAX_PORTS = 512
+      (the fleet default) the value 64 costs 1.5 MiB of static memory and
+      the default 16 costs 384 KiB; with 32 ports (edge), 96 KiB at 64.
+      A remove by key lists the removed sources on the syscall stack,
+      28 bytes each (1.8 KiB at 64).
+
+      Cost: 48 B of RAM per entry per port (PORTS, .data: both arrays
+      together), i.e. 48 x MAX_PORTS B per unit of this option (1,536 B at
+      edge's 32 ports), the same on riscv64 and aarch64.  At the default 16:
+      edge (32 ports) 24 KiB; embedded (8) 6 KiB; fleet (512) 384 KiB, all of
+      it inside the PORTS figure of MAX_PORTS.  It is a stack and table size
+      only: no frame is taken from the page allocator.
+
+config MAX_LEASES
+    int "Maximum IPC memory leases"
+    range 4 65536
+    default 8   if PROFILE_EMBEDDED
+    default 16  if PROFILE_EDGE
+    default 512 if PROFILE_FLEET
+    help
+      Lease table for shared-memory delegation between tasks.  Each
+      lease maps a physical region into another task's address space
+      for a bounded time.  Current codebase value: 16.
+
+      Cost: 112 B of RAM per lease (LEASES, .data: the grant, its mapping
+      record and its seal record), plus a 12-byte accept-waiter slot per task
+      slot that is counted under MAX_TASKS; the same on riscv64 and aarch64.
+      At the default: edge (16) 2,568 B including the waiter slots of 64
+      tasks; embedded (8) 1,288 B including the waiter slots of 32 tasks;
+      fleet (512) 106,504 B = 104 KiB including the waiter slots of 4096
+      tasks.  One task may lend half of them (MAX_LEASES_PER_LESSOR).
+
+# ---------------------------------------------------------------------------
+# Pub/Sub
+# ---------------------------------------------------------------------------
+
+config MAX_SERVICES
+    int "Maximum named services"
+    range 4 65536
+    default 8   if PROFILE_EMBEDDED
+    default 32  if PROFILE_EDGE
+    default 512 if PROFILE_FLEET
+    help
+      Service-registry table size.  Services are typed endpoints
+      discoverable by name.  Current codebase value: 32 (crates/core/service).
+
+      Cost: 48 B of RAM per service (SERVICE_TABLE, .bss), the same on riscv64
+      and aarch64.  At the default: edge (32) 1,552 B; embedded (8) 384 B;
+      fleet (512) 24,592 B = 24 KiB.
+
+config MAX_TOPICS
+    int "Maximum pub/sub topics"
+    range 4 65536
+    default 8   if PROFILE_EMBEDDED
+    default 32  if PROFILE_EDGE
+    default 512 if PROFILE_FLEET
+    help
+      Static topic table size.  Each topic holds a fixed-size message
+      ring plus subscriber list.  Current codebase value: 32 (crates/core/pubsub).
+
+      Cost: 312 B of RAM per topic plus 8 B per subscriber slot
+      (MAX_SUBS_PER_TOPIC), so 376 B per topic at 8 subscribers (TOPICS, .data);
+      the same on riscv64 and aarch64.  At the default: edge (32 x 8 slots)
+      12,040 B = 11.8 KiB; embedded (8 x 4) 2,752 B; fleet (512 x 32)
+      290,824 B = 284 KiB.  The build also requires KERNEL_HEAP_SIZE to cover
+      MAX_TOPICS x 512 B plus the other terms of its heap floor (see
+      KERNEL_HEAP_SIZE).
+
+config MAX_SUBS_PER_TOPIC
+    int "Maximum subscribers per topic"
+    range 1 256
+    default 4  if PROFILE_EMBEDDED
+    default 8  if PROFILE_EDGE
+    default 32 if PROFILE_FLEET
+    help
+      Fan-out limit per topic.  Each subscription slot holds a task ID
+      and a read pointer.  Current codebase value: 8 (crates/core/pubsub).
+
+      Cost: 8 B of RAM per subscriber slot per topic, i.e. 8 x MAX_TOPICS B per
+      unit of this option (256 B at edge's 32 topics), inside TOPICS (.data);
+      the same on riscv64 and aarch64.  The build refuses a value above
+      MAX_TASKS.
+
+# ---------------------------------------------------------------------------
+# Capability system
+# ---------------------------------------------------------------------------
+
+config MAX_CAPS_TOTAL
+    int "Total capability pool size"
+    range 64 1048576
+    default 256   if PROFILE_EMBEDDED
+    default 1024  if PROFILE_EDGE
+    default 65536 if PROFILE_FLEET
+    help
+      Size of the capability-declaration pool of the signed topology
+      (crates/core/topology/src/types.rs, caps_pool): the number of `caps`
+      entries all task rows of CAPS.TOML together may declare.  It is not the
+      run-time capability table: each task's table has MAX_CAPS_PER_TASK slots
+      (see there).  The build requires it to be at least MAX_TASKS x 8 and at
+      least MAX_CAPS_PER_TASK.
+
+      Cost: 24 B of RAM per entry (the topology state, SLOT, .data), the same
+      on riscv64 and aarch64.  At the default: edge (1024) 24,576 B = 24 KiB;
+      embedded (256) 6,144 B; fleet (65,536) 1.5 MiB.  Ceiling in the code: the
+      pool length is a u16 (caps_pool_len), so at most 65,535 entries can be
+      used; the Kconfig range (1,048,576) is above it, and the fleet default
+      of 65,536 is one over.
+
+config MAX_CAPS_PER_TASK
+    int "Maximum capabilities per task"
+    range 8 512
+    default 32  if PROFILE_EMBEDDED
+    default 256 if PROFILE_EDGE
+    default 512 if PROFILE_FLEET
+    help
+      Per-task capability slot count.  Limits how many IPC endpoints,
+      memory regions, and devices a single process can hold at once.
+      Current codebase value: 256 (crates/core/ipc/src/cap.rs).
+
+      Cost: 8 B of RAM per slot per task slot, i.e. 8 x MAX_TASKS B per unit of
+      this option (512 B at edge's 64 tasks), in CAP_TABLES (.bss, 4 B of lock
+      per task on top); the same on riscv64 and aarch64.  At the default: edge
+      (256 slots x 64 tasks) 131,328 B = 128.3 KiB; embedded (32 x 32) 8,320 B;
+      fleet (512 x 4096) 16,793,600 B = 16.0 MiB.
+      Ceiling: 512.  A CapHandle addresses a slot with 9 bits
+      (CapHandle::SLOT_BITS, crates/core/abi/src/cap.rs) and a compile-time
+      assert in crates/core/ipc/src/cap.rs fails the build above 512 (tried:
+      513), so the range stops there.
+
+# ---------------------------------------------------------------------------
+# Memory budgets
+# ---------------------------------------------------------------------------
+
+config KERNEL_HEAP_SIZE
+    int "Kernel heap size (KiB)"
+    range 64 1048576
+    default 512    if PROFILE_EMBEDDED
+    default 32768  if PROFILE_EDGE
+    default 262144 if PROFILE_FLEET
+    help
+      Heap region the kernel reserves at boot right after _kernel_end
+      (kernel/src/entry/{riscv64,aarch64}/boot_hooks.rs), not part of the image.  It must be free RAM:
+      the image, this heap, and the PMM's page-table and task frames
+      share the board's RAM above the firmware.
+      Edge default: 32 MiB.  Embedded: 512 KiB.  Fleet: 256 MiB.
+      Embedded figures (image, what is left on 16 and 64 MiB boards)
+      are printed by tools/size_report.sh.
+
+      Cost: no static RAM (the image does not grow: +0 B measured for 32768 ->
+      32769 and -> 65536 KiB, both ISAs).  The heap is taken from the page
+      allocator at boot, so every KiB here is a KiB less for ring-3 frames.
+      What lives in it today: tmpfs file data (up to TMPFS_MAX_KB), procfs
+      text and the boot-time self-tests.  None of the tables the options in
+      this file size is in the heap: they are static (.data/.bss), so the
+      MAX_TASKS x 384 + ... floor that build.rs checks is a conservative
+      estimate of a heap that those tables no longer use, not a measurement.
+
+config RING3_MEM_PAGES_DEFAULT
+    int "Frame budget of a ring-3 topology row that declares none (pages)"
+    range 16 1048576
+    default 64   if PROFILE_EMBEDDED
+    default 1024 if PROFILE_EDGE
+    default 4096 if PROFILE_FLEET
+    help
+      RFC-0049 P1: every ring-3 row of the signed topology (a row named
+      after an .ELF image, or `autorun`) has a frame budget.  A row
+      without `mem_pages` gets this one as its ceiling.  The budget
+      counts every frame the task holds: ELF image, user stack, page
+      tables, heap, anonymous and demand pages, the shared memory it
+      creates and its io_ring pages (crates/core/topology/src/memory.rs).
+      Boot-time memory admission counts a ceiling row twice (one COW
+      copy, P3), so this value times two, per row, must fit the RAM.
+
+      Cost: no static RAM (+0 B measured, both ISAs); a ceiling in 4 KiB frames
+      checked against free RAM at boot (1024 pages = 4 MiB per row).
+
+config AUTORUN_MEM_PAGES
+    int "Frame budget of the default topology's autorun row (pages)"
+    range 16 1048576
+    default 256  if PROFILE_EMBEDDED
+    default 2048 if PROFILE_EDGE
+    default 2048 if PROFILE_FLEET
+    help
+      The `autorun` row of the built-in topology
+      (crates/core/topology/src/builder.rs), shared by every autorun image
+      without a row of its own.  Edge: 2048 pages (8 MiB), four times the
+      largest measured peak (vsbench, 512 pages of heap).  Embedded: 256
+      pages, so the default topology is admitted on a 16 MiB board.
+
+      Cost: no static RAM (+0 B measured, both ISAs); a ceiling in 4 KiB frames
+      checked against free RAM at boot (2048 pages = 8 MiB).
+
+config MEM_KERNEL_RESERVE_KB
+    int "RAM memory admission keeps back for the kernel (KiB)"
+    range 0 1048576
+    default 256   if PROFILE_EMBEDDED
+    default 2048  if PROFILE_EDGE
+    default 16384 if PROFILE_FLEET
+    help
+      Frames the kernel may still take after boot-time memory admission
+      and that no task budget covers: page tables of kernel mappings,
+      driver queues set up late, the block cache.  The per-slot vDSO
+      pages (one per MAX_TASKS slot) are added on top of this by the
+      kernel.  Admission refuses the topology unless the ring-3 budgets
+      plus this reserve fit the free RAM (crates/core/topology/src/memory.rs).
+
+      Cost: no static RAM (+0 B measured, both ISAs); a number of free frames
+      admission keeps back.  The kernel adds one 4 KiB vDSO frame per MAX_TASKS
+      slot on top (kernel/src/boot/topology.rs): 256 KiB at edge's 64 tasks.
+
+config MM_REGIONS_PER_SPACE
+    int "Demand-paged mmap region records per address space"
+    range 2 256
+    default 8
+    help
+      Wave 14 (DEMANDPAGE): an anonymous mmap reserves its range as a
+      region record (crates/core/mm/src/region.rs) and commits each page
+      on first touch.  Each user address space has this many records, in
+      a static table of MAX_TASKS slots (crates/core/mm/src/pager.rs).
+      Consecutive mmaps with the same permissions fold into one record,
+      so a task that only grows its mappings uses one; mprotect and a
+      munmap in the middle of a region cut records.  A mapping that finds
+      no free record is committed eagerly instead (the pre-wave-14
+      behaviour); a munmap or mprotect whose cut needs a record answers
+      ENOMEM, as Linux does past its map count.
+
+      Cost: (24 + 32 x this) B of .bss per MAX_TASKS slot, both ISAs:
+      280 B at 8, 17.5 KiB at edge's 64 tasks.
+
+config DMA_POOL_FLOOR_KB
+    int "Minimum DMA pool reserved at boot (KiB)"
+    range 0 1048576
+    default 256  if PROFILE_EMBEDDED
+    default 2048 if PROFILE_EDGE
+    default 2048 if PROFILE_FLEET
+    help
+      RFC-0049 P7: the physically contiguous pool reserved at boot for
+      device DMA.  The pool is the larger of this floor and the sum of
+      the `dma_kb` of every `[pipeline.NAME]` in the signed topology.
+      Reserved only: no driver allocates from it yet.
+
+      Cost: no static RAM (+0 B measured, both ISAs); the pool is taken from
+      the page allocator at boot, 1 KiB of RAM per KiB, so 2048 KiB is 2 MiB
+      less for ring-3 frames.
+
+config USER_STACK_SIZE_KB
+    int "User-task stack size (KiB)"
+    range 4 1024
+    default 64 if AARCH64_PAGE_64K
+    default 16
+    help
+      Stack of every user task, ending at USER_STACK_TOP.  16 KiB on both
+      ISAs (aarch64 was 32 with nothing in the code needing it; owner
+      decision 2026-09-28).  Populated
+      eagerly at exec (crates/core/sched/src/process.rs): every page is
+      allocated, zeroed and mapped read-write before the task runs, so
+      each task costs USER_STACK_SIZE_KB / 4 physical frames whether it
+      touches them or not.  No guard page is carved out of it or placed
+      below it: the bottom of the stack is also the ceiling of the task's
+      MMIO/shm window (USER_MMIO_LIMIT), so an overflow can run into a
+      mapping there instead of faulting.  Nothing the kernel saves goes
+      on this stack: integer registers go to the kernel trap frame, and
+      aarch64 FP/NEON state to the kernel's lazy-FP save areas.
+      Must be a multiple of 4 (one page); the build refuses any other value.
+
+      Cost: no static RAM (+0 B measured, both ISAs); USER_STACK_SIZE_KB of
+      page-allocator frames per ring-3 task, taken at exec and charged to its
+      mem_pages: 16 KiB, so 1 MiB for 64 ring-3 tasks, 64 MiB for 4096.  The
+      stack ends at USER_STACK_TOP; there is no code ceiling below the range.
+
+config KERNEL_STACK_SIZE_KB
+    int "Per-task kernel stack (KiB)"
+    range 4 256
+    default 32 if ARCH_RISCV64
+    default 128 if AARCH64_PAGE_64K
+    default 48 if AARCH64_PAGE_16K
+    default 32 if ARCH_AARCH64
+    help
+      Kernel-mode stack depth reserved when a user task syscalls into
+      the kernel.  Sized for the deepest syscall handler chain including
+      interrupt nesting.  Larger on Aarch64/x86_64 due to bigger trap frames.
+
+      A guard page (one base page: 4 KiB, or the aarch64 granule) is taken
+      out of this, so the usable depth is one page less — hence the larger
+      defaults under AARCH64_PAGE_16K (48 = 32 usable) and _64K (128 = 64
+      usable). The size must be a whole number of pages.  Since 2026-09-16 an interrupt HANDLER runs on the hart's
+      own INTERRUPT_STACK_SIZE_KB stack, so this size covers the deepest
+      syscall chain and the 288-byte trap frame, and no longer has to leave
+      room for a handler on top of it.  The frame itself still lands here.
+
+      MEASURED, not chosen (tools/stack_chain.py, 2026-09-16).  The deepest
+      chain from trap_handler is 18.6 KiB on the qemu and embedded images and
+      20.6 KiB on fleet, whose trap_handler frame alone is 2.2 KiB:
+
+        dispatch_slow -> sys_recvfrom_syscall (4192) -> recv_bounced (4144)
+        -> socket_recv -> tcp::recv -> send_segment_opts (1648)
+        -> ip::send_flags (3136) -> ip::handle -> handle_icmp (1552)
+        -> icmp_frag_needed -> retransmit (1712)
+
+      `ip::send_flags -> ip::handle` is the loopback re-entry, and it is what
+      makes the TCP/IP send path a 14-function mutually recursive component:
+      its depth is not statically bounded, and stack_chain.py charges it the
+      longest path in which no function repeats.  Splitting recvfrom's bounce
+      buffer into its own frame the same day took that chain to 14.6 KiB; with
+      288 for the trap frame, 32 KiB (28 KiB usable) leaves about 13 KiB.
+
+      EMBEDDED IS NOT SMALLER FOR NOW.  It ran at 16 KiB -- 12 KiB usable --
+      against that same 18.6 KiB chain, because it links the same network
+      stack; only its table sizes are smaller.  Two 4 KiB syscall bounce
+      buffers are 8.3 KiB of the chain, so moving them off the stack is what
+      would let this profile shrink again.
+
+      Cost: MAX_TASKS KiB of RAM per KiB of this option: one stack per task
+      slot (TASK_STACKS, .bss), the same on riscv64 and aarch64 (measured:
+      +65,536 B per KiB at 64 tasks).  At the default 32 KiB: edge (64 tasks)
+      2 MiB; embedded (32) 1 MiB; fleet (4096) 128 MiB.  It is the largest
+      single line of the per-task cost under MAX_TASKS (32,768 of 38,573 B on riscv64, 39,757 B on aarch64).
+      The build refuses 4 KiB or less (nothing would be left after the guard
+      page); the range stops at 256.
+
+config INTERRUPT_STACK_SIZE_KB
+    int "Per-hart interrupt stack (KiB)"
+    range 2 64
+    default 8 if ARCH_RISCV64
+    default 8 if ARCH_AARCH64
+    help
+      A dedicated stack per hart for interrupt handlers, separate from the
+      task kernel stack.  On rv64 it is WIRED UP since 2026-09-16: the trap
+      entry switches to it when scause says interrupt, and only when the
+      stack in hand is not already this hart's -- a trap taken while on it
+      keeps it, so a nested handler does not restart at the top and overwrite
+      the outer one.  The 288-byte trap frame stays on the interrupted stack,
+      because trap_return computes the next trap's sscratch from it.
+
+      MEASURED (tools/stack_chain.py, 2026-09-16).  The whole interrupt half
+      needs 2,400 bytes: 240 for trap_handler's own frame plus 2,160 for the
+      deepest chain from the interrupt callees -- irq_dispatch through the
+      port queue into wake_task_by_tid, including its panic tail.  Add a
+      nested trap frame and 8 KiB leaves about 5 KiB for the drivers a real
+      board brings.  There is no guard page here: the slots are .bss, so the
+      bottom eight bytes of each carry a magic word that trap_resched checks
+      on the way out of every trap.
+
+      The cost is this value times MAX_HARTS, once, in .bss.  What it buys is
+      that the deepest syscall chain no longer has to leave room for an
+      interrupt on top of it.
+
+      Cost: 8 KiB of RAM per KiB of this option (one stack per hart,
+      MAX_HARTS = 8 in kernel/src/main.rs; .bss), the same on riscv64 and
+      aarch64: 64 KiB at the default 8 KiB, in every profile.  Measured from the
+      section sizes (+65,536 B for 8 -> 16 KiB): the stacks have no symbol of
+      their own in the linked image.
+
+# ---------------------------------------------------------------------------
+# WCET measurement table
+# ---------------------------------------------------------------------------
+
+config WCET_MAX_POINTS
+    int "Maximum WCET measurement points (fixed + per-function)"
+    range 16 1024
+    default 32   if PROFILE_EMBEDDED
+    default 128  if PROFILE_EDGE
+    default 512  if PROFILE_FLEET
+    default 32
+    help
+      Total slots in the WCET measurement table.  The first 9 are
+      reserved for the existing fixed points (pid_loop, sensor_read,
+      ctx_switch, timer_isr, actuator_write, net_send, cnn_infer,
+      lidar_scan, path_plan); the rest are filled by `#[wcet(...)]`
+      attribute annotations enumerated by crates/drivers/sys/build.rs.
+      See RFC-0027.  Sized as a Kconfig option so each deployment
+      profile can tune the budget without a source-code change.
+
+      Cost: 36 B of RAM per point (WCET, .data), the same on riscv64 and
+      aarch64.  At the default: edge (128) 4,608 B; embedded (32) 1,152 B;
+      fleet (512) 18,432 B.  At least 9 (the fixed points); the Kconfig range
+      starts at 16.
+
+# ---------------------------------------------------------------------------
+# Ring-3 driver supervisor (RFC-0049 M4)
+# ---------------------------------------------------------------------------
+
+config SUP_RESTART_BURST
+    int "Supervised driver: restarts allowed within the interval"
+    range 1 16
+    default 3
+    help
+      The cold-restart supervisor (kernel/src/drv_supervisor.rs) restarts a
+      supervised ring-3 driver that died of a failure (killed by a fault,
+      a seccomp kill or a kernel stop request, or exited with a code other
+      than 0) at most this many times within SUP_RESTART_INTERVAL_S.  The
+      failure after that stays down until the machine restarts.  A driver
+      that exits 0 is never restarted.  systemd's StartLimitBurst, with
+      Restart=on-failure.
+
+config SUP_RESTART_INTERVAL_S
+    int "Supervised driver: restart-limit interval (seconds)"
+    range 1 86400
+    default 300
+    help
+      The window SUP_RESTART_BURST counts restarts in: a restart older than
+      this no longer counts against the budget, so a driver that fails
+      rarely is restarted every time and one in a crash loop is given up
+      on.  systemd's StartLimitIntervalSec.  The default leaves the gate's
+      four-kill supervisor row (worst case ~80 s under host load) inside
+      one window.
+
+# ---------------------------------------------------------------------------
+# Process exit, io_ring, filesystems (wave 11: were literals in the crates)
+# ---------------------------------------------------------------------------
+
+config MAX_IO_RINGS
+    int "Maximum io_rings system-wide"
+    range 2 256
+    default 16
+    help
+      crates/core/ipc/src/io_ring.rs, MAX_IO_RINGS. One task may hold
+      half of them. At most 256: a Cap<IoRing> packs the index in 8 bits
+      (a compile-time assertion in io_ring.rs). Each ring is one 4 KiB
+      shared page, allocated when the ring is created.
+
+      Cost: 268 B of static RAM per ring slot (the ring table, 68 B, and its
+      parked-waiter set, 200 B, .data and .bss: 4,296 B at the default 16),
+      the same on riscv64 and aarch64; plus one 4 KiB page-allocator frame
+      for each ring that exists, so up to 64 KiB of frames at 16 rings, 1 MiB
+      at 256.
+      Ceiling: 256 (a compile-time assertion in io_ring.rs: the Cap<IoRing>
+      index is 8 bits); the Kconfig range already stops there.
+
+config VFS_MAX_FILES
+    int "Maximum inodes in the in-kernel RAM filesystem"
+    range 64 4096
+    default 128
+    help
+      Size of the VFS inode pool (crates/fs/fs/src/vfs.rs, MAX_FILES):
+      every file and directory of the RAM filesystem, plus the inodes a
+      mounted filesystem's open files take.
+
+      Cost: 160 B of RAM per inode (FS, .data), the same on riscv64 and
+      aarch64: 20,480 B of the 20,888-byte filesystem table at the default 128
+      (the mount table and a few counters are the rest).  No code ceiling below the
+      range.
+
+config VFS_MAX_MOUNTS
+    int "Maximum mounted filesystems"
+    range 4 16
+    default 4
+    help
+      crates/fs/fs/src/vfs.rs, MAX_MOUNTS.
+
+      Cost: 96 B of RAM per mount slot (FS, .data), the same on riscv64 and
+      aarch64: 384 B at the default 4.
+
+config FS_BLOCK_CACHE_KB
+    int "FAT32 block cache (KiB; 0 = the 4 KiB, 8-sector cache)"
+    range 0 16384
+    default 64   if PROFILE_EMBEDDED
+    default 512  if PROFILE_EDGE
+    default 4096 if PROFILE_FLEET
+    help
+      crates/fs/fs/src/fat32.rs, SECTOR_CACHE (crates/fs/fs/src/bcache.rs):
+      the FAT32 driver's cache of 512-byte volume sectors, directory and FAT
+      sectors and file data alike, set-associative (8 ways) past 8 lines.
+      A repeated open/read of a small file, or a repeated spawn of the same
+      image, is served from it instead of the block device.  Write-through:
+      every write reaches the device before it returns, in the same order as
+      without the cache; writes by anyone else (USB mass-storage gadget,
+      reserved-tail records, SYS_DISK_WRITE) drop the sectors they touch
+      (azos_drv_block::write_observer).  0 or a power of two from 4; 0
+      keeps the 8 x 512 B cache this option replaced.
+
+      Cost: the value in KiB of RAM (.bss, not image bytes) plus 32 B of tags
+      per 512 B line (6.25 %), the same on riscv64 and aarch64: 544 KiB at
+      edge's 512, 68 KiB at embedded's 64.
+
+config EXEC_IMAGE_CACHE_KB
+    int "Verified exec image cache (KiB of frames; 0 = off)"
+    range 0 65536
+    default 64   if PROFILE_EMBEDDED
+    default 512  if PROFILE_EDGE
+    default 4096 if PROFILE_FLEET
+    help
+      crates/core/syscall/src/image_cache.rs, crates/core/mm/src/image_frames.rs:
+      the frames a spawn of a FAT32 image keeps for the next spawn of the
+      same bytes (same start cluster and size, and no write of the volume,
+      mount or unmount since; USB mass storage, OTA and SYS_DISK_WRITE
+      writes count). The next spawn maps the executable pages read-execute,
+      shared, and copies every other page from a kernel template, so it
+      neither reads nor hashes the file. Writable pages are never shared;
+      every page is present when the task starts (a mem = "locked" row
+      stays committed). Least recently used images go first; a frame a
+      running task still maps outlives its eviction until that task exits.
+      0 keeps only the digest cache (16 entries, always on).
+
+      Cost: nothing in the image (.bss: about 1 KiB of table); at run time
+      up to this many KiB of frames from the page allocator, held only by
+      images spawned at least once: one frame per image page plus one per
+      image. A task that maps a kept image is charged every page of it, as
+      if it had loaded it.
+
+config TMPFS_MAX_FILES
+    int "Maximum files in tmpfs"
+    range 8 1024
+    default 64
+    help
+      crates/fs/fs/src/tmpfs.rs, TMPFS_MAX_FILES.
+
+      Cost: 96 B of RAM per entry (TMPFS, .data), the same on riscv64 and
+      aarch64: 6,168 B at the default 64.  File data is not in this table (see
+      TMPFS_MAX_KB).
+
+config TMPFS_MAX_KB
+    int "tmpfs data capacity (KiB)"
+    range 64 65536
+    default 2048
+    help
+      crates/fs/fs/src/tmpfs.rs, TMPFS_MAX_BYTES. A write that would pass
+      it evicts the oldest file first (FIFO).
+
+      Cost: no static RAM (+0 B measured, both ISAs).  File data is allocated
+      from the kernel heap when a file is written, so the worst case is
+      TMPFS_MAX_KB of KERNEL_HEAP_SIZE (2 MiB of edge's 32 MiB heap) plus a
+      transient second copy of the file being rewritten.  Embedded's heap is
+      512 KiB, so there the heap fills before this ceiling does and a write
+      fails with an allocation error.
+
+# ---------------------------------------------------------------------------
+# User shell (RFC-0055, wave 11)
+# ---------------------------------------------------------------------------
+
+config USER_SHELL
+    bool "Ring-3 user shell on the console (SH.ELF)"
+    depends on MAX_FDS_PER_PROC >= 16 && MAX_PIPES >= 8
+    default y if PROFILE_EDGE || PROFILE_FLEET
+    default n
+    help
+      Start the native shell (userspace/services/sh, /fat/SH.ELF) on the
+      console when boot completes, supervised like the ring-3 drivers
+      (its topology row says start = true). It reads the console with
+      SYS_CONSOLE_WAIT, runs programs with SYS_SPAWN_EX under their own
+      seccomp profile and topology row, and holds no hardware authority.
+      The in-kernel shell becomes a recovery console: it runs only in
+      safe mode, when the volume has no SH.ELF, when the user shell does
+      not take the console within SH_START_TIMEOUT_S, or after the
+      supervisor gave up on it.
+
+      Needs MAX_FDS_PER_PROC >= 16 and MAX_PIPES >= 8: a pipeline with
+      redirections holds several descriptors and pipes at once.
+
+      n: the kernel shell owns the console, as before wave 11.
+
+config SH_START_TIMEOUT_S
+    int "User shell: seconds to take the console before the recovery console does"
+    range 1 300
+    default 10
+    help
+      After boot, and after each death of the user shell, the kernel
+      console waits this long for SH.ELF to claim console input. If it
+      has not, the recovery console (the in-kernel shell) takes it.
+
+endmenu # Resource Limits

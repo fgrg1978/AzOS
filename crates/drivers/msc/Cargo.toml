@@ -1,0 +1,10 @@
+[package]
+name = "azos_msc"
+version = "0.1.0"
+edition = "2021"
+description = "DEV03 — USB Mass Storage Class (MSC) Bulk-Only Transport + minimal SCSI command set. Pure no_std protocol layer; the USB device controller surface lives in azos_drv_bus::usb_device."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[lib]
+name = "azos_msc"

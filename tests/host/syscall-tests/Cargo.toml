@@ -1,0 +1,84 @@
+[package]
+name = "azos_syscall_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/core/syscall/src/handlers.rs. Excluded from workspace."
+
+# Run with:  cd tests/host/syscall-tests && cargo test --release
+
+[features]
+# The syscall sources pulled in below name the robot crates through the shims
+# in `shims/` (robot, imu, gps); `domain-robot` is what makes them do so
+# instead of importing `crates/core/syscall/src/no_robot.rs` (wave 11).
+default = ["domain-robot"]
+domain-robot = []
+# Mirrors azos_syscall's gate canary (wave 13): `cfg!(feature =
+# "mmap-prot-canary")` in the pulled-in handlers.rs. Off: the real behaviour.
+mmap-prot-canary = []
+# Wave 14 (DEMANDPAGE): the region pagers never resolve a fault.
+demand-region-canary = ["azos_mm/demand-region-canary"]
+# Wave 14 (SPAWNCACHE): mirrors azos_syscall's canaries of the same names
+# (the pulled-in image_cache.rs).
+digest-cache-stale-canary = []
+digest-recheck-canary = []
+# ... and the kept-frames canary of the pulled-in `image_frames.rs`.
+image-share-all-canary = ["azos_mm/image-share-all-canary"]
+mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]
+
+[dependencies]
+# Real, pure, no_std, host-buildable as-is (crates/core/abi has zero dependencies).
+azos_abi = { path = "../../../crates/core/abi" }
+# Wave 14 (SPAWNCACHE): `image_cache.rs` sizes its kept frames by Kconfig
+# `EXEC_IMAGE_CACHE_KB` (generated from the tree's .config, as the mm shim's).
+azos_limits = { path = "../../../crates/core/limits" }
+
+# Host stand-ins. Renamed via Cargo dependency rename so `handlers.rs`'s own
+# `use azos_x::...` statements resolve unchanged; the kernel never sees
+# any of these.
+# Reused, not duplicated: tests/host/cap-tests already built the host stand-in
+# for azos_sync (a std::sync::Mutex-backed SpinLock) that net-tests and
+# drivers-tests also depend on. Same crate, same reasons.
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
+azos_sched = { path = "shims/sched", package = "syscall_test_sched" }
+azos_ipc = { path = "shims/ipc", package = "syscall_test_ipc" }
+syscall_test_drivers = { path = "shims/drivers" }
+azos_drv_api = { path = "../../../crates/drivers/api" }
+azos_net = { path = "shims/net", package = "syscall_test_net" }
+azos_mm = { path = "shims/mm", package = "syscall_test_mm" }
+azos_arch = { path = "shims/arch", package = "syscall_test_arch" }
+azos_arch_api = { path = "../../../crates/core/arch-api" }
+azos_robot = { path = "shims/robot", package = "syscall_test_robot" }
+azos_service = { path = "shims/service", package = "syscall_test_service" }
+azos_imu = { path = "shims/imu", package = "syscall_test_imu" }
+azos_gps = { path = "shims/gps", package = "syscall_test_gps" }
+azos_driver_server = { path = "shims/driver_server", package = "syscall_test_driver_server" }
+
+# The task pool the pulled-in `cap_store.rs` resolves TIDs against.
+#
+# `crates/core/ipc`'s cap_store calls `azos_sched::idx_for_tid`, and inside
+# `shims/ipc` that name resolves to `shims/ipc_sched` -> `cap_test_sched`, NOT
+# to this crate's own `shims/sched`. The two are separate task tables. A test
+# that mints a capability and then calls a typed handler has to bind the TID in
+# THIS one and set the current TID in the other, so it needs both names.
+# Aliased rather than shadowing `azos_sched` precisely so that a reader
+# cannot mistake one for the other.
+ipc_task_pool = { path = "../cap-tests/shims/sched", package = "cap_test_sched" }
+
+# The scheduler as `crates/core/ipc` sees it (`shims/ipc_sched`): where the real
+# `lease.rs` records its wakes. Named so the lease tests can read them.
+ipc_sched_shim = { path = "shims/ipc_sched", package = "syscall_test_ipc_sched" }
+
+# Reproduce the kernel's release profile: overflow-checks is what turns a
+# wrapped arithmetic op into a panic, which matters for handlers that do
+# pointer/length arithmetic on raw syscall args.
+[profile.release]
+overflow-checks = true
+
+[lints.rust]
+# `handlers.rs` is compiled here under a host target it was never written
+# for; a handful of driver/ipc modules it pulls in declare cfg's (qemu, vf2,
+# kani, loom) that this crate's Cargo.toml does not also declare features
+# for. Declared rather than silenced, so the condition stays visible.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)', 'cfg(feature, values("qemu"))', 'cfg(feature, values("vf2"))', 'cfg(feature, values("actuation-smoke"))', 'cfg(feature, values("arp-timing"))', 'cfg(feature, values("portwait-timer-canary"))'] }

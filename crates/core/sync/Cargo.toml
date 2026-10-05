@@ -1,0 +1,15 @@
+[package]
+name = "azos_sync"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_arch = { workspace = true }
+azos_common = { workspace = true }
+
+[features]
+# Masked-window tracer hooks on the preemption counter and the spinlock
+# guards (Kconfig `LAT_TRACE`). Off: no hook, no extra guard field.
+lat-trace = ["azos_arch/lat-trace"]

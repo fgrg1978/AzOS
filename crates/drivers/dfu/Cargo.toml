@@ -1,0 +1,10 @@
+[package]
+name = "azos_dfu"
+version = "0.1.0"
+edition = "2021"
+description = "DEV02 — DFU 1.1 (Device Firmware Update) protocol state machine + USB descriptor builders. Pure no_std; transport-agnostic so a kernel running on DWC2/DWC3 or an OTG-capable controller can drive it once the controller registers are wired."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[lib]
+name = "azos_dfu"

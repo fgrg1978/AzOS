@@ -1,0 +1,15 @@
+[package]
+name = "azos_buzzer"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Piezo buzzer chip logic, written once for both placements (RFC-0052 section 6.1): no syscalls, no statics, generic over the environment's `Pwm`. Hosted in ring 3 by userspace/drivers/buzz_drv and in the kernel by crates/drivers/actuator (feature buzzer-kernel)."
+build = "build.rs"
+
+[lib]
+name = "azos_buzzer"
+
+[dependencies]
+# Path, not `workspace = true`: userspace/drivers/buzz_drv builds standalone.
+azos_abi = { path = "../../core/abi" }

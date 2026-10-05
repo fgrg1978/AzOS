@@ -1,0 +1,15708 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# AzOS — CI verification (D07)
+#
+# 1. Builds every feature combination for zero errors AND zero warnings.
+# 2. Runs drone algorithm unit tests in tests/host/flight-sim on the host.
+# 3. Boots the kernel in QEMU and asserts real runtime behaviour.
+#
+# Step 3 exists because steps 1-2 cannot see the failures that actually hurt:
+# esp32c3 rotted for months while CI was green, and a network smoke silently
+# stopped running because it raced the scheduler. A build-only gate dates a
+# regression to "somewhere in the last N commits" instead of to one commit.
+#
+# Usage: ./tools/ci_check.sh
+#        make ci
+#        CI_TIER=fast ./tools/ci_check.sh     # every build/host/lint row, one QEMU row
+#                                             # per subsystem per ISA (FAST_ROWS)
+#        CI_JOBS=1 ./tools/ci_check.sh        # rows one at a time (default 4 jobs)
+#        CI_SKIP_QEMU=1 ./tools/ci_check.sh   # explicit opt-out, see below
+#        CI_SKIP_FUZZ=1 ./tools/ci_check.sh   # skips the cargo-fuzz rows (end of file)
+#        CI_INJECT_FAIL=<row> ./tools/ci_check.sh  # canary: that row must FAIL
+# Per-phase wall clock is printed before the result; per-row seconds go to
+# build/ci-logs/timing.tsv.
+
+set -uo pipefail
+
+CARGO="${CARGO:-cargo}"
+QEMU="${QEMU:-qemu-system-riscv64}"
+KERNEL="target/riscv64imac-unknown-none-elf/release/kernel"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# The topology/config key every build in this gate embeds (wave 11): the TEST
+# key, by name. `crates/core/topology/build.rs` no longer defaults to it, so a
+# build without `TOPOLOGY_PUBKEY_PATH` and without the `dev-key` feature (vf2,
+# k1, fleet, embedded, the featureless rows) fails. Exported once, here, for
+# every row: build scripts rerun when its value changes, and a value that
+# differed between rows would rebuild the kernel at every alternation. The
+# gate's fixtures are signed with `test_priv.bin`, so a caller's own key is not
+# honoured. Generated first when absent: an explicitly named key that does not
+# exist fails the build. The `topology key` rows unset it to watch the refusal.
+if [ ! -f "$REPO_ROOT/tools/keys/test_pub.bin" ]; then
+    python3 "$REPO_ROOT/tools/gen_test_key.py" >/dev/null 2>&1 || true
+fi
+export TOPOLOGY_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin"
+
+# Refuse to run on a tree carrying iCloud duplicates.
+#
+# The repository lives under iCloud Drive, which resolves a sync conflict by
+# writing a second copy named `<stem> <digit>.<ext>` (`build 2.rs`,
+# `Cargo 2.toml`) or `<name> <digit>`. Cargo and `include!` then pick the copy up
+# as a real module: gate 194 failed with E0428 in crates/drivers/sys/build.rs
+# because of one, and the rows after it reported verdicts about a tree nobody
+# wrote. Only UNTRACKED, non-ignored paths are considered, so a tracked file
+# that legitimately has such a name never trips this. Any path component counts
+# (a duplicated directory `src 2/` shows up through the files inside it).
+# `CI_DUP_CHECK_ONLY=1` runs just this check, for testing it.
+refuse_icloud_duplicates() {
+    local dups
+    dups="$(cd "$REPO_ROOT" && git ls-files --others --exclude-standard 2>/dev/null \
+        | grep -E '(^|/)[^/]* [0-9]{1,2}(\.[^/ ]*)?(/|$)')"
+    if [ -n "$dups" ]; then
+        echo "ci_check: refusing to run, the tree has untracked iCloud duplicate(s):"
+        printf '%s\n' "$dups" | sed 's/^/    /'
+        echo "  A copy named '<name> <digit>.<ext>' is a sync-conflict artefact; cargo"
+        echo "  compiles it as a second module and every row after it tests the wrong"
+        echo "  tree. Delete or reconcile the file(s) above and run the gate again."
+        exit 2
+    fi
+}
+refuse_icloud_duplicates
+[ "${CI_DUP_CHECK_ONLY:-0}" = 1 ] && exit 0
+
+PASS=0
+FAIL=0
+SKIP=0
+
+ok()   { echo "ok";   PASS=$((PASS + 1)); ci_time_row ok; }
+bad()  { echo "FAIL"; FAIL=$((FAIL + 1)); ci_time_row FAIL; }
+
+# ── Timing ──────────────────────────────────────────────────────────────────
+#
+# Every verdict appends `<seconds>\t<verdict>\t<row label>` to
+# `$CI_LOG_DIR/timing.tsv`, in the order the log prints the rows. The seconds
+# run from the previous verdict, or, for a row run in parallel (see `par`),
+# from the start of its job, so the builds a row triggers are charged to it.
+# Phase totals are printed at the end of the log. Verdict lines are unchanged.
+#
+# The label is the one every row prints first, `printf "  %-26s" "<label>..."`;
+# this wrapper notes it on the way past and changes nothing printf prints.
+CI_ROW_LABEL=""
+CI_T_LAST=$SECONDS
+CI_TIMING=""
+printf() {
+    case "${1:-}" in
+        "  %-26s"*) CI_ROW_LABEL="${2%...}"; PAR_SEEN="${PAR_SEEN:-}${CI_ROW_LABEL}
+" ;;
+    esac
+    builtin printf "$@"
+}
+ci_time_row() { # ci_time_row <verdict>
+    local now=$SECONDS
+    if [ -n "$CI_TIMING" ]; then
+        builtin printf '%s\t%s\t%s\n' "$((now - CI_T_LAST))" "$1" "$CI_ROW_LABEL" >>"$CI_TIMING"
+    fi
+    CI_T_LAST=$now
+}
+CI_PHASE_NAMES=()
+CI_PHASE_START=()
+ci_phase() { # ci_phase <name>: the clock of the phase that starts here
+    CI_PHASE_NAMES[${#CI_PHASE_NAMES[@]}]="$1"
+    CI_PHASE_START[${#CI_PHASE_START[@]}]=$SECONDS
+}
+ci_phase_report() {
+    local i n=${#CI_PHASE_NAMES[@]} end
+    echo "Timing (wall clock, CI_TIER=${CI_TIER}, CI_JOBS=${CI_JOBS}):"
+    for ((i = 0; i < n; i++)); do
+        if [ $((i + 1)) -lt "$n" ]; then end=${CI_PHASE_START[$((i + 1))]}; else end=$SECONDS; fi
+        builtin printf "  %-34s %5d s\n" "${CI_PHASE_NAMES[$i]}" "$((end - CI_PHASE_START[$i]))"
+    done
+    builtin printf "  %-34s %5d s\n" "total" "$SECONDS"
+    [ -n "$CI_TIMING" ] && echo "  per row: $CI_TIMING"
+}
+ci_phase "setup, lints, image tables"
+
+# Build the kernel for a scenario, and FAIL LOUDLY instead of leaving whatever
+# binary is already on disk for the next `qemu_run` to boot.
+#
+# **This existed 37 times as `"$CARGO" build ... >/dev/null 2>&1`, with the
+# result discarded, and exactly once with a check.** Gate 116 is what it costs:
+# `topology: infeasible deadlines` went red reporting that the kernel ADMITTED
+# an infeasible topology. It had not — the build of its `deadline-refusal-canary`
+# feature failed (iCloud was returning "Operation not permitted" on target/
+# that afternoon), so the row booted the PREVIOUS kernel, which of course has no
+# canary tasks to refuse. A row that reports a verdict about a kernel nobody
+# asked for is worse than one that does not run.
+#
+# Deliberately does NOT `return` non-zero into its caller: the 37 sites sit in
+# two different control-flow contexts (inside scenario functions and at the top
+# level of the QEMU section), and a bare `|| return` would be wrong in half of
+# them. It marks the gate failed and says why; the row that follows then fails
+# with its own message, now explained rather than mysterious.
+kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
+    local feats="$1"; shift
+    par_shared "kbuild $feats" || return 1
+    if "$CARGO" build --release --features "$feats" "$@" >/dev/null 2>&1; then
+        return 0
+    fi
+    printf "  %-26s" "build --features ${feats}..."
+    bad
+    echo "      the kernel did NOT build, and the previous binary is still on"
+    echo "      disk. Whatever row follows is about to boot it and report a"
+    echo "      verdict for a kernel that was never asked for. Re-run the"
+    echo "      build by hand to see the error:"
+    echo "        cargo build --release --features ${feats}"
+    return 1
+}
+
+# ── Builds ──────────────────────────────────────────────────────────────────
+#
+# Warnings count as failures: the header has always claimed "zero
+# errors/warnings" while only ever grepping for errors.
+build() {
+    local label="$1"; shift
+    printf "  %-26s" "${label}..."
+    local out rc
+    out="$("$CARGO" build "$@" 2>&1)"; rc=$?
+    # cargo's exit status fails a row as well as an `^error` line does. A cargo
+    # that never ran (not found, not executable) prints no `^error`, and the row
+    # used to read `ok` with nothing compiled. Every row calling this expects a
+    # successful build, so none relies on a nonzero exit being ignored.
+    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -qE "^error"; then
+        bad; printf '%s\n' "$out" | grep -E "^error" | head -5
+        if [ "$rc" -ne 0 ]; then echo "      cargo exited $rc"; fi
+        return
+    fi
+    # ANY rustc warning fails the build, not an allowlist of five spellings.
+    #
+    # This used to read `^warning: (unused|function|variable|field|constant)`.
+    # An allowlist of message prefixes measures the allowlist, not the tree: it
+    # let `type WaitQueueInner is more private than the item WaitQueue::inner`
+    # through all three kernel builds while reporting clean, and it would have
+    # let through every lint rustc gains from here on. The host-suite half of
+    # this same file already used the broad pattern, so the two halves of one
+    # gate disagreed — and the permissive one was the half that compiles the
+    # kernel.
+    #
+    # Measured before widening, since the note that flagged this warned that a
+    # wider pattern would surface pre-existing warnings: across all fifteen
+    # feature combinations the tree emits exactly one `^warning:` line, and it
+    # is not a lint. `cargo` prefixes build-script output as
+    # `warning: <pkg>@<version>: ...` — `crates/core/ota`'s script announces which
+    # public key it embedded, which is information worth printing and not a
+    # defect. That one shape is excluded by pattern, not by name, so a second
+    # build script gets the same treatment without editing this line.
+    if printf '%s\n' "$out" | grep -E "^warning:" \
+         | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
+        bad
+        printf '%s\n' "$out" | grep -E "^warning:" \
+          | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]" | head -5
+        return
+    fi
+    ok
+}
+
+# vf2/k1 must be built exactly as the Makefile ships them — with their linker
+# script. Without it CI validates a binary nobody ever runs.
+# The ISA extensions each board's Makefile target compiles with, READ FROM THE
+# MAKEFILE rather than copied. A board built here without the flags its Makefile
+# uses is a different binary from the one that ships, and the guard rows below
+# would then be checking something nobody flashes. A second copy of the string
+# would drift exactly the way `kernel/Cargo.toml`'s `k1` feature list drifted
+# from `rvv`'s (2026-09-18), so there is only one.
+K1_ISA="$(sed -n 's/^K1_ISA := //p' "$REPO_ROOT/Makefile")"
+if [ -z "$K1_ISA" ]; then
+    echo "FATAL: no K1_ISA in the Makefile — the per-board extension flags moved," >&2
+    echo "       and the k1 build here would silently lose them." >&2
+    exit 1
+fi
+
+build_board() {
+    local label="$1" feat="$2" ld="kernel/linker-$2.ld" isa="${3:-}"
+    printf "  %-26s" "${label}..."
+    if ! board_config "$feat"; then
+        bad; echo "      could not expand config/defconfigs/${feat}.config with python3 -m olddefconfig"
+        return
+    fi
+    local out rc
+    out="$(KCONFIG_CONFIG="${REPO_ROOT}/target/board-${feat}/${feat}.config" \
+           RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release --features "$feat" \
+           --config "build.rustflags=['-C','link-arg=-T$ld']" 2>&1)"; rc=$?
+    # The exit status counts here too, as in `build`. Warnings do too, as of
+    # U12-5: this used to check `^error` only, so vf2/k1 — the only two rows
+    # that build a kernel that actually ships — passed with any number of
+    # warnings while every other feature combination's build was held to zero.
+    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -qE "^error"; then
+        bad; printf '%s\n' "$out" | grep -E "^error" | head -5
+        if [ "$rc" -ne 0 ]; then echo "      cargo exited $rc"; fi
+    elif printf '%s\n' "$out" | grep -E "^warning:" \
+         | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
+        bad
+        printf '%s\n' "$out" | grep -E "^warning:" \
+          | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]" | head -5
+    else
+        ok
+    fi
+}
+
+# The fleet profile, built the way `make build-fleet` means it: the fleet
+# defconfig expanded by olddefconfig, the fleet linker script, and the features
+# `tools/kconfig_to_cargo.py` derives from that config. It differs from the
+# Makefile target in three ways, each on purpose:
+#   * The expanded config lives in the fleet target dir and never touches
+#     `.config`: `crates/core/limits/build.rs` reads `$KCONFIG_CONFIG`, so every
+#     other row keeps building from the workspace `.config`. It is rewritten
+#     only when olddefconfig's output changes, so a warm dir stays warm.
+#   * Its own CARGO_TARGET_DIR: fleet-configured artifacts are never picked up
+#     by the rows above, nor theirs here.
+#   * RUSTFLAGS repeats the other flags of `.cargo/config.toml`. A RUSTFLAGS
+#     environment variable REPLACES that list instead of adding to it, so with
+#     the linker script alone (as `build-fleet` and `build_board` pass it) the
+#     workspace compiles with different flags from every row above. It links
+#     either way (checked 2026-09-14); the difference is the flags, not the link.
+# The build goes through `build`, so warnings fail it too; the touch before
+# the matrix reaches this target dir as well. `fleet_config_applied` then
+# checks that the constants compiled in came from this config, not `.config`.
+# Wave 11 (DOMAIN, owner decision): config/defconfigs/fleet.config and
+# embedded.config are Generic; the robot image these rows always built is
+# robot-fleet.config / robot-embedded.config (same profile, DOMAIN_ROBOT).
+FLEET_DIR="${FLEET_DIR:-${REPO_ROOT}/target/fleet}"
+FLEET_CONFIG="${FLEET_DIR}/fleet.config"
+FLEET_RUSTFLAGS="-C link-arg=-Tkernel/linker-fleet.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
+FLEET_KERNEL="${FLEET_DIR}/riscv64imac-unknown-none-elf/release/kernel"
+FLEET_BUILT=0
+
+# The profile defaults to the warn log level (config/Kconfig.development);
+# the gate builds it at debug, as it builds every kernel it boots, because its
+# boot rows wait for an info line ("Starting scheduler on boot CPU"). The
+# release level is built by the board rows (vf2) and booted by vsbench.
+fleet_config() {
+    local tmp rc
+    mkdir -p "$FLEET_DIR" || return 1
+    tmp="$(mktemp -d)" || return 1
+    cp "${REPO_ROOT}/config/defconfigs/robot-fleet.config" "$tmp/fleet.config" \
+      && echo "CONFIG_LOG_LEVEL_DEBUG=y" >>"$tmp/fleet.config" \
+      && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/fleet.config" python3 -m olddefconfig >/dev/null 2>&1) \
+      && grep -q '^CONFIG_PROFILE_FLEET=y$' "$tmp/fleet.config" \
+      && { cmp -s "$tmp/fleet.config" "$FLEET_CONFIG" || cp "$tmp/fleet.config" "$FLEET_CONFIG"; }
+    rc=$?
+    rm -rf "$tmp"
+    return $rc
+}
+
+# Arguments, both optional: the row label, and the cargo profile directory whose
+# `build/azos_limits-*` to search (the kernel build's by default; the host
+# net-tests run in [2/4] passes its own).
+fleet_config_applied() {
+    local label="${1:-fleet config applied}"
+    local rel="${2:-${FLEET_DIR}/riscv64imac-unknown-none-elf/release}"
+    printf "  %-26s" "${label}..."
+    local sha gen key val
+    sha="$(shasum -a 256 "$FLEET_CONFIG" | cut -c1-12)"
+    gen="$(grep -l "Config SHA-256 prefix: ${sha} " \
+        "$rel"/build/azos_limits-*/out/generated.rs \
+        2>/dev/null | sed -n 1p)"
+    if [ -z "$gen" ]; then
+        bad; echo "      no generated.rs under $rel was built from $FLEET_CONFIG ($sha)"
+        return
+    fi
+    for key in PROFILE_FLEET TCP_MAX_CONNS TCP_BUF_SIZE RAM_SIZE; do
+        val="$(sed -n "s/^CONFIG_${key}=//p" "$FLEET_CONFIG")"
+        [ "$val" = "y" ] && val="true"
+        if ! grep -qE "^pub const ${key}: [a-z0-9]+ = ${val};$" "$gen"; then
+            bad; echo "      $gen does not carry ${key} = ${val} from $FLEET_CONFIG"
+            return
+        fi
+    done
+    ok
+}
+
+EMBEDDED_DIR="${EMBEDDED_DIR:-${REPO_ROOT}/target/embedded}"
+EMBEDDED_CONFIG="${EMBEDDED_DIR}/embedded.config"
+EMBEDDED_KERNEL="${EMBEDDED_DIR}/riscv64imac-unknown-none-elf/release/kernel"
+EMBEDDED_RUSTFLAGS="-C link-arg=-Tkernel/linker-embedded.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
+EMBEDDED_BUILT=0
+# Debug log level in the gate, as `fleet_config` says.
+embedded_config() {
+    local tmp rc
+    mkdir -p "$EMBEDDED_DIR" || return 1
+    tmp="$(mktemp -d)" || return 1
+    cp "${REPO_ROOT}/config/defconfigs/robot-embedded.config" "$tmp/embedded.config" \
+      && echo "CONFIG_LOG_LEVEL_DEBUG=y" >>"$tmp/embedded.config" \
+      && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/embedded.config" python3 -m olddefconfig >/dev/null 2>&1) \
+      && grep -q '^CONFIG_PROFILE_EMBEDDED=y$' "$tmp/embedded.config" \
+      && { cmp -s "$tmp/embedded.config" "$EMBEDDED_CONFIG" || cp "$tmp/embedded.config" "$EMBEDDED_CONFIG"; }
+    rc=$?; rm -rf "$tmp"; return $rc
+}
+embedded_config_applied() {
+    printf "  %-26s" "embedded config applied..."
+    local rel="${EMBEDDED_DIR}/riscv64imac-unknown-none-elf/release" sha gen key val
+    sha="$(shasum -a 256 "$EMBEDDED_CONFIG" | cut -c1-12)"
+    gen="$(grep -l "Config SHA-256 prefix: ${sha} " "$rel"/build/azos_limits-*/out/generated.rs 2>/dev/null | sed -n 1p)"
+    if [ -z "$gen" ]; then bad; echo "      no generated.rs under $rel was built from $EMBEDDED_CONFIG ($sha)"; return 1; fi
+    for key in PROFILE_EMBEDDED RAM_SIZE KERNEL_HEAP_SIZE; do
+        val="$(sed -n "s/^CONFIG_${key}=//p" "$EMBEDDED_CONFIG")"; [ "$val" = "y" ] && val="true"
+        if ! grep -qE "^pub const ${key}: [a-z0-9]+ = ${val};$" "$gen"; then
+            bad; echo "      $gen does not carry ${key} = ${val} from $EMBEDDED_CONFIG"; return 1; fi
+    done
+    ok
+}
+
+# ── U12-3: the primary column names a configuration ────────────────────────
+#
+# Every plain `kbuild`/`build` call below this point (no per-scenario
+# KCONFIG_CONFIG of its own) used to build `azos_limits` from the
+# gitignored workspace `.config` — whatever the developer's board and RAM
+# happen to be (observed live: BOARD_VF2, RAM_SIZE=8192) — while booting a
+# `--features qemu` kernel under `-machine virt`. "N/N ok" named no
+# configuration. This pins the primary column to its own defconfig, the way
+# `fleet_config`/`embedded_config` above already pin theirs.
+#
+# Exported once, like PATH: a cargo invoked directly OR through `make` below
+# picks it up without its call site changing — `make`'s own
+# `KCONFIG_CONFIG ?= .config` (Makefile) yields to an already-exported value.
+# Anything that needs a DIFFERENT config overrides the variable inline on its
+# own command; `a64_kbuild` and `build_board` below are given exactly that
+# override so aarch64 and the board rows are not silently repointed here.
+PRIMARY_DIR="${PRIMARY_DIR:-${REPO_ROOT}/target/primary}"
+PRIMARY_CONFIG="${PRIMARY_DIR}/qemu.config"
+primary_config() {
+    local tmp rc
+    mkdir -p "$PRIMARY_DIR" || return 1
+    tmp="$(mktemp -d)" || return 1
+    cp "${REPO_ROOT}/config/defconfigs/qemu.config" "$tmp/qemu.config" \
+      && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/qemu.config" python3 -m olddefconfig >/dev/null 2>&1) \
+      && grep -q '^CONFIG_BOARD_QEMU=y$' "$tmp/qemu.config" \
+      && { cmp -s "$tmp/qemu.config" "$PRIMARY_CONFIG" || cp "$tmp/qemu.config" "$PRIMARY_CONFIG"; }
+    rc=$?
+    rm -rf "$tmp"
+    return $rc
+}
+if primary_config; then
+    export KCONFIG_CONFIG="$PRIMARY_CONFIG"
+else
+    echo "FATAL: could not expand config/defconfigs/qemu.config with python3 -m olddefconfig" >&2
+    exit 1
+fi
+primary_config_applied() {
+    printf "  %-26s" "primary config applied..."
+    local rel="target/${TARGET:-riscv64imac-unknown-none-elf}/release" sha gen key val
+    sha="$(shasum -a 256 "$PRIMARY_CONFIG" | cut -c1-12)"
+    gen="$(grep -l "Config SHA-256 prefix: ${sha} " "$rel"/build/azos_limits-*/out/generated.rs 2>/dev/null | sed -n 1p)"
+    if [ -z "$gen" ]; then
+        bad; echo "      no generated.rs under $rel was built from $PRIMARY_CONFIG ($sha)"; return
+    fi
+    for key in BOARD_QEMU RAM_SIZE MAX_TASKS; do
+        val="$(sed -n "s/^CONFIG_${key}=//p" "$PRIMARY_CONFIG")"; [ "$val" = "y" ] && val="true"
+        if ! grep -qE "^pub const ${key}: [a-z0-9]+ = ${val};$" "$gen"; then
+            bad; echo "      $gen does not carry ${key} = ${val} from $PRIMARY_CONFIG"; return
+        fi
+    done
+    ok
+}
+
+# aarch64's own column, same reasoning. Before this, `a64_kbuild` set no
+# KCONFIG_CONFIG at all, so it inherited whatever ARCH_RISCV64 workspace
+# `.config` was checked out — confirmed live: the aarch64 target's
+# `generated.rs` carried `USER_STACK_SIZE_KB: usize = 16` (riscv64's
+# default) while `config/defconfigs/qemu-aarch64.config` (ARCH_AARCH64) expands
+# to 32, the value `make aarch64` actually ships.
+AARCH64_DIR="${AARCH64_DIR:-${REPO_ROOT}/target/primary-aarch64}"
+AARCH64_CONFIG="${AARCH64_DIR}/qemu-aarch64.config"
+aarch64_config() {
+    local tmp rc
+    mkdir -p "$AARCH64_DIR" || return 1
+    tmp="$(mktemp -d)" || return 1
+    cp "${REPO_ROOT}/config/defconfigs/qemu-aarch64.config" "$tmp/qemu-aarch64.config" \
+      && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/qemu-aarch64.config" python3 -m olddefconfig >/dev/null 2>&1) \
+      && grep -q '^CONFIG_ARCH_AARCH64=y$' "$tmp/qemu-aarch64.config" \
+      && { cmp -s "$tmp/qemu-aarch64.config" "$AARCH64_CONFIG" || cp "$tmp/qemu-aarch64.config" "$AARCH64_CONFIG"; }
+    rc=$?
+    rm -rf "$tmp"
+    return $rc
+}
+if ! aarch64_config; then
+    echo "FATAL: could not expand config/defconfigs/qemu-aarch64.config with python3 -m olddefconfig" >&2
+    exit 1
+fi
+aarch64_config_applied() {
+    printf "  %-26s" "aarch64 config applied..."
+    local rel="target/aarch64-unknown-none-softfloat/release" sha gen key val
+    sha="$(shasum -a 256 "$AARCH64_CONFIG" | cut -c1-12)"
+    gen="$(grep -l "Config SHA-256 prefix: ${sha} " "$rel"/build/azos_limits-*/out/generated.rs 2>/dev/null | sed -n 1p)"
+    if [ -z "$gen" ]; then
+        bad; echo "      no generated.rs under $rel was built from $AARCH64_CONFIG ($sha)"; return
+    fi
+    for key in ARCH_AARCH64 USER_STACK_SIZE_KB; do
+        val="$(sed -n "s/^CONFIG_${key}=//p" "$AARCH64_CONFIG")"; [ "$val" = "y" ] && val="true"
+        if ! grep -qE "^pub const ${key}: [a-z0-9]+ = ${val};$" "$gen"; then
+            bad; echo "      $gen does not carry ${key} = ${val} from $AARCH64_CONFIG"; return
+        fi
+    done
+    ok
+}
+
+# The board rows (vf2/k1, U12-2): each expands ITS OWN defconfig the way
+# `fleet_config` does, instead of inheriting the primary column's
+# `qemu.config` (or the workspace `.config`) via `build_board`. Keyed off
+# `feat` ("vf2"/"k1") so `build_board` needs no new parameter —
+# `config/defconfigs/$feat.config` already exists for both names.
+board_config() { # board_config <feat>
+    local feat="$1" dir cfg tmp rc marker
+    dir="${REPO_ROOT}/target/board-${feat}"
+    cfg="${dir}/${feat}.config"
+    marker="$(printf 'CONFIG_BOARD_%s' "$feat" | tr '[:lower:]' '[:upper:]')=y"
+    mkdir -p "$dir" || return 1
+    tmp="$(mktemp -d)" || return 1
+    cp "${REPO_ROOT}/config/defconfigs/${feat}.config" "$tmp/${feat}.config" \
+      && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/${feat}.config" python3 -m olddefconfig >/dev/null 2>&1) \
+      && grep -q "^${marker}$" "$tmp/${feat}.config" \
+      && { cmp -s "$tmp/${feat}.config" "$cfg" || cp "$tmp/${feat}.config" "$cfg"; }
+    rc=$?
+    rm -rf "$tmp"
+    return $rc
+}
+board_config_applied() { # board_config_applied <label> <feat>
+    local label="$1" feat="$2"
+    # (split: `${feat}` in the same `local` statement expands before `feat` is
+    # assigned — `set -u` aborts the whole gate; gate 182 died here.)
+    local cfg="${REPO_ROOT}/target/board-${feat}/${feat}.config"
+    printf "  %-26s" "${label}..."
+    local rel="target/${TARGET:-riscv64imac-unknown-none-elf}/release" sha gen key val marker
+    sha="$(shasum -a 256 "$cfg" | cut -c1-12)"
+    gen="$(grep -l "Config SHA-256 prefix: ${sha} " "$rel"/build/azos_limits-*/out/generated.rs 2>/dev/null | sed -n 1p)"
+    if [ -z "$gen" ]; then
+        bad; echo "      no generated.rs under $rel was built from $cfg ($sha)"; return
+    fi
+    marker="$(printf 'BOARD_%s' "$feat" | tr '[:lower:]' '[:upper:]')"
+    for key in "$marker" RAM_SIZE; do
+        val="$(sed -n "s/^CONFIG_${key}=//p" "$cfg")"; [ "$val" = "y" ] && val="true"
+        if ! grep -qE "^pub const ${key}: [a-z0-9]+ = ${val};$" "$gen"; then
+            bad; echo "      $gen does not carry ${key} = ${val} from $cfg"; return
+        fi
+    done
+    ok
+}
+
+# host_cargo <var> <dir> <cargo args...>: run cargo in <dir> in a process
+# group of its own (`gate_pgroup_run`); its output into the variable <var>,
+# its exit status returned.
+host_cargo() {
+    local __var="$1" __dir="$2" __f __rc
+    shift 2
+    __f="$(mktemp "${GATE_PGROUP_DIR}/../host-cargo.XXXXXX")" || return 1
+    gate_pgroup_run "$__f" "$__dir" "$CARGO" "$@"
+    __rc=$?
+    printf -v "$__var" '%s' "$(cat "$__f")"
+    rm -f "$__f"
+    return "$__rc"
+}
+
+# Run one host test crate.
+#
+# --release on purpose. `cargo test` defaults to the dev profile, which for
+# this workspace is opt-level 1 and roughly 30x slower — enough that the
+# wall-clock ceilings in regression-tests/src/host_microbench.rs (crc8 under
+# 5 us, parse_packet under 5 us) fail on a machine that has no problem
+# meeting them. The release profile keeps `overflow-checks = true`, so
+# nothing is given up by running the tests optimised.
+#
+# The old body piped cargo into grep and tested GREP's status, which threw
+# away cargo's exit code: a crate that died without printing a matching line
+# was reported as a pass.
+# Warnings are a failure HERE too, not only in the build matrix.
+#
+# The build loop above has always treated a warning as a failure; this function
+# checked only for `test result: FAILED`. So the 35 host suites -- the majority
+# of the code the gate compiles -- could carry warnings indefinitely, and four
+# of them did, one since the crate was created. A warning gate that skips most
+# of the tree is not a warning gate.
+#
+# `touch`ing the crate root first is not optional: rustc emits warnings only
+# when it actually compiles, so on a warm cache a warning-carrying crate prints
+# nothing and passes. That failure mode is silent and it is why this was worth
+# writing down rather than just adding a grep.
+#
+# Wave 13: cargo runs through `gate_pgroup_run` (tools/gate_pgroup.sh), in a
+# process group of its own that an interrupted gate kills whole.
+test_host() {
+    local label="$1" crate="$2" out
+    printf "  %-26s" "${label}..."
+    touch "${crate}/src/lib.rs" 2>/dev/null || true
+    if host_cargo out "${crate}" test --release \
+       && ! echo "$out" | grep -q "test result: FAILED" \
+       && ! echo "$out" | grep -qE "^warning: .*generated"; then
+        ok
+    else
+        bad
+        echo "$out" | grep -m4 -E "^error|^warning: [a-z]|test result: FAILED|panicked at" \
+            | sed 's/^/      /'
+    fi
+}
+
+# ── QEMU ────────────────────────────────────────────────────────────────────
+#
+# There is no `timeout` binary on macOS, so every run is bounded here by a
+# polling loop. Two rules learned the hard way:
+#   * Build and launch are separate steps. Chaining them lets QEMU start on the
+#     PREVIOUS binary when a build is slow or interrupted — that produces
+#     confident diagnoses of bugs that do not exist.
+#   * A panic and a timeout are both failures. Waiting only for the success
+#     marker makes a crash indistinguishable from "still working".
+# Disk images are PREREQUISITES, not part of the scenario under test: a
+# failed image build must abort the whole gate loudly, never hand QEMU 32 MB
+# of zeros. Learned 2026-08-23: `mkfs.fat` (dosfstools) lives in
+# /opt/homebrew/sbin, a PATH without sbin made every regenerated image
+# silently unformattable, and the result was NINE scenario FAILs that read
+# exactly like kernel regressions in the exec path. The `>/dev/null 2>&1`
+# on these make calls is fine for noise — swallowing the EXIT CODE was the
+# bug this helper exists to prevent.
+make_disk() {
+    par_shared "make_disk $*" || return 1
+    if ! make "$@" >/dev/null 2>&1; then
+        echo ""
+        echo "  FATAL: disk image build failed: make $*"
+        echo "         mkfs.fat missing from PATH? dosfstools installs it in"
+        echo "         /opt/homebrew/sbin — every userspace/secure-boot/link"
+        echo "         scenario would fail on a zeroed image, so aborting the"
+        echo "         gate here instead."
+        exit 1
+    fi
+    # Keep the image as built: `fresh_disk` restores it (see there).
+    local a
+    for a in "$@"; do
+        case "$a" in *.img)
+            cp -p "$a" "$a.pristine"; MADE_DISKS="$MADE_DISKS $a "
+            if [ -n "$PAR_JOB" ]; then rm -f "$(job_disk_path "$a")"; fi ;;
+        esac
+    done
+    # Not the status of the loop's last test: outside a job `[ -n "$PAR_JOB" ]`
+    # is false, and `lx_busybox_ready` read that as a failed build and skipped
+    # the BusyBox rows as "no zig or no pinned tarball".
+    return 0
+}
+MADE_DISKS=" "
+
+# job_disk <image>: sets JDISK to the path a row boots for <image>. Serially
+# (and in a `par -w` job) the image itself; in a parallel job the job's own
+# copy of it, taken the first time and reused by the job's later boots, as a
+# serial row's later boots reuse the image. Taken before `par_ready`, so
+# nothing that runs after it can rewrite the image under the running QEMU,
+# and this job's writes reach no other row. `make_disk`/`fresh_disk` drop the
+# copy, so the next boot takes the image as they left it.
+job_disk_path() { echo "$PAR_DIR/$PAR_JOB.disk.$(printf '%s' "$1" | tr '/' '_')"; }
+job_disk() {
+    JDISK="$1"
+    [ -n "$PAR_JOB" ] && [ "$PAR_HOLD" != 1 ] || return 0
+    JDISK="$(job_disk_path "$1")"
+    [ -f "$JDISK" ] && return 0
+    par_shared "job_disk $1" || return 1
+    cp -p "$1" "$JDISK"
+}
+
+# Put a disk image back to how `make_disk` built it.
+#
+# Every boot writes BOOTMETA: until the 30 s boot-good mark it counts as an
+# unconfirmed boot, and a row that stops QEMU earlier leaves that count on the
+# volume. Since wave 10 the fourth unconfirmed boot of a one-image volume
+# enters SAFE MODE (no autorun, actuators held) — so the fourth short row in a
+# row of boots on one image silently tested safe mode instead of its subject
+# (gate 194: `mm: canary (exit frees a live root)` printed `[AUTORUN] REFUSED:
+# safe mode`). Rows that are not about what persists across boots start from
+# the built volume; rows that ARE (boot count, latch, OTA, safe mode) do not
+# call this.
+fresh_disk() {
+    par_shared "fresh_disk $1" || return 1
+    # The snapshot must be this run's. Serially the row that made it always
+    # ran first; under CI_TIER=fast it may have been skipped, and a parallel
+    # job may have made it in another shell. Then it is made here, from
+    # scratch: `make` alone would call an image a boot has written to up to
+    # date and snapshot that.
+    case "$MADE_DISKS" in *" $1 "*) ;; *) rm -f "$1" "$1.pristine"; make_disk "$1" ;; esac
+    # A missing snapshot must stop the gate: booting on whatever the last boot
+    # left is exactly what this helper exists to prevent.
+    if ! cp -p "$1.pristine" "$1"; then
+        echo ""
+        echo "  FATAL: fresh_disk $1: no $1.pristine (was make_disk run for it?)"
+        exit 1
+    fi
+    [ -n "$PAR_JOB" ] && rm -f "$(job_disk_path "$1")"
+    return 0
+}
+
+# ── Persisted entropy seed rows (ENTSEED, wave 11) ──────────────────────────
+#
+# One boot of the volume under test, either ISA, with or without virtio-rng,
+# with or without the disk. `$ENTSEED_RV_KERNEL` / `$ENTSEED_A64_IMG` name the
+# kernel image the caller has already built and copied. The boot is stopped
+# once `stop` appears, plus a second so the lines printed right after it (the
+# stack canary) are in the log. Never waits by counting yields.
+entseed_boot() { # entseed_boot <riscv64|aarch64> <disk|-> <log> <rng yes|no> <stop-regex> <half-seconds>
+    local isa="$1" disk="$2" log="$3" rng="$4" stop="$5" secs="$6"
+    local rngarg="" diskarg=""
+    [ "$rng" = yes ] && rngarg="-device virtio-rng-device"
+    [ "$disk" != "-" ] && diskarg="-drive file=$disk,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0"
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = riscv64 ]; then
+        # shellcheck disable=SC2086
+        "$QEMU" -machine virt -nographic -bios default -kernel "${ENTSEED_RV_KERNEL}" -smp 2 \
+            -global virtio-mmio.force-legacy=false $diskarg $rngarg </dev/null >"$log" 2>&1 &
+    else
+        # shellcheck disable=SC2086
+        qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "${ENTSEED_A64_IMG}" -global virtio-mmio.force-legacy=false \
+            $diskarg $rngarg </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt "$secs" ]; do
+        grep -aqE "$stop" "$log" 2>/dev/null && break
+        grep -aqE "PANIC|panic|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    sleep 1
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+}
+
+# What the seed sector of an image holds, from the host: `absent` or
+# `valid <sha256 of the seed>` (tools/seed_provision.py --show).
+entseed_show() { python3 "$REPO_ROOT/tools/seed_provision.py" --show "$1" 2>&1; }
+
+# Fails the row (returns 1 after printing) when a boot log is not usable
+# evidence: a panic/trap, or a persisted-seed failure line.
+entseed_log_sane() { # entseed_log_sane <log> <what>
+    if grep -aqE "!!! KERNEL PANIC !!!|AARCH64-TRAP\] unhandled|\[FATAL\]" "$1" 2>/dev/null; then
+        bad; echo "      $2: the kernel panicked or trapped:"
+        grep -aE -m3 "PANIC|AARCH64-TRAP|FATAL" "$1" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $1"; return 1
+    fi
+    if grep -aqF "persisted seed: REWRITE FAILED" "$1" 2>/dev/null; then
+        bad; echo "      $2: the kernel could not rewrite the seed:"
+        grep -aF "persisted seed:" "$1" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $1"; return 1
+    fi
+    return 0
+}
+
+# (a) Two consecutive boots on the SAME volume, virtio-rng present: boot 1
+# finds no record and PROVISIONS one; boot 2 reads that record, stirs it in
+# without crediting it (another source already seeded the pool) and replaces
+# it. The proof is on the volume, read from the host: the stored seed differs
+# after each boot. The lines are the other half: boot 2's own says it mixed,
+# and each says the rewrite was flushed.
+# Canary (wave 11, by hand, reverted): `entropy_seed_store` returns Ok(true)
+# without writing -> both boots print "rewritten and flushed" and the host
+# readback finds the same seed (here: `absent` after boot 1).
+entseed_rotate_row() { # entseed_rotate_row <riscv64|aarch64>
+    local isa="$1" label="$1: persisted seed rotates"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local l1="$CI_LOG_DIR/entseed-rotate-$isa-1.log" l2="$CI_LOG_DIR/entseed-rotate-$isa-2.log"
+    local disk="$CI_LOG_DIR/entseed-rotate-$isa.img" dsrc stop
+    rm -f "$l1" "$l2" "$disk"
+    if [ "$isa" = riscv64 ]; then dsrc=build/disk.img; stop='Stack canary: '; else dsrc=build/disk-aarch64.img; stop='persisted seed: (rewritten|REWRITE FAILED)'; fi
+    rm -f "$dsrc"; make_disk "$dsrc"; cp "$dsrc" "$disk"
+    par_ready
+    local h1 h2
+    entseed_boot "$isa" "$disk" "$l1" yes "$stop" 120
+    entseed_log_sane "$l1" "boot 1" || return
+    h1="$(entseed_show "$disk")"
+    entseed_boot "$isa" "$disk" "$l2" yes "$stop" 120
+    entseed_log_sane "$l2" "boot 2" || return
+    h2="$(entseed_show "$disk")"
+    if ! grep -aqF "persisted seed: no valid record in reserved sector 1" "$l1" \
+       || ! grep -aqF "persisted seed: rewritten and flushed" "$l1" \
+       || [ "${h1%% *}" != valid ]; then
+        bad; echo "      boot 1 did not provision a seed on a fresh volume (readback: '$h1'):"
+        grep -a "ENTROPY\]" "$l1" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    if ! grep -aqF "persisted seed: mixed 64 bytes, not credited (pool already seeded)" "$l2" \
+       || ! grep -aqF "persisted seed: rewritten and flushed" "$l2"; then
+        bad; echo "      boot 2 did not mix the seed boot 1 left and replace it:"
+        grep -a "ENTROPY\]" "$l2" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    if [ "${h2%% *}" != valid ] || [ "$h1" = "$h2" ]; then
+        bad; echo "      the stored seed did not change between the two boots:"
+        echo "        after boot 1: $h1"; echo "        after boot 2: $h2"
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    ok; rm -f "$l1" "$l2" "$disk"
+}
+
+# (c) A board with no entropy device. Boot 0, no record: the pool stays
+# unseeded, the sector is left alone, and the boot says so ("nothing honest to
+# write"). Then the host provisions a seed. Boot 1: the seed is the only source,
+# so it is credited, the pool seeds, the canary is drawn from it, and the seed
+# is replaced. Boot 2: again, and the replacement is not the record boot 1 read.
+# riscv64 also compares the canary fingerprint (its Phase 16 line); aarch64 has
+# no such readback.
+# Canary (wave 11, by hand, reverted): `SeedLoad::Credited` reported but the
+# credit flag forced false in `Pool::apply_persisted_seed` -> boot 1 prints
+# "pool unseeded after load" and no canary line.
+entseed_alone_row() { # entseed_alone_row <riscv64|aarch64>
+    local isa="$1" label="$1: persisted seed seeds"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local l0="$CI_LOG_DIR/entseed-alone-$isa-0.log" l1="$CI_LOG_DIR/entseed-alone-$isa-1.log" l2="$CI_LOG_DIR/entseed-alone-$isa-2.log"
+    local disk="$CI_LOG_DIR/entseed-alone-$isa.img" dsrc stop
+    rm -f "$l0" "$l1" "$l2" "$disk"
+    if [ "$isa" = riscv64 ]; then dsrc=build/disk.img; stop='Stack canary: '; else dsrc=build/disk-aarch64.img; stop='persisted seed: (rewritten|REWRITE FAILED|pool unseeded)'; fi
+    rm -f "$dsrc"; make_disk "$dsrc"; cp "$dsrc" "$disk"
+    par_ready
+
+    entseed_boot "$isa" "$disk" "$l0" no "$stop" 120
+    entseed_log_sane "$l0" "boot 0" || return
+    if ! grep -aq "\[ENTROPY\] pool unseeded: no entropy device" "$l0" \
+       || ! grep -aqF "persisted seed: pool unseeded — nothing honest to write; sector left as found" "$l0" \
+       || [ "$(entseed_show "$disk")" != absent ]; then
+        bad; echo "      boot 0 (no device, no record) did not leave the pool unseeded and the sector alone:"
+        grep -a "ENTROPY\]" "$l0" | tr -d '\r' | sed 's/^/        /'
+        echo "      readback: $(entseed_show "$disk")"; echo "      log kept: $l0"; return
+    fi
+    if grep -aqF "[SEC] Stack canary drawn from the entropy pool" "$l0"; then
+        bad; echo "      boot 0 drew a canary from a pool nothing seeded"; echo "      log kept: $l0"; return
+    fi
+
+    python3 "$REPO_ROOT/tools/seed_provision.py" "$disk" >/dev/null || { bad; echo "      could not provision $disk"; return; }
+    local p0 h1 h2 fp1 fp2
+    p0="$(entseed_show "$disk")"
+    entseed_boot "$isa" "$disk" "$l1" no "$stop" 120
+    entseed_log_sane "$l1" "boot 1" || return
+    h1="$(entseed_show "$disk")"
+    entseed_boot "$isa" "$disk" "$l2" no "$stop" 120
+    entseed_log_sane "$l2" "boot 2" || return
+    h2="$(entseed_show "$disk")"
+    local n
+    for n in 1 2; do
+        local lg="$CI_LOG_DIR/entseed-alone-$isa-$n.log"
+        if ! grep -aq "\[ENTROPY\] pool unseeded: no entropy device" "$lg" \
+           || ! grep -aqF "persisted seed: mixed 64 bytes, credited (no other source) — pool seeded" "$lg" \
+           || ! grep -aqF "persisted seed: rewritten and flushed" "$lg" \
+           || ! grep -aqF "[SEC] Stack canary drawn from the entropy pool" "$lg"; then
+            bad; echo "      boot $n (provisioned seed, no device) did not seed the pool from the seed:"
+            grep -a "ENTROPY\]\|Stack canary" "$lg" | tr -d '\r' | sed 's/^/        /'
+            echo "      logs kept: $l0 $l1 $l2"; return
+        fi
+    done
+    if [ "${h1%% *}" != valid ] || [ "${h2%% *}" != valid ] || [ "$p0" = "$h1" ] || [ "$h1" = "$h2" ]; then
+        bad; echo "      the stored seed was not replaced at each boot:"
+        echo "        provisioned: $p0"; echo "        after boot 1: $h1"; echo "        after boot 2: $h2"
+        echo "      logs kept: $l0 $l1 $l2"; return
+    fi
+    if [ "$isa" = riscv64 ]; then
+        fp1="$(grep -a "\[SEC\] Stack canary: from the entropy pool, fingerprint " "$l1" | sed -n 's/.*fingerprint \([0-9a-f]\{6\}\).*/\1/p' | sed -n 1p)"
+        fp2="$(grep -a "\[SEC\] Stack canary: from the entropy pool, fingerprint " "$l2" | sed -n 's/.*fingerprint \([0-9a-f]\{6\}\).*/\1/p' | sed -n 1p)"
+        if [ -z "$fp1" ] || [ -z "$fp2" ] || [ "$fp1" = "$fp2" ]; then
+            bad; echo "      canary fingerprints '$fp1' and '$fp2' (must both exist and differ)"
+            echo "      logs kept: $l0 $l1 $l2"; return
+        fi
+    fi
+    ok; rm -f "$l0" "$l1" "$l2" "$disk"
+}
+
+# (b) Diskless boots are unchanged apart from one line each. With virtio-rng:
+# pool seeded (48 bytes, the pinned figure) and the canary drawn. Without: the
+# unseeded line, and no canary drawn. Both print the diskless persisted-seed line.
+entseed_diskless_row() { # entseed_diskless_row <riscv64|aarch64>
+    local isa="$1" label="$1: seed diskless unchanged"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local l1="$CI_LOG_DIR/entseed-diskless-$isa-rng.log" l2="$CI_LOG_DIR/entseed-diskless-$isa-norng.log" stop
+    rm -f "$l1" "$l2"
+    par_ready
+    if [ "$isa" = riscv64 ]; then stop='Stack canary: '; else stop='WDT\] timer liveness ACTIVE'; fi
+    entseed_boot "$isa" - "$l1" yes "$stop" 120
+    entseed_log_sane "$l1" "rng boot" || return
+    entseed_boot "$isa" - "$l2" no "$stop" 120
+    entseed_log_sane "$l2" "no-rng boot" || return
+    if ! grep -aqF "[ENTROPY] pool seeded: 48 bytes from virtio-rng" "$l1" \
+       || ! grep -aqF "[ENTROPY] persisted seed: no block device — pool as before (diskless)" "$l1" \
+       || ! grep -aqF "[SEC] Stack canary drawn from the entropy pool" "$l1"; then
+        bad; echo "      diskless boot with virtio-rng changed:"
+        grep -a "ENTROPY\]\|Stack canary" "$l1" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    if ! grep -aq "\[ENTROPY\] pool unseeded: no entropy device" "$l2" \
+       || ! grep -aqF "[ENTROPY] persisted seed: no block device — pool as before (diskless)" "$l2"; then
+        bad; echo "      diskless boot without virtio-rng changed:"
+        grep -a "ENTROPY\]" "$l2" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    if grep -aqF "[SEC] Stack canary drawn from the entropy pool" "$l2"; then
+        bad; echo "      diskless boot without virtio-rng drew a canary from an unseeded pool"
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    ok; rm -f "$l1" "$l2"
+}
+
+# (d) An orderly reboot refreshes the seed. `orderly-reboot-smoke` calls
+# `sys_reboot`'s handler 3 s into a boot of a fresh volume; `-no-reboot` makes
+# QEMU exit on the reset. The seed the boot itself wrote is read from the host
+# while the guest is still up, the seed after the exit is read again: they must
+# differ, and neither may be absent. Anchored on the volume, not on a console
+# line, because a line printed just before the reset can still sit in the
+# console's defer buffer (see `orderly_reboot_row`).
+# Canary (wave 11, by hand, reverted): `entropy_seed_refresh_at_power_off` not
+# called from the orderly hook -> the two readbacks are equal.
+entseed_orderly_row() { # entseed_orderly_row <riscv64|aarch64>
+    local isa="$1" label="$1: seed refreshed at reboot"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/entseed-orderly-$isa.log" disk="$CI_LOG_DIR/entseed-orderly-$isa.img" dsrc
+    rm -f "$log" "$disk"
+    if [ "$isa" = riscv64 ]; then dsrc=build/disk.img; else dsrc=build/disk-aarch64.img; fi
+    rm -f "$dsrc"; make_disk "$dsrc"; cp "$dsrc" "$disk"
+    par_ready
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = riscv64 ]; then
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "${ENTSEED_ORD_RV_KERNEL}" -no-reboot -smp 2 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
+            -device virtio-rng-device </dev/null >"$log" 2>&1 &
+    else
+        par_ready
+        qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic -no-reboot \
+            -kernel "${ENTSEED_ORD_A64_IMG}" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
+            -device virtio-rng-device </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 h1="" h2="" exited=no
+    while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
+        if [ -z "$h1" ] && grep -aqF "persisted seed: rewritten and flushed" "$log" 2>/dev/null; then
+            h1="$(entseed_show "$disk")"
+        fi
+        grep -aqE "!!! KERNEL PANIC !!!|ORDERLY\] FAIL|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -0 "$pid" 2>/dev/null || exited=yes
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    h2="$(entseed_show "$disk")"
+    entseed_log_sane "$log" "orderly boot" || return
+    if [ "$exited" != yes ] || ! grep -aqF "[ORDERLY] smoke: sys_reboot" "$log" 2>/dev/null; then
+        bad; echo "      the guest did not reach its orderly reboot (exited: $exited):"
+        grep -a "ORDERLY\]\|ENTROPY\]" "$log" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    if [ "${h1%% *}" != valid ] || [ "${h2%% *}" != valid ] || [ "$h1" = "$h2" ]; then
+        bad; echo "      the seed did not change across the orderly reboot:"
+        echo "        before the reboot: ${h1:-<never read>}"; echo "        after: $h2"
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$disk"
+}
+
+# (e) The seed is never written into filesystem data. An image built WITHOUT the
+# tail headroom (the FAT32 volume is the whole medium) must be left alone: the
+# kernel prints the one skip line and the last 8 sectors, pre-filled with a
+# marker, are byte-for-byte what they were. virtio-rng is present, so a rewrite
+# would otherwise happen.
+# Canary (wave 11, by hand, reverted): the `seed_tail_check` verdict ignored in
+# `install_entropy_seed` -> the skip line is absent and the marker is overwritten.
+entseed_noheadroom_row() { # entseed_noheadroom_row <riscv64|aarch64>
+    local isa="$1" label="$1: seed spares the filesystem"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/entseed-nohead-$isa.log" disk="$CI_LOG_DIR/entseed-nohead-$isa.img" dsrc stop
+    rm -f "$log" "$disk"
+    if [ "$isa" = riscv64 ]; then dsrc=build/disk.img; stop='Stack canary: '; else dsrc=build/disk-aarch64.img; stop='persisted seed: (rewritten|REWRITE FAILED|skipped)'; fi
+    rm -f "$dsrc"; make_disk "$dsrc"; cp "$dsrc" "$disk"
+    par_ready
+    # Drop the 8 tail sectors (the volume now reaches the end of the medium) and
+    # fill what is now the last 4 KiB with a marker the kernel must not touch.
+    python3 - "$disk" <<'PY'
+import sys
+p = sys.argv[1]
+with open(p, "r+b") as f:
+    f.seek(0, 2); n = f.tell() - 8 * 512
+    f.truncate(n); f.seek(n - 4096); f.write(b"\xa5" * 4096)
+PY
+    local before after
+    before="$(tail -c 4096 "$disk" | shasum -a 256)"
+    entseed_boot "$isa" "$disk" "$log" yes "$stop" 120
+    after="$(tail -c 4096 "$disk" | shasum -a 256)"
+    entseed_log_sane "$log" "no-headroom boot" || return
+    if ! grep -aqF "persisted seed: skipped — reserved tail not usable (FilesystemReaches" "$log"; then
+        bad; echo "      the kernel did not refuse a tail inside the filesystem:"
+        grep -a "ENTROPY\]" "$log" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    if [ "$before" != "$after" ]; then
+        bad; echo "      the last 4 KiB of the medium changed although the kernel refused the tail"
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$disk"
+}
+
+# Where a failing scenario's log is kept.
+#
+# It used to be a mktemp deleted on every path, success or failure. That
+# destroyed the evidence at the one moment it was worth having, and it cost
+# months: the intermittent `userspace: IPC` failure was catalogued as a
+# scheduler wedge of unidentified origin until 2026-09-03, when a run was
+# finally captured whole and turned out to be the ring-3 test DECLARING
+# failure — `[IPCTEST] FAILED: 6 check(s)` — which nobody had ever seen,
+# because waiting only for the success marker makes a declared failure and a
+# hang look identical, and `tail -5` of a test that then sits idle shows
+# scheduler noise rather than the failure.
+CI_LOG_DIR="${CI_LOG_DIR:-build/ci-logs}"
+mkdir -p "$CI_LOG_DIR"
+CI_TIMING="$CI_LOG_DIR/timing.tsv"
+: >"$CI_TIMING"
+
+# ── Rows run in parallel, and the fast tier ─────────────────────────────────
+#
+# `par [-s] <key> <command> [args...]` runs one QEMU row, or a group of rows
+# that depend on each other, as a JOB: a subshell whose output goes to its own
+# file. Up to CI_JOBS jobs run at once; the log prints each job's block whole
+# and in the order the `par` calls are written, so it reads as a serial run's.
+# CI_JOBS=1 runs every row inline, exactly as before this existed.
+#
+# Why a job sees what a serial run would. A row has two parts: a PREP that
+# builds kernels, makes disks and copies what it will boot out of target/ and
+# build/ (the state every row shares), and the BOOTS, which use only those
+# copies. The row calls `par_ready` between the two. `par` does not return
+# until the job it started has reached `par_ready` (or ended), so every prep,
+# and every statement of this script outside a job, still runs one at a time
+# and in the order written: target/ and build/ evolve exactly as they do
+# serially. Only what follows `par_ready` overlaps, and it may not touch them:
+# `kbuild`, `a64_kbuild`, `make_disk`, `fresh_disk` and `job_disk` refuse there
+# (the row FAILs, saying so), and `par_ready` copies the kernels KERNEL,
+# A64_KERNEL and A64_IMG name into the job and points the three there, so the
+# boots after it see the kernels a serial run would. A row that never
+# calls `par_ready` is serialised whole: a missing call costs time, never
+# correctness. What the audit of each call site still owns: after `par_ready`
+# a row boots only its own copies (`job_disk` gives one for a build/ image),
+# names no target/ path but those three variables, writes only names of its
+# own, boots one QEMU at a time and binds no fixed host port.
+#
+# `-a` keeps the row in every tier; `-h` marks a host-only job (no QEMU, so
+# only CI_JOBS bounds it); `-n N` is a row that starts N QEMUs at once (it
+# waits for N free slots host-wide; default 1). `-s` runs the row in this shell after every job has finished: rows that bind
+# a fixed host port (the brain/link peers on 9000, OTA, gdb), boot two QEMUs
+# at once, or judge wall-clock time. `-w` runs it as a job that never reaches
+# `par_ready`: the gate waits for all of it, as it would serially, while the
+# jobs before it finish their boots. For a group whose boots reuse build/
+# images it edits in between.
+#
+# QEMU stays at CI_QEMU_MAX (4) host-wide: a job starts only while
+#   (this gate's running jobs) + (QEMUs on the host that are not this gate's)
+# is below it. Other fronts' QEMUs are counted with `pgrep -x`; this gate's own
+# are the ones in its process group.
+#
+# CI_TIER=fast keeps every build row, every host suite and every lint, and of
+# the `par` rows only those whose key is in FAST_ROWS (one representative row
+# per subsystem per ISA, listed where it is defined); every other `par` row
+# prints `skipped (CI_TIER=fast)` in its place. The full tier (the default)
+# runs every row.
+CI_TIER="${CI_TIER:-full}"
+case "$CI_TIER" in full|fast) ;; *) echo "ci_check: CI_TIER must be full or fast, not '$CI_TIER'"; exit 2 ;; esac
+CI_JOBS="${CI_JOBS:-4}"
+case "$CI_JOBS" in ''|*[!0-9]*|0) echo "ci_check: CI_JOBS must be a positive integer"; exit 2 ;; esac
+CI_QEMU_MAX="${CI_QEMU_MAX:-4}"
+# CI_INJECT_FAIL=<key>: the rows of that `par` key wait for a marker no kernel
+# prints (see `ci_marker`): the canary that a failing parallel row is reported.
+CI_INJECT_FAIL="${CI_INJECT_FAIL:-}"
+PAR_DIR="$CI_LOG_DIR/par"
+rm -rf "$PAR_DIR"; mkdir -p "$PAR_DIR"
+PAR_PGID="$(ps -o pgid= -p $$ | tr -d ' ')"
+# Host commands' own process groups (wave 13): see tools/gate_pgroup.sh.
+GATE_PGROUP_DIR="$PAR_DIR/pgroups"
+# shellcheck source=tools/gate_pgroup.sh
+. "${REPO_ROOT}/tools/gate_pgroup.sh"
+PAR_N=0          # par calls so far
+PAR_HEAD=1       # the next job whose block is printed
+PAR_PID=()       # job number -> subshell pid ("" for a skipped row)
+PAR_JOB=""       # inside a job: its number
+PAR_READY=0      # inside a job: par_ready has run
+PAR_KEY=""       # the key of the row running in this shell
+PAR_HOLD=0       # inside a `par -w` job: never ready, the gate waits for all of it
+PAR_SEG=""       # the queue entry this shell's own output is going to, or ""
+MAIN_TIMING="$CI_TIMING"
+# The gate's real stdout. While jobs are out, what this shell prints goes to a
+# SEGMENT, a queue entry of its own, so it reaches the log after the blocks of
+# the jobs started before it, exactly where a serial run prints it.
+exec 7>&1
+par_seg_open() {
+    [ -z "$PAR_JOB" ] && [ -z "$PAR_SEG" ] || return 0
+    PAR_N=$((PAR_N + 1)); PAR_SEG=$PAR_N; PAR_PID[$PAR_N]=seg
+    exec >"$PAR_DIR/$PAR_N.out"
+    CI_TIMING="$PAR_DIR/$PAR_N.timing"
+}
+par_seg_close() {
+    [ -n "$PAR_SEG" ] || return 0
+    exec >&7
+    CI_TIMING="$MAIN_TIMING"
+    PAR_PID[$PAR_SEG]=""
+    PAR_SEG=""
+}
+
+# par_shared <what>: may this shell touch target/ and build/ now?
+par_shared() {
+    [ -n "$PAR_JOB" ] && [ "$PAR_READY" = 1 ] || return 0
+    printf "  %-26s" "${PAR_KEY}: $1 after par_ready..."
+    bad
+    echo "      a parallel row touched the shared target/ or build/ after par_ready;"
+    echo "      refused. Move the step before par_ready in the row."
+    return 1
+}
+par_ready() { # the row's prep is done: let the gate run on
+    [ -n "$PAR_JOB" ] && [ "$PAR_READY" = 0 ] && [ "$PAR_HOLD" = 0 ] || return 0
+    # The kernels as the prep left them, for the boots that follow: what a
+    # serial run would boot, since nothing may rebuild them in between.
+    # (The aarch64 names are defined after the first rows that run here.)
+    local k="$PAR_DIR/$PAR_JOB"
+    cp "$KERNEL" "$k.kernel" 2>/dev/null; KERNEL="$k.kernel"
+    if [ -n "${A64_KERNEL:-}" ]; then
+        cp "$A64_KERNEL" "$k.a64-kernel" 2>/dev/null; A64_KERNEL="$k.a64-kernel"
+        cp "$A64_IMG" "$k.a64-kernel.img" 2>/dev/null; A64_IMG="$k.a64-kernel.img"
+    fi
+    PAR_READY=1
+    : >"$k.ready"
+}
+par_qemu_count() { # par_qemu_count [mine]: QEMU processes host-wide, or this gate's
+    if [ "${1:-}" = mine ]; then
+        echo $(( $(pgrep -g "$PAR_PGID" -x qemu-system-riscv64 | wc -l) + $(pgrep -g "$PAR_PGID" -x qemu-system-aarch64 | wc -l) ))
+    else
+        echo $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) ))
+    fi
+}
+par_kill_tree() { # par_kill_tree <pid>: a job and everything it started
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null); do par_kill_tree "$c"; done
+    kill "$1" 2>/dev/null
+}
+par_job_running() { # par_job_running <n>
+    case "${PAR_PID[$1]:-}" in ""|seg) return 1 ;; esac
+    ! par_job_done "$1"
+}
+# A job is done when its EXIT trap says so, or when its process is gone (or
+# a zombie) without having said so: a job that died hard must not hang the gate.
+par_job_done() { # par_job_done <n>
+    [ -f "$PAR_DIR/$1.done" ] && return 0
+    local st
+    st="$(ps -o stat= -p "${PAR_PID[$1]}" 2>/dev/null | tr -d ' ')"
+    case "$st" in ""|Z*) return 0 ;; esac
+    return 1
+}
+par_abort() {
+    local i
+    for ((i = PAR_HEAD; i <= PAR_N; i++)); do
+        par_job_running "$i" && par_kill_tree "${PAR_PID[$i]}"
+    done
+    return 0
+}
+# On any exit: no job outlives the gate, and nothing it printed is lost.
+par_exit() {
+    gate_pgroup_kill_all
+    par_abort
+    # And what this shell itself started (a serial row's QEMU): its children only.
+    local c
+    for c in $(pgrep -P $$ 2>/dev/null); do par_kill_tree "$c"; done
+    par_seg_close
+    local i
+    for ((i = PAR_HEAD; i <= PAR_N; i++)); do cat "$PAR_DIR/$i.out" >&7 2>/dev/null; done
+    PAR_HEAD=$((PAR_N + 1))
+}
+trap 'par_exit' EXIT
+trap 'exit 130' INT TERM
+# Print, in order, every finished job at the head of the queue.
+par_reap() {
+    local n pid p f
+    while [ "$PAR_HEAD" -le "$PAR_N" ]; do
+        n=$PAR_HEAD; pid="${PAR_PID[$n]:-}"
+        [ "$pid" = seg ] && return 0
+        if [ -n "$pid" ]; then
+            par_job_done "$n" || return 0
+            wait "$pid" 2>/dev/null
+        fi
+        cat "$PAR_DIR/$n.out" >&7
+        cat "$PAR_DIR/$n.timing" >>"$MAIN_TIMING" 2>/dev/null
+        PAR_HEAD=$((n + 1))
+        if [ -n "$pid" ]; then
+            if [ ! -f "$PAR_DIR/$n.res" ]; then
+                # The job exited before its end: a FATAL (make_disk, fresh_disk)
+                # that stops a serial gate stops this one too.
+                echo "  FATAL: the parallel row '$(cat "$PAR_DIR/$n.key")' exited early (above); stopping." >&7
+                exit 1
+            fi
+            read -r p f <"$PAR_DIR/$n.res"
+            PASS=$((PASS + p)); FAIL=$((FAIL + f))
+        fi
+    done
+}
+par_running() {
+    local i c=0
+    for ((i = PAR_HEAD; i <= PAR_N; i++)); do
+        par_job_running "$i" && c=$((c + 1))
+    done
+    echo "$c"
+}
+par_drain() { # wait for every job and print what is left, in order
+    [ -n "$PAR_JOB" ] && return 0
+    par_seg_close
+    while [ "$PAR_HEAD" -le "$PAR_N" ]; do par_reap; [ "$PAR_HEAD" -le "$PAR_N" ] && sleep 0.5; done
+    CI_T_LAST=$SECONDS
+}
+fast_keeps() { printf '%s\n' "${FAST_ROWS:-}" | grep -qxF -- "$1"; }
+PAR_SEEN="${PAR_SEEN:-}"   # keys of `par` calls and labels of printed rows
+fast_unseen() { # FAST_ROWS keys no `par` call used: a renamed row the list missed
+    local k
+    printf '%s\n' "$FAST_ROWS" | while IFS= read -r k; do
+        [ -n "$k" ] || continue
+        printf '%s' "$PAR_SEEN" | grep -qxF -- "$k" || echo "$k"
+    done
+}
+par() { # par [-a] [-h] [-n <qemus>] [-s|-w] <key> <command> [args...]
+    local serial=0 hold=0 always=0 host=0 need=1
+    while :; do
+        case "$1" in
+            -n) need="$2"; shift 2 ;;
+            -s) serial=1; shift ;;
+            -w) hold=1; shift ;;
+            -a) always=1; shift ;;
+            -h) host=1; shift ;;
+            *) break ;;
+        esac
+    done
+    local key="$1"; shift
+    PAR_SEEN="${PAR_SEEN}${key}
+"
+    if [ "$CI_TIER" = fast ] && [ "$always" = 0 ] && ! fast_keeps "$key"; then
+        SKIP=$((SKIP + 1))
+        builtin printf "  %-26s%s\n" "${key}..." "skipped (CI_TIER=fast)"
+        return 0
+    fi
+    # Inline: one job at a time, a serial row, or a `par` inside a job.
+    if [ "$CI_JOBS" -le 1 ] || [ "$serial" = 1 ] || [ -n "$PAR_JOB" ]; then
+        if [ -z "$PAR_JOB" ]; then
+            par_drain
+            # This shell's own row: it too starts only when the host has a
+            # slot for each QEMU it starts at once (`-n`; no job of this gate
+            # is running now, so every QEMU counted is foreign).
+            while [ $(( $(par_qemu_count) + need )) -gt "$CI_QEMU_MAX" ]; do sleep 2; done
+        fi
+        local saved_key="$PAR_KEY"; PAR_KEY="$key"
+        "$@"
+        PAR_KEY="$saved_key"
+        [ -z "$PAR_JOB" ] && CI_T_LAST=$SECONDS
+        return 0
+    fi
+    # Wait for a slot, printing what has finished meanwhile.
+    par_seg_close
+    local others mine running
+    while :; do
+        par_reap
+        running="$(par_running)"
+        if [ "$running" -lt "$CI_JOBS" ]; then
+            [ "$host" = 1 ] && break
+            mine="$(par_qemu_count mine)"; others=$(( $(par_qemu_count) - mine ))
+            [ $((running + others + need - 1)) -lt "$CI_QEMU_MAX" ] && break
+        fi
+        sleep 0.5
+    done
+    PAR_N=$((PAR_N + 1))
+    local n=$PAR_N
+    echo "$key" >"$PAR_DIR/$n.key"
+    (
+        PAR_JOB=$n; PAR_KEY="$key"; PAR_READY=0; PAR_HOLD=$hold
+        trap "echo \$? >'$PAR_DIR/$n.done'" EXIT
+        trap - INT TERM
+        exec >"$PAR_DIR/$n.out" 2>&1 </dev/null 7>&-
+        PASS=0; FAIL=0; CI_TIMING="$PAR_DIR/$n.timing"; CI_T_LAST=$SECONDS
+        "$@"
+        echo "$PASS $FAIL" >"$PAR_DIR/$n.res"
+        exit 0
+    ) &
+    PAR_PID[$n]=$!
+    # The job's prep runs alone, as it would serially (see above).
+    until [ -f "$PAR_DIR/$n.ready" ] || par_job_done "$n"; do sleep 0.1; done
+    # A job that stopped the gate in its prep stops it here, as serially.
+    if par_job_done "$n" && [ ! -f "$PAR_DIR/$n.res" ]; then par_drain; fi
+    CI_T_LAST=$SECONDS
+    par_seg_open
+}
+# par_row [-s] <row-function> <label> [args...]: `par` keyed by the row's label.
+par_row() {
+    local mode=""
+    case "$1" in -s|-w) mode="$1"; shift ;; esac
+    par $mode "$2" "$@"
+}
+# host_job <command> [args...]: a host-only row (a host suite, a fuzz target)
+# as a job; kept in every tier. Its key is the row's label, its second word.
+host_job() {
+    local key="$2"
+    par -a -h "$key" host_job_run "$@"
+}
+host_job_run() { par_ready; "$@"; }
+# ── CI_TIER=fast: the QEMU rows it keeps ────────────────────────────────────
+#
+# One row per subsystem per ISA, the row that shows the subsystem WORKS (not
+# its canary: a canary proves the row that uses it discriminates, and that row
+# is what fast keeps). Keys are `par` keys, which are the rows' labels. A key
+# missing here is skipped and printed as such; a key here that no `par` uses
+# keeps nothing, so `CI_TIER=fast` also prints the kept rows it never saw.
+FAST_ROWS='
+aarch64 kernel boots (EL1, -smp 4)
+aarch64 shell answers help
+boot + SMP scheduling
+shell answers help
+aarch64 userspace
+userspace: ABI conformance
+aarch64 abitest
+aarch64 network: DHCP lease
+network: DHCP lease
+aarch64 tlb: stale access faults
+tlb: stale access after cross-hart unmap faults
+aarch64 sensors: IMU stamped at acquisition
+sensors: IMU stamped at acquisition
+aarch64 ipctest
+userspace: IPC
+aarch64 captest
+userspace: capabilities
+aarch64 ring-3 drivers
+userspace: ring-3 GPIO driver
+aarch64 driver restarted
+userspace: a crashed ring-3 driver is restarted
+aarch64 INA219 placed in kernel
+drivers: INA219 placed in kernel
+aarch64 start=true drivers supervised
+drivers: start=true supervised
+mem quota: refusals>0 (N)
+mem: locked row, zero faults
+fork refusal names its site
+aarch64 fork refusal site
+exit: notice after teardown
+aarch64 exit notice order
+proc: hidepid view
+aarch64 proc: hidepid view
+console: no splice smp4
+aarch64 console: no splice
+ml service killed
+aarch64 ml service killed
+ml data signed
+aarch64 ml data signed
+riscv64 guard: stack probe faults
+aarch64 guard: stack probe faults
+aarch64: OTA boot good
+boot count: survives a crash
+aarch64: watchdog wired
+aarch64: entropy seeds pool
+entropy: virtio-rng seeds the pool
+aarch64: persisted seed rotates
+riscv64: persisted seed rotates
+aarch64: procfs registered
+aarch64: IPC plumbing up
+aarch64 granule 16 KiB
+streams: riscv64 on
+streams: aarch64 on
+crash log: records a real panic, survives reboot
+pstore: valid record (rv)
+pstore: valid record (arm)
+irq: handlers on their own stack
+timer: stimecmp on Sstc
+aarch64: tick on the virtual timer
+mm: W^X verified
+embedded: boots in 64 MiB
+fleet: boots in 1 GiB
+topology: memory admitted, DMA pool
+secure boot accepts signed
+aarch64 secboot signed
+pci: bus 0 enumerates (riscv64)
+pci: bus 0 enumerates (aarch64)
+userspace: reflex reacts
+safety: envelope refuses
+config: replay refused, lost sig latches
+aarch64 config: replay refused, lost sig latches
+safety: brain e-stop (tcp)
+link: rfc-0019 end to end
+storage: mmc flush (sdhci)
+seccomp: replaced image is refused
+rvv: vector path runs
+sched-rt: riscv64 band/edf/cbs/admit
+sched-rt: aarch64 band/edf/cbs/admit
+pifast: riscv64 inversion
+pifast: aarch64 inversion
+portwait: riscv64 ring-3 wait
+portwait: aarch64 ring-3 wait
+ipc: ring-3 lessor lends its priority (SYS_IPC_LEASE_WAIT)
+sh: pipeline (rv)
+sh: pipeline (arm)
+generic: riscv64 boots, abitest
+generic: aarch64 boots, abitest
+rt7: panic contain (rv)
+rt7: panic contain (arm)
+energy: riscv64 model/refuse/util
+energy: aarch64 model/refuse/util
+lx: module loads and runs
+aarch64 lx: module loads and runs
+linux: static ELF under the personality (rv)
+linux: static ELF under the personality (arm)
+linux: busybox sh (rv)
+linux: busybox sh (arm)
+'
+# The impossible marker CI_INJECT_FAIL substitutes for a row's own.
+ci_marker() { # ci_marker <marker>
+    if [ -n "$CI_INJECT_FAIL" ] && [ "$CI_INJECT_FAIL" = "$PAR_KEY" ]; then
+        echo "CI_INJECT_FAIL: this marker is never printed"
+    else
+        echo "$1"
+    fi
+}
+
+# What a scenario printing its own verdict looks like.
+#
+# Validated against real captures rather than assumed: of 142 logs from runs
+# that passed, NONE contain this; of 12 logs from runs that did not, 7 do. So
+# it cannot turn a passing scenario red, and it correctly re-classifies most of
+# what used to be reported as "no marker within Ns". Override per scenario if
+# one needs a different shape.
+#
+# `RFC ... FAIL mask=` is the network conformance probe's own verdict
+# (`kernel/src/main.rs`, printed on every boot). It was invisible to this gate
+# in BOTH directions: nothing asserted the success string and nothing matched
+# the failure one, so a total conformance regression scrolled past in green.
+#
+# The rest are verdicts printed in their own shape. Two kinds:
+#   * a smoke with its own scenario (DHCPSMOKE, PISMOKE, gpio_drv's
+#     registration): its failure used to surface only as "no marker within
+#     Ns", after the whole timeout;
+#   * a boot self-check no scenario asserts (APS pick, IP and UDP loopback, the
+#     IPC pipe and service demo, the GGUF policy tests): it runs in every
+#     scenario, and its failure scrolled past whatever marker that scenario
+#     waits for.
+# Across 376 kernel logs kept from hand runs and canaries, the only hit is
+# "Pipe create FAILED", twice, from pipe slots that were never reclaimed.
+# The AQ3 GPIO round trip is NOT here: every qemu boot runs that smoke, and
+# one whose autorun is not gpio_drv prints "round-trip FAILED" when its
+# retries run out (80 of those logs). Its scenario adds it below.
+# `[FATAL]` is the kernel's last line before it shuts down on an exception
+# it cannot handle, a kernel page fault included. A scenario whose checks
+# all matched before that line still ran in a kernel that stopped: the
+# ring-3 e-stop boots did exactly that on 2026-09-15, with every assertion
+# green and a guard-page fault a second later.
+# `PAGE FAULT] OUT OF MEMORY` is in this set rather than in one row's, because
+# it is the one page fault where the program did nothing wrong — it wrote to
+# its own copy-on-write page and the allocator was empty. It must never happen
+# on a healthy boot, and putting it here makes every scenario in the gate the
+# control: 149 rows that would each catch it firing spuriously.
+#
+# Stated plainly: the POSITIVE case has no test. Provoking a real
+# out-of-memory at a COW break needs the arena genuinely empty at the instant
+# a forked task writes a shared page, and nothing in this gate can arrange that
+# reliably — the same reason the host test for `user_range_prepare_write` took
+# three attempts. What is proven is that the message does not fire when it
+# should not.
+# `[CONSOLE] dropped` (wave 9): kernel lines that did not fit the buffer they
+# wait in while ring 3 owns the console (`uart::console_write_ring3`). A drop
+# can remove exactly the line a row asserts on — `fast-ipc irq-ctx=1` gone
+# would turn the census row falsely green — so any drop fails the row.
+QEMU_FAIL_RE="${QEMU_FAIL_RE:-FAILED:|PAGE FAULT\] OUT OF MEMORY|RFC [0-9/]+ FAIL|\[(DHCPSMOKE|PISMOKE|PIFLUSH)\] FAIL|\[gpio_drv\] .*FAILED|\[mlsrv\] .*FAILED|\[APS\] +smoke FAIL|loopback FAIL|service_discover FAILED|\[GGUF\] [0-2]/3 tests passed|Pipe create FAILED|\[FATAL\]|\[CONSOLE\] dropped}"
+
+qemu_run() { # qemu_run <label> <success-marker> <timeout-s> <qemu-args...>
+    local label="$1" marker limit="$3"
+    marker="$(ci_marker "$2")"; shift 3
+    printf "  %-26s" "${label}..."
+    # An empty marker matches the first byte of any log: a row that passes
+    # without looking (it happened once, to a whole tier, through an argument
+    # shifted away before it was read).
+    if [ -z "$marker" ]; then bad; echo "      qemu_run: empty success marker"; return; fi
+    # The same hazard on the failure side (wave 13): an empty QEMU_FAIL_RE
+    # matches the first line of any log, so the row reports "scenario
+    # reported failure" with no FAIL line and kills QEMU wherever the boot
+    # was. A harness that pulled qemu_run out of this file without the
+    # global below read that as a kernel that "went silent" in abitest's
+    # sleep loop, 3/3 boots (the same kernels pass 3/3 with it set).
+    if [ -z "${QEMU_FAIL_RE:-}" ]; then
+        bad; echo "      qemu_run: QEMU_FAIL_RE is empty (it would match every log)"; return
+    fi
+    mkdir -p "$CI_LOG_DIR"
+    local slug log
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"
+    rm -f "$log"
+    # Inside a parallel job a `file=build/...` drive is the job's own copy.
+    local a path rest args=()
+    for a in "$@"; do
+        case "$a" in
+            *file=build/*)
+                rest="${a#*file=}"; path="${rest%%,*}"
+                job_disk "$path" || { echo "      (qemu_run: no private copy of $path)"; return; }
+                a="${a%%file=*}file=${JDISK}${rest#"$path"}" ;;
+        esac
+        args[${#args[@]}]="$a"
+    done
+    par_ready
+    "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" ${args[@]+"${args[@]}"} >"$log" 2>&1 &
+    local pid=$!
+    local i=0
+    while [ "$i" -lt "$((limit * 2))" ]; do
+        # -a: kernel logs carry stray NUL bytes, and without it grep reports
+        # "binary file matches" instead of the lines we need to show.
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed 's/^/      /'
+            echo "      full log kept: $log"
+            return
+        fi
+        # A scenario that ran to completion and said it failed is a DIFFERENT
+        # outcome from one that never got there, and reporting both as a
+        # timeout hides which one happened.
+        if grep -aqE "$QEMU_FAIL_RE" "$log" 2>/dev/null; then
+            kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            bad; echo "      scenario reported failure:"
+            grep -a -m6 "FAIL" "$log" | sed 's/^/      /'
+            echo "      full log kept: $log"
+            return
+        fi
+        if grep -aq "$marker" "$log" 2>/dev/null; then
+            kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            # QEMU_KEEP_LOG=1: a later row reads this same boot.
+            ok; [ -n "${QEMU_KEEP_LOG:-}" ] || rm -f "$log"; return
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    bad; echo "      no '$marker' within ${limit}s and no verdict printed — last lines:"
+    tail -5 "$log" | sed 's/^/      /'
+    echo "      full log kept: $log"
+}
+
+# kq <features> <qemu_run args...>: build a kernel, then boot it: one row, so
+# that `par` can run it as one job.
+kq() {
+    kbuild "$1"; shift
+    qemu_run "$@"
+}
+
+# ── The console answers a command (shell input path) ─────────────────────────
+#
+# Every other row only reads what the kernel prints. This one TYPES: it boots,
+# waits for the shell's `robot> ` prompt, writes `help\r` to QEMU's stdin (the
+# `-nographic` serial), and requires a line only `cmd_help` prints.
+#
+# Why it exists: on riscv64 the shell never answered. `kernel_main`'s driver-
+# registry smoke called `UartDriver::init` -> `uart::init()` a second time,
+# after the boot hook had enabled the RX interrupt; the 16550 re-init wrote
+# IER = 0 while `IRQ_MODE` stayed set, so `can_read()` polled a ring buffer the
+# ISR never filled again and typed bytes sat in the FIFO. `uart::init()` now
+# programs the device once. Canary: drop that guard in crates/drivers/sys/src/
+# uart.rs and the riscv64 row goes red with "echoed: no". Since wave 7 the
+# aarch64 kernel calls `uart::enable_irq()` too (PL011 RX interrupt, INTID from
+# the DTB), so its shell reads the ring the RX ISR fills and that canary now
+# applies to it as well (not re-run on aarch64 for wave 7). The aarch64 branch
+# types PACED, one byte per 50 ms (see the AIA row's comment for why never a
+# flood); the riscv64 branch is unchanged.
+#
+# stdin is a fifo whose write end this shell holds open on fd 9 for the whole
+# boot: QEMU's stdio backend must not see EOF between the prompt and the
+# write. `exec 9>` blocks until QEMU has opened the read end, so the order
+# below (QEMU in the background first) is required. The kernel is copied per
+# row, as the other QEMU rows do. Marker: the help table's own `help` entry —
+# the boot banner's "type 'help' for commands" does not match it.
+shell_help_row() { # shell_help_row <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log fifo kcopy src
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; fifo="$CI_LOG_DIR/${slug}.fifo"; kcopy="$CI_LOG_DIR/${slug}-kernel"
+    rm -f "$log" "$fifo" "$kcopy"
+    if [ "$isa" = rv ]; then src="$KERNEL"; else src="$A64_IMG"; fi
+    if [ ! -f "$src" ]; then bad; echo "      not built: $src"; return; fi
+    cp "$src" "$kcopy"
+    if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; rm -f "$kcopy"; return; fi
+    par_ready
+    if [ "$isa" = rv ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 <"$fifo" >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" <"$fifo" >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 sent=0 last_send=0 verdict="" e
+    exec 9>"$fifo"
+    while [ "$i" -lt 120 ]; do
+        if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then verdict=crash; break; fi
+        if grep -aqF "help              - this message" "$log" 2>/dev/null; then verdict=pass; break; fi
+        kill -0 "$pid" 2>/dev/null || { verdict=exited; break; }
+        # Send once the prompt is up, then again every 5 s (at most 3 sends):
+        # a line typed while the shell is between prompts is still read, so a
+        # resend only covers a byte lost before the shell existed.
+        if grep -aqF "robot> " "$log" 2>/dev/null && [ "$sent" -lt 3 ]; then
+            if [ "$sent" -eq 0 ] || [ "$((i - last_send))" -ge 10 ]; then
+                if [ "$isa" = rv ]; then
+                    ( printf 'help\r' >&9 ) 2>/dev/null
+                else
+                    ( for b in h e l p; do printf '%s' "$b"; sleep 0.05; done; printf '\r' ) >&9 2>/dev/null
+                fi
+                sent=$((sent + 1)); last_send=$i
+            fi
+        fi
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    exec 9>&-
+    rm -f "$fifo" "$kcopy"
+    case "$verdict" in
+        pass) ok; rm -f "$log" ;;
+        crash) bad; echo "      the kernel crashed:"
+               grep -a -m3 -iE "panic|\[FATAL\]|AARCH64-TRAP" "$log" | tr -d '\r' | sed 's/^/      /'
+               echo "      full log kept: $log" ;;
+        *) bad
+           if ! grep -aqF "robot> " "$log"; then
+               echo "      no 'robot> ' prompt within 60 s (verdict: ${verdict:-timeout})"
+           else
+               # `readline` echoes each accepted byte, so an echoed `help`
+               # separates "input never reached the shell" from "the command
+               # ran and its output was lost".
+               if tr -d '\r' <"$log" | grep -aqE '(^|robot> )help$'; then e=yes; else e=no; fi
+               echo "      prompt seen, sent 'help\\r' ${sent}x, no help table; echoed: $e"
+           fi
+           tail -3 "$log" | tr -d '\r' | sed 's/^/      /'
+           echo "      full log kept: $log" ;;
+    esac
+}
+
+echo "=== AzOS CI Check ==="
+# U12-3: name the configuration a passing row means something about. Both
+# SHAs are of the EXPANDED defconfig (post `olddefconfig`), not the raw file,
+# so a stale `depends on`/`default` in Kconfig itself still changes it.
+echo "  primary config  (config/defconfigs/qemu.config):         $(shasum -a 256 "$PRIMARY_CONFIG" | cut -c1-12)"
+echo "  aarch64 config  (config/defconfigs/qemu-aarch64.config):  $(shasum -a 256 "$AARCH64_CONFIG" | cut -c1-12)"
+echo ""
+
+# TCB crate-boundary check (tools/tcb_check.sh). Pure
+# Cargo.toml inspection, no build needed, so it runs before anything else.
+# All three violations are now closed and the baseline is 0, so this fails if
+# ANY core -> scaffolding edge appears. It was written to tolerate the three
+# that existed — a check that starts red gets ignored, not fixed — and it
+# ratcheted down as each closed. Run `tools/tcb_check.sh` directly for detail.
+printf "  %-26s" "TCB crate boundary..."
+if tcb_out="$(bash "${REPO_ROOT}/tools/tcb_check.sh" 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$tcb_out" | sed 's/^/      /'
+fi
+
+# Syscall-number single-source-of-truth check (follow-on to 1195b1e).
+#
+# 1195b1e collapsed four independent tables of `SYS_*` literals into one
+# (crates/core/abi/src/syscall_nr.rs) and made the other three re-export or derive
+# it instead of restating it. Nothing stops a FIFTH from appearing — a new
+# crate, a shim, or a userspace program hardcoding `const SYS_FOO: u64 = 123;`
+# again — and a renumbered syscall silently disagreeing with a copy nobody is
+# watching is exactly the seccomp hazard that commit closed (a filter built
+# from the wrong table grants a DIFFERENT syscall than the one it names, with
+# nothing red anywhere).
+#
+# How: pull the canonical `SYS_*` names straight out of syscall_nr.rs (not a
+# hand-copied list here — this check would itself be a sixth table if it kept
+# its own), then scan every other .rs file for a bare `const`/`static` of one
+# of those EXACT names assigned directly to a numeric literal. Matching by
+# exact canonical name, not by the bare `SYS_` prefix, is deliberate: this
+# tree also has `SYS_PATH_MAX` / `SYS_SERVICE_NAME_MAX` (buffer-size limits,
+# not syscall numbers) and `userspace/bench/vsbench/src/abi_linux.rs` (the Linux/
+# riscv64 syscall ABI, hand-encoded on purpose for the kernel-vs-Linux
+# comparison — see that file's own header — and excluded by path below). A
+# prefix-only match would fail the gate on both, for a hazard neither is.
+#
+# WHAT THIS CANNOT CATCH: a syscall number restated under a DIFFERENT local
+# name. `kernel/src/main.rs` has one today — `SYS_DRV_INVOKE_NR: u64 = 311`
+# — a boot-time smoke whose own comment says it exists to "avoid a kernel->abi
+# Cargo dep". That justification is now false: kernel gained a real
+# azos_abi dependency in 0a41883 (for DRV_KIND_*), so this is a real,
+# fixable instance of exactly the hazard this check exists for — just
+# invisible to exact-name matching, and out of scope for the change that
+# added this check. Also uncaught: a literal inside a `match` arm or enum
+# discriminant instead of a named const, and any restatement outside Rust
+# entirely — `../AzOSRobotBrain/protocol.py` mirrors some of these numbers, and
+# watching that side is the protocol-sync skill's job, not this check's.
+printf "  %-26s" "syscall-number literals..."
+sys_nr_tmp="$(mktemp)"
+(
+    cd "$REPO_ROOT" || exit 1
+    canon_file="crates/core/abi/src/syscall_nr.rs"
+    canon_names="$(grep -oE 'pub const (SYS_[A-Za-z0-9_]+)' "$canon_file" | awk '{print $3}' | sort -u)"
+    canon_count=$(printf '%s\n' "$canon_names" | grep -c .)
+    if [ "$canon_count" -lt 100 ]; then
+        echo "CANON_BROKEN:$canon_count"
+        exit 0
+    fi
+    scanned=0
+    while IFS= read -r -d '' f; do
+        scanned=$((scanned + 1))
+        case "$f" in
+            "./$canon_file") continue ;;
+            ./userspace/bench/vsbench/src/abi_linux.rs) continue ;;
+        esac
+        while IFS= read -r hitline; do
+            [ -n "$hitline" ] || continue
+            name="$(printf '%s' "$hitline" | grep -oE 'SYS_[A-Za-z0-9_]+' | head -1)"
+            [ -n "$name" ] || continue
+            if printf '%s\n' "$canon_names" | grep -qx "$name"; then
+                printf '%s:%s\n' "$f" "$hitline"
+            fi
+        done < <(grep -nE '^[[:space:]]*(pub[[:space:]]+)?(const|static)[[:space:]]+SYS_[A-Za-z0-9_]+[[:space:]]*:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*(0x)?[0-9]' "$f" 2>/dev/null)
+    done < <(find . \( -name .git -o -name .claude -o -name .codex -o -name target -o -name build -o -name 'target 2' -o -name 'build 2' \) -prune -o -type f -name '*.rs' -print0)
+    if [ "$scanned" -lt 100 ]; then
+        echo "SCAN_BROKEN:$scanned"
+    fi
+) > "$sys_nr_tmp"
+if grep -q '^CANON_BROKEN:' "$sys_nr_tmp"; then
+    bad
+    n="$(sed -n 's/^CANON_BROKEN://p' "$sys_nr_tmp")"
+    echo "      extracted only $n canonical names from crates/core/abi/src/syscall_nr.rs"
+    echo "      (expected ~205). Either that file moved/changed shape, or this"
+    echo "      check's own extraction regex broke — fix before trusting it."
+elif grep -q '^SCAN_BROKEN:' "$sys_nr_tmp"; then
+    bad
+    n="$(sed -n 's/^SCAN_BROKEN://p' "$sys_nr_tmp")"
+    echo "      scanned only $n .rs files — the exclusion filters likely ate"
+    echo "      the tree (expect several hundred outside target/build/.git/"
+    echo "      .claude/.codex). A check that scans nothing"
+    echo "      reports ok for the wrong reason."
+elif [ -s "$sys_nr_tmp" ]; then
+    bad
+    sed 's/^/      /' "$sys_nr_tmp"
+    echo "      each restates a name crates/core/abi/src/syscall_nr.rs already"
+    echo "      defines. Import it from azos_abi::syscall_nr instead of"
+    echo "      hardcoding the value."
+else
+    ok
+fi
+rm -f "$sys_nr_tmp"
+
+echo ""
+# The seccomp image table. crates/core/sched/src/seccomp.rs `include!`s
+# build/image_hashes.rs, the SHA-256 of every ELF the disk images carry, so no
+# kernel build below and no seccomp-tests run compiles without it. Made through
+# make, which rebuilds any stale userspace ELF first, so the table and the images
+# made later come from the same bytes. A failure aborts the gate: every kernel
+# build would fail with it, for one reason.
+echo "Generating the seccomp image table (build/image_hashes.rs)..."
+if ! make build/image_hashes.rs >/dev/null 2>&1; then
+    echo "  FATAL: make build/image_hashes.rs failed: a userspace ELF did not build,"
+    echo "         or python3 is missing. Run it by hand to see which."
+    exit 1
+fi
+
+# Same table, aarch64 ELFs, own file (crates/core/sched/src/seccomp.rs cfg-selects
+# between the two — see that include! site). A failure here only aborts the
+# aarch64 userspace row below, not the whole gate: unlike the riscv64 table,
+# no OTHER row's kernel build `include!`s this file.
+echo "Generating the seccomp image table (build/image_hashes_aarch64.rs)..."
+if ! make build/image_hashes_aarch64.rs >/dev/null 2>&1; then
+    echo "  WARNING: make build/image_hashes_aarch64.rs failed — the aarch64"
+    echo "           userspace row below will fail too."
+    A64_USERSPACE_TABLE_FAILED=1
+fi
+
+ci_phase "[1/4] builds + aarch64/early QEMU rows"
+echo "[1/4] Building all feature combinations..."
+
+# No forced recompile here any more. This line used to `touch` every .rs file
+# under crates/ domains/ kernel/ because "rustc only emits warnings when it
+# compiles": four unused-constant warnings once sat unnoticed on a warm cache.
+# The cargo this tree pins (nightly-2026-02-21) REPLAYS a fresh unit's stored
+# warnings on every build. Measured 2026-10-03 on this tree: an unused const
+# planted in crates/core/abi and, separately, in kernel/src/main.rs printed
+# its `warning:` on the compiling build, again on a 0.08 s fresh rebuild, and
+# again after building another feature set and coming back; `build` below
+# fails on those lines either way. The touch cost every warm gate a rebuild of
+# every crate for each of the ~50 feature sets (264 s of cargo in [1/4], gate
+# of 2026-10-03). If a cargo upgrade stops replaying, that canary is how to see
+# it: plant the const, build twice, and the second build must still warn.
+
+build       "default (QEMU)"      --release
+build       "qemu"                --release --features qemu
+build       "no-ml"               --release --features no-ml
+build       "no-mmu"              --release --features no-mmu
+build       "rvv"                 --release --features rvv
+build       "net-smoke"           --release --features qemu,net-smoke
+build       "tftp-smoke"          --release --features qemu,tftp-smoke
+build       "dhcp-smoke"          --release --features qemu,dhcp-smoke
+build       "pi-smoke"            --release --features qemu,pi-smoke
+build       "pi-flush-smoke"      --release --features qemu,pi-flush-smoke
+# Secure-boot policy is fixed at compile time (RFC-0011), so if this feature
+# is not built in CI it can break with nobody noticing — exactly the way
+# esp32c3 rotted.
+build       "secure-boot-enforced" --release --features qemu,secure-boot-enforced
+build       "link-auth-enforced"   --release --features qemu,link-auth-enforced
+build       "link-encrypt-enforced" --release --features qemu,link-encrypt-enforced
+build       "reflex-smoke"        --release --features qemu,reflex-smoke
+build       "envelope-smoke"      --release --features qemu,envelope-smoke
+build       "geofence-smoke"      --release --features qemu,geofence-smoke
+build       "console-splice-smoke" --release --features qemu,console-splice-smoke
+# The refusal canary is its own feature (never part of `qemu`), so it has to be
+# built here or it rots unseen: see the "topology: infeasible deadlines" row.
+build       "deadline-refusal-canary" --release --features qemu,deadline-refusal-canary
+# Same reason as the row above: a canary feature that is never BUILT here rots
+# unseen, and this one is the only thing in the gate that observes the frame
+# budget refusing anything.
+build       "mem-quota-canary"  --release --features qemu,mem-quota-canary
+build       "mem-locked-smoke"  --release --features qemu,mem-locked-smoke
+build       "mem-locked-canary" --release --features qemu,mem-locked-canary
+build       "mem-locked-refusal-canary" --release --features qemu,mem-locked-refusal-canary
+build       "mem-admission-canary" --release --features qemu,mem-admission-canary
+build       "disk-part-row"     --release --features qemu,disk-part-row
+build       "deadline-hart-canary" --release --features qemu,deadline-hart-canary
+build       "brain-lies-smoke"    --release --features qemu,brain-lies-smoke
+build       "actuation-smoke"     --release --features qemu,actuation-smoke
+build       "reflex+actuation"    --release --features qemu,reflex-smoke,actuation-smoke
+build       "i3-smoke"            --release --features qemu,i3-smoke
+# Wave 8 TLB shootdown probe and its canary (see the "tlb: stale access" rows).
+build       "tlb-smoke"           --release --features qemu,tlb-smoke
+build       "tlb-local-only"      --release --features qemu,tlb-smoke,tlb-local-only
+build       "tlb-bound-canary"    --release --features qemu,tlb-smoke,tlb-bound-canary
+# The page-table free check's canary (see the "mm: canary" row).
+build       "exit-satp-canary"    --release --features qemu,exit-satp-canary
+build       "proxy-pi-smoke"      --release --features qemu,proxy-pi-smoke
+# The donation canary for the row that boots proxy-pi-smoke: built here so it
+# cannot rot; booted by hand (it must fail on `[PROXYPI] FAIL TIMEOUT`).
+build       "proxy-donation-canary" --release --features qemu,proxy-donation-canary
+build       "sup-smoke"           --release --features qemu,sup-smoke
+# The supervisor canary (RFC-0049 M4): built here so it cannot rot; booted by
+# hand (the restart row must fail on `[SUP] FAIL not restarted after kill 1`).
+build       "sup-canary"          --release --features qemu,sup-canary
+
+# Wave 9: the ring-3 donation floor's canary, booted by hand (it must fail on
+# `[PROXYPI] FAIL floor: gpio_drv was lent 8, below the ring-3 floor 12`).
+build       "donation-floor-canary" --release --features qemu,donation-floor-canary
+build       "lease-pi3-smoke"     --release --features qemu,lease-pi3-smoke
+# ipc-census is load-bearing diagnostics: the userspace-IPC scenario's
+# comment prescribes it as the wedge-reproduction recipe (K-C25), so it must
+# stay inside the cold-cache warnings gate or it rots silently.
+build       "ipc-census"          --release --features qemu,ipc-census
+# The ring-3 ML service's kill row and its canary (`ml_service_kill_row`).
+build       "ml-kill-smoke"       --release --features qemu,ml-kill-smoke
+build       "ml-fallback-canary"  --release --features qemu,ml-kill-smoke,ml-fallback-canary
+build       "ml-absent-canary"    --release --features qemu,ml-kill-smoke,ml-absent-canary
+# Wave 14: the motor-command watchdog record row (`rt_watchdog_record_row`)
+# and its canary.
+build       "rtwd-window-smoke"   --release --features qemu,rtwd-window-smoke
+build       "rtwd-record-canary"  --release --features qemu,rtwd-window-smoke,rtwd-record-canary
+# Wave 11: the supervisor over what the topology starts (`supall_row`) and its
+# canary, which the ML kill row also boots (`ml service killed, not supervised`).
+build       "supall-smoke"        --release --features qemu,supall-smoke
+build       "supall-canary"       --release --features qemu,supall-smoke,supall-canary
+build       "ml+supall-canary"    --release --features qemu,ml-kill-smoke,supall-canary
+# Wave 10: the "behavior ARP sleeps" rows boot `arp-timing` on both ISAs.
+build       "arp-timing"          --release --features qemu,arp-timing
+# Wave 11: the display features `make config` offers (DRV_DISPLAY_RAMFB,
+# DRV_DISPLAY_HDMI in config/Kconfig.drivers). No row boots either; building
+# them here is what keeps the options from rotting unseen.
+build       "ramfb"               --release --features qemu,ramfb
+build       "hdmi"                --release --features vf2,hdmi
+# Wave 11 (SENSORTS): the acquisition-stamp smoke and its frozen-stamp canary
+# (the "sensors: IMU stamped at acquisition" rows boot both, on both ISAs).
+build       "sensor-ts-smoke"     --release --features qemu,sensor-ts-smoke
+build       "sensor-ts-freeze"    --release --features qemu,sensor-ts-freeze
+# ── Per-board ISA extensions, and the guard that keeps them on their board ──
+#
+# The K1 (SpacemiT X60, RVA22) has Zba/Zbb/Zbs, so its build lets the compiler
+# use them ANYWHERE — not only in hand-written `asm!`. The VF2 (JH7110, SiFive
+# U74) is rv64gc and has none of them: one such instruction is an illegal
+# instruction on its first execution. Both binaries are called `kernel`.
+#
+# So the flags are checked from both sides, because either check alone is
+# worthless: the negative one (VF2 and QEMU carry no B instruction) is what
+# stops a mis-set flag bricking the primary board, and the positive one (the K1
+# carries thousands) is its control — without it a detector that matched nothing
+# at all would report the VF2 clean for ever.
+isa_guard() { # isa_guard <label> <expect: none|some>
+    local label="$1" expect="$2" n
+    printf "  %-26s" "${label}..."
+    local tools; tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+    local kernel="target/${TARGET:-riscv64imac-unknown-none-elf}/release/kernel"
+    if [ ! -f "$kernel" ]; then bad; echo "      no kernel at $kernel"; return; fi
+    n=$("$tools/llvm-objdump" -d --mattr=+zba,+zbb,+zbs "$kernel" 2>/dev/null \
+        | grep -cE '[[:space:]](sh[123]add|add\.uw|andn|orn|xnor|clz|ctz|cpop|minu|maxu|sext\.b|zext\.h|rev8|orc\.b|bset|bclr|binv|bext)([[:space:]]|$)')
+    case "$expect" in
+      none) if [ "$n" -eq 0 ]; then ok; else bad
+              echo "      $n bitmanip instruction(s) in a binary for a board without them —"
+              echo "      this kernel dies with an illegal instruction on its first one."; fi ;;
+      some) if [ "$n" -gt 0 ]; then ok; else bad
+              echo "      0 bitmanip instructions in the K1 build: either the flags did not"
+              echo "      reach the compiler, or the detector above matches nothing."; fi ;;
+    esac
+}
+
+# ── aarch64: the port stays alive only because these rows exist ─────────────
+#
+# The parked-architecture notes said it plainly before this crate moved into the
+# workspace: "the CI gate entry is what decides whether the work is still alive
+# in six months; without a gate, the esp32c3 history repeats" — an architecture
+# that rotted parked for months. So: it builds for its real target, and its pure
+# halves are tested on the host, on every run.
+#
+# This crate row stays `aarch64-unknown-none` (hard-float): the crate is also
+# used by `tests/qemu/aarch64-smoke` on that target, and its NEON `dot_f32` is
+# compiled only where NEON is part of the target (`vector.rs`). The KERNEL is
+# built for `aarch64-unknown-none-softfloat` (see "The KERNEL on aarch64"
+# below), which compiles this crate a second time without NEON.
+printf "  %-26s" "aarch64 crate (ARMv8.5)..."
+if aarch_out="$(RUSTFLAGS="" KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release --target aarch64-unknown-none \
+        -p azos_arch_aarch64 --config "build.rustflags=[]" 2>&1)" \
+   && ! printf '%s\n' "$aarch_out" | grep -qE "^(error|warning)"; then
+    ok
+else
+    bad; printf '%s\n' "$aarch_out" | grep -E "^(error|warning)" | head -5
+fi
+
+# aarch64, actually BOOTED. The build row above proves it compiles; these prove
+# the port runs: EL2→EL1, GICv3, an IRQ, an SVC, a second PE via PSCI, a
+# cross-core SGI, the timer, the MMU, and a drop to EL0 with the trap back.
+#
+# Two CPUs, and the second row is the one that matters most.
+#   * `max,pauth=on` + `mte=on` is an ARMv8.5 machine: every feature must be
+#     detected and the baseline MET. If QEMU stopped providing one, or a field
+#     decoder read the wrong four bits, this row says so.
+#   * `cortex-a72` is ARMv8.0 — none of the four. The SAME binary must still
+#     reach the same last marker, reporting NOT MET. That is the project's
+#     standing rule made testable: **no extension is ever a hard requirement**,
+#     the thing that would otherwise be discovered on a board that will not boot.
+aarch64_smoke_row() { # aarch64_smoke_row <label> <cpu-args> <expect: met|unmet>
+    local label="$1" cpuargs="$2" expect="$3"
+    printf "  %-26s" "${label}..."
+    local bin="tests/qemu/aarch64-smoke/target/aarch64-unknown-none/release/aarch64_smoke"
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if [ ! -x "$bin" ]; then bad; echo "      not built: $bin"; return; fi
+    par_ready   # $bin is built once, by the row above, and never again
+    # shellcheck disable=SC2086
+    qemu-system-aarch64 -M virt,gic-version=3$QEMU_AARCH64_MACH -cpu $cpuargs \
+        -smp 2 -nographic -kernel "$bin" >"$log" 2>&1 &
+    local pid=$! i=0
+    # Anchor on the LAST marker the boot ever prints (the EL0 SVC
+    # round-trip), not an earlier one like the FEAT line used to. Killing
+    # right after an early marker races every stage still to come (MMU,
+    # the EL0 drop, hart 1's SGI receipt) against a fixed 0.5 s poll —
+    # it passed only because TCG is slow enough that those stages
+    # finished anyway. Waiting for the true last line makes the row
+    # actually observe the whole boot instead of trusting emulator speed.
+    while [ "$i" -lt 60 ]; do
+        grep -aqF "SVC from AArch64 — imm=0x00be (from EL0 user_main)" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    local want; [ "$expect" = "met" ] && want="MET" || want="NOT MET"
+    # Every stage, not just the last line: a binary that skipped the MMU or the
+    # second PE and still printed the feature line would otherwise pass.
+    # `IRQ-1] fired` is hart 1's own handler receiving hart 0's cross-core
+    # SGI — the walk-based `gic::find_redistributor` + `gic::send_sgi` path
+    # (Phase 4 PREP) proven for real, not just on the host. Before this
+    # wave the marker list checked hart 0's `IRQ-0` and hart 1's "ready"
+    # flag, but never that the SGI actually arrived — a `send_sgi` that
+    # silently addressed the wrong PE would still have passed every row.
+    local missing=""
+    for m in "arch-api ARCH_ID: aarch64" "GIC] init OK" "IRQ-0] fired" \
+             "SVC from AArch64 — imm=0x0000 (from EL1)" "hart 1 ready" \
+             "IRQ-1] fired! INTID=0x000" \
+             "MMU]  M+I+C enabled" "SVC from AArch64 — imm=0x00be (from EL0 user_main)"; do
+        grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m"
+    done
+    if [ -n "$missing" ]; then
+        bad; echo "      the aarch64 boot did not reach:"; printf "%b\n" "$missing"
+        echo "      log kept: $log"; return
+    fi
+    if grep -aqF "armv8.5 baseline: $want" "$log" 2>/dev/null; then ok
+    else
+        bad; echo "      expected 'armv8.5 baseline: $want', got:"
+        grep -a "FEAT]" "$log" | sed "s|^|        |"
+        echo "      log kept: $log"; return
+    fi
+}
+printf "  %-26s" "aarch64 smoke (build)..."
+# NO `RUSTFLAGS=""` here. The crate's own `.cargo/config.toml` passes
+# `-C link-arg=-T./aarch64-virt.ld`, and an empty RUSTFLAGS in the environment
+# OVERRIDES `build.rustflags` from config rather than adding to it — the link
+# then fails with `undefined symbol: __bss_end`, which reads like a code defect
+# and is a harness defect. `env -u` removes the variable instead, so the
+# config's flags apply and nothing the caller exported leaks in.
+if as_out="$(cd tests/qemu/aarch64-smoke && env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
+        "$CARGO" +nightly build --release \
+        --target aarch64-unknown-none -Z build-std=core,compiler_builtins \
+        -Z build-std-features=compiler-builtins-mem 2>&1)" \
+   && ! printf '%s\n' "$as_out" | grep -qE "^(error|warning)"; then ok
+else bad; printf '%s\n' "$as_out" | grep -E "^(error|warning)" | head -5; fi
+QEMU_AARCH64_MACH=",mte=on" par "aarch64 boots (ARMv8.5)" aarch64_smoke_row "aarch64 boots (ARMv8.5)" "max,pauth=on" met
+QEMU_AARCH64_MACH=""        par "aarch64 boots (ARMv8.0)" aarch64_smoke_row "aarch64 boots (ARMv8.0)" "cortex-a72"   unmet
+
+# B2-06/B2-07 coverage: `virtualization=on` gives the guest a real EL2, so
+# `_start` takes the `_azos_drop_to_el1` branch instead of skipping it —
+# the ONLY one of these three rows that exercises the trampoline at all.
+# Before this wave, that path hung inside `psci::cpu_on` (HVC from EL1 trapped
+# to our own, handler-less EL2 — see `psci.rs`'s `select_conduit_from_entry_el`
+# doc comment) and CPTR_EL2 was never written (see `boot.rs`'s CPTR_EL2
+# comment for the FP/SIMD trap it could otherwise leave armed). Same binary,
+# same 7 markers, same ARMv8.5 baseline as the first row above — MET is
+# expected here too.
+QEMU_AARCH64_MACH=",mte=on,virtualization=on" par "aarch64 boots at EL2 (ARMv8.5)" aarch64_smoke_row "aarch64 boots at EL2 (ARMv8.5)" "max,pauth=on" met
+
+# ── The KERNEL on aarch64, not the demo above ────────────────────────────────
+# `azos_kernel` built for `aarch64-unknown-none` with its own linker script
+# and booted to `kernel_main`, which now (Item 2 Stage 5, memory-parity task)
+# does a real FDT handoff, PMM, kernel page tables (W^X) and a heap, on top of
+# the earlier banner/hart-id/FP self-check/boot-stack milestone.
+#
+# Two entry paths, because they differ in exactly the way that broke once:
+# entered at EL1 (QEMU without `virtualization=on`) nothing drops from EL2, so
+# EL1's FP/SIMD permission (CPACR_EL1.FPEN) must be set by the kernel's own
+# boot.S. It was not, until 2026-09-21; the kernel only survived because its
+# minimal kernel_main emitted no FP. The self-check line executes FP on
+# purpose, so a boot that loses that permission traps (EC=0x07) and fails here.
+#
+# Stale-binary rule (see "El gate arrancó un kernel obsoleto"): both the ELF
+# and the `.img` are deleted before the build, so a failed build cannot be
+# booted in its place.
+# Soft-float: the aarch64 kernel is FP-free (user FP state is saved lazily,
+# kernel/src/entry/aarch64/fp_lazy.rs); userspace stays hard-float.
+A64_KERNEL_OUT="target/aarch64-unknown-none-softfloat/release/kernel"
+A64_IMG_OUT="target/aarch64-unknown-none-softfloat/release/kernel.img"
+# The same two files; `par_ready` points these two at a parallel job's copies.
+A64_KERNEL="$A64_KERNEL_OUT"
+A64_IMG="$A64_IMG_OUT"
+# Build noise every aarch64 KERNEL row tolerates, and nothing more: the prod
+# pubkey notice, and cargo's future-incompat notice for `core` ALONE — the
+# build-std `core` carries stdarch's `#[target_feature(enable = "neon")]`
+# intrinsics, which rustc flags on a soft-float target (lint
+# `aarch64_softfloat_neon`, rust-lang/rust#134375; `-A` does not silence the
+# report). Anchored at end of line: a notice that names any second package
+# is not matched and still fails the row.
+A64_KNOWN_NOISE='prod pubkey|packages contain code that will be rejected by a future version of Rust: core v0\.0\.0 \([^,]*\)$'
+
+printf "  %-26s" "aarch64 kernel (build)..."
+rm -f "$A64_KERNEL" "$A64_IMG"
+# `env -u RUSTFLAGS`, NOT `RUSTFLAGS=""` like the arch-crate row above: cargo
+# gives an environment RUSTFLAGS — even an empty one — precedence over
+# `build.rustflags`, so `RUSTFLAGS=""` silently drops the linker script and the
+# link fails on `undefined symbol: _stack_end`. (Written that way first, 21 Sep.)
+if a64k_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release --target aarch64-unknown-none-softfloat \
+        -p azos_kernel \
+        --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+   && ! printf '%s\n' "$a64k_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+   && [ -f "$A64_KERNEL" ]; then
+    # ── ELF → arm64 Image (task 1) ──────────────────────────────────────────
+    # `boot.S`'s `_start` opens with the 64-byte arm64 Linux boot-protocol
+    # header (Documentation/arch/arm64/booting.rst); a flat `objcopy -O
+    # binary` of the ELF reproduces that header at file offset 0, which is
+    # what QEMU's `-kernel` loader and U-Boot `booti` both recognise as an
+    # Image (as opposed to a bare ELF `-kernel` load, where x0 is always 0 —
+    # established empirically this task, not assumed).
+    A64_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    if [ -x "$A64_OBJCOPY" ] \
+       && "$A64_OBJCOPY" -O binary "$A64_KERNEL" "$A64_IMG" 2>/dev/null \
+       && [ -f "$A64_IMG" ]; then
+        # Header sanity, independent of a QEMU boot: magic at 0x38, and
+        # image_size (0x10) must equal `_kernel_end - _start` — a `nm`
+        # cross-check, not a second guess at the linker's arithmetic.
+        a64_magic="$(od -A n -t x1 -j 0x38 -N 4 "$A64_IMG" | tr -d ' \n')"
+        a64_img_size_le="$(od -A n -t x1 -j 0x10 -N 8 "$A64_IMG" | tr -d ' \n')"
+        # od prints big-to-little in byte order already (one hex pair per
+        # file byte, in file order); reverse the 8 pairs to get the LE u64.
+        a64_img_size_hex="$(printf '%s\n' "$a64_img_size_le" | \
+            sed -E 's/(..)(..)(..)(..)(..)(..)(..)(..)/\8\7\6\5\4\3\2\1/')"
+        a64_img_size=$((16#$a64_img_size_hex))
+        a64_nm_start="$(nm "$A64_KERNEL" 2>/dev/null | awk '$3=="_start"{print $1}')"
+        a64_nm_end="$(nm "$A64_KERNEL" 2>/dev/null | awk '$3=="_kernel_end"{print $1}')"
+        a64_nm_delta=$((16#$a64_nm_end - 16#$a64_nm_start))
+        if [ "$a64_magic" = "41524d64" ] && [ "$a64_img_size" -eq "$a64_nm_delta" ]; then
+            ok
+        else
+            bad; printf '      magic=%s (want 41524d64) image_size=%#x (nm says %#x)\n' \
+                "$a64_magic" "$a64_img_size" "$a64_nm_delta"
+        fi
+    else
+        bad; echo "      llvm-objcopy not found or ELF -> .img failed: $A64_OBJCOPY"
+    fi
+else
+    bad; printf '%s\n' "$a64k_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+fi
+
+# ── The aarch64 kernel names no FP/SIMD register outside the lazy-FP code ────
+# The trap path no longer saves the interrupted task's V0-V31/FPSR/FPCR (user
+# FP state is saved lazily, on context switch — kernel/src/entry/aarch64/
+# fp_lazy.rs), so ANY kernel code that touches a V register corrupts whatever
+# user task it interrupted. The soft-float target keeps rustc from emitting
+# such code; this row proves the linked ELF, inline asm and `.S` included:
+# every instruction naming an FP/SIMD register or FPCR/FPSR must sit in one of
+# the symbols the script allows by name. Canaries: the gate-186 hard-float
+# kernel fails it (144 functions); so does dropping one allowed name.
+printf "  %-26s" "aarch64 kernel FP-free..."
+if [ ! -f "$A64_KERNEL" ]; then
+    bad; echo "      not built: $A64_KERNEL"
+elif fpfree_out="$(bash tools/aarch64_fp_free_check.sh "$A64_KERNEL" 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$fpfree_out" | head -12 | sed 's|^|      |'
+fi
+
+# ── Trap-path code size (wave 14, LOGLEVEL) ─────────────────────────────────
+# The first Rust frames of every trap, the syscall path included, pinned to
+# their size within TRAP_SIZE_SLACK bytes. What LLVM inlines into them sets
+# the registers every syscall saves: an unrelated edit in the kernel crate
+# once inlined `handle_exception` into `riscv64_trap_handler` (130 -> 2038 B)
+# and every syscall paid 22 instructions (vsbench `syscall-floor` 195 -> 217
+# ns/op, -icount). `#[inline(never)]` on `handle_exception` fixes that one;
+# this row catches the next. A size that moved on purpose: re-pin it here.
+# Read from the linked ELF (llvm-nm), no QEMU. Canaries (wave 14, by hand,
+# reverted): `#[inline(always)]` on `handle_exception` turns the riscv64 row
+# red at 1912 B. Removing the `#[inline(never)]` alone did NOT on that tree:
+# LLVM kept the body out of line (130 B), and that is the point of the
+# attribute and of this row, as the decision flips with unrelated edits.
+# Symbols are matched by name suffix (the Rust ones are mangled).
+TRAP_SIZE_SLACK="${TRAP_SIZE_SLACK:-64}"
+trap_size_row() { # trap_size_row <label> <elf> <symbol-suffix>=<bytes>...
+    local label="$1" elf="$2"; shift 2
+    printf "  %-26s" "${label}..."
+    if [ ! -f "$elf" ]; then bad; echo "      not built: $elf"; return; fi
+    local nmtool syms pin sym want got fail=0 report=""
+    nmtool="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+    if ! syms="$("$nmtool" -S --defined-only "$elf" 2>/dev/null | awk '$3 ~ /^[tT]$/ {print $4, $2}')" \
+       || [ -z "$syms" ]; then
+        bad; echo "      no symbols read from $elf ($nmtool)"; return
+    fi
+    for pin in "$@"; do
+        sym="${pin%=*}"; want="${pin#*=}"
+        got="$(printf '%s\n' "$syms" | awk -v s="$sym" \
+            '{ n = length($1); m = length(s); if (n >= m && substr($1, n - m + 1) == s) { print $2; exit } }')"
+        if [ -z "$got" ]; then
+            fail=1; report="$report      $sym: no such text symbol\n"; continue
+        fi
+        got=$((16#$got))
+        if [ "$got" -gt $((want + TRAP_SIZE_SLACK)) ] || [ "$got" -lt $((want - TRAP_SIZE_SLACK)) ]; then
+            fail=1; report="$report      $sym: $got B, pinned at $want B +/- $TRAP_SIZE_SLACK\n"
+        else
+            report="$report      $sym: $got B (pinned $want)\n"
+        fi
+    done
+    if [ "$fail" = 0 ]; then ok; else bad; fi
+    printf '%b' "$report"
+}
+trap_size_row "aarch64: trap path size" "$A64_KERNEL" aarch64_trap_entry=1216 7aarch6412svc_dispatch=488
+
+aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected entry EL> <smp>
+    local label="$1" mach="$2" el="$3" smp="${4:-2}"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if [ ! -f "$A64_IMG" ]; then bad; echo "      not built: $A64_IMG"; return; fi
+    # Boots the `.img` (Image format), NOT the ELF — this is the row that
+    # actually exercises task 1's whole point: x0 carries a real FDT only
+    # for a recognised Image load.
+    par_ready
+    qemu-system-aarch64 -M "virt,gic-version=3$mach" -cpu max,pauth=on -smp "$smp" \
+        -nographic -kernel "$A64_IMG" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 40 ]; do
+        # Phase 4 (SMP): the LAST thing this boot ever prints is the
+        # migration probe's own verdict (`kernel_main`'s SMP bring-up tail,
+        # `aarch64_migrate_probe_task` in kernel/src/smokes/aarch64_sched.rs) — it runs
+        # after `azos_sched::start()` hands off, same as Phase 3's
+        # "d8 survived every context switch" used to be the last line
+        # before Phase 4 added more boot after it. Waiting on that older
+        # line here would `break` (and the harness would `kill -9`) before
+        # the SMP markers below ever print.
+        grep -aq "smp-migrate-probe ran on" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception during boot:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # Any of mm's/SMP's own "FAILED:" lines (W^X, NX, heap range,
+    # no-free-pages, a hart that never came online, a hart that never
+    # ticked, TPIDR_EL1 not matching its own hart id, an SGI never
+    # received) fails this row too — same free-failure-half trick riscv64's
+    # QEMU scenarios already lean on (`QEMU_FAIL_RE`), applied here by hand
+    # since this row greps its own log rather than going through that path.
+    if grep -aq "FAILED:" "$log" 2>/dev/null; then
+        bad; echo "      the boot log reported a failure:"
+        grep -a "FAILED:" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local missing=""
+    for m in "AzOS Rust kernel booted! (aarch64)" "[BOOT] Hart ID:    0" \
+             "[BOOT] Entered at: EL$el" \
+             "[MM] SCTLR_EL1.M before first spinlock: ON" \
+             "[BOOT] FDT at x0: magic=0xd00dfeed" \
+             "[BOOT] FP/SIMD at EL1: 1.5*1.5+0.25 = 2.5" \
+             "[MM] PMM:" "[MM] W^X ok:" "[MM] NX outside the image:" \
+             "[MM] Null pointer guard active (page 0 unmapped)" \
+             "[MM] Stack guard pages active" \
+             "[MM] Null guard readback: page 0 unmapped" \
+             "[MM] Heap test: Vec = [1, 2, 3, 4, 5, 6]" \
+             "[MM] Boot stack:" \
+             "[TRAP] svc #0 self-test: PASS" \
+             "[TRAP] FP/SIMD survives interrupt: PASS" \
+             "[AARCH64-IRQSTACK] hart 0 handles interrupts on its own stack" \
+             "[AARCH64-TTBR1] kernel runs in the upper half:" \
+             "[AARCH64-TTBR1-POST] after a user task's own TTBR0_EL1" \
+             "[GIC] MMIO mapped: GICD=0x8000000 GICR=0x80a0000" \
+             "[SMP] PSCI conduit:" \
+             "[SMP] hart->MPIDR table: $smp of $smp cpu@ nodes published" \
+             "[SCHED] Created $smp idle tasks (one per hart)" \
+             "[SCHED] task A and task B created" \
+             "[SCHED] Created smp-migrate-probe task" \
+             "[SMP] UART lock enabled" \
+             "[SMP] Starting $((smp - 1)) secondary hart(s) via PSCI CPU_ON" \
+             "[SGI] sent by hart 0, received by hart 1: count=" \
+             "[SCHED] Starting scheduler on boot CPU" \
+             "interleaved" \
+             "preemptions observed:" \
+             "x20 survived every context switch" \
+             "smp-migrate-probe ran on"; do
+        grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m"
+    done
+    # The GICR frame count itself (item 1 of this task's brief: canary (a) —
+    # mapping only one frame — must fail this row). A regex, not a fixed
+    # string with today's `MAX_HARTS` (8) baked in: `kernel::MAX_HARTS`
+    # changing would otherwise silently stop this check from meaning
+    # anything, rather than failing loudly like the marker text itself would.
+    if ! grep -aqE '\[GIC\] MMIO mapped: GICD=0x8000000 GICR=0x80a0000 \(x[0-9]+ frames\)' "$log" 2>/dev/null; then
+        missing="$missing\n        [GIC] MMIO mapped ... (xN frames)"
+    fi
+    # Stack guard readback (task 1, aarch64 parity program): a regex, not a
+    # fixed "64/64" — `MAX_TASKS` changing would otherwise silently stop this
+    # meaning anything. The two halves are printed by the SAME `if` branch in
+    # `kernel_main` (kernel/src/main.rs, right after `setup_stack_guard_pages`),
+    # so this success-shaped line can only appear when `unmapped == total`; a
+    # mismatch prints "[MM] FAILED: stack guard readback" instead, which the
+    # generic `FAILED:` check above already catches — this regex only needs
+    # to confirm the success line was reached at all.
+    if ! grep -aqE '\[MM\] Stack guard readback: [0-9]+/[0-9]+ stack bottoms unmapped' "$log" 2>/dev/null; then
+        missing="$missing\n        [MM] Stack guard readback: N/N stack bottoms unmapped"
+    fi
+    # Per-secondary-hart markers, one pair per hart 1..smp-1 — every hart
+    # `-smp $smp` gives this kernel must independently prove it took a real
+    # PSCI CPU_ON, published its own MPIDR + hart id, and ticked at least
+    # once, not just that HART 1 (the SGI target) did.
+    local h=1
+    while [ "$h" -lt "$smp" ]; do
+        grep -aqE "\[SMP\] hart $h online: MPIDR_EL1=0x[0-9a-f]+ current_cpu_id\(\)=$h" "$log" 2>/dev/null \
+            || missing="$missing\n        [SMP] hart $h online (current_cpu_id()=$h)"
+        grep -aqF "[SMP] hart $h took" "$log" 2>/dev/null \
+            || missing="$missing\n        [SMP] hart $h took N ticks"
+        h=$((h + 1))
+    done
+    # Lazy FP resting state, every hart including 0: CPACR_EL1.FPEN read
+    # back as 0b01 (EL0 traps) after its last boot-time writer. A hart left
+    # at 0b11 runs user FP untrapped, so its state is never saved on a
+    # switch. The failure prints `[FP] FAILED:`, caught by the generic check.
+    h=0
+    while [ "$h" -lt "$smp" ]; do
+        grep -aqF "[FP] hart $h CPACR_EL1.FPEN=0b01: EL0 FP traps" "$log" 2>/dev/null \
+            || missing="$missing\n        [FP] hart $h CPACR_EL1.FPEN=0b01"
+        h=$((h + 1))
+    done
+    if [ -n "$missing" ]; then
+        bad; echo "      the aarch64 kernel boot did not reach:"; printf "%b\n" "$missing"
+        echo "      log kept: $log"; return
+    fi
+    # Timer ticks: the kernel prints `FAILED:` itself when 5 ticks do not land
+    # near the time CNTFRQ_EL0 predicts (caught above); this only catches the
+    # check not running at all.
+    if ! grep -aqE "\[TIMER\] ticks: 5 in [0-9]+ ms" "$log" 2>/dev/null; then
+        bad; echo "      no [TIMER] ticks line: the periodic tick never ran"
+        echo "      log kept: $log"; return
+    fi
+    # PMM frame count > 0: read the actual number back rather than trust
+    # the marker's mere presence — a `0 total pages` line would still match
+    # the "[MM] PMM:" prefix above.
+    local a64_total_pages
+    a64_total_pages="$(grep -a "\[MM\] PMM:" "$log" | head -1 | sed -E 's/.* ([0-9]+) total.*/\1/')"
+    if [ -z "$a64_total_pages" ] || [ "$a64_total_pages" -eq 0 ]; then
+        bad; echo "      PMM reported 0 total pages"; echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log"
+}
+par "aarch64 kernel boots (EL1)"        aarch64_kernel_row "aarch64 kernel boots (EL1)"        ""                     1 2
+par "aarch64 kernel boots (EL2)"        aarch64_kernel_row "aarch64 kernel boots (EL2)"        ",virtualization=on"   2 2
+par "aarch64 kernel boots (EL1, -smp 4)" aarch64_kernel_row "aarch64 kernel boots (EL1, -smp 4)" ""                    1 4
+par "aarch64 shell answers help" shell_help_row "aarch64 shell answers help" arm
+
+# ── aarch64: PL011 console RX on interrupts (wave 7) ─────────────────────────
+#
+# riscv64's UART RX has been interrupt-driven (PLIC/APLIC -> `uart::irq_handler`
+# -> ring) for a long time; the aarch64 PL011 was polled. `arch_early_boot`
+# now reads the PL011's `interrupts` from the DTB (QEMU virt: SPI 1 -> INTID
+# 33), routes that SPI to the boot hart (GICD_IROUTER from MPIDR_EL1), enables
+# it, and unmasks RX/RX-timeout in the PL011; `handle_irq` drains the FIFO into
+# the ring and wakes the parked shell. Input is PACED, one byte per 50 ms, as
+# in the AIA row (never a flood: one IRQ per byte with no line rate made that
+# row's boot bimodal). The number is read back and must be > 0.
+#
+# Canary (hand-run, wave 7): `--features qemu,pl011-rx-irq-canary` leaves the
+# PL011's RX interrupt masked (GIC side still routed and enabled). The shell
+# still answers by polling, and this row goes red on the count, "delivered 0
+# time(s)".
+pl011_rx_irq_row() {
+    local label="aarch64 pl011 rx irq count"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/pl011-rx-irq.log" kcopy="$CI_LOG_DIR/pl011-rx-irq-kernel"
+    rm -f "$log" "$kcopy"
+    if [ ! -f "$A64_IMG" ]; then bad; echo "      not built: $A64_IMG"; return; fi
+    cp "$A64_IMG" "$kcopy"
+    par_ready
+    pl011_paced_input() { while :; do printf x || break; sleep 0.05; done; }
+    pl011_paced_input 2>/dev/null | qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
+        -nographic -kernel "$kcopy" >"$log" 2>&1 &
+    local qpid=$! i=0
+    while [ "$i" -lt 90 ]; do
+        grep -aqE "\[IRQ\] PL011 (INTID [0-9]+ \(uart\) delivered|RX interrupt not wired)" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$qpid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+    rm -f "$kcopy"
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel crashed — log kept: $log"; return
+    fi
+    if ! grep -aqE "\[IRQ\] PL011 0x9000000: DTB INTID 33 \(level\) .* enabled=true" "$log"; then
+        bad; echo "      the PL011 SPI was not derived/routed/enabled (want DTB INTID 33, level, enabled=true):"
+        grep -a "\[IRQ\] PL011\|\[IRQ\] no PL011" "$log" | tr -d '\r' | sed 's/^/      /'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aqE "\[IRQ\] PL011 INTID 33 \(uart\) delivered [1-9][0-9]* time" "$log"; then
+        ok; echo "      $(grep -a "\[IRQ\] PL011 INTID" "$log" | tr -d '\r')"; rm -f "$log"
+    else
+        bad; echo "      paced input, but no PL011 RX interrupt was counted:"
+        grep -a "\[IRQ\] PL011" "$log" | tr -d '\r' | sed 's/^/      /'
+        echo "      log kept: $log"
+    fi
+}
+par "aarch64 pl011 rx irq count" pl011_rx_irq_row
+
+# ── aarch64 userspace (Phase 6) ──────────────────────────────────────────────
+#
+# Two boots, one image each (hermetic — the guest WRITES to its FAT32, so
+# reusing an image across boots breaks the second run): `disk-aarch64.img`
+# autoruns HELLO.ELF (the milestone: EL0 entry, `write`+`exit` through `svc`,
+# the kernel prints the line and reaps the task); `disk-aarch64-systest.img`
+# autoruns SYSCALL_TEST.ELF (getpid/write/brk get/brk extend/write-to-new-page).
+# `[SCHED] aarch64 reaped tid=N` (`scheduler.rs`, `#[cfg(target_arch =
+# "aarch64")]` only — riscv64 prints nothing new here) is printed for EVERY
+# reaped task, so the row reads HELLO's own TID from its autorun line
+# (`[AUTORUN][MEM] tid=N HELLO.ELF`) and waits for that TID's reap; it used to
+# stop at the first `reaped` of any task, which can come before HELLO prints.
+# Canary (by hand, 2026-10-03, on synthetic logs through `a64_hello_reaped`):
+# another task reaped before HELLO prints -> still waits, passes once HELLO's
+# own reap appears; no HELLO autorun line -> never reaped, the row fails.
+a64_hello_tid() { # <log>: HELLO.ELF's TID from its autorun line, or nothing
+    grep -a "\] tid=[0-9]* HELLO\.ELF " "$1" 2>/dev/null \
+        | sed -n 's/.*\] tid=\([0-9][0-9]*\) HELLO\.ELF .*/\1/p' | sed -n '1p'
+}
+a64_hello_reaped() { # <log>: HELLO's own task was reaped
+    local t; t="$(a64_hello_tid "$1")"
+    [ -n "$t" ] && grep -aqE "\[SCHED\] aarch64 reaped tid=${t} slot=" "$1" 2>/dev/null
+}
+aarch64_userspace_row() {
+    local label="aarch64 userspace"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if [ -n "${A64_USERSPACE_TABLE_FAILED:-}" ]; then
+        bad; echo "      build/image_hashes_aarch64.rs was not generated"; return
+    fi
+    if [ ! -f "$A64_IMG" ]; then bad; echo "      not built: $A64_IMG"; return; fi
+
+    rm -f build/disk-aarch64.img build/disk-aarch64-systest.img
+    if ! make build/disk-aarch64.img build/disk-aarch64-systest.img >/dev/null 2>&1; then
+        bad; echo "      disk image build failed: make build/disk-aarch64.img \
+build/disk-aarch64-systest.img"
+        return
+    fi
+
+    # Boot a COPY of the kernel image and a COPY of each disk image — the
+    # guest writes FAT32 (BOOTMETA/log files), so reusing an image across
+    # runs, or across the two boots this row makes, breaks the second one.
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-userspace.img"
+    cp "$A64_IMG" "$img_copy"
+
+    # ── Boot 1: hello ────────────────────────────────────────────────────
+    local hello_disk="$CI_LOG_DIR/disk-aarch64-hello.img"
+    cp build/disk-aarch64.img "$hello_disk"
+    local systest_disk="$CI_LOG_DIR/disk-aarch64-systest.img"
+    cp build/disk-aarch64-systest.img "$systest_disk"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file="$hello_disk",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        a64_hello_reaped "$log" && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        grep -aq "FAILED:" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      hello: the kernel took an exception"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aq "FAILED:" "$log" 2>/dev/null; then
+        bad; echo "      hello: the boot log reported a failure:"
+        grep -a "FAILED:" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "Hello from user-space!" "$log" 2>/dev/null; then
+        bad; echo "      hello: its write() output never appeared"
+        echo "      log kept: $log"; return
+    fi
+    if ! a64_hello_reaped "$log"; then
+        bad; echo "      hello (tid=$(a64_hello_tid "$log")): exited but was never \
+reaped (do_schedule's Zombie arm never ran)"
+        echo "      log kept: $log"; return
+    fi
+    rm -f "$log"
+
+    # ── Boot 2: syscall_test ────────────────────────────────────────────
+    local log2="$CI_LOG_DIR/aarch64-userspace-systest.log"
+    rm -f "$log2"
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file="$systest_disk",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log2" 2>&1 &
+    pid=$!; i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aqF "[SYSCALL_TEST] ALL PASSED" "$log2" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log2" 2>/dev/null && break
+        grep -aq "FAILED:" "$log2" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log2" 2>/dev/null; then
+        bad; echo "      syscall_test: the kernel took an exception"
+        grep -a "AARCH64-TRAP" "$log2" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log2"; return
+    fi
+    if ! grep -aqF "[SYSCALL_TEST] ALL PASSED" "$log2" 2>/dev/null; then
+        bad; echo "      syscall_test: did not print ALL PASSED"
+        grep -a "SYSCALL_TEST\]" "$log2" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log2"; return
+    fi
+
+    ok; rm -f "$log2"
+}
+par "aarch64 userspace" aarch64_userspace_row
+
+# ── aarch64 networking (aarch64 parity program, network bring-up task) ──────
+#
+# riscv64's `kernel_main` brings up `azos_drv_virtio::virtio::net`, applies
+# the configured address, and runs a dedicated `net-poll` task; aarch64's own
+# `kernel_main` never called any of it (its own comments said so directly —
+# "no network bring-up on aarch64"). Both ISAs now go through the SAME shared
+# functions (`install_net_config`/`install_net`, `net_poll_task` — see
+# `kernel/src/boot/net.rs`'s own doc comments on each), called from each
+# `kernel_main` rather than a second copy. These two rows are aarch64's
+# twin of riscv64's `-netdev user,...` scenarios, over virtio-mmio (not
+# PCI) — `-global virtio-mmio.force-legacy=false` matches the blk row above
+# so the NIC negotiates the SAME (modern, v2) transport the driver has
+# actually been run against on this ISA, not legacy v1.
+#
+# Diskless on purpose for the first row (riscv64's own DHCP row boots
+# diskless too): device bring-up must not depend on a disk being present.
+aarch64_net_probe_row() {
+    local label="aarch64 network: NIC found + MAC"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if [ ! -f "$A64_IMG" ]; then bad; echo "      not built: $A64_IMG"; return; fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-netprobe.img"
+    cp "$A64_IMG" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+        >"$log" 2>&1 &
+    local pid=$! i=0
+    # Wait for the LAST line this row asserts (net-poll actually running),
+    # not for its creation: the row used to stop at "Created net-poll task"
+    # and then assert "Phase U1 ... started", which is printed ~50 lines
+    # later once the scheduler runs it. Wave 5's boot lines moved it past the
+    # kill point (gate 187: "created but never actually ran" on a kernel that
+    # runs it at boot line 233 when left alone).
+    while [ "$i" -lt 60 ]; do
+        grep -aqF "[NET-POLL] Phase U1: dedicated network polling task started" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        grep -aq "FAILED:" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aq "FAILED:" "$log" 2>/dev/null; then
+        bad; echo "      the boot log reported a failure:"
+        grep -a "FAILED:" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # The MAC is read back off the device (2 aligned 32-bit config-space
+    # words, unpacked) and asserted against the EXACT value QEMU's SLIRP NIC
+    # gives this scenario's `-netdev user` on this command line
+    # (52:54:00:12:34:56 — its fixed default, no `mac=` override above).
+    #
+    # A generic "six hex-pair octets" regex was tried first and does NOT
+    # discriminate: hand-verified this task by reverting `net.rs`'s MAC read
+    # to the historical per-byte low-byte-of-word bug that read-back
+    # function's own doc comment describes (offsets 1/2/3 of the config
+    # space are unaligned, so `mmio_read` rounds them down to offset 0 and
+    # every one of those three bytes reads back as MAC[0]) — the generic
+    # regex still matched the resulting `52:52:52:52:34:34`, a MAC this
+    # guest does not own. The exact-string check below fails on that same
+    # binary; reverting the bug makes it pass again.
+    if ! grep -aqF "[NET] VirtIO net: MAC 52:54:00:12:34:56" "$log" 2>/dev/null; then
+        bad; echo "      no MAC read back from the device (or the wrong one)"
+        grep -a "VirtIO net: MAC" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[NET] VirtIO net OK" "$log" 2>/dev/null; then
+        bad; echo "      NIC probe did not report OK"
+        echo "      log kept: $log"; return
+    fi
+    # Address configuration: `install_net_config` ran and `net_init` brought
+    # the stack up (both shared with riscv64 — see their own doc comments).
+    if ! grep -aqE '\[CFG\] net: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ gw [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$log" 2>/dev/null; then
+        bad; echo "      no [CFG] net: address line"
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[NET] Stack ready" "$log" 2>/dev/null; then
+        bad; echo "      net_init() never reported the stack ready"
+        echo "      log kept: $log"; return
+    fi
+    # net-poll: shared with riscv64, but pinned to the LAST ONLINE hart here
+    # (this board's -smp varies across rows) rather than a literal 3 — see
+    # `net_poll_task`'s own call site in `kernel_main` for why. -smp 2 above
+    # means hart 1.
+    if ! grep -aqF "[SCHED] Created net-poll task (IO-wait, <= sched_hz=100 Hz) [hart 1]" "$log" 2>/dev/null; then
+        bad; echo "      net-poll task was not created on the expected hart"
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[NET-POLL] Phase U1: dedicated network polling task started" "$log" 2>/dev/null; then
+        bad; echo "      net-poll task was created but never actually ran"
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log"
+}
+par "aarch64 network: NIC found + MAC" aarch64_net_probe_row
+
+# aarch64's twin of riscv64's `network: DHCP lease` row (`run_dhcp_smoke` —
+# shared code, see its own doc comment). Needs its OWN build+image: the
+# `dhcp-smoke` feature changes `kernel_main`'s boot sequence, so reusing
+# `$A64_IMG` here would be exactly the stale-binary trap this project's own
+# notes warn about (a build failure leaving the PREVIOUS image for this row
+# to boot and report a verdict for). Deleted before rebuilding for the same
+# reason `$A64_IMG` itself is.
+aarch64_dhcp_row() {
+    local label="aarch64 network: DHCP lease"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    local dhcp_kernel="target/aarch64-unknown-none-softfloat/release/kernel"
+    local dhcp_img="target/aarch64-unknown-none-softfloat/release/kernel-dhcp-smoke.img"
+    rm -f "$dhcp_kernel" "$dhcp_img"
+    local build_out
+    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --features dhcp-smoke \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+       || [ ! -f "$dhcp_kernel" ]; then
+        bad; echo "      dhcp-smoke aarch64 kernel did NOT build:"
+        printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return
+    fi
+    local a64_objcopy
+    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    if [ ! -x "$a64_objcopy" ] || ! "$a64_objcopy" -O binary "$dhcp_kernel" "$dhcp_img" \
+       || [ ! -f "$dhcp_img" ]; then
+        bad; echo "      llvm-objcopy not found or ELF -> .img failed"
+        return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-dhcp.img"
+    cp "$dhcp_img" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+        >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aqE "\[DHCPSMOKE\] (PASS|FAIL)" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[DHCPSMOKE] PASS" "$log" 2>/dev/null; then
+        bad; echo "      DHCP smoke did not PASS:"
+        grep -a "DHCPSMOKE\]" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$dhcp_kernel" "$dhcp_img"
+}
+par "aarch64 network: DHCP lease" aarch64_dhcp_row
+
+# ── aarch64: cross-hart TLB shootdown (wave 8) ──────────────────────────────
+#
+# The riscv64 "tlb:" rows' probe on this ISA, where the shootdown is the
+# broadcast `TLBI VAAE1IS` + `DSB ISH` and needs no IPI (remote mask 0 is the
+# expected value here). A task on hart 2 runs a private TTBR0 table, reads a
+# page and spins with interrupts masked; hart 1 unmaps it through `vmm::unmap`
+# and overwrites the frame. The second read must take a level-3 translation
+# fault (ESR 0x96000007). The canary builds the non-broadcast `TLBI VAAE1`
+# (`tlb-local-only`) and must read the overwritten frame: `STALE READ` is a
+# line only that path prints, and it fails the first row.
+aarch64_tlb_row() { # aarch64_tlb_row <label> <features> <marker> <fail-regex>
+    local label="$1" feats="$2" marker="$3" failre="$4"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    local kern="target/aarch64-unknown-none-softfloat/release/kernel"
+    local img="target/aarch64-unknown-none-softfloat/release/kernel-tlb-smoke.img"
+    rm -f "$kern" "$img"
+    local build_out
+    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+       || [ ! -f "$kern" ]; then
+        bad; echo "      $feats aarch64 kernel did NOT build:"
+        printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return
+    fi
+    local a64_objcopy
+    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    if [ ! -x "$a64_objcopy" ] || ! "$a64_objcopy" -O binary "$kern" "$img" || [ ! -f "$img" ]; then
+        bad; echo "      llvm-objcopy not found or ELF -> .img failed"
+        return
+    fi
+    local img_copy="${log%.log}-kernel.img"
+    cp "$img" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        -kernel "$img_copy" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 120 ]; do
+        grep -aq "TLB-SMOKE\]" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aqE "AARCH64-TRAP\] unhandled|$failre" "$log" 2>/dev/null; then
+        bad; echo "      wrong verdict or exception:"
+        grep -aE "AARCH64-TRAP|TLB-SMOKE" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "$marker" "$log" 2>/dev/null; then
+        bad; echo "      marker not found:"
+        grep -a "TLB-SMOKE\]" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$kern" "$img" "$img_copy"
+}
+par "aarch64 tlb: stale access faults" aarch64_tlb_row "aarch64 tlb: stale access faults" "qemu,tlb-smoke" \
+    "[TLB-SMOKE] PASS: hart 2 faulted (cause=0x96000007) on the page hart 1 unmapped after the touch; remote mask=0x0 harts signalled=0; munmap path faulted too (cause=0x96000007)" \
+    'TLB-SMOKE\] (STALE READ|FAILED)|KTASK-ROOT\] FAILED'
+par "aarch64 tlb: canary reads stale data" aarch64_tlb_row "aarch64 tlb: canary reads stale data" "qemu,tlb-smoke,tlb-local-only" \
+    "[TLB-SMOKE] STALE READ on hart 2: value=0x5a5a5a5a5a5a5a5a (unmap) value=0x5a5a5a5a5a5a5a5a (munmap path)" \
+    'TLB-SMOKE\] (PASS|FAILED)'
+
+# ── aarch64: the IMU's acquisition stamp (wave 11, SENSORTS) ────────────────
+#
+# The riscv64 rows "sensors: IMU stamped at acquisition" / "sensors: canary
+# (frozen stamp is stale)" state the test (`kernel/src/smokes/sensor_ts.rs`):
+# twenty IMU reads stamped inside their own read, and the sensor bus judging
+# the IMU sample by its ACQUISITION stamp. The canary build
+# (`sensor-ts-freeze`) hands every reading the first reading's stamp: readings
+# keep arriving and the bus must call them stale (`[SENSORTS] STALE:`, printed
+# only on that path, with L0's verdict). A bus stamped at delivery stays fresh
+# there and the canary row goes red.
+aarch64_sensor_ts_row() { # aarch64_sensor_ts_row <label> <features> <marker> <fail-regex>
+    local label="$1" feats="$2" marker="$3" failre="$4"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    local kern="target/aarch64-unknown-none-softfloat/release/kernel"
+    local img="target/aarch64-unknown-none-softfloat/release/kernel-sensor-ts.img"
+    rm -f "$kern" "$img"
+    local build_out
+    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+       || [ ! -f "$kern" ]; then
+        bad; echo "      $feats aarch64 kernel did NOT build:"
+        printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return
+    fi
+    local a64_objcopy
+    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    if [ ! -x "$a64_objcopy" ] || ! "$a64_objcopy" -O binary "$kern" "$img" || [ ! -f "$img" ]; then
+        bad; echo "      llvm-objcopy not found or ELF -> .img failed"
+        return
+    fi
+    local img_copy="${log%.log}-kernel.img"
+    cp "$img" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqE "SENSORTS\] (PASS|FAILED|reads:)" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aqE "AARCH64-TRAP\] unhandled|$failre" "$log" 2>/dev/null; then
+        bad; echo "      wrong verdict or exception:"
+        grep -aE "AARCH64-TRAP|SENSORTS" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "$marker" "$log" 2>/dev/null; then
+        bad; echo "      marker not found:"
+        grep -a "SENSORTS\]" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; grep -a "SENSORTS\] \(PASS\|STALE\)" "$log" | tr -d '\r' | sed 's|^|      |'
+    rm -f "$log" "$kern" "$img" "$img_copy"
+}
+par "aarch64 sensors: IMU stamped at acquisition" aarch64_sensor_ts_row "aarch64 sensors: IMU stamped at acquisition" "qemu,sensor-ts-smoke" \
+    "[SENSORTS] PASS: 20 IMU reads stamped inside their read, monotonic" \
+    'SENSORTS\] (STALE|FAILED)'
+par "aarch64 sensors: canary (frozen stamp is stale)" aarch64_sensor_ts_row "aarch64 sensors: canary (frozen stamp is stale)" "qemu,sensor-ts-freeze" \
+    "[SENSORTS] STALE: IMU readings still arriving (20/20 answered)" \
+    'SENSORTS\] (PASS|FAILED)'
+
+# ── aarch64: install_sched_hooks (aarch64 parity task S2) ───────────────────
+#
+# `install_sched_hooks` (kernel/src/boot/sched.rs) is the shared function BOTH
+# `kernel_main`s now call to wire PiMutex boost/restore, K-C29's deferred
+# resched, the task-exit resource-release hook, and WaitQueue block/wake.
+# riscv64 already called all four inline; aarch64 called none of them —
+# silently, with no error and no failing test on either ISA (that function's
+# own doc has the full reasoning). This row proves the ACTUAL EFFECT of each
+# callback on aarch64, not merely that the registration call was made:
+#
+#   - waitqueue: a producer counts to a ceiling and only then wakes a
+#     waiter blocked on the same queue; the waiter reads the counter right
+#     after `wait()` returns. A real block reads back near the ceiling; a
+#     `wait()` that silently degrades to a no-op (no callback registered)
+#     reads back near zero — the waiter races ahead instead of blocking.
+#   - cap revocation: a child task mints itself a typed capability, exits,
+#     and an observer reads the SAME pool slot back (by index, not by TID —
+#     see `sched_hooks_smoke`'s own doc for why a TID-keyed read cannot
+#     discriminate here). Revoked reads `after=0`; a hook that never ran
+#     leaves `after=1`.
+#   - pimutex: a low-priority holder spawns a high-priority waiter only
+#     after it already owns the mutex, so the two cannot race for it. A
+#     real boost reads the holder's OWN live priority as raised to the
+#     waiter's while contended; no callback leaves it at base — or, as
+#     measured while building this row, leaves the holder starved forever
+#     (the classic priority-inversion deadlock this mechanism exists to
+#     prevent), in which case this row times out rather than reading a
+#     wrong number.
+#
+# `sched-hooks-smoke` composes `qemu` (same shape as `reflex-smoke`) and is
+# off by default — enabling it cannot perturb any other row's log-matching.
+aarch64_sched_hooks_row() {
+    local label="aarch64: sched hooks"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    local sh_kernel="target/aarch64-unknown-none-softfloat/release/kernel"
+    local sh_img="target/aarch64-unknown-none-softfloat/release/kernel-sched-hooks-smoke.img"
+    rm -f "$sh_kernel" "$sh_img"
+    local build_out
+    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
+            --target aarch64-unknown-none-softfloat -p azos_kernel \
+            --features qemu,sched-hooks-smoke \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+       || [ ! -f "$sh_kernel" ]; then
+        bad; echo "      sched-hooks-smoke aarch64 kernel did NOT build:"
+        printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return
+    fi
+    local a64_objcopy
+    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    if [ ! -x "$a64_objcopy" ] || ! "$a64_objcopy" -O binary "$sh_kernel" "$sh_img" \
+       || [ ! -f "$sh_img" ]; then
+        bad; echo "      llvm-objcopy not found or ELF -> .img failed"
+        return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-sched-hooks.img"
+    cp "$sh_img" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" >"$log" 2>&1 &
+    local pid=$! i=0
+    # Generous: the waitqueue producer's plain-counter loop measured slower
+    # on aarch64 QEMU-TCG than the same loop on riscv64's (the ceiling below
+    # is sized so this still finishes well inside this budget on the slower
+    # ISA — see `sched_hooks_smoke`'s own doc for the earlier, mistaken
+    # placement that made this look broken instead of merely early).
+    # All three lines, not just the last one expected: their order follows
+    # each task's own wait, which is on the clock (wave 11), not a fixed
+    # count of yields that used to make pimutex reliably print last.
+    while [ "$i" -lt 220 ]; do
+        grep -aq "SCHEDHOOKS\] pimutex" "$log" 2>/dev/null \
+            && grep -aq "SCHEDHOOKS\] waitqueue" "$log" 2>/dev/null \
+            && grep -aq "SCHEDHOOKS\] cap revocation" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception during boot:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aq "FAILED:" "$log" 2>/dev/null; then
+        bad; echo "      the boot log reported a failure:"
+        grep -a "FAILED:" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # waitqueue: read the counter back and require it near the ceiling —
+    # not just that the line printed. A `wait()` that silently degrades to
+    # a no-op still prints this line, just with a small number.
+    local wq_line wq_counter wq_ceiling
+    wq_line="$(grep -a "SCHEDHOOKS\] waitqueue" "$log" 2>/dev/null | head -1)"
+    if [ -z "$wq_line" ]; then
+        bad; echo "      no waitqueue marker — the waiter task never resumed \
+(wait() hung, or the boot never reached it)"
+        echo "      log kept: $log"; return
+    fi
+    wq_counter="$(printf '%s' "$wq_line" | sed -E 's/.*counter at wake = ([0-9]+).*/\1/')"
+    wq_ceiling="$(printf '%s' "$wq_line" | sed -E 's/.*\(ceiling ([0-9]+)\).*/\1/')"
+    if [ -z "$wq_counter" ] || [ -z "$wq_ceiling" ] || [ "$wq_counter" -lt $((wq_ceiling / 2)) ]; then
+        bad; echo "      waitqueue: counter at wake = $wq_counter, ceiling \
+$wq_ceiling — wait() returned before the producer made real progress \
+(degraded to a no-op)"
+        echo "      log kept: $log"; return
+    fi
+    # cap revocation: the exact readback, not just the line's presence.
+    if ! grep -aqE "SCHEDHOOKS\] cap revocation: before=1 after=0 \(tid=[0-9]+ slot=[0-9]+\)" \
+            "$log" 2>/dev/null; then
+        bad; echo "      cap revocation did not read back before=1 after=0:"
+        grep -a "SCHEDHOOKS\] cap revocation" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # pimutex: the boost must be observed while L is holding the mutex
+    # contended by H — base 20 (unboosted) rising to 4 (H's priority).
+    if ! grep -aqE "SCHEDHOOKS\] pimutex: holder priority base=20 while-contended=4 " \
+            "$log" 2>/dev/null; then
+        bad; echo "      pimutex boost not observed (base should read 20, \
+while-contended should read 4):"
+        grep -a "SCHEDHOOKS\] pimutex" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$sh_kernel" "$sh_img"
+}
+par "aarch64: sched hooks" aarch64_sched_hooks_row
+
+# ── aarch64: flight recorder + e-stop latch (aarch64 parity task S2) ────────
+#
+# `install_flight_recorder` (kernel/src/boot/robot.rs) is the shared function both
+# `kernel_main`s call to arm the FAT32-backed flight recorder AND replay the
+# durable e-stop latch — riscv64 had this inline in its own FAT32-mount arm;
+# aarch64 called none of it, so "was the e-stop latched when we last shut
+# down?" silently answered "not latched" on every boot there, regardless of
+# what was on disk. riscv64 has a gate row for this property (`safety: latch
+# survives reboot`, driven by a real brain-link peer + kill-switch GPIO); this
+# is its aarch64 twin, using `estop-latch-smoke`'s direct durable-write call
+# (`domains/robot/behavior::logger::log_safety_violation_durable`) instead of that
+# whole apparatus — same on-disk record, same replay code, same ISA-neutral
+# `domains/robot/behavior`/`domains/robot/safety-core`, a smaller trigger.
+#
+# Two boots, ONE image (hermetic per boot — the SECOND boot reads what the
+# FIRST wrote, so reusing the image across the pair is the point, not a bug;
+# see feedback-hermetic-qemu-scenarios for why that rule is usually the
+# opposite way round).
+aarch64_flight_recorder_row() {
+    local label="aarch64: flight recorder"
+    printf "  %-26s" "${label}..."
+    local log1="$CI_LOG_DIR/aarch64-flight-recorder-boot1.log"
+    local log2="$CI_LOG_DIR/aarch64-flight-recorder-boot2.log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log1" "$log2"
+    local fr_kernel="target/aarch64-unknown-none-softfloat/release/kernel"
+    local fr_img="target/aarch64-unknown-none-softfloat/release/kernel-flight-recorder-smoke.img"
+    rm -f "$fr_kernel" "$fr_img"
+    local build_out
+    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
+            --target aarch64-unknown-none-softfloat -p azos_kernel \
+            --features qemu,estop-latch-smoke \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+       || [ ! -f "$fr_kernel" ]; then
+        bad; echo "      estop-latch-smoke aarch64 kernel did NOT build:"
+        printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return
+    fi
+    local a64_objcopy
+    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    if [ ! -x "$a64_objcopy" ] || ! "$a64_objcopy" -O binary "$fr_kernel" "$fr_img" \
+       || [ ! -f "$fr_img" ]; then
+        bad; echo "      llvm-objcopy not found or ELF -> .img failed"
+        return
+    fi
+    rm -f build/disk-aarch64.img
+    make_disk build/disk-aarch64.img
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-flight-recorder.img"
+    cp "$fr_img" "$img_copy"
+
+    # Boot 1: fresh disk, writes the durable latching record.
+    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-aarch64.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 \
+        >"$log1" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aq "ESTOPLATCHSMOKE\]" "$log1" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log1" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log1" 2>/dev/null; then
+        bad; echo "      boot 1: the kernel took an exception:"
+        grep -a "AARCH64-TRAP" "$log1" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log1"; return
+    fi
+    if ! grep -aqF "ESTOPLATCHSMOKE] wrote durable SAFETY_ESTOP record" "$log1" 2>/dev/null; then
+        bad; echo "      boot 1: never wrote the durable SAFETY_ESTOP record:"
+        grep -a "ESTOPLATCHSMOKE\]\|LOG\]" "$log1" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log1"; return
+    fi
+
+    # Boot 2: SAME image. Replay must read boot 1's record back.
+    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-aarch64.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 \
+        >"$log2" 2>&1 &
+    pid=$!; i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aq "ESTOPLATCHSMOKE\]" "$log2" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log2" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log2" 2>/dev/null; then
+        bad; echo "      boot 2: the kernel took an exception:"
+        grep -a "AARCH64-TRAP" "$log2" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log2"; return
+    fi
+    # The actual proof: boot 2 replayed what boot 1 wrote. Exact text, same
+    # line `boot_latch::apply` prints on riscv64's own gate row.
+    if ! grep -aqF "SAFETY] ESTOP restored: the last session ended latched (action 2)" \
+            "$log2" 2>/dev/null; then
+        bad; echo "      boot 2 did NOT restore the latch boot 1 wrote:"
+        grep -a "SAFETY\]\|LOG\]" "$log2" | tr -d '\r' | sed 's|^|        |'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    ok; rm -f "$log1" "$log2" "$fr_kernel" "$fr_img" build/disk-aarch64.img
+}
+par "aarch64: flight recorder" aarch64_flight_recorder_row
+
+# ── aarch64: sys-wdt runs AND the boot is actually marked good ──────────────
+#
+# Two properties, one row, and the second is the one that matters.
+#
+# `sys-wdt` was riscv64-only until this row existed: aarch64's `kernel_main`
+# created no such task, so nothing on that ISA ever called
+# `ota_mark_boot_good`. `ota_boot_validate` still INCREMENTED `boot_count` on
+# every boot, so every aarch64 boot printed a higher `count=N/3` than the last
+# and, on a board with a second slot installed, the third boot would have
+# rolled back to `last_good` — and then done it again, forever, because the
+# slot it rolled back to could not mark itself good either.
+#
+# WHY TWO BOOTS, AND WHY THE SAME DISK. A row that asserted only "[WDT] Phase
+# 16 system watchdog running" and "[OTA] Boot marked good" would have passed
+# the moment the task was spawned, whether or not the mark reached the
+# volume — and a row asserting only the log line would have passed against a
+# `BOOTMETA` write that silently failed. The property is a STATE: `boot_count`
+# stops climbing. Only a second boot off the volume the first one wrote can
+# see it. So both boots share ONE disk copy — that sharing IS the test — while
+# the copy itself keeps this row hermetic from every other row, which matters
+# because the guest writes this volume.
+#
+# Measured before the fix, on this exact pair of boots: `count=1/3` then
+# `count=2/3`, with no `[WDT]` line in either log.
+#
+# THE WAIT IS 30 SECONDS OF REAL UPTIME and is not negotiable down: the delay
+# is `azos_ota::OTA_BOOT_GOOD_DELAY_S`, and shortening it under a test
+# feature would prove a delay production never ships. Boot 1 reached the mark
+# at 32 s wall (measured), so the bound is 90 s — three times the delay, not
+# a value tuned to the one run that passed.
+aarch64_boot_good_row() {
+    local label="aarch64: OTA boot good"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log1="$CI_LOG_DIR/aarch64-boot-good-1.log"
+    local log2="$CI_LOG_DIR/aarch64-boot-good-2.log"
+    rm -f "$log1" "$log2"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      aarch64 kernel (--features qemu) did not build"; return
+    fi
+    if ! make build/disk-aarch64.img >/dev/null 2>&1; then
+        bad; echo "      disk image build failed: make build/disk-aarch64.img"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-boot-good.img"
+    # ONE disk copy, deliberately shared by both boots below — see this row's
+    # header. Fresh from the Makefile each run (`boot_count=0` in its BOOTMETA),
+    # so boot 1 always starts from 0 whatever a previous gate left behind.
+    local disk_copy="$CI_LOG_DIR/disk-aarch64-boot-good-run.img"
+    cp "$A64_IMG" "$img_copy"
+    cp build/disk-aarch64.img "$disk_copy"
+
+    a64_bg_boot() { # a64_bg_boot <log> <marker> <max-seconds>
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$img_copy" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$1" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt "$3" ]; do
+            grep -aqF "$2" "$1" 2>/dev/null && break
+            grep -aq "AARCH64-TRAP\] unhandled" "$1" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    }
+
+    # Boot 1: fresh BOOTMETA. The task must run, and it must mark the boot.
+    # `ota_mark_boot_good` writes BOOTMETA and THEN prints, so breaking on the
+    # print cannot race the write.
+    a64_bg_boot "$log1" "[OTA] Boot marked good" 90
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log1" 2>/dev/null; then
+        bad; echo "      boot 1: the kernel took an exception:"
+        grep -a "AARCH64-TRAP" "$log1" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log1"; return
+    fi
+    # Half one: the task is not merely created, it ENTERED. This line is
+    # `system_wdt_task`'s own first statement.
+    if ! grep -aqF "[WDT] Phase 16 system watchdog running" "$log1" 2>/dev/null; then
+        bad; echo "      boot 1: sys-wdt never entered — the task was not created,"
+        echo "      or was created on a hart nothing drains (check the pin against"
+        echo "      this row's -smp 2):"
+        grep -a "SCHED\] Created sys-wdt\|WDT\]" "$log1" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log1"; return
+    fi
+    if ! grep -aqF "[OTA] Boot: slot=A count=1/3" "$log1" 2>/dev/null; then
+        bad; echo "      boot 1 did not start from a fresh BOOTMETA (expected count=1/3)"
+        echo "      — the disk copy is stale, so boot 2 below would prove nothing:"
+        grep -a "OTA] Boot:" "$log1" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log1"; return
+    fi
+    # Half two, part one: the mark was reached at all (the hook is installed
+    # AND sys-wdt iterated for 30 s, not just entered and died).
+    if ! grep -aqF "[OTA] Boot marked good (slot=A)" "$log1" 2>/dev/null; then
+        bad; echo "      boot 1: sys-wdt ran but never marked the boot good within 90 s."
+        echo "      Either install_ota_boot_good_hook was not called (disk-gated block"
+        echo "      in aarch64 kernel_main), or the task stopped iterating:"
+        grep -a "WDT\]\|OTA\]" "$log1" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log1"; return
+    fi
+
+    # Boot 2: the SAME volume boot 1 wrote. This is the whole row.
+    a64_bg_boot "$log2" "[OTA] Boot: slot=" 40
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log2" 2>/dev/null; then
+        bad; echo "      boot 2: the kernel took an exception:"
+        grep -a "AARCH64-TRAP" "$log2" | tr -d '\r' | sed 's|^|        |'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    # Half two, part two: `boot_count` did NOT climb. Without the mark this
+    # reads count=2/3, and at 3/3 a board with a second slot rolls back.
+    if ! grep -aqF "[OTA] Boot: slot=A count=1/3" "$log2" 2>/dev/null; then
+        bad; echo "      boot 2: boot_count CLIMBED — the mark boot 1 printed did not"
+        echo "      reach the volume, so OTA would still roll this board back:"
+        echo "        boot 1: $(grep -a 'OTA] Boot: slot=' "$log1" | tr -d '\r' | sed -n '1p')"
+        echo "        boot 2: $(grep -a 'OTA] Boot: slot=' "$log2" | tr -d '\r' | sed -n '1p')"
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    ok; rm -f "$log1" "$log2" "$img_copy" "$disk_copy"
+}
+# NOT invoked here. This row builds through `a64_kbuild`, which bash has not
+# defined yet at this point in the file — a function must be defined before the
+# line that calls it RUNS, and every other `a64_kbuild` caller is itself inside
+# a function invoked further down. Called after the guard rows instead; see
+# there. (Gate 169 went red exactly here: `a64_kbuild: command not found`.)
+
+# ── aarch64: file-open / captest / ipctest parity (aarch64 parity program) ──
+#
+# `aarch64_kernel_row`/`aarch64_userspace_row` above build the aarch64 kernel
+# with NO cargo features — proof the port compiles and boots hello/systest at
+# all. These three rows need `qemu` (`crates/core/topology/src/builder.rs`'s
+# `cap-refusal-canary`: `RESOURCE_MMIO_RTC`/`RESOURCE_PWM_MOTOR`/
+# `RESOURCE_GPIO_MOTOR`, and `gpio-aq3-smoke`), the same feature riscv64's own
+# `kbuild "qemu"` scenarios below build with — so they rebuild their own
+# kernel image rather than reuse `$A64_IMG`, mirroring riscv64's `kbuild`.
+#
+# Root cause this task found and fixed: `crates/core/syscall::file_ops::
+# set_file_ops` — the seam behind `SYS_OPEN`/`SYS_FILE_OPEN_TYPED`/
+# `SYS_SPAWN` — was installed only from riscv64's `kernel_main`; aarch64's own
+# never called it, so every file-open syscall returned -1 regardless of
+# whether FAT32 was mounted underneath it. `install_ring3_seams`
+# (`kernel/src/boot/seams.rs`) is now the ONE function both ISAs call — see that
+# function's own doc for the full reasoning, and `install_robot_hw` alongside
+# it for the matching gap in the GPIO/PWM/I2C/motor-binding boot step
+# `captest`'s cap-refusal checks needed.
+#
+# "forked children (fork+wait identity)": covered here, not as a separate
+# row — abitest's own `fork()`/`wait()`/`wait_status()`/`waitpid()` checks
+# (six of its 173) are part of the "all checks" row below, the same as on
+# riscv64.
+a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64_IMG_OUT
+    local feats="$1"
+    rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT"
+    local out
+    # KCONFIG_CONFIG pinned to config/defconfigs/qemu-aarch64.config (U12-3): without
+    # this override every aarch64 build inherited the exported primary-column
+    # KCONFIG_CONFIG above (an ARCH_RISCV64 config before this change existed
+    # at all), so `azos_limits` built ARCH_RISCV64's constants for an
+    # ARCH_AARCH64 kernel.
+    if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; then
+        printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return 1
+    fi
+    if printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+        printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return 1
+    fi
+    [ -f "$A64_KERNEL_OUT" ] || return 1
+    local a64_objcopy
+    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    [ -x "$a64_objcopy" ] || return 1
+    "$a64_objcopy" -O binary "$A64_KERNEL_OUT" "$A64_IMG_OUT" 2>/dev/null
+    [ -f "$A64_IMG_OUT" ] || return 1
+    # Same FP-free proof as the "aarch64 kernel FP-free" row, on this feature
+    # set's own ELF (more crates are linked in than in the no-feature build).
+    local fpfree
+    if ! fpfree="$(bash tools/aarch64_fp_free_check.sh "$A64_KERNEL_OUT" 2>&1)"; then
+        printf '%s\n' "$fpfree" | head -8
+        return 1
+    fi
+}
+a64_kbuild() { # a64_kbuild <comma-separated-features>
+    par_shared "a64_kbuild $1" || return 1
+    a64_kbuild_out "$@"
+}
+
+# aarch64 abitest: mirrors riscv64's "userspace: ABI conformance" row —
+# every check the binary runs, read back rather than counted here (the
+# total drifts as `userspace/tests/abitest` grows; do not hardcode it). One KNOWN
+# gap, not silenced: `vdso flags bit 0: rdtime native`
+# is riscv64-only BY DESIGN (`install_vdso`'s own doc — aarch64 has no
+# `rdtime`-from-U-mode fast path yet). Any OTHER failure, or a different
+# failure count, fails the row: the count and the failing line(s) are read
+# back, not just ALL PASSED's absence.
+aarch64_abitest_row() {
+    local label="aarch64 abitest"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/aarch64-abitest.log"
+    rm -f "$log"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      aarch64 kernel (--features qemu) did not build"; return
+    fi
+    if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+        bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-abitest.img"
+    local disk_copy="$CI_LOG_DIR/disk-aarch64-abitest-run.img"
+    cp "$A64_IMG" "$img_copy"
+    cp build/disk-aarch64-abitest.img "$disk_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    # `[0-9]+ check(s) run` is NOT the last line abitest prints — `FAILED: N
+    # check(s)` (when N>0) follows it. Killing on the FIRST match races that
+    # second line: caught once, empty `fail_lines` on a run that genuinely
+    # failed. Waited out with one extra settle poll below instead of trusted.
+    while [ "$i" -lt 90 ]; do
+        grep -aqE "ABITEST\] [0-9]+ check\(s\) run" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    sleep 1
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqE "\[ABITEST\] [0-9]+ check\(s\) run" "$log" 2>/dev/null; then
+        bad; echo "      abitest never printed its own summary line"
+        echo "      log kept: $log"; return
+    fi
+    # The page-table free check (riscv64's "mem quota lets real work through"
+    # row carries it too): on this ISA it sees the freeing PE's own TTBR0_EL1.
+    # Canary, run by hand: `qemu,exit-satp-canary` prints it at every exit.
+    if grep -aq "\[MM\] page-table root" "$log" 2>/dev/null; then
+        bad; echo "      a teardown found its root still live:"
+        grep -a -m3 "\[MM\] page-table root" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # `fails` comes from COUNTING the `  FAIL  ` lines themselves, the same
+    # readback `aarch64_ipctest_row` uses — not from parsing the `FAILED: N`
+    # summary line, which is one more print after the trigger this loop
+    # breaks on and can still be mid-flush when the settle sleep above ends.
+    local fail_lines
+    fail_lines="$(grep -a '\[ABITEST\]  FAIL  ' "$log" | sed 's/^\[ABITEST\]  FAIL  //')"
+    local fails
+    fails="$(printf '%s\n' "$fail_lines" | grep -c .)"
+    if [ "$fails" -eq 0 ]; then
+        ok; rm -f "$log"; return
+    fi
+    if [ "$fails" -eq 1 ] && printf '%s\n' "$fail_lines" | grep -qF "vdso flags bit 0: rdtime native"; then
+        ok; rm -f "$log"; return
+    fi
+    bad; echo "      abitest reported $fails failure(s), not the one known aarch64 gap:"
+    printf '%s\n' "$fail_lines" | sed 's|^|        |'
+    echo "      log kept: $log"
+}
+par "aarch64 abitest" aarch64_abitest_row
+
+# aarch64 twin of `userspace: a crashed ring-3 driver is restarted` (RFC-0049
+# M4, `kernel/src/drv_supervisor.rs`): the kernel stops gpio_drv four times;
+# three restarts must answer again and the fourth death must stay down, with
+# 3 restarts + 1 give-up added to the flight recorder. `[SUP] FAIL` is a
+# verdict; `sup-canary` (supervisor off) fails on `[SUP] FAIL not restarted
+# after kill 1`; a supervisor wake before the dead driver's address-space
+# teardown fails on `[SUP] FAIL the supervisor was woken` (wave 12, see the
+# riscv64 row). Only `[SUP] FAIL`, the driver's own FAILED line and an
+# unhandled trap are judged here: this ISA's `--features qemu` boot prints the
+# known `[SCHED] FAILED: task A and B did not interleave` (front INV), which is
+# not this row's property. `-smp 2`: the autorun hart (3) does not exist, so
+# the successor must follow the dead driver's live hart, not the constant.
+aarch64_sup_row() {
+    local label="aarch64 driver restarted"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/aarch64-sup.log"
+    rm -f "$log"
+    if ! a64_kbuild "qemu,sup-smoke"; then
+        bad; echo "      aarch64 kernel (--features qemu,sup-smoke) did not build"; return
+    fi
+    if ! make build/disk-aarch64-gpiodrv.img >/dev/null 2>&1; then
+        bad; echo "      disk image build failed: make build/disk-aarch64-gpiodrv.img"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-sup.img"
+    local disk_copy="$CI_LOG_DIR/disk-aarch64-gpiodrv-sup.img"
+    cp "$A64_IMG" "$img_copy"
+    cp build/disk-aarch64-gpiodrv.img "$disk_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqE "\[SUP\] (PASS|FAIL)|\[gpio_drv\] .*FAILED|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img_copy" "$disk_copy"
+    if grep -aqE "\[SUP\] FAIL|\[gpio_drv\] .*FAILED|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      scenario reported failure:"
+        grep -aE "\[SUP\] FAIL|\[gpio_drv\] .*FAILED|AARCH64-TRAP" "$log" | tr -d '\r' | sed -n '1,4p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aq "\[SUP\] PASS" "$log" 2>/dev/null; then
+        bad; echo "      no '[SUP] PASS' within 240 s — last lines:"
+        tr -d '\r' < "$log" | tail -5 | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log"
+}
+par "aarch64 driver restarted" aarch64_sup_row
+# Leave $A64_IMG on an ordinary qemu build for the rows below.
+a64_kbuild "qemu" >/dev/null 2>&1 || true
+
+# aarch64 ipctest: mirrors riscv64's ipctest phase A (1600 of 1600 fast-IPC
+# round trips). **No tolerated failure — a clean run or nothing.**
+#
+# This row used to tolerate exactly one failure named `B/client reported at
+# all`, blamed on an aarch64 cross-hart WAKE defect. **That diagnosis was
+# wrong and cost a week.** The real cause, found 2026-09-25, was a per-board
+# constant in shared userspace test code: `userspace/tests/ipctest` hardcoded
+# `TICKS_PER_MS = 10_000`, right for riscv64's fixed 10 MHz CLINT and wrong
+# for aarch64, whose `CNTVCT_EL0` ticks at the live `CNTFRQ_EL0` — 1 GHz in
+# this QEMU. Every `WAIT_MS` deadline in the file was therefore enforced at
+# 1/100th of its intended real time: a nominal 20,000 ms budget became ~200 ms,
+# which phase B's own deliberate sleeps (650 ms) blow through. The waiter gave
+# up before the waker could plausibly have run. No task ever failed to wake.
+#
+# Fixed by reading the kernel's own live `vdso_timebase_hz()`. Measured: 5/5
+# failures before, 10/10 clean after, canary 2/2. Same CLASS the project had
+# already named — a tick count is a per-board number — one instance nobody
+# had converted.
+#
+# The row is host-load sensitive in a DIFFERENT, pre-existing way (phase A not
+# finishing 1600 calls inside the 200 s ceiling when run right after another
+# freshly rebuilt aarch64 row). That shows up as `PHASE_A_INCOMPLETE`, which
+# the old tolerance never covered either, so removing it does not make this
+# row more fragile.
+#
+# KNOWN FLAKE, measured, not guessed: eight forked children each hammer one
+# server with real `sys::sleep`-paced calls and a 20 s wall-clock stall
+# detector (`WAIT_MS`, `userspace/tests/ipctest`). Run alone, right after a cold
+# build, this row completed 1600/1600 twice; run immediately after another
+# freshly rebuilt-and-booted aarch64 row on this same host it read 1400 and
+# then 1200 of 1600 on two more attempts — a real host-load sensitivity, not
+# a logic bug in this row (it correctly reported FAIL both times, which is
+# what a genuinely incomplete run must do). Same class of finding as "two
+# concurrent QEMUs turn a passing phase A into 4/8 stalled children" above:
+# a wall-clock deadline inside the guest is only as reliable as the host is
+# idle. Give this row room — do not run it back-to-back with another
+# freshly-building aarch64 row without a short settle, and do not run it
+# beside a second concurrent QEMU.
+aarch64_ipctest_row() {
+    local label="aarch64 ipctest"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/aarch64-ipctest.log"
+    rm -f "$log"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      aarch64 kernel (--features qemu) did not build"; return
+    fi
+    if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+        bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-ipctest.img"
+    local disk_copy="$CI_LOG_DIR/disk-aarch64-ipctest-run.img"
+    cp "$A64_IMG" "$img_copy"
+    cp build/disk-aarch64-ipctest.img "$disk_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    # 200, not 60: ipctest's own stall detector gives a client 20 s of guest
+    # wall clock (userspace/tests/ipctest/src/main.rs, WAIT_MS) before it reports
+    # `server stalled`, and phase A's 1600 calls take longer than 60 s under
+    # TCG on a loaded host. The ceiling sits above the guest's own budget so
+    # that the TEST decides the verdict, not this loop's patience.
+    #
+    # This row is STRICT on purpose (1600 of 1600). It went red once in three
+    # hand runs with two cargo builds hammering the host, and the log says why:
+    # `server stalled: no call served for 20000 ms`, one client of eight silent
+    # for twenty seconds of GUEST time on `-smp 2`. That is a lost wake-up, not
+    # a slow machine -- raising the budget to 45 s was tried and the same run
+    # failed the same way. Under investigation; the row must keep failing until
+    # it is fixed rather than be relaxed to accept 1400 of 1600.
+    while [ "$i" -lt 200 ]; do
+        grep -aqE "IPCTEST\] [0-9]+ check\(s\) run" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[IPCTEST] all=1600 of 1600 OK" "$log" 2>/dev/null; then
+        bad; echo "      phase A did not complete all 1600 calls:"
+        grep -a "IPCTEST\] all=" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local fail_lines
+    fail_lines="$(grep -a '\[IPCTEST\]  FAIL  ' "$log" | sed 's/^\[IPCTEST\]  FAIL  //')"
+    local fails
+    fails="$(printf '%s\n' "$fail_lines" | grep -c .)"
+    if [ "$fails" -eq 0 ]; then
+        ok; rm -f "$log"; return
+    fi
+    # TOLERANCE REMOVED 2026-09-25. It used to pass a run whose only failure was
+    # named `B/client reported at all`, on the belief that this was an aarch64
+    # cross-hart WAKE defect. It was not a wake defect at all — see the comment
+    # above the row. The row now demands a clean run, like riscv64's.
+    bad; echo "      ipctest reported $fails failure(s):"
+    printf '%s\n' "$fail_lines" | sed 's|^|        |'
+    echo "      log kept: $log"
+}
+par "aarch64 ipctest" aarch64_ipctest_row
+
+# aarch64 phase 3 under `--features qemu`: two equal-priority kernel tasks on
+# ONE hart must take turns because the tick preempts them. The boot rows above
+# assert the same "interleaved" line, but they build without `qemu`, and that
+# is the only reason they passed: unpinned, the two tasks landed on different
+# harts and never shared one. Every `--features qemu` boot printed "[SCHED]
+# FAILED: task A and B did not interleave" (8/8 with the ipctest disk, 2/2
+# without), and no row read that line. Now both pinned to hart 0
+# (`PHASE3_HART` in kernel/src/smokes/aarch64_sched.rs): 9/9 interleaved (5 without a disk,
+# 4 with), and the build without `qemu` still interleaves at -smp 1/2/4. No disk here: phase 3
+# runs before anything reads one. Canary, by hand: pin phase3-b to hart 1 and
+# this row prints the FAILED line (2/2).
+aarch64_phase3_qemu_row() {
+    local label="aarch64 preemption (qemu)"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/aarch64-phase3-qemu.log"
+    rm -f "$log"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      aarch64 kernel (--features qemu) did not build"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-phase3-qemu.img"
+    cp "$A64_IMG" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 120 ]; do
+        grep -aqE "\[SCHED\] (FAILED: task A|task A ran [0-9]+ times, task B ran [0-9]+ times, interleaved)" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aqE "\[SCHED\] task A ran [0-9]+ times, task B ran [0-9]+ times, interleaved" "$log" 2>/dev/null \
+       && ! grep -aq "\[SCHED\] FAILED:" "$log" 2>/dev/null; then
+        ok; rm -f "$log" "$img_copy"; return
+    fi
+    bad; echo "      phase 3 did not interleave on --features qemu:"
+    grep -a "\[SCHED\] FAILED:\|AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+    echo "      log kept: $log"
+}
+par "aarch64 preemption (qemu)" aarch64_phase3_qemu_row
+
+# aarch64 captest: mirrors riscv64's "userspace: capabilities" row — the
+# device-name and MMIO-region-table fixes from this task (ISA-neutral
+# munmap-refused check: GICD/GICR/UART, not CLINT/PLIC/UART; aarch64's own
+# `MMIO_REGIONS` table: PL031 at index 0, the first virtio-mmio slot at
+# index 1 — `crates/drivers/base/src/platform.rs`), plus `install_robot_hw`'s
+# GPIO/PWM/I2C + motor-binding boot step. Full parity: ALL PASSED, same as
+# riscv64 — no known gap on this one.
+aarch64_captest_row() {
+    local label="aarch64 captest"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/aarch64-captest.log"
+    rm -f "$log"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      aarch64 kernel (--features qemu) did not build"; return
+    fi
+    if ! make build/disk-aarch64-captest.img >/dev/null 2>&1; then
+        bad; echo "      disk image build failed: make build/disk-aarch64-captest.img"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-captest.img"
+    local disk_copy="$CI_LOG_DIR/disk-aarch64-captest-run.img"
+    cp "$A64_IMG" "$img_copy"
+    cp build/disk-aarch64-captest.img "$disk_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aqF "CAPTEST] ALL PASSED" "$log" 2>/dev/null && break
+        grep -aqE "CAPTEST\]  FAIL" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aqE "CAPTEST\]  FAIL" "$log" 2>/dev/null; then
+        bad; echo "      captest reported a failure:"
+        grep -a "CAPTEST\]  FAIL" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[CAPTEST] ALL PASSED" "$log" 2>/dev/null; then
+        bad; echo "      captest never printed ALL PASSED"
+        echo "      log kept: $log"; return
+    fi
+    ok
+}
+
+# Wave 11 (SENSORTS), both ISAs: read from the captest boot of the row above
+# (riscv64: "userspace: capabilities"). captest reads each granted sensor
+# through `SYS_SENSOR_READ_TS` (606) between two vDSO clock reads and prints
+# its summary line only when every stamp held: on the reader's clock, inside
+# the call for a value read during it (IMU, encoder, rangefinder, battery),
+# under 1 s before it for odometry (cached by the 50 Hz `odom` task), never
+# backwards; plus a header-but-short buffer refused. Invoked before the IRQ
+# rows, which delete the shared log. Canary (hand-run): the `sensor-ts-freeze`
+# kernel on the same disk -> `FAIL  sensor_read_ts(IMU): acquired inside the
+# call` and no summary line.
+sensor_ts_captest_row() { # sensor_ts_captest_row <label> <log>
+    local label="$1" log="$2"
+    printf "  %-26s" "${label}..."
+    if [ ! -s "$log" ]; then
+        bad; echo "      no captest log to read (the captest row did not keep one)"; return
+    fi
+    if grep -aqE "CAPTEST\]  FAIL  sensor_read_ts" "$log"; then
+        bad; echo "      a stamped read failed:"
+        grep -aE "CAPTEST\]  FAIL  sensor_read_ts|CAPTEST\] sensorts" "$log" | tr -d '\r' | sed 's|^|        |'
+        return
+    fi
+    if ! grep -aqF "[CAPTEST] sensorts: 5 sensors stamped on the vDSO clock, inside the call (IMU ENCODER RANGE BATTERY) or < 1 s before it (ODOM), monotonic" "$log" \
+        || ! grep -aqF "[CAPTEST]   ok   sensor_read_ts(IMU, header + 23 bytes) -> refused" "$log"; then
+        bad; echo "      captest never printed the stamped-read summary and the short-buffer refusal:"
+        grep -a "sensorts\|sensor_read_ts" "$log" | tr -d '\r' | sed 's|^|        |'
+        return
+    fi
+    ok; grep -a "CAPTEST\] sensorts: IMU" "$log" | tr -d '\r' | sed 's|^|      |'
+}
+
+# Wave 10 IRQ5, both ISAs: captest binds a line the capability range admits
+# and QEMU `virt`'s controller does not implement (riscv64 source 100: PLIC
+# 1..=95, APLIC 1..=96; aarch64 SPI 1000: past GICD_TYPER.ITLinesNumber) with
+# 510 and with 575. Both must answer -ENODEV, and the kernel reads back, after
+# its undo, how many bindings of the line are left: 0. Before, both answered
+# 0 and kept a binding no interrupt could reach. Prints the reason and
+# returns 1 when the evidence is missing. Canary (hand-run): drop the
+# `irq_unbind` in `handlers::route_stored_binding_with` -> "bindings left on
+# the line: 1" and this check fails on it.
+irq_refusal_evidence() { # irq_refusal_evidence <log> <line>
+    local log="$1" line="$2" n
+    if ! grep -aqF "[CAPTEST]   ok   irq: irq_bind(absent line) -> -ENODEV" "$log" \
+        || ! grep -aqF "[CAPTEST]   ok   irq: port_bind_typed(port, absent line) -> -ENODEV" "$log"; then
+        echo "      captest did not see both binds of the absent line $line refused with -ENODEV:"
+        grep -a "absent line" "$log" | tr -d '\r' | sed 's|^|        |'
+        return 1
+    fi
+    n="$(grep -a "\[IRQ\] ring-3 line $line refused by the interrupt controller" "$log" \
+        | tr -d '\r' | grep -c "bindings left on the line: 0$")"
+    if [ "$n" != "2" ]; then
+        echo "      the kernel did not read back 0 bindings of line $line after each undo:"
+        grep -a "ring-3 line $line refused" "$log" | tr -d '\r' | sed 's|^|        |'
+        return 1
+    fi
+    return 0
+}
+
+# aarch64 ring-3 IRQ (wave 8, IRQ3; wave 9 IRQ4): read from the SAME boot as
+# the captest row above — captest's `irq_section` binds the PL031's line
+# (INTID 34, `irq.34` + `mmio.2` in the qemu topology) to a port, raises the
+# alarm, and must see: the interrupt delivered to the port; the line held
+# MASKED while the device still asserts and nobody ACKed (no second event in
+# 100 ms); after RTCICR + `SYS_DRV_IRQ_ACK` (305), a second alarm delivered.
+# Wave 9: then the line bound to the task itself (510 type 0), an alarm raised
+# BEFORE `SYS_DRV_IRQ_WAIT`, and the wait must return 0 (the binding's pending
+# bit, `irq_bind::irq_wait_begin`). Also the boot line of the DTB trigger map
+# `gic::user_spi_bind` programs ICFGR from: QEMU `virt` describes the PL031 as
+# level (`<0 2 4>`) and the first virtio-mmio slot as edge (`<0 16 1>`).
+# The kernel side: `handle_irq`'s ring-3 arm (mask via GICD_ICENABLER, EOI,
+# `irq_dispatch` + `wake_by_irq`) and the ACK's unmask (GICD_ISENABLER).
+#
+# Canaries (hand-run): `--features qemu,irq-ack-canary` makes the ACK leave
+# the line masked -> `[CAPTEST]  FAIL  irq: second interrupt delivered after
+# ACK`; `irq-mask-canary` (no mask on delivery) -> `FAIL  irq: line held
+# masked until ACK`; `irq-pending-canary` -> captest hangs after its `waiting
+# for an interrupt delivered before the wait` marker (the captest row times
+# out, this row prints the marker as the last irq line).
+aarch64_ring3_irq_row() {
+    local label="aarch64 ring-3 irq"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/aarch64-captest.log"
+    if [ ! -s "$log" ]; then
+        bad; echo "      no captest log to read (the captest row did not boot)"; return
+    fi
+    if grep -aqE "CAPTEST\]  FAIL  irq: " "$log"; then
+        bad; echo "      captest's IRQ section failed:"
+        grep -aE "CAPTEST\]  FAIL  irq: " "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[CAPTEST] irq: line 34 delivered twice, masked in between, re-armed by ACK" "$log" \
+        || ! grep -aqF "[CAPTEST]   ok   irq: line held masked until ACK" "$log" \
+        || ! grep -aqF "[CAPTEST] irq: line 34 delivered before SYS_DRV_IRQ_WAIT was kept pending" "$log"; then
+        bad; echo "      captest never reported the two deliveries, the mask and the pending wait"
+        grep -a "CAPTEST\].*irq" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqE "\[IRQ\] DTB triggers \(GICv3\): [0-9]+ SPIs, [1-9][0-9]* edge; INTID 34 level, INTID 48 edge" "$log"; then
+        bad; echo "      the DTB trigger map did not read PL031 level and virtio-mmio edge:"
+        grep -a "DTB triggers" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local why
+    if ! why="$(irq_refusal_evidence "$log" 1000)"; then
+        bad; echo "$why"; echo "      log kept: $log"; return
+    fi
+    ok; echo "      $(grep -a "irq: line 34 delivered twice" "$log" | tr -d '\r')"
+    rm -f "$log"
+}
+# The captest boot, and the two rows that read its log: one job.
+aarch64_captest_group() {
+    aarch64_captest_row
+    sensor_ts_captest_row "aarch64 sensors: stamped read" "$CI_LOG_DIR/aarch64-captest.log"
+    aarch64_ring3_irq_row
+}
+par "aarch64 captest" aarch64_captest_group
+
+# aarch64 DRV1 (wave 9): the buzzer and INA219 ring-3 drivers on this ISA.
+# The riscv64 rows `drivers: buzzer` / `drivers: INA219 power monitor` state
+# the test; this is the same kernel smoke (`ring3-drv-smoke`) on the aarch64
+# `build/disk-aarch64-drv.img` (the one aarch64 image carrying the two driver
+# images; their rows say `start = true`), one boot, both verdicts read from
+# its log. Rebuilds the plain `qemu` kernel after,
+# so no later aarch64 row boots the smoke kernel.
+aarch64_ring3_drivers_row() {
+    local label="aarch64 ring-3 drivers"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/aarch64-ring3-drivers.log"
+    rm -f "$log"
+    if ! a64_kbuild "qemu,ring3-drv-smoke"; then
+        bad; echo "      aarch64 kernel (--features qemu,ring3-drv-smoke) did not build"; return
+    fi
+    rm -f build/disk-aarch64-drvbase.img build/disk-aarch64-drv.img
+    if ! make build/disk-aarch64-drv.img >/dev/null 2>&1; then
+        bad; echo "      disk image build failed: make build/disk-aarch64-drv.img"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-drv.img"
+    local disk_copy="$CI_LOG_DIR/disk-aarch64-drv-run.img"
+    cp "$A64_IMG" "$img_copy"
+    cp build/disk-aarch64-drv.img "$disk_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        -kernel "$img_copy" \
+        -global virtio-mmio.force-legacy=false \
+        -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqE "DRV1\] ina219 (PASS|FAIL)" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img_copy" "$disk_copy"
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel crashed — log kept: $log"; return
+    fi
+    if grep -aqE "DRV1\] (buzzer|ina219) FAIL" "$log"; then
+        bad; grep -aE "DRV1\] (buzzer|ina219) FAIL" "$log" | tr -d '\r' | sed 's|^|      |'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aqF "[DRV1] buzzer PASS" "$log" && grep -aqF "[DRV1] ina219 PASS" "$log"; then
+        ok; rm -f "$log"
+    else
+        bad; echo "      no verdict for both drivers — log kept: $log"
+    fi
+}
+par "aarch64 ring-3 drivers" aarch64_ring3_drivers_row
+a64_kbuild "qemu" || true
+
+# ── Wave 11: what the topology starts is supervised (both ISAs) ─────────────
+#
+# Before wave 11 only the autorun image was supervised; the images the kernel
+# spawns because the system declares them — the `start = true` rows (the
+# buzzer and the INA219 under `qemu`) and the ML service — died once,
+# unsupervised and unrecorded. They now go through
+# `drv_supervisor::spawn_supervised` and are supervised from their start,
+# under the same policy (SUP_RESTART_BURST restarts within
+# SUP_RESTART_INTERVAL_S, on failure only). `supall-smoke`
+# (`drv_supervisor::supall`): the buzzer is stopped (137) and a new task must
+# own its kind and answer `buzzer_off`; the INA219 is stopped each time it is
+# serving again, four times — kills 1-3 restarted (a new owner answers a power
+# read), kill 4 past the budget: no owner and every read refused for 3 s,
+# entry Down, the give-up recorded; then the flight recorder must hold, by
+# kind, +1 buzzer restart, +3 INA219 restarts and +1 INA219 give-up.
+# `[SUPALL] FAIL` is a verdict. Canary: `supall-canary` (a kernel spawn is
+# not supervised, as before) fails on `[SUPALL] FAIL buzzer not restarted`,
+# which only a driver that never came back prints. Boots a copy of the drv
+# disk as built (`.pristine` on riscv64; rebuilt on aarch64), so earlier boots
+# of that disk cannot push this one into safe mode.
+supall_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <expect: PASS|FAIL>
+    local label="$1" isa="$2" extra="$3" expect="$4"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" kimg=""
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img"
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "qemu,supall-smoke$extra"; then
+            bad; echo "      riscv64 kernel (qemu,supall-smoke$extra) did not build"; return
+        fi
+        if [ ! -f build/disk-drv.img.pristine ]; then
+            rm -f build/disk-drvbase.img build/disk-drv.img
+            make_disk build/disk-drv.img
+        fi
+        cp build/disk-drv.img.pristine "$img"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "qemu,supall-smoke$extra"; then
+            bad; echo "      aarch64 kernel (qemu,supall-smoke$extra) did not build"; return
+        fi
+        rm -f build/disk-aarch64-drvbase.img build/disk-aarch64-drv.img
+        if ! make build/disk-aarch64-drv.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-drv.img"; return
+        fi
+        cp build/disk-aarch64-drv.img "$img"
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"
+        cp "$A64_IMG" "$kimg"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            -kernel "$kimg" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 480 ]; do
+        grep -aqE "\[SUPALL\] (PASS|FAIL)" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img"; [ -n "$kimg" ] && rm -f "$kimg"
+
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      kernel panic or fatal exception:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local verdict
+    verdict="$(grep -a "\[SUPALL\] \(PASS\|FAIL\)" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ "$expect" = "FAIL" ]; then
+        case "$verdict" in
+            "[SUPALL] FAIL buzzer not restarted"*) ok; rm -f "$log" ;;
+            *) bad; echo "      the canary did not fail on the not-restarted line: '${verdict:-no verdict}'"
+               echo "      log kept: $log" ;;
+        esac
+        return
+    fi
+    case "$verdict" in
+        "[SUPALL] PASS"*) ok; rm -f "$log" ;;
+        *) bad; echo "      ${verdict:-no [SUPALL] verdict within 240 s}"
+           grep -a "\[SUPALL\]\|\[SUP\]\|DRVLAUNCH" "$log" | tr -d '\r' | sed -n '1,14p' \
+               | sed 's|^|        |'
+           echo "      log kept: $log" ;;
+    esac
+}
+par "aarch64 start=true drivers supervised" supall_row "aarch64 start=true drivers supervised" arm "" PASS
+a64_kbuild "qemu" || true
+
+# ── Wave 11 (DRVPLACE): driver placement and the `restart` row key ──────────
+#
+# `drvplace_row` boots the drivers disk (a copy of the `.pristine` image on
+# riscv64; rebuilt on aarch64) on a kernel built with `<features>` and reads
+# one verdict. Kinds:
+#   ina-kernel   `ring3-drv-smoke` with `ina219-kernel` (Kconfig
+#                DRV_INA219_PLACEMENT = kernel): `[DRV1] ina219 PASS` with
+#                the same simulated readings (7400 mV, 1500 mA) as the ring-3
+#                row, and `(kernel tid=`: the kernel host answered, the
+#                topology declared no INADRV.ELF and no ring-3 task owned
+#                DRV_KIND_POWER_MON (`placement_check`).
+#   ina-canary   `ina219-placement-canary`: the kernel placement with the
+#                INADRV.ELF row kept and the link-time check skipped. Must
+#                fail on `placement is kernel but the topology declares`,
+#                which only the boot check prints.
+#   restart      `restart-smoke`: BUZZDRV.ELF `restart = always`, INADRV.ELF
+#                `restart = no` (CAPS.TOML format 2). The buzzer stopped with
+#                exit 0 must come back; the INA219 killed must stay down.
+#   restart-canary  `restart-canary` (the supervisor ignores the row): must
+#                print both `FAIL buzzer not restarted after exit 0` and
+#                `FAIL INA219 restarted under restart = no`.
+#   buzz-kernel  wave 12: `ring3-drv-smoke` with `buzzer-kernel` (Kconfig
+#                DRV_BUZZER_PLACEMENT = kernel): `[DRV1] buzzer PASS` with the
+#                same PWM checks as the ring-3 row, from `(kernel tid=` (the
+#                topology declared no BUZZDRV.ELF and no ring-3 task owned
+#                DRV_KIND_BUZZER: `buzzer_placement_check`), and the kernel
+#                ELF carries the tree's buzzer source marker
+#                (tools/chip_source_check.py; the ring-3 ELFs are checked by
+#                the Makefile when built). Canaries by hand (2026-10-03):
+#                gpio_drv.elf -> "carries no marker"; the chip source edited
+#                after the build -> "carries marker <old>"; buzz_drv without
+#                its marker print -> `make build/buzz_drv.elf` fails.
+# The build bucket is `drvplace_build_canary_row`: the drivers crate told
+# "kernel" and the topology not must not compile.
+drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
+    local label="$1" isa="$2" feats="$3" kind="$4"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" kimg=""
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img"
+    local until="DRV1\] ina219 (PASS|FAIL)"
+    case "$kind" in
+        restart) until="\[RESTART\] (PASS|FAIL)" ;;
+        restart-canary) until="\[RESTART\] (PASS|FAIL INA219)" ;;
+    esac
+    local src_why=""
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "$feats"; then
+            bad; echo "      riscv64 kernel ($feats) did not build"; return
+        fi
+        if [ "$kind" = buzz-kernel ]; then
+            src_why="$(python3 tools/chip_source_check.py buzzer "$KERNEL" 2>&1)"
+        fi
+        if [ ! -f build/disk-drv.img.pristine ]; then
+            rm -f build/disk-drvbase.img build/disk-drv.img
+            make_disk build/disk-drv.img
+        fi
+        cp build/disk-drv.img.pristine "$img"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then
+            bad; echo "      aarch64 kernel ($feats) did not build"; return
+        fi
+        if [ "$kind" = buzz-kernel ]; then
+            src_why="$(python3 tools/chip_source_check.py buzzer "$A64_KERNEL" 2>&1)"
+        fi
+        rm -f build/disk-aarch64-drvbase.img build/disk-aarch64-drv.img
+        if ! make build/disk-aarch64-drv.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-drv.img"; return
+        fi
+        cp build/disk-aarch64-drv.img "$img"
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"
+        cp "$A64_IMG" "$kimg"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            -kernel "$kimg" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 480 ]; do
+        grep -aqE "$until" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    sleep 1
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img"; [ -n "$kimg" ] && rm -f "$kimg"
+
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      kernel panic or fatal exception:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local why=""
+    case "$kind" in
+        ina-kernel)
+            grep -aqE "\[DRV1\] ina219 PASS 7400 mV 1500 mA [0-9]+% \(kernel tid=" "$log" \
+                || why="no '[DRV1] ina219 PASS 7400 mV 1500 mA .. (kernel tid=' line"
+            grep -aqF "[DRV1] ina219 FAIL" "$log" && why="an ina219 FAIL line"
+            ;;
+        ina-canary)
+            grep -aqF "[DRV1] ina219 FAIL: placement is kernel but the topology declares" "$log" \
+                || why="the canary did not fail on the placement check"
+            ;;
+        restart)
+            grep -aqF "[RESTART] PASS" "$log" || why="no [RESTART] PASS"
+            grep -aqF "[RESTART] FAIL" "$log" && why="a [RESTART] FAIL line"
+            ;;
+        restart-canary)
+            grep -aqF "[RESTART] FAIL buzzer not restarted after exit 0" "$log" \
+                && grep -aqF "[RESTART] FAIL INA219 restarted under restart = no" "$log" \
+                || why="the canary did not fail on both halves"
+            ;;
+        buzz-kernel)
+            grep -aqE "\[DRV1\] buzzer PASS .*\(kernel tid=" "$log" \
+                || why="no '[DRV1] buzzer PASS ... (kernel tid=' line"
+            grep -aqF "[DRV1] buzzer FAIL" "$log" && why="a buzzer FAIL line"
+            grep -aqF "[DRV1] ina219 FAIL" "$log" && why="an ina219 FAIL line"
+            [ -n "$src_why" ] && why="$src_why"
+            ;;
+    esac
+    if [ -z "$why" ]; then
+        ok
+        # The read path's cost in this placement (wall clock under TCG;
+        # informational, the instruction counts are an -icount boot's).
+        grep -a "ina219 read path" "$log" | tr -d '\r' | sed -n '1s|^|      |p'
+        rm -f "$log"
+    else
+        bad; echo "      $why"
+        grep -aE "\[DRV1\] (ina219|buzzer)|\[RESTART\]|\[INA219\]|\[BUZZER\]|\[SUP\]" "$log" | tr -d '\r' \
+            | sed -n '1,12p' | sed 's|^|        |'
+        echo "      log kept: $log"
+    fi
+}
+
+# The build bucket: the drivers crate told "kernel" (`azos_drv_sensor/
+# ina219-kernel`) while the topology still declares INADRV.ELF must not link
+# (`kernel/src/tasks/ina219_host.rs`); green only on that assertion's text.
+# Wave 12: the same bucket for the buzzer (`buzzer-placement-build-canary`,
+# `kernel/src/tasks/buzzer_host.rs`), through the optional arguments.
+drvplace_build_canary_row() { # <label> <isa: rv|arm> [<feature> <assertion text>]
+    local label="$1" isa="$2" out
+    local feat="${3:-ina219-placement-build-canary}"
+    local text="${4:-DRV_INA219_PLACEMENT: the drivers crate and the topology disagree}"
+    printf "  %-26s" "${label}..."
+    if [ "$isa" = "rv" ]; then
+        out="$("$CARGO" build --release --features "qemu,$feat" 2>&1)"
+    else
+        out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build \
+            --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+            --features "qemu,$feat" \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"
+    fi
+    if printf '%s\n' "$out" | grep -qF "$text"; then
+        ok
+    else
+        bad; echo "      the mismatched placement built, or failed on something else:"
+        printf '%s\n' "$out" | grep -E "^error" | head -3 | sed 's|^|        |'
+    fi
+    if [ "$isa" = "arm" ]; then a64_kbuild "qemu" || true; fi
+}
+
+par "aarch64 INA219 placed in kernel" drvplace_row "aarch64 INA219 placed in kernel" arm "qemu,ring3-drv-smoke,ina219-kernel" ina-kernel
+a64_kbuild "qemu" || true
+par "aarch64 INA219 placement canary" drvplace_row "aarch64 INA219 placement canary" arm "qemu,ring3-drv-smoke,ina219-placement-canary" ina-canary
+a64_kbuild "qemu" || true
+drvplace_build_canary_row "aarch64 INA219 placement build canary" arm
+par "aarch64 restart = always / no" drvplace_row "aarch64 restart = always / no" arm "qemu,restart-smoke" restart
+a64_kbuild "qemu" || true
+par "aarch64 restart key canary" drvplace_row "aarch64 restart key canary" arm "qemu,restart-canary" restart-canary
+a64_kbuild "qemu" || true
+par "aarch64 buzzer placed in kernel" drvplace_row "aarch64 buzzer placed in kernel" arm "qemu,ring3-drv-smoke,buzzer-kernel" buzz-kernel
+a64_kbuild "qemu" || true
+drvplace_build_canary_row "aarch64 buzzer placement build canary" arm \
+    buzzer-placement-build-canary "DRV_BUZZER_PLACEMENT: the drivers crate and the topology disagree"
+
+# ── Guard-page fault proof (aarch64 parity program, task 1) ─────────────────
+#
+# `aarch64_kernel_row` above proves the guard PTEs are gone (readback) — it
+# does NOT prove a real access actually traps there instead of, say, reading
+# stale data from a TLB entry `unmap()` forgot to flush. These two rows each
+# rebuild the kernel with ONE opt-in feature (`kernel/Cargo.toml`) that makes
+# `kernel_main` deliberately write to the guard it just installed and never
+# return — the boot is expected to die in the SAME "[FATAL] aarch64 kernel
+# page fault" path an accidental kernel-mode overflow/null-deref would hit
+# (`entry::aarch64::handle_page_fault`); this is not new fault-handling
+# policy, just a scripted trigger for the policy already there. The address
+# is read back from THIS boot's own log twice — once from the probe's own
+# announcement, once from the FATAL line — and compared, rather than pinned
+# to a literal: the guard address depends on where `TASK_STACKS` lands in
+# .bss, which can shift with unrelated code changes.
+# ── mem quota: the KERNEL's own refusal counter, read as a number ──────────
+#
+# The existing `mem-quota-canary` row infers the refusal from abitest's own
+# report (`brk granted N of 256`, 0 < N < 256). This one reads `mm_quota_refusals()` —
+# printed by the ipc-census dump as `mem quota refused=N` — and requires
+# N >= 1. A counter stuck at its initial value still prints a line matching
+# the text, so only the NUMBER distinguishes a wired quota from a dead one.
+#
+# It also builds `mem-quota-canary` + `ipc-census` in one boot, a combination
+# the suite had never run. Relevant now because 2026-09-25 moved this exact
+# arithmetic out of `scheduler.rs`'s inline fields into
+# `crates/core/mm::budget::PageBudget` — the host tests cover the struct, this row
+# covers the kernel that ships it.
+#
+# Hand-rolled, not `qemu_run`: that helper deletes its log on success and this
+# row must read the log AFTER the marker to parse the count out of it.
+#
+# Helpers: `kbuild`, `make_disk`, `ok`, `bad`, `$QEMU`, `$KERNEL`,
+# `$CI_LOG_DIR` — all defined near the top of this file.
+mm_quota_refused_row() {
+    if ! kbuild "qemu,mem-quota-canary,ipc-census"; then return; fi
+
+    printf "  %-26s" "mem quota: refusals>0 (N)..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/mm-quota-refusals-numeric.log"
+    rm -f "$log"
+
+    rm -f build/disk-abitest.img
+    make_disk build/disk-abitest.img
+    job_disk build/disk-abitest.img
+
+    par_ready
+    "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file="$JDISK",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    # Two positive waits, each anchored on its own cause, no count:
+    #   1. the refusal must have actually happened (abitest's own report).
+    #   2. AFTER that, a census dump must have printed the counter non-zero
+    #      (the counter only counts up, so once non-zero it stays non-zero —
+    #      this is not a race, it is "wait for the next dump to have fired").
+    # Kept as two loops rather than one combined regex so a boot that never
+    # reaches step 1 reports THAT, not a generic timeout.
+    while [ "$i" -lt 360 ]; do
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            bad; echo "      kernel panic or fatal exception:"
+            grep -aiE -m3 "panic|\[FATAL\]" "$log" | sed 's/^/      /'
+            return
+        fi
+        if grep -aqE "brk granted (0|256) of 256 pages" "$log" 2>/dev/null; then
+            kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            bad; echo "      canary build did not bind as intended: brk granted 0 or 256 of 256"
+            return
+        fi
+        grep -aqE "brk granted [1-9][0-9]* of 256 pages" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    while [ "$i" -lt 360 ]; do
+        grep -aqE 'mem quota refused=[1-9]' "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+
+    # Read the NUMBER back rather than matching a line: a counter stuck at
+    # its initial value (0) still prints a line matching
+    # "mem quota refused=[0-9]+", so a text match alone cannot tell a wired
+    # quota from a dead one. Last occurrence via `sed -n '$p'`
+    # (no `tail` — SHELL RULES), since the counter is monotonically
+    # non-decreasing across the boot.
+    local n
+    n="$(grep -aoE 'mem quota refused=[0-9]+' "$log" 2>/dev/null | sed -n '$p' | grep -oE '[0-9]+$')"
+
+    if [ -n "$n" ] && [ "$n" -ge 1 ] 2>/dev/null; then
+        ok; rm -f "$log"
+    else
+        bad
+        echo "      mm_quota_refusals() never read back non-zero (got: '${n:-<no line found>}')"
+        echo "      a quota that never refuses is indistinguishable from one that is not wired"
+        echo "      full log kept: $log"
+    fi
+}
+par "mem quota: refusals>0 (N)" mm_quota_refused_row
+# Leave $KERNEL on the ordinary qemu build for anything below that forgets.
+kbuild "qemu"
+
+# ── fork refusals name themselves, on BOTH ISAs ────────────────────────────
+#
+# `sys_fork_impl` refuses from SIX distinct sites and every one of them
+# returned a bare `-1` until 2026-09-25. That ambiguity cost a week: an
+# aarch64 `fork+exit` `rc=-1` was mis-filed as a known gap because a `-1` in a
+# log cannot say WHICH site fired (30 runs across 5 committed trees later
+# produced no failure at all — it had been a measurement artefact).
+#
+# Each site now bumps its own counter and prints `[FORK] refusal site first
+# hit: <name>` once, on the 0→1 transition, unconditionally and on both ISAs.
+# **A counter no row observes is indistinguishable from one that is not
+# wired**, and a FEATURE no scenario runs is the `rvv` trap all over again, so
+# these two rows make site 1 fire and read the result back.
+#
+# The probe (`kernel/src/main.rs`, `--features fork-refusal-probe`) calls fork
+# from kernel context just before the scheduler starts, where
+# `current_user_pt()` is 0 — site 1's exact test. It allocates nothing and
+# cannot reach the five later sites; see the probe's own comment.
+#
+# Hand-rolled, not `qemu_run`: `-1` here is the PROPERTY, and `qemu_run`'s
+# failure set is not the right judge of a boot whose point is a refusal.
+#
+# Helpers: `kbuild` / `a64_kbuild`, `ok`, `bad`, `$QEMU`, `$KERNEL`,
+# `$A64_IMG`, `$CI_LOG_DIR`.
+fork_refusal_probe_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    local img_copy=""
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "qemu,fork-refusal-probe"; then
+            bad; echo "      riscv64 kernel (qemu,fork-refusal-probe) did not build"; return
+        fi
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+            >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "qemu,fork-refusal-probe"; then
+            bad; echo "      aarch64 kernel (qemu,fork-refusal-probe) did not build"; return
+        fi
+        img_copy="$CI_LOG_DIR/kernel-fork-probe.img"
+        cp "$A64_IMG" "$img_copy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$img_copy" >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aqF "[FORK] refusal probe: rc=" "$log" 2>/dev/null && break
+        grep -aqF "AARCH64-TRAP] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+
+    # 1. The probe ran at all.
+    if ! grep -aqF "[FORK] refusal probe: calling fork from kernel context" "$log" 2>/dev/null; then
+        bad; echo "      the probe never ran — the feature did not reach the boot:"
+        grep -a "FORK" "$log" | tr -d '\r' | sed -n '1,4p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 2. The diagnostic NAMED the site. This is the whole point of the change:
+    #    before it, this boot would have produced a bare -1 and nothing else.
+    #    The literal is the SITE NAME as `fork_refusal_site_name` prints it
+    #    (`kernel-task`), not the enum variant — hand-running this row is what
+    #    caught the difference before the gate did.
+    if ! grep -aqF "[FORK] refusal site first hit: kernel-task" "$log" 2>/dev/null; then
+        bad; echo "      fork refused but the diagnostic did not name the site:"
+        grep -a "FORK" "$log" | tr -d '\r' | sed -n '1,6p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 3. Read the RETURN VALUE back, not just the line. A probe that printed
+    #    its banner and then returned 0 would satisfy 1 and 2 on a kernel that
+    #    had stopped refusing.
+    local rc
+    rc="$(grep -a "\[FORK\] refusal probe: rc=" "$log" | tr -d '\r' \
+          | sed -n '1s/.*rc=\(-\{0,1\}[0-9][0-9]*\).*/\1/p')"
+    if [ "${rc:-unset}" != "-1" ]; then
+        bad; echo "      fork from kernel context returned '${rc:-<no rc line>}', not -1"
+        grep -a "FORK" "$log" | tr -d '\r' | sed -n '1,4p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log"; [ -n "$img_copy" ] && rm -f "$img_copy"
+    return 0
+}
+par "fork refusal names its site" fork_refusal_probe_row "fork refusal names its site" rv
+par "aarch64 fork refusal site" fork_refusal_probe_row "aarch64 fork refusal site"  arm
+
+# ── exit: the parent's wait returns after the child's teardown, BOTH ISAs ───
+#
+# Wave 11 (EXIT2). `task_exit_with_code` publishes the exit notice AFTER the
+# exit hook and the address-space teardown (Linux's `exit_mm` before
+# `exit_notify`), so a parent that reaps and forks again never races a
+# half-torn-down child. abitest's `check_exit_storm` forks 64 children one at
+# a time, reaps each with `waitpid` (sleeping between looks), reads the free
+# pages AT the reap, and prints the kernel's exit-path counters
+# (`SYS_EXIT_STATS`, 605) around the storm on one line:
+#
+#   exit storm: forks=64 reaped=64 exit_teardowns=+N reuse=0 early=0 short=0
+#
+# Every number is read back: N >= 64 (each child freed its own address space
+# on its exit path), `reuse` 0 (no slot claim found a previous tenant's
+# address space: the K-C22(B) fallback), `early` 0 (no notice published while
+# its task still held its address space), `short` 0 (free pages back when
+# `waitpid` returned).
+#
+# Canaries, run by hand on both ISAs (EXIT2 report): `note_exit` moved back
+# above the exit hook -> `early=64` (and `short` > 0 in some runs, both ISAs); an early
+# `return` in `release_address_space_at_exit` -> `exit_teardowns=+0 reuse=64`.
+exit_storm_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "qemu"; then bad; echo "      riscv64 kernel (qemu) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "qemu"; then bad; echo "      aarch64 kernel (qemu) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 180 ]; do
+        grep -aqF "[ABITEST] exit storm: forks=" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aq "\[MM\] page-table root" "$log" 2>/dev/null; then
+        bad; echo "      a teardown found its root still live:"
+        grep -a -m3 "\[MM\] page-table root" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local line
+    line="$(grep -a "\[ABITEST\] exit storm: forks=" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ -z "$line" ]; then
+        bad; echo "      abitest never printed its exit-storm line"
+        echo "      log kept: $log"; return
+    fi
+    num() { printf '%s\n' "$line" | sed -n "s/.* $1=+\{0,1\}\([0-9][0-9]*\).*/\1/p"; }
+    local forks reaped exits reuse early short
+    forks="$(num forks)"; reaped="$(num reaped)"; exits="$(num exit_teardowns)"
+    reuse="$(num reuse)"; early="$(num early)"; short="$(num short)"
+    if [ "${forks:-x}" = 64 ] && [ "${reaped:-x}" = 64 ] && [ "${exits:-0}" -ge 64 ] 2>/dev/null \
+        && [ "${reuse:-x}" = 0 ] && [ "${early:-x}" = 0 ] && [ "${short:-x}" = 0 ]; then
+        ok; rm -f "$log"; return
+    fi
+    bad; echo "      want forks=64 reaped=64 exit_teardowns>=+64 reuse=0 early=0 short=0, read:"
+    echo "        $line"
+    echo "      log kept: $log"
+}
+par "exit: notice after teardown" exit_storm_row "exit: notice after teardown" rv
+par "aarch64 exit notice order" exit_storm_row "aarch64 exit notice order"  arm
+
+# Wave 12 (EXIT2): an unreaped child's exit notice is kept until its parent
+# reaps it or exits, as Linux keeps a zombie. The notice table has one entry
+# per task slot and a child with a parent is created only while the queued
+# notices leave a slot for it (`exit_note::admits`), so no notice is dropped:
+# a parent that never waits gets its fork refused. abitest's
+# `check_unreaped_children_are_kept` forks children that exit at once, reaps
+# none until fork is refused, then reaps each by name:
+#
+#   zombies: forked=N refused=yes reaped=N drops=0 refusals=+K
+#
+# Read back: refused, reaped = forked > 0, drops (`SYS_EXIT_STATS` 5) 0,
+# refusals (6) >= 1. Canary, by hand on both ISAs (2026-10-03):
+# `exit_note::admits` answering true -> refused=no, forked=512, reaped < 512,
+# drops > 0.
+zombie_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "qemu"; then bad; echo "      riscv64 kernel (qemu) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "qemu"; then bad; echo "      aarch64 kernel (qemu) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "[ABITEST] zombies: forked=" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local line
+    line="$(grep -a "\[ABITEST\] zombies: forked=" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ -z "$line" ]; then
+        bad; echo "      abitest never printed its zombies line"
+        echo "      log kept: $log"; return
+    fi
+    znum() { printf '%s\n' "$line" | sed -n "s/.* $1=+\{0,1\}\([0-9][0-9]*\).*/\1/p"; }
+    local forked reaped drops refusals
+    forked="$(znum forked)"; reaped="$(znum reaped)"; drops="$(znum drops)"; refusals="$(znum refusals)"
+    if printf '%s\n' "$line" | grep -qF " refused=yes " \
+        && [ "${forked:-0}" -ge 1 ] 2>/dev/null && [ "${reaped:-x}" = "$forked" ] \
+        && [ "${drops:-x}" = 0 ] && [ "${refusals:-0}" -ge 1 ] 2>/dev/null; then
+        ok; rm -f "$log"; return
+    fi
+    bad; echo "      want refused=yes reaped=forked>0 drops=0 refusals>=+1, read:"
+    echo "        $line"
+    echo "      log kept: $log"
+}
+par_row zombie_row "exit: unreaped notices kept" rv
+par_row zombie_row "aarch64 unreaped notices"    arm
+
+# ── proc: hidepid=2 task view, BOTH ISAs (wave 12, owner round 48) ─────────
+#
+# `/proc/tasks` shows a reader only itself and its descendants unless it holds
+# `Cap<Task>` READ on "tasks"; `/proc/<tid>` names nothing for a TID it may not
+# see, answering exactly as for a TID nobody holds. abitest's
+# `check_proc_view` (ABITEST.ELF holds no such grant) forks a child that forks
+# a grandchild, then reads both files:
+#
+#   proc view: rows=3 self=S child=C grandchild=G
+#
+# followed by its eleven `proc view:` checks (itself, child and grandchild
+# listed, nothing else, no idle task, `/proc/<self>` and `/proc/<child>` open,
+# `/proc/1` refused as an absent TID is, the child reaped). Read back: rows=3,
+# G > 0, eleven `ok` lines and no `FAIL` line among them. The canary row boots
+# `proc-hidepid-canary` (the filter compiled out) and must see the filter's
+# checks fail: `lists nothing else` and `/proc/1 ... does not open`. The
+# granted half (`ps` lists every task, idle included) is the `sh: family
+# tools` row's idle-line marker.
+proc_view_row() { # <label> <isa: rv|arm> <features> <hidden|canary>
+    local label="$1" isa="$2" feats="$3" want="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled'
+    while [ "$i" -lt 180 ]; do
+        grep -aqF "proc view: the child is reaped" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "$fault" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local line rows gc oks fails
+    line="$(grep -a "\[ABITEST\] proc view: rows=" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ -z "$line" ] || ! grep -aqF "proc view: the child is reaped" "$log"; then
+        bad; echo "      abitest never finished its proc-view check"
+        echo "      log kept: $log"; return
+    fi
+    rows="$(printf '%s\n' "$line" | sed -n 's/.* rows=\([0-9][0-9]*\).*/\1/p')"
+    gc="$(printf '%s\n' "$line" | sed -n 's/.* grandchild=\([0-9][0-9]*\).*/\1/p')"
+    oks="$(grep -a "\[ABITEST\]   ok   proc view: " "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -a "\[ABITEST\]  FAIL  proc view: " "$log" | tr -d '\r')"
+    if [ "$want" = hidden ]; then
+        if [ "${rows:-x}" = 3 ] && [ "${gc:-0}" -gt 0 ] 2>/dev/null && [ "$oks" = 11 ] && [ -z "$fails" ]; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      want rows=3, grandchild>0, 11 ok and no FAIL proc-view lines; read ($oks ok):"
+    else
+        if printf '%s\n' "$fails" | grep -qF "lists nothing else (hidepid)" \
+            && printf '%s\n' "$fails" | grep -qF "a foreign live TID) does not open"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (filter compiled out) still hid every foreign task; read ($oks ok):"
+    fi
+    echo "        $line"
+    [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
+    echo "      log kept: $log"
+}
+par_row proc_view_row "proc: hidepid view"              rv  qemu hidden
+par_row proc_view_row "aarch64 proc: hidepid view"      arm qemu hidden
+par_row proc_view_row "proc: hidepid canary"            rv  qemu,proc-hidepid-canary canary
+par_row proc_view_row "aarch64 proc: hidepid canary"    arm qemu,proc-hidepid-canary canary
+
+# ── fork: a native child inherits descriptors, holds only its row (wave 13) ──
+#
+# Owner decision, round 49 (NATFORK): a native fork child inherits its
+# parent's files and pipe ends as duplicates sharing the open description, at
+# the parent's handles, and its capabilities are seeded from its own row, never
+# copied from the parent's table (`crates/core/syscall/src/natfork.rs`).
+# abitest's `check_fork_inherits_descriptors` and
+# `check_fork_child_holds_only_its_row` print sixteen `natfork:` checks: a
+# pipe fd written by child and parent reads "ab", a child's read moves the
+# parent's file offset, the parent's runtime port is stale in the child, the
+# child holds its row's entropy capability at the parent's handle. The
+# abitest rows hold them to ALL PASSED; these rows prove they discriminate.
+# `native-fork-no-inherit-canary` (no descriptor inherited) must fail the
+# "ab" and offset checks; `native-fork-copy-canary` (the parent's handles
+# kept, the 2026-09-21 copy) must fail the stale-port check.
+natfork_row() { # <label> <isa: rv|arm> <features> <ok|noinherit|copy>
+    local label="$1" isa="$2" feats="$3" want="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled' last="natfork: the child holds its row's entropy cap"
+    while [ "$i" -lt 180 ]; do
+        grep -aqF "$last" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "$fault" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "$last" "$log"; then
+        bad; echo "      abitest never finished its natfork checks"
+        echo "      log kept: $log"; return
+    fi
+    local oks fails
+    oks="$(grep -a "\[ABITEST\]   ok   natfork: " "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -a "\[ABITEST\]  FAIL  natfork: " "$log" | tr -d '\r')"
+    case "$want" in
+    ok)
+        if [ "$oks" = 16 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      want 16 ok and no FAIL natfork lines; read $oks ok:" ;;
+    noinherit)
+        if printf '%s\n' "$fails" | grep -qF "parent and child wrote one inherited fd -> [ab]" \
+            && printf '%s\n' "$fails" | grep -qF "moved the parent's offset"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (nothing inherited) still passed the descriptor checks; read $oks ok:" ;;
+    copy)
+        if printf '%s\n' "$fails" | grep -qF "runtime port is stale in the child"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (parent's handles kept) still found the port stale; read $oks ok:" ;;
+    tamper)
+        if [ "$oks" = 16 ] && [ -z "$fails" ] \
+            && grep -aqF "capability template failed its seal: dropped, minted again" "$log"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      want the seal refusal line, 16 ok and no FAIL natfork lines; read $oks ok:" ;;
+    noseal)
+        if printf '%s\n' "$fails" | grep -qF "holds its row's entropy cap at the parent's handle"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (edited template served) still passed the row-capability check; read $oks ok:" ;;
+    esac
+    [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
+    echo "      log kept: $log"
+}
+par_row natfork_row "fork: native child inherits fds"        rv  qemu ok
+par_row natfork_row "aarch64 fork: native child fds"         arm qemu ok
+par_row natfork_row "fork: no-inherit canary"                rv  qemu,native-fork-no-inherit-canary noinherit
+par_row natfork_row "aarch64 fork: no-inherit canary"        arm qemu,native-fork-no-inherit-canary noinherit
+par_row natfork_row "fork: table-copy canary"                rv  qemu,native-fork-copy-canary copy
+par_row natfork_row "aarch64 fork: table-copy canary"        arm qemu,native-fork-copy-canary copy
+# The per-row seed template (`natfork`): a template entry edited after it was
+# sealed is refused by the seal (dropped, minted again, said once) and the
+# child holds exactly its row's capabilities; with the seal check compiled out
+# the edited entry (entropy gains WRITE) is served and the check fails.
+par_row natfork_row "fork: template tamper refused"          rv  qemu,natfork-template-tamper-canary tamper
+par_row natfork_row "aarch64 fork: template tamper"          arm qemu,natfork-template-tamper-canary tamper
+par_row natfork_row "fork: template seal canary"             rv  qemu,natfork-template-noseal-canary noseal
+par_row natfork_row "aarch64 fork: template seal canary"     arm qemu,natfork-template-noseal-canary noseal
+
+# ── threads: native thread groups (wave 13, THREADS) ──────────────────────
+#
+# abitest's `check_threads` prints seventeen `threads:` checks: two threads
+# and the main thread contend on a futex lock over shared memory (the plain
+# count exact), joins through the cleared clear-tid word, the futex answers
+# (EAGAIN, ETIMEDOUT, a wake that wakes a parked waiter), a thread uses the
+# creator's file handle and the creator the thread's (one capability table,
+# one descriptor table), getpid is the process's, /proc shows the thread to
+# its process and hides it from a forked child, and `exit` from one thread
+# ends every thread. Canaries: `threads-private-table-canary` (a thread gets
+# its own table: the handle checks fail), `futex-wake-noop-canary` (a wake
+# wakes nobody: the wake check fails), `threads-no-cleartid-canary` (the word
+# is never cleared: the joins fail).
+threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|noclear>
+    local label="$1" isa="$2" feats="$3" want="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled' last="threads: exit ends every thread"
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "$last" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "$fault" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "$last" "$log"; then
+        bad; echo "      abitest never finished its thread checks"
+        echo "      log kept: $log"; return
+    fi
+    local oks fails need
+    oks="$(grep -a "\[ABITEST\]   ok   threads: " "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -a "\[ABITEST\]  FAIL  threads: " "$log" | tr -d '\r')"
+    case "$want" in
+    ok)
+        if [ "$oks" = 17 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      want 17 ok and no FAIL threads lines; read $oks ok:" ;;
+    privtable|futexnoop|noclear)
+        case "$want" in
+        privtable) need="the thread read through the creator's handle" ;;
+        futexnoop) need="futex_wake wakes the waiting thread" ;;
+        noclear)   need="both joined through their cleared word" ;;
+        esac
+        if printf '%s\n' "$fails" | grep -qF "$need"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary ($want) still passed '$need'; read $oks ok:" ;;
+    esac
+    [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
+    echo "      log kept: $log"
+}
+par_row threads_row "threads: native groups"                 rv  qemu ok
+par_row threads_row "aarch64 threads: native groups"         arm qemu ok
+par_row threads_row "threads: private table canary"          rv  qemu,threads-private-table-canary privtable
+par_row threads_row "aarch64 threads: private table canary"  arm qemu,threads-private-table-canary privtable
+par_row threads_row "threads: futex wake canary"             rv  qemu,futex-wake-noop-canary futexnoop
+par_row threads_row "aarch64 threads: futex wake canary"     arm qemu,futex-wake-noop-canary futexnoop
+par_row threads_row "threads: clear-tid canary"              rv  qemu,threads-no-cleartid-canary noclear
+par_row threads_row "aarch64 threads: clear-tid canary"      arm qemu,threads-no-cleartid-canary noclear
+
+# ── fork: W^X across copy-on-write (wave 13, security) ─────────────────────
+#
+# A fork used to mark every user page copy-on-write, code and read-only data
+# included: a child's store to its own code took the COW break and got a
+# private WRITABLE copy that kept the execute bit (found by SIGNALS). Only
+# writable pages are COW now; code and rodata are shared read-only. abitest's
+# `check_fork_keeps_code_read_only`: a child's store to its code and to its
+# rodata die 128+SIGSEGV, a `read()` into its code is refused, the parent's
+# word is unchanged (four `wx:` checks). Canary `cow-ro-canary` (the old
+# marking, and the COW break's execute-bit refusal off): the store and the
+# read succeed.
+wx_row() { # <label> <isa: rv|arm> <features> <ok|canary>
+    local label="$1" isa="$2" feats="$3" want="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled' last="wx: the read-only word is unchanged"
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "$last" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "$fault" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "$last" "$log"; then
+        bad; echo "      abitest never finished its W^X checks"
+        echo "      log kept: $log"; return
+    fi
+    local oks fails need
+    oks="$(grep -a "\[ABITEST\]   ok   wx: " "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -a "\[ABITEST\]  FAIL  wx: " "$log" | tr -d '\r')"
+    case "$want" in
+    ok)
+        if [ "$oks" = 4 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      want 4 ok and no FAIL wx lines; read $oks ok:" ;;
+    canary)
+        if printf '%s\n' "$fails" | grep -qF "store to its code faults" \
+            && printf '%s\n' "$fails" | grep -qF "read() into a fork child's code is refused"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (code copy-on-write) still faulted the store; read $oks ok:" ;;
+    esac
+    [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
+    echo "      log kept: $log"
+}
+par_row wx_row "fork: store to code faults"          rv  qemu ok
+par_row wx_row "aarch64 fork: store to code faults"  arm qemu ok
+par_row wx_row "fork: W^X canary"                    rv  qemu,cow-ro-canary canary
+par_row wx_row "aarch64 fork: W^X canary"            arm qemu,cow-ro-canary canary
+
+# ── mmap: PROT_READ/PROT_WRITE are exact (wave 13, security) ──────────────
+#
+# `mmap` mapped every page read-write whatever `prot` said, so a PROT_READ
+# mapping took stores. abitest's `check_mmap_prot` (native): a store to a
+# PROT_READ page and to a PROT_NONE reservation die 128+SIGSEGV, a `read()`
+# into PROT_READ memory is refused, PROT_READ|PROT_WRITE takes stores (seven
+# `mprot:` checks). The Linux side (`mprotect` too) is in the LXHELLO rows.
+# Canary `mmap-prot-canary`: read-write mappings and a no-op `mprotect`.
+mprot_row() { # <label> <isa: rv|arm> <features> <ok|canary>
+    local label="$1" isa="$2" feats="$3" want="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled' last="mprot: a store to PROT_NONE memory faults"
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "$last" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "$fault" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "$last" "$log"; then
+        bad; echo "      abitest never finished its mmap prot checks"
+        echo "      log kept: $log"; return
+    fi
+    local oks fails need
+    oks="$(grep -a "\[ABITEST\]   ok   mprot: " "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -a "\[ABITEST\]  FAIL  mprot: " "$log" | tr -d '\r')"
+    case "$want" in
+    ok)
+        if [ "$oks" = 7 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      want 7 ok and no FAIL mprot lines; read $oks ok:" ;;
+    canary)
+        if printf '%s\n' "$fails" | grep -qF "store to PROT_READ memory faults" \
+            && printf '%s\n' "$fails" | grep -qF "read() into PROT_READ memory is refused"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (read-write mappings) still faulted the store; read $oks ok:" ;;
+    esac
+    [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
+    echo "      log kept: $log"
+}
+par_row mprot_row "mmap: PROT_READ is read-only"          rv  qemu ok
+par_row mprot_row "aarch64 mmap: PROT_READ read-only"     arm qemu ok
+par_row mprot_row "mmap: prot canary"                     rv  qemu,mmap-prot-canary canary
+par_row mprot_row "aarch64 mmap: prot canary"             arm qemu,mmap-prot-canary canary
+
+# ── Orphans: re-parented to a subreaper or init, BOTH ISAs (wave 13) ────────
+#
+# When a user task exits, its children go to the nearest live ancestor marked
+# a child subreaper (`SYS_TASK_SUBREAPER`, Linux `PR_SET_CHILD_SUBREAPER`),
+# else to init (the autorun image's task), with the notices of its children
+# that exited unreaped. abitest's `check_orphans` (abitest is this image's
+# init): a child forks a grandchild and exits; the grandchild sees `/proc`
+# name init as its parent, init lists and reaps it with its code. Then a
+# marked child does the same one level down and must be the adopter, init
+# none. Read back: the `init=` line with children=1 and an orphan TID, eleven
+# `ok   orphans:` lines and no `FAIL   orphans:` line. The canary row boots
+# `orphan-reparent-canary` (wave 12's purge, no re-link) and must see both
+# adoption checks fail.
+orphan_row() { # <label> <isa: rv|arm> <features> <adopted|canary>
+    local label="$1" isa="$2" feats="$3" want="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled'
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "[ABITEST] orphans: done" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "$fault" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local line oks fails
+    line="$(grep -a "\[ABITEST\] orphans: init=" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ -z "$line" ] || ! grep -aqF "[ABITEST] orphans: done" "$log"; then
+        bad; echo "      abitest never finished its orphan check"
+        echo "      log kept: $log"; return
+    fi
+    oks="$(grep -a "\[ABITEST\]   ok   orphans: " "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -a "\[ABITEST\]  FAIL  orphans: " "$log" | tr -d '\r')"
+    if [ "$want" = adopted ]; then
+        if printf '%s\n' "$line" | grep -qE " children=1 orphan=[1-9][0-9]*$" \
+            && [ "$oks" = 11 ] && [ -z "$fails" ]; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      want children=1, an orphan TID, 11 ok and no FAIL orphan lines; read ($oks ok):"
+    else
+        if printf '%s\n' "$fails" | grep -qF "shows the orphan as init's child" \
+            && printf '%s\n' "$fails" | grep -qF "a subreaper adopts and reaps its orphan"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (re-parenting compiled out) still adopted the orphans; read ($oks ok):"
+    fi
+    echo "        $line"
+    [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
+    echo "      log kept: $log"
+}
+par_row orphan_row "exit: orphans adopted"           rv  qemu adopted
+par_row orphan_row "aarch64 orphans adopted"         arm qemu adopted
+par_row orphan_row "exit: orphans canary"            rv  qemu,orphan-reparent-canary canary
+par_row orphan_row "aarch64 orphans canary"          arm qemu,orphan-reparent-canary canary
+
+# ── Console: a ring-3 line is never spliced by a kernel line ────────────────
+#
+# Fourth instance of the class that turns a working property into a red row:
+# gate 192b's `ipc: census counters zero` read `[IPCTEST] ALL PA[SCHED-DBG]
+# ASKS-SCHED ...` — a timer-ISR `kprintln!` landed between two 16-byte pieces
+# of a ring-3 write. Since wave 9 the ring-3 writer OWNS the console with
+# interrupts on, and kernel lines from any hart or interrupt handler wait in a
+# buffer it drains (`crates/drivers/sys/src/console_defer.rs`).
+#
+# The `console-splice-smoke` kernel pushes 2000 known 84-byte lines through
+# `console_write_ring3` (the `sys_write` fd 1/2 function) while a task on
+# another hart `kprintln!`s one line a millisecond and the timer ISR prints
+# every tick. `tools/console_splice_count.sh` requires all 2000 byte-exact,
+# every kernel smoke line on the wire whole, every missing one covered by a
+# `[CONSOLE] dropped` report, and at least one kernel line in the window.
+# `-smp 4` covers other-hart task and ISR lines; `-smp 1` covers same-hart
+# preemption and the same-hart ISR.
+#
+# Canaries (2026-09-28): kernel output ignoring ownership -> 640/2000 ring-3
+# lines spliced at -smp 4, kernel lines torn; base commit 08647ce: 795 and 54
+# (riscv64), 52 at aarch64 -smp 2. The host protocol tests are in
+# tests/host/drivers-tests (`console_ownership`).
+console_splice_row() { # <label> <isa: rv|arm> <smp>
+    local label="$1" isa="$2" smp="$3"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    local kcopy="$log.kernel"
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "qemu,console-splice-smoke"; then
+            bad; echo "      riscv64 kernel (qemu,console-splice-smoke) did not build"; return
+        fi
+        cp "$KERNEL" "$kcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp "$smp" \
+            >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "qemu,console-splice-smoke"; then
+            bad; echo "      aarch64 kernel (qemu,console-splice-smoke) did not build"; return
+        fi
+        cp "$A64_IMG" "$kcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
+            -kernel "$kcopy" >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "[SPLICE] DONE" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy"
+    local verdict
+    if verdict="$(bash tools/console_splice_count.sh "$log")"; then
+        ok; rm -f "$log"; return 0
+    fi
+    bad; echo "      $verdict"
+    echo "      log kept: $log"
+}
+par "console: no splice smp4" console_splice_row "console: no splice smp4"      rv 4
+par "console: no splice smp1" console_splice_row "console: no splice smp1"      rv 1
+par "aarch64 console: no splice" console_splice_row "aarch64 console: no splice"   arm 2
+
+# ── Console: no writer waits for the UART with interrupts masked (wave 11) ──
+#
+# Kernel and ring-3 output goes into a TX ring under the UART lock, and the
+# UART's own TX interrupt moves it to the FIFO (`uart.rs`, "TX ring"). The
+# `[SPLICE] DONE` line of the same smoke as above reports, over every UART
+# lock hold of the window (interrupts masked on that hart for exactly the
+# hold): `max_masked_wire_bytes`, the most bytes one hold pushed through the
+# BLOCKING FIFO writer (spins on THRE/TXFE: on a real board ≈ 1.4 ms per
+# 16 B past the first FIFO load at 115200 baud), and `max_masked_fill_bytes`,
+# the most one hold moved with the NON-blocking fill (only into free FIFO
+# slots; under QEMU, which transmits instantly, bounded by TX_IRQ_BUDGET).
+# The row wants tx_async=1, no blocking byte in any hold, the fill bound, and
+# the splice count clean. The canary row builds `console-tx-sync` (the old
+# synchronous path) and wants the blocking bytes back above one FIFO load.
+# Measured 2026-10-02: base e8d673e max_masked_wire_bytes 86..128 on both
+# ISAs; TX ring 0 (fill 16..256); console-tx-sync 86+.
+console_tx_row() { # <label> <isa: rv|arm> <smp> <async|sync>
+    local label="$1" isa="$2" smp="$3" mode="$4"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    local kcopy="$log.kernel" feats="qemu,console-splice-smoke"
+    [ "$mode" = "sync" ] && feats="$feats,console-tx-sync"
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "$feats"; then
+            bad; echo "      riscv64 kernel ($feats) did not build"; return
+        fi
+        cp "$KERNEL" "$kcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp "$smp" \
+            >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then
+            bad; echo "      aarch64 kernel ($feats) did not build"; return
+        fi
+        cp "$A64_IMG" "$kcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
+            -kernel "$kcopy" >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "[SPLICE] DONE" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy"
+    local done_line
+    done_line="$(grep -a '\[SPLICE\] DONE ' "$log" | tr -d '\r' | sed -n 1p)"
+    tx_field() { printf '%s' "$done_line" | sed -n "s/.* $1=\([0-9]*\).*/\1/p"; }
+    local tx_async wire fill
+    tx_async="$(tx_field tx_async)"; wire="$(tx_field max_masked_wire_bytes)"
+    fill="$(tx_field max_masked_fill_bytes)"
+    if [ -z "$tx_async" ] || [ -z "$wire" ] || [ -z "$fill" ]; then
+        bad; echo "      no complete '[SPLICE] DONE' line with the TX fields — log kept: $log"; return
+    fi
+    if [ "$mode" = "async" ]; then
+        local verdict
+        if ! verdict="$(bash tools/console_splice_count.sh "$log")"; then
+            bad; echo "      $verdict"; echo "      log kept: $log"; return
+        fi
+        if [ "$tx_async" = "1" ] && [ "$wire" -eq 0 ] && [ "$fill" -le 256 ]; then
+            ok; echo "      tx_async=1 max_masked_wire_bytes=0 max_masked_fill_bytes=$fill"; rm -f "$log"; return 0
+        fi
+        bad; echo "      want tx_async=1 max_masked_wire_bytes=0 fill<=256, got tx_async=$tx_async wire=$wire fill=$fill"
+    else
+        if [ "$tx_async" = "0" ] && [ "$wire" -gt 16 ]; then
+            ok; echo "      canary: tx_async=0 max_masked_wire_bytes=$wire (> one 16-byte FIFO load)"; rm -f "$log"; return 0
+        fi
+        bad; echo "      canary did not regress: tx_async=$tx_async max_masked_wire_bytes=$wire"
+    fi
+    echo "      log kept: $log"
+}
+par "console: tx ring, no wait" console_tx_row "console: tx ring, no wait"     rv  2 async
+par "aarch64 console: tx ring" console_tx_row "aarch64 console: tx ring"      arm 2 async
+par "console: tx-sync canary" console_tx_row "console: tx-sync canary"       rv  2 sync
+par "aarch64 console: tx-sync can." console_tx_row "aarch64 console: tx-sync can." arm 2 sync
+# Leave $KERNEL / $A64_IMG on ordinary qemu builds for anything below that
+# forgets to rebuild.
+kbuild "qemu"
+a64_kbuild "qemu" >/dev/null 2>&1 || true
+
+# ── The ring-3 ML service: late, then killed, and the loop decides anyway ───
+#
+# The behavior loop's MLP runs in `userspace/services/mlsrv` (wave 9); the kernel asks
+# it once per 100 ms cycle with a 10 ms reply budget. `ml-kill-smoke` drives
+# the service through three states from inside the loop (kernel/src/
+# behavior_ml.rs): answering (10 verdicts, a parity sweep against the
+# reference MLP the smoke build links, round-trip timing), LATE (it is told to sleep 300 ms), and
+# KILLED (it is told to fault; the kernel kills it on the page fault) and,
+# since wave 11, RESTARTED by the supervisor (`drv_supervisor::
+# spawn_supervised`: the service is supervised from its start) — twice: the
+# first restart is immediate, the second waits for the supervisor's 1 s
+# cooldown (~10 loop cycles). The kernel prints `[MLKILL] PASS` only if the
+# stall produced at least one late cycle, for each kill every cycle from the
+# kill up to the first verdict after it decided STOP
+# through L1 (the restart lets nothing through before the service is back),
+# that verdict came from a NEW task owning the ML kind, five verdicts followed,
+# no cycle from the stall on overran its period, both restarts are in the
+# flight recorder on disk (`SAFETY_DRIVER_SUPERVISOR`, restarts 1 and 2 of the
+# ML kind), and — when a gap lasted the 10 cycles that write it — the absence
+# (`SAFETY_ML_ABSENT`) is too; a shorter gap writes none ("a verdict ends the
+# episode"), and the verdict line says which. Read back by the kernel after a
+# flush.
+#
+# Checked on top of that verdict: the service's own GGUF self-test (moved out
+# of the kernel with it) passed; every answered parity point was
+# bit-identical to the reference MLP's compiled-in weights — since wave 10 the
+# service loads its weights from `/fat/MLP.RML` (an 8.3 name; `MLP.RMLP` was
+# never found), so this also proves the file carries the same weights; and
+# the kill was a real one —
+# the task exit HELD the service's driver slot for its successor, by the TID it
+# was started with, and the supervisor spawned restart 1 of /fat/MLSRV.ELF.
+#
+# Canaries: `ml-fallback-canary` turns the missing-verdict fallback into "no
+# verdict" (the loop before the move). L1 then decides nothing after the kill
+# and the kernel prints `[MLKILL] FAIL` — the one line that path prints.
+# `supall-canary` (wave 11) spawns the service unsupervised, as before: no
+# verdict ever comes back and the kernel prints `[MLKILL] FAIL: not
+# restarted` after 200 cycles, the line only that path prints (expect
+# NORESTART).
+ml_service_kill_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <expect: PASS|FAIL|NORESTART>
+    local label="$1" isa="$2" extra="$3" expect="$4"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" ini="$CI_LOG_DIR/${tag}.ini"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img" "$ini"
+    local disk kimg=""
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "qemu,ml-kill-smoke$extra"; then
+            bad; echo "      riscv64 kernel (qemu,ml-kill-smoke$extra) did not build"; return
+        fi
+        disk=build/disk-envelope.img
+    else
+        if ! a64_kbuild "qemu,ml-kill-smoke$extra"; then
+            bad; echo "      aarch64 kernel (qemu,ml-kill-smoke$extra) did not build"; return
+        fi
+        disk=build/disk-aarch64.img
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"
+        cp "$A64_IMG" "$kimg"
+    fi
+    rm -f "$disk"
+    make_disk "$disk"
+    cp "$disk" "$img"
+    # This copy only: no autorun (nothing but the loop and the service runs)
+    # and no brain link (with no NIC, every dial stalls the cycle for its 2 s
+    # handshake budget). REWRITTEN, not appended: `cfg_get` answers the FIRST
+    # line with a key, so an appended override is silently ignored.
+    if ! mcopy -n -i "$img" ::CONFIG.INI "$ini.in" 2>/dev/null \
+       || ! sed -e 's/^behavior_server_port=.*/behavior_server_port=0/' \
+                -e 's/^autorun=.*/autorun=/' "$ini.in" >"$ini" \
+       || ! grep -q '^behavior_server_port=0' "$ini" \
+       || ! mcopy -o -i "$img" "$ini" ::CONFIG.INI 2>/dev/null \
+       || ! python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$img" --out "$ini.sig" >/dev/null 2>&1 \
+       || ! mcopy -o -i "$img" "$ini.sig" ::CONFIG.SIG 2>/dev/null; then
+        bad; echo "      could not rewrite CONFIG.INI in $img with mtools"; return
+    fi
+    rm -f "$ini" "$ini.in" "$ini.sig"
+    if [ "$isa" = "rv" ]; then
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqE "\[MLKILL\] (PASS|FAIL)" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img"; [ -n "$kimg" ] && rm -f "$kimg"
+
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      kernel panic or fatal exception:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local verdict
+    verdict="$(grep -a "\[MLKILL\] \(PASS\|FAIL\)" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ "$expect" = "FAIL" ]; then
+        # The canary: the kernel must have printed its own FAIL, not merely
+        # timed out.
+        case "$verdict" in
+            "[MLKILL] FAIL"*) ok; rm -f "$log" ;;
+            *) bad; echo "      the fallback canary did not turn the row red: '${verdict:-no verdict}'"
+               echo "      log kept: $log" ;;
+        esac
+        return
+    fi
+    if [ "$expect" = "NORESTART" ]; then
+        case "$verdict" in
+            "[MLKILL] FAIL: not restarted"*) ok; rm -f "$log" ;;
+            *) bad; echo "      the supervision canary did not fail on 'not restarted': '${verdict:-no verdict}'"
+               echo "      log kept: $log" ;;
+        esac
+        return
+    fi
+    case "$verdict" in
+        "[MLKILL] PASS"*) ;;
+        *) bad; echo "      ${verdict:-no [MLKILL] verdict within 120 s}"
+           grep -a "\[MLKILL\]\|\[BEHAVIOR\]\[ML\]\|\[ML\] ring-3\|mlsrv\]" "$log" | tr -d '\r' \
+               | sed -n '1,12p' | sed 's|^|        |'
+           echo "      log kept: $log"; return ;;
+    esac
+    # Prefix only: the service prints the line in one write, but a kernel
+    # line from another hart can still land inside it (seen: "[GGUF] 3/3
+    # tests[TASK] Worker 0 ..."). A failing count is "[0-2]/3", which the
+    # boot-wide QEMU_FAIL_RE catches.
+    if ! grep -aq "\[GGUF\] 3/3" "$log"; then
+        bad; echo "      the service's GGUF self-test did not pass (or did not run)"
+        grep -a "GGUF" "$log" | tr -d '\r' | sed -n '1,5p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local parity same answered
+    parity="$(grep -a "\[MLKILL\] parity:" "$log" | tr -d '\r' | sed -n '1p')"
+    same="$(printf '%s\n' "$parity" | sed -n 's/.*parity: \([0-9]*\)\/\([0-9]*\) answered.*/\1/p')"
+    answered="$(printf '%s\n' "$parity" | sed -n 's/.*parity: \([0-9]*\)\/\([0-9]*\) answered.*/\2/p')"
+    if [ -z "$same" ] || [ "$answered" = "0" ] || [ "$same" != "$answered" ]; then
+        bad; echo "      the service's MLP does not match the kernel's: '${parity:-no parity line}'"
+        echo "      log kept: $log"; return
+    fi
+    local tid
+    tid="$(grep -a "\[ML\] ring-3 ML service /fat/MLSRV.ELF started, tid=" "$log" | tr -d '\r' \
+           | sed -n '1s/.*tid=\([0-9]*\).*/\1/p')"
+    if [ -z "$tid" ] || ! grep -aqE "\[DRV\] held 1 driver slot\(s\) of task ${tid} for its successor" "$log"; then
+        bad; echo "      the service (tid ${tid:-?}) was not held for a successor: no '[DRV] held 1 driver slot(s) of task ${tid:-?}'"
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqE "\[SUP\] restart 1/[0-9]+ of /fat/MLSRV\.ELF: successor tid=[0-9]+ for tid=${tid} " "$log"; then
+        bad; echo "      no '[SUP] restart 1/N of /fat/MLSRV.ELF ... for tid=${tid:-?}'"
+        echo "      log kept: $log"; return
+    fi
+    ok; grep -a "\[MLKILL\] restarted:" "$log" | tr -d '\r' | sed -n '1,2p' | sed 's|^|      |'
+    rm -f "$log"
+}
+par_row ml_service_kill_row "ml service killed"          rv  ""                     PASS
+par_row ml_service_kill_row "ml service killed, canary"  rv  ",ml-fallback-canary"  FAIL
+par_row ml_service_kill_row "aarch64 ml service killed"  arm ""                     PASS
+par_row ml_service_kill_row "ml service killed, not supervised" rv ",supall-canary" NORESTART
+
+# ── The ring-3 ML service never starts: the loop holds STOP, and records it ──
+#
+# Owner decision 2026-09-28, fail closed: with ML enabled, a boot on which the
+# ML service never started holds STOP through L1 for every cycle that asks for
+# a verdict — as a service that died does — instead of letting L2/L3 drive
+# blind. The same `ml-kill-smoke` kernel as the kill row, on the same disk
+# with the same CONFIG.INI rewrite, minus `MLSRV.ELF` (deleted with mtools,
+# and its absence checked on the image). The kernel's scenario, on seeing
+# `NotLaunched`, counts 20 cycles and prints `[MLABSENT] PASS` only if all 20
+# decided STOP through L1 AND the `SAFETY_ML_ABSENT` record (action 1, never
+# started), written on the 10th, is in the flight recorder on disk.
+#
+# Anchored on the launch line too, with `rc=-1`: `spawn_path` answers -1 for a
+# file it cannot read, and -13 (EACCES) for an image whose digest the seccomp
+# table does not know. A stale `build/image_hashes*.rs` would make EVERY disk
+# boot not start the service and pass this row for the wrong reason (the kill
+# row above then goes red); the pinned rc tells the two apart.
+#
+# Canary: `ml-absent-canary` restores the answer before the decision ("no
+# verdict", L1 passes) for a service that never started. The kernel prints
+# `[MLABSENT] FAIL` (0 of 20 decided STOP by L1, nothing recorded) — the one
+# line that path prints.
+ml_service_absent_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <expect: PASS|FAIL>
+    local label="$1" isa="$2" extra="$3" expect="$4"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" ini="$CI_LOG_DIR/${tag}.ini"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img" "$ini"
+    local disk kimg=""
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "qemu,ml-kill-smoke$extra"; then
+            bad; echo "      riscv64 kernel (qemu,ml-kill-smoke$extra) did not build"; return
+        fi
+        disk=build/disk-envelope.img
+    else
+        if ! a64_kbuild "qemu,ml-kill-smoke$extra"; then
+            bad; echo "      aarch64 kernel (qemu,ml-kill-smoke$extra) did not build"; return
+        fi
+        disk=build/disk-aarch64.img
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"
+        cp "$A64_IMG" "$kimg"
+    fi
+    rm -f "$disk"
+    make_disk "$disk"
+    cp "$disk" "$img"
+    # As the kill row: no autorun, no brain link (REWRITTEN, not appended —
+    # `cfg_get` answers the FIRST line with a key).
+    if ! mcopy -n -i "$img" ::CONFIG.INI "$ini.in" 2>/dev/null \
+       || ! sed -e 's/^behavior_server_port=.*/behavior_server_port=0/' \
+                -e 's/^autorun=.*/autorun=/' "$ini.in" >"$ini" \
+       || ! grep -q '^behavior_server_port=0' "$ini" \
+       || ! mcopy -o -i "$img" "$ini" ::CONFIG.INI 2>/dev/null \
+       || ! python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$img" --out "$ini.sig" >/dev/null 2>&1 \
+       || ! mcopy -o -i "$img" "$ini.sig" ::CONFIG.SIG 2>/dev/null; then
+        bad; echo "      could not rewrite CONFIG.INI in $img with mtools"; return
+    fi
+    rm -f "$ini" "$ini.in" "$ini.sig"
+    # The one difference from the kill row's volume: no service image.
+    if ! mdir -i "$img" ::MLSRV.ELF >/dev/null 2>&1 \
+       || ! mdel -i "$img" ::MLSRV.ELF 2>/dev/null \
+       || mdir -i "$img" ::MLSRV.ELF >/dev/null 2>&1; then
+        bad; echo "      could not delete MLSRV.ELF from $img with mtools (or it was never there)"
+        rm -f "$img"; [ -n "$kimg" ] && rm -f "$kimg"; return
+    fi
+    if [ "$isa" = "rv" ]; then
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqE "\[MLABSENT\] (PASS|FAIL)" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img"; [ -n "$kimg" ] && rm -f "$kimg"
+
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      kernel panic or fatal exception:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aq "\[ML\] ring-3 ML service NOT started (spawn /fat/MLSRV.ELF rc=-1)" "$log"; then
+        bad; echo "      the service was not refused as a missing file (rc=-1):"
+        grep -a "\[ML\] ring-3" "$log" | tr -d '\r' | sed -n '1,3p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local verdict
+    verdict="$(grep -a "\[MLABSENT\] \(PASS\|FAIL\)" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ "$expect" = "FAIL" ]; then
+        case "$verdict" in
+            "[MLABSENT] FAIL"*) ok; rm -f "$log" ;;
+            *) bad; echo "      the absent canary did not turn the row red: '${verdict:-no verdict}'"
+               echo "      log kept: $log" ;;
+        esac
+        return
+    fi
+    case "$verdict" in
+        "[MLABSENT] PASS"*) ok; rm -f "$log" ;;
+        *) bad; echo "      ${verdict:-no [MLABSENT] verdict within 120 s}"
+           grep -a "\[MLABSENT\]\|\[BEHAVIOR\]\[ML\]\|\[ML\] ring-3\|\[SAFETY\] no ML" "$log" \
+               | tr -d '\r' | sed -n '1,12p' | sed 's|^|        |'
+           echo "      log kept: $log" ;;
+    esac
+}
+par_row ml_service_absent_row "ml service absent"          rv  ""                    PASS
+par_row ml_service_absent_row "ml service absent, canary"  rv  ",ml-absent-canary"   FAIL
+par_row ml_service_absent_row "aarch64 ml service absent"  arm ""                    PASS
+
+# ── The motor-command watchdog is on the flight recorder (wave 14) ──────────
+#
+# `rt_motor_task`'s watchdog (no motor command for 500 ms -> SAFE STOP) writes
+# a `SAFETY_RT_WATCHDOG` (0x19) record on its transitions only: the first SAFE
+# STOP (durable), the first clear, then one repeats record per window that saw
+# more (`RtWatchdogReports`, crates/core/actuation/src/logger.rs). The boot has
+# no brain, so the watchdog flaps every couple of seconds; `rtwd-window-smoke`
+# closes a window every 5 s instead of 60. Once the console shows a window's
+# count the boot stops and the recorder file is read off the volume with
+# mtools, from the host:
+#   - a STOP, a CLEAR and a REPEATS record, and the REPEATS count is the
+#     console's;
+#   - no more records of a kind than console lines of it (the console prints
+#     transitions only, so the recorder does too: never one per flap).
+# Canary: `rtwd-record-canary` prints and records nothing: red.
+rt_watchdog_record_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <expect: PASS|FAIL>
+    local label="$1" isa="$2" extra="$3" expect="$4"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" rec="$CI_LOG_DIR/${tag}.bin"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img" "$rec"
+    local disk kimg=""
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "qemu,rtwd-window-smoke$extra"; then
+            bad; echo "      riscv64 kernel (qemu,rtwd-window-smoke$extra) did not build"; return
+        fi
+        disk=build/disk.img
+    else
+        if ! a64_kbuild "qemu,rtwd-window-smoke$extra"; then
+            bad; echo "      aarch64 kernel (qemu,rtwd-window-smoke$extra) did not build"; return
+        fi
+        disk=build/disk-aarch64.img
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"
+        cp "$A64_IMG" "$kimg"
+    fi
+    make_disk "$disk"
+    cp "$disk" "$img"
+    if [ "$isa" = "rv" ]; then
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 2 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aq "\[RT-MOTOR\] Watchdog: [0-9]* repeat" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    # The clear and the count reach the volume at the recorder's periodic
+    # flush (~0.5 s); the SAFE STOP record is already there (durable).
+    sleep 2
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    [ -n "$kimg" ] && rm -f "$kimg"
+
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      kernel panic or fatal exception:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | sed 's|^|        |'
+        echo "      log kept: $log"; rm -f "$img"; return
+    fi
+    local stops clears sums first
+    stops="$(grep -ac "\[RT-MOTOR\] Watchdog! No command" "$log")"
+    clears="$(grep -ac "\[RT-MOTOR\] Watchdog cleared" "$log")"
+    sums="$(grep -ac "\[RT-MOTOR\] Watchdog: [0-9]* repeat" "$log")"
+    first="$(grep -a "\[RT-MOTOR\] Watchdog: [0-9]* repeat" "$log" | sed -n '1s/.*Watchdog: \([0-9]*\) repeat.*/\1/p')"
+    if [ "$stops" = 0 ] || [ "$clears" = 0 ] || [ -z "$first" ]; then
+        bad; echo "      the console never showed a stop, a clear and a window's count \
+(stops=$stops clears=$clears count=${first:-none})"
+        echo "      log kept: $log"; rm -f "$img"; return
+    fi
+    if ! mcopy -n -i "$img" ::LOG/LOG00000.BIN "$rec" 2>/dev/null; then
+        bad; echo "      no ::LOG/LOG00000.BIN on the volume"; echo "      log kept: $log"; rm -f "$img"; return
+    fi
+    rm -f "$img"
+    # Header 16 B, then 32-byte records: kind at 8, payload at 12 (code,
+    # action, _, _, detail u32 LE) — `LogRecord::encode`. 0x03 = safety
+    # violation, 0x19 = SAFETY_RT_WATCHDOG.
+    local counts
+    counts="$(python3 - "$rec" <<'PY'
+import struct, sys
+b = open(sys.argv[1], 'rb').read()
+n = {1: 0, 2: 0, 3: 0}; first = None
+for off in range(16, len(b) - 31, 32):
+    r = b[off:off + 32]
+    if r[8] == 0x03 and r[12] == 0x19 and r[13] in n:
+        n[r[13]] += 1
+        if r[13] == 3 and first is None:
+            first = struct.unpack_from('<I', r, 16)[0] & 0x7FFFFFFF
+print(n[1], n[2], n[3], first if first is not None else -1)
+PY
+)"
+    rm -f "$rec"
+    local rs rc rr rfirst
+    read -r rs rc rr rfirst <<<"$counts"
+    local why=""
+    [ "${rs:-0}" -ge 1 ] || why="$why [no SAFE STOP record]"
+    [ "${rc:-0}" -ge 1 ] || why="$why [no clear record]"
+    [ "${rr:-0}" -ge 1 ] || why="$why [no repeats record]"
+    [ "${rr:-0}" -ge 1 ] && [ "$rfirst" != "$first" ] && why="$why [repeats record says $rfirst, console $first]"
+    [ "${rs:-0}" -le "$stops" ] && [ "${rc:-0}" -le "$clears" ] && [ "${rr:-0}" -le "$sums" ] \
+        || why="$why [more records than console transitions: $rs/$rc/$rr vs $stops/$clears/$sums]"
+    if [ "$expect" = "FAIL" ]; then
+        if [ -n "$why" ]; then ok; echo "      canary red as it must:$why"; rm -f "$log"
+        else bad; echo "      the canary build recorded the watchdog: the row does not discriminate"
+             echo "      log kept: $log"; fi
+        return
+    fi
+    if [ -z "$why" ]; then
+        ok; echo "      records stop/clear/repeats $rs/$rc/$rr (console $stops/$clears/$sums), count $first"
+        rm -f "$log"
+    else
+        bad; echo "     $why"; echo "      log kept: $log"
+    fi
+}
+par_row rt_watchdog_record_row "rt watchdog recorded"          rv  ""                     PASS
+par_row rt_watchdog_record_row "rt watchdog recorded, canary"  rv  ",rtwd-record-canary"  FAIL
+par_row rt_watchdog_record_row "aarch64 rt watchdog recorded"  arm ""                     PASS
+kbuild "qemu"
+a64_kbuild "qemu" >/dev/null 2>&1 || true
+
+# ── The ML data files are verified before the ML service uses them ──────────
+#
+# Wave 11: `/fat/MLP.RML` (weights) and `/fat/POLICY.GGF` (the GGUF policy)
+# sit on the USB-exposed FAT volume. The service (`userspace/services/mlsrv`) checks
+# each against its bare 64-byte Ed25519 sidecar (`MLP.SIG`, `POLICY.SIG`, the
+# CONFIG.SIG format and key) before use; Kconfig ML_DATA_SIG_REQUIRED, default
+# y. Plain `qemu` kernels (just built above), one fresh disk copy per boot.
+#
+#   signed:   the disk as `make` builds it — weights loaded with
+#             "signature verified", GGUF self-test 3/3.
+#   tampered: one byte of MLP.RML and of POLICY.GGF flipped (offset 40) —
+#             both REFUSED for a bad signature, the weights line and the GGUF
+#             parse line absent (the negation anchors on lines only the
+#             accepting path prints).
+#   nosig:    MLP.SIG and POLICY.SIG deleted — both REFUSED as unsigned.
+#
+# The `[MLKILL]` parity check above cannot see a refusal: the refused file's
+# fallback is the compiled-in weights, which the shipped file equals.
+#
+# Canary (by hand, 2026-10-02, both ISAs): `check_signature` answering
+# `Verified` for any sidecar turns the tampered rows red ("weights loaded
+# from /fat/MLP.RML (292 bytes, signature verified)" printed for a flipped
+# file).
+ml_data_sig_row() { # <label> <isa: rv|arm> <mode: signed|tampered|nosig>
+    local label="$1" isa="$2" mode="$3"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" tmp="$CI_LOG_DIR/${tag}.bin"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img" "$tmp"
+    local disk kimg=""
+    if [ "$isa" = "rv" ]; then
+        disk=build/disk-envelope.img
+    else
+        disk=build/disk-aarch64.img
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"
+        if [ ! -f "$A64_IMG" ]; then bad; echo "      not built: $A64_IMG"; return; fi
+        cp "$A64_IMG" "$kimg"
+    fi
+    [ -f "$disk.pristine" ] || make_disk "$disk"
+    cp "$disk.pristine" "$img"
+    local f
+    case "$mode" in
+        tampered)
+            for f in MLP.RML POLICY.GGF; do
+                if ! mcopy -n -i "$img" "::$f" "$tmp" 2>/dev/null \
+                   || ! python3 -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[40]^=1; open(p,"wb").write(b)' "$tmp" \
+                   || ! mcopy -o -i "$img" "$tmp" "::$f" 2>/dev/null; then
+                    bad; echo "      could not flip a byte of $f in $img"; return
+                fi
+            done ;;
+        nosig)
+            if ! mdel -i "$img" ::MLP.SIG ::POLICY.SIG 2>/dev/null \
+               || mdir -i "$img" :: 2>/dev/null | grep -qE "^(MLP|POLICY) +SIG"; then
+                bad; echo "      could not delete MLP.SIG/POLICY.SIG from $img"; return
+            fi ;;
+    esac
+    rm -f "$tmp"
+    if [ "$isa" = "rv" ]; then
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    # The service prints its registration line after both files are dealt with.
+    while [ "$i" -lt 240 ]; do
+        grep -aq "\[mlsrv\] registered DRV_KIND_ML" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    sleep 1
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img"; [ -n "$kimg" ] && rm -f "$kimg"
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      kernel panic or fatal exception:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local why=""
+    local loaded='\[mlsrv\] weights loaded from /fat/MLP\.RML \([0-9]+ bytes'
+    case "$mode" in
+        signed)
+            grep -aqE "${loaded}, signature verified\)" "$log" || why="no verified weights line"
+            grep -aq "\[GGUF\] 3/3" "$log" || why="${why:+$why; }GGUF self-test did not pass"
+            grep -aq "REFUSED" "$log" && why="${why:+$why; }a signed file was REFUSED" ;;
+        tampered|nosig)
+            local reason="bad signature in" ; [ "$mode" = nosig ] && reason="no"
+            grep -aq "\[mlsrv\] /fat/MLP.RML REFUSED: ${reason} /fat/MLP.SIG" "$log" \
+                || why="MLP.RML not refused (${reason})"
+            grep -aq "\[GGUF\] /fat/POLICY.GGF REFUSED: ${reason} /fat/POLICY.SIG" "$log" \
+                || why="${why:+$why; }POLICY.GGF not refused (${reason})"
+            grep -aqE "$loaded" "$log" && why="${why:+$why; }the weights were loaded"
+            grep -aq "\[GGUF\] Parsed POLICY.GGF" "$log" && why="${why:+$why; }the policy was parsed"
+            grep -aq "\[mlsrv\] registered DRV_KIND_ML" "$log" \
+                || why="${why:+$why; }the service did not go on serving" ;;
+    esac
+    if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+    bad; echo "      $why"
+    grep -a "mlsrv\]\|GGUF\]" "$log" | tr -d '\r' | sed -n '1,6p' | sed 's|^|        |'
+    echo "      log kept: $log"
+}
+par_row ml_data_sig_row "ml data signed"            rv  signed
+par_row ml_data_sig_row "ml data tampered"          rv  tampered
+par_row ml_data_sig_row "ml data unsigned"          rv  nosig
+par_row ml_data_sig_row "aarch64 ml data signed"    arm signed
+par_row ml_data_sig_row "aarch64 ml data tampered"  arm tampered
+par_row ml_data_sig_row "aarch64 ml data unsigned"  arm nosig
+
+# ── Spectre v1: the syscall-table index is masked in the built kernel ───────
+#
+# Wave 11, Kconfig MITIGATION_SPECTRE_V1_INDEX (`azos_limits::nospec`).
+# The mask is a few ALU instructions the compiler is free to drop if the
+# helper is ever "simplified", and nothing at run time would notice, so the
+# canary is the disassembly of `dispatch_slow` (`#[inline(never)]`, so it is a
+# symbol of its own) in the two `qemu` kernels just built: riscv64 must carry
+# `sltu`+`neg`, aarch64 `csdb`, when the config the kernel was built from has
+# the option on, and neither when it is off.
+#
+# Canary (by hand, 2026-10-02): the same kernels built with the option off
+# (`# CONFIG_MITIGATION_SPECTRE_V1_INDEX is not set`) have neither: the table
+# load indexes with the raw a7/x0 (`slli a7, a0, 3` / `ldr x8, [x8, x0, lsl #3]`).
+spectre_v1_disasm_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    local objdump elf cfg want dis sym
+    objdump="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objdump"
+    if [ "$isa" = rv ]; then elf="$KERNEL"; cfg="$PRIMARY_CONFIG"
+    else elf="$A64_KERNEL"; cfg="$AARCH64_CONFIG"; fi
+    if [ ! -x "$objdump" ] || [ ! -f "$elf" ]; then bad; echo "      missing $objdump or $elf"; return; fi
+    if grep -q '^CONFIG_MITIGATION_SPECTRE_V1_INDEX=y$' "$cfg"; then want=on; else want=off; fi
+    # By address range, not `--disassemble-symbols`: on riscv64 a local
+    # `.Lpcrel_hi` label inside the function ends that listing early.
+    sym="$("$objdump" -t "$elf" | grep 'dispatch13dispatch_slow' | sed -n 1p)"
+    if [ -z "$sym" ]; then bad; echo "      no dispatch_slow symbol in $elf"; return; fi
+    local start size
+    start="$(printf '%s\n' "$sym" | awk '{print $1}')"
+    # Size is the field after the section: an LTO-promoted local carries an extra `.hidden` column.
+    size="$(printf '%s\n' "$sym" | awk '{for (i = 1; i < NF; i++) if ($i ~ /^\./ && $(i+1) ~ /^[0-9a-f]+$/) { print $(i+1); exit }}')"
+    dis="$("$objdump" -d --no-show-raw-insn --start-address="0x$start" \
+           --stop-address="$(printf '0x%x' $((0x$start + 0x$size)))" "$elf")"
+    local has=off
+    if [ "$isa" = rv ]; then
+        printf '%s\n' "$dis" | grep -A1 -E '[[:space:]]sltu[[:space:]]' | grep -qE '[[:space:]]neg[[:space:]]' && has=on
+    else
+        printf '%s\n' "$dis" | grep -qE '[[:space:]]csdb' && has=on
+    fi
+    if [ "$has" = "$want" ]; then ok; return; fi
+    bad; echo "      config says $want, dispatch_slow says $has ($elf)"
+    printf '%s\n' "$dis" | grep -E '^ +[0-9a-f]+:' | sed -n '1,24p' | sed 's|^|        |'
+}
+spectre_v1_disasm_row "spectre v1 mask (disasm)"         rv
+spectre_v1_disasm_row "aarch64 spectre v1 mask (disasm)" arm
+
+# ── io_ring: each SQ entry is copied out of the ring page exactly once ──────
+#
+# OVSwrap review F4. Ring 3 maps the whole ring page RW and may rewrite an SQ
+# entry while a pass runs. The pass copies the entry into a local and checks
+# and uses only that copy — but a plain struct copy is ordinary loads the
+# compiler may split or re-materialise next to each use, which would read ring
+# memory again AFTER the check. The copy is now `sqe_snapshot`
+# (crates/core/ipc/src/io_ring.rs): `#[inline(never)]`, one `read_volatile`.
+# This row checks the property in the two kernels just built:
+#   * the symbol exists (so the copy is a function of its own, not inlined
+#     back into code that could re-read);
+#   * its loads add up to exactly 32 bytes, one `SqEntry` (a field read twice
+#     would add up to more);
+#   * exactly one call site in the whole image (a second read of the same
+#     entry anywhere would be a second call: the volatile read cannot be merged).
+# Canary (by hand, 2026-10-02): a second `sqe_snapshot(ring, sq_idx)` in
+# `run_pass` whose opcode is compared with the first: red, "2 call sites", both
+# ISAs. Removing `#[inline(never)]`: red, "no sqe_snapshot symbol".
+ioring_sqe_once_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    local objdump elf sym start size stop dis bytes calls
+    objdump="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objdump"
+    if [ "$isa" = rv ]; then elf="$KERNEL"; else elf="$A64_KERNEL"; fi
+    if [ ! -x "$objdump" ] || [ ! -f "$elf" ]; then bad; echo "      missing $objdump or $elf"; return; fi
+    sym="$("$objdump" -t "$elf" | grep '7io_ring12sqe_snapshot' | sed -n 1p)"
+    if [ -z "$sym" ]; then bad; echo "      no sqe_snapshot symbol in $elf (inlined?)"; return; fi
+    start="$(printf '%s\n' "$sym" | awk '{print $1}')"
+    size="$(printf '%s\n' "$sym" | awk '{for (i = 1; i < NF; i++) if ($i ~ /^\./ && $(i+1) ~ /^[0-9a-f]+$/) { print $(i+1); exit }}')"
+    stop="$(python3 -c "print(hex(0x$start + 0x$size))")"
+    dis="$("$objdump" -d --no-show-raw-insn --start-address="0x$start" --stop-address="$stop" "$elf" \
+           | grep -E '^ *[0-9a-f]+:')"
+    # Bytes loaded, by mnemonic (and register width for aarch64 ldr/ldp).
+    bytes="$(printf '%s\n' "$dis" | awk -v isa="$isa" '
+        { m = $2; r = $3 }
+        isa == "rv"  && m == "ld"                  { n += 8 }
+        isa == "rv"  && (m == "lw" || m == "lwu")  { n += 4 }
+        isa == "rv"  && (m == "lh" || m == "lhu")  { n += 2 }
+        isa == "rv"  && (m == "lb" || m == "lbu")  { n += 1 }
+        isa == "arm" && m == "ldr"   { n += (r ~ /^x/) ? 8 : 4 }
+        isa == "arm" && m == "ldp"   { n += (r ~ /^x/) ? 16 : 8 }
+        isa == "arm" && m == "ldrh"  { n += 2 }
+        isa == "arm" && m == "ldrb"  { n += 1 }
+        END { print n + 0 }')"
+    calls="$("$objdump" -d --no-show-raw-insn "$elf" | grep -E 'sqe_snapshot>' | grep -cvE '^[0-9a-f]+ <')"
+    if [ "$bytes" -eq 32 ] && [ "$calls" -eq 1 ]; then ok; return; fi
+    bad; echo "      sqe_snapshot loads $bytes bytes (want 32) and has $calls call sites (want 1) in $elf"
+    printf '%s\n' "$dis" | sed -n '1,24p' | sed 's|^|        |'
+}
+ioring_sqe_once_row "ioring: SQE copied once"         rv
+ioring_sqe_once_row "aarch64 ioring: SQE copied once" arm
+
+# ── riscv64: the guard pages really TRAP, not just read as unmapped ────────
+#
+# The aarch64 twin of this pair has existed since the parity program; riscv64
+# — **the ISA this project measures on** — had no row for its kernel fault
+# path at all until 2026-09-25. `[MM] Null pointer guard active` and
+# `[MM] Stack guard pages active` prove a PTE is gone; neither proves an
+# access TRAPS there rather than reading stale data through a TLB entry the
+# unmap forgot to flush.
+#
+# Each feature makes early boot touch ONE guard and never return, dying in the
+# same `[PAGE FAULT]` / `[FATAL] Kernel page fault` path a real kernel-mode
+# overflow or null deref hits (`kernel/src/entry/riscv64/boot_hooks.rs`).
+#
+# **Hand-rolled, not `qemu_run`:** `qemu_run` fails any log containing
+# `panic|[FATAL]` (its own doc), which is correct everywhere else and wrong
+# here — the FATAL line IS the property. Same reason the crash-log row is
+# hand-rolled.
+#
+# The ADDRESS is read back off both lines and compared. riscv64 prints the
+# faulting address on the `[PAGE FAULT] ... at <stval>` line, NOT on its FATAL
+# line (aarch64 is the other way round) — a row that matched only the lines
+# would pass if the kernel faulted somewhere else entirely.
+#
+# Helpers: `kbuild`, `ok`, `bad`, globals `$CI_LOG_DIR`/`$QEMU`/`$KERNEL` —
+# all defined near the top of this file, well above this row's call site.
+riscv64_guard_fault_row() { # <label> <feature> [<extra-marker>]
+    local label="$1" feat="$2" extra="$3"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if ! kbuild "qemu,$feat"; then
+        bad; echo "      riscv64 kernel (--features qemu,$feat) did not build"; return
+    fi
+    par_ready
+    "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+        >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 40 ]; do
+        grep -aqF "[FATAL] Kernel page fault" "$log" 2>/dev/null && break
+        grep -aqF "GUARD PROBE FAILED" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+
+    # The one negative check, and it keys on a string ONLY the failure path
+    # prints: the probe's own "did not fault" line, reached only when the
+    # volatile write returned.
+    if grep -aqF "GUARD PROBE FAILED" "$log" 2>/dev/null; then
+        bad; echo "      the probe wrote to the guard page and it did NOT fault:"
+        grep -a "GUARD PROBE" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local probe_addr fault_addr
+    probe_addr="$(grep -a "\[MM\] GUARD PROBE: writing to" "$log" | tr -d '\r' \
+                  | sed -n '1s/.*at \(0x[0-9a-f][0-9a-f]*\).*/\1/p')"
+    fault_addr="$(grep -a "\[PAGE FAULT\] CPU .* at " "$log" | tr -d '\r' \
+                  | sed -n '1s/.* at \(0x[0-9a-f][0-9a-f]*\).*/\1/p')"
+    if [ -z "$probe_addr" ]; then
+        bad; echo "      no [MM] GUARD PROBE line — the probe never ran"
+        echo "      log kept: $log"; return
+    fi
+    if [ -z "$fault_addr" ]; then
+        bad; echo "      no \"[PAGE FAULT] CPU n — ... at 0x...\" line: the boot did"
+        echo "      not die the expected way"
+        grep -a "PAGE FAULT\|FATAL" "$log" | tr -d '\r' | sed -n '1,4p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if [ "$probe_addr" != "$fault_addr" ]; then
+        bad; echo "      probe touched $probe_addr but the fault names $fault_addr"
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[FATAL] Kernel page fault" "$log" 2>/dev/null; then
+        bad; echo "      the fault was reported but never escalated to FATAL —"
+        echo "      a kernel-mode guard hit must not be treated as recoverable"
+        echo "      log kept: $log"; return
+    fi
+    # Optional third assertion: the kernel IDENTIFIED the guard, rather than
+    # merely faulting at that address. Only the null guard has such a note
+    # (`page_fault_note_guard`), so the stack row passes "" here.
+    if [ -n "$extra" ] && ! grep -aqF "$extra" "$log" 2>/dev/null; then
+        bad; echo "      the fault did not carry its guard note ($extra):"
+        grep -a "PAGE FAULT" -A 3 "$log" | tr -d '\r' | sed -n '1,6p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log"
+}
+par_row riscv64_guard_fault_row "riscv64 guard: stack probe faults" "guard-fault-probe-stack" ""
+par_row riscv64_guard_fault_row "riscv64 guard: null probe faults"  "guard-fault-probe-null" \
+    "null guard: VA <"
+# Leave $KERNEL on the ordinary qemu build: every scenario below rebuilds for
+# itself, but a kernel that dies in early boot must not be what a row that
+# forgets to rebuild inherits.
+kbuild "qemu"
+
+aarch64_guard_fault_row() { # aarch64_guard_fault_row <label> <feature>
+    local label="$1" feat="$2"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if ! a64_kbuild "$feat"; then
+        bad; echo "      aarch64 kernel (--features $feat) did not build"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').img"
+    cp "$A64_IMG" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 20 ]; do
+        grep -aqF "[FATAL] aarch64 kernel page fault" "$log" 2>/dev/null && break
+        grep -aqF "GUARD PROBE FAILED" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aqF "GUARD PROBE FAILED" "$log" 2>/dev/null; then
+        bad; echo "      the probe wrote to the guard page and it did NOT fault:"
+        grep -a "GUARD PROBE" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local probe_addr fatal_addr
+    probe_addr="$(grep -a "\[MM\] GUARD PROBE: writing to" "$log" | head -1 | sed -E 's/.*at (0x[0-9a-f]+).*/\1/')"
+    fatal_addr="$(grep -a "\[FATAL\] aarch64 kernel page fault: write at" "$log" | head -1 | sed -E 's/.*write at (0x[0-9a-f]+).*/\1/')"
+    if [ -z "$probe_addr" ]; then
+        bad; echo "      no [MM] GUARD PROBE line — the probe never ran"
+        echo "      log kept: $log"; return
+    fi
+    if [ -z "$fatal_addr" ]; then
+        bad; echo "      no \"[FATAL] aarch64 kernel page fault: write ...\" line — \
+the boot did not die the expected way"
+        echo "      log kept: $log"; return
+    fi
+    if [ "$probe_addr" != "$fatal_addr" ]; then
+        bad; echo "      probe touched $probe_addr but the FATAL fault names $fatal_addr"
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log"
+}
+par_row aarch64_guard_fault_row "aarch64 guard: stack probe faults" "guard-fault-probe-stack"
+par_row aarch64_guard_fault_row "aarch64 guard: null probe faults"  "guard-fault-probe-null"
+# ── aarch64: ring-3 writes really go through the Console abstraction ───────
+#
+# **This row exists because the property is otherwise UNTESTABLE.**
+# `uart::console_write` falls back to the direct path when nothing is
+# registered — a correctness property, since an early-boot ring-3 write must
+# still reach the wire — which means a build with the registration DELETED
+# produces byte-identical output. "The console still works" proves nothing
+# about whether the abstraction is load-bearing.
+#
+# So the canary build registers a console that PREFIXES every write, and the
+# row checks two things at once:
+#   1. a ring-3 `write(1, ...)` comes out prefixed — the registration is live;
+#   2. the kernel's own `kprintln!` lines do NOT — the panic path is still on
+#      the direct route, which is the half that matters when a panic handler
+#      has to print. Checked positively (kernel lines must EXIST and must be
+#      unprefixed), not as an absence.
+aarch64_console_route_row() {
+    local label="aarch64: console routed"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/aarch64-console-route.log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if ! a64_kbuild "console-route-canary"; then
+        bad; echo "      the console-route-canary aarch64 kernel did not build"; return
+    fi
+    if [ ! -f build/disk-aarch64.img ] && ! make build/disk-aarch64.img >/dev/null 2>&1; then
+        bad; echo "      build/disk-aarch64.img could not be built"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-console-route.img"
+    local disk_copy="$CI_LOG_DIR/disk-aarch64-console-route.img"
+    cp "$A64_IMG" "$img_copy"
+    # Own copy: the guest writes this volume, so a shared image breaks the
+    # next run that reads it.
+    cp build/disk-aarch64.img "$disk_copy"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" \
+        -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 90 ]; do
+        grep -aq "SCHED\] aarch64 reaped" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception during boot:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 1. The ring-3 write went through the registered console.
+    if ! grep -aq "CANARY>Hello from user-space!" "$log" 2>/dev/null; then
+        bad; echo "      ring-3 write did NOT go through the registered console."
+        echo "      Either console_register() is not called, or sys_write no"
+        echo "      longer dispatches through it — both are silent regressions,"
+        echo "      because the fallback path produces identical output."
+        grep -a "user-space" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 2a. Kernel log lines exist at all — otherwise 2b passes vacuously.
+    # No `^` anchor: QEMU's -nographic console emits a CR before every line,
+    # so every log line starts with \r and an anchored pattern matches nothing.
+    # This check caught exactly that, which is what it is for — without it,
+    # 2b below would have passed vacuously.
+    #
+    # `grep -q`, NOT `grep -c` into an integer test. `grep -c` prints `0` AND
+    # exits 1 when it matches nothing, so the idiomatic-looking
+    # `"$(grep -c ... || echo 0)"` yields the two-line string "0\n0" and the
+    # `[ ... -ne 0 ]` below dies with "integer expression expected". Gate 171
+    # showed exactly that: the row printed the bash error and then `ok`,
+    # because a failed `[` is just a false branch — **the check did not run,
+    # and the row passed anyway.** A silently skipped assertion is worse than
+    # a missing one.
+    if ! grep -aq "\[BOOT\]" "$log" 2>/dev/null; then
+        bad; echo "      no [BOOT] lines in the log — cannot judge the kprintln path"
+        echo "      log kept: $log"; return
+    fi
+    # 2b. ...and none of them was routed through the canary console.
+    if grep -a "CANARY>" "$log" 2>/dev/null \
+       | grep -q "\[BOOT\]\|\[SCHED\]\|\[MM\]"; then
+        bad; echo "      kernel kprintln! output was routed through the console"
+        echo "      abstraction — the panic path must stay direct:"
+        grep -a "CANARY>" "$log" | grep "\[BOOT\]\|\[SCHED\]\|\[MM\]" \
+            | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$img_copy" "$disk_copy"
+}
+
+# ── aarch64: virtio-rng seeds the entropy pool ───────────────────────────
+#
+# Mirrors the riscv64 entropy row (~2247-2280 in tools/ci_check.sh): a
+# device-present boot must print the seeded line AND the pool-drawn canary
+# line; a device-absent boot must print neither. Unlike the riscv64 row,
+# this does NOT compare two canary fingerprints — aarch64's kernel_main has
+# no Phase-16 readback of `stack_canary_fingerprint()` (that print is
+# riscv64-only, Phase 16, and out of scope for this task: extracting it
+# would be a fourth helper nobody asked for). Instead the byte COUNT is
+# read back and pinned to `azos_crypto::entropy::SEED_BYTES` (48) —
+# a number read back beats a line matched.
+#
+# Diskless: `install_entropy()` runs before `blkdev::init()` in both
+# kernel_mains.
+aarch64_entropy_row() {
+    local label="aarch64: entropy seeds pool"
+    printf "  %-26s" "${label}..."
+    local log_seeded="$CI_LOG_DIR/aarch64-entropy-seeded.log"
+    local log_absent="$CI_LOG_DIR/aarch64-entropy-absent.log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log_seeded" "$log_absent"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      the qemu aarch64 kernel did not build"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-entropy.img"
+    cp "$A64_IMG" "$img_copy"
+
+    # Boot 1: device present.
+    par_ready
+    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" -device virtio-rng-device >"$log_seeded" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aq "WDT\] timer liveness ACTIVE" "$log_seeded" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log_seeded" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log_seeded" 2>/dev/null; then
+        bad; echo "      device-present boot took an exception:"
+        grep -a "AARCH64-TRAP" "$log_seeded" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log_seeded"; return
+    fi
+    # Read the byte count back — pinned to SEED_BYTES (48), not just matched.
+    local n
+    n="$(grep -a "\[ENTROPY\] pool seeded: " "$log_seeded" | tr -d '\r' \
+         | sed -n 's/.*pool seeded: \([0-9][0-9]*\) bytes.*/\1/p' | sed -n 1p)"
+    if [ -z "$n" ] || [ "$n" -ne 48 ]; then
+        bad; echo "      device-present boot: expected 48 seeded bytes, read '${n:-none}':"
+        grep -a "ENTROPY" "$log_seeded" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log_seeded"; return
+    fi
+    if ! grep -aq "\[SEC\] Stack canary drawn from the entropy pool" "$log_seeded" 2>/dev/null; then
+        bad; echo "      device-present boot: canary was not drawn from the pool:"
+        grep -a "Stack canary" "$log_seeded" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log_seeded"; return
+    fi
+
+    # Boot 2: no device — the negative half. Absence of the seeded/canary
+    # lines is not asserted alone (a crash before this point would also
+    # produce that); the boot must still reach a live WDT tick AND print
+    # the specific "pool unseeded" line.
+    par_ready
+    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" >"$log_absent" 2>&1 &
+    pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aq "WDT\] timer liveness ACTIVE" "$log_absent" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log_absent" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if ! grep -aq "WDT\] timer liveness ACTIVE" "$log_absent" 2>/dev/null; then
+        bad; echo "      device-absent boot never reached a live watchdog tick"
+        echo "      log kept: $log_absent"; return
+    fi
+    if ! grep -aq "\[ENTROPY\] pool unseeded: " "$log_absent" 2>/dev/null; then
+        bad; echo "      device-absent boot did not print the unseeded line:"
+        grep -a "ENTROPY" "$log_absent" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log_absent"; return
+    fi
+    if grep -aq "\[SEC\] Stack canary drawn from the entropy pool" "$log_absent" 2>/dev/null; then
+        bad; echo "      device-absent boot drew a canary from an unseeded pool"
+        echo "      log kept: $log_absent"; return
+    fi
+    ok; rm -f "$log_seeded" "$log_absent" "$img_copy"
+}
+
+# ── aarch64: procfs/sysfs registered ─────────────────────────────────────
+#
+# `install_procfs()` un-gated `gen_sys_scheduler`/`gen_sys_drivers` from
+# `#[cfg(target_arch = "riscv64")]` (both only ever walked arch-neutral
+# crate registries — see their doc comments in kernel/src/boot/procfs.rs), so aarch64 now
+# registers the SAME 5+2 = 7 providers riscv64 does. The count is read back
+# and pinned to 7, not just matched as a line — a provider silently
+# dropped, or the un-gating reverted, would still print "ready (N
+# entries)" for some N.
+#
+# Diskless: `install_procfs()` runs unconditionally, before the
+# disk-gated block.
+aarch64_procfs_row() {
+    local label="aarch64: procfs registered"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/aarch64-procfs.log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      the qemu aarch64 kernel did not build"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-procfs.img"
+    cp "$A64_IMG" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aq "WDT\] timer liveness ACTIVE" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception during boot:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local n
+    n="$(grep -a "\[FS\] procfs/sysfs ready " "$log" | tr -d '\r' \
+         | sed -n 's/.*ready (\([0-9][0-9]*\) entries).*/\1/p' | sed -n 1p)"
+    if [ -z "$n" ] || [ "$n" -ne 8 ]; then
+        bad; echo "      expected 8 procfs/sysfs entries, read '${n:-none}':"
+        grep -a "FS\] procfs" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$img_copy"
+}
+
+# ── aarch64: IPC plumbing initialized ────────────────────────────────────
+#
+# `install_ipc_plumbing()` (pipes, signals, service manager) never ran on
+# this ISA before this task. Pure line match, not a number: today nothing
+# on aarch64's kernel_main actually consumes a pipe, a signal or the
+# service registry (no `shell` task, no IPC-bearing task_create on this
+# ISA yet — see the helper's own doc), so there is no downstream functional
+# behavior to read back that would fail differently from the line simply
+# being absent. Recorded bucket: (b) rather than a stronger number-based
+# check, until a task exists on this ISA that would notice.
+#
+# Diskless: `install_ipc_plumbing()` runs unconditionally, before any
+# task_create on this ISA.
+aarch64_ipc_plumbing_row() {
+    local label="aarch64: IPC plumbing up"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/aarch64-ipc-plumbing.log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      the qemu aarch64 kernel did not build"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-ipc-plumbing.img"
+    cp "$A64_IMG" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aq "WDT\] timer liveness ACTIVE" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception during boot:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aq "\[IPC\] Pipes, signals, service manager initialized" "$log" 2>/dev/null; then
+        bad; echo "      IPC plumbing line missing — pipe_init/signal_init/service_init"
+        echo "      did not run (or were reverted) on this ISA"
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$img_copy"
+}
+
+# ── aarch64: the safety watchdog is actually wired to the timer ISR ─────────
+#
+# Until 2026-09-24 aarch64's timer ISR called NOTHING in
+# `crates/core/actuation/src/watchdog.rs`. Four consequences, one omission: the
+# liveness counter was unfed, a panicked hart did not stop this hart's
+# actuators, the hardware WDT was never fed, and `hw_init()` was riscv64-only.
+#
+# **Two POSITIVE markers, deliberately.** Asserting that the "INERT" line is
+# absent would prove nothing — a kernel that never reached `sys-wdt`, or a
+# marker someone renamed, is equally absent. So this reads the live state:
+#   * `hw_init()` ran on this ISA at all (it prints exactly one of two lines;
+#     under QEMU there is no hardware WDT, so it is the software one);
+#   * the liveness counter is ADVANCING, and the row reads the number back
+#     rather than matching the line, because a counter stuck at its initial
+#     value would still print a line.
+# Diskless: `sys-wdt` is created with the other tasks on this ISA, so none of
+# this needs a volume.
+aarch64_watchdog_row() {
+    local label="aarch64: watchdog wired"
+    printf "  %-26s" "${label}..."
+    local log="$CI_LOG_DIR/aarch64-watchdog.log"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      the qemu aarch64 kernel did not build"; return
+    fi
+    local img_copy="$CI_LOG_DIR/kernel-aarch64-watchdog.img"
+    cp "$A64_IMG" "$img_copy"
+    par_ready
+    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img_copy" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aq "WDT\] timer liveness ACTIVE" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception during boot:"
+        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 1. hw_init() reached this ISA.
+    if ! grep -aq "WDT\] No hardware WDT" "$log" 2>/dev/null; then
+        bad; echo "      watchdog::hw_init() did not run on aarch64 — no [WDT] line:"
+        grep -a "\[WDT\]" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 2. The INERT half must NOT be what we got. Checked explicitly so the
+    #    failure names the real state instead of timing out on the marker.
+    if grep -aq "timer liveness INERT" "$log" 2>/dev/null; then
+        bad; echo "      the liveness counter is still unfed on aarch64:"
+        grep -a "timer liveness" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 3. Read the COUNT back. A counter stuck at its initial value would still
+    #    print the ACTIVE line; only the number distinguishes fed from present.
+    local wdt_ticks
+    wdt_ticks="$(grep -a "timer liveness ACTIVE" "$log" | tr -d '\r' \
+                 | sed -n '1s/.*TICK_COUNT=\([0-9][0-9]*\).*/\1/p')"
+    if [ -z "$wdt_ticks" ] || [ "$wdt_ticks" -lt 1 ]; then
+        bad; echo "      liveness counter not advancing (read: '\''${wdt_ticks:-none}'\'')"
+        grep -a "timer liveness" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$img_copy"
+}
+
+# Defined ~400 lines above, run HERE because it needs `a64_kbuild`, which is
+# defined between the two. It rebuilds its own image and leaves $A64_IMG to the
+# reset below, so running it last among the aarch64 rows costs nothing.
+par "aarch64: OTA boot good" aarch64_boot_good_row
+par "aarch64: watchdog wired" aarch64_watchdog_row
+par "aarch64: console routed" aarch64_console_route_row
+par "aarch64: entropy seeds pool" aarch64_entropy_row
+# Persisted entropy seed (ENTSEED, wave 11), same three rows as riscv64's.
+if a64_kbuild "qemu"; then
+    mkdir -p "$CI_LOG_DIR"
+    ENTSEED_A64_IMG="$CI_LOG_DIR/kernel-entseed-a64.img"
+    cp "$A64_IMG" "$ENTSEED_A64_IMG"
+    par "aarch64: persisted seed rotates" entseed_rotate_row aarch64
+    par "aarch64: persisted seed seeds" entseed_alone_row aarch64
+    par "aarch64: seed diskless unchanged" entseed_diskless_row aarch64
+    par "aarch64: seed spares the filesystem" entseed_noheadroom_row aarch64
+    if a64_kbuild "qemu,orderly-reboot-smoke"; then
+        ENTSEED_ORD_A64_IMG="$CI_LOG_DIR/kernel-entseed-ord-a64.img"
+        cp "$A64_IMG" "$ENTSEED_ORD_A64_IMG"
+        par "aarch64: seed refreshed at reboot" entseed_orderly_row aarch64
+    else
+        printf "  %-26s" "aarch64: seed refreshed at reboot..."; bad
+        echo "      the orderly-reboot-smoke aarch64 kernel did not build"
+    fi
+    a64_kbuild "qemu" >/dev/null
+else
+    printf "  %-26s" "aarch64: persisted seed..."; bad
+    echo "      the qemu aarch64 kernel did not build"
+fi
+par "aarch64: procfs registered" aarch64_procfs_row
+par "aarch64: IPC plumbing up" aarch64_ipc_plumbing_row
+
+# BEHAVIOR'S NETWORK WAITS SLEEP (wave 10, owner decision on INV question 3).
+#
+# `behavior` (priority 14) resolved the brain's MAC by YIELD-polling the ARP
+# cache for up to CONNECT_ARP_BUDGET_US (500 ms) per dial. A yield hands the
+# hart only to tasks at priority 14 or above, so every lower task on its hart
+# got nothing for the whole budget (wave 9 INV: `aarch64 preemption (qemu)`
+# failed behind it). It now sleeps NET_WAIT_POLL_MS (1 ms) between polls,
+# and so do its DHCP, RFC-0019 handshake and brain-send waits
+# (`net_wait_sleep` in kernel/src/tasks/brain_link.rs).
+#
+# Booted with NO network device, so no ARP reply ever comes and every dial
+# spends the whole budget; `arp-timing` prints how many waits it took:
+# `[ARPTIME] gave up after 500000 us (N spins)`. Sleeping, N cannot exceed
+# 500 000 us / 1 ms = 500 (each wait lasts at least 1 ms of guest time).
+# Yield-polling it was 73,483-503,780 per dial (2026-09-28, both ISAs); the
+# same boots with the sleep read 200-308. Only behavior dials on this disk
+# (no `behavior_camera_port`, autorun does no networking), so every line is
+# behavior's. Canary, by hand: the behavior dial's closure put back to
+# `azos_sched::task_yield`: FAIL on both ISAs (152,378-503,780 polls).
+behavior_arp_sleep_row() { # behavior_arp_sleep_row rv|a64
+    local isa="$1" label log kern disk pid i
+    if [ "$isa" = "a64" ]; then label="aarch64 behavior ARP sleeps"; else label="network: behavior ARP sleeps"; fi
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    log="$CI_LOG_DIR/behavior-arp-sleep-$isa.log"
+    disk="$CI_LOG_DIR/behavior-arp-sleep-$isa.img"
+    rm -f "$log"
+    if [ "$isa" = "a64" ]; then
+        if ! a64_kbuild "qemu,arp-timing"; then
+            bad; echo "      aarch64 kernel (--features qemu,arp-timing) did not build"; return
+        fi
+        make_disk build/disk-aarch64.img
+        kern="$CI_LOG_DIR/behavior-arp-sleep-a64.kimg"
+        cp "$A64_IMG" "$kern"; cp build/disk-aarch64.img "$disk"
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            -kernel "$kern" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        kbuild "qemu,arp-timing" || return
+        make_disk build/disk.img
+        kern="$CI_LOG_DIR/behavior-arp-sleep-rv.elf"
+        cp "$KERNEL" "$kern"; cp build/disk.img "$disk"
+        "$QEMU" -machine virt -nographic -bios default -smp 4 -kernel "$kern" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    pid=$!; i=0
+    while [ "$i" -lt 60 ]; do
+        [ "$(grep -ac "\[ARPTIME\] gave up after" "$log" 2>/dev/null)" -ge 3 ] && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kern" "$disk"
+    if [ "$isa" = "a64" ]; then a64_kbuild "qemu" || true; else kbuild "qemu"; fi
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel crashed — log kept: $log"; return
+    fi
+    local spins waits max
+    spins="$(tr -d '\r' <"$log" | sed -n 's/.*\[ARPTIME\] gave up after 500000 us (\([0-9][0-9]*\) spins).*/\1/p')"
+    waits="$(printf '%s\n' "$spins" | grep -c '[0-9]')"
+    if [ "$waits" -lt 2 ]; then
+        bad; echo "      behavior never gave up a 500 ms ARP wait ($waits lines) — log kept: $log"; return
+    fi
+    max="$(printf '%s\n' "$spins" | sort -n | sed -n '$p')"
+    if [ "$max" -gt 500 ]; then
+        bad; echo "      an ARP wait took $max polls in 500 ms: more than one per ms is a yield-poll"
+        echo "      (per wait: $(printf '%s' "$spins" | tr '\n' ' ')) — log kept: $log"; return
+    fi
+    ok; echo "      $waits waits of 500 ms, at most $max polls each"
+    rm -f "$log"
+}
+par -s "aarch64 behavior ARP sleeps" behavior_arp_sleep_row a64
+# Leave $A64_IMG carrying neither probe feature — nothing downstream reads it
+# today, but a future row should not silently inherit one by accident.
+a64_kbuild "" >/dev/null 2>&1 || true
+
+# ── aarch64: the translation granule is a Kconfig choice (wave 11, PAGESIZE) ──
+#
+# config/Kconfig.arch AARCH64_PAGE_16K / _64K, expanded from the same
+# qemu-aarch64 defconfig the 4 KiB rows use. The features come from
+# tools/kconfig_to_cargo.py (the row fails if `page-<N>k` is missing from its
+# output); the user images, their digest table and the disk come from
+# `make AARCH64_PAGE_SIZE=<bytes>`. One boot per granule must show:
+#   - `[AARCH64-GRANULE] ok:` — TG0 and TG1 decoded from the LIVE TCR_EL1
+#     name the granule the kernel was built for (the canary below is what
+#     makes that line worth reading: run by hand, forcing TG0's 4 KiB
+#     encoding under page-16k stops the boot at the MMU switch);
+#   - the shell prompt;
+#   - abitest's own summary with only the known aarch64 gap;
+#   - `brk granted N of N pages` with N = 1 MiB / page (64, 16): the budget,
+#     converted from 4 KiB topology pages to frames, does not bind real work,
+#     and abitest counted in this granule's pages (libsys::PAGE_SIZE);
+#   - no page-table root still live at teardown, no unhandled trap.
+# The 16 KiB row also proves the two routes agree: `cargo check` with the
+# 16 KiB `.config` and NO `page-16k` feature must stop at the kernel's
+# `page size mismatch` assertion (anchored on that message, which only the
+# mismatch prints).
+aarch64_granule_row() { # aarch64_granule_row <16|64>
+    local g="$1" bytes=$(( $1 * 1024 )) shift_want label="aarch64 granule ${1} KiB"
+    case "$g" in 16) shift_want=14 ;; 64) shift_want=16 ;; *) return ;; esac
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local cfg="$AARCH64_DIR/qemu-aarch64-${g}k.config" log="$CI_LOG_DIR/aarch64-granule-${g}k.log"
+    local tdir="target/aarch64-${g}k" out feats
+    rm -f "$log"
+    cp "${REPO_ROOT}/config/defconfigs/qemu-aarch64.config" "$cfg" \
+        && echo "CONFIG_AARCH64_PAGE_${g}K=y" >>"$cfg" \
+        && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1
+    if ! grep -q "^CONFIG_PAGE_SHIFT=${shift_want}$" "$cfg" 2>/dev/null; then
+        bad; echo "      $cfg does not carry CONFIG_PAGE_SHIFT=${shift_want}"; return
+    fi
+    feats="$(python3 tools/kconfig_to_cargo.py "$cfg" | sed -n 's/.*--features \([^ ]*\).*/\1/p')"
+    if ! printf '%s' ",$feats," | grep -q ",page-${g}k,"; then
+        bad; echo "      tools/kconfig_to_cargo.py did not emit page-${g}k for $cfg (got: $feats)"; return
+    fi
+    if ! make AARCH64_PAGE_SIZE="$bytes" "build/image_hashes_aarch64_${g}k.rs" \
+            "build/disk-aarch64-${g}k-abitest.img" >"$log.make" 2>&1; then
+        bad; echo "      make AARCH64_PAGE_SIZE=$bytes failed — log kept: $log.make"; return
+    fi
+    rm -f "$log.make"
+    local kelf="$tdir/aarch64-unknown-none-softfloat/release/kernel"
+    rm -f "$kelf"
+    if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
+            "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+            --features "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+       || printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+        bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
+    fi
+    local a64_objcopy img="$CI_LOG_DIR/kernel-aarch64-${g}k.img" disk="$CI_LOG_DIR/disk-aarch64-${g}k-run.img"
+    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    "$a64_objcopy" -O binary "$kelf" "$img" 2>/dev/null || { bad; echo "      objcopy failed"; return; }
+    cp "build/disk-aarch64-${g}k-abitest.img" "$disk"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img" -global virtio-mmio.force-legacy=false \
+        -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 120 ]; do
+        grep -aqE "ABITEST\] [0-9]+ check\(s\) run" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    sleep 1
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img" "$disk"
+    local pages=$(( 1048576 / bytes )) fail_lines fails
+    if grep -aq "AARCH64-TRAP\] unhandled" "$log"; then
+        bad; echo "      the kernel took an exception — log kept: $log"; return
+    fi
+    if ! grep -aq "\[AARCH64-GRANULE\] ok: TG0=${g} KiB TG1=${g} KiB (built for ${g} KiB)" "$log"; then
+        bad; echo "      no '[AARCH64-GRANULE] ok' for ${g} KiB:"
+        grep -a "AARCH64-GRANULE" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aq "robot> " "$log"; then
+        bad; echo "      the shell prompt never appeared — log kept: $log"; return
+    fi
+    if ! grep -aqE "\[ABITEST\] [0-9]+ check\(s\) run" "$log"; then
+        bad; echo "      abitest never printed its summary — log kept: $log"; return
+    fi
+    if ! grep -aq "\[ABITEST\] brk granted ${pages} of ${pages} pages" "$log"; then
+        bad; echo "      expected 'brk granted ${pages} of ${pages} pages':"
+        grep -a "brk granted" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aq "\[MM\] page-table root" "$log"; then
+        bad; echo "      a teardown found its root still live — log kept: $log"; return
+    fi
+    fail_lines="$(grep -a '\[ABITEST\]  FAIL  ' "$log" | sed 's/^\[ABITEST\]  FAIL  //')"
+    fails="$(printf '%s\n' "$fail_lines" | grep -c .)"
+    if [ "$fails" -gt 1 ] || { [ "$fails" -eq 1 ] && ! printf '%s\n' "$fail_lines" | grep -qF "vdso flags bit 0: rdtime native"; }; then
+        bad; echo "      abitest reported $fails failure(s), not the one known aarch64 gap:"
+        printf '%s\n' "$fail_lines" | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if [ "$g" = 16 ]; then
+        local mm nofeat
+        nofeat="$(printf '%s' "$feats" | tr ',' '\n' | grep -v "^page-" | paste -sd, -)"
+        mm="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="target/aarch64-granule-mismatch" \
+            "$CARGO" check --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+            --features "$nofeat" 2>&1)"
+        if ! printf '%s\n' "$mm" | grep -q "page size mismatch"; then
+            bad; echo "      a 16 KiB .config built WITHOUT page-16k was not refused (no 'page size mismatch'):"
+            printf '%s\n' "$mm" | grep -E "^error" | head -3 | sed 's|^|        |'
+            return
+        fi
+    fi
+    ok; echo "      $(grep -a "\[AARCH64-GRANULE\]" "$log" | tr -d '\r' | sed -n 1p | cut -c1-150)"
+    echo "      $(grep -a "exec charged" "$log" | tr -d '\r' | sed -n 1p)"
+    rm -f "$log"
+}
+par "aarch64 granule 16 KiB" aarch64_granule_row 16
+par "aarch64 granule 64 KiB" aarch64_granule_row 64
+
+# ── streams: kernel sensor streams in shared memory (wave 11, SHMRING) ──────
+#
+# Kconfig STREAM_LIDAR_RING / STREAM_CAMERA_RING (default off) publish LiDAR
+# scans and camera frames from the kernel into a kernel-owned Cap<Shm> SPSC
+# ring (crates/core/ipc/src/stream_ring.rs) that the autorun row is seeded
+# (`Shm stream.lidar` / `stream.camera`). Owner decision 2026-10-03: holding
+# that capability IS the authority to read the stream, no per-frame check.
+# LIDAR_SIM feeds synthetic LD19 packets to the real parser (nothing feeds it
+# on any board). captest (`userspace/tests/captest/src/stream.rs`) is the
+# consumer; each "on" row, both ISAs, must show:
+#   - 20 scans intact and in order (every point's index, revolution + 1,
+#     consecutive seq) drained on the doorbell;
+#   - NO producer doorbell while the consumer polls without announcing a
+#     sleep, every polled batch > 1 scan (the suppression, counted by the
+#     producer in the ring header);
+#   - a 2.5 s stall: full ring held, drops counted == the seq gap, cadence
+#     kept (the producer never blocks; drop-newest);
+#   - 10 camera JPEG frames (SOI..EOI) in order; ALL PASSED.
+# The "fallback" row (riscv64) builds LIDAR_SIM alone: no stream, and the
+# unchanged SYS_SENSOR_READ_TYPED path must answer a whole scan (1440 bytes).
+# Canaries (hand-run, 2026-10-03): `ring_push_publish` always answering
+# DoneWake (suppression off) -> `producer doorbells=17` on the polled drain
+# and `FAIL  stream lidar: no doorbell while ...`, red here; the fallback row
+# is canary B (ring disabled -> the old path answers).
+stream_ring_row() { # stream_ring_row <riscv64|aarch64> <on|fallback>
+    local isa="$1" mode="$2" label="streams: $1 $2"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local defc cfg tdir log feats out
+    case "$isa" in riscv64) defc=qemu ;; aarch64) defc=qemu-aarch64 ;; esac
+    # Absolute: `azos_limits`' build script reads KCONFIG_CONFIG from its
+    # own crate directory.
+    cfg="$(cd "$CI_LOG_DIR" && pwd)/stream-$isa-$mode.config"; tdir="target/stream-$isa-$mode"
+    log="$CI_LOG_DIR/stream-$isa-$mode.log"; rm -f "$log"
+    cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg"
+    if [ "$mode" = on ]; then
+        printf 'CONFIG_STREAM_LIDAR_RING=y\nCONFIG_STREAM_CAMERA_RING=y\nCONFIG_LIDAR_SIM=y\n' >>"$cfg"
+    else
+        printf 'CONFIG_LIDAR_SIM=y\n' >>"$cfg"
+    fi
+    (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+        || { bad; echo "      olddefconfig failed on $cfg"; return; }
+    feats="$(python3 tools/kconfig_to_cargo.py "$cfg" | sed -n 's/.*--features \([^ ]*\).*/\1/p')"
+    local disk="$CI_LOG_DIR/disk-stream-$isa-$mode.img" kelf
+    if [ "$isa" = riscv64 ]; then
+        make build/image_hashes.rs build/disk-captest.img >/dev/null 2>&1 \
+            || { bad; echo "      make build/disk-captest.img failed"; return; }
+        kelf="$tdir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$kelf"
+        if ! out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release \
+                --features "$feats" 2>&1)" \
+           || printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+            bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
+        fi
+        cp build/disk-captest.img "$disk"
+        par_ready
+        qemu-system-riscv64 -machine virt -nographic -bios default -smp 4 -kernel "$kelf" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        make build/image_hashes_aarch64.rs build/disk-aarch64-captest.img >/dev/null 2>&1 \
+            || { bad; echo "      make build/disk-aarch64-captest.img failed"; return; }
+        kelf="$tdir/aarch64-unknown-none-softfloat/release/kernel"; rm -f "$kelf"
+        if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
+                "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+                --features "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+           || printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+            bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
+        fi
+        local objcopy img="$CI_LOG_DIR/kernel-stream-$isa-$mode.img"
+        objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+        "$objcopy" -O binary "$kelf" "$img" 2>/dev/null || { bad; echo "      objcopy failed"; return; }
+        cp build/disk-aarch64-captest.img "$disk"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$img" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 180 ]; do
+        grep -aqE "CAPTEST\] (ALL PASSED|FAILED)" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$disk" "$CI_LOG_DIR/kernel-stream-$isa-$mode.img"
+    local want missing=""
+    if [ "$mode" = on ]; then
+        for want in \
+            "[CAPTEST]   ok   stream lidar: 20 scans intact and in order" \
+            "[CAPTEST]   ok   stream lidar: no doorbell while the consumer never said it sleeps rc=0" \
+            "[CAPTEST]   ok   stream lidar: every batch drained more than one scan, intact and in order" \
+            "[CAPTEST]   ok   stream lidar: a stalled consumer costs drops, never a blocked producer" \
+            "[CAPTEST]   ok   stream camera: 10 JPEG frames (SOI..EOI) in order" \
+            "[CAPTEST] ALL PASSED"; do
+            grep -aqF "$want" "$log" 2>/dev/null || missing="$missing|$want"
+        done
+    else
+        for want in \
+            "[CAPTEST] stream lidar: off (no Cap<Shm>, lookup rc=-2), SYS_SENSOR_READ_TYPED path answered 1440" \
+            "[CAPTEST] ALL PASSED"; do
+            grep -aqF "$want" "$log" 2>/dev/null || missing="$missing|$want"
+        done
+        if grep -aqF "[STREAM]" "$log" 2>/dev/null; then missing="$missing|a [STREAM] line: a ring was built with every stream off"; fi
+    fi
+    if [ -n "$missing" ]; then
+        bad; echo "      missing:"; printf '%s\n' "$missing" | tr '|' '\n' | sed '/^$/d;s|^|        |'
+        grep -a "CAPTEST\]  FAIL\|AARCH64-TRAP" "$log" | tr -d '\r' | head -5 | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok
+    if [ "$mode" = on ]; then
+        grep -a "stream lidar: polled drain\|stream lidar: 2500 ms stall" "$log" | tr -d '\r' | sed 's|^\[CAPTEST\] |      |'
+    fi
+    rm -f "$log"
+}
+# Alone: "every batch drained more than one scan" depends on how late the
+# consumer wakes; with other jobs running it failed once on aarch64 (2026-10-03).
+par -s "streams: riscv64 on" stream_ring_row riscv64 on
+par -s "streams: aarch64 on" stream_ring_row aarch64 on
+par "streams: riscv64 fallback" stream_ring_row riscv64 fallback
+
+# ── board: the data volume is DERIVED from the topology ─────────────────────
+#
+# Owner decision 2026-09-24: an ELF goes on a board's volume iff the topology
+# declares a service it provides. Until this row, no gate row ran
+# `build/disk-board.img` at all, so the drift check in
+# `tools/check_board_disk.py` (reads the BUILT image back with `mdir` and
+# diffs it against `build/board_manifest.txt`) never executed anywhere.
+#
+# Underneath: no Makefile target had ever flashed a data volume — the 35
+# `disk*.img` targets are all gate scenarios shipping the same 13 ELFs, so
+# "the board ELF list" had never existed. This row is the first time the
+# volume a board would carry is built and checked. Host-only, no QEMU.
+#
+# Positive assertions: `make` exits 0, the manifest names at least one ELF,
+# and the image lists every manifest entry (read back via mdir, not assumed).
+# ── crash log: /fat/CRASH.LOG records a real panic and survives a reboot ───
+#
+# The black box `kernel/src/panic.rs` writes on every panic — proved end to
+# end, on real riscv64 QEMU, for the first time (`grep -c CRASH.LOG
+# tools/ci_check.sh` was 0 before this row). Boot 1 panics ON PURPOSE
+# (nothing else in this gate provokes a genuine `panic!()` on riscv64 — see
+# `crates/fs/fs/src/lib.rs`'s `crash-log-smoke`-gated `vfs_mount` wrapper, the
+# ONLY caller of that feature, and its doc for why the trigger lives there
+# and not in `vfs.rs`/`fat32.rs`/`crash_log.rs`, all three of which
+# `tests/host/fs-tests` pulls whole and which must therefore stay free of this
+# cfg). The panic handler's own three-way outcome line proves the write
+# landed; boot 2 — the SAME disk copy, a fresh QEMU process — reads the
+# record back on a normal, non-panicking boot. Self-detecting, so one kernel
+# image serves both halves: the wrapper panics only when `/fat/CRASH.LOG`
+# does not exist yet.
+#
+# Hand-rolled for BOTH boots, not `qemu_run`: `qemu_run` treats ANY "panic"
+# in the log as an automatic FAIL (its own doc, ~line 372), which is correct
+# for every other row and wrong for boot 1 here specifically — a row that
+# used it would fail itself the instant the thing it is trying to prove
+# happens. Boot 2 must NOT panic, and that IS checked below (the "boot 2
+# panicked" branch), just not through `qemu_run`.
+#
+# Helpers used (all defined above this point in tools/ci_check.sh today):
+# `kbuild`, `make_disk`, `ok`, `bad`, and the globals `$CI_LOG_DIR`, `$QEMU`,
+# `$KERNEL`. No new helper is introduced; `crashlog_bg_boot` below is a
+# private function local to this row, the same shape as `aarch64_boot_good_
+# row`'s own `a64_bg_boot` (tools/ci_check.sh ~line 1457) — one `printf`/`ok`/
+# `bad` for the whole row, not one per boot.
+#
+# Splice this at the SAME indentation level as the function definitions in
+# this file (top-level), after `qemu_run` is defined (uses `$KERNEL`, set at
+# the top of the file) and after `kbuild`/`make_disk` (defined near the top).
+# Call `crash_log_rotation_row` once, wherever the other riscv64 `kbuild
+# "qemu"` scenarios run — it rebuilds its own kernel image (like every
+# feature-gated row in this file) and does not depend on any prior row's
+# build being left in place.
+crash_log_rotation_row() {
+    local label="crash log: records a real panic, survives reboot"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log1="$CI_LOG_DIR/crash-log-boot1.log"
+    local log2="$CI_LOG_DIR/crash-log-boot2.log"
+    rm -f "$log1" "$log2"
+
+    if ! kbuild "qemu,azos_fs/crash-log-smoke"; then
+        bad; echo "      the crash-log-smoke kernel did not build"; return
+    fi
+    make_disk build/disk.img
+    local disk_copy="$CI_LOG_DIR/disk-crash-log-run.img"
+    # ONE disk copy, deliberately shared by both boots below — boot 2 reading
+    # what boot 1 wrote IS the property, same reason `aarch64_boot_good_row`
+    # copies its own disk once and reuses it.
+    cp build/disk.img "$disk_copy"
+
+    # crashlog_bg_boot <log> <max-seconds>: boots the shared $disk_copy in
+    # the background, polls for whichever of this row's own outcome markers
+    # appears first (or the process exiting on its own), then kills it.
+    # Prints nothing — the caller below decides ok/bad once, for the row as
+    # a whole.
+    crashlog_bg_boot() {
+        local out="$1" secs="$2"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$out" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt "$secs" ]; do
+            grep -aqF "Crash log written to /fat/CRASH.LOG" "$out" 2>/dev/null && break
+            grep -aqE "Crash log NOT written|Crash log FLUSH FAILED" "$out" 2>/dev/null && break
+            grep -aqF "[CRASH-SMOKE]" "$out" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    }
+
+    # Boot 1: fresh disk, no /fat/CRASH.LOG yet — the wrapper panics on
+    # purpose right after /fat mounts.
+    crashlog_bg_boot "$log1" 60
+
+    # Positive assertion 1: the boot actually panicked. (Absence of a
+    # "did not panic" state is not checked anywhere in this row — every
+    # check below asserts what IS in the log.)
+    if ! grep -aqF "KERNEL PANIC" "$log1" 2>/dev/null; then
+        bad; echo "      boot 1 never panicked — crash-log-smoke's own trigger did"
+        echo "      not fire, so this row proves nothing about the black box:"
+        tail -5 "$log1" | sed 's/^/      /'
+        echo "      log kept: $log1"; return
+    fi
+    # Positive assertion 2: it panicked for THIS reason, not some other real
+    # bug that happened to fire first.
+    if ! grep -aqF "crash-log-smoke: deliberate panic" "$log1" 2>/dev/null; then
+        bad; echo "      boot 1 panicked, but not for the reason this row expects"
+        echo "      — a different, real panic came first:"
+        grep -a -m3 "PANIC\|FATAL" "$log1" | sed 's/^/      /'
+        echo "      log kept: $log1"; return
+    fi
+    # Positive assertion 3: the black box's own success line, not just "it
+    # attempted to write" — this is the line `write_crash_log` prints only
+    # when `vfs_close` returned 0.
+    if ! grep -aqF "Crash log written to /fat/CRASH.LOG" "$log1" 2>/dev/null; then
+        bad; echo "      the panic ran but the black box did not confirm the write:"
+        grep -a "Crash log" "$log1" | sed 's/^/      /'
+        echo "      log kept: $log1 (disk kept: $disk_copy)"; return
+    fi
+
+    # Boot 2: the SAME volume boot 1 just wrote to, a fresh QEMU process.
+    crashlog_bg_boot "$log2" 60
+
+    # Positive-framed even though it reads as a negative grep: this is the
+    # one check in the row where finding the marker is the FAILURE, so it is
+    # written as "assert boot 2 panicked" (checked true) rather than
+    # inverted — matching qemu_run's own panic detection, which boot 2 does
+    # not otherwise get for free since it is not run through qemu_run.
+    # Keyed on the panic HANDLER's exact banner, not the bare word: boot 2's
+    # own [CRASH-SMOKE] readback line quotes boot 1's entry, which contains
+    # "deliberate panic". Gate 173 went red exactly here with the kernel
+    # having done the right thing — the row was reading its own evidence as
+    # the failure. `!!! KERNEL PANIC !!!` is printed by kernel/src/panic.rs
+    # and nothing else.
+    if grep -aqF "!!! KERNEL PANIC !!!" "$log2" 2>/dev/null; then
+        bad; echo "      boot 2 panicked — reading back its own black-box record"
+        echo "      must not crash the NEXT boot:"
+        grep -aF -m3 "KERNEL PANIC" "$log2" | sed 's/^/      /'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    # Positive assertion 4: boot 2 actually read /fat/CRASH.LOG back.
+    if ! grep -aqF "[CRASH-SMOKE] /fat/CRASH.LOG holds" "$log2" 2>/dev/null; then
+        bad; echo "      boot 2 did not read /fat/CRASH.LOG back — no [CRASH-SMOKE]"
+        echo "      line, on a fresh boot of the SAME disk copy boot 1 wrote:"
+        tail -5 "$log2" | sed 's/^/      /'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    # Positive assertion 5, the one that matters most: what boot 2 read back
+    # is boot 1's OWN entry, not an empty/garbage file that merely exists.
+    if ! grep -aq "tail:.*crash-log-smoke: deliberate panic" "$log2" 2>/dev/null; then
+        bad; echo "      boot 2 found /fat/CRASH.LOG but its content is not boot 1's"
+        echo "      entry — the record did not survive the reboot intact:"
+        grep -a "CRASH-SMOKE" "$log2" | sed 's/^/      /'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    # Positive assertion 6: boot 2 continued past the check into a normal
+    # boot, not just far enough to print one line and wedge.
+    if ! grep -aqF "[FS] FAT32 mounted at /fat" "$log2" 2>/dev/null; then
+        bad; echo "      boot 2 never got past mounting /fat — [CRASH-SMOKE] alone"
+        echo "      does not prove the boot continued normally:"
+        tail -5 "$log2" | sed 's/^/      /'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+
+    ok; rm -f "$log1" "$log2" "$disk_copy"
+}
+par "crash log: records a real panic, survives reboot" crash_log_rotation_row
+
+# Canary (2026-09-24, by hand): an unconditional early return after the lock checks in
+# `write_crash_log` — boot 1 panicked identically and never printed the
+# written line; assertion 3 went red. Bucket (a). Reverted.
+
+# ── boot count: an unconfirmed boot's count survives the crash (U05-5) ─────
+#
+# `wdt::CRASH_COUNTER` is `.bss`; its durable copy is OTA BOOTMETA's
+# `boot_count` (wave 9: `/fat/BOOTCNT.BIN` was a second counter for the same
+# fact and is gone). `ota_boot_validate` writes count + 1 early in boot and
+# `ota_mark_boot_good` (sys-wdt, after OTA_BOOT_GOOD_DELAY_S = 30 s of uptime)
+# writes 0. `boot-count-smoke` panics right after the first write when the
+# volume had no BOOTMETA.A/.B record, so:
+#   boot 1 (fresh volume): records 1, panics;
+#   boot 2 (same volume):  must read 1, load it into the in-memory counter
+#                          (Phase D prints "Recovering from 1"), hand it to the
+#                          recovery decision, and be marked good by sys-wdt;
+#   host readback:         the volume's plain BOOTMETA and one of the dual
+#                          records must then hold boot_count=0 (`mtype`, not
+#                          the kernel's own word for it).
+# Hand-rolled like `crash_log_rotation_row`: `qemu_run` fails on any panic.
+# Boot 2's negative anchor is the handler's banner only. The wait for the mark
+# is 30 s of real uptime by design (see `aarch64_boot_good_row`), so boot 2's
+# bound is 120 s.
+boot_count_row() {
+    local label="boot count: survives a crash"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log1="$CI_LOG_DIR/boot-count-boot1.log"
+    local log2="$CI_LOG_DIR/boot-count-boot2.log"
+    local disk_copy="$CI_LOG_DIR/disk-boot-count-run.img"
+    rm -f "$log1" "$log2" "$disk_copy"
+    if ! kbuild "qemu,boot-count-smoke"; then
+        bad; echo "      the boot-count-smoke kernel did not build"; return
+    fi
+    rm -f build/disk.img
+    make_disk build/disk.img
+    cp build/disk.img "$disk_copy"
+
+    bootcount_bg_boot() { # <log> <max-half-seconds> <stop-regex>
+        local out="$1" secs="$2" stop="$3"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 2 -global virtio-mmio.force-legacy=false \
+            -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$out" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt "$secs" ]; do
+            grep -aqE "$stop" "$out" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 0.5
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    }
+
+    bootcount_bg_boot "$log1" 120 'PANIC\] Rebooting|PANIC\] Crash log|OTA\] Boot marked good'
+    if ! grep -aqF "[BOOTCNT] 0 unconfirmed boot(s) before this one (no BOOTMETA.A/.B record on this volume); this boot recorded as unconfirmed" "$log1" \
+       || ! grep -aqF "boot-count-smoke: deliberate crash before the boot is confirmed clean" "$log1"; then
+        bad; echo "      boot 1 did not record itself on a fresh volume and then crash:"
+        grep -a "BOOTCNT\]\|PANIC\|OTA\] Boot" "$log1" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log1"; return
+    fi
+
+    bootcount_bg_boot "$log2" 240 'OTA\] Boot marked good|!!! KERNEL PANIC !!!'
+    if grep -aqF "!!! KERNEL PANIC !!!" "$log2"; then
+        bad; echo "      boot 2 panicked: it did not find boot 1's record"
+        grep -a "BOOTCNT\]\|PANIC" "$log2" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    if ! grep -aqF "[BOOTCNT] 1 unconfirmed boot(s) before this one (BOOTMETA boot_count); this boot recorded as unconfirmed" "$log2" \
+       || ! grep -aqF "[OTA] Boot: slot=A count=2/3" "$log2" \
+       || ! grep -aqF "[RECOVERY] not armed (crash count 1)" "$log2" \
+       || ! grep -aqF "[WDT] Recovering from 1 previous crash(es)" "$log2" \
+       || ! grep -aqF "[OTA] Boot marked good (slot=A)" "$log2"; then
+        bad; echo "      boot 2 did not read 1, load it, and get marked good:"
+        grep -a "BOOTCNT\]\|OTA\] Boot\|RECOVERY\]\|WDT\] Recovering\|WDT\] WARNING" "$log2" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    local plain dual
+    plain="$(mtype -i "$disk_copy" ::BOOTMETA 2>/dev/null | tr -d '\r' | grep -a '^boot_count=')"
+    dual="$( { mtype -i "$disk_copy" ::BOOTMETA.A 2>/dev/null; mtype -i "$disk_copy" ::BOOTMETA.B 2>/dev/null; } \
+        | tr -d '\r' | grep -a '^boot_count=' | tr '\n' ' ')"
+    if [ "$plain" != "boot_count=0" ] || ! printf '%s' "$dual" | grep -q 'boot_count=0 '; then
+        bad; echo "      after boot 2 the volume holds plain '$plain', dual records '$dual' (want boot_count=0)"
+        echo "      logs kept: $log1 $log2 (disk: $disk_copy)"; return
+    fi
+    ok; rm -f "$log1" "$log2" "$disk_copy"
+}
+par "boot count: survives a crash" boot_count_row
+# Every exit of the row above leaves the smoke kernel built; put back the
+# plain one before any later row boots `$KERNEL`.
+kbuild "qemu"
+# Canaries (2026-09-28, by hand, w8-debt, against /fat/BOOTCNT.BIN), reverted:
+#   (a) `mark_unconfirmed` writes nothing: boot 2 finds no record and panics
+#       like boot 1 ("boot 2 panicked").
+#   (b) `boot_count_mark` without `crash_counter_set`: boot 2 prints the
+#       [BOOTCNT] line but never "Recovering from 1" (second check).
+# Canaries (wave 9, by hand, against BOOTMETA), reverted:
+#   (B) `prior_unconfirmed` read after this boot's increment: boot 1 prints
+#       "1 unconfirmed" on a fresh volume (first check).
+#   (C) `ota_mark_boot_good` without its `ota_write_boot_meta`: both boots
+#       pass, the readback finds plain boot_count=2 (last check).
+
+# ── safe mode: boot attempts exhausted (owner decision 2026-09-28) ─────────
+#
+# `crates/core/ota/src/pure.rs` has the sequence. On a single-image volume
+# (`last_good == active`), boots 1-3 count 1, 2, 3 and boot 4 finds its
+# attempts exhausted with nothing to roll back to: it must enter SAFE MODE —
+# actuators held, no ring-3 program, console and OTA alive, the boot never
+# confirmed. `safe-mode-smoke` crashes every boot that is not safe mode right
+# after its mark is written, so one image walks the real sequence. Boot 4:
+#   * the FSM and recovery lines (`nothing to roll back to`, `armed ... SAFE MODE`);
+#   * autorun refused; the boot-good hook withheld;
+#   * the probe: motor 0 forward refused with duty 0, the spray pump refused,
+#     and BOOTMETA's count unchanged after OTA_BOOT_GOOD_DELAY_S + 5 s;
+#   * OTA alive: a real transfer (`tools/ota_send.py` through SLIRP, a host
+#     port of this row's own) is installed (`[OTA] CRC OK`), and the host
+#     readback of the plain BOOTMETA says `active_slot=b`, `boot_count=0` —
+#     the install is what takes the device out of safe mode.
+# Canary (by hand, reverted): the old FSM (rollback onto `last_good ==
+# active`, count reset to 1) -> boot 4 is not safe mode and crashes like boots
+# 1-3 ("boot 4 did not enter safe mode").
+safe_mode_row() {
+    local label="safe mode: attempts exhausted"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local disk="$CI_LOG_DIR/disk-safe-mode.img" ini="$CI_LOG_DIR/safe-mode-config.ini"
+    local payload="$CI_LOG_DIR/safe-mode-ota.bin" port=18093 n log
+    rm -f "$disk" "$ini" "$ini.in" "$ini.sig" "$payload" "$CI_LOG_DIR"/safe-mode-boot*.log
+    if ! kbuild "qemu,safe-mode-smoke"; then
+        bad; echo "      the safe-mode-smoke kernel did not build"; return
+    fi
+    rm -f build/disk.img
+    make_disk build/disk.img
+    cp build/disk.img "$disk"
+    # This copy only: the OTA listener on, and no brain link (host port 9000
+    # belongs to the network rows). `cfg_get` answers the FIRST line with a
+    # key, so the port is rewritten, and the listener's key goes first.
+    if ! mcopy -n -i "$disk" ::CONFIG.INI "$ini.in" 2>/dev/null \
+       || ! { printf 'ota_auto_recv_port=8080\n'; sed -e 's/^behavior_server_port=.*/behavior_server_port=0/' "$ini.in"; } >"$ini" \
+       || ! grep -q '^behavior_server_port=0' "$ini" \
+       || ! mcopy -o -i "$disk" "$ini" ::CONFIG.INI 2>/dev/null \
+       || ! python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$disk" --out "$ini.sig" >/dev/null 2>&1 \
+       || ! mcopy -o -i "$disk" "$ini.sig" ::CONFIG.SIG 2>/dev/null; then
+        bad; echo "      could not rewrite CONFIG.INI in $disk with mtools"; return
+    fi
+    rm -f "$ini" "$ini.in" "$ini.sig"
+
+    safe_mode_boot() { # <log> <max-half-seconds> <stop-regex> [extra qemu args...]
+        local out="$1" secs="$2" stop="$3"; shift 3
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -no-reboot \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 "$@" </dev/null >"$out" 2>&1 &
+        SAFE_MODE_PID=$!
+        local i=0
+        while [ "$i" -lt "$secs" ]; do
+            grep -aqE "$stop" "$out" 2>/dev/null && break
+            kill -0 "$SAFE_MODE_PID" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+    }
+    safe_mode_stop() { sleep 0.5; kill -9 "$SAFE_MODE_PID" 2>/dev/null; wait "$SAFE_MODE_PID" 2>/dev/null; }
+
+    for n in 1 2 3; do
+        log="$CI_LOG_DIR/safe-mode-boot$n.log"
+        safe_mode_boot "$log" 240 'PANIC\] Rebooting|PANIC\] Crash log|SAFE-MODE\]|RECOVERY\] armed'
+        safe_mode_stop
+        if ! grep -aqF "[OTA] Boot: slot=A count=$n/3 last_good=A" "$log" \
+           || ! grep -aqF "safe-mode-smoke: deliberate crash before the boot is confirmed" "$log" \
+           || grep -aqF "[RECOVERY] armed" "$log"; then
+            bad; echo "      boot $n did not count itself $n and crash:"
+            grep -a "OTA\] Boot\|RECOVERY\]\|safe-mode-smoke" "$log" | tr -d '\r' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+    done
+
+    log="$CI_LOG_DIR/safe-mode-boot4.log"
+    safe_mode_boot "$log" 480 'SAFE-MODE\] (PASS|FAIL)|!!! KERNEL PANIC !!!|\[CONSOLE\] dropped' \
+        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${port}-:8080" -device virtio-net-device,netdev=net0
+    local missing="" want
+    for want in \
+        "[OTA] Boot loop detected (max=3) with nothing to roll back to: slot A IS last_good. Count kept at 4" \
+        "[RECOVERY] armed: BootLoop { crashes: 3 } (Exhausted, slot A boot_count=4) -- SAFE MODE" \
+        "[SAFE-MODE] boot-good mark withheld" \
+        "[AUTORUN] REFUSED: safe mode -- /fat/GPIODRV.ELF not started" \
+        "[SAFE-MODE] probe: motor 0 forward 60% refused (rc=-2, applied 0%), spray refused" \
+        "[SAFE-MODE] PASS probe: actuators held; 35 s up and BOOTMETA boot_count still 4"; do
+        grep -aqF "$want" "$log" || missing="$missing
+        $want"
+    done
+    if [ -n "$missing" ] || grep -aqE "!!! KERNEL PANIC !!!|\[CONSOLE\] dropped|OTA\] Boot marked good|SAFE-MODE\] FAIL" "$log"; then
+        safe_mode_stop
+        bad; echo "      boot 4 did not enter safe mode and hold it; missing:$missing"
+        grep -a "OTA\] Boot\|RECOVERY\]\|SAFE-MODE\]\|AUTORUN\]\|PANIC\|CONSOLE\] dropped" "$log" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    # OTA alive: a 64 KiB image over TCP, installed into slot B.
+    dd if=/dev/urandom of="$payload" bs=1024 count=64 2>/dev/null
+    local sent i=0
+    sent="$(python3 tools/ota_send.py "$payload" 127.0.0.1 --port "$port" --version 2 2>&1)"
+    while [ "$i" -lt 120 ]; do
+        grep -aqF "[OTA] CRC OK" "$log" 2>/dev/null && break
+        i=$((i + 1)); sleep 0.5
+    done
+    sleep 2
+    safe_mode_stop
+    local plain
+    plain="$(mtype -i "$disk" ::BOOTMETA 2>/dev/null | tr -d '\r' | grep -aE '^(active_slot|boot_count)=' | tr '\n' ' ')"
+    if ! grep -aqF "[OTA] CRC OK" "$log" || [ "$plain" != "active_slot=b boot_count=0 " ]; then
+        bad; echo "      safe mode did not take an OTA image: plain BOOTMETA '$plain'"
+        printf '%s\n' "$sent" | sed 's/^/        sender: /'
+        grep -a "\[OTA\]" "$log" | tr -d '\r' | sed -n '1,12p' | sed 's/^/        /'
+        echo "      log kept: $log (disk: $disk)"; return
+    fi
+    ok; rm -f "$disk" "$payload" "$CI_LOG_DIR"/safe-mode-boot*.log
+}
+par -s "safe mode: attempts exhausted" safe_mode_row   # OTA on host port 18093
+kbuild "qemu"
+
+# ── boot count: an orderly reboot is not a crash (owner decision 2026-09-28)
+#
+# An orderly reboot or power-off before sys-wdt confirms the boot voids that
+# boot's own unconfirmed mark (`ota_void_unconfirmed_boot`, compare-and-
+# decrement) instead of counting it: only crashes and resets count.
+# `orderly-reboot-smoke` calls `sys_reboot`'s handler 3 s into a boot on a
+# fresh volume. `-no-reboot`: QEMU exits on the reset. Then:
+#   host readback:  plain BOOTMETA and one dual record hold boot_count=0 (the
+#                   boot wrote 1, the reboot took it back);
+#   boot 2:         reads 0 unconfirmed boots, not 1.
+# Anchored on the volume and on boot 2, not on boot 1's last lines: a kernel
+# line printed just before the reset can still sit in the console's defer
+# buffer behind the ring-3 UART owner.
+# Canary (by hand, reverted): the hook not installed -> boot 2 reads "1
+# unconfirmed", the readback finds boot_count=1.
+orderly_reboot_row() {
+    local label="boot count: orderly reboot"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log1="$CI_LOG_DIR/orderly-boot1.log" log2="$CI_LOG_DIR/orderly-boot2.log"
+    local disk="$CI_LOG_DIR/disk-orderly.img"
+    rm -f "$log1" "$log2" "$disk"
+    if ! kbuild "qemu,orderly-reboot-smoke"; then
+        bad; echo "      the orderly-reboot-smoke kernel did not build"; return
+    fi
+    rm -f build/disk.img
+    make_disk build/disk.img
+    cp build/disk.img "$disk"
+    par_ready
+    "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -no-reboot \
+        -smp 2 -global virtio-mmio.force-legacy=false \
+        -drive file="$disk",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 </dev/null >"$log1" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
+        grep -aqE "!!! KERNEL PANIC !!!|OTA\] Boot marked good|ORDERLY\] FAIL" "$log1" 2>/dev/null && break
+        i=$((i + 1)); sleep 0.5
+    done
+    local exited=no
+    kill -0 "$pid" 2>/dev/null || exited=yes
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    local plain dual
+    plain="$(mtype -i "$disk" ::BOOTMETA 2>/dev/null | tr -d '\r' | grep -a '^boot_count=')"
+    dual="$( { mtype -i "$disk" ::BOOTMETA.A 2>/dev/null; mtype -i "$disk" ::BOOTMETA.B 2>/dev/null; } \
+        | tr -d '\r' | grep -a '^boot_count=' | tr '\n' ' ')"
+    if [ "$exited" != yes ] \
+       || ! grep -aqF "[BOOTCNT] 0 unconfirmed boot(s) before this one (no BOOTMETA.A/.B record on this volume); this boot recorded as unconfirmed" "$log1" \
+       || grep -aqE "!!! KERNEL PANIC !!!|OTA\] Boot marked good" "$log1" \
+       || [ "$plain" != "boot_count=0" ] || ! printf '%s' "$dual" | grep -q 'boot_count=0 '; then
+        bad; echo "      boot 1 (exited on its reboot: $exited) left plain '$plain', dual '$dual' (want boot_count=0):"
+        grep -a "BOOTCNT\]\|ORDERLY\]\|OTA\] \(Boot\|orderly\)\|PANIC" "$log1" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log1 (disk: $disk)"; return
+    fi
+    par_ready
+    "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -no-reboot \
+        -smp 2 -global virtio-mmio.force-legacy=false \
+        -drive file="$disk",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 </dev/null >"$log2" 2>&1 &
+    pid=$! i=0
+    while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
+        grep -aqE "RECOVERY\] (armed|not armed)" "$log2" 2>/dev/null && break
+        i=$((i + 1)); sleep 0.5
+    done
+    sleep 0.5
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if ! grep -aqF "[BOOTCNT] 0 unconfirmed boot(s) before this one (BOOTMETA boot_count); this boot recorded as unconfirmed" "$log2" \
+       || ! grep -aqF "[RECOVERY] not armed (crash count 0)" "$log2"; then
+        bad; echo "      boot 2 did not read 0 unconfirmed boots:"
+        grep -a "BOOTCNT\]\|RECOVERY\]\|OTA\] Boot" "$log2" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $log1 $log2"; return
+    fi
+    ok; rm -f "$log1" "$log2" "$disk"
+}
+par "boot count: orderly reboot" orderly_reboot_row
+kbuild "qemu"
+
+# ── pstore: a panic with the FS lock held reaches the next boot ────────────
+#
+# `write_crash_log` skips /fat/CRASH.LOG when the VFS or FAT32 lock is held,
+# so a panic inside the filesystem used to leave no record. The panic handler
+# now also writes the entry, lock-free, into a reserved RAM region at the top
+# of RAM (kernel/src/pstore.rs, Kconfig PSTORE_SIZE_KB, default 4 on QEMU);
+# after /fat mounts, the next boot checks its CRC-32, appends it to CRASH.LOG
+# and clears it. `pstore-smoke` panics with the VFS `FS` lock held on a boot
+# that found no record and sets a 200 ms panic reboot delay, so ONE QEMU
+# process (no -no-reboot) runs boot 1, the guest-initiated reset (SBI SRST /
+# PSCI SYSTEM_RESET) and boot 2. QEMU 11 keeps guest RAM across that reset
+# except the blobs it re-copies (the kernel image and, on riscv64, the DTB 2
+# MiB below the top of RAM): measured with a bare-metal probe on both ISAs.
+# Modes:
+#   valid   — boot 2 prints `[PSTORE] recovered ...` with boot 1's panic text,
+#             and the volume's CRASH.LOG holds it (`mtype`, not the kernel's
+#             own word for it);
+#   corrupt — `pstore-corrupt-smoke` flips one payload bit after the CRC:
+#             boot 2 must print `record REJECTED ... checksum`, copy none of
+#             the text, and note the discarded record in CRASH.LOG.
+# Both: exactly one panic banner over both boots, boot 1 skipped its own
+# CRASH.LOG write (`FS lock busy`), two `[PSTORE] region reserved` lines.
+pstore_row() { # pstore_row <isa: rv|arm> <mode: valid|corrupt>
+    local isa="$1" mode="$2"
+    local label="pstore: ${mode} record (${isa})"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local feats="qemu,pstore-smoke" src_disk="build/disk.img"
+    [ "$mode" = corrupt ] && feats="qemu,pstore-corrupt-smoke"
+    [ "$isa" = arm ] && src_disk="build/disk-aarch64.img"
+    local log="$CI_LOG_DIR/pstore-${isa}-${mode}.log"
+    local disk="$CI_LOG_DIR/disk-pstore-${isa}-${mode}.img"
+    local kimg="$CI_LOG_DIR/kernel-pstore-${isa}-${mode}"
+    rm -f "$log" "$disk" "$kimg"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 --features $feats did not build"; return; fi
+        cp "$KERNEL" "$kimg"
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 --features $feats did not build"; return; fi
+        cp "$A64_IMG" "$kimg"
+    fi
+    rm -f "$src_disk"
+    if ! make "$src_disk" >/dev/null 2>&1; then bad; echo "      make $src_disk failed"; return; fi
+    cp "$src_disk" "$disk"
+    par_ready   # the wait below happens in the job, not in the gate
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = rv ]; then
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+    else
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 n
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "[PSTORE-SMOKE] record found this boot" "$log" 2>/dev/null && break
+        n="$(grep -acF '!!! KERNEL PANIC !!!' "$log" 2>/dev/null)"
+        [ "${n:-0}" = 0 ] || [ "${n:-0}" = 1 ] || break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    sleep 1
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg"
+    # The console starts lines with a carriage return; the anchored patterns
+    # below read the log without them.
+    tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+
+    local want
+    for want in "[PSTORE] no record from the previous boot" \
+                "[PSTORE-SMOKE] panicking with the VFS FS lock held" \
+                "pstore-smoke: deliberate panic with the VFS FS lock held" \
+                "[PANIC] pstore record written: " \
+                "[PANIC] FS lock busy — skipping crash log dump to /fat/CRASH.LOG" \
+                "[PANIC] Rebooting in 200 ms..."; do
+        if ! grep -aqF "$want" "$log"; then
+            bad; echo "      boot 1 did not print: $want"
+            grep -a "PSTORE\|PANIC" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+    done
+    n="$(grep -acF '[PSTORE] region reserved: ' "$log")"
+    if [ "$n" != 2 ]; then
+        bad; echo "      $n '[PSTORE] region reserved' lines, want 2 (boot 1 + the warm reboot):"
+        tr -d '\r' < "$log" | tail -5 | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    n="$(grep -acF '!!! KERNEL PANIC !!!' "$log")"
+    if [ "$n" != 1 ]; then
+        bad; echo "      $n panic banners over both boots, want 1 (boot 2 found no record and panicked again?):"
+        grep -a "PSTORE" "$log" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    local crash
+    crash="$(mtype -i "$disk" ::CRASH.LOG 2>/dev/null | tr -d '\r')"
+    if [ "$mode" = valid ]; then
+        if ! grep -aq "^\[PSTORE\] recovered previous panic into /fat/CRASH.LOG: \[pstore\] \[t=[0-9]*\] hart=[0-9]* .*pstore-smoke: deliberate panic with the VFS FS lock held" "$log" \
+           || ! grep -aqF "[PSTORE-SMOKE] record found this boot (valid)" "$log"; then
+            bad; echo "      boot 2 did not recover boot 1's record:"
+            grep -a "PSTORE" "$log" | tr -d '\r' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        if ! printf '%s\n' "$crash" | grep -aq "^\[pstore\] \[t=[0-9]*\] hart=.*pstore-smoke: deliberate panic with the VFS FS lock held$" \
+           || [ "$(printf '%s\n' "$crash" | grep -c .)" != 1 ]; then
+            bad; echo "      /fat/CRASH.LOG on the volume does not hold exactly the recovered record:"
+            printf '%s\n' "$crash" | sed -n '1,4p' | sed 's/^/        /'
+            echo "      log kept: $log (disk: $disk)"; return
+        fi
+    else
+        if grep -aqF "[PSTORE] recovered previous panic" "$log"; then
+            bad; echo "      boot 2 ACCEPTED a record whose payload was damaged after its CRC:"
+            grep -a "PSTORE" "$log" | tr -d '\r' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq "^\[PSTORE\] record REJECTED: \[pstore\] corrupt record discarded: checksum stored 0x[0-9a-f]\{8\} computed 0x[0-9a-f]\{8\}$" "$log" \
+           || ! grep -aqF "[PSTORE] discarded; noted in /fat/CRASH.LOG" "$log" \
+           || ! grep -aqF "[PSTORE-SMOKE] record found this boot (rejected)" "$log"; then
+            bad; echo "      boot 2 did not reject and report the damaged record:"
+            grep -a "PSTORE" "$log" | tr -d '\r' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        if ! printf '%s\n' "$crash" | grep -aq "^\[pstore\] corrupt record discarded: checksum stored 0x" \
+           || [ "$(printf '%s\n' "$crash" | grep -c .)" != 1 ] \
+           || printf '%s\n' "$crash" | grep -aqF "deliberate panic"; then
+            bad; echo "      /fat/CRASH.LOG should hold the discard note and none of the damaged text:"
+            printf '%s\n' "$crash" | sed -n '1,4p' | sed 's/^/        /'
+            echo "      log kept: $log (disk: $disk)"; return
+        fi
+    fi
+    ok; rm -f "$log" "$disk"
+}
+par "pstore: valid record (rv)" pstore_row rv valid
+par "pstore: corrupt record (rv)" pstore_row rv corrupt
+par "pstore: valid record (arm)" pstore_row arm valid
+par "pstore: corrupt record (arm)" pstore_row arm corrupt
+# Canaries (2026-10-02, by hand, both ISAs), reverted:
+#   (A) `pstore::arm` zeroes the region (RAM wiped by the reset): both valid
+#       rows FAIL, boot 2 finds no record and panics again ("5 '[PSTORE]
+#       region reserved' lines, want 2").
+#   (B) `pstore::decode` skips the CRC compare: both corrupt rows FAIL with
+#       "boot 2 ACCEPTED a record whose payload was damaged after its CRC"
+#       (the recovered text starts `Zt=` for `[t=`); fs-tests fails 3 tests.
+
+# ── rt7: panic policy by profile (RFC-0052 §5, row R6) ──────────────────────
+#
+# Kconfig PANIC_POLICY: Reset (every panic: actuators safe, global flag,
+# halt/reboot — the ground profile and the default) or Contain ("warn, don't
+# kill": the Robot drone profile's default). `rt-panic-canary` boots an
+# observer on hart 1 that arms the flight controller and measures rt-motor's
+# heartbeat and flight-ctrl's ticks over 500 ms, then creates a culprit kernel
+# task on hart 0 — the control hart — that panics (kernel/src/smokes/
+# rt_panic_smoke.rs). Each row builds its own `.config` (the qemu defconfig
+# plus the policy) in the shared target dir, so the order below flips the
+# config twice per ISA, not four times. Modes:
+#   contain — Contain, no lock held: the handler prints `verdict=contain`,
+#             parks the culprit (exit status 134, isolation #1), and no panic
+#             banner follows; flight-ctrl prints its own `contained kernel
+#             panic #1: Land` and, PANIC_CONTAIN_LAND_MS (5 s) later, `Land
+#             done ... Disarm`; the observer prints `[RT7-SMOKE] PASS` (one
+#             isolation, culprit slot gone, global flag clear, both loops
+#             at >= half their pre-panic rate, heartbeat never still > 50 ms,
+#             Land seen, disarmed); /fat/CRASH.LOG holds exactly the
+#             CONTAINED entry.
+#   spin    — Contain, the culprit holds a SpinLock (`lock()`, interrupts
+#             on): `verdict=reset reason=spinlock-held`, one banner, no
+#             containment, the observer never prints a verdict.
+#   reset   — Reset, the same panic as `contain` (the canary: containment
+#             off): `verdict=reset reason=policy-reset`, one banner, nothing
+#             contained.
+#   safety  — Contain, and the panic is in rt-motor itself, a registered
+#             safety task, holding no lock (`rt-panic-canary-safety`, wave
+#             13): `verdict=reset reason=safety-task` on hart 0 in task
+#             rt-motor, one banner, the crash counter raised, nothing
+#             contained, and the latch kept — the observer (interrupts
+#             masked, so its tick cannot park it) prints `latch:
+#             panicked=true motor_set rc=-1 applied=none esc_armed=false`:
+#             a motor command after the panic is refused and the ESC the
+#             observer armed is disarmed.
+rt7_row() { # rt7_row <isa: rv|arm> <mode: contain|spin|reset>
+    local isa="$1" mode="$2"
+    local label="rt7: panic ${mode} (${isa})"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local defc=qemu src_disk="build/disk.img" policy=CONTAIN feats="qemu,rt-panic-canary"
+    [ "$isa" = arm ] && { defc=qemu-aarch64; src_disk="build/disk-aarch64.img"; }
+    [ "$mode" = reset ] && policy=RESET
+    [ "$mode" = spin ] && feats="qemu,rt-panic-canary-spin"
+    [ "$mode" = safety ] && feats="qemu,rt-panic-canary-safety"
+    local cfg log disk kimg
+    # Absolute: `azos_limits`' build script resolves KCONFIG_CONFIG from
+    # its own crate directory.
+    cfg="$(cd "$CI_LOG_DIR" && pwd)/rt7-${isa}-${policy}.config"
+    log="$CI_LOG_DIR/rt7-${isa}-${mode}.log"
+    disk="$CI_LOG_DIR/disk-rt7-${isa}-${mode}.img"
+    kimg="$CI_LOG_DIR/kernel-rt7-${isa}-${mode}"
+    rm -f "$log" "$disk" "$kimg"
+    cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg"
+    printf '# CONFIG_PANIC_POLICY_RESET is not set\n# CONFIG_PANIC_POLICY_CONTAIN is not set\nCONFIG_PANIC_POLICY_%s=y\n' \
+        "$policy" >>"$cfg"
+    (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+        || { bad; echo "      olddefconfig failed on $cfg"; return; }
+    if ! grep -q "^CONFIG_PANIC_POLICY_${policy}=y$" "$cfg"; then
+        bad; echo "      $cfg does not carry CONFIG_PANIC_POLICY_${policy}=y"; return
+    fi
+    if [ "$isa" = rv ]; then
+        if ! KCONFIG_CONFIG="$cfg" kbuild "$feats"; then
+            echo "      riscv64 --features $feats ($policy) did not build"; return
+        fi
+        cp "$KERNEL" "$kimg"
+    else
+        if ! AARCH64_CONFIG="$cfg" a64_kbuild "$feats"; then
+            bad; echo "      aarch64 --features $feats ($policy) did not build"; return
+        fi
+        cp "$A64_IMG" "$kimg"
+    fi
+    # A fresh image each row, as the pstore rows do: the contain row asserts
+    # that CRASH.LOG holds exactly one entry.
+    rm -f "$src_disk"
+    if ! make "$src_disk" >/dev/null 2>&1; then
+        bad; echo "      make $src_disk failed"; return
+    fi
+    cp "$src_disk" "$disk"
+    par_ready   # the wait below happens in the job, not in the gate
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = rv ]; then
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+    else
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 120 ]; do
+        grep -aq "RT7-SMOKE\] \(PASS\|FAIL\)" "$log" 2>/dev/null && break
+        if [ "$mode" = safety ]; then
+            grep -aq "RT7-SMOKE\] latch: " "$log" 2>/dev/null && break
+        else
+            grep -aqF '!!! KERNEL PANIC !!!' "$log" 2>/dev/null && break
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    # After a banner, give a hart that did NOT halt time to say so.
+    sleep 3
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg"
+    tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+
+    local want n
+    local pol_lc; pol_lc="$(printf '%s' "$policy" | tr 'A-Z' 'a-z')"
+    local culprit_re="^\[RT7-SMOKE\] culprit tid=[0-9]* panicking"
+    [ "$mode" = safety ] && culprit_re="^\[RT7-SMOKE\] culprit rt-motor panicking (a safety task)$"
+    if ! grep -aqF "[RT7-SMOKE] observer created on hart 1; policy=${pol_lc}" "$log" \
+       || ! grep -aqF "[RT7-SMOKE] flight controller armed: true" "$log" \
+       || ! grep -aq "$culprit_re" "$log"; then
+        bad; echo "      the smoke did not reach the panic (policy=${pol_lc}, armed):"
+        grep -a "RT7\|PANIC" "$log" | sed -n '1,8p' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    n="$(grep -acF '!!! KERNEL PANIC !!!' "$log")"
+    if [ "$mode" = contain ]; then
+        for want in "[PANIC] policy=contain verdict=contain task=rt7-culprit tid=" \
+                    "[PANIC]   rt-panic-canary: deliberate panic in a non-safety kernel task" \
+                    "[PANIC] contained: crash log written to /fat/CRASH.LOG" \
+                    "parked, exit status 134; isolation #1; control loop untouched" \
+                    "[FLIGHT] contained kernel panic #1: Land" \
+                    "[FLIGHT] contained kernel panic: Land done after 5000 ms, Disarm" \
+                    "[RT7-SMOKE] PASS"; do
+            if ! grep -aqF "$want" "$log"; then
+                bad; echo "      did not print: $want"
+                grep -a "RT7\|PANIC\|FLIGHT" "$log" | sed -n '1,14p' | sed 's/^/        /'
+                echo "      log kept: $log"; return
+            fi
+        done
+        if [ "$n" != 0 ] || grep -aqF "[PANIC] Crash counter" "$log"; then
+            bad; echo "      a contained panic took the reset path ($n banners) or raised the crash counter"
+            echo "      log kept: $log"; return
+        fi
+        # Land after the containment, Disarm after the Land.
+        local lc ll ld
+        lc="$(grep -anF "verdict=contain task=rt7-culprit" "$log" | sed -n '1s/:.*//p')"
+        ll="$(grep -anF "[FLIGHT] contained kernel panic #1: Land" "$log" | sed -n '1s/:.*//p')"
+        ld="$(grep -anF "[FLIGHT] contained kernel panic: Land done" "$log" | sed -n '1s/:.*//p')"
+        if [ -z "$lc" ] || [ -z "$ll" ] || [ -z "$ld" ] || [ "$ll" -le "$lc" ] || [ "$ld" -le "$ll" ]; then
+            bad; echo "      out of order: contain line $lc, Land line $ll, Disarm line $ld"
+            echo "      log kept: $log"; return
+        fi
+        local crash
+        crash="$(mtype -i "$disk" ::CRASH.LOG 2>/dev/null | tr -d '\r')"
+        if ! printf '%s\n' "$crash" | grep -aq "^\[t=[0-9]*\] hart=0 task=rt7-culprit CONTAINED at .*rt-panic-canary: deliberate panic in a non-safety kernel task$" \
+           || [ "$(printf '%s\n' "$crash" | grep -c .)" != 1 ]; then
+            bad; echo "      /fat/CRASH.LOG does not hold exactly the CONTAINED entry:"
+            printf '%s\n' "$crash" | sed -n '1,4p' | sed 's/^/        /'
+            echo "      log kept: $log (disk: $disk)"; return
+        fi
+        local meas
+        meas="$(grep -a "^\[RT7-SMOKE\] \(before\|after\|isolations\)" "$log")"
+        ok; printf '%s\n' "$meas" | sed 's/^/      /'; rm -f "$log" "$disk"; return
+    else
+        local reason=spinlock-held
+        [ "$mode" = reset ] && reason=policy-reset
+        [ "$mode" = safety ] && reason=safety-task
+        if [ "$n" != 1 ] \
+           || ! grep -aqF "[PANIC] policy=${pol_lc} verdict=reset reason=${reason}" "$log"; then
+            bad; echo "      want one banner and 'policy=${pol_lc} verdict=reset reason=${reason}' ($n banners):"
+            grep -a "PANIC" "$log" | sed -n '1,6p' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        if grep -aqF "verdict=contain" "$log" || grep -aqF "[FLIGHT] contained kernel panic" "$log" \
+           || grep -aq "^\[RT7-SMOKE\] \(isolations\|PASS\|FAIL\)" "$log"; then
+            bad; echo "      the panic was contained, or the observer kept running after the reset path:"
+            grep -a "RT7\|verdict\|contained" "$log" | sed -n '1,8p' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        if [ "$mode" = safety ]; then
+            for want in "[SAFETY] rt-motor (tid " \
+                        "  hart=0 task=rt-motor" \
+                        "  rt-panic-canary: deliberate panic in rt-motor (a safety task)" \
+                        "[PANIC] Crash counter = "; do
+                if ! grep -aqF "$want" "$log"; then
+                    bad; echo "      did not print: $want"
+                    grep -a "RT7\|PANIC\|SAFETY\|hart=" "$log" | sed -n '1,10p' | sed 's/^/        /'
+                    echo "      log kept: $log"; return
+                fi
+            done
+            if ! grep -aqx "\[RT7-SMOKE\] latch: panicked=true motor_set rc=-1 applied=none esc_armed=false" "$log"; then
+                bad; echo "      the latch was not kept after the panic:"
+                grep -a "RT7-SMOKE\] latch\|no panic latch" "$log" | sed 's/^/        /'
+                echo "      log kept: $log"; return
+            fi
+        fi
+    fi
+    ok; rm -f "$log" "$disk"
+}
+# The drone profile's default, without a boot: Robot drone → Contain.
+rt7_drone_default_row() {
+    printf "  %-26s" "rt7: drone → contain..."
+    mkdir -p "$CI_LOG_DIR"
+    local cfg; cfg="$(cd "$CI_LOG_DIR" && pwd)/rt7-drone.config"
+    cp "${REPO_ROOT}/config/defconfigs/qemu.config" "$cfg"
+    echo "CONFIG_ROBOT_DRONE=y" >>"$cfg"
+    if (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+       && grep -q '^CONFIG_ROBOT_DRONE=y$' "$cfg" && grep -q '^CONFIG_PANIC_POLICY_CONTAIN=y$' "$cfg" \
+       && grep -q '^CONFIG_PANIC_POLICY_RESET=y$' "$PRIMARY_CONFIG"; then
+        ok; rm -f "$cfg"
+    else
+        bad; echo "      drone .config: $(grep 'ROBOT_DRONE\|PANIC_POLICY' "$cfg" | tr '\n' ' ')"
+        echo "      qemu .config:  $(grep 'PANIC_POLICY' "$PRIMARY_CONFIG" | tr '\n' ' ')"
+    fi
+}
+rt7_drone_default_row
+# Alone: the smoke judges the control loop's heartbeat against a wall-clock
+# bound (100 ms); with other jobs running it read 100.9 ms once (2026-10-03).
+par -s "rt7: panic contain (rv)" rt7_row rv contain
+par -s "rt7: panic spin (rv)" rt7_row rv spin
+par -s "rt7: panic contain (arm)" rt7_row arm contain
+par -s "rt7: panic spin (arm)" rt7_row arm spin
+par -s "rt7: panic reset (rv)" rt7_row rv reset
+par -s "rt7: panic reset (arm)" rt7_row arm reset
+par -s "rt7: panic safety (rv)" rt7_row rv safety
+par -s "rt7: panic safety (arm)" rt7_row arm safety
+# Canaries (2026-10-03, by hand, both ISAs), reverted:
+#   (A) `panic_policy::decide` without the `preempt_depth` check: both spin
+#       rows FAIL ("want one banner and 'policy=contain verdict=reset
+#       reason=spinlock-held' (0 banners)": the handler printed
+#       `verdict=contain` and parked the task with the lock leaked);
+#       panic-policy-tests fails 4 tests.
+#   (B) `pi_mutex::try_acquire` without its held-count increment:
+#       sync-tests fails the 3 `pi_held_count_*` tests.
+#   (C) did not compile (an undefined identifier in rt_panic_smoke.rs): the
+#       row prints `build --features qemu,rt-panic-canary...FAIL` and
+#       "did not build", and boots nothing.
+# The `reset` rows are the canary for the contain rows (same panic,
+# containment off).
+# Safety rows (wave 13), canaries by hand, reverted:
+#   (A) rt-motor not registered as a safety task (rv): FAIL, "want one banner
+#       ... reason=safety-task (0 banners)" — the handler contained rt-motor.
+#   (B) `motor_set_reporting` without its `is_panicked()` refusal (arm): FAIL,
+#       "latch: panicked=true motor_set rc=0 applied=50" — the wheel moved.
+#   (C) did not compile (an undefined function in rt_panic_smoke.rs): the
+#       build FAIL line and "did not build", nothing booted.
+# A driver placed in the kernel survives a panic in its host (wave 13):
+# `drv-contain-smoke` (buzzer-kernel), Kconfig PANIC_POLICY_CONTAIN. The
+# buzzer's kernel host is supervised (`SupOrigin::KernelHost`,
+# kernel/src/drv_supervisor.rs `start_kernel_host`); the smoke checks the
+# host ends a 50 ms tone on its own (no call made in between), makes it panic
+# holding no lock, and wants exactly one isolation, a successor host with a
+# new TID, and the successor ending a tone too
+# (kernel/src/smokes/drv_contain_smoke.rs). The row also wants the panic
+# handler's `verdict=contain task=buzzer`, the supervisor's `restart 1/` line
+# for the kernel host, and no reset banner.
+drvcontain_row() { # drvcontain_row <isa: rv|arm> [features]
+    local isa="$1" feats="${2:-qemu,drv-contain-smoke}"
+    printf "  %-26s" "rt7: driver contained, restarted (${isa})..."
+    mkdir -p "$CI_LOG_DIR"
+    local defc=qemu src_disk="build/disk.img"
+    [ "$isa" = arm ] && { defc=qemu-aarch64; src_disk="build/disk-aarch64.img"; }
+    local cfg log disk kimg
+    cfg="$(cd "$CI_LOG_DIR" && pwd)/drvcontain-${isa}.config"
+    log="$CI_LOG_DIR/drvcontain-${isa}.log"
+    disk="$CI_LOG_DIR/disk-drvcontain-${isa}.img"
+    kimg="$CI_LOG_DIR/kernel-drvcontain-${isa}"
+    rm -f "$log" "$disk" "$kimg"
+    cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg"
+    printf '# CONFIG_PANIC_POLICY_RESET is not set\nCONFIG_PANIC_POLICY_CONTAIN=y\n' >>"$cfg"
+    (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+        || { bad; echo "      olddefconfig failed on $cfg"; return; }
+    if [ "$isa" = rv ]; then
+        if ! KCONFIG_CONFIG="$cfg" kbuild "$feats"; then
+            echo "      riscv64 --features $feats did not build"; return
+        fi
+        cp "$KERNEL" "$kimg"
+    else
+        if ! AARCH64_CONFIG="$cfg" a64_kbuild "$feats"; then
+            bad; echo "      aarch64 --features $feats did not build"; return
+        fi
+        cp "$A64_IMG" "$kimg"
+    fi
+    if [ ! -f "$src_disk" ] && ! make "$src_disk" >/dev/null 2>&1; then
+        bad; echo "      make $src_disk failed"; return
+    fi
+    cp "$src_disk" "$disk"
+    par_ready
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = rv ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 160 ]; do
+        grep -aq "^.*\[DRVCONTAIN\] \(PASS\|FAIL\)" "$log" 2>/dev/null && break
+        grep -aqF '!!! KERNEL PANIC !!!' "$log" 2>/dev/null && { sleep 2; break; }
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg" "$disk"
+    tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+    local want
+    for want in "[DRVCONTAIN] observer created; policy=contain" \
+                "[SUP] kernel host buzzer tid=" \
+                "[PANIC] policy=contain verdict=contain task=buzzer tid=" \
+                "[PANIC]   drv-contain-smoke: deliberate panic in the buzzer's kernel host" \
+                "[SUP] restart 1/" \
+                "[DRVCONTAIN] PASS host tid="; do
+        if ! grep -aqF "$want" "$log"; then
+            bad; echo "      did not print: $want"
+            grep -a "DRVCONTAIN\|PANIC\|\[SUP\]\|BUZZER" "$log" | sed -n '1,12p' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+    done
+    if grep -aqF '!!! KERNEL PANIC !!!' "$log" || ! grep -aq "^\[SUP\] restart 1/[0-9]* of kernel host buzzer: successor tid=" "$log"; then
+        bad; echo "      a reset banner, or no kernel-host restart line:"
+        grep -a "KERNEL PANIC\|\[SUP\] restart" "$log" | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    ok; grep -a "^\[DRVCONTAIN\] \(host\|isolations\)" "$log" | sed 's/^/      /'; rm -f "$log"
+}
+# Canary (2026-10-03, rv): `sup-canary` (the supervisor ignores every death)
+# -> "[DRVCONTAIN] FAIL the host was not restarted" (isolations=1,
+# successor=None). Compile errors: `kbuild`/`a64_kbuild`'s own FAIL line.
+par -s "rt7: driver contained, restarted (rv)" drvcontain_row rv
+par -s "rt7: driver contained, restarted (arm)" drvcontain_row arm
+# The timer-sleeper heap under the interleavings that lost rt-motor's wake
+# with it (gate 185; fixed in wave 5: `rearm_if_sleeping`, `peek_live`), wave
+# 13: `timer-heap-smoke` + `ipc-census` + `sched-timer-heap`, -smp 4, no disk.
+# Three sleepers per hart (1-7 ms periods) raced by one early-waking racer per
+# hart that never wakes a sleeper whose deadline is due, so a lost timer wake
+# is never rescued (kernel/src/smokes/timer_heap_smoke.rs). `[THEAP] PASS`:
+# no sleeper stuck (each woke on its timer in the run's second half, none
+# blocked 2 s past its deadline) and the census counted no lost sleeper.
+# Lateness is printed, not judged: the guest clock follows the host's, and
+# host load made it 0.1-1 s with the heap on and off alike.
+theap_row() { # theap_row <isa: rv|arm> [features]
+    local isa="$1" feats="${2:-qemu,sched-timer-heap,ipc-census,timer-heap-smoke}"
+    printf "  %-26s" "sched: timer heap raced (${isa})..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/theap-${isa}.log" kimg="$CI_LOG_DIR/kernel-theap-${isa}"
+    rm -f "$log" "$kimg"
+    if [ "$isa" = rv ]; then
+        kbuild "$feats" || { echo "      riscv64 --features $feats did not build"; return; }
+        cp "$KERNEL" "$kimg"
+    else
+        a64_kbuild "$feats" || { bad; echo "      aarch64 --features $feats did not build"; return; }
+        cp "$A64_IMG" "$kimg"
+    fi
+    par_ready
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = rv ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 </dev/null >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            -kernel "$kimg" </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aq "THEAP\] \(PASS\|FAIL\)" "$log" 2>/dev/null && break
+        grep -aqE '\[FATAL\]|KERNEL PANIC|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg"
+    tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+    if ! grep -aq "^\[THEAP\] 12 sleepers, 4 racers on 4 harts; heap=true census=true$" "$log" \
+       || ! grep -aqx "\[THEAP\] PASS" "$log"; then
+        bad; grep -a "THEAP\|FATAL\|PANIC" "$log" | sed -n '1,10p' | sed 's/^/      /'
+        echo "      log kept: $log"; return
+    fi
+    ok; grep -a "^\[THEAP\] timer wakes" "$log" | sed 's/^/      /'; rm -f "$log"
+}
+par -s "sched: timer heap raced (rv)" theap_row rv
+par -s "sched: timer heap raced (arm)" theap_row arm
+# Canary (2026-10-03, rv, by hand, reverted): the wave-5 bug put back (the
+# retry re-arms a deadline read before the heap lock; `peek_live` pops a
+# misarmed entry instead of moving it): 4 of 4 boots FAIL ("a sleeper
+# stopped waking on its timer" or "the census counted a lost sleeper",
+# census lost=1..3) against 4 of 4 PASS for
+# the same build without it. Compile errors: `kbuild`'s own FAIL line.
+# A tick deferred by a SpinLock is a preemption (wave 13): `preempt-account-
+# smoke`, -smp 2, no disk. A task holds a SpinLock for 30 ms (interrupts on)
+# beside a same-priority spinner on hart 1; the drop pays the deferred tick.
+# Its own counts across the hold must read `voluntary +0 preempted +N>=1`
+# (kernel/src/smokes/preempt_account_smoke.rs). Before wave 13 the debt was
+# paid through `task_yield` and counted voluntary, which hid tick
+# preemptions from SYS_TASKINFO (vsbench's drvring-batch8 bound).
+pacct_row() { # pacct_row <isa: rv|arm>
+    local isa="$1" feats="qemu,preempt-account-smoke"
+    printf "  %-26s" "sched: deferred tick counted (${isa})..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/pacct-${isa}.log" kimg="$CI_LOG_DIR/kernel-pacct-${isa}"
+    rm -f "$log" "$kimg"
+    if [ "$isa" = rv ]; then
+        kbuild "$feats" || { echo "      riscv64 --features $feats did not build"; return; }
+        cp "$KERNEL" "$kimg"
+    else
+        a64_kbuild "$feats" || { bad; echo "      aarch64 --features $feats did not build"; return; }
+        cp "$A64_IMG" "$kimg"
+    fi
+    par_ready
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = rv ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 </dev/null >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 120 ]; do
+        grep -aq "PACCT\] \(PASS\|FAIL\)" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg"
+    tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+    if grep -aq "^\[PACCT\] PASS voluntary +0 preempted +[1-9][0-9]*$" "$log"; then
+        ok; grep -a "^\[PACCT\]" "$log" | sed 's/^/      /'; rm -f "$log"
+    else
+        bad; grep -a "PACCT\|FATAL\|PANIC" "$log" | sed -n '1,4p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    fi
+}
+par -s "sched: deferred tick counted (rv)" pacct_row rv
+par -s "sched: deferred tick counted (arm)" pacct_row arm
+# Canary (2026-10-04, rv, by hand, reverted): the deferred-resched callback
+# back to `task_yield`: 3 of 3 boots "FAIL voluntary +1 preempted +0";
+# with the fix 5/5 rv, 5/5 arm PASS.
+# The rows above leave smoke kernels built; put back the plain ones.
+kbuild "qemu"
+a64_kbuild "qemu" >/dev/null 2>&1 || true
+
+board_volume_row() {
+    local label="board: volume = topology"
+    printf "  %-26s" "${label}..."
+    local out
+    rm -f build/disk-board.img build/board_manifest.txt build/board_elfs.list
+    # A board volume never carries the test key (wave 11 BOARDIMG): the board
+    # builds its own ML service from a NAMED key. Two refusals first (no key;
+    # the test key named by path), each bound to the line only the refusal
+    # prints, then the positive build with a key that is not the test key. The
+    # image's MLSRV.ELF is read back and checked by `tools/check_board_keys.py`
+    # (the recipe runs it): embeds no test key, hashes to the board table's row,
+    # is not the QEMU build.
+    mkdir -p build/board
+    # A throwaway pair, not the test key: the board volume is signed with it and
+    # `check_board_keys.py sigs` re-verifies every signature with the kernel's
+    # own verifier built for the public half.
+    python3 -c 'import os, sys; sys.path.insert(0, "tools"); import check_board_keys as c; s = os.urandom(32); open("build/board/gate_priv.bin", "wb").write(s); open("build/board/gate_pub.bin", "wb").write(c.derive_public(s))'
+    local gate_keys="TOPOLOGY_PUBKEY_PATH=$PWD/build/board/gate_pub.bin TOPOLOGY_PRIVKEY_PATH=$PWD/build/board/gate_priv.bin"
+    # The gate exports the test key for every other build (line ~39): the
+    # no-key case must not inherit it.
+    out="$(env -u TOPOLOGY_PUBKEY_PATH -u TOPOLOGY_PRIVKEY_PATH make build/board/mlsrv.elf DEV_KEYS=1 2>&1)" \
+        && { bad; echo "      a board ML service built with DEV_KEYS=1 and no named key"; return; }
+    printf '%s\n' "$out" | grep -aq "refusing: no topology/config key" \
+        || { bad; echo "      DEV_KEYS=1 board build failed, but not with the no-key refusal"; return; }
+    out="$(make build/board/mlsrv.elf TOPOLOGY_PUBKEY_PATH=tools/keys/test_pub.bin 2>&1)" \
+        && { bad; echo "      a board ML service built with the test key named by path"; return; }
+    printf '%s\n' "$out" | grep -aq "names the TEST key" \
+        || { bad; echo "      test-key board build failed, but not with the test-key refusal"; return; }
+    out="$(make build/disk-board.img TOPOLOGY_PUBKEY_PATH="$PWD/build/board/gate_pub.bin" TOPOLOGY_PRIVKEY_PATH=tools/keys/test_priv.bin 2>&1)" \
+        && { bad; echo "      a board volume was signed with the test private key"; return; }
+    printf '%s\n' "$out" | grep -aq "is the test key\|TEST key" \
+        || { bad; echo "      test-key signing failed, but not with the test-key refusal"; return; }
+    # shellcheck disable=SC2086
+    if ! out="$(make build/disk-board.img $gate_keys 2>&1)"; then
+        bad; echo "      make build/disk-board.img failed:"
+        printf '%s\n' "$out" | grep -aE "ORPHAN|disagree|Error|error|check_board_keys" | sed 's|^|        |'
+        return
+    fi
+    if [ ! -s build/board_manifest.txt ] || ! grep -aq "\.ELF" build/board_manifest.txt; then
+        bad; echo "      build/board_manifest.txt is empty — the topology declares no board service"
+        return
+    fi
+    # Manifest lines are `NAME.ELF=build/path.elf`; mdir prints the 8.3 stem
+    # and the long name, so match the NAME before `=` with its `.ELF` dropped.
+    local missing="" line name stem
+    while read -r line; do
+        [ -n "$line" ] || continue
+        name="${line%%=*}"; stem="${name%.ELF}"
+        if ! mdir -i build/disk-board.img ::/ 2>/dev/null | grep -aqi "$stem"; then
+            missing="$missing $name"
+        fi
+    done < build/board_manifest.txt
+    if [ -n "$missing" ]; then
+        bad; echo "      manifest entries not on the built image:$missing"
+        return
+    fi
+    printf '%s\n' "$out" | grep -aq "^CONFIG.SIG verified" \
+        && printf '%s\n' "$out" | grep -aq "^MLP.RML verified" \
+        && printf '%s\n' "$out" | grep -aq "^POLICY.GGF verified" \
+        || { bad; echo "      the board volume's signatures were not verified under the board key"; return; }
+    ok
+}
+board_volume_row
+
+# U12-3 proof rows: a fresh build of each column immediately followed by the
+# check that its `azos_limits` came from that column's own defconfig, not
+# from whatever this shell's ambient `.config` (or another column's pinned
+# config) happens to be. `kbuild`/`a64_kbuild` overwrite the shared
+# `target/.../release` triple `build_board` is about to reuse below, which is
+# exactly why the check runs BEFORE `build_board`, not after.
+kbuild "qemu"
+primary_config_applied
+a64_kbuild "qemu" >/dev/null 2>&1 || true
+aarch64_config_applied
+
+build_board "vf2 (+linker)"       vf2
+board_config_applied "vf2 config applied" vf2
+isa_guard   "vf2: no B extension" none
+# OWNER DECISION V2.3 (2026-09-26): the k1 build REFUSES to compile until real
+# K1 gpio/pwm/i2c/spi/dma drivers exist (`compile_error!` in each sim module,
+# U05-4). The row asserts the refusal by its message — a k1 kernel that builds
+# would mean a simulation is being shipped as a board driver again.
+k1_refuses_to_build_row() {
+    printf "  %-26s" "k1: refuses to build (V2.3)..."
+    local out
+    out="$(RUSTFLAGS="-C link-arg=-Tkernel/linker-k1.ld $K1_ISA" "$CARGO" build --release --features k1 --keep-going 2>&1)"  # --keep-going: the refusals sit in four driver class crates; without it cargo stops at the first
+    if printf '%s\n' "$out" | grep -q "no real K1 GPIO driver exists yet" \
+        && printf '%s\n' "$out" | grep -q "no real K1 PWM driver exists yet" \
+        && ! printf '%s\n' "$out" | grep -q "Finished"; then
+        ok
+    else
+        bad; echo "      the k1 build did not refuse with the expected compile_error! messages"
+        printf '%s\n' "$out" | grep -E "^error" | head -3 | sed 's/^/      /'
+    fi
+}
+k1_refuses_to_build_row
+# (k1 config applied: no k1 binary to check under V2.3 — see k1_refuses_to_build_row)
+# (k1: B extension guard removed with V2.3 — there is no k1 binary to inspect)
+# The fleet profile: 1024 TCP connections, a 1022 MiB linker region. See
+# `fleet_config` for why it does not use `make build-fleet`.
+if fleet_config; then
+    fail_before=$FAIL
+    # shellcheck disable=SC2046
+    KCONFIG_CONFIG="$FLEET_CONFIG" CARGO_TARGET_DIR="$FLEET_DIR" RUSTFLAGS="$FLEET_RUSTFLAGS" \
+        build "fleet (+linker)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$FLEET_CONFIG")
+    fleet_config_applied
+    if [ "$FAIL" -eq "$fail_before" ]; then FLEET_BUILT=1; fi
+else
+    printf "  %-26s" "fleet (+linker)..."
+    bad; echo "      could not expand config/defconfigs/robot-fleet.config with python3 -m olddefconfig"
+fi
+if embedded_config; then
+    fail_before=$FAIL
+    # shellcheck disable=SC2046
+    KCONFIG_CONFIG="$EMBEDDED_CONFIG" CARGO_TARGET_DIR="$EMBEDDED_DIR" RUSTFLAGS="$EMBEDDED_RUSTFLAGS" \
+        build "embedded (+linker)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$EMBEDDED_CONFIG")
+    if [ "$FAIL" -eq "$fail_before" ] && embedded_config_applied; then EMBEDDED_BUILT=1; fi
+else
+    printf "  %-26s" "embedded (+linker)..."
+    bad; echo "      could not expand config/defconfigs/robot-embedded.config with python3 -m olddefconfig"
+fi
+
+# ── Topology/config key: a production build names its key (wave 11) ──────
+#
+# RFC-0054 F-7: `crates/core/topology/build.rs` used to embed
+# `tools/keys/test_pub.bin` whenever `TOPOLOGY_PUBKEY_PATH` was unset, so a
+# board build that forgot the variable verified CONFIG.SIG (and the ML
+# service its model sidecars) against the TEST key. It now fails instead,
+# unless the build says it is a dev/test one (`dev-key`, which `qemu` enables).
+# Every other build in this gate runs with the variable exported (top of this
+# file), so this row is the only place the refusal itself is observed:
+#   (a) topology built WITHOUT the variable and WITHOUT `dev-key` must fail,
+#       on the one line the build script prints for exactly that case;
+#   (b) the same build with `dev-key` must succeed — (a)'s control, so (a)
+#       cannot pass on an unrelated compile error;
+#   (c) an explicitly named key that does not exist must fail, not fall back
+#       to an all-zero key;
+#   (d) the kernel's feature graph: `qemu` enables `dev-key`, `vf2`/`k1` do not.
+# Host-target `cargo check` in topology-tests' own workspace (its default
+# feature is `dev-key`; `--no-default-features` drops it), in a target dir of
+# its own so the suite's own build is not invalidated.
+# Canary (by hand, 2026-10-02): make build.rs's `(None, false)` arm return the
+# test key instead of failing — (a) goes red ("the build did not refuse").
+topology_key_row() {
+    printf "  %-26s" "topology key: no default..."
+    local dir="$REPO_ROOT/tests/host/topology-tests" tdir="$REPO_ROOT/target/topokey" out rc why=""
+    out="$(cd "$dir" && env -u TOPOLOGY_PUBKEY_PATH CARGO_TARGET_DIR="$tdir" \
+           "$CARGO" check --no-default-features 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ] || ! printf '%s\n' "$out" | grep -q "azos_topology: no signing key for a production build"; then
+        why="(a) the build did not refuse (rc=$rc)"
+    fi
+    if [ -z "$why" ]; then
+        out="$(cd "$dir" && env -u TOPOLOGY_PUBKEY_PATH CARGO_TARGET_DIR="$tdir" "$CARGO" check 2>&1)" \
+            || why="(b) the dev-key build failed: $(printf '%s\n' "$out" | grep -m1 -E '^error|error:')"
+    fi
+    if [ -z "$why" ]; then
+        out="$(cd "$dir" && TOPOLOGY_PUBKEY_PATH=/nonexistent/topology_pub.bin CARGO_TARGET_DIR="$tdir" \
+               "$CARGO" check --no-default-features 2>&1)"; rc=$?
+        if [ "$rc" -eq 0 ] || ! printf '%s\n' "$out" | grep -q "TOPOLOGY_PUBKEY_PATH=/nonexistent/topology_pub.bin cannot be read"; then
+            why="(c) a missing named key did not fail the build (rc=$rc)"
+        fi
+    fi
+    if [ -z "$why" ]; then
+        local f
+        for f in qemu vf2 k1; do
+            out="$("$CARGO" tree -e features -p azos_kernel --features "$f" -i azos_topology 2>&1)"
+            if ! printf '%s\n' "$out" | grep -q 'azos_topology feature "default"'; then
+                why="(d) cargo tree --features $f did not list azos_topology"; break
+            fi
+            if printf '%s\n' "$out" | grep -q 'azos_topology feature "dev-key"'; then
+                [ "$f" = qemu ] || { why="(d) --features $f enables dev-key"; break; }
+            else
+                [ "$f" != qemu ] || { why="(d) --features qemu does not enable dev-key"; break; }
+            fi
+        done
+    fi
+    if [ -z "$why" ]; then ok; else bad; echo "      $why"; fi
+}
+topology_key_row
+
+echo ""
+par_drain
+ci_phase "[2/4] host test suites"
+echo "[2/4] Running host test suites..."
+# Every crate in the tree that carries #[test] functions. Until 2026-08-20
+# this stage ran flight-sim and nothing else, so ~650 tests across 22 other
+# crates -- including all 72 OTA tests and the 113 in regression-tests --
+# compiled, passed, and were never once executed by the gate. That is the
+# same shape of hole that let esp32c3 rot for months while CI stayed green:
+# the work exists, everyone assumes it runs, nobody checked.
+for c in flight-sim regression-tests ota-tests sched-policy-tests msc-tests \
+         tftp-tests topology-tests config-tests dfu-tests crypto-tests \
+         flight-math-tests abi-tests arch-api-tests gguf-tests efi-tests \
+         multi-stream-tests drv-api-tests encrypt-link-tests \
+         cam-ring-tests dtb-tests aead-link-tests \
+         cap-tests \
+         ipc-fast-tests ipc-lease-tests ipc-chan-tests sched-wake-tests \
+         fs-tests arch-tests drivers-tests mm-tests libsys-tests behavior-tests \
+         net-tests seccomp-tests syscall-tests sync-tests world-state-tests flight-tests \
+         shell-tests sh-tests panic-policy-tests energy-tests linux-abi-tests; do
+    case "$c" in
+        # Wall-clock ceilings (host_microbench, lease_tick_cost): run alone.
+        regression-tests|ipc-lease-tests) par -a -s "$c" test_host "$c" "${REPO_ROOT}/tests/host/${c}" ;;
+        *) host_job test_host "$c" "${REPO_ROOT}/tests/host/${c}" ;;
+    esac
+done
+# net-tests again at the fleet ring. The run above compiles `crates/net/net` from
+# the workspace `.config` (the 128 KiB ring of edge); this one from the config
+# `fleet_config` expands (a 16 KiB ring, 1024 connections), the same way the
+# fleet build row does: `KCONFIG_CONFIG`, and a target dir of its own so neither
+# run rebuilds the other's artifacts. A test whose premise needs a larger ring
+# than the one compiled in prints `[skip]` with that premise and returns (shown
+# with --nocapture); every other test runs. The second row checks that the
+# constants this run compiled came from the fleet config.
+if fleet_config; then
+    KCONFIG_CONFIG="$FLEET_CONFIG" CARGO_TARGET_DIR="${FLEET_DIR}/host-net-tests" \
+        test_host "net-tests (fleet ring)" "${REPO_ROOT}/tests/host/net-tests"
+    # The crate's `.cargo/config.toml` names its build target, so cargo nests
+    # the profile dir under that triple.
+    net_host="$(sed -n 's/^target = "\(.*\)"$/\1/p' "${REPO_ROOT}/tests/host/net-tests/.cargo/config.toml" 2>/dev/null)"
+    if [ -z "$net_host" ]; then
+        printf "  %-26s" "net-tests fleet config..."
+        bad; echo "      no build target read from tests/host/net-tests/.cargo/config.toml"
+    else
+        fleet_config_applied "net-tests fleet config" "${FLEET_DIR}/host-net-tests/${net_host}/release"
+    fi
+else
+    printf "  %-26s" "net-tests (fleet ring)..."
+    bad; echo "      could not expand config/defconfigs/robot-fleet.config with python3 -m olddefconfig"
+fi
+# Not under crates/: the allow-list and BPF program of the Linux+seccomp
+# column of vsbench, checked against userspace/bench/vsbench/src/abi_linux.rs.
+test_host "linux-seccomp-launch" "${REPO_ROOT}/tools/linux_seccomp_launch/host-tests"
+printf "  %-26s" "kconfig_to_cargo tests..."
+if kc_out="$(python3 "${REPO_ROOT}/tools/test_kconfig_to_cargo.py" 2>&1)"; then ok
+else bad; printf '%s\n' "$kc_out" | grep -E "FAIL|ERROR" | sed 's/^/      /'; fi
+
+# K-C5: encrypt-link-tests asserts the LINK_ENCRYPT_ENFORCED const in BOTH
+# feature states, and the enforced arm only compiles under the feature —
+# without this second run, the exact assertions written to prevent the
+# secure-boot-style silently-absent-policy failure never execute. The plain
+# run above covers the OFF state; this covers ON.
+test_host_features() { # test_host_features <label> <crate-dir> <features>
+    local label="$1" crate="$2" feats="$3" out
+    printf "  %-26s" "${label}..."
+    if host_cargo out "${crate}" test --release --features "$feats" \
+       && ! echo "$out" | grep -q "test result: FAILED"; then
+        ok
+    else
+        bad
+        echo "$out" | grep -m4 -E "^error|test result: FAILED|panicked at" \
+            | sed 's/^/      /'
+    fi
+}
+test_host_features "encrypt-link(enforced)" \
+    "${REPO_ROOT}/tests/host/encrypt-link-tests" "enforced"
+
+# Same two-state argument for the topology. The plain run above is a GENERIC
+# board topology: it asserts no PWM channel, no GPIO pin the drivetrain owns,
+# and — since 2026-09-21 — no motor capability at all. This run is the
+# kernel's `qemu` shape, where `pwm.0`/`gpio.0` ARE granted so the
+# `userspace: capabilities` scenario can watch them be refused, and where the
+# actuation profile declares the drivetrain.
+# One run alone proves only half of it: without the first, an unconditional
+# grant ships to every deployment; without the second, the refusal stops being
+# observable and a deleted guard looks like a missing capability.
+test_host_features "topology(cap-canary)" \
+    "${REPO_ROOT}/tests/host/topology-tests" "cap-refusal-canary,profile-actuation,ring3-driver-start"
+# The partition row's grant: `disk.part.1` RW present under `disk-part-row`,
+# and (the plain run above) absent everywhere else.
+test_host_features "topology(disk-part)" \
+    "${REPO_ROOT}/tests/host/topology-tests" "disk-part-row"
+# Wave 11 (DRVPLACE): the kernel placement of the INA219 (no INADRV.ELF row)
+# and the gate's `restart` rows (BUZZDRV.ELF always, INADRV.ELF no).
+test_host_features "topology(drvplace)" \
+    "${REPO_ROOT}/tests/host/topology-tests" "ina219-kernel,ring3-driver-start"
+test_host_features "topology(restart)" \
+    "${REPO_ROOT}/tests/host/topology-tests" "restart-smoke,ring3-driver-start"
+# RFC-0051 E2 canary: `EnergyModel::validate` accepts everything
+# (`validate-canary`), so exactly the three tests that expect a refusal must
+# fail, and nothing else. A build error is its own FAIL (third bucket), not a
+# passing canary.
+printf "  %-26s" "energy(validate-canary)..."
+if host_cargo en_out "${REPO_ROOT}/tests/host/energy-tests" test --release --features validate-canary; then
+    bad; echo "      the suite passed with validation disabled: no test pins it"
+# Only rustc/cargo-build print these; a failing test run ends in
+# "error: test failed", which must NOT read as a build error.
+elif echo "$en_out" | grep -qE "^error(\[E[0-9]+\]|: could not compile)"; then
+    bad; echo "      did not compile:"; echo "$en_out" | grep -m3 -E "^error" | sed 's/^/        /'
+else
+    en_failed="$(echo "$en_out" | sed -n 's/^test \([a-z_:]*\) \.\.\. FAILED$/\1/p' | sort | tr '\n' ' ')"
+    if [ "$en_failed" = "dt::no_power_in_the_dtb_is_refused model::every_fault_is_found model::resolution_order " ]; then
+        ok
+    else
+        bad; echo "      expected exactly the three refusal tests to fail, got: ${en_failed:-none}"
+    fi
+fi
+# RFC-0051 E3/E4 invariant canaries (wave 13): each removes one floor from
+# `azos_energy` and exactly its invariant tests must fail — I1 (the
+# deadline floor ignores reservations), I6 (the WCET floor is the slowest
+# OPP), I3 (the idle choice ignores the RT slack). Same three buckets.
+for en_c in "i1:governor::deadline_floor_covers_admitted_density_with_margin governor::i1_and_i6_hold_everywhere " \
+            "i6:governor::i1_and_i6_hold_everywhere governor::safety_floor_is_the_first_opp_at_the_wcet_reference " \
+            "i3:idle::i3_holds_for_any_history idle::rt_slack_caps_the_exit_latency "; do
+    en_f="${en_c%%:*}"; en_want="${en_c#*:}"
+    printf "  %-26s" "energy(${en_f}-canary)..."
+    if en_out=$( (cd "${REPO_ROOT}/tests/host/energy-tests" && "$CARGO" test --release --features "${en_f}-canary" 2>&1) ); then
+        bad; echo "      the suite passed with the ${en_f} floor removed: no test pins it"
+    elif echo "$en_out" | grep -qE "^error(\[E[0-9]+\]|: could not compile)"; then
+        bad; echo "      did not compile:"; echo "$en_out" | grep -m3 -E "^error" | sed 's/^/        /'
+    else
+        en_failed="$(echo "$en_out" | sed -n 's/^test \([a-z0-9_:]*\) \.\.\. FAILED$/\1/p' | sort | tr '\n' ' ')"
+        if [ "$en_failed" = "$en_want" ]; then
+            ok
+        else
+            bad; echo "      expected exactly: ${en_want}— got: ${en_failed:-none}"
+        fi
+    fi
+done
+
+# RFC-0053 L0: the `lx-server` topology (LXSRV.ELF started, no capability).
+test_host_features "topology(lx-server)" \
+    "${REPO_ROOT}/tests/host/topology-tests" "lx-server,cap-refusal-canary,profile-actuation,ring3-driver-start"
+
+# ── RFC-0053 L0/L0b: the Linux layer's host rows (wave 12, LXL0) ─────────────
+#
+# * `lx-emul`: the base skeleton in lx/ (Apache-2.0 OR GPL-2.0-only since round 47, never a workspace
+#   member), its own host tests.
+# * `lx-loader-tests`: the relocatable-module loader the server links, its
+#   encoders against llvm-mc encodings and every relocation of the test module
+#   (`make lx-modules`, both ISAs) against an independent decoder; the suite
+#   carries its own oracle canary.
+# * licence lint (`tools/lx_license_lint.py`): no GPL-only source outside lx/
+#   and third_party/, no lx/ symbol in any built kernel, ELF or module, no
+#   module with Linux's licence tag before stage L1. Its canary is
+#   `--self-test`, which breaks each rule once in a throwaway tree and fails
+#   unless every rule reports it.
+# * `submodule == pin`: the gitlink, the checkout's HEAD and Kconfig's
+#   LX_LINUX_PIN all equal lx/LINUX_PIN, and the checkout carries zero patches
+#   (a fresh clone needs `tools/lx_fetch_linux.sh`; the submodule is
+#   `update = none`, so nothing fetches the Linux tree by accident).
+# * `Kconfig gates`: azos_limits refuses a module option (LX_FS_EXT2) and
+#   LINUX_DRIVERS without LX_SERVER_SKELETON, and builds with the pair. Its
+#   own target dir: a different KCONFIG_CONFIG must not leave a stale
+#   azos_limits in the shared one.
+test_host "lx-emul" "${REPO_ROOT}/lx/emul"
+# The same crate must also build no_std for both server targets (lxsrv links it
+# from stage L1): a host-only dependency on std would surface only then.
+lx_emul_nostd_row() {
+    printf "  %-26s" "lx-emul no_std (rv, arm)..."
+    local t out
+    for t in riscv64imac-unknown-none-elf aarch64-unknown-none; do
+        if ! out="$( (cd "${REPO_ROOT}/lx/emul" && CARGO_TARGET_DIR="${REPO_ROOT}/lx/emul/target/cross" \
+                "$CARGO" +nightly build --release --target "$t" -Zbuild-std=core) 2>&1)" \
+           || printf '%s\n' "$out" | grep -qE "^warning"; then
+            bad; printf '%s\n' "$out" | grep -m3 -E "^(error|warning)" | sed 's/^/      /'; return
+        fi
+    done
+    ok
+}
+lx_emul_nostd_row
+if make lx-modules >/dev/null 2>&1; then
+    test_host "lx-loader-tests" "${REPO_ROOT}/tests/host/lx-loader-tests"
+else
+    printf "  %-26s" "lx-loader-tests..."; bad; echo "      make lx-modules failed (LX_CC=${LX_CC:-clang})"
+fi
+lx_lint_row() { # <label> <args>
+    local label="$1" args="$2" out
+    printf "  %-26s" "${label}..."
+    if out="$(python3 "${REPO_ROOT}/tools/lx_license_lint.py" $args 2>&1)"; then ok
+    else bad; printf '%s\n' "$out" | sed -n '1,6p' | sed 's/^/      /'; fi
+}
+lx_lint_row "lx: licence lint" ""
+lx_lint_row "lx: licence lint canary" "--self-test"
+lx_lint_row "lx: submodule == pin" "--pin"
+lx_kconfig_row() {
+    local label="lx: Kconfig gates"
+    printf "  %-26s" "${label}..."
+    local tdir="${REPO_ROOT}/target/lx-kconfig" cfg="${REPO_ROOT}/target/lx-kconfig/lx.config" out
+    mkdir -p "$tdir"
+    local case lines want got
+    for case in "LX_FS_EXT2|CONFIG_LINUX_DRIVERS=y CONFIG_LX_SERVER_SKELETON=y CONFIG_LX_FS_EXT2=y|refuse" \
+                "LINUX_DRIVERS alone|CONFIG_LINUX_DRIVERS=y|refuse" \
+                "skeleton|CONFIG_LINUX_DRIVERS=y CONFIG_LX_SERVER_SKELETON=y|build"; do
+        lines="$(printf '%s' "$case" | cut -d'|' -f2)"; want="$(printf '%s' "$case" | cut -d'|' -f3)"
+        cp "$PRIMARY_CONFIG" "$cfg"
+        printf '%s\n' $lines >> "$cfg"
+        if out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release -p azos_limits 2>&1)"; then
+            got=build
+        elif printf '%s\n' "$out" | grep -q "validation FAIL"; then
+            got=refuse
+        else
+            got=error
+        fi
+        if [ "$got" != "$want" ]; then
+            bad; echo "      $(printf '%s' "$case" | cut -d'|' -f1): wanted $want, got $got"
+            printf '%s\n' "$out" | grep -m3 -E "^error|validation FAIL|not implemented" | sed 's/^/        /'
+            return
+        fi
+    done
+    ok
+}
+lx_kconfig_row
+# ── RFC-0053 L1: Linux modules built by Linux's Kbuild (wave 13, L1) ────────
+#
+# `tools/lx_kbuild/run.sh` runs Kbuild for both ISAs inside the pinned
+# container (tools/lx_kbuild/Containerfile, recorded in tools/lx_kbuild/IMAGE;
+# owner decision, round 49: podman), --network=none, the Linux tree mounted
+# read-only: lxbase.ko (lx/glue, GPL-2.0-only, the base) and the upstream
+# lib/xz/xz_dec.ko, plus the xz fixtures, into build/lx/kbuild/.
+#
+# * `modules`: the build, `tools/lx_license_lint.py --ko` (GPL-compatible
+#   tag, vermagic of the pin, every import = host ABI or an earlier module's
+#   export, no image names a .ko symbol) and the loader host tests over the
+#   fresh .ko (every relocation against the oracle, exports from __ksymtab
+#   only); none of the three may report SKIP;
+# * `reproducible`: a second clean build (fresh container, fresh O=) gives
+#   byte-identical .ko and fixtures;
+# * `lint canary`: the K rules each bite on a mutated copy of the real set.
+#
+# SKIP, with the reason, when podman is absent, its machine is down, the
+# image is not built (`make lx-kbuild-image`, the one networked step) or no
+# Linux tree at the pin is reachable: the iCloud checkout cannot hold one, so
+# a gate run there sets LX_LINUX_SRC to a worktree's fetched tree.
+lx_kbuild_row() { # <label> <mode: modules|repro|canary>
+    local label="$1" mode="$2" out rc=0 dir="${REPO_ROOT}/build/lx/kbuild"
+    out="$(bash "${REPO_ROOT}/tools/lx_kbuild/run.sh" check 2>&1)" || rc=$?
+    if [ "$rc" -eq 3 ]; then
+        SKIP=$((SKIP + 1)); printf "  %-26s%s\n" "${label}..." "${out}"; return 0
+    fi
+    printf "  %-26s" "${label}..."
+    if [ "$rc" -ne 0 ]; then bad; printf '%s\n' "$out" | sed -n '1,4p' | sed 's/^/      /'; return; fi
+    case "$mode" in
+    modules)
+        if ! out="$(bash "${REPO_ROOT}/tools/lx_kbuild/run.sh" build "$dir" 2>&1)"; then
+            bad; printf '%s\n' "$out" | grep -v '^kbuild-in' | sed -n '1,8p' | sed 's/^/      /'; return
+        fi
+        if ! out="$(python3 "${REPO_ROOT}/tools/lx_license_lint.py" --ko "$dir" 2>&1)"; then
+            bad; printf '%s\n' "$out" | sed -n '1,6p' | sed 's/^/      /'; return
+        fi
+        out="$( (cd "${REPO_ROOT}/tests/host/lx-loader-tests" && "$CARGO" test --release kbuild_ 2>&1) )"
+        if echo "$out" | grep -q "test result: ok. 3 passed" && ! echo "$out" | grep -qE "SKIP|FAILED|^warning: .*generated"; then
+            ok
+        else
+            bad; echo "$out" | grep -m4 -E "^error|SKIP|test result|panicked at" | sed 's/^/      /'
+        fi ;;
+    repro)
+        local two="${REPO_ROOT}/build/lx/kbuild-repro"
+        if [ ! -f "$dir/SHA256SUMS" ]; then bad; echo "      no first build ($dir/SHA256SUMS): the modules row did not run"; return; fi
+        if ! out="$(bash "${REPO_ROOT}/tools/lx_kbuild/run.sh" build "$two" 2>&1)"; then
+            bad; printf '%s\n' "$out" | sed -n '1,6p' | sed 's/^/      /'; return
+        fi
+        if out="$(diff "$dir/SHA256SUMS" "$two/SHA256SUMS" 2>&1)"; then ok; rm -rf "$two"
+        else bad; printf '%s\n' "$out" | sed -n '1,6p' | sed 's/^/      /'; fi ;;
+    canary)
+        if out="$(python3 "${REPO_ROOT}/tools/lx_license_lint.py" --ko "$dir" --self-test 2>&1)"; then ok
+        else bad; printf '%s\n' "$out" | sed -n '1,6p' | sed 's/^/      /'; fi ;;
+    esac
+}
+lx_kbuild_row "lx: Kbuild modules (container)" modules
+lx_kbuild_row "lx: Kbuild reproducible" repro
+lx_kbuild_row "lx: Kbuild lint canary" canary
+# Wave 12 (DRVPLACE): the kernel placement of the buzzer (no BUZZDRV.ELF row).
+test_host_features "topology(drvplace buzzer)" \
+    "${REPO_ROOT}/tests/host/topology-tests" "buzzer-kernel,ring3-driver-start"
+# Wave 12: the family tools' rows, with the drivetrain moved to FLIGHT.ELF
+# (one writer per motor still admitted) and with no capabilities (canary).
+test_host_features "topology(flight drivetrain)" \
+    "${REPO_ROOT}/tests/host/topology-tests" "flight-tool-drivetrain,ring3-driver-start"
+test_host_features "topology(family-cap-canary)" \
+    "${REPO_ROOT}/tests/host/topology-tests" "family-cap-canary"
+# Wave 13: an interrupted gate kills its host commands' process groups, an
+# orphan re-parented to launchd included (tools/gate_pgroup.sh). The plain
+# self-test must pass and its canary (group kill disabled) must fail on the
+# orphan; a canary failing for another reason (the gate never exiting) is
+# not this property.
+gate_pgroup_row() {
+    printf "  %-26s" "gate: host groups killed..."
+    local out cout
+    if ! out="$(bash "${REPO_ROOT}/tools/gate_pgroup_selftest.sh" 2>&1)"; then
+        bad; printf '%s\n' "$out" | sed -n 1,3p | sed 's/^/      /'; return
+    fi
+    if cout="$(CI_PGROUP_KILL_CANARY=1 bash "${REPO_ROOT}/tools/gate_pgroup_selftest.sh" 2>&1)"; then
+        bad; echo "      canary passed: the self-test does not see a surviving orphan"
+    elif ! printf '%s\n' "$cout" | grep -q "^FAIL: orphan .* outlived"; then
+        bad; printf '%s\n' "$cout" | sed -n 1,3p | sed 's/^/      canary: /'
+    else
+        ok
+    fi
+}
+gate_pgroup_row
+
+echo ""
+ci_phase "[3/4] QEMU rows"
+echo "[3/4] Runtime verification in QEMU..."
+
+if [ "${CI_SKIP_QEMU:-0}" = "1" ]; then
+    echo "  skipped (CI_SKIP_QEMU=1)"
+elif ! command -v "$QEMU" >/dev/null 2>&1; then
+    # Not a silent skip: a missing emulator means the runtime gate did not run,
+    # and pretending otherwise is how rot goes unnoticed for months.
+    printf "  %-26sFAIL\n" "qemu availability..."
+    echo "      '$QEMU' not found. Install it, set QEMU=<path>, or set"
+    echo "      CI_SKIP_QEMU=1 to accept an unverified runtime."
+    FAIL=$((FAIL + 1))
+else
+    kbuild "qemu"
+    # Stack frames against the stacks that run them. A local sized by a Kconfig
+    # limit lands on a 32 KiB kernel task stack (16 KiB on embedded, 4 KiB of
+    # either one being guard), and the limits differ by up to 256x between
+    # profiles: the fleet image faulted on a topology on the boot stack,
+    # MAX_TASKS scratch arrays and machine-sized FdTables before any of its
+    # frames was measured. 8 KiB per frame everywhere -- a quarter of the task
+    # stack, half of embedded's -- because the deep chains are built from
+    # several frames, not one: the receive path alone stacks a syscall bounce
+    # buffer, net_poll, a TCP ACK and an MTU-sized packet. kernel_main alone
+    # runs on the 256 KiB boot stack.
+    #
+    # This row reads each frame from the WHOLE prologue. Until 2026-09-16 it
+    # took the largest single `addi sp`, and LLVM reserves a big frame in two
+    # or three steps: `ip::send_flags` measured 2032 of its 3136 bytes, and
+    # the syscall bounce buffers 2048 of ~4.1 KiB.
+    frame_row() { # frame_row <label> <elf> <limit-bytes>
+        printf "  %-26s" "${1}..."
+        local out
+        if out="$(python3 "${REPO_ROOT}/tools/stack_frames.py" "$2" --limit "$3" \
+                --boot-limit 65536 --boot kernel_main 2>&1)"; then
+            ok
+        else
+            bad; echo "$out" | grep -a "OVER\|no image\|rror" | sed 's/^/      /'
+        fi
+    }
+    # The frame lint above asks whether any ONE function is too big. That is
+    # not what overflows a stack: on 2026-09-15 ten small and medium frames in
+    # one chain did it, with nothing near the limit. This row asks how deep a
+    # single trap can go, and it is the row that would have caught that night
+    # before the kernel faulted.
+    #
+    # The budget, per image, from its own KERNEL_STACK_SIZE_KB:
+    #   usable        = stack - 4096            (the guard page)
+    #   minus   288   the trap frame the chain starts under
+    #
+    # An interrupt taken on top of the deepest syscall used to cost another
+    # ~2.8 KiB here -- 288 for its frame, 240 for trap_handler and 2160 for
+    # the deepest chain from the interrupt half. Since 2026-09-16 the handler
+    # runs on the hart's own interrupt stack and only the frame lands on the
+    # task's, so the reserve is gone. `irq: handlers on their own stack`
+    # below is the row that keeps that true.
+    chain_row() { # chain_row <label> <elf> <config-with-CONFIG_KERNEL_STACK_SIZE_KB>
+        printf "  %-26s" "${1}..."
+        local kb limit out
+        kb="$(sed -n 's/^CONFIG_KERNEL_STACK_SIZE_KB=//p' "$3" 2>/dev/null)"
+        if [ -z "$kb" ]; then bad; echo "      no CONFIG_KERNEL_STACK_SIZE_KB in $3"; return 1; fi
+        limit=$(( kb * 1024 - 4096 - 288 ))
+        if out="$(python3 "${REPO_ROOT}/tools/stack_chain.py" "$2" --limit "$limit" --frames 8 2>&1)"; then
+            ok
+        else
+            bad; echo "$out" | sed 's/^/      /'
+        fi
+    }
+    frame_row "stack frames: qemu" "$KERNEL" 8192
+    if [ "$FLEET_BUILT" = "1" ]; then frame_row "stack frames: fleet" "$FLEET_KERNEL" 8192; fi
+    if [ "$EMBEDDED_BUILT" = "1" ]; then frame_row "stack frames: embedded" "$EMBEDDED_KERNEL" 8192; fi
+    # U12-3: $KERNEL here is built from $PRIMARY_CONFIG (see the primary-column
+    # export above), not the workspace `.config` — reading CONFIG_KERNEL_STACK_
+    # SIZE_KB from `.config` would be the exact config/binary split this whole
+    # change exists to close, reintroduced in one row.
+    chain_row "stack chain: qemu" "$KERNEL" "$PRIMARY_CONFIG"
+    if [ "$FLEET_BUILT" = "1" ]; then chain_row "stack chain: fleet" "$FLEET_KERNEL" "$FLEET_CONFIG"; fi
+    if [ "$EMBEDDED_BUILT" = "1" ]; then chain_row "stack chain: embedded" "$EMBEDDED_KERNEL" "$EMBEDDED_CONFIG"; fi
+    # The trap-path size pins (`trap_size_row`, defined beside the aarch64
+    # kernel rows): the riscv64 qemu kernel just built.
+    trap_size_row "riscv64: trap path size" "$KERNEL" riscv64_trap_handler=130 9exception12handle_ecall=494
+    par_row qemu_run "boot + SMP scheduling" "Completed 2000 iterations" 60 -smp 4
+    # kernel_main's last line, printed just before the boot hart enters the
+    # scheduler: everything above it ran, watchdog::hw_init() included. A timer
+    # tick taken before that point discards kernel_main (it is no task), so the
+    # line is the proof the boot hart finished its init.
+    par_row qemu_run "boot: kernel_main completes" "Starting scheduler on boot CPU" 60 -smp 4
+    par_row shell_help_row "shell answers help" rv
+
+    # ── Console lockdown: moved (RFC-0055 S5, wave 11) ─────────────────────
+    #
+    # The rows `lockdown: console unseeded` (rv, arm) booted a lockdown kernel
+    # and typed `flight arm` / `pm suspend` at the kernel console's `robot> `.
+    # Owner decision (RFC-0055 §5.8): under CONFIG_CONSOLE_LOCKDOWN the kernel
+    # console task is not created at all (`[CONSOLE] lockdown: no kernel
+    # console task`), so there is no `robot> ` to type at and those rows encoded
+    # the old behaviour. Their successor is `sh: lockdown` in the user-shell
+    # block: the user shell is the only console, and it may not start the
+    # privileged power tool.
+
+
+    # ── M47 / U12-6: `no-ml`/`no-mmu` were built in [1/4] and booted nowhere ──
+    #
+    # `arch_enter_scheduler` (kernel/src/entry/{riscv64,aarch64}/boot_hooks.rs)
+    # prints "[SCHED] Starting scheduler on boot CPU" unconditionally, on the
+    # tail shared by every feature combination — neither `no-ml` nor `no-mmu`
+    # guards anything upstream of it (`no-ml` only skips ML/CNN init branches
+    # inside `kernel_main`; `no-mmu` only skips `install_vdso`'s MMU-dependent
+    # half, `kernel/src/boot/seams.rs` — the MMU itself is enabled by arch
+    # entry code neither feature touches). So the same marker used above is
+    # the right proof for both: the boot hart reached the end of init, not
+    # just that the ELF built. Each row rebuilds `$KERNEL` under its own
+    # feature and restores the plain `qemu` build after, since every row
+    # below this point assumes `$KERNEL` is that build.
+    par "boot: no-ml" kq "qemu,no-ml" "boot: no-ml" "Starting scheduler on boot CPU" 60 -smp 4
+    par "boot: no-mmu" kq "qemu,no-mmu" "boot: no-mmu" "Starting scheduler on boot CPU" 60 -smp 4
+    kbuild "qemu"
+    # `link-encrypt-enforced` is NOT re-added here: it already has a real boot
+    # row with its own assertions (not just "did it boot"), added in the same
+    # wave as the e-stop release-authority work —
+    # `estop_release_authority_enforced_link_boot` ("safety: e-stop authority
+    # under link-encrypt-enforced"), a few hundred lines below. That row
+    # builds `qemu,link-encrypt-enforced`, boots it, and checks the K-C5
+    # link-policy refusal fires without a panic and without clearing the
+    # e-stop latch — a stronger proof than a bare marker match, so it is left
+    # as the feature's one QEMU row rather than duplicated here.
+    #
+    # All three named features can and do boot on QEMU `virt`; none needed
+    # "built, not booted" in the header. (`vf2`/`k1` remain built-never-
+    # booted for the reason `build_board`'s own U12-2 comment above gives —
+    # they are real hardware boards, not a QEMU gap — and are outside this
+    # feature list.)
+    # An interrupt handler runs on the hart's own stack, not on whichever
+    # task was interrupted (2026-09-16). The kernel asserts this from INSIDE
+    # a live timer handler -- `sp` there belongs to the stack the handler is
+    # actually on -- and prints the slot it found itself outside of when it
+    # is not, which `FAILED:` in QEMU_FAIL_RE catches on every other row too.
+    #
+    # Reading the four instructions in trap_entry.S is not the same check:
+    # the disassembly says what was assembled, this says what ran.
+    par_row qemu_run "irq: handlers on their own stack" "IRQSTACK] hart" 60 -smp 4
+    # RFC-0041 §B: the timer is programmed through `stimecmp` when cpu@0 declares
+    # Sstc and S-mode can read the CSR, and through SBI `set_timer` otherwise.
+    # Each row fails on the other mechanism's boot line and passes only once
+    # scheduling ran, so a mode that is selected but never fires cannot pass.
+    # `-cpu rv64,sstc=off` is also the only place the probe's trap path runs.
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|TIMER\] SBI set_timer|TIMER\] stimecmp probe: trapped" \
+        par_row qemu_run "timer: stimecmp on Sstc" "Completed 2000 iterations" 60 -smp 4
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|TIMER\] stimecmp \(Sstc\)|TIMER\] stimecmp probe: readable" \
+        par_row qemu_run "timer: SBI without Sstc" "Completed 2000 iterations" 60 -smp 4 -cpu rv64,sstc=off
+    # RFC-0045 Tier 0 item 3: the page allocator zeroes with `cbo.zero` when
+    # cpu@0 declares Zicboz AND a trap-safe probe confirms the instruction
+    # runs and actually zeroes; `write_bytes` otherwise. Each row fails on the
+    # other mode's selection line, so a fast path that is selected but never
+    # taken -- or a fallback that quietly keeps using cbo.zero -- cannot pass.
+    #
+    # `-cpu rv64,zicboz=off` is the only place the absent-extension path runs:
+    # it removes both the `zicboz` token from `riscv,isa-extensions` and the
+    # `riscv,cboz-block-size` property, so the DTB half says no and the probe
+    # is never even attempted (verified with `-M virt,dumpdtb=`).
+    #
+    # The CONTENT half needs no row of its own: the kernel's bad-path line is
+    # "[MM] Zicboz zero-fill self-check FAILED:", which `QEMU_FAIL_RE` already
+    # matches, so a wrong stride or a partially-zeroed page turns EVERY
+    # scenario red wherever it boots. Verified by mutation (stride doubled to
+    # `off += block * 2`): the line reads FAILED while the selection line still
+    # reads "enabled", i.e. it catches what the boot probe alone cannot.
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|Zicboz cbo.zero fast path: scalar fallback" \
+        par_row qemu_run "mm: Zicboz zeroes pages" "Zicboz zero-fill self-check: PASS" 60 -smp 4
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|Zicboz cbo.zero fast path: enabled" \
+        par_row qemu_run "mm: scalar zero without Zicboz" "Zicboz zero-fill self-check: PASS" 60 -smp 4 \
+        -cpu rv64,zicboz=off
+    # Entropy (owner decision 61): virtio-rng seeds the pool, and the pool
+    # reaches a consumer the log can show without revealing it -- the stack
+    # canary's fingerprint. Two boots, legacy then modern MMIO transport: each
+    # must print the seeded line and the pool-drawn canary line, neither may
+    # match QEMU_FAIL_RE, and the two fingerprints must differ. A pool that
+    # ignored its seed, or a canary left at the fixed default, prints the same
+    # fingerprint twice. Every other row boots without the device and prints
+    # "[ENTROPY] pool unseeded" and "[SEC] Stack canary: fixed (pool unseeded)"
+    # -- never "FAILED:".
+    entropy_scenario() {
+        local label="entropy: virtio-rng seeds the pool"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local i log pid n fp legacy fps=""
+        par_ready
+        for i in 1 2; do
+            log="$CI_LOG_DIR/entropy-$i.log"; rm -f "$log"
+            if [ "$i" = 1 ]; then legacy=true; else legacy=false; fi
+            "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+                -global virtio-mmio.force-legacy=$legacy \
+                -device virtio-rng-device >"$log" 2>&1 &
+            pid=$!
+            n=0
+            while [ "$n" -lt 120 ]; do
+                grep -aq "Starting scheduler on boot CPU" "$log" 2>/dev/null && break
+                grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+                kill -0 "$pid" 2>/dev/null || break
+                n=$((n + 1)); sleep 0.5
+            done
+            kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            if grep -aqiE "panic|\[FATAL\]" "$log" || grep -aqE "$QEMU_FAIL_RE" "$log"; then
+                bad; echo "      boot $i (force-legacy=$legacy) reported failure:"
+                grep -aiE -m4 "FAIL|panic" "$log" | sed 's/^/      /'
+                echo "      log kept: $log"; return
+            fi
+            if ! grep -aq "Starting scheduler on boot CPU" "$log"; then
+                bad; echo "      boot $i: kernel_main did not complete within 60 s; log kept: $log"; return
+            fi
+            if ! grep -aq "\[ENTROPY\] pool seeded: " "$log"; then
+                bad; echo "      boot $i (force-legacy=$legacy): no seeded line:"
+                grep -a -m2 "ENTROPY" "$log" | sed 's/^/      /'
+                echo "      log kept: $log"; return
+            fi
+            fp=$(grep -a "\[SEC\] Stack canary: from the entropy pool, fingerprint " "$log" \
+                 | sed -n 's/.*fingerprint \([0-9a-f]\{6\}\).*/\1/p' | sed -n 1p)
+            if [ -z "$fp" ]; then
+                bad; echo "      boot $i: the canary was not drawn from the pool:"
+                grep -a -m2 "Stack canary" "$log" | sed 's/^/      /'
+                echo "      log kept: $log"; return
+            fi
+            fps="$fps $fp"
+        done
+        set -- $fps
+        if [ "$1" = "$2" ]; then
+            bad; echo "      both boots printed canary fingerprint $1 (a collision is 1 in 2^24)"
+            echo "      logs kept: $CI_LOG_DIR/entropy-1.log $CI_LOG_DIR/entropy-2.log"; return
+        fi
+        ok; rm -f "$CI_LOG_DIR/entropy-1.log" "$CI_LOG_DIR/entropy-2.log"
+    }
+    par "entropy: virtio-rng seeds the pool" entropy_scenario
+    # Persisted entropy seed (ENTSEED, wave 11): rotation across two boots of
+    # one volume, a seed that is the only source, and the diskless boot.
+    mkdir -p "$CI_LOG_DIR"
+    ENTSEED_RV_KERNEL="$CI_LOG_DIR/kernel-entseed-rv"
+    cp "$KERNEL" "$ENTSEED_RV_KERNEL"
+    par "riscv64: persisted seed rotates" entseed_rotate_row riscv64
+    par "riscv64: persisted seed seeds" entseed_alone_row riscv64
+    par "riscv64: seed diskless unchanged" entseed_diskless_row riscv64
+    par "riscv64: seed spares the filesystem" entseed_noheadroom_row riscv64
+    if kbuild "qemu,orderly-reboot-smoke"; then
+        ENTSEED_ORD_RV_KERNEL="$CI_LOG_DIR/kernel-entseed-ord-rv"
+        cp "$KERNEL" "$ENTSEED_ORD_RV_KERNEL"
+        par "riscv64: seed refreshed at reboot" entseed_orderly_row riscv64
+    else
+        printf "  %-26s" "riscv64: seed refreshed at reboot..."; bad
+        echo "      the orderly-reboot-smoke kernel did not build"
+    fi
+    kbuild "qemu"
+    # The embedded image (config/defconfigs/robot-embedded.config, kernel/linker-embedded.ld)
+    # on the RAM sizes it is for; one image serves both, the PMM sizes itself
+    # from the device tree.
+    if [ "$EMBEDDED_BUILT" = "1" ]; then
+        KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 64 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 64M
+        KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 16 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 16M
+    else
+        for row in "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"; do
+            printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass; not booted"; done
+    fi
+    # The fleet image (config/defconfigs/robot-fleet.config, kernel/linker-fleet.ld), whose
+    # tables are sized for 4096 tasks. Its first boots found three faults the
+    # marker alone would not have caught:
+    #   * RAM_SIZE 256 left no room for the 256 MiB heap after a ~134 MiB image
+    #     ("[MM] Heap FAILED:");
+    #   * the topology, megabytes at this sizing, was built on the boot stack
+    #     and overwrote `.bss` (a kernel page fault in the driver registry);
+    #   * `MAX_TASKS`-sized scratch arrays on 16 KiB kernel stacks
+    #     (`lease_release_all`, `cpu_remove`) faulted in the guard page when
+    #     the first tasks exited, seconds AFTER the marker.
+    # So the row boots to the marker and then keeps watching: no page fault,
+    # FATAL, panic or QEMU_FAIL_RE line for FLEET_WATCH_S seconds.
+    fleet_boot_scenario() {
+        local label="fleet: boots in 1 GiB" watch="${FLEET_WATCH_S:-30}"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/fleet-boot.log" pid n=0 bad_re
+        bad_re="\[PAGE FAULT\]|\[FATAL\]|panic|${QEMU_FAIL_RE}"
+        rm -f "$log"
+        par_ready   # $FLEET_KERNEL is built once, in [1/4], into its own target dir
+        "$QEMU" -machine virt -nographic -bios default -kernel "$FLEET_KERNEL" -smp 4 -m 1G >"$log" 2>&1 &
+        pid=$!
+        while [ "$n" -lt 240 ]; do
+            grep -aq "Starting scheduler on boot CPU" "$log" 2>/dev/null && break
+            grep -aqE "$bad_re" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            n=$((n + 1)); sleep 0.5
+        done
+        if grep -aq "Starting scheduler on boot CPU" "$log" && ! grep -aqE "$bad_re" "$log"; then
+            n=0
+            while [ "$n" -lt $((watch * 2)) ]; do
+                grep -aqE "$bad_re" "$log" 2>/dev/null && break
+                kill -0 "$pid" 2>/dev/null || break
+                n=$((n + 1)); sleep 0.5
+            done
+        fi
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        if grep -aqE "$bad_re" "$log"; then
+            bad; echo "      fleet image reported a fault:"
+            grep -aE -m6 "$bad_re" "$log" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq "Starting scheduler on boot CPU" "$log"; then
+            bad; echo "      kernel_main did not complete within 120 s; log kept: $log"; return
+        fi
+        if [ "$n" -lt $((watch * 2)) ]; then
+            bad; echo "      QEMU exited ${n} half-seconds into the ${watch} s watch; log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    if [ "$FLEET_BUILT" = "1" ]; then
+        # Alone: on a loaded host TCG stretches timer_isr past its WCET bound,
+        # the `[WCET] VIOLATION` lines overflow the console buffer while ring 3
+        # holds it, and `[CONSOLE] dropped` fails the row (seen 2026-10-03 with
+        # four jobs and other fronts' QEMUs running).
+        par -s "fleet: boots in 1 GiB" fleet_boot_scenario
+    else
+        printf "  %-26s" "fleet: boots in 1 GiB..."; bad; echo "      fleet build row did not pass; not booted"
+    fi
+
+    # W^X, read back from the page table rather than announced.
+    #
+    # `enforce_wx` returns nothing, `remap_range` skips anything that is not a
+    # valid 4 KiB leaf, and `split_mega_range` skips a megapage in silence when
+    # `alloc_page` fails. The boot log printed "W^X enforced" through all of
+    # that, because the line sat after the call and asserted nothing. Now the
+    # kernel walks its own PTEs and prints the counts, and this asserts the
+    # clean verdict.
+    #
+    # The FAILURE half needs no scenario of its own: the kernel's bad-path line
+    # is "[MM] W^X FAILED:", which `QEMU_FAIL_RE` already matches, so a broken
+    # W^X turns EVERY scenario red wherever it boots. Verified by mutation
+    # (skipping the .text remap): 180 W+X pages, first at 0x80200000.
+    #
+    # The marker deliberately avoids `W^X`: `qemu_run` greps a plain BRE and
+    # the caret is read as an anchor, so that pattern matches nothing and the
+    # scenario would pass on a log it never found. Checked against a real boot
+    # log, not assumed.
+    par_row qemu_run "mm: W^X verified" "pages checked, RX/RO/RW as planned" 60 -smp 4
+
+    # The other half: nothing outside the kernel image is executable.
+    #
+    # `vmm::init` maps ALL of RAM `KERNEL_RWX` — it must, since it runs before
+    # `enable_paging()` and the kernel executes out of that memory. Until
+    # 2026-09-08 `enforce_wx` tightened only the image, leaving ~121 MiB of a
+    # 128 MiB board writable AND executable in the kernel's own table: the
+    # heap, every frame `pmm` hands out, every task stack. Owner decision that
+    # day; `strip_exec_outside_image` takes the X off after paging is live.
+    #
+    # A separate scenario rather than a second marker on the one above because
+    # they are separate properties and a single grep can only prove one. Its
+    # failure half, like the other, is free: the bad-path line is
+    # "[MM] NX FAILED:", which `QEMU_FAIL_RE` already matches everywhere.
+    # Measured by mutation (sweep stripping nothing): 60 megapages + 311
+    # pages, 121 MiB, first at 0x80000000.
+    par_row qemu_run "mm: NX outside the image" "none left executable" 60 -smp 4
+
+    # NOT a scenario, deliberately — read this before writing one.
+    #
+    # The boot-time conformance probe prints a verdict on every boot and the
+    # gate was blind to it in both directions. The failure half is now covered:
+    # `QEMU_FAIL_RE` matches its `RFC ... FAIL` line, so a regression turns a
+    # run red wherever it boots. The SUCCESS half is not, and asserting it cost
+    # two attempts:
+    #
+    #   * Turning the FAIL line red immediately showed the probe had been
+    #     printing `RFC 791 FAIL mask=0x40600000` on EVERY NIC-less boot —
+    #     bits 21, 22 and 30, the three checks that put bytes on a wire.
+    #     A check that cannot run is not a check that failed; the kernel now
+    #     skips those three and prints a partial verdict saying so.
+    #   * With a NIC and NO disk, the probe printed `... conformant` instantly
+    #     when run alone, then twice failed to print any verdict within 60 s
+    #     when the host was busy — once beside a second QEMU, once inside this
+    #     gate. The kernel was alive throughout (its jitter report kept
+    #     accumulating samples), so it blocks somewhere between the IPv6 line
+    #     and its verdict, and only sometimes. CAUSE NOT IDENTIFIED.
+    #
+    #     Scoped, not assumed: with a disk AND a NIC — the `brain lies`
+    #     configuration — the verdict prints immediately (checked standalone,
+    #     2026-09-06). So the three re-enabled wire sends are not what stalls,
+    #     and the four networked scenarios this gate does run are not sitting
+    #     on the unexplained path. What is unexplained is the diskless+NIC boot
+    #     under host contention, which is the one nothing asserts.
+    #
+    # A scenario that is load-sensitive and whose stall nobody understands
+    # would fail for reasons unrelated to conformance, which is worse than no
+    # scenario: it teaches everyone to ignore it. So the success half stays
+    # uncovered and the reason is written down instead of the assertion.
+
+    # The fixture spans two full 512-byte DATA blocks plus a short final one,
+    # and carries a pattern the kernel recomputes and checks byte for byte.
+    # The marker demands the exact length AND "content exact", because the
+    # previous one matched the word "fetched" alone — which a transfer that
+    # ended halfway still prints. See tools/make_tftp_fixture.sh.
+    kbuild "qemu,tftp-smoke"
+    bash "${REPO_ROOT}/tools/make_tftp_fixture.sh" build/tftp/TFTP.BIN 1100 >/dev/null
+    par_row qemu_run "network: TFTP fetch" "TFTP] VERIFIED 1100 bytes, content exact" 60 \
+        -netdev user,id=net0,tftp=build/tftp -device virtio-net-device,netdev=net0
+
+    # DHCP against QEMU's built-in server. We had just hardened the XID and
+    # server-id checks with no way to exercise them at all.
+    par "network: DHCP lease" kq "qemu,dhcp-smoke" "network: DHCP lease" "DHCPSMOKE] PASS" 90 \
+        -netdev user,id=net0 -device virtio-net-device,netdev=net0
+
+    # Userspace: ELF load from FAT32, exec into ring 3, and the syscall ABI
+    # (getpid/write/brk/exit). SYSTEST.ELF sat unused on the disk image for
+    # months — built, copied, never invoked.
+    kbuild "qemu"
+    # Regenerate the image every run. The guest WRITES to this FAT32 (trajectory
+    # CSV flush, CONFIG.INI), so a reused image is not the image the previous
+    # run started from — the scenario stops being hermetic and starts failing
+    # for reasons that have nothing to do with the change under test. `make`
+    # alone will not rebuild it: the file exists and its prerequisites are older.
+    rm -f build/disk-systest.img
+    make_disk build/disk-systest.img
+    # 180s, not 90: this is the heaviest scenario (boots a disk, mounts FAT32,
+    # loads and execs a userspace ELF) and these bounds are WALL CLOCK, so they
+    # have to absorb however loaded the machine is. Seen failing at 90s on a
+    # busy host while passing in seconds on an idle one.
+    par_row qemu_run "userspace: syscall ABI" "SYSCALL_TEST] ALL PASSED" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-systest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # PiMutex donation with holder and waiter on ONE hart — the case the old
+    # spinning implementation deadlocked on. Asserts the boost actually landed
+    # and the owner returned to base priority, not merely that nothing hung.
+    kbuild "qemu,pi-smoke"
+    # ONE hart on purpose. The property under test is two contenders sharing a
+    # hart; with -smp 4 the pair can land on different harts despite the CPU
+    # pin, the holder finishes in parallel, and there is no contention left to
+    # measure — which the probe correctly reports as "no-boost" and which looks
+    # like a regression. Single hart also matches the deployment that motivated
+    # the fix.
+    par_row qemu_run "PiMutex donation (K-A14)" "PISMOKE] PASS" 90
+
+    # PiMutex donation on SMP, where the row above cannot look (-smp 1 has one
+    # hart, so the owner it records is always right). `pi-flush-smoke` pins a
+    # priority-14 flusher to hart 2 beside `sys-wdt` (11) and both flush the
+    # flight recorder: every `sys-wdt` wake lands inside the flusher's hold of
+    # `LOG_FILE`, the pairing of the camera row's e-stop stall. Three holes in
+    # `crates/core/sync/src/pi_mutex.rs` each wedged hart 2 on every boot (the
+    # owner read from a global any hart's switch overwrites; a donation lost
+    # when the owner re-took the lock; a lock held with no owner recorded).
+    # Canaries, by hand, each 3/3 `[PIFLUSH] FAIL the flusher stopped`: force
+    # the global in `current_task_tid`; donate once per `lock()` call instead
+    # of per `epoch`; store `locked = false` after the owner-clear section in
+    # `release`. Own disk copy: the recorder writes to it.
+    kbuild "qemu,pi-flush-smoke"
+    rm -f build/disk.img
+    make_disk build/disk.img
+    pi_flush_row() {
+        cp build/disk.img "$CI_LOG_DIR/pi-flush.img"
+        qemu_run "PiMutex donation (SMP)" "PIFLUSH] PASS" 150 \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$CI_LOG_DIR/pi-flush.img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
+        rm -f "$CI_LOG_DIR/pi-flush.img"
+    }
+    par "PiMutex donation (SMP)" pi_flush_row
+
+    # NOTE the position: AFTER the PiMutex scenario, not before it. This block
+    # builds its own kernel, and `PiMutex donation` runs on the binary the
+    # `pi-smoke` build above leaves in place — putting this between the two
+    # made that scenario boot an i3-smoke kernel with no `[PISMOKE]` line in
+    # it, and it failed on the first gate run after the move. Same inheritance
+    # trap the brain-lies block documents.
+    # RFC-0031 lease inversion. Behind `i3-smoke` since 2026-09-10 and ASSERTED
+    # here for the first time — it used to run in every scenario on `qemu` and
+    # be checked by none, which made it pure jitter. Measured over 12 000
+    # net-poll iterations: with the probe 4 097 gaps exceeded 5 ms (worst
+    # 61.5 ms), without it 3 190 (worst 40.4 ms). Its four spinners sit at
+    # priority 4 — inside the hard-RT band, where the tick does not preempt —
+    # on hart 3, which is `net-poll`'s hart.
+    #
+    # The marker carries the measurement, so a probe that spawned its tasks and
+    # never completed the inversion cannot pass.
+    #
+    # Wave 8 (owner decision round 17): lease priority inheritance is ON by
+    # default, and this row now asserts it WORKS rather than that the probe
+    # printed. The verdict is an ordering, not a duration: the spinners run in
+    # the RT band where the tick does not preempt, so without inheritance the
+    # lessor's wait ends after all four have finished, and with it before any.
+    # `[I3] FAIL` is that failure (also printed with inheritance off: the
+    # canary is `# CONFIG_LEASE_PRIORITY_INHERITANCE is not set`).
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[I3\] FAIL" \
+        par "sched: lease inversion" kq "qemu,i3-smoke" "sched: lease inversion" "I3] PASS inversion avoided" 120 -smp 4
+
+    # E03 on-board geofence, both verdicts, from the kernel's own GPS path: a
+    # fence around the simulated fix reads Inside, and a checksummed GGA
+    # sentence ~1 km outside it, fed through the driver's byte feed, reaches
+    # `safety_check` as a violation. The probe prints the outside verdict only
+    # after the inside one held, and `[GEOFENCE] FAILED:` otherwise (caught by
+    # QEMU_FAIL_RE), so one marker covers both.
+    #
+    # The marker is the LATCH, not the verdict: since 2026-09-16 a breach stops
+    # the motors and latches the envelope, and a row that passes on the verdict
+    # alone would stay green if the latch were lost. `latched: false` is added
+    # to this row's failure set so a lost latch dies with a verdict instead of
+    # waiting out the 120 s — the probe prints the bool it read back.
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|GEOFENCE\] latched: false" \
+        par "safety: geofence sees GPS" kq "qemu,geofence-smoke" "safety: geofence sees GPS" "GEOFENCE] latched: true" 120 -smp 4
+
+    # Wave 8 cross-hart TLB shootdown. A task on hart 2 runs a private address
+    # space, reads a page, and spins with interrupts off; hart 1 removes the
+    # mapping through the real `vmm::unmap` and overwrites the frame. The next
+    # read on hart 2 must FAULT. `STALE READ` is printed only when that read
+    # returned data instead — it joins the failure set, so a lost shootdown
+    # dies with a verdict. The marker carries the remote mask the shootdown
+    # had to reach, so a probe whose toucher never shared the address space
+    # (mask 0) cannot pass silently: look for `harts signalled=1`.
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|TLB-SMOKE\] STALE READ" \
+        par "tlb: stale access after cross-hart unmap faults" kq "qemu,tlb-smoke" "tlb: stale access after cross-hart unmap faults" "TLB-SMOKE] PASS: hart 2 faulted (cause=0xd) on the page hart 1 unmapped after the touch; remote mask=0x4 harts signalled=1; munmap path faulted too (cause=0xd)" 60 -smp 4
+    # The canary: same probe, remote half of the shootdown compiled out. It
+    # must read the overwritten frame through the stale entry; if it faults,
+    # the row above proves nothing (something else is flushing hart 2).
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|TLB-SMOKE\] PASS" \
+        par "tlb: canary (local-only) reads stale data" kq "qemu,tlb-smoke,tlb-local-only" "tlb: canary (local-only) reads stale data" "TLB-SMOKE] STALE READ on hart 2: value=0x5a5a5a5a5a5a5a5a (unmap) value=0x5a5a5a5a5a5a5a5a (munmap path)" 60 -smp 4
+    # Wave 9: the shootdown scans the published roots only up to one past the
+    # highest started hart (`tlb::note_hart_online`), not all eight slots. The
+    # canary notes no hart, so hart 2 is outside the scan and must read stale
+    # data exactly like the local-only canary: the bound is what reaches it.
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|TLB-SMOKE\] PASS" \
+        par "tlb: canary (scan bound) reads stale data" kq "qemu,tlb-smoke,tlb-bound-canary" "tlb: canary (scan bound) reads stale data" "TLB-SMOKE] STALE READ on hart 2: value=0x5a5a5a5a5a5a5a5a (unmap) value=0x5a5a5a5a5a5a5a5a (munmap path)" 60 -smp 4
+
+    # Wave 11 (SENSORTS): the IMU's acquisition stamp, from the driver to the
+    # sensor bus staleness check L0 reads (`kernel/src/smokes/sensor_ts.rs`).
+    # Twenty IMU reads must be stamped inside their own read and in order, and
+    # the bus must judge the `imu` task's last sample fresh BY ITS
+    # ACQUISITION STAMP. The canary build (`sensor-ts-freeze`) gives every
+    # reading the first reading's stamp: readings keep arriving, and the bus
+    # must call them stale — `[SENSORTS] STALE:` is printed only on that path
+    # (with L0's verdict, `SensorIncoherent` once its 1 s grace is over). A bus
+    # stamped at delivery, as before wave 11, stays fresh there: red.
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|SENSORTS\] STALE" \
+        par "sensors: IMU stamped at acquisition" kq "qemu,sensor-ts-smoke" "sensors: IMU stamped at acquisition" "SENSORTS] PASS: 20 IMU reads stamped inside their read, monotonic" 60 -smp 4
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|SENSORTS\] PASS" \
+        par "sensors: canary (frozen stamp is stale)" kq "qemu,sensor-ts-freeze" "sensors: canary (frozen stamp is stale)" "SENSORTS] STALE: IMU readings still arriving (20/20 answered)" 60 -smp 4
+
+
+    # ── Deadline admission: an infeasible topology must not boot ────────
+    #
+    # `ClassSpec::admission_control` was parsed, declared `true` for the safety
+    # classes, and read by nothing. `Topology::admission_check` now refuses a set
+    # of real-time tasks no CPU can schedule, and `init_with` runs it, so the
+    # kernel halts at "Topology install FAILED" instead of booting a robot that
+    # will miss deadlines. The host tests prove the arithmetic; this row proves
+    # the KERNEL CALLS IT: a kernel that stopped calling the check would boot the
+    # canary topology, and every host test would stay green.
+    #
+    # The canary declares two 60% `hard_rt` tasks pinned to CPU 0 (120% of one
+    # CPU). Marker: the refusal. `Topology installed` is added to the failure set
+    # so a kernel that ADMITTED it fails at once with a verdict instead of waiting
+    # out the timeout. The default `QEMU_FAIL_RE` is replaced: its `FAILED:` is
+    # this row's own success marker.
+    QEMU_FAIL_RE='\[FATAL\]|TOPO\] Topology installed' \
+        par "topology: infeasible deadlines" kq "qemu,deadline-refusal-canary" "topology: infeasible deadlines" "Topology install FAILED: Admission(Deadline(" 60 -smp 1
+
+    # The SECOND check, with the board's real hart count. A task pinned to CPU 3
+    # is admissible in principle (a mask can name 32 CPUs), so `init_with` installs
+    # it; `kernel_main` then knows this boot has ONE hart and must refuse. The
+    # pair above is refused before this check is reached, so it could not notice
+    # it being deleted. `Topology installed` is expected first here, and is not a
+    # failure; the default `QEMU_FAIL_RE` (whose `FAILED:` this row never prints)
+    # is replaced only to drop nothing else it guards.
+    QEMU_FAIL_RE='\[FATAL\]|Deadline admission: [0-9]+ real-time' \
+        par "topology: deadlines need real harts" kq "qemu,deadline-hart-canary" "topology: deadlines need real harts" "Deadline admission REFUSED on 1 CPU(s)" 60 -smp 1
+
+
+    # ── Secure boot: all three verdicts, against a pinned TEST key ──────
+    #
+    # Until 2026-08-21 this was one scenario asserting "SECURE-BOOT] FATAL"
+    # against an image with no signature sidecar, and it was green for the
+    # wrong reason. `crates/core/ota/build.rs` embeds tools/keys/prod_pub.bin when
+    # that file exists and QUIETLY falls back to an all-zero key when it does
+    # not. With a zero key, `secure_boot_verify_slot_detailed()` returns
+    # NoTrustedKey on its very first line — before read_sig_file, before
+    # sig_parse_header, before sig_verify. Enforced + Unverified still prints
+    # "SECURE-BOOT] FATAL", so the assertion passed with the Ed25519 code
+    # never once executing. Worse, it passed for a DIFFERENT reason depending
+    # on whether the developer happened to have a production key on disk:
+    # green that cannot be reproduced cannot be debugged.
+    #
+    # Two things close that hole:
+    #
+    #   * PROD_PUBKEY_PATH is pinned to a generated TEST key, so neither the
+    #     presence nor the absence of a real prod key on this machine can
+    #     change the outcome. The path must be ABSOLUTE: cargo runs build
+    #     scripts with CWD = the package root (crates/core/ota), so a repo-relative
+    #     path resolves to crates/core/ota/tools/keys/... , misses, and takes the
+    #     silent zero-key fallback — reintroducing the exact bug being fixed,
+    #     invisibly.
+    #
+    #   * The assertions name the exact BootTrustReason. "Rejected" must not
+    #     be allowed to mean "rejected because there is no key".
+    #
+    # Three scenarios because a signature check has three distinct verdicts
+    # and the crypto only runs in two of them:
+    #
+    #   absent  — no .SIG on the volume. Bails before any crypto (that is the
+    #             point: it is the control case, and on its own it proves
+    #             nothing about Ed25519).
+    #   valid   — image + matching signature. The verifier must run and ACCEPT.
+    #   corrupt — well-formed RSIG, trusted pubkey, one flipped bit in the
+    #             scalar s. The verifier must run and REJECT. A missing file
+    #             does not exercise the curve arithmetic; a bad signature does.
+    #             See tools/corrupt_sig.py for why s[0] and not any other byte.
+    #
+    # Same reasoning as the link-auth pair below: a gate observed only
+    # refusing is indistinguishable from a gate wired to always refuse, and a
+    # gate observed only accepting is indistinguishable from no gate at all.
+    #
+    #   recovery — slot A unsigned exactly as in the control, but a SIGNED
+    #             KERN_R.BIN alongside it. Owner decision 99: the refusal must
+    #             steer the next boot at recovery and reset, not halt. Paired
+    #             with the control by construction — same kernel, same slot-A
+    #             verdict, one extra file, opposite outcome.
+    #
+    # All four images are regenerated from scratch first, before any of them
+    # boots — the guest writes to the FAT volume (BOOTMETA boot_count), and
+    # disk-signed/disk-badsig/disk-recovery are copies of disk.img, so building
+    # them lazily between runs would fork them off a volume a previous scenario
+    # had already scribbled on. For disk-recovery.img that is not a nicety: the
+    # scenario's whole property is what the FIRST boot writes into BOOTMETA, so
+    # a volume already carrying `active_slot=r` from an earlier run would pass
+    # without the kernel steering anything.
+    SECBOOT_TEST_KEY="${REPO_ROOT}/tools/keys/test_pub.bin"
+    rm -f build/disk.img build/disk-signed.img build/disk-badsig.img \
+          build/disk-recovery.img build/disk-badslotb.img
+    make_disk build/disk.img build/disk-signed.img build/disk-badsig.img \
+          build/disk-recovery.img build/disk-badslotb.img
+    PROD_PUBKEY_PATH="$SECBOOT_TEST_KEY" \
+        kbuild "qemu,secure-boot-enforced"
+
+    # Prove the key actually made it into the binary BEFORE booting anything.
+    # Without this, a broken PROD_PUBKEY_PATH degrades into three confusing
+    # QEMU failures (or, historically, one confident false pass) instead of
+    # one precise message. The check is a byte-scan of the ELF for the 32-byte
+    # public key: SECURE_BOOT_PUBKEY is a const that gets promoted to .rodata,
+    # so the bytes are there contiguously if — and only if — build.rs read the
+    # file instead of taking its zero fallback.
+    printf "  %-26s" "secure boot key embedded..."
+    if python3 -c '
+import sys
+key = open(sys.argv[2], "rb").read()
+img = open(sys.argv[1], "rb").read()
+sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
+' "$KERNEL" "$SECBOOT_TEST_KEY"; then
+        ok
+    else
+        bad
+        echo "      the secure-boot-enforced kernel does NOT carry the test"
+        echo "      public key ($SECBOOT_TEST_KEY)."
+        echo "      crates/core/ota/build.rs fell back to its all-zero key, which"
+        echo "      short-circuits verification at NoTrustedKey — the three"
+        echo "      scenarios below would then prove nothing about Ed25519."
+        echo "      Usual causes: the key was never generated (python3 lacks"
+        echo "      the 'cryptography' package, so tools/gen_test_key.py died"
+        echo "      during the fixture build), or PROD_PUBKEY_PATH was passed"
+        echo "      relative instead of absolute."
+    fi
+
+    # CONTROL: no .SIG at all. Asserts the reason as well as the refusal, so
+    # this can no longer pass as "no trusted key".
+    par_row qemu_run "secure boot rejects unsigned" \
+        "FATAL: slot A rejected — signature file absent" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ACCEPT: the Ed25519 verifier runs over a 256 KiB image and succeeds.
+    # This is the only scenario in the whole gate in which sig_verify() is
+    # reached at all.
+    par_row qemu_run "secure boot accepts signed" "Slot A signature: verified" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-signed.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # REJECT: same image, one bit flipped in the signature scalar. Must fail
+    # with SignatureInvalid specifically — SignatureMalformed or
+    # PubkeyMismatch here would mean the fixture is broken and the curve
+    # arithmetic was skipped again.
+    par_row qemu_run "secure boot rejects bad sig" \
+        "FATAL: slot A rejected — signature invalid for image contents" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-badsig.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # RECOVER (owner decision 99): the refusal must not be the end of the board.
+    #
+    # Until this row, `secure-boot-enforced` answered every rejected slot with
+    # `loop { wfi() }` — correct as a containment decision and terminal as a
+    # product one: a device whose recovery is physical, bricked by a torn OTA
+    # write or a flipped bit. Decision 99 keeps the halt as the LAST resort and
+    # puts one step in front of it: verify the immutable recovery slot by
+    # SIGNATURE, write `active_slot=r` into BOOTMETA (dual records and the
+    # legacy single file U-Boot's `env import -t` reads), read it back, and
+    # only then reset.
+    #
+    # WHAT THIS ROW PROVES AND WHAT IT DOES NOT. It proves the KERNEL half:
+    # refusal → steer → reset → the next boot verifies slot R. It does NOT
+    # prove U-Boot loads KERN_R.BIN — QEMU boots `-kernel` directly, boot.cmd
+    # never runs here, and the `active_slot = r` branch (tools/boot.cmd:32) is
+    # exercised only on real hardware. What the second boot verifies is
+    # therefore KERN_R.BIN as a FILE, read by the same kernel image; that is
+    # exactly the steer's observable consequence and nothing more.
+    #
+    # Why the marker cannot be faked by a single boot: the first boot prints
+    # "Slot A signature: ..." and can never print a slot-R verdict, because
+    # `active_slot` only becomes R by being written to disk and read back on a
+    # later boot. So "Slot R signature: verified" in this log IS the reset.
+    # The ordering check below pins that rather than assuming it.
+    #
+    # Its own function rather than `qemu_run`: the property is three lines in
+    # order, and `qemu_run` asserts one marker and deletes the log.
+    secure_boot_recovery_scenario() {
+        local label="secure boot falls to R"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/secure-boot-recovery.log"
+        rm -f "$log"
+
+        if [ ! -f build/disk-recovery.img ]; then
+            bad; echo "      build/disk-recovery.img is missing — the fixture"
+            echo "      (unsigned slot A + SIGNED KERN_R.BIN) was not built."; return
+        fi
+        job_disk build/disk-recovery.img
+        par_ready
+
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$JDISK",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt 240 ]; do
+            if grep -aq "SECURE-BOOT] Slot R signature: verified" "$log" 2>/dev/null; then
+                break
+            fi
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+
+        # 1. The first boot must have refused slot A for the control's reason.
+        #    If this changes, the row stopped testing the fall and started
+        #    testing something else.
+        if ! grep -aq "FATAL: slot A rejected — signature file absent" "$log" 2>/dev/null; then
+            bad; echo "      the first boot did not refuse slot A the way the"
+            echo "      control does — this fixture differs from build/disk.img"
+            echo "      by KERN_R.BIN alone, so it must refuse identically:"
+            grep -a -m3 "SECURE-BOOT]" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+
+        # 2. None of the three "cannot fall" answers may appear. Each is a
+        #    legitimate halt in its own right, and any of them here means the
+        #    fixture is wrong, not that the policy is.
+        if grep -aqE "already running the recovery slot|recovery slot R unusable|recovery steer did not persist" "$log" 2>/dev/null; then
+            bad; echo "      the kernel refused to fall to recovery:"
+            grep -aE -m2 "already running the recovery|recovery slot R unusable|steer did not persist" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+
+        # 3. The steer, and 4. the second boot's verdict on R — in that order.
+        local steer_ln verify_ln
+        steer_ln=$(grep -an "steering the next boot to the recovery slot" "$log" 2>/dev/null | sed -n '1p' | cut -d: -f1)
+        verify_ln=$(grep -an "SECURE-BOOT] Slot R signature: verified" "$log" 2>/dev/null | sed -n '1p' | cut -d: -f1)
+        if [ -z "$steer_ln" ]; then
+            bad; echo "      slot A was refused but the kernel never steered BOOTMETA"
+            echo "      at the recovery slot. log kept: $log"; return
+        fi
+        if [ -z "$verify_ln" ]; then
+            bad; echo "      the steer was announced but no second boot followed it:"
+            echo "      SBI cold reset did not bring the kernel back, or the"
+            echo "      steer did not survive to the next boot's BOOTMETA read."
+            echo "      log kept: $log"; return
+        fi
+        if [ "$verify_ln" -le "$steer_ln" ]; then
+            bad; echo "      'Slot R signature: verified' (line $verify_ln) does not follow"
+            echo "      the steer (line $steer_ln) — it cannot be the reset's doing."
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "secure boot falls to R" secure_boot_recovery_scenario
+
+    # RECORD THE SLOTS WE ARE NOT RUNNING (owner decision, 2026-09-19).
+    #
+    # `ota_boot_validate_pure` rolled back to `last_good` UNCONDITIONALLY. So
+    # an attacker who can write the inactive slot — remote OTA, or a
+    # half-finished install — and then induce `max_attempts` failed boots got
+    # their image SELECTED, because the rollback never asked whether the slot
+    # it was falling back to is signed. The boot gate now verifies every slot
+    # it is NOT running and records the failures in BOOTMETA's `bad_slots`;
+    # the rollback branch and `ota rollback` both consult it.
+    #
+    # SCOPE, so nobody reads this row as more than it is: this hardens the
+    # rollback/OTA path. It does NOT close F1, the confused deputy — U-Boot
+    # picks the slot from a file the kernel does not authenticate, and an
+    # attacker whose payload is already executing never runs this code. F1
+    # closes in the loader or not at all.
+    #
+    # Two boots on ONE image, deliberately not hermetic, same shape as
+    # `safety: latch survives reboot`: the verdict is written by the first boot
+    # and READ by the second, and a single boot cannot tell "recorded" from
+    # "recorded durably". The second row is the one that would catch a write
+    # that never reached the volume.
+    #
+    # The refusal itself is host-tested (`rollback_refuses_a_last_good_that_
+    # failed_secure_boot`, with its own control and a canary), because
+    # provoking a real boot loop here would cost `max_attempts` boots per run.
+    # The second boot reads what the first wrote: one job, one copy of the disk.
+    secure_boot_unfit_rows() {
+    qemu_run "secure boot records unfit B" \
+        "unfit slot(s) recorded, mask 0x02" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-badslotb.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # Same image again: the mask must come back off the volume. Asserted on
+    # `[OTA] Boot:`, which prints on EVERY boot — the gate's own "recorded"
+    # line above prints only when the mask CHANGES, so on this second boot it
+    # is correctly silent and cannot be what satisfies this row.
+    qemu_run "unfit slot survives reboot" \
+        "OTA] Boot: slot=A .* bad_slots=0x02" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-badslotb.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    }
+    par "secure boot records unfit B" secure_boot_unfit_rows
+
+    # ── The SAME secure-boot verdicts, on aarch64 ───────────────────────────
+    #
+    # Until this block the whole OTA/secure-boot boot gate lived inline in
+    # riscv64's `kernel_main` and aarch64's `kernel_main` had NONE of it: an
+    # aarch64 board built with `secure-boot-enforced` booted an unsigned slot
+    # in silence. `boot_validate_and_verify_slots()` (kernel/src/boot/ota.rs) is
+    # now the ONE function both `kernel_main`s call, so these rows and the
+    # four riscv64 rows above exercise the same code — which is exactly why
+    # they must BOTH run: a shared function proves nothing about the ISA whose
+    # `kernel_main` forgot to call it.
+    #
+    # The fixtures are the riscv64 ones, byte for byte (`build/KERN_A.BIN`,
+    # `KERN_A.SIG`, `KERN_BAD.SIG`, `KERN_R.BIN`, `KERN_R.SIG`), copied onto
+    # the aarch64 base image by the Makefile. `crates/core/ota::secure_boot`
+    # verifies FILES off the FAT volume, never the running kernel, so an
+    # Ed25519 signature means the same thing to either ISA.
+    #
+    # Placed here, after the riscv64 block, because it reuses that block's
+    # `$SECBOOT_TEST_KEY` and its already-built `build/KERN_*` payloads.
+    # It rebuilds `$A64_IMG` with `secure-boot-enforced`: nothing after this
+    # point in the gate reads `$A64_IMG` (checked), so it is not restored.
+    a64_qemu_run() { # a64_qemu_run <label> <success-marker> <timeout-s> <disk-img>
+        local label="$1" marker="$2" limit="$3" disk="$4"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"
+        rm -f "$log"
+        if [ ! -f "$disk" ]; then bad; echo "      fixture missing: $disk"; return; fi
+        # Per-run COPIES of both the kernel image and the disk — the guest
+        # WRITES the FAT32 volume (BOOTMETA), so a shared image would let one
+        # row's writes decide the next row's verdict. The aarch64 rows above
+        # (`aarch64_userspace_row`) copy for the same reason.
+        local img_copy="$CI_LOG_DIR/${slug}-kernel.img"
+        local disk_copy="$CI_LOG_DIR/${slug}-disk.img"
+        cp "$A64_IMG" "$img_copy"; cp "$disk" "$disk_copy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$img_copy" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt "$((limit * 2))" ]; do
+            if grep -aq "$marker" "$log" 2>/dev/null; then
+                kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+                ok; rm -f "$log" "$img_copy" "$disk_copy"; return
+            fi
+            # An unhandled exception is a DIFFERENT outcome from a timeout, and
+            # reporting both as "no marker" hides which one happened.
+            if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+                kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+                bad; echo "      the kernel took an exception:"
+                grep -a -m3 "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+                echo "      log kept: $log"; rm -f "$img_copy" "$disk_copy"; return
+            fi
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        bad; echo "      no '$marker' within ${limit}s — last lines:"
+        tail -5 "$log" | tr -d '\r' | sed 's|^|      |'
+        echo "      log kept: $log"; rm -f "$img_copy" "$disk_copy"
+    }
+
+    aarch64_secure_boot_block() {
+        # Fixtures first, all three regenerated from scratch before any of
+        # them boots — same argument as the riscv64 block above: the guest
+        # writes BOOTMETA, and the signed/badsig/recovery images are copies
+        # of the base image, so building them lazily between runs would fork
+        # them off a volume a previous row had already scribbled on.
+        rm -f build/disk-aarch64.img build/disk-aarch64-signed.img \
+              build/disk-aarch64-badsig.img build/disk-aarch64-recovery.img
+        if ! make build/disk-aarch64-signed.img build/disk-aarch64-badsig.img \
+                  build/disk-aarch64-recovery.img >/dev/null 2>&1; then
+            printf "  %-26s" "aarch64 secboot fixtures..."
+            bad; echo "      make build/disk-aarch64-{signed,badsig,recovery}.img failed"
+            return
+        fi
+
+        # The kernel these four rows boot. `PROD_PUBKEY_PATH` pinned to the
+        # same TEST key the riscv64 block pins, ABSOLUTE for the same reason
+        # (cargo runs build scripts with CWD = crates/core/ota).
+        printf "  %-26s" "aarch64 secboot (build)..."
+        if PROD_PUBKEY_PATH="$SECBOOT_TEST_KEY" a64_kbuild "qemu,secure-boot-enforced"; then
+            ok
+        else
+            bad; echo "      the aarch64 kernel did not build with"
+            echo "      --features qemu,secure-boot-enforced — the four rows"
+            echo "      below would boot a stale \$A64_IMG and report a verdict"
+            echo "      for a kernel nobody asked for."
+            return
+        fi
+
+        # THE GUARD, and it is not optional here: `a64_kbuild` filters
+        # `prod pubkey` warnings out of its own output, which is exactly the
+        # warning `crates/core/ota/build.rs` emits when it takes the all-zero key
+        # fallback. With a zero key every verdict short-circuits at
+        # NoTrustedKey — "rejects unsigned" and "rejects bad sig" would both
+        # still go green, proving nothing about Ed25519, and "accepts signed"
+        # would be the only row that noticed. Byte-scan the ELF (not the
+        # `.img`) for the 32-byte public key.
+        printf "  %-26s" "aarch64 secboot key..."
+        if python3 -c '
+import sys
+key = open(sys.argv[2], "rb").read()
+img = open(sys.argv[1], "rb").read()
+sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
+' "$A64_KERNEL" "$SECBOOT_TEST_KEY"; then
+            ok
+        else
+            bad
+            echo "      the aarch64 secure-boot-enforced kernel does NOT carry"
+            echo "      the test public key ($SECBOOT_TEST_KEY)."
+            echo "      crates/core/ota/build.rs fell back to its all-zero key, which"
+            echo "      short-circuits verification at NoTrustedKey — the rows"
+            echo "      below would then prove nothing about Ed25519."
+        fi
+
+        # CONTROL: no .SIG at all. Bails before any crypto — on its own it
+        # proves nothing about the curve, which is why the other two exist.
+        par_row a64_qemu_run "aarch64 secboot unsigned" \
+            "FATAL: slot A rejected — signature file absent" 180 \
+            build/disk-aarch64.img
+
+        # ACCEPT: the Ed25519 verifier runs over a 256 KiB image and succeeds.
+        # The only aarch64 row in the gate in which `sig_verify()` is reached
+        # and returns true.
+        par_row a64_qemu_run "aarch64 secboot signed" \
+            "Slot A signature: verified" 180 \
+            build/disk-aarch64-signed.img
+
+        # REJECT: same image, one bit flipped in the signature scalar s. Must
+        # fail with SignatureInvalid specifically — SignatureMalformed or
+        # PubkeyMismatch here would mean the curve arithmetic was skipped.
+        par_row a64_qemu_run "aarch64 secboot bad sig" \
+            "FATAL: slot A rejected — signature invalid for image contents" 180 \
+            build/disk-aarch64-badsig.img
+        A64_SECBOOT_BUILT=1
+    }
+
+    aarch64_secure_boot_recovery() {
+        # RECOVER (owner decision 99), on aarch64 the reset is PSCI
+        # SYSTEM_RESET rather than SBI. Three lines in order, so its own
+        # function rather than `a64_qemu_run` (which asserts one marker).
+        #
+        # WHAT IT PROVES: refusal -> steer -> reset -> the next boot verifies
+        # slot R. It does NOT prove a bootloader loads KERN_R.BIN — QEMU boots
+        # `-kernel` directly. "Slot R signature: verified" cannot come from a
+        # single boot: `active_slot` only becomes R by being written to disk
+        # and read back later, so that line IS the reset, and the ordering
+        # check below pins it rather than assuming it.
+        local label="aarch64 secboot falls to R"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/aarch64-secure-boot-recovery.log"
+        rm -f "$log"
+        if [ ! -f build/disk-aarch64-recovery.img ]; then
+            bad; echo "      build/disk-aarch64-recovery.img is missing"; return
+        fi
+        local img_copy="$CI_LOG_DIR/aarch64-secboot-recovery-kernel.img"
+        local disk_copy="$CI_LOG_DIR/aarch64-secboot-recovery-disk.img"
+        cp "$A64_IMG" "$img_copy"; cp build/disk-aarch64-recovery.img "$disk_copy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$img_copy" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk_copy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt 360 ]; do
+            grep -aq "SECURE-BOOT] Slot R signature: verified" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$img_copy" "$disk_copy"
+
+        # 1. The first boot must have refused slot A for the control's reason.
+        if ! grep -aq "FATAL: slot A rejected — signature file absent" "$log" 2>/dev/null; then
+            bad; echo "      the first boot did not refuse slot A the way the"
+            echo "      control does — this fixture differs from"
+            echo "      build/disk-aarch64.img by KERN_R.BIN/.SIG alone:"
+            grep -a -m3 "SECURE-BOOT]" "$log" | tr -d '\r' | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        # 2. None of the three "cannot fall" answers may appear.
+        if grep -aqE "already running the recovery slot|recovery slot R unusable|recovery steer did not persist" "$log" 2>/dev/null; then
+            bad; echo "      the kernel refused to fall to recovery:"
+            grep -aE -m2 "already running the recovery|recovery slot R unusable|steer did not persist" "$log" | tr -d '\r' | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        # 3. The steer, and 4. the second boot's verdict on R — in that order.
+        local steer_ln verify_ln
+        steer_ln=$(grep -an "steering the next boot to the recovery slot" "$log" 2>/dev/null | sed -n '1p' | cut -d: -f1)
+        verify_ln=$(grep -an "SECURE-BOOT] Slot R signature: verified" "$log" 2>/dev/null | sed -n '1p' | cut -d: -f1)
+        if [ -z "$steer_ln" ]; then
+            bad; echo "      slot A was refused but the kernel never steered BOOTMETA"
+            echo "      at the recovery slot. log kept: $log"; return
+        fi
+        if [ -z "$verify_ln" ]; then
+            bad; echo "      the steer was announced but no second boot followed it:"
+            echo "      PSCI SYSTEM_RESET did not bring the kernel back, or the"
+            echo "      steer did not survive to the next boot's BOOTMETA read."
+            echo "      log kept: $log"; return
+        fi
+        if [ "$verify_ln" -le "$steer_ln" ]; then
+            bad; echo "      'Slot R signature: verified' (line $verify_ln) does not"
+            echo "      follow the steer (line $steer_ln) — it cannot be the reset's"
+            echo "      doing. log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    A64_SECBOOT_BUILT=0
+    aarch64_secure_boot_block
+    if [ "$A64_SECBOOT_BUILT" = 1 ]; then
+        par "aarch64 secboot falls to R" aarch64_secure_boot_recovery
+    fi
+
+    # Runs AFTER the secure-boot block on purpose: `a64_kbuild "pci"` deletes
+    # and rebuilds $A64_KERNEL/$A64_IMG. Gate 182e (2026-09-26) had this row
+    # spliced between `secboot signed` and `secboot bad sig`, so `bad sig`
+    # booted a kernel WITHOUT secure-boot-enforced and with the prod pubkey:
+    # "key does not match trusted key ... booting anyway" instead of FATAL.
+    # ── RFC-0046 stage 1, gate 4: native PCI enumeration (aarch64) ───────
+    # ECAM at 0x40_1000_0000 (highmem-ecam) and the 32-bit BAR window, both
+    # read from the DTB's `pcie@10000000` node (`[PCI] host bridge: ...
+    # (dtb)`); `iommu=smmuv3` is harmless (bypass until a stream table
+    # entry is programmed).
+    pci_enum_row_aarch64() {
+        local label="pci: bus 0 enumerates (aarch64)"
+        printf "  %-26s" "${label}..."
+        a64_kbuild "pci" || return
+        dd if=/dev/zero of="$CI_LOG_DIR/pci-blk-a64.img" bs=1M count=8 2>/dev/null
+        dd if=/dev/zero of="$CI_LOG_DIR/pci-nvme-a64.img" bs=1M count=8 2>/dev/null
+        local log="$CI_LOG_DIR/pci-enum-aarch64.log"
+        rm -f "$log"
+        # The Image, not the ELF: QEMU hands the DTB in x0 only to an
+        # Image-format load, and this row asserts the host bridge came from it.
+        local img_copy="$CI_LOG_DIR/kernel-aarch64-pci.img"
+        cp "$A64_IMG" "$img_copy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3,iommu=smmuv3 -cpu max,pauth=on -smp 2 -nographic \
+            -drive file="$CI_LOG_DIR/pci-blk-a64.img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-pci,drive=hd0,disable-legacy=on \
+            -drive file="$CI_LOG_DIR/pci-nvme-a64.img",if=none,format=raw,id=hd1 \
+            -device nvme,serial=deadbeef,drive=hd1 \
+            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            -kernel "$img_copy" >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 60 ]; do
+            grep -aq "PCI\] pci 00:03.0 1af4:1041" "$log" 2>/dev/null && break
+            grep -aqiE "\[FATAL\]|panic" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        if grep -aqiE "\[FATAL\]|panic" "$log" 2>/dev/null; then
+            bad; echo "      kernel fault during PCI enumeration — log kept: $log"; return
+        fi
+        if grep -aq "PCI\] pci 00:01.0 1af4:1042" "$log" \
+            && grep -aq "PCI\] pci 00:02.0 1b36:0010" "$log" \
+            && grep -aq "PCI\] pci 00:03.0 1af4:1041" "$log" \
+            && grep -aq "msix=y" "$log" \
+            && grep -aqF "[PCI] host bridge: ECAM 0x4010000000 (dtb), mem32 0x10000000+0x2eff0000 (dtb)" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      expected DTB-sourced ECAM/mem32, and virtio-blk 1af4:1042, nvme 1b36:0010, virtio-net 1af4:1041 with msix=y — log kept: $log"
+        fi
+    }
+    par "pci: bus 0 enumerates (aarch64)" pci_enum_row_aarch64
+
+    # ── RFC-0046 stage 1a: GICv3 ITS + MSI-X (aarch64) ───────────────────
+    # The aarch64 twin of the riscv64 AIA rows: the kernel drives one
+    # virtio-net-pci TX completion whose MSI-X vector 1 is programmed with
+    # GITS_TRANSLATER and EventID 1; the ITS translates it to LPI 8193 and
+    # the IRQ path counts it. `tx used=1` = the device completed the frame,
+    # `vec1 event=1 lpis=N` = its MSI became an LPI. Canary: the
+    # `its-skip-mapti` feature leaves the EventID unmapped -> `used` still
+    # moves, lpis stays 0 and only then the kernel prints `delivery FAILED`.
+    # Placed AFTER every row that reuses $A64_IMG (a64_kbuild rebuilds it).
+    pci_its_boot_aarch64() { # pci_its_boot_aarch64 <log>
+        local log="$1" img_copy="${1%.log}-kernel.img"
+        rm -f "$log"; cp "$A64_IMG" "$img_copy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$img_copy" \
+            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 60 ]; do
+            grep -aq "ITS\] LPI vector 1 delivered" "$log" 2>/dev/null && break
+            grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        rm -f "$img_copy"
+    }
+    pci_its_msix_row_aarch64() {
+        local label="its: msix -> lpi (aarch64)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        a64_kbuild "pci" || return
+        local log="$CI_LOG_DIR/pci-its-aarch64.log"
+        pci_its_boot_aarch64 "$log"
+        if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+            bad; echo "      the kernel took an exception — log kept: $log"; return
+        fi
+        # The Image (not the ELF) gets the DTB in x0: the host bridge must
+        # come from it, not from the built-in constants.
+        if grep -aq "ITS\] enabled: base=0x8080000" "$log" \
+            && grep -aqF "[PCI] host bridge: ECAM 0x4010000000 (dtb), mem32 0x10000000+0x2eff0000 (dtb)" "$log" \
+            && grep -aqE "PCI\] msix 00:01.0 enabled=y .* target=0x8090040 tx used=1" "$log" \
+            && grep -aqE "PCI\] msix 00:01.0 vec0 event=0 lpis=[0-9]+ vec1 event=1 lpis=[1-9]" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      expected ITS enabled, DTB-sourced host bridge, MSI-X to GITS_TRANSLATER with used=1, vec1 lpis>0 — log kept: $log"
+        fi
+    }
+    par "its: msix -> lpi (aarch64)" pci_its_msix_row_aarch64
+    pci_its_msix_canary_aarch64() {
+        local label="its: msix canary (no MAPTI)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        a64_kbuild "pci,its-skip-mapti" || return
+        local log="$CI_LOG_DIR/pci-its-canary-aarch64.log"
+        pci_its_boot_aarch64 "$log"
+        # Printed only when the device completed (used=1) and vector 1's
+        # LPI count stayed 0 — the property broken, not a dead boot.
+        if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+            bad; echo "      the kernel took an exception — log kept: $log"
+        elif grep -aq "PCI\] msix 00:01.0 delivery FAILED: used=1 but vec1 lpis=0" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      canary did not bite: expected 'delivery FAILED: used=1 but vec1 lpis=0' — log kept: $log"
+        fi
+    }
+    par "its: msix canary (no MAPTI)" pci_its_msix_canary_aarch64
+
+    # ── RFC-0046 stage 1: the kernel's NIC over virtio-pci + MSI-X (aarch64) ──
+    # Twin of `network: DHCP lease (pci)`: RX MSI-X vector -> ITS EventID 1 ->
+    # LPI 8197 (the driver's route maps EventID N to LPI 8196+N, apart from
+    # the self-test's 8192+N). Canary: `msix-enable-canary` -> mode=irq
+    # msix=n, rx=0, DHCPSMOKE FAIL; `aarch64 network: DHCP lease` (MMIO) is
+    # the control that passes.
+    pci_net_dhcp_boot_aarch64() { # pci_net_dhcp_boot_aarch64 <log>
+        local log="$1" img_copy="${1%.log}-kernel.img"
+        rm -f "$log"; cp "$A64_IMG" "$img_copy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$img_copy" \
+            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            </dev/null >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 90 ]; do
+            grep -aqF "NET] msix counts (after dhcp)" "$log" 2>/dev/null && break
+            grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        rm -f "$img_copy"
+    }
+    pci_net_dhcp_row_aarch64() {
+        local label="aarch64 network: DHCP (pci)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        a64_kbuild "pci,dhcp-smoke" || { bad; echo "      pci,dhcp-smoke aarch64 kernel did NOT build (row not run)"; return; }
+        local log="$CI_LOG_DIR/pci-net-dhcp-aarch64.log"
+        pci_net_dhcp_boot_aarch64 "$log"
+        if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+            bad; echo "      the kernel took an exception — log kept: $log"; return
+        fi
+        if grep -aqE "NET\] virtio-net-pci [0-9a-f:.]+ mode=irq msix=y " "$log" \
+            && grep -aqF "[PCI] host bridge: ECAM 0x4010000000 (dtb), mem32 0x10000000+0x2eff0000 (dtb)" "$log" \
+            && grep -aqF "NET] msix counts (before dhcp): config=0 rx=0 tx=0" "$log" \
+            && grep -aqF "[DHCPSMOKE] PASS" "$log" \
+            && grep -aqE "NET\] msix counts \(after dhcp\): config=[0-9]+ rx=[1-9]" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      expected mode=irq msix=y, DTB-sourced host bridge, rx=0 before, DHCPSMOKE PASS, rx>0 after — log kept: $log"
+        fi
+    }
+    par "aarch64 network: DHCP (pci)" pci_net_dhcp_row_aarch64
+    pci_net_dhcp_canary_aarch64() {
+        local label="aarch64 pci dhcp canary"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        a64_kbuild "pci,dhcp-smoke,azos_pci/msix-enable-canary" \
+            || { bad; echo "      canary aarch64 kernel did NOT build (row not run)"; return; }
+        local log="$CI_LOG_DIR/pci-net-dhcp-canary-aarch64.log"
+        pci_net_dhcp_boot_aarch64 "$log"
+        if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+            bad; echo "      the kernel took an exception — log kept: $log"
+        elif grep -aqE "NET\] virtio-net-pci [0-9a-f:.]+ mode=irq msix=n " "$log" \
+            && grep -aqF "[DHCPSMOKE] FAIL" "$log" \
+            && grep -aqF "NET] msix counts (after dhcp): config=0 rx=0 tx=0" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      canary did not bite: expected mode=irq msix=n, DHCPSMOKE FAIL, rx=0 — log kept: $log"
+        fi
+    }
+    par "aarch64 pci dhcp canary" pci_net_dhcp_canary_aarch64
+
+    # Ring-3 capabilities, seeded from the topology into the task's capability
+    # table; cap_check and the typed calls answer from it. captest asserts BOTH
+    # halves: a granted sensor/motor is usable through its Cap<T>, AND an
+    # ungranted ADC channel and a forged motor handle are still refused.
+    # The negative half is what stops this passing on a kernel where someone
+    # deleted the capability checks outright.
+    kbuild "qemu"
+    rm -f build/disk-captest.img
+    make_disk build/disk-captest.img
+    rm -f "$CI_LOG_DIR/userspace-capabilities.log"
+
+    # Wave 10 IRQ5: where captest's line was routed and taken. captest runs
+    # as `autorun`, pinned to hart 3 (`AUTORUN_HART`); the kernel prints the
+    # route at the bind (`[IRQ] ring-3 line 11 -> hart H (owner tid T, pinned
+    # P, ...)`) and, at the first ACK after it, the hart whose handler took the
+    # line (`[IRQ] ring-3 line 11 taken on hart X (routed to hart R)`). The
+    # property: H == P, and X == R == H — the line is enabled on the owner's
+    # hart alone and delivered there. Hart 3 is a secondary unless OpenSBI's
+    # boot-hart lottery picked it (`Boot HART ID`, printed by OpenSBI); then
+    # the route still has to follow the pin but no secondary took the line,
+    # and the row says so rather than claim it. Canaries (hand-run):
+    # `--features qemu,irq-route-canary` (every line on the boot hart) ->
+    # `-> hart 0 (owner tid N, pinned 3` and `taken on hart 0`, red here;
+    # `--features qemu,irq-secondary-seie-canary` (secondaries without SEIE) ->
+    # `FAIL  irq: first interrupt delivered to the port`, red in both rows.
+    riscv64_irq_route_evidence() { # riscv64_irq_route_evidence <log>; prints one summary line
+        local log="$1" route taken boot h p x r
+        boot="$(grep -a "Boot HART ID" "$log" | tr -d '\r' | sed -n 's/.*: *\([0-9][0-9]*\).*/\1/p' | sed -n 1p)"
+        route="$(grep -a "\[IRQ\] ring-3 line 11 -> hart " "$log" | tr -d '\r' \
+            | sed -n 's/.*ring-3 line 11 -> hart \([0-9][0-9]*\) (owner tid [0-9]*, pinned \(-*[0-9][0-9]*\),.*/\1 \2/p' | sed -n 1p)"
+        taken="$(grep -a "\[IRQ\] ring-3 line 11 taken on hart " "$log" | tr -d '\r' \
+            | sed -n 's/.*taken on hart \([0-9][0-9]*\) (routed to hart \(-*[0-9][0-9]*\)).*/\1 \2/p' | sed -n 1p)"
+        if [ -z "$route" ] || [ -z "$taken" ] || [ -z "$boot" ]; then
+            echo "      no route/delivery report for line 11 (route='$route' taken='$taken' boot hart='$boot'):"
+            grep -a "ring-3 line 11" "$log" | tr -d '\r' | sed 's|^|        |'
+            return 1
+        fi
+        h="${route% *}" p="${route#* }" x="${taken% *}" r="${taken#* }"
+        if [ "$h" != "$p" ] || [ "$x" != "$h" ] || [ "$r" != "$h" ]; then
+            echo "      line 11 routed to hart $h, taken on hart $x (routed $r), owner pinned to hart $p:"
+            grep -a "ring-3 line 11" "$log" | tr -d '\r' | sed 's|^|        |'
+            return 1
+        fi
+        if [ "$h" = "$boot" ]; then
+            echo "      line 11 taken on hart $x = its owner's pin; that is this boot's boot hart $boot (no secondary exercised)"
+        else
+            echo "      line 11 taken on secondary hart $x = its owner's pin (boot hart $boot)"
+        fi
+        return 0
+    }
+
+    # riscv64 ring-3 IRQ (wave 9, IRQ4): read from the SAME boot as the row
+    # above, the riscv64 twin of `aarch64 ring-3 irq`. captest binds the
+    # goldfish RTC's line (source 11; `irq.11` + `mmio.2` in the qemu
+    # topology) to a port and must see: the interrupt delivered; the line held
+    # MASKED while the device asserts and drives it again with nobody ACKing
+    # (no second event in 100 ms); after CLEAR_INTERRUPT + `SYS_DRV_IRQ_ACK`,
+    # a second delivery. Then the line bound to the task itself (510 type 0),
+    # an alarm raised BEFORE `SYS_DRV_IRQ_WAIT`, and the wait must return 0
+    # (the binding's pending bit). Kernel side: `INT_EXTERNAL_S` masks an
+    # owned line (PLIC priority 0) before completing it, the ACK unmasks
+    # (`azos_drv_irqchip::user_irq`). A `FAIL irq:` line also turns the row
+    # above red (captest prints `FAILED:`).
+    #
+    # Canaries (hand-run, wave 9): `--features qemu,irq-mask-canary` (no mask
+    # on delivery) -> `FAIL  irq: line held masked until ACK`;
+    # `--features qemu,irq-ack-canary` -> `FAIL  irq: second interrupt
+    # delivered after ACK`; `--features qemu,irq-pending-canary` -> captest
+    # hangs after the `waiting for an interrupt delivered before the wait`
+    # marker and this row reports that marker as the last irq line.
+    riscv64_ring3_irq_row() {
+        local label="riscv64 ring-3 irq"
+        printf "  %-26s" "${label}..."
+        local log="$CI_LOG_DIR/userspace-capabilities.log"
+        if [ ! -s "$log" ]; then
+            bad; echo "      no captest log to read (the capabilities row did not keep one)"; return
+        fi
+        if grep -aqE "CAPTEST\]  FAIL  irq: " "$log"; then
+            bad; echo "      captest's IRQ section failed:"
+            grep -aE "CAPTEST\]  FAIL  irq: " "$log" | tr -d '\r' | sed 's|^|        |'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aqF "[CAPTEST] irq: line 11 delivered twice, masked in between, re-armed by ACK" "$log" \
+            || ! grep -aqF "[CAPTEST]   ok   irq: line held masked until ACK" "$log" \
+            || ! grep -aqF "[CAPTEST] irq: line 11 delivered before SYS_DRV_IRQ_WAIT was kept pending" "$log"; then
+            bad; echo "      captest never reported the two deliveries, the mask and the pending wait"
+            grep -a "CAPTEST\].*irq" "$log" | tr -d '\r' | sed 's|^|        |'
+            echo "      log kept: $log"; return
+        fi
+        local why
+        if ! why="$(riscv64_irq_route_evidence "$log")" \
+            || ! why="$why"$'\n'"$(irq_refusal_evidence "$log" 100)"; then
+            bad; echo "$why"; echo "      log kept: $log"; return
+        fi
+        ok; echo "      $(grep -a "irq: line 11 delivered twice" "$log" | tr -d '\r')"
+        echo "$why" | sed '/^$/d'
+        rm -f "$log"
+    }
+    # The captest boot, and the two rows that read its log: one job.
+    rv_captest_group() {
+    QEMU_KEEP_LOG=1 qemu_run "userspace: capabilities" "CAPTEST] ALL PASSED" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-captest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    sensor_ts_captest_row "sensors: stamped read" "$CI_LOG_DIR/userspace-capabilities.log"
+    riscv64_ring3_irq_row
+    }
+    par "userspace: capabilities" rv_captest_group
+
+    # The same captest boot on `virt,aia=aplic-imsic` (wave 10 IRQ5): APLIC in
+    # MSI mode + per-hart IMSIC files, no PLIC. The route is the APLIC
+    # source's `target` (hart index), each secondary enables the wired
+    # identities in its own IMSIC file (`user_irq::hart_ready`), the mask is
+    # `clrienum`; the absent line 100 is past `riscv,num-sources` (96). Same
+    # evidence as the two rows above. Fresh image: the first boot wrote to it.
+    rm -f build/disk-captest.img
+    make_disk build/disk-captest.img
+    riscv64_ring3_irq_aia_row() {
+        local label="riscv64 ring-3 irq AIA"
+        printf "  %-26s" "${label}..."
+        local log="$CI_LOG_DIR/userspace-capabilities-AIA.log"
+        if [ ! -s "$log" ]; then
+            bad; echo "      no captest log to read (the AIA capabilities row did not keep one)"; return
+        fi
+        if grep -aqE "CAPTEST\]  FAIL  irq: " "$log" \
+            || ! grep -aqF "[CAPTEST] irq: line 11 delivered twice, masked in between, re-armed by ACK" "$log" \
+            || ! grep -aqF "[CAPTEST] irq: line 11 delivered before SYS_DRV_IRQ_WAIT was kept pending" "$log"; then
+            bad; echo "      captest's IRQ section did not pass on AIA:"
+            grep -a "CAPTEST\].*irq" "$log" | tr -d '\r' | sed 's|^|        |'
+            echo "      log kept: $log"; return
+        fi
+        local why
+        if ! why="$(riscv64_irq_route_evidence "$log")" \
+            || ! why="$why"$'\n'"$(irq_refusal_evidence "$log" 100)"; then
+            bad; echo "$why"; echo "      log kept: $log"; return
+        fi
+        ok; echo "$why" | sed '/^$/d'
+        rm -f "$log"
+    }
+    rv_captest_aia_group() {
+    QEMU_KEEP_LOG=1 qemu_run "userspace: capabilities AIA" "CAPTEST] ALL PASSED" 180 \
+        -machine aia=aplic-imsic -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-captest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    riscv64_ring3_irq_aia_row
+    }
+    par "userspace: capabilities AIA" rv_captest_aia_group
+
+    # The record half of a capability refusal. `captest` hands a typed GPIO
+    # call the null handle and asserts the errno, which proves the kernel
+    # REFUSED. That the refusal was RECORDED had never been observed:
+    # `SAFETY_CAP_DENIED_TYPED` is wired and host-tested, and no scenario read it
+    # back off the persistent log the way `safety: envelope RECORDS` does.
+    #
+    # Its own feature and its own boot, not folded into the scenario above, for
+    # the reason the unknown-packet probe gives: a probe task added to that boot
+    # would verify a build nobody ships. Fresh image, because the probe reads
+    # LOG00000.BIN and a reused one could pass on an earlier boot's record.
+    cap_denial_record_scenario() {
+        local label="userspace: denial RECORDED"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/cap-denial-record.log"
+        rm -f "$log"
+
+        kbuild "qemu,cap-deny-smoke"
+        rm -f build/disk-captest.img
+        make_disk build/disk-captest.img
+        job_disk build/disk-captest.img
+        par_ready
+
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$JDISK",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 240 ]; do
+            # Both probes: the capability one and the seccomp audit one.
+            if grep -aqE "CAPDENYSMOKE\] (NOT )?RECORDED" "$log" 2>/dev/null \
+               && grep -aqE "SECCOMPAUDIT\] (NOT )?RECORDED" "$log" 2>/dev/null; then
+                break
+            fi
+            grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq "CAPTEST]" "$log" 2>/dev/null; then
+            bad; echo "      captest never ran, so nothing was refused and there was"
+            echo "      nothing to record. log kept: $log"; return
+        fi
+        # The untyped verdict (an ADC refusal) prints before the typed one, so
+        # by the time the wait above has stopped it is already in the log.
+        if grep -aq "CAPDENYSMOKE] UNTYPED NOT RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the untyped refusal happened and its record did not reach the disk:"
+            grep -a -m1 "CAPDENYSMOKE] UNTYPED NOT RECORDED" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq "CAPDENYSMOKE] UNTYPED RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the probe gave no verdict on the untyped refusal."
+            echo "      log kept: $log"; return
+        fi
+        if grep -aq "CAPDENYSMOKE] NOT RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the refusal happened and its record did not reach the disk:"
+            grep -a -m1 "CAPDENYSMOKE] NOT RECORDED" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq "CAPDENYSMOKE] RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the probe never reached a verdict — it ran out of time,"
+            echo "      or the task never started. log kept: $log"; return
+        fi
+        # The seccomp half. CAPTEST.ELF runs under an image profile in audit
+        # mode (crates/core/sched/src/seccomp.rs), so its one call outside the row,
+        # the retired SYS_CAP_GRANT (116), goes through and is written as
+        # SAFETY_SECCOMP_AUDIT; the probe reads it back off LOG00000.BIN. The
+        # install line is asserted too: without audit mode the probe is never
+        # spawned, and "no verdict" alone would not say why.
+        if ! grep -aqF "[AUTORUN] seccomp: /fat/CAPTEST.ELF runs under the CAPTEST.ELF profile (audit mode)" "$log" 2>/dev/null; then
+            bad; echo "      CAPTEST.ELF did not start under its audit-mode image profile."
+            echo "      log kept: $log"; return
+        fi
+        if grep -aq "SECCOMPAUDIT] NOT RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the audited call went through and its record did not reach the disk:"
+            grep -a -m1 "SECCOMPAUDIT] NOT RECORDED" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        # The probe counts only a record whose detail is 116, so this line
+        # names the call, not only the kind of record.
+        if ! grep -aq "SECCOMPAUDIT] RECORDED: syscall 116 " "$log" 2>/dev/null; then
+            bad; echo "      the seccomp audit probe gave no verdict on syscall 116."
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "userspace: denial RECORDED" cap_denial_record_scenario
+
+    # RFC-0048 P3 from ring 3, on a PARTITIONED medium (wave 9). Every other
+    # image is a bare FAT32 medium, so the partition table, the FAT32 mount at
+    # a partition's start and a partition-scoped `Cap<Disk>` had host tests
+    # and no boot. `build/disk-parted.img` is the captest volume inside
+    # partition 0 of an MBR (LBA 2048) with a 64-sector raw partition 1 after
+    # it; `disk-part-row` grants autorun `disk.part.1` read/write and spawns a
+    # probe that reads the refusal back off the flight recorder.
+    #
+    # captest writes RELATIVE sectors 0 and 63 of partition 1 and is refused
+    # relative 64. Wave 10: the row also grants `disk.part.0` READ, so a read
+    # through the sentinel selector is refused as ambiguous (the pinned
+    # `refused ambiguous read` line), and captest reads partition 0's FAT32
+    # boot sector and both partitions' sizes by handle (the disk calls'
+    # partition argument). After QEMU exits the image is read on the host: the two
+    # patterns must sit at partition 1's ABSOLUTE start and start + 63, LBA 0
+    # must still be the MBR, and absolute LBA 0..63 must hold no pattern — a
+    # kernel that took the sector as absolute would have written the MBR and
+    # LBA 63, and one that skipped the range check would print no scope line.
+    #
+    # Canaries, run by hand (wave 9 FS2 report): `partition::resolve`
+    # returning the relative sector unchanged turns captest's first write into
+    # an `E_PERM`-free write of LBA 0 and the host check red; `disk_lba`
+    # admitting every partition request removes the scope line and the record.
+    disk_part_row_scenario() {
+        local label="disk: partition cap refused from ring 3"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/disk-part-row.log"
+        rm -f "$log"
+        if ! kbuild "qemu,disk-part-row"; then
+            bad; echo "      kernel build failed (qemu,disk-part-row)"; return
+        fi
+        rm -f build/disk-captest.img build/disk-parted.img
+        make_disk build/disk-parted.img
+        job_disk build/disk-parted.img
+        local parted="$JDISK"
+        par_ready
+
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$parted",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 240 ]; do
+            if grep -aqE "DISKPART\] (NOT )?RECORDED" "$log" 2>/dev/null \
+               && grep -aqE "CAPTEST\] (ALL PASSED|FAILED)" "$log" 2>/dev/null; then
+                break
+            fi
+            grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        local want
+        for want in "[DISK] partitions: 2 (MBR)" \
+                    "[DISK]   part 0: LBA 2048 + " \
+                    "base LBA 2048" \
+                    "[FS] FAT32 mounted at /fat" \
+                    "[AUTORUN][CAP-SEED] minted kind=Disk target=disk.part.1" \
+                    "[CAPTEST]   ok   disk_write(rel 0) [inside partition 1]" \
+                    "[CAPTEST]   ok   disk_write(rel 64) [one past the end]" \
+                    "[CAPTEST] partition checks done" \
+                    "partition 1 refused write LBA 64+1" \
+                    "[AUTORUN][CAP-SEED] minted kind=Disk target=disk.part.0" \
+                    ": refused ambiguous read LBA 0+1" \
+                    ": refused ambiguous size" \
+                    "[CAPTEST] partition selector checks done" \
+                    "[DISKPART] RECORDED" \
+                    "[CAPTEST] ALL PASSED"; do
+            if ! grep -aqF "$want" "$log" 2>/dev/null; then
+                bad; echo "      missing: $want"
+                grep -aE -m6 "DISK|DISKPART|CAPTEST\].*(FAIL|disk)|FAT32\] Mounted" "$log" | sed "s|^|      |"
+                echo "      log kept: $log"; return
+            fi
+        done
+        # The image, read back on the host: where did the two writes land?
+        local verdict
+        verdict=$(python3 - "$parted" <<'PY'
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+S = 512
+mbr = d[:S]
+if mbr[510:512] != b"\x55\xaa" or mbr[446 + 4] != 0x0C:
+    print("BAD LBA 0 is no longer the MBR"); sys.exit()
+start1, n1 = struct.unpack_from("<II", mbr, 446 + 16 + 8)
+for lba, tag in ((start1, b"AZOS-P3-REL000"), (start1 + 63, b"AZOS-P3-REL063")):
+    if d[lba * S:lba * S + len(tag)] != tag:
+        print("BAD LBA %d does not hold %s" % (lba, tag.decode())); sys.exit()
+if b"AZOS-P3-REL" in d[:64 * S]:
+    print("BAD a pattern landed in absolute LBA 0..63"); sys.exit()
+if b"AZOS-P3-REL" in d[(start1 + n1) * S:]:
+    print("BAD a pattern landed past partition 1"); sys.exit()
+print("OK partition 1 at LBA %d holds both patterns" % start1)
+PY
+)
+        case "$verdict" in
+            OK*) ;;
+            *) bad; echo "      host read-back: ${verdict:-no verdict}"; echo "      log kept: $log"; return ;;
+        esac
+        ok; rm -f "$log"
+    }
+    par "disk: partition cap refused from ring 3" disk_part_row_scenario
+
+    # Syscall latency microbenchmark from ring 3. Asserts only that it runs
+    # to completion — deliberately NO timing threshold. A wall-clock ceiling
+    # in a gate measures the host's load and the compiler's flags, not the
+    # kernel: the three host_microbench failures found earlier today were
+    # exactly that, failing under the dev profile and passing under release.
+    # The numbers are printed for a human to compare across runs; the gate
+    # only guarantees the path still works end to end.
+    kbuild "qemu"
+    rm -f build/disk-latbench.img
+    make_disk build/disk-latbench.img
+    # Syscall ABI conformance from ring 3. libsys and the kernel handlers had
+    # diverged on a dozen signatures -- exec, drv_mmap, disk_read, readdir,
+    # pipe, the whole service family -- and nothing caught it because no
+    # userspace program called any of them. abitest calls them. It needs
+    # neither disk nor NIC, but gets a disk because autorun loads the ELF from
+    # FAT32.
+    kbuild "qemu"
+    rm -f build/disk-abitest.img
+    make_disk build/disk-abitest.img
+    # RFC-0040 gap 2 stage 2b rides in this row rather than in one of its own.
+    # `abitest` spawns `EPSRV.ELF`, calls `endpoint.demo` by CAPABILITY
+    # (SYS_IPC_FAST_CALL_EP, 582 — never by TID), checks the reply carries
+    # `w0 + 1` so it cannot have come from zeroed registers or a stale slot,
+    # and reaps the server to read its own verdict. Five checks, and
+    # `ALL PASSED` is false if any of them fails, so the marker covers them.
+    par_row qemu_run "userspace: ABI conformance" "ABITEST] ALL PASSED" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-abitest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # The vDSO write is masked (wave 13, RT7). `vdso_update` claims the page
+    # by making `seq` odd; every ring-3 clock read retries while it is odd.
+    # Wave 13 also called it from idle with interrupts ON (3fcdc041): a tick
+    # inside the write preempted idle with `seq` odd, and a ring-3 reader on
+    # that hart (abitest's `children_of` deadline loop) outranked idle and
+    # spun forever — 1 in 10-20 loaded boots. `vdso-write-window` holds the
+    # write open ~1 ms so a tick inside it is all but certain; abitest must
+    # still finish. Canary (by hand, 2026-10-04, rv, host load 25-46): the
+    # mask removed -> 3/3 hang right after "sleep_until_ns(past) did not
+    # block", hart 3 in ring 3 inside `vdso_now_ns`; with it 5/5 PASS.
+    kbuild "qemu,vdso-write-window"
+    fresh_disk build/disk-abitest.img
+    par_row qemu_run "vdso: write window masked" "ABITEST] ALL PASSED" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-abitest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    kbuild "qemu"
+
+    par_row qemu_run "userspace: syscall latency" "LATBENCH] DONE" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-latbench.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── Single hart (-smp 1) ────────────────────────────────────────────
+    #
+    # Until 2026-09-03 this gate had NOT ONE `-smp 1` scenario: every other
+    # `-smp` here says 4. That gap let a serious defect live, fixed on
+    # 2026-08-30: several tasks are created with EXPLICIT affinity to a
+    # hart, and that pin is not bounded by the DTB count; with one hart, six
+    # tasks -- `autorun` among them -- were queued on non-existent CPUs
+    # (`per_cpu_queues=[0,3,1,2]`) and the user program never started, with
+    # the kernel apparently healthy.
+    #
+    # The scenario sat written-but-disabled while a SECOND defect made it
+    # permanently red: `rt-motor`, `flight-ctrl`, `sensor-ahrs`, `net-poll`
+    # and friends polled by yielding (`loop { ...; task_yield(); }`) instead
+    # of sleeping until their next period. Under strict priority on a single
+    # hart they trade the CPU between themselves forever and nothing at
+    # normal priority ever runs; with four harts it did not show, because
+    # the RT tasks spread out and left harts free. Closed as K-C27
+    # (2026-09-03): the daemons now block on WaitReason::Timer at their
+    # design rates. Canary before enabling: the pre-fix kernel loaded
+    # LATBENCH.ELF at -smp 1 and never executed one line of it in 120 s;
+    # the fixed kernel completes in about a second. This scenario is what
+    # keeps the whole daemon population honest -- ONE new above-normal
+    # spinner anywhere and it goes red again.
+    # Fresh image: the -smp 4 latbench run above wrote to this FAT32, and a
+    # reused image is not the image the previous verdict was earned on.
+    rm -f build/disk-latbench.img
+    make_disk build/disk-latbench.img
+    par_row qemu_run "userspace: 1 hart (-smp 1)" "LATBENCH] DONE" 180 \
+        -smp 1 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-latbench.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # Ring-3 IPC probe. Until this scenario existed NO userspace program had
+    # ever executed SYS_IPC_FAST_CALL/_ACCEPT/_REPLY, the shm/port/io_ring
+    # ownership gates, or the typed Cap<T> family: the tree passed green over
+    # code nothing exercised. ipctest exercises it and ASSERTS both halves of
+    # every case — the legitimate caller works AND the stranger is denied —
+    # because a positive case alone is indistinguishable from a gate that
+    # always accepts, and a negative one alone from a gate that always
+    # rejects.
+    #
+    # -smp 4 is NOT decorative: phase A depends on client and server running
+    # on different harts to open the window between wake_fast_ipc_server()
+    # and task_block() in SYS_IPC_FAST_CALL. With -smp 1 the race does not
+    # exist and the phase proves nothing. Ring 3 has no syscall to read the
+    # hart count, so the requirement lives here.
+    #
+    # No time threshold, same as latbench: a clock ceiling in a gate measures
+    # host load, not the kernel. The 180 s limit is a hang detector, not a
+    # measurement.
+    #
+    # EXPECTED STATE TODAY: green. One wedge class closed 2026-08-24 (K-C25);
+    # the second (K-C26, below) did not reproduce in 32 runs on 2026-09-08, so
+    # a red here is no longer covered by it — see that block before deciding
+    # what a failure means. The
+    # chain, for the record: the original failures (K-C11 fork regs,
+    # server-side wakes) were closed by K-C17/K-C19 (state+stamp word) and
+    # K-C24 ('Blocked does not mean parked'). What remained presented as
+    # "~1 exchange/s throughput, hidden by ipc-trace" and was NOT slowness:
+    # the QEMU `-icount` hunt (deterministic virtual time) showed phase A
+    # completing 1600/1600 in ~30 s, and the extended ipc-census caught the
+    # real residue — a K-C24 stamp landing between do_schedule's switch-away
+    # sweep and context_switch.S clearing `context_saving` parks the task as
+    # Blocked+WAKE_STAMP+saved, a state with NO consumer for one-shot wakes
+    # (the fast-IPC reply fires exactly once). Clients wedged serially on
+    # that, which read as throughput. Fix: the K-C25 reaper
+    # (`sched_word::reap_orphaned_stamp` + `reap_stamped_sleepers()` on the
+    # timer tick, counted as `late_dispatch` in wake_counters); 4 new host
+    # tests in sched-wake-tests (75 total) pin the protocol, and the
+    # falsified-hypothesis log (TCP handshake yield-storm — fixed anyway;
+    # host App Nap — no effect) is not repeated here.
+    #
+    # K-C26 (2026-08-24) — DID NOT REPRODUCE, 2026-09-08. Read this before
+    # writing off a red here.
+    #
+    # This block used to say "usually green, NOT guaranteed ... treat a red as
+    # the documented open bug, not a regression", citing ~1 wedge per handful
+    # of runs. That licence is withdrawn: 32 runs of this exact scenario on
+    # 2026-09-08 produced ZERO wedges and zero declared failures. Every run
+    # completed the full phase A (`[IPCTEST] all=1600 of 1600 OK`,
+    # `server served=1600 accept_fail=0`), so it was the recipe's workload and
+    # not a lighter one. 0/32 bounds the rate under ~9% (rule of three); the
+    # documented rate was 20-33%.
+    #
+    # **A RED HERE IS NOW A REGRESSION UNTIL SOMEONE SHOWS OTHERWISE.**
+    # Capture the log — CI_LOG_DIR keeps it — and read the last [IPC-CENSUS]
+    # block before blaming this class.
+    #
+    # WHAT WAS NOT ESTABLISHED. Absence over 32 runs is not closure, and this
+    # does not identify what closed it. 20 of the 32 ran with
+    # `preempt::depth()` forced to 0 — the counter still maintained, nothing
+    # consulting it, which is exactly the pre-K-C29 scheduler behaviour — and
+    # still did not wedge. So K-C29 is NOT what keeps this green, which
+    # contradicts `crates/core/sync/src/preempt.rs`'s own causal claim (corrected
+    # there too). K-C27 (yield-polling daemons fixed at the workload) and
+    # K-C28 (the `sepc`/`sstatus` window) both landed after this comment was
+    # written and were NOT disabled by that mutation; either is a better
+    # candidate, and neither has been tested.
+    #
+    # THE RECIPE, KEPT because it is what the next hunt needs — marked as not
+    # reproducing rather than deleted. Stock scenario command plus
+    # `--features qemu,ipc-census` (good runs finish in ~2 s), or
+    #   -accel tcg,thread=single -icount shift=3
+    # for what used to be a higher rate. Terminal census signature: the
+    # phase-A server `READY-UNQUEUED` (Ready, in no queue, current on no
+    # hart) with all slots Pending and every client asleep. Read the last
+    # [IPC-CENSUS] block: slot states, per-sleeper word/saving, per-hart
+    # currents.
+    #
+    # Wave 11 (LEASE2): IPCTEST phases R (a robust notify word whose holder is
+    # killed while a waiter sleeps: the waiter wakes with OWNER_DIED, `rc=2`)
+    # and W (a lease's end unmaps the lessee: a write after return, and a
+    # lessee running while its lessor frees the lease, both fault, are
+    # attributed and kill it) run in this boot and in `aarch64 ipctest`.
+    # Canaries, by hand on both ISAs: `--features qemu,robust-sweep-canary`
+    # fails `R/server woken with OWNER_DIED rc=1`; `qemu,lease-revoke-canary`
+    # fails `W1/lessee killed by its write after return (status 139) rc=0`
+    # and `W2/spinner stopped by the revoke (status 139) rc=-1`.
+    #
+    # Wave 11 (LEASE3): phases S (a sealed grant takes the lessor's write
+    # until the lease ends; S3 a mapping made under the seal stays read-only)
+    # and X (an expired lease is revoked by the lease worker with its lessor
+    # idle; the aarch64 tick now runs `lease_tick`) run here and in `aarch64
+    # ipctest` too. Their canaries are the `lease3:` rows after the portwait
+    # rows below."
+    rm -f build/disk-ipctest.img
+    make_disk build/disk-ipctest.img
+    par_row qemu_run "userspace: IPC" "IPCTEST] ALL PASSED" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-ipctest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # OWNER DECISION 102 — the frame budget must actually REFUSE.
+    #
+    # Everything else about the quota is asserted the other way round: the row
+    # below requires `mem quota refused` to stay ZERO, i.e. the ceiling is not
+    # in the way of real programs. That half alone cannot tell a working budget
+    # from one that is not wired, because every functional assertion passes
+    # either way — the same shape that made the reverted IPC hand-off look fine
+    # for two sessions.
+    #
+    # `mem-quota-canary` drops the autorun budget from 2048 pages to 64 so the
+    # refusal is reachable in one small allocation instead of 8 MiB on a 32 MiB
+    # arena. `abitest` asks `brk` for 256 pages, last of all its checks (it
+    # allocates, and nothing may run under the pressure it leaves), and REPORTS
+    # what was granted rather than asserting — one program, two correct
+    # outcomes, and this row knows which build it booted.
+    #
+    # RFC-0049 M1 (wave 8): the budget now covers the image, stack and page
+    # tables too (`[AUTORUN][MEM] exec charged N pages` on the console), so the
+    # canary's grant is 64 minus what abitest already holds when it asks — a
+    # number that moves with the binary. The row pins the SHAPE instead:
+    # granted 1..255, never 0 (the budget would then be spent before the probe
+    # and prove nothing) and never 256.
+    #
+    # The pair is what discriminates, measured by hand before landing:
+    #   canary  → `brk granted N of 256`, 0 < N < 256 (the budget binds)
+    #   normal  → `brk granted 256 of 256`  (it does not bind real work)
+    # A quota wired to refuse everything would fail the second; one wired to
+    # refuse nothing would fail the first.
+    #
+    # `ALL PASSED` is also required: a refused allocation must leave the program
+    # RUNNING. `sys_brk_impl` commits what it mapped and reports it honestly, so
+    # hitting the ceiling is not an error, it is a smaller heap.
+    kbuild "qemu,mem-quota-canary"
+    fresh_disk build/disk-abitest.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|brk granted (0|256) of 256" \
+        par_row qemu_run "mem quota refuses a runaway brk" "ABITEST] brk granted [1-9][0-9]* of 256 pages" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-abitest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    #
+    # The same boot also carries the page-table free check: every address
+    # space abitest's children leave behind is torn down with no hart still on
+    # its root, or `[MM] page-table root ... teardown refused` is printed and
+    # the row fails. (Found as a kernel page fault on the trap vector, 1 of 32
+    # boots of an A/B run of this row on 5c805b9: a dying hart still had its
+    # root in `satp` when another hart's claim of its task slot freed it.)
+    kbuild "qemu"
+    fresh_disk build/disk-abitest.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[MM\] page-table root" \
+        par_row qemu_run "mem quota lets real work through" "ABITEST] brk granted 256 of 256 pages" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-abitest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    # Its canary: `exit-satp-canary` frees each exiting task's address space
+    # without first moving the hart off it, so the check must find the dying
+    # hart on the root and refuse at the first exit. If this row stays silent,
+    # the one above proves nothing (the check is not looking). The default
+    # failure set is replaced: the leaked address spaces also fail abitest's
+    # own `exit: free pages back` checks, which print `FAILED:` later.
+    kbuild "qemu,exit-satp-canary"
+    fresh_disk build/disk-abitest.img
+    QEMU_FAIL_RE='\[FATAL\]' \
+        par_row qemu_run "mm: canary (exit frees a live root) refused" "MM] page-table root 0x[0-9a-f]* still live on hart mask 0x[0-9a-f]*: teardown refused" 90 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-abitest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── RFC-0049 M1c: a `mem = "locked"` row takes no page fault ──────────
+    #
+    # `mem-locked-smoke` gives `UHELLO.ELF` a locked topology row (64 pages).
+    # The task is born by exec, its image and stack are populated eagerly, and
+    # it may not fork or reserve demand pages, so it must exit having resolved
+    # zero page faults. The kernel counts them per task (the fault hook in
+    # `azos_mm::vmm::note_*_resolved`, both ISAs) and prints the NUMBER at
+    # exit; the marker pins `faults=0` and any non-zero count fails at once.
+    #
+    # Canary, run by hand (`mem-locked-canary`): the loader maps user stacks
+    # lazily; uhello takes stack faults and this row goes red on
+    # `faults=[1-9]`. See the M1 report for the numbers.
+    kbuild "qemu,mem-locked-smoke"
+    rm -f build/disk-uhello.img
+    make_disk build/disk-uhello.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|exits: faults=[1-9]|exec REFUSED" \
+        par_row qemu_run "mem: locked row, zero faults" "MEM] locked task [0-9]* exits: faults=0 " 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-uhello.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # P2: a locked row whose image's profile could fork or demand-page — here
+    # ABITEST.ELF, audit mode — is refused by the autorun loader, before exec.
+    # `ALL PASSED` would mean it ran anyway.
+    kbuild "qemu,mem-locked-refusal-canary"
+    fresh_disk build/disk-abitest.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|ABITEST] ALL PASSED" \
+        par_row qemu_run "mem: locked row refuses a forking image" "AUTORUN\]\[MEM\] REFUSED: ABITEST.ELF runs under the locked row" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-abitest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── RFC-0049 M1b: memory admission refuses an overcommitted topology ──
+    #
+    # `mem-admission-canary` adds a ring-3 row with a 4 GiB ceiling. The kernel
+    # must halt at the admission line, before the first ring-3 task; a kernel
+    # that no longer calls the check would print the admitted line instead,
+    # which fails at once. The positive half — the default topology admitted,
+    # with its arithmetic printed — is the row after it.
+    QEMU_FAIL_RE='\[FATAL\]|TOPO\] Memory admission: [0-9]' \
+        par "topology: memory overcommit refused" kq "qemu,mem-admission-canary" "topology: memory overcommit refused" "Memory admission REFUSED: Memory(Overcommit" 60 -smp 1
+    kbuild "qemu"
+    # Wave 9: the line carries the forking-row and instance counts; the shape
+    # is pinned, not the numbers.
+    par_row qemu_run "topology: memory admitted, DMA pool" "TOPO\] Memory admission: [0-9]* ring-3 row(s) ([0-9]* locked, [0-9]* forking), [0-9]* instance(s): " 60 -smp 1
+
+    # ── RFC-0049 M1, wave 9: a row's `instances` bounds its live spawns ──
+    #
+    # `instances = N` (default 1) bounds the live SPAWNED or EXEC'd instances
+    # of a row's image; fork children are not instances (owner decision: the
+    # memory budget and the admitted COW copy bound them). abitest spawns
+    # `EPSRV.ELF` (its row declares no `instances`, so 1) and, while that
+    # server is alive, spawns it again: the second spawn must be refused, and
+    # the kernel prints the refusal with the running refusal count — a line
+    # only the refusal path prints. abitest itself checks the `-1`, so its
+    # `FAILED:` (the usual failure pattern) also fails this row.
+    # Canary (by hand, reverted): `row_claim` always `true` -> the second
+    # EPSRV is created, no refusal line, abitest FAILS its check -> red.
+    fresh_disk build/disk-abitest.img
+    par_row qemu_run "mem: row instances refuse a spawn" "\[MEM\] spawn REFUSED: EPSRV.ELF -- its row already has 1 of 1 live instance(s) (instance refusals: 1)" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-abitest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── Kconfig LOCKED_HUGE_LEAVES (wave 11, PAGESIZE): 2 MiB leaves ──────
+    #
+    # The base page stays 4 KiB; a `mem = "locked"` row may declare
+    # `mem_huge_mib = N`, reserved at boot (2 MiB-aligned) and mapped at exec
+    # with Sv39 level-1 leaves. `huge-leaves-smoke` gives the locked UHELLO.ELF
+    # row of `mem-locked-smoke` a 4 MiB region; the build uses the primary
+    # config with CONFIG_LOCKED_HUGE_LEAVES=y in its own target dir (the
+    # option is a `.config` symbol, azos_limits::LOCKED_HUGE_LEAVES).
+    # The exec prints what a walk of the task's page table finds: both 2 MiB
+    # slots must be level-1 leaves, none page-mapped, and a user-permission
+    # walk must resolve the first, a middle and the last byte to the reserved
+    # frames — then the task must still exit with zero page faults.
+    # Buckets:
+    #   - canary `huge-leaves-canary` maps the same frames with 4 KiB leaves:
+    #     the walk line reads `0 of 2 ... 2 page-mapped` and the row fails on it
+    #     (the QEMU_FAIL_RE below anchors on that line, which only a
+    #     page-mapped region prints);
+    #   - the same topology on a kernel built WITHOUT the option halts at
+    #     admission (`... built without LOCKED_HUGE_LEAVES`), the second row.
+    huge_cfg="$PRIMARY_DIR/qemu-huge.config"
+    cp "$PRIMARY_CONFIG" "$huge_cfg" && echo "CONFIG_LOCKED_HUGE_LEAVES=y" >>"$huge_cfg" \
+        && KCONFIG_CONFIG="$huge_cfg" python3 -m olddefconfig >/dev/null 2>&1
+    if grep -q '^CONFIG_LOCKED_HUGE_LEAVES=y$' "$huge_cfg" \
+       && KCONFIG_CONFIG="$huge_cfg" CARGO_TARGET_DIR=target/riscv-huge \
+            "$CARGO" build --release --features qemu,huge-leaves-smoke >/dev/null 2>&1; then
+        rm -f build/disk-uhello.img
+        make_disk build/disk-uhello.img
+        # The boot, and the row that reads its log: one job.
+        huge_rows() {
+        KERNEL=target/riscv-huge/riscv64imac-unknown-none-elf/release/kernel \
+        QEMU_KEEP_LOG=1 \
+        QEMU_FAIL_RE="$QEMU_FAIL_RE|exits: faults=[1-9]|exec REFUSED|HUGE\] .*, [1-9][0-9]* page-mapped|user walk MISMATCH" \
+            qemu_run "mem: locked region, 0 faults" "MEM\] locked task [0-9]* exits: faults=0 " 120 \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file=build/disk-uhello.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
+        # Read from the same boot (the walk line and the boot reservation
+        # both precede the exit line that ended the row above).
+        local huge_log="$CI_LOG_DIR/mem-locked-region-0-faults.log"
+        printf "  %-26s" "mem: region in 2 MiB leaves..."
+        if ! grep -aq "MM\] huge region: row [0-9]* (UHELLO.ELF) 4 MiB reserved at pa 0x[0-9a-f]*, mapped with 2 MiB leaves at exec" "$huge_log" 2>/dev/null; then
+            bad; echo "      no boot-time reservation line — log kept: $huge_log"
+        elif ! grep -aq "HUGE\] row [0-9]* region 0x[0-9a-f]*+4 MiB at pa 0x[0-9a-f]*: 2 of 2 2 MiB slots are level-1 leaves, 0 page-mapped, 0 unmapped; user walk ok" "$huge_log" 2>/dev/null; then
+            bad; echo "      the exec-time walk did not find two level-1 leaves:"
+            grep -a "HUGE\]" "$huge_log" | tr -d '\r' | sed 's|^|        |'
+            echo "      log kept: $huge_log"
+        else
+            ok; rm -f "$huge_log"
+        fi
+        }
+        par "mem: locked region, 0 faults" huge_rows
+    else
+        printf "  %-26s" "mem: locked region, 0 faults..."
+        bad; echo "      the LOCKED_HUGE_LEAVES kernel did not build (KCONFIG_CONFIG=$huge_cfg, --features qemu,huge-leaves-smoke)"
+    fi
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|TOPO\] Memory admission: [0-9]" \
+        par "mem: huge row, option off" kq "qemu,huge-leaves-smoke" "mem: huge row, option off" "Memory admission REFUSED: row [0-9]* (UHELLO.ELF) declares mem_huge_mib = 4 but this kernel was built without LOCKED_HUGE_LEAVES" 60 -smp 1
+    kbuild "qemu"
+
+    # The diagnostic counters that must stay at zero, on a kernel that has them.
+    #
+    # This row used to assert `handoff taken=[1-9]` for RFC-0040 stage 3. That
+    # hand-off was **reverted** after measurement: `-smp 1` + icount, control
+    # `syscall-floor` bit-identical at 318, showed it cost **52 instructions
+    # per round trip and saved none** — on the benchmark lane the server is the
+    # only runnable task, so `do_schedule` would have picked it anyway and the
+    # hint paid a swap, an `idx_for_tid`, a state check and a `cpu_remove` scan
+    # for a decision already made.
+    #
+    # The row stays because the two FAILURE guards below are what it is really
+    # worth: both print from the same `ipc-census` dump, and both must be zero.
+    #
+    #   * `mem quota refused` — owner decision 102's per-task frame budget must
+    #     not bind a legitimate program (2048 pages against a measured peak of
+    #     512 for vsbench).
+    #   * `fast-ipc irq-ctx` — `FAST_IPC` taken from interrupt context, the
+    #     precondition for a same-hart deadlock on it. Proven to fire: a canary
+    #     calling `fast_ipc_census` from the trap handler's interrupt arm took
+    #     it to 10,210. The lock is deliberately not irqsave, so this counter is
+    #     what replaces the masking; it costs 45 instructions per round trip,
+    #     measured, and the owner chose to keep it compiled for that price.
+    kbuild "qemu,ipc-census"
+    fresh_disk build/disk-ipctest.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|mem quota refused=[1-9]|fast-ipc irq-ctx=[1-9]" \
+    par_row qemu_run "ipc: census counters zero" "IPCTEST] ALL PASSED" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-ipctest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    kbuild "qemu"
+
+    # The reflex daemon must REACT, not merely start. A kernel task moves the
+    # simulated rangefinder to 100 mm and then back to 1500 mm; reflex has to
+    # trip and then recover. Asserting on "Clear" rather than the trigger is
+    # deliberate: `overriding` is only ever set by a trigger, so that one
+    # string proves both the reaction and the exit from it — and a daemon
+    # wedged in override means motors held in reverse forever.
+    kbuild "qemu,reflex-smoke"
+    rm -f build/disk-reflex.img
+    make_disk build/disk-reflex.img
+    # KNOWN GAP, measured twice rather than assumed. This marker proves reflex
+    # RAN and logged; it does not prove the motors were COMMANDED. Stubbing
+    # `sys_motor_speed_typed` to return 0 without calling `motor_stop` leaves
+    # this scenario GREEN (2026-09-07).
+    #
+    # A marker at the actuation gate was tried on the same day and removed: it
+    # does not discriminate either. `rt_motor_task` writes the motors every
+    # control tick, so a print in `actuation_gate` fires ~2300 times per boot
+    # regardless — 2328 in the baseline, 2308 with the typed call stubbed to
+    # actuate nothing. A check on it would always pass, which is worse than no
+    # check because it reads as coverage.
+    #
+    # What would work needs one of: caller identity at the gate hook (whose
+    # signature is `(id, speed)` and is on the actuation path, so widening it
+    # is not a test change), or a marker inside `sys_motor_speed_typed` with
+    # the smoke feature plumbed into `crates/core/syscall`. Recorded rather than
+    # guessed at.
+    par_row qemu_run "userspace: reflex reacts" "reflex] Clear" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-reflex.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # THE GAP ABOVE, CLOSED 2026-09-09. The scenario proves reflex REACTED;
+    # this one proves it COMMANDED the motors.
+    #
+    # `[ACTSMOKE]` prints the duty the actuation itself left on the PWM
+    # channel, so a handler stubbed to return success without driving anything
+    # cannot produce it — which is exactly what the comment above records as
+    # having been measured and left uncovered. The value is reported out of the
+    # write (`motor_set_reporting`) rather than read back afterwards; see the
+    # ring-3 scenario below for why that distinction is the whole assertion.
+    #
+    # ASSERTED ON THE REVERSE, NOT THE STOP, and that took a measurement to
+    # get right. Reflex's stops go through the typed call and every one of
+    # them reads `ask=0 duty=0` — indistinguishable from a stub, because
+    # nothing was driving the motors beforehand in this scenario. The backup
+    # is the actuation with a number in it: `dir=1` (Backward) and the duty
+    # the kernel fixes at 50. It goes through `SYS_MOTOR_DIRECTION_TYPED` (576),
+    # the typed form of the retired `SYS_MOTOR_ENABLE` (231); the marker is
+    # printed by `motor_direction_reporting`, shared by both, so `dir=1 ask=30 duty=30`
+    # is unchanged.
+    #
+    # Both wheels, because a reflex that backs up one of them steers into the
+    # obstacle.
+    reflex_actuation_scenario() {
+        local label="userspace: reflex COMMANDS"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/reflex-commands.log"
+        rm -f "$log"
+
+        kbuild "qemu,reflex-smoke,actuation-smoke"
+        rm -f build/disk-reflex.img
+        make_disk build/disk-reflex.img
+        job_disk build/disk-reflex.img
+        par_ready
+
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$JDISK",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local qpid=$!
+        local i=0
+        while [ "$i" -lt 360 ]; do
+            grep -aq "reflex] Clear" "$log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 2
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq "reflex] CRITICAL OBSTACLE" "$log" 2>/dev/null; then
+            bad; echo "      the reflex never tripped, so there was nothing to"
+            echo "      command. This is the 'reacts' scenario's property."
+            echo "      log kept: $log"; return
+        fi
+        local m=0
+        for id in 0 1; do
+            grep -aq "ACTSMOKE] ring3 motor id=$id dir=1 ask=30 duty=30" "$log" 2>/dev/null \
+                && m=$((m + 1))
+        done
+        if [ "$m" -ne 2 ]; then
+            bad; echo "      reflex logged but did not drive both wheels backwards"
+            echo "      ($m/2 matched). What the markers say:"
+            grep -a -m4 "ACTSMOKE" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "userspace: reflex COMMANDS" reflex_actuation_scenario
+
+    # ── 2026-09-25 owner decisions Q1.4/Q1.3: gate fails closed; actuation record ──
+    # Gate rows for Q1.4 (fail-closed motor gate) and Q1.3 (actuation record),
+    # owner decisions 2026-09-25. NOT wired into tools/ci_check.sh — delivered as
+    # text per the task brief (tools/ci_check.sh is off-limits to this agent).
+    # Written to slot in beside `reflex_actuation_scenario` (tools/ci_check.sh,
+    # ~line 4076), reusing its exact QEMU invocation and helpers:
+    #   - kbuild()   tools/ci_check.sh ~line 47  — build, fail loudly on error
+    #   - make_disk() tools/ci_check.sh ~line 288 — `make <target>`, fail loudly
+    #   - qemu_run() / QEMU_FAIL_RE  tools/ci_check.sh ~line 356-399 — the
+    #     general scenario runner; NOT used verbatim below because (like
+    #     reflex_actuation_scenario) both rows need two sequential markers in one
+    #     boot, so they follow that scenario's own hand-rolled loop instead.
+    #   - CI_LOG_DIR  tools/ci_check.sh ~line 311
+    #
+    # Rules followed throughout, per the task brief:
+    #   - `grep -q` (or `grep -aq`), never `grep -c` into an integer test.
+    #   - No `^` anchors: QEMU's UART emits `\r` before each line, so an anchor
+    #     would silently never match.
+    #   - Every assertion is POSITIVE (a `grep -aq PATTERN` that must find
+    #     something), including the "absent" property — see below.
+    #   - A negative property ("the gate is not installed") is proved by
+    #     grepping for a string ONLY the skip path prints
+    #     ("[SAFETY] actuation gate SKIPPED"), never by the ABSENCE of a string
+    #     the working path prints — absence-of-output is indistinguishable from
+    #     "the scenario did not reach that code yet" or "the boot hung".
+    #   - Where a number exists, it is read back and compared, not merely
+    #     matched: `duty=0` / `duty=50` / the ring length, not just "ACTSMOKE
+    #     appeared".
+    #
+    # Both rows share ONE disk image (build/disk-reflex.img — `reflex-smoke`'s
+    # autorun is `/fat/REFLEX.ELF`; neither `gate-skip-smoke` nor
+    # `actuation-smoke` touch what goes ON the disk, only what the KERNEL binary
+    # does), so a real gate script would build it once, before either row.
+    #
+    # Circularity note (why the fail-closed row does NOT prove itself by "motors
+    # never move"): with the gate genuinely skipped, `autorun_task` still starts
+    # ring-3 code today (the boot-refusal half of Q1.4 is a DIFFERENT boundary —
+    # see the delivered kernel/src/main.rs diff, not yet applied because this
+    # agent may not touch that file). So `reflex.elf` still runs and still
+    # commands the wheels; what must change is the DUTY that command leaves on
+    # the channel (50 -> 0), not whether a command is issued at all. Asserting
+    # only "no ACTSMOKE line" would be proving nothing once the boot-refusal
+    # lands and no ring-3 program starts at all — asserting the NUMBER inside
+    # the line survives that future change and keeps discriminating.
+
+    # ── Row 1: Q1.4 — the actuation gate fails closed ──────────────────────────
+    #
+    # Baseline build (gate installed) must show `ask=30 duty=30` (REFLEX.ELF's own
+    # BACKUP_SPEED_PCT through SYS_MOTOR_MOVE_TYPED (584); until 2026-09-26 the
+    # daemon could only reach `motor_direction_typed`'s kernel-fixed 50%, and
+    # this row encoded that 50 — the envelope-clamped
+    # reflex backup speed — see reflex_actuation_scenario's own comment for why
+    # 50, not the raw ask, is what a working gate leaves on the channel).
+    # `gate-skip-smoke` build (gate NOT installed): since Q1.4 autorun refuses
+    # to start REFLEX.ELF at all, so the half asserts the refusal + the
+    # kernel-side writer clamped to 0 — it used to expect `duty=0` for the
+    # SAME command — `gate_speed`'s `None` arm now clamps instead of passing the
+    # request through. The SKIPPED line proves the skip build is the one that
+    # ACTUALLY reached `install()` without arming the gate, not merely a build
+    # that happens to also produce duty=0 for some unrelated reason.
+    gate_fails_closed_scenario() {
+        local label="safety: actuation gate fails closed"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+
+        kbuild "qemu,reflex-smoke,actuation-smoke" || return
+        rm -f build/disk-reflex.img
+        make_disk build/disk-reflex.img
+        # Both kernels and both volumes are taken before the first boot, so
+        # the row's boots can run beside other rows' (see `par`).
+        local k1="$CI_LOG_DIR/gate-baseline.kernel" d1="$CI_LOG_DIR/gate-baseline.img"
+        local k2="$CI_LOG_DIR/gate-skip.kernel" d2="$CI_LOG_DIR/gate-skip.img"
+        cp "$KERNEL" "$k1"; cp build/disk-reflex.img "$d1"
+        kbuild "qemu,reflex-smoke,actuation-smoke,gate-skip-smoke" || return
+        fresh_disk build/disk-reflex.img
+        cp "$KERNEL" "$k2"; cp build/disk-reflex.img "$d2"
+        par_ready
+
+        local baseline_log="$CI_LOG_DIR/gate-baseline.log"
+        rm -f "$baseline_log"
+        "$QEMU" -machine virt -nographic -bios default -kernel "$k1" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$d1",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$baseline_log" 2>&1 &
+        local qpid=$!
+        local i=0
+        while [ "$i" -lt 360 ]; do
+            grep -aq "reflex] Clear" "$baseline_log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$baseline_log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 2
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        rm -f "$k1" "$d1"
+
+        if grep -aqiE "panic|\[FATAL\]" "$baseline_log" 2>/dev/null; then
+            bad; echo "      baseline: kernel panic or fatal exception:"
+            grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$baseline_log" | sed "s|^|      |"
+            echo "      log kept: $baseline_log"; return
+        fi
+        # Positive: the baseline (gate armed) must show the clamped 50, both
+        # wheels, driven by reflex reacting to the obstacle.
+        local baseline_ok=0
+        for id in 0 1; do
+            grep -aq "ACTSMOKE] ring3 motor id=$id dir=1 ask=30 duty=30" "$baseline_log" 2>/dev/null \
+                && baseline_ok=$((baseline_ok + 1))
+        done
+        if [ "$baseline_ok" -ne 2 ]; then
+            bad; echo "      baseline (gate armed) did not show ask=30 duty=30 on both wheels"
+            echo "      ($baseline_ok/2 matched) — the scenario itself is broken,"
+            echo "      not the property under test. What the markers say:"
+            grep -a -m6 "ACTSMOKE" "$baseline_log" | sed "s|^|      |"
+            echo "      log kept: $baseline_log"; return
+        fi
+
+        local skip_log="$CI_LOG_DIR/gate-skip.log"
+        rm -f "$skip_log"
+        "$QEMU" -machine virt -nographic -bios default -kernel "$k2" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$d2",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$skip_log" 2>&1 &
+        qpid=$!
+        i=0
+        while [ "$i" -lt 360 ]; do
+            # REFLEX.ELF never starts on this build (see below), so its
+            # "Clear" line cannot end the wait; the smoke script's own DONE can.
+            grep -aq "reflex] Clear\|REFLEXSMOKE] DONE" "$skip_log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$skip_log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 2
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        rm -f "$k2" "$d2"
+
+        if grep -aqiE "panic|\[FATAL\]" "$skip_log" 2>/dev/null; then
+            bad; echo "      gate-skip build: kernel panic or fatal exception"
+            echo "      (a fail-closed motor write must not be able to crash the"
+            echo "      boot — this itself would be a regression):"
+            grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$skip_log" | sed "s|^|      |"
+            echo "      log kept: $skip_log"; return
+        fi
+        # Positive: the skip build genuinely reached `install()` without arming
+        # the gate — a string only that code path prints.
+        if ! grep -aq "SAFETY] actuation gate SKIPPED" "$skip_log" 2>/dev/null; then
+            bad; echo "      gate-skip-smoke build did not print the SKIPPED"
+            echo "      line — the feature did not wire the way this row assumes."
+            echo "      log kept: $skip_log"; return
+        fi
+        # Q1.4 (owner decision, landed 2026-09-26): with no actuation gate
+        # installed, `autorun` REFUSES to start any ring-3 program at all —
+        # REFLEX.ELF is never loaded, so the "same command now reads 0" line
+        # this row used to look for cannot be printed on this build. The
+        # fail-closed property is now enforced one layer earlier, and that is
+        # what this half asserts. Anchors, all positive and all from lines
+        # only these code paths print:
+        #   1. the refusal itself (`[AUTORUN] REFUSED: actuation gate is not
+        #      installed`);
+        #   2. `[REFLEXSMOKE] DONE` — the smoke script ran to its end, so the
+        #      boot did not merely die before a ring-3 line could appear;
+        #   3. the kernel-side smoke writer still wrote (`kernel motor id=N
+        #      duty=0` is its on-change print), which anchors the negation
+        #      that no `duty=80` got through — the baseline above shows the
+        #      same writer alternating 0/80 when the gate is armed.
+        # With 1–3 in hand, the negation "no ring-3 motor line at all" is
+        # tied to a refusal that only the fail-closed path prints, not to
+        # a boot that simply printed nothing.
+        if ! grep -aq "AUTORUN] REFUSED: actuation gate is not installed" "$skip_log" 2>/dev/null; then
+            bad; echo "      gate-skip build: autorun did NOT refuse to start ring-3"
+            echo "      programs with the gate absent (Q1.4 regressed):"
+            grep -a -m3 "AUTORUN\]" "$skip_log" | sed "s|^|      |"
+            echo "      log kept: $skip_log"; return
+        fi
+        if ! grep -aq "REFLEXSMOKE] DONE" "$skip_log" 2>/dev/null; then
+            bad; echo "      gate-skip build: the smoke script did not run to DONE,"
+            echo "      so an absent ring-3 line would prove nothing."
+            echo "      log kept: $skip_log"; return
+        fi
+        local skip_ok=0
+        for id in 0 1; do
+            grep -aq "ACTSMOKE] kernel motor id=$id duty=0" "$skip_log" 2>/dev/null \
+                && ! grep -aq "ACTSMOKE] kernel motor id=$id duty=80" "$skip_log" 2>/dev/null \
+                && skip_ok=$((skip_ok + 1))
+        done
+        if [ "$skip_ok" -ne 2 ]; then
+            bad; echo "      gate-skip build: the kernel-side smoke writer did not clamp"
+            echo "      both wheels to duty=0 ($skip_ok/2). What the markers say:"
+            grep -a -m6 "ACTSMOKE" "$skip_log" | sed "s|^|      |"
+            echo "      log kept: $skip_log"; return
+        fi
+        if grep -aq "ACTSMOKE] ring3 motor" "$skip_log" 2>/dev/null; then
+            bad; echo "      gate-skip build: a ring-3 motor write reached the kernel"
+            echo "      although autorun announced the refusal above:"
+            grep -a -m4 "ACTSMOKE] ring3" "$skip_log" | sed "s|^|      |"
+            echo "      log kept: $skip_log"; return
+        fi
+        ok; rm -f "$baseline_log" "$skip_log"
+    }
+
+    # ── Row 2: Q1.3 — an admitted actuation command reaches the flight recorder ─
+    #
+    # Same baseline boot (gate armed, `actuation-smoke` on) already commands both
+    # wheels via reflex. `[ACTREC]` (domains/robot/safety-core/src/actuation.rs,
+    # `record_motor_change`) is the record hook itself printing its own
+    # admission, `duty=` the value it just wrote to `log_actuator_cmd`, and
+    # `ring_len=` the flight recorder's ring depth read back immediately after —
+    # a NUMBER through the real `logger_ring_len()`, not merely a line's
+    # presence. Failure mode this discriminates against: a build where the
+    # record hook is never installed, or is installed but never called
+    # (canary below).
+    record_reaches_the_ring_scenario() {
+        local label="safety: actuation record reaches the ring"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+
+        kbuild "qemu,reflex-smoke,actuation-smoke" || return
+        rm -f build/disk-reflex.img
+        make_disk build/disk-reflex.img
+        job_disk build/disk-reflex.img
+        par_ready
+
+        local log="$CI_LOG_DIR/actrec.log"
+        rm -f "$log"
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$JDISK",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local qpid=$!
+        local i=0
+        while [ "$i" -lt 360 ]; do
+            grep -aq "reflex] Clear" "$log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 2
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"
+            grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        # Positive, with a number: the same admitted command (dir=1 duty=30,
+        # matching row 1's baseline) reached the recorder, for BOTH wheels, and
+        # the ring depth it reports is > 0 (it went somewhere, not just printed).
+        local seen=0
+        for id in 0 1; do
+            if grep -aq "ACTREC] motor id=$id dir=1 duty=30 ring_len=" "$log" 2>/dev/null; then
+                local ring_len
+                ring_len=$(grep -a "ACTREC] motor id=$id dir=1 duty=30 ring_len=" "$log" \
+                    | sed -n '1{s/.*ring_len=\([0-9]*\).*/\1/p;}')
+                if [ -n "$ring_len" ] && [ "$ring_len" -gt 0 ]; then
+                    seen=$((seen + 1))
+                fi
+            fi
+        done
+        if [ "$seen" -ne 2 ]; then
+            bad; echo "      the admitted 30% command was not recorded for both"
+            echo "      wheels with a positive ring length ($seen/2). What the"
+            echo "      markers say:"
+            grep -a -m8 "ACTREC" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        # Positive: the record hook does not flood — the tree already learned
+        # this the hard way for a marker at the GATE hook (2026-09-07, see
+        # actuation.rs's own note: ~2300 prints/boot with no discrimination).
+        # A held command must be at most MOTOR_RECORD_BUDGET_PER_WINDOW (4) per
+        # motor per ~1s window, not one per control tick — so over a boot that
+        # settles within a few seconds, dozens, not thousands.
+        local actrec_count
+        actrec_count=$(grep -ac "ACTREC" "$log")
+        if [ "$actrec_count" -gt 200 ]; then
+            bad; echo "      $actrec_count ACTREC lines — the rate limiter is not"
+            echo "      bounding this the way it is supposed to (expected order"
+            echo "      of magnitude: tens, not hundreds)."
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+
+    # ── Canaries (run by hand, not part of the gate — proved once, recorded here) ─
+    #
+    # Three buckets per scenario: (a) discriminates, (b) does not discriminate,
+    # (c) did not compile. All three were exercised for real during this task
+    # (see the report), not merely asserted:
+    #
+    #   Q1.4 fail-closed, host test `no_gate_installed_clamps_every_speed_to_
+    #   zero_not_passthrough` (tests/host/behavior-tests/src/lib.rs):
+    #     (a) discriminates — revert `domains/robot/robot/src/motor.rs`'s
+    #         `gate_speed`'s `None => 0` to `None => speed_pct`: RED,
+    #         `left: Some(77) / right: Some(0)`.
+    #     (c) did not compile — this row's OWN mechanism: `kbuild` fails loudly
+    #         on any build error rather than reusing a stale binary (its own doc,
+    #         citing gate 116's postmortem) — reproduced directly during this
+    #         task by a one-identifier typo in `admit_motor_record`
+    #         (domains/robot/safety-core/src/actuation.rs): `cargo build` exited
+    #         nonzero with `error[E0425]: cannot find value
+    #         'MOTOR_RECORD_BUDGET_PER_WINDOOP' in this scope`.
+    #     (b) does not discriminate — N/A for this property: there is no
+    #         "records but ignores the gate" middle state for a return value.
+    #
+    #   Q1.3 record-on-change, host test `a_change_is_recorded_but_a_repeat_is_
+    #   not`:
+    #     (a) discriminates — make `motor_set_reporting`'s
+    #         `if changed { record_motor_change(...) }` unconditional: RED,
+    #         `left: 2 / right: 1` (the repeat was recorded too).
+    #     (b) does not discriminate — the ALREADY-REJECTED precedent this
+    #         design deliberately avoided: a marker at the GATE hook itself
+    #         (`actuation.rs`'s own comment, 2026-09-07) fired ~2300 times per
+    #         boot whether or not any ring-3 program commanded anything (2328
+    #         baseline vs 2308 with the handler stubbed to actuate nothing) —
+    #         a check that always passes. This task's own QEMU row above
+    #         confirms the RECORD hook does not repeat that mistake: 36
+    #         `[ACTREC]` lines in a real boot that commands both wheels
+    #         continuously via `rt_motor_task`, not thousands.
+    #     (c) did not compile — same `kbuild` mechanism as above.
+    par "safety: actuation gate fails closed" gate_fails_closed_scenario
+    par "safety: actuation record reaches the ring" record_reaches_the_ring_scenario
+
+    # ── config: unsigned CONFIG.INI fails closed (owner V1.4, 2026-09-26) ────
+    # CONFIG.INI on the USB-exposed FAT volume decides the kill-switch pin,
+    # link encryption, an OTA listener, bench_boot and autorun. It is now
+    # signed with the topology key (CONFIG.SIG); a tampered sidecar must boot
+    # into factory defaults with the kernel saying so — a string only the
+    # FailClosed branch prints.
+    kbuild "qemu"
+    rm -f build/disk-configtamper.img
+    make_disk build/disk-configtamper.img
+    # Wave 11: the marker names the reason (a v2 sidecar whose signature does
+    # not verify), so a refusal for any other reason cannot pass the row.
+    par_row qemu_run "config: tampered CONFIG.SIG fails closed" "(CONFIG.SIG did not verify) — fell back to factory defaults" 90 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-configtamper.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+
+    # ── config: CONFIG.SIG v2 — a replay is refused, a lost signature latches ──
+    #
+    # Wave 11, RFC-0054 finding 7. CONFIG.SIG used to be a bare signature over
+    # CONFIG.INI's bytes: an older, validly signed pair copied back verified,
+    # and deleting CONFIG.SIG left the kill switch at its "unconfigured"
+    # sentinel with one boot-log line. v2 signs the device id (reserved tail
+    # sector 2) and a counter; the device record keeps the lowest counter
+    # still accepted (the floor). Three boots of ONE copy of the image, which
+    # is re-provisioned first (its own id, floor 0) whatever booted the base:
+    #   1. counter 2: loads, and the kernel raises the floor 0 -> 2. The floor
+    #      is then read back OFF THE IMAGE (`device_provision.py --show`), not
+    #      off the log. No latch line.
+    #   2. the counter-1 pair, validly signed for this device (an older file
+    #      put back): refused as a replay, defaults, e-stop latched with
+    #      `estop_is_active=1`, and the durable record written. Floor still 2.
+    #   3. CONFIG.SIG deleted: latched again, reason "CONFIG.SIG absent".
+    # Every boot's marker is a line only its own path prints.
+    # Canaries (by hand, 2026-10-02): the `c >= f` guard in
+    # `config_authority_decision` made `true` -> boot 2 loads the replay (no
+    # "below the floor" line, red); the `_ if f == 0` arm made `_` -> boot 3
+    # takes defaults without latching (red). The host table is in config-tests.
+    config_authority_row() { # <label> <isa: rv|arm>
+        local label="$1" isa="$2"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug base img kimg dir log why="" pid i
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        img="$CI_LOG_DIR/${slug}.img"; kimg="$CI_LOG_DIR/${slug}-kernel"; dir="$CI_LOG_DIR/${slug}.d"
+        if [ "$isa" = rv ]; then
+            base=build/disk.img
+            kbuild "qemu" >/dev/null || { bad; echo "      riscv64 kernel (qemu) did not build"; return; }
+            cp "$KERNEL" "$kimg"
+        else
+            base=build/disk-aarch64.img
+            a64_kbuild "qemu" >/dev/null || { bad; echo "      aarch64 kernel (qemu) did not build"; return; }
+            cp "$A64_IMG" "$kimg"
+        fi
+        rm -rf "$img" "$dir"; mkdir -p "$dir"
+        make_disk "$base"; cp "$base" "$img"
+        # Three short boots of one volume: start its boot count at 0 (the
+        # Makefile's BOOTMETA), so none of them is the fourth unconfirmed boot
+        # that enters SAFE MODE whatever booted the base image before.
+        printf "active_slot=a\nboot_count=0\nlast_good=a\nfw_version_a=0\nfw_version_b=0\n" >"$dir/BOOTMETA"
+        mdel -i "$img" ::BOOTMETA.A ::BOOTMETA.B >/dev/null 2>&1 || true
+        if ! mcopy -o -i "$img" "$dir/BOOTMETA" ::BOOTMETA 2>/dev/null \
+           || ! python3 tools/device_provision.py "$img" >/dev/null \
+           || ! mcopy -n -i "$img" ::CONFIG.INI "$dir/CONFIG.INI" 2>/dev/null \
+           || ! python3 tools/gen_config_sig.py "$dir/CONFIG.INI" --config-v2 --counter 1 --image "$img" --out "$dir/old.sig" >/dev/null \
+           || ! python3 tools/gen_config_sig.py "$dir/CONFIG.INI" --config-v2 --counter 2 --image "$img" --out "$dir/new.sig" >/dev/null \
+           || ! mcopy -o -i "$img" "$dir/new.sig" ::CONFIG.SIG 2>/dev/null; then
+            bad; echo "      could not provision and sign $img"; rm -f "$kimg"; return
+        fi
+        cfgauth_boot() { # <boot#> <marker (fixed string)> -> log path in $log
+            log="$CI_LOG_DIR/${slug}-boot$1.log"; rm -f "$log"
+            if [ "$isa" = rv ]; then
+                par_ready
+                "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 \
+                    -global virtio-mmio.force-legacy=false \
+                    -drive file="$img",if=none,format=raw,id=hd0 \
+                    -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+            else
+                par_ready
+                qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                    -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                    -drive file="$img",if=none,format=raw,id=hd0 \
+                    -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+            fi
+            pid=$!; i=0
+            while [ "$i" -lt 180 ]; do
+                grep -aqF "$2" "$log" 2>/dev/null && break
+                grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+                kill -0 "$pid" 2>/dev/null || break
+                i=$((i + 1)); sleep 0.5
+            done
+            # Past the marker the line that follows it (the durable record) may
+            # still be in flight: give it the time a flush takes.
+            sleep 2
+            kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        }
+        cfgauth_boot 1 "[CFG] config counter floor raised 0 -> 2"
+        if ! grep -aqF "[CFG] config counter floor raised 0 -> 2" "$log"; then why="boot 1: the counter-2 file did not load and raise the floor"
+        elif grep -aqF "E-STOP LATCHED" "$log"; then why="boot 1 latched"
+        elif [ "$(python3 tools/device_provision.py --show "$img" | awk '{print $NF}')" != 2 ]; then why="boot 1: the image's floor is not 2"
+        fi
+        if [ -z "$why" ]; then
+            mcopy -o -i "$img" "$dir/old.sig" ::CONFIG.SIG 2>/dev/null
+            cfgauth_boot 2 "config-authority stop recorded"
+            if ! grep -aqF "[CFG] REPLAY: CONFIG.SIG counter 1 is below the floor 2" "$log"; then why="boot 2: the counter-1 file was not refused as a replay"
+            elif ! grep -aqF "config authority lost (CONFIG.SIG counter below the floor (replay))" "$log" \
+                 || ! grep -aqF "estop_is_active=1" "$log"; then why="boot 2: the replay did not latch the e-stop"
+            elif ! grep -aqF "config-authority stop recorded" "$log"; then why="boot 2: the stop was not recorded"
+            elif grep -aqF "CONFIG.SIG v2 verified" "$log"; then why="boot 2 loaded the replayed file"
+            elif [ "$(python3 tools/device_provision.py --show "$img" | awk '{print $NF}')" != 2 ]; then why="boot 2 moved the floor"
+            fi
+        fi
+        if [ -z "$why" ]; then
+            mdel -i "$img" ::CONFIG.SIG 2>/dev/null
+            cfgauth_boot 3 "config-authority stop recorded"
+            if ! grep -aqF "config authority lost (CONFIG.SIG absent)" "$log" \
+               || ! grep -aqF "estop_is_active=1" "$log"; then why="boot 3: a deleted CONFIG.SIG did not latch the e-stop"
+            fi
+        fi
+        rm -f "$kimg"
+        if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then why="${why:-crash}; kernel crashed"; fi
+        if [ -z "$why" ]; then ok; rm -rf "$img" "$dir" "$CI_LOG_DIR/${slug}"-boot*.log; return; fi
+        bad; echo "      $why"
+        grep -a "\[CFG\]" "$log" | tr -d '\r' | sed -n '1,6p' | sed 's/^/      /'
+        echo "      logs kept: $CI_LOG_DIR/${slug}-boot*.log"
+    }
+    par_row config_authority_row "config: replay refused, lost sig latches"         rv
+    par_row config_authority_row "aarch64 config: replay refused, lost sig latches" arm
+
+    # RFC-0033: the motor envelope refuses a command above the per-robot-type
+    # cap at the real MotorCmd -> PWM chokepoint. The marker carries the exact
+    # numbers so a scenario that merely reached the code cannot pass: the ask
+    # (100,-100) and what was applied (80,-80) must both appear.
+    kbuild "qemu,envelope-smoke"
+    # Two markers, because the thesis sentence has two halves and the scenario
+    # used to prove only one. "refused" is the clamp; RECORDED is the kernel
+    # reading its own flight-recorder file back off the disk and finding the
+    # refusal in it. A run that clamps and does not record now fails, which is
+    # the point: a safety intervention nobody can audit afterwards may as well
+    # not have been made.
+    rm -f build/disk-envelope.img
+    make_disk build/disk-envelope.img
+    par_row qemu_run "safety: envelope refuses" "ENVELOPE] refused: asked (100,-100) applied (80,-80)" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-envelope.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    # Fresh image again: the run above WROTE its log to this FAT32, so reusing
+    # the image would let "RECORDED" pass on the previous run's leftovers
+    # instead of on anything this boot did.
+    rm -f build/disk-envelope.img
+    make_disk build/disk-envelope.img
+    par_row qemu_run "safety: envelope RECORDS" "ENVSMOKE] RECORDED" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-envelope.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # An e-stop is the event most likely to be followed by the reset that would
+    # erase an unflushed record, so it must reach the disk synchronously rather
+    # than on the watchdog's ~500 ms cadence. Fresh image again for the same
+    # reason as above.
+    rm -f build/disk-envelope.img
+    make_disk build/disk-envelope.img
+    par_row qemu_run "safety: estop record is durable" "ENVSMOKE] ESTOP DURABLE" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-envelope.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── The brain lies (RFC-0035 step 6, scenario 2) ────────────────────
+    #
+    # A host-side peer sends frames that are structurally valid — right magic,
+    # right length field, correct CRC — and semantically wrong. That is the
+    # case with no coverage anywhere: a bit-garbled frame is dropped by
+    # `parse_packet`'s CRC check before it reaches the dispatch, so it tests
+    # the parser; these reach the dispatch and test the safety layer. RFC-0037
+    # names this gap explicitly: "the fail-closed unwrap_or(CONTAINED) on a
+    # truncated packet is the single most safety-relevant line in the design
+    # and has no runtime coverage at all."
+    #
+    # Its own function rather than `qemu_run`, for the negative half: `qemu_run`
+    # deletes the log on success, and the assertion that matters here is that a
+    # string is ABSENT. Proving the kernel clamped to CONTAINED says nothing
+    # about the sibling handler that used to do the opposite on the same input.
+    #
+    # The peer is `tools/fake_brain.py` on the host; QEMU's SLIRP maps
+    # 10.0.2.2 to it, and the image's CONFIG.INI dials 10.0.2.2:9000. Its
+    # framing is pinned against the kernel's by the golden vectors in
+    # `tests/host/behavior-tests` — without those, a drifted CRC would make every
+    # frame get dropped at the parser and the log would look exactly like a
+    # kernel that ignored them.
+    #
+    # This was also the FIRST gate scenario to boot a disk image and a NIC at
+    # the same time, which is the configuration a real robot runs in and the
+    # one nothing covered: until then every networked scenario booted diskless
+    # (no CONFIG.INI, so no autorun) and every disk-backed scenario booted
+    # without a NIC. Writing it found that a ring-3 autorun created inside the real-time
+    # band starved `net-poll` on its hart so completely that the RX ring was
+    # never drained — no ARP reply learned, no SYN ever sent, brain link
+    # permanently down. Hence the `[NET-POLL]` assertion below: it is cheap and
+    # it fails first, before the frame assertions, if that returns.
+    #
+    # What it does NOT assert: the 4th frame's `SAFETY_UNKNOWN_PKT` record.
+    # `log_safety_violation` writes the flight recorder, not the console, so
+    # reading it back needs a kernel-side smoke feature the way
+    # `envelope-smoke` does. The frame is still sent, so the dispatch's `else`
+    # arm is exercised — it is the RECORD that is unasserted, not the path.
+    # Start the lying peer, boot a disk+NIC kernel against it, wait for the
+    # peer's verdict, and tear both down. Extracted 2026-09-08 so the record
+    # scenario below does not become a second copy of the boot sequence — the
+    # part with the race in it, which is the part worth having once.
+    #
+    #   run_brain_peer_boot <kernel-log> <peer-log> <image> <settle-s> [peer-args...]
+    #
+    # The peer's arguments are the last parameter because the two callers need
+    # different peers: the lying script sends four refusable frames and leaves,
+    # while `--serve` reads SensorPackets and answers with ActuatorCmd frames.
+    # Same boot sequence, same race, one copy.
+    run_brain_peer_boot() {
+        local log="$1" blog="$2" image="$3" settle="$4"; shift 4
+        local peer_args="${*:---port 9000 --wait 90}"
+        # shellcheck disable=SC2086
+        python3 tools/fake_brain.py $peer_args >"$blog" 2>&1 &
+        local bpid=$!
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$image",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 \
+            -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+            ${PEER_BOOT_QEMU_EXTRA:-} \
+            >"$log" 2>&1 &
+        local qpid=$!
+
+        # Wait on the PEER's verdict, not on the kernel's first log line.
+        # Waiting for "semantic level set to 3" is wrong and silently
+        # under-tests: that line appears after frame 1 of 4, so the loop broke
+        # and killed QEMU before the DEGRADE and unknown-type frames were ever
+        # sent. It passed standalone (the peer had already finished) and failed
+        # in the suite (a colder cache made the kernel slower than the peer) —
+        # the timing tells you nothing about the kernel, only about which
+        # process won a race the test should not have had.
+        local i=0
+        while [ "$i" -lt 240 ]; do
+            # Either peer's own verdict: the lying script's "sent 4 frames", or
+            # the serving peer's second ActuatorCmd (its script is two long, so
+            # that is the point where both branches have been exercised).
+            grep -aq "sent 4 frames\|ActuatorCmd 'reverse'\|phase 3 done\|reconnect done\|FAIL no-robot" "$blog" 2>/dev/null && break
+            # The kill-switch scenario's peer never stops driving, so its
+            # verdict is the kernel's: the smoke task says when it is done.
+            grep -aq "ESTOPGPIO] DONE" "$log" 2>/dev/null && break
+            # A ring-3 client that refused to run has nothing more to say.
+            grep -aq "brain_client\] FATAL" "$log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        # Settle: the last frame is sent, not yet dispatched. The peer holds
+        # the connection open 2 s after its last write for exactly this, but
+        # the kernel's behaviour loop runs at 10 Hz, so give it its own margin
+        # rather than racing the peer's teardown. A scenario whose verdict is
+        # printed by the kernel after the peer is done sets PEER_BOOT_DONE_RE:
+        # the settle is then a ceiling that ends at that line, not a guess.
+        local j=0
+        while [ "$j" -lt $((settle * 2)) ]; do
+            if [ -n "${PEER_BOOT_DONE_RE:-}" ] \
+                && grep -aqE "$PEER_BOOT_DONE_RE" "$log" 2>/dev/null; then
+                break
+            fi
+            # The same, for a verdict only the PEER can print (wave 9: the
+            # brain opening a record the client sealed after its own REKEY).
+            if [ -n "${PEER_BOOT_PEER_DONE_RE:-}" ] \
+                && grep -aqE "$PEER_BOOT_PEER_DONE_RE" "$blog" 2>/dev/null; then
+                break
+            fi
+            kill -0 "$qpid" 2>/dev/null || break
+            j=$((j + 1)); sleep 0.5
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+    }
+
+    brain_lies_scenario() {
+        local label="userspace: the brain lies"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/brain-lies.log"
+        local blog="$CI_LOG_DIR/brain-lies-peer.log"
+        rm -f "$log" "$blog"
+
+        # Build the PLAIN kernel. Without this the scenario inherits whatever
+        # binary the previous block left in place — today `envelope-smoke`,
+        # which spawns an extra task — and the thing this scenario is most
+        # valuable for is a SCHEDULING property (that `net-poll` gets to run on
+        # its hart). Proving that for a build nobody ships is proving the wrong
+        # thing, and the inheritance is invisible: the scenario passes either
+        # way, so nothing would ever tell you.
+        kbuild "qemu"
+
+        if ! python3 tools/fake_brain.py --selftest >/dev/null 2>&1; then
+            bad; echo "      tools/fake_brain.py selftest failed — its framing no"
+            echo "      longer matches brain_protocol.rs, so every frame it sends"
+            echo "      would be dropped at the CRC check and this scenario would"
+            echo "      fail for the wrong reason."
+            return
+        fi
+
+        # A dedicated image: same GPIODRV autorun as build/disk.img (that is
+        # what exposed the starvation), but `link_encrypt=0`. The default is
+        # ON, and with no LINK.KEY the kernel connects and closes at once
+        # ("no plaintext fallback", RFC-0019) — correct, proved by
+        # `link auth rejects missing key`, and it would stop every frame here
+        # from reaching the dispatch.
+        rm -f build/disk-brainlies.img
+        make_disk build/disk-brainlies.img
+
+        # The peer is done after frame 4 is WRITTEN; the kernel dispatches at
+        # 10 Hz from its own loop and, on a loaded host, had handled only
+        # frame 1 when a fixed 3 s settle killed it (gate 187: timer ISR
+        # jitter 38 ms, the peer PASS, no DEGRADE line). The settle is now a
+        # 20 s ceiling ending at the kernel's verdict on the DEGRADE frame,
+        # armed OR cleared, so the negative check below still sees a clear.
+        PEER_BOOT_DONE_RE='degraded mode (armed|cleared)' \
+            run_brain_peer_boot "$log" "$blog" build/disk-brainlies.img 20
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the robot never connected — no SYN reached the peer."
+            echo "      Check '[NET-POLL]' in the kernel log first: if it is"
+            echo "      absent, a task on hart 3 starved the poller and the RX"
+            echo "      ring was never drained."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # Positive: a truncated 0x8B reached the dispatch and clamped closed.
+        if ! grep -aq "semantic level set to 3" "$log" 2>/dev/null; then
+            bad; echo "      no 'semantic level set to 3' — the malformed frame"
+            echo "      never reached the dispatch, or did not fail closed."
+            echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # Negative: the empty 0x8A must ARM containment, never clear it. Until
+        # 2026-09-06 it read `unwrap_or(DEGRADE_CLEAR)` and a truncated frame
+        # disarmed containment — resetting a CONTAINED level to FULL through
+        # the same atomic the assertion above just proved was set.
+        if grep -aq "degraded mode cleared" "$log" 2>/dev/null; then
+            bad; echo "      a DEGRADE frame with no reason byte CLEARED containment"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "degraded mode armed — reason byte missing" "$log" 2>/dev/null; then
+            bad; echo "      the empty DEGRADE frame did not arm containment"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # And the reason the frames arrived at all: the network poller ran.
+        # Checked last because the three assertions above cannot pass without
+        # it — it is here to name the cause when they fail together.
+        if ! grep -aq "NET-POLL" "$log" 2>/dev/null; then
+            bad; echo "      net-poll never started — a task on hart 3 starved"
+            echo "      it, so the RX ring was never drained (see the"
+            echo "      AUTORUN_PRIORITY block in kernel/src/main.rs)"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: the brain lies" brain_lies_scenario   # the brain peer on host port 9000
+
+    # The record half of the same frame, which the scenario above states it
+    # does not cover: `log_safety_violation` writes the flight recorder, not
+    # the console, so the fourth frame's `SAFETY_UNKNOWN_PKT` was exercised on
+    # every run and asserted on none.
+    #
+    # A SEPARATE build and scenario, not a second marker on the one above.
+    # That one exists to prove a SCHEDULING property — that `net-poll` gets to
+    # run on its hart — and its own comment explains why it forces a plain
+    # kernel: adding a task changes the thing being measured. So the probe
+    # lives behind its own feature and gets its own boot.
+    #
+    # `brain_lies_smoke_task` polls: flush, scan the log, block on the timer for
+    # half a second, repeat, for 60 s. The peer is done in ~4 s, well before the
+    # record is on disk, so the settle waits for the probe's own verdict line
+    # and 70 s is only the ceiling.
+    brain_lies_record_scenario() {
+        local label="userspace: unknown packet RECORDED"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/brain-record.log"
+        local blog="$CI_LOG_DIR/brain-record-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,brain-lies-smoke"
+        # Fresh image: the probe reads LOG00000.BIN back, and a reused image
+        # would let it pass on a previous run's record instead of this boot's.
+        rm -f build/disk-brainrec.img
+        make_disk build/disk-brainrec.img
+
+        PEER_BOOT_DONE_RE='BRAINSMOKE\] (NOT )?RECORDED' \
+            run_brain_peer_boot "$log" "$blog" build/disk-brainrec.img 70
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the robot never connected — no frame was ever sent,"
+            echo "      so there was nothing to record. Check '[NET-POLL]'."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aq "BRAINSMOKE] NOT RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the frame arrived and the record did not reach the disk:"
+            grep -a -m1 "BRAINSMOKE] NOT RECORDED" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "BRAINSMOKE] RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the probe never reached a verdict — it ran out of"
+            echo "      attempts, or the task never started."
+            echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: unknown packet RECORDED" brain_lies_record_scenario   # the brain peer on host port 9000
+
+    # THE RING-3 PRODUCT PATH, END TO END. Sensors up, ActuatorCmd down,
+    # motors driven — from a userspace ELF, through typed capabilities.
+    #
+    # `userspace/services/brain_client` is the only program in the tree that does the
+    # whole loop, and until 2026-09-08 NOTHING booted its image: it was built
+    # on every run and started by no scenario. Booting it by hand that day
+    # immediately found a live defect (the ARP microbenchmarks were writing the
+    # gateway's MAC into the live cache), which is the argument for this
+    # scenario existing at all.
+    #
+    # THE ASSERTION IS THE PAIR `ask=60 duty=60`, NOT THE MARKER'S PRESENCE.
+    # `[ACTSMOKE]` prints after the actuation and carries the duty that landed
+    # on the PWM channel. A handler stubbed to return success without driving
+    # anything still prints the line — measured: `ask=60 duty=0 rc=0`. Only the
+    # applied value separates "ring 3 commanded a motor" from "the handler
+    # ran", which is exactly the distinction the reflex scenario could not make
+    # (stubbing the typed call left it green, 2026-09-07).
+    #
+    # THAT VALUE COMES OUT OF THE WRITE, NOT FROM READING THE CHANNEL BACK.
+    # The first version of this assertion did the readback at the call site
+    # with `pwm_get`, and it was racy: `rt_motor_task` drives these same two
+    # wheels every control tick, so between the write and the read its duty
+    # could be what came back. It was not theoretical — a run on 2026-09-10
+    # printed `ask=60 duty=0 rc=0` for wheel 0 with the handler intact, which
+    # is a red this scenario would have reported as a kernel defect. The
+    # opposite direction is worse: had the other writer happened to write 60,
+    # the scenario would have passed while proving nothing. The readback now
+    # happens inside the critical section that performs the write
+    # (`pwm::pwm_set_duty_pct_reporting`), which is what makes asserting
+    # `ask == duty` legitimate at all.
+    #
+    # Canaries, 2026-09-10: dropping the duty write while still reporting gives
+    # `duty=50` (the stale value) and 0/2; clamping `gate_speed` to half gives
+    # `ask=60 duty=30` and 0/2. Both compiled and booted, and the restored tree
+    # is 2/2.
+    #
+    # 60 is what `fake_brain.py --serve` sends first, and forward goes through
+    # `SYS_MOTOR_SPEED_TYPED` (560); `apply_motor_cmd` sends reverse down
+    # `SYS_MOTOR_DIRECTION_TYPED` (576), the typed form of the retired 231.
+    #
+    # `sys_motor_speed_typed` is reachable only by `ecall`, so this marker
+    # cannot be produced by the kernel's own brain link, which also connects to
+    # this peer and drives motors through a channel instead.
+    ring3_actuation_scenario() {
+        local label="userspace: ring-3 drives motors"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/ring3-actuation.log"
+        local blog="$CI_LOG_DIR/ring3-actuation-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        rm -f build/disk-braincli.img build/disk-braincli-linkkey.img build/braincli_linkkey.bin
+        make_disk build/disk-braincli-linkkey.img
+
+        # Wave 9 (P3): brain_client runs the RFC-0019 encrypted link, whose
+        # ephemeral keys come from the entropy pool — so virtio-rng — and the
+        # peer runs the brain side of it (`--encrypt`, AzOSRobotBrain's
+        # secure_channel; AZOS_BRAIN_DIR as for `tools/link_peer.py`).
+        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
+        run_brain_peer_boot "$log" "$blog" build/disk-braincli-linkkey.img 8 \
+            --serve --duration 40 --encrypt build/braincli_linkkey.bin
+
+        # V1.9 (2026-09-26): the peer sends ONE deliberately unwrapped probe
+        # first — since wave 9 a correctly sealed record whose inner bytes
+        # carry no HMAC envelope; brain_client must refuse it by name.
+        if ! grep -aq "brain_client\] REFUSED unwrapped frame" "$log" 2>/dev/null; then
+            bad; echo "      brain_client did not refuse the unwrapped probe (V1.9)"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the robot never connected, so no command was ever"
+            echo "      sent. Check '[NET-POLL]' in the kernel log first."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "ACTSMOKE] ring3 motor" "$log" 2>/dev/null; then
+            bad; echo "      ring 3 never reached sys_motor_speed_typed — the"
+            echo "      ActuatorCmd did not arrive, or was refused before the"
+            echo "      capability check."
+            echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # Both wheels, and the duty must MATCH the ask on each.
+        local m=0
+        for id in 0 1; do
+            grep -aq "ACTSMOKE] ring3 motor id=$id ask=60 duty=60" "$log" 2>/dev/null \
+                && m=$((m + 1))
+        done
+        if [ "$m" -ne 2 ]; then
+            bad; echo "      the handler ran but the motors were not driven to the"
+            echo "      commanded speed on both wheels ($m/2 matched):"
+            grep -a -m4 "ACTSMOKE" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: ring-3 drives motors" ring3_actuation_scenario   # the brain peer on host port 9000
+
+    # A RING-3 CLIENT THAT RECONNECTS MUST GIVE ITS SOCKET BACK EVERY TIME.
+    #
+    # `brain_client` reconnects forever by design. A client that ends a
+    # connection without releasing its socket keeps working for exactly
+    # `MAX_SOCKETS_PER_TASK` dials (8 with the tree's `.config`, MAX_SOCKETS=16)
+    # and then can never create another — "Connection failed, retrying..." for
+    # the rest of its life — while every other scenario, each one connection
+    # long, stays green. So the peer here resets every connection after its
+    # first bytes, and the client has to dial again about every two seconds.
+    #
+    # The count comes from the kernel log, not from the peer: the kernel's own
+    # brain link dials the same port and SLIRP hides which dialer is which. Ten
+    # is past the quota with room for a slow first connect.
+    ring3_reconnect_scenario() {
+        local label="userspace: ring-3 reconnects"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/ring3-reconnect.log"
+        local blog="$CI_LOG_DIR/ring3-reconnect-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        rm -f build/disk-braincli.img build/disk-braincli-linkkey.img build/braincli_linkkey.bin build/brain_client.elf
+        make_disk build/disk-braincli-linkkey.img
+        # The rebuilt ELF must be the bytes the kernel's seccomp table lists, or
+        # autorun refuses it and the scenario reads like a kernel fault. Userspace
+        # builds do not depend on the checkout path (Makefile, USPACE_BUILD), so a
+        # mismatch here is a source change since `make build/image_hashes.rs`.
+        if ! python3 userspace/image_hashes.py --check build/image_hashes.rs \
+                BRAINCLI.ELF=build/brain_client.elf; then
+            bad; echo "      the rebuilt BRAINCLI.ELF is not the image this kernel was built for:"
+            echo "      run make build/image_hashes.rs, then rebuild the kernel."; return
+        fi
+
+        # Wave 9: the peer opens every connection with the RFC-0019 HELLO (the
+        # client sends nothing before one) and resets it after the reply.
+        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
+        run_brain_peer_boot "$log" "$blog" build/disk-braincli-linkkey.img 1 \
+            --reconnect --duration 80 --encrypt build/braincli_linkkey.bin
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      nothing ever connected, so nothing was reset."
+            echo "      Check '[NET-POLL]' in the kernel log first."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        local dials
+        dials=$(grep -ac "\[brain_client\] Connected!" "$log" 2>/dev/null)
+        if [ "${dials:-0}" -lt 10 ]; then
+            bad; echo "      brain_client connected ${dials:-0} time(s) in 80 s; a client"
+            echo "      that stops at 8 is not releasing its socket."
+            grep -a -m3 "brain_client\] Connection failed" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: ring-3 reconnects" ring3_reconnect_scenario   # the brain peer on host port 9000
+
+    # THE EMERGENCY STOP, FROM RING 3, END TO END — and it is asserted on the
+    # LATCH, not on the stop.
+    #
+    # `SYS_ROBOT_ESTOP` (325) was declared in the ABI, exposed by `libsys` and
+    # swallowed by `dispatch`'s stub range, so `brain_client` mapped the
+    # brain's `FLAG_EMERGENCY` onto two ordinary `motor_speed_typed(cap, 0)`
+    # calls. Measured before the fix, with the peer driving again afterwards:
+    # the robot kept going at 60% for 101 more commands, and the boot log held
+    # no e-stop record of any kind.
+    #
+    # WHY THE ASSERTION IS `ask=60 duty=0` AFTER, NOT `ask=0 duty=0` AT THE
+    # EMERGENCY. A stop command and a stubbed handler both print
+    # `ask=0 duty=0`; that pair has never been able to discriminate and it
+    # still cannot. What only a real e-stop produces is a REFUSAL of the next
+    # drive: the peer's script ends with a plain 60% command that repeats for
+    # the rest of the run, and every one of those must come back `duty=0`.
+    # Same ask, same marker, opposite duty, separated by the e-stop.
+    #
+    # AND NOT ON THE `[SAFETY]` LINE EITHER. Measured: a handler that stops the
+    # wheels but skips `estop_activate()` still prints
+    # "motors stopped, envelope latched" — and the robot drove 20 more times.
+    # Grepping the console line would have been a false green.
+    #
+    # What this does NOT cover: that the `SAFETY_ESTOP` record reaches DISK.
+    # The durability of that mechanism is pinned by the `[ENVSMOKE] ESTOP
+    # DURABLE` self-check; this scenario pins the wiring to it.
+    ring3_estop_scenario() {
+        local label="userspace: ring-3 e-stop"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/ring3-estop.log"
+        local blog="$CI_LOG_DIR/ring3-estop-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        # The ring-3 ELF carries half of this path, so it must be rebuilt too —
+        # a stale `brain_client.elf` would test yesterday's userspace against
+        # today's kernel and pass either way.
+        rm -f build/disk-braincli.img build/disk-braincli-linkkey.img build/braincli_linkkey.bin build/brain_client.elf
+        make_disk build/disk-braincli-linkkey.img
+        # As in `userspace: ring-3 reconnects`: the rebuilt ELF must be the bytes
+        # the kernel's seccomp table lists, or autorun refuses it.
+        if ! python3 userspace/image_hashes.py --check build/image_hashes.rs \
+                BRAINCLI.ELF=build/brain_client.elf; then
+            bad; echo "      the rebuilt BRAINCLI.ELF is not the image this kernel was built for:"
+            echo "      run make build/image_hashes.rs, then rebuild the kernel."; return
+        fi
+
+        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
+        run_brain_peer_boot "$log" "$blog" build/disk-braincli-linkkey.img 20 \
+            --serve --emergency --duration 40 --encrypt build/braincli_linkkey.bin
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the robot never connected, so no emergency was"
+            echo "      ever sent. logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        local estop_line
+        estop_line=$(grep -an "\[SAFETY\] ESTOP from ring 3" "$log" 2>/dev/null \
+                     | sed -n "1p" | cut -d: -f1)
+        if [ -z "$estop_line" ]; then
+            bad; echo "      SYS_ROBOT_ESTOP never reached the kernel handler —"
+            echo "      the emergency was not declared as one."
+            grep -a -m4 "ACTSMOKE] ring3" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # It has to have been DRIVING first, or "stopped" means nothing.
+        local drove_before
+        drove_before=$(grep -an "ACTSMOKE] ring3 motor id=[01] ask=60 duty=60" "$log" 2>/dev/null \
+                       | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
+        if [ "$drove_before" -lt 2 ]; then
+            bad; echo "      the wheels were never driven before the e-stop"
+            echo "      ($drove_before/2 wheels at 60%), so a later duty=0 proves"
+            echo "      nothing. logs kept: $log $blog"; return
+        fi
+
+        # After it: every 60% ask must be refused, on both wheels.
+        local drove_after refused_l refused_r
+        drove_after=$(grep -an "ACTSMOKE] ring3 motor id=[01] ask=60 duty=60" "$log" 2>/dev/null \
+                      | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+        refused_l=$(grep -an "ACTSMOKE] ring3 motor id=0 ask=60 duty=0 rc=" "$log" 2>/dev/null \
+                    | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+        refused_r=$(grep -an "ACTSMOKE] ring3 motor id=1 ask=60 duty=0 rc=" "$log" 2>/dev/null \
+                    | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+
+        if [ "$drove_after" -ne 0 ]; then
+            bad; echo "      THE E-STOP DID NOT HOLD: $drove_after commands reached the"
+            echo "      wheels at full duty after it latched."
+            grep -an "ACTSMOKE] ring3 motor id=[01] ask=60 duty=60" "$log" \
+                | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # Two each, so one sampled refusal cannot carry the verdict.
+        if [ "$refused_l" -lt 2 ] || [ "$refused_r" -lt 2 ]; then
+            bad; echo "      the peer did not keep asking after the e-stop"
+            echo "      (refusals seen: left=$refused_l right=$refused_r, want >=2 each),"
+            echo "      so the latch was never actually tested."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # THE SAME LATCH THROUGH THE io_ring (RFC-0041 §E, owner decision 81).
+        # brain_client submits each forward command a second time as one
+        # `OP_MOTOR_SPEED` entry for both wheels, and the kernel's op-table
+        # entry prints `ACTSMOKE] ioring motor` per wheel with the duty its own
+        # write reported. The checks mirror the typed ones: driven through the
+        # ring before the e-stop, never at duty 60 after it, refused on each
+        # wheel after it — and the refusal carried back to ring 3 in the
+        # completion as -EAGAIN with CQE_F_REFUSED (`result=-11 flags=1`). A
+        # wheel written at duty 0 by an entry that answered success would pass
+        # the first three and not the last.
+        if grep -aq "\[brain_client\] FAILED: io_ring" "$log" 2>/dev/null; then
+            bad; echo "      brain_client could not create its motor ring:"
+            grep -a -m2 "\[brain_client\] FAILED: io_ring" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        local ring_before_l ring_before_r ring_after ring_refused_l ring_refused_r ring_cqe
+        ring_before_l=$(grep -an "ACTSMOKE] ioring motor id=0 ask=60 duty=60 rc=" "$log" 2>/dev/null \
+                        | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
+        ring_before_r=$(grep -an "ACTSMOKE] ioring motor id=1 ask=60 duty=60 rc=" "$log" 2>/dev/null \
+                        | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
+        ring_after=$(grep -an "ACTSMOKE] ioring motor id=[01] ask=60 duty=60 rc=" "$log" 2>/dev/null \
+                     | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+        ring_refused_l=$(grep -an "ACTSMOKE] ioring motor id=0 ask=60 duty=0 rc=" "$log" 2>/dev/null \
+                         | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+        ring_refused_r=$(grep -an "ACTSMOKE] ioring motor id=1 ask=60 duty=0 rc=" "$log" 2>/dev/null \
+                         | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+        ring_cqe=$(grep -anE "\[brain_client\] ioring motor cqe result=-11 flags=1([^0-9]|$)" "$log" 2>/dev/null \
+                   | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+
+        if [ "$ring_before_l" -lt 1 ] || [ "$ring_before_r" -lt 1 ]; then
+            bad; echo "      the io_ring never drove the wheels before the e-stop"
+            echo "      (ring entries at 60%: left=$ring_before_l right=$ring_before_r, want >=1 each),"
+            echo "      so its refusals after it prove nothing. First ring lines:"
+            grep -a -m4 "ioring motor" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if [ "$ring_after" -ne 0 ]; then
+            bad; echo "      THE E-STOP DID NOT HOLD ON THE io_ring: $ring_after ring entries"
+            echo "      reached the wheels at full duty after it latched."
+            grep -an "ACTSMOKE] ioring motor id=[01] ask=60 duty=60 rc=" "$log" \
+                | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if [ "$ring_refused_l" -lt 2 ] || [ "$ring_refused_r" -lt 2 ]; then
+            bad; echo "      the io_ring entries after the e-stop did not reach the motor layer"
+            echo "      (ring refusals seen: left=$ring_refused_l right=$ring_refused_r, want >=2 each)."
+            grep -an "ioring motor" "$log" \
+                | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if [ "$ring_cqe" -lt 1 ]; then
+            bad; echo "      no io_ring completion after the e-stop came back refused with"
+            echo "      -EAGAIN (want result=-11 flags=1); completions seen:"
+            grep -an "ioring motor cqe" "$log" \
+                | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: ring-3 e-stop" ring3_estop_scenario   # the brain peer on host port 9000
+
+    # RING 3's BRAIN LINK IS THE ENCRYPTED ONE (wave 9, owner decision P3).
+    #
+    # brain_client used to verify the HMAC envelope directly under the PSK,
+    # with its replay floor only in RAM, per connection. It now runs the same
+    # RFC-0019 handshake and record layer as the kernel's own link, with its
+    # ephemeral key from `SYS_ENTROPY_READ_TYPED`. The rows above prove the
+    # commands still arrive; this one proves the MODE, each claim anchored on
+    # a line only the encrypted path prints:
+    #   * `[brain_client] link: RFC-0019 session established` — printed after
+    #     `handle_initiator_confirm` accepted the brain's PSK proof, nowhere else;
+    #   * the peer OPENED a sealed SensorPacket from the client — its record
+    #     layer and its envelope check both passed on bytes the client sealed;
+    #   * the brain's REKEY was followed (`peer REKEY, rx generation 1`) and a
+    #     ring-3 motor command landed AFTER it — so records under the ratcheted
+    #     key opened;
+    #   * the client's own wall-clock REKEY (`brain_client_rekey_secs=10` on
+    #     this image) COMPLETED: `client REKEY #1 completed` is printed by the
+    #     peer only when a SensorPacket sealed AFTER the client's REKEY record
+    #     opened and its envelope verified — the REKEY record opening alone
+    #     (`client REKEY #1 opened`) only announces the ratchet. The crate's
+    #     own limits (2^20 records, 1 GiB) are far out of this boot's reach,
+    #     so the rekey is the CONFIG.INI clock's; the key can only shorten
+    #     the hour (`azos_encrypt_link::rekey_interval_secs`, host-tested).
+    #
+    # Canary, 2026-09-28 (wave 9): `link::handshake` short-circuited to return
+    # `true` without a handshake and `seal_frame` sending the bare envelope
+    # (the pre-wave HMAC-only client). See the ENT report for what printed.
+    # Canary, 2026-09-28 (wave 10, ENT2): `brain_client_rekey_secs=10` dropped
+    # from the image's CONFIG.INI (default hour): RED, "brain_client's own
+    # REKEY did not complete", no REKEY line on either side.
+    ring3_encrypted_link_scenario() {
+        local label="userspace: ring-3 link encrypted"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/ring3-enc.log"
+        local blog="$CI_LOG_DIR/ring3-enc-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        rm -f build/disk-braincli.img build/disk-braincli-linkkey.img build/braincli_linkkey.bin build/brain_client.elf
+        make_disk build/disk-braincli-linkkey.img
+        if ! python3 userspace/image_hashes.py --check build/image_hashes.rs \
+                BRAINCLI.ELF=build/brain_client.elf; then
+            bad; echo "      the rebuilt BRAINCLI.ELF is not the image this kernel was built for:"
+            echo "      run make build/image_hashes.rs, then rebuild the kernel."; return
+        fi
+
+        # Ends at the brain completing the client's REKEY, with a 30 s
+        # ceiling. On the PEER's line, not the client's `REKEY sent`: that
+        # prints before the record reaches the host, and ending there killed
+        # the peer first.
+        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
+        PEER_BOOT_PEER_DONE_RE="client REKEY #1 completed" \
+        run_brain_peer_boot "$log" "$blog" build/disk-braincli-linkkey.img 30 \
+            --serve --duration 60 --encrypt build/braincli_linkkey.bin
+        sleep 1
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "\[brain_client\] link: RFC-0019 session established" "$log" 2>/dev/null; then
+            bad; echo "      brain_client never established an RFC-0019 session:"
+            grep -a -m4 "brain_client\]" "$log" | sed "s|^|      |"
+            echo "      peer said: $(grep -a -m3 "encrypted\|FAIL\|refused" "$blog" | tr "\n" " ")"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "opened a sealed SensorPacket from the client" "$blog" 2>/dev/null; then
+            bad; echo "      the brain never opened a sealed SensorPacket from brain_client"
+            echo "      logs kept: $log $blog"; return
+        fi
+        local rk_line after
+        rk_line=$(grep -an "\[brain_client\] link: peer REKEY, rx generation 1" "$log" 2>/dev/null \
+                  | sed -n "1p" | cut -d: -f1)
+        if [ -z "$rk_line" ]; then
+            bad; echo "      brain_client never followed the brain's REKEY"
+            echo "      logs kept: $log $blog"; return
+        fi
+        after=$(grep -an "ACTSMOKE] ring3 motor id=[01] " "$log" 2>/dev/null \
+                | awk -F: -v n="$rk_line" '$1 > n' | grep -c .)
+        if [ "$after" -lt 2 ]; then
+            bad; echo "      no ring-3 motor command landed after the brain's REKEY ($after),"
+            echo "      so records under the ratcheted key were not shown to open."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "\[brain_client\] link: REKEY sent, tx generation 1" "$log" 2>/dev/null \
+           || ! grep -aq "client REKEY #1 completed" "$blog" 2>/dev/null; then
+            bad; echo "      brain_client's own REKEY did not complete (sent, then a record"
+            echo "      under the new key opened by the brain):"
+            grep -a -m3 "REKEY" "$log" "$blog" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: ring-3 link encrypted" ring3_encrypted_link_scenario   # the brain peer on host port 9000
+
+    # NO FRESH KEYS, NO LINK (wave 9, owner decision P9).
+    #
+    # The same image booted WITHOUT virtio-rng: the pool stays unseeded, so
+    # `SYS_ENTROPY_READ_TYPED` refuses (`-ENODEV`, 19) and brain_client, which
+    # draws every handshake's ephemeral key from it, refuses to run the link.
+    # Anchored on the two lines only the refusal prints — the kernel's
+    # one-per-boot `[ENTROPY] REFUSED: ring-3 read` (it also writes the
+    # durable SAFETY_ENTROPY_UNSEEDED_REFUSED record) and brain_client's FATAL
+    # with the kernel's answer in it — then on the session line's absence.
+    #
+    # Canary, 2026-09-28 (wave 9): the handler's `!got` branch disabled, so an
+    # unseeded pool hands out its zero buffer as "entropy". See the ENT report.
+    ring3_entropy_refused_scenario() {
+        local label="userspace: ring-3 entropy refused"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/ring3-noent.log"
+        local blog="$CI_LOG_DIR/ring3-noent-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        rm -f build/disk-braincli.img build/disk-braincli-linkkey.img build/braincli_linkkey.bin build/brain_client.elf
+        make_disk build/disk-braincli-linkkey.img
+        if ! python3 userspace/image_hashes.py --check build/image_hashes.rs \
+                BRAINCLI.ELF=build/brain_client.elf; then
+            bad; echo "      the rebuilt BRAINCLI.ELF is not the image this kernel was built for:"
+            echo "      run make build/image_hashes.rs, then rebuild the kernel."; return
+        fi
+
+        run_brain_peer_boot "$log" "$blog" build/disk-braincli-linkkey.img 2 \
+            --serve --duration 30 --encrypt build/braincli_linkkey.bin
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "\[ENTROPY\] pool unseeded" "$log" 2>/dev/null; then
+            bad; echo "      the pool was not unseeded on this boot, so nothing was tested"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "\[ENTROPY\] REFUSED: ring-3 read tid=" "$log" 2>/dev/null; then
+            bad; echo "      the kernel never refused a ring-3 entropy read on an unseeded pool"
+            grep -a -m3 "brain_client\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "\[brain_client\] FATAL entropy refused rc=-19 " "$log" 2>/dev/null; then
+            bad; echo "      brain_client did not refuse to run the link on -ENODEV:"
+            grep -a -m4 "brain_client\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aq "\[brain_client\] link: RFC-0019 session established" "$log" 2>/dev/null; then
+            bad; echo "      a session was established with no entropy behind it"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: ring-3 entropy refused" ring3_entropy_refused_scenario   # the brain peer on host port 9000
+
+    # THE BRAIN'S E-STOP OVER TCP — the second of the four sources, and the
+    # first scenario in this gate where the KERNEL's own actuation path moves a
+    # wheel.
+    #
+    # A different image from the ring-3 one, and not for convenience:
+    # `PKT_ESTOP` over TCP is handled in `behavior_task`, and that link only
+    # comes up with `link_encrypt=0`. The ring-3 image has no LINK.KEY, so its
+    # kernel link closes on the handshake ("no plaintext fallback") — measured,
+    # which is why the two cannot share a boot.
+    #
+    # WHAT IT TOOK TO MAKE THIS ASSERTABLE AT ALL. The first attempt found the
+    # wheels at duty 0 for the whole run with the brain commanding 60%. The
+    # command was arriving (`remote_action` held it); the arbiter was returning
+    # L0 every tick with `violation=LowBattery`, because the sensor task
+    # fabricated 3700 mV when there is no ADS1115 and every pack threshold in
+    # `safety.rs` is 6500. The entire L1/L2/L3 stack was permanently overridden
+    # in every scenario in this gate, and nothing here could tell.
+    #
+    # THE ASSERTION IS THE PAIR "drove, then did not", on the KERNEL's own
+    # writes. `[ACTSMOKE] kernel motor` reports what `motor_set_reporting`
+    # applied, from inside the write. A non-zero duty must appear BEFORE the
+    # e-stop and none after it, while the peer keeps commanding 60% for the
+    # rest of the run. Asserting on `[BRAIN] ESTOP received` would be a false
+    # green: measured on the ring-3 path, a handler that skipped the latch
+    # still printed "envelope latched" and the robot drove 20 more times.
+    brain_estop_tcp_scenario() {
+        local label="safety: brain e-stop (tcp)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/brain-estop-tcp.log"
+        local blog="$CI_LOG_DIR/brain-estop-tcp-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        rm -f build/disk-brainestop.img
+        make_disk build/disk-brainestop.img
+
+        run_brain_peer_boot "$log" "$blog" build/disk-brainestop.img 4 \
+            --kernel-estop --duration 45 --gap 0.25
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the kernel's brain link never connected — check"
+            echo "      link_encrypt on this image before suspecting the stack."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "phase 3 done" "$blog" 2>/dev/null; then
+            bad; echo "      the peer never got to the post-e-stop phase, so the"
+            echo "      latch was never actually tested:"
+            tail -3 "$blog" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        local estop_line
+        estop_line=$(grep -an "\[BRAIN\] ESTOP received" "$log" 2>/dev/null \
+                     | sed -n "1p" | cut -d: -f1)
+        if [ -z "$estop_line" ]; then
+            bad; echo "      PKT_ESTOP never reached the TCP handler."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # It must have been DRIVING first, on both wheels, or "stopped" is
+        # not a claim about anything.
+        local drove_l drove_r
+        drove_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null \
+                  | grep -v "duty=0$" | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
+        drove_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null \
+                  | grep -v "duty=0$" | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
+        if [ "$drove_l" -lt 1 ] || [ "$drove_r" -lt 1 ]; then
+            bad; echo "      the kernel's control loop never drove the wheels before"
+            echo "      the e-stop (left=$drove_l right=$drove_r), so a later duty=0"
+            echo "      proves nothing. If this went red after a change to the"
+            echo "      sensor bus, check that no absent sensor is being"
+            echo "      fabricated into a safety violation."
+            grep -a -m6 "ACTSMOKE] kernel motor" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # THE ASSERTION IS THE FINAL STATE, NOT THE ABSENCE OF TRANSITIONS.
+        # `[ACTSMOKE] kernel motor` prints only when the duty CHANGES, so
+        # "no non-zero line after the e-stop" is also what a wheel that never
+        # stopped looks like — it just keeps applying the same 80 and says
+        # nothing. Measured on the kill-switch scenario below, where exactly
+        # that produced a false green. What discriminates is the LAST value
+        # each wheel was left at, plus where the last NON-ZERO one falls.
+        #
+        # **Why the reference point is the last non-zero duty and not the
+        # console line.** This asked that the final `duty=0` come AFTER
+        # "[BRAIN] ESTOP received", which assumes the wheels cannot stop before
+        # the handler announces itself. They can, and on 2026-09-11 they
+        # started to: `estop_activate()` now installs the stop as the standing
+        # action, so the control loop on another hart applies 0 inside the
+        # window between the latch and the `kprintln` three statements later.
+        # The scenario reported a FASTER stop as a failure. The property has
+        # nothing to do with print interleaving — it is "drove, then went to
+        # zero, and stayed there, and nothing drove after the latch" — so that
+        # is what is asserted, and the non-zero bound is strictly stricter than
+        # the console one it replaces.
+        local last_l last_r
+        last_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null | sed -n '$p')
+        last_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null | sed -n '$p')
+        local nz_l nz_r
+        nz_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null \
+               | grep -v "duty=0$" | sed -n '$p' | cut -d: -f1)
+        nz_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null \
+               | grep -v "duty=0$" | sed -n '$p' | cut -d: -f1)
+        for w in "$last_l:$nz_l" "$last_r:$nz_r"; do
+            local rec nz val
+            rec=${w%:*}; nz=${w##*:}; val=${rec##*duty=}
+            if [ -z "$rec" ] || [ "$val" != "0" ] || [ -z "$nz" ] \
+               || [ "$nz" -gt "$estop_line" ]; then
+                bad; echo "      THE E-STOP DID NOT HOLD. Each wheel's last applied duty"
+                echo "      must be 0, and its last NON-ZERO duty must fall before the"
+                echo "      latch; got:"
+                echo "        left : ${last_l:-<none>}   (last non-zero at line ${nz_l:-<none>})"
+                echo "        right: ${last_r:-<none>}   (last non-zero at line ${nz_r:-<none>})"
+                echo "      e-stop at line $estop_line"
+                echo "      logs kept: $log $blog"; return
+            fi
+        done
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "safety: brain e-stop (tcp)" brain_estop_tcp_scenario   # the brain peer on host port 9000
+
+    # ── 2026-09-25 owner decision Q1.2: e-stop release needs operator authority ──
+    # Gate rows for the 2026-09-25 owner decision: "the brain may REQUEST an
+    # e-stop release; it may never CLEAR the latch." Delivered as TEXT, to be
+    # spliced into tools/ci_check.sh by the owner/coordinator (I do not own that
+    # file). Written in its own style, using its EXISTING helpers verbatim:
+    # `kbuild`, `make_disk`, `run_brain_peer_boot`, `ok`/`bad`, `$QEMU`/`$KERNEL`,
+    # `$CI_LOG_DIR`. Two new scenario functions plus one static (no-QEMU) canary.
+    #
+    # Provisioning note: these rows need a 32-byte Ed25519 OPERATOR key pair, the
+    # same shape `build/disk-linkkey.img` already gives LINK.KEY (see the
+    # Makefile's `build/disk-linkkey.img` recipe for the pattern this mirrors).
+    # I did not add a Makefile target (Makefile is not in my file ownership for
+    # this change) — `operator_key_scenario_setup` below generates the pair with
+    # the SAME `cryptography` package `tools/gen_test_key.py` already requires,
+    # and provisions it with `mcopy`, exactly like the CONFIG.INI edit in
+    # `link_peer_scenario` does today. If the coordinator prefers a Makefile
+    # target instead (`build/disk-estopauth.img`, mirroring `disk-linkkey.img`),
+    # swap the setup block below for one; nothing else here depends on how the
+    # image was built, only on what is IN it (LINK.KEY absent — this scenario
+    # runs `link_encrypt=0`, same image as `disk-brainestop.img` — and a fresh
+    # OPERATOR.PUB).
+
+    # ── Setup: a disk image + a fresh operator keypair for this run ─────────────
+    operator_key_scenario_setup() {
+        # $1 = image to build (e.g. build/disk-estopauth.img), by copying the
+        # existing `disk-brainestop.img` recipe's output (GPIODRV autorun,
+        # link_encrypt=0 — this scenario does not exercise K-C5, that is the
+        # SEPARATE enforced-link row below).
+        local img="$1" keydir="$2"
+        # rm first: `safety: brain e-stop (tcp)` boots build/disk-brainestop.img
+        # DIRECTLY and leaves its flight recorder ending LATCHED; `make` then
+        # sees an up-to-date target and hands that dirty image over, the boot
+        # restores the latch, and PKT_ESTOP becomes a no-op ("already latched
+        # is already done") — gate 182f, 2026-09-26. Fresh image, every time.
+        rm -f build/disk-brainestop.img
+        make_disk build/disk-brainestop.img
+        cp build/disk-brainestop.img "$img"
+        mkdir -p "$keydir"
+        python3 - "$keydir" <<'PYEOF'
+import sys
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+except ImportError:
+    print("error: install the 'cryptography' package: pip install cryptography",
+          file=sys.stderr)
+    sys.exit(1)
+d = sys.argv[1]
+# Fixed seed: reproducible across runs, and distinct from
+# tools/keys/test_priv.bin (secure boot) so the two authorities cannot be
+# confused if a future change accidentally shared state between them.
+seed = bytes([0x37] * 32)
+priv = Ed25519PrivateKey.from_private_bytes(seed)
+pub = priv.public_key().public_bytes(
+    encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+open(f"{d}/operator_priv.bin", "wb").write(seed)
+open(f"{d}/operator_pub.bin", "wb").write(pub)
+PYEOF
+        mcopy -o -i "$img" "$keydir/operator_pub.bin" ::OPERATOR.PUB
+    }
+
+    # ── Row 1: request does not clear, signed release does (QEMU, brain link) ──
+    #
+    # Reuses `run_brain_peer_boot`'s boot sequence with `tools/fake_brain.py
+    # --kernel-estop-release` as the peer (the ONE new message this change adds
+    # to that file — see its own doc for the six phases). Same image shape as
+    # `brain_estop_tcp_scenario` (`link_encrypt=0`, GPIODRV autorun), plus
+    # `/fat/OPERATOR.PUB`.
+    #
+    # THE ASSERTION IS THE PAIR, on the kernel's OWN console lines, which are
+    # printed by the exact branch that does or does not call `safety::
+    # estop_release` — not a re-derivation of the gate. (A stricter version would
+    # additionally read `[ACTSMOKE] kernel motor duty=` back, the way
+    # `brain_estop_tcp_scenario` does, for the wheel-level evidence; that
+    # assertion is straightforward to add the same way but is NOT included below
+    # — see the agent report for why the run that produced these lines did not
+    # also capture clean ACTSMOKE output.)
+    estop_release_authority_scenario() {
+        local label="safety: e-stop release requires operator authority"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/estop-authority.log"
+        local blog="$CI_LOG_DIR/estop-authority-peer.log"
+        local img="build/disk-estopauth.img"
+        local keydir="$CI_LOG_DIR/estop-authority-keys"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        operator_key_scenario_setup "$img" "$keydir"
+
+        # settle 20, not 4: `run_brain_peer_boot` stops waiting at the peer's
+        # "phase 3 done"; the signed release and the 12 s drive-again window
+        # (`n_each * gap`) come AFTER that line, and the PASS marker after
+        # those. With 4 the boot was killed mid-phase-5 (gate 182e).
+        run_brain_peer_boot "$log" "$blog" "$img" 20 \
+            --kernel-estop-release --operator-priv "$keydir/operator_priv.bin" \
+            --duration 60 --gap 0.25
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the kernel's brain link never connected."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"
+            grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "PASS kernel-estop-release" "$blog" 2>/dev/null; then
+            bad; echo "      the peer script did not complete:"
+            tail -5 "$blog" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # THE ESTOP MUST HAVE LATCHED.
+        if ! grep -aq "BRAIN\] ESTOP received" "$log" 2>/dev/null; then
+            bad; echo "      PKT_ESTOP never reached the TCP handler."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # THE BARE REQUEST MUST NOT HAVE CLEARED IT — key line 1. Failure-only
+        # string: the OLD (pre-2026-09-25) behaviour printed "ESTOP cleared by
+        # MODE command" here instead, which this positive check would simply not
+        # find, so a regression reads as this assertion failing, not as a
+        # different string appearing.
+        if ! grep -aq "BRAIN\] ESTOP_RESET recorded as a REQUEST" "$log" 2>/dev/null; then
+            bad; echo "      the bare ESTOP_RESET request was not recorded as a"
+            echo "      request (either it was silently ignored, or — check the"
+            echo "      next line below — it cleared the latch on its own, which"
+            echo "      is the exact regression this row exists to catch)."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # And the ORDER matters: the request-refusal line must come BEFORE the
+        # verified-authority line, or a kernel that clears first and merely LOGS
+        # a stray "recorded as a REQUEST" afterwards would still pass a
+        # presence-only check.
+        local refuse_line clear_line
+        refuse_line=$(grep -an "BRAIN\] ESTOP_RESET recorded as a REQUEST" "$log" \
+                      | sed -n "1p" | cut -d: -f1)
+        clear_line=$(grep -an "BRAIN\] ESTOP cleared by verified operator authority" "$log" \
+                     | sed -n "1p" | cut -d: -f1)
+        if [ -z "$clear_line" ]; then
+            bad; echo "      the signed release was never accepted — no"
+            echo "      'ESTOP cleared by verified operator authority' line."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if [ -z "$refuse_line" ] || [ "$refuse_line" -ge "$clear_line" ]; then
+            bad; echo "      the request-refusal line did not come BEFORE the"
+            echo "      verified-release line (refuse=$refuse_line clear=$clear_line)."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        ok; rm -f "$log" "$blog"; rm -rf "$keydir"
+    }
+    par -s "safety: e-stop release requires operator authority" estop_release_authority_scenario   # the brain peer on host port 9000
+
+    # ── Row 2: the enforced-link build, booted — the audit's named measurement ─
+    #
+    # `link-encrypt-enforced` has a compile-time-only policy gate (K-C5): no
+    # runtime flag relaxes it, so an unauthenticated frame — which is everything
+    # `tools/fake_brain.py` sends, since it does not implement the RFC-0019
+    # handshake `tools/link_peer.py` does — must be refused at the link layer,
+    # BEFORE `safety::verify_operator_release` or even `mode_estop_record` is
+    # reached. This row's job is only to prove the build BOOTS and the refusal
+    # fires — it is not a release-authority test, K-C5 already has its own rows
+    # (`link auth rejects missing key` / `THE ENCRYPTED BRAIN LINK, END TO END`).
+    # Named in the owner's brief as "never booted in the gate" — `tools/
+    # ci_check.sh:554` only BUILDS it (`build "vf2"` / `build "k1"` set
+    # `link-encrypt-enforced`; grep confirms neither is booted anywhere in the
+    # file).
+    estop_release_authority_enforced_link_boot() {
+        local label="safety: e-stop authority under link-encrypt-enforced"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/estop-authority-enforced.log"
+        local blog="$CI_LOG_DIR/estop-authority-enforced-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,link-encrypt-enforced"
+        rm -f build/disk-linkkey.img
+        make_disk build/disk-linkkey.img
+
+        local keydir="$CI_LOG_DIR/estop-authority-enforced-keys"
+        mkdir -p "$keydir"
+        python3 - "$keydir" <<'PYEOF'
+import sys
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+seed = bytes([0x37] * 32)
+open(f"{sys.argv[1]}/operator_priv.bin", "wb").write(seed)
+PYEOF
+
+        run_brain_peer_boot "$log" "$blog" build/disk-linkkey.img 20 \
+            --kernel-estop-release --operator-priv "$keydir/operator_priv.bin" \
+            --duration 60 --gap 0.25
+
+        if grep -aqiE "panic" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic (an unauthenticated peer must be"
+            echo "      REFUSED, not crash the kernel):"
+            grep -aiE -m3 "panic" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # THE MEASUREMENT: an unauthenticated frame must be refused BY POLICY,
+        # named as such — not merely dropped in silence (see
+        # `auth_envelope::announce_denial`'s own doc for why silence here is
+        # itself the bug it replaced).
+        if ! grep -aq "SECCHAN\] FATAL: brain link .* refused" "$log" 2>/dev/null; then
+            bad; echo "      no link-policy refusal was announced; either the"
+            echo "      build did not actually enforce K-C5, or it silently"
+            echo "      accepted an unauthenticated frame (worse)."
+            echo "      logs kept: $log $blog"; return
+        fi
+        # And NOTHING from that unauthenticated attempt may have cleared the
+        # latch — belt and suspenders on top of the K-C5 rows: this row is what
+        # proves it for THIS build, under the actual release-authority code path.
+        if grep -aq "BRAIN\] ESTOP cleared" "$log" 2>/dev/null; then
+            bad; echo "      an unauthenticated peer cleared the e-stop under"
+            echo "      link-encrypt-enforced — K-C5 and the release authority"
+            echo "      both failed."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        ok; rm -f "$log" "$blog"; rm -rf "$keydir"
+    }
+    par -s "safety: e-stop authority under link-encrypt-enforced" estop_release_authority_enforced_link_boot   # the brain peer on host port 9000
+
+    # ── Row 3 (static, no QEMU): the test-only proof constructor never ships ───
+    #
+    # `safety::ReleaseAuthority::for_test` and `safety::test_reset_operator_
+    # authority` are `#[cfg(test)]` — compiled into `tests/host/behavior-tests`
+    # (which pulls `safety.rs` in with `#[path]`) and this crate's own `cargo
+    # test`, never into a kernel binary. This is the grep the module comments on
+    # `ReleaseAuthority`/`estop_release` promise: a real kernel ELF, built
+    # normally, must not contain the symbol. `nm`'s Rust v0 mangling embeds the
+    # literal path components, so a plain string match on the demangled-looking
+    # substring is enough — no demangler required, and no `^` anchor (the symbol
+    # is preceded by the mangling prefix, not by a line start).
+    #
+    # NEGATIVE check, failure-only string: absence of "for_test" is what PASSES
+    # here, so this is really a presence check inverted — `grep -q` returning
+    # nonzero is success. Paired with a POSITIVE check on the same binary (the
+    # production symbols the mechanism actually needs) so a kernel that failed to
+    # link `safety.rs` at all — which would ALSO pass the negative half — cannot
+    # read green here.
+    estop_release_authority_binary_canary() {
+        local label="safety: no test-only e-stop proof in the kernel binary"
+        printf "  %-26s" "${label}..."
+        kbuild "qemu"
+        local elf="target/riscv64imac-unknown-none-elf/release/kernel"
+        if [ ! -f "$elf" ]; then
+            bad; echo "      $elf does not exist after a supposedly successful build."
+            return
+        fi
+        # `nm | grep -q` is the wrong shape under `set -o pipefail`: grep -q
+        # exits on the first MATCH, nm takes SIGPIPE, the pipeline reports
+        # 141 — so the positive check below read "not linked" on a kernel
+        # that DOES link it (gate 182e). Symbols go to a file first.
+        local syms="$CI_LOG_DIR/estop-canary-syms.txt"
+        mkdir -p "$CI_LOG_DIR"
+        nm "$elf" > "$syms" 2>/dev/null
+        if grep -q "for_test" "$syms"; then
+            bad; echo "      the kernel binary links a #[cfg(test)]-only symbol"
+            echo "      (for_test) — the test-only release-authority bypass is"
+            echo "      reachable from a real kernel image."
+            return
+        fi
+        # Wave 11 (DOMAIN): the latch and its release moved from
+        # `azos_behavior::safety` to `azos_actuation::estop`
+        # (behavior re-exports it), so that is the symbol's path now.
+        if ! grep -q "14azos_actuation5estop13estop_release" "$syms"; then
+            bad; echo "      estop::estop_release is not linked into the kernel"
+            echo "      at all — the canary above would pass vacuously against a"
+            echo "      kernel that dropped the whole mechanism, so this positive"
+            echo "      half is required, not optional."
+            return
+        fi
+        ok
+    }
+    estop_release_authority_binary_canary
+
+
+    # THE PHYSICAL KILL SWITCH — the third of the four e-stop sources, and the
+    # one QEMU cannot present by itself.
+    #
+    # Two things had to be built before this could be asserted at all, and both
+    # were defects rather than missing test scaffolding:
+    #
+    #  1. `sys-wdt`, which owns this poll, NEVER RAN UNDER LOAD. Priority 20 —
+    #     the lowest in the system bar idle — under strict priority with no
+    #     aging. Measured with a probe verified present in the binary: it
+    #     entered and iterated on an idle boot and did not execute one
+    #     instruction in 50 s with the brain link, a disk and a NIC attached.
+    #     Six mechanisms died with it: stack canaries, timer liveness, this
+    #     poll, the flight-recorder flush, driver health and the OTA boot-good
+    #     mark. It is now priority 11, pinned to hart 2, and sleeps on a timer
+    #     instead of spinning.
+    #  2. The branch was not EDGE-TRIGGERED, because it had never run twice.
+    #     One press wrote 14 durable `SAFETY_ESTOP` records at 500 ms apart.
+    #
+    # `estop_gpio_pin` is set by the smoke task, not by CONFIG.INI, and the
+    # ORDER is the reason: every simulated GPIO pin powers up reading 0 and the
+    # poll is active-low, so a configured pin would latch the e-stop on the
+    # first poll before anything could move. The task drives the pin high —
+    # the released switch, which on a board is a pull-up — and only then arms
+    # the config. See `estop_gpio_smoke_task`.
+    killswitch_gpio_scenario() {
+        local label="safety: kill switch (gpio)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/killswitch-gpio.log"
+        local blog="$CI_LOG_DIR/killswitch-gpio-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,estop-gpio-smoke"
+        rm -f build/disk-estopgpio.img
+        make_disk build/disk-estopgpio.img
+
+        # `--kernel-drive` is the TCP script with the PKT_ESTOP withheld: the
+        # peer only ever asks the robot to MOVE, so whatever stops it can only
+        # have been the switch.
+        run_brain_peer_boot "$log" "$blog" build/disk-estopgpio.img 4 \
+            --kernel-drive --duration 50 --gap 0.25
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the kernel's brain link never connected, so the"
+            echo "      wheels were never turning. logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "ESTOPGPIO] kill switch armed" "$log" 2>/dev/null; then
+            bad; echo "      the smoke task never armed the pin — nothing was"
+            echo "      testable. logs kept: $log $blog"; return
+        fi
+
+        # Two anchors, and they are not interchangeable.
+        #
+        # `wdt_line` is where the watchdog RECORDED the event; `press_line` is
+        # where the switch was pressed. The stop is applied by the actuation
+        # gate, which can zero a wheel BEFORE the watchdog task gets to print,
+        # so "the wheel stopped because of the press" must be measured against
+        # the press. Gate 78 (2026-09-19) failed on exactly that: press at 532,
+        # right wheel zeroed at 537, watchdog record at 538, left wheel at 540 —
+        # both wheels stopped after the press, and the row still called it
+        # "THE KILL SWITCH DID NOT HOLD".
+        #
+        # The record is still required to exist, and exactly once: that is the
+        # `hits` check below, and it is a different property from the ordering.
+        local wdt_line hits press_line
+        wdt_line=$(grep -an "WDT] GPIO ESTOP" "$log" 2>/dev/null | sed -n "1p" | cut -d: -f1)
+        press_line=$(grep -an "ESTOPGPIO] pressing the kill switch" "$log" 2>/dev/null | sed -n "1p" | cut -d: -f1)
+        if [ -z "$press_line" ]; then
+            bad; echo "      the smoke task never pressed the switch — nothing was"
+            echo "      testable. logs kept: $log $blog"; return
+        fi
+        if [ -z "$wdt_line" ]; then
+            bad; echo "      the watchdog never saw the switch. If this went red"
+            echo "      after a scheduling change, check FIRST that sys-wdt runs"
+            echo "      at all under load — it did not until 2026-09-10."
+            echo "      logs kept: $log $blog"; return
+        fi
+        # Exactly one record for one press: the edge trigger.
+        hits=$(grep -ac "WDT] GPIO ESTOP" "$log" 2>/dev/null)
+        if [ "$hits" -ne 1 ]; then
+            bad; echo "      one press produced $hits e-stop records. A held switch"
+            echo "      is one event; repeating it writes a durable record every"
+            echo "      500 ms and buries the incident it is meant to explain."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        local drove_l drove_r
+        drove_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null \
+                  | grep -v "duty=0$" | awk -F: -v n="$wdt_line" '$1 < n' | grep -c .)
+        drove_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null \
+                  | grep -v "duty=0$" | awk -F: -v n="$wdt_line" '$1 < n' | grep -c .)
+        if [ "$drove_l" -lt 1 ] || [ "$drove_r" -lt 1 ]; then
+            bad; echo "      the wheels were never turning before the switch was"
+            echo "      pressed (left=$drove_l right=$drove_r), so stopping proves nothing."
+            grep -a -m6 "ACTSMOKE] kernel motor" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # The peer must still have been ASKING after the press, or a stopped
+        # wheel proves only that nobody wanted it to move.
+        local asks_after
+        asks_after=$(grep -an "TCP-RX" "$log" 2>/dev/null \
+                     | awk -F: -v n="$wdt_line" '$1 > n' | grep -c .)
+        if [ "$asks_after" -lt 5 ]; then
+            bad; echo "      the brain stopped talking after the switch was pressed"
+            echo "      ($asks_after frames), so the latch was never tested."
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # FINAL STATE, not absence of transitions — see the TCP scenario above
+        # for why. This is where that false green was measured: without the
+        # latch the wheel stayed at 80 and the change-only marker said nothing,
+        # so counting non-zero lines after the press returned 0 and passed.
+        local last_l last_r
+        last_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null | sed -n '$p')
+        last_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null | sed -n '$p')
+        for w in "$last_l" "$last_r"; do
+            local ln val
+            ln=${w%%:*}; val=${w##*duty=}
+            if [ -z "$w" ] || [ "$val" != "0" ] || [ "$ln" -lt "$press_line" ]; then
+                bad; echo "      THE KILL SWITCH DID NOT HOLD. Each wheel's last applied"
+                echo "      duty must be 0 and must come after the press; got:"
+                echo "        left : ${last_l:-<none>}"
+                echo "        right: ${last_r:-<none>}   (press at line $press_line, record at $wdt_line)"
+                echo "      logs kept: $log $blog"; return
+            fi
+        done
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "safety: kill switch (gpio)" killswitch_gpio_scenario   # the brain peer on host port 9000
+
+    # The latch survives a reset. Owner decision, 2026-09-13: boot reads the
+    # last `SAFETY_ESTOP` in the flight recorder and starts latched if the last
+    # session ended latched.
+    #
+    # DELIBERATELY NOT HERMETIC, and it is the one scenario that must not be:
+    # the second boot reading what the first one wrote is the property. It boots
+    # the image the kill-switch scenario just left — a durable `SAFETY_ESTOP`
+    # with action 2 and nothing after it that clears it — on the plain
+    # actuation kernel, with no kill switch configured and a peer that only ever
+    # asks to drive. So whatever keeps the wheels still can only be the record.
+    #
+    # The assertion is on the kernel's own writes, as above: each wheel's loop
+    # ran, no duty it applied was ever positive, the last one is 0, and the peer
+    # kept asking the whole time.
+    latch_survives_reboot_scenario() {
+        local label="safety: latch survives reboot"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/latch-reboot.log"
+        local blog="$CI_LOG_DIR/latch-reboot-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        if [ ! -f build/disk-estopgpio.img ]; then
+            bad; echo "      build/disk-estopgpio.img is missing: this scenario boots"
+            echo "      the image the kill-switch scenario leaves behind."; return
+        fi
+
+        run_brain_peer_boot "$log" "$blog" build/disk-estopgpio.img 4 \
+            --kernel-drive --duration 40 --gap 0.25
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the kernel's brain link never connected, so nothing"
+            echo "      asked the wheels to move. logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aq "SAFETY] ESTOP restored: the last session ended latched (action 2)" "$log" 2>/dev/null; then
+            bad; echo "      boot did not restore the latch the kill switch left on disk:"
+            grep -a -m3 "SAFETY] .*booting released\|SAFETY] ESTOP restored" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        local asks
+        asks=$(grep -ac "TCP-RX" "$log" 2>/dev/null)
+        if [ "$asks" -lt 20 ]; then
+            bad; echo "      only $asks frames from the peer reached the kernel, so a"
+            echo "      still wheel proves nothing. logs kept: $log $blog"; return
+        fi
+
+        local w line
+        for w in 0 1; do
+            line=$(grep -a "ACTSMOKE] kernel motor id=$w duty=" "$log" 2>/dev/null | sed -n '$p')
+            if [ -z "$line" ] || [ "${line##*duty=}" != "0" ]; then
+                bad; echo "      wheel $w: the control loop's last applied duty must be 0;"
+                echo "      got: ${line:-<no write at all>}. logs kept: $log $blog"; return
+            fi
+        done
+        if grep -aqE "ACTSMOKE] kernel motor id=[01] duty=[1-9]" "$log" 2>/dev/null; then
+            bad; echo "      THE LATCH DID NOT SURVIVE THE RESET — a wheel was driven:"
+            grep -aE -m4 "ACTSMOKE] kernel motor id=[01] duty=[1-9]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "safety: latch survives reboot" latch_survives_reboot_scenario   # the brain peer on host port 9000
+
+    # The latch record reaches the MEDIUM, not only the device's write cache.
+    #
+    # `safety: latch survives reboot` cannot see a missing flush: a killed QEMU
+    # leaves every write it accepted in the host file, flushed or not. This row
+    # boots with the device's write cache ON (`write-cache=on`, which the
+    # kernel's VIRTIO_BLK_F_FLUSH negotiation keeps on) behind QEMU's
+    # `blklogwrites` filter, which logs every write and every flush in order.
+    # `tools/blklog_crash_image.py` then rebuilds the disk a power cut would
+    # leave -- the pre-boot copy plus every write up to the LAST flush -- and a
+    # second boot on that image must restore the latch.
+    #
+    # `estop-latch-smoke` writes one durable latching SAFETY_ESTOP and then
+    # parks the boot, so no write after the claim (a periodic logger flush,
+    # BOOTMETA) can add a flush that hides a missing one. Canaries, run by
+    # hand: `virtio::blk::flush` answering Ok without sending T_FLUSH gives
+    # "0 flushes" and boot 2 "booting released"; dropping the flush after the
+    # directory entry in `fat32_fsync` gives "1 dropped" and the same; the
+    # tree before the flush existed fails "flush not negotiated" (QEMU then
+    # runs writethrough and the kernel's flush is not what made it durable).
+    latch_flush_scenario() {
+        local label="safety: latch record flushed"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log1="$CI_LOG_DIR/latch-flush-boot1.log"
+        local log2="$CI_LOG_DIR/latch-flush-boot2.log"
+        local img="$CI_LOG_DIR/latch-flush.img"
+        local pristine="$CI_LOG_DIR/latch-flush-pristine.img"
+        local wlog="$CI_LOG_DIR/latch-flush.wlog"
+        local crash="$CI_LOG_DIR/latch-flush-crash.img"
+        rm -f "$log1" "$log2" "$img" "$pristine" "$wlog" "$crash"
+        if ! kbuild "qemu,estop-latch-smoke"; then return; fi
+        # A fresh image: earlier rows write to build/disk.img, and a latching
+        # record they left would let boot 2 restore the latch with no flush.
+        rm -f build/disk.img
+        make_disk build/disk.img
+        cp build/disk.img "$img"; cp build/disk.img "$pristine"
+        if ! qemu-img create -f raw "$wlog" 256M >/dev/null 2>&1; then
+            bad; echo "      qemu-img could not create the write log"; return
+        fi
+
+        local pid i
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 2 \
+            -blockdev "driver=blklogwrites,node-name=d0,file.driver=file,file.filename=$img,log.driver=file,log.filename=$wlog,log-sector-size=512,log-super-update-interval=1" \
+            -device virtio-blk-device,drive=d0,write-cache=on >"$log1" 2>&1 &
+        pid=$!; i=0
+        while [ "$i" -lt 240 ]; do
+            grep -aq "ESTOPLATCHSMOKE\] parked" "$log1" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log1" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.25
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        if grep -aqiE "panic|\[FATAL\]" "$log1" 2>/dev/null; then
+            bad; echo "      boot 1: kernel panic or fatal exception:"
+            grep -aiE -m3 "panic|\[FATAL\]" "$log1" | sed "s|^|      |"
+            echo "      log kept: $log1"; return
+        fi
+        if ! grep -aq "VIRTIO-BLK\] flush: negotiated" "$log1" 2>/dev/null; then
+            bad; echo "      boot 1: VIRTIO_BLK_F_FLUSH was not negotiated, so the"
+            echo "      kernel cannot flush and QEMU ran writethrough:"
+            grep -a "VIRTIO-BLK\]" "$log1" | tr -d '\r' | sed "s|^|        |"
+            echo "      log kept: $log1"; return
+        fi
+        # Boot 2 restoring the latch proves this boot's record only if the
+        # image started released; otherwise the row cannot discriminate.
+        # A fresh `make_disk` image has no recorder file at all, and the kernel
+        # says so in its own words; both lines mean "no latch on this disk".
+        # Gate 187 was this row's first gate, and it went red on exactly that.
+        if ! grep -aqF "SAFETY] the last session ended released" "$log1" 2>/dev/null \
+           && ! grep -aqF "SAFETY] no flight recorder on this disk — booting released" "$log1" 2>/dev/null; then
+            bad; echo "      boot 1 did not start released, so the pristine image already"
+            echo "      carries a latch and boot 2 could restore it with no flush:"
+            grep -a "SAFETY\] .*boot\|SAFETY\] ESTOP" "$log1" | tr -d '\r' | sed "s|^|        |"
+            echo "      log kept: $log1"; return
+        fi
+        if ! grep -aqF "ESTOPLATCHSMOKE] wrote durable SAFETY_ESTOP record" "$log1" 2>/dev/null \
+           || ! grep -aq "ESTOPLATCHSMOKE\] parked" "$log1" 2>/dev/null; then
+            bad; echo "      boot 1: no durable SAFETY_ESTOP claim, or the boot never parked:"
+            grep -a "ESTOPLATCHSMOKE\]\|LOG\]" "$log1" | tr -d '\r' | sed "s|^|        |"
+            echo "      log kept: $log1"; return
+        fi
+
+        local summary
+        if ! summary="$(python3 tools/blklog_crash_image.py "$pristine" "$wlog" "$crash" 2>&1)"; then
+            bad; echo "      could not rebuild the power-cut image: $summary"; return
+        fi
+
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 2 \
+            -drive "file=$crash,if=none,format=raw,id=d0" \
+            -device virtio-blk-device,drive=d0 >"$log2" 2>&1 &
+        pid=$!; i=0
+        while [ "$i" -lt 240 ]; do
+            grep -aq "ESTOPLATCHSMOKE\] parked" "$log2" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log2" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.25
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        if ! grep -aqF "SAFETY] ESTOP restored: the last session ended latched (action 2)" \
+                "$log2" 2>/dev/null; then
+            bad; echo "      the power-cut image lost the latch boot 1 called durable"
+            echo "      ($summary):"
+            grep -a "SAFETY\] .*boot\|SAFETY\] ESTOP" "$log2" | tr -d '\r' | sed "s|^|        |"
+            echo "      logs kept: $log1 $log2"; return
+        fi
+        ok; rm -f "$log1" "$log2" "$img" "$pristine" "$wlog" "$crash"
+    }
+    par "safety: latch record flushed" latch_flush_scenario
+
+    # FAT32 journal barriers under a power cut that REORDERS (wave 7, STOR).
+    #
+    # The row above cuts at the last flush, which never reorders, so it cannot
+    # see a missing ordering barrier. `fat-barrier-smoke` checks BARRIER.DAT
+    # right after mount (journal recovery has run), then creates it (1400 B,
+    # 3 clusters) and overwrites it (900 B, 2 clusters) through
+    # `fat32_write_file`, and parks. Boot 1 runs on a write-cache=on disk
+    # behind `blklogwrites`; `blklog_crash_image.py --cuts` then lists, for
+    # every flush epoch from the first PENDING journal record on, every
+    # subset of that epoch's writes grouped by class (journal / FAT / root
+    # directory / data), and each distinct image is booted: the check must
+    # find the file absent, old or new, its chain sound (no link into a free
+    # cluster, EOC at the length its size needs) and the journal idle.
+    # Class granularity only; `tests/host/fs-tests` `power_cut::*` enumerates
+    # every per-sector subset. Canary, run by hand: delete barrier 1 of the
+    # overwrite arm in `write_file_journaled` (after the PENDING record) and
+    # a cut that keeps only the FAT writes of that epoch prints
+    # `FATBARRIER] FAIL ... FREE`.
+    fat_barrier_scenario() {
+        local label="storage: journal power cuts"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log1="$CI_LOG_DIR/fat-barrier-boot1.log"
+        local log2="$CI_LOG_DIR/fat-barrier-cut.log"
+        local img="$CI_LOG_DIR/fat-barrier.img"
+        local pristine="$CI_LOG_DIR/fat-barrier-pristine.img"
+        local wlog="$CI_LOG_DIR/fat-barrier.wlog"
+        local crash="$CI_LOG_DIR/fat-barrier-crash.img"
+        local cuts="$CI_LOG_DIR/fat-barrier-cuts.txt"
+        rm -f "$log1" "$log2" "$img" "$pristine" "$wlog" "$crash" "$cuts"
+        if ! kbuild "qemu,fat-barrier-smoke"; then return; fi
+        rm -f build/disk.img
+        make_disk build/disk.img
+        cp build/disk.img "$img"; cp build/disk.img "$pristine"
+        if ! qemu-img create -f raw "$wlog" 256M >/dev/null 2>&1; then
+            bad; echo "      qemu-img could not create the write log"; return
+        fi
+        local pid i
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 1 \
+            -blockdev "driver=blklogwrites,node-name=d0,file.driver=file,file.filename=$img,log.driver=file,log.filename=$wlog,log-sector-size=512,log-super-update-interval=1" \
+            -device virtio-blk-device,drive=d0,write-cache=on >"$log1" 2>&1 &
+        pid=$!; i=0
+        while [ "$i" -lt 240 ]; do
+            grep -aqE "FATBARRIER\] (parked|FAIL)" "$log1" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log1" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.25
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        if ! grep -aq "VIRTIO-BLK\] flush: negotiated" "$log1" 2>/dev/null \
+           || ! grep -aqF "FATBARRIER] check: BARRIER.DAT absent" "$log1" 2>/dev/null \
+           || ! grep -aqF "FATBARRIER] parked" "$log1" 2>/dev/null; then
+            bad; echo "      boot 1 did not negotiate FLUSH, start without BARRIER.DAT, or park:"
+            grep -a "VIRTIO-BLK\] flush\|FATBARRIER\]" "$log1" | tr -d '\r' | sed "s|^|        |"
+            echo "      log kept: $log1"; return
+        fi
+        if ! python3 tools/blklog_crash_image.py --cuts "$pristine" "$wlog" >"$cuts" 2>"$cuts.sum"; then
+            bad; echo "      could not list the cut images: $(cat "$cuts.sum")"; return
+        fi
+        local k cls n=0 absent=0 old=0 new=0
+        while read -r k cls; do
+            # stdin from /dev/null for both: this loop reads the cut list
+            # on stdin, and QEMU (-nographic) would swallow the rest of it.
+            python3 tools/blklog_crash_image.py --cut "$k" "$cls" "$pristine" "$wlog" "$crash" </dev/null || {
+                bad; echo "      could not build cut $k $cls"; return; }
+            rm -f "$log2"
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 1 \
+                -drive "file=$crash,if=none,format=raw,id=d0" \
+                -device virtio-blk-device,drive=d0 </dev/null >"$log2" 2>&1 &
+            pid=$!; i=0
+            while [ "$i" -lt 240 ]; do
+                grep -aqE "FATBARRIER\] (check|FAIL)" "$log2" 2>/dev/null && break
+                grep -aqiE "panic|\[FATAL\]" "$log2" 2>/dev/null && break
+                kill -0 "$pid" 2>/dev/null || break
+                i=$((i + 1)); sleep 0.25
+            done
+            kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            if ! grep -aqE "FATBARRIER\] check: BARRIER.DAT (absent|old|new), chain sound, journal idle" "$log2"; then
+                bad; echo "      cut in epoch $k keeping classes '$cls' ($(cat "$cuts.sum")):"
+                grep -a "FATBARRIER\]\|FAT32\] Journal" "$log2" | tr -d '\r' | sed "s|^|        |"
+                cp "$log2" "$log2.kept"; echo "      logs kept: $log1 $log2.kept"; return
+            fi
+            n=$((n + 1))
+            grep -aqF "BARRIER.DAT absent" "$log2" && absent=$((absent + 1))
+            grep -aqF "BARRIER.DAT old" "$log2" && old=$((old + 1))
+            grep -aqF "BARRIER.DAT new" "$log2" && new=$((new + 1))
+        done <"$cuts"
+        # All three outcomes must have been reached, or the cuts did not span
+        # the operations they claim to.
+        if [ "$n" -lt 3 ] || [ "$absent" -eq 0 ] || [ "$old" -eq 0 ] || [ "$new" -eq 0 ]; then
+            bad; echo "      $n cut boots: absent=$absent old=$old new=$new -- the cuts do not span create + overwrite"
+            return
+        fi
+        ok; echo "      $n cut boots: absent=$absent old=$old new=$new ($(sed 's/^# //' "$cuts.sum"))"
+        rm -f "$log1" "$log2" "$img" "$pristine" "$wlog" "$crash" "$cuts" "$cuts.sum"
+    }
+    par "storage: journal power cuts" fat_barrier_scenario
+
+    # MMC flush on an SDHCI-v3 host (wave 7, STOR). `mmc.rs` is compiled
+    # for QEMU under `mmc-pci` and bound to `sdhci-pci`'s BAR 0; the block
+    # device stays virtio. `mmc_flush_smoke` (kernel/src/smokes/storage.rs): write -> flush Ok
+    # with at least one CMD13 status read -> read back; a write past the
+    # card's end (QEMU answers ADDRESS_ERROR in the CMD24 response) -> flush
+    # Err; flush again -> Ok. The canary row builds `mmc-flush-canary`
+    # (flush answers Ok at entry, no CMD13) and must see the FAIL line only
+    # that path prints. Busy/prg polling and the eMMC CMD6 path are
+    # board-only: QEMU's card is never busy and has no cache.
+    mmc_sd_img="$CI_LOG_DIR/mmc-sd.img"
+    mkdir -p "$CI_LOG_DIR"
+    if kbuild "qemu,mmc-flush-smoke"; then
+        rm -f "$mmc_sd_img"; dd if=/dev/zero of="$mmc_sd_img" bs=1M count=64 2>/dev/null
+        QEMU_FAIL_RE="$QEMU_FAIL_RE|MMCSMOKE\] FAIL" \
+            par_row qemu_run "storage: mmc flush (sdhci)" "MMCSMOKE] PASS" 60 -smp 1 \
+            -device sdhci-pci -drive file="$mmc_sd_img",if=none,format=raw,id=sd0 \
+            -device sd-card,drive=sd0
+    fi
+    mmc_flush_canary_row() {
+        local label="storage: mmc flush canary"
+        printf "  %-26s" "${label}..."
+        local log="$CI_LOG_DIR/mmc-flush-canary.log" sd="$CI_LOG_DIR/mmc-sd-canary.img"
+        rm -f "$log" "$sd"; dd if=/dev/zero of="$sd" bs=1M count=64 2>/dev/null
+        if ! kbuild "qemu,mmc-flush-canary" >/dev/null; then
+            bad; echo "      qemu,mmc-flush-canary kernel did NOT build (row not run)"; return
+        fi
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 1 \
+            -device sdhci-pci -drive file="$sd",if=none,format=raw,id=sd0 \
+            -device sd-card,drive=sd0 >"$log" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt 120 ]; do
+            grep -aqE "MMCSMOKE\] (PASS|FAIL)" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        if grep -aqF "MMCSMOKE] FAIL flush answered Ok without reading the card status" "$log"; then
+            ok; rm -f "$log" "$sd"
+        else
+            bad; echo "      a flush that never asks the card was not caught — log kept: $log"
+        fi
+    }
+    par "storage: mmc flush canary" mmc_flush_canary_row
+    kbuild "qemu"
+
+    # Brain-link authentication gate, BOTH directions. build/disk.img carries
+    # no LINK.KEY, so the enforced kernel must refuse; build/disk-linkkey.img
+    # carries one, so the same kernel must boot past the gate. Testing only the
+    # refusal would pass just as happily on a gate wired to always refuse.
+    par "link auth rejects missing key" kq "qemu,link-auth-enforced" "link auth rejects missing key" "SECCHAN] FATAL" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    rm -f build/disk-linkkey.img
+    make_disk build/disk-linkkey.img
+    par_row qemu_run "link auth accepts valid key" "brain link authenticated" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-linkkey.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # THE ENCRYPTED BRAIN LINK, END TO END (RFC-0019). The scenario above shows
+    # the key loads; this one runs the link the key protects: a handshake,
+    # sealed records both ways, a REKEY in each direction, an in-session REJECT
+    # and a second handshake. The peer is `tools/link_peer.py`, which imports
+    # AzOSRobotBrain's `secure_channel.py` — the brain's implementation, not a
+    # copy — and reads the PSK out of the image this kernel boots.
+    #
+    # Two smoke features. `actuation-smoke`, because the PKT_ESTOP the peer
+    # seals right after its REKEY is asserted the way `safety: brain e-stop
+    # (tcp)` asserts it: on the wheels, never on the console line — see that
+    # scenario for why a handler that prints and does not latch must read red.
+    # `link-rekey-smoke`, because the kernel's own rekey interval is an hour;
+    # under the feature it is 5 s, so its REKEY records reach the peer.
+    #
+    # Its own boot sequence, not `run_brain_peer_boot`, which starts
+    # `tools/fake_brain.py`. The race that helper documents is handled the same
+    # way — wait on the peer's verdict, never on a kernel line — with one
+    # addition: QEMU starts only once the peer says `listening`, because the
+    # peer reads LINK.KEY out of the image with mtools and QEMU locks it.
+    #
+    # `link_peer_scenario <label> <camera-port>`: with a camera port (C1), the
+    # image's CONFIG.INI sets `behavior_camera_port` and the peer also accepts
+    # the kernel's camera connections there; every assertion below still holds,
+    # and the camera connection adds its own.
+    link_peer_scenario() {
+        local label="$1" camera_port="$2" tag="link-peer"
+        if [ "$camera_port" != 0 ]; then tag="link-camera"; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/${tag}.log"
+        local blog="$CI_LOG_DIR/${tag}-peer.log"
+        local img="build/disk-${tag}.img"
+        rm -f "$log" "$blog"
+
+        if ! python3 tools/link_peer.py --selftest >"$blog" 2>&1; then
+            bad; echo "      tools/link_peer.py --selftest failed: AzOSRobotBrain's"
+            echo "      secure_channel is not importable or no longer matches the peer,"
+            echo "      so a boot would fail for the wrong reason:"
+            grep -a "FAIL\|Error" "$blog" | sed -n "1,3p" | sed "s|^|      |"
+            echo "      log kept: $blog"; return
+        fi
+        if ! "$CARGO" build --release --features qemu,actuation-smoke,link-rekey-smoke \
+                >/dev/null 2>&1; then
+            bad; echo "      kernel build with link-rekey-smoke failed; not booting the"
+            echo "      previous binary in its place."; return
+        fi
+        # Hermetic: a fresh LINK.KEY image, and a copy only this boot writes.
+        rm -f build/disk-linkkey.img "$img"
+        make_disk build/disk-linkkey.img
+        cp build/disk-linkkey.img "$img"
+        if [ "$camera_port" != 0 ]; then
+            # This copy's CONFIG.INI only: the kernel dials a camera connection.
+            local ini="$CI_LOG_DIR/${tag}-config.ini"
+            if ! mcopy -n -i "$img" ::CONFIG.INI "$ini" 2>/dev/null \
+               || ! printf "behavior_camera_port=%s\n" "$camera_port" >>"$ini" \
+               || ! mcopy -o -i "$img" "$ini" ::CONFIG.INI 2>/dev/null \
+               || ! python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$img" --out "$ini.sig" >/dev/null 2>&1 \
+               || ! mcopy -o -i "$img" "$ini.sig" ::CONFIG.SIG 2>/dev/null; then
+                bad; echo "      could not set behavior_camera_port in $img with mtools"
+                return
+            fi
+            rm -f "$ini"
+        fi
+
+        python3 tools/link_peer.py --port 9000 --camera-port "$camera_port" --image "$img" \
+            >>"$blog" 2>&1 &
+        local bpid=$!
+        local i=0
+        while [ "$i" -lt 30 ]; do
+            grep -aq "\[link-peer\] listening\|\[link-peer\] FAIL" "$blog" 2>/dev/null && break
+            kill -0 "$bpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 \
+            -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+            >"$log" 2>&1 &
+        local qpid=$!
+        i=0
+        while [ "$i" -lt 720 ]; do
+            grep -aq "\[link-peer\] PASS\|\[link-peer\] FAIL" "$blog" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            kill -0 "$bpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        # Settle: the kernel logs a dispatch after the peer has written it.
+        sleep 2
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the kernel's brain link never connected to the peer."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        local sid1
+        sid1=$(grep -a "\[link-peer\] session 1 established sid=" "$blog" 2>/dev/null \
+               | sed -n '1s/.*sid=//p')
+        if [ -z "$sid1" ]; then
+            bad; echo "      no RFC-0019 handshake completed between the kernel and the peer:"
+            grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
+            grep -a "\[BRAIN\] hs:\|RFC-0019" "$log" 2>/dev/null | sed -n "1,3p" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # Phases 1-3: a SensorPacket opened, drive frames sealed, then the
+        # brain's REKEY + PKT_ESTOP and more drive frames under the new keys.
+        # A kernel that refuses records after a REKEY stops the peer here.
+        if ! grep -aq "\[link-peer\] phase 3 done" "$blog" 2>/dev/null; then
+            bad; echo "      the peer did not get through its REKEY + PKT_ESTOP phase:"
+            grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
+            grep -a "RFC-0019 record layer" "$log" 2>/dev/null | sed -n "1,2p" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # The e-stop sealed after the brain's REKEY must have LATCHED. Same
+        # evidence as `safety: brain e-stop (tcp)`: both wheels drove before
+        # it, and each wheel's last applied duty is 0 with its last non-zero
+        # duty before the latch, while the peer kept commanding 60 %.
+        local estop_line
+        estop_line=$(grep -an "\[BRAIN\] ESTOP received" "$log" 2>/dev/null \
+                     | sed -n "1p" | cut -d: -f1)
+        if [ -z "$estop_line" ]; then
+            bad; echo "      THE E-STOP SEALED AFTER THE BRAIN'S REKEY NEVER REACHED THE"
+            echo "      TCP HANDLER: the peer sent it and kept driving, and the kernel"
+            echo "      neither latched nor refused the session."
+            echo "      logs kept: $log $blog"; return
+        fi
+        local drove_l drove_r
+        drove_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null \
+                  | grep -v "duty=0$" | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
+        drove_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null \
+                  | grep -v "duty=0$" | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
+        if [ "$drove_l" -lt 1 ] || [ "$drove_r" -lt 1 ]; then
+            bad; echo "      the sealed drive frames never moved the wheels before the"
+            echo "      e-stop (left=$drove_l right=$drove_r), so a later duty=0 proves"
+            echo "      nothing about the latch."
+            grep -a -m6 "ACTSMOKE] kernel motor" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        local last_l last_r nz_l nz_r w
+        last_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null | sed -n '$p')
+        last_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null | sed -n '$p')
+        nz_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null \
+               | grep -v "duty=0$" | sed -n '$p' | cut -d: -f1)
+        nz_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null \
+               | grep -v "duty=0$" | sed -n '$p' | cut -d: -f1)
+        for w in "$last_l:$nz_l" "$last_r:$nz_r"; do
+            local rec nz val
+            rec=${w%:*}; nz=${w##*:}; val=${rec##*duty=}
+            if [ -z "$rec" ] || [ "$val" != "0" ] || [ -z "$nz" ] \
+               || [ "$nz" -gt "$estop_line" ]; then
+                bad; echo "      THE E-STOP SEALED AFTER THE BRAIN'S REKEY DID NOT HOLD. Each"
+                echo "      wheel's last applied duty must be 0, and its last NON-ZERO duty"
+                echo "      must fall before the latch; got:"
+                echo "        left : ${last_l:-<none>}   (last non-zero at line ${nz_l:-<none>})"
+                echo "        right: ${last_r:-<none>}   (last non-zero at line ${nz_r:-<none>})"
+                echo "      e-stop at line $estop_line"
+                echo "      logs kept: $log $blog"; return
+            fi
+        done
+
+        # Phase 4: kernel records kept opening after the brain's REKEY, and at
+        # least one kernel REKEY record arrived with records opened after it.
+        local p4 krekeys
+        p4=$(grep -a "\[link-peer\] phase 4 done" "$blog" 2>/dev/null | sed -n '1p')
+        krekeys=$(printf '%s\n' "$p4" | sed -n 's/.*kernel_rekeys=\([0-9]*\).*/\1/p')
+        if [ -z "$krekeys" ] || [ "$krekeys" -lt 1 ]; then
+            bad; echo "      no kernel REKEY record followed by an opened kernel record"
+            echo "      reached the peer (kernel_rekeys=${krekeys:-<none>}):"
+            grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
+        # Phase 5: a tampered record ends the session with a REJECT record and
+        # a close, and the kernel's next dial completes a NEW session.
+        local sid2 est
+        sid2=$(grep -a "\[link-peer\] session 2 established sid=" "$blog" 2>/dev/null \
+               | sed -n '1s/.*sid=//p')
+        if ! grep -aq "\[link-peer\] phase 5 done" "$blog" 2>/dev/null \
+           || [ -z "$sid2" ] || [ "$sid2" = "$sid1" ]; then
+            bad; echo "      the tampered record did not end in a REJECT record, a close and"
+            echo "      a second handshake with a new session id"
+            echo "      (session 1: $sid1, session 2: ${sid2:-<none>}):"
+            grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
+            grep -a "RFC-0019 record layer" "$log" 2>/dev/null | sed -n "1,2p" | sed "s|^|      |"
+            # The kernel closes first here and redials at once; a refused
+            # connect or handshake reads as a TCP-layer fault, not a link one.
+            grep -a "connect failed rc\|handshake stalled\|\[BRAIN\] hs:" "$log" 2>/dev/null \
+                | sed -n "1,3p" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        est=$(grep -ac "\[BRAIN\] RFC-0019 encrypted link established" "$log" 2>/dev/null)
+        if [ "${est:-0}" -lt 2 ]; then
+            bad; echo "      the peer saw two sessions but the kernel logged ${est:-0}"
+            echo "      established links, want >= 2."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if [ "$camera_port" = 0 ]; then
+            # Without the key the kernel creates no camera task at all.
+            if grep -aq "Created camera-tx task" "$log" 2>/dev/null; then
+                bad; echo "      no behavior_camera_port is set, yet the kernel created camera-tx."
+                echo "      logs kept: $log $blog"; return
+            fi
+        else
+            # C1: camera frames on a connection of their own. The peer's
+            # `camera phase N done` lines carry the assertions: frames and a
+            # kernel REKEY on it, closing with its control session, a new one
+            # with the next session, four distinct session ids, no camera frame
+            # on a control connection and nothing else on a camera one.
+            if ! grep -aq "\[link-peer\] camera phase 5 done" "$blog" 2>/dev/null; then
+                bad; echo "      the camera connection did not complete its phases:"
+                grep -a "\[link-peer\] FAIL\|\[link-peer\] camera" "$blog" 2>/dev/null \
+                    | sed -n "1,4p" | sed "s|^|      |"
+                grep -a "\[CAM-TX\]" "$log" 2>/dev/null | sed -n "1,4p" | sed "s|^|      |"
+                echo "      logs kept: $log $blog"; return
+            fi
+            # The kernel must say it closed the camera connection because its
+            # control session ended (or was replaced before the task looked).
+            if ! grep -aq "\[CAM-TX\] closed (Control\(Ended\|Replaced\))" "$log" 2>/dev/null; then
+                bad; echo "      the peer saw the camera connection close, but the kernel never"
+                echo "      logged closing it for its control session:"
+                grep -a "\[CAM-TX\]" "$log" 2>/dev/null | sed -n "1,4p" | sed "s|^|      |"
+                echo "      logs kept: $log $blog"; return
+            fi
+        fi
+        if ! grep -aq "\[link-peer\] PASS" "$blog" 2>/dev/null; then
+            bad; echo "      the peer did not finish its script:"
+            grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par_row -s link_peer_scenario "link: rfc-0019 end to end" 0   # the peer on host port 9000
+    # C1: the same link with camera frames on a connection of their own.
+    par_row -s link_peer_scenario "link: camera connection" 9001
+
+    # ── The userspace ELFs the gate never executed ─────────────────────
+    #
+    # Of eleven programs under `userspace/`, four were never run by any
+    # scenario. Two of those are worth running and are added here. Of the other
+    # two:
+    #
+    #   * `hello` is hand-written assembly (hello.S), covered by the ELF loader
+    #     path the other scenarios already exercise, and stays out.
+    #   * `brain_client` needed a live brain server on the host. It is booted
+    #     now, against `tools/fake_brain.py`, by `userspace: ring-3 drives
+    #     motors`, `userspace: ring-3 reconnects` and `userspace: ring-3 e-stop`.
+    #
+    # **gpio_drv is the one that matters.** It is the ring-3 driver: userspace
+    # registers as the handler for DRV_KIND_GPIO and the kernel dispatches a
+    # real request to it. Nothing else in the gate crosses that boundary in
+    # that direction. It was built into every disk image since E11.AQ3 and made
+    # the autorun of none of them, so the whole path shipped untested.
+    #
+    # The marker is the kernel's own confirmation of the round trip, not the
+    # driver's "I started" line: a driver that registers and then answers
+    # nothing would satisfy the latter.
+    kbuild "qemu"
+    rm -f build/disk-gpiodrv.img
+    make_disk build/disk-gpiodrv.img
+    # The smoke's own verdict counts here, where gpio_drv is the autorun, and
+    # only here (see QEMU_FAIL_RE).
+    #
+    # Wave 10 (DRV2): before that line the smoke counts gpio_drv's idle
+    # serve-loop passes over 3 s with no client (`[AQ3] gpio_drv idle:`).
+    # Parked in SYS_DRIVER_REPLY_WAIT it wakes about once a second (the
+    # kernel's park bound); `[AQ3] gpio_drv idle FAIL` (above 5/s) is a
+    # verdict. Canary: gpio_drv back on its 581 + yield poll measured
+    # ~155 000/s. `[AQ3] proxy round trip FAIL` (more than 16 of the 32 timed
+    # pings unanswered) is one too: it is what a submit that stops waking the
+    # parked driver prints.
+    #
+    # Wave 7: the marker is the line printed AFTER the round trip, with the
+    # answering driver's live priority and class read from the scheduler by
+    # its registered TID. 24/best_effort is what the `GPIODRV.ELF` topology
+    # row declares (best_effort, priority 0 clamped into [24, 30]); before the
+    # topology was applied it read 16. Any other value is a verdict line that
+    # only the failure prints, so it is matched as one rather than timing out.
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)|\[AQ3\] gpio_drv idle FAIL|\[AQ3\] proxy round trip FAIL|\[AQ3\] gpio_drv tid=[0-9]+ runs at priority=([^2]|2[^4]|24[0-9])|\[AQ3\] gpio_drv tid=[0-9]+ runs at priority=24 class=[^b]" \
+    par_row qemu_run "userspace: ring-3 GPIO driver" "gpio_drv tid=.* runs at priority=24 class=best_effort" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-gpiodrv.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # The minimal Rust ring-3 ELF (E11.AQ3 phase-1). Trivial by design, and
+    # that is the point: it is the smallest thing that proves the loader, the
+    # linker script and the libsys entry path still work, so when a bigger
+    # program fails to start this says whether the cause is upstream of it.
+    #
+    # It is also the runtime proof that a call OUTSIDE a binary's seccomp
+    # profile is refused. The kernel installs UHELLO.ELF's profile at exec
+    # (`IMAGE_PROFILES` in crates/core/sched/src/seccomp.rs: putchar, exit, write),
+    # and uhello then calls getpid, which answers a positive tid unfiltered and
+    # -1 filtered. The marker is the refusal line, printed after the running
+    # line; an answered getpid prints `FAILED:` and QEMU_FAIL_RE reports it.
+    # The host half — every shipped binary has a row, each row equals what its
+    # source issues, everything else is refused — is `tests/host/seccomp-tests`.
+    rm -f build/disk-uhello.img
+    make_disk build/disk-uhello.img
+    par_row qemu_run "userspace: minimal Rust ELF" "SECCOMP] tid=" 120 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-uhello.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── The 49 measurements nobody was reading ─────────────────────────
+    #
+    # `domains/robot/bench` (1332 lines, 11 subsystems) runs on **every** boot and
+    # emits 49 `[BENCH-RES]` lines: ipc, mm, sched, net, fs, crypto, auth, cap,
+    # ota, protocol, asyncrt. The gate looked at none of them. A subsystem
+    # whose benchmark stopped emitting -- because it panicked, was cfg'd out,
+    # or was quietly deleted -- would take its measurement with it and the gate
+    # would stay green.
+    #
+    # **The count, not the values.** A cycle threshold in a gate measures the
+    # host's load, not the kernel; this file already says so about latbench,
+    # and the same reasoning applies with more force here, where the numbers
+    # come from `rdcycle` under TCG SMP. What IS gate-able is that every
+    # subsystem still produces its measurement, and that is what breaks
+    # silently.
+    #
+    # 49 verified stable across five runs from different builds. If a
+    # subsystem is legitimately added or removed, this number changes with it
+    # -- deliberately, so the change has to be noticed.
+    #
+    # Not covered, and it is worth knowing why: `tools/bench_e2e.sh` (468
+    # lines) drives the throughput and latency scenarios end to end, but needs
+    # a live brain server on the host. That is why nobody runs it, and why it
+    # is not gated here.
+    fresh_disk build/disk-uhello.img
+    par_row qemu_run "bench: all 49 measurements" "run_all done emitted=49" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-uhello.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── The ring-3 driver serves a MORE urgent client on its own hart ─────
+    #
+    # `UserDriverProxy` used to wait for a ring-3 driver's reply with a
+    # million-iteration spin: a client more urgent than the driver on the
+    # driver's hart spun the whole bound and the driver never ran. It now
+    # blocks (wake by TID on the reply), and for the span of the wait donates
+    # its priority to the driver — the lease-PI mechanism. Blocking alone is
+    # not enough: `proxy_pi_smoke` puts a prio-20 task that only yields between
+    # the client (14) and gpio_drv (24) on gpio_drv's hart, so without the
+    # donation the hart goes to that task and every attempt ends at the proxy's
+    # 100 ms timeout. Marker: the answered call, with the driver back at its
+    # base priority after it. `[PROXYPI] FAIL` (incl. `FAIL TIMEOUT`, which only
+    # the timeout path prints) is a verdict. Canary: `proxy-donation-canary`
+    # (never donates) fails here on `FAIL TIMEOUT`.
+    #
+    # Wave 9: then a client at 8 (hard-RT band) calls the same driver; the
+    # donation must lend gpio_drv 12, the ring-3 floor, not 8. The marker is
+    # that second verdict, printed only after the first passed. Canary:
+    # `donation-floor-canary` (no floor) fails on `FAIL floor: gpio_drv was
+    # lent 8, below the ring-3 floor 12`.
+    #
+    # Placed after the bench row and before the seccomp block, whose first act
+    # is `kbuild "qemu"`: no later row inherits this kernel. Reuses the gpio_drv
+    # disk the `ring-3 GPIO driver` row built.
+    kbuild "qemu,proxy-pi-smoke"
+    fresh_disk build/disk-gpiodrv.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[PROXYPI\] FAIL|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)" \
+    par_row qemu_run "userspace: ring-3 driver serves a more urgent client on its hart" "PROXYPI] PASS floor" 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-gpiodrv.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── A crashed ring-3 driver is restarted, three times and no more ─────
+    #
+    # RFC-0049 M4. The kernel stops gpio_drv (`driver_request_stop`: it exits
+    # with 137 at its next driver call) four times. Kills 1-3: the supervisor
+    # holds the GPIO driver-server slot, creates a successor from the same
+    # image (re-read, re-hashed), hands it the slot, and the successor answers
+    # a ping; the row prints death -> successor created -> registered -> first
+    # reply in ms (wall clock under TCG: the cold-restart baseline RFC-0050's
+    # restore is compared against). Kill 4: the budget (3) is spent, the kind
+    # must stay down for 3 s, and the flight recorder must hold exactly three
+    # more restart records and one more give-up than before kill 1.
+    # `[SUP] FAIL` is a verdict. Canary: `sup-canary` (supervisor off) fails
+    # on `[SUP] FAIL not restarted after kill 1`, which only a driver that
+    # never came back prints. Wave 12 (EXIT2): the supervisor is woken from the
+    # post-teardown exit hook, and a wake while the dead driver still holds its
+    # address space fails the smoke (`[SUP] FAIL the supervisor was woken N
+    # time(s) while ...`); canary by hand, 2026-10-03: wake from `exit_done`
+    # again -> that line, N = 4, both ISAs. Its own disk copy: the recorder count must not
+    # see another boot's records, and the other gpio rows must not see these.
+    # Before the seccomp block's `kbuild "qemu"`, like the row above.
+    kbuild "qemu,sup-smoke"
+    rm -f build/disk-gpiodrv-sup.img
+    cp build/disk-gpiodrv.img build/disk-gpiodrv-sup.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[SUP\] FAIL|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)" \
+    # Alone, like the restart-window row below: its restart budget is judged
+    # against the clock, and with other jobs running it once read "restarted
+    # past the budget" (2026-10-03).
+    par_row -s qemu_run "userspace: a crashed ring-3 driver is restarted" "SUP] PASS" 240 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-gpiodrv-sup.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    rm -f build/disk-gpiodrv-sup.img
+
+    # ── The supervisor's restart window and Restart=on-failure ───────────
+    #
+    # Owner decisions 2026-09-28 (`crates/core/sched/src/supervisor.rs`): at most
+    # SUP_RESTART_BURST restarts within SUP_RESTART_INTERVAL_S (systemd's
+    # StartLimitBurst/IntervalSec), and a driver that exits 0 is not restarted.
+    # The row above covers the burst at the default interval (300 s). This one
+    # builds with the interval set to 5 s in a copy of the primary config, so the
+    # Kconfig symbol is what reaches the table: kill gpio_drv (137), wait the
+    # interval out, kill it again -> restarted as restart 1 of a FRESH window;
+    # then stop it with exit code 0 (the code a driver's own exit(0) passes to
+    # task_exit_with_code) -> not restarted, no owner for 3 s. Canaries (by
+    # hand, reverted): the window never forgets -> `[SUP] FAIL window`; exit 0
+    # treated as a failure -> `[SUP] FAIL restarted after exit 0`. The plain
+    # kernel is rebuilt with the primary config afterwards.
+    # Absolute, under the primary column's own directory: `azos_limits`'s
+    # build script resolves KCONFIG_CONFIG from its crate directory, so a
+    # relative path (CI_LOG_DIR is one) builds against no config at all.
+    sup_window_cfg="${PRIMARY_DIR}/sup-window.config"
+    sed 's/^CONFIG_SUP_RESTART_INTERVAL_S=.*/CONFIG_SUP_RESTART_INTERVAL_S=5/' \
+        "$PRIMARY_CONFIG" >"$sup_window_cfg"
+    if ! grep -q '^CONFIG_SUP_RESTART_INTERVAL_S=5$' "$sup_window_cfg"; then
+        printf "  %-26s" "userspace: supervisor restart window..."
+        bad; echo "      $PRIMARY_CONFIG has no CONFIG_SUP_RESTART_INTERVAL_S to shorten"
+    else
+        export KCONFIG_CONFIG="$sup_window_cfg"
+        kbuild "qemu,sup-window-smoke"
+        rm -f build/disk-gpiodrv-supw.img
+        cp build/disk-gpiodrv.img build/disk-gpiodrv-supw.img
+        QEMU_FAIL_RE="$QEMU_FAIL_RE|\[SUP\] FAIL|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)" \
+        # Alone: a 5 s window, judged by the in-kernel smoke against the clock;
+        # with other jobs running it read "restarted after exit 0" before the
+        # supervisor had released the driver (2026-10-03).
+        par_row -s qemu_run "userspace: supervisor restart window" "SUP] PASS window" 240 \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file=build/disk-gpiodrv-supw.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
+        rm -f build/disk-gpiodrv-supw.img
+        export KCONFIG_CONFIG="$PRIMARY_CONFIG"
+        kbuild "qemu"
+    fi
+    rm -f "$sup_window_cfg"
+
+    # ── Lease priority inheritance from a ring-3 lessor (wave 9) ─────────
+    #
+    # `SYS_IPC_LEASE_WAIT` (602) takes the `Cap<Lease>` `SYS_IPC_LEASE_GRANT_TYPED`
+    # mints for a ring-3 lessor and reaches `lease_wait_return_as`, so lease
+    # PI applies to ring 3. IPCTEST's phase L2 is the lessor (16); the kernel
+    # `lease_pi3_smoke` lessee (24) sits behind a prio-20 hog that only
+    # yields. Marker: the lessee got past the hog AT the lessor's priority and
+    # was back at base after the return. Canary (by hand):
+    # `# CONFIG_LEASE_PRIORITY_INHERITANCE is not set` fails on `[LEASEPI3]
+    # FAIL lessee ran at 24 (no donation from the ring-3 wait)`, printed only
+    # after the hog's 5 s ceiling. Reuses the ipctest disk its own row built;
+    # the next block's first act is `kbuild "qemu"`.
+    kbuild "qemu,lease-pi3-smoke"
+    fresh_disk build/disk-ipctest.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[LEASEPI3\] FAIL|\[IPCTEST\]  FAIL  L" \
+    par_row qemu_run "ipc: ring-3 lessor lends its priority (SYS_IPC_LEASE_WAIT)" "LEASEPI3] PASS ring-3 lessor" 200 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-ipctest.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+
+    # ── DRV1 (wave 9): the buzzer and the INA219, in ring 3 ────────────
+    #
+    # The functional test of the two drivers RFC-0040 places in user space
+    # (rule 3), run by a kernel task (`ring3_drv_smoke`) through the kernel API
+    # the syscall handlers call, and checked against the simulated hardware
+    # underneath: PWM channel 5's state for the buzzer (440 Hz on, off, a
+    # 50 ms 1000 Hz tone that has ended 300 ms later), the fixed 7400 mV /
+    # 1500 mA of the simulated INA219 for the power record. The same
+    # assertions passed on the in-kernel drivers before they moved.
+    #
+    # Both drivers now run in ring 3 (`userspace/drivers/buzz_drv`, `userspace/drivers/ina_drv`),
+    # started by the kernel because their topology rows say `start = true`
+    # (`ring3-driver-start`, on under `qemu`), with the capabilities of those
+    # rows; the kernel API is their `UserDriverProxy` client. Only
+    # `build/disk-drv.img` carries the two images.
+    #
+    # Wave 10 (DRV2): each verdict also requires the driver to stay parked
+    # while nobody calls it (idle serve-loop passes over 3 s: at most 5/s for
+    # the silent buzzer, 15/s for the INA219, which samples at 10 Hz), and
+    # the INA219's integrated charge over a 3 s window to be 1500 mA times the
+    # measured window within 50..=150% (it is weighted by the driver's clock,
+    # not by a nominal cadence). Both fail as `[DRV1] <driver> FAIL:`.
+    #
+    # One boot per row, one verdict per driver: `[DRV1] <driver> FAIL:` is
+    # added to each row's own pattern only, so one driver's failure does not
+    # turn the other's row red. The canary row below removes the flag from
+    # the buzzer's row.
+    kbuild "qemu,ring3-drv-smoke"
+    rm -f build/disk-drvbase.img build/disk-drv.img
+    make_disk build/disk-drv.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[DRV1\] buzzer FAIL" \
+    par_row qemu_run "drivers: buzzer" "DRV1] buzzer PASS" 240 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-drv.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    fresh_disk build/disk-drv.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[DRV1\] ina219 FAIL" \
+    par_row qemu_run "drivers: INA219 power monitor" "DRV1] ina219 PASS" 240 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-drv.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    # The canary, gated: `ring3-drv-start-canary` builds the same topology
+    # with the buzzer row's `start = true` removed. The image is on the same
+    # disk, so the ONLY difference is the flag, and nothing must start it:
+    # the marker is the verdict only the smoke's registration timeout prints.
+    # A buzzer PASS here means something other than the flag starts drivers.
+    # The INA219 still starts (its row keeps the flag) and must not fail.
+    kbuild "qemu,ring3-drv-start-canary"
+    fresh_disk build/disk-drv.img
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[DRV1\] buzzer PASS|\[DRV1\] ina219 FAIL|DRVLAUNCH\] BUZZDRV\.ELF started" \
+    par_row qemu_run "drivers: no start flag, no driver" "DRV1] buzzer FAIL: no ring-3 driver registered" 240 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=build/disk-drv.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    # Wave 11: the same two drivers killed under supervision (`supall_row`,
+    # defined beside the aarch64 drivers row), and its canary.
+    par_row supall_row "drivers: start=true supervised" rv "" PASS
+    par_row supall_row "drivers: start=true supervised, canary" rv ",supall-canary" FAIL
+    # Wave 11 (DRVPLACE): the INA219 in the kernel placement (same readings
+    # as `drivers: INA219 power monitor`), its two canaries, and the topology
+    # row key `restart` (`drvplace_row`, defined beside the aarch64 rows).
+    par_row drvplace_row "drivers: INA219 placed in kernel" rv "qemu,ring3-drv-smoke,ina219-kernel" ina-kernel
+    par_row drvplace_row "drivers: INA219 placement canary" rv "qemu,ring3-drv-smoke,ina219-placement-canary" ina-canary
+    drvplace_build_canary_row "drivers: INA219 placement build canary" rv
+    par_row drvplace_row "drivers: restart = always / no" rv "qemu,restart-smoke" restart
+    par_row drvplace_row "drivers: restart key canary" rv "qemu,restart-canary" restart-canary
+    par_row drvplace_row "drivers: buzzer placed in kernel" rv "qemu,ring3-drv-smoke,buzzer-kernel" buzz-kernel
+    drvplace_build_canary_row "drivers: buzzer placement build canary" rv \
+        buzzer-placement-build-canary "DRV_BUZZER_PLACEMENT: the drivers crate and the topology disagree"
+
+    # ── Seccomp image binding ───────────────────────────────────────────
+    #
+    # Each seccomp image profile is bound to the SHA-256 of the exact ELF the
+    # build ships (crates/core/sched/src/seccomp.rs, build/image_hashes.rs), never to
+    # the name it is opened under (owner decision 2026-09-14). Two images from
+    # the Makefile, both after `bench: all 49 measurements` so no scenario above
+    # inherits the cap-deny-smoke kernel the second one builds. The host half,
+    # every binary renamed and replaced, is tests/host/seccomp-tests.
+    #
+    # RENAMED: uhello's bytes over ABITEST.ELF. Bound by name, uhello would run
+    # under ABITEST.ELF's row, which allows getpid, and print `FAILED:`. Bound by
+    # digest it runs under UHELLO.ELF's row and its getpid is refused. Asserted:
+    # the kernel's install line naming both, the refusal line, and no abitest.
+    seccomp_renamed_scenario() {
+        local label="seccomp: renamed image keeps its profile"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/seccomp-renamed.log"
+        rm -f "$log"
+
+        kbuild "qemu"
+        rm -f build/disk-abitest.img build/disk-seccomp-renamed.img
+        make_disk build/disk-seccomp-renamed.img
+        job_disk build/disk-seccomp-renamed.img
+        par_ready
+
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$JDISK",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 240 ]; do
+            grep -aqE "SECCOMP\] tid=|uhello\] FAILED" "$log" 2>/dev/null && break
+            grep -aqE "AUTORUN\] REFUSED" "$log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        if grep -aq "ABITEST]" "$log" 2>/dev/null; then
+            bad; echo "      abitest ran: the image did not carry uhello's bytes. log kept: $log"; return
+        fi
+        if ! grep -aqF "[AUTORUN] seccomp: /fat/ABITEST.ELF runs under the UHELLO.ELF profile" "$log" 2>/dev/null; then
+            bad; echo "      /fat/ABITEST.ELF was not confined to the profile its bytes are bound to:"
+            grep -a -m3 "AUTORUN\] \(REFUSED\|seccomp\)" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        if grep -aq "uhello] FAILED" "$log" 2>/dev/null; then
+            bad; echo "      getpid was answered: the renamed binary ran under a wider profile."
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq "SECCOMP] tid=" "$log" 2>/dev/null; then
+            bad; echo "      uhello gave no verdict. log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "seccomp: renamed image keeps its profile" seccomp_renamed_scenario
+
+    # REPLACED: UHELLO.ELF one byte longer, still a loadable ELF. Its digest
+    # matches no shipped ELF, so autorun refuses it before granting anything,
+    # writes SAFETY_EXEC_REFUSED durably, and (cap-deny-smoke) reads the record
+    # back off LOG00000.BIN. Asserted: the refusal line, the record, and that
+    # uhello never printed a line. The kernel is rebuilt without the smoke
+    # feature right after QEMU stops, pass or fail.
+    seccomp_replaced_scenario() {
+        local label="seccomp: replaced image is refused"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/seccomp-replaced.log"
+        rm -f "$log"
+
+        kbuild "qemu,cap-deny-smoke"
+        rm -f build/disk-uhello.img build/disk-seccomp-replaced.img
+        make_disk build/disk-seccomp-replaced.img
+        job_disk build/disk-seccomp-replaced.img
+        par_ready
+
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 4 -global virtio-mmio.force-legacy=false \
+            -drive file="$JDISK",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 240 ]; do
+            grep -aqE "AUTORUN\] exec refusal (NOT )?RECORDED" "$log" 2>/dev/null && break
+            grep -aq "uhello]" "$log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        if grep -aq "uhello]" "$log" 2>/dev/null; then
+            bad; echo "      the replaced binary ran:"; grep -a -m2 "uhello]" "$log" | sed "s|^|      |"
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aqF "[AUTORUN] REFUSED: /fat/UHELLO.ELF (" "$log" 2>/dev/null; then
+            bad; echo "      autorun did not refuse the replaced image. log kept: $log"; return
+        fi
+        if grep -aq "exec refusal NOT RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the exec was refused and its record did not reach the disk."
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq "exec refusal RECORDED" "$log" 2>/dev/null; then
+            bad; echo "      the refusal readback gave no verdict. log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "seccomp: replaced image is refused" seccomp_replaced_scenario
+    kbuild "qemu"
+
+    # Shared verdict of the idle-wakes rows (both ISAs), on `delta` timer
+    # interrupts over the 30 s window. Wave 13, owner decision round 50:
+    # hart 0's idle keepalive runs only while a watchdog is armed.
+    #   * no watchdog (QEMU): THRESHOLD delta <= IDLE_WAKES_MAX_30S. Measured
+    #     band: 0 on every run (bench-minimal, 30 s windows, host QEMU
+    #     census 1-4: riscv64 and aarch64, -smp 1 x5 and -smp 4 x3 each); the
+    #     margin of 3 leaves room for the 60 s self-heal ceiling. Linux 6.4 on the same QEMU (riscv64, busybox
+    #     shell idle) takes 2.3/s = 69 per 30 s; the old fixed 100 ms keepalive
+    #     read 9.3-9.6/s.
+    #   * `wdt` (feature `wdt-sim`: the 500 ms timeout recorded as armed): the
+    #     boot prints the derived period (`[WDT] idle keepalive on hart 0 every
+    #     N us`, timeout / 4 = 125 ms) and the count must sit in the band that
+    #     period gives: 228-237 per 30 s on both ISAs (-smp 1 x5, -smp 4 x3; 240
+    #     would be exact, the re-arm counts from each wake); THRESHOLD 210-250. A keepalive at the old fixed 100 ms
+    #     (~280 per 30 s) or none (0) fails.
+    IDLE_WAKES_MAX_30S=3
+    idle_wakes_verdict() { # idle_wakes_verdict <mode> <delta> <log>
+        local mode="$1" delta="$2" log="$3" per
+        if [ "$mode" = wdt ]; then
+            per="$(tr -d '\r' <"$log" | sed -n 's/^\[WDT\] idle keepalive on hart 0 every \([0-9][0-9]*\) us.*/\1/p' | sed -n 1p)"
+            if [ "$per" != 125000 ]; then
+                bad; echo "      the boot did not print the derived keepalive (125000 us; got '${per:-none}') — log kept: $log"; return
+            fi
+            if [ "$delta" -ge 210 ] && [ "$delta" -le 250 ]; then
+                ok; echo "      $delta timer interrupts over 30 s at a ${per} us keepalive (band 210-250)"
+                rm -f "$log"
+            else
+                bad; echo "      $delta timer interrupts over 30 s, outside 210-250 for a ${per} us keepalive — log kept: $log"
+            fi
+            return
+        fi
+        if ! tr -d '\r' <"$log" | grep -q '^\[WDT\] no watchdog armed: no idle keepalive'; then
+            bad; echo "      the boot did not report 'no watchdog armed' — log kept: $log"; return
+        fi
+        if [ "$delta" -le "$IDLE_WAKES_MAX_30S" ]; then
+            ok; echo "      $delta timer interrupts over 30 s (threshold <= $IDLE_WAKES_MAX_30S; Linux: 69)"
+            rm -f "$log"
+        else
+            bad; echo "      $delta timer interrupts over 30 s, above $IDLE_WAKES_MAX_30S: an idle hart"
+            echo "      is waking with nothing to do — log kept: $log"
+        fi
+    }
+    # ── 2026-09-25 owner decision Q3.2: idle is truly tickless ───────────────
+    #
+    # `timebase::set_next_tick_smart` clamped every timer to `now + 1/sched_hz`,
+    # so an idle hart woke at sched_hz forever while the scheduler's comments
+    # said "tickless". Now `do_schedule()` arms the timer for the NEAREST real
+    # deadline when the hart goes idle (hart 0 keeps a 100 ms keepalive for the
+    # watchdog feed and the vDSO page; other harts wake by IPI).
+    #
+    # Measured, wall-clock, riscv64 -smp 1 bench-minimal, 30 s windows, host
+    # QEMU census 0: BEFORE 81.9/80.8/81.2 wakeups/s; AFTER 43.5/45.4/41.8.
+    # The dominant sleeper in both is the live shell's 20 ms UART poll, so this
+    # is a conservative halving, not a zero-sleeper idle. THRESHOLD 70/s sat
+    # between the two bands so a regression to the periodic clamp failed here
+    # rather than sliding through on host-load noise.
+    #
+    # Wave 11 ONESHOT: 9/9/9 wakeups/s on c1afd98 and 9/9/9 after the one-shot
+    # change (the empty-queue re-arm fix of 2026-09-26 is what took it from 74
+    # to 9). THRESHOLD 20/s: twice the measured band. Canary, by hand: idle
+    # harts armed with the busy cap (`set_next_tick_tickless` ignoring
+    # `hart_idle`) read 73/s here and 68/s on the aarch64 row — FAIL on both.
+    #
+    # The number is read back, not inferred: `watchdog::TICK_COUNT` (one
+    # increment per timer-ISR entry on every hart) via the ELF's symbol table
+    # and a live GDB-stub attach (`-s`, never `-S`: the CPU is not halted, the
+    # read is a snapshot of a running system). Wall-clock, so NOT `-icount`.
+    # Wave 13 (ENERGY): the 9.3-9.6/s floor measured on 9dc76dd9 was hart 0's
+    # fixed 100 ms idle keepalive. Round 50 (owner) ties it to an armed
+    # watchdog; the verdict and the measured bands are `idle_wakes_verdict`'s.
+    tickless_idle_wakeups_row() { # [wdt]: the simulated-watchdog build
+        local mode="${1:-}" feats="qemu,bench-minimal"
+        local label="riscv64: idle wakeups/s (tickless)"
+        if [ "$mode" = wdt ]; then
+            feats="qemu,bench-minimal,wdt-sim"; label="riscv64: idle keepalive (simulated WDT)"
+        fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        if ! command -v riscv64-elf-gdb >/dev/null 2>&1; then
+            bad; echo "      riscv64-elf-gdb not installed — the row cannot read TICK_COUNT back"; return
+        fi
+        kbuild "$feats" || return
+        local addr
+        # Leading zeros stripped: nm prints 16 hex digits (000000008067d338),
+        # gdb echoes the address back as 0x8067d338: — the grep in
+        # read_ticks() below keys on gdb's spelling. With the zeros kept
+        # both reads came back empty (hand run, 2026-09-26).
+        addr=$(nm "$KERNEL" 2>/dev/null | grep "watchdog10TICK_COUNT" | sed -n '1{s/ .*//p;}' | sed 's/^0*//')
+        if [ -z "$addr" ]; then
+            bad; echo "      watchdog::TICK_COUNT symbol not found in $KERNEL"; return
+        fi
+        local log="$CI_LOG_DIR/tickless-idle${mode:+-$mode}.log"
+        rm -f "$log"
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -smp 1 -m 128M -s >"$log" 2>&1 </dev/null &
+        local qpid=$!
+        sleep 10
+        if ! kill -0 "$qpid" 2>/dev/null; then
+            bad; echo "      qemu exited during boot — log kept: $log"; return
+        fi
+        read_ticks() {
+            riscv64-elf-gdb -q -batch -ex "target remote localhost:1234" \
+                -ex "x/1xg 0x${addr}" -ex "detach" 2>/dev/null \
+                | grep "0x${addr}:" | grep -o "0x[0-9a-f]*$"
+        }
+        local t0_hex t1_hex
+        t0_hex=$(read_ticks)
+        if [ -z "$t0_hex" ]; then
+            kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+            bad; echo "      first GDB read of TICK_COUNT (0x$addr) came back empty — log kept: $log"; return
+        fi
+        sleep 30
+        if ! kill -0 "$qpid" 2>/dev/null; then
+            bad; echo "      qemu exited mid-window — log kept: $log"; return
+        fi
+        t1_hex=$(read_ticks)
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        if [ -z "$t1_hex" ]; then
+            bad; echo "      second GDB read of TICK_COUNT (0x$addr) came back empty — log kept: $log"; return
+        fi
+        local delta rate
+        delta=$(( t1_hex - t0_hex ))
+        rate=$(( delta / 30 ))
+        if [ "$delta" -lt 0 ]; then
+            bad; echo "      TICK_COUNT went backwards ($t0_hex -> $t1_hex) — log kept: $log"; return
+        fi
+        idle_wakes_verdict "$mode" "$delta" "$log"
+    }
+    par -s "riscv64: idle wakeups/s (tickless)" tickless_idle_wakeups_row   # gdb on 1234, wall clock
+    par -s "riscv64: idle keepalive (simulated WDT)" tickless_idle_wakeups_row wdt   # gdb on 1234
+
+    # ── net-poll in IRQ mode: zero idle iterations (wave 8 FORKX, wave 9) ────
+    #
+    # With a virtio-net-pci NIC in MSI-X mode, `net_poll_task` sleeps with no
+    # timer while no TCP connection has a clock deadline (`tcp::tick_needed()`
+    # false): only an RX MSI or a `tcp::set_timer_kick` wake gives it work,
+    # plus a 60 s self-heal ceiling. Before that it woke 10 times a second
+    # (300 in 30 s, measured wave 8); a 1 ms poll-mode timer is ~600/s.
+    #
+    # The number is read back like the tickless row's: `NET_POLL_ITERS` (one
+    # increment per loop iteration) via the ELF's symbol table and a live GDB
+    # attach. The window starts 2 s after the task's own first line and lasts
+    # 30 s, so it ends before the 60 s ceiling can fire: the expected delta
+    # is exactly 0. Positive anchors first — IRQ mode's own NIC line and the
+    # task's start — because a boot with NO NIC also reads 0 (the no-NIC mode
+    # has no timer either) and must not pass this row.
+    netpoll_irq_idle_row() {
+        local label="riscv64: net-poll idle (irq)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        if ! command -v riscv64-elf-gdb >/dev/null 2>&1; then
+            bad; echo "      riscv64-elf-gdb not installed — the row cannot read NET_POLL_ITERS back"; return
+        fi
+        kbuild "qemu,pci" || return
+        local addr port="${NETPOLL_GDB_PORT:-1234}"
+        addr=$(nm "$KERNEL" 2>/dev/null | grep "net_poll14NET_POLL_ITERS" | sed -n '1{s/ .*//p;}' | sed 's/^0*//')
+        if [ -z "$addr" ]; then
+            bad; echo "      NET_POLL_ITERS symbol not found in $KERNEL"; return
+        fi
+        local log="$CI_LOG_DIR/netpoll-irq-idle.log"
+        rm -f "$log"
+        "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -kernel "$KERNEL" \
+            -smp 1 -m 128M -gdb "tcp::${port}" \
+            -device virtio-net-pci,netdev=n0,disable-legacy=on -netdev user,id=n0 >"$log" 2>&1 </dev/null &
+        local qpid=$! i=0
+        while [ "$i" -lt 120 ]; do
+            grep -aqF "[NET-POLL] Phase U1: dedicated network polling task started" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        if ! grep -aqF "[NET-POLL] Phase U1: dedicated network polling task started" "$log" 2>/dev/null; then
+            kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+            bad; echo "      net-poll never started within 60 s — log kept: $log"; return
+        fi
+        if ! grep -aq "\[NET\] virtio-net-pci .* mode=irq msix=y" "$log" 2>/dev/null \
+           || grep -aqF "[NET-POLL] no NIC ready" "$log" 2>/dev/null; then
+            kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+            bad; echo "      the NIC is not in IRQ mode, so 0 iterations would prove nothing:"
+            grep -a "\[NET\] virtio-net\|\[NET\] VirtIO\|NET-POLL\]" "$log" | tr -d '\r' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        sleep 2
+        read_iters() {
+            riscv64-elf-gdb -q -batch -ex "target remote localhost:${port}" \
+                -ex "x/1xg 0x${addr}" -ex "detach" 2>/dev/null \
+                | grep "0x${addr}:" | grep -o "0x[0-9a-f]*$"
+        }
+        local t0_hex t1_hex
+        t0_hex=$(read_iters)
+        if [ -z "$t0_hex" ]; then
+            kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+            bad; echo "      first GDB read of NET_POLL_ITERS (0x$addr) came back empty — log kept: $log"; return
+        fi
+        sleep 30
+        if ! kill -0 "$qpid" 2>/dev/null; then
+            bad; echo "      qemu exited mid-window — log kept: $log"; return
+        fi
+        t1_hex=$(read_iters)
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        if [ -z "$t1_hex" ]; then
+            bad; echo "      second GDB read of NET_POLL_ITERS (0x$addr) came back empty — log kept: $log"; return
+        fi
+        # The task has run its first iteration (the counter is live), and
+        # none since.
+        if [ $(( t0_hex )) -lt 1 ]; then
+            bad; echo "      NET_POLL_ITERS read $t0_hex at the window start: the counter never moved — log kept: $log"; return
+        fi
+        local delta=$(( t1_hex - t0_hex ))
+        if [ "$delta" -eq 0 ]; then
+            ok; echo "      net-poll iterations in 30 s idle = 0 (count stayed at $(( t0_hex )))"
+            rm -f "$log"
+        else
+            bad; echo "      net-poll iterations in 30 s idle = $delta ($t0_hex -> $t1_hex), expected 0:"
+            echo "      the poller is waking on a timer in IRQ mode — log kept: $log"
+        fi
+    }
+    par -s "riscv64: net-poll idle (irq)" netpoll_irq_idle_row   # gdb port, wall clock
+
+    # ── RVV: the build that was compiled and never run ─────────────────
+    #
+    # `rvv` was in the build matrix and in NO scenario, and it was not a
+    # cosmetic difference: `--features rvv` used to forward
+    # `azos_sched/rvv`, which took a **different wake path** -- `saved =
+    # true` unconditionally, `clear_saving_on_no_switch` a no-op, and the
+    # `context_saving` spin-gate compiled out entirely (12 divergent `cfg`
+    # sites in the scheduler). A build that compiles is not a build that works,
+    # and this one had never executed a single instruction.
+    #
+    # CLOSED 2026-09-24. `context_switch_rvv.S` now clears `context_saving`
+    # with the same `fence rw, w` + `sb` release tail as the scalar switch, so
+    # all twelve `cfg` sites are deleted and `azos_sched/rvv` no longer
+    # exists. An rvv build takes the identical scheduler path.
+    #
+    # **This paragraph used to claim the gap could not reach a board** --
+    # "`--features k1` does NOT enable `azos_sched/rvv`, tested with a
+    # temporary `compile_error!`". That was true when written and became FALSE
+    # when `k1` was changed to compose `rvv` (`k1 = ["rvv", ...]`) instead of
+    # hand-copying four of its five members. Cargo features are transitive, so
+    # `k1` -> `rvv` -> `azos_sched/rvv`: the one board with real vector
+    # hardware was selecting the undefended scheduler, for as long as this
+    # comment said it was not. A negative claim about a feature's reach has to
+    # be re-derived from the composition, never grepped for its name.
+    #
+    # Needs a V-capable CPU: QEMU's default `rv64` has the vector extension
+    # off, so the kernel would take an illegal-instruction trap on its first
+    # vector op. `-cpu rv64,v=true` is therefore part of the scenario, not an
+    # optimisation.
+    par "rvv: vector path runs" kq "qemu,rvv" "rvv: vector path runs" "Phase 11 complete" 120 \
+        -smp 4 -cpu rv64,v=true,vlen=256,elen=64
+
+    # ── rvv: vector state isolated across tasks (2026-09-26) ─────────────────
+    # rvv_ctx_save/restore indexed VEC_STATES[] by Task+120 = ctx.tp (the hart
+    # id), not Task.tid (offset 128); every context switch under `rvv` handed
+    # one task's v0-v31 to another. Fixed by threading offset_of!(Task, tid)
+    # through global_asm!. VecState was also sized for VLEN=128 while the K1
+    # (X60) is 256: now sized by vlenb at boot, refused when wider. The probe
+    # (`rvv-isolation-probe`): two kernel tasks pinned to hart 0 fill v0-v31
+    # with distinct patterns, yield 8 times, and check; OK only if both survive.
+    # Runs at vlen=256 like the row above; the old sizing page-faults there.
+    QEMU_FAIL_RE="$QEMU_FAIL_RE|RVV\] ISOLATION FAILED" \
+        par "rvv: vector state isolated" kq "qemu,rvv,rvv-isolation-probe" "rvv: vector state isolated" "RVV] ISOLATION OK" 60 \
+            -smp 4 -cpu rv64,v=true,vlen=256,elen=64
+    kbuild "qemu"
+    # ── RFC-0046 stage 1, gate 4: native PCI enumeration (riscv64) ───────────
+    # ECAM and the 32-bit BAR window from the DTB's `pci-host-ecam-generic`
+    # node (`[PCI] host bridge: ... (dtb)`; `(built-in)` would mean the
+    # kernel fell back to its constants), the PLIC from its own
+    # `riscv,plic0` node; one `[PCI]` line per function,
+    # keyed on the vendor:device pair QEMU itself assigns (1af4:1042 virtio-
+    # blk, 1b36:0010 nvme, 1af4:1041 virtio-net). BAR addresses are 0x0 here —
+    # no firmware assigns them. Plain `virt` (PLIC); the AIA machine has its
+    # own rows below.
+    pci_enum_row_riscv64() {
+        local label="pci: bus 0 enumerates (riscv64)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        kbuild "qemu,pci" || return
+        dd if=/dev/zero of="$CI_LOG_DIR/pci-blk.img" bs=1M count=8 2>/dev/null
+        dd if=/dev/zero of="$CI_LOG_DIR/pci-nvme.img" bs=1M count=8 2>/dev/null
+        local log="$CI_LOG_DIR/pci-enum-riscv64.log"
+        rm -f "$log"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
+            -drive file="$CI_LOG_DIR/pci-blk.img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-pci,drive=hd0,disable-legacy=on \
+            -drive file="$CI_LOG_DIR/pci-nvme.img",if=none,format=raw,id=hd1 \
+            -device nvme,serial=deadbeef,drive=hd1 \
+            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 60 ]; do
+            grep -aq "PCI\] pci 00:03.0 1af4:1041" "$log" 2>/dev/null && break
+            grep -aqE "$QEMU_FAIL_RE" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        if grep -aqE "$QEMU_FAIL_RE" "$log" 2>/dev/null; then
+            bad; echo "      kernel fault during PCI enumeration — log kept: $log"; return
+        fi
+        if grep -aq "PCI\] pci 00:01.0 1af4:1042" "$log" \
+            && grep -aq "PCI\] pci 00:02.0 1b36:0010" "$log" \
+            && grep -aq "PCI\] pci 00:03.0 1af4:1041" "$log" \
+            && grep -aq "msix=y" "$log" \
+            && grep -aqF "[PCI] host bridge: ECAM 0x30000000 (dtb), mem32 0x40000000+0x40000000 (dtb)" "$log" \
+            && grep -aqF "[DTB] UART=0x10000000, PLIC=0xc000000" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      expected DTB-sourced ECAM/mem32 and PLIC, and virtio-blk 1af4:1042, nvme 1b36:0010, virtio-net 1af4:1041 with msix=y — log kept: $log"
+        fi
+    }
+    par "pci: bus 0 enumerates (riscv64)" pci_enum_row_riscv64
+    kbuild "qemu"
+
+    # ── RFC-0046 stage 1a: AIA (APLIC MSI mode + IMSIC) and MSI-X (riscv64) ──
+    # Same kernel on `virt,aia=aplic-imsic`: no PLIC there (HEAD took a
+    # Store/AMO access fault at stval 0xc000004). The kernel drives one
+    # virtio-net-pci TX completion over MSI-X into the boot hart's IMSIC
+    # file and prints the per-vector counts; `used=1` says the device
+    # completed the frame, `vec1 ... count=N` says its MSI arrived. stdin is
+    # flooded with `x` so UART RX interrupts cross APLIC -> IMSIC during boot
+    # (identity 10 count at scheduler start). Canary: azos_pci's
+    # `msix-enable-canary` leaves MSI-X Enable clear -> the device falls back
+    # to INTx, `used` still moves, vec1 stays 0 and only then the kernel
+    # prints `delivery FAILED`.
+    pci_aia_boot_riscv64() { # pci_aia_boot_riscv64 <log>
+        local log="$1"
+        local blk="${log%.log}-blk.img" nvme="${log%.log}-nvme.img"
+        dd if=/dev/zero of="$blk" bs=1M count=8 2>/dev/null
+        dd if=/dev/zero of="$nvme" bs=1M count=8 2>/dev/null
+        rm -f "$log"
+        # PACED input, one byte per 50 ms. It was `yes x`: QEMU feeds stdin as
+        # fast as the guest drains it, one RX interrupt per byte with no line
+        # rate, and the boot went bimodal — 1-3 s usually, 30-120+ s sometimes,
+        # on BOTH gate 187's and gate 188's kernels (5+5 hand runs). Gate 188
+        # failed on that slow mode (killed at 60 s, still in boot Phase D).
+        # A real UART is bounded (115200 baud ≈ 11.5 k bytes/s); a handful of
+        # bytes proves the property. Paced: 5/5 delivered in ~1 s. Before
+        # wave 11, no input read "delivered 0 time(s)". Since then identity 10
+        # also carries the console's TX interrupt (`uart::enable_tx_irq`), so
+        # the count is nonzero with no input too: the `[1-9]` check below
+        # proves UART interrupts cross APLIC -> IMSIC, not RX ones in
+        # particular.
+        aia_paced_input() { while :; do printf x || break; sleep 0.05; done; }
+        par_ready
+        aia_paced_input 2>/dev/null | "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -kernel "$KERNEL" \
+            -drive file="$blk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-pci,drive=hd0,disable-legacy=on \
+            -drive file="$nvme",if=none,format=raw,id=hd1 \
+            -device nvme,serial=deadbeef,drive=hd1 \
+            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 60 ]; do
+            grep -aq "IRQ\] AIA identity 10 (uart) delivered" "$log" 2>/dev/null && break
+            grep -aqE "EXCEPTION\]|$QEMU_FAIL_RE" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+    }
+    pci_aia_msix_row_riscv64() {
+        local label="aia: msix + uart via imsic"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        kbuild "qemu,pci" || return
+        local log="$CI_LOG_DIR/pci-aia-riscv64.log"
+        pci_aia_boot_riscv64 "$log"
+        if grep -aqE "EXCEPTION\]|$QEMU_FAIL_RE" "$log" 2>/dev/null; then
+            bad; echo "      fault or FAILED line on the AIA machine — log kept: $log"; return
+        fi
+        # The AIA machine has no PLIC: the DTB line says so and the bus lists
+        # none (`[HWBUS] plic` is printed only for a PLIC entry).
+        if grep -aq "HWBUS\] plic " "$log" 2>/dev/null; then
+            bad; echo "      the bus listed a PLIC on the AIA machine — log kept: $log"; return
+        fi
+        if grep -aq "DTB\] AIA: APLIC=" "$log" \
+            && grep -aqF "[DTB] UART=0x10000000, PLIC=none" "$log" \
+            && grep -aqE "PCI\] msix 00:03.0 enabled=y .* tx used=1$" "$log" \
+            && grep -aqE "PCI\] msix 00:03.0 vec0 id=[0-9]+ count=[0-9]+ vec1 id=[0-9]+ count=[1-9]" "$log" \
+            && grep -aqE "IRQ\] AIA identity 10 \(uart\) delivered [1-9]" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      expected AIA selected, PLIC=none, MSI-X vec1 count>0 with used=1, uart identity 10 count>0 — log kept: $log"
+        fi
+    }
+    par "aia: msix + uart via imsic" pci_aia_msix_row_riscv64
+    pci_aia_msix_canary_riscv64() {
+        local label="aia: msix canary (enable off)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        kbuild "qemu,pci,azos_pci/msix-enable-canary" || return
+        local log="$CI_LOG_DIR/pci-aia-canary-riscv64.log"
+        pci_aia_boot_riscv64 "$log"
+        # `delivery FAILED` is printed only when the completion happened
+        # (used=1) and its vector count stayed 0 — the property broken.
+        if grep -aq "EXCEPTION\]" "$log" 2>/dev/null; then
+            bad; echo "      fault on the AIA machine — log kept: $log"
+        elif grep -aqE "PCI\] msix 00:03.0 delivery FAILED: used=1 but vec1 count=0" "$log" \
+            && grep -aqE "PCI\] msix 00:03.0 enabled=n " "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      canary did not bite: expected enabled=n and 'delivery FAILED: used=1' — log kept: $log"
+        fi
+    }
+    par "aia: msix canary (enable off)" pci_aia_msix_canary_riscv64
+    kbuild "qemu"
+
+    # ── RFC-0046 stage 1: the kernel's NIC over virtio-pci + MSI-X (riscv64) ──
+    # `network: DHCP lease`'s smoke with the NIC as a virtio-net-pci function
+    # on `virt,aia=aplic-imsic`: the driver runs in IRQ mode (MSI-X vector 1 =
+    # RX, into the boot hart's IMSIC file) and reads the RX ring only after
+    # that vector fired, so a lease is proof the RX MSIs arrived. `rx=0`
+    # before and `rx=[1-9]` after are the driver's own ISR-hook counts.
+    # Canary: `msix-enable-canary` leaves MSI-X Enable clear. The driver still
+    # runs in IRQ mode (it decides by route, never by the enable read-back),
+    # no RX MSI arrives, no frame is read and the lease fails — while
+    # `network: DHCP lease` (MMIO, polled) passes on the same stack.
+    pci_net_dhcp_boot_riscv64() { # pci_net_dhcp_boot_riscv64 <log>
+        local log="$1"
+        rm -f "$log"
+        par_ready
+        "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -kernel "$KERNEL" \
+            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            </dev/null >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 90 ]; do
+            grep -aqF "NET] msix counts (after dhcp)" "$log" 2>/dev/null && break
+            grep -aqE "EXCEPTION\]|panic" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+    }
+    pci_net_dhcp_row_riscv64() {
+        local label="network: DHCP lease (pci)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        kbuild "qemu,pci,dhcp-smoke" || return
+        local log="$CI_LOG_DIR/pci-net-dhcp-riscv64.log"
+        pci_net_dhcp_boot_riscv64 "$log"
+        if grep -aqE "EXCEPTION\]|panic" "$log" 2>/dev/null; then
+            bad; echo "      fault on the AIA machine — log kept: $log"; return
+        fi
+        if grep -aqE "NET\] virtio-net-pci [0-9a-f:.]+ mode=irq msix=y " "$log" \
+            && grep -aqF "[PCI] host bridge: ECAM 0x30000000 (dtb), mem32 0x40000000+0x40000000 (dtb)" "$log" \
+            && grep -aqF "NET] msix counts (before dhcp): config=0 rx=0 tx=0" "$log" \
+            && grep -aqF "[DHCPSMOKE] PASS" "$log" \
+            && grep -aqE "NET\] msix counts \(after dhcp\): config=[0-9]+ rx=[1-9]" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      expected mode=irq msix=y, DTB-sourced host bridge, rx=0 before, DHCPSMOKE PASS, rx>0 after — log kept: $log"
+        fi
+    }
+    par "network: DHCP lease (pci)" pci_net_dhcp_row_riscv64
+    pci_net_dhcp_canary_riscv64() {
+        local label="network: pci dhcp canary"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        kbuild "qemu,pci,dhcp-smoke,azos_pci/msix-enable-canary" || return
+        local log="$CI_LOG_DIR/pci-net-dhcp-canary-riscv64.log"
+        pci_net_dhcp_boot_riscv64 "$log"
+        # Bites only when the PCI IRQ path ran (`mode=irq msix=n` is printed
+        # by nothing else) AND the lease failed with the RX count still 0.
+        if grep -aqE "EXCEPTION\]|panic" "$log" 2>/dev/null; then
+            bad; echo "      fault on the AIA machine — log kept: $log"
+        elif grep -aqE "NET\] virtio-net-pci [0-9a-f:.]+ mode=irq msix=n " "$log" \
+            && grep -aqF "[DHCPSMOKE] FAIL" "$log" \
+            && grep -aqF "NET] msix counts (after dhcp): config=0 rx=0 tx=0" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      canary did not bite: expected mode=irq msix=n, DHCPSMOKE FAIL, rx=0 — log kept: $log"
+        fi
+    }
+    par "network: pci dhcp canary" pci_net_dhcp_canary_riscv64
+    kbuild "qemu"
+    # The runtime half, after the scheduler starts: a host datagram through a
+    # UDP hostfwd reaches the NIC, and the ISR of its RX MSI must take
+    # net-poll out of its timer sleep (`dispatched=[1-9]`). A missing wake
+    # prints its own line ("no ISR wake dispatched"), so it reads red rather
+    # than timing out.
+    pci_net_rx_wake_riscv64() {
+        local label="pci: rx msi wakes net-poll"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local port=47123
+        if lsof -iUDP:"$port" >/dev/null 2>&1; then
+            bad; echo "      host UDP port $port is in use; row not run"; return
+        fi
+        kbuild "qemu,pci" || return
+        local log="$CI_LOG_DIR/pci-net-rxwake-riscv64.log"
+        rm -f "$log"
+        "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -kernel "$KERNEL" \
+            -netdev user,id=net0,hostfwd=udp:127.0.0.1:"$port"-:7777 \
+            -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            </dev/null >"$log" 2>&1 &
+        local qpid=$! i=0
+        while [ "$i" -lt 60 ]; do
+            grep -aqF "NET-POLL] Phase U1" "$log" 2>/dev/null && break
+            grep -aqE "EXCEPTION\]|panic" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        sleep 3
+        local n
+        for n in 1 2 3; do printf 'rxwake-%s' "$n" | nc -u -w1 127.0.0.1 "$port" 2>/dev/null; done
+        i=0
+        while [ "$i" -lt 20 ]; do
+            grep -aqE "NET-POLL\] RX MSI (woke|taken)" "$log" 2>/dev/null && break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        if grep -aqE "EXCEPTION\]|panic" "$log" 2>/dev/null; then
+            bad; echo "      fault on the AIA machine — log kept: $log"
+        elif grep -aqE "NET-POLL\] RX MSI woke this task: rx [0-9]+ -> [0-9]+, dispatched=[1-9]" "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      no RX MSI wake of net-poll — log kept: $log"
+            grep -a "NET-POLL\]" "$log" | tr -d '\r' | sed 's|^|        |'
+        fi
+        kbuild "qemu"
+    }
+    par -s "pci: rx msi wakes net-poll" pci_net_rx_wake_riscv64   # UDP host port 47123
+
+
+    # riscv64 half of `behavior_arp_sleep_row` (defined with the aarch64 rows).
+    par -s "network: behavior ARP sleeps" behavior_arp_sleep_row rv
+
+    # ── Worst-case wake-up latency under load (wave 11, LAT) ──────────────
+    #
+    # cyclictest/timerlat in the kernel (`kernel/src/lat_smoke.rs`): a
+    # priority-1 task on hart 0 sleeps to an absolute 1 ms deadline 2000
+    # times while a console spammer, a disk reader and a never-blocking CPU
+    # hog share the hart, and prints how late it woke (`[LAT] isa=...
+    # max_ns= p99_ns=`). `-smp 1 -icount shift=0,sleep=off`: one ns of
+    # virtual time per guest instruction, so the numbers do not move with
+    # host load (they are not bit-exact: a virtio-blk completion lands where
+    # the host thread delivers it). The verdict line is the kernel's:
+    # `[LAT] PASS` when max <= BOUND_NS (100 us, both ISAs, since wave 11
+    # ONESHOT; it was 12 ms, the 10 ms tick plus 20%, while a timer sleeper
+    # on a busy hart waited for the next tick — `BOUND_NS`'s doc), `[LAT]
+    # FAIL` (only that path prints it) otherwise. The row also requires every
+    # load to have run.
+    #
+    # The canary row builds `lat-canary` (implies the masked-window tracer,
+    # `lat-trace`): a task on the same hart masks interrupts for 20 ms three
+    # times and prints its site. It must FAIL, and the tracer must name that
+    # site as the worst interrupts-masked window both on the console
+    # (`[LATTRACE] run irq top1`) and through `/proc/irqsoff`. Measured by
+    # hand when this landed (wave 11): plain riscv64 max 7.5-8.0 ms, aarch64
+    # 9.85 ms; canary 19.8 ms / 19.7 ms with the tracer at the canary line.
+    # After ONESHOT (three runs each): riscv64 max 17.9-18.4 us (Sstc),
+    # aarch64 11.5-12.8 us. Wave 13, load paced by lat-rt (20 boots each):
+    # riscv64 max 4.4-15.8 us, aarch64 3.6-7.3 us.
+    #
+    # The periodic-arm canary rows build `oneshot-canary`: the arming from
+    # before ONESHOT (no reprogram at block time; aarch64's tick handler
+    # programs `now + period` only). They must print `[LAT] FAIL`.
+    # Wave 13: the riscv64 canary passed 9 of 20 boots while the smoke's load
+    # slept on timers of its own (each such deadline made the tick handler
+    # program the nearest sleeper, lat-rt's included); paced by lat-rt it
+    # fails 18 of 20 (the 2: the boot's 1 ms rt-motor sleeper on hart 0) and
+    # aarch64's 20 of 20. A single riscv64 canary PASS is therefore not yet
+    # proof the block-time arm is gone — see kernel/src/lat_smoke.rs.
+    # Compile-error bucket: a build failure is its own `FAIL` line below.
+    lat_wake_row() { # lat_wake_row <label> <isa: rv|arm> <features> <expect: PASS|CANARY|PERIODIC>
+        local label="$1" isa="$2" feats="$3" expect="$4"
+        # `kbuild` reports its own failure (compile-error bucket) and counts it.
+        if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log disk kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        disk="$CI_LOG_DIR/${slug}-disk.img"
+        if [ "$isa" = rv ]; then
+            [ -f build/disk-ipctest.img.pristine ] || make_disk build/disk-ipctest.img
+            cp build/disk-ipctest.img.pristine "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            # The riscv64 PERIODIC canary measures on hart 1 (kernel/src/lat_smoke.rs
+            # HART), away from the boot's 1 kHz sleepers on hart 0.
+            local smp=1; [ "$expect" = PERIODIC ] && smp=2
+            "$QEMU" -machine virt -nographic -bios default -smp "$smp" -icount shift=0,sleep=off \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+                bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+            fi
+            cp build/disk-aarch64-ipctest.img "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        while [ "$i" -lt 480 ]; do
+            grep -aqE '\[LAT\] (PASS|FAIL) ' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$disk" "$kimg"
+        # The console starts some lines with a bare CR: anchor on a copy
+        # without them, never on the raw log.
+        local clean="$log.txt"
+        tr -d '\r' <"$log" >"$clean"
+        local result load
+        result="$(grep -a '^\[LAT\] isa=' "$clean" | sed -n 1p)"
+        load="$(grep -a '^\[LAT\] load ' "$clean" | sed -n 1p)"
+        if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+            bad; echo "      the kernel stopped:"; grep -aiE -m3 'panic|\[FATAL\]|AARCH64-TRAP' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if [ -z "$result" ]; then
+            bad; echo "      no [LAT] result within the timeout — log kept: $log"; return
+        fi
+        # Every load ran and the disk never failed: a run with an idle hart
+        # measures a different thing (an idle hart re-arms its timer). The
+        # PERIODIC canary runs the CPU hog alone (kernel/src/lat_smoke.rs: the
+        # paced spam and disk interrupts reprogrammed the comparator and hid
+        # the missing arm in 3 boots of 5), so it must show exactly that.
+        local want_load='spam_lines=[1-9][0-9]* disk_reads=[1-9][0-9]* disk_errors=0 hog_rounds=[1-9]'
+        [ "$expect" = PERIODIC ] && want_load='spam_lines=0 disk_reads=0 disk_errors=0 hog_rounds=[1-9]'
+        if ! printf '%s\n' "$load" | grep -qE "$want_load"; then
+            bad; echo "      the load did not all run: ${load:-no load line}"
+            echo "      log kept: $log"; return
+        fi
+        if [ "$expect" = PASS ]; then
+            if grep -aq '^\[LAT\] PASS ' "$clean"; then
+                ok; echo "      ${result#\[LAT\] }"; rm -f "$log" "$clean"
+            else
+                bad; echo "      ${result}"; grep -a '^\[LAT\] FAIL ' "$clean" | sed 's/^/      /'
+                echo "      log kept: $log"
+            fi
+            return
+        fi
+        # PERIODIC (wave 11 ONESHOT canary): the kernel built with the timer
+        # arming from before the one-shot change must fail the bound. Anchored
+        # on the line only the failure path prints.
+        if [ "$expect" = PERIODIC ]; then
+            if grep -aq '^\[LAT\] FAIL ' "$clean"; then
+                ok; echo "      ${result#\[LAT\] }"; rm -f "$log" "$clean"
+            else
+                bad; echo "      the periodic arming did not fail the row: ${result}"
+                echo "      log kept: $log"
+            fi
+            return
+        fi
+        # CANARY: the verdict is FAIL, and the tracer names the canary's own
+        # site as the worst masked window, on the console and in procfs.
+        local site
+        site="$(grep -a '^\[LATCANARY\] masked ' "$clean" | sed -n 's/.* site=\([^ ]*\)$/\1/p' | sed -n 1p)"
+        if [ -z "$site" ]; then
+            bad; echo "      the canary task never masked (no [LATCANARY] line) — log kept: $log"; return
+        fi
+        if ! grep -aq '^\[LAT\] FAIL ' "$clean"; then
+            bad; echo "      a ${site} masked window did not fail the row: ${result}"
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -a '^\[LATTRACE\] run irq top1 ' "$clean" | grep -qF " site=${site} "; then
+            bad; echo "      the tracer's worst irq site is not the canary's (${site}):"
+            grep -a '^\[LATTRACE\] run irq top1 ' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -a '^\[LATTRACE\] proc irqsoff | start ' "$clean" | grep -qxF "[LATTRACE] proc irqsoff | start ${site}"; then
+            bad; echo "      /proc/irqsoff does not name the canary site (${site}):"
+            grep -a '^\[LATTRACE\] proc irqsoff' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log" "$clean"
+    }
+    par_row -s lat_wake_row "lat: riscv64 wake-up under load" rv "qemu,lat-smoke" PASS
+    par_row -s lat_wake_row "lat: riscv64 masked-window canary" rv "qemu,lat-canary" CANARY
+    par_row -s lat_wake_row "lat: aarch64 wake-up under load" arm "qemu,lat-smoke" PASS
+    par_row -s lat_wake_row "lat: aarch64 masked-window canary" arm "qemu,lat-canary" CANARY
+    par_row -s lat_wake_row "lat: riscv64 periodic-arm canary" rv "qemu,oneshot-canary" PERIODIC
+    par_row -s lat_wake_row "lat: aarch64 periodic-arm canary" arm "qemu,oneshot-canary" PERIODIC
+
+    # The console's interrupts-masked window (wave 13, RT7): the lat smoke's
+    # load prints a ~100-byte line every other period, and with `lat-trace`
+    # the tracer names the worst masked windows by site. Every window at a
+    # console site (`crates/drivers/sys/src/uart.rs`) must be at most
+    # 2,000 ns of -icount time. Kernel lines are formatted before the UART
+    # lock (`kernel_print`) and copied into the TX ring in blocks
+    # (`TxRing::put`): measured 1,800 ns riscv64, 1,935 ns aarch64, the same
+    # in 5 runs each. Before, one line's hold was 9.7 us (formatting under
+    # the lock), longer than the timer-ISR entry. Canary (by hand,
+    # 2026-10-04): `console-format-in-lock` -> 14,800 ns riscv64, 8,774 ns
+    # aarch64, red. Compile errors: the build's own FAIL line.
+    console_window_row() { # console_window_row <label> <isa: rv|arm> <features>
+        local label="$1" isa="$2" feats="$3"
+        if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log disk kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        disk="$CI_LOG_DIR/${slug}-disk.img"
+        if [ "$isa" = rv ]; then
+            [ -f build/disk-ipctest.img.pristine ] || make_disk build/disk-ipctest.img
+            cp build/disk-ipctest.img.pristine "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            "$QEMU" -machine virt -nographic -bios default -smp 1 -icount shift=0,sleep=off \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+                bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+            fi
+            cp build/disk-aarch64-ipctest.img "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        while [ "$i" -lt 480 ]; do
+            grep -aq '^\[LATTRACE\] run irq top' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$disk" "$kimg"
+        local clean="$log.txt" sites worst
+        tr -d '\r' <"$log" >"$clean"
+        sites="$(grep -a '^\[LATTRACE\] run irq top' "$clean")"
+        if [ -z "$sites" ]; then
+            bad; echo "      no [LATTRACE] run irq lines — log kept: $log"; return
+        fi
+        if ! printf '%s\n' "$sites" | grep -q 'site=crates/drivers/sys/src/uart.rs:'; then
+            bad; echo "      no console window among the traced sites (did the load print?):"
+            printf '%s\n' "$sites" | sed 's/^/      /'; echo "      log kept: $log"; return
+        fi
+        worst="$(printf '%s\n' "$sites" | grep 'site=crates/drivers/sys/src/uart.rs:' \
+            | sed -n 's/.* max_ns=\([0-9]*\) .*/\1/p' | sort -n | sed -n '$p')"
+        if [ -z "$worst" ] || [ "$worst" -gt 2000 ]; then
+            bad; echo "      console masked window ${worst:-?} ns > 2000 ns:"
+            printf '%s\n' "$sites" | grep uart.rs | sed 's/^/      /'; echo "      log kept: $log"; return
+        fi
+        ok; echo "      console masked window max ${worst} ns"; rm -f "$log" "$clean"
+    }
+    par_row -s console_window_row "console: masked window rv" rv "qemu,lat-smoke,lat-trace"
+    par_row -s console_window_row "console: masked window arm" arm "qemu,lat-smoke,lat-trace"
+
+    # ── aarch64: idle wakeups/s (tickless), wave 11 ONESHOT ─────────────────
+    #
+    # The aarch64 half of `tickless_idle_wakeups_row` (riscv64 block): the same
+    # bench-minimal boot, the same 30 s wall-clock window, the same counter
+    # (`watchdog::TICK_COUNT`, which the aarch64 timer handler bumps through
+    # `watchdog::tick()`), read the same way over the QEMU GDB stub — with
+    # lldb's `gdb-remote`, because there is no aarch64 gdb on the host. Port
+    # 1236, not the riscv64 row's 1234.
+    #
+    # Measured (wave 11, three 30 s windows each): 9/9/9 wakeups/s on c1afd98
+    # and 9/9/9 after the one-shot change — hart 0's 100 ms idle keepalive
+    # plus the boot's own sleepers, the riscv64 band. THRESHOLD 20/s, as
+    # there; the same canary (idle armed with the busy cap) read 68/s: FAIL.
+    # Wave 13 (ENERGY): same verdict as the riscv64 row (`idle_wakes_verdict`).
+    # No aarch64 Linux image on the host: the Linux figure there is riscv64's.
+    tickless_idle_wakeups_row_aarch64() { # [wdt]: the simulated-watchdog build
+        local mode="${1:-}" feats="qemu,bench-minimal"
+        local label="aarch64: idle wakeups/s (tickless)"
+        if [ "$mode" = wdt ]; then
+            feats="qemu,bench-minimal,wdt-sim"; label="aarch64: idle keepalive (simulated WDT)"
+        fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        if ! command -v lldb >/dev/null 2>&1; then
+            bad; echo "      lldb not installed — the row cannot read TICK_COUNT back"; return
+        fi
+        if ! a64_kbuild "$feats"; then
+            bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+        fi
+        local addr
+        addr=$(nm "$A64_KERNEL" 2>/dev/null | grep "watchdog10TICK_COUNT" | sed -n '1{s/ .*//p;}' | sed 's/^0*//')
+        if [ -z "$addr" ]; then
+            bad; echo "      watchdog::TICK_COUNT symbol not found in $A64_KERNEL"; return
+        fi
+        local log="$CI_LOG_DIR/tickless-idle-aarch64${mode:+-$mode}.log" kimg="$CI_LOG_DIR/tickless-idle-aarch64.img"
+        rm -f "$log"; cp "$A64_IMG" "$kimg"
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 -m 128M \
+            -nographic -kernel "$kimg" -gdb tcp::1236 >"$log" 2>&1 </dev/null &
+        local qpid=$!
+        sleep 10
+        if ! kill -0 "$qpid" 2>/dev/null; then
+            bad; echo "      qemu exited during boot — log kept: $log"; rm -f "$kimg"; return
+        fi
+        read_ticks_a64() {
+            lldb --batch -o "gdb-remote localhost:1236" \
+                -o "memory read -s8 -fx -c1 0x${addr}" -o "process detach" 2>/dev/null \
+                | grep -i "^0x0*${addr}:" | grep -o "0x[0-9a-f]*$"
+        }
+        local t0_hex t1_hex
+        t0_hex=$(read_ticks_a64)
+        if [ -z "$t0_hex" ]; then
+            kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null; rm -f "$kimg"
+            bad; echo "      first lldb read of TICK_COUNT (0x$addr) came back empty — log kept: $log"; return
+        fi
+        sleep 30
+        if ! kill -0 "$qpid" 2>/dev/null; then
+            rm -f "$kimg"
+            bad; echo "      qemu exited mid-window — log kept: $log"; return
+        fi
+        t1_hex=$(read_ticks_a64)
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null; rm -f "$kimg"
+        if [ -z "$t1_hex" ]; then
+            bad; echo "      second lldb read of TICK_COUNT (0x$addr) came back empty — log kept: $log"; return
+        fi
+        local delta rate
+        delta=$(( t1_hex - t0_hex ))
+        rate=$(( delta / 30 ))
+        if [ "$delta" -lt 0 ]; then
+            bad; echo "      TICK_COUNT went backwards ($t0_hex -> $t1_hex) — log kept: $log"; return
+        fi
+        idle_wakes_verdict "$mode" "$delta" "$log"
+    }
+    par -s "aarch64: idle wakeups/s (tickless)" tickless_idle_wakeups_row_aarch64   # gdb on 1236, wall clock
+    par -s "aarch64: idle keepalive (simulated WDT)" tickless_idle_wakeups_row_aarch64 wdt   # gdb on 1236
+
+    # ── A64CLK: the aarch64 kernel runs on the VIRTUAL counter/timer (wave 11) ─
+    #
+    # The kernel reads `CNTVCT_EL0` and programs `CNTV_CVAL_EL0`/`CNTV_CTL_EL0`
+    # (PPI 27), as Linux does at EL1, instead of `CNTPCT_EL0`/`CNTP_*` (PPI 30).
+    # Ring 3's vDSO reads `CNTVCT_EL0`, so kernel stamps and ring-3 clock reads
+    # share one clock even when firmware or a hypervisor leaves `CNTVOFF_EL2`
+    # nonzero. Three rows:
+    #   tick   — the plain kernel arms the tick on PPI 27 and five ticks arrive.
+    #   canary — `a64clk-ppi-canary` programs CNTV but enables PPI 30: no tick
+    #            ever arrives, the boot stops right after the svc self-test.
+    #   offset — `a64clk-cntvoff-canary` drops from EL2 leaving CNTVOFF_EL2 =
+    #            2_000_000 ticks (2 ms), and captest's stamped-read summary
+    #            (every sensor stamp inside its own read, on the vDSO clock)
+    #            must still hold. Measured by hand when this landed: the SAME
+    #            canary with the kernel's clock switched back to CNTPCT_EL0
+    #            printed `FAIL sensor_read_ts(IMU): acquired inside the call`
+    #            (stamps 2 ms ahead of the vDSO) and no summary line.
+    a64clk_boot() { # a64clk_boot <log> <mach-extra> <marker> <secs> <kernel img>
+        local log="$1" mach="$2" marker="$3" secs="$4" img="$5" i=0
+        cp "$A64_IMG" "$img"
+        par_ready
+        qemu-system-aarch64 -M "virt,gic-version=3$mach" -cpu max,pauth=on -smp 2 \
+            -nographic -kernel "$img" >"$log" 2>&1 &
+        local pid=$!
+        while [ "$i" -lt $((secs * 2)) ]; do
+            grep -aqF "$marker" "$log" 2>/dev/null && break
+            grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$img"
+    }
+    a64clk_tick_row() {
+        local label="aarch64: tick on the virtual timer"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        if ! a64_kbuild "qemu"; then
+            bad; echo "      the aarch64 kernel (--features qemu) did not build"; return
+        fi
+        local log="$CI_LOG_DIR/a64clk-tick.log"; rm -f "$log"
+        a64clk_boot "$log" "" "[TRAP] FP/SIMD survives interrupt" 30 "$CI_LOG_DIR/a64clk-tick.img"
+        if ! grep -aqF "PPI 27 + SGI 0 enabled" "$log" \
+            || ! grep -aqE "^\[TIMER\] ticks: 5 in [0-9]+ ms" <(tr -d '\r' <"$log") \
+            || ! grep -aqF "[TRAP] FP/SIMD survives interrupt: PASS" "$log" \
+            || grep -aqE "TIMER\] FAILED|AARCH64-TRAP\] unhandled" "$log"; then
+            bad; echo "      no tick on PPI 27:"
+            grep -aE "GIC\] dist|TIMER\]|TRAP\]" "$log" | tr -d '\r' | sed 's|^|        |'
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "aarch64: tick on the virtual timer" a64clk_tick_row
+    a64clk_ppi_canary_row() {
+        local label="aarch64: PPI 30 canary (no tick)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        # Compile-error bucket: its own FAIL, not a pass of the canary.
+        if ! a64_kbuild "qemu,a64clk-ppi-canary"; then
+            bad; echo "      the aarch64 kernel (--features qemu,a64clk-ppi-canary) did not build"; return
+        fi
+        local log="$CI_LOG_DIR/a64clk-ppi-canary.log"; rm -f "$log"
+        a64clk_boot "$log" "" "[TIMER] ticks:" 12 "$CI_LOG_DIR/a64clk-ppi-canary.img"
+        if ! grep -aqF "PPI 30 + SGI 0 enabled" "$log" \
+            || ! grep -aqF "[TRAP] svc #0 self-test: PASS" "$log" \
+            || grep -aqE "AARCH64-TRAP\] unhandled|panic|\[FATAL\]|FAILED" "$log"; then
+            bad; echo "      the canary kernel did not park silently at the tick check (a build, boot or trap problem, not a verdict):"
+            tr -d '\r' <"$log" | sed -n '$p' | sed 's|^|        |'
+            echo "      log kept: $log"; return
+        fi
+        if grep -aqF "[TIMER] ticks:" "$log"; then
+            bad; echo "      PPI 30 enabled while CNTV is programmed, and the ticks still arrived"
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "aarch64: PPI 30 canary (no tick)" a64clk_ppi_canary_row
+    a64clk_cntvoff_row() {
+        local label="aarch64: one clock under CNTVOFF"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        if ! a64_kbuild "qemu,a64clk-cntvoff-canary"; then
+            bad; echo "      the aarch64 kernel (--features qemu,a64clk-cntvoff-canary) did not build"; return
+        fi
+        if ! make build/disk-aarch64-captest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-captest.img"; return
+        fi
+        local log="$CI_LOG_DIR/a64clk-cntvoff.log"; rm -f "$log"
+        local kimg="$CI_LOG_DIR/a64clk-cntvoff.img" disk="$CI_LOG_DIR/a64clk-cntvoff-disk.img"
+        cp "$A64_IMG" "$kimg"; cp build/disk-aarch64-captest.img "$disk"
+        # `virtualization=on`: the kernel enters at EL2 and `_azos_drop_to_el1`
+        # is what leaves CNTVOFF_EL2 nonzero under the canary feature.
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3,virtualization=on -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt 90 ]; do
+            grep -aqF "CAPTEST] ALL PASSED" "$log" 2>/dev/null && break
+            grep -aqE "CAPTEST\]  FAIL" "$log" 2>/dev/null && break
+            grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$kimg" "$disk"
+        if ! grep -aqF "Entered at: EL2" "$log"; then
+            bad; echo "      the kernel did not enter at EL2, so the offset was never set — log kept: $log"; return
+        fi
+        if grep -aqE "CAPTEST\]  FAIL|AARCH64-TRAP\] unhandled" "$log" \
+            || ! grep -aqF "[CAPTEST] sensorts: 5 sensors stamped on the vDSO clock, inside the call (IMU ENCODER RANGE BATTERY) or < 1 s before it (ODOM), monotonic" "$log" \
+            || ! grep -aqF "[CAPTEST] ALL PASSED" "$log"; then
+            bad; echo "      kernel stamps and the vDSO clock disagree under CNTVOFF_EL2 != 0:"
+            grep -aE "CAPTEST\]  FAIL|CAPTEST\] sensorts" "$log" | tr -d '\r' | sed -n 1,6p | sed 's|^|        |'
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "aarch64: one clock under CNTVOFF" a64clk_cntvoff_row
+
+    # ── SCHED-RT: RT band budget, EDF + CBS, run-time admission (wave 11) ──
+    #
+    # `kernel/src/rt_smoke.rs` (feature `sched-rt-smoke`) runs four checks on
+    # hart 0 under `-smp 1 -icount shift=0,sleep=off` (instruction counts) and
+    # prints one verdict line per check, `[SCHEDRT] <check> PASS|FAIL <isa>`,
+    # FAIL only from the failure path:
+    #   band  — a band task (prio 10) that never blocks runs 3 s (three 1 s
+    #           windows); the non-band task beside it must get >= 2 % and the
+    #           runaway <= the 95 % cap + 2 %.
+    #   exempt — during that run the non-band task watches rt-motor's
+    #           heartbeat while the band is throttled: the kernel safety loops
+    #           are exempt from the cap, so it may stand still for at most 5 ms
+    #           of the observer's running (rt-motor's period is 1 ms).
+    #   edf   — two reservations from the signed topology's rows `rt-edf-a`/
+    #           `rt-edf-b` (boot admission placed them on CPU 0) share level 4
+    #           under a CPU hog and a console spammer; B is released first and
+    #           A (deadline 3 ms) must preempt it: no job may finish late (the
+    #           LAT instrument's `now - deadline`).
+    #   cbs   — a hard reservation that never stops (1 ms per 10 ms) beside
+    #           two that must keep their deadlines; it must be throttled.
+    #   admit — run-time admission refuses a band over-subscription with
+    #           EBUSY and a `[SCHED-RT] admission REFUSED` line, and a hart
+    #           over-subscription likewise.
+    #   ring3 — the row lookup SYS_SPAWN/autorun apply keeps a profiled
+    #           band row's priority with its reservation and raises a band
+    #           row without one to the ring-3 floor (12).
+    # The PASS row also prints `[SCHEDRT] cost`: instructions per comparator
+    # write through `arm_if_earlier`, and per call that does not write.
+    # Canary rows: each breaks one property and the matching check must print
+    # FAIL (`rt-band-canary` cap off, `rt-exempt-canary` no exemption: rt-motor
+    # is throttled with the band, `rt-edf-canary` FIFO inside a level,
+    # `rt-cbs-canary` no budget charging, `rt-admit-canary` no admission).
+    # Compile-error bucket: `kbuild`/`a64_kbuild` failures are their own FAIL.
+    sched_rt_row() { # sched_rt_row <label> <isa: rv|arm> <features> <expect: PASS|band|edf|cbs|admit>
+        local label="$1" isa="$2" feats="$3" expect="$4"
+        if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        if [ "$isa" = rv ]; then
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -smp 1 -icount shift=0,sleep=off \
+                -kernel "$kimg" >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" >"$log" 2>&1 &
+        fi
+        # 900 x 0.5 s: the CBS canary alone took 111 s of host time (a task
+        # that never stops leaves no idle for -icount to skip).
+        local pid=$! i=0
+        while [ "$i" -lt 900 ]; do
+            grep -aq '\[SCHEDRT\] done ' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$kimg"
+        local clean="$log.txt"
+        tr -d '\r' <"$log" >"$clean"
+        if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+            bad; echo "      the kernel stopped:"; grep -aiE -m3 'panic|\[FATAL\]|AARCH64-TRAP' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq '^\[SCHEDRT\] done ' "$clean"; then
+            bad; echo "      no [SCHEDRT] done line within the timeout — log kept: $log"; return
+        fi
+        local c
+        if [ "$expect" = PASS ]; then
+            for c in band exempt edf cbs admit ring3; do
+                if ! grep -aq "^\[SCHEDRT\] $c PASS " "$clean"; then
+                    bad; grep -a "^\[SCHEDRT\] $c " "$clean" | sed 's/^/      /'
+                    echo "      log kept: $log"; return
+                fi
+            done
+            ok
+            for c in band exempt edf cbs admit ring3; do
+                grep -a "^\[SCHEDRT\] $c PASS " "$clean" | sed 's/^\[SCHEDRT\] /      /'
+            done
+            grep -a "^\[SCHEDRT\] cost " "$clean" | sed 's/^\[SCHEDRT\] /      /'
+            rm -f "$log" "$clean"
+            return
+        fi
+        # Canary: the check the canary breaks fails, on the line only its
+        # failure path prints.
+        if grep -aq "^\[SCHEDRT\] $expect FAIL " "$clean"; then
+            ok; grep -a "^\[SCHEDRT\] $expect FAIL " "$clean" | sed 's/^\[SCHEDRT\] /      /'
+            rm -f "$log" "$clean"
+        else
+            bad; echo "      the $expect canary did not fail its check:"
+            grep -a "^\[SCHEDRT\] $expect " "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"
+        fi
+    }
+    par_row sched_rt_row "sched-rt: riscv64 band/edf/cbs/admit" rv "qemu,sched-rt-smoke" PASS
+    par_row sched_rt_row "sched-rt: riscv64 band cap canary" rv "qemu,rt-band-canary" band
+    par_row sched_rt_row "sched-rt: riscv64 EDF order canary" rv "qemu,rt-edf-canary" edf
+    par_row sched_rt_row "sched-rt: riscv64 CBS canary" rv "qemu,rt-cbs-canary" cbs
+    par_row sched_rt_row "sched-rt: riscv64 admission canary" rv "qemu,rt-admit-canary" admit
+    par_row sched_rt_row "sched-rt: riscv64 exemption canary" rv "qemu,rt-exempt-canary" exempt
+    par_row sched_rt_row "sched-rt: aarch64 band/edf/cbs/admit" arm "qemu,sched-rt-smoke" PASS
+    par_row sched_rt_row "sched-rt: aarch64 band cap canary" arm "qemu,rt-band-canary" band
+    par_row sched_rt_row "sched-rt: aarch64 EDF order canary" arm "qemu,rt-edf-canary" edf
+    par_row sched_rt_row "sched-rt: aarch64 CBS canary" arm "qemu,rt-cbs-canary" cbs
+    par_row sched_rt_row "sched-rt: aarch64 admission canary" arm "qemu,rt-admit-canary" admit
+    par_row sched_rt_row "sched-rt: aarch64 exemption canary" arm "qemu,rt-exempt-canary" exempt
+
+    # ── Priority inversion through fast IPC (wave 11 PIFAST, RFC-0052 R4) ──
+    #
+    # `kernel/src/smokes/pifast_smoke.rs`: a priority-13 kernel client calls a
+    # priority-24 server through SYS_IPC_FAST_CALL_EP (582, the real dispatch
+    # arms) once per 1.3 ms while a priority-18 hog computes in 2 ms bursts on
+    # the same hart, and times every call. `-smp 1 -icount shift=0,sleep=off`,
+    # the LAT rows' setup. The kernel prints the verdict: `[PIFAST] PASS` when
+    # the worst of 1000 loaded calls is <= 100 us AND the server was seen
+    # serving at the client's 13 (the donation is why), `[PIFAST] FAIL`
+    # otherwise — a line only that path prints.
+    #
+    # Measured before the donation existed (wave 11, three runs per ISA): p99
+    # 1.98 ms (one hog burst), 249-250 of 1000 calls over the bound, worst
+    # 1.1-1.6 s (the boot's `behavior` task, priority 14, also sits between
+    # client and server while it runs its bench sweep). With it (three runs
+    # per ISA): riscv64 worst 19.3-24.7 us, aarch64 16.4-16.5 us, none over.
+    #
+    # Canary rows build `pifast-donation-canary` (the call never donates): the
+    # row must print `[PIFAST] FAIL` with `server_prio_seen=24`. A build
+    # failure is its own FAIL line (compile-error bucket).
+    pifast_row() { # pifast_row <label> <isa: rv|arm> <features> <expect: PASS|CANARY>
+        local label="$1" isa="$2" feats="$3" expect="$4"
+        if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log disk kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        disk="$CI_LOG_DIR/${slug}-disk.img"
+        if [ "$isa" = rv ]; then
+            [ -f build/disk-ipctest.img.pristine ] || make_disk build/disk-ipctest.img
+            cp build/disk-ipctest.img.pristine "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -smp 1 -icount shift=0,sleep=off \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+                bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+            fi
+            cp build/disk-aarch64-ipctest.img "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        while [ "$i" -lt 480 ]; do
+            grep -aqE '\[PIFAST\] (PASS|FAIL)' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$disk" "$kimg"
+        # Anchor on a copy without the console's bare CRs.
+        local clean="$log.txt"
+        tr -d '\r' <"$log" >"$clean"
+        local loaded
+        loaded="$(grep -a '^\[PIFAST\] isa=[a-z0-9]* loaded calls=' "$clean" | sed -n 1p)"
+        if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+            bad; echo "      the kernel stopped:"; grep -aiE -m3 'panic|\[FATAL\]|AARCH64-TRAP' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if [ -z "$loaded" ]; then
+            bad; echo "      no [PIFAST] loaded result within the timeout:"
+            grep -a '^\[PIFAST\]' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        # Every loaded call ran against a running hog.
+        if ! printf '%s\n' "$loaded" | grep -qE 'calls=1000 .* hog_bursts=[1-9][0-9]* '; then
+            bad; echo "      the hog did not run: $loaded"; echo "      log kept: $log"; return
+        fi
+        if [ "$expect" = PASS ]; then
+            if grep -aq '^\[PIFAST\] PASS ' "$clean"; then
+                ok; echo "      ${loaded#\[PIFAST\] }"; rm -f "$log" "$clean"
+            else
+                bad; echo "      ${loaded}"; grep -a '^\[PIFAST\] FAIL ' "$clean" | sed 's/^/      /'
+                echo "      log kept: $log"
+            fi
+            return
+        fi
+        # CANARY: the call without the donation fails the bound, and the
+        # server was never seen above its own 24.
+        if grep -aq '^\[PIFAST\] FAIL loaded .* server_prio_seen=24 ' "$clean"; then
+            ok; echo "      ${loaded#\[PIFAST\] }"; rm -f "$log" "$clean"
+        else
+            bad; echo "      the call without a donation did not fail the row: ${loaded}"
+            echo "      log kept: $log"
+        fi
+    }
+    par_row pifast_row "pifast: riscv64 inversion" rv "qemu,pifast-smoke" PASS
+    par_row pifast_row "pifast: riscv64 no-donation canary" rv "qemu,pifast-donation-canary" CANARY
+    par_row pifast_row "pifast: aarch64 inversion" arm "qemu,pifast-smoke" PASS
+    par_row pifast_row "pifast: aarch64 no-donation canary" arm "qemu,pifast-donation-canary" CANARY
+
+    # ── Multi-source port wait (wave 11, PORTWAIT) ────────────────────────
+    #
+    # ipctest's phase P on both ISAs: a waiter binds a channel and a timer to
+    # one port, moves the `Cap<Channel>` to its server and sleeps in
+    # `SYS_PORT_WAIT_UNTIL_TYPED` (604); the server's send 30 ms later must
+    # wake it with the channel's key; the timer, re-armed 100 ms ahead, must
+    # be the next event and not before its deadline; a wait with nothing
+    # armed must answer 0 at its deadline; an io_ring completion must be an
+    # event; a remove by key must find the channel. The row requires the nine
+    # `ok   P/` verdicts and no `FAIL  P/` line; the rest of ipctest is
+    # judged by the ipctest rows above.
+    #
+    # Canary (`portwait-timer-canary`): a timer bind answers 0 and arms
+    # nothing. The row must then read `FAIL  P/the timer source fired`
+    # (printed only by the failure path), after the 5 s outer deadline of the
+    # timer wait, while the channel verdict stays `ok` (the phase ran).
+    # Measured when this landed (wave 11): riscv64 waited_us=30441 for the
+    # channel, the timer 1.0 ms late, the timeout 0.9 ms late; aarch64
+    # 31476 / 1.1 ms / 1.9 ms; the canary's timer wait answered 0 after
+    # 5.00 s on both. Compile-error bucket: a build failure is its own FAIL.
+    portwait_row() { # portwait_row <label> <isa: rv|arm> <features> <expect: PASS|CANARY>
+        local label="$1" isa="$2" feats="$3" expect="$4"
+        if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log disk kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        disk="$CI_LOG_DIR/${slug}-disk.img"
+        if [ "$isa" = rv ]; then
+            [ -f build/disk-ipctest.img.pristine ] || make_disk build/disk-ipctest.img
+            cp build/disk-ipctest.img.pristine "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -smp 4 -kernel "$kimg" \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+                bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+            fi
+            cp build/disk-aarch64-ipctest.img "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        # ipctest's own budget is 20 s of guest time per child verdict; the
+        # ceiling sits above it so the test decides, not this loop.
+        while [ "$i" -lt 200 ]; do
+            grep -aqE 'IPCTEST\] [0-9]+ check\(s\) run' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$disk" "$kimg"
+        local clean="$log.txt"
+        tr -d '\r' <"$log" >"$clean"
+        if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+            bad; echo "      the kernel stopped:"; grep -aiE -m3 'panic|\[FATAL\]|AARCH64-TRAP' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        local oks fails
+        oks="$(grep -ac '^\[IPCTEST\]   ok   P/' "$clean")"
+        fails="$(grep -a '^\[IPCTEST\]  FAIL  P/' "$clean")"
+        if [ "$expect" = PASS ]; then
+            if [ "$oks" = 9 ] && [ -z "$fails" ]; then
+                ok; grep -a '^\[IPCTEST\] P: \(channel\|timer\|timeout\) wait' "$clean" | sed 's/^\[IPCTEST\] /      /'
+                rm -f "$log" "$clean"
+            else
+                bad; echo "      phase P: ${oks} of 9 verdicts ok"
+                printf '%s\n' "$fails" | sed '/^$/d; s/^/      /'
+                grep -a '^\[IPCTEST\] P: ' "$clean" | sed 's/^/      /'
+                echo "      log kept: $log"
+            fi
+            return
+        fi
+        # CANARY: the timer verdict fails, and the phase ran (the channel's is ok).
+        if ! grep -aq '^\[IPCTEST\]   ok   P/the channel source woke the waiter' "$clean"; then
+            bad; echo "      the canary run did not reach phase P's channel wait — log kept: $log"; return
+        fi
+        if grep -aq '^\[IPCTEST\]  FAIL  P/the timer source fired' "$clean"; then
+            ok; grep -a '^\[IPCTEST\] P: timer wait' "$clean" | sed 's/^\[IPCTEST\] /      /'
+            rm -f "$log" "$clean"
+        else
+            bad; echo "      an unarmed timer did not fail the timer verdict:"
+            grep -a '^\[IPCTEST\] P: timer wait\|P/the timer' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"
+        fi
+    }
+    par_row portwait_row "portwait: riscv64 ring-3 wait" rv "qemu" PASS
+    par_row portwait_row "portwait: riscv64 timer canary" rv "qemu,portwait-timer-canary" CANARY
+    par_row portwait_row "portwait: aarch64 ring-3 wait" arm "qemu" PASS
+    par_row portwait_row "portwait: aarch64 timer canary" arm "qemu,portwait-timer-canary" CANARY
+
+    # Wave 11 (LEASE3): the canaries of ipctest's phases S and X, on both
+    # ISAs (the phases themselves are judged by the ipctest rows above).
+    # `lease-seal-canary` makes the seal take nothing away: the row must read
+    # `FAIL  S1/sealed lessor killed by its write (status 139)` while
+    # `ok   S2/` shows the phase ran. `lease-expiry-worker-canary` leaves the
+    # lease worker's reap out: the row must read `FAIL  X1/lessee killed by
+    # its write after the expiry (status 139)` and `FAIL  X2/` while
+    # `ok   X1/lease with a deadline granted` shows the phase ran. Measured
+    # when this landed: both ISAs, S1/X1 lessees exit 0 under their canary
+    # (the write lands), X2's lessor is killed (139). A by-hand third canary
+    # removed the aarch64 tick's `lease_tick` call: X1 and X2 fail the same
+    # way. Compile-error bucket: a build failure is its own FAIL.
+    lease3_canary_row() { # lease3_canary_row <label> <isa: rv|arm> <features> <must-fail> <must-pass>
+        local label="$1" isa="$2" feats="$3" mustfail="$4" mustpass="$5"
+        if [ "$isa" = rv ]; then kbuild "$feats" || { bad; echo "      the riscv64 kernel (--features $feats) did not build"; return; }; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log disk kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        disk="$CI_LOG_DIR/${slug}-disk.img"
+        if [ "$isa" = rv ]; then
+            [ -f build/disk-ipctest.img.pristine ] || make_disk build/disk-ipctest.img
+            cp build/disk-ipctest.img.pristine "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -smp 4 -kernel "$kimg" \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+                bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+            fi
+            cp build/disk-aarch64-ipctest.img "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        while [ "$i" -lt 200 ]; do
+            grep -aqE 'IPCTEST\] [0-9]+ check\(s\) run' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$disk" "$kimg"
+        local clean="$log.txt"
+        tr -d '\r' <"$log" >"$clean"
+        if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+            bad; echo "      the kernel stopped:"; grep -aiE -m3 'panic|\[FATAL\]|AARCH64-TRAP' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aqF "[IPCTEST]   ok   $mustpass" "$clean"; then
+            bad; echo "      the canary run did not reach its phase (no \`ok   $mustpass\`) — log kept: $log"; return
+        fi
+        if grep -aqF "[IPCTEST]  FAIL  $mustfail" "$clean"; then
+            ok; grep -aF "[IPCTEST]  FAIL  $mustfail" "$clean" | sed 's/^\[IPCTEST\]  /      /'
+            rm -f "$log" "$clean"
+        else
+            bad; echo "      the canary did not fail \`$mustfail\`:"
+            grep -a "IPCTEST\] .*${mustfail%%/*}/" "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"
+        fi
+    }
+    par_row lease3_canary_row "lease3: riscv64 seal canary" rv "qemu,lease-seal-canary" \
+        "S1/sealed lessor killed by its write (status 139)" "S2/the write after return lands"
+    par_row lease3_canary_row "lease3: riscv64 expiry canary" rv "qemu,lease-expiry-worker-canary" \
+        "X1/lessee killed by its write after the expiry (status 139)" "X1/lease with a deadline granted"
+    par_row lease3_canary_row "lease3: aarch64 seal canary" arm "qemu,lease-seal-canary" \
+        "S1/sealed lessor killed by its write (status 139)" "S2/the write after return lands"
+    par_row lease3_canary_row "lease3: aarch64 expiry canary" arm "qemu,lease-expiry-worker-canary" \
+        "X1/lessee killed by its write after the expiry (status 139)" "X1/lease with a deadline granted"
+
+    # Leave the tree on the default build: every scenario above rebuilds for
+    # itself, but nothing after this one does, and a stale `rvv` kernel in
+    # target/ is exactly the kind of thing that gets measured by accident.
+    kbuild "qemu"
+
+    # Two guests on one link: both ends are our stack, so this is the only
+    # scenario that covers TCP handshake and RX checksum validation in both
+    # directions. Has its own harness because it drives two QEMU processes.
+    # vsbench: the same ring-3 work on both kernels, and the check that step 9
+    # actually names. Until 2026-09-07 the parity claim rested on one manual
+    # run recorded by hand; nothing re-ran it, and the Linux half
+    # was not built by `make userspace` — long enough for that lane to grow a
+    # comment saying the reap "should be taken back in" and dead code marked
+    # "kept for when this lane measures the full life cycle again".
+    #
+    # It asserts what SURVIVES the instrument, not speed, on the gate column —
+    # AzOS built `qemu,bench-minimal`, refused unless its log shows the
+    # bench-minimal banner: it completes, reports no lane failure, and every
+    # lane has a Linux counterpart. The AzOS product column (`qemu`, full
+    # daemon set) and Linux+seccomp are printed beside it and do not decide
+    # the result. The script builds both kernels into target/vsbench-compare/,
+    # never into the default target/ release directory. No thresholds — see
+    # the script's header for the measurement that settles why.
+    #
+    # The ring lanes (`ring-*`, `ioring-*`) are measured a second time on the
+    # gate kernel and on Linux under `-accel tcg,thread=single -icount
+    # shift=0,sleep=off` (owner decision 2026-09-28): under MTTCG a parked
+    # gate column's ring exchange waits on a halted vCPU's host-thread wake,
+    # which scales with host load. That pass prints its own table in
+    # instructions per op and must pass assertions 1-3 as well; see
+    # VSBENCH_RING_DET in the script.
+    vsbench_row() {
+        printf "  %-26s" "bench: vsbench vs Linux..."
+        if QEMU="$QEMU" WAIT_SECS=90 VSBENCH_SECCOMP=1 bash "${REPO_ROOT}/tools/vsbench_compare.sh"; then
+            ok
+        else
+            bad; echo "      logs in build/vsbench-compare/"
+        fi
+    }
+    par -s "bench: vsbench vs Linux" vsbench_row   # wall-clock lanes, two kernels
+
+    # Besides the round trip, the script requires both ends to report
+    # `opts wscale=1/1 sack=1`: this is the only boot where both SYNs come
+    # from this stack, since slirp parses nothing but the MSS.
+    net_pair_row() {
+        printf "  %-26s" "network: two-node TCP..."
+        kbuild "qemu,net-smoke"
+        if QEMU="$QEMU" WAIT_SECS=90 bash "${REPO_ROOT}/tools/net_pair_smoke.sh" >/dev/null 2>&1; then
+            ok
+        else
+            bad; echo "      re-run 'make qemu-net-pair' to see the logs"
+        fi
+    }
+    par -s -n 2 "network: two-node TCP" net_pair_row   # two QEMUs on one link
+
+    # ── The user shell (RFC-0055, wave 11), both ISAs ──────────────────────
+    #
+    # These rows TYPE. Each boots the gate kernel with `build/disk-sh.img` /
+    # `build/disk-aarch64-sh.img` (the drivers base plus SH.ELF and
+    # TOOLBOX.ELF: the only volumes that carry the shell), waits for the user
+    # shell's `azos$ ` prompt, types a script one line per prompt (paced,
+    # one byte per 20 ms, on both ISAs), and then requires every marker. A
+    # line `^C` sends 0x03 and waits for the prompt to come back; `#wait RE`
+    # waits for an extended regex in the log; `#sleep N` waits N seconds;
+    # `#intr` sends 0x03 without waiting for anything (wave 13: `^C` to a
+    # Linux job reading the console, which the shell's prompt never follows);
+    # `!line` is typed without waiting for a prompt after it. `USH_FAULTS=N` requires exactly N
+    # deliberate user-fault kills (see the check below). `USH_FORBID` is an extended
+    # regex that must NOT appear: `USH_SMP` overrides the hart count (rv 4,
+    # arm 2 otherwise), `USH_KERNEL` boots that kernel image instead of
+    # building `<features>`; rows that are about exclusive console input
+    # forbid the recovery console's `robot> ` prompt, which only the kernel
+    # shell prints; `USH_DISK=lxabi` boots `build/disk-lxabi.img` /
+    # `build/disk-aarch64-lxabi.img` (the shell volume plus the static Linux
+    # binary `LXHELLO.ELF`, RFC-0047) instead; the prompt row then waits past `SH_START_TIMEOUT_S` (10 s)
+    # so a recovery console that should not start has had the time to. The QEMU stdin is a fifo held open on fd 8 (fd 9 is the
+    # help row's), as `shell_help_row` does. `expect` FAIL is a canary build:
+    # the row passes when the property is missing.
+    # RFC-0047 stage 3: build the third-party BusyBox once per gate run (both
+    # ISAs), in a config of its own with USERSPACE_GPL + BUSYBOX: the gate's
+    # own configs keep both off. 0 when build/disk-busybox.img and its
+    # aarch64 twin exist afterwards.
+    lx_busybox_ready() {
+        if [ -z "${LX_BUSYBOX_STATE:-}" ]; then
+            LX_BUSYBOX_STATE=no
+            mkdir -p "$CI_LOG_DIR"
+            local cfg="$REPO_ROOT/target/linux-busybox.config"
+            sed -e 's/^# CONFIG_USERSPACE_GPL is not set$/CONFIG_USERSPACE_GPL=y/' "$PRIMARY_CONFIG" >"$cfg"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1)
+            sed -i '' -e 's/^# CONFIG_BUSYBOX is not set$/CONFIG_BUSYBOX=y/' "$cfg"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1)
+            if grep -q '^CONFIG_BUSYBOX=y$' "$cfg" \
+               && make -s busybox KCONFIG_CONFIG="$cfg" >"$CI_LOG_DIR/busybox-build.log" 2>&1 \
+               && make_disk build/disk-busybox.img build/disk-aarch64-busybox.img; then
+                LX_BUSYBOX_STATE=yes
+            fi
+        fi
+        [ "$LX_BUSYBOX_STATE" = yes ]
+    }
+    # Wave 13: `LXTHR.ELF` built (`make lxthreads`, zig) and its volumes made.
+    lx_threads_ready() {
+        if [ -z "${LX_THREADS_STATE:-}" ]; then
+            LX_THREADS_STATE=no
+            mkdir -p "$CI_LOG_DIR"
+            if make -s lxthreads >"$CI_LOG_DIR/lxthreads-build.log" 2>&1 \
+               && make_disk build/disk-lxthr.img build/disk-aarch64-lxthr.img; then
+                LX_THREADS_STATE=yes
+            fi
+        fi
+        [ "$LX_THREADS_STATE" = yes ]
+    }
+    ushell_row() { # ushell_row <label> <rv|arm> <features> <PASS|FAIL> <script> <limit-s> <marker>...
+        local label="$1" isa="$2" feats="$3" expect="$4" script="$5" limit="$6"; shift 6
+        printf "  %-26s" "${label}..."
+        local slug log fifo img kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/ush-${slug}.log"; fifo="$CI_LOG_DIR/ush-${slug}.fifo"
+        img="$CI_LOG_DIR/ush-${slug}.img"; kimg="$CI_LOG_DIR/ush-${slug}-kernel"
+        mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$fifo" "$img" "$kimg"
+        local dsk="${USH_DISK:-sh}"
+        if [ "$isa" = rv ]; then
+            if [ -z "${USH_KERNEL:-}" ] && ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+            if [ ! -f "build/disk-$dsk.img.pristine" ]; then
+                rm -f build/disk-drvbase.img build/disk-sh.img "build/disk-$dsk.img"; make_disk "build/disk-$dsk.img"
+            fi
+            cp "build/disk-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$KERNEL}" "$kimg"
+        else
+            if [ -z "${USH_KERNEL:-}" ] && ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+            if [ ! -f "build/disk-aarch64-$dsk.img.pristine" ]; then
+                rm -f build/disk-aarch64-drvbase.img build/disk-aarch64-sh.img "build/disk-aarch64-$dsk.img"
+                make_disk "build/disk-aarch64-$dsk.img"
+            fi
+            cp "build/disk-aarch64-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$A64_IMG}" "$kimg"
+        fi
+        if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; return; fi
+        par_ready   # the wait below happens in the job, not in the gate
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        if [ "$isa" = rv ]; then
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${USH_SMP:-4}" \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
+        else
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${USH_SMP:-2}" -nographic \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
+        fi
+        local pid=$! t0 prompts verdict="" line
+        exec 8>"$fifo"
+        t0=$(date +%s)
+        ush_prompts() { grep -ao 'azos\$ ' "$log" 2>/dev/null | wc -l | tr -d ' '; }
+        ush_alive() {
+            kill -0 "$pid" 2>/dev/null || { verdict=exited; return 1; }
+            if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then verdict=crash; return 1; fi
+            [ $(( $(date +%s) - t0 )) -lt "$limit" ] || { verdict=timeout; return 1; }
+        }
+        ush_type() { local b i; for ((i = 0; i < ${#1}; i++)); do printf '%s' "${1:i:1}" >&8; sleep 0.02; done; }
+        while ush_alive && [ "$(ush_prompts)" -lt 1 ]; do sleep 0.5; done
+        if [ -z "$verdict" ]; then
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                if [ "${line#\#wait }" != "$line" ]; then
+                    while ush_alive && ! grep -aqE "${line#\#wait }" "$log"; do sleep 0.5; done
+                    [ -n "$verdict" ] && break; continue
+                fi
+                if [ "${line#!}" != "$line" ]; then ush_type "${line#!}"; printf '\r' >&8; continue; fi
+                if [ "$line" = "#intr" ]; then printf '\003' >&8; continue; fi
+                if [ "${line#\#sleep }" != "$line" ]; then sleep "${line#\#sleep }"; continue; fi
+                prompts=$(ush_prompts)
+                if [ "$line" = "^C" ]; then printf '\003' >&8; else ush_type "$line"; printf '\r' >&8; fi
+                while ush_alive && [ "$(ush_prompts)" -le "$prompts" ]; do sleep 0.5; done
+                [ -n "$verdict" ] && break
+            done <<< "$script"
+            sleep 1
+        fi
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        exec 8>&-
+        rm -f "$fifo" "$img" "$kimg"
+        local missing="" m
+        for m in "$@"; do grep -aqF -- "$m" "$log" || missing="$missing [$m]"; done
+        local forbidden=""
+        if [ -n "${USH_FORBID:-}" ] && grep -aqE -- "$USH_FORBID" "$log"; then
+            forbidden="$(grep -aE -m1 -- "$USH_FORBID" "$log" | tr -d '\r')"
+        fi
+        # `USH_FAULTS=N`: the scenario faults on purpose N times (LXHELLO's
+        # `mprot:` checks fork a child that stores to read-only memory).
+        # Exactly N kills and 2N `PAGE FAULT` lines, compared as strings
+        # (`grep -c` into `-eq` skips the check on a grep error).
+        if [ -n "${USH_FAULTS:-}" ]; then
+            local kills faults
+            kills="$(grep -a 'PAGE FAULT\] Killing user task' "$log" | wc -l | tr -d ' ')"
+            faults="$(grep -a 'PAGE FAULT' "$log" | wc -l | tr -d ' ')"
+            if [ "$kills" != "$USH_FAULTS" ] || [ "$faults" != "$((USH_FAULTS * 2))" ]; then
+                missing="$missing [expected $USH_FAULTS fault kill(s) / $((USH_FAULTS * 2)) PAGE FAULT lines, saw $kills / $faults]"
+            fi
+        fi
+        if [ "$verdict" = crash ]; then missing="$missing [kernel crash]"; fi
+        if [ "$expect" = FAIL ]; then
+            if [ -n "$missing" ] || [ -n "$forbidden" ]; then
+                ok; echo "      canary failed as it must:${missing}${forbidden:+ forbidden: $forbidden}"; rm -f "$log"
+            else
+                bad; echo "      the canary build passed: the row does not discriminate"; echo "      log kept: $log"
+            fi
+            return
+        fi
+        if [ -z "$missing" ] && [ -z "$forbidden" ] && [ "$verdict" != crash ]; then
+            ok; rm -f "$log"
+        else
+            bad
+            [ -n "$missing" ] && echo "      missing:$missing (stopped: ${verdict:-script done})"
+            [ -n "$forbidden" ] && echo "      forbidden line printed: $forbidden"
+            echo "      log kept: $log"
+        fi
+    }
+    # The shell volumes, rebuilt once per run, here. The first row that needs
+    # one only builds it when no `.pristine` exists, so a snapshot left by an
+    # earlier run on an older tree was booted as-is (2026-10-03: LXHELLO.ELF
+    # "not permitted" after a merge changed the image's rows). Not FATAL here:
+    # a volume that does not build is reported by the rows that use it.
+    for ush_vol in sh lxabi aarch64-sh aarch64-lxabi; do
+        rm -f "build/disk-$ush_vol.img" "build/disk-$ush_vol.img.pristine"
+    done
+    rm -f build/disk-drvbase.img build/disk-aarch64-drvbase.img
+    for ush_vol in sh lxabi aarch64-sh aarch64-lxabi; do
+        if make "build/disk-$ush_vol.img" >/dev/null 2>&1; then
+            cp -p "build/disk-$ush_vol.img" "build/disk-$ush_vol.img.pristine"
+        fi
+    done
+    for ush_isa in rv arm; do
+        ush_feat="qemu"
+        USH_FORBID='robot> ' par_row ushell_row "sh: prompt + exclusive reader ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "echo sh-echo-ok
+#sleep 12" 120 \
+            "[CONSOLE] user shell pending" "has the console" "[sh] AzOS user shell" "sh-echo-ok"
+        USH_FORBID='robot> ' par_row ushell_row "sh: spawn argv/env/cwd ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "export FOO=bar
+cd /fat
+args one 'two words'" 120 \
+            "argc=3" "argv[0]=args" "argv[2]=two words" "env FOO=bar" "cwd=/fat"
+        USH_FORBID='robot> ' par_row ushell_row "sh: pipeline ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "echo a b c | wc
+echo one two | cat | wc
+echo piped-ok | cat" 150 \
+            "1 3 6" "1 2 8" "piped-ok"
+        USH_FORBID='robot> ' par_row ushell_row "sh: redirect ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "echo hello > /fat/T1.TXT
+args x > /fat/T2.TXT 2>&1
+cat /fat/T2.TXT
+wc < /fat/T1.TXT
+cat < /fat/T1.TXT | wc" 150 \
+            "argv[1]=x" "1 1 6"
+        USH_FORBID='robot> ' par_row ushell_row "sh: ctrl-c stops a job ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "!spin
+#wait spin: computing
+^C
+echo after-spin \$?
+!yes
+#wait ^y
+^C
+echo after-yes \$?" 180 \
+            "stopped by an ancestor" "after-spin 130" "after-yes 130"
+        USH_FORBID='robot> ' par_row ushell_row "sh: kill reaches descendants only ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "kill 1
+kill 2" 120 \
+            "no such descendant"
+        par_row ushell_row "sh: exit gives the console back ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "spin &
+!exit 0
+#wait robot> " 150 \
+            "die-with-parent" "gave up: recovery console" "robot> "
+        # RFC-0055 S5 (USHELL2). ^C on ONE hart: the shell (24) out-ranks the
+        # CPU-bound tool (26), so the RX wake is served at the next tick, not
+        # when equal-priority slicing comes back to the shell. The `[SPAWN][PRIO]`
+        # line pins the number the tool actually ran at. Canary
+        # (`ushell-prio-canary`, tools 24 / shell 26): the shell starves, no
+        # `after-spin 130` (FAIL row below).
+        # Wave 14: the `[SPAWN][PRIO]` line of a spawn that applied its row's
+        # priority as declared is debug output (`spawn-log`); both rows ask
+        # for it.
+        USH_SMP=1 USH_FORBID='robot> ' par_row ushell_row "sh: ctrl-c on one hart ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
+            "!spin
+#wait spin: computing
+^C
+echo after-spin \$?" 120 \
+            "row=TOOLBOX.ELF class=best_effort declared=26 applied=26" "stopped by an ancestor" "after-spin 130"
+        USH_SMP=1 USH_FORBID='robot> ' par_row ushell_row "sh: ctrl-c canary, tool out-ranks shell ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log,ushell-prio-canary" FAIL \
+            "!spin
+#wait spin: computing
+^C
+echo after-spin \$?" 60 \
+            "after-spin 130"
+        # The power family's ring-3 form: `POWER.ELF` under its row's
+        # `Cap<Power>`, through `SYS_POWER_TYPED`. Rate read, set, read back;
+        # suspend and resume; an orderly reboot (the rebooted shell's prompt
+        # answers the next line); an orderly power-off ends QEMU.
+        USH_FORBID='robot> |REFUSED' par_row ushell_row "sh: power tool ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "power sched_hz 200
+power sched_hz
+power suspend
+power reboot
+echo after-reboot
+!power shutdown
+#wait POWER\] shutdown by" 240 \
+            "sched_hz set 200" "[SCHED] Scheduler rate set to 200 Hz" "sched_hz 200" \
+            "[PM] System suspended" "power: resumed" "[POWER] reboot by tid" "after-reboot" \
+            "[POWER] shutdown by tid"
+        # Without `Cap<Power>` (`power-cap-canary` empties POWER.ELF's row):
+        # every operation is refused by the capability, recorded (the
+        # `[AUTHORITY]` line prints only when the record was handed to the
+        # recorder), and does not run.
+        USH_FORBID='robot> |Scheduler rate set|System suspended' par_row ushell_row "sh: power refused without Cap<Power> ($ush_isa)" "$ush_isa" "$ush_feat,power-cap-canary" PASS \
+            "power sched_hz 200
+power suspend" 150 \
+            "[AUTHORITY] sched_hz set REFUSED" "[AUTHORITY] pm suspend REFUSED" "(recorded)" \
+            "power: sched_hz refused" "power: suspend refused"
+        # Wave 12: the other privileged families' tools (`FLIGHT.ELF`,
+        # `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`), each under its row's
+        # capability through its typed call (615..=618), running the console's
+        # own command bodies; and `ps` (TOOLBOX.ELF) over `/proc/tasks`. Only
+        # reversible operations: arm then disarm, a layer off then on, a key
+        # set then read back, the status and a rollback that a fresh volume
+        # answers "already on the last good slot". `ps` holds the full task
+        # view (`Cap<Task>` READ on "tasks", owner round 48), so it lists a
+        # task that is not its own descendant: hart 0's idle task (TID 1).
+        # Without the grant it would list only itself (`proc: hidepid view`).
+        # `flight-tool-drivetrain`
+        # gives the drivetrain to FLIGHT.ELF (the default topology gives it to
+        # the autorun row: one writer per motor).
+        USH_FORBID='robot> |REFUSED|command not found' par_row ushell_row "sh: family tools ($ush_isa)" "$ush_isa" "$ush_feat,flight-tool-drivetrain" PASS \
+            "flight arm
+flight disarm
+behavior disable 2
+behavior status
+behavior enable 2
+config set log_level 2
+config get log_level
+ota status
+ota rollback
+ps" 240 \
+            "[FLIGHT] flight arm by tid" "flight: arm ok" "[FLIGHT] DISARMED" "flight: disarm ok" \
+            "behavior: L2 disabled" "behavior: enabled layers L0 L1 L3" "behavior: L2 enabled" \
+            "[CFG] set by tid" "log_level=2" "ota: active A last-good A" \
+            "ota: already on the last good slot" "  TID  PPID PRI S NAME" " R TOOLBOX.ELF" \
+            "    1     0  31 R idle"
+        # Canary half (`family-cap-canary` empties the four rows): every
+        # operation refused by the capability, recorded (the `[AUTHORITY]`
+        # line prints only when the record reached the recorder), not run.
+        USH_FORBID='robot> |FLIGHT\] ARMED|CFG\] set by|behavior: L2|ota: active' par_row ushell_row "sh: family tools refused without their capability ($ush_isa)" "$ush_isa" "$ush_feat,family-cap-canary" PASS \
+            "flight arm
+behavior disable 2
+config set log_level 2
+ota rollback" 150 \
+            "[AUTHORITY] flight arm REFUSED" "[AUTHORITY] behavior disable REFUSED" \
+            "[AUTHORITY] config set REFUSED" "[AUTHORITY] ota rollback REFUSED" "(recorded)" \
+            "flight: arm refused" "ota: rollback refused"
+        # The supervisor gives up on a shell that keeps failing
+        # (`SUP_RESTART_BURST` = 3 restarts, then the fourth failure): the
+        # recovery console takes the console.
+        par_row ushell_row "sh: supervisor gives up, recovery console ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "exit 1
+exit 1
+exit 1
+!exit 1
+#wait robot> " 180 \
+            "exited: restarting" "gave up: recovery console" "robot> "
+        # ── The Linux personality (RFC-0047, wave 12) ──────────────────────
+        # `LXHELLO.ELF` is a static Linux ELF (`userspace/tests/lxhello`, our
+        # own C, no C library) run from the shell under its row's
+        # `abi = "linux"` (`linux-abi-test`). It checks its initial stack
+        # (argv, env, auxv), identity, time and sleep, brk and mmap, the tty
+        # ioctls, signal state, a pipe through dup3, a file (fstat, read,
+        # lseek), newfstatat, getdents64 over /fat, writev, wait4, fcntl,
+        # and prints `lx: done failures=0`. The capability canary is inside
+        # it: its row holds nothing, so `openat(O_CREAT)` under /fat must be
+        # refused by the native tree gate AND recorded (`(recorded)` prints
+        # only when the record reached the recorder). A call it does not
+        # answer gets `-ENOSYS`, reported, never a native call.
+        # Canaries: `linux-abi-caps-canary` grants the row `/fat` read-write,
+        # so the create succeeds and the refusal lines are missing;
+        # `linux-abi-tag-canary` never tags the task, so its Linux numbers hit
+        # the native table and seccomp kills it at its first call.
+        USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL|SECCOMP' par_row ushell_row "linux: static ELF under the personality ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test" PASS \
+            "lxhello one 'two words'
+echo after-lx \$?" 120 \
+            "row=LXHELLO.ELF" "lx: hello from a static Linux ELF, argc=3 [lxhello] [one] [two words]" \
+            "lx: auxv ok" "lx: pipe ok" "lx: file ok" "lx: getdents64 ok" "lx: writev ok" \
+            "[LINUX] tid=" "openat refused by the capability check: -EACCES (recorded)" \
+            "lx: create outside caps refused ok" "not answered by the personality: -ENOSYS" \
+            "lx: fork+wait4 ok" "lx: fp state kept across switches ok" "lx: thread pointer kept across switches ok" \
+            "lx: fork child holds only its row ok" \
+            "lx: inherited file reads [ab]" "lx: fork shares the file offset ok" \
+            "lx: exec child argc=2 ok" "lx: execve ok" \
+            "lx: signal handler ok" "lx: sigreturn restores fp ok" "lx: signal mask ok" "lx: sigchld ok" \
+            "lx: default action ok" "lx: sigpipe ok" "lx: kill a child: eintr + handler ok" \
+            "lx: kill the parent refused ok" "lx: signal delivered at an interrupt ok" \
+            "lx: wait4 reports a signalled child WIFSIGNALED ok" \
+            "lx: orphan adopted by its subreaper ok" \
+            "lx: mprot: a store to PROT_READ memory faults ok" "lx: mprot: mprotect(PROT_READ) makes a store fault ok" \
+            "lx: mprot: mprotect(PROT_EXEC) is refused ok" "lx: mprot: a PROT_NONE mapping made read-write ok" \
+            "lx: done failures=0" "after-lx 0"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: caps canary, row granted /fat ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-caps-canary" FAIL \
+            "lxhello
+echo after-lx" 120 \
+            "openat refused by the capability check" "lx: create outside caps refused ok" "lx: done failures=0"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: tag canary, native table ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-tag-canary" FAIL \
+            "lxhello
+echo after-lx" 120 \
+            "lx: hello from a static Linux ELF" "lx: done failures=0"
+        # Shared open file descriptions (round 48): a descriptor inherited
+        # across fork, or dup'ed, shares one offset with its original, as in
+        # Linux. LXHELLO's child writes "a" to an inherited /tmp descriptor,
+        # the parent then writes "b"; the file must read "ab" (the main row
+        # above). Canary `fd-private-offset-canary`: every dup gets a private
+        # copy of the offset, the parent overwrites the child's byte and the
+        # file reads "b".
+        # Wave 13 (security): LXHELLO's `mprot:` checks (a store to PROT_READ
+        # memory, and to memory `mprotect` made read-only, faults; PROT_EXEC is
+        # refused; a PROT_NONE mapping is made usable). Canary
+        # `mmap-prot-canary`: read-write mappings, `mprotect` a no-op.
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: mmap prot canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,mmap-prot-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: mprot: a store to PROT_READ memory faults ok" "lx: mprot: mprotect(PROT_READ) makes a store fault ok"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: inherited file reads [ab]" "lx: fork shares the file offset ok"
+        # Stage 3 canaries. `linux-abi-fork-canary` also grants a forked child
+        # `/fat` read-write, which its row does not declare: the child's create
+        # succeeds and the reseed marker is missing. `linux-abi-fp-canary`
+        # stops a Linux task's per-task state following it: on riscv64 its FP
+        # file, on aarch64 its TPIDR_EL0 (the FP file there is the kernel's
+        # own lazy switch). With one hart the parent and its fork child, which
+        # set different values, clobber each other's.
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: fork canary, child beyond its row ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-fork-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: fork child holds only its row ok"
+        if [ "$ush_isa" = rv ]; then
+            USH_SMP=1 USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: fp canary, file not switched (rv)" rv "$ush_feat,linux-abi-fp-canary" FAIL \
+                "lxhello
+echo after-lx" 150 \
+                "lx: fp state kept across switches ok"
+        else
+            USH_SMP=1 USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: tls canary, TPIDR_EL0 not switched (arm)" arm "$ush_feat,linux-abi-fp-canary" FAIL \
+                "lxhello
+echo after-lx" 150 \
+                "lx: thread pointer kept across switches ok"
+        fi
+        # Wave 13 (SIGNALS): the main row above runs LXHELLO's signal checks
+        # (a handler at kill's return with siginfo, the FP file and every
+        # register back after rt_sigreturn, a mask holding a signal pending,
+        # SIGCHLD at a child's exit, a default action ending a task with
+        # 128 + signo, SIGPIPE ignored then default, a parent's signal ending
+        # a child's sleep with -EINTR and running its handler, a child refused
+        # signalling its parent, and delivery at an interrupt to a task that
+        # makes no syscall). Canaries, each compiling one property out:
+        # nothing delivered; no SIGCHLD; no SIGPIPE.
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: signal canary, nothing delivered ($ush_isa)" "$ush_isa" "$ush_feat,linux-signal-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: signal handler ok" "lx: signal delivered at an interrupt ok"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: sigchld canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-sigchld-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: sigchld ok"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: sigpipe canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-sigpipe-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: sigpipe ok"
+        # Wave 13 (orphans): LXHELLO's `stage_orphans` — a child marked with
+        # `prctl(PR_SET_CHILD_SUBREAPER)` adopts the grandchild its own child
+        # leaves behind (`getppid`, `wait4(-1)`; the main row above). Canary
+        # `orphan-reparent-canary`: nothing is re-parented, the grandchild's
+        # notice is dropped, and the adoption line is missing.
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: orphan canary, no re-parent ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,orphan-reparent-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: orphan adopted by its subreaper ok"
+        # Wave 13: the shell is a child subreaper. `lxhello orphan` (a job)
+        # forks a grandchild and exits at once; the grandchild sees its parent
+        # move off the dead job (`lx: orphan ppid=N adopted`, exit 90), and the
+        # shell, idle at its prompt, reaps it and says so (`[reaped] tid N,
+        # status 90`). Canary `subreaper-mark-canary`: the mark is never set;
+        # a shell volume has no autorun (init), so the grandchild is left with
+        # no parent (`ppid=0 not adopted`), its notice goes nowhere and no reap
+        # line is printed.
+        USH_DISK=lxabi USH_FORBID='robot> |not adopted' par_row ushell_row "sh: adopts a job's orphan ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test" PASS \
+            "lxhello orphan
+#wait lx: orphan ppid=
+#sleep 2
+echo after-orphan" 120 \
+            "lx: orphan forked, parent exits" "adopted" "[reaped] tid" ", status 90" "after-orphan"
+        # The canary row asserts the broken state itself (PASS on the canary
+        # kernel: `ppid=0 not adopted` printed, no reap line), so a shell that
+        # never started cannot pass it by printing nothing.
+        USH_DISK=lxabi USH_FORBID='robot> |\[reaped\] tid' par_row ushell_row "sh: orphan canary, shell not a subreaper ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,subreaper-mark-canary" PASS \
+            "lxhello orphan
+#wait lx: orphan ppid=
+#sleep 2
+echo after-orphan" 120 \
+            "lx: orphan forked, parent exits" "lx: orphan ppid=0 not adopted" "after-orphan"
+        # BusyBox (third-party, GPL-2.0-only; `make busybox` with
+        # USERSPACE_GPL + BUSYBOX in a config of its own, never the gate's).
+        # `sh` runs a builtin, a NOEXEC applet over a FAT32 directory, a
+        # pipeline in command substitution (fork, pipe2, execve of
+        # /proc/self/exe for `wc`), and a subshell whose create under /fat its
+        # row does not allow (the forked child, reseeded from the row, is
+        # refused and the refusal recorded). Canary: the fork canary (the
+        # child may create). Skipped, and said so, when the toolchain (zig) or the
+        # pinned tarball is not on this host.
+        if lx_busybox_ready; then
+            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                "busybox sh -c 'echo bb-sh-ok; ls /fat'
+busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
+busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
+busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'
+echo after-bb \$?" 240 \
+                "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "wc-out=8" \
+                "openat refused by the capability check: -EACCES (recorded)" "Permission denied" "sub-rc=1" \
+                "bbfork-2" "after-bb 0"
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
+                "busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'" 150 \
+                "Permission denied" "sub-rc=1"
+            # Two subshells write one inherited descriptor in turn (the main
+            # row's `bbfork-2`: two lines). Canary
+            # `fd-private-offset-busybox-canary` (private offsets): the second
+            # subshell overwrites the first's line, one line is left.
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
+                "busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'" 150 \
+                "bbfork-2"
+            # Two Linux tasks on one hart: BusyBox sleeping in the background
+            # while LXHELLO (which starts with TPIDR_EL0 = 0) runs, then
+            # BusyBox forks again. Its thread pointer must be its own when it
+            # resumes (LXHELLO sets its own and checks it, too).
+            USH_SMP=1 USH_DISK=busybox USH_FAULTS=2 USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                "!busybox sh -c 'sleep 2; echo tls-\$(echo kept)' &
+lxhello
+#wait tls-kept" 240 \
+                "lx: done failures=0" "tls-kept"
+            # A streamed image (BUSYBOX.ELF is larger than the exec bounce
+            # buffer) must run only if the bytes copied in hash to the digest
+            # it was planned by. `linux-stream-tamper-test` flips one byte of
+            # the copy (the file changed between the two reads): the spawn is
+            # refused, the refusal recorded, and nothing of BusyBox runs.
+            # Canary `linux-stream-tamper-canary`: the same flip with the
+            # check compiled out; the image runs and the refusal is missing.
+            # (`bb-tamper-ran` is only ever printed by BusyBox: the typed line
+            # spells it `bb-tamper-$(echo ran)`.)
+            USH_DISK=busybox USH_FORBID='robot> |bb-tamper-ran' par_row ushell_row "linux: streamed image changed, refused ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-test" PASS \
+                "busybox sh -c 'echo bb-tamper-\$(echo ran)'
+echo after-tamper \$?" 150 \
+                "BUSYBOX.ELF changed between its hash and its load (digest mismatch) (recorded)" "after-tamper "
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: tamper canary, check compiled out ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-canary" FAIL \
+                "busybox sh -c 'echo bb-tamper-\$(echo ran)'
+echo after-tamper \$?" 150 \
+                "changed between its hash and its load (digest mismatch)"
+            # Wave 13 (SIGNALS): an interactive BusyBox `sh`. The shell lends
+            # the console to its foreground Linux job (SPAWN_F_CONSOLE_IN):
+            # ash reads typed lines through the kernel's line discipline
+            # (they were end of file before), and `^C` while `sleep` runs is
+            # SIGINT to ash and its child (sleep ends 128 + 2; ash goes on).
+            # Canaries: a console read is end of file again (ash exits at
+            # once); `^C` is queued as a byte instead of a signal at the RX
+            # interrupt (sleep runs its 20 s and the rest of its line runs:
+            # `bb-slept`, which the main row forbids; the byte is turned into
+            # SIGINT only when ash reads again).
+            bb_int_script="!busybox sh
+#sleep 3
+!x=int; echo bb-\$x-ok
+#wait bb-int-ok
+!sleep 20; x=slept; echo bb-\$x
+#sleep 3
+#intr
+#sleep 1
+!echo bb-after-intr-\$?
+#wait bb-after-intr-[0-9]
+!exit
+#sleep 2
+echo after-bb-int \$?"
+            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                "$bb_int_script" 120 \
+                "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
+            # The same on one hart: the echo is written after the line
+            # discipline's lock is dropped, so a full TX ring cannot hold it.
+            USH_SMP=1 USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh, one hart ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                "$bb_int_script" 150 \
+                "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: console EOF canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-console-eof-canary" FAIL \
+                "$bb_int_script" 90 \
+                "bb-int-ok" "bb-after-intr-130"
+            USH_DISK=busybox USH_FORBID='robot> |bb-slept' par_row ushell_row "linux: console ^C canary ($ush_isa)" "$ush_isa" "$ush_feat,console-isig-canary" FAIL \
+                "$bb_int_script" 90 \
+                "bb-after-intr-130"
+            # Wave 13: `execve` into ANOTHER row. With `linux-exec-row-test`
+            # BUSYBOX.ELF's row holds `/fat` and the grant to exec
+            # LXHELLO.ELF, whose row holds only `/tmp`: BusyBox writes /fat,
+            # then execs LXHELLO, which runs under LXHELLO's row (its /fat
+            # create refused). Without the grant (the plain BusyBox row) the
+            # exec is refused and recorded, and LXHELLO never runs. Canary
+            # `linux-exec-row-canary`: the launch check compiled out, the
+            # exec goes through without the grant.
+            USH_DISK=busybox USH_FAULTS=2 USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
+                "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
+echo after-x \$?" 180 \
+                "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" \
+                "lx: create outside caps refused ok" "lx: done failures=0" "after-x 0"
+            exec_refused_script="busybox sh -c 'exec /fat/LXHELLO.ELF from-bb'
+echo after-x \$?"
+            USH_DISK=busybox USH_FORBID='robot> |lx: hello' par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                "$exec_refused_script" 150 \
+                "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)" "LXHELLO.ELF: Permission denied"
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-canary" FAIL \
+                "$exec_refused_script" 150 \
+                "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)"
+            # Wave 13: the BusyBox row is a deployment's, not only the gate's.
+            # A kernel built from a `.config` with USERSPACE_GPL + BUSYBOX
+            # (the one `make busybox` used) and NO test feature carries the
+            # row and the shell's grant: BusyBox runs from the shell.
+            # Canary: the same kernel from the gate's own `.config` (BUSYBOX
+            # off) has neither, and the shell is not permitted to start it.
+            bb_cfg_rv="$REPO_ROOT/target/linux-busybox.config"
+            bb_cfg_arm="$REPO_ROOT/target/linux-busybox-aarch64.config"
+            # Regenerated every run, as lx_busybox_ready does for riscv64: a
+            # copy cached in target/ outlives new Kconfig symbols (wave 14:
+            # MM_REGIONS_PER_SPACE missing broke this row's build).
+            sed -e 's/^# CONFIG_USERSPACE_GPL is not set$/CONFIG_USERSPACE_GPL=y/' "$AARCH64_CONFIG" >"$bb_cfg_arm"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg_arm" python3 -m olddefconfig >/dev/null 2>&1)
+            sed -i '' -e 's/^# CONFIG_BUSYBOX is not set$/CONFIG_BUSYBOX=y/' "$bb_cfg_arm"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg_arm" python3 -m olddefconfig >/dev/null 2>&1)
+            if [ "$ush_isa" = rv ]; then bb_cfg="$bb_cfg_rv"; else bb_cfg="$bb_cfg_arm"; fi
+            KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT' par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+                "busybox sh -c 'x=prod; echo bb-\$x-ok'
+echo after-prod \$?" 150 \
+                "row=BUSYBOX.ELF" "bb-prod-ok" "after-prod 0"
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox Kconfig row canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
+                "busybox sh -c 'x=prod; echo bb-\$x-ok'
+echo after-prod \$?" 150 \
+                "row=BUSYBOX.ELF" "bb-prod-ok"
+        else
+            printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (no zig or no pinned tarball on this host; see make busybox)"
+        fi
+        # Wave 13 (THREADS): `LXTHR.ELF` (`make lxthreads`: our C, static
+        # musl by zig cc) uses pthreads as any Linux program does: four
+        # threads contend on a mutex (futex wait/wake), each keeps its own
+        # `__thread` value, all are joined (musl waits on a futex and on the
+        # thread-list lock the kernel's clear-tid wake releases), a thread
+        # and main write one open file description ("ab"), and a second round
+        # runs in the same address space. Canary `threads-tls-canary`: a new
+        # thread keeps its creator's thread pointer, so musl's thread-local
+        # storage (and its thread descriptor) is the creator's.
+        if lx_threads_ready; then
+            USH_DISK=lxthr USH_FORBID='robot> |lxthr: .* FAIL|SECCOMP|PAGE FAULT' par_row ushell_row "linux: pthreads ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test" PASS \
+                "lxthr
+echo after-lxthr \$?" 150 \
+                "row=LXTHR.ELF" "lxthr: pthread_create x4 ok" "lxthr: pthread_join x4 ok" \
+                "lxthr: mutex contention keeps the count exact ok" "lxthr: tls distinct per thread ok" \
+                "lxthr: gettid differs from getpid in a thread ok" "lxthr: shared file reads [ab]" \
+                "lxthr: a second round of threads ok" \
+                "lxthr: a process signal lands on an unblocked thread ok" \
+                "lxthr: tgkill to a blocked thread stays pending on it ok" \
+                "lxthr: a fatal signal ends every thread; wait sees WIFSIGNALED ok" \
+                "lxthr: done failures=0" "after-lxthr 0"
+            # Wave 13 (SIGNALS) canaries over the same run: a process-directed
+            # signal always to the leader (which blocks it); a tgkill posted
+            # as the process's (an unblocked thread takes it); wait4 reporting
+            # a signalled child as exited 128 + n.
+            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: thread signal canary, leader only ($ush_isa)" "$ush_isa" "$ush_feat,linux-sig-thread-canary" FAIL \
+                "lxthr
+echo after-lxthr \$?" 150 \
+                "lxthr: a process signal lands on an unblocked thread ok"
+            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: tgkill canary, posted to the process ($ush_isa)" "$ush_isa" "$ush_feat,linux-tkill-process-canary" FAIL \
+                "lxthr
+echo after-lxthr \$?" 150 \
+                "lxthr: tgkill to a blocked thread stays pending on it ok"
+            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: wait4 canary, signalled child exited ($ush_isa)" "$ush_isa" "$ush_feat,linux-wait-exited-canary" FAIL \
+                "lxthr
+echo after-lxthr \$?" 150 \
+                "lxthr: a fatal signal ends every thread; wait sees WIFSIGNALED ok"
+            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: pthreads tls canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,threads-tls-canary" FAIL \
+                "lxthr
+echo after-lxthr \$?" 120 \
+                "lxthr: tls distinct per thread ok" "lxthr: done failures=0"
+        else
+            printf "  %-26s%s\n" "linux: pthreads ($ush_isa)..." "SKIP (no zig on this host; see make lxthreads)"
+        fi
+        # Wave 14 (security): a fork shares a read-only page with its child as
+        # it is; the child's mprotect(RW) made the leaf writable in place and
+        # its store landed in the parent's frame. LXHELLO forks after making a
+        # page read-only; the child mprotects it read-write and stores, and
+        # must read its own byte while the parent's stays. Canary
+        # `mprotect-shared-canary` (the write bit set in place): the parent's
+        # byte changes.
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: fork child mprotect is private ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test" PASS \
+            "lxhello
+echo after-lx" 150 \
+            "lx: mprot: a fork child's mprotect(RW) write is its own ok" "lx: mprot: the parent's read-only page is unchanged ok"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: fork mprotect canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,mprotect-shared-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: mprot: the parent's read-only page is unchanged ok"
+    done
+
+    # ── sh: lockdown (both ISAs) ───────────────────────────────────────────
+    #
+    # Successor of SEC2's `lockdown: console unseeded` rows (owner round 38:
+    # lockdown = no kernel console). A kernel built from the primary column's
+    # config with only CONFIG_CONSOLE_LOCKDOWN turned on, in a target dir of
+    # its own (the option changes `azos_limits`; in the shared dir it
+    # would rebuild every crate twice per gate), booted with the shell volume.
+    # Needs: no kernel console task (its line), the user shell answering, the
+    # console's `pm suspend` absent from it (`command not found`), and the
+    # privileged tools REFUSED at `SYS_SPAWN_EX` — the lockdown shell row holds
+    # no launch grant on `POWER.ELF` nor (wave 12) on `FLIGHT.ELF` — with the
+    # refusal recorded. Forbidden: anything only the kernel console prints
+    # (`robot> `, `user shell pending`; the row waits past
+    # `SH_START_TIMEOUT_S` first), and any of the three having run.
+    # Canaries (by hand, 2026-10-03, rv): the lockdown row with `SH_CAPS` (the
+    # launch grant kept): `not permitted` missing and the rate is set; the
+    # kernel console task created under lockdown: its lockdown line missing
+    # and `user shell pending` printed.
+    ush_lockdown_kernel() { # <rv|arm> -> prints the image path, or nothing
+        local isa="$1" dir="$REPO_ROOT/target/lockdown-$1" base tmp cfg elf img
+        if [ "$isa" = rv ]; then base="$PRIMARY_CONFIG"; else base="$AARCH64_CONFIG"; fi
+        mkdir -p "$dir"; cfg="$dir/lockdown.config"; tmp="$(mktemp -d)"
+        sed 's/^# CONFIG_CONSOLE_LOCKDOWN is not set$/CONFIG_CONSOLE_LOCKDOWN=y/' "$base" >"$tmp/c.config"
+        if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) \
+           || ! grep -q '^CONFIG_CONSOLE_LOCKDOWN=y$' "$tmp/c.config" \
+           || ! grep -q '^CONFIG_USER_SHELL=y$' "$tmp/c.config"; then
+            rm -rf "$tmp"; return
+        fi
+        cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"
+        rm -rf "$tmp"
+        if [ "$isa" = rv ]; then
+            elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
+            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --features qemu >/dev/null 2>&1
+            img="$elf"
+        else
+            elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
+            env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
+                "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+                --features qemu --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >/dev/null 2>&1
+            [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
+                -O binary "$elf" "$img" 2>/dev/null
+        fi
+        [ -f "$img" ] && printf '%s\n' "$img"
+    }
+    for ush_isa in rv arm; do
+        ush_lk="$(ush_lockdown_kernel "$ush_isa")"
+        if [ -z "$ush_lk" ]; then
+            printf "  %-26s" "sh: lockdown ($ush_isa)..."; bad; echo "      the lockdown kernel did not build"
+            continue
+        fi
+        USH_KERNEL="$ush_lk" USH_FORBID='robot> |user shell pending|Scheduler rate set|FLIGHT\] ARMED|PM\] Entering suspend|System suspended' \
+            par_row ushell_row "sh: lockdown ($ush_isa)" "$ush_isa" qemu PASS \
+            "echo locked-ok
+#sleep 12
+flight arm
+pm suspend
+power sched_hz 200
+power suspend" 150 \
+            "[CONSOLE] lockdown: no kernel console task" "locked-ok" \
+            "holds no launch grant for FLIGHT.ELF (recorded)" "sh: pm: command not found" \
+            "holds no launch grant for POWER.ELF (recorded)" "not permitted"
+    done
+
+    # ── sh: safe mode (both ISAs) ──────────────────────────────────────────
+    #
+    # Safe mode hands the console to the recovery console at once: the
+    # loader starts no ring-3 program, `SH.ELF` included. The shell volume is
+    # walked into safe mode the way `safe mode: attempts exhausted` does it
+    # (`safe-mode-smoke` crashes boots 1-3 after their unconfirmed mark), then
+    # boot 4 must print the recovery reason and `robot> `, and must not start
+    # the user shell: the loader's `[DRVLAUNCH] SH.ELF started` line (printed
+    # in every build, debug or not) is forbidden. Wave 14: it replaces the
+    # spawn's `SH.ELF profile` line, which a release build no longer prints.
+    # Canary `safe-mode-launch-canary` (the driver launcher ignores safe mode):
+    # boot 4 starts the shell and the row must be red on that line.
+    ush_safe_mode_row() { # <rv|arm> [ok|canary]
+        local isa="$1" mode="${2:-ok}" disk log n i pid missing="" want
+        local label="sh: safe mode ($1)" feats="qemu,safe-mode-smoke"
+        if [ "$mode" = canary ]; then label="sh: safe mode canary ($1)"; feats="$feats,safe-mode-launch-canary"; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        disk="$CI_LOG_DIR/ush-safe-mode-$isa.img"; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$isa"-boot*.log
+        if [ "$isa" = rv ]; then
+            kbuild "$feats" || { bad; echo "      the safe-mode-smoke kernel did not build"; return; }
+            [ -f build/disk-sh.img.pristine ] || { rm -f build/disk-drvbase.img build/disk-sh.img; make_disk build/disk-sh.img; }
+            cp build/disk-sh.img.pristine "$disk"
+        else
+            a64_kbuild "$feats" || { bad; echo "      the aarch64 safe-mode-smoke kernel did not build"; return; }
+            [ -f build/disk-aarch64-sh.img.pristine ] || { rm -f build/disk-aarch64-drvbase.img build/disk-aarch64-sh.img; make_disk build/disk-aarch64-sh.img; }
+            cp build/disk-aarch64-sh.img.pristine "$disk"
+        fi
+        for n in 1 2 3 4; do
+            log="$CI_LOG_DIR/ush-safe-mode-$isa-boot$n.log"
+            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+            if [ "$isa" = rv ]; then
+                par_ready
+                "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -no-reboot -smp 4 \
+                    -global virtio-mmio.force-legacy=false \
+                    -drive file="$disk",if=none,format=raw,id=hd0 \
+                    -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+            else
+                par_ready
+                qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -no-reboot \
+                    -kernel "$A64_IMG" -global virtio-mmio.force-legacy=false \
+                    -drive file="$disk",if=none,format=raw,id=hd0 \
+                    -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+            fi
+            pid=$!; i=0
+            while [ "$i" -lt 240 ]; do
+                if [ "$n" -lt 4 ]; then
+                    grep -aqF "safe-mode-smoke: deliberate crash" "$log" 2>/dev/null && break
+                else
+                    # Past the start timeout, so a user shell that should not
+                    # start has had the time to.
+                    grep -aqF "robot> " "$log" 2>/dev/null && [ "$i" -ge 24 ] && break
+                fi
+                kill -0 "$pid" 2>/dev/null || break
+                i=$((i + 1)); sleep 0.5
+            done
+            sleep 0.5; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            if [ "$n" -lt 4 ] && ! grep -aqF "safe-mode-smoke: deliberate crash" "$log"; then
+                bad; echo "      boot $n did not crash before its boot was confirmed; log kept: $log"; return
+            fi
+        done
+        for want in "[RECOVERY] armed" "[CONSOLE] recovery console: safe mode" "robot> "; do
+            grep -aqF "$want" "$log" || missing="$missing [$want]"
+        done
+        for want in 'azos$ ' "has the console" "[DRVLAUNCH] SH.ELF started"; do
+            grep -aqF "$want" "$log" && missing="$missing [forbidden: $want]"
+        done
+        if [ "$mode" = canary ]; then
+            case "$missing" in
+            *"[forbidden: [DRVLAUNCH] SH.ELF started]"*)
+                ok; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$isa"-boot*.log ;;
+            *)  bad; echo "      the canary did not start the shell in safe mode:$missing"; echo "      log kept: $log" ;;
+            esac
+            return
+        fi
+        if [ -z "$missing" ]; then
+            ok; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$isa"-boot*.log
+        else
+            bad; echo "      boot 4:$missing"; echo "      log kept: $log"
+        fi
+    }
+    par "sh: safe mode (rv)" ush_safe_mode_row rv
+    par "sh: safe mode (arm)" ush_safe_mode_row arm
+    par "sh: safe mode canary (rv)" ush_safe_mode_row rv canary
+    par "sh: safe mode canary (arm)" ush_safe_mode_row arm canary
+    kbuild "qemu" >/dev/null 2>&1 || true
+    a64_kbuild "qemu" >/dev/null 2>&1 || true
+
+    # ── Generic domain: a kernel without the robot crates (wave 11) ─────────
+    #
+    # Every row above builds the robot worked example: the shipped defconfigs
+    # select DOMAIN_ROBOT and the kernel's `default` features carry
+    # `domain-robot`. These rows build the image `make config` gives by
+    # default, DOMAIN_GENERIC, on both ISAs: the defconfig with its
+    # CONFIG_DOMAIN_ROBOT line removed, expanded by olddefconfig, its cargo
+    # arguments from tools/kconfig_to_cargo.py (`--no-default-features` plus
+    # the rest of `default`). Into target/generic/, so no row's $KERNEL or
+    # $A64_IMG is touched.
+    #
+    # Build row: zero warnings; `cargo tree` of the kernel names no crate
+    # under domains/robot/ (the shell lives in crates/core since w14), nor imu/baro/gps/multi_stream/camera;
+    # `llvm-nm` finds no symbol of a robot crate in the ELF. Both checks are
+    # run on the robot kernel of the same ISA first and must FIND robot crates
+    # and symbols there, so a query that went blind cannot pass.
+    # Canary (hand-run, wave 11): appending `domain-robot` to the Generic
+    # feature list prints `FAIL ... robot symbols in the Generic kernel` with
+    # the symbol count; the compile-error bucket is a .config that selects
+    # DOMAIN_ROBOT built without the feature (kernel/src/main.rs's guard).
+    #
+    # Boot row: abitest from the autorun disk, as the "userspace: ABI
+    # conformance" / "aarch64 abitest" rows run it (aarch64: only the known
+    # vdso gap), the shell prompt reached, the shared ring-3 e-stop armed, and
+    # no robot task created — each robot task's own `[SCHED] Created` line is
+    # what only the failure prints.
+    GENERIC_DIR="${REPO_ROOT}/target/generic"
+    GENERIC_ROBOT_CRATES="$(for d in "${REPO_ROOT}"/domains/robot/*/; do
+            n="$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$d/Cargo.toml" | sed -n 1p)"
+            [ "$n" = azos_shell ] || printf '%s\n' "$n"
+        done; printf '%s\n' azos_multi_stream azos_camera azos_imu azos_baro azos_gps)"
+    generic_robot_re="$(printf '%s\n' "$GENERIC_ROBOT_CRATES" | paste -sd'|' -)"
+    generic_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+    generic_build_row() { # generic_build_row <rv|arm>
+        local isa="$1" label defc cfg args log out rc robot_feats elf robot_elf triple n
+        if [ "$isa" = rv ]; then
+            label="generic: riscv64 builds, no robot crate"; defc=qemu
+            triple=riscv64imac-unknown-none-elf; robot_elf="$KERNEL"
+        else
+            label="generic: aarch64 builds, no robot crate"; defc=qemu-aarch64
+            triple=aarch64-unknown-none-softfloat; robot_elf="target/${triple}/release/kernel"
+        fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR" "$GENERIC_DIR"
+        cfg="$GENERIC_DIR/${defc}-generic.config"; log="$CI_LOG_DIR/generic-build-${isa}.log"
+        if ! grep -v '^CONFIG_DOMAIN_ROBOT=y$' "${REPO_ROOT}/config/defconfigs/${defc}.config" >"$cfg" \
+           || ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+           || ! grep -q '^CONFIG_DOMAIN_GENERIC=y$' "$cfg"; then
+            bad; echo "      could not expand a Generic ${defc} config"; return
+        fi
+        args="$(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$cfg")"
+        case "$args" in *--no-default-features*) ;; *)
+            bad; echo "      kconfig_to_cargo did not turn the defaults off: $args"; return ;; esac
+        if [ "$isa" = rv ]; then
+            # shellcheck disable=SC2086
+            out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$GENERIC_DIR" "$CARGO" build --release \
+                -p azos_kernel $args 2>&1)"; rc=$?
+        else
+            # shellcheck disable=SC2086
+            out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" \
+                CARGO_TARGET_DIR="$GENERIC_DIR" "$CARGO" build --release -p azos_kernel $args \
+                --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; rc=$?
+        fi
+        printf '%s\n' "$out" >"$log"
+        if [ "$rc" -ne 0 ]; then
+            bad; grep -E "^error" "$log" | head -5 | sed 's/^/      /'; echo "      log kept: $log"; return
+        fi
+        if grep -E "^warning:" "$log" | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]|future version of Rust"; then
+            bad; grep -E "^warning:" "$log" | head -5 | sed 's/^/      /'; echo "      log kept: $log"; return
+        fi
+        elf="$GENERIC_DIR/${triple}/release/kernel"
+        # The same tree query with the robot kernel's features must find them.
+        robot_feats="--target ${triple} --features qemu"
+        # shellcheck disable=SC2086
+        n="$("$CARGO" tree -p azos_kernel $robot_feats -e normal --prefix none 2>/dev/null \
+            | sed 's/ .*//' | sort -u | grep -cxE "$generic_robot_re")"
+        if [ "${n:-0}" -eq 0 ]; then
+            bad; echo "      cargo tree found no robot crate in the ROBOT kernel either: the query is blind"; return
+        fi
+        # shellcheck disable=SC2086
+        out="$("$CARGO" tree -p azos_kernel $args -e normal --prefix none 2>/dev/null \
+            | sed 's/ .*//' | sort -u | grep -xE "$generic_robot_re")"
+        if [ -n "$out" ]; then
+            bad; echo "      cargo tree links robot crates into the Generic kernel:"
+            printf '%s\n' "$out" | sed 's/^/        /'; return
+        fi
+        n="$("$generic_nm" "$robot_elf" 2>/dev/null | grep -cE "$generic_robot_re")"
+        if [ "${n:-0}" -eq 0 ]; then
+            bad; echo "      llvm-nm found no robot symbol in the ROBOT kernel ($robot_elf): the check is blind"; return
+        fi
+        n="$("$generic_nm" "$elf" 2>/dev/null | grep -cE "$generic_robot_re")"
+        if [ "${n:-0}" -ne 0 ]; then
+            bad; echo "      FAIL: ${n} robot symbols in the Generic kernel ($elf):"
+            "$generic_nm" "$elf" | grep -E "$generic_robot_re" | head -5 | sed 's/^/        /'; return
+        fi
+        ok; rm -f "$log"
+    }
+    generic_boot_row() { # generic_boot_row <rv|arm>
+        local isa="$1" label elf img disk log pid i fails a64_objcopy
+        mkdir -p "$CI_LOG_DIR"
+        log="$CI_LOG_DIR/generic-boot-${isa}.log"; rm -f "$log"
+        if [ "$isa" = rv ]; then
+            label="generic: riscv64 boots, abitest"
+            elf="$GENERIC_DIR/riscv64imac-unknown-none-elf/release/kernel"
+            img="$CI_LOG_DIR/kernel-generic-rv"; disk="$CI_LOG_DIR/disk-generic-rv.img"
+            printf "  %-26s" "${label}..."
+            [ -f "$elf" ] || { bad; echo "      no Generic kernel at $elf (build row failed?)"; return; }
+            rm -f build/disk-abitest.img; make_disk build/disk-abitest.img
+            cp "$elf" "$img"; cp build/disk-abitest.img "$disk"
+            par_ready   # the wait below happens in the job, not in the gate
+            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -kernel "$img" -smp 4 \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        else
+            label="generic: aarch64 boots, abitest"
+            elf="$GENERIC_DIR/aarch64-unknown-none-softfloat/release/kernel"
+            img="$CI_LOG_DIR/kernel-generic-a64.img"; disk="$CI_LOG_DIR/disk-generic-a64.img"
+            printf "  %-26s" "${label}..."
+            [ -f "$elf" ] || { bad; echo "      no Generic kernel at $elf (build row failed?)"; return; }
+            if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+                bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+            fi
+            a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+            if ! "$a64_objcopy" -O binary "$elf" "$img" 2>/dev/null || [ ! -f "$img" ]; then
+                bad; echo "      llvm-objcopy not found or ELF -> .img failed"; return
+            fi
+            cp build/disk-aarch64-abitest.img "$disk"
+            par_ready   # the wait below happens in the job, not in the gate
+            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                -kernel "$img" -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        fi
+        pid=$!; i=0
+        # `N check(s) run` is followed by `FAILED: N` when N > 0: one settle
+        # second after the match, as the aarch64 abitest row does.
+        while [ "$i" -lt 180 ]; do
+            grep -aqE "ABITEST\] [0-9]+ check\(s\) run" "$log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+        sleep 1
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log"; then
+            bad; echo "      the Generic kernel faulted:"; grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aqE "\[ABITEST\] [0-9]+ check\(s\) run" "$log"; then
+            bad; echo "      abitest never printed its summary line"; echo "      log kept: $log"; return
+        fi
+        fails="$(grep -a '\[ABITEST\]  FAIL  ' "$log" | sed 's/^\[ABITEST\]  FAIL  //')"
+        if [ -n "$fails" ] && { [ "$isa" = rv ] \
+             || [ "$(printf '%s\n' "$fails" | grep -c .)" -ne 1 ] \
+             || ! printf '%s\n' "$fails" | grep -qF "vdso flags bit 0: rdtime native"; }; then
+            bad; echo "      abitest failed on the Generic kernel:"; printf '%s\n' "$fails" | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aqF "robot> " "$log"; then
+            bad; echo "      the shell prompt never printed"; echo "      log kept: $log"; return
+        fi
+        if ! grep -aqF "[SAFETY] ring-3 emergency stop armed" "$log"; then
+            bad; echo "      the shared ring-3 e-stop was not armed"; echo "      log kept: $log"; return
+        fi
+        if grep -aE "\[SCHED\] Created (behavior|rt-motor|sensor-ahrs|flight-ctrl|telemetry|camera-tx) task|\[SCHED\] Sensor tasks:|\[SAFETY\] actuation gate armed" "$log" >"$log.robot"; then
+            bad; echo "      a robot task or the robot motor gate started in the Generic kernel:"
+            sed 's/^/        /' "$log.robot"; echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log" "$log.robot"
+    }
+    generic_build_row rv
+    par "generic: riscv64 boots, abitest" generic_boot_row rv
+    a64_kbuild "qemu" >/dev/null 2>&1 || true
+    generic_build_row arm
+    par "generic: aarch64 boots, abitest" generic_boot_row arm
+
+    # ── Energy-aware scheduling, stages E0-E2 (RFC-0051, wave 12 ENERGY) ─────
+    #
+    # `kernel/src/smokes/energy_smoke.rs` (feature `energy-smoke`, which turns
+    # on Kconfig ENERGY's `energy` feature and gives the built-in topology a
+    # fake two-domain model) under `-smp 2 -icount shift=0,sleep=off`. One
+    # verdict line per check, FAIL only from the failure path:
+    #   model  — boot resolved the topology's model with exactly the declared
+    #            shape (2 domains, 3 + 4 OPPs, 2 + 1 idle states), mode
+    #            performance, and the seams are still Legacy/Fixed/WfiOnly.
+    #   refuse — the same model with one power figure wrong, through the
+    #            SCHED.TOML parser and `resolve`: PowerNotIncreasing at domain 1
+    #            OPP 2, no model.
+    #   util   — a task computing 300 ms on CPU 1 reads >= 800/1024 and so does
+    #            CPU 1; 200 ms after it stops it reads <= 50.
+    # The PASS row also prints `[ENERGY] cost`: instructions per call of the
+    # switch and tick hooks. Canary rows: `energy-model-canary` (boot ignores
+    # the topology's model) -> model FAIL; `energy-validate-canary` (validation
+    # accepts all) -> refuse FAIL; `energy-util-canary` (dispatch records the
+    # task as not running) and `energy-switchout-canary` (switch-out leaves it
+    # running) -> util FAIL. A build failure is its own FAIL line.
+    #
+    # What this block does not hold: invariant I4 for the default build (the
+    # seams fold to the code they replaced, no ENERGY code linked). That was
+    # measured once per ISA with `tools/text_equiv.py` against the pre-ENERGY
+    # kernel: every function's instruction stream identical. Re-run it by hand
+    # when a seam's call site changes.
+    energy_row() { # energy_row <label> <isa: rv|arm> <features> <expect: PASS|model|refuse|util|gov|idle>
+        local label="$1" isa="$2" feats="$3" expect="$4"
+        if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        if [ "$isa" = rv ]; then
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -smp 2 -icount shift=0,sleep=off \
+                -kernel "$kimg" >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" >"$log" 2>&1 &
+        fi
+        # Measured: about 60 s of host time per run.
+        local pid=$! i=0
+        while [ "$i" -lt 600 ]; do
+            grep -aq '\[ENERGY\] done ' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$kimg"
+        local clean="$log.txt"
+        tr -d '\r' <"$log" >"$clean"
+        if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+            bad; echo "      the kernel stopped:"; grep -aiE -m3 'panic|\[FATAL\]|AARCH64-TRAP' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq '^\[ENERGY\] done ' "$clean"; then
+            bad; echo "      no [ENERGY] done line within the timeout — log kept: $log"; return
+        fi
+        local c
+        # RFC-0051 E3/E4 (wave 13): the balanced-model build adds `gov`, `idle`.
+        local checks="model refuse util"
+        case ",$feats," in *,energy-gov-smoke,*) checks="$checks gov idle" ;; esac
+        if [ "$expect" = PASS ]; then
+            for c in $checks; do
+                if ! grep -aq "^\[ENERGY\] $c PASS " "$clean"; then
+                    bad; grep -a "^\[ENERGY\] $c " "$clean" | sed 's/^/      /'
+                    echo "      log kept: $log"; return
+                fi
+            done
+            ok
+            for c in $checks cost; do
+                grep -a "^\[ENERGY\] $c " "$clean" | sed 's/^\[ENERGY\] /      /'
+            done
+            rm -f "$log" "$clean"
+            return
+        fi
+        if grep -aq "^\[ENERGY\] $expect FAIL " "$clean"; then
+            ok; grep -a "^\[ENERGY\] $expect FAIL " "$clean" | sed 's/^\[ENERGY\] /      /'
+            rm -f "$log" "$clean"
+        else
+            bad; echo "      the $expect canary did not fail its check:"
+            grep -a "^\[ENERGY\] $expect " "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"
+        fi
+    }
+    for en_isa in rv arm; do
+        en_name=riscv64; [ "$en_isa" = arm ] && en_name=aarch64
+        par_row energy_row "energy: $en_name model/refuse/util" "$en_isa" "qemu,energy-smoke" PASS
+        par_row energy_row "energy: $en_name model canary" "$en_isa" "qemu,energy-model-canary" model
+        par_row energy_row "energy: $en_name validate canary" "$en_isa" "qemu,energy-validate-canary" refuse
+        par_row energy_row "energy: $en_name dispatch canary" "$en_isa" "qemu,energy-util-canary" util
+        par_row energy_row "energy: $en_name switch-out canary" "$en_isa" "qemu,energy-switchout-canary" util
+        # Wave 13 (RFC-0051 E3/E4): the balanced fake model opts in to the
+        # DeadlineFloor governor and the TEO-like idle governor. Canaries: the
+        # deadline floor ignores reservations (gov); the idle choice ignores
+        # the RT slack (idle); the kernel's RT-slack input reads "none" (idle).
+        par_row energy_row "energy: $en_name gov/idle (E3/E4)" "$en_isa" "qemu,energy-gov-smoke" PASS
+        par_row energy_row "energy: $en_name I1 canary" "$en_isa" "qemu,energy-i1-canary" gov
+        par_row energy_row "energy: $en_name I3 canary" "$en_isa" "qemu,energy-i3-canary" idle
+        par_row energy_row "energy: $en_name rt-slack canary" "$en_isa" "qemu,energy-slack-canary" idle
+    done
+    a64_kbuild "qemu" >/dev/null 2>&1 || true
+
+    kbuild "qemu"
+fi
+
+# ── RFC-0053 L0b: the module loader end to end (wave 12, LXL0; both ISAs) ────
+#
+# `lx-server` kernels (Kconfig LINUX_DRIVERS + LX_SERVER_SKELETON) start the
+# empty Linux driver server LXSRV.ELF from its topology row; only
+# `build/disk-lx.img` / `build/disk-aarch64-lx.img` carry it and the test
+# module LXTEST.KO (our own C, compiled to an ET_REL `.ko` by `make
+# lx-modules`; no Linux object exists in any image before stage L1). The
+# server reads the module, has the kernel verify its SHA-256 against the
+# table built into the kernel (`SYS_MODULE_VERIFY`), relocates it into its
+# own memory, has the kernel flip the text read-write -> read-execute
+# (`SYS_MODULE_MAP_X`, token-gated, the result read back by the kernel) and
+# calls its init, whose value it recomputes. It also probes a forged token, an
+# oversized range and a reused token, each of which must be refused.
+#
+#   load    PASS = the server's `init=... PASS` line (value equal, all three
+#           probes refused) and the kernel's `mapped RX ... W^X read back`;
+#   tamper  one byte inside LXTEST.KO's .text flipped on the volume copy:
+#           PASS = the kernel's `verify REFUSED ... RECORDED` line, the
+#           server's refusal line, and NO executable mapping or init;
+#   off     the default `qemu` kernel on the same volume: PASS = the boot
+#           reaches the topology launcher and no `[LXSRV]`/`[LX] module`
+#           line ever appears (no row, 630/631 unassigned).
+#
+# RFC-0053 L1 (wave 13): the Kbuild modules (`lx: Kbuild modules` row) on the
+# same volume. SKIP, with the reason, when they were not built.
+#   linux        PASS = LXBASE.KO (license=GPL) and XZ_DEC.KO (license=Dual
+#                BSD/GPL) admitted with the pin's vermagic, kernel-verified and
+#                mapped RX, and xz_dec.ko's decompression of XZTEST.XZ equal
+#                to the server's own regeneration of the plaintext, a
+#                corrupted copy refused, every kmalloc freed;
+#   linux-tamper one bit of XZ_DEC.KO's .text flipped on the volume: PASS =
+#                the kernel refuses and records XZ_DEC.KO, and xz_dec never
+#                runs (the digest table covers the Linux modules too);
+#   linux-other  canary: XZTEST.XZ replaced by XZOTHER.XZ (a valid stream of
+#                another plaintext) and judged as `linux`: it must go red.
+#
+# Canaries, each its own row with expect FAIL: `lx-verify-canary` (the kernel
+# skips the digest compare: the tamper row must go red), `lx-wx-canary` (the
+# text is mapped writable AND executable: the kernel's readback must refuse,
+# so the load row goes red) and `lx-server` under `off` (the server starts).
+# A canary that "passes" means the property it guards is not what the row
+# measures. Boots copies of the kernel and the disk (one image per QEMU).
+lx_module_row() { # <label> <isa: rv|arm> <features> <mode: load|tamper|off|linux|linux-tamper|linux-other> <expect: PASS|FAIL>
+    local label="$1" isa="$2" feats="$3" mode="$4" expect="$5"
+    local kdir="${REPO_ROOT}/build/lx/kbuild/riscv64"; [ "$isa" = arm ] && kdir="${REPO_ROOT}/build/lx/kbuild/aarch64"
+    case "$mode" in linux*|hwcap*|zknh)
+        if [ ! -f "$kdir/xz_dec.ko" ]; then
+            SKIP=$((SKIP + 1))
+            printf "  %-26s%s\n" "${label}..." "SKIP (no Kbuild modules: see the 'lx: Kbuild modules' row)"; return 0
+        fi ;;
+    esac
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local tag; tag="lx-$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/$tag.log" disk="$CI_LOG_DIR/$tag.img" kimg="$CI_LOG_DIR/$tag.kernel" diskname
+    local tko=LXTEST.KO; [ "$mode" = linux-tamper ] && tko=XZ_DEC.KO
+    rm -f "$log" "$disk" "$kimg"
+    if ! make lx-modules >/dev/null 2>&1; then bad; echo "      make lx-modules failed"; return; fi
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel (--features $feats) did not build"; return; fi
+        cp "$KERNEL" "$kimg"; diskname=build/disk-lx.img
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel (--features $feats) did not build"; return; fi
+        cp "$A64_IMG" "$kimg"; diskname=build/disk-aarch64-lx.img
+    fi
+    rm -f "$diskname"
+    if ! make "$diskname" >/dev/null 2>&1; then bad; echo "      make $diskname failed"; return; fi
+    cp "$diskname" "$disk"
+    if [ "$mode" = linux-other ]; then
+        if ! mcopy -o -i "$disk" "${REPO_ROOT}/build/lx/kbuild/XZOTHER.XZ" ::XZTEST.XZ 2>/dev/null; then
+            bad; echo "      could not put XZOTHER.XZ on the volume"; return
+        fi
+    fi
+    if [ "$mode" = tamper ] || [ "$mode" = linux-tamper ]; then
+        local ko="$CI_LOG_DIR/$tag.ko"
+        rm -f "$ko"
+        if ! mcopy -i "$disk" "::$tko" "$ko" 2>/dev/null \
+           || ! python3 - "$ko" <<'PY'
+import sys
+p = sys.argv[1]
+b = bytearray(open(p, "rb").read())
+shoff = int.from_bytes(b[40:48], "little"); shnum = int.from_bytes(b[60:62], "little")
+shstr = int.from_bytes(b[62:64], "little")
+def sh(i, o, n): return int.from_bytes(b[shoff + i * 64 + o:shoff + i * 64 + o + n], "little")
+names = sh(shstr, 24, 8)
+for i in range(shnum):
+    n = b[names + sh(i, 0, 4):].split(b"\0", 1)[0]
+    if n == b".text" and sh(i, 32, 8) > 8:
+        b[sh(i, 24, 8) + 4] ^= 0x01   # one bit of one instruction
+        open(p, "wb").write(b)
+        sys.exit(0)
+sys.exit(1)
+PY
+        then bad; echo "      could not flip a byte of $tko's .text"; return; fi
+        mcopy -o -i "$disk" "$ko" "::$tko"
+        rm -f "$ko"
+    fi
+    par_ready   # the wait below happens in the job, not in the gate
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = rv ]; then
+        par_ready
+        # `zknh`: the same board with the SHA-2 scalar extension declared.
+        local rvcpu=""; [ "$mode" = zknh ] && rvcpu="-cpu rv64,zknh=true"
+        "$QEMU" -machine virt $rvcpu -nographic -bios default -kernel "$kimg" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 seen=0
+    # Clock deadline, not a yield count: 120 s of wall time at most.
+    local deadline=$(( $(date +%s) + 120 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        case "$mode" in
+            load|tamper|linux*|hwcap*|zknh) grep -aqE "\[LXSRV\] (idle|.*FAIL)" "$log" 2>/dev/null && break ;;
+            off) if grep -aqF "[DRVLAUNCH] SH.ELF" "$log" 2>/dev/null; then
+                     # The launcher walks every row in one pass; give a started
+                     # server 5 s to print before judging it absent.
+                     [ "$seen" -eq 0 ] && seen=$(( $(date +%s) + 5 ))
+                     [ "$(date +%s)" -ge "$seen" ] && break
+                 fi ;;
+        esac
+        sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg" "$disk"
+    local v=FAIL why=""
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log"; then
+        why="the kernel crashed"
+    else
+        case "$mode" in
+        load)
+            if grep -aqE "\[LXSRV\] module lxtest init=.* refused: PASS" "$log" \
+               && grep -aqE "\[LX\] module text mapped RX: .* W\^X read back" "$log" \
+               && ! grep -aqE "\[LXSRV\] .*FAIL|W\^X VIOLATED" "$log"; then v=PASS
+            else why="no init PASS with a W^X read-back (or a FAIL/VIOLATED line)"; fi ;;
+        tamper)
+            # Since L1 the server goes on to the Kbuild modules (when the
+            # volume has them), each mapped once: every `text mapped RX` must
+            # be one of theirs, none LXTEST.KO's.
+            local maps lxm
+            maps="$(grep -acF "[LX] module text mapped RX" "$log")"
+            lxm="$(grep -acE "\[LX\] module (LXBASE|XZ_DEC)\.KO license=" "$log")"
+            if grep -aqE "\[LX\] module verify REFUSED: tid [0-9]+ LXTEST\.KO .*RECORDED" "$log" \
+               && grep -aqF "[LXSRV] module LXTEST.KO verify REFUSED by the kernel" "$log" \
+               && [ "${maps:-x}" = "${lxm:-y}" ] \
+               && ! grep -aqE "\[LXSRV\] module lxtest init=" "$log"; then v=PASS
+            else why="the tampered module was not refused and recorded (or it was mapped/run)"; fi ;;
+        off)
+            if grep -aqF "[DRVLAUNCH] SH.ELF" "$log" \
+               && ! grep -aqE "\[LXSRV\]|\[LX\] module" "$log"; then v=PASS
+            else why="the boot did not reach the launcher, or a Linux server ran"; fi ;;
+        linux|linux-other)
+            local arch=riscv; [ "$isa" = arm ] && arch=aarch64
+            local vm; vm="$(sed -n 's/^tag=v//p' "${REPO_ROOT}/lx/LINUX_PIN") SMP preempt $arch"
+            # The first unmet condition is the reason, so a canary row shows
+            # WHICH property caught it. (`[LX] module map_x REFUSED` is the
+            # L0b oversized-range probe on LXTEST.KO: expected, not a fault.)
+            # lxbase: lxh_alloc, lxh_free, lxh_hwcap, memset.
+            local bimp=4
+            if ! grep -aqF "[LX] module LXBASE.KO license=GPL vermagic='$vm' imports $bimp exports 9: kernel-verified, mapped RX" "$log"; then
+                why="LXBASE.KO not admitted (GPL, vermagic '$vm'), verified and mapped"
+            elif ! grep -aqF "[LX] module XZ_DEC.KO license=Dual BSD/GPL vermagic='$vm' imports 11 exports 4: kernel-verified, mapped RX" "$log"; then
+                why="XZ_DEC.KO not admitted (Dual BSD/GPL, vermagic '$vm'), verified and mapped"
+            elif ! grep -aqE "\[LX\] xz_dec\.ko decompressed XZTEST\.XZ: [0-9]+ -> 49152 bytes, ret 1, equal to the pattern; corrupted copy ret [2-8]; kmalloc/kfree ([1-9][0-9]*)/\1: PASS" "$log"; then
+                why="xz_dec.ko's output is not the pattern, a corrupted copy decoded, or an allocation leaked"
+            elif grep -aqE "\[LX\] (module (LXBASE|XZ_DEC)\.KO|XZ_DEC\.KO) .*(FAIL|REFUSED)|\[LX\] module verify REFUSED|\[LXSRV\] .*FAIL|W\^X VIOLATED" "$log"; then
+                why="a FAIL/REFUSED line for a Linux module"
+            else v=PASS; fi ;;
+        hwcap|hwcap-canary|zknh)
+            # The vDSO hwcap word this QEMU model must produce (wave 13):
+            # aarch64 `-cpu max`: crc32 aes pmull sha2 atomics; riscv64
+            # default `rv64`: zbb zbc; `-cpu rv64,zknh=true`: + zknh.
+            local want="0x1f" sha="armv8-ce" crc="arm64 CRC32 instructions" hz
+            if [ "$isa" = rv ]; then
+                want="0x300000000"; sha="zbb"; crc="riscv64 Zbc carry-less multiply"
+                [ "$mode" = zknh ] && { want="0xb00000000"; sha="zknh"; }
+                hz=10000000
+            else
+                hz="$(grep -aoE "\[TIMER\] CNTFRQ_EL0: [0-9]+ Hz" "$log" | sed -n '1s/.*: \([0-9][0-9]*\) Hz/\1/p')"
+            fi
+            # The canary kernel publishes the word minus CRC32 (0x1e), so the
+            # row reaches the check that matters: which CRC path lxbase took.
+            [ "$mode" = hwcap-canary ] && { [ "$isa" = rv ] && want="0x100000000" || want="0x1e"; }
+            local hex; hex="$(printf '0x%016x' "$want")"
+            if ! grep -aqE "\[VDSO\] hwcap=$want:" "$log"; then
+                why="the kernel's hwcap word is not $want ($(grep -aoE '\[VDSO\] hwcap=[^ ]*' "$log" | sed -n 1p))"
+            elif ! grep -aqF "[LX] vdso hwcap $hex; lxbase crc32_le: $crc" "$log"; then
+                why="lxsrv did not read $hex from the vDSO, or lxbase did not pick '$crc' ($(grep -aoE 'lxbase crc32_le: .*' "$log" | sed -n 1p | tr -d '\r'))"
+            elif ! grep -aqF "[CRYPTO] sha256 blocks: $sha" "$log"; then
+                why="the kernel SHA-256 is not on '$sha'"
+            elif [ -z "$hz" ] || ! tr -d '\r' < "$log" | grep -aqE "; counter hz $hz\$"; then
+                why="lxsrv's counter frequency is not the kernel's ($hz Hz)"
+            elif ! grep -aqE "\[LX\] xz_dec\.ko decompressed XZTEST\.XZ: .* equal to the pattern; .*: PASS" "$log"; then
+                why="xz_dec.ko did not decompress XZTEST.XZ correctly on this path"
+            else v=PASS; fi ;;
+        linux-tamper)
+            if grep -aqE "\[LX\] module verify REFUSED: tid [0-9]+ XZ_DEC\.KO .*RECORDED" "$log" \
+               && grep -aqF "[LX] module XZ_DEC.KO verify REFUSED by the kernel" "$log" \
+               && grep -aqF "[LX] module LXBASE.KO license=GPL" "$log" \
+               && ! grep -aqE "\[LX\] (module XZ_DEC\.KO license|xz_dec\.ko decompressed)" "$log"; then v=PASS
+            else why="the tampered XZ_DEC.KO was not refused and recorded (or it was mapped/run)"; fi ;;
+        esac
+    fi
+    if [ "$v" = "$expect" ]; then
+        ok
+        # A canary row says what it caught, so "red for the right reason" is
+        # read off the gate output, not assumed.
+        if [ "$expect" = FAIL ]; then
+            echo "      canary caught: ${why}"
+            grep -aE "W\^X VIOLATED|text mapped RX|init=|verify REFUSED|map_x REFUSED|\[LXSRV\] (up|.*FAIL)|xz_dec\.ko decompressed" "$log" \
+                | grep -avE "asked for [0-9]+ pages" | tr -d '\r' | sed -n '1,3p' | sed 's/^/        /'
+        fi
+        rm -f "$log"
+    else
+        bad; echo "      expected $expect, got $v${why:+ ($why)}"; echo "      log kept: $log"
+        grep -aE "\[LXSRV\]|\[LX\]" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'
+    fi
+}
+par_row lx_module_row "lx: module loads and runs"        rv  "qemu,lx-server"        load   PASS
+par_row lx_module_row "lx: module tamper refused"        rv  "qemu,lx-server"        tamper PASS
+par_row lx_module_row "lx: tamper canary (no digest)"    rv  "qemu,lx-verify-canary" tamper FAIL
+par_row lx_module_row "lx: W^X canary (text writable)"   rv  "qemu,lx-wx-canary"     load   FAIL
+par_row lx_module_row "lx: default kernel, no server"    rv  "qemu"                  off    PASS
+par_row lx_module_row "lx: default-off canary"           rv  "qemu,lx-server"        off    FAIL
+par_row lx_module_row "aarch64 lx: module loads and runs"     arm "qemu,lx-server"        load   PASS
+par_row lx_module_row "aarch64 lx: module tamper refused"     arm "qemu,lx-server"        tamper PASS
+par_row lx_module_row "aarch64 lx: tamper canary"             arm "qemu,lx-verify-canary" tamper FAIL
+par_row lx_module_row "aarch64 lx: W^X canary"                arm "qemu,lx-wx-canary"     load   FAIL
+par_row lx_module_row "lx: Kbuild xz_dec.ko runs (rv)"         rv  "qemu,lx-server"        linux        PASS
+par_row lx_module_row "lx: Kbuild module tamper refused (rv)"  rv  "qemu,lx-server"        linux-tamper PASS
+par_row lx_module_row "lx: Kbuild fixture canary (rv)"         rv  "qemu,lx-server"        linux-other  FAIL
+par_row lx_module_row "lx: Kbuild xz_dec.ko runs (arm)"        arm "qemu,lx-server"        linux        PASS
+par_row lx_module_row "lx: Kbuild module tamper refused (arm)" arm "qemu,lx-server"        linux-tamper PASS
+par_row lx_module_row "lx: Kbuild fixture canary (arm)"        arm "qemu,lx-server"        linux-other  FAIL
+# Wave 13: the vDSO hwcap word (ID registers / device tree), lxbase's CRC
+# path chosen from it, the kernel SHA-256 path, and lxsrv's counter frequency
+# equal to the kernel's. The canary clears the CRC32 bit: lxbase must fall
+# back to its tables (and still decode correctly), so the row goes red.
+par_row lx_module_row "lx: hwcap (rv)"                         rv  "qemu,lx-server"        hwcap        PASS
+par_row lx_module_row "lx: hwcap + zknh SHA-256 (rv)"          rv  "qemu,lx-server"        zknh         PASS
+par_row lx_module_row "lx: hwcap (arm)"                        arm "qemu,lx-server"        hwcap        PASS
+par_row lx_module_row "lx: hwcap canary, CRC32 bit cleared (arm)" arm "qemu,lx-server,hwcap-clear-canary" hwcap-canary FAIL
+par_row lx_module_row "lx: hwcap canary, Zbc bit cleared (rv)"    rv  "qemu,lx-server,hwcap-clear-canary" hwcap-canary FAIL
+kbuild "qemu"
+a64_kbuild "qemu" >/dev/null 2>&1 || true
+
+# ── Fuzzing and bounded proofs (host) ───────────────────────────────────────
+#
+# cargo-fuzz (libFuzzer + AddressSanitizer) over the parsers that take bytes
+# from outside the kernel: the DTB firmware hands over, FAT32 volumes,
+# CONFIG.INI, SCHED/CAPS.TOML, POLICY.GGF, ELF images, the RFC-0019 link, and
+# network frames. Each row builds its target, replays every checked-in input
+# (`corpus/` seeds and `regressions/`, the inputs that once failed), then
+# fuzzes from them for FUZZ_SECS (default 30) seconds; see tools/fuzz.sh. New
+# inputs go to target/fuzz-work, never into the tree. A missing cargo-fuzz is a
+# FAIL, as a missing QEMU is; CI_SKIP_FUZZ=1 is the explicit opt-out.
+par_drain
+ci_phase "[3b/4] fuzzing + Kani"
+echo ""
+echo "[3b/4] Fuzzing and bounded proofs (host)..."
+if [ "${CI_SKIP_FUZZ:-0}" = "1" ]; then
+    echo "  fuzzing skipped (CI_SKIP_FUZZ=1)"
+elif ! "$CARGO" fuzz --version >/dev/null 2>&1; then
+    printf "  %-26sFAIL\n" "cargo-fuzz availability..."
+    echo "      'cargo fuzz' not found. Install it (cargo install cargo-fuzz) or set"
+    echo "      CI_SKIP_FUZZ=1 to accept parsers nobody fuzzed."
+    FAIL=$((FAIL + 1))
+else
+    fuzz_row() { # fuzz_row <label> <spec>
+        printf "  %-26s" "${1}..."
+        local fuzz_out
+        if fuzz_out="$(bash "${REPO_ROOT}/tools/fuzz.sh" check "$2" 2>&1)"; then
+            ok
+        else
+            bad; printf '%s\n' "$fuzz_out"
+        fi
+    }
+    for fuzz_spec in $(bash "${REPO_ROOT}/tools/fuzz.sh" list); do
+        host_job fuzz_row "fuzz: ${fuzz_spec#*:}" "$fuzz_spec"
+    done
+fi
+
+# Kani: the bounded proofs in crates/core/ipc/src/cap.rs and crates/core/ipc/src/objref.rs
+# through tests/host/cap-tests, which pulls cap.rs in by
+# `#[path]` (objref.rs is its submodule). Run from a directory OUTSIDE the
+# tree: inside it, the root .cargo/config.toml's `build-std` makes Kani's own
+# pinned toolchain build std from source, and that toolchain has no rust-src.
+# The row passes only if Kani reports every harness the two files declare as
+# verified. Not installed: a SKIP line, counted neither way.
+printf "  %-26s" "formal: Kani harnesses..."
+if ! "$CARGO" kani --version >/dev/null 2>&1; then
+    echo "SKIP (cargo kani not installed: nothing was verified)"
+else
+    kani_want="$(cat "${REPO_ROOT}/crates/core/ipc/src/cap.rs" "${REPO_ROOT}/crates/core/ipc/src/objref.rs" \
+        | grep -c '#\[kani::proof\]')"
+    kani_cwd="$(mktemp -d)"
+    kani_out="$(cd "$kani_cwd" && "$CARGO" kani \
+        --manifest-path "${REPO_ROOT}/tests/host/cap-tests/Cargo.toml" \
+        --target-dir "${REPO_ROOT}/target/kani" 2>&1)"
+    rmdir "$kani_cwd" 2>/dev/null
+    if [ -n "$kani_want" ] && [ "$kani_want" -gt 0 ] \
+       && printf '%s\n' "$kani_out" | grep -qF "Complete - ${kani_want} successfully verified harnesses, 0 failures, ${kani_want} total."; then
+        ok
+    else
+        bad; echo "      expected ${kani_want:-?} verified harnesses; Kani said:"
+        printf '%s\n' "$kani_out" | grep -E "^Checking harness|VERIFICATION|^Complete|^error|FAILURE" \
+            | sed -n 1,20p | sed 's/^/        /'
+    fi
+fi
+
+par_drain
+if [ "$CI_TIER" = fast ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then
+    fast_missing="$(fast_unseen)"
+    if [ -n "$fast_missing" ]; then
+        printf "  %-26s" "fast tier: kept rows exist..."; bad
+        echo "      FAST_ROWS names rows no par call used (renamed or removed?):"
+        printf '%s\n' "$fast_missing" | sed 's/^/        /'
+    fi
+fi
+echo ""
+ci_phase_report
+echo ""
+if [ "$SKIP" -gt 0 ]; then
+    echo "[4/4] Results: ${PASS} passed, ${FAIL} failed, ${SKIP} skipped (CI_TIER=fast; each is marked above)"
+else
+    echo "[4/4] Results: ${PASS} passed, ${FAIL} failed"
+fi
+
+if [ "$FAIL" -gt 0 ]; then
+    echo "=== CI FAILED ==="
+    exit 1
+fi
+
+echo "=== All checks passed ==="

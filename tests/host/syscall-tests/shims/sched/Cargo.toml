@@ -1,0 +1,26 @@
+[package]
+name = "syscall_test_sched"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_sched, used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+# Same crates the outer package's own `azos_mm` / `azos_arch`
+# dependencies point at — Cargo unifies identical paths into one compiled
+# crate, so `copy_from_user` here walks the very page tables `handlers.rs`
+# built through `azos_mm::vmm::map`.
+azos_mm = { path = "../mm", package = "syscall_test_mm" }
+azos_arch = { path = "../arch", package = "syscall_test_arch" }
+azos_arch_api = { path = "../../../../../crates/core/arch-api" }
+# For the REAL `crates/core/sched/src/seccomp.rs`, pulled in by `#[path]` so that
+# `sys_exec`/`sys_execpath` look images up in the real table with the real hash.
+azos_abi = { path = "../../../../../crates/core/abi" }
+azos_crypto = { path = "../../../../../crates/core/crypto" }
+# For the REAL `crates/core/sched/src/driver.rs` (the F06 driver registry that
+# `SYS_DRV_REGISTER`/`_HEARTBEAT`/`_GET_DEVICE` reach), pulled by `#[path]`.
+# The same host SpinLock stand-in the outer package uses.
+azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
+# `driver.rs` masks the driver id (`azos_limits::nospec`, Spectre v1).
+azos_limits = { path = "../../../../../crates/core/limits" }

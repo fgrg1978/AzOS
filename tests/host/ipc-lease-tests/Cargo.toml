@@ -1,0 +1,55 @@
+[package]
+name = "azos_ipc_lease_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/core/ipc/src/{lease,rpc,port,io_ring,handle,cap}.rs — IPC-3 task-exit reclamation, IPC-6 lease ownership, io_ring, the handle table and the capability table. Excluded from workspace."
+
+# `cap.rs` carries `#[cfg(kani)]` proof harnesses; the kernel's own
+# `crates/core/ipc/Cargo.toml` declares the same check-cfg. Without it the host
+# build emits a warning, and warnings count as failures in this project.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[dependencies]
+# Real generated constants — MAX_LEASES / MAX_PORTS / MAX_TASKS must be the
+# ones the kernel is built with, not a hand-copied guess.
+azos_limits = { path = "../../../crates/core/limits" }
+
+# `port.rs` drags in `crate::cap` + `crate::cap_store`; those need these two,
+# exactly as `tests/host/cap-tests` does.
+azos_abi = { path = "../../../crates/core/abi" }
+wcet-macro = { path = "../../../crates/core/wcet-macro" }
+
+# Host stand-ins for the two RV64-only kernel crates the ipc modules call
+# into. Renamed so the module sources compile unmodified — see each shim's
+# crate doc for why the real crate cannot be used on the host.
+azos_sync = { path = "shims/sync", package = "ipc_lease_test_sync" }
+azos_sched = { path = "shims/sched", package = "ipc_lease_test_sched" }
+azos_mm = { path = "shims/mm", package = "ipc_lease_test_mm" }
+# `irq_bind.rs`'s `irq_grant_cap` (U03-2) needs `plic::MAX_IRQS`.
+ipc_lease_test_drivers = { path = "shims/drivers" }
+# `shm.rs` (pulled in for `lease_grant_as`'s owner check) zeroes its pages
+# with `azos_arch::mmu::PAGE_SIZE`.
+azos_arch = { path = "shims/arch", package = "ipc_lease_test_arch" }
+
+[features]
+# `crates/core/ipc/src/irq_bind.rs`'s canary, host side: with it on, the pending
+# tests in that file's suite fail (a delivery before the wait is lost).
+irq-pending-canary = []
+# `crates/core/ipc/src/port.rs`'s canary: `port_wait_begin_at` checks for an
+# event and registers the waiter in two `PORTS` holds instead of one; the
+# lost-wakeup test in that file's suite fails (the event in the gap wakes
+# nobody).
+port-recheck-canary = []
+# `crates/core/ipc/src/port.rs`'s capability-binding canary (wave 11, LEASE3):
+# `port_cap_event` ignores every event; the revoke test in that file's suite
+# fails (the revoked capability's binding still delivers).
+port-revoke-canary = []
+# Run the suite at a 16 KiB page (the mm shim's pool page, which the arch shim's
+# `mmu::PAGE_SIZE` follows), as an aarch64 16 KiB-granule kernel splits shm
+# offsets. `cargo test --release --features page-16k shm::`.
+page-16k = ["azos_mm/page-16k"]
+
+[dev-dependencies]

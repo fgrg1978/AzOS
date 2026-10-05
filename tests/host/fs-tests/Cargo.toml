@@ -1,0 +1,74 @@
+[package]
+name = "azos_fs_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/fs/fs/src/fat32.rs and crates/fs/fs/src/vfs.rs, driven against hand-built volume images. Excluded from workspace."
+
+# Run with:  cd tests/host/fs-tests && cargo test --release
+
+# The modules under test are pulled with `#[path]`, so their doc examples are
+# compiled as doctests of THIS crate, where the names they use are not in
+# scope (procfs's module example calls `procfs_init`/`procfs_read` bare).
+# They are examples for the kernel crate, not tests of this one.
+[lib]
+doctest = false
+
+[features]
+# Round 48 canary: per-descriptor offsets (see crates/fs/fs).
+fd-private-offset-canary = []
+# Wave 14 canary: per-sector `fat32_read_chain` (see crates/fs/fs).
+read-chain-sector-canary = []
+# Wave 14 (FATCACHE) canaries, one per coherence path of the block cache
+# (crates/fs/fs/src/fat32.rs). Each must turn an fs-tests `fatcache` test
+# red. Never in a real build.
+#   observer:     external medium writes no longer drop cached sectors
+#   writethrough: FAT32's own writes no longer update a cached line
+#   token:        a run read installs what it read even if a write raced it
+#   run-bypass:   run reads neither hit nor fill the cache (pre-wave-14 path)
+fatcache-observer-canary = []
+fatcache-writethrough-canary = []
+fatcache-token-canary = []
+fatcache-run-bypass-canary = []
+#   ro-stream-off: read-only opens take the whole-file proxy again
+#   write-gen:     writes no longer move FAT32's write generation
+ro-stream-off-canary = []
+write-gen-canary = []
+#   dcache-stale:  the root-entry cache answers whatever the generation
+dcache-stale-canary = []
+# Wave 14 (SPAWNCACHE) canaries:
+#   write-epoch:       writes no longer move the 64-bit write epoch
+#   write-gen-early:   FAT32 bumps the generation before its bytes land
+#   content-stamp-off: no path has a content stamp (nothing is cached)
+write-epoch-canary = []
+write-gen-early-canary = []
+content-stamp-off-canary = []
+# The kernel's `file-census` diagnostic (census.rs). Declared so the cfg is
+# known; never enabled here (it prints through the kernel timebase).
+file-census = []
+
+[dependencies]
+# The real azos_sync SpinLock reads/writes RV64 sstatus in inline asm, so
+# it neither compiles nor runs on the host. cap-tests already carries a
+# Mutex-backed stand-in with the same surface; reusing it beats a second copy
+# that can drift.
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
+# Host stand-in for the RV64-only driver crate. Renamed so the module source
+# compiles unmodified — see the shim's crate doc.
+fs_test_drivers = { path = "shims/drivers" }
+azos_drv_api = { path = "../../../crates/drivers/api" }
+# Host stand-in for the generated limits crate — see the shim's crate doc.
+azos_limits = { path = "shims/limits", package = "fs_test_limits" }
+# Host stand-in for the three page counters procfs's meminfo generator reads.
+azos_mm = { path = "shims/mm", package = "fs_test_mm" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)', 'cfg(fuzzing)'] }
+
+# Reproduce the kernel's release profile: `overflow-checks` is what turns a
+# wrapping sum of on-disk fields into a board reset there, so the parsers
+# pulled here (FAT32, the partition table) must be tested with it on — a
+# fuzz case that only wraps silently on the host proves nothing.
+[profile.release]
+overflow-checks = true

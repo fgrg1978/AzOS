@@ -1,0 +1,18 @@
+# Override the workspace target so `cd crates/core/topology && cargo test
+# --features <feature>` runs this crate's own `#[cfg(test)]` unit tests on
+# the host instead of failing to even build (this crate has no `.cargo/
+# config.toml` of its own has meant `cargo test` here silently inherited
+# the repo root's riscv64/build-std settings, tripped a duplicate-lang-item
+# error when a concurrent build was using the shared target dir, and no
+# feature combination could be exercised directly from this directory —
+# only via `tests/host/topology-tests`, which cannot select
+# `azos_topology`'s own features with an unqualified `--features` flag
+# for a package outside the workspace). Same override as
+# `tests/host/topology-tests/.cargo/config.toml` and ~50 other test-oriented
+# crates in this tree.
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []

@@ -1,0 +1,21 @@
+[package]
+name = "azos_arch_api"
+version = "0.1.0"
+edition = "2021"
+description = "AZOS Arch trait surface — cross-ISA abstraction for Cpu / Interrupts / Mmu / Boot / Vector. RFC-0002 modular pattern. Pure no_std, host-compatible."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+repository = "https://github.com/azos-project/azos"
+
+[lib]
+name = "azos_arch_api"
+
+[dependencies]
+
+[features]
+# Masked-window tracer bookkeeping (`src/lat.rs`). Off: the module is absent.
+lat-trace = []
+# Translation granule (Kconfig AARCH64_PAGE_*; aarch64 only). Neither = 4 KiB.
+# `azos_limits::PAGE_SHIFT` must agree; the kernel asserts it.
+page-16k = []
+page-64k = []

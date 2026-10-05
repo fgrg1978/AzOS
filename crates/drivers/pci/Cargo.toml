@@ -1,0 +1,20 @@
+[package]
+name = "azos_pci"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+Native PCI/PCIe enumeration over ECAM: config-space access trait, capability
+walk (MSI/MSI-X/vendor-specific), BAR sizing/assignment. no_std, no target
+asm — pure logic against an injected ConfigSpace so it host-tests via
+tests/host/pci-tests. Stage 1 of RFC-0046.
+"""
+
+[dependencies]
+
+[features]
+# Gate canary only: `msix_set_enable(.., true)` leaves MSI-X Enable clear, so
+# a device falls back to INTx and no MSI reaches the interrupt controller.
+# The AIA MSI-X row must fail with this on. Never enabled in a shipping build.
+msix-enable-canary = []

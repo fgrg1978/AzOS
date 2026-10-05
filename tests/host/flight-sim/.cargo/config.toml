@@ -1,0 +1,4 @@
+# flight-sim is a host-side (std) crate.
+# Override the workspace riscv64 target so `cargo test` works from this directory.
+[build]
+target = "aarch64-apple-darwin"

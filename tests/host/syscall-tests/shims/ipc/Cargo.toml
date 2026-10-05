@@ -1,0 +1,37 @@
+[package]
+name = "syscall_test_ipc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_ipc, used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[features]
+# Declared so the pulled `irq_bind.rs`'s `cfg(feature = "irq-pending-canary")`
+# is a known cfg here; never enabled.
+irq-pending-canary = []
+# Declared for the pulled `port.rs`'s `cfg(feature = "port-recheck-canary")`.
+port-recheck-canary = []
+# And for its `cfg(feature = "port-revoke-canary")` (wave 11, LEASE3).
+port-revoke-canary = []
+
+[dependencies]
+# Real, pure, host-buildable.
+azos_abi = { path = "../../../../../crates/core/abi" }
+azos_limits = { path = "../../../../../crates/core/limits" }
+wcet-macro = { path = "../../../../../crates/core/wcet-macro" }
+# Reused host stand-ins, same reasons as everywhere else in this crate.
+azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
+azos_sched = { path = "../ipc_sched", package = "syscall_test_ipc_sched" }
+# Scoped to this crate: gpio_cap/i2c_cap/pwm_cap/motor_cap need
+# azos_drv_{gpio,bus,actuator}::{gpio,i2c,pwm,motor_pid}. See shims/ipc_drivers.
+syscall_test_ipc_drivers = { path = "../ipc_drivers" }
+# `shm.rs` allocates/frees the region's backing pages directly. Same crates
+# the outer package's own `azos_mm`/`azos_arch` dependencies point
+# at -- Cargo unifies identical paths into one compiled crate, so these are
+# the same `PhysAddr` / `PteFlags` types `handlers.rs` itself sees.
+azos_mm = { path = "../mm", package = "syscall_test_mm" }
+azos_arch = { path = "../arch", package = "syscall_test_arch" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }

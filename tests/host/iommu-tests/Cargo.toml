@@ -1,0 +1,17 @@
+[package]
+name = "azos_iommu_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/iommu (DC/STE encode-decode round trips, fault/event classification). Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/iommu-tests && cargo test --release
+
+[dependencies]
+azos_iommu = { path = "../../../crates/drivers/iommu" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

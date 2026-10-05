@@ -1,0 +1,17 @@
+[package]
+name = "azos_gguf_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the GGUF model-file parser in azos_ml::gguf. Pulls the file in via #[path] (same pattern as tests/host/ota-tests) because the full ml crate depends on azos_arch which is riscv-only."
+
+# Run with:  cd tests/host/gguf-tests && cargo test
+
+[dependencies]
+# `ggml_nano.rs` (pulled in via #[path], see src/lib.rs) calls
+# `azos_arch::vector::dot_f32_best`. See shims/arch's own doc for why
+# this is a reimplementation of the scalar dot product rather than a
+# `#[path]` pull of the real function: the real file mixes it with
+# unconditional RISC-V inline asm that cannot assemble on a host target.
+azos_arch = { path = "shims/arch", package = "gguf_test_arch" }

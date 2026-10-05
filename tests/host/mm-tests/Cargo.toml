@@ -1,0 +1,36 @@
+[package]
+name = "azos_mm_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the physical page allocator in crates/core/mm/src/pmm.rs. Excluded from workspace."
+
+# Run with:  cd tests/host/mm-tests && cargo test --release
+
+[dependencies]
+azos_arch = { path = "shims/arch", package = "mm_test_arch" }
+# Real crate, not a shim: `azos_arch_api` is pure `no_std`, no asm, no
+# target-specific code (see its own Cargo.toml description) — exactly the
+# property that makes it safe to link on the host, unlike the facade above.
+# `wx.rs` (pulled in with `#[path]` below) types against it directly since
+# the page-table abstraction (B2) made `wx` ISA-neutral.
+azos_arch_api = { path = "../../../crates/core/arch-api" }
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
+azos_common = { path = "../../../crates/core/common" }
+# Real crate, not a shim: it is generated from .config by a build script and
+# has no target-specific code, and pmm's MAX_PAGES is derived from it. A stub
+# would let the arena size drift from the kernel's.
+azos_limits = { path = "../../../crates/core/limits" }
+
+# Reproduce the kernel's release profile. A suite that does not is testing a
+# different program: overflow-checks is what turns a wrapping computation into
+# a panic, and panic = "abort" is what makes that a board reset.
+# pmm.rs carries a `small-mem` cfg that the mm crate declares; without echoing
+# it here the pulled module emits unexpected_cfgs, and warnings are failures in
+# this project. Declared rather than silenced so the condition stays visible.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("small-mem"))'] }
+
+[profile.release]
+overflow-checks = true

@@ -1,0 +1,1 @@
+cat < /fat/IN.TXT | wc 2>> /fat/ERR.LOG # comment

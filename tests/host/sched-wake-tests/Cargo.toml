@@ -1,0 +1,33 @@
+[package]
+name = "azos_sched_wake_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the K-C10 TID-directed wake logic in crates/core/sched/src/wait.rs. Excluded from workspace."
+
+[dependencies]
+# task.rs re-exports MAX_TASKS from this leaf; it has no runtime dependencies
+# of its own, so it compiles for the host unchanged.
+azos_limits = { path = "../../../crates/core/limits" }
+
+# Host stand-in for the K-C29 preemption mechanism. `wait.rs`'s
+# `task_block_outcome` names `azos_sync::preempt::depth()` and
+# `azos_sync::preempt_core::voluntary_admission()`; the first is inline
+# asm on the kernel target, the second is pulled real. See the shim's crate
+# doc for which half is which.
+azos_sync = { path = "shims/sync", package = "sched_wake_test_sync" }
+
+# Owner decision 102 — `task.rs` (pulled below) now holds `budget:
+# azos_mm::budget::PageBudget`. The real `azos_mm` cannot compile for
+# the host (transitively pulls in `azos_arch`'s asm), so this shim pulls
+# the real `crates/core/mm/src/budget.rs` unmodified — see its own doc.
+azos_mm = { path = "shims/mm", package = "sched_wake_test_mm" }
+
+[dev-dependencies]
+
+[features]
+# `wait.rs` (pulled by path) branches on this sched feature. Declared here,
+# never enabled, so the host build compiles the sweep branch without an
+# `unexpected_cfgs` warning; the heap itself is tested through `timer_heap`.
+sched-timer-heap = []

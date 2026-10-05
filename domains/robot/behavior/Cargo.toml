@@ -1,0 +1,40 @@
+[package]
+name = "azos_behavior"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+no-ml = []
+# Canary for the ML service kill row: a missing ring-3 verdict becomes "no
+# verdict" instead of STOP (`ml_link::fallback`). Forwarded from the kernel.
+ml-fallback-canary = []
+# Canary for the ML service absent row: a boot that never started the service
+# gets "no verdict" (L1 passes) instead of STOP. Forwarded from the kernel.
+ml-absent-canary = []
+# K-C5. Forwarded from kernel/Cargo.toml; the const the gate reads lives in
+# azos_encrypt_link, this crate only re-exports the policy surface
+# (auth_envelope::link_policy_denial and friends).
+link-encrypt-enforced = ["azos_encrypt_link/link-encrypt-enforced"]
+
+[dependencies]
+azos_sync         = { workspace = true }
+azos_drv_sys      = { workspace = true }
+azos_drv_gpio     = { workspace = true }
+azos_drv_actuator = { workspace = true }
+azos_crypto       = { path = "../../../crates/core/crypto" }
+azos_encrypt_link = { path = "../../../crates/net/encrypt-link" }
+# RFC-0037: graded degrade level — motor_envelope reads degrade_level() from
+# ipc and level_cap_pct() from the dep-free degrade-policy leaf.
+azos_ipc          = { workspace = true }
+# RFC-0037: degrade taxonomy + speed-ceiling constants (motor-actuation policy).
+azos_degrade_policy = { workspace = true }
+# Kconfig ROBOT_TYPE_ID (config/Kconfig.robot): the robot type the safety
+# envelope starts with (safety.rs, ROBOT_TYPE).
+azos_limits       = { workspace = true }
+azos_actuation    = { workspace = true }
+# RFC-0027: #[wcet(N_us)] proc-macro for per-function WCET budget annotations.
+# Host-built proc-macro; Cargo resolves it correctly for cross-compilation
+# because proc-macros are always built for the host (build target).
+wcet-macro = { path = "../../../crates/core/wcet-macro" }

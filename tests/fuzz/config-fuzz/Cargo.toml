@@ -1,0 +1,26 @@
+[package]
+name = "azos_config_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "cargo-fuzz (libFuzzer) targets for the CONFIG.INI parser (azos_config). Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+azos_config = { path = "../../../crates/core/config" }
+
+[[bin]]
+name = "config_ini"
+path = "fuzz_targets/config_ini.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]
+

@@ -1,0 +1,22 @@
+[package]
+name = "azos_crypto_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side unit tests for azos_crypto. Excluded from workspace. Uses NIST FIPS / RFC test vectors for SHA-256, AES-128, X25519. Ed25519 path tests the current HMAC-SHA256 stub (real ed25519 verify is a known gap — see task #212)."
+
+# Run with:  cd tests/host/crypto-tests && cargo test
+# Same nightly-build-std workaround as the other *-tests crates —
+# rust-toolchain.toml pins stable, .cargo/config.toml targets the host.
+
+[dependencies]
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+[dev-dependencies]
+# Signing side of the manifest-scheme tests (`sign_manifest` helper in
+# `ed25519_tests`): `azos_crypto` is verify-only by design (no_std,
+# firmware-verification use case), so the test-side signer needs its own
+# copy with signing enabled. Deterministic seed -> deterministic signature
+# (RFC 8032), so no RNG feature is needed.
+ed25519-dalek = "2"

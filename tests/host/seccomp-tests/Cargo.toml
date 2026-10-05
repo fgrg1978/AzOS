@@ -1,0 +1,27 @@
+[package]
+name = "azos_seccomp_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the syscall filter (AQ11): crates/core/sched/src/filter.rs and seccomp.rs. Excluded from workspace."
+
+# Run with:  cd tests/host/seccomp-tests && cargo test --release
+
+[dependencies]
+# The real syscall numbers, not a copy. `seccomp.rs` redeclares them as local
+# `const`s with a comment saying they "must match azos_syscall::numbers
+# exactly" — a claim nothing enforced until this suite did.
+azos_syscall_numbers = { path = "shims/numbers" }
+# This suite `#[path]`-includes the real `crates/core/sched/src/seccomp.rs`,
+# which derives its syscall numbers from `abi` instead of restating them.
+azos_abi = { path = "../../../crates/core/abi" }
+# RFC-0047: a Linux image's profile is derived through the personality's table.
+azos_linux_abi = { path = "../../../crates/core/linux-abi" }
+# `seccomp.rs` hashes images with `azos_crypto::sha256`, as in the kernel.
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+# Reproduce the kernel's release profile: a suite that does not is testing a
+# different program.
+[profile.release]
+overflow-checks = true

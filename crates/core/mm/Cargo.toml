@@ -1,0 +1,52 @@
+[package]
+name = "azos_mm"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_abi = { workspace = true }
+azos_arch = { workspace = true }
+azos_arch_api = { workspace = true }
+azos_sync = { workspace = true }
+azos_common = { workspace = true }
+azos_limits = { workspace = true }
+linked_list_allocator = { workspace = true }
+
+[features]
+# Gate row only (wave 13): `vdso_update` holds its write open longer, so an
+# interrupt inside it is all but certain were the write not masked. The
+# `vdso: write window` row boots abitest with it.
+vdso-write-window = []
+# Gate canary only (RFC-0053 L0b): `set_user_range_exec` maps the module
+# text read-write-EXECUTE. `lx: module text W^X` must go red with it on.
+lx-wx-canary = []
+# Gate canary only (wave 13): a fork marks read-only and executable pages
+# copy-on-write again, so a store to one gets a writable copy that keeps its
+# execute bit. The `wx:` abitest checks must go red with it on.
+cow-ro-canary = []
+# Gate canary only (wave 14, FORKSPAWN): a fork's child takes the parent's
+# committed-page counter instead of counting its own pages, so a page a
+# sibling thread commits during the fork is left out of the child's charge.
+fork-commit-race-canary = []
+# Canary only (wave 14, DEMANDPAGE): the fault path never asks the region
+# pagers, so the first touch of a demand-paged `mmap` page kills the task
+# (and a kernel copy into one fails). Host rows in syscall-tests must go red.
+demand-region-canary = []
+# Gate canary only (wave 14): a fork leaves the parent's demand markers out
+# of the child again, so a child's first touch of a reserved page (a `brk`
+# heap page it never touched) kills it.
+fork-demand-canary = []
+# Gate canary only (wave 14): a COW break always copies, also when the
+# breaking task is the frame's last holder.
+cow-reuse-canary = []
+# Canary only (wave 14, SPAWNCACHE): the verified-image cache shares every
+# page of a kept image, writable data included (`image_frames.rs`). The
+# syscall-tests shared-text rows must go red.
+image-share-all-canary = []
+# Gate canary only (wave 14, security): adding write to a read-only leaf whose
+# frame another space maps sets the bit again (`vmm::rewrite_leaf_write`), so a
+# fork child's mprotect(RW) writes its parent's page. The `linux: fork child
+# mprotect` rows and syscall-tests `mprotect_shared` must go red.
+mprotect-shared-canary = []

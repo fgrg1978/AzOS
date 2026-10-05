@@ -1,0 +1,11 @@
+[package]
+name = "azos_shell_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Host-side tests for the console authority decision in crates/core/ipc/src/authority_policy.rs (pulled in via #[path]; the ipc and shell crates link kernel-only crates). Excluded from workspace."
+
+# Run with:  cd tests/host/shell-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }

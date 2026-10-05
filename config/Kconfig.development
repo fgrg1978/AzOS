@@ -1,0 +1,260 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.development — Debug probes, trace ring, verbose logging, panic
+#
+# RFC-0026 Phase C1.  Developer-facing options; should generally be off
+# in production defconfigs.
+
+menu "Development & Debug"
+
+# ---------------------------------------------------------------------------
+# TCP trace probes
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "TCP per-segment trace probes"
+    default TCP_TRACE_OFF
+    help
+      Inserts kprintln! trace points at key TCP state transitions
+      (SYN, SYN-ACK, ACK, FIN, RST, retransmit).  Useful for
+      debugging the sensor-pump E2E path (#39).
+      Has measurable performance impact — disable in production.
+
+    config TCP_TRACE_OFF
+        bool "Off (no trace output)"
+        help
+          Default.  Zero overhead on the hot TCP path.
+
+    config TCP_TRACE_QEMU_ONLY
+        bool "QEMU only (enabled when BOARD_QEMU)"
+        help
+          Trace probes active only under QEMU.  Automatically
+          disabled in VF2/K1 builds by the build.rs feature guard.
+          Good for CI debugging without affecting hardware builds.
+
+    config TCP_TRACE_ALWAYS
+        bool "Always (real hardware + QEMU)"
+        help
+          All builds include trace probes.  Use only for deep
+          hardware bring-up debugging — performance impact is real
+          (~3-5% slower TCP throughput per segment due to UART output).
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# WCET reporting
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "WCET violation reporting"
+    default WCET_REPORT_NEVER
+    help
+      Controls when the WCET subsystem reports accumulated violation
+      statistics.
+
+    config WCET_REPORT_NEVER
+        bool "Never (production default)"
+        help
+          WCET records violations in an in-memory counter only.
+          No periodic output — avoids timing perturbation.
+
+    config WCET_REPORT_ON_SHUTDOWN
+        bool "On shutdown / panic"
+        help
+          Dumps accumulated violation counts to UART when the kernel
+          exits or panics.  Useful for end-of-run post-mortem.
+
+    config WCET_REPORT_PERIODIC
+        bool "Periodically (every N scheduler ticks)"
+        help
+          Dumps WCET stats at regular intervals.  Adds UART output
+          overhead proportional to reporting frequency.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Panic action
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Panic action"
+    default PANIC_HALT
+    help
+      What the kernel does after printing the panic message.
+
+    config PANIC_HALT
+        bool "Halt (infinite WFI loop)"
+        help
+          Kernel spins in WFI forever after panic.  Safe default —
+          no automatic restart, operator must intervene.
+
+    config PANIC_REBOOT
+        bool "Reboot after delay"
+        help
+          Kernel reboots after a fixed delay (was PANIC_REBOOT_DELAY_MS; removed 2026-09-26, V2.6 — never consumed).
+          Allows reading the panic message before the reset.
+          Useful for unattended field deployments where a stuck robot
+          is worse than an automatically-recovering one.
+
+    config PANIC_DUMP_HALT
+        bool "Dump register state then halt"
+        help
+          Dumps full CPU register file (all GPRs + CSRs) to UART
+          before entering WFI.  Maximum debug information;
+          largest output.  Use during active debugging only.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Panic policy (RFC-0052 §5, RT7)
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Panic policy"
+    default PANIC_POLICY_CONTAIN if ROBOT_DRONE
+    default PANIC_POLICY_RESET
+    help
+      Which kernel panics stop the machine. The panic action above applies
+      to every panic that takes the reset path.
+
+      Ground robots reset (halt or reboot) on any kernel panic. A flying
+      robot with armed ESCs must not: a motor stop in flight is the failure.
+      The Robot drone profile (ROBOT_DRONE) therefore defaults to Contain.
+
+    config PANIC_POLICY_RESET
+        bool "Reset (every panic: safe state, then halt or reboot)"
+        help
+          Every kernel panic stops all actuators (lock-free), sets the global
+          panic flag (every other hart halts at its next tick and stops
+          feeding the watchdog), writes the crash record (RAM pstore and
+          /fat/CRASH.LOG) and takes the panic action. The behaviour before
+          RT7.
+
+    config PANIC_POLICY_CONTAIN
+        bool "Contain (park the culprit task; the control loop keeps running)"
+        help
+          "Warn, don't kill." A panic in a non-safety kernel task is
+          contained when its context passes the predicate in
+          crates/core/common/src/panic_policy.rs: not in an interrupt
+          handler, no SpinLock held by the hart, interrupts were enabled, no
+          PiMutex held by the task, not a second panic, no hart already on
+          the reset path, and the task is neither idle, nor ring 3 in a
+          system call, nor a safety task (rt-motor, flight-ctrl). The task is
+          parked (it exits with status 134 and its resources are released by
+          the ordinary exit path); the global panic flag is NOT set, the
+          actuators are NOT stopped, the other harts keep running and the
+          crash counter (boot-loop detection) is not raised. The record still
+          goes to the RAM pstore and /fat/CRASH.LOG, marked CONTAINED. The
+          flight controller then flies its own Land and, after
+          PANIC_CONTAIN_LAND_MS, Disarm; it never resets.
+
+          Every panic that fails the predicate takes the reset path, as
+          under Reset, and prints the reason. A fault on the control loop
+          itself is one of those: the reset path stops feeding the watchdog
+          and the external ESC/FC failsafe is the backstop.
+
+          Cost (QEMU defconfigs, release, measured 2026-10-03): kernel
+          .text +1742 B on riscv64 and +2128 B on aarch64 over Reset (the
+          contain path and flight-ctrl's Land/Disarm sequence). Reset
+          itself grew +1326 B / +2176 B over the tree before RT7 (the
+          predicate captured on every panic, the safety-task registry,
+          the PiMutex held count). Every PiMutex acquisition and release
+          does one more atomic add on a 64-entry per-TID table (+6
+          instructions each in riscv64 try_acquire and in the guard's release).
+
+endchoice
+
+config PANIC_CONTAIN_LAND_MS
+    int "Contained panic: Land duration before Disarm (ms)"
+    range 100 600000
+    default 5000
+    help
+      After a contained kernel panic the flight controller (if armed) flies
+      Land for this long, then disarms. There is no touchdown detection in
+      the flight controller, so the descent is time-bounded: set it to the
+      worst-case time to descend from the vehicle's operating altitude at
+      the Land throttle. Read only when PANIC_POLICY_CONTAIN is set.
+
+# ---------------------------------------------------------------------------
+# Kernel console log level
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Kernel console log level"
+    default LOG_LEVEL_WARN if PROFILE_EMBEDDED
+    default LOG_LEVEL_WARN if PROFILE_EDGE
+    default LOG_LEVEL_WARN if PROFILE_FLEET
+    default LOG_LEVEL_WARN
+    help
+      Which kernel log lines are compiled in, Linux numbering (err 3,
+      warning 4, info 6, debug 7). A line above the level is not compiled
+      at all: no format string, no formatting code, no call
+      (crates/drivers/sys/src/uart.rs, `kerr!`/`kwarn!`/`kinfo!`/
+      `kdebug!`; a plain `kprintln!` is info).
+
+      Every deployment profile defaults to warn: errors, security
+      refusals and safety warnings only. The QEMU development configs
+      (config/defconfigs/qemu.config, qemu-aarch64.config), which the
+      gate builds, select debug so every gate row reads its lines.
+
+      Not affected by the level: the console output of the shell and of
+      ring-3 programs, the panic report, and the durable records (flight
+      recorder, /fat/CRASH.LOG, pstore).
+
+    config LOG_LEVEL_ERR
+        bool "err: errors only"
+
+    config LOG_LEVEL_WARN
+        bool "warn: errors, security refusals, safety warnings"
+
+    config LOG_LEVEL_INFO
+        bool "info: also boot progress and status lines"
+
+    config LOG_LEVEL_DEBUG
+        bool "debug: every kernel line"
+
+endchoice
+
+config LOG_LEVEL
+    int
+    default 3 if LOG_LEVEL_ERR
+    default 4 if LOG_LEVEL_WARN
+    default 6 if LOG_LEVEL_INFO
+    default 7 if LOG_LEVEL_DEBUG
+
+# ---------------------------------------------------------------------------
+# Masked-window tracer
+# ---------------------------------------------------------------------------
+
+config LAT_TRACE
+    bool "Interrupts-masked / preemption-disabled window tracer"
+    default n
+    help
+      Records, per hart, the longest window with interrupts masked and
+      the longest with preemption disabled, each with the call site that
+      opened it and the one that closed it, plus the longest window per
+      opening site. Read out at /proc/latency. The analogue of Linux's
+      irqsoff/preemptoff tracers, for measuring a worst-case latency
+      budget.
+
+      Off (default): the hooks, the tables and the procfs entry are not
+      compiled at all. Maps to the kernel cargo feature `lat-trace`
+      (tools/kconfig_to_cargo.py). On: every interrupt mask/unmask through
+      the arch-api `Interrupts` trait, every preemption-counter 0<->1
+      transition and every trap entry/exit reads the counter once.
+
+config SYSCALL_TRACE
+    bool "Record every syscall entry in the post-mortem trace ring"
+    default n
+    help
+      Writes one TRACE_SYSCALL event (syscall number) into the 512-event
+      kernel trace ring on every syscall entry, so a crash dump shows the
+      last syscalls. riscv64 only; aarch64 has no such hook.
+
+      Off (default): the call is not compiled; the ring still records
+      IRQ, scheduler, fault and IPC events, and seccomp denials
+      (TRACE_SYSCALL / 0xDEAD) are recorded either way. On: 19
+      instructions on every syscall (static count, getpid path). Maps to
+      the kernel cargo feature `syscall-trace` (tools/kconfig_to_cargo.py).
+
+endmenu # Development & Debug

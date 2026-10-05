@@ -1,0 +1,19 @@
+[package]
+name = "azos_aead_link_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side cross-side compat tests for RFC-0019 AEAD link. Pins the wire format produced by AzOSRobotBrain/secure_channel.py against crates/core/crypto::secure_channel. Excluded from workspace."
+
+# Run with:
+#   cd tests/host/aead-link-tests && cargo +stable test --release -- --nocapture
+#
+# Pinned to stable via rust-toolchain.toml.
+
+[dependencies]
+azos_crypto = { path = "../../../crates/core/crypto" }
+# `encrypt-link` carries its own record layer (rekey state the crypto crate's
+# `SecureChannel` does not expose); its flags-zero record is pinned against the
+# frame this crate pins.
+azos_encrypt_link = { path = "../../../crates/net/encrypt-link" }

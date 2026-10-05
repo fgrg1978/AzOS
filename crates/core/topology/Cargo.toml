@@ -1,0 +1,171 @@
+[package]
+name = "azos_topology"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "AZOS static topology — RFC-0005. Parses signed CAPS.TOML + SCHED.TOML into a fixed-pool, alloc-free representation."
+
+[lib]
+name = "azos_topology"
+
+[dependencies]
+azos_abi = { workspace = true }
+azos_crypto = { workspace = true }
+azos_limits = { workspace = true }
+azos_energy = { workspace = true, optional = true }
+
+[features]
+# RFC-0053 L0: the `LXSRV.ELF` row (start = true, no capability). Off by
+# default: the default topology names no Linux server.
+lx-server = []
+default = []
+# RFC-0051 E2: the topology carries an `EnergySpec` (mode + model) and
+# `parse_sched` fills it from `[energy]` / `[energy.domain.NAME]`. Without it
+# those sections are recognised and skipped: a kernel built without Kconfig
+# ENERGY boots a topology that declares a model and runs with none (I4).
+energy = ["dep:azos_energy"]
+# The QEMU row's fake model (kernel `energy-smoke`): the default topology
+# parses a two-domain model from an embedded SCHED.TOML fragment, through the
+# same parser a signed file goes through.
+energy-fake-model = ["energy"]
+# RFC-0051 E3/E4 gate row: the fake model in `balanced` mode, with WCET
+# reference clocks (builder.rs).
+energy-fake-balanced = ["energy-fake-model"]
+# Embed `tools/keys/test_pub.bin` as `TRUSTED_PUBKEY` when
+# `TOPOLOGY_PUBKEY_PATH` is not set (see `build.rs`). Without either, the build
+# fails: a production build names its key, a dev/test build says it is one.
+# `kernel/Cargo.toml` wires it to `qemu` and to nothing else; the host test
+# crates and the QEMU build of the ML service turn it on themselves.
+dev-key = []
+# Declare `pwm.0` and `gpio.0` — motor 0's duty channel and one of its
+# direction pins — in the default topology, so a ring-3 task HOLDS the
+# capability the kernel's actuation guards must refuse. Without the grant a
+# deleted guard is indistinguishable from a missing capability, so the QEMU
+# scenario that asserts the refusal needs this on. Nothing on a robot does:
+# `kernel/Cargo.toml` wires it to `qemu` and to nothing else.
+cap-refusal-canary = []
+# Grant the autorun row `disk.part.1` read/write (RFC-0048 P3). Only the gate
+# row that boots the partitioned image turns it on (`kernel/Cargo.toml`
+# `disk-part-row`); see `builder.rs`.
+disk-part-row = []
+# **A deployment profile, not a canary.** Declares `motor.0`/`motor.1` RW on
+# the `autorun` row — the drivetrain a robot deployment actuates.
+#
+# It used to be unconditional, which made an actuation authority part of the
+# default topology of a general-purpose kernel: every build, every board, every
+# workload, whether or not anything on it could move. Owner decision
+# 2026-09-21, with the pivot to a generic microkernel: the ABI numbers stay
+# where they are (550-561 — retiring a syscall number is not something this
+# project does), and what moves is the GRANT. A deployment that actuates turns
+# this on; one that does not never holds the capability, so there is nothing
+# for a bug in the guards to reach.
+#
+# Wired to `qemu` in `kernel/Cargo.toml`, because the gate's scenarios are
+# actuation scenarios. NOT wired to `vf2`/`k1`: those name a BOARD, and a board
+# is not a domain — a VF2 running something that does not move should not boot
+# holding motor capabilities.
+profile-actuation = []
+# The two DEMO endpoints and their server rows. Test scaffolding for
+# RFC-0040 gap 2, and nothing a robot runs — a board topology must declare
+# zero `Endpoint` rows, so they hang off `qemu` exactly as
+# `cap-refusal-canary` does. See `builder.rs`.
+ipc-endpoint-canary = []
+# Wave 9 (owner decision): `start = true` on the BUZZDRV.ELF and INADRV.ELF
+# rows, so the kernel starts the two ring-3 drivers at boot. Wired to `qemu`
+# only: the images ship only on the QEMU drivers disks (`build/disk-drv.img`,
+# `build/disk-aarch64-drv.img`), so a QEMU boot starts them from those disks
+# alone. NOT wired to `vf2`/`k1`: no board starts a driver until the owner
+# says which board rows start (the board volume ships the images; its rows do
+# not start them).
+ring3-driver-start = []
+# Its canary: the buzzer row loses `start = true` (the INA219 row keeps it),
+# so the `drivers: buzzer` row must go red on "no ring-3 driver registered".
+ring3-driver-start-canary = ["ring3-driver-start"]
+# Wave 11 (DRVPLACE): Kconfig DRV_INA219_PLACEMENT = kernel, forwarded by the
+# kernel's `ina219-kernel`. The INADRV.ELF row (the ring-3 host's grants) is
+# not declared (`builder::INADRV_ROW`).
+ina219-kernel = []
+# Its gate canary: the row is kept under the kernel placement, as if the
+# ring-3 host were still part of the image; the INA219 rows must fail.
+ina219-placement-canary = []
+# Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel, forwarded by the
+# kernel's `buzzer-kernel`. The BUZZDRV.ELF row (the ring-3 host's grants) is
+# not declared (`builder::BUZZDRV_ROW`).
+buzzer-kernel = []
+# Wave 11 (DRVPLACE) gate row: `restart = always` on BUZZDRV.ELF and
+# `restart = no` on INADRV.ELF, so the supervisor's honouring of the row key
+# can be shown on a boot (the kernel's `restart-smoke`). Every other row, and
+# every build without it, keeps the default `on-failure`.
+restart-smoke = []
+# Declare two `hard_rt` tasks of 60% each, both pinned to CPU 0: 120% of one
+# CPU, which no schedule can meet. `Topology::admission_check` must refuse it,
+# so the kernel halts at "Topology install FAILED: Deadline(..)" instead of
+# booting a robot that will miss deadlines. Without this the refusal is only
+# ever exercised by host tests, and a kernel that stopped calling the check would
+# stay green. Nothing on a robot enables it: `kernel/Cargo.toml` wires it to a
+# feature of its own and to nothing else.
+deadline-refusal-canary = []
+# Shrinks the autorun frame budget so a ring-3 probe can hit it in 16 pages
+# instead of 2048. See `builder.rs`.
+mem-quota-canary = []
+# RFC-0049 M1c: an `UHELLO.ELF` row marked `mem = "locked"`, so the gate can
+# boot a locked task and read its fault count at exit. See `builder.rs`.
+mem-locked-smoke = []
+# Kconfig LOCKED_HUGE_LEAVES gate row: the mem-locked-smoke UHELLO.ELF row with
+# `mem_huge_mib = 4`. Never in a real build.
+huge-leaves-smoke = ["mem-locked-smoke"]
+# RFC-0049 M1c canary: an `ABITEST.ELF` row marked locked. Its profile can fork,
+# so the loader must refuse it. See `builder.rs`.
+mem-locked-refusal-canary = []
+# RFC-0049 M1b canary: a ring-3 row with a 4 GiB ceiling, which memory admission
+# must refuse. See `builder.rs`.
+mem-admission-canary = []
+# RFC-0055 canary: `SH.ELF` and its tools' priorities swapped (tools 24, shell
+# 26), so a CPU-bound tool out-ranks the shell. Gate row `sh: ctrl-c on one
+# hart` must fail with it. Never in a real build.
+ushell-prio-canary = []
+# RFC-0055 canary: `POWER.ELF`'s row without `Cap<Power>`; every power
+# operation must be refused and recorded. Never in a real build.
+power-cap-canary = []
+# Wave 12 canary: FLIGHT.ELF, BEHAVIOR.ELF, CONFIG.ELF and OTA.ELF rows without
+# their capabilities; every family operation must be refused and recorded.
+# Never in a real build.
+family-cap-canary = []
+# Wave 12 gate row: the drivetrain (motor.0/motor.1 WRITE) is FLIGHT.ELF's
+# instead of the autorun row's, so `flight arm` from the user shell can
+# succeed (one writer per motor). Implies the actuation profile.
+flight-tool-drivetrain = ["profile-actuation"]
+# RFC-0047 (wave 12): the Linux personality's test row, `LXHELLO.ELF`
+# (abi = "linux", no capabilities), and the shell's right to start it. Gate
+# only. `linux-abi-caps-canary` grants the row `/fat` read-write so the
+# image's create under `/fat` is no longer refused.
+linux-abi-test = []
+linux-abi-caps-canary = ["linux-abi-test"]
+# RFC-0047 stage 3: the third-party BUSYBOX.ELF row (`make busybox`) and the
+# shell's grant to start it. Gate only.
+linux-busybox-test = ["linux-abi-test"]
+# Wave 13 gate row: `BUSYBOX.ELF`'s row also holds `/fat` and the grant to
+# `execve` `LXHELLO.ELF` (whose row does not hold `/fat`). Never in a real
+# build.
+linux-exec-row-test = ["linux-busybox-test"]
+# Wave 13 (THREADS): the gate's `LXTHR.ELF` row (`make lxthreads`) and the
+# shell's launch grant for it.
+linux-threads-test = ["linux-abi-test"]
+# One small `hard_rt` task pinned to CPU 3. The install-time check assumes every
+# CPU a mask can name and admits it; a board with fewer harts must refuse it, and
+# that second check lives in `kernel_main`, where the real hart count is known.
+# Boot with `-smp 1` to see it. Its own row, because the pair above is refused
+# before the second check is ever reached and could not notice it being removed.
+deadline-hart-canary = []
+# Wave 11 SCHED-RT rows (`sched-rt-smoke` in kernel/Cargo.toml): two profiled
+# `safety_critical` rows, `rt-edf-a` and `rt-edf-b`, pinned to CPU 0, whose kernel tasks
+# take their EDF + CBS reservations from these rows. Never in a real build.
+sched-rt-smoke = []
+# Let the `autorun` row start an io_ring SQ poller (20 ms idle), for the
+# vsbench SQPOLL lane. Off everywhere by default: `kernel/Cargo.toml` wires it
+# to its own feature and to nothing else.
+sqpoll-bench = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }

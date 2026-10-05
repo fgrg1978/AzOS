@@ -1,0 +1,10 @@
+[package]
+name = "azos_linux_abi"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The Linux personality's pure half (RFC-0047): Linux syscall numbers, errno mapping, the wire layouts the translation writes (stat, dirent64, termios, utsname, the initial stack) and the native numbers each Linux call reaches. No kernel state; the translation itself is crates/core/syscall/src/linux.rs."
+
+[dependencies]
+azos_abi = { path = "../abi" }

@@ -1,0 +1,22 @@
+[package]
+name = "azos_ml"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# arch (default): dot products through `azos_arch::vector::dot_f32_best`.
+# Off, they are a plain sequential loop and the crate depends on nothing —
+# what `userspace/services/mlsrv` builds, since `azos_arch` is kernel code (the
+# aarch64 dispatcher reads ID_AA64PFR0_EL1, which EL0 may not). The loop is
+# the one `dot_f32_scalar` runs on every build without RVV or NEON, the
+# kernels' included, so the two agree bit for bit.
+# rvv: use dot_f32_rvv (RVV 1.0) for linear-layer dot products.
+# Requires QEMU with -cpu rv64,v=true,vlen=128,vext_spec=v1.0.
+[features]
+default = ["arch"]
+arch = ["dep:azos_arch"]
+rvv = ["arch", "azos_arch/rvv"]
+
+[dependencies]
+azos_arch = { workspace = true, optional = true }

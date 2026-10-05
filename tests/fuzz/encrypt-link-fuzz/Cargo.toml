@@ -1,0 +1,26 @@
+[package]
+name = "azos_encrypt_link_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "cargo-fuzz (libFuzzer) targets for the RFC-0019 handshake and record decoder (azos_encrypt_link). Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+azos_encrypt_link = { path = "../../../crates/net/encrypt-link" }
+
+[[bin]]
+name = "link_frames"
+path = "fuzz_targets/link_frames.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]
+

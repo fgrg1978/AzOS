@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.network — Ethernet, TCP/IP stack parameters, ARP, brain link
+#
+# RFC-0026 Phase C1.  All network constants with defaults matching the
+# current codebase values from crates/net/net/src/*.
+
+menu "Network"
+
+# ---------------------------------------------------------------------------
+# Ethernet / IP
+# ---------------------------------------------------------------------------
+config TCP_BUF_SIZE
+    int "TCP per-connection receive and send ring (bytes)"
+    range 8192 1048576
+    default 16384  if PROFILE_FLEET
+    default 16384  if DOMAIN_GATEWAY && PROFILE_EDGE
+    default 131072
+    help
+      Size of each of the two static rings of one TCP connection, the
+      receive ring and the send ring (crates/net/net/src/tcp.rs rx_buf and
+      tx_buf).  Must be a power of two, and at least 8192 so that the
+      send ring holds a few full-size segments of headroom for loss
+      recovery; crates/core/limits/build.rs rejects anything else.
+
+      Read from .config: tcp.rs TCP_BUF_SIZE = azos_limits::TCP_BUF_SIZE.
+      Derived from it in tcp.rs: the send ring (TCP_SND_BUF_SIZE), the
+      window of a SYN and of an unscaled connection
+      (min(TCP_BUF_SIZE - 1, 65535)), the window-scale shift a SYN offers
+      (the smallest that covers TCP_BUF_SIZE - 1: 1 at 131072, 0 at 65536
+      or less), the initial ssthresh and the cwnd cap.
+
+      Per profile: 131072 (128 KiB) for edge and embedded, 16384 (16 KiB)
+      for fleet.  One connection is size_of::<TcpConn>() =
+      2 × TCP_BUF_SIZE + 6,088 B, and the table of TCP_MAX_CONNS of them
+      is static (.bss): 8 × 268,232 B for edge, 4 × 268,232 B for
+      embedded, 1024 × 38,856 B = 37.9 MiB for fleet (262 MiB at 131072).
+      Larger rings improve throughput
+      on high-latency links (BDP = RTT × bandwidth).
+
+      Embedded's memory is not budgeted: there is no embedded linker
+      script and no gate build row, and the measured image is 5.6 MiB
+      against the < 1 MiB SRAM PROFILE_EMBEDDED states.  131072 stays on
+      embedded until that budget (target board and RAM, linker script,
+      gate build row), which is queued, exists.
+
+      At fleet's 16384 the shift this end offers is 0, so a two-node run
+      of a fleet build prints wscale=<peer>/0.
+
+      Cost: 2 x TCP_MAX_CONNS B of RAM per byte of ring (16 B per byte at
+      edge's 8 connections: 2 MiB of the 2.05 MiB TCP table is rings), the
+      same on riscv64 and aarch64 (measured: +2,097,152 B for 131072 -> 262144
+      at 8 connections).  See TCP_MAX_CONNS for the per-connection and total
+      figures.  Ceiling: a power of two in 8192..1,048,576 (build.rs refuses
+      anything else).
+
+# ---------------------------------------------------------------------------
+# ARP, DNS and UDP tables (wave 11: were literals in crates/net/net)
+# ---------------------------------------------------------------------------
+
+config ARP_CACHE_SIZE
+    int "ARP cache entries"
+    range 4 256
+    default 64 if DOMAIN_GATEWAY && PROFILE_EDGE
+    default 16
+    help
+      crates/net/net/src/arp.rs, ARP_CACHE_SIZE. DOMAIN_GATEWAY on the
+      Edge profile starts it at 64.
+
+      Cost: 24 B of RAM per entry (ARP_TABLE, .bss), the same on riscv64 and
+      aarch64: 400 B at the default 16.
+
+config ARP_PENDING_SIZE
+    int "Outstanding ARP requests remembered"
+    range 2 64
+    default 16 if DOMAIN_GATEWAY && PROFILE_EDGE
+    default 8
+    help
+      crates/net/net/src/arp.rs, ARP_PENDING_SIZE: requests whose reply
+      is still eligible to be accepted. DOMAIN_GATEWAY on the Edge
+      profile starts it at 16.
+
+      Cost: 16 B of RAM per entry (ARP_PENDING, .bss), the same on riscv64 and
+      aarch64: 136 B at the default 8.
+
+config DNS_CACHE_SIZE
+    int "DNS cache entries"
+    range 1 64
+    default 16 if DOMAIN_GATEWAY && PROFILE_EDGE
+    default 4
+    help
+      crates/net/net/src/dns.rs, DNS_CACHE_SIZE. DOMAIN_GATEWAY on the
+      Edge profile starts it at 16.
+
+      Cost: 80 B of RAM per entry (DNS_CACHE, .bss), the same on riscv64 and
+      aarch64: 328 B at the default 4.
+
+config UDP_RX_SLOTS
+    int "Datagrams queued per UDP socket"
+    range 2 64
+    default 16 if DOMAIN_GATEWAY && PROFILE_EDGE
+    default 4
+    help
+      crates/net/net/src/udp.rs, UDP_RX_SLOTS: the receive ring of each
+      UDP socket. DOMAIN_GATEWAY on the Edge profile starts it at 16.
+      Must be a power of two (the ring index is a mask);
+      crates/core/limits/build.rs refuses any other value.
+
+      Cost: 11,904 B of RAM per slot (the UDP table, .bss), the same on riscv64
+      and aarch64: 8 UDP sockets (UDP_MAX_SOCKETS, a literal) x one 1,488-byte
+      datagram slot each.  47,912 B for the whole UDP table at the default 4
+      slots; 64 slots (the range limit) would be 761,856 B of slots.  It does not
+      depend on MAX_SOCKETS.
+
+endmenu # Network

@@ -1,0 +1,29 @@
+[package]
+name = "azos_energy"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "RFC-0051 energy-aware scheduling: utilisation tracking, the energy model and the scheduler seams. Pure no_std, host-tested in tests/host/energy-tests."
+
+[lib]
+name = "azos_energy"
+
+[features]
+# Gate canary (RFC-0051 E2 QEMU row): `EnergyModel::validate` accepts every
+# model, so the smoke's `refuse` check (an invalid model must be refused and
+# fall back to none) must print FAIL. Never in a real build.
+validate-canary = []
+# Host canaries for the E3/E4 invariants (tests/host/energy-tests): each
+# removes one floor, and the named invariant test must fail. Never in a real
+# build. I1: `DeadlineFloor` ignores the admitted reservations. I6: the WCET
+# floor is the slowest OPP. I3: the idle choice ignores the real-time slack.
+i1-canary = []
+i6-canary = []
+i3-canary = []
+
+[dependencies]
+# `dt.rs` turns the raw operating-points-v2 / idle-states tables that
+# `azos_dtb::dtb_energy` extracts into an `EnergyModel`. The DTB crate has
+# no dependencies of its own, so this closes no cycle.
+azos_dtb = { workspace = true }

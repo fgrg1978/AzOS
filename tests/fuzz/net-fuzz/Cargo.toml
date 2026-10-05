@@ -1,0 +1,34 @@
+[package]
+name = "azos_net_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "cargo-fuzz (libFuzzer) targets for the network stack's receive path (crates/net/net: Ethernet, ARP, IPv4, ICMP, IGMP, UDP, TCP, IPv6) and the DHCP/DNS payload parsers. Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# The real crates/net/net modules and their host shims, through the host-test
+# crate's `#[cfg(fuzzing)] fuzz_entry` module.
+azos_net_tests = { path = "../../host/net-tests" }
+
+[[bin]]
+name = "eth_frame"
+path = "fuzz_targets/eth_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dhcp_dns"
+path = "fuzz_targets/dhcp_dns.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]

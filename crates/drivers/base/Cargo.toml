@@ -1,0 +1,19 @@
+[package]
+name = "azos_drv_base"
+version = "0.1.0"
+edition = "2021"
+description = "Driver base: board description (platform::hw), the in-kernel driver registry, resource decoding."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+
+[dependencies]
+azos_abi     = { workspace = true }
+azos_arch    = { workspace = true }
+azos_sync    = { workspace = true }
+azos_limits  = { workspace = true }
+azos_drv_api = { workspace = true }

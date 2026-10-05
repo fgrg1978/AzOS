@@ -1,0 +1,25 @@
+[package]
+name = "azos_net"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+arp-timing = []
+# Enables `[TCP-RX]` / `[TCP-TX]` per-segment trace probes in `tcp.rs`.
+# Propagated from the kernel's `qemu` feature.  Free in production builds.
+qemu = []
+
+[dependencies]
+azos_drv_sys = { workspace = true }
+azos_drv_bus = { workspace = true }
+azos_drv_net = { workspace = true }
+azos_sync = { workspace = true }
+azos_common = { workspace = true }
+azos_limits = { workspace = true }
+# U06-6: HMAC-SHA256 for the TCP ISN generator (`tcp.rs::generate_isn`),
+# replacing an invertible FNV-1a hash. No new edge for the kernel binary --
+# `azos_crypto` is already linked in via `encrypt-link`/`ota`/`behavior`.
+azos_crypto = { workspace = true }
+wcet-macro = { path = "../../core/wcet-macro" }

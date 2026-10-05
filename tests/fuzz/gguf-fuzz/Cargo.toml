@@ -1,0 +1,26 @@
+[package]
+name = "azos_gguf_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "cargo-fuzz (libFuzzer) targets for the GGUF model parser (crates/core/ml/src/gguf.rs) and the MLP that consumes it. Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+azos_gguf_tests = { path = "../../host/gguf-tests" }
+
+[[bin]]
+name = "gguf_parse"
+path = "fuzz_targets/gguf_parse.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]
+

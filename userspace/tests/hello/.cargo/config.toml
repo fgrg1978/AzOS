@@ -1,0 +1,18 @@
+# aarch64-only build directory: hello.elf (RISC-V) is built by the Makefile
+# straight through $(RISCV_AS)/$(RISCV_LD) on hello.S and never invokes
+# cargo here, so this file affects nothing about the RISC-V build.
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tuser_aarch64.ld",
+    "-C", "link-arg=-zmax-page-size=4096",
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "code-model=small",
+]
+
+[unstable]
+build-std = ["core"]
+build-std-features = ["compiler-builtins-mem"]

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The Kbuild host for the lx/ layer (RFC-0053 open question 1, decided by the
+# owner in round 49): Linux's own build system runs inside this Linux
+# container, never on the macOS host. The base is pinned by digest, the
+# top-level packages by version; tools/lx_kbuild/IMAGE records the digest,
+# the platform and the full installed package set (`make lx-kbuild-image`
+# rewrites it). The image build is the only step that touches the network;
+# every Kbuild run uses `--network=none` and mounts the Linux tree read-only.
+FROM docker.io/library/debian@sha256:6cd299e86325abd62517d61ee57cba4fbef96ac9f086afee1613db7091443007
+ENV DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends \
+      gcc=4:14.2.0-1 libc6-dev=2.41-12+deb13u4 xz-utils=5.8.1-1+deb13u1 \
+      gcc-riscv64-linux-gnu=4:14.2.0-1 gcc-aarch64-linux-gnu=4:14.2.0-1 \
+      make=4.4.1-2 bc=1.07.1-4+b1 flex=2.6.4-8.2+b4 bison=2:3.8.2+dfsg-1+b2 \
+ && apt-get clean && rm -rf /var/lib/apt/lists/* \
+ && dpkg-query -W -f '${Package} ${Version}\n' > /etc/lx-kbuild-packages

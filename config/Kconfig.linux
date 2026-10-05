@@ -1,0 +1,256 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.linux — Linux compatibility
+#
+# The menu RFC-0053 section 8 lays out: unmodified Linux modules run in
+# ring-3 servers (lxsrv-<class>), built from a pinned Linux tree
+# (third_party/linux/) against a compatibility layer (lx/). None of that code
+# exists beyond stage L0/L0b: the pinned submodule, the lx/ base skeleton,
+# the module loader (SYS_MODULE_VERIFY / SYS_MODULE_MAP_X) and the empty
+# server (LX_SERVER_SKELETON). So that no symbol here is silently inert,
+# enabling any other fails the build: crates/core/limits/build.rs
+# (`NOT_IMPLEMENTED`) refuses a .config that sets one, naming the stage that
+# would implement it, and refuses LINUX_DRIVERS without LX_SERVER_SKELETON.
+# When a stage lands, its symbols leave that list in the same change that
+# wires them.
+#
+# Every symbol is default n: the default image contains no Linux-derived
+# object.
+
+menu "Linux compatibility"
+
+config LINUX_DRIVERS
+    bool "Linux driver support (ring-3 servers, RFC-0053)"
+    default n
+    depends on !PROFILE_EMBEDDED && !NO_MMU
+    help
+      Implemented up to RFC-0053 stage L0b: the module loader and the
+      empty server. On its own it fails the build; it builds only with
+      LX_SERVER_SKELETON (below), and every module option still fails.
+
+      Runs validated, unmodified Linux modules in ring-3 server processes,
+      one process per driver class, through a compatibility layer (lx/)
+      over a pinned Linux tree (third_party/linux/). A server holds no
+      actuator capability, and no safety decision reads its output.
+
+      Licence: an image that contains a Linux module is distributed as
+      GPL-2.0-only as a whole (Linux is GPL-2.0-only; the project is
+      "Apache-2.0 OR GPL-2.0-only", and the combination takes the GPL
+      branch). Shipping it requires offering the corresponding source.
+
+      Needs an MMU and more memory than the Embedded profile has.
+
+if LINUX_DRIVERS
+
+config LX_SERVER_SKELETON
+    bool "Server skeleton only (development, RFC-0053 L0)"
+    default n
+    help
+      Builds the module loader's two syscalls (SYS_MODULE_VERIFY,
+      SYS_MODULE_MAP_X, with the module digest table built into the
+      kernel) and starts the empty Linux driver server LXSRV.ELF from its
+      topology row (no capability). The server loads only the test
+      module LXTEST.KO, compiled from this project's own C, and idles. No
+      Linux object is built or linked: the image stays
+      "Apache-2.0 OR GPL-2.0-only". Kernel feature `lx-server`.
+
+config LX_LINUX_PIN
+    string "Pinned Linux tag (stable tree)"
+    default "v7.2.9"
+    help
+      The tag of third_party/linux/ (a shallow submodule of the
+      kernel.org stable tree, fetched by tools/lx_fetch_linux.sh), fixed
+      at RFC-0053 stage L0 and recorded with its commit in lx/LINUX_PIN.
+      Every module is built against this exact tag; changing it is a
+      "Lbump" (re-run every validated row). tools/lx_license_lint.py
+      fails if this default, lx/LINUX_PIN and the submodule disagree.
+
+menu "Filesystems (lxsrv-fs)"
+
+config LX_FS_EXT2
+    bool "ext2"
+    help
+      Not implemented: RFC-0053 stage L1 (read-only, the pilot; needs
+      owner sign-off), stage L2 (read-write). Enabling it fails the build.
+      ext2 does no DMA: its server is isolated on every board.
+      Licence: GPL-2.0-only image (see LINUX_DRIVERS).
+
+config LX_FS_EXT4_RO
+    bool "ext4 read-only (no journal replay)"
+    help
+      Not implemented: RFC-0053 stage L3 (ext4 + inert jbd2, mounted
+      `noload`; a volume that needs recovery is refused). Enabling it
+      fails the build. No DMA. Licence: GPL-2.0-only image.
+
+config LX_FS_EXT4_RW
+    bool "ext4 read-write with journal (jbd2)"
+    help
+      Not implemented: RFC-0053 stage L4 (journalled writes, barrier
+      mapping to BlockDevice::flush). Enabling it fails the build. No DMA.
+      Licence: GPL-2.0-only image.
+
+endmenu
+
+comment "Block devices: Linux filesystems use the native BlockDevice (RFC-0053 5.1); no Linux block driver is planned"
+
+menu "USB (lxsrv-usb)"
+
+config LX_USB_XHCI
+    bool "xHCI host controller over PCI (xhci-pci, usbcore, hub)"
+    help
+      Not implemented: RFC-0053 stage L6 (QEMU qemu-xhci), after the
+      native prerequisites of stage L5 (ring-3 DMA capability, PCI-BAR
+      capability, ring-3 MSI, IOMMU wiring). Enabling it fails the build.
+      Does DMA: see LX_ACCEPT_UNCONFINED_DMA. Licence: GPL-2.0-only image.
+
+config LX_USB_DWC3
+    bool "Board USB controller (xhci-plat over dwc3)"
+    help
+      Not implemented: RFC-0053 stage L8 (VF2/K1 board bring-up of the
+      dwc3 clocks, resets and PHY). Enabling it fails the build. Does
+      DMA, and VF2/K1 have no IOMMU: needs LX_ACCEPT_UNCONFINED_DMA.
+      Licence: GPL-2.0-only image.
+
+config LX_USB_HID
+    bool "HID keyboard / mouse (usbhid)"
+    help
+      Not implemented: RFC-0053 stage L6. Enabling it fails the build.
+      Licence: GPL-2.0-only image.
+
+config LX_USB_STORAGE
+    bool "Mass storage (usb-storage)"
+    help
+      Not implemented: RFC-0053 stage L7 (host-template side only; the
+      SCSI mid layer is not compiled). Enabling it fails the build.
+      Licence: GPL-2.0-only image.
+
+config LX_USB_CDC
+    bool "CDC serial (cdc-acm)"
+    help
+      Not implemented: RFC-0053 stage L7. Enabling it fails the build.
+      Licence: GPL-2.0-only image.
+
+config LX_USB_UVC
+    bool "UVC camera (uvcvideo)"
+    help
+      Not implemented: RFC-0053 stage L9+ (needs its own RFC amendment;
+      V4L2 and videobuf2 are the heaviest class). Enabling it fails the
+      build. Licence: GPL-2.0-only image.
+
+endmenu
+
+menu "Later classes (each needs an RFC-0053 amendment)"
+
+config LX_SND_ASOC
+    bool "Audio (ALSA core + ASoC codecs)"
+    help
+      Not implemented: RFC-0053 stage L9+. Enabling it fails the build.
+      Does DMA. Licence: GPL-2.0-only image.
+
+config LX_DRM_PANEL
+    bool "Display panels (DRM/KMS panel drivers)"
+    help
+      Not implemented: RFC-0053 stage L9+ (panel drivers only, not GPU
+      stacks). Enabling it fails the build. Does DMA. Licence:
+      GPL-2.0-only image.
+
+config LX_IIO
+    bool "IIO sensors"
+    help
+      Not implemented: RFC-0053 stage L9+ (one driver per sensor, usually
+      I2C/SPI, no DMA). No safety decision may read an IIO server's
+      output (RFC-0053 9.4). Enabling it fails the build. Licence:
+      GPL-2.0-only image.
+
+config LX_WIFI
+    bool "Wi-Fi (mac80211 / cfg80211)"
+    help
+      Not implemented: RFC-0053 stage L9+, last, only with a product
+      case. Enabling it fails the build. Does DMA. Licence: GPL-2.0-only
+      image.
+
+config LX_BLUETOOTH
+    bool "Bluetooth"
+    help
+      Not implemented: RFC-0053 stage L9+. Enabling it fails the build.
+      Does DMA. Licence: GPL-2.0-only image.
+
+endmenu
+
+config LX_ACCEPT_UNCONFINED_DMA
+    bool "Allow DMA-capable Linux servers on a board without an IOMMU"
+    default n
+    depends on LX_USB_XHCI || LX_USB_DWC3 || LX_SND_ASOC || LX_DRM_PANEL || LX_WIFI || LX_BLUETOOTH
+    help
+      Not implemented: RFC-0053 stages L5/L8. Enabling it fails the build.
+
+      Where a Linux server drives a bus master and the board has no
+      IOMMU (VF2 and K1 have none), the device can write any physical
+      address, including kernel memory, and the ring-3 boundary does not
+      contain it (RFC-0053 9.2). A DMA class on such a board is meant to
+      build only with this option set, so the acceptance is a recorded
+      build-time act, never inherited silently; the server prints
+      "[LX] DMA UNCONFINED" at start.
+
+endif # LINUX_DRIVERS
+
+config USERSPACE_GPL
+    bool "Allow third-party GPL userspace programs (e.g. BusyBox)"
+    default n
+    help
+      The switch without which no third-party GPL program is built or put
+      in an image. The kernel and the base image never contain one; with
+      this on, a program below may be built from a pinned upstream release
+      (fetched by URL and SHA-256, never committed) and copied onto a
+      volume that is then distributed under that program's licence, with
+      the source offer `make busybox-source-offer` writes (GPL-2.0
+      section 3). Off by default.
+
+config BUSYBOX
+    bool "BusyBox (static, run through the Linux personality)"
+    default n
+    depends on USERSPACE_GPL && LINUX_ABI
+    help
+      `make busybox` builds the pinned BusyBox release (Makefile:
+      BUSYBOX_VERSION, BUSYBOX_SHA256) from a tarball already on disk
+      (BUSYBOX_TARBALL, outside the repository; make never downloads),
+      checks its SHA-256, and builds a static binary with `zig cc`
+      (BUSYBOX_ZIG or LX_ZIG; zig carries musl and the Linux uapi headers
+      for both ISAs). It runs as BUSYBOX.ELF under its own topology row
+      with abi = "linux". The make target refuses, naming what is missing,
+      without zig or the tarball, or on a digest mismatch.
+      GPL-2.0-only: see USERSPACE_GPL for the source offer.
+
+config LINUX_ABI
+    bool "Linux syscall personality (static Linux binaries, RFC-0047)"
+    default n
+    depends on !NO_MMU
+    help
+      Off by default in every profile (owner, 2026-10-04: running Linux
+      programs is parked; Linux DRIVERS are LINUX_DRIVERS and do not need
+      this). The QEMU test defconfigs turn it on so the gate keeps testing it.
+
+      Run a static Linux binary (riscv64 or aarch64, asm-generic syscall
+      table) unmodified: the kernel translates each Linux call onto the
+      native one (crates/core/syscall/src/linux.rs). Only an image whose
+      signed topology row says abi = "linux" is translated; a row says it
+      or the image is native, so no native image ever reaches this table.
+      A Linux row holds no hardware capability (the topology refuses one),
+      its seccomp profile lists the native calls its translations reach,
+      and every capability check of the native call stands.
+
+      Off, the table is compiled out and a Linux row is refused at spawn.
+      Answered today: file, pipe, directory, memory, time, identity and
+      tty calls; clone in the fork and vfork shapes (the child is
+      seeded from its row and shares the parent's open descriptions),
+      wait4, and execve (into another Linux row only with a launch
+      grant); threads (clone with CLONE_THREAD, futex, set_tid_address,
+      exit and exit_group: a process's threads share its memory,
+      capabilities and descriptors); signals inside the compartment (kill,
+      tgkill, sigaction, sigprocmask, sigreturn, SIGCHLD, SIGPIPE, console
+      ^C), mprotect (read/write exactly; adding PROT_EXEC is refused), and
+      console input for the shell's foreground job. Not yet: posix_spawn's
+      CLONE_VM | CLONE_VFORK child with a stack, requeue and
+      priority-inheritance futexes.
+
+endmenu # Linux compatibility

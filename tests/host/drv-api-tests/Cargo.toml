@@ -1,0 +1,21 @@
+[package]
+name = "azos_drv_api_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_drv_api. Excluded from workspace."
+
+# The api crate is no_std + architecture-neutral, so it compiles on
+# the host. This excluded crate is the documented run entry point,
+# matching the abi-tests / sched-policy-tests pattern.
+#
+# Run with:
+#   cd tests/host/drv-api-tests && cargo +stable test \
+#       --target aarch64-apple-darwin
+
+[dependencies]
+azos_abi         = { path = "../../../crates/core/abi" }
+azos_drv_api = { path = "../../../crates/drivers/api" }
+
+[dev-dependencies]

@@ -1,0 +1,25 @@
+[package]
+name = "azos_energy_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for RFC-0051 E0-E2: azos_energy (utilisation trackers on synthetic traces, model validation and resolution, the seams' I4 answer), the SCHED.TOML energy sections and the DTB energy tables. Excluded from workspace."
+
+# Run with:  cd tests/host/energy-tests && cargo test --release
+
+[dependencies]
+azos_energy = { path = "../../../crates/core/energy" }
+azos_dtb = { path = "../../../crates/drivers/dtb" }
+# The parser of the signed SCHED.TOML, with its energy sections; `dev-key`
+# because a host build names no production key (see topology-tests).
+azos_topology = { path = "../../../crates/core/topology", features = ["energy", "dev-key"] }
+
+[features]
+# The gate's canary run: `EnergyModel::validate` accepts everything, and the
+# validation tests must fail.
+validate-canary = ["azos_energy/validate-canary"]
+# E3/E4 invariant canaries: each must turn its invariant test red.
+i1-canary = ["azos_energy/i1-canary"]
+i6-canary = ["azos_energy/i6-canary"]
+i3-canary = ["azos_energy/i3-canary"]

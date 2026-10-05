@@ -1,0 +1,28 @@
+[package]
+name = "syscall_test_ipc_drivers"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for the driver class crates (azos_drv_*) as seen from crates/core/ipc's gpio_cap/i2c_cap/pwm_cap/motor_cap modules. Used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+# motor_pid.rs is pulled in real below; it needs a SpinLock. Reused from
+# tests/host/cap-tests, same reasons as everywhere else in this crate. Also the
+# same file tests/host/drivers-tests already proves is pure and host-pullable.
+azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
+# `mmio_cap.rs` (pulled by `shims/ipc`) reads `platform::mmio_region`. The
+# table is the real `crates/drivers/base/src/platform.rs`, which `shims/drivers`
+# already pulls; re-exported from there rather than pulled a second time, so
+# the handler's side and the capability's side cannot see two tables.
+syscall_test_drivers = { path = "../drivers" }
+# `motor_pid.rs` reads Kconfig `PID_DT_MS` (wave 11): the real crate, as
+# `tests/host/drivers-tests` uses it.
+azos_limits = { path = "../../../../../crates/core/limits" }
+
+# `pwm_domain.rs` is pulled in with `#[path]` and is split by a `vf2` cfg the
+# real drivers crate declares. Echoed here so the pulled module does not emit
+# `unexpected_cfgs` — DECLARED rather than silenced, so the condition stays
+# visible. Same reason, same shape, as `tests/host/drivers-tests`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1"))'] }

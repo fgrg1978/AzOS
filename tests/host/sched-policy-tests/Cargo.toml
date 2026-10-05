@@ -1,0 +1,17 @@
+[package]
+name = "azos_sched_policy_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the W4 multi-policy scheduler. Excluded from workspace."
+
+# Pulls crates/core/sched/src/{class,partitions,policies/*}.rs in via #[path]
+# so the embedded #[cfg(test)] suites + integration tests run on the
+# developer host.
+#
+# Run with:  cd tests/host/sched-policy-tests && cargo +stable test
+
+[dependencies]
+
+[dev-dependencies]

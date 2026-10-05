@@ -1,0 +1,281 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.timing — Scheduler, WCET, networking timers, watchdog
+#
+# RFC-0026 Phase C1.  All timing/WCET constants with per-arch and per-profile
+# defaults matching the current codebase values.
+
+menu "Scheduling, IPC & timing"
+
+# ---------------------------------------------------------------------------
+# Scheduler
+# ---------------------------------------------------------------------------
+
+config SCHED_HZ
+    int "Scheduler tick frequency (Hz)"
+    range 10 1000
+    default 100  if PROFILE_EMBEDDED
+    default 100  if PROFILE_EDGE && BOARD_QEMU
+    default 250  if PROFILE_EDGE && BOARD_VF2
+    default 250  if PROFILE_EDGE && BOARD_K1
+    default 500  if PROFILE_FLEET
+    default 100
+    help
+      Periodic timer interrupt rate.  Drives RR scheduler preemption,
+      WDT kick, and tickless-idle `set_next_tick_smart`.
+      Higher SCHED_HZ reduces task-switch latency but increases ISR
+      overhead.  QEMU TCG amplifies ISR cost ~5× — keep it lower there.
+      Current codebase: 100 Hz (crates/drivers/irqchip/src/clint.rs AtomicU32).
+
+config SCHED_HZ_FLOOR
+    int
+    default 10
+    help
+      Minimum scheduler tick rate CONFIG.INI is allowed to request at boot
+      (Q4.2, owner decision 2026-09-25: CONFIG.INI on the removable FAT
+      volume may only LOWER `SCHED_HZ` below the compile-time default it
+      was built with, never raise it, and never below this floor). Must be
+      kept equal to SCHED_HZ's own `range 10 1000` lower bound — below it
+      the WDT kick and RR preemption granularity are unreliable, so a
+      CONFIG.INI value under this is treated as garbage and the
+      compile-time SCHED_HZ default is used instead (see
+      `resolve_sched_hz` in `crates/core/config/src/lib.rs`). Kconfig cannot
+      reference another symbol's `range` directly, so this is a second
+      literal that has to be kept in sync by hand;
+      `crates/core/limits/build.rs` validates `SCHED_HZ_FLOOR <= SCHED_HZ` at
+      every build so a drift is a hard build error, not a silent one.
+# ---------------------------------------------------------------------------
+# Scheduler backend selection
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Default scheduler backend"
+    default SCHED_BACKEND_LEGACY
+    help
+      Which dispatch backend the scheduler boots with.  Selected at config
+      time; the typed registry (crates/core/sched/src/runtime/registry.rs) can
+      still switch at runtime via `use_aps_dispatch(bool)`.  Only Legacy
+      and APS have a live dispatch path today; the per-policy standalone
+      backends (FIFO/EDF/RR/CFS/Sporadic) are reserved for a future phase
+      and are not offered here yet.
+
+      Surfaces as `azos_limits::SCHED_BACKEND_APS` (bool: true = APS,
+      false = Legacy).  The boot path in kernel/src/main.rs reads this const
+      and calls `azos_sched::use_aps_dispatch()` once, after the
+      diagnostic smoke-test, before `start()`.
+
+      APS ALSO emits the cargo feature `sched-aps`
+      (tools/kconfig_to_cargo.py), which is what compiles the backend in at
+      all: the policies, the per-CPU runqueues and the typed registry.  The
+      const alone could not do that job — `lto = false` in this workspace,
+      so nothing strips code the const merely never reaches, and a Legacy
+      kernel carried 8.1 KB of .text plus 41,536 bytes of .data
+      (`aps_state::V2_STATE`) for a dispatcher it never selects.  Selecting
+      LEGACY is the absence of the feature.
+
+      The const and the feature must move together, and a `make` build keeps
+      them together because both come from this one choice.  A hand-run
+      `cargo build` can still set APS here and forget `--features sched-aps`;
+      that combination would otherwise link no APS backend at all and boot
+      Legacy in silence, so `kernel/src/main.rs` carries a `const` assert
+      that turns it into a build error naming this option.
+
+    config SCHED_BACKEND_LEGACY
+        bool "Legacy priority-queue (default, production)"
+        help
+          The original priority-queue scheduler.  Validated, always-available
+          default.  Recommended for all production use today.
+
+    config SCHED_BACKEND_APS
+        bool "APS — Adaptive Partitioning (EXPERIMENTAL, smoke-tested only)"
+        help
+          Class-first Adaptive Partitioning combinator.  Wired into the live
+          dispatch path but only smoke-tested — NOT validated as a production
+          dispatcher (it falls back to Legacy on any per-tick error).  Select
+          only for development or experimentation; do not use in production.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Energy-aware scheduling (RFC-0051, stages E0-E4)
+# ---------------------------------------------------------------------------
+config ENERGY
+    bool "Energy-aware scheduling: utilisation tracking and the energy model"
+    default n
+    help
+      RFC-0051 stages E0-E4. Emits the kernel cargo feature `energy`
+      (tools/kconfig_to_cargo.py).
+
+      The seams themselves (Placement, Governor, IdleGovernor in
+      crates/core/energy) are in every build with today's behaviour only:
+      Legacy wake-up placement, no frequency request (the boot clock), `wfi`
+      in both idle tasks. With this option off they fold to the code they
+      replaced: the kernel's .text is unchanged (invariant I4).
+
+      y = also track per-task and per-CPU utilisation (ENERGY_UTIL, updated at
+        every dispatch, switch-out, wake-up and tick), and read the energy
+        model at boot: the signed topology's `[energy.domain.*]` sections,
+        else the DTB's operating-points-v2 / idle-states, else none. The
+        model is validated and reported (`[ENERGY]` lines); an invalid one is
+        refused and the machine runs with none. The E3 frequency governor
+        (Schedutil, DeadlineFloor) and the E4 idle governor run only when the
+        topology carries a model and mode `balanced` or `endurance`; they
+        count their decisions and apply none (no clock driver; every idle
+        state is entered as `wfi`). Cost, measured
+        under QEMU -icount by the gate's energy row (one run per ISA and
+        tracker, 2026-10-03): switch hook 73-76 instructions per call on
+        riscv64 and 128-271 on aarch64; tick hook 61-71 and 187-382.
+      n (default) = none of the above is compiled.
+
+      The energy MODE (performance / balanced / endurance) is not a Kconfig
+      symbol: the signed topology chooses it (`[energy] mode`, invariant
+      I5), and every built-in profile topology says `performance`.
+
+choice
+    prompt "Utilisation tracker (with ENERGY)"
+    default ENERGY_UTIL_WINDOW
+    help
+      How ENERGY ages the utilisation signals. Both are integer and do O(1)
+      work per update whatever the gap since the last one. Surfaces as the
+      bool consts azos_limits::ENERGY_UTIL_WINDOW / ENERGY_UTIL_PELT.
+      No effect without ENERGY.
+
+    config ENERGY_UTIL_WINDOW
+        bool "Window (WALT-like): max(last window, mean of the last four)"
+        help
+          Busy time per ENERGY_UTIL_WINDOW_US window; the signal is the
+          larger of the last closed window and the mean of the last four.
+          A step to fully busy shows after one window; a task that stops
+          reads zero four windows later.
+
+    config ENERGY_UTIL_PELT
+        bool "PELT-like geometric decay, half-life 32 periods"
+        help
+          avg = avg*y + input*(1-y) per ENERGY_PELT_PERIOD_US period, with
+          y^32 = 1/2, in Q32 fixed point.
+
+endchoice
+
+config ENERGY_UTIL_WINDOW_US
+    int "Utilisation window (us, window tracker)"
+    range 1000 100000
+    default 10000
+    help
+      Length of one window of the window tracker. No effect without ENERGY
+      or with ENERGY_UTIL_PELT.
+
+config ENERGY_PELT_PERIOD_US
+    int "Utilisation period (us, PELT-like tracker)"
+    range 256 10000
+    default 1024
+    help
+      Length of one decay step of the PELT-like tracker; the half-life is 32
+      of them (32.8 ms at the default). No effect without ENERGY or with
+      ENERGY_UTIL_WINDOW.
+
+# ---------------------------------------------------------------------------
+# IPC
+# ---------------------------------------------------------------------------
+config LEASE_PRIORITY_INHERITANCE
+    bool "Leases: donate a blocked lessor's priority to its lessee (anti-inversion)"
+    default y
+    help
+      RFC-0031. On by default since owner decision round 17 (wave 8).
+      Surfaces as `azos_limits::LEASE_PRIORITY_INHERITANCE`; the unused
+      branch is const-eliminated.
+
+      y (default) = a lessor blocked in `lease_wait_return` donates its live
+        PRIORITY to the lessee holding its buffer, until the lease is
+        returned or expires (`azos_sched::donate_priority`, the same
+        mechanism the user-driver proxy uses while it waits on a ring-3
+        driver; rule in crates/core/sched/src/donation.rs). Priority only, not
+        the scheduler class: under the Legacy policy dispatch is by
+        priority alone.
+      n = no inheritance: the lessor blocks until the lessee is eventually
+        scheduled or the lease expires; with a non-expiring lease
+        (expire_ticks=0) a runnable mid-priority task delays it without
+        bound.
+
+      Reached today only by kernel callers of `lease_wait_return`: no
+      syscall arm waits on a lease. Proven by the `sched: lease inversion`
+      gate row (`i3-smoke`): with inheritance the lessor's wait ends before
+      any mid-priority spinner finishes; without it, after all of them.
+
+# ---------------------------------------------------------------------------
+# Control loop
+# ---------------------------------------------------------------------------
+config CONTROL_TXN_TICKS
+    bool "Control plane: transactional ticks (rollback recoverable faults)"
+    default y
+    help
+      Experiment I-13 (RFC-0029) — ACCEPTED, default ON. A per-hart checkpoint
+      is armed once at the motor control task's entry; a recoverable fault
+      (illegal instruction / misaligned load-store) inside the control loop is
+      rolled back — motors safe-stop and the task restarts at its entry —
+      instead of `panic=abort` halting the kernel mid-motion.
+
+      y (default) = a recoverable fault in the control loop is survivable
+        (safe-stop + restart; abort counted in TXN_ABORTS). Verified:
+        survived=1, aborts=1, 0 FATAL (RFC-0029 §Results).
+      n = the fault is FATAL (legacy: kernel logs + shuts down). The rollback
+        branch is const-eliminated → trap handler byte-identical to legacy.
+
+      Surfaces as `azos_limits::CONTROL_TXN_TICKS`. No-fault hot path is
+      unchanged (the arm runs once per task entry, not per tick; the trap-hook
+      check only runs on the rare exception path). Recoverable-cause whitelist
+      is conservative (excludes page faults + ecall). Remaining hardening:
+      cert review of the trap-handler hook (RFC-0017).
+
+# ---------------------------------------------------------------------------
+# Real-time band budget (wave 11 SCHED-RT, RFC-0052 §4.3)
+# ---------------------------------------------------------------------------
+config RT_BAND_WINDOW_MS
+    int "RT band budget: window (ms)"
+    range 10 10000
+    default 1000
+    help
+      Length of the per-hart window in which the real-time band (priorities
+      below 12, never preempted by the tick) may use at most
+      RT_BAND_CAP_PCT of the hart while a non-band task is ready on it. The
+      rest of the window is guaranteed to the non-band tasks of that hart
+      (net-poll, ring-3 services, best effort). Work-conserving: if nothing
+      outside the band is ready, the band keeps the hart.
+
+      A shorter window bounds how long a runaway band task holds the hart
+      in one stretch (cap x window) at the price of more throttling events.
+      Accounting is by the monotonic counter at the switch and tick points;
+      enforcement is a one-shot comparator write, armed only while a band
+      task runs AND a non-band task is ready on its hart.
+
+      Surfaces as `azos_limits::RT_BAND_WINDOW_MS`. Cost: see
+      RT_BAND_CAP_PCT.
+
+config RT_BAND_CAP_PCT
+    int "RT band budget: share of each window the band may use (%)"
+    range 50 100
+    default 95
+    help
+      Share of each RT_BAND_WINDOW_MS window the real-time band may run on a
+      hart while a non-band task is ready there. 95 (default) guarantees 5 %
+      to the non-band tasks, the share Linux's RT throttle and its 6.12
+      fair_server default to. 100 disables the budget: a band task that
+      never blocks owns its hart (the behaviour before wave 11).
+
+      Admission uses the same cap: the EDF+CBS reservations of band tasks
+      admitted on one hart may sum to at most this share of it.
+
+      Cost, measured (wave 11 SCHED-RT rows, -smp 1 -icount, instructions):
+      one comparator write through the arming path 39 (riscv64, Sstc) /
+      30 (aarch64, CNTV_CVAL); a call that finds the comparator already
+      earlier, 11 / 12. Over the rows' 12 s run (rt-motor at 1 kHz on the
+      same hart, a runaway band task, EDF and CBS load) the RT paths armed
+      ~40,000 times and wrote the comparator ~850 times. With no band task
+      involved and no reservation on the hart: one per-hart word test per
+      switch, pick and tick; vsbench (bench-minimal, -icount) moved
+      sched-yield +4 instructions on both ISAs, switch-loaded +18/+19,
+      ipc-roundtrip +20 (aarch64) / -2 (riscv64), syscall-floor 0 / -2.
+      Surfaces as `azos_limits::RT_BAND_CAP_PCT`.
+
+# The safety comms timeouts (now in seconds) and PID_DT_MS are in the Robot
+# menu (config/Kconfig.robot, "Safety layer and motor control"), wave 11.
+endmenu # Scheduling, IPC & timing

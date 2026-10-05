@@ -1,0 +1,12 @@
+[package]
+name = "linux_seccomp_launch_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side checks for tools/linux_seccomp_launch: the allow-list against vsbench's Linux source, and the BPF program under classic-BPF and seccomp action-cache semantics."
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

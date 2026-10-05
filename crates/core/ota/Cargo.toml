@@ -1,0 +1,21 @@
+[package]
+name = "azos_ota"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+vf2     = []
+k1      = []
+# Force `CFG_SECURE_BOOT_REQUIRE_SIG = 1` at build time. Production / release
+# builds should always pass this so a binary cannot ship with signature
+# enforcement disabled by accident (`secure_boot.rs:85`).
+secure-boot-enforced = []
+
+[dependencies]
+azos_fs = { workspace = true }
+azos_config = { workspace = true }
+azos_drv_sys = { workspace = true }
+azos_crypto = { path = "../crypto" }
+azos_limits = { workspace = true }

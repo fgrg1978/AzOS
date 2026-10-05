@@ -1,0 +1,25 @@
+[package]
+name = "azos_ota_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side unit tests for OTA pure logic (OT01). Excluded from workspace."
+
+# This crate is EXCLUDED from the workspace (see top-level Cargo.toml).
+# It runs on the development host (aarch64-apple-darwin), not RISC-V.
+#
+# Source layout:
+#   src/lib.rs  uses #[path] to include crates/core/ota/src/pure.rs directly.
+#   No deps on azos_drv_* or azos_fs — those would fail to
+#   build on host (they have MMIO + bare-metal asm).
+#
+# Run with:
+#   cd tests/host/ota-tests && cargo test
+#
+# The local .cargo/config.toml overrides the workspace target so this
+# builds for the host instead of riscv64imac-unknown-none-elf.
+
+[dependencies]
+
+[dev-dependencies]

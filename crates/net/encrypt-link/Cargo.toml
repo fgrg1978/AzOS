@@ -1,0 +1,22 @@
+[package]
+name = "azos_encrypt_link"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "RFC-0019 forward-secret link — handshake state machine + AEAD wrapper. Pure no_std, host-buildable. Tested cross-side against AzOSRobotBrain/secure_channel.py via the companion `encrypt-link-tests` crate."
+
+[features]
+# K-C5. Kconfig `LINK_ENCRYPT_ENFORCED`. Refuse to produce or accept a
+# brain-link frame unless it is travelling inside an established RFC-0019
+# AEAD session. Compile-time only, no runtime override — same shape as
+# `secure-boot-enforced` and `link-auth-enforced`. See the "Link policy"
+# section in src/lib.rs for what it costs and what it forbids.
+link-encrypt-enforced = []
+# Host test builds only (`tests/host/encrypt-link-tests`): exposes
+# `EncryptLink::key_material` so tests can check what a rekey wipes. Never
+# enable in a firmware build.
+key-introspection = []
+
+[dependencies]
+azos_crypto = { path = "../../core/crypto" }

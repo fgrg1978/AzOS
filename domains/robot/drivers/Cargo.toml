@@ -1,0 +1,17 @@
+[package]
+name = "azos_robot_drivers"
+version = "0.1.0"
+edition = "2021"
+description = "Drivers only the robot domain uses: ESC outputs and the RC receiver."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+
+[dependencies]
+azos_common       = { workspace = true }
+azos_drv_actuator = { workspace = true }
+azos_drv_sys      = { workspace = true }

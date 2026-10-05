@@ -1,0 +1,27 @@
+[package]
+name = "azos_fs_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "cargo-fuzz (libFuzzer) target for the FAT32 driver (crates/fs/fs/src/fat32.rs) on an in-memory disk: mount, journal recovery, read and write paths. Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# The real fat32.rs and its host shim disk, through the host-test crate's
+# `#[cfg(fuzzing)] fuzz_entry` module.
+azos_fs_tests = { path = "../../host/fs-tests" }
+
+[[bin]]
+name = "fat32_image"
+path = "fuzz_targets/fat32_image.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]

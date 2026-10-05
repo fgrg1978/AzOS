@@ -1,0 +1,14 @@
+[package]
+name = "syscall_test_ipc_sched"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_sched, as seen from crates/core/ipc (cap_store.rs + channel.rs). Used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+# idx_for_tid / task::MAX_TASKS: reused from tests/host/cap-tests verbatim.
+cap_test_sched = { path = "../../../cap-tests/shims/sched" }
+# current_task_tid / current_user_pt: forwarded to the SAME registers the
+# pulled `handlers.rs` reads, so `channel.rs` and the handlers see one caller.
+syscall_test_sched = { path = "../sched" }

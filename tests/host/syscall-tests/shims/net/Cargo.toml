@@ -1,0 +1,25 @@
+[package]
+name = "syscall_test_net"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_net, used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+# `socket.rs` needs the whole real stack underneath it (tcp/udp/ip/etc) --
+# the same set tests/host/net-tests already proves host-buildable together, and
+# reused via the same dependency shape so it is not duplicated.
+azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
+beh_test_drivers = { path = "../../../behavior-tests/shims/drivers" }
+azos_limits = { path = "../../../../../crates/core/limits" }
+# tcp.rs derives the ISN with HMAC-SHA256 (2026-09-26)
+azos_crypto = { path = "../../../../../crates/core/crypto" }
+wcet-macro = { path = "../../../../../crates/core/wcet-macro" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))'] }
+
+[features]
+# `tcp.rs` gates its ARP timing prints on this. Declared, not silenced.
+arp-timing = []

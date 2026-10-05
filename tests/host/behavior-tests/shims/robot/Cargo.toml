@@ -1,0 +1,31 @@
+[package]
+name = "beh_test_robot"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_robot, used only by tests/host/behavior-tests' motor-gate/record suite (Q1.3/Q1.4, 2026-09-25). NOT part of the kernel."
+
+# Always on: this crate exists only for tests, so `motor.rs`'s
+# `clear_motor_gate_for_test`/`clear_motor_recorder_for_test`
+# (`#[cfg(any(test, feature = "test-util"))]` in `domains/robot/robot/src/
+# motor.rs`) must be reachable here even though `cargo test` never runs
+# directly ON this crate — it is an ordinary dependency of
+# `azos_behavior_tests`, compiled as a plain library, so `cfg(test)`
+# alone (true only for the crate `cargo test` targets) would not include
+# them. `feature = "test-util"`, defaulted on, is the substitute.
+[features]
+test-util = []
+default = ["test-util"]
+
+[dependencies]
+# `motor_stop_panic` needs `SpinLock::get_mut_unchecked`, which
+# `cap_test_sync` deliberately omits. See shims/robot_sync.
+azos_sync = { path = "../robot_sync", package = "beh_test_robot_sync" }
+# Real, no_std, no dependencies, host-buildable: `is_panicked`.
+azos_common = { path = "../../../../../crates/core/common" }
+# The driver stand-in `tests/host/behavior-tests`'s own pulled-in `payload.rs`
+# sees too — Cargo unifies the identical path dependency into one compiled
+# crate, so a test's GPIO/PWM probes (installed on the shared statics there)
+# see this crate's motor-layer writes as well.
+beh_test_drivers = { path = "../drivers" }

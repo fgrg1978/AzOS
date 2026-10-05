@@ -1,0 +1,20 @@
+[package]
+name = "azos_flight_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the RRT* planner in domains/robot/flight/src/path3d.rs. Excluded from the kernel workspace. Run with: cd tests/host/flight-tests && cargo test"
+
+# Its own workspace root, like sync-tests: without this, cargo walks up to the
+# kernel manifest and refuses to build a package listed in neither `members`
+# nor `exclude`.
+[workspace]
+
+[dependencies]
+# `path3d.rs` names exactly one external crate — `azos_sync::pi_mutex` —
+# and the real one puts RV64 `sstatus` asm in the acquire path, so the module
+# is compiled against the shared host shim that net-tests, mm-tests and
+# syscall-tests already use. The shim's `PiMutex` models mutual exclusion and
+# not priority inheritance, which is all the planner's invariants depend on.
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }

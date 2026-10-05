@@ -1,0 +1,52 @@
+[package]
+name = "azos_safety_core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# RFC-0040 gap 0: the robot's part of the safety path that ran inside
+# kernel/src/main.rs (motor gate and envelope wiring, rt-motor, flight control,
+# I-13 rollback). Profile crate (tools/tcb_check.sh, wave 11): the part every
+# domain shares moved to crates/core/actuation, which this crate registers
+# its stop work into.
+
+[features]
+# Both forwarded from kernel/Cargo.toml.
+# `actuation-smoke`: the `[ACTSMOKE] kernel motor` marker in `rt_motor`, and
+# (Q1.3, 2026-09-25) the `[ACTREC]` record-admitted marker in `actuation.rs`.
+actuation-smoke = []
+# `gate-skip-smoke`: `install()` does NOT install the motor gate — canary for
+# Q1.4's fail-closed default (2026-09-25). Never on in a normal build; no
+# feature in `kernel/Cargo.toml`'s default set turns it on. See
+# `actuation.rs`'s `install()`.
+gate-skip-smoke = []
+# `rt-panic-canary-safety` (RT7, wave 13): `rt_motor_task` panics on its next
+# tick once `request_canary_panic` is called — a panic in a safety task, which
+# the panic policy never contains. Never on in a normal build.
+rt-panic-canary-safety = []
+# `rtwd-window-smoke` (wave 14): the motor-command watchdog's report window
+# is 5 s instead of 60, so the gate row (`rt_watchdog_record_row`) sees a
+# repeats record in a short boot. Never on in a normal build.
+rtwd-window-smoke = []
+# `rtwd-record-canary` (wave 14): the watchdog prints its transitions and
+# writes no `SAFETY_RT_WATCHDOG` record. The gate row must go red on it.
+rtwd-record-canary = []
+
+[dependencies]
+azos_arch     = { workspace = true }
+azos_common   = { workspace = true }
+azos_sync     = { workspace = true }
+azos_drv_sys       = { workspace = true }
+azos_drv_actuator  = { workspace = true }
+azos_robot_drivers = { workspace = true }
+azos_sched    = { workspace = true }
+azos_ipc      = { workspace = true }
+azos_syscall  = { workspace = true }
+azos_actuation = { workspace = true }
+azos_behavior = { workspace = true }
+azos_robot    = { workspace = true }
+azos_config   = { workspace = true }
+azos_limits   = { workspace = true }
+azos_flight   = { workspace = true }
+azos_ahrs     = { workspace = true }

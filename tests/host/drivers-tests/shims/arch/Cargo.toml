@@ -1,0 +1,10 @@
+[package]
+name = "drv_test_arch"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_arch, re-exporting the REAL Sv39 mmu module. Excluded from workspace."
+
+[dependencies]
+bitflags = "2"

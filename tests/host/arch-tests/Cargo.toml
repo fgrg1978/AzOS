@@ -1,0 +1,23 @@
+[package]
+name = "azos_arch_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the pure parts of crates/core/arch-riscv64 and crates/core/arch-aarch64: Sv39/VMSAv8-64 address decomposition, PMP region encoding, PTE attribute encode/decode. Excluded from workspace."
+
+# Run with:  cd tests/host/arch-tests && cargo test --release
+
+[features]
+# `crates/core/arch-riscv64/src/tlb.rs` (pulled in below) reads it: the scan-bound
+# canary, under which `tlb_bound` must fail.
+tlb-bound-canary = []
+
+[dependencies]
+bitflags = "2"
+# M38/U10-3: crates/core/arch-aarch64/src/mmu.rs (pulled in via #[path] below)
+# uses PagePerms/MmuError from this crate directly, unlike arch-riscv64's own
+# mmu.rs (bitflags only) — azos_arch_api is itself pure no_std and
+# host-compatible (see its own Cargo.toml description), so pulling it in adds
+# no asm/target concerns.
+azos_arch_api = { path = "../../../crates/core/arch-api" }

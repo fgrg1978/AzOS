@@ -1,0 +1,16 @@
+[package]
+name = "azos_abi"
+version = "1.0.0"
+edition = "2021"
+description = "AZOS frozen ABI — syscall numbers, error codes, repr(C) types crossing the user/kernel boundary. RFC-0008. Stable v1.x."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+repository = "https://github.com/azos-project/azos"
+
+[lib]
+name = "azos_abi"
+
+[dependencies]
+
+[features]
+default = []

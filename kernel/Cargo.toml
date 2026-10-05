@@ -1,0 +1,906 @@
+[package]
+name = "azos_kernel"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# Pass --features vf2 to target StarFive VisionFive 2 (JH7110).
+# Pass --features k1  to target SpacemiT K1 (BananaPi BPI-F3, RV64GCVB + RVV1.0).
+# Pass --features rvv to enable RISC-V Vector Extension benchmarks (QEMU only).
+# vf2 and rvv are mutually exclusive (VF2 has no V extension).
+# k1 includes rvv because the K1 has native RVV 1.0 (VLEN=256).
+[features]
+# Owner decision 2026-09-27 (after gate 184): the wave-4 scheduler changes
+# are on by default once a gate is green with them. `sched-timer-heap` joined
+# the list in wave 8 (owner decision round 9). It had been left out after gate
+# 185 lost rt-motor's wake with it on: a retry re-armed a popped sleeper with
+# a deadline read outside the heap lock, overwriting the deadline the sleeper
+# had armed itself, and the next nearest-deadline query dropped the entry.
+# The fix (`timer_sleepers::rearm_if_sleeping`, `TimerHeap::peek_live`) is in
+# `crates/core/sched/src/scheduler.rs`. `--no-default-features` brings back the
+# pre-wave-4 placement, load-balanced IPC wakes and the per-tick sleeper sweep.
+#
+# Taken back out after gate 193 (2026-09-28), the heap's own gate, was not
+# green: the red row was a yield-count wait in abitest, but an A/B of that row
+# left one heap-on boot hung in a fast-IPC reply wait that nothing explains
+# yet. The rule is a green gate with it on; it returns with its own gate.
+#
+# Back in (wave 13, RT7). Its own rows, `sched: timer heap raced` (rv, arm;
+# kernel/src/smokes/timer_heap_smoke.rs, heap + ipc-census), fail 4/4 with
+# the wave-5 bug put back and passed 20/20 per ISA twice (1-7 ms sleepers;
+# then with 20-100 us sleepers added), census lost=0 and unexplained=0 in
+# every boot. Gate 193's abitest boot, heap on: riscv64 20/20 ALL PASSED
+# (and 20/20 with the census, lost=0); aarch64 20/20 with only its known
+# `rdtime native` failure plus, once, its 20 ms wall-clock sleep bound
+# (24.6 ms at host load 11; heap-off boots reached 20.3 ms at load 2-7) —
+# no fast-IPC hang in 60. The vsbench spawn+wait hang (2 in 200 heap-on
+# boots) was a K-C24 rescue stranded on a tickless idle hart, not the heap
+# (`do_schedule`'s Blocked arm now rings the hart's doorbell): 0 in 200
+# after. The full gate with it on is main's to run.
+default = ["sched-o1-placement", "sched-ipc-affinity", "sched-timer-heap", "domain-robot"]
+# The Robot application domain (wave 11, DOMAIN; config/Kconfig.domain
+# DOMAIN_ROBOT). Links the robot crates under domains/robot/ — behavior and
+# the brain link, the motor/sensor/flight stack, the robot safety layer
+# (safety-core), the robot shell commands, the in-kernel benches — and the
+# kernel tasks and call sites that use them (`#[cfg(feature =
+# "domain-robot")]` in kernel/src). Without it the image is a general-purpose
+# kernel: same scheduler, IPC, file systems, network, drivers and the shared
+# actuation authority (crates/core/actuation: e-stop latch, flight recorder,
+# sys-wdt), and none of those crates.
+#
+# In `default` so every build that names its features by hand (the gate's
+# rows, `--features qemu,...`) keeps building the robot image it always
+# built. A build driven by a .config (`make build`, the board and fleet
+# targets, the gate's board rows) goes through tools/kconfig_to_cargo.py,
+# which emits `--no-default-features` plus the rest of `default` for every
+# domain except Robot. kernel/src/main.rs refuses (compile error) a .config
+# that selects DOMAIN_ROBOT without this feature.
+domain-robot = [
+    "dep:azos_behavior", "dep:azos_robot", "dep:azos_safety_core",
+    "dep:azos_flight", "dep:azos_nav", "dep:azos_gps",
+    "dep:azos_imu", "dep:azos_baro", "dep:azos_ahrs",
+    "dep:azos_telemetry", "dep:azos_bench", "dep:azos_multi_stream",
+    "dep:azos_camera", "dep:azos_robot_drivers",
+    "azos_shell/domain-robot", "azos_syscall/domain-robot",
+]
+# Bring up the CSI camera at boot in an image without the Robot domain
+# (config/Kconfig.drivers DRV_CAMERA; implied by DOMAIN_IOT_HMI). A robot image
+# brings it up with its sensors. Ring 3 reads frames through
+# `SYS_SENSOR_READ_TYPED` (SENSOR_TYPE_CAMERA) either way.
+camera = []
+# Board builds REQUIRE the authenticated brain link (owner decision 2026-09-13).
+# Without `link-encrypt-enforced` a keyless boot ran the brain link in
+# plaintext, where seven bytes -- `PKT_MODE 0xFF` plus a CRC-8 -- clear a
+# latched e-stop, and the UART bridge carried every frame with no envelope.
+# Enforced: no `/fat/LINK.KEY` means no brain link, and `bridge_policy_permits()`
+# holds the UART bridge down in both directions. Provision the key per robot.
+# `azos_crypto/no-bitmanip`: the VF2 kernel carries no bit-manipulation
+# instruction, not even behind runtime detection (gate row `vf2: no B
+# extension`); its SHA-256 is the generic one.
+vf2 = [
+    "azos_drv_base/vf2", "azos_drv_irqchip/vf2", "azos_drv_sys/vf2",
+    "azos_drv_gpio/vf2", "azos_drv_bus/vf2", "azos_drv_virtio/vf2",
+    "azos_drv_block/vf2", "azos_drv_net/vf2", "azos_drv_sensor/vf2",
+    "azos_drv_actuator/vf2", "azos_drv_power/vf2", "azos_drv_dmac/vf2",
+    "azos_robot_drivers?/vf2", "azos_ota/vf2", "link-encrypt-enforced",
+    "azos_crypto/no-bitmanip",
+]
+# Composes `rvv` rather than re-listing its members. It used to hand-copy four
+# of the five (`arch`, `shell`, `ml`, `camera`) and drop two things: the
+# KERNEL's own `rvv` feature, which is what selects `context_switch_rvv.S`
+# over the scalar one in `main.rs`, and `azos_sched/rvv`. So a
+# `--features k1` build emitted vector instructions from `arch-riscv64`'s
+# kernels (reached by `ml` and `camera`) while linking a context switch that
+# leaves `v0`-`v31` untouched across a preemption — on the one board with real
+# vector hardware. The gate could not see it: `build_board "k1 (+linker)"`
+# checks that it compiles, and it does.
+#
+# Composing used to pull `azos_sched/rvv` in as well, which compiled the
+# K-C24 double-dispatch protection OUT of the scheduler — and because `k1`
+# composes `rvv`, the board with real vector hardware selected that build
+# transitively. `context_switch_rvv.S` now clears `context_saving` itself
+# (K-C23 tail), the `azos_sched/rvv` feature is deleted, and both builds
+# run the identical scheduler. Nothing here exempts anything any more.
+k1 = [
+    "rvv", "azos_drv_base/k1", "azos_drv_irqchip/k1", "azos_drv_sys/k1",
+    "azos_drv_gpio/k1", "azos_drv_bus/k1", "azos_drv_virtio/k1",
+    "azos_drv_block/k1", "azos_drv_sensor/k1", "azos_drv_actuator/k1",
+    "azos_drv_dmac/k1", "dep:azos_drv_npu", "azos_drv_npu/k1",
+    "azos_robot_drivers?/k1", "azos_ota/k1", "link-encrypt-enforced",
+]
+rvv  = ["azos_arch/rvv", "azos_shell/rvv", "azos_ml?/rvv", "azos_camera?/rvv"]
+# RFC-0046 stage 1a canary (aarch64): see crates/core/arch-aarch64/Cargo.toml.
+its-skip-mapti = ["azos_arch/its-skip-mapti"]
+# Relaxed timing bounds for QEMU emulation (timer ISR ~100x slower than hardware).
+# `cap-refusal-canary`: the default topology declares `pwm.0`/`gpio.0` only
+# here, so the `userspace: capabilities` scenario can hold the capability the
+# actuation guards refuse. A board build must not carry that grant — see
+# `crates/core/topology/src/builder.rs`.
+qemu = ["azos_drv_irqchip/qemu", "azos_drv_sys/qemu", "azos_net/qemu",
+        "azos_topology/cap-refusal-canary",
+        # `ipc-endpoint-canary`: `endpoint.demo` and `endpoint.bench` exist to
+        # test capability-addressed IPC. A board build must declare no endpoint
+        # it does not serve — the topology is the authority graph a reader
+        # audits, and two services the robot does not run do not belong in it.
+        "azos_topology/ipc-endpoint-canary",
+        # `profile-actuation`: the gate's scenarios drive motors, so the QEMU
+        # build declares a drivetrain. A deployment profile, not a canary —
+        # `vf2`/`k1` deliberately do NOT enable it, because a board is not a
+        # domain. See `crates/core/topology/Cargo.toml`.
+        "azos_topology/profile-actuation",
+        # `ring3-driver-start`: `start = true` on the ring-3 driver rows
+        # (BUZZDRV.ELF, INADRV.ELF). Only the QEMU drivers disks carry the
+        # images, so only a boot from them starts anything. Not on boards.
+        "azos_topology/ring3-driver-start",
+        # `dev-key`: the QEMU build verifies CONFIG.SIG against the TEST key
+        # (`tools/keys/test_pub.bin`), and says so by this feature. A board
+        # build has no default and fails without `TOPOLOGY_PUBKEY_PATH`
+        # (`crates/core/topology/build.rs`).
+        "azos_topology/dev-key",
+        "azos_ipc/profile-actuation",
+        # `legacy-tid-ipc`: syscall 108 exists only for `ipctest`, whose peers
+        # are forked children. A board kernel does not compile the arm.
+        "azos_syscall/legacy-tid-ipc",
+        "azos_actuation/qemu",
+        "azos_gps?/simulated-fix"]
+# `deadline-refusal-canary`: the default topology declares two 60% `hard_rt`
+# tasks on one CPU, so boot must stop at "Topology install FAILED: Deadline(..)".
+# Its own feature, not part of `qemu`: `qemu` must still boot.
+deadline-refusal-canary = ["azos_topology/deadline-refusal-canary"]
+
+# `mem-quota-canary`: the autorun task's frame budget drops from 2048 pages to
+# 64 (image, stack and page tables included since RFC-0049 M1), so `abitest`'s
+# 256-page brk probe reaches it instead of needing 8 MiB. The budget is owner decision 102; without a canary nothing in the gate
+# ever OBSERVES it refusing, and a quota that never refuses is indistinguishable
+# from one that is not wired.
+mem-quota-canary = ["azos_topology/mem-quota-canary"]
+# RFC-0049 M1c gate row: an `UHELLO.ELF` topology row marked `mem = "locked"`;
+# the task reports `faults=` at exit and the row requires 0.
+mem-locked-smoke = ["azos_topology/mem-locked-smoke"]
+# Kconfig LOCKED_HUGE_LEAVES (riscv64) gate row: the locked UHELLO.ELF row gets a
+# 4 MiB region mapped with 2 MiB leaves; `huge-leaves-canary` maps the same
+# region with page leaves, so the walk marker must report them.
+huge-leaves-smoke = ["mem-locked-smoke", "azos_topology/huge-leaves-smoke"]
+huge-leaves-canary = ["huge-leaves-smoke", "azos_sched/huge-leaves-canary"]
+# Its canary: the loader maps every user stack lazily (demand markers), so the
+# locked task takes stack faults and the row above must go red.
+mem-locked-canary = ["mem-locked-smoke", "azos_sched/mem-locked-canary"]
+# RFC-0049 P2 canary: an `ABITEST.ELF` row marked locked; its audit-mode
+# profile can fork, so the autorun loader must refuse to exec it.
+mem-locked-refusal-canary = ["azos_topology/mem-locked-refusal-canary"]
+# RFC-0049 M1b canary: a ring-3 row with a 4 GiB ceiling; memory admission
+# must refuse the topology and halt before the first ring-3 task.
+mem-admission-canary = ["azos_topology/mem-admission-canary"]
+# RFC-0055 canary: tools out-rank the user shell; `sh: ctrl-c on one hart`
+# must fail (a CPU-bound tool starves the shell on `-smp 1`).
+ushell-prio-canary = ["azos_topology/ushell-prio-canary"]
+# RFC-0055 canary: `POWER.ELF` holds no `Cap<Power>`; `SYS_POWER_TYPED` must
+# refuse and record every operation.
+power-cap-canary = ["azos_topology/power-cap-canary"]
+# Wave 12 canary: the four family tools hold no capability; their typed calls
+# must refuse and record every operation.
+family-cap-canary = ["azos_topology/family-cap-canary"]
+# Wave 12 gate row: the drivetrain belongs to FLIGHT.ELF, not to the autorun
+# row, so the user shell's `flight arm` runs (`sh: family tools` rows).
+flight-tool-drivetrain = ["azos_topology/flight-tool-drivetrain"]
+# RFC-0047 (wave 12): the Linux personality's gate rows. `linux-abi-test` adds
+# the `LXHELLO.ELF` row (abi = "linux") and the shell's grant to start it.
+# Canaries: `linux-abi-caps-canary` grants that row `/fat` read-write (its
+# create is no longer refused); `linux-abi-tag-canary` never tags a Linux task
+# (its numbers go to the native table). Never in a real build.
+linux-abi-test = ["azos_topology/linux-abi-test"]
+linux-abi-caps-canary = ["azos_topology/linux-abi-caps-canary"]
+linux-abi-tag-canary = ["azos_sched/linux-abi-tag-canary", "azos_topology/linux-abi-test"]
+# Wave 12 canary (owner round 48): `/proc/tasks` and `/proc/<tid>` unfiltered,
+# every reader sees every task (the hidepid rows go red). Never in a real build.
+proc-hidepid-canary = ["azos_sched/proc-hidepid-canary"]
+# Wave 13 canary: orphans are not re-parented (the orphan rows go red).
+# Never in a real build.
+orphan-reparent-canary = ["azos_sched/orphan-reparent-canary"]
+# Wave 13 canary: the subreaper mark is never set (the shell's orphan rows go
+# red). Never in a real build.
+subreaper-mark-canary = ["azos_sched/subreaper-mark-canary"]
+linux-abi-fork-canary = ["azos_syscall/linux-abi-fork-canary", "azos_topology/linux-abi-test"]
+linux-busybox-test = ["azos_topology/linux-busybox-test"]
+linux-threads-test = ["azos_topology/linux-threads-test", "linux-abi-test"]
+# RFC-0047 stage 3: a streamed image changed between its two reads (refused,
+# recorded), and the same with the check compiled out (gate canary).
+fd-private-offset-canary = ["azos_fs/fd-private-offset-canary", "azos_topology/linux-abi-test"]
+fd-private-offset-busybox-canary = ["azos_fs/fd-private-offset-canary", "linux-busybox-test"]
+linux-stream-tamper-test = ["linux-busybox-test", "azos_syscall/stream-hash-flip-canary"]
+linux-stream-tamper-canary = ["linux-busybox-test", "azos_syscall/stream-hash-nocheck-canary"]
+linux-abi-fp-canary = ["azos_sched/linux-abi-fp-canary", "azos_topology/linux-abi-test"]
+linux-busybox-fork-canary = ["linux-busybox-test", "azos_syscall/linux-abi-fork-canary"]
+# Wave 13 (SIGNALS): signal delivery, console input and execve across rows.
+# `linux-exec-row-test` gives BUSYBOX.ELF's row `/fat` and the grant to exec
+# LXHELLO.ELF. Canaries (never in a real build): no delivery, no SIGPIPE, no
+# SIGCHLD, console read EOF, `^C` not a signal, execve's launch check skipped.
+linux-exec-row-test = ["azos_topology/linux-exec-row-test", "linux-busybox-test"]
+linux-signal-canary = ["azos_syscall/linux-signal-canary", "azos_topology/linux-abi-test"]
+linux-sigpipe-canary = ["azos_syscall/linux-sigpipe-canary", "azos_topology/linux-abi-test"]
+linux-sigchld-canary = ["azos_sched/linux-sigchld-canary", "azos_topology/linux-abi-test"]
+linux-console-eof-canary = ["azos_syscall/linux-console-eof-canary", "linux-busybox-test"]
+console-isig-canary = ["azos_drv_sys/console-isig-canary", "linux-busybox-test"]
+linux-exec-row-canary = ["azos_syscall/linux-exec-row-canary", "linux-busybox-test"]
+# Signals and threads (wave 13): canaries over the LXTHR row and LXHELLO.
+linux-sig-thread-canary = ["azos_sched/linux-sig-thread-canary", "linux-threads-test"]
+linux-tkill-process-canary = ["azos_syscall/linux-tkill-process-canary", "linux-threads-test"]
+linux-wait-exited-canary = ["azos_syscall/linux-wait-exited-canary", "linux-threads-test"]
+# Wave 13 (NATFORK) canaries, see `crates/core/syscall/Cargo.toml`.
+native-fork-no-inherit-canary = ["azos_syscall/native-fork-no-inherit-canary"]
+native-fork-copy-canary = ["azos_syscall/native-fork-copy-canary"]
+fork-profile = ["azos_sched/fork-profile"]
+cow-ro-canary = ["azos_mm/cow-ro-canary"]
+# Gate canary only (wave 14, security): a fork child's mprotect(RW) of a page
+# its parent shares read-only writes the parent's frame again.
+mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]
+fork-demand-canary = ["azos_mm/fork-demand-canary"]
+cow-reuse-canary = ["azos_mm/cow-reuse-canary"]
+fork-commit-race-canary = ["azos_mm/fork-commit-race-canary"]
+mmap-prot-canary = ["azos_syscall/mmap-prot-canary"]
+demand-region-canary = ["azos_mm/demand-region-canary"]
+# Wave 13 (THREADS) canaries, see `crates/core/sched/Cargo.toml`.
+futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]
+threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]
+threads-tls-canary = ["azos_sched/threads-tls-canary"]
+threads-private-table-canary = ["azos_sched/threads-private-table-canary"]
+natfork-template-tamper-canary = ["azos_syscall/natfork-template-tamper-canary"]
+natfork-template-noseal-canary = ["azos_syscall/natfork-template-noseal-canary"]
+# RFC-0053 stage L0/L0b (Kconfig LINUX_DRIVERS + LX_SERVER_SKELETON): the
+# module loader's two syscalls and digest table (`azos_syscall/lx-loader`)
+# and `LXSRV.ELF`'s topology row with `start = true`
+# (`azos_topology/lx-server`). The server is the
+# empty skeleton: no Linux object is linked anywhere. Off by default: the
+# default kernel neither starts LXSRV.ELF (no row) nor can make ring-3 memory
+# executable (630/631 unassigned).
+lx-server = ["azos_syscall/lx-loader", "azos_topology/lx-server"]
+# Gate canary only: the same kernel with `SYS_MODULE_VERIFY` granting a
+# token for ANY bytes under a listed name (the digest compare skipped). The
+# tamper row must fail with it: `lx: module tamper refused` passes only if
+# the digest is what refuses.
+lx-verify-canary = ["lx-server", "azos_syscall/lx-verify-canary"]
+# Gate canary only: the module text is mapped writable AND executable; the
+# kernel's own readback in `SYS_MODULE_MAP_X` must refuse and say so.
+lx-wx-canary = ["lx-server", "azos_mm/lx-wx-canary"]
+# `deadline-hart-canary`: a task pinned to CPU 3, refused by `kernel_main`'s
+# second admission (with the real hart count) when booted `-smp 1`.
+deadline-hart-canary = ["azos_topology/deadline-hart-canary"]
+# RFC-0027: per-function `#[wcet(...)]` runtime telemetry. Default OFF (CI gate
+# rejected, KILL2). Opt-in on real hardware (VF2/K1) where rdcycle is reliable.
+wcet = ["azos_drv_sys/wcet"]
+# F4 (wave 3): irq-in-syscall-probe -- a syscall the ecall arm intercepts
+# before normal dispatch, which spins ~50 ms reading `time` while the timer
+# fires (-smp 1), to prove the O3.1 nested-trap fix in
+# kernel/src/entry/riscv64/asm/trap_entry.S (trap_return's sstatus-before-
+# sscratch ordering) actually closes the corruption window: it must FAIL
+# against the old asm with enable_all() on, and PASS against the fixed asm.
+# Opt-in only -- not part of `qemu` or any board feature.
+irq-in-syscall-probe = []
+# RFC-0046 stage 1 — native PCI/ECAM enumeration + virtio-pci modern
+# transport. QEMU `virt` only today (both ISAs): the ECAM base wired in
+# `main.rs` is a QEMU-`virt` constant behind this feature, not a DTB
+# value yet (VF2/K1 have their own PCIe root complexes and are NOT
+# exercised by this feature).
+pci = ["azos_drv_virtio/pci", "azos_pci"]
+# RFC-0046 stage 1b — minimal IOMMU support (RISC-V IOMMU on QEMU riscv64
+# `virt` with `-device riscv-iommu-pci`; SMMUv3 on aarch64 `virt` with
+# `-machine virt,iommu=smmuv3`). Depends on `pci` for there to be a
+# device to fault. Encode/decode only wired to a fault sink here.
+iommu = ["pci", "azos_iommu"]
+# DEV01.4 — opt-in boot-time TFTP fetch smoke. Calls
+# azos_tftp::client::tftp_fetch against the default gateway
+# (10.0.2.2 = QEMU user-mode network's built-in TFTP if started with
+# `-netdev user,tftp=DIR,...`). Prints [TFTP] N bytes / [TFTP] error
+# and otherwise leaves boot unaffected.
+tftp-smoke = []
+net-smoke = []
+dhcp-smoke = []
+pi-smoke = []
+# pi-flush-smoke: the flight recorder's PiMutex contended by two tasks on ONE
+# hart of an SMP machine — `sys-wdt` (priority 11, hart 2, its periodic
+# `logger_flush`) against a priority-14 flusher pinned to the same hart, the
+# pairing of the brain-link e-stop stall. See `pi_flush_probe` in kernel/src/smokes/pi_flush_probe.rs.
+pi-flush-smoke = ["qemu"]
+# Two riscv64 kernel tasks pinned to the SAME hart each fill v0-v31 with a
+# distinct pattern, yield to each other, then verify their own pattern
+# survived — a canary for the rvv_ctx_save/restore TID-vs-offset-120 bug
+# (crates/core/arch-riscv64/src/rvv.rs). QEMU only, requires `rvv`.
+rvv-isolation-probe = []
+# Opt-in: time the f32 paths the kernel ran before the MLP moved to ring 3
+# (MLP, camera features, GGUF MLP) in a loop early in kernel_main, print
+# `[MLSF]` lines, halt. kernel/src/mlsf_bench.rs. Needs build/policy.gguf
+# (tools/make_gguf.py). Never in a default build.
+mlsf-bench = ["dep:azos_ml", "dep:azos_camera"]
+# The ML service kill row (`tools/ci_check.sh`, "ml service killed"): the
+# behavior loop stalls the ring-3 ML service once, then makes it fault, and
+# checks that every cycle after each decided STOP through L1 without the loop
+# missing its period. `[MLKILL]` lines. kernel/src/behavior_ml.rs. Links the
+# MLP (`azos_ml`) for its parity sweep; no other kernel build does.
+ml-kill-smoke = ["dep:azos_ml", "domain-robot"]
+# Its canary: the missing-verdict fallback is "no verdict" (the pre-move
+# behaviour). The kill row must go red on it.
+ml-fallback-canary = ["domain-robot", "azos_behavior?/ml-fallback-canary"]
+# The ML service absent row's canary: a boot that never started the service
+# has L1 pass ("no verdict", the behaviour before owner decision 2026-09-28)
+# instead of holding STOP. The absent row must go red on it.
+ml-absent-canary = ["domain-robot", "azos_behavior?/ml-absent-canary"]
+# aarch64 parity program, task 1 — guard-page fault proof. Each of these
+# deliberately touches ONE of the two guard pages `aarch64::kernel_main`
+# installs right after `enable_paging()` and never returns: the boot is
+# expected to die in `entry::aarch64::handle_page_fault`'s existing EL1-fault
+# path, naming the SAME address the probe printed just before touching it.
+# Opt-in only — a normal/board/CI build must never carry either of these;
+# see `tools/ci_check.sh`'s "aarch64 guard: ... probe faults" rows, the only
+# callers.
+guard-fault-probe-stack = []
+guard-fault-probe-null  = []
+# O3.2 (owner decision, PAN/SUM): touches a USER-tagged page from EL1/S-mode
+# OUTSIDE any UserAccess guard — must fault now that SPAN=0/SUM starts clear.
+pan-probe = []
+# Gate-only: makes early boot call `sys_fork_impl` from kernel context, so
+# fork-refusal site 1 (`KernelTask`) fires deterministically on BOTH ISAs and
+# the gate can observe the per-site diagnostic actually firing. A counter no
+# row ever sees is indistinguishable from one that is not wired. Safe by
+# construction — site 1's test is `current_user_pt() == 0`, which is true
+# before the scheduler starts, so the call allocates nothing and cannot reach
+# the five later sites. Never in a normal or board build.
+fork-refusal-probe = []
+# RFC-0041 §A: leave the vDSO's rdtime flag clear, so libsys `uptime()` traps.
+vdso-force-syscall = []
+# RFC-0041 §B: program the timer with SBI `set_timer` even on a hart with Sstc.
+timer-sbi-only = []
+no-ml       = ["azos_shell/no-ml", "azos_behavior?/no-ml"]
+no-mmu      = ["azos_shell/no-mmu", "azos_sched/no-mmu"]
+# B2-02/B2-03: `no-opensbi` and `uefi` were deleted 2026-09-21 (owner
+# decision: delete now, redo when needed). Neither was wired to a real boot
+# path — no-opensbi's ELF entry was never `_start_mmode`, all harts would
+# have shared one stack, and nothing set `mtvec`; uefi had no `global_asm!`
+# including boot_efi.S, so `efi_main` was dead-stripped. `crates/core/efi` and
+# `tests/host/efi-tests` stay (host parser suite in the gate); only the kernel
+# wiring and the two dead boot .S files are gone.
+# config/Kconfig.security SECURE_BOOT_ENFORCED. Forces the boot sequence
+# (kernel/src/boot/ota.rs, right after the active-slot CRC check) to verify
+# the Ed25519 signature of the active OTA slot and halt instead of
+# booting on any non-Verified result. See crates/core/ota/src/secure_boot.rs.
+# Off by default in every existing defconfig/build.sh config — dev/CI
+# builds keep today's warn-only behaviour unless this is explicitly set.
+secure-boot-enforced = ["azos_ota/secure-boot-enforced"]
+# Refuse to boot when /fat/LINK.KEY is missing or invalid, instead of
+# silently downgrading the brain link to plaintext. Compile-time only, by
+# design — see the gate in kernel/src/main.rs.
+link-auth-enforced = []
+# K-C5: refuse to produce or accept any brain-link frame outside an
+# established RFC-0019 AEAD session, and refuse to boot without a key (a
+# keyless encrypted-only robot can never talk — fail at provisioning time,
+# loudly, not in the field). Superset of link-auth-enforced's boot gate;
+# the per-packet gate lives in domains/robot/behavior/src/auth_envelope.rs and
+# const-folds to nothing when this is off. Compile-time only, by design.
+link-encrypt-enforced = ["azos_behavior?/link-encrypt-enforced"]
+# Drive the ring-3 reflex daemon through a real obstacle decision by moving
+# the simulated rangefinder under it. QEMU-only validation aid.
+reflex-smoke = ["qemu", "domain-robot"]
+# aarch64 parity task S2: read-back markers for `install_sched_hooks`'s four
+# callbacks (PiMutex boost/restore, WaitQueue block/wake, task-exit resource
+# release). See `sched_hooks_smoke`'s own doc in kernel/src/smokes/sched_hooks_smoke.rs.
+sched-hooks-smoke = ["qemu"]
+# aarch64 parity task S2: write a durable, latching SAFETY_ESTOP record on
+# this boot so a SECOND boot of the same image (`install_flight_recorder`'s
+# replay) can prove the e-stop latch survives a reset on this ISA. See
+# `install_flight_recorder`'s own doc in kernel/src/boot/robot.rs.
+estop-latch-smoke = ["qemu"]
+# Wave 7 (STOR): drive `mmc::mmc_flush` against QEMU's `sdhci-pci` +
+# `sd-card` (riscv64 `virt`, polled). See `mmc_flush_smoke` in kernel/src/smokes/storage.rs.
+mmc-flush-smoke = ["qemu", "pci", "azos_drv_block/mmc-pci"]
+# Wave 7 (STOR): check BARRIER.DAT after mount, create + overwrite it, park.
+# The gate's power-cut row boots every cut of that write log. See
+# `fat_barrier_smoke` in kernel/src/smokes/storage.rs.
+fat-barrier-smoke = ["qemu"]
+# Canary for the row above: `mmc_flush` answers Ok before touching the card.
+mmc-flush-canary = ["mmc-flush-smoke", "azos_drv_block/mmc-flush-canary"]
+# `boot-count-smoke`: the gate row `boot count: survives a crash`. On a volume
+# with no `/fat/BOOTMETA.A`/`.B` record the boot panics right after
+# `ota_boot_validate` records it as unconfirmed (`boot_count_loaded` in
+# kernel/src/boot/ota.rs); the next boot of the same volume must read the count back. Never
+# in a board build.
+boot-count-smoke = ["qemu"]
+# RFC-0031 lease-inversion probe. Its own feature since 2026-09-10, and it used
+# to ride on `qemu` — i.e. it ran in EVERY gate scenario while NO scenario
+# asserted its output. That is cost without signal, and the cost is measurable:
+# it spawns four never-yielding spinners at priority 4, inside the hard-RT band
+# where the tick does not preempt, pinned to hart 3 — the same hart as
+# `net-poll` at priority 12. Measured over 12 000 net-poll iterations: with the
+# probe, 4 097 exceeded 5 ms (worst 61.5 ms); without it, 3 190 (worst 40.4 ms).
+# A measurement task must not perturb the system it measures.
+i3-smoke = ["qemu"]
+# Wave 8 TLB shootdown probe (riscv64, -smp >= 3): a stale access after a
+# cross-hart unmap must fault. `tlb-local-only` is its canary: the remote half
+# of the shootdown is compiled out, and the probe must print STALE READ.
+tlb-smoke = ["qemu"]
+tlb-local-only = ["azos_arch/tlb-local-only"]
+# Canary for the riscv64 shootdown scan bound: no hart is noted online.
+tlb-bound-canary = ["azos_arch/tlb-bound-canary"]
+# Wave 8: the ring-3 GPIO driver serves a kernel client more urgent than
+# itself on its own hart, past a task in between that never blocks — only the
+# proxy's priority donation lets the driver run (`proxy_pi_smoke` in
+# kernel/src/smokes/proxy_pi_smoke.rs). Booted by the `userspace: ring-3 driver serves a more
+# urgent client on its hart` row, on the gpio_drv disk.
+proxy-pi-smoke = ["qemu"]
+# Gate canary only: the kernel installs a proxy donation hook that never
+# donates. The row above must fail on `[PROXYPI] FAIL TIMEOUT` with it.
+proxy-donation-canary = ["proxy-pi-smoke"]
+# Wave 9 (RFC-0049 M4): the kernel stops the ring-3 GPIO driver four times;
+# the supervisor must restart it three times (each answering again, with the
+# death-to-first-reply latency printed) and keep it down after the fourth,
+# with every restart and the give-up on the flight recorder
+# (`kernel/src/drv_supervisor.rs`). Booted by the `userspace: a crashed
+# ring-3 driver is restarted` row, on the gpio_drv disk.
+sup-smoke = ["qemu"]
+# Gate canary only: the supervisor is switched off (every death releases
+# everything, as before M4). The row above must fail on
+# `[SUP] FAIL not restarted after kill 1` with it.
+sup-canary = ["sup-smoke"]
+# Wave 10 (owner decisions 2026-09-28): the supervisor's restart window and
+# `Restart=on-failure`. Built by the `userspace: supervisor restart window`
+# row with a short `SUP_RESTART_INTERVAL_S`; see `drv_supervisor::smoke::window`.
+sup-window-smoke = ["sup-smoke"]
+# Wave 11: the topology's `start = true` ring-3 drivers under the supervisor
+# (`drv_supervisor::supall`): the buzzer killed and restarted, the INA219
+# crash-looping into a recorded give-up. Boots `build/disk-drv.img` /
+# `build/disk-aarch64-drv.img`, the images carrying the two drivers.
+supall-smoke = ["qemu"]
+# Wave 11 (DRVPLACE): the topology row key `restart` honoured by the
+# supervisor (`drv_supervisor::restart`). The drv disk's rows say
+# `restart = always` (BUZZDRV.ELF) and `restart = no` (INADRV.ELF): the buzzer
+# stopped with exit 0 must come back, the INA219 killed (137) must stay down.
+restart-smoke = ["qemu", "azos_topology/restart-smoke"]
+# Its canary: the supervisor ignores the row (`row_restart` answers
+# on-failure), so the row must fail on `[RESTART] FAIL buzzer not restarted
+# after exit 0`.
+restart-canary = ["restart-smoke"]
+# Gate canary only: a kernel spawn of a declared image (`start = true` rows,
+# the ML service) is not supervised, as before wave 11. The supall row must
+# fail on `[SUPALL] FAIL buzzer not restarted` and the ML kill row on
+# `[MLKILL] FAIL: not restarted` with it.
+supall-canary = []
+# Wave 10 (owner decisions 2026-09-28), gate rows `safe mode: attempts
+# exhausted` and `boot count: orderly reboot`
+# (`kernel/src/boot/ota.rs`, `boot_count_loaded`). `safe-mode-smoke` crashes every
+# boot that is not safe mode, so one volume walks the sequence to safe mode,
+# then probes the actuators; `orderly-reboot-smoke` calls `sys_reboot` a few
+# seconds into a boot on a fresh volume.
+safe-mode-smoke = ["qemu", "domain-robot"]
+# Gate canary only (wave 14): the ring-3 driver launcher ignores safe mode, so
+# safe mode starts SH.ELF and `sh: safe mode canary` must see it.
+safe-mode-launch-canary = []
+orderly-reboot-smoke = ["qemu"]
+
+# Wave 9 canary: no ring-3 floor on donations. `proxy-pi-smoke`'s floor check
+# (a client at 8 onto gpio_drv) must fail on `[PROXYPI] FAIL floor`.
+donation-floor-canary = ["proxy-pi-smoke", "azos_sched/donation-floor-canary"]
+# Wave 9: lease priority inheritance from a ring-3 lessor (`SYS_IPC_LEASE_WAIT`):
+# IPCTEST's phase L2 is the lessor, `lease_pi3_smoke` the kernel lessee and hog.
+# Booted on the ipctest disk; canary: `# CONFIG_LEASE_PRIORITY_INHERITANCE is not set`.
+lease-pi3-smoke = ["qemu"]
+# Wave 11 (LEASE2) canaries, by hand, booted on the ipctest disk:
+# `lease-revoke-canary` registers no PTE removal for a lease's end, so
+# IPCTEST's phase W lessee writes after its return without faulting and the
+# phase fails; `robust-sweep-canary` skips the exit sweep of robust notify
+# words, so phase R's sleeper times out instead of waking with OWNER_DIED.
+lease-revoke-canary = []
+robust-sweep-canary = []
+# Wave 11 (LEASE3) canaries, booted on the ipctest disk: `lease-seal-canary`
+# makes the producer-side seal take nothing away, so IPCTEST's phase S lessor
+# writes its sealed buffer and lives; `lease-expiry-worker-canary` leaves the
+# lease worker's reap out, so phase X's lessee writes its expired buffer and
+# lives (its lessor never waits or frees).
+lease-seal-canary = []
+lease-expiry-worker-canary = []
+
+# Wave 11 (DRVPLACE): Kconfig DRV_INA219_PLACEMENT = kernel. The INA219's
+# chip logic (crates/drivers/ina219) runs in a kernel task (`ina219_host_task`)
+# and the kernel API reads its state directly; the topology declares no
+# INADRV.ELF row. Without it (the default, `ring3`) the same chip logic runs
+# in ring 3 (`userspace/drivers/ina_drv`) behind the proxy.
+ina219-kernel = ["azos_drv_sensor/ina219-kernel", "azos_topology/ina219-kernel"]
+# Gate canary (row bucket): the kernel placement with the INADRV.ELF row kept
+# and the link-time placement check skipped. The INA219 rows must fail on
+# `[DRV1] ina219 FAIL: placement is kernel but the topology declares`.
+ina219-placement-canary = ["ina219-kernel", "azos_topology/ina219-placement-canary"]
+# Gate canary (build bucket): the drivers crate told "kernel", the topology
+# not; the kernel must not compile (`tasks/ina219_host.rs`).
+ina219-placement-build-canary = ["azos_drv_sensor/ina219-kernel"]
+# Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel. The buzzer chip
+# logic (crates/drivers/buzzer) runs in the kernel: a call plays through the
+# kernel's PWM driver directly and a kernel task (`buzzer_host_task`) advances
+# the timed steps; the topology declares no BUZZDRV.ELF row. Without it (the
+# default, `ring3`) the same chip logic runs in `userspace/drivers/buzz_drv`.
+buzzer-kernel = ["azos_drv_actuator/buzzer-kernel", "azos_topology/buzzer-kernel"]
+# Gate canary (build bucket): the drivers crate told "kernel", the topology
+# not; the kernel must not compile (`tasks/buzzer_host.rs`).
+buzzer-placement-build-canary = ["azos_drv_actuator/buzzer-kernel"]
+
+# Wave 9 (DRV1): the functional test of the drivers RFC-0040 places in user
+# space (buzzer, INA219), run from a kernel task through the same kernel API
+# the syscall handlers call (`ring3_drv_smoke` in kernel/src/smokes/ring3_drv_smoke.rs). Booted
+# by the `drivers: buzzer` and `drivers: INA219 power monitor` rows.
+ring3-drv-smoke = ["qemu"]
+# Its canary: the buzzer row has no `start = true`, so nothing starts the
+# buzzer driver and `drivers: buzzer` must fail on "no ring-3 driver
+# registered" (the INA219 still starts and passes).
+ring3-drv-start-canary = ["ring3-drv-smoke", "azos_topology/ring3-driver-start-canary"]
+# RFC-0033 — drive the motor envelope chokepoint with a command above the
+# per-robot-type cap and observe the refusal on the console. Opt-in; a normal
+# build pays nothing.
+envelope-smoke = ["qemu", "domain-robot"]
+# E03 — arm a geofence around the simulated GPS fix, feed the GPS driver a fix
+# outside it and print both verdicts. Opt-in; a normal build pays nothing.
+geofence-smoke = ["qemu", "domain-robot"]
+# Wave 11 (SENSORTS) — the IMU's acquisition stamp, from the driver to the
+# sensor bus staleness check L0 reads: prints `[SENSORTS] PASS`. Opt-in.
+sensor-ts-smoke = ["qemu", "domain-robot"]
+# Its canary: the IMU driver reports its FIRST reading's stamp forever, so
+# readings keep arriving and the bus must judge them stale (`[SENSORTS] STALE`).
+sensor-ts-freeze = ["sensor-ts-smoke", "azos_imu/freeze-acq-stamp"]
+# Reads SAFETY_UNKNOWN_PKT back off the flight recorder after `fake_brain.py`
+# sends a packet type this build does not act on. Its own feature, not folded
+# into the plain brain-lies scenario: that one exists to prove a SCHEDULING
+# property (that `net-poll` gets to run on its hart), and adding a task to it
+# would measure a build nobody ships.
+brain-lies-smoke = ["qemu", "domain-robot"]
+# RFC-0019: the brain link's wall-clock rekey interval drops from 3600 s to 5 s
+# (`BRAIN_LINK_REKEY_SECS` in kernel/src/tasks/brain_link.rs), so one QEMU boot sees the
+# kernel send REKEY records to `tools/link_peer.py`. The crate constant is
+# unchanged; every other build rekeys hourly.
+link-rekey-smoke = ["qemu", "domain-robot"]
+# Reads captest's forged-handle refusal (`SAFETY_CAP_DENIED_TYPED`, GPIO) back
+# off the flight recorder. Its own feature for the same reason as the probe
+# above: a task added to the plain capabilities boot would verify a build
+# nobody ships.
+cap-deny-smoke = ["qemu", "domain-robot"]
+# RFC-0048 P3 gate row (`disk: partition cap refused from ring 3`): the autorun
+# row is granted `disk.part.1` read/write, and a probe task reads captest's
+# out-of-partition refusal (`SAFETY_CAP_DENIED`, Disk) back off the flight
+# recorder. Booted only on the partitioned image `build/disk-parted.img`.
+disk-part-row = ["qemu", "domain-robot", "azos_topology/disk-part-row"]
+# estop-gpio-smoke: stand in for the physical kill-switch wiring, which QEMU
+# does not model — see `estop_gpio_smoke_task`. Pulls in actuation-smoke
+# because the assertion is on the kernel's own wheel writes.
+estop-gpio-smoke = ["qemu", "actuation-smoke"]
+# Fast-IPC path trace (diagnostic; see crates/core/syscall/Cargo.toml).
+actuation-smoke = ["qemu", "domain-robot", "azos_syscall/actuation-smoke", "azos_safety_core?/actuation-smoke"]
+# gate-skip-smoke: canary for Q1.4's fail-closed default (2026-09-25) —
+# `azos_safety_core::actuation::install()` does not install the motor
+# gate, so `motor_set_reporting` must clamp every duty to 0. Never in the
+# default feature set; see `domains/robot/safety-core/src/actuation.rs`.
+gate-skip-smoke = ["qemu", "domain-robot", "azos_safety_core?/gate-skip-smoke"]
+# Gate-only console-routing canary — see crates/drivers/sys/Cargo.toml for what it
+# proves and why the property is untestable without it.
+console-route-canary = ["qemu", "azos_drv_sys/console-route-canary"]
+# Gate canary only: kernel lines formatted inside the console lock (wave 13).
+console-format-in-lock = ["qemu", "azos_drv_sys/console-format-in-lock"]
+# Gate-only reproducer for the ring-3 / kernel console splice: one kernel task
+# pushes known lines through `uart::console_write_ring3` (the `sys_write` fd 1/2
+# path), another `kprintln!`s in a loop, and the timer ISR prints on every tick
+# while it runs. The host counts the ring-3 lines that came out intact. See
+# `console_splice_writer_task` in kernel/src/smokes/console_splice.rs.
+console-splice-smoke = ["qemu", "azos_drv_sys/console-splice-smoke"]
+# Gate canary for the console TX ring (wave 11): the console stays on the
+# synchronous FIFO-polling path. With `console-splice-smoke`, the
+# `[SPLICE] DONE` line's `max_masked_wire_bytes` goes back above a FIFO load.
+console-tx-sync = ["azos_drv_sys/console-tx-sync"]
+# Gate-only canary for the aarch64 PL011 RX interrupt (wave 7): the SPI is
+# routed and enabled at the GIC, but the PL011's own RX/RX-timeout interrupt
+# stays masked, so the console falls back to polling and the boot line's
+# delivered count must read 0. See kernel/src/entry/aarch64/boot_hooks.rs.
+pl011-rx-irq-canary = ["qemu"]
+# Hand-run canary for the aarch64 ring-3 IRQ row (wave 8): `SYS_DRV_IRQ_ACK`
+# does not unmask the line `handle_irq` masked on delivery, so captest's
+# second interrupt never arrives and it prints its `second IRQ` FAIL line.
+irq-ack-canary = ["qemu", "azos_syscall/irq-ack-canary"]
+# Wave 9 IRQ4 canary: a wake-task binding's delivery is not kept pending, so
+# captest's "interrupt before the wait" check blocks in SYS_DRV_IRQ_WAIT.
+irq-pending-canary = ["qemu", "azos_ipc/irq-pending-canary"]
+# Wave 9 IRQ4 canary, both ISAs: the external-interrupt handler does not mask
+# a ring-3 line on delivery, so a level device that still asserts is taken
+# again at once and captest's "line held masked until ACK" check fails.
+irq-mask-canary = ["qemu"]
+# Wave 10 IRQ5 canaries, riscv64. `irq-secondary-seie-canary`: secondaries
+# leave `sie.SEIE` clear (the old entry), so a ring-3 line routed to the pinned
+# hart is never taken and captest's first delivery times out.
+# `irq-route-canary`: every ring-3 line is routed to the boot hart (the old
+# rule), so the `riscv64 ring-3 irq` row sees the line taken on hart 0 while
+# its owner is pinned to hart 3.
+irq-secondary-seie-canary = ["qemu"]
+irq-route-canary = ["qemu", "azos_syscall/irq-route-canary"]
+# Wave 10 IRQ5 probe, riscv64: the external-interrupt handler re-runs
+# `irqchip::init` on this hart right after it masks a ring-3 line. Passes
+# while `plic::init` rewrites the global priorities only once; a re-init that
+# rewrote them would unmask the line and fail captest's mask check.
+irq-reinit-probe = ["qemu"]
+# Temporary: prints how long an ARP resolution actually took, to set the
+# budget from data instead of by argument.
+arp-timing = ["qemu", "azos_net/arp-timing"]
+ipc-trace = ["azos_syscall/ipc-trace"]
+# The vsbench SQPOLL lane: the autorun row may start an io_ring SQ poller.
+# Never part of a board or default build; see crates/core/topology/Cargo.toml.
+sqpoll-bench = ["azos_topology/sqpoll-bench"]
+ipc-census = ["azos_syscall/ipc-census", "azos_sched/ipc-census"]
+# Gate canary for the page-table free check: see crates/core/sched/Cargo.toml.
+exit-satp-canary = ["azos_sched/exit-satp-canary"]
+# Minimal boot for the comparative benchmark (vsbench). Never in production.
+bench-minimal = ["azos_sched/bench-minimal"]
+# Gate canary (wave 13): the vDSO hwcap word loses the bits lxbase.ko picks
+# its CRC path by (aarch64 CRC32, riscv64 Zbc), so the module must report
+# its table fallback.
+hwcap-clear-canary = []
+# Board images: the seccomp image table is the board volume's own (named-key ML
+# service), `build/board/image_hashes.rs`. Passed by `make vf2`/`k1`/`build-fleet`,
+# never by a QEMU or bare-`cargo` build. See crates/core/sched/Cargo.toml.
+board-image = ["azos_sched/board-image"]
+# Translation granule (config/Kconfig.arch AARCH64_PAGE_*; aarch64 only, and
+# tools/kconfig_to_cargo.py emits the token). Neither = 4 KiB. The kernel
+# asserts at compile time that the granule these select equals
+# azos_limits::PAGE_SHIFT from `.config`, so the two cannot disagree;
+# kernel/build.rs derives the linker-script page alignment from them.
+page-16k = ["azos_arch_api/page-16k", "azos_sched/page-16k"]
+page-64k = ["azos_arch_api/page-64k", "azos_sched/page-64k"]
+# config/Kconfig.timing's `SCHED_BACKEND_APS` choice, emitted by
+# `tools/kconfig_to_cargo.py`. Compiles the Adaptive Partitioning backend
+# (policies, per-CPU runqueue state, the typed registry) into the kernel.
+# Default OFF = Legacy priority queue, and the APS code is not linked at all:
+# with `lto = false` nothing else strips it, and it cost 8.1 KB of `.text`
+# plus 41,536 bytes of `.data` in every Legacy build (measured: -41,576 and
+# -9,328 respectively). This feature REQUIRES the matching guards in
+# `kernel/src/main.rs` — the boot-path arms that call `aps_state::smoke_test`,
+# `use_aps_dispatch` and `runtime::registry` must carry the same
+# `#[cfg(feature = "sched-aps")]`, or a default build does not compile.
+sched-aps = ["azos_sched/sched-aps"]
+# RFC-0051 E0-E2 (Kconfig ENERGY, default off): per-task and per-CPU
+# utilisation tracking in the scheduler, and the energy model read at boot
+# from the topology, else the DTB (`kernel/src/boot/energy.rs`). The seams
+# themselves are compiled in every build, with today's behaviour.
+energy = ["azos_sched/energy", "azos_topology/energy"]
+# The RFC-0051 E0-E2 gate row (`kernel/src/smokes/energy_smoke.rs`): the
+# built-in topology carries a fake two-domain model; checks model, refuse,
+# util, and prints the hooks' cost. `-smp 2`.
+energy-smoke = ["qemu", "energy", "azos_topology/energy-fake-model"]
+# Its canaries, one property broken each; the named check must print FAIL.
+energy-util-canary = ["energy-smoke", "azos_sched/energy-util-canary"]
+energy-validate-canary = ["energy-smoke", "azos_energy/validate-canary"]
+energy-switchout-canary = ["energy-smoke", "azos_sched/energy-switchout-canary"]
+# Boot ignores the topology's model (resolves from DTB/none only): `model` FAIL.
+energy-model-canary = ["energy-smoke"]
+# RFC-0051 E3/E4 gate row: the smoke on the `balanced` fake model, adding the
+# `gov` (I1, I6, schedutil) and `idle` (TEO choice, I3) checks.
+energy-gov-smoke = ["energy-smoke", "azos_topology/energy-fake-balanced"]
+# Its canaries: the deadline floor ignores reservations (`gov` must FAIL); the
+# idle choice ignores the RT slack (`idle` must FAIL); the kernel's RT-slack
+# input reads "none" (`idle` must FAIL).
+# Gate row "idle keepalive (simulated WDT)": the watchdog timeout is recorded
+# as armed under QEMU, so hart 0's idle keepalive runs at the derived period.
+wdt-sim = ["azos_drv_sys/wdt-sim"]
+energy-i1-canary = ["energy-gov-smoke", "azos_energy/i1-canary"]
+energy-i3-canary = ["energy-gov-smoke", "azos_energy/i3-canary"]
+energy-slack-canary = ["energy-gov-smoke", "azos_sched/energy-slack-canary"]
+# U02-3 measurement: prints `[SCHED] tick instr=N` at boot under
+# `-icount shift=0,sleep=off`. See `azos_sched`'s own feature doc.
+sched-tick-probe = ["azos_sched/sched-tick-probe"]
+# U02-3: O(NUM_PRIORITIES) placement, timer-sleeper heap,
+# fast-IPC hand-off co-location. All three are in `default` above; see
+# crates/core/sched/Cargo.toml.
+sched-o1-placement = ["azos_sched/sched-o1-placement"]
+sched-timer-heap = ["azos_sched/sched-timer-heap"]
+sched-ipc-affinity = ["azos_sched/sched-ipc-affinity"]
+# Event-driven K-C25 reaper (visits only slots stamped mid-switch). OFF by
+# default; see crates/core/sched/Cargo.toml.
+sched-reap-event = ["azos_sched/sched-reap-event"]
+# VF2-only DC8200 + Innosilicon HDMI TX framebuffer driver
+# (crates/drivers/display). Opt-in, not part of the `vf2` feature bundle: fixed
+# resolution (HDMI_WIDTH/HDMI_HEIGHT in config/Kconfig.platform), no EDID
+# negotiation, solid-color milestone only — never validated against real
+# hardware (QEMU has no model for this peripheral at all).
+hdmi = ["azos_display", "azos_display/vf2"]
+# QEMU-only ramfb framebuffer test (crates/drivers/display/src/ramfb.rs) — a
+# generic "can this kernel drive a framebuffer" check, unrelated to the
+# real VF2 DC8200/HDMI TX driver (`hdmi` above), which QEMU can't
+# simulate at all. Opt-in, not bundled into `qemu` — needs `-device
+# ramfb -display <backend>` on the QEMU command line too (not
+# `-nographic`, which every other QEMU boot this session has used).
+ramfb = ["azos_display", "azos_display/qemu"]
+# Wave 11 (LAT): masked-window tracer, Kconfig `LAT_TRACE` (config/Kconfig.development,
+# mapped by tools/kconfig_to_cargo.py). Records per hart the longest
+# interrupts-masked and preemption-disabled windows and their call sites,
+# read out at `/proc/latency`. Off: no hook, no table, no procfs entry.
+lat-trace = ["azos_arch/lat-trace", "azos_sync/lat-trace"]
+# Kconfig `SYSCALL_TRACE`: record every syscall entry in the trace ring (riscv64).
+syscall-trace = []
+# vsbench diagnostic: `[SPAWN-CENSUS]` per-phase spawn cost (crates/core/syscall/src/spawn.rs).
+spawn-census = ["azos_syscall/spawn-census"]
+# Debug output (owner: console output only in debug modes): a successful
+# spawn's `[SPAWN] tid=...` and `[SPAWN][PRIO]` lines and every exec's
+# `[VDSO] mapped` line. Refusals, floors, aborts and fallbacks print anyway.
+spawn-log = ["azos_syscall/spawn-log", "azos_sched/spawn-log"]
+# Wave 14 vsbench diagnostic: per-phase cost of a backend file open/read/close
+# (crates/fs/fs/src/census.rs). Never in a shipped build.
+file-census = ["azos_fs/file-census"]
+# The worst-case wake-up latency rows (cyclictest/timerlat shape): a priority-1
+# kernel task wakes on an absolute 1 ms period while kernel tasks spam the
+# console and read the disk, and reports max/p99 against a per-ISA bound.
+# Booted under `-icount`. See kernel/src/lat_smoke.rs. Without `lat-trace`, so
+# the number is the kernel's and not the tracer's; add `lat-trace` for sites.
+lat-smoke = ["qemu"]
+# Its canary: a task on the same hart masks interrupts for 20 ms three times.
+# The tracer must name that site and the latency row must print `[LAT] FAIL`.
+lat-canary = ["lat-smoke", "lat-trace"]
+# Wave 11 (PSTORE): gate rows `pstore: ...`. After /fat mounts, a boot that
+# found no RAM panic record panics with the VFS lock held and reboots warm;
+# the next boot must recover the record into /fat/CRASH.LOG. See
+# kernel/src/pstore.rs.
+pstore-smoke = ["qemu", "azos_fs/pstore-smoke"]
+# Its canary: the panic path flips one payload byte after the checksum, so the
+# next boot must reject the record and say so.
+pstore-corrupt-smoke = ["pstore-smoke"]
+# Wave 11 ONESHOT canary: the timer arming before the one-shot change (no
+# reprogram when a task blocks on a timer deadline; aarch64's tick handler
+# programs `now + period` only). The `lat:` row must print `[LAT] FAIL`.
+oneshot-canary = ["lat-smoke", "azos_sched/oneshot-canary"]
+# Wave 11 (A64CLK): the aarch64 kernel runs on the VIRTUAL counter/timer
+# (CNTVCT_EL0, CNTV_*, PPI 27), the clock ring 3's vDSO reads. Two canaries:
+# `a64clk-ppi-canary` programs CNTV but enables PPI 30 (the physical timer's
+# line), so no tick arrives; `a64clk-cntvoff-canary` leaves CNTVOFF_EL2 nonzero
+# at the EL2 drop (boot with `-M virt,virtualization=on`), so a kernel that
+# read the physical counter would stamp 2 ms (2_000_000 ticks) off the vDSO.
+a64clk-ppi-canary = ["qemu"]
+a64clk-cntvoff-canary = ["qemu", "azos_arch/cntvoff-canary"]
+# Wave 11 (PORTWAIT) canary: a port's timer source is accepted and never
+# armed; ipctest's phase P must then fail its timer check (gate rows
+# `portwait: ring-3 multi-source wait`, riscv64 and aarch64).
+portwait-timer-canary = ["qemu", "azos_syscall/portwait-timer-canary"]
+# Wave 11 PIFAST (RFC-0052 row R4): a priority-13 kernel client calls a
+# priority-24 kernel server through fast IPC (582) while a priority-18 hog
+# computes in 2 ms bursts on the same hart, and reports the call latency
+# against a 100 us bound. See kernel/src/smokes/pifast_smoke.rs.
+pifast-smoke = ["qemu"]
+# Its canary: the call never donates (`azos_syscall/pifast-donation-canary`),
+# so the row must print `[PIFAST] FAIL`.
+pifast-donation-canary = ["pifast-smoke", "azos_syscall/pifast-donation-canary"]
+# Wave 11 SCHED-RT rows (`sched-rt:` in tools/ci_check.sh): the RT band budget,
+# EDF + CBS and run-time admission measured on hart 0 under `-icount`, see
+# kernel/src/rt_smoke.rs. The topology gains the two profiled rows the EDF
+# check attaches to.
+sched-rt-smoke = ["qemu", "domain-robot", "azos_topology/sched-rt-smoke"]
+# Its canaries, one property broken each; the named check must print FAIL.
+rt-band-canary = ["sched-rt-smoke", "azos_sched/rt-band-canary"]
+rt-edf-canary = ["sched-rt-smoke", "azos_sched/rt-edf-canary"]
+rt-cbs-canary = ["sched-rt-smoke", "azos_sched/rt-cbs-canary"]
+rt-admit-canary = ["sched-rt-smoke", "azos_sched/rt-admit-canary"]
+rt-exempt-canary = ["sched-rt-smoke", "azos_sched/rt-exempt-canary"]
+# RT7 (RFC-0052 §5.5, row R6): an observer on hart 1 arms the flight
+# controller and a culprit kernel task on hart 0 (the control hart) panics.
+# Under Kconfig PANIC_POLICY_CONTAIN the panic must be contained and the
+# control loops keep their period; otherwise it takes the reset path. See
+# kernel/src/smokes/rt_panic_smoke.rs.
+rt-panic-canary = ["qemu", "domain-robot"]
+# The same panic with a SpinLock held: must take the reset path under either
+# policy (the containment predicate's depth check).
+rt-panic-canary-spin = ["rt-panic-canary"]
+# The panic in rt-motor itself, a registered safety task, holding no lock: the
+# reset path under either policy (`reason=safety-task` under Contain), with the
+# global panic latch set — the observer checks that a motor command and the
+# ESC are refused after it (wave 13).
+rt-panic-canary-safety = ["rt-panic-canary", "azos_safety_core?/rt-panic-canary-safety"]
+# The motor-command watchdog record row (`tools/ci_check.sh`,
+# `rt_watchdog_record_row`): a 5 s report window instead of 60 s, so a short
+# boot closes one. Never in a default build.
+rtwd-window-smoke = ["qemu", "domain-robot", "azos_safety_core?/rtwd-window-smoke"]
+# Its canary: the watchdog's transitions print but are not recorded. The row
+# must go red on it.
+rtwd-record-canary = ["domain-robot", "azos_safety_core?/rtwd-record-canary"]
+# A panic in the buzzer's kernel host (placement kernel), contained under
+# Kconfig PANIC_POLICY_CONTAIN, and the supervisor's restart of the host
+# (`SupOrigin::KernelHost`): kernel/src/smokes/drv_contain_smoke.rs (wave 13).
+drv-contain-smoke = ["qemu", "buzzer-kernel"]
+# Timer sleepers on every hart raced by early TID wakes (the interleavings
+# that lost rt-motor's wake with the heap, gate 185); a stuck sleeper or a
+# census `lost` count fails it: kernel/src/smokes/timer_heap_smoke.rs (wave 13).
+timer-heap-smoke = ["qemu"]
+# A tick deferred by a SpinLock is paid at the guard drop and counted as a
+# preemption, not a voluntary switch: kernel/src/smokes/preempt_account_smoke.rs.
+preempt-account-smoke = ["qemu"]
+# Periodic-wake tail latency (mean/p99/p99.9/max over 10k wakes) against
+# ping-pong pairs on the same hart, waker in the RT band with a CBS
+# reservation and then best-effort: kernel/src/smokes/tail_smoke.rs. Linux
+# counterpart: tools/lat_linux/tail.c.
+tail-smoke = ["qemu"]
+# Gate row only: the vDSO write window held open (crates/core/mm vdso.rs);
+# abitest must still finish (no ring-3 reader may spin on an odd seq).
+vdso-write-window = ["qemu", "azos_mm/vdso-write-window"]
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+
+[dependencies]
+# Single source for the DRV_KIND_* constants. The kernel already hand-declared
+# DRV_KIND_GPIO inside gpio_user_driver_smoke_task; the capability seeding needs
+# the same value, and a second local copy is how the syscall-number problem this
+# tree already has got started.
+azos_driver_server = { workspace = true }
+azos_common = { workspace = true }
+azos_arch = { workspace = true }
+azos_arch_api = { workspace = true }
+azos_sync = { workspace = true }
+azos_drv_base      = { workspace = true }
+azos_drv_irqchip   = { workspace = true }
+azos_drv_sys       = { workspace = true }
+azos_drv_gpio      = { workspace = true }
+azos_drv_bus       = { workspace = true }
+azos_drv_virtio    = { workspace = true }
+azos_drv_block     = { workspace = true }
+azos_drv_net       = { workspace = true }
+azos_drv_sensor    = { workspace = true }
+azos_drv_actuator  = { workspace = true }
+azos_drv_npu       = { workspace = true, optional = true }
+azos_drv_power     = { workspace = true }
+azos_drv_dmac      = { workspace = true }
+azos_robot_drivers = { workspace = true, optional = true }
+azos_drv_api       = { workspace = true }
+azos_abi = { workspace = true }
+azos_mm = { workspace = true }
+azos_sched = { workspace = true }
+# RFC-0051: the idle tasks go through `seams::IDLE_GOVERNOR`; with `energy`,
+# the boot-time model resolution.
+azos_energy = { workspace = true }
+azos_syscall = { workspace = true }
+azos_fs = { workspace = true }
+azos_net = { workspace = true }
+# `client` pulls in the boot-time TFTP fetch loop, which moved out of
+# `crates/net/net` so that a core crate no longer depends on a scaffolding one.
+azos_tftp = { workspace = true }
+azos_multi_stream = { workspace = true, optional = true }
+azos_ipc = { workspace = true }
+azos_service = { workspace = true }
+azos_robot = { workspace = true, optional = true }
+azos_shell  = { workspace = true }
+azos_ml     = { workspace = true, optional = true }
+azos_camera = { workspace = true, optional = true }
+azos_display = { workspace = true, optional = true }
+# RFC-0046 stage 1/1b — see the `pci`/`iommu` feature docs above.
+azos_pci   = { workspace = true, optional = true }
+azos_iommu = { workspace = true, optional = true }
+azos_config = { workspace = true }
+azos_imu    = { workspace = true, optional = true }
+azos_baro   = { workspace = true, optional = true }
+azos_dtb      = { workspace = true }
+azos_behavior = { workspace = true, optional = true }
+azos_ahrs     = { workspace = true, optional = true }
+azos_gps       = { workspace = true, optional = true }
+azos_flight    = { workspace = true, optional = true }
+azos_telemetry = { workspace = true, optional = true }
+azos_nav       = { workspace = true, optional = true }
+azos_ota       = { workspace = true }
+azos_dfu       = { workspace = true }
+# Synthetic per-subsystem microbenches.  `cfg(feature = "qemu")`
+# triggers a one-shot `run_all` from behavior_task post-boot so the
+# bench harness scrapes [BENCH-RES] lines without needing shell input
+# (which is unreliable end-to-end under QEMU TCG SMP).
+azos_bench     = { path = "../domains/robot/bench", features = ["all"], optional = true }
+# DEV03 — USB MSC gadget. Pure no_std protocol crate; kernel side
+# wiring lives in kernel/src/msc_gadget.rs.
+azos_msc       = { workspace = true }
+azos_pubsub    = { workspace = true }
+azos_trace     = { workspace = true }
+azos_topology  = { workspace = true }
+azos_limits    = { workspace = true }
+# RFC-0047: the Linux personality's numbers (the aarch64 trap snapshots a
+# Linux `clone` like a native fork).
+azos_linux_abi = { workspace = true }
+# RFC-0040 gap 0: the safety path (domains/robot/safety-core). The kernel creates its
+# tasks, calls its ISR-side functions and installs its OTA boot-good hook.
+azos_safety_core = { path = "../domains/robot/safety-core", optional = true }
+# Wave 11 (DOMAIN): the actuation authority every domain shares — e-stop latch,
+# release authority, safe mode, flight recorder, sys-wdt, the timer-ISR feed.
+azos_actuation = { workspace = true }
+# The entropy pool's boot-side helpers (kernel/src/boot/entropy_pool.rs).
+azos_crypto    = { workspace = true }

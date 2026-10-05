@@ -1,0 +1,25 @@
+[package]
+name = "azos_dtb_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "cargo-fuzz (libFuzzer) targets for the Flattened Device Tree parser (azos_dtb). Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+azos_dtb = { path = "../../../crates/drivers/dtb" }
+
+[[bin]]
+name = "dtb_parse"
+path = "fuzz_targets/dtb_parse.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]

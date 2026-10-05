@@ -1,0 +1,21 @@
+[package]
+name = "ws_test_sync"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-buildable facade for azos_sync, used only by tests/host/world-state-tests. NOT part of the kernel."
+
+# Reuses tests/host/sync-tests's own arch shim rather than duplicating it: same
+# reasoning tests/host/behavior-tests already applies when it reuses
+# tests/host/cap-tests/shims/sync (see that Cargo.toml). `preempt.rs` reaches the
+# machine through exactly `azos_arch::cpu::hart_id()` and
+# `azos_arch::csr::read_sstatus()`, both RISC-V inline asm; the shim
+# replaces those two inputs with settable per-thread cells and nothing else.
+[dependencies]
+azos_arch = { path = "../../../sync-tests/shims/arch", package = "sync_test_arch" }
+
+# `preempt.rs` (pulled via `#[path]`) carries `#[cfg(feature = "lat-trace")]`
+# hooks. Declared only so `unexpected_cfgs` recognizes the name; never on.
+[features]
+lat-trace = []

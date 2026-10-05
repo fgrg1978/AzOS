@@ -1,0 +1,6 @@
+# Pin stable for this host-test crate. The root rust-toolchain.toml pins
+# nightly with `[unstable] build-std = ["core", "alloc"]` which conflicts
+# with host test compilation. Stable skips -Z flags entirely, side-stepping
+# the double-link issue. Same pattern as tests/host/cap-tests.
+[toolchain]
+channel = "stable"

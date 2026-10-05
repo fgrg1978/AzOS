@@ -1,0 +1,27 @@
+[package]
+name = "azos_drv_sensor"
+version = "0.1.0"
+edition = "2021"
+description = "Sensors: INA219, ADS1115, LD19 LiDAR, rangefinders, MIPI CSI-2."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+# Wave 11 (DRVPLACE): Kconfig DRV_INA219_PLACEMENT = kernel. The INA219 runs
+# in the kernel (`ina219::kernel_host`, sampled by a kernel task) instead of
+# behind the ring-3 proxy. The kernel's own `ina219-kernel` forwards here and
+# to the topology, which then declares no INADRV.ELF row.
+ina219-kernel = []
+
+[dependencies]
+azos_abi           = { workspace = true }
+azos_sync          = { workspace = true }
+azos_driver_server = { workspace = true }
+azos_ina219        = { workspace = true }
+azos_drv_api       = { workspace = true }
+azos_drv_bus       = { workspace = true }
+azos_drv_gpio      = { workspace = true }
+azos_drv_sys       = { workspace = true }

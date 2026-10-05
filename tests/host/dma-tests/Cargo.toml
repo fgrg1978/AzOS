@@ -1,0 +1,17 @@
+[package]
+name = "azos_dma_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/dma (map/unmap bookkeeping, coherent pool, bounce decision). Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/dma-tests && cargo test --release
+
+[dependencies]
+azos_dma = { path = "../../../crates/drivers/dma" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

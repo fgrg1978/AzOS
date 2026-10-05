@@ -1,0 +1,21 @@
+[package]
+name = "azos_pci_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/pci (ECAM math, cap walk, BAR sizing, MSI/MSI-X parse) and for crates/drivers/virtio/src/virtio/pci.rs, pulled in via #[path] against a fake ConfigSpace/Mmio. Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/pci-tests && cargo test --release
+
+[dependencies]
+azos_pci = { path = "../../../crates/drivers/pci" }
+
+[features]
+# Mirrors azos_pci's gate canary so the host tests can show it bites.
+msix-enable-canary = ["azos_pci/msix-enable-canary"]
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

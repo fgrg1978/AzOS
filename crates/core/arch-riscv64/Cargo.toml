@@ -1,0 +1,28 @@
+[package]
+name = "azos_arch_riscv64"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "AZOS — RISC-V (rv64gc + Sv39 + PMP + SBI + RVV-opt) ISA crate. Was crates/core/arch pre-Stage-1; now lives behind the crates/core/arch facade per rfcs/item-2-kernel-cross-arch-plan.md."
+
+[lib]
+name = "azos_arch_riscv64"
+
+# rvv: enable RISC-V Vector Extension (RVV 1.0) math kernels.
+# Requires QEMU with -cpu rv64,v=true,vlen=128,vext_spec=v1.0.
+# VisionFive 2 (SiFive U74) does NOT support the V extension.
+[features]
+rvv = []
+# Gate canary for the TLB shootdown (`src/tlb.rs`): skip the remote fence.
+# Never part of a real build; see the `tlb-smoke` rows in tools/ci_check.sh.
+tlb-local-only = []
+# Canary for the scan bound (`tlb::note_hart_online` records nothing).
+tlb-bound-canary = []
+# Masked-window tracer hooks (`src/lat_hook.rs`); Kconfig `LAT_TRACE`.
+lat-trace = ["azos_arch_api/lat-trace"]
+
+[dependencies]
+azos_common   = { workspace = true }
+azos_arch_api = { workspace = true }
+bitflags          = { workspace = true }

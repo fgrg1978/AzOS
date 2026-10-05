@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.brain — Brain server link defaults and subsumption layer enables
+#
+# RFC-0026 Phase C1.  Compile-time defaults for the brain link.
+# Runtime values can be overridden in CONFIG.INI.
+#
+# Sourced from inside the Robot menu (config/Kconfig.robot), so it is shown
+# only for DOMAIN_ROBOT. The brain-link task is compiled only into a
+# DOMAIN_ROBOT image (kernel feature `domain-robot`, wave 11); its two
+# enforcement switches in "Security" depend on DOMAIN_ROBOT.
+
+menu "Brain Server Link"
+config MULTISTREAM_SCHED_PRIORITY
+    bool "Multi-stream scheduler: priority (control preempts bulk)"
+    default n
+    help
+      RFC-0021 multi-stream link scheduling policy — a compile-time
+      choice so each binary carries exactly one policy (zero hot-path
+      overhead; the unused branch is const-eliminated).
+
+      n (default) = FIFO: streams share the link in send order; a large
+        STREAM_CAMERA frame can head-of-line-block a STREAM_CONTROL frame.
+      y = PRIORITY: STREAM_CONTROL frames are interleaved ahead of bulk
+        stream chunks, bounding control hold-off to ~one chunk-time
+        instead of one full bulk-frame-time (experiment I2).
+
+      Selected via `make menuconfig` / defconfig; surfaces as
+      `azos_limits::MULTISTREAM_SCHED_PRIORITY`. A/B the two builds
+      with the bench_boot capture + dashboard. Outside DOMAIN_ROBOT the
+      option is hidden and reads as n (FIFO).
+
+endmenu # Brain Server Link

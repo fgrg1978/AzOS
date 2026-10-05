@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# Linux-side benchmark module (tools/lx_kbuild/run.sh linux); never on a
+# AzOS volume.
+obj-m += lxbench.o

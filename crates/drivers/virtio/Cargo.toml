@@ -1,0 +1,29 @@
+[package]
+name = "azos_drv_virtio"
+version = "0.1.0"
+edition = "2021"
+description = "VirtIO transport (MMIO, PCI) and its block, network and entropy devices."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+# RFC-0046 stage 1: native PCI/ECAM enumeration + virtio-pci modern
+# transport (crates/drivers/virtio/src/virtio/pci.rs). Off by default — VF2/K1
+# have no PCIe backend today (native drivers own those boards per the
+# owner's native-first rule) and pulling azos_pci into
+# every build would be dead weight there. Enabled by `kernel`'s own `pci`
+# feature.
+pci = ["dep:azos_pci"]
+
+[dependencies]
+azos_arch        = { workspace = true }
+azos_mm          = { workspace = true }
+azos_sync        = { workspace = true }
+azos_drv_api     = { workspace = true }
+azos_drv_base    = { workspace = true }
+azos_drv_irqchip = { workspace = true }
+azos_drv_sys     = { workspace = true }
+azos_pci         = { workspace = true, optional = true }

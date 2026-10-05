@@ -1,0 +1,169 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.mitigations — Threat model and mitigations
+#
+# Owner decision (wave 11): every mitigation is a switch in `make config`;
+# none is forced on. A threat-model profile sets the DEFAULTS of the
+# mitigation switches with `imply`, never `select`: each switch can still be
+# turned off by hand under any profile. Only mitigations that exist in code
+# have a symbol; the ones that do not are listed as comments.
+
+menu "Mitigations"
+
+choice
+    prompt "Threat model"
+    default THREAT_PHYSICAL_ACCESS if DOMAIN_INDUSTRIAL
+    default THREAT_RING3_IMAGE
+    help
+      Who the image defends against. The choice sets the default of the
+      mitigation switches below; it never forces one, and a switch set by
+      hand wins. Each profile includes the ones above it. The default is
+      the base profile, and "Physical access" for DOMAIN_INDUSTRIAL.
+
+    config THREAT_RING3_IMAGE
+        bool "Compromised ring-3 image (base)"
+        imply MITIGATION_SPECTRE_V1_INDEX
+        imply ML_DATA_SIG_REQUIRED
+        help
+          Default. An image on the allow-list is compromised and attacks
+          the kernel and the other images through syscalls and shared
+          hardware. Implies the Spectre v1 index masking and the ML data
+          signature check; both are on by default anyway, so this profile
+          changes no default.
+
+    config THREAT_THIRD_PARTY_CODE
+        bool "Third-party code"
+        imply MITIGATION_SPECTRE_V1_INDEX
+        imply ML_DATA_SIG_REQUIRED
+        help
+          Code the owner did not write runs in ring 3 (applications,
+          drivers, models). Implies the same switches as the base profile:
+          no mitigation specific to this threat exists in the tree yet
+          (see the "not implemented" lines below), so today it sets the
+          same defaults as the base profile.
+
+    config THREAT_PHYSICAL_ACCESS
+        bool "Physical access to the device"
+        imply MITIGATION_SPECTRE_V1_INDEX
+        imply ML_DATA_SIG_REQUIRED
+        imply CONSOLE_LOCKDOWN
+        imply SECURE_BOOT_ENFORCED
+        imply OTA_SIG_MANDATORY
+        imply LINK_AUTH_ENFORCED
+        help
+          The attacker can reach the console, the removable FAT volume
+          (also exposed over USB mass storage) and the boot media. On top
+          of the base profile, implies:
+            CONSOLE_LOCKDOWN     no kernel console; the ring-3 user
+                                 shell is unprivileged unless a signed
+                                 topology row grants it more;
+            SECURE_BOOT_ENFORCED boot halts on an unsigned or badly
+                                 signed kernel image ("Security");
+            OTA_SIG_MANDATORY    unsigned OTA images are refused;
+            LINK_AUTH_ENFORCED   boot halts without a valid
+                                 /fat/LINK.KEY instead of running the brain
+                                 link unauthenticated.
+          Each implied switch carries its own cost and deployment
+          requirement; read its help before building with this profile.
+
+endchoice
+
+config MITIGATION_SPECTRE_V1_INDEX
+    bool "Spectre v1: mask table indices that come from ring 3"
+    default y
+    help
+      Bounds-check-bypass mitigation, the analogue of Linux's
+      array_index_nospec (crates/core/limits/src/nospec.rs). After the bounds
+      check, the index used for the load is ANDed with a mask computed
+      without a branch (riscv64: sltu+neg; aarch64: cmp+sbc+csdb), so a
+      load issued under a mispredicted check reads entry 0, not memory
+      past the table. Applied to the syscall table and to the per-task
+      tables a syscall indexes with a user value (see the call sites of
+      azos_limits::nospec).
+
+      Cost, instructions per operation under -icount
+      (tools/vsbench_aarch64.sh, this option y against n, same tree,
+      2026-10-02), aarch64/riscv64:
+        syscall-floor (getpid, answered before the table)    +0 / +0
+        clock [call] (the syscall-table mask alone)          +5 / +4
+        chan-call, notify, sensor-read-call (+ cap slot)  +9..10 / +7..8
+        ipc-roundtrip                                         +9 / +12
+        ring-pingpong                                        +36 / +19
+        udp-roundtrip (socket fd masks on every call)        +62 / +140
+      aarch64 adds one csdb per masked site (118 in a qemu kernel).
+
+      n: every masked site compiles to the unmasked index.
+
+config ML_DATA_SIG_REQUIRED
+    bool "Require an Ed25519 signature on the ML data files"
+    default y
+    help
+      The ring-3 ML service (userspace/services/mlsrv) verifies /fat/MLP.RML
+      (MLP weights) against /fat/MLP.SIG and /fat/POLICY.GGF (GGUF
+      policy) against /fat/POLICY.SIG before using either: a bare
+      64-byte Ed25519 signature over the file's bytes, the same key and
+      sidecar format as CAPS.SIG and CONFIG.SIG
+      (azos_topology::TRUSTED_PUBKEY; `make` signs both with
+      tools/gen_config_sig.py). Both files live on the USB-exposed FAT
+      volume.
+
+      A weights file without a valid signature is refused with an
+      "[mlsrv] /fat/MLP.RML REFUSED" line and the service serves the
+      weights compiled into its own image (digest-pinned like the rest
+      of the image), as for an absent file. A refused POLICY.GGF skips
+      the GGUF self-test.
+
+      Cost: one Ed25519 verification per file when the service starts,
+      nothing per inference. The service image grows by the verifier
+      (ed25519-dalek, already in the kernel): 35,576 -> 84,680 bytes on
+      riscv64, 25,168 -> 60,928 on aarch64 (exec limit 128 KiB).
+
+      n: both files are used unverified, as before wave 11.
+
+config CONSOLE_LOCKDOWN
+    bool "Production console lockdown: no kernel console, unprivileged user shell"
+    default n
+    help
+      Under this option the in-kernel shell (the recovery console) is
+      not created at all, in safe mode included: boot prints
+      "[CONSOLE] lockdown: no kernel console task". The console belongs
+      to the ring-3 user shell (SH.ELF, USER_SHELL; with USER_SHELL=n
+      the image has no console).
+
+      The user shell's built-in row is reduced: it may start the
+      unprivileged tool image (TOOLBOX.ELF) and write /tmp, nothing
+      else. It holds no launch right on POWER.ELF (power suspend,
+      reboot, shutdown, sched_hz) nor on FLIGHT.ELF, BEHAVIOR.ELF,
+      CONFIG.ELF and OTA.ELF: they are refused at SYS_SPAWN_EX and
+      recorded. It cannot change /fat. A privileged service shell
+      exists only if the signed topology gives an image's row those
+      capabilities; nothing on the console can grant them.
+
+      The authority table (crates/core/ipc/src/authority_policy.rs) is
+      unchanged by this option for ring 3: a typed syscall checks the
+      calling image's own capability on every build. For the recovery
+      console it names eight commands: `flight arm` (Cap<Motor>
+      WRITE), `pm suspend`, `reboot` and `shutdown` (Cap<Power> WRITE)
+      are checked on every build; `behavior disable`, `sched_hz <hz>`,
+      `config set watchdog_ms` and `ota rollback` (Cap<Power> WRITE)
+      only under this option, and the console would be seeded with no
+      capability. Both matter only to a build that still has the
+      recovery console, i.e. with this option off.
+
+      Default n: the recovery console exists (it takes the console in
+      safe mode, without SH.ELF, or when the user shell is given up
+      on), it is seeded with Cap<Motor> and Cap<Power> WRITE, and the
+      four lockdown-only rows proceed unchecked. The check's predicate
+      also answers "no" during an RFC-0036 containment episode, so
+      enforcing those rows on every build would refuse `behavior
+      disable` in the middle of one.
+
+      Cost: none on any syscall path; a production image loses the
+      in-kernel console as a recovery path.
+
+comment "Not implemented (no symbol until the code exists):"
+comment "  branch-predictor / buffer flush on a switch between address spaces"
+comment "  kernel page-table isolation (KPTI-equivalent)"
+comment "  speculation barrier on syscall entry"
+
+endmenu # Mitigations

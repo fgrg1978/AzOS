@@ -1,0 +1,43 @@
+[package]
+name = "vsbench"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Same ring-3 workload measured on Azos and on Linux/riscv64. One shared core, two syscall backends — the builds differ only in which kernel they call."
+
+[features]
+# Exactly one. `main.rs` refuses to build otherwise: a benchmark that silently
+# links the wrong ABI reports a number for the wrong kernel, which is worse
+# than not building.
+azos = ["azos_libsys"]
+# `azos_libsys` for its PURE ring core only (`SpscRing`, `RingStep`,
+# `RingSleep`, `RingStats`): the Linux `ring-*` lanes run the same ring code
+# as AzOS and issue their own `futex` where AzOS issues notify. No libsys
+# syscall wrapper is called from the Linux build — `abi_linux.rs` holds every
+# `ecall` it makes, and `tools/linux_seccomp_launch/src/allow.rs` lists them.
+linux = ["azos_libsys"]
+# Opt-in only, never part of `azos`/`linux` or the default `run()` path: an
+# extra pass, after every reported lane, that forks without reaping until the
+# kernel refuses — deliberately provoking `sys_fork_impl`'s task-pool-exhausted
+# refusal (`ForkRefusalSite::PoolExhausted`, `crates/core/sched/src/process.rs`) so
+# it can be observed in a QEMU log instead of only trusted to exist. Gated
+# behind its own feature, not a default lane, so `syscall-floor` / `fork+exit`
+# / `fork+exit+wait` — the numbers `tools/vsbench_aarch64.sh` compares run to
+# run — are measured by a binary that does not even link this code path.
+fork-bomb = []
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys", optional = true }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above. The root
+# manifest already excludes it, but that exclusion is relative to the root, so
+# it does not hold when the checkout is nested inside another workspace (a git
+# worktree under .claude/worktrees). Same belt-and-braces shape as
+# tests/host/cam-ring-tests.
+[workspace]

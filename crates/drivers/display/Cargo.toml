@@ -1,0 +1,26 @@
+[package]
+name = "azos_display"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# This crate is meaningless without JH7110/VF2's DC8200+HDMI TX hardware —
+# gates the whole body, not just a value, unlike most `vf2` features in
+# this workspace. Compiles to an empty no-op crate otherwise, so plain
+# `cargo build --features <anything-else>` (which builds every workspace
+# member regardless of that feature, since Cargo has no per-invocation
+# way to skip a member) doesn't fail looking for VF2-only MMIO constants.
+vf2 = []
+# QEMU's own emulated `ramfb` display device (fw_cfg-based) — unrelated to
+# real VF2 hardware, a separate "can this kernel drive a framebuffer at
+# all" check that QEMU can actually run, unlike the vf2 path above. See
+# ramfb.rs's module doc comment.
+qemu = []
+
+[dependencies]
+azos_arch    = { workspace = true }
+azos_drv_base = { workspace = true }
+azos_drv_sys  = { workspace = true }
+azos_limits  = { workspace = true }

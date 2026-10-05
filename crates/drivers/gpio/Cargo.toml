@@ -1,0 +1,20 @@
+[package]
+name = "azos_drv_gpio"
+version = "0.1.0"
+edition = "2021"
+description = "GPIO controller and its Driver registration."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+
+[dependencies]
+azos_abi           = { workspace = true }
+azos_sync          = { workspace = true }
+azos_driver_server = { workspace = true }
+azos_drv_api       = { workspace = true }
+azos_drv_base      = { workspace = true }
+azos_drv_sys       = { workspace = true }
