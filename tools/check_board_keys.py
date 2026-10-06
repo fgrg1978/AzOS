@@ -16,7 +16,9 @@ names). These checks say what each board artifact contains, from the bytes:
         <priv> is a 32-byte seed whose public half is <pub>, and neither it nor
         <pub> is the test pair (a missing test file skips only that comparison).
     check_board_keys.py sigs <image> <pub>
-        CONFIG.SIG and the ML data signatures on the image verify under <pub>,
+        CONFIG.SIG, the ML data signatures and the signed topology (CAPS.SIG
+        over CAPS.TOM, bound to the image's device id and to SCHED.TOM's
+        hash) on the image verify under <pub>,
         checked by the kernel's own verifier code (tests/host/topology-tests'
         `verify_board_volume`, built with TOPOLOGY_PUBKEY_PATH=<pub>).
     check_board_keys.py disk <image> <board_table.rs> <qemu_mlsrv.elf> <test_pub>
@@ -86,7 +88,8 @@ def check_sigs(image, pub_path):
     if rec is None:
         return f"{image} carries no device record"
     with tempfile.TemporaryDirectory() as d:
-        names = ["CONFIG.INI", "CONFIG.SIG", "MLP.RML", "MLP.SIG", "POLICY.GGF", "POLICY.SIG"]
+        names = ["CONFIG.INI", "CONFIG.SIG", "MLP.RML", "MLP.SIG", "POLICY.GGF", "POLICY.SIG",
+                 "CAPS.TOM", "CAPS.SIG", "SCHED.TOM"]
         paths = {}
         for n in names:
             paths[n] = os.path.join(d, n)
@@ -96,7 +99,8 @@ def check_sigs(image, pub_path):
         r = subprocess.run(
             ["cargo", "run", "-q", "--release", "--bin", "verify_board_volume", "--",
              paths["CONFIG.INI"], paths["CONFIG.SIG"], rec[0].hex(),
-             paths["MLP.RML"], paths["MLP.SIG"], paths["POLICY.GGF"], paths["POLICY.SIG"]],
+             paths["MLP.RML"], paths["MLP.SIG"], paths["POLICY.GGF"], paths["POLICY.SIG"],
+             paths["CAPS.TOM"], paths["CAPS.SIG"], paths["SCHED.TOM"]],
             cwd=os.path.join(here, "..", "tests", "host", "topology-tests"), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         out = r.stdout.decode(errors="replace")

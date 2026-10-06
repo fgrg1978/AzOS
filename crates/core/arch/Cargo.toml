@@ -23,6 +23,7 @@ tlb-bound-canary = ["azos_arch_riscv64/tlb-bound-canary"]
 cntvoff-canary = ["azos_arch_aarch64/cntvoff-canary"]
 # Masked-window tracer (Kconfig `LAT_TRACE`): hooks in both ISA crates.
 lat-trace = ["azos_arch_riscv64/lat-trace", "azos_arch_aarch64/lat-trace"]
+irq-nomem-canary = ["azos_arch_riscv64/irq-nomem-canary", "azos_arch_aarch64/irq-nomem-canary"]
 
 # Per-target_arch deps: each is only pulled in for builds whose
 # target arch matches. On riscv64 (the only ISA the kernel boots

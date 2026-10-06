@@ -11,6 +11,8 @@ pub mod ioring_ops;
 pub mod ioring_sqpoll;
 pub mod syscall_table;
 pub mod dispatch;
+#[cfg(feature = "kheap-census")]
+pub mod kheap_census;
 pub mod mmio;
 pub mod sleep;
 pub mod spawn;
@@ -32,6 +34,8 @@ pub mod linux;
 pub mod power;
 /// Wave 12: the flight, behavior, config and OTA typed calls (615..=618).
 pub mod families;
+/// Wave 15: the kernel tracer's control call (632).
+pub mod trace_ctl;
 #[cfg(feature = "lx-loader")]
 pub mod module_ops;
 // Without the Robot domain: what the motor and robot-sensor syscalls see in

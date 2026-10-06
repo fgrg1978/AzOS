@@ -307,6 +307,29 @@ const _: () = {
     assert_adjacent!(d14, d15);
 };
 
+/// [`Task::queued`]: an `AtomicBool`'s interface over a word (wave 15,
+/// SWITCH). RV64 has no sub-word AMO, so a byte flag's `swap` compiled to an
+/// aligned-word `amoor`/`amoand` with shift and mask (eight instructions);
+/// the claim runs on every enqueue, twice per context switch counting the
+/// pick. Zero is `false`, so `mem::zeroed()` stays a valid initial state.
+#[repr(transparent)]
+pub struct QueuedFlag(core::sync::atomic::AtomicU32);
+
+impl QueuedFlag {
+    #[inline(always)]
+    pub fn load(&self, order: core::sync::atomic::Ordering) -> bool {
+        self.0.load(order) != 0
+    }
+    #[inline(always)]
+    pub fn store(&self, v: bool, order: core::sync::atomic::Ordering) {
+        self.0.store(v as u32, order)
+    }
+    #[inline(always)]
+    pub fn swap(&self, v: bool, order: core::sync::atomic::Ordering) -> bool {
+        self.0.swap(v as u32, order) != 0
+    }
+}
+
 // ---- Task state ----
 
 #[repr(u32)]
@@ -684,6 +707,15 @@ pub mod sched_word {
     /// `wake_pending` cell used to.
     #[inline]
     pub fn set_state(w: &AtomicU32, s: TaskState) {
+        // `Ready` packs to 0, so its transition is `cur & WAKE_STAMP`: one
+        // atomic AND (`amoand.w` / `ldclr`) instead of a load and a CAS loop
+        // — wave 15 (SWITCH), once per context switch. Exact: the word holds
+        // only the state bits and the stamp.
+        const _: () = assert!(pack(TaskState::Ready) == 0 && STATE_MASK | WAKE_STAMP == 0xF);
+        if s == TaskState::Ready {
+            w.fetch_and(WAKE_STAMP, Ordering::Relaxed);
+            return;
+        }
         let mut cur = w.load(Ordering::Relaxed);
         loop {
             match w.compare_exchange_weak(
@@ -1130,8 +1162,9 @@ pub struct Task {
     ///
     /// Zero-init via `mem::zeroed()` gives `false`, which is correct: a fresh
     /// task is in no queue. Declared after `donation_count` for the same
-    /// layout-freeze reason documented there.
-    pub queued: core::sync::atomic::AtomicBool,
+    /// layout-freeze reason documented there. A word ([`QueuedFlag`]) since
+    /// wave 15: the claim is one `amoswap.w` instead of a masked byte AMO.
+    pub queued: QueuedFlag,
 
     /// K-C26 provenance: who last set this task `Ready`, and on which hart.
     ///

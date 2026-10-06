@@ -49,6 +49,9 @@ its-skip-mapti = []
 tlb-local-only = []
 # Masked-window tracer hooks (`src/lat_hook.rs`); Kconfig `LAT_TRACE`.
 lat-trace = ["azos_arch_api/lat-trace"]
+# Gate canary only (wave 15): the interrupt-mask asm gets `nomem` back, so
+# it stops being a compiler barrier. The `irq order` rows must go red.
+irq-nomem-canary = []
 # Gate canary for the one-clock property: `_azos_drop_to_el1` sets
 # `CNTVOFF_EL2` to a large nonzero value (the stand-in for firmware that did),
 # so only a kernel whose stamps, deadlines and ring 3's vDSO all read the

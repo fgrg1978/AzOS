@@ -42,6 +42,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_spsc"
+version = "0.1.0"
+
+[[package]]
 name = "azos_syscall_tests"
 version = "0.1.0"
 dependencies = [
@@ -49,6 +53,7 @@ dependencies = [
  "azos_arch_api",
  "azos_drv_api",
  "azos_limits",
+ "azos_trace",
  "cap_test_sched",
  "cap_test_sync",
  "syscall_test_arch",
@@ -63,6 +68,15 @@ dependencies = [
  "syscall_test_robot",
  "syscall_test_sched",
  "syscall_test_service",
+]
+
+[[package]]
+name = "azos_trace"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_limits",
+ "azos_spsc",
 ]
 
 [[package]]
@@ -308,6 +322,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_limits",
+ "azos_trace",
  "cap_test_sync",
  "syscall_test_arch",
  "syscall_test_ipc_drivers",

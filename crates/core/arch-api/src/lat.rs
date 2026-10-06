@@ -105,6 +105,21 @@ impl Track {
     }
 }
 
+/// Wave 15 (TRACE): called with `(kind, hart, length, open site, close
+/// site)` each time [`close`] measures a new longest window on a track. The
+/// kernel tracer installs it (Kconfig `KTRACE_CLASS_LAT`); 0 means none.
+/// A function address rather than a dependency: this crate sits below the
+/// tracer.
+static NEW_MAX_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+/// The new-maximum hook's signature: `(kind, hart, length, open site, close site)`.
+pub type NewMaxHook = fn(Kind, usize, u64, usize, usize);
+
+/// Install the new-maximum hook (once, at boot).
+pub fn set_new_max_hook(f: NewMaxHook) {
+    NEW_MAX_HOOK.store(f as usize, core::sync::atomic::Ordering::Release);
+}
+
 static TRACKS: [[Track; 2]; HARTS] = [const { [const { Track::new() }, const { Track::new() }] }; HARTS];
 
 #[inline]
@@ -142,6 +157,12 @@ pub fn close(kind: Kind, hart: usize, now: u64, site: usize) {
         t.max.store(len, Relaxed);
         t.max_start.store(start, Relaxed);
         t.max_end.store(site, Relaxed);
+        let h = NEW_MAX_HOOK.load(Relaxed);
+        if h != 0 {
+            // SAFETY: only `set_new_max_hook` stores here, from a `NewMaxHook`.
+            let f: NewMaxHook = unsafe { core::mem::transmute::<usize, NewMaxHook>(h) };
+            f(kind, hart, len, start, site);
+        }
     }
     // Open addressing on the site value: the probe starts at its hash and
     // stops at its own slot or the first empty one, so the common case is a

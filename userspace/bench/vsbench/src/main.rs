@@ -32,7 +32,7 @@ use bench_core::{
     Vdso, N_DUP, N_FILE, N_PIPE, N_PIPE_OPEN, N_SPAWN, PIPE_MSG,
     IPC_RENDEZVOUS_TRIES, IPC_RETRY_BUDGET, IPC_SENTINEL, N,
     N_BRK, N_FAULT_PAGES, N_IPC, N_IPC_TOTAL, N_IPC_WARM, N_MEM, N_MEM_ROUNDS, N_PROC,
-    N_EGRESS, N_LOAD_PEERS, N_LOAD_PEER_ITERS, N_LOAD_YIELDS, N_NET, N_SLOW, N_VDSO, PAGE,
+    N_EGRESS, N_LOAD_PEERS, N_LOAD_PEER_ITERS, N_LOAD_PEER_STAMPS, N_LOAD_WARMUP, N_LOAD_YIELDS, N_NET, N_SLOW, N_VDSO, PAGE,
 };
 
 #[cfg(feature = "azos")]
@@ -224,8 +224,20 @@ fn ipc_roundtrip(abi: &(impl Abi + Ipc), floor_ns: u64) -> Option<u64> {
 
 /// Stop the `ipc-roundtrip` server with the sentinel, so it exits cleanly
 /// rather than being left blocked when this process does.
+///
+/// **Retried, and a failure is printed (wave 15).** It was one unchecked
+/// call, and a spurious `-1` (the K-C10 backstop, see [`rt_retry`]) would
+/// have left the server behind without a word. Not what put a sixth task in
+/// `switch-loaded`'s window (that was the UDP echo, see
+/// [`Net::net_stop_echo`]): a census boot with no release at all shows this
+/// server blocked, outside the round-robin.
 fn release_peer(abi: &(impl Abi + Ipc), peer: u64) {
-    let _ = abi.round_trip(peer, IPC_SENTINEL);
+    let mut spurious = 0u64;
+    if let Err(code) = rt_retry(abi, peer, IPC_SENTINEL, &mut spurious) {
+        abi.write(b"[VSBENCH] ipc server NOT released rc=");
+        put_i(abi, code);
+        abi.write(b": it stays runnable under every later lane\n");
+    }
 }
 
 /// The two memory lanes: mapping bookkeeping, and the demand-fault path.
@@ -1411,6 +1423,98 @@ fn report_hart(abi: &impl Abi, who: &[u8], first: Option<u64>, last: Option<u64>
     abi.write(&buf[..n]);
 }
 
+/// One competitor's timestamps (see [`N_LOAD_PEER_STAMPS`]). Each forked
+/// competitor has its own copy; the measurer never touches it.
+static mut PEER_STAMPS: [u32; N_LOAD_PEER_STAMPS] = [0; N_LOAD_PEER_STAMPS];
+
+/// Bytes of the window message, measurer → competitor: `t0`, `t1` (`u64` LE
+/// counter values bracketing the measured batch). `t0 == t1 == 0` means "no
+/// window": the lane gave up after forking, and the competitor reports zero.
+const WIN_MSG: usize = 16;
+/// Bytes of a competitor's report, competitor → measurer: yields that
+/// returned inside the window, yields stamped, switches over the stamped
+/// yields, and 1 if the stamps ended before the window did (lower bound).
+const PEER_MSG: usize = 32;
+
+/// Read exactly `buf.len()` bytes, retrying a would-block answer with a
+/// yield (AzOS answers an empty pipe without blocking). Never inside a
+/// measured window. `false` if the descriptor failed or the bound ran out.
+fn read_full(abi: &(impl Abi + Shell), fd: u64, buf: &mut [u8]) -> bool {
+    let mut got = 0usize;
+    let mut tries = 0u32;
+    while got < buf.len() {
+        let n = abi.fd_read(fd, &mut buf[got..]);
+        if n > 0 {
+            got += n as usize;
+            continue;
+        }
+        tries += 1;
+        if n == 0 || tries > 1_000_000 { return false; }
+        abi.yield_now();
+    }
+    true
+}
+
+/// A competitor of `switch-loaded`: stamp [`N_LOAD_PEER_STAMPS`] yields,
+/// learn the measurer's window, report, then keep yielding until
+/// [`N_LOAD_PEER_ITERS`] so the load outlives everything after it as before.
+fn yield_peer(abi: &(impl Abi + Proc + Shell), win_r: u64, win_w: u64, back_r: u64, back_w: u64) -> ! {
+    // Only the measurer writes the window and reads the reports: with these
+    // closed, a measurer that is gone reads as EOF, not as a wait.
+    abi.fd_close(win_w);
+    abi.fd_close(back_r);
+    if cfg!(feature = "switch-peer-canary") { abi.exit_child() }
+    let first = abi.current_cpu();
+    // SAFETY: this process's own copy; nothing else in it touches the buffer.
+    let stamps = unsafe { &mut *core::ptr::addr_of_mut!(PEER_STAMPS) };
+    // Touch every page before the first yield, so its faults are prelude.
+    for s in stamps.iter_mut() {
+        unsafe { core::ptr::write_volatile(s, 0) };
+    }
+    let sw0 = abi.ctx_switches();
+    let base = bench_core::rdtime();
+    let mut i = 0usize;
+    while i < N_LOAD_PEER_STAMPS {
+        abi.yield_now();
+        stamps[i] = bench_core::rdtime().wrapping_sub(base) as u32;
+        i += 1;
+    }
+    let sw1 = abi.ctx_switches();
+
+    let mut win = [0u8; WIN_MSG];
+    let ok = read_full(abi, win_r, &mut win);
+    let t0 = u64::from_le_bytes(win[0..8].try_into().unwrap());
+    let t1 = u64::from_le_bytes(win[8..16].try_into().unwrap());
+    let mut inside = 0u64;
+    if ok && t1 > t0 {
+        for &s in stamps.iter() {
+            let t = base.wrapping_add(s as u64);
+            if t > t0 && t <= t1 { inside += 1; }
+        }
+    }
+    let last = base.wrapping_add(stamps[N_LOAD_PEER_STAMPS - 1] as u64);
+    let truncated = (ok && t1 > t0 && last <= t1) as u64;
+    let switches = match (sw0, sw1) {
+        (Some((v0, i0)), Some((v1, i1))) => (v1 - v0) + (i1 - i0),
+        _ => u64::MAX,
+    };
+    let mut msg = [0u8; PEER_MSG];
+    msg[0..8].copy_from_slice(&inside.to_le_bytes());
+    msg[8..16].copy_from_slice(&(N_LOAD_PEER_STAMPS as u64).to_le_bytes());
+    msg[16..24].copy_from_slice(&switches.to_le_bytes());
+    msg[24..32].copy_from_slice(&truncated.to_le_bytes());
+    let _ = abi.fd_write(back_w, &msg);
+
+    let mut j = N_LOAD_PEER_STAMPS as u64;
+    while j < N_LOAD_PEER_ITERS {
+        abi.yield_now();
+        j += 1;
+    }
+    // After the loop: by then the measurer's batch is long over.
+    report_hart(abi, b"peer", first, abi.current_cpu());
+    abi.exit_child()
+}
+
 /// Context switching **with real competition** for the CPU.
 ///
 /// `sched-yield` measures yielding when nobody else is ready: the scheduler
@@ -1418,32 +1522,77 @@ fn report_hart(abi: &impl Abi, who: &[u8], first: Option<u64>, last: Option<u64>
 /// genuinely runnable tasks, so every yield is a full selection and a real
 /// context switch.
 ///
-/// The ratio between this lane and `sched-yield` is the interesting part: it
-/// says what competition costs on top of the mechanism, and it is comparable
-/// across the two kernels because it cancels each one's base cost.
-fn loaded_switch_lane(abi: &(impl Abi + Proc), floor_ns: u64, unloaded_yield_ns: u64) {
+/// **Two numbers, and only the second compares across kernels (wave 15).**
+/// `switch-loaded` is the measurer's time per yield: one yield of its own
+/// plus whatever ran before it was picked again. How much ran is the
+/// scheduler's choice, so the op need not be the same amount of work on two
+/// kernels: measured at `-smp 1` under `-icount` (wave 15), AzOS ran all
+/// four competitors between two measurer yields and Linux about one (0.50 to
+/// 0.96 across runs), with 323 to 500 of the measurer's 500 yields switching. `ctxsw-loaded` divides the
+/// same window by the context switches inside it — the measurer's own count
+/// plus the competitors' yields that returned inside it (from their stamps),
+/// printed only when every competitor yield switched: the cost of one
+/// context switch under load, on both kernels.
+fn loaded_switch_lane(abi: &(impl Abi + Proc + Shell), floor_ns: u64, unloaded_yield_ns: u64) {
+    let (win_r, win_w) = match abi.pipe_open() {
+        Ok(p) => p,
+        Err(_) => {
+            abi.write(b"[VSBENCH] switch-loaded: no pipe for the instrument, no number\n");
+            return;
+        }
+    };
+    let (back_r, back_w) = match abi.pipe_open() {
+        Ok(p) => p,
+        Err(_) => {
+            abi.pipe_close(win_r, win_w);
+            abi.write(b"[VSBENCH] switch-loaded: no pipe for the instrument, no number\n");
+            return;
+        }
+    };
     let mut spawned = 0u64;
     for _ in 0..N_LOAD_PEERS {
-        if abi.spawn_yield_peer(N_LOAD_PEER_ITERS).is_err() { break; }
-        spawned += 1;
+        match abi.spawn_peer_raw() {
+            Some(true) => yield_peer(abi, win_r, win_w, back_r, back_w),
+            Some(false) => spawned += 1,
+            None => break,
+        }
     }
+    // The competitors' end of the report pipe: once every competitor is
+    // gone, the report read below sees EOF instead of waiting out its bound.
+    // The window pipe's read end stays open here, so writing a window after
+    // the competitors died is never a write without a reader (SIGPIPE).
+    abi.fd_close(back_w);
+    // Every forked competitor waits for a window message; send one on every
+    // path from here on, or it waits until its read bound runs out.
+    let send_window = |t0: u64, t1: u64| {
+        let mut m = [0u8; WIN_MSG];
+        m[0..8].copy_from_slice(&t0.to_le_bytes());
+        m[8..16].copy_from_slice(&t1.to_le_bytes());
+        for _ in 0..spawned { let _ = abi.fd_write(win_w, &m); }
+    };
     if spawned != N_LOAD_PEERS {
         // Without the full load the number does not mean what it says, so it
         // is not reported: two competitors instead of four would be a
         // different measurement under the same label.
+        send_window(0, 0);
+        abi.pipe_close(win_r, win_w);
+        abi.fd_close(back_r);
         abi.write(b"[VSBENCH] switch-loaded: could not spawn the competitors, no number\n");
         return;
     }
 
     let measurer_first = abi.current_cpu();
 
-    // One yield before measuring, so the competitors have run at least once
-    // and are genuinely in the ready queue rather than freshly created.
-    abi.yield_now();
+    // Yields before measuring, so the competitors have run their prelude and
+    // are genuinely in the ready queue rather than freshly created.
+    for _ in 0..N_LOAD_WARMUP { abi.yield_now(); }
 
     let sw_before = abi.ctx_switches();
+    let w0 = bench_core::rdtime();
     let t = batch(N_LOAD_YIELDS, || abi.yield_now());
+    let w1 = bench_core::rdtime();
     let sw_after = abi.ctx_switches();
+    send_window(w0, w1);
     let loaded_ns = ns_per_op(t, N_LOAD_YIELDS);
 
     // Before the refusal check, so a refused run reports its placement too.
@@ -1453,51 +1602,40 @@ fn loaded_switch_lane(abi: &(impl Abi + Proc), floor_ns: u64, unloaded_yield_ns:
     // total by a YIELD count and calls the answer the cost of a context
     // switch, which is true only if each yield switched. Both kernels can now
     // say: AzOS through `SYS_TASKINFO`, Linux through `getrusage`.
-    //
-    // It is reported rather than asserted because the honest answer may be
-    // that the two kernels do different amounts of work for the same call —
-    // and if so, THAT is the finding, not a performance gap. A comparison that
-    // hides it is the one that misleads.
     let switches = match (sw_before, sw_after) {
         (Some((v0, i0)), Some((v1, i1))) => Some((v1 - v0, i1 - i0)),
         _ => None,
     };
 
+    // The competitors' reports: yields inside the window, and whether each of
+    // their stamped yields switched. They arrive once each competitor has
+    // stamped all its yields, after the window.
+    let mut peer_inside = 0u64;
+    let mut peer_stamped = 0u64;
+    let mut peer_switches = 0u64;
+    let mut peer_truncated = 0u64;
+    let mut peer_reports = 0u64;
+    for _ in 0..spawned {
+        let mut m = [0u8; PEER_MSG];
+        if !read_full(abi, back_r, &mut m) { break; }
+        let g = |i: usize| u64::from_le_bytes(m[i * 8..i * 8 + 8].try_into().unwrap());
+        peer_inside += g(0);
+        peer_stamped += g(1);
+        peer_switches = peer_switches.saturating_add(g(2));
+        peer_truncated += g(3);
+        peer_reports += 1;
+    }
+    abi.pipe_close(win_r, win_w);
+    abi.fd_close(back_r);
+
     // **THIS LANE'S NUMBER IS CONDITIONAL, AND NOTHING USED TO CHECK THE
     // CONDITION.** It means "a yield against four runnable competitors" only
     // if the competitors are competing. Measured 2026-09-10: across nine runs
     // of the same binary it read 30-60 us eight times and 3.3 us once, and the
-    // 3.3 us was reported as a 1.4x win over Linux — the 07-09 comparison
-    // table recorded that artefact as a AzOS victory.
-    //
-    // A deliberate hunt then reproduced it 1 boot in 12, and CORRECTED the
-    // first guess about it. The run that first showed the fast value also had
-    // `ipc-roundtrip` at 998 us and no `udp-roundtrip` line, which looked like
-    // a boot where forked processes were broken; the captured recurrence had
-    // both of those lanes perfectly normal. So the neighbours were
-    // coincidence, not signature: **the only reliable evidence is this lane
-    // against the unloaded yield**, which is exactly why the check lives
-    // here.
-    //
-    // Reproduced on demand to confirm the mechanism: with the peers forked but
-    // returning without yielding, the lane reads 3602 against a 3336 unloaded
-    // yield — the fast mode, exactly.
-    //
-    // TWO THINGS ARE DONE ABOUT IT, AND NEITHER IS A THRESHOLD.
-    //
-    // 1. Refuse the number when it is IMPOSSIBLE: at or below the unloaded
-    //    yield from the same boot. The loaded case does strictly more work —
-    //    a full selection and a real switch — so it cannot be cheaper. This
-    //    catches the clearest cases and cannot fire on a healthy run of
-    //    either kernel.
-    //
-    // 2. Always print the ratio to the unloaded yield, because the impossible
-    //    case is not the only broken one and a tighter threshold is not
-    //    available: **Linux legitimately sits at about 1.4x** here (3460 over
-    //    2924, measured), while a healthy AzOS run is 10-19x. So ~1x is the
-    //    signature to read in the log, and refusing everything under 2x would
-    //    refuse Linux's honest number. A comparison tool that silences one
-    //    side is worse than one that reports a suspicious ratio plainly.
+    // 3.3 us was reported as a 1.4x win over Linux. Reproduced on demand by
+    // making the peers return without yielding (3602 against a 3336 unloaded
+    // yield). So the number is refused when it is IMPOSSIBLE — at or below the
+    // unloaded yield of the same boot — and the ratio to it is always printed.
     if loaded_ns <= unloaded_yield_ns {
         abi.write(b"[VSBENCH] switch-loaded: REFUSED, ");
         put_u(abi, loaded_ns);
@@ -1538,8 +1676,58 @@ fn loaded_switch_lane(abi: &(impl Abi + Proc), floor_ns: u64, unloaded_yield_ns:
             }
             abi.write(b"\n");
         }
-        None => abi.write(b"[VSBENCH] switch-loaded: this kernel cannot report \
-switch counts, so ns/op cannot be read as a per-switch cost\n"),
+        None => {
+            abi.write(b"[VSBENCH] switch-loaded: this kernel cannot report \
+switch counts, so ns/op cannot be read as a per-switch cost\n");
+        }
+    }
+
+    // The instrument line: what one `switch-loaded` op contained.
+    let per_op_x100 = peer_inside * 100 / N_LOAD_YIELDS;
+    abi.write(b"[VSBENCH] ");
+    abi.write(SIDE);
+    abi.write(b" switch-loaded competitors: ");
+    put_u(abi, peer_inside);
+    abi.write(b" competitor yields in the window over ");
+    put_u(abi, N_LOAD_YIELDS);
+    abi.write(b" measurer yields (");
+    put_u(abi, per_op_x100 / 100);
+    abi.write(b".");
+    if per_op_x100 % 100 < 10 { abi.write(b"0"); }
+    put_u(abi, per_op_x100 % 100);
+    abi.write(b" per op); ");
+    put_u(abi, peer_switches);
+    abi.write(b" switches over ");
+    put_u(abi, peer_stamped);
+    abi.write(b" stamped competitor yields; reports=");
+    put_u(abi, peer_reports);
+    if peer_truncated > 0 { abi.write(b", TRUNCATED (lower bound)"); }
+    abi.write(b"\n");
+
+    // `ctxsw-loaded`: the comparable number, per CONTEXT SWITCH in the
+    // window — the measurer's switches (its own counter) plus the
+    // competitors' yields in the window, each of which switched (their
+    // counters over every stamped yield say so; otherwise no number). A
+    // measurer yield that did not switch stays in the window's time: it is
+    // what that kernel chose to do with the yield.
+    let all_reported = peer_reports == N_LOAD_PEERS && peer_truncated == 0;
+    let peers_switched = peer_switches != u64::MAX && peer_switches >= peer_stamped;
+    let meas_sw = switches.map(|(v, i)| v + i).unwrap_or(0);
+    if all_reported && peers_switched && meas_sw + peer_inside > 0 {
+        let yields = N_LOAD_YIELDS + peer_inside;
+        abi.write(b"[VSBENCH] ");
+        abi.write(SIDE);
+        abi.write(b" ctxsw-loaded window: ");
+        put_u(abi, meas_sw + peer_inside);
+        abi.write(b" switches, ");
+        put_u(abi, yields);
+        abi.write(b" yields, ");
+        put_u(abi, ticks_to_ns(w1 - w0) / yields);
+        abi.write(b" ns per yield\n");
+        report(abi, b"ctxsw-loaded", w1 - w0, meas_sw + peer_inside, floor_ns);
+    } else {
+        abi.write(b"[VSBENCH] ctxsw-loaded: the competitors' yields are not all \
+accounted for and switched, no number\n");
     }
 }
 
@@ -1647,6 +1835,7 @@ fn net_lane(abi: &(impl Abi + Net + Proc), floor_ns: u64) {
         if abi.net_round_trip().is_some() { listo = true; break; }
     }
     if !listo {
+        abi.net_stop_echo();
         abi.write(b"[VSBENCH] udp-rt: the peer never answered, no number\n");
         return;
     }
@@ -1655,6 +1844,8 @@ fn net_lane(abi: &(impl Abi + Net + Proc), floor_ns: u64) {
     let t = batch(N_NET, || {
         if abi.net_round_trip().is_none() { fallo = true; }
     });
+    // The echo exits on this; it would otherwise poll for the rest of the run.
+    if !cfg!(feature = "echo-stop-canary") { abi.net_stop_echo(); }
     if fallo {
         abi.write(b"[VSBENCH] udp-rt: a round trip never came back, no number\n");
     } else {
@@ -2012,6 +2203,11 @@ fn run<A: Abi + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
     abi.write(b"[VSBENCH] side=");
     abi.write(SIDE);
     abi.write(b" start\n");
+    // `VSBENCH_LANES`: sections not named are skipped; the default runs all.
+    let lanes = abi.lanes();
+    if !lanes.is_all() {
+        abi.write(b"[VSBENCH] lanes filtered: only the named sections run\n");
+    }
 
     // 1. Syscall floor. Everything else is quoted against this, so it is
     //    measured first and never inside another batch.
@@ -2041,7 +2237,8 @@ fn run<A: Abi + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
     //    against the same run's floor and still bounded by the same noise
     //    check. A separate binary or a separate run would break the rule that
     //    every lane is quoted against the floor of its own run.
-    if let Some(peer) = ipc_roundtrip(abi, floor_ns) {
+    if !lanes.on(b"ipc") {
+    } else if let Some(peer) = ipc_roundtrip(abi, floor_ns) {
         // 3b. Wave 6: notify/wait and the shm ring, against the same peer.
         #[cfg(feature = "azos")]
         ring_lanes(abi, peer, floor_ns);
@@ -2063,42 +2260,42 @@ fn run<A: Abi + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
     }
 
     // 4. Memory: mapping bookkeeping and the demand-fault path.
-    mem_lanes(abi, floor_ns);
+    if lanes.on(b"mem") { mem_lanes(abi, floor_ns); }
 
     // 4b. Heap and processes: two operations the harness used without ever
     //     measuring.
-    proc_lanes(abi, floor_ns);
+    if lanes.on(b"proc") { proc_lanes(abi, floor_ns); }
     // 4b'. Wave 13: threads of one process, both sides.
-    thread_lanes::<A>(abi, floor_ns);
+    if lanes.on(b"thread") { thread_lanes::<A>(abi, floor_ns); }
 
     // 4c. The only lane that measures the cost of NOT entering the kernel.
-    vdso_lanes(abi, floor_ns);
+    if lanes.on(b"vdso") { vdso_lanes(abi, floor_ns); }
     // 4d. Wave 6: the task's own vDSO page — its sensors and counters.
     #[cfg(feature = "azos")]
-    vdso_task_lanes(abi, floor_ns);
+    if lanes.on(b"vdso") { vdso_task_lanes(abi, floor_ns); }
     // Linux: only `taskinfo [call]` has a counterpart, and it is the very
     // call `ctx_switches` already makes (`getrusage`), in the same batch.
     #[cfg(feature = "linux")]
-    {
+    if lanes.on(b"vdso") {
         let t_cs = batch(N_VDSO, || { core::hint::black_box(abi.ctx_switches()); });
         report(abi, b"taskinfo [call]", t_cs, N_VDSO, floor_ns);
     }
 
     // 4d. N operations per trap against N traps (`sqpoll` is AzOS only).
     #[cfg(feature = "azos")]
-    ioring_lanes(abi, floor_ns);
+    if lanes.on(b"ioring") { ioring_lanes(abi, floor_ns); }
     #[cfg(feature = "linux")]
-    abi_linux::ioring_lanes(abi, floor_ns);
+    if lanes.on(b"ioring") { abi_linux::ioring_lanes(abi, floor_ns); }
     #[cfg(feature = "azos")]
-    sqpoll_lanes(abi, floor_ns);
+    if lanes.on(b"ioring") { sqpoll_lanes(abi, floor_ns); }
 
     // 4e. Wave 12: the user shell's primitives (`bench_core::Shell`), both
     //     sides. Appended before the closing floor, so no lane above moves.
-    shell_lanes(abi, floor_ns);
+    if lanes.on(b"shell") { shell_lanes(abi, floor_ns); }
 
     // 4f. Wave 13 (RT7): periodic timer wake jitter, both sides. Appended
     //     before the closing floor, so no lane above moves.
-    timer_periodic_lane(abi);
+    if lanes.on(b"timer") { timer_periodic_lane(abi); }
 
     // 5. The floor again, at the end. Not redundant: its spread against the
     //    first measurement is this run's noise floor, and any conclusion
@@ -2112,10 +2309,12 @@ fn run<A: Abi + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
     //    would have the noise control measured with that load on top: the
     //    resulting spread would look like host noise when it is declared load.
     //    Last, and the noise floor stays clean.
-    nic_egress_lane(abi, floor_ns);
-    net_lane(abi, floor_ns);
+    if lanes.on(b"net") {
+        nic_egress_lane(abi, floor_ns);
+        net_lane(abi, floor_ns);
+    }
 
-    loaded_switch_lane(abi, floor_ns, unloaded_yield_ns);
+    if lanes.on(b"switch") { loaded_switch_lane(abi, floor_ns, unloaded_yield_ns); }
 
     // Reserved: socketpair and futex on the Linux side, to bracket the pipe
     // number. One primitive per side is enough for a first honest comparison.

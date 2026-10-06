@@ -266,6 +266,13 @@ lx-wx-canary = ["lx-server", "azos_mm/lx-wx-canary"]
 # `deadline-hart-canary`: a task pinned to CPU 3, refused by `kernel_main`'s
 # second admission (with the real hart count) when booted `-smp 1`.
 deadline-hart-canary = ["azos_topology/deadline-hart-canary"]
+# Wave 15 TOPOSIGN canary: the signed-topology loader skips both signature
+# checks (`azos_topology::signed::fill_signed`), so a tampered CAPS.TOM that
+# still parses is installed. The gate's tampered-topology rows must turn red.
+topo-verify-skip-canary = ["azos_topology/topo-verify-skip-canary"]
+topo-sched-hash-canary = ["azos_topology/topo-sched-hash-canary"]
+topo-device-canary = ["azos_topology/topo-device-canary"]
+topo-replay-canary = ["azos_topology/topo-replay-canary"]
 # RFC-0027: per-function `#[wcet(...)]` runtime telemetry. Default OFF (CI gate
 # rejected, KILL2). Opt-in on real hardware (VF2/K1) where rdcycle is reliable.
 wcet = ["azos_drv_sys/wcet"]
@@ -712,11 +719,35 @@ ramfb = ["azos_display", "azos_display/qemu"]
 # mapped by tools/kconfig_to_cargo.py). Records per hart the longest
 # interrupts-masked and preemption-disabled windows and their call sites,
 # read out at `/proc/latency`. Off: no hook, no table, no procfs entry.
-lat-trace = ["azos_arch/lat-trace", "azos_sync/lat-trace"]
-# Kconfig `SYSCALL_TRACE`: record every syscall entry in the trace ring (riscv64).
-syscall-trace = []
+lat-trace = ["azos_arch/lat-trace", "azos_sync/lat-trace", "azos_mm/lat-trace"]
+# Wave 15 (TRACE) gate canaries. `trace-producer-canary`: the tracer's
+# producer never advances its index, so a reader sees one record per ring
+# (`trace: tracectl reads live` must fail). `trace-cap-canary`: TRACECTL.ELF's
+# row holds no `Cap<Trace>`, so every control call is refused and recorded.
+trace-producer-canary = ["azos_trace/producer-canary"]
+trace-cap-canary = ["azos_topology/trace-cap-canary"]
+# Wave 15 diagnostic: `[TRACE-COST]`, the tracepoint's masked, recording and
+# full-ring cost measured at boot (kernel/src/smokes/trace_cost.rs). Never shipped.
+trace-cost-probe = []
+# Wave 15 gate canary: the static-key patcher writes through the executable
+# text mapping; the boot must die on a store fault at that address
+# (`trace: static-key W^X canary`).
+trace-wx-canary = ["azos_ipc/text-poke-wx-canary"]
 # vsbench diagnostic: `[SPAWN-CENSUS]` per-phase spawn cost (crates/core/syscall/src/spawn.rs).
 spawn-census = ["azos_syscall/spawn-census"]
+# Wave 15: `azos_sched::swcensus`, the switch path phase by phase.
+switch-census = ["azos_sched/switch-census"]
+# vsbench diagnostic (wave 15, SLAB): `[KHEAP-*]` kernel heap census
+# (crates/core/mm/src/kheap_census.rs, crates/core/syscall/src/kheap_census.rs).
+kheap-census = ["azos_syscall/kheap-census"]
+# Gate canary only (wave 15, SLAB): a slab hands out a freed object without
+# unlinking it. The `kheap slab` self-test rows must go red.
+slab-freelist-canary = ["azos_mm/slab-freelist-canary"]
+# Wave 15 (DAIF): `irq_order_probe` (kernel/src/smokes/irq_order_probe.rs), a
+# function the gate's `irq order` rows disassemble; and its canary, which
+# gives the interrupt-mask asm `nomem` back.
+irq-order-probe = []
+irq-nomem-canary = ["irq-order-probe", "azos_arch/irq-nomem-canary"]
 # Debug output (owner: console output only in debug modes): a successful
 # spawn's `[SPAWN] tid=...` and `[SPAWN][PRIO]` lines and every exec's
 # `[VDSO] mapped` line. Refusals, floors, aborts and fallbacks print anyway.
@@ -891,6 +922,8 @@ azos_bench     = { path = "../domains/robot/bench", features = ["all"], optional
 azos_msc       = { workspace = true }
 azos_pubsub    = { workspace = true }
 azos_trace     = { workspace = true }
+# Wave 15: the trace ring layout (the cost probe reads its own ring).
+azos_spsc      = { workspace = true }
 azos_topology  = { workspace = true }
 azos_limits    = { workspace = true }
 # RFC-0047: the Linux personality's numbers (the aarch64 trap snapshots a

@@ -62,6 +62,8 @@ pub mod families;
 pub mod sensor_sample;
 pub mod syscall_nr;
 pub mod time;
+/// Wave 15: the kernel tracer's control call (632), classes and event ids.
+pub mod trace;
 pub mod types;
 pub mod ushell;
 pub mod vdso;

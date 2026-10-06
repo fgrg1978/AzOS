@@ -37,6 +37,9 @@ pub extern "C" fn aarch64_smp_secondary_start(hart_id: usize) -> ! {
     // CNTVCT_EL0 on this specific core, even though it worked fine before
     // the migration.
     azos_arch::sysregs::enable_el0_cntvct();
+    // Wave 15 (TRACE): this core's own tracer set-up (its cycle counter, when
+    // that is the timestamp source); nothing otherwise.
+    azos_trace::cpu_online();
 
     // Arm this core's own periodic tick at the SAME period the boot CPU
     // computed from the live `CNTFRQ_EL0` (`entry::aarch64::TICK_PERIOD`,
@@ -104,6 +107,7 @@ pub extern "C" fn smp_secondary_start(hart_id: usize) -> ! {
                   hart_id, MAX_CPUS);
         loop { azos_arch::cpu::wfi(); }
     }
+    azos_trace::cpu_online();
 
     // Also noted by the waker before `hart_start`; a hart that arrives here
     // without being started (see above) must still be in the shootdown's scan

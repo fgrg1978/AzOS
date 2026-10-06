@@ -531,3 +531,11 @@ mod fd_table {
         assert_eq!(env_lookup(b"A=1", b"A"), None, "an unterminated blob is not read");
     }
 }
+
+/// `azos_spsc::trace`: the kernel tracer's per-CPU record rings (wave 15).
+#[cfg(test)]
+mod trace_ring;
+
+/// `crates/core/trace/src/jump.rs`: static-key sites and encoders (wave 15).
+#[cfg(test)]
+mod jump_sites;

@@ -43,13 +43,22 @@ pub fn sfence_vma_addr(vaddr: usize) {
 #[inline(always)]
 pub fn read_sstatus() -> usize {
     let val: usize;
+    // A compiler barrier on purpose (no `nomem`): `sstatus` holds `SIE`, and
+    // no memory access may move across an interrupt-mask change. The
+    // `irq-nomem-canary` arm exists only for the gate's `irq order` canary.
+    #[cfg(not(feature = "irq-nomem-canary"))]
     unsafe { core::arch::asm!("csrr {}, sstatus", out(reg) val) };
+    #[cfg(feature = "irq-nomem-canary")]
+    unsafe { core::arch::asm!("csrr {}, sstatus", out(reg) val, options(nomem, nostack)) };
     val
 }
 
 #[inline(always)]
 pub fn write_sstatus(val: usize) {
+    #[cfg(not(feature = "irq-nomem-canary"))]
     unsafe { core::arch::asm!("csrw sstatus, {}", in(reg) val, options(nostack)) };
+    #[cfg(feature = "irq-nomem-canary")]
+    unsafe { core::arch::asm!("csrw sstatus, {}", in(reg) val, options(nomem, nostack)) };
 }
 
 #[inline(always)]

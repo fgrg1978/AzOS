@@ -15,6 +15,16 @@ azos_limits = { workspace = true }
 linked_list_allocator = { workspace = true }
 
 [features]
+# vsbench diagnostic only (wave 15, SLAB): count and time every kernel heap
+# alloc/free by size bucket and by syscall (src/kheap_census.rs). Never shipped.
+kheap-census = []
+# The masked-window tracer (kernel `lat-trace`): the heap's size-class cache
+# masks interrupts through the arch calls the tracer hooks, not its own asm.
+lat-trace = []
+# Canaries only (wave 15, SLAB), host rows in tests/host/mm-tests: a slab hands
+# a freed object out without unlinking it; objects are carved off alignment.
+slab-freelist-canary = []
+slab-align-canary = []
 # Gate row only (wave 13): `vdso_update` holds its write open longer, so an
 # interrupt inside it is all but certain were the write not masked. The
 # `vdso: write window` row boots abitest with it.

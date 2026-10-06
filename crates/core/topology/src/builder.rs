@@ -271,12 +271,13 @@ const RESOURCE_MMIO_RTC: &[u8] = b"mmio.0";
 // interrupt line, so `userspace/tests/captest` can raise an interrupt from ring 3,
 // bind it, and prove it is delivered and re-armed only by its ACK. aarch64
 // (wave 8): the PL031, `irq.34` (SPI 2). riscv64 (wave 9 IRQ4): the goldfish
-// RTC, `irq.11` (PLIC/APLIC source 11). `target_os = "none"`:
+// RTC, `irq.11` (PLIC/APLIC source 11). `topo_bare` / `topo_arch_*` (set by
+// `build.rs`: a kernel target, or the emitter's `emit-target-*` feature):
 // `tests/host/topology-tests` builds this crate for `aarch64-apple-darwin` with
 // `cap-refusal-canary` on, and must keep seeing the host-shaped topology.
-#[cfg(all(feature = "cap-refusal-canary", target_os = "none"))]
+#[cfg(all(feature = "cap-refusal-canary", topo_bare))]
 const RESOURCE_MMIO_RTC_RW: &[u8] = b"mmio.2";
-#[cfg(all(feature = "cap-refusal-canary", target_arch = "aarch64", target_os = "none"))]
+#[cfg(all(feature = "cap-refusal-canary", topo_arch_aarch64))]
 const RESOURCE_IRQ_RTC: &[u8] = b"irq.34";
 // `disk.part.1`, READ|WRITE (RFC-0048 P3, wave 9): partition 1 of the table
 // the kernel published — on the gate's partitioned image
@@ -305,7 +306,7 @@ const RESOURCE_TREE_FAT: &[u8] = b"/fat";
 #[cfg(feature = "cap-refusal-canary")]
 const RESOURCE_TREE_TMP: &[u8] = b"/tmp";
 
-#[cfg(all(feature = "cap-refusal-canary", target_arch = "riscv64", target_os = "none"))]
+#[cfg(all(feature = "cap-refusal-canary", topo_arch_riscv64))]
 const RESOURCE_IRQ_RTC: &[u8] = b"irq.11";
 // A line the capability range admits and QEMU `virt`'s interrupt controller
 // does not implement, so `userspace/tests/captest` can see a bind of it refused with
@@ -314,9 +315,9 @@ const RESOURCE_IRQ_RTC: &[u8] = b"irq.11";
 // (`riscv,num-sources = <0x60>`), the capability range is 1..128. aarch64:
 // SPI 1000 — the capability range is 32..=1019, the GICv3 distributor's
 // `ITLinesNumber` stops far below it.
-#[cfg(all(feature = "cap-refusal-canary", target_arch = "riscv64", target_os = "none"))]
+#[cfg(all(feature = "cap-refusal-canary", topo_arch_riscv64))]
 const RESOURCE_IRQ_ABSENT: &[u8] = b"irq.100";
-#[cfg(all(feature = "cap-refusal-canary", target_arch = "aarch64", target_os = "none"))]
+#[cfg(all(feature = "cap-refusal-canary", topo_arch_aarch64))]
 const RESOURCE_IRQ_ABSENT: &[u8] = b"irq.1000";
 // The ten sensor types the legacy autorun seed already grants RO
 // (`kernel/src/tasks/loader.rs`, `HandleKind::Sensor(st)` for st in 0..=9). Declared
@@ -598,7 +599,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 perms: CapPerms::READ,
                 target: MaybeStr::from_bytes(RESOURCE_MMIO_RTC), transfer: false,
         },
-            #[cfg(all(feature = "cap-refusal-canary", target_os = "none"))]
+            #[cfg(all(feature = "cap-refusal-canary", topo_bare))]
             CapSpec {
                 kind: CapKind::MmioRegion,
                 perms: CapPerms::RW,
@@ -628,7 +629,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 perms: CapPerms::RW,
                 target: MaybeStr::from_bytes(RESOURCE_TREE_TMP), transfer: false,
         },
-            #[cfg(all(feature = "cap-refusal-canary", target_os = "none"))]
+            #[cfg(all(feature = "cap-refusal-canary", topo_bare))]
             CapSpec {
                 kind: CapKind::Irq,
                 perms: CapPerms::READ,
@@ -754,7 +755,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_BENCH), transfer: false,
         },
             // Last, so no earlier grant changes slot (wave 10 IRQ5).
-            #[cfg(all(feature = "cap-refusal-canary", target_os = "none"))]
+            #[cfg(all(feature = "cap-refusal-canary", topo_bare))]
             CapSpec {
                 kind: CapKind::Irq,
                 perms: CapPerms::READ,
@@ -1249,6 +1250,16 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             .expect("default_minimal_topology: family tool push failed");
         topo.set_last_task_mem_pages(POWER_MEM_PAGES);
     }
+    // Wave 15 (TRACE): the tracer's reader, the POWER.ELF pattern. Its row is
+    // the whole of its authority: `Cap<Trace>` (READ maps the rings, WRITE
+    // sets the class mask), checked by `SYS_TRACE_CTL_TYPED` on every call,
+    // and `/fat` read-write for `tracectl stream -o FILE`. The shell holds
+    // only the right to start it, not under `CONSOLE_LOCKDOWN`. Pushed after
+    // every earlier row, so no index another test pins moves.
+    topo.push_task(MaybeStr::from_bytes(TASK_TRACECTL_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, TRACECTL_CAPS)
+        .expect("default_minimal_topology: TRACECTL.ELF push failed");
+    topo.set_last_task_mem_pages(TRACECTL_MEM_PAGES);
+    topo.set_last_task_instances(TRACECTL_INSTANCES);
     // RFC-0053 L0: the Linux driver server skeleton, only under `lx-server`
     // (Kconfig LINUX_DRIVERS + LX_SERVER_SKELETON). No capability at all: a
     // Linux server never holds an actuator (`Motor`, `Pwm`, `Gpio`, `Estop`),
@@ -1538,6 +1549,39 @@ const POWER_CAPS: &[CapSpec] = &[CapSpec {
 #[cfg(feature = "power-cap-canary")]
 const POWER_CAPS: &[CapSpec] = &[];
 
+/// The tracer's reader (wave 15, TRACE).
+pub const TASK_TRACECTL_IMAGE: &[u8] = b"TRACECTL.ELF";
+/// Frame budget of `TRACECTL.ELF`: image, stack, its record batch and the
+/// trace region's mapping (at most `MAX_SHM_PAGES`, 64 pages, booked to the
+/// region, not here); 48 pages, as `TOOLBOX.ELF`.
+const TRACECTL_MEM_PAGES: u32 = 48;
+/// Live `TRACECTL.ELF` instances: the one reader (`stream`, the rings' only
+/// consumer) and one controller (`start`/`stop`/`info`, which consume
+/// nothing) beside it. Structural, not a tuning knob: a second reader would
+/// race the first on every tail.
+const TRACECTL_INSTANCES: u16 = 2;
+/// `TRACECTL.ELF`'s authority: `Cap<Trace>` read-write, and `/fat`
+/// read-write for a trace file. Under `trace-cap-canary` the tracer grant is
+/// withheld: every control call is refused by the capability and recorded
+/// (gate row `trace: refused without Cap<Trace>`).
+#[cfg(not(feature = "trace-cap-canary"))]
+const TRACECTL_CAPS: &[CapSpec] = &[
+    CapSpec {
+        kind: CapKind::Trace,
+        perms: CapPerms::RW,
+        target: MaybeStr::from_bytes(b"trace"), transfer: false,
+    },
+    FAT_RW,
+];
+#[cfg(feature = "trace-cap-canary")]
+const TRACECTL_CAPS: &[CapSpec] = &[FAT_RW];
+/// The `/fat` tree, read-write.
+const FAT_RW: CapSpec = CapSpec {
+    kind: CapKind::File,
+    perms: CapPerms::RW,
+    target: MaybeStr::from_bytes(b"/fat"), transfer: false,
+};
+
 /// `SH.ELF`'s priority: the most urgent `best_effort` number. Under
 /// `ushell-prio-canary` the two numbers are swapped, so a tool out-ranks the
 /// shell and a CPU-bound one starves it on its hart.
@@ -1599,6 +1643,12 @@ const SH_CAPS: &[CapSpec] = &[
         kind: CapKind::Launch,
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_OTA_IMAGE), transfer: false,
+    },
+    // Wave 15 (TRACE): the tracer's reader.
+    CapSpec {
+        kind: CapKind::Launch,
+        perms: CapPerms::EXEC,
+        target: MaybeStr::from_bytes(TASK_TRACECTL_IMAGE), transfer: false,
     },
     CapSpec {
         kind: CapKind::File,

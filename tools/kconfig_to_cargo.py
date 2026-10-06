@@ -84,7 +84,7 @@ DEFAULT_TARGET = "riscv64imac-unknown-none-elf"
 #   vf2, k1, rvv, qemu, tftp-smoke, no-ml, no-mmu, secure-boot-enforced,
 #   link-auth-enforced, link-encrypt-enforced, sched-aps, lat-trace,
 #   pci, hdmi, ramfb, page-16k, page-64k, camera, domain-robot, energy,
-#   syscall-trace
+#   switch-census
 #
 # `no-opensbi` and `uefi` were removed 2026-09-21 (B2-02/B2-03): neither was
 # wired to a real boot path (see kernel/Cargo.toml's [features] comment), so
@@ -153,7 +153,7 @@ KCONFIG_TO_CARGO_FEATURE: dict[str, Optional[str]] = {
     # crates and in crates/core/sync behind cargo features (kernel `lat-trace`
     # forwards to both), so off means not compiled, not merely not called.
     "CONFIG_LAT_TRACE": "lat-trace",
-    "CONFIG_SYSCALL_TRACE": "syscall-trace",
+    "CONFIG_SWITCH_CENSUS": "switch-census",
 
     # Optional buses and display drivers (config/Kconfig.drivers, wave 11).
     # Each is a kernel feature that already existed with no Kconfig symbol;

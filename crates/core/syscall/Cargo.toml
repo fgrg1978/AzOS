@@ -10,6 +10,7 @@ azos_abi = { workspace = true }
 azos_sched = { workspace = true }
 azos_mm = { workspace = true }
 azos_net = { workspace = true }
+azos_trace = { workspace = true }
 azos_ipc = { workspace = true }
 azos_service = { workspace = true }
 azos_robot = { workspace = true, optional = true }
@@ -122,6 +123,9 @@ ipc-census = []
 # address space, the rest), as `[SPAWN-CENSUS]`: every miss of the verified-image
 # cache, and the average of every 32 hits.
 spawn-census = []
+# vsbench diagnostic (wave 15, SLAB): tag kernel heap traffic by syscall and
+# print `[KHEAP-*]` tables (src/kheap_census.rs). Never shipped.
+kheap-census = ["azos_mm/kheap-census"]
 # Debug output: a successful spawn's `[SPAWN] tid=...` and `[SPAWN][PRIO]`
 # lines (refusals, floors and aborts print without it). Kernel `spawn-log`.
 spawn-log = []

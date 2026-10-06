@@ -959,6 +959,20 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         audit: false,
     },
+    // Wave 15 (TRACE): the tracer's reader, the POWER.ELF shape. The ONLY
+    // profile that lists `SYS_TRACE_CTL_TYPED` (632); `SYS_CAP_LOOKUP` finds
+    // the `Cap<Trace>` its row grants; `SYS_SLEEP` between drains (the rings
+    // are polled: the producer rings no doorbell); `SYS_UPTIME` where the
+    // clock vDSO falls back to it (`rdtime` not native); 563/565/566 and 600
+    // for `-o FILE` (and 565 for a redirected stdout).
+    ImageProfile {
+        image: "TRACECTL.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_WRITE, SYS_SLEEP, SYS_UPTIME, SYS_CAP_LOOKUP, SYS_TRACE_CTL_TYPED,
+            SYS_FILE_OPEN_TYPED, SYS_FILE_WRITE_TYPED, SYS_CLOSE_TYPED, SYS_FSYNC_TYPED,
+        ],
+        audit: false,
+    },
     // RFC-0053 L0/L0b: the Linux driver server skeleton. Reads its test
     // module off the boot volume (563/564/566), prints through libsys
     // `println` (1, its fallback), builds the two regions with

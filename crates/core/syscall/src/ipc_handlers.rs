@@ -791,7 +791,7 @@ pub fn sys_shm_map_typed(cap_raw: u64) -> i64 {
     use azos_abi::cap::{CapHandle, CapPerms};
     use azos_abi::error::Errno;
     use azos_ipc::cap::{targets::Shm, Cap};
-    use azos_ipc::shm::{self, ShmCapError, ShmPerms, MAX_SHM_PAGES};
+    use azos_ipc::shm::{self, ShmCapError, ShmPerms};
 
     let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
     let tid = azos_sched::current_task_tid();
@@ -808,6 +808,16 @@ pub fn sys_shm_map_typed(cap_raw: u64) -> i64 {
         Some(Err(e)) => return errno_for_shm_err(e),
         None => return Errno::EINVAL.to_syscall_ret(),
     };
+    map_region_ref(tid, r, writable)
+}
+
+/// The mapping half of [`sys_shm_map_typed`], once an authority has resolved
+/// region `r` for `tid` (a `Cap<Shm>` there; a `Cap<Trace>` for the tracer's
+/// region, `crate::trace_ctl`): map it into the caller, book the mapping,
+/// and answer its base address or the errno 574 documents.
+pub(crate) fn map_region_ref(tid: u32, r: u32, writable: bool) -> i64 {
+    use azos_abi::error::Errno;
+    use azos_ipc::shm::{self, MAX_SHM_PAGES};
     if azos_sched::current_user_pt() == 0 {
         return Errno::EINVAL.to_syscall_ret();
     }

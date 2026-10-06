@@ -7559,7 +7559,8 @@ board_volume_row() {
     printf '%s\n' "$out" | grep -aq "^CONFIG.SIG verified" \
         && printf '%s\n' "$out" | grep -aq "^MLP.RML verified" \
         && printf '%s\n' "$out" | grep -aq "^POLICY.GGF verified" \
-        || { bad; echo "      the board volume's signatures were not verified under the board key"; return; }
+        && printf '%s\n' "$out" | grep -aq "^CAPS.TOM/SCHED.TOM verified, bound (counter Some(1))" \
+        || { bad; echo "      the board volume's signatures (CONFIG, ML data, topology) were not verified under the board key"; return; }
     ok
 }
 board_volume_row
@@ -8242,15 +8243,34 @@ else
         echo "      the orderly-reboot-smoke kernel did not build"
     fi
     kbuild "qemu"
+    # Wave 15 (TOPOSIGN follow-up): the product profiles default to
+    # TOPOLOGY_SOURCE_SIGNED_REQUIRED and halt without the signed topology, so
+    # their QEMU boots get a volume carrying one: the plain disk plus that
+    # profile's topology (its .config and kconfig_to_cargo features), bound
+    # to the disk's device id. SIGNED WITH THE TEST KEY, and named `-testkey`
+    # for it: the gate builds these kernels with the test public key
+    # (TOPOLOGY_PUBKEY_PATH, exported at the top); a product volume is never
+    # signed with it (`make vf2`/`k1`/`build-fleet` refuse). One image per
+    # boot: the boot writes the counter floor and the flight recorder.
+    product_testkey_disk() { # <.config> <out image>
+        cp build/disk.img "$2" && make topo-volume TOPO_IMAGE="$2" TOPO_ISA=riscv64 TOPO_KCONFIG_RISCV64="$1" \
+            TOPO_KERNEL_FEATURES="$(python3 tools/kconfig_to_cargo.py "$1" | sed -n 's/.*--features //p')" >/dev/null 2>&1
+    }
     # The embedded image (config/defconfigs/robot-embedded.config, kernel/linker-embedded.ld)
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
     # from the device tree.
-    if [ "$EMBEDDED_BUILT" = "1" ]; then
-        KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 64 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 64M
-        KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 16 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 16M
+    if [ "$EMBEDDED_BUILT" = "1" ] && make_disk build/disk.img \
+       && product_testkey_disk "$EMBEDDED_CONFIG" build/disk-embedded64-testkey.img \
+       && product_testkey_disk "$EMBEDDED_CONFIG" build/disk-embedded16-testkey.img; then
+        KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 64 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 64M \
+            -global virtio-mmio.force-legacy=false -drive file=build/disk-embedded64-testkey.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
+        KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 16 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 16M \
+            -global virtio-mmio.force-legacy=false -drive file=build/disk-embedded16-testkey.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
     else
         for row in "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"; do
-            printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass; not booted"; done
+            printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass, or its test-key topology volume was not built; not booted"; done
     fi
     # The fleet image (config/defconfigs/robot-fleet.config, kernel/linker-fleet.ld), whose
     # tables are sized for 4096 tasks. Its first boots found three faults the
@@ -8272,7 +8292,9 @@ else
         bad_re="\[PAGE FAULT\]|\[FATAL\]|panic|${QEMU_FAIL_RE}"
         rm -f "$log"
         par_ready   # $FLEET_KERNEL is built once, in [1/4], into its own target dir
-        "$QEMU" -machine virt -nographic -bios default -kernel "$FLEET_KERNEL" -smp 4 -m 1G >"$log" 2>&1 &
+        "$QEMU" -machine virt -nographic -bios default -kernel "$FLEET_KERNEL" -smp 4 -m 1G \
+            -global virtio-mmio.force-legacy=false -drive file=build/disk-fleet-testkey.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
         pid=$!
         while [ "$n" -lt 240 ]; do
             grep -aq "Starting scheduler on boot CPU" "$log" 2>/dev/null && break
@@ -8302,14 +8324,15 @@ else
         fi
         ok; rm -f "$log"
     }
-    if [ "$FLEET_BUILT" = "1" ]; then
+    if [ "$FLEET_BUILT" = "1" ] && make_disk build/disk.img \
+       && product_testkey_disk "$FLEET_CONFIG" build/disk-fleet-testkey.img; then
         # Alone: on a loaded host TCG stretches timer_isr past its WCET bound,
         # the `[WCET] VIOLATION` lines overflow the console buffer while ring 3
         # holds it, and `[CONSOLE] dropped` fails the row (seen 2026-10-03 with
         # four jobs and other fronts' QEMUs running).
         par -s "fleet: boots in 1 GiB" fleet_boot_scenario
     else
-        printf "  %-26s" "fleet: boots in 1 GiB..."; bad; echo "      fleet build row did not pass; not booted"
+        printf "  %-26s" "fleet: boots in 1 GiB..."; bad; echo "      fleet build row did not pass, or its test-key topology volume was not built; not booted"
     fi
 
     # W^X, read back from the page table rather than announced.
@@ -9951,6 +9974,122 @@ PY
     fi
     QEMU_FAIL_RE="$QEMU_FAIL_RE|TOPO\] Memory admission: [0-9]" \
         par "mem: huge row, option off" kq "qemu,huge-leaves-smoke" "mem: huge row, option off" "Memory admission REFUSED: row [0-9]* (UHELLO.ELF) declares mem_huge_mib = 4 but this kernel was built without LOCKED_HUGE_LEAVES" 60 -smp 1
+
+    # ── Wave 15 (SLAB): the kernel heap's size-class cache ───────────────────
+    #
+    # `kernel_main` runs `kheap::slab_selftest` when KHEAP_SLAB_DEBUG is on (the
+    # development configurations): every class through its magazines, the
+    # depot and a new slab, objects tagged at both ends, half freed and pushed
+    # back into the slab free lists by `reclaim`, reallocated, every tag
+    # re-read, then a final `reclaim` that must leave no magazine holding an
+    # object. The same boot runs the poison and red-zone checks on every small
+    # allocation the kernel makes. Host rows: tests/host/mm-tests slab_tests.
+    #
+    # Canary (both ISAs, in the gate): `slab-freelist-canary` makes a slab
+    # hand out a freed object without unlinking it. The boot must stop on the
+    # poison check (`written after free`: a panic located in slab.rs) or the
+    # self-test must say FAILED; a PASS line means the checks are not looking.
+    kheap_slab_row() { # kheap_slab_row <isa: rv|arm> <features> <pass|canary>
+        local isa="$1" feats="$2" want="$3"
+        local label="kheap slab: self-test ($isa)"
+        [ "$want" = canary ] && label="kheap slab: canary refused ($isa)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/kheap-slab-${want}-${isa}.log" kimg="$CI_LOG_DIR/kernel-kheap-slab-${want}-${isa}"
+        rm -f "$log" "$kimg"
+        if [ "$isa" = rv ]; then
+            kbuild "$feats" || { bad; echo "      riscv64 --features $feats did not build"; return; }
+            cp "$KERNEL" "$kimg"
+        else
+            a64_kbuild "$feats" || { bad; echo "      aarch64 --features $feats did not build"; return; }
+            cp "$A64_IMG" "$kimg"
+        fi
+        par_ready
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        if [ "$isa" = rv ]; then
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 </dev/null >"$log" 2>&1 &
+        else
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+                -kernel "$kimg" </dev/null >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        while [ "$i" -lt 180 ]; do
+            grep -aq "Heap slab self-test\|At scheduler start" "$log" 2>/dev/null && break
+            grep -aqE '\[FATAL\]|KERNEL PANIC|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 1
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$kimg"
+        tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+        local passed=0 caught=0
+        grep -aqE '^\[MM\] Heap slab self-test: [1-9][0-9]* objects in [1-9][0-9]* classes, reclaim returned [0-9]+ B: PASS$' "$log" && passed=1
+        # The panic handler prints where, not what: a panic located in
+        # slab.rs is the poison check (`written after free`) firing.
+        grep -aqE 'Heap slab self-test FAILED|^  at crates/core/mm/src/slab\.rs:[0-9]+' "$log" && caught=1
+        if [ "$want" = pass ] && [ "$passed" = 1 ] && [ "$caught" = 0 ] \
+           && ! grep -aqE 'KERNEL PANIC|\[FATAL\]|kheap slab:' "$log"; then
+            ok; grep -a "Heap slab self-test" "$log" | sed 's/^/      /'; rm -f "$log"; return
+        fi
+        if [ "$want" = canary ] && [ "$caught" = 1 ] && [ "$passed" = 0 ]; then
+            ok; rm -f "$log"; return
+        fi
+        bad; grep -a "Heap slab\|kheap slab\|PANIC\|FATAL" "$log" | sed -n '1,6p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    }
+    par -s "kheap slab: self-test (rv)" kheap_slab_row rv qemu pass
+    par -s "kheap slab: self-test (arm)" kheap_slab_row arm qemu pass
+    par -s "kheap slab: canary refused (rv)" kheap_slab_row rv qemu,slab-freelist-canary canary
+    par -s "kheap slab: canary refused (arm)" kheap_slab_row arm qemu,slab-freelist-canary canary
+
+    # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
+    #
+    # aarch64's `read_daif`/`write_daif`/`enable_irq` were `nomem`, so LLVM
+    # could move plain loads and stores across `ARCH.disable_all()` /
+    # `restore()`, out of the window the caller masked. They are barriers now
+    # (riscv64's `sstatus` accessors always were). `irq-order-probe` builds
+    # `azos_irq_order_probe` (kernel/src/smokes/irq_order_probe.rs): store 1,
+    # mask, store 2, restore. Read in the disassembly: two stores, the first
+    # before the masking write (`csrw sstatus` / `msr DAIF`).
+    #
+    # Canary (both ISAs, in the gate): `irq-nomem-canary` gives the mask asm
+    # `nomem` back; the first store is then dead and LLVM drops it, so the
+    # row must find one store, or the first store after the mask.
+    irq_order_row() { # irq_order_row <isa: rv|arm> <features> <pass|canary>
+        local isa="$1" feats="$2" want="$3" elf objdump dis mask
+        local label="irq order: store before mask ($isa)"
+        [ "$want" = canary ] && label="irq order: canary refused ($isa)"
+        printf "  %-26s" "${label}..."
+        if [ "$isa" = rv ]; then
+            kbuild "$feats" || { bad; echo "      riscv64 --features $feats did not build"; return; }
+            elf="$KERNEL"; mask='csrw[[:space:]]+sstatus'
+        else
+            a64_kbuild "$feats" || { bad; echo "      aarch64 --features $feats did not build"; return; }
+            elf="$A64_KERNEL"; mask='msr[[:space:]]+DAIF,'
+        fi
+        objdump="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objdump"
+        dis="$("$objdump" -d --no-show-raw-insn --disassemble-symbols=azos_irq_order_probe "$elf" 2>/dev/null \
+               | grep -E '^[[:space:]]*[0-9a-f]+:[[:space:]]')"
+        local stores first_store first_mask
+        stores="$(printf '%s\n' "$dis" | grep -cE '[[:space:]](sd|str)[[:space:]]')"
+        first_store="$(printf '%s\n' "$dis" | grep -nE '[[:space:]](sd|str)[[:space:]]' | sed -n '1s/:.*//p')"
+        first_mask="$(printf '%s\n' "$dis" | grep -nE "$mask" | sed -n '1s/:.*//p')"
+        if [ -z "$dis" ] || [ -z "$first_mask" ]; then
+            bad; echo "      azos_irq_order_probe not found or has no mask instruction in $elf"; return
+        fi
+        local ordered=0
+        [ "$stores" -eq 2 ] && [ -n "$first_store" ] && [ "$first_store" -lt "$first_mask" ] && ordered=1
+        if { [ "$want" = pass ] && [ "$ordered" = 1 ]; } || { [ "$want" = canary ] && [ "$ordered" = 0 ]; }; then
+            ok; return
+        fi
+        bad; echo "      stores=$stores first store at line ${first_store:-none}, first mask at line $first_mask:"
+        printf '%s\n' "$dis" | sed 's/^/        /'
+    }
+    par -s "irq order: store before mask (rv)" irq_order_row rv qemu,irq-order-probe pass
+    par -s "irq order: store before mask (arm)" irq_order_row arm qemu,irq-order-probe pass
+    par -s "irq order: canary refused (rv)" irq_order_row rv qemu,irq-nomem-canary canary
+    par -s "irq order: canary refused (arm)" irq_order_row arm qemu,irq-nomem-canary canary
     kbuild "qemu"
 
     # The diagnostic counters that must stay at zero, on a kernel that has them.
@@ -10538,6 +10677,344 @@ PY
     }
     par_row config_authority_row "config: replay refused, lost sig latches"         rv
     par_row config_authority_row "aarch64 config: replay refused, lost sig latches" arm
+
+    # ── topology: the signed capability topology from the volume (wave 15) ──
+    #
+    # Kconfig TOPOLOGY_SOURCE (QEMU default SIGNED_OR_BUILTIN): the kernel
+    # installs /fat/CAPS.TOM + CAPS.SIG and /fat/SCHED.TOM when CAPS.SIG
+    # verifies against the embedded key, CAPS.TOM's binding names this device,
+    # a counter no lower than the floor (reserved tail sector 3) and SCHED.TOM's
+    # SHA-256, and the set parses and is admitted. `make topo-volume` writes the
+    # gate kernel's built-in topology onto an image, bound to the image's own
+    # device id, counter TOPO_COUNTER (TEST key: these are QEMU fixtures).
+    #
+    # Shared prep for every row below: copies of the plain disk, each bound by
+    # `topo-volume`, and the boot helper. A boot's verdict data: the log, the
+    # SAFETY_TOPO_SOURCE (0x1A) records left on the volume ("<n> <action>
+    # <detail>" of the last: header 16 B, 32-byte records, kind at 8 (0x03),
+    # code at 12, action at 13, detail u32 LE at 16, `LogRecord::encode`), and
+    # the topology counter floor read back off the image.
+    topo_prep() { # <isa> <out image> [make vars...]: base disk + a bound set
+        local isa="$1" out="$2" base tisa; shift 2
+        base=build/disk.img; tisa=riscv64
+        [ "$isa" = arm ] && { base=build/disk-aarch64.img; tisa=aarch64; }
+        par_shared "make topo-volume" || return 1
+        make_disk "$base"
+        cp "$base" "$out"
+        make topo-volume TOPO_IMAGE="$out" TOPO_ISA="$tisa" TOPO_KCONFIG_RISCV64="$PRIMARY_CONFIG" \
+            TOPO_KCONFIG_AARCH64="$AARCH64_CONFIG" "$@" >/dev/null 2>&1
+    }
+    topo_boot() { # <isa> <kernel> <image> <log>: boot to the topology install, then read the volume
+        local isa="$1" k="$2" img="$3" pid i
+        log="$4"; rm -f "$log"
+        if [ "$isa" = rv ]; then
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -kernel "$k" -smp 2 \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+        else
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                -kernel "$k" -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+        fi
+        pid=$!; i=0
+        while [ "$i" -lt 240 ]; do
+            grep -aqF "[TOPO] Topology installed:" "$log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled|\[TOPO\] HALTED" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 2   # margin past the marker (records and the floor are flushed before it)
+        kill "$pid" 2>/dev/null; sleep 1; kill -0 "$pid" 2>/dev/null && kill -9 "$pid"; wait "$pid" 2>/dev/null
+        # This boot's recorder file: each boot opens the next LOG/LOGnnnnn.BIN
+        # (the replay mode boots one volume twice).
+        rec="0 0 0"
+        lastlog="$(mdir -b -i "$img" ::LOG 2>/dev/null | grep -aiE 'LOG[0-9]+\.BIN$' | sort | sed -n '$p')"
+        if [ -n "$lastlog" ] && mcopy -n -i "$img" "$lastlog" "$img.rec" 2>/dev/null; then
+            rec="$(python3 - "$img.rec" <<'PY'
+import struct, sys
+b = open(sys.argv[1], 'rb').read()
+n, last = 0, (0, 0)
+for off in range(16, len(b) - 31, 32):
+    r = b[off:off + 32]
+    if r[8] == 0x03 and r[12] == 0x1A:
+        n += 1; last = (r[13], struct.unpack_from('<I', r, 16)[0])
+print(n, last[0], '%#010x' % last[1])
+PY
+)"
+            rm -f "$img.rec"
+        fi
+        floor="$(python3 tools/device_provision.py --show --topo-floor "$img" | sed -n 's/^topo-floor //p')"
+        installed="$(grep -a "\[TOPO\] Topology installed:" "$log" | sed -n '1s/.*installed: \([0-9]*\) classes, \([0-9]*\) tasks.*/\1 \2/p')"
+        crashed=""
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" && crashed=1
+        return 0
+    }
+    topo_kernel() { # <isa> <extra features> <out kernel>
+        if [ "$1" = rv ]; then
+            kbuild "qemu$2" >/dev/null || return 1
+            cp "$KERNEL" "$3"
+        else
+            a64_kbuild "qemu$2" >/dev/null || return 1
+            cp "$A64_IMG" "$3"
+        fi
+    }
+
+    # Signed set, then a tampered one. Two boots of copies of one bound image:
+    #   1. as bound: "[TOPO] source: signed", installed "from the signed
+    #      files", the floor raised 0 -> 1, no SAFETY_TOPO_SOURCE record;
+    #   2. CAPS.TOM with one row's `priority = 16` made 17 (still parses, still
+    #      admitted, binding intact: only the signature can refuse it):
+    #      REFUSED with Signature(Caps, InvalidSignature), installed "from the
+    #      built-in topology", exactly one record, action 2 (fallback invalid),
+    #      detail 0x31000000 (signature step, CAPS file).
+    # Boot 1's class and task counts must equal boot 2's: the signed files
+    # carry the built-in topology.
+    # Canary: `topo-verify-skip-canary` installs the tampered file: red.
+    toposign_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <expect: PASS|FAIL>
+        local label="$1" isa="$2" extra="$3" expect="$4"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug kimg dir log why="" rec floor installed crashed counts1="" lastlog
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        kimg="$CI_LOG_DIR/${slug}-kernel"; dir="$CI_LOG_DIR/${slug}.d"
+        rm -rf "${dir:?}"; mkdir -p "$dir"
+        topo_kernel "$isa" "$extra" "$kimg" || { bad; echo "      $isa kernel (qemu$extra) did not build"; return; }
+        if ! topo_prep "$isa" "$dir/bound.img"; then bad; echo "      make topo-volume failed"; rm -f "$kimg"; return; fi
+        mcopy -n -i "$dir/bound.img" ::CAPS.TOM "$dir/CAPS.TOM" 2>/dev/null
+        sed 's/^priority = 16$/priority = 17/' "$dir/CAPS.TOM" >"$dir/CAPS.TAMPERED"
+        if cmp -s "$dir/CAPS.TOM" "$dir/CAPS.TAMPERED"; then
+            bad; echo "      the bound CAPS.TOM has no 'priority = 16' row to tamper with"; rm -f "$kimg"; return
+        fi
+        cp "$dir/bound.img" "$dir/boot1.img"
+        topo_boot "$isa" "$kimg" "$dir/boot1.img" "$CI_LOG_DIR/${slug}-boot1.log"
+        counts1="$installed"
+        if [ -n "$crashed" ]; then why="boot 1: kernel crashed"
+        elif ! grep -aqF "[TOPO] source: signed /fat/CAPS.TOM" "$log"; then why="boot 1: the signed set was not installed"
+        elif ! grep -aqF "tasks, from the signed files in" "$log"; then why="boot 1: not installed from the signed files"
+        elif [ "$floor" != 1 ]; then why="boot 1: the topology floor on the image is '${floor:-absent}', not 1"
+        elif [ "${rec%% *}" != 0 ]; then why="boot 1: SAFETY_TOPO_SOURCE records on the volume ($rec)"
+        fi
+        if [ -z "$why" ]; then
+            cp "$dir/bound.img" "$dir/boot2.img"
+            mcopy -o -i "$dir/boot2.img" "$dir/CAPS.TAMPERED" ::CAPS.TOM
+            topo_boot "$isa" "$kimg" "$dir/boot2.img" "$CI_LOG_DIR/${slug}-boot2.log"
+            if [ -n "$crashed" ]; then why="boot 2: kernel crashed"
+            elif ! grep -aqF "[TOPO] REFUSED: the signed topology on the volume: Signature(Caps, InvalidSignature)" "$log"; then
+                why="boot 2: the tampered CAPS.TOM was not refused by its signature"
+            elif ! grep -aqF "tasks, from the built-in topology in" "$log"; then why="boot 2: the built-in topology was not installed"
+            elif [ "$rec" != "1 2 0x31000000" ]; then why="boot 2: SAFETY_TOPO_SOURCE records on the volume are '$rec', not one fallback-invalid (2) with detail 0x31000000"
+            elif [ -z "$counts1" ] || [ "$counts1" != "$installed" ]; then
+                why="the signed set installed '$counts1' classes/tasks, the built-in topology '$installed'"
+            fi
+        fi
+        rm -f "$kimg"
+        if [ "$expect" = FAIL ]; then
+            if [ -n "$why" ]; then ok; echo "      canary red as it must: $why"; rm -rf "${dir:?}"; rm -f "${CI_LOG_DIR:?}/${slug:?}"-boot*.log
+            else bad; echo "      the canary kernel refused the tampered file: the row does not discriminate"
+                 echo "      logs kept: $CI_LOG_DIR/${slug}-boot*.log"; fi
+            return
+        fi
+        if [ -z "$why" ]; then
+            ok; echo "      signed and built-in: ${counts1% *} classes, ${counts1#* } tasks; floor 0 -> 1; tampered refused, record $rec"
+            rm -rf "${dir:?}"; rm -f "${CI_LOG_DIR:?}/${slug:?}"-boot*.log; return
+        fi
+        bad; echo "      $why"
+        grep -a "\[TOPO\]" "$log" | tr -d '\r' | sed -n '1,6p' | sed 's/^/      /'
+        echo "      logs kept: $CI_LOG_DIR/${slug}-boot*.log"
+    }
+    par_row toposign_row "topology: signed set, tampered refused"         rv  ""                         PASS
+    par_row toposign_row "topology: tampered, verify skipped (canary)"    rv  ",topo-verify-skip-canary" FAIL
+    par_row toposign_row "aarch64 topology: signed set, tampered refused" arm ""                         PASS
+    par_row toposign_row "aarch64 topology: verify skipped (canary)"      arm ",topo-verify-skip-canary" FAIL
+
+    # ── topology: anti-replay — the binding in the signed CAPS.TOM (wave 15) ──
+    #
+    # One signature covers both files; CAPS.TOM binds SCHED.TOM's hash, the
+    # device id and a counter. Each mode boots files that are validly signed
+    # and refused for one binding reason only, and reads the reason back from
+    # the console AND from the SAFETY_TOPO_SOURCE record's detail:
+    #   replay: counter 2 boots and raises the floor 0 -> 2 (read back off the
+    #           image); then the counter-1 CAPS.TOM + CAPS.SIG (validly signed
+    #           for this device) on the same volume: REFUSED Replay { counter:
+    #           1, floor: 2 }, detail 0x91000001, the floor still 2;
+    #   sched:  SCHED.TOM swapped for a well-formed one with one class's
+    #           time slice changed: REFUSED SchedHashMismatch, 0x72000000;
+    #   device: a set bound to another device id: REFUSED WrongDevice,
+    #           0x81000000.
+    # Every refusal falls back to the built-in topology with one record,
+    # action 2. Canaries: `topo-replay-canary`, `topo-sched-hash-canary`,
+    # `topo-device-canary` each skip the one check: the file installs, red.
+    toposign_bind_row() { # <label> <isa: rv|arm> <mode: replay|sched|device> <extra features> <expect: PASS|FAIL>
+        local label="$1" isa="$2" mode="$3" extra="$4" expect="$5"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug kimg dir log why="" rec floor installed crashed want lastlog
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        kimg="$CI_LOG_DIR/${slug}-kernel"; dir="$CI_LOG_DIR/${slug}.d"
+        rm -rf "${dir:?}"; mkdir -p "$dir"
+        topo_kernel "$isa" "$extra" "$kimg" || { bad; echo "      $isa kernel (qemu$extra) did not build"; return; }
+        case "$mode" in
+        replay)
+            want="Replay { counter: 1, floor: 2 }|1 2 0x91000001"
+            # The counter-1 pair for this image's device, then the image bound at 2.
+            if ! topo_prep "$isa" "$dir/old.img" TOPO_COUNTER=1; then bad; echo "      topo-volume (counter 1) failed"; return; fi
+            mcopy -n -i "$dir/old.img" ::CAPS.TOM "$dir/CAPS.OLD" && mcopy -n -i "$dir/old.img" ::CAPS.SIG "$dir/SIG.OLD"
+            cp "$dir/old.img" "$dir/vol.img"
+            if ! make topo-volume TOPO_IMAGE="$dir/vol.img" TOPO_ISA="$([ "$isa" = arm ] && echo aarch64 || echo riscv64)" \
+                    TOPO_KCONFIG_RISCV64="$PRIMARY_CONFIG" TOPO_KCONFIG_AARCH64="$AARCH64_CONFIG" TOPO_COUNTER=2 >/dev/null 2>&1; then
+                bad; echo "      topo-volume (counter 2) failed"; return
+            fi
+            topo_boot "$isa" "$kimg" "$dir/vol.img" "$CI_LOG_DIR/${slug}-boot1.log"
+            if [ -n "$crashed" ]; then why="boot 1: kernel crashed"
+            elif ! grep -aqF "tasks, from the signed files in" "$log"; then why="boot 1: the counter-2 set was not installed"
+            elif ! grep -aqF "[TOPO] topology counter floor raised 0 -> 2" "$log" || [ "$floor" != 2 ]; then
+                why="boot 1: the floor was not raised 0 -> 2 (image: '${floor:-absent}')"
+            fi
+            if [ -z "$why" ]; then
+                mcopy -o -i "$dir/vol.img" "$dir/CAPS.OLD" ::CAPS.TOM && mcopy -o -i "$dir/vol.img" "$dir/SIG.OLD" ::CAPS.SIG
+                topo_boot "$isa" "$kimg" "$dir/vol.img" "$CI_LOG_DIR/${slug}-boot2.log"
+                [ "$floor" = 2 ] || why="boot 2 moved the floor to '${floor:-absent}'"
+            fi ;;
+        sched)
+            want="SchedHashMismatch|1 2 0x72000000"
+            if ! topo_prep "$isa" "$dir/vol.img"; then bad; echo "      make topo-volume failed"; return; fi
+            mcopy -n -i "$dir/vol.img" ::SCHED.TOM "$dir/SCHED.TOM"
+            awk '!d && /^time_slice_ms = /{sub(/= /, "= 1"); d = 1} {print}' "$dir/SCHED.TOM" >"$dir/SCHED.SWAP"
+            if cmp -s "$dir/SCHED.TOM" "$dir/SCHED.SWAP"; then bad; echo "      could not change SCHED.TOM"; return; fi
+            mcopy -o -i "$dir/vol.img" "$dir/SCHED.SWAP" ::SCHED.TOM
+            topo_boot "$isa" "$kimg" "$dir/vol.img" "$CI_LOG_DIR/${slug}-boot2.log" ;;
+        device)
+            want="WrongDevice|1 2 0x81000000"
+            if ! topo_prep "$isa" "$dir/vol.img" TOPO_DEVICE=0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e; then
+                bad; echo "      make topo-volume failed"; return
+            fi
+            topo_boot "$isa" "$kimg" "$dir/vol.img" "$CI_LOG_DIR/${slug}-boot2.log" ;;
+        esac
+        if [ -z "$why" ]; then
+            if [ -n "$crashed" ]; then why="kernel crashed"
+            elif ! grep -aqF "[TOPO] REFUSED: the signed topology on the volume: ${want%%|*}" "$log"; then
+                why="not refused as ${want%%|*}"
+            elif ! grep -aqF "tasks, from the built-in topology in" "$log"; then why="the built-in topology was not installed"
+            elif [ "$rec" != "${want#*|}" ]; then why="SAFETY_TOPO_SOURCE records on the volume are '$rec', not '${want#*|}'"
+            fi
+        fi
+        rm -f "$kimg"
+        if [ "$expect" = FAIL ]; then
+            if [ -n "$why" ]; then ok; echo "      canary red as it must: $why"; rm -rf "${dir:?}"; rm -f "${CI_LOG_DIR:?}/${slug:?}"-boot*.log
+            else bad; echo "      the canary kernel refused the file: the row does not discriminate"
+                 echo "      logs kept: $CI_LOG_DIR/${slug}-boot*.log"; fi
+            return
+        fi
+        if [ -z "$why" ]; then
+            ok; echo "      refused as ${want%%|*}, record ${want#*|}"
+            rm -rf "${dir:?}"; rm -f "${CI_LOG_DIR:?}/${slug:?}"-boot*.log; return
+        fi
+        bad; echo "      $why"
+        grep -a "\[TOPO\]" "$log" | tr -d '\r' | sed -n '1,6p' | sed 's/^/      /'
+        echo "      logs kept: $CI_LOG_DIR/${slug}-boot*.log"
+    }
+    par_row toposign_bind_row "topology: replay refused"                rv  replay ""                        PASS
+    par_row toposign_bind_row "topology: replay, floor skipped (canary)" rv replay ",topo-replay-canary"     FAIL
+    par_row toposign_bind_row "topology: swapped SCHED.TOM refused"     rv  sched  ""                        PASS
+    par_row toposign_bind_row "topology: SCHED hash skipped (canary)"   rv  sched  ",topo-sched-hash-canary" FAIL
+    par_row toposign_bind_row "topology: wrong device refused"          rv  device ""                        PASS
+    par_row toposign_bind_row "topology: device skipped (canary)"       rv  device ",topo-device-canary"     FAIL
+    par_row toposign_bind_row "aarch64 topology: replay refused"        arm replay ""                        PASS
+    par_row toposign_bind_row "aarch64 topology: replay (canary)"       arm replay ",topo-replay-canary"     FAIL
+    par_row toposign_bind_row "aarch64 topology: swapped SCHED.TOM"     arm sched  ""                        PASS
+    par_row toposign_bind_row "aarch64 topology: SCHED hash (canary)"   arm sched  ",topo-sched-hash-canary" FAIL
+    par_row toposign_bind_row "aarch64 topology: wrong device"          arm device ""                        PASS
+    par_row toposign_bind_row "aarch64 topology: device (canary)"       arm device ",topo-device-canary"     FAIL
+
+    # ── topology: SIGNED_REQUIRED halts without the set (wave 15) ──────────
+    #
+    # A kernel built with CONFIG_TOPOLOGY_SOURCE_SIGNED_REQUIRED boots the
+    # plain disk (no CAPS.TOM/SCHED.TOM): the REFUSED line naming the policy,
+    # one durable SAFETY_TOPO_SOURCE record with action 3 (halt missing), the
+    # HALTED line as the last line of the boot, and no topology installed
+    # (no task, no scheduler: nothing after the halt). Its own .config, as
+    # rt7_row builds the panic policies.
+    toposign_required_row() { # <label> <isa: rv|arm>
+        local label="$1" isa="$2"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug defc base cfg kimg img log why="" pid i rec last
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        defc=qemu; base=build/disk.img
+        [ "$isa" = arm ] && { defc=qemu-aarch64; base=build/disk-aarch64.img; }
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/${slug}.config"
+        kimg="$CI_LOG_DIR/${slug}-kernel"; img="$CI_LOG_DIR/${slug}.img"; log="$CI_LOG_DIR/${slug}.log"
+        rm -f "$log" "$img" "$kimg"
+        cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg"
+        printf '# CONFIG_TOPOLOGY_SOURCE_BUILTIN is not set\n# CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN is not set\nCONFIG_TOPOLOGY_SOURCE_SIGNED_REQUIRED=y\n' >>"$cfg"
+        (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+            || { bad; echo "      olddefconfig failed on $cfg"; return; }
+        grep -q '^CONFIG_TOPOLOGY_SOURCE_SIGNED_REQUIRED=y$' "$cfg" \
+            || { bad; echo "      $cfg does not carry CONFIG_TOPOLOGY_SOURCE_SIGNED_REQUIRED=y"; return; }
+        if [ "$isa" = rv ]; then
+            KCONFIG_CONFIG="$cfg" kbuild "qemu" >/dev/null || { bad; echo "      riscv64 SIGNED_REQUIRED kernel did not build"; return; }
+            cp "$KERNEL" "$kimg"
+        else
+            AARCH64_CONFIG="$cfg" a64_kbuild "qemu" >/dev/null || { bad; echo "      aarch64 SIGNED_REQUIRED kernel did not build"; return; }
+            cp "$A64_IMG" "$kimg"
+        fi
+        make_disk "$base"
+        cp "$base" "$img"
+        if [ "$isa" = rv ]; then
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+        else
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+        fi
+        pid=$!; i=0
+        while [ "$i" -lt 240 ]; do
+            grep -aqF "[TOPO] HALTED" "$log" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled|\[TOPO\] Topology installed" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 4   # a boot that went on past the halt would print in this time
+        kill "$pid" 2>/dev/null; sleep 1; kill -0 "$pid" 2>/dev/null && kill -9 "$pid"; wait "$pid" 2>/dev/null
+        rm -f "$kimg"
+        rec="0 0"
+        if mcopy -n -i "$img" ::LOG/LOG00000.BIN "$img.rec" 2>/dev/null; then
+            rec="$(python3 - "$img.rec" <<'PY'
+import sys
+b = open(sys.argv[1], 'rb').read()
+acts = [b[o + 13] for o in range(16, len(b) - 31, 32) if b[o + 8] == 0x03 and b[o + 12] == 0x1A]
+print(len(acts), acts[-1] if acts else 0)
+PY
+)"
+        fi
+        rm -f "$img" "$img.rec"
+        last="$(tr -d '\r' <"$log" | grep -av '^qemu-system-\|^[[:space:]]*$' | sed -n '$p')"
+        if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log"; then why="kernel crashed"
+        elif ! grep -aqF "[TOPO] REFUSED: no signed topology on the volume and TOPOLOGY_SOURCE_SIGNED_REQUIRED" "$log"; then why="no refusal naming SIGNED_REQUIRED"
+        elif grep -aqF "[TOPO] Topology installed" "$log"; then why="a topology was installed"
+        elif [ "$rec" != "1 3" ]; then why="SAFETY_TOPO_SOURCE records on the volume are '$rec', not one halt-missing (3)"
+        elif [ "$last" != "[TOPO] HALTED: no capability topology installed — the boot stops here" ]; then
+            why="the boot went on past the halt; last line: $last"
+        fi
+        if [ -z "$why" ]; then ok; echo "      halted before any task, record action 3"; rm -f "$log" "$cfg"; return; fi
+        bad; echo "      $why"
+        grep -a "\[TOPO\]" "$log" | tr -d '\r' | sed -n '1,4p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    }
+    par_row toposign_required_row "topology: SIGNED_REQUIRED halts"         rv
+    par_row toposign_required_row "aarch64 topology: SIGNED_REQUIRED halts" arm
+    kbuild "qemu"
+    a64_kbuild "qemu" >/dev/null 2>&1 || true
 
     # RFC-0033: the motor envelope refuses a command above the per-robot-type
     # cap at the real MotorCmd -> PWM chokepoint. The marker carries the exact
@@ -14281,7 +14758,9 @@ PYEOF
     # deliberate user-fault kills (see the check below). `USH_FORBID` is an extended
     # regex that must NOT appear: `USH_SMP` overrides the hart count (rv 4,
     # arm 2 otherwise), `USH_KERNEL` boots that kernel image instead of
-    # building `<features>`; rows that are about exclusive console input
+    # building `<features>`; `USH_QEMU_EXTRA` is added to the QEMU command
+    # line (`-icount shift=0,sleep=off` for a row whose verdict must not
+    # depend on the host's load); rows that are about exclusive console input
     # forbid the recovery console's `robot> ` prompt, which only the kernel
     # shell prints; `USH_DISK=lxabi` boots `build/disk-lxabi.img` /
     # `build/disk-aarch64-lxabi.img` (the shell volume plus the static Linux
@@ -14350,13 +14829,13 @@ PYEOF
         while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
         if [ "$isa" = rv ]; then
             par_ready
-            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${USH_SMP:-4}" \
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${USH_SMP:-4}" ${USH_QEMU_EXTRA:-} \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
         else
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${USH_SMP:-2}" -nographic \
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${USH_SMP:-2}" ${USH_QEMU_EXTRA:-} -nographic \
                 -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
@@ -14389,7 +14868,11 @@ PYEOF
             done <<< "$script"
             sleep 1
         fi
-        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        # QEMU under `-icount` may ignore SIGTERM: escalate after 2 s at most.
+        kill "$pid" 2>/dev/null
+        local k; for k in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
         exec 8>&-
         rm -f "$fifo" "$img" "$kimg"
         local missing="" m
@@ -14426,6 +14909,49 @@ PYEOF
             [ -n "$missing" ] && echo "      missing:$missing (stopped: ${verdict:-script done})"
             [ -n "$forbidden" ] && echo "      forbidden line printed: $forbidden"
             echo "      log kept: $log"
+        fi
+    }
+    # Wave 15 (TRACE, static keys): the W^X canary. `trace-wx-canary` makes
+    # the static-key patcher write a site through the EXECUTABLE text
+    # mapping instead of its never-executable alias (azos_mm::text_poke).
+    # W^X must refuse it: the boot dies on a kernel store fault, and the
+    # fault names exactly the address the canary printed. A pass here is the
+    # evidence that the read-execute mapping is not a writable path, so the
+    # alias is the only one; the normal boot's `[TRACE] static keys: ...
+    # text RX at N/N sites; alias ... mapped=false` line is its other half.
+    trace_wx_row() { # trace_wx_row <label> <rv|arm>
+        local label="$1" isa="$2"
+        printf "  %-26s" "${label}..."
+        local log="$CI_LOG_DIR/trace-wx-$isa.log" kimg="$CI_LOG_DIR/trace-wx-$isa.kernel" addr fault
+        mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$kimg"
+        if [ "$isa" = rv ]; then
+            kbuild "qemu,trace-wx-canary" || { bad; echo "      riscv64 canary kernel did not build"; return; }
+            cp "$KERNEL" "$kimg"
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -smp 4 -kernel "$kimg" </dev/null >"$log" 2>&1 &
+        else
+            a64_kbuild "qemu,trace-wx-canary" || { bad; echo "      aarch64 canary kernel did not build"; return; }
+            cp "$A64_IMG" "$kimg"
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kimg" </dev/null >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        while [ "$i" -lt 90 ] && ! grep -aq "FATAL" "$log" 2>/dev/null && kill -0 "$pid" 2>/dev/null; do
+            i=$((i + 1)); sleep 1
+        done
+        sleep 1
+        kill "$pid" 2>/dev/null; sleep 1; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$kimg"
+        addr="$(grep -a 'static-key W^X canary: writing ' "$log" | sed -n 's/.*writing \(0x[0-9a-f]*\) through the executable mapping.*/\1/p' | head -1 | tr -d '\r')"
+        if [ "$isa" = rv ]; then
+            fault="$(grep -a 'Store/AMO page fault at ' "$log" | sed -n 's/.*page fault at \(0x[0-9a-f]*\).*/\1/p' | head -1 | tr -d '\r')"
+        else
+            fault="$(grep -a 'aarch64 kernel page fault: write at ' "$log" | sed -n 's/.*write at \(0x[0-9a-f]*\).*/\1/p' | head -1 | tr -d '\r')"
+        fi
+        if [ -n "$addr" ] && [ "$addr" = "$fault" ] && grep -aq "FATAL" "$log" && ! grep -aq "\[TRACE\] static keys: " "$log"; then
+            ok; echo "      the write through the executable mapping faulted at $addr"; rm -f "$log"
+        else
+            bad; echo "      canary write ${addr:-not printed}, store fault ${fault:-none}; log kept: $log"
         fi
     }
     # The shell volumes, rebuilt once per run, here. The first row that needs
@@ -14915,6 +15441,66 @@ echo after-lx" 150 \
             "lxhello
 echo after-lx" 150 \
             "lx: mprot: the parent's read-only page is unchanged ok"
+        # Wave 15 (TRACE): the kernel tracer read live from ring 3. Per-CPU
+        # lock-free SPSC rings in one Cap<Trace>-gated region
+        # (crates/core/spsc/src/trace.rs, crates/core/trace); TRACECTL.ELF
+        # maps it (SYS_TRACE_CTL_TYPED, 632), sets the class mask and drains
+        # every CPU's ring. At -smp 4 with two CPU-bound jobs running, it must
+        # read 20000 records with 0 drops and 0 lost, and the scheduler and
+        # interrupt classes must both be present (their zero counts, as
+        # tracectl's summary prints them, are the forbidden lines: a fixed
+        # marker cannot say "non-zero"); then a short
+        # decoded stream. Under `-icount` (virtual time, every vCPU in lock
+        # step): without it a host that stalls the reader's vCPU for ~0.4 s
+        # lets the other CPUs fill their 1024-record rings (seen once on
+        # aarch64 under a loaded host, 3155 drops), a verdict about the host,
+        # not the tracer. Canary `trace-producer-canary` (the producer never
+        # advances its index): a reader sees one record per ring and the
+        # 20000 never arrive, so the row's FAIL build passes. Negative row:
+        # TRACECTL.ELF without its Cap<Trace> (`trace-cap-canary`) is refused
+        # by the capability, recorded, and maps nothing.
+        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID='robot> |ms, drops=[1-9]|drops=[0-9]+ lost=[1-9]|classes sched=0 | irq=0 syscall=|REFUSED|Killing user task' par_row ushell_row "trace: tracectl reads live, -smp 4 ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "spin &
+spin &
+tracectl stream -n 20000 -t 60000 -q
+tracectl stream -n 40 -c sched,irq" 240 \
+            "[TRACE] tracer on: 4 CPUs" "tracectl: read 20000 records from 4 cpus" "drops=0 lost=0" \
+            "tracectl: classes sched=" " sched_switch prev=" " irq_entry irq=" "tracectl: read 40 records from 4 cpus"
+        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID='robot> ' par_row ushell_row "trace: producer-index canary ($ush_isa)" "$ush_isa" "$ush_feat,trace-producer-canary" FAIL \
+            "spin &
+spin &
+tracectl stream -n 20000 -t 30000 -q" 180 \
+            "tracectl: read 20000 records from 4 cpus" "drops=0 lost=0"
+        USH_SMP=4 USH_FORBID='robot> |tracectl: cpus=|tracectl: start mask=|tracectl: read ' par_row ushell_row "trace: refused without Cap<Trace> ($ush_isa)" "$ush_isa" "$ush_feat,trace-cap-canary" PASS \
+            "tracectl info
+tracectl start
+tracectl stream -n 10" 150 \
+            "[TRACE] op 1 REFUSED" "lacks Cap<Trace> READ (recorded)" "[TRACE] op 4 REFUSED" \
+            "tracectl: info refused" "tracectl: start refused"
+        # Static keys (`KTRACE_STATIC_KEYS`): a class switched on and off while
+        # tracectl streams. Every masked site is a nop (boot readback: 0
+        # refused, text RX at every site, the alias unmapped); `tracectl
+        # start` rewrites the syscall class's sites to branches and back. The
+        # stream dates each mask change by the kernel's clock (region header)
+        # and counts per segment: syscalls absent before, present while on
+        # (the controller's own calls at least), and no record of a masked
+        # class past a 20 ms grace ("outside"), 0 drops. Not the irq class:
+        # under -icount its rate (~20k records/s) made 0 drops a statement
+        # about the reader's time slice, not the keys. Hand canary (enabling
+        # never re-patches a site to its branch): red, sched=0 in every
+        # segment.
+        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID='robot> |segment 0 mask=0x1 sched=[0-9]+ irq=[0-9]+ syscall=[1-9]|segment 1 mask=0x5 sched=[0-9]+ irq=[0-9]+ syscall=0 |outside=[1-9]|mask=0x[0-9a-f]+ sched=0 |ms, drops=[1-9]|drops=[0-9]+ lost=[1-9]|REFUSED|Killing user task|could not start' par_row ushell_row "trace: static keys toggled live ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "spin &
+!tracectl stream -t 60000 -m 2 -p 10 -c sched -q &
+#wait tracectl: stream mask=0x1 cpus=
+#sleep 2
+tracectl start sched,syscall
+#sleep 4
+tracectl start sched
+#wait tracectl: segment 2" 300 \
+            " 0 refused; now " "0 branch; text RX at" "mapped=false" "tracectl: start mask=0x5 was=0x1" "tracectl: start mask=0x1 was=0x5" \
+            "tracectl: segment 0 mask=0x1 " "tracectl: segment 1 mask=0x5 " "tracectl: segment 2 mask=0x1 " "drops=0 lost=0"
+        par_row trace_wx_row "trace: static-key W^X canary ($ush_isa)" "$ush_isa"
     done
 
     # ── sh: lockdown (both ISAs) ───────────────────────────────────────────
@@ -14993,12 +15579,15 @@ power suspend" 150 \
     # Canary `safe-mode-launch-canary` (the driver launcher ignores safe mode):
     # boot 4 starts the shell and the row must be red on that line.
     ush_safe_mode_row() { # <rv|arm> [ok|canary]
-        local isa="$1" mode="${2:-ok}" disk log n i pid missing="" want
+        local isa="$1" mode="${2:-ok}" disk log n i pid missing="" want tag
         local label="sh: safe mode ($1)" feats="qemu,safe-mode-smoke"
         if [ "$mode" = canary ]; then label="sh: safe mode canary ($1)"; feats="$feats,safe-mode-launch-canary"; fi
+        # The ok row and its canary run as parallel jobs: their disk and logs
+        # must not share a path, or one row overwrites the other mid-boot.
+        tag="$isa-$mode"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        disk="$CI_LOG_DIR/ush-safe-mode-$isa.img"; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$isa"-boot*.log
+        disk="$CI_LOG_DIR/ush-safe-mode-$tag.img"; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$tag"-boot*.log
         if [ "$isa" = rv ]; then
             kbuild "$feats" || { bad; echo "      the safe-mode-smoke kernel did not build"; return; }
             [ -f build/disk-sh.img.pristine ] || { rm -f build/disk-drvbase.img build/disk-sh.img; make_disk build/disk-sh.img; }
@@ -15009,7 +15598,7 @@ power suspend" 150 \
             cp build/disk-aarch64-sh.img.pristine "$disk"
         fi
         for n in 1 2 3 4; do
-            log="$CI_LOG_DIR/ush-safe-mode-$isa-boot$n.log"
+            log="$CI_LOG_DIR/ush-safe-mode-$tag-boot$n.log"
             while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
             if [ "$isa" = rv ]; then
                 par_ready
@@ -15050,13 +15639,13 @@ power suspend" 150 \
         if [ "$mode" = canary ]; then
             case "$missing" in
             *"[forbidden: [DRVLAUNCH] SH.ELF started]"*)
-                ok; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$isa"-boot*.log ;;
+                ok; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$tag"-boot*.log ;;
             *)  bad; echo "      the canary did not start the shell in safe mode:$missing"; echo "      log kept: $log" ;;
             esac
             return
         fi
         if [ -z "$missing" ]; then
-            ok; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$isa"-boot*.log
+            ok; rm -f "$disk" "$CI_LOG_DIR"/ush-safe-mode-"$tag"-boot*.log
         else
             bad; echo "      boot 4:$missing"; echo "      log kept: $log"
         fi

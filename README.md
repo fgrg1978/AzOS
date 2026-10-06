@@ -58,7 +58,16 @@ watchdog.
   Ed25519 signature (`CONFIG.SIG`) that names this device and carries a
   counter no lower than the last one accepted, so a configuration for another
   device, or an older one, is not taken; anything else falls back to factory
-  defaults. The capability topology itself is still built into the image.
+  defaults.
+- **Signed capability topology.** The topology every ring-3 task's
+  capabilities, class, priority and memory budget come from is read from the
+  volume (`CAPS.TOM`, `SCHED.TOM`) when one Ed25519 signature over
+  `CAPS.TOM` verifies under the embedded key and `CAPS.TOM` names this
+  device, a counter no lower than the last one accepted, and the SHA-256 of
+  `SCHED.TOM`; the set must also parse and pass the boot's admission.
+  Otherwise the topology built into the image is used, with a warning and a
+  flight-recorder record. A build option makes the signed topology required.
+  `make topo-volume` writes the built-in topology onto an image that way.
 - **Hardware authority is a capability.** GPIO, PWM, I2C, sensors, power and
   motors are reached through capability-typed calls; the untyped hardware
   calls are retired, except two that have no typed form. A deployment without

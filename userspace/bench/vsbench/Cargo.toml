@@ -26,6 +26,14 @@ linux = ["azos_libsys"]
 # / `fork+exit+wait` — the numbers `tools/vsbench_aarch64.sh` compares run to
 # run — are measured by a binary that does not even link this code path.
 fork-bomb = []
+# Canaries for `switch-loaded`'s instrument (wave 15), never in a real run.
+# `switch-peer-canary`: the competitors exit without yielding, so the lane
+# must REFUSE (the known broken mode, now with the pipes in the path: the
+# measurer must see EOF, not hang). `echo-stop-canary`: leave the UDP echo
+# running after `udp-roundtrip`, so a `SWITCH_CENSUS` boot shows it as a
+# sixth task in the window (the contamination wave 15 found and fixed).
+switch-peer-canary = []
+echo-stop-canary = []
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys", optional = true }

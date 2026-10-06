@@ -2240,6 +2240,7 @@ pub fn sys_meminfo() -> i64 {
 /// counts that can be compared with Linux's, which is what a benchmark needs
 /// to know whether a number means what its label says.
 pub fn sys_taskinfo(out_ptr: u64, out_len: u64) -> i64 {
+    azos_sched::swcensus::dump_window();
     use azos_abi::error::Errno;
     use azos_abi::syscall_nr::TASKINFO_BYTES;
 

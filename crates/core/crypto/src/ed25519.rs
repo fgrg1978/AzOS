@@ -195,13 +195,28 @@ pub fn sig_verify(
     if firmware_data.len() > MAX_VERIFY_MESSAGE_SIZE {
         return false;
     }
+    sig_verify_message(trusted_key, signature, firmware_data)
+}
+
+/// [`sig_verify`] without [`MAX_VERIFY_MESSAGE_SIZE`]: for a caller whose
+/// message is already bounded by the buffer it was read into. The signed
+/// topology (`azos_topology::verify_signature`: CAPS.TOM, SCHED.TOM,
+/// CONFIG.SIG v2's message, the ML data files) is bounded by its Kconfig
+/// buffer sizes (`TOPOLOGY_CAPS_MAX_KB`, ...); the 4 KiB bound of the raw
+/// primitive refused a valid 4.6 KB CAPS.TOM. The cost is one SHA-512 pass
+/// over the message on top of the fixed verification.
+pub fn sig_verify_message(
+    trusted_key: &[u8; ED25519_PUBLIC_KEY_SIZE],
+    signature: &[u8; ED25519_SIGNATURE_SIZE],
+    message: &[u8],
+) -> bool {
     let vk = match ed25519_dalek::VerifyingKey::from_bytes(trusted_key) {
         Ok(v) => v,
         Err(_) => return false,  // malformed pubkey bytes
     };
     let sig = ed25519_dalek::Signature::from_bytes(signature);
     // strict variant rejects non-canonical signatures (point + scalar).
-    vk.verify_strict(firmware_data, &sig).is_ok()
+    vk.verify_strict(message, &sig).is_ok()
 }
 
 /// Compute SHA-256 hash of firmware data (for signing on the build system).

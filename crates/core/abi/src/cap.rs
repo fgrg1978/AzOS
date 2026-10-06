@@ -408,6 +408,12 @@ pub enum CapKind {
     /// and `EXEC` is the permission the call checks against the image the
     /// file's digest resolves to (not the path typed).
     Launch = 27,
+    /// The kernel tracer (wave 15, `SYS_TRACE_CTL_TYPED`, 632): `READ` maps
+    /// the per-CPU trace rings and reads the class mask, `WRITE` changes the
+    /// mask (and, with `READ`, is what mapping the rings read-write needs).
+    /// A singleton, like `Power`: resource `0`. Granted only by a topology
+    /// row (the word `"trace"`; `TRACECTL.ELF`'s row), never at run time.
+    Trace = 28,
 }
 
 impl CapKind {
@@ -443,6 +449,7 @@ impl CapKind {
             25 => Some(Self::Lease),
             26 => Some(Self::Pipe),
             27 => Some(Self::Launch),
+            28 => Some(Self::Trace),
             // No catch-all beyond the named arms: an unknown tag is not a
             // kind, and `None` is what makes an unpack of a corrupt or
             // future handle fail closed instead of aliasing onto a real one.
@@ -502,6 +509,7 @@ impl CapKind {
             Self::Lease => 25,
             Self::Pipe => 26,
             Self::Launch => 27,
+            Self::Trace => 28,
         }
     }
 }

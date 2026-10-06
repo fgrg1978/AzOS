@@ -40,6 +40,7 @@ use std::path::PathBuf;
 const PUBKEY_LEN: usize = 32;
 
 fn main() {
+    emit_target_cfgs();
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let dest = out_dir.join("topology_pubkey.rs");
 
@@ -121,6 +122,48 @@ fn main() {
         write!(out, "0x{:02x}", b).unwrap();
     }
     writeln!(out, "];").unwrap();
+}
+
+/// The shape of the built-in topology that depends on the machine, as cfgs.
+///
+/// A few rows of `builder.rs` name a resource of one QEMU `virt` machine
+/// (`mmio.2`, `irq.11`/`irq.34`, `irq.100`/`irq.1000`): they exist only in a
+/// kernel (`target_os = "none"`) and differ by ISA. The host emitter
+/// (`tests/host/topology-tests/src/bin/topo_emit.rs`) writes the CAPS.TOM a
+/// kernel of one ISA would build, so it must compile those rows for a target
+/// it is not running on. `emit-target-riscv64` / `emit-target-aarch64` ask for
+/// that shape; without either, the cfgs follow the real target, so a kernel
+/// and the host suites build exactly what they built before.
+///
+/// * `topo_bare`: the rows a kernel has and a host build does not;
+/// * `topo_arch_riscv64` / `topo_arch_aarch64`: the ISA's row variants
+///   (each implies `topo_bare`).
+fn emit_target_cfgs() {
+    println!("cargo:rustc-check-cfg=cfg(topo_bare)");
+    println!("cargo:rustc-check-cfg=cfg(topo_arch_riscv64)");
+    println!("cargo:rustc-check-cfg=cfg(topo_arch_aarch64)");
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let want_rv = env::var_os("CARGO_FEATURE_EMIT_TARGET_RISCV64").is_some();
+    let want_arm = env::var_os("CARGO_FEATURE_EMIT_TARGET_AARCH64").is_some();
+    if want_rv && want_arm {
+        fail("emit-target-riscv64 and emit-target-aarch64 are exclusive: one ISA's topology at a time");
+    }
+    let bare = os == "none";
+    let (rv, arm) = if want_rv || want_arm {
+        (want_rv, want_arm)
+    } else {
+        (bare && arch == "riscv64", bare && arch == "aarch64")
+    };
+    if bare || rv || arm {
+        println!("cargo:rustc-cfg=topo_bare");
+    }
+    if rv {
+        println!("cargo:rustc-cfg=topo_arch_riscv64");
+    }
+    if arm {
+        println!("cargo:rustc-cfg=topo_arch_aarch64");
+    }
 }
 
 /// Stop the build with one line on stderr (cargo prints it under the failing

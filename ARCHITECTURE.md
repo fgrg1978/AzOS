@@ -67,17 +67,70 @@ are hooks under `kernel/src/entry/{riscv64,aarch64}/`.
    recovers the RAM panic record and opens the flight recorder.
 4. The signed device configuration and the A/B image-slot verification.
 5. The network stack, the watchdogs and the hardware the domain needs.
-6. The topology install, including deadline and memory admission.
+6. The topology install: the signed topology from the volume or the built-in
+   one, then deadline and memory admission.
 7. Kernel tasks, then the ring-3 programs. These are the autorun list from the
    configuration and the topology rows marked `start`.
 8. Secondary CPUs, then the scheduler.
 
-**Topology.** The topology is a table of rows compiled into the kernel image.
-It is not loaded from disk. A row is keyed by the program's image name. It
-gives the task's priority, scheduling profile (period, runtime, deadline, CPU
-mask), memory budget, the capabilities minted for it, its restart policy and
-its ABI (native or Linux). Every ring-3 task the kernel starts gets its
-authority from its row.
+**Topology.** The topology is a table of scheduler classes and rows. A row
+is keyed by the program's image name. It gives the task's priority, scheduling
+profile (period, runtime, deadline, CPU mask), memory budget, the capabilities
+minted for it, its restart policy and its ABI (native or Linux). Every ring-3
+task the kernel starts gets its authority from its row.
+
+The topology has two sources. One is built into the kernel image
+(`crates/core/topology/src/builder.rs`). The other is a signed pair on the
+FAT volume: `CAPS.TOM` (the rows) and `SCHED.TOM` (the classes), under one
+bare Ed25519 signature, `CAPS.SIG`, made with the key that also signs
+`CONFIG.SIG`. Before its first section, `CAPS.TOM` (format 4) carries a
+binding inside the signed bytes: `sched_sha256`, the SHA-256 of the one
+`SCHED.TOM` it goes with; `device`, the device id from the device record in
+the reserved tail (the id `CONFIG.SIG` is bound to); and `counter`. At the
+topology install the kernel reads the three files and verifies `CAPS.SIG`
+before parsing anything. It then checks `SCHED.TOM`'s hash, the device id, and
+that the counter is not below the floor it keeps in a reserved tail sector
+(`TOPOLOGY_FLOOR_SECTOR`, the same raise-only rule as the configuration
+counter). Only then does it parse the two files and run the same admission
+the built-in topology passes (structure, deadline admission on the real CPU
+count, the real-time band, memory) on the candidate before it is published.
+Accepting a higher counter raises the floor. The Kconfig choice
+`TOPOLOGY_SOURCE` decides what happens:
+
+| Policy | Signed set valid | No set on the volume | Set present but refused |
+|---|---|---|---|
+| `BUILTIN` | not read | built-in | not read |
+| `SIGNED_OR_BUILTIN` (QEMU default) | signed | built-in, warning, record | built-in, error, record (or halt with `TOPOLOGY_INVALID_HALT`) |
+| `SIGNED_REQUIRED` (product default) | signed | record, halt | record, halt |
+
+Every board other than QEMU (`BOARD_VF2`, `BOARD_K1`, `BOARD_GENERIC`)
+defaults to `SIGNED_REQUIRED`, and every product make target builds the FAT
+volume that carries the signed set, bound to the volume's device and signed
+with the board key: `make vf2` builds `build/disk-board.img`, `make k1`
+builds `build/disk-board-k1.img`, and `make build-fleet` builds
+`build/disk-board-fleet.img`. Without the board signing key these targets
+stop with an error instead of producing an unsigned volume.
+
+The record is a durable `SAFETY_TOPO_SOURCE` flight-recorder entry whose
+action says which case it was and whose detail names the file and the step
+that refused. A halt stops the boot CPU before the scheduler starts and before
+any task the topology admits is created. A partial set (some of the three
+files) counts as present and refused. A set signed for another device, an
+older counter, and a `SCHED.TOM` that is not the one `CAPS.TOM` names are each
+refused with their own record detail. `TOPOLOGY_BIND_DEVICE` and
+`TOPOLOGY_COUNTER_FLOOR` make the device and the counter optional (still
+checked when present); the hash is always required. Whoever can rewrite the
+reserved tail (a card reader, not the USB export) can reset the floor. The
+file buffers are Kconfig sizes (`TOPOLOGY_CAPS_MAX_KB`,
+`TOPOLOGY_SCHED_MAX_KB`) and stay allocated: the installed topology's names
+point into them.
+
+`make topo-volume TOPO_IMAGE=<image>` writes the built-in topology of a given
+`.config` and kernel feature set onto an image, bound to that image's device
+id and to `TOPO_COUNTER`, signed with the test key for QEMU images;
+`build/disk-board.img` signs with the board key. The emitter parses its
+output back and refuses to write a set that does not reproduce the built-in
+topology field by field.
 
 **Image hashes.** The build hashes each shipped ring-3 ELF.
 `userspace/image_hashes.py` writes `build/image_hashes.rs`, a table from
@@ -131,7 +184,15 @@ authority, the kernel also latches the e-stop and writes a safety record.
   read-execute, read-only data read-only, and data read-write. Execute
   permission is removed from all RAM outside the image. Both properties are
   checked by reading the page tables back at boot, and a failed check is
-  reported on the console.
+  reported on the console. One path writes kernel text after that:
+  `azos_mm::text_poke`, used only by the tracer's static keys. It refuses
+  unless the instruction's page is mapped read-execute and not writable. It
+  maps that frame at a temporary alias above the RAM map, read-write and
+  never executable, and writes one aligned 32-bit word through it. Then it
+  unmaps the alias with a TLB shootdown on every CPU and synchronises every
+  CPU's instruction fetch. The text mapping itself stays read-execute: a
+  write through it takes a kernel store fault, and a gate canary checks
+  that.
 - **User W^X.**
   - `fork` shares read-only and executable pages and marks only writable
     pages copy-on-write. The copy-on-write fault handler refuses an entry that
@@ -150,7 +211,16 @@ authority, the kernel also latches the e-stop and writes a safety record.
   leader. Copy-on-write breaks are counted but not charged. At boot, the sum
   of the row budgets is checked against RAM.
 - **Allocators.** The physical frame allocator is a bitmap. The kernel heap is
-  a linked-list allocator.
+  a first-fit linked-list allocator over a region reserved at boot. In front
+  of it, by default, sits a per-CPU cache of fixed size classes (Kconfig
+  `KHEAP_SLAB`): each CPU holds two magazines of free objects per class, a
+  per-class depot trades full and empty magazines between CPUs, and objects
+  are carved from slabs taken from the heap. A small allocation or free is a
+  magazine pop or push with interrupts masked on that CPU: no lock, no heap
+  walk. Larger requests go to the heap. When the heap refuses, the cache
+  returns what it holds and the request is retried once; a second refusal is
+  returned to the caller. Class sizes, magazine depth, per-CPU and depot
+  limits and debug poisoning are Kconfig options with per-profile defaults.
 
 ## IPC and capabilities
 
@@ -331,6 +401,63 @@ next boot copies the RAM record to the file. `CRASH.LOG` rotates to
 **Log levels.** `LOG_LEVEL` (err, warn, info, debug) is a build-time choice.
 Console lines below the level are compiled out. The flight recorder and the
 panic report are not affected by it.
+
+## Tracing
+
+**Kernel event tracer** (`KTRACE`). One single-producer/single-consumer ring
+per CPU, all in one kernel-owned shared-memory region
+(`crates/core/spsc/src/trace.rs` is the layout both sides compile;
+`crates/core/trace` is the kernel side):
+
+- **Records.** 32 bytes: a timestamp, the index the record was written at, an
+  event id, the CPU and four arguments. The timestamp is the clock vDSO's
+  timebase by default (the rate is in the region header), or the CPU cycle
+  counter.
+- **Classes.** Scheduler (switch, wakeup), interrupts (entry, exit), syscalls
+  (entry, exit, seccomp denial), fast IPC (call, reply), page faults, process
+  life cycle (spawn, exit, signal) and the `LAT_TRACE` maxima. Each class is
+  compiled in or out by its own Kconfig symbol and masked at run time.
+- **Record path.** Each CPU is the only producer of its ring, so masking that
+  CPU's interrupts around the record is its whole mutual exclusion. A record
+  takes no lock and no atomic read-modify-write, and divides nothing. It
+  writes only its own cache line and publishes itself with a release store
+  of its index. The consumer's tail is read only when the producer's cached
+  copy says the ring is full. There is no doorbell: the reader polls.
+- **Full ring.** By default the newest record is dropped and counted in the
+  ring's drop word. `KTRACE_POLICY_OVERWRITE` keeps the newest instead: the
+  reader re-checks each record after copying it and counts the ones
+  overwritten under it as lost.
+- **Reader.** `tracectl` (`TRACECTL.ELF`) holds `Cap<Trace>`, which only its
+  topology row grants. With it, `SYS_TRACE_CTL_TYPED` maps the region and
+  reads or sets the class mask; a call without it is refused and recorded.
+  The tool streams decoded records to the console or a file, and the shell
+  starts it like any other tool. The panic path prints each CPU's last
+  records from the kernel's own view of its ring.
+
+**Static keys** (`KTRACE_STATIC_KEYS`). Every tracepoint check is one
+naturally aligned 32-bit instruction, recorded with its class in a table the
+linker collects (`.azos_keys`). It is linked as a branch to the class's mask
+test, and at boot the sites of masked-off classes are rewritten to nops
+through `text_poke`. A mask change rewrites the changed classes' sites, mask
+first and text after, so a site in either state is correct at any instant.
+The rewrite runs while the other CPUs keep executing. On aarch64, NOP and B
+are in the architecture's list of instructions that may be modified while
+another PE executes them. On riscv64 a site is never compressed or relaxed,
+so a hart fetches the old word or the new one, never a mix; Linux's riscv
+jump labels rely on the same property. A kernel that cannot set up the
+alias keeps every site a branch: the mask test, correct and slower.
+
+**Cost**, in instructions under QEMU `-icount`, both ISAs. Compiled out:
+none, every tracepoint folds away, and every vsbench lane is unchanged.
+Compiled in, class masked off: one nop per tracepoint with static keys.
+riscv64 adds a 2-byte padding `c.nop` before a site that would otherwise
+start 2 bytes off a 4-byte boundary. Without static keys it is 4 (the
+mask's address, a load, an `and`, a branch). Recording: 48 per event on both
+ISAs with static keys (the branch, the mask test, the call), 47 on riscv64
+and 44 on aarch64 without; a full ring costs 46 and 42. The boot probe
+`trace-cost-probe` measures these. On the riscv64 syscall path (two
+sites, both padded) `syscall-floor` is 195 compiled out, 199 with static
+keys and 203 with the mask test.
 
 ## Configuration and profiles
 

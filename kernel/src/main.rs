@@ -2624,6 +2624,24 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         kprintln!("[FORK] refusal probe: rc={} (expected -1)", rc);
     }
 
+    // Wave 15 (TRACE): the tracer's rings, one per CPU this boot brings up,
+    // created before any secondary can record; the timestamps' rate is the
+    // clock vDSO's (the live CNTFRQ_EL0 on aarch64). Nothing with KTRACE off.
+    {
+        #[cfg(target_arch = "aarch64")]
+        let ts_hz = azos_arch::cpu::timer_freq_hw();
+        #[cfg(not(target_arch = "aarch64"))]
+        let ts_hz = azos_drv_sys::timebase::TIMER_FREQ;
+        // SAFETY: linker-script symbols; only their addresses are taken.
+        let text = unsafe { (&_text_start as *const u8 as usize, &_text_end as *const u8 as usize) };
+        azos_ipc::trace::init(num_cpus, ts_hz, text);
+        azos_trace::cpu_online();
+        #[cfg(feature = "trace-cost-probe")]
+        crate::smokes::trace_cost_probe(ts_hz);
+        #[cfg(feature = "lat-trace")]
+        azos_arch::lat_hook::lat::set_new_max_hook(crate::lat_trace::trace_new_max);
+    }
+
     boot_hooks::arch_wake_secondaries(num_cpus);
 
     // The boot hart's timer interrupt stays off until the end of kernel_main
@@ -3705,6 +3723,19 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
             }
         } else {
             kprintln!("[NET]  loopback: no IP assigned yet, check skipped");
+        }
+    }
+
+    // Wave 15 (SLAB): the heap's size-class cache, exercised in this
+    // kernel's own environment (crates/core/mm/src/kheap.rs). Development
+    // configurations only (`KHEAP_SLAB_DEBUG`); the gate's `kheap slab` rows
+    // read this line.
+    if azos_limits::KHEAP_SLAB && azos_limits::KHEAP_SLAB_DEBUG {
+        match azos_mm::kheap::slab_selftest() {
+            Ok((n, back)) => kprintln!(
+                "[MM] Heap slab self-test: {} objects in {} classes, reclaim returned {} B: PASS",
+                n, azos_limits::KHEAP_SLAB_CLASS_LIST.len(), back),
+            Err(e) => kprintln!("[MM] Heap slab self-test FAILED: {}", e),
         }
     }
 

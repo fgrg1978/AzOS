@@ -93,6 +93,7 @@ use azos_abi::syscall_nr::{
     SYS_POWER_TYPED,
     SYS_FLIGHT_TYPED, SYS_BEHAVIOR_TYPED, SYS_CONFIG_TYPED, SYS_OTA_TYPED,
     SYS_MODULE_VERIFY, SYS_MODULE_MAP_X,
+    SYS_TRACE_CTL_TYPED,
 };
 
 // Sensor type IDs for sensor_read_typed()
@@ -4081,6 +4082,18 @@ pub use azos_abi::power;
 /// return.
 pub fn power_typed(cap: u32, op: u64, arg: u64) -> isize {
     unsafe { syscall3(SYS_POWER_TYPED, cap as u64, op, arg) }
+}
+
+/// The kernel tracer's operations, classes and event ids (wave 15).
+pub use azos_abi::trace as trace_abi;
+
+/// The kernel tracer's control (`SYS_TRACE_CTL_TYPED`, wave 15): operation
+/// `op` (`azos_abi::trace::TRACE_OP_*`) with argument `arg`, under the
+/// `Cap<Trace>` handle `cap`. The operation's value (`TRACE_OP_MAP`: the
+/// region's address), else a negative errno (`-ENOSYS` with the tracer
+/// compiled out, `-ECAPPERMS` etc. without the capability).
+pub fn trace_ctl_typed(cap: u32, op: u64, arg: u64) -> isize {
+    unsafe { syscall3(SYS_TRACE_CTL_TYPED, cap as u64, op, arg) }
 }
 
 /// The flight, behavior, config and OTA families' operations and limits

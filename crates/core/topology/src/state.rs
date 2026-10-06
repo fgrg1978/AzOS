@@ -116,6 +116,52 @@ pub fn init_with(fill: impl FnOnce(&mut Topology<'static>)) -> Result<(), InitEr
     Ok(())
 }
 
+/// Why [`try_init_with`] did not publish a topology.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TryInitError<E> {
+    /// The slot was already claimed.
+    AlreadyInit,
+    /// `fill` refused (for the signed topology: a file that does not verify
+    /// or does not parse).
+    Fill(E),
+    /// The filled topology failed `admission_check`.
+    Admission(crate::AdmissionError),
+    /// `check` refused the admitted topology (the kernel's boot admission:
+    /// deadlines, the real-time band, memory).
+    Check(E),
+}
+
+/// [`init_with`] for a topology that may be refused: `fill` writes it into
+/// the slot, `admission_check` runs, then `check`; it is published only if
+/// all three succeed. On any refusal the slot is emptied and left
+/// claimable, so the caller can install another topology instead (the
+/// kernel falls back to the built-in one, Kconfig `TOPOLOGY_SOURCE`).
+/// Nothing reads the slot before READY, so a refused topology is never seen.
+pub fn try_init_with<E>(
+    fill: impl FnOnce(&mut Topology<'static>) -> Result<(), E>,
+    check: impl FnOnce(&Topology<'static>) -> Result<(), E>,
+) -> Result<(), TryInitError<E>> {
+    claim().map_err(|_| TryInitError::AlreadyInit)?;
+    // SAFETY: we hold the INITIALISING state exclusively (CAS above), and
+    // `get` hands out no reference before READY.
+    let topology = unsafe { &mut *SLOT.cell.get() };
+    topology.clear();
+    let outcome = match fill(topology) {
+        Err(e) => Err(TryInitError::Fill(e)),
+        Ok(()) => match topology.admission_check() {
+            Err(e) => Err(TryInitError::Admission(e)),
+            Ok(()) => check(topology).map_err(TryInitError::Check),
+        },
+    };
+    if outcome.is_err() {
+        topology.clear();
+        SLOT.state.store(STATE_EMPTY, Ordering::Release);
+        return outcome;
+    }
+    SLOT.state.store(STATE_READY, Ordering::Release);
+    Ok(())
+}
+
 /// Borrow the loaded topology. Returns `None` until [`init`] or
 /// [`init_with`] succeeds.
 pub fn get() -> Option<&'static Topology<'static>> {

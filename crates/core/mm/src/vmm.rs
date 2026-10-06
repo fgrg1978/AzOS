@@ -1316,11 +1316,21 @@ fn kernel_va(pa: usize) -> usize {
     crate::addr::phys_to_virt(pa)
 }
 
+/// The physical end of the RAM [`init`] mapped (0 before it ran).
+static RAM_END: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// The physical end of the RAM the kernel maps (wave 15: `text_poke` places
+/// its alias above it).
+pub fn ram_end() -> usize {
+    RAM_END.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn init(mem_start: usize, mem_size: usize) -> KResult<()> {
     let kpt = create_pagetable()?;
     *KERNEL_PT.lock() = kpt;
 
     let mem_end = mem_start + mem_size;
+    RAM_END.store(mem_end, core::sync::atomic::Ordering::Relaxed);
 
     // Phase 1: 4 KiB pages for any unaligned head (mem_start → first 2M boundary)
     let mega_start = (mem_start + MEGA_SIZE - 1) & !(MEGA_SIZE - 1);

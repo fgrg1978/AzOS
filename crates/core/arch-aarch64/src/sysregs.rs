@@ -25,12 +25,16 @@ pub const DAIF_MASK_ALL: u64 = DAIF_D | DAIF_A | DAIF_I | DAIF_F;
 #[inline]
 pub fn read_daif() -> u64 {
     let v: u64;
+    // Not `nomem` (wave 15): every DAIF access is a compiler barrier, so no
+    // memory access moves across a mask change. `irq-nomem-canary` puts
+    // `nomem` back for the gate's `irq order` canary rows.
+    #[cfg(not(feature = "irq-nomem-canary"))]
     unsafe {
-        core::arch::asm!(
-            "mrs {0}, DAIF",
-            out(reg) v,
-            options(nomem, nostack, preserves_flags),
-        );
+        core::arch::asm!("mrs {0}, DAIF", out(reg) v, options(nostack, preserves_flags));
+    }
+    #[cfg(feature = "irq-nomem-canary")]
+    unsafe {
+        core::arch::asm!("mrs {0}, DAIF", out(reg) v, options(nomem, nostack, preserves_flags));
     }
     v
 }
@@ -39,12 +43,16 @@ pub fn read_daif() -> u64 {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn write_daif(val: u64) {
+    // A compiler barrier (no `nomem`): with `nomem`, LLVM could move plain
+    // loads and stores across the mask change, out of the window the caller
+    // masked interrupts for (found by wave 15 SLAB; `kheap.rs` had to fence).
+    #[cfg(not(feature = "irq-nomem-canary"))]
     unsafe {
-        core::arch::asm!(
-            "msr DAIF, {0}",
-            in(reg) val,
-            options(nomem, nostack, preserves_flags),
-        );
+        core::arch::asm!("msr DAIF, {0}", in(reg) val, options(nostack, preserves_flags));
+    }
+    #[cfg(feature = "irq-nomem-canary")]
+    unsafe {
+        core::arch::asm!("msr DAIF, {0}", in(reg) val, options(nomem, nostack, preserves_flags));
     }
 }
 
@@ -65,9 +73,11 @@ pub fn disable_irq_fiq() -> u64 {
 #[inline]
 pub fn enable_irq() {
     unsafe {
+        // A compiler barrier like `write_daif`: nothing the masked window
+        // wrote may sink below the unmask.
         core::arch::asm!(
             "msr DAIFClr, #2",
-            options(nomem, nostack),
+            options(nostack),
         );
     }
 }

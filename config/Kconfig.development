@@ -243,18 +243,245 @@ config LAT_TRACE
       the arch-api `Interrupts` trait, every preemption-counter 0<->1
       transition and every trap entry/exit reads the counter once.
 
-config SYSCALL_TRACE
-    bool "Record every syscall entry in the post-mortem trace ring"
+# ---------------------------------------------------------------------------
+# Kernel event tracer (wave 15)
+# ---------------------------------------------------------------------------
+
+config KTRACE
+    bool "Kernel event tracer, read live from ring 3"
+    default y if LOG_LEVEL_DEBUG
     default n
     help
-      Writes one TRACE_SYSCALL event (syscall number) into the 512-event
-      kernel trace ring on every syscall entry, so a crash dump shows the
-      last syscalls. riscv64 only; aarch64 has no such hook.
+      Per-CPU lock-free rings of 32-byte event records (scheduler,
+      interrupts, syscalls, IPC, page faults, process life cycle, and
+      the LAT_TRACE maxima) in one shared-memory region that a ring-3
+      reader holding Cap<Trace> maps and drains while the kernel runs
+      (userspace/services/tracectl). The kernel is the only producer of
+      each ring, the reader the only consumer; a record touches one
+      cache line, takes no lock and divides nothing.
 
-      Off (default): the call is not compiled; the ring still records
-      IRQ, scheduler, fault and IPC events, and seccomp denials
-      (TRACE_SYSCALL / 0xDEAD) are recorded either way. On: 19
-      instructions on every syscall (static count, getpid path). Maps to
-      the kernel cargo feature `syscall-trace` (tools/kconfig_to_cargo.py).
+      Off (default in every deployment profile, which build at log
+      level warn): no tracepoint, no ring, no region is compiled; every
+      tracepoint folds to zero instructions, and SYS_TRACE_CTL_TYPED
+      answers -ENOSYS. On (default in the QEMU development configs,
+      which select LOG_LEVEL_DEBUG): each compiled-in tracepoint costs
+      its runtime-mask test while its class is masked off, and the
+      record path while it records (see KTRACE_BOOT_MASK). The
+      per-tracepoint and per-event instruction counts are measured in
+      ARCHITECTURE.md ("Tracing").
+
+config KTRACE_RING_ENTRIES
+    int "Trace records per CPU ring (power of two)"
+    range 64 8192
+    default 256 if PROFILE_EMBEDDED
+    default 1024
+    help
+      Records each CPU's ring holds before the policy applies (a full
+      ring drops the newest record, or overwrites the oldest: see the
+      policy choice). Read only with KTRACE. Must be a power of two (the
+      slot is index & (entries - 1); the build refuses anything else).
+
+      RAM: entries x 32 B x online CPUs, plus 64 B of header and 128 B
+      per ring, in one kernel-owned shared-memory region, allocated at
+      boot. The region is capped at MAX_SHM_PAGES (64 pages, 256 KiB):
+      when the online CPUs times this value does not fit, the boot
+      halves the entries until it does and prints a warning. 1024 on 4
+      CPUs is 129 KiB. The same on both ISAs: the record size and the
+      region cap do not depend on the ISA. Embedded boards default to
+      256 (32 KiB on 4 CPUs).
+
+      Raise it when a reader that wakes rarely reports drops; lower it
+      to save RAM. The number of instructions per event does not change.
+
+config KTRACE_BOOT_MASK
+    hex "Trace classes recording from boot (runtime mask)"
+    range 0x0 0x7f
+    default 0x0
+    help
+      The runtime class mask the tracer starts with; tracectl changes it
+      with SYS_TRACE_CTL_TYPED (TRACE_OP_SET_MASK). Bit n is class n:
+      0 sched, 1 irq, 2 syscall, 3 ipc, 4 fault, 5 proc, 6 lat. Bits of
+      classes not compiled in are ignored. Read only with KTRACE.
+
+      0 (default): nothing records until a reader asks, so a tracer
+      that is compiled in but idle costs only the mask test per
+      tracepoint (a load, an and and a branch). Set 0x7f with
+      KTRACE_POLICY_OVERWRITE for a flight recorder: the panic path
+      dumps each CPU's last records.
+
+choice
+    prompt "Trace ring policy when a ring is full"
+    default KTRACE_POLICY_DROP
+    help
+      What a full ring does with the next record. Read only with KTRACE.
+
+    config KTRACE_POLICY_DROP
+        bool "Drop the newest record and count it"
+        help
+          Default. The record is refused and the ring's drop counter
+          (in the shared region) counts it; the reader sees every
+          record it was given exactly once and never a torn one. The
+          producer never writes a slot the reader has not released.
+
+    config KTRACE_POLICY_OVERWRITE
+        bool "Overwrite the oldest record (flight recorder)"
+        help
+          The newest records always land. Each record is first marked
+          in progress, then written, then published (one more store and
+          a store-store fence per record); the reader re-checks every
+          record after copying it and counts the ones overwritten under
+          it as lost. With no reader attached a full ring stays full,
+          so every record also re-reads the reader's tail and stores the
+          ring's overwrite count (a load and a store more). Use with
+          KTRACE_BOOT_MASK for a black box whose last events survive to
+          the panic dump.
+
+endchoice
+
+choice
+    prompt "Trace timestamp source"
+    default KTRACE_TS_TIMEBASE
+    help
+      The counter each record's timestamp reads. Read only with KTRACE.
+
+    config KTRACE_TS_TIMEBASE
+        bool "The monotonic timebase (the clock vDSO's)"
+        help
+          Default. rdtime on riscv64, CNTVCT_EL0 on aarch64: the counter
+          the vDSO clock reads, the same on every CPU, at the rate the
+          region header publishes (10 MHz on QEMU riscv64 virt, the
+          live CNTFRQ_EL0 on aarch64), so records from different CPUs
+          merge into one timeline. One instruction per record.
+
+    config KTRACE_TS_CYCLES
+        bool "The CPU cycle counter"
+        help
+          rdcycle on riscv64, PMCCNTR_EL0 on aarch64 (enabled at boot):
+          finer, but per CPU (not comparable across CPUs), its rate is
+          not published (the header says 0) and it stops in WFI on
+          some cores. For measuring short sections on one CPU. Booted on
+          QEMU, both ISAs (rdcycle is readable from S-mode under OpenSBI;
+          each CPU starts PMCCNTR_EL0 itself); on a board, check the
+          firmware leaves the counter readable (mcounteren.CY) first.
+
+endchoice
+
+config KTRACE_STATIC_KEYS
+    bool "Tracepoints as patched branches (static keys)"
+    depends on KTRACE && !NO_MMU
+    default y if ARCH_RISCV64
+    default y if ARCH_AARCH64
+    help
+      Each tracepoint is one instruction in the kernel text, a branch to
+      the class's mask test while the class may record and a nop while it
+      is masked off: a masked tracepoint costs one nop instead of the mask
+      load, and, and branch (4 instructions). Like Linux's static keys.
+      Changing the class mask (SYS_TRACE_CTL_TYPED, Cap<Trace>) rewrites
+      every site of the changed classes: rare and slow by design.
+
+      The text stays read-execute. A site is rewritten only through
+      azos_mm::text_poke, which maps the page's frame at a temporary,
+      never-executable alias, writes the word, unmaps the alias with a
+      shootdown on every CPU and synchronises every CPU's instruction
+      fetch (riscv64: fence.i and an SBI remote fence.i; aarch64: IC
+      IALLUIS, DSB, ISB). Each site is a single naturally aligned 32-bit
+      instruction swapped for another (nop and jal/b), which aarch64
+      allows concurrently (CMODX) and riscv64 Linux relies on.
+
+      Every site is linked as the branch, so a kernel that cannot patch
+      (this off, no-MMU, or no free alias address at boot) keeps the
+      4-instruction mask test and stays correct. Costs 24 bytes of table
+      per site. Off: the mask test at every tracepoint.
+
+config KTRACE_CLASS_SCHED
+    bool "Trace class: scheduler (switch, wakeup)"
+    depends on KTRACE
+    default y
+    help
+      Two tracepoints: every context switch (do_schedule) and every
+      wakeup of a sleeping task. Off: neither is compiled.
+
+config KTRACE_CLASS_IRQ
+    bool "Trace class: interrupts (entry, exit)"
+    depends on KTRACE
+    default y
+    help
+      An entry and an exit record around every external and timer
+      interrupt the kernel dispatches, both ISAs. Off: not compiled.
+
+config KTRACE_CLASS_SYSCALL
+    bool "Trace class: system calls (entry, exit, seccomp denial)"
+    depends on KTRACE
+    default y
+    help
+      Entry and exit of every syscall, both ISAs, and every seccomp
+      denial. The heaviest class by event rate: off, the syscall path
+      carries no tracepoint at all (the vsbench syscall-floor lane is
+      the measure). Replaces SYSCALL_TRACE.
+
+config KTRACE_CLASS_IPC
+    bool "Trace class: fast IPC (call, reply)"
+    depends on KTRACE
+    default y
+    help
+      A record for every fast-IPC call and reply. Off: not compiled.
+
+config KTRACE_CLASS_FAULT
+    bool "Trace class: page faults"
+    depends on KTRACE
+    default y
+    help
+      A record for every page fault the trap handlers see, both ISAs,
+      with the address and the cause. Off: not compiled.
+
+config KTRACE_CLASS_PROC
+    bool "Trace class: process life cycle (spawn, exit, signal)"
+    depends on KTRACE
+    default y
+    help
+      A record when a task is created, when one exits (with its code)
+      and when a signal is delivered to a Linux task. Off: not compiled.
+
+config KTRACE_CLASS_LAT
+    bool "Trace class: masked-window maxima (LAT_TRACE)"
+    depends on KTRACE && LAT_TRACE
+    default y
+    help
+      A record each time LAT_TRACE measures a new longest
+      interrupts-masked or preemption-disabled window on a CPU, with
+      its length and the two call sites. Costs nothing outside those
+      new maxima. Needs LAT_TRACE.
+
+config SWITCH_CENSUS
+    bool "Census of the yield-and-switch path, phase by phase"
+    default n
+    help
+      Measurement only (crates/core/sched/src/swcensus.rs). Times each
+      phase of a yield that switches (trap and user mode, syscall
+      dispatch, the pick, the re-queue, the context-saving gate, the
+      accounting, context_switch, the return) and counts switches into
+      each task slot; SYS_TASKINFO prints the per-switch averages since
+      its previous call as `[SW-CENSUS]` lines at log level debug when at
+      least SWITCH_CENSUS_DUMP_MIN switches happened in between. The clock
+      is rdcycle (riscv64) or cntvct_el0 (aarch64): under QEMU -icount
+      both count guest instructions. Meaningful at one hart (one set of
+      globals for all harts).
+
+      Off (default): not compiled, zero instructions. On: about ten
+      instructions per phase boundary (eight per switch) and 800 bytes of
+      counters.
+      Maps to the kernel cargo feature `switch-census`
+      (tools/kconfig_to_cargo.py).
+
+config SWITCH_CENSUS_DUMP_MIN
+    int "Fewest switches that make a census dump worth printing"
+    range 1 1000000000
+    default 1000
+    help
+      SWITCH_CENSUS prints at a SYS_TASKINFO only when at least this many
+      switches happened since the previous one, so the windows of a
+      benchmark print and the bookkeeping calls between them do not.
+      No cost while SWITCH_CENSUS is off; read once per SYS_TASKINFO when
+      on. Raise it when a workload calls SYS_TASKINFO often.
 
 endmenu # Development & Debug

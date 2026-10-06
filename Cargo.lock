@@ -433,6 +433,7 @@ dependencies = [
  "azos_sched",
  "azos_spsc",
  "azos_sync",
+ "azos_trace",
  "wcet-macro",
 ]
 
@@ -494,6 +495,7 @@ dependencies = [
  "azos_sched",
  "azos_service",
  "azos_shell",
+ "azos_spsc",
  "azos_sync",
  "azos_syscall",
  "azos_telemetry",
@@ -664,6 +666,7 @@ dependencies = [
  "azos_linux_abi",
  "azos_mm",
  "azos_sync",
+ "azos_trace",
  "wcet-macro",
 ]
 
@@ -764,6 +767,7 @@ dependencies = [
  "azos_service",
  "azos_sync",
  "azos_topology",
+ "azos_trace",
 ]
 
 [[package]]
@@ -796,9 +800,9 @@ dependencies = [
 name = "azos_trace"
 version = "0.1.0"
 dependencies = [
- "azos_drv_sys",
- "azos_fs",
- "azos_sync",
+ "azos_abi",
+ "azos_limits",
+ "azos_spsc",
 ]
 
 [[package]]

@@ -718,8 +718,13 @@ static mut PER_CPU_QUEUES: [[PrioQueue; NUM_PRIORITIES]; MAX_CPUS] =
 /// state lock. The full chain is `PiMutex::pi_state` -> donation lock ->
 /// `CPU_LOCKS[cpu]`. Never take a donation lock or lock a `PiMutex` while
 /// holding a CPU lock.
-static CPU_LOCKS: [AtomicBool; MAX_CPUS] =
-    [const { AtomicBool::new(false) }; MAX_CPUS];
+///
+/// Words, not `AtomicBool` (wave 15, SWITCH): RV64 has no sub-word AMO, so
+/// a byte lock's compare-and-swap compiled to a masked `amoor.w` sequence
+/// (nine instructions); a word lock is one `amoswap.w.aq` to take and one
+/// store to give back. Two of these per context switch.
+static CPU_LOCKS: [AtomicU32; MAX_CPUS] =
+    [const { AtomicU32::new(0) }; MAX_CPUS];
 
 // ---- FFI: context_switch assembly ----
 
@@ -804,19 +809,14 @@ impl CpuLockGuard {
     fn acquire(cpu: usize) -> Self {
         let prev_sstatus = azos_arch::ARCH.disable_all();
 
-        while CPU_LOCKS[cpu]
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
+        cpu_lock_spin(cpu);
         CpuLockGuard { cpu, prev_sstatus }
     }
 }
 
 impl Drop for CpuLockGuard {
     fn drop(&mut self) {
-        CPU_LOCKS[self.cpu].store(false, Ordering::Release);
+        CPU_LOCKS[self.cpu].store(0, Ordering::Release);
         // Restore only the SIE bit from the saved sstatus (same ordering
         // rationale as `IrqSaveGuard::drop` in crates/core/sync/src/spinlock.rs).
         azos_arch::ARCH.restore(self.prev_sstatus);
@@ -834,6 +834,40 @@ impl Drop for CpuLockGuard {
 /// (`task_create` takes `priority: u32` and never validates it). Clamping to
 /// the lowest bucket degrades the task's scheduling instead of resetting the
 /// board.
+/// Take `CPU_LOCKS[cpu]`: test-and-set, spinning on a plain load while it
+/// is held (no AMO traffic from the waiters).
+#[inline(always)]
+fn cpu_lock_spin(cpu: usize) {
+    while CPU_LOCKS[cpu].swap(1, Ordering::Acquire) != 0 {
+        while CPU_LOCKS[cpu].load(Ordering::Relaxed) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// `CPU_LOCKS[cpu]` for a caller whose interrupts are ALREADY masked:
+/// `do_schedule`, whose every caller masks them (`yield_as`, the tick, the
+/// block path, `task_exit`'s idle). Saves the `sstatus` save, mask and
+/// restore that [`CpuLockGuard`] does, twice per context switch.
+struct CpuLockIrqsOff {
+    cpu: usize,
+}
+
+impl CpuLockIrqsOff {
+    #[inline(always)]
+    fn acquire(cpu: usize) -> Self {
+        cpu_lock_spin(cpu);
+        CpuLockIrqsOff { cpu }
+    }
+}
+
+impl Drop for CpuLockIrqsOff {
+    #[inline(always)]
+    fn drop(&mut self) {
+        CPU_LOCKS[self.cpu].store(0, Ordering::Release);
+    }
+}
+
 #[inline]
 fn prio_bucket(priority: u32) -> usize {
     (priority as usize).min(NUM_PRIORITIES - 1)
@@ -908,10 +942,7 @@ unsafe fn cpu_enqueue(cpu: usize, idx: usize) -> bool {
             // preempts it will enqueue it then. That is a delay; overwriting
             // a live entry, which is what the old code did here, was a
             // permanent, silent loss of somebody else's task.
-            azos_drv_sys::kerr!(
-                "[SCHED] BUG: ready queue cpu{} prio{} full ({} entries) — task {} not enqueued",
-                cpu, prio, count, task.tid,
-            );
+            enqueue_full_report(cpu, prio, count, task.tid);
             false
         }
         EnqueueOutcome::Append => {
@@ -938,6 +969,18 @@ unsafe fn cpu_enqueue(cpu: usize, idx: usize) -> bool {
 
 /// Dequeue the highest-priority ready task from CPU `cpu`.
 /// Caller must hold `CPU_LOCKS[cpu]` or guarantee single-CPU access.
+/// The K-C12 "queue full" report, out of line: formatting it inline gave
+/// every enqueue a stack frame and six saved registers it never uses on the
+/// path that runs.
+#[cold]
+#[inline(never)]
+fn enqueue_full_report(cpu: usize, prio: usize, count: usize, tid: u32) {
+    azos_drv_sys::kerr!(
+        "[SCHED] BUG: ready queue cpu{} prio{} full ({} entries) — task {} not enqueued",
+        cpu, prio, count, tid,
+    );
+}
+
 unsafe fn cpu_dequeue(cpu: usize) -> Option<usize> {
     let bm = &PER_CPU[cpu].ready_bitmap;
     let bitmap = bm.load(Ordering::Relaxed);
@@ -1018,6 +1061,23 @@ unsafe fn cpu_peek_highest_prio(cpu: usize) -> Option<u32> {
 unsafe fn cpu_dequeue_locked(cpu: usize) -> Option<usize> {
     let _g = CpuLockGuard::acquire(cpu);
     cpu_dequeue(cpu)
+}
+
+/// [`cpu_dequeue_locked`] for `do_schedule`, whose interrupts are masked.
+#[inline(always)]
+unsafe fn cpu_dequeue_irqs_off(cpu: usize) -> Option<usize> {
+    let _g = CpuLockIrqsOff::acquire(cpu);
+    cpu_dequeue(cpu)
+}
+
+/// `do_schedule` putting a task back on ITS OWN hart's queue, interrupts
+/// masked: [`cpu_enqueue_locked`] without the `sstatus` save/restore and
+/// without the doorbell, which only a remote enqueue rings (`cpu` is this
+/// hart, awake by definition).
+#[inline(always)]
+unsafe fn cpu_requeue_self(cpu: usize, idx: usize) -> bool {
+    let _g = CpuLockIrqsOff::acquire(cpu);
+    cpu_enqueue(cpu, idx)
 }
 
 /// Enqueue task `idx` on CPU `cpu`'s ready queue, taking `CPU_LOCKS[cpu]`
@@ -1128,6 +1188,10 @@ unsafe fn cpu_enqueue_locked(cpu: usize, idx: usize) -> bool {
 #[inline]
 unsafe fn wake_enqueue_locked(cpu: usize, idx: usize) -> bool {
     let appended = cpu_enqueue_locked(cpu, idx);
+    // Wave 15 (TRACE): every wake that queues a task passes here.
+    if azos_trace::sched_on() {
+        azos_trace::raw::sched_wakeup(task_ref(idx).tid, cpu as u32, current_task_tid());
+    }
     #[cfg(feature = "sched-aps")]
     if appended && aps_dispatch_enabled() {
         let task = task_mut(idx);
@@ -2399,6 +2463,7 @@ pub fn try_task_create_init(
                     // hand it to the same reuse-time reclaim as `user_pt`
                     // below instead of leaking it.
                     if task.exec_ctx_ready.swap(false, Ordering::Relaxed) {
+                        EXEC_HANDOFFS.fetch_sub(1, Ordering::Relaxed);
                         stale_exec_old_pt = task.exec_old_pt;
                     }
                     task.exec_entry   = 0;
@@ -2649,6 +2714,13 @@ pub fn try_task_create_init(
 
     // Restore interrupts.
     azos_arch::ARCH.restore(sstatus);
+    // Wave 15 (TRACE): the proc class's spawn record (every task, kernel or
+    // user, fork or spawn, is created here).
+    if azos_trace::proc_on() {
+        if let Some(idx) = result {
+            azos_trace::raw::proc_spawn(unsafe { task_ref(idx).tid }, current_task_tid());
+        }
+    }
     // K-C22(B): reuse-time reclaim of the previous occupant's address
     // space(s), with interrupts back on. Runs before the caller learns the
     // new index, but after the new task is enqueued — harmless: the new task
@@ -3029,6 +3101,7 @@ unsafe fn release_address_space_at_exit(idx: usize) {
     let user_pt = core::mem::replace(&mut task.user_pt, 0);
     task.user_brk = 0;
     let exec_old_pt = if task.exec_ctx_ready.swap(false, Ordering::Relaxed) {
+        EXEC_HANDOFFS.fetch_sub(1, Ordering::Relaxed);
         core::mem::replace(&mut task.exec_old_pt, 0)
     } else {
         0
@@ -3235,6 +3308,10 @@ pub fn task_exit_with_code(code: i32) -> ! {
         azos_sync::preempt::force_zero_depth();
     }
     let t_exit = crate::prof::t();
+    // Wave 15 (TRACE): the proc class's exit record.
+    if azos_trace::proc_on() {
+        azos_trace::raw::proc_exit(current_task_tid(), code);
+    }
     unsafe {
         let cpu = current_cpu_id();
         let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
@@ -3414,6 +3491,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
 /// function registered as the deferred-reschedule callback, and the refusal is
 /// what stops a guard drop nested inside another critical section from
 /// switching early.
+#[inline]
 pub fn task_yield() {
     yield_as(SwitchReason::Voluntary);
 }
@@ -3431,6 +3509,7 @@ pub fn task_preempt_deferred() {
     yield_as(SwitchReason::Preempted);
 }
 
+#[inline(always)]
 fn yield_as(why: SwitchReason) {
     use azos_sync::preempt_core::VoluntaryAdmission;
     if azos_sync::preempt_core::voluntary_admission(azos_sync::preempt::depth())
@@ -3439,6 +3518,7 @@ fn yield_as(why: SwitchReason) {
         preempt_audit::bump(&preempt_audit::YIELD_WHILE_ATOMIC);
         return;
     }
+    crate::swcensus::yield_enter();
 
     let sstatus = azos_arch::ARCH.disable_all();
 
@@ -4856,6 +4936,140 @@ unsafe fn tickless_rearm_if_idle(cpu: usize) {
     }
 }
 
+/// The context-saving gate's wait (see `do_schedule`): spin until `next`'s
+/// save has finished, with a wall-clock bound (SCHED_SAVING_GATE_US). `false` when the bound
+/// ran out. Out of line: the flag is clear on every switch that finds its
+/// task saved, and the deadline needs a clock read only when it is not.
+#[inline(never)]
+fn wait_context_saved(next: &Task) -> bool {
+    // Kconfig SCHED_SAVING_GATE_US (1000) and SCHED_SAVING_GATE_CLOCK_EVERY
+    // (256): the bound and how often the clock is read while waiting.
+    let deadline = azos_drv_sys::timebase::now()
+        + (azos_drv_sys::timebase::TIMER_FREQ as u64)
+            * azos_limits::SCHED_SAVING_GATE_US as u64 / 1_000_000;
+    let every = (azos_limits::SCHED_SAVING_GATE_CLOCK_EVERY as u32).max(1);
+    let mut spins: u32 = 0;
+    while next.context_saving.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+        spins = spins.wrapping_add(1);
+        if spins % every == 0 && azos_drv_sys::timebase::now() >= deadline {
+            return false;
+        }
+    }
+    true
+}
+
+/// `do_schedule`'s reap of a Zombie it is switching away from, out of line
+/// (wave 15, SWITCH): a rare arm with a lock, two prints and a TTBR1 probe,
+/// inline it made every switch's prologue save registers only it needs.
+/// The slot is free when this returns; the caller must not touch it again.
+#[inline(never)]
+unsafe fn reap_zombie_on_switch(old_idx: usize) {
+    let old = task_mut(old_idx);
+    // K-C6: `task_exit()` marks the task Zombie but deliberately does
+    // NOT free its pool slot (TASK_VALID) or clear
+    // PER_CPU[cpu].current_idx itself — at that point it is still
+    // executing ON this exact task's own stack (task_exit() calls
+    // do_schedule() directly, and if no task was ready yet, idles in
+    // its own WFI loop on that same stack). Freeing the slot there
+    // would let another hart's alloc_slot() (e.g. via fork()) reuse
+    // and dispatch a brand new task onto that same physical stack
+    // while this hart is still running on it.
+    //
+    // This is therefore the correct, and only safe, place to free
+    // it: right here, in the SAME do_schedule() call that is about
+    // to `context_switch()` away from it below — whether that
+    // happens on the very tick task_exit() called us (a ready task
+    // was immediately available) or many ticks later (task_exit()
+    // idled in WFI until one appeared; schedule() treats a lingering
+    // Zombie exactly like "nothing running" in the meantime, see its
+    // K-C6 comment, so it keeps calling us every tick until we get
+    // here). Either way, by the time this line runs we are
+    // unconditionally about to leave `old`'s stack for good via the
+    // context_switch() call below — no other hart can have reused
+    // this slot in the interim, since TASK_VALID stayed true.
+    let _pool = PoolGuard::acquire();
+    // aarch64 Phase 6 marker: this is the actual reap — the pool slot
+    // is freed right here, immediately (no second task_create needed
+    // to trigger it, unlike the lazy claim-time reset in
+    // `try_task_create_init`) — so it is the honest place to prove
+    // "the kernel reaps it" for the `hello`/`syscall_test` gate row.
+    // `#[cfg]`'d to the real aarch64 kernel target only — NOT plain
+    // `target_arch = "aarch64"`, which is also this crate's OWN host
+    // test target (`aarch64-apple-darwin`, since these tests run on
+    // Apple Silicon). That plain form shipped once and broke
+    // `tests/host/syscall-tests`' `exec_binding` suite: this arm ran
+    // during a host test through the very same `#[path]`-pulled
+    // source (`shims/sched`), calling a `kprintln!` that assumes a
+    // live UART driver. `target_os = "none"` is what is actually
+    // true only for the real bare-metal build. RISC-V's console
+    // output must not change either way (this task's own
+    // constraint) — riscv64 already proves this same path via its
+    // own scenarios' exit-code checks.
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    azos_drv_sys::kprintln!(
+        "[SCHED] aarch64 reaped tid={} slot={}", old.tid, old_idx);
+    // TTBR1 split proof, second half (aarch64 parity program): the
+    // boot-time marker in `kernel_main` (`[AARCH64-TTBR1]`) proves
+    // the alias table is configured correctly at boot; this proves
+    // it STAYS that way after real user-task activity has forced
+    // real `TTBR0_EL1` switches (fork/exec/exit, all upstream of
+    // every reap). First reap ON HART 0 only.
+    //
+    // **Must be hart 0, not merely "the first reap".** `TTBR1_EL1`
+    // is a per-CPU banked register, and this wave's
+    // `aarch64_early_ttbr1_alias` (`boot.S`) runs on the PRIMARY
+    // ONLY — a secondary's own `TTBR1_EL1` was never written and
+    // reads back whatever its reset state happens to be (0 on
+    // QEMU). Gating on "first reap, any hart" measured this
+    // directly on `-smp 2` ipctest: 8 of 10 runs printed FAILED
+    // with `now=0x0` whenever hart 1 (not hart 0) reaped first —
+    // a false positive from comparing hart 0's boot-time value
+    // against hart 1's own never-initialized register, not a real
+    // write to anything. Every row this runs in reaps many tasks
+    // across the run, so waiting specifically for a hart-0 reap
+    // still fires reliably without needing every secondary to
+    // also run the alias setup (out of scope for this wave — see
+    // `enable_ttbr1_alias`'s own doc).
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    if crate::smp::current_cpu_id() == 0 {
+        static CHECKED: AtomicBool = AtomicBool::new(false);
+        if !CHECKED.swap(true, Ordering::AcqRel) {
+            // What this asserts changed when the kernel moved into the
+            // upper half: TTBR1 no longer holds the boot-time alias,
+            // it holds the kernel's REAL page table. So the invariant
+            // is "TTBR1 still points at the kernel's table after user
+            // tasks have been switching TTBR0", which is the property
+            // the split exists for — comparing against the boot alias
+            // would now fail on a correct kernel.
+            let kpt = azos_mm::vmm::kernel_pagetable();
+            if kpt != 0 {
+                let now = azos_arch::sysregs::read_ttbr1_el1() as usize & !0xFFF;
+                if now == kpt {
+                    azos_drv_sys::kprintln!(
+                        "[AARCH64-TTBR1-POST] after a user task's own TTBR0_EL1 \
+                         switches: TTBR1_EL1 still the kernel table on hart 0 ({:#x})", now);
+                } else {
+                    azos_drv_sys::kerr!(
+                        "[AARCH64-TTBR1-POST] FAILED: hart 0's TTBR1_EL1 is not the \
+                         kernel table after user activity — kernel PT {:#x}, TTBR1 {:#x}",
+                        kpt, now);
+                }
+            }
+        }
+    }
+    // Its reservation, if any, leaves the hart's set and ledger before
+    // the slot can be claimed again.
+    rt::release(old_idx);
+    TASK_VALID[old_idx].store(false, Ordering::Relaxed);
+    hist_reaccount(old_idx);
+    // Sentinel protocol (see alloc_slot): unpublish, fence, clear the
+    // tid, so a dead TID can never be matched against this slot's
+    // next occupant by the lock-free `idx_for_tid` scan.
+    core::sync::atomic::fence(Ordering::Release);
+    old.tid = 0;
+}
+
 unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     // AZOS Phase 1 W4-int.2 — if APS dispatch is enabled, consult
     // the per-class policies first. On any error (empty policies, tid
@@ -4886,7 +5100,7 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
         let aps_pick: Option<usize> = None;
         match aps_pick {
             Some(idx) => idx,
-            None => match cpu_dequeue_locked(cpu) {
+            None => match cpu_dequeue_irqs_off(cpu) {
                 Some(idx) => idx,
                 None => {
                     #[cfg(feature = "ipc-census")]
@@ -4914,7 +5128,7 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
                 rt::Pick::Keep => None,
             }
         } else {
-            cpu_dequeue_locked(cpu)
+            cpu_dequeue_irqs_off(cpu)
         };
         match picked {
             Some(idx) => { from_prio_queue = true; idx }
@@ -4935,7 +5149,19 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
         }
     };
 
+    crate::swcensus::picked();
     let old_idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+    // Wave 15 (SWITCH): each task's slot is computed once for the whole
+    // switch (bounds check and index arithmetic), not at every use. Raw
+    // pointers: `next` and `old` may be the same slot until the self-pick
+    // test below, and the Zombie arm frees `old`'s slot (`old_slot_freed`).
+    // (Deferring `old_t` past the self-pick measured worse on both ISAs.)
+    let next_t: *mut Task = task_mut(next_idx);
+    let old_t: *mut Task = if old_idx != usize::MAX {
+        task_mut(old_idx) as *mut Task
+    } else {
+        core::ptr::null_mut()
+    };
 
     // A strictly WORSE-priority pick must not preempt a Running current.
     //
@@ -4959,14 +5185,14 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     // budget, or a throttled reservation, must yield to a worse priority —
     // that is the whole point of the budget.
     if from_prio_queue && !rt_force && old_idx < MAX_TASKS && next_idx != old_idx {
-        let old = task_ref(old_idx);
+        let old = &*old_t;
         if old.state() == TaskState::Running
-            && task_ref(next_idx).priority.load(Ordering::Relaxed) > old.priority.load(Ordering::Relaxed)
+            && (*next_t).priority.load(Ordering::Relaxed) > old.priority.load(Ordering::Relaxed)
         {
             // Put the pick back: the selection above consumed a queue entry,
             // and dropping it here would leak the task out of every run queue
             // while leaving it Ready — the exact K-C26 shape guarded below.
-            if !cpu_enqueue_locked(cpu, next_idx) {
+            if !cpu_requeue_self(cpu, next_idx) {
                 SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
             }
             PRIO_GUARD_NO_SWITCH.fetch_add(1, Ordering::Relaxed);
@@ -5017,10 +5243,10 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
         // dequeued next pass, matches `next_idx == old_idx` again, and is
         // re-enqueued once more — a self-feeding loop measured at 12906
         // iterations in one run.
-        match task_ref(next_idx).state() {
+        match (*next_t).state() {
             TaskState::Blocked | TaskState::Zombie => {}
             _ => {
-                if !cpu_enqueue_locked(cpu, next_idx) {
+                if !cpu_requeue_self(cpu, next_idx) {
                     SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -5052,7 +5278,7 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
         // IDLE_PRIORITY`. Not a `ready_bitmap` peek — `cpu_dequeue_locked`
         // just proved nothing higher-priority was ready by finding idle
         // itself here; a second peek would be redundant, not more correct.
-        if task_ref(next_idx).priority.load(Ordering::Relaxed) == crate::task::IDLE_PRIORITY {
+        if (*next_t).priority.load(Ordering::Relaxed) == crate::task::IDLE_PRIORITY {
             azos_drv_sys::timebase::set_next_tick_tickless(
                 cpu as u32, nearest_timer_deadline(), true,
             );
@@ -5085,7 +5311,7 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     // it anymore — see the `old_ptr` selection at the bottom.
     let mut old_slot_freed = false;
     if old_idx != usize::MAX {
-        let old = task_mut(old_idx);
+        let old = &mut *old_t;
         if old.state() == TaskState::Running {
             // Same protection as block_current(): mark in-transit before
             // this task becomes visible/dispatchable via the ready queue.
@@ -5098,7 +5324,7 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
             // K-C26 discriminator 2: `set_state(Ready)` above already happened,
             // so a refusal here leaves this task Ready and in no queue — the
             // terminal signature. Counted, not ignored.
-            if !cpu_enqueue_locked(cpu, old_idx) { // enqueues at old.priority level
+            if !cpu_requeue_self(cpu, old_idx) { // enqueues at old.priority level
                 SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
             }
 
@@ -5117,108 +5343,7 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
                 );
             }
         } else if old.state() == TaskState::Zombie {
-            // K-C6: `task_exit()` marks the task Zombie but deliberately does
-            // NOT free its pool slot (TASK_VALID) or clear
-            // PER_CPU[cpu].current_idx itself — at that point it is still
-            // executing ON this exact task's own stack (task_exit() calls
-            // do_schedule() directly, and if no task was ready yet, idles in
-            // its own WFI loop on that same stack). Freeing the slot there
-            // would let another hart's alloc_slot() (e.g. via fork()) reuse
-            // and dispatch a brand new task onto that same physical stack
-            // while this hart is still running on it.
-            //
-            // This is therefore the correct, and only safe, place to free
-            // it: right here, in the SAME do_schedule() call that is about
-            // to `context_switch()` away from it below — whether that
-            // happens on the very tick task_exit() called us (a ready task
-            // was immediately available) or many ticks later (task_exit()
-            // idled in WFI until one appeared; schedule() treats a lingering
-            // Zombie exactly like "nothing running" in the meantime, see its
-            // K-C6 comment, so it keeps calling us every tick until we get
-            // here). Either way, by the time this line runs we are
-            // unconditionally about to leave `old`'s stack for good via the
-            // context_switch() call below — no other hart can have reused
-            // this slot in the interim, since TASK_VALID stayed true.
-            let _pool = PoolGuard::acquire();
-            // aarch64 Phase 6 marker: this is the actual reap — the pool slot
-            // is freed right here, immediately (no second task_create needed
-            // to trigger it, unlike the lazy claim-time reset in
-            // `try_task_create_init`) — so it is the honest place to prove
-            // "the kernel reaps it" for the `hello`/`syscall_test` gate row.
-            // `#[cfg]`'d to the real aarch64 kernel target only — NOT plain
-            // `target_arch = "aarch64"`, which is also this crate's OWN host
-            // test target (`aarch64-apple-darwin`, since these tests run on
-            // Apple Silicon). That plain form shipped once and broke
-            // `tests/host/syscall-tests`' `exec_binding` suite: this arm ran
-            // during a host test through the very same `#[path]`-pulled
-            // source (`shims/sched`), calling a `kprintln!` that assumes a
-            // live UART driver. `target_os = "none"` is what is actually
-            // true only for the real bare-metal build. RISC-V's console
-            // output must not change either way (this task's own
-            // constraint) — riscv64 already proves this same path via its
-            // own scenarios' exit-code checks.
-            #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-            azos_drv_sys::kprintln!(
-                "[SCHED] aarch64 reaped tid={} slot={}", old.tid, old_idx);
-            // TTBR1 split proof, second half (aarch64 parity program): the
-            // boot-time marker in `kernel_main` (`[AARCH64-TTBR1]`) proves
-            // the alias table is configured correctly at boot; this proves
-            // it STAYS that way after real user-task activity has forced
-            // real `TTBR0_EL1` switches (fork/exec/exit, all upstream of
-            // every reap). First reap ON HART 0 only.
-            //
-            // **Must be hart 0, not merely "the first reap".** `TTBR1_EL1`
-            // is a per-CPU banked register, and this wave's
-            // `aarch64_early_ttbr1_alias` (`boot.S`) runs on the PRIMARY
-            // ONLY — a secondary's own `TTBR1_EL1` was never written and
-            // reads back whatever its reset state happens to be (0 on
-            // QEMU). Gating on "first reap, any hart" measured this
-            // directly on `-smp 2` ipctest: 8 of 10 runs printed FAILED
-            // with `now=0x0` whenever hart 1 (not hart 0) reaped first —
-            // a false positive from comparing hart 0's boot-time value
-            // against hart 1's own never-initialized register, not a real
-            // write to anything. Every row this runs in reaps many tasks
-            // across the run, so waiting specifically for a hart-0 reap
-            // still fires reliably without needing every secondary to
-            // also run the alias setup (out of scope for this wave — see
-            // `enable_ttbr1_alias`'s own doc).
-            #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-            if crate::smp::current_cpu_id() == 0 {
-                static CHECKED: AtomicBool = AtomicBool::new(false);
-                if !CHECKED.swap(true, Ordering::AcqRel) {
-                    // What this asserts changed when the kernel moved into the
-                    // upper half: TTBR1 no longer holds the boot-time alias,
-                    // it holds the kernel's REAL page table. So the invariant
-                    // is "TTBR1 still points at the kernel's table after user
-                    // tasks have been switching TTBR0", which is the property
-                    // the split exists for — comparing against the boot alias
-                    // would now fail on a correct kernel.
-                    let kpt = azos_mm::vmm::kernel_pagetable();
-                    if kpt != 0 {
-                        let now = azos_arch::sysregs::read_ttbr1_el1() as usize & !0xFFF;
-                        if now == kpt {
-                            azos_drv_sys::kprintln!(
-                                "[AARCH64-TTBR1-POST] after a user task's own TTBR0_EL1 \
-                                 switches: TTBR1_EL1 still the kernel table on hart 0 ({:#x})", now);
-                        } else {
-                            azos_drv_sys::kerr!(
-                                "[AARCH64-TTBR1-POST] FAILED: hart 0's TTBR1_EL1 is not the \
-                                 kernel table after user activity — kernel PT {:#x}, TTBR1 {:#x}",
-                                kpt, now);
-                        }
-                    }
-                }
-            }
-            // Its reservation, if any, leaves the hart's set and ledger before
-            // the slot can be claimed again.
-            rt::release(old_idx);
-            TASK_VALID[old_idx].store(false, Ordering::Relaxed);
-            hist_reaccount(old_idx);
-            // Sentinel protocol (see alloc_slot): unpublish, fence, clear the
-            // tid, so a dead TID can never be matched against this slot's
-            // next occupant by the lock-free `idx_for_tid` scan.
-            core::sync::atomic::fence(Ordering::Release);
-            old.tid = 0;
+            reap_zombie_on_switch(old_idx);
             old_slot_freed = true;
         } else if old.state() == TaskState::Blocked {
             // K-C24 tail: a stamp that landed while this task ran past an
@@ -5279,8 +5404,9 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
         }
     }
 
+    crate::swcensus::requeued();
     // Activate next task.
-    let next = task_mut(next_idx);
+    let next = &mut *next_t;
     // If `next` is mid-transition (context_saving == true — e.g. this
     // exact task was just preempted/blocked on another hart and its
     // context_switch.S save hasn't finished yet), wait for it. The
@@ -5306,28 +5432,19 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
         // **A wall-clock deadline, not a spin count**, for the reason the
         // virtio-blk timeout was rewritten: a spin count buys a different
         // amount of real time on QEMU, the VF2 and the K1, so it is the kind
-        // of budget that works on the desk and fails on the board. 1 ms is
-        // ~100x any legitimate wait here (the save tail is a handful of
-        // instructions) and 10x below the 100 Hz tick, so it cannot fire on a
-        // healthy switch and cannot hide a wedge for a whole tick.
+        // of budget that works on the desk and fails on the board. 1 ms (the
+        // SCHED_SAVING_GATE_US default) is ~100x any legitimate wait here
+        // (the save tail is a handful of instructions) and 10x below the
+        // 100 Hz tick, so it cannot fire on a healthy switch and cannot hide
+        // a wedge for a whole tick.
         //
         // The clock is read once per 256 spins: `get_time` on the CLINT is a
         // device read, and putting one in a tight retry loop would make the
         // gate expensive in the common case, which is the case that matters.
-        let deadline = azos_drv_sys::timebase::now()
-            + azos_drv_sys::timebase::TIMER_FREQ / 1_000;
-        let mut spins: u32 = 0;
-        let mut expired = false;
-        while next.context_saving.load(Ordering::Acquire) {
-            core::hint::spin_loop();
-            spins = spins.wrapping_add(1);
-            if spins & 0xFF == 0
-                && azos_drv_sys::timebase::now() >= deadline
-            {
-                expired = true;
-                break;
-            }
-        }
+        // Wave 15 (SWITCH): and not at all when the flag is already clear,
+        // which is every switch on one hart — the wait is out of line.
+        let expired = next.context_saving.load(Ordering::Acquire)
+            && !wait_context_saved(next);
         if expired {
             // **Give the task back rather than dispatching it.** Restoring a
             // context nobody has finished saving is the double-dispatch
@@ -5348,13 +5465,14 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
             // it is deleted.)
             SPIN_GATE_EXPIRED.fetch_add(1, Ordering::Relaxed);
             next.set_state(TaskState::Ready);
-            if !cpu_enqueue_locked(cpu, next_idx) {
+            if !cpu_requeue_self(cpu, next_idx) {
                 SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
             }
             clear_saving_on_no_switch(cpu);
             return;
         }
     }
+    crate::swcensus::gated();
     #[cfg(feature = "ipc-census")]
     wakelat::measure(next_idx);
     next.set_state(TaskState::Running);
@@ -5409,7 +5527,7 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     // instructions. With NULL the call never returns to this frame — there
     // is nothing after it, and no live state on this stack to return to.
     let old_ptr = if old_idx != usize::MAX && !old_slot_freed {
-        task_mut(old_idx) as *mut Task
+        old_t
     } else {
         // No old task to save: first run, post-task_exit idle hand-off, or
         // a freed zombie slot (see above).
@@ -5417,8 +5535,11 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     };
 
     // Update PI mutex identity so priority inheritance knows who we are.
-    azos_sync::pi_mutex::CURRENT_TID.store(next.tid, core::sync::atomic::Ordering::Release);
-    azos_sync::pi_mutex::CURRENT_PRIO.store(next.priority.load(Ordering::Relaxed), core::sync::atomic::Ordering::Release);
+    // One release fence for both stores (each was a `Release` store, i.e. a
+    // fence of its own); the readers load them `Relaxed`.
+    core::sync::atomic::fence(Ordering::Release);
+    azos_sync::pi_mutex::CURRENT_TID.store(next.tid, Ordering::Relaxed);
+    azos_sync::pi_mutex::CURRENT_PRIO.store(next.priority.load(Ordering::Relaxed), Ordering::Relaxed);
 
     #[cfg(feature = "ipc-census")]
     unswitched::bump(&unswitched::SWITCHED);
@@ -5449,7 +5570,8 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     //
     // Relaxed, and on the outgoing task: only the hart that is running it
     // writes these, and the reader is that same task asking about itself.
-    if !old_ptr.is_null() {
+    // Kconfig SCHED_SWITCH_COUNTERS (off in the embedded profile).
+    if azos_limits::SCHED_SWITCH_COUNTERS && !old_ptr.is_null() {
         let old = &*old_ptr;
         match why {
             SwitchReason::Voluntary => &old.switches_voluntary,
@@ -5478,11 +5600,13 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     // guards `usize::MAX` (first-ever dispatch, `start()`'s own
     // `context_switch(null_mut(), next)` at this same function's other call
     // site never reaches here — this is `do_schedule()`, not `start()`).
+    // `next`'s priority, loaded once for the idle test and the RT hook (they
+    // used to re-derive `next` from its index, bounds check included).
+    let next_prio = next.priority.load(Ordering::Relaxed);
     {
-        let next_is_idle = task_ref(next_idx).priority.load(Ordering::Relaxed)
-            == crate::task::IDLE_PRIORITY;
+        let next_is_idle = next_prio == crate::task::IDLE_PRIORITY;
         let old_was_idle = old_idx != usize::MAX
-            && task_ref(old_idx).priority.load(Ordering::Relaxed) == crate::task::IDLE_PRIORITY;
+            && (*old_t).priority.load(Ordering::Relaxed) == crate::task::IDLE_PRIORITY;
         if next_is_idle || old_was_idle {
             azos_drv_sys::timebase::set_next_tick_tickless(
                 cpu as u32, nearest_timer_deadline(), next_is_idle,
@@ -5495,15 +5619,23 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     // write cannot move the comparator past it. One per-hart load and the
     // next task's priority when neither side is a band task and the hart
     // holds no reservation.
-    rt::on_switch(cpu, next_idx);
+    rt::on_switch_prio(cpu, next_idx, next_prio);
 
     // RFC-0051 E1: the outgoing task stops and `next` starts accruing
     // utilisation (a freed or first-run `old` has no signal to close).
     #[cfg(feature = "energy")]
     energy::on_switch(cpu, if old_ptr.is_null() { usize::MAX } else { old_idx }, next_idx);
 
+    crate::swcensus::before_switch(next_idx);
+    // Wave 15 (TRACE): the sched class's switch record (Kconfig
+    // `KTRACE_CLASS_SCHED`; no instruction when compiled out).
+    if azos_trace::sched_on() {
+        let (prev, prev_state) = if old_ptr.is_null() { (0, 0) } else { ((*old_ptr).tid, (*old_ptr).state() as u32) };
+        azos_trace::raw::sched_switch(prev, next.tid, prev_state, why as u32);
+    }
     context_switch(old_ptr, next as *mut Task);
     // Returns here when the old task is rescheduled.
+    crate::swcensus::after_switch();
 }
 
 // ---- Query functions ----
@@ -6443,9 +6575,24 @@ pub(crate) fn set_current_task_exec_slots(
         task.exec_sstatus = sstatus;
         task.exec_satp    = satp;
         task.exec_old_pt  = old_pt;
-        task.exec_ctx_ready.store(true, Ordering::Release);
+        if !task.exec_ctx_ready.swap(true, Ordering::Release) {
+            EXEC_HANDOFFS.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
+
+/// Exec hand-offs published and not yet consumed or discarded, all tasks
+/// (wave 15, SWITCH). Every syscall's return path tests for a pending
+/// hand-off; this one global load answers "none anywhere" for all of them
+/// but a successful exec's, instead of the per-task lookup (current slot,
+/// bounds check, `TASKS` index, flag: 13 instructions on every syscall).
+/// Written at the three places the per-task flag flips (publish here, the
+/// consume below, the reuse/exit discards), each only when the flag really
+/// changed. The publisher reads it back later in the same trap on the same
+/// task, so its own increment is visible to it, migration included (a
+/// switch orders through the queue lock). A count left high can only send
+/// a syscall to the per-task test, never skip a real hand-off.
+pub(crate) static EXEC_HANDOFFS: AtomicU32 = AtomicU32::new(0);
 
 /// K-C21 fast test: is an exec hand-off pending for the task running on this
 /// CPU? A plain load, so the syscall return path pays no atomic
@@ -6456,6 +6603,9 @@ pub(crate) fn set_current_task_exec_slots(
 /// slow path's own swap answering `None`, exactly as before.
 #[inline(always)]
 pub(crate) fn current_task_exec_ctx_pending() -> bool {
+    if EXEC_HANDOFFS.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
     let cpu = current_cpu_id();
     unsafe {
         let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
@@ -6481,6 +6631,7 @@ pub(crate) fn take_current_task_exec_slots() -> Option<(u64, u64, u64, u64, u64)
         if !task.exec_ctx_ready.swap(false, Ordering::Acquire) {
             return None;
         }
+        EXEC_HANDOFFS.fetch_sub(1, Ordering::Relaxed);
         Some((
             task.exec_entry,
             task.exec_user_sp,
@@ -8686,11 +8837,19 @@ unsafe fn direct_switch_block(cpu: usize, ti: usize, reason: WaitReason) {
             preempt_audit::bump(&preempt_audit::SWITCH_WHILE_ATOMIC);
             azos_sync::preempt::force_zero_depth();
         }
-        task.switches_voluntary.fetch_add(1, Ordering::Relaxed);
+        if azos_limits::SCHED_SWITCH_COUNTERS {
+            task.switches_voluntary.fetch_add(1, Ordering::Relaxed);
+        }
         // RFC-0051 E1: this hand-off bypasses `do_schedule`'s dispatch tail,
         // so it closes and opens the two signals itself.
         #[cfg(feature = "energy")]
         energy::on_switch(cpu, cur, ti);
+        // Wave 15 (TRACE): the direct IPC hand-off is a switch too (reason 2).
+        // The state is an atomic load: read it only when recording, or the
+        // compiled-out build would still pay it.
+        if azos_trace::sched_on() {
+            azos_trace::raw::sched_switch(task.tid, next.tid, task.state() as u32, 2);
+        }
         context_switch(task as *mut Task, next as *mut Task);
         // Resumed: woken and dispatched like any other blocked task.
     }
@@ -8829,6 +8988,10 @@ fn wake_by_slot(
                             target_saved,
                         }) {
                             task.context.tp = claim_cpu as CtxReg;
+                            // Wave 15 (TRACE): a claimed wake never queues.
+                            if azos_trace::sched_on() {
+                                azos_trace::raw::sched_wakeup(task.tid, claim_cpu as u32, current_task_tid());
+                            }
                             return WakeOut::Claimed(i);
                         }
                     }

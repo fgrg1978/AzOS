@@ -352,6 +352,12 @@ unsafe fn charge_cur(cpu: usize, o: &mut Owner, now: u64, running: bool) -> bool
 #[inline(always)]
 pub(super) unsafe fn on_switch(cpu: usize, next_idx: usize) {
     let next_prio = unsafe { task_ref(next_idx).priority.load(Ordering::Relaxed) };
+    unsafe { on_switch_prio(cpu, next_idx, next_prio) };
+}
+
+/// [`on_switch`] for a caller that already loaded `next`'s priority.
+#[inline(always)]
+pub(super) unsafe fn on_switch_prio(cpu: usize, next_idx: usize, next_prio: u32) {
     if FLAGS[cpu].load(Ordering::Relaxed) == 0 && !is_band(next_prio) {
         return;
     }

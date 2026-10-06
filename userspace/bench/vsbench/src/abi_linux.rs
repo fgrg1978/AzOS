@@ -159,7 +159,27 @@ impl Abi for LinuxAbi {
         // hostage by a flush that never happens before the process exits.
         unsafe { syscall3(SYS_WRITE, 2, bytes.as_ptr() as usize, bytes.len()); }
     }
+
+    /// `VSBENCH_LANES=` from the environment (a kernel command-line word
+    /// the kernel does not know is handed to init as an environment string).
+    fn lanes(&self) -> super::bench_core::Lanes {
+        let p = LANES_ENV.load(core::sync::atomic::Ordering::Relaxed);
+        if p == 0 { return super::bench_core::Lanes::all(); }
+        let mut buf = [0u8; super::bench_core::LANES_MAX];
+        let mut n = 0usize;
+        while n < buf.len() {
+            let b = unsafe { core::ptr::read((p + n) as *const u8) };
+            if b == 0 { break; }
+            buf[n] = b;
+            n += 1;
+        }
+        super::bench_core::Lanes::from_bytes(&buf[..n])
+    }
 }
+
+/// Address of the value of `VSBENCH_LANES=` in init's environment, or 0.
+static LANES_ENV: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+const LANES_KEY: &[u8] = b"VSBENCH_LANES=";
 
 /// `TCSBRK` with a non-zero argument is `tcdrain`: return once everything
 /// written to the terminal has been transmitted.
@@ -370,18 +390,6 @@ impl Proc for LinuxAbi {
         Ok(got as u64)
     }
 
-    fn spawn_yield_peer(&self, iters: u64) -> Result<(), i64> {
-        let pid = unsafe { syscall5(SYS_CLONE, SIGCHLD, 0, 0, 0, 0) };
-        if pid < 0 { return Err(pid as i64); }
-        if pid == 0 {
-            let first = self.current_cpu();
-            for _ in 0..iters { unsafe { syscall0(SYS_SCHED_YIELD); } }
-            super::report_hart(self, b"peer", first, self.current_cpu());
-            exit(0);
-        }
-        Ok(())
-    }
-
     fn spawn_peer_raw(&self) -> Option<bool> {
         match unsafe { syscall5(SYS_CLONE, SIGCHLD, 0, 0, 0, 0) } {
             0 => Some(true),
@@ -469,6 +477,19 @@ pub fn init_args(sp: usize) -> bool {
     if argc >= 1 {
         unsafe { *SPAWN_ARGV.0.get() = [arg(0), EXIT_ARG_Z.as_ptr() as usize, 0] };
     }
+    // envp follows argv's NULL.
+    let mut e = argc + 1;
+    loop {
+        let p = arg(e);
+        if p == 0 { break; }
+        let starts = LANES_KEY.iter().enumerate()
+            .all(|(i, &k)| unsafe { core::ptr::read((p + i) as *const u8) } == k);
+        if starts {
+            LANES_ENV.store(p + LANES_KEY.len(), core::sync::atomic::Ordering::Relaxed);
+            break;
+        }
+        e += 1;
+    }
     false
 }
 
@@ -534,6 +555,16 @@ impl Shell for LinuxAbi {
             syscall1(SYS_CLOSE, w as usize);
         }
     }
+
+    fn fd_read(&self, fd: u64, buf: &mut [u8]) -> isize {
+        unsafe { syscall3(SYS_READ, fd as usize, buf.as_mut_ptr() as usize, buf.len()) }
+    }
+
+    fn fd_write(&self, fd: u64, buf: &[u8]) -> isize {
+        unsafe { syscall3(SYS_WRITE, fd as usize, buf.as_ptr() as usize, buf.len()) }
+    }
+
+    fn fd_close(&self, fd: u64) { unsafe { syscall1(SYS_CLOSE, fd as usize) }; }
 
     fn file_open_read_close(&self, buf: &mut [u8]) -> Result<(), i64> {
         let fd = unsafe { syscall4(SYS_OPENAT, AT_FDCWD as usize, b"/init\0".as_ptr() as usize, 0, 0) };
@@ -948,6 +979,13 @@ impl Net for LinuxAbi {
         None
     }
 
+    fn net_stop_echo(&self) {
+        let (fd, ok) = unsafe { *NET.0.get() };
+        if !ok { return; }
+        let out = [super::bench_core::NET_STOP; NET_PAYLOAD];
+        unsafe { syscall6(SYS_SENDTO, fd as usize, out.as_ptr() as usize, NET_PAYLOAD, 0, 0, 0); }
+    }
+
     fn net_echo(&self, n: u64) {
         let (fd, ok) = unsafe { *NET.0.get() };
         if !ok { return; }
@@ -958,6 +996,7 @@ impl Net for LinuxAbi {
                 syscall6(SYS_RECVFROM, fd as usize, buf.as_mut_ptr() as usize,
                          NET_PAYLOAD, MSG_DONTWAIT, 0, 0)
             };
+            if got > 0 && buf[0] == super::bench_core::NET_STOP { return; }
             if got > 0 {
                 unsafe {
                     syscall6(SYS_SENDTO, fd as usize, buf.as_ptr() as usize,

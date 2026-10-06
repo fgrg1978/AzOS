@@ -62,6 +62,10 @@ linux-busybox-test = ["linux-abi-test", "azos_topology/linux-busybox-test"]
 linux-exec-row-test = ["linux-busybox-test", "azos_topology/linux-exec-row-test"]
 # RFC-0053 L0: the Linux driver server skeleton's row (`LXSRV.ELF`).
 lx-server = ["azos_topology/lx-server"]
+# The emitter (`src/bin/topo_emit.rs`, `make topology-files`) writes the
+# topology a kernel of one ISA builds, kernel-only rows included.
+emit-target-riscv64 = ["azos_topology/emit-target-riscv64"]
+emit-target-aarch64 = ["azos_topology/emit-target-aarch64"]
 
 [dependencies]
 azos_abi = { path = "../../../crates/core/abi" }
@@ -84,3 +88,6 @@ azos_sync = { path = "shims/sync", package = "topology_seed_test_sync" }
 azos_sched = { path = "shims/sched", package = "topology_seed_test_sched" }
 topology_seed_test_drivers = { path = "shims/drivers" }
 [dev-dependencies]
+# Signs the emitted topology in `signed_topology_tests` (the same crate the
+# kernel verifies with, already in the lock through azos_crypto).
+ed25519-dalek = { version = "2", default-features = false }

@@ -66,6 +66,11 @@ POWER_DIR     := userspace/services/power
 POWER_BUILT   := $(POWER_DIR)/target/riscv64imac-unknown-none-elf/release/power
 POWER_ELF     := build/power.elf
 POWER_SRC     := $(POWER_DIR)/src/main.rs $(POWER_DIR)/Cargo.toml
+# Wave 15 (TRACE): the kernel tracer's reader (`Cap<Trace>`, `SYS_TRACE_CTL_TYPED`).
+TRACECTL_DIR  := userspace/services/tracectl
+TRACECTL_BUILT:= $(TRACECTL_DIR)/target/riscv64imac-unknown-none-elf/release/tracectl
+TRACECTL_ELF  := build/tracectl.elf
+TRACECTL_SRC  := $(TRACECTL_DIR)/src/main.rs $(TRACECTL_DIR)/Cargo.toml
 # Wave 12: the other privileged families' tools, one crate with one binary
 # each (`FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`).
 FAMTOOLS_DIR  := userspace/services/famtools
@@ -190,6 +195,7 @@ INA_DRV_ELF_AARCH64   := $(AARCH64_DIR)/ina_drv.elf
 SH_ELF_AARCH64        := $(AARCH64_DIR)/sh.elf
 TOOLBOX_ELF_AARCH64   := $(AARCH64_DIR)/toolbox.elf
 POWER_ELF_AARCH64     := $(AARCH64_DIR)/power.elf
+TRACECTL_ELF_AARCH64  := $(AARCH64_DIR)/tracectl.elf
 FLIGHT_ELF_AARCH64    := $(AARCH64_DIR)/flight.elf
 BEHAVIOR_ELF_AARCH64  := $(AARCH64_DIR)/behavior.elf
 CONFIG_ELF_AARCH64    := $(AARCH64_DIR)/config.elf
@@ -335,6 +341,7 @@ IMAGE_ELFS := HELLO.ELF=$(HELLO_ELF) SYSTEST.ELF=$(SYSTEST_ELF) \
               SH.ELF=$(SH_ELF) TOOLBOX.ELF=$(TOOLBOX_ELF) POWER.ELF=$(POWER_ELF) \
               FLIGHT.ELF=$(FLIGHT_ELF) BEHAVIOR.ELF=$(BEHAVIOR_ELF) \
               CONFIG.ELF=$(CONFIG_ELF) OTA.ELF=$(OTA_ELF) \
+              TRACECTL.ELF=$(TRACECTL_ELF) \
               LXSRV.ELF=$(LXSRV_ELF) \
               LXHELLO.ELF=$(LXHELLO_ELF)
 IMAGE_HASHES := build/image_hashes.rs
@@ -348,6 +355,11 @@ IMAGE_HASHES := build/image_hashes.rs
 # build their kernel with `--features board-image` (azos_sched), which
 # `include!`s IMAGE_HASHES_BOARD instead of IMAGE_HASHES.
 BOARD_DIR := build/board
+# What the signed-topology emitter reads (wave 15 TOPOSIGN; its targets are
+# near the end of this file, with the rest of the topology rules).
+TOPO_EMIT_DEPS := tests/host/topology-tests/src/bin/topo_emit.rs tests/host/topology-tests/Cargo.toml \
+	crates/core/topology/build.rs crates/core/topology/Cargo.toml kernel/Cargo.toml \
+	$(shell find crates/core/topology/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*')
 MLSRV_ELF_BOARD := $(BOARD_DIR)/mlsrv.elf
 IMAGE_ELFS_BOARD := $(patsubst MLSRV.ELF=%,MLSRV.ELF=$(MLSRV_ELF_BOARD),$(IMAGE_ELFS))
 IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
@@ -357,7 +369,7 @@ $(IMAGE_HASHES_BOARD): userspace/image_hashes.py \
                $(UHELLO_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) \
                $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(VSBENCH_ELF) \
                $(EPSRV_ELF) $(VSSRV_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) \
-               $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
+               $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(TRACECTL_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
 	@mkdir -p $(BOARD_DIR)
 	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_BOARD)
 
@@ -366,7 +378,7 @@ $(IMAGE_HASHES): userspace/image_hashes.py \
                $(UHELLO_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) \
                $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(VSBENCH_ELF) \
                $(EPSRV_ELF) $(VSSRV_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) \
-               $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
+               $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(TRACECTL_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
 	@mkdir -p build
 	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS)
 	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing build/thirdparty_hashes.rs \
@@ -496,14 +508,14 @@ build-rvv: $(IMAGE_HASHES) $(QEMU_DEV_KCONFIG)
 # overflow the default 8 MiB linker).  This target is the kernel side of
 # the RFC-0026 fleet defconfig and runs only on gateway boards with
 # >= 1 GiB RAM.  Not part of the default `build` target — opt-in.
-build-fleet: $(IMAGE_HASHES_BOARD)
+build-fleet: $(IMAGE_HASHES_BOARD) build/disk-board-fleet.img
 	$(call require_board_key,FLEET)
 	$(call check_board_priv_if_given,FLEET)
 	@$(MAKE) defconfig-fleet
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" RUSTFLAGS="$(FLEET_RUSTFLAGS)" \
 	$(CARGO) build $(CARGO_FLAGS) -p azos_kernel --features board-image \
 		$$(python3 tools/kconfig_to_cargo.py .config | tr -s ' ')
-	@echo "[FLEET] kernel built — use a gateway board with >= 1 GiB RAM"
+	@echo "[FLEET] kernel built, volume build/disk-board-fleet.img (signed topology) — use a gateway board with >= 1 GiB RAM"
 	@$(MAKE) --no-print-directory prune
 
 # Build the minimal hello.elf user-space test binary + GPIO ring-3 driver.
@@ -511,7 +523,7 @@ userspace: $(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF) \
            $(UHELLO_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) \
            $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(VSBENCH_ELF) \
            $(EPSRV_ELF) $(VSSRV_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) \
-           $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
+           $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(TRACECTL_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
 
 # E11.AQ3 ring-3 driver — Rust no_std ELF.  Builds via the crate's own
 # .cargo/config.toml which pins target=riscv64imac-unknown-none-elf and
@@ -675,6 +687,12 @@ $(POWER_ELF): $(POWER_SRC) $(POWER_DIR)/user.ld $(LIBSYS_SRC)
 	cp $(POWER_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+$(TRACECTL_ELF): $(TRACECTL_SRC) $(TRACECTL_DIR)/user.ld $(LIBSYS_SRC)
+	@mkdir -p build
+	cd $(TRACECTL_DIR) && $(USPACE_BUILD)
+	cp $(TRACECTL_BUILT) $@
+	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
 # Wave 12: one binary of the family-tools crate per image.
 $(FLIGHT_ELF): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user.ld $(LIBSYS_SRC)
 	@mkdir -p build
@@ -753,11 +771,24 @@ $(CAPTEST_ELF): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/src/stream.rs $(CAPTES
 	cp $(CAPTEST_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+# Extra vsbench cargo features (wave 15: its canaries, e.g.
+# `VSBENCH_FEATURES=switch-peer-canary`; tools/vsbench_compare.sh passes its
+# VSBENCH_BENCH_FEATURES here). The stamp holds the set the ELFs were built
+# with and changes only when the set does, so a canary ELF can never be
+# reused by a later default build.
+VSBENCH_FEATURES ?=
+comma := ,
+VSBENCH_FEATURES_ARG := $(if $(strip $(VSBENCH_FEATURES)),$(comma)$(strip $(VSBENCH_FEATURES)))
+build/vsbench.features: FORCE
+	@mkdir -p build
+	@printf '%s\n' '$(strip $(VSBENCH_FEATURES))' | cmp -s - $@ \
+	    || printf '%s\n' '$(strip $(VSBENCH_FEATURES))' >$@
+
 $(VSBENCH_ELF): $(VSBENCH_DIR)/src/main.rs $(VSBENCH_DIR)/src/bench_core.rs $(VSBENCH_DIR)/src/ipc_proto.rs \
                $(VSBENCH_DIR)/src/abi_azos.rs $(VSBENCH_DIR)/Cargo.toml $(VSBENCH_DIR)/user.ld \
-               $(LIBSYS_SRC)
+               $(LIBSYS_SRC) build/vsbench.features
 	@mkdir -p build
-	cd $(VSBENCH_DIR) && $(USPACE_BUILD) --features azos
+	cd $(VSBENCH_DIR) && $(USPACE_BUILD) --features azos$(VSBENCH_FEATURES_ARG)
 	cp $(VSBENCH_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1023,6 +1054,7 @@ IMAGE_ELFS_AARCH64 := HELLO.ELF=$(HELLO_ELF_AARCH64) SYSTEST.ELF=$(SYSTEST_ELF_A
               SH.ELF=$(SH_ELF_AARCH64) TOOLBOX.ELF=$(TOOLBOX_ELF_AARCH64) POWER.ELF=$(POWER_ELF_AARCH64) \
               FLIGHT.ELF=$(FLIGHT_ELF_AARCH64) BEHAVIOR.ELF=$(BEHAVIOR_ELF_AARCH64) \
               CONFIG.ELF=$(CONFIG_ELF_AARCH64) OTA.ELF=$(OTA_ELF_AARCH64) \
+              TRACECTL.ELF=$(TRACECTL_ELF_AARCH64) \
               LXSRV.ELF=$(LXSRV_ELF_AARCH64) \
               LXHELLO.ELF=$(LXHELLO_ELF_AARCH64)
 IMAGE_HASHES_AARCH64 := build/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
@@ -1033,7 +1065,7 @@ $(IMAGE_HASHES_AARCH64): userspace/image_hashes.py \
                $(CAPTEST_ELF_AARCH64) $(LATBENCH_ELF_AARCH64) $(ABITEST_ELF_AARCH64) \
                $(IPCTEST_ELF_AARCH64) $(VSBENCH_ELF_AARCH64) $(EPSRV_ELF_AARCH64) \
                $(VSSRV_ELF_AARCH64) $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64) \
-               $(SH_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(LXSRV_ELF_AARCH64) $(LXHELLO_ELF_AARCH64)
+               $(SH_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(TRACECTL_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(LXSRV_ELF_AARCH64) $(LXHELLO_ELF_AARCH64)
 	@mkdir -p build
 	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_AARCH64)
 	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing build/thirdparty_hashes_aarch64.rs \
@@ -1054,7 +1086,7 @@ userspace-aarch64: $(HELLO_ELF_AARCH64) $(SYSTEST_ELF_AARCH64) $(GPIO_DRV_ELF_AA
            $(UHELLO_ELF_AARCH64) $(REFLEX_ELF_AARCH64) $(BRAINCLI_ELF_AARCH64) $(CAPTEST_ELF_AARCH64) \
            $(LATBENCH_ELF_AARCH64) $(ABITEST_ELF_AARCH64) $(IPCTEST_ELF_AARCH64) $(VSBENCH_ELF_AARCH64) \
            $(EPSRV_ELF_AARCH64) $(VSSRV_ELF_AARCH64) $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64) \
-           $(SH_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(LXSRV_ELF_AARCH64) $(LXHELLO_ELF_AARCH64)
+           $(SH_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(TRACECTL_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(LXSRV_ELF_AARCH64) $(LXHELLO_ELF_AARCH64)
 
 $(HELLO_ELF_AARCH64): $(HELLO_DIR)/src/main.rs $(HELLO_DIR)/Cargo.toml $(HELLO_DIR)/user_aarch64.ld
 	@mkdir -p $(AARCH64_DIR)
@@ -1113,6 +1145,12 @@ $(POWER_ELF_AARCH64): $(POWER_SRC) $(POWER_DIR)/user_aarch64.ld $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
 	cd $(POWER_DIR) && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
 	cp $(POWER_DIR)/$(AARCH64_UTARGET)/$(TARGET_AARCH64)/release/power $@
+	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
+$(TRACECTL_ELF_AARCH64): $(TRACECTL_SRC) $(TRACECTL_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+	@mkdir -p $(AARCH64_DIR)
+	cd $(TRACECTL_DIR) && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cp $(TRACECTL_DIR)/$(AARCH64_UTARGET)/$(TARGET_AARCH64)/release/tracectl $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(FLIGHT_ELF_AARCH64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_aarch64.ld $(LIBSYS_SRC)
@@ -1190,9 +1228,9 @@ $(CAPTEST_ELF_AARCH64): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/src/stream.rs 
 
 $(VSBENCH_ELF_AARCH64): $(VSBENCH_DIR)/src/main.rs $(VSBENCH_DIR)/src/bench_core.rs $(VSBENCH_DIR)/src/ipc_proto.rs \
                $(VSBENCH_DIR)/src/abi_azos.rs $(VSBENCH_DIR)/Cargo.toml $(VSBENCH_DIR)/user_aarch64.ld \
-               $(LIBSYS_SRC)
+               $(LIBSYS_SRC) build/vsbench.features
 	@mkdir -p $(AARCH64_DIR)
-	cd $(VSBENCH_DIR) && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) --features azos
+	cd $(VSBENCH_DIR) && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) --features azos$(VSBENCH_FEATURES_ARG)
 	cp $(VSBENCH_DIR)/$(AARCH64_UTARGET)/$(TARGET_AARCH64)/release/vsbench $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1533,7 +1571,7 @@ build/disk-drv.img: build/disk-drvbase.img $(BUZZ_DRV_ELF) $(INA_DRV_ELF)
 # SH.ELF, TOOLBOX.ELF and POWER.ELF. The only gate image that carries them: on every
 # other volume `/fat/SH.ELF` is absent, so the kernel console is the recovery
 # console at once, as before, and no scenario gains a task.
-build/disk-sh.img: build/disk-drvbase.img $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(FAM_ELFS)
+build/disk-sh.img: build/disk-drvbase.img $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(FAM_ELFS) $(TRACECTL_ELF)
 	cp build/disk-drvbase.img $@
 	mcopy -i $@ $(SH_ELF) ::SH.ELF
 	mcopy -i $@ $(TOOLBOX_ELF) ::TOOLBOX.ELF
@@ -1542,7 +1580,8 @@ build/disk-sh.img: build/disk-drvbase.img $(SH_ELF) $(TOOLBOX_ELF) $(POWER_ELF) 
 	mcopy -i $@ $(BEHAVIOR_ELF) ::BEHAVIOR.ELF
 	mcopy -i $@ $(CONFIG_ELF) ::CONFIG.ELF
 	mcopy -i $@ $(OTA_ELF) ::OTA.ELF
-	@echo "[DISK] FAT32 image: $@ (user shell SH.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF)"
+	mcopy -i $@ $(TRACECTL_ELF) ::TRACECTL.ELF
+	@echo "[DISK] FAT32 image: $@ (user shell SH.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF, TRACECTL.ELF)"
 
 # RFC-0053 L0b: the Linux-server disk -- the drivers base (no autorun) plus
 # LXSRV.ELF and its test module. The only gate image that carries them; a
@@ -1623,15 +1662,30 @@ $(BOARD_DIR)/policy.sig: build/policy.gguf tools/gen_config_sig.py $(BOARD_PRIV_
 	@mkdir -p $(BOARD_DIR)
 	python3 tools/gen_config_sig.py build/policy.gguf --priv $(BOARD_SIGN_PRIV) --out $@
 
-build/disk-board.img: AUTORUN_ELF := /fat/GPIODRV.ELF
-build/disk-board.img: build/board_manifest.txt tools/check_board_disk.py \
+# Wave 15 (TOPOSIGN follow-up, owner round 73): every product image path ships
+# its FAT volume, because a product kernel defaults to
+# TOPOLOGY_SOURCE_SIGNED_REQUIRED and halts without the signed topology. One
+# volume per product profile, same recipe; only the topology differs (emitted
+# for that profile's .config and features, bound to the volume's device id,
+# signed with the board key):
+#   build/disk-board.img        VF2 (`make vf2`; the name predates the others)
+#   build/disk-board-k1.img     K1  (`make k1`)
+#   build/disk-board-fleet.img  the fleet profile (`make build-fleet`)
+# No board key, no volume: `require_board_priv` refuses with a message rather
+# than ship an unsigned topology.
+build/disk-board.img:       BOARD_VOL_KCONFIG := build/vf2.config
+build/disk-board-k1.img:    BOARD_VOL_KCONFIG := build/k1.config
+build/disk-board-fleet.img: BOARD_VOL_KCONFIG := build/fleet.config
+build/disk-board.img build/disk-board-k1.img build/disk-board-fleet.img: AUTORUN_ELF := /fat/GPIODRV.ELF
+build/disk-board.img build/disk-board-k1.img build/disk-board-fleet.img: \
+		build/board_manifest.txt tools/check_board_disk.py \
 		tools/check_board_keys.py $(IMAGE_HASHES_BOARD) $(BOARD_DIR)/mlp.sig $(BOARD_DIR)/policy.sig \
 		$(BOARD_PRIV_STAMP) \
 		$(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF_BOARD) $(UHELLO_ELF) \
 		$(EPSRV_ELF) $(VSSRV_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) \
 		$(CAPTEST_ELF) $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) \
 		$(VSBENCH_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) build/mlp.rmlp build/policy.gguf \
-		$(CONFIG_SIG_TOOLS)
+		$(CONFIG_SIG_TOOLS) $(TOPO_EMIT_DEPS) build/vf2.config build/k1.config build/fleet.config
 	$(call require_board_key,BOARD)
 	$(call require_board_priv,BOARD)
 	@mkdir -p build
@@ -1658,6 +1712,9 @@ build/disk-board.img: build/board_manifest.txt tools/check_board_disk.py \
 	mcopy -i $@ $@.tmp_board_config.ini ::CONFIG.INI
 	mcopy -i $@ $@.tmp_board_config.sig ::CONFIG.SIG
 	mcopy -i $@ $@.tmp_board_bootmeta ::BOOTMETA
+	# Wave 15: the board kernel's topology as signed files (TOPOLOGY_SOURCE),
+	# bound to this volume's device id, signed with the board key.
+	$(call topo_bind,riscv64,$(BOARD_VOL_KCONFIG),$(call board_topo_features,$(BOARD_VOL_KCONFIG)),$(BOARD_DIR)/topo-$(basename $(notdir $@)),$@,$(BOARD_SIGN_PRIV))
 	@while IFS='=' read -r name path; do \
 		[ -z "$$name" ] && continue; \
 		mcopy -i $@ "$$path" "::$$name" || exit 1; \
@@ -1666,7 +1723,7 @@ build/disk-board.img: build/board_manifest.txt tools/check_board_disk.py \
 	python3 tools/check_board_disk.py $@ build/board_manifest.txt
 	python3 tools/check_board_keys.py disk $@ $(IMAGE_HASHES_BOARD) $(MLSRV_ELF) tools/keys/test_pub.bin
 	python3 tools/check_board_keys.py sigs $@ $(BOARD_TOPOLOGY_KEY)
-	@echo "[DISK] Board FAT32 image (topology-derived): $@ (autorun=$(AUTORUN_ELF))"
+	@echo "[DISK] Board FAT32 image (topology-derived, signed topology for $(BOARD_VOL_KCONFIG)): $@ (autorun=$(AUTORUN_ELF))"
 
 .PHONY: board-elfs
 board-elfs: build/board_elfs.list
@@ -1770,7 +1827,7 @@ build/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img: build/disk-aarch64$(AARCH64_PG_S
 	@echo "[DISK] aarch64 FAT32 image: $@ (ring-3 drivers BUZZDRV.ELF, INADRV.ELF)"
 
 # RFC-0055: see `build/disk-sh.img`.
-build/disk-aarch64-sh.img: build/disk-aarch64-drvbase.img $(SH_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64)
+build/disk-aarch64-sh.img: build/disk-aarch64-drvbase.img $(SH_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(TRACECTL_ELF_AARCH64)
 	cp build/disk-aarch64-drvbase.img $@
 	mcopy -i $@ $(SH_ELF_AARCH64) ::SH.ELF
 	mcopy -i $@ $(TOOLBOX_ELF_AARCH64) ::TOOLBOX.ELF
@@ -1779,7 +1836,8 @@ build/disk-aarch64-sh.img: build/disk-aarch64-drvbase.img $(SH_ELF_AARCH64) $(TO
 	mcopy -i $@ $(BEHAVIOR_ELF_AARCH64) ::BEHAVIOR.ELF
 	mcopy -i $@ $(CONFIG_ELF_AARCH64) ::CONFIG.ELF
 	mcopy -i $@ $(OTA_ELF_AARCH64) ::OTA.ELF
-	@echo "[DISK] aarch64 FAT32 image: $@ (user shell SH.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF)"
+	mcopy -i $@ $(TRACECTL_ELF_AARCH64) ::TRACECTL.ELF
+	@echo "[DISK] aarch64 FAT32 image: $@ (user shell SH.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF, TRACECTL.ELF)"
 
 # RFC-0053 L0b: see `build/disk-lx.img`.
 build/disk-aarch64-lx.img: build/disk-aarch64-drvbase.img $(LXSRV_ELF_AARCH64) $(LXTEST_KO_AARCH64) $(LX_KO_A64) $(LX_XZTEST)
@@ -2079,7 +2137,7 @@ $(VF2_KCONFIG): config/defconfigs/vf2.config \
 # expanded profile through tools/kconfig_to_cargo.py, as `make aarch64` does;
 # the linker script stays on the command line (RUSTFLAGS + --config), since
 # the bridge only derives target/features, never link args.
-vf2: $(IMAGE_HASHES_BOARD) $(VF2_KCONFIG)
+vf2: $(IMAGE_HASHES_BOARD) $(VF2_KCONFIG) build/disk-board.img
 	$(call require_board_key,VF2)
 	$(call check_board_priv_if_given,VF2)
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
@@ -2090,7 +2148,7 @@ vf2: $(IMAGE_HASHES_BOARD) $(VF2_KCONFIG)
 	@mkdir -p build
 	riscv64-unknown-elf-objcopy -O binary \
 		target/$(TARGET)/release/kernel $(VF2_BIN)
-	@echo "[VF2] Built $(VF2_BIN)"
+	@echo "[VF2] Built $(VF2_BIN) and its volume build/disk-board.img (signed topology)"
 	@ls -lh $(VF2_BIN)
 
 # Flash kernel.bin to SD card for VisionFive 2 boot.
@@ -2119,6 +2177,15 @@ vf2-console:
 # U12-2: same fix as $(VF2_KCONFIG) above, for K1's own profile.
 K1_KCONFIG := build/k1.config
 
+# The fleet profile expanded on its own (wave 15): `build-fleet` expands it
+# into the workspace .config (`defconfig-fleet`); its volume's topology is
+# emitted from this copy, which the same defconfig yields.
+build/fleet.config: config/defconfigs/fleet.config \
+		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
+	@mkdir -p build
+	cp config/defconfigs/fleet.config $@
+	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
+
 $(K1_KCONFIG): config/defconfigs/k1.config \
 		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
 	@mkdir -p build
@@ -2131,7 +2198,7 @@ $(K1_KCONFIG): config/defconfigs/k1.config \
 # `k1 = ["rvv", ...]`); tools/kconfig_to_cargo.py additionally emits `rvv`
 # explicitly for CONFIG_BOARD_K1, which is redundant with that feature edge,
 # not in conflict with it.
-k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG)
+k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG) build/disk-board-k1.img
 	$(call require_board_key,K1)
 	$(call check_board_priv_if_given,K1)
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
@@ -2142,7 +2209,7 @@ k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG)
 	@mkdir -p build
 	riscv64-unknown-elf-objcopy -O binary \
 		target/$(TARGET)/release/kernel $(K1_BIN)
-	@echo "[K1] Built $(K1_BIN)"
+	@echo "[K1] Built $(K1_BIN) and its volume build/disk-board-k1.img (signed topology)"
 	@ls -lh $(K1_BIN)
 
 # Flash kernel.bin to SD card for K1 boot.
@@ -2412,6 +2479,136 @@ qemu-aarch64: aarch64
 # EL2->EL1 trampoline and SMC-conduit PSCI.
 qemu-aarch64-el2: aarch64
 	qemu-system-aarch64 -M virt,gic-version=3,virtualization=on $(QEMU_AARCH64_KERNEL_FLAGS) -kernel $(AARCH64_IMG)
+
+# ── Signed capability topology files (wave 15 TOPOSIGN) ─────────────────────
+#
+# Kconfig TOPOLOGY_SOURCE: a kernel installs /fat/CAPS.TOM + CAPS.SIG and
+# /fat/SCHED.TOM when they verify, are bound to this device and counter, parse
+# and are admitted. ONE signature: CAPS.TOM (format 4) carries
+# `sched_sha256`, the SHA-256 of SCHED.TOM, plus `device` (the image's device
+# record, the id CONFIG.SIG v2 is bound to) and `counter` (TOPO_COUNTER); the
+# kernel refuses a counter below the floor it keeps in reserved tail sector
+# TOPOLOGY_FLOOR_SECTOR. SCHED.SIG is retired and never written.
+#
+# These targets write the BUILT-IN topology (crates/core/topology/src/
+# builder.rs) as those files, so a volume can carry exactly what a kernel would
+# build:
+#
+#   make topo-volume TOPO_IMAGE=<img>   bind to <img>'s device, sign, copy on
+#   make build/disk-topo.img            build/disk.img + the riscv64 set
+#   make build/disk-aarch64-topo.img    build/disk-aarch64.img + aarch64's
+#   make topology-files                 both ISAs' files, unbound unless
+#                                       TOPO_DEVICE is given (inspection)
+#
+# The topology depends on the .config (row budgets, limits) and on the
+# kernel's features (canary rows, profiles), so the emitter
+# (tests/host/topology-tests/src/bin/topo_emit.rs) is built with the same
+# KCONFIG_CONFIG and with the azos_topology features those kernel features
+# turn on, as `cargo tree` resolves them; `emit-target-<isa>` adds the rows
+# only a kernel of that ISA declares. It parses its own output back and exits
+# 1 unless the result equals the built-in topology field by field.
+#
+#   TOPO_KERNEL_FEATURES   kernel features of the kernel that boots the files
+#                          (default `qemu`, the gate's QEMU kernels)
+#   TOPO_KCONFIG_RISCV64   its .config (default $(QEMU_DEV_KCONFIG))
+#   TOPO_KCONFIG_AARCH64   (default $(AARCH64_KCONFIG))
+#   TOPO_ISA               topo-volume's ISA (riscv64 | aarch64)
+#   TOPO_COUNTER           the signed counter (default 1: the gate rows pin it)
+#   TOPO_DEVICE            32 hex digits, instead of the image's own id
+#   TOPO_PRIV              topo-volume's signing key (default the TEST key:
+#                          QEMU fixtures only; board volumes sign with
+#                          TOPOLOGY_PRIVKEY_PATH, below)
+#
+# Only the dedicated -topo images carry the files, not build/disk.img itself:
+# one gate disk is booted by kernels whose built-in topologies differ (every
+# canary and smoke feature adds or changes rows), and under the QEMU default
+# TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN a signed default topology on the shared
+# disk would replace each of them.
+TOPO_KERNEL_FEATURES ?= qemu
+TOPO_KCONFIG_RISCV64 ?= $(QEMU_DEV_KCONFIG)
+TOPO_KCONFIG_AARCH64 ?= $(AARCH64_KCONFIG)
+TOPO_ISA ?= riscv64
+TOPO_COUNTER ?= 1
+TOPO_DEVICE ?=
+TOPO_PRIV ?= $(TEST_PRIV_KEY)
+TOPO_DIR_RISCV64 := build/topo/riscv64
+TOPO_DIR_AARCH64 := build/topo/aarch64
+topo_set = $(1)/CAPS.TOM $(1)/CAPS.SIG $(1)/SCHED.TOM
+
+# The azos_topology features a kernel built with features $(1) (a comma list,
+# or a shell expression printing one) turns on, as `--features` arguments.
+topo_features = $$($(CARGO) tree -q -p azos_kernel --features "$(1)" -e features -i azos_topology --prefix none \
+	| sed -n 's/^azos_topology feature "\(.*\)"$$/azos_topology\/\1/p' | grep -v '/default$$' | sort -u | tr '\n' ' ')
+
+# $(call topo_emit,<riscv64|aarch64>,<.config>,<kernel features>,<out dir>,<extra topo_emit args>)
+define topo_emit
+	@mkdir -p $(4)
+	feats="emit-target-$(1) $(call topo_features,$(3))"; \
+	cd tests/host/topology-tests && KCONFIG_CONFIG="$(abspath $(2))" CARGO_TARGET_DIR="$(CURDIR)/target/topo-emit-$(1)" \
+		$(CARGO) run -q --release --bin topo_emit --features "$$feats" -- "$(CURDIR)/$(4)/CAPS.TOM" "$(CURDIR)/$(4)/SCHED.TOM" $(5)
+endef
+
+# $(call topo_bind,<isa>,<.config>,<kernel features>,<out dir>,<image>,<priv key>):
+# emit bound to <image>'s device id (or TOPO_DEVICE) and TOPO_COUNTER, sign
+# CAPS.TOM with <priv key>, put the three files on <image> (and drop a stale
+# SCHED.SIG). The image must already carry its device record.
+define topo_bind
+	@dev="$(or $(TOPO_DEVICE),$$(python3 tools/device_provision.py --show --id-only $(5)))"; \
+	case "$$dev" in [0-9a-f][0-9a-f]*) ;; *) echo "[TOPO] $(5): no device record (tools/device_provision.py) to bind the topology to"; exit 1;; esac; \
+	echo "$$dev" > $(4).device
+	$(call topo_emit,$(1),$(2),$(3),$(4),--device $$(cat $(CURDIR)/$(4).device) --counter $(TOPO_COUNTER))
+	python3 tools/gen_config_sig.py $(4)/CAPS.TOM --priv $(6) --out $(4)/CAPS.SIG
+	for f in CAPS.TOM CAPS.SIG SCHED.TOM; do mcopy -o -i $(5) $(4)/$$f ::$$f || exit 1; done
+	@mdel -i $(5) ::SCHED.SIG >/dev/null 2>&1 || true
+endef
+
+.PHONY: topo-volume
+topo-volume: $(TOPO_EMIT_DEPS) $(if $(filter aarch64,$(TOPO_ISA)),$(TOPO_KCONFIG_AARCH64),$(TOPO_KCONFIG_RISCV64)) $(TEST_PRIV_KEY)
+	@[ -n "$(TOPO_IMAGE)" ] && [ -f "$(TOPO_IMAGE)" ] || { echo "[TOPO] topo-volume needs TOPO_IMAGE=<an existing image>"; exit 1; }
+	$(call topo_bind,$(TOPO_ISA),$(if $(filter aarch64,$(TOPO_ISA)),$(TOPO_KCONFIG_AARCH64),$(TOPO_KCONFIG_RISCV64)),$(TOPO_KERNEL_FEATURES),build/topo/vol-$(TOPO_ISA),$(TOPO_IMAGE),$(TOPO_PRIV))
+	@echo "[TOPO] $(TOPO_IMAGE): signed topology bound to device $$(cat build/topo/vol-$(TOPO_ISA).device), counter $(TOPO_COUNTER)"
+
+# What the inspection files were emitted for: rewritten only when it changes.
+$(TOPO_DIR_RISCV64)/inputs $(TOPO_DIR_AARCH64)/inputs: FORCE
+	@mkdir -p $(@D)
+	@printf '%s\n' "$(TOPO_KERNEL_FEATURES) $(TOPO_DEVICE) $(TOPO_COUNTER) $(abspath $(if $(findstring riscv64,$@),$(TOPO_KCONFIG_RISCV64),$(TOPO_KCONFIG_AARCH64)))" > $@.tmp
+	@cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
+
+topo_emit_args = $(if $(TOPO_DEVICE),--device $(TOPO_DEVICE)) --counter $(TOPO_COUNTER)
+$(TOPO_DIR_RISCV64)/CAPS.TOM: $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_RISCV64) $(TOPO_DIR_RISCV64)/inputs
+	$(call topo_emit,riscv64,$(TOPO_KCONFIG_RISCV64),$(TOPO_KERNEL_FEATURES),$(TOPO_DIR_RISCV64),$(topo_emit_args))
+$(TOPO_DIR_AARCH64)/CAPS.TOM: $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_AARCH64) $(TOPO_DIR_AARCH64)/inputs
+	$(call topo_emit,aarch64,$(TOPO_KCONFIG_AARCH64),$(TOPO_KERNEL_FEATURES),$(TOPO_DIR_AARCH64),$(topo_emit_args))
+# Written by the same run, after CAPS.TOM.
+$(TOPO_DIR_RISCV64)/SCHED.TOM: $(TOPO_DIR_RISCV64)/CAPS.TOM ; @true
+$(TOPO_DIR_AARCH64)/SCHED.TOM: $(TOPO_DIR_AARCH64)/CAPS.TOM ; @true
+# A bare 64-byte Ed25519 signature over CAPS.TOM (the CAPS.SIG format), TEST
+# key: these are QEMU fixtures.
+build/topo/riscv64/CAPS.SIG: $(TOPO_DIR_RISCV64)/CAPS.TOM $(TEST_PRIV_KEY) tools/gen_config_sig.py
+	python3 tools/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
+build/topo/aarch64/CAPS.SIG: $(TOPO_DIR_AARCH64)/CAPS.TOM $(TEST_PRIV_KEY) tools/gen_config_sig.py
+	python3 tools/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
+
+.PHONY: topology-files
+topology-files: $(call topo_set,$(TOPO_DIR_RISCV64)) $(call topo_set,$(TOPO_DIR_AARCH64))
+	@ls -l $^
+
+build/disk-topo.img: build/disk.img $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_RISCV64) $(TEST_PRIV_KEY)
+	cp build/disk.img $@
+	$(call topo_bind,riscv64,$(TOPO_KCONFIG_RISCV64),$(TOPO_KERNEL_FEATURES),build/topo/img-riscv64,$@,$(TEST_PRIV_KEY))
+	@echo "[DISK] FAT32 image with the signed topology (test key, counter $(TOPO_COUNTER)): $@"
+
+build/disk-aarch64-topo.img: build/disk-aarch64.img $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_AARCH64) $(TEST_PRIV_KEY)
+	cp build/disk-aarch64.img $@
+	$(call topo_bind,aarch64,$(TOPO_KCONFIG_AARCH64),$(TOPO_KERNEL_FEATURES),build/topo/img-aarch64,$@,$(TEST_PRIV_KEY))
+	@echo "[DISK] FAT32 image with the signed topology (test key, counter $(TOPO_COUNTER)): $@"
+
+# The board volumes' sets: each product profile's topology (BOARD_VOL_KCONFIG,
+# with `board-image` and that profile's features), bound to the volume's own
+# device record and signed with the board key (`require_board_priv`), never
+# the test key. Used inside the build/disk-board*.img recipe, after the volume
+# is provisioned.
+board_topo_features = board-image$$(python3 tools/kconfig_to_cargo.py $(1) | sed -n 's/.*--features /,/p')
 
 # ── CI: build all feature combinations (0 errors, 0 warnings). ───────────────
 ci:

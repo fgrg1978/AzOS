@@ -825,6 +825,33 @@ mod profiles {
         assert!(!pw.audit, "the power tool's row is enforcing, not audit");
     }
 
+    /// Wave 15: the tracer's control call is `TRACECTL.ELF`'s alone, and that
+    /// profile has no exec, spawn, kill or untyped privileged call.
+    ///
+    /// **Canary.** Add `SYS_TRACE_CTL_TYPED` to `TOOLBOX.ELF`'s row: red,
+    /// naming it.
+    #[test]
+    fn only_the_trace_tool_lists_the_trace_call() {
+        use azos_abi::syscall_nr as nr;
+        let n = nr::SYS_TRACE_CTL_TYPED as u16;
+        for ip in IMAGE_PROFILES {
+            assert_eq!(image_filter(ip).is_allowed(n), ip.image == "TRACECTL.ELF",
+                       "image profile {} and syscall {n}: only TRACECTL.ELF may list it", ip.image);
+        }
+        for p in RESTRICTED {
+            assert!(!profile_to_filter(p).expect("known profile").is_allowed(n),
+                    "role profile {p} grants the trace call");
+        }
+        let tc = IMAGE_PROFILES.iter().find(|p| p.image == "TRACECTL.ELF").expect("TRACECTL.ELF row");
+        let f = image_filter(tc);
+        for m in [nr::SYS_SHUTDOWN, nr::SYS_REBOOT, nr::SYS_CONSOLE_WAIT, nr::SYS_SPAWN_EX,
+                  nr::SYS_TASK_KILL, nr::SYS_FORK, nr::SYS_SPAWN, nr::SYS_SHM_MAP_TYPED,
+                  nr::SYS_TRACE_DUMP] {
+            assert!(!f.is_allowed(m as u16), "TRACECTL.ELF lists {m}");
+        }
+        assert!(!tc.audit, "the trace tool's row is enforcing, not audit");
+    }
+
     /// Wave 12: each family's typed call is its tool's alone, and the four
     /// tools hold no other privileged or exec call.
     ///
@@ -1411,6 +1438,8 @@ mod image_profiles {
     /// Every image and the sources its `Makefile` rule compiles into it.
     const SOURCES: &[(&str, Lang, &[(&str, &str)])] = &[
         ("HELLO.ELF", Lang::Asm, &[src!("userspace/tests/hello/hello.S")]),
+        // Wave 15: the kernel tracer's reader.
+        ("TRACECTL.ELF", Lang::Rust, &[src!("userspace/services/tracectl/src/main.rs")]),
         ("SYSTEST.ELF", Lang::Asm, &[src!("userspace/tests/syscall_test/test.S")]),
         ("GPIODRV.ELF", Lang::Rust, &[src!("userspace/drivers/gpio_drv/src/main.rs")]),
         ("MLSRV.ELF", Lang::Rust, &[src!("userspace/services/mlsrv/src/main.rs")]),
@@ -2983,12 +3012,13 @@ mod image_profiles {
         // 19 with the power tool (RFC-0055 S5).
         // 20 with the Linux driver server skeleton (RFC-0053 L0b, wave 12).
         // 24 with the flight, behavior, config and OTA tools (wave 12).
+        // 25 with the kernel tracer's reader (wave 15).
         // +1 riscv64 since wave 11 BOARDIMG: the board volume's own ML service
         // (the same crate, the named key), `$(MLSRV_ELF_BOARD)`.
         assert_eq!(
             recipes,
-            rust_images + 24 + 1,
-            "expected {rust_images} riscv64 + 24 aarch64 + 1 board $(USPACE_BUILD) recipes",
+            rust_images + 25 + 1,
+            "expected {rust_images} riscv64 + 25 aarch64 + 1 board $(USPACE_BUILD) recipes",
         );
 
         let key = WRAPPER

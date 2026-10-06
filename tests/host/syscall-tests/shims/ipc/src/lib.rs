@@ -229,3 +229,16 @@ static TRACE_DUMPS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::ne
 pub fn shim_take_trace_dumps() -> Vec<usize> {
     std::mem::take(&mut *TRACE_DUMPS.lock().unwrap_or_else(|e| e.into_inner()))
 }
+
+/// Stand-in for `azos_ipc::trace`'s region (wave 15): no tracer region on
+/// the host, so `SYS_TRACE_CTL_TYPED` answers `-ENOSYS` once its capability
+/// check has passed. The check itself is the real one.
+pub mod trace {
+    pub fn region_ref() -> Option<(u32, usize)> {
+        None
+    }
+    /// The mask door (static keys are kernel-only): the real tracer's mask.
+    pub fn set_mask(m: u32) -> u32 {
+        azos_trace::set_mask(m)
+    }
+}

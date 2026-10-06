@@ -88,6 +88,9 @@ rt-exempt-canary = []
 # returns zeros from code that does not exist -- which already invalidated
 # two measurements.
 ipc-census = []
+# Wave 15: per-phase instruction census of a yield that switches
+# (`swcensus.rs`). Measurement only; nothing without it.
+switch-census = []
 # Gate canary: the exit path tears its address space down WITHOUT first
 # leaving it (step 2 of `release_address_space_at_exit`), so the free-time
 # check must find this hart on the root and refuse every exit's teardown.
@@ -177,6 +180,9 @@ azos_arch_api = { workspace = true }
 azos_sync = { workspace = true }
 azos_common = { workspace = true }
 azos_limits = { workspace = true }
+# Wave 15: the tracer's sched and proc tracepoints (depends on abi, spsc and
+# limits only, so this closes no cycle).
+azos_trace = { workspace = true }
 # RFC-0047: the Linux personality's numbers and layouts (pure, no state).
 azos_linux_abi = { workspace = true }
 azos_drv_base = { workspace = true }

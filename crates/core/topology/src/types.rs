@@ -14,16 +14,16 @@ use crate::AdmissionError;
 // Bounds — fixed at compile time. RFC-0005.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Maximum scheduler classes per topology.
-pub const MAX_CLASSES: usize = 8;
+/// Maximum scheduler classes per topology (Kconfig `TOPOLOGY_MAX_CLASSES`).
+pub const MAX_CLASSES: usize = azos_limits::TOPOLOGY_MAX_CLASSES;
 
 /// Maximum length of a task or class name (in bytes). Names beyond this
-/// are rejected with `ParseError::NameTooLong`.
-pub const MAX_TASK_NAME_LEN: usize = 32;
+/// are rejected with `ParseError::NameTooLong` (Kconfig `TOPOLOGY_NAME_MAX`).
+pub const MAX_TASK_NAME_LEN: usize = azos_limits::TOPOLOGY_NAME_MAX;
 
 /// Maximum length of a cap-target string (e.g. `/cmd/motor`,
-/// `bus.0/0x68`). Longer values are rejected.
-pub const MAX_TARGET_LEN: usize = 64;
+/// `bus.0/0x68`). Longer values are rejected (Kconfig `TOPOLOGY_TARGET_MAX`).
+pub const MAX_TARGET_LEN: usize = azos_limits::TOPOLOGY_TARGET_MAX;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Bounded string — borrows from input bytes
@@ -120,6 +120,17 @@ impl PolicyKind {
             _ => None,
         }
     }
+
+    /// The literal TOML string [`PolicyKind::from_str`] reads back.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fifo => "fifo",
+            Self::Edf => "edf",
+            Self::Rr => "rr",
+            Self::Cfs => "cfs",
+            Self::Sporadic => "sporadic",
+        }
+    }
 }
 
 /// Preemption policy for a scheduler class.
@@ -142,6 +153,15 @@ impl Preemption {
             "timer-only" => Some(Self::TimerOnly),
             "never" => Some(Self::Never),
             _ => None,
+        }
+    }
+
+    /// The literal TOML string [`Preemption::from_str`] reads back.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::TimerOnly => "timer-only",
+            Self::Never => "never",
         }
     }
 }
@@ -325,6 +345,14 @@ impl TaskAbi {
         }
     }
 
+    /// The row value [`TaskAbi::from_bytes`] reads back.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TaskAbi::Native => "native",
+            TaskAbi::Linux => "linux",
+        }
+    }
+
     /// Capability kinds a Linux row may hold: files, sockets, pipes and the
     /// right to start an image (RFC-0047 P6: a Linux task holds no hardware
     /// capability; it reaches the machine only through files and sockets
@@ -356,6 +384,15 @@ impl RestartPolicy {
             b"on-failure" => Some(RestartPolicy::OnFailure),
             b"no" => Some(RestartPolicy::No),
             _ => None,
+        }
+    }
+
+    /// The row value [`RestartPolicy::from_bytes`] reads back.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RestartPolicy::Always => "always",
+            RestartPolicy::OnFailure => "on-failure",
+            RestartPolicy::No => "no",
         }
     }
 }
@@ -456,8 +493,9 @@ pub struct Topology<'a> {
     energy: azos_energy::EnergySpec,
 }
 
-/// Maximum `[pipeline.NAME]` sections in one topology.
-pub const MAX_PIPELINES: usize = 8;
+/// Maximum `[pipeline.NAME]` sections in one topology (Kconfig
+/// `TOPOLOGY_MAX_PIPELINES`).
+pub const MAX_PIPELINES: usize = azos_limits::TOPOLOGY_MAX_PIPELINES;
 
 /// One `[pipeline.NAME]` section: a data path (camera -> ML -> brain, say)
 /// and the physically contiguous DMA memory it needs, in 4 KiB pages

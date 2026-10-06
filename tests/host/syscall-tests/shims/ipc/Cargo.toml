@@ -16,6 +16,7 @@ port-recheck-canary = []
 port-revoke-canary = []
 
 [dependencies]
+azos_trace = { path = "../../../../../crates/core/trace" }
 # Real, pure, host-buildable.
 azos_abi = { path = "../../../../../crates/core/abi" }
 azos_limits = { path = "../../../../../crates/core/limits" }

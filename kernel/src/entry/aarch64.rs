@@ -820,6 +820,9 @@ fn handle_irq(_frame: &mut TrapFrame) {
         // NOT be deactivated — there is nothing to EOI.
         return;
     }
+    // Wave 15 (TRACE): the irq class, the GIC INTID; the exit record is the
+    // scope's drop, at every return below.
+    let _irq_scope = azos_trace::IrqScope::enter(intid);
 
     // console-splice-smoke: an interrupt-context kernel line on every
     // interrupt, not only the timer's (on this ISA the timer is the one that
@@ -1362,6 +1365,18 @@ fn svc_dispatch(frame: &mut TrapFrame, num: u64, entry: azos_syscall::SyscallEnt
     result
 }
 
+/// The syscall entry record (wave 15): `[nr, tid, x0, x1]` from the frame.
+#[inline(never)]
+fn trace_sys_enter(frame: &TrapFrame) {
+    azos_trace::raw::sys_enter(frame.regs[REG_X8] as u32, azos_sched::current_task_tid(), frame.regs[REG_X0], frame.regs[REG_X0 + 1]);
+}
+
+/// The syscall exit record (wave 15): `[nr, tid, ret]` from the frame.
+#[inline(never)]
+fn trace_sys_exit(frame: &TrapFrame) {
+    azos_trace::raw::sys_exit(frame.regs[REG_X8] as u32, azos_sched::current_task_tid(), frame.regs[REG_X0] as i64);
+}
+
 /// Entry point `entry/aarch64/asm/trap_entry.S`'s vector table jumps to
 /// once it has saved the register file + system registers + FP/SIMD state
 /// into a `TrapFrame` on the kernel stack (Item 2 Stage 5, then Phase 2,
@@ -1471,6 +1486,7 @@ pub extern "C" fn aarch64_trap_entry(frame: &mut TrapFrame) -> u64 {
                 use azos_arch::Interrupts;
                 azos_arch::ARCH.enable_all();
             }
+            azos_sched::swcensus::ecall_enter();
 
             // SYSFLOOR: the filter verdict and the three register-only calls
             // first (`syscall_entry_fast`); the fork snapshot, the argument
@@ -1478,11 +1494,20 @@ pub extern "C" fn aarch64_trap_entry(frame: &mut TrapFrame) -> u64 {
             // them, out of line in `svc_dispatch`. The filter still runs
             // first for every number, exactly as inside
             // `syscall_dispatch_out`.
+            // Wave 15 (TRACE): the syscall class's tracepoints, compiled out
+            // (no instruction) unless Kconfig `KTRACE_CLASS_SYSCALL`; out of
+            // line and reading the frame, as riscv64's (`handle_ecall`).
+            if azos_trace::syscall_on() {
+                trace_sys_enter(frame);
+            }
             let result = match azos_syscall::syscall_entry_fast(num) {
                 azos_syscall::SyscallEntry::Done(r) => r,
                 entry => svc_dispatch(frame, num, entry),
             };
             frame.regs[REG_X0] = result as u64;
+            if azos_trace::syscall_on() {
+                trace_sys_exit(frame);
+            }
 
             // No ELR_EL1 adjustment — see the EL1 self-test arm's comment
             // above; the ARM ARM already leaves it past the `svc`.
@@ -1507,6 +1532,7 @@ pub extern "C" fn aarch64_trap_entry(frame: &mut TrapFrame) -> u64 {
             if azos_limits::LINUX_ABI && azos_sched::scheduler::signal::work_pending() {
                 signal_return(frame, true);
             }
+            azos_sched::swcensus::ecall_exit();
             0
         }
         TrapClass::Interrupt => {
@@ -1661,6 +1687,11 @@ fn handle_page_fault(frame: &mut TrapFrame) {
     let from_user = frame.came_from_user();
     let write = frame.esr_el1 & ESR_ISS_WNR != 0;
     let fault_va = frame.far_el1 as usize;
+    // Wave 15 (TRACE): the fault class, on every fault, resolved or not; the
+    // cause is the ESR_EL1 exception class.
+    if azos_trace::fault_on() {
+        azos_trace::raw::page_fault(fault_va as u64, (frame.esr_el1 >> 26) as u32, azos_sched::current_task_tid());
+    }
 
     if from_user {
         let user_pt = azos_sched::current_user_pt();

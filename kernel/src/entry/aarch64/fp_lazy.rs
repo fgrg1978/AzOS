@@ -107,8 +107,10 @@ impl IrqMask {
     fn new() -> Self {
         let daif: u64;
         unsafe {
+            // Compiler barriers both ways (no `nomem`): the FP state work
+            // this guard covers must stay inside the masked window.
             core::arch::asm!("mrs {0}, DAIF", "msr DAIFSet, #0x2", out(reg) daif,
-                options(nomem, nostack, preserves_flags));
+                options(nostack, preserves_flags));
         }
         IrqMask(daif)
     }
@@ -116,7 +118,7 @@ impl IrqMask {
 impl Drop for IrqMask {
     #[inline(always)]
     fn drop(&mut self) {
-        unsafe { core::arch::asm!("msr DAIF, {0}", in(reg) self.0, options(nomem, nostack, preserves_flags)) };
+        unsafe { core::arch::asm!("msr DAIF, {0}", in(reg) self.0, options(nostack, preserves_flags)) };
     }
 }
 

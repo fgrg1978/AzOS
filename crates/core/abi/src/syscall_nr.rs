@@ -1664,6 +1664,20 @@ pub const SUBREAPER_CLEAR: u64 = 2;
 /// one call's kernel time bounded.
 pub const MODULE_MAX_BYTES: u64 = 4 << 20;
 
+/// `SYS_TRACE_CTL_TYPED` — `a0 = Cap<Trace>` handle, `a1 = op`
+/// (`crate::trace::TRACE_OP_*`), `a2` = the operation's argument (the new
+/// class mask for `TRACE_OP_SET_MASK`, otherwise 0). Wave 15 (TRACE): the
+/// kernel tracer's control, for the `TRACECTL.ELF` tool. The capability is
+/// checked FIRST: `READ` for `INFO`, `GET_MASK` and `REGION_BYTES`, `WRITE`
+/// for `SET_MASK`, both for `MAP` (the reader stores its tails in the
+/// region); a refusal is recorded (`SAFETY_CAP_DENIED_TYPED`). Returns the
+/// operation's value (`MAP`: the region's base address in the caller), or
+/// `-EINVAL` (unknown op, a non-zero argument where none is taken),
+/// `-ENOSYS` (the tracer compiled out, Kconfig `KTRACE`), `-EBUSY` (the
+/// region is already mapped by the caller), `-ENOMEM`, or the capability's
+/// `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS`.
+pub const SYS_TRACE_CTL_TYPED: u64 = 632;
+
 /// Reserved upper bound. Numbers ≥ this are unallocated; new syscalls
 /// must increment this and request an RFC. The 528..=549 range is
 /// reserved for cap-typed migrations of the IPC family (W5);
@@ -1682,8 +1696,9 @@ pub const MODULE_MAX_BYTES: u64 = 4 << 20;
 /// the module loader's (RFC-0053 L0b, `SYS_MODULE_VERIFY`/`SYS_MODULE_MAP_X`),
 /// the highest numbers in use. Wave 13: 619 `SYS_TASK_SUBREAPER`, 620..=623 the
 /// native thread calls (`SYS_THREAD_CREATE`, `SYS_THREAD_EXIT`,
-/// `SYS_FUTEX_WAIT`, `SYS_FUTEX_WAKE`), 624..=629 the signal calls.
-pub const SYS_NR_RESERVED_UPPER: u64 = 632;
+/// `SYS_FUTEX_WAIT`, `SYS_FUTEX_WAKE`), 624..=629 the signal calls. Wave
+/// 15: 632 `SYS_TRACE_CTL_TYPED`, the kernel tracer's control.
+pub const SYS_NR_RESERVED_UPPER: u64 = 633;
 
 // ---------------------------------------------------------------------------
 // The Cap<T> families, as a set.
@@ -1808,6 +1823,8 @@ pub const CAP_TYPED_SYSCALLS: &[u64] = &[
     SYS_BEHAVIOR_TYPED,          // 616  Cap<Power>
     SYS_CONFIG_TYPED,            // 617  Cap<Power>
     SYS_OTA_TYPED,               // 618  Cap<Power>
+    // Wave 15: a `Cap<Trace>` in `a0`; only `TRACECTL.ELF`'s profile lists it.
+    SYS_TRACE_CTL_TYPED,         // 632
 ];
 
 // ---------------------------------------------------------------------------

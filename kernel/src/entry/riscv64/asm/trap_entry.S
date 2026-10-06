@@ -145,12 +145,12 @@ trap_entry_common:
     # Swap SP <-> sscratch
     csrrw sp, sscratch, sp
 
-    # If SP == 0, we came from S-mode (sscratch was 0)
-    beqz sp, trap_from_smode
+    # SP != 0: we came from U-mode, SP = kernel stack, sscratch = user SP.
+    # (Wave 15: one taken branch instead of a not-taken `beqz` plus a `j` on
+    # every trap from U-mode, every syscall included.)
+    bnez sp, trap_save_context
 
-    # We came from U-mode, SP = kernel stack, sscratch = user SP
-    j trap_save_context
-
+    # SP == 0: we came from S-mode (sscratch was 0)
 trap_from_smode:
     # Restore: swap back (get real kernel SP from sscratch)
     csrrw sp, sscratch, sp
@@ -195,8 +195,11 @@ trap_save_context:
     sd x31, 248(sp)   # t6
 
     # Save original SP: check SPP bit to determine origin
-    csrr t0, sstatus
-    andi t0, t0, SSTATUS_SPP
+    # sstatus read once (wave 15): t5 is already in the frame, so it holds
+    # the value `save_csrs` stores, and nothing on either path below writes
+    # sstatus or t5.
+    csrr t5, sstatus
+    andi t0, t5, SSTATUS_SPP
     bnez t0, save_smode_sp
 
     # Came from U-mode: original SP is in sscratch
@@ -226,8 +229,7 @@ save_csrs:
     csrr t0, sepc
     sd t0, TF_SEPC(sp)
 
-    csrr t0, sstatus
-    sd t0, TF_SSTATUS(sp)
+    sd t5, TF_SSTATUS(sp)
 
     csrr t0, stval
     sd t0, TF_STVAL(sp)

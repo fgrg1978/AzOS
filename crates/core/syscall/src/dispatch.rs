@@ -702,13 +702,18 @@ pub fn syscall_dispatch_checked(
     sepc: u64, user_sp: u64, regs: &azos_sched::UserRegs,
     out: &mut SyscallOut,
 ) -> i64 {
-    match entry {
+    #[cfg(feature = "kheap-census")]
+    crate::kheap_census::enter(num);
+    let r = match entry {
         SyscallEntry::Done(r) => r,
         SyscallEntry::Linux if azos_limits::LINUX_ABI => {
             crate::linux::entry(num, a0, a1, a2, a3, a4, a5, sepc, user_sp, regs, out)
         }
         _ => dispatch_slow(num, a0, a1, a2, a3, a4, a5, sepc, user_sp, regs, out),
-    }
+    };
+    #[cfg(feature = "kheap-census")]
+    crate::kheap_census::leave();
+    r
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1014,6 +1019,8 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         SYS_BEHAVIOR_TYPED => crate::families::sys_behavior_typed(a0, a1, a2),
         SYS_CONFIG_TYPED   => crate::families::sys_config_typed(a0, a1, a2, a3, a4, a5),
         SYS_OTA_TYPED      => crate::families::sys_ota_typed(a0, a1, a2),
+        // Wave 15 (TRACE): the kernel tracer's control, `Cap<Trace>` in `a0`.
+        SYS_TRACE_CTL_TYPED => crate::trace_ctl::sys_trace_ctl_typed(a0, a1, a2),
         // RFC-0053 L0b: the module loader's kernel half. Unassigned (the `_`
         // arm, -ENOSYS) in a kernel built without `lx-loader`.
         #[cfg(feature = "lx-loader")]

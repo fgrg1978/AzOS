@@ -93,8 +93,113 @@ pub enum ParseError {
 /// The CAPS.TOML formats this parser reads. A file with no `format = N`
 /// line before its first section is format 1 (every topology written before
 /// wave 11). Format 2 adds the task keys `restart` and `lease_seal`; format 3
-/// (wave 12, RFC-0047) adds the task key `abi`.
-pub const CAPS_FORMAT_MAX: u8 = 3;
+/// (wave 12, RFC-0047) adds the task key `abi`; format 4 (wave 15) adds the
+/// top-level binding keys `device`, `counter` and `sched_sha256` ([`Binding`]).
+pub const CAPS_FORMAT_MAX: u8 = 4;
+
+/// The top-level keys of a format-4 CAPS.TOML that bind the signed file to one
+/// device, to a counter the device never lets go backwards, and to the exact
+/// SCHED.TOML it was signed with (wave 15, TOPOSIGN). They sit inside the
+/// signed bytes, so CAPS.SIG covers them; the sidecar format is unchanged.
+///
+/// ```toml
+/// format = 4
+/// device = "1b5a0a5b3f7d6a54263091faf0027124"   # 16 bytes, hex
+/// counter = 2                                     # >= 1
+/// sched_sha256 = "<64 hex>"                       # SHA-256 of SCHED.TOML
+/// ```
+///
+/// Each key at most once, before the first section; a malformed value is a
+/// parse error, never a missing key. Whether a missing key is acceptable is
+/// the loader's policy (`crate::signed`), not the parser's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Binding {
+    /// `format = N` (1 when the line is absent).
+    pub format: u8,
+    /// `device = "<32 hex>"`.
+    pub device: Option<[u8; crate::device_record::DEVICE_ID_LEN]>,
+    /// `counter = N`, never 0.
+    pub counter: Option<u64>,
+    /// `sched_sha256 = "<64 hex>"`.
+    pub sched_sha256: Option<[u8; 32]>,
+}
+
+/// Read only the top-level lines of a CAPS.TOML (those before its first
+/// section): `format` and the [`Binding`] keys. Run on verified bytes, before
+/// SCHED.TOML is parsed: the loader needs `sched_sha256` to authenticate it.
+pub fn parse_binding(input: &[u8]) -> Result<Binding, ParseError> {
+    let mut b = Binding { format: 1, ..Binding::default() };
+    let mut format_declared = false;
+    let mut rest: &[u8] = input;
+    while !rest.is_empty() {
+        let (line, next) = take_line(rest);
+        rest = next;
+        let mut effective = line;
+        if let Some(idx) = find_comment_start(effective) {
+            effective = &effective[..idx];
+        }
+        let effective = trim_trailing_ws(skip_inline_ws(effective));
+        if effective.is_empty() {
+            continue;
+        }
+        if parse_section_line(effective)?.is_some() {
+            break;
+        }
+        top_level_line(effective, &mut b, &mut format_declared)?;
+    }
+    Ok(b)
+}
+
+/// One line before the first section of a CAPS.TOML: `format = N` (once, a
+/// format this parser knows) or a [`Binding`] key (once, format 4 or later).
+/// Any other key is ignored, as every key outside a section was before
+/// format 2.
+fn top_level_line(line: &[u8], b: &mut Binding, format_declared: &mut bool) -> Result<(), ParseError> {
+    if let Some(n) = parse_format_line(line)? {
+        if *format_declared || n == 0 || n > CAPS_FORMAT_MAX as u64 {
+            return Err(ParseError::UnsupportedFormat);
+        }
+        b.format = n as u8;
+        *format_declared = true;
+        return Ok(());
+    }
+    let Ok((key, after)) = take_ident(line) else { return Ok(()) };
+    if key != b"device" && key != b"counter" && key != b"sched_sha256" {
+        return Ok(());
+    }
+    if b.format < 4 {
+        return Err(ParseError::FieldNeedsFormat);
+    }
+    let after = skip_inline_ws(after);
+    if !after.starts_with(b"=") {
+        return Err(ParseError::MissingEquals);
+    }
+    let after = skip_inline_ws(&after[1..]);
+    match key {
+        b"device" => {
+            let (v, tail) = parse_quoted_string(after, 2 * crate::device_record::DEVICE_ID_LEN)?;
+            if b.device.is_some() || !skip_inline_ws(tail).is_empty() {
+                return Err(ParseError::BadValue);
+            }
+            b.device = Some(parse_hex::<{ crate::device_record::DEVICE_ID_LEN }>(v)?);
+        }
+        b"counter" => {
+            let (n, tail) = parse_unsigned_int(after)?;
+            if b.counter.is_some() || n == 0 || !skip_inline_ws(tail).is_empty() {
+                return Err(ParseError::BadValue);
+            }
+            b.counter = Some(n);
+        }
+        _ => {
+            let (v, tail) = parse_quoted_string(after, 64)?;
+            if b.sched_sha256.is_some() || !skip_inline_ws(tail).is_empty() {
+                return Err(ParseError::BadValue);
+            }
+            b.sched_sha256 = Some(parse_hex::<32>(v)?);
+        }
+    }
+    Ok(())
+}
 
 /// Two tasks that both declare WRITE on one motor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -428,8 +533,9 @@ enum InlineValue<'a> {
     Range(u8, u8),
 }
 
-/// Maximum fields per inline table — over-provisioned for forward-compat.
-const MAX_INLINE_FIELDS: usize = 8;
+/// Maximum fields per inline table — over-provisioned for forward-compat
+/// (Kconfig `TOPOLOGY_INLINE_FIELDS_MAX`).
+const MAX_INLINE_FIELDS: usize = azos_limits::TOPOLOGY_INLINE_FIELDS_MAX;
 
 /// Parse one `{ k = v, k = v, ... }` block. Returns the consumed bytes.
 fn parse_inline_table<'a>(
@@ -611,6 +717,10 @@ fn parse_cap_kind(s: &[u8]) -> Result<CapKind, ParseError> {
         // word: a pipe end is minted by `SYS_PIPE_TYPED` at run time and never
         // granted by a row.
         "launch" => CapKind::Launch,
+        // Wave 15 (TRACE): named AND minted in the same commit
+        // (`crates/core/ipc/src/cap_seed.rs`'s `CapKind::Trace` arm). Target:
+        // the bare word `"trace"`; perms read/write.
+        "trace" => CapKind::Trace,
         // `CapKind::{Adc, Buzzer, NetConfig}` exist as of the same day
         // and are still DELIBERATELY absent from this table (`Power` was
         // here too until wave 3, 2026-09-26 — see the `"power"` arm above —
@@ -624,6 +734,41 @@ fn parse_cap_kind(s: &[u8]) -> Result<CapKind, ParseError> {
         _ => return Err(ParseError::UnknownEnumValue),
     };
     Ok(k)
+}
+
+/// The word [`parse_cap_kind`] reads as `kind`, or `None` for a kind no word
+/// names (a signed CAPS.TOML cannot grant it). The inverse of that table, kept
+/// next to it: `tests/host/topology-tests` checks every word maps back to the
+/// kind it came from, so the emitter (`crate::emit`) and the parser cannot
+/// drift apart. `"motor"` only where the parser accepts it.
+pub fn cap_kind_word(kind: CapKind) -> Option<&'static str> {
+    Some(match kind {
+        CapKind::Channel => "channel",
+        CapKind::Shm => "shm",
+        CapKind::Port => "port",
+        CapKind::Irq => "irq",
+        CapKind::MmioRegion => "mmio",
+        CapKind::IoRing => "io-ring",
+        CapKind::Sensor => "sensor",
+        CapKind::Gpio => "gpio",
+        CapKind::I2c => "i2c",
+        CapKind::Pwm => "pwm",
+        #[cfg(feature = "profile-actuation")]
+        CapKind::Motor => "motor",
+        CapKind::File => "file",
+        CapKind::Socket => "socket",
+        CapKind::Task => "task",
+        CapKind::AiSession => "ai-session",
+        CapKind::Power => "power",
+        CapKind::DriverRegistry => "driver-registry",
+        CapKind::Endpoint => "endpoint",
+        CapKind::LinkKey => "linkkey",
+        CapKind::Entropy => "entropy",
+        CapKind::Disk => "disk",
+        CapKind::Launch => "launch",
+        CapKind::Trace => "trace",
+        _ => return None,
+    })
 }
 
 // Compile-time pin (M40): `CapKind::Motor` the ENUM VARIANT stays
@@ -693,8 +838,10 @@ pub fn parse_caps<'a>(
     let mut current_task_restart = RestartPolicy::OnFailure;
     let mut current_task_abi = TaskAbi::Native;
     // Format 1 until a `format = N` line before the first section says
-    // otherwise.
-    let mut format: u8 = 1;
+    // otherwise. The binding keys are checked here as well (a malformed or
+    // repeated one fails the parse) and read by the loader with
+    // `parse_binding`.
+    let mut binding = Binding { format: 1, ..Binding::default() };
     let mut format_declared = false;
     // An open `[pipeline.NAME]`: its name and `dma_kb` so far.
     let mut current_pipeline: Option<(MaybeStr<'a>, u32)> = None;
@@ -806,7 +953,7 @@ pub fn parse_caps<'a>(
                     &mut current_task_lease_seal,
                     &mut current_task_restart,
                     &mut current_task_abi,
-                    format,
+                    binding.format,
                 )?;
             }
             Some(Section::Operator) => {
@@ -820,13 +967,7 @@ pub fn parse_caps<'a>(
             // Wave 11: `format = N` before the first section. Once, and only
             // a format this parser knows.
             None => {
-                if let Some(n) = parse_format_line(effective)? {
-                    if format_declared || n == 0 || n > CAPS_FORMAT_MAX as u64 {
-                        return Err(ParseError::UnsupportedFormat);
-                    }
-                    format = n as u8;
-                    format_declared = true;
-                }
+                top_level_line(effective, &mut binding, &mut format_declared)?;
             }
             // KV outside a recognised section is ignored.
             _ => {}
@@ -1581,7 +1722,12 @@ fn handle_operator_kv<'a>(
 /// number) — two nibbles at a time, rejecting anything outside
 /// `[0-9a-fA-F]` and any length other than exactly 64.
 fn parse_hex32(s: &[u8]) -> Result<[u8; 32], ParseError> {
-    if s.len() != 64 {
+    parse_hex::<32>(s)
+}
+
+/// Decode exactly `2 * N` hex characters into `N` bytes.
+fn parse_hex<const N: usize>(s: &[u8]) -> Result<[u8; N], ParseError> {
+    if s.len() != 2 * N {
         return Err(ParseError::BadValue);
     }
     fn nibble(b: u8) -> Result<u8, ParseError> {
@@ -1592,8 +1738,8 @@ fn parse_hex32(s: &[u8]) -> Result<[u8; 32], ParseError> {
             _ => Err(ParseError::BadValue),
         }
     }
-    let mut out = [0u8; 32];
-    for i in 0..32 {
+    let mut out = [0u8; N];
+    for i in 0..N {
         let hi = nibble(s[i * 2])?;
         let lo = nibble(s[i * 2 + 1])?;
         out[i] = (hi << 4) | lo;

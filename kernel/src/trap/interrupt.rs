@@ -295,7 +295,11 @@ pub(crate) fn handle_interrupt(_frame: &mut TrapFrame, cause: usize) {
     // wrapped body below rather than a bare `enter` here.
     let hart_for_isr = azos_arch::cpu::hart_id() as usize;
     azos_sync::isr_depth::enter(hart_for_isr);
+    // Wave 15 (TRACE): the irq class, around the whole dispatch; the id is
+    // the `scause` interrupt code (5 timer, 9 external, 1 software).
+    azos_trace::irq_entry(cause as u32);
     handle_interrupt_inner(_frame, cause);
+    azos_trace::irq_exit(cause as u32);
     azos_sync::isr_depth::exit(hart_for_isr);
     // The forced stop and the Linux signal taken at an interrupt from U-mode
     // are NOT handled here: this runs on the hart's interrupt stack, and both
@@ -407,10 +411,6 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                 azos_sched::nearest_timer_deadline(),
             );
 
-            // AQ8: Trace timer tick.
-            azos_ipc::trace_event(azos_ipc::TRACE_IRQ,
-                cause as u32, hart as u32, 0, 0);
-
             // F16.1: record timer ISR execution time BEFORE schedule().
             // schedule() may context-switch us out and back later — measuring
             // after it includes wall time of unrelated tasks and reports
@@ -429,10 +429,6 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                 let hart = azos_arch::cpu::hart_id();
                 let irq = azos_drv_irqchip::irqchip::claim(hart as u32);
                 if irq != 0 {
-                    // AQ8: Trace external IRQ.
-                    azos_ipc::trace_event(azos_ipc::TRACE_IRQ,
-                        irq, hart as u32, 0, 0);
-
                     // A line a ring-3 driver bound is delivered
                     // mask-until-ACK (wave 9 IRQ4, `azos_drv_irqchip::
                     // user_irq`): masked BEFORE the completion below, so a
@@ -532,10 +528,8 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
         }
         _ => {
             // Avoid kprintln from ISR — it acquires the UART spinlock and
-            // can block the ISR for ms when worker tasks hold the lock.
-            // Record to trace ring; userspace dumps it later.
-            azos_ipc::trace_event(azos_ipc::TRACE_IRQ,
-                cause as u32, u32::MAX, 0, 0);
+            // can block the ISR for ms when worker tasks hold the lock. The
+            // irq class's entry record (`handle_interrupt`) names the cause.
         }
     }
 }

@@ -100,12 +100,8 @@ pub use port::{
 };
 
 pub use trace::{
-    TraceEvent, trace_start, trace_stop, trace_is_enabled,
-    trace_event, trace_irq, trace_sched, trace_syscall, trace_fault,
-    trace_dump, trace_total,
-    TRACE_IRQ, TRACE_SCHED, TRACE_SYSCALL, TRACE_DRIVER,
-    TRACE_MM, TRACE_FAULT, TRACE_IPC, TRACE_USER,
-    TRACE_BUF_SIZE,
+    trace_event, trace_dump, trace_total,
+    TRACE_IRQ, TRACE_SCHED, TRACE_SYSCALL, TRACE_FAULT, TRACE_SIGNAL,
 };
 
 pub use irq_bind::{

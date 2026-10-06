@@ -38,6 +38,22 @@ energy-fake-balanced = ["energy-fake-model"]
 # `kernel/Cargo.toml` wires it to `qemu` and to nothing else; the host test
 # crates and the QEMU build of the ML service turn it on themselves.
 dev-key = []
+# The host emitter (`tests/host/topology-tests/src/bin/topo_emit.rs`) writes
+# the CAPS.TOM a kernel of ONE ISA builds: these select the rows `builder.rs`
+# compiles only into a kernel (`topo_bare`, `topo_arch_*` in `build.rs`).
+# Never set by a kernel build, which gets the same cfgs from its target.
+# Canary of the gate's tampered-topology rows: `signed::fill_signed` skips
+# both signature checks, so a tampered CAPS.TOM that still parses is
+# installed. The rows must turn red. Never in a shipped build.
+topo-verify-skip-canary = []
+# Canaries of the anti-replay rows (`signed::check_binding`): skip the
+# SCHED.TOM hash check, the device check, the counter floor check. Each must
+# turn its gate row red. Never in a shipped build.
+topo-sched-hash-canary = []
+topo-device-canary = []
+topo-replay-canary = []
+emit-target-riscv64 = []
+emit-target-aarch64 = []
 # Declare `pwm.0` and `gpio.0` — motor 0's duty channel and one of its
 # direction pins — in the default topology, so a ring-3 task HOLDS the
 # capability the kernel's actuation guards must refuse. Without the grant a
@@ -128,6 +144,9 @@ ushell-prio-canary = []
 # RFC-0055 canary: `POWER.ELF`'s row without `Cap<Power>`; every power
 # operation must be refused and recorded. Never in a real build.
 power-cap-canary = []
+# Wave 15 canary: TRACECTL.ELF's row holds no `Cap<Trace>`; every
+# `SYS_TRACE_CTL_TYPED` call must be refused and recorded.
+trace-cap-canary = []
 # Wave 12 canary: FLIGHT.ELF, BEHAVIOR.ELF, CONFIG.ELF and OTA.ELF rows without
 # their capabilities; every family operation must be refused and recorded.
 # Never in a real build.

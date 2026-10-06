@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! Static-key sites (wave 15, TRACE; Kconfig `KTRACE_STATIC_KEYS`): the
+//! link-time table of patchable tracepoint branches and the two instruction
+//! words each one can hold.
+//!
+//! Pure: no `asm!`, no memory access beyond the table's own fields, so the
+//! host test suite pulls this file in by `#[path]` and checks the encoders
+//! against assembler output on both ISAs.
+//!
+//! # A site
+//!
+//! Every tracepoint check is one naturally aligned 32-bit instruction in the
+//! kernel text, linked as a branch to the class's mask test (`jal zero,
+//! target` on riscv64, `b target` on aarch64) and recorded in the section
+//! `.azos_keys` as a [`KeySite`]. Turning a class off rewrites its sites to
+//! the ISA's nop, turning it on rewrites them back to the branch. The
+//! branch target re-tests the runtime mask, so a site in either state, at
+//! any moment of a change, runs correct code: that is why a kernel that
+//! cannot patch keeps the branches and stays correct, only slower.
+
+/// One table entry, as the `asm!` in `azos_trace` emits it: 24 bytes,
+/// 8-aligned.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeySite {
+    /// The instruction's address (the kernel's VA of it).
+    pub site: u64,
+    /// Where the branch form jumps: the class's mask test.
+    pub target: u64,
+    /// The key: a trace class (`azos_abi::trace::TRACE_CLASS_*`).
+    pub key: u32,
+    /// The instruction form, [`KIND_RV_JAL`] or [`KIND_A64_B`].
+    pub kind: u32,
+}
+
+/// riscv64: `jal zero, target` / `addi zero, zero, 0`.
+pub const KIND_RV_JAL: u32 = 1;
+/// aarch64: `b target` / `nop`.
+pub const KIND_A64_B: u32 = 2;
+
+/// riscv64 `nop` (`addi x0, x0, 0`), the 4-byte form (never `c.nop`).
+pub const RV_NOP: u32 = 0x0000_0013;
+/// aarch64 `nop`.
+pub const A64_NOP: u32 = 0xd503_201f;
+
+const RV_JAL_OPCODE: u32 = 0x6f;
+const A64_B_OPCODE: u32 = 0x1400_0000;
+
+/// `jal x0, to` placed at `from`: a signed, even offset within ±1 MiB.
+pub fn rv_jal(from: u64, to: u64) -> Option<u32> {
+    let off = to.wrapping_sub(from) as i64;
+    if off & 1 != 0 || !(-(1 << 20)..(1 << 20)).contains(&off) {
+        return None;
+    }
+    let o = off as u32;
+    Some(((o >> 20) & 1) << 31 | ((o >> 1) & 0x3ff) << 21 | ((o >> 11) & 1) << 20 | ((o >> 12) & 0xff) << 12 | RV_JAL_OPCODE)
+}
+
+/// The offset a `jal x0` word encodes, if it is one.
+pub fn rv_jal_offset(w: u32) -> Option<i64> {
+    if w & 0xfff != RV_JAL_OPCODE {
+        return None; // not JAL, or rd != x0
+    }
+    let imm = ((w >> 31) & 1) << 20 | ((w >> 21) & 0x3ff) << 1 | ((w >> 20) & 1) << 11 | ((w >> 12) & 0xff) << 12;
+    Some(((imm << 11) as i32 >> 11) as i64)
+}
+
+/// `b to` placed at `from`: a signed offset, a multiple of 4, within ±128 MiB.
+pub fn a64_b(from: u64, to: u64) -> Option<u32> {
+    let off = to.wrapping_sub(from) as i64;
+    if off & 3 != 0 || !(-(1 << 27)..(1 << 27)).contains(&off) {
+        return None;
+    }
+    Some(A64_B_OPCODE | ((off >> 2) as u32 & 0x03ff_ffff))
+}
+
+/// The offset a `b` word encodes, if it is one.
+pub fn a64_b_offset(w: u32) -> Option<i64> {
+    if w & 0xfc00_0000 != A64_B_OPCODE {
+        return None;
+    }
+    Some((((w & 0x03ff_ffff) << 6) as i32 >> 4) as i64)
+}
+
+/// Why a site cannot be patched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SiteError {
+    /// Not a 4-byte aligned address (a riscv64 site assembled compressed or
+    /// misaligned, or a corrupt entry).
+    Misaligned,
+    /// A kind this build does not know.
+    Kind,
+    /// The branch cannot reach its target from the site.
+    Range,
+    /// The word at the site is neither this site's nop nor its branch.
+    Unexpected,
+}
+
+impl KeySite {
+    /// The word for `on` (the branch) or off (the nop).
+    pub fn word(&self, on: bool) -> Result<u32, SiteError> {
+        if self.site & 3 != 0 {
+            return Err(SiteError::Misaligned);
+        }
+        match (self.kind, on) {
+            (KIND_RV_JAL, false) => Ok(RV_NOP),
+            (KIND_RV_JAL, true) => rv_jal(self.site, self.target).ok_or(SiteError::Range),
+            (KIND_A64_B, false) => Ok(A64_NOP),
+            (KIND_A64_B, true) => a64_b(self.site, self.target).ok_or(SiteError::Range),
+            _ => Err(SiteError::Kind),
+        }
+    }
+
+    /// The state `word` (read from the site) shows: `Ok(true)` the branch,
+    /// `Ok(false)` the nop. Anything else is refused: a patcher that found
+    /// some other word would be writing over code it did not put there.
+    pub fn state(&self, word: u32) -> Result<bool, SiteError> {
+        let on = self.word(true)?;
+        let off = self.word(false)?;
+        if word == on {
+            Ok(true)
+        } else if word == off {
+            Ok(false)
+        } else {
+            Err(SiteError::Unexpected)
+        }
+    }
+}
+
+/// The entries of a raw `.azos_keys` image (`len` bytes at `bytes`, as the
+/// linker laid it out), or `None` when the length is not a whole number of
+/// entries.
+pub fn parse(bytes: &[u8]) -> Option<impl Iterator<Item = KeySite> + '_> {
+    const N: usize = core::mem::size_of::<KeySite>();
+    if bytes.len() % N != 0 {
+        return None;
+    }
+    Some(bytes.chunks_exact(N).map(|c| {
+        let u64_at = |o: usize| u64::from_le_bytes(c[o..o + 8].try_into().unwrap());
+        let u32_at = |o: usize| u32::from_le_bytes(c[o..o + 4].try_into().unwrap());
+        KeySite { site: u64_at(0), target: u64_at(8), key: u32_at(16), kind: u32_at(20) }
+    }))
+}
+
+const _: () = assert!(core::mem::size_of::<KeySite>() == 24);

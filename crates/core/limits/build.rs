@@ -110,6 +110,7 @@ fn main() {
     // -----------------------------------------------------------------------
     let mut out = String::new();
     azos_config::emit_rust(&cfg, &mut out, sha12);
+    emit_kheap_slab_classes(&cfg, &mut out);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let dest = out_dir.join("generated.rs");
@@ -694,4 +695,48 @@ fn run_validations(cfg: &ConfigMap) {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Wave 15 (SLAB): KHEAP_SLAB_CLASSES is a string ("16 32 64 ..."); the kernel
+// heap's size-class cache (crates/core/mm/src/slab.rs) needs it as a slice,
+// trimmed to KHEAP_SLAB_MAX_CLASS. Checked here because a Kconfig `string`
+// has no range: every size a multiple of 8 from 8 to 4096, strictly
+// ascending, 1 to 16 of them after the trim; KHEAP_SLAB_BYTES a power of two.
+// Absent keys (a .config from before wave 15) emit nothing, and the kernel
+// then fails to compile rather than run on silent defaults.
+// ---------------------------------------------------------------------------
+fn emit_kheap_slab_classes(cfg: &ConfigMap, out: &mut String) {
+    let Some(raw) = cfg.get("KHEAP_SLAB_CLASSES") else { return };
+    let raw = raw.trim_matches('"');
+    let max = get_u64(cfg, "KHEAP_SLAB_MAX_CLASS").unwrap_or(4096);
+    let mut list: Vec<u64> = Vec::new();
+    for tok in raw.split(|c: char| c == ' ' || c == ',').filter(|t| !t.is_empty()) {
+        let v: u64 = tok.parse().unwrap_or_else(|_| {
+            panic!("validation FAIL: KHEAP_SLAB_CLASSES: '{tok}' is not a number (\"{raw}\").")
+        });
+        if v < 8 || v > 4096 || v % 8 != 0 {
+            panic!("validation FAIL: KHEAP_SLAB_CLASSES: {v} is not a multiple of 8 in 8..=4096.");
+        }
+        if list.last().is_some_and(|&p| v <= p) {
+            panic!("validation FAIL: KHEAP_SLAB_CLASSES must ascend strictly (\"{raw}\").");
+        }
+        list.push(v);
+    }
+    list.retain(|&v| v <= max);
+    if list.is_empty() || list.len() > 16 {
+        panic!("validation FAIL: KHEAP_SLAB_CLASSES (\"{raw}\") leaves {} classes at or under \
+                KHEAP_SLAB_MAX_CLASS ({max}); 1 to 16 are allowed.", list.len());
+    }
+    if let Some(sb) = get_u64(cfg, "KHEAP_SLAB_BYTES") {
+        if !sb.is_power_of_two() {
+            panic!("validation FAIL: KHEAP_SLAB_BYTES ({sb}) is not a power of two.");
+        }
+    }
+    let items: Vec<String> = list.iter().map(|v| v.to_string()).collect();
+    out.push_str(&format!(
+        "/// KHEAP_SLAB_CLASSES at or under KHEAP_SLAB_MAX_CLASS (limits build.rs).\n\
+         pub const KHEAP_SLAB_CLASS_LIST: &[usize] = &[{}];\n",
+        items.join(", ")
+    ));
 }

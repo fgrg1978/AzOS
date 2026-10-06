@@ -69,6 +69,20 @@ pub(crate) fn probe_irq_in_syscall() -> usize {
     0
 }
 
+/// The syscall entry record (wave 15): `[nr, tid, a0, a1]` from the frame.
+#[cfg(target_arch = "riscv64")]
+#[inline(never)]
+fn trace_sys_enter(frame: &TrapFrame) {
+    azos_trace::raw::sys_enter(frame.regs[17] as u32, azos_sched::current_task_tid(), frame.regs[10] as u64, frame.regs[11] as u64);
+}
+
+/// The syscall exit record (wave 15): `[nr, tid, ret]` from the frame.
+#[cfg(target_arch = "riscv64")]
+#[inline(never)]
+fn trace_sys_exit(frame: &TrapFrame) {
+    azos_trace::raw::sys_exit(frame.regs[17] as u32, azos_sched::current_task_tid(), frame.regs[10] as i64);
+}
+
 /// The `ecall` path of [`handle_exception`] (U-mode and S-mode). Entered
 /// straight from `riscv64_trap_handler` for a U-mode `ecall` (SYSFLOOR), so a
 /// syscall no longer pays `handle_exception`'s cause decode and the frame its
@@ -77,7 +91,17 @@ pub(crate) fn probe_irq_in_syscall() -> usize {
 #[cfg(target_arch = "riscv64")]
 #[inline(never)]
 pub(crate) fn handle_ecall(frame: &mut TrapFrame) -> usize {
+    // Wave 15 (TRACE): the syscall class's entry tracepoint, FIRST and out
+    // of line, reading everything from the frame: then nothing but `frame`
+    // is live across its call, and the function keeps its register shape
+    // (no extra callee-saved register to save on every syscall). Compiled
+    // out (no instruction) unless Kconfig `KTRACE` and `KTRACE_CLASS_SYSCALL`;
+    // compiled in, a mask test while the class is off.
+    if azos_trace::syscall_on() {
+        trace_sys_enter(frame);
+    }
     let num = frame.regs[17]; // a7 = syscall number
+    azos_sched::swcensus::ecall_enter();
 
     // O3.1 (owner decision, 2026-09-26): syscalls run with interrupts
     // enabled once the frame is saved (Linux model). LANDED (F4, wave
@@ -143,11 +167,6 @@ pub(crate) fn handle_ecall(frame: &mut TrapFrame) -> usize {
     // it is not modified yet. Verified by following the chain
     // sys_fork -> sys_fork_impl -> set_task_fork_ctx, not assumed.
 
-    // AQ8: trace syscall entry into the post-mortem ring. Kconfig
-    // `SYSCALL_TRACE` (cargo `syscall-trace`), off by default: on, it costs
-    // 19 instructions on every syscall. Seccomp denials are recorded either way.
-    #[cfg(feature = "syscall-trace")]
-    azos_ipc::trace_syscall(num as u32, 0);
 
     // K-A15: sepc/user_sp passed straight through as call parameters
     // (this trap frame's own values, hart-local) instead of via the
@@ -171,6 +190,11 @@ pub(crate) fn handle_ecall(frame: &mut TrapFrame) -> usize {
         entry => ecall_dispatch(frame, num as u64, entry),
     };
     frame.regs[10] = result as _; // return value in a0
+    // The exit tracepoint, as the entry one: the number and the result are
+    // read back from the frame.
+    if azos_trace::syscall_on() {
+        trace_sys_exit(frame);
+    }
     // Skip the `ecall`. Wrapping: an `ecall` at the top 4 bytes of the
     // address space cannot exist (no U-mode or kernel mapping is there), so
     // the overflow panic was two dead instructions on every syscall.
@@ -197,6 +221,7 @@ pub(crate) fn handle_ecall(frame: &mut TrapFrame) -> usize {
     if azos_limits::LINUX_ABI && azos_sched::scheduler::signal::work_pending() {
         signal_return(frame, true);
     }
+    azos_sched::swcensus::ecall_exit();
     0
 }
 
@@ -275,14 +300,12 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame, cause: usize) -> usize {
             // SPP bit: 0 = came from U-mode, 1 = came from S-mode.
             let from_user = (frame.sstatus as usize) & csr::SSTATUS_SPP == 0;
 
-            // AQ8: Trace page fault (critical for post-mortem debugging).
-            // AQ8 trace stays on EVERY fault, resolved or not: it is a ring
-            // buffer write with no UART lock, and it is what `trace_dump`
-            // replays on the fatal path below.
-            azos_ipc::trace_fault(
-                frame.stval as u32, cause as u32,
-                azos_sched::current_task_tid(),
-            );
+            // The fault class's tracepoint, on EVERY fault, resolved or not:
+            // a lock-free per-CPU record, and what `trace_dump` replays on
+            // the fatal path below (Kconfig `KTRACE_CLASS_FAULT`).
+            if azos_trace::fault_on() {
+                azos_trace::raw::page_fault(frame.stval as u64, cause as u32, azos_sched::current_task_tid());
+            }
 
             // The banner used to be printed HERE, before COW and demand paging
             // were even attempted. Nearly every fault this kernel takes is a

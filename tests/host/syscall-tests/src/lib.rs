@@ -132,6 +132,9 @@ pub mod power;
 // Wave 12: the flight/behavior/config/OTA typed calls, the real file.
 #[path = "../../../../crates/core/syscall/src/families.rs"]
 pub mod families;
+// Wave 15: the kernel tracer's control call (632), the real file.
+#[path = "../../../../crates/core/syscall/src/trace_ctl.rs"]
+pub mod trace_ctl;
 
 // Wave 6 (front V): the per-task vDSO page and notify/wait handlers. A
 // sibling of `link_key` for the same reason; `#[path]`, not `include!`.

@@ -3,7 +3,14 @@
 //! Verifies a board volume's signatures with the kernel's own verifier code.
 //!
 //!     verify_board_volume <CONFIG.INI> <CONFIG.SIG> <device-id-hex> \
-//!                         <MLP.RML> <MLP.SIG> <POLICY.GGF> <POLICY.SIG>
+//!                         <MLP.RML> <MLP.SIG> <POLICY.GGF> <POLICY.SIG> \
+//!                         [<CAPS.TOM> <CAPS.SIG> <SCHED.TOM>]
+//!
+//! With the three topology files (wave 15), the signed topology is loaded the
+//! way the kernel loads it before its boot admission
+//! (`azos_topology::signed::load_signed`: CAPS.SIG, the binding against the
+//! image's device id and SCHED.TOM's hash with floor 0, both parses, then
+//! `admission_check`).
 //!
 //! `azos_topology::verify_config_sig_v2` for the config (the call the
 //! kernel's `cfg_load_verified` makes) and `verify_signature` for the two ML
@@ -24,8 +31,9 @@ fn read(path: &str) -> Vec<u8> {
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() != 8 {
-        eprintln!("usage: verify_board_volume CONFIG.INI CONFIG.SIG device-id-hex MLP.RML MLP.SIG POLICY.GGF POLICY.SIG");
+    if a.len() != 8 && a.len() != 11 {
+        eprintln!("usage: verify_board_volume CONFIG.INI CONFIG.SIG device-id-hex MLP.RML MLP.SIG POLICY.GGF POLICY.SIG \
+                   [CAPS.TOM CAPS.SIG SCHED.TOM]");
         std::process::exit(2);
     }
     let hex = a[3].as_bytes();
@@ -53,6 +61,23 @@ fn main() {
             Ok(()) => println!("{name} verified"),
             Err(e) => {
                 println!("{name} REFUSED: {e:?}");
+                bad += 1;
+            }
+        }
+    }
+    if a.len() == 11 {
+        let (caps, caps_sig, sched) = (read(&a[8]), read(&a[9]), read(&a[10]));
+        let files = azos_topology::signed::SignedFiles { caps: &caps, caps_sig: &caps_sig, sched: &sched };
+        let ctx = azos_topology::signed::DeviceContext {
+            device_id: Some(id), floor: 0, bind_device: true, enforce_floor: true,
+        };
+        // A `Topology` is sized by the limits; keep it off the main stack.
+        let mut topo = Box::new(azos_topology::Topology::empty());
+        match azos_topology::signed::load_signed(&mut topo, &files, &TRUSTED_PUBKEY, &ctx) {
+            Ok(c) => println!("CAPS.TOM/SCHED.TOM verified, bound (counter {:?}), parsed and admitted ({} classes, {} tasks)",
+                c, topo.classes_len(), topo.tasks_len()),
+            Err(e) => {
+                println!("CAPS.TOM/SCHED.TOM REFUSED: {e:?}");
                 bad += 1;
             }
         }

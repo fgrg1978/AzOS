@@ -102,6 +102,50 @@ pub trait Abi {
     /// Write bytes to the console/stderr. Never called inside a measured
     /// batch — see the module doc.
     fn write(&self, bytes: &[u8]);
+    /// The lane filter this run was given ([`Lanes`]); all lanes by default.
+    fn lanes(&self) -> Lanes { Lanes::all() }
+}
+
+/// The lane filter (`VSBENCH_LANES`, wave 15): a comma list of section keys
+/// that runs only those sections, on both sides, so one change can be
+/// measured without the whole suite. Empty (the default) runs everything,
+/// exactly as before. The floor, the unloaded yield and the closing floor
+/// always run: every other number is quoted against them.
+///
+/// Keys: `ipc` (ipc-roundtrip and the ring/drv/frame lanes on its peer),
+/// `mem`, `proc`, `thread`, `vdso`, `ioring`, `shell`, `timer`, `net`
+/// (nic-egress, udp-roundtrip), `switch` (switch-loaded, yield-switch).
+/// AzOS reads it from `/fat/VSBLANES.TXT`, Linux from its environment;
+/// `tools/vsbench_compare.sh` puts it in both.
+pub struct Lanes {
+    buf: [u8; LANES_MAX],
+    len: usize,
+}
+
+/// Longest `VSBENCH_LANES` value read; the script refuses a longer one.
+pub const LANES_MAX: usize = 128;
+
+impl Lanes {
+    pub const fn all() -> Self { Lanes { buf: [0; LANES_MAX], len: 0 } }
+
+    pub fn from_bytes(src: &[u8]) -> Self {
+        let mut l = Lanes::all();
+        for &b in src.iter().take(LANES_MAX) {
+            if b == 0 || b == b'\n' || b == b'\r' { break; }
+            if b == b' ' { continue; }
+            l.buf[l.len] = b;
+            l.len += 1;
+        }
+        l
+    }
+
+    /// Is the section `key` selected?
+    pub fn on(&self, key: &[u8]) -> bool {
+        if self.len == 0 { return true; }
+        self.buf[..self.len].split(|&b| b == b',').any(|k| k == key)
+    }
+
+    pub fn is_all(&self) -> bool { self.len == 0 }
 }
 
 /// One measured batch: `iters` calls of `body`, returning elapsed ticks.
@@ -415,12 +459,6 @@ pub trait Proc {
     /// would be timing bookkeeping instead of allocation.
     fn brk_grow(&self, delta: u64) -> Result<u64, i64>;
 
-    /// Fork a competitor that yields `iters` times and exits.
-    ///
-    /// Puts real runnable load under the measurement, not simulated: these are
-    /// actual tasks competing for the CPU in the scheduler's queue.
-    fn spawn_yield_peer(&self, iters: u64) -> Result<(), i64>;
-
     /// Fork a peer. `Some(true)` in the child, `Some(false)` in the parent,
     /// `None` if the fork failed. Unlike [`Ipc::spawn_peer`], the child
     /// **returns** to do its own work rather than being handed a role.
@@ -577,6 +615,13 @@ pub trait Shell {
     fn pipe_rw(&self, r: u64, w: u64, buf: &mut [u8]) -> Result<(), i64>;
     /// Close both ends.
     fn pipe_close(&self, r: u64, w: u64);
+    /// One `read` on a descriptor: bytes read, or a negative error (AzOS
+    /// answers an empty pipe with `-EAGAIN`-class codes; callers retry).
+    fn fd_read(&self, fd: u64, buf: &mut [u8]) -> isize;
+    /// One `write` on a descriptor: bytes written, or a negative error.
+    fn fd_write(&self, fd: u64, buf: &[u8]) -> isize;
+    /// Close one end of a pipe from [`Shell::pipe_open`].
+    fn fd_close(&self, fd: u64);
     /// Round 48: open the side's own executable read-only, read 64 bytes,
     /// close it (AzOS `/fat/VSBENCH.ELF` through `Cap<File>` 563/564/566;
     /// Linux `/init`, the same binary in its initramfs, `openat`/`read`/
@@ -664,6 +709,27 @@ pub const N_LOAD_YIELDS: u64 = 500;
 /// does.
 pub const N_LOAD_PEER_ITERS: u64 = 200_000;
 
+/// Yields the measurer spends before its batch, so every competitor has run
+/// its prelude (the timestamp buffer below is touched there, its page faults
+/// included) and is genuinely in the ready queue. One used to be assumed
+/// enough, which presumes the very round-robin order the lane is testing.
+pub const N_LOAD_WARMUP: u64 = 8;
+
+/// Yields each competitor timestamps (one `u32` tick delta per yield).
+///
+/// **The instrument behind `yield-switch` (wave 15).** The measurer's own
+/// counter says only that IT switched on every yield; how many competitor
+/// yields ran between two of its yields is what decides what one
+/// `switch-loaded` op contains, and the two schedulers need not agree on it.
+/// Each competitor stamps its first `N_LOAD_PEER_STAMPS` yields, learns the
+/// measurer's window afterwards through a pipe, and reports how many of its
+/// yields returned inside it. Sized far above the ~`N_LOAD_YIELDS` a fair
+/// round-robin gives each competitor; a count that does not reach the end of
+/// the window is reported as a lower bound, never silently. 16 KiB per
+/// competitor, touched before its first yield. Identical work on both sides:
+/// one counter read and one store per competitor yield.
+pub const N_LOAD_PEER_STAMPS: usize = 4096;
+
 // ── Network: local UDP round trip ──────────────────────────────────────────
 //
 // **The lane that was blocked from the start.** It needed three things this
@@ -692,6 +758,10 @@ pub const NET_POLL_BUDGET: u64 = 200_000;
 /// path, not of the copy.
 pub const NET_PAYLOAD: usize = 32;
 
+/// The byte of [`Net::net_stop_echo`]'s datagram; the measured payload is
+/// `0xA5`, so the echo can tell them apart by the first byte.
+pub const NET_STOP: u8 = 0x5A;
+
 /// UDP round trip against a local peer.
 pub trait Net {
     /// `false` if the system cannot set the pair up; then no number is
@@ -712,6 +782,14 @@ pub trait Net {
 
     /// Echo side: receive and send back, `n` times. For the child.
     fn net_echo(&self, n: u64);
+
+    /// Stop the echo started by [`Net::net_echo`]: one datagram whose bytes
+    /// are all [`NET_STOP`]. Wave 15: the echo used to outlive the lane,
+    /// polling `recv` + yield, and sat in `switch-loaded`'s window as a
+    /// sixth runnable task on BOTH kernels (AzOS's `SWITCH_CENSUS` named its
+    /// slot; on Linux the measurer's switches outnumbered the competitors'
+    /// yields by ~250 of 500).
+    fn net_stop_echo(&self);
 
     /// NIC egress lane: a UDP socket connected to the limited broadcast
     /// `255.255.255.255:9` (discard). Broadcast needs no ARP, so the lane

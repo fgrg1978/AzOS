@@ -1,0 +1,21 @@
+[package]
+name = "tracectl"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS kernel tracer's reader (wave 15): maps the per-CPU trace rings under the Cap<Trace> its topology row grants, sets the class mask through SYS_TRACE_CTL_TYPED, and streams decoded events to the console or a file. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_spsc = { path = "../../../crates/core/spsc" }
+azos_abi = { path = "../../../crates/core/abi" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]

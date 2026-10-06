@@ -88,6 +88,21 @@
 # So on the only lane where the question is well posed, AzOS is ~1.6x FASTER
 # per context switch, not 11x slower.
 #
+# **WAVE 15: THE 11-09 COUNTERS WERE AT `-smp 4`; AT `-smp 1` THE REASON
+# CHANGED, AND THE LANE STAYS OUT FOR A DIFFERENT ONE.** At one hart Linux
+# does switch (0 voluntary + 479-500 preempted over 500 yields), but the
+# competitors' own stamps (see `loaded_switch_lane`) show what one op holds:
+#
+#     azos:  4.00 competitor yields per measurer yield (round-robin of five)
+#     linux: 0.50-0.95 (EEVDF re-picks the measurer after about one)
+#
+# so `switch-loaded` is ~5 yields of work on AzOS and ~2 on Linux. And both
+# sides had a sixth task in the window: `udp-roundtrip`'s echo, left polling
+# `recv` + yield for the rest of the run (now stopped, `Net::net_stop_echo`;
+# AzOS's `SWITCH_CENSUS` named its slot). The comparable number is
+# `ctxsw-loaded`: the same window divided by the context switches inside
+# it, on both kernels.
+#
 # **`switch-loaded` IS THEREFORE EXCLUDED FROM THE COMPARISON COLUMN** (see
 # `LANES_NOT_COMPARABLE` below) and kept only as a AzOS-side number. It is
 # still worth having: it is the one measure of what a context switch costs this
@@ -287,6 +302,34 @@ WAIT_SECS="${WAIT_SECS:-60}"
 WORK="${VSBENCH_WORK:-$REPO_ROOT/build/vsbench-compare}"
 CARGO="${CARGO:-cargo}"
 VSBENCH_SECCOMP="${VSBENCH_SECCOMP:-0}"
+
+# ── VSBENCH_LANES: run only some sections, on every side (wave 15) ──────────
+#
+# A comma list of section keys (see `Lanes` in
+# userspace/bench/vsbench/src/bench_core.rs): ipc, mem, proc, thread, vdso,
+# ioring, shell, timer, net, switch. The floors and the unloaded yield always
+# run. Unset (the default) changes nothing: no file is added to the AzOS disk
+# and no word to the Linux command line. Set, AzOS reads it from
+# /fat/VSBLANES.TXT in its own disk copy and Linux from init's environment.
+# For iterating on one change only: a filtered run is not a comparison of the
+# suite, and the seccomp column (whose check is "every lane the unfiltered
+# column measured") is refused with it.
+VSBENCH_LANES="${VSBENCH_LANES:-}"
+if [ -n "$VSBENCH_LANES" ]; then
+    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch))*$' \
+        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,switch" >&2; exit 1; }
+    [ "$VSBENCH_SECCOMP" = "1" ] && { echo "vsbench: VSBENCH_LANES and VSBENCH_SECCOMP=1 do not mix" >&2; exit 1; }
+    echo "vsbench: lanes filtered to: $VSBENCH_LANES" >&2
+fi
+
+# ── VSBENCH_BENCH_FEATURES: extra cargo features of the vsbench binary ─────
+#
+# Both sides, for the lane canaries (e.g. `switch-peer-canary`); empty by
+# default. The Makefile keeps the AzOS ELF's feature set in a stamp
+# (build/vsbench.features), so the next default run rebuilds it.
+VSBENCH_BENCH_FEATURES="${VSBENCH_BENCH_FEATURES:-}"
+export VSBENCH_FEATURES="$VSBENCH_BENCH_FEATURES"
+[ -n "$VSBENCH_BENCH_FEATURES" ] && echo "vsbench: CANARY/diagnostic bench features: $VSBENCH_BENCH_FEATURES" >&2
 VSBENCH_SECCOMP_STRICT="${VSBENCH_SECCOMP_STRICT:-0}"
 VSBENCH_SECCOMP_CANARY="${VSBENCH_SECCOMP_CANARY:-0}"
 # Cargo target directories, one per artefact this script builds:
@@ -338,8 +381,15 @@ justified_azos_only() {
 # were written on the same day and the coupling is easy to miss, which is why
 # it is spelled out here.
 completion_lane() { # completion_lane <log> <side>
+    # A filtered run without `switch` has no last lane: its end is `done`.
+    if [ -n "$VSBENCH_LANES" ] && ! printf ',%s,' "$VSBENCH_LANES" | grep -q ',switch,'; then
+        tr -d '\r' <"$1" 2>/dev/null | grep -qF "[VSBENCH] side=$2 done"
+        return
+    fi
+    # The lane's LAST line (wave 15): `ctxsw-loaded` or its refusal follows
+    # `switch-loaded =`, so stopping on the earlier line could cut it off.
     tr -d '\r' <"$1" 2>/dev/null \
-        | grep -qE "\[VSBENCH\] $2 switch-loaded =|\[VSBENCH\] switch-loaded: REFUSED"
+        | grep -qE "\[VSBENCH\] $2 ctxsw-loaded =|\[VSBENCH\] ctxsw-loaded: |\[VSBENCH\] switch-loaded: REFUSED"
 }
 
 # ── AzOS side ───────────────────────────────────────────────────────────
@@ -410,8 +460,21 @@ if cmp -s "$AZ_CONFIG.new" "$AZ_CONFIG"; then rm -f "$AZ_CONFIG.new"; else mv "$
 # One AzOS boot, with its own copy of the disk: QEMU locks the file, and the
 # guest writes to the FAT32, so a second boot of one copy would start from what
 # the first left behind.
+# Stop one QEMU this script started. Under `-icount` QEMU can ignore SIGTERM
+# (one canary boot waited 10 minutes in `wait`), so a survivor gets SIGKILL.
+stop_qemu() { # stop_qemu <pid>
+    kill "$1" 2>/dev/null
+    sleep 2
+    kill -0 "$1" 2>/dev/null && kill -9 "$1" 2>/dev/null
+    wait "$1" 2>/dev/null
+}
+
 boot_azos() { # boot_azos <kernel> <log> <disk copy>
     cp "$REPO_ROOT/build/disk-vsbench.img" "$3"
+    if [ -n "$VSBENCH_LANES" ]; then
+        printf '%s\n' "$VSBENCH_LANES" >"$3.lanes"
+        mcopy -o -i "$3" "$3.lanes" ::VSBLANES.TXT || die "could not add VSBLANES.TXT to $3"
+    fi
     "$QEMU" -machine virt -nographic -bios default -smp "$VSBENCH_SMP" $ICOUNT_ARGS ${BOOT_EXTRA:-} \
         -kernel "$1" \
         -global virtio-mmio.force-legacy=false \
@@ -422,7 +485,7 @@ boot_azos() { # boot_azos <kernel> <log> <disk copy>
         completion_lane "$2" azos && break
         sleep 1
     done
-    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    stop_qemu "$pid"
 }
 boot_azos "$KM_KERNEL" "$KM_LOG" "$WORK/k-bench-minimal.img"
 boot_azos "$KP_KERNEL" "$KP_LOG" "$WORK/k-product.img"
@@ -446,14 +509,14 @@ fi
 boot_linux() { # boot_linux <initramfs> <log> [extra cmdline]
     "$QEMU" -machine virt -nographic -bios default -smp "$VSBENCH_SMP" $ICOUNT_ARGS ${BOOT_EXTRA:-} \
         -kernel "$LINUX_IMAGE" -initrd "$1" \
-        -append "rdinit=/init console=ttyS0${3:+ $3}" >"$2" 2>&1 &
+        -append "rdinit=/init console=ttyS0${3:+ $3}${VSBENCH_LANES:+ VSBENCH_LANES=$VSBENCH_LANES}" >"$2" 2>&1 &
     local pid=$!
     for _ in $(seq 1 "${BOOT_WAIT:-$WAIT_SECS}"); do
         completion_lane "$2" linux && break
         grep -q "Attempted to kill init" "$2" 2>/dev/null && break
         sleep 1
     done
-    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    stop_qemu "$pid"
 }
 
 # An UNCOMPRESSED newc initramfs of one directory. Uncompressed on purpose: the
@@ -474,7 +537,7 @@ if [ -n "$L_LOG" ]; then
     ( cd "$REPO_ROOT/userspace/bench/vsbench" \
       && CARGO_TARGET_DIR="$BENCH_TARGET/vsbench-linux" \
          RUSTFLAGS="-C link-arg=-Tlinux.ld $LINUX_RUSTFLAGS" \
-         $CARGO +nightly build --release --no-default-features --features linux \
+         $CARGO +nightly build --release --no-default-features --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
       ) >/dev/null 2>&1 || die "could not build the Linux-side vsbench ELF"
 
     # The ELF alone, as /init: PID 1, and when it returns Linux panics by design.
@@ -693,13 +756,13 @@ if [ -n "$L_LOG" ]; then
 
     # ── Lanes that are NOT comparable, and why each one is listed ─────────
     #
-    # `switch-loaded`: measured 2026-09-11 with both kernels' own switch
-    # counters, AzOS switched on 500 of 500 yields and Linux on 0 of 500.
-    # Linux's `sched_yield` re-elects the running task when nothing else is
-    # runnable on its CPU, so the two sides are timing different events under
-    # one label. It stays in each side's own output — it is the only measure of
-    # what a switch costs this kernel under load, and its refusal guard caught
-    # a bad boot — but it must not sit in a column headed "azos / linux".
+    # `switch-loaded`: measured 2026-09-11 (`-smp 4`) with both kernels' own
+    # switch counters, AzOS switched on 500 of 500 yields and Linux on 0 of
+    # 500. At `-smp 1` (wave 15) Linux switches, but runs ~1 competitor yield
+    # per op where AzOS runs 4: one op is not the same work on the two
+    # kernels. `ctxsw-loaded` (same window, per context switch) is the lane
+    # that compares; this one stays in each side's own output, not in a
+    # column headed "azos / linux".
     #
     # `sleep-until0` and `ioring-tmr xN` (2026-09-27): AzOS completes a
     # deadline that has already passed inside the call; Linux arms an hrtimer

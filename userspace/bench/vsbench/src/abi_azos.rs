@@ -59,6 +59,17 @@ impl Abi for AzosAbi {
     fn write(&self, bytes: &[u8]) {
         sys::print(bytes);
     }
+
+    /// `/fat/VSBLANES.TXT`, which only a filtered run's disk carries.
+    fn lanes(&self) -> super::bench_core::Lanes {
+        let h = sys::file_open_typed(b"/fat/VSBLANES.TXT\0", 0);
+        if h < 0 { return super::bench_core::Lanes::all(); }
+        let mut buf = [0u8; super::bench_core::LANES_MAX];
+        let n = sys::file_read_typed(h as u32, &mut buf);
+        let _ = sys::close_typed(h as u32);
+        if n <= 0 { return super::bench_core::Lanes::all(); }
+        super::bench_core::Lanes::from_bytes(&buf[..n as usize])
+    }
 }
 
 impl Ipc for AzosAbi {
@@ -168,20 +179,6 @@ impl Proc for AzosAbi {
         match sys::brk(cur as u64 + delta) {
             r if r < 0 => Err(r as i64),
             r => Ok(r as u64),
-        }
-    }
-
-    fn spawn_yield_peer(&self, iters: u64) -> Result<(), i64> {
-        match sys::fork() {
-            0 => {
-                let first = self.current_cpu();
-                for _ in 0..iters { sys::yield_now(); }
-                // After the loop: by then the measurer's batch is long over.
-                super::report_hart(self, b"peer", first, self.current_cpu());
-                sys::exit(0)
-            }
-            tid if tid > 0 => Ok(()),
-            e => Err(e as i64),
         }
     }
 
@@ -302,6 +299,12 @@ impl Shell for AzosAbi {
         let _ = sys::close_typed(r as u32);
         let _ = sys::close_typed(w as u32);
     }
+
+    fn fd_read(&self, fd: u64, buf: &mut [u8]) -> isize { sys::read(fd, buf) }
+
+    fn fd_write(&self, fd: u64, buf: &[u8]) -> isize { sys::write(fd, buf) }
+
+    fn fd_close(&self, fd: u64) { let _ = sys::close_typed(fd as u32); }
 
     fn file_open_read_close(&self, buf: &mut [u8]) -> Result<(), i64> {
         let h = sys::file_open_typed(b"/fat/VSBENCH.ELF\0", 0);
@@ -480,6 +483,12 @@ impl Net for AzosAbi {
         None
     }
 
+    fn net_stop_echo(&self) {
+        let (fd, ok) = unsafe { *NET.0.get() };
+        if !ok { return; }
+        let _ = sys::send(fd as u64, &[super::bench_core::NET_STOP; NET_PAYLOAD], 0);
+    }
+
     fn egress_setup(&self) -> Result<(), i64> {
         if sys::net_getip() <= 0 { return Err(-1); }
         let fd = sys::socket(2, 2, 0);          // AF_INET, SOCK_DGRAM
@@ -505,6 +514,7 @@ impl Net for AzosAbi {
         let mut served = 0u64;
         while served < n {
             let got = sys::recv(fd as u64, &mut buf, 0);
+            if got > 0 && buf[0] == super::bench_core::NET_STOP { return; }
             if got > 0 {
                 let _ = sys::send(fd as u64, &buf[..got as usize], 0);
                 served += 1;

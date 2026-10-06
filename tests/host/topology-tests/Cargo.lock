@@ -43,6 +43,7 @@ dependencies = [
  "azos_crypto",
  "azos_limits",
  "azos_topology",
+ "ed25519-dalek",
  "topology_seed_test_drivers",
  "topology_seed_test_sched",
  "topology_seed_test_sync",

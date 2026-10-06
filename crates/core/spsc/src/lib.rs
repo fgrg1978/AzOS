@@ -312,3 +312,6 @@ impl<const W: usize> SpscSlots<W> {
 
 mod bytes;
 pub use bytes::*;
+
+/// Wave 15 (TRACE): the kernel tracer's per-CPU record rings.
+pub mod trace;

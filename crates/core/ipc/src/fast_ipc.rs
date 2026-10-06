@@ -94,6 +94,19 @@ fn in_isr_now() -> bool { false }
 // `target_os = "none"`, so the host substitutes below are unreachable from any
 // build that can run on a board.
 
+// Wave 15 (TRACE): the ipc class's tracepoints, behind the same switch: the
+// host build of this file has no tracer (and no `.config` to read one from).
+#[cfg(target_os = "none")]
+use azos_trace as trace_seam;
+#[cfg(not(target_os = "none"))]
+mod trace_seam {
+    pub fn ipc_on() -> bool { false }
+    pub fn ipc_call(_caller: u32, _server: u32, _label: u32) {}
+    pub mod raw {
+        pub fn ipc_reply(_server: u32, _caller: u32, _status: u32) {}
+    }
+}
+
 #[cfg(target_os = "none")]
 mod sched_seam {
     /// Whether `tid` names a live task, and its task slot — so the fast-IPC
@@ -487,10 +500,34 @@ impl FastIpcState {
         Some((handle, caller, words, moved_cap))
     }
 
-    /// Body of [`fast_ipc_reply`], under a lock the caller holds. The check
-    /// order (state, ownership, generation last) is `FastIpcReply`'s.
+    /// Body of [`fast_ipc_reply`], under a lock the caller holds, and the
+    /// ipc class's reply record (wave 15; no instruction when compiled out):
+    /// `[replier, caller (0 unless delivered), status 0 delivered / 1 stale
+    /// / 2 refused]`.
     #[inline(always)]
     fn reply_locked(
+        &mut self,
+        handle: u64,
+        replier_tid: u32,
+        privileged: bool,
+        words: [u64; FAST_IPC_MAX_WORDS],
+    ) -> FastIpcReply {
+        let r = self.reply_locked_body(handle, replier_tid, privileged, words);
+        if trace_seam::ipc_on() {
+            let (caller, status) = match r {
+                FastIpcReply::Woke { caller_tid, .. } => (caller_tid, 0),
+                FastIpcReply::Stale => (0, 1),
+                FastIpcReply::Refused => (0, 2),
+            };
+            trace_seam::raw::ipc_reply(replier_tid, caller, status);
+        }
+        r
+    }
+
+    /// The checks and the deposit of [`Self::reply_locked`]. The check order
+    /// (state, ownership, generation last) is `FastIpcReply`'s.
+    #[inline(always)]
+    fn reply_locked_body(
         &mut self,
         handle: u64,
         replier_tid: u32,
@@ -704,6 +741,8 @@ pub fn fast_ipc_call_donating(
     moved_cap: u32,
     donate: bool,
 ) -> Option<u64> {
+    // Wave 15 (TRACE): the ipc class's call record, `[caller, server, word 0]`.
+    trace_seam::ipc_call(caller_tid, server_tid, words[0] as u32);
     // Self-call is an immediate self-deadlock: the caller blocks waiting for a
     // reply only it could send, and the slot is leaked until it is killed.
     // O(1) to reject, so reject.

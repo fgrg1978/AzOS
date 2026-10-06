@@ -112,6 +112,256 @@ config PMP_REGIONS_RESERVED
       Current codebase: 6 total in use, but 4 is the design budget
       (crates/core/arch-riscv64/src/pmp.rs N_PMP_REGIONS = 6 current impl).
 
+# ---------------------------------------------------------------------------
+# Signed capability topology (RFC-0005, wave 15 TOPOSIGN)
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Capability topology source"
+    default TOPOLOGY_SOURCE_SIGNED_REQUIRED if !BOARD_QEMU
+    default TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+    help
+      Where the boot takes the capability topology from: the rows every
+      ring-3 task's capabilities, scheduler class, priority and memory
+      budget come from. The signed form is /fat/CAPS.TOM + /fat/CAPS.SIG
+      (a bare Ed25519 signature under the embedded topology key, the key
+      CONFIG.SIG uses) and /fat/SCHED.TOM, which CAPS.TOM binds by its
+      SHA-256 (`sched_sha256`), together with this device's id and a
+      counter (TOPOLOGY_BIND_DEVICE, TOPOLOGY_COUNTER_FLOOR). The built-in
+      form is crates/core/topology/src/builder.rs, compiled into the image.
+      `make topo-volume TOPO_IMAGE=<img>` writes the built-in topology of a
+      given .config and feature set onto an image, bound to that image's
+      device (tests/host/topology-tests topo_emit).
+
+      CAPS.SIG is verified before any byte is parsed, and SCHED.TOM's hash
+      before SCHED.TOM is parsed; the parsed topology then passes the same
+      admission as the built-in one (admission_check, deadline_admission on
+      the real CPU count, the RT_BAND_CAP_PCT band, memory) BEFORE it is
+      published, so a refused file never becomes the topology.
+
+      Defaults (owner decision, 2026-10-05): "signed required" on every
+      product board (BOARD_VF2, BOARD_K1, BOARD_GENERIC: the vf2, k1,
+      embedded and fleet profiles), because under signed-or-built-in
+      deleting the files from the (USB-exposed) volume boots the built-in
+      topology, which may grant more than the deployment's signed one.
+      Every product make target builds the volume that carries them,
+      signed with the board key: `make vf2` -> build/disk-board.img,
+      `make k1` -> build/disk-board-k1.img, `make build-fleet` ->
+      build/disk-board-fleet.img; without TOPOLOGY_PRIVKEY_PATH they
+      refuse. "Signed if present" on BOARD_QEMU (development and the gate),
+      where one disk is booted by kernels with different built-in
+      topologies.
+
+      Cost, instructions at the topology install (QEMU virt, -icount
+      shift=0, -smp 1, the gate's 19-row topology, 2026-10-05),
+      riscv64 / aarch64:
+        built-in only (BUILTIN)                        17,800 / 16,376
+        no files on the volume (fallback + record)    126,400 / 116,141
+        signed set installed (one signature)        1,797,300 / 1,271,881
+      The one Ed25519 verification is about 1.35 M of it on riscv64
+      (measured with the verification skipped: 443,400); reads, the
+      SCHED.TOM hash, the binding, the floor sector, the parse and the
+      admission of the candidate are the rest. A first boot of a new
+      counter adds the floor write. RAM: the two buffers (see
+      TOPOLOGY_CAPS_MAX_KB), under every choice. The cost is printed on the
+      "[TOPO] Topology installed: ... in N ticks" line of every boot.
+
+    config TOPOLOGY_SOURCE_BUILTIN
+        bool "Built-in only (never read the volume)"
+        help
+          The topology compiled into the image, as before wave 15. The
+          files are not opened: no boot cost, no RAM for the buffers
+          (they are still reserved), and no record.
+
+    config TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+        bool "Signed if present and valid, else built-in"
+        help
+          The signed topology when all four files are on the volume and
+          it verifies, parses and is admitted. With none of the four
+          files, the built-in topology, a "[TOPO] WARNING" line and a
+          SAFETY_TOPO_SOURCE flight-recorder record (action 1, fallback
+          missing). A set that is present but refused (partial, too
+          large, bad signature, does not parse, not admitted) is a
+          security event: see TOPOLOGY_INVALID.
+
+    config TOPOLOGY_SOURCE_SIGNED_REQUIRED
+        bool "Signed required (halt without it)"
+        help
+          The signed topology or no boot. Missing or refused files write
+          a durable SAFETY_TOPO_SOURCE record (action 3 missing, 4
+          invalid) and halt the boot hart before any ring-3 task or
+          kernel task the topology admits is created. Choose it only
+          when every volume this image boots from carries the signed
+          files.
+
+endchoice
+
+choice
+    prompt "A signed topology that is present but invalid"
+    depends on TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+    default TOPOLOGY_INVALID_FALLBACK
+    help
+      Under "signed if present and valid": what a set that IS on the
+      volume but is refused does. Either way the boot prints a "[TOPO]
+      REFUSED" line with the reason and writes a durable
+      SAFETY_TOPO_SOURCE record whose detail says which file and step.
+
+      Default fallback: whoever can tamper with the files can also delete
+      them, and deletion already boots the built-in topology under this
+      source policy, so halting on a tampered file would add a denial of
+      service without closing anything. Halt is for a deployment that
+      wants a corrupted or tampered volume to stop the machine where it
+      can be inspected (with deletion still falling back; for "never
+      boot without the signed topology" choose "signed required").
+
+    config TOPOLOGY_INVALID_FALLBACK
+        bool "Fall back to the built-in topology"
+        help
+          Install the built-in topology after the REFUSED line and the
+          record (action 2, fallback invalid).
+
+    config TOPOLOGY_INVALID_HALT
+        bool "Halt"
+        help
+          Record (action 4, halt invalid) and halt the boot hart.
+
+endchoice
+
+config TOPOLOGY_BIND_DEVICE
+    bool "The signed topology must name this device"
+    depends on !TOPOLOGY_SOURCE_BUILTIN
+    default y
+    help
+      CAPS.TOM (format 4) must carry `device = "<32 hex>"` equal to this
+      device's id: the device record in reserved tail sector 2
+      (tools/device_provision.py), the id CONFIG.SIG v2 is bound to. A file
+      signed for another device is refused (SAFETY_TOPO_SOURCE detail step
+      8), a file with no `device` key too (step 10), and so is any file on a
+      device with no record (step 11). With n, `device` is optional, and
+      still checked when present.
+
+      Default y for every profile: `make` writes the image's own id into the
+      files it signs (QEMU images and board volumes alike). Cost: a 16-byte
+      compare and one sector read at boot (the record is already read for
+      CONFIG.INI; it is read again here), either ISA.
+
+config TOPOLOGY_COUNTER_FLOOR
+    bool "Refuse a signed topology older than the last one accepted"
+    depends on !TOPOLOGY_SOURCE_BUILTIN
+    default y
+    help
+      CAPS.TOM (format 4) must carry `counter = N` (N >= 1), and N must be at
+      least the floor this device keeps in reserved tail sector
+      TOPOLOGY_FLOOR_SECTOR. Accepting a file with a higher counter raises
+      the floor (one sector write and a flush, once per new counter). An
+      older, validly signed CAPS.TOM put back on the volume is refused as a
+      replay (SAFETY_TOPO_SOURCE detail step 9, low bits the counter). The
+      CONFIG.SIG v2 semantics: the floor only moves up, and a missing or
+      invalid floor record reads as 0.
+
+      What it does not stop: whoever can rewrite the reserved tail (a card
+      reader, not the USB export) can reset the floor (RFC-0054 §6.3).
+
+      Default y for every profile. Cost: one sector read per boot, either
+      ISA.
+
+config TOPOLOGY_FLOOR_SECTOR
+    int "Reserved tail sector of the topology counter floor"
+    range 3 7
+    default 3
+    help
+      Index in the reserved tail past the FAT32 volume
+      (kernel/src/msc_gadget.rs, 8 sectors) of the "KTPF" floor record
+      (crates/core/topology/src/device_record.rs). 0 is the link key, 1 the
+      entropy seed, 2 the device record; 3..7 are free. Change it only to
+      move it off a sector another feature of your build claims, and give
+      tools/device_provision.py --topo-sector the same value.
+
+config TOPOLOGY_CAPS_MAX_KB
+    int "Largest CAPS.TOM the boot reads (KiB)"
+    range 1 4096
+    default 8   if PROFILE_EMBEDDED
+    default 16  if PROFILE_EDGE
+    default 256 if PROFILE_FLEET
+    help
+      The buffer CAPS.TOM is read into (kernel/src/boot/topology.rs). It
+      stays allocated for the life of the kernel: every task name, class
+      name and grant target of the installed topology borrows from it. A
+      larger file is refused unread (SignedRefusal::TooLarge).
+
+      Cost: this many KiB of .bss on riscv64 and aarch64 alike, whether or
+      not the volume carries the file (also under TOPOLOGY_SOURCE_BUILTIN).
+      Size it from your file: the QEMU gate's topology (19 rows, 53
+      grants, its test rows included) is 4.6 KB; a row is about 100 bytes
+      plus 50 per grant. Fleet's 256 KiB leaves room for about 2,000 rows.
+
+config TOPOLOGY_SCHED_MAX_KB
+    int "Largest SCHED.TOM the boot reads (KiB)"
+    range 1 1024
+    default 2  if PROFILE_EMBEDDED
+    default 4  if PROFILE_EDGE
+    default 16 if PROFILE_FLEET
+    help
+      The buffer SCHED.TOM is read into; kept for the kernel's life (the
+      class names borrow from it). A larger file is refused unread.
+
+      Cost: this many KiB of .bss, either ISA. The QEMU gate's SCHED.TOM
+      (5 classes) is under 1 KB; a class is about 190 bytes.
+
+config TOPOLOGY_MAX_CLASSES
+    int "Scheduler classes a topology may declare"
+    range 1 255
+    default 8
+    help
+      Size of the class table of the topology
+      (crates/core/topology/src/types.rs, MAX_CLASSES). A SCHED.TOM with
+      more classes is refused by the parser. The class count is kept in a
+      u8, hence the range.
+
+      Cost: 32 B of RAM per class (the topology slot, .data) and 132 B of
+      stack per class in deadline admission (a u32 per class for each of
+      its 32 admission CPUs, plus the budget), either ISA. The built-in
+      topology declares 5.
+
+config TOPOLOGY_MAX_PIPELINES
+    int "[pipeline.NAME] sections a topology may declare"
+    range 1 255
+    default 8
+    help
+      Size of the pipeline table (MAX_PIPELINES): each declared pipeline
+      adds its dma_kb to the boot DMA pool (DMA_POOL_FLOOR_KB). More are
+      refused. Kept in a u8.
+
+      Cost: 24 B of RAM per entry, either ISA.
+
+config TOPOLOGY_NAME_MAX
+    int "Longest task, class or pipeline name in a topology (bytes)"
+    range 8 255
+    default 32
+    help
+      MAX_TASK_NAME_LEN: the longest section name ([task.NAME],
+      [class.NAME], [pipeline.NAME]), class reference and enum word the
+      parser accepts; longer is refused (NameTooLong). Names borrow from
+      the file buffer, so this costs no RAM; it bounds the parser's scans.
+
+config TOPOLOGY_TARGET_MAX
+    int "Longest grant target in a topology (bytes)"
+    range 16 255
+    default 64
+    help
+      MAX_TARGET_LEN: the longest `target = "..."` of a grant (a channel
+      path, an image name, "disk.part.1"); longer is refused. No RAM cost
+      (targets borrow from the file buffer).
+
+config TOPOLOGY_INLINE_FIELDS_MAX
+    int "Fields in one grant's inline table"
+    range 4 32
+    default 8
+    help
+      MAX_INLINE_FIELDS: how many `key = value` pairs one `{ ... }` grant
+      may hold (kind, target, perm, transfer are the four in use). More
+      are refused. Cost: 32 B of parser stack per field, either ISA.
+
 # MITIGATION_SPECTRE_V1_INDEX, ML_DATA_SIG_REQUIRED and CONSOLE_LOCKDOWN moved
 # to the Mitigations menu (config/Kconfig.mitigations), wave 11.
 

@@ -805,7 +805,8 @@ mod restart_tests {
                 "{:?}", core::str::from_utf8(bad));
         }
         // Formats this parser does not know, and a second declaration.
-        for bad in [&b"format = 4\n[task.A.ELF]\n"[..], b"format = 0\n[task.A.ELF]\n",
+        // (4 became known in wave 15: the TOPOSIGN binding keys.)
+        for bad in [&b"format = 5\n[task.A.ELF]\n"[..], b"format = 0\n[task.A.ELF]\n",
                     b"format = 2\nformat = 2\n[task.A.ELF]\n"] {
             let mut topo = Topology::empty();
             assert_eq!(parse_caps(bad, &mut topo), Err(ParseError::UnsupportedFormat),
@@ -1238,12 +1239,12 @@ mod builder_tests {
         // `TASK_GPIODRV_IMAGE` block comment.
         // +3 in wave 9: the ring-3 ML service (MLSRV.ELF) and the ring-3
         // driver rows (BUZZDRV.ELF/INADRV.ELF).
-        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 18 } else { 16 }
+        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 19 } else { 17 }
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
             + cfg!(feature = "lx-server") as usize
             + azos_topology::builder::LXHELLO_ROW as usize
-            + azos_topology::builder::BUSYBOX_ROW as usize); // +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER (RFC-0055); +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF (RFC-0053 L0); +1 for the wave-12 Linux test row (gate only)
+            + azos_topology::builder::BUSYBOX_ROW as usize); // +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER (RFC-0055); +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF (RFC-0053 L0); +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
         let supervisor = t
             .find_task(&MaybeStr::from_bytes(b"supervisor"))
             .expect("supervisor present");
@@ -1604,12 +1605,12 @@ mod state_tests {
         // `TASK_GPIODRV_IMAGE` block comment.
         // +3 in wave 9: the ring-3 ML service (MLSRV.ELF) and the ring-3
         // driver rows (BUZZDRV.ELF/INADRV.ELF).
-        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 18 } else { 16 }
+        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 19 } else { 17 }
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
             + cfg!(feature = "lx-server") as usize
             + azos_topology::builder::LXHELLO_ROW as usize
-            + azos_topology::builder::BUSYBOX_ROW as usize); // +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER (RFC-0055); +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF (RFC-0053 L0); +1 for the wave-12 Linux test row (gate only)
+            + azos_topology::builder::BUSYBOX_ROW as usize); // +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER (RFC-0055); +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF (RFC-0053 L0); +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
 
         // A second init must fail with AlreadyInit, by either path, and
         // `init_with` must not run its fill on a slot it does not hold.
@@ -1634,12 +1635,12 @@ mod state_tests {
         // `TASK_GPIODRV_IMAGE` block comment.
         // +3 in wave 9: the ring-3 ML service (MLSRV.ELF) and the ring-3
         // driver rows (BUZZDRV.ELF/INADRV.ELF).
-        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 18 } else { 16 }
+        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 19 } else { 17 }
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
             + cfg!(feature = "lx-server") as usize
             + azos_topology::builder::LXHELLO_ROW as usize
-            + azos_topology::builder::BUSYBOX_ROW as usize); // +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER (RFC-0055); +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF (RFC-0053 L0); +1 for the wave-12 Linux test row (gate only)
+            + azos_topology::builder::BUSYBOX_ROW as usize); // +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER (RFC-0055); +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF (RFC-0053 L0); +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
     }
 
     /// The kernel installs `fill_default_minimal` in place
@@ -3541,5 +3542,280 @@ mod launch_cap_tests {
                     && c.target == MaybeStr::from_bytes(b"LXSRV.ELF")),
                     "{} may launch the Linux server", t.name.as_str());
         }
+    }
+}
+
+// ── Wave 15 TOPOSIGN: the built-in topology as signed files ─────────────────
+//
+// The emitter (`azos_topology::emit`) writes the topology `builder.rs` builds
+// for THIS crate's feature set; the parser must read back the same topology,
+// field by field. The gate runs this crate with the board feature set (none)
+// and the QEMU one (`cap-refusal-canary,profile-actuation,...`), so both
+// shapes round-trip. `topo_emit` runs the same check on every file it writes.
+//
+// One signature (CAPS.SIG) covers both files: CAPS.TOM (format 4) binds the
+// SHA-256 of SCHED.TOM, the device id and a counter (`check_binding`).
+//
+// Canaries (host bucket), each must fail the named test:
+//   --features azos_topology/topo-verify-skip-canary  tampered_caps_is_refused_by_its_signature
+//   --features azos_topology/topo-sched-hash-canary   a_swapped_sched_tom_is_refused
+//   --features azos_topology/topo-device-canary       another_devices_file_is_refused
+//   --features azos_topology/topo-replay-canary       an_older_counter_is_a_replay
+#[cfg(test)]
+mod signed_topology_tests {
+    use azos_abi::cap::CapKind;
+    use azos_topology::device_record::{topo_floor_decode, topo_floor_encode};
+    use azos_topology::emit::{emit_caps, emit_sched, first_difference, EMIT_FORMAT};
+    use azos_topology::parser::cap_kind_word;
+    use azos_topology::signed::{
+        decide, load_signed, Candidate, DeviceContext, SignedFile, SignedFiles, SignedRefusal,
+        SourceAction, SourcePolicy, UNBOUND_COUNTER, UNBOUND_DEVICE, UNBOUND_SCHED,
+    };
+    use azos_topology::{parse_binding, parse_caps, parse_sched, Binding, ParseError, Topology, VerifyError};
+    use ed25519_dalek::{Signer, SigningKey};
+
+    const DEV: [u8; 16] = [0xd0; 16];
+    const OTHER: [u8; 16] = [0x0e; 16];
+
+    fn builtin() -> Box<Topology<'static>> {
+        let mut t = Box::new(Topology::empty());
+        azos_topology::fill_default_minimal(&mut t);
+        t
+    }
+
+    /// The built-in topology as (CAPS.TOM, SCHED.TOM), bound to `device` and
+    /// `counter` and to its own SCHED.TOM.
+    fn emitted_bound(t: &Topology<'_>, device: Option<[u8; 16]>, counter: Option<u64>) -> (String, String) {
+        let mut sched = String::new();
+        emit_sched(t, &mut sched).expect("emit SCHED.TOM");
+        let b = Binding {
+            format: EMIT_FORMAT,
+            device,
+            counter,
+            sched_sha256: Some(azos_crypto::sha256::sha256(sched.as_bytes())),
+        };
+        let mut caps = String::new();
+        emit_caps(t, &b, &mut caps).expect("emit CAPS.TOM");
+        (caps, sched)
+    }
+
+    fn emitted(t: &Topology<'_>) -> (String, String) {
+        emitted_bound(t, Some(DEV), Some(1))
+    }
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[0x5a; 32])
+    }
+
+    fn ctx(floor: u64) -> DeviceContext {
+        DeviceContext { device_id: Some(DEV), floor, bind_device: true, enforce_floor: true }
+    }
+
+    fn load(caps: &str, sched: &str, c: &DeviceContext) -> Result<Option<u64>, SignedRefusal> {
+        let sig = key().sign(caps.as_bytes()).to_bytes();
+        let files = SignedFiles { caps: caps.as_bytes(), caps_sig: &sig, sched: sched.as_bytes() };
+        let mut t = Box::new(Topology::empty());
+        load_signed(&mut t, &files, key().verifying_key().as_bytes(), c)
+    }
+
+    #[test]
+    fn builtin_topology_round_trips_through_its_emitted_text() {
+        let built = builtin();
+        let (caps, sched) = emitted(&built);
+        let mut parsed = Box::new(Topology::empty());
+        parse_sched(sched.as_bytes(), &mut parsed).expect("SCHED.TOM parses back");
+        parse_caps(caps.as_bytes(), &mut parsed).expect("CAPS.TOM parses back");
+        parsed.admission_check().expect("the parsed topology is admitted");
+        assert_eq!(first_difference(&built, &parsed), None);
+        let b = parse_binding(caps.as_bytes()).unwrap();
+        assert_eq!((b.format, b.device, b.counter), (4, Some(DEV), Some(1)));
+        assert_eq!(b.sched_sha256, Some(azos_crypto::sha256::sha256(sched.as_bytes())));
+    }
+
+    /// The comparison itself discriminates: one changed field is found.
+    #[test]
+    fn first_difference_sees_a_changed_priority() {
+        let built = builtin();
+        let (caps, sched) = emitted(&built);
+        let caps = caps.replacen("priority = 0", "priority = 1", 1);
+        let mut parsed = Box::new(Topology::empty());
+        parse_sched(sched.as_bytes(), &mut parsed).unwrap();
+        parse_caps(caps.as_bytes(), &mut parsed).unwrap();
+        assert_eq!(first_difference(&built, &parsed), Some("task priority"));
+    }
+
+    /// Every kind the emitter names is the kind the parser reads for it.
+    #[test]
+    fn every_cap_kind_word_parses_back_to_its_kind() {
+        let sched = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+        let mut named = 0;
+        for raw in 0u8..64 {
+            let Some(kind) = CapKind::from_raw(raw) else { continue };
+            let Some(word) = cap_kind_word(kind) else { continue };
+            let text = format!("[task.x]\ncaps = [\n    {{ kind = \"{word}\", target = \"t\", perm = \"r\" }},\n]\n");
+            let mut t = Box::new(Topology::empty());
+            parse_sched(sched, &mut t).unwrap();
+            parse_caps(text.as_bytes(), &mut t).unwrap_or_else(|e| panic!("{word}: {e:?}"));
+            assert_eq!(t.caps_of(&t.tasks()[0])[0].kind, kind, "{word}");
+            named += 1;
+        }
+        assert!(named >= 20, "only {named} kinds have a word");
+    }
+
+    #[test]
+    fn signed_bound_pair_loads_and_equals_the_builtin_topology() {
+        let built = builtin();
+        let (caps, sched) = emitted_bound(&built, Some(DEV), Some(3));
+        let sig = key().sign(caps.as_bytes()).to_bytes();
+        let files = SignedFiles { caps: caps.as_bytes(), caps_sig: &sig, sched: sched.as_bytes() };
+        let mut t = Box::new(Topology::empty());
+        assert_eq!(load_signed(&mut t, &files, key().verifying_key().as_bytes(), &ctx(3)), Ok(Some(3)));
+        assert_eq!(first_difference(&built, &t), None);
+    }
+
+    /// A one-digit change that still parses and is still admitted: only the
+    /// signature can refuse it (the gate's tampered row uses the same edit).
+    #[test]
+    fn tampered_caps_is_refused_by_its_signature() {
+        let (caps, sched) = emitted(&builtin());
+        let sig = key().sign(caps.as_bytes()).to_bytes();
+        let tampered = caps.replacen("priority = 16", "priority = 17", 1);
+        assert_ne!(tampered, caps, "the built-in topology has a priority-16 row to tamper with");
+        let mut probe = Box::new(Topology::empty());
+        parse_sched(sched.as_bytes(), &mut probe).unwrap();
+        parse_caps(tampered.as_bytes(), &mut probe).expect("the tampered file still parses");
+        probe.admission_check().expect("and is still admitted");
+        let files = SignedFiles { caps: tampered.as_bytes(), caps_sig: &sig, sched: sched.as_bytes() };
+        let mut t = Box::new(Topology::empty());
+        assert_eq!(
+            load_signed(&mut t, &files, key().verifying_key().as_bytes(), &ctx(0)),
+            Err(SignedRefusal::Signature(SignedFile::Caps, VerifyError::InvalidSignature)),
+        );
+    }
+
+    #[test]
+    fn wrong_key_or_short_sidecar_is_refused() {
+        let (caps, sched) = emitted(&builtin());
+        let sig = key().sign(caps.as_bytes()).to_bytes();
+        let other = SigningKey::from_bytes(&[0x11; 32]);
+        let files = SignedFiles { caps: caps.as_bytes(), caps_sig: &sig, sched: sched.as_bytes() };
+        let mut t = Box::new(Topology::empty());
+        assert_eq!(
+            load_signed(&mut t, &files, other.verifying_key().as_bytes(), &ctx(0)),
+            Err(SignedRefusal::Signature(SignedFile::Caps, VerifyError::InvalidSignature)),
+        );
+        let short = SignedFiles { caps_sig: &sig[..63], ..files };
+        let mut t = Box::new(Topology::empty());
+        assert_eq!(
+            load_signed(&mut t, &short, key().verifying_key().as_bytes(), &ctx(0)),
+            Err(SignedRefusal::Signature(SignedFile::Caps, VerifyError::BadSignatureLen)),
+        );
+    }
+
+    /// SCHED.TOM is authenticated by the hash in the signed CAPS.TOM: a
+    /// different, well-formed SCHED.TOM is refused before it is parsed.
+    #[test]
+    fn a_swapped_sched_tom_is_refused() {
+        let (caps, sched) = emitted(&builtin());
+        let swapped = sched.replacen("time_slice_ms = ", "time_slice_ms = 1", 1);
+        assert_ne!(swapped, sched);
+        assert_eq!(load(&caps, &swapped, &ctx(0)), Err(SignedRefusal::SchedHashMismatch));
+        assert_eq!(load(&caps, "[class.x\n", &ctx(0)), Err(SignedRefusal::SchedHashMismatch));
+    }
+
+    #[test]
+    fn another_devices_file_is_refused() {
+        let (caps, sched) = emitted_bound(&builtin(), Some(OTHER), Some(1));
+        assert_eq!(load(&caps, &sched, &ctx(0)), Err(SignedRefusal::WrongDevice));
+        // Checked when present even if the policy does not require it.
+        let lax = DeviceContext { bind_device: false, ..ctx(0) };
+        assert_eq!(load(&caps, &sched, &lax), Err(SignedRefusal::WrongDevice));
+    }
+
+    #[test]
+    fn an_older_counter_is_a_replay() {
+        let (caps, sched) = emitted_bound(&builtin(), Some(DEV), Some(1));
+        assert_eq!(load(&caps, &sched, &ctx(2)), Err(SignedRefusal::Replay { counter: 1, floor: 2 }));
+        assert_eq!(load(&caps, &sched, &ctx(1)), Ok(Some(1)), "a counter equal to the floor loads");
+    }
+
+    #[test]
+    fn missing_binding_keys_are_refused_by_policy() {
+        let built = builtin();
+        let (caps, sched) = emitted_bound(&built, None, None);
+        assert_eq!(
+            load(&caps, &sched, &ctx(0)),
+            Err(SignedRefusal::Unbound { missing: UNBOUND_DEVICE | UNBOUND_COUNTER }),
+        );
+        let lax = DeviceContext { bind_device: false, enforce_floor: false, ..ctx(0) };
+        assert_eq!(load(&caps, &sched, &lax), Ok(None));
+        // No sched_sha256: never acceptable, SCHED.TOM would be unauthenticated.
+        let no_hash: String = caps.lines().filter(|l| !l.starts_with("sched_sha256")).map(|l| format!("{l}\n")).collect();
+        assert_eq!(load(&no_hash, &sched, &lax), Err(SignedRefusal::Unbound { missing: UNBOUND_SCHED }));
+        // A bound file on a device with no record.
+        let (caps, sched) = emitted(&built);
+        let unprov = DeviceContext { device_id: None, ..ctx(0) };
+        assert_eq!(load(&caps, &sched, &unprov), Err(SignedRefusal::Unprovisioned));
+    }
+
+    #[test]
+    fn binding_keys_need_format_4_once_and_well_formed() {
+        let h = "0".repeat(64);
+        assert_eq!(parse_binding(b"format = 3\ncounter = 2\n"), Err(ParseError::FieldNeedsFormat));
+        assert_eq!(parse_binding(b"format = 4\ncounter = 2\ncounter = 3\n"), Err(ParseError::BadValue));
+        assert_eq!(parse_binding(b"format = 4\ncounter = 0\n"), Err(ParseError::BadValue));
+        assert_eq!(parse_binding(b"format = 4\ndevice = \"abcd\"\n"), Err(ParseError::BadValue));
+        let ok = format!("format = 4\ncounter = 7\nsched_sha256 = \"{h}\"\n[task.a]\ncounter = 9\n");
+        let b = parse_binding(ok.as_bytes()).unwrap();
+        assert_eq!((b.counter, b.sched_sha256, b.device), (Some(7), Some([0u8; 32]), None));
+        // A repeated key fails the full parse too, not only the binding read.
+        let mut t = Box::new(Topology::empty());
+        assert_eq!(parse_caps(b"format = 4\ncounter = 2\ncounter = 3\n", &mut t), Err(ParseError::BadValue));
+    }
+
+    #[test]
+    fn the_topology_floor_record_round_trips() {
+        let mut sector = [0u8; 512];
+        assert_eq!(topo_floor_decode(&sector), None, "a fresh sector is no record (floor 0)");
+        let rec = topo_floor_encode(5);
+        sector[..rec.len()].copy_from_slice(&rec);
+        assert_eq!(topo_floor_decode(&sector), Some(5));
+        sector[6] ^= 1;
+        assert_eq!(topo_floor_decode(&sector), None, "a torn record is no record");
+    }
+
+    #[test]
+    fn the_source_policy_table() {
+        let bad = SignedRefusal::Signature(SignedFile::Caps, VerifyError::InvalidSignature);
+        let fb = SourcePolicy::SignedOrBuiltin { invalid_halts: false };
+        let hb = SourcePolicy::SignedOrBuiltin { invalid_halts: true };
+        let rq = SourcePolicy::SignedRequired;
+        let b = SourcePolicy::Builtin;
+        for c in [Candidate::Absent, Candidate::Valid, Candidate::Refused(bad)] {
+            assert_eq!(decide(b, c), SourceAction::Builtin);
+        }
+        assert_eq!(decide(fb, Candidate::Valid), SourceAction::Signed);
+        assert_eq!(decide(fb, Candidate::Absent), SourceAction::FallbackMissing);
+        assert_eq!(decide(fb, Candidate::Refused(bad)), SourceAction::FallbackInvalid(bad));
+        assert_eq!(decide(hb, Candidate::Valid), SourceAction::Signed);
+        assert_eq!(decide(hb, Candidate::Absent), SourceAction::FallbackMissing);
+        assert_eq!(decide(hb, Candidate::Refused(bad)), SourceAction::HaltInvalid(bad));
+        assert_eq!(decide(rq, Candidate::Valid), SourceAction::Signed);
+        assert_eq!(decide(rq, Candidate::Absent), SourceAction::HaltMissing);
+        assert_eq!(decide(rq, Candidate::Refused(bad)), SourceAction::HaltInvalid(bad));
+    }
+
+    #[test]
+    fn refusal_codes_name_the_step_and_the_file() {
+        assert_eq!(SignedRefusal::Incomplete { present: 0b101 }.code(), 0x1000_0005);
+        assert_eq!(SignedRefusal::TooLarge(SignedFile::Sched).code(), 0x2200_0000);
+        assert_eq!(SignedRefusal::Signature(SignedFile::Caps, VerifyError::InvalidSignature).code(), 0x3100_0000);
+        assert_eq!(SignedRefusal::HugeLeaves.code(), 0x6000_0000);
+        assert_eq!(SignedRefusal::SchedHashMismatch.code(), 0x7200_0000);
+        assert_eq!(SignedRefusal::WrongDevice.code(), 0x8100_0000);
+        assert_eq!(SignedRefusal::Replay { counter: 1, floor: 2 }.code(), 0x9100_0001);
+        assert_eq!(SignedRefusal::Replay { counter: u64::MAX, floor: 2 }.code(), 0x91FF_FFFF);
+        assert_eq!(SignedRefusal::Unbound { missing: UNBOUND_DEVICE }.code(), 0xA100_0001);
+        assert_eq!(SignedRefusal::Unprovisioned.code(), 0xB000_0000);
     }
 }

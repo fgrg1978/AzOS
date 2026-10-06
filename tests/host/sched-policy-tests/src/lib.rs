@@ -1405,7 +1405,8 @@ mod rt_wiring {
     fn the_dispatch_tail_charges_after_the_last_comparator_write() {
         let c = code();
         let ds = body(&c, "unsafe fn do_schedule(");
-        let tail = ds.rfind("rt::on_switch(cpu, next_idx)").expect("on_switch missing");
+        // Wave 15: do_schedule passes the priority it already loaded.
+        let tail = ds.rfind("rt::on_switch_prio(cpu, next_idx").expect("on_switch missing");
         let last_tickless = ds.rfind("set_next_tick_tickless(").unwrap();
         let switch = ds.rfind("context_switch(old_ptr").unwrap();
         assert!(last_tickless < tail && tail < switch,

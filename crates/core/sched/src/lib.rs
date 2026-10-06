@@ -31,6 +31,7 @@ pub mod ready_ring;
 pub mod rt_core;
 pub mod timer_heap;
 pub mod scheduler;
+pub mod swcensus;
 pub mod smp;
 pub mod wait;
 pub mod seccomp;

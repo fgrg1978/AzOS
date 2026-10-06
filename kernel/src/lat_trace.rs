@@ -151,3 +151,10 @@ pub fn print_summary(tag: &str, top: usize) {
         }
     }
 }
+
+/// Wave 15 (TRACE): the `lat` class's source. Installed as `lat`'s
+/// new-maximum hook at boot; each new longest window on a CPU becomes one
+/// trace record (nothing unless Kconfig `KTRACE_CLASS_LAT` and its mask bit).
+pub fn trace_new_max(kind: Kind, _hart: usize, len: u64, open_site: usize, close_site: usize) {
+    azos_trace::lat_window(kind == Kind::Preempt, len, open_site, close_site);
+}

@@ -670,10 +670,6 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
     // (RFC-0041 §A); `vdso-force-syscall` keeps the trap, for measuring it.
     crate::install_vdso(azos_drv_sys::timebase::TIMER_FREQ);
 
-    // AQ8: Enable kernel tracing (ring buffer of last 512 events).
-    azos_ipc::trace_start();
-    kprintln!("[TRACE] Kernel tracing enabled ({} event buffer)", azos_ipc::TRACE_BUF_SIZE);
-    kprintln!();
 
     // ---- Phase 3: Interrupt controllers + enable interrupts ----
     // (crate::trap_init was already done in Phase 1b before any potentially faulting code.)

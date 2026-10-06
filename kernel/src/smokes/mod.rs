@@ -9,6 +9,10 @@
 
 mod selftest;
 pub(crate) use selftest::*;
+#[cfg(feature = "trace-cost-probe")]
+mod trace_cost;
+#[cfg(feature = "trace-cost-probe")]
+pub(crate) use trace_cost::*;
 #[cfg(target_arch = "aarch64")]
 mod aarch64_sched;
 #[cfg(target_arch = "aarch64")]
@@ -58,6 +62,8 @@ pub(crate) mod ring3_drv_smoke;
 #[cfg(feature = "qemu")]
 #[cfg(feature = "tlb-smoke")]
 pub(crate) mod tlb_probe;
+#[cfg(feature = "irq-order-probe")]
+pub(crate) mod irq_order_probe;
 #[cfg(feature = "pi-smoke")]
 pub(crate) mod pi_probe;
 #[cfg(feature = "pi-flush-smoke")]

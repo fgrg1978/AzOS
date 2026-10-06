@@ -35,7 +35,20 @@ const SIG_READ_MAX: usize = 128;
 /// Is the reserved tail writable on this boot's medium: no partition and no
 /// FAT32 volume reaches it (`seed_tail_check`, the test the entropy seed uses
 /// before it rewrites its own sector).
-fn tail_writable() -> bool {
+pub(crate) fn tail_writable() -> bool {
+    // Read once per boot (Phase G2 and the topology install both ask; the
+    // answer cannot change in between: nothing repartitions the medium).
+    // SAFETY: boot hart only, before any other task exists.
+    static mut TAIL: u8 = 0; // 0 unknown, 1 no, 2 yes
+    unsafe {
+        if TAIL == 0 {
+            TAIL = if tail_writable_uncached() { 2 } else { 1 };
+        }
+        TAIL == 2
+    }
+}
+
+fn tail_writable_uncached() -> bool {
     use crate::boot::entropy_pool as el;
     let cap = azos_drv_block::blkdev::capacity_sectors();
     if cap == 0 {
@@ -59,7 +72,25 @@ fn tail_writable() -> bool {
 
 /// The device record, or `None` (no usable tail, unreadable, or no valid
 /// record).
-fn read_device_record() -> Option<DeviceRecord> {
+pub(crate) fn read_device_record() -> Option<DeviceRecord> {
+    // The id never changes within a boot; the floor in it only changes
+    // through `write_floor`, which updates this copy too. Read once: the
+    // topology install (wave 15) binds to the same id CONFIG.SIG v2 does.
+    // SAFETY: boot hart only, before any other task exists.
+    unsafe {
+        if let Some(r) = DEVICE_RECORD {
+            return r;
+        }
+        let r = read_device_record_uncached();
+        DEVICE_RECORD = Some(r);
+        r
+    }
+}
+
+/// The device record as read this boot (`None` until the first read).
+static mut DEVICE_RECORD: Option<Option<DeviceRecord>> = None;
+
+fn read_device_record_uncached() -> Option<DeviceRecord> {
     if !tail_writable() {
         return None;
     }
@@ -78,6 +109,8 @@ fn write_floor(rec: DeviceRecord, counter: u64) {
         && !matches!(azos_drv_block::blkdev::flush(),
                      Err(e) if e != azos_drv_api::block::FlushError::Unsupported);
     if ok {
+        // SAFETY: boot hart only (Phase G2).
+        unsafe { DEVICE_RECORD = Some(Some(new)); }
         kprintln!("[CFG] config counter floor raised {} -> {}", rec.floor, counter);
     } else {
         azos_drv_sys::kerr!("[CFG] WARNING: config counter floor NOT raised ({} -> {}): the device \

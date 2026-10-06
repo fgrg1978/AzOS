@@ -280,6 +280,8 @@ pub mod targets {
     // RFC-0055 (wave 11). Seeded from the topology word `"launch"`; the
     // resource is an interned image name (`crate::launch_cap`).
     target!(Launch,     Launch,     "The right to start one image with SYS_SPAWN_EX.");
+    // Wave 15 (TRACE). Seeded from the topology word `"trace"`; resource 0.
+    target!(Trace,      Trace,      "The kernel tracer: map its rings, read and set its class mask.");
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -308,6 +310,12 @@ pub mod targets {
 /// note above for why there is only one.
 pub fn power_grant_cap(tid: u32, perms: CapPerms) -> Option<Cap<targets::Power>> {
     crate::cap_store::grant::<targets::Power>(tid, perms, 0)
+}
+
+/// Mint a `Cap<Trace>` for `tid` (wave 15). `resource` is always `0`: one
+/// tracer per kernel, as one power domain.
+pub fn trace_grant_cap(tid: u32, perms: CapPerms) -> Option<Cap<targets::Trace>> {
+    crate::cap_store::grant::<targets::Trace>(tid, perms, 0)
 }
 
 /// Mint a `Cap<AiSession>` for `tid`. `resource` is always `0`, for the same

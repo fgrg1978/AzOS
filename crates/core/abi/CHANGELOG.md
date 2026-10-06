@@ -15,6 +15,20 @@ SemVer convention the crate was written to, not a commitment:
 
 ## [Unreleased]
 
+TRACE (wave 15).
+
+- **Added** `SYS_TRACE_CTL_TYPED` (632): `a0` = `Cap<Trace>`, `a1` = op
+  (`azos_abi::trace::TRACE_OP_*`: `INFO`, `MAP`, `GET_MASK`, `SET_MASK`,
+  `REGION_BYTES`), `a2` = the new class mask for `SET_MASK`. The kernel
+  tracer's control: maps the per-CPU trace rings (layout in
+  `azos_spsc::trace`) and reads or sets the runtime class mask. A member of
+  `CAP_TYPED_SYSCALLS`.
+- **Added** `CapKind::Trace` (28, denial code 28): granted only by a topology
+  row (the word `"trace"`, resource 0).
+- **Added** `azos_abi::trace`: the operations, the class bits
+  (`TRACE_CLASS_*`) and the event ids (`TRACE_EV_*`, `(class << 8) | n`).
+- **Changed** `SYS_NR_RESERVED_UPPER` 632 → 633.
+
 LINUXP.
 
 - **Changed** a native `SYS_FORK` child inherits its parent's files and pipe

@@ -50,6 +50,14 @@ mod budget;
 #[path = "../../../../crates/core/mm/src/region.rs"]
 mod region;
 
+// Wave 15 (SLAB): the per-CPU magazine layer of the kernel heap. Depends on
+// `core` only; its rows are in `slab_tests.rs`.
+#[allow(dead_code)]
+#[path = "../../../../crates/core/mm/src/slab.rs"]
+mod slab;
+#[cfg(test)]
+mod slab_tests;
+
 /// Every test that touches the `pmm` singleton or the frame window it
 /// publishes takes this.
 #[cfg(test)]

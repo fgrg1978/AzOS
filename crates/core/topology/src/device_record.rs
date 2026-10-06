@@ -73,3 +73,49 @@ impl DeviceRecord {
         Some(Self { device_id, floor: u64::from_le_bytes(f) })
     }
 }
+
+// ── The signed topology's counter floor (wave 15, TOPOSIGN) ─────────────────
+//
+// A second record, in its own reserved-tail sector (Kconfig
+// `TOPOLOGY_FLOOR_SECTOR`, default 3), so the CONFIG.SIG floor above and this
+// one move independently and neither format changes:
+//
+//   0   4   magic "KTPF"
+//   4   1   version 1
+//   5   8   floor, u64 little-endian (0: no counter-bound topology accepted)
+//   13  4   first 4 bytes of SHA-256(bytes 0..13)
+//
+// Same trust as the device record: the sector is out of the USB export's
+// reach; a card-reader attacker can rewrite it (RFC-0054 §6.3).
+
+/// Meaningful bytes of a topology floor record; the rest of the sector is 0.
+pub const TOPO_FLOOR_LEN: usize = 4 + 1 + 8 + 4;
+const TOPO_MAGIC: [u8; 4] = *b"KTPF";
+const TOPO_VERSION: u8 = 1;
+const TOPO_BODY: usize = TOPO_FLOOR_LEN - 4;
+
+/// Encode the topology counter floor as it goes on the medium.
+pub fn topo_floor_encode(floor: u64) -> [u8; TOPO_FLOOR_LEN] {
+    let mut out = [0u8; TOPO_FLOOR_LEN];
+    out[..4].copy_from_slice(&TOPO_MAGIC);
+    out[4] = TOPO_VERSION;
+    out[5..TOPO_BODY].copy_from_slice(&floor.to_le_bytes());
+    let tag = sha256(&out[..TOPO_BODY]);
+    out[TOPO_BODY..].copy_from_slice(&tag[..4]);
+    out
+}
+
+/// Decode a topology floor sector: `None` for anything that is not a valid
+/// record (an all-zero sector of a fresh image included), which the loader
+/// reads as floor 0.
+pub fn topo_floor_decode(sector: &[u8]) -> Option<u64> {
+    if sector.len() < TOPO_FLOOR_LEN || sector[..4] != TOPO_MAGIC || sector[4] != TOPO_VERSION {
+        return None;
+    }
+    if sector[TOPO_BODY..TOPO_FLOOR_LEN] != sha256(&sector[..TOPO_BODY])[..4] {
+        return None;
+    }
+    let mut f = [0u8; 8];
+    f.copy_from_slice(&sector[5..TOPO_BODY]);
+    Some(u64::from_le_bytes(f))
+}

@@ -33,6 +33,9 @@ azos_abi = { path = "../../../crates/core/abi" }
 # Wave 14 (SPAWNCACHE): `image_cache.rs` sizes its kept frames by Kconfig
 # `EXEC_IMAGE_CACHE_KB` (generated from the tree's .config, as the mm shim's).
 azos_limits = { path = "../../../crates/core/limits" }
+# Wave 15: the real tracer (host-buildable: abi, spsc and limits only), for
+# the pulled-in `trace_ctl.rs`.
+azos_trace = { path = "../../../crates/core/trace" }
 
 # Host stand-ins. Renamed via Cargo dependency rename so `handlers.rs`'s own
 # `use azos_x::...` statements resolve unchanged; the kernel never sees

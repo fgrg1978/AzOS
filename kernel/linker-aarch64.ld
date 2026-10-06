@@ -162,6 +162,13 @@ SECTIONS
     .rodata : ALIGN(AZOS_PAGE_SIZE)
     {
         *(.rodata .rodata.*)
+        /* Wave 15 (TRACE): the static-key site table, {site, target, key,
+         * kind} per tracepoint (crates/core/trace/src/jump.rs). In .rodata:
+         * read-only, never executable; KEEP, since nothing references an entry. */
+        . = ALIGN(8);
+        __azos_keys_start = .;
+        KEEP(*(.azos_keys))
+        __azos_keys_end = .;
 
         /*
          * The trusted secure-boot public key (`SECURE_BOOT_PUBKEY`,

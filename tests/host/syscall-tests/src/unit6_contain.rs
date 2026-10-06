@@ -1013,6 +1013,8 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
         ("behavior_typed", CapKind::Power, || crate::families::sys_behavior_typed(0, azos_abi::families::BEHAVIOR_OP_DISABLE, 2)),
         ("config_typed", CapKind::Power, || crate::families::sys_config_typed(0, azos_abi::families::CONFIG_OP_SET, S, 1, S, 1)),
         ("ota_typed", CapKind::Power, || crate::families::sys_ota_typed(0, azos_abi::families::OTA_OP_ROLLBACK, 0)),
+        // 632, wave 15 — `crate::trace_ctl`. The mask set: a WRITE.
+        ("trace_ctl_typed", CapKind::Trace, || crate::trace_ctl::sys_trace_ctl_typed(0, azos_abi::trace::TRACE_OP_SET_MASK, 1)),
     ];
     // The SEVEN mints (530, 533, 536, 563, 567, 573, 583) resolve no
     // capability. Every other member consumes one, 574 to 578 included, so the

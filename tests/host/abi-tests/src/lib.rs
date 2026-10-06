@@ -31,7 +31,7 @@ mod cap_tests {
     /// variant without adding it here is a compile error. An inferred
     /// `[CapKind; _]` would silently keep covering only the old set, which
     /// is the failure this array exists to prevent.
-    const ALL_KINDS: [CapKind; 28] = [
+    const ALL_KINDS: [CapKind; 29] = [
         CapKind::Null,
         CapKind::Channel,
         CapKind::Shm,
@@ -62,6 +62,7 @@ mod cap_tests {
         // 26 and 27: the user shell's pipe ends and launch grants (RFC-0055).
         CapKind::Pipe,
         CapKind::Launch,
+        CapKind::Trace,
     ];
 
     /// Every permission combination worth distinguishing: each single
@@ -232,7 +233,9 @@ mod cap_tests {
         assert_eq!(CapKind::from_raw(25), Some(CapKind::Lease));
         assert_eq!(CapKind::from_raw(26), Some(CapKind::Pipe));
         assert_eq!(CapKind::from_raw(27), Some(CapKind::Launch));
-        assert_eq!(CapKind::from_raw(28), None);
+        // 28 is `Trace`, added in wave 15 (the kernel tracer).
+        assert_eq!(CapKind::from_raw(28), Some(CapKind::Trace));
+        assert_eq!(CapKind::from_raw(29), None);
         assert_eq!(CapKind::from_raw(63), None);
         assert_eq!(CapKind::from_raw(255), None);
     }
@@ -520,7 +523,9 @@ mod syscall_nr_tests {
         // Wave 13 (orphans): the child-subreaper mark.
         assert_eq!(SYS_TASK_SUBREAPER, 619);
         assert_eq!(MODULE_MAX_BYTES, 4 << 20);
-        assert_eq!(SYS_NR_RESERVED_UPPER, 632);
+        // Wave 15: the kernel tracer's control.
+        assert_eq!(SYS_TRACE_CTL_TYPED, 632);
+        assert_eq!(SYS_NR_RESERVED_UPPER, 633);
         // RFC-0044 — absolute sleep.
         assert_eq!(SYS_SLEEP_UNTIL, 590);
         // RFC-0002 Driver registry bridge.
@@ -1123,5 +1128,40 @@ mod ushell_blocks {
         assert_eq!((SPAWN_F_DIE_WITH_PARENT, SPAWN_F_MAP_TASK_PAGE), (1, 2));
         assert_eq!((SPAWN_ARGV_MAX, SPAWN_ENV_MAX, SPAWN_ARGC_MAX, SPAWN_ENVC_MAX, SPAWN_CWD_MAX, SPAWN_MAX_MOVES),
                    (1024, 1024, 16, 16, 64, 8));
+    }
+}
+
+/// Wave 15: the kernel tracer's ABI names (`azos_abi::trace`).
+#[cfg(test)]
+mod trace_abi_tests {
+    use azos_abi::trace::*;
+
+    /// Every event id names its own class, and every class has a name.
+    #[test]
+    fn event_ids_carry_their_class_and_classes_their_names() {
+        let evs = [
+            (TRACE_EV_SCHED_SWITCH, TRACE_CLASS_SCHED), (TRACE_EV_SCHED_WAKEUP, TRACE_CLASS_SCHED),
+            (TRACE_EV_IRQ_ENTRY, TRACE_CLASS_IRQ), (TRACE_EV_IRQ_EXIT, TRACE_CLASS_IRQ),
+            (TRACE_EV_SYS_ENTER, TRACE_CLASS_SYSCALL), (TRACE_EV_SYS_EXIT, TRACE_CLASS_SYSCALL),
+            (TRACE_EV_SYS_DENY, TRACE_CLASS_SYSCALL), (TRACE_EV_IPC_CALL, TRACE_CLASS_IPC),
+            (TRACE_EV_IPC_REPLY, TRACE_CLASS_IPC), (TRACE_EV_PAGE_FAULT, TRACE_CLASS_FAULT),
+            (TRACE_EV_PROC_SPAWN, TRACE_CLASS_PROC), (TRACE_EV_PROC_EXIT, TRACE_CLASS_PROC),
+            (TRACE_EV_PROC_SIGNAL, TRACE_CLASS_PROC), (TRACE_EV_LAT_IRQSOFF, TRACE_CLASS_LAT),
+            (TRACE_EV_LAT_PREEMPTOFF, TRACE_CLASS_LAT),
+        ];
+        for (e, c) in evs {
+            assert_eq!(trace_event_class(e), c, "{}", trace_event_name(e));
+            assert_ne!(trace_event_name(e), "unknown");
+        }
+        for c in 0..TRACE_CLASSES {
+            assert_ne!(trace_class_name(c), "?");
+        }
+        assert_eq!(TRACE_MASK_ALL, 0x7f);
+    }
+
+    /// The operation numbers are ABI: frozen.
+    #[test]
+    fn operations_are_frozen() {
+        assert_eq!((TRACE_OP_INFO, TRACE_OP_MAP, TRACE_OP_GET_MASK, TRACE_OP_SET_MASK, TRACE_OP_REGION_BYTES), (1, 2, 3, 4, 5));
     }
 }

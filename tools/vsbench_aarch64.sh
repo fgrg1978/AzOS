@@ -139,6 +139,12 @@ case "$VSBENCH_LOG_LEVEL" in
     *) die "VSBENCH_LOG_LEVEL=$VSBENCH_LOG_LEVEL: want err, warn, info or debug" ;;
 esac
 AZ_LEVEL="CONFIG_LOG_LEVEL_$(printf '%s' "$VSBENCH_LOG_LEVEL" | tr '[:lower:]' '[:upper:]')=y"
+# Wave 15: the same diagnostic knobs as tools/vsbench_compare.sh.
+# VSBENCH_AZOS_EXTRA_FEATURES: extra kernel features on both ISAs (e.g.
+# `switch-census`, whose `[SW-CENSUS]` lines need VSBENCH_LOG_LEVEL=debug).
+# VSBENCH_LANES: only the named vsbench sections (see vsbench_compare.sh).
+K_FEATURES="qemu,bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}"
+VSBENCH_LANES="${VSBENCH_LANES:-}"
 R_CONFIG="$BENCH_TARGET/riscv64.config"
 { grep -v 'LOG_LEVEL' "${KCONFIG_CONFIG:-$REPO_ROOT/config/defconfigs/qemu.config}" \
     && echo "$AZ_LEVEL"; } >"$R_CONFIG.new" \
@@ -148,7 +154,7 @@ R_CONFIG="$BENCH_TARGET/riscv64.config"
 if cmp -s "$R_CONFIG.new" "$R_CONFIG"; then rm -f "$R_CONFIG.new"; else mv "$R_CONFIG.new" "$R_CONFIG"; fi
 R_KERNEL="$BENCH_TARGET/azos-riscv64/riscv64imac-unknown-none-elf/release/kernel"
 ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$R_CONFIG" CARGO_TARGET_DIR="$BENCH_TARGET/azos-riscv64" \
-    $CARGO build --release --features qemu,bench-minimal >"$WORK/build-riscv64.log" 2>&1 ) \
+    $CARGO build --release --features "$K_FEATURES" >"$WORK/build-riscv64.log" 2>&1 ) \
     || die "could not build the riscv64 AzOS kernel (--features \
 qemu,bench-minimal) — see $WORK/build-riscv64.log"
 [ -f "$R_KERNEL" ] || die "no kernel at $R_KERNEL"
@@ -172,7 +178,7 @@ A_CONFIG="$WORK/qemu-aarch64.config"
     KCONFIG_CONFIG="$A_CONFIG" \
     CARGO_TARGET_DIR="$BENCH_TARGET/azos-aarch64" \
     $CARGO build --release --target "$A_TRIPLE" -p azos_kernel \
-    --features qemu,bench-minimal \
+    --features "$K_FEATURES" \
     --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' \
     >"$WORK/build-aarch64.log" 2>&1 ) \
     || die "could not build the aarch64 AzOS kernel (--features \
@@ -185,8 +191,12 @@ A64_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host:
 
 # ── Boot both, same completion rule vsbench_compare.sh uses ─────────────────
 completion_lane() { # completion_lane <log>
+    if [ -n "$VSBENCH_LANES" ] && ! printf ',%s,' "$VSBENCH_LANES" | grep -q ',switch,'; then
+        tr -d '\r' <"$1" 2>/dev/null | grep -qF "[VSBENCH] side=azos done"
+        return
+    fi
     tr -d '\r' <"$1" 2>/dev/null \
-        | grep -qE '\[VSBENCH\] azos switch-loaded =|\[VSBENCH\] switch-loaded: REFUSED'
+        | grep -qE '\[VSBENCH\] azos ctxsw-loaded =|\[VSBENCH\] ctxsw-loaded: |\[VSBENCH\] switch-loaded: REFUSED'
 }
 
 R_LOG="$WORK/riscv64.log"
@@ -195,6 +205,12 @@ R_DISK="$WORK/disk-riscv64.img"
 A_DISK="$WORK/disk-aarch64.img"
 cp "$REPO_ROOT/build/disk-vsbench.img" "$R_DISK"
 cp "$REPO_ROOT/build/disk-aarch64-vsbench.img" "$A_DISK"
+if [ -n "$VSBENCH_LANES" ]; then
+    printf '%s\n' "$VSBENCH_LANES" >"$WORK/lanes.txt"
+    for d in "$R_DISK" "$A_DISK"; do
+        mcopy -o -i "$d" "$WORK/lanes.txt" ::VSBLANES.TXT || die "could not add VSBLANES.TXT to $d"
+    done
+fi
 
 "$QEMU_RISCV64" -machine virt -nographic -bios default -smp "$VSBENCH_SMP" $ICOUNT_ARGS \
     -kernel "$R_KERNEL" \

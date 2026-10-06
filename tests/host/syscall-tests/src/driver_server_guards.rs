@@ -1033,9 +1033,9 @@ fn cap_lookup_refuses_a_kind_byte_that_names_no_kind() {
     // test green only until something minted the kind it names, then assert
     // the opposite of what it is named for. 24 is `CapKind::Entropy` and 25
     // `CapKind::Lease` (both wave 9); 26 `CapKind::Pipe` and 27
-    // `CapKind::Launch` (RFC-0055, wave 11); 28 is the first byte past the
-    // last variant today.
-    for bad in [28u64, 63, 255, 256, u64::MAX] {
+    // `CapKind::Launch` (RFC-0055, wave 11); 28 `CapKind::Trace` (wave 15);
+    // 29 is the first byte past the last variant today.
+    for bad in [29u64, 63, 255, 256, u64::MAX] {
         assert_eq!(
             crate::handlers::sys_cap_lookup(bad, 0),
             einval,

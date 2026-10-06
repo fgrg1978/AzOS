@@ -629,6 +629,13 @@ pub mod task {
     pub use crate::filter::{SyscallFilter, TaskInit, SYSCALL_FILTER_MAX};
 }
 
+/// `SYS_TASKINFO` calls the switch census's dump (`crates/core/sched/src/
+/// swcensus.rs`), which compiles to nothing without `SWITCH_CENSUS`.
+pub mod swcensus {
+    #[inline(always)]
+    pub fn dump_window() {}
+}
+
 pub mod scheduler {
     use crate::filter::SyscallFilter;
     use std::sync::Mutex;

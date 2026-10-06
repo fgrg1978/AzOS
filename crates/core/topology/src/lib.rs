@@ -16,7 +16,7 @@
 //! - [`verify`] — Ed25519 signature verification of the TOML bytes
 //!   against the trusted topology key.
 //! - [`paths`] — the FAT 8.3 file names a loader opens (`CAPS.TOM`,
-//!   `CAPS.SIG`, `SCHED.TOM`, `SCHED.SIG`), and why they are not
+//!   `CAPS.SIG`, `SCHED.TOM`; `SCHED.SIG` is retired), and why they are not
 //!   `CAPS.TOML`/`CAPS.TOML.SIG`.
 //!
 //! # Lifecycle
@@ -25,24 +25,29 @@
 //!   ┌─────────────────────────────────────────────────────────────┐
 //!   │ Boot (kernel/src/boot/topology.rs, install_topology)        │
 //!   │                                                             │
-//!   │  1. init_with(fill_default_minimal): the topology built     │
-//!   │     into the image (builder.rs)                             │
-//!   │  2. deadline_admission(num_cpus) against the real harts     │
-//!   │  3. STATIC_TOPOLOGY = topology  (immutable thereafter)      │
-//!   │                                                             │
-//!   │  Any failure ⇒ kernel halts; user-space spawn is blocked.   │
+//!   │  Kconfig TOPOLOGY_SOURCE (signed::decide):                  │
+//!   │  1. read CAPS.TOM, CAPS.SIG and SCHED.TOM off /fat          │
+//!   │  2. verify CAPS.SIG, check the binding (SCHED.TOM's hash,   │
+//!   │     device, counter floor), THEN parse (signed::fill_signed)│
+//!   │  3. admission_check + the boot admission (deadlines on the  │
+//!   │     real harts, RT band, memory) on the candidate           │
+//!   │  4. publish it (try_init_with) — or, if refused or absent,  │
+//!   │     record SAFETY_TOPO_SOURCE and install                   │
+//!   │     fill_default_minimal (builder.rs), or halt              │
+//!   │  5. STATIC_TOPOLOGY is immutable thereafter                 │
 //!   └─────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! The signed-TOML path (`CAPS.TOM`/`CAPS.SIG`, `SCHED.TOM`/`SCHED.SIG`:
-//! `verify::verify_signature`, then `parser::parse_caps` /
-//! `parser::parse_sched`) is implemented and host-tested, but the kernel
-//! does not call it at boot today.
+//! [`emit`] writes a topology back out as the two files; the host emitter
+//! (`tests/host/topology-tests/src/bin/topo_emit.rs`, `make topology-files`)
+//! ships the built-in topology as a signed pair that way.
 //!
 //! # Memory budget
 //!
-//! Worst case: 8 classes + 64 tasks + 1024 caps total + 64 KiB
-//! source-text buffer ≈ ~96 KiB static, all stored in BSS.
+//! The slot is sized by Kconfig (`TOPOLOGY_MAX_CLASSES`, `MAX_TASKS`,
+//! `MAX_CAPS_TOTAL`, `TOPOLOGY_MAX_PIPELINES`); the kernel keeps the file
+//! buffers (`TOPOLOGY_CAPS_MAX_KB` + `TOPOLOGY_SCHED_MAX_KB`) for its life,
+//! since a signed topology's strings borrow from them.
 
 #![no_std]
 #![deny(missing_docs)]
@@ -51,9 +56,11 @@ pub mod apply;
 pub mod builder;
 pub mod deadline;
 pub mod device_record;
+pub mod emit;
 pub mod memory;
 pub mod parser;
 pub mod paths;
+pub mod signed;
 pub mod state;
 pub mod types;
 pub mod verify;
@@ -61,8 +68,8 @@ pub mod verify;
 pub use apply::{ring3_priority, RowSched};
 pub use memory::{frames_for, units_for, MemReport, MemoryRefusal, RowMem, AUTORUN_ROW, RING3_DEFAULT_PAGES, TOPOLOGY_PAGE};
 pub use builder::{default_minimal, fill_default_minimal};
-pub use parser::{parse_caps, parse_sched, ParseError};
-pub use state::{get, init, init_with, is_ready, InitError};
+pub use parser::{parse_binding, parse_caps, parse_sched, Binding, ParseError};
+pub use state::{get, init, init_with, is_ready, try_init_with, InitError, TryInitError};
 pub use types::{
     CapSpec, ClassSpec, MaybeStr, PolicyKind, Preemption, RestartPolicy, SchedConfig, TaskAbi,
     PipelineSpec, TaskSpec, Topology, MAX_CAPS_TOTAL, MAX_CLASSES, MAX_PIPELINES,

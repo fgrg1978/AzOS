@@ -21,6 +21,9 @@ tlb-local-only = []
 tlb-bound-canary = []
 # Masked-window tracer hooks (`src/lat_hook.rs`); Kconfig `LAT_TRACE`.
 lat-trace = ["azos_arch_api/lat-trace"]
+# Gate canary only (wave 15): the interrupt-mask asm gets `nomem` back, so
+# it stops being a compiler barrier. The `irq order` rows must go red.
+irq-nomem-canary = []
 
 [dependencies]
 azos_common   = { workspace = true }

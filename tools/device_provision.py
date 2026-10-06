@@ -16,7 +16,10 @@ which the USB mass-storage export cannot address:
 
 `--show` prints `device <32 hex> floor <n>` or `absent`. `--id-only` with
 `--show` prints just the 32 hex digits (what `gen_config_sig.py --device-id`
-takes).
+takes). `--topo-floor` with `--show` prints the signed topology's counter
+floor instead (wave 15: the "KTPF" record the kernel keeps in tail sector
+`--topo-sector`, Kconfig TOPOLOGY_FLOOR_SECTOR, default 3): `topo-floor <n>`,
+or `absent` (which the kernel reads as 0).
 
 Record format (one sector; see `crates/core/topology/src/device_record.rs`):
     0   4   magic "KDEV"
@@ -80,15 +83,40 @@ def read_record(image: str):
         return decode(f.read(SECTOR))
 
 
+TOPO_MAGIC = b"KTPF"
+TOPO_RECORD_BYTES = 4 + 1 + 8 + 4
+
+
+def read_topo_floor(image: str, sector: int = 3):
+    """The topology counter floor on `image` (`device_record.rs`
+    `topo_floor_decode`), or None for no valid record."""
+    tail_start, _ = tail_offset(image)
+    with open(image, "rb") as f:
+        f.seek((tail_start + sector) * SECTOR)
+        s = f.read(SECTOR)
+    if len(s) < TOPO_RECORD_BYTES or s[:4] != TOPO_MAGIC or s[4] != 1:
+        return None
+    body = s[:TOPO_RECORD_BYTES - 4]
+    if s[TOPO_RECORD_BYTES - 4:TOPO_RECORD_BYTES] != hashlib.sha256(body).digest()[:4]:
+        return None
+    return struct.unpack_from("<Q", body, 5)[0]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("image")
     ap.add_argument("--show", action="store_true", help="read, do not write")
     ap.add_argument("--id-only", action="store_true", help="with --show: print only the id")
     ap.add_argument("--device-id", help="32 hex digits (default: random)")
+    ap.add_argument("--topo-floor", action="store_true", help="with --show: the topology counter floor")
+    ap.add_argument("--topo-sector", type=int, default=3, help="its tail sector (Kconfig TOPOLOGY_FLOOR_SECTOR)")
     a = ap.parse_args()
 
     tail_start, off = tail_offset(a.image)
+    if a.show and a.topo_floor:
+        f = read_topo_floor(a.image, a.topo_sector)
+        print("absent" if f is None else f"topo-floor {f}")
+        return 0
     if a.show:
         r = read_record(a.image)
         if r is None:

@@ -278,4 +278,48 @@ config RT_BAND_CAP_PCT
 
 # The safety comms timeouts (now in seconds) and PID_DT_MS are in the Robot
 # menu (config/Kconfig.robot, "Safety layer and motor control"), wave 11.
+config SCHED_SWITCH_COUNTERS
+    bool "Count each task's context switches (voluntary / preempted)"
+    default n if PROFILE_EMBEDDED
+    default y
+    help
+      Per-task counts of the switches a task took voluntarily (yield,
+      block, exit) and by preemption, as SYS_TASKINFO, the task's vDSO page
+      and Linux getrusage report them. vsbench's switch lanes read them to
+      prove that each yield switched.
+
+      Cost: one atomic add on every context switch (about five
+      instructions) and 16 bytes per task slot. Nothing safety-related
+      reads them (the watchdog and RT budgets keep their own accounting),
+      so the embedded product profile leaves them out; off, the counts
+      read 0. Turn on wherever switch statistics or vsbench's switch
+      lanes are wanted.
+
+config SCHED_SAVING_GATE_US
+    int "Longest wait for a picked task's context save (us)"
+    range 10 100000
+    default 1000
+    help
+      A hart that picks a task still being switched out on another hart
+      waits for that save to finish (the context-saving gate in
+      do_schedule) at most this long, then puts the task back on the queue
+      instead of hanging. A legitimate wait is a handful of instructions;
+      the bound only matters when something is broken.
+
+      Cost: none on a switch whose task is already saved (the common
+      case); the clock is read only while waiting. Keep it well below one
+      scheduler tick (1/SCHED_HZ) so a wedge cannot hide for a tick, and
+      well above any real save time on the slowest board.
+
+config SCHED_SAVING_GATE_CLOCK_EVERY
+    int "Spins between clock reads in the context-saving gate"
+    range 1 65536
+    default 256
+    help
+      How many spins of the context-saving gate's wait pass between two
+      reads of the clock that bounds it (SCHED_SAVING_GATE_US). A clock
+      read is a device access on some boards, so it is kept out of the
+      tight loop. A power of two compiles to a mask. Only the waiting
+      path pays it; lower it if the gate's bound must be precise.
+
 endmenu # Scheduling, IPC & timing

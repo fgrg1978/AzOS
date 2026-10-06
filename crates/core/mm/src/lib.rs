@@ -13,6 +13,8 @@ pub mod vmm;
 pub mod budget;
 /// The W^X boundary rule, shared by the enforcer and the verifier.
 pub mod wx;
+/// Wave 15: the controlled kernel-text write path (static keys).
+pub mod text_poke;
 /// E11 / AQ9 — Copy-on-Write support for `fork()`.
 pub mod cow;
 mod cow_table;
@@ -23,6 +25,9 @@ pub mod pager;
 /// Wave 14 (SPAWNCACHE): a verified image's frames, kept for its next spawn.
 pub mod image_frames;
 pub mod kheap;
+pub mod slab;
+#[cfg(feature = "kheap-census")]
+pub mod kheap_census;
 pub mod vdso;
 /// Kconfig `LOCKED_HUGE_LEAVES`: boot-reserved regions of locked rows,
 /// mapped with level-1 leaves.

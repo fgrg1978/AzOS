@@ -582,6 +582,22 @@ pub const RTWD_ACTION_REPEATS: u8 = 3;
 /// SAFE STOP. The low 31 bits are the count.
 pub const RTWD_DETAIL_STOPPED: u32 = 1 << 31;
 
+/// The boot did not install the signed capability topology from the volume
+/// (Kconfig `TOPOLOGY_SOURCE`, `kernel/src/boot/topology.rs`, wave 15).
+/// Durable, once per boot, written before the built-in topology is installed
+/// or the boot hart halts. `action_code` is one of the `TOPO_ACTION_*`
+/// below; `detail` is `azos_topology::signed::SignedRefusal::code()` for an
+/// invalid set (step in bits 28..31, file in 24..27), 0 for a missing one.
+pub const SAFETY_TOPO_SOURCE: u8 = 0x1A;
+/// None of the four files on the volume: the built-in topology is installed.
+pub const TOPO_ACTION_FALLBACK_MISSING: u8 = 1;
+/// The set on the volume was refused: the built-in topology is installed.
+pub const TOPO_ACTION_FALLBACK_INVALID: u8 = 2;
+/// No set under `TOPOLOGY_SOURCE_SIGNED_REQUIRED`: the boot halts.
+pub const TOPO_ACTION_HALT_MISSING: u8 = 3;
+/// The set was refused and the policy halts: the boot halts.
+pub const TOPO_ACTION_HALT_INVALID: u8 = 4;
+
 /// The `detail` word of an [`RTWD_ACTION_REPEATS`] record.
 pub const fn rtwd_repeats_detail(repeats: u32, stopped: bool) -> u32 {
     let n = if repeats > !RTWD_DETAIL_STOPPED { !RTWD_DETAIL_STOPPED } else { repeats };

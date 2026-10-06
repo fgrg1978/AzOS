@@ -9,6 +9,9 @@ publish = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 
 [features]
+# Wave 15 gate canary: a static-key write goes through the EXECUTABLE text
+# mapping instead of the alias; W^X must stop it with a store fault.
+text-poke-wx-canary = []
 default = []
 # M40 (audit U10-6): gates `seed_one_cap_outcome`'s `CapKind::Motor` arm the
 # same way `crates/core/topology`'s parser and builder already gate the word
@@ -43,4 +46,5 @@ azos_drv_actuator = { workspace = true }
 azos_arch = { workspace = true }
 azos_limits = { workspace = true }
 azos_spsc = { workspace = true }
+azos_trace = { workspace = true }
 wcet-macro = { path = "../wcet-macro" }

@@ -405,6 +405,148 @@ config KERNEL_HEAP_SIZE
       MAX_TASKS x 384 + ... floor that build.rs checks is a conservative
       estimate of a heap that those tables no longer use, not a measurement.
 
+config KHEAP_SLAB
+    bool "Per-CPU size-class cache in front of the kernel heap"
+    default y
+    help
+      Wave 15 (SLAB). Small kernel heap requests (up to KHEAP_SLAB_MAX_CLASS
+      bytes) are served from per-CPU magazines of fixed size classes, a
+      per-class depot of full and empty magazines, and slabs carved from the
+      heap (crates/core/mm/src/slab.rs). Alloc and free of a small object
+      are then O(1) with no lock and no heap walk while the CPU's magazines
+      hold or have room for it; a miss costs at most one magazine of slab
+      work with interrupts masked, never a heap walk. Larger requests, and
+      every request with this off, go to the first-fit heap exactly as
+      before (off is today's allocator, kept for comparison).
+
+      Measured (riscv64, -icount, wave 15): the kernel heap is not on any
+      vsbench hot path (spawn, thread, fork, IPC, file, UDP make no heap
+      allocation); procfs text on open is its main user. So this moves no
+      lane; it bounds what an allocation costs. A heap refusal first gives
+      back what this layer caches (this CPU's magazines, the depot, empty
+      slabs) and retries once; a refusal is still a refusal.
+
+      Cost: 3,712 B of .data (riscv64, measured: 8 CPUs x 2 x 16 magazine
+      pointers and 17 class locks) and about 0.5 KiB of tables, plus, in the
+      heap, what the options below let it cache (edge defaults: at most
+      27 KiB per CPU, 54 KiB of depot, one 4-32 KiB slab per class in use).
+      Instructions (riscv64, -icount): a small alloc or free that its
+      magazine serves is about 40 (an alloc+free pair 81) against 310-360
+      for the first-fit heap on a nearly empty heap and 1,700+ with 256
+      small holes in front of the request; a request above the largest class
+      pays about 7 more than before (the interrupt-context owner check in
+      crates/core/mm/src/kheap.rs).
+      Same on both ISAs: nothing here depends on the page granule.
+      The KHEAP_SLAB_* options below are read only with this on.
+
+config KHEAP_SLAB_CLASSES
+    string "Size classes (bytes, ascending, multiples of 8, at most 16)"
+    default "16 32 64 128 256 512 1024 2048"
+    help
+      The object sizes the cache serves; a request gets the smallest class
+      that holds it. The default is powers of two because that is what the
+      measured traffic supports: on the abitest workload 99% of
+      allocations were 56 or 64 bytes (procfs text on open), the rest
+      scattered between 8 and 264 bytes, with no intermediate size frequent
+      enough to pay for a class of its own (a class costs at least one slab
+      of heap once used). Add one (48, 96, ...) when a census
+      (`kheap-census`) shows a size worth it. Each class is naturally
+      aligned to its largest power-of-two divisor; a request aligned beyond
+      that moves to a larger class or to the heap.
+
+config KHEAP_SLAB_MAX_CLASS
+    int "Largest request served by the cache (bytes)"
+    range 16 4096
+    default 256  if PROFILE_EMBEDDED
+    default 2048
+    help
+      Classes in KHEAP_SLAB_CLASSES above this are dropped; larger requests
+      go to the heap. Lower it to keep big objects out of slabs (a slab of a
+      2048-byte class is 32 KiB holding 15 objects). Embedded keeps it at
+      256 so no slab exceeds 2 KiB of its 512 KiB heap.
+
+config KHEAP_SLAB_MAG_DEPTH
+    int "Magazine depth (objects)"
+    range 1 1024
+    default 8  if PROFILE_EMBEDDED
+    default 64 if PROFILE_FLEET
+    default 32
+    help
+      Most objects one magazine holds. Each CPU has two per class, so this
+      many alloc/free in a row (twice it, with the swap) stay on the
+      lock-free path; a deeper magazine amortises the depot lock over more
+      operations and caches more memory. Per class the depth is further cut
+      by KHEAP_SLAB_CPU_CACHE_KB. A magazine is 24 + 8 x depth bytes of heap.
+
+config KHEAP_SLAB_CPU_CACHE_KB
+    int "Most memory one CPU caches in magazines (KiB)"
+    range 1 65536
+    default 2   if PROFILE_EMBEDDED
+    default 128 if PROFILE_FLEET
+    default 32
+    help
+      Split evenly between classes; a class's depth is the smaller of
+      KHEAP_SLAB_MAG_DEPTH and its share / (2 x size), at least 1. This is
+      the memory a CPU can hold that no other CPU and no reclaim can take
+      back (only that CPU's own refusal path drains it).
+
+config KHEAP_SLAB_DEPOT_MAGS
+    int "Full magazines kept per class in the depot"
+    range 0 256
+    default 1 if PROFILE_EMBEDDED
+    default 8 if PROFILE_FLEET
+    default 4
+    help
+      The depot moves objects between CPUs a magazine at a time. A CPU
+      whose magazines are full puts one here (when there is room) instead
+      of returning its objects to their slabs one by one. Cost: up to this
+      many x depth x class size bytes per class, returned on a heap refusal.
+
+config KHEAP_SLAB_BYTES
+    int "Smallest slab (bytes, a power of two)"
+    range 1024 65536
+    default 1024 if PROFILE_EMBEDDED
+    default 8192 if PROFILE_FLEET
+    default 4096
+    help
+      A class's slab is the smallest power of two from this that holds
+      KHEAP_SLAB_MIN_OBJS objects after its 64-byte header. Slabs are taken
+      from the heap aligned to their size, so a bigger slab is fewer heap
+      walks and more internal waste for a class used lightly.
+
+config KHEAP_SLAB_MIN_OBJS
+    int "Fewest objects in a slab"
+    range 1 256
+    default 4 if PROFILE_EMBEDDED
+    default 8
+    help
+      A slab grows (doubling from KHEAP_SLAB_BYTES) until it holds this many
+      objects; it bounds the header-and-tail waste to about 1/this.
+
+config KHEAP_SLAB_KEEP_EMPTY
+    int "Empty slabs a class keeps"
+    range 0 64
+    default 0 if PROFILE_EMBEDDED
+    default 2 if PROFILE_FLEET
+    default 1
+    help
+      A slab whose last object is freed goes back to the heap unless its
+      class already keeps this many empty ones. Keeping one avoids a heap
+      walk on a class that oscillates around a slab boundary; it costs one
+      slab per class.
+
+config KHEAP_SLAB_DEBUG
+    bool "Poison freed objects and check red zones"
+    default y if LOG_LEVEL_DEBUG && BOARD_QEMU
+    help
+      A freed small object is filled with 0x6b and checked on its next
+      allocation (a write after free panics with the object's address); the
+      bytes between the requested size and the class size are filled with
+      0xbb and checked on free (an overrun panics). On by default only in
+      the debug QEMU development configurations, never in a product build.
+      Cost: a fill and a scan of the object on every alloc and free (about
+      size/8 to size instructions each), nothing in RAM.
+
 config RING3_MEM_PAGES_DEFAULT
     int "Frame budget of a ring-3 topology row that declares none (pages)"
     range 16 1048576

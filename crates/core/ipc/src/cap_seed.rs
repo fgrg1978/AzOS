@@ -103,6 +103,8 @@ use crate::cap::{CapHandle, CapKind, CapPerms};
 ///     the table the kernel parsed at boot (`azos_drv_block::partition`),
 ///     minted as resource `n + 1`; see `crate::disk_cap`. RFC-0048 P3, wave 8.
 ///     The whole-disk resource 0 has no minter.
+///   - `Trace`: the bare word `"trace"` — one tracer per kernel (wave 15),
+///     `READ`/`WRITE` only.
 ///   - `AiSession`: the bare word `"ai.session"`, same reason and same wave.
 ///     `"ai-session"`/`"service-call"` are also valid `CapKind` *words* in
 ///     `crates/core/topology/src/parser.rs` (a signed TOML can spell the KIND
@@ -248,6 +250,12 @@ pub fn seed_one_cap_outcome(
         CapKind::Power => parse_bare_name(target, "power")
             .and_then(|()| crate::cap::power_grant_cap(tid, perms))
             .map(|c| c.raw()),
+        // Wave 15 (TRACE): the kernel tracer, the bare word `"trace"`, READ
+        // and WRITE only (mapping the rings and setting the mask).
+        CapKind::Trace if CapPerms::RW.contains(perms) => parse_bare_name(target, "trace")
+            .and_then(|()| crate::cap::trace_grant_cap(tid, perms))
+            .map(|c| c.raw()),
+        CapKind::Trace => None,
         CapKind::AiSession => parse_bare_name(target, "ai.session")
             .and_then(|()| crate::cap::ai_session_grant_cap(tid, perms))
             .map(|c| c.raw()),
