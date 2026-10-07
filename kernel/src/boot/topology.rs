@@ -386,6 +386,9 @@ fn admit(
     let page = azos_arch_api::PAGE_SIZE as u64;
     let floor = dma_floor_pages();
     let pool = topo.dma_pool_pages(floor);
+    // Held to the end of this call: the frames go back when it returns.
+    #[cfg(feature = "dma-contig-canary")]
+    let _frag = dma_contig_canary::fragment(azos_topology::frames_for(pool, page) as usize);
     let free_before = azos_topology::units_for(azos_mm::pmm::free_pages() as u64, page);
     match azos_mm::pmm::reserve_dma_pool(azos_topology::frames_for(pool, page) as usize) {
         Ok(base) => kprintln!(
@@ -444,6 +447,74 @@ fn admit(
         }
     }
     Ok(())
+}
+
+/// Kernel feature `dma-contig-canary` (gate rows "topology: DMA pool needs a
+/// run"): the boot's first [`admit`] reserves its DMA pool with one free frame
+/// in every `pool` taken, so no free run is as long as the pool while the
+/// free total still covers the pool and every row's budget; the frames go
+/// back when that admission returns. An admission that reserves the pool
+/// refuses it (`DmaPool`); one that compared the pool with the free total
+/// would admit it.
+#[cfg(feature = "dma-contig-canary")]
+mod dma_contig_canary {
+    use crate::kprintln;
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    const WORDS: usize = azos_limits::RAM_SIZE * 1024 * 1024 / azos_arch_api::PAGE_SIZE / 64 + 1;
+    /// The frames taken, by `pmm::frame_index`.
+    static TAKEN: [AtomicU64; WORDS] = [const { AtomicU64::new(0) }; WORDS];
+    static DONE: AtomicBool = AtomicBool::new(false);
+
+    /// Frames taken until dropped; `base` is the physical address of frame 0.
+    pub(super) struct Fragmented {
+        base: usize,
+    }
+
+    /// Take one free frame in every `pool` (at least every other one), on
+    /// the first call of the boot only.
+    pub(super) fn fragment(pool: usize) -> Option<Fragmented> {
+        if DONE.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let page = azos_arch_api::PAGE_SIZE;
+        let before = azos_mm::pmm::free_pages();
+        let mut pa = azos_mm::pmm::next_free_addr();
+        let first = azos_mm::pmm::frame_index(pa)?;
+        let base = pa - first * page;
+        let stride = pool.max(2);
+        let mut taken = 0usize;
+        while let Some(i) = azos_mm::pmm::frame_index(pa) {
+            if i % stride == stride - 1 && azos_mm::pmm::range_is_free(pa, page) {
+                azos_mm::pmm::reserve_range(pa, page);
+                TAKEN[i / 64].fetch_or(1 << (i % 64), Ordering::Relaxed);
+                taken += 1;
+            }
+            pa += page;
+        }
+        kprintln!(
+            "[CANARY] dma-contig: {} of {} free frames taken, one in every {}: {} free, no free run of {}",
+            taken, before, stride, azos_mm::pmm::free_pages(), stride,
+        );
+        Some(Fragmented { base })
+    }
+
+    impl Drop for Fragmented {
+        fn drop(&mut self) {
+            let page = azos_arch_api::PAGE_SIZE;
+            let mut back = 0usize;
+            for (w, word) in TAKEN.iter().enumerate() {
+                let mut bits = word.swap(0, Ordering::Relaxed);
+                while bits != 0 {
+                    let i = w * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(self.base + i * page));
+                    back += 1;
+                }
+            }
+            kprintln!("[CANARY] dma-contig: {} frames given back, {} free", back, azos_mm::pmm::free_pages());
+        }
+    }
 }
 
 /// A refusal of the topology that will run: the board stops here.

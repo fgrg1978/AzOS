@@ -1820,6 +1820,7 @@ build       "mem-locked-refusal-canary" --release --features qemu,mem-locked-ref
 build       "mem-admission-canary" --release --features qemu,mem-admission-canary
 build       "disk-part-row"     --release --features qemu,disk-part-row
 build       "deadline-hart-canary" --release --features qemu,deadline-hart-canary
+build       "dma-contig-canary"   --release --features qemu,dma-contig-canary
 build       "brain-lies-smoke"    --release --features qemu,brain-lies-smoke
 build       "actuation-smoke"     --release --features qemu,actuation-smoke
 build       "reflex+actuation"    --release --features qemu,reflex-smoke,actuation-smoke
@@ -11333,6 +11334,95 @@ PY
     }
     par_row toposign_required_row "topology: SIGNED_REQUIRED halts"         rv
     par_row toposign_required_row "aarch64 topology: SIGNED_REQUIRED halts" arm
+
+    # ── topology: the DMA pool is reserved at admission, not estimated ──
+    #
+    # One `admit` (kernel/src/boot/topology.rs) serves the signed candidate
+    # and the built-in topology, and RESERVES the DMA pool (a contiguous run,
+    # `pmm::reserve_dma_pool`) instead of comparing it with the free total.
+    # `dma-contig-canary` takes one free frame in every pool-length before the
+    # boot's first admission reserves its pool, and gives them back when it
+    # returns: the total still covers the pool and every row's budget, no free
+    # run is as long as the pool.
+    #   builtin — no signed set on the volume: the built-in topology's
+    #             admission halts with "Memory admission REFUSED: DmaPool",
+    #             its `free` at least its `need`;
+    #   signed  — a bound signed set: the candidate is refused with
+    #             Admission(Memory(DmaPool ..)) before it is published, one
+    #             fallback-invalid record, and the built-in topology (the
+    #             second admission, RAM whole again) installs with its pool.
+    # Canary bucket: an admission that only compared the pool with the free
+    # total (the old candidate estimate) admits both, so the built-in boot
+    # prints the admitted line and the signed boot installs the signed files.
+    dma_contig_row() { # <label> <isa: rv|arm> <mode: builtin|signed>
+        local label="$1" isa="$2" mode="$3"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug kimg img why="" base ref need free rec floor installed crashed lastlog
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        kimg="$CI_LOG_DIR/${slug}-kernel"; img="$CI_LOG_DIR/${slug}.img"
+        topo_kernel "$isa" ",dma-contig-canary" "$kimg" || { bad; echo "      $isa kernel (qemu,dma-contig-canary) did not build"; return; }
+        if [ "$mode" = signed ]; then
+            if ! topo_prep "$isa" "$img"; then bad; echo "      make topo-volume failed"; rm -f "$kimg"; return; fi
+        else
+            base=build/disk.img; [ "$isa" = arm ] && base=build/disk-aarch64.img
+            make_disk "$base"; cp "$base" "$img"
+        fi
+        if [ "$mode" = signed ]; then
+            topo_boot "$isa" "$kimg" "$img" "$CI_LOG_DIR/${slug}.log"
+        else
+            # Not `topo_boot`: it stops at "Topology installed", which the
+            # built-in topology prints BEFORE its admission. Wait for the halt.
+            log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"; crashed=""
+            par_ready
+            if [ "$isa" = rv ]; then
+                "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+                    -global virtio-mmio.force-legacy=false \
+                    -drive file="$img",if=none,format=raw,id=hd0 \
+                    -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+            else
+                qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                    -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                    -drive file="$img",if=none,format=raw,id=hd0 \
+                    -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+            fi
+            local pid=$! i=0
+            while [ "$i" -lt 120 ]; do
+                grep -aqE "Memory admission REFUSED: .* — halting|TOPO\] Memory admission: [0-9]" "$log" 2>/dev/null && break
+                grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+                kill -0 "$pid" 2>/dev/null || break
+                i=$((i + 1)); sleep 0.5
+            done
+            kill "$pid" 2>/dev/null; sleep 1; kill -0 "$pid" 2>/dev/null && kill -9 "$pid"; wait "$pid" 2>/dev/null
+            grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" && crashed=1
+        fi
+        rm -f "$kimg" "$img"
+        ref="$(grep -a "Memory admission REFUSED: DmaPool\|Admission(Memory(DmaPool" "$log" | sed -n '1s/.*DmaPool { need: \([0-9]*\), free: \([0-9]*\) }.*/\1 \2/p')"
+        need="${ref% *}"; free="${ref#* }"
+        if [ -n "$crashed" ]; then why="kernel crashed"
+        elif ! grep -aq "\[CANARY\] dma-contig: [1-9][0-9]* of [0-9]* free frames taken" "$log"; then why="the canary did not fragment RAM"
+        elif [ -z "$ref" ]; then why="no DmaPool refusal"
+        elif [ "$free" -lt "$need" ]; then why="refused with free $free < need $need: not a contiguity refusal"
+        elif [ "$mode" = builtin ]; then
+            if ! grep -aqF "[TOPO] Memory admission REFUSED: DmaPool {" "$log"; then why="the built-in topology was not refused"
+            elif grep -aq "TOPO\] Memory admission: [0-9]" "$log"; then why="the built-in topology was admitted"
+            fi
+        elif ! grep -aqF "[TOPO] REFUSED: the signed topology on the volume: Admission(Memory(DmaPool {" "$log"; then why="the candidate was not refused before it was published"
+        elif ! grep -aqF "tasks, from the built-in topology in" "$log"; then why="the built-in topology was not installed"
+        elif ! grep -aq "MM\] DMA pool: [0-9]* KiB reserved" "$log"; then why="the built-in topology has no DMA pool"
+        elif [ "${rec% *}" != "1 2" ]; then why="SAFETY_TOPO_SOURCE records '$rec', not one fallback-invalid (2)"
+        fi
+        if [ -z "$why" ]; then
+            ok; echo "      refused: need $need, free $free pages; $mode"; rm -f "$log"; return
+        fi
+        bad; echo "      $why"
+        grep -a "\[TOPO\]\|\[CANARY\]" "$log" | tr -d '\r' | sed -n '1,6p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    }
+    par_row dma_contig_row "topology: DMA pool needs a run, built-in"         rv  builtin
+    par_row dma_contig_row "topology: DMA pool needs a run, signed"           rv  signed
+    par_row dma_contig_row "aarch64 topology: DMA pool needs a run, built-in" arm builtin
+    par_row dma_contig_row "aarch64 topology: DMA pool needs a run, signed"   arm signed
     kbuild "qemu"
     a64_kbuild "qemu" >/dev/null 2>&1 || true
 

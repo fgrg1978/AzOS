@@ -268,6 +268,11 @@ lx-wx-canary = ["lx-server", "azos_mm/lx-wx-canary"]
 # `deadline-hart-canary`: a task pinned to CPU 3, refused by `kernel_main`'s
 # second admission (with the real hart count) when booted `-smp 1`.
 deadline-hart-canary = ["azos_topology/deadline-hart-canary"]
+# `dma-contig-canary`: the boot's first topology admission reserves its DMA
+# pool with one free frame in every pool-length taken (frames enough, no run
+# long enough); reserving the pool must refuse it. Gate rows "topology: DMA
+# pool needs a run".
+dma-contig-canary = []
 # Wave 15 TOPOSIGN canary: the signed-topology loader skips both signature
 # checks (`azos_topology::signed::fill_signed`), so a tampered CAPS.TOM that
 # still parses is installed. The gate's tampered-topology rows must turn red.
