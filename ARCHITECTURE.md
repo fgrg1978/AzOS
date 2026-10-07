@@ -56,31 +56,32 @@ are hooks under `kernel/src/entry/{riscv64,aarch64}/`.
 
 **Early boot.** `kernel_main` first calls `boot::early_main`
 (`kernel/src/boot/early.rs`), the same on every ISA, as Linux's
-`start_kernel` calls `setup_arch`. It owns the common steps, their order and
-their log lines: the console, the firmware table's CPU count and PCI host,
-the page allocator, the panic-record region, the kernel page tables, W^X and
-NX over the image and RAM, the null and stack guards, the heap. Where the
-ISAs differ it calls a hook of the kernel's `ArchEntry` implementation
+`start_kernel` calls `setup_arch`. It owns the common steps, in one order
+for every ISA, and their log lines: the console, the device-tree parse, the
+CPU count, the PCI host and the ring-3 interrupt trigger types (all read
+before the page allocator may reuse the blob), the page allocator, the
+panic-record region, the kernel page tables with every platform device
+window mapped before they go live, W^X and NX over the image and RAM, the
+null and stack guards, the heap, the vDSO page. Where the ISAs differ it
+calls a hook of the kernel's `ArchEntry` implementation
 (`kernel/src/entry/<isa>/arch_entry.rs` over `boot_hooks.rs`), in the order
 the trait declares them: `pre_console`, `trap_init`, `boot_banner`,
 `firmware_table`, `irqchip_probe`, `timer_probe`, `cpu_features`,
-`firmware_memory`, `firmware_done`, `reserve_firmware_table`,
-`kernel_mmio_map`, `mmu_enabled`, `restrict_low_half`, `verify_guards`,
-`post_heap`, `irqchip_init`, `irq_enable_early`, `console_irq`,
-`irq_triggers`, `line_release`, `irq_routing_init`, `smp_probe`,
-`timer_init`, `boot_selftests`. Every hook is required, `#[inline(always)]`
-on a zero-sized type: no `dyn`, no table. The firmware table's parsed form
-is the ISA's associated `Firmware` type; `early_main` reads it only through
-`firmware_memory`.
+`firmware_memory`, `irq_trigger_controller`, `irq_triggers`,
+`firmware_done`, `reserve_firmware_table`, `kernel_mmio_windows`,
+`mmu_enabled`, `restrict_low_half`, `verify_guards`, `post_heap`,
+`timebase_hz`, `irqchip_init`, `irq_enable_early`, `console_irq`,
+`line_release`, `irq_routing_init`, `smp_probe`, `timer_init`,
+`boot_selftests`. Every hook is required, `#[inline(always)]` on a
+zero-sized type: no `dyn`, no table. The ISA's view of the firmware table
+is its associated `Firmware` type; `early_main` reads it only through
+`firmware_memory`. Code only one ISA runs lives beside the hooks:
+`smp.rs` (the secondary-CPU wake), `board_map.rs` (the device windows),
+and the ISA's self-tests (`aarch64/selftests.rs`, `riscv64/zicboz.rs`).
 
-A step that runs at a different point of one ISA's boot stays in that ISA's
-hooks with a `// boot-seq: <why>` note: the riscv64 vDSO page is installed
-before its PLIC (fixed `TIMER_FREQ`), the aarch64 one after the GIC, ITS and
-PSCI (live `CNTFRQ_EL0`); riscv64 reads the device tree's interrupt triggers
-before the page allocator (its blob is not reserved), aarch64 after its GIC
-(its blob is reserved). `tools/boot_seq_lint.py` lists the common steps and
-fails when one appears in a `boot_hooks.rs` without that note, or when a
-step is in neither `early_main` nor an ISA's hooks.
+`tools/boot_seq_lint.py` lists the common steps and fails when one appears
+in a `boot_hooks.rs` without a `// boot-seq: <why>` note, or when a step is
+in neither `early_main` nor an ISA's hooks.
 
 - **riscv64.** OpenSBI starts the kernel on one hart in S-mode. Secondary
   harts are started later with the SBI hart-state-management call.
@@ -619,9 +620,9 @@ first method still a `todo!()` naming the x86 mechanism.
   through these; the facade refuses to compile for a bare-metal target it has
   no branch for.
 - **`kernel/src/entry/<isa>/`**: `boot_hooks.rs` and `arch_entry.rs`, the
-  kernel's `ArchEntry` (32 methods, a `Firmware` type and a `PAGE_TABLES`
-  name: the 24 early-boot hooks `boot::early_main` calls, the late VirtIO
-  map, the secondary-CPU wake, the scheduler hand-off, the four
+  kernel's `ArchEntry` (34 methods, four associated types and a
+  `PAGE_TABLES` name: the 26 early-boot hooks `boot::early_main` calls, the
+  late VirtIO map, the secondary-CPU wake, the scheduler hand-off, the four
   secondary-CPU steps the shared `secondary_main` calls, the vDSO clock);
   `kernel/src/entry/<isa>.rs` with the `TrapFrame` and its `TrapContext` (11
   methods); and `asm/boot.S` (exports `_start`, calls `kernel_main` and, per
