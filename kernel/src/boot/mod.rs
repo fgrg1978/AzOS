@@ -3,6 +3,8 @@
 //! Boot-time install steps that `kernel_main` runs in order, one module per
 //! subsystem. Everything is re-exported so `kernel_main` calls them by name.
 
+mod early;
+pub(crate) use early::early_main;
 mod entropy;
 pub(crate) use entropy::*;
 mod config_auth;

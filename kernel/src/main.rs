@@ -524,17 +524,10 @@ pub(crate) const ARCH_ENTRY: arch_entry::Entry = arch_entry::Entry;
 use azos_arch::ArchEntry as _;
 
 /// Early-boot output the shared `kernel_main` body needs past
-/// `boot_hooks::arch_early_boot`'s return. `heap_start`/`kernel_end_aligned`
-/// are read by exactly one downstream consumer — the riscv64-only PMP audit
-/// block inside the shared body (`pmp::pmp_regions` is one of the three
-/// riscv64-only symbols `kernel_main`'s own body still names directly) — so
-/// on an aarch64 build, where that block is `cfg`'d out, those two fields go
-/// unread; `num_cpus` is read on both ISAs. `#[allow(dead_code)]` rather
-/// than per-field `cfg`: both ISAs' own `arch_early_boot` compute all three
-/// regardless (aarch64's PMM/heap bring-up has its own
-/// `kernel_end_aligned`/`heap_start` locals already), and a per-field `cfg`
-/// would have to track which ISA's hook produces which field for no
-/// behavioural benefit.
+/// `boot::early_main`'s return. `heap_start`/`kernel_end_aligned` are read
+/// only by the riscv64 PMP audit block inside the shared body, so an aarch64
+/// build leaves them unread; `#[allow(dead_code)]` rather than per-field
+/// `cfg`, since the generic early boot computes them on every ISA.
 #[allow(dead_code)]
 pub struct EarlyBoot {
     pub num_cpus: usize,
@@ -547,8 +540,9 @@ pub struct EarlyBoot {
 /// Kernel entry point. Called from boot.S (hart 0 only, both ISAs).
 ///
 /// Boot flow:
-///   1. **Early init** (interrupts OFF): UART, DTB parse, PMM, VMM, heap, traps
-///      — per-ISA, see `boot_hooks::arch_early_boot`.
+///   1. **Early init**: UART, traps, firmware table, PMM, VMM, heap,
+///      interrupt controller — `boot::early_main` (kernel/src/boot/early.rs),
+///      generic, calling the ISA's `ArchEntry` hooks where the ISAs differ.
 ///   2. **Late init** (interrupts ON): storage, config, IPC, drivers,
 ///      scheduler — shared body below.
 ///   3. Secondary harts — per-ISA, see `boot_hooks::arch_wake_secondaries`.
@@ -562,13 +556,13 @@ pub struct EarlyBoot {
 /// per-arch hook does.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
-    let early = ARCH_ENTRY.early_boot(hart_id, dtb_ptr);
+    let early = boot::early_main(hart_id, dtb_ptr);
     // The kernel's own page table, live from here, maps the pstore region:
     // a panic from now on leaves a RAM record.
     pstore::arm();
     let num_cpus = early.num_cpus;
     // The per-CPU areas, one per possible CPU (the DTB's count, cut to
-    // NR_CPUS by `arch_early_boot`), from the frame allocator: after the
+    // NR_CPUS by `boot::early_main`), from the frame allocator: after the
     // heap, before the scheduler, the first task and the secondaries.
     boot::setup_per_cpu_areas();
     // Read only by the riscv64-only PMP audit block further down (the one
@@ -3753,7 +3747,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
             azos_drv_sys::uart::UART_IRQ,
             azos_drv_irqchip::irqchip::delivered(azos_drv_sys::uart::UART_IRQ));
     }
-    // aarch64 twin: PL011 RX interrupts taken since `arch_early_boot` wired
+    // aarch64 twin: PL011 RX interrupts taken since `boot_hooks::console_irq` wired
     // the line (nonzero only when the console received input). The INTID
     // printed is the DTB-derived one the handler matches on.
     #[cfg(target_arch = "aarch64")]

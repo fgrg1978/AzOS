@@ -68,19 +68,133 @@ pub trait ArchPlatform: Send + Sync {
     fn user_access(&self) -> Self::UserAccess;
 }
 
+/// What the firmware table says about RAM and CPUs, in the shape the generic
+/// early boot (`boot::early_main`) consumes. Produced by
+/// [`ArchEntry::firmware_memory`] from the ISA's own parsed table.
+#[derive(Clone, Copy, Debug)]
+pub struct FirmwareMemory {
+    /// First byte of RAM (physical).
+    pub mem_start: usize,
+    /// Bytes of RAM from `mem_start`.
+    pub mem_size: usize,
+    /// `true` when `mem_start`/`mem_size` came from the table, `false` for
+    /// the platform fallback (no table, or one without a usable memory node).
+    pub from_firmware: bool,
+    /// CPUs the table lists (0: none listed).
+    pub cpu_count: usize,
+    /// The boot CPU's logical id.
+    pub boot_cpu: usize,
+    /// Where `cpu_count` came from ("DTB", "none"), for the boot log.
+    pub cpu_source: &'static str,
+}
+
 /// The kernel boot sequence, per ISA (see the module doc for why the kernel,
 /// not the ISA crate, implements it).
+///
+/// The generic early boot (`boot::early_main`, kernel/src/boot/early.rs)
+/// owns the common steps, their order and their log lines, and calls the
+/// early-boot hooks below at the points where the ISAs differ, in the order
+/// they are declared here. Every hook is required (no default), so a new ISA
+/// cannot leave a step out silently.
 pub trait ArchEntry {
-    /// What the early hook hands back to `kernel_main` (heap bounds, CPU
-    /// count, ...). A kernel type, so arch-api cannot name it.
-    type Early;
+    /// The ISA's parsed firmware table (a device tree today; ACPI on a port
+    /// without one), handed back to the probe hooks.
+    type Firmware;
 
-    /// First Rust on the boot CPU: console, firmware table (`fw_table`, the
-    /// DTB pointer on riscv64/aarch64), memory map, allocator, MMU. CPU
-    /// discovery happens here: the hook hands the firmware's CPU count
-    /// (DTB `cpu@` nodes; ACPI MADT on a port that has no DTB) to the
-    /// kernel's per-CPU set-up (`boot::discover_cpus`).
-    fn early_boot(&self, hart_id: usize, fw_table: usize) -> Self::Early;
+    /// The page-table format, for the `[MM] Initializing VMM (...)` line.
+    const PAGE_TABLES: &'static str;
+
+    /// Before the console exists: state that must be read before the first
+    /// lock is taken (aarch64: `SCTLR_EL1`, proof the MMU is on before the
+    /// first atomic).
+    fn pre_console(&self);
+
+    /// The trap vector and the interrupt stacks it runs on, before any code
+    /// that can fault (riscv64: `stvec`; aarch64 and x86_64 install theirs
+    /// in assembly before Rust).
+    fn trap_init(&self);
+
+    /// The boot banner and the ISA's entry facts (CPU id, firmware pointer,
+    /// exception level, self-checks that need only the console).
+    fn boot_banner(&self, hart_id: usize, fw_table: usize);
+
+    /// Parse the firmware table at `fw_table` and report it.
+    fn firmware_table(&self, hart_id: usize, fw_table: usize) -> Self::Firmware;
+
+    /// Choose the interrupt controller the table describes (riscv64: PLIC or
+    /// AIA) and bind the table's devices.
+    fn irqchip_probe(&self, fw: &Self::Firmware);
+
+    /// Choose the timer the table describes and check its frequency.
+    fn timer_probe(&self, fw: &Self::Firmware);
+
+    /// The CPU extensions the table declares, each confirmed on this CPU
+    /// before it is used (riscv64: Zicboz, the vDSO hwcaps).
+    fn cpu_features(&self, fw: &Self::Firmware);
+
+    /// RAM and CPUs from the table, or the platform fallback.
+    fn firmware_memory(&self, fw: &Self::Firmware) -> FirmwareMemory;
+
+    /// The last use of the firmware table before the page allocator owns
+    /// RAM: read what must be read while the blob is intact, and report the
+    /// choices made from it (`num_cpus` is the discovered CPU count).
+    fn firmware_done(&self, fw_table: usize, num_cpus: usize);
+
+    /// Keep the firmware table's own pages out of the page allocator, where
+    /// the loader put it inside managed RAM.
+    fn reserve_firmware_table(&self, fw_table: usize);
+
+    /// Map the platform's device windows (beyond the console, which the
+    /// generic sequence maps) into the kernel table before it goes live.
+    fn kernel_mmio_map(&self);
+
+    /// Right after the kernel table went live (`vmm::enable_paging`): report
+    /// it and publish what secondary CPUs attach.
+    fn mmu_enabled(&self);
+
+    /// After W^X/NX: take RAM out of the half of the address space user
+    /// tables share (aarch64: TTBR0 keeps device windows only).
+    fn restrict_low_half(&self);
+
+    /// Read the null and stack guards back from the page table, and the
+    /// ISA's opt-in access probes.
+    fn verify_guards(&self);
+
+    /// After the heap: the ISA's allocator self-checks and audit logs.
+    fn post_heap(&self, heap_start: usize, kernel_end_aligned: usize);
+
+    /// The boot CPU's interrupt controller (PLIC/AIA, GIC), mapped and
+    /// initialised; interrupts are still masked at the CPU.
+    fn irqchip_init(&self, hart_id: usize, fw_table: usize);
+
+    /// Unmask the interrupt classes the boot CPU takes before the console
+    /// line is wired (riscv64: external + software; aarch64 waits for its
+    /// timer).
+    fn irq_enable_early(&self);
+
+    /// Wire the console's receive/transmit interrupt.
+    fn console_irq(&self, hart_id: usize, fw_table: usize);
+
+    /// Trigger types (edge/level) for lines ring 3 may bind, from the
+    /// firmware table, where this ISA reads them after the MMU is up.
+    fn irq_triggers(&self, fw_table: usize);
+
+    /// What a line's last ring-3 binding releases into at task exit.
+    fn line_release(&self) -> fn(u32);
+
+    /// Routing state for ring-3 lines and message-signalled interrupts
+    /// (riscv64: the boot hart; aarch64: the ITS).
+    fn irq_routing_init(&self, hart_id: usize);
+
+    /// How secondary CPUs are started (aarch64: the PSCI conduit).
+    fn smp_probe(&self, fw_table: usize);
+
+    /// The boot CPU's timer: frequency, the vDSO timebase, the first tick
+    /// where this ISA arms it during boot.
+    fn timer_init(&self);
+
+    /// Boot self-tests that need interrupts live.
+    fn boot_selftests(&self);
 
     /// Map device windows the early map did not cover, once the heap exists.
     fn map_late_mmio(&self);

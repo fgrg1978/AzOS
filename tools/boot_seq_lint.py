@@ -84,6 +84,7 @@ def scan(text, skip_fns=()):
     lines = text.split("\n")
     cur_fn = None
     fn_justified = False
+    stmt_justified = False
     comment_block = []
     for i, raw in enumerate(lines, 1):
         m = FN_RE.match(raw)
@@ -99,13 +100,19 @@ def scan(text, skip_fns=()):
         if cur_fn in skip_fns:
             comment_block = []
             continue
-        justified = fn_justified or MARK in trailing or any(MARK in c for c in comment_block)
+        # A marker above a statement covers it to its `;` (calls split over
+        # lines: `let x = unsafe {` / `step(...)` / `};`).
+        if any(MARK in c for c in comment_block):
+            stmt_justified = True
+        justified = fn_justified or stmt_justified or MARK in trailing
         for cm in CALL_RE.finditer(strip_strings(code)):
             s = step_of(cm.group(1))
             if s:
                 out.append((i, s, justified))
         if stripped and not stripped.startswith("#["):
             comment_block = []
+        if ";" in code:
+            stmt_justified = False
     return out
 
 
@@ -237,6 +244,10 @@ def self_test():
         ("a justified step also in early_main", tree(full, just, just), False),
         ("a marker above the fn covers its body",
          tree(rest, "}\n/// boot-seq: why\n#[inline(always)]\npub fn h2() {\n    crate::install_vdso(1);", just), True),
+        ("a marker above a split statement covers it",
+         tree(rest, "    // boot-seq: why\n    let v = unsafe {\n        crate::install_vdso(1)\n    };", just), True),
+        ("a marker does not outlive its statement",
+         tree(full, "    // boot-seq: why\n    let v = 1;\n    azos_mm::vmm::init(a, b);", ""), False),
         ("a late fn is not early boot",
          tree(full, "pub fn arch_wake_secondaries() { azos_mm::pmm::init(); }", ""), True),
         ("a step inside a string is not a call",

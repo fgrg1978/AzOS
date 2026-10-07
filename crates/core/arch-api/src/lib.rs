@@ -636,4 +636,4 @@ pub mod lat;
 // ──────────────────────────────────────────────────────────────────────────
 
 mod contract;
-pub use contract::{ArchEntry, ArchPlatform};
+pub use contract::{ArchEntry, ArchPlatform, FirmwareMemory};

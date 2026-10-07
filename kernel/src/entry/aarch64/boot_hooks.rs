@@ -1,60 +1,71 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! aarch64 boot hooks — kernel-main-merge task (2026-09-24).
+//! aarch64 boot hooks: the ISA-specific steps of the generic early boot
+//! (`boot::early_main`, kernel/src/boot/early.rs), which calls them through
+//! this ISA's `ArchEntry` (`arch_entry.rs`), plus the late VirtIO mapping,
+//! the PSCI `CPU_ON` secondary wake with its online readback and cross-core
+//! SGI proof, and the hand-off to the scheduler.
 //!
-//! Extracted verbatim from the former aarch64-only `kernel_main`'s own body:
-//! the FDT-handoff/FP self-checks, memory bring-up (PMM/VMM/heap, W^X/NX,
-//! TTBR0-device-only, guard pages), GICv3 + PSCI + EL1 timer bring-up and
-//! its own self-tests (svc, N-ticks, FP-survives-interrupt, IRQ-stack,
-//! TTBR1 alias), the PSCI `CPU_ON` secondary-hart wake with its
-//! online-readback + cross-core SGI proof, and the tail that hands off to
-//! the scheduler. See `entry::riscv64::boot_hooks` for the riscv64
-//! counterparts and `ordering-decisions.md` (kernel-main-merge task) for
-//! why each cut point is where it is.
-//!
-//! Every symbol here that used to be a bare reference into `main.rs` or
-//! `entry::aarch64` is now `crate::`-qualified — this file is a sibling
-//! module of `entry`, not a submodule of it.
+//! What is aarch64's own here: the entry-EL and SCTLR/FDT/FP proofs, the DTB
+//! reservation, TTBR1 publication and the device-only TTBR0, the guard
+//! readbacks and PAN probe, GICv3 + ITS, the PL011 interrupt, PSCI, the EL1
+//! virtual timer and the boot self-tests that need interrupts (svc, ticks,
+//! FP across an interrupt, IRQ stack, TTBR1 alias, granule, TCR). The common
+//! steps (console, memory map, page tables, W^X/NX, guards, heap) are in
+//! `early_main`; a common step kept here carries a `boot-seq:` reason
+//! (`tools/boot_seq_lint.py`).
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
 use azos_arch::mmu::PAGE_SIZE;
-use crate::EarlyBoot;
+use azos_arch::FirmwareMemory;
+use azos_arch::{gic, timer as arch_timer, Cpu, Interrupts, ARCH};
+use azos_drv_base::platform::hw;
+use core::sync::atomic::Ordering as AOrdering;
 
-/// Verbatim cut from the former aarch64 `kernel_main`'s own body, from its
-/// very first statement (must stay first — see the doc comment inline)
-/// through the TTBR1-alias self-check that closes Phase 2.
-pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
-    // Read BEFORE `uart::init()` — the very first atomic this kernel_main
-    // reaches is inside `uart::init()`'s `kprintln!` (`UartGuard`'s
-    // spinlock, a `compare_exchange`), so this is the closest a
-    // Rust-level read can get to proving the constraint `boot.S`'s
-    // `aarch64_early_mmu_init` call exists to satisfy: the MMU is ON
-    // before that first atomic runs. Printed further down, once
-    // `kprintln!` itself is safe to call.
-    let sctlr_before_first_lock = azos_arch::sysregs::read_sctlr_el1();
+/// `SCTLR_EL1` as read before the first lock (`pre_console`), printed by
+/// `boot_banner` once `kprintln!` is safe.
+static SCTLR_BEFORE_FIRST_LOCK: AtomicU64 = AtomicU64::new(0);
 
-    azos_drv_sys::uart::init();
-    // Which device is the console, chosen here rather than hardcoded at every
-    // call site. `sys_write` to fd 1/2 goes through `uart::console_write`,
-    // which dispatches on this registration; the kernel's own `kprintln!` and
-    // `kernel/src/panic.rs` deliberately stay on the direct path — a panic
-    // handler that depends on a registered implementation prints nothing
-    // exactly when it matters. Runs on the boot hart before
-    // `enable_smp_lock()`, which is the contract `console_register` states.
-    #[cfg(not(feature = "console-route-canary"))]
-    azos_drv_sys::uart::console_register(&azos_drv_sys::uart::CONSOLE);
-    // Gate-only: a console whose effect is VISIBLE, so the row can tell a live
-    // registration from the silent fallback. See `uart::CanaryConsole`.
-    #[cfg(feature = "console-route-canary")]
-    azos_drv_sys::uart::console_register(&azos_drv_sys::uart::CANARY_CONSOLE);
+/// The scheduler tick on aarch64. Mirrors `clint::SCHED_HZ`'s boot default
+/// (100 Hz): read by `timer_init` (the period) and `boot_selftests` (the
+/// expected tick time).
+const AARCH64_SCHED_HZ: u64 = 100;
 
-    // Written by boot.S before the EL2->EL1 drop (or left 0 if none was
-    // needed) — see that file's header comment.
+/// The parsed device tree (`None`: no pointer, or one that did not parse).
+pub struct Firmware {
+    info: Option<azos_dtb::DtbInfo>,
+}
+
+/// `true` when boot.S dropped from EL2 to EL1. Written by boot.S before the
+/// drop (or left 0 if none was needed); see that file's header comment.
+fn entered_at_el2() -> bool {
     unsafe extern "C" {
         static boot_entry_el: u8;
     }
-    let entry_el_2 = unsafe { core::ptr::read_volatile(&raw const boot_entry_el) } != 0;
+    unsafe { core::ptr::read_volatile(&raw const boot_entry_el) != 0 }
+}
+
+/// Read BEFORE `uart::init()`: the very first atomic `kernel_main` reaches
+/// is inside it (`UartGuard`'s spinlock, a `compare_exchange`), so this is
+/// the closest a Rust-level read can get to proving the constraint boot.S's
+/// `aarch64_early_mmu_init` call exists to satisfy: the MMU is ON before
+/// that first atomic runs. Printed by `boot_banner`.
+#[inline(always)]
+pub fn pre_console() {
+    SCTLR_BEFORE_FIRST_LOCK.store(azos_arch::sysregs::read_sctlr_el1(), Ordering::Relaxed);
+}
+
+/// Nothing: boot.S sets `VBAR_EL1` before any Rust runs.
+#[inline(always)]
+pub fn trap_init() {}
+
+/// The banner, the entry EL, then the proofs that need only the console:
+/// MMU on before the first lock, the FDT handoff in x0, FP/SIMD at EL1.
+#[inline(always)]
+pub fn boot_banner(hart_id: usize, dtb_ptr: usize) {
+    let entry_el_2 = entered_at_el2();
+    let sctlr_before_first_lock = SCTLR_BEFORE_FIRST_LOCK.load(Ordering::Relaxed);
 
     kprintln!();
     kprintln!("========================================");
@@ -118,95 +129,74 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
     // `f64::from_bits` keeps the gate's marker text unchanged.
     let fp = f64::from_bits(fp_self_check(1.5f64.to_bits(), 0.25f64.to_bits()));
     kprintln!("[BOOT] FP/SIMD at EL1: 1.5*1.5+0.25 = {}", fp);
+}
 
-    // ══════════════════════════════════════════════════════════════════
-    //  Memory bring-up (tasks 3/4) — mirrors riscv64's kernel_main below:
-    //  DTB → PMM → kernel page tables (W^X) → heap. Every step past the
-    //  DTB parse calls the SAME `crates/core/mm` functions riscv64 calls,
-    //  reached only through `azos_arch::ARCH` (`arch-api::Mmu`) —
-    //  nothing ISA-specific lives in `crates/core/mm` itself.
-    // ══════════════════════════════════════════════════════════════════
-    use azos_drv_base::platform::hw;
-
-    // `dtb_num_cpus` feeds Phase 4's SMP bring-up (idle-per-hart creation,
-    // `NUM_ONLINE_CPUS`'s pre-`wake_harts` estimate) — clamped to
-    // the Kconfig ceiling `NR_CPUS` here, once, by `boot::discover_cpus`
-    // (with a warning when it cuts), rather than at every later call site, and
-    // never 0 (this hart is always running, whatever the DTB says). The boot
-    // core is logical CPU 0 on this ISA (`boot.S`: `TPIDR_EL1` = 0).
-    let (mem_start, mem_size, mem_from_dtb, dtb_num_cpus) = if dtb_ptr != 0 {
-        match unsafe { azos_dtb::dtb_parse(dtb_ptr as *const u8) } {
-            Some(info) if info.mem_base != 0 && info.mem_size != 0 => {
-                kprintln!("[DTB] Parsed FDT — mem={:#x}+{:#x} ({} CPUs)",
-                    info.mem_base, info.mem_size, info.num_cpus);
-                (info.mem_base, info.mem_size, true, crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: info.num_cpus, boot_cpu: 0, source: "DTB" }))
-            }
-            Some(info) => {
-                kprintln!("[DTB] Parsed FDT but no usable /memory node — falling back");
-                (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: info.num_cpus, boot_cpu: 0, source: "DTB" }))
-            }
-            None => {
-                azos_drv_sys::kerr!("[DTB] Parse failed (invalid or unsupported FDT)");
-                (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: 0, boot_cpu: 0, source: "none" }))
-            }
+/// Parse the DTB and print what it says.
+#[inline(always)]
+pub fn firmware_table(_hart_id: usize, dtb_ptr: usize) -> Firmware {
+    if dtb_ptr == 0 {
+        return Firmware { info: None };
+    }
+    // boot-seq: the firmware-table format is the ISA's (a DTB here and on
+    // riscv64, PVH/ACPI on x86_64), and each prints its own lines.
+    let info = unsafe { azos_dtb::dtb_parse(dtb_ptr as *const u8) };
+    match &info {
+        Some(info) if info.mem_base != 0 && info.mem_size != 0 => {
+            kprintln!("[DTB] Parsed FDT — mem={:#x}+{:#x} ({} CPUs)",
+                info.mem_base, info.mem_size, info.num_cpus);
         }
-    } else {
-        (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: 0, boot_cpu: 0, source: "none" }))
+        Some(_) => kprintln!("[DTB] Parsed FDT but no usable /memory node — falling back"),
+        None => azos_drv_sys::kerr!("[DTB] Parse failed (invalid or unsupported FDT)"),
+    }
+    Firmware { info }
+}
+
+/// Nothing to choose: QEMU `virt` with `gic-version=3` is the only interrupt
+/// controller this ISA drives (`gic`), at fixed addresses.
+#[inline(always)]
+pub fn irqchip_probe(_fw: &Firmware) {}
+
+/// Nothing to choose: the EL1 virtual timer; its frequency is read live from
+/// `CNTFRQ_EL0` in `timer_init`.
+#[inline(always)]
+pub fn timer_probe(_fw: &Firmware) {}
+
+/// Nothing taken from the DTB: aarch64 features come from the ID registers
+/// (`azos_arch::features`), probed by the ISA crate.
+#[inline(always)]
+pub fn cpu_features(_fw: &Firmware) {}
+
+/// RAM from the DTB's `/memory` node, or the platform fallback. The boot
+/// core is logical CPU 0 on this ISA (boot.S: `TPIDR_EL1` = 0).
+#[inline(always)]
+pub fn firmware_memory(fw: &Firmware) -> FirmwareMemory {
+    let (mem_start, mem_size, from_firmware) = match &fw.info {
+        Some(i) if i.mem_base != 0 && i.mem_size != 0 => (i.mem_base, i.mem_size, true),
+        _ => (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false),
     };
-    // The PCI host bridge's ECAM and `ranges`, for `kernel_main`'s PCI
-    // block. Read here, with the same pointer as `dtb_parse`, as riscv64
-    // does.
-    let pci_host = if dtb_ptr != 0 {
-        unsafe { azos_dtb::dtb_pci_host(dtb_ptr as *const u8) }
+    let (cpu_count, cpu_source) = match &fw.info {
+        Some(i) => (i.num_cpus, "DTB"),
+        None => (0, "none"),
+    };
+    FirmwareMemory { mem_start, mem_size, from_firmware, cpu_count, boot_cpu: 0, cpu_source }
+}
+
+/// Nothing: the blob is reserved (`reserve_firmware_table`) and read again
+/// after the GIC is up.
+#[inline(always)]
+pub fn firmware_done(_dtb_ptr: usize, _num_cpus: usize) {}
+
+/// The DTB blob itself, out of the page allocator: QEMU places the FDT
+/// INSIDE the managed RAM window here, so the allocator must never hand out
+/// a page still holding it (riscv64 reads its blob in full before
+/// `pmm::init` instead).
+#[inline(always)]
+pub fn reserve_firmware_table(dtb_ptr: usize) {
+    let dtb_probe = if dtb_ptr != 0 {
+        unsafe { azos_dtb::dtb_probe(dtb_ptr as *const u8) }
     } else {
         None
     };
-
-    let kernel_end = unsafe { &crate::_kernel_end as *const u8 as usize };
-    let kernel_end_aligned = (kernel_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    // `pmm` manages PHYSICAL frames (it shares `mem_start`'s address space,
-    // which comes straight from the DTB's `/memory` node — a PA range).
-    // `kernel_end_aligned` above is the kernel's own VA (a linker symbol's
-    // address) — identical to its PA today (`virt_to_phys` is a no-op, see
-    // `azos_mm::addr`'s module doc), but the two are NOT the same
-    // *role*: `kernel_end_aligned` stays a VA below, where `enforce_wx`/
-    // `split_mega_range` take it as the end of a virtual sweep range
-    // (paired with `text_start`, itself a VA) — only this one PMM call
-    // needs the PA.
-    let kernel_end_pa = azos_mm::addr::virt_to_phys(kernel_end_aligned);
-    kprintln!("[MM] Kernel end:  {:#x} (aligned: {:#x})", kernel_end, kernel_end_aligned);
-    if mem_from_dtb {
-        kprintln!("[MM] RAM detected via DTB: {:#x} - {:#x} ({} MiB)",
-            mem_start, crate::mem_range_end(mem_start, mem_size), mem_size >> 20);
-    } else {
-        kprintln!("[MM] RAM fallback (no DTB): {:#x} - {:#x} ({} MiB)",
-            mem_start, crate::mem_range_end(mem_start, mem_size), mem_size >> 20);
-    }
-
-    // MARKER, asserted by the gate. Canary: hand-build a DTB `/memory`
-    // node with `mem_base` > this image's own `crate::_kernel_end` (impossible on
-    // real hardware — the image is loaded INTO the range it reports) and
-    // this line prints instead of `pmm::init` underflowing
-    // `kernel_end - mem_start` into a board reset.
-    if !azos_mm::pmm::init(mem_start, mem_size, kernel_end_pa) {
-        azos_drv_sys::kerr!("[MM] FAILED: refused memory map — mem_start {:#x} > kernel_end {:#x} \
-                   (DTB claims RAM starts after the kernel's own image, which is impossible \
-                   on real hardware)", mem_start, kernel_end_pa);
-        loop { azos_arch::cpu::wfi(); }
-    }
-
-    {
-        let stack_start = unsafe { &crate::_stack_start as *const u8 as usize };
-        let stack_end   = unsafe { &crate::_stack_end   as *const u8 as usize };
-        kprintln!("[MM] Boot stack reserved: {:#x} - {:#x} ({} KiB)",
-            stack_start, stack_end, (stack_end - stack_start) >> 10);
-    }
-
-    // Reserve the DTB blob itself — riscv64's kernel_main does not need
-    // this (OpenSBI's DTB placement there sits below `mem_start` on every
-    // board this tree boots), but aarch64's QEMU places the FDT INSIDE
-    // the managed RAM window (task 3 requires reserving it explicitly so
-    // the allocator never hands out a page still holding it).
     if let Some((_, totalsize)) = dtb_probe {
         let dtb_start = dtb_ptr & !(PAGE_SIZE - 1);
         let dtb_end = (dtb_ptr + totalsize as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
@@ -220,55 +210,19 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
                 dtb_start, dtb_end);
         }
     }
+}
 
-    // Panic record region (pstore): the top of RAM, out of the allocator
-    // before anything allocates. The DTB's own range rules out an overlap.
-    let dtb_range = dtb_probe.map(|(_, total)| (dtb_ptr, dtb_ptr + total as usize));
-    crate::pstore::reserve(mem_start, mem_size, kernel_end_pa, dtb_range);
+/// Nothing beyond the console before the table goes live: the GIC is mapped
+/// in `irqchip_init` (after the heap) and VirtIO in `arch_map_late_mmio`.
+#[inline(always)]
+pub fn kernel_mmio_map() {}
 
-    kprintln!("[MM] PMM: {} total pages, {} free, {} used",
-        azos_mm::pmm::total_pages(),
-        azos_mm::pmm::free_pages(),
-        azos_mm::pmm::used_pages());
-    // MARKER, asserted by the gate (PMM frame count > 0). Canary: force
-    // `mem_size = 0` (e.g. corrupt the DTB's `/memory` node) and this
-    // path is reached — `total_pages()` is 0, so `free_pages() == 0` too.
-    if azos_mm::pmm::free_pages() == 0 {
-        azos_drv_sys::kerr!("[MM] FAILED: no free pages after reserving the kernel \
-                   ({} pages managed, image ends at {:#x})",
-            azos_mm::pmm::total_pages(), kernel_end_aligned);
-        loop { azos_arch::cpu::wfi(); }
-    }
-
-    kprintln!("[MM] Initializing VMM (aarch64 3-level page tables)...");
-    match azos_mm::vmm::init(mem_start, mem_size) {
-        Ok(()) => kprintln!("[MM] VMM initialized (megapages), kernel PT created"),
-        Err(e) => {
-            azos_drv_sys::kerr!("[MM] VMM init FAILED: {:?}", e);
-            loop { azos_arch::cpu::wfi(); }
-        }
-    }
-
-    // MMIO: UART only, for this milestone. GICD/GICR mapping is deferred
-    // to whichever wave wires interrupts into this real kernel_main (this
-    // task's scope is memory, and nothing here touches the GIC yet — see
-    // `tests/qemu/aarch64-smoke` for the GIC init this kernel does not call).
-    let _ = azos_mm::vmm::map_mmio_region(hw::UART_BASE, 0x1000);
-    kprintln!("[MM] Platform MMIO mapped ({})", hw::PLATFORM_NAME);
-
-    // Table switch, not an MMU enable — the MMU has been on since
-    // `aarch64_early_mmu_init` (`ARCH.switch_pt` is a TTBR0_EL1 write + ISB;
-    // see `arch-aarch64::api_impl`). `enable_paging` itself calls
-    // `ARCH.switch_kernel_pt`, a DIFFERENT method that writes `TTBR1_EL1`
-    // (kernel-side, upper half) rather than `TTBR0_EL1` (task-side, lower
-    // half) — the aarch64 TTBR1 migration's whole point (see `mmu_setup::
-    // enable_ttbr1_alias`'s doc). The bootstrap identity map's TTBR0
-    // mapping served its one purpose (surviving the first atomic) and its
-    // ROLE — carrying the kernel's own translations — is abandoned here in
-    // favor of the real, PMM-backed, soon-to-be W^X-enforced kernel table,
-    // now reached through TTBR1 instead. TTBR0 itself is not touched by
-    // this call; U01-2's fix (below, after W^X/NX) is what changes it.
-    azos_mm::vmm::enable_paging();
+/// The kernel table now in `TTBR1_EL1` (`vmm::enable_paging` calls
+/// `ARCH.switch_kernel_pt`); the MMU itself has been on since boot.S's
+/// `aarch64_early_mmu_init`, and TTBR0 is untouched until
+/// `restrict_low_half`.
+#[inline(always)]
+pub fn mmu_enabled() {
     kprintln!("[MM] Kernel page tables active (TTBR1_EL1 switched)");
 
     // U01-1: publish the REAL kernel table's PA for every secondary's
@@ -292,90 +246,12 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
     // whole kernel image (RAM included) reachable by physical address
     // through TTBR0 forever. The real publish is after the device-only
     // table is installed, below.
+}
 
-    // W^X enforcement — identical call sequence to riscv64's, below.
-    unsafe {
-        let text_start = &crate::_text_start as *const u8 as usize;
-        let text_end   = &crate::_text_end as *const u8 as usize;
-        let ro_start   = &crate::_rodata_start as *const u8 as usize;
-        let ro_end     = &crate::_rodata_end as *const u8 as usize;
-        let data_start = &crate::_data_start as *const u8 as usize;
-
-        let unsplit = azos_mm::vmm::split_mega_range(text_start, kernel_end_aligned);
-        if unsplit != 0 {
-            azos_drv_sys::kwarn!("[MM] W^X WARN: {} megapage(s) unsplit (out of memory)", unsplit);
-        }
-
-        // Gate canary `wx-skip-canary`: the image keeps its boot-time leaves.
-        #[cfg(not(feature = "wx-skip-canary"))]
-        azos_mm::vmm::enforce_wx(
-            text_start, text_end,
-            ro_start, ro_end,
-            data_start, kernel_end_aligned,
-        );
-
-        let rep = azos_mm::vmm::verify_wx(
-            text_start, text_end,
-            ro_start, ro_end,
-            data_start, kernel_end_aligned,
-        );
-        if rep.is_clean() {
-            // MARKER, asserted by the gate.
-            kprintln!(
-                "[MM] W^X ok: {} pages checked, RX/RO/RW as planned",
-                rep.checked,
-            );
-        } else {
-            azos_drv_sys::kerr!(
-                "[MM] W^X FAILED: {} pages checked, {} W+X, {} wrong-flags, \
-                 {} unmapped, {} unsplit-mega, first bad {:#x}",
-                rep.checked, rep.write_exec, rep.wrong_flags,
-                rep.unmapped, rep.unsplit_megapage, rep.first_bad,
-            );
-        }
-
-        // The sweep walks the KERNEL's own page table, so its range must be
-        // in the kernel's own virtual addresses — `text_start` and
-        // `kernel_end_aligned` already are (the linker gives high VAs), while
-        // `mem_start`/`mem_size` come from the DTB and are physical. Mixing
-        // the two is not a cosmetic error here: with the kernel in TTBR1, a
-        // low VA and its high alias resolve to the SAME table entries, so a
-        // sweep started at a physical address strips execute permission from
-        // the kernel's own text and the next instruction fetch dies silently.
-        let mem_start_va = azos_mm::addr::phys_to_virt(mem_start);
-        let mem_end_va = azos_mm::addr::phys_to_virt(crate::mem_range_end(mem_start, mem_size));
-        let stripped = {
-            // Gate canary `nx-skip-canary`: the sweep covers nothing.
-            #[cfg(feature = "nx-skip-canary")]
-            let mem_end_va = mem_start_va;
-            azos_mm::vmm::strip_exec_outside_image(
-                mem_start_va, mem_end_va, text_start, kernel_end_aligned,
-            )
-        };
-        let left = azos_mm::vmm::verify_no_exec_outside_image(
-            mem_start_va, mem_end_va, text_start, kernel_end_aligned,
-        );
-        // The `mm_wx_image` / `mm_nx_outside_image` ktests re-read these.
-        #[cfg(feature = "ktest")]
-        crate::ktest::note_image(crate::ktest::Image {
-            text: (text_start, text_end), ro: (ro_start, ro_end),
-            data: (data_start, kernel_end_aligned), mem: (mem_start_va, mem_end_va),
-        });
-        if left.is_empty() {
-            // MARKER, asserted by the gate.
-            kprintln!(
-                "[MM] NX outside the image: {} MiB stripped, none left executable",
-                stripped.bytes() >> 20,
-            );
-        } else {
-            azos_drv_sys::kerr!(
-                "[MM] NX FAILED: {} MiB still executable outside the image \
-                 ({} megapages, {} pages, first {:#x})",
-                left.bytes() >> 20, left.megapages, left.pages, left.first,
-            );
-        }
-    }
-
+/// Before the null guard means anything on this ISA: the low half must stop
+/// being the bootstrap identity map.
+#[inline(always)]
+pub fn restrict_low_half() {
     // Before the null guard means anything on this ISA: the low half must
     // stop being the bootstrap identity map. Until this runs, TTBR0 still
     // maps all RAM (so a kernel bug can reach any page by its physical
@@ -421,24 +297,12 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
             crate::entry::aarch64::AARCH64_KERNEL_TTBR0.store(kpt as u64, Ordering::Release);
         }
     }
+}
 
-    azos_mm::vmm::null_guard();
-    kprintln!("[MM] Null pointer guard active (page 0 unmapped)");
-
-    // Guard pages: unmap the bottom 4 KiB of every task's KERNEL stack so a
-    // kernel-mode stack overflow faults immediately instead of silently
-    // corrupting whatever sits below it. Same call riscv64's kernel_main
-    // makes (see that call site, `crates/core/sched::setup_stack_guard_pages`,
-    // for the full rationale) — SHARED code, reached the same way W^X/NX
-    // are above: through `crates/core/mm::vmm` and `azos_arch::ARCH`, with
-    // nothing ISA-specific in `crates/core/sched` either. Previously missing on
-    // this ISA only because this call site never made it — the function
-    // itself was always arch-generic.
-    // Gate canary `stack-guard-skip-canary`: no task stack gets its guard.
-    #[cfg(not(feature = "stack-guard-skip-canary"))]
-    azos_sched::setup_stack_guard_pages();
-    kprintln!("[MM] Stack guard pages active");
-
+/// The null and stack guards read back from the page table, and the opt-in
+/// PAN probe (`pan-probe`).
+#[inline(always)]
+pub fn verify_guards() {
     // Read back BOTH guards rather than trust the calls above returned —
     // the same principle `verify_wx`/`verify_no_exec_outside_image` apply to
     // W^X/NX a few lines up. MARKERS, asserted by the gate.
@@ -465,34 +329,6 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
             azos_drv_sys::kerr!("[MM] FAILED: stack guard readback — {}/{} stack bottoms unmapped",
                 unmapped, total);
         }
-    }
-
-    // ── Guard-page fault probes (opt-in only; never part of a normal boot) ──
-    //
-    // `setup_stack_guard_pages()`/`null_guard()` printing "active" and the
-    // readback above translating `None` both prove the PTE is gone — neither
-    // proves a real access actually traps there instead of, say, reading
-    // stale data from a TLB crate::entry the unmap forgot to flush. These two
-    // features each deliberately touch ONE guard and never return: the boot
-    // is expected to die in the SAME "[FATAL] aarch64 kernel page fault"
-    // path an accidental kernel-mode overflow/null-deref would hit (see
-    // `crate::entry::aarch64::handle_page_fault`) — this is not new fault-handling
-    // policy, just a scripted trigger for the policy that is already there.
-    // `tools/ci_check.sh`'s two "aarch64 guard: ... probe faults" rows build
-    // with exactly one of these features and check the FATAL line names the
-    // SAME address this block just printed.
-    #[cfg(feature = "guard-fault-probe-stack")]
-    {
-        let addr = azos_sched::stack_guard_addr(0);
-        kprintln!("[MM] GUARD PROBE: writing to stack guard at {:#x} (must fault)", addr);
-        unsafe { core::ptr::write_volatile(addr as *mut u8, 0xAA) };
-        azos_drv_sys::kerr!("[MM] GUARD PROBE FAILED: write to {:#x} did not fault", addr);
-    }
-    #[cfg(feature = "guard-fault-probe-null")]
-    {
-        kprintln!("[MM] GUARD PROBE: writing to null guard at {:#x} (must fault)", 0usize);
-        unsafe { core::ptr::write_volatile(0usize as *mut u8, 0xAA) };
-        azos_drv_sys::kerr!("[MM] GUARD PROBE FAILED: write to {:#x} did not fault", 0usize);
     }
 
     // O3.2 (owner decision, PAN): a fresh USER-tagged page, read from EL1
@@ -522,505 +358,513 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
             Err(_) => kprintln!("[MM] PAN PROBE: could not allocate a scratch page"),
         }
     }
+}
 
-    // Heap — same shape as riscv64's: reserve first, then init, so no
-    // window exists where `alloc_page()` could hand out a page the heap
-    // is about to claim.
-    let heap_start = azos_mm::pmm::next_free_addr();
-    kprintln!("[MM] Heap: {:#x}, {} KiB", heap_start, crate::HEAP_SIZE / 1024);
-    if !azos_mm::pmm::range_is_free(heap_start, crate::HEAP_SIZE) {
-        azos_drv_sys::kerr!("[MM] Heap FAILED: [{:#x}, {:#x}) is not all free RAM",
-            heap_start, heap_start + crate::HEAP_SIZE);
-        loop { azos_arch::cpu::wfi(); }
-    }
-    azos_mm::pmm::reserve_range(heap_start, crate::HEAP_SIZE);
-    // `heap_start` is PHYSICAL — `pmm::next_free_addr` deals in frames. The
-    // allocator writes its own free-list bookkeeping THROUGH this pointer,
-    // so it must be the kernel's own view of that memory: identity on
-    // riscv64, the upper half on aarch64.
-    let heap_start_va = azos_mm::addr::phys_to_virt(heap_start);
-    unsafe { azos_mm::kheap::init(heap_start_va, crate::HEAP_SIZE) };
-    kprintln!("[MM] Heap initialized");
-
-    {
-        // MARKER, asserted by the gate: a real heap allocation, not just
-        // an announcement that `kheap::init` returned.
-        let mut v = alloc::vec![1u32, 2, 3, 4, 5];
-        v.push(6);
-        kprintln!("[MM] Heap test: Vec = {:?}", v);
-    }
-
-    // Same function, same paint pattern, same three linker symbols
-    // riscv64's kernel_main reads at the end of its own boot — see that
-    // function's call site for the full rationale.
+/// The boot stack's high-water mark (the same report riscv64 prints from
+/// `arch_enter_scheduler`).
+#[inline(always)]
+pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
     crate::boot_stack_report();
+}
 
-    // ══════════════════════════════════════════════════════════════════
-    //  Phase 2 (this task): GICv3 + EL1 virtual timer + a trap policy
-    //  that can actually return, on top of the memory bring-up above.
-    //  Order: IRQ-stack bounds published -> GIC up -> timer armed ->
-    //  IRQs unmasked -> three self-checks -> park. Everything below is
-    //  new for this task; nothing above this comment changed.
-    // ══════════════════════════════════════════════════════════════════
+/// GICv3: the IRQ stacks first, then the GIC MMIO and the distributor,
+/// redistributor(0) and CPU interface, with the timer PPI and SGI 0.
+///
+/// boot-seq: the GIC/ITS windows are mapped here, after the heap, not in
+/// `kernel_mmio_map`: moving them would move the `[GIC] MMIO mapped` line.
+#[inline(always)]
+pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
+    kprintln!();
+
+    // Per-CPU IRQ stack: magic word + published [base, top), BEFORE
+    // anything below can take an interrupt — same ordering
+    // constraint riscv64's `irq_stacks_arm()` documents.
+    crate::aarch64_irq_stacks_arm();
+
+    // GIC MMIO — Device memory, mapped the same way UART already is
+    // above. `GICR_STRIDE` covers ONE PE's 128 KiB redistributor frame;
+    // Phase 2 mapped only the first (hart 0 was the only PE that would
+    // ever walk this range). Phase 4 (SMP) needs the WHOLE range mapped
+    // BEFORE any secondary starts: `arch-aarch64::smp::secondary_init`
+    // walks `find_redistributor` up to `crate::MAX_HARTS` frames looking for
+    // its own affinity, and a walk past a single mapped frame data-
+    // aborts on unmapped Device space. Canary (a): map only one frame
+    // here again — see this task's report for whether the row actually
+    // fails (`map_mmio_region`'s own granularity may already cover more
+    // than one frame, which would make this canary a non-discriminating
+    // one; verified, not assumed).
+    let _ = azos_mm::vmm::map_mmio_region(gic::GICD_BASE, 0x1_0000);
+    let _ = azos_mm::vmm::map_mmio_region(gic::GICR_BASE, gic::GICR_STRIDE * crate::MAX_HARTS);
+    // ITS control + translation frames (RFC-0046 stage 1a). 0x2_0000
+    // covers both 64 KiB frames `azos_arch::its::translater_address`
+    // assumes — see that function's doc for the exact frame layout.
+    let _ = azos_mm::vmm::map_mmio_region(azos_arch::its::ITS_BASE, 0x2_0000);
+    // URGENT fix (coordinator, 2026-09-26): `map_mmio_region` mirrors
+    // into `DEVICE_PT` too once U01-2's fix installed it (`install_
+    // device_only_ttbr0`, above) — but it writes the new PTEs with a
+    // plain `write_volatile`, no barrier, and by THIS point in boot
+    // `DEVICE_PT` is the LIVE `TTBR0_EL1` on this hart. A brand-new
+    // fault->valid PTE (and, worse, a brand-new intermediate L1/L2
+    // table descriptor when the walk had to allocate one) written into
+    // the table this core is CURRENTLY translating through is not
+    // guaranteed visible to the next translation table walk without a
+    // `dsb ishst` + TLB invalidate + `isb` — exactly what
+    // `ARCH.flush_tlb_all()` (`tlbi_vmalle1is`) already does. Without
+    // this, `init_redistributor(0)` below (or `init_distributor()`)
+    // faults on the GICR/GICD access it JUST mapped: measured as
+    // `[FATAL] aarch64 kernel page fault: read/exec at 0x80a0014`
+    // (GICR_WAKER) — the mapping printed as done, the very next access
+    // to it still saw a translation fault. Same class of hazard
+    // applies to `arch_map_late_mmio`'s own `map_mmio_region` call
+    // (virtio), fixed there too.
     {
-        use core::sync::atomic::Ordering as AOrdering;
-        use azos_arch::{gic, timer as arch_timer, Cpu, Interrupts, ARCH};
+        use azos_arch::Mmu;
+        azos_arch::ARCH.flush_tlb_all();
+    }
+    kprintln!("[GIC] MMIO mapped: GICD={:#x} GICR={:#x} (x{} frames)",
+        gic::GICD_BASE, gic::GICR_BASE, crate::MAX_HARTS);
 
-        kprintln!();
+    gic::init_distributor();
+    gic::init_redistributor(0);
+    // Also sets ICC_SRE_EL1.SRE=1 — task 2's EL1-path requirement.
+    // On the EL2 crate::entry path `_azos_drop_to_el1` already granted EL1
+    // permission to touch that bit (ICC_SRE_EL2.SRE+Enable); this is
+    // what actually turns the EL1 system-register interface on,
+    // needed on BOTH crate::entry paths.
+    gic::init_cpu_interface();
+    gic::enable_ppi(0, crate::entry::aarch64::TIMER_PPI_ENABLED); // EL1 virtual timer, PPI 27
+    // SGI 0 — this kernel's cross-core IPI (Phase 4). Enabled on hart 0
+    // here, on every secondary inside `smp::secondary_init`'s caller
+    // (`secondary_main`) — see `crate::entry::aarch64::handle_irq`
+    // for the receive side.
+    gic::enable_ppi(0, 0);
+    kprintln!("[GIC] distributor + redistributor(0) + CPU interface \
+               initialized, PPI {} + SGI 0 enabled", crate::entry::aarch64::TIMER_PPI_ENABLED);
+}
 
-        // Per-CPU IRQ stack: magic word + published [base, top), BEFORE
-        // anything below can take an interrupt — same ordering
-        // constraint riscv64's `irq_stacks_arm()` documents.
-        crate::aarch64_irq_stacks_arm();
+/// Nothing yet: `timer_init` unmasks IRQs once the tick is armed.
+#[inline(always)]
+pub fn irq_enable_early() {}
 
-        // GIC MMIO — Device memory, mapped the same way UART already is
-        // above. `GICR_STRIDE` covers ONE PE's 128 KiB redistributor frame;
-        // Phase 2 mapped only the first (hart 0 was the only PE that would
-        // ever walk this range). Phase 4 (SMP) needs the WHOLE range mapped
-        // BEFORE any secondary starts: `arch-aarch64::smp::secondary_init`
-        // walks `find_redistributor` up to `crate::MAX_HARTS` frames looking for
-        // its own affinity, and a walk past a single mapped frame data-
-        // aborts on unmapped Device space. Canary (a): map only one frame
-        // here again — see this task's report for whether the row actually
-        // fails (`map_mmio_region`'s own granularity may already cover more
-        // than one frame, which would make this canary a non-discriminating
-        // one; verified, not assumed).
-        let _ = azos_mm::vmm::map_mmio_region(gic::GICD_BASE, 0x1_0000);
-        let _ = azos_mm::vmm::map_mmio_region(gic::GICR_BASE, gic::GICR_STRIDE * crate::MAX_HARTS);
-        // ITS control + translation frames (RFC-0046 stage 1a). 0x2_0000
-        // covers both 64 KiB frames `azos_arch::its::translater_address`
-        // assumes — see that function's doc for the exact frame layout.
-        let _ = azos_mm::vmm::map_mmio_region(azos_arch::its::ITS_BASE, 0x2_0000);
-        // URGENT fix (coordinator, 2026-09-26): `map_mmio_region` mirrors
-        // into `DEVICE_PT` too once U01-2's fix installed it (`install_
-        // device_only_ttbr0`, above) — but it writes the new PTEs with a
-        // plain `write_volatile`, no barrier, and by THIS point in boot
-        // `DEVICE_PT` is the LIVE `TTBR0_EL1` on this hart. A brand-new
-        // fault->valid PTE (and, worse, a brand-new intermediate L1/L2
-        // table descriptor when the walk had to allocate one) written into
-        // the table this core is CURRENTLY translating through is not
-        // guaranteed visible to the next translation table walk without a
-        // `dsb ishst` + TLB invalidate + `isb` — exactly what
-        // `ARCH.flush_tlb_all()` (`tlbi_vmalle1is`) already does. Without
-        // this, `init_redistributor(0)` below (or `init_distributor()`)
-        // faults on the GICR/GICD access it JUST mapped: measured as
-        // `[FATAL] aarch64 kernel page fault: read/exec at 0x80a0014`
-        // (GICR_WAKER) — the mapping printed as done, the very next access
-        // to it still saw a translation fault. Same class of hazard
-        // applies to `arch_map_late_mmio`'s own `map_mmio_region` call
-        // (virtio), fixed there too.
-        {
-            use azos_arch::Mmu;
-            azos_arch::ARCH.flush_tlb_all();
-        }
-        kprintln!("[GIC] MMIO mapped: GICD={:#x} GICR={:#x} (x{} frames)",
-            gic::GICD_BASE, gic::GICR_BASE, crate::MAX_HARTS);
-
-        gic::init_distributor();
-        gic::init_redistributor(0);
-        // Also sets ICC_SRE_EL1.SRE=1 — task 2's EL1-path requirement.
-        // On the EL2 crate::entry path `_azos_drop_to_el1` already granted EL1
-        // permission to touch that bit (ICC_SRE_EL2.SRE+Enable); this is
-        // what actually turns the EL1 system-register interface on,
-        // needed on BOTH crate::entry paths.
-        gic::init_cpu_interface();
-        gic::enable_ppi(0, crate::entry::aarch64::TIMER_PPI_ENABLED); // EL1 virtual timer, PPI 27
-        // SGI 0 — this kernel's cross-core IPI (Phase 4). Enabled on hart 0
-        // here, on every secondary inside `smp::secondary_init`'s caller
-        // (`secondary_main`) — see `crate::entry::aarch64::handle_irq`
-        // for the receive side.
-        gic::enable_ppi(0, 0);
-        kprintln!("[GIC] distributor + redistributor(0) + CPU interface \
-                   initialized, PPI {} + SGI 0 enabled", crate::entry::aarch64::TIMER_PPI_ENABLED);
-
-        // PL011 console RX on interrupts (wave 7), the riscv64 PLIC/APLIC
-        // UART path's twin. The INTID comes from the DTB's PL011 node (QEMU
-        // `virt`: `interrupts = <0 1 4>`, SPI 1 level -> INTID 33), never
-        // from `uart::UART_IRQ`, which is only printed next to it so a
-        // disagreement shows. Wired only when that node's `reg` is the UART
-        // this kernel drives; otherwise the console stays polled (the
-        // shell's 20 ms `readline` poll of the FIFO), exactly as before.
-        //
-        // Order: publish the INTID for `handle_irq` -> route + enable the
-        // SPI at the GIC -> unmask RX/RX-timeout in the PL011 (which also
-        // switches `uart::can_read` to the ring). IRQs are still masked at
-        // the PE here (`ARCH.enable_all()` is below), and a byte already
-        // waiting in the FIFO raises the level line as soon as they are not.
-        {
-            let found = if dtb_ptr != 0 {
-                unsafe {
-                    azos_dtb::dtb_pl011_irq(
-                        azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8)
-                }
-            } else {
-                None
-            };
-            match found {
-                Some(p) if p.base == hw::UART_BASE => {
-                    crate::entry::aarch64::PL011_RX_INTID.store(p.intid, AOrdering::Release);
-                    let mpidr = azos_arch::mpidr::read_mpidr().raw;
-                    gic::route_spi(p.intid, mpidr, p.edge);
-                    let (router, edge, enabled) = gic::spi_state(p.intid);
-                    kprintln!("[IRQ] PL011 {:#x}: DTB INTID {} ({}) (platform const {}), \
-                               IROUTER={:#x} (MPIDR {:#x}) enabled={}",
-                        p.base, p.intid, if edge { "edge" } else { "level" },
-                        azos_drv_sys::uart::UART_IRQ, router, mpidr, enabled);
-                    #[cfg(not(feature = "pl011-rx-irq-canary"))]
-                    {
-                        azos_drv_sys::uart::enable_irq();
-                        azos_drv_sys::uart::set_rx_wake_wired();
-                        kprintln!("[IRQ] PL011 RX interrupt enabled (ring buffer RX)");
-                        // The same SPI now feeds the PL011 from the
-                        // console's TX ring. Not under the RX canary: that
-                        // row's console stays polled end to end.
-                        azos_drv_sys::uart::enable_tx_irq();
-                    }
-                    #[cfg(feature = "pl011-rx-irq-canary")]
-                    kprintln!("[IRQ] PL011 RX interrupt LEFT MASKED (pl011-rx-irq-canary): console polled");
-                }
-                Some(p) => kprintln!("[IRQ] PL011 in DTB at {:#x}, not the console at {:#x}: \
-                                      RX interrupt not wired, console polled", p.base, hw::UART_BASE),
-                None => kprintln!("[IRQ] no PL011 interrupt in the DTB (dtb={:#x}): \
-                                   RX interrupt not wired, console polled", dtb_ptr),
-            }
-        }
-
-        // Trigger types for ring-3 SPIs (wave 9 IRQ4): `gic::user_spi_bind`
-        // programs ICFGR from this instead of always level. The boot line
-        // names two lines QEMU `virt` describes with opposite triggers (the
-        // PL031's SPI 2 level, the first virtio-mmio slot's SPI 16 edge).
-        // A line whose last ring-3 binding goes at task exit is masked and
-        // handed back (`irq_bind::irq_unbind_all` -> the release hook).
-        {
-            let found = if dtb_ptr != 0 {
-                unsafe {
-                    azos_dtb::dtb_irq_triggers(
-                        azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8,
-                        azos_dtb::IrqController::GicV3)
-                }
-            } else {
-                None
-            };
-            match found {
-                Some(t) => {
-                    for intid in 32..1020 {
-                        if let Some(edge) = t.edge(intid) {
-                            gic::note_dtb_trigger(intid, edge);
-                        }
-                    }
-                    let (n, e) = t.counts();
-                    let name = |i: u32| match gic::dtb_trigger(i) {
-                        Some(true) => "edge",
-                        Some(false) => "level",
-                        None => "absent",
-                    };
-                    kprintln!("[IRQ] DTB triggers (GICv3): {} SPIs, {} edge; INTID 34 {}, INTID 48 {}",
-                        n, e, name(34), name(48));
-                }
-                None => kprintln!("[IRQ] DTB triggers: no GICv3 node with 3-cell specifiers"),
-            }
-            azos_ipc::irq_bind::set_line_release_hook(gic::user_spi_release);
-        }
-
-        // RFC-0046 stage 1a: bring the ITS up and enable LPIs on hart 0's
-        // redistributor. `rd_base` here is EXACTLY the frame
-        // `init_redistributor(0)` two lines up already programmed
-        // (`gic::GICR_BASE + 0 * gic::GICR_STRIDE`) — same frame, not a
-        // second lookup. Kept fallible and non-fatal: a board/QEMU config
-        // without `its=on` must still boot everything ELSE this hook does
-        // (PCI enumeration, PSCI, timer) — only the ITS-dependent PCI IRQ
-        // path (A2-main.diff) is unavailable if this errors.
-        let its_rd_base = gic::GICR_BASE; // cpu_id 0 * GICR_STRIDE
-        match its().init(its_rd_base) {
-            Ok(()) => {
-                ITS_READY.store(true, core::sync::atomic::Ordering::Release);
-                kprintln!("[ITS] enabled: base={:#x} rd_base(cpu0)={:#x}",
-                    azos_arch::its::ITS_BASE, its_rd_base);
-            }
-            Err(e) => azos_drv_sys::kwarn!("[ITS] init failed: {:?} (PCI MSI-X stays unrouted)", e),
-        }
-
-        // PSCI conduit — must be selected before ANY `cpu_on` (Phase 4's
-        // `wake_harts`, near the end of this function). Prefer the FDT's
-        // own `/psci` `method` property; fall back to the crate::entry-EL
-        // heuristic (`psci::select_conduit_from_entry_el`) only when the
-        // FDT has none — see that function's own doc for why crate::entry EL
-        // alone is not always right (`virtualization=on` makes `HVC` from
-        // EL1 trap to OUR OWN unhandled EL2 vector instead of reaching
-        // QEMU's PSCI shim).
-        let psci_from_fdt = if dtb_ptr != 0 {
-            // The DTB sits in RAM at a PHYSICAL address the bootloader chose.
-            // Once the low half stops mapping RAM, reading it through that raw
-            // number faults — the kernel's own view is what resolves.
+/// The PL011's receive/transmit interrupt.
+#[inline(always)]
+pub fn console_irq(_hart_id: usize, dtb_ptr: usize) {
+    // PL011 console RX on interrupts (wave 7), the riscv64 PLIC/APLIC
+    // UART path's twin. The INTID comes from the DTB's PL011 node (QEMU
+    // `virt`: `interrupts = <0 1 4>`, SPI 1 level -> INTID 33), never
+    // from `uart::UART_IRQ`, which is only printed next to it so a
+    // disagreement shows. Wired only when that node's `reg` is the UART
+    // this kernel drives; otherwise the console stays polled (the
+    // shell's 20 ms `readline` poll of the FIFO), exactly as before.
+    //
+    // Order: publish the INTID for `handle_irq` -> route + enable the
+    // SPI at the GIC -> unmask RX/RX-timeout in the PL011 (which also
+    // switches `uart::can_read` to the ring). IRQs are still masked at
+    // the PE here (`ARCH.enable_all()` is below), and a byte already
+    // waiting in the FIFO raises the level line as soon as they are not.
+    {
+        let found = if dtb_ptr != 0 {
             unsafe {
-                azos_arch::psci::select_conduit_from_fdt(
-                    azos_mm::addr::phys_to_virt(dtb_ptr) as u64)
+                azos_dtb::dtb_pl011_irq(
+                    azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8)
             }
         } else {
-            false
+            None
         };
-        if !psci_from_fdt {
-            azos_arch::psci::select_conduit_from_entry_el(entry_el_2);
-        }
-        kprintln!("[SMP] PSCI conduit: {:?} (from {})",
-            azos_arch::psci::conduit(),
-            if psci_from_fdt { "FDT /psci" } else { "crate::entry EL" });
-
-        // Timer period: read CNTFRQ_EL0 LIVE rather than trust the
-        // platform constant. `arch-aarch64::sysregs::read_cntfrq_el0`'s
-        // own doc says QEMU virt's cortex-a72 default is 62.5 MHz, while
-        // `platform::hw::TIMER_FREQ` documents 1 GHz for machine >= 9.0 —
-        // the two sources disagree about which QEMU config this actually
-        // is, so only a live read is trustworthy; printed either way so a
-        // real mismatch is visible instead of silently mis-pacing every
-        // tick by up to 16x.
-        let live_hz = arch_timer::freq_hz();
-        kprintln!("[TIMER] CNTFRQ_EL0: {} Hz (platform const: {} Hz)", live_hz, hw::TIMER_FREQ);
-        if live_hz != hw::TIMER_FREQ {
-            azos_drv_sys::kwarn!("[TIMER] WARN: live CNTFRQ_EL0 disagrees with platform::hw::TIMER_FREQ \
-                       — using the live value for the tick period");
-        }
-
-        // M01: vDSO — allocate the shared timing page that user-space reads
-        // directly. Shared with riscv64's kernel_main — see `crate::install_vdso`'s
-        // own doc for why this was missing here (every aarch64 process took
-        // a page fault reading `VDSO_USER_BASE`) and why the timebase is the
-        // just-read live `CNTFRQ_EL0` value rather than a compile-time
-        // constant. Called here (before ANY task can exec — autorun spawns
-        // much later, past FAT32/CONFIG.INI) rather than at this
-        // function's very top: it needs `live_hz`, which needs the GIC/PSCI
-        // bring-up above it in this same block.
-        crate::install_vdso(live_hz);
-        // Publish for `handle_irq` (`kernel/src/crate::entry/aarch64.rs`) to convert
-        // CNTVCT_EL0 ticks to milliseconds on every timer IRQ — see
-        // `VDSO_TIMEBASE_HZ`'s own doc. Must happen before IRQs are
-        // unmasked below, so the first tick never reads a stale 0.
-        crate::entry::aarch64::VDSO_TIMEBASE_HZ.store(live_hz, AOrdering::Release);
-        // Lets ring 3 read CNTVCT_EL0 directly (`libsys::vdso_now_ns`'s
-        // RFC-0041 §A parity path) instead of trapping — see
-        // `sysregs::enable_el0_cntvct`'s own doc. Hart 0 only here;
-        // `secondary_main` below does the same for every
-        // secondary, since this is a per-PE register.
-        azos_arch::sysregs::enable_el0_cntvct();
-        // Mirrors `clint::SCHED_HZ`'s own boot default (100 Hz, crates/
-        // drivers/src/clint.rs) — aarch64 has no scheduler wired up yet to
-        // drive this from a real runtime value, so this is a local
-        // constant, not a shared one.
-        const AARCH64_SCHED_HZ: u64 = 100;
-        let period_ticks = if live_hz == 0 { 1 } else { core::cmp::max(1, live_hz / AARCH64_SCHED_HZ) };
-        crate::entry::aarch64::arm_periodic_timer(period_ticks);
-        kprintln!("[TIMER] periodic tick armed: period={} ticks (~{} Hz)", period_ticks, AARCH64_SCHED_HZ);
-
-        ARCH.enable_all();
-        kprintln!("[TRAP] IRQs unmasked (DAIF.I clear)");
-
-        // ── (a) `svc #0` self-test — must RETURN, not park ──────────────
-        let selftest_x0: u64;
-        unsafe {
-            core::arch::asm!(
-                "mov x0, #0",
-                "svc #0",
-                "mov {0}, x0",
-                out(reg) selftest_x0,
-                out("x0") _,
-                options(nostack),
-            );
-        }
-        if selftest_x0 == crate::entry::aarch64::SELFTEST_SVC_REPLY {
-            kprintln!("[TRAP] svc #0 self-test: PASS (returned, x0={:#x})", selftest_x0);
-        } else {
-            azos_drv_sys::kerr!("[TRAP] FAILED: svc #0 self-test — expected x0={:#x}, got {:#x}",
-                crate::entry::aarch64::SELFTEST_SVC_REPLY, selftest_x0);
-        }
-
-        // ── (b) N ticks in bounded time ──────────────────────────────────
-        //
-        // The pass/fail bound below is deliberately NOT derived from
-        // `period_ticks` — a bound built from the very period this loop
-        // exists to verify cannot catch that period being systematically
-        // wrong (the 1 GHz-vs-62.5 MHz QEMU `-cpu` disagreement
-        // `arch_timer::freq_hz`'s own call site above warns about, or a
-        // bad `AARCH64_SCHED_HZ`): the timeout would simply stretch or
-        // shrink to match the same error, and the loop would "pass" no
-        // matter what the period actually was. `EXPECTED_MS` is instead
-        // computed ONCE from `TICK_TARGET`/`AARCH64_SCHED_HZ` alone — the
-        // wall-clock time this test is actually supposed to take — and
-        // checked against `elapsed_ms`, which comes from the LIVE
-        // `CNTVCT_EL0` delta converted through the LIVE `live_hz`, not
-        // from anything this test derived. The loop's own timeout is a
-        // generous, unrelated 2-real-second safety cap for a timer that
-        // ticks but too slowly or too rarely — it is not what decides
-        // pass/fail. It does NOT bound a timer whose line never fires
-        // (PPI 27 never enabled): `wfi` runs before the deadline compare, so
-        // with no interrupt at all the PE parks here for good — which is
-        // what the `a64clk-ppi-canary` gate row relies on.
-        const TICK_TARGET: u64 = 5;
-        const EXPECTED_MS: u64 = 1000 * TICK_TARGET / AARCH64_SCHED_HZ; // 50 ms
-        let ticks_before = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
-        let target = ticks_before + TICK_TARGET;
-        let start_cntvct = ARCH.now_ticks();
-        let hard_timeout_ticks = live_hz.saturating_mul(2); // 2 s, independent of period_ticks
-        let deadline_cntvct = start_cntvct.wrapping_add(hard_timeout_ticks);
-        loop {
-            let now_count = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
-            if now_count >= target { break; }
-            if ARCH.now_ticks() >= deadline_cntvct { break; }
-            ARCH.wfi();
-        }
-        let ticks_after = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
-        let elapsed_cntvct = ARCH.now_ticks().wrapping_sub(start_cntvct);
-        let elapsed_ms = if live_hz == 0 { 0 } else { elapsed_cntvct * 1000 / live_hz };
-        // Generous 4x-either-way band around EXPECTED_MS: wide enough to
-        // absorb QEMU scheduling jitter and the self-test/kprintln! work
-        // already done above, tight enough that a 16x frequency mixup or a
-        // re-arm-after-EOI storm (2x too fast — see `handle_irq`'s own
-        // comment on ordering) still falls outside it.
-        if ticks_after < target {
-            azos_drv_sys::kerr!("[TIMER] FAILED: only {} of {} ticks arrived in {} ms (expected ~{} ms)",
-                ticks_after - ticks_before, TICK_TARGET, elapsed_ms, EXPECTED_MS);
-        } else if elapsed_ms < EXPECTED_MS / 4 || elapsed_ms > EXPECTED_MS * 4 {
-            azos_drv_sys::kerr!("[TIMER] FAILED: {} ticks arrived in {} ms, expected ~{} ms \
-                       (period computed wrong, or re-arming too fast/slow)",
-                ticks_after - ticks_before, elapsed_ms, EXPECTED_MS);
-        } else {
-            kprintln!("[TIMER] ticks: {} in {} ms (target {}, expected ~{} ms)",
-                ticks_after - ticks_before, elapsed_ms, TICK_TARGET, EXPECTED_MS);
-        }
-
-        // ── (c) FP/SIMD survives interrupt ────────────────────────────────
-        let probe_target = ticks_after + TICK_TARGET;
-        let probe_deadline = ARCH.now_ticks().wrapping_add(live_hz.saturating_mul(2));
-        let (v8_lo, v8_hi, _probe_final_ticks) =
-            crate::entry::aarch64::fp_survives_interrupt_probe(probe_target, probe_deadline);
-        let pattern = crate::entry::aarch64::FP_PROBE_PATTERN;
-        if v8_lo == pattern && v8_hi == pattern {
-            kprintln!("[TRAP] FP/SIMD survives interrupt: PASS (v8=[{:#x},{:#x}])", v8_hi, v8_lo);
-        } else {
-            azos_drv_sys::kerr!("[TRAP] FAILED: FP/SIMD did not survive interrupt — v8=[{:#x},{:#x}], \
-                       expected [{:#x},{:#x}]", v8_hi, v8_lo, pattern, pattern);
-        }
-
-        // ── IRQ-stack proof (task 1) ───────────────────────────────────────
-        let (probed, took_own_stack) = crate::entry::aarch64::irq_stack_probe_result();
-        if probed && took_own_stack {
-            kprintln!("[AARCH64-IRQSTACK] hart 0 handles interrupts on its own stack");
-        } else if probed {
-            azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: hart 0 handled an interrupt off its own IRQ stack");
-        } else {
-            azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: no interrupt was observed to probe");
-        }
-        if !crate::aarch64_irq_stack_intact() {
-            azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: hart 0's IRQ-stack magic word was \
-                       overwritten (overflow)");
-        }
-
-        // ── TTBR1 alias proof (aarch64 parity program, TTBR1 migration) ────
-        //
-        // `aarch64_early_ttbr1_alias` (boot.S, right after
-        // `aarch64_early_mmu_init`) already built the alias table and
-        // turned TTBR1 walks on; this reads back what the hardware
-        // actually latched, decodes T0SZ/T1SZ from the LIVE TCR_EL1 (not
-        // the constants that requested them), and does a live
-        // cross-mapping read to prove the table itself resolves to the
-        // right physical page. See `azos_arch::mmu_setup::
-        // enable_ttbr1_alias`'s doc for what this does and does not
-        // change about the kernel's actual translations.
-        let ttbr1_boot = azos_arch::mmu_setup::TTBR1_BOOT_VALUE.load(AOrdering::Acquire);
-        let tcr_boot = azos_arch::mmu_setup::TCR_BOOT_VALUE.load(AOrdering::Acquire);
-        let t0sz = azos_arch::mmu::tcr_t0sz(tcr_boot);
-        let t1sz = azos_arch::mmu::tcr_t1sz(tcr_boot);
-        let ttbr1_now = azos_arch::sysregs::read_ttbr1_el1();
-        let (canary_low, canary_high, canary_match) = crate::entry::aarch64::ttbr1_alias_verify();
-        kprintln!("[AARCH64-TTBR1] T0SZ={} T1SZ={} TTBR1_EL1={:#x} \
-                   KERNEL_VA_OFFSET={:#x}",
-            t0sz, t1sz, ttbr1_boot, azos_arch::mmu::KERNEL_VA_OFFSET);
-        // 25 (39-bit halves) at a 4 or 16 KiB granule, 16 (48-bit) at 64 KiB:
-        // the input range this build's granule walks in three levels.
-        let want_tsz = azos_arch::mmu::GRANULE.tsz();
-        if t0sz != want_tsz || t1sz != want_tsz {
-            azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: expected T0SZ=T1SZ={} ({}-bit \
-                       halves), read T0SZ={} T1SZ={}", want_tsz, 64 - want_tsz, t0sz, t1sz);
-        } else if ttbr1_boot == 0 {
-            azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: TTBR1_EL1 read back 0 — \
-                       enable_ttbr1_alias did not run or did not publish it");
-        } else if !canary_match {
-            azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: alias read mismatch — low={:#x} \
-                       high={:#x}, expected both == {:#x}",
-                canary_low, canary_high, crate::entry::aarch64::TTBR1_ALIAS_CANARY);
-        } else if ttbr1_now as usize & !0xFFF != azos_mm::vmm::kernel_pagetable() {
-            // The boot alias is SUPPOSED to be gone by now: `enable_paging`
-            // replaces it with the kernel's real table, which is what carries
-            // W^X, NX and the stack guards. A TTBR1 still holding the alias
-            // means the kernel is executing out of a flat 1 GiB mapping with
-            // none of those permissions — the exact silent hole this
-            // migration exists to close, and the shape an earlier attempt
-            // shipped before the guard-page probe caught it.
-            azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: TTBR1_EL1 is not the kernel page table — \
-                       kernel PT {:#x}, TTBR1 {:#x} (boot alias was {:#x})",
-                      azos_mm::vmm::kernel_pagetable(), ttbr1_now, ttbr1_boot);
-        } else {
-            kprintln!("[AARCH64-TTBR1] kernel runs in the upper half: alias low={:#x} \
-                       high={:#x} match, TTBR1_EL1 = kernel PT {:#x}",
-                      canary_low, canary_high, ttbr1_now);
-        }
-
-        // ── Translation granule readback (config/Kconfig.arch AARCH64_PAGE_*) ──
-        //
-        // Decoded from the LIVE TCR_EL1, not from the constants that asked for
-        // it: TG0 (bits [15:14]) and TG1 ([31:30]) use different encodings, so
-        // each is decoded on its own and both must name the granule this
-        // kernel was built for. The table count is a walk of the kernel's own
-        // page table (root + every table under it), so the line also says
-        // what the granule costs in page-table memory on this boot.
-        {
-            let tcr = azos_arch::sysregs::read_tcr_el1();
-            let tg0_kib = match (tcr >> 14) & 0b11 { 0b00 => 4, 0b10 => 16, 0b01 => 64, _ => 0 };
-            let tg1_kib = match (tcr >> 30) & 0b11 { 0b10 => 4, 0b01 => 16, 0b11 => 64, _ => 0 };
-            let g = azos_arch::mmu::GRANULE;
-            let want_kib = g.page_size() / 1024;
-            let kpt = azos_mm::vmm::kernel_pagetable();
-            let tables = azos_mm::vmm::table_frames(kpt);
-            let verdict = if tg0_kib == want_kib && tg1_kib == want_kib { "ok" } else { "MISMATCH" };
-            kprintln!("[AARCH64-GRANULE] {}: TG0={} KiB TG1={} KiB (built for {} KiB), \
-                       T0SZ={} T1SZ={}, root {} entries, level-1 block {} KiB; \
-                       kernel page tables: {} frames = {} KiB",
-                verdict, tg0_kib, tg1_kib, want_kib,
-                azos_arch::mmu::tcr_t0sz(tcr), azos_arch::mmu::tcr_t1sz(tcr),
-                g.root_entries(), g.level_size(1) / 1024,
-                tables, tables * g.page_size() / 1024);
-        }
-
-        // ── M41 (coordinator / U10-7, audit): TCR_EL1.IPS/AS readback ────
-        //
-        // MARKER, per-boot proof that `tcr_value_for_this_cpu` actually
-        // landed what it computed, not just that the constant looks right
-        // in source. Read from the LIVE register (not `tcr_boot`, which is
-        // the alias-time snapshot from before `enable_paging` — IPS/AS do
-        // not change across that switch, but this line is meant to prove
-        // the CURRENT state, the same discipline every other readback in
-        // this block follows).
-        let tcr_live = azos_arch::sysregs::read_tcr_el1();
-        let ips = azos_arch::mmu::tcr_ips(tcr_live);
-        let as_bit = azos_arch::mmu::tcr_as(tcr_live);
-        kprintln!("[AARCH64-TCR] IPS={} AS={}", ips, as_bit);
-        // Both FAILED branches are QEMU-target claims (`-cpu max`/cortex-a72
-        // report PARange >= 4 and 16-bit ASID support), not an architectural
-        // guarantee for every CPU this crate might run on: a real
-        // implementation that only supports 8-bit ASIDs makes `AS` RES0 —
-        // reading back 0 there would be correct hardware behavior, not this
-        // code failing to ask. This gate boots QEMU only, so it is a fair
-        // canary here; it is not a portable assertion if reused elsewhere.
-        if ips == 0 {
-            azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: IPS=0 — TCR_EL1 still describes \
-                       32-bit physical addresses only");
-        }
-        if as_bit == 0 {
-            azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: AS=0 on QEMU — TCR_EL1 still \
-                       selects an 8-bit ASID");
+        match found {
+            Some(p) if p.base == hw::UART_BASE => {
+                crate::entry::aarch64::PL011_RX_INTID.store(p.intid, AOrdering::Release);
+                let mpidr = azos_arch::mpidr::read_mpidr().raw;
+                gic::route_spi(p.intid, mpidr, p.edge);
+                let (router, edge, enabled) = gic::spi_state(p.intid);
+                kprintln!("[IRQ] PL011 {:#x}: DTB INTID {} ({}) (platform const {}), \
+                           IROUTER={:#x} (MPIDR {:#x}) enabled={}",
+                    p.base, p.intid, if edge { "edge" } else { "level" },
+                    azos_drv_sys::uart::UART_IRQ, router, mpidr, enabled);
+                #[cfg(not(feature = "pl011-rx-irq-canary"))]
+                {
+                    azos_drv_sys::uart::enable_irq();
+                    azos_drv_sys::uart::set_rx_wake_wired();
+                    kprintln!("[IRQ] PL011 RX interrupt enabled (ring buffer RX)");
+                    // The same SPI now feeds the PL011 from the
+                    // console's TX ring. Not under the RX canary: that
+                    // row's console stays polled end to end.
+                    azos_drv_sys::uart::enable_tx_irq();
+                }
+                #[cfg(feature = "pl011-rx-irq-canary")]
+                kprintln!("[IRQ] PL011 RX interrupt LEFT MASKED (pl011-rx-irq-canary): console polled");
+            }
+            Some(p) => kprintln!("[IRQ] PL011 in DTB at {:#x}, not the console at {:#x}: \
+                                  RX interrupt not wired, console polled", p.base, hw::UART_BASE),
+            None => kprintln!("[IRQ] no PL011 interrupt in the DTB (dtb={:#x}): \
+                               RX interrupt not wired, console polled", dtb_ptr),
         }
     }
+}
 
-    EarlyBoot { num_cpus: dtb_num_cpus, heap_start, kernel_end_aligned, pci_host }
+/// Trigger types for ring-3 SPIs (wave 9 IRQ4), read through the kernel's
+/// own view of the blob now that the low half maps devices only.
+///
+/// boot-seq: read after the GIC is up (the blob is reserved on aarch64);
+/// riscv64 reads its triggers before `pmm::init`.
+#[inline(always)]
+pub fn irq_triggers(dtb_ptr: usize) {
+    // Trigger types for ring-3 SPIs (wave 9 IRQ4): `gic::user_spi_bind`
+    // programs ICFGR from this instead of always level. The boot line
+    // names two lines QEMU `virt` describes with opposite triggers (the
+    // PL031's SPI 2 level, the first virtio-mmio slot's SPI 16 edge).
+    // A line whose last ring-3 binding goes at task exit is masked and
+    // handed back (`irq_bind::irq_unbind_all` -> the release hook).
+    {
+        let found = if dtb_ptr != 0 {
+            unsafe {
+                azos_dtb::dtb_irq_triggers(
+                    azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8,
+                    azos_dtb::IrqController::GicV3)
+            }
+        } else {
+            None
+        };
+        match found {
+            Some(t) => {
+                for intid in 32..1020 {
+                    if let Some(edge) = t.edge(intid) {
+                        gic::note_dtb_trigger(intid, edge);
+                    }
+                }
+                let (n, e) = t.counts();
+                let name = |i: u32| match gic::dtb_trigger(i) {
+                    Some(true) => "edge",
+                    Some(false) => "level",
+                    None => "absent",
+                };
+                kprintln!("[IRQ] DTB triggers (GICv3): {} SPIs, {} edge; INTID 34 {}, INTID 48 {}",
+                    n, e, name(34), name(48));
+            }
+            None => kprintln!("[IRQ] DTB triggers: no GICv3 node with 3-cell specifiers"),
+        }
+    }
+}
+
+/// The SPI, masked and handed back.
+#[inline(always)]
+pub fn line_release() -> fn(u32) {
+    gic::user_spi_release
+}
+
+/// The ITS on hart 0's redistributor.
+#[inline(always)]
+pub fn irq_routing_init(_hart_id: usize) {
+    // RFC-0046 stage 1a: bring the ITS up and enable LPIs on hart 0's
+    // redistributor. `rd_base` here is EXACTLY the frame
+    // `init_redistributor(0)` two lines up already programmed
+    // (`gic::GICR_BASE + 0 * gic::GICR_STRIDE`) — same frame, not a
+    // second lookup. Kept fallible and non-fatal: a board/QEMU config
+    // without `its=on` must still boot everything ELSE this hook does
+    // (PCI enumeration, PSCI, timer) — only the ITS-dependent PCI IRQ
+    // path (A2-main.diff) is unavailable if this errors.
+    let its_rd_base = gic::GICR_BASE; // cpu_id 0 * GICR_STRIDE
+    match its().init(its_rd_base) {
+        Ok(()) => {
+            ITS_READY.store(true, core::sync::atomic::Ordering::Release);
+            kprintln!("[ITS] enabled: base={:#x} rd_base(cpu0)={:#x}",
+                azos_arch::its::ITS_BASE, its_rd_base);
+        }
+        Err(e) => azos_drv_sys::kwarn!("[ITS] init failed: {:?} (PCI MSI-X stays unrouted)", e),
+    }
+}
+
+/// The PSCI conduit.
+#[inline(always)]
+pub fn smp_probe(dtb_ptr: usize) {
+    let entry_el_2 = entered_at_el2();
+    // PSCI conduit — must be selected before ANY `cpu_on` (Phase 4's
+    // `wake_harts`, near the end of this function). Prefer the FDT's
+    // own `/psci` `method` property; fall back to the crate::entry-EL
+    // heuristic (`psci::select_conduit_from_entry_el`) only when the
+    // FDT has none — see that function's own doc for why crate::entry EL
+    // alone is not always right (`virtualization=on` makes `HVC` from
+    // EL1 trap to OUR OWN unhandled EL2 vector instead of reaching
+    // QEMU's PSCI shim).
+    let psci_from_fdt = if dtb_ptr != 0 {
+        // The DTB sits in RAM at a PHYSICAL address the bootloader chose.
+        // Once the low half stops mapping RAM, reading it through that raw
+        // number faults — the kernel's own view is what resolves.
+        unsafe {
+            azos_arch::psci::select_conduit_from_fdt(
+                azos_mm::addr::phys_to_virt(dtb_ptr) as u64)
+        }
+    } else {
+        false
+    };
+    if !psci_from_fdt {
+        azos_arch::psci::select_conduit_from_entry_el(entry_el_2);
+    }
+    kprintln!("[SMP] PSCI conduit: {:?} (from {})",
+        azos_arch::psci::conduit(),
+        if psci_from_fdt { "FDT /psci" } else { "crate::entry EL" });
+}
+
+/// The EL1 virtual timer: the live frequency, the vDSO timebase, the
+/// periodic tick, then IRQs unmasked.
+///
+/// boot-seq: `install_vdso` runs here, with the live `CNTFRQ_EL0` read after
+/// the GIC/ITS/PSCI bring-up; riscv64 installs it from `post_heap` with its
+/// fixed TIMER_FREQ, before its PLIC.
+#[inline(always)]
+pub fn timer_init() {
+    // Timer period: read CNTFRQ_EL0 LIVE rather than trust the
+    // platform constant. `arch-aarch64::sysregs::read_cntfrq_el0`'s
+    // own doc says QEMU virt's cortex-a72 default is 62.5 MHz, while
+    // `platform::hw::TIMER_FREQ` documents 1 GHz for machine >= 9.0 —
+    // the two sources disagree about which QEMU config this actually
+    // is, so only a live read is trustworthy; printed either way so a
+    // real mismatch is visible instead of silently mis-pacing every
+    // tick by up to 16x.
+    let live_hz = arch_timer::freq_hz();
+    kprintln!("[TIMER] CNTFRQ_EL0: {} Hz (platform const: {} Hz)", live_hz, hw::TIMER_FREQ);
+    if live_hz != hw::TIMER_FREQ {
+        azos_drv_sys::kwarn!("[TIMER] WARN: live CNTFRQ_EL0 disagrees with platform::hw::TIMER_FREQ \
+                   — using the live value for the tick period");
+    }
+
+    // M01: vDSO — allocate the shared timing page that user-space reads
+    // directly. Shared with riscv64's kernel_main — see `crate::install_vdso`'s
+    // own doc for why this was missing here (every aarch64 process took
+    // a page fault reading `VDSO_USER_BASE`) and why the timebase is the
+    // just-read live `CNTFRQ_EL0` value rather than a compile-time
+    // constant. Called here (before ANY task can exec — autorun spawns
+    // much later, past FAT32/CONFIG.INI) rather than at this
+    // function's very top: it needs `live_hz`, which needs the GIC/PSCI
+    // bring-up above it in this same block.
+    crate::install_vdso(live_hz);
+    // Publish for `handle_irq` (`kernel/src/crate::entry/aarch64.rs`) to convert
+    // CNTVCT_EL0 ticks to milliseconds on every timer IRQ — see
+    // `VDSO_TIMEBASE_HZ`'s own doc. Must happen before IRQs are
+    // unmasked below, so the first tick never reads a stale 0.
+    crate::entry::aarch64::VDSO_TIMEBASE_HZ.store(live_hz, AOrdering::Release);
+    // Lets ring 3 read CNTVCT_EL0 directly (`libsys::vdso_now_ns`'s
+    // RFC-0041 §A parity path) instead of trapping — see
+    // `sysregs::enable_el0_cntvct`'s own doc. Hart 0 only here;
+    // `secondary_main` below does the same for every
+    // secondary, since this is a per-PE register.
+    azos_arch::sysregs::enable_el0_cntvct();
+    let period_ticks = if live_hz == 0 { 1 } else { core::cmp::max(1, live_hz / AARCH64_SCHED_HZ) };
+    crate::entry::aarch64::arm_periodic_timer(period_ticks);
+    kprintln!("[TIMER] periodic tick armed: period={} ticks (~{} Hz)", period_ticks, AARCH64_SCHED_HZ);
+
+    ARCH.enable_all();
+    kprintln!("[TRAP] IRQs unmasked (DAIF.I clear)");
+}
+
+/// The self-tests that need interrupts live.
+#[inline(always)]
+pub fn boot_selftests() {
+    let live_hz = arch_timer::freq_hz();
+    // ── (a) `svc #0` self-test — must RETURN, not park ──────────────
+    let selftest_x0: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov x0, #0",
+            "svc #0",
+            "mov {0}, x0",
+            out(reg) selftest_x0,
+            out("x0") _,
+            options(nostack),
+        );
+    }
+    if selftest_x0 == crate::entry::aarch64::SELFTEST_SVC_REPLY {
+        kprintln!("[TRAP] svc #0 self-test: PASS (returned, x0={:#x})", selftest_x0);
+    } else {
+        azos_drv_sys::kerr!("[TRAP] FAILED: svc #0 self-test — expected x0={:#x}, got {:#x}",
+            crate::entry::aarch64::SELFTEST_SVC_REPLY, selftest_x0);
+    }
+
+    // ── (b) N ticks in bounded time ──────────────────────────────────
+    //
+    // The pass/fail bound below is deliberately NOT derived from
+    // `period_ticks` — a bound built from the very period this loop
+    // exists to verify cannot catch that period being systematically
+    // wrong (the 1 GHz-vs-62.5 MHz QEMU `-cpu` disagreement
+    // `arch_timer::freq_hz`'s own call site above warns about, or a
+    // bad `AARCH64_SCHED_HZ`): the timeout would simply stretch or
+    // shrink to match the same error, and the loop would "pass" no
+    // matter what the period actually was. `EXPECTED_MS` is instead
+    // computed ONCE from `TICK_TARGET`/`AARCH64_SCHED_HZ` alone — the
+    // wall-clock time this test is actually supposed to take — and
+    // checked against `elapsed_ms`, which comes from the LIVE
+    // `CNTVCT_EL0` delta converted through the LIVE `live_hz`, not
+    // from anything this test derived. The loop's own timeout is a
+    // generous, unrelated 2-real-second safety cap for a timer that
+    // ticks but too slowly or too rarely — it is not what decides
+    // pass/fail. It does NOT bound a timer whose line never fires
+    // (PPI 27 never enabled): `wfi` runs before the deadline compare, so
+    // with no interrupt at all the PE parks here for good — which is
+    // what the `a64clk-ppi-canary` gate row relies on.
+    const TICK_TARGET: u64 = 5;
+    const EXPECTED_MS: u64 = 1000 * TICK_TARGET / AARCH64_SCHED_HZ; // 50 ms
+    let ticks_before = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
+    let target = ticks_before + TICK_TARGET;
+    let start_cntvct = ARCH.now_ticks();
+    let hard_timeout_ticks = live_hz.saturating_mul(2); // 2 s, independent of period_ticks
+    let deadline_cntvct = start_cntvct.wrapping_add(hard_timeout_ticks);
+    loop {
+        let now_count = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
+        if now_count >= target { break; }
+        if ARCH.now_ticks() >= deadline_cntvct { break; }
+        ARCH.wfi();
+    }
+    let ticks_after = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
+    let elapsed_cntvct = ARCH.now_ticks().wrapping_sub(start_cntvct);
+    let elapsed_ms = if live_hz == 0 { 0 } else { elapsed_cntvct * 1000 / live_hz };
+    // Generous 4x-either-way band around EXPECTED_MS: wide enough to
+    // absorb QEMU scheduling jitter and the self-test/kprintln! work
+    // already done above, tight enough that a 16x frequency mixup or a
+    // re-arm-after-EOI storm (2x too fast — see `handle_irq`'s own
+    // comment on ordering) still falls outside it.
+    if ticks_after < target {
+        azos_drv_sys::kerr!("[TIMER] FAILED: only {} of {} ticks arrived in {} ms (expected ~{} ms)",
+            ticks_after - ticks_before, TICK_TARGET, elapsed_ms, EXPECTED_MS);
+    } else if elapsed_ms < EXPECTED_MS / 4 || elapsed_ms > EXPECTED_MS * 4 {
+        azos_drv_sys::kerr!("[TIMER] FAILED: {} ticks arrived in {} ms, expected ~{} ms \
+                   (period computed wrong, or re-arming too fast/slow)",
+            ticks_after - ticks_before, elapsed_ms, EXPECTED_MS);
+    } else {
+        kprintln!("[TIMER] ticks: {} in {} ms (target {}, expected ~{} ms)",
+            ticks_after - ticks_before, elapsed_ms, TICK_TARGET, EXPECTED_MS);
+    }
+
+    // ── (c) FP/SIMD survives interrupt ────────────────────────────────
+    let probe_target = ticks_after + TICK_TARGET;
+    let probe_deadline = ARCH.now_ticks().wrapping_add(live_hz.saturating_mul(2));
+    let (v8_lo, v8_hi, _probe_final_ticks) =
+        crate::entry::aarch64::fp_survives_interrupt_probe(probe_target, probe_deadline);
+    let pattern = crate::entry::aarch64::FP_PROBE_PATTERN;
+    if v8_lo == pattern && v8_hi == pattern {
+        kprintln!("[TRAP] FP/SIMD survives interrupt: PASS (v8=[{:#x},{:#x}])", v8_hi, v8_lo);
+    } else {
+        azos_drv_sys::kerr!("[TRAP] FAILED: FP/SIMD did not survive interrupt — v8=[{:#x},{:#x}], \
+                   expected [{:#x},{:#x}]", v8_hi, v8_lo, pattern, pattern);
+    }
+
+    // ── IRQ-stack proof (task 1) ───────────────────────────────────────
+    let (probed, took_own_stack) = crate::entry::aarch64::irq_stack_probe_result();
+    if probed && took_own_stack {
+        kprintln!("[AARCH64-IRQSTACK] hart 0 handles interrupts on its own stack");
+    } else if probed {
+        azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: hart 0 handled an interrupt off its own IRQ stack");
+    } else {
+        azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: no interrupt was observed to probe");
+    }
+    if !crate::aarch64_irq_stack_intact() {
+        azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: hart 0's IRQ-stack magic word was \
+                   overwritten (overflow)");
+    }
+
+    // ── TTBR1 alias proof (aarch64 parity program, TTBR1 migration) ────
+    //
+    // `aarch64_early_ttbr1_alias` (boot.S, right after
+    // `aarch64_early_mmu_init`) already built the alias table and
+    // turned TTBR1 walks on; this reads back what the hardware
+    // actually latched, decodes T0SZ/T1SZ from the LIVE TCR_EL1 (not
+    // the constants that requested them), and does a live
+    // cross-mapping read to prove the table itself resolves to the
+    // right physical page. See `azos_arch::mmu_setup::
+    // enable_ttbr1_alias`'s doc for what this does and does not
+    // change about the kernel's actual translations.
+    let ttbr1_boot = azos_arch::mmu_setup::TTBR1_BOOT_VALUE.load(AOrdering::Acquire);
+    let tcr_boot = azos_arch::mmu_setup::TCR_BOOT_VALUE.load(AOrdering::Acquire);
+    let t0sz = azos_arch::mmu::tcr_t0sz(tcr_boot);
+    let t1sz = azos_arch::mmu::tcr_t1sz(tcr_boot);
+    let ttbr1_now = azos_arch::sysregs::read_ttbr1_el1();
+    let (canary_low, canary_high, canary_match) = crate::entry::aarch64::ttbr1_alias_verify();
+    kprintln!("[AARCH64-TTBR1] T0SZ={} T1SZ={} TTBR1_EL1={:#x} \
+               KERNEL_VA_OFFSET={:#x}",
+        t0sz, t1sz, ttbr1_boot, azos_arch::mmu::KERNEL_VA_OFFSET);
+    // 25 (39-bit halves) at a 4 or 16 KiB granule, 16 (48-bit) at 64 KiB:
+    // the input range this build's granule walks in three levels.
+    let want_tsz = azos_arch::mmu::GRANULE.tsz();
+    if t0sz != want_tsz || t1sz != want_tsz {
+        azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: expected T0SZ=T1SZ={} ({}-bit \
+                   halves), read T0SZ={} T1SZ={}", want_tsz, 64 - want_tsz, t0sz, t1sz);
+    } else if ttbr1_boot == 0 {
+        azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: TTBR1_EL1 read back 0 — \
+                   enable_ttbr1_alias did not run or did not publish it");
+    } else if !canary_match {
+        azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: alias read mismatch — low={:#x} \
+                   high={:#x}, expected both == {:#x}",
+            canary_low, canary_high, crate::entry::aarch64::TTBR1_ALIAS_CANARY);
+    } else if ttbr1_now as usize & !0xFFF != azos_mm::vmm::kernel_pagetable() {
+        // The boot alias is SUPPOSED to be gone by now: `enable_paging`
+        // replaces it with the kernel's real table, which is what carries
+        // W^X, NX and the stack guards. A TTBR1 still holding the alias
+        // means the kernel is executing out of a flat 1 GiB mapping with
+        // none of those permissions — the exact silent hole this
+        // migration exists to close, and the shape an earlier attempt
+        // shipped before the guard-page probe caught it.
+        azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: TTBR1_EL1 is not the kernel page table — \
+                   kernel PT {:#x}, TTBR1 {:#x} (boot alias was {:#x})",
+                  azos_mm::vmm::kernel_pagetable(), ttbr1_now, ttbr1_boot);
+    } else {
+        kprintln!("[AARCH64-TTBR1] kernel runs in the upper half: alias low={:#x} \
+                   high={:#x} match, TTBR1_EL1 = kernel PT {:#x}",
+                  canary_low, canary_high, ttbr1_now);
+    }
+
+    // ── Translation granule readback (config/Kconfig.arch AARCH64_PAGE_*) ──
+    //
+    // Decoded from the LIVE TCR_EL1, not from the constants that asked for
+    // it: TG0 (bits [15:14]) and TG1 ([31:30]) use different encodings, so
+    // each is decoded on its own and both must name the granule this
+    // kernel was built for. The table count is a walk of the kernel's own
+    // page table (root + every table under it), so the line also says
+    // what the granule costs in page-table memory on this boot.
+    {
+        let tcr = azos_arch::sysregs::read_tcr_el1();
+        let tg0_kib = match (tcr >> 14) & 0b11 { 0b00 => 4, 0b10 => 16, 0b01 => 64, _ => 0 };
+        let tg1_kib = match (tcr >> 30) & 0b11 { 0b10 => 4, 0b01 => 16, 0b11 => 64, _ => 0 };
+        let g = azos_arch::mmu::GRANULE;
+        let want_kib = g.page_size() / 1024;
+        let kpt = azos_mm::vmm::kernel_pagetable();
+        let tables = azos_mm::vmm::table_frames(kpt);
+        let verdict = if tg0_kib == want_kib && tg1_kib == want_kib { "ok" } else { "MISMATCH" };
+        kprintln!("[AARCH64-GRANULE] {}: TG0={} KiB TG1={} KiB (built for {} KiB), \
+                   T0SZ={} T1SZ={}, root {} entries, level-1 block {} KiB; \
+                   kernel page tables: {} frames = {} KiB",
+            verdict, tg0_kib, tg1_kib, want_kib,
+            azos_arch::mmu::tcr_t0sz(tcr), azos_arch::mmu::tcr_t1sz(tcr),
+            g.root_entries(), g.level_size(1) / 1024,
+            tables, tables * g.page_size() / 1024);
+    }
+
+    // ── M41 (coordinator / U10-7, audit): TCR_EL1.IPS/AS readback ────
+    //
+    // MARKER, per-boot proof that `tcr_value_for_this_cpu` actually
+    // landed what it computed, not just that the constant looks right
+    // in source. Read from the LIVE register (not `tcr_boot`, which is
+    // the alias-time snapshot from before `enable_paging` — IPS/AS do
+    // not change across that switch, but this line is meant to prove
+    // the CURRENT state, the same discipline every other readback in
+    // this block follows).
+    let tcr_live = azos_arch::sysregs::read_tcr_el1();
+    let ips = azos_arch::mmu::tcr_ips(tcr_live);
+    let as_bit = azos_arch::mmu::tcr_as(tcr_live);
+    kprintln!("[AARCH64-TCR] IPS={} AS={}", ips, as_bit);
+    // Both FAILED branches are QEMU-target claims (`-cpu max`/cortex-a72
+    // report PARange >= 4 and 16-bit ASID support), not an architectural
+    // guarantee for every CPU this crate might run on: a real
+    // implementation that only supports 8-bit ASIDs makes `AS` RES0 —
+    // reading back 0 there would be correct hardware behavior, not this
+    // code failing to ask. This gate boots QEMU only, so it is a fair
+    // canary here; it is not a portable assertion if reused elsewhere.
+    if ips == 0 {
+        azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: IPS=0 — TCR_EL1 still describes \
+                   32-bit physical addresses only");
+    }
+    if as_bit == 0 {
+        azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: AS=0 on QEMU — TCR_EL1 still \
+                   selects an 8-bit ASID");
+    }
 }
 
 /// VirtIO-MMIO is not live before this point on aarch64 (Phase 1 above only
@@ -1032,7 +876,7 @@ pub fn arch_map_late_mmio() {
     use azos_drv_base::platform::hw;
     let _ = azos_mm::vmm::map_mmio_region(
         hw::VIRTIO_MMIO_BASE, hw::VIRTIO_MMIO_STRIDE * hw::VIRTIO_MMIO_COUNT);
-    // Same barrier this front's own GIC mapping needed (`arch_early_boot`,
+    // Same barrier this front's own GIC mapping needed (`irqchip_init`,
     // see that call site's comment): this runs after `install_device_only_
     // ttbr0`, writing new PTEs into the table already live in `TTBR0_EL1`.
     {

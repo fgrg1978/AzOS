@@ -2444,7 +2444,7 @@ par "aarch64 shell answers help" shell_help_row "aarch64 shell answers help" arm
 # ── aarch64: PL011 console RX on interrupts (wave 7) ─────────────────────────
 #
 # riscv64's UART RX has been interrupt-driven (PLIC/APLIC -> `uart::irq_handler`
-# -> ring) for a long time; the aarch64 PL011 was polled. `arch_early_boot`
+# -> ring) for a long time; the aarch64 PL011 was polled. `boot_hooks::console_irq`
 # now reads the PL011's `interrupts` from the DTB (QEMU virt: SPI 1 -> INTID
 # 33), routes that SPI to the boot hart (GICD_IROUTER from MPIDR_EL1), enables
 # it, and unmasks RX/RX-timeout in the PL011; `handle_irq` drains the FIFO into

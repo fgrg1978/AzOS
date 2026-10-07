@@ -648,7 +648,7 @@ pub static LPI_VECTOR_COUNT: [AtomicU64; azos_arch::its::MAX_EVENTS_PER_DEVICE] 
 /// The PL011 console's SPI INTID, as the DTB gave it (`azos_dtb::
 /// dtb_pl011_irq`), or 0 when the line was not wired (no DTB, no PL011
 /// node, or its `reg` is not the UART this kernel drives). Published by
-/// `boot_hooks::arch_early_boot` BEFORE the GIC enables the line, so the
+/// `boot_hooks::console_irq` BEFORE the GIC enables the line, so the
 /// first interrupt already finds its arm in [`handle_irq`].
 pub static PL011_RX_INTID: AtomicU32 = AtomicU32::new(0);
 /// PL011 RX interrupts taken — riscv64's `irqchip::delivered(UART_IRQ)`
@@ -857,7 +857,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
     }
 
     // The PL011 console's RX / RX-timeout interrupt (a level SPI routed to
-    // the boot hart; see `boot_hooks::arch_early_boot`). `PL011_RX_INTID` is
+    // the boot hart; see `boot_hooks::console_irq`). `PL011_RX_INTID` is
     // 0 when it was not wired, and no INTID that reaches this line is 0
     // (SGI 0 returned above), so an unwired line never matches.
     //

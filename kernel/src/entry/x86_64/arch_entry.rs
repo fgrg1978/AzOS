@@ -10,11 +10,39 @@ use azos_arch::ArchEntry;
 pub struct Entry;
 
 impl ArchEntry for Entry {
-    type Early = crate::EarlyBoot;
+    type Firmware = ();
+    const PAGE_TABLES: &'static str = "x86-64 4-level page tables";
 
-    fn early_boot(&self, hart_id: usize, fw_table: usize) -> crate::EarlyBoot {
-        crate::boot_hooks::arch_early_boot(hart_id, fw_table)
+    fn pre_console(&self) { crate::boot_hooks::pre_console() }
+    fn trap_init(&self) { crate::boot_hooks::trap_init() }
+    fn boot_banner(&self, hart_id: usize, fw_table: usize) { crate::boot_hooks::boot_banner(hart_id, fw_table) }
+    fn firmware_table(&self, hart_id: usize, fw_table: usize) -> Self::Firmware {
+        crate::boot_hooks::firmware_table(hart_id, fw_table)
     }
+    fn irqchip_probe(&self, fw: &Self::Firmware) { crate::boot_hooks::irqchip_probe(fw) }
+    fn timer_probe(&self, fw: &Self::Firmware) { crate::boot_hooks::timer_probe(fw) }
+    fn cpu_features(&self, fw: &Self::Firmware) { crate::boot_hooks::cpu_features(fw) }
+    fn firmware_memory(&self, fw: &Self::Firmware) -> azos_arch::FirmwareMemory {
+        crate::boot_hooks::firmware_memory(fw)
+    }
+    fn firmware_done(&self, fw_table: usize, num_cpus: usize) { crate::boot_hooks::firmware_done(fw_table, num_cpus) }
+    fn reserve_firmware_table(&self, fw_table: usize) { crate::boot_hooks::reserve_firmware_table(fw_table) }
+    fn kernel_mmio_map(&self) { crate::boot_hooks::kernel_mmio_map() }
+    fn mmu_enabled(&self) { crate::boot_hooks::mmu_enabled() }
+    fn restrict_low_half(&self) { crate::boot_hooks::restrict_low_half() }
+    fn verify_guards(&self) { crate::boot_hooks::verify_guards() }
+    fn post_heap(&self, heap_start: usize, kernel_end_aligned: usize) {
+        crate::boot_hooks::post_heap(heap_start, kernel_end_aligned)
+    }
+    fn irqchip_init(&self, hart_id: usize, fw_table: usize) { crate::boot_hooks::irqchip_init(hart_id, fw_table) }
+    fn irq_enable_early(&self) { crate::boot_hooks::irq_enable_early() }
+    fn console_irq(&self, hart_id: usize, fw_table: usize) { crate::boot_hooks::console_irq(hart_id, fw_table) }
+    fn irq_triggers(&self, fw_table: usize) { crate::boot_hooks::irq_triggers(fw_table) }
+    fn line_release(&self) -> fn(u32) { crate::boot_hooks::line_release() }
+    fn irq_routing_init(&self, hart_id: usize) { crate::boot_hooks::irq_routing_init(hart_id) }
+    fn smp_probe(&self, fw_table: usize) { crate::boot_hooks::smp_probe(fw_table) }
+    fn timer_init(&self) { crate::boot_hooks::timer_init() }
+    fn boot_selftests(&self) { crate::boot_hooks::boot_selftests() }
 
     fn map_late_mmio(&self) {
         crate::boot_hooks::arch_map_late_mmio()

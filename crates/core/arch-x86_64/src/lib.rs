@@ -45,7 +45,7 @@ macro_rules! on_x86 {
 }
 
 pub use azos_arch_api::{
-    ArchEntry, ArchPlatform, Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu,
+    ArchEntry, ArchPlatform, FirmwareMemory, Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu,
     MmuError, PagePerms, Vector, PAGE_SHIFT, PAGE_SIZE,
 };
 
