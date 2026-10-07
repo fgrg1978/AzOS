@@ -58,7 +58,8 @@ The first target is QEMU `microvm`.
 
 ## Hardware
 
-- Bring-up on StarFive VisionFive 2 and SpacemiT K1.
+- Bring-up on real boards: StarFive VisionFive 2 and SpacemiT K1 (riscv64),
+  Raspberry Pi 5 (aarch64).
 - Address-space identifiers.
 - Energy-aware task placement, timer slack and power hints.
 - Cache maintenance and timing measured on silicon, not only under QEMU.
