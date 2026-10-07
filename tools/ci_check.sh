@@ -26,6 +26,11 @@
 set -uo pipefail
 
 CARGO="${CARGO:-cargo}"
+# Every cargo call goes through tools/ci_cargo.py (gate speed, wave 15): it
+# times the call for the row's build/boot split and, for a kernel build, reuses
+# the kernel this run already built from identical inputs (CI_KCACHE=0: off).
+export CI_REAL_CARGO="$CARGO"
+CARGO="$(cd "$(dirname "$0")" && pwd)/ci_cargo.py"
 QEMU="${QEMU:-qemu-system-riscv64}"
 KERNEL="target/riscv64imac-unknown-none-elf/release/kernel"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -71,6 +76,19 @@ refuse_icloud_duplicates() {
 refuse_icloud_duplicates
 [ "${CI_DUP_CHECK_ONLY:-0}" = 1 ] && exit 0
 
+# Disk budget (wave 15). A full disk does not stop the gate cleanly: the
+# wave-15 integration gate died at the INA219 rows with every row after them
+# failing for want of space. A full run needs about GATE_DISK_MIN_GB free on
+# the filesystem of the tree (target/ grows, per-job kernels are clones, disks
+# are copied per job and removed as each job is reaped); refuse to start below.
+GATE_DISK_MIN_GB="${GATE_DISK_MIN_GB:-20}"
+gate_disk_free_gb() { df -k "$REPO_ROOT" | awk 'NR == 2 {printf "%d", $4 / 1048576}'; }
+if [ "$(gate_disk_free_gb)" -lt "$GATE_DISK_MIN_GB" ]; then
+    echo "ci_check: refusing to run, $(gate_disk_free_gb) GiB free on the tree's filesystem,"
+    echo "  below GATE_DISK_MIN_GB=${GATE_DISK_MIN_GB}. Prune (python3 tools/prune_build.py) and retry."
+    exit 2
+fi
+
 PASS=0
 FAIL=0
 SKIP=0
@@ -103,6 +121,21 @@ ci_time_row() { # ci_time_row <verdict>
     if [ -n "$CI_TIMING" ]; then
         builtin printf '%s\t%s\t%s\n' "$((now - CI_T_LAST))" "$1" "$CI_ROW_LABEL" >>"$CI_TIMING"
     fi
+    if [ -n "${CI_ROWS_TSV:-}" ]; then
+        # The cargo time tools/ci_cargo.py logged since the last verdict.
+        local b=0
+        if [ -s "${CI_BUILD_ACC:-}" ]; then
+            b="$(awk -F'\t' '{s += $1} END {printf "%d", s + 0.5}' "$CI_BUILD_ACC")"
+            awk -v l="$CI_ROW_LABEL" '{print l "\t" $0}' "$CI_BUILD_ACC" >>"$CI_LOG_ABS/cargo-calls.tsv" 2>/dev/null
+            : >"$CI_BUILD_ACC"
+        fi
+        local w=$((now - CI_T_LAST)) p=0; [ "$b" -gt "$w" ] && b=$w
+        # prep_s: from the row's start to par_ready (its builds and disks,
+        # which the gate runs one at a time); the rest of run_s is its boots.
+        if [ -n "${CI_PREP_AT:-}" ] && [ "$CI_PREP_AT" -ge "$CI_T_LAST" ]; then p=$((CI_PREP_AT - CI_T_LAST)); fi
+        builtin printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$CI_ROW_LABEL" "${CI_STAGE:-setup}" \
+            "$b" "$((w - b))" "$1" "$p" >>"$CI_ROWS_TSV"
+    fi
     CI_T_LAST=$now
 }
 CI_PHASE_NAMES=()
@@ -110,6 +143,18 @@ CI_PHASE_START=()
 ci_phase() { # ci_phase <name>: the clock of the phase that starts here
     CI_PHASE_NAMES[${#CI_PHASE_NAMES[@]}]="$1"
     CI_PHASE_START[${#CI_PHASE_START[@]}]=$SECONDS
+    CI_STAGE="${1%% *}"; CI_STAGE="${CI_STAGE%,}"
+}
+# The slowest rows of each stage, from rows.tsv (printed with the timing).
+ci_slowest() { # ci_slowest <tsv> [n]
+    [ -s "$1" ] || return 0
+    local st
+    for st in $(awk -F'\t' 'NR > 1 && !seen[$2]++ {print $2}' "$1"); do
+        echo "  slowest rows of ${st} (wall = build + run, seconds):"
+        awk -F'\t' -v st="$st" 'NR > 1 && $2 == st {printf "%d\t%d\t%d\t%s\t%s\n", $3 + $4, $3, $4, $5, $1}' "$1" \
+            | sort -t "$(builtin printf '\t')" -k1,1nr | sed -n "1,${2:-20}p" \
+            | awk -F'\t' '{printf "    %5d = %5d + %5d  %-4s %s\n", $1, $2, $3, $4, $5}'
+    done
 }
 ci_phase_report() {
     local i n=${#CI_PHASE_NAMES[@]} end
@@ -120,6 +165,17 @@ ci_phase_report() {
     done
     builtin printf "  %-34s %5d s\n" "total" "$SECONDS"
     [ -n "$CI_TIMING" ] && echo "  per row: $CI_TIMING"
+    if [ -n "${CI_ROWS_TSV:-}" ]; then
+        echo "  per row, build/run split: $CI_ROWS_TSV"
+        ci_kcache_report
+        ci_slowest "$CI_ROWS_TSV" 20
+    fi
+}
+ci_kcache_report() { # what the kernel cache saved (tools/ci_cargo.py)
+    local f="$CI_LOG_ABS/cargo-calls.tsv"
+    [ -s "$f" ] || return 0
+    awk -F'\t' '$3 == "hit" {h++; hs += $2} $3 == "miss" {m++; ms += $2} $3 == "run" {r++; rs += $2}
+        END {printf "  cargo: %d kernel builds (%d s), %d reused from the cache (%d s), %d other calls (%d s)\n", m, ms + 0.5, h, hs + 0.5, r, rs + 0.5}' "$f"
 }
 ci_phase "setup, lints, image tables"
 
@@ -162,6 +218,7 @@ kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
 # errors/warnings" while only ever grepping for errors.
 build() {
     local label="$1"; shift
+    ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     local out rc
     out="$("$CARGO" build "$@" 2>&1)"; rc=$?
@@ -220,6 +277,7 @@ fi
 
 build_board() {
     local label="$1" feat="$2" ld="kernel/linker-$2.ld" isa="${3:-}"
+    ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     if ! board_config "$feat"; then
         bad; echo "      could not expand config/defconfigs/${feat}.config with python3 -m olddefconfig"
@@ -296,6 +354,7 @@ fleet_config() {
 # net-tests run in [2/4] passes its own).
 fleet_config_applied() {
     local label="${1:-fleet config applied}"
+    ci_tier_skips "$label" && return 0
     local rel="${2:-${FLEET_DIR}/riscv64imac-unknown-none-elf/release}"
     printf "  %-26s" "${label}..."
     local sha gen key val
@@ -336,6 +395,7 @@ embedded_config() {
     rc=$?; rm -rf "$tmp"; return $rc
 }
 embedded_config_applied() {
+    ci_tier_skips "embedded config applied" && return 0
     printf "  %-26s" "embedded config applied..."
     local rel="${EMBEDDED_DIR}/riscv64imac-unknown-none-elf/release" sha gen key val
     sha="$(shasum -a 256 "$EMBEDDED_CONFIG" | cut -c1-12)"
@@ -465,6 +525,7 @@ board_config() { # board_config <feat>
 }
 board_config_applied() { # board_config_applied <label> <feat>
     local label="$1" feat="$2"
+    ci_tier_skips "$label" && return 0
     # (split: `${feat}` in the same `local` statement expands before `feat` is
     # assigned — `set -u` aborts the whole gate; gate 182 died here.)
     local cfg="${REPO_ROOT}/target/board-${feat}/${feat}.config"
@@ -528,6 +589,7 @@ host_cargo() {
 # process group of its own that an interrupted gate kills whole.
 test_host() {
     local label="$1" crate="$2" out
+    ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     touch "${crate}/src/lib.rs" 2>/dev/null || true
     if host_cargo out "${crate}" test --release \
@@ -989,6 +1051,23 @@ CI_LOG_DIR="${CI_LOG_DIR:-build/ci-logs}"
 mkdir -p "$CI_LOG_DIR"
 CI_TIMING="$CI_LOG_DIR/timing.tsv"
 : >"$CI_TIMING"
+# rows.tsv: one line per verdict, `row  stage  build_s  run_s  verdict`, where
+# build_s is the time spent inside cargo since the previous verdict (or the
+# start of the row's job) and run_s the rest of the row's wall time: its boots.
+CI_LOG_ABS="$(cd "$CI_LOG_DIR" && pwd)"
+CI_ROWS_TSV="$CI_LOG_ABS/rows.tsv"
+builtin printf 'row\tstage\tbuild_s\trun_s\tverdict\tprep_s\n' >"$CI_ROWS_TSV"
+export CI_BUILD_ACC="$CI_LOG_ABS/build-acc.main"
+: >"$CI_BUILD_ACC"
+: >"$CI_LOG_ABS/cargo-calls.tsv"
+# The kernel cache (tools/ci_cargo.py): one gate run's, emptied here.
+CI_KCACHE="${CI_KCACHE:-1}"
+rm -rf "$CI_LOG_ABS/kcache" "$CI_LOG_ABS/fpfree"
+if [ "$CI_KCACHE" = 1 ]; then
+    export CI_KCACHE_DIR="$CI_LOG_ABS/kcache"; mkdir -p "$CI_KCACHE_DIR"
+else
+    unset CI_KCACHE_DIR
+fi
 
 # ── Rows run in parallel, and the fast tier ─────────────────────────────────
 #
@@ -1035,11 +1114,23 @@ CI_TIMING="$CI_LOG_DIR/timing.tsv"
 # per subsystem per ISA, listed where it is defined); every other `par` row
 # prints `skipped (CI_TIER=fast)` in its place. The full tier (the default)
 # runs every row.
+#
+# CI_TIER=rows (wave 15, the N1 tier; `make check1` drives it): only the rows
+# whose key is a line of CI_ROWS (or of the file CI_ROWS_FILE) run, `par` rows,
+# `build` rows and host suites alike; every other one of those prints
+# `skipped (CI_TIER=rows)`. The few checks the gate runs outside those helpers
+# (image tables, isa guards, lints) still run. A listed key that no row uses
+# fails the gate, as FAST_ROWS does. tools/rows_for_diff.py writes the list.
 CI_TIER="${CI_TIER:-full}"
-case "$CI_TIER" in full|fast) ;; *) echo "ci_check: CI_TIER must be full or fast, not '$CI_TIER'"; exit 2 ;; esac
-CI_JOBS="${CI_JOBS:-4}"
+case "$CI_TIER" in full|fast|rows) ;; *) echo "ci_check: CI_TIER must be full, fast or rows, not '$CI_TIER'"; exit 2 ;; esac
+if [ "$CI_TIER" = rows ]; then
+    if [ -n "${CI_ROWS_FILE:-}" ]; then CI_ROWS="$(cat "$CI_ROWS_FILE")" || exit 2; fi
+    [ -n "${CI_ROWS:-}" ] || { echo "ci_check: CI_TIER=rows needs CI_ROWS or CI_ROWS_FILE"; exit 2; }
+fi
+# GATE_JOBS (wave 15) is the QEMU job count; CI_JOBS, its older name, still works.
+CI_JOBS="${GATE_JOBS:-${CI_JOBS:-4}}"
 case "$CI_JOBS" in ''|*[!0-9]*|0) echo "ci_check: CI_JOBS must be a positive integer"; exit 2 ;; esac
-CI_QEMU_MAX="${CI_QEMU_MAX:-4}"
+CI_QEMU_MAX="${GATE_QEMU_MAX:-${CI_QEMU_MAX:-4}}"
 # CI_INJECT_FAIL=<key>: the rows of that `par` key wait for a marker no kernel
 # prints (see `ci_marker`): the canary that a failing parallel row is reported.
 CI_INJECT_FAIL="${CI_INJECT_FAIL:-}"
@@ -1086,18 +1177,22 @@ par_shared() {
     echo "      refused. Move the step before par_ready in the row."
     return 1
 }
+ci_clone() { cp -c "$1" "$2" 2>/dev/null || cp "$1" "$2" 2>/dev/null; }
 par_ready() { # the row's prep is done: let the gate run on
     [ -n "$PAR_JOB" ] && [ "$PAR_READY" = 0 ] && [ "$PAR_HOLD" = 0 ] || return 0
     # The kernels as the prep left them, for the boots that follow: what a
     # serial run would boot, since nothing may rebuild them in between.
     # (The aarch64 names are defined after the first rows that run here.)
+    # Clones (`cp -c`, APFS copy-on-write): no disk and no copy time for a
+    # kernel the job only reads; a plain copy where the filesystem has none.
     local k="$PAR_DIR/$PAR_JOB"
-    cp "$KERNEL" "$k.kernel" 2>/dev/null; KERNEL="$k.kernel"
+    ci_clone "$KERNEL" "$k.kernel"; KERNEL="$k.kernel"
     if [ -n "${A64_KERNEL:-}" ]; then
-        cp "$A64_KERNEL" "$k.a64-kernel" 2>/dev/null; A64_KERNEL="$k.a64-kernel"
-        cp "$A64_IMG" "$k.a64-kernel.img" 2>/dev/null; A64_IMG="$k.a64-kernel.img"
+        ci_clone "$A64_KERNEL" "$k.a64-kernel"; A64_KERNEL="$k.a64-kernel"
+        ci_clone "$A64_IMG" "$k.a64-kernel.img"; A64_IMG="$k.a64-kernel.img"
     fi
     PAR_READY=1
+    CI_PREP_AT=$SECONDS
     : >"$k.ready"
 }
 par_qemu_count() { # par_qemu_count [mine]: QEMU processes host-wide, or this gate's
@@ -1163,7 +1258,7 @@ par_reap() {
         # riscv64 kernel with its debug info is ~47 MB, one per job) and the
         # wave-15 integration gate died of a full disk at the INA219 rows.
         rm -f "$PAR_DIR/$n.kernel" "$PAR_DIR/$n.a64-kernel" "$PAR_DIR/$n.a64-kernel.img" \
-            "$PAR_DIR/$n.disk."*
+            "$PAR_DIR/$n.disk."* "$PAR_DIR/$n.bacc"
         PAR_HEAD=$((n + 1))
         if [ -n "$pid" ]; then
             if [ ! -f "$PAR_DIR/$n.res" ]; then
@@ -1190,11 +1285,26 @@ par_drain() { # wait for every job and print what is left, in order
     while [ "$PAR_HEAD" -le "$PAR_N" ]; do par_reap; [ "$PAR_HEAD" -le "$PAR_N" ] && sleep 0.5; done
     CI_T_LAST=$SECONDS
 }
-fast_keeps() { printf '%s\n' "${FAST_ROWS:-}" | grep -qxF -- "$1"; }
+fast_keeps() {
+    if [ "$CI_TIER" = rows ]; then printf '%s\n' "${CI_ROWS:-}" | grep -qxF -- "$1"; return; fi
+    printf '%s\n' "${FAST_ROWS:-}" | grep -qxF -- "$1"
+}
+# ci_tier_skips <key>: under CI_TIER=rows, an unlisted build/host row prints
+# its skip line and the caller returns; elsewhere it never skips.
+ci_tier_skips() {
+    [ "${CI_TIER:-full}" = rows ] || return 1
+    PAR_SEEN="${PAR_SEEN:-}${1}
+"
+    fast_keeps "$1" && return 1
+    SKIP=$((SKIP + 1))
+    builtin printf "  %-26s%s\n" "${1}..." "skipped (CI_TIER=rows)"
+    return 0
+}
 PAR_SEEN="${PAR_SEEN:-}"   # keys of `par` calls and labels of printed rows
 fast_unseen() { # FAST_ROWS keys no `par` call used: a renamed row the list missed
-    local k
-    printf '%s\n' "$FAST_ROWS" | while IFS= read -r k; do
+    local k list="$FAST_ROWS"
+    [ "$CI_TIER" = rows ] && list="$CI_ROWS"
+    printf '%s\n' "$list" | while IFS= read -r k; do
         [ -n "$k" ] || continue
         printf '%s' "$PAR_SEEN" | grep -qxF -- "$k" || echo "$k"
     done
@@ -1214,9 +1324,9 @@ par() { # par [-a] [-h] [-n <qemus>] [-s|-w] <key> <command> [args...]
     local key="$1"; shift
     PAR_SEEN="${PAR_SEEN}${key}
 "
-    if [ "$CI_TIER" = fast ] && [ "$always" = 0 ] && ! fast_keeps "$key"; then
+    if { [ "$CI_TIER" = fast ] && [ "$always" = 0 ] || [ "$CI_TIER" = rows ]; } && ! fast_keeps "$key"; then
         SKIP=$((SKIP + 1))
-        builtin printf "  %-26s%s\n" "${key}..." "skipped (CI_TIER=fast)"
+        builtin printf "  %-26s%s\n" "${key}..." "skipped (CI_TIER=${CI_TIER})"
         return 0
     fi
     # Inline: one job at a time, a serial row, or a `par` inside a job.
@@ -1256,6 +1366,7 @@ par() { # par [-a] [-h] [-n <qemus>] [-s|-w] <key> <command> [args...]
         trap - INT TERM
         exec >"$PAR_DIR/$n.out" 2>&1 </dev/null 7>&-
         PASS=0; FAIL=0; CI_TIMING="$PAR_DIR/$n.timing"; CI_T_LAST=$SECONDS
+        export CI_BUILD_ACC="$CI_LOG_ABS/par/$n.bacc"; : >"$CI_BUILD_ACC"
         "$@"
         echo "$PASS $FAIL" >"$PAR_DIR/$n.res"
         exit 0
@@ -1733,6 +1844,15 @@ else
     bad; printf '%s\n' "$acl_out" | sed 's/^/      /'
 fi
 
+# Every row's key has a line in tools/gate_rows.tsv (its tier and the paths it
+# depends on, for `make check1`), and no line names a row that is gone.
+printf "  %-26s" "gate rows manifest..."
+if grm_out="$(python3 "${REPO_ROOT}/tools/gate_rows.py" --check 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$grm_out" | sed -n 1,10p | sed 's/^/      /'
+fi
+
 echo ""
 # The seccomp image table. crates/core/sched/src/seccomp.rs `include!`s
 # build/image_hashes.rs, the SHA-256 of every ELF the disk images carry, so no
@@ -1886,6 +2006,7 @@ build       "sensor-ts-freeze"    --release --features qemu,sensor-ts-freeze
 # at all would report the VF2 clean for ever.
 isa_guard() { # isa_guard <label> <expect: none|some>
     local label="$1" expect="$2" n
+    ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     local tools; tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
     local kernel="target/${TARGET:-riscv64imac-unknown-none-elf}/release/kernel"
@@ -2140,8 +2261,8 @@ trap_size_row() { # trap_size_row <label> <elf> <symbol-suffix>=<bytes>...
     fi
     for pin in "$@"; do
         sym="${pin%=*}"; want="${pin#*=}"
-        got="$(printf '%s\n' "$syms" | awk -v s="$sym" \
-            '{ n = length($1); m = length(s); if (n >= m && substr($1, n - m + 1) == s) { print $2; exit } }')"
+        got="$(awk -v s="$sym" \
+            '{ n = length($1); m = length(s); if (n >= m && substr($1, n - m + 1) == s) { print $2; exit } }' <<<"$syms")"
         if [ -z "$got" ]; then
             fail=1; report="$report      $sym: no such text symbol\n"; continue
         fi
@@ -3190,11 +3311,19 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     [ -f "$A64_IMG_OUT" ] || return 1
     # Same FP-free proof as the "aarch64 kernel FP-free" row, on this feature
     # set's own ELF (more crates are linked in than in the no-feature build).
-    local fpfree
+    # The proof is a function of the ELF's bytes and of the checker: an ELF
+    # this run already proved (same SHA-256, same checker) is not re-read
+    # (3.3 s each; wave 15 measured ~30 repeats of the plain qemu kernel).
+    local fpfree fpkey=""
+    if [ -n "${CI_LOG_ABS:-}" ]; then
+        fpkey="$CI_LOG_ABS/fpfree/$(cat "$A64_KERNEL_OUT" tools/aarch64_fp_free_check.sh | shasum -a 256 | cut -c1-64)"
+        [ -f "$fpkey" ] && return 0
+    fi
     if ! fpfree="$(bash tools/aarch64_fp_free_check.sh "$A64_KERNEL_OUT" 2>&1)"; then
         printf '%s\n' "$fpfree" | head -8
         return 1
     fi
+    if [ -n "$fpkey" ]; then mkdir -p "${fpkey%/*}"; : >"$fpkey"; fi
 }
 a64_kbuild() { # a64_kbuild <comma-separated-features>
     par_shared "a64_kbuild $1" || return 1
@@ -8056,6 +8185,7 @@ else bad; printf '%s\n' "$kc_out" | grep -E "FAIL|ERROR" | sed 's/^/      /'; fi
 # run above covers the OFF state; this covers ON.
 test_host_features() { # test_host_features <label> <crate-dir> <features>
     local label="$1" crate="$2" feats="$3" out
+    ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     if host_cargo out "${crate}" test --release --features "$feats" \
        && ! echo "$out" | grep -q "test result: FAILED"; then
@@ -16791,11 +16921,11 @@ else
 fi
 
 par_drain
-if [ "$CI_TIER" = fast ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then
+if [ "$CI_TIER" != full ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then
     fast_missing="$(fast_unseen)"
     if [ -n "$fast_missing" ]; then
-        printf "  %-26s" "fast tier: kept rows exist..."; bad
-        echo "      FAST_ROWS names rows no par call used (renamed or removed?):"
+        printf "  %-26s" "${CI_TIER} tier: kept rows exist..."; bad
+        echo "      the tier's row list names rows no par call used (renamed or removed?):"
         printf '%s\n' "$fast_missing" | sed 's/^/        /'
     fi
 fi
@@ -16803,7 +16933,7 @@ echo ""
 ci_phase_report
 echo ""
 if [ "$SKIP" -gt 0 ]; then
-    echo "[4/4] Results: ${PASS} passed, ${FAIL} failed, ${SKIP} skipped (CI_TIER=fast; each is marked above)"
+    echo "[4/4] Results: ${PASS} passed, ${FAIL} failed, ${SKIP} skipped (CI_TIER=${CI_TIER}; each is marked above)"
 else
     echo "[4/4] Results: ${PASS} passed, ${FAIL} failed"
 fi

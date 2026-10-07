@@ -130,6 +130,8 @@ make qemu                    # boot it (make qemu-smp: 4 CPUs)
 make aarch64                 # aarch64 kernel (make qemu-aarch64 boots it)
 make config                  # choose domain, profile and options
 make ci                      # every build, the host suites, the QEMU scenarios
+make check0                  # cargo check per ISA + the host suites the diff reaches
+make check1                  # check0's suites + smoke boots + the rows the diff maps to
 ```
 
 `make ci` runs `tools/ci_check.sh`; it is run by hand, there is no hosted CI.

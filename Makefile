@@ -316,7 +316,7 @@ QEMU_RVV_CPU := rv64,v=true,vlen=128,vext_spec=v1.0
 FLEET_LINKER   := kernel/linker-fleet.ld
 FLEET_RUSTFLAGS := -C link-arg=-T$(FLEET_LINKER)
 
-.PHONY: prune all build build-rvv build-fleet clean qemu qemu-smp qemu-full-smp qemu-net-pair \
+.PHONY: check0 check1 prune all build build-rvv build-fleet clean qemu qemu-smp qemu-full-smp qemu-net-pair \
         qemu-rvv qemu-full-smp-rvv qemu-systest qemu-dhcp-smoke qemu-pi-smoke userspace userspace-aarch64 syscall-test make-mlp make-gguf \
         vf2 flash-vf2 k1 flash-k1 k1-console ci
 
@@ -2679,6 +2679,16 @@ board_topo_features = board-image$$(python3 tools/kconfig_to_cargo.py $(1) | sed
 # ── CI: build all feature combinations (0 errors, 0 warnings). ───────────────
 ci:
 	@bash tools/ci_check.sh
+
+# The short tiers (tools/gate_tier.sh): N0 the edit loop (`cargo check` per
+# ISA + the host suites the diff reaches), N1 the front check (N0's suites,
+# then the per-ISA smoke boots and the gate rows the diff maps to,
+# tools/rows_for_diff.py). GATE_BASE=<rev> diffs against a revision, not HEAD.
+check0:
+	@bash tools/gate_tier.sh n0
+
+check1:
+	@bash tools/gate_tier.sh n1
 
 # Full CI: azos builds + AzOSRobotBrain tests + protocol sync.
 ci-full:
