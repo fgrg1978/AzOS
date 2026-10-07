@@ -10,6 +10,10 @@
 
 #![cfg(target_arch = "riscv64")]
 
+pub(crate) mod board_map;
+pub(crate) mod smp;
+pub(crate) mod zicboz;
+
 use core::sync::atomic::AtomicBool;
 use super::{TrapClass, TrapContext};
 // Kernel only depends on the `azos_arch` facade, which

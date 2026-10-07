@@ -545,7 +545,7 @@ pub struct EarlyBoot {
 ///      generic, calling the ISA's `ArchEntry` hooks where the ISAs differ.
 ///   2. **Late init** (interrupts ON): storage, config, IPC, drivers,
 ///      scheduler — shared body below.
-///   3. Secondary harts — per-ISA, see `boot_hooks::arch_wake_secondaries`.
+///   3. Secondary harts — per-ISA, see the `wake_secondaries` hook (`entry/<isa>/smp.rs`).
 ///   4. Hand off to the scheduler — per-ISA, see
 ///      `boot_hooks::arch_enter_scheduler`.
 ///

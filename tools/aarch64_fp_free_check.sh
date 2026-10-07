@@ -41,7 +41,7 @@ context_switch
 azos_arch_aarch64::fp_state::save_fp_state
 azos_arch_aarch64::fp_state::restore_fp_state
 kernel::entry::aarch64::fp_survives_interrupt_probe
-kernel::boot_hooks::fp_self_check
+kernel::entry::aarch64::selftests::fp_self_check
 azos_sha256_ce_blocks
 '
 

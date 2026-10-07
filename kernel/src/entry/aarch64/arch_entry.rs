@@ -50,7 +50,7 @@ impl ArchEntry for Entry {
     fn reserve_firmware_table(&self, fw_table: usize) { crate::boot_hooks::reserve_firmware_table(fw_table) }
     #[inline(always)]
     fn kernel_mmio_windows(&self) -> impl Iterator<Item = (usize, usize)> {
-        crate::boot_hooks::kernel_mmio_windows()
+        crate::entry::aarch64::board_map::kernel_mmio_windows()
     }
     #[inline(always)]
     fn mmu_enabled(&self) { crate::boot_hooks::mmu_enabled() }
@@ -83,7 +83,7 @@ impl ArchEntry for Entry {
     #[inline(always)]
     fn timer_init(&self) { crate::boot_hooks::timer_init() }
     #[inline(always)]
-    fn boot_selftests(&self) { crate::boot_hooks::boot_selftests() }
+    fn boot_selftests(&self) { crate::entry::aarch64::selftests::boot_selftests() }
 
     #[inline(always)]
     fn map_late_mmio(&self) {
@@ -92,7 +92,7 @@ impl ArchEntry for Entry {
 
     #[inline(always)]
     fn wake_secondaries(&self, num_cpus: usize) {
-        crate::boot_hooks::arch_wake_secondaries(num_cpus)
+        crate::entry::aarch64::smp::wake_secondaries(num_cpus)
     }
 
     #[inline(always)]

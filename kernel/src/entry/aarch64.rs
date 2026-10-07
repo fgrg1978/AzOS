@@ -20,6 +20,9 @@ the BCM2712 PL011 debug UART as console and firmware boot (kernel8.img); see BOA
 use super::{TrapClass, TrapContext};
 
 pub mod fp_lazy;
+pub(crate) mod board_map;
+pub(crate) mod selftests;
+pub(crate) mod smp;
 
 // Through the facade, same convention `aarch64_early_mmu_init` below
 // already uses for `mmu_setup` — see that function's comment for why this

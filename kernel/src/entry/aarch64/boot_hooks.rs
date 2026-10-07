@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
 use azos_arch::mmu::PAGE_SIZE;
 use azos_arch::FirmwareMemory;
-use azos_arch::{gic, timer as arch_timer, Cpu, Interrupts, ARCH};
+use azos_arch::{gic, timer as arch_timer, Interrupts, ARCH};
 use azos_drv_base::platform::hw;
 use core::sync::atomic::Ordering as AOrdering;
 
@@ -29,7 +29,7 @@ static SCTLR_BEFORE_FIRST_LOCK: AtomicU64 = AtomicU64::new(0);
 /// The scheduler tick on aarch64. Mirrors `clint::SCHED_HZ`'s boot default
 /// (100 Hz): read by `timer_init` (the period) and `boot_selftests` (the
 /// expected tick time).
-const AARCH64_SCHED_HZ: u64 = 100;
+pub(crate) const AARCH64_SCHED_HZ: u64 = 100;
 
 /// The parsed device tree (`None`: no pointer, or one that did not parse).
 pub struct Firmware {
@@ -126,7 +126,7 @@ pub fn boot_banner(hart_id: usize, dtb_ptr: usize) {
     // executes the real `fmul`/`fadd` in asm; EL1 still needs FPEN because
     // the lazy user-FP save/restore runs at EL1. Printing the result through
     // `f64::from_bits` keeps the gate's marker text unchanged.
-    let fp = f64::from_bits(fp_self_check(1.5f64.to_bits(), 0.25f64.to_bits()));
+    let fp = f64::from_bits(crate::entry::aarch64::selftests::fp_self_check(1.5f64.to_bits(), 0.25f64.to_bits()));
     kprintln!("[BOOT] FP/SIMD at EL1: 1.5*1.5+0.25 = {}", fp);
 }
 
@@ -206,24 +206,6 @@ pub fn reserve_firmware_table(dtb_ptr: usize) {
                 dtb_start, dtb_end);
         }
     }
-}
-
-/// The GICv3 distributor, every redistributor frame and the ITS. All
-/// `MAX_HARTS` 128 KiB redistributor frames: `smp::secondary_init` walks
-/// `find_redistributor` up to `MAX_HARTS` frames looking for its own
-/// affinity, and a walk past a mapped frame data-aborts on unmapped Device
-/// space. The ITS takes its control and translation frames (0x2_0000, see
-/// `azos_arch::its::translater_address`). Mapped before the kernel table goes
-/// live, and recorded, so the device-only TTBR0 (`restrict_low_half`) gets
-/// them too; VirtIO comes later (`arch_map_late_mmio`).
-#[inline(always)]
-pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
-    [
-        (gic::GICD_BASE, 0x1_0000),
-        (gic::GICR_BASE, gic::GICR_STRIDE * crate::MAX_HARTS),
-        (azos_arch::its::ITS_BASE, 0x2_0000),
-    ]
-    .into_iter()
 }
 
 /// The kernel table now in `TTBR1_EL1` (`vmm::enable_paging` calls
@@ -612,216 +594,6 @@ pub fn timer_init() {
     kprintln!("[TRAP] IRQs unmasked (DAIF.I clear)");
 }
 
-/// The self-tests that need interrupts live.
-#[inline(always)]
-pub fn boot_selftests() {
-    let live_hz = arch_timer::freq_hz();
-    // ── (a) `svc #0` self-test — must RETURN, not park ──────────────
-    let selftest_x0: u64;
-    unsafe {
-        core::arch::asm!(
-            "mov x0, #0",
-            "svc #0",
-            "mov {0}, x0",
-            out(reg) selftest_x0,
-            out("x0") _,
-            options(nostack),
-        );
-    }
-    if selftest_x0 == crate::entry::aarch64::SELFTEST_SVC_REPLY {
-        kprintln!("[TRAP] svc #0 self-test: PASS (returned, x0={:#x})", selftest_x0);
-    } else {
-        azos_drv_sys::kerr!("[TRAP] FAILED: svc #0 self-test — expected x0={:#x}, got {:#x}",
-            crate::entry::aarch64::SELFTEST_SVC_REPLY, selftest_x0);
-    }
-
-    // ── (b) N ticks in bounded time ──────────────────────────────────
-    //
-    // The pass/fail bound below is deliberately NOT derived from
-    // `period_ticks` — a bound built from the very period this loop
-    // exists to verify cannot catch that period being systematically
-    // wrong (the 1 GHz-vs-62.5 MHz QEMU `-cpu` disagreement
-    // `arch_timer::freq_hz`'s own call site above warns about, or a
-    // bad `AARCH64_SCHED_HZ`): the timeout would simply stretch or
-    // shrink to match the same error, and the loop would "pass" no
-    // matter what the period actually was. `EXPECTED_MS` is instead
-    // computed ONCE from `TICK_TARGET`/`AARCH64_SCHED_HZ` alone — the
-    // wall-clock time this test is actually supposed to take — and
-    // checked against `elapsed_ms`, which comes from the LIVE
-    // `CNTVCT_EL0` delta converted through the LIVE `live_hz`, not
-    // from anything this test derived. The loop's own timeout is a
-    // generous, unrelated 2-real-second safety cap for a timer that
-    // ticks but too slowly or too rarely — it is not what decides
-    // pass/fail. It does NOT bound a timer whose line never fires
-    // (PPI 27 never enabled): `wfi` runs before the deadline compare, so
-    // with no interrupt at all the PE parks here for good — which is
-    // what the `a64clk-ppi-canary` gate row relies on.
-    const TICK_TARGET: u64 = 5;
-    const EXPECTED_MS: u64 = 1000 * TICK_TARGET / AARCH64_SCHED_HZ; // 50 ms
-    let ticks_before = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
-    let target = ticks_before + TICK_TARGET;
-    let start_cntvct = ARCH.now_ticks();
-    let hard_timeout_ticks = live_hz.saturating_mul(2); // 2 s, independent of period_ticks
-    let deadline_cntvct = start_cntvct.wrapping_add(hard_timeout_ticks);
-    loop {
-        let now_count = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
-        if now_count >= target { break; }
-        if ARCH.now_ticks() >= deadline_cntvct { break; }
-        ARCH.wfi();
-    }
-    let ticks_after = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
-    let elapsed_cntvct = ARCH.now_ticks().wrapping_sub(start_cntvct);
-    let elapsed_ms = if live_hz == 0 { 0 } else { elapsed_cntvct * 1000 / live_hz };
-    // Generous 4x-either-way band around EXPECTED_MS: wide enough to
-    // absorb QEMU scheduling jitter and the self-test/kprintln! work
-    // already done above, tight enough that a 16x frequency mixup or a
-    // re-arm-after-EOI storm (2x too fast — see `handle_irq`'s own
-    // comment on ordering) still falls outside it.
-    if ticks_after < target {
-        azos_drv_sys::kerr!("[TIMER] FAILED: only {} of {} ticks arrived in {} ms (expected ~{} ms)",
-            ticks_after - ticks_before, TICK_TARGET, elapsed_ms, EXPECTED_MS);
-    } else if elapsed_ms < EXPECTED_MS / 4 || elapsed_ms > EXPECTED_MS * 4 {
-        azos_drv_sys::kerr!("[TIMER] FAILED: {} ticks arrived in {} ms, expected ~{} ms \
-                   (period computed wrong, or re-arming too fast/slow)",
-            ticks_after - ticks_before, elapsed_ms, EXPECTED_MS);
-    } else {
-        kprintln!("[TIMER] ticks: {} in {} ms (target {}, expected ~{} ms)",
-            ticks_after - ticks_before, elapsed_ms, TICK_TARGET, EXPECTED_MS);
-    }
-
-    // ── (c) FP/SIMD survives interrupt ────────────────────────────────
-    let probe_target = ticks_after + TICK_TARGET;
-    let probe_deadline = ARCH.now_ticks().wrapping_add(live_hz.saturating_mul(2));
-    let (v8_lo, v8_hi, _probe_final_ticks) =
-        crate::entry::aarch64::fp_survives_interrupt_probe(probe_target, probe_deadline);
-    let pattern = crate::entry::aarch64::FP_PROBE_PATTERN;
-    if v8_lo == pattern && v8_hi == pattern {
-        kprintln!("[TRAP] FP/SIMD survives interrupt: PASS (v8=[{:#x},{:#x}])", v8_hi, v8_lo);
-    } else {
-        azos_drv_sys::kerr!("[TRAP] FAILED: FP/SIMD did not survive interrupt — v8=[{:#x},{:#x}], \
-                   expected [{:#x},{:#x}]", v8_hi, v8_lo, pattern, pattern);
-    }
-
-    // ── IRQ-stack proof (task 1) ───────────────────────────────────────
-    let (probed, took_own_stack) = crate::entry::aarch64::irq_stack_probe_result();
-    if probed && took_own_stack {
-        kprintln!("[AARCH64-IRQSTACK] hart 0 handles interrupts on its own stack");
-    } else if probed {
-        azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: hart 0 handled an interrupt off its own IRQ stack");
-    } else {
-        azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: no interrupt was observed to probe");
-    }
-    if !crate::aarch64_irq_stack_intact() {
-        azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: hart 0's IRQ-stack magic word was \
-                   overwritten (overflow)");
-    }
-
-    // ── TTBR1 alias proof (aarch64 parity program, TTBR1 migration) ────
-    //
-    // `aarch64_early_ttbr1_alias` (boot.S, right after
-    // `aarch64_early_mmu_init`) already built the alias table and
-    // turned TTBR1 walks on; this reads back what the hardware
-    // actually latched, decodes T0SZ/T1SZ from the LIVE TCR_EL1 (not
-    // the constants that requested them), and does a live
-    // cross-mapping read to prove the table itself resolves to the
-    // right physical page. See `azos_arch::mmu_setup::
-    // enable_ttbr1_alias`'s doc for what this does and does not
-    // change about the kernel's actual translations.
-    let ttbr1_boot = azos_arch::mmu_setup::TTBR1_BOOT_VALUE.load(AOrdering::Acquire);
-    let tcr_boot = azos_arch::mmu_setup::TCR_BOOT_VALUE.load(AOrdering::Acquire);
-    let t0sz = azos_arch::mmu::tcr_t0sz(tcr_boot);
-    let t1sz = azos_arch::mmu::tcr_t1sz(tcr_boot);
-    let ttbr1_now = azos_arch::sysregs::read_ttbr1_el1();
-    let (canary_low, canary_high, canary_match) = crate::entry::aarch64::ttbr1_alias_verify();
-    kprintln!("[AARCH64-TTBR1] T0SZ={} T1SZ={} TTBR1_EL1={:#x} \
-               KERNEL_VA_OFFSET={:#x}",
-        t0sz, t1sz, ttbr1_boot, azos_arch::mmu::KERNEL_VA_OFFSET);
-    // 25 (39-bit halves) at a 4 or 16 KiB granule, 16 (48-bit) at 64 KiB:
-    // the input range this build's granule walks in three levels.
-    let want_tsz = azos_arch::mmu::GRANULE.tsz();
-    if t0sz != want_tsz || t1sz != want_tsz {
-        azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: expected T0SZ=T1SZ={} ({}-bit \
-                   halves), read T0SZ={} T1SZ={}", want_tsz, 64 - want_tsz, t0sz, t1sz);
-    } else if ttbr1_boot == 0 {
-        azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: TTBR1_EL1 read back 0 — \
-                   enable_ttbr1_alias did not run or did not publish it");
-    } else if !canary_match {
-        azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: alias read mismatch — low={:#x} \
-                   high={:#x}, expected both == {:#x}",
-            canary_low, canary_high, crate::entry::aarch64::TTBR1_ALIAS_CANARY);
-    } else if ttbr1_now as usize & !0xFFF != azos_mm::vmm::kernel_pagetable() {
-        // The boot alias is SUPPOSED to be gone by now: `enable_paging`
-        // replaces it with the kernel's real table, which is what carries
-        // W^X, NX and the stack guards. A TTBR1 still holding the alias
-        // means the kernel is executing out of a flat 1 GiB mapping with
-        // none of those permissions — the exact silent hole this
-        // migration exists to close, and the shape an earlier attempt
-        // shipped before the guard-page probe caught it.
-        azos_drv_sys::kerr!("[AARCH64-TTBR1] FAILED: TTBR1_EL1 is not the kernel page table — \
-                   kernel PT {:#x}, TTBR1 {:#x} (boot alias was {:#x})",
-                  azos_mm::vmm::kernel_pagetable(), ttbr1_now, ttbr1_boot);
-    } else {
-        kprintln!("[AARCH64-TTBR1] kernel runs in the upper half: alias low={:#x} \
-                   high={:#x} match, TTBR1_EL1 = kernel PT {:#x}",
-                  canary_low, canary_high, ttbr1_now);
-    }
-
-    // ── Translation granule readback (config/Kconfig.arch AARCH64_PAGE_*) ──
-    //
-    // Decoded from the LIVE TCR_EL1, not from the constants that asked for
-    // it: TG0 (bits [15:14]) and TG1 ([31:30]) use different encodings, so
-    // each is decoded on its own and both must name the granule this
-    // kernel was built for. The table count is a walk of the kernel's own
-    // page table (root + every table under it), so the line also says
-    // what the granule costs in page-table memory on this boot.
-    {
-        let tcr = azos_arch::sysregs::read_tcr_el1();
-        let tg0_kib = match (tcr >> 14) & 0b11 { 0b00 => 4, 0b10 => 16, 0b01 => 64, _ => 0 };
-        let tg1_kib = match (tcr >> 30) & 0b11 { 0b10 => 4, 0b01 => 16, 0b11 => 64, _ => 0 };
-        let g = azos_arch::mmu::GRANULE;
-        let want_kib = g.page_size() / 1024;
-        let kpt = azos_mm::vmm::kernel_pagetable();
-        let tables = azos_mm::vmm::table_frames(kpt);
-        let verdict = if tg0_kib == want_kib && tg1_kib == want_kib { "ok" } else { "MISMATCH" };
-        kprintln!("[AARCH64-GRANULE] {}: TG0={} KiB TG1={} KiB (built for {} KiB), \
-                   T0SZ={} T1SZ={}, root {} entries, level-1 block {} KiB; \
-                   kernel page tables: {} frames = {} KiB",
-            verdict, tg0_kib, tg1_kib, want_kib,
-            azos_arch::mmu::tcr_t0sz(tcr), azos_arch::mmu::tcr_t1sz(tcr),
-            g.root_entries(), g.level_size(1) / 1024,
-            tables, tables * g.page_size() / 1024);
-    }
-
-    // ── M41 (coordinator / U10-7, audit): TCR_EL1.IPS/AS readback ────
-    //
-    // MARKER, per-boot proof that `tcr_value_for_this_cpu` actually
-    // landed what it computed, not just that the constant looks right
-    // in source. Read from the LIVE register (not `tcr_boot`, which is
-    // the alias-time snapshot from before `enable_paging` — IPS/AS do
-    // not change across that switch, but this line is meant to prove
-    // the CURRENT state, the same discipline every other readback in
-    // this block follows).
-    let tcr_live = azos_arch::sysregs::read_tcr_el1();
-    let ips = azos_arch::mmu::tcr_ips(tcr_live);
-    let as_bit = azos_arch::mmu::tcr_as(tcr_live);
-    kprintln!("[AARCH64-TCR] IPS={} AS={}", ips, as_bit);
-    // Both FAILED branches are QEMU-target claims (`-cpu max`/cortex-a72
-    // report PARange >= 4 and 16-bit ASID support), not an architectural
-    // guarantee for every CPU this crate might run on: a real
-    // implementation that only supports 8-bit ASIDs makes `AS` RES0 —
-    // reading back 0 there would be correct hardware behavior, not this
-    // code failing to ask. This gate boots QEMU only, so it is a fair
-    // canary here; it is not a portable assertion if reused elsewhere.
-    if ips == 0 {
-        azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: IPS=0 — TCR_EL1 still describes \
-                   32-bit physical addresses only");
-    }
-    if as_bit == 0 {
-        azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: AS=0 on QEMU — TCR_EL1 still \
-                   selects an 8-bit ASID");
-    }
-}
-
 /// VirtIO-MMIO is not live before this point on aarch64 (Phase 1 above only
 /// mapped GICD/GICR/UART) — this maps the whole window right before
 /// `install_entropy()` needs it. No-op on riscv64, which already mapped
@@ -831,186 +603,12 @@ pub fn arch_map_late_mmio() {
     use azos_drv_base::platform::hw;
     let _ = azos_mm::vmm::map_mmio_region(
         hw::VIRTIO_MMIO_BASE, hw::VIRTIO_MMIO_STRIDE * hw::VIRTIO_MMIO_COUNT);
-    // Same barrier this front's own GIC mapping needed (`irqchip_init`,
-    // see that call site's comment): this runs after `install_device_only_
-    // ttbr0`, writing new PTEs into the table already live in `TTBR0_EL1`.
+    // This runs after `install_device_only_ttbr0`, writing new PTEs into the
+    // table already live in `TTBR0_EL1`: without the barrier and TLB
+    // invalidate, the next access may still see a translation fault.
     {
         use azos_arch::Mmu;
         azos_arch::ARCH.flush_tlb_all();
-    }
-}
-
-/// Start every secondary hart via PSCI `CPU_ON`, correct `NUM_ONLINE_CPUS`
-/// down to the real count, rescue any stranded task, then (aarch64-only:
-/// riscv64 has no equivalent proof) block on each secondary's own
-/// `CORE_ONLINE` publish and prove a cross-core SGI round trip. Verbatim
-/// cut from the former aarch64 `kernel_main`'s own body.
-pub fn arch_wake_secondaries(num_cpus: usize) {
-    let dtb_num_cpus = num_cpus;
-    azos_drv_sys::uart::enable_smp_lock();
-    kprintln!("[SMP] UART lock enabled");
-
-    kprintln!("[SMP] Starting {} secondary hart(s) via PSCI CPU_ON...", dtb_num_cpus - 1);
-    // A secondary reads `AZOS_SECONDARY_SP` and first uses its boot stack
-    // with its MMU (so its caches) off: push the boot CPU's writes to both
-    // out to the point of coherency, and drop any line of the stacks a later
-    // cacheable read could find stale. A no-op on QEMU; required on silicon.
-    for cpu in 0..azos_percpu::nr_cpu_ids() {
-        let top = crate::AZOS_SECONDARY_SP[cpu].load(core::sync::atomic::Ordering::Relaxed);
-        if top != 0 {
-            let stack = azos_mm::addr::phys_to_virt(top - crate::SECONDARY_STACK_SIZE);
-            unsafe { azos_arch::cache::dcache_clean_and_invalidate(stack, crate::SECONDARY_STACK_SIZE) };
-        }
-    }
-    unsafe {
-        azos_arch::cache::dcache_clean(
-            crate::AZOS_SECONDARY_SP.as_ptr() as usize,
-            core::mem::size_of_val(&crate::AZOS_SECONDARY_SP),
-        )
-    };
-    let online = unsafe { azos_sched::smp::wake_harts(dtb_num_cpus) };
-    if online != dtb_num_cpus {
-        azos_drv_sys::kwarn!("[SMP] WARNING: only {}/{} harts started — degraded to {} online CPU(s)",
-            online, dtb_num_cpus, online);
-    }
-    azos_sched::smp::NUM_ONLINE_CPUS.store(online, Ordering::SeqCst);
-    if online < azos_sched::MAX_CPUS {
-        let rescued = azos_sched::rebalance_from_offline_cpus(online, dtb_num_cpus);
-        if rescued != 0 {
-            kprintln!("[SMP] rescued {} task(s) off harts that never came up", rescued);
-        }
-    }
-
-    // ── Online readback — MARKER, per hart ──────────────────────────────
-    //
-    // Each secondary publishes `CORE_ONLINE`/`CORE_MPIDR`/`CORE_HART_ID`
-    // (`crate::boot::smp::secondary_main`) once its own GIC +
-    // timer bring-up is done. Bounded spin, not a fixed sleep: real
-    // hardware and QEMU both take a variable number of cycles from
-    // `CPU_ON` to a PE's first published word, and a fixed delay would
-    // either flake under load or waste boot time padding for the common
-    // case.
-    {
-        use azos_arch::{Cpu, ARCH};
-        let deadline = ARCH.now_ticks().wrapping_add(azos_arch::timer::freq_hz().saturating_mul(2));
-        for hart in 1..online {
-            while !crate::entry::aarch64::CORE_ONLINE[hart].load(Ordering::Acquire) {
-                if ARCH.now_ticks() >= deadline {
-                    azos_drv_sys::kerr!("[SMP] FAILED: hart {} never published online \
-                               (CORE_ONLINE timed out)", hart);
-                    break;
-                }
-                ARCH.wfi();
-            }
-            if crate::entry::aarch64::CORE_ONLINE[hart].load(Ordering::Acquire) {
-                let mpidr = crate::entry::aarch64::CORE_MPIDR[hart].load(Ordering::Acquire);
-                let got_id = crate::entry::aarch64::CORE_HART_ID[hart].load(Ordering::Acquire);
-                kprintln!("[SMP] hart {} online: MPIDR_EL1={:#x} current_cpu_id()={}",
-                    hart, mpidr, got_id);
-                // MARKER, asserted by the gate — canary (b) (drop the
-                // TPIDR_EL1 write on secondaries) must fail exactly this
-                // line: `got_id` then reads back as whatever TPIDR_EL1
-                // reset to (0 on QEMU), never `hart`.
-                if got_id != hart as u64 {
-                    azos_drv_sys::kerr!("[SMP] FAILED: hart {} current_cpu_id() reported {} \
-                               (TPIDR_EL1 not set to this core's own id)", hart, got_id);
-                }
-
-                // ── MARKER: this hart's own TTBR0/TTBR1 readback ─────────
-                //
-                // U01-1/U01-2 (audit): proves this secondary attached the
-                // REAL kernel table into TTBR1 (not the early-boot alias)
-                // and the DEVICE-ONLY root into TTBR0 (not the full kernel
-                // table) — no feature flag needed, this runs on every boot.
-                // Masks off the low 12 bits (ASID/attrs) before comparing,
-                // same as the primary's own `[AARCH64-TTBR1]` marker above.
-                let got_ttbr0 = crate::entry::aarch64::CORE_TTBR0[hart].load(Ordering::Acquire);
-                let got_ttbr1 = crate::entry::aarch64::CORE_TTBR1[hart].load(Ordering::Acquire);
-                let want_ttbr0 = crate::entry::aarch64::SECONDARY_TTBR0_PA.load(Ordering::Acquire) as u64;
-                let want_ttbr1 = azos_mm::vmm::kernel_pagetable() as u64;
-                let ttbr0_ok = (got_ttbr0 & !0xFFF) == (want_ttbr0 & !0xFFF);
-                let ttbr1_ok = (got_ttbr1 & !0xFFF) == (want_ttbr1 & !0xFFF);
-                kprintln!("[SMP] hart {} TTBR0_EL1={:#x} TTBR1_EL1={:#x}",
-                    hart, got_ttbr0, got_ttbr1);
-                if !ttbr0_ok {
-                    azos_drv_sys::kerr!("[SMP] FAILED: hart {} TTBR0_EL1={:#x}, expected the \
-                               device-only root {:#x}", hart, got_ttbr0, want_ttbr0);
-                }
-                if !ttbr1_ok {
-                    azos_drv_sys::kerr!("[SMP] FAILED: hart {} TTBR1_EL1={:#x}, expected the \
-                               kernel page table {:#x} (still the boot alias?)",
-                               hart, got_ttbr1, want_ttbr1);
-                }
-
-                // ── MARKER: this hart took at least N ticks ──────────────
-                // A bounded wait, same shape as the online-publish spin
-                // above: this hart's own periodic timer was armed inside
-                // `secondary_main`, right before it published
-                // `CORE_ONLINE`, so a few ticks should already be close.
-                const MIN_TICKS: u64 = 3;
-                let tick_deadline = ARCH.now_ticks()
-                    .wrapping_add(azos_arch::timer::freq_hz().saturating_mul(2));
-                while crate::entry::aarch64::TICK_PER_HART[hart].load(Ordering::Acquire) < MIN_TICKS {
-                    if ARCH.now_ticks() >= tick_deadline {
-                        break;
-                    }
-                    ARCH.wfi();
-                }
-                let ticks = crate::entry::aarch64::TICK_PER_HART[hart].load(Ordering::Acquire);
-                if ticks < MIN_TICKS {
-                    azos_drv_sys::kerr!("[SMP] FAILED: hart {} took only {} tick(s), expected >= {}",
-                        hart, ticks, MIN_TICKS);
-                } else {
-                    // MARKER, asserted by the gate.
-                    kprintln!("[SMP] hart {} took {} ticks (>= {})", hart, ticks, MIN_TICKS);
-                }
-            }
-        }
-    }
-
-    // ── Cross-core SGI — MARKER: sent by X, received by Y ───────────────
-    //
-    // Only meaningful with a real secondary online; `-smp 1` (or every
-    // `wake_harts` call failing) skips it rather than printing a marker
-    // that never had anything to prove.
-    // Lazy FP resting state on every online hart: CPACR_EL1.FPEN must read
-    // back 0b01 (EL0 traps) after its last boot-time writer. A hart left at
-    // 0b11 would run user FP without ever trapping, so its state would never
-    // be saved on a switch — silent cross-task corruption.
-    for hart in 0..online {
-        let cpacr = crate::entry::aarch64::CORE_CPACR[hart].load(Ordering::Acquire);
-        let fpen = (cpacr >> 20) & 0b11;
-        if fpen == 0b01 {
-            kprintln!("[FP] hart {} CPACR_EL1.FPEN=0b01: EL0 FP traps (lazy save)", hart);
-        } else {
-            azos_drv_sys::kerr!("[FP] FAILED: hart {} CPACR_EL1={:#x} (FPEN={:#04b}), expected FPEN=0b01",
-                hart, cpacr, fpen);
-        }
-    }
-
-    if online > 1 {
-        use azos_arch::{Cpu, Interrupts, ARCH};
-        let target_hart = 1usize;
-        let before = crate::entry::aarch64::SGI_RECEIVED[target_hart].load(Ordering::Acquire);
-        kprintln!("[SGI] hart 0 sending SGI 0 to hart {}...", target_hart);
-        ARCH.send_ipi(target_hart);
-        let deadline = ARCH.now_ticks().wrapping_add(azos_arch::timer::freq_hz().saturating_mul(2));
-        loop {
-            let now_count = crate::entry::aarch64::SGI_RECEIVED[target_hart].load(Ordering::Acquire);
-            if now_count > before { break; }
-            if ARCH.now_ticks() >= deadline {
-                azos_drv_sys::kerr!("[SGI] FAILED: hart 0 sent SGI 0 to hart {} — never received \
-                           ({} == {})", target_hart, now_count, before);
-                break;
-            }
-            ARCH.wfi();
-        }
-        let after = crate::entry::aarch64::SGI_RECEIVED[target_hart].load(Ordering::Acquire);
-        if after > before {
-            // MARKER, asserted by the gate.
-            kprintln!("[SGI] sent by hart 0, received by hart {}: count={}",
-                target_hart, after);
-        }
     }
 }
 
@@ -1055,30 +653,4 @@ pub fn its() -> &'static mut azos_arch::its::ItsDriver {
 /// Did `ItsDriver::init` succeed? `false` on a machine without an ITS.
 pub fn its_ready() -> bool {
     ITS_READY.load(core::sync::atomic::Ordering::Acquire)
-}
-
-/// `a * a + b` on the FP unit, operands and result as raw f64 bits.
-///
-/// Boot-only (called from `kernel_main`'s early self-check, before any user
-/// task exists), so clobbering d0/d1 cannot destroy anyone's FP state. Named
-/// in `tools/aarch64_fp_free_check.sh`'s allowed list — the one place kernel
-/// code outside the user-FP save/restore executes an FP instruction.
-#[inline(never)]
-fn fp_self_check(a_bits: u64, b_bits: u64) -> u64 {
-    let out: u64;
-    unsafe {
-        core::arch::asm!(
-            ".arch_extension fp",
-            "fmov d0, {a}",
-            "fmov d1, {b}",
-            "fmul d0, d0, d0",
-            "fadd d0, d0, d1",
-            "fmov {out}, d0",
-            a = in(reg) a_bits,
-            b = in(reg) b_bits,
-            out = lateout(reg) out,
-            options(nomem, nostack),
-        );
-    }
-    out
 }
