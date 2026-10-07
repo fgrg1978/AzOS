@@ -20,6 +20,7 @@
 //! time, so the `ns` it prints ARE instructions; on a real core they are
 //! nanoseconds. Printed with two decimals.
 
+use azos_arch::Cpu as _;
 use azos_drv_sys::kprintln;
 use azos_spsc::trace::{region_bytes, Pop, TraceConsumer, TraceGeometry};
 
@@ -44,8 +45,8 @@ pub(crate) fn trace_cost_probe(hz: u64) {
         kprintln!("[TRACE-COST] needs KTRACE_CLASS_SYSCALL and the drop policy");
         return;
     }
-    let now = azos_arch::cpu::now_ticks;
-    let cpu = azos_arch::cpu::hart_id() as u32;
+    let now = || azos_arch::ARCH.now_ticks();
+    let cpu = azos_arch::ARCH.hart_id() as u32;
     let Some(g) = TraceGeometry::from_header(base, region_bytes(ncpu, entries)) else { return };
     let mut c = TraceConsumer::new(base, &g, cpu);
     let drain = |c: &mut TraceConsumer| {

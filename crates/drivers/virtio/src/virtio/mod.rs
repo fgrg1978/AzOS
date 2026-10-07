@@ -251,7 +251,7 @@ pub unsafe fn init(dev: &mut VirtioDev) -> Result<(), ()> {
 
     // Legacy: set guest page size
     if dev.version == 1 {
-        mmio_write(dev.base, VIRTIO_MMIO_GUEST_PAGE_SIZE, azos_arch::mmu::PAGE_SIZE as u32);
+        mmio_write(dev.base, VIRTIO_MMIO_GUEST_PAGE_SIZE, azos_arch::PAGE_SIZE as u32);
     }
 
     // Step 2: ACK
@@ -324,7 +324,7 @@ pub unsafe fn virtq_init(dev: &mut VirtioDev, queue_idx: u32, vq: &mut Virtq) ->
         // For VIRTIO_QUEUE_SIZE=16: total ~4230 bytes = 2 pages.
         let desc_size  = 16 * queue_size as usize;
         let avail_size = 6 + 2 * queue_size as usize;
-        let page_sz    = azos_arch::mmu::PAGE_SIZE;
+        let page_sz    = azos_arch::PAGE_SIZE;
         let used_offset = ((desc_size + avail_size + page_sz - 1) / page_sz) * page_sz;
         let used_size  = 6 + 8 * queue_size as usize;
         let total_size = used_offset + used_size;
@@ -364,9 +364,9 @@ pub unsafe fn virtq_init(dev: &mut VirtioDev, queue_idx: u32, vq: &mut Virtq) ->
         let avail_va = dma_page_ptr(avail_page);
         let used_va  = dma_page_ptr(used_page);
 
-        core::ptr::write_bytes(desc_va  as *mut u8, 0, azos_arch::mmu::PAGE_SIZE);
-        core::ptr::write_bytes(avail_va as *mut u8, 0, azos_arch::mmu::PAGE_SIZE);
-        core::ptr::write_bytes(used_va  as *mut u8, 0, azos_arch::mmu::PAGE_SIZE);
+        core::ptr::write_bytes(desc_va  as *mut u8, 0, azos_arch::PAGE_SIZE);
+        core::ptr::write_bytes(avail_va as *mut u8, 0, azos_arch::PAGE_SIZE);
+        core::ptr::write_bytes(used_va  as *mut u8, 0, azos_arch::PAGE_SIZE);
 
         vq.desc  = desc_va  as *mut VirtqDesc;
         vq.avail = avail_va as *mut VirtqAvail;
@@ -502,9 +502,9 @@ pub unsafe fn virtq_alloc_rings(vq: &mut Virtq, queue_size: u16) -> Result<(u64,
     let desc_va  = dma_page_ptr(desc_page);
     let avail_va = dma_page_ptr(avail_page);
     let used_va  = dma_page_ptr(used_page);
-    core::ptr::write_bytes(desc_va  as *mut u8, 0, azos_arch::mmu::PAGE_SIZE);
-    core::ptr::write_bytes(avail_va as *mut u8, 0, azos_arch::mmu::PAGE_SIZE);
-    core::ptr::write_bytes(used_va  as *mut u8, 0, azos_arch::mmu::PAGE_SIZE);
+    core::ptr::write_bytes(desc_va  as *mut u8, 0, azos_arch::PAGE_SIZE);
+    core::ptr::write_bytes(avail_va as *mut u8, 0, azos_arch::PAGE_SIZE);
+    core::ptr::write_bytes(used_va  as *mut u8, 0, azos_arch::PAGE_SIZE);
     vq.desc  = desc_va  as *mut VirtqDesc;
     vq.avail = avail_va as *mut VirtqAvail;
     vq.used  = used_va  as *mut VirtqUsed;

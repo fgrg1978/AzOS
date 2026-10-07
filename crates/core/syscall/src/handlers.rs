@@ -2319,21 +2319,10 @@ pub(crate) fn power_off_orderly() -> ! {
     // Deferred kernel lines reach the wire before the power-off (see
     // `sys_reboot`).
     azos_drv_sys::uart::console_flush_for_reboot();
-    // RISC-V (real crate): `azos_arch::sbi::shutdown()`, unchanged.
-    // `tests/host/syscall-tests`' host shim substitutes its own `azos_arch`
-    // with a `sbi` module (`todo!()` body, never reached by that crate's
-    // tests) but no `Boot` impl — so this call, not `arch-api`'s
-    // `Boot::shutdown`, is what keeps that shim compiling. Only the real
-    // aarch64 target (`target_os = "none"`, where `azos_arch::sbi`
-    // does not exist at all — see `crates/core/arch-aarch64`) needs the other
-    // arm, and there `Boot::shutdown` reaches real PSCI `SYSTEM_OFF`.
-    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
-    azos_arch::sbi::shutdown();
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    {
-        use azos_arch::Boot;
-        azos_arch::ARCH.shutdown();
-    }
+    // riscv64: SBI SRST shutdown; aarch64: PSCI `SYSTEM_OFF`. The host shim
+    // of `tests/host/syscall-tests` implements `Boot` with `todo!()` bodies
+    // (never reached by its tests).
+    azos_arch::Boot::shutdown(&azos_arch::ARCH)
 }
 
 pub fn sys_reboot() -> i64 {
@@ -2348,14 +2337,8 @@ pub(crate) fn reboot_orderly() -> ! {
     // Deferred kernel lines (ring 3 may own the console on another hart)
     // reach the wire before the reset, not never.
     azos_drv_sys::uart::console_flush_for_reboot();
-    // See `sys_shutdown` above for why this is split the way it is.
-    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
-    azos_arch::sbi::reboot();
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    {
-        use azos_arch::Boot;
-        azos_arch::ARCH.reboot();
-    }
+    // riscv64: SBI SRST cold reboot; aarch64: PSCI `SYSTEM_RESET`.
+    azos_arch::Boot::reboot(&azos_arch::ARCH)
 }
 
 // ── Disk ─────────────────────────────────────────────────────────────────────
@@ -3851,7 +3834,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     // much one call may claim.
     if len > azos_mm::demand::MAX_DEMAND_ALLOC_BYTES { return -1; }
 
-    let page_size = azos_arch::mmu::PAGE_SIZE;
+    let page_size = azos_arch::PAGE_SIZE;
     let num_pages = len.saturating_add(page_size - 1) / page_size;
 
     // Use brk as base for anonymous mappings, then advance brk
@@ -3964,7 +3947,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
 /// the address down on every hart that may hold it before it returns, so no
 /// stale TLB entry survives the free.
 fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
-    let page_size = azos_arch::mmu::PAGE_SIZE;
+    let page_size = azos_arch::PAGE_SIZE;
     let mut v = base;
     while v < end {
         if let Some(pa) = azos_mm::vmm::translate_user(user_pt, v, false) {
@@ -3996,7 +3979,7 @@ fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
 pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     use azos_abi::error::Errno;
     let _mm = azos_sched::group::mm_lock();
-    let page_size = azos_arch::mmu::PAGE_SIZE;
+    let page_size = azos_arch::PAGE_SIZE;
     if prot & !(MMAP_PROT_READ | MMAP_PROT_WRITE | MMAP_PROT_EXEC) != 0
         || addr as usize & (page_size - 1) != 0 || length == 0
     {
@@ -4115,7 +4098,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     let user_pt = azos_sched::current_user_pt();
     if user_pt == 0 { return -1; }
 
-    let page_size = azos_arch::mmu::PAGE_SIZE;
+    let page_size = azos_arch::PAGE_SIZE;
     let len = length as usize;
     if len == 0 { return -1; }
 
@@ -4293,7 +4276,7 @@ pub fn sys_alloc_demand(size: u64) -> i64 {
         return -1;
     }
 
-    let page_size = azos_arch::mmu::PAGE_SIZE;
+    let page_size = azos_arch::PAGE_SIZE;
     let num_pages = (size + page_size - 1) / page_size;
 
     // Use the user brk as the allocation base (same convention as sys_mmap),
@@ -6754,7 +6737,7 @@ pub fn sys_drv_irq_ack(irq: u64) -> i64 {
                 #[cfg(not(feature = "irq-ack-canary"))]
                 azos_drv_irqchip::user_irq::unmask(irq);
             } else {
-                let hart = azos_arch::cpu::hart_id() as u32;
+                let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32;
                 azos_drv_irqchip::irqchip::complete_if_enabled(hart, irq);
             }
         }
@@ -6832,7 +6815,7 @@ pub(crate) fn arch_irq_bound(irq: u32) -> bool {
         let tid = azos_sched::current_task_tid();
         let pin = azos_sched::task_cpu_affinity(tid).unwrap_or(-1);
         #[cfg(not(feature = "irq-route-canary"))]
-        let hart = user_irq::target_hart(pin, azos_arch::cpu::hart_id() as u32);
+        let hart = user_irq::target_hart(pin, azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32);
         // Canary: the old rule, every ring-3 line on the boot hart.
         #[cfg(feature = "irq-route-canary")]
         let hart = user_irq::boot_hart();

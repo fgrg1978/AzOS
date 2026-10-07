@@ -173,6 +173,7 @@ fn compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
             let f: BlocksFn = unsafe { core::mem::transmute::<usize, BlocksFn>(HOOK.load(Ordering::Relaxed)) };
             f(state, blocks);
         }
+        // arch-only: riscv64 extension arms; other ISAs fall to `_`.
         // SAFETY (both riscv arms): set only by `select_riscv`, after cpu@0
         // declared the extension and the path passed the self-test.
         #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
@@ -292,6 +293,9 @@ pub fn select_hook(f: BlocksFn) -> bool {
 
 /// riscv64: Zknh, else Zbb, else generic, from what cpu@0 declares. Returns
 /// the backend kept. Boot only, before anything else hashes.
+// arch-only: an optional riscv64 extension path (Zbb/Zknh), probed at boot;
+// every other ISA takes the portable code or the select_hook path
+// (aarch64 SHA2 CE, x86_64 SHA-NI).
 #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
 pub fn select_riscv(zbb: bool, zknh: bool) -> &'static str {
     // Zknh's path is compiled with Zbb on as well (rev8 word loads, and the
@@ -335,6 +339,9 @@ pub fn select_riscv(_zbb: bool, _zknh: bool) -> &'static str {
 /// How the four sigma functions are computed.
 const SIG_ROT: u8 = 0; // `rotate_right`: a native rotate (aarch64, x86, riscv64 Zbb)
 const SIG_DUP: u8 = 1; // riscv64 without Zbb: 64-bit duplicate, see `dup`
+// arch-only: an optional riscv64 extension path (Zbb/Zknh), probed at boot;
+// every other ISA takes the portable code or the select_hook path
+// (aarch64 SHA2 CE, x86_64 SHA-NI).
 #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
 const SIG_ZKNH: u8 = 2; // riscv64 Zknh: one instruction each
 
@@ -368,6 +375,9 @@ pub fn blocks_wide(state: &mut [u32; 8], blocks: &[u8]) {
     blocks_with::<SIG_ROT, LOAD_WIDE>(state, blocks);
 }
 
+// arch-only: an optional riscv64 extension path (Zbb/Zknh), probed at boot;
+// every other ISA takes the portable code or the select_hook path
+// (aarch64 SHA2 CE, x86_64 SHA-NI).
 #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
 mod rv {
     use super::*;
@@ -567,6 +577,8 @@ fn blocks_with<const SIG: u8, const LOAD: u8>(state: &mut [u32; 8], blocks: &[u8
 fn pin(x: &mut u32) {
     // SAFETY (each arm): an empty template; it only claims to read and
     // write `x`.
+    // arch-only: a codegen barrier (spills), not correctness: an ISA without
+    // an arm here computes the same hash.
     #[cfg(target_arch = "riscv64")]
     unsafe {
         core::arch::asm!("/* {0} */", inout(reg) *x, options(nomem, nostack, preserves_flags));
@@ -615,6 +627,7 @@ fn dup(x: u32) -> (u64, u64) {
 /// Σ0 = ROTR2 ^ ROTR13 ^ ROTR22.
 #[inline(always)]
 fn sum0<const S: u8>(x: u32) -> u32 {
+    // arch-only: riscv64 Zknh; S is never SIG_ZKNH elsewhere.
     #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
     if S == SIG_ZKNH {
         return rv::sum0(x);
@@ -629,6 +642,7 @@ fn sum0<const S: u8>(x: u32) -> u32 {
 /// Σ1 = ROTR6 ^ ROTR11 ^ ROTR25.
 #[inline(always)]
 fn sum1<const S: u8>(x: u32) -> u32 {
+    // arch-only: riscv64 Zknh; S is never SIG_ZKNH elsewhere.
     #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
     if S == SIG_ZKNH {
         return rv::sum1(x);
@@ -643,6 +657,7 @@ fn sum1<const S: u8>(x: u32) -> u32 {
 /// σ0 = ROTR7 ^ ROTR18 ^ SHR3.
 #[inline(always)]
 fn sig0<const S: u8>(x: u32) -> u32 {
+    // arch-only: riscv64 Zknh; S is never SIG_ZKNH elsewhere.
     #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
     if S == SIG_ZKNH {
         return rv::sig0(x);
@@ -657,6 +672,7 @@ fn sig0<const S: u8>(x: u32) -> u32 {
 /// σ1 = ROTR17 ^ ROTR19 ^ SHR10.
 #[inline(always)]
 fn sig1<const S: u8>(x: u32) -> u32 {
+    // arch-only: riscv64 Zknh; S is never SIG_ZKNH elsewhere.
     #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
     if S == SIG_ZKNH {
         return rv::sig1(x);

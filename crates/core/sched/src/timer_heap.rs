@@ -219,6 +219,89 @@ impl<const N: usize> Default for TimerHeap<N> {
     }
 }
 
+/// The scheduler around the heap, as a tick's pass over due sleepers
+/// ([`wake_due`]) sees it. The kernel's one implementation is in
+/// `scheduler::timer_sleepers`; the host runner implements it with a model
+/// that runs another hart's steps inside each call (`tests` below).
+pub trait DueSleepers<const N: usize> {
+    /// Run `f` on the heap with the sleeper lock held. The lock serialises
+    /// every heap access, including the sleeper's own arm after its commit.
+    fn locked<R>(&self, f: impl FnOnce(&mut TimerHeap<N>) -> R) -> R;
+    /// The deadline `slot` is blocked on now, if it is blocked on a timer.
+    fn live(&self, slot: usize) -> Option<u64>;
+    /// Wake `slot` if it is blocked on a timer due at `now`. A sleeper still
+    /// switching away can only be stamped: it stays blocked for now.
+    fn wake(&self, slot: usize, now: u64);
+    /// `slot` was popped (called under the lock).
+    #[inline]
+    fn popped(&self, _slot: usize) {}
+    /// `slot`'s wake-or-re-arm step is over.
+    #[inline]
+    fn landed(&self, _slot: usize) {}
+}
+
+/// A tick's pass over the due sleepers: pop them in batches of `BATCH`
+/// (the lock is never held across a wake — wakes take the run-queue
+/// locks), wake each, and re-arm a slot still blocked on a timer after its
+/// wake (it was switching away, so the wake could only stamp it; a
+/// popped-and-forgotten entry would also vanish from the nearest-deadline
+/// query, letting a tickless hart sleep past it).
+///
+/// The re-arm reads the deadline under the lock, in the same critical
+/// section as the arm. A sleeper arms after its commit and under the lock,
+/// so a read made there either sees that commit (and arms the same
+/// deadline) or precedes it (and is overwritten by the sleeper's own arm).
+/// A deadline read before the lock (wave 5, gate 185) could predate an arm
+/// that completed in between and overwrite it with an older deadline.
+#[inline]
+pub fn wake_due<const N: usize, const BATCH: usize, S: DueSleepers<N>>(s: &S, now: u64) {
+    let mut batch = [0usize; BATCH];
+    // Each entry present at entry is popped at most about once per call: a
+    // re-armed retry can come round again only while this lasts.
+    let mut budget = s.locked(|h| h.len());
+    while budget > 0 {
+        let take = budget.min(BATCH);
+        let n = s.locked(|h| {
+            let mut n = 0;
+            while n < take {
+                match h.pop_due(now) {
+                    Some((_, slot)) => {
+                        s.popped(slot);
+                        batch[n] = slot;
+                        n += 1;
+                    }
+                    None => break,
+                }
+            }
+            n
+        });
+        budget -= n;
+        let mut retry = [0usize; BATCH];
+        let mut r = 0;
+        for &slot in &batch[..n] {
+            s.wake(slot, now);
+            // Only a filter: the deadline re-armed is re-read under the lock.
+            if s.live(slot).is_some() {
+                retry[r] = slot;
+                r += 1;
+            }
+        }
+        for &slot in &retry[..r] {
+            s.locked(|h| {
+                if let Some(d) = s.live(slot) {
+                    h.arm(slot, d);
+                }
+            });
+        }
+        for &slot in &batch[..n] {
+            s.landed(slot);
+        }
+        if n < BATCH {
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +488,225 @@ mod tests {
                 assert_eq!(h.armed_deadline(s), model[s], "step {step} slot {s}");
             }
         }
+    }
+
+    // ── `wake_due` under another hart: the wave-5 race (gate 185) ──────────
+    //
+    // Slot 0 is a sleeper whose own hart runs a script of atomic steps; the
+    // model runs them inside `wake_due`'s calls (its interleaving points),
+    // and every placement of the steps over the points is tried. A step
+    // that needs the heap (the sleeper's own arm) never runs while the tick
+    // holds the lock; the others (state commits) may, as on hardware.
+    // Slot 1 is a plain due sleeper, so batches of 1 split the pass.
+
+    use core::cell::{Cell, RefCell};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum St {
+        Blocked(u64),
+        Ready,
+    }
+
+    const NOW: u64 = 20;
+    const D1: u64 = 10;
+    const D2: u64 = 50;
+
+    struct Model<'a> {
+        heap: RefCell<TimerHeap<4>>,
+        st: [Cell<St>; 2],
+        /// Slot 0 still switching away: a wake can only stamp it.
+        switching: Cell<bool>,
+        stamped: Cell<bool>,
+        in_lock: Cell<bool>,
+        point: Cell<usize>,
+        next: Cell<usize>,
+        /// `first[i]`: the first point at which script step `i` may run.
+        first: &'a [usize],
+    }
+
+    impl Model<'_> {
+        /// Script step `i` for slot 0, if it can run now.
+        fn try_step(&self, i: usize) -> bool {
+            match i {
+                // The switch away completes; the reaper takes a stamp.
+                0 => {
+                    if !self.switching.get() {
+                        return false;
+                    }
+                    self.switching.set(false);
+                    if self.stamped.replace(false) {
+                        self.st[0].set(St::Ready);
+                    }
+                }
+                // Dispatched, runs, commits `Blocked` on a later timer.
+                1 => {
+                    if self.st[0].get() != St::Ready {
+                        return false;
+                    }
+                    self.st[0].set(St::Blocked(D2));
+                    self.switching.set(true);
+                }
+                // `block_current`'s arm, after the commit, under the lock.
+                2 => {
+                    if self.in_lock.get() {
+                        return false;
+                    }
+                    self.heap.borrow_mut().arm(0, D2);
+                }
+                // The second switch away completes.
+                _ => self.switching.set(false),
+            }
+            true
+        }
+
+        fn run_due(&self, upto: usize) {
+            while self.next.get() < self.first.len()
+                && self.first[self.next.get()] <= upto
+                && self.try_step(self.next.get())
+            {
+                self.next.set(self.next.get() + 1);
+            }
+        }
+
+        fn point(&self) {
+            let p = self.point.get();
+            self.point.set(p + 1);
+            self.run_due(p);
+        }
+    }
+
+    impl DueSleepers<4> for Model<'_> {
+        fn locked<R>(&self, f: impl FnOnce(&mut TimerHeap<4>) -> R) -> R {
+            self.point();
+            self.in_lock.set(true);
+            // The heap is taken out for the hold: the sleeper's arm cannot
+            // run inside it (`try_step` refuses), so nothing else touches it.
+            let mut h = core::mem::take(&mut *self.heap.borrow_mut());
+            let r = f(&mut h);
+            *self.heap.borrow_mut() = h;
+            self.in_lock.set(false);
+            r
+        }
+
+        fn live(&self, slot: usize) -> Option<u64> {
+            let r = match self.st[slot].get() {
+                St::Blocked(d) => Some(d),
+                St::Ready => None,
+            };
+            self.point();
+            r
+        }
+
+        fn wake(&self, slot: usize, now: u64) {
+            if let St::Blocked(d) = self.st[slot].get() {
+                if now >= d {
+                    if slot == 0 && self.switching.get() {
+                        self.stamped.set(true);
+                    } else {
+                        self.st[slot].set(St::Ready);
+                    }
+                }
+            }
+            self.point();
+        }
+
+        fn popped(&self, _slot: usize) {
+            self.point();
+        }
+    }
+
+    /// Every placement of slot 0's script over `points` interleaving points
+    /// (non-decreasing first points; `points` = after the pass).
+    fn placements(steps: usize, points: usize, mut f: impl FnMut(&[usize])) {
+        let mut v = vec![0usize; steps];
+        loop {
+            f(&v);
+            let mut i = steps;
+            loop {
+                if i == 0 {
+                    return;
+                }
+                i -= 1;
+                if v[i] < points {
+                    v[i] += 1;
+                    for j in i + 1..steps {
+                        v[j] = v[i];
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// One pass of `wake_due::<BATCH>` with slot 0's script placed at
+    /// `first`; returns slot 0's end state and armed deadline after the
+    /// sleeper's hart finishes its script.
+    fn race<const BATCH: usize>(first: &[usize], start: (St, bool)) -> (St, Option<u64>, Option<u64>) {
+        let mut h = TimerHeap::<4>::new();
+        h.arm(0, D1);
+        h.arm(1, 15);
+        let m = Model {
+            heap: RefCell::new(h),
+            st: [Cell::new(start.0), Cell::new(St::Blocked(15))],
+            switching: Cell::new(start.1),
+            stamped: Cell::new(false),
+            in_lock: Cell::new(false),
+            point: Cell::new(0),
+            next: Cell::new(if start.1 { 0 } else { 1 }),
+            first,
+        };
+        wake_due::<4, BATCH, _>(&m, NOW);
+        m.run_due(usize::MAX);
+        let live = |s: usize| match m.st[s].get() {
+            St::Blocked(d) => Some(d),
+            St::Ready => None,
+        };
+        let st = m.st[0].get();
+        let armed = m.heap.borrow().armed_deadline(0);
+        // Slot 1 too: a pass whose budget a due retry used up leaves it to
+        // the next tick, still armed exactly.
+        if let St::Blocked(d) = m.st[1].get() {
+            assert_eq!(m.heap.borrow().armed_deadline(1), Some(d), "slot 1, placement={first:?}");
+        }
+        let want = [0, 1].iter().filter_map(|&s| live(s)).min();
+        let nearest = m.heap.borrow_mut().peek_live(live);
+        assert_eq!(nearest, want, "nearest, placement={first:?}");
+        (st, armed, nearest)
+    }
+
+    fn check_all_races<const BATCH: usize>() -> usize {
+        let mut runs = 0;
+        // (a) Slot 0 popped while still switching away from its block on
+        // D1: the wake only stamps it, the reaper readies it, it runs and
+        // blocks on D2 — the gate-185 shape. (b) Slot 0 woken early by TID
+        // before the tick, so its D1 entry is stale when popped.
+        for start in [(St::Blocked(D1), true), (St::Ready, false)] {
+            let steps = if start.1 { 4 } else { 3 };
+            placements(steps, 16, |p| {
+                let first: Vec<usize> =
+                    if start.1 { p.to_vec() } else { core::iter::once(0).chain(p.iter().copied()).collect() };
+                let (st, armed, nearest) = race::<BATCH>(&first, start);
+                runs += 1;
+                if let St::Blocked(d) = st {
+                    // Exact, not merely present: an older deadline left on a
+                    // sleeper is an early tick at best, and was a lost
+                    // sleeper once `nearest` popped it.
+                    assert_eq!(armed, Some(d), "BATCH={BATCH} start={start:?} placement={first:?}");
+                    assert!(nearest.is_some_and(|n| n <= d), "BATCH={BATCH} start={start:?} placement={first:?}");
+                }
+            });
+        }
+        runs
+    }
+
+    /// The tick's retry re-arm must not overwrite the deadline a sleeper
+    /// armed itself after the pop: every interleaving of the sleeper's
+    /// switch / run / re-block / arm with one pass of `wake_due`, with the
+    /// pass split into batches of 1 and in one batch. Red with the wave-5
+    /// bug (the re-armed deadline read before the lock is taken).
+    #[test]
+    fn wake_due_retry_never_overwrites_a_newer_arm() {
+        let runs = check_all_races::<1>() + check_all_races::<8>();
+        assert!(runs > 1000, "only {runs} interleavings tried");
     }
 }

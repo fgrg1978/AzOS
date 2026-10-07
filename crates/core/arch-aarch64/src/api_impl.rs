@@ -60,6 +60,18 @@ impl Cpu for Aarch64 {
         // needs no conversion.
         crate::sysregs::read_cntvct_el0()
     }
+
+    #[inline(always)]
+    fn percpu_base(&self) -> usize {
+        let b: usize;
+        unsafe { core::arch::asm!("mrs {}, TPIDR_EL1", out(reg) b, options(nomem, nostack, preserves_flags)) };
+        b
+    }
+
+    #[inline(always)]
+    fn set_percpu_base(&self, base: usize) {
+        unsafe { core::arch::asm!("msr TPIDR_EL1, {}", in(reg) base, options(nomem, nostack, preserves_flags)) };
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

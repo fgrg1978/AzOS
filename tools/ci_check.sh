@@ -631,6 +631,43 @@ fresh_disk() {
     return 0
 }
 
+# ── A host port of the row's own, for a row with a host-side peer ───────────
+#
+# Every image `make` builds dials its brain at 10.0.2.2:9000, and QEMU's SLIRP
+# turns that into a connect to 127.0.0.1:9000 on the HOST. So a peer bound to
+# 9000 is reachable by EVERY disk+NIC guest on the machine — another job of
+# this gate, another worktree's gate, a hand run — and all of them reach it
+# from 127.0.0.1, so the peer cannot tell them apart. A stranger that dials
+# first takes the peer's one `accept()`; on a standard image (link_encrypt on,
+# no LINK.KEY) it closes at once, the peer's next write dies on a broken pipe,
+# its listener goes with it, and the guest under test is refused on every
+# redial: `[BRAIN] handshake stalled (state=0)` (Closed: an RST, not a lost
+# SYN, which would leave SynSent) over and over, never `connected`. That is the
+# `the brain lies` red of gate 150, reproduced with a stand-in stranger. One
+# arriving later waits in `link_peer.py`'s backlog and is accepted as session
+# 2 at phase 5 (the camera row's phase-5 red of 24-09).
+#
+# So every row with a host peer starts it with `--port 0`, reads the port the
+# OS gave it back from the peer's `listening on` line, and only then points
+# the image at it and boots: no window in which another process can take it.
+#
+# peer_port_image <img> <port> [extra-line]: this image's brain link dials
+# <port> instead of 9000 (and gets [extra-line] appended), CONFIG.SIG re-signed
+# for it. REWRITTEN, not appended: `cfg_get` answers the FIRST line with a key.
+peer_port_image() {
+    local img="$1" port="$2" extra="${3:-}" ini="$1.peerport.ini" rc=0
+    mcopy -n -i "$img" ::CONFIG.INI "$ini.in" 2>/dev/null \
+      && sed -e "s/^behavior_server_port=.*/behavior_server_port=$port/" "$ini.in" >"$ini" \
+      && grep -q "^behavior_server_port=$port\$" "$ini" \
+      && { [ -z "$extra" ] || printf '%s\n' "$extra" >>"$ini"; } \
+      && mcopy -o -i "$img" "$ini" ::CONFIG.INI 2>/dev/null \
+      && python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$img" \
+             --out "$ini.sig" >/dev/null 2>&1 \
+      && mcopy -o -i "$img" "$ini.sig" ::CONFIG.SIG 2>/dev/null || rc=1
+    rm -f "$ini" "$ini.in" "$ini.sig"
+    return $rc
+}
+
 # ── Persisted entropy seed rows (ENTSEED, wave 11) ──────────────────────────
 #
 # One boot of the volume under test, either ISA, with or without virtio-rng,
@@ -1121,6 +1158,12 @@ par_reap() {
         fi
         cat "$PAR_DIR/$n.out" >&7
         cat "$PAR_DIR/$n.timing" >>"$MAIN_TIMING" 2>/dev/null
+        # The job's private kernel copies and disks (`par_ready`, `job_disk`)
+        # end with it. Kept, they grew to 17 GiB by the start of [3/4] (a
+        # riscv64 kernel with its debug info is ~47 MB, one per job) and the
+        # wave-15 integration gate died of a full disk at the INA219 rows.
+        rm -f "$PAR_DIR/$n.kernel" "$PAR_DIR/$n.a64-kernel" "$PAR_DIR/$n.a64-kernel.img" \
+            "$PAR_DIR/$n.disk."*
         PAR_HEAD=$((n + 1))
         if [ -n "$pid" ]; then
             if [ ! -f "$PAR_DIR/$n.res" ]; then
@@ -1676,6 +1719,20 @@ else
 fi
 rm -f "$sys_nr_tmp"
 
+# Arch contract lint (tools/arch_cfg_lint.py): every `cfg(target_arch)` in
+# shared code needs an else branch or a `compile_error!`, or a new ISA
+# compiles with that code silently gone (a riscv64/aarch64 pair is not an
+# else). Ratchet: per-file counts in tools/arch_cfg_lint.baseline may only
+# fall. The row also runs the lint's own canaries (`--self-test`): a new
+# violation must fail, a fixed one pass, a malformed baseline error out.
+printf "  %-26s" "arch cfg lint (ratchet)..."
+if acl_out="$(python3 "${REPO_ROOT}/tools/arch_cfg_lint.py" --self-test 2>&1)" \
+   && acl_out="$(python3 "${REPO_ROOT}/tools/arch_cfg_lint.py" 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$acl_out" | sed 's/^/      /'
+fi
+
 echo ""
 # The seccomp image table. crates/core/sched/src/seccomp.rs `include!`s
 # build/image_hashes.rs, the SHA-256 of every ELF the disk images carry, so no
@@ -1703,6 +1760,19 @@ fi
 
 ci_phase "[1/4] builds + aarch64/early QEMU rows"
 echo "[1/4] Building all feature combinations..."
+
+# The x86_64 skeleton type-checks the kernel through the arch contract only:
+# there the facade exports arch-api's traits and `ARCH`, not the ISA modules.
+# Shared code that names a module (`azos_arch::cpu::hart_id()`) still builds
+# for riscv64 and aarch64, whose facades re-export those modules, and the arch
+# cfg lint does not see it (it is not a cfg). Wave 15 integration: the per-hart
+# loopback guard did exactly that, and only `make ARCH=x86_64 check` failed.
+printf "  %-26s" "x86_64: make check..."
+if x86_out="$(make ARCH=x86_64 check 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$x86_out" | grep -A6 '^error' | sed -n 1,40p | sed 's/^/      /'
+fi
 
 # No forced recompile here any more. This line used to `touch` every .rs file
 # under crates/ domains/ kernel/ because "rustc only emits warnings when it
@@ -2084,7 +2154,11 @@ trap_size_row() { # trap_size_row <label> <elf> <symbol-suffix>=<bytes>...
     if [ "$fail" = 0 ]; then ok; else bad; fi
     printf '%b' "$report"
 }
-trap_size_row "aarch64: trap path size" "$A64_KERNEL" aarch64_trap_entry=1216 7aarch6412svc_dispatch=488
+# Re-pinned in the wave-15 integration: block A (c44e9b85) moved both trap
+# paths and the row was already red on main (aarch64 1356 B; riscv64
+# trap_handler 54 B, handle_ecall 568 B, then 582 with NRCPUS). vsbench
+# -icount syscall-floor did not move: 180 riscv64, 152 aarch64.
+trap_size_row "aarch64: trap path size" "$A64_KERNEL" aarch64_trap_entry=1356 7aarch6412svc_dispatch=488
 
 aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected entry EL> <smp>
     local label="$1" mach="$2" el="$3" smp="${4:-2}"
@@ -7142,18 +7216,25 @@ rt7_row() { # rt7_row <isa: rv|arm> <mode: contain|spin|reset>
     if [ "$isa" = rv ]; then
         par_ready
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
-            -global virtio-mmio.force-legacy=false \
+            -icount shift=0,sleep=off -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
     else
         par_ready
         qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -icount shift=0,sleep=off \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
     fi
+    # Ceiling 600 s: a quiet host reaches the verdict in ~7 s under -icount
+    # (one host thread runs both harts); a loaded one stretches that, and the
+    # verdict does not depend on it (virtual time). 120 s was too short in the
+    # wave-15 integration gate, where the eight rows run as parallel jobs next
+    # to builds: `rt7: panic contain (rv)` was cut ~2.5 s of virtual time
+    # before its Disarm line, with nothing wrong in what it had printed.
     local pid=$! i=0
-    while [ "$i" -lt 120 ]; do
+    while [ "$i" -lt 1200 ]; do
         grep -aq "RT7-SMOKE\] \(PASS\|FAIL\)" "$log" 2>/dev/null && break
         if [ "$mode" = safety ]; then
             grep -aq "RT7-SMOKE\] latch: " "$log" 2>/dev/null && break
@@ -7272,16 +7353,23 @@ rt7_drone_default_row() {
     fi
 }
 rt7_drone_default_row
-# Alone: the smoke judges the control loop's heartbeat against a wall-clock
-# bound (100 ms); with other jobs running it read 100.9 ms once (2026-10-03).
-par -s "rt7: panic contain (rv)" rt7_row rv contain
-par -s "rt7: panic spin (rv)" rt7_row rv spin
-par -s "rt7: panic contain (arm)" rt7_row arm contain
-par -s "rt7: panic spin (arm)" rt7_row arm spin
-par -s "rt7: panic reset (rv)" rt7_row rv reset
-par -s "rt7: panic reset (arm)" rt7_row arm reset
-par -s "rt7: panic safety (rv)" rt7_row rv safety
-par -s "rt7: panic safety (arm)" rt7_row arm safety
+# Virtual time (-icount shift=0,sleep=off), so in parallel. On wall time the
+# smoke's rates and still times measured the host: the guest clock runs while
+# the host deschedules a vCPU thread, and under -smp 2 behavior's one-shot
+# `[BENCH-RES]` sweep is rebalanced from dead hart 2 onto hart 0, the control
+# hart, keeping that vCPU CPU-bound across the after window. Serial, 1/10 read
+# "rt-motor lost its period" (145 vs 290 heartbeats, wave 15); with 12 host
+# busy loops 4/7 runs failed and after < before in all 7. Under -icount, 20/20
+# PASS at 493-499 heartbeats per 500 ms in both windows, 10 of them with the
+# sweep spanning the after window (2026-10-06).
+par "rt7: panic contain (rv)" rt7_row rv contain
+par "rt7: panic spin (rv)" rt7_row rv spin
+par "rt7: panic contain (arm)" rt7_row arm contain
+par "rt7: panic spin (arm)" rt7_row arm spin
+par "rt7: panic reset (rv)" rt7_row rv reset
+par "rt7: panic reset (arm)" rt7_row arm reset
+par "rt7: panic safety (rv)" rt7_row rv safety
+par "rt7: panic safety (arm)" rt7_row arm safety
 # Canaries (2026-10-03, by hand, both ISAs), reverted:
 #   (A) `panic_policy::decide` without the `preempt_depth` check: both spin
 #       rows FAIL ("want one banner and 'policy=contain verdict=reset
@@ -7295,6 +7383,13 @@ par -s "rt7: panic safety (arm)" rt7_row arm safety
 #       "did not build", and boots nothing.
 # The `reset` rows are the canary for the contain rows (same panic,
 # containment off).
+# Contain rows under -icount (2026-10-06, by hand, both ISAs), reverted:
+#   (D) the contain path spins 300 ms with interrupts off before the
+#       culprit's exit: FAIL "heartbeat stood still too long" (arm 267 ms,
+#       rv 300 ms). Before the smoke anchored its watch on the culprit's
+#       exit, rv PASSed it ("still max 0 us": the watch had closed).
+#   (E) rt-motor's period tripled once a panic is contained: FAIL
+#       "rt-motor lost its period" (arm +167, rv +150 vs +497).
 # Safety rows (wave 13), canaries by hand, reverted:
 #   (A) rt-motor not registered as a safety task (rv): FAIL, "want one banner
 #       ... reason=safety-task (0 banners)" — the handler contained rt-motor.
@@ -7392,8 +7487,9 @@ drvcontain_row() { # drvcontain_row <isa: rv|arm> [features]
 par -s "rt7: driver contained, restarted (rv)" drvcontain_row rv
 par -s "rt7: driver contained, restarted (arm)" drvcontain_row arm
 # The timer-sleeper heap under the interleavings that lost rt-motor's wake
-# with it (gate 185; fixed in wave 5: `rearm_if_sleeping`, `peek_live`), wave
-# 13: `timer-heap-smoke` + `ipc-census` + `sched-timer-heap`, -smp 4, no disk.
+# with it (gate 185; fixed in wave 5: the retry re-arm, now in
+# `timer_heap::wake_due`, and `peek_live`), wave 13: `timer-heap-smoke` +
+# `ipc-census` + `sched-timer-heap`, -smp 4, no disk.
 # Three sleepers per hart (1-7 ms periods) raced by one early-waking racer per
 # hart that never wakes a sleeper whose deadline is due, so a lost timer wake
 # is never rescued (kernel/src/smokes/timer_heap_smoke.rs). `[THEAP] PASS`:
@@ -7496,6 +7592,93 @@ par -s "sched: deferred tick counted (arm)" pacct_row arm
 # Canary (2026-10-04, rv, by hand, reverted): the deferred-resched callback
 # back to `task_yield`: 3 of 3 boots "FAIL voluntary +1 preempted +0";
 # with the fix 5/5 rv, 5/5 arm PASS.
+# NR_CPUS (wave 15, NRCPUS): the CPU ceiling is Kconfig, the DTB's count is
+# cut to it with a kwarn, and per-CPU state lives in per-CPU areas allocated
+# at boot for the possible CPUs only. Each row builds its own kernel into a
+# private target directory (NR_CPUS changes every per-CPU table, so it must
+# not rebuild the shared gate kernel) and boots it at -smp N:
+#   * NR_CPUS 64 at -smp 16: 16 CPUs possible, 16 areas, SMP stress done;
+#   * NR_CPUS 4 at -smp 8: QEMU's DTB names 8 CPUs, the boot cuts to 4 with
+#     the kwarn and runs on 4;
+#   * canary `nr-cpus-clamp-canary` (the cut removed): "booting 8" past
+#     NR_CPUS 4, bound to that line;
+#   * canary `percpu-oor-canary` (an area attached past nr_cpu_ids): the
+#     `[PERCPU] self-check FAILED` line.
+nrcpus_row() { # nrcpus_row <isa: rv|arm> <NR_CPUS> <smp> <features> <expect: PASS|FAIL> <fail-line-regex>
+    local isa="$1" nr="$2" smp="$3" feats="$4" expect="$5" failre="$6"
+    local tag="nrcpus-${isa}-${nr}-${smp}-$(printf '%s' "$feats" | tr -c 'A-Za-z0-9' '-')"
+    printf "  %-26s" "smp: NR_CPUS ${nr} at -smp ${smp} ${feats} (${isa})..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/${tag}.log" kimg="$CI_LOG_DIR/${tag}.kimg" tdir="$REPO_ROOT/target/gate-${tag}"
+    local cfg="$tdir.config" src elf
+    rm -f "$log" "$kimg"
+    if [ "$isa" = rv ]; then src="$PRIMARY_CONFIG"; else src="$AARCH64_CONFIG"; fi
+    { grep -v '^CONFIG_NR_CPUS=' "$src"; echo "CONFIG_NR_CPUS=$nr"; } >"$cfg.new" \
+        && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg.new" python3 -m olddefconfig >/dev/null 2>&1) \
+        && grep -q "^CONFIG_NR_CPUS=$nr\$" "$cfg.new" \
+        || { bad; echo "      could not derive a configuration with NR_CPUS=$nr"; return; }
+    cmp -s "$cfg.new" "$cfg" && rm -f "$cfg.new" || mv "$cfg.new" "$cfg"
+    if [ "$isa" = rv ]; then
+        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release --features "$feats" >"$log.build" 2>&1 \
+            || { bad; echo "      riscv64 --features $feats (NR_CPUS $nr) did not build: $log.build"; return; }
+        elf="$tdir/riscv64imac-unknown-none-elf/release/kernel"
+        cp "$elf" "$kimg"
+    else
+        env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >"$log.build" 2>&1 \
+            || { bad; echo "      aarch64 --features $feats (NR_CPUS $nr) did not build: $log.build"; return; }
+        elf="$tdir/aarch64-unknown-none-softfloat/release/kernel"
+        "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" -O binary "$elf" "$kimg" \
+            || { bad; echo "      llvm-objcopy failed on $elf"; return; }
+    fi
+    if grep -E "^(warning|error)" "$log.build" | grep -vqE "${A64_KNOWN_NOISE:-^$}"; then
+        bad; grep -E "^(warning|error)" "$log.build" | sed -n '1,4p' | sed 's/^/      /'; return
+    fi
+    rm -f "$log.build"
+    par_ready
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = rv ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "$smp" </dev/null >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
+            -kernel "$kimg" </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 360 ]; do
+        grep -aq "Completed 2000 iterations\|self-check FAILED\|\[FATAL\]\|panic" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; sleep 2; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg"
+    tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+    local want=$(( smp < nr ? smp : nr ))
+    local good=1
+    grep -aq "^\[SMP\] CPUs from DTB: $smp, booting $want (possible $want, nr_cpu_ids $want, NR_CPUS $nr)\$" "$log" || good=0
+    grep -aq "^\[PERCPU\] self-check: CPUs 0\.\.$want attached, .*: PASS\$" "$log" || good=0
+    grep -aq "Completed 2000 iterations" "$log" || good=0
+    if [ "$smp" -gt "$nr" ]; then
+        grep -aq "DTB names $smp CPUs, NR_CPUS is $nr: the rest are never started" "$log" || good=0
+    fi
+    grep -aqE "\[FATAL\]|panic|FAILED:" "$log" && good=0
+    if [ "$expect" = PASS ] && [ "$good" = 1 ]; then
+        ok; grep -a "^\[SMP\] CPUs from\|^\[PERCPU\]" "$log" | sed 's/^/      /'; rm -f "$log"
+    elif [ "$expect" = FAIL ] && [ "$good" = 0 ] && grep -aqE "$failre" "$log"; then
+        ok; grep -aE "$failre" "$log" | sed -n '1,2p' | sed 's/^/      canary caught: /'; rm -f "$log"
+    else
+        bad; grep -a "SMP\] CPUs from\|PERCPU\|FATAL\|panic" "$log" | sed -n '1,6p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    fi
+}
+par -s "smp: 16 CPUs, NR_CPUS 64 (rv)" nrcpus_row rv 64 16 qemu PASS ""
+par -s "smp: 16 CPUs, NR_CPUS 64 (arm)" nrcpus_row arm 64 16 qemu PASS ""
+par -s "smp: DTB above NR_CPUS clamps (rv)" nrcpus_row rv 4 8 qemu PASS ""
+par -s "smp: DTB above NR_CPUS clamps (arm)" nrcpus_row arm 4 8 qemu PASS ""
+par -s "smp: canary, no clamp (rv)" nrcpus_row rv 4 8 qemu,nr-cpus-clamp-canary FAIL "booting 8 \(possible 4, nr_cpu_ids 4, NR_CPUS 4\)"
+par -s "smp: canary, no clamp (arm)" nrcpus_row arm 4 8 qemu,nr-cpus-clamp-canary FAIL "booting 8 \(possible 4, nr_cpu_ids 4, NR_CPUS 4\)"
+par -s "percpu: canary, area past nr_cpu_ids (rv)" nrcpus_row rv 64 4 qemu,percpu-oor-canary FAIL "PERCPU\] self-check FAILED"
+par -s "percpu: canary, area past nr_cpu_ids (arm)" nrcpus_row arm 64 4 qemu,percpu-oor-canary FAIL "PERCPU\] self-check FAILED"
 # The rows above leave smoke kernels built; put back the plain ones.
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
@@ -7681,6 +7864,121 @@ topology_key_row() {
 }
 topology_key_row
 
+# ── current_cpu_id() against the hardware id, BOTH ISAs ─────────────────────
+#
+# Closes the 2026-09-25 "current_cpu_id() may have lied" finding. The probe
+# (`--features cpuid-probe`: `crates/core/sched/src/cpuid_probe.rs`,
+# `kernel/src/smokes/cpuid_probe.rs`) checks EVERY `current_cpu_id()` call
+# against an id the register cannot reach — riscv64: the `stvec` slot's id
+# word (`boot_hart_id` on the boot hart), the K-C16 derivation; aarch64:
+# MPIDR_EL1 Aff2:Aff1:Aff0 — and counts `current_user_pt()` calls that loaded
+# another hart's slot. The boot hart also hammers both at the position the
+# fork-refusal probe first sat at (after `arch_wake_secondaries`). ipctest
+# runs meanwhile, so user code that writes `tp`, migrations and cross-hart
+# IPC all happen under the check.
+#
+# Read back: the hammer line says `wrong id 0, user_pt!=0 0`; EVERY `[CPUID]`
+# totals line says `mismatches=0 first=none foreign=0`; the last totals line
+# comes after `[IPCTEST] ALL PASSED` and has more reads than the boot line
+# (the hook saw the scheduled system, not only the hammer).
+#
+# Canary, run by hand on both ISAs (`--features cpuid-probe-canary`): the id
+# register is made to lie with interrupts off and fork is called as the old
+# probe did; the counters go non-zero (first=reg:1/hw:0) and fork returns the
+# CHILD'S TID (riscv64 rc=28, aarch64 rc=29), which then faults at sepc 0x4.
+#
+# Helpers: `kbuild` / `a64_kbuild`, `ok`, `bad`, `par_ready`, `$QEMU`,
+# `$KERNEL`, `$A64_IMG`, `$CI_LOG_DIR`.
+cpuid_probe_row() { # <label> <isa: rv|arm> <smp>
+    local label="$1" isa="$2" smp="$3"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/$tag.log" disk="$CI_LOG_DIR/$tag-disk.img" img_copy=""
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "qemu,cpuid-probe"; then
+            bad; echo "      riscv64 kernel (qemu,cpuid-probe) did not build"; return
+        fi
+        if ! make build/disk-ipctest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-ipctest.img"; return
+        fi
+        cp build/disk-ipctest.img "$disk"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp "$smp" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "qemu,cpuid-probe"; then
+            bad; echo "      aarch64 kernel (qemu,cpuid-probe) did not build"; return
+        fi
+        if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+        fi
+        cp build/disk-aarch64-ipctest.img "$disk"
+        img_copy="$CI_LOG_DIR/$tag-kernel.img"
+        cp "$A64_IMG" "$img_copy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
+            -kernel "$img_copy" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    # 180 s, ipctest's own row's budget; then one more totals line (1 s apart).
+    while [ "$i" -lt 360 ]; do
+        grep -aqE "IPCTEST\] (ALL PASSED|.*FAIL)|PANIC|panicked|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    local seen; seen="$(grep -ac '\[CPUID\] totals' "$log" 2>/dev/null)"; i=0
+    while [ "$i" -lt 20 ] && [ "$(grep -ac '\[CPUID\] totals' "$log" 2>/dev/null)" -le "${seen:-0}" ]; do
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+
+    local cpuid; cpuid="$(grep -a '\[CPUID\]' "$log" | tr -d '\r')"
+    # 1. The hammer at the old fork-probe position ran and saw nothing.
+    if ! printf '%s\n' "$cpuid" | grep -qE 'old fork-probe position: [0-9]+ reads, wrong id 0, user_pt!=0 0$'; then
+        bad; echo "      the boot-hart hammer is missing or saw a wrong id / a user page table:"
+        printf '%s\n' "$cpuid" | sed -n '1,3p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 2. The workload ran to its verdict, and a totals line followed it.
+    if ! grep -aqF "[IPCTEST] ALL PASSED" "$log"; then
+        bad; echo "      ipctest did not pass, so the check did not run under load:"
+        grep -aE "IPCTEST\].*FAIL|PANIC|panicked|unhandled" "$log" | tr -d '\r' | sed -n '1,3p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local pass_at last_at
+    pass_at="$(grep -anF "[IPCTEST] ALL PASSED" "$log" | sed -n '1s/:.*//p')"
+    last_at="$(grep -an '\[CPUID\] totals' "$log" | sed -n '$s/:.*//p')"
+    if [ -z "$last_at" ] || [ "$last_at" -le "$pass_at" ]; then
+        bad; echo "      no [CPUID] totals line after ipctest passed"
+        echo "      log kept: $log"; return
+    fi
+    # 3. Every counter line is clean: no lie, no foreign slot, anywhere.
+    local dirty; dirty="$(printf '%s\n' "$cpuid" | grep 'reads=' | grep -v 'mismatches=0 first=none foreign=0$')"
+    if [ -n "$dirty" ]; then
+        bad; echo "      current_cpu_id() disagreed with the hardware id:"
+        printf '%s\n' "$dirty" | sed -n '1,3p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    # 4. The hook saw the scheduled system, not only the boot-hart hammer.
+    local r0 r1
+    r0="$(printf '%s\n' "$cpuid" | sed -n 's/.*\] boot: reads=\([0-9]*\) .*/\1/p' | sed -n 1p)"
+    r1="$(printf '%s\n' "$cpuid" | grep '\] totals:' | sed -n '$s/.*reads=\([0-9]*\) .*/\1/p')"
+    if [ -z "$r0" ] || [ -z "$r1" ] || [ "$r1" -le "$r0" ]; then
+        bad; echo "      the check saw no reads after the boot hammer (boot=${r0:-?} last=${r1:-?})"
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$disk"; [ -n "$img_copy" ] && rm -f "$img_copy"
+    return 0
+}
+par "cpuid matches hardware" cpuid_probe_row "cpuid matches hardware" rv 4
+par "aarch64 cpuid matches hw" cpuid_probe_row "aarch64 cpuid matches hw" arm 4
+
 echo ""
 par_drain
 ci_phase "[2/4] host test suites"
@@ -7691,19 +7989,31 @@ echo "[2/4] Running host test suites..."
 # compiled, passed, and were never once executed by the gate. That is the
 # same shape of hole that let esp32c3 rot for months while CI stayed green:
 # the work exists, everyone assumes it runs, nobody checked.
-for c in flight-sim regression-tests ota-tests sched-policy-tests msc-tests \
-         tftp-tests topology-tests config-tests dfu-tests crypto-tests \
-         flight-math-tests abi-tests arch-api-tests gguf-tests efi-tests \
-         multi-stream-tests drv-api-tests encrypt-link-tests \
-         cam-ring-tests dtb-tests aead-link-tests \
-         cap-tests \
-         ipc-fast-tests ipc-lease-tests ipc-chan-tests sched-wake-tests \
-         fs-tests arch-tests drivers-tests mm-tests libsys-tests behavior-tests \
-         net-tests seccomp-tests syscall-tests sync-tests world-state-tests flight-tests \
-         shell-tests sh-tests panic-policy-tests energy-tests linux-abi-tests; do
+HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests msc-tests
+         tftp-tests topology-tests config-tests dfu-tests crypto-tests
+         flight-math-tests abi-tests arch-api-tests arch-stub-tests gguf-tests efi-tests
+         multi-stream-tests drv-api-tests encrypt-link-tests
+         cam-ring-tests dtb-tests aead-link-tests
+         cap-tests
+         ipc-fast-tests ipc-lease-tests ipc-chan-tests sched-wake-tests
+         fs-tests arch-tests drivers-tests mm-tests libsys-tests behavior-tests
+         net-tests seccomp-tests syscall-tests sync-tests world-state-tests flight-tests
+         shell-tests sh-tests panic-policy-tests energy-tests linux-abi-tests
+         percpu-tests iommu-tests pci-tests dma-tests auth-envelope-bench"
+# The same hole, one suite at a time: percpu-tests (wave 15) and four suites
+# from b6d74c00 were never in the list above. Every tracked suite is now either
+# in it or run by a row of its own (lx-loader-tests, below, needs its modules).
+printf "  %-26s" "host suites: all listed..."
+hs_missing=""
+for c in $(cd "$REPO_ROOT" && git ls-files 'tests/host/*/Cargo.toml' | sed -n 's|^tests/host/\([^/]*\)/Cargo.toml$|\1|p'); do
+    case " $(echo $HOST_SUITES) lx-loader-tests " in *" $c "*) ;; *) hs_missing="$hs_missing $c" ;; esac
+done
+if [ -z "$hs_missing" ]; then ok; else bad; echo "      not run by the gate:$hs_missing"; fi
+for c in $HOST_SUITES; do
     case "$c" in
-        # Wall-clock ceilings (host_microbench, lease_tick_cost): run alone.
-        regression-tests|ipc-lease-tests) par -a -s "$c" test_host "$c" "${REPO_ROOT}/tests/host/${c}" ;;
+        # Wall-clock ceilings (host_microbench, lease_tick_cost, the envelope
+        # bench's timings): run alone.
+        regression-tests|ipc-lease-tests|auth-envelope-bench) par -a -s "$c" test_host "$c" "${REPO_ROOT}/tests/host/${c}" ;;
         *) host_job test_host "$c" "${REPO_ROOT}/tests/host/${c}" ;;
     esac
 done
@@ -8026,8 +8336,17 @@ else
     frame_row() { # frame_row <label> <elf> <limit-bytes>
         printf "  %-26s" "${1}..."
         local out
+        # `parse_caps` runs only from `boot::topology::install_topology`,
+        # i.e. under kernel_main on the boot stack (its one caller is
+        # `signed::fill_signed`, called from kernel/src/boot/topology.rs). Its
+        # caps buffer is MAX_CAPS_PER_TASK x 24 B, a 12,960 B frame on fleet
+        # (512). A 12c69085-based fleet build inlined it into that boot chain;
+        # in wave 15 LLVM kept it out of line and this row went red. A call
+        # from a task would need this name dropped and the buffer moved off
+        # the stack.
         if out="$(python3 "${REPO_ROOT}/tools/stack_frames.py" "$2" --limit "$3" \
-                --boot-limit 65536 --boot kernel_main 2>&1)"; then
+                --boot-limit 65536 --boot kernel_main \
+                --boot azos_topology::parser::parse_caps 2>&1)"; then
             ok
         else
             bad; echo "$out" | grep -a "OVER\|no image\|rror" | sed 's/^/      /'
@@ -8073,7 +8392,8 @@ else
     if [ "$EMBEDDED_BUILT" = "1" ]; then chain_row "stack chain: embedded" "$EMBEDDED_KERNEL" "$EMBEDDED_CONFIG"; fi
     # The trap-path size pins (`trap_size_row`, defined beside the aarch64
     # kernel rows): the riscv64 qemu kernel just built.
-    trap_size_row "riscv64: trap path size" "$KERNEL" riscv64_trap_handler=130 9exception12handle_ecall=494
+    # Re-pinned in the wave-15 integration (see the aarch64 row's note).
+    trap_size_row "riscv64: trap path size" "$KERNEL" riscv64_trap_handler=54 9exception12handle_ecall=582
     par_row qemu_run "boot + SMP scheduling" "Completed 2000 iterations" 60 -smp 4
     # kernel_main's last line, printed just before the boot hart enters the
     # scheduler: everything above it ran, watchdog::hw_init() included. A timer
@@ -11071,7 +11391,8 @@ PY
     # about the sibling handler that used to do the opposite on the same input.
     #
     # The peer is `tools/fake_brain.py` on the host; QEMU's SLIRP maps
-    # 10.0.2.2 to it, and the image's CONFIG.INI dials 10.0.2.2:9000. Its
+    # 10.0.2.2 to it, and the image's CONFIG.INI dials 10.0.2.2 on the port
+    # the peer was given (`run_brain_peer_boot`; 9000 is every other guest's). Its
     # framing is pinned against the kernel's by the golden vectors in
     # `tests/host/behavior-tests` — without those, a drifted CRC would make every
     # frame get dropped at the parser and the log would look exactly like a
@@ -11105,10 +11426,28 @@ PY
     # Same boot sequence, same race, one copy.
     run_brain_peer_boot() {
         local log="$1" blog="$2" image="$3" settle="$4"; shift 4
-        local peer_args="${*:---port 9000 --wait 90}"
+        local peer_args="${*:---wait 90}"
+        # A port of the peer's own, never 9000 (see `peer_port_image`): bound
+        # first, read back, written into the image, and only then the boot.
+        # `--port 0` goes last, so it is the one argparse keeps. The image
+        # is rewritten with the peer already up, which is safe: every peer
+        # mode reads its key files before it binds.
         # shellcheck disable=SC2086
-        python3 tools/fake_brain.py $peer_args >"$blog" 2>&1 &
+        python3 tools/fake_brain.py $peer_args --port 0 >"$blog" 2>&1 &
         local bpid=$!
+        local k=0 port=""
+        while [ "$k" -lt 60 ]; do
+            port=$(sed -n 's/^\[fake-brain\] listening on [0-9.]*:\([0-9][0-9]*\)$/\1/p' "$blog" 2>/dev/null | sed -n 1p)
+            [ -n "$port" ] && break
+            kill -0 "$bpid" 2>/dev/null || break
+            k=$((k + 1)); sleep 0.25
+        done
+        if [ -z "$port" ] || ! peer_port_image "$image" "$port"; then
+            # Every caller checks this line first and fails naming it.
+            echo "[fake-brain] FAIL no-robot — the row could not point $image at the peer's port (${port:-none})" >>"$blog"
+            kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+            return 1
+        fi
         "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
             -smp 4 -global virtio-mmio.force-legacy=false \
             -drive file="$image",if=none,format=raw,id=hd0 \
@@ -11251,7 +11590,7 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: the brain lies" brain_lies_scenario   # the brain peer on host port 9000
+    par -s "userspace: the brain lies" brain_lies_scenario   # the brain peer on a host port of its own
 
     # The record half of the same frame, which the scenario above states it
     # does not cover: `log_safety_violation` writes the flight recorder, not
@@ -11307,7 +11646,7 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: unknown packet RECORDED" brain_lies_record_scenario   # the brain peer on host port 9000
+    par -s "userspace: unknown packet RECORDED" brain_lies_record_scenario   # the brain peer on a host port of its own
 
     # THE RING-3 PRODUCT PATH, END TO END. Sensors up, ActuatorCmd down,
     # motors driven — from a userspace ELF, through typed capabilities.
@@ -11410,7 +11749,7 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 drives motors" ring3_actuation_scenario   # the brain peer on host port 9000
+    par -s "userspace: ring-3 drives motors" ring3_actuation_scenario   # the brain peer on a host port of its own
 
     # A RING-3 CLIENT THAT RECONNECTS MUST GIVE ITS SOCKET BACK EVERY TIME.
     #
@@ -11471,7 +11810,7 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 reconnects" ring3_reconnect_scenario   # the brain peer on host port 9000
+    par -s "userspace: ring-3 reconnects" ring3_reconnect_scenario   # the brain peer on a host port of its own
 
     # THE EMERGENCY STOP, FROM RING 3, END TO END — and it is asserted on the
     # LATCH, not on the stop.
@@ -11637,7 +11976,7 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 e-stop" ring3_estop_scenario   # the brain peer on host port 9000
+    par -s "userspace: ring-3 e-stop" ring3_estop_scenario   # the brain peer on a host port of its own
 
     # RING 3's BRAIN LINK IS THE ENCRYPTED ONE (wave 9, owner decision P3).
     #
@@ -11733,7 +12072,7 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 link encrypted" ring3_encrypted_link_scenario   # the brain peer on host port 9000
+    par -s "userspace: ring-3 link encrypted" ring3_encrypted_link_scenario   # the brain peer on a host port of its own
 
     # NO FRESH KEYS, NO LINK (wave 9, owner decision P9).
     #
@@ -11791,7 +12130,7 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 entropy refused" ring3_entropy_refused_scenario   # the brain peer on host port 9000
+    par -s "userspace: ring-3 entropy refused" ring3_entropy_refused_scenario   # the brain peer on a host port of its own
 
     # THE BRAIN'S E-STOP OVER TCP — the second of the four sources, and the
     # first scenario in this gate where the KERNEL's own actuation path moves a
@@ -11918,7 +12257,7 @@ PY
         done
         ok; rm -f "$log" "$blog"
     }
-    par -s "safety: brain e-stop (tcp)" brain_estop_tcp_scenario   # the brain peer on host port 9000
+    par -s "safety: brain e-stop (tcp)" brain_estop_tcp_scenario   # the brain peer on a host port of its own
 
     # ── 2026-09-25 owner decision Q1.2: e-stop release needs operator authority ──
     # Gate rows for the 2026-09-25 owner decision: "the brain may REQUEST an
@@ -12074,7 +12413,7 @@ PYEOF
 
         ok; rm -f "$log" "$blog"; rm -rf "$keydir"
     }
-    par -s "safety: e-stop release requires operator authority" estop_release_authority_scenario   # the brain peer on host port 9000
+    par -s "safety: e-stop release requires operator authority" estop_release_authority_scenario   # the brain peer on a host port of its own
 
     # ── Row 2: the enforced-link build, booted — the audit's named measurement ─
     #
@@ -12143,7 +12482,7 @@ PYEOF
 
         ok; rm -f "$log" "$blog"; rm -rf "$keydir"
     }
-    par -s "safety: e-stop authority under link-encrypt-enforced" estop_release_authority_enforced_link_boot   # the brain peer on host port 9000
+    par -s "safety: e-stop authority under link-encrypt-enforced" estop_release_authority_enforced_link_boot   # the brain peer on a host port of its own
 
     # ── Row 3 (static, no QEMU): the test-only proof constructor never ships ───
     #
@@ -12332,7 +12671,7 @@ PYEOF
         done
         ok; rm -f "$log" "$blog"
     }
-    par -s "safety: kill switch (gpio)" killswitch_gpio_scenario   # the brain peer on host port 9000
+    par -s "safety: kill switch (gpio)" killswitch_gpio_scenario   # the brain peer on a host port of its own
 
     # The latch survives a reset. Owner decision, 2026-09-13: boot reads the
     # last `SAFETY_ESTOP` in the flight recorder and starts latched if the last
@@ -12401,7 +12740,7 @@ PYEOF
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "safety: latch survives reboot" latch_survives_reboot_scenario   # the brain peer on host port 9000
+    par -s "safety: latch survives reboot" latch_survives_reboot_scenario   # the brain peer on a host port of its own
 
     # The latch record reaches the MEDIUM, not only the device's write cache.
     #
@@ -12695,9 +13034,10 @@ PYEOF
     # addition: QEMU starts only once the peer says `listening`, because the
     # peer reads LINK.KEY out of the image with mtools and QEMU locks it.
     #
-    # `link_peer_scenario <label> <camera-port>`: with a camera port (C1), the
-    # image's CONFIG.INI sets `behavior_camera_port` and the peer also accepts
-    # the kernel's camera connections there; every assertion below still holds,
+    # `link_peer_scenario <label> <camera 0|1>`: with a camera port (C1), the
+    # image's CONFIG.INI sets `behavior_camera_port` (a free port, as the
+    # control port is) and the peer also accepts the kernel's camera
+    # connections there; every assertion below still holds,
     # and the camera connection adds its own.
     link_peer_scenario() {
         local label="$1" camera_port="$2" tag="link-peer"
@@ -12725,21 +13065,15 @@ PYEOF
         rm -f build/disk-linkkey.img "$img"
         make_disk build/disk-linkkey.img
         cp build/disk-linkkey.img "$img"
-        if [ "$camera_port" != 0 ]; then
-            # This copy's CONFIG.INI only: the kernel dials a camera connection.
-            local ini="$CI_LOG_DIR/${tag}-config.ini"
-            if ! mcopy -n -i "$img" ::CONFIG.INI "$ini" 2>/dev/null \
-               || ! printf "behavior_camera_port=%s\n" "$camera_port" >>"$ini" \
-               || ! mcopy -o -i "$img" "$ini" ::CONFIG.INI 2>/dev/null \
-               || ! python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$img" --out "$ini.sig" >/dev/null 2>&1 \
-               || ! mcopy -o -i "$img" "$ini.sig" ::CONFIG.SIG 2>/dev/null; then
-                bad; echo "      could not set behavior_camera_port in $img with mtools"
-                return
-            fi
-            rm -f "$ini"
-        fi
-
-        python3 tools/link_peer.py --port 9000 --camera-port "$camera_port" --image "$img" \
+        # Ports of its own, never 9000/9001: every other disk+NIC guest on the
+        # host dials 9000, and a stranger reaching this peer is accepted as
+        # session 2 at phase 5 (see `peer_port_image`). The peer binds free
+        # ports (`--port 0`, `--camera-port -1`) and prints them; this copy's
+        # CONFIG.INI is pointed at them once it says `listening`, which it
+        # prints after reading LINK.KEY, so the rewrite never races that read.
+        local cam_arg=0
+        [ "$camera_port" != 0 ] && cam_arg=-1
+        python3 tools/link_peer.py --port 0 --camera-port "$cam_arg" --image "$img" \
             >>"$blog" 2>&1 &
         local bpid=$!
         local i=0
@@ -12748,6 +13082,19 @@ PYEOF
             kill -0 "$bpid" 2>/dev/null || break
             i=$((i + 1)); sleep 0.5
         done
+        local port cport="" extra=""
+        port=$(sed -n 's/^\[link-peer\] listening on [0-9.]*:\([0-9][0-9]*\) .*/\1/p' "$blog" | sed -n 1p)
+        if [ "$camera_port" != 0 ]; then
+            cport=$(sed -n 's/^\[link-peer\] camera listener on [0-9.]*:\([0-9][0-9]*\)$/\1/p' "$blog" | sed -n 1p)
+            extra="behavior_camera_port=${cport:-none}"
+        fi
+        if [ -z "$port" ] || { [ "$camera_port" != 0 ] && [ -z "$cport" ]; } \
+           || ! peer_port_image "$img" "$port" "$extra"; then
+            kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+            bad; echo "      could not point $img at the peer's ports (${port:-none}/${cport:-none}):"
+            grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed -n "1,3p" | sed "s|^|      |"
+            echo "      log kept: $blog"; return
+        fi
         "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
             -smp 4 -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
@@ -12913,9 +13260,9 @@ PYEOF
         fi
         ok; rm -f "$log" "$blog"
     }
-    par_row -s link_peer_scenario "link: rfc-0019 end to end" 0   # the peer on host port 9000
+    par_row -s link_peer_scenario "link: rfc-0019 end to end" 0   # the peer on a host port of its own
     # C1: the same link with camera frames on a connection of their own.
-    par_row -s link_peer_scenario "link: camera connection" 9001
+    par_row -s link_peer_scenario "link: camera connection" 1   # 1: with a camera port
 
     # ── The userspace ELFs the gate never executed ─────────────────────
     #
@@ -14743,6 +15090,85 @@ PYEOF
     }
     par -s -n 2 "network: two-node TCP" net_pair_row   # two QEMUs on one link
 
+    # ── Wave 15 (FIX1): a loopback delivery survives a preemption inside it ──
+    #
+    # The product column's `udp-roundtrip` (vsbench, -icount) lost a reply:
+    # the loopback recursion guard in `ip::send_flags` was ONE global flag,
+    # held across `handle` with preemption on (syscalls run with interrupts
+    # enabled). A wake-up that preempted the vsbench client between
+    # delivering its datagram and dropping the flag made the echo's reply
+    # send return -1, and the client waited out its poll budget. The flag is
+    # per hart now and the delivery runs with preemption off
+    # (`ip::loopback_deliver`). `loopback-preempt-probe` asks for a
+    # reschedule inside that window on EVERY delivery, as a tick landing there
+    # would; the row boots the product kernel (`qemu`, full daemon set) with
+    # the vsbench volume, `net` lanes only, `-smp 1 -icount`, and needs the
+    # udp-roundtrip number. Canary: `loopback-guard-canary` puts the old
+    # global flag back without the guard, and the lane must report the lost
+    # round trip (only the failure prints `udp-rt: ...`). Compile-error
+    # bucket: a build failure is its own FAIL.
+    loopback_preempt_row() { # loopback_preempt_row <rv|arm> <features> <pass|canary>
+        local isa="$1" feats="$2" want="$3"
+        local label="net: loopback preempted ($isa)"
+        [ "$want" = canary ] && label="net: loopback canary ($isa)"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/loopback-$want-$isa.log" kimg="$CI_LOG_DIR/kernel-loopback-$want-$isa"
+        local disk="$CI_LOG_DIR/loopback-$want-$isa.img" src
+        rm -f "$log" "$kimg" "$disk" "$disk.lanes"
+        make_disk build/disk-vsbench.img build/disk-aarch64-vsbench.img || { bad; return; }
+        if [ "$isa" = rv ]; then
+            kbuild "$feats" || { bad; echo "      riscv64 --features $feats did not build"; return; }
+            cp "$KERNEL" "$kimg"; src="$REPO_ROOT/build/disk-vsbench.img"
+        else
+            a64_kbuild "$feats" || { bad; echo "      aarch64 --features $feats did not build"; return; }
+            cp "$A64_IMG" "$kimg"; src="$REPO_ROOT/build/disk-aarch64-vsbench.img"
+        fi
+        cp "$src" "$disk" && printf 'net\n' >"$disk.lanes" \
+            && mcopy -o -i "$disk" "$disk.lanes" ::VSBLANES.TXT \
+            || { bad; echo "      could not prepare $disk"; return; }
+        par_ready
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        if [ "$isa" = rv ]; then
+            "$QEMU" -machine virt -nographic -bios default -smp 1 -icount shift=0,sleep=off \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive "file=$disk,if=none,format=raw,id=hd0" \
+                -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+        else
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+                -icount shift=0,sleep=off -nographic \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive "file=$disk,if=none,format=raw,id=hd0" \
+                -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        while [ "$i" -lt 360 ]; do
+            grep -aq '\[VSBENCH\] side=azos done' "$log" 2>/dev/null && break
+            grep -aqE '\[FATAL\]|KERNEL PANIC|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 1
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$kimg" "$disk" "$disk.lanes"
+        tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+        local measured=0 lost=0
+        grep -aqE '^\[VSBENCH\] azos udp-roundtrip = [0-9]+ ns/op' "$log" && measured=1
+        grep -aqE '^\[VSBENCH\] udp-rt: (a round trip never came back|the peer never answered)' "$log" && lost=1
+        if [ "$want" = pass ] && [ "$measured" = 1 ] && [ "$lost" = 0 ]; then
+            ok; grep -a 'udp-roundtrip =' "$log" | sed 's/^/      /'; rm -f "$log"; return
+        fi
+        if [ "$want" = canary ] && [ "$lost" = 1 ] && [ "$measured" = 0 ]; then
+            ok; rm -f "$log"; return
+        fi
+        bad; grep -aE 'udp|VSBENCH\] side|PANIC|FATAL' "$log" | sed -n '1,6p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    }
+    par -s "net: loopback preempted (rv)" loopback_preempt_row rv qemu,loopback-preempt-probe pass
+    par -s "net: loopback preempted (arm)" loopback_preempt_row arm qemu,loopback-preempt-probe pass
+    par -s "net: loopback canary (rv)" loopback_preempt_row rv qemu,loopback-preempt-probe,loopback-guard-canary canary
+    par -s "net: loopback canary (arm)" loopback_preempt_row arm qemu,loopback-preempt-probe,loopback-guard-canary canary
+
     # ── The user shell (RFC-0055, wave 11), both ISAs ──────────────────────
     #
     # These rows TYPE. Each boots the gate kernel with `build/disk-sh.img` /
@@ -15018,7 +15444,10 @@ kill 2" 120 \
         # `after-spin 130` (FAIL row below).
         # Wave 14: the `[SPAWN][PRIO]` line of a spawn that applied its row's
         # priority as declared is debug output (`spawn-log`); both rows ask
-        # for it.
+        # for it, and so do the `linux:` rows below that wait for `row=<ELF>`
+        # (static ELF, busybox sh, busybox Kconfig row and its canary,
+        # pthreads): without it they could never pass, and the Kconfig-row
+        # canary passed for that reason instead of its own.
         USH_SMP=1 USH_FORBID='robot> ' par_row ushell_row "sh: ctrl-c on one hart ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
             "!spin
 #wait spin: computing
@@ -15121,7 +15550,7 @@ exit 1
         # so the create succeeds and the refusal lines are missing;
         # `linux-abi-tag-canary` never tags the task, so its Linux numbers hit
         # the native table and seccomp kills it at its first call.
-        USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL|SECCOMP' par_row ushell_row "linux: static ELF under the personality ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test" PASS \
+        USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL|SECCOMP' par_row ushell_row "linux: static ELF under the personality ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log" PASS \
             "lxhello one 'two words'
 echo after-lx \$?" 120 \
             "row=LXHELLO.ELF" "lx: hello from a static Linux ELF, argc=3 [lxhello] [one] [two words]" \
@@ -15252,7 +15681,7 @@ echo after-orphan" 120 \
         # child may create). Skipped, and said so, when the toolchain (zig) or the
         # pinned tarball is not on this host.
         if lx_busybox_ready; then
-            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
                 "busybox sh -c 'echo bb-sh-ok; ls /fat'
 busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
 busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
@@ -15371,11 +15800,11 @@ echo after-x \$?"
             sed -i '' -e 's/^# CONFIG_BUSYBOX is not set$/CONFIG_BUSYBOX=y/' "$bb_cfg_arm"
             (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg_arm" python3 -m olddefconfig >/dev/null 2>&1)
             if [ "$ush_isa" = rv ]; then bb_cfg="$bb_cfg_rv"; else bb_cfg="$bb_cfg_arm"; fi
-            KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT' par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT' par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
                 "busybox sh -c 'x=prod; echo bb-\$x-ok'
 echo after-prod \$?" 150 \
                 "row=BUSYBOX.ELF" "bb-prod-ok" "after-prod 0"
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox Kconfig row canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox Kconfig row canary ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" FAIL \
                 "busybox sh -c 'x=prod; echo bb-\$x-ok'
 echo after-prod \$?" 150 \
                 "row=BUSYBOX.ELF" "bb-prod-ok"
@@ -15392,7 +15821,7 @@ echo after-prod \$?" 150 \
         # thread keeps its creator's thread pointer, so musl's thread-local
         # storage (and its thread descriptor) is the creator's.
         if lx_threads_ready; then
-            USH_DISK=lxthr USH_FORBID='robot> |lxthr: .* FAIL|SECCOMP|PAGE FAULT' par_row ushell_row "linux: pthreads ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test" PASS \
+            USH_DISK=lxthr USH_FORBID='robot> |lxthr: .* FAIL|SECCOMP|PAGE FAULT' par_row ushell_row "linux: pthreads ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,spawn-log" PASS \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "row=LXTHR.ELF" "lxthr: pthread_create x4 ok" "lxthr: pthread_join x4 ok" \

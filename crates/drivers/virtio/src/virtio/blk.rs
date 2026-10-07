@@ -177,7 +177,7 @@ unsafe fn negotiate(dev: &mut VirtioDev) -> Result<(u32, u32), ()> {
     mmio_write(dev.base, VIRTIO_MMIO_STATUS, 0);
     if dev.version == 1 {
         mmio_write(dev.base, VIRTIO_MMIO_GUEST_PAGE_SIZE,
-                   azos_arch::mmu::PAGE_SIZE as u32);
+                   azos_arch::PAGE_SIZE as u32);
     }
     let s = mmio_read(dev.base, VIRTIO_MMIO_STATUS);
     mmio_write(dev.base, VIRTIO_MMIO_STATUS, s | VIRTIO_STATUS_ACK);

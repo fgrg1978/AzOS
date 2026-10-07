@@ -1444,6 +1444,7 @@ pub fn map_recorded_mmio_into(pt: usize) -> usize {
 /// `(vpn2, vpn1)` for the exec refusal message, or `None`. The page-granular
 /// counterpart of [`kernel_entry_collision`]'s slot check, for the layout
 /// where device windows are mapped into a task's table page by page.
+// arch-only: aarch64 maps device windows page by page into user tables.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 fn mmio_page_collision(user_pt: usize) -> Option<(usize, usize)> {
     let regions = *MMIO_REGIONS.lock();
@@ -1746,6 +1747,7 @@ fn megapage_leaf_at(pt_phys: usize, vaddr: usize) -> bool {
 /// probe caught exactly that.
 ///
 /// Returns the pages mapped, so the caller can print a read-back count.
+// arch-only: the aarch64 TTBR0/TTBR1 split.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub fn install_device_only_ttbr0() -> KResult<usize> {
     let pt = create_pagetable()?;
@@ -2002,6 +2004,7 @@ pub fn kernel_entry_collision(user_pt: usize) -> Option<(usize, usize)> {
     // then report the device windows' level-1 slot — 512 MiB at 64 KiB,
     // which also holds the ring-3 image at 0x1_0000 — although nothing is
     // shared. What must not collide is a user page with a device page.
+    // arch-only: aarch64 granules above 4 KiB (see above).
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     if MEGA_SIZE != 2 * 1024 * 1024 {
         return mmio_page_collision(user_pt);

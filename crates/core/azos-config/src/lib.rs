@@ -155,6 +155,11 @@ pub fn parse_config(path: &str) -> Result<ConfigMap, ConfigError> {
 /// - `_CPUS`       → `u32`    (CPU counts)
 /// - default       → `usize`
 fn infer_int_type(key: &str) -> &'static str {
+    // Array lengths named like counts: `NR_CPUS` sizes every per-CPU table
+    // and must not take the `_CPUS` suffix's u32 below.
+    if key == "NR_CPUS" {
+        return "usize";
+    }
     // Longest-suffix-first to avoid partial matches.
     let suffixes: &[(&str, &str)] = &[
         ("_ATTEMPTS", "u32"),
@@ -196,6 +201,7 @@ fn byte_expanded_key(key: &str) -> Option<(&'static str, u64)> {
         "USER_STACK_SIZE_KB"        => Some(("USER_STACK_SIZE_BYTES",        1024)),
         "KERNEL_STACK_SIZE_KB"      => Some(("KERNEL_STACK_SIZE_BYTES",      1024)),
         "INTERRUPT_STACK_SIZE_KB"   => Some(("INTERRUPT_STACK_SIZE_BYTES",   1024)),
+        "SECONDARY_STACK_SIZE_KB"   => Some(("SECONDARY_STACK_SIZE_BYTES",   1024)),
         // OTA image size
         "OTA_MAX_IMAGE_SIZE_MB"     => Some(("OTA_MAX_IMAGE_SIZE_BYTES", 1024 * 1024)),
         _ => None,

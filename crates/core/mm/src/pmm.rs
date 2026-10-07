@@ -7,9 +7,10 @@
 ///
 /// Ported from kernel/mm/pmm.c
 
+use azos_arch::ArchPlatform as _;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use azos_arch::mmu::PAGE_SIZE;
+use azos_arch::PAGE_SIZE;
 use azos_sync::SpinLock;
 use crate::addr::PhysAddr;
 use azos_common::error::{KResult, KernelError};
@@ -455,7 +456,7 @@ fn zero_new_page(addr: PhysAddr) {
         // aarch64 — zeroing through the raw physical number worked only
         // while a task's TTBR0 happened to still identity-map RAM, and
         // stopped the moment a user page table was installed.
-        azos_arch::cbo::zero_memory(crate::addr::phys_to_virt(addr.as_usize()), PAGE_SIZE);
+        azos_arch::ARCH.zero_memory(crate::addr::phys_to_virt(addr.as_usize()), PAGE_SIZE);
     }
 }
 

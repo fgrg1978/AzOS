@@ -311,18 +311,18 @@ trap_return_masked:
     //
     // `x9-x14` are free: every GPR is already in the frame.
 90: // maybe switch to the IRQ stack
-    mrs     x9, MPIDR_EL1
-    and     x9, x9, #0xffffff          // Aff2:Aff1:Aff0 — see boot.S
-    mov     x10, #MAX_HARTS
-    cmp     x9, x10
-    csel    x9, x9, xzr, lo            // out-of-range hart id -> slot 0
-
+    // This CPU's interrupt stack, from its per-CPU area: one word per CPU
+    // in AZOS_IRQ_STACK_BASE (kernel/src/main.rs), 0 when it has none. The
+    // index is the CPU id in TPIDR_EL1 — what `current_cpu_id()` reads and
+    // boot.S range-checked — not an MPIDR decode, which is only the CPU id
+    // on a flat topology.
+    mrs     x9, TPIDR_EL1
+    adrp    x11, AZOS_IRQ_STACK_BASE
+    add     x11, x11, :lo12:AZOS_IRQ_STACK_BASE
+    ldr     x11, [x11, x9, lsl #3]     // x11 = this CPU's stack base
+    cbz     x11, 91b                   // none (cannot happen once armed): call in place
     mov     x13, #IRQ_STACK_SIZE
-    mul     x10, x9, x13               // offset = hart * IRQ_STACK_SIZE
-    adrp    x11, aarch64_irq_stacks
-    add     x11, x11, :lo12:aarch64_irq_stacks
-    add     x11, x11, x10              // x11 = this hart's slot base
-    add     x12, x11, x13              // x12 = slot top (stacks grow down)
+    add     x12, x11, x13              // x12 = stack top (stacks grow down)
 
     // Nesting check (unsigned): `sp - base < size` means we are ALREADY
     // on this hart's IRQ stack — a trap taken inside a handler. Do not
@@ -416,5 +416,5 @@ aarch64_ret_to_user_tls:
     b       trap_return_masked
 
 .extern aarch64_trap_entry
-.extern aarch64_irq_stacks
+.extern AZOS_IRQ_STACK_BASE
 .extern aarch64_trap_resched

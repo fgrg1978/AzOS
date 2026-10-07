@@ -1078,7 +1078,7 @@ mod aps_bookkeeping {
         assert!(on.contains("aps_seed_current_classes()"), "enabling APS no longer seeds the current class");
         assert!(on.contains("enable && !prev"), "seed only on the off -> on edge");
         let seed = body(&c, "fn aps_seed_current_classes(");
-        assert!(seed.contains("for cpu in 0..MAX_CPUS"), "the seed must cover every CPU");
+        assert!(seed.contains("for cpu in 0..ncpu()"), "the seed must cover every CPU this boot has");
         assert!(seed.contains("set_current("), "the seed must set the class");
         assert!(seed.contains("set_idle()"), "a CPU with no task must be seeded idle");
     }
@@ -1478,5 +1478,34 @@ mod rt_exemption {
         ] {
             assert!(!src.contains("exempt_from_band_cap"), "{path} can grant the band exemption");
         }
+    }
+}
+
+/// What one CPU's per-CPU area holds besides its ready queues (wave 15,
+/// NRCPUS-FLEET-AREA): the RT band state (`rt::RtCpu`: `SET_CAP` slot words,
+/// `SET_CAP` CBS reservations, the owner's band and three words) and, with
+/// the APS backend, `aps_state::CpuSchedV2` (the partition combinator and one
+/// policy per class). Neither depends on `MAX_TASKS`: the policies' capacities
+/// and `SET_CAP` are fixed, so these bytes are the same in every profile.
+/// Printed with `--nocapture` for the area table; the asserts pin the
+/// profile-independence the table relies on.
+#[cfg(test)]
+mod percpu_area_sizes {
+    use core::mem::size_of;
+
+    /// `rt.rs`'s `SET_CAP` (the module does not compile for the host).
+    const SET_CAP: usize = 16;
+
+    #[test]
+    fn rt_and_aps_per_cpu_state_is_fixed_size() {
+        let cbs = size_of::<super::rt_core::Cbs>();
+        let band = size_of::<super::rt_core::Band>();
+        let rt_cpu = SET_CAP * 8 + SET_CAP * cbs + (band + 3 * 8);
+        let aps = size_of::<super::partitions::Aps>()
+            + super::class::SchedClass::COUNT * size_of::<super::policies::Backend>();
+        println!("[AREA] Cbs {cbs} B, Band {band} B, RtCpu ~{rt_cpu} B, CpuSchedV2 ~{aps} B");
+        // Fixed-size: none of these types is generic over MAX_TASKS.
+        assert!(rt_cpu < 4096, "the RT band's per-CPU state grew past a page");
+        assert!(aps < 64 * 1024, "the APS per-CPU tables grew past 64 KiB");
     }
 }

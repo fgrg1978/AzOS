@@ -112,6 +112,7 @@ crypto encrypt-link
 actuation channel
 config topology pubsub service multi-stream dtb
 linux-abi
+percpu trace
 "
 # Wave 11 (DOMAIN): `actuation` (crates/core/actuation) is the authority
 # every domain shares — e-stop latch, signed release, flight recorder,
@@ -152,13 +153,21 @@ linux-abi
 # `buzzer` joined CORE in wave 12 (DRVPLACE): the buzzer chip logic, the
 # same shape and the same dependency edge from `drivers` as `ina219`.
 
+# `percpu` and `trace` joined CORE in wave 15, by dependency direction:
+# `percpu` (NRCPUS) holds the per-CPU areas `sched`, `mm` and `trace` reach
+# their per-CPU state through; `trace` (block A, TRACE) is the static-key
+# tracepoint layer `sched`, `ipc` and `syscall` call on their hot paths, so
+# it can no longer sit in SCAFFOLD (that drew three CORE -> SCAFFOLD edges,
+# the row's red since c44e9b85). Its own dependencies (abi, spsc, percpu) are
+# CORE.
+
 PROFILE_CRATES="
 behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-core drivers
 lx-loader
 "
 
 SCAFFOLD_CRATES="
-fs shell ml camera dfu ota msc efi display bench trace cam-ring telemetry tftp
+fs shell ml camera dfu ota msc efi display bench cam-ring telemetry tftp
 "
 
 # ── Known violations ────────────────────────────────────────────────────────

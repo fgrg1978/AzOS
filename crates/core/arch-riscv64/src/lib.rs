@@ -11,6 +11,11 @@ pub use azos_arch_api::{
     Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu, MmuError,
     PagePerms, Vector,
 };
+// The rest of the arch contract (`ArchPlatform`, `ArchEntry`) and the page
+// geometry, under the same ISA-neutral names on every ISA.
+pub use azos_arch_api::{ArchEntry, ArchPlatform, PAGE_SHIFT, PAGE_SIZE};
+// Sv39 has one base page size: the contract's must agree with `mmu`'s.
+const _: () = assert!(mmu::PAGE_SIZE == PAGE_SIZE && mmu::PAGE_SHIFT == PAGE_SHIFT);
 
 pub mod cbo;
 pub mod cpu;
@@ -29,6 +34,7 @@ pub mod tlb;
 // traits in terms of the legacy free-function modules above. Pure
 // additive; existing callers are unaffected.
 pub mod api_impl;
+mod platform_impl;
 
 // Sv39 has one base page. A `page-16k`/`page-64k` feature (the aarch64
 // granule choice) reaching a riscv64 build is a configuration error, not a

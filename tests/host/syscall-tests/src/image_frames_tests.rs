@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 // Wave 14 (SPAWNCACHE): a verified image's kept frames (`azos_mm::
 // image_frames`) and the table that keeps them (`image_cache`), on the real
 // page tables, refcounts and allocator. Included into `mod handlers`.

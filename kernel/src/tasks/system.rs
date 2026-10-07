@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Always-on system tasks: the per-hart idle task (one per ISA) and the shell.
 
+use azos_arch::{ArchEntry as _, Cpu as _};
 // Only `idle_task`'s `ipc-census` block names a crate-root item (`kprintln!`).
 #[cfg(all(target_arch = "riscv64", feature = "ipc-census"))]
 use crate::*;
@@ -16,7 +17,7 @@ fn idle_wait() {
     match azos_energy::seams::IDLE_GOVERNOR
         .select_state(azos_sched::smp::current_cpu_id, azos_sched::nearest_timer_deadline)
     {
-        azos_energy::IdleChoice::Wfi | azos_energy::IdleChoice::Deep(_) => azos_arch::cpu::wfi(),
+        azos_energy::IdleChoice::Wfi | azos_energy::IdleChoice::Deep(_) => azos_arch::ARCH.wfi(),
     }
 }
 
@@ -26,7 +27,7 @@ fn idle_wait() {
 #[cfg(feature = "energy")]
 #[inline(always)]
 fn idle_wait() {
-    azos_sched::energy::idle_wait(azos_sched::smp::current_cpu_id(), azos_arch::cpu::wfi);
+    azos_sched::energy::idle_wait(azos_sched::smp::current_cpu_id(), || azos_arch::ARCH.wfi());
 }
 
 /// Refresh the vDSO timing page as an idle hart wakes (wave 13, owner
@@ -40,54 +41,17 @@ fn idle_wait() {
 /// tick keeps.
 #[inline(always)]
 fn vdso_refresh_on_wake() {
-    #[cfg(all(target_arch = "riscv64", not(feature = "no-mmu")))]
-    {
-        let now = azos_drv_sys::timebase::now();
-        azos_mm::vdso::vdso_update(
-            azos_actuation::watchdog::ticks(),
-            now / (azos_drv_sys::timebase::TIMER_FREQ / 1000),
-        );
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        use core::sync::atomic::Ordering;
-        let hz = crate::entry::aarch64::VDSO_TIMEBASE_HZ.load(Ordering::Relaxed);
-        let now = azos_drv_sys::timebase::now();
-        if now != 0 && hz >= 1000 {
-            azos_mm::vdso::vdso_update(
-                crate::entry::aarch64::TICK_COUNT.load(Ordering::Relaxed),
-                now / (hz / 1000),
-            );
-        }
+    // The ISA's clock source (`ArchEntry::vdso_clock`): riscv64 `rdtime` at
+    // the fixed `TIMER_FREQ` and the watchdog tick; aarch64 `CNTVCT_EL0` at
+    // the live `CNTFRQ_EL0` once known. `None` under `no-mmu` (no vDSO page).
+    if let Some((ticks, ms)) = crate::ARCH_ENTRY.vdso_clock() {
+        azos_mm::vdso::vdso_update(ticks, ms);
     }
 }
 
-/// One per hart, pinned — mirrors riscv64's own `idle_task` (this file,
-/// `#[cfg(target_arch = "riscv64")]`) in shape, minus the `ipc-census`
-/// wake-latency reporting (RISC-V/CLINT-specific counters this milestone
-/// has no aarch64 equivalent for). `wfi()` returns on ANY pending
-/// interrupt, including an SGI doorbell from another core — the
-/// `task_yield()` right after is not optional, same reason riscv64's own
-/// idle_task documents: without it, a task some other hart just enqueued
-/// here would sit ready until the next timer tick instead of running
-/// immediately.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn aarch64_idle_task(_arg: usize) {
-    loop {
-        idle_wait();
-        vdso_refresh_on_wake();
-        azos_sched::task_yield();
-        // Stranded console residual (see `idle_task`): one relaxed load.
-        azos_drv_sys::uart::console_idle_drain();
-        // The K-C25 reaper's safety net, off the tick (`reap_idle_sweep`).
-        if azos_sched::scheduler::reap_idle_sweep() {
-            azos_sched::task_yield();
-        }
-    }
-}
-
-/// Idle task: runs when no other task is ready on this CPU.
-#[cfg(target_arch = "riscv64")]
+/// Idle task, one per CPU, pinned: runs when no other task is ready on this
+/// CPU. The same body on every ISA; only the `ipc-census` wake-latency
+/// report is riscv64's (CLINT counters with no aarch64 equivalent).
 pub(crate) fn idle_task(_arg: usize) {
     loop {
         idle_wait();
@@ -128,7 +92,7 @@ pub(crate) fn idle_task(_arg: usize) {
         //
         // Rate-limited to changes: printing on every idle pass would perturb
         // the very latency being measured.
-        #[cfg(feature = "ipc-census")]
+        #[cfg(all(target_arch = "riscv64", feature = "ipc-census"))]
         {
             use core::sync::atomic::{AtomicU32, Ordering};
             static LAST: AtomicU32 = AtomicU32::new(0);

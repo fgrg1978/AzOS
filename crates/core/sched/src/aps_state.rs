@@ -18,7 +18,6 @@ use azos_sync::spinlock::SpinLock;
 use crate::class::SchedClass;
 use crate::partitions::Aps;
 use crate::policies::Backend;
-use crate::scheduler::MAX_CPUS;
 
 /// Per-CPU multi-policy scheduler state.
 ///
@@ -70,8 +69,20 @@ const FRESH_CPU_STATE: SpinLock<CpuSchedV2> = SpinLock::new(CpuSchedV2::new());
 /// `task_exit()`/admission run in task context on the same hart with interrupts
 /// enabled. `with_cpu`/`for_each_cpu` therefore lock with `lock_irqsave()` so a
 /// timer tick can't re-enter and deadlock on `V2_STATE[cpu]`.
-static V2_STATE: [SpinLock<CpuSchedV2>; MAX_CPUS] =
-    [FRESH_CPU_STATE; MAX_CPUS];
+///
+/// In the per-CPU areas (wave 15, NRCPUS): one policy table per possible CPU,
+/// not one per CPU of the Kconfig ceiling. A CPU without an area (past
+/// `nr_cpu_ids`) answers `None` from [`with_cpu`], as an out-of-range id did.
+/// (Before the areas are attached `ncpu()` is 1 and CPU 0's slot is still
+/// `POISON`: nothing here runs before `kernel_main` attaches them.)
+pub(crate) static V2_STATE: azos_percpu::PerCpu<SpinLock<CpuSchedV2>> =
+    azos_percpu::PerCpu::with_init(v2_state_init);
+
+/// Initial per-CPU state, written in place when the CPU's area is attached.
+unsafe fn v2_state_init(p: *mut SpinLock<CpuSchedV2>) {
+    // SAFETY: the caller hands a zeroed, aligned, exclusive slot.
+    unsafe { p.write(FRESH_CPU_STATE) };
+}
 
 /// Mark the V2 scheduler state as initialised. Called once during
 /// boot from `crate::scheduler::init()` (W4-int.2 will wire this in).
@@ -89,18 +100,21 @@ pub fn is_initialised() -> bool {
 ///
 /// Returns `None` if `cpu` is out of range.
 pub fn with_cpu<R>(cpu: usize, f: impl FnOnce(&mut CpuSchedV2) -> R) -> Option<R> {
-    if cpu >= MAX_CPUS {
+    if cpu >= crate::scheduler::ncpu() {
         return None;
     }
-    let mut state = V2_STATE[cpu].lock_irqsave();
+    // SAFETY: every CPU below `ncpu()` has an area, never freed.
+    let slot = unsafe { &*V2_STATE.ptr(cpu) };
+    let mut state = slot.lock_irqsave();
     Some(f(&mut *state))
 }
 
 /// Run the same closure on every CPU's state in turn (used by the
 /// window-anchor path at boot).
 pub fn for_each_cpu(mut f: impl FnMut(usize, &mut CpuSchedV2)) {
-    for cpu in 0..MAX_CPUS {
-        let mut state = V2_STATE[cpu].lock_irqsave();
+    for cpu in 0..crate::scheduler::ncpu() {
+        // SAFETY: every CPU below `ncpu()` has an area (see `with_cpu`).
+        let mut state = unsafe { &*V2_STATE.ptr(cpu) }.lock_irqsave();
         f(cpu, &mut *state);
     }
 }
@@ -161,7 +175,7 @@ pub fn enqueue_task_for_class(
 ///
 /// Returns `None` if every policy's runqueue is empty.
 pub fn pick_next(cpu: usize, now_us: u64) -> Option<TaskMeta> {
-    if cpu >= MAX_CPUS {
+    if cpu >= crate::scheduler::ncpu() {
         return None;
     }
     with_cpu(cpu, |state| {
@@ -181,7 +195,7 @@ pub fn pick_next(cpu: usize, now_us: u64) -> Option<TaskMeta> {
 /// Used by the kernel to print a one-line PASS/FAIL line during
 /// boot without flipping the dispatch flag permanently.
 pub fn smoke_test(cpu: usize) -> Result<u32, &'static str> {
-    if cpu >= MAX_CPUS {
+    if cpu >= crate::scheduler::ncpu() {
         return Err("cpu out of range");
     }
     let pick = pick_next(cpu, 0).ok_or("no class returned a task")?;

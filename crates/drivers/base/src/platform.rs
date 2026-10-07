@@ -29,6 +29,7 @@
     feature = "vf2",
     feature = "k1",
     all(target_arch = "aarch64", target_os = "none"),
+    all(target_arch = "x86_64", target_os = "none"),
 )))]
 pub mod hw {
     pub const PLATFORM_NAME: &str = "QEMU virt";
@@ -607,6 +608,8 @@ pub mod hw {
 // than this one, so this block never needs to build for the host — but
 // without the `target_os` guard it would try to, and its MMIO reads would be
 // real ARM system-register asm compiled for the wrong purpose.
+// arch-only: one platform table per ISA; the QEMU-virt riscv64 `hw` above
+// is the default, x86_64's skeleton table is below.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod hw {
     pub const PLATFORM_NAME: &str = "QEMU virt (aarch64)";
@@ -765,7 +768,7 @@ pub mod hw {
         // no reverse path to the real constant; margin here is ~63 MiB
         // (see the module doc), so even a stale copy cannot silently pass
         // a real collision.
-        const MAX_HARTS_MIRROR: usize = 8;
+        const MAX_HARTS_MIRROR: usize = azos_limits::NR_CPUS;
         assert!(vdso_is_below_ram(RAM_BASE), "vDSO is not below aarch64 QEMU virt RAM");
         assert!(!collides(UART_BASE, 0x1000), "vDSO shares aarch64 QEMU virt UART's 2 MiB slot");
         assert!(
@@ -793,6 +796,40 @@ pub mod hw {
 /// `writable`. Every entry is page aligned, outside RAM, overlaps no other
 /// entry, fits one user MMIO mapping (1 MiB) and has a base below 4 GiB, the
 /// width of the denial record (`tests/host/topology-tests`, `mmio_table_tests`).
+/// x86_64 port SKELETON: the PC platform's constants, every value a
+/// placeholder the port replaces (most come from ACPI at boot, not from
+/// constants: the MADT, the MCFG, the HPET table). Before this block an
+/// x86_64 build silently took the QEMU-virt RISC-V addresses above.
+// arch-only: one platform table per ISA (see aarch64's above).
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub mod hw {
+    pub const PLATFORM_NAME: &str = "PC (x86_64 skeleton)";
+    /// COM1 is an I/O PORT (0x3F8), not an MMIO address; the uart driver's
+    /// x86 back end uses port I/O.
+    pub const UART_BASE:   usize = 0x3F8;
+    pub const UART_COMPATIBLE: &str = "ns16550a";
+    pub const TIMER_FREQ:  u64   = azos_limits::TIMER_FREQ as u64;
+    /// From the ACPI MADT at boot; this is only the static upper bound.
+    pub const NUM_CPUS:    usize = azos_limits::NR_CPUS;
+    /// RAM starts at 0 on a PC; the kernel loads at 1 MiB (linker-x86_64.ld).
+    pub const RAM_BASE:    usize = 0;
+    pub const KERNEL_LOAD: usize = 0x10_0000;
+    /// The TSC rate (CPUID.15H, or calibrated against the HPET/PIT).
+    pub fn timer_freq_hw() -> u64 {
+        todo!("x86_64: hw::timer_freq_hw: CPUID.15H / TSC calibration")
+    }
+    /// Device windows come from ACPI (MCFG ECAM, HPET, IOAPIC), not a table.
+    pub const MMIO_REGIONS: &[super::MmioRegion] = &[];
+    /// No virtio-mmio on a PC: virtio is PCI (crates/drivers/virtio pci.rs).
+    pub const VIRTIO_MMIO_BASE:  usize = 0;
+    pub const VIRTIO_MMIO_STRIDE: usize = 0x200;
+    pub const VIRTIO_MMIO_COUNT: usize = 0;
+    pub const VIRTIO_IRQ_BASE: u32 = 0;
+    /// CMOS RTC at I/O ports 0x70/0x71, IRQ 8.
+    pub const RTC_BASE: usize = 0x70;
+    pub const RTC_IRQ: u32 = 8;
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MmioRegion {
     /// Physical base address.

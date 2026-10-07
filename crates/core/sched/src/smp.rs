@@ -15,6 +15,7 @@
 
 use core::sync::atomic::AtomicUsize;
 
+// arch-only: the aarch64 MPIDR affinity table below.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 use core::sync::atomic::{AtomicU32, Ordering as SmpOrdering};
 
@@ -89,7 +90,7 @@ pub unsafe fn wake_hart(hart_id: usize) -> isize {
 /// below still only trusts an entry `NUM_ONLINE_CPUS`/the DTB actually named —
 /// this sentinel only guards against reading a table slot nobody wrote).
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-pub const AARCH64_HART_TABLE_LEN: usize = 8;
+pub const AARCH64_HART_TABLE_LEN: usize = azos_percpu::NR_CPUS;
 
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 const HART_AFFINITY_UNSET: u32 = u32::MAX;
@@ -182,6 +183,13 @@ pub unsafe fn wake_hart(hart_id: usize) -> isize {
     }
 }
 
+/// x86_64 skeleton (and any further ISA): INIT-SIPI-SIPI to the MADT APIC
+/// ID of `hart_id` through `Boot::hart_start`.
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub unsafe fn wake_hart(_hart_id: usize) -> isize {
+    todo!("x86_64: wake_hart: Boot::hart_start (INIT-SIPI-SIPI) to the MADT APIC ID")
+}
+
 /// Start every secondary hart in `0..num_cpus` (boot hart excluded — it is
 /// already running).
 ///
@@ -212,9 +220,17 @@ pub unsafe fn wake_hart(hart_id: usize) -> isize {
 pub unsafe fn wake_harts(num_cpus: usize) -> usize {
     let boot = current_cpu_id();
     let mut alive = hart_set::mark_alive(0, boot); // boot hart is already running
+    // The online mask (`azos_percpu::online`) is the SET of running CPUs,
+    // kept apart from the possible mask so a later hotplug is a bit flip;
+    // `NUM_ONLINE_CPUS` below stays the prefix the scheduler walks.
+    azos_percpu::set_cpu_online(boot, true);
     // The boot hart publishes roots too; other harts' shootdowns must scan it.
     #[cfg(target_arch = "riscv64")]
     azos_arch::tlb::note_hart_online(boot);
+    // x86_64 skeleton: no broadcast invalidate there either, so the boot CPU
+    // joins the shootdown's IPI mask (aarch64 needs nothing: TLBI ...IS).
+    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+    todo!("x86_64: wake_harts: add the boot CPU to the TLB-shootdown IPI mask");
 
     for hart_id in 0..num_cpus {
         if hart_id == boot {
@@ -223,6 +239,7 @@ pub unsafe fn wake_harts(num_cpus: usize) -> usize {
         let ret = wake_hart(hart_id);
         if ret == 0 {
             alive = hart_set::mark_alive(alive, hart_id);
+            azos_percpu::set_cpu_online(hart_id, true);
         } else {
             azos_drv_sys::kwarn!(
                 "[SMP] hart {} failed to start (sbi hart_start error {})",
@@ -255,16 +272,14 @@ pub unsafe fn wake_harts(num_cpus: usize) -> usize {
     //     `rebalance_from_offline_cpus` counts its queue as belonging to a
     //     dead hart.
     //
-    //  b) `boot >= num_cpus` outright. `PER_CPU` is `[_; MAX_CPUS]` with
-    //     `MAX_CPUS = 8` (`scheduler.rs`), and `kernel_main` asserts at
-    //     compile time that `MAX_HARTS` (8) fits in it, so any hart id the
-    //     boot code accepts indexes `PER_CPU` in bounds. But riscv64
-    //     `kernel_main` clamps `num_cpus` to its own `MAX_CPUS = 4`
-    //     (`kernel/src/main.rs`), so on a board whose boot hart id is 4 or
-    //     more (the VF2/JH7110 case: S7 as hart 0, U74s as 1..4) the boot
-    //     hart runs the kernel outside the online prefix and receives no
-    //     balanced work. This print is the warning for it, reached before
-    //     `sched::start()`.
+    //  b) `boot >= num_cpus` outright. Every per-CPU table is sized by the
+    //     Kconfig ceiling `NR_CPUS`, and `boot::discover_cpus` adds the boot
+    //     hart to the possible mask, so it has its slots and its area; but
+    //     `num_cpus` is the DTB's count, so on a board whose boot hart id is
+    //     at or past it (the VF2/JH7110 case if its DTB counted only the
+    //     U74s 1..4) the boot hart runs the kernel outside the online prefix
+    //     and receives no balanced work. This print is the warning for it,
+    //     reached before `sched::start()`.
     if boot >= online {
         azos_drv_sys::kwarn!(
             "[SMP] WARNING: boot hart {} is outside the online prefix 0..{} \
@@ -308,5 +323,7 @@ pub fn current_cpu_id() -> usize {
     {
         id = 0;
     }
+    #[cfg(feature = "cpuid-probe")]
+    crate::cpuid_probe::observe(id);
     id
 }

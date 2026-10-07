@@ -130,26 +130,28 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
 
     // `dtb_num_cpus` feeds Phase 4's SMP bring-up (idle-per-hart creation,
     // `NUM_ONLINE_CPUS`'s pre-`wake_harts` estimate) — clamped to
-    // `crate::MAX_HARTS` here, once, rather than at every later call site, and
-    // never 0 (this hart is always running, whatever the DTB says).
+    // the Kconfig ceiling `NR_CPUS` here, once, by `boot::discover_cpus`
+    // (with a warning when it cuts), rather than at every later call site, and
+    // never 0 (this hart is always running, whatever the DTB says). The boot
+    // core is logical CPU 0 on this ISA (`boot.S`: `TPIDR_EL1` = 0).
     let (mem_start, mem_size, mem_from_dtb, dtb_num_cpus) = if dtb_ptr != 0 {
         match unsafe { azos_dtb::dtb_parse(dtb_ptr as *const u8) } {
             Some(info) if info.mem_base != 0 && info.mem_size != 0 => {
                 kprintln!("[DTB] Parsed FDT — mem={:#x}+{:#x} ({} CPUs)",
                     info.mem_base, info.mem_size, info.num_cpus);
-                (info.mem_base, info.mem_size, true, info.num_cpus.clamp(1, crate::MAX_HARTS))
+                (info.mem_base, info.mem_size, true, crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: info.num_cpus, boot_cpu: 0, source: "DTB" }))
             }
             Some(info) => {
                 kprintln!("[DTB] Parsed FDT but no usable /memory node — falling back");
-                (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, info.num_cpus.clamp(1, crate::MAX_HARTS))
+                (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: info.num_cpus, boot_cpu: 0, source: "DTB" }))
             }
             None => {
                 azos_drv_sys::kerr!("[DTB] Parse failed (invalid or unsupported FDT)");
-                (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, 1)
+                (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: 0, boot_cpu: 0, source: "none" }))
             }
         }
     } else {
-        (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, 1)
+        (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: 0, boot_cpu: 0, source: "none" }))
     };
     // The PCI host bridge's ECAM and `ranges`, for `kernel_main`'s PCI
     // block. Read here, with the same pointer as `dtb_parse`, as riscv64
@@ -610,7 +612,7 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
         gic::enable_ppi(0, crate::entry::aarch64::TIMER_PPI_ENABLED); // EL1 virtual timer, PPI 27
         // SGI 0 — this kernel's cross-core IPI (Phase 4). Enabled on hart 0
         // here, on every secondary inside `smp::secondary_init`'s caller
-        // (`aarch64_smp_secondary_start`) — see `crate::entry::aarch64::handle_irq`
+        // (`secondary_main`) — see `crate::entry::aarch64::handle_irq`
         // for the receive side.
         gic::enable_ppi(0, 0);
         kprintln!("[GIC] distributor + redistributor(0) + CPU interface \
@@ -782,7 +784,7 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
         // Lets ring 3 read CNTVCT_EL0 directly (`libsys::vdso_now_ns`'s
         // RFC-0041 §A parity path) instead of trapping — see
         // `sysregs::enable_el0_cntvct`'s own doc. Hart 0 only here;
-        // `aarch64_smp_secondary_start` below does the same for every
+        // `secondary_main` below does the same for every
         // secondary, since this is a per-PE register.
         azos_arch::sysregs::enable_el0_cntvct();
         // Mirrors `clint::SCHED_HZ`'s own boot default (100 Hz, crates/
@@ -1035,6 +1037,23 @@ pub fn arch_wake_secondaries(num_cpus: usize) {
     kprintln!("[SMP] UART lock enabled");
 
     kprintln!("[SMP] Starting {} secondary hart(s) via PSCI CPU_ON...", dtb_num_cpus - 1);
+    // A secondary reads `AZOS_SECONDARY_SP` and first uses its boot stack
+    // with its MMU (so its caches) off: push the boot CPU's writes to both
+    // out to the point of coherency, and drop any line of the stacks a later
+    // cacheable read could find stale. A no-op on QEMU; required on silicon.
+    for cpu in 0..azos_percpu::nr_cpu_ids() {
+        let top = crate::AZOS_SECONDARY_SP[cpu].load(core::sync::atomic::Ordering::Relaxed);
+        if top != 0 {
+            let stack = azos_mm::addr::phys_to_virt(top - crate::SECONDARY_STACK_SIZE);
+            unsafe { azos_arch::cache::dcache_clean_and_invalidate(stack, crate::SECONDARY_STACK_SIZE) };
+        }
+    }
+    unsafe {
+        azos_arch::cache::dcache_clean(
+            crate::AZOS_SECONDARY_SP.as_ptr() as usize,
+            core::mem::size_of_val(&crate::AZOS_SECONDARY_SP),
+        )
+    };
     let online = unsafe { azos_sched::smp::wake_harts(dtb_num_cpus) };
     if online != dtb_num_cpus {
         azos_drv_sys::kwarn!("[SMP] WARNING: only {}/{} harts started — degraded to {} online CPU(s)",
@@ -1051,7 +1070,7 @@ pub fn arch_wake_secondaries(num_cpus: usize) {
     // ── Online readback — MARKER, per hart ──────────────────────────────
     //
     // Each secondary publishes `CORE_ONLINE`/`CORE_MPIDR`/`CORE_HART_ID`
-    // (`crate::entry::aarch64::aarch64_smp_secondary_start`) once its own GIC +
+    // (`crate::boot::smp::secondary_main`) once its own GIC +
     // timer bring-up is done. Bounded spin, not a fixed sleep: real
     // hardware and QEMU both take a variable number of cycles from
     // `CPU_ON` to a PE's first published word, and a fixed delay would
@@ -1112,7 +1131,7 @@ pub fn arch_wake_secondaries(num_cpus: usize) {
                 // ── MARKER: this hart took at least N ticks ──────────────
                 // A bounded wait, same shape as the online-publish spin
                 // above: this hart's own periodic timer was armed inside
-                // `aarch64_smp_secondary_start`, right before it published
+                // `secondary_main`, right before it published
                 // `CORE_ONLINE`, so a few ticks should already be close.
                 const MIN_TICKS: u64 = 3;
                 let tick_deadline = ARCH.now_ticks()

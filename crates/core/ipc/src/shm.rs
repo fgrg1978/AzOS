@@ -315,7 +315,7 @@ pub fn shm_create_kernel_contig_ref(page_count: usize, perms: ShmPerms) -> Optio
     if page_count == 0 || page_count > MAX_SHM_PAGES {
         return None;
     }
-    let page = azos_arch::mmu::PAGE_SIZE;
+    let page = azos_arch::PAGE_SIZE;
     let base = azos_mm::pmm::alloc_contiguous(page_count).ok()?.as_usize();
     let mut pages = [0usize; MAX_SHM_PAGES];
     for (i, p) in pages.iter_mut().enumerate().take(page_count) {
@@ -624,7 +624,7 @@ fn take_mapping_locked(region: &mut ShmRegion, tid: u32) -> Option<(usize, usize
 /// moves the capability to a peer (`cap_store::move_cap`). Answered under the
 /// table lock on every call, so a released mapping stops resolving at once.
 pub fn shm_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize, usize)> {
-    let page = azos_arch::mmu::PAGE_SIZE;
+    let page = azos_arch::PAGE_SIZE;
     let regions = SHM_REGIONS.lock_irqsave();
     for (i, region) in regions.iter().enumerate() {
         if !region.active { continue; }
@@ -679,7 +679,7 @@ pub fn shm_page_phys_ref(r: u32, page_idx: usize) -> Result<Option<usize>, ShmCa
 /// load, in the kernel's use).
 ///
 /// The offset is split with the build's translation granule
-/// (`azos_arch::mmu::PAGE_SIZE`), as [`shm_resolve_mapped`] splits it:
+/// (`azos_arch::PAGE_SIZE`), as [`shm_resolve_mapped`] splits it:
 /// each entry of `phys_pages` is one granule. It used a fixed 4096, so on an
 /// aarch64 16/64 KiB build a word past the first 4 KiB of a region was read
 /// from a later frame (or refused past `page_count` 4 KiB "pages").
@@ -688,7 +688,7 @@ pub fn shm_with_word_ref<R>(
     offset: usize,
     f: impl FnOnce(&AtomicU32) -> R,
 ) -> Result<Option<R>, ShmCapError> {
-    let page_size = azos_arch::mmu::PAGE_SIZE;
+    let page_size = azos_arch::PAGE_SIZE;
     let regions = SHM_REGIONS.lock_irqsave();
     let i = live_index(&regions, r)?;
     let region = &regions[i];
@@ -1185,7 +1185,7 @@ mod tests {
         assert_eq!(v, 0x5eed_f00d, "the word was not read through the region's page");
         assert!(!unlocked, "the region table was unlocked during the load");
         assert!(__shm_table_unlocked_for_tests(), "the lock outlived the call");
-        let page = azos_arch::mmu::PAGE_SIZE;
+        let page = azos_arch::PAGE_SIZE;
         assert_eq!(shm_with_word_ref(r, page, |w| w.load(Ordering::Acquire)), Ok(None));
         assert_eq!(shm_with_word_ref(r, 6, |w| w.load(Ordering::Acquire)), Ok(None));
     }
@@ -1208,7 +1208,7 @@ mod tests {
         let _g = setup();
         const PAGES: usize = 3;
         const VA: usize = 0x4000_0000;
-        let page = azos_arch::mmu::PAGE_SIZE;
+        let page = azos_arch::PAGE_SIZE;
         let cap = shm_create_cap(A, PAGES, ShmPerms::ReadWrite).expect("create");
         let r = cap_store::get(A, cap, CapPerms::READ).expect("a fresh capability resolves");
         assert_eq!(shm_note_mapping_ref(A, r, VA, PAGES), Ok(true));
@@ -1230,7 +1230,7 @@ mod tests {
 
     /// The source half of the fix above: the two functions that split a
     /// region offset into (frame, offset in frame) both take the granule from
-    /// `azos_arch::mmu::PAGE_SIZE`, and neither carries a page size of its
+    /// `azos_arch::PAGE_SIZE`, and neither carries a page size of its
     /// own. Red on the old `shm_with_word_ref` (`const PAGE: usize = 4096`).
     ///
     /// Both also index `phys_pages` with a page number derived from a ring-3
@@ -1249,7 +1249,7 @@ mod tests {
         };
         for name in ["shm_with_word_ref", "shm_resolve_mapped"] {
             let b = body(name);
-            assert!(b.contains("azos_arch::mmu::PAGE_SIZE"), "{name} does not take the build's granule");
+            assert!(b.contains("azos_arch::PAGE_SIZE"), "{name} does not take the build's granule");
             for fixed in ["4096", "0x1000", "16384", "65536"] {
                 assert!(!b.contains(fixed), "{name} splits the offset with a fixed {fixed}");
             }
@@ -1529,14 +1529,14 @@ mod tests {
         let _g = setup();
         let old = shm_create_ref(A, 1, ShmPerms::ReadWrite).expect("create");
         let p = shm_page_phys_ref(old, 0).expect("live").expect("page 0");
-        unsafe { core::ptr::write_bytes(p as *mut u8, 0xAA, azos_arch::mmu::PAGE_SIZE) };
+        unsafe { core::ptr::write_bytes(p as *mut u8, 0xAA, azos_arch::PAGE_SIZE) };
         assert_eq!(shm_release_ref(A, old), Ok(()), "the last reference");
         assert_eq!(azos_mm::shim_free_count(p), 1, "the region's page went back");
 
         let new = shm_create_ref(B, 1, ShmPerms::ReadWrite).expect("create");
         let q = shm_page_phys_ref(new, 0).expect("live").expect("page 0");
         assert_eq!(q, p, "precondition: the new region got the poisoned page back");
-        let bytes = unsafe { core::slice::from_raw_parts(q as *const u8, azos_arch::mmu::PAGE_SIZE) };
+        let bytes = unsafe { core::slice::from_raw_parts(q as *const u8, azos_arch::PAGE_SIZE) };
         assert!(bytes.iter().all(|&b| b == 0), "a new region shows the previous owner's bytes");
     }
 
@@ -1576,7 +1576,7 @@ mod tests {
         assert_eq!(held, MAX_SHM_REGIONS_PER_TASK);
         assert_eq!(shm_create_ref(A, 4, ShmPerms::ReadWrite), None, "over quota");
         assert_eq!(azos_mm::shim_pages_in_use(), held, "pages leaked on a quota refusal");
-        let page = azos_arch::mmu::PAGE_SIZE;
+        let page = azos_arch::PAGE_SIZE;
         for k in held..held + 4 {
             assert_eq!(azos_mm::shim_free_count(first + k * page), 0,
                        "a refused create allocated page {k} before checking the quota");

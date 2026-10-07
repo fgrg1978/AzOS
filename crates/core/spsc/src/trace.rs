@@ -70,9 +70,11 @@ pub const TRACE_VERSION: u32 = 1;
 pub const TRACE_REC_BYTES: usize = 32;
 const REC_SHIFT: u32 = TRACE_REC_BYTES.trailing_zeros();
 const _: () = assert!(TRACE_REC_BYTES == 1 << REC_SHIFT);
-/// Rings a region may hold: the kernel's hart bound
-/// (`azos_sync::isr_depth::MAX_HARTS`, asserted where the region is made).
-pub const TRACE_MAX_CPUS: u32 = 8;
+/// Rings a region may hold: the ABI ceiling a reader validates against. The
+/// kernel makes at most one ring per CPU of its Kconfig `NR_CPUS`, whose range
+/// stops at this value (asserted in `crates/core/trace`); it was 8, the old
+/// hard-coded hart bound.
+pub const TRACE_MAX_CPUS: u32 = 64;
 
 /// Header word offsets.
 pub const HDR_MAGIC: usize = 0;

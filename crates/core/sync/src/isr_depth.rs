@@ -38,7 +38,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// and the boot-hart range check use different bounds). A hart id past this
 /// is ignored rather than indexed — an out-of-range write here would be a
 /// memory-safety bug reported as a scheduling one.
-pub const MAX_HARTS: usize = 8;
+pub const MAX_HARTS: usize = azos_limits::NR_CPUS;
 
 const ZERO: AtomicU32 = AtomicU32::new(0);
 static DEPTH: [AtomicU32; MAX_HARTS] = [ZERO; MAX_HARTS];

@@ -30,6 +30,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use azos_arch::Interrupts;
 use azos_sync::PiMutex;
 
+// arch-only: the MMIO back ends' base; x86_64's COM1 is port I/O.
+#[cfg(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none")))]
 use azos_drv_base::platform::hw::UART_BASE;
 
 // ---- IRQ ring buffer (shared across all platforms) ----
@@ -647,6 +649,98 @@ mod pl011 {
     }
 }
 
+// ============================================================
+// x86_64 skeleton (and any further ISA): the PC's COM1 is a 16550 too, but
+// behind PORT I/O (0x3F8, `in`/`out`), not MMIO, with its IRQ on IOAPIC
+// GSI 4. Every body is a `todo!()` naming that; nothing here runs.
+// ============================================================
+
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+mod com16550_pio {
+    //! COM1, polled: enough for the boot banner and the panic path. The IRQ
+    //! half (IER, the IOAPIC route) is still `todo!()`.
+    const COM1: u16 = 0x3F8;
+    const REG_THR: u16 = 0;
+    const REG_IER: u16 = 1;
+    const REG_FCR: u16 = 2;
+    const REG_LCR: u16 = 3;
+    const REG_MCR: u16 = 4;
+    const REG_LSR: u16 = 5;
+    const LSR_DR: u8 = 0x01;
+    const LSR_THRE: u8 = 0x20;
+    const LSR_TEMT: u8 = 0x40;
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    fn outb(reg: u16, v: u8) {
+        // SAFETY: COM1's own I/O ports.
+        unsafe { core::arch::asm!("out dx, al", in("dx") COM1 + reg, in("al") v, options(nomem, nostack, preserves_flags)) };
+    }
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    fn inb(reg: u16) -> u8 {
+        let v: u8;
+        // SAFETY: COM1's own I/O ports.
+        unsafe { core::arch::asm!("in al, dx", in("dx") COM1 + reg, out("al") v, options(nomem, nostack, preserves_flags)) };
+        v
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    fn outb(_reg: u16, _v: u8) { todo!("port: COM1 port I/O") }
+    #[cfg(not(target_arch = "x86_64"))]
+    fn inb(_reg: u16) -> u8 { todo!("port: COM1 port I/O") }
+
+    /// 115200 8N1, FIFOs on, interrupts off (polled).
+    pub fn init() {
+        outb(REG_IER, 0x00);
+        outb(REG_LCR, 0x80);
+        outb(REG_THR, 0x01);
+        outb(REG_IER, 0x00);
+        outb(REG_LCR, 0x03);
+        outb(REG_FCR, 0xC7);
+        outb(REG_MCR, 0x0B);
+    }
+    pub fn can_write() -> bool { inb(REG_LSR) & LSR_THRE != 0 }
+    pub fn can_read_hw() -> bool { inb(REG_LSR) & LSR_DR != 0 }
+    pub fn putc_raw(c: u8) {
+        while !can_write() {
+            core::hint::spin_loop();
+        }
+        outb(REG_THR, c);
+    }
+    pub fn write_bytes(bytes: &[u8]) {
+        for &b in bytes {
+            putc_raw(b);
+        }
+    }
+    pub fn getc_raw() -> u8 { inb(REG_THR) }
+    pub fn enable_irq() { todo!("x86_64: uart enable_irq: IER + IOAPIC GSI 4") }
+    pub fn irq_handler() -> bool { todo!("x86_64: uart irq_handler") }
+    /// Writes into free FIFO room only (THRE: the 16-byte FIFO is empty).
+    pub fn tx_fill(src: &[u8]) -> usize {
+        if !can_write() {
+            return 0;
+        }
+        let n = src.len().min(16);
+        for &b in &src[..n] {
+            outb(REG_THR, b);
+        }
+        n
+    }
+    /// Polled: there is no TX interrupt to arm yet.
+    pub fn tx_irq_set(_on: bool) {}
+    pub fn tx_wait_idle() {
+        while inb(REG_LSR) & LSR_TEMT == 0 {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// The x86 console: same driver shape as the MMIO 16550.
+    pub struct Com16550Console;
+    impl super::Console for Com16550Console {
+        #[inline] fn write_bytes(&self, bytes: &[u8]) { super::tx_write_wait(bytes, false) }
+    }
+}
+
 // The single dispatch point "Public API" below calls through: RISC-V's
 // 16550 path is untouched, aarch64 gets PL011, and both compile to a direct
 // call with no vtable/indirection (`hw::` resolves to one module per
@@ -656,6 +750,8 @@ mod pl011 {
 use ns16550a as hw;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 use pl011 as hw;
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+use com16550_pio as hw;
 
 /// The [`Console`] this build's platform UART is.
 ///
@@ -673,6 +769,8 @@ use pl011 as hw;
 pub static CONSOLE: ns16550a::Ns16550aConsole = ns16550a::Ns16550aConsole;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub static CONSOLE: pl011::Pl011Console = pl011::Pl011Console;
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub static CONSOLE: com16550_pio::Com16550Console = com16550_pio::Com16550Console;
 
 /// Gate-only: a [`Console`] that prefixes every write with `CANARY>`.
 ///
@@ -804,6 +902,10 @@ pub const UART_IRQ: u32 = 32;
 /// way the RISC-V numbers above were.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub const UART_IRQ: u32 = 33;
+/// x86_64 skeleton: COM1 is legacy IRQ 4, an IOAPIC GSI (placeholder until
+/// the port routes it).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub const UART_IRQ: u32 = 4;
 
 /// Set by the first [`init`]; see its doc for why later calls must not reach
 /// the hardware.

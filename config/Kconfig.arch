@@ -33,10 +33,16 @@ choice
           Phase 2 multi-arch support.  Kernel builds but E2E robot loop
           is deferred to Phase 3 hardware bring-up.
 
+    config ARCH_X86_64
+        bool "x86_64 (port skeleton: type-checks only)"
+        help
+          The x86_64 port skeleton: every arch-api trait implemented with
+          todo!() bodies (crates/core/arch-x86_64), the entry/asm/linker
+          stubs under kernel/src/entry/x86_64/, and this Kconfig block. It
+          type-checks (`make ARCH=x86_64 check`); it does not link or boot.
+          Its purpose is to show, as code, what a new ISA must provide.
+
 endchoice
-# CONFIG_ARCH_X86_64 removed 2026-09-25 (Q4.1, owner decision): it mapped to
-# a Cargo target (`x86_64-unknown-none`, tools/kconfig_to_cargo.py) with no
-# real port behind it in this tree. Re-add when a port exists.
 
 # ---------------------------------------------------------------------------
 # RISC-V specific options
@@ -128,12 +134,119 @@ config MM_PRECOMMIT_RT
       in the fault path) would land inside its period.  Off: such tasks
       demand-fault like any other unless they ask for MAP_POPULATE.
 
-# x86_64-specific options (HAS_SSE2, HAS_AVX2, KPTI, SMEP, SMAP) removed
-# 2026-09-25 along with CONFIG_ARCH_X86_64 itself (Q4.1, owner decision):
-# the whole block was unreachable without that arch choice, and KPTI/SMEP/
-# SMAP additionally had zero references anywhere outside this file (see the
-# HAS_SVE/HAS_PAC/HAS_BTI note above — same finding, x86_64 side). Re-add
-# with a real x86_64 port.
+# ---------------------------------------------------------------------------
+# x86_64 (port skeleton)
+# ---------------------------------------------------------------------------
+# The same three tiers riscv64 uses (crates/core/arch-riscv64/src/cbo.rs):
+#   1. the compile-time BASELINE (X86_64_LEVEL), the only thing codegen may
+#      assume, checked at boot: a CPU below it is refused with a message;
+#   2. optional extensions, each a runtime CPUID probe before use with a
+#      fallback, emitted only inside gated asm, never as a global
+#      target-feature;
+#   3. per-board HAS_* (below) compiling a path in; a board that claims an
+#      extension still probes it at boot.
+
+if ARCH_X86_64
+
+choice
+    prompt "x86_64 baseline micro-architecture level"
+    default X86_64_LEVEL_V2
+    help
+      The psABI level codegen assumes for the whole kernel
+      (`-C target-cpu=x86-64[-vN]`, tools/kconfig_to_cargo.py). Anything
+      above it is an optional extension (HAS_X86_* below). The boot CPU
+      checks the level's CPUID bits before anything else and refuses to
+      boot below it. Higher levels let the compiler use wider instructions
+      everywhere (smaller, faster code) and drop every CPU older than the
+      level.
+
+    config X86_64_LEVEL_V1
+        bool "x86-64 (v1: SSE2)"
+        help
+          Every x86_64 CPU. No popcnt/SSE4.2 in compiled code.
+    config X86_64_LEVEL_V2
+        bool "x86-64-v2 (SSE4.2, POPCNT, CMPXCHG16B)"
+        help
+          Nehalem (2008) and later, every QEMU `-cpu` model newer than
+          qemu64 with `+sse4.2,+popcnt`. The default.
+    config X86_64_LEVEL_V3
+        bool "x86-64-v3 (AVX2, BMI2, FMA, MOVBE)"
+        help
+          Haswell (2013) and later. AVX2 becomes baseline; kernel FP/SIMD
+          use still needs the FPU-section discipline (FP_XSAVE_EAGER).
+endchoice
+
+config HAS_X86_SMEP
+    bool "SMEP (supervisor-mode execution prevention)"
+    default y
+    help
+      CR4.SMEP after CPUID.(EAX=7,ECX=0):EBX[7]. Cost: none at runtime.
+      Off: the kernel may execute user pages (an exploit primitive).
+
+config HAS_X86_SMAP
+    bool "SMAP (supervisor-mode access prevention)"
+    default y
+    help
+      CR4.SMAP after CPUID.(EAX=7,ECX=0):EBX[20]; the user-access window
+      (ArchPlatform::user_access) is stac/clac. Cost: two instructions per
+      user copy. Fallback: no window (every kernel access to user memory
+      allowed), as without the bit.
+
+config HAS_X86_PCID
+    bool "PCID / INVPCID (tagged TLB)"
+    default y
+    help
+      CR4.PCIDE after CPUID.1:ECX[17] (PCID) and CPUID.7:EBX[10] (INVPCID).
+      Keeps TLB entries across address-space switches (the ASID of
+      Mmu::switch_pt). Fallback: a full flush on every CR3 write.
+
+config HAS_X86_FSGSBASE
+    bool "FSGSBASE (rd/wrgsbase)"
+    default y
+    help
+      CR4.FSGSBASE after CPUID.7:EBX[0]: Cpu::percpu_base/set_percpu_base
+      without an MSR access (tens of cycles less per kernel entry).
+      Fallback: rdmsr/wrmsr IA32_GS_BASE.
+
+config HAS_X86_TSC_DEADLINE
+    bool "LAPIC TSC-deadline timer"
+    default y
+    help
+      CPUID.1:ECX[24]: Interrupts::set_timer_deadline writes
+      IA32_TSC_DEADLINE in TSC ticks. Fallback: the LAPIC one-shot count
+      calibrated against the TSC.
+
+config HAS_X86_X2APIC
+    bool "x2APIC (MSR-mapped LAPIC)"
+    default y
+    help
+      CPUID.1:ECX[21]: LAPIC registers as MSRs, IPIs as one wrmsr to the
+      ICR. Fallback: xAPIC MMIO at the IA32_APIC_BASE address.
+
+config HAS_X86_XSAVEOPT
+    bool "XSAVEOPT / XSAVES (compact, modified-only FP save)"
+    default y
+    help
+      CPUID.(EAX=0xD,ECX=1):EAX[0] (XSAVEOPT), [3] (XSAVES). Smaller and
+      faster FP save on every switch. Fallback: XSAVE, then FXSAVE.
+
+config HAS_X86_AVX2
+    bool "AVX2 in the Vector impl"
+    default y if X86_64_LEVEL_V3
+    default n
+    help
+      CPUID.7:EBX[5] plus XCR0 YMM state. Used ONLY inside the Vector
+      impl's dot product, behind the probe and the FPU section. Fallback:
+      SSE2 (baseline). Cost: the YMM half of the FP save area.
+
+config HAS_X86_SHA_NI
+    bool "SHA-NI (SHA-256 instructions)"
+    default n
+    help
+      CPUID.7:EBX[29]: the secure-boot hash through sha256rnds2. Fallback:
+      the portable SHA-256 (crates/core/crypto).
+
+endif # ARCH_X86_64
 
 # ---------------------------------------------------------------------------
 # Floating-point context
@@ -143,6 +256,7 @@ choice
     prompt "Floating-point context save format"
     default FP_HARDFLOAT_D if ARCH_RISCV64
     default FP_NEON        if ARCH_AARCH64
+    default FP_XSAVE_EAGER if ARCH_X86_64
     help
       Selects the FP register save format used in each task's TCB.
       Larger contexts cost more RAM per task; smaller contexts limit
@@ -198,11 +312,16 @@ choice
           VLEN-dependent and determined at runtime.  Adds allocation
           overhead to task creation.
 
-    # FP_XSAVE_SSE / FP_XSAVE_AVX2 / FP_XSAVE_AVX512 removed 2026-09-25
-    # along with CONFIG_ARCH_X86_64 (Q4.1): all three `depends on
-    # ARCH_X86_64`, which no longer exists as a symbol, so they were
-    # permanently unselectable dead entries the moment the arch choice
-    # went. Re-add with a real x86_64 port.
+    config FP_XSAVE_EAGER
+        bool "x86_64 XSAVE area, EAGER switch (512 B legacy + XSAVE header + enabled components)"
+        depends on ARCH_X86_64
+        help
+          x86_64 saves and restores the FP/SIMD state on EVERY context
+          switch, never lazily: lazy switching (CR0.TS + #NM) is the LazyFP
+          leak (CVE-2018-3665), and Linux removed it. aarch64's lazy path
+          (kernel/src/entry/aarch64/fp_lazy.rs, CPACR_EL1 trap on first use)
+          is a per-ISA choice, not a shared one. Cost: one XSAVEOPT/XRSTOR
+          pair per switch (HAS_X86_XSAVEOPT), ~0.5-1 KiB per task.
 
 endchoice
 

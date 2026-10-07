@@ -217,6 +217,7 @@ impl WcetStats {
 
 // ── Global state (lock-free via separate u64 atomics) ─────────────────────────
 
+use azos_arch::Cpu as _;
 use core::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 
 struct WcetTable {
@@ -580,7 +581,7 @@ pub fn jitter_record(series: u8) {
     if idx >= JITTER_MAX_SERIES { return; }
 
     // See `JitterTable::last` doc comment: comparisons must stay same-hart.
-    let hart = azos_arch::cpu::hart_id();
+    let hart = azos_arch::ARCH.hart_id();
     if hart >= JITTER_MAX_HARTS { return; } // defensive: unexpected hart id
 
     let now = read_cycles();

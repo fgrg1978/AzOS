@@ -66,7 +66,7 @@ use self::host_seam::SpinLock;
 #[cfg(target_os = "none")]
 #[inline(always)]
 fn in_isr_now() -> bool {
-    azos_sync::isr_depth::in_isr(azos_arch::cpu::hart_id() as usize)
+    azos_sync::isr_depth::in_isr(azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize)
 }
 #[cfg(not(target_os = "none"))]
 #[inline(always)]

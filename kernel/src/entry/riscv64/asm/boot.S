@@ -33,6 +33,38 @@ _start:
     amoswap.w.aq t2, t1, (t0)
     bnez t2, secondary_halt        # Others halt (SBI HSM will start them later)
 
+    # A boot hart at or past NR_CPUS (MAX_HARTS) has no per-CPU slot, and
+    # OpenSBI's boot-hart lottery can pick any hart of the DTB, which may name
+    # more harts than NR_CPUS. Such a boot died silently before the banner
+    # (wave-15 integration gate: `-smp 8` at NR_CPUS 4, "Boot HART ID : 4").
+    # Hand the boot to the first hart below NR_CPUS that SBI HSM starts, at
+    # `_start` with the DTB as its opaque argument (it arrives in a1), and stop
+    # this hart. The lock is released first so the started hart wins it.
+    li t1, MAX_HARTS
+    bltu s0, t1, boot_hart_in_range
+    la t0, boot_lock
+    fence rw, w
+    sw zero, 0(t0)
+    li s2, 0
+boot_handoff_next:
+    li t1, MAX_HARTS
+    bgeu s2, t1, secondary_halt    # no hart would start: nothing can boot
+    mv a0, s2
+    la a1, _start
+    mv a2, s1
+    li a6, 0                       # SBI HSM hart_start(hartid, addr, opaque)
+    li a7, 0x48534D
+    ecall
+    beqz a0, boot_handoff_stop
+    addi s2, s2, 1
+    j boot_handoff_next
+boot_handoff_stop:
+    li a6, 1                       # SBI HSM hart_stop(): does not return
+    li a7, 0x48534D
+    ecall
+    j secondary_halt
+boot_hart_in_range:
+
     # Disable S-mode interrupts
     csrw sie, zero
 
@@ -125,8 +157,8 @@ _secondary_start:
     csrw sie, zero
 
     # Range-check the hart id BEFORE anything is computed from it. The sp
-    # derived from an id >= MAX_HARTS points outside secondary_stacks into
-    # adjacent .bss; parking used to happen only after that sp was already
+    # derived from an id >= MAX_HARTS would index past AZOS_SECONDARY_SP
+    # into adjacent .data; parking used to happen only after that sp was already
     # live in the register file, so any future instruction between stack
     # setup and the park that touched the stack would have corrupted .bss.
     # Nothing before this needs more than s0 itself.
@@ -134,13 +166,14 @@ _secondary_start:
     bgeu s0, t1, secondary_halt     # no stack slot, no trap-vector slot,
                                     # no PER_CPU entry: park
 
-    # Stack = secondary_stacks[hart_id] + stack_size
-    la t0, secondary_stacks
-    la t1, _secondary_stack_size
-    ld t1, 0(t1)                    # load const from .data (Rust SECONDARY_STACK_SIZE)
-    mul t2, s0, t1
+    # Stack = AZOS_SECONDARY_SP[hart_id]: the top of this CPU's boot stack
+    # in its per-CPU area (kernel/src/main.rs), written by the boot hart
+    # before it started us. 0 = no area (not a possible CPU): park.
+    la t0, AZOS_SECONDARY_SP
+    slli t2, s0, 3
     add t0, t0, t2
-    add sp, t0, t1
+    ld sp, 0(t0)
+    beqz sp, secondary_halt
 
     # Set trap vector — K-C16: this hart's OWN slot, not the generic vector.
     # Each slot carries its hart id in the word just below the entry point, so
@@ -159,17 +192,17 @@ _secondary_start:
     li t0, SSTATUS_SPP
     csrs sstatus, t0
 
-    # Call Rust smp_secondary_start(hart_id)
+    # Call Rust secondary_main(hart_id), the one secondary entry every ISA
+    # reaches (kernel/src/boot/smp.rs)
     mv a0, s0
-    call smp_secondary_start
+    call secondary_main
 
     wfi
     j secondary_halt
 
 .size _secondary_start, . - _secondary_start
 
-.extern secondary_stacks
-.extern _secondary_stack_size
+.extern AZOS_SECONDARY_SP
 .extern trap_hart_vectors
 .extern boot_hart_id
 

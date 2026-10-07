@@ -107,6 +107,22 @@ pub trait Cpu: Send + Sync {
     /// The counter's epoch is reset-time and comparing readings across a
     /// reboot is meaningless.
     fn now_ticks(&self) -> u64;
+
+    // ── Per-CPU base register (wave 15, NRCPUS) ─────────────────────────
+    //
+    // The register the kernel keeps per CPU and never lets ring 3 change
+    // under it: `tp` on riscv64 (rebuilt on every trap from U-mode),
+    // `TPIDR_EL1` on aarch64, the GS base on x86_64. What this kernel keeps
+    // there is the CPU id, the index of this CPU's slot in every per-CPU
+    // table (`azos_percpu`); a port that keeps an area pointer instead
+    // changes these two methods and `azos_percpu`'s accessor, nothing else.
+
+    /// The calling CPU's per-CPU base: today its CPU id, `0..NR_CPUS`.
+    fn percpu_base(&self) -> usize;
+
+    /// Set the calling CPU's per-CPU base. Boot and secondary bring-up only,
+    /// before anything reads it on this CPU.
+    fn set_percpu_base(&self, base: usize);
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -614,3 +630,10 @@ pub const fn arch_name(id: ArchId) -> &'static str {
 /// The ISA crates own the hooks; this is the ISA-neutral bookkeeping.
 #[cfg(feature = "lat-trace")]
 pub mod lat;
+
+// ──────────────────────────────────────────────────────────────────────────
+// Arch contract: ArchPlatform (ISA crates) and ArchEntry (kernel boot hooks)
+// ──────────────────────────────────────────────────────────────────────────
+
+mod contract;
+pub use contract::{ArchEntry, ArchPlatform};

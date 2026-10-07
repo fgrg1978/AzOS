@@ -3,9 +3,8 @@
 // Process management: ELF loader, exec, SRET to U-mode.
 // Phase 7 — enables kernel to launch RISC-V 64-bit ELF user programs.
 
-use azos_arch::mmu::PAGE_SIZE;
-#[cfg(target_arch = "riscv64")]
-use azos_arch::mmu::make_satp;
+use azos_arch::{ArchPlatform, ARCH};
+use azos_arch::PAGE_SIZE;
 use azos_arch_api::PagePerms;
 
 /// O3.2 (owner decision, PAN/SUM): one name for the RAII "I am about to
@@ -17,33 +16,16 @@ use azos_arch_api::PagePerms;
 /// module's copy_* routines — see [`copy_from_user`]'s own doc for why
 /// today's access (`phys_to_virt`) does not actually NEED it, and why the
 /// guard is placed here anyway.
-#[cfg(target_arch = "aarch64")]
-use azos_arch::sysregs::UserAccess;
-#[cfg(target_arch = "riscv64")]
-use azos_arch::csr::UserAccess;
 
 /// Encode the address-space-activation value this crate's `satp`/`task_satp`
-/// fields carry.
-///
-/// **RISC-V**: `azos_arch::mmu::make_satp` — a real Sv39 `satp` word
-/// (MODE|ASID|PPN), later written by `kernel/src/asm/context_switch.S`'s
-/// `csrw satp` on every task switch and by [`take_current_task_exec_ctx`]'s
-/// `csr::write_satp` below.
-///
-/// **aarch64**: there is no `satp`-shaped register to encode — the
-/// equivalent state is `TTBR0_EL1`, a bare physical table-base address with
-/// no MODE/ASID fields to pack in. `task_satp`/`ExecContext::satp` simply
-/// carry that PA verbatim; `entry/aarch64/asm/context_switch.S`'s per-task
-/// switch (`TASK_SATP_OFFSET`) and `trap_entry.S`'s exec-handoff switch both
-/// treat it as a raw `TTBR0_EL1` value already, `0` meaning "keep the
-/// kernel's own table" (see that file's long comment on why 0 cannot be a
-/// real root on this ISA). `_asid` is unused: this kernel flushes the whole
-/// TLB (`tlbi vmalle1`) on every address-space switch instead of tagging
-/// with ASIDs — see `context_switch.S`'s own note — so there is nothing to
-/// encode here.
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
-fn make_satp(root_pt_phys: usize, _asid: u16) -> usize {
-    root_pt_phys
+/// fields carry: the ISA's user-root word (`ArchPlatform::user_root_word`).
+/// riscv64: a real Sv39 `satp` word (MODE|ASID|PPN), later written by
+/// `context_switch.S`'s `csrw satp`. aarch64: the bare `TTBR0_EL1` table PA,
+/// `0` meaning "keep the kernel's own table"; the ASID is unused because the
+/// kernel flushes on every address-space switch.
+#[inline]
+fn make_satp(root_pt_phys: usize, asid: u16) -> usize {
+    ARCH.user_root_word(root_pt_phys, asid)
 }
 use azos_mm::{pmm, vmm, vdso};
 use azos_common::error::KernelError;
@@ -449,12 +431,9 @@ fn take_current_task_exec_ctx_slow() -> Option<ExecHandoff> {
     // the low half on this ISA, so an interrupt taken during the teardown
     // could walk the table being freed. `satp` is the new root's PA there (see
     // `make_satp`); the hand-off's later write of the same value is harmless.
-    #[cfg(target_arch = "riscv64")]
-    azos_arch::csr::write_satp(satp as usize); // includes sfence.vma
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    if satp != 0 {
-        azos_arch::sysregs::install_ttbr0_flush_local(satp as usize);
-    }
+    // riscv64: `csrw satp` + `sfence.vma`; aarch64: TTBR0_EL1 + local flush,
+    // skipped for a zero word (no root lives at PA 0 there).
+    ARCH.install_user_root_local(satp as usize);
     if old_pt != 0 {
         // A ring-3 task looping SYS_EXEC used to drain the PMM through the
         // success path — nothing ever freed the replaced address space.
@@ -657,32 +636,22 @@ pub(crate) fn image_page_range(hdr: &[u8]) -> Option<(usize, usize)> {
 ///   broadcast invalidate instead of `IC IVAU` per line, which on a
 ///   multi-page image costs more instructions and needs the user VA.
 pub(crate) fn sync_image_text(user_pt: usize, lo: usize, hi: usize) {
-    #[cfg(target_arch = "riscv64")]
-    {
-        let _ = (user_pt, lo, hi);
-        // SAFETY: memory and instruction-fetch fences only.
-        unsafe { core::arch::asm!("fence rw, rw", "fence.i", options(nostack, preserves_flags)) };
-        let _ = azos_arch::sbi::remote_fence_i(0, usize::MAX);
-    }
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    {
+    // `icache_needs_dcache_clean` is a constant per ISA (false on riscv64,
+    // whose `fence.i` needs no clean): the loop folds away there.
+    if ARCH.icache_needs_dcache_clean() {
         let mut va = lo;
         while va < hi {
             if let Some(pa) = vmm::translate_user(user_pt, va, false) {
                 if matches!(vmm::user_page(user_pt, va), vmm::UserPage::Leaf { exec: true }) {
                     let k = azos_mm::addr::phys_to_virt(pa & !(PAGE_SIZE - 1));
                     // SAFETY: a whole frame of RAM through the kernel's map.
-                    unsafe { azos_arch::cache::dcache_clean(k, PAGE_SIZE) };
+                    unsafe { ARCH.dcache_clean(k, PAGE_SIZE) };
                 }
             }
             va += PAGE_SIZE;
         }
-        azos_arch::cache::icache_invalidate_all();
     }
-    #[cfg(not(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none"))))]
-    {
-        let _ = (user_pt, lo, hi);
-    }
+    ARCH.icache_sync_all();
 }
 
 /// The loader behind [`load_elf`] and [`load_elf_hdr`]: `elf` is the whole
@@ -1238,7 +1207,7 @@ fn finish_user_space(user_pt: usize, e_entry: u64, brk_va: usize, mut frames: u3
 fn publish_user_root(satp: usize) {
     use azos_arch::csr;
     csr::write_sstatus(csr::read_sstatus() & !csr::SSTATUS_SIE);
-    azos_arch::tlb::publish(azos_arch::cpu::hart_id(), satp);
+    azos_arch::tlb::publish(azos_arch::Cpu::hart_id(&ARCH), satp);
 }
 
 /// Switch from kernel S-mode to user U-mode.  Never returns.
@@ -1332,6 +1301,13 @@ pub unsafe fn sret_to_user(entry: usize, user_sp: usize, satp: usize) -> ! {
         fn aarch64_enter_user(entry: u64, user_sp: u64, ttbr0: u64) -> !;
     }
     unsafe { aarch64_enter_user(entry as u64, user_sp as u64, satp as u64) }
+}
+
+/// x86_64 skeleton (and any further ISA): load the user CR3, swapgs, and
+/// `sysretq` (or `iretq`) to `entry` with RSP = `user_sp`.
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub unsafe fn sret_to_user(_entry: usize, _user_sp: usize, _satp: usize) -> ! {
+    todo!("x86_64: sret_to_user: mov cr3; swapgs; sysretq to ring 3")
 }
 
 /// SRET into user mode restoring a forked child's **complete** register file
@@ -1477,6 +1453,13 @@ pub unsafe fn sret_to_user_forked(entry: usize, satp: usize, regs: &crate::task:
     unsafe { aarch64_enter_user_forked(entry as u64, satp as u64, regs) }
 }
 
+/// x86_64 skeleton (and any further ISA): restore the forked child's
+/// registers from `regs` (rax = 0) and return to ring 3 through `iretq`.
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub unsafe fn sret_to_user_forked(_entry: usize, _satp: usize, _regs: &crate::task::UserRegs) -> ! {
+    todo!("x86_64: sret_to_user_forked: restore UserRegs, rax = 0, iretq")
+}
+
 // ── User-space memory access ──────────────────────────────────────────────────
 
 /// Copy `len` bytes FROM user virtual address `user_src` INTO kernel buffer `kernel_dst`.
@@ -1540,7 +1523,7 @@ pub fn copy_from_user(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool 
         // dereferences a raw user VA directly from silently succeeding
         // outside this narrow window.
         {
-            let _ua = UserAccess::enable();
+            let _ua = ARCH.user_access();
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     azos_mm::addr::phys_to_virt(pa) as *const u8,
@@ -1740,7 +1723,7 @@ pub fn copy_to_user(user_dst: usize, kernel_src: *const u8, len: usize) -> bool 
         let chunk = (PAGE_SIZE - (va & (PAGE_SIZE - 1))).min(len - done);
         // O3.2: see copy_from_user's own comment on this guard.
         {
-            let _ua = UserAccess::enable();
+            let _ua = ARCH.user_access();
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     kernel_src.add(done),
@@ -1796,7 +1779,7 @@ pub fn copy_cstr_from_user(dst: &mut [u8], user_ptr: usize) -> Option<usize> {
             // through its own mapping — identity on riscv64, upper half on
             // aarch64. O3.2 guard: see copy_from_user's own comment.
             let b = {
-                let _ua = UserAccess::enable();
+                let _ua = ARCH.user_access();
                 unsafe { *((azos_mm::addr::phys_to_virt(pa) + off) as *const u8) }
             };
             dst[len] = b;

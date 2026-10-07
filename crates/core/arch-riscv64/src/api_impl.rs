@@ -70,6 +70,18 @@ impl Cpu for Riscv64 {
         unsafe { core::arch::asm!("rdtime {}", out(reg) t, options(nomem, nostack)) };
         t
     }
+
+    #[inline(always)]
+    fn percpu_base(&self) -> usize {
+        let b: usize;
+        unsafe { core::arch::asm!("mv {}, tp", out(reg) b, options(nomem, nostack, preserves_flags)) };
+        b
+    }
+
+    #[inline(always)]
+    fn set_percpu_base(&self, base: usize) {
+        unsafe { core::arch::asm!("mv tp, {}", in(reg) base, options(nomem, nostack, preserves_flags)) };
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

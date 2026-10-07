@@ -8,28 +8,28 @@
 
 use crate::*;
 
-/// Write the magic word at the bottom of every interrupt-stack slot.
+/// Arm the boot hart's interrupt stack (its magic word and its entry in
+/// `AZOS_IRQ_STACK_BASE`).
 ///
-/// Called once by the boot hart before interrupts are enabled anywhere:
-/// the slots are shared out by hart id, and a secondary that takes its first
-/// timer before this ran would be checking an uninitialised word.
+/// Called once by the boot hart before interrupts are enabled anywhere. The
+/// secondaries' stacks live in their per-CPU areas and are armed by
+/// `boot::setup_per_cpu_areas`, before the secondaries are started: a
+/// secondary that took its first timer before its stack was armed would
+/// find no stack (`trap_entry.S` then stays on the interrupted one).
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn irq_stacks_arm() {
-    for hart in 0..MAX_HARTS {
-        unsafe {
-            let base = (&raw const irq_stacks).add(hart * IRQ_STACK_SIZE) as *mut u64;
-            base.write_volatile(IRQ_STACK_MAGIC);
-        }
-    }
+    use azos_arch::{Cpu, ARCH};
+    crate::boot::arm_irq_stack(ARCH.percpu_base(), crate::boot::boot_irq_stack_base());
 }
 
 /// Print, once per boot, whether an interrupt really is being handled on the
 /// hart's own interrupt stack.
 ///
-/// The switch is four instructions in `trap_entry.S` and it is easy to read
-/// the disassembly and believe it. This asserts it from inside a live handler
-/// instead: `sp` here belongs to whatever stack the handler is running on.
-/// `[IRQSTACK] FAILED:` is caught by the gate's global failure pattern.
+/// The switch is a handful of instructions in `trap_entry.S` and it is easy
+/// to read the disassembly and believe it. This asserts it from inside a live
+/// handler instead: `sp` here belongs to whatever stack the handler is
+/// running on. `[IRQSTACK] FAILED:` is caught by the gate's global failure
+/// pattern.
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn irq_stack_probe(hart: usize) {
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -37,23 +37,20 @@ pub(crate) fn irq_stack_probe(hart: usize) {
     if PROBED.swap(true, Ordering::AcqRel) || hart >= MAX_HARTS { return; }
     let sp: usize;
     unsafe { core::arch::asm!("mv {}, sp", out(reg) sp, options(nomem, nostack)) };
-    let base = unsafe { (&raw const irq_stacks).add(hart * IRQ_STACK_SIZE) } as usize;
-    if sp >= base && sp < base + IRQ_STACK_SIZE {
+    let base = crate::boot::irq_stack_base(hart);
+    if base != 0 && sp >= base && sp < base + IRQ_STACK_SIZE {
         kprintln!("[IRQSTACK] hart {} handles interrupts on its own stack", hart);
     } else {
         azos_drv_sys::kerr!("[IRQSTACK] FAILED: hart {} handled an interrupt at sp {:#x}, \
-                   outside its slot {:#x}..{:#x}", hart, sp, base, base + IRQ_STACK_SIZE);
+                   outside its stack {:#x}..{:#x}", hart, sp, base, base + IRQ_STACK_SIZE);
     }
 }
 
 /// True while this hart's interrupt stack still carries its magic word.
 #[cfg(target_arch = "riscv64")]
+#[inline]
 pub(crate) fn irq_stack_intact(hart: usize) -> bool {
-    if hart >= MAX_HARTS { return true; }
-    unsafe {
-        let base = (&raw const irq_stacks).add(hart * IRQ_STACK_SIZE) as *const u64;
-        base.read_volatile() == IRQ_STACK_MAGIC
-    }
+    crate::boot::irq_stack_magic_intact(hart)
 }
 
 /// Initialize trap handling: set stvec, sscratch, scounteren.
@@ -102,7 +99,7 @@ pub extern "C" fn trap_resched(frame: &mut TrapFrame) {
     // returns towards the `sret` (every path below).
     #[cfg(feature = "lat-trace")]
     let _lat_exit = lat_trace::IrqExit(core::panic::Location::caller());
-    let hart = azos_arch::cpu::hart_id() as usize;
+    let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize;
     if !irq_stack_intact(hart) {
         azos_drv_sys::uart::console_bypass_for_halt();
         azos_drv_sys::kerr!("[FATAL] Interrupt stack of hart {} overflowed its slot", hart);
@@ -110,7 +107,7 @@ pub extern "C" fn trap_resched(frame: &mut TrapFrame) {
         // machine does. A corrupted stack is not a state to keep driving in.
         #[cfg(feature = "domain-robot")]
         azos_robot::motor_cmd_publish(0, 0);
-        azos_arch::sbi::shutdown();
+        azos_arch::Boot::shutdown(&azos_arch::ARCH);
     }
     // U01-4 (audit, 2026-09-26): never call schedule() before sched::start()
     // has run on this hart. Early boot enables SIE_SEIE|SIE_SSIE long before
@@ -293,7 +290,7 @@ pub(crate) fn handle_interrupt(_frame: &mut TrapFrame, cause: usize) {
     //
     // The `exit` at every return is what keeps this honest, hence the single
     // wrapped body below rather than a bare `enter` here.
-    let hart_for_isr = azos_arch::cpu::hart_id() as usize;
+    let hart_for_isr = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize;
     azos_sync::isr_depth::enter(hart_for_isr);
     // Wave 15 (TRACE): the irq class, around the whole dispatch; the id is
     // the `scause` interrupt code (5 timer, 9 external, 1 software).
@@ -405,7 +402,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
 
             // M03: Schedule next timer at the nearest deadline (tickless).
             // Falls back to periodic tick if no tasks are sleeping on a timer.
-            let hart = azos_arch::cpu::hart_id();
+            let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
             azos_drv_sys::timebase::set_next_tick_smart(
                 hart as u32,
                 azos_sched::nearest_timer_deadline(),
@@ -426,7 +423,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
         }
         INT_EXTERNAL_S => {
             {
-                let hart = azos_arch::cpu::hart_id();
+                let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
                 let irq = azos_drv_irqchip::irqchip::claim(hart as u32);
                 if irq != 0 {
                     // A line a ring-3 driver bound is delivered
@@ -524,7 +521,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
             // wakes from `wfi()`, finds nothing has asked it to do anything,
             // and goes straight back to sleep with a runnable task sitting in
             // its own queue.
-            request_resched(azos_arch::cpu::hart_id() as usize);
+            request_resched(azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize);
         }
         _ => {
             // Avoid kprintln from ISR — it acquires the UART spinlock and

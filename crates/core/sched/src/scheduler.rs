@@ -71,7 +71,24 @@ use wcet_macro::wcet;
 /// The mirrored assert below is what keeps the two in step; `crates/core/sched`
 /// cannot see the kernel's constant, which is why it is asserted there rather
 /// than derived here.
-pub const MAX_CPUS: usize = 8;
+pub const MAX_CPUS: usize = azos_percpu::NR_CPUS;
+
+// The narrow places a CPU id is stored, each the reason the Kconfig `NR_CPUS`
+// range stops where it does: `Task::cpu_affinity` is an `i8` (-1 = any), the
+// online-prefix bookkeeping is one `u64` (`hart_set`), and the resident
+// histogram packs a CPU under `CPU_MASK` (asserted in its own file).
+const _: () = assert!(MAX_CPUS <= i8::MAX as usize + 1, "cpu_affinity is an i8");
+const _: () = assert!(MAX_CPUS <= crate::smp::hart_set::HART_MASK_BITS, "hart_set's liveness mask is a u64");
+
+/// One past the highest CPU this boot can run (`azos_percpu::nr_cpu_ids`, the
+/// DTB's count cut to `MAX_CPUS`). The bound of every walk over CPUs and of
+/// every clamp of a CPU id: a CPU at or past it has no per-CPU area, so no
+/// ready queue, and its slots in the `MAX_CPUS`-long static tables are never
+/// used. Possible CPUs are exactly `0..ncpu()` (`boot::discover_cpus`).
+#[inline(always)]
+pub(crate) fn ncpu() -> usize {
+    azos_percpu::nr_cpu_ids()
+}
 
 /// Pure O(`NUM_PRIORITIES`) resident-placement histogram (U02-3, task
 /// 3a), in its own file only so the host test runner
@@ -134,9 +151,9 @@ static HIST_KEY: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASK
 #[inline]
 fn resident_home(task: &Task) -> usize {
     if task.cpu_affinity >= 0 {
-        (task.cpu_affinity as usize).min(MAX_CPUS - 1)
+        (task.cpu_affinity as usize).min(ncpu() - 1)
     } else {
-        (task.context.tp as usize).min(MAX_CPUS - 1)
+        (task.context.tp as usize).min(ncpu() - 1)
     }
 }
 
@@ -508,29 +525,24 @@ static POOL_LOCK: AtomicBool = AtomicBool::new(false);
 /// (`boost_ready_task`) a per-field AMO does not make a multi-field
 /// mutation atomic anyway.
 ///
-/// **A side effect worth naming: `q.buf[head]` and `q.buf[tail]` are now
-/// provably in range on the write side too.** Every store to `head`/`tail`
-/// anywhere in this file is `(x + 1) % MAX_TASKS`, `k % MAX_TASKS`, `0`, or
-/// the initialiser — all below `MAX_TASKS`. A `Relaxed` atomic load is
-/// guaranteed to return *some value that was actually stored*, so a raced
-/// read of either field is still below `MAX_TASKS` and the index cannot
-/// panic. A plain racing load had no such guarantee — it had no value at all
-/// to reason about, which is precisely why the ISR-side walk needs
-/// `ring_walk_bounds` and why the write side had only the queue invariant
-/// standing between it and an indexing panic under `panic = "abort"`.
-struct PrioQueue {
-    buf:   [AtomicUsize; MAX_TASKS],
-    head:  AtomicUsize,
-    tail:  AtomicUsize,
-    count: AtomicUsize,
-}
+/// **Lists, not rings** (wave 15, NRCPUS-FLEET-AREA): see `ready_list`. The
+/// queues were `MAX_TASKS`-slot rings, 32 per CPU; they are now intrusive
+/// lists threaded through [`RQ_NEXT`], one link per task slot for every queue
+/// of every CPU, so a CPU's 32 queues are 512 bytes in every profile instead
+/// of 32 x `MAX_TASKS` words (1 MiB a CPU at fleet's 4096 tasks). A walk is
+/// bounded by `count` and by `MAX_TASKS` and stops at an out-of-range link,
+/// which is what keeps a raced read (the audit) from looping or panicking.
+pub(crate) type PrioQueue = crate::ready_list::ReadyList;
 
-const EMPTY_PRIO_QUEUE: PrioQueue = PrioQueue {
-    buf:   [const { AtomicUsize::new(0) }; MAX_TASKS],
-    head:  AtomicUsize::new(0),
-    tail:  AtomicUsize::new(0),
-    count: AtomicUsize::new(0),
-};
+/// The ready-queue links: `RQ_NEXT[i]` is the successor of slot `i` in
+/// whichever ready queue holds it (a list ends at its count, not at a link). One table for every queue of
+/// every CPU, because a slot is in at most one queue at a time (the `queued`
+/// claim, K-C12). Written under the owning CPU's lock. `MAX_TASKS` x 4 B,
+/// static: it is sized by the task table, not by the CPUs.
+pub(crate) static RQ_NEXT: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
+
+// Slots are stored as `u32` and read sign-extended (`ready_list::rd`).
+const _: () = assert!(MAX_TASKS < i32::MAX as usize, "ready-list links are u32 slots, read sign-extended");
 
 /// Per-CPU scheduling state with 32-level priority queue.
 ///
@@ -695,8 +707,23 @@ static mut PER_CPU: [PerCpuSched; MAX_CPUS] = [const { EMPTY_CPU }; MAX_CPUS];
 /// or `PER_CPU[cpu].ready_queues[prio]`, so the two arrays read exactly like
 /// one did before, and re-merging them would undo the point of the split
 /// for no gain.
-static mut PER_CPU_QUEUES: [[PrioQueue; NUM_PRIORITIES]; MAX_CPUS] =
-    [const { [const { EMPTY_PRIO_QUEUE }; NUM_PRIORITIES] }; MAX_CPUS];
+///
+/// **In the per-CPU areas** (wave 15, NRCPUS): `NUM_PRIORITIES` list heads
+/// of 16 bytes per CPU, the same in every profile (the links are in
+/// [`RQ_NEXT`]). Allocated at boot for the possible CPUs only (all-zero is the
+/// empty list) and reached through [`cpu_queues`].
+pub(crate) static PER_CPU_QUEUES: azos_percpu::PerCpu<[PrioQueue; NUM_PRIORITIES]> =
+    // SAFETY: a `ReadyList` is atomics only; all-zero is the empty list.
+    unsafe { azos_percpu::PerCpu::zeroed() };
+
+/// `cpu`'s ready queues, in its per-CPU area. `cpu` must be below [`ncpu`]
+/// (a CPU past it holds `azos_percpu::POISON`, and the access faults there).
+#[inline(always)]
+pub(crate) fn cpu_queues(cpu: usize) -> &'static [PrioQueue; NUM_PRIORITIES] {
+    // SAFETY: attached at boot, before any task exists, for every CPU below
+    // `ncpu()`, and never freed; a `PrioQueue` is atomics, shared by `&`.
+    unsafe { &*PER_CPU_QUEUES.ptr(cpu) }
+}
 
 /// Per-CPU spinlocks for ready queue access.
 ///
@@ -907,8 +934,8 @@ unsafe fn cpu_enqueue(cpu: usize, idx: usize) -> bool {
     // atomic field cannot be kept in a register across `enqueue_decision`, so
     // re-reading it there would cost an extra `ld` on the hot path for a
     // value the lock guarantees has not changed.
-    let q = &PER_CPU_QUEUES[cpu][prio];
-    let count = q.count.load(Ordering::Relaxed);
+    let q = &cpu_queues(cpu)[prio];
+    let count = q.count();
 
     match enqueue_decision(already, count, MAX_TASKS) {
         // Still queued (elsewhere, or by the hart that won the swap) — leave
@@ -953,13 +980,9 @@ unsafe fn cpu_enqueue(cpu: usize, idx: usize) -> bool {
             // very same bytes from another hart's timer ISR — and that half of
             // the UB survives converting the fields. Interior mutability
             // through the atomics is what removes it.
-            let tail = q.tail.load(Ordering::Relaxed);
-            q.buf[tail].store(idx, Ordering::Relaxed);
-            q.tail.store((tail + 1) % MAX_TASKS, Ordering::Relaxed);
-            // `count` was loaded above under the same lock; +1 without a
-            // second load, and plain `store` rather than `fetch_add` so no
-            // AMO reaches the write path.
-            q.count.store(count + 1, Ordering::Relaxed);
+            // `count` was loaded above under the same lock and is passed on,
+            // so the list does not load it twice; plain stores, no AMO.
+            q.push_back(&RQ_NEXT, idx, count);
             let bm = &PER_CPU[cpu].ready_bitmap;
             bm.store(bm.load(Ordering::Relaxed) | (1 << prio), Ordering::Relaxed);
             true
@@ -994,8 +1017,8 @@ unsafe fn cpu_dequeue(cpu: usize) -> Option<usize> {
     // `&`, not `&mut`: the audit holds a shared reference to these same bytes
     // from another hart's timer ISR, so a `&mut` here is an aliasing
     // violation regardless of what the fields' types are.
-    let q = &PER_CPU_QUEUES[cpu][prio];
-    let count = q.count.load(Ordering::Relaxed);
+    let q = &cpu_queues(cpu)[prio];
+    let count = q.count();
     if count == 0 {
         // Bitmap says occupied, ring says empty: they disagree. `count -= 1`
         // here would underflow, and `overflow-checks = true` turns that into
@@ -1003,11 +1026,13 @@ unsafe fn cpu_dequeue(cpu: usize) -> Option<usize> {
         bm.store(bitmap & !(1 << prio), Ordering::Relaxed);
         return None;
     }
-    let head = q.head.load(Ordering::Relaxed);
-    let idx = q.buf[head].load(Ordering::Relaxed);
-    q.head.store((head + 1) % MAX_TASKS, Ordering::Relaxed);
+    let Some(idx) = q.pop_front(&RQ_NEXT, count) else {
+        // A head link out of range: the list reset itself to empty. Same
+        // answer as the count/bitmap disagreement above.
+        bm.store(bitmap & !(1 << prio), Ordering::Relaxed);
+        return None;
+    };
     let count = count - 1;
-    q.count.store(count, Ordering::Relaxed);
     if count == 0 {
         // `bitmap`, not a second load. Re-reading an atomic the compiler is no
         // longer free to keep in a register is the one way this conversion
@@ -1358,6 +1383,10 @@ static PREV_CLAIM_NO_ENTRY: [core::sync::atomic::AtomicU64; SLOT_WORDS] =
 /// makes the increment unable to overflow; `wrapping_add` on top means the
 /// no-panic property can be seen locally without having to trust the clamp
 /// (`crate::task::ring_walk_bounds`, host-tested against `usize::MAX`).
+/// (Wave 15: the queues are lists now; the walk is `ReadyList::iter`, bounded
+/// by `count` and `MAX_TASKS`, every link range-checked before it is used, no
+/// arithmetic on a raced value — the same no-panic property, host-tested in
+/// `sched-wake-tests` against garbage links.)
 /// Garbage samples still enter the result, and that is fine — absorbing them is
 /// exactly what the two-sample `persistent` filter is for.
 ///
@@ -1438,30 +1467,28 @@ pub fn ring_claim_audit() -> (u32, u32, u32, u32) {
     let mut present = slot_bitmap::SlotBitmap::<SLOT_WORDS>::new();
     let mut dup: u32 = 0;
     unsafe {
-        for cpu in 0..MAX_CPUS {
+        for cpu in 0..ncpu() {
+            // This walk runs from the timer ISR (`ipc-census`), and the first
+            // tick can land before `setup_per_cpu_areas`: interrupts are on
+            // from "[IRQ] Traps + interrupts active", the areas come after.
+            // A CPU with no area yet holds POISON (gate, wave 15 integration:
+            // `mem quota: refusals>0 (N)` took a kernel load fault at
+            // 0xdeadc0de00000000 on its first census dump). Skip it, as
+            // `azos_trace` does for its producers.
+            if !PER_CPU_QUEUES.attached(cpu) {
+                continue;
+            }
             for prio in 0..NUM_PRIORITIES {
-                let q = &PER_CPU_QUEUES[cpu][prio];
-                // Once each, and never trusted: `count` is clamped to the ring
-                // size so the walk terminates, `head` is reduced into range so
-                // the cursor starts valid. `Relaxed` because we want the load
-                // to be *legal*, not ordered — there is nothing here to order
-                // it against.
-                let raw_count = q.count.load(Ordering::Relaxed);
-                let raw_head  = q.head.load(Ordering::Relaxed);
-                // The clamp is `crate::task::ring_walk_bounds`, host-tested
-                // against adversarial inputs (`usize::MAX` included), so the
-                // no-panic property is proved rather than sampled.
-                let (mut h, mut remaining) =
-                    crate::task::ring_walk_bounds(raw_head, raw_count, MAX_TASKS);
-                while remaining > 0 {
-                    // `h` is in range by construction, so this index cannot go
-                    // out of bounds however the entry itself races.
-                    let idx = q.buf[h].load(Ordering::Relaxed);
+                let q = &cpu_queues(cpu)[prio];
+                // Without the lock (see `PrioQueue`): the walk is bounded by
+                // `count` and `MAX_TASKS` and stops at an out-of-range link, so
+                // a raced list ends the walk early or shows a stale slot — the
+                // same torn-sample shape the ring's racy reads had, absorbed
+                // the same way (two-sample filter for missing entries).
+                for idx in q.iter(&RQ_NEXT) {
                     if idx < MAX_TASKS && present.insert(idx) {
                         dup += 1;
                     }
-                    h = h.wrapping_add(1) % MAX_TASKS;
-                    remaining -= 1;
                 }
             }
         }
@@ -1635,9 +1662,9 @@ unsafe fn find_best_cpu_scan(prio: u32, exclude: usize, num_online: usize) -> [C
             continue;
         }
         let home = if t.cpu_affinity >= 0 {
-            (t.cpu_affinity as usize).min(MAX_CPUS - 1)
+            (t.cpu_affinity as usize).min(ncpu() - 1)
         } else {
-            (t.context.tp as usize).min(MAX_CPUS - 1)
+            (t.context.tp as usize).min(ncpu() - 1)
         };
         if home >= num_online {
             continue;
@@ -1835,7 +1862,7 @@ unsafe fn pick_target_cpu(affinity: i8, prio: u32, exclude: usize) -> usize {
         // K-A13: clamp — an out-of-range affinity (a bad literal at a call
         // site; not reachable from userspace today) must not index
         // CPU_LOCKS/PER_CPU out of bounds and panic.
-        (affinity as usize).min(MAX_CPUS - 1)
+        (affinity as usize).min(ncpu() - 1)
     } else {
         find_best_cpu(prio, exclude)
     }
@@ -1923,7 +1950,7 @@ pub fn use_aps_dispatch(enable: bool) -> bool {
 #[cfg(feature = "sched-aps")]
 fn aps_seed_current_classes() {
     unsafe {
-        for cpu in 0..MAX_CPUS {
+        for cpu in 0..ncpu() {
             let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
             if idx >= MAX_TASKS {
                 let _ = crate::aps_state::with_cpu(cpu, |state| state.aps.set_idle());
@@ -2255,6 +2282,25 @@ pub fn task_create_affinity(
     priority: u32,
     affinity: i8,
 ) -> usize {
+    // A pin to a CPU this boot does not have (at or past `nr_cpu_ids`: the
+    // DTB named fewer CPUs, or the Kconfig ceiling NR_CPUS cut them) has no
+    // ready queue to go to — that CPU has no per-CPU area. Re-pin it, loudly,
+    // where `rebalance_from_offline_cpus` used to after the fact, when every
+    // CPU of the ceiling still had a static queue. The pin is rewritten, not
+    // just clamped at each use: a pin that names another CPU than the one
+    // the task runs on refuses the IPC direct switch (`ipc_direct::allowed`),
+    // which cost the ipc-roundtrip lane 16 % when only the uses were clamped.
+    let affinity = if affinity >= 0 && affinity as usize >= ncpu() {
+        // SAFETY: a racy load scan, as at every other call site.
+        let to = unsafe { find_best_cpu(priority, MAX_TASKS) }.min(ncpu() - 1);
+        azos_drv_sys::kwarn!(
+            "[SMP] task '{}' pinned to CPU {}, which this boot does not have (nr_cpu_ids {}) — pinned to CPU {} instead",
+            name, affinity, ncpu(), to
+        );
+        to as i8
+    } else {
+        affinity
+    };
     // `bench-minimal`: boot only what the measurement needs.
     //
     // **WHY this exists.** Comparing this kernel against Linux under the same
@@ -3082,6 +3128,9 @@ unsafe fn release_address_space_at_exit(idx: usize) {
         return; // a kernel task: nothing to release, nothing to switch
     }
 
+    // arch-only: aarch64's device-only low-half root (TTBR0); riscv64 and an
+    // x86_64 port keep the kernel in every user table and switch to the
+    // kernel task's own root below.
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     let kernel_root = {
         unsafe extern "C" {
@@ -3118,6 +3167,10 @@ unsafe fn release_address_space_at_exit(idx: usize) {
     azos_arch::sysregs::install_ttbr0_flush_local(kernel_root as usize);
     #[cfg(all(target_arch = "aarch64", target_os = "none", feature = "exit-satp-canary"))]
     let _ = kernel_root;
+    // Any other ISA (the x86_64 skeleton): the contract's local root install
+    // (riscv64's arm above is that same call: `write_satp`).
+    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64")), not(feature = "exit-satp-canary")))]
+    azos_arch::ArchPlatform::install_user_root_local(&azos_arch::ARCH, task.task_satp as usize);
 
     // Step 3.
     EXIT_TEARDOWNS.fetch_add(1, Ordering::Relaxed);
@@ -3256,6 +3309,8 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
     // (K-C22(B)).
     {
         let task = task_mut(idx);
+        // arch-only: aarch64's device-only low-half root (see
+        // release_address_space_at_exit).
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]
         let kernel_root = {
             unsafe extern "C" {
@@ -3273,6 +3328,8 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
         if kernel_root != 0 {
             azos_arch::sysregs::install_ttbr0_flush_local(kernel_root as usize);
         }
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        azos_arch::ArchPlatform::install_user_root_local(&azos_arch::ARCH, task.task_satp as usize);
     }
     let _ = crate::group::member_gone(lead, tid);
     wake_task_by_tid(lead, &|r| matches!(r, WaitReason::Timer(_)));
@@ -3286,7 +3343,7 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
     do_schedule(cpu, SwitchReason::Voluntary);
     loop {
         azos_arch::ARCH.enable_all();
-        azos_arch::cpu::wfi();
+        azos_arch::Cpu::wfi(&azos_arch::ARCH);
     }
 }
 
@@ -3476,7 +3533,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
     // No tasks remaining — idle until timer brings more work.
     loop {
         azos_arch::ARCH.enable_all();
-        azos_arch::cpu::wfi();
+        azos_arch::Cpu::wfi(&azos_arch::ARCH);
         // Timer interrupt → schedule() → do_schedule() → may context-switch away.
         // If not, we just loop again.
     }
@@ -3757,7 +3814,7 @@ pub fn start() -> ! {
 ///
 /// # Why the *destination* side still goes through the locked wrappers
 ///
-/// A hart that *did* start runs `smp_secondary_start()` immediately and
+/// A hart that *did* start runs `secondary_main()` immediately and
 /// independently of how far the boot hart has gotten through the rest of
 /// `kernel_main` — it enables its own local timer right there and will call
 /// `schedule()` on its first tick, which can land before the boot hart
@@ -3794,7 +3851,8 @@ pub fn start() -> ! {
 /// No work-stealing is added at runtime — this is a one-shot rescue that
 /// only ever runs during this boot-time window.
 pub fn rebalance_from_offline_cpus(online: usize, _total: usize) -> usize {
-    // **Sweep up to `MAX_CPUS`, not up to the DTB count.**
+    // **Sweep up to `nr_cpu_ids`, not up to the DTB count.** (Every CPU
+    // below it has a queue; a pin past it was cut to it at creation.)
     //
     // This function used to take `total` (the harts the DTB said exist) and
     // drained only `online..total`. That looks reasonable and strands tasks:
@@ -3812,7 +3870,7 @@ pub fn rebalance_from_offline_cpus(online: usize, _total: usize) -> usize {
     // Every queue above `online` must be drained, whether the task got there
     // by load balancing or by an explicit pin. `total` is kept in the
     // signature for caller compatibility and is deliberately unused.
-    let total = MAX_CPUS;
+    let total = ncpu();
     if online == 0 || online >= total {
         return 0; // Nothing offline, or nothing online to rescue onto.
     }
@@ -5006,6 +5064,7 @@ unsafe fn reap_zombie_on_switch(old_idx: usize) {
     // output must not change either way (this task's own
     // constraint) — riscv64 already proves this same path via its
     // own scenarios' exit-code checks.
+    // arch-only: an aarch64 bring-up trace line.
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     azos_drv_sys::kprintln!(
         "[SCHED] aarch64 reaped tid={} slot={}", old.tid, old_idx);
@@ -5031,6 +5090,7 @@ unsafe fn reap_zombie_on_switch(old_idx: usize) {
     // still fires reliably without needing every secondary to
     // also run the alias setup (out of scope for this wave — see
     // `enable_ttbr1_alias`'s own doc).
+    // arch-only: the TTBR1 split proof; no other ISA splits its tables so.
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     if crate::smp::current_cpu_id() == 0 {
         static CHECKED: AtomicBool = AtomicBool::new(false);
@@ -5812,6 +5872,8 @@ pub fn current_user_pt() -> usize {
     let cpu = current_cpu_id();
     unsafe {
         let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+        #[cfg(feature = "cpuid-probe")]
+        crate::cpuid_probe::note_accessor(cpu);
         if idx == usize::MAX { 0 } else { TASKS[idx].user_pt as usize }
     }
 }
@@ -6273,7 +6335,7 @@ pub fn set_current_sched_params(priority: u32, class_raw: u8) -> u32 {
             before = task.base_priority.load(Ordering::Relaxed);
             #[cfg(feature = "sched-aps")]
             if task.sched_class_raw != class_raw {
-                for c in 0..MAX_CPUS {
+                for c in 0..ncpu() {
                     crate::aps_state::dequeue_task_for_class(c, task.tid, task.sched_class_raw);
                 }
             }
@@ -6752,26 +6814,12 @@ impl crate::donation::DonationCell for TaskDonation {
 unsafe fn cpu_remove(cpu: usize, idx: usize) -> bool {
     let prio = prio_bucket(task_mut(idx).priority.load(Ordering::Relaxed));
     // `&`, not `&mut` — see `cpu_dequeue`.
-    let q = &PER_CPU_QUEUES[cpu][prio];
-    // Hoisted deliberately. The plain-field version wrote `q.head` inside the
-    // loop condition and the compiler kept it in a register; an atomic field
-    // must be re-loaded at every use unless the load is lifted out by hand, so
-    // leaving it inline would cost `n` extra `ld` instructions on a path that
-    // is already O(bucket length). Same for `count`.
-    let head = q.head.load(Ordering::Relaxed);
-    // Clamped: `tmp` below holds MAX_TASKS entries, so a `count` that ever
-    // exceeded the ring would index it out of bounds — a panic, i.e. a board
-    // reset. The K-C12 `queued` invariant makes that unreachable; the clamp
-    // is what keeps "unreachable" from meaning "resets the robot".
-    let n = q.count.load(Ordering::Relaxed).min(MAX_TASKS);
-    // In place (`ready_ring`): a scratch copy of the bucket would be
-    // `MAX_TASKS` words on the caller's stack, 32 KiB on the fleet profile
-    // against a 16 KiB kernel stack.
-    let removed = crate::ready_ring::remove_in_place(&q.buf, head, n, idx);
+    let q = &cpu_queues(cpu)[prio];
+    // O(position): the list is walked from its head, under the lock, for at
+    // most `count` (and at most `MAX_TASKS`) links. No scratch copy.
+    let removed = q.remove(&RQ_NEXT, idx);
     let found = removed.is_some();
     if let Some(k) = removed {
-        q.tail.store((head + k) % MAX_TASKS, Ordering::Relaxed);
-        q.count.store(k, Ordering::Relaxed);
         if k == 0 {
             let bm = &PER_CPU[cpu].ready_bitmap;
             bm.store(bm.load(Ordering::Relaxed) & !(1 << prio), Ordering::Relaxed);
@@ -6812,7 +6860,7 @@ unsafe fn cpu_remove(cpu: usize, idx: usize) -> bool {
 /// `LEASES` guard before the priority-inheritance block, which is what keeps
 /// this from becoming the first edge in a lock graph that has none.
 unsafe fn cpu_remove_anywhere(idx: usize) -> Option<usize> {
-    for cpu in 0..MAX_CPUS {
+    for cpu in 0..ncpu() {
         let _g = CpuLockGuard::acquire(cpu);
         if cpu_remove(cpu, idx) {
             return Some(cpu);
@@ -7007,9 +7055,9 @@ pub fn task_census() -> (u32, u32, u32, [u32; MAX_CPUS], u32, u32, [u32; 5]) {
                     ready += 1;
                     if !t.queued.load(Ordering::Acquire) { ready_unqueued += 1; }
                     let c = if t.cpu_affinity >= 0 {
-                        (t.cpu_affinity as usize).min(MAX_CPUS - 1)
+                        (t.cpu_affinity as usize).min(ncpu() - 1)
                     } else {
-                        (t.context.tp as usize).min(MAX_CPUS - 1)
+                        (t.context.tp as usize).min(ncpu() - 1)
                     };
                     per_cpu[c] += 1;
                 }
@@ -7762,7 +7810,7 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
 unsafe fn wake_target_cpu(idx: usize, task: &Task) -> usize {
     match azos_energy::seams::PLACEMENT {
         azos_energy::Placement::Legacy => if task.cpu_affinity >= 0 {
-            (task.cpu_affinity as usize).min(MAX_CPUS - 1)
+            (task.cpu_affinity as usize).min(ncpu() - 1)
         } else {
             // K-C12: "emptiest hart" is not the same question as "hart that will
             // dispatch this task". A woken task parked behind permanently
@@ -7770,7 +7818,7 @@ unsafe fn wake_target_cpu(idx: usize, task: &Task) -> usize {
             // defect K-C14 half-fixed by moving off the hardcoded CPU 0.
             // Approximate and unlocked, like the metric it replaces: a stale
             // sample costs one suboptimal placement, never correctness.
-            find_best_cpu(task.priority.load(Ordering::Relaxed), idx).min(MAX_CPUS - 1)
+            find_best_cpu(task.priority.load(Ordering::Relaxed), idx).min(ncpu() - 1)
         },
     }
 }
@@ -7850,9 +7898,9 @@ unsafe fn outranked_on(cpu: usize, prio: u32, a: usize, b: usize) -> bool {
         }
         let t = &*core::ptr::addr_of!(TASKS[i]);
         let home = if t.cpu_affinity >= 0 {
-            (t.cpu_affinity as usize).min(MAX_CPUS - 1)
+            (t.cpu_affinity as usize).min(ncpu() - 1)
         } else {
-            (t.context.tp as usize).min(MAX_CPUS - 1)
+            (t.context.tp as usize).min(ncpu() - 1)
         };
         if home != cpu || !crate::task::resident_competes(t.state()) {
             continue;
@@ -8204,7 +8252,7 @@ static SCHED_ENQ_REFUSED: core::sync::atomic::AtomicU32 = core::sync::atomic::At
 /// the ipc-census family.
 pub fn current_snapshot(out: &mut [(u32, u32, [u8; 8]); MAX_CPUS]) {
     unsafe {
-        for cpu in 0..MAX_CPUS {
+        for cpu in 0..ncpu() {
             let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
             out[cpu] = if idx < MAX_TASKS && TASK_VALID[idx].load(Ordering::Relaxed) {
                 let t = task_ref(idx);
@@ -8563,7 +8611,7 @@ unsafe fn reap_one(i: usize) -> Reap {
             // by first leaving Blocked (dispatch CAS → our CAS fails), so
             // checking currency before the CAS closes the ABA.
             let mut is_current = false;
-            for cpu in 0..MAX_CPUS {
+            for cpu in 0..ncpu() {
                 if PER_CPU[cpu].current_idx.load(Ordering::Relaxed) == i {
                     is_current = true;
                     break;
@@ -8710,13 +8758,9 @@ pub static KC24_RESCUE_KICKS: AtomicU32 = AtomicU32::new(0);
 /// rings for a remote hart). Also valid for the calling hart: the interrupt
 /// stays pending until it is taken, whatever runs next.
 fn kick_hart(cpu: usize) {
-    #[cfg(target_arch = "riscv64")]
-    let _ = azos_arch::sbi::send_ipi(1, cpu);
-    #[cfg(not(target_arch = "riscv64"))]
-    {
-        use azos_arch::Interrupts;
-        azos_arch::ARCH.send_ipi(cpu);
-    }
+    // riscv64: SBI IPI to `cpu` (its error code ignored, as before);
+    // aarch64: SGI 0.
+    azos_arch::Interrupts::send_ipi(&azos_arch::ARCH, cpu);
 }
 
 /// Times [`ipc_wake_then_block`] switched directly (census builds only).
@@ -9101,7 +9145,7 @@ fn nearest_timer_deadline_sweep() -> Option<u64> {
 ///   popped-and-forgotten entry would also vanish from
 ///   `nearest_timer_deadline`, letting a tickless hart sleep past it (a
 ///   `-smp 4` census boot without the re-arm counted 333 such sleepers).
-///   The re-arm reads the deadline under the lock (`rearm_if_sleeping`).
+///   The re-arm reads the deadline under the lock (`timer_heap::wake_due`).
 ///   It used to arm a deadline read before the lock was taken; between
 ///   that read and the arm, the stamped sleeper could be dispatched, run,
 ///   block again on a later timer and arm it, and the re-arm then
@@ -9173,12 +9217,6 @@ pub mod timer_sleepers {
         Guard::acquire().heap().arm(idx, deadline);
     }
 
-    /// Entries currently armed (live or stale).
-    #[inline]
-    pub(super) fn len() -> usize {
-        Guard::acquire().heap().len()
-    }
-
     /// The deadline `slot` still sleeps on, if it is `Blocked` on a timer.
     #[inline]
     pub(super) fn still_sleeping(slot: usize) -> Option<u64> {
@@ -9201,28 +9239,6 @@ pub mod timer_sleepers {
     #[allow(dead_code)]
     pub(super) fn cancel(idx: usize) {
         Guard::acquire().heap().cancel(idx);
-    }
-
-    /// Pop up to `out.len()` entries due at `now`, returning how many.
-    #[inline]
-    pub(super) fn pop_due(now: u64, out: &mut [usize]) -> usize {
-        let mut g = Guard::acquire();
-        let h = g.heap();
-        let mut n = 0;
-        while n < out.len() {
-            match h.pop_due(now) {
-                Some((_, slot)) => {
-                    #[cfg(feature = "ipc-census")]
-                    INFLIGHT[slot].fetch_add(1, Ordering::Relaxed);
-                    #[cfg(feature = "ipc-census")]
-                    POPS[slot].fetch_add(1, Ordering::Relaxed);
-                    out[n] = slot;
-                    n += 1;
-                }
-                None => break,
-            }
-        }
-        n
     }
 
     /// `ipc-census`: per slot, ticks that popped it and are not yet
@@ -9257,17 +9273,38 @@ pub mod timer_sleepers {
         Guard::acquire().heap().peek_live(still_sleeping)
     }
 
-    /// The tick's retry re-arm for a popped slot that is still asleep on a
-    /// timer. The deadline is read under `LOCK`, never carried over from a
-    /// read made before it: `block_current` arms after its commit and under
-    /// `LOCK`, so a read made here either sees that commit (and arms the
-    /// same deadline) or precedes it (and is overwritten by its arm). A
-    /// deadline read before taking the lock could be older than an arm that
-    /// completed in between, and would overwrite it — see the module doc.
-    pub(super) fn rearm_if_sleeping(slot: usize) {
-        let mut g = Guard::acquire();
-        if let Some(d) = still_sleeping(slot) {
-            g.heap().arm(slot, d);
+    /// The live heap and task table as `timer_heap::wake_due` sees them.
+    pub(super) struct Due;
+
+    impl crate::timer_heap::DueSleepers<MAX_TASKS> for Due {
+        #[inline]
+        fn locked<R>(&self, f: impl FnOnce(&mut TimerHeap<MAX_TASKS>) -> R) -> R {
+            f(Guard::acquire().heap())
+        }
+
+        #[inline]
+        fn live(&self, slot: usize) -> Option<u64> {
+            still_sleeping(slot)
+        }
+
+        #[inline]
+        fn wake(&self, slot: usize, now: u64) {
+            super::try_wake_task(slot, &|r: &WaitReason| {
+                matches!(r, WaitReason::Timer(d) if now >= *d)
+            });
+        }
+
+        #[cfg(feature = "ipc-census")]
+        #[inline]
+        fn popped(&self, slot: usize) {
+            INFLIGHT[slot].fetch_add(1, Ordering::Relaxed);
+            POPS[slot].fetch_add(1, Ordering::Relaxed);
+        }
+
+        #[cfg(feature = "ipc-census")]
+        #[inline]
+        fn landed(&self, slot: usize) {
+            landed(slot);
         }
     }
 
@@ -9590,7 +9627,7 @@ pub mod timer_sleepers {
         if t.context_saving.load(Ordering::Acquire) {
             return SleeperWhy::Saving;
         }
-        let current = (0..super::MAX_CPUS)
+        let current = (0..super::ncpu())
             .any(|c| unsafe { super::PER_CPU[c].current_idx.load(Ordering::Relaxed) } == i);
         if current {
             SleeperWhy::Current
@@ -9602,42 +9639,18 @@ pub mod timer_sleepers {
     }
 }
 
-/// `wait::wake_expired_timers` with `sched-timer-heap`: pop the due
-/// entries in batches (the lock is never held across a wake — wakes take
-/// `CPU_LOCKS`), wake each with the sweep's own predicate.
+/// `wait::wake_expired_timers` with `sched-timer-heap`: the pure pass
+/// `timer_heap::wake_due` (batches of `SCHED_TIMER_WAKE_BATCH`, the lock
+/// never held across a wake, the retry re-armed with a deadline read under
+/// the lock) over the live heap, waking each popped slot with the sweep's
+/// own predicate. The host runner drives the same pass under a model of
+/// another hart (`timer_heap`'s `wake_due_*` tests).
 #[cfg(feature = "sched-timer-heap")]
 pub(crate) fn wake_expired_timers_heap(now_ticks: u64) {
-    const BATCH: usize = 8;
-    let pred = |r: &WaitReason| matches!(r, WaitReason::Timer(d) if now_ticks >= *d);
-    let mut batch = [0usize; BATCH];
-    // Each entry present at entry is popped at most about once per call:
-    // a re-armed retry can come round again only while this lasts.
-    let mut budget = timer_sleepers::len();
-    while budget > 0 {
-        let n = timer_sleepers::pop_due(now_ticks, &mut batch[..budget.min(BATCH)]);
-        budget -= n;
-        let mut retry = [0usize; BATCH];
-        let mut r = 0;
-        for &slot in &batch[..n] {
-            try_wake_task(slot, &pred);
-            // Only a filter: the deadline re-armed is re-read under the
-            // lock (`rearm_if_sleeping`), not this one.
-            if timer_sleepers::still_sleeping(slot).is_some() {
-                retry[r] = slot;
-                r += 1;
-            }
-        }
-        for &slot in &retry[..r] {
-            timer_sleepers::rearm_if_sleeping(slot);
-        }
-        #[cfg(feature = "ipc-census")]
-        for &slot in &batch[..n] {
-            timer_sleepers::landed(slot);
-        }
-        if n < BATCH {
-            break;
-        }
-    }
+    crate::timer_heap::wake_due::<MAX_TASKS, { azos_limits::SCHED_TIMER_WAKE_BATCH }, _>(
+        &timer_sleepers::Due,
+        now_ticks,
+    );
     #[cfg(feature = "ipc-census")]
     timer_sleepers::check_tick(now_ticks);
 }
@@ -9676,7 +9689,7 @@ unsafe fn task_ref(idx: usize) -> &'static Task {
 //      `block_current` both clear SIE to avoid.
 //
 //   (4, not in the original charge sheet: it indexed `[AtomicI32; MAX_CPUS]`
-//   with `hart.min(MAX_CPUS - 1)`. `MAX_CPUS` is 4, `MAX_HARTS` is 8, so
+//   with `hart.min(ncpu() - 1)`. `MAX_CPUS` is 4, `MAX_HARTS` is 8, so
 //   harts 3..7 all shared slot 3 — a lock on hart 5 would have disabled
 //   preemption on hart 3.)
 

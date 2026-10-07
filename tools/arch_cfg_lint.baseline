@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# tools/arch_cfg_lint.py ratchet: uncovered cfg(target_arch) sites per file.
+# Counts may only go down. Regenerate with --update-baseline.
+5	domains/robot/safety-core/src/txn.rs
+4	kernel/src/boot/seams.rs
+2	kernel/src/boot/stacks.rs
+36	kernel/src/main.rs
+4	kernel/src/mlsf_bench.rs
+2	kernel/src/smokes/mod.rs
+4	kernel/src/smokes/selftest.rs
+20	kernel/src/smokes/tlb_probe.rs
+2	kernel/src/tasks/system.rs
+10	kernel/src/trap/exception.rs
+10	kernel/src/trap/interrupt.rs
+2	userspace/bench/latbench/src/main.rs
+2	userspace/bench/vsbench/src/bench_core.rs
+8	userspace/services/lxsrv/src/main.rs
+18	userspace/tests/abitest/src/main.rs
+12	userspace/tests/captest/src/main.rs
+2	userspace/tests/ipctest/src/main.rs

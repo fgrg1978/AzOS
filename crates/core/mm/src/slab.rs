@@ -62,9 +62,16 @@ pub const MAGC: usize = MAX_CLASSES;
 const NC: usize = MAX_CLASSES + 1;
 /// [`Slab::class_of`]'s answer for "not a class: the heap".
 pub const NO_CLASS: usize = usize::MAX;
-/// Upper bound on CPUs with a magazine cache. A CPU id at or above it is
-/// served from the slabs directly, correct but locked.
-pub const MAX_CPUS: usize = 8;
+/// Upper bound on CPUs with a magazine cache: the CPU ceiling, Kconfig
+/// `NR_CPUS`. A CPU id at or above it is served from the slabs directly,
+/// correct but locked.
+///
+/// **Static, not in a per-CPU area** (wave 15, NRCPUS). The magazines serve
+/// the kernel heap from `kheap::init` on, before the per-CPU areas exist, and
+/// the fast path is `cpu < MAX_CPUS` plus a shift: an area pointer would add
+/// a load and a null test to every allocation and every free. The price is
+/// 256 B (one `CpuCache`) per CPU of the ceiling, 16 KiB at 64.
+pub const MAX_CPUS: usize = azos_limits::NR_CPUS;
 /// Largest object size a class may have.
 pub const MAX_CLASS_BYTES: usize = 4096;
 /// Size-to-class table entries: one per 8 bytes up to the largest class.

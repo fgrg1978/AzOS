@@ -17,7 +17,7 @@ use azos_common::error::{KResult, KernelError};
 use azos_sync::SpinLock;
 
 use crate::{pmm, vmm};
-use azos_arch::mmu::PAGE_SIZE;
+use azos_arch::PAGE_SIZE;
 
 /// Rows with a region at once. A topology declaring more is refused at boot.
 pub const MAX_HUGE_REGIONS: usize = 8;

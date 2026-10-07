@@ -49,8 +49,7 @@ use crate::rt_core::{self, Band, Cbs, HartLoad, Refusal};
 use crate::task::{TaskState, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
 
 use super::{
-    cpu_remove, prio_bucket, task_mut, task_ref, CpuLockGuard, MAX_CPUS, MAX_TASKS, PER_CPU,
-    PER_CPU_QUEUES,
+    cpu_remove, ncpu, prio_bucket, task_mut, task_ref, CpuLockGuard, MAX_CPUS, MAX_TASKS, PER_CPU,
 };
 
 /// Reservations one hart can hold.
@@ -94,17 +93,52 @@ const EDF_ON: bool = !cfg!(feature = "rt-edf-canary");
 const ADMIT_ON: bool = !cfg!(feature = "rt-admit-canary");
 
 static FLAGS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
-/// Reservation set per hart (`usize::MAX` = empty slot). Written under
-/// [`ADMIT`]; read lock-free by the owner hart (`Acquire` pairs with the
-/// publishing `Release`, so the task's `rt` is complete when read).
-static SET: [[AtomicUsize; SET_CAP]; MAX_CPUS] =
-    [const { [const { AtomicUsize::new(usize::MAX) }; SET_CAP] }; MAX_CPUS];
+/// One hart's reservation state, in its per-CPU area (wave 15, NRCPUS:
+/// about 1 KiB a CPU, which a `[_; MAX_CPUS]` static charged for every CPU of
+/// the Kconfig ceiling). Touched only after `FLAGS[cpu]` says the hart has a
+/// reservation, or by admission under [`ADMIT`] for a CPU below `ncpu()`.
+pub(crate) struct RtCpu {
+    /// Reservation set (`usize::MAX` = empty slot). Written under [`ADMIT`];
+    /// read lock-free by the owner hart (`Acquire` pairs with the publishing
+    /// `Release`, so the task's `rt` is complete when read).
+    set: [AtomicUsize; SET_CAP],
+    /// The reservations themselves, one per set slot: written by admission
+    /// before the slot is published in `set`, then only by the owner hart.
+    /// Not in `Task`: the TCB is layout-frozen (`TASK_SATP_OFFSET`) and sized
+    /// per `MAX_TASKS` slot, while reservations are a handful per hart.
+    res: core::cell::UnsafeCell<[Cbs; SET_CAP]>,
+    /// Owner-hart state (see [`Owner`]).
+    owner: core::cell::UnsafeCell<Owner>,
+}
 
-/// The reservations themselves, one per set slot: written by admission
-/// before the slot is published in [`SET`], then only by the owner hart.
-/// Not in `Task`: the TCB is layout-frozen (`TASK_SATP_OFFSET`) and sized per
-/// `MAX_TASKS` slot, while reservations are a handful per hart.
-static mut RES: [[Cbs; SET_CAP]; MAX_CPUS] = [[Cbs::NONE; SET_CAP]; MAX_CPUS];
+/// Initial state, written in place when a CPU's area is attached.
+unsafe fn rt_cpu_init(p: *mut RtCpu) {
+    // SAFETY: the caller hands a zeroed, aligned, exclusive slot.
+    unsafe {
+        p.write(RtCpu {
+            set: [const { AtomicUsize::new(usize::MAX) }; SET_CAP],
+            res: core::cell::UnsafeCell::new([Cbs::NONE; SET_CAP]),
+            owner: core::cell::UnsafeCell::new(Owner { band: Band::NEW, cur: usize::MAX, cur_slot: 0, cur_since: 0 }),
+        })
+    };
+}
+
+/// Every hart's [`RtCpu`].
+pub(crate) static RT_CPU: azos_percpu::PerCpu<RtCpu> = azos_percpu::PerCpu::with_init(rt_cpu_init);
+
+/// `cpu`'s reservation set. `cpu < ncpu()`.
+#[inline(always)]
+fn set_of(cpu: usize) -> &'static [AtomicUsize; SET_CAP] {
+    // SAFETY: attached at boot for every CPU below `ncpu()`, never freed.
+    unsafe { &(*RT_CPU.ptr(cpu)).set }
+}
+
+/// `cpu`'s owner state. `cpu < ncpu()`; the owner-hart contract of [`Owner`].
+#[inline(always)]
+fn owner_of(cpu: usize) -> *mut Owner {
+    // SAFETY: as `set_of`; the pointer is dereferenced under `Owner`'s rule.
+    unsafe { (*RT_CPU.ptr(cpu)).owner.get() }
+}
 
 /// Owner-hart state: written only by the hart it describes, with interrupts
 /// off (dispatch, tick), so it needs no lock.
@@ -117,8 +151,6 @@ struct Owner {
     cur_since: u64,
 }
 
-static mut OWNER: [Owner; MAX_CPUS] =
-    [const { Owner { band: Band::NEW, cur: usize::MAX, cur_slot: 0, cur_since: 0 } }; MAX_CPUS];
 
 /// Per-hart admitted load. Admission and release only.
 static ADMIT: azos_sync::SpinLock<[HartLoad; MAX_CPUS]> =
@@ -143,11 +175,11 @@ pub static ADMITTED_PPM: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; M
 #[cfg(feature = "energy")]
 pub fn rt_slack(cpu: usize, now: u64) -> u64 {
     let mut slack = u64::MAX;
-    if cfg!(feature = "energy-slack-canary") || cpu >= MAX_CPUS || FLAGS[cpu].load(Ordering::Acquire) & F_RESV == 0 {
+    if cfg!(feature = "energy-slack-canary") || cpu >= ncpu() || FLAGS[cpu].load(Ordering::Acquire) & F_RESV == 0 {
         return slack;
     }
     for k in 0..SET_CAP {
-        if SET[cpu][k].load(Ordering::Acquire) == usize::MAX {
+        if set_of(cpu)[k].load(Ordering::Acquire) == usize::MAX {
             continue;
         }
         // SAFETY: the slot is published; see above for the concurrent writer.
@@ -255,7 +287,7 @@ fn sync_flags(cpu: usize, o: &Owner) {
 #[inline]
 fn set_iter(cpu: usize) -> impl Iterator<Item = (usize, usize)> {
     let n = if FLAGS[cpu].load(Ordering::Acquire) & F_RESV != 0 { SET_CAP } else { 0 };
-    SET[cpu][..n].iter().enumerate()
+    set_of(cpu)[..n].iter().enumerate()
         .map(|(k, s)| (k, s.load(Ordering::Acquire)))
         .filter(|&(_, i)| i < MAX_TASKS)
 }
@@ -263,14 +295,14 @@ fn set_iter(cpu: usize) -> impl Iterator<Item = (usize, usize)> {
 /// The slot of `idx` in `cpu`'s set.
 #[inline]
 fn slot_of(cpu: usize, idx: usize) -> Option<usize> {
-    SET[cpu].iter().position(|s| s.load(Ordering::Acquire) == idx)
+    set_of(cpu).iter().position(|s| s.load(Ordering::Acquire) == idx)
 }
 
 /// The reservation in slot `k` of `cpu`. Owner hart, or admission under
 /// [`ADMIT`] before the slot is published.
 #[inline(always)]
 unsafe fn res(cpu: usize, k: usize) -> &'static mut Cbs {
-    unsafe { &mut (*core::ptr::addr_of_mut!(RES))[cpu][k] }
+    unsafe { &mut (*(*RT_CPU.ptr(cpu)).res.get())[k] }
 }
 
 /// Apply the clock to the hart's reservations at `now`: replenish the
@@ -290,7 +322,7 @@ unsafe fn refresh_set(cpu: usize, now: u64) {
 
 /// Arm the earliest enforcement instant of `cpu` (see the module doc).
 unsafe fn arm(cpu: usize, now: u64) {
-    let o = unsafe { &(*core::ptr::addr_of!(OWNER))[cpu] };
+    let o = unsafe { &*owner_of(cpu) };
     let mut at = u64::MAX;
     if o.band.since != 0 && !o.band.exhausted && CAP != u64::MAX {
         let bm = unsafe { PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed) };
@@ -367,7 +399,7 @@ pub(super) unsafe fn on_switch_prio(cpu: usize, next_idx: usize, next_prio: u32)
 #[inline(never)]
 unsafe fn on_switch_slow(cpu: usize, next_idx: usize, next_prio: u32) {
     let now = now();
-    let o = unsafe { &mut (*core::ptr::addr_of_mut!(OWNER))[cpu] };
+    let o = unsafe { &mut *owner_of(cpu) };
     if o.band.since != 0 {
         o.band.stop(now, WINDOW, CAP);
     }
@@ -410,34 +442,18 @@ unsafe fn throttled(cpu: usize, idx: usize) -> bool {
     }
 }
 
-/// Ring `level` of `cpu`: the first entry that is not a throttled
+/// Ready queue `level` of `cpu`: the first entry that is not a throttled
 /// reservation. Caller holds `CPU_LOCKS[cpu]`.
 unsafe fn ring_first_eligible(cpu: usize, level: usize, resv: bool) -> Option<usize> {
-    let q = unsafe { &PER_CPU_QUEUES[cpu][level] };
-    let head = q.head.load(Ordering::Relaxed);
-    let n = q.count.load(Ordering::Relaxed).min(MAX_TASKS);
-    for j in 0..n {
-        let idx = q.buf[(head + j) % MAX_TASKS].load(Ordering::Relaxed);
-        if idx < MAX_TASKS && !(resv && unsafe { throttled(cpu, idx) }) {
-            return Some(idx);
-        }
-    }
-    None
+    let q = &super::cpu_queues(cpu)[level];
+    q.iter(&super::RQ_NEXT).find(|&idx| idx < MAX_TASKS && !(resv && unsafe { throttled(cpu, idx) }))
 }
 
 /// Ring `level` of `cpu`: the first exempt entry that is not a throttled
 /// reservation. Caller holds `CPU_LOCKS[cpu]`.
 unsafe fn ring_first_exempt(cpu: usize, level: usize, resv: bool) -> Option<usize> {
-    let q = unsafe { &PER_CPU_QUEUES[cpu][level] };
-    let head = q.head.load(Ordering::Relaxed);
-    let n = q.count.load(Ordering::Relaxed).min(MAX_TASKS);
-    for j in 0..n {
-        let idx = q.buf[(head + j) % MAX_TASKS].load(Ordering::Relaxed);
-        if exempt(idx) && !(resv && unsafe { throttled(cpu, idx) }) {
-            return Some(idx);
-        }
-    }
-    None
+    let q = &super::cpu_queues(cpu)[level];
+    q.iter(&super::RQ_NEXT).find(|&idx| exempt(idx) && !(resv && unsafe { throttled(cpu, idx) }))
 }
 
 /// What the RT pick decided.
@@ -454,7 +470,7 @@ pub(super) enum Pick {
 /// current on `cpu`, still `Running` if it was preempted.
 pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
     let now = now();
-    let o = unsafe { &mut (*core::ptr::addr_of_mut!(OWNER))[cpu] };
+    let o = unsafe { &mut *owner_of(cpu) };
     if o.band.since != 0 {
         o.band.charge(now, WINDOW, CAP);
     } else if o.band.exhausted {
@@ -570,7 +586,7 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
 /// arms; returns whether the current task must be preempted.
 pub(super) unsafe fn tick(cpu: usize, cur_idx: usize) -> bool {
     let now = now();
-    let o = unsafe { &mut (*core::ptr::addr_of_mut!(OWNER))[cpu] };
+    let o = unsafe { &mut *owner_of(cpu) };
     let bm = unsafe { PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed) };
     let mut preempt = false;
     if o.band.since != 0 {
@@ -668,12 +684,14 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         let online_mask = if online >= 32 { u32::MAX } else { (1u32 << online) - 1 };
         let mut mask = if r.cpu_mask == 0 { online_mask } else { r.cpu_mask & online_mask };
         if t.cpu_affinity >= 0 {
-            mask &= 1u32 << (t.cpu_affinity as u32);
+            // A reservation mask is a u32 (the syscall ABI's): a pin past
+            // CPU 31 cannot be named in it and leaves nothing to fit.
+            mask &= 1u32.checked_shl(t.cpu_affinity as u32).unwrap_or(0);
         } else if unsafe { PER_CPU[me].current_idx.load(Ordering::Relaxed) } == idx {
-            mask &= 1u32 << me;
+            mask &= 1u32.checked_shl(me as u32).unwrap_or(0);
         }
         let mut load = ADMIT.lock_irqsave();
-        if (0..MAX_CPUS).any(|c| slot_of(c, idx).is_some()) {
+        if (0..ncpu()).any(|c| slot_of(c, idx).is_some()) {
             return Err(Refusal::Busy);
         }
         let cpu = if ADMIT_ON {
@@ -683,7 +701,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         } else {
             return Err(Refusal::NoRoom);
         };
-        let k = SET[cpu].iter().position(|s| s.load(Ordering::Relaxed) == usize::MAX)
+        let k = set_of(cpu).iter().position(|s| s.load(Ordering::Relaxed) == usize::MAX)
             .ok_or(Refusal::Busy)?;
         let freq = azos_drv_sys::timebase::TIMER_FREQ;
         let d_us = if r.deadline_us == 0 { r.period_us } else { r.deadline_us };
@@ -704,7 +722,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         }
         #[cfg(feature = "energy")]
         ADMITTED_PPM[cpu].store(load[cpu].total_ppm, Ordering::Relaxed);
-        SET[cpu][k].store(idx, Ordering::Release);
+        set_of(cpu)[k].store(idx, Ordering::Release);
         FLAGS[cpu].fetch_or(F_RESV, Ordering::Release);
         Ok((cpu, density, load[cpu]))
     })();
@@ -750,13 +768,17 @@ pub(super) fn release(idx: usize) {
     if idx < MAX_TASKS {
         EXEMPT[idx].store(false, Ordering::Relaxed);
     }
-    if FLAGS.iter().all(|f| f.load(Ordering::Relaxed) & F_RESV == 0) {
+    // Only the CPUs this boot has: admission sets `F_RESV` below `ncpu()`
+    // alone. Walking all `MAX_CPUS` (the Kconfig ceiling, 64 by default) on
+    // every slot free and reuse cost thread create+join ~+700 instructions
+    // at `-smp 1` when NR_CPUS replaced the fixed 8 (wave 15).
+    if FLAGS[..ncpu().min(MAX_CPUS)].iter().all(|f| f.load(Ordering::Relaxed) & F_RESV == 0) {
         return;
     }
     let mut load = ADMIT.lock_irqsave();
-    for cpu in 0..MAX_CPUS {
+    for cpu in 0..ncpu() {
         let Some(k) = slot_of(cpu, idx) else { continue };
-        SET[cpu][k].store(usize::MAX, Ordering::Release);
+        set_of(cpu)[k].store(usize::MAX, Ordering::Release);
         let r = unsafe { res(cpu, k) };
         load[cpu].total_ppm = load[cpu].total_ppm.saturating_sub(r.density_ppm);
         if r.band {
@@ -764,11 +786,11 @@ pub(super) fn release(idx: usize) {
         }
         #[cfg(feature = "energy")]
         ADMITTED_PPM[cpu].store(load[cpu].total_ppm, Ordering::Relaxed);
-        if SET[cpu].iter().all(|s| s.load(Ordering::Relaxed) == usize::MAX) {
+        if set_of(cpu).iter().all(|s| s.load(Ordering::Relaxed) == usize::MAX) {
             FLAGS[cpu].fetch_and(!F_RESV, Ordering::Release);
         }
         if cpu == crate::smp::current_cpu_id() {
-            let o = unsafe { &mut (*core::ptr::addr_of_mut!(OWNER))[cpu] };
+            let o = unsafe { &mut *owner_of(cpu) };
             if o.cur == idx {
                 o.cur = usize::MAX;
             }
@@ -791,7 +813,7 @@ pub fn stats() -> (u32, u32, u32, u32, u32, u32) {
 
 /// `(overruns, throttled, absolute deadline)` of task `idx`'s reservation.
 pub fn task_reservation(idx: usize) -> Option<(u32, bool, u64)> {
-    for cpu in 0..MAX_CPUS {
+    for cpu in 0..ncpu() {
         if let Some(k) = slot_of(cpu, idx) {
             let r = unsafe { res(cpu, k) };
             return Some((r.overruns, r.throttled, r.deadline));

@@ -28,5 +28,7 @@ mod ota;
 pub(crate) use ota::*;
 mod stacks;
 pub(crate) use stacks::*;
+mod percpu;
+pub(crate) use percpu::*;
 // Entered from `boot.S` by symbol (`#[no_mangle]`); nothing in Rust names them.
 mod smp;

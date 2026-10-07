@@ -3,6 +3,7 @@
 //! riscv64 synchronous exceptions: the syscall (`ecall`) arm, page faults
 //! (COW, demand paging, guards) and the fatal-fault post-mortem.
 
+use azos_arch::Cpu as _;
 use crate::*;
 // Not from the crate root: there `trap` names this module tree.
 use azos_arch::trap;
@@ -296,7 +297,7 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame, cause: usize) -> usize {
 
         // ── Page faults: kill user task, fatal if from kernel ──────────
         TRAP_INSTR_PAGE_FAULT | TRAP_LOAD_PAGE_FAULT | TRAP_STORE_PAGE_FAULT => {
-            let hart = azos_arch::cpu::hart_id();
+            let hart = azos_arch::ARCH.hart_id();
             // SPP bit: 0 = came from U-mode, 1 = came from S-mode.
             let from_user = (frame.sstatus as usize) & csr::SSTATUS_SPP == 0;
 
@@ -436,7 +437,7 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame, cause: usize) -> usize {
                 // Emergency motor stop to prevent runaway
                 #[cfg(feature = "domain-robot")]
                 azos_robot::motor_cmd_publish(0, 0);
-                azos_arch::sbi::shutdown();
+                azos_arch::Boot::shutdown(&azos_arch::ARCH);
             }
         }
 
@@ -471,7 +472,7 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame, cause: usize) -> usize {
             {
                 return 0;
             }
-            let hart = azos_arch::cpu::hart_id();
+            let hart = azos_arch::ARCH.hart_id();
             // SPP bit: 0 = came from U-mode, 1 = came from S-mode. Exactly the
             // mechanism the page-fault arm uses — once we are inside the
             // handler, sstatus.SPP is the only trustworthy record of the
@@ -527,7 +528,7 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame, cause: usize) -> usize {
                 azos_robot::motor_cmd_publish(0, 0);
                 azos_drv_sys::uart::console_bypass_for_halt();
                 azos_drv_sys::kerr!("[FATAL] Unhandled exception on CPU {} — shutdown", hart);
-                azos_arch::sbi::shutdown();
+                azos_arch::Boot::shutdown(&azos_arch::ARCH);
             }
         }
     }

@@ -6225,6 +6225,7 @@ mod ro_stream {
 /// Equal stamps must mean equal bytes: every way the volume's bytes change
 /// moves it, and the epoch it carries is never one a reader could have read
 /// while the bytes it reports were still landing.
+#[cfg(test)]
 mod content_stamp {
     use super::{fat32, image::*, serial, vfs};
     use std::sync::Mutex;

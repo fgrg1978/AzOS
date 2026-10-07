@@ -82,6 +82,11 @@
 # hart id), not Task.tid (offset 128). Both are now loaded here, from the
 # real offset_of!(Task, tid), and passed as the tid argument (a0) instead.
 .equ TASK_SATP_OFFSET,       {task_satp_off}
+# Length of `AZOS_HART_SATP` (`azos_arch::tlb::TLB_MAX_HARTS`, Kconfig
+# `NR_CPUS`), injected by the `global_asm!` block in kernel/src/main.rs. It
+# was a literal 8 here: past it a hart skipped publishing its root and
+# `tlb::shootdown` never signalled it.
+.equ TLB_MAX_HARTS,          {tlb_max_harts}
 .equ TASK_CTX_SAVING_OFFSET, {context_saving_off}
 .equ TASK_TID_OFFSET,        {task_tid_off}
 
@@ -183,7 +188,7 @@ restore_new_task:
     beq t1, t2, rvv_skip_pt_switch
     # TLB shootdown bookkeeping — see context_switch.S. This file never
     # loads tp (header note), so tp is this hart's id throughout.
-    li   t3, 8                       # tlb::TLB_MAX_HARTS
+    li   t3, TLB_MAX_HARTS
     bgeu tp, t3, 1f
     la   t3, AZOS_HART_SATP
     slli t4, tp, 3

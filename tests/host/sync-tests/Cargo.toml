@@ -23,6 +23,7 @@ description = "Host-side tests for the K-C29 preemption-control mechanism in cra
 # which are inline asm on the kernel target. See the shim's crate doc.
 [dependencies]
 azos_arch = { path = "shims/arch", package = "sync_test_arch" }
+azos_limits = { path = "../../../crates/core/limits" }
 
 [dev-dependencies]
 

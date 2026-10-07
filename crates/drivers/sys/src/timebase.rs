@@ -23,7 +23,7 @@
 //! `azos_drv_sys` and pin this clock so the flight recorder's records
 //! decode reproducibly — a wall-clock stamp would make the bytes a test
 //! asserts on different every run. Pointing the call sites at
-//! `azos_arch::cpu::now_ticks()` directly would have needed three NEW arch
+//! `azos_arch::ARCH.now_ticks()` directly would have needed three NEW arch
 //! shim crates and scattered that one override across four more places.
 //!
 //! So: the primitive is arch's, the seam stays where the tests already reach
@@ -36,6 +36,7 @@
 //! platform-defined (`TIMER_FREQ` converts; a raw tick count is a per-board
 //! number, not a duration).
 
+use azos_arch::Cpu as _;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::timer_arm;
@@ -43,7 +44,7 @@ use crate::timer_arm;
 /// Read the monotonic tick counter.
 #[inline(always)]
 pub fn now() -> u64 {
-    azos_arch::cpu::now_ticks()
+    azos_arch::ARCH.now_ticks()
 }
 
 /// Ticks per second of the counter [`now`] reads.
@@ -131,7 +132,7 @@ static PROGRAMMED: [AtomicU64; ARM_HARTS] = [const { AtomicU64::new(timer_arm::N
 #[inline]
 fn program(next: u64) {
     use azos_arch::Interrupts;
-    let cpu = azos_arch::cpu::hart_id();
+    let cpu = azos_arch::ARCH.hart_id();
     let prev = azos_arch::ARCH.disable_all();
     match PROGRAMMED.get(cpu) {
         Some(slot) => {
@@ -160,7 +161,7 @@ fn program(next: u64) {
 #[inline]
 pub fn arm_if_earlier(deadline: u64) -> bool {
     use azos_arch::Interrupts;
-    let cpu = azos_arch::cpu::hart_id();
+    let cpu = azos_arch::ARCH.hart_id();
     let Some(slot) = PROGRAMMED.get(cpu) else { return false };
     if !timer_arm::earlier_than_programmed(slot.load(Ordering::Relaxed), deadline) {
         return false;
@@ -187,7 +188,7 @@ pub fn program_at(_hart: u32, next: u64) {
 /// What the calling hart last programmed ([`timer_arm::NOT_ARMED`] if
 /// never, or if the hart is beyond the recorded range).
 pub fn programmed() -> u64 {
-    PROGRAMMED.get(azos_arch::cpu::hart_id())
+    PROGRAMMED.get(azos_arch::ARCH.hart_id())
         .map_or(timer_arm::NOT_ARMED, |s| s.load(Ordering::Relaxed))
 }
 

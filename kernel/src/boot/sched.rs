@@ -137,7 +137,7 @@ fn lease_seal(root: usize, va: usize, pages: usize, write: bool) -> usize {
     if cfg!(feature = "lease-seal-canary") && !write {
         return pages;
     }
-    let end = va.saturating_add(pages.saturating_mul(azos_arch::mmu::PAGE_SIZE));
+    let end = va.saturating_add(pages.saturating_mul(azos_arch::PAGE_SIZE));
     azos_mm::vmm::set_user_range_write(root, va, end, write)
 }
 
@@ -151,7 +151,7 @@ fn lease_seal(root: usize, va: usize, pages: usize, write: bool) -> usize {
 fn lease_unmap(root: usize, va: usize, pages: usize) {
     #[cfg(not(feature = "lease-revoke-canary"))]
     {
-        let end = va.saturating_add(pages.saturating_mul(azos_arch::mmu::PAGE_SIZE));
+        let end = va.saturating_add(pages.saturating_mul(azos_arch::PAGE_SIZE));
         let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
     }
     #[cfg(feature = "lease-revoke-canary")]

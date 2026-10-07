@@ -17,8 +17,8 @@ publish = false
 # 185 lost rt-motor's wake with it on: a retry re-armed a popped sleeper with
 # a deadline read outside the heap lock, overwriting the deadline the sleeper
 # had armed itself, and the next nearest-deadline query dropped the entry.
-# The fix (`timer_sleepers::rearm_if_sleeping`, `TimerHeap::peek_live`) is in
-# `crates/core/sched/src/scheduler.rs`. `--no-default-features` brings back the
+# The fix (the retry re-arm in `timer_heap::wake_due`, `TimerHeap::peek_live`)
+# is in `crates/core/sched/src/timer_heap.rs`. `--no-default-features` brings back the
 # pre-wave-4 placement, load-balanced IPC wakes and the per-tick sleeper sweep.
 #
 # Taken back out after gate 193 (2026-09-28), the heap's own gate, was not
@@ -353,6 +353,13 @@ pan-probe = []
 # before the scheduler starts, so the call allocates nothing and cannot reach
 # the five later sites. Never in a normal or board build.
 fork-refusal-probe = []
+# Gate only: check every `current_cpu_id()` against the hardware id (riscv64:
+# the `stvec` slot's id word; aarch64: MPIDR_EL1) and hammer it on the boot
+# hart at the old fork-probe position (`smokes/cpuid_probe.rs`). The canary
+# makes the id register lie there and forks, which the probe must report.
+# Never in a normal or board build.
+cpuid-probe = ["azos_sched/cpuid-probe"]
+cpuid-probe-canary = ["cpuid-probe", "azos_sched/cpuid-probe-canary"]
 # RFC-0041 §A: leave the vDSO's rdtime flag clear, so libsys `uptime()` traps.
 vdso-force-syscall = []
 # RFC-0041 §B: program the timer with SBI `set_timer` even on a hart with Sstc.
@@ -427,6 +434,12 @@ tlb-smoke = ["qemu"]
 tlb-local-only = ["azos_arch/tlb-local-only"]
 # Canary for the riscv64 shootdown scan bound: no hart is noted online.
 tlb-bound-canary = ["azos_arch/tlb-bound-canary"]
+# NRCPUS canaries (wave 15). `percpu-oor-canary`: the boot attaches a per-CPU
+# area past nr_cpu_ids, and the `[PERCPU] self-check` line turns red.
+percpu-oor-canary = ["qemu"]
+# `nr-cpus-clamp-canary`: the DTB's CPU count is used past the Kconfig ceiling
+# NR_CPUS instead of being cut to it; a boot with more CPUs than NR_CPUS breaks.
+nr-cpus-clamp-canary = ["qemu"]
 # Wave 8: the ring-3 GPIO driver serves a kernel client more urgent than
 # itself on its own hart, past a task in between that never blocks — only the
 # proxy's priority donation lets the driver run (`proxy_pi_smoke` in
@@ -628,6 +641,9 @@ irq-reinit-probe = ["qemu"]
 # Temporary: prints how long an ARP resolution actually took, to set the
 # budget from data instead of by argument.
 arp-timing = ["qemu", "azos_net/arp-timing"]
+# Gate row and canary (wave 15): see crates/net/net/Cargo.toml.
+loopback-preempt-probe = ["qemu", "azos_net/loopback-preempt-probe"]
+loopback-guard-canary = ["qemu", "azos_net/loopback-guard-canary"]
 ipc-trace = ["azos_syscall/ipc-trace"]
 # The vsbench SQPOLL lane: the autorun row may start an io_ring SQ poller.
 # Never part of a board or default build; see crates/core/topology/Cargo.toml.
@@ -862,6 +878,7 @@ azos_common = { workspace = true }
 azos_arch = { workspace = true }
 azos_arch_api = { workspace = true }
 azos_sync = { workspace = true }
+azos_percpu = { workspace = true }
 azos_drv_base      = { workspace = true }
 azos_drv_irqchip   = { workspace = true }
 azos_drv_sys       = { workspace = true }

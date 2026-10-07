@@ -44,8 +44,9 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed};
 
-/// Tracked harts. Matches `MAX_HARTS` / `azos_sync::preempt::SLOTS`.
-pub const HARTS: usize = 8;
+/// Tracked harts: the CPU ceiling (Kconfig `NR_CPUS`), as `MAX_HARTS` and
+/// `azos_sync::preempt::SLOTS` are.
+pub const HARTS: usize = azos_limits::NR_CPUS;
 /// Distinct start sites remembered per hart and track. A full table evicts
 /// its shortest entry for a longer window (see [`close`]), so the longest
 /// sites are always kept whatever the number of distinct sites.

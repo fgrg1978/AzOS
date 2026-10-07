@@ -1732,7 +1732,7 @@ pub fn lease_take_revoked(tid: u32, out: &mut [(usize, usize)]) -> usize {
 /// fault. Called from the page-fault kill path of both ISAs, with no lock
 /// held.
 pub fn lease_revoked_fault(tid: u32, va: usize) -> Option<usize> {
-    let page = azos_arch::mmu::PAGE_SIZE;
+    let page = azos_arch::PAGE_SIZE;
     let table = LEASES.lock_irqsave();
     let hit = table.revoked.iter().find(|r| {
         r.tid == tid && va >= r.va && va < r.va.saturating_add(r.pages.saturating_mul(page))
@@ -1844,7 +1844,7 @@ pub fn lease_forget_seal(tid: u32, va: usize) {
 /// held. A fault that races the lease's end is killed unattributed (the
 /// write was issued under the seal).
 pub fn lease_sealed_fault(tid: u32, va: usize) -> Option<usize> {
-    let page = azos_arch::mmu::PAGE_SIZE;
+    let page = azos_arch::PAGE_SIZE;
     let table = LEASES.lock_irqsave();
     let id = table.entries.iter().position(|e| {
         e.lessor_tid == tid && e.seal.root != 0

@@ -14,6 +14,7 @@ description = "Host-buildable facade for azos_sync, used only by tests/host/worl
 # replaces those two inputs with settable per-thread cells and nothing else.
 [dependencies]
 azos_arch = { path = "../../../sync-tests/shims/arch", package = "sync_test_arch" }
+azos_limits = { path = "../../../../../crates/core/limits" }
 
 # `preempt.rs` (pulled via `#[path]`) carries `#[cfg(feature = "lat-trace")]`
 # hooks. Declared only so `unexpected_cfgs` recognizes the name; never on.

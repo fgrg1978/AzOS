@@ -48,10 +48,11 @@
 .equ MAX_HARTS, {max_harts}
 
 # Size of one hart's interrupt stack, from CONFIG_INTERRUPT_STACK_SIZE_KB
-# through the same global_asm! substitution.  The slots themselves are
-# `irq_stacks` in kernel/src/main.rs; one hand-written size here and another
-# there is the class of constant that drifts silently, and the symptom would
-# be a hart running off the end of its slot into its neighbour's.
+# through the same global_asm! substitution.  The stacks themselves are in
+# the per-CPU areas, reached through `AZOS_IRQ_STACK_BASE` (kernel/src/main.rs);
+# one hand-written size here and another there is the class of constant that
+# drifts silently, and the symptom would be a hart running off the end of its
+# stack into whatever lies below it.
 .equ IRQ_STACK_SIZE, {irq_stack_size}
 
 .section .text
@@ -274,10 +275,14 @@ save_csrs:
 
     bgez t0, trap_call_here          # bit 63 clear => exception, stay put
 
-    la   t1, irq_stacks
+    # This CPU's interrupt stack, from its per-CPU area: one word per CPU
+    # in AZOS_IRQ_STACK_BASE (kernel/src/main.rs), 0 when it has none.
+    la   t1, AZOS_IRQ_STACK_BASE
+    slli t3, tp, 3
+    add  t1, t1, t3
+    ld   t1, 0(t1)                   # base of this hart's stack
+    beqz t1, trap_call_here          # none (cannot happen once armed): stay
     li   t2, IRQ_STACK_SIZE
-    mul  t3, tp, t2
-    add  t1, t1, t3                  # base of this hart's slot
     sub  t4, sp, t1
     bltu t4, t2, trap_call_here      # already on it: nested, keep going
 

@@ -38,10 +38,13 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Size of [`AZOS_HART_SATP`]. Matches `MAX_HARTS` in `kernel/src/main.rs`,
-/// which `boot.S` range-checks secondary hart ids against. The context-switch
-/// assembly skips the publication for a hart id at or above it.
-pub const TLB_MAX_HARTS: usize = 8;
+/// Size of [`AZOS_HART_SATP`]: the CPU ceiling, Kconfig `NR_CPUS`, the same
+/// constant `kernel/src/main.rs`'s `MAX_HARTS` and `boot.S`'s range check
+/// take. The context-switch assembly takes it as `{tlb_max_harts}` (it was a
+/// literal 8 there) and skips the publication for a hart id at or above it.
+pub const TLB_MAX_HARTS: usize = azos_limits::NR_CPUS;
+// `remote_mask` answers a `usize` bit mask, one bit per hart.
+const _: () = assert!(TLB_MAX_HARTS <= usize::BITS as usize);
 
 /// `len` value meaning "the whole address space".
 pub const ALL: usize = usize::MAX;

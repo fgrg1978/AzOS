@@ -5,7 +5,7 @@
 //!
 //! Pure logic in its own file so `tests/host/sched-wake-tests` can compile it;
 //! the scheduler proper cannot leave the target. Same pattern as
-//! `resident_histogram.rs` / `ready_ring.rs`.
+//! `resident_histogram.rs` / `ready_list.rs`.
 //!
 //! # The rule is an equivalence, not a heuristic
 //!

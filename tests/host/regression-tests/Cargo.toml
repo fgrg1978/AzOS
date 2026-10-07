@@ -20,6 +20,9 @@ description = "Host-side regression tests for kernel bugs found and fixed. Exclu
 no-bitmanip = []
 
 [dependencies]
+# `crates/drivers/dtb/src/lib.rs` (pulled in with `#[path]`) sizes its CPU
+# table by `azos_limits::NR_CPUS` (wave 15).
+azos_limits = { path = "../../../crates/core/limits" }
 
 [dev-dependencies]
 # TS01 — property-based tests. Generates random inputs to check invariants.

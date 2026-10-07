@@ -178,7 +178,7 @@ pub fn cam_info() {
 
 #[inline(always)]
 fn dot(a: &[f32], b: &[f32]) -> f32 {
-    azos_arch::vector::dot_f32_best(a, b)
+    azos_arch::Vector::dot_f32(&azos_arch::ARCH, a, b)
 }
 
 // ── CSI / MIPI camera skeleton ───────────────────────────────────────────────

@@ -1640,8 +1640,8 @@ pub mod resident_histogram;
 #[path = "../../../../crates/core/sched/src/timer_heap.rs"]
 pub mod timer_heap;
 
-#[path = "../../../../crates/core/sched/src/ready_ring.rs"]
-pub mod ready_ring;
+#[path = "../../../../crates/core/sched/src/ready_list.rs"]
+pub mod ready_list;
 
 // The fast-IPC same-hart direct switch's eligibility rule
 // (`scheduler::ipc_wake_then_block`). Pure; its `#[cfg(test)]` module holds
@@ -1797,61 +1797,124 @@ mod donation_race_tests {
     }
 }
 
-/// `cpu_remove`'s ring surgery (`ready_ring::remove_in_place`).
+/// The ready queues as intrusive lists (`ready_list`, wave 15
+/// NRCPUS-FLEET-AREA): FIFO order, removal from anywhere keeping order, one
+/// link table shared by several lists, and walks that stay bounded and in
+/// range over garbage links (the audit's lockless walk).
 ///
-/// **Canaries.** Delete the shift loop: `removes_from_the_middle_keeping_order`
-/// red. Index from 0 instead of `head`: `wraps_around_the_end` red. Scan to the
-/// last occurrence instead of the first: `removes_only_the_first_duplicate` red.
+/// **Canaries.** `push_back` that does not link the old tail: `fifo_order`
+/// red. `remove` that leaves `tail` on the removed slot:
+/// `removing_the_tail_then_appending_keeps_the_list` red. `iter` without the
+/// `count` bound: `a_cycle_in_the_links_ends_the_walk` hangs. A `next[..]`
+/// index without `get`: `garbage_links_never_index_out_of_range` panics.
 #[cfg(test)]
-mod ready_ring_tests {
-    use super::ready_ring::remove_in_place;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+mod ready_list_tests {
+    use super::ready_list::{ReadyList, EMPTY};
+    use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
-    fn ring(vals: &[usize]) -> Vec<AtomicUsize> {
-        vals.iter().map(|&v| AtomicUsize::new(v)).collect()
-    }
-    fn read(buf: &[AtomicUsize], head: usize, count: usize) -> Vec<usize> {
-        (0..count).map(|j| buf[(head + j) % buf.len()].load(Ordering::Relaxed)).collect()
-    }
+    const CAP: usize = 64;
 
-    #[test]
-    fn removes_from_the_middle_keeping_order() {
-        let buf = ring(&[10, 11, 12, 13, 14, 0, 0, 0]);
-        assert_eq!(remove_in_place(&buf, 0, 5, 12), Some(4));
-        assert_eq!(read(&buf, 0, 4), vec![10, 11, 13, 14]);
+    fn links() -> Vec<AtomicU32> {
+        (0..CAP).map(|_| AtomicU32::new(0)).collect()
     }
-
-    #[test]
-    fn wraps_around_the_end() {
-        // head 6, five entries: slots 6, 7, 0, 1, 2.
-        let buf = ring(&[3, 4, 5, 0, 0, 0, 1, 2]);
-        assert_eq!(read(&buf, 6, 5), vec![1, 2, 3, 4, 5]);
-        assert_eq!(remove_in_place(&buf, 6, 5, 2), Some(4));
-        assert_eq!(read(&buf, 6, 4), vec![1, 3, 4, 5]);
+    fn push(q: &ReadyList, next: &[AtomicU32], v: &[usize]) {
+        for &x in v {
+            q.push_back(next, x, q.count());
+        }
+    }
+    fn read(q: &ReadyList, next: &[AtomicU32]) -> Vec<usize> {
+        q.iter(next).collect()
     }
 
     #[test]
-    fn absent_value_writes_nothing() {
-        let buf = ring(&[7, 8, 9, 99, 0, 0, 0, 0]);
-        // 99 sits past `count`, so it is not an entry.
-        assert_eq!(remove_in_place(&buf, 0, 3, 99), None);
-        assert_eq!(read(&buf, 0, 4), vec![7, 8, 9, 99]);
+    fn fifo_order() {
+        let next = links();
+        let q = EMPTY;
+        push(&q, &next, &[5, 1, 9, 3]);
+        assert_eq!(read(&q, &next), vec![5, 1, 9, 3]);
+        let mut out = vec![];
+        while q.count() > 0 {
+            out.push(q.pop_front(&next, q.count()).unwrap());
+        }
+        assert_eq!(out, vec![5, 1, 9, 3]);
+        assert_eq!(read(&q, &next), Vec::<usize>::new());
+        push(&q, &next, &[7]);
+        assert_eq!(read(&q, &next), vec![7], "an emptied list takes a new head");
     }
 
     #[test]
-    fn removes_only_the_first_duplicate() {
-        let buf = ring(&[5, 6, 5, 7, 0, 0, 0, 0]);
-        assert_eq!(remove_in_place(&buf, 0, 4, 5), Some(3));
-        assert_eq!(read(&buf, 0, 3), vec![6, 5, 7]);
+    fn removes_from_anywhere_keeping_order() {
+        let next = links();
+        let q = EMPTY;
+        push(&q, &next, &[10, 11, 12, 13, 14]);
+        assert_eq!(q.remove(&next, 12), Some(4));
+        assert_eq!(read(&q, &next), vec![10, 11, 13, 14]);
+        assert_eq!(q.remove(&next, 10), Some(3));
+        assert_eq!(read(&q, &next), vec![11, 13, 14]);
+        assert_eq!(q.remove(&next, 42), None, "absent: nothing written");
+        assert_eq!(read(&q, &next), vec![11, 13, 14]);
     }
 
     #[test]
-    fn last_entry_and_oversized_count() {
-        let buf = ring(&[42, 0, 0, 0]);
-        assert_eq!(remove_in_place(&buf, 0, 1, 42), Some(0));
-        let full = ring(&[1, 2, 3, 4]);
-        assert_eq!(remove_in_place(&full, 1, 9, 1), Some(3));
-        assert_eq!(read(&full, 1, 3), vec![2, 3, 4]);
+    fn removing_the_tail_then_appending_keeps_the_list() {
+        let next = links();
+        let q = EMPTY;
+        push(&q, &next, &[1, 2, 3]);
+        assert_eq!(q.remove(&next, 3), Some(2));
+        push(&q, &next, &[4]);
+        assert_eq!(read(&q, &next), vec![1, 2, 4]);
+        assert_eq!(q.remove(&next, 1), Some(2));
+        assert_eq!(q.remove(&next, 2), Some(1));
+        assert_eq!(q.remove(&next, 4), Some(0));
+        push(&q, &next, &[6]);
+        assert_eq!(read(&q, &next), vec![6]);
+    }
+
+    /// Several lists (the 32 levels of every CPU) share one link table: a
+    /// slot moves from one to another as it does on a priority change.
+    #[test]
+    fn lists_share_one_link_table() {
+        let next = links();
+        let (a, b) = (EMPTY, EMPTY);
+        push(&a, &next, &[1, 2, 3]);
+        push(&b, &next, &[4, 5]);
+        assert_eq!(a.remove(&next, 2), Some(2));
+        push(&b, &next, &[2]);
+        assert_eq!(read(&a, &next), vec![1, 3]);
+        assert_eq!(read(&b, &next), vec![4, 5, 2]);
+    }
+
+    #[test]
+    fn a_cycle_in_the_links_ends_the_walk() {
+        let next = links();
+        let q = EMPTY;
+        push(&q, &next, &[1, 2]);
+        next[2].store(1, Relaxed); // 2 -> 1 again: a cycle
+        assert_eq!(read(&q, &next).len(), 2, "bounded by count");
+        assert_eq!(q.remove(&next, 9), None, "a remove over a cycle ends");
+    }
+
+    #[test]
+    fn garbage_links_never_index_out_of_range() {
+        let next = links();
+        let q = EMPTY;
+        push(&q, &next, &[1, 2, 3]);
+        next[2].store(u32::MAX, Relaxed);
+        assert_eq!(read(&q, &next), vec![1, 2], "the walk stops at the bad link");
+        assert_eq!(q.remove(&next, 3), None);
+        next[1].store(CAP as u32 + 7, Relaxed);
+        q.pop_front(&next, q.count());
+        assert!(read(&q, &next).is_empty() || read(&q, &next).iter().all(|&s| s < CAP));
+    }
+
+    /// The per-CPU area relies on this: sixteen bytes a level (a shift away),
+    /// all-zero empty.
+    #[test]
+    fn a_level_is_sixteen_bytes_and_zero_is_empty() {
+        assert_eq!(core::mem::size_of::<ReadyList>(), 16);
+        let q = ReadyList::default();
+        assert_eq!(q.count(), 0);
+        assert!(read(&q, &links()).is_empty());
     }
 }
 
@@ -2684,7 +2747,7 @@ mod reap_flag_gate {
         assert!(it.contains("& F_RESV != 0"), "set_iter must test F_RESV");
         // reserve: slot first, flag second (a reader seeing the flag sees the slot).
         let res = code(body_of(RT, "pub fn reserve("));
-        let slot = res.find("SET[cpu][k].store(idx").expect("the slot store");
+        let slot = res.find("set_of(cpu)[k].store(idx").expect("the slot store");
         let flag = res.find("fetch_or(F_RESV").expect("the flag set");
         assert!(slot < flag, "F_RESV is set before the slot it announces");
         // release: the flag is cleared only once every slot is empty.
@@ -2746,18 +2809,18 @@ mod reap_flag_gate {
         assert!(!code(body_of(SCHED, "pub fn reap_stamped_sleepers(")).contains("reap_idle"));
     }
 
-    /// Both ISAs' idle loops run the net and yield to what it woke before
-    /// going back to `wfi`. Canary: drop either call.
+    /// The idle loop (one body for every ISA) runs the net and yields to
+    /// what it woke before going back to `wfi`. Canary: drop either call.
     #[test]
     fn both_idle_loops_run_the_net_and_yield() {
         let src = code(SYSTEM);
-        for f in ["pub(crate) fn idle_task(", "pub(crate) fn aarch64_idle_task("] {
+        for f in ["pub(crate) fn idle_task("] {
             let b = code(body_of(SYSTEM, f));
             let call = b.find("if azos_sched::scheduler::reap_idle_sweep() {").unwrap_or_else(|| panic!("{f} does not run the net"));
             assert!(b[call..].trim_start_matches("if azos_sched::scheduler::reap_idle_sweep() {").trim_start().starts_with("azos_sched::task_yield();"),
                     "{f} sleeps on a task the net just woke");
         }
-        assert_eq!(src.matches("reap_idle_sweep()").count(), 2);
+        assert_eq!(src.matches("reap_idle_sweep()").count(), 1);
     }
 
     /// A forgotten flag: the tick never walks, the idle walk delivers the wake.

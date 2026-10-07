@@ -544,13 +544,10 @@ pub(crate) fn ring3_driver_launch_task(_: usize) {
 /// would otherwise bring back the 2026-08-20 bug (`/fat/BRAINCLI.ELF` cut to
 /// `/fat/BRAINCLI.EL`, surfacing as "[AUTORUN] File not found") at a cut
 /// point with no counter behind it. The build fails instead.
-// Shared with aarch64 (Phase 6) — `autorun_task` itself lost its
-// riscv64-only gate for the same reason (see that function's own doc): this
-// buffer and its length constant are pure data, read/written identically by
-// both ISAs' `kernel_main`.
-#[cfg(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none")))]
+// Shared by every ISA — `autorun_task` itself lost its riscv64-only gate for
+// the same reason (see that function's own doc): this buffer and its length
+// constant are pure data, read/written identically by every `kernel_main`.
 pub(crate) const AUTORUN_PATH_MAX: usize = 64;
-#[cfg(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none")))]
 const _: () = assert!(
     AUTORUN_PATH_MAX > azos_config::MAX_VAL,
     "AUTORUN_PATH_MAX must leave room for the longest value CONFIG.INI can \
@@ -558,5 +555,4 @@ const _: () = assert!(
 );
 
 /// Static buffer for autorun ELF path (set during boot, read by autorun_task).
-#[cfg(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none")))]
 pub(crate) static mut AUTORUN_PATH: [u8; AUTORUN_PATH_MAX] = [0u8; AUTORUN_PATH_MAX];

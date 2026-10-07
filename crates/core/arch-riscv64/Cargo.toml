@@ -26,6 +26,7 @@ lat-trace = ["azos_arch_api/lat-trace"]
 irq-nomem-canary = []
 
 [dependencies]
+azos_limits = { workspace = true }
 azos_common   = { workspace = true }
 azos_arch_api = { workspace = true }
 bitflags          = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "azos_percpu_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/core/percpu: CPU masks, nr_cpu_ids and the per-CPU area allocator. Excluded from workspace."
+
+# Run with:  cd tests/host/percpu-tests && cargo test --release
+
+[dependencies]
+# The real crates: `azos_percpu` is pure `no_std` with no target-specific
+# code, and `azos_limits` gives it the NR_CPUS the kernel is built with.
+azos_percpu = { path = "../../../crates/core/percpu" }
+azos_limits = { path = "../../../crates/core/limits" }
+
+[profile.release]
+overflow-checks = true

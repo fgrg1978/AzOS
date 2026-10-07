@@ -102,6 +102,8 @@ use core::sync::atomic::Ordering;
 // declared outside it.
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+use core::sync::atomic::Ordering;
 // NOT `#[cfg]`'d: read from the shared CONFIG.INI-apply block (kernel-main-
 // merge task) and from `camera_send_frame`, both now unconditional.
 use azos_config::ML_ENABLED;
@@ -201,6 +203,8 @@ global_asm!(
     // 2026-09-24: that file clears the flag with the same tail now, so the
     // two switches take the identical pair of offsets from this one site.)
     context_saving_off = const core::mem::offset_of!(azos_sched::task::Task, context_saving),
+    // The TLB root table (`TLB_MAX_HARTS`) is the same Kconfig `NR_CPUS` long.
+    tlb_max_harts = const MAX_HARTS,
 );
 #[cfg(target_arch = "riscv64")]
 #[cfg(feature = "rvv")]
@@ -220,6 +224,8 @@ global_asm!(
     // Task.tid (offset 128). Every context switch under `rvv` was
     // saving/restoring v0-v31/vl/vtype/vstart into the wrong slot.
     task_tid_off = const core::mem::offset_of!(azos_sched::task::Task, tid),
+    // The TLB root table (`TLB_MAX_HARTS`) is the same Kconfig `NR_CPUS` long.
+    tlb_max_harts = const MAX_HARTS,
 );
 
 // ── Page size: one Kconfig choice, two routes into the build ────────────
@@ -252,7 +258,7 @@ global_asm!(
     kernel_va_offset = const azos_arch::mmu::KERNEL_VA_OFFSET,
     // The same tie for the granule: linker-aarch64.ld ASSERTs its
     // `AZOS_PAGE_SIZE` (kernel/build.rs) against `_azos_page_size_check`.
-    page_size = const azos_arch::mmu::PAGE_SIZE,
+    page_size = const azos_arch::PAGE_SIZE,
 );
 
 // TrapFrame layout + vector-number constants (B2-01 pattern): read off the
@@ -281,7 +287,7 @@ global_asm!(
     // taken on a per-CPU IRQ stack", the same shape, not a copy of riscv64's
     // own slots — see that const's doc comment).
     max_harts       = const MAX_HARTS,
-    irq_stack_size  = const AARCH64_IRQ_STACK_SIZE,
+    irq_stack_size  = const IRQ_STACK_SIZE,
 );
 
 // Context switch asm — Phase 3 (context switch + scheduler on aarch64).
@@ -311,22 +317,45 @@ global_asm!(
     context_saving_off = const core::mem::offset_of!(azos_sched::task::Task, context_saving),
 );
 
-/// Maximum number of harts supported (stack slots allocated).
-const MAX_HARTS: usize = 8;
+// x86_64: the PVH boot path (boot.S: baseline check, long mode, IDT, then
+// kernel_main) and the trap / switch stubs, AT&T syntax like the other
+// ISAs' files. `x86_level` is Kconfig X86_64_LEVEL, checked by CPUID before
+// any code compiled for that level runs.
+// arch-only: x86_64's own asm files and level; each ISA includes its own.
+#[cfg(target_arch = "x86_64")]
+const X86_64_LEVEL: u32 = if azos_limits::X86_64_LEVEL_V3 {
+    3
+} else if azos_limits::X86_64_LEVEL_V1 {
+    1
+} else {
+    2
+};
+#[cfg(target_arch = "x86_64")]
+global_asm!(
+    include_str!("entry/x86_64/asm/boot.S"),
+    x86_level = const X86_64_LEVEL,
+    options(att_syntax),
+);
+#[cfg(target_arch = "x86_64")]
+global_asm!(include_str!("entry/x86_64/asm/trap_entry.S"), options(att_syntax));
+#[cfg(target_arch = "x86_64")]
+global_asm!(include_str!("entry/x86_64/asm/context_switch.S"), options(att_syntax));
+
+/// The CPU ceiling (Kconfig `NR_CPUS`, through `azos_percpu`): the bound on
+/// every table assembly or early boot indexes by CPU id (`boot.S`'s range
+/// check, `trap_hart_vectors`, the per-CPU stack-top tables). The name stays
+/// `MAX_HARTS` because the asm takes it under that name; on riscv64 a CPU id
+/// IS a hart id (`tp`), so the two bounds are one.
+const MAX_HARTS: usize = azos_percpu::NR_CPUS;
 
 // K-C29: `azos_sync::preempt` keeps one preemption-depth slot per hart and
-// indexes it by `hart_id()` with NO clamp. A clamp is exactly what let the
-// deleted stub merge harts 3..7 onto one counter -- it clamped to MAX_CPUS (4)
-// while this constant is 8, so a lock taken on hart 5 disabled preemption on
-// hart 3. `crates/core/sync` cannot see MAX_HARTS, so this is the one place the two
-// constants can be tied together, and it fails the build rather than the robot.
+// indexes it by `hart_id()` with NO clamp; `PER_CPU` and every other
+// scheduler table are indexed by `current_cpu_id()` the same way. All of them
+// now take their length from the one Kconfig symbol `NR_CPUS` (they were
+// hand-written 8s and a private 4, tied by asserts). The asserts stay: they
+// are what fails the build, not the robot, if a table is ever sized by
+// anything else again.
 const _: () = assert!(MAX_HARTS <= azos_sync::preempt::SLOTS);
-
-/// `PER_CPU` is `[_; MAX_CPUS]` and is indexed by hart id with no clamp, while
-/// `boot.S` range-checks secondary harts against `MAX_HARTS` and does not check
-/// the boot hart at all. If `MAX_HARTS` ever exceeds `MAX_CPUS` again, a hart
-/// the assembly admits is a hart the scheduler cannot index — a board reset at
-/// boot, on whichever board enumerates that many harts. They were 8 and 4.
 const _: () = assert!(MAX_HARTS <= azos_sched::MAX_CPUS);
 
 /// Same class of copied-constant drift (`feedback-a-copied-feature-list-
@@ -344,145 +373,71 @@ const _: () = assert!(MAX_HARTS <= azos_sched::smp::AARCH64_HART_TABLE_LEN);
 #[cfg(target_arch = "aarch64")]
 const _: () = assert!(MAX_HARTS <= azos_dtb::MAX_CPU_REG);
 
-/// Stack size per secondary hart (16 KiB).
-/// Enough for nested traps (288 B each) + scheduler + Rust calls.
-#[cfg(target_arch = "riscv64")]
-const SECONDARY_STACK_SIZE: usize = 16 * 1024;
+/// Boot stack of each secondary CPU (Kconfig `SECONDARY_STACK_SIZE_KB`,
+/// 16 KiB by default): nested traps (288 B each), the scheduler and its Rust
+/// callers until the CPU's first task switch.
+const SECONDARY_STACK_SIZE: usize = azos_limits::SECONDARY_STACK_SIZE_BYTES;
 
-// Secondary CPU stacks — boot.S references `secondary_stacks` and
-// loads the per-hart size from `_secondary_stack_size` (.quad in .data).
-//
-// _secondary_stack_size lives in .data because it carries a real value.
-// secondary_stacks lives in .bss so the 128 KiB buffer doesn't bloat the
-// kernel binary on disk; clear_bss in boot.S zeroes it before any hart
-// ever touches it (secondaries are still parked in OpenSBI at that point).
-#[cfg(target_arch = "riscv64")]
-global_asm!(
-    ".section .data",
-    ".align 3",
-    ".global _secondary_stack_size",
-    "_secondary_stack_size:",
-    "    .quad {size}",
-    size = const SECONDARY_STACK_SIZE,
-);
-#[cfg(target_arch = "riscv64")]
-global_asm!(
-    ".section .bss",
-    ".align 12",
-    ".global secondary_stacks",
-    "secondary_stacks:",
-    "    .space {size} * {max_harts}",
-    size = const SECONDARY_STACK_SIZE,
-    max_harts = const MAX_HARTS,
-);
-
-/// Per-hart interrupt stack, from Kconfig `INTERRUPT_STACK_SIZE_KB`.
+/// Per-CPU interrupt stack, from Kconfig `INTERRUPT_STACK_SIZE_KB`.
 ///
-/// The trap entry switches to this hart's slot when `scause` says interrupt,
-/// so the depth an interrupt costs is no longer charged to whichever task
-/// happened to be running. See the block comment in `trap_entry.S`.
-#[cfg(target_arch = "riscv64")]
+/// The trap entry switches to this CPU's stack when the trap is an
+/// interrupt, so the depth an interrupt costs is no longer charged to
+/// whichever task happened to be running. See the block comment in either
+/// ISA's `trap_entry.S`, which take it as `{irq_stack_size}`.
 const IRQ_STACK_SIZE: usize = azos_limits::INTERRUPT_STACK_SIZE_BYTES;
 
-/// The word the bottom of every interrupt-stack slot carries.
+/// The word the bottom of every interrupt stack carries, on both ISAs.
 ///
-/// These slots are .bss with no guard page, so an overflow would quietly eat
-/// the slot below. `trap_resched` reads this word on the way out of every
-/// trap: cheap, and it turns a silent corruption into a message. The low
-/// half must match `IRQ_STACK_MAGIC_LO` in `trap_entry.S`.
-#[cfg(target_arch = "riscv64")]
+/// There is no guard page below an interrupt stack, so an overflow would
+/// quietly eat whatever lies below it. riscv64's `trap_resched` reads this
+/// word on the way out of every trap and aarch64 checks the boot CPU's after
+/// its tick wait: cheap, and it turns a silent corruption into a message.
 const IRQ_STACK_MAGIC: u64 = 0x4952_5153_5441_5A57; // "IRQSTAZW"
 
-// .bss for the same reason as `secondary_stacks`: the buffer would otherwise
-// be zeroes on disk. `clear_bss` in boot.S runs before any hart takes a trap,
-// and `irq_stacks_arm()` writes the magic before interrupts are enabled.
-#[cfg(target_arch = "riscv64")]
+// ── Per-CPU stacks (wave 15, NRCPUS) ────────────────────────────────────
+//
+// These were `.bss` arrays of `MAX_HARTS` slots — secondary boot stacks and
+// interrupt stacks, 24 KiB a CPU, 1.5 MiB at a ceiling of 64 — indexed by the
+// asm with a `mul`. They now live in each secondary CPU's per-CPU area,
+// allocated at boot for the possible CPUs only (`boot::setup_per_cpu_areas`),
+// and the asm reaches them through two tables of one word per CPU. The
+// tables stay static: the asm reads them by symbol, a secondary before its
+// MMU is on. The boot CPU's interrupt stack is the one static stack left
+// (`boot_irq_stack`): it is armed before interrupts are enabled, which is
+// before the per-CPU areas exist.
+
+/// Base (lowest address) of each CPU's interrupt stack, `INTERRUPT_STACK_SIZE`
+/// bytes long, as a kernel virtual address; 0 for a CPU without one. Read by
+/// both ISAs' `trap_entry.S` (`AZOS_IRQ_STACK_BASE[cpu id]`) on every
+/// interrupt; written by `boot::arm_irq_stack` before that CPU can take one.
+#[unsafe(no_mangle)]
+pub static AZOS_IRQ_STACK_BASE: [core::sync::atomic::AtomicUsize; MAX_HARTS] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; MAX_HARTS];
+
+/// Initial `sp` of each secondary CPU, as a PHYSICAL address (the secondary
+/// loads it with its MMU off; riscv64 maps the kernel 1:1, aarch64 adds
+/// `KERNEL_VA_OFFSET` once the MMU is on); 0 parks the CPU. Read by both
+/// ISAs' `boot.S` secondary entry; written by `boot::setup_per_cpu_areas`
+/// before the secondaries are started.
+#[unsafe(no_mangle)]
+pub static AZOS_SECONDARY_SP: [core::sync::atomic::AtomicUsize; MAX_HARTS] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; MAX_HARTS];
+
+// The boot CPU's interrupt stack. `.bss`, so it is zeroes on disk;
+// `clear_bss` in boot.S runs before any trap.
 global_asm!(
     ".section .bss",
-    ".align 12",
-    ".global irq_stacks",
-    "irq_stacks:",
-    "    .space {size} * {max_harts}",
+    // `.p2align`: 2^12 on every ISA (x86's `.align` counts bytes).
+    ".p2align 12",
+    ".global boot_irq_stack",
+    "boot_irq_stack:",
+    "    .space {size}",
     size = const IRQ_STACK_SIZE,
-    max_harts = const MAX_HARTS,
 );
 
-#[cfg(target_arch = "riscv64")]
 unsafe extern "C" {
-    static irq_stacks: u8;
+    static boot_irq_stack: u8;
 }
-
-// ── aarch64 per-CPU IRQ stack — Phase 2, task 1 ─────────────────────────
-//
-// Same shape as riscv64's `irq_stacks` above (own const, own bss region,
-// own magic word), not a shared array: the two ISAs' trap asm switches
-// onto it independently (`trap_entry.S`'s `90:`/`91:` block), and sharing
-// the riscv64 symbol across a `#[cfg]` boundary would make the aarch64
-// linker script responsible for a riscv64-owned layout decision for no
-// reason. Sized by the same `MAX_HARTS` both boot.S files already take —
-// written as future-proofing against SMP landing on this ISA when only
-// hart 0 could reach Rust code (Phase 2/3); Phase 4 (SMP) is what actually
-// exercises the other slots: every secondary's own timer tick switches onto
-// ITS slot too (`trap_entry.S`'s `90:` block computes the index from
-// `MPIDR_EL1` directly, independent of this array's own indexing here).
-#[cfg(target_arch = "aarch64")]
-const AARCH64_IRQ_STACK_SIZE: usize = azos_limits::INTERRUPT_STACK_SIZE_BYTES;
-
-/// Distinct from riscv64's `IRQ_STACK_MAGIC` so a log line unambiguously
-/// names which ISA's slot underflowed, if that ever needs debugging from a
-/// mixed build's saved logs.
-#[cfg(target_arch = "aarch64")]
-const AARCH64_IRQ_STACK_MAGIC: u64 = 0x4152_4d36_3449_5251; // "ARM64IRQ"-ish
-
-#[cfg(target_arch = "aarch64")]
-global_asm!(
-    ".section .bss",
-    ".align 12",
-    ".global aarch64_irq_stacks",
-    "aarch64_irq_stacks:",
-    "    .space {size} * {max_harts}",
-    size = const AARCH64_IRQ_STACK_SIZE,
-    max_harts = const MAX_HARTS,
-);
-
-#[cfg(target_arch = "aarch64")]
-unsafe extern "C" {
-    static aarch64_irq_stacks: u8;
-}
-
-// ── aarch64 secondary-hart boot stacks — Phase 4 (SMP) ──────────────────
-//
-// Mirrors riscv64's `secondary_stacks`/`_secondary_stack_size` above,
-// exactly: `.bss` (so the 128 KiB buffer is zero on disk, not baked into the
-// image), size published to the asm as a `.data` quad so
-// `_aarch64_secondary_entry` (boot.S) can compute
-// `aarch64_secondary_stacks[hart_id] + stack_size` the same way
-// `_secondary_start` computes `secondary_stacks[hart_id] + stack_size` — no
-// second scheduler, no second stack-table shape, just the aarch64 asm
-// entry's own copy of the identical arithmetic (PSCI `CPU_ON` hands x0 =
-// hart_id, the same payload SBI `hart_start` hands a0 on riscv64).
-#[cfg(target_arch = "aarch64")]
-const AARCH64_SECONDARY_STACK_SIZE: usize = 16 * 1024;
-
-#[cfg(target_arch = "aarch64")]
-global_asm!(
-    ".section .data",
-    ".align 3",
-    ".global _aarch64_secondary_stack_size",
-    "_aarch64_secondary_stack_size:",
-    "    .quad {size}",
-    size = const AARCH64_SECONDARY_STACK_SIZE,
-);
-#[cfg(target_arch = "aarch64")]
-global_asm!(
-    ".section .bss",
-    ".align 12",
-    ".global aarch64_secondary_stacks",
-    "aarch64_secondary_stacks:",
-    "    .space {size} * {max_harts}",
-    size = const AARCH64_SECONDARY_STACK_SIZE,
-    max_harts = const MAX_HARTS,
-);
 
 // Linker script symbols — section boundaries for W^X enforcement.
 // Shared by both ISAs since Item 2 Stage 5 task 4: linker.ld and
@@ -520,15 +475,6 @@ const FALLBACK_MEM_SIZE: usize = 128 * 1024 * 1024;
 
 use azos_limits::KERNEL_HEAP_SIZE_BYTES as HEAP_SIZE;
 
-/// Compile-time maximum number of CPUs supported. The runtime count is
-/// derived from the DTB (capped at this value); see `num_cpus` local in
-/// kernel_main. Must be ≤ MAX_HARTS so all online CPUs have a stack slot.
-/// riscv64-only: nothing on the aarch64 side reads this yet (no DTB
-/// parse, no SMP wiring — see that kernel_main's doc comment); the two
-/// `MAX_HARTS <= azos_sched::MAX_CPUS` asserts above reference the
-/// scheduler crate's own constant, a different item, and stay shared.
-#[cfg(target_arch = "riscv64")]
-const MAX_CPUS: usize = 4;
 
 /// Number of worker tasks for the SMP stress test.
 const NUM_WORKERS: usize = 15;
@@ -543,12 +489,36 @@ const WORKER_POOL_RESERVE: usize = 16;
 // `entry/riscv64.rs`'s own trap-context work; this keeps the two files
 // apart). Same public fn names/signatures on both ISAs — see each file's
 // module doc for what it does per ISA.
+//
+// `arch_entry` is the same ISA's `ArchEntry` impl over those hooks plus the
+// secondary-CPU steps; `kernel_main` and `boot::smp::secondary_main` reach
+// the ISA only through `ARCH_ENTRY`. An ISA with neither file stops here.
 #[cfg(target_arch = "riscv64")]
 #[path = "entry/riscv64/boot_hooks.rs"]
 mod boot_hooks;
+#[cfg(target_arch = "riscv64")]
+#[path = "entry/riscv64/arch_entry.rs"]
+mod arch_entry;
 #[cfg(target_arch = "aarch64")]
 #[path = "entry/aarch64/boot_hooks.rs"]
 mod boot_hooks;
+#[cfg(target_arch = "aarch64")]
+#[path = "entry/aarch64/arch_entry.rs"]
+mod arch_entry;
+#[cfg(target_arch = "x86_64")]
+#[path = "entry/x86_64/boot_hooks.rs"]
+mod boot_hooks;
+#[cfg(target_arch = "x86_64")]
+#[path = "entry/x86_64/arch_entry.rs"]
+mod arch_entry;
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("kernel: no boot hooks for this target_arch: add \
+    kernel/src/entry/<isa>/{boot_hooks,arch_entry}.rs (ArchEntry)");
+
+/// This ISA's boot sequence: the arch contract's `ArchEntry`, zero-sized, so
+/// every call through it is the hook body itself.
+pub(crate) const ARCH_ENTRY: arch_entry::Entry = arch_entry::Entry;
+use azos_arch::ArchEntry as _;
 
 /// Early-boot output the shared `kernel_main` body needs past
 /// `boot_hooks::arch_early_boot`'s return. `heap_start`/`kernel_end_aligned`
@@ -589,11 +559,15 @@ pub struct EarlyBoot {
 /// per-arch hook does.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
-    let early = boot_hooks::arch_early_boot(hart_id, dtb_ptr);
+    let early = ARCH_ENTRY.early_boot(hart_id, dtb_ptr);
     // The kernel's own page table, live from here, maps the pstore region:
     // a panic from now on leaves a RAM record.
     pstore::arm();
     let num_cpus = early.num_cpus;
+    // The per-CPU areas, one per possible CPU (the DTB's count, cut to
+    // NR_CPUS by `arch_early_boot`), from the frame allocator: after the
+    // heap, before the scheduler, the first task and the secondaries.
+    boot::setup_per_cpu_areas();
     // Read only by the riscv64-only PMP audit block further down (the one
     // block in this shared body that still names `pmp::pmp_regions`
     // directly) — see `EarlyBoot`'s own doc.
@@ -630,7 +604,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // ── Entropy: virtio-rng seeds the kernel pool ────────────────────────────
     // Shared with aarch64's kernel_main — see `install_entropy`'s own doc
     // for the full reasoning and the ordering constraint.
-    boot_hooks::arch_map_late_mmio();
+    ARCH_ENTRY.map_late_mmio();
     install_entropy();
 
     match azos_drv_block::blkdev::init() {
@@ -927,7 +901,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
                     } else {
                         "link-auth-enforced"
                     });
-                loop { azos_arch::cpu::wfi(); }
+                loop { azos_arch::Cpu::wfi(&azos_arch::ARCH); }
             }
         }
         #[cfg(all(feature = "domain-robot",
@@ -1122,7 +1096,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         let mut window = azos_pci::BarWindow::new(pci_mem32.0, pci_mem32.1);
         #[cfg(target_arch = "riscv64")]
         if azos_drv_irqchip::irqchip::is_aia() {
-            let hart = azos_arch::cpu::hart_id() as u32;
+            let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32;
             if let Some(net) = funcs[..pci_n].iter().flatten()
                 .find(|f| f.vendor == 0x1af4 && f.device == 0x1041)
             {
@@ -1222,7 +1196,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         {
             #[cfg(target_arch = "riscv64")]
             let mut route = azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(
-                azos_arch::cpu::hart_id() as u32);
+                azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32);
             #[cfg(target_arch = "aarch64")]
             let mut route = ItsRoute {
                 dev: azos_arch::its::device_id(net.bdf.bus, net.bdf.device, net.bdf.function),
@@ -1865,13 +1839,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // `wake_harts()`. An idle pinned to a hart that never starts is harmless:
     // the K-C24 rescue moves tasks off dead harts, and a rescued idle is just
     // one more lowest-priority task.
-    #[cfg(target_arch = "riscv64")]
-    let idle_fn = idle_task;
-    #[cfg(target_arch = "aarch64")]
-    let idle_fn = aarch64_idle_task;
     for cpu in 0..num_cpus {
         azos_sched::task_create_affinity(
-            "idle", idle_fn, 0, azos_sched::IDLE_PRIORITY, cpu as i8);
+            "idle", idle_task, 0, azos_sched::IDLE_PRIORITY, cpu as i8);
     }
     kprintln!("[SCHED] Created {} idle tasks (one per hart)", num_cpus);
 
@@ -2189,6 +2159,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     #[cfg(target_arch = "riscv64")]
     let net_poll_hart: i8 = 3;
     #[cfg(target_arch = "aarch64")]
+    let net_poll_hart: i8 = num_cpus.saturating_sub(1) as i8;
+    // Any other ISA (the x86_64 skeleton): aarch64's policy, the last CPU.
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
     let net_poll_hart: i8 = num_cpus.saturating_sub(1) as i8;
     azos_sched::task_create_affinity("net-poll", net_poll_task, 0,
         azos_sched::NET_POLL_PRIORITY, net_poll_hart);
@@ -2642,7 +2615,12 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         azos_arch::lat_hook::lat::set_new_max_hook(crate::lat_trace::trace_new_max);
     }
 
-    boot_hooks::arch_wake_secondaries(num_cpus);
+    // Gate only: from here on every `current_cpu_id()` is checked against
+    // the hardware id (`smokes/cpuid_probe.rs`).
+    #[cfg(feature = "cpuid-probe")]
+    crate::smokes::cpuid_probe::arm(num_cpus);
+
+    ARCH_ENTRY.wake_secondaries(num_cpus);
 
     // The boot hart's timer interrupt stays off until the end of kernel_main
     // (see there); the other harts are already running tasks.
@@ -3796,7 +3774,12 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         None => kprintln!("[WDT] no watchdog armed: no idle keepalive"),
     }
 
-    boot_hooks::arch_enter_scheduler(hart_id)
+    // Gate only: the position the fork-refusal probe first sat at, where the
+    // secondaries already run tasks and this hart has never scheduled.
+    #[cfg(feature = "cpuid-probe")]
+    crate::smokes::cpuid_probe::at_old_fork_probe_position(hart_id as usize, num_cpus);
+
+    ARCH_ENTRY.enter_scheduler(hart_id)
 }
 
 /// The idle-poll hook (`timebase::set_idle_poll_hook`): a deadline only the

@@ -128,7 +128,7 @@ pub fn stream_region(s: Stream) -> Option<u32> {
         return Some(l.region);
     }
     let (cap, slot) = s.geometry();
-    let page = azos_arch::mmu::PAGE_SIZE;
+    let page = azos_arch::PAGE_SIZE;
     let pages = SpscBytes::bytes(cap, slot).div_ceil(page);
     let (region, phys) = shm::shm_create_kernel_contig_ref(pages, ShmPerms::ReadWrite)?;
     let base = azos_mm::addr::phys_to_virt(phys);

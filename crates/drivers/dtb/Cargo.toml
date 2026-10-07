@@ -9,3 +9,4 @@ publish = false
 # Parses a Flattened Device Tree blob from a raw pointer and extracts
 # memory, UART, PLIC, timer-freq, CPU count, and compatible string.
 [dependencies]
+azos_limits = { workspace = true }

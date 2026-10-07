@@ -4,8 +4,8 @@
 //! into the two call sequences a kernel needs — bring a secondary core up
 //! from the primary, and have that secondary core finish its own per-PE
 //! init. Wired into `kernel/` since the aarch64 parity program's Phase 4:
-//! `secondary_init` (below) is called from `kernel::entry::aarch64::
-//! aarch64_smp_secondary_start`, and `kernel/src/entry/aarch64/boot_hooks.rs`'s `arch_wake_
+//! `secondary_init` (below) is called from the kernel's aarch64
+//! `ArchEntry::secondary_irq_init` (`kernel/src/entry/aarch64/arch_entry.rs`), and `kernel/src/entry/aarch64/boot_hooks.rs`'s `arch_wake_
 //! secondaries` (`entry::aarch64::boot_hooks`) drives the primary side
 //! through `azos_sched::smp::wake_harts` → `ARCH.hart_start` (PSCI
 //! `CPU_ON`) — four call sites into this module as of this doc's own

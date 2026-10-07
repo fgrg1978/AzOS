@@ -42,7 +42,7 @@
 //! alias is only ever one page at a time and only on the CPU that holds it.
 
 use crate::vmm;
-use azos_arch::ARCH;
+use azos_arch::{ArchPlatform, ARCH};
 use azos_arch_api::{Mmu, PagePerms, PAGE_SIZE};
 use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -167,11 +167,9 @@ pub fn write_words(words: &[(usize, u32)]) -> Result<usize, PokeError> {
             core::ptr::write_volatile(p, w);
             core::ptr::read_volatile(p)
         };
-        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-        // SAFETY: the alias line is mapped.
-        unsafe {
-            azos_arch::cache::dcache_clean(p as usize, 4)
-        };
+        // SAFETY: the alias line is mapped. A no-op where fetch is coherent
+        // with data writes (riscv64).
+        unsafe { ARCH.dcache_clean(p as usize, 4) };
         vmm::unmap_kernel(kpt, alias);
         ARCH.flush_tlb_page(alias);
         if back != w {
@@ -187,21 +185,10 @@ pub fn write_words(words: &[(usize, u32)]) -> Result<usize, PokeError> {
 /// The alias's TLB entries gone from every CPU, and every CPU's instruction
 /// fetch synchronised with the text writes (module doc).
 fn sync_all(alias: usize) {
-    #[cfg(target_arch = "riscv64")]
-    {
-        // SAFETY: memory and instruction-fetch fences only.
-        unsafe { core::arch::asm!("fence rw, rw", "fence.i", options(nostack, preserves_flags)) };
-        let _ = azos_arch::sbi::remote_sfence_vma(0, usize::MAX, alias, PAGE_SIZE);
-        let _ = azos_arch::sbi::remote_fence_i(0, usize::MAX);
-    }
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    {
-        // `flush_tlb_page` is `TLBI VAAE1IS` (broadcast) on this ISA.
-        ARCH.flush_tlb_page(alias);
-        azos_arch::cache::icache_invalidate_all();
-    }
-    #[cfg(not(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none"))))]
-    {
-        let _ = alias;
-    }
+    // riscv64: SBI `remote_sfence_vma` of the alias page to every hart (the
+    // local `sfence.vma` too); aarch64: `TLBI VAAE1IS`, already broadcast.
+    ARCH.flush_tlb_page_all(alias);
+    // riscv64: local `fence rw, rw; fence.i`, then SBI remote fence.i;
+    // aarch64: the broadcast I-cache invalidate.
+    ARCH.icache_sync_all();
 }

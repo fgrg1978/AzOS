@@ -8,3 +8,4 @@ description = "Host stand-in for azos_arch, re-exporting the REAL Sv39 mmu modul
 
 [dependencies]
 bitflags = "2"
+azos_arch_api = { path = "../../../../../crates/core/arch-api" }

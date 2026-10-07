@@ -539,7 +539,10 @@ mod tests {
         // The deleted stub clamped `hart.min(MAX_CPUS - 1)` with MAX_CPUS = 4
         // and MAX_HARTS = 8, so a critical section on hart 5 disabled
         // preemption on hart 3. Every slot must be independent.
-        assert_eq!(preempt::SLOTS, 8);
+        // One slot per CPU of the Kconfig ceiling; this test needs hart 5, so
+        // it runs against a `.config` with NR_CPUS of at least 6 (qemu: 64).
+        assert_eq!(preempt::SLOTS, azos_limits::NR_CPUS);
+        assert!(preempt::SLOTS > 5, "this test needs NR_CPUS >= 6 in the host .config");
         for h in 0..preempt::SLOTS {
             azos_arch::set_hart(h);
             preempt::force_zero_depth();

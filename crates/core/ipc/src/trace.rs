@@ -51,7 +51,7 @@ pub fn init(ncpu: usize, ts_hz: u64, text: (usize, usize)) {
         return;
     }
     let ncpu = ncpu.clamp(1, azos_trace::MAX_CPUS) as u32;
-    let page = azos_arch::mmu::PAGE_SIZE;
+    let page = azos_arch::PAGE_SIZE;
     let cap_bytes = shm::MAX_SHM_PAGES * page;
     let mut entries = azos_trace::RING_ENTRIES;
     while entries > 64 && azos_spsc::trace::region_bytes(ncpu, entries) > cap_bytes {
@@ -87,7 +87,7 @@ pub fn init(ncpu: usize, ts_hz: u64, text: (usize, usize)) {
 /// The region's packed pool reference and its size in bytes, once created.
 pub fn region_ref() -> Option<(u32, usize)> {
     let r = REGION_REF.load(Ordering::Acquire);
-    (r != u32::MAX).then(|| (r, REGION_PAGES.load(Ordering::Relaxed) as usize * azos_arch::mmu::PAGE_SIZE))
+    (r != u32::MAX).then(|| (r, REGION_PAGES.load(Ordering::Relaxed) as usize * azos_arch::PAGE_SIZE))
 }
 
 /// Record an event in the AQ8 form. Forwards to the typed tracepoints; a

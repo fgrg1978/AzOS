@@ -21,6 +21,9 @@ dependencies = [
 [[package]]
 name = "azos_dtb"
 version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
 
 [[package]]
 name = "azos_energy"

@@ -13,6 +13,9 @@ version = "1.0.0"
 [[package]]
 name = "azos_arch_api"
 version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
 
 [[package]]
 name = "azos_common"
@@ -39,6 +42,13 @@ version = "0.1.0"
 dependencies = [
  "azos-config",
  "sha2",
+]
+
+[[package]]
+name = "azos_percpu"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
 ]
 
 [[package]]
@@ -76,6 +86,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_limits",
+ "azos_percpu",
  "azos_spsc",
 ]
 

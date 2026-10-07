@@ -311,6 +311,21 @@ mod tests {
     /// — which is the point.
     struct Stub;
 
+    /// The stub's per-CPU base register.
+    static PERCPU_BASE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    /// The per-CPU base round-trips through the trait (a `&dyn Cpu`, as the
+    /// kernel would hold it): what `set_percpu_base` writes is what
+    /// `percpu_base` reads. Canary: make the stub's setter a no-op.
+    #[test]
+    fn percpu_base_round_trips_through_the_trait() {
+        let c: &dyn Cpu = &Stub;
+        c.set_percpu_base(5);
+        assert_eq!(c.percpu_base(), 5);
+        c.set_percpu_base(0);
+        assert_eq!(c.percpu_base(), 0);
+    }
+
     impl Cpu for Stub {
         fn hart_id(&self) -> usize { 0 }
         fn wfi(&self) {}
@@ -322,6 +337,12 @@ mod tests {
             use core::sync::atomic::{AtomicU64, Ordering};
             static T: AtomicU64 = AtomicU64::new(0);
             T.fetch_add(1, Ordering::Relaxed)
+        }
+        fn percpu_base(&self) -> usize {
+            PERCPU_BASE.load(core::sync::atomic::Ordering::Relaxed)
+        }
+        fn set_percpu_base(&self, base: usize) {
+            PERCPU_BASE.store(base, core::sync::atomic::Ordering::Relaxed)
         }
     }
 

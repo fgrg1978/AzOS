@@ -288,3 +288,34 @@ impl Interrupts for Arch {
         todo!("IPI stand-in: not reached by any test in this crate")
     }
 }
+
+pub use azos_arch_api::ArchPlatform;
+pub use mmu::{PAGE_SHIFT, PAGE_SIZE};
+
+/// The arch contract's `ArchPlatform`, host bodies: plain stores for zeroing,
+/// no caches or TLBs to maintain. Shared files call these through `ARCH`
+/// rather than an ISA module, so this stand-in implements the contract.
+impl azos_arch_api::ArchPlatform for Arch {
+    fn icache_needs_dcache_clean(&self) -> bool { false }
+    unsafe fn dcache_clean(&self, _va: usize, _len: usize) {}
+    fn icache_sync_all(&self) {}
+    fn flush_tlb_page_all(&self, _va: usize) {}
+    unsafe fn zero_memory(&self, va: usize, len: usize) {
+        unsafe { core::ptr::write_bytes(va as *mut u8, 0, len) };
+    }
+    fn user_root_word(&self, root_phys: usize, asid: u16) -> usize { mmu::make_satp(root_phys, asid) }
+    fn install_user_root_local(&self, _word: usize) {}
+    type UserAccess = ();
+    fn user_access(&self) {}
+}
+
+/// `Boot` for the host: nothing to power off. `power_off_orderly` /
+/// `reboot_orderly` name it; no test reaches them.
+impl azos_arch_api::Boot for Arch {
+    fn shutdown(&self) -> ! { todo!("host shim: shutdown") }
+    fn reboot(&self) -> ! { todo!("host shim: reboot") }
+    fn hart_start(&self, _hart_id: usize, _start_pc: usize, _opaque: usize) -> Result<(), azos_arch_api::HartStartError> {
+        todo!("host shim: hart_start")
+    }
+}
+pub use azos_arch_api::Boot;

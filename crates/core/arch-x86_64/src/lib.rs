@@ -1,0 +1,226 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#![no_std]
+
+//! x86_64 port skeleton: the arch contract, every method a `todo!()` that
+//! names the x86 mechanism it stands for. Structure only — no instruction
+//! here has run, and nothing builds this crate by default.
+//!
+//! It exports the contract and NOTHING else: no `cpu`, `mmu`, `apic`, ...
+//! modules. So `cargo check` of a shared crate against it (the facade's
+//! `stub` feature, or a bare-metal `x86_64` target) fails exactly where that
+//! crate still reaches past the contract into an ISA module, and that error
+//! list is what a port must add (`tools/arch_stub_check.py`).
+//!
+//! The same crate is the facade's host-side fake ISA (`azos_arch/stub`):
+//! the method list is one list, so the skeleton and the stub cannot drift.
+//!
+//! Beyond the contract, two ISA-private modules: [`features`] (the
+//! three-tier baseline / probe / `HAS_X86_*` model riscv64 uses) and
+//! [`fpu`] (EAGER FP save: x86 never switches FP lazily).
+//!
+//! What an x86_64 port adds beyond these methods: `kernel/src/entry/x86_64/`
+//! (boot hooks, `ArchEntry`, `TrapContext`, `boot.S`/`trap_entry.S`/
+//! `context_switch.S`), `kernel/linker-x86_64.ld`, ACPI MADT next to the DTB
+//! for CPU discovery, LAPIC/IOAPIC in `crates/drivers/irqchip`, and the
+//! `compile_error!("x86_64: ...")` branches the shared crates carry.
+
+pub mod features;
+pub mod fpu;
+pub mod hw;
+
+/// The x86 body on x86_64; on the host (this crate is also the facade's fake
+/// ISA) the `todo!()` naming it.
+macro_rules! on_x86 {
+    ($e:expr, $msg:literal) => {{
+        #[cfg(target_arch = "x86_64")]
+        {
+            $e
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            todo!($msg)
+        }
+    }};
+}
+
+pub use azos_arch_api::{
+    ArchEntry, ArchPlatform, Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu,
+    MmuError, PagePerms, Vector, PAGE_SHIFT, PAGE_SIZE,
+};
+
+/// The x86_64 zero-sized singleton type (`azos_arch::ArchImpl`).
+pub struct X86_64;
+
+/// The singleton (`azos_arch::ARCH`).
+pub static X86_64_ARCH: X86_64 = X86_64;
+
+impl Cpu for X86_64 {
+    /// This CPU's index: the LAPIC/x2APIC ID mapped to a dense CPU number
+    /// (`CPUID.0BH`/`1FH`, or the GS-relative per-CPU slot once it exists).
+    fn hart_id(&self) -> usize {
+        on_x86!(hw::rdmsr(hw::IA32_GS_BASE) as usize, "x86_64: hart_id: x2APIC ID -> dense CPU index (per-CPU slot via GS)")
+    }
+    /// `sti; hlt` with interrupts in the state the caller left them.
+    /// `hlt`. With interrupts masked nothing but an NMI ends it: that is a
+    /// final stop (the panic path's), so it is reported through QEMU's
+    /// isa-debug-exit first (status 1; a no-op without that device).
+    fn wfi(&self) {
+        on_x86!({
+            if hw::rflags() & hw::RFLAGS_IF == 0 {
+                hw::outl(hw::DEBUG_EXIT_PORT, 0);
+            }
+            hw::hlt()
+        }, "x86_64: wfi: hlt (mwait where the idle governor allows)")
+    }
+    /// `cli; hlt` forever.
+    fn halt(&self) -> ! {
+        on_x86!(hw::halt_forever(), "x86_64: halt: cli; hlt loop")
+    }
+    /// Invariant TSC (`rdtsc`, `CPUID.80000007H:EDX[8]`), frequency from
+    /// `CPUID.15H` or calibrated against the HPET/PIT.
+    fn now_ticks(&self) -> u64 {
+        on_x86!(hw::rdtsc(), "x86_64: now_ticks: invariant TSC via rdtsc")
+    }
+    /// `IA32_GS_BASE` (`rdgsbase`), swapped with `IA32_KERNEL_GS_BASE` by
+    /// `swapgs` on every user/kernel transition.
+    fn percpu_base(&self) -> usize {
+        on_x86!(hw::rdmsr(hw::IA32_GS_BASE) as usize, "x86_64: percpu_base: rdgsbase (kernel GS)")
+    }
+    /// `wrgsbase` / `wrmsr IA32_GS_BASE`.
+    fn set_percpu_base(&self, _base: usize) {
+        on_x86!(hw::wrmsr(hw::IA32_GS_BASE, _base as u64), "x86_64: set_percpu_base: wrgsbase / IA32_GS_BASE")
+    }
+}
+
+impl Interrupts for X86_64 {
+    /// `pushfq; cli`, returning RFLAGS.IF.
+    fn disable_all(&self) -> InterruptState {
+        on_x86!({
+            let f = hw::rflags();
+            hw::cli();
+            InterruptState(f & hw::RFLAGS_IF)
+        }, "x86_64: disable_all: pushfq; cli -> RFLAGS.IF")
+    }
+    /// `sti` only if the saved RFLAGS.IF was set.
+    fn restore(&self, _prev: InterruptState) {
+        on_x86!(if _prev.0 & hw::RFLAGS_IF != 0 { hw::sti() }, "x86_64: restore: sti iff saved IF")
+    }
+    /// `sti`.
+    fn enable_all(&self) {
+        on_x86!(hw::sti(), "x86_64: enable_all: sti")
+    }
+    /// RFLAGS.IF.
+    fn interrupts_enabled(&self) -> bool {
+        on_x86!(hw::rflags() & hw::RFLAGS_IF != 0, "x86_64: interrupts_enabled: pushfq, test IF")
+    }
+    /// LAPIC timer in TSC-deadline mode (`IA32_TSC_DEADLINE`), one-shot.
+    fn set_timer_deadline(&self, _deadline_ticks: u64) { todo!("x86_64: set_timer_deadline: wrmsr IA32_TSC_DEADLINE") }
+    /// A fixed-vector IPI through the LAPIC ICR (x2APIC `wrmsr 0x830`).
+    fn send_ipi(&self, _target_hart: usize) { todo!("x86_64: send_ipi: LAPIC ICR fixed vector") }
+}
+
+impl Mmu for X86_64 {
+    /// 4 KiB base pages (2 MiB / 1 GiB leaves at levels 1 and 2).
+    const PAGE_SIZE: usize = PAGE_SIZE;
+    /// 4-level paging (PML4); 5-level (LA57) is a later choice.
+    fn levels(&self) -> usize { todo!("x86_64: levels: 4 (PML4, LA57 off)") }
+    /// 512 eight-byte entries per table.
+    fn entries_per_table(&self) -> usize { todo!("x86_64: entries_per_table: 512") }
+    fn vpn(&self, _va: usize, _level: usize) -> usize { todo!("x86_64: vpn: 9-bit index per level from bit 12") }
+    fn pte_empty(&self) -> u64 { todo!("x86_64: pte_empty: 0 (P clear)") }
+    /// Present bit (bit 0).
+    fn pte_is_valid(&self, _word: u64) -> bool { todo!("x86_64: pte_is_valid: P bit") }
+    /// P set and PS clear above level 0.
+    fn pte_is_table(&self, _word: u64, _level: usize) -> bool { todo!("x86_64: pte_is_table: P && !PS") }
+    /// Level 0, or PS set at level 1/2.
+    fn pte_is_leaf(&self, _word: u64, _level: usize) -> bool { todo!("x86_64: pte_is_leaf: level 0 or PS") }
+    /// Bits 12..51 (MAXPHYADDR from `CPUID.80000008H`).
+    fn pte_phys(&self, _word: u64) -> usize { todo!("x86_64: pte_phys: bits 12..MAXPHYADDR") }
+    fn pte_make_table(&self, _pa: usize) -> u64 { todo!("x86_64: pte_make_table: P|RW|US") }
+    /// P, RW, US, NX (bit 63, `EFER.NXE`), G for kernel pages, PAT via PWT/PCD.
+    fn pte_make_leaf(&self, _pa: usize, _perms: PagePerms, _level: usize) -> Result<u64, MmuError> {
+        todo!("x86_64: pte_make_leaf: P|RW|US|NX|G, PS above level 0")
+    }
+    fn pte_perms(&self, _word: u64) -> PagePerms { todo!("x86_64: pte_perms: decode RW/US/NX") }
+    /// A software-available bit (9..11) marks COW.
+    fn pte_is_cow(&self, _word: u64) -> bool { todo!("x86_64: pte_is_cow: software bit 9") }
+    fn pte_share_cow(&self, _word: u64) -> u64 { todo!("x86_64: pte_share_cow: clear RW, set COW bit") }
+    fn pte_break_cow(&self, _word: u64) -> u64 { todo!("x86_64: pte_break_cow: set RW, clear COW bit") }
+    /// Not-present with a software encoding of the permissions.
+    fn pte_make_demand(&self, _perms: PagePerms) -> u64 { todo!("x86_64: pte_make_demand: P clear, perms in bits 1..") }
+    fn pte_is_demand(&self, _word: u64) -> bool { todo!("x86_64: pte_is_demand") }
+    fn pte_demand_perms(&self, _word: u64) -> PagePerms { todo!("x86_64: pte_demand_perms") }
+    /// `mov cr3` with the PCID in bits 0..11 (`CR4.PCIDE`), bit 63 to keep the TLB.
+    fn switch_pt(&self, _root_phys: usize, _asid: u16) { todo!("x86_64: switch_pt: mov cr3, root|PCID") }
+    /// The kernel half lives in every PML4 (shared upper entries); a
+    /// kernel-only root is a CR3 write with PCID 0.
+    fn switch_kernel_pt(&self, _root_phys: usize) { todo!("x86_64: switch_kernel_pt: mov cr3, PCID 0") }
+    /// CR4.PGE toggle (global pages too), or `invpcid` type 2.
+    fn flush_tlb_all(&self) { todo!("x86_64: flush_tlb_all: invpcid all / CR4.PGE toggle") }
+    /// `invpcid` type 1 (single context).
+    fn flush_tlb_asid(&self, _asid: u16) { todo!("x86_64: flush_tlb_asid: invpcid single-context") }
+    /// `invlpg`.
+    fn flush_tlb_page(&self, _va: usize) { todo!("x86_64: flush_tlb_page: invlpg") }
+    /// No broadcast invalidate on x86: an IPI to every CPU holding the root,
+    /// each running `invlpg` (Linux `flush_tlb_mm_range`).
+    fn tlb_shootdown(&self, _root_phys: usize, _va: usize, _len: usize) -> usize {
+        todo!("x86_64: tlb_shootdown: IPI to holders + invlpg each")
+    }
+    fn root_holders(&self, _root_phys: usize) -> usize { todo!("x86_64: root_holders: per-CPU CR3 publication scan") }
+}
+
+impl Boot for X86_64 {
+    /// ACPI S5 (`PM1a_CNT` SLP_TYP from the FADT/DSDT `\_S5`), or the
+    /// hypervisor's exit device under QEMU (`isa-debug-exit`).
+    /// Today: QEMU isa-debug-exit (status 1) if present, else stop the CPU.
+    fn shutdown(&self) -> ! {
+        on_x86!({
+            hw::outl(hw::DEBUG_EXIT_PORT, 0);
+            hw::halt_forever()
+        }, "x86_64: shutdown: ACPI S5 via FADT PM1a_CNT")
+    }
+    /// ACPI reset register (FADT `RESET_REG`), else the 0xCF9 port.
+    /// Today: QEMU isa-debug-exit (status 5) if present, else stop the CPU.
+    fn reboot(&self) -> ! {
+        on_x86!({
+            hw::outl(hw::DEBUG_EXIT_PORT, 2);
+            hw::halt_forever()
+        }, "x86_64: reboot: FADT RESET_REG / port 0xCF9")
+    }
+    /// INIT-SIPI-SIPI through the LAPIC ICR to the APIC ID from the MADT,
+    /// with a real-mode trampoline below 1 MiB (`kernel/src/entry/x86_64/asm/boot.S`).
+    fn hart_start(&self, _hart_id: usize, _start_pc: usize, _opaque: usize) -> Result<(), HartStartError> {
+        todo!("x86_64: hart_start: INIT-SIPI-SIPI to the MADT APIC ID")
+    }
+}
+
+impl Vector for X86_64 {
+    /// SSE2 is baseline on x86_64; AVX2 only behind `features::detect().avx2`
+    /// (Kconfig `HAS_X86_AVX2`), inside a kernel FPU section that saves the
+    /// interrupted task's state eagerly (`fpu`).
+    fn dot_f32(&self, _a: &[f32], _b: &[f32]) -> f32 { todo!("x86_64: dot_f32: SSE2 / AVX2 under kernel_fpu_begin") }
+    fn is_accelerated(&self) -> bool { todo!("x86_64: is_accelerated") }
+}
+
+/// The user-access window: `stac` on open, `clac` on drop (SMAP).
+pub struct UserAccess;
+
+impl ArchPlatform for X86_64 {
+    /// x86 instruction fetch snoops the data cache (self-modifying code is
+    /// coherent after a serializing instruction): no clean needed.
+    fn icache_needs_dcache_clean(&self) -> bool { todo!("x86_64: icache_needs_dcache_clean: false (coherent I/D)") }
+    unsafe fn dcache_clean(&self, _va: usize, _len: usize) { todo!("x86_64: dcache_clean: no-op (coherent)") }
+    /// A serializing instruction on every CPU (`cpuid`/`serialize`), by IPI.
+    fn icache_sync_all(&self) { todo!("x86_64: icache_sync_all: IPI + serialize on every CPU") }
+    /// `invlpg` locally, then an IPI shootdown.
+    fn flush_tlb_page_all(&self, _va: usize) { todo!("x86_64: flush_tlb_page_all: invlpg + IPI shootdown") }
+    /// `rep stosb` (ERMS/FSRM).
+    unsafe fn zero_memory(&self, _va: usize, _len: usize) { todo!("x86_64: zero_memory: rep stosb") }
+    /// The CR3 value: PML4 PA | PCID.
+    fn user_root_word(&self, _root_phys: usize, _asid: u16) -> usize { todo!("x86_64: user_root_word: PML4 PA | PCID") }
+    fn install_user_root_local(&self, _word: usize) { todo!("x86_64: install_user_root_local: mov cr3") }
+    type UserAccess = UserAccess;
+    /// `stac` (SMAP), `clac` when the value drops.
+    fn user_access(&self) -> UserAccess { todo!("x86_64: user_access: stac / clac (SMAP)") }
+}

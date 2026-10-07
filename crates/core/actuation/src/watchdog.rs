@@ -7,6 +7,7 @@
 //! `#[inline]`: the ISR calls them across a crate boundary and the release
 //! profile has `lto = false`.
 
+use azos_arch::Cpu as _;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use azos_drv_sys::kprintln;
 
@@ -80,7 +81,7 @@ pub fn halt_if_panicked() {
         // it registered their lock-free stop with `gate::
         // register_panic_stop_hook` at boot. Run here, in the same order.
         crate::gate::run_panic_stop_hooks();
-        loop { azos_arch::cpu::wfi(); }
+        loop { azos_arch::ARCH.wfi(); }
     }
 }
 
@@ -111,7 +112,7 @@ pub fn feed_from_timer_tick() {
     // instead. `hb == 0` keeps feeding until the task first runs (no
     // boot-time false reset); after that a stall beyond the grace window
     // stops the kicks. (WDT is a no-op on QEMU; real effect on VF2/K1.)
-    if azos_arch::cpu::hart_id() == 0 {
+    if azos_arch::ARCH.hart_id() == 0 {
         let hb = CONTROL_HEARTBEAT.load(Ordering::Relaxed);
         if hb != WDT_LAST_HEARTBEAT.load(Ordering::Relaxed) {
             WDT_LAST_HEARTBEAT.store(hb, Ordering::Relaxed);

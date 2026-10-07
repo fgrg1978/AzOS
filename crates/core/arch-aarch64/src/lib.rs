@@ -50,8 +50,13 @@ pub use azos_arch_api::{
     Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu, MmuError,
     PagePerms, Vector,
 };
+// The rest of the arch contract (`ArchPlatform`, `ArchEntry`) and the page
+// geometry, under the same ISA-neutral names on every ISA.
+pub use azos_arch_api::{ArchEntry, ArchPlatform, PAGE_SHIFT, PAGE_SIZE};
 
 pub mod api_impl;
+#[cfg(target_arch = "aarch64")]
+mod platform_impl;
 pub mod boot;
 pub mod cache;
 pub mod cbo;

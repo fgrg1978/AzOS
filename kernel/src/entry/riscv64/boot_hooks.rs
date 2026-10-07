@@ -62,27 +62,21 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
     kprintln!("[BOOT] DTB addr: {:#x}", dtb_ptr);
 
     // The boot hart is whoever won `boot_lock` — boot.S range-checks only
-    // SECONDARY harts, and against MAX_HARTS (stack + trap-vector slots),
-    // not crate::MAX_CPUS. Every scheduler structure is `[_; crate::MAX_CPUS]` indexed by
-    // a raw `PER_CPU[current_cpu_id()]`, so a boot hart id past crate::MAX_CPUS is
-    // not degraded service — it is an out-of-bounds write into .bss on the
-    // first scheduler touch and a silent board reset. The VF2/JH7110 case
-    // is real (S7 + four U74s enumerate 5 harts):
-    // if firmware ever elects a boot hart >= crate::MAX_CPUS, halting loudly here
-    // with the id on the UART is the only honest outcome. The real fix for
-    // such boards is a physical→logical hart map (post-hardware work);
-    // until then the id doubles as the index and must be in range.
-    if hart_id >= crate::MAX_CPUS {
-        azos_drv_sys::kerr!("[BOOT] FATAL: boot hart id {} >= crate::MAX_CPUS {} — every \
-                   PER_CPU access would index out of bounds. Halting. \
-                   (Board needs a physical->logical hart map, or boot-hart \
-                   selection in firmware.)", hart_id, crate::MAX_CPUS);
+    // SECONDARY harts. A CPU id is the hart id here (`tp`), and every per-CPU
+    // table and area is indexed by it, so a boot hart at or past the Kconfig
+    // ceiling `NR_CPUS` has no slot anywhere: halt loudly with the id on the
+    // UART rather than index out of bounds on the first scheduler touch.
+    // (VF2: S7 is hart 0 and the U74s are 1..4, so its default is 5.)
+    if hart_id >= crate::MAX_HARTS {
+        azos_drv_sys::kerr!("[BOOT] FATAL: boot hart id {} >= NR_CPUS {} — it has no per-CPU \
+                   slot. Halting. (Raise NR_CPUS in make config.)", hart_id, crate::MAX_HARTS);
         loop { azos_arch::cpu::wfi(); }
     }
 
     // Parse DTB (Flattened Device Tree) if pointer looks valid.
     // Extract mem_base/mem_size to feed PMM and VMM with real hardware RAM.
-    // Extract num_cpus to size the SMP scheduler at runtime (capped at crate::MAX_CPUS).
+    // Extract num_cpus to size the SMP scheduler at runtime (cut to NR_CPUS
+    // by `boot::discover_cpus`, with a warning).
     // Validate timer_freq against the kernel's hardcoded value — a mismatch
     // means every µs/ms calculation in the kernel is off and must be flagged.
     let (mem_start, mem_size, mem_from_dtb, num_cpus) = if dtb_ptr != 0 {
@@ -154,12 +148,7 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
                 }
             }
 
-            // Cap DTB-reported CPUs by compile-time crate::MAX_CPUS (stack slots reserved).
-            let cpus = if info.num_cpus > 0 {
-                core::cmp::min(crate::MAX_CPUS, info.num_cpus)
-            } else {
-                crate::MAX_CPUS
-            };
+            let cpus = crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: info.num_cpus, boot_cpu: hart_id, source: "DTB" });
             if info.mem_base != 0 && info.mem_size != 0 {
                 (info.mem_base, info.mem_size, true, cpus)
             } else {
@@ -167,10 +156,12 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
             }
         } else {
             azos_drv_sys::kerr!("[DTB] Parse failed (invalid or unsupported FDT)");
-            (azos_drv_base::platform::hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, crate::MAX_CPUS)
+            (azos_drv_base::platform::hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false,
+             crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: 0, boot_cpu: hart_id, source: "none" }))
         }
     } else {
-        (azos_drv_base::platform::hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false, crate::MAX_CPUS)
+        (azos_drv_base::platform::hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false,
+         crate::boot::discover_cpus(azos_percpu::FirmwareCpus { count: 0, boot_cpu: hart_id, source: "none" }))
     };
     // The PCI host bridge's ECAM and `ranges`, for `kernel_main`'s PCI
     // block. Read now: nothing reserves the DTB's pages from the page
@@ -219,7 +210,7 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
     let zicboz_on = azos_arch::cbo::zicboz_select(false, 0);
     kprintln!("[MM] Zicboz cbo.zero fast path: {}",
         if zicboz_on { "enabled" } else { "scalar fallback" });
-    kprintln!("[BOOT] Online CPUs: {} (max compile-time: {})", num_cpus, crate::MAX_CPUS);
+    kprintln!("[BOOT] Online CPUs: {} (NR_CPUS: {})", num_cpus, crate::MAX_HARTS);
     kprintln!();
 
     // ---- Phase 2: Memory Management ----
@@ -715,7 +706,7 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
     azos_ipc::irq_bind::set_line_release_hook(azos_drv_irqchip::user_irq::release);
     // The boot hart: the kernel's own lines are routed here, and it is the
     // first hart a ring-3 line may be routed to; each secondary joins in
-    // `smp_secondary_start` (`user_irq::hart_ready`).
+    // `secondary_main` (`user_irq::hart_ready`).
     azos_drv_irqchip::user_irq::set_boot_hart(hart_id as u32);
     kprintln!("[IRQ] Traps + interrupts active");
     kprintln!();

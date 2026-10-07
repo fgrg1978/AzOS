@@ -319,6 +319,13 @@ const RESOURCE_IRQ_RTC: &[u8] = b"irq.11";
 const RESOURCE_IRQ_ABSENT: &[u8] = b"irq.100";
 #[cfg(all(feature = "cap-refusal-canary", topo_arch_aarch64))]
 const RESOURCE_IRQ_ABSENT: &[u8] = b"irq.1000";
+// Any other bare-metal ISA (the x86_64 skeleton): the CMOS RTC is legacy
+// IRQ 8; an IOAPIC has 24 inputs, so 1000 is absent. Placeholders until the
+// port's topology rows exist (build.rs emits no topo_arch_* for it).
+#[cfg(all(feature = "cap-refusal-canary", topo_bare, not(any(topo_arch_riscv64, topo_arch_aarch64))))]
+const RESOURCE_IRQ_RTC: &[u8] = b"irq.8";
+#[cfg(all(feature = "cap-refusal-canary", topo_bare, not(any(topo_arch_riscv64, topo_arch_aarch64))))]
+const RESOURCE_IRQ_ABSENT: &[u8] = b"irq.1000";
 // The ten sensor types the legacy autorun seed already grants RO
 // (`kernel/src/tasks/loader.rs`, `HandleKind::Sensor(st)` for st in 0..=9). Declared
 // here so the typed mint comes from the topology rather than being hard-coded

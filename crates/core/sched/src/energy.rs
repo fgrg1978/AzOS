@@ -364,7 +364,7 @@ pub fn gov_maybe(_cpu: usize, at: u64) -> u32 {
             continue;
         }
         let (mut util, mut ppm) = (0u32, 0u32);
-        for c in 0..MAX_CPUS.min(32) {
+        for c in 0..super::ncpu().min(32) {
             if d.cpus & (1 << c) != 0 {
                 util = util.max(cpu_util_at(c, at));
                 ppm = ppm.max(super::rt::ADMITTED_PPM[c].load(Ordering::Relaxed));

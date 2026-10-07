@@ -29,7 +29,9 @@ config MAX_TASKS
       the edge values of KERNEL_STACK_SIZE_KB = 32 and MAX_CAPS_PER_TASK = 256.
       Of that: 32,768 B kernel stack (KERNEL_STACK_SIZE_KB, TASK_STACKS);
       2,052 B capability table (8 B x MAX_CAPS_PER_TASK + 4, CAP_TABLES);
-      2,048 B run queues (MAX_CPUS 8 x NUM_PRIORITIES 32 x one 8-byte slot);
+      2,048 B run queues (MAX_CPUS 8 x NUM_PRIORITIES 32 x one 8-byte slot;
+      wave 15: now a 4 B ready-queue link, RQ_NEXT, the queues being lists
+      -- 2,044 B less per slot than the figures here, which predate it);
       the task control block (TASKS), 1,216 B riscv64 / 1,856 B aarch64, and
       on aarch64 544 B of lazy FP save area; 268 B signal state; 80 B topology
       slot; 24 B each of notify waiter and vDSO slot; 16 B each of port waiter
@@ -59,6 +61,64 @@ config MAX_TASKS
       has overflow checks on, however large MAX_TASKS is.
       The build refuses MAX_FDS_TOTAL < 4 x MAX_TASKS, MAX_CAPS_TOTAL <
       8 x MAX_TASKS and MAX_SUBS_PER_TOPIC > MAX_TASKS.
+
+config NR_CPUS
+    int "Maximum number of CPUs (ceiling, like Linux CONFIG_NR_CPUS)"
+    range 1 64
+    default 8  if BOARD_K1
+    default 5  if BOARD_VF2
+    default 4  if PROFILE_EMBEDDED
+    default 64
+    help
+      The largest CPU id plus one this kernel can run.  A CPU id is the hart
+      id on riscv64 (tp, the value SBI hands each hart; the VF2 enumerates
+      its S7 monitor core as hart 0 and the four U74s as 1..4, so it needs 5)
+      and the boot-assigned logical id on aarch64 (TPIDR_EL1, 0..n-1).
+
+      At boot the kernel counts the DTB's /cpus nodes: that count, cut to
+      this ceiling, is nr_cpu_ids and the possible-CPU mask.  A DTB that
+      names more CPUs than this boots on the first NR_CPUS with a kwarn line
+      ("[SMP] DTB names N CPUs, NR_CPUS is M"); the rest are never started.
+
+      Per-CPU state lives in per-CPU areas the kernel allocates from the
+      frame allocator at boot, one per possible CPU, before the secondaries
+      start (crates/core/percpu).  Raising this ceiling does not add areas;
+      it widens the tables that must stay static (the per-CPU pointer
+      tables, the CPU masks, and the small tables assembly or early boot
+      indexes by CPU id: see ARCHITECTURE.md, "SMP and per-CPU state").
+
+      Cost, per unit of this option, in the image (measured, qemu
+      configuration, NR_CPUS 8 against 64): 466 B on riscv64, 349 B on
+      aarch64 -- the per-CPU pointer tables, masks, preemption and IRQ-depth
+      counters, slab magazine pointers and the stack tables the asm reads.
+      Per possible CPU, at run time, from the frame allocator: one per-CPU
+      area -- the 32 ready-queue heads (512 B; the queues are lists whose
+      links live in one MAX_TASKS-long table, 4 B a task), the RT band's
+      1,080 B, the trace producer's 64 B, and 6,584 B of APS tables when
+      that backend is built -- one 4 KiB page (8 KiB with APS) in every
+      profile, MAX_TASKS does not change it; plus, for each CPU but the
+      boot CPU, SECONDARY_STACK_SIZE_KB + INTERRUPT_STACK_SIZE_KB of stacks.
+
+      The range stops at 64: task.cpu_affinity is an i8, the online-prefix
+      bookkeeping (crates/core/sched/src/hart_set.rs) is one u64, and the
+      energy model's domain masks (crates/core/energy) cover CPUs 0..31
+      only; each is a compile-time assert.  Set it to the board's CPU
+      count to spend nothing on CPUs that cannot exist.
+
+config SECONDARY_STACK_SIZE_KB
+    int "Boot stack of each secondary CPU (KiB)"
+    range 8 256
+    default 16
+    help
+      The stack a secondary CPU runs its bring-up and idle loop on, until
+      its first task switch.  Allocated at boot in that CPU's per-CPU area,
+      only for possible CPUs other than the boot CPU (which runs on the
+      linker-reserved boot stack, BOOT_STACK_SIZE).  16 KiB is the size the
+      kernel has always used: enough for nested 288 B trap frames, the
+      scheduler and its Rust callers.
+
+      Cost: this value per possible CPU but one, at run time; nothing in
+      the image.
 
 # ---------------------------------------------------------------------------
 # Network
@@ -667,6 +727,7 @@ config KERNEL_STACK_SIZE_KB
     default 128 if AARCH64_PAGE_64K
     default 48 if AARCH64_PAGE_16K
     default 32 if ARCH_AARCH64
+    default 32 if ARCH_X86_64
     help
       Kernel-mode stack depth reserved when a user task syscalls into
       the kernel.  Sized for the deepest syscall handler chain including
@@ -715,6 +776,8 @@ config INTERRUPT_STACK_SIZE_KB
     range 2 64
     default 8 if ARCH_RISCV64
     default 8 if ARCH_AARCH64
+    # x86_64: the IST stacks (#DF, NMI, #MC) come out of the same area.
+    default 16 if ARCH_X86_64
     help
       A dedicated stack per hart for interrupt handlers, separate from the
       task kernel stack.  On rv64 it is WIRED UP since 2026-09-16: the trap
@@ -733,15 +796,16 @@ config INTERRUPT_STACK_SIZE_KB
       bottom eight bytes of each carry a magic word that trap_resched checks
       on the way out of every trap.
 
-      The cost is this value times MAX_HARTS, once, in .bss.  What it buys is
+      The cost is this value once per possible CPU: the boot CPU's stack is
+      in .bss, every other CPU's is in its per-CPU area.  What it buys is
       that the deepest syscall chain no longer has to leave room for an
       interrupt on top of it.
 
-      Cost: 8 KiB of RAM per KiB of this option (one stack per hart,
-      MAX_HARTS = 8 in kernel/src/main.rs; .bss), the same on riscv64 and
-      aarch64: 64 KiB at the default 8 KiB, in every profile.  Measured from the
-      section sizes (+65,536 B for 8 -> 16 KiB): the stacks have no symbol of
-      their own in the linked image.
+      Cost: 1 KiB of RAM per KiB of this option per possible CPU, the same
+      on riscv64 and aarch64: 1 KiB of .bss (the boot CPU's stack,
+      `boot_irq_stack`), the rest from the frame allocator at boot (wave 15:
+      these were MAX_HARTS = 8 static slots, 64 KiB of .bss at the default
+      whatever the board had).
 
 # ---------------------------------------------------------------------------
 # WCET measurement table

@@ -48,6 +48,8 @@ const UART_MMIO_BYTES: u64 = 0x100;
 const UART_DRIVER_NAME: &str = "ns16550a-uart";
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 const UART_DRIVER_NAME: &str = "pl011-uart";
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+const UART_DRIVER_NAME: &str = "com16550-pio-uart";
 
 /// UART driver ops. Stable wire numbers — bump
 /// [`super::api::DRIVER_MANIFEST_VERSION`] on any breaking change.

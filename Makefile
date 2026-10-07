@@ -2436,6 +2436,72 @@ AARCH64_IMG      := build/kernel-aarch64$(AARCH64_PG_SUFFIX).img
 AARCH64_OBJCOPY   = $(shell rustc --print sysroot)/lib/rustlib/$(shell rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy
 QEMU_AARCH64_KERNEL_FLAGS := -cpu max,pauth=on -smp 2 -nographic
 
+# ── make ARCH=<isa> check ───────────────────────────────────────────────────
+# Type-check the kernel for one ISA without linking. For the x86_64 port
+# skeleton (config/Kconfig.arch ARCH_X86_64) it is the only build there is;
+# its errors and compile_error!s are the porting checklist. The target triple
+# and the baseline codegen flags (`--rustflags`: x86_64's X86_64_LEVEL) come
+# from the expanded defconfig through tools/kconfig_to_cargo.py, and
+# `-Zbuild-std` (.cargo/config.toml) builds core/alloc from rust-src, so no
+# target has to be installed. RUSTFLAGS is set only when the ISA has baseline
+# flags: an empty one would override riscv64's build.rustflags.
+ARCH ?= riscv64
+CHECK_DEFCONFIG_riscv64 := config/defconfigs/qemu.config
+CHECK_DEFCONFIG_aarch64 := config/defconfigs/qemu-aarch64.config
+CHECK_DEFCONFIG_x86_64  := config/defconfigs/qemu-x86_64.config
+CHECK_KCONFIG := build/check-$(ARCH).config
+
+.PHONY: check
+check:
+	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
+	@mkdir -p build
+	cp "$(CHECK_DEFCONFIG_$(ARCH))" "$(CHECK_KCONFIG)"
+	KCONFIG_CONFIG="$(CHECK_KCONFIG)" $(PYTHON) -m olddefconfig
+	rf="$$(python3 tools/kconfig_to_cargo.py --rustflags "$(CHECK_KCONFIG)")"; \
+	if [ -n "$$rf" ]; then export RUSTFLAGS="$$rf"; else unset RUSTFLAGS; fi; \
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(CHECK_KCONFIG)" \
+	    $(CARGO) check --release -p azos_kernel \
+	    $$(python3 tools/kconfig_to_cargo.py "$(CHECK_KCONFIG)" | tr -s ' ')
+
+# ── x86_64: build and boot (QEMU microvm, PVH) ─────────────────────────────
+# `make ARCH=x86_64 x86_64` builds the kernel ELF; `make qemu-x86_64` boots it
+# on `-M microvm` (PVH entry via -kernel, COM1 on stdio, isa-debug-exit so a
+# stop ends QEMU with a status). It reaches the banner and stops at the first
+# piece not ported yet, with a message. Same Kconfig expansion as `check`.
+X86_64_KCONFIG := build/x86_64.config
+X86_64_ELF     := target/x86_64-unknown-none/release/kernel
+X86_64_IMG     := build/kernel-x86_64.elf
+X86_64_LINKER  := kernel/linker-x86_64.ld
+# curve25519-dalek picks its AVX2 "simd" backend on x86_64; the kernel is
+# soft-float (no SSE/AVX state at CPL0), so it takes the portable one.
+X86_64_DALEK   := --cfg curve25519_dalek_backend=\"serial\"
+# -cpu max: the default model (qemu64) is below the x86-64-v2 baseline, and the
+# kernel refuses it (the canary: `make qemu-x86_64 QEMU_X86_64_CPU=qemu64`).
+QEMU_X86_64_CPU ?= max
+QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-reboot \
+	-device isa-debug-exit,iobase=0xf4,iosize=0x04
+
+.PHONY: x86_64 qemu-x86_64
+$(X86_64_KCONFIG): config/defconfigs/qemu-x86_64.config
+	@mkdir -p build
+	cp config/defconfigs/qemu-x86_64.config $@
+	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
+	@grep -q '^CONFIG_ARCH_X86_64=y$$' $@ || { echo "[X86_64] $@ lost CONFIG_ARCH_X86_64"; exit 1; }
+
+# build/image_hashes.rs: the seccomp table; x86_64 has no user images yet and
+# takes the riscv64 one (crates/core/sched/src/seccomp.rs, the non-bare arm).
+x86_64: $(X86_64_KCONFIG) build/image_hashes.rs
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(X86_64_KCONFIG)" \
+	    RUSTFLAGS="-C link-arg=-T$(X86_64_LINKER) -C relocation-model=static $(X86_64_DALEK) $$(python3 tools/kconfig_to_cargo.py --rustflags $(X86_64_KCONFIG))" \
+	    $(CARGO) build --release -p azos_kernel \
+	    $$(python3 tools/kconfig_to_cargo.py $(X86_64_KCONFIG) | tr -s ' ')
+	@mkdir -p build
+	cp $(X86_64_ELF) $(X86_64_IMG)
+	@echo "[X86_64] Built $(X86_64_IMG)"
+
+qemu-x86_64: x86_64
+	qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -kernel $(X86_64_IMG)
+
 .PHONY: aarch64 qemu-aarch64 qemu-aarch64-el2
 
 # U12-8: see the LIBSYS_SRC comment above — same iCloud-duplicate hazard,

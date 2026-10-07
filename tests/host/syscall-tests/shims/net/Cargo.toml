@@ -18,7 +18,7 @@ azos_crypto = { path = "../../../../../crates/core/crypto" }
 wcet-macro = { path = "../../../../../crates/core/wcet-macro" }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))', 'cfg(feature, values("loopback-preempt-probe"))', 'cfg(feature, values("loopback-guard-canary"))'] }
 
 [features]
 # `tcp.rs` gates its ARP timing prints on this. Declared, not silenced.

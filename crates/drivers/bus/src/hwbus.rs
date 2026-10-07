@@ -190,7 +190,7 @@ impl DeviceTable {
 // `azos_dtb::DtbInfo`'s own zeroed-on-failure convention. `aia` is
 // `virt,aia=aplic-imsic`: that machine has no PLIC, so the table lists none
 // (it used to list one at the APLIC's address, or at `hw::PLIC_BASE`).
-#[cfg(not(any(feature = "vf2", feature = "k1", all(target_arch = "aarch64", target_os = "none"))))]
+#[cfg(not(any(feature = "vf2", feature = "k1", all(target_arch = "aarch64", target_os = "none"), all(target_arch = "x86_64", target_os = "none"))))]
 pub fn qemu_virt_riscv64_devices(dtb_uart_base: usize, dtb_plic_base: usize, aia: bool) -> DeviceTable {
     use azos_drv_base::platform::hw;
     let mut t = DeviceTable::new();
@@ -269,7 +269,7 @@ impl Driver for VirtioWindowBusDriver {
 /// Run the bus for QEMU virt (riscv64) with the given (possibly-zero) DTB
 /// bases. Safe to call from `boot_hooks.rs` right after `dtb_parse`
 /// succeeds — see this front's report for the exact call.
-#[cfg(not(any(feature = "vf2", feature = "k1", all(target_arch = "aarch64", target_os = "none"))))]
+#[cfg(not(any(feature = "vf2", feature = "k1", all(target_arch = "aarch64", target_os = "none"), all(target_arch = "x86_64", target_os = "none"))))]
 pub fn probe_qemu_virt_riscv64(dtb_uart_base: usize, dtb_plic_base: usize, aia: bool) {
     let table = qemu_virt_riscv64_devices(dtb_uart_base, dtb_plic_base, aia);
     let uart = UartBusDriver;

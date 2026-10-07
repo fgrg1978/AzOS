@@ -6,6 +6,7 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [dependencies]
+azos_percpu = { workspace = true }
 azos_abi = { workspace = true }
 azos_arch = { workspace = true }
 azos_arch_api = { workspace = true }

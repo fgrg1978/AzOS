@@ -4,6 +4,7 @@
 //! by the kernel's `handle_exception` on every synchronous exception, so it is
 //! `#[inline]` across the crate boundary (`lto = false`).
 
+use azos_arch::Cpu as _;
 use core::sync::atomic::Ordering;
 // `TrapFrame` and the `TRAP_*` cause constants are RISC-V-specific (see
 // `crates/core/arch-riscv64/src/trap.rs`) — aarch64 has its own exception-frame
@@ -64,7 +65,7 @@ pub(crate) fn txn_arm(sp: usize, pc: usize) {
     if !azos_limits::CONTROL_TXN_TICKS {
         return;
     }
-    let h = azos_arch::cpu::hart_id() as usize;
+    let h = azos_arch::ARCH.hart_id() as usize;
     if h < MAX_TXN_HARTS {
         TXN[h].sp.store(sp, Ordering::Relaxed);
         TXN[h].pc.store(pc, Ordering::Relaxed);
@@ -118,7 +119,7 @@ pub fn txn_try_rollback(frame: &mut TrapFrame, cause: usize) -> bool {
     if !txn_is_recoverable(cause) {
         return false;
     }
-    let h = azos_arch::cpu::hart_id() as usize;
+    let h = azos_arch::ARCH.hart_id() as usize;
     if h >= MAX_TXN_HARTS || !TXN[h].armed.load(Ordering::Relaxed) {
         return false;
     }

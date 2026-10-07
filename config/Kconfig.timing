@@ -44,6 +44,25 @@ config SCHED_HZ_FLOOR
       literal that has to be kept in sync by hand;
       `crates/core/limits/build.rs` validates `SCHED_HZ_FLOOR <= SCHED_HZ` at
       every build so a drift is a hard build error, not a silent one.
+
+config SCHED_TIMER_WAKE_BATCH
+    int "Timer sleepers popped per heap lock hold (sched-timer-heap)"
+    range 1 64
+    default 8
+    help
+      With the `sched-timer-heap` cargo feature (a kernel default), a
+      tick's pass over due timer sleepers (`timer_heap::wake_due`) pops at
+      most this many entries per hold of the sleeper-heap lock, then drops
+      the lock to wake them (wakes take the run-queue locks, which never
+      nest inside the heap lock). Cost: 16 B of tick-ISR stack per unit
+      (the popped and retry arrays), either ISA, and one lock round trip
+      (interrupts masked) per BATCH due sleepers. A larger batch holds the
+      lock, with interrupts masked on this hart, for one more heap pop
+      (O(log MAX_TASKS)) per unit. Raise it only when many sleepers share
+      a deadline (periodic tasks on one grid) and the round trips show in
+      the tick; lower it when the masked window bounds an interrupt
+      latency budget.
+      Ignored without the heap (the per-tick sweep has no batch).
 # ---------------------------------------------------------------------------
 # Scheduler backend selection
 # ---------------------------------------------------------------------------

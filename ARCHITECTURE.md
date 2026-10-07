@@ -45,7 +45,9 @@ from one source tree and one kernel entry function.
 ```
 
 The ISA crates implement one trait surface (`crates/core/arch-api`: CPU,
-interrupts, MMU, boot, vectors); `crates/core/arch` re-exports the active one.
+interrupts, MMU, boot, vectors, platform); `crates/core/arch` re-exports the
+active one. The kernel's boot sequence per ISA is the `ArchEntry` trait (see
+"Adding an ISA").
 
 ## Boot and composition
 
@@ -166,10 +168,54 @@ authority, the kernel also latches the e-stop and writes a safety record.
   CPUs found at boot and against the band cap. A set that does not
   fit stops the boot. Reservations made after boot are placed on an online
   CPU, first fit, against the same limit.
-- **SMP.** The kernel supports up to 8 CPUs. It places a waking unpinned task
-  on a suitable CPU and signals other CPUs with an inter-processor interrupt
-  (SBI on riscv64, GICv3 SGI on aarch64). Tasks are not stolen between run
-  queues at run time.
+- **SMP.** The kernel places a waking unpinned task on a suitable CPU and
+  signals other CPUs with an inter-processor interrupt (SBI on riscv64,
+  GICv3 SGI on aarch64). Tasks are not stolen between run queues at run time.
+  A task pinned to a CPU the boot does not have is re-pinned, with a warning,
+  when it is created.
+- **CPU ceiling.** `NR_CPUS` (Kconfig, 1 to 64) is the largest CPU id plus
+  one a build can run, as `CONFIG_NR_CPUS` is in Linux. Its default depends
+  on the board and profile: 8 on the K1, 5 on the VF2 (its S7 monitor core is
+  hart 0 and the four U74 cores are harts 1 to 4), 4 on the embedded profile,
+  and 64 otherwise. A CPU id is the hart id on riscv64 and the boot-assigned
+  logical id on aarch64. Both are kept in the per-CPU register (`tp` or
+  `TPIDR_EL1`), read and written through the `Cpu` trait of the
+  architecture API (`percpu_base`, `set_percpu_base`).
+- **Possible and online CPUs.** The boot hooks describe the firmware's CPUs
+  in one structure (`FirmwareCpus`, filled from the DTB's `/cpus` on both
+  ISAs). The count is cut to `NR_CPUS`. The cut is logged as a warning, and
+  the CPUs above the ceiling are never started. The result is the
+  possible-CPU mask and `nr_cpu_ids`. The online mask is kept separate, so a
+  CPU can later leave it without moving any per-CPU state. CPU hotplug is not
+  implemented.
+- **Per-CPU areas.** At boot, after the heap and before the scheduler or any
+  secondary CPU starts, the kernel allocates one area per possible CPU from
+  the frame allocator. An area holds that CPU's run queues, real-time band
+  reservations, adaptive-partitioning tables and trace-ring producer. The
+  run queues are linked lists threaded through one table of one link per
+  task slot, so an area's size does not depend on `MAX_TASKS`. A
+  secondary CPU's area also holds its boot stack (`SECONDARY_STACK_SIZE_KB`)
+  and its interrupt stack (`INTERRUPT_STACK_SIZE_KB`). Each per-CPU variable
+  is reached through a table of one pointer per CPU, indexed by CPU id. A CPU
+  without an area holds a non-canonical address there, so an access faults
+  instead of reading another CPU's state, and a boot self-check verifies
+  this.
+- **Static per-CPU tables.** Some per-CPU state stays in fixed tables sized
+  by `NR_CPUS`, because it is needed before the areas exist or is indexed by
+  assembly:
+  - the preemption counters and interrupt-depth counters (every lock uses
+    them from the first console line);
+  - the slab allocator's per-CPU magazine pointers (the heap serves
+    allocations before the areas exist);
+  - the scheduler's current-task word, ready bitmap and CPU locks (32 bytes
+    and one word per CPU, read on every system call);
+  - the tables of stack addresses and published page-table roots that
+    `boot.S`, `trap_entry.S` and the context switch read by symbol;
+  - riscv64's per-hart trap-vector slots and aarch64's per-core bring-up
+    records.
+
+  Together these cost under 500 bytes of image per CPU of the ceiling. The
+  boot CPU keeps the linker's boot stack and one static interrupt stack.
 - **Tickless idle.** A CPU whose run queue is empty programs its timer for the
   nearest timer deadline instead of the periodic tick, bounded by an idle
   ceiling, or by a shorter keep-alive or polling interval when one is needed. It restores the periodic tick when work arrives.
@@ -495,12 +541,50 @@ Other menus cover the architecture (including the aarch64 page granule),
 timing and scheduling, security mitigations, network, OTA, the Linux options
 and development aids.
 
+## Adding an ISA
+
+A port is a list of methods the compiler asks for, plus a few files. The
+x86_64 skeleton is the template: `make qemu-x86_64` boots it on QEMU
+`-M microvm` (PVH entry, long mode, COM1), prints the banner and stops at the
+first method still a `todo!()` naming the x86 mechanism.
+
+- **`crates/core/arch-<isa>`** implements every trait `crates/core/arch-api`
+  exports, on a zero-sized type the facade (`crates/core/arch`) names `ARCH`:
+  `Cpu` (6 methods, including the per-CPU base), `Interrupts` (6), `Mmu` (24
+  required, 1 provided, the `PAGE_SIZE` constant), `Boot` (3), `Vector` (2),
+  `ArchPlatform` (8, and a `UserAccess` type). Shared crates reach the ISA only
+  through these; the facade refuses to compile for a bare-metal target it has
+  no branch for.
+- **`kernel/src/entry/<isa>/`**: `boot_hooks.rs` and `arch_entry.rs`, the
+  kernel's `ArchEntry` (9 methods: the four boot hooks, the four
+  secondary-CPU steps the shared `secondary_main` calls, the vDSO clock);
+  `kernel/src/entry/<isa>.rs` with the `TrapFrame` and its `TrapContext` (11
+  methods); and `asm/boot.S` (exports `_start`, calls `kernel_main` and, per
+  secondary CPU, `secondary_main`), `asm/trap_entry.S` (the vector table and
+  the return path, calling the ISA's Rust dispatcher) and
+  `asm/context_switch.S` (exports `context_switch`).
+- **`kernel/linker-<isa>.ld`**, defining the section symbols the shared code
+  reads (`_text_start` ... `_kernel_end`, `__azos_keys_start/_end`).
+- **Configuration**: an `ARCH_<ISA>` entry in the `config/Kconfig.arch`
+  choice with its baseline and `HAS_*` extension symbols (a baseline the
+  boot path checks, each extension probed at run time before use); the
+  target triple and baseline flags in `tools/kconfig_to_cargo.py`; a
+  defconfig named in the Makefile, after which `make ARCH=<isa> check`
+  type-checks the kernel.
+- **Shared code**: `tools/arch_cfg_lint.py` requires every `cfg(target_arch)`
+  outside the arch crates to have an else arm, a `compile_error!`, or a
+  `// arch-only: <why>` note, so a branch cannot vanish silently on a new
+  ISA; the per-file counts in `tools/arch_cfg_lint.baseline` may only fall.
+  `tools/arch_stub_check.py` runs `cargo check` of each arch-consuming crate
+  against the skeleton and lists what reaches past the contract.
+
 ## Source layout
 
 ```
 kernel/          composition root: kernel_main, entry and trap code per ISA,
                  boot steps (kernel/src/boot), kernel tasks, panic handler
-crates/core/     abi, arch-api, arch-riscv64, arch-aarch64, sched, mm, ipc,
+crates/core/     abi, arch-api, arch-riscv64, arch-aarch64, arch-x86_64
+                 (skeleton), sched, mm, ipc,
                  channel, spsc, pubsub, syscall, topology, actuation, config,
                  limits, crypto, ota, shell, libsys, linux-abi, lx-loader, ...
 crates/drivers/  one crate per driver class, plus api, base, driver_server

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Topology install and memory admission against the DTB/fallback RAM window.
 
+use azos_arch::Cpu as _;
 use crate::*;
 
 /// Install the static topology before any task that mints a capability
@@ -74,7 +75,7 @@ pub(crate) fn install_topology(num_cpus: usize) {
             Ok(_) => {}
             Err(e) => {
                 azos_drv_sys::kerr!("[TOPO] Deadline admission REFUSED on {} CPU(s): {:?} — halting", num_cpus, e);
-                loop { azos_arch::cpu::wfi(); }
+                loop { azos_arch::ARCH.wfi(); }
             }
         }
     }
@@ -88,7 +89,7 @@ pub(crate) fn install_topology(num_cpus: usize) {
 fn install_builtin() {
     if let Err(e) = azos_topology::init_with(azos_topology::fill_default_minimal) {
         azos_drv_sys::kerr!("[TOPO] Topology install FAILED: {:?} — halting", e);
-        loop { azos_arch::cpu::wfi(); }
+        loop { azos_arch::ARCH.wfi(); }
     }
 }
 
@@ -97,7 +98,7 @@ fn install_builtin() {
 /// ever created. The `SAFETY_TOPO_SOURCE` record was written before this.
 fn halt_without_topology() -> ! {
     azos_drv_sys::kerr!("[TOPO] HALTED: no capability topology installed — the boot stops here");
-    loop { azos_arch::cpu::wfi(); }
+    loop { azos_arch::ARCH.wfi(); }
 }
 
 // ── The signed topology on the volume (Kconfig TOPOLOGY_SOURCE) ─────────────
@@ -322,7 +323,7 @@ fn signed_candidate(
         Err(TryInitError::Admission(e)) => Candidate::Refused(SignedRefusal::Admission(e)),
         Err(TryInitError::AlreadyInit) => {
             azos_drv_sys::kerr!("[TOPO] Topology install FAILED: the slot was already taken — halting");
-            loop { azos_arch::cpu::wfi(); }
+            loop { azos_arch::ARCH.wfi(); }
         }
     };
     (candidate, caps_len, sched_len, counter)
@@ -372,7 +373,7 @@ fn band_admission(topo: &azos_topology::Topology<'static>, r: &azos_topology::de
     if let Err(e) = band_check(topo, r) {
         azos_drv_sys::kerr!("[TOPO] Deadline admission REFUSED: {:?} — the band's rows on that CPU exceed \
                    RT_BAND_CAP_PCT={} % — halting", e, azos_limits::RT_BAND_CAP_PCT);
-        loop { azos_arch::cpu::wfi(); }
+        loop { azos_arch::ARCH.wfi(); }
     }
 }
 
@@ -448,7 +449,7 @@ fn memory_admission(topo: &azos_topology::Topology<'static>) {
         Err(_) => {
             azos_drv_sys::kerr!("[TOPO] Memory admission REFUSED: {:?} — halting",
                 azos_topology::MemoryRefusal::DmaPool { need: pool, free: free_before });
-            loop { azos_arch::cpu::wfi(); }
+            loop { azos_arch::ARCH.wfi(); }
         }
     }
     let reserve = kernel_reserve_pages();
@@ -460,7 +461,7 @@ fn memory_admission(topo: &azos_topology::Topology<'static>) {
         if let Some((i, t)) = topo.tasks().iter().enumerate().find(|(_, t)| t.mem_huge_mib != 0) {
             azos_drv_sys::kerr!("[TOPO] Memory admission REFUSED: row {} ({}) declares mem_huge_mib = {} but this kernel was built without LOCKED_HUGE_LEAVES — halting",
                 i, t.name.as_str(), t.mem_huge_mib);
-            loop { azos_arch::cpu::wfi(); }
+            loop { azos_arch::ARCH.wfi(); }
         }
     }
     match topo.memory_admission(free, reserve, azos_topology::RING3_DEFAULT_PAGES, &may_fork) {
@@ -470,7 +471,7 @@ fn memory_admission(topo: &azos_topology::Topology<'static>) {
         ),
         Err(e) => {
             azos_drv_sys::kerr!("[TOPO] Memory admission REFUSED: {:?} — halting", e);
-            loop { azos_arch::cpu::wfi(); }
+            loop { azos_arch::ARCH.wfi(); }
         }
     }
     if azos_limits::LOCKED_HUGE_LEAVES {
@@ -497,7 +498,7 @@ fn reserve_huge_regions(topo: &azos_topology::Topology<'static>) {
             Err(e) => {
                 azos_drv_sys::kerr!("[TOPO] Memory admission REFUSED: row {} ({}) huge region of {} MiB: {:?} — halting",
                     i, t.name.as_str(), t.mem_huge_mib, e);
-                loop { azos_arch::cpu::wfi(); }
+                loop { azos_arch::ARCH.wfi(); }
             }
         }
     }

@@ -26,7 +26,7 @@ pub mod runtime;
 pub mod donation;
 pub mod filter;
 pub mod task;
-pub mod ready_ring;
+pub mod ready_list;
 /// Wave 11 SCHED-RT: band budget and EDF + CBS arithmetic (host-tested).
 pub mod rt_core;
 pub mod timer_heap;
@@ -40,6 +40,9 @@ pub mod supervisor;
 pub mod process;
 /// Wave 13: process life-cycle phase profile (feature `fork-profile`).
 pub mod prof;
+/// `current_cpu_id()` cross-check against the hardware id (gate only).
+#[cfg(feature = "cpuid-probe")]
+pub mod cpuid_probe;
 /// Wave 13: thread groups and futexes.
 pub mod group;
 pub mod futex;
@@ -195,3 +198,15 @@ pub use process::{
     sys_brk_impl,
     mmio_map_user, shm_map_user,
 };
+
+/// The per-CPU variables this crate keeps in the per-CPU areas (wave 15,
+/// NRCPUS), for the kernel's `setup_per_cpu_areas`: the ready queues, the RT
+/// band's reservation state and, with the APS backend, its policy tables.
+/// Every one must be attached for every possible CPU before the first task is
+/// created.
+pub fn for_each_percpu_var(f: &mut dyn FnMut(&'static dyn azos_percpu::PerCpuVar)) {
+    f(&scheduler::PER_CPU_QUEUES);
+    f(&scheduler::rt::RT_CPU);
+    #[cfg(feature = "sched-aps")]
+    f(&aps_state::V2_STATE);
+}

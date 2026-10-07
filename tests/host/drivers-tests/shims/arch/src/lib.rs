@@ -8,3 +8,6 @@
 //! than a number this shim made up.
 #[path = "../../../../../../crates/core/arch-riscv64/src/mmu.rs"]
 pub mod mmu;
+
+/// The contract's page geometry under its ISA-neutral name.
+pub use mmu::{PAGE_SHIFT, PAGE_SIZE};

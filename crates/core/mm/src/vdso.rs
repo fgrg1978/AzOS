@@ -30,8 +30,9 @@
 ///
 /// VDSO_USER_BASE is exported to libsys so it can read without a syscall.
 
+use azos_arch::ArchPlatform as _;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use azos_arch::mmu::PAGE_SIZE;
+use azos_arch::PAGE_SIZE;
 use crate::pmm;
 
 // ---------------------------------------------------------------------------
@@ -177,7 +178,7 @@ pub fn vdso_init() {
         // hot path, so it stays as defense-in-depth rather than being
         // removed as dead work.
         // PHYSICAL page: zero it through the kernel's own view of it.
-        unsafe { azos_arch::cbo::zero_memory(crate::addr::phys_to_virt(phys), PAGE_SIZE); }
+        unsafe { azos_arch::ARCH.zero_memory(crate::addr::phys_to_virt(phys), PAGE_SIZE); }
 
         // Write the magic and version (seq = 0 = stable, no data yet).
         let data = unsafe { &*(crate::addr::phys_to_virt(phys) as *const VdsoData) };
@@ -213,11 +214,13 @@ pub fn sigtramp_init(code: &[u32]) {
         let phys = page.as_usize();
         let va = crate::addr::phys_to_virt(phys);
         unsafe {
-            azos_arch::cbo::zero_memory(va, PAGE_SIZE);
+            azos_arch::ARCH.zero_memory(va, PAGE_SIZE);
             for (i, w) in code.iter().enumerate().take(PAGE_SIZE / 4) {
                 core::ptr::write_volatile((va as *mut u32).add(i), *w);
             }
         }
+        // arch-only: the sigreturn trampoline page is riscv64's (the early
+        // return above skips every other ISA).
         #[cfg(target_arch = "riscv64")]
         unsafe { core::arch::asm!("fence.i") };
         SIGTRAMP_PHYS.store(phys as u64, Ordering::Release);
@@ -566,7 +569,7 @@ pub fn task_page_claim(idx: usize, tid: u32) -> Option<TaskPageClaim> {
     slot.owner.store(0, Ordering::Release);
     slot.va.store(0, Ordering::Relaxed);
     // SAFETY: the frame is ours and nobody publishes into it while owner is 0.
-    unsafe { azos_arch::cbo::zero_memory(crate::addr::phys_to_virt(phys), PAGE_SIZE); }
+    unsafe { azos_arch::ARCH.zero_memory(crate::addr::phys_to_virt(phys), PAGE_SIZE); }
     let page = task_page(phys);
     page.magic.store(VDSO_TASK_MAGIC, Ordering::Relaxed);
     page.version.store(azos_abi::vdso::VDSO_TASK_VERSION, Ordering::Relaxed);

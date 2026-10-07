@@ -298,7 +298,7 @@ pub(crate) fn boot_validate_and_verify_slots() {
                                into the same failure");
                 }
             }
-            loop { azos_arch::cpu::wfi(); }
+            loop { azos_arch::Cpu::wfi(&azos_arch::ARCH); }
         }
 
         // OWNER DECISION, 2026-09-19 — verify the slots we are NOT

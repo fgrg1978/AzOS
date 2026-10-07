@@ -108,6 +108,7 @@ exclude = [
     "userspace/services/toolbox",
     "userspace/services/power",
     "tests/host/mm-tests",
+    "tests/host/percpu-tests",
     "tests/host/mm-tests/shims/arch",
 
     # seccomp-tests covers the syscall filter (AQ11). Its `numbers` shim is
@@ -222,6 +223,7 @@ members = [
     "crates/core/common",
     "crates/core/arch",
     "crates/core/sync",
+    "crates/core/percpu",
     "crates/drivers/base",
     "crates/drivers/irqchip",
     "crates/drivers/sys",
@@ -345,6 +347,7 @@ azos_spsc = { path = "crates/core/spsc" }
 azos_common = { path = "crates/core/common" }
 azos_arch = { path = "crates/core/arch" }
 azos_sync = { path = "crates/core/sync" }
+azos_percpu = { path = "crates/core/percpu" }
 azos_drv_base = { path = "crates/drivers/base" }
 azos_drv_irqchip = { path = "crates/drivers/irqchip" }
 azos_drv_sys = { path = "crates/drivers/sys" }

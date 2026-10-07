@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! riscv64's [`ArchEntry`]: the boot hooks (`boot_hooks.rs`) and the
+//! secondary-hart steps the shared `boot::smp::secondary_main` calls.
+//! Every method is `#[inline(always)]` on a zero-sized type, so a call
+//! through `crate::ARCH_ENTRY` compiles to the hook body itself.
+
+use azos_arch::{csr, ArchEntry};
+
+/// The riscv64 boot sequence (`crate::ARCH_ENTRY`).
+pub struct Entry;
+
+impl ArchEntry for Entry {
+    type Early = crate::EarlyBoot;
+
+    #[inline(always)]
+    fn early_boot(&self, hart_id: usize, fw_table: usize) -> crate::EarlyBoot {
+        crate::boot_hooks::arch_early_boot(hart_id, fw_table)
+    }
+
+    #[inline(always)]
+    fn map_late_mmio(&self) {
+        crate::boot_hooks::arch_map_late_mmio()
+    }
+
+    #[inline(always)]
+    fn wake_secondaries(&self, num_cpus: usize) {
+        crate::boot_hooks::arch_wake_secondaries(num_cpus)
+    }
+
+    #[inline(always)]
+    fn enter_scheduler(&self, hart_id: usize) -> ! {
+        crate::boot_hooks::arch_enter_scheduler(hart_id)
+    }
+
+    /// Also noted by the waker before `hart_start`; a hart that arrives here
+    /// without being started (firmware HSM state, a resumed hart) must still
+    /// be in the shootdown's scan before it can publish a root.
+    #[inline(always)]
+    fn secondary_tlb_online(&self, cpu: usize) {
+        azos_arch::tlb::note_hart_online(cpu);
+    }
+
+    /// This hart's controller state, then timer, software AND external
+    /// interrupts in `sie` (boot.S cleared it).
+    ///
+    /// `SIE_SSIE` was once missing here, and that was the whole K-C15
+    /// doorbell: a cross-hart wake set `sip.SSIP` on a hart whose
+    /// `sie.SSIE` was clear, so the wake waited for the next tick (vsbench
+    /// `ipc-rt`: 5-15 ms against Linux's 276-417 us, gone at `-smp 1`).
+    ///
+    /// `SEIE` (wave 10 IRQ5): a ring-3 line is routed to the hart its binding
+    /// task is pinned to (`azos_drv_irqchip::user_irq`), so every hart claims
+    /// external interrupts. PLIC: this hart's S-context threshold 0 (OpenSBI
+    /// leaves 7, "mask all"; the global priorities, set once by the boot
+    /// hart, hold ring 3's masks and are not rewritten). AIA: this hart's
+    /// IMSIC file and the wired identities (`user_irq::hart_ready`). The
+    /// context's enable bits are only set by a ring-3 route to this hart.
+    #[inline(always)]
+    fn secondary_irq_init(&self, cpu: usize) {
+        azos_drv_irqchip::irqchip::init(cpu as u32);
+        let sie = csr::read_sie();
+        #[cfg(not(feature = "irq-secondary-seie-canary"))]
+        csr::write_sie(sie | csr::SIE_STIE | csr::SIE_SSIE | csr::SIE_SEIE);
+        // Canary: the secondary entry as it was, SEIE clear. A ring-3 line
+        // routed here is never taken: captest's first delivery times out.
+        #[cfg(feature = "irq-secondary-seie-canary")]
+        csr::write_sie(sie | csr::SIE_STIE | csr::SIE_SSIE);
+        azos_drv_irqchip::user_irq::hart_ready(cpu as u32);
+    }
+
+    /// The first tick for this hart (SBI `set_timer` / `stimecmp`).
+    #[inline(always)]
+    fn secondary_timer_init(&self, cpu: usize) {
+        azos_drv_sys::timebase::set_next_tick(cpu as u32);
+    }
+
+    /// Nothing to publish: `kernel_main` on riscv64 does not wait for a
+    /// per-hart online flag (the HSM `hart_start` return is its readback).
+    #[inline(always)]
+    fn secondary_publish_online(&self, _cpu: usize) {}
+
+    /// The vDSO clock on riscv64: the watchdog tick count and `rdtime` in ms
+    /// at the fixed `TIMER_FREQ`. No vDSO page under `no-mmu`.
+    #[inline(always)]
+    fn vdso_clock(&self) -> Option<(u64, u64)> {
+        #[cfg(not(feature = "no-mmu"))]
+        {
+            let now = azos_drv_sys::timebase::now();
+            Some((azos_actuation::watchdog::ticks(), now / (azos_drv_sys::timebase::TIMER_FREQ / 1000)))
+        }
+        #[cfg(feature = "no-mmu")]
+        {
+            None
+        }
+    }
+}

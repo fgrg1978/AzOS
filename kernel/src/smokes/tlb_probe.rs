@@ -33,7 +33,7 @@ const VA: usize = 0x20_0000_0000;
 /// Second page: removed through `unmap_user_range_and_free`, the batched
 /// path `munmap` takes, where `VA` goes through `vmm::unmap` (shm, io_ring,
 /// mmap unwind, MMIO rollback).
-const VA2: usize = VA + azos_arch::mmu::PAGE_SIZE;
+const VA2: usize = VA + azos_arch::PAGE_SIZE;
 const OLD: u64 = 0xA5A5_A5A5_A5A5_A5A5;
 const NEW: u64 = 0x5A5A_5A5A_5A5A_5A5A;
 
@@ -172,7 +172,7 @@ fn remote_mask(root: usize) -> usize {
     {
         azos_arch::tlb::remote_mask(
             |h| azos_arch::tlb::AZOS_HART_SATP[h].load(Ordering::SeqCst),
-            azos_arch::tlb::TLB_MAX_HARTS, azos_arch::cpu::hart_id(), root)
+            azos_arch::tlb::TLB_MAX_HARTS, azos_arch::ARCH.hart_id(), root)
     }
     #[cfg(target_arch = "aarch64")]
     { let _ = root; 0 }
@@ -204,7 +204,7 @@ fn irq_restore(saved: usize) {
 
 fn fill(frame: usize, word: u64) {
     let p = addr::phys_to_virt(frame) as *mut u64;
-    for i in 0..(azos_arch::mmu::PAGE_SIZE / 8) {
+    for i in 0..(azos_arch::PAGE_SIZE / 8) {
         unsafe { core::ptr::write_volatile(p.add(i), word) };
     }
     core::sync::atomic::fence(Ordering::SeqCst);
@@ -251,12 +251,12 @@ fn toucher(_: usize) {
     if running_on(root) {
         KTASK_CREATOR_ROOT.store(live_root(), Ordering::SeqCst);
         azos_sched::task_create_affinity("ktask-root", ktask, 0, PROBE_PRIO,
-                                             azos_arch::cpu::hart_id() as i8);
+                                             azos_arch::ARCH.hart_id() as i8);
     }
 
     // From here to the second load: no interrupt, so no switch, so no flush.
     let saved = irq_off();
-    TOUCH_HART.store(azos_arch::cpu::hart_id(), Ordering::SeqCst);
+    TOUCH_HART.store(azos_arch::ARCH.hart_id(), Ordering::SeqCst);
     if running_on(root) {
         let r = unsafe { azos_tlb_probe_load(VA) };
         let r2 = unsafe { azos_tlb_probe_load(VA2) };
@@ -293,7 +293,7 @@ fn toucher(_: usize) {
 }
 
 pub fn runner(touch_hart: usize) {
-    let me = azos_arch::cpu::hart_id();
+    let me = azos_arch::ARCH.hart_id();
     // A boot-created kernel task: this is the kernel's root.
     let kernel_root = live_root();
     let (frame, frame2) = match (pmm::alloc_page(), pmm::alloc_page()) {
@@ -335,7 +335,7 @@ pub fn runner(touch_hart: usize) {
     // frees nothing here (a kernel-permission leaf is not a task's own
     // frame) but clears, batches and shoots down exactly as `munmap` does.
     vmm::unmap(pt, VA);
-    let _ = vmm::unmap_user_range_and_free(pt, VA2, VA2 + azos_arch::mmu::PAGE_SIZE, 0, 0);
+    let _ = vmm::unmap_user_range_and_free(pt, VA2, VA2 + azos_arch::PAGE_SIZE, 0, 0);
     // Reuse of the frames the PTEs named.
     fill(frame, NEW);
     fill(frame2, NEW);

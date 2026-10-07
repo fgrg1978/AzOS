@@ -36,10 +36,13 @@ use azos_spsc::trace::{region_init, TraceProducer, TraceRecord, POLICY_DROP, POL
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-/// Per-CPU producer slots: the layout's ring bound. The kernel asserts it
-/// equals the scheduler's hart bound (`azos_sync::isr_depth::MAX_HARTS`)
-/// where it creates the region; a hart at or above it never records.
-pub const MAX_CPUS: usize = azos_spsc::trace::TRACE_MAX_CPUS as usize;
+/// Per-CPU producer slots: the CPU ceiling (Kconfig `NR_CPUS`). The kernel
+/// asserts it equals the scheduler's hart bound (`azos_sync::isr_depth::
+/// MAX_HARTS`) where it creates the region; a hart at or above it never
+/// records. The region layout's own bound, `TRACE_MAX_CPUS`, is the ABI
+/// ceiling `tracectl` validates against and may not be exceeded.
+pub const MAX_CPUS: usize = azos_limits::NR_CPUS;
+const _: () = assert!(MAX_CPUS <= azos_spsc::trace::TRACE_MAX_CPUS as usize, "NR_CPUS exceeds the trace region's ring bound");
 
 /// Is the tracer compiled in?
 pub const ENABLED: bool = azos_limits::KTRACE;
@@ -75,12 +78,33 @@ const _: () = assert!(!ENABLED || RING_ENTRIES.is_power_of_two(), "KTRACE_RING_E
 const _: () = assert!(TRACE_CLASSES <= 32);
 
 #[repr(C, align(64))]
-struct PerCpu(UnsafeCell<TraceProducer>);
+struct Producer(UnsafeCell<TraceProducer>);
 // SAFETY: slot `i` is only touched by CPU `i` with its interrupts masked
 // (`record`), or by `install` before any other CPU can record.
-unsafe impl Sync for PerCpu {}
+unsafe impl Sync for Producer {}
 
-static CPUS: [PerCpu; MAX_CPUS] = [const { PerCpu(UnsafeCell::new(TraceProducer::empty())) }; MAX_CPUS];
+/// Each CPU's producer (the ring control: head, drops, its ring's address),
+/// in its per-CPU area (wave 15, NRCPUS), one cache line a CPU. All-zero is
+/// `TraceProducer::empty()`, a producer that is not live and records nothing.
+static CPUS: azos_percpu::PerCpu<Producer> =
+    // SAFETY: all-zero bytes are `Producer(UnsafeCell::new(TraceProducer::empty()))`.
+    unsafe { azos_percpu::PerCpu::zeroed() };
+
+/// The per-CPU variables this crate keeps in the areas, for the kernel's
+/// `setup_per_cpu_areas`.
+pub fn for_each_percpu_var(f: &mut dyn FnMut(&'static dyn azos_percpu::PerCpuVar)) {
+    if ENABLED {
+        f(&CPUS);
+    }
+}
+
+/// CPU `cpu`'s producer, or `None` if it has no area (past `nr_cpu_ids`, or
+/// before the areas are attached at boot).
+#[inline(always)]
+fn producer(cpu: usize) -> Option<&'static Producer> {
+    // SAFETY: an attached slot lives as long as the kernel.
+    CPUS.attached(cpu).then(|| unsafe { &*CPUS.ptr(cpu) })
+}
 
 /// The runtime mask, alone on its line: every tracepoint reads it, only
 /// `set_mask` writes it.
@@ -233,7 +257,9 @@ pub fn install(base: usize, ncpu: u32, entries: u32, ts_hz: u64) {
     for cpu in 0..ncpu {
         // SAFETY: no CPU records before the mask below is set, and only
         // the boot CPU runs.
-        unsafe { *CPUS[cpu as usize].0.get() = TraceProducer::attach(base, cpu, entries) };
+        if let Some(slot) = producer(cpu as usize) {
+            unsafe { *slot.0.get() = TraceProducer::attach(base, cpu, entries) };
+        }
     }
     NCPU.store(ncpu, Ordering::Relaxed);
     ENTRIES.store(entries, Ordering::Relaxed);
@@ -288,7 +314,7 @@ pub fn on(class: u32, compiled: bool) -> bool {
 #[inline(never)]
 pub fn record(event: u16, a0: u32, a1: u32, a2: u32, a3: u32) {
     let s = isa::irq_save();
-    if let Some(slot) = CPUS.get(isa::cpu()) {
+    if let Some(slot) = producer(isa::cpu()) {
         // SAFETY: this CPU's own producer, with its interrupts masked.
         let p = unsafe { &mut *slot.0.get() };
         if p.is_live() {
@@ -303,7 +329,7 @@ pub fn record(event: u16, a0: u32, a1: u32, a2: u32, a3: u32) {
 /// own view (never the reader's tail): the panic path's dump. Racy against
 /// that CPU if it is still running; a record being rewritten is skipped.
 pub fn for_each_recent(cpu: usize, n: u32, mut f: impl FnMut(&TraceRecord)) {
-    let Some(slot) = CPUS.get(cpu) else { return };
+    let Some(slot) = producer(cpu) else { return };
     // SAFETY: read-only; see the doc.
     let p = unsafe { &*slot.0.get() };
     if !p.is_live() {
@@ -321,7 +347,7 @@ pub fn for_each_recent(cpu: usize, n: u32, mut f: impl FnMut(&TraceRecord)) {
 /// `(records written, drops)` of CPU `cpu`'s ring, for statistics. Racy by
 /// nature against that CPU.
 pub fn cpu_stats(cpu: usize) -> (u32, u32) {
-    match CPUS.get(cpu) {
+    match producer(cpu) {
         // SAFETY: read-only snapshot of two words.
         Some(slot) => unsafe {
             let p = &*slot.0.get();
@@ -336,6 +362,8 @@ pub fn cpu_stats(cpu: usize) -> (u32, u32) {
 /// The site emitter. `branch!(CLASS)` is one 32-bit instruction, linked as a
 /// branch to the class's mask test and recorded in `.azos_keys` (see
 /// [`jump`]); the fall-through (a patched nop) answers `false`.
+// arch-only: patched-branch static keys exist per ISA; an ISA without them
+// keeps KTRACE_STATIC_KEYS off (its default on x86_64) and tests the mask.
 #[cfg(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none")))]
 mod keys {
     #[cfg(target_arch = "riscv64")]
@@ -433,6 +461,7 @@ macro_rules! class_on {
             if !(ENABLED && azos_limits::$kconfig) {
                 return false;
             }
+            // arch-only: static keys (see `mod keys`).
             #[cfg(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none")))]
             if STATIC_KEYS {
                 return keys::branch!($class);

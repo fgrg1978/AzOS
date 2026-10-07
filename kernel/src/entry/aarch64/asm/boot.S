@@ -417,19 +417,18 @@ _aarch64_secondary_entry:
     isb
 
     // ── This core's own boot stack ───────────────────────────────────────
-    // sp = aarch64_secondary_stacks[hart_id] + stack_size — the SAME
-    // arithmetic `_secondary_start` (riscv64) does with `secondary_stacks`,
-    // computed here rather than trusting a stack top handed through
-    // `context_id`: `x20` (hart_id) was already range-checked above, an
-    // address would not have been.
-    adrp    x0, aarch64_secondary_stacks
-    add     x0, x0, :lo12:aarch64_secondary_stacks
-    adrp    x1, _aarch64_secondary_stack_size
-    add     x1, x1, :lo12:_aarch64_secondary_stack_size
-    ldr     x1, [x1]
-    mul     x2, x20, x1
-    add     x0, x0, x2
-    add     sp, x0, x1
+    // sp = AZOS_SECONDARY_SP[hart_id]: the PHYSICAL top of this CPU's boot
+    // stack in its per-CPU area (kernel/src/main.rs), written — and cleaned
+    // to the point of coherency, since we read it with the MMU off — by the
+    // boot CPU before it started us. 0 = no area (not a possible CPU): park.
+    // `x20` (hart_id) was already range-checked above against MAX_HARTS, the
+    // table's length. Read through the table rather than trusting a stack
+    // address handed through `context_id`: an address could not be checked.
+    adrp    x0, AZOS_SECONDARY_SP
+    add     x0, x0, :lo12:AZOS_SECONDARY_SP
+    ldr     x0, [x0, x20, lsl #3]
+    cbz     x0, _secondary_park
+    mov     sp, x0
 
     // ── MMU on, against the REAL kernel page table, before the first
     //    atomic ──────────────────────────────────────────────────────────
@@ -462,11 +461,12 @@ _aarch64_secondary_entry:
 
     bl      aarch64_secondary_mmu_init
 
-    // ── Call Rust aarch64_smp_secondary_start(hart_id) ───────────────────
+    // ── Call Rust secondary_main(hart_id) ────────────────────────────────
+    // The one secondary entry every ISA reaches (kernel/src/boot/smp.rs).
     mov     x0, x20
-    bl      aarch64_smp_secondary_start
+    bl      secondary_main
 
-    // `aarch64_smp_secondary_start`'s signature is `-> !`; this exists only
+    // `secondary_main`'s signature is `-> !`; this exists only
     // so a bug that somehow returns parks instead of running off the end.
     b       _secondary_park
 
@@ -487,6 +487,5 @@ boot_entry_el:
 .extern aarch64_early_mmu_init
 .extern aarch64_early_ttbr1_alias
 .extern aarch64_secondary_mmu_init
-.extern aarch64_smp_secondary_start
-.extern aarch64_secondary_stacks
-.extern _aarch64_secondary_stack_size
+.extern secondary_main
+.extern AZOS_SECONDARY_SP

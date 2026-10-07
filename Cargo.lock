@@ -44,6 +44,7 @@ version = "0.1.0"
 dependencies = [
  "azos_arch_aarch64",
  "azos_arch_riscv64",
+ "azos_arch_x86_64",
 ]
 
 [[package]]
@@ -57,6 +58,9 @@ dependencies = [
 [[package]]
 name = "azos_arch_api"
 version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
 
 [[package]]
 name = "azos_arch_riscv64"
@@ -64,7 +68,15 @@ version = "0.1.0"
 dependencies = [
  "azos_arch_api",
  "azos_common",
+ "azos_limits",
  "bitflags",
+]
+
+[[package]]
+name = "azos_arch_x86_64"
+version = "0.1.0"
+dependencies = [
+ "azos_arch_api",
 ]
 
 [[package]]
@@ -335,6 +347,9 @@ dependencies = [
 [[package]]
 name = "azos_dtb"
 version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
 
 [[package]]
 name = "azos_efi"
@@ -488,6 +503,7 @@ dependencies = [
  "azos_net",
  "azos_ota",
  "azos_pci",
+ "azos_percpu",
  "azos_pubsub",
  "azos_robot",
  "azos_robot_drivers",
@@ -547,6 +563,7 @@ dependencies = [
  "azos_arch_api",
  "azos_common",
  "azos_limits",
+ "azos_percpu",
  "azos_sync",
  "linked_list_allocator",
 ]
@@ -574,6 +591,7 @@ dependencies = [
 name = "azos_net"
 version = "0.1.0"
 dependencies = [
+ "azos_arch",
  "azos_common",
  "azos_crypto",
  "azos_drv_bus",
@@ -598,6 +616,13 @@ dependencies = [
 [[package]]
 name = "azos_pci"
 version = "0.1.0"
+
+[[package]]
+name = "azos_percpu"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
 
 [[package]]
 name = "azos_pubsub"
@@ -665,6 +690,7 @@ dependencies = [
  "azos_limits",
  "azos_linux_abi",
  "azos_mm",
+ "azos_percpu",
  "azos_sync",
  "azos_trace",
  "wcet-macro",
@@ -732,6 +758,7 @@ version = "0.1.0"
 dependencies = [
  "azos_arch",
  "azos_common",
+ "azos_limits",
 ]
 
 [[package]]
@@ -802,6 +829,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_limits",
+ "azos_percpu",
  "azos_spsc",
 ]
 

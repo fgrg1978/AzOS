@@ -513,6 +513,8 @@ pub mod msix_selftest {
     }
 
     /// riscv64 AIA route: identities allocated on `hart`'s IMSIC file.
+    // arch-only: the riscv64 AIA route; x86_64's is ApicMsiRoute below,
+    // aarch64's the kernel's ITS route.
     #[cfg(target_arch = "riscv64")]
     pub struct AiaRoute {
         hart: u32,
@@ -544,6 +546,27 @@ pub mod msix_selftest {
         }
         fn delivered(&self, vec: u16) -> u64 {
             azos_drv_irqchip::irqchip::delivered(self.first + vec as u32) as u64
+        }
+    }
+
+    /// x86_64 skeleton (and any further ISA): MSI-X straight to a LAPIC
+    /// (address 0xFEE0_0000 | dest APIC ID << 12, data = vector). aarch64's
+    /// route is the ITS one the kernel builds; it needs no arm here.
+    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+    pub struct ApicMsiRoute {
+        pub hart: u32,
+    }
+
+    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+    impl MsiRoute for ApicMsiRoute {
+        fn prepare(&mut self, _n: u16) -> bool {
+            todo!("x86_64: ApicMsiRoute::prepare: allocate n IDT vectors on the destination CPU")
+        }
+        fn target(&self, _vec: u16) -> (u64, u32) {
+            todo!("x86_64: ApicMsiRoute::target: (0xFEE0_0000 | apic_id << 12, vector)")
+        }
+        fn delivered(&self, _vec: u16) -> u64 {
+            todo!("x86_64: ApicMsiRoute::delivered: per-vector delivery count")
         }
     }
 

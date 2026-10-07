@@ -521,7 +521,7 @@ struct Walker {
 /// reporting more `cpu@` nodes than this still parses; the extra ones are
 /// counted in [`DtbInfo::num_cpus`] but their `reg` is not recorded, the
 /// same truncate-not-fail shape [`dtb_parse`]'s `compatible` copy uses.
-pub const MAX_CPU_REG: usize = 8;
+pub const MAX_CPU_REG: usize = azos_limits::NR_CPUS;
 
 impl Walker {
     /// Read the next big-endian u32 token from the structure block and

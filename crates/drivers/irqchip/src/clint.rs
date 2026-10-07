@@ -11,6 +11,7 @@
 /// Ported from kernel/core/irq.c (CLINT parts)
 
 use core::sync::atomic::{AtomicU32, Ordering};
+// arch-only: the riscv64 SBI/Sstc mode word.
 #[cfg(target_arch = "riscv64")]
 use core::sync::atomic::AtomicU8;
 
@@ -61,7 +62,9 @@ pub enum TimerMode {
     /// ARMv8 generic timer (`CNTV_CVAL_EL0`) — the only mechanism aarch64
     /// has. Not a placeholder: this is the honest, permanent answer on
     /// this ISA, not a stand-in for a selection that hasn't landed yet.
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    // aarch64 and any ISA without a mechanism choice (the x86_64 skeleton):
+    // the one deadline write the arch contract offers.
+    #[cfg(any(all(target_arch = "aarch64", target_os = "none"), not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
     Generic,
 }
 
@@ -132,18 +135,20 @@ fn decode(mode: u8) -> TimerMode {
     if mode == MODE_SSTC { TimerMode::Sstc } else { TimerMode::Sbi }
 }
 
-/// aarch64: one mechanism only, so there is nothing to select. `_dt_sstc` is
+/// aarch64 (and the x86_64 skeleton, whose deadline is the contract's
+/// `set_timer_deadline`: TSC-deadline): one mechanism only, so there is
+/// nothing to select. `_dt_sstc` is
 /// accepted (not `#[cfg]`d away) so a caller written against the RISC-V
 /// signature — a device-tree Sstc flag — still compiles unchanged on this
 /// ISA; the value is always ignored, since Sstc is a RISC-V CSR extension
 /// with no aarch64 equivalent to turn on or off.
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(any(all(target_arch = "aarch64", target_os = "none"), not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 pub fn timer_select(_dt_sstc: bool) -> TimerMode {
     TimerMode::Generic
 }
 
 /// aarch64: always [`TimerMode::Generic`] — see [`TimerMode`]'s doc.
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(any(all(target_arch = "aarch64", target_os = "none"), not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 pub fn timer_mode() -> TimerMode {
     TimerMode::Generic
 }
@@ -247,10 +252,10 @@ pub fn get_time() -> u64 {
 /// aarch64: `CNTVCT_EL0`, through the same free function `timebase::now()`
 /// and `Cpu::now_ticks` already use — see `azos_drv_sys::timebase`'s module doc
 /// for why this crate stopped naming the clock after a RISC-V device.
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(any(all(target_arch = "aarch64", target_os = "none"), not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 #[inline(always)]
 pub fn get_time() -> u64 {
-    azos_arch::cpu::now_ticks()
+    azos_arch::Cpu::now_ticks(&azos_arch::ARCH)
 }
 
 /// Schedule the next timer interrupt at an absolute time value, on the
@@ -281,7 +286,7 @@ pub fn set_timer(_hart: u32, time: u64) {
 /// `Interrupts::set_timer_deadline` is SBI-only — it has no visibility into
 /// this module's `TIMER_MODE` — so doing the same thing there would
 /// silently drop the Sstc fast path this file exists to provide.
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(any(all(target_arch = "aarch64", target_os = "none"), not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 #[inline(always)]
 pub fn set_timer(_hart: u32, time: u64) {
     use azos_arch::Interrupts;

@@ -62,6 +62,9 @@ config TIMER_FREQ
     # TIMER_FREQ-derived timeout is compile-time; a wrong value here is a
     # 100x-short DHCP/ARP/safety timeout on that ISA (gate 182c).
     default 1000000000 if ARCH_AARCH64
+    # x86_64 skeleton: the TSC rate is per-CPU and calibrated at boot; a port
+    # makes the TIMER_FREQ-derived timeouts runtime. Placeholder until then.
+    default 1000000000 if ARCH_X86_64
     default 10000000 if BOARD_QEMU
     default 4000000  if BOARD_VF2
     default 24000000 if BOARD_K1

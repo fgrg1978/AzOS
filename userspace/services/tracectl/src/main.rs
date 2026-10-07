@@ -368,15 +368,24 @@ fn seg_book(segs: &mut [Seg], class: u32, ns: u64) {
 /// Rings this reader drains: the layout's bound (a region never has more).
 const MAX_RINGS: usize = azos_spsc::trace::TRACE_MAX_CPUS as usize;
 
-/// Per-CPU records taken per poll before the merge.
-const BATCH: usize = 64;
+/// Records taken per poll before the merge, all rings together: 64 per ring
+/// for the 8 rings this reader was first written for. A region may hold up to
+/// `MAX_RINGS` (64) rings now that the kernel's CPU ceiling is Kconfig
+/// `NR_CPUS`, so the rings share this budget (`per_ring`) instead of each
+/// taking 64 and the buffer growing to 128 KiB.
+const BATCH_RECORDS: usize = 512;
+
+/// One ring's share of [`BATCH_RECORDS`] for a region of `ncpu` rings.
+fn per_ring(ncpu: usize) -> usize {
+    (BATCH_RECORDS / ncpu.max(1)).max(1)
+}
 
 /// The per-poll batches, in `.bss`: 16 KiB would not fit the stack.
-struct Batches(core::cell::UnsafeCell<[[TraceRecord; BATCH]; MAX_RINGS]>);
+struct Batches(core::cell::UnsafeCell<[TraceRecord; BATCH_RECORDS]>);
 // SAFETY: this program is single-threaded.
 unsafe impl Sync for Batches {}
 static BATCH_BUF: Batches = Batches(core::cell::UnsafeCell::new(
-    [[TraceRecord { ts: 0, seq: 0, event: 0, cpu: 0, flags: 0, args: [0; 4] }; BATCH]; MAX_RINGS],
+    [TraceRecord { ts: 0, seq: 0, event: 0, cpu: 0, flags: 0, args: [0; 4] }; BATCH_RECORDS],
 ));
 
 /// Decode one record as a text line (ftrace-like).
@@ -583,15 +592,16 @@ fn stream() -> i32 {
     // SAFETY: the one reference to the static batch, in a single-threaded program.
     let batch = unsafe { &mut *BATCH_BUF.0.get() };
     let mut n = [0usize; MAX_RINGS];
+    let per = per_ring(ncpu);
     'outer: loop {
         let mut any = false;
         for cpu in 0..ncpu {
             let k = cons[cpu].as_mut().unwrap();
             n[cpu] = 0;
-            while n[cpu] < BATCH {
+            while n[cpu] < per {
                 match k.pop() {
                     Pop::Rec(r) => {
-                        batch[cpu][n[cpu]] = r;
+                        batch[cpu * per + n[cpu]] = r;
                         n[cpu] += 1;
                     }
                     Pop::Lost(l) => lost += l as u64,
@@ -624,12 +634,12 @@ fn stream() -> i32 {
         loop {
             let mut best: Option<usize> = None;
             for cpu in 0..ncpu {
-                if at[cpu] < n[cpu] && best.is_none_or(|b| batch[cpu][at[cpu]].ts < batch[b][at[b]].ts) {
+                if at[cpu] < n[cpu] && best.is_none_or(|b| batch[cpu * per + at[cpu]].ts < batch[b * per + at[b]].ts) {
                     best = Some(cpu);
                 }
             }
             let Some(cpu) = best else { break };
-            let r = batch[cpu][at[cpu]];
+            let r = batch[cpu * per + at[cpu]];
             at[cpu] += 1;
             emit(&mut out, &r, g.ts_hz);
             let class = trace_event_class(r.event) as usize;

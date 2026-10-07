@@ -36,3 +36,27 @@ pub mod cbo {
         unsafe { core::ptr::write_bytes(addr as *mut u8, 0, len) };
     }
 }
+
+pub use azos_arch_api::ArchPlatform;
+pub use mmu::{PAGE_SHIFT, PAGE_SIZE};
+
+/// Stand-in singleton for `azos_arch::ARCH`.
+pub struct Arch;
+pub static ARCH: Arch = Arch;
+
+/// The arch contract's `ArchPlatform`, host bodies: plain stores for zeroing,
+/// no caches or TLBs to maintain. Shared files call these through `ARCH`
+/// rather than an ISA module, so this stand-in implements the contract.
+impl azos_arch_api::ArchPlatform for Arch {
+    fn icache_needs_dcache_clean(&self) -> bool { false }
+    unsafe fn dcache_clean(&self, _va: usize, _len: usize) {}
+    fn icache_sync_all(&self) {}
+    fn flush_tlb_page_all(&self, _va: usize) {}
+    unsafe fn zero_memory(&self, va: usize, len: usize) {
+        unsafe { core::ptr::write_bytes(va as *mut u8, 0, len) };
+    }
+    fn user_root_word(&self, root_phys: usize, asid: u16) -> usize { mmu::make_satp(root_phys, asid) }
+    fn install_user_root_local(&self, _word: usize) {}
+    type UserAccess = ();
+    fn user_access(&self) {}
+}

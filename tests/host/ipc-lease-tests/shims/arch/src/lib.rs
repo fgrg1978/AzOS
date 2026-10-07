@@ -16,3 +16,6 @@
 pub mod mmu {
     pub const PAGE_SIZE: usize = azos_mm::PAGE_SIZE;
 }
+
+/// The contract's page size under its ISA-neutral name.
+pub const PAGE_SIZE: usize = azos_mm::PAGE_SIZE;

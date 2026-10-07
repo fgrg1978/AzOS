@@ -9,6 +9,8 @@
 
 mod selftest;
 pub(crate) use selftest::*;
+#[cfg(feature = "cpuid-probe")]
+pub(crate) mod cpuid_probe;
 #[cfg(feature = "trace-cost-probe")]
 mod trace_cost;
 #[cfg(feature = "trace-cost-probe")]

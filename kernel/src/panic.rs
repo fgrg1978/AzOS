@@ -38,6 +38,7 @@
 /// ordinary exit path and nothing global happens. Every other panic takes
 /// the reset path described above, which first prints the verdict and why.
 use core::panic::PanicInfo;
+use azos_arch::Cpu as _;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use azos_common::panic_policy::{self, Culprit, PanicContext, Policy, Verdict};
@@ -125,7 +126,7 @@ fn capture(hart: usize, tid: u32) -> PanicContext {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     // ── Panic policy: decide before masking anything ────────────────────
-    let hart = azos_arch::cpu::hart_id();
+    let hart = azos_arch::ARCH.hart_id();
     let tid = azos_sched::current_task_tid();
     let verdict = panic_policy::decide(POLICY, &capture(hart, tid));
     let reason = match verdict {
@@ -262,7 +263,7 @@ fn panic(info: &PanicInfo) -> ! {
     }
 
     loop {
-        azos_arch::cpu::wfi();
+        azos_arch::ARCH.wfi();
     }
 }
 

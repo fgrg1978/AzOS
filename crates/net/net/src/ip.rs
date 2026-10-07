@@ -194,9 +194,75 @@ fn build_header_flags(
     hlen
 }
 
-/// Closes the loopback recursion. See the comment in `send`.
-static LOOPBACK_DEPTH: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+/// Closes the loopback recursion, one flag per hart. See [`loopback_deliver`].
+static LOOPBACK_ACTIVE: [core::sync::atomic::AtomicBool; LOOPBACK_HARTS] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; LOOPBACK_HARTS];
+
+// Host seam: `tests/host/net-tests` and syscall-tests' net shim pull this file
+// in with `#[path]`, and their `azos_sync` shim has no preemption counter, so
+// the host build runs as one hart that is never preempted.
+#[cfg(target_os = "none")]
+const LOOPBACK_HARTS: usize = azos_sync::preempt::SLOTS;
+#[cfg(target_os = "none")]
+#[cfg_attr(feature = "loopback-guard-canary", allow(dead_code))]
+#[inline(always)]
+fn loopback_pin() -> azos_sync::PreemptGuard { azos_sync::critical_section() }
+#[cfg(target_os = "none")]
+#[cfg_attr(feature = "loopback-guard-canary", allow(dead_code))]
+#[inline(always)]
+fn loopback_hart() -> usize { azos_arch::Cpu::hart_id(&azos_arch::ARCH) }
+#[cfg(not(target_os = "none"))]
+const LOOPBACK_HARTS: usize = 1;
+#[cfg(not(target_os = "none"))]
+#[cfg_attr(feature = "loopback-guard-canary", allow(dead_code))]
+#[inline(always)]
+fn loopback_pin() {}
+#[cfg(not(target_os = "none"))]
+#[cfg_attr(feature = "loopback-guard-canary", allow(dead_code))]
+#[inline(always)]
+fn loopback_hart() -> usize { 0 }
+
+/// Deliver one built IP packet up this host's own stack, at most one level
+/// deep per call stack. `false`: refused, because this call stack is already
+/// inside a loopback delivery (a TCP answer to a looped-back segment).
+///
+/// **The guard is a property of the call stack, not of the machine.** It was
+/// one global flag, held across `handle` with preemption ON (syscalls run
+/// with interrupts enabled). A task preempted inside its own delivery left
+/// the flag up, and every other task's loopback send was refused with -1
+/// until it ran again: the vsbench UDP echo lost its reply whenever a wake-up
+/// preempted the client between delivering its request and dropping the
+/// flag, and the client then waited out its whole poll budget (product
+/// kernel, -icount: one refused send in 21, read from a QEMU exec trace). On SMP two harts sending to themselves refused each other the same
+/// way. Now the flag is per hart and the delivery runs with preemption off, so
+/// the task that raised it is the only one that can see it: a recursion on
+/// the same stack is still refused, nothing else is. A tick that lands inside
+/// is paid when the guard drops, after the flag is down.
+///
+/// Cost: preemption is off for one `handle` of one packet (a UDP ring push,
+/// or one TCP input step, whose own answer is refused here and not sent).
+/// `loopback-guard-canary` restores the old global flag without the guard;
+/// `loopback-preempt-probe` asks for a reschedule inside the window on every
+/// delivery, as a tick landing there would (gate rows).
+fn loopback_deliver(packet: &[u8], our_mac: &[u8; 6], our_ip: &[u8; 4]) -> bool {
+    #[cfg(not(feature = "loopback-guard-canary"))]
+    let _pinned = loopback_pin();
+    #[cfg(not(feature = "loopback-guard-canary"))]
+    let Some(active) = LOOPBACK_ACTIVE.get(loopback_hart()) else { return false };
+    #[cfg(feature = "loopback-guard-canary")]
+    let active = &LOOPBACK_ACTIVE[0];
+    if active.swap(true, Ordering::Acquire) {
+        return false;
+    }
+    handle(packet, our_mac, our_ip);
+    #[cfg(feature = "loopback-preempt-probe")]
+    {
+        azos_sync::preempt::set_need_resched();
+        drop(azos_sync::critical_section());
+    }
+    active.store(false, Ordering::Release);
+    true
+}
 
 /// Send an IP packet.
 ///
@@ -283,12 +349,7 @@ fn send_flags(
         // **answers**: an ACK over loopback would re-enter here with no
         // bottom. Depth 1 — the packet is delivered and any reply it triggers
         // is dropped. TCP retries a lost ACK; nobody retries a blown stack.
-        if LOOPBACK_DEPTH.swap(true, core::sync::atomic::Ordering::Acquire) {
-            return -1;
-        }
-        handle(&ip_payload[..total_len], our_mac, our_ip);
-        LOOPBACK_DEPTH.store(false, core::sync::atomic::Ordering::Release);
-        return 0;
+        return if loopback_deliver(&ip_payload[..total_len], our_mac, our_ip) { 0 } else { -1 };
     }
 
     // ── Multicast local delivery ────────────────────────
@@ -304,10 +365,7 @@ fn send_flags(
     // goes to the wire, because other hosts are members too. The same depth
     // guard applies, for the same reason.
     if super::igmp::is_multicast(dst_ip) && super::igmp::is_joined(dst_ip) {
-        if !LOOPBACK_DEPTH.swap(true, core::sync::atomic::Ordering::Acquire) {
-            handle(&ip_payload[..total_len], our_mac, our_ip);
-            LOOPBACK_DEPTH.store(false, core::sync::atomic::Ordering::Release);
-        }
+        let _ = loopback_deliver(&ip_payload[..total_len], our_mac, our_ip);
     }
 
     // ── Broadcast (RFC 919 / RFC 922) ──────────────────────────────────

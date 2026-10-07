@@ -33,8 +33,8 @@
 //! hole sits idle (see [`stranded`]) instead of a dead hart receiving work.
 
 /// Width of the liveness mask. Harts at or above this index cannot be
-/// represented; `MAX_HARTS` is 8 and `MAX_CPUS` is 4, so this is slack, not a
-/// limit anyone reaches.
+/// represented; the Kconfig `NR_CPUS` range stops at 64 for this reason (the
+/// scheduler asserts `MAX_CPUS <= HART_MASK_BITS`).
 pub const HART_MASK_BITS: usize = u64::BITS as usize;
 
 /// Set the bit for `hart_id`, ignoring ids the mask cannot hold.

@@ -28,9 +28,10 @@
 //! the gap; this one is load-bearing, because it is what a reader checks
 //! before deciding whether a second ISA exists.)
 //!
-//! There is no x86_64 port in this tree.
+//! x86_64 is a port skeleton only (`crates/core/arch-x86_64`): every arch
+//! method `todo!()`; it type-checks and does not run.
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(feature = "stub")))]
 pub use azos_arch_riscv64::*;
 
 // `target_os = "none"` in addition to the arch check, unlike the riscv64
@@ -44,7 +45,7 @@ pub use azos_arch_riscv64::*;
 // currently depends on the real `azos_arch` (they all go through a shim
 // where they touch it at all) — this guard keeps it that way rather than
 // relying on that staying true by convention.
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(all(target_arch = "aarch64", target_os = "none", not(feature = "stub")))]
 pub use azos_arch_aarch64::*;
 
 /// The active ISA's `arch-api` implementation, under one name.
@@ -67,8 +68,41 @@ pub use azos_arch_aarch64::*;
 /// two scans to survive as two scans), so without the attribute a call
 /// through this alias would be a real cross-crate call on the path every
 /// syscall takes.
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(feature = "stub")))]
 pub use azos_arch_riscv64::api_impl::RISCV64 as ARCH;
 
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(all(target_arch = "aarch64", target_os = "none", not(feature = "stub")))]
 pub use azos_arch_aarch64::api_impl::AARCH64 as ARCH;
+
+/// The type behind [`ARCH`], for the contract's associated items
+/// (`<azos_arch::ArchImpl as Mmu>::PAGE_SIZE`) and for host checks that
+/// assert a bound on it.
+#[cfg(all(target_arch = "riscv64", not(feature = "stub")))]
+pub type ArchImpl = azos_arch_riscv64::api_impl::Riscv64;
+
+#[cfg(all(target_arch = "aarch64", target_os = "none", not(feature = "stub")))]
+pub type ArchImpl = azos_arch_aarch64::api_impl::Aarch64;
+
+// x86_64: the port SKELETON (`crates/core/arch-x86_64`): the arch contract
+// with every method `todo!()`, nothing else exported. It type-checks; it does
+// not run. Feature `stub` selects it on any target (host checks,
+// `tests/host/arch-stub-tests`), so the skeleton and the fake ISA are one
+// method list.
+#[cfg(any(feature = "stub", all(target_arch = "x86_64", target_os = "none")))]
+pub use azos_arch_x86_64::*;
+
+#[cfg(any(feature = "stub", all(target_arch = "x86_64", target_os = "none")))]
+pub use azos_arch_x86_64::X86_64_ARCH as ARCH;
+
+#[cfg(any(feature = "stub", all(target_arch = "x86_64", target_os = "none")))]
+pub type ArchImpl = azos_arch_x86_64::X86_64;
+
+// A bare-metal target with no port must not get a silently empty facade.
+#[cfg(all(
+    target_os = "none",
+    not(any(feature = "stub", target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))
+))]
+compile_error!(
+    "azos_arch: no port for this target_arch. Implement every trait arch-api \
+     exports (crates/core/arch-x86_64 is the template) in crates/core/arch-<isa>."
+);

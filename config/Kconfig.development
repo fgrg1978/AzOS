@@ -371,6 +371,7 @@ config KTRACE_STATIC_KEYS
     depends on KTRACE && !NO_MMU
     default y if ARCH_RISCV64
     default y if ARCH_AARCH64
+    default n if ARCH_X86_64
     help
       Each tracepoint is one instruction in the kernel text, a branch to
       the class's mask test while the class may record and a nop while it

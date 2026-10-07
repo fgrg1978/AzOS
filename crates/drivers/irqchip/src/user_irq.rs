@@ -30,7 +30,7 @@
 //! binds from ([`route_for`]); a hart that does not take supervisor external
 //! interrupts falls back to the boot hart. Every hart that takes them says so
 //! once ([`hart_ready`]: the boot hart from its interrupt bring-up, each
-//! secondary from `smp_secondary_start`, which now sets `sie.SEIE` and gives
+//! secondary from `secondary_main`, which now sets `sie.SEIE` and gives
 //! its PLIC context threshold 0). A later bind by a task on another hart
 //! moves the line: PLIC, the old context's enable bit is cleared before the
 //! new one is set (Linux `plic_set_affinity`: one effective CPU, invalidate
@@ -254,6 +254,12 @@ pub fn set_boot_hart(hart: u32) {
     hart_ready(hart);
 }
 
+/// x86_64 skeleton (and any further ISA): the IOAPIC (`crate::apic`).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub fn set_boot_hart(hart: u32) {
+    crate::apic::set_boot_hart(hart)
+}
+
 /// The calling hart — `hart`, after its `irqchip::init` — takes supervisor
 /// external interrupts from now on: a ring-3 line may be routed here. On AIA
 /// this also enables every wired APLIC source's identity in this hart's IMSIC
@@ -272,6 +278,12 @@ pub fn hart_ready(hart: u32) {
         return;
     }
     note_hart_ready(hart);
+}
+
+/// x86_64 skeleton (and any further ISA): the IOAPIC (`crate::apic`).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub fn hart_ready(hart: u32) {
+    crate::apic::hart_ready(hart)
 }
 
 /// The boot hart ([`set_boot_hart`]).
@@ -322,6 +334,12 @@ pub fn bind(irq: u32, hart: u32, edge: Option<bool>) -> bool {
     true
 }
 
+/// x86_64 skeleton (and any further ISA): the IOAPIC (`crate::apic`).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub fn bind(irq: u32, hart: u32, edge: Option<bool>) -> bool {
+    crate::apic::bind(irq, hart, edge)
+}
+
 /// Mask `irq` (see the module doc). Called by the handler before it
 /// completes a ring-3 line, and by [`release`].
 #[cfg(target_arch = "riscv64")]
@@ -332,6 +350,12 @@ pub fn mask(irq: u32) {
     } else {
         crate::plic::set_priority(irq, 0);
     }
+}
+
+/// x86_64 skeleton (and any further ISA): the IOAPIC (`crate::apic`).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub fn mask(irq: u32) {
+    crate::apic::mask(irq)
 }
 
 /// Unmask `irq`: `SYS_DRV_IRQ_ACK`. A level line the driver has not
@@ -345,6 +369,12 @@ pub fn unmask(irq: u32) {
     }
 }
 
+/// x86_64 skeleton (and any further ISA): the IOAPIC (`crate::apic`).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub fn unmask(irq: u32) {
+    crate::apic::unmask(irq)
+}
+
 /// Hand `irq` back when its last binding went (task exit, through
 /// `irq_bind`'s release hook): mask, then forget the ownership — the order
 /// `gic::user_spi_release` uses, for the same reason. Not owned: untouched.
@@ -355,4 +385,10 @@ pub fn release(irq: u32) {
     }
     mask(irq);
     let _ = unmark(irq);
+}
+
+/// x86_64 skeleton (and any further ISA): the IOAPIC (`crate::apic`).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub fn release(irq: u32) {
+    crate::apic::release(irq)
 }

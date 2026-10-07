@@ -307,7 +307,7 @@ pub fn sys_notify_robust(uaddr: u64, op: u64) -> i64 {
 /// skipped — its registration goes, nothing is written.
 pub fn notify_robust_exit(tid: u32) -> u32 {
     use azos_ipc::shm;
-    let page = azos_arch::mmu::PAGE_SIZE;
+    let page = azos_arch::PAGE_SIZE;
     let resolve = |region: u32, off: u32| -> Option<usize> {
         if !matches!(shm::shm_has_mapping_ref(tid, region), Ok(true)) {
             return None;

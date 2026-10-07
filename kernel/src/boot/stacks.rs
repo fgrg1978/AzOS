@@ -40,28 +40,56 @@ pub(crate) fn boot_stack_report() {
     }
 }
 
-/// Write the magic word at the bottom of every IRQ-stack slot and publish
-/// hart 0's `[base, top)` to `entry::aarch64::set_irq_stack_bounds` — both
-/// BEFORE IRQs are unmasked, same ordering constraint riscv64's
-/// `irq_stacks_arm()` documents (a hart that took its first interrupt
-/// before this ran would be checking an unpublished bound / an
-/// uninitialised magic word).
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn aarch64_irq_stacks_arm() {
-    for hart in 0..MAX_HARTS {
-        unsafe {
-            let base = (&raw const aarch64_irq_stacks).add(hart * AARCH64_IRQ_STACK_SIZE) as *mut u64;
-            base.write_volatile(AARCH64_IRQ_STACK_MAGIC);
-        }
-    }
-    let base0 = (&raw const aarch64_irq_stacks) as usize;
-    entry::aarch64::set_irq_stack_bounds(base0, base0 + AARCH64_IRQ_STACK_SIZE);
+/// Give `cpu` the interrupt stack `[base, base + IRQ_STACK_SIZE)`: write its
+/// magic word, then publish it in `AZOS_IRQ_STACK_BASE`, which the trap entry
+/// reads. Before `cpu` can take an interrupt.
+pub(crate) fn arm_irq_stack(cpu: usize, base: usize) {
+    // SAFETY: `base` is the bottom of a stack nothing runs on yet.
+    unsafe { (base as *mut u64).write_volatile(IRQ_STACK_MAGIC) };
+    AZOS_IRQ_STACK_BASE[cpu].store(base, core::sync::atomic::Ordering::Release);
 }
 
-/// True while hart 0's IRQ stack still carries its magic word — the
-/// aarch64 analogue of riscv64's `irq_stack_intact`, checked the same way
-/// (after the tick-wait loop, not from inside a handler).
+/// Base of `cpu`'s interrupt stack, or 0 if it has none.
+#[inline]
+pub(crate) fn irq_stack_base(cpu: usize) -> usize {
+    AZOS_IRQ_STACK_BASE.get(cpu).map_or(0, |b| b.load(core::sync::atomic::Ordering::Relaxed))
+}
+
+/// True while `cpu`'s interrupt stack still carries its magic word (and
+/// vacuously for a CPU without one).
+#[inline]
+pub(crate) fn irq_stack_magic_intact(cpu: usize) -> bool {
+    let base = irq_stack_base(cpu);
+    // SAFETY: an armed stack is mapped for the kernel's lifetime.
+    base == 0 || unsafe { (base as *const u64).read_volatile() } == IRQ_STACK_MAGIC
+}
+
+/// The boot CPU's interrupt stack (static: it is armed before interrupts are
+/// enabled, which is before the per-CPU areas exist).
+pub(crate) fn boot_irq_stack_base() -> usize {
+    (&raw const boot_irq_stack) as usize
+}
+
+/// Arm the boot CPU's interrupt stack and publish its `[base, top)` to
+/// `entry::aarch64::set_irq_stack_bounds` — BEFORE IRQs are unmasked, same
+/// ordering constraint riscv64's `irq_stacks_arm()` documents (a CPU that
+/// took its first interrupt before this ran would be checking an
+/// unpublished bound / an uninitialised magic word). The secondaries' stacks
+/// are armed by `setup_per_cpu_areas`, before they are started.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn aarch64_irq_stacks_arm() {
+    use azos_arch::{Cpu, ARCH};
+    let cpu = ARCH.percpu_base();
+    let base0 = boot_irq_stack_base();
+    arm_irq_stack(cpu, base0);
+    entry::aarch64::set_irq_stack_bounds(base0, base0 + IRQ_STACK_SIZE);
+}
+
+/// True while the boot CPU's interrupt stack still carries its magic word —
+/// the aarch64 analogue of riscv64's `irq_stack_intact`, checked the same
+/// way (after the tick-wait loop, not from inside a handler).
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn aarch64_irq_stack_intact() -> bool {
-    unsafe { (&raw const aarch64_irq_stacks as *const u64).read_volatile() == AARCH64_IRQ_STACK_MAGIC }
+    use azos_arch::{Cpu, ARCH};
+    irq_stack_magic_intact(ARCH.percpu_base())
 }

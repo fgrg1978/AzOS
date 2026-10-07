@@ -113,7 +113,7 @@ pub const MAX_IRQS: u32 = 128;
 /// then this hart's own context ([`init_hart`]).
 ///
 /// Every hart that takes supervisor external interrupts calls this (the boot
-/// hart in its interrupt bring-up, each secondary in `smp_secondary_start`).
+/// hart in its interrupt bring-up, each secondary in `secondary_main`).
 /// Before, it rewrote every source's priority to 1 on each call: priorities
 /// are global, so a second call — a secondary's init, or any later re-init —
 /// unmasked the ring-3 lines `user_irq` holds masked at priority 0 until

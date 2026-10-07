@@ -323,7 +323,7 @@ class CameraSide:
         self.psk, self.sender, self.timeout = psk, sender, timeout
         self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.srv.bind((host, port))
+        self.srv.bind((host, max(port, 0)))  # -1: any free port
         self.srv.listen(2)
         self.srv.settimeout(0.5)
         self._sessions: list = []  # (sid, Link) in accept order
@@ -405,8 +405,8 @@ def run(args) -> None:
     if args.camera_port:
         cam = CameraSide(args.host, args.camera_port, psk, sender, args.phase_timeout)
         cam.start()
-        say(f"camera listener on {args.host}:{args.camera_port}")
-    say(f"listening on {args.host}:{args.port} (LINK.KEY from {args.image})")
+        say(f"camera listener on {args.host}:{cam.srv.getsockname()[1]}")
+    say(f"listening on {args.host}:{srv.getsockname()[1]} (LINK.KEY from {args.image})")
 
     link, sid1 = accept(srv, 1, args.wait, psk, sender, args.phase_timeout)
 
@@ -592,9 +592,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=9000)
+    ap.add_argument("--port", type=int, default=9000,
+                    help="0: any free port; the bound one is printed on the 'listening on' line")
     ap.add_argument("--camera-port", type=int, default=0,
-                    help="also accept the kernel's camera connections here (C1)")
+                    help="also accept the kernel's camera connections here (C1); -1: any "
+                         "free port, printed on the 'camera listener on' line; 0: none")
     ap.add_argument("--image", help="disk image the kernel boots; LINK.KEY is read from it")
     ap.add_argument("--wait", type=float, default=180.0,
                     help="seconds to wait for the kernel's first connection")

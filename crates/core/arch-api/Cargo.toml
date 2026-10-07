@@ -11,6 +11,7 @@ repository = "https://github.com/azos-project/azos"
 name = "azos_arch_api"
 
 [dependencies]
+azos_limits = { workspace = true }
 
 [features]
 # Masked-window tracer bookkeeping (`src/lat.rs`). Off: the module is absent.

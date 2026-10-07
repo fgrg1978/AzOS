@@ -11,6 +11,11 @@ publish = false
 fork-profile = []
 # Wave 14: debug output, every exec's `[VDSO] mapped` line (kernel `spawn-log`).
 spawn-log = []
+# Gate only: every `current_cpu_id()` is checked against the hardware id
+# (`cpuid_probe.rs`). The canary makes the id register lie on the boot hart
+# and forks there, which the probe must report. Never in a real build.
+cpuid-probe = []
+cpuid-probe-canary = ["cpuid-probe"]
 # Wave 13 (THREADS) canaries, never in a real build: a futex wake that wakes
 # nobody; a thread exit that never clears its clear-tid word; a new thread
 # that keeps its creator's thread pointer.
@@ -171,6 +176,7 @@ sched-reap-event = []
 # double-dispatch hole (K-C24 disabled) in a build `k1` transitively selected.
 
 [dependencies]
+azos_percpu = { workspace = true }
 # `seccomp.rs` derives its syscall numbers from here instead of restating
 # them; `abi` has zero dependencies so this closes no cycle.
 azos_abi          = { workspace = true }

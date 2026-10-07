@@ -96,9 +96,12 @@ mod tlb_mask {
 
     #[test]
     fn hart_count_is_clamped_to_the_table() {
+        // The table is `TLB_MAX_HARTS` (Kconfig `NR_CPUS`) long; a hart count
+        // past it must stop at its end, never index past it.
         let root = 0x8123_4000;
-        let pubd = [satp(root, 0); 8];
-        assert_eq!(remote_mask(|h| pubd[h], 64, 0, root), 0b1111_1110);
+        let pubd = [satp(root, 0); TLB_MAX_HARTS];
+        let all = if TLB_MAX_HARTS == usize::BITS as usize { usize::MAX } else { (1usize << TLB_MAX_HARTS) - 1 };
+        assert_eq!(remote_mask(|h| pubd[h], TLB_MAX_HARTS + 8, 0, root), all & !1);
     }
 
     /// The page-table free check (`holders`) is the shootdown's selection

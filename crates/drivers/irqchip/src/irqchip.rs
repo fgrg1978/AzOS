@@ -13,6 +13,7 @@
 //! State is written once by the boot hart before interrupts are enabled
 //! and before secondary harts start, and only read afterwards.
 
+use azos_arch::Cpu as _;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::aplic::Aplic;
@@ -147,7 +148,7 @@ pub fn enable_irq(hart: u32, irq: u32) {
     // A line the kernel enables for itself is never ring 3's to bind.
     crate::user_irq::mark_kernel(irq);
     if is_aia() {
-        if hart == azos_arch::cpu::hart_id() as u32 {
+        if hart == azos_arch::ARCH.hart_id() as u32 {
             imsic::enable(irq);
         }
     } else {
@@ -157,7 +158,7 @@ pub fn enable_irq(hart: u32, irq: u32) {
 
 pub fn disable_irq(hart: u32, irq: u32) {
     if is_aia() {
-        if hart == azos_arch::cpu::hart_id() as u32 {
+        if hart == azos_arch::ARCH.hart_id() as u32 {
             imsic::disable(irq);
         }
     } else {

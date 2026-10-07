@@ -41,6 +41,9 @@ pub fn reset(idx: usize) {
         USED[idx].store(false, Ordering::Relaxed);
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]
         TLS[idx].store(0, Ordering::Relaxed);
+        // x86_64 skeleton: a Linux task's thread pointer is its FS base.
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: fp::reset: clear the slot's saved FS base (Linux TLS)");
     }
 }
 
@@ -48,6 +51,11 @@ pub fn reset(idx: usize) {
 /// writes it and a native image never uses it, but a spawned task's entry
 /// writes it (0), so a Linux task's value is kept per slot across switches.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
+/// x86_64 skeleton: each Linux task's FS base (musl's thread pointer),
+/// kept per slot like aarch64's `TPIDR_EL0` above.
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
 
@@ -78,6 +86,14 @@ pub fn switch_slow(prev: usize, next: usize) {
             // kernel itself does not use TPIDR_EL0.
             unsafe { core::arch::asm!("msr TPIDR_EL0, {0}", in(reg) v) };
         }
+    }
+    // x86_64 skeleton: swap a Linux task's FS base (rdfsbase/wrfsbase with
+    // FSGSBASE, else IA32_FS_BASE); its FP/SIMD file is switched eagerly on
+    // every switch by the ISA's FPU path, not here (FP_XSAVE_EAGER).
+    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+    if azos_limits::LINUX_ABI && prev != next {
+        let _ = &TLS;
+        todo!("x86_64: fp::switch_slow: save/restore the Linux task's FS base");
     }
     if !azos_limits::LINUX_ABI || !cfg!(all(target_arch = "riscv64", target_os = "none")) {
         return;

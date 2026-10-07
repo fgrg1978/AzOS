@@ -252,7 +252,7 @@ fn mlp_forward(w1: &[f32], b1: &[f32], w2: &[f32], b2: &[f32],
 #[cfg(feature = "arch")]
 #[inline(always)]
 pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
-    azos_arch::vector::dot_f32_best(a, b)
+    azos_arch::Vector::dot_f32(&azos_arch::ARCH, a, b)
 }
 
 /// Without `arch`: the sequential loop, in the order `dot_f32_scalar` sums.

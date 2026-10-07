@@ -93,7 +93,7 @@ impl SpawnPrepared {
         while done < n {
             let va = base as usize + done;
             let Some(pa) = vmm::translate(self.user_pt, va) else { return false };
-            let in_page = azos_arch::mmu::PAGE_SIZE - (va & (azos_arch::mmu::PAGE_SIZE - 1));
+            let in_page = azos_arch::PAGE_SIZE - (va & (azos_arch::PAGE_SIZE - 1));
             let chunk = in_page.min(n - done);
             // SAFETY: `pa` is a frame of the child's eagerly mapped stack,
             // reached through the kernel's own mapping of it; the child has
@@ -179,7 +179,7 @@ pub fn write_linux_stack_into(
     while done < MAX {
         let va = base as usize + done;
         let pa = vmm::translate(user_pt, va)?;
-        let in_page = azos_arch::mmu::PAGE_SIZE - (va & (azos_arch::mmu::PAGE_SIZE - 1));
+        let in_page = azos_arch::PAGE_SIZE - (va & (azos_arch::PAGE_SIZE - 1));
         let chunk = in_page.min(MAX - done);
         // SAFETY: a frame of the eagerly mapped stack of an address space no
         // task runs on yet, reached through the kernel's own mapping of RAM.
@@ -302,7 +302,7 @@ pub fn spawn_prepare(
     // The auxiliary values are read from the headers `load_elf` accepted;
     // unused unless the row makes the child a Linux task.
     let aux_of = |hdr: &[u8]| {
-        azos_linux_abi::image_aux(hdr, azos_arch::mmu::PAGE_SIZE as u64).unwrap_or_default()
+        azos_linux_abi::image_aux(hdr, azos_arch::PAGE_SIZE as u64).unwrap_or_default()
     };
     let (ctx, aux) = match elf {
         ElfImage::Bytes(b) => (load_elf(b).ok_or(SpawnError::BadImage)?, aux_of(b)),

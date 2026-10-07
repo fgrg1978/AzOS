@@ -124,23 +124,13 @@ impl PreemptSlot {
     }
 }
 
-/// Number of per-hart slots. Matches `MAX_HARTS` in `kernel/src/main.rs`.
-pub const SLOTS: usize = 8;
-
-/// Pins this crate's own constant.
-///
-/// **This assert is deliberately weak and must not be mistaken for the guard.**
-/// `crates/core/sync` cannot see `kernel/src/main.rs`, so it cannot check
-/// `MAX_HARTS <= SLOTS` itself. The real compile-time guard is the mirrored
-/// assertion in `kernel/src/main.rs`, next to `MAX_HARTS`:
-///
-/// ```text
-/// const _: () = assert!(MAX_HARTS <= azos_sync::preempt::SLOTS);
-/// ```
-///
-/// What this one buys is that raising `SLOTS` here without looking at the
-/// kernel side is a deliberate act, not a typo.
-const _: () = assert!(SLOTS == 8, "SLOTS must track MAX_HARTS in kernel/src/main.rs");
+/// Number of per-hart slots: the CPU ceiling, Kconfig `NR_CPUS`, the same
+/// constant `kernel/src/main.rs`'s `MAX_HARTS` and `boot.S`'s range check
+/// take, so the two cannot drift (they used to be two hand-written 8s tied by
+/// an assert). Static, not in a per-CPU area: every spinlock takes a
+/// `PreemptGuard`, from the first `kprintln!` on, long before the frame
+/// allocator exists. 8 bytes per CPU of the ceiling.
+pub const SLOTS: usize = azos_limits::NR_CPUS;
 
 static PREEMPT: [PreemptSlot; SLOTS] = [const { PreemptSlot::new() }; SLOTS];
 
@@ -260,7 +250,7 @@ fn bump(c: &AtomicU32) {
 /// the counter-merging the deleted stub had.
 #[inline(always)]
 fn slot() -> Option<&'static PreemptSlot> {
-    let hart = azos_arch::cpu::hart_id();
+    let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
     match PREEMPT.get(hart) {
         Some(s) => Some(s),
         None => { bump(&HART_OOR); None }

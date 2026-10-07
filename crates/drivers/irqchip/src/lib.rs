@@ -26,6 +26,11 @@ pub mod imsic;
 #[cfg(target_arch = "riscv64")]
 pub mod irqchip;
 
+// x86_64 skeleton (and any further ISA): LAPIC + IOAPIC. aarch64's GIC lives
+// in its arch crate, so it has no arm here.
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub mod apic;
+
 /// Ring-3 ownership of riscv64 external interrupt lines (mask-until-ACK).
 /// The bitmaps build everywhere (host tests); the controller half is
 /// riscv64-only.

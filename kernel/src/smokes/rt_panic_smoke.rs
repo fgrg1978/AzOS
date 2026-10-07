@@ -46,7 +46,8 @@ const OBSERVER_HART: i8 = 1;
 const SETTLE_MS: u64 = 2000;
 /// Measurement window, before and after the panic.
 const WINDOW_MS: u64 = 500;
-/// How long the observer waits for the isolation to be recorded.
+/// How long the observer waits for the culprit to leave (the end of the
+/// containment) before it judges.
 const CONTAIN_WAIT_MS: u64 = 2000;
 /// PASS bound: the heartbeat never stood still longer than this across the
 /// panic (rt-motor's period is 1 ms; the bound leaves room for TCG jitter,
@@ -136,14 +137,23 @@ fn observer_task(_: usize) {
     azos_sched::task_create_affinity("rt7-culprit", culprit_task, 0,
         azos_sched::DEFAULT_PRIORITY, CULPRIT_HART);
 
-    // Watch the heartbeat every millisecond until the isolation shows up.
+    // Watch the heartbeat every millisecond until the culprit has left and
+    // one window more. Anchored on the culprit's exit, the end of the
+    // containment, not on its creation: the handler parks the culprit only
+    // after its CRASH.LOG append, which shares the UART and the hart with
+    // whatever else prints then (gate 203/204: behavior's one-shot
+    // `[BENCH-RES]` sweep landed there), and a window counted from the spawn
+    // closed before a stall at the end of that path (2026-10-06: a 300 ms
+    // interrupts-off stall before the exit read "still max 0 us" on riscv64).
+    // A culprit never released ends the watch at CONTAIN_WAIT_MS and fails.
     let t_spawn = now();
     let mut last_hb = azos_actuation::watchdog::control_heartbeat();
     let mut last_adv = t_spawn;
     let mut still_max = 0u64;
     let end = t_spawn + ms(CONTAIN_WAIT_MS);
-    let mut seen = false;
-    while now() < end {
+    let mut gone_at: Option<u64> = None;
+    let mut tid = 0;
+    loop {
         sleep_until(now() + ms(1));
         let t = now();
         let hb = azos_actuation::watchdog::control_heartbeat();
@@ -152,28 +162,20 @@ fn observer_task(_: usize) {
             last_adv = t;
         }
         still_max = still_max.max(t - last_adv);
-        if !seen && azos_common::panic_policy::contained_count() != contained0 {
-            seen = true;
+        if tid == 0 {
+            tid = CULPRIT_TID.load(Ordering::Acquire);
         }
-        // Keep sampling for one window after the isolation, so the still
-        // time covers the panic and its aftermath.
-        if seen && t.wrapping_sub(t_spawn) >= ms(WINDOW_MS) {
-            break;
+        if gone_at.is_none() && tid != 0 && azos_sched::idx_for_tid(tid).is_none() {
+            gone_at = Some(t);
+        }
+        match gone_at {
+            Some(g) if t.wrapping_sub(g) >= ms(WINDOW_MS) => break,
+            None if t >= end => break,
+            _ => {}
         }
     }
     let still_us = still_max * 1_000_000 / TIMER_FREQ;
     let isolations = azos_common::panic_policy::contained_count().wrapping_sub(contained0);
-    let tid = CULPRIT_TID.load(Ordering::Acquire);
-    // The culprit leaves only after its CRASH.LOG append, which shares the
-    // UART and its hart with whatever else prints then (gate 203/204: the
-    // behavior task's one-shot `[BENCH-RES]` sweep landed inside the window
-    // and the slot was freed just after a fixed 500 ms check). Wait for the
-    // exit itself, bounded by CONTAIN_WAIT_MS: a culprit that is never
-    // released still fails the row.
-    let gone_by = t_spawn + ms(CONTAIN_WAIT_MS);
-    while tid != 0 && azos_sched::idx_for_tid(tid).is_some() && now() < gone_by {
-        sleep_until(now() + ms(1));
-    }
     let culprit_gone = tid != 0 && azos_sched::idx_for_tid(tid).is_none();
     let panicked = azos_common::is_panicked();
     kprintln!("[RT7-SMOKE] isolations={} culprit tid={} gone={} global_panic={} \

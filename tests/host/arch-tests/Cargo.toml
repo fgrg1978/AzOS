@@ -14,6 +14,7 @@ description = "Host-side tests for the pure parts of crates/core/arch-riscv64 an
 tlb-bound-canary = []
 
 [dependencies]
+azos_limits = { path = "../../../crates/core/limits" }
 bitflags = "2"
 # M38/U10-3: crates/core/arch-aarch64/src/mmu.rs (pulled in via #[path] below)
 # uses PagePerms/MmuError from this crate directly, unlike arch-riscv64's own

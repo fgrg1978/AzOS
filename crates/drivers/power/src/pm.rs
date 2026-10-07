@@ -48,7 +48,11 @@ pub fn pm_init() {
 /// Returns immediately after an interrupt wakes the hart.
 pub fn pm_idle() {
     PM_STATE.store(PmState::Idle as u8, Ordering::Release);
+    // riscv64 and aarch64 share the `wfi` mnemonic; x86_64 halts.
+    #[cfg(not(target_arch = "x86_64"))]
     unsafe { core::arch::asm!("wfi") };
+    #[cfg(target_arch = "x86_64")]
+    unsafe { core::arch::asm!("hlt") };
     PM_STATE.store(PmState::Active as u8, Ordering::Release);
 }
 
@@ -59,7 +63,11 @@ pub fn pm_idle() {
 pub fn pm_suspend() {
     PM_STATE.store(PmState::Suspend as u8, Ordering::Release);
     azos_drv_sys::kprintln!("[PM] System suspended -- WFI");
+    // riscv64 and aarch64 share the `wfi` mnemonic; x86_64 halts.
+    #[cfg(not(target_arch = "x86_64"))]
     unsafe { core::arch::asm!("wfi") };
+    #[cfg(target_arch = "x86_64")]
+    unsafe { core::arch::asm!("hlt") };
     // Woken by interrupt
     PM_STATE.store(PmState::Active as u8, Ordering::Release);
     azos_drv_sys::kprintln!("[PM] Resumed from suspend");

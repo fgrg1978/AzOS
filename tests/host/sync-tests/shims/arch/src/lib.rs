@@ -213,3 +213,16 @@ impl Interrupts for HostArch {
         unimplemented!("sync-tests has no second hart to signal")
     }
 }
+
+/// `Cpu` for the host: `hart_id` is the settable stand-in above (so the
+/// contract call `Cpu::hart_id(&ARCH)` in `preempt.rs` sees `set_hart` and
+/// the read hook exactly as `cpu::hart_id()` does); nothing else is reached.
+impl azos_arch_api::Cpu for HostArch {
+    fn hart_id(&self) -> usize { cpu::hart_id() }
+    fn wfi(&self) { unimplemented!("sync-tests never idles") }
+    fn halt(&self) -> ! { unimplemented!("sync-tests never halts") }
+    fn now_ticks(&self) -> u64 { unimplemented!("sync-tests has no timer") }
+    fn percpu_base(&self) -> usize { unimplemented!("sync-tests has no per-CPU base") }
+    fn set_percpu_base(&self, _base: usize) { unimplemented!("sync-tests has no per-CPU base") }
+}
+pub use azos_arch_api::Cpu;

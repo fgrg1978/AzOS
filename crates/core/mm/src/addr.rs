@@ -4,7 +4,7 @@
 ///
 /// These prevent accidentally mixing physical and virtual addresses.
 
-use azos_arch::mmu::{PAGE_SIZE, PAGE_SHIFT};
+use azos_arch::{PAGE_SIZE, PAGE_SHIFT};
 
 // ─────────────────────────────────────────────────────────────────────────
 // phys_to_virt / virt_to_phys — aarch64 TTBR1 migration scaffold.

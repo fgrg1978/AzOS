@@ -252,6 +252,9 @@ fn read_time_csr() -> u64 {
     unsafe { core::arch::asm!("rdtime {}", out(reg) t, options(nomem, nostack)); }
     #[cfg(target_arch = "aarch64")]
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t, options(nomem, nostack)); }
+    // x86_64 skeleton: the invariant TSC.
+    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+    todo!("x86_64: libsys read_time_csr: rdtsc");
     t
 }
 
@@ -840,6 +843,10 @@ unsafe fn syscall0(nr: u64) -> isize {
             lateout("x0") ret,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys syscall0: the `syscall` instruction");
     }
     ret
 }
@@ -862,6 +869,10 @@ unsafe fn syscall1(nr: u64, a0: u64) -> isize {
             inlateout("x0") a0 as isize => ret,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys syscall1: the `syscall` instruction");
     }
     ret
 }
@@ -886,6 +897,10 @@ unsafe fn syscall2(nr: u64, a0: u64, a1: u64) -> isize {
             in("x1") a1,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys syscall2: the `syscall` instruction");
     }
     ret
 }
@@ -912,6 +927,10 @@ unsafe fn syscall3(nr: u64, a0: u64, a1: u64, a2: u64) -> isize {
             in("x2") a2,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys syscall3: the `syscall` instruction");
     }
     ret
 }
@@ -940,6 +959,10 @@ unsafe fn syscall4(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> isize {
             in("x3") a3,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys syscall4: the `syscall` instruction");
     }
     ret
 }
@@ -970,6 +993,10 @@ unsafe fn syscall5(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> isiz
             in("x4") a4,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys syscall5: the `syscall` instruction");
     }
     ret
 }
@@ -1002,6 +1029,10 @@ unsafe fn syscall6(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64
             in("x5") a5,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys syscall6: the `syscall` instruction");
     }
     ret
 }
@@ -3004,6 +3035,10 @@ pub fn fast_ipc_call_full(
             lateout("x6") _,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys fast_ipc_call_full: the `syscall` instruction");
     }
     if ret < 0 { return None; }
     Some([ret as u64, r1, r2, r3])
@@ -3091,6 +3126,10 @@ pub fn fast_ipc_call_ep_moving(
             lateout("x6") _,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys fast_ipc_call_ep_moving: the `syscall` instruction");
     }
     if ret < 0 { return None; }
     Some([ret as u64, r1, r2, r3])
@@ -3223,6 +3262,10 @@ pub fn fast_ipc_accept_req() -> Option<FastRequest> {
             lateout("x6") moved,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys fast_ipc_accept_req: the `syscall` instruction");
     }
     if ret < 0 {
         return None;
@@ -3363,6 +3406,10 @@ pub fn fast_ipc_reply_accept(
             lateout("x6") moved,
             options(nostack),
         );
+        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
+        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        todo!("x86_64: libsys fast_ipc_reply_accept: the `syscall` instruction");
     }
     match ret as isize {
         r if r >= 0 => Ok(Some(fast_request(ret, caller, [w0, w1, w2, w3], moved as u32))),

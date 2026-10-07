@@ -10,6 +10,7 @@ description = "The kernel event tracer (Kconfig KTRACE): per-CPU lock-free recor
 azos_abi    = { workspace = true }
 azos_spsc   = { workspace = true }
 azos_limits = { workspace = true }
+azos_percpu = { workspace = true }
 
 [features]
 # Gate canary: the producer never advances its head, so every record lands

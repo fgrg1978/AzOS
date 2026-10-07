@@ -1,0 +1,13 @@
+[package]
+name = "azos_arch_x86_64"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "x86_64 port skeleton: every arch-api trait with todo!() bodies naming the x86 mechanism. Structure only; nothing here runs. Also serves as the fake ISA behind azos_arch's `stub` feature (host checks, porting checklist)."
+
+[lib]
+name = "azos_arch_x86_64"
+
+[dependencies]
+azos_arch_api = { path = "../arch-api" }

@@ -37,6 +37,8 @@ Phase C4 changes vs C1:
   - Added INVERTED_FEATURES set for documentation: features whose Kconfig
     option is absent/n when the cargo feature is enabled.
   - Added ISA-correct --target selection (riscv64 / aarch64 / x86_64).
+  - `--rustflags`: the ISA baseline (`-C target-cpu=...`) where it is a
+    Kconfig choice (x86_64 X86_64_LEVEL).
 """
 
 import sys
@@ -48,11 +50,6 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 # Maps CONFIG_ARCH_* key to cargo --target triple.
-#
-# CONFIG_ARCH_X86_64 removed 2026-09-25 (Q4.1, owner decision): the Kconfig
-# choice mapped to this "x86_64-unknown-none" triple with no real port
-# behind it in this tree (see config/Kconfig.arch's note at the same date). Re-add
-# once a port exists.
 ARCH_TO_TARGET: dict[str, str] = {
     "CONFIG_ARCH_RISCV64": "riscv64imac-unknown-none-elf",
     # Soft-float KERNEL: it names no FP/SIMD register outside the lazy
@@ -61,7 +58,34 @@ ARCH_TO_TARGET: dict[str, str] = {
     # hard-float `aarch64-unknown-none` (Makefile TARGET_AARCH64); this map
     # is only used for kernel builds.
     "CONFIG_ARCH_AARCH64": "aarch64-unknown-none-softfloat",
+    # The x86_64 port skeleton (config/Kconfig.arch): type-checked only, with
+    # `-Zbuild-std` (no installed target needed). The baseline level comes
+    # from `--rustflags` below.
+    "CONFIG_ARCH_X86_64": "x86_64-unknown-none",
 }
+
+# The compile-time BASELINE codegen may assume, per ISA (the only global
+# target-cpu/target-feature; every optional extension is probed at runtime
+# and emitted inside gated asm). riscv64's lives in .cargo/config.toml
+# (rv64imac + zaamo/zalrsc); aarch64 has no level symbol (ARMv8.0 by the
+# target). x86_64's is the Kconfig choice X86_64_LEVEL.
+X86_64_LEVEL_TO_CPU: dict[str, str] = {
+    "CONFIG_X86_64_LEVEL_V1": "x86-64",
+    "CONFIG_X86_64_LEVEL_V2": "x86-64-v2",
+    "CONFIG_X86_64_LEVEL_V3": "x86-64-v3",
+}
+
+
+def baseline_rustflags(cfg: dict[str, str]) -> str:
+    """`-C target-cpu=...` for an ISA whose baseline is a Kconfig choice;
+    empty for the others (their baseline is the target triple plus
+    .cargo/config.toml)."""
+    if cfg.get("CONFIG_ARCH_X86_64") == "y":
+        for key, cpu in X86_64_LEVEL_TO_CPU.items():
+            if cfg.get(key) == "y":
+                return f"-C target-cpu={cpu}"
+        return "-C target-cpu=x86-64-v2"
+    return ""
 
 # Default target when no ARCH_* is set (ARCH_RISCV64 is the Kconfig default).
 DEFAULT_TARGET = "riscv64imac-unknown-none-elf"
@@ -375,7 +399,9 @@ def main() -> int:
     # board features by hand (`make build` is `--features qemu`), so the
     # application domain chosen in `make config` still decides the crates.
     domain_only = "--domain-only" in args
-    args = [a for a in args if a != "--domain-only"]
+    # `--rustflags`: only the baseline codegen flags (see baseline_rustflags).
+    rustflags_only = "--rustflags" in args
+    args = [a for a in args if a not in ("--domain-only", "--rustflags")]
     dot_config_path = args[0] if args else DOT_CONFIG_DEFAULT
 
     cfg = read_dot_config(dot_config_path)
@@ -390,6 +416,12 @@ def main() -> int:
             print(f"kconfig_to_cargo: {k}: a driver a safety decision reads is never "
                   f"placed in ring 3 (config/Kconfig.drivers)", file=sys.stderr)
         return 1
+
+    if rustflags_only:
+        flags = baseline_rustflags(cfg)
+        if flags:
+            print(flags)
+        return 0
 
     if domain_only:
         # Driver placement is not a board feature either: `make build`

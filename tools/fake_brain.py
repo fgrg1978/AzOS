@@ -255,6 +255,16 @@ def actuator_payload(left: int, right: int, flags: int = 0,
     return bytes([act_type, n_channels & 0xFF, flags]) + struct.pack("<hh", left, right)
 
 
+def announce_port(host: str, srv) -> int:
+    """Print the port actually bound and return it. `--port 0` asks the OS for
+    a free one; the gate row reads it back from this line and points the
+    image's CONFIG.INI at it (ci_check.sh `run_brain_peer_boot`), so no other
+    guest on the host -- they all dial 9000 -- can reach this peer."""
+    port = srv.getsockname()[1]
+    print(f"[fake-brain] listening on {host}:{port}", flush=True)
+    return port
+
+
 def kernel_estop(host: str, port: int, duration: float, gap: float,
                  send_estop: bool = True) -> int:
     """Drive the KERNEL's own brain link, then `PKT_ESTOP`, then keep driving.
@@ -282,6 +292,7 @@ def kernel_estop(host: str, port: int, duration: float, gap: float,
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(1)
+    port = announce_port(host, srv)
     srv.settimeout(duration)
     print(f"[fake-brain] kernel-estop mode on {host}:{port}", flush=True)
     try:
@@ -399,6 +410,7 @@ def kernel_estop_release(host: str, port: int, duration: float, gap: float,
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(1)
+    port = announce_port(host, srv)
     srv.settimeout(duration)
     print(f"[fake-brain] kernel-estop-release mode on {host}:{port}", flush=True)
     try:
@@ -607,6 +619,7 @@ def serve(host: str, port: int, duration: float, emergency: bool,
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(8)
+    port = announce_port(host, srv)
     srv.settimeout(0.2)
 
     script = [("forward", actuator_payload(60, 60)),
@@ -809,6 +822,7 @@ def reconnect(host: str, port: int, duration: float, enc_key: bytes = None) -> i
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(8)
+    port = announce_port(host, srv)
     srv.settimeout(0.2)
     sc_mod = load_secure_channel() if enc_key is not None else None
     print(f"[fake-brain] resetting every connection on {host}:{port} "
@@ -837,7 +851,15 @@ def reconnect(host: str, port: int, duration: float, enc_key: bytes = None) -> i
             got = len(c.recv(4096))
         except OSError:
             got = 0
-        c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        # A client that already closed (or reset) the connection makes this
+        # setsockopt fail with EINVAL on macOS: the reset is then moot, and
+        # the peer must keep accepting. Unhandled, it killed the peer
+        # mid-row (wave-15 integration: `ring-3 reconnects` red after 51
+        # resets, every later dial refused).
+        try:
+            c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        except OSError:
+            pass
         c.close()
         print(f"[fake-brain] reset #{accepts} after {got} B", flush=True)
 
@@ -942,7 +964,7 @@ def main() -> int:
     srv.bind((args.host, args.port))
     srv.listen(1)
     srv.settimeout(args.wait)
-    print(f"[fake-brain] listening on {args.host}:{args.port}", flush=True)
+    print(f"[fake-brain] listening on {args.host}:{srv.getsockname()[1]}", flush=True)
 
     try:
         conn, addr = srv.accept()

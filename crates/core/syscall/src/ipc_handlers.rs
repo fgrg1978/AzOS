@@ -882,7 +882,7 @@ pub(crate) fn unmap_user_pages(va: usize, pages: usize) {
     if user_pt == 0 || va >= crate::handlers::USER_VA_TOP {
         return;
     }
-    let len = pages.saturating_mul(azos_arch::mmu::PAGE_SIZE);
+    let len = pages.saturating_mul(azos_arch::PAGE_SIZE);
     let end = va.saturating_add(len).min(crate::handlers::USER_VA_TOP);
     let _ = azos_mm::vmm::unmap_user_range_and_free(user_pt, va, end, va, end);
 }

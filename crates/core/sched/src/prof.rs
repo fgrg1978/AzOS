@@ -36,7 +36,7 @@ static CNT: [AtomicU64; PHASES] = [const { AtomicU64::new(0) }; PHASES];
 pub fn t() -> u64 {
     #[cfg(feature = "fork-profile")]
     {
-        azos_arch::cpu::now_ticks()
+        azos_arch::Cpu::now_ticks(&azos_arch::ARCH)
     }
     #[cfg(not(feature = "fork-profile"))]
     {
@@ -49,7 +49,7 @@ pub fn t() -> u64 {
 pub fn add(p: usize, t0: u64) {
     #[cfg(feature = "fork-profile")]
     if p < PHASES {
-        let d = azos_arch::cpu::now_ticks().wrapping_sub(t0);
+        let d = azos_arch::Cpu::now_ticks(&azos_arch::ARCH).wrapping_sub(t0);
         SUM[p].fetch_add(d, Ordering::Relaxed);
         CNT[p].fetch_add(1, Ordering::Relaxed);
     }

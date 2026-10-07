@@ -24,6 +24,10 @@ cntvoff-canary = ["azos_arch_aarch64/cntvoff-canary"]
 # Masked-window tracer (Kconfig `LAT_TRACE`): hooks in both ISA crates.
 lat-trace = ["azos_arch_riscv64/lat-trace", "azos_arch_aarch64/lat-trace"]
 irq-nomem-canary = ["azos_arch_riscv64/irq-nomem-canary", "azos_arch_aarch64/irq-nomem-canary"]
+# The x86_64 port skeleton (crates/core/arch-x86_64, every method todo!())
+# in place of the real ISA: host checks only, never a kernel build. On a
+# bare-metal x86_64 target the skeleton is selected without the feature.
+stub = ["dep:azos_arch_x86_64"]
 
 # Per-target_arch deps: each is only pulled in for builds whose
 # target arch matches. On riscv64 (the only ISA the kernel boots
@@ -34,3 +38,8 @@ azos_arch_riscv64 = { workspace = true }
 [target.'cfg(all(target_arch = "aarch64", target_os = "none"))'.dependencies]
 azos_arch_aarch64 = { workspace = true }
 
+[target.'cfg(all(target_arch = "x86_64", target_os = "none"))'.dependencies]
+azos_arch_x86_64 = { path = "../arch-x86_64" }
+
+[dependencies]
+azos_arch_x86_64 = { path = "../arch-x86_64", optional = true }

@@ -78,7 +78,7 @@ pub type Load = crate::task::CpuLoad;
 /// cannot be pulled into the host test runner (`tests/host/sched-wake-tests`),
 /// so this module cannot name it. `scheduler.rs` has a `const _: () =
 /// assert!(...)` tying the two together.
-pub const MAX_CPUS: usize = 8;
+pub const MAX_CPUS: usize = azos_limits::NR_CPUS;
 
 /// A slot's recorded contribution, packed into one `u32` so it can be
 /// swapped atomically. `NONE` (all zero — what a `zeroed()` static holds)
