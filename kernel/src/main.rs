@@ -1758,7 +1758,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // below (the early one reads `counter at wake = 0` there), and the
     // cluster shares its statics, so spawning it from both sites printed
     // every `[SCHEDHOOKS]` line twice and doubled the waitqueue counter.
-    #[cfg(all(feature = "sched-hooks-smoke", not(target_arch = "aarch64")))]
+    #[cfg(all(feature = "sched-hooks-smoke", not(target_arch = "aarch64"), not(feature = "ktest")))]
     sched_hooks_smoke::spawn();
 
     // Tell the scheduler how many CPUs are *expected* to come online so the
@@ -1881,9 +1881,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         // boot has enough moving parts between that point and this one — SMP
         // bring-up, GIC, the timer tick going live — that several are
         // plausible candidates and none was singled out); moved to here, all
-        // three read back correctly on every boot tried (see the `aarch64:
-        // sched hooks` gate row).
-        #[cfg(feature = "sched-hooks-smoke")]
+        // three read back correctly on every boot tried (the gate row was
+        // `aarch64: sched hooks`; the ktest `sched_hooks_wired` now).
+        #[cfg(all(feature = "sched-hooks-smoke", not(feature = "ktest")))]
         sched_hooks_smoke::spawn();
 
         // Migration probe (item 7 of this task's brief) — a task that blocks
@@ -1950,7 +1950,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // probe would block on `wq_block_current()` forever with no `[I3]` line.
     // No gate scenario boots this kernel at `-smp 2/3` today (only 1 and 4),
     // so this is a latent gap, not a live one.
-    #[cfg(feature = "i3-smoke")]
+    #[cfg(all(feature = "i3-smoke", not(feature = "ktest")))]
     {
         let i3_hart: i8 = if num_cpus > 1 { 3 } else { 0 };
         azos_sched::task_create_affinity("i3-probe", i3_probe::runner,
@@ -1973,7 +1973,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
 
     // Wave 8: cross-hart TLB shootdown, observed (see `tlb_probe`). Runner on
     // hart 1, toucher on hart 2 (hart 3 is net-poll's); needs >= 3 harts.
-    #[cfg(feature = "tlb-smoke")]
+    #[cfg(all(feature = "tlb-smoke", not(feature = "ktest")))]
     {
         if num_cpus >= 3 {
             azos_sched::task_create_affinity("tlb-probe", tlb_probe::runner, 2,
@@ -1985,7 +1985,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     }
 
     // K-A14 probe: PiMutex donation with holder and waiter on one hart.
-    #[cfg(feature = "pi-smoke")]
+    #[cfg(all(feature = "pi-smoke", not(feature = "ktest")))]
     {
         azos_sched::task_create_affinity("pi-probe", pi_probe::runner, 0,
                                              pi_probe::PROBE_PRIO, 0);
@@ -2017,7 +2017,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     #[cfg(feature = "timer-heap-smoke")]
     smokes::timer_heap_smoke::spawn();
     // RT7 (wave 13): a tick deferred by a SpinLock counts as a preemption.
-    #[cfg(feature = "preempt-account-smoke")]
+    #[cfg(all(feature = "preempt-account-smoke", not(feature = "ktest")))]
     smokes::preempt_account_smoke::spawn();
     // RT7 (wave 13): periodic-wake tail latency under ping-pong contention.
     #[cfg(feature = "tail-smoke")]
@@ -2508,7 +2508,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
 
     // geofence-smoke: arm a fence around the simulated GPS fix, feed the GPS
     // driver a fix outside it, and print the verdict L0 would act on.
-    #[cfg(feature = "geofence-smoke")]
+    #[cfg(all(feature = "geofence-smoke", not(feature = "ktest")))]
     {
         azos_sched::task_create(
             "geofence-smoke", geofence_smoke_task, 0,
@@ -2518,7 +2518,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
 
     // sensor-ts-smoke (wave 11): the IMU's acquisition stamp, from the driver
     // to the bus staleness check L0 reads (see `smokes::sensor_ts`).
-    #[cfg(feature = "sensor-ts-smoke")]
+    #[cfg(all(feature = "sensor-ts-smoke", not(feature = "ktest")))]
     {
         azos_sched::task_create(
             "sensor-ts-smoke", smokes::sensor_ts::sensor_ts_smoke_task, 0,

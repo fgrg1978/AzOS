@@ -509,7 +509,7 @@ keys and 203 with the mask test.
 
 `crates/core/ktest` is a test registry in the style of Linux's KUnit. The
 `ktest!` macro defines a test, `fn() -> Result<(), &'static str>`, next to
-the code it checks, and places a 24-byte `{name, fn}` entry in the
+the code it checks, and places a 32-byte `{name, fn, phase}` entry in the
 `.azos_ktest` link section. Every kernel linker script brackets that section
 right after the static-key table in `.rodata`, so the registry is a slice
 over read-only data, with no constructor, allocation or fixed-size table.
@@ -520,7 +520,15 @@ function for function. With it on, `kernel_main` calls the runner
 (`kernel/src/ktest.rs`) after boot init, before the secondary harts wake and
 before any task runs. The runner executes the tests in name order, printing
 each name before its test, then TAP (`1..N`, `ok i - name`,
-`not ok i - name # reason`) and a summary, and powers the machine off. On
+`not ok i - name # reason`). Tests defined with `ktest_late!` form a second
+phase, like KUnit's late-init tests: boot continues, and once the scheduler
+runs on every CPU a `ktest-late` kernel task (Kconfig `KTEST_LATE_PRIORITY`)
+runs them in name order. A late test starts its scenario's tasks (pinned
+probes, priority donation, cross-CPU TLB shootdown) and waits for them on the
+clock, at most `KTEST_LATE_TIMEOUT_MS`. Both phases share one TAP plan: the
+early tests are numbered first, the late ones continue the count. After the
+last test the runner prints a summary, flushes the console and powers the
+machine off. On
 riscv64 the power-off carries the verdict (SBI system reset with a failure
 reason, so QEMU exits non-zero); aarch64's PSCI power-off has no reason
 field. The kernel does not unwind, so a panicking test cannot be resumed: the

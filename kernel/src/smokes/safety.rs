@@ -324,7 +324,15 @@ pub(crate) fn envelope_smoke_task(_arg: usize) {
 /// Any other reading prints `[GEOFENCE] FAILED:` with what was read, so a
 /// higher-priority L0 verdict masking the fence is told apart from a fix that
 /// never reached it.
-#[cfg(feature = "geofence-smoke")]
+#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "domain-robot")))]
+/// The geofence scenario's outcome, for the ktest verdict
+/// ([`safety_geofence_breach_latches_estop`]): `[GEOFENCE] FAILED` lines
+/// printed, and whether the breach held the e-stop.
+static GEOFENCE_FAILS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "domain-robot")))]
+static GEOFENCE_HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "domain-robot")))]
 pub(crate) fn geofence_smoke_task(_arg: usize) {
     use azos_behavior::safety::{
         geofence_disable, geofence_set, geofence_status, safety_check,
@@ -358,6 +366,7 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
     let mut polls: u32 = 1;
     while s.gps_fix == 0 && polls < MAX_POLLS { s = poll(); polls += 1; }
     if s.gps_fix == 0 {
+        GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
         kprintln!("[GEOFENCE] FAILED: no GPS fix reached the sensor bus in {} polls", polls);
         return;
     }
@@ -368,6 +377,7 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
     let s = poll();
     let status = geofence_status(&s);
     if status != GeofenceStatus::Inside {
+        GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
         kprintln!("[GEOFENCE] FAILED: at the fence centre read {:?} \
                    (lat_udeg={} lon_udeg={} fix={} sats={})",
                   status, s.gps_lat_udeg, s.gps_lon_udeg, s.gps_fix, s.gps_satellites);
@@ -389,6 +399,7 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
     let mut accepted = false;
     for &b in OUTSIDE_GGA { accepted |= azos_gps::gps_feed_byte(b); }
     if !accepted {
+        GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
         kprintln!("[GEOFENCE] FAILED: the GPS driver rejected the injected GGA sentence");
         geofence_disable();
         return;
@@ -441,12 +452,15 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
         match latched {
             Some(overshoot_m) => {
                 let held = azos_behavior::safety::estop_is_active();
+                GEOFENCE_HELD.store(held, core::sync::atomic::Ordering::SeqCst);
                 kprintln!("[GEOFENCE] latched: {} ({} m beyond the fence)", held, overshoot_m);
                 if !held {
+                    GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                     kprintln!("[GEOFENCE] FAILED: the breach did not hold the e-stop");
                 }
                 // A second pass must not re-record: the latch is the guard.
                 if azos_behavior::safety::geofence_breach_latch(&s).is_some() {
+                    GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                     kprintln!("[GEOFENCE] FAILED: a held latch was recorded twice");
                 }
                 // Owner decision, 2026-09-25: this probe no longer releases the
@@ -462,9 +476,10 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
                 // is unaffected — nothing after this point in the boot depends on
                 // the latch being clear.
             }
-            None => kprintln!("[GEOFENCE] FAILED: the breach latched nothing"),
+            None => { GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst); kprintln!("[GEOFENCE] FAILED: the breach latched nothing") }
         }
     } else {
+        GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
         kprintln!("[GEOFENCE] FAILED: injected fix read as {:?}, L0 saw {:?} \
                    (lat_udeg={} lon_udeg={} fix={} sats={})",
                   status, verdict.violation, s.gps_lat_udeg, s.gps_lon_udeg,
@@ -474,6 +489,29 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
     // 4. Disarm.
     geofence_disable();
     kprintln!("[GEOFENCE] DONE");
+}
+
+// L0 sees the GPS: a fence armed around the simulated fix reads Inside; a
+// checksummed GGA sentence ~1 km outside it, fed through the driver's byte
+// feed, is a GeofenceViolation (or the behaviour loop latched it first), the
+// breach latches the e-stop exactly once and the e-stop holds (the row
+// `safety: geofence sees GPS`, `[GEOFENCE] latched: true`; the latch, not
+// the verdict, since a breach stops the motors). It leaves the e-stop latched for the rest of the boot:
+// the tests after it in name order (`sensors_*`, `sync_*`, `tlb_*`) do not
+// read it.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    #[cfg(feature = "domain-robot")]
+    fn safety_geofence_breach_latches_estop() {
+        crate::ktest::probe("geofence-smoke", geofence_smoke_task, 0, azos_sched::DEFAULT_PRIORITY, -1)?;
+        if GEOFENCE_FAILS.load(core::sync::atomic::Ordering::SeqCst) != 0 {
+            Err("the scenario printed [GEOFENCE] FAILED")
+        } else if !GEOFENCE_HELD.load(core::sync::atomic::Ordering::SeqCst) {
+            Err("the breach did not latch and hold the e-stop")
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Read `SAFETY_UNKNOWN_PKT` back off the flight recorder.

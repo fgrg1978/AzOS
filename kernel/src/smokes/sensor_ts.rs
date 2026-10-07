@@ -29,6 +29,13 @@ use crate::*;
 /// IMU readings the smoke takes itself.
 const READS: u32 = 20;
 
+/// The scenario's outcome for the ktest verdict ([`sensors_imu_stamped_at_acquisition`]):
+/// reads answered, stamps inside their read and monotonic, the bus sample
+/// fresh. `ANSWERED` stays `u32::MAX` until the reads ran.
+static ANSWERED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+static STAMPS_OK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static FRESH: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 fn sleep_ms(ms: u64) {
     let dl = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * ms / 1000;
     azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
@@ -94,6 +101,9 @@ pub(crate) fn sensor_ts_smoke_task(_: usize) {
         }
     }
 
+    ANSWERED.store(answered, O::SeqCst);
+    STAMPS_OK.store(inside && monotonic, O::SeqCst);
+    FRESH.store(s.imu_valid, O::SeqCst);
     if answered != READS {
         kprintln!("[SENSORTS] FAILED: the IMU answered {}/{} reads", answered, READS);
         return;
@@ -117,5 +127,30 @@ pub(crate) fn sensor_ts_smoke_task(_: usize) {
     if s.imu_valid {
         kprintln!("[SENSORTS] PASS: {} IMU reads stamped inside their read, monotonic; bus IMU sample acquired {} us ago < {} us: fresh (L0 verdict {:?})",
                   READS, ticks_to_us(age), ticks_to_us(bound), verdict.violation);
+    }
+}
+
+// The IMU's acquisition stamp, from the driver to the staleness check L0
+// reads: 20 reads each stamped inside its own read window, monotonic, and
+// the bus sample fresh (the rows `sensors: IMU stamped at acquisition`,
+// rv and arm). Canary `sensor-ts-freeze` (the driver keeps its first
+// stamp): the bus sample reads stale while readings still arrive, `not ok`.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn sensors_imu_stamped_at_acquisition() {
+        use core::sync::atomic::Ordering as O;
+        crate::ktest::probe("sensor-ts-smoke", sensor_ts_smoke_task, 0, azos_sched::DEFAULT_PRIORITY, -1)?;
+        let answered = ANSWERED.load(O::SeqCst);
+        if answered == u32::MAX {
+            Err("no IMU sample reached the sensor bus in 10 s")
+        } else if answered != READS {
+            Err("the IMU did not answer every read")
+        } else if !FRESH.load(O::SeqCst) {
+            Err("STALE: readings still arrive but the bus sample is older than IMU_MAX_AGE")
+        } else if !STAMPS_OK.load(O::SeqCst) {
+            Err("an IMU stamp is outside its read, or not monotonic")
+        } else {
+            Ok(())
+        }
     }
 }

@@ -37,9 +37,10 @@ mod ota;
 pub(crate) use ota::*;
 #[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke", feature = "geofence-smoke",
           feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
-          feature = "ml-kill-smoke"))]
+          feature = "ml-kill-smoke", all(feature = "ktest", feature = "domain-robot")))]
 mod safety;
-#[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke", feature = "geofence-smoke",
+#[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke",
+          all(feature = "geofence-smoke", not(feature = "ktest")),
           feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
           feature = "ml-kill-smoke"))]
 pub(crate) use safety::*;
@@ -53,7 +54,7 @@ mod console_splice;
 pub(crate) use console_splice::*;
 
 // Former inline `mod name { ... }` blocks of main.rs, one file each.
-#[cfg(feature = "sched-hooks-smoke")]
+#[cfg(any(feature = "sched-hooks-smoke", feature = "ktest"))]
 pub(crate) mod sched_hooks_smoke;
 #[cfg(feature = "proxy-pi-smoke")]
 pub(crate) mod proxy_pi_smoke;
@@ -62,17 +63,17 @@ pub(crate) mod lease_pi3_smoke;
 #[cfg(feature = "ring3-drv-smoke")]
 pub(crate) mod ring3_drv_smoke;
 #[cfg(feature = "qemu")]
-#[cfg(feature = "tlb-smoke")]
+#[cfg(any(feature = "tlb-smoke", feature = "ktest"))]
 pub(crate) mod tlb_probe;
 #[cfg(feature = "irq-order-probe")]
 pub(crate) mod irq_order_probe;
-#[cfg(feature = "pi-smoke")]
+#[cfg(any(feature = "pi-smoke", feature = "ktest"))]
 pub(crate) mod pi_probe;
 #[cfg(feature = "pi-flush-smoke")]
 pub(crate) mod pi_flush_probe;
-#[cfg(feature = "i3-smoke")]
+#[cfg(any(feature = "i3-smoke", feature = "ktest"))]
 pub(crate) mod i3_probe;
-#[cfg(feature = "sensor-ts-smoke")]
+#[cfg(any(feature = "sensor-ts-smoke", all(feature = "ktest", feature = "domain-robot")))]
 pub(crate) mod sensor_ts;
 #[cfg(feature = "pifast-smoke")]
 pub(crate) mod pifast_smoke;
@@ -82,7 +83,7 @@ pub(crate) mod rt_panic_smoke;
 pub(crate) mod drv_contain_smoke;
 #[cfg(feature = "timer-heap-smoke")]
 pub(crate) mod timer_heap_smoke;
-#[cfg(feature = "preempt-account-smoke")]
+#[cfg(any(feature = "preempt-account-smoke", feature = "ktest"))]
 pub(crate) mod preempt_account_smoke;
 #[cfg(feature = "tail-smoke")]
 pub(crate) mod tail_smoke;

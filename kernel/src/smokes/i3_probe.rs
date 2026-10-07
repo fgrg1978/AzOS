@@ -176,7 +176,38 @@ pub fn run(hart: i8) {
 /// `arg` is the hart the call site pinned this task to (and that its own
 /// affinity was set with) — `run` reuses it to pin every task it spawns
 /// to the same hart.
+#[cfg(not(feature = "ktest"))]
 pub fn runner(arg: usize) {
     run(arg as i8);
     task_exit();
+}
+
+#[cfg(feature = "ktest")]
+fn ktest_entry(hart: usize) {
+    run(hart as i8);
+}
+
+// RFC-0031 lease inversion through the lease layer: a priority-2 lessor
+// blocked on a lease held by a priority-6 lessee, four priority-4 spinners
+// on the same CPU. With `LEASE_PRIORITY_INHERITANCE` the lessee is boosted
+// and returns the lease before the spinners finish (the row `sched: lease
+// inversion`, `[I3] PASS inversion avoided`). The test waits for every
+// spinner to exit too: they would otherwise steal their CPU from the tests
+// after it. Canary: a configuration without LEASE_PRIORITY_INHERITANCE.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn sched_lease_inversion() {
+        let hart: usize = if azos_percpu::nr_cpu_ids() > 3 { 3 } else { 0 };
+        crate::ktest::probe("i3-probe", ktest_entry, hart, PROBE_PRIO, hart as i8)?;
+        let done = SPINNERS_DONE_AT_RETURN.load(Ordering::SeqCst);
+        crate::ktest::wait("the spinners did not finish",
+            || SPINNERS_DONE.load(Ordering::SeqCst) >= N_SPINNERS as u32)?;
+        if !LESSOR_DONE.load(Ordering::SeqCst) {
+            Err("the lessor never got its lease back")
+        } else if done >= N_SPINNERS as u32 {
+            Err("inversion: the lessor waited for every spinner")
+        } else {
+            Ok(())
+        }
+    }
 }

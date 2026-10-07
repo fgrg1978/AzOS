@@ -57,8 +57,16 @@ static PRIO_WHILE_HELD: AtomicU32 = AtomicU32::new(u32::MAX);
 /// itself. Read from the runner instead and you race the reaper: the task
 /// is usually already gone and `task_priority` returns None.
 static PRIO_AFTER_RELEASE: AtomicU32 = AtomicU32::new(u32::MAX);
+/// Every CPU the holder and the waiter were seen on (bit per CPU): at entry,
+/// and around the lock. The ktest verdict requires CPU 0 alone.
+static CPUS_SEEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+fn seen_on_cpu() {
+    CPUS_SEEN.fetch_or(1 << azos_sched::smp::current_cpu_id(), Ordering::SeqCst);
+}
 
 fn holder_entry(_: usize) {
+    seen_on_cpu();
     HOLDER_TID.store(current_task_tid(), Ordering::SeqCst);
 
     let g = M.lock();
@@ -101,6 +109,7 @@ fn holder_entry(_: usize) {
     }
     core::hint::black_box(acc);
 
+    seen_on_cpu();
     drop(g);
     PRIO_AFTER_RELEASE.store(
         task_priority(me).unwrap_or(u32::MAX), Ordering::SeqCst);
@@ -108,15 +117,23 @@ fn holder_entry(_: usize) {
 }
 
 fn waiter_entry(_: usize) {
+    seen_on_cpu();
     CONTENDING.store(true, Ordering::SeqCst);
     let g = M.lock();                 // must not hang
+    seen_on_cpu();
     ACQUIRED.store(true, Ordering::SeqCst);
     drop(g);
     wq_wake_by_tid(RUNNER_TID.load(Ordering::SeqCst));
     task_exit();
 }
 
+#[cfg(not(feature = "ktest"))]
 pub fn runner(_: usize) {
+    run(0);
+    task_exit();
+}
+
+fn run(_: usize) {
     RUNNER_TID.store(current_task_tid(), Ordering::SeqCst);
     let _ = task_create_affinity("pi-holder", holder_entry, 0, HOLDER_PRIO, CPU0);
 
@@ -144,5 +161,34 @@ pub fn runner(_: usize) {
         crate::kprintln!("[PISMOKE] PASS boosted {}->{}, restored to {}",
                          HOLDER_PRIO, held, after);
     }
-    task_exit();
+}
+
+// K-A14: PiMutex donation with the holder and the waiter pinned to the same
+// CPU. The priority-6 holder works without yielding; the priority-4 waiter
+// must give the CPU up from inside `lock()`, the holder must run boosted to
+// the waiter's priority, and drop back to its own after the release (the
+// row `PiMutex donation (K-A14)`, `[PISMOKE] PASS`). The row booted
+// `-smp 1` because the pair once landed on different CPUs despite the pin
+// (no contention, read as "no-boost"); here the test checks the premise
+// instead: the holder and the waiter must have been seen on CPU 0 alone, at
+// entry and around the lock, so a `-smp 4` boot runs the one-CPU scenario
+// or reports `not ok`.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn sync_pimutex_donation_one_cpu() {
+        crate::ktest::probe("pi-probe", run, 0, PROBE_PRIO, CPU0)?;
+        let held = PRIO_WHILE_HELD.load(Ordering::SeqCst);
+        let after = PRIO_AFTER_RELEASE.load(Ordering::SeqCst);
+        if !ACQUIRED.load(Ordering::SeqCst) {
+            Err("the waiter never acquired")
+        } else if CPUS_SEEN.load(Ordering::SeqCst) != 1 {
+            Err("the holder or the waiter ran on another CPU than 0: not the one-CPU scenario")
+        } else if held > WAITER_PRIO {
+            Err("no boost: the holder ran below the waiter's priority while it held the lock")
+        } else if after != HOLDER_PRIO {
+            Err("not restored: the holder kept a donated priority after the release")
+        } else {
+            Ok(())
+        }
+    }
 }

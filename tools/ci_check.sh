@@ -1413,10 +1413,6 @@ userspace: ABI conformance
 aarch64 abitest
 aarch64 network: DHCP lease
 network: DHCP lease
-aarch64 tlb: stale access faults
-tlb: stale access after cross-hart unmap faults
-aarch64 sensors: IMU stamped at acquisition
-sensors: IMU stamped at acquisition
 aarch64 ipctest
 userspace: IPC
 aarch64 captest
@@ -1993,7 +1989,8 @@ build       "arp-timing"          --release --features qemu,arp-timing
 build       "ramfb"               --release --features qemu,ramfb
 build       "hdmi"                --release --features vf2,hdmi
 # Wave 11 (SENSORTS): the acquisition-stamp smoke and its frozen-stamp canary
-# (the "sensors: IMU stamped at acquisition" rows boot both, on both ISAs).
+# (the ktest `sensors_imu_stamped_at_acquisition` boots both, on both ISAs:
+# rows `ktest (rv|arm)` and `ktest IMU frozen-stamp canary (rv|arm)`).
 build       "sensor-ts-smoke"     --release --features qemu,sensor-ts-smoke
 build       "sensor-ts-freeze"    --release --features qemu,sensor-ts-freeze
 # ── Per-board ISA extensions, and the guard that keeps them on their board ──
@@ -2768,267 +2765,6 @@ aarch64_dhcp_row() {
     ok; rm -f "$log" "$dhcp_kernel" "$dhcp_img"
 }
 par "aarch64 network: DHCP lease" aarch64_dhcp_row
-
-# ── aarch64: cross-hart TLB shootdown (wave 8) ──────────────────────────────
-#
-# The riscv64 "tlb:" rows' probe on this ISA, where the shootdown is the
-# broadcast `TLBI VAAE1IS` + `DSB ISH` and needs no IPI (remote mask 0 is the
-# expected value here). A task on hart 2 runs a private TTBR0 table, reads a
-# page and spins with interrupts masked; hart 1 unmaps it through `vmm::unmap`
-# and overwrites the frame. The second read must take a level-3 translation
-# fault (ESR 0x96000007). The canary builds the non-broadcast `TLBI VAAE1`
-# (`tlb-local-only`) and must read the overwritten frame: `STALE READ` is a
-# line only that path prints, and it fails the first row.
-aarch64_tlb_row() { # aarch64_tlb_row <label> <features> <marker> <fail-regex>
-    local label="$1" feats="$2" marker="$3" failre="$4"
-    printf "  %-26s" "${label}..."
-    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
-    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
-    local kern="target/aarch64-unknown-none-softfloat/release/kernel"
-    local img="target/aarch64-unknown-none-softfloat/release/kernel-tlb-smoke.img"
-    rm -f "$kern" "$img"
-    local build_out
-    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
-            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
-       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
-       || [ ! -f "$kern" ]; then
-        bad; echo "      $feats aarch64 kernel did NOT build:"
-        printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
-        return
-    fi
-    local a64_objcopy
-    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
-    if [ ! -x "$a64_objcopy" ] || ! "$a64_objcopy" -O binary "$kern" "$img" || [ ! -f "$img" ]; then
-        bad; echo "      llvm-objcopy not found or ELF -> .img failed"
-        return
-    fi
-    local img_copy="${log%.log}-kernel.img"
-    cp "$img" "$img_copy"
-    par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
-        -kernel "$img_copy" >"$log" 2>&1 &
-    local pid=$! i=0
-    while [ "$i" -lt 120 ]; do
-        grep -aq "TLB-SMOKE\]" "$log" 2>/dev/null && break
-        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
-        kill -0 "$pid" 2>/dev/null || break
-        i=$((i + 1)); sleep 0.5
-    done
-    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    if grep -aqE "AARCH64-TRAP\] unhandled|$failre" "$log" 2>/dev/null; then
-        bad; echo "      wrong verdict or exception:"
-        grep -aE "AARCH64-TRAP|TLB-SMOKE" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    if ! grep -aqF "$marker" "$log" 2>/dev/null; then
-        bad; echo "      marker not found:"
-        grep -a "TLB-SMOKE\]" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    ok; rm -f "$log" "$kern" "$img" "$img_copy"
-}
-par "aarch64 tlb: stale access faults" aarch64_tlb_row "aarch64 tlb: stale access faults" "qemu,tlb-smoke" \
-    "[TLB-SMOKE] PASS: hart 2 faulted (cause=0x96000007) on the page hart 1 unmapped after the touch; remote mask=0x0 harts signalled=0; munmap path faulted too (cause=0x96000007)" \
-    'TLB-SMOKE\] (STALE READ|FAILED)|KTASK-ROOT\] FAILED'
-par "aarch64 tlb: canary reads stale data" aarch64_tlb_row "aarch64 tlb: canary reads stale data" "qemu,tlb-smoke,tlb-local-only" \
-    "[TLB-SMOKE] STALE READ on hart 2: value=0x5a5a5a5a5a5a5a5a (unmap) value=0x5a5a5a5a5a5a5a5a (munmap path)" \
-    'TLB-SMOKE\] (PASS|FAILED)'
-
-# ── aarch64: the IMU's acquisition stamp (wave 11, SENSORTS) ────────────────
-#
-# The riscv64 rows "sensors: IMU stamped at acquisition" / "sensors: canary
-# (frozen stamp is stale)" state the test (`kernel/src/smokes/sensor_ts.rs`):
-# twenty IMU reads stamped inside their own read, and the sensor bus judging
-# the IMU sample by its ACQUISITION stamp. The canary build
-# (`sensor-ts-freeze`) hands every reading the first reading's stamp: readings
-# keep arriving and the bus must call them stale (`[SENSORTS] STALE:`, printed
-# only on that path, with L0's verdict). A bus stamped at delivery stays fresh
-# there and the canary row goes red.
-aarch64_sensor_ts_row() { # aarch64_sensor_ts_row <label> <features> <marker> <fail-regex>
-    local label="$1" feats="$2" marker="$3" failre="$4"
-    printf "  %-26s" "${label}..."
-    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
-    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
-    local kern="target/aarch64-unknown-none-softfloat/release/kernel"
-    local img="target/aarch64-unknown-none-softfloat/release/kernel-sensor-ts.img"
-    rm -f "$kern" "$img"
-    local build_out
-    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
-            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
-       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
-       || [ ! -f "$kern" ]; then
-        bad; echo "      $feats aarch64 kernel did NOT build:"
-        printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
-        return
-    fi
-    local a64_objcopy
-    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
-    if [ ! -x "$a64_objcopy" ] || ! "$a64_objcopy" -O binary "$kern" "$img" || [ ! -f "$img" ]; then
-        bad; echo "      llvm-objcopy not found or ELF -> .img failed"
-        return
-    fi
-    local img_copy="${log%.log}-kernel.img"
-    cp "$img" "$img_copy"
-    par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
-        -kernel "$img_copy" >"$log" 2>&1 &
-    local pid=$! i=0
-    while [ "$i" -lt 240 ]; do
-        grep -aqE "SENSORTS\] (PASS|FAILED|reads:)" "$log" 2>/dev/null && break
-        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
-        kill -0 "$pid" 2>/dev/null || break
-        i=$((i + 1)); sleep 0.5
-    done
-    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    if grep -aqE "AARCH64-TRAP\] unhandled|$failre" "$log" 2>/dev/null; then
-        bad; echo "      wrong verdict or exception:"
-        grep -aE "AARCH64-TRAP|SENSORTS" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    if ! grep -aqF "$marker" "$log" 2>/dev/null; then
-        bad; echo "      marker not found:"
-        grep -a "SENSORTS\]" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    ok; grep -a "SENSORTS\] \(PASS\|STALE\)" "$log" | tr -d '\r' | sed 's|^|      |'
-    rm -f "$log" "$kern" "$img" "$img_copy"
-}
-par "aarch64 sensors: IMU stamped at acquisition" aarch64_sensor_ts_row "aarch64 sensors: IMU stamped at acquisition" "qemu,sensor-ts-smoke" \
-    "[SENSORTS] PASS: 20 IMU reads stamped inside their read, monotonic" \
-    'SENSORTS\] (STALE|FAILED)'
-par "aarch64 sensors: canary (frozen stamp is stale)" aarch64_sensor_ts_row "aarch64 sensors: canary (frozen stamp is stale)" "qemu,sensor-ts-freeze" \
-    "[SENSORTS] STALE: IMU readings still arriving (20/20 answered)" \
-    'SENSORTS\] (PASS|FAILED)'
-
-# ── aarch64: install_sched_hooks (aarch64 parity task S2) ───────────────────
-#
-# `install_sched_hooks` (kernel/src/boot/sched.rs) is the shared function BOTH
-# `kernel_main`s now call to wire PiMutex boost/restore, K-C29's deferred
-# resched, the task-exit resource-release hook, and WaitQueue block/wake.
-# riscv64 already called all four inline; aarch64 called none of them —
-# silently, with no error and no failing test on either ISA (that function's
-# own doc has the full reasoning). This row proves the ACTUAL EFFECT of each
-# callback on aarch64, not merely that the registration call was made:
-#
-#   - waitqueue: a producer counts to a ceiling and only then wakes a
-#     waiter blocked on the same queue; the waiter reads the counter right
-#     after `wait()` returns. A real block reads back near the ceiling; a
-#     `wait()` that silently degrades to a no-op (no callback registered)
-#     reads back near zero — the waiter races ahead instead of blocking.
-#   - cap revocation: a child task mints itself a typed capability, exits,
-#     and an observer reads the SAME pool slot back (by index, not by TID —
-#     see `sched_hooks_smoke`'s own doc for why a TID-keyed read cannot
-#     discriminate here). Revoked reads `after=0`; a hook that never ran
-#     leaves `after=1`.
-#   - pimutex: a low-priority holder spawns a high-priority waiter only
-#     after it already owns the mutex, so the two cannot race for it. A
-#     real boost reads the holder's OWN live priority as raised to the
-#     waiter's while contended; no callback leaves it at base — or, as
-#     measured while building this row, leaves the holder starved forever
-#     (the classic priority-inversion deadlock this mechanism exists to
-#     prevent), in which case this row times out rather than reading a
-#     wrong number.
-#
-# `sched-hooks-smoke` composes `qemu` (same shape as `reflex-smoke`) and is
-# off by default — enabling it cannot perturb any other row's log-matching.
-aarch64_sched_hooks_row() {
-    local label="aarch64: sched hooks"
-    printf "  %-26s" "${label}..."
-    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
-    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
-    local sh_kernel="target/aarch64-unknown-none-softfloat/release/kernel"
-    local sh_img="target/aarch64-unknown-none-softfloat/release/kernel-sched-hooks-smoke.img"
-    rm -f "$sh_kernel" "$sh_img"
-    local build_out
-    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
-            --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --features qemu,sched-hooks-smoke \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
-       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
-       || [ ! -f "$sh_kernel" ]; then
-        bad; echo "      sched-hooks-smoke aarch64 kernel did NOT build:"
-        printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
-        return
-    fi
-    local a64_objcopy
-    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
-    if [ ! -x "$a64_objcopy" ] || ! "$a64_objcopy" -O binary "$sh_kernel" "$sh_img" \
-       || [ ! -f "$sh_img" ]; then
-        bad; echo "      llvm-objcopy not found or ELF -> .img failed"
-        return
-    fi
-    local img_copy="$CI_LOG_DIR/kernel-aarch64-sched-hooks.img"
-    cp "$sh_img" "$img_copy"
-    par_ready
-    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
-        -kernel "$img_copy" >"$log" 2>&1 &
-    local pid=$! i=0
-    # Generous: the waitqueue producer's plain-counter loop measured slower
-    # on aarch64 QEMU-TCG than the same loop on riscv64's (the ceiling below
-    # is sized so this still finishes well inside this budget on the slower
-    # ISA — see `sched_hooks_smoke`'s own doc for the earlier, mistaken
-    # placement that made this look broken instead of merely early).
-    # All three lines, not just the last one expected: their order follows
-    # each task's own wait, which is on the clock (wave 11), not a fixed
-    # count of yields that used to make pimutex reliably print last.
-    while [ "$i" -lt 220 ]; do
-        grep -aq "SCHEDHOOKS\] pimutex" "$log" 2>/dev/null \
-            && grep -aq "SCHEDHOOKS\] waitqueue" "$log" 2>/dev/null \
-            && grep -aq "SCHEDHOOKS\] cap revocation" "$log" 2>/dev/null && break
-        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
-        kill -0 "$pid" 2>/dev/null || break
-        i=$((i + 1)); sleep 1
-    done
-    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
-        bad; echo "      the kernel took an exception during boot:"
-        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    if grep -aq "FAILED:" "$log" 2>/dev/null; then
-        bad; echo "      the boot log reported a failure:"
-        grep -a "FAILED:" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    # waitqueue: read the counter back and require it near the ceiling —
-    # not just that the line printed. A `wait()` that silently degrades to
-    # a no-op still prints this line, just with a small number.
-    local wq_line wq_counter wq_ceiling
-    wq_line="$(grep -a "SCHEDHOOKS\] waitqueue" "$log" 2>/dev/null | head -1)"
-    if [ -z "$wq_line" ]; then
-        bad; echo "      no waitqueue marker — the waiter task never resumed \
-(wait() hung, or the boot never reached it)"
-        echo "      log kept: $log"; return
-    fi
-    wq_counter="$(printf '%s' "$wq_line" | sed -E 's/.*counter at wake = ([0-9]+).*/\1/')"
-    wq_ceiling="$(printf '%s' "$wq_line" | sed -E 's/.*\(ceiling ([0-9]+)\).*/\1/')"
-    if [ -z "$wq_counter" ] || [ -z "$wq_ceiling" ] || [ "$wq_counter" -lt $((wq_ceiling / 2)) ]; then
-        bad; echo "      waitqueue: counter at wake = $wq_counter, ceiling \
-$wq_ceiling — wait() returned before the producer made real progress \
-(degraded to a no-op)"
-        echo "      log kept: $log"; return
-    fi
-    # cap revocation: the exact readback, not just the line's presence.
-    if ! grep -aqE "SCHEDHOOKS\] cap revocation: before=1 after=0 \(tid=[0-9]+ slot=[0-9]+\)" \
-            "$log" 2>/dev/null; then
-        bad; echo "      cap revocation did not read back before=1 after=0:"
-        grep -a "SCHEDHOOKS\] cap revocation" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    # pimutex: the boost must be observed while L is holding the mutex
-    # contended by H — base 20 (unboosted) rising to 4 (H's priority).
-    if ! grep -aqE "SCHEDHOOKS\] pimutex: holder priority base=20 while-contended=4 " \
-            "$log" 2>/dev/null; then
-        bad; echo "      pimutex boost not observed (base should read 20, \
-while-contended should read 4):"
-        grep -a "SCHEDHOOKS\] pimutex" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    ok; rm -f "$log" "$sh_kernel" "$sh_img"
-}
-par "aarch64: sched hooks" aarch64_sched_hooks_row
 
 # ── aarch64: flight recorder + e-stop latch (aarch64 parity task S2) ────────
 #
@@ -7624,61 +7360,6 @@ theap_row() { # theap_row <isa: rv|arm> [features]
 }
 par -s "sched: timer heap raced (rv)" theap_row rv
 par -s "sched: timer heap raced (arm)" theap_row arm
-# Canary (2026-10-03, rv, by hand, reverted): the wave-5 bug put back (the
-# retry re-arms a deadline read before the heap lock; `peek_live` pops a
-# misarmed entry instead of moving it): 4 of 4 boots FAIL ("a sleeper
-# stopped waking on its timer" or "the census counted a lost sleeper",
-# census lost=1..3) against 4 of 4 PASS for
-# the same build without it. Compile errors: `kbuild`'s own FAIL line.
-# A tick deferred by a SpinLock is a preemption (wave 13): `preempt-account-
-# smoke`, -smp 2, no disk. A task holds a SpinLock for 30 ms (interrupts on)
-# beside a same-priority spinner on hart 1; the drop pays the deferred tick.
-# Its own counts across the hold must read `voluntary +0 preempted +N>=1`
-# (kernel/src/smokes/preempt_account_smoke.rs). Before wave 13 the debt was
-# paid through `task_yield` and counted voluntary, which hid tick
-# preemptions from SYS_TASKINFO (vsbench's drvring-batch8 bound).
-pacct_row() { # pacct_row <isa: rv|arm>
-    local isa="$1" feats="qemu,preempt-account-smoke"
-    printf "  %-26s" "sched: deferred tick counted (${isa})..."
-    mkdir -p "$CI_LOG_DIR"
-    local log="$CI_LOG_DIR/pacct-${isa}.log" kimg="$CI_LOG_DIR/kernel-pacct-${isa}"
-    rm -f "$log" "$kimg"
-    if [ "$isa" = rv ]; then
-        kbuild "$feats" || { echo "      riscv64 --features $feats did not build"; return; }
-        cp "$KERNEL" "$kimg"
-    else
-        a64_kbuild "$feats" || { bad; echo "      aarch64 --features $feats did not build"; return; }
-        cp "$A64_IMG" "$kimg"
-    fi
-    par_ready
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
-    if [ "$isa" = rv ]; then
-        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 </dev/null >"$log" 2>&1 &
-    else
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
-            -kernel "$kimg" </dev/null >"$log" 2>&1 &
-    fi
-    local pid=$! i=0
-    while [ "$i" -lt 120 ]; do
-        grep -aq "PACCT\] \(PASS\|FAIL\)" "$log" 2>/dev/null && break
-        kill -0 "$pid" 2>/dev/null || break
-        i=$((i + 1)); sleep 0.5
-    done
-    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    rm -f "$kimg"
-    tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
-    if grep -aq "^\[PACCT\] PASS voluntary +0 preempted +[1-9][0-9]*$" "$log"; then
-        ok; grep -a "^\[PACCT\]" "$log" | sed 's/^/      /'; rm -f "$log"
-    else
-        bad; grep -a "PACCT\|FATAL\|PANIC" "$log" | sed -n '1,4p' | sed 's/^/      /'
-        echo "      log kept: $log"
-    fi
-}
-par -s "sched: deferred tick counted (rv)" pacct_row rv
-par -s "sched: deferred tick counted (arm)" pacct_row arm
-# Canary (2026-10-04, rv, by hand, reverted): the deferred-resched callback
-# back to `task_yield`: 3 of 3 boots "FAIL voluntary +1 preempted +0";
-# with the fix 5/5 rv, 5/5 arm PASS.
 # NR_CPUS (wave 15, NRCPUS): the CPU ceiling is Kconfig, the DTB's count is
 # cut to it with a kwarn, and per-CPU state lives in per-CPU areas allocated
 # at boot for the possible CPUs only. Each row builds its own kernel into a
@@ -8849,18 +8530,6 @@ else
         -drive file=build/disk-systest.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # PiMutex donation with holder and waiter on ONE hart — the case the old
-    # spinning implementation deadlocked on. Asserts the boost actually landed
-    # and the owner returned to base priority, not merely that nothing hung.
-    kbuild "qemu,pi-smoke"
-    # ONE hart on purpose. The property under test is two contenders sharing a
-    # hart; with -smp 4 the pair can land on different harts despite the CPU
-    # pin, the holder finishes in parallel, and there is no contention left to
-    # measure — which the probe correctly reports as "no-boost" and which looks
-    # like a regression. Single hart also matches the deployment that motivated
-    # the fix.
-    par_row qemu_run "PiMutex donation (K-A14)" "PISMOKE] PASS" 90
-
     # PiMutex donation on SMP, where the row above cannot look (-smp 1 has one
     # hart, so the owner it records is always right). `pi-flush-smoke` pins a
     # priority-14 flusher to hart 2 beside `sys-wdt` (11) and both flush the
@@ -8886,83 +8555,6 @@ else
     }
     par "PiMutex donation (SMP)" pi_flush_row
 
-    # NOTE the position: AFTER the PiMutex scenario, not before it. This block
-    # builds its own kernel, and `PiMutex donation` runs on the binary the
-    # `pi-smoke` build above leaves in place — putting this between the two
-    # made that scenario boot an i3-smoke kernel with no `[PISMOKE]` line in
-    # it, and it failed on the first gate run after the move. Same inheritance
-    # trap the brain-lies block documents.
-    # RFC-0031 lease inversion. Behind `i3-smoke` since 2026-09-10 and ASSERTED
-    # here for the first time — it used to run in every scenario on `qemu` and
-    # be checked by none, which made it pure jitter. Measured over 12 000
-    # net-poll iterations: with the probe 4 097 gaps exceeded 5 ms (worst
-    # 61.5 ms), without it 3 190 (worst 40.4 ms). Its four spinners sit at
-    # priority 4 — inside the hard-RT band, where the tick does not preempt —
-    # on hart 3, which is `net-poll`'s hart.
-    #
-    # The marker carries the measurement, so a probe that spawned its tasks and
-    # never completed the inversion cannot pass.
-    #
-    # Wave 8 (owner decision round 17): lease priority inheritance is ON by
-    # default, and this row now asserts it WORKS rather than that the probe
-    # printed. The verdict is an ordering, not a duration: the spinners run in
-    # the RT band where the tick does not preempt, so without inheritance the
-    # lessor's wait ends after all four have finished, and with it before any.
-    # `[I3] FAIL` is that failure (also printed with inheritance off: the
-    # canary is `# CONFIG_LEASE_PRIORITY_INHERITANCE is not set`).
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[I3\] FAIL" \
-        par "sched: lease inversion" kq "qemu,i3-smoke" "sched: lease inversion" "I3] PASS inversion avoided" 120 -smp 4
-
-    # E03 on-board geofence, both verdicts, from the kernel's own GPS path: a
-    # fence around the simulated fix reads Inside, and a checksummed GGA
-    # sentence ~1 km outside it, fed through the driver's byte feed, reaches
-    # `safety_check` as a violation. The probe prints the outside verdict only
-    # after the inside one held, and `[GEOFENCE] FAILED:` otherwise (caught by
-    # QEMU_FAIL_RE), so one marker covers both.
-    #
-    # The marker is the LATCH, not the verdict: since 2026-09-16 a breach stops
-    # the motors and latches the envelope, and a row that passes on the verdict
-    # alone would stay green if the latch were lost. `latched: false` is added
-    # to this row's failure set so a lost latch dies with a verdict instead of
-    # waiting out the 120 s — the probe prints the bool it read back.
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|GEOFENCE\] latched: false" \
-        par "safety: geofence sees GPS" kq "qemu,geofence-smoke" "safety: geofence sees GPS" "GEOFENCE] latched: true" 120 -smp 4
-
-    # Wave 8 cross-hart TLB shootdown. A task on hart 2 runs a private address
-    # space, reads a page, and spins with interrupts off; hart 1 removes the
-    # mapping through the real `vmm::unmap` and overwrites the frame. The next
-    # read on hart 2 must FAULT. `STALE READ` is printed only when that read
-    # returned data instead — it joins the failure set, so a lost shootdown
-    # dies with a verdict. The marker carries the remote mask the shootdown
-    # had to reach, so a probe whose toucher never shared the address space
-    # (mask 0) cannot pass silently: look for `harts signalled=1`.
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|TLB-SMOKE\] STALE READ" \
-        par "tlb: stale access after cross-hart unmap faults" kq "qemu,tlb-smoke" "tlb: stale access after cross-hart unmap faults" "TLB-SMOKE] PASS: hart 2 faulted (cause=0xd) on the page hart 1 unmapped after the touch; remote mask=0x4 harts signalled=1; munmap path faulted too (cause=0xd)" 60 -smp 4
-    # The canary: same probe, remote half of the shootdown compiled out. It
-    # must read the overwritten frame through the stale entry; if it faults,
-    # the row above proves nothing (something else is flushing hart 2).
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|TLB-SMOKE\] PASS" \
-        par "tlb: canary (local-only) reads stale data" kq "qemu,tlb-smoke,tlb-local-only" "tlb: canary (local-only) reads stale data" "TLB-SMOKE] STALE READ on hart 2: value=0x5a5a5a5a5a5a5a5a (unmap) value=0x5a5a5a5a5a5a5a5a (munmap path)" 60 -smp 4
-    # Wave 9: the shootdown scans the published roots only up to one past the
-    # highest started hart (`tlb::note_hart_online`), not all eight slots. The
-    # canary notes no hart, so hart 2 is outside the scan and must read stale
-    # data exactly like the local-only canary: the bound is what reaches it.
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|TLB-SMOKE\] PASS" \
-        par "tlb: canary (scan bound) reads stale data" kq "qemu,tlb-smoke,tlb-bound-canary" "tlb: canary (scan bound) reads stale data" "TLB-SMOKE] STALE READ on hart 2: value=0x5a5a5a5a5a5a5a5a (unmap) value=0x5a5a5a5a5a5a5a5a (munmap path)" 60 -smp 4
-
-    # Wave 11 (SENSORTS): the IMU's acquisition stamp, from the driver to the
-    # sensor bus staleness check L0 reads (`kernel/src/smokes/sensor_ts.rs`).
-    # Twenty IMU reads must be stamped inside their own read and in order, and
-    # the bus must judge the `imu` task's last sample fresh BY ITS
-    # ACQUISITION STAMP. The canary build (`sensor-ts-freeze`) gives every
-    # reading the first reading's stamp: readings keep arriving, and the bus
-    # must call them stale — `[SENSORTS] STALE:` is printed only on that path
-    # (with L0's verdict, `SensorIncoherent` once its 1 s grace is over). A bus
-    # stamped at delivery, as before wave 11, stays fresh there: red.
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|SENSORTS\] STALE" \
-        par "sensors: IMU stamped at acquisition" kq "qemu,sensor-ts-smoke" "sensors: IMU stamped at acquisition" "SENSORTS] PASS: 20 IMU reads stamped inside their read, monotonic" 60 -smp 4
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|SENSORTS\] PASS" \
-        par "sensors: canary (frozen stamp is stale)" kq "qemu,sensor-ts-freeze" "sensors: canary (frozen stamp is stale)" "SENSORTS] STALE: IMU readings still arriving (20/20 answered)" 60 -smp 4
 
 
     # ── Deadline admission: an infeasible topology must not boot ────────
@@ -10395,6 +9987,36 @@ PY
     # off. A panicking test prints its `not ok` from the panic handler and a
     # `Bail out!` line: the tests after it do not run (no unwinding).
     #
+    # Late phase (`azos_ktest::ktest_late!`): the early tests no longer power
+    # off; boot goes on and the `ktest-late` kernel task runs the late tests
+    # once the scheduler runs on every CPU (`# ktest phase late`), continuing
+    # the same TAP plan (1..E early, E+1..N late), then the summary and the
+    # power-off. Each late test starts its scenario's probe tasks and judges
+    # the values the old row's marker pinned. The kernel carries `ipc-census`
+    # (`KTEST_FEATS`) for `sched_timer_heap_raced`'s lost-sleeper count.
+    #   ktest                               replaces the rows
+    #   tlb_shootdown_cross_cpu             tlb: stale access after cross-hart
+    #                                       unmap faults; aarch64 tlb: stale
+    #                                       access faults
+    #   sensors_imu_stamped_at_acquisition  (aarch64) sensors: IMU stamped at
+    #                                       acquisition
+    #   sched_lease_inversion               sched: lease inversion
+    #   safety_geofence_breach_latches_estop  safety: geofence sees GPS
+    #   sync_pimutex_donation_one_cpu       PiMutex donation (K-A14): the row
+    #                                       booted -smp 1; the test checks the
+    #                                       holder and the waiter ran on CPU 0
+    #                                       alone, so -smp 4 is the same
+    #                                       one-CPU scenario or `not ok`
+    #   sched_deferred_tick_counted_as_preemption  sched: deferred tick
+    #                                       counted (rv|arm), pinned to CPU 1
+    #                                       (the rows booted -smp 2)
+    #   sched_hooks_wired                   aarch64: sched hooks (now rv too)
+    # Kept as rows: `PiMutex donation (SMP)` (a disk, the e-stop flush),
+    # `sched: timer heap raced` (judged on the wall clock, so serial, and
+    # built with `ipc-census`, whose periodic dumps flood a shared boot),
+    # `pifast:` (-smp 1 -icount latency bound), `aarch64 driver restarted`
+    # (kills a ring-3 driver past its restart budget: global).
+    #
     # The pass row requires the plan to be exactly KTEST_N_<ISA> (a dropped or
     # unregistered test turns it red), every number 1..N reported once, no
     # `not ok`, and the summary. Raise the count when a test is added.
@@ -10410,13 +10032,20 @@ PY
     #   procfs_entries_registered     procfs-skip-canary (no install_procfs)
     #   mm_zicboz_zero_fill (rv)      zicboz-skip-canary (DTB Zicboz ignored)
     #   kheap_slab_selftest           slab-freelist-canary (panics in slab.rs)
+    # Late canaries that break memory safety or the safety layer for the
+    # whole boot keep a boot each, and their row names only their test:
+    #   tlb_shootdown_cross_cpu             tlb-local-only (rv, arm),
+    #                                       tlb-bound-canary (rv)
+    #   sensors_imu_stamped_at_acquisition  sensor-ts-freeze (rv, arm): the
+    #                                       stale IMU latches the e-stop
     # These replace the rows `kheap slab: self-test|canary refused (rv|arm)`,
     # `percpu: canary, area past nr_cpu_ids (rv|arm)`, `mm: W^X verified`,
     # `mm: NX outside the image` (riscv64 only before; both ISAs now),
     # `mm: Zicboz zeroes pages` and `aarch64: procfs registered` (both ISAs
-    # now).
-    KTEST_N_RV=7
-    KTEST_N_ARM=6
+    # now), and the late tests' rows above.
+    KTEST_N_RV=14
+    KTEST_N_ARM=13
+    KTEST_FEATS="qemu,ktest"
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated>
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
         [ "$isa" = arm ] && n_want=$KTEST_N_ARM
@@ -10426,10 +10055,10 @@ PY
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
         rm -f "$log" "$kimg"
         if [ "$isa" = rv ]; then
-            kbuild "qemu,ktest$extra" || { bad; echo "      riscv64 --features qemu,ktest$extra did not build"; return; }
+            kbuild "$KTEST_FEATS$extra" || { bad; echo "      riscv64 --features $KTEST_FEATS$extra did not build"; return; }
             cp "$KERNEL" "$kimg"
         else
-            a64_kbuild "qemu,ktest$extra" || { bad; echo "      aarch64 --features qemu,ktest$extra did not build"; return; }
+            a64_kbuild "$KTEST_FEATS$extra" || { bad; echo "      aarch64 --features $KTEST_FEATS$extra did not build"; return; }
             cp "$A64_IMG" "$kimg"
         fi
         par_ready
@@ -10441,8 +10070,9 @@ PY
                 -kernel "$kimg" </dev/null >"$log" 2>&1 &
         fi
         local pid=$! i=0
-        # The runner powers the machine off; the wait is only a backstop.
-        while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do i=$((i + 1)); sleep 0.5; done
+        # The runner powers the machine off; the wait is only a backstop (the
+        # late tests take about a minute together).
+        while [ "$i" -lt 600 ] && kill -0 "$pid" 2>/dev/null; do i=$((i + 1)); sleep 0.5; done
         # riscv64 carries the verdict in QEMU's exit status (the runner fails
         # through the sifive_test finisher): 0 for a clean run, 1 otherwise.
         local qrc=timeout
@@ -10490,6 +10120,11 @@ PY
     par "ktest canaries (arm)" ktest_row "ktest canaries (arm)" arm "$KTEST_CANARIES" "$KTEST_CANARIED"
     par "ktest slab canary (rv)" ktest_row "ktest slab canary (rv)" rv ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest slab canary (arm)" ktest_row "ktest slab canary (arm)" arm ",slab-freelist-canary" "kheap_slab_selftest"
+    par "ktest tlb local-only canary (rv)" ktest_row "ktest tlb local-only canary (rv)" rv ",tlb-local-only" "tlb_shootdown_cross_cpu"
+    par "ktest tlb local-only canary (arm)" ktest_row "ktest tlb local-only canary (arm)" arm ",tlb-local-only" "tlb_shootdown_cross_cpu"
+    par "ktest tlb scan-bound canary (rv)" ktest_row "ktest tlb scan-bound canary (rv)" rv ",tlb-bound-canary" "tlb_shootdown_cross_cpu"
+    par "ktest IMU frozen-stamp canary (rv)" ktest_row "ktest IMU frozen-stamp canary (rv)" rv ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition"
+    par "ktest IMU frozen-stamp canary (arm)" ktest_row "ktest IMU frozen-stamp canary (arm)" arm ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

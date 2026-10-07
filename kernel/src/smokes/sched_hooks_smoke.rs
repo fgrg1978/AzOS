@@ -79,6 +79,7 @@ fn wq_producer_task(_arg: usize) {
         false
     });
     if !woken {
+        FAILS.fetch_add(1, Ordering::SeqCst);
         kprintln!("[SCHEDHOOKS] waitqueue FAIL: the waiter did not report in {} ms of wakes",
             WQ_WAKE_FOR_MS);
     }
@@ -88,6 +89,7 @@ fn wq_waiter_task(_arg: usize) {
     let wq = unsafe { &mut *(&raw mut WQ) };
     wq.wait();
     let n = WQ_COUNTER.load(Ordering::Relaxed);
+    WQ_AT_WAKE.store(n as u32, Ordering::Release);
     WQ_WAITER_DONE.store(1, Ordering::Release);
     kprintln!("[SCHEDHOOKS] waitqueue: counter at wake = {} (ceiling {})",
         n, WQ_CEILING);
@@ -116,6 +118,14 @@ fn wq_waiter_task(_arg: usize) {
 // L create H only after `PI_MUTEX.lock()` already returned removes the
 // race by construction: H cannot exist, let alone run, before L is the
 // owner.
+/// For the ktest verdict ([`sched_hooks_wired`]): each scenario's reading,
+/// `u32::MAX` / `usize::MAX` until it reported, and the FAIL lines printed.
+static WQ_AT_WAKE: AtomicU32 = AtomicU32::new(u32::MAX);
+static PI_BEFORE: AtomicU32 = AtomicU32::new(u32::MAX);
+static PI_DURING: AtomicU32 = AtomicU32::new(u32::MAX);
+static CAP_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
+static FAILS: AtomicU32 = AtomicU32::new(0);
+
 static PI_MUTEX: azos_sync::pi_mutex::PiMutex<u32> =
     azos_sync::pi_mutex::PiMutex::new(0);
 const PI_LOW_PRIO: u32 = 20;
@@ -145,6 +155,8 @@ fn pi_low_task(_arg: usize) {
     });
     let during = azos_sched::task_priority(me).unwrap_or(0);
     drop(guard);
+    PI_BEFORE.store(before, Ordering::Release);
+    PI_DURING.store(during, Ordering::Release);
     kprintln!("[SCHEDHOOKS] pimutex: holder priority base={} while-contended={} \
                (boost expected: {} -> {})", before, during, PI_LOW_PRIO, PI_HIGH_PRIO);
 }
@@ -208,6 +220,7 @@ fn cap_child_task(_arg: usize) {
 fn cap_observer_task(_arg: usize) {
     use azos_syscall::sleep::wait_until_ms;
     if !wait_until_ms(CAP_WAIT_MS, 1, || CAP_CHILD_TID.load(Ordering::Acquire) != 0) {
+        FAILS.fetch_add(1, Ordering::SeqCst);
         kprintln!("[SCHEDHOOKS] cap revocation FAIL: the child never published its tid \
                    in {} ms", CAP_WAIT_MS);
         return;
@@ -218,12 +231,14 @@ fn cap_observer_task(_arg: usize) {
     // TID stops resolving when the switch away from it frees the slot,
     // and the exit hook has run before that (`task_exit_with_code`).
     if !wait_until_ms(CAP_WAIT_MS, 1, || azos_sched::idx_for_tid(tid).is_none()) {
+        FAILS.fetch_add(1, Ordering::SeqCst);
         kprintln!("[SCHEDHOOKS] cap revocation FAIL: child tid={} still alive after {} ms",
             tid, CAP_WAIT_MS);
         return;
     }
     let before = CAP_BEFORE.load(Ordering::Acquire);
     let after = azos_ipc::cap_store::occupied_at_slot(idx);
+    CAP_AFTER.store(after, Ordering::Release);
     kprintln!("[SCHEDHOOKS] cap revocation: before={} after={} (tid={} slot={})",
         before, after, tid, idx);
 }
@@ -249,4 +264,36 @@ pub fn spawn() {
     azos_sched::task_create_affinity(
         "schedhooks-cap-child", cap_child_task, 0,
         azos_sched::DEFAULT_PRIORITY, CAP_HART);
+}
+
+// The scheduler hooks the sync and IPC crates install, exercised from tasks:
+// a WaitQueue waiter sleeps until a producer has made real progress (counter
+// at wake >= half its ceiling); a PiMutex holder at priority 20 is boosted
+// to 4 while a priority-4 task contends; a task's capability slot is
+// cleared when the task exits (before=1 after=0). The row `aarch64: sched
+// hooks` judged the three lines on aarch64; the test runs on both ISAs.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn sched_hooks_wired() {
+        spawn();
+        crate::ktest::wait("a scenario did not report", || {
+            FAILS.load(Ordering::SeqCst) != 0
+                || (WQ_AT_WAKE.load(Ordering::Acquire) != u32::MAX
+                    && PI_DURING.load(Ordering::Acquire) != u32::MAX
+                    && CAP_AFTER.load(Ordering::Acquire) != usize::MAX)
+        })?;
+        if FAILS.load(Ordering::SeqCst) != 0 {
+            return Err("a scenario printed [SCHEDHOOKS] ... FAIL");
+        }
+        if WQ_AT_WAKE.load(Ordering::Acquire) < WQ_CEILING as u32 / 2 {
+            return Err("waitqueue: wait() returned before the producer made real progress");
+        }
+        if PI_BEFORE.load(Ordering::Acquire) != PI_LOW_PRIO || PI_DURING.load(Ordering::Acquire) != PI_HIGH_PRIO {
+            return Err("pimutex: the holder was not boosted from 20 to 4 while contended");
+        }
+        if CAP_BEFORE.load(Ordering::Acquire) != 1 || CAP_AFTER.load(Ordering::Acquire) != 0 {
+            return Err("cap revocation: the exited task's capability slot was not cleared");
+        }
+        Ok(())
+    }
 }

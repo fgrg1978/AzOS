@@ -493,20 +493,49 @@ config KTEST
     bool "In-kernel tests (ktest): run every registered test at boot, then power off"
     default n
     help
-      Compiles every `ktest!` test (crates/core/ktest) and the runner
-      (kernel/src/ktest.rs). After boot init, before the secondary harts
-      wake and before any task runs, the runner executes each test in name
-      order and prints TAP on the console (`1..N`, `ok i - name`,
-      `not ok i - name # reason`), then a summary line, then powers the
-      machine off. A panicking test is reported `not ok` by the panic
+      Compiles every `ktest!` and `ktest_late!` test (crates/core/ktest) and
+      the runner (kernel/src/ktest.rs), and prints TAP on the console
+      (`1..N`, `ok i - name`, `not ok i - name # reason`, one plan for both
+      phases), then a summary line, then powers the machine off.
+      Early phase (`ktest!`): after boot init, before the secondary harts
+      wake and before any task runs, on the boot hart, in name order.
+      Late phase (`ktest_late!`): in the `ktest-late` kernel task once the
+      scheduler runs on every hart, in name order; these tests create probe
+      tasks and block. A panicking test is reported `not ok` by the panic
       handler and ends the run (the kernel does not unwind).
 
       Off (default in every mode, development included): no test, no entry
       in `.azos_ktest`, no runner; zero bytes and zero instructions. It is
       not on in the QEMU development configs because the runner ends the
       boot: it is a test kernel, built for the gate's `ktest` rows. On: the
-      tests' code and 24 bytes of `.rodata` per test, and the boot stops
-      after the run. Maps to the kernel cargo feature `ktest`
-      (tools/kconfig_to_cargo.py).
+      tests' code and 32 bytes of `.rodata` per test, one more kernel task
+      when a late test exists, and the boot stops after the run. Maps to
+      the kernel cargo feature `ktest` (tools/kconfig_to_cargo.py).
+
+config KTEST_LATE_PRIORITY
+    int "Priority of the late ktest runner task"
+    range 1 30
+    default 30
+    help
+      The `ktest-late` task (KTEST on, a `ktest_late!` test linked) runs the
+      late tests at this priority, pinned to CPU 0; lower is more urgent,
+      16 is the default task priority and 31 the idle task's. It spends its
+      time asleep while the probe tasks it starts run at their own
+      priorities, so it sits below every task in the system by default and
+      does not steal a hart from the scenario a test watches. Raise its
+      urgency only if a test itself must run ahead of boot tasks.
+      Read only when KTEST is on; no cost otherwise.
+
+config KTEST_LATE_TIMEOUT_MS
+    int "Longest a late ktest waits for its probe task (ms)"
+    range 100 600000
+    default 60000
+    help
+      A late test that starts a probe task waits for it, sleeping 10 ms at a
+      time, at most this long, then reports `not ok` (the probe did not
+      finish). The longest probe today (the lease inversion scenario) needs
+      a few seconds under QEMU; the default leaves room for a loaded host.
+      Raise it for slow emulation (-icount, TCG on a busy host); lower it to
+      fail a hung run sooner. Read only when KTEST is on; no cost otherwise.
 
 endmenu # Development & Debug

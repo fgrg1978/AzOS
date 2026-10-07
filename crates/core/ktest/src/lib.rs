@@ -17,24 +17,39 @@
 //! macro's own `#[cfg(feature = "ktest")]`, evaluated in the invoking crate,
 //! is a second guard.
 //!
-//! Order is by name ([`nth`]), not link order, so adding a test in one file
-//! does not renumber the TAP lines of the others. The kernel's runner
-//! (`kernel/src/ktest.rs`) records the running test with [`set_current`]; the
-//! panic handler reads it back with [`current`] to report that test as
-//! failed, because the kernel does not unwind: a panic still ends the run.
+//! Two phases share the section, told apart by [`KTest::phase`]:
+//! [`EARLY`] tests ([`ktest!`]) run on the boot hart before the scheduler
+//! starts; [`LATE`] tests ([`ktest_late!`]) run in a kernel task after it
+//! started, with every hart online, so they may create tasks and block.
+//!
+//! Order is by phase, then by name ([`nth`]), not link order, so adding a
+//! test in one file does not renumber the TAP lines of the others. The
+//! kernel's runner (`kernel/src/ktest.rs`) records the running test with
+//! [`set_current`]; the panic handler reads it back with [`current`] to
+//! report that test as failed, because the kernel does not unwind: a panic
+//! still ends the run.
 #![no_std]
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 /// A registered test: its name and its body. `Err` carries the reason that
 /// the TAP line prints after `#`.
 pub type TestFn = fn() -> Result<(), &'static str>;
 
-/// One `.azos_ktest` entry (24 bytes on a 64-bit target).
+/// The phase of a test registered with [`ktest!`]: boot hart, before the
+/// scheduler starts.
+pub const EARLY: usize = 0;
+/// The phase of a test registered with [`ktest_late!`]: a kernel task, after
+/// the scheduler started.
+pub const LATE: usize = 1;
+
+/// One `.azos_ktest` entry (32 bytes on a 64-bit target).
 #[repr(C)]
 pub struct KTest {
     pub name: &'static str,
     pub run: TestFn,
+    /// [`EARLY`] or [`LATE`].
+    pub phase: usize,
 }
 
 /// Define and register an in-kernel test.
@@ -53,6 +68,26 @@ pub struct KTest {
 #[macro_export]
 macro_rules! ktest {
     ($(#[cfg($c:meta)])* fn $name:ident() $body:block) => {
+        $crate::__ktest_entry!($crate::EARLY; $(#[cfg($c)])* fn $name() $body);
+    };
+}
+
+/// Define and register a late in-kernel test: same form as [`ktest!`], run
+/// by the kernel's late runner task after the scheduler started, every hart
+/// online. The body may create tasks and block (a timer sleep, a wait
+/// queue); it must not return before the tasks it created stopped touching
+/// state the next test reads.
+#[macro_export]
+macro_rules! ktest_late {
+    ($(#[cfg($c:meta)])* fn $name:ident() $body:block) => {
+        $crate::__ktest_entry!($crate::LATE; $(#[cfg($c)])* fn $name() $body);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __ktest_entry {
+    ($phase:expr; $(#[cfg($c:meta)])* fn $name:ident() $body:block) => {
         #[cfg(all(feature = "ktest" $(, $c)*))]
         fn $name() -> ::core::result::Result<(), &'static str> $body
 
@@ -63,6 +98,7 @@ macro_rules! ktest {
             static ENTRY: $crate::KTest = $crate::KTest {
                 name: ::core::stringify!($name),
                 run: $name,
+                phase: $phase,
             };
         };
     };
@@ -95,21 +131,26 @@ pub fn all() -> &'static [KTest] {
     }
 }
 
-/// The test of rank `r` in name order (ties, which [`duplicate`] reports,
-/// broken by link order so every rank names exactly one entry). O(N^2) over
-/// a handful of entries, and allocation-free.
-pub fn nth(tests: &'static [KTest], r: usize) -> Option<&'static KTest> {
-    tests.iter().enumerate().find_map(|(i, t)| {
+/// How many tests of `phase` are registered.
+pub fn count(tests: &'static [KTest], phase: usize) -> usize {
+    tests.iter().filter(|t| t.phase == phase).count()
+}
+
+/// The test of rank `r` among the tests of `phase`, in name order (ties,
+/// which [`duplicate`] reports, broken by link order so every rank names
+/// exactly one entry). O(N^2) over a few dozen entries, and allocation-free.
+pub fn nth(tests: &'static [KTest], phase: usize, r: usize) -> Option<&'static KTest> {
+    tests.iter().enumerate().filter(|(_, t)| t.phase == phase).find_map(|(i, t)| {
         let rank = tests
             .iter()
             .enumerate()
-            .filter(|&(j, u)| u.name < t.name || (u.name == t.name && j < i))
+            .filter(|&(j, u)| u.phase == phase && (u.name < t.name || (u.name == t.name && j < i)))
             .count();
         (rank == r).then_some(t)
     })
 }
 
-/// A name registered twice, if any.
+/// A name registered twice (in either phase), if any.
 pub fn duplicate(tests: &'static [KTest]) -> Option<&'static str> {
     tests
         .iter()
@@ -118,19 +159,29 @@ pub fn duplicate(tests: &'static [KTest]) -> Option<&'static str> {
         .map(|(_, t)| t.name)
 }
 
-/// 1-based TAP number of the test now running, 0 when none.
+/// 1-based TAP number of the test now running, 0 when none, and its entry.
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
+static CURRENT_TEST: AtomicPtr<KTest> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Record that the test with TAP number `n` (1-based) is running; 0 clears.
-pub fn set_current(n: usize) {
+/// Record that test `t`, TAP number `n` (1-based), is running; `None` clears.
+pub fn set_current(running: Option<(usize, &'static KTest)>) {
+    let (n, p) = match running {
+        Some((n, t)) => (n, t as *const KTest as *mut KTest),
+        None => (0, core::ptr::null_mut()),
+    };
+    CURRENT_TEST.store(p, Ordering::Release);
     CURRENT.store(n, Ordering::Release);
 }
 
-/// The running test's TAP number and entry, if a run is in progress.
+/// The running test's TAP number and entry, if a run is in progress. A late
+/// test's panic may come from a task it created, on another hart: the test
+/// that was running is still the one that failed.
 pub fn current() -> Option<(usize, &'static KTest)> {
     let n = CURRENT.load(Ordering::Acquire);
-    if n == 0 {
+    let p = CURRENT_TEST.load(Ordering::Acquire);
+    if n == 0 || p.is_null() {
         return None;
     }
-    nth(all(), n - 1).map(|t| (n, t))
+    // SAFETY: only `set_current` stores it, from a `&'static KTest`.
+    Some((n, unsafe { &*p }))
 }

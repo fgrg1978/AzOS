@@ -25,6 +25,11 @@ const SETTLE_MS: u64 = 1_500;
 const HOLD_MS: u64 = 30;
 
 static STOP: AtomicBool = AtomicBool::new(false);
+/// For the ktest verdict ([`sched_deferred_tick_counted_as_preemption`]):
+/// the holder's voluntary and preempted deltas across the hold, `u32::MAX`
+/// until it measured them.
+static DV: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+static DP: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
 static LOCK: azos_sync::SpinLock<u32> = azos_sync::SpinLock::new(0);
 
 fn ms(n: u64) -> u64 {
@@ -61,9 +66,39 @@ fn holder(_: usize) {
     let (v1, p1) = azos_sched::scheduler::current_task_switches();
     STOP.store(true, Ordering::Release);
     let (dv, dp) = (v1.wrapping_sub(v0), p1.wrapping_sub(p0));
+    DP.store(dp as u32, Ordering::Release);
+    DV.store(dv as u32, Ordering::Release);
     if dv == 0 && dp >= 1 {
         kprintln!("[PACCT] PASS voluntary +{} preempted +{}", dv, dp);
     } else {
         kprintln!("[PACCT] FAIL voluntary +{} preempted +{} (want +0 / >= +1)", dv, dp);
+    }
+}
+
+// A tick deferred by a SpinLock is a preemption: on CPU 1, a task holds a
+// SpinLock with interrupts on for 30 ms while a same-priority spinner is
+// Ready; the ticks in that window are paid at the guard's drop and must
+// count as `preempted +N (N >= 1)`, `voluntary +0` (the rows `sched:
+// deferred tick counted (rv|arm)`, `[PACCT] PASS voluntary +0 preempted
+// +N`). Both tasks are pinned to CPU 1, so `-smp 4` runs the scenario the
+// rows ran at `-smp 2`. Canary (2026-10-04, by hand, reverted): the
+// deferred-resched callback back to `task_yield` gave 3 of 3 boots
+// "voluntary +1 preempted +0".
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn sched_deferred_tick_counted_as_preemption() {
+        if azos_percpu::nr_cpu_ids() < 2 {
+            return Err("needs 2 CPUs (the scenario runs on CPU 1)");
+        }
+        spawn();
+        crate::ktest::wait("the holder did not measure", || DV.load(Ordering::Acquire) != u32::MAX)?;
+        let (dv, dp) = (DV.load(Ordering::Acquire), DP.load(Ordering::Acquire));
+        if dv != 0 {
+            Err("the holder was counted as switching voluntarily across the hold")
+        } else if dp == 0 {
+            Err("no preemption counted for the ticks deferred by the lock")
+        } else {
+            Ok(())
+        }
     }
 }

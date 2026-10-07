@@ -4,14 +4,21 @@
 //!
 //! `kernel_main` calls [`run`] after boot init, before the secondary harts
 //! wake and before the scheduler starts, so no task has run yet. Every test
-//! registered with `azos_ktest::ktest!` runs in name order on the boot hart,
-//! and the console gets TAP:
+//! registered with `azos_ktest::ktest!` (the early phase) runs in name order
+//! on the boot hart. Tests registered with `azos_ktest::ktest_late!` (the
+//! late phase, KUnit's late-init counterpart) run afterwards in the
+//! `ktest-late` kernel task, once the scheduler runs on every hart; a late
+//! test usually starts a probe task with [`probe`] and reads its verdict.
+//! The console gets one TAP plan for both phases:
 //!
 //! ```text
 //! 1..N
+//! # ktest phase early: E tests, ...
 //! # ktest 1 <name>          (printed before the test runs)
 //! ok 1 - <name>
 //! not ok 2 - <name> # <reason>
+//! # ktest phase late: N-E tests, ...
+//! ok E+1 - <name>
 //! # ktest: N tests, P passed, F failed (<isa>)
 //! ```
 //!
@@ -24,7 +31,7 @@
 //! The tests themselves live next to the code they check; the few that need
 //! boot-time values (the image layout, which only the ISA boot hook knows)
 //! read them from [`note_image`].
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use azos_drv_sys::kprintln;
 
@@ -38,6 +45,10 @@ fn isa() -> &'static str {
 /// was measured). aarch64's PSCI `SYSTEM_OFF` has no reason field, so QEMU
 /// exits 0 either way there; the gate reads the TAP lines on both ISAs.
 fn power_off(failed: bool) -> ! {
+    // Once the scheduler runs, kernel output may sit in the console's TX
+    // ring or deferred buffer: put it on the wire first, or the summary
+    // line is cut by the power-off (seen on a late run).
+    azos_drv_sys::uart::console_flush_for_reboot();
     // arch-only: QEMU riscv64 virt's sifive_test finisher; no other ISA's
     // QEMU machine has a power-off that carries a status.
     #[cfg(all(target_arch = "riscv64", feature = "qemu"))]
@@ -55,42 +66,126 @@ fn power_off(failed: bool) -> ! {
     azos_arch::ARCH.shutdown()
 }
 
-/// Run every registered test, print TAP, power off.
+/// Early tests that failed, carried to the late runner's summary.
+static EARLY_FAILED: AtomicUsize = AtomicUsize::new(0);
+
+/// Run every early test (boot hart, no task has run) and print TAP. With no
+/// late test, print the summary and power off. Otherwise create the late
+/// runner task ([`late_run`]) and return: boot goes on, the scheduler starts,
+/// and that task runs the late tests, prints the summary and powers off.
+///
+/// One TAP plan covers both phases: `1..N` with N = early + late; the early
+/// tests are 1..E, the late ones E+1..N, each phase in name order, and a
+/// `# ktest phase late` comment separates them. A test dropped from either
+/// phase changes N.
 pub(crate) fn run() {
     let tests = azos_ktest::all();
-    let n = tests.len();
+    let early = azos_ktest::count(tests, azos_ktest::EARLY);
+    let late = azos_ktest::count(tests, azos_ktest::LATE);
     if let Some(name) = azos_ktest::duplicate(tests) {
         kprintln!("Bail out! ktest: the name {} is registered twice", name);
         power_off(true);
     }
-    kprintln!("1..{}", n);
+    kprintln!("1..{}", early + late);
+    kprintln!("# ktest phase early: {} tests, boot hart, before the scheduler ({})", early, isa());
+    let failed = run_phase(azos_ktest::EARLY, 0);
+    if late == 0 {
+        summary(early, failed);
+    }
+    EARLY_FAILED.store(failed, Ordering::Relaxed);
+    let _ = azos_sched::task_create_affinity("ktest-late", late_run, 0, azos_limits::KTEST_LATE_PRIORITY as u32, 0);
+}
+
+/// Run every test of `phase`; TAP numbers start after `first`. Returns how
+/// many failed. In the late phase every TAP line starts on a fresh line: a
+/// ring-3 program (the shell's prompt) may have left a partial line on the
+/// console, and a TAP line must start at column 0.
+fn run_phase(phase: usize, first: usize) -> usize {
+    let nl = if phase == azos_ktest::LATE { "\n" } else { "" };
+    let tests = azos_ktest::all();
     let mut failed = 0usize;
-    for r in 0..n {
-        let Some(t) = azos_ktest::nth(tests, r) else { break };
-        kprintln!("# ktest {} {}", r + 1, t.name);
-        azos_ktest::set_current(r + 1);
+    for r in 0..azos_ktest::count(tests, phase) {
+        let Some(t) = azos_ktest::nth(tests, phase, r) else { break };
+        let i = first + r + 1;
+        kprintln!("{}# ktest {} {}", nl, i, t.name);
+        azos_ktest::set_current(Some((i, t)));
         let verdict = (t.run)();
-        azos_ktest::set_current(0);
+        azos_ktest::set_current(None);
         match verdict {
-            Ok(()) => kprintln!("ok {} - {}", r + 1, t.name),
+            Ok(()) => kprintln!("{}ok {} - {}", nl, i, t.name),
             Err(why) => {
                 failed += 1;
-                kprintln!("not ok {} - {} # {}", r + 1, t.name, why);
+                kprintln!("{}not ok {} - {} # {}", nl, i, t.name, why);
             }
         }
     }
-    kprintln!("# ktest: {} tests, {} passed, {} failed ({})", n, n - failed, failed, isa());
+    failed
+}
+
+fn summary(n: usize, failed: usize) -> ! {
+    kprintln!("\n# ktest: {} tests, {} passed, {} failed ({})", n, n - failed, failed, isa());
     power_off(failed != 0)
+}
+
+/// The late runner: a kernel task (Kconfig `KTEST_LATE_PRIORITY`, pinned to
+/// CPU 0) created by [`run`] before the scheduler starts. Every hart is
+/// online when it runs, and so is every boot task (the same system the
+/// smokes these tests replace booted next to).
+fn late_run(_: usize) {
+    let tests = azos_ktest::all();
+    let early = azos_ktest::count(tests, azos_ktest::EARLY);
+    let late = azos_ktest::count(tests, azos_ktest::LATE);
+    kprintln!("\n# ktest phase late: {} tests, kernel task, {} CPUs online ({})", late, azos_percpu::nr_cpu_ids(), isa());
+    let failed = run_phase(azos_ktest::LATE, early);
+    summary(early + late, EARLY_FAILED.load(Ordering::Relaxed) + failed)
+}
+
+/// Set by a probe task when it is done ([`probe_done`]); read by [`probe`].
+static PROBE_DONE: AtomicBool = AtomicBool::new(false);
+static PROBE_ENTRY: AtomicUsize = AtomicUsize::new(0);
+
+/// Called by a late test's probe task when its scenario is over (its
+/// verdict statics are final).
+pub(crate) fn probe_done() {
+    PROBE_DONE.store(true, Ordering::Release);
+}
+
+fn probe_trampoline(arg: usize) {
+    // SAFETY: `probe` stored a `fn(usize)` just before creating this task.
+    let entry: fn(usize) = unsafe { core::mem::transmute(PROBE_ENTRY.load(Ordering::Acquire)) };
+    entry(arg);
+    probe_done();
+}
+
+/// Wait, sleeping 10 ms at a time, until `ready()` holds, at most Kconfig
+/// `KTEST_LATE_TIMEOUT_MS`; `Err(why)` on timeout. A late test's wait on the
+/// tasks it started: a timer wait on the counter, never a yield count.
+pub(crate) fn wait(why: &'static str, ready: impl FnMut() -> bool) -> Result<(), &'static str> {
+    if azos_syscall::sleep::wait_until_ms(azos_limits::KTEST_LATE_TIMEOUT_MS as u64, 10, ready) {
+        Ok(())
+    } else {
+        Err(why)
+    }
+}
+
+/// Create `entry(arg)` as a kernel task (`prio`, pinned to `cpu`) and wait
+/// ([`wait`]) until it returns or calls [`probe_done`]. The scenario's
+/// verdict is then the caller's to read from the probe's statics.
+pub(crate) fn probe(name: &str, entry: fn(usize), arg: usize, prio: u32, cpu: i8) -> Result<(), &'static str> {
+    PROBE_DONE.store(false, Ordering::Release);
+    PROBE_ENTRY.store(entry as usize, Ordering::Release);
+    azos_sched::task_create_affinity(name, probe_trampoline, arg, prio, cpu);
+    wait("the probe task did not finish within KTEST_LATE_TIMEOUT_MS", || PROBE_DONE.load(Ordering::Acquire))
 }
 
 /// The panic handler's hook: a panic during a test is that test's failure.
 /// Returns when no test is running.
 pub(crate) fn on_panic(info: &core::panic::PanicInfo) {
     let Some((i, t)) = azos_ktest::current() else { return };
-    azos_ktest::set_current(0);
+    azos_ktest::set_current(None);
     match info.location() {
-        Some(l) => kprintln!("not ok {} - {} # panic at {}:{}", i, t.name, l.file(), l.line()),
-        None => kprintln!("not ok {} - {} # panic", i, t.name),
+        Some(l) => kprintln!("\nnot ok {} - {} # panic at {}:{}", i, t.name, l.file(), l.line()),
+        None => kprintln!("\nnot ok {} - {} # panic", i, t.name),
     }
     kprintln!("Bail out! ktest: {} panicked; tests {}.. did not run ({})", t.name, i + 1, isa());
     power_off(true)

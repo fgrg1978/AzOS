@@ -46,6 +46,11 @@ static SECOND_CAUSE: AtomicU64 = AtomicU64::new(u64::MAX);
 static SECOND2: AtomicU64 = AtomicU64::new(0);
 static SECOND2_CAUSE: AtomicU64 = AtomicU64::new(u64::MAX);
 static TOUCH_HART: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// The runner's CPU and the remote mask it computed before the revokes, for
+/// the ktest verdict ([`tlb_shootdown_cross_cpu`]).
+static RUNNER_HART: AtomicUsize = AtomicUsize::new(usize::MAX);
+static MASK: AtomicUsize = AtomicUsize::new(usize::MAX);
+static KERNEL_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Wave 9: the translation root `ktask` found itself on (`u64::MAX`: it
 /// never ran), and the one the toucher was on when it created it.
 static KTASK_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -296,6 +301,7 @@ pub fn runner(touch_hart: usize) {
     let me = azos_arch::ARCH.hart_id();
     // A boot-created kernel task: this is the kernel's root.
     let kernel_root = live_root();
+    KERNEL_ROOT.store(kernel_root, Ordering::SeqCst);
     let (frame, frame2) = match (pmm::alloc_page(), pmm::alloc_page()) {
         (Ok(p), Ok(q)) => (p.as_usize(), q.as_usize()),
         _ => { kprintln!("[TLB-SMOKE] FAILED: no frame"); return; }
@@ -330,6 +336,8 @@ pub fn runner(touch_hart: usize) {
     // Who the shootdown will have to reach (recomputed inside it; the
     // toucher is spinning on P, so this is what it sees).
     let mask = remote_mask(pt);
+    MASK.store(mask, Ordering::SeqCst);
+    RUNNER_HART.store(me, Ordering::SeqCst);
 
     // The revokes under test: the production unmap paths. The range call
     // frees nothing here (a kernel-permission leaf is not a task's own
@@ -383,5 +391,74 @@ pub fn runner(touch_hart: usize) {
         vmm::destroy_user_pagetable(pt);
         let _ = pmm::free_page(addr::PhysAddr::new(frame));
         let _ = pmm::free_page(addr::PhysAddr::new(frame2));
+    }
+}
+
+/// The cause the revoked pages must fault with (the row's pinned value): a
+/// load page fault on riscv64; on aarch64 a same-EL data abort, translation
+/// fault at level 3 (the probe pages are 4 KiB leaves).
+#[cfg(feature = "ktest")]
+fn expected_cause() -> u64 {
+    // arch-only: the fault encodings are the ISAs' own (scause, ESR_EL1).
+    #[cfg(target_arch = "riscv64")]
+    { 13 }
+    #[cfg(target_arch = "aarch64")]
+    { 0x9600_0007 }
+}
+
+/// Who the shootdown must signal: on riscv64 exactly the toucher's CPU (an
+/// IPI per CPU that runs on the root); aarch64 broadcasts TLBI in the inner
+/// shareable domain, so no CPU is signalled.
+#[cfg(feature = "ktest")]
+fn expected_mask(touch: usize) -> usize {
+    // arch-only: riscv64 shoots down by IPI, aarch64 by broadcast TLBI.
+    #[cfg(target_arch = "riscv64")]
+    { 1usize << touch }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = touch; 0 }
+}
+
+// Cross-CPU TLB shootdown, observed: CPU 1 unmaps two pages of a private
+// root (through `vmm::unmap` and through `munmap`'s batched path) while CPU 2
+// runs on it with both translations cached; CPU 2's next reads must fault
+// with a translation fault, and the shootdown must have signalled exactly
+// the CPUs that run on the root. Also: a kernel task created on a user root
+// runs on the kernel root. The same verdict as the rows `tlb: stale access
+// after cross-hart unmap faults` and `aarch64 tlb: stale access faults`
+// pinned in their marker: on riscv64 the remote mask is exactly CPU 2's
+// (`harts signalled=1`), so a toucher that never shared the root cannot
+// pass. Canaries `tlb-local-only` (the remote half of the shootdown compiled
+// out) and, riscv64, `tlb-bound-canary` (the shootdown's scan of published
+// roots notes no started CPU, so CPU 2 is outside it): CPU 2 reads the
+// overwritten frame through the stale entry, `not ok`.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn tlb_shootdown_cross_cpu() {
+        const TOUCH: usize = 2;
+        if azos_percpu::nr_cpu_ids() < 3 {
+            return Err("needs 3 CPUs (runner on CPU 1, toucher on CPU 2)");
+        }
+        crate::ktest::probe("tlb-probe", runner, TOUCH, PROBE_PRIO, 1)?;
+        if STAGE.load(Ordering::SeqCst) < 4 {
+            return Err("the scenario stopped before the second reads (see the [TLB-SMOKE] line)");
+        }
+        let (c, c2) = (SECOND_CAUSE.load(Ordering::SeqCst), SECOND2_CAUSE.load(Ordering::SeqCst));
+        if c == 0 || c2 == 0 {
+            return Err("STALE READ: the toucher read a revoked page");
+        }
+        if c != expected_cause() || c2 != expected_cause() {
+            return Err("the second reads faulted with another cause than a translation fault");
+        }
+        if TOUCH_HART.load(Ordering::SeqCst) != TOUCH || RUNNER_HART.load(Ordering::SeqCst) != 1 {
+            return Err("the runner or the toucher ran on another CPU than pinned");
+        }
+        if MASK.load(Ordering::SeqCst) != expected_mask(TOUCH) {
+            return Err("the shootdown would signal another CPU set than the toucher's");
+        }
+        let kroot = KTASK_ROOT.load(Ordering::SeqCst);
+        if kroot != KERNEL_ROOT.load(Ordering::SeqCst) || kroot == KTASK_CREATOR_ROOT.load(Ordering::SeqCst) {
+            return Err("KTASK-ROOT: a kernel task created on a user root does not run on the kernel root");
+        }
+        Ok(())
     }
 }
