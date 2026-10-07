@@ -16,7 +16,6 @@ use core::sync::atomic::Ordering;
 use azos_drv_sys::kprintln;
 use azos_arch::csr;
 use azos_arch::Interrupts;
-use azos_arch::mmu::PAGE_SIZE;
 use azos_arch::FirmwareMemory;
 
 /// The parsed device tree (`None`: no pointer, or one that did not parse),
@@ -365,6 +364,7 @@ pub fn post_heap(heap_start: usize, kernel_end_aligned: usize) {
 fn zicboz_selfcheck() {
     #[cfg(feature = "qemu")]
     {
+        use azos_arch::mmu::PAGE_SIZE;
         let ok = (|| -> Option<bool> {
             let p = azos_mm::pmm::alloc_page().ok()?;
             let addr = p.as_usize();
