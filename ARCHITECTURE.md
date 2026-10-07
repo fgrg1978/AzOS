@@ -505,6 +505,33 @@ and 44 on aarch64 without; a full ring costs 46 and 42. The boot probe
 sites, both padded) `syscall-floor` is 195 compiled out, 199 with static
 keys and 203 with the mask test.
 
+## In-kernel tests
+
+`crates/core/ktest` is a test registry in the style of Linux's KUnit. The
+`ktest!` macro defines a test, `fn() -> Result<(), &'static str>`, next to
+the code it checks, and places a 24-byte `{name, fn}` entry in the
+`.azos_ktest` link section. Every kernel linker script brackets that section
+right after the static-key table in `.rodata`, so the registry is a slice
+over read-only data, with no constructor, allocation or fixed-size table.
+With Kconfig `KTEST` off (the default in every mode) the crate is not a
+dependency of the kernel and every test sits in a module compiled only with
+the `ktest` feature: the section is empty and the kernel has the same size,
+function for function. With it on, `kernel_main` calls the runner
+(`kernel/src/ktest.rs`) after boot init, before the secondary harts wake and
+before any task runs. The runner executes the tests in name order, printing
+each name before its test, then TAP (`1..N`, `ok i - name`,
+`not ok i - name # reason`) and a summary, and powers the machine off. On
+riscv64 the power-off carries the verdict (SBI system reset with a failure
+reason, so QEMU exits non-zero); aarch64's PSCI power-off has no reason
+field. The kernel does not unwind, so a panicking test cannot be resumed: the
+panic handler prints that test's `not ok` and a `Bail out!` line, and the
+tests after it do not run. Tests that need a boot-time value, such as the
+image layout only the ISA boot hook knows, read it from a note that hook
+records when `KTEST` is on. The gate boots one test kernel per ISA, requires
+the plan to match the expected count and every result to be `ok`, and boots
+the same kernel built with the tests' canaries to require exactly those
+tests' `not ok`.
+
 ## Configuration and profiles
 
 `make config` runs Kconfig over `Kconfig` and `config/Kconfig.*`.

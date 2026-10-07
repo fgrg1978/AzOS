@@ -1452,7 +1452,7 @@ aarch64: entropy seeds pool
 entropy: virtio-rng seeds the pool
 aarch64: persisted seed rotates
 riscv64: persisted seed rotates
-aarch64: procfs registered
+ktest (arm)
 aarch64: IPC plumbing up
 aarch64 granule 16 KiB
 streams: riscv64 on
@@ -1463,7 +1463,7 @@ pstore: valid record (arm)
 irq: handlers on their own stack
 timer: stimecmp on Sstc
 aarch64: tick on the virtual timer
-mm: W^X verified
+ktest (rv)
 embedded: boots in 64 MiB
 fleet: boots in 1 GiB
 topology: memory admitted, DMA pool
@@ -6131,54 +6131,8 @@ aarch64_entropy_row() {
     ok; rm -f "$log_seeded" "$log_absent" "$img_copy"
 }
 
-# ── aarch64: procfs/sysfs registered ─────────────────────────────────────
-#
-# `install_procfs()` un-gated `gen_sys_scheduler`/`gen_sys_drivers` from
-# `#[cfg(target_arch = "riscv64")]` (both only ever walked arch-neutral
-# crate registries — see their doc comments in kernel/src/boot/procfs.rs), so aarch64 now
-# registers the SAME 5+2 = 7 providers riscv64 does. The count is read back
-# and pinned to 7, not just matched as a line — a provider silently
-# dropped, or the un-gating reverted, would still print "ready (N
-# entries)" for some N.
-#
-# Diskless: `install_procfs()` runs unconditionally, before the
-# disk-gated block.
-aarch64_procfs_row() {
-    local label="aarch64: procfs registered"
-    printf "  %-26s" "${label}..."
-    local log="$CI_LOG_DIR/aarch64-procfs.log"
-    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
-    if ! a64_kbuild "qemu"; then
-        bad; echo "      the qemu aarch64 kernel did not build"; return
-    fi
-    local img_copy="$CI_LOG_DIR/kernel-aarch64-procfs.img"
-    cp "$A64_IMG" "$img_copy"
-    par_ready
-    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
-        -kernel "$img_copy" >"$log" 2>&1 &
-    local pid=$! i=0
-    while [ "$i" -lt 60 ]; do
-        grep -aq "WDT\] timer liveness ACTIVE" "$log" 2>/dev/null && break
-        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
-        kill -0 "$pid" 2>/dev/null || break
-        i=$((i + 1)); sleep 0.5
-    done
-    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
-        bad; echo "      the kernel took an exception during boot:"
-        grep -a "AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    local n
-    n="$(grep -a "\[FS\] procfs/sysfs ready " "$log" | tr -d '\r' \
-         | sed -n 's/.*ready (\([0-9][0-9]*\) entries).*/\1/p' | sed -n 1p)"
-    if [ -z "$n" ] || [ "$n" -ne 8 ]; then
-        bad; echo "      expected 8 procfs/sysfs entries, read '${n:-none}':"
-        grep -a "FS\] procfs" "$log" | tr -d '\r' | sed 's|^|        |'
-        echo "      log kept: $log"; return
-    fi
-    ok; rm -f "$log" "$img_copy"
-}
+# The `aarch64: procfs registered` row is now the `procfs_entries_registered`
+# ktest, on both ISAs (`ktest (rv|arm)`), with its canary `procfs-skip-canary`.
 
 # ── aarch64: IPC plumbing initialized ────────────────────────────────────
 #
@@ -6325,7 +6279,6 @@ else
     printf "  %-26s" "aarch64: persisted seed..."; bad
     echo "      the qemu aarch64 kernel did not build"
 fi
-par "aarch64: procfs registered" aarch64_procfs_row
 par "aarch64: IPC plumbing up" aarch64_ipc_plumbing_row
 
 # BEHAVIOR'S NETWORK WAITS SLEEP (wave 10, owner decision on INV question 3).
@@ -7811,8 +7764,8 @@ par -s "smp: DTB above NR_CPUS clamps (rv)" nrcpus_row rv 4 8 qemu PASS ""
 par -s "smp: DTB above NR_CPUS clamps (arm)" nrcpus_row arm 4 8 qemu PASS ""
 par -s "smp: canary, no clamp (rv)" nrcpus_row rv 4 8 qemu,nr-cpus-clamp-canary FAIL "booting 8 \(possible 4, nr_cpu_ids 4, NR_CPUS 4\)"
 par -s "smp: canary, no clamp (arm)" nrcpus_row arm 4 8 qemu,nr-cpus-clamp-canary FAIL "booting 8 \(possible 4, nr_cpu_ids 4, NR_CPUS 4\)"
-par -s "percpu: canary, area past nr_cpu_ids (rv)" nrcpus_row rv 64 4 qemu,percpu-oor-canary FAIL "PERCPU\] self-check FAILED"
-par -s "percpu: canary, area past nr_cpu_ids (arm)" nrcpus_row arm 64 4 qemu,percpu-oor-canary FAIL "PERCPU\] self-check FAILED"
+# The `percpu-oor-canary` rows are now `ktest canaries (rv|arm)`: the
+# `percpu_areas_and_oor_refusal` ktest reads the same self-check.
 # The rows above leave smoke kernels built; put back the plain ones.
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
@@ -8615,8 +8568,10 @@ else
     # scenario red wherever it boots. Verified by mutation (stride doubled to
     # `off += block * 2`): the line reads FAILED while the selection line still
     # reads "enabled", i.e. it catches what the boot probe alone cannot.
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|Zicboz cbo.zero fast path: scalar fallback" \
-        par_row qemu_run "mm: Zicboz zeroes pages" "Zicboz zero-fill self-check: PASS" 60 -smp 4
+    # The Zicboz-present half is now the `mm_zicboz_zero_fill` ktest
+    # (`ktest (rv)`), with its canary `zicboz-skip-canary` (`ktest canaries
+    # (rv)`): fast path on, a block size, and a poisoned page that comes back
+    # all zero. The absent half needs its own `-cpu`, so it stays a row.
     QEMU_FAIL_RE="$QEMU_FAIL_RE|Zicboz cbo.zero fast path: enabled" \
         par_row qemu_run "mm: scalar zero without Zicboz" "Zicboz zero-fill self-check: PASS" 60 -smp 4 \
         -cpu rv64,zicboz=off
@@ -8808,7 +8763,7 @@ else
     # the caret is read as an anchor, so that pattern matches nothing and the
     # scenario would pass on a log it never found. Checked against a real boot
     # log, not assumed.
-    par_row qemu_run "mm: W^X verified" "pages checked, RX/RO/RW as planned" 60 -smp 4
+    # Now the `mm_wx_image` ktest, both ISAs, with its canary (`ktest (rv)`).
 
     # The other half: nothing outside the kernel image is executable.
     #
@@ -8825,7 +8780,7 @@ else
     # "[MM] NX FAILED:", which `QEMU_FAIL_RE` already matches everywhere.
     # Measured by mutation (sweep stripping nothing): 60 megapages + 311
     # pages, 121 MiB, first at 0x80000000.
-    par_row qemu_run "mm: NX outside the image" "none left executable" 60 -smp 4
+    # Now the `mm_nx_outside_image` ktest, both ISAs, with its canary.
 
     # NOT a scenario, deliberately — read this before writing one.
     #
@@ -10430,33 +10385,51 @@ PY
     QEMU_FAIL_RE="$QEMU_FAIL_RE|TOPO\] Memory admission: [0-9]" \
         par "mem: huge row, option off" kq "qemu,huge-leaves-smoke" "mem: huge row, option off" "Memory admission REFUSED: row [0-9]* (UHELLO.ELF) declares mem_huge_mib = 4 but this kernel was built without LOCKED_HUGE_LEAVES" 60 -smp 1
 
-    # ── Wave 15 (SLAB): the kernel heap's size-class cache ───────────────────
+    # ── Wave 15 (KTEST): the in-kernel tests, one boot per ISA ───────────────
     #
-    # `kernel_main` runs `kheap::slab_selftest` when KHEAP_SLAB_DEBUG is on (the
-    # development configurations): every class through its magazines, the
-    # depot and a new slab, objects tagged at both ends, half freed and pushed
-    # back into the slab free lists by `reclaim`, reallocated, every tag
-    # re-read, then a final `reclaim` that must leave no magazine holding an
-    # object. The same boot runs the poison and red-zone checks on every small
-    # allocation the kernel makes. Host rows: tests/host/mm-tests slab_tests.
+    # `--features qemu,ktest` compiles every `azos_ktest::ktest!` test and the
+    # runner (kernel/src/ktest.rs): after boot init, before any secondary hart
+    # wakes or any task runs, each test runs in name order and prints TAP
+    # (`1..N`, `ok i - name`, `not ok i - name # reason`), then
+    # `# ktest: N tests, P passed, F failed (<isa>)`, then the machine powers
+    # off. A panicking test prints its `not ok` from the panic handler and a
+    # `Bail out!` line: the tests after it do not run (no unwinding).
     #
-    # Canary (both ISAs, in the gate): `slab-freelist-canary` makes a slab
-    # hand out a freed object without unlinking it. The boot must stop on the
-    # poison check (`written after free`: a panic located in slab.rs) or the
-    # self-test must say FAILED; a PASS line means the checks are not looking.
-    kheap_slab_row() { # kheap_slab_row <isa: rv|arm> <features> <pass|canary>
-        local isa="$1" feats="$2" want="$3"
-        local label="kheap slab: self-test ($isa)"
-        [ "$want" = canary ] && label="kheap slab: canary refused ($isa)"
+    # The pass row requires the plan to be exactly KTEST_N_<ISA> (a dropped or
+    # unregistered test turns it red), every number 1..N reported once, no
+    # `not ok`, and the summary. Raise the count when a test is added.
+    #
+    # The canary rows build the same kernel with gate canaries on and require
+    # `not ok` for exactly the tests named, `ok` for the others (or a
+    # `Bail out!` naming the panicking test). The four non-panicking canaries
+    # share one boot: each breaks only its own test's property.
+    #   mm_wx_image                   wx-skip-canary (boot skips enforce_wx)
+    #   mm_nx_outside_image           nx-skip-canary (boot strips nothing)
+    #   percpu_areas_and_oor_refusal  percpu-oor-canary (area past nr_cpu_ids)
+    #   sched_stack_guards_unmapped   stack-guard-skip-canary (no guard pages)
+    #   procfs_entries_registered     procfs-skip-canary (no install_procfs)
+    #   mm_zicboz_zero_fill (rv)      zicboz-skip-canary (DTB Zicboz ignored)
+    #   kheap_slab_selftest           slab-freelist-canary (panics in slab.rs)
+    # These replace the rows `kheap slab: self-test|canary refused (rv|arm)`,
+    # `percpu: canary, area past nr_cpu_ids (rv|arm)`, `mm: W^X verified`,
+    # `mm: NX outside the image` (riscv64 only before; both ISAs now),
+    # `mm: Zicboz zeroes pages` and `aarch64: procfs registered` (both ISAs
+    # now).
+    KTEST_N_RV=7
+    KTEST_N_ARM=6
+    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated>
+        local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
+        [ "$isa" = arm ] && n_want=$KTEST_N_ARM
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        local log="$CI_LOG_DIR/kheap-slab-${want}-${isa}.log" kimg="$CI_LOG_DIR/kernel-kheap-slab-${want}-${isa}"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
         rm -f "$log" "$kimg"
         if [ "$isa" = rv ]; then
-            kbuild "$feats" || { bad; echo "      riscv64 --features $feats did not build"; return; }
+            kbuild "qemu,ktest$extra" || { bad; echo "      riscv64 --features qemu,ktest$extra did not build"; return; }
             cp "$KERNEL" "$kimg"
         else
-            a64_kbuild "$feats" || { bad; echo "      aarch64 --features $feats did not build"; return; }
+            a64_kbuild "qemu,ktest$extra" || { bad; echo "      aarch64 --features qemu,ktest$extra did not build"; return; }
             cp "$A64_IMG" "$kimg"
         fi
         par_ready
@@ -10468,35 +10441,55 @@ PY
                 -kernel "$kimg" </dev/null >"$log" 2>&1 &
         fi
         local pid=$! i=0
-        while [ "$i" -lt 180 ]; do
-            grep -aq "Heap slab self-test\|At scheduler start" "$log" 2>/dev/null && break
-            grep -aqE '\[FATAL\]|KERNEL PANIC|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
-            kill -0 "$pid" 2>/dev/null || break
-            i=$((i + 1)); sleep 0.5
-        done
-        sleep 1
-        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        # The runner powers the machine off; the wait is only a backstop.
+        while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do i=$((i + 1)); sleep 0.5; done
+        # riscv64 carries the verdict in QEMU's exit status (the runner fails
+        # through the sifive_test finisher): 0 for a clean run, 1 otherwise.
+        local qrc=timeout
+        if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        else wait "$pid" 2>/dev/null; qrc=$?; fi
         rm -f "$kimg"
         tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
-        local passed=0 caught=0
-        grep -aqE '^\[MM\] Heap slab self-test: [1-9][0-9]* objects in [1-9][0-9]* classes, reclaim returned [0-9]+ B: PASS$' "$log" && passed=1
-        # The panic handler prints where, not what: a panic located in
-        # slab.rs is the poison check (`written after free`) firing.
-        grep -aqE 'Heap slab self-test FAILED|^  at crates/core/mm/src/slab\.rs:[0-9]+' "$log" && caught=1
-        if [ "$want" = pass ] && [ "$passed" = 1 ] && [ "$caught" = 0 ] \
-           && ! grep -aqE 'KERNEL PANIC|\[FATAL\]|kheap slab:' "$log"; then
-            ok; grep -a "Heap slab self-test" "$log" | sed 's/^/      /'; rm -f "$log"; return
+        local plan why="" k name got
+        plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
+        got="$(sed -n 's/^not ok [0-9][0-9]* - \([A-Za-z0-9_]*\)\( #.*\)\{0,1\}$/\1/p' "$log" | grep . | sort | tr '\n' ' ')"
+        want="$(printf '%s\n' $want | grep . | sort | tr '\n' ' ')"
+        if [ -z "$plan" ]; then why="no TAP plan line (1..N)"
+        elif [ "$plan" != "$n_want" ]; then why="plan 1..$plan, the gate expects $n_want tests (KTEST_N_*)"
+        elif [ "$got" != "$want" ]; then why="not ok: [${got% }], expected [${want% }]"
+        elif grep -aq '^Bail out!' "$log"; then
+            # Only a canary that panics may stop the run, and only in its test.
+            for name in $want; do grep -aq "^Bail out! ktest: $name panicked" "$log" && why=bail; done
+            [ "$why" = bail ] && why="" || why="the run bailed out: $(grep -a '^Bail out!' "$log")"
+        else
+            k=1
+            while [ "$k" -le "$plan" ]; do
+                [ "$(grep -acE "^(not )?ok $k - " "$log")" = 1 ] || { why="test $k reported $(grep -acE "^(not )?ok $k - " "$log") times"; break; }
+                k=$((k + 1))
+            done
+            [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
+                && why="no matching summary line"
         fi
-        if [ "$want" = canary ] && [ "$caught" = 1 ] && [ "$passed" = 0 ]; then
-            ok; rm -f "$log"; return
+        if [ -z "$why" ] && [ "$qrc" = timeout ]; then why="QEMU did not power off"
+        elif [ -z "$why" ] && [ "$isa" = rv ] && [ -z "$want" ] && [ "$qrc" != 0 ]; then why="QEMU exit status $qrc after a clean run"
+        elif [ -z "$why" ] && [ "$isa" = rv ] && [ -n "$want" ] && [ "$qrc" != 1 ]; then why="QEMU exit status $qrc after a failed run, not 1"
         fi
-        bad; grep -a "Heap slab\|kheap slab\|PANIC\|FATAL" "$log" | sed -n '1,6p' | sed 's/^/      /'
+        if [ -z "$why" ]; then
+            ok; grep -a '^# ktest:' "$log" | sed 's/^/      /'; rm -f "$log"; return
+        fi
+        bad; echo "      $why"
+        grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
         echo "      log kept: $log"
     }
-    par -s "kheap slab: self-test (rv)" kheap_slab_row rv qemu pass
-    par -s "kheap slab: self-test (arm)" kheap_slab_row arm qemu pass
-    par -s "kheap slab: canary refused (rv)" kheap_slab_row rv qemu,slab-freelist-canary canary
-    par -s "kheap slab: canary refused (arm)" kheap_slab_row arm qemu,slab-freelist-canary canary
+    par "ktest (rv)" ktest_row "ktest (rv)" rv "" ""
+    par "ktest (arm)" ktest_row "ktest (arm)" arm "" ""
+    KTEST_CANARIES=",wx-skip-canary,nx-skip-canary,percpu-oor-canary,stack-guard-skip-canary,procfs-skip-canary"
+    KTEST_CANARIED="mm_wx_image mm_nx_outside_image percpu_areas_and_oor_refusal sched_stack_guards_unmapped procfs_entries_registered"
+    par "ktest canaries (rv)" ktest_row "ktest canaries (rv)" rv "$KTEST_CANARIES,zicboz-skip-canary" \
+        "$KTEST_CANARIED mm_zicboz_zero_fill"
+    par "ktest canaries (arm)" ktest_row "ktest canaries (arm)" arm "$KTEST_CANARIES" "$KTEST_CANARIED"
+    par "ktest slab canary (rv)" ktest_row "ktest slab canary (rv)" rv ",slab-freelist-canary" "kheap_slab_selftest"
+    par "ktest slab canary (arm)" ktest_row "ktest slab canary (arm)" arm ",slab-freelist-canary" "kheap_slab_selftest"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

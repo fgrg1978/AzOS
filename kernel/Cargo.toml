@@ -760,6 +760,24 @@ trace-wx-canary = ["azos_ipc/text-poke-wx-canary"]
 spawn-census = ["azos_syscall/spawn-census"]
 # Wave 15: `azos_sched::swcensus`, the switch path phase by phase.
 switch-census = ["azos_sched/switch-census"]
+# Kconfig KTEST (wave 15): the in-kernel test registry's runner
+# (kernel/src/ktest.rs) and every `ktest!` test. Off: none of it is compiled.
+ktest = ["dep:azos_ktest"]
+# Gate canaries for two ktest tests (wave 15): the boot skips `enforce_wx`
+# (the image keeps its boot-time RWX leaves) or `strip_exec_outside_image`
+# (RAM outside the image stays executable). `mm_wx_image` /
+# `mm_nx_outside_image` must report `not ok`.
+wx-skip-canary = []
+nx-skip-canary = []
+# The boot skips `setup_stack_guard_pages`: `sched_stack_guards_unmapped`
+# must report `not ok`.
+stack-guard-skip-canary = []
+# `kernel_main` skips `install_procfs`: `procfs_entries_registered` must
+# report `not ok`.
+procfs-skip-canary = []
+# riscv64: the boot ignores the DTB's Zicboz (scalar fallback):
+# `mm_zicboz_zero_fill` must report `not ok`.
+zicboz-skip-canary = []
 # vsbench diagnostic (wave 15, SLAB): `[KHEAP-*]` kernel heap census
 # (crates/core/mm/src/kheap_census.rs, crates/core/syscall/src/kheap_census.rs).
 kheap-census = ["azos_syscall/kheap-census"]
@@ -946,6 +964,7 @@ azos_bench     = { path = "../domains/robot/bench", features = ["all"], optional
 azos_msc       = { workspace = true }
 azos_pubsub    = { workspace = true }
 azos_trace     = { workspace = true }
+azos_ktest     = { workspace = true, optional = true }
 # Wave 15: the trace ring layout (the cost probe reads its own ring).
 azos_spsc      = { workspace = true }
 azos_topology  = { workspace = true }

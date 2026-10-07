@@ -179,6 +179,9 @@ KCONFIG_TO_CARGO_FEATURE: dict[str, Optional[str]] = {
     # forwards to both), so off means not compiled, not merely not called.
     "CONFIG_LAT_TRACE": "lat-trace",
     "CONFIG_SWITCH_CENSUS": "switch-census",
+    # The in-kernel test registry and runner (config/Kconfig.development):
+    # off means the `ktest!` tests and the runner are not compiled.
+    "CONFIG_KTEST": "ktest",
 
     # Optional buses and display drivers (config/Kconfig.drivers, wave 11).
     # Each is a kernel feature that already existed with no Kconfig symbol;

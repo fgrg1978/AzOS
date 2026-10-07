@@ -202,3 +202,37 @@ fn percpu_self_check() {
         }
     });
 }
+
+// Kconfig KTEST: the boot self-check above, re-read after boot init. Its
+// `percpu-oor-canary` (an area attached past `nr_cpu_ids`) must turn this
+// test `not ok`. A separate copy of the three findings, not a helper shared
+// with `percpu_self_check`: the boot path stays byte-identical with KTEST off.
+#[cfg(feature = "ktest")]
+mod ktests {
+    use super::*;
+
+    azos_ktest::ktest! {
+        fn percpu_areas_and_oor_refusal() {
+            let (missing, caught, counted) = with_percpu_vars(|vars| {
+                let n = azos_percpu::nr_cpu_ids();
+                let missing = (0..n).filter(|&c| vars.iter().any(|v| !v.attached(c))).count()
+                    + (0..n).filter(|&c| crate::boot::irq_stack_base(c) == 0).count()
+                    + (0..n).filter(|&c| c != boot_cpu() && AZOS_SECONDARY_SP[c].load(Ordering::Relaxed) == 0).count();
+                let before = azos_percpu::oor_count();
+                let caught = n >= azos_percpu::NR_CPUS
+                    || (vars.iter().all(|v| !v.attached(n)) && azos_percpu::checked_area(n).is_none());
+                let counted = azos_percpu::oor_count() > before || n >= azos_percpu::NR_CPUS;
+                (missing, caught, counted)
+            });
+            if missing != 0 {
+                Err("a CPU below nr_cpu_ids has no per-CPU area, IRQ stack or boot stack")
+            } else if !caught {
+                Err("CPU nr_cpu_ids has a per-CPU area")
+            } else if !counted {
+                Err("the out-of-range access was not counted")
+            } else {
+                Ok(())
+            }
+        }
+    }
+}

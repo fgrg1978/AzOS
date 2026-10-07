@@ -306,6 +306,8 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
             azos_drv_sys::kwarn!("[MM] W^X WARN: {} megapage(s) unsplit (out of memory)", unsplit);
         }
 
+        // Gate canary `wx-skip-canary`: the image keeps its boot-time leaves.
+        #[cfg(not(feature = "wx-skip-canary"))]
         azos_mm::vmm::enforce_wx(
             text_start, text_end,
             ro_start, ro_end,
@@ -342,12 +344,23 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
         // the kernel's own text and the next instruction fetch dies silently.
         let mem_start_va = azos_mm::addr::phys_to_virt(mem_start);
         let mem_end_va = azos_mm::addr::phys_to_virt(crate::mem_range_end(mem_start, mem_size));
-        let stripped = azos_mm::vmm::strip_exec_outside_image(
-            mem_start_va, mem_end_va, text_start, kernel_end_aligned,
-        );
+        let stripped = {
+            // Gate canary `nx-skip-canary`: the sweep covers nothing.
+            #[cfg(feature = "nx-skip-canary")]
+            let mem_end_va = mem_start_va;
+            azos_mm::vmm::strip_exec_outside_image(
+                mem_start_va, mem_end_va, text_start, kernel_end_aligned,
+            )
+        };
         let left = azos_mm::vmm::verify_no_exec_outside_image(
             mem_start_va, mem_end_va, text_start, kernel_end_aligned,
         );
+        // The `mm_wx_image` / `mm_nx_outside_image` ktests re-read these.
+        #[cfg(feature = "ktest")]
+        crate::ktest::note_image(crate::ktest::Image {
+            text: (text_start, text_end), ro: (ro_start, ro_end),
+            data: (data_start, kernel_end_aligned), mem: (mem_start_va, mem_end_va),
+        });
         if left.is_empty() {
             // MARKER, asserted by the gate.
             kprintln!(
@@ -421,6 +434,8 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
     // nothing ISA-specific in `crates/core/sched` either. Previously missing on
     // this ISA only because this call site never made it — the function
     // itself was always arch-generic.
+    // Gate canary `stack-guard-skip-canary`: no task stack gets its guard.
+    #[cfg(not(feature = "stack-guard-skip-canary"))]
     azos_sched::setup_stack_guard_pages();
     kprintln!("[MM] Stack guard pages active");
 

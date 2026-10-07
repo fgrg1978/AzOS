@@ -64,6 +64,13 @@ pub mod hw {
     /// DC8200/HDMI TX driver, which QEMU cannot simulate at all.
     pub const FW_CFG_BASE: usize = 0x1010_0000;
 
+    /// QEMU `virt`'s `sifive_test` finisher (`virt_memmap[VIRT_TEST]`,
+    /// `{ 0x100000, 0x1000 }`): a 32-bit write of `0x3333 | code << 16`
+    /// makes QEMU exit with status `code`. Only the in-kernel test runner
+    /// (Kconfig KTEST) writes it, to fail the run; OpenSBI's own reset path
+    /// writes 16 bits, so its failure reason reaches the host as status 0.
+    pub const TEST_FINISHER_BASE: usize = 0x0010_0000;
+
     /// The MMIO regions a topology can grant to ring 3: `mmio.N` names
     /// `MMIO_REGIONS[N]` (RFC-0043). Addresses from QEMU's `virt_memmap[]`
     /// (`hw/riscv/virt.c`), read out of the QEMU 11.0.0 binary the gate runs.

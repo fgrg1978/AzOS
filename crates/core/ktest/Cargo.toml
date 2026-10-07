@@ -1,0 +1,9 @@
+[package]
+name = "azos_ktest"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The in-kernel test registry (Kconfig KTEST): the ktest! macro places one entry per test in the .azos_ktest link section; the kernel's runner reads them back in name order and reports TAP. With the feature off the macro emits nothing and the section is empty."
+
+[dependencies]

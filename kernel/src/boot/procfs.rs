@@ -228,3 +228,43 @@ fn gen_proc_tasks(buf: &mut [u8]) -> usize {
     len += tail.n;
     len
 }
+
+// Kconfig KTEST: `install_procfs` ran on this ISA and every provider it
+// registers answers. The eight built-in paths (five from `procfs_init`, then
+// /sys/scheduler, /sys/drivers, /proc/tasks; `lat-trace` adds two) are all
+// listed, the count is exactly that, and the providers whose content is
+// never empty return bytes through `procfs_read`. Canary
+// `procfs-skip-canary` (`kernel_main` skips `install_procfs`): `not ok`.
+#[cfg(feature = "ktest")]
+mod ktests {
+    const PATHS: [&str; 8] = [
+        "/proc/uptime", "/proc/meminfo", "/proc/fs", "/sys/version", "/sys/platform",
+        "/sys/scheduler", "/sys/drivers", "/proc/tasks",
+    ];
+    const NON_EMPTY: [&[u8]; 5] = [b"/proc/uptime", b"/proc/meminfo", b"/sys/version", b"/sys/platform", b"/sys/scheduler"];
+
+    azos_ktest::ktest! {
+        fn procfs_entries_registered() {
+            let want = PATHS.len() + if cfg!(feature = "lat-trace") { 2 } else { 0 };
+            if azos_fs::procfs_count() != want {
+                return Err("procfs/sysfs does not hold exactly the built-in entries");
+            }
+            let mut seen = 0usize;
+            azos_fs::procfs_ls(|p| {
+                if let Some(i) = PATHS.iter().position(|q| *q == p) {
+                    seen |= 1 << i;
+                }
+            });
+            if seen != (1 << PATHS.len()) - 1 {
+                return Err("a built-in procfs/sysfs path is not listed");
+            }
+            let mut buf = [0u8; 256];
+            for p in NON_EMPTY {
+                if azos_fs::procfs_read(p, &mut buf) == 0 {
+                    return Err("a built-in provider returned nothing");
+                }
+            }
+            Ok(())
+        }
+    }
+}

@@ -485,4 +485,28 @@ config SWITCH_CENSUS_DUMP_MIN
       No cost while SWITCH_CENSUS is off; read once per SYS_TASKINFO when
       on. Raise it when a workload calls SYS_TASKINFO often.
 
+# ---------------------------------------------------------------------------
+# In-kernel test registry (wave 15)
+# ---------------------------------------------------------------------------
+
+config KTEST
+    bool "In-kernel tests (ktest): run every registered test at boot, then power off"
+    default n
+    help
+      Compiles every `ktest!` test (crates/core/ktest) and the runner
+      (kernel/src/ktest.rs). After boot init, before the secondary harts
+      wake and before any task runs, the runner executes each test in name
+      order and prints TAP on the console (`1..N`, `ok i - name`,
+      `not ok i - name # reason`), then a summary line, then powers the
+      machine off. A panicking test is reported `not ok` by the panic
+      handler and ends the run (the kernel does not unwind).
+
+      Off (default in every mode, development included): no test, no entry
+      in `.azos_ktest`, no runner; zero bytes and zero instructions. It is
+      not on in the QEMU development configs because the runner ends the
+      boot: it is a test kernel, built for the gate's `ktest` rows. On: the
+      tests' code and 24 bytes of `.rodata` per test, and the boot stops
+      after the run. Maps to the kernel cargo feature `ktest`
+      (tools/kconfig_to_cargo.py).
+
 endmenu # Development & Debug

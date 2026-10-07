@@ -493,6 +493,7 @@ dependencies = [
  "azos_imu",
  "azos_iommu",
  "azos_ipc",
+ "azos_ktest",
  "azos_limits",
  "azos_linux_abi",
  "azos_ml",
@@ -519,6 +520,10 @@ dependencies = [
  "azos_topology",
  "azos_trace",
 ]
+
+[[package]]
+name = "azos_ktest"
+version = "0.1.0"
 
 [[package]]
 name = "azos_libsys"

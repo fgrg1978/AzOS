@@ -132,7 +132,9 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
             // "device tree claims it, then verify on the real hart" shape
             // as the Sstc call just above). Must run before `pmm::init`
             // below: `alloc_page`'s zero-fill consults this decision on its
-            // very first call.
+            // very first call. Gate canary `zicboz-skip-canary` (KTEST):
+            // the DTB's Zicboz is ignored, the scalar fallback is chosen.
+            #[cfg(not(feature = "zicboz-skip-canary"))]
             azos_arch::cbo::zicboz_select(info.isa_zicboz, info.cboz_block_size);
 
             // Wave 13: the vDSO `hwcap` inputs (published by `install_vdso`).
@@ -384,6 +386,8 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
             }
 
             // Now remap with per-section permissions.
+            // Gate canary `wx-skip-canary`: the image keeps its boot-time leaves.
+            #[cfg(not(feature = "wx-skip-canary"))]
             azos_mm::vmm::enforce_wx(
                 text_start, text_end,
                 ro_start, ro_end,
@@ -436,15 +440,26 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
             // board were writable AND executable in the kernel's own table:
             // the heap, every frame `pmm` hands out, every task stack.
             let mem_end = crate::mem_range_end(mem_start, mem_size);
-            let stripped = azos_mm::vmm::strip_exec_outside_image(
-                mem_start, mem_end, text_start, kernel_end_aligned,
-            );
+            let stripped = {
+                // Gate canary `nx-skip-canary`: the sweep covers nothing.
+                #[cfg(feature = "nx-skip-canary")]
+                let mem_end = mem_start;
+                azos_mm::vmm::strip_exec_outside_image(
+                    mem_start, mem_end, text_start, kernel_end_aligned,
+                )
+            };
             // Read back rather than trust the sweep's own count: they are two
             // passes over the same walker, and a clean result is the two
             // agreeing that nothing executable is left.
             let left = azos_mm::vmm::verify_no_exec_outside_image(
                 mem_start, mem_end, text_start, kernel_end_aligned,
             );
+            // The `mm_wx_image` / `mm_nx_outside_image` ktests re-read these.
+            #[cfg(feature = "ktest")]
+            crate::ktest::note_image(crate::ktest::Image {
+                text: (text_start, text_end), ro: (ro_start, ro_end),
+                data: (data_start, kernel_end_aligned), mem: (mem_start, mem_end),
+            });
             if left.is_empty() {
                 // MARKER, asserted by the gate's `mm: W^X verified` scenario.
                 kprintln!(
@@ -466,6 +481,8 @@ pub fn arch_early_boot(hart_id: usize, dtb_ptr: usize) -> EarlyBoot {
 
         // Guard pages: unmap bottom 4 KiB of each task stack so overflow
         // triggers an immediate page fault instead of silent corruption.
+        // Gate canary `stack-guard-skip-canary`: no task stack gets its guard.
+        #[cfg(not(feature = "stack-guard-skip-canary"))]
         azos_sched::setup_stack_guard_pages();
         kprintln!("[MM] Stack guard pages active");
 

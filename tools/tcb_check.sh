@@ -166,8 +166,12 @@ behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-co
 lx-loader
 "
 
+# `ktest` joined SCAFFOLD in wave 15 (KTEST): the in-kernel test registry,
+# compiled into a kernel only with Kconfig KTEST (a test kernel the gate
+# boots); no CORE crate depends on it, only the kernel binary's tests do.
 SCAFFOLD_CRATES="
 fs shell ml camera dfu ota msc efi display bench cam-ring telemetry tftp
+ktest
 "
 
 # ── Known violations ────────────────────────────────────────────────────────

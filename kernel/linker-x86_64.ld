@@ -18,6 +18,7 @@
  *   _text_start _text_end _rodata_start _rodata_end _data_start _data_end
  *   _bss_start _bss_end _stack_start _stack_end _kernel_end
  *   __azos_keys_start __azos_keys_end   (the signed-boot key section)
+ *   __azos_ktest_start __azos_ktest_end (the in-kernel test registry)
  */
 
 OUTPUT_ARCH(i386:x86-64)
@@ -46,6 +47,9 @@ SECTIONS
     __azos_keys_start = .;
     .azos_keys : { KEEP(*(.azos_keys)) }
     __azos_keys_end = .;
+    /* The in-kernel test registry (Kconfig KTEST, crates/core/ktest); empty
+     * with KTEST off. */
+    .azos_ktest : { __azos_ktest_start = .; KEEP(*(.azos_ktest)) __azos_ktest_end = .; }
     _rodata_end = .;
 
     . = ALIGN(4K);

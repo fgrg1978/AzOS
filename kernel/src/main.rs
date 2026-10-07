@@ -10,6 +10,9 @@
 extern crate alloc;
 
 mod panic;
+// Kconfig KTEST: the in-kernel test runner (crates/core/ktest is the registry).
+#[cfg(feature = "ktest")]
+mod ktest;
 // Panic record in reserved RAM, recovered into /fat/CRASH.LOG on the next
 // boot (Kconfig `PSTORE_SIZE_KB`).
 mod pstore;
@@ -642,8 +645,10 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
 
     // F21: Procfs + sysfs. Shared with aarch64's kernel_main — see
     // `install_procfs`'s own doc for the full reasoning and the ordering
-    // constraint.
-    install_procfs();
+    // constraint. Gate canary `procfs-skip-canary` (KTEST): not installed.
+    if !cfg!(feature = "procfs-skip-canary") {
+        install_procfs();
+    }
     // Wave 12: `/proc` through the VFS, so ring 3 reads it with the file
     // calls (the user shell's `ps` reads `/proc/tasks`). Read-only: the
     // procfs backend refuses every write. Independent of the disk.
@@ -2619,6 +2624,11 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // the hardware id (`smokes/cpuid_probe.rs`).
     #[cfg(feature = "cpuid-probe")]
     crate::smokes::cpuid_probe::arm(num_cpus);
+
+    // Kconfig KTEST: every registered test, then power off. Boot init is
+    // done; no secondary hart is awake and no task has run.
+    #[cfg(feature = "ktest")]
+    ktest::run();
 
     ARCH_ENTRY.wake_secondaries(num_cpus);
 

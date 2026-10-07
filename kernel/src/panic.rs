@@ -187,6 +187,11 @@ fn panic(info: &PanicInfo) -> ! {
         azos_drv_sys::uart::puts("\n");
     }
 
+    // A panic inside a `ktest!` test is that test's `not ok`; the run ends
+    // here, the kernel does not unwind (kernel/src/ktest.rs).
+    #[cfg(feature = "ktest")]
+    crate::ktest::on_panic(info);
+
     // ── Print CPU and task context ──────────────────────────────────────
     let task_name = azos_sched::current_task_name();
     azos_drv_sys::uart::puts("  hart=");
