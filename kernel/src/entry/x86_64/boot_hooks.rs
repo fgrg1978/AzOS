@@ -59,7 +59,7 @@ pub fn boot_banner(hart_id: usize, fw_table: usize) {
 /// allocator, the kernel page tables, the heap, the LAPIC/IOAPIC, the TSC
 /// calibration: the boot stops here with a `todo!()` the panic handler
 /// prints.
-pub fn firmware_table(_hart_id: usize, fw_table: usize) {
+pub fn firmware_table(_hart_id: usize, fw_table: usize, _dt: Option<azos_dtb::DtbInfo>) {
     // SAFETY: boot.S passes the PVH start_info's physical address, identity
     // mapped (0..4 GiB) by boot.S's page tables.
     let si = unsafe { &*(fw_table as *const HvmStartInfo) };
@@ -113,8 +113,8 @@ pub fn reserve_firmware_table(_fw_table: usize) {
     todo!("x86_64: reserve_firmware_table: the ACPI tables and the PVH start_info page")
 }
 
-pub fn kernel_mmio_map() {
-    todo!("x86_64: kernel_mmio_map: LAPIC (0xFEE00000), IOAPIC, HPET as UC pages")
+pub fn kernel_mmio_windows() -> core::iter::Empty<(usize, usize)> {
+    todo!("x86_64: kernel_mmio_windows: LAPIC (0xFEE00000), IOAPIC, HPET as UC pages")
 }
 
 pub fn mmu_enabled() {
@@ -133,6 +133,10 @@ pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
     todo!("x86_64: post_heap: SMEP/SMAP enable (CR4) and their readback")
 }
 
+pub fn timebase_hz() -> u64 {
+    todo!("x86_64: timebase_hz: invariant TSC frequency (CPUID.15H, or HPET calibration)")
+}
+
 pub fn irqchip_init(_hart_id: usize, _fw_table: usize) {
     todo!("x86_64: irqchip_init: mask the 8259 PICs, x2APIC enable, IOAPIC redirection table")
 }
@@ -145,7 +149,11 @@ pub fn console_irq(_hart_id: usize, _fw_table: usize) {
     todo!("x86_64: console_irq: COM1 IRQ 4 through the IOAPIC, IER RX/TX")
 }
 
-pub fn irq_triggers(_fw_table: usize) {
+pub fn irq_trigger_controller() -> Option<azos_dtb::IrqController> {
+    todo!("x86_64: irq_trigger_controller: none (no device tree); triggers come from the MADT")
+}
+
+pub fn irq_triggers(_triggers: Option<azos_dtb::IrqTriggers>) {
     todo!("x86_64: irq_triggers: MADT interrupt source overrides (polarity, trigger)")
 }
 

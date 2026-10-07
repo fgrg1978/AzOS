@@ -97,9 +97,19 @@ pub struct FirmwareMemory {
 /// they are declared here. Every hook is required (no default), so a new ISA
 /// cannot leave a step out silently.
 pub trait ArchEntry {
-    /// The ISA's parsed firmware table (a device tree today; ACPI on a port
-    /// without one), handed back to the probe hooks.
+    /// The ISA's view of the firmware table, handed back to the probe hooks.
     type Firmware;
+
+    /// The parsed device tree `early_main` hands `firmware_table` (the
+    /// kernel's `azos_dtb::DtbInfo` on every ISA; `None` without one).
+    type DeviceTree;
+
+    /// The device-tree interrupt controller whose trigger types ring-3 lines
+    /// take (`azos_dtb::IrqController`), and the triggers read for it
+    /// (`azos_dtb::IrqTriggers`).
+    type IrqController;
+    /// See [`ArchEntry::IrqController`].
+    type IrqTriggers;
 
     /// The page-table format, for the `[MM] Initializing VMM (...)` line.
     const PAGE_TABLES: &'static str;
@@ -118,8 +128,10 @@ pub trait ArchEntry {
     /// exception level, self-checks that need only the console).
     fn boot_banner(&self, hart_id: usize, fw_table: usize);
 
-    /// Parse the firmware table at `fw_table` and report it.
-    fn firmware_table(&self, hart_id: usize, fw_table: usize) -> Self::Firmware;
+    /// Report the firmware table at `fw_table` (`dt`: its device tree, as
+    /// `early_main` parsed it) and keep what the probes need.
+    fn firmware_table(&self, hart_id: usize, fw_table: usize, dt: Option<Self::DeviceTree>)
+        -> Self::Firmware;
 
     /// Choose the interrupt controller the table describes (riscv64: PLIC or
     /// AIA) and bind the table's devices.
@@ -135,18 +147,27 @@ pub trait ArchEntry {
     /// RAM and CPUs from the table, or the platform fallback.
     fn firmware_memory(&self, fw: &Self::Firmware) -> FirmwareMemory;
 
+    /// The interrupt controller whose ring-3 trigger types `early_main`
+    /// reads from the device tree, or `None` when none takes a trigger.
+    fn irq_trigger_controller(&self) -> Option<Self::IrqController>;
+
+    /// Record and report the trigger types read for ring-3 lines (`None`:
+    /// the device tree describes none).
+    fn irq_triggers(&self, triggers: Option<Self::IrqTriggers>);
+
     /// The last use of the firmware table before the page allocator owns
-    /// RAM: read what must be read while the blob is intact, and report the
-    /// choices made from it (`num_cpus` is the discovered CPU count).
+    /// RAM: report the choices made from it (`num_cpus` is the discovered
+    /// CPU count).
     fn firmware_done(&self, fw_table: usize, num_cpus: usize);
 
     /// Keep the firmware table's own pages out of the page allocator, where
     /// the loader put it inside managed RAM.
     fn reserve_firmware_table(&self, fw_table: usize);
 
-    /// Map the platform's device windows (beyond the console, which the
-    /// generic sequence maps) into the kernel table before it goes live.
-    fn kernel_mmio_map(&self);
+    /// The platform's device windows `(base, bytes)` beyond the console:
+    /// interrupt controller, timer block, board devices. `early_main` maps
+    /// them into the kernel table before it goes live.
+    fn kernel_mmio_windows(&self) -> impl Iterator<Item = (usize, usize)>;
 
     /// Right after the kernel table went live (`vmm::enable_paging`): report
     /// it and publish what secondary CPUs attach.
@@ -163,6 +184,10 @@ pub trait ArchEntry {
     /// After the heap: the ISA's allocator self-checks and audit logs.
     fn post_heap(&self, heap_start: usize, kernel_end_aligned: usize);
 
+    /// The timebase the vDSO page publishes, in Hz (riscv64: the fixed
+    /// `TIMER_FREQ`; aarch64: `CNTFRQ_EL0`, read live).
+    fn timebase_hz(&self) -> u64;
+
     /// The boot CPU's interrupt controller (PLIC/AIA, GIC), mapped and
     /// initialised; interrupts are still masked at the CPU.
     fn irqchip_init(&self, hart_id: usize, fw_table: usize);
@@ -175,10 +200,6 @@ pub trait ArchEntry {
     /// Wire the console's receive/transmit interrupt.
     fn console_irq(&self, hart_id: usize, fw_table: usize);
 
-    /// Trigger types (edge/level) for lines ring 3 may bind, from the
-    /// firmware table, where this ISA reads them after the MMU is up.
-    fn irq_triggers(&self, fw_table: usize);
-
     /// What a line's last ring-3 binding releases into at task exit.
     fn line_release(&self) -> fn(u32);
 
@@ -189,8 +210,8 @@ pub trait ArchEntry {
     /// How secondary CPUs are started (aarch64: the PSCI conduit).
     fn smp_probe(&self, fw_table: usize);
 
-    /// The boot CPU's timer: frequency, the vDSO timebase, the first tick
-    /// where this ISA arms it during boot.
+    /// The boot CPU's timer: frequency check, the first tick where this ISA
+    /// arms it during boot.
     fn timer_init(&self);
 
     /// Boot self-tests that need interrupts live.

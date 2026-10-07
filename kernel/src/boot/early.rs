@@ -13,7 +13,7 @@
 //!
 //! Linux splits the same way: `start_kernel` (generic) and `setup_arch`
 //! plus its `*_init` callbacks (per ISA). `tools/boot_seq_lint.py` keeps the
-//! common steps here: one in a `boot_hooks.rs` needs a `boot-seq:` reason.
+//! common steps here, in one order for every ISA.
 
 use azos_arch::{ArchEntry, Cpu, PAGE_SIZE};
 use azos_drv_sys::kprintln;
@@ -56,7 +56,15 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
     // ---- Firmware table: interrupt controller, timer and CPU extensions are
     // chosen from it BEFORE `pmm::init` (the page allocator's zero-fill
     // consults the CPU-extension choice on its very first call).
-    let fw = a.firmware_table(hart_id, fw_table);
+    // The device tree, when the firmware handed one (`dtb_parse` checks the
+    // FDT magic first, so a non-FDT table such as x86_64's PVH start_info
+    // parses to `None`).
+    let dt = if fw_table != 0 {
+        unsafe { azos_dtb::dtb_parse(fw_table as *const u8) }
+    } else {
+        None
+    };
+    let fw = a.firmware_table(hart_id, fw_table, dt);
     a.irqchip_probe(&fw);
     a.timer_probe(&fw);
     a.cpu_features(&fw);
@@ -71,12 +79,20 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
     let (mem_start, mem_size) = (mem.mem_start, mem.mem_size);
     // The PCI host bridge's ECAM and `ranges`, for `kernel_main`'s PCI block.
     // Read now: on riscv64 nothing reserves the blob's pages from the page
-    // allocator, so it is not guaranteed to survive `pmm::init` below.
+    // allocator, so it is not guaranteed to survive `pmm::init` below, and on
+    // aarch64 the low half stops mapping it once it holds devices only.
     let pci_host = if fw_table != 0 {
         unsafe { azos_dtb::dtb_pci_host(fw_table as *const u8) }
     } else {
         None
     };
+    // Trigger types (edge/level) for ring-3 lines (wave 9 IRQ4), read now for
+    // the same reason, on every ISA.
+    if fw_table != 0 {
+        if let Some(ctl) = a.irq_trigger_controller() {
+            a.irq_triggers(unsafe { azos_dtb::dtb_irq_triggers(fw_table as *const u8, ctl) });
+        }
+    }
     a.firmware_done(fw_table, num_cpus);
 
     // ---- Page allocator ----
@@ -160,11 +176,14 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
         }
 
         // Device windows, mapped before the table goes live: the console on
-        // every platform, then the ISA's and board's own.
+        // every platform, then the ISA's and board's own. Each is recorded, so
+        // a device-only user half (aarch64 TTBR0) gets the same windows.
         {
             use azos_drv_base::platform::hw;
             let _ = azos_mm::vmm::map_mmio_region(hw::UART_BASE, 0x1000);
-            a.kernel_mmio_map();
+            for (base, bytes) in a.kernel_mmio_windows() {
+                let _ = azos_mm::vmm::map_mmio_region(base, bytes);
+            }
             kprintln!("[MM] Platform MMIO mapped ({})", hw::PLATFORM_NAME);
         }
 
@@ -333,13 +352,16 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
 
     a.post_heap(heap_start, kernel_end_aligned);
 
+    // M01: the vDSO timing page user space reads directly, at the timebase
+    // the ISA reports. Before any task can exec.
+    crate::install_vdso(a.timebase_hz());
+
     // ---- Interrupts: the controller, the console line, ring-3 lines, then
     // the timer. The boot CPU's own tick is armed where the ISA's
     // `timer_init` says (riscv64 defers it to `enter_scheduler`).
     a.irqchip_init(hart_id, fw_table);
     a.irq_enable_early();
     a.console_irq(hart_id, fw_table);
-    a.irq_triggers(fw_table);
     // A line whose last ring-3 binding goes at task exit is masked and handed
     // back (wave 9 IRQ4; `irq_bind::irq_unbind_all`).
     azos_ipc::irq_bind::set_line_release_hook(a.line_release());

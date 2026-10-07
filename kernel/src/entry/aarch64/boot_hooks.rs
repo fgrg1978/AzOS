@@ -12,8 +12,7 @@
 //! virtual timer and the boot self-tests that need interrupts (svc, ticks,
 //! FP across an interrupt, IRQ stack, TTBR1 alias, granule, TCR). The common
 //! steps (console, memory map, page tables, W^X/NX, guards, heap) are in
-//! `early_main`; a common step kept here carries a `boot-seq:` reason
-//! (`tools/boot_seq_lint.py`).
+//! `early_main` (`tools/boot_seq_lint.py` keeps them there).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
@@ -131,16 +130,13 @@ pub fn boot_banner(hart_id: usize, dtb_ptr: usize) {
     kprintln!("[BOOT] FP/SIMD at EL1: 1.5*1.5+0.25 = {}", fp);
 }
 
-/// Parse the DTB and print what it says.
+/// Print what the DTB says (`dt`: `early_main`'s parse of it).
 #[inline(always)]
-pub fn firmware_table(_hart_id: usize, dtb_ptr: usize) -> Firmware {
+pub fn firmware_table(_hart_id: usize, dtb_ptr: usize, dt: Option<azos_dtb::DtbInfo>) -> Firmware {
     if dtb_ptr == 0 {
         return Firmware { info: None };
     }
-    // boot-seq: the firmware-table format is the ISA's (a DTB here and on
-    // riscv64, PVH/ACPI on x86_64), and each prints its own lines.
-    let info = unsafe { azos_dtb::dtb_parse(dtb_ptr as *const u8) };
-    match &info {
+    match &dt {
         Some(info) if info.mem_base != 0 && info.mem_size != 0 => {
             kprintln!("[DTB] Parsed FDT — mem={:#x}+{:#x} ({} CPUs)",
                 info.mem_base, info.mem_size, info.num_cpus);
@@ -148,7 +144,7 @@ pub fn firmware_table(_hart_id: usize, dtb_ptr: usize) -> Firmware {
         Some(_) => kprintln!("[DTB] Parsed FDT but no usable /memory node — falling back"),
         None => azos_drv_sys::kerr!("[DTB] Parse failed (invalid or unsupported FDT)"),
     }
-    Firmware { info }
+    Firmware { info: dt }
 }
 
 /// Nothing to choose: QEMU `virt` with `gic-version=3` is the only interrupt
@@ -212,10 +208,23 @@ pub fn reserve_firmware_table(dtb_ptr: usize) {
     }
 }
 
-/// Nothing beyond the console before the table goes live: the GIC is mapped
-/// in `irqchip_init` (after the heap) and VirtIO in `arch_map_late_mmio`.
+/// The GICv3 distributor, every redistributor frame and the ITS. All
+/// `MAX_HARTS` 128 KiB redistributor frames: `smp::secondary_init` walks
+/// `find_redistributor` up to `MAX_HARTS` frames looking for its own
+/// affinity, and a walk past a mapped frame data-aborts on unmapped Device
+/// space. The ITS takes its control and translation frames (0x2_0000, see
+/// `azos_arch::its::translater_address`). Mapped before the kernel table goes
+/// live, and recorded, so the device-only TTBR0 (`restrict_low_half`) gets
+/// them too; VirtIO comes later (`arch_map_late_mmio`).
 #[inline(always)]
-pub fn kernel_mmio_map() {}
+pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
+    [
+        (gic::GICD_BASE, 0x1_0000),
+        (gic::GICR_BASE, gic::GICR_STRIDE * crate::MAX_HARTS),
+        (azos_arch::its::ITS_BASE, 0x2_0000),
+    ]
+    .into_iter()
+}
 
 /// The kernel table now in `TTBR1_EL1` (`vmm::enable_paging` calls
 /// `ARCH.switch_kernel_pt`); the MMU itself has been on since boot.S's
@@ -367,11 +376,20 @@ pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
     crate::boot_stack_report();
 }
 
-/// GICv3: the IRQ stacks first, then the GIC MMIO and the distributor,
-/// redistributor(0) and CPU interface, with the timer PPI and SGI 0.
-///
-/// boot-seq: the GIC/ITS windows are mapped here, after the heap, not in
-/// `kernel_mmio_map`: moving them would move the `[GIC] MMIO mapped` line.
+/// `CNTFRQ_EL0`, read live: the platform constant and QEMU's default
+/// disagree (see `timer_init`). The vDSO page (`install_vdso`) publishes
+/// it, so every aarch64 process can read `VDSO_USER_BASE` and `CNTVCT_EL0`
+/// at the right rate.
+#[inline(always)]
+pub fn timebase_hz() -> u64 {
+    arch_timer::freq_hz()
+}
+
+/// GICv3: the IRQ stacks first, then the distributor, redistributor(0)
+/// and CPU interface, with the timer PPI and SGI 0. The GIC and ITS windows
+/// were mapped by `early_main` (`kernel_mmio_windows`) before the kernel
+/// table went live and are in the device-only TTBR0, so no mapping is
+/// written into a live table here (the reason a TLB flush once followed it).
 #[inline(always)]
 pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
     kprintln!();
@@ -381,46 +399,6 @@ pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
     // constraint riscv64's `irq_stacks_arm()` documents.
     crate::aarch64_irq_stacks_arm();
 
-    // GIC MMIO — Device memory, mapped the same way UART already is
-    // above. `GICR_STRIDE` covers ONE PE's 128 KiB redistributor frame;
-    // Phase 2 mapped only the first (hart 0 was the only PE that would
-    // ever walk this range). Phase 4 (SMP) needs the WHOLE range mapped
-    // BEFORE any secondary starts: `arch-aarch64::smp::secondary_init`
-    // walks `find_redistributor` up to `crate::MAX_HARTS` frames looking for
-    // its own affinity, and a walk past a single mapped frame data-
-    // aborts on unmapped Device space. Canary (a): map only one frame
-    // here again — see this task's report for whether the row actually
-    // fails (`map_mmio_region`'s own granularity may already cover more
-    // than one frame, which would make this canary a non-discriminating
-    // one; verified, not assumed).
-    let _ = azos_mm::vmm::map_mmio_region(gic::GICD_BASE, 0x1_0000);
-    let _ = azos_mm::vmm::map_mmio_region(gic::GICR_BASE, gic::GICR_STRIDE * crate::MAX_HARTS);
-    // ITS control + translation frames (RFC-0046 stage 1a). 0x2_0000
-    // covers both 64 KiB frames `azos_arch::its::translater_address`
-    // assumes — see that function's doc for the exact frame layout.
-    let _ = azos_mm::vmm::map_mmio_region(azos_arch::its::ITS_BASE, 0x2_0000);
-    // URGENT fix (coordinator, 2026-09-26): `map_mmio_region` mirrors
-    // into `DEVICE_PT` too once U01-2's fix installed it (`install_
-    // device_only_ttbr0`, above) — but it writes the new PTEs with a
-    // plain `write_volatile`, no barrier, and by THIS point in boot
-    // `DEVICE_PT` is the LIVE `TTBR0_EL1` on this hart. A brand-new
-    // fault->valid PTE (and, worse, a brand-new intermediate L1/L2
-    // table descriptor when the walk had to allocate one) written into
-    // the table this core is CURRENTLY translating through is not
-    // guaranteed visible to the next translation table walk without a
-    // `dsb ishst` + TLB invalidate + `isb` — exactly what
-    // `ARCH.flush_tlb_all()` (`tlbi_vmalle1is`) already does. Without
-    // this, `init_redistributor(0)` below (or `init_distributor()`)
-    // faults on the GICR/GICD access it JUST mapped: measured as
-    // `[FATAL] aarch64 kernel page fault: read/exec at 0x80a0014`
-    // (GICR_WAKER) — the mapping printed as done, the very next access
-    // to it still saw a translation fault. Same class of hazard
-    // applies to `arch_map_late_mmio`'s own `map_mmio_region` call
-    // (virtio), fixed there too.
-    {
-        use azos_arch::Mmu;
-        azos_arch::ARCH.flush_tlb_all();
-    }
     kprintln!("[GIC] MMIO mapped: GICD={:#x} GICR={:#x} (x{} frames)",
         gic::GICD_BASE, gic::GICR_BASE, crate::MAX_HARTS);
 
@@ -502,29 +480,20 @@ pub fn console_irq(_hart_id: usize, dtb_ptr: usize) {
     }
 }
 
-/// Trigger types for ring-3 SPIs (wave 9 IRQ4), read through the kernel's
-/// own view of the blob now that the low half maps devices only.
-///
-/// boot-seq: read after the GIC is up (the blob is reserved on aarch64);
-/// riscv64 reads its triggers before `pmm::init`.
+/// Trigger types for ring-3 SPIs come from the GICv3 node.
 #[inline(always)]
-pub fn irq_triggers(dtb_ptr: usize) {
-    // Trigger types for ring-3 SPIs (wave 9 IRQ4): `gic::user_spi_bind`
-    // programs ICFGR from this instead of always level. The boot line
-    // names two lines QEMU `virt` describes with opposite triggers (the
-    // PL031's SPI 2 level, the first virtio-mmio slot's SPI 16 edge).
-    // A line whose last ring-3 binding goes at task exit is masked and
-    // handed back (`irq_bind::irq_unbind_all` -> the release hook).
+pub fn irq_trigger_controller() -> Option<azos_dtb::IrqController> {
+    Some(azos_dtb::IrqController::GicV3)
+}
+
+/// Trigger types for ring-3 SPIs (wave 9 IRQ4): `gic::user_spi_bind`
+/// programs ICFGR from these instead of always level. The boot line names
+/// two lines QEMU `virt` describes with opposite triggers (the PL031's SPI 2
+/// level, the first virtio-mmio slot's SPI 16 edge). Noting them only fills
+/// `gic`'s own tables: no GIC access, so it runs before the GIC is up.
+#[inline(always)]
+pub fn irq_triggers(found: Option<azos_dtb::IrqTriggers>) {
     {
-        let found = if dtb_ptr != 0 {
-            unsafe {
-                azos_dtb::dtb_irq_triggers(
-                    azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8,
-                    azos_dtb::IrqController::GicV3)
-            }
-        } else {
-            None
-        };
         match found {
             Some(t) => {
                 for intid in 32..1020 {
@@ -605,12 +574,8 @@ pub fn smp_probe(dtb_ptr: usize) {
         if psci_from_fdt { "FDT /psci" } else { "crate::entry EL" });
 }
 
-/// The EL1 virtual timer: the live frequency, the vDSO timebase, the
-/// periodic tick, then IRQs unmasked.
-///
-/// boot-seq: `install_vdso` runs here, with the live `CNTFRQ_EL0` read after
-/// the GIC/ITS/PSCI bring-up; riscv64 installs it from `post_heap` with its
-/// fixed TIMER_FREQ, before its PLIC.
+/// The EL1 virtual timer: the live frequency, the timebase `handle_irq`
+/// converts ticks with, the periodic tick, then IRQs unmasked.
 #[inline(always)]
 pub fn timer_init() {
     // Timer period: read CNTFRQ_EL0 LIVE rather than trust the
@@ -628,16 +593,6 @@ pub fn timer_init() {
                    — using the live value for the tick period");
     }
 
-    // M01: vDSO — allocate the shared timing page that user-space reads
-    // directly. Shared with riscv64's kernel_main — see `crate::install_vdso`'s
-    // own doc for why this was missing here (every aarch64 process took
-    // a page fault reading `VDSO_USER_BASE`) and why the timebase is the
-    // just-read live `CNTFRQ_EL0` value rather than a compile-time
-    // constant. Called here (before ANY task can exec — autorun spawns
-    // much later, past FAT32/CONFIG.INI) rather than at this
-    // function's very top: it needs `live_hz`, which needs the GIC/PSCI
-    // bring-up above it in this same block.
-    crate::install_vdso(live_hz);
     // Publish for `handle_irq` (`kernel/src/crate::entry/aarch64.rs`) to convert
     // CNTVCT_EL0 ticks to milliseconds on every timer IRQ — see
     // `VDSO_TIMEBASE_HZ`'s own doc. Must happen before IRQs are

@@ -9,8 +9,7 @@
 //! PLIC/AIA choice and its init, Sstc vs SBI `set_timer`, Zicboz, the QEMU
 //! and board MMIO windows, the PMP audit log, the `sie` enables. The common
 //! steps (console, memory map, page tables, W^X/NX, guards, heap) are in
-//! `early_main`; a common step kept here carries a `boot-seq:` reason
-//! (`tools/boot_seq_lint.py`).
+//! `early_main` (`tools/boot_seq_lint.py` keeps them there).
 
 use core::sync::atomic::Ordering;
 use azos_drv_sys::kprintln;
@@ -65,32 +64,25 @@ pub fn boot_banner(hart_id: usize, dtb_ptr: usize) {
     }
 }
 
-/// Parse the DTB and print what it says.
+/// Print what the DTB says (`dt`: `early_main`'s parse of it).
 #[inline(always)]
-pub fn firmware_table(hart_id: usize, dtb_ptr: usize) -> Firmware {
-    let info = if dtb_ptr != 0 {
-        // boot-seq: the firmware-table format is the ISA's (a DTB here and on
-        // aarch64, PVH/ACPI on x86_64), and each prints its own lines.
-        let parsed = unsafe { azos_dtb::dtb_parse(dtb_ptr as *const u8) };
-        match &parsed {
-            Some(info) => {
-                let compat = azos_dtb::dtb_compatible_str(info);
-                kprintln!("[DTB] Parsed FDT — {} CPUs, mem={:#x}+{:#x}, timer={}",
-                    info.num_cpus, info.mem_base, info.mem_size, info.timer_freq);
-                if info.plic_base != 0 {
-                    kprintln!("[DTB] UART={:#x}, PLIC={:#x}", info.uart_base, info.plic_base);
-                } else {
-                    kprintln!("[DTB] UART={:#x}, PLIC=none", info.uart_base);
-                }
-                kprintln!("[DTB] Compatible: {}", core::str::from_utf8(compat).unwrap_or("?"));
+pub fn firmware_table(hart_id: usize, dtb_ptr: usize, dt: Option<azos_dtb::DtbInfo>) -> Firmware {
+    match &dt {
+        Some(info) => {
+            let compat = azos_dtb::dtb_compatible_str(info);
+            kprintln!("[DTB] Parsed FDT — {} CPUs, mem={:#x}+{:#x}, timer={}",
+                info.num_cpus, info.mem_base, info.mem_size, info.timer_freq);
+            if info.plic_base != 0 {
+                kprintln!("[DTB] UART={:#x}, PLIC={:#x}", info.uart_base, info.plic_base);
+            } else {
+                kprintln!("[DTB] UART={:#x}, PLIC=none", info.uart_base);
             }
-            None => azos_drv_sys::kerr!("[DTB] Parse failed (invalid or unsupported FDT)"),
+            kprintln!("[DTB] Compatible: {}", core::str::from_utf8(compat).unwrap_or("?"));
         }
-        parsed
-    } else {
-        None
-    };
-    Firmware { info, hart_id }
+        None if dtb_ptr != 0 => azos_drv_sys::kerr!("[DTB] Parse failed (invalid or unsupported FDT)"),
+        None => {}
+    }
+    Firmware { info: dt, hart_id }
 }
 
 /// RFC-0046 stage 1a: an S-domain APLIC plus an S-level IMSIC group in the
@@ -167,34 +159,35 @@ pub fn firmware_memory(fw: &Firmware) -> FirmwareMemory {
     FirmwareMemory { mem_start, mem_size, from_firmware, cpu_count, boot_cpu: fw.hart_id, cpu_source }
 }
 
-/// Before `pmm::init`, which may reuse the blob's pages (nothing reserves
-/// them on this ISA): the ring-3 trigger types, then the final timer and
-/// Zicboz choices, each finalized here when the DTB made none.
+/// Ring-3 trigger types come only from an APLIC (`sourcecfg`); a PLIC has
+/// no trigger configuration and its binding (`#interrupt-cells = 1`) carries
+/// none, so plain `virt` reads nothing.
 #[inline(always)]
-pub fn firmware_done(dtb_ptr: usize, num_cpus: usize) {
-    // Trigger types for ring-3 lines (wave 9 IRQ4). Only the APLIC takes a
-    // trigger (`sourcecfg`); a PLIC has none and its binding
-    // (`#interrupt-cells = 1`) carries none, so plain `virt` reads nothing.
-    if azos_drv_irqchip::irqchip::is_aia() && dtb_ptr != 0 {
-        // boot-seq: read before `pmm::init` here (the blob is not reserved
-        // on riscv64); aarch64 reserves it and reads after its GIC is up.
-        let found = unsafe {
-            azos_dtb::dtb_irq_triggers(dtb_ptr as *const u8, azos_dtb::IrqController::AplicS)
-        };
-        match found {
-            Some(t) => {
-                for line in 1..azos_drv_irqchip::plic::MAX_IRQS {
-                    if let Some(edge) = t.edge(line) {
-                        azos_drv_irqchip::user_irq::note_dtb_trigger(line, edge);
-                    }
-                }
-                let (n, e) = t.counts();
-                kprintln!("[IRQ] DTB triggers (APLIC-S): {} sources, {} edge", n, e);
-            }
-            None => kprintln!("[IRQ] DTB triggers: no S-domain APLIC with 2-cell specifiers"),
-        }
-    }
+pub fn irq_trigger_controller() -> Option<azos_dtb::IrqController> {
+    azos_drv_irqchip::irqchip::is_aia().then_some(azos_dtb::IrqController::AplicS)
+}
 
+/// The APLIC's trigger types, noted for `user_irq` (wave 9 IRQ4).
+#[inline(always)]
+pub fn irq_triggers(found: Option<azos_dtb::IrqTriggers>) {
+    match found {
+        Some(t) => {
+            for line in 1..azos_drv_irqchip::plic::MAX_IRQS {
+                if let Some(edge) = t.edge(line) {
+                    azos_drv_irqchip::user_irq::note_dtb_trigger(line, edge);
+                }
+            }
+            let (n, e) = t.counts();
+            kprintln!("[IRQ] DTB triggers (APLIC-S): {} sources, {} edge", n, e);
+        }
+        None => kprintln!("[IRQ] DTB triggers: no S-domain APLIC with 2-cell specifiers"),
+    }
+}
+
+/// The final timer and Zicboz choices, each finalized here when the DTB
+/// made none, and the CPU count.
+#[inline(always)]
+pub fn firmware_done(_dtb_ptr: usize, num_cpus: usize) {
     // Selects SBI when nothing above did (no DTB, or one that did not parse);
     // otherwise returns the choice already made.
     match azos_drv_irqchip::clint::timer_select(false) {
@@ -221,75 +214,61 @@ pub fn firmware_done(dtb_ptr: usize, num_cpus: usize) {
 pub fn reserve_firmware_table(_dtb_ptr: usize) {}
 
 /// The interrupt controller, the timer block and the board's devices,
-/// identity-mapped before `enable_paging` (the console is mapped by
-/// `early_main`).
-///
-/// boot-seq: the device windows are the platform's; only the console's is
-/// common.
+/// identity-mapped by `early_main` before `enable_paging` (after the
+/// console).
 #[inline(always)]
-pub fn kernel_mmio_map() {
+pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
     use azos_drv_base::platform::hw;
-
-    // PLIC (all platforms — up to 4 MiB is sufficient for enable/threshold/claim)
-    let _ = azos_mm::vmm::map_mmio_region(hw::PLIC_BASE, 0x40_0000);
-
-    // S-domain APLIC (32 KiB), only when the DTB selected AIA. The IMSIC
-    // needs no mapping: the kernel reaches its own file through CSRs; only
-    // devices write the file's physical page.
-    if let Some(aplic_base) = azos_drv_irqchip::irqchip::aplic_mmio_base() {
-        let _ = azos_mm::vmm::map_mmio_region(aplic_base, 0x8000);
-    }
-
-    // QEMU-specific MMIO
-    #[cfg(not(any(feature = "vf2", feature = "k1")))]
-    {
-        // VirtIO MMIO 0x10001000 - 0x10008000 (8 devices)
-        let _ = azos_mm::vmm::map_mmio_region(0x1000_1000, 0x8000);
-        // CLINT 0x02000000 (64 KiB) — mtime/mtimecmp via SBI but read rdtime
-        let _ = azos_mm::vmm::map_mmio_region(0x0200_0000, 0x1_0000);
-        // fw_cfg (--features ramfb only — crates/drivers/display/src/ramfb.rs).
-        // Found by booting with ramfb and getting a page fault at 0x10100008
-        // (the selector register).
-        #[cfg(feature = "ramfb")]
-        let _ = azos_mm::vmm::map_mmio_region(hw::FW_CFG_BASE, 0x1000);
-    }
-
-    // VF2-specific MMIO
-    #[cfg(feature = "vf2")]
-    {
-        let _ = azos_mm::vmm::map_mmio_region(0x0200_0000, 0x1_0000); // CLINT
-        let _ = azos_mm::vmm::map_mmio_region(hw::GPIO_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::PWM_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::I2C0_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::I2C1_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::MMC0_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::MMC1_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::ETH0_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::UART1_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::WDT_BASE, 0x1000);
-        // Display (--features hdmi only — crates/drivers/display), added after
-        // the same class of missing mapping was caught on QEMU's ramfb.
-        #[cfg(feature = "hdmi")]
-        {
-            let _ = azos_mm::vmm::map_mmio_region(hw::DC8200_TOP_BASE, 0x1000);
-            let _ = azos_mm::vmm::map_mmio_region(hw::DC8200_MAIN_BASE, 0x2000);
-            let _ = azos_mm::vmm::map_mmio_region(hw::HDMI_TX_BASE, 0x1000);
-        }
-    }
-
-    // K1-specific MMIO
-    #[cfg(feature = "k1")]
-    {
-        let _ = azos_mm::vmm::map_mmio_region(hw::GPIO_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::PWM_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::I2C0_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::I2C1_BASE, 0x1000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::MMC0_BASE, 0x2000);
-        let _ = azos_mm::vmm::map_mmio_region(hw::WDT_BASE, 0x1000);
-        // F14: NPU MMIO (1 MiB, covers all command/data registers).
-        let _ = azos_mm::vmm::map_mmio_region(hw::NPU_BASE, hw::NPU_SIZE);
-    }
+    // PLIC (all platforms — up to 4 MiB is sufficient for enable/threshold/claim),
+    // then the S-domain APLIC (32 KiB), only when the DTB selected AIA. The
+    // IMSIC needs no mapping: the kernel reaches its own file through CSRs;
+    // only devices write the file's physical page.
+    let aplic = azos_drv_irqchip::irqchip::aplic_mmio_base().map(|b| (b, 0x8000));
+    core::iter::once((hw::PLIC_BASE, 0x40_0000))
+        .chain(aplic)
+        .chain(BOARD_WINDOWS.iter().copied())
 }
+
+/// The board's fixed device windows, after the interrupt controller.
+const BOARD_WINDOWS: &[(usize, usize)] = {
+    #[allow(unused_imports)]
+    use azos_drv_base::platform::hw;
+    &[
+        // QEMU: VirtIO MMIO 0x10001000 - 0x10008000 (8 devices); CLINT
+        // 0x02000000 (64 KiB, mtime/mtimecmp via SBI but read rdtime);
+        // fw_cfg (--features ramfb only, crates/drivers/display/src/ramfb.rs:
+        // found by booting with ramfb and faulting at 0x10100008).
+        #[cfg(not(any(feature = "vf2", feature = "k1")))]
+        (0x1000_1000, 0x8000),
+        #[cfg(not(any(feature = "vf2", feature = "k1")))]
+        (0x0200_0000, 0x1_0000),
+        #[cfg(all(feature = "ramfb", not(any(feature = "vf2", feature = "k1"))))]
+        (hw::FW_CFG_BASE, 0x1000),
+        // VF2. Display (--features hdmi only, crates/drivers/display), added
+        // after the same class of missing mapping was caught on QEMU's ramfb.
+        #[cfg(feature = "vf2")] (0x0200_0000, 0x1_0000), // CLINT
+        #[cfg(feature = "vf2")] (hw::GPIO_BASE, 0x1000),
+        #[cfg(feature = "vf2")] (hw::PWM_BASE, 0x1000),
+        #[cfg(feature = "vf2")] (hw::I2C0_BASE, 0x1000),
+        #[cfg(feature = "vf2")] (hw::I2C1_BASE, 0x1000),
+        #[cfg(feature = "vf2")] (hw::MMC0_BASE, 0x1000),
+        #[cfg(feature = "vf2")] (hw::MMC1_BASE, 0x1000),
+        #[cfg(feature = "vf2")] (hw::ETH0_BASE, 0x1000),
+        #[cfg(feature = "vf2")] (hw::UART1_BASE, 0x1000),
+        #[cfg(feature = "vf2")] (hw::WDT_BASE, 0x1000),
+        #[cfg(all(feature = "vf2", feature = "hdmi"))] (hw::DC8200_TOP_BASE, 0x1000),
+        #[cfg(all(feature = "vf2", feature = "hdmi"))] (hw::DC8200_MAIN_BASE, 0x2000),
+        #[cfg(all(feature = "vf2", feature = "hdmi"))] (hw::HDMI_TX_BASE, 0x1000),
+        // K1. F14: NPU MMIO (1 MiB, covers all command/data registers).
+        #[cfg(feature = "k1")] (hw::GPIO_BASE, 0x1000),
+        #[cfg(feature = "k1")] (hw::PWM_BASE, 0x1000),
+        #[cfg(feature = "k1")] (hw::I2C0_BASE, 0x1000),
+        #[cfg(feature = "k1")] (hw::I2C1_BASE, 0x1000),
+        #[cfg(feature = "k1")] (hw::MMC0_BASE, 0x2000),
+        #[cfg(feature = "k1")] (hw::WDT_BASE, 0x1000),
+        #[cfg(feature = "k1")] (hw::NPU_BASE, hw::NPU_SIZE),
+    ]
+};
 
 /// `satp` now holds the kernel table.
 #[inline(always)]
@@ -307,8 +286,7 @@ pub fn restrict_low_half() {}
 #[inline(always)]
 pub fn verify_guards() {}
 
-/// The Zicboz zero-fill self-check and bench (QEMU), the PMP audit log, and
-/// the vDSO page.
+/// The Zicboz zero-fill self-check and bench (QEMU), and the PMP audit log.
 #[inline(always)]
 pub fn post_heap(heap_start: usize, kernel_end_aligned: usize) {
     zicboz_selfcheck();
@@ -337,13 +315,6 @@ pub fn post_heap(heap_start: usize, kernel_end_aligned: usize) {
         kprintln!();
     }
 
-    // M01: the vDSO timing page user space reads directly. `rdtime` from
-    // U-mode is enabled (`scounteren.TM`), so libsys may read the counter
-    // instead of trapping for SYS_UPTIME (RFC-0041 §A); `vdso-force-syscall`
-    // keeps the trap, for measuring it.
-    // boot-seq: riscv64's timebase is the fixed TIMER_FREQ, known here, before
-    // the PLIC; aarch64 installs it after reading CNTFRQ_EL0 (`timer_init`).
-    crate::install_vdso(azos_drv_sys::timebase::TIMER_FREQ);
 }
 
 /// RFC-0045 Tier 0 item 3 canary (QEMU only): poison a page, free it, force a
@@ -459,9 +430,13 @@ pub fn console_irq(hart_id: usize, _dtb_ptr: usize) {
     azos_drv_sys::uart::enable_tx_irq();
 }
 
-/// Read already, before `pmm::init` (`firmware_done`).
+/// The fixed `TIMER_FREQ`. `rdtime` from U-mode is enabled
+/// (`scounteren.TM`), so libsys may read the counter instead of trapping for
+/// SYS_UPTIME (RFC-0041 §A); `vdso-force-syscall` keeps the trap.
 #[inline(always)]
-pub fn irq_triggers(_dtb_ptr: usize) {}
+pub fn timebase_hz() -> u64 {
+    azos_drv_sys::timebase::TIMER_FREQ
+}
 
 /// The PLIC/APLIC line, masked and handed back.
 #[inline(always)]
