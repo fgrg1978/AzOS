@@ -28,7 +28,7 @@ set -uo pipefail
 CARGO="${CARGO:-cargo}"
 # Every cargo call goes through tools/ci_cargo.py (gate speed, wave 15): it
 # times the call for the row's build/boot split and, for a kernel build, reuses
-# the kernel this run already built from identical inputs (CI_KCACHE=0: off).
+# the kernel this run already built from identical inputs (off by default; CI_KCACHE=1: on).
 export CI_REAL_CARGO="$CARGO"
 CARGO="$(cd "$(dirname "$0")" && pwd)/ci_cargo.py"
 QEMU="${QEMU:-qemu-system-riscv64}"
@@ -1060,8 +1060,9 @@ builtin printf 'row\tstage\tbuild_s\trun_s\tverdict\tprep_s\n' >"$CI_ROWS_TSV"
 export CI_BUILD_ACC="$CI_LOG_ABS/build-acc.main"
 : >"$CI_BUILD_ACC"
 : >"$CI_LOG_ABS/cargo-calls.tsv"
-# The kernel cache (tools/ci_cargo.py): one gate run's, emptied here.
-CI_KCACHE="${CI_KCACHE:-1}"
+# The kernel cache (tools/ci_cargo.py): one gate run's, emptied here. Off by
+# default until it is verified; CI_KCACHE=1 turns it on.
+CI_KCACHE="${CI_KCACHE:-0}"
 rm -rf "$CI_LOG_ABS/kcache" "$CI_LOG_ABS/fpfree"
 if [ "$CI_KCACHE" = 1 ]; then
     export CI_KCACHE_DIR="$CI_LOG_ABS/kcache"; mkdir -p "$CI_KCACHE_DIR"
