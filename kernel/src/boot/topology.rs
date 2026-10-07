@@ -63,29 +63,16 @@ pub(crate) fn install_topology(num_cpus: usize) {
         if action == SourceAction::Signed { "signed files" } else { "built-in topology" },
         ticks, ticks_to_ns(ticks),
     );
-    if let Some(topo) = azos_topology::get() {
-        match topo.deadline_admission(num_cpus) {
-            Ok(r) if r.placed > 0 => {
-                kprintln!(
-                    "[TOPO] Deadline admission: {} real-time task(s) placed on {} CPU(s)",
-                    r.placed, num_cpus,
-                );
-                band_admission(topo, &r);
-            }
-            Ok(_) => {}
-            Err(e) => {
-                azos_drv_sys::kerr!("[TOPO] Deadline admission REFUSED on {} CPU(s): {:?} — halting", num_cpus, e);
-                loop { azos_arch::ARCH.wfi(); }
-            }
+    // A signed topology was admitted, with its memory reserved, before it
+    // was published (`signed_candidate`). The built-in one is admitted here,
+    // the same way, and halts the board if it does not fit.
+    if action != SourceAction::Signed {
+        if let Some(topo) = azos_topology::get() {
+            let _ = admit(topo, num_cpus, Mode::Final);
         }
-    }
-    if let Some(topo) = azos_topology::get() {
-        memory_admission(topo);
     }
 }
 
-/// The topology built into the image (`builder.rs`). Halts if it is refused,
-/// as it always has: there is nothing left to fall back to.
 fn install_builtin() {
     if let Err(e) = azos_topology::init_with(azos_topology::fill_default_minimal) {
         azos_drv_sys::kerr!("[TOPO] Topology install FAILED: {:?} — halting", e);
@@ -315,7 +302,7 @@ fn signed_candidate(
             counter = azos_topology::signed::fill_signed(t, &files, &azos_topology::TRUSTED_PUBKEY, ctx)?;
             Ok(())
         },
-        |t| boot_admission(t, num_cpus),
+        |t| admit(t, num_cpus, Mode::Candidate),
     );
     let candidate = match outcome {
         Ok(()) => Candidate::Valid,
@@ -329,56 +316,143 @@ fn signed_candidate(
     (candidate, caps_len, sched_len, counter)
 }
 
-/// The boot admission of a candidate, with no side effect: what
-/// `install_topology` checks after publishing (deadlines on this board's
-/// harts, the real-time band, huge leaves, memory after the DMA pool), so a
-/// signed topology it would halt on is refused before it is published, while
-/// the built-in one is still there to fall back to.
-fn boot_admission(
+/// Who [`admit`] answers to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// A signed candidate: a refusal is returned, and the built-in topology
+    /// is still there to fall back to.
+    Candidate,
+    /// The topology that will run: a refusal halts the board.
+    Final,
+}
+
+/// The boot admission of one topology, the signed candidate's or the
+/// built-in one's, in one place:
+/// 1. deadlines on this board's CPUs, and the real-time band cap;
+/// 2. huge-leaf rows against Kconfig `LOCKED_HUGE_LEAVES`;
+/// 3. the DMA pool reserved, then every ring-3 row's frame budget checked
+///    against the RAM left (`Topology::memory_admission`);
+/// 4. each 2 MiB-leaf region reserved, which admission has just counted.
+///
+/// The memory is reserved, not estimated, so what is admitted is what the
+/// allocator really gave: a pool or a region that has the frames but no
+/// contiguous (or aligned) run for them is refused here, before a signed
+/// topology is published, instead of halting the board after it. On a
+/// refusal everything this call reserved is released, so the fallback
+/// starts from the same RAM. Booting a topology whose budgets cannot all be
+/// honoured would turn a declared guarantee into a race for the last frames.
+fn admit(
     topo: &azos_topology::Topology<'static>,
     num_cpus: usize,
+    mode: Mode,
 ) -> Result<(), azos_topology::signed::SignedRefusal> {
     use azos_topology::signed::SignedRefusal;
-    use azos_topology::AdmissionError;
-    let r = topo.deadline_admission(num_cpus).map_err(SignedRefusal::Admission)?;
+    use azos_topology::{AdmissionError, MemoryRefusal};
+
+    // 1. Deadlines and the band.
+    let r = match topo.deadline_admission(num_cpus) {
+        Ok(r) => r,
+        Err(e) if mode == Mode::Final => halt_refused(format_args!(
+            "[TOPO] Deadline admission REFUSED on {} CPU(s): {:?}", num_cpus, e)),
+        Err(e) => return Err(SignedRefusal::Admission(e)),
+    };
     if r.placed > 0 {
-        band_check(topo, &r).map_err(|e| SignedRefusal::Admission(AdmissionError::Deadline(e)))?;
+        kprintln!("[TOPO] Deadline admission: {} real-time task(s) placed on {} CPU(s)", r.placed, num_cpus);
+        if let Err(e) = band_check(topo, &r) {
+            if mode == Mode::Final {
+                halt_refused(format_args!("[TOPO] Deadline admission REFUSED: {:?} — the band's rows on that CPU exceed \
+                     RT_BAND_CAP_PCT={} %", e, azos_limits::RT_BAND_CAP_PCT));
+            }
+            return Err(SignedRefusal::Admission(AdmissionError::Deadline(e)));
+        }
     }
-    if !azos_limits::LOCKED_HUGE_LEAVES && topo.tasks().iter().any(|t| t.mem_huge_mib != 0) {
-        return Err(SignedRefusal::HugeLeaves);
+
+    // 2. A row that asks for a 2 MiB-leaf region on a kernel built without
+    // the option is refused, not run without the region it was written for.
+    if !azos_limits::LOCKED_HUGE_LEAVES {
+        if let Some((i, t)) = topo.tasks().iter().enumerate().find(|(_, t)| t.mem_huge_mib != 0) {
+            if mode == Mode::Final {
+                halt_refused(format_args!("[TOPO] Memory admission REFUSED: row {} ({}) declares mem_huge_mib = {} but this \
+                     kernel was built without LOCKED_HUGE_LEAVES", i, t.name.as_str(), t.mem_huge_mib));
+            }
+            return Err(SignedRefusal::HugeLeaves);
+        }
     }
+
+    // 3. The DMA pool, then the rows' budgets against what is left. Below,
+    // sizes are topology pages (4 KiB, `TOPOLOGY_PAGE`); the allocator counts
+    // frames of PAGE_SIZE. The conversions keep a signed topology meaning the
+    // same bytes under an aarch64 16/64 KiB granule.
     let page = azos_arch_api::PAGE_SIZE as u64;
-    let pool = topo.dma_pool_pages(dma_floor_pages());
-    let frames = azos_mm::pmm::free_pages() as u64;
-    let pool_frames = azos_topology::frames_for(pool, page);
-    if pool_frames > frames {
-        return Err(SignedRefusal::Admission(AdmissionError::Memory(azos_topology::MemoryRefusal::DmaPool {
-            need: pool, free: azos_topology::units_for(frames, page),
-        })));
+    let floor = dma_floor_pages();
+    let pool = topo.dma_pool_pages(floor);
+    let free_before = azos_topology::units_for(azos_mm::pmm::free_pages() as u64, page);
+    match azos_mm::pmm::reserve_dma_pool(azos_topology::frames_for(pool, page) as usize) {
+        Ok(base) => kprintln!(
+            "[MM] DMA pool: {} KiB reserved at {:#x} (floor {} KiB, {} pipeline(s) declare {} KiB)",
+            pool * 4, base.as_usize(), floor * 4, topo.pipelines().len(),
+            topo.pipelines().iter().map(|p| p.dma_pages as u64 * 4).sum::<u64>(),
+        ),
+        Err(_) => {
+            let e = MemoryRefusal::DmaPool { need: pool, free: free_before };
+            if mode == Mode::Final {
+                halt_refused(format_args!("[TOPO] Memory admission REFUSED: {:?}", e));
+            }
+            return Err(SignedRefusal::Admission(AdmissionError::Memory(e)));
+        }
     }
-    let free = azos_topology::units_for(frames - pool_frames, page);
-    topo.memory_admission(free, kernel_reserve_pages(), azos_topology::RING3_DEFAULT_PAGES, &may_fork)
-        .map(|_| ())
-        .map_err(SignedRefusal::Admission)
+    let reserve = kernel_reserve_pages();
+    let free = azos_topology::units_for(azos_mm::pmm::free_pages() as u64, page);
+    match topo.memory_admission(free, reserve, azos_topology::RING3_DEFAULT_PAGES, &may_fork) {
+        Ok(m) => kprintln!(
+            "[TOPO] Memory admission: {} ring-3 row(s) ({} locked, {} forking), {} instance(s): {} locked + {} ceiling + {} COW copy + {} kernel reserve = {} of {} free pages",
+            m.rows, m.locked_rows, m.fork_rows, m.instances, m.locked_pages, m.ceiling_pages, m.cow_pages, m.reserve_pages, m.need, m.free,
+        ),
+        Err(e) => {
+            if mode == Mode::Final {
+                halt_refused(format_args!("[TOPO] Memory admission REFUSED: {:?}", e));
+            }
+            azos_mm::pmm::release_dma_pool();
+            return Err(SignedRefusal::Admission(e));
+        }
+    }
+
+    // 4. The 2 MiB-leaf regions, each one physically contiguous and 2 MiB
+    // aligned (`azos_mm::huge`); exec maps them with 2 MiB leaves.
+    if azos_limits::LOCKED_HUGE_LEAVES {
+        for (i, t) in topo.tasks().iter().enumerate() {
+            if t.mem_huge_mib == 0 {
+                continue;
+            }
+            let bytes = t.mem_huge_mib as usize * 1024 * 1024;
+            match azos_mm::huge::reserve((i + 1) as u16, bytes) {
+                Ok(pa) => kprintln!(
+                    "[MM] huge region: row {} ({}) {} MiB reserved at pa {:#x}, mapped with 2 MiB leaves at exec",
+                    i, t.name.as_str(), t.mem_huge_mib, pa,
+                ),
+                Err(err) => {
+                    if mode == Mode::Final {
+                        halt_refused(format_args!("[TOPO] Memory admission REFUSED: row {} ({}) huge region of {} MiB: {:?}",
+                            i, t.name.as_str(), t.mem_huge_mib, err));
+                    }
+                    azos_mm::huge::release_all();
+                    azos_mm::pmm::release_dma_pool();
+                    return Err(SignedRefusal::Admission(AdmissionError::Memory(
+                        MemoryRefusal::HugeRegion { task: i as u16, mib: t.mem_huge_mib })));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
-/// Wave 11 SCHED-RT: the second condition of boot admission. The rows placed
-/// on a CPU whose priority (clamped into their class) is in the real-time band
-/// may take at most `RT_BAND_CAP_PCT` of it: the band budget keeps the rest
-/// for the tasks outside the band, so a band set denser than the cap would be
-/// admitted only to be throttled past its deadlines. Halts like the density
-/// check does; run-time admission (`azos_sched::rt::reserve`) applies the
-/// same limit to every reservation made after boot.
-fn band_admission(topo: &azos_topology::Topology<'static>, r: &azos_topology::deadline::Report) {
-    if let Err(e) = band_check(topo, r) {
-        azos_drv_sys::kerr!("[TOPO] Deadline admission REFUSED: {:?} — the band's rows on that CPU exceed \
-                   RT_BAND_CAP_PCT={} % — halting", e, azos_limits::RT_BAND_CAP_PCT);
-        loop { azos_arch::ARCH.wfi(); }
-    }
+/// A refusal of the topology that will run: the board stops here.
+fn halt_refused(what: core::fmt::Arguments<'_>) -> ! {
+    azos_drv_sys::kerr!("{} — halting", what);
+    loop { azos_arch::ARCH.wfi(); }
 }
 
-/// The band condition itself, shared by [`band_admission`] and the signed
-/// candidate's [`boot_admission`].
+/// The band condition of [`admit`].
 fn band_check(
     topo: &azos_topology::Topology<'static>,
     r: &azos_topology::deadline::Report,
@@ -420,88 +494,6 @@ fn may_fork(t: &azos_topology::TaskSpec<'_>) -> bool {
     }
     azos_sched::seccomp::profile_named(name)
         .map_or(true, azos_sched::seccomp::profile_can_fork)
-}
-
-/// RFC-0049 M1b + P7, once, before the first ring-3 task: reserve the DMA
-/// pool, then check that every ring-3 row's frame budget fits the RAM that is
-/// left. Halts the board on either failure, as the deadline check does:
-/// booting a topology whose budgets cannot all be honoured would turn a
-/// declared guarantee into a race for the last frames.
-///
-/// The kernel reserve is Kconfig `MEM_KERNEL_RESERVE_KB` plus one vDSO page
-/// per task slot (`azos_mm::vdso::task_page_claim` allocates one per slot
-/// on first use and never frees it).
-fn memory_admission(topo: &azos_topology::Topology<'static>) {
-    // Everything below is in topology pages (4 KiB, `TOPOLOGY_PAGE`); the
-    // allocator counts frames of PAGE_SIZE. At 4 KiB the two conversions are
-    // the identity; under an aarch64 16/64 KiB granule they keep a signed
-    // topology meaning the same bytes (`azos_topology::memory`'s doc).
-    let page = azos_arch_api::PAGE_SIZE as u64;
-    let floor = dma_floor_pages();
-    let pool = topo.dma_pool_pages(floor);
-    let free_before = azos_topology::units_for(azos_mm::pmm::free_pages() as u64, page);
-    match azos_mm::pmm::reserve_dma_pool(azos_topology::frames_for(pool, page) as usize) {
-        Ok(base) => kprintln!(
-            "[MM] DMA pool: {} KiB reserved at {:#x} (floor {} KiB, {} pipeline(s) declare {} KiB)",
-            pool * 4, base.as_usize(), floor * 4, topo.pipelines().len(),
-            topo.pipelines().iter().map(|p| p.dma_pages as u64 * 4).sum::<u64>(),
-        ),
-        Err(_) => {
-            azos_drv_sys::kerr!("[TOPO] Memory admission REFUSED: {:?} — halting",
-                azos_topology::MemoryRefusal::DmaPool { need: pool, free: free_before });
-            loop { azos_arch::ARCH.wfi(); }
-        }
-    }
-    let reserve = kernel_reserve_pages();
-    let free = azos_topology::units_for(azos_mm::pmm::free_pages() as u64, page);
-    // Kconfig LOCKED_HUGE_LEAVES: a row that asks for a 2 MiB-leaf region on
-    // a kernel built without the option is refused here, not run without
-    // the region it was written for.
-    if !azos_limits::LOCKED_HUGE_LEAVES {
-        if let Some((i, t)) = topo.tasks().iter().enumerate().find(|(_, t)| t.mem_huge_mib != 0) {
-            azos_drv_sys::kerr!("[TOPO] Memory admission REFUSED: row {} ({}) declares mem_huge_mib = {} but this kernel was built without LOCKED_HUGE_LEAVES — halting",
-                i, t.name.as_str(), t.mem_huge_mib);
-            loop { azos_arch::ARCH.wfi(); }
-        }
-    }
-    match topo.memory_admission(free, reserve, azos_topology::RING3_DEFAULT_PAGES, &may_fork) {
-        Ok(r) => kprintln!(
-            "[TOPO] Memory admission: {} ring-3 row(s) ({} locked, {} forking), {} instance(s): {} locked + {} ceiling + {} COW copy + {} kernel reserve = {} of {} free pages",
-            r.rows, r.locked_rows, r.fork_rows, r.instances, r.locked_pages, r.ceiling_pages, r.cow_pages, r.reserve_pages, r.need, r.free,
-        ),
-        Err(e) => {
-            azos_drv_sys::kerr!("[TOPO] Memory admission REFUSED: {:?} — halting", e);
-            loop { azos_arch::ARCH.wfi(); }
-        }
-    }
-    if azos_limits::LOCKED_HUGE_LEAVES {
-        reserve_huge_regions(topo);
-    }
-}
-
-/// Kconfig LOCKED_HUGE_LEAVES: take each `mem_huge_mib` row's region out of
-/// the allocator now, once — admission has just counted it as locked pages —
-/// as one physically contiguous, 2 MiB-aligned run (`azos_mm::huge`).
-/// Exec maps it with 2 MiB leaves. A region that cannot be reserved halts the
-/// board like any other admission failure: the row was promised it.
-fn reserve_huge_regions(topo: &azos_topology::Topology<'static>) {
-    for (i, t) in topo.tasks().iter().enumerate() {
-        if t.mem_huge_mib == 0 {
-            continue;
-        }
-        let bytes = t.mem_huge_mib as usize * 1024 * 1024;
-        match azos_mm::huge::reserve((i + 1) as u16, bytes) {
-            Ok(pa) => kprintln!(
-                "[MM] huge region: row {} ({}) {} MiB reserved at pa {:#x}, mapped with 2 MiB leaves at exec",
-                i, t.name.as_str(), t.mem_huge_mib, pa,
-            ),
-            Err(e) => {
-                azos_drv_sys::kerr!("[TOPO] Memory admission REFUSED: row {} ({}) huge region of {} MiB: {:?} — halting",
-                    i, t.name.as_str(), t.mem_huge_mib, e);
-                loop { azos_arch::ARCH.wfi(); }
-            }
-        }
-    }
 }
 
 /// `mem_start + mem_size` for display and for the W^X "outside the image"

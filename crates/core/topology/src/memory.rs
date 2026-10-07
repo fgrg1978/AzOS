@@ -125,6 +125,14 @@ pub enum MemoryRefusal {
         /// Pages free when the pool was reserved.
         free: u64,
     },
+    /// Row `task` asks for a `mib` MiB 2 MiB-leaf region and the allocator
+    /// has no free, 2 MiB-aligned contiguous run of that size.
+    HugeRegion {
+        /// Index of the row in the task table.
+        task: u16,
+        /// The region's size, from the row's `mem_huge_mib`.
+        mib: u16,
+    },
 }
 
 /// What admission counted, for the boot log.

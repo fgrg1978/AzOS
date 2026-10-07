@@ -583,6 +583,18 @@ pub fn reserve_dma_pool(pages: usize) -> KResult<PhysAddr> {
     Ok(base)
 }
 
+/// Undo [`reserve_dma_pool`]: every frame goes back to the allocator and the
+/// pool is unset. For boot admission only, when the topology the pool was
+/// reserved for is refused before it is installed; nothing has been given a
+/// frame of the pool yet.
+pub fn release_dma_pool() {
+    let pages = DMA_POOL_PAGES.swap(0, Ordering::AcqRel);
+    let base = DMA_POOL_BASE.swap(0, Ordering::AcqRel);
+    for i in 0..pages {
+        let _ = free_page(PhysAddr::new(base + i * PAGE_SIZE));
+    }
+}
+
 /// `(physical base, pages)` of the DMA pool; `(0, 0)` before it is reserved.
 pub fn dma_pool() -> (usize, usize) {
     (DMA_POOL_BASE.load(Ordering::Acquire), DMA_POOL_PAGES.load(Ordering::Acquire))

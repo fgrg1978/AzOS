@@ -44,6 +44,19 @@ pub fn reserve(row: u16, bytes: usize) -> KResult<usize> {
 }
 
 /// `(physical base, bytes)` of the row's region, if it has one.
+/// Undo every [`reserve`]: the frames go back to the allocator and the
+/// table is emptied. For boot admission only, when the topology the regions
+/// were reserved for is refused before it is installed.
+pub fn release_all() {
+    let mut regions = REGIONS.lock();
+    for r in regions.iter_mut().filter(|r| r.0 != 0) {
+        for off in (0..r.2).step_by(PAGE_SIZE) {
+            let _ = pmm::free_page(crate::addr::PhysAddr::new(r.1 + off));
+        }
+        *r = (0, 0, 0);
+    }
+}
+
 pub fn region(row: u16) -> Option<(usize, usize)> {
     if row == 0 {
         return None;
