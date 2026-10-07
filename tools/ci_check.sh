@@ -1238,6 +1238,9 @@ par_exit() {
     local i
     for ((i = PAR_HEAD; i <= PAR_N; i++)); do cat "$PAR_DIR/$i.out" >&7 2>/dev/null; done
     PAR_HEAD=$((PAR_N + 1))
+    # The kernel cache is one run's: up to CI_KCACHE_MAX_MB of it would
+    # otherwise sit in the log dir until the next run.
+    if [ -z "$PAR_JOB" ] && [ -n "${CI_LOG_ABS:-}" ]; then rm -rf "$CI_LOG_ABS/kcache"; fi
 }
 trap 'par_exit' EXIT
 trap 'exit 130' INT TERM
