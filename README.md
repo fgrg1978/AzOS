@@ -29,6 +29,9 @@ kernel for devices whose irreversible effects must pass a kernel-held
 authority. It is not a POSIX or Linux replacement (the Linux personality is
 optional), has no desktop or GUI, and is not certified.
 
+[`ROADMAP.md`](ROADMAP.md) gives the direction and the order of the work
+ahead.
+
 ## One kernel, several deployment profiles
 
 The same tree builds images for different jobs. The application domain is a
