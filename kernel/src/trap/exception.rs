@@ -4,6 +4,7 @@
 //! (COW, demand paging, guards) and the fatal-fault post-mortem.
 
 use azos_arch::Cpu as _;
+use crate::entry::TrapContext as _;
 use crate::*;
 // Not from the crate root: there `trap` names this module tree.
 use azos_arch::trap;
@@ -101,7 +102,7 @@ pub(crate) fn handle_ecall(frame: &mut TrapFrame) -> usize {
     if azos_trace::syscall_on() {
         trace_sys_enter(frame);
     }
-    let num = frame.regs[17]; // a7 = syscall number
+    let num = frame.syscall_number(); // a7
     azos_sched::swcensus::ecall_enter();
 
     // O3.1 (owner decision, 2026-09-26): syscalls run with interrupts
@@ -190,7 +191,7 @@ pub(crate) fn handle_ecall(frame: &mut TrapFrame) -> usize {
         azos_syscall::SyscallEntry::Done(r) => r,
         entry => ecall_dispatch(frame, num as u64, entry),
     };
-    frame.regs[10] = result as _; // return value in a0
+    frame.set_syscall_return(result as usize); // a0
     // The exit tracepoint, as the entry one: the number and the result are
     // read back from the frame.
     if azos_trace::syscall_on() {
@@ -199,7 +200,7 @@ pub(crate) fn handle_ecall(frame: &mut TrapFrame) -> usize {
     // Skip the `ecall`. Wrapping: an `ecall` at the top 4 bytes of the
     // address space cannot exist (no U-mode or kernel mapping is there), so
     // the overflow panic was two dead instructions on every syscall.
-    frame.sepc = frame.sepc.wrapping_add(4);
+    frame.set_pc(frame.pc().wrapping_add(4));
 
     // K-C21: if THIS task ran exec_user() inside this ecall, consume
     // its own hand-off and switch to U-mode. Per-task, not the old
