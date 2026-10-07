@@ -43,6 +43,22 @@ choice
           SpacemiT K1 SoC with 8-core rv64gcv @ 1.6 GHz + RVV V1.0 (VLEN=256).
           Used for ML/CNN inference acceleration paths.
 
+    config BOARD_RPI5
+        bool "Raspberry Pi 5 (BCM2712, aarch64) - not ported yet"
+        depends on ARCH_AARCH64
+        help
+          Raspberry Pi 5 Model B: BCM2712, 4x Cortex-A76 (ARMv8.2-A: LSE;
+          no PAuth, BTI, MTE or SVE). Port notes, to be verified against
+          the BCM2712 device tree before bring-up:
+          - interrupt controller GIC-400 (GICv2); the aarch64 port uses
+            GICv3, so an irqchip backend for GICv2 is needed;
+          - most peripherals sit behind the RP1 southbridge on PCIe; the
+            3-pin debug UART is a PL011 on the SoC, the first console;
+          - booted by the Pi firmware (config.txt, kernel8.img, DTB);
+          - generic timer at 54 MHz.
+          Selecting it stops the build with a compile_error! that names
+          what is missing.
+
     config BOARD_GENERIC
         bool "Generic / custom (manually specify all addresses)"
         help
@@ -61,6 +77,7 @@ config TIMER_FREQ
     # ARMv8 generic timer on QEMU virt (>= 9.0): CNTFRQ_EL0 = 1 GHz. Every
     # TIMER_FREQ-derived timeout is compile-time; a wrong value here is a
     # 100x-short DHCP/ARP/safety timeout on that ISA (gate 182c).
+    default 54000000 if BOARD_RPI5
     default 1000000000 if ARCH_AARCH64
     # x86_64 skeleton: the TSC rate is per-CPU and calibrated at boot; a port
     # makes the TIMER_FREQ-derived timeouts runtime. Placeholder until then.

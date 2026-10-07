@@ -109,6 +109,8 @@ k1 = [
     "azos_drv_dmac/k1", "dep:azos_drv_npu", "azos_drv_npu/k1",
     "azos_robot_drivers?/k1", "azos_ota/k1", "link-encrypt-enforced",
 ]
+# Raspberry Pi 5 (BOARD_RPI5): selectable, not ported; see entry/aarch64.rs.
+rpi5 = []
 rvv  = ["azos_arch/rvv", "azos_shell/rvv", "azos_ml?/rvv", "azos_camera?/rvv"]
 # RFC-0046 stage 1a canary (aarch64): see crates/core/arch-aarch64/Cargo.toml.
 its-skip-mapti = ["azos_arch/its-skip-mapti"]

@@ -67,6 +67,7 @@ config NR_CPUS
     range 1 64
     default 8  if BOARD_K1
     default 5  if BOARD_VF2
+    default 4  if BOARD_RPI5
     default 4  if PROFILE_EMBEDDED
     default 64
     help

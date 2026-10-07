@@ -121,6 +121,7 @@ KCONFIG_TO_CARGO_FEATURE: dict[str, Optional[str]] = {
     # Board / platform → bare kernel feature
     "CONFIG_BOARD_VF2":     "vf2",
     "CONFIG_BOARD_K1":      "k1",
+    "CONFIG_BOARD_RPI5":    "rpi5",
     "CONFIG_BOARD_QEMU":    "qemu",
 
     # ISA extensions
