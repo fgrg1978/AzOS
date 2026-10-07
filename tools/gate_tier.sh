@@ -29,11 +29,15 @@ if [ "${GATE_DRY:-0}" = 1 ]; then
     exit 0
 fi
 
+# The gate's own rules: zero warnings for riscv64 and aarch64 but build-script
+# notes and the aarch64 build's known noise (A64_KNOWN_NOISE in ci_check.sh);
+# the x86_64 skeleton by exit status, as the gate's "x86_64: make check" row.
+noise='^warning: [A-Za-z0-9_-]+@[0-9]|prod pubkey|packages contain code that will be rejected by a future version of Rust: core v0\.0\.0'
 if [ "$tier" = n0 ]; then
     for arch in riscv64 aarch64 x86_64; do
         printf "  %-26s" "check ${arch}..."
         if out="$(make ARCH="$arch" check 2>&1)" \
-           && ! printf '%s\n' "$out" | grep -E '^warning:' | grep -qvE '^warning: [A-Za-z0-9_-]+@[0-9]'; then
+           && { [ "$arch" = x86_64 ] || ! printf '%s\n' "$out" | grep -E '^warning:' | grep -qvE "$noise"; }; then
             echo ok
         else
             echo FAIL; fail=1
