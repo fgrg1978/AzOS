@@ -1844,6 +1844,20 @@ else
     bad; printf '%s\n' "$acl_out" | sed 's/^/      /'
 fi
 
+# Boot sequence lint (tools/boot_seq_lint.py): the common early-boot steps
+# (console, firmware table, memory map, page tables, W^X/NX, guards, heap, ...)
+# run from boot::early_main, not from each ISA's boot_hooks.rs, unless a
+# `// boot-seq:` comment says why that ISA runs one elsewhere; a step present
+# in neither is lost. Ratchet in tools/boot_seq_lint.baseline. The row also
+# runs the lint's own canaries (`--self-test`).
+printf "  %-26s" "boot seq lint (ratchet)..."
+if bsl_out="$(python3 "${REPO_ROOT}/tools/boot_seq_lint.py" --self-test 2>&1)" \
+   && bsl_out="$(python3 "${REPO_ROOT}/tools/boot_seq_lint.py" 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$bsl_out" | sed -n 1,10p | sed 's/^/      /'
+fi
+
 # Every row's key has a line in tools/gate_rows.tsv (its tier and the paths it
 # depends on, for `make check1`), and no line names a row that is gone.
 printf "  %-26s" "gate rows manifest..."

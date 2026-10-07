@@ -46,6 +46,18 @@ if [ "$tier" = n0 ]; then
     done
 fi
 
+# The boot sequence lint (tools/boot_seq_lint.py), as the gate's row does.
+if [ "$tier" = n0 ]; then
+    printf "  %-26s" "boot seq lint..."
+    if out="$(python3 tools/boot_seq_lint.py --self-test 2>&1)" \
+       && out="$(python3 tools/boot_seq_lint.py 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 for s in $suites; do
     printf "  %-26s" "host ${s#tests/host/}..."
     if out="$(cd "$s" && cargo test --release 2>&1)" \
