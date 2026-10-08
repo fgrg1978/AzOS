@@ -601,6 +601,25 @@ three:
 - **Edge**, the default, for single-board computers.
 - **Fleet**, for gateways aggregating many devices.
 
+**Userspace programs and the console program.** The "Userspace programs"
+menu is generated at every Kconfig parse by `tools/gen_userspace_kconfig.py`
+from the directories under `userspace/` (each program's
+`[package.metadata.azos]`, or `azos.toml`, names its images) and is not
+committed: a program directory that is added or deleted appears in, or
+leaves, the next configuration. It has one `USERSPACE_<IMAGE>` option per
+image, which puts that image on the board volume. Images that the built-in
+topology always has a row for are selected and cannot be removed. The
+`CONSOLE_PROGRAM` choice picks what the kernel starts on the console: the
+native shell (the edge and fleet default), BusyBox `sh`, any other included
+image, a custom `/fat` image with arguments, or none. Its topology row says
+`start = true`, so it is hash-bound, confined by its seccomp profile and
+row, and supervised like any other row. A Linux-ABI console program gets
+its argv, descriptors 0-2 on the console and the console input. The
+in-kernel shell remains the recovery console. With secure boot off,
+`init=/fat/NAME.ELF` on the kernel command line (`/chosen/bootargs`) names
+another image for one boot, provided that image has a topology row. With
+secure boot on, `init=` is ignored and the boot log says so.
+
 **CPU baseline and extensions.** Every ISA is configured the same way
 (`config/Kconfig.arch`):
 
