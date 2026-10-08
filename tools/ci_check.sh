@@ -4461,7 +4461,17 @@ par_row natfork_row "aarch64 fork: template seal canary"     arm qemu,natfork-te
 # wake check did (`sleep(50)`, then one wake) and failed 4 boots in 30 of the
 # `vdso-write-window` row under gate load; with the old check this canary
 # failed it 2/2.
-threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|noclear>
+#
+# The thread storm (abitest's `check_thread_storm`, before these checks;
+# CTXHUNT 2026-10-08): fork children whose spinning threads their exit must
+# stop, threads that exit at once, and children whose thread faults while
+# they exit, 200 rounds. Before the fixes it faulted the kernel in about a
+# second, 10/10 loaded boots on each ISA. `exit-stale-hart-canary` (the exit
+# path's stale hart id) and `reap-window-canary` (a Zombie's stack freed
+# before its hart left it) must fault or wedge the kernel (`kbroken`);
+# `cow-spurious-canary` (a COW fault on an entry another thread just broke
+# kills the thread) must fail the storm's first check (`cowkill`).
+threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|noclear|cowkill|kbroken>
     local label="$1" isa="$2" feats="$3" want="$4"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
@@ -4500,6 +4510,16 @@ threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|nocle
     done
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
     rm -f "$kcopy" "$dcopy"
+    # A kernel canary (CTXHUNT) must break the kernel inside the cap: fault
+    # it, or wedge it short of the thread checks (the aarch64 stale-hart
+    # canary strands exits instead of faulting).
+    if [ "$want" = kbroken ]; then
+        if grep -aqiE "$fault" "$log" 2>/dev/null || ! grep -aqF "$last" "$log" 2>/dev/null; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary ($feats) left the kernel working"
+        echo "      log kept: $log"; return
+    fi
     if grep -aqiE "$fault" "$log" 2>/dev/null; then
         bad; echo "      the kernel faulted:"
         grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
@@ -4511,16 +4531,17 @@ threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|nocle
     fi
     local oks fails need
     oks="$(grep -a "\[ABITEST\]   ok   threads: " "$log" | wc -l | tr -d ' ')"
-    fails="$(grep -a "\[ABITEST\]  FAIL  threads: " "$log" | tr -d '\r')"
+    fails="$(grep -a "\[ABITEST\]  FAIL  thread" "$log" | tr -d '\r')"
     case "$want" in
     ok)
         if [ "$oks" = 17 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
         bad; echo "      want 17 ok and no FAIL threads lines; read $oks ok:" ;;
-    privtable|futexnoop|noclear)
+    privtable|futexnoop|noclear|cowkill)
         case "$want" in
         privtable) need="the thread read through the creator's handle" ;;
         futexnoop) need="futex_wake wakes the waiting thread" ;;
         noclear)   need="both joined through their cleared word" ;;
+        cowkill)   need="thread storm: every spinning child exits with its own code" ;;
         esac
         if printf '%s\n' "$fails" | grep -qF "$need"; then
             ok; rm -f "$log"; return
@@ -4540,6 +4561,12 @@ par_row threads_row "threads: clear-tid canary"              rv  qemu,threads-no
 par_row threads_row "aarch64 threads: clear-tid canary"      arm qemu,threads-no-cleartid-canary noclear
 par_row threads_row "threads: late start"                    rv  qemu,threads-late-start-canary ok
 par_row threads_row "aarch64 threads: late start"            arm qemu,threads-late-start-canary ok
+par_row threads_row "threads: stale exit hart canary"        rv  qemu,exit-stale-hart-canary kbroken
+par_row threads_row "aarch64 threads: stale exit hart"       arm qemu,exit-stale-hart-canary kbroken
+par_row threads_row "threads: reap window canary"            rv  qemu,reap-window-canary kbroken
+par_row threads_row "aarch64 threads: reap window canary"    arm qemu,reap-window-canary kbroken
+par_row threads_row "threads: cow spurious canary"           rv  qemu,cow-spurious-canary cowkill
+par_row threads_row "aarch64 threads: cow spurious canary"   arm qemu,cow-spurious-canary cowkill
 
 # ── fork: W^X across copy-on-write (wave 13, security) ─────────────────────
 #

@@ -219,6 +219,7 @@ pub extern "C" fn _start() -> ! {
     check_fork_keeps_code_read_only();
     check_mmap_prot();
     // Wave 13 (THREADS): native threads. They reap their own children.
+    check_thread_storm();
     check_threads();
     check_orphans();
     // aarch64 lazy FP. After the wait()/waitpid() checks and before any
@@ -2079,6 +2080,66 @@ extern "C" fn t_spin(_z: u64, _stack: u64, _arg: u64) -> ! {
     loop {
         T_COUNT.fetch_add(1, AO::Relaxed);
     }
+}
+
+/// A thread that faults at once (a store through a null pointer): its
+/// fault ends its whole process.
+extern "C" fn t_null_store(_z: u64, _stack: u64, _arg: u64) -> ! {
+    unsafe { core::ptr::write_volatile(0x8 as *mut u32, 1) };
+    sys::thread_exit(0)
+}
+
+/// A thread that exits at once.
+extern "C" fn t_exit_now(_z: u64, _stack: u64, _arg: u64) -> ! {
+    sys::thread_exit(0)
+}
+
+/// Rounds of [`check_thread_storm`].
+const STORM_ROUNDS: usize = 200;
+
+/// Thread-group exits, many times over, on every hart (CTXHUNT, 2026-10-08).
+/// Each round: a fork child whose two threads spin on one counter exits 7
+/// (its exit must stop them); a thread exits and is joined; a fork child
+/// whose thread faults while the child exits is reaped.
+///
+/// Three kernel bugs failed it in about a second on `-smp 4`: the exit path
+/// ran `do_schedule` with the hart id it entered on after a wait had moved it
+/// (another hart's `current_idx` taken as its own), a Zombie's stack was
+/// freed while its hart still ran on it, and the second of two threads
+/// breaking one copy-on-write page died (`NotMapped` for an entry the first
+/// had just broken). Canaries (gate rows): `exit-stale-hart-canary` and
+/// `reap-window-canary` fault or wedge the kernel; `cow-spurious-canary`
+/// fails the first check.
+fn check_thread_storm() {
+    let (mut code_ok, mut joined, mut faulted_reaped) = (0usize, 0usize, 0usize);
+    for _ in 0..STORM_ROUNDS {
+        let pid = sys::fork();
+        if pid == 0 {
+            let _ = sys::thread_create(t_spin, t_stack_top(0), 0, core::ptr::null_mut());
+            let _ = sys::thread_create(t_spin, t_stack_top(1), 0, core::ptr::null_mut());
+            sys::exit(7);
+        }
+        if pid > 0 {
+            let (got, st) = reap_by_tid(pid);
+            if got == pid && st == 7 { code_ok += 1; }
+        }
+        T_CTID[2].store(u32::MAX, AO::Release);
+        let t = sys::thread_create(t_exit_now, t_stack_top(2), 0, T_CTID[2].as_ptr());
+        if t > 0 && t_join(2) { joined += 1; }
+        let pid = sys::fork();
+        if pid == 0 {
+            let _ = sys::thread_create(t_spin, t_stack_top(0), 0, core::ptr::null_mut());
+            let _ = sys::thread_create(t_null_store, t_stack_top(1), 0, core::ptr::null_mut());
+            sys::exit(7);
+        }
+        if pid > 0 && reap_by_tid(pid).0 == pid { faulted_reaped += 1; }
+    }
+    expect_eq(b"thread storm: every spinning child exits with its own code", code_ok as isize,
+              STORM_ROUNDS as isize);
+    expect_eq(b"thread storm: every thread that exits at once is joined", joined as isize,
+              STORM_ROUNDS as isize);
+    expect_eq(b"thread storm: every child whose thread faulted is reaped", faulted_reaped as isize,
+              STORM_ROUNDS as isize);
 }
 
 /// Join: wait until the thread's exit cleared its word, within 5 s.

@@ -45,6 +45,8 @@ demand-region-canary = []
 # ... and the wave 14 (FORKSPAWN) canaries in the pulled-in `cow.rs`.
 fork-demand-canary = []
 cow-reuse-canary = []
+# ... and `cfg(feature = "cow-spurious-canary")` in the pulled-in `cow.rs` (CTXHUNT).
+cow-spurious-canary = []
 # ... and the wave 14 (SPAWNCACHE) canary in the pulled-in `image_frames.rs`.
 image-share-all-canary = []
 # ... and the wave 14 security canary in the pulled-in `vmm.rs`.
