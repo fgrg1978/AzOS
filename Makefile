@@ -2651,7 +2651,7 @@ endef
 # CAPS.TOM with <priv key>, put the three files on <image> (and drop a stale
 # SCHED.SIG). The image must already carry its device record.
 define topo_bind
-	@dev="$(or $(TOPO_DEVICE),$$(python3 tools/device_provision.py --show --id-only $(5)))"; \
+	@mkdir -p $(dir $(4)); dev="$(or $(TOPO_DEVICE),$$(python3 tools/device_provision.py --show --id-only $(5)))"; \
 	case "$$dev" in [0-9a-f][0-9a-f]*) ;; *) echo "[TOPO] $(5): no device record (tools/device_provision.py) to bind the topology to"; exit 1;; esac; \
 	echo "$$dev" > $(4).device
 	$(call topo_emit,$(1),$(2),$(3),$(4),--device $$(cat $(CURDIR)/$(4).device) --counter $(TOPO_COUNTER))

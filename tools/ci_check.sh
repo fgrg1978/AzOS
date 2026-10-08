@@ -2365,6 +2365,54 @@ A64_IMG="$A64_IMG_OUT"
 # report). Anchored at end of line: a notice that names any second package
 # is not matched and still fails the row.
 A64_KNOWN_NOISE='prod pubkey|packages contain code that will be rejected by a future version of Rust: core v0\.0\.0 \([^,]*\)$'
+# The aarch64 kernel builds, defined before the first row that builds one: a
+# deferred build (ci_kb_defer) is made by whichever later row flushes it.
+a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64_IMG_OUT
+    local feats="$1"
+    rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT"
+    local out
+    # KCONFIG_CONFIG pinned to config/defconfigs/qemu-aarch64.config (U12-3): without
+    # this override every aarch64 build inherited the exported primary-column
+    # KCONFIG_CONFIG above (an ARCH_RISCV64 config before this change existed
+    # at all), so `azos_limits` built ARCH_RISCV64's constants for an
+    # ARCH_AARCH64 kernel.
+    if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; then
+        printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return 1
+    fi
+    if printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+        printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
+        return 1
+    fi
+    [ -f "$A64_KERNEL_OUT" ] || return 1
+    local a64_objcopy
+    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    [ -x "$a64_objcopy" ] || return 1
+    "$a64_objcopy" -O binary "$A64_KERNEL_OUT" "$A64_IMG_OUT" 2>/dev/null
+    [ -f "$A64_IMG_OUT" ] || return 1
+    # Same FP-free proof as the "aarch64 kernel FP-free" row, on this feature
+    # set's own ELF (more crates are linked in than in the no-feature build).
+    # The proof is a function of the ELF's bytes and of the checker: an ELF
+    # this run already proved (same SHA-256, same checker) is not re-read
+    # (3.3 s each; wave 15 measured ~30 repeats of the plain qemu kernel).
+    local fpfree fpkey=""
+    if [ -n "${CI_LOG_ABS:-}" ]; then
+        fpkey="$CI_LOG_ABS/fpfree/$(cat "$A64_KERNEL_OUT" tools/aarch64_fp_free_check.sh | shasum -a 256 | cut -c1-64)"
+        [ -f "$fpkey" ] && return 0
+    fi
+    if ! fpfree="$(bash tools/aarch64_fp_free_check.sh "$A64_KERNEL_OUT" 2>&1)"; then
+        printf '%s\n' "$fpfree" | head -8
+        return 1
+    fi
+    if [ -n "$fpkey" ]; then mkdir -p "${fpkey%/*}"; : >"$fpkey"; fi
+}
+a64_kbuild() { # a64_kbuild <comma-separated-features>
+    par_shared "a64_kbuild $1" || return 1
+    if [ $# -eq 1 ] && ci_kb_defer a64 "$1"; then return 0; fi
+    a64_kbuild_out "$@"
+}
 
 rm -f "$A64_KERNEL" "$A64_IMG"
 if ci_row_begin "aarch64 kernel (build)"; then
@@ -3230,52 +3278,6 @@ aarch64_boot_good_row() {
 # row — abitest's own `fork()`/`wait()`/`wait_status()`/`waitpid()` checks
 # (six of its 173) are part of the "all checks" row below, the same as on
 # riscv64.
-a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64_IMG_OUT
-    local feats="$1"
-    rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT"
-    local out
-    # KCONFIG_CONFIG pinned to config/defconfigs/qemu-aarch64.config (U12-3): without
-    # this override every aarch64 build inherited the exported primary-column
-    # KCONFIG_CONFIG above (an ARCH_RISCV64 config before this change existed
-    # at all), so `azos_limits` built ARCH_RISCV64's constants for an
-    # ARCH_AARCH64 kernel.
-    if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
-            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; then
-        printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
-        return 1
-    fi
-    if printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
-        printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
-        return 1
-    fi
-    [ -f "$A64_KERNEL_OUT" ] || return 1
-    local a64_objcopy
-    a64_objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
-    [ -x "$a64_objcopy" ] || return 1
-    "$a64_objcopy" -O binary "$A64_KERNEL_OUT" "$A64_IMG_OUT" 2>/dev/null
-    [ -f "$A64_IMG_OUT" ] || return 1
-    # Same FP-free proof as the "aarch64 kernel FP-free" row, on this feature
-    # set's own ELF (more crates are linked in than in the no-feature build).
-    # The proof is a function of the ELF's bytes and of the checker: an ELF
-    # this run already proved (same SHA-256, same checker) is not re-read
-    # (3.3 s each; wave 15 measured ~30 repeats of the plain qemu kernel).
-    local fpfree fpkey=""
-    if [ -n "${CI_LOG_ABS:-}" ]; then
-        fpkey="$CI_LOG_ABS/fpfree/$(cat "$A64_KERNEL_OUT" tools/aarch64_fp_free_check.sh | shasum -a 256 | cut -c1-64)"
-        [ -f "$fpkey" ] && return 0
-    fi
-    if ! fpfree="$(bash tools/aarch64_fp_free_check.sh "$A64_KERNEL_OUT" 2>&1)"; then
-        printf '%s\n' "$fpfree" | head -8
-        return 1
-    fi
-    if [ -n "$fpkey" ]; then mkdir -p "${fpkey%/*}"; : >"$fpkey"; fi
-}
-a64_kbuild() { # a64_kbuild <comma-separated-features>
-    par_shared "a64_kbuild $1" || return 1
-    if [ $# -eq 1 ] && ci_kb_defer a64 "$1"; then return 0; fi
-    a64_kbuild_out "$@"
-}
 
 # aarch64 abitest: mirrors riscv64's "userspace: ABI conformance" row —
 # every check the binary runs, read back rather than counted here (the
@@ -8789,7 +8791,10 @@ else
                 n=$((n + 1)); sleep 0.5
             done
         fi
-        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        # SIGTERM first, SIGKILL if QEMU is still there 2 s later: a plain
+        # `kill; wait` held this row ~15 min after its 30 s watch (2026-10-08).
+        kill "$pid" 2>/dev/null; sleep 2; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
         if grep -aqE "$bad_re" "$log"; then
             bad; echo "      fleet image reported a fault:"
             grep -aE -m6 "$bad_re" "$log" | sed 's/^/      /'
