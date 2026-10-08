@@ -32,6 +32,9 @@ exec-no-dethread-canary = []
 # ... and one where a thread that is not the leader is refused its exec, as
 # before the PID hand-over (`scheduler::exec_take_over`).
 exec-no-pid-swap-canary = []
+# Wave 15 gate canary: a native thread's argument is not written into its
+# third argument register (aarch64 then reads 0).
+thread-regs-canary = []
 # Gate canary (CTXHUNT): a Zombie's slot is freed before the switch away from
 # it, as before, and the hart stays 2 ms on the freed stack.
 reap-window-canary = []

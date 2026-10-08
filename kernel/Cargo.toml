@@ -257,9 +257,9 @@ exec-no-dethread-canary = ["azos_sched/exec-no-dethread-canary"]
 thread-objects-canary = ["azos_syscall/thread-objects-canary"]
 exec-no-pid-swap-canary = ["azos_sched/exec-no-pid-swap-canary"]
 exec-validate-late-canary = ["azos_syscall/exec-validate-late-canary"]
-# Wave 15 gate canary (aarch64): a native thread starts without its
-# creator's register snapshot again, so its argument arrives as 0.
-thread-regs-canary = []
+# Wave 15 gate canary (aarch64): a native thread's argument is not written
+# into its third argument register, so it arrives as 0.
+thread-regs-canary = ["azos_sched/thread-regs-canary"]
 reap-window-canary = ["azos_sched/reap-window-canary"]
 ctx-probe = ["azos_sched/ctx-probe"]
 exit-stale-hart-canary = ["azos_sched/exit-stale-hart-canary"]

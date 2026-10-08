@@ -2437,6 +2437,7 @@ pub fn thread_create_impl(
     tls: Option<u64>,
     ctid: u64,
     regs: &crate::task::UserRegs,
+    arg: Option<u64>,
     before_release: &mut dyn FnMut(u32) -> bool,
 ) -> i64 {
     const EAGAIN: i64 = -11;
@@ -2486,11 +2487,22 @@ pub fn thread_create_impl(
     // Gate canary only: the new thread keeps its creator's thread pointer
     // (musl's thread-local storage is then the creator's).
     let tls = if cfg!(feature = "threads-tls-canary") { None } else { tls };
+    // Wave 15: a native thread's argument, in its third argument register.
+    // aarch64's trap path hands this call no register snapshot (`regs` is
+    // zeroed there: copying the creator's file, its 528-byte FP state
+    // included, cost every create about 1,000 instructions), so the one
+    // register the thread is promised is written here; the rest start
+    // zeroed, the FP file clean. Gate canary `thread-regs-canary` leaves it
+    // out (the argument then reads 0 on aarch64).
+    let arg = if cfg!(feature = "thread-regs-canary") { None } else { arg };
     #[cfg(target_arch = "riscv64")]
     {
         r[2] = stack;
         if let Some(t) = tls {
             r[4] = t;
+        }
+        if let Some(a) = arg {
+            r[12] = a;
         }
     }
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
@@ -2498,6 +2510,9 @@ pub fn thread_create_impl(
         r.sp_el0 = stack;
         if let Some(t) = tls {
             r.tpidr_el0 = t;
+        }
+        if let Some(a) = arg {
+            r.gpr[2] = a;
         }
     }
     #[cfg(not(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none"))))]

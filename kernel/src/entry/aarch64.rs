@@ -1318,21 +1318,15 @@ fn svc_dispatch(frame: &mut TrapFrame, num: u64, entry: azos_syscall::SyscallEnt
     // bytes. So the untaken branch hands out a reference to a
     // zero-initialised `static` instead — nothing is written per
     // call, and `built` stays an unwritten stack slot unless this is
-    // a fork. `dispatch_slow` reads `regs` in SYS_FORK, SYS_FORK_COW
-    // and SYS_THREAD_CREATE (crates/core/syscall/src/dispatch.rs);
+    // a fork. `dispatch_slow` reads `regs` in exactly two arms,
+    // SYS_FORK and SYS_FORK_COW (crates/core/syscall/src/dispatch.rs);
     // any new reader must be added to `wants_regs` below or it reads
     // zeroes.
     static NO_REGS: azos_sched::UserRegs = unsafe { core::mem::zeroed() };
     // RFC-0047 stage 3: a Linux task's `clone` (220) forks through the
     // same snapshot. Folded away without `LINUX_ABI`.
-    // Wave 15: a native thread starts from the same snapshot
-    // (`process::thread_create_impl`): its argument is the caller's x2, and
-    // without it the thread began with every register zero (the argument
-    // read 0; riscv64 always delivered it). Gate canary
-    // `thread-regs-canary` leaves it out again.
     let wants_regs = num == azos_abi::syscall_nr::SYS_FORK
         || num == azos_abi::syscall_nr::SYS_FORK_COW
-        || (num == azos_abi::syscall_nr::SYS_THREAD_CREATE && !cfg!(feature = "thread-regs-canary"))
         || (azos_limits::LINUX_ABI
             && num == azos_linux_abi::nr::CLONE
             && azos_sched::scheduler::current_is_linux());

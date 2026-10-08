@@ -17,18 +17,18 @@ pub(crate) fn read_u32(addr: u64) -> Option<u32> {
 pub fn sys_thread_create(
     entry: u64,
     stack: u64,
-    _arg: u64,
+    arg: u64,
     ctid: u64,
     tls: u64,
     regs: &azos_sched::UserRegs,
 ) -> i64 {
-    // The argument reaches the thread in its third argument register, as
-    // every register the call did not change; nothing to do with it here.
+    // The argument reaches the thread in its third argument register
+    // (`thread_create_impl` writes it: aarch64 hands this call no snapshot).
     if stack == 0 || stack & 15 != 0 || ctid & 3 != 0 {
         return -1;
     }
     let tls = (tls != 0).then_some(tls);
-    azos_sched::process::thread_create_impl(entry, stack, tls, ctid, regs, &mut |_| true)
+    azos_sched::process::thread_create_impl(entry, stack, tls, ctid, regs, Some(arg), &mut |_| true)
 }
 
 /// `SYS_THREAD_EXIT(code)`.

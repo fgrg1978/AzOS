@@ -1979,7 +1979,7 @@ fn clone_thread(
     let clear = if flags & CLONE_CHILD_CLEARTID != 0 { ctid } else { 0 };
     let tls = (flags & CLONE_SETTLS != 0).then_some(tls);
     let r = azos_sched::process::thread_create_impl(
-        azos_sched::process::resume_pc_after(sepc), newsp, tls, clear, regs,
+        azos_sched::process::resume_pc_after(sepc), newsp, tls, clear, regs, None,
         &mut |child| {
             let id = (child as i32).to_le_bytes();
             // Its signal words: the creating thread's mask, the process's
