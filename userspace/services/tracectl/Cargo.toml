@@ -19,3 +19,8 @@ panic = "abort"
 # Prevents Cargo from merging this crate into the workspace above (see
 # userspace/services/reflex/Cargo.toml).
 [workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+topology = true

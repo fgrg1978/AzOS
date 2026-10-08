@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# tools/gen_userspace_kconfig.py: this directory builds no AzOS program image.
+[azos]
+images = []

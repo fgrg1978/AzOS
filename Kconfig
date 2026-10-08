@@ -29,5 +29,10 @@ source "config/Kconfig.security"
 source "config/Kconfig.mitigations"
 source "config/Kconfig.drivers"
 source "config/Kconfig.linux"
+# The programs under userspace/ (board volume contents, the console program).
+# Generated at every parse by the line below, never committed: a program
+# directory added or deleted shows up at the next configuration.
+$(shell,python3 tools/gen_userspace_kconfig.py)
+source "config/Kconfig.userspace"
 source "config/Kconfig.ota"
 source "config/Kconfig.development"

@@ -1742,12 +1742,15 @@ build/disk-board.img build/disk-board-k1.img build/disk-board-fleet.img: \
 	# Wave 15: the board kernel's topology as signed files (TOPOLOGY_SOURCE),
 	# bound to this volume's device id, signed with the board key.
 	$(call topo_bind,riscv64,$(BOARD_VOL_KCONFIG),$(call board_topo_features,$(BOARD_VOL_KCONFIG)),$(BOARD_DIR)/topo-$(basename $(notdir $@)),$@,$(BOARD_SIGN_PRIV))
+	# The topology's images plus the ones this volume's .config selects
+	# under "Userspace programs" (`make config`).
+	python3 tools/gen_board_manifest.py build/board_elfs.list --config $(BOARD_VOL_KCONFIG) $(IMAGE_ELFS_BOARD) > $@.manifest
 	@while IFS='=' read -r name path; do \
 		[ -z "$$name" ] && continue; \
 		mcopy -i $@ "$$path" "::$$name" || exit 1; \
-	done < build/board_manifest.txt
+	done < $@.manifest
 	@rm -f $@.tmp_board_config.ini $@.tmp_board_bootmeta
-	python3 tools/check_board_disk.py $@ build/board_manifest.txt
+	python3 tools/check_board_disk.py $@ $@.manifest
 	python3 tools/check_board_keys.py disk $@ $(IMAGE_HASHES_BOARD) $(MLSRV_ELF) tools/keys/test_pub.bin
 	python3 tools/check_board_keys.py sigs $@ $(BOARD_TOPOLOGY_KEY)
 	@echo "[DISK] Board FAT32 image (topology-derived, signed topology for $(BOARD_VOL_KCONFIG)): $@ (autorun=$(AUTORUN_ELF))"

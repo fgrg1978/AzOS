@@ -986,25 +986,20 @@ config TMPFS_MAX_KB
 # ---------------------------------------------------------------------------
 
 config USER_SHELL
-    bool "Ring-3 user shell on the console (SH.ELF)"
-    depends on MAX_FDS_PER_PROC >= 16 && MAX_PIPES >= 8
-    default y if PROFILE_EDGE || PROFILE_FLEET
-    default n
+    bool
+    default y if !CONSOLE_PROGRAM_NONE
     help
-      Start the native shell (userspace/services/sh, /fat/SH.ELF) on the
-      console when boot completes, supervised like the ring-3 drivers
-      (its topology row says start = true). It reads the console with
-      SYS_CONSOLE_WAIT, runs programs with SYS_SPAWN_EX under their own
-      seccomp profile and topology row, and holds no hardware authority.
-      The in-kernel shell becomes a recovery console: it runs only in
-      safe mode, when the volume has no SH.ELF, when the user shell does
-      not take the console within SH_START_TIMEOUT_S, or after the
-      supervisor gave up on it.
+      Derived from CONSOLE_PROGRAM (Userspace programs): y when a ring-3
+      program is started on the console at boot (by default the native
+      shell, userspace/services/sh, /fat/SH.ELF, supervised like the ring-3
+      drivers: its topology row says start = true). The in-kernel shell
+      becomes a recovery console: it runs only in safe mode, when the volume
+      has no console image, when the console program does not take the
+      console within SH_START_TIMEOUT_S, or after the supervisor gave up on
+      it.
 
-      Needs MAX_FDS_PER_PROC >= 16 and MAX_PIPES >= 8: a pipeline with
-      redirections holds several descriptors and pipes at once.
-
-      n: the kernel shell owns the console, as before wave 11.
+      n (CONSOLE_PROGRAM_NONE): the kernel shell owns the console, as before
+      wave 11.
 
 config SH_START_TIMEOUT_S
     int "User shell: seconds to take the console before the recovery console does"

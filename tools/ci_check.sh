@@ -7986,6 +7986,13 @@ test_host "linux-seccomp-launch" "${REPO_ROOT}/tools/linux_seccomp_launch/host-t
 printf "  %-26s" "kconfig_to_cargo tests..."
 if kc_out="$(python3 "${REPO_ROOT}/tools/test_kconfig_to_cargo.py" 2>&1)"; then ok
 else bad; printf '%s\n' "$kc_out" | grep -E "FAIL|ERROR" | sed 's/^/      /'; fi
+# The generated "Userspace programs" menu (config/Kconfig.userspace): the
+# board defaults are the topology's images, a program directory added or
+# deleted under userspace/ enters or leaves the menu, a console program that
+# is gone falls back with a warning.
+printf "  %-26s" "gen_userspace_kconfig..."
+if us_out="$(python3 "${REPO_ROOT}/tools/test_gen_userspace_kconfig.py" 2>&1)"; then ok
+else bad; printf '%s\n' "$us_out" | grep -E "^FAIL|Error" | sed 's/^/      /'; fi
 
 # K-C5: encrypt-link-tests asserts the LINK_ENCRYPT_ENFORCED const in BOTH
 # feature states, and the enforced arm only compiles under the feature —
