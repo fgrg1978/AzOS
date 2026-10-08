@@ -50,7 +50,9 @@ pub use azos_limits::MAX_PIPES;
 #[inline(always)]
 fn caller_ctx() -> (u32, bool) {
     (
-        azos_sched::current_task_tid(),
+        // Wave 15 (plan 4a): the process, so a thread's channel or pipe is
+        // its process's, as a descriptor is, and outlives the thread.
+        azos_sched::current_proc_tid(),
         azos_sched::current_user_pt() == 0,
     )
 }

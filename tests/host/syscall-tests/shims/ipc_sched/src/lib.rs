@@ -27,6 +27,11 @@ pub fn current_task_tid() -> u32 {
     syscall_test_sched::current_task_tid()
 }
 
+/// The calling process (wave 15): a host task is its own process.
+pub fn current_proc_tid() -> u32 {
+    current_task_tid()
+}
+
 pub fn current_user_pt() -> usize {
     syscall_test_sched::current_user_pt()
 }

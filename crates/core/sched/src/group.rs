@@ -28,6 +28,25 @@
 //! clears and wakes its clear-tid word (`CLONE_CHILD_CLEARTID`,
 //! `set_tid_address`), and posts no notice: a thread is nobody's child.
 //!
+//! What a thread creates belongs to its process (wave 15, plan 4a): sockets,
+//! ports, channels, pipes, shared-memory regions and IO rings are booked to
+//! the process id (`current_proc_tid`), as descriptors and capabilities
+//! already were, so any thread may use them and they outlive the thread
+//! that made them, until the process exits. Booked to the thread, by
+//! design, is what names a thread as the one to wake or call: fast-IPC
+//! slots, endpoints it serves, service names, driver slots, IRQ wake
+//! bindings, leases and their seals, its signal state and robust list.
+//!
+//! # Exec
+//!
+//! An exec from a process with threads (wave 15, plan 4a) first ends every
+//! other thread and waits until they have gone
+//! (`scheduler::exec_end_other_threads`): the group is marked exec'ing, no
+//! member may join, a member's exit ends only itself, and the last one's
+//! exit dissolves the group, so the image is replaced by a plain process.
+//! Only the leader may exec (the process is its TID); another thread's exec
+//! is refused.
+//!
 //! # Lock order
 //!
 //! Outermost: the group's layout lock ([`mm_lock`]), taken first by a call
@@ -110,9 +129,13 @@ struct Group {
     /// how many times it holds it.
     mm_owner: u32,
     mm_depth: u32,
+    /// The leader is exec'ing (wave 15, plan 4a): every other member is being
+    /// stopped and ends only itself; no member may be added.
+    execing: bool,
 }
 
-const GROUP_FREE: Group = Group { leader: 0, live: 0, exiting: false, code: 0, mm_owner: 0, mm_depth: 0 };
+const GROUP_FREE: Group =
+    Group { leader: 0, live: 0, exiting: false, code: 0, mm_owner: 0, mm_depth: 0, execing: false };
 
 static GROUPS: SpinLock<[Group; GROUPS_MAX]> = SpinLock::new([GROUP_FREE; GROUPS_MAX]);
 
@@ -220,7 +243,7 @@ pub(crate) fn take_clear_tid(idx: usize) -> u64 {
 pub(crate) fn admit(leader: u32, leader_idx: usize) -> bool {
     let mut g = GROUPS.lock();
     if let Some(e) = g.iter_mut().find(|e| e.leader == leader) {
-        if e.live >= GROUP_THREADS_MAX || e.exiting {
+        if e.live >= GROUP_THREADS_MAX || e.exiting || e.execing {
             return false;
         }
         e.live += 1;
@@ -265,13 +288,35 @@ pub fn exiting(leader: u32) -> Option<i32> {
     GROUPS.lock().iter().find(|e| e.leader == leader && e.exiting).map(|e| e.code)
 }
 
-/// Is the current task a member of a thread group that is ending? A forced
-/// stop it takes then needs no console line.
+/// Is the current task a member of a thread group that is ending, or whose
+/// leader is exec'ing? A forced stop it takes then needs no console line.
 pub fn current_group_ending() -> bool {
     crate::scheduler::current_slot().is_some_and(|i| {
         let l = lead_of_idx(i);
-        l != 0 && exiting(l).is_some()
+        l != 0 && GROUPS.lock().iter().any(|e| e.leader == l && (e.exiting || e.execing))
     })
+}
+
+/// Is `leader`'s group being emptied by its leader's exec? A member stopped
+/// then ends only itself ([`begin_exit`] refuses to end the group).
+pub fn execing(leader: u32) -> bool {
+    GROUPS.lock().iter().any(|e| e.leader == leader && e.execing)
+}
+
+/// The leader `leader` starts an exec: mark its group so that no member is
+/// added and a member's exit ends only that member. `false` when the group
+/// is already ending (the leader is being stopped; its exec must not run).
+/// `true` with nothing marked when `leader` has no group.
+pub(crate) fn begin_exec(leader: u32) -> bool {
+    let mut g = GROUPS.lock();
+    match g.iter_mut().find(|e| e.leader == leader) {
+        Some(e) if e.exiting => false,
+        Some(e) => {
+            e.execing = true;
+            true
+        }
+        None => true,
+    }
 }
 
 /// A member (not the leader) of `leader`'s group has gone. Returns the
@@ -306,11 +351,14 @@ pub(crate) fn member_gone(leader: u32, tid: u32) -> u32 {
 }
 
 /// The group of `leader` ends: mark it so (first code wins) and return
-/// whether this call started it.
+/// whether this call started it. Never while the leader is exec'ing: a
+/// member's whole-process exit then ends only that member, and the exec
+/// goes on (Linux's `do_group_exit` likewise ends only its caller while
+/// `group_exec_task` is set).
 pub(crate) fn begin_exit(leader: u32, code: i32) -> bool {
     let mut g = GROUPS.lock();
     match g.iter_mut().find(|e| e.leader == leader) {
-        Some(e) if !e.exiting => {
+        Some(e) if !e.exiting && !e.execing => {
             e.exiting = true;
             e.code = code;
             true

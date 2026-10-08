@@ -172,7 +172,13 @@ pub(crate) fn errno_for_port_err(e: azos_ipc::port::PortCapError) -> i64 {
 /// cap handle as `i64` (always > 0) on success, or `-Errno`.
 pub fn sys_port_create_typed() -> i64 {
     use azos_abi::error::Errno;
-    let tid = azos_sched::current_task_tid();
+    // Wave 15 (plan 4a): booked to the process, not the creating thread,
+    // so it outlives the thread (`port_release_all` at the process's exit).
+    let tid = if cfg!(feature = "thread-objects-canary") {
+        azos_sched::current_task_tid()
+    } else {
+        azos_sched::current_proc_tid()
+    };
     match azos_ipc::port::port_create_cap(tid) {
         Some(cap) => cap.raw().as_raw() as i64,
         None => Errno::EMFILE.to_syscall_ret(),
@@ -692,7 +698,8 @@ pub fn sys_shm_create_typed(page_count: u64, perms_mode: u64) -> i64 {
     let Some(perms) = decode_shm_perms(perms_mode) else {
         return Errno::EINVAL.to_syscall_ret();
     };
-    let tid = azos_sched::current_task_tid();
+    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    let tid = azos_sched::current_proc_tid();
     match azos_ipc::shm::shm_create_cap(tid, page_count as usize, perms) {
         Ok(cap) => cap.raw().as_raw() as i64,
         Err(e) => errno_for_shm_err(e),
@@ -725,7 +732,8 @@ pub fn sys_shm_acquire_typed(cap_raw: u64, out_ptr: u64) -> i64 {
         return Errno::EFAULT.to_syscall_ret();
     }
     let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    let tid = azos_sched::current_task_tid();
+    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    let tid = azos_sched::current_proc_tid();
     let result = azos_ipc::cap_store::with_table(tid, |table| {
         azos_ipc::shm::shm_acquire_cap(tid, table, cap)
     });
@@ -794,7 +802,8 @@ pub fn sys_shm_map_typed(cap_raw: u64) -> i64 {
     use azos_ipc::shm::{self, ShmCapError, ShmPerms};
 
     let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    let tid = azos_sched::current_task_tid();
+    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    let tid = azos_sched::current_proc_tid();
     let resolved = azos_ipc::cap_store::with_table(tid, |table| -> Result<(u32, bool), ShmCapError> {
         let r = table.get(cap, CapPerms::READ)?;
         let writable = shm::shm_perms_ref(r)? == ShmPerms::ReadWrite;
@@ -917,7 +926,8 @@ pub fn sys_shm_release_typed(cap_raw: u64) -> i64 {
     use azos_ipc::cap::{targets::Shm, Cap};
 
     let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    let tid = azos_sched::current_task_tid();
+    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    let tid = azos_sched::current_proc_tid();
     let mapping = azos_ipc::cap_store::with_table(tid, |table| {
         let r = table.get(cap, CapPerms::READ).ok()?;
         azos_ipc::shm::shm_take_mapping_ref(tid, r).ok().flatten()
@@ -927,7 +937,8 @@ pub fn sys_shm_release_typed(cap_raw: u64) -> i64 {
         // Wave 11 (LEASE3): a seal naming this mapping is forgotten before
         // its PTEs go and its window can be reused, so a later end of the
         // lease cannot widen whatever is mapped at `va` next.
-        azos_ipc::lease::lease_forget_seal(tid, va);
+        // A lease's seal is its lessee THREAD's (`lease.rs`), as before.
+        azos_ipc::lease::lease_forget_seal(azos_sched::current_task_tid(), va);
         unmap_user_pages(va, pages);
         // With its PTEs gone, the addresses go back to the task's window.
         let _ = azos_sched::process::release_user_window(va, pages);
@@ -1024,7 +1035,8 @@ pub fn sys_ioring_create_typed(out_ptr: u64) -> i64 {
     if out_ptr == 0 {
         return Errno::EINVAL.to_syscall_ret();
     }
-    let tid = azos_sched::current_task_tid();
+    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    let tid = azos_sched::current_proc_tid();
     let (cap, r, phys_addr) = match azos_ipc::io_ring::io_ring_create_cap_ref(tid) {
         Ok(v) => v,
         Err(e) => return errno_for_ioring_err(e),
@@ -1089,7 +1101,8 @@ pub fn sys_ioring_submit_typed(cap_raw: u64) -> i64 {
     use azos_ipc::io_ring::IoRingCapError;
 
     let cap: Cap<IoRing> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    let tid = azos_sched::current_task_tid();
+    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    let tid = azos_sched::current_proc_tid();
     let r = match azos_ipc::cap_store::with_table(tid, |table| {
         table.get_uncontained(cap, CapPerms::WRITE)
     }) {
@@ -1130,7 +1143,8 @@ pub fn sys_ioring_destroy_typed(cap_raw: u64) -> i64 {
     use azos_ipc::io_ring::IoRingCapError;
 
     let cap: Cap<IoRing> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    let tid = azos_sched::current_task_tid();
+    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    let tid = azos_sched::current_proc_tid();
     let r = match azos_ipc::cap_store::with_table(tid, |table| {
         table.get_uncontained(cap, CapPerms::WRITE)
     }) {

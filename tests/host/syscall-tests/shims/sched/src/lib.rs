@@ -647,6 +647,19 @@ pub mod scheduler {
         crate::task_exit_with_code(code)
     }
 
+    /// Mirrors `scheduler::ExecDethreadError` (wave 15, plan 4a).
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum ExecDethreadError {
+        NotLeader,
+        Ending,
+    }
+
+    /// Mirrors `scheduler::exec_end_other_threads`: a host task has no
+    /// threads, so there is nothing to end.
+    pub fn exec_end_other_threads() -> Result<u32, ExecDethreadError> {
+        Ok(0)
+    }
+
     /// Mirrors `scheduler::take_current_forced_exit` (RFC-0055): the exit code
     /// of a forced stop pending for the current task. A test arms one with
     /// [`shim_set_forced_exit`]; consumed on read, as the real one is.

@@ -1266,15 +1266,13 @@ pub(crate) fn record_exec_refused_recorded(action_code: u8, digest_head: u32) ->
 /// trap_handler will switch to U-mode on SRET. An image no seccomp profile is
 /// bound to is refused with `EACCES` before it is parsed.
 pub fn sys_exec(data_ptr: u64, len: u64) -> i64 {
-    // Wave 13: a process with more than one thread cannot replace its image
-    // (Linux would end the other threads first; this kernel refuses).
-    if azos_sched::group::live_members(azos_sched::current_proc_tid()) > 1 { return -1; }
     if data_ptr == 0 || len == 0 { return -1; }
     // Reject before copying rather than truncating: a silently-clipped ELF
     // would be parsed as a corrupt image and the failure would be reported as
     // "bad ELF" instead of "too large".
     let len = len as usize;
     if len > EXEC_MAX_BYTES { return -1; }
+    if let Err(e) = exec_end_other_threads() { return exec_dethread_errno(e); }
 
     let mut buf = EXEC_BOUNCE.lock();
     // `copy_from_user` validates the whole range page by page through
@@ -1284,6 +1282,41 @@ pub fn sys_exec(data_ptr: u64, len: u64) -> i64 {
         return -1;
     }
     exec_bound_image(&buf[..len])
+}
+
+/// Wave 15 (plan 4a): an exec from a process with threads ends every other
+/// thread first and waits until they have gone
+/// (`scheduler::exec_end_other_threads`), so none runs on the image being
+/// replaced; the exec'ing thread goes on as the whole process. Every exec
+/// handler (native `exec`/`execpath`, Linux `execve`) calls it after copying
+/// its arguments and before taking `EXEC_BOUNCE`: a member stopped while it
+/// waited for that lock would never reach the return to user mode where a
+/// stop ends it. So an exec refused after this point (no such file, no
+/// bound profile) has already ended the threads, where Linux validates the
+/// file first; the process goes on single-threaded.
+///
+/// `Err(NotLeader)` from a thread that is not its process's leader (Linux's
+/// PID swap for that case is not implemented), `Err(Ending)` when the
+/// process is ending. A process with no threads pays one load.
+pub(crate) fn exec_end_other_threads() -> Result<(), azos_sched::scheduler::ExecDethreadError> {
+    let n = azos_sched::scheduler::exec_end_other_threads()?;
+    if n != 0 {
+        azos_drv_sys::kprintln!(
+            "[EXEC] tid={} ended {} other thread(s) before replacing its image",
+            azos_sched::current_task_tid(), n,
+        );
+    }
+    Ok(())
+}
+
+/// The native exec calls' answer to an [`exec_end_other_threads`] refusal:
+/// `EBUSY` (not the leader) or `EINTR` (the process is ending).
+fn exec_dethread_errno(e: azos_sched::scheduler::ExecDethreadError) -> i64 {
+    use azos_abi::error::Errno;
+    match e {
+        azos_sched::scheduler::ExecDethreadError::NotLeader => Errno::EBUSY.to_syscall_ret(),
+        azos_sched::scheduler::ExecDethreadError::Ending => Errno::EINTR.to_syscall_ret(),
+    }
 }
 
 /// Hand `elf` to the loader if a seccomp image profile is bound to it;
@@ -1383,9 +1416,6 @@ fn exec_bound_image_digest(elf: &[u8], digest: &[u8; 32]) -> i64 {
 }
 
 pub fn sys_execpath(path_ptr: u64) -> i64 {
-    // Wave 13: a process with more than one thread cannot replace its image
-    // (Linux would end the other threads first; this kernel refuses).
-    if azos_sched::group::live_members(azos_sched::current_proc_tid()) > 1 { return -1; }
     if path_ptr == 0 { return -1; }
 
     // Copy the path from user space.
@@ -1396,6 +1426,7 @@ pub fn sys_execpath(path_ptr: u64) -> i64 {
     let path_len = path_buf.iter().position(|&b| b == 0).unwrap_or(0);
     if path_len == 0 { return -1; }
     let path = &path_buf[..path_len];
+    if let Err(e) = exec_end_other_threads() { return exec_dethread_errno(e); }
 
     // Read the ELF into the fixed kernel bounce buffer. An earlier version grew
     // an unbounded `Vec` on the kernel heap: a large file on the mounted FAT32
@@ -3211,7 +3242,9 @@ fn socket_owner_for_caller() -> Option<u32> {
     if azos_sched::current_user_pt() == 0 {
         return Some(azos_net::SOCK_OWNER_KERNEL);
     }
-    match azos_sched::current_task_tid() {
+    // Wave 15 (plan 4a): the process, so a thread's socket is its process's
+    // (every thread may use it, and it outlives the thread).
+    match azos_sched::current_proc_tid() {
         0   => None, // 0 means "no current task"; NEXT_TID never issues it.
         tid => Some(tid),
     }
@@ -3255,7 +3288,7 @@ fn socket_access_ok(fd: u64) -> bool {
     if fd >= azos_net::MAX_SOCKETS as u64 {
         return false;
     }
-    let tid = azos_sched::current_task_tid();
+    let tid = azos_sched::current_proc_tid();
     if tid == 0 {
         return false;
     }
@@ -6328,7 +6361,8 @@ pub fn sys_ipc_lease_grant_opts(shm_id: u64, lessee: u64, expire_ticks: u64, sea
     let seal = seal.then(|| {
         let mapping = u32::try_from(shm_id).ok()
             .and_then(azos_ipc::shm::shm_ref)
-            .and_then(|r| azos_ipc::shm::shm_mapping_of_ref(lessor, r).ok().flatten());
+            // The mapping is the process's (wave 15, plan 4a).
+            .and_then(|r| azos_ipc::shm::shm_mapping_of_ref(azos_sched::current_proc_tid(), r).ok().flatten());
         match mapping {
             Some((va, pages)) if root != 0 => azos_ipc::lease::SealMap { root, va, pages },
             _ => azos_ipc::lease::SealMap::NONE,

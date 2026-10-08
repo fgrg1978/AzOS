@@ -181,7 +181,8 @@ fn notify_key(uaddr: u64) -> Result<(u32, u32, usize), i64> {
     if uaddr & 3 != 0 {
         return Err(Errno::EINVAL.to_syscall_ret());
     }
-    let tid = azos_sched::current_task_tid();
+    // The mapping is the process's (wave 15, plan 4a), whichever thread asks.
+    let tid = azos_sched::current_proc_tid();
     match azos_ipc::shm::shm_resolve_mapped(tid, uaddr as usize) {
         Some((region, off, phys)) => Ok((region, off as u32, phys)),
         None => Err(Errno::EFAULT.to_syscall_ret()),
@@ -309,7 +310,9 @@ pub fn notify_robust_exit(tid: u32) -> u32 {
     use azos_ipc::shm;
     let page = azos_arch::PAGE_SIZE;
     let resolve = |region: u32, off: u32| -> Option<usize> {
-        if !matches!(shm::shm_has_mapping_ref(tid, region), Ok(true)) {
+        // The words live in the process's mappings (a thread's robust list
+        // is its own, the regions are its process's).
+        if !matches!(shm::shm_has_mapping_ref(azos_sched::group::proc_tid(tid), region), Ok(true)) {
             return None;
         }
         let off = off as usize;

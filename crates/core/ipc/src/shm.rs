@@ -265,9 +265,9 @@ fn create_core(owner_task: u32, page_count: usize, perms: ShmPerms) -> Option<u3
     }
 
     // RFC-0049 M1: the frames count against the creator's budget, charged
-    // before one is taken, when the creator is the calling task. A kernel
+    // before one is taken, when the creator is the calling process. A kernel
     // caller creating on a task's behalf is covered by the kernel reserve.
-    let charged = azos_sched::current_task_tid() == owner_task;
+    let charged = azos_sched::current_proc_tid() == owner_task;
     if charged && !azos_sched::mm_charge(page_count as u32) {
         return None;
     }

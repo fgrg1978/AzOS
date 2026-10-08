@@ -28,6 +28,11 @@ pub fn current_task_tid() -> u32 {
     0
 }
 
+/// The calling process (wave 15): a host task is its own process.
+pub fn current_proc_tid() -> u32 {
+    current_task_tid()
+}
+
 /// See [`current_task_tid`].
 pub fn current_user_pt() -> usize {
     0

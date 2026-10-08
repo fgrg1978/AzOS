@@ -3236,6 +3236,71 @@ pub fn thread_exit(code: i32) -> ! {
     task_exit_with_code(code)
 }
 
+/// Why [`exec_end_other_threads`] refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExecDethreadError {
+    /// The caller is a thread of its process, not its leader.
+    NotLeader,
+    /// The process is ending (`exit_group`, a fault, a forced stop).
+    Ending,
+}
+
+/// Wave 15 (plan 4a): the first half of an exec from a process with threads,
+/// POSIX's "all other threads are terminated" (Linux `de_thread`). Every
+/// other thread of the caller's process is stopped and this waits until it
+/// has gone: each ends only itself (`group::begin_exit` refuses while the
+/// group is marked exec'ing), clears and wakes its clear-tid word on the old
+/// image, and leaves the shared root before the exec replaces it, so no
+/// thread ever returns to user mode on an address space that is about to be
+/// torn down. The last one's exit dissolves the group: the caller is a plain
+/// process again, and the exec that follows is the single-threaded one.
+///
+/// Only the leader may exec: the process is named by its leader's TID (its
+/// capability table, descriptors, budget and parent link live on that slot),
+/// and Linux's PID swap for a non-leader exec is not implemented
+/// (`NotLeader`). Returns how many threads were ended (0 for a process with
+/// none: one load, `group::lead_of_idx`).
+///
+/// It waits as the leader's own exit does (`group_exit`): each member's exit
+/// wakes it, and the 10 ms deadline is the same backstop. Members are asked
+/// again on every pass, so one a sibling admitted just before the group was
+/// marked (its slot not yet joined) is stopped too.
+pub fn exec_end_other_threads() -> Result<u32, ExecDethreadError> {
+    let Some(idx) = current_slot() else { return Ok(0) };
+    let lead = crate::group::lead_of_idx(idx);
+    if lead == 0 {
+        return Ok(0);
+    }
+    let me = unsafe { TASKS[idx].tid };
+    if lead != me {
+        return Err(ExecDethreadError::NotLeader);
+    }
+    // Gate canary only: the other threads keep running across the exec.
+    if cfg!(feature = "exec-no-dethread-canary") {
+        return Ok(0);
+    }
+    if !crate::group::begin_exec(lead) {
+        return Err(ExecDethreadError::Ending);
+    }
+    let ended = crate::group::live_members(lead).saturating_sub(1);
+    let mut members = [0u32; crate::group::GROUP_THREADS_MAX as usize];
+    while crate::group::live_members(lead) > 1 {
+        // The leader itself is being stopped: its exec must not run. The
+        // members are already asked; their exits dissolve the group.
+        if current_forced_exit().is_some() {
+            return Err(ExecDethreadError::Ending);
+        }
+        let n = crate::group::members_of(lead, me, &mut members).min(members.len());
+        for &m in &members[..n] {
+            let _ = task_stop(m, true, 9);
+        }
+        let deadline = azos_drv_sys::timebase::now()
+            .saturating_add(azos_drv_sys::timebase::TIMER_FREQ / 100);
+        crate::task_block(WaitReason::Timer(deadline));
+    }
+    Ok(ended)
+}
+
 /// Wave 13 (THREADS): the thread-group half of an exit, run first.
 ///
 /// A whole-process exit (anything but [`thread_exit`]) marks the group ending

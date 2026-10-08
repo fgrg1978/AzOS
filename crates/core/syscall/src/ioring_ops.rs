@@ -75,7 +75,7 @@ const fn errno(e: Errno) -> i32 {
 /// An audited entry is recorded against the owner's per-task bound.
 fn syscall_allowed(owner_tid: u32, nr: u64) -> bool {
     use azos_sched::filter::FilterVerdict;
-    let verdict = if azos_sched::current_task_tid() == owner_tid {
+    let verdict = if azos_sched::current_proc_tid() == owner_tid {
         azos_sched::scheduler::current_syscall_verdict(nr)
     } else {
         match azos_sched::scheduler::task_syscall_verdict(owner_tid, nr) {

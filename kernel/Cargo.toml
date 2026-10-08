@@ -248,6 +248,11 @@ futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]
 threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]
 threads-tls-canary = ["azos_sched/threads-tls-canary"]
 threads-late-start-canary = ["azos_sched/threads-late-start-canary"]
+# Wave 15 (plan 4a) canaries: an exec leaves the other threads running
+# (`azos_sched`); an object a thread creates is booked to the thread, not to
+# its process, and dies with it (`azos_syscall`).
+exec-no-dethread-canary = ["azos_sched/exec-no-dethread-canary"]
+thread-objects-canary = ["azos_syscall/thread-objects-canary"]
 reap-window-canary = ["azos_sched/reap-window-canary"]
 ctx-probe = ["azos_sched/ctx-probe"]
 exit-stale-hart-canary = ["azos_sched/exit-stale-hart-canary"]

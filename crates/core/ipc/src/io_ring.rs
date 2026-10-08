@@ -543,9 +543,9 @@ pub fn io_ring_create_ref(owner_task: usize) -> Option<(u32, usize)> {
 /// lock held.
 fn create_core(owner_task: usize) -> Option<(u32, usize)> {
     // RFC-0049 M1: the ring's page counts against its creator's budget when
-    // the creator is the calling task; freeing it gives the charge back
+    // the creator is the calling process; freeing it gives the charge back
     // (`uncharge_owner`).
-    let charged = azos_sched::current_task_tid() as usize == owner_task;
+    let charged = azos_sched::current_proc_tid() as usize == owner_task;
     if charged && !azos_sched::mm_charge(1) {
         return None;
     }

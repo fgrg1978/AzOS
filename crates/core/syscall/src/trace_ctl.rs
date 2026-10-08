@@ -77,7 +77,8 @@ pub fn sys_trace_ctl_typed(cap_raw: u64, op: u64, arg: u64) -> i64 {
             }
             azos_ipc::trace::set_mask(arg as u32) as i64
         }
-        TRACE_OP_MAP => crate::ipc_handlers::map_region_ref(tid, region, true),
+        // Booked to the process, as every shared-memory mapping is (wave 15).
+        TRACE_OP_MAP => crate::ipc_handlers::map_region_ref(azos_sched::current_proc_tid(), region, true),
         _ => Errno::EINVAL.to_syscall_ret(),
     }
 }

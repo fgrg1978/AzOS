@@ -2186,6 +2186,14 @@ fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
     let Some(ops) = file_ops() else { return neg(le::EIO) };
     let Some((row, row_len)) = with_me(|p| (p.row, p.row_len)) else { return neg(le::EFAULT) };
     reach(k::SYS_EXECPATH);
+    // Wave 15 (plan 4a): the other threads end before the image is replaced
+    // (`handlers::exec_end_other_threads`); before, they ran on.
+    if let Err(e) = crate::handlers::exec_end_other_threads() {
+        return match e {
+            azos_sched::scheduler::ExecDethreadError::NotLeader => neg(le::EBUSY),
+            azos_sched::scheduler::ExecDethreadError::Ending => neg(le::EINTR),
+        };
+    }
     let random = random16();
     let mut buf = crate::handlers::EXEC_BOUNCE.lock();
     let img = match crate::spawn::read_image(ops, &path[..plen], &mut buf[..]) {

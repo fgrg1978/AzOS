@@ -17,6 +17,9 @@ domain-robot = []
 # Mirrors azos_syscall's gate canary (wave 13): `cfg!(feature =
 # "mmap-prot-canary")` in the pulled-in handlers.rs. Off: the real behaviour.
 mmap-prot-canary = []
+# Mirrors azos_syscall's gate canary (wave 15, plan 4a) in the pulled-in
+# ipc_handlers.rs. Off: the real behaviour.
+thread-objects-canary = []
 # Wave 14 (DEMANDPAGE): the region pagers never resolve a fault.
 demand-region-canary = ["azos_mm/demand-region-canary"]
 # Wave 14 (SPAWNCACHE): mirrors azos_syscall's canaries of the same names
