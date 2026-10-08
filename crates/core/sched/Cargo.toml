@@ -22,6 +22,10 @@ cpuid-probe-canary = ["cpuid-probe"]
 futex-wake-noop-canary = []
 threads-no-cleartid-canary = []
 threads-tls-canary = []
+# A new thread first runs user code at least 100 ms after its creation (the
+# late start a loaded host gives it): a thread check that sleeps to "let the
+# thread park" fails every boot with it.
+threads-late-start-canary = []
 # ... and a thread that gets a capability table of its own instead of its
 # group leader's (`group::table_lead_of_idx`).
 threads-private-table-canary = []

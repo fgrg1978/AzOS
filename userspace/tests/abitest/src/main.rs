@@ -2134,14 +2134,37 @@ fn check_threads() {
     T_WAKE_RC.store(u64::MAX, AO::Release);
     T_CTID[0].store(u32::MAX, AO::Release);
     let t = sys::thread_create(t_waiter, t_stack_top(0), 0, T_CTID[0].as_ptr());
-    // Long enough for the new thread to be parked in its wait (it is
-    // created runnable and does nothing else first).
-    sys::sleep(50);
-    T_WAKE_WORD.store(1, AO::Release);
-    let woke = sys::futex_wake(&T_WAKE_WORD, 1);
+    // No sleep stands in for "the waiter is parked". It used to be
+    // `sleep(50)`, then a store of 1 and one wake: a waiter that first ran
+    // after that read 1, answered EAGAIN, and the wake found nobody (4 boots
+    // in 30 of the `vdso-write-window` row under gate load; a new thread
+    // first ran 65-84 ms after its creation there). The word now never
+    // changes, so a late waiter still parks, and the wake is retried until
+    // it finds the waiter queued (it returns 1): the only proof of "parked"
+    // ring 3 has.
+    let mut woke = 0isize;
+    let mut deadline = Deadline::in_ms(5_000);
+    while t > 0 && !deadline.expired() {
+        woke = sys::futex_wake(&T_WAKE_WORD, 1);
+        if woke != 0 {
+            break;
+        }
+        sys::sleep(1);
+    }
     let joined = t > 0 && t_join(0);
-    expect_true(b"threads: futex_wake wakes the waiting thread (it returns 0)",
-                joined && woke == 1 && T_WAKE_RC.load(AO::Acquire) == 0);
+    let rc = T_WAKE_RC.load(AO::Acquire) as i64 as isize;
+    let ok = joined && woke == 1 && rc == 0;
+    expect_true(b"threads: futex_wake wakes the waiting thread (it returns 0)", ok);
+    if !ok {
+        // Which half failed. Not a check: the threads row counts seventeen.
+        out(b"[ABITEST]        wake woke=");
+        print_i(woke);
+        out(b" waiter rc=");
+        print_i(rc);
+        out(b" joined=");
+        print_i(joined as isize);
+        out(b"\n");
+    }
     // 3. One capability table, one descriptor table.
     let h = sys::open(sys::cstr!(b"/fat/CONFIG.INI"), 0);
     expect_true(b"threads: open a file for the thread", h >= 0);

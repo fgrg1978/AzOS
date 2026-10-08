@@ -2484,6 +2484,17 @@ pub(crate) fn fork_child_entry(_arg: usize) {
         if let Some((entry, _user_sp, satp, regs)) =
             crate::scheduler::take_current_task_fork_ctx()
         {
+            // Gate canary only: a thread (not a forked process) first runs
+            // user code 100 ms after it started, as one does on a loaded
+            // host. Checked after the hand-off, which `group::join` precedes.
+            // Yields, so the rest of the machine runs on.
+            #[cfg(feature = "threads-late-start-canary")]
+            if crate::group::shares_tables(crate::current_task_tid()) {
+                let late = azos_drv_sys::timebase::TIMER_FREQ / 10;
+                while azos_drv_sys::timebase::now().wrapping_sub(started) < late {
+                    crate::task_yield();
+                }
+            }
             // RFC-0055: a spawn aborted after the child existed (its move
             // list failed) releases it with a forced stop pending; it ends
             // here, before its first user instruction, by the normal exit.

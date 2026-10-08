@@ -4455,7 +4455,12 @@ par_row natfork_row "aarch64 fork: template seal canary"     arm qemu,natfork-te
 # ends every thread. Canaries: `threads-private-table-canary` (a thread gets
 # its own table: the handle checks fail), `futex-wake-noop-canary` (a wake
 # wakes nobody: the wake check fails), `threads-no-cleartid-canary` (the word
-# is never cleared: the joins fail).
+# is never cleared: the joins fail). `threads-late-start-canary` starts every
+# thread 100 ms late, as a loaded host does, and the row must stay green: no
+# thread check may use a sleep as proof that a thread reached its wait. The
+# wake check did (`sleep(50)`, then one wake) and failed 4 boots in 30 of the
+# `vdso-write-window` row under gate load; with the old check this canary
+# failed it 2/2.
 threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|noclear>
     local label="$1" isa="$2" feats="$3" want="$4"
     printf "  %-26s" "${label}..."
@@ -4533,6 +4538,8 @@ par_row threads_row "threads: futex wake canary"             rv  qemu,futex-wake
 par_row threads_row "aarch64 threads: futex wake canary"     arm qemu,futex-wake-noop-canary futexnoop
 par_row threads_row "threads: clear-tid canary"              rv  qemu,threads-no-cleartid-canary noclear
 par_row threads_row "aarch64 threads: clear-tid canary"      arm qemu,threads-no-cleartid-canary noclear
+par_row threads_row "threads: late start"                    rv  qemu,threads-late-start-canary ok
+par_row threads_row "aarch64 threads: late start"            arm qemu,threads-late-start-canary ok
 
 # ── fork: W^X across copy-on-write (wave 13, security) ─────────────────────
 #
@@ -9653,8 +9660,12 @@ PY
     # inside the write preempted idle with `seq` odd, and a ring-3 reader on
     # that hart (abitest's `children_of` deadline loop) outranked idle and
     # spun forever — 1 in 10-20 loaded boots. `vdso-write-window` holds the
-    # write open ~1 ms so a tick inside it is all but certain; abitest must
-    # still finish. Canary (by hand, 2026-10-04, rv, host load 25-46): the
+    # write open (200,000 spins: ~13 ms on an idle host, more under load,
+    # longer than a 10 ms tick) so a tick inside it is all but certain; abitest
+    # must still finish. Every ring-3 clock read and every IPI to the writing
+    # hart waits for it: measured 2026-10-08, idle host, a clock read 8.5 ms
+    # mean (134/200 over 1 ms), a new thread's first instruction 13-27 ms late
+    # in 8 of 40 creations. abitest's timing must not assume less. Canary (by hand, 2026-10-04, rv, host load 25-46): the
     # mask removed -> 3/3 hang right after "sleep_until_ns(past) did not
     # block", hart 3 in ring 3 inside `vdso_now_ns`; with it 5/5 PASS.
     kbuild "qemu,vdso-write-window"
