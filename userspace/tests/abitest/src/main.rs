@@ -2112,11 +2112,14 @@ const STORM_ROUNDS: usize = 200;
 /// fails the first check.
 fn check_thread_storm() {
     let (mut code_ok, mut joined, mut faulted_reaped) = (0usize, 0usize, 0usize);
-    for _ in 0..STORM_ROUNDS {
+    for round in 0..STORM_ROUNDS {
+        // The spinners run a millisecond, both bumping one counter on its
+        // copy-on-write page, before the exit stops them.
         let pid = sys::fork();
         if pid == 0 {
             let _ = sys::thread_create(t_spin, t_stack_top(0), 0, core::ptr::null_mut());
             let _ = sys::thread_create(t_spin, t_stack_top(1), 0, core::ptr::null_mut());
+            sys::sleep(1);
             sys::exit(7);
         }
         if pid > 0 {
@@ -2133,6 +2136,10 @@ fn check_thread_storm() {
             sys::exit(7);
         }
         if pid > 0 && reap_by_tid(pid).0 == pid { faulted_reaped += 1; }
+        // One failed round answers each check: stop, so a canary that
+        // breaks the join (`threads-no-cleartid-canary`) does not wait out
+        // every round's deadline.
+        if code_ok + joined + faulted_reaped != 3 * (round + 1) { break; }
     }
     expect_eq(b"thread storm: every spinning child exits with its own code", code_ok as isize,
               STORM_ROUNDS as isize);

@@ -54,6 +54,14 @@ threads: futex wake canary	n1	userspace/** crates/core/abi/** crates/core/syscal
 aarch64 threads: futex wake canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 threads: clear-tid canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 threads: clear-tid canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
+threads: late start	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 threads: late start	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+threads: stale exit hart canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 threads: stale exit hart	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+threads: reap window canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 threads: reap window canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+threads: cow spurious canary	n1	crates/core/mm/** crates/core/percpu/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 threads: cow spurious canary	n1	crates/core/mm/** crates/core/percpu/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 fork: store to code faults	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 fork: store to code faults	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 fork: W^X canary	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
