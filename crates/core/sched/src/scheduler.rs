@@ -3283,8 +3283,9 @@ pub enum ExecDethreadError {
 /// caller holds once the hand-over is done, and the 10 ms deadline is the
 /// backstop. Members are stopped by slot, under the pool lock, so a stop
 /// meant for the leader cannot land on the caller once it holds the
-/// leader's TID; they are asked again on every pass, so one a sibling
-/// admitted just before the group was marked is stopped too.
+/// leader's TID; each slot once, and the slots are scanned again on every
+/// pass, so one a sibling admitted just before the group was marked is
+/// stopped too.
 pub fn exec_end_other_threads() -> Result<u32, ExecDethreadError> {
     let Some(idx) = current_slot() else { return Ok(0) };
     let lead = crate::group::lead_of_idx(idx);
@@ -3305,6 +3306,11 @@ pub fn exec_end_other_threads() -> Result<u32, ExecDethreadError> {
         return Err(ExecDethreadError::Ending);
     }
     let ended = crate::group::live_members(lead).saturating_sub(1);
+    // Each slot is stopped once. A member that has exited keeps its slot
+    // (and its group mark) until the slot is reused, and a second stop on it
+    // would count a forced stop nobody consumes (`FORCED_PENDING`), putting
+    // every timer tick from user mode, machine-wide, on the slow path.
+    let mut stopped = [0u64; MAX_TASKS.div_ceil(64)];
     while crate::group::live_members(lead) > 1 {
         // The caller itself is being stopped: its exec must not run. The
         // members are already asked; their exits dissolve the group. Once
@@ -3313,7 +3319,9 @@ pub fn exec_end_other_threads() -> Result<u32, ExecDethreadError> {
             return Err(ExecDethreadError::Ending);
         }
         for i in 0..MAX_TASKS {
-            if i != idx && crate::group::lead_of_idx(i) == lead {
+            let bit = 1u64 << (i % 64);
+            if i != idx && stopped[i / 64] & bit == 0 && crate::group::lead_of_idx(i) == lead {
+                stopped[i / 64] |= bit;
                 stop_slot(i);
             }
         }
