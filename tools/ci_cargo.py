@@ -11,14 +11,26 @@ subtracts from the row's wall time to split build from boot.
 
 The kernel cache (`CI_KCACHE_DIR`; unset means off). A call is cacheable when it
 is `cargo build --release` of the kernel package (no `-p`, or `-p azos_kernel`)
-without `--keep-going`. Its KEY is the whole argv, the working directory, every
-environment variable but the gate's own bookkeeping, the content of the file
-`KCONFIG_CONFIG` names, the content of `TOPOLOGY_PUBKEY_PATH`, and the source
-state (HEAD's tree, `git diff HEAD`, and the names and content of untracked,
-non-ignored files). An entry also records every file rustc read for that kernel
-(the `.d` dep-info cargo writes next to it, which lists `include_bytes!` inputs
-such as build/*.elf that git ignores) with its content hash; a lookup is a hit
-only if the key matches AND every one of those files still hashes the same.
+without `--keep-going`. Its KEY is the whole argv (features, target, flags), the
+working directory, the toolchain (`rustc -vV`), the environment variables a
+build can read (below), the content of the file `KCONFIG_CONFIG` names and of
+the workspace `.config`, the content of `TOPOLOGY_PUBKEY_PATH` and
+`PROD_PUBKEY_PATH`, and the source state: HEAD's tree, `git diff HEAD`, and the
+names and content of untracked, non-ignored files. An entry also records every
+file the kernel's dep-info names (`<artifact>.d`: every source rustc read, the
+`include_bytes!` inputs such as build/*.elf that git ignores, and every
+`rerun-if-changed` input of a build script, such as the .config and the key
+files) with its content hash; a lookup is a hit only if the key matches AND
+every one of those files still hashes the same.
+
+The environment in the key is not all of it: the variables a session sets
+(terminal, agent and ssh-agent ids) would make a cache kept between runs miss
+for no reason. It is every variable whose name matches KEY_ENV_RE (cargo's,
+rustc's, rustup's, the C toolchain's, python's, PATH, HOME) plus every name the
+tree itself reads: `env!`, `option_env!`, `env::var[_os]` and
+`rerun-if-env-changed=` with a literal name in any .rs file (git grep, per
+source state). A build that reads a variable some other way is the gap; there
+is none in the tree today.
 
 A hit replays the exit status and the exact stdout/stderr of the build that
 filled the entry (so a zero-warning row still sees that build's warnings) and
@@ -26,12 +38,15 @@ puts the stored ELF back at the path cargo writes it to, after unlinking that
 path first: cargo hard-links it to `deps/kernel-<hash>`, and copying through
 the link would rewrite cargo's own artifact for another feature set. Only
 successful builds are stored, so a canary that must fail to build always runs
-cargo. The cache lives for one gate run.
+cargo. The gate (tools/ci_check.sh) keeps one run's cache by default, and
+under CI_TIER=rows a cache in build/kcache that persists between runs, bounded
+by CI_KCACHE_MAX_MB (least recently used entries go first).
 """
 
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,8 +56,10 @@ REAL = os.environ.get("CI_REAL_CARGO", "cargo")
 ACC = os.environ.get("CI_BUILD_ACC", "")
 CACHE = os.environ.get("CI_KCACHE_DIR", "")
 # The gate's own bookkeeping: per-row, per-job values that do not reach cargo.
-ENV_SKIP = {"_", "SHLVL", "OLDPWD", "PWD", "CI_BUILD_ACC", "CI_KCACHE_DIR",
-            "CI_REAL_CARGO", "TERM_SESSION_ID", "SECURITYSESSIONID"}
+# The variables a build can read whatever the tree says (see the docstring).
+KEY_ENV_RE = re.compile(r"^(__CARGO|CARGO|RUST|PYTHON|CC|CXX|CFLAGS|CXXFLAGS|CPPFLAGS|"
+                        r"LDFLAGS|AR|LD|NM|OBJCOPY|SDKROOT|MACOSX_|DEVELOPER_DIR|PATH$|HOME$)")
+ENV_READ_RE = r'(env!|option_env!|env::var(_os)?)\("[A-Za-z_0-9]+"|rerun-if-env-changed=[A-Za-z_0-9]+'
 BIN = "kernel"
 
 
@@ -132,20 +149,55 @@ def cacheable(argv):
     return os.path.join(tdir, triple, "release", BIN)
 
 
+def tree_env_names(top, state):
+    """The variable names the tree's .rs files read, by literal (cached per state)."""
+    memo = os.path.join(CACHE, "env-names.%s" % state) if CACHE else None
+    if memo and os.path.exists(memo):
+        return open(memo).read().split()
+    out = git(["grep", "-hoE", ENV_READ_RE, "--", "*.rs"], top)
+    if out is None:
+        out = b""  # git grep exits 1 when nothing matches
+    names = sorted(set(re.findall(r'[A-Za-z_0-9]+(?="?$)', l)[0]
+                       for l in out.decode().splitlines() if l))
+    if memo:
+        try:
+            for old in os.listdir(CACHE):
+                if old.startswith("env-names."):
+                    os.unlink(os.path.join(CACHE, old))
+            open(memo, "w").write("\n".join(names) + "\n")
+        except OSError:
+            pass
+    return names
+
+
+def toolchain(argv):
+    cmd = ["rustc"] + ([argv[0]] if argv and argv[0].startswith("+") else []) + ["-vV"]
+    try:
+        return subprocess.run(cmd, capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def key_of(argv):
     state = source_state(os.getcwd())
-    if state is None:
+    tc = toolchain(argv)
+    if state is None or tc is None:
         return None
+    top = git(["rev-parse", "--show-toplevel"], os.getcwd()).decode().strip()
     h = hashlib.sha256()
     h.update(json.dumps(argv).encode())
     h.update(os.getcwd().encode())
+    h.update(tc)
+    names = set(tree_env_names(top, state))
     for k in sorted(os.environ):
-        if k not in ENV_SKIP:
+        if KEY_ENV_RE.match(k) or k in names:
             h.update(("%s=%s\0" % (k, os.environ[k])).encode())
-    for var in ("KCONFIG_CONFIG", "TOPOLOGY_PUBKEY_PATH"):
+    for var in ("KCONFIG_CONFIG", "TOPOLOGY_PUBKEY_PATH", "PROD_PUBKEY_PATH"):
         p = os.environ.get(var)
+        h.update(("%s:" % var).encode())
         if p:
             sha_file(p, h)
+    sha_file(os.path.join(top, ".config"), h)
     h.update(state.encode())
     return h.hexdigest()
 

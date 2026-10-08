@@ -28,7 +28,8 @@ set -uo pipefail
 CARGO="${CARGO:-cargo}"
 # Every cargo call goes through tools/ci_cargo.py (gate speed, wave 15): it
 # times the call for the row's build/boot split and, for a kernel build, reuses
-# the kernel this run already built from identical inputs (off by default; CI_KCACHE=1: on).
+# the kernel already built from identical inputs (CI_KCACHE; on and kept
+# between runs under CI_TIER=rows, off otherwise: see "The kernel cache" below).
 export CI_REAL_CARGO="$CARGO"
 CARGO="$(cd "$(dirname "$0")" && pwd)/ci_cargo.py"
 QEMU="${QEMU:-qemu-system-riscv64}"
@@ -1067,11 +1068,25 @@ builtin printf 'row\tstage\tbuild_s\trun_s\tverdict\tprep_s\n' >"$CI_ROWS_TSV"
 export CI_BUILD_ACC="$CI_LOG_ABS/build-acc.main"
 : >"$CI_BUILD_ACC"
 : >"$CI_LOG_ABS/cargo-calls.tsv"
-# The kernel cache (tools/ci_cargo.py): one gate run's, emptied here. Off by
-# default until it is verified; CI_KCACHE=1 turns it on.
-CI_KCACHE="${CI_KCACHE:-0}"
+# The kernel cache (tools/ci_cargo.py). Under CI_TIER=rows it is on by
+# default and PERSISTS between runs in build/kcache (CI_KCACHE_PERSIST=1),
+# bounded by CI_KCACHE_MAX_MB (default 6144 there): a targeted run after an
+# edit rebuilds only the kernels whose inputs moved. Its key is content, not
+# mtimes (the argv, the toolchain, the build's environment, the .config and key
+# files, HEAD's tree + `git diff HEAD` + untracked files, and every file the
+# kernel's dep-info names, rehashed at lookup), so it cannot hand back a kernel
+# built from other sources. The full and fast tiers keep the older default: off
+# (CI_KCACHE=1 turns on one run's cache, emptied here and at exit).
+if [ "${CI_TIER:-full}" = rows ]; then
+    CI_KCACHE="${CI_KCACHE:-1}"; CI_KCACHE_PERSIST="${CI_KCACHE_PERSIST:-1}"
+    export CI_KCACHE_MAX_MB="${CI_KCACHE_MAX_MB:-6144}"
+else
+    CI_KCACHE="${CI_KCACHE:-0}"; CI_KCACHE_PERSIST="${CI_KCACHE_PERSIST:-0}"
+fi
 rm -rf "$CI_LOG_ABS/kcache" "$CI_LOG_ABS/fpfree"
-if [ "$CI_KCACHE" = 1 ]; then
+if [ "$CI_KCACHE" = 1 ] && [ "$CI_KCACHE_PERSIST" = 1 ]; then
+    export CI_KCACHE_DIR="$REPO_ROOT/build/kcache"; mkdir -p "$CI_KCACHE_DIR"
+elif [ "$CI_KCACHE" = 1 ]; then
     export CI_KCACHE_DIR="$CI_LOG_ABS/kcache"; mkdir -p "$CI_KCACHE_DIR"
 else
     unset CI_KCACHE_DIR
