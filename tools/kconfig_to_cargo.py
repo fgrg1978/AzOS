@@ -37,8 +37,11 @@ Phase C4 changes vs C1:
   - Added INVERTED_FEATURES set for documentation: features whose Kconfig
     option is absent/n when the cargo feature is enabled.
   - Added ISA-correct --target selection (riscv64 / aarch64 / x86_64).
-  - `--rustflags`: the ISA baseline (`-C target-cpu=...`) where it is a
-    Kconfig choice (x86_64 X86_64_LEVEL).
+  - `--rustflags` / `--user-rustflags`: the ISA baseline codegen flags of
+    the kernel / the user images (the Kconfig level plus every extension
+    set to `require`); `--toml` prints them as a TOML array's inside;
+    `--target-features`: what crates/core/limits/build.rs checks the
+    kernel build against.
 """
 
 import sys
@@ -64,28 +67,121 @@ ARCH_TO_TARGET: dict[str, str] = {
     "CONFIG_ARCH_X86_64": "x86_64-unknown-none",
 }
 
-# The compile-time BASELINE codegen may assume, per ISA (the only global
-# target-cpu/target-feature; every optional extension is probed at runtime
-# and emitted inside gated asm). riscv64's lives in .cargo/config.toml
-# (rv64imac + zaamo/zalrsc); aarch64 has no level symbol (ARMv8.0 by the
-# target). x86_64's is the Kconfig choice X86_64_LEVEL.
+# The compile-time BASELINE codegen may assume, per ISA (config/Kconfig.arch,
+# "Hardware support model"): the level plus every extension set to
+# `require`. Every `probe` extension is detected at boot and emitted only
+# inside gated asm, never as a global target-feature. One emitter for the
+# kernel (`--rustflags`), the user images (`--user-rustflags`) and the
+# build-time cross-check (`--target-features`, crates/core/limits/build.rs).
 X86_64_LEVEL_TO_CPU: dict[str, str] = {
     "CONFIG_X86_64_LEVEL_V1": "x86-64",
     "CONFIG_X86_64_LEVEL_V2": "x86-64-v2",
     "CONFIG_X86_64_LEVEL_V3": "x86-64-v3",
 }
 
+# riscv64: the level's codegen features. Zaamo/Zalrsc are the A extension
+# (implied by the triple; spelled out as .cargo/config.toml always has).
+# F, D and V never reach global codegen: the kernel and the user images are
+# soft-float (`riscv64imac-unknown-none-elf`).
+RISCV64_BASE_FEATURES: list[str] = ["zaamo", "zalrsc"]
+# `require` on these compiles them in everywhere (the K1's old K1_ISA).
+RISCV64_REQUIRE_FEATURES: dict[str, str] = {
+    "CONFIG_RV_ZBA_REQUIRE": "zba",
+    "CONFIG_RV_ZBB_REQUIRE": "zbb",
+    "CONFIG_RV_ZBS_REQUIRE": "zbs",
+}
 
-def baseline_rustflags(cfg: dict[str, str]) -> str:
-    """`-C target-cpu=...` for an ISA whose baseline is a Kconfig choice;
-    empty for the others (their baseline is the target triple plus
-    .cargo/config.toml)."""
+# aarch64: each level's mandatory features as stable target features (never
+# `+v8.Na`, which rustc flags as unstable). `kernel` ones need no FP/SIMD
+# register (the kernel is `aarch64-unknown-none-softfloat`, where enabling
+# NEON is an ABI warning); `user` ones only reach the hard-float user images.
+AARCH64_LEVEL_FEATURES: list[tuple[int, list[str], list[str]]] = [
+    # (minor, kernel, user-only)
+    (1, ["lse", "crc", "pan", "lor", "vh"], ["rdm"]),
+    (2, ["ras", "dpb"], []),
+    (3, ["rcpc", "paca", "pacg"], ["jsconv", "fcma"]),
+    (4, ["dit", "flagm", "rcpc2"], ["dotprod"]),
+    (5, ["sb", "ssbs", "bti"], ["frintts"]),
+]
+AARCH64_LEVEL_MINOR: dict[str, int] = {
+    "CONFIG_AARCH64_LEVEL_8_0": 0, "CONFIG_AARCH64_LEVEL_8_1": 1,
+    "CONFIG_AARCH64_LEVEL_8_2": 2, "CONFIG_AARCH64_LEVEL_8_3": 3,
+    "CONFIG_AARCH64_LEVEL_8_4": 4, "CONFIG_AARCH64_LEVEL_8_5": 5,
+}
+# `require` → (kernel features, user-only features).
+AARCH64_REQUIRE_FEATURES: dict[str, tuple[list[str], list[str]]] = {
+    "CONFIG_A64_LSE_REQUIRE":   (["lse"], []),
+    "CONFIG_A64_CRC32_REQUIRE": (["crc"], []),
+    "CONFIG_A64_PAUTH_REQUIRE": (["paca", "pacg"], []),
+    "CONFIG_A64_BTI_REQUIRE":   (["bti"], []),
+    "CONFIG_A64_MTE_REQUIRE":   (["mte"], []),
+    "CONFIG_A64_SVE_REQUIRE":   ([], ["sve"]),
+    "CONFIG_A64_AES_REQUIRE":   ([], ["aes"]),
+    "CONFIG_A64_PMULL_REQUIRE": ([], ["aes"]),
+    "CONFIG_A64_SHA2_REQUIRE":  ([], ["sha2"]),
+}
+# The features whose presence in a kernel build must match the Kconfig
+# exactly (limits/build.rs): the ones that change codegen. A K1 flag in a
+# VF2 build, or +lse in an Armv8.0 build, is a binary for another board.
+CONTROLLED_FEATURES: dict[str, list[str]] = {
+    "CONFIG_ARCH_RISCV64": ["zba", "zbb", "zbs"],
+    "CONFIG_ARCH_AARCH64": ["lse", "rcpc"],
+}
+
+
+def _dedup(xs: list[str]) -> list[str]:
+    out: list[str] = []
+    for x in xs:
+        if x not in out:
+            out.append(x)
+    return out
+
+
+def isa_features(cfg: dict[str, str], user: bool) -> list[str]:
+    """The level's and every `require` extension's target features, for the
+    kernel (`user=False`) or the user images (`user=True`)."""
+    on = lambda k: cfg.get(k) == "y"
+    feats: list[str] = []
+    if on("CONFIG_ARCH_AARCH64"):
+        minor = max((m for k, m in AARCH64_LEVEL_MINOR.items() if on(k)), default=0)
+        for lvl, kern, uonly in AARCH64_LEVEL_FEATURES:
+            if lvl <= minor:
+                feats += kern + (uonly if user else [])
+        for key, (kern, uonly) in AARCH64_REQUIRE_FEATURES.items():
+            if on(key):
+                feats += kern + (uonly if user else [])
+    elif on("CONFIG_ARCH_X86_64"):
+        pass
+    else:
+        feats += RISCV64_BASE_FEATURES
+        feats += [f for k, f in RISCV64_REQUIRE_FEATURES.items() if on(k)]
+    return _dedup(feats)
+
+
+def baseline_rustflags(cfg: dict[str, str], user: bool = False, skip_base: bool = False) -> str:
+    """The baseline codegen flags: `-C target-cpu=...` for x86_64's level,
+    `-C target-feature=+a,+b` for the others (empty for an Armv8.0 kernel
+    with no `require`, which is what the target triple already means).
+    `skip_base`: leave out riscv64's level features, which
+    .cargo/config.toml and every riscv64 user crate's target already carry
+    (for a `--config` that merges with them)."""
     if cfg.get("CONFIG_ARCH_X86_64") == "y":
         for key, cpu in X86_64_LEVEL_TO_CPU.items():
             if cfg.get(key) == "y":
                 return f"-C target-cpu={cpu}"
         return "-C target-cpu=x86-64-v2"
-    return ""
+    feats = isa_features(cfg, user)
+    if skip_base:
+        feats = [f for f in feats if f not in RISCV64_BASE_FEATURES]
+    return f"-C target-feature={','.join('+' + f for f in feats)}" if feats else ""
+
+
+def toml_rustflags(flags: str) -> str:
+    """`-C a -C b` as the inside of a TOML array: `"-C","a","-C","b"` (for
+    `--config 'target.<triple>.rustflags=[...]'`, which merges with the
+    target's own rustflags instead of replacing them as RUSTFLAGS does)."""
+    return ",".join(f'"{w}"' for w in flags.split())
+
 
 # Default target when no ARCH_* is set (ARCH_RISCV64 is the Kconfig default).
 DEFAULT_TARGET = "riscv64imac-unknown-none-elf"
@@ -403,9 +499,17 @@ def main() -> int:
     # board features by hand (`make build` is `--features qemu`), so the
     # application domain chosen in `make config` still decides the crates.
     domain_only = "--domain-only" in args
-    # `--rustflags`: only the baseline codegen flags (see baseline_rustflags).
+    # `--rustflags`: only the kernel's baseline codegen flags
+    # (baseline_rustflags); `--user-rustflags`: the user images' ones;
+    # `--toml`: either as the inside of a TOML array; `--target-features`:
+    # the kernel's required and controlled features (limits/build.rs).
     rustflags_only = "--rustflags" in args
-    args = [a for a in args if a not in ("--domain-only", "--rustflags")]
+    user_rustflags = "--user-rustflags" in args
+    as_toml = "--toml" in args
+    target_features = "--target-features" in args
+    skip_base = "--skip-base" in args
+    args = [a for a in args if a not in ("--domain-only", "--rustflags", "--user-rustflags",
+                                         "--toml", "--target-features", "--skip-base")]
     dot_config_path = args[0] if args else DOT_CONFIG_DEFAULT
 
     cfg = read_dot_config(dot_config_path)
@@ -421,10 +525,17 @@ def main() -> int:
                   f"placed in ring 3 (config/Kconfig.drivers)", file=sys.stderr)
         return 1
 
-    if rustflags_only:
-        flags = baseline_rustflags(cfg)
+    if rustflags_only or user_rustflags:
+        flags = baseline_rustflags(cfg, user=user_rustflags, skip_base=skip_base)
         if flags:
-            print(flags)
+            print(toml_rustflags(flags) if as_toml else flags)
+        return 0
+
+    if target_features:
+        arch = next((k for k in CONTROLLED_FEATURES if cfg.get(k) == "y"),
+                    "CONFIG_ARCH_RISCV64" if cfg.get("CONFIG_ARCH_X86_64") != "y" else "")
+        print("require=" + ",".join(isa_features(cfg, user=False)))
+        print("control=" + ",".join(CONTROLLED_FEATURES.get(arch, [])))
         return 0
 
     if domain_only:

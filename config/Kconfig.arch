@@ -45,22 +45,218 @@ choice
 endchoice
 
 # ---------------------------------------------------------------------------
+# Hardware support model (every ISA the same way)
+# ---------------------------------------------------------------------------
+# 1. A BASELINE level per ISA (RISCV64_LEVEL, AARCH64_LEVEL, X86_64_LEVEL):
+#    the only thing codegen assumes for the whole kernel and its user
+#    images (tools/kconfig_to_cargo.py --rustflags / --user-rustflags), and
+#    checked at boot: a CPU below it is refused with a message.
+# 2. Every OPTIONAL extension is a three-way choice:
+#      n        never used, even when the CPU has it (its path is compiled
+#               out or never selected, and the vDSO hwcap hides it);
+#      probe    compiled in, used only when the boot probe finds it, with
+#               a fallback otherwise;
+#      require  part of the baseline: codegen may assume it where the ISA
+#               allows, and the boot refuses a CPU without it.
+#    The boot prints one `[ISA]` line: the baseline and each extension's
+#    state (n / probed-present / probed-absent / required).
+# 3. Per-board defaults (`default ... if BOARD_*`) say what each board has.
+# The policy values reach Rust as azos_arch_api::isa (crates/core/arch-api).
+
+# ---------------------------------------------------------------------------
 # RISC-V specific options
 # ---------------------------------------------------------------------------
 
 if ARCH_RISCV64
 
-config HAS_RVV
-    bool "RISC-V Vector Extension (V 1.0) present"
-    default y if BOARD_K1
-    default n if BOARD_VF2
-    default n if BOARD_QEMU
-    default n
+choice
+    prompt "riscv64 baseline ISA"
+    default RISCV64_LEVEL_RV64GCV if BOARD_K1
+    default RISCV64_LEVEL_RV64GC if BOARD_VF2
+    default RISCV64_LEVEL_RV64IMAC
     help
-      Enable when the target SoC includes RVV 1.0 hardware (e.g. SpacemiT K1
-      with VLEN=256).  Activates RVV code paths in ml/, camera/, and vector
-      math helpers.  JH7110 (VF2) does NOT have RVV.  QEMU can emulate it
-      with `-cpu rv64,v=true` — opt-in only.
+      What the kernel and its user images assume of every hart. The
+      kernel is soft-float (riscv64imac-unknown-none-elf, lazy FP), so the
+      level changes codegen only through the bit-manipulation extensions
+      set to `require` below; F, D and V are reached through
+      `.option arch` inside their own save/restore and SIMD code. The boot
+      checks cpu@0's device-tree `riscv,isa` against the level and refuses
+      a hart below it. Raise it when every board the image targets has
+      the extensions: nothing is gained in speed, but a wrong board is
+      refused with a message instead of faulting later.
+
+    config RISCV64_LEVEL_RV64IMAC
+        bool "rv64imac (QEMU virt, any RV64 with atomics and C)"
+        help
+          Integer, multiply, atomics (Zaamo + Zalrsc) and compressed. The
+          default; what every build assumed before this choice existed.
+    config RISCV64_LEVEL_RV64GC
+        bool "rv64gc (+ F, D, Zicsr, Zifencei: JH7110 / VisionFive 2)"
+        help
+          Adds the F and D floating-point registers the FP context
+          (FP_HARDFLOAT_*) saves. The SiFive U74 of the VF2.
+    config RISCV64_LEVEL_RV64GCV
+        bool "rv64gcv (+ V 1.0: SpacemiT K1 / X60)"
+        help
+          Adds the vector extension: RV_V defaults to `require`. RVA22-class
+          parts such as the X60 also mandate Zba/Zbb/Zbs (set below).
+endchoice
+
+choice
+    prompt "Zicboz (cbo.zero page zeroing)"
+    default RV_ZICBOZ_PROBE
+    help
+      `cbo.zero` zeroes a whole cache block per instruction in the page
+      allocator's zero-fill (crates/core/arch-riscv64/src/cbo.rs): about a
+      third of the cycles of a store loop per 4 KiB page under QEMU. probe:
+      used when cpu@0's device tree declares it AND a trap-safe execution
+      probe confirms it zeroes; plain stores otherwise. n: always plain stores.
+      require: refuse to boot without it. Costs nothing when absent.
+
+    config RV_ZICBOZ_NEVER
+        bool "n: never use it"
+    config RV_ZICBOZ_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZICBOZ_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Sstc (S-mode stimecmp timer)"
+    default RV_SSTC_PROBE
+    help
+      The timer is programmed by writing `stimecmp` (one CSR write) instead of
+      an SBI `set_timer` call into firmware (an M-mode round trip, hundreds of
+      cycles) on every tick and deadline (crates/drivers/irqchip/src/clint.rs).
+      probe: used when cpu@0 declares Sstc and S-mode can read the CSR; SBI
+      otherwise. n: always SBI. require: refuse to boot without it.
+
+    config RV_SSTC_NEVER
+        bool "n: never use it"
+    config RV_SSTC_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SSTC_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Svpbmt (page-based memory types)"
+    default RV_SVPBMT_PROBE
+    help
+      PTE bits that mark a page non-cacheable or I/O without PMAs. No kernel
+      path uses it yet: n and probe differ only in the [ISA] boot line; require
+      refuses a hart whose device tree does not declare it.
+
+    config RV_SVPBMT_NEVER
+        bool "n: never use it"
+    config RV_SVPBMT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SVPBMT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zba (address-generation bit-manipulation)"
+    default RV_ZBA_REQUIRE if BOARD_K1
+    default RV_ZBA_PROBE
+    help
+      sh1add/sh2add/sh3add and the .uw forms: shorter array indexing. No
+      runtime-selected path uses it, so probe only reports it. require: the
+      whole kernel and its user images are compiled with +zba (smaller, faster
+      address arithmetic everywhere) and a hart without it is refused. The K1
+      (RVA22) has it; the VF2's U74 build keeps it off.
+
+    config RV_ZBA_NEVER
+        bool "n: never use it"
+    config RV_ZBA_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZBA_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zbb (basic bit-manipulation)"
+    default RV_ZBB_REQUIRE if BOARD_K1
+    default RV_ZBB_PROBE
+    help
+      Rotates, clz/ctz/cpop, rev8, andn/orn. probe: the kernel's SHA-256 (module
+      and image digests) takes its rotate path when cpu@0 declares Zbb, and the
+      vDSO hwcap advertises it to ring 3. n: the generic SHA-256 and no hwcap
+      bit. require: compiled in everywhere with +zbb (bitmaps, hashing, byte
+      swaps) and a hart without it is refused.
+
+    config RV_ZBB_NEVER
+        bool "n: never use it"
+    config RV_ZBB_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZBB_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zbs (single-bit instructions)"
+    default RV_ZBS_REQUIRE if BOARD_K1
+    default RV_ZBS_PROBE
+    help
+      bset/bclr/binv/bext: one instruction per bit operation (ready bitmaps,
+      PTE flags). No runtime-selected path, so probe only reports it.
+      require: compiled in everywhere with +zbs; a hart without it is refused.
+
+    config RV_ZBS_NEVER
+        bool "n: never use it"
+    config RV_ZBS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZBS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "V 1.0 (vector)"
+    default RV_V_REQUIRE if RISCV64_LEVEL_RV64GCV
+    default RV_V_NEVER
+    help
+      The vector unit for the ML dot products and matmul (crates/core/ml,
+      crates/drivers/camera) and the vector state saved on every context
+      switch (`rvv` cargo feature, HAS_RVV). Cost when compiled in: the
+      vector-state save/restore calls on every switch and up to 32 x VLEN/8
+      bytes of state per task. probe: compiled in; the vector state and the
+      vector kernels are used only when cpu@0 declares V, the scalar ones
+      otherwise. n (the default without V hardware): compiled out, scalar
+      kernels. require: a hart without V is refused.
+
+    config RV_V_NEVER
+        bool "n: never use it"
+    config RV_V_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_V_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AIA (APLIC + IMSIC interrupt controller)"
+    default RV_AIA_PROBE
+    help
+      Message-signalled interrupts through the IMSIC and the APLIC instead of
+      the PLIC (crates/drivers/irqchip). probe: used when the device tree has
+      an S-domain APLIC; the PLIC otherwise. n: the PLIC always, even on a
+      machine with AIA (a machine with AIA and no PLIC then has no external
+      interrupts). require: refuse to boot without an S-domain APLIC.
+
+    config RV_AIA_NEVER
+        bool "n: never use it"
+    config RV_AIA_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_AIA_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+config HAS_RVV
+    bool
+    default y if RV_V_PROBE || RV_V_REQUIRE
+    help
+      Derived from RV_V (n: off; probe or require: on). Compiles the
+      vector code in (`rvv` cargo feature, FP_RVV).
+
 config NO_MMU
     bool "No MMU mode (M+U only, no Sv39)"
     default n
@@ -99,6 +295,192 @@ config LOCKED_HUGE_LEAVES
 endif # ARCH_RISCV64
 
 if ARCH_AARCH64
+
+choice
+    prompt "aarch64 baseline architecture level"
+    default AARCH64_LEVEL_8_2 if BOARD_RPI5
+    default AARCH64_LEVEL_8_0
+    help
+      The Armv8.x level the kernel and its user images assume. Codegen
+      gets that level's mandatory features (tools/kconfig_to_cargo.py:
+      the kernel, soft-float, only those that need no FP/SIMD registers,
+      e.g. +lse,+rcpc; the user images the whole list). The boot reads
+      the ID registers before anything else and refuses a CPU below the
+      level, naming the missing feature. A higher level makes atomics
+      single instructions (8.1 LSE: a contended lock costs one LDADD
+      instead of an LL/SC loop) and drops older cores.
+
+    config AARCH64_LEVEL_8_0
+        bool "Armv8.0 (Cortex-A53/A72, QEMU virt; the default)"
+    config AARCH64_LEVEL_8_1
+        bool "Armv8.1 (+ LSE atomics, CRC32, RDM, PAN, VHE)"
+    config AARCH64_LEVEL_8_2
+        bool "Armv8.2 (+ PAN2, DC CVAP, UAO: Cortex-A55/A76, Raspberry Pi 5)"
+    config AARCH64_LEVEL_8_3
+        bool "Armv8.3 (+ PAuth, RCpc, JSCVT, FCMA)"
+    config AARCH64_LEVEL_8_4
+        bool "Armv8.4 (+ DIT, FlagM, RCpc2, DotProd)"
+    config AARCH64_LEVEL_8_5
+        bool "Armv8.5 (+ BTI, SB, FlagM2, FRINTTS)"
+endchoice
+
+choice
+    prompt "LSE atomics (FEAT_LSE)"
+    default A64_LSE_REQUIRE if !AARCH64_LEVEL_8_0
+    default A64_LSE_PROBE
+    help
+      LDADD/CAS/SWP: a single-instruction atomic instead of an LL/SC loop.
+      The compiler can only emit them globally (no outlined atomics in this
+      kernel), so probe detects and advertises them (vDSO hwcap) and require
+      compiles the kernel and user images with +lse; Armv8.1 and above
+      include it (a level >= 8.1 with LSE not `require` is a build error).
+
+    config A64_LSE_NEVER
+        bool "n: never use it"
+    config A64_LSE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_LSE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "CRC32 instructions (FEAT_CRC32)"
+    default A64_CRC32_REQUIRE if !AARCH64_LEVEL_8_0
+    default A64_CRC32_PROBE
+    help
+      CRC32B/H/W/X and CRC32C*. probe: advertised in the vDSO hwcap (ring-3
+      and lxbase.ko CRC paths key on it). n: hidden. require: compiled in with
+      +crc. Mandatory from Armv8.1.
+
+    config A64_CRC32_NEVER
+        bool "n: never use it"
+    config A64_CRC32_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_CRC32_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Pointer authentication (FEAT_PAuth)"
+    default A64_PAUTH_REQUIRE if AARCH64_LEVEL_8_3 || AARCH64_LEVEL_8_4 || AARCH64_LEVEL_8_5
+    default A64_PAUTH_NEVER if BOARD_RPI5
+    default A64_PAUTH_PROBE
+    help
+      Signed return addresses. Detected and reported only: the kernel is not
+      built with branch protection yet, so n and probe differ in the [ISA]
+      line, and require refuses a CPU without it. Armv8.3 includes it. The
+      Raspberry Pi 5's Cortex-A76 does not have it (default n there).
+
+    config A64_PAUTH_NEVER
+        bool "n: never use it"
+    config A64_PAUTH_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_PAUTH_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Branch target identification (FEAT_BTI)"
+    default A64_BTI_REQUIRE if AARCH64_LEVEL_8_5
+    default A64_BTI_NEVER if BOARD_RPI5
+    default A64_BTI_PROBE
+    help
+      Indirect branches land only on BTI pads. Detected and reported only (no
+      branch-protection build yet); require refuses a CPU without it. Armv8.5
+      includes it; the Cortex-A76 does not.
+
+    config A64_BTI_NEVER
+        bool "n: never use it"
+    config A64_BTI_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_BTI_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Memory tagging (FEAT_MTE)"
+    default A64_MTE_NEVER if BOARD_RPI5
+    default A64_MTE_PROBE
+    help
+      4-bit tags per 16-byte granule, checked on every access. Optional at
+      every level. Detected and reported only (no tagging allocator yet);
+      require refuses a CPU without it. QEMU needs `-M virt,mte=on`.
+
+    config A64_MTE_NEVER
+        bool "n: never use it"
+    config A64_MTE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_MTE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Scalable vectors (FEAT_SVE)"
+    default A64_SVE_NEVER if BOARD_RPI5
+    default A64_SVE_PROBE
+    help
+      Variable-length vectors. Detected and reported only: no kernel SVE
+      path and no SVE state save (FP_SVE is not wired), so ring 3 must not
+      use it; require refuses a CPU without it.
+
+    config A64_SVE_NEVER
+        bool "n: never use it"
+    config A64_SVE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_SVE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AES instructions (FEAT_AES)"
+    default A64_AES_PROBE
+    help
+      AESE/AESD/AESMC. probe: advertised in the vDSO hwcap; n hides it. They
+      need the SIMD registers, so the soft-float kernel never compiles them
+      globally; require adds +aes to the user images only and refuses a CPU
+      without it.
+
+    config A64_AES_NEVER
+        bool "n: never use it"
+    config A64_AES_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_AES_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "64-bit polynomial multiply (FEAT_PMULL)"
+    default A64_PMULL_PROBE
+    help
+      PMULL/PMULL2 on 64-bit lanes (GHASH, CRC folding). probe: vDSO hwcap;
+      n hides it; require refuses a CPU without it.
+
+    config A64_PMULL_NEVER
+        bool "n: never use it"
+    config A64_PMULL_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_PMULL_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "SHA-256 instructions (FEAT_SHA256)"
+    default A64_SHA2_PROBE
+    help
+      SHA256H/H2/SU0/SU1. probe: the kernel's SHA-256 (module verify, image
+      digests) runs on them after its self-test, about 10x the generic
+      blocks, and the vDSO hwcap advertises them. n: the generic SHA-256 and
+      no hwcap bit. require: also +sha2 for the user images; a CPU without it
+      is refused.
+
+    config A64_SHA2_NEVER
+        bool "n: never use it"
+    config A64_SHA2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_SHA2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
 endif # ARCH_AARCH64
 
 config MM_DEMAND_PAGING
@@ -143,8 +525,8 @@ config MM_PRECOMMIT_RT
 #   2. optional extensions, each a runtime CPUID probe before use with a
 #      fallback, emitted only inside gated asm, never as a global
 #      target-feature;
-#   3. per-board HAS_* (below) compiling a path in; a board that claims an
-#      extension still probes it at boot.
+#   3. each extension a three-way choice X86_* (n / probe / require, the
+#      model above); per-board defaults say what a board has.
 
 if ARCH_X86_64
 
@@ -154,7 +536,7 @@ choice
     help
       The psABI level codegen assumes for the whole kernel
       (`-C target-cpu=x86-64[-vN]`, tools/kconfig_to_cargo.py). Anything
-      above it is an optional extension (HAS_X86_* below). The boot CPU
+      above it is an optional extension (X86_* below). The boot CPU
       checks the level's CPUID bits before anything else and refuses to
       boot below it. Higher levels let the compiler use wider instructions
       everywhere (smaller, faster code) and drop every CPU older than the
@@ -176,75 +558,165 @@ choice
           use still needs the FPU-section discipline (FP_XSAVE_EAGER).
 endchoice
 
-config HAS_X86_SMEP
-    bool "SMEP (supervisor-mode execution prevention)"
-    default y
+choice
+    prompt "SMEP (supervisor-mode execution prevention)"
+    default X86_SMEP_PROBE
     help
       CR4.SMEP after CPUID.(EAX=7,ECX=0):EBX[7]. Cost: none at runtime.
       Off: the kernel may execute user pages (an exploit primitive).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
 
-config HAS_X86_SMAP
-    bool "SMAP (supervisor-mode access prevention)"
-    default y
+    config X86_SMEP_NEVER
+        bool "n: never use it"
+    config X86_SMEP_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SMEP_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "SMAP (supervisor-mode access prevention)"
+    default X86_SMAP_PROBE
     help
       CR4.SMAP after CPUID.(EAX=7,ECX=0):EBX[20]; the user-access window
       (ArchPlatform::user_access) is stac/clac. Cost: two instructions per
       user copy. Fallback: no window (every kernel access to user memory
       allowed), as without the bit.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
 
-config HAS_X86_PCID
-    bool "PCID / INVPCID (tagged TLB)"
-    default y
+    config X86_SMAP_NEVER
+        bool "n: never use it"
+    config X86_SMAP_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SMAP_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "PCID / INVPCID (tagged TLB)"
+    default X86_PCID_PROBE
     help
       CR4.PCIDE after CPUID.1:ECX[17] (PCID) and CPUID.7:EBX[10] (INVPCID).
       Keeps TLB entries across address-space switches (the ASID of
       Mmu::switch_pt). Fallback: a full flush on every CR3 write.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
 
-config HAS_X86_FSGSBASE
-    bool "FSGSBASE (rd/wrgsbase)"
-    default y
+    config X86_PCID_NEVER
+        bool "n: never use it"
+    config X86_PCID_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_PCID_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "FSGSBASE (rd/wrgsbase)"
+    default X86_FSGSBASE_PROBE
     help
       CR4.FSGSBASE after CPUID.7:EBX[0]: Cpu::percpu_base/set_percpu_base
       without an MSR access (tens of cycles less per kernel entry).
       Fallback: rdmsr/wrmsr IA32_GS_BASE.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
 
-config HAS_X86_TSC_DEADLINE
-    bool "LAPIC TSC-deadline timer"
-    default y
+    config X86_FSGSBASE_NEVER
+        bool "n: never use it"
+    config X86_FSGSBASE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_FSGSBASE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "LAPIC TSC-deadline timer"
+    default X86_TSC_DEADLINE_PROBE
     help
       CPUID.1:ECX[24]: Interrupts::set_timer_deadline writes
       IA32_TSC_DEADLINE in TSC ticks. Fallback: the LAPIC one-shot count
       calibrated against the TSC.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
 
-config HAS_X86_X2APIC
-    bool "x2APIC (MSR-mapped LAPIC)"
-    default y
+    config X86_TSC_DEADLINE_NEVER
+        bool "n: never use it"
+    config X86_TSC_DEADLINE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_TSC_DEADLINE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "x2APIC (MSR-mapped LAPIC)"
+    default X86_X2APIC_PROBE
     help
       CPUID.1:ECX[21]: LAPIC registers as MSRs, IPIs as one wrmsr to the
       ICR. Fallback: xAPIC MMIO at the IA32_APIC_BASE address.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
 
-config HAS_X86_XSAVEOPT
-    bool "XSAVEOPT / XSAVES (compact, modified-only FP save)"
-    default y
+    config X86_X2APIC_NEVER
+        bool "n: never use it"
+    config X86_X2APIC_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_X2APIC_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "XSAVEOPT / XSAVES (compact, modified-only FP save)"
+    default X86_XSAVEOPT_PROBE
     help
       CPUID.(EAX=0xD,ECX=1):EAX[0] (XSAVEOPT), [3] (XSAVES). Smaller and
       faster FP save on every switch. Fallback: XSAVE, then FXSAVE.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
 
-config HAS_X86_AVX2
-    bool "AVX2 in the Vector impl"
-    default y if X86_64_LEVEL_V3
-    default n
+    config X86_XSAVEOPT_NEVER
+        bool "n: never use it"
+    config X86_XSAVEOPT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_XSAVEOPT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AVX2 in the Vector impl"
+    default X86_AVX2_REQUIRE if X86_64_LEVEL_V3
+    default X86_AVX2_NEVER
     help
       CPUID.7:EBX[5] plus XCR0 YMM state. Used ONLY inside the Vector
       impl's dot product, behind the probe and the FPU section. Fallback:
       SSE2 (baseline). Cost: the YMM half of the FP save area.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
 
-config HAS_X86_SHA_NI
-    bool "SHA-NI (SHA-256 instructions)"
-    default n
+    config X86_AVX2_NEVER
+        bool "n: never use it"
+    config X86_AVX2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_AVX2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "SHA-NI (SHA-256 instructions)"
+    default X86_SHA_NI_NEVER
     help
       CPUID.7:EBX[29]: the secure-boot hash through sha256rnds2. Fallback:
       the portable SHA-256 (crates/core/crypto).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_SHA_NI_NEVER
+        bool "n: never use it"
+    config X86_SHA_NI_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SHA_NI_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
 
 endif # ARCH_X86_64
 
@@ -321,7 +793,7 @@ choice
           leak (CVE-2018-3665), and Linux removed it. aarch64's lazy path
           (kernel/src/entry/aarch64/fp_lazy.rs, CPACR_EL1 trap on first use)
           is a per-ISA choice, not a shared one. Cost: one XSAVEOPT/XRSTOR
-          pair per switch (HAS_X86_XSAVEOPT), ~0.5-1 KiB per task.
+          pair per switch (X86_XSAVEOPT), ~0.5-1 KiB per task.
 
 endchoice
 

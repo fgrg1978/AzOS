@@ -14,6 +14,7 @@
 //! steps (console, memory map, page tables, W^X/NX, guards, heap) are in
 //! `early_main` (`tools/boot_seq_lint.py` keeps them there).
 
+use azos_arch_api::isa::aarch64 as policy;
 use core::sync::atomic::{AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
 use azos_arch::mmu::PAGE_SIZE;
@@ -53,6 +54,15 @@ fn entered_at_el2() -> bool {
 #[inline(always)]
 pub fn pre_console() {
     SCTLR_BEFORE_FIRST_LOCK.store(azos_arch::sysregs::read_sctlr_el1(), Ordering::Relaxed);
+    // The baseline level (Kconfig AARCH64_LEVEL), before the first lock:
+    // a level's codegen (`+lse` from 8.1, `+rcpc` from 8.3) would fault on
+    // an older core at its first atomic, so this is the last point where a
+    // refusal can still be printed. Reads ID registers only; refuses with a
+    // message and powers off.
+    let regs = azos_arch::features::read_id_regs();
+    if let Some(missing) = azos_arch::features::level_missing(&regs, policy::LEVEL_MINOR) {
+        crate::boot::isa::refuse_level(policy::LEVEL, missing);
+    }
 }
 
 /// Nothing: boot.S sets `VBAR_EL1` before any Rust runs.
@@ -157,10 +167,29 @@ pub fn irqchip_probe(_fw: &Firmware) {}
 #[inline(always)]
 pub fn timer_probe(_fw: &Firmware) {}
 
-/// Nothing taken from the DTB: aarch64 features come from the ID registers
-/// (`azos_arch::features`), probed by the ISA crate.
+/// The `[ISA]` line: each extension's Kconfig choice against the ID
+/// registers (`azos_arch::features`; the DTB plays no part). The users act
+/// on the same resolution: the vDSO hwcap and the SHA-256 selection
+/// (`boot::seams::detect_hwcap`) mask what is `n`. A `require`d extension
+/// the CPU lacks refuses the boot.
 #[inline(always)]
-pub fn cpu_features(_fw: &Firmware) {}
+pub fn cpu_features(_fw: &Firmware) {
+    use azos_arch_api::isa::Ext;
+    let regs = azos_arch::features::read_id_regs();
+    let f = regs.features();
+    let e = |name, symbol, policy, present| Ext { name, symbol, policy, present };
+    crate::boot::isa::report(policy::LEVEL, &[
+        e("lse", "A64_LSE", policy::LSE, f.lse),
+        e("crc32", "A64_CRC32", policy::CRC32, f.crc32),
+        e("pauth", "A64_PAUTH", policy::PAUTH, f.pauth),
+        e("bti", "A64_BTI", policy::BTI, f.bti),
+        e("mte", "A64_MTE", policy::MTE, f.mte),
+        e("sve", "A64_SVE", policy::SVE, regs.sve()),
+        e("aes", "A64_AES", policy::AES, f.aes),
+        e("pmull", "A64_PMULL", policy::PMULL, f.pmull),
+        e("sha2", "A64_SHA2", policy::SHA2, f.sha2),
+    ]);
+}
 
 /// RAM from the DTB's `/memory` node, or the platform fallback. The boot
 /// core is logical CPU 0 on this ISA (boot.S: `TPIDR_EL1` = 0).

@@ -231,7 +231,7 @@ mod tests {
             mem_base: 0, mem_size: 0, timer_freq: 0,
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [0u8; 64], isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_f: false, isa_d: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         assert_eq!(dtb_compatible_str(&info), b"");
     }
@@ -242,7 +242,7 @@ mod tests {
             mem_base: 0, mem_size: 0, timer_freq: 0,
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [0u8; 64], isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_f: false, isa_d: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         let want = b"riscv-virtio";
         info.compatible[..want.len()].copy_from_slice(want);
@@ -258,7 +258,7 @@ mod tests {
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [b'A'; 64], // no NUL anywhere
             isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_f: false, isa_d: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         let out = dtb_compatible_str(&info);
         assert_eq!(out.len(), 64);

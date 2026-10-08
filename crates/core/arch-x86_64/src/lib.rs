@@ -16,7 +16,7 @@
 //! the method list is one list, so the skeleton and the stub cannot drift.
 //!
 //! Beyond the contract, two ISA-private modules: [`features`] (the
-//! three-tier baseline / probe / `HAS_X86_*` model riscv64 uses) and
+//! baseline / n-probe-require `X86_*` model every ISA uses) and
 //! [`fpu`] (EAGER FP save: x86 never switches FP lazily).
 //!
 //! What an x86_64 port adds beyond these methods: `kernel/src/entry/x86_64/`
@@ -197,7 +197,7 @@ impl Boot for X86_64 {
 
 impl Vector for X86_64 {
     /// SSE2 is baseline on x86_64; AVX2 only behind `features::detect().avx2`
-    /// (Kconfig `HAS_X86_AVX2`), inside a kernel FPU section that saves the
+    /// (Kconfig `X86_AVX2`), inside a kernel FPU section that saves the
     /// interrupted task's state eagerly (`fpu`).
     fn dot_f32(&self, _a: &[f32], _b: &[f32]) -> f32 { todo!("x86_64: dot_f32: SSE2 / AVX2 under kernel_fpu_begin") }
     fn is_accelerated(&self) -> bool { todo!("x86_64: is_accelerated") }

@@ -112,6 +112,14 @@ pub struct DtbInfo {
     pub isa_zbc: bool,
     pub isa_zknh: bool,
     pub isa_v: bool,
+    /// Zba, Zbs, Svpbmt (exact tokens) and F, D (letters, as `isa_v`):
+    /// the inputs of the boot's `[ISA]` line and its baseline check
+    /// (config/Kconfig.arch RISCV64_LEVEL, RV_*).
+    pub isa_zba: bool,
+    pub isa_zbs: bool,
+    pub isa_svpbmt: bool,
+    pub isa_f: bool,
+    pub isa_d: bool,
     /// Base address of the S-domain APLIC (RFC-0046 stage 1a), or 0 if
     /// none was found. `-machine virt,aia=aplic-imsic` has two
     /// `riscv,aplic` nodes: the M-domain root (has `riscv,children`,
@@ -152,6 +160,11 @@ impl DtbInfo {
             isa_zbc: false,
             isa_zknh: false,
             isa_v: false,
+            isa_zba: false,
+            isa_zbs: false,
+            isa_svpbmt: false,
+            isa_f: false,
+            isa_d: false,
             aplic_base: 0,
             aplic_num_sources: 0,
             imsic_base: 0,
@@ -892,6 +905,11 @@ impl Walker {
                 self.info.isa_zbc |= isa_prop_has_token(prop, list, b"zbc");
                 self.info.isa_zknh |= isa_prop_has_token(prop, list, b"zknh");
                 self.info.isa_v |= isa_prop_has_letter(prop, list, b'v');
+                self.info.isa_zba |= isa_prop_has_token(prop, list, b"zba");
+                self.info.isa_zbs |= isa_prop_has_token(prop, list, b"zbs");
+                self.info.isa_svpbmt |= isa_prop_has_token(prop, list, b"svpbmt");
+                self.info.isa_f |= isa_prop_has_letter(prop, list, b'f');
+                self.info.isa_d |= isa_prop_has_letter(prop, list, b'd');
                 return true;
             }
 

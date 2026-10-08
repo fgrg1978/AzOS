@@ -68,9 +68,13 @@ pub(crate) fn detect_hwcap() -> u64 {
     use azos_abi::vdso::*;
     #[cfg(target_arch = "aarch64")]
     let h = {
+        // Kconfig `n` (azos_arch_api::isa::aarch64) hides an extension
+        // from ring 3 and from the kernel's own SHA-256 selection below.
+        use azos_arch_api::isa::aarch64 as p;
         let f = azos_arch::features::detect();
-        [(f.crc32, HWCAP_A64_CRC32), (f.aes, HWCAP_A64_AES), (f.pmull, HWCAP_A64_PMULL),
-         (f.sha2, HWCAP_A64_SHA2), (f.lse, HWCAP_A64_ATOMICS)]
+        [(p::CRC32.gate(f.crc32), HWCAP_A64_CRC32), (p::AES.gate(f.aes), HWCAP_A64_AES),
+         (p::PMULL.gate(f.pmull), HWCAP_A64_PMULL), (p::SHA2.gate(f.sha2), HWCAP_A64_SHA2),
+         (p::LSE.gate(f.lse), HWCAP_A64_ATOMICS)]
             .iter()
             .fold(0u64, |h, &(on, bit)| if on { h | bit } else { h })
     };

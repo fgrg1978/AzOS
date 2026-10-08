@@ -4,6 +4,8 @@
 //! subsystem. Everything is re-exported so `kernel_main` calls them by name.
 
 mod early;
+// The `[ISA]` boot line and the baseline/`require` refusals.
+pub(crate) mod isa;
 pub(crate) use early::early_main;
 mod entropy;
 pub(crate) use entropy::*;

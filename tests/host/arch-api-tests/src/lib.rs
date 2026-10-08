@@ -1877,3 +1877,61 @@ mod lat_tests {
         assert_eq!(lat::top_sites(Kind::Irq, &mut out), 0);
     }
 }
+
+/// config/Kconfig.arch's hardware-support model (`azos_arch_api::isa`): the
+/// three-way choice, its resolution against the probe, and the boot line.
+#[cfg(test)]
+mod isa_tests {
+    use azos_arch_api::isa::{first_missing, write_refusal, write_report, Ext, ExtPolicy, ExtState};
+
+    #[test]
+    fn the_choice_members_map_to_one_policy() {
+        assert_eq!(ExtPolicy::from_kconfig(true, false), ExtPolicy::Never);
+        assert_eq!(ExtPolicy::from_kconfig(false, true), ExtPolicy::Require);
+        // A choice hidden on another ISA writes neither member: probe.
+        assert_eq!(ExtPolicy::from_kconfig(false, false), ExtPolicy::Probe);
+    }
+
+    /// `n` keeps a path off even when the CPU has the extension; probe
+    /// follows the CPU; require is the only one that can be MISSING.
+    #[test]
+    fn each_policy_resolves_against_the_probe() {
+        use ExtPolicy::*;
+        assert!(!Never.gate(true) && Probe.gate(true) && !Probe.gate(false) && Require.gate(true));
+        let cases = [(Never, true, ExtState::Off, "n"), (Never, false, ExtState::Off, "n"),
+                     (Probe, true, ExtState::Present, "probed-present"),
+                     (Probe, false, ExtState::Absent, "probed-absent"),
+                     (Require, true, ExtState::Required, "required"),
+                     (Require, false, ExtState::Missing, "MISSING")];
+        for (p, present, state, label) in cases {
+            assert_eq!(p.resolve(present), state, "{p:?}/{present}");
+            assert_eq!(state.label(), label);
+            assert_eq!(state.in_use(), matches!(state, ExtState::Present | ExtState::Required));
+        }
+    }
+
+    struct S(std::string::String);
+    impl core::fmt::Write for S {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            self.0.push_str(s);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_boot_line_and_the_refusal_name_each_extension() {
+        let e = |name, symbol, policy, present| Ext { name, symbol, policy, present };
+        let exts = [e("zicboz", "RV_ZICBOZ", ExtPolicy::Never, true),
+                    e("sstc", "RV_SSTC", ExtPolicy::Probe, false),
+                    e("zbb", "RV_ZBB", ExtPolicy::Require, false)];
+        let mut s = S(String::new());
+        write_report(&mut s, "rv64imac", &exts).unwrap();
+        assert_eq!(s.0, "[ISA] baseline=rv64imac zicboz=n sstc=probed-absent zbb=MISSING");
+        let m = first_missing(&exts).expect("zbb is required and absent");
+        assert_eq!(m.name, "zbb");
+        let mut s = S(String::new());
+        write_refusal(&mut s, m).unwrap();
+        assert!(s.0.starts_with("[ISA] FATAL: zbb is `require` (Kconfig RV_ZBB_REQUIRE)"), "{}", s.0);
+        assert!(first_missing(&exts[..2]).is_none());
+    }
+}

@@ -15,6 +15,31 @@ use azos_drv_sys::kprintln;
 use azos_arch::csr;
 use azos_arch::Interrupts;
 use azos_arch::FirmwareMemory;
+use azos_arch_api::isa::riscv64 as policy;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// What cpu@0's device tree declares, for the `[ISA]` line `firmware_done`
+/// prints (no DTB: nothing declared). One bit per [`Dt`] entry.
+static DT_ISA: AtomicU32 = AtomicU32::new(0);
+
+/// The `DT_ISA` bits.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum Dt { Zicboz = 1, Sstc = 2, Svpbmt = 4, Zba = 8, Zbb = 16, Zbs = 32, V = 64, Aia = 128, F = 256, D = 512 }
+
+/// Kconfig RV_V, except that a build given `--features rvv` by hand (`make
+/// build-rvv`, `qemu-rvv`, the `k1` feature's edge) on a config whose RV_V
+/// is n means probe: the feature compiled the vector code in to be used.
+const V_POLICY: azos_arch_api::isa::ExtPolicy =
+    if cfg!(feature = "rvv") && !policy::V.allowed() {
+        azos_arch_api::isa::ExtPolicy::Probe
+    } else {
+        policy::V
+    };
+
+fn dt_has(bit: Dt) -> bool {
+    DT_ISA.load(Ordering::Relaxed) & bit as u32 != 0
+}
 
 /// The parsed device tree (`None`: no pointer, or one that did not parse),
 /// and the hart it was parsed on.
@@ -93,7 +118,8 @@ pub fn firmware_table(hart_id: usize, dtb_ptr: usize, dt: Option<azos_dtb::DtbIn
 #[inline(always)]
 pub fn irqchip_probe(fw: &Firmware) {
     let Some(info) = &fw.info else { return };
-    if info.aplic_base != 0 && info.imsic_base != 0 {
+    // Kconfig RV_AIA = n: the PLIC, even when the DTB has an APLIC.
+    if policy::AIA.allowed() && info.aplic_base != 0 && info.imsic_base != 0 {
         let layout = azos_drv_irqchip::imsic::GroupLayout {
             base: info.imsic_base,
             num_ids: info.imsic_num_ids,
@@ -117,8 +143,9 @@ pub fn irqchip_probe(fw: &Firmware) {
 #[inline(always)]
 pub fn timer_probe(fw: &Firmware) {
     let Some(info) = &fw.info else { return };
+    // Kconfig RV_SSTC = n: SBI, even when cpu@0 declares Sstc.
     azos_drv_irqchip::clint::timer_select(
-        cfg!(not(feature = "timer-sbi-only")) && info.isa_sstc,
+        cfg!(not(feature = "timer-sbi-only")) && policy::SSTC.gate(info.isa_sstc),
     );
     let kernel_timer_hz = azos_drv_base::platform::hw::TIMER_FREQ;
     if info.timer_freq != 0 && info.timer_freq != kernel_timer_hz {
@@ -137,9 +164,25 @@ pub fn timer_probe(fw: &Firmware) {
 #[inline(always)]
 pub fn cpu_features(fw: &Firmware) {
     let Some(info) = &fw.info else { return };
+    let mut dt = 0u32;
+    for (on, bit) in [(info.isa_zicboz, Dt::Zicboz), (info.isa_sstc, Dt::Sstc),
+                      (info.isa_svpbmt, Dt::Svpbmt), (info.isa_zba, Dt::Zba),
+                      (info.isa_zbb, Dt::Zbb), (info.isa_zbs, Dt::Zbs), (info.isa_v, Dt::V),
+                      (info.aplic_base != 0 && info.imsic_base != 0, Dt::Aia),
+                      (info.isa_f, Dt::F), (info.isa_d, Dt::D)] {
+        if on {
+            dt |= bit as u32;
+        }
+    }
+    DT_ISA.store(dt, Ordering::Relaxed);
+    // Kconfig RV_ZICBOZ = n: the DTB's Zicboz is ignored (as the canary does).
     #[cfg(not(feature = "zicboz-skip-canary"))]
-    azos_arch::cbo::zicboz_select(info.isa_zicboz, info.cboz_block_size);
-    crate::boot::note_dtb_isa(info.isa_zbb, info.isa_zbc, info.isa_zknh, info.isa_v);
+    azos_arch::cbo::zicboz_select(policy::ZICBOZ.gate(info.isa_zicboz), info.cboz_block_size);
+    // Kconfig n hides Zbb / V from the kernel's own users and from the vDSO hwcap.
+    crate::boot::note_dtb_isa(policy::ZBB.gate(info.isa_zbb), info.isa_zbc, info.isa_zknh,
+                              V_POLICY.gate(info.isa_v));
+    #[cfg(feature = "rvv")]
+    azos_arch::rvv::set_usable(V_POLICY.gate(info.isa_v));
 }
 
 /// RAM from the DTB's `/memory` node, or the platform fallback. The boot
@@ -189,10 +232,10 @@ pub fn irq_triggers(found: Option<azos_dtb::IrqTriggers>) {
 pub fn firmware_done(_dtb_ptr: usize, num_cpus: usize) {
     // Selects SBI when nothing above did (no DTB, or one that did not parse);
     // otherwise returns the choice already made.
-    match azos_drv_irqchip::clint::timer_select(false) {
-        azos_drv_irqchip::clint::TimerMode::Sstc => kprintln!("[TIMER] stimecmp (Sstc)"),
-        azos_drv_irqchip::clint::TimerMode::Sbi => kprintln!("[TIMER] SBI set_timer"),
-    }
+    let sstc_on = match azos_drv_irqchip::clint::timer_select(false) {
+        azos_drv_irqchip::clint::TimerMode::Sstc => { kprintln!("[TIMER] stimecmp (Sstc)"); true }
+        azos_drv_irqchip::clint::TimerMode::Sbi => { kprintln!("[TIMER] SBI set_timer"); false }
+    };
     // The probe's own trap path, taken on purpose: under `-cpu rv64,sstc=off`
     // the read traps, and the boot must carry on past this line.
     #[cfg(feature = "qemu")]
@@ -203,8 +246,34 @@ pub fn firmware_done(_dtb_ptr: usize, num_cpus: usize) {
     let zicboz_on = azos_arch::cbo::zicboz_select(false, 0);
     kprintln!("[MM] Zicboz cbo.zero fast path: {}",
         if zicboz_on { "enabled" } else { "scalar fallback" });
+    isa_report(zicboz_on, sstc_on);
     kprintln!("[BOOT] Online CPUs: {} (NR_CPUS: {})", num_cpus, crate::MAX_HARTS);
     kprintln!();
+}
+
+/// The baseline check and the `[ISA]` line (config/Kconfig.arch): Zicboz
+/// and Sstc as the probes resolved them (DTB plus a trap-safe execution
+/// probe), the rest as cpu@0's device tree declares them. A level above
+/// the hart, or a `require`d extension it lacks, refuses the boot.
+fn isa_report(zicboz_on: bool, sstc_on: bool) {
+    use azos_arch_api::isa::Ext;
+    if policy::LEVEL_NEEDS_FD && !(dt_has(Dt::F) && dt_has(Dt::D)) {
+        crate::boot::isa::refuse_level(policy::LEVEL, "F and D (cpu@0 riscv,isa)");
+    }
+    if policy::LEVEL_NEEDS_V && !dt_has(Dt::V) {
+        crate::boot::isa::refuse_level(policy::LEVEL, "V (cpu@0 riscv,isa)");
+    }
+    let e = |name, symbol, policy, present| Ext { name, symbol, policy, present };
+    crate::boot::isa::report(policy::LEVEL, &[
+        e("zicboz", "RV_ZICBOZ", policy::ZICBOZ, zicboz_on),
+        e("sstc", "RV_SSTC", policy::SSTC, sstc_on),
+        e("svpbmt", "RV_SVPBMT", policy::SVPBMT, dt_has(Dt::Svpbmt)),
+        e("zba", "RV_ZBA", policy::ZBA, dt_has(Dt::Zba)),
+        e("zbb", "RV_ZBB", policy::ZBB, dt_has(Dt::Zbb)),
+        e("zbs", "RV_ZBS", policy::ZBS, dt_has(Dt::Zbs)),
+        e("v", "RV_V", V_POLICY, dt_has(Dt::V)),
+        e("aia", "RV_AIA", policy::AIA, azos_drv_irqchip::irqchip::is_aia()),
+    ]);
 }
 
 /// Nothing to reserve: the blob is read in full before `pmm::init`

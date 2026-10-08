@@ -268,6 +268,26 @@ pub fn read_vlenb() -> usize {
 /// though it is over budget, so the caller can print it) exceeds
 /// `MAX_VLEN_BYTES`, or is `0` (no V extension) — vector state save/restore
 /// stays disabled; a task's v0-v31 will not survive a context switch.
+/// The boot's verdict on V (Kconfig `RV_V` and cpu@0's device tree), set
+/// before any vector code can run: with `RV_V` = probe on a hart without V
+/// every dispatcher takes the scalar kernels and the vector state is never
+/// initialised (so the switch's save/restore stay no-ops).
+#[cfg(feature = "rvv")]
+static V_USABLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Record the boot's verdict on V (once, before the first task).
+#[cfg(feature = "rvv")]
+pub fn set_usable(on: bool) {
+    V_USABLE.store(on, core::sync::atomic::Ordering::Release);
+}
+
+/// Whether the vector kernels may run on this boot.
+#[cfg(feature = "rvv")]
+#[inline(always)]
+pub fn usable() -> bool {
+    V_USABLE.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(feature = "rvv")]
 pub fn init_vector_state() -> Result<usize, usize> {
     let vlenb = read_vlenb();

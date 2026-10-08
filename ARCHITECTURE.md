@@ -601,6 +601,50 @@ three:
 - **Edge**, the default, for single-board computers.
 - **Fleet**, for gateways aggregating many devices.
 
+**CPU baseline and extensions.** Every ISA is configured the same way
+(`config/Kconfig.arch`):
+
+- A **baseline level**: `RISCV64_LEVEL` (rv64imac, rv64gc, rv64gcv),
+  `AARCH64_LEVEL` (Armv8.0 to 8.5) or `X86_64_LEVEL` (x86-64 v1 to v3).
+  It is the only thing codegen assumes for the kernel and the user images.
+  `tools/kconfig_to_cargo.py --rustflags` and `--user-rustflags` turn it into
+  target features. They use stable feature names, never `+v8.Na`. The
+  soft-float aarch64 kernel gets only the features that need no SIMD
+  registers (`+lse`, `+rcpc`, ...); the user images get the whole list. The
+  boot checks the level before anything that depends on it. On aarch64 that
+  is the first hook, before the first lock: a `+lse` kernel on an Armv8.0
+  core would otherwise fault at its first atomic instead of saying why. A CPU
+  below the level is refused with a message naming the missing feature, and
+  the machine powers off.
+- **Each optional extension is a three-way choice**: `n` (never used, even
+  when present: its path is never selected and the vDSO hwcap hides it),
+  `probe` (used only when the boot probe finds it, with a fallback otherwise)
+  or `require` (part of the baseline: target features where the ISA allows,
+  and a CPU without it is refused). riscv64 has Zicboz, Sstc, Svpbmt, Zba,
+  Zbb, Zbs, V and AIA. aarch64 has LSE, CRC32, PAuth, BTI, MTE, SVE, AES,
+  PMULL and SHA2. x86_64 has SMEP, SMAP, PCID, FSGSBASE, TSC-deadline,
+  x2APIC, XSAVEOPT, AVX2 and SHA-NI. Some of these are detected and reported
+  only, because no kernel path uses them yet; each symbol's help says which.
+  For those, `n` and `probe` differ only in the boot line.
+- **Per-board defaults** say what a board has. QEMU uses rv64imac and
+  Armv8.0 with everything on `probe` (V is `n`). The VisionFive 2 uses
+  rv64gc. The K1 uses rv64gcv with Zba/Zbb/Zbs and V set to `require`. The
+  Raspberry Pi 5 uses Armv8.2 with LSE set to `require` and PAuth, BTI, MTE
+  and SVE set to `n`. A level that contains an extension forces `require` on
+  it: Armv8.1 implies LSE and CRC32, 8.3 PAuth, 8.5 BTI, and x86-64-v3 AVX2.
+
+The boot prints one line with the baseline and each extension's state:
+`[ISA] baseline=rv64imac zicboz=probed-present sstc=probed-present ... v=n`.
+The policies reach Rust as `azos_arch_api::isa`. Every kernel rule in the
+Makefile takes its flags from the one emitter. `crates/core/limits/build.rs`
+refuses a kernel build whose target features disagree with its Kconfig, in
+either direction. A K1 flag in a VF2 build, or a `require` the flags
+forgot, is a build error. The plain `cargo build` of the default config
+needs nothing extra: `.cargo/config.toml` carries riscv64's default level.
+A board's user images are built from its config:
+`make RV_USER_KCONFIG=build/k1.config userspace` or
+`make AARCH64_USER_KCONFIG=<config> userspace-aarch64`.
+
 Other menus cover the architecture (including the aarch64 page granule),
 timing and scheduling, security mitigations, network, OTA, the Linux options
 and development aids.
@@ -632,11 +676,15 @@ first method still a `todo!()` naming the x86 mechanism.
 - **`kernel/linker-<isa>.ld`**, defining the section symbols the shared code
   reads (`_text_start` ... `_kernel_end`, `__azos_keys_start/_end`).
 - **Configuration**: an `ARCH_<ISA>` entry in the `config/Kconfig.arch`
-  choice with its baseline and `HAS_*` extension symbols (a baseline the
-  boot path checks, each extension probed at run time before use); the
-  target triple and baseline flags in `tools/kconfig_to_cargo.py`; a
-  defconfig named in the Makefile, after which `make ARCH=<isa> check`
-  type-checks the kernel.
+  choice, with a `<ISA>_LEVEL` baseline choice and one n / probe / require
+  choice per optional extension (the model under "Configuration and
+  profiles"), with per-board defaults; their policy table in
+  `crates/core/arch-api/src/isa.rs`; the target triple and the level's
+  target features (kernel and user) in `tools/kconfig_to_cargo.py`; the
+  boot hook that checks the level before anything compiled for it runs and
+  prints the `[ISA]` line through `kernel/src/boot/isa.rs`; a defconfig
+  named in the Makefile, after which `make ARCH=<isa> check` type-checks
+  the kernel.
 - **Shared code**: `tools/arch_cfg_lint.py` requires every `cfg(target_arch)`
   outside the arch crates to have an else arm, a `compile_error!`, or a
   `// arch-only: <why>` note, so a branch cannot vanish silently on a new

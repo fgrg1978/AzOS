@@ -304,13 +304,23 @@ azos_ktest::ktest! {
 // first-fit allocator hands back the same frame) must read back all zero:
 // the zero-fill `alloc_page` runs is `cbo.zero` here, not the host tests'
 // scalar stand-in. Canary `zicboz-skip-canary` (the boot ignores the DTB's
-// Zicboz): the scalar fallback is chosen and this test is `not ok`.
+// Zicboz): the scalar fallback is chosen and this test is `not ok`. With
+// Kconfig RV_ZICBOZ = n it asserts the opposite: the fast path stays off.
 azos_ktest::ktest! {
     // arch-only: Zicboz is a RISC-V extension; aarch64's counterpart,
     // DC ZVA, is not wired (its pages are zeroed with plain stores).
     #[cfg(target_arch = "riscv64")]
     fn mm_zicboz_zero_fill() {
         use azos_arch::mmu::PAGE_SIZE;
+        // Kconfig RV_ZICBOZ = n: the fast path must stay off although this
+        // CPU declares Zicboz (the `[ISA]` line reads `zicboz=n`).
+        if !azos_arch_api::isa::riscv64::ZICBOZ.allowed() {
+            return if azos_arch::cbo::zicboz_available() {
+                Err("RV_ZICBOZ is n but the Zicboz fast path was selected")
+            } else {
+                Ok(())
+            };
+        }
         if !azos_arch::cbo::zicboz_available() {
             return Err("the Zicboz fast path is off (scalar fallback) on a CPU that has Zicboz");
         }

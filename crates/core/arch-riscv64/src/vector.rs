@@ -26,21 +26,16 @@ pub fn dot_f32_scalar(a: &[f32], b: &[f32]) -> f32 {
 /// `rvv` feature on and the V extension compiled in, dispatches to
 /// [`rvv::dot_f32_rvv`]; otherwise falls back to the scalar form.
 ///
-/// Runtime CPU probing (à la x86_64's CPUID check or aarch64's
-/// `ID_AA64PFR0_EL1.SVE` poke) isn't done here because the V
-/// extension on the current targets is decided at build time —
-/// QEMU-with-V is one binary, VisionFive 2 (no V) is another. If
-/// that changes we can add a `has_v()` similar to `has_sve()`.
+/// Kconfig `RV_V`: n compiles the vector kernels out; probe and require
+/// compile them in and take them only when the boot found V
+/// ([`rvv::usable`]).
 #[inline]
 pub fn dot_f32_best(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(all(target_arch = "riscv64", feature = "rvv"))]
-    {
-        rvv::dot_f32_rvv(a, b)
+    if rvv::usable() {
+        return rvv::dot_f32_rvv(a, b);
     }
-    #[cfg(not(all(target_arch = "riscv64", feature = "rvv")))]
-    {
-        rvv::dot_f32_scalar(a, b)
-    }
+    rvv::dot_f32_scalar(a, b)
 }
 
 /// Human-readable name of the kernel currently selected by
@@ -49,11 +44,8 @@ pub fn dot_f32_best(a: &[f32], b: &[f32]) -> f32 {
 /// can print this without caring about the ISA.
 pub fn active_backend() -> &'static str {
     #[cfg(all(target_arch = "riscv64", feature = "rvv"))]
-    {
-        "RVV"
+    if rvv::usable() {
+        return "RVV";
     }
-    #[cfg(not(all(target_arch = "riscv64", feature = "rvv")))]
-    {
-        "scalar"
-    }
+    "scalar"
 }

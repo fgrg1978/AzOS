@@ -569,6 +569,55 @@ def test_lx_server_skeleton_reaches_the_build() -> None:
         assert "lx-server" not in feats, f"LINUX_DRIVERS alone emitted {feats}"
 
 
+def _isa(cfg: Path, *flags: str) -> str:
+    script = TOOLS_DIR / "kconfig_to_cargo.py"
+    r = subprocess.run([sys.executable, str(script), *flags, str(cfg)],
+                       capture_output=True, text=True, check=True)
+    return r.stdout.strip()
+
+
+def test_isa_level_and_require_reach_the_codegen() -> None:
+    """config/Kconfig.arch's hardware-support model: the level and every
+    `require` extension become target features (kernel and user images),
+    `probe` and `n` never do, the soft-float aarch64 kernel never gets a
+    feature that needs the SIMD registers, and the per-board defaults
+    (QEMU: today's flags; K1: Zba/Zbb/Zbs; Raspberry Pi 5: Armv8.2 + LSE,
+    no PAuth/BTI/MTE/SVE) come out of the defconfigs."""
+    import tempfile
+
+    simd = {"rdm", "dotprod", "fp16", "jsconv", "fcma", "frintts", "aes", "sha2", "sve", "neon"}
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        _expand(["CONFIG_ARCH_RISCV64=y"], t, "rv.config")
+        assert _isa(t / "rv.config", "--rustflags") == "-C target-feature=+zaamo,+zalrsc"
+        assert _isa(t / "rv.config", "--rustflags", "--skip-base") == ""
+        _expand(["CONFIG_ARCH_RISCV64=y", "CONFIG_RV_ZBB_REQUIRE=y", "CONFIG_RV_ZICBOZ_REQUIRE=y"], t, "rvb.config")
+        assert _isa(t / "rvb.config", "--rustflags", "--skip-base") == "-C target-feature=+zbb"
+        assert "require=zaamo,zalrsc,zbb" in _isa(t / "rvb.config", "--target-features")
+        _expand((DEFCONFIGS_DIR / "k1.config").read_text().splitlines(), t, "k1.config")
+        assert _isa(t / "k1.config", "--rustflags").endswith("+zba,+zbb,+zbs")
+        _expand((DEFCONFIGS_DIR / "vf2.config").read_text().splitlines(), t, "vf2.config")
+        assert "zb" not in _isa(t / "vf2.config", "--rustflags")
+        _expand(["CONFIG_ARCH_AARCH64=y"], t, "a.config")
+        assert _isa(t / "a.config", "--rustflags") == "" and _isa(t / "a.config", "--user-rustflags") == ""
+        rpi = [l for l in (DEFCONFIGS_DIR / "qemu-aarch64.config").read_text().splitlines()
+               if "BOARD_" not in l] + ["CONFIG_BOARD_RPI5=y"]
+        out = _expand(rpi, t, "rpi5.config")
+        assert "CONFIG_AARCH64_LEVEL_8_2=y" in out and "CONFIG_A64_LSE_REQUIRE=y" in out
+        for ext in ("PAUTH", "BTI", "MTE", "SVE"):
+            assert f"CONFIG_A64_{ext}_NEVER=y" in out, ext
+        k = _isa(t / "rpi5.config", "--rustflags").split("=", 1)[1].replace("+", "").split(",")
+        u = _isa(t / "rpi5.config", "--user-rustflags").split("=", 1)[1].replace("+", "").split(",")
+        assert "lse" in k and "dpb" in k and not {"paca", "bti", "mte", "rcpc"} & set(k), k
+        assert "rdm" in u and not simd & set(k), (k, u)
+        _expand(["CONFIG_ARCH_AARCH64=y", "CONFIG_AARCH64_LEVEL_8_5=y", "CONFIG_A64_SHA2_REQUIRE=y"], t, "a85.config")
+        k = _isa(t / "a85.config", "--rustflags").split("=", 1)[1].replace("+", "").split(",")
+        u = _isa(t / "a85.config", "--user-rustflags").split("=", 1)[1].replace("+", "").split(",")
+        assert {"lse", "rcpc", "paca", "bti"} <= set(k) and not simd & set(k), k
+        assert {"sha2", "dotprod", "frintts"} <= set(u), u
+        assert "control=lse,rcpc" in _isa(t / "a85.config", "--target-features")
+
+
 def test_page_size_reaches_the_build() -> None:
     """config/Kconfig.arch's aarch64 granule choice emits `page-16k`/`page-64k`
     and PAGE_SHIFT 14/16; 4 KiB emits neither (it is their absence), and a
@@ -869,6 +918,7 @@ def _run_all_tests() -> int:
         test_driver_switches_follow_their_board,
         test_no_defconfig_enables_unimplemented_options,
         test_page_size_reaches_the_build,
+        test_isa_level_and_require_reach_the_codegen,
         test_lx_server_skeleton_reaches_the_build,
         test_profile_defconfigs_generic_robot_variants_robot,
         test_generic_drops_only_the_domain_feature,

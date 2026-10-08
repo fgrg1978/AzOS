@@ -2036,17 +2036,23 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // no-op safely on the uninitialized sentinel until this runs (see
     // `VLEN_BYTES`'s doc comment in rvv.rs) — this print is what keeps that
     // silent fallback from being silent in practice.
+    // Kconfig `RV_V` = probe on a hart without V: `vlenb` would trap, so
+    // the vector state stays uninitialised and the scalar kernels run.
     #[cfg(all(target_arch = "riscv64", feature = "rvv"))]
-    match azos_arch::rvv::init_vector_state() {
-        Ok(vlenb) => kprintln!("[RVV] vlenb={} — vector state save/restore enabled", vlenb),
-        Err(vlenb) => kprintln!(
-            "[RVV] vlenb={} exceeds MAX_VLEN_BYTES={} — vector state save disabled, V not enabled for tasks",
-            vlenb, azos_arch::rvv::MAX_VLEN_BYTES),
+    if azos_arch::rvv::usable() {
+        match azos_arch::rvv::init_vector_state() {
+            Ok(vlenb) => kprintln!("[RVV] vlenb={} — vector state save/restore enabled", vlenb),
+            Err(vlenb) => kprintln!(
+                "[RVV] vlenb={} exceeds MAX_VLEN_BYTES={} — vector state save disabled, V not enabled for tasks",
+                vlenb, azos_arch::rvv::MAX_VLEN_BYTES),
+        }
+    } else {
+        kprintln!("[RVV] no V on this hart — scalar kernels, no vector state");
     }
 
     // Create RVV benchmark task (Phase 11, QEMU only).
     #[cfg(all(target_arch = "riscv64", feature = "rvv"))]
-    {
+    if azos_arch::rvv::usable() {
         azos_sched::task_create("rvv-bench", rvv_bench_task, 0, azos_sched::DEFAULT_PRIORITY);
         kprintln!("[SCHED] Created rvv-bench task");
     }

@@ -724,6 +724,10 @@ fn cmd_rvv() {
     {
         use azos_arch::{csr, rvv};
 
+        if !rvv::usable() {
+            azos_drv_sys::kconsoleln!("[RVV] not available — this hart has no V (RV_V = probe)");
+            return;
+        }
         azos_drv_sys::kconsoleln!("[RVV] RISC-V Vector Extension 1.0 benchmark");
         azos_drv_sys::kconsoleln!("[RVV] VLEN=128, LMUL=m4, f32 precision");
         azos_drv_sys::kconsoleln!();

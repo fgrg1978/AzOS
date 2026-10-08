@@ -10,8 +10,10 @@
 //!    tests its bit and falls back. Instructions above the baseline are
 //!    emitted only inside gated `asm!` (or `#[target_feature]` functions
 //!    reached only after the probe), never as a global target-feature.
-//! 3. **Per-board `HAS_X86_*`** (config/Kconfig.arch) compiles a path in;
-//!    a board that claims an extension still probes it here.
+//! 3. **Per-extension `X86_*` choice** (config/Kconfig.arch: n / probe /
+//!    require, `azos_arch_api::isa::x86_64`): n never selects the path,
+//!    probe takes this module's answer, require refuses a CPU without it
+//!    (the kernel's `[ISA]` boot line, `boot::isa`).
 
 /// What [`detect`] found. One bit per optional extension, with its CPUID
 /// source and the fallback its user takes when clear.

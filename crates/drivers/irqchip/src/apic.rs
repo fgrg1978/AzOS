@@ -4,7 +4,7 @@
 //! `imsic`/`irqchip` (riscv64) and the GIC in `azos_arch_aarch64::gic`.
 //! Every body is a `todo!()` naming the mechanism; nothing here runs.
 //!
-//! * The LAPIC is per-CPU (x2APIC: MSRs 0x800+, `HAS_X86_X2APIC`; else MMIO
+//! * The LAPIC is per-CPU (x2APIC: MSRs 0x800+, Kconfig `X86_X2APIC`; else MMIO
 //!   at IA32_APIC_BASE): spurious vector, TPR, EOI, the timer
 //!   (TSC-deadline) and IPIs (ICR).
 //! * IOAPICs (addresses and GSI bases from the ACPI MADT) route external

@@ -631,6 +631,10 @@ pub const fn arch_name(id: ArchId) -> &'static str {
 #[cfg(feature = "lat-trace")]
 pub mod lat;
 
+/// Baseline level and per-extension n / probe / require policy, every ISA
+/// (config/Kconfig.arch), and the `[ISA]` boot line.
+pub mod isa;
+
 // ──────────────────────────────────────────────────────────────────────────
 // Arch contract: ArchPlatform (ISA crates) and ArchEntry (kernel boot hooks)
 // ──────────────────────────────────────────────────────────────────────────

@@ -262,18 +262,25 @@ build() {
 
 # vf2/k1 must be built exactly as the Makefile ships them — with their linker
 # script. Without it CI validates a binary nobody ever runs.
-# The ISA extensions each board's Makefile target compiles with, READ FROM THE
-# MAKEFILE rather than copied. A board built here without the flags its Makefile
-# uses is a different binary from the one that ships, and the guard rows below
-# would then be checking something nobody flashes. A second copy of the string
-# would drift exactly the way `kernel/Cargo.toml`'s `k1` feature list drifted
-# from `rvv`'s (2026-09-18), so there is only one.
-K1_ISA="$(sed -n 's/^K1_ISA := //p' "$REPO_ROOT/Makefile")"
-if [ -z "$K1_ISA" ]; then
-    echo "FATAL: no K1_ISA in the Makefile — the per-board extension flags moved," >&2
-    echo "       and the k1 build here would silently lose them." >&2
-    exit 1
-fi
+# The ISA extensions each board's build compiles with, DERIVED, never copied:
+# the board's Kconfig (config/Kconfig.arch: the K1's RV_ZBA/ZBB/ZBS default to
+# `require`) through tools/kconfig_to_cargo.py --rustflags, the emitter the
+# Makefile's `k1` rule uses too. A board built here without the flags it ships
+# with is a different binary from the one that ships, and the guard rows below
+# would then be checking something nobody flashes; crates/core/limits/build.rs
+# also refuses a kernel build whose target features disagree with its Kconfig.
+# The expanded K1 config stays for the rows that build `--features k1` by hand.
+K1_ISA_KCONFIG="$REPO_ROOT/target/ci-k1-isa.config"
+mkdir -p "$REPO_ROOT/target"
+K1_ISA="$(cp "$REPO_ROOT/config/defconfigs/k1.config" "$K1_ISA_KCONFIG" \
+    && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$K1_ISA_KCONFIG" python3 -m olddefconfig >/dev/null 2>&1) \
+    && python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --rustflags "$K1_ISA_KCONFIG")"
+case "$K1_ISA" in
+  *zba*zbb*zbs*) ;;
+  *) echo "FATAL: the K1 config no longer yields its Zba/Zbb/Zbs flags (got '$K1_ISA')," >&2
+     echo "       and the k1 build here would silently lose them." >&2
+     exit 1 ;;
+esac
 
 build_board() {
     local label="$1" feat="$2" ld="kernel/linker-$2.ld" isa="${3:-}"
@@ -7591,7 +7598,7 @@ isa_guard   "vf2: no B extension" none
 k1_refuses_to_build_row() {
     printf "  %-26s" "k1: refuses to build (V2.3)..."
     local out
-    out="$(RUSTFLAGS="-C link-arg=-Tkernel/linker-k1.ld $K1_ISA" "$CARGO" build --release --features k1 --keep-going 2>&1)"  # --keep-going: the refusals sit in four driver class crates; without it cargo stops at the first
+    out="$(KCONFIG_CONFIG="$K1_ISA_KCONFIG" RUSTFLAGS="-C link-arg=-Tkernel/linker-k1.ld $K1_ISA" "$CARGO" build --release --features k1 --keep-going 2>&1)"  # --keep-going: the refusals sit in four driver class crates; without it cargo stops at the first
     if printf '%s\n' "$out" | grep -q "no real K1 GPIO driver exists yet" \
         && printf '%s\n' "$out" | grep -q "no real K1 PWM driver exists yet" \
         && ! printf '%s\n' "$out" | grep -q "Finished"; then

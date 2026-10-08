@@ -153,6 +153,7 @@ IPCTEST_ELF   := build/ipctest.elf
 # already defaults `[build] target` to `aarch64-unknown-none`, so no
 # `--target` flag is needed for those two.
 TARGET_AARCH64 := aarch64-unknown-none
+comma := ,
 # ── aarch64 translation granule of the user images ──────────────────────────
 # config/Kconfig.arch AARCH64_PAGE_* picks the kernel's granule; a user image
 # must be linked for the same page (`-z max-page-size`, which every
@@ -164,9 +165,18 @@ TARGET_AARCH64 := aarch64-unknown-none
 #   make AARCH64_PAGE_SIZE=16384 build/image_hashes_aarch64_16k.rs  -> build/aarch64-16k/*.elf
 #   make AARCH64_PAGE_SIZE=16384 aarch64                            -> build/kernel-aarch64-16k.img
 AARCH64_PAGE_SIZE ?= 4096
+# ── aarch64 baseline of the user images ─────────────────────────────────────
+# The Kconfig level and `require`d extensions (config/Kconfig.arch
+# AARCH64_LEVEL, A64_*) as user codegen flags, from the expanded config the
+# kernel is built from (tools/kconfig_to_cargo.py --user-rustflags). Armv8.0
+# with nothing required (QEMU's default) emits nothing, so the default images
+# and their digests are what this Makefile always built. A board's images:
+#   make AARCH64_USER_KCONFIG=build/rpi5.config userspace-aarch64
+AARCH64_USER_KCONFIG ?= build/aarch64$(if $(filter 16384,$(AARCH64_PAGE_SIZE)),-16k,$(if $(filter 65536,$(AARCH64_PAGE_SIZE)),-64k)).config
+AARCH64_USER_ISA := $(if $(wildcard $(AARCH64_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml $(AARCH64_USER_KCONFIG)))
 ifeq ($(AARCH64_PAGE_SIZE),4096)
 AARCH64_PG_SUFFIX :=
-AARCH64_PG_FLAGS  :=
+AARCH64_PG_FLAGS  := $(if $(AARCH64_USER_ISA),--config 'target.$(TARGET_AARCH64).rustflags=[$(AARCH64_USER_ISA)]')
 AARCH64_UTARGET   := target
 else
 ifeq ($(AARCH64_PAGE_SIZE),16384)
@@ -181,7 +191,7 @@ AARCH64_UTARGET   := target$(AARCH64_PG_SUFFIX)
 # 4 KiB (see user_aarch64.ld), and the loader maps an executable segment only
 # onto a page it owns outright (W^X, crates/core/sched/src/process.rs), so the
 # headers must be in the RX segment rather than an R segment of their own.
-AARCH64_PG_FLAGS  := --target-dir $(AARCH64_UTARGET) --config 'target.$(TARGET_AARCH64).rustflags=["-C","link-arg=-zmax-page-size=$(AARCH64_PAGE_SIZE)","-C","link-arg=--no-rosegment"]'
+AARCH64_PG_FLAGS  := --target-dir $(AARCH64_UTARGET) --config 'target.$(TARGET_AARCH64).rustflags=["-C","link-arg=-zmax-page-size=$(AARCH64_PAGE_SIZE)","-C","link-arg=--no-rosegment"$(if $(AARCH64_USER_ISA),$(comma)$(AARCH64_USER_ISA))]'
 endif
 AARCH64_PG_TABLE  := $(subst -,_,$(AARCH64_PG_SUFFIX))
 AARCH64_DIR    := build/aarch64$(AARCH64_PG_SUFFIX)
@@ -258,7 +268,13 @@ LIBSYS_SRC := $(LIBSYS_DIR)/Cargo.toml $(LIBSYS_DIR)/src/lib.rs \
 # rustflags array is part of cargo's fingerprint, so a changed wrapper rebuilds
 # every userspace crate, build-std's included.
 USPACE_METADATA_TAG := $(shell python3 -c 'import hashlib; print(hashlib.sha256(open("userspace/rustc_stable_metadata.py", "rb").read()).hexdigest()[:12])')
-USPACE_BUILD := RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(CARGO) +nightly build --release --config 'target.$(TARGET).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"]'
+# The riscv64 user images' codegen beyond the target triple: the Kconfig
+# extensions set to `require` (config/Kconfig.arch RV_ZBA/ZBB/ZBS; nothing on
+# QEMU's default, so the default images and digests do not move). A board's
+# images: `make RV_USER_KCONFIG=build/k1.config userspace`.
+RV_USER_KCONFIG ?= build/qemu-dev.config
+RV_USER_ISA := $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
+USPACE_BUILD := RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(CARGO) +nightly build --release --config 'target.$(TARGET).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"$(if $(RV_USER_ISA),$(comma)$(RV_USER_ISA))]'
 
 # VisionFive 2 configuration (Phase 10)
 # Override these from the command line as needed:
@@ -301,8 +317,12 @@ K1_LINKER   := kernel/linker-k1.ld
 # NOT the way to reach an extension that only SOME target has: that is a runtime
 # probe with a scalar fallback (`crates/core/arch-riscv64/src/cbo.rs` for Zicboz). This
 # is for extensions the board is known to have at build time.
-K1_ISA := -C target-feature=+zba,+zbb,+zbs
-K1_RUSTFLAGS := -C link-arg=-T$(K1_LINKER) $(K1_ISA)
+#
+# The flags come from the Kconfig (config/Kconfig.arch: the K1's RV_ZBA/ZBB/ZBS
+# default to `require`) through tools/kconfig_to_cargo.py --rustflags, the one
+# emitter every kernel rule uses; crates/core/limits/build.rs refuses a kernel
+# build whose target features disagree with its Kconfig.
+K1_RUSTFLAGS = -C link-arg=-T$(K1_LINKER) $(shell python3 tools/kconfig_to_cargo.py --rustflags $(K1_KCONFIG))
 K1_BIN      := build/kernel-k1.bin
 
 # RVV: QEMU CPU model with Vector 1.0 extension (VLEN=128).
@@ -484,8 +504,15 @@ lx-modules: $(MODULE_HASHES) $(MODULE_HASHES_AARCH64)
 # its profile's level, warn. `make qemu QEMU_LOG_LEVEL=warn` boots what ships.
 QEMU_DEV_KCONFIG := build/qemu-dev.config
 QEMU_DEV_ENV      = KCONFIG_CONFIG="$(CURDIR)/$(QEMU_DEV_KCONFIG)"
+#
+# `QEMU_DEV_ISA`: the Kconfig's riscv64 codegen beyond .cargo/config.toml's
+# baseline (RV_ZBA/ZBB/ZBS set to `require`), merged into the target's
+# rustflags; empty on the default config.
+QEMU_DEV_ISA = rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base $(QEMU_DEV_KCONFIG))"; \
+	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]";
 build: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel --features qemu \
+	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel --features qemu \
+		$${isa:+--config "$$isa"} \
 		$$(python3 tools/kconfig_to_cargo.py --domain-only $(QEMU_DEV_KCONFIG))
 	@$(MAKE) --no-print-directory prune
 
@@ -500,7 +527,7 @@ prune:
 
 # Build kernel with RVV 1.0 support (requires QEMU with -cpu rv64,v=true).
 build-rvv: $(IMAGE_HASHES) $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) --features rvv,qemu
+	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) --features rvv,qemu $${isa:+--config "$$isa"}
 	@$(MAKE) --no-print-directory prune
 
 # Build kernel with PROFILE_FLEET defconfig and the fleet linker script
@@ -512,7 +539,8 @@ build-fleet: $(IMAGE_HASHES_BOARD) build/disk-board-fleet.img
 	$(call require_board_key,FLEET)
 	$(call check_board_priv_if_given,FLEET)
 	@$(MAKE) defconfig-fleet
-	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" RUSTFLAGS="$(FLEET_RUSTFLAGS)" \
+	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
+	RUSTFLAGS="$(FLEET_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags .config)" \
 	$(CARGO) build $(CARGO_FLAGS) -p azos_kernel --features board-image \
 		$$(python3 tools/kconfig_to_cargo.py .config | tr -s ' ')
 	@echo "[FLEET] kernel built, volume build/disk-board-fleet.img (signed topology) — use a gateway board with >= 1 GiB RAM"
@@ -777,7 +805,6 @@ $(CAPTEST_ELF): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/src/stream.rs $(CAPTES
 # with and changes only when the set does, so a canary ELF can never be
 # reused by a later default build.
 VSBENCH_FEATURES ?=
-comma := ,
 VSBENCH_FEATURES_ARG := $(if $(strip $(VSBENCH_FEATURES)),$(comma)$(strip $(VSBENCH_FEATURES)))
 build/vsbench.features: FORCE
 	@mkdir -p build
@@ -2141,7 +2168,8 @@ vf2: $(IMAGE_HASHES_BOARD) $(VF2_KCONFIG) build/disk-board.img
 	$(call require_board_key,VF2)
 	$(call check_board_priv_if_given,VF2)
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
-	KCONFIG_CONFIG="$(CURDIR)/$(VF2_KCONFIG)" RUSTFLAGS="$(VF2_RUSTFLAGS)" \
+	KCONFIG_CONFIG="$(CURDIR)/$(VF2_KCONFIG)" \
+	RUSTFLAGS="$(VF2_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags $(VF2_KCONFIG))" \
 	$(CARGO) build --release -p azos_kernel --features board-image \
 		$$(python3 tools/kconfig_to_cargo.py $(VF2_KCONFIG) | tr -s ' ') \
 		--config "build.rustflags=['-C','link-arg=-T$(VF2_LINKER)']"
@@ -2529,7 +2557,7 @@ $(AARCH64_KCONFIG): config/defconfigs/qemu-aarch64.config \
 # caller's shell would silently drop it.
 aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(AARCH64_KCONFIG)" $(AARCH64_KTARGET_ENV) \
-	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER)" \
+	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/kconfig_to_cargo.py --rustflags $(AARCH64_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel \
 	    $$(python3 tools/kconfig_to_cargo.py $(AARCH64_KCONFIG) | tr -s ' ')
 	@mkdir -p build

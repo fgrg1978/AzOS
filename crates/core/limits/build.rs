@@ -104,6 +104,7 @@ fn main() {
     // A failed invariant panics the build with a clear error message.
     // -----------------------------------------------------------------------
     run_validations(&cfg);
+    check_target_features(workspace_root, &config_path);
 
     // -----------------------------------------------------------------------
     // Emit generated.rs into OUT_DIR.
@@ -154,6 +155,103 @@ fn get_str<'a>(cfg: &'a ConfigMap, key: &str) -> &'a str {
 // Validation invariants (RFC-0026 §Validation & invariants).
 // Every check panics with a descriptive message on failure.
 // ---------------------------------------------------------------------------
+/// The ISA baseline level and the extension choices it contains
+/// (config/Kconfig.arch, "Hardware support model"): an extension that is
+/// part of the level is in the compiled code, so `n` or `probe` for it
+/// would be a promise the binary cannot keep.
+fn validate_isa_levels(cfg: &ConfigMap) {
+    let on = |k: &str| get_bool(cfg, k);
+    let mut bad: Vec<String> = Vec::new();
+    if on("ARCH_AARCH64") {
+        let minor = [("AARCH64_LEVEL_8_5", 5), ("AARCH64_LEVEL_8_4", 4), ("AARCH64_LEVEL_8_3", 3),
+                     ("AARCH64_LEVEL_8_2", 2), ("AARCH64_LEVEL_8_1", 1)]
+            .iter().find(|(k, _)| on(k)).map(|&(_, m)| m).unwrap_or(0);
+        for (ext, from) in [("A64_LSE", 1), ("A64_CRC32", 1), ("A64_PAUTH", 3), ("A64_BTI", 5)] {
+            if minor >= from && !on(&format!("{ext}_REQUIRE")) {
+                bad.push(format!("{ext} must be `require` at Armv8.{minor} (Armv8.{from} includes it)"));
+            }
+        }
+        if on("FP_SVE") && on("A64_SVE_NEVER") {
+            bad.push("FP_SVE saves SVE state but A64_SVE is n".to_string());
+        }
+    }
+    if on("ARCH_X86_64") && on("X86_64_LEVEL_V3") && !on("X86_AVX2_REQUIRE") {
+        bad.push("X86_AVX2 must be `require` at x86-64-v3 (the level compiles AVX2 in)".to_string());
+    }
+    if on("ARCH_RISCV64") && on("RISCV64_LEVEL_RV64GCV") && on("RV_V_PROBE") {
+        bad.push("RV_V is probe but the level rv64gcv says every hart has V: use require (or n)".to_string());
+    }
+    if !bad.is_empty() {
+        panic!("validation FAIL: ISA level and extension choices disagree:\n  {}\n\
+                Fix: change the extension in make config, or lower the level.",
+               bad.join("\n  "));
+    }
+}
+
+/// The kernel's target features against the Kconfig's (bare-metal builds
+/// only): every feature the level and the `require` extensions put in the
+/// baseline must be enabled, and a codegen-changing feature the Kconfig
+/// does not ask for must not be (a K1 flag in a VF2 build, `+lse` in an
+/// Armv8.0 one: a binary for another board). The lists come from the one
+/// emitter, tools/kconfig_to_cargo.py `--target-features`; the flags reach
+/// cargo through `--rustflags` (every Makefile kernel rule).
+fn check_target_features(workspace_root: &std::path::Path, config_path: &std::path::Path) {
+    // Kernel builds only. A user image links this crate too (mlsrv), for
+    // the target triple of the user images: hard-float `aarch64-unknown-none`
+    // (the kernel is `-softfloat`), and on riscv64 the kernel's own triple
+    // but with the userspace build's `--cfg azos_stable_metadata_*` marker
+    // (Makefile USPACE_BUILD). Its flags come from `--user-rustflags`. A
+    // build for another ISA than the config's is not checked either.
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let cfg_arch = std::fs::read_to_string(config_path).unwrap_or_default();
+    let cfg_is = |a: &str| cfg_arch.lines().any(|l| l == format!("CONFIG_ARCH_{a}=y"));
+    let flags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let kernel = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none")
+        && !flags.contains("azos_stable_metadata_")
+        && match arch.as_str() {
+            "riscv64" => cfg_is("RISCV64") || !(cfg_is("AARCH64") || cfg_is("X86_64")),
+            "aarch64" => cfg_is("AARCH64")
+                && env::var("CARGO_CFG_TARGET_ABI").as_deref() == Ok("softfloat"),
+            "x86_64" => cfg_is("X86_64"),
+            _ => false,
+        };
+    if !kernel {
+        return;
+    }
+    let script = workspace_root.join("tools/kconfig_to_cargo.py");
+    println!("cargo:rerun-if-changed={}", script.display());
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    let out = std::process::Command::new("python3")
+        .arg(&script).arg("--target-features").arg(config_path)
+        .output()
+        .unwrap_or_else(|e| panic!("azos_limits: cannot run python3 {}: {e}", script.display()));
+    if !out.status.success() {
+        panic!("azos_limits: {} --target-features failed: {}", script.display(),
+               String::from_utf8_lossy(&out.stderr));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let list = |key: &str| -> Vec<String> {
+        text.lines().find_map(|l| l.strip_prefix(key))
+            .map(|v| v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default()
+    };
+    let (require, control) = (list("require="), list("control="));
+    let have_s = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    let have: Vec<&str> = have_s.split(',').collect();
+    let missing: Vec<&String> = require.iter().filter(|f| !have.contains(&f.as_str())).collect();
+    let extra: Vec<&String> = control.iter()
+        .filter(|f| have.contains(&f.as_str()) && !require.contains(f)).collect();
+    if !missing.is_empty() || !extra.is_empty() {
+        panic!(
+            "ISA baseline mismatch: {} asks for target features {:?}, the build has {:?} \
+             (missing {:?}, not asked for {:?}). Build through make, or pass \
+             RUSTFLAGS=\"$(python3 tools/kconfig_to_cargo.py --rustflags {})\" with the \
+             linker script.",
+            config_path.display(), require, have, missing, extra, config_path.display()
+        );
+    }
+}
+
 fn run_validations(cfg: &ConfigMap) {
     // -----------------------------------------------------------------------
     // Options for code that does not exist yet (wave 11). The Linux
@@ -377,9 +475,11 @@ fn run_validations(cfg: &ConfigMap) {
     if fp_rvv && !has_rvv {
         panic!(
             "validation FAIL: FP_RVV=y but HAS_RVV=n — the target SoC does not have RVV hardware. \
-             Fix: enable HAS_RVV or choose FP_HARDFLOAT_D as the FP context."
+             Fix: set RV_V to probe or require, or choose FP_HARDFLOAT_D as the FP context."
         );
     }
+
+    validate_isa_levels(cfg);
 
     // -----------------------------------------------------------------------
     // AEAD link encryption requires a PSK path

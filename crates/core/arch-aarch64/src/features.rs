@@ -2,9 +2,13 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! What this CPU actually implements, read from the architectural ID registers.
 //!
-//! The baseline is **ARMv8.5-A** (owner decision 97, 2026-09-19): LSE atomics
-//! (8.1), PAC (8.3), BTI and MTE (8.5). "Modern ARM, no legacy support" — the
-//! same rule the RISC-V side is held to.
+//! The compile-time baseline is the Kconfig level `AARCH64_LEVEL` (8.0 by
+//! default, 8.2 on the Raspberry Pi 5): [`level_missing`] checks it against
+//! the ID registers before the first lock. Every other feature here is an
+//! extension with its own `make config` choice (n / probe / require,
+//! `azos_arch_api::isa::aarch64`). [`Features::meets_armv8_5_baseline`] is
+//! what the security properties (PAuth, BTI, MTE) would need, reported, not
+//! required.
 //!
 //! # Why this is nicer than the RISC-V equivalent, and why it is still a probe
 //!
@@ -115,6 +119,111 @@ pub const fn decode(isar0: u64, isar1: u64, pfr1: u64) -> Features {
         aes: field(isar0, 4) >= 1,
         pmull: field(isar0, 4) >= 2,
         sha2: field(isar0, 12) >= 1,
+    }
+}
+
+/// The ID registers the baseline-level check reads (one snapshot).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct IdRegs {
+    pub isar0: u64,
+    pub isar1: u64,
+    pub pfr0: u64,
+    pub pfr1: u64,
+    pub mmfr1: u64,
+    pub mmfr2: u64,
+}
+
+impl IdRegs {
+    /// The extension bits [`decode`] reads.
+    pub const fn features(&self) -> Features {
+        decode(self.isar0, self.isar1, self.pfr1)
+    }
+
+    /// FEAT_SVE: ID_AA64PFR0_EL1.SVE [35:32] >= 1.
+    pub const fn sve(&self) -> bool {
+        field(self.pfr0, 32) >= 1
+    }
+}
+
+/// Which register a level check reads.
+#[derive(Clone, Copy)]
+enum Reg { Isar0, Isar1, Pfr0, Pfr1, Mmfr1, Mmfr2 }
+
+/// Each Armv8.x level's mandatory features the boot checks: (level, register,
+/// field shift, minimum value, name). Cumulative: Armv8.N needs every row
+/// with level <= N. A representative set, not every FEAT_ of the level:
+/// enough that a core of a lower level always lacks one of them.
+const LEVEL_FEATURES: &[(u8, Reg, u32, u64, &str)] = &[
+    (1, Reg::Isar0, 20, 2, "FEAT_LSE"),
+    (1, Reg::Isar0, 16, 1, "FEAT_CRC32"),
+    (1, Reg::Isar0, 28, 1, "FEAT_RDM"),
+    (1, Reg::Mmfr1, 20, 1, "FEAT_PAN"),
+    (1, Reg::Mmfr1, 16, 1, "FEAT_LOR"),
+    (1, Reg::Mmfr1, 8, 1, "FEAT_VHE"),
+    (2, Reg::Mmfr1, 20, 2, "FEAT_PAN2"),
+    (2, Reg::Isar1, 0, 1, "FEAT_DPB"),
+    (2, Reg::Mmfr2, 4, 1, "FEAT_UAO"),
+    (3, Reg::Isar1, 20, 1, "FEAT_LRCPC"),
+    (3, Reg::Isar1, 12, 1, "FEAT_JSCVT"),
+    (3, Reg::Isar1, 16, 1, "FEAT_FCMA"),
+    (4, Reg::Pfr0, 48, 1, "FEAT_DIT"),
+    (4, Reg::Isar0, 52, 1, "FEAT_FlagM"),
+    (4, Reg::Isar1, 20, 2, "FEAT_LRCPC2"),
+    (4, Reg::Isar0, 44, 1, "FEAT_DotProd"),
+    (5, Reg::Pfr1, 0, 1, "FEAT_BTI"),
+    (5, Reg::Isar1, 36, 1, "FEAT_SB"),
+    (5, Reg::Isar0, 52, 2, "FEAT_FlagM2"),
+    (5, Reg::Isar1, 32, 1, "FEAT_FRINTTS"),
+];
+
+/// The first mandatory feature of Armv8.`minor` (and every level below it)
+/// that `r` does not report, or `None` when the CPU meets the level.
+/// FEAT_PAuth (8.3) is either address-key field ([`decode`]).
+pub const fn level_missing(r: &IdRegs, minor: u8) -> Option<&'static str> {
+    if minor >= 3 && !r.features().pauth {
+        return Some("FEAT_PAuth");
+    }
+    let mut i = 0;
+    while i < LEVEL_FEATURES.len() {
+        let (lvl, reg, shift, min, name) = LEVEL_FEATURES[i];
+        let v = match reg {
+            Reg::Isar0 => r.isar0,
+            Reg::Isar1 => r.isar1,
+            Reg::Pfr0 => r.pfr0,
+            Reg::Pfr1 => r.pfr1,
+            Reg::Mmfr1 => r.mmfr1,
+            Reg::Mmfr2 => r.mmfr2,
+        };
+        if lvl <= minor && field(v, shift) < min {
+            return Some(name);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Read every ID register [`IdRegs`] holds. No atomics, no memory access:
+/// safe before the first lock. Zeros where [`detect`] answers NONE.
+pub fn read_id_regs() -> IdRegs {
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    {
+        let (isar0, isar1, pfr0, pfr1, mmfr1, mmfr2): (u64, u64, u64, u64, u64, u64);
+        // SAFETY: architectural reads of EL1-readable ID registers.
+        // ID_AA64MMFR2_EL1 by its encoding (an Armv8.2 name the assembler
+        // may not accept at the base level; the register reads as 0 below).
+        unsafe {
+            asm!("mrs {}, ID_AA64ISAR0_EL1", out(reg) isar0, options(nostack, nomem, preserves_flags));
+            asm!("mrs {}, ID_AA64ISAR1_EL1", out(reg) isar1, options(nostack, nomem, preserves_flags));
+            asm!("mrs {}, ID_AA64PFR0_EL1",  out(reg) pfr0,  options(nostack, nomem, preserves_flags));
+            asm!("mrs {}, ID_AA64PFR1_EL1",  out(reg) pfr1,  options(nostack, nomem, preserves_flags));
+            asm!("mrs {}, ID_AA64MMFR1_EL1", out(reg) mmfr1, options(nostack, nomem, preserves_flags));
+            asm!("mrs {}, S3_0_C0_C7_2",     out(reg) mmfr2, options(nostack, nomem, preserves_flags));
+        }
+        IdRegs { isar0, isar1, pfr0, pfr1, mmfr1, mmfr2 }
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+    {
+        IdRegs::default()
     }
 }
 
@@ -234,6 +343,39 @@ mod tests {
     /// `mrs ID_AA64ISAR1_EL1` — an EL1 read from EL0 — which killed the test
     /// process with an illegal instruction. If this test ever dies rather than
     /// fails, the guard has been widened back.
+    /// The level check, against QEMU's Cortex-A53 (8.0), Cortex-A76 (8.2)
+    /// and a `max`-like value: each meets its own level and names the first
+    /// missing feature of the next.
+    #[test]
+    fn the_level_check_names_the_first_missing_feature() {
+        let a53 = IdRegs { isar0: 0x0000_0000_0001_1120, isar1: 0, pfr0: 0x2222,
+                           pfr1: 0, mmfr1: 0, mmfr2: 0 };
+        assert_eq!(level_missing(&a53, 0), None);
+        assert_eq!(level_missing(&a53, 1), Some("FEAT_LSE"));
+        let a76 = IdRegs { isar0: 0x0000_1000_1021_1120, isar1: 0x0010_0001, pfr0: 0x1100_0000_1011_1112,
+                           pfr1: 0x10, mmfr1: 0x1021_2122, mmfr2: 0x1011 };
+        for minor in 0..=2 {
+            assert_eq!(level_missing(&a76, minor), None, "A76 meets 8.{minor}");
+        }
+        assert_eq!(level_missing(&a76, 3), Some("FEAT_PAuth"));
+        assert_eq!(level_missing(&a76, 5), Some("FEAT_PAuth"));
+        let all = IdRegs { isar0: !0, isar1: !0, pfr0: !0, pfr1: !0, mmfr1: !0, mmfr2: !0 };
+        assert_eq!(level_missing(&all, 5), None);
+        // Each row discriminates: clearing its field alone fails its level.
+        // (Set just below its minimum, so PAN2/LRCPC2/FlagM2 keep PAN/LRCPC/FlagM.)
+        for &(lvl, reg, shift, min, name) in LEVEL_FEATURES {
+            let mut r = all;
+            let f = match reg {
+                Reg::Isar0 => &mut r.isar0, Reg::Isar1 => &mut r.isar1, Reg::Pfr0 => &mut r.pfr0,
+                Reg::Pfr1 => &mut r.pfr1, Reg::Mmfr1 => &mut r.mmfr1, Reg::Mmfr2 => &mut r.mmfr2,
+            };
+            *f = (*f & !(0xF << shift)) | ((min - 1) << shift);
+            assert_eq!(level_missing(&r, 5), Some(name), "{name} cleared");
+            assert_eq!(level_missing(&r, lvl - 1), None, "{name} is not needed below 8.{lvl}");
+        }
+        assert!(all.sve() && !a76.sve());
+    }
+
     #[test]
     fn a_build_that_is_not_bare_metal_aarch64_detects_nothing_without_trapping() {
         assert_eq!(detect(), Features::NONE);

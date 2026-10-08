@@ -97,8 +97,24 @@ pub fn timer_probe(_fw: &()) {
     todo!("x86_64: timer_probe: TSC-deadline (CPUID.01H:ECX[24]), invariant TSC, HPET from ACPI")
 }
 
+/// The `[ISA]` line: each extension's Kconfig choice (X86_*, n / probe /
+/// require) against CPUID (`features::detect`, not ported yet). Each user
+/// must also gate on the same policy (`azos_arch_api::isa::x86_64`).
 pub fn cpu_features(_fw: &()) {
-    todo!("x86_64: cpu_features: CPUID leaves 1/7 (SMEP, SMAP, PCID, INVPCID), XSAVE")
+    use azos_arch_api::isa::{x86_64 as p, Ext};
+    let f = azos_arch::features::detect();
+    let e = |name, symbol, policy, present| Ext { name, symbol, policy, present };
+    crate::boot::isa::report(p::LEVEL, &[
+        e("smep", "X86_SMEP", p::SMEP, f.smep),
+        e("smap", "X86_SMAP", p::SMAP, f.smap),
+        e("pcid", "X86_PCID", p::PCID, f.pcid && f.invpcid),
+        e("fsgsbase", "X86_FSGSBASE", p::FSGSBASE, f.fsgsbase),
+        e("tsc-deadline", "X86_TSC_DEADLINE", p::TSC_DEADLINE, f.tsc_deadline),
+        e("x2apic", "X86_X2APIC", p::X2APIC, f.x2apic),
+        e("xsaveopt", "X86_XSAVEOPT", p::XSAVEOPT, f.xsaveopt),
+        e("avx2", "X86_AVX2", p::AVX2, f.avx2),
+        e("sha-ni", "X86_SHA_NI", p::SHA_NI, f.sha_ni),
+    ]);
 }
 
 pub fn firmware_memory(_fw: &()) -> azos_arch::FirmwareMemory {
