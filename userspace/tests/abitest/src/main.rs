@@ -187,6 +187,9 @@ fn expect_true(name: &[u8], ok: bool) {
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    // Wave 15 (plan 4a): the image `check_exec_from_threads`' child exec'd
+    // runs its own checks and exits here.
+    exec_alone_mode();
     outln(b"[ABITEST] Starting - libsys/kernel ABI conformance");
 
     check_process();
@@ -221,6 +224,10 @@ pub extern "C" fn _start() -> ! {
     // Wave 13 (THREADS): native threads. They reap their own children.
     check_thread_storm();
     check_threads();
+    // Wave 15 (plan 4a): after the thread checks (their rows stop reading
+    // at the last of them), and reaping only their own children by TID.
+    check_thread_objects();
+    check_exec_from_threads();
     check_orphans();
     // aarch64 lazy FP. After the wait()/waitpid() checks and before any
     // check that leaves a child running: these fork and reap their own.
@@ -2286,6 +2293,186 @@ fn check_threads() {
         let (got, st) = reap_by_tid(pid);
         expect_true(b"threads: exit ends every thread of the process", got == pid && st == 7);
     }
+}
+
+// ── Exec from a process with threads; what a thread creates (wave 15) ─────
+
+/// Per-thread spin counters of [`check_exec_from_threads`]'s two spinners.
+static X_COUNT: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+/// What a thread that is not its process's leader got back from `execpath`
+/// (`u64::MAX` until it answered).
+static X_RC: AtomicU64 = AtomicU64::new(u64::MAX);
+/// The port handle a thread created for [`check_thread_objects`]
+/// (`u32::MAX` until it made one).
+static X_PORT: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// The exec'd child's exit code when every check it ran passed.
+const EXEC_ALONE_OK: i32 = 0x5E;
+/// ... when one failed.
+const EXEC_ALONE_FAIL: i32 = 0x5F;
+/// The child's exit code when its own `execpath` returned.
+const EXEC_RETURNED: i32 = 0x71;
+/// How long the exec'ing child's own child lives: the exec'd image finds it
+/// in `/proc/tasks` (its proof it is the exec'd image) and reaps it.
+const EXEC_GRANDCHILD_MS: u64 = 3_000;
+
+/// Spin, syscall-free, on counter 0: only a forced stop ends it. One entry
+/// per counter, not the thread argument: the counter must not depend on how
+/// the argument register reaches a new thread.
+extern "C" fn x_spin0(_z: u64, _stack: u64, _arg: u64) -> ! {
+    loop {
+        X_COUNT[0].fetch_add(1, AO::Relaxed);
+    }
+}
+
+/// [`x_spin0`] on counter 1.
+extern "C" fn x_spin1(_z: u64, _stack: u64, _arg: u64) -> ! {
+    loop {
+        X_COUNT[1].fetch_add(1, AO::Relaxed);
+    }
+}
+
+/// The argument [`x_exec_try`] received (printed, not checked).
+static X_ARG: AtomicU64 = AtomicU64::new(0);
+
+/// A thread that is not its process's leader tries to exec.
+extern "C" fn x_exec_try(_z: u64, _stack: u64, arg: u64) -> ! {
+    X_ARG.store(arg, AO::Release);
+    let rc = sys::execpath(sys::cstr!(b"/fat/ABITEST.ELF"));
+    X_RC.store(rc as i64 as u64, AO::Release);
+    sys::thread_exit(0)
+}
+
+/// A thread creates a port and exits at once.
+extern "C" fn x_make_port(_z: u64, _stack: u64, _arg: u64) -> ! {
+    let p = sys::port_create_typed();
+    X_PORT.store(if p >= 0 { p as u32 } else { u32::MAX - 1 }, AO::Release);
+    sys::thread_exit(0)
+}
+
+/// What a thread creates belongs to its process (wave 15, plan 4a): a port a
+/// thread made, and then exited, is still the process's. Before, the thread's
+/// exit freed it (`port_release_all` of the thread's TID) and the handle in
+/// the shared table answered `ECAPSTALE`.
+///
+/// Canary `thread-objects-canary` (gate row): the port is booked to the
+/// thread again, and this check fails.
+fn check_thread_objects() {
+    const E_EAGAIN: isize = -11;
+    X_PORT.store(u32::MAX, AO::Release);
+    T_CTID[0].store(u32::MAX, AO::Release);
+    let t = sys::thread_create(x_make_port, t_stack_top(0), 0, T_CTID[0].as_ptr());
+    let joined = t > 0 && t_join(0);
+    let port = X_PORT.load(AO::Acquire);
+    let made = joined && port < u32::MAX - 1;
+    let mut ev = [0u8; sys::PORT_EVENT_BYTES];
+    let rc = if made { sys::port_poll_typed(port, &mut ev) } else { -1 };
+    report(b"proc objects: a port a thread made outlives the thread (poll -> EAGAIN)",
+           made && rc == E_EAGAIN, rc);
+    if made { let _ = sys::port_destroy_typed(port); }
+}
+
+/// POSIX exec from a process with threads (wave 15, plan 4a): every other
+/// thread ends before the image is replaced, and the exec'ing thread goes
+/// on as the process.
+///
+/// A forked child starts two syscall-free spinners and checks that a thread
+/// that is not its leader is refused (`EBUSY`: the PID swap Linux does for
+/// that case is not implemented). It forks a child of its own (the exec'd
+/// image's proof that it is one: [`exec_alone_mode`]), sees its threads and
+/// that child in `/proc/tasks`, and execs ABITEST.ELF from its main thread.
+/// The new image finds itself alone: `/proc/tasks` lists only it and its
+/// child, no thread (a thread's row has parent 0). Before wave 15 the exec
+/// was refused (`-1`) in a process with threads, and the Linux `execve`
+/// replaced the image under threads still running on it.
+///
+/// Canary `exec-no-dethread-canary` (gate row): the threads are left running
+/// across the exec, and the exec'd image does not find itself alone.
+fn check_exec_from_threads() {
+    let pid = sys::fork();
+    if pid == 0 {
+        exec_from_threads_child();
+    }
+    if pid <= 0 {
+        report(b"exec-threads: fork the child that execs", false, pid);
+        return;
+    }
+    let (got, st) = reap_by_tid(pid);
+    out(b"[ABITEST] exec-threads: child status=");
+    print_i(st as isize);
+    outln(b"");
+    report(b"exec-threads: the exec'd child ran alone and exits with its code",
+           got == pid && st == EXEC_ALONE_OK, st as isize);
+}
+
+/// The forked child's half of [`check_exec_from_threads`]. Never returns.
+fn exec_from_threads_child() -> ! {
+    for c in X_COUNT.iter() { c.store(0, AO::Relaxed); }
+    let mut tids = [0isize; 2];
+    tids[0] = sys::thread_create(x_spin0, t_stack_top(0), 0, core::ptr::null_mut());
+    tids[1] = sys::thread_create(x_spin1, t_stack_top(1), 0, core::ptr::null_mut());
+    // Both spinners have run user code (a late start must not make this
+    // check exec before them).
+    let mut deadline = Deadline::in_ms(5_000);
+    while !deadline.expired()
+        && !(X_COUNT[0].load(AO::Relaxed) > 0 && X_COUNT[1].load(AO::Relaxed) > 0)
+    {
+        sys::sleep(1);
+    }
+    let spinning = tids[0] > 0 && tids[1] > 0
+        && X_COUNT[0].load(AO::Relaxed) > 0 && X_COUNT[1].load(AO::Relaxed) > 0;
+    report(b"exec-threads: two threads spin before the exec", spinning, tids[1]);
+    // A thread that is not the leader may not exec.
+    X_RC.store(u64::MAX, AO::Release);
+    T_CTID[2].store(u32::MAX, AO::Release);
+    let t = sys::thread_create(x_exec_try, t_stack_top(2), 0x77, T_CTID[2].as_ptr());
+    let joined = t > 0 && t_join(2);
+    let rc = X_RC.load(AO::Acquire) as i64 as isize;
+    out(b"[ABITEST] exec-threads: counters ");
+    print_i(X_COUNT[0].load(AO::Relaxed).min(1_000_000) as isize);
+    out(b" ");
+    print_i(X_COUNT[1].load(AO::Relaxed).min(1_000_000) as isize);
+    out(b"; a thread's argument 0x77 arrived as ");
+    print_i(X_ARG.load(AO::Acquire) as i64 as isize);
+    outln(b"");
+    report(b"exec-threads: exec from a thread that is not the leader -> EBUSY", joined && rc == -16, rc);
+    // The exec'd image's own child.
+    let gc = sys::fork();
+    if gc == 0 {
+        sys::sleep(EXEC_GRANDCHILD_MS);
+        sys::exit(0);
+    }
+    let me = sys::getpid() as u32;
+    let mut rows = [(0u32, 0u32); 64];
+    let n = proc_task_rows(&mut rows).unwrap_or(0).min(rows.len());
+    let shown = &rows[..n];
+    let both = tids.iter().all(|&t| t > 0 && shown.iter().any(|r| r.0 == t as u32));
+    report(b"exec-threads: /proc/tasks lists both threads before the exec",
+           gc > 0 && both && shown.iter().any(|r| r.0 == gc as u32 && r.1 == me), n as isize);
+    let rc = sys::execpath(sys::cstr!(b"/fat/ABITEST.ELF"));
+    out(b"[ABITEST] exec-threads: execpath returned ");
+    print_i(rc);
+    outln(b"");
+    sys::exit(EXEC_RETURNED)
+}
+
+/// Is this image the one [`exec_from_threads_child`] exec'd? It is when it
+/// starts with a child already: the autorun ABITEST has none. Then it runs
+/// its checks and exits; it never returns.
+fn exec_alone_mode() {
+    let me = sys::getpid() as u32;
+    let mut rows = [(0u32, 0u32); 64];
+    let n = proc_task_rows(&mut rows).unwrap_or(0).min(rows.len());
+    let shown = &rows[..n];
+    let Some(&(gc, _)) = shown.iter().find(|r| r.1 == me && r.0 != me) else { return };
+    // Every row is itself or its child: no thread of the old image is left.
+    let others = shown.iter().filter(|r| r.0 != me && r.0 != gc).count();
+    report(b"exec-threads: the exec'd image is alone (/proc/tasks: itself and its child)",
+           others == 0, others as isize);
+    let (got, _) = reap_by_tid(gc as isize);
+    report(b"exec-threads: the exec'd image reaps the child it inherited", got == gc as isize, got);
+    let failed = unsafe { FAILURES };
+    sys::exit(if failed == 0 { EXEC_ALONE_OK } else { EXEC_ALONE_FAIL })
 }
 
 /// The parent `/proc/tasks` shows for `tid` (0 when the row is not visible).

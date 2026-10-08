@@ -62,6 +62,12 @@ threads: reap window canary	n1	userspace/** crates/core/abi/** crates/core/sysca
 aarch64 threads: reap window canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 threads: cow spurious canary	n1	crates/core/mm/** crates/core/percpu/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
 aarch64 threads: cow spurious canary	n1	crates/core/mm/** crates/core/percpu/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+exec from threads	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 exec from threads	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+exec from threads: dethread canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 exec threads: dethread canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+thread objects canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 thread objects canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 fork: store to code faults	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 fork: store to code faults	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 fork: W^X canary	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs

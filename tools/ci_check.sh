@@ -4575,6 +4575,98 @@ par_row threads_row "aarch64 threads: reap window canary"    arm qemu,reap-windo
 par_row threads_row "threads: cow spurious canary"           rv  qemu,cow-spurious-canary cowkill
 par_row threads_row "aarch64 threads: cow spurious canary"   arm qemu,cow-spurious-canary cowkill
 
+# ── exec from a process with threads; what a thread creates (wave 15, 4a) ──
+#
+# abitest's `check_thread_objects` and `check_exec_from_threads` print seven
+# `exec-threads:`/`proc objects:` checks: a port a thread made and then
+# exited is still the process's (it was freed with the thread); a forked
+# child's two spinning threads run, a thread that is not the leader is
+# refused its exec (EBUSY), `/proc/tasks` lists both threads, the leader
+# execs ABITEST.ELF, and the new image finds itself alone in `/proc/tasks`
+# (itself and the child it inherited, no thread), reaps that child and exits
+# with the code its parent checks. The kernel says it ended the two threads
+# (`[EXEC] ... ended 2 other thread(s)`), a line only the fixed exec prints.
+# Canaries: `exec-no-dethread-canary` (the threads run on across the exec:
+# the kernel line is absent and the exec'd image is not alone) and
+# `thread-objects-canary` (the port is booked to the thread: the objects
+# check fails).
+exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|objects>
+    local label="$1" isa="$2" feats="$3" want="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled'
+    local last="exec-threads: the exec'd child ran alone and exits with its code"
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "$last" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    local oks fails ended
+    oks="$(grep -aE '\[ABITEST\]   ok   (exec-threads|proc objects): ' "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -aE '\[ABITEST\]  FAIL  (exec-threads|proc objects): ' "$log" | tr -d '\r')"
+    ended="$(grep -acE '\[EXEC\] tid=[0-9]+ ended 2 other thread\(s\) before replacing its image' "$log")"
+    case "$want" in
+    ok)
+        if grep -aqiE "$fault" "$log" 2>/dev/null; then
+            bad; echo "      the kernel faulted:"
+            grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
+        elif [ "$oks" = 7 ] && [ -z "$fails" ] && [ "$ended" = 1 ]; then
+            ok; rm -f "$log"; return
+        else
+            bad; echo "      want 7 ok, no FAIL and one '[EXEC] ... ended 2'; read $oks ok, $ended ended:"
+        fi ;;
+    nodethread)
+        # The fixed exec's line absent, and the exec'd image NOT alone: its
+        # old threads still listed (both ISAs, 2026-10-08: 2 rows left).
+        if [ "$ended" = 0 ] && printf '%s\n' "$fails" | grep -qF "exec-threads: the exec'd image is alone"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary ($feats) left the exec working; read $oks ok, $ended ended:" ;;
+    objects)
+        if printf '%s\n' "$fails" | grep -qF "proc objects: a port a thread made outlives the thread"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary ($feats) still passed the objects check; read $oks ok:" ;;
+    esac
+    [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
+    echo "      log kept: $log"
+}
+par_row exec_threads_row "exec from threads"                     rv  qemu ok
+par_row exec_threads_row "aarch64 exec from threads"             arm qemu ok
+par_row exec_threads_row "exec from threads: dethread canary"    rv  qemu,exec-no-dethread-canary nodethread
+par_row exec_threads_row "aarch64 exec threads: dethread canary" arm qemu,exec-no-dethread-canary nodethread
+par_row exec_threads_row "thread objects canary"                 rv  qemu,thread-objects-canary objects
+par_row exec_threads_row "aarch64 thread objects canary"         arm qemu,thread-objects-canary objects
+
 # ── fork: W^X across copy-on-write (wave 13, security) ─────────────────────
 #
 # A fork used to mark every user page copy-on-write, code and read-only data
