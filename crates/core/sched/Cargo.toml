@@ -26,6 +26,15 @@ threads-tls-canary = []
 # late start a loaded host gives it): a thread check that sleeps to "let the
 # thread park" fails every boot with it.
 threads-late-start-canary = []
+# Gate canary (CTXHUNT): a Zombie's slot is freed before the switch away from
+# it, as before, and the hart stays 2 ms on the freed stack.
+reap-window-canary = []
+# CTXHUNT probe, never in a real build: every switch checks the slot it
+# dispatches, every resume the stack it runs on, every reap the slot it frees.
+ctx-probe = []
+# Gate canary: the exit path hands `do_schedule` the hart it entered on,
+# after a forced move to the next hart (the pre-CTXHUNT stale id).
+exit-stale-hart-canary = []
 # ... and a thread that gets a capability table of its own instead of its
 # group leader's (`group::table_lead_of_idx`).
 threads-private-table-canary = []

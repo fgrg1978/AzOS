@@ -1232,6 +1232,13 @@ pub struct Task {
     /// charging paths and the locked-row policy need. Appended at the end so
     /// `TASK_SATP_OFFSET` stays stable; all-zero is its initial state.
     pub mem: TaskMem,
+
+    /// A Zombie slot this task frees when it next resumes, plus one (0:
+    /// none). Set by the hart that switches from that Zombie to this task,
+    /// read and cleared by this task right after the switch, on its own
+    /// stack (`scheduler::finish_switch`). Appended at the end so
+    /// `TASK_SATP_OFFSET` stays stable; 0 is its initial state.
+    pub reap_on_resume: usize,
 }
 
 /// [`Task::abi`]: the native AzOS syscall table.

@@ -1882,6 +1882,8 @@ unsafe fn pick_target_cpu(affinity: i8, prio: u32, exclude: usize) -> usize {
 pub unsafe extern "C" fn task_entry_wrapper() {
     let cpu = current_cpu_id();
     let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+    // A task's first instructions after the switch that started it.
+    finish_switch(task_mut(idx) as *mut Task);
 
     // Enable interrupts — required when first entered from a timer ISR
     // (hardware clears SIE on interrupt entry; sret would restore it, but we
@@ -2674,6 +2676,7 @@ pub fn try_task_create_init(
                         task.budget = azos_mm::budget::PageBudget::new();
                         task.mem = crate::task::TaskMem::new();
                         task.user_window = [[0; 2]; crate::user_window::USER_WINDOW_RANGES];
+                        task.reap_on_resume = 0;
                     }
 
                     // Phase 16: write stack canary at the bottom of the stack (lowest
@@ -3338,9 +3341,8 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
         task_mut(idx).set_state(TaskState::Zombie);
         hist_reaccount(idx);
     }
-    let cpu = current_cpu_id();
     let _ = azos_arch::ARCH.disable_all();
-    do_schedule(cpu, SwitchReason::Voluntary);
+    do_schedule(SwitchReason::Voluntary);
     loop {
         azos_arch::ARCH.enable_all();
         azos_arch::Cpu::wfi(&azos_arch::ARCH);
@@ -3372,6 +3374,8 @@ pub fn task_exit_with_code(code: i32) -> ! {
     unsafe {
         let cpu = current_cpu_id();
         let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+        #[cfg(feature = "exit-stale-hart-canary")]
+        stale_hart_canary::arm(cpu, idx);
         // Wave 13: a thread group's member ends here alone; its leader
         // waits to be the last and exits with the group's code. So the
         // re-parenting below (`note_exit`) runs once, for the whole process,
@@ -3432,7 +3436,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
             // AZOS Phase 1 W4-int.3b — remove the dying task from
             // its policy runqueue so APS pick_next never sees a Zombie.
             #[cfg(feature = "sched-aps")]
-            crate::aps_state::dequeue_task_for_class(cpu, exit_tid, exit_class);
+            crate::aps_state::dequeue_task_for_class(current_cpu_id(), exit_tid, exit_class);
 
             // Release resources keyed by this TID before the slot can be
             // reused: a resource left behind by a dead task is otherwise
@@ -3517,7 +3521,8 @@ pub fn task_exit_with_code(code: i32) -> ! {
         // class until the next dispatch.
         #[cfg(feature = "sched-aps")]
         if aps_dispatch_enabled() {
-            let _ = crate::aps_state::with_cpu(cpu, |state| {
+            // Not the `cpu` read on entry: `group_exit` may have blocked.
+            let _ = crate::aps_state::with_cpu(current_cpu_id(), |state| {
                 state.aps.set_idle();
             });
         }
@@ -3526,7 +3531,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
         crate::prof::report(11, 40);
         // Disable interrupts and try an immediate reschedule.
         let _ = azos_arch::ARCH.disable_all();
-        do_schedule(cpu, SwitchReason::Voluntary);
+        do_schedule(SwitchReason::Voluntary);
         // do_schedule() only returns when there are no ready tasks on this CPU.
     }
 
@@ -3579,8 +3584,7 @@ fn yield_as(why: SwitchReason) {
 
     let sstatus = azos_arch::ARCH.disable_all();
 
-    let cpu = current_cpu_id();
-    unsafe { do_schedule(cpu, why); }
+    unsafe { do_schedule(why); }
 
     azos_arch::ARCH.restore(sstatus);
 }
@@ -3666,7 +3670,7 @@ pub fn schedule() {
             // hart with none of them pays one per-hart load here.
             if rt::active(cpu) && rt::tick(cpu, current_idx) {
                 RT_TICK_PREEMPTS.fetch_add(1, Ordering::Relaxed);
-                if tick_admit() { do_schedule(cpu, SwitchReason::Preempted); }
+                if tick_admit() { do_schedule(SwitchReason::Preempted); }
                 return;
             }
 
@@ -3699,7 +3703,7 @@ pub fn schedule() {
             // or a rolled band window is dispatched below like any tick.
             RT_TICK_PREEMPTS.fetch_add(1, Ordering::Relaxed);
         }
-        if tick_admit() { do_schedule(cpu, SwitchReason::Preempted); }
+        if tick_admit() { do_schedule(SwitchReason::Preempted); }
     }
 }
 
@@ -5017,12 +5021,233 @@ fn wait_context_saved(next: &Task) -> bool {
     true
 }
 
+
+/// Gate-only probe (`ctx-probe`, CTXHUNT 2026-10-08): the invariants a
+/// switch relies on, checked where they must hold. The first violation is
+/// printed (`[CTXPROBE]`, both task ids, the hart, the site) and the kernel
+/// panics; a second hart that fails meanwhile spins, so the line is whole.
+/// - every `do_schedule` entry and every resume: `tp` is this hart (riscv64:
+///   the id under its `stvec` slot) and `sp` is on the current task's stack;
+/// - every dispatch: the task's saved `sp` is on its own stack, its `ra` is
+///   not 0, its slot is valid, it is current on no other hart, and the
+///   switching hart is still on the outgoing task's stack;
+/// - every reap: no hart runs on the slot being freed.
+///
+/// It found the stale hart id of the exit path (see `do_schedule`) on its
+/// first loaded boot.
+#[cfg(feature = "ctx-probe")]
+pub(crate) mod ctx_probe {
+    use super::*;
+    pub const DISPATCH: u8 = 1;
+    pub const RESUME: u8 = 2;
+    pub const REAP: u8 = 3;
+    pub const DIRECT: u8 = 4;
+    pub const ENTRY: u8 = 5;
+    pub const TAIL: u8 = 6;
+
+    #[inline(always)]
+    pub fn sp_now() -> usize {
+        let sp: usize;
+        #[cfg(target_arch = "riscv64")]
+        unsafe { core::arch::asm!("mv {}, sp", out(reg) sp) };
+        #[cfg(target_arch = "aarch64")]
+        unsafe { core::arch::asm!("mov {}, sp", out(reg) sp) };
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+        { sp = 0; }
+        sp
+    }
+
+    /// The hart the trap entry would name (riscv64: the word under this
+    /// hart's `stvec` slot, -1 for the boot hart's generic vector).
+    /// `usize::MAX` where the ISA gives no independent answer.
+    pub fn true_hart() -> usize {
+        #[cfg(all(target_arch = "riscv64", target_os = "none"))]
+        {
+            let v: usize;
+            unsafe { core::arch::asm!("csrr {}, stvec", out(reg) v) };
+            let w = unsafe { core::ptr::read_volatile((v - 4) as *const i32) };
+            if w < 0 {
+                unsafe extern "C" { static boot_hart_id: usize; }
+                unsafe { core::ptr::read_volatile(core::ptr::addr_of!(boot_hart_id)) }
+            } else {
+                w as usize
+            }
+        }
+        #[cfg(not(all(target_arch = "riscv64", target_os = "none")))]
+        { usize::MAX }
+    }
+
+    /// The task slot whose kernel stack holds `sp`, or `usize::MAX`.
+    pub fn stack_slot_of(sp: usize) -> usize {
+        let base = core::ptr::addr_of!(TASK_STACKS) as usize;
+        if sp <= base || sp > base + STACK_SIZE * MAX_TASKS { return usize::MAX; }
+        (sp - 1 - base) / STACK_SIZE
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub fn fail(site: u8, cpu: usize, idx: usize, other: usize, what: &str, val: usize) -> ! {
+        static FIRST: AtomicBool = AtomicBool::new(false);
+        if FIRST.swap(true, Ordering::AcqRel) {
+            loop { core::hint::spin_loop(); }
+        }
+        let name = |i: usize| -> &'static str {
+            if i >= MAX_TASKS { return "-"; }
+            let t = unsafe { task_ref(i) };
+            let n = t.name.iter().position(|&b| b == 0).unwrap_or(TASK_NAME_MAX_LEN);
+            core::str::from_utf8(&t.name[..n]).unwrap_or("?")
+        };
+        let (tid, st, rs, ra, ssp) = if idx < MAX_TASKS {
+            let t = unsafe { task_ref(idx) };
+            (t.tid, t.state() as u32, t.ready_site.load(Ordering::Relaxed),
+             t.context.ra as usize, t.context.sp as usize)
+        } else { (0, 0, 0, 0, 0) };
+        let otid = if other < MAX_TASKS { unsafe { task_ref(other).tid } } else { 0 };
+        azos_drv_sys::uart::console_bypass_for_halt();
+        azos_drv_sys::kerr!(
+            "[CTXPROBE] site={} cpu={} slot={} tid={} ({}) state={} ready_site={:#x} saved ra={:#x} sp={:#x}; other slot={} tid={} ({}); {}={:#x}",
+            site, cpu, idx, tid, name(idx), st, rs, ra, ssp, other, otid, name(other), what, val);
+        panic!("ctx-probe");
+    }
+
+    /// `idx` is current on `cpu`: on no other hart.
+    pub fn check_unique(site: u8, cpu: usize, idx: usize) {
+        for c in 0..ncpu() {
+            if c != cpu && unsafe { PER_CPU[c].current_idx.load(Ordering::Acquire) } == idx {
+                fail(site, cpu, idx, usize::MAX, "also_current_on_cpu", c);
+            }
+        }
+    }
+
+    /// Before a switch to `next_idx` on `cpu`.
+    pub fn check_dispatch(site: u8, cpu: usize, next_idx: usize) {
+        if next_idx >= MAX_TASKS { return; }
+        let t = unsafe { task_ref(next_idx) };
+        if !unsafe { TASK_VALID[next_idx].load(Ordering::Acquire) } {
+            fail(site, cpu, next_idx, usize::MAX, "invalid_slot", 0);
+        }
+        let sp = t.context.sp as usize;
+        let owner = stack_slot_of(sp);
+        if owner != next_idx && owner != usize::MAX {
+            fail(site, cpu, next_idx, owner, "saved_sp_on_other_stack", sp);
+        }
+        if t.context.ra == 0 {
+            fail(site, cpu, next_idx, usize::MAX, "saved_ra_zero", 0);
+        }
+        check_unique(site, cpu, next_idx);
+    }
+
+    /// Code running on this hart: `tp` names it, `sp` is the current task's.
+    pub fn check_running(site: u8) {
+        let cpu = current_cpu_id();
+        if cpu >= MAX_CPUS { return; }
+        let idx = unsafe { PER_CPU[cpu].current_idx.load(Ordering::Relaxed) };
+        let th = true_hart();
+        if th != usize::MAX && th != cpu {
+            fail(site, cpu, idx, usize::MAX, "tp_is_not_this_hart_which_is", th);
+        }
+        let owner = stack_slot_of(sp_now());
+        if idx < MAX_TASKS && owner != usize::MAX && owner != idx {
+            fail(site, cpu, idx, owner, "running_on_other_stack", sp_now());
+        }
+        if idx < MAX_TASKS {
+            check_unique(site, cpu, idx);
+        }
+    }
+
+    /// `idx` is about to be freed by `cpu`: nobody runs on it.
+    pub fn check_reap(cpu: usize, idx: usize) {
+        if stack_slot_of(sp_now()) == idx {
+            fail(REAP, cpu, idx, idx, "reaping_own_stack", sp_now());
+        }
+        for c in 0..ncpu() {
+            if unsafe { PER_CPU[c].current_idx.load(Ordering::Acquire) } == idx {
+                fail(REAP, cpu, idx, usize::MAX, "reaping_current_of_cpu", c);
+            }
+        }
+    }
+}
+
+/// Gate canary (`exit-stale-hart-canary`): the exit path's stale hart id,
+/// made certain. An exiting task first sleeps 1 ms with its affinity on the
+/// next hart, so it wakes there, then its next `do_schedule` is handed the
+/// hart it entered the exit on, as `task_exit_with_code` used to hand it.
+#[cfg(feature = "exit-stale-hart-canary")]
+mod stale_hart_canary {
+    use super::*;
+    static ENTRY_CPU: [AtomicUsize; MAX_TASKS] = [const { AtomicUsize::new(usize::MAX) }; MAX_TASKS];
+
+    pub unsafe fn arm(cpu: usize, idx: usize) {
+        if idx >= MAX_TASKS || ncpu() < 2 { return; }
+        let saved = task_ref(idx).cpu_affinity;
+        task_mut(idx).cpu_affinity = ((cpu + 1) % ncpu()) as i8;
+        let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 1000;
+        crate::task_block(WaitReason::Timer(until));
+        task_mut(idx).cpu_affinity = saved;
+        ENTRY_CPU[idx].store(cpu, Ordering::Release);
+    }
+
+    pub unsafe fn take(cpu: usize) -> usize {
+        let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+        if idx < MAX_TASKS {
+            let c = ENTRY_CPU[idx].swap(usize::MAX, Ordering::AcqRel);
+            if c != usize::MAX { return c; }
+        }
+        cpu
+    }
+}
+
+/// **A Zombie's slot is freed only after the switch away from it**
+/// (CTXHUNT, 2026-10-08), by the task switched to, on its own stack: the
+/// hart that switches from the Zombie stores the slot in the next task's
+/// `reap_on_resume`, and that task frees it first thing when it runs
+/// (`finish_switch`, after every `context_switch` that resumes a task and at
+/// the top of `task_entry_wrapper`). It used to be freed in `do_schedule`'s
+/// Zombie arm, BEFORE `context_switch`, while the hart still ran on the
+/// Zombie's kernel stack through the dispatch tail (the context-saving gate's
+/// spin of up to SCHED_SAVING_GATE_US, the tickless write, tracing): from
+/// `TASK_VALID` false on, another hart could hand the slot, and its stack, to
+/// a new fork or thread and run it. Two harts on one stack. With the stale
+/// hart id of the exit path fixed (see `do_schedule`), the old order still
+/// faulted the kernel in 4 of 8 loaded boots of abitest's thread storm;
+/// `reap-window-canary` (the old order plus 2 ms on the freed stack) faults
+/// it in the storm's first round. Linux frees a dead task's stack in
+/// `finish_task_switch`, on the next task's stack; this is the same rule.
+///
+/// The store is made after the dispatch gate, so a `do_schedule` that gives
+/// its pick back (and stays on the Zombie) leaves nothing to free.
+#[inline(always)]
+pub(crate) unsafe fn finish_switch(me: *mut Task) {
+    #[cfg(feature = "ctx-probe")]
+    ctx_probe::check_running(ctx_probe::RESUME);
+    let r = unsafe { (*me).reap_on_resume };
+    if r != 0 {
+        finish_switch_slow(me, r - 1);
+    }
+}
+
+#[inline(never)]
+#[cold]
+unsafe fn finish_switch_slow(me: *mut Task, idx: usize) {
+    unsafe {
+        (*me).reap_on_resume = 0;
+        // SAFETY: `idx` is the Zombie the hart switched from to resume
+        // `me`; nothing runs on its stack any more and its slot is still
+        // valid (`TASK_VALID` true until this reap).
+        reap_zombie_on_switch(idx);
+    }
+}
+
 /// `do_schedule`'s reap of a Zombie it is switching away from, out of line
 /// (wave 15, SWITCH): a rare arm with a lock, two prints and a TTBR1 probe,
 /// inline it made every switch's prologue save registers only it needs.
 /// The slot is free when this returns; the caller must not touch it again.
+/// Called from [`finish_switch`], once this hart is off the Zombie's stack
+/// (the K-C6 note below predates that: "about to leave" was not left yet).
 #[inline(never)]
 unsafe fn reap_zombie_on_switch(old_idx: usize) {
+    #[cfg(feature = "ctx-probe")]
+    ctx_probe::check_reap(current_cpu_id(), old_idx);
     let old = task_mut(old_idx);
     // K-C6: `task_exit()` marks the task Zombie but deliberately does
     // NOT free its pool slot (TASK_VALID) or clear
@@ -5130,7 +5355,27 @@ unsafe fn reap_zombie_on_switch(old_idx: usize) {
     old.tid = 0;
 }
 
-unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
+unsafe fn do_schedule(why: SwitchReason) {
+    // The hart is read HERE, with interrupts off, never taken from the
+    // caller (CTXHUNT, 2026-10-08). `task_exit_with_code` read its `cpu` on
+    // entry, then waited in `group_exit` (a leader waits for its threads)
+    // and could be woken on another hart: its `do_schedule(cpu)` then ran
+    // there with the old hart's id, read that hart's `current_idx` as `old`,
+    // dequeued from its queue and published a task there while switching
+    // on this one. Measured with `ctx-probe`: every fault of the fork +
+    // thread exit storm began as "`cpu` is not this hart" in a
+    // `do_schedule` called from the exit path. A caller can no longer hand
+    // it a stale id.
+    let cpu = current_cpu_id();
+    #[cfg(feature = "exit-stale-hart-canary")]
+    let cpu = stale_hart_canary::take(cpu);
+    #[cfg(feature = "ctx-probe")]
+    {
+        ctx_probe::check_running(ctx_probe::ENTRY);
+        if azos_arch::Interrupts::interrupts_enabled(&azos_arch::ARCH) {
+            ctx_probe::fail(ctx_probe::ENTRY, cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed), usize::MAX, "irqs_on_at_entry", 0);
+        }
+    }
     // AZOS Phase 1 W4-int.2 — if APS dispatch is enabled, consult
     // the per-class policies first. On any error (empty policies, tid
     // not in pool) fall back to the legacy bitmap queue so we never
@@ -5366,10 +5611,12 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     }
 
     // Re-enqueue old task if it is still runnable.
-    // Set when the Zombie arm below frees the slot: from that instant the
-    // slot is claimable by any hart's task_create, so nothing may write to
-    // it anymore — see the `old_ptr` selection at the bottom.
+    // Set for a Zombie (the arm below): its context is not saved, and its
+    // slot is freed after the switch (`finish_switch`), so nothing here may
+    // write to it — see the `old_ptr` selection at the bottom.
     let mut old_slot_freed = false;
+    // `old` is a Zombie whose slot `next` frees when it resumes.
+    let mut old_zombie = false;
     if old_idx != usize::MAX {
         let old = &mut *old_t;
         if old.state() == TaskState::Running {
@@ -5403,7 +5650,20 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
                 );
             }
         } else if old.state() == TaskState::Zombie {
-            reap_zombie_on_switch(old_idx);
+            // The slot is freed only once this hart is off its stack, by
+            // the task switched to (`finish_switch`). Gate canary only: free
+            // it here, as before, and hold the hart on the freed stack 2 ms.
+            if cfg!(feature = "reap-window-canary") {
+                reap_zombie_on_switch(old_idx);
+                let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 500;
+                while azos_drv_sys::timebase::now() < until { core::hint::spin_loop(); }
+            } else {
+                // Its reservation leaves the hart's set now, as it did when
+                // the reap ran here: the dispatch tail below (`rt::on_switch_prio`)
+                // must not see it. `reap_zombie_on_switch` repeats it (a no-op).
+                rt::release(old_idx);
+                old_zombie = true;
+            }
             old_slot_freed = true;
         } else if old.state() == TaskState::Blocked {
             // K-C24 tail: a stamp that landed while this task ran past an
@@ -5551,6 +5811,9 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     // the dispatch gate above has seen the save finish, so this store is the
     // last word.
     next.context.tp = cpu as CtxReg;
+    if old_zombie {
+        next.reap_on_resume = old_idx + 1;
+    }
 
     // AZOS Phase 1 W4-int.4 — tell the APS combinator which class
     // is now running on this CPU so subsequent timer ticks credit the
@@ -5687,6 +5950,15 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
     energy::on_switch(cpu, if old_ptr.is_null() { usize::MAX } else { old_idx }, next_idx);
 
     crate::swcensus::before_switch(next_idx);
+    #[cfg(feature = "ctx-probe")]
+    {
+        ctx_probe::check_dispatch(ctx_probe::DISPATCH, cpu, next_idx);
+        // The hart is still on the outgoing task's stack.
+        let on = ctx_probe::stack_slot_of(ctx_probe::sp_now());
+        if old_idx != usize::MAX && on != usize::MAX && on != old_idx {
+            ctx_probe::fail(ctx_probe::TAIL, cpu, old_idx, on, "tail_not_on_old_stack", ctx_probe::sp_now());
+        }
+    }
     // Wave 15 (TRACE): the sched class's switch record (Kconfig
     // `KTRACE_CLASS_SCHED`; no instruction when compiled out).
     if azos_trace::sched_on() {
@@ -5694,7 +5966,8 @@ unsafe fn do_schedule(cpu: usize, why: SwitchReason) {
         azos_trace::raw::sched_switch(prev, next.tid, prev_state, why as u32);
     }
     context_switch(old_ptr, next as *mut Task);
-    // Returns here when the old task is rescheduled.
+    // Returns here when the old task is rescheduled: `old_t` is this task.
+    finish_switch(old_t);
     crate::swcensus::after_switch();
 }
 
@@ -7646,6 +7919,9 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
     // task_yield(), and both the "have a task to block" and early-return
     // paths below converge on the same restore.
     let sstatus = azos_arch::ARCH.disable_all();
+    // This hart, read with interrupts off: the caller's `cpu` may predate a
+    // block that moved the task (see `do_schedule`).
+    let cpu = current_cpu_id();
     unsafe {
         let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
         // `< MAX_TASKS`, not `!= usize::MAX`: the scheduler only ever writes
@@ -7754,7 +8030,7 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
             }
 
             // Don't re-enqueue — blocked tasks leave the ready queue.
-            do_schedule(cpu, SwitchReason::Voluntary);
+            do_schedule(SwitchReason::Voluntary);
             // Returns here when woken and rescheduled.
             #[cfg(feature = "ipc-census")]
             unswitched::bump(&unswitched::BLOCK_SLEPT);
@@ -8894,8 +9170,11 @@ unsafe fn direct_switch_block(cpu: usize, ti: usize, reason: WaitReason) {
         if azos_trace::sched_on() {
             azos_trace::raw::sched_switch(task.tid, next.tid, task.state() as u32, 2);
         }
+        #[cfg(feature = "ctx-probe")]
+        ctx_probe::check_dispatch(ctx_probe::DIRECT, cpu, ti);
         context_switch(task as *mut Task, next as *mut Task);
         // Resumed: woken and dispatched like any other blocked task.
+        finish_switch(task as *mut Task);
     }
 }
 
