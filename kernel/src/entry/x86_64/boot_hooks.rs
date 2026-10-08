@@ -102,6 +102,9 @@ pub fn timer_probe(_fw: &()) {
 /// must also gate on the same policy (`azos_arch_api::isa::x86_64`).
 pub fn cpu_features(_fw: &()) {
     use azos_arch_api::isa::{x86_64 as p, Ext};
+    if let Err(missing) = azos_arch::features::check_baseline() {
+        crate::boot::isa::refuse_level(p::LEVEL, missing);
+    }
     let f = azos_arch::features::detect();
     let e = |name, symbol, policy, present| Ext { name, symbol, policy, present };
     crate::boot::isa::report(p::LEVEL, &[
