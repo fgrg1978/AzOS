@@ -114,9 +114,11 @@ printf() {
     case "${1:-}" in
         "  %-26s"*) CI_ROW_LABEL="${2%...}"; PAR_SEEN="${PAR_SEEN:-}${CI_ROW_LABEL}
 "
-            # A row is starting: a kernel a deferred kbuild left pending is
-            # built before the row can read it (CI_TIER=rows; see ci_kb_defer).
-            [ -n "${CI_KPEND_RV+x}${CI_KPEND_A64+x}" ] && ci_kflush ;;
+            # A kept row outside `par` is starting: a kernel a deferred kbuild
+            # left pending is built before the row can read it (CI_TIER=rows;
+            # see ci_kb_defer). A `par` row's kernels are `par`'s to build.
+            if [ -n "${CI_KPEND_RV+x}${CI_KPEND_A64+x}" ] && [ -z "$PAR_JOB" ] && [ -z "$PAR_KEY" ] \
+               && fast_keeps "$CI_ROW_LABEL"; then ci_kflush; fi ;;
     esac
     builtin printf "$@"
 }
@@ -1401,7 +1403,8 @@ ci_row_end() { if [ "${CI_ROW_OPENED:-0}" = 1 ]; then CI_IN_ROW=""; CI_ROW_OPENE
 # environment as the gate set it) only records the feature set and DELETES
 # the binary it would write; the build runs when something can read it:
 #   * a kept `par` row, before its prep (`par`);
-#   * any row that prints its label (the printf wrapper), and every `ci_row`;
+#   * any kept row outside `par` that prints its label (the printf wrapper),
+#     and every `ci_row`;
 #   * the few top-level lines that copy the kernel without a row (ci_kflush).
 # A later call for the same ISA replaces the pending one: nothing read it.
 # Deleting the binary is what makes this safe: a reader this list missed finds
