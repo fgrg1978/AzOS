@@ -1010,4 +1010,29 @@ config SH_START_TIMEOUT_S
       console waits this long for SH.ELF to claim console input. If it
       has not, the recovery console (the in-kernel shell) takes it.
 
+config KERNEL_CMDLINE_INIT
+    bool "Honour init=/fat/NAME.ELF on the kernel command line (secure boot off)"
+    default y
+    help
+      The kernel command line (the device tree's /chosen/bootargs; QEMU
+      -append) may name the console program for one boot:
+      `init=/fat/NAME.ELF`, an 8.3 image directly under /fat whose topology
+      row exists (spawn refuses an image without one; the row's seccomp
+      profile, capabilities and supervision apply). It replaces
+      CONSOLE_PROGRAM for that boot. Never with secure boot on
+      (SECURE_BOOT_ENFORCED): the word is ignored and the boot log says so,
+      since the console program is part of what the signed configuration
+      decides. Costs one device-tree walk at boot.
+
+      n: init= is ignored on every build (the log says so).
+
+config KERNEL_CMDLINE_MAX
+    int "Kernel command line: bytes read from /chosen/bootargs"
+    range 64 4096
+    default 256
+    help
+      The command line is copied onto the boot stack once, at this length;
+      longer is cut (and an init= past the cut is not seen). Costs this
+      many bytes of the boot CPU's stack while it is read.
+
 endmenu # Resource Limits

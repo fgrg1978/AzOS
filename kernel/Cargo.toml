@@ -503,6 +503,14 @@ restart-smoke = ["qemu", "azos_topology/restart-smoke"]
 # on-failure), so the row must fail on `[RESTART] FAIL buzzer not restarted
 # after exit 0`.
 restart-canary = ["restart-smoke"]
+# Gate canary: `init=` on the kernel command line is honoured even with
+# secure boot on (console_mode::read_cmdline's check compiled out), so the
+# `init= ignored under secure boot` row's refusal line is missing.
+cmdline-init-canary = []
+# Gate canary: the console program is started as any other row
+# (drv_supervisor::spawn_supervised), without `spawn_console`'s argv, console
+# descriptors and console input: the BusyBox-console rows must fail.
+console-spawn-canary = []
 # Gate canary only: a kernel spawn of a declared image (`start = true` rows,
 # the ML service) is not supervised, as before wave 11. The supall row must
 # fail on `[SUPALL] FAIL buzzer not restarted` and the ML kill row on

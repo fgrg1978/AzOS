@@ -183,12 +183,20 @@ pub(crate) fn spawn_supervised(path: &[u8]) -> i64 {
     }
     let mut slot = None;
     let restart = row_restart(path);
-    let rc = azos_syscall::spawn::spawn_path_hooked(path, &mut |tid| {
+    let mut hook = |tid| {
         slot = sup_note_started(tid, path);
         if let Some(s) = slot {
             let _ = sup_set_restart(s, restart);
         }
-    });
+    };
+    // The console program gets its console (`spawn_console`). Gate canary
+    // `console-spawn-canary`: started as any other row, a Linux console
+    // program has no argv and no console (the BusyBox-console rows fail).
+    let rc = if crate::console_mode::is_console_path(path) && !cfg!(feature = "console-spawn-canary") {
+        azos_syscall::ushell::spawn_console(path, console_args(), &mut hook)
+    } else {
+        azos_syscall::spawn::spawn_path_hooked(path, &mut hook)
+    };
     if rc > 0 {
         match slot {
             Some(_) => kprintln!("[SUP] {} tid={} supervised from its start: restart = {} ({} \
@@ -199,6 +207,15 @@ pub(crate) fn spawn_supervised(path: &[u8]) -> i64 {
         }
     }
     rc
+}
+
+/// The console program's arguments: Kconfig `CONSOLE_ARGS` for Kconfig's
+/// console program, none for an `init=` one.
+fn console_args() -> &'static [u8] {
+    match crate::console_mode::console_path() {
+        Some(c) if c.overridden => b"",
+        _ => azos_limits::CONSOLE_ARGS.as_bytes(),
+    }
 }
 
 /// Wave 11 (DRVPLACE): the `restart` key of the topology row named after
@@ -486,13 +503,20 @@ fn respawn_spawned(slot: usize, e: &SupEntry) {
     let (mut slots, mut names, mut heir) = (0usize, 0usize, 0u32);
     let rc = match refusal {
         Some(_) => -1,
-        None => azos_syscall::spawn::spawn_path_hooked(e.image(), &mut |tid| {
-            slots = azos_driver_server::driver_adopt(dead, tid);
-            names = azos_service::service_adopt(dead, tid);
-            if sup_respawned(slot, tid, now()) {
-                heir = tid;
+        None => {
+            let mut hook = |tid| {
+                slots = azos_driver_server::driver_adopt(dead, tid);
+                names = azos_service::service_adopt(dead, tid);
+                if sup_respawned(slot, tid, now()) {
+                    heir = tid;
+                }
+            };
+            if crate::console_mode::is_console_path(e.image()) && !cfg!(feature = "console-spawn-canary") {
+                azos_syscall::ushell::spawn_console(e.image(), console_args(), &mut hook)
+            } else {
+                azos_syscall::spawn::spawn_path_hooked(e.image(), &mut hook)
             }
-        }),
+        }
     };
     if rc > 0 && heir as i64 == rc {
         kprintln!("[SUP] restart {}/{} of {}: successor tid={} for tid={} spawned {} ms after \

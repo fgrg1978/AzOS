@@ -1213,9 +1213,6 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     )
     .expect("default_minimal_topology: SH.ELF push failed");
     topo.set_last_task_mem_pages(SH_MEM_PAGES);
-    if azos_limits::USER_SHELL {
-        topo.set_last_task_start(true);
-    }
     // `restart` stays `on-failure` (wave 11): `exit` ends the shell with
     // code 0 and gives the console back to the kernel shell. `always` would
     // restart it instead (owner note, DRVPLACE).
@@ -1324,7 +1321,39 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_abi(crate::types::TaskAbi::Linux)
             .expect("default_minimal_topology: LXTHR.ELF is a Linux row with no hardware capability");
     }
+    // The console program (Kconfig CONSOLE_PROGRAM, "Userspace programs"):
+    // its row says `start = true`. The native shell's row is pushed above;
+    // BusyBox's with `BUSYBOX` (the choice selects it); any other image the
+    // topology has a row for keeps that row; one it has none for gets a row
+    // with no capability, `best_effort` at the shell's priority, last, so
+    // no index another test pins moves. The kernel starts it after every
+    // other `start = true` row (`kernel/src/tasks/loader.rs`).
+    if let Some(name) = console_image() {
+        let name = MaybeStr::from_bytes(name);
+        if !topo.set_task_start(&name, true) {
+            topo.push_task(name, MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, &[])
+                .expect("default_minimal_topology: console program row push failed");
+            topo.set_last_task_mem_pages(CONSOLE_MEM_PAGES);
+            topo.set_last_task_start(true);
+        }
+    }
 }
+
+/// The console program's image name (Kconfig `CONSOLE_PATH` without its
+/// `/fat/`), `None` without one (`CONSOLE_PROGRAM_NONE`). `azos_limits`'
+/// build script refuses a path that is not `/fat/NAME.ELF`.
+pub const fn console_image() -> Option<&'static [u8]> {
+    let p = azos_limits::CONSOLE_PATH.as_bytes();
+    if p.len() <= 5 {
+        return None;
+    }
+    let (_, name) = p.split_at(5);
+    Some(name)
+}
+
+/// Frame budget of a console program the topology has no row of its own
+/// for: the native shell's.
+const CONSOLE_MEM_PAGES: u32 = SH_MEM_PAGES;
 
 /// Does the built-in topology carry the `LXTHR.ELF` row? Gate builds
 /// (`linux-threads-test`) with the Linux personality (wave 13).

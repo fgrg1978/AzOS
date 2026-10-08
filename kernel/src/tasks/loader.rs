@@ -495,11 +495,26 @@ pub(crate) fn ring3_driver_launch_task(_: usize) {
         return;
     }
     let Some(topo) = azos_topology::get() else { return };
-    // RFC-0055: the user shell starts LAST, after every other `start = true`
-    // row, whatever the row order: a prompt is the sign the system is up.
-    let is_shell = |r: &&azos_topology::TaskSpec| r.name.as_bytes() == &crate::console_mode::SH_PATH[5..];
-    let rows = topo.tasks().iter().filter(|r| r.start && !is_shell(r))
-        .chain(topo.tasks().iter().filter(|r| r.start && is_shell(r)));
+    // RFC-0055: the console program (Kconfig CONSOLE_PROGRAM, `SH.ELF` by
+    // default, or `init=` with secure boot off) starts LAST, after every
+    // other `start = true` row, whatever the row order: a prompt is the sign
+    // the system is up. Kconfig's console row is skipped when `init=`
+    // replaced it; an `init=` image needs a row (any `start`).
+    let console = crate::console_mode::console_path();
+    let configured = crate::console_mode::configured_row();
+    let is_console = |r: &&azos_topology::TaskSpec| {
+        let n = r.name.as_bytes();
+        (!configured.is_empty() && n == configured) || console.is_some_and(|c| n == c.name())
+    };
+    let console_row = console.and_then(|c| {
+        let row = topo.tasks().iter().find(|r| r.name.as_bytes() == c.name());
+        if row.is_none() && c.overridden {
+            azos_drv_sys::kwarn!("[DRVLAUNCH] init={} has no topology row -- not started",
+                core::str::from_utf8(c.path()).unwrap_or("?"));
+        }
+        row.filter(|r| r.start || c.overridden)
+    });
+    let rows = topo.tasks().iter().filter(|r| r.start && !is_console(r)).chain(console_row);
     for row in rows {
         let name = row.name.as_bytes();
         let shown = row.name.as_str();
@@ -523,7 +538,7 @@ pub(crate) fn ring3_driver_launch_task(_: usize) {
         // policy, like the autorun image (`drv_supervisor::spawn_supervised`).
         match drv_supervisor::spawn_supervised(path) {
             tid if tid > 0 => {
-                if is_shell(&row) {
+                if is_console(&row) {
                     crate::console_mode::note_user_shell_started();
                 }
                 kprintln!("[DRVLAUNCH] {} started tid={} (start = true)", shown, tid)

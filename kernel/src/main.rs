@@ -1732,6 +1732,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // class assignment from RFC-0005 declarations. Shared with aarch64's
     // kernel_main — see `install_topology`'s own doc.
     install_topology(num_cpus);
+    // The kernel command line: `init=` (secure boot off) names this boot's
+    // console program. Read before anything ring 3 starts.
+    crate::console_mode::read_cmdline(dtb_ptr);
     // RFC-0051 E2: the energy model, from the topology just installed, else
     // the DTB, else none.
     #[cfg(feature = "energy")]

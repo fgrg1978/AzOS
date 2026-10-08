@@ -2143,6 +2143,82 @@ pub unsafe fn dtb_pl011_irq(ptr: *const u8) -> Option<Pl011Irq> {
     walker.pl011
 }
 
+/// `/chosen/bootargs`, the kernel command line, copied into `out` (cut to
+/// its length; the terminating NUL is not copied). Returns the number of
+/// bytes copied, or `None` for an invalid header, a malformed structure
+/// block, or no such property. A walk of its own, not a [`DtbInfo`] field:
+/// only `kernel_main` reads it, once.
+///
+/// # Safety
+/// Same precondition as [`dtb_parse`].
+pub unsafe fn dtb_bootargs(ptr: *const u8, out: &mut [u8]) -> Option<usize> {
+    if ptr.is_null() {
+        return None;
+    }
+    let hdr = unsafe { parse_header(ptr) }?;
+    if hdr.magic != FDT_MAGIC || hdr.version < 16 {
+        return None;
+    }
+    let end = hdr.totalsize as usize;
+    if end < FDT_HEADER_SIZE || end > MAX_DTB_SIZE {
+        return None;
+    }
+    let mut off = hdr.off_dt_struct as usize;
+    let strings_off = hdr.off_dt_strings as usize;
+    let strings_end = strings_off.checked_add(hdr.size_dt_strings as usize)?;
+    if off >= end || strings_end > end {
+        return None;
+    }
+    // Depth 1 is the root node, so `/chosen` opens at depth 2.
+    let (mut depth, mut in_chosen) = (0usize, false);
+    loop {
+        if off.checked_add(4)? > end {
+            return None;
+        }
+        let tok = unsafe { read_be32(ptr, off) };
+        off += 4;
+        match tok {
+            FDT_BEGIN_NODE => {
+                let n = unsafe { strlen_bounded(ptr, off, end) }?;
+                depth += 1;
+                in_chosen = depth == 2 && unsafe { streq(ptr, off, end, b"chosen") };
+                off = align4_checked(off + n + 1)?;
+            }
+            FDT_END_NODE => {
+                if depth == 2 {
+                    in_chosen = false;
+                }
+                depth = depth.checked_sub(1)?;
+            }
+            FDT_PROP => {
+                if off.checked_add(8)? > end {
+                    return None;
+                }
+                let len = unsafe { read_be32(ptr, off) } as usize;
+                let name = strings_off.checked_add(unsafe { read_be32(ptr, off + 4) } as usize)?;
+                off += 8;
+                if off.checked_add(len)? > end {
+                    return None;
+                }
+                if in_chosen && name < strings_end && unsafe { streq(ptr, name, strings_end, b"bootargs") } {
+                    let mut n = len;
+                    while n > 0 && unsafe { *ptr.add(off + n - 1) } == 0 {
+                        n -= 1;
+                    }
+                    let n = n.min(out.len());
+                    for (i, b) in out[..n].iter_mut().enumerate() {
+                        *b = unsafe { *ptr.add(off + i) };
+                    }
+                    return Some(n);
+                }
+                off = align4_checked(off + len)?;
+            }
+            FDT_NOP => {}
+            _ => return None,
+        }
+    }
+}
+
 /// Read just the FDT header's `magic` and `totalsize`, with none of
 /// [`dtb_parse`]'s structure-block walk.
 ///

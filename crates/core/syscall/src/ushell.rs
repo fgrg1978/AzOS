@@ -583,6 +583,72 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
     }
 }
 
+// ── The console program, started by the kernel ─────────────────────────────
+
+/// Start the console program at `path` from a kernel task (the boot loader,
+/// the supervisor's restart) as [`crate::spawn::spawn_path_hooked`] does:
+/// the same digest binding, seccomp profile, row and supervision hook
+/// (`before_release`). What a terminal's program also needs:
+///
+/// * a Linux row (`abi = "linux"`, e.g. BusyBox `sh`): the initial stack
+///   with `args` (space-separated, argv[0] first; empty = the image name),
+///   descriptors 0-2 on the console, and console input claimed for it and
+///   lent to it (its reads go through the line discipline, `^C` is SIGINT
+///   to it and its children), as `SYS_SPAWN_EX` with `SPAWN_F_CONSOLE_IN`
+///   gives a shell's foreground Linux job. Its exit releases input (the
+///   task-exit hook), which is what tells the console mode it is gone;
+/// * a native row: it claims input itself (`SYS_CONSOLE_WAIT`, the native
+///   shell). With `args`, it also gets a startup block with them and
+///   descriptors 0-2 on the console.
+pub fn spawn_console(path: &[u8], args: &[u8], before_release: &mut dyn FnMut(u32)) -> i64 {
+    let mut argv = [0u8; SPAWN_ARGV_MAX];
+    let (mut al, mut argc) = (0usize, 0usize);
+    let name = path.rsplit(|&b| b == b'/').next().unwrap_or(path);
+    let mut words = args.split(|&b| b == b' ').filter(|w| !w.is_empty()).peekable();
+    let only_name = [name];
+    let list: &mut dyn Iterator<Item = &[u8]> =
+        if words.peek().is_some() { &mut words } else { &mut only_name.into_iter() };
+    for w in list {
+        if al + w.len() + 1 <= argv.len() {
+            argv[al..al + w.len()].copy_from_slice(w);
+            al += w.len() + 1;
+            argc += 1;
+        }
+    }
+    let mut fds = [StartupFd::default(); STARTUP_FDS];
+    for f in fds.iter_mut().take(3) {
+        *f = StartupFd { kind: FD_CONSOLE, handle: 0 };
+    }
+    const CWD: &[u8] = b"/fat";
+    let rc = crate::spawn::spawn_path_ex(path, &mut |_| true, &mut |child| {
+        let tid = child.tid();
+        let wrote = if child.is_linux() {
+            crate::linux::proc_set_startup(tid, &fds, CWD)
+                && child.write_linux_stack(&argv[..al], argc, &[], 0, &crate::linux::random16())
+        } else if !args.is_empty() {
+            child.write_startup(azos_abi::ushell::STARTUP_BLOCK_SIZE + al + CWD.len() + 32, &mut |base, out| {
+                layout_startup(out, base, &argv[..al], argc as u32, &[], 0, CWD, 0, &fds)
+            })
+        } else {
+            true
+        };
+        if !wrote {
+            return false;
+        }
+        before_release(tid);
+        if child.is_linux() {
+            let _ = azos_drv_sys::uart::CONSOLE_RX.claim(tid);
+            let _ = azos_drv_sys::uart::CONSOLE_RX.lend(tid, tid);
+        }
+        true
+    });
+    match rc {
+        crate::spawn::SpawnEx::Started(tid) => tid as i64,
+        crate::spawn::SpawnEx::Failed(e) => e,
+        crate::spawn::SpawnEx::Refused | crate::spawn::SpawnEx::Aborted => -1,
+    }
+}
+
 // ── SYS_TASK_KILL (611) ─────────────────────────────────────────────────────
 
 /// `SYS_TASK_KILL`: see `azos_abi::syscall_nr::SYS_TASK_KILL`.

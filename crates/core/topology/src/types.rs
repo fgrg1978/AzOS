@@ -872,6 +872,19 @@ impl<'a> Topology<'a> {
         true
     }
 
+    /// Mark the task named `name` to be started at boot. `false` when no
+    /// task has that name.
+    pub fn set_task_start(&mut self, name: &MaybeStr<'a>, start: bool) -> bool {
+        let n = self.tasks_len as usize;
+        match self.tasks[..n].iter_mut().find(|t| t.name == *name) {
+            Some(t) => {
+                t.start = start;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Require sealed lease grants from the most recently pushed task
     /// ([`TaskSpec::lease_seal`]). `false` when no task has been pushed.
     pub fn set_last_task_lease_seal(&mut self, seal: bool) -> bool {
