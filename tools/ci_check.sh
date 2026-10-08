@@ -4577,20 +4577,25 @@ par_row threads_row "aarch64 threads: cow spurious canary"   arm qemu,cow-spurio
 
 # ── exec from a process with threads; what a thread creates (wave 15, 4a) ──
 #
-# abitest's `check_thread_objects` and `check_exec_from_threads` print seven
-# `exec-threads:`/`proc objects:` checks: a port a thread made and then
-# exited is still the process's (it was freed with the thread); a forked
-# child's two spinning threads run, a thread that is not the leader is
-# refused its exec (EBUSY), `/proc/tasks` lists both threads, the leader
-# execs ABITEST.ELF, and the new image finds itself alone in `/proc/tasks`
-# (itself and the child it inherited, no thread), reaps that child and exits
-# with the code its parent checks. The kernel says it ended the two threads
-# (`[EXEC] ... ended 2 other thread(s)`), a line only the fixed exec prints.
-# Canaries: `exec-no-dethread-canary` (the threads run on across the exec:
-# the kernel line is absent and the exec'd image is not alone) and
-# `thread-objects-canary` (the port is booked to the thread: the objects
-# check fails).
-exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|objects>
+# abitest's `check_thread_objects` and `check_exec_from_threads` print eight
+# `exec-threads:`/`proc objects:`/`args:` checks: a port a thread made and
+# then exited is still the process's (it was freed with the thread); a new
+# thread receives its argument; a forked child's two spinning threads run,
+# its execs of a missing path and of an unbound file are refused and both
+# threads still run, `/proc/tasks` lists both, a thread that is not the
+# leader execs ABITEST.ELF, and the new image finds itself alone in
+# `/proc/tasks` (itself and the child it inherited, whose parent it is: it
+# holds the PID), reaps that child and exits with the code the parent reads
+# through `waitpid` on that PID. The kernel says it ended the three other
+# threads, the leader among them (`[EXEC] ... ended 3 other thread(s)`), a
+# line only the fixed exec prints.
+# Canaries: `exec-no-dethread-canary` (the threads run on across the exec),
+# `exec-validate-late-canary` (the threads end before the image is checked:
+# the refused execs end them), `exec-no-pid-swap-canary` (the thread that is
+# not the leader is refused: no exec'd image), `thread-objects-canary` (the
+# port is booked to the thread) and, aarch64 only, `thread-regs-canary` (a
+# new thread starts with zeroed registers: its argument reads 0).
+exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|validatelate|nopidswap|objects|regs>
     local label="$1" isa="$2" feats="$3" want="$4"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
@@ -4621,7 +4626,7 @@ exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|objects>
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     fi
     local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled'
-    local last="exec-threads: the exec'd child ran alone and exits with its code"
+    local last="exec-threads: waitpid(the child's PID) reaps the exec'd image"
     while [ "$i" -lt 240 ]; do
         grep -aqF "$last" "$log" 2>/dev/null && break
         grep -aqiE "$fault" "$log" 2>/dev/null && break
@@ -4631,18 +4636,18 @@ exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|objects>
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
     rm -f "$kcopy" "$dcopy"
     local oks fails ended
-    oks="$(grep -aE '\[ABITEST\]   ok   (exec-threads|proc objects): ' "$log" | wc -l | tr -d ' ')"
-    fails="$(grep -aE '\[ABITEST\]  FAIL  (exec-threads|proc objects): ' "$log" | tr -d '\r')"
-    ended="$(grep -acE '\[EXEC\] tid=[0-9]+ ended 2 other thread\(s\) before replacing its image' "$log")"
+    oks="$(grep -aE '\[ABITEST\]   ok   (exec-threads|proc objects|args): ' "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -aE '\[ABITEST\]  FAIL  (exec-threads|proc objects|args): ' "$log" | tr -d '\r')"
+    ended="$(grep -acE '\[EXEC\] tid=[0-9]+ ended 3 other thread\(s\) before replacing its image' "$log")"
     case "$want" in
     ok)
         if grep -aqiE "$fault" "$log" 2>/dev/null; then
             bad; echo "      the kernel faulted:"
             grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
-        elif [ "$oks" = 7 ] && [ -z "$fails" ] && [ "$ended" = 1 ]; then
+        elif [ "$oks" = 8 ] && [ -z "$fails" ] && [ "$ended" = 1 ]; then
             ok; rm -f "$log"; return
         else
-            bad; echo "      want 7 ok, no FAIL and one '[EXEC] ... ended 2'; read $oks ok, $ended ended:"
+            bad; echo "      want 8 ok, no FAIL and one '[EXEC] ... ended 3'; read $oks ok, $ended ended:"
         fi ;;
     nodethread)
         # The fixed exec's line absent, and the exec'd image NOT alone: its
@@ -4651,11 +4656,19 @@ exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|objects>
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary ($feats) left the exec working; read $oks ok, $ended ended:" ;;
-    objects)
-        if printf '%s\n' "$fails" | grep -qF "proc objects: a port a thread made outlives the thread"; then
-            ok; rm -f "$log"; return
+    objects|validatelate|nopidswap|regs)
+        case "$want" in
+        objects)      need="proc objects: a port a thread made outlives the thread" ;;
+        validatelate) need="exec-threads: a refused exec leaves both threads running" ;;
+        nopidswap)    need="exec-threads: waitpid(the child's PID) reaps the exec'd image" ;;
+        regs)         need="args: a new thread receives its argument" ;;
+        esac
+        if [ "$ended" = 0 ] || [ "$want" != nopidswap ]; then
+            if printf '%s\n' "$fails" | grep -qF "$need"; then
+                ok; rm -f "$log"; return
+            fi
         fi
-        bad; echo "      the canary ($feats) still passed the objects check; read $oks ok:" ;;
+        bad; echo "      the canary ($feats) still passed '$need'; read $oks ok, $ended ended:" ;;
     esac
     [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
     echo "      log kept: $log"
@@ -4666,6 +4679,11 @@ par_row exec_threads_row "exec from threads: dethread canary"    rv  qemu,exec-n
 par_row exec_threads_row "aarch64 exec threads: dethread canary" arm qemu,exec-no-dethread-canary nodethread
 par_row exec_threads_row "thread objects canary"                 rv  qemu,thread-objects-canary objects
 par_row exec_threads_row "aarch64 thread objects canary"         arm qemu,thread-objects-canary objects
+par_row exec_threads_row "exec threads: validate-late canary"   rv  qemu,exec-validate-late-canary validatelate
+par_row exec_threads_row "aarch64 exec threads: validate-late"   arm qemu,exec-validate-late-canary validatelate
+par_row exec_threads_row "exec threads: no-pid-swap canary"      rv  qemu,exec-no-pid-swap-canary nopidswap
+par_row exec_threads_row "aarch64 exec threads: no-pid-swap"     arm qemu,exec-no-pid-swap-canary nopidswap
+par_row exec_threads_row "aarch64 thread args: regs canary"      arm qemu,thread-regs-canary regs
 
 # ── fork: W^X across copy-on-write (wave 13, security) ─────────────────────
 #

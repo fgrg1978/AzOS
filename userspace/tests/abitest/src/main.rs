@@ -2332,12 +2332,18 @@ extern "C" fn x_spin1(_z: u64, _stack: u64, _arg: u64) -> ! {
     }
 }
 
-/// The argument [`x_exec_try`] received (printed, not checked).
+/// The argument [`x_arg`] received.
 static X_ARG: AtomicU64 = AtomicU64::new(0);
 
-/// A thread that is not its process's leader tries to exec.
-extern "C" fn x_exec_try(_z: u64, _stack: u64, arg: u64) -> ! {
+/// A thread that records its argument and exits.
+extern "C" fn x_arg(_z: u64, _stack: u64, arg: u64) -> ! {
     X_ARG.store(arg, AO::Release);
+    sys::thread_exit(0)
+}
+
+/// A thread that is not its process's leader execs ABITEST.ELF; it stores
+/// the answer only when the exec failed.
+extern "C" fn x_exec_try(_z: u64, _stack: u64, _arg: u64) -> ! {
     let rc = sys::execpath(sys::cstr!(b"/fat/ABITEST.ELF"));
     X_RC.store(rc as i64 as u64, AO::Release);
     sys::thread_exit(0)
@@ -2370,24 +2376,35 @@ fn check_thread_objects() {
     report(b"proc objects: a port a thread made outlives the thread (poll -> EAGAIN)",
            made && rc == E_EAGAIN, rc);
     if made { let _ = sys::port_destroy_typed(port); }
+    // A new thread receives the argument `thread_create` was given (wave 15:
+    // aarch64 started every thread with its registers zeroed, so it read 0;
+    // canary `thread-regs-canary`).
+    X_ARG.store(0, AO::Release);
+    T_CTID[0].store(u32::MAX, AO::Release);
+    let t = sys::thread_create(x_arg, t_stack_top(0), 0x77, T_CTID[0].as_ptr());
+    let joined = t > 0 && t_join(0);
+    let got = X_ARG.load(AO::Acquire) as i64 as isize;
+    report(b"args: a new thread receives its argument (0x77)", joined && got == 0x77, got);
 }
 
 /// POSIX exec from a process with threads (wave 15, plan 4a): every other
 /// thread ends before the image is replaced, and the exec'ing thread goes
-/// on as the process.
+/// on as the process, under the process's PID.
 ///
-/// A forked child starts two syscall-free spinners and checks that a thread
-/// that is not its leader is refused (`EBUSY`: the PID swap Linux does for
-/// that case is not implemented). It forks a child of its own (the exec'd
-/// image's proof that it is one: [`exec_alone_mode`]), sees its threads and
-/// that child in `/proc/tasks`, and execs ABITEST.ELF from its main thread.
-/// The new image finds itself alone: `/proc/tasks` lists only it and its
-/// child, no thread (a thread's row has parent 0). Before wave 15 the exec
-/// was refused (`-1`) in a process with threads, and the Linux `execve`
-/// replaced the image under threads still running on it.
+/// A forked child starts two syscall-free spinners. Its execs of a missing
+/// path and of a file no profile is bound to are refused, and both threads
+/// still run (the exec checks before it ends anyone). It forks a child of
+/// its own (the exec'd image's proof that it is one: [`exec_alone_mode`]),
+/// sees its threads and that child in `/proc/tasks`, and a thread that is
+/// not its leader execs ABITEST.ELF. The new image finds itself alone
+/// (`/proc/tasks`: itself and its child, no thread) and that child's parent
+/// is itself: it holds the PID the child was forked under, which is also the
+/// PID this parent's `waitpid` reaps it by.
 ///
-/// Canary `exec-no-dethread-canary` (gate row): the threads are left running
-/// across the exec, and the exec'd image does not find itself alone.
+/// Canaries (gate rows): `exec-no-dethread-canary` (the threads are left
+/// running across the exec), `exec-validate-late-canary` (the threads end
+/// before the image is checked, so the refused execs end them),
+/// `exec-no-pid-swap-canary` (the thread that is not the leader is refused).
 fn check_exec_from_threads() {
     let pid = sys::fork();
     if pid == 0 {
@@ -2401,7 +2418,7 @@ fn check_exec_from_threads() {
     out(b"[ABITEST] exec-threads: child status=");
     print_i(st as isize);
     outln(b"");
-    report(b"exec-threads: the exec'd child ran alone and exits with its code",
+    report(b"exec-threads: waitpid(the child's PID) reaps the exec'd image, alone, with its code",
            got == pid && st == EXEC_ALONE_OK, st as isize);
 }
 
@@ -2413,29 +2430,20 @@ fn exec_from_threads_child() -> ! {
     tids[1] = sys::thread_create(x_spin1, t_stack_top(1), 0, core::ptr::null_mut());
     // Both spinners have run user code (a late start must not make this
     // check exec before them).
-    let mut deadline = Deadline::in_ms(5_000);
-    while !deadline.expired()
-        && !(X_COUNT[0].load(AO::Relaxed) > 0 && X_COUNT[1].load(AO::Relaxed) > 0)
-    {
-        sys::sleep(1);
-    }
-    let spinning = tids[0] > 0 && tids[1] > 0
-        && X_COUNT[0].load(AO::Relaxed) > 0 && X_COUNT[1].load(AO::Relaxed) > 0;
+    let spinning = tids[0] > 0 && tids[1] > 0 && x_both_advance();
     report(b"exec-threads: two threads spin before the exec", spinning, tids[1]);
-    // A thread that is not the leader may not exec.
-    X_RC.store(u64::MAX, AO::Release);
-    T_CTID[2].store(u32::MAX, AO::Release);
-    let t = sys::thread_create(x_exec_try, t_stack_top(2), 0x77, T_CTID[2].as_ptr());
-    let joined = t > 0 && t_join(2);
-    let rc = X_RC.load(AO::Acquire) as i64 as isize;
-    out(b"[ABITEST] exec-threads: counters ");
-    print_i(X_COUNT[0].load(AO::Relaxed).min(1_000_000) as isize);
-    out(b" ");
-    print_i(X_COUNT[1].load(AO::Relaxed).min(1_000_000) as isize);
-    out(b"; a thread's argument 0x77 arrived as ");
-    print_i(X_ARG.load(AO::Acquire) as i64 as isize);
+    // A refused exec (no such file; a file no profile is bound to) leaves
+    // the process as it was: both threads still run.
+    let missing = sys::execpath(sys::cstr!(b"/fat/NOSUCH.ELF"));
+    let unbound = sys::execpath(sys::cstr!(b"/fat/README.TXT"));
+    let still = x_both_advance();
+    out(b"[ABITEST] exec-threads: refused execs answered ");
+    print_i(missing);
+    out(b" and ");
+    print_i(unbound);
     outln(b"");
-    report(b"exec-threads: exec from a thread that is not the leader -> EBUSY", joined && rc == -16, rc);
+    report(b"exec-threads: a refused exec leaves both threads running",
+           missing < 0 && unbound < 0 && still, missing);
     // The exec'd image's own child.
     let gc = sys::fork();
     if gc == 0 {
@@ -2449,11 +2457,35 @@ fn exec_from_threads_child() -> ! {
     let both = tids.iter().all(|&t| t > 0 && shown.iter().any(|r| r.0 == t as u32));
     report(b"exec-threads: /proc/tasks lists both threads before the exec",
            gc > 0 && both && shown.iter().any(|r| r.0 == gc as u32 && r.1 == me), n as isize);
-    let rc = sys::execpath(sys::cstr!(b"/fat/ABITEST.ELF"));
-    out(b"[ABITEST] exec-threads: execpath returned ");
-    print_i(rc);
+    // A thread that is not the leader execs. On success the image runs as
+    // this process (this PID), and this thread, stopped like the spinners,
+    // never comes back from its sleep.
+    out(b"[ABITEST] exec-threads: pid ");
+    print_i(me as isize);
+    outln(b" before the exec");
+    X_RC.store(u64::MAX, AO::Release);
+    let t = sys::thread_create(x_exec_try, t_stack_top(2), 0, core::ptr::null_mut());
+    let mut deadline = Deadline::in_ms(10_000);
+    while t > 0 && X_RC.load(AO::Acquire) == u64::MAX && !deadline.expired() {
+        sys::sleep(1);
+    }
+    out(b"[ABITEST] exec-threads: the exec from a thread returned ");
+    print_i(X_RC.load(AO::Acquire) as i64 as isize);
     outln(b"");
     sys::exit(EXEC_RETURNED)
+}
+
+/// Both spinners' counters advance within 5 s of now.
+fn x_both_advance() -> bool {
+    let start = [X_COUNT[0].load(AO::Relaxed), X_COUNT[1].load(AO::Relaxed)];
+    let mut deadline = Deadline::in_ms(5_000);
+    while !deadline.expired() {
+        if X_COUNT[0].load(AO::Relaxed) > start[0] && X_COUNT[1].load(AO::Relaxed) > start[1] {
+            return true;
+        }
+        sys::sleep(1);
+    }
+    false
 }
 
 /// Is this image the one [`exec_from_threads_child`] exec'd? It is when it
