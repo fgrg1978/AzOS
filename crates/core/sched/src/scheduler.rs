@@ -4194,6 +4194,8 @@ pub fn note_exit(idx: usize, code: i32) {
         for i in 0..MAX_TASKS {
             if i != idx && tid_for_idx(i).is_some() && PARENT_TID[i].load(Ordering::Relaxed) == child {
                 PARENT_TID[i].store(reaper, Ordering::Relaxed);
+                #[cfg(feature = "orphan-late-adopter-canary")]
+                LATE_ADOPTER_TID.store(child, Ordering::Relaxed);
             }
         }
     }
@@ -4300,6 +4302,11 @@ pub fn take_exit_note_for(parent_tid: u32, child_tid: u32) -> Result<(u32, i32),
             let r = (e.1, e.2);
             *e = (0, 0, 0);
             EXIT_NOTICES_QUEUED.fetch_sub(1, Ordering::Release);
+            #[cfg(feature = "orphan-late-adopter-canary")]
+            {
+                drop(t);
+                late_adopter_delay(child_tid);
+            }
             return Ok(r);
         }
     }
@@ -4313,6 +4320,25 @@ pub fn take_exit_note_for(parent_tid: u32, child_tid: u32) -> Result<(u32, i32),
 }
 
 /// Why [`take_exit_note_for`] found no notice.
+/// Gate canary (`orphan-late-adopter-canary`): the last task whose exit
+/// re-parented a child of its own.
+#[cfg(feature = "orphan-late-adopter-canary")]
+static LATE_ADOPTER_TID: AtomicU32 = AtomicU32::new(0);
+
+/// Gate canary: the reap of that task returns 1.5 s late, as on a loaded
+/// host, so its orphan's adopter lists it late.
+#[cfg(feature = "orphan-late-adopter-canary")]
+fn late_adopter_delay(child_tid: u32) {
+    if child_tid == 0 || LATE_ADOPTER_TID.compare_exchange(child_tid, 0, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+        return;
+    }
+    let until = azos_drv_sys::timebase::now()
+        .saturating_add(azos_drv_sys::timebase::TIMER_FREQ * 3 / 2);
+    while azos_drv_sys::timebase::now() < until {
+        crate::task_block(WaitReason::Timer(until));
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WaitpidMiss {
     /// A live child of this parent that has not exited. Poll again.

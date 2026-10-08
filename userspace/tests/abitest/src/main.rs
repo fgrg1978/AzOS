@@ -2300,22 +2300,55 @@ const ORPHAN_ADOPTED: i32 = 0x5A;
 /// ... and when it did not, within the deadline.
 const ORPHAN_NOT_ADOPTED: i32 = 0x5B;
 
+/// A pipe the adopter writes one byte to once it has listed the orphan, as
+/// small fds (a fork child inherits descriptors): `(read fd, write fd)`,
+/// `(0, 0)` when none could be made.
+fn orphan_release_pipe() -> (u32, u32) {
+    let mut p = [0u32; 2];
+    if sys::pipe_typed(&mut p, 0) != 0 {
+        return (0, 0);
+    }
+    sys::fd_install(6, p[0]);
+    sys::fd_install(7, p[1]);
+    (6, 7)
+}
+
+/// The adopter's half of the release: one byte, then its ends closed.
+fn orphan_release(rel: (u32, u32)) {
+    if rel.1 != 0 {
+        let _ = sys::write(rel.1 as u64, b"r");
+        let _ = sys::close(rel.1 as u64);
+    }
+    if rel.0 != 0 {
+        let _ = sys::close(rel.0 as u64);
+    }
+}
+
 /// The grandchild's half: fork it from a child that then exits at once. It
 /// waits (clock deadline) until `/proc/tasks` shows its parent as `want`,
-/// stays a second so the adopter can list it, and exits [`ORPHAN_ADOPTED`];
-/// [`ORPHAN_NOT_ADOPTED`] at the deadline. Returns in the
-/// caller (the parent of the exiting child) only.
-fn fork_orphan_via_child(want: u32) -> isize {
+/// then stays alive until the adopter has listed it (a byte on `rel`, or the
+/// pipe's end: no deadline stands in for "listed"), and exits
+/// [`ORPHAN_ADOPTED`]; [`ORPHAN_NOT_ADOPTED`] at the deadline. Returns in
+/// the caller (the parent of the exiting child) only.
+///
+/// It used to stay one second (`sleep(1_000)`) and exit: an adopter that
+/// listed it later than that, as a loaded host allows, found no child.
+/// Canary `orphan-late-adopter-canary` (gate row): the adopter's reap of the
+/// exiting child returns 1.5 s late; the old sleep then fails every boot.
+fn fork_orphan_via_child(want: u32, rel: (u32, u32)) -> isize {
     let mid = sys::fork();
     if mid == 0 {
         let c = sys::fork();
         if c == 0 {
             let me = sys::getpid() as u32;
+            if rel.1 != 0 {
+                let _ = sys::close(rel.1 as u64);
+            }
             let mut deadline = Deadline::in_ms(5_000);
             while !deadline.expired() {
                 if proc_parent_of(me) == want {
-                    // Alive a while longer, so the adopter sees it listed.
-                    sys::sleep(1_000);
+                    let mut b = [0u8; 1];
+                    let _ = if rel.0 != 0 { sys::read(rel.0 as u64, &mut b) } else { 0 };
                     sys::exit(ORPHAN_ADOPTED);
                 }
                 sys::sleep(5);
@@ -2392,12 +2425,14 @@ fn check_orphans() {
     expect_eq(b"orphans: an unknown subreaper op is EINVAL", sys::task_subreaper(9), -22);
 
     // 1. Init adopts.
-    let mid = fork_orphan_via_child(me);
+    let rel = orphan_release_pipe();
+    let mid = fork_orphan_via_child(me, rel);
     expect_true(b"orphans: fork the intermediate child", mid > 0);
-    if mid <= 0 { return; }
+    if mid <= 0 { orphan_release(rel); return; }
     let (got, st) = reap(mid as u32);
     expect_true(b"orphans: the intermediate child exits 0", got == mid && st == 0);
     let (children, last) = children_of(me);
+    orphan_release(rel);
     let orphan = if children == 1 { last } else { 0 };
     out(b"[ABITEST] orphans: init=");
     print_i(me as isize);
@@ -2419,11 +2454,13 @@ fn check_orphans() {
         let sme = sys::getpid() as u32;
         let mut bad = 0i32;
         if sys::task_subreaper(sys::SUBREAPER_SET) != 1 { bad |= 1; }
-        let mid = fork_orphan_via_child(sme);
-        if mid <= 0 { sys::exit(bad | 2); }
+        let rel = orphan_release_pipe();
+        let mid = fork_orphan_via_child(sme, rel);
+        if mid <= 0 { orphan_release(rel); sys::exit(bad | 2); }
         let (got, st) = reap(mid as u32);
         if got != mid || st != 0 { bad |= 4; }
         let orphan = only_child_of(sme);
+        orphan_release(rel);
         if orphan == 0 { bad |= 8; }
         if orphan != 0 {
             let (got, st) = reap(orphan);

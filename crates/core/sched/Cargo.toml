@@ -35,6 +35,9 @@ ctx-probe = []
 # Gate canary: the exit path hands `do_schedule` the hart it entered on,
 # after a forced move to the next hart (the pre-CTXHUNT stale id).
 exit-stale-hart-canary = []
+# Gate canary: the reap of a task whose exit re-parented a child returns
+# 1.5 s late (abitest's orphan checks must not rely on a sleep).
+orphan-late-adopter-canary = []
 # ... and a thread that gets a capability table of its own instead of its
 # group leader's (`group::table_lead_of_idx`).
 threads-private-table-canary = []

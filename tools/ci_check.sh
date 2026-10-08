@@ -4813,6 +4813,12 @@ par_row orphan_row "exit: orphans adopted"           rv  qemu adopted
 par_row orphan_row "aarch64 orphans adopted"         arm qemu adopted
 par_row orphan_row "exit: orphans canary"            rv  qemu,orphan-reparent-canary canary
 par_row orphan_row "aarch64 orphans canary"          arm qemu,orphan-reparent-canary canary
+# The adopter late (CTXHUNT, 2026-10-08): `orphan-late-adopter-canary` returns
+# the reap of the exiting child 1.5 s late. The orphan waits for the
+# adopter's byte on a pipe, not a second of sleep, so the row stays green;
+# with the old sleep the init and subreaper adoptions fail every boot.
+par_row orphan_row "exit: orphans late adopter"      rv  qemu,orphan-late-adopter-canary adopted
+par_row orphan_row "aarch64 orphans late adopter"    arm qemu,orphan-late-adopter-canary adopted
 
 # ── Console: a ring-3 line is never spliced by a kernel line ────────────────
 #
