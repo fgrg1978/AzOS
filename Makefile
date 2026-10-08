@@ -138,8 +138,8 @@ IPCTEST_ELF   := build/ipctest.elf
 
 # ── aarch64 userspace parity (phase 6 prep) ──────────────────────────────────
 #
-# Same 13 programs, built for `aarch64-unknown-none` (hard-float, ARMv8.5
-# baseline — owner decision 97) into `build/aarch64/` instead of `build/`, so
+# Same 13 programs, built for `aarch64-unknown-none` (hard-float; the level is
+# Kconfig AARCH64_LEVEL, AARCH64_USER_ISA below) into `build/aarch64/` instead of `build/`, so
 # they never collide with the RISC-V names `IMAGE_ELFS`/`image_hashes.py`
 # bind seccomp profiles to. **No aarch64 kernel exec path exists yet** — these
 # targets exist to prove the toolchain (rust-lld, page-aligned segments,

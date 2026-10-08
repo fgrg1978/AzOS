@@ -296,7 +296,7 @@ members = [
     # crates/core/arch is now a per-target_arch facade re-exporting one of
     # the per-ISA crates (arch-riscv64, arch-aarch64).
     "crates/core/arch-riscv64",
-    # aarch64, ARMv8.5 baseline (owner decision 97). Compiles to near-nothing on
+    # aarch64 (baseline: Kconfig AARCH64_LEVEL). Compiles to near-nothing on
     # riscv64; `tools/ci_check.sh` builds and tests it for aarch64 so it cannot
     # rot unnoticed the way the parked copy did for a month.
     "crates/core/arch-aarch64",

@@ -2969,8 +2969,9 @@ mod image_profiles {
         );
         // Cargo does not rebuild when only RUSTC_WRAPPER changes, so the flags
         // carry a digest of the wrapper: a changed wrapper changes the fingerprint.
+        // (Followed by the Kconfig's `require`d codegen, RV_USER_ISA, when any.)
         assert!(
-            def.contains(r#"--config 'target.$(TARGET).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"]'"#),
+            def.contains(r#"--config 'target.$(TARGET).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)""#),
             "{def}",
         );
         let tag = MAKEFILE

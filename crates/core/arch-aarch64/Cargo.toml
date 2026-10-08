@@ -15,8 +15,8 @@ name = "azos_arch_aarch64"
 # to `target_arch = "aarch64"` — on the workspace's default riscv64 target the
 # crate compiles cleanly as essentially-empty.
 #
-# Built for two targets. `aarch64-unknown-none` (hard-float; the baseline is
-# ARMv8.5-A, owner decision 97, where NEON is mandatory) for this crate's own
+# Built for two targets. `aarch64-unknown-none` (hard-float, where NEON is
+# part of the target; the level is Kconfig AARCH64_LEVEL) for this crate's own
 # gate row and `tests/qemu/aarch64-smoke`; `aarch64-unknown-none-softfloat` as part
 # of the kernel, which is FP-free so that user FP state can be saved lazily
 # (kernel/src/entry/aarch64/fp_lazy.rs). No `#[target_feature(enable =
