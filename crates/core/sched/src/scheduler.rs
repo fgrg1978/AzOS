@@ -3033,6 +3033,20 @@ pub fn set_task_exit_hook(f: fn(u32)) {
     TASK_EXIT_HOOK.store(f as usize, Ordering::Release);
 }
 
+/// Wave 15 (plan 4a): called when an exec'ing thread takes its process's
+/// identity from the leader (`exec_take_over`) with `(from_idx, to_idx, tid)`:
+/// what other crates keep per pool slot for the process (`azos_ipc`'s
+/// capability table, the seed row `natfork` recorded) moves from the
+/// leader's slot to the thread's, now named `tid`. Registered by the kernel
+/// at boot, as [`TASK_EXIT_HOOK`].
+static TASK_IDENTITY_HOOK: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Register the [`TASK_IDENTITY_HOOK`]. Call once, during boot.
+pub fn set_task_identity_hook(f: fn(usize, usize, u32)) {
+    TASK_IDENTITY_HOOK.store(f as usize, Ordering::Release);
+}
+
 /// Called with the exiting task's TID after its address space is torn down
 /// (`release_address_space_at_exit`) and before its exit notice: for what
 /// must not happen while the dying task still holds memory (wave 12: the
@@ -3239,32 +3253,38 @@ pub fn thread_exit(code: i32) -> ! {
 /// Why [`exec_end_other_threads`] refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExecDethreadError {
-    /// The caller is a thread of its process, not its leader.
-    NotLeader,
-    /// The process is ending (`exit_group`, a fault, a forced stop).
+    /// The process is ending (`exit_group`, a fault, a forced stop), or
+    /// another of its threads is already exec'ing.
     Ending,
 }
 
-/// Wave 15 (plan 4a): the first half of an exec from a process with threads,
-/// POSIX's "all other threads are terminated" (Linux `de_thread`). Every
-/// other thread of the caller's process is stopped and this waits until it
-/// has gone: each ends only itself (`group::begin_exit` refuses while the
-/// group is marked exec'ing), clears and wakes its clear-tid word on the old
-/// image, and leaves the shared root before the exec replaces it, so no
-/// thread ever returns to user mode on an address space that is about to be
-/// torn down. The last one's exit dissolves the group: the caller is a plain
-/// process again, and the exec that follows is the single-threaded one.
+/// Wave 15 (plan 4a): the first half of an exec's commit from a process with
+/// threads, POSIX's "all other threads are terminated" (Linux `de_thread`).
+/// Called once the new image is admitted (`process::exec_prepare_*`): an
+/// exec that fails before this point leaves every thread running.
 ///
-/// Only the leader may exec: the process is named by its leader's TID (its
-/// capability table, descriptors, budget and parent link live on that slot),
-/// and Linux's PID swap for a non-leader exec is not implemented
-/// (`NotLeader`). Returns how many threads were ended (0 for a process with
-/// none: one load, `group::lead_of_idx`).
+/// Every other thread of the caller's process is stopped and this waits until
+/// it has gone: each ends only itself (`group::begin_exit` refuses while the
+/// group is exec'ing), clears and wakes its clear-tid word on the old image,
+/// and leaves the shared root before the exec replaces it, so no thread ever
+/// returns to user mode on an address space that is about to be torn down.
+/// The last one's exit dissolves the group: the caller is a plain process
+/// again, and the commit that follows is the single-threaded one.
 ///
-/// It waits as the leader's own exit does (`group_exit`): each member's exit
-/// wakes it, and the 10 ms deadline is the same backstop. Members are asked
-/// again on every pass, so one a sibling admitted just before the group was
-/// marked (its slot not yet joined) is stopped too.
+/// A caller that is not the leader takes the process's identity: the
+/// leader, stopped like the others, hands it over on its way out
+/// ([`exec_take_over`]) and ends as a thread under the caller's old TID.
+/// The caller then IS the process (its TID is the process id the parent
+/// waits for and `/proc` and signals name), as Linux's PID swap makes it.
+///
+/// Returns how many threads were ended (0 for a process with none: one
+/// load, `group::lead_of_idx`). It waits as the leader's own exit does
+/// (`group_exit`): each member's exit wakes the leader's TID, which the
+/// caller holds once the hand-over is done, and the 10 ms deadline is the
+/// backstop. Members are stopped by slot, under the pool lock, so a stop
+/// meant for the leader cannot land on the caller once it holds the
+/// leader's TID; they are asked again on every pass, so one a sibling
+/// admitted just before the group was marked is stopped too.
 pub fn exec_end_other_threads() -> Result<u32, ExecDethreadError> {
     let Some(idx) = current_slot() else { return Ok(0) };
     let lead = crate::group::lead_of_idx(idx);
@@ -3272,33 +3292,118 @@ pub fn exec_end_other_threads() -> Result<u32, ExecDethreadError> {
         return Ok(0);
     }
     let me = unsafe { TASKS[idx].tid };
-    if lead != me {
-        return Err(ExecDethreadError::NotLeader);
+    // Gate canaries only: a thread that is not the leader is refused, as
+    // before the PID hand-over; or the other threads keep running across
+    // the exec.
+    if cfg!(feature = "exec-no-pid-swap-canary") && lead != me {
+        return Err(ExecDethreadError::Ending);
     }
-    // Gate canary only: the other threads keep running across the exec.
     if cfg!(feature = "exec-no-dethread-canary") {
         return Ok(0);
     }
-    if !crate::group::begin_exec(lead) {
+    if !crate::group::begin_exec(lead, me) {
         return Err(ExecDethreadError::Ending);
     }
     let ended = crate::group::live_members(lead).saturating_sub(1);
-    let mut members = [0u32; crate::group::GROUP_THREADS_MAX as usize];
     while crate::group::live_members(lead) > 1 {
-        // The leader itself is being stopped: its exec must not run. The
-        // members are already asked; their exits dissolve the group.
-        if current_forced_exit().is_some() {
+        // The caller itself is being stopped: its exec must not run. The
+        // members are already asked; their exits dissolve the group. Once
+        // the leader has begun handing it the process, it waits for that.
+        if current_forced_exit().is_some() && crate::group::abandon_exec(lead, me) {
             return Err(ExecDethreadError::Ending);
         }
-        let n = crate::group::members_of(lead, me, &mut members).min(members.len());
-        for &m in &members[..n] {
-            let _ = task_stop(m, true, 9);
+        for i in 0..MAX_TASKS {
+            if i != idx && crate::group::lead_of_idx(i) == lead {
+                stop_slot(i);
+            }
         }
         let deadline = azos_drv_sys::timebase::now()
             .saturating_add(azos_drv_sys::timebase::TIMER_FREQ / 100);
         crate::task_block(WaitReason::Timer(deadline));
     }
     Ok(ended)
+}
+
+/// Force-stop (signal 9) whatever task holds slot `idx` now, checked and
+/// recorded under the pool lock, which [`exec_take_over`] also holds while
+/// it swaps two slots' TIDs: the stop lands on the slot it was meant for.
+fn stop_slot(idx: usize) {
+    let tid = {
+        let _pool = PoolGuard::acquire();
+        // SAFETY: under the pool lock, a valid index.
+        unsafe {
+            if !TASK_VALID[idx].load(Ordering::Relaxed) {
+                return;
+            }
+            let tid = TASKS[idx].tid;
+            if tid == 0 {
+                return;
+            }
+            record_stop(idx, tid, stop_policy::Stop { force: true, signo: 9 });
+            tid
+        }
+    };
+    wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(_)));
+}
+
+/// Wave 15 (plan 4a): the leader's half of an exec by another of its
+/// threads. Called on the leader's exit path (`group_exit`, slot `idx`,
+/// TID `lead`) while its group is exec'ing by thread `by`: the two slots
+/// swap TIDs, and the process's state on the leader's slot moves to the
+/// exec'ing thread's — the break, the page budget, the address-space
+/// window, the memory row and lock, the name, the parent link, the
+/// subreaper and die-with-parent marks, the signal words, and (through
+/// [`TASK_IDENTITY_HOOK`]) the capability table and the seed row. Returns
+/// the leader slot's new TID (`by`'s old one): it then ends as a thread of
+/// the group, whose leader TID is unchanged. `None` when there is nothing to
+/// hand over (no exec, or the leader is the one exec'ing).
+///
+/// It runs only when the two are the group's last live members
+/// (`group::claim_handover`), so no other thread of the process runs; the
+/// exec'ing thread is in [`exec_end_other_threads`], which touches nothing
+/// of its slot but under the pool lock this holds. A stop already recorded
+/// on the leader's slot is dropped (the slot is ending).
+unsafe fn exec_take_over(idx: usize, lead: u32) -> Option<u32> {
+    // Only once every other member has gone: nothing else of the process
+    // still runs (a sibling's fault would charge the budget being moved).
+    let by = crate::group::claim_handover(lead)?;
+    let to = idx_for_tid(by)?;
+    {
+        let _pool = PoolGuard::acquire();
+        // SAFETY: both slots valid under the pool lock; the thread in `to`
+        // is parked, the leader in `idx` is the caller.
+        unsafe {
+            let (a, b) = (task_mut(idx) as *mut Task, task_mut(to) as *mut Task);
+            let (a, b) = (&mut *a, &mut *b);
+            core::mem::swap(&mut a.tid, &mut b.tid);
+            core::mem::swap(&mut a.name, &mut b.name);
+            core::mem::swap(&mut a.user_brk, &mut b.user_brk);
+            core::mem::swap(&mut a.budget, &mut b.budget);
+            core::mem::swap(&mut a.user_window, &mut b.user_window);
+            core::mem::swap(&mut a.mem, &mut b.mem);
+            for arr in [&PARENT_TID, &DWP_TID] {
+                let v = arr[idx].swap(arr[to].load(Ordering::Relaxed), Ordering::AcqRel);
+                arr[to].store(v, Ordering::Release);
+            }
+            let v = SUBREAPER[idx].swap(SUBREAPER[to].load(Ordering::Relaxed), Ordering::AcqRel);
+            SUBREAPER[to].store(v, Ordering::Release);
+            if STOP_TID[idx].swap(0, Ordering::AcqRel) != 0
+                && stop_policy::Stop::decode(STOP_WORD[idx].load(Ordering::Acquire)).is_some_and(|s| s.force)
+            {
+                FORCED_PENDING.fetch_sub(1, Ordering::AcqRel);
+            }
+            // The two TIDs' lookup hints now name the other slot; the scan
+            // in `idx_for_tid` finds and repairs them on first use.
+        }
+    }
+    signal::hand_over(idx, to);
+    let raw = TASK_IDENTITY_HOOK.load(Ordering::Acquire);
+    if raw != 0 {
+        // SAFETY: registered by `set_task_identity_hook` from a `fn(usize, usize, u32)`.
+        let f: fn(usize, usize, u32) = unsafe { core::mem::transmute(raw) };
+        f(idx, to, lead);
+    }
+    Some(by)
 }
 
 /// Wave 13 (THREADS): the thread-group half of an exit, run first.
@@ -3332,6 +3437,11 @@ unsafe fn group_exit(idx: usize, tid: u32, code: i32) -> i32 {
     // deadline is a backstop against a wake that found it not yet asleep and
     // a stamp already consumed.
     while crate::group::live_members(lead) > 1 {
+        // Wave 15 (plan 4a): another thread is exec'ing. The leader hands
+        // it the process and ends as a thread under its old TID.
+        if let Some(t) = unsafe { exec_take_over(idx, lead) } {
+            member_exit(idx, t, lead, code);
+        }
         let deadline = azos_drv_sys::timebase::now()
             .saturating_add(azos_drv_sys::timebase::TIMER_FREQ / 100);
         crate::task_block(WaitReason::Timer(deadline));
@@ -4560,7 +4670,15 @@ pub fn task_stop(tid: u32, force: bool, signo: u8) -> bool {
             _ => return true,
         }
     }
-    let new = stop_policy::Stop { force, signo };
+    record_stop(idx, tid, stop_policy::Stop { force, signo });
+    wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(_)));
+    true
+}
+
+/// Record stop request `new` for task `tid` in slot `idx` (merged with one
+/// already pending): the request word, the machine-wide forced count, and a
+/// forced stop's empty filter. The caller wakes the task.
+fn record_stop(idx: usize, tid: u32, new: stop_policy::Stop) {
     let old = if STOP_TID[idx].load(Ordering::Acquire) == tid {
         stop_policy::Stop::decode(STOP_WORD[idx].load(Ordering::Acquire))
     } else {
@@ -4586,8 +4704,6 @@ pub fn task_stop(tid: u32, force: bool, signo: u8) -> bool {
             }
         }
     }
-    wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(_)));
-    true
 }
 
 /// The stop request pending for the current task, if any. Sticky: a task
@@ -6619,6 +6735,18 @@ pub fn current_mem_row() -> u16 {
         let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
         if idx >= MAX_TASKS { return 0; }
         TASKS[idx].mem.row
+    }
+}
+
+/// The row whose count the current task's process holds (its leader's
+/// [`crate::task::TaskMem::row`]; a thread's own is 0). What an exec from
+/// any thread compares its image's row with.
+pub fn current_proc_mem_row() -> u16 {
+    let cpu = current_cpu_id();
+    unsafe {
+        let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+        if idx >= MAX_TASKS { return 0; }
+        TASKS[proc_slot(idx)].mem.row
     }
 }
 

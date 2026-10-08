@@ -296,6 +296,26 @@ pub fn reset(tid: u32) {
     OWNER[idx].store(NO_OWNER, Ordering::Release);
 }
 
+/// Wave 15 (plan 4a): an exec'ing thread takes its process's identity from
+/// the leader (`azos_sched::scheduler::exec_take_over`): the table in slot
+/// `from` (the leader's) becomes slot `to`'s, owned by `tid` (the process
+/// id, now `to`'s TID), and `from` is left empty and unowned. Both locks in
+/// index order.
+pub fn hand_over(from: usize, to: usize, tid: u32) {
+    if from >= MAX_TASKS || to >= MAX_TASKS || from == to {
+        return;
+    }
+    let (lo, hi) = if from < to { (from, to) } else { (to, from) };
+    let mut a = CAP_TABLES[lo].lock();
+    let mut b = CAP_TABLES[hi].lock();
+    let (src, dst) = if from < to { (&mut *a, &mut *b) } else { (&mut *b, &mut *a) };
+    // Swapped in place, then the source wiped, as `reset` wipes a table.
+    core::mem::swap(src, dst);
+    *src = CapTable::empty();
+    OWNER[to].store(tid, Ordering::Release);
+    OWNER[from].store(NO_OWNER, Ordering::Release);
+}
+
 /// Borrow the cap-table for the given task and run a closure on it.
 ///
 /// Used by syscall handlers that need direct access (e.g. to compute

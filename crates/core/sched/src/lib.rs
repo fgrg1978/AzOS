@@ -55,7 +55,7 @@ pub mod user_window;
 pub use scheduler::{
     init, start, schedule, task_create, task_create_affinity, try_task_create_affinity, free_task_slots,
     try_task_create_init,
-    task_yield, task_preempt_deferred, task_exit, set_task_exit_hook, set_task_exit_late_hook, set_task_fork_hook,
+    task_yield, task_preempt_deferred, task_exit, set_task_exit_hook, set_task_exit_late_hook, set_task_identity_hook, set_task_fork_hook,
     tid_holds_address_space, task_row, task_rows, task_visible_to, TaskRow,
     task_create_with_class, task_set_class, idx_for_tid, tid_for_idx, tid_is_exiting,
     aps_dispatch_enabled,

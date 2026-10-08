@@ -2186,14 +2186,6 @@ fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
     let Some(ops) = file_ops() else { return neg(le::EIO) };
     let Some((row, row_len)) = with_me(|p| (p.row, p.row_len)) else { return neg(le::EFAULT) };
     reach(k::SYS_EXECPATH);
-    // Wave 15 (plan 4a): the other threads end before the image is replaced
-    // (`handlers::exec_end_other_threads`); before, they ran on.
-    if let Err(e) = crate::handlers::exec_end_other_threads() {
-        return match e {
-            azos_sched::scheduler::ExecDethreadError::NotLeader => neg(le::EBUSY),
-            azos_sched::scheduler::ExecDethreadError::Ending => neg(le::EINTR),
-        };
-    }
     let random = random16();
     let mut buf = crate::handlers::EXEC_BOUNCE.lock();
     let img = match crate::spawn::read_image(ops, &path[..plen], &mut buf[..]) {
@@ -2238,15 +2230,23 @@ fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
     }
     let mem = if cross { Some(crate::topo_sched::resolve_mem(profile.image, None).0) } else { None };
     let (argv, env) = strs[..al + el].split_at(al);
-    let r = crate::spawn::with_elf(ops, &img, &path[..plen], &mut buf[..], &mut |elf| {
-        azos_sched::process::exec_user_image(elf, mem, &mut |user_pt, aux| {
+    let prepared = crate::spawn::with_elf(ops, &img, &path[..plen], &mut buf[..], &mut |elf| {
+        azos_sched::process::exec_prepare_image(elf, mem, &mut |user_pt, aux| {
             azos_sched::spawn::write_linux_stack_into(user_pt, aux, argv, argc, env, envc, &random)
         })
     });
     drop(buf);
-    if r != 0 {
-        return neg(le::ENOMEM);
+    let Some(prepared) = prepared else { return neg(le::ENOMEM) };
+    // Wave 15 (plan 4a): every check has passed and the new image is built;
+    // only now do the other threads end (`handlers::exec_end_other_threads`:
+    // a refused execve leaves them running; before, they ran on across it).
+    // A thread that was not the leader holds the process's TID after it.
+    if crate::handlers::exec_end_other_threads().is_err() {
+        azos_sched::process::exec_abort(prepared);
+        return neg(le::EINTR);
     }
+    let _ = azos_sched::process::exec_commit(prepared);
+    let me = azos_sched::current_task_tid();
     if cross {
         enter_row(me, profile, own);
     }

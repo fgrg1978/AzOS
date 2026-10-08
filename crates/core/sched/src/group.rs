@@ -44,8 +44,11 @@
 //! (`scheduler::exec_end_other_threads`): the group is marked exec'ing, no
 //! member may join, a member's exit ends only itself, and the last one's
 //! exit dissolves the group, so the image is replaced by a plain process.
-//! Only the leader may exec (the process is its TID); another thread's exec
-//! is refused.
+//! Any thread may exec. When it is not the leader, the leader, stopped like
+//! the others, first hands it the process's identity (its TID, its
+//! capability table, budget, break, window, row, parent link and signal
+//! words: `scheduler::exec_take_over`) and then ends as a thread under the
+//! exec'ing thread's old TID, as Linux's `de_thread` swaps the PIDs.
 //!
 //! # Lock order
 //!
@@ -129,13 +132,18 @@ struct Group {
     /// how many times it holds it.
     mm_owner: u32,
     mm_depth: u32,
-    /// The leader is exec'ing (wave 15, plan 4a): every other member is being
-    /// stopped and ends only itself; no member may be added.
-    execing: bool,
+    /// The thread exec'ing (wave 15, plan 4a), 0 for none: every other member
+    /// is being stopped and ends only itself; no member may be added. When it
+    /// is not the leader, the leader hands it the process's identity on its
+    /// way out (`scheduler::exec_take_over`).
+    exec_by: u32,
+    /// The leader has begun handing the process to `exec_by`: the exec can no
+    /// longer be abandoned.
+    handing: bool,
 }
 
 const GROUP_FREE: Group =
-    Group { leader: 0, live: 0, exiting: false, code: 0, mm_owner: 0, mm_depth: 0, execing: false };
+    Group { leader: 0, live: 0, exiting: false, code: 0, mm_owner: 0, mm_depth: 0, exec_by: 0, handing: false };
 
 static GROUPS: SpinLock<[Group; GROUPS_MAX]> = SpinLock::new([GROUP_FREE; GROUPS_MAX]);
 
@@ -243,7 +251,7 @@ pub(crate) fn take_clear_tid(idx: usize) -> u64 {
 pub(crate) fn admit(leader: u32, leader_idx: usize) -> bool {
     let mut g = GROUPS.lock();
     if let Some(e) = g.iter_mut().find(|e| e.leader == leader) {
-        if e.live >= GROUP_THREADS_MAX || e.exiting || e.execing {
+        if e.live >= GROUP_THREADS_MAX || e.exiting || e.exec_by != 0 {
             return false;
         }
         e.live += 1;
@@ -293,26 +301,52 @@ pub fn exiting(leader: u32) -> Option<i32> {
 pub fn current_group_ending() -> bool {
     crate::scheduler::current_slot().is_some_and(|i| {
         let l = lead_of_idx(i);
-        l != 0 && GROUPS.lock().iter().any(|e| e.leader == l && (e.exiting || e.execing))
+        l != 0 && GROUPS.lock().iter().any(|e| e.leader == l && (e.exiting || e.exec_by != 0))
     })
 }
 
-/// Is `leader`'s group being emptied by its leader's exec? A member stopped
-/// then ends only itself ([`begin_exit`] refuses to end the group).
-pub fn execing(leader: u32) -> bool {
-    GROUPS.lock().iter().any(|e| e.leader == leader && e.execing)
-}
-
-/// The leader `leader` starts an exec: mark its group so that no member is
-/// added and a member's exit ends only that member. `false` when the group
-/// is already ending (the leader is being stopped; its exec must not run).
-/// `true` with nothing marked when `leader` has no group.
-pub(crate) fn begin_exec(leader: u32) -> bool {
+/// Thread `by` of `leader`'s group starts an exec: mark the group so that no
+/// member is added and a member's exit ends only that member. `false` when
+/// the group is already ending or another thread is already exec'ing (the
+/// caller is then being stopped; its exec must not run). `true` with nothing
+/// marked when `leader` has no group.
+pub(crate) fn begin_exec(leader: u32, by: u32) -> bool {
     let mut g = GROUPS.lock();
     match g.iter_mut().find(|e| e.leader == leader) {
-        Some(e) if e.exiting => false,
+        Some(e) if e.exiting || e.exec_by != 0 => false,
         Some(e) => {
-            e.execing = true;
+            e.exec_by = by;
+            true
+        }
+        None => true,
+    }
+}
+
+/// The leader of `leader`'s group starts handing the process to the thread
+/// exec'ing: that thread, when one other than the leader is exec'ing, every
+/// other member has gone (the two are the group's only live members), and
+/// no hand-over has begun. From here the exec cannot be abandoned.
+pub(crate) fn claim_handover(leader: u32) -> Option<u32> {
+    let mut g = GROUPS.lock();
+    let e = g.iter_mut().find(|e| e.leader == leader)?;
+    if e.exec_by == 0 || e.exec_by == leader || e.handing || e.live != 2 {
+        return None;
+    }
+    e.handing = true;
+    Some(e.exec_by)
+}
+
+/// Thread `by`'s exec is abandoned (it is being stopped): unmark the group,
+/// unless the leader already began handing it the process (`false`: the
+/// caller must wait for that hand-over to finish).
+pub(crate) fn abandon_exec(leader: u32, by: u32) -> bool {
+    let mut g = GROUPS.lock();
+    match g.iter_mut().find(|e| e.leader == leader) {
+        Some(e) if e.handing => false,
+        Some(e) => {
+            if e.exec_by == by {
+                e.exec_by = 0;
+            }
             true
         }
         None => true,
@@ -358,7 +392,7 @@ pub(crate) fn member_gone(leader: u32, tid: u32) -> u32 {
 pub(crate) fn begin_exit(leader: u32, code: i32) -> bool {
     let mut g = GROUPS.lock();
     match g.iter_mut().find(|e| e.leader == leader) {
-        Some(e) if !e.exiting && !e.execing => {
+        Some(e) if !e.exiting && e.exec_by == 0 => {
             e.exiting = true;
             e.code = code;
             true

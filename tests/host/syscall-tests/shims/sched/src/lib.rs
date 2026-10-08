@@ -650,7 +650,6 @@ pub mod scheduler {
     /// Mirrors `scheduler::ExecDethreadError` (wave 15, plan 4a).
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum ExecDethreadError {
-        NotLeader,
         Ending,
     }
 
@@ -861,6 +860,28 @@ pub fn shim_take_blocks() -> Vec<WaitReason> {
 }
 
 pub mod process {
+    /// Mirrors `process::PreparedExec` (wave 15, plan 4a): carries what the
+    /// recording loader was told to answer.
+    pub struct PreparedExec {
+        ret: i64,
+    }
+
+    /// Mirrors `process::exec_prepare_mem`: records the image like
+    /// [`crate::exec_user`]; a loader answer of `-1` is a refused admission
+    /// (`None`), any other one is admitted and returned by the commit.
+    pub fn exec_prepare_mem(elf: &[u8], mem: Option<crate::MemSpec>) -> Option<PreparedExec> {
+        let ret = crate::exec_user_mem(elf, mem);
+        (ret != -1).then_some(PreparedExec { ret })
+    }
+
+    /// Mirrors `process::exec_commit`.
+    pub fn exec_commit(p: PreparedExec) -> i64 {
+        p.ret
+    }
+
+    /// Mirrors `process::exec_abort`: nothing was built.
+    pub fn exec_abort(_p: PreparedExec) {}
+
     /// `todo!()` unless a test programmed a return with
     /// [`shim_program_fork`]; programmed, it records `(sepc, user_sp, regs
     /// address)` and returns that value.

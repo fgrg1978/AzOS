@@ -29,6 +29,9 @@ threads-late-start-canary = []
 # Wave 15 (plan 4a) gate canary, never in a real build: an exec from a
 # process with threads leaves the other threads running across it.
 exec-no-dethread-canary = []
+# ... and one where a thread that is not the leader is refused its exec, as
+# before the PID hand-over (`scheduler::exec_take_over`).
+exec-no-pid-swap-canary = []
 # Gate canary (CTXHUNT): a Zombie's slot is freed before the switch away from
 # it, as before, and the hart stays 2 ms on the freed stack.
 reap-window-canary = []

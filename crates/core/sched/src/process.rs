@@ -259,8 +259,15 @@ pub fn exec_user_image(
     mem: Option<MemSpec>,
     stack: &mut dyn FnMut(usize, &azos_linux_abi::ImageAux) -> Option<u64>,
 ) -> i64 {
+    let (ctx, aux) = load_image(img);
+    exec_install(ctx, mem, Some((&aux, stack)))
+}
+
+/// Load `img` into a new address space: its context and its auxiliary
+/// vector, or `None` (nothing left behind) when it does not load.
+fn load_image(img: crate::spawn::ElfImage<'_>) -> (Option<ExecContext>, azos_linux_abi::ImageAux) {
     let aux_of = |hdr: &[u8]| azos_linux_abi::image_aux(hdr, PAGE_SIZE as u64).unwrap_or_default();
-    let (ctx, aux) = match img {
+    match img {
         crate::spawn::ElfImage::Bytes(b) => (load_elf(b), aux_of(b)),
         crate::spawn::ElfImage::Streamed { hdr, len, fill } => {
             let ctx = match load_elf_hdr(hdr, len) {
@@ -280,8 +287,7 @@ pub fn exec_user_image(
             load_elf_cached(pages, kept.entry, kept.brk),
             crate::spawn::kept_aux(&kept),
         ),
-    };
-    exec_install(ctx, mem, Some((&aux, stack)))
+    }
 }
 
 /// The second half of every exec: admission against the row's budget, then
@@ -293,89 +299,149 @@ fn exec_install(
     mem: Option<MemSpec>,
     stack: Option<(&azos_linux_abi::ImageAux, &mut dyn FnMut(usize, &azos_linux_abi::ImageAux) -> Option<u64>)>,
 ) -> i64 {
-    match ctx {
-        Some(mut ctx) => {
-            let (cur_limit, cur_locked) = crate::scheduler::current_mem_policy();
-            let cur_row = crate::scheduler::current_mem_row();
-            let spec = mem.unwrap_or(MemSpec {
-                limit: cur_limit, locked: cur_locked, row: cur_row, instances: 0, huge_mib: 0,
-            });
-            // Kconfig LOCKED_HUGE_LEAVES: the row's region, mapped now that
-            // the address space exists and before anything is charged or
-            // claimed, so a refusal leaves nothing behind but the new table.
-            // The tables the mapping hung (one level-1 table at most) are
-            // charged with the rest of the address space.
-            if spec.huge_mib != 0 {
-                match install_locked_arena(ctx.user_pt as usize, &spec) {
-                    Ok((va, bytes)) => {
-                        ctx.frames = ctx.frames.saturating_add(crate::scheduler::take_current_pt_build());
-                        report_locked_arena(ctx.user_pt as usize, spec.row, va, bytes);
-                    }
-                    Err(why) => {
-                        let _ = crate::scheduler::take_current_pt_build();
-                        azos_drv_sys::kwarn!("[MEM] exec REFUSED: the row's 2 MiB-leaf region: {}", why);
-                        vmm::destroy_user_pagetable(ctx.user_pt as usize);
-                        return -1;
-                    }
-                }
-            }
-            if spec.limit != 0 && ctx.frames > spec.limit {
-                azos_drv_sys::kwarn!(
-                    "[MEM] exec REFUSED: the image needs {} pages, its budget is {}",
-                    ctx.frames, spec.limit,
-                );
-                crate::scheduler::note_mm_quota_refusal();
-                vmm::destroy_user_pagetable(ctx.user_pt as usize);
-                return -1;
-            }
-            // Wave 9: an exec into a different row becomes one of that row's
-            // live instances, refused past its `instances` before the task
-            // gives up the image it is running. Everything after this point
-            // succeeds, so the count taken here is never given back on a
-            // failure path; the one the task held is given back below.
-            if let Some((aux, f)) = stack {
-                match f(ctx.user_pt as usize, aux) {
-                    Some(sp) => ctx.user_sp = sp,
-                    None => {
-                        vmm::destroy_user_pagetable(ctx.user_pt as usize);
-                        return -1;
-                    }
-                }
-            }
-            let row_change = spec.row != cur_row;
-            if row_change && !crate::scheduler::row_claim(spec.row, spec.instances) {
-                let live = crate::scheduler::row_live(spec.row);
-                let n = crate::scheduler::note_mm_instance_refusal();
-                azos_drv_sys::kwarn!(
-                    "[MEM] exec REFUSED: its row already has {} of {} live instance(s) (instance refusals: {})",
-                    live, spec.instances, n,
-                );
-                vmm::destroy_user_pagetable(ctx.user_pt as usize);
-                return -1;
-            }
-            // K-C22(A): capture the address space this task is abandoning
-            // BEFORE `set_current_user_info` overwrites `user_pt` with the
-            // new one — this is the only moment the old root is still
-            // reachable. It rides in the hand-off because it must be
-            // destroyed by the CONSUMER, after satp points at the new page
-            // table: right now this hart is still fetching kernel code
-            // through the old PT's kernel entries.
-            let old_pt = crate::scheduler::current_user_pt() as u64;
-            // Store user PT info into the current task so context_switch.S can
-            // write the correct SATP on every subsequent context switch.
-            crate::scheduler::set_current_user_info(ctx.satp, ctx.user_pt, ctx.brk);
-            crate::scheduler::mm_install_frames(spec.limit, spec.locked, ctx.frames);
-            if row_change {
-                crate::scheduler::row_release(cur_row);
-                crate::scheduler::set_current_mem_row(spec.row);
-            }
-            crate::scheduler::set_current_task_exec_slots(
-                ctx.entry, ctx.user_sp, ctx.sstatus, ctx.satp, old_pt,
-            );
-            0
-        }
+    match exec_admit(ctx, mem, stack) {
+        Some(p) => exec_commit(p),
         None => -1,
     }
+}
+
+/// An exec admitted but not yet committed (wave 15, plan 4a): the new address
+/// space is built, its budget and row instance checked and claimed, its stack
+/// laid out; the caller's image is untouched. Everything that can refuse an
+/// exec has run. [`exec_commit`] switches to it (it cannot fail);
+/// [`exec_abort`] gives it back. Between the two the caller ends its other
+/// threads (`scheduler::exec_end_other_threads`), so an exec that fails
+/// leaves the process and its threads as they were.
+pub struct PreparedExec {
+    ctx: ExecContext,
+    spec: MemSpec,
+    /// The process's row when the exec was admitted, and whether the image's
+    /// row differs from it (an instance of `spec.row` was then claimed).
+    cur_row: u16,
+    row_change: bool,
+}
+
+/// [`exec_user_mem`] up to the commit: `None` when the image does not load or
+/// is refused (nothing is left behind).
+pub fn exec_prepare_mem(elf: &[u8], mem: Option<MemSpec>) -> Option<PreparedExec> {
+    exec_admit(load_elf(elf), mem, None)
+}
+
+/// [`exec_user_image`] up to the commit.
+pub fn exec_prepare_image(
+    img: crate::spawn::ElfImage<'_>,
+    mem: Option<MemSpec>,
+    stack: &mut dyn FnMut(usize, &azos_linux_abi::ImageAux) -> Option<u64>,
+) -> Option<PreparedExec> {
+    let (ctx, aux) = load_image(img);
+    exec_admit(ctx, mem, Some((&aux, stack)))
+}
+
+/// Admission: everything an exec checks before it may replace the caller's
+/// image. The process's limit, lock and row are read through its leader's
+/// slot (`proc_slot`): the caller may be any of its threads.
+#[allow(clippy::type_complexity)]
+fn exec_admit(
+    ctx: Option<ExecContext>,
+    mem: Option<MemSpec>,
+    stack: Option<(&azos_linux_abi::ImageAux, &mut dyn FnMut(usize, &azos_linux_abi::ImageAux) -> Option<u64>)>,
+) -> Option<PreparedExec> {
+    let mut ctx = ctx?;
+    let (cur_limit, cur_locked) = crate::scheduler::current_mem_policy();
+    let cur_row = crate::scheduler::current_proc_mem_row();
+    let spec = mem.unwrap_or(MemSpec {
+        limit: cur_limit, locked: cur_locked, row: cur_row, instances: 0, huge_mib: 0,
+    });
+    // Kconfig LOCKED_HUGE_LEAVES: the row's region, mapped now that
+    // the address space exists and before anything is charged or
+    // claimed, so a refusal leaves nothing behind but the new table.
+    // The tables the mapping hung (one level-1 table at most) are
+    // charged with the rest of the address space.
+    if spec.huge_mib != 0 {
+        match install_locked_arena(ctx.user_pt as usize, &spec) {
+            Ok((va, bytes)) => {
+                ctx.frames = ctx.frames.saturating_add(crate::scheduler::take_current_pt_build());
+                report_locked_arena(ctx.user_pt as usize, spec.row, va, bytes);
+            }
+            Err(why) => {
+                let _ = crate::scheduler::take_current_pt_build();
+                azos_drv_sys::kwarn!("[MEM] exec REFUSED: the row's 2 MiB-leaf region: {}", why);
+                vmm::destroy_user_pagetable(ctx.user_pt as usize);
+                return None;
+            }
+        }
+    }
+    if spec.limit != 0 && ctx.frames > spec.limit {
+        azos_drv_sys::kwarn!(
+            "[MEM] exec REFUSED: the image needs {} pages, its budget is {}",
+            ctx.frames, spec.limit,
+        );
+        crate::scheduler::note_mm_quota_refusal();
+        vmm::destroy_user_pagetable(ctx.user_pt as usize);
+        return None;
+    }
+    if let Some((aux, f)) = stack {
+        match f(ctx.user_pt as usize, aux) {
+            Some(sp) => ctx.user_sp = sp,
+            None => {
+                vmm::destroy_user_pagetable(ctx.user_pt as usize);
+                return None;
+            }
+        }
+    }
+    // Wave 9: an exec into a different row becomes one of that row's
+    // live instances, refused past its `instances` before the task
+    // gives up the image it is running. The count taken here is given
+    // back by `exec_abort`, or (the one the process held) by the commit.
+    let row_change = spec.row != cur_row;
+    if row_change && !crate::scheduler::row_claim(spec.row, spec.instances) {
+        let live = crate::scheduler::row_live(spec.row);
+        let n = crate::scheduler::note_mm_instance_refusal();
+        azos_drv_sys::kwarn!(
+            "[MEM] exec REFUSED: its row already has {} of {} live instance(s) (instance refusals: {})",
+            live, spec.instances, n,
+        );
+        vmm::destroy_user_pagetable(ctx.user_pt as usize);
+        return None;
+    }
+    Some(PreparedExec { ctx, spec, cur_row, row_change })
+}
+
+/// Give back an admitted exec that will not run: its address space and
+/// the row instance it claimed. The caller keeps its image.
+pub fn exec_abort(p: PreparedExec) {
+    vmm::destroy_user_pagetable(p.ctx.user_pt as usize);
+    if p.row_change {
+        crate::scheduler::row_release(p.spec.row);
+    }
+}
+
+/// Switch the current task to an admitted exec. Cannot fail: returns 0.
+/// The current task must be its process's only thread by now (after
+/// `scheduler::exec_end_other_threads`, whose PID hand-over put the process's
+/// state on this slot when a thread that was not the leader execs).
+pub fn exec_commit(p: PreparedExec) -> i64 {
+    let PreparedExec { ctx, spec, cur_row, row_change } = p;
+    // K-C22(A): capture the address space this task is abandoning
+    // BEFORE `set_current_user_info` overwrites `user_pt` with the
+    // new one — this is the only moment the old root is still
+    // reachable. It rides in the hand-off because it must be
+    // destroyed by the CONSUMER, after satp points at the new page
+    // table: right now this hart is still fetching kernel code
+    // through the old PT's kernel entries.
+    let old_pt = crate::scheduler::current_user_pt() as u64;
+    // Store user PT info into the current task so context_switch.S can
+    // write the correct SATP on every subsequent context switch.
+    crate::scheduler::set_current_user_info(ctx.satp, ctx.user_pt, ctx.brk);
+    crate::scheduler::mm_install_frames(spec.limit, spec.locked, ctx.frames);
+    if row_change {
+        crate::scheduler::row_release(cur_row);
+        crate::scheduler::set_current_mem_row(spec.row);
+    }
+    crate::scheduler::set_current_task_exec_slots(
+        ctx.entry, ctx.user_sp, ctx.sstatus, ctx.satp, old_pt,
+    );
+    0
 }
 
 /// K-C21/K-C22: consume the exec hand-off published by [`exec_user`] on the

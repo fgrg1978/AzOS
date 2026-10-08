@@ -394,3 +394,23 @@ pub fn take_current_restart() -> Option<u64> {
 pub fn counts() -> (u32, u32) {
     (POSTED.load(Ordering::Relaxed), DELIVERED.load(Ordering::Relaxed))
 }
+
+/// Wave 15 (plan 4a): an exec from a thread that is not its process's leader
+/// hands the leader's identity (`from`, the leader's slot) to the exec'ing
+/// thread (`to`): the slot's signal words follow the TID. The process's
+/// pending signals and its ignored set move to `to`; `to` keeps its own mask
+/// and its own pending signals (Linux keeps the exec'ing thread's), and
+/// `from`, about to end as a thread, keeps nothing.
+pub(crate) fn hand_over(from: usize, to: usize) {
+    if from >= MAX_TASKS || to >= MAX_TASKS {
+        return;
+    }
+    let (ft, tt) = (TID[from].load(Ordering::Acquire), TID[to].load(Ordering::Acquire));
+    TID[to].store(ft, Ordering::Release);
+    TID[from].store(tt, Ordering::Release);
+    PENDING[to].fetch_or(PENDING[from].swap(0, Ordering::AcqRel), Ordering::AcqRel);
+    IGNORED[to].store(IGNORED[from].load(Ordering::Acquire), Ordering::Release);
+    SENDER[to].store(SENDER[from].load(Ordering::Acquire), Ordering::Release);
+    resync(from);
+    resync(to);
+}

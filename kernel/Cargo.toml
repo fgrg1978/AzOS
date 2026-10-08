@@ -250,9 +250,13 @@ threads-tls-canary = ["azos_sched/threads-tls-canary"]
 threads-late-start-canary = ["azos_sched/threads-late-start-canary"]
 # Wave 15 (plan 4a) canaries: an exec leaves the other threads running
 # (`azos_sched`); an object a thread creates is booked to the thread, not to
-# its process, and dies with it (`azos_syscall`).
+# its process, and dies with it (`azos_syscall`); a thread that is not the
+# leader is refused its exec (`azos_sched`); an exec ends the other threads
+# before it checks the image (`azos_syscall`).
 exec-no-dethread-canary = ["azos_sched/exec-no-dethread-canary"]
 thread-objects-canary = ["azos_syscall/thread-objects-canary"]
+exec-no-pid-swap-canary = ["azos_sched/exec-no-pid-swap-canary"]
+exec-validate-late-canary = ["azos_syscall/exec-validate-late-canary"]
 # Wave 15 gate canary (aarch64): a native thread starts without its
 # creator's register snapshot again, so its argument arrives as 0.
 thread-regs-canary = []

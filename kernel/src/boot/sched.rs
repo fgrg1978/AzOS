@@ -85,6 +85,10 @@ pub(crate) fn install_sched_hooks() {
     // Wave 12 (EXIT2): what must wait for the dying task's address space to
     // go — the driver supervisor's wake.
     azos_sched::set_task_exit_late_hook(crate::drv_supervisor::exit_after_teardown);
+    // Wave 15 (plan 4a): an exec from a thread that is not its process's
+    // leader takes the leader's identity; what is kept per pool slot outside
+    // `azos_sched` moves with it.
+    azos_sched::set_task_identity_hook(task_identity_moved);
     // Wave 11 (LEASE2): a lease's end removes the lessee's mapping through
     // this hook (`azos_ipc::lease`, "Leases that bite"). Before the first
     // user task, so no lease can be mapped without it.
@@ -192,6 +196,15 @@ fn proxy_wake(tid: u32, deadline: u64) {
         tid,
         &|r| matches!(r, azos_sched::WaitReason::Timer(d) if *d == deadline),
     );
+}
+
+/// Wave 15 (plan 4a): the process's per-slot state outside `azos_sched`
+/// moves from the leader's slot `from` to the exec'ing thread's `to`, now
+/// named `tid` (`scheduler::exec_take_over`): the capability table and the
+/// seed row a fork reseeds from.
+fn task_identity_moved(from: usize, to: usize, tid: u32) {
+    azos_ipc::cap_store::hand_over(from, to, tid);
+    azos_syscall::natfork::hand_over(from, to, tid);
 }
 
 /// Release every per-task resource when a task dies.

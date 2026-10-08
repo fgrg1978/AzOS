@@ -72,6 +72,10 @@ mmap-prot-canary = []
 # creates is booked to the thread instead of its process, so the thread's
 # exit frees it under its siblings.
 thread-objects-canary = []
+# Wave 15 (plan 4a) gate canary, never in a real build: a native exec ends
+# the other threads before it reads and checks the image, so an exec that
+# fails leaves the process with one thread.
+exec-validate-late-canary = []
 # Wave 13 canaries for the per-row seed template (`natfork`): an entry is
 # edited after the template is sealed (the seal must refuse it: dropped and
 # minted again), and the same with the seal check compiled out (the edited

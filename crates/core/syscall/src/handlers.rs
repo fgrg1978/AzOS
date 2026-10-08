@@ -1272,7 +1272,7 @@ pub fn sys_exec(data_ptr: u64, len: u64) -> i64 {
     // "bad ELF" instead of "too large".
     let len = len as usize;
     if len > EXEC_MAX_BYTES { return -1; }
-    if let Err(e) = exec_end_other_threads() { return exec_dethread_errno(e); }
+    if let Err(e) = exec_validate_late_canary() { return e; }
 
     let mut buf = EXEC_BOUNCE.lock();
     // `copy_from_user` validates the whole range page by page through
@@ -1281,23 +1281,84 @@ pub fn sys_exec(data_ptr: u64, len: u64) -> i64 {
     if !azos_sched::copy_from_user(buf.as_mut_ptr(), data_ptr as usize, len) {
         return -1;
     }
-    exec_bound_image(&buf[..len])
+    let prepared = exec_bound_image(&buf[..len]);
+    drop(buf);
+    match prepared {
+        Ok((p, digest)) => exec_finish(p, &digest),
+        Err(e) => e,
+    }
+}
+
+/// Gate canary `exec-validate-late-canary` only: the other threads are ended
+/// before the image is read and checked, as before wave 15's follow-up, so a
+/// failing exec leaves the process with one thread.
+fn exec_validate_late_canary() -> Result<(), i64> {
+    if cfg!(feature = "exec-validate-late-canary") {
+        exec_end_other_threads().map_err(exec_dethread_errno)?;
+    }
+    Ok(())
+}
+
+/// The commit of a native exec that passed every check
+/// (`exec_bound_image_digest`): end the other threads, switch to the new
+/// image, install its row's filter, and let go of what the old image held in
+/// user space. `EINTR` (the new image given back, the process untouched but
+/// for the threads already asked to stop) when the process is ending.
+fn exec_finish(prepared: azos_sched::process::PreparedExec, digest: &[u8; 32]) -> i64 {
+    if let Err(e) = exec_end_other_threads() {
+        azos_sched::process::exec_abort(prepared);
+        return exec_dethread_errno(e);
+    }
+    let r = azos_sched::process::exec_commit(prepared);
+    // U07-3 (audit unit-07): `exec_user` never touches the filter — by
+    // design, matching Linux's "seccomp survives execve"
+    // (`process.rs::exec_user`'s own doc). That is the wrong default
+    // for THIS project's own guarantee, which `seccomp.rs:327-332`
+    // states as fact: every image's row is bound to its digest, so an
+    // already-confined task (e.g. ABITEST, whose row grants
+    // `SYS_EXEC`/`SYS_EXECPATH` with 53 syscalls, `seccomp.rs:581`)
+    // executing a narrower-profiled image must land on THAT image's
+    // row, not keep its own, wider one.
+    //
+    // `install_image_profile` — what the autorun loader and the shell
+    // call — will not do this: it is documented one-way and refuses
+    // when a filter is already enabled, which is exactly the state a
+    // confined ring-3 caller is always in. This installs the executed
+    // image's row unconditionally instead, only after the commit — a
+    // failed exec leaves the caller's own filter and its own
+    // still-running image untouched, so there is no wrong-filter/old-image
+    // window to unwind.
+    if let Some(profile) = azos_sched::seccomp::image_for_digest(digest) {
+        azos_sched::set_current_syscall_filter(
+            azos_sched::seccomp::image_filter(profile),
+        );
+    }
+    // Wave 11 (LEASE2): the old image is gone, so is everything it held
+    // in user space. Robust words it held become OWNER_DIED and their
+    // waiters are woken (Linux runs the robust list at exec too), and its
+    // lease mappings are dropped BEFORE the old address space is torn
+    // down by the exec hand-off's consumer — a lease revoke edits the
+    // lessee's page table from another task, and it must never find a
+    // root that no longer exists (`lease.rs`, "Page-table lifetime").
+    // Read now: a thread that was not the leader holds the process's TID
+    // since `exec_end_other_threads`.
+    let me = azos_sched::current_task_tid();
+    let _ = crate::vdso_notify::notify_robust_exit(me);
+    azos_ipc::lease::lease_exec(me);
+    r
 }
 
 /// Wave 15 (plan 4a): an exec from a process with threads ends every other
-/// thread first and waits until they have gone
-/// (`scheduler::exec_end_other_threads`), so none runs on the image being
-/// replaced; the exec'ing thread goes on as the whole process. Every exec
-/// handler (native `exec`/`execpath`, Linux `execve`) calls it after copying
-/// its arguments and before taking `EXEC_BOUNCE`: a member stopped while it
-/// waited for that lock would never reach the return to user mode where a
-/// stop ends it. So an exec refused after this point (no such file, no
-/// bound profile) has already ended the threads, where Linux validates the
-/// file first; the process goes on single-threaded.
+/// thread and waits until they have gone (`scheduler::exec_end_other_threads`),
+/// so none runs on the image being replaced; the exec'ing thread goes on as
+/// the whole process, under the process's TID when it was not the leader.
+/// Every exec handler (native `exec`/`execpath`, Linux `execve`) calls it
+/// once the new image is read, checked (bound profile, rows) and admitted
+/// (`process::exec_prepare_*`), and after dropping `EXEC_BOUNCE`: a refused
+/// exec leaves every thread running, as Linux validates before `de_thread`.
 ///
-/// `Err(NotLeader)` from a thread that is not its process's leader (Linux's
-/// PID swap for that case is not implemented), `Err(Ending)` when the
-/// process is ending. A process with no threads pays one load.
+/// `Err(Ending)` when the process is ending (or another of its threads is
+/// already exec'ing). A process with no threads pays one load.
 pub(crate) fn exec_end_other_threads() -> Result<(), azos_sched::scheduler::ExecDethreadError> {
     let n = azos_sched::scheduler::exec_end_other_threads()?;
     if n != 0 {
@@ -1310,12 +1371,10 @@ pub(crate) fn exec_end_other_threads() -> Result<(), azos_sched::scheduler::Exec
 }
 
 /// The native exec calls' answer to an [`exec_end_other_threads`] refusal:
-/// `EBUSY` (not the leader) or `EINTR` (the process is ending).
+/// `EINTR` (the process is ending).
 fn exec_dethread_errno(e: azos_sched::scheduler::ExecDethreadError) -> i64 {
-    use azos_abi::error::Errno;
     match e {
-        azos_sched::scheduler::ExecDethreadError::NotLeader => Errno::EBUSY.to_syscall_ret(),
-        azos_sched::scheduler::ExecDethreadError::Ending => Errno::EINTR.to_syscall_ret(),
+        azos_sched::scheduler::ExecDethreadError::Ending => azos_abi::error::Errno::EINTR.to_syscall_ret(),
     }
 }
 
@@ -1325,7 +1384,7 @@ fn exec_dethread_errno(e: azos_sched::scheduler::ExecDethreadError) -> i64 {
 /// The one way both ring-3 exec handlers load an image. They call it with the
 /// slice of `EXEC_BOUNCE` they filled, while still holding its lock, so the
 /// bytes hashed are the bytes loaded.
-fn exec_bound_image(elf: &[u8]) -> i64 {
+fn exec_bound_image(elf: &[u8]) -> Result<(azos_sched::process::PreparedExec, [u8; 32]), i64> {
     // Hashed once (see `exec_image_is_bound_by_digest`'s doc: hashing twice
     // under `EXEC_BOUNCE.lock()` was the alternative) and reused below for
     // the U07-3 filter install, so this is the same one SHA-256 pass the
@@ -1336,10 +1395,13 @@ fn exec_bound_image(elf: &[u8]) -> i64 {
 /// [`exec_bound_image`] for bytes whose digest the caller holds: `digest`
 /// MUST be the SHA-256 of exactly `elf` (`image_cache::read_verified`'s
 /// answer for the bytes it read into the buffer `elf` is).
-fn exec_bound_image_digest(elf: &[u8], digest: &[u8; 32]) -> i64 {
+fn exec_bound_image_digest(
+    elf: &[u8],
+    digest: &[u8; 32],
+) -> Result<(azos_sched::process::PreparedExec, [u8; 32]), i64> {
     let digest = *digest;
     if !exec_image_is_bound_by_digest(&digest) {
-        return azos_abi::error::Errno::EACCES.to_syscall_ret();
+        return Err(azos_abi::error::Errno::EACCES.to_syscall_ret());
     }
     // RFC-0047: an image whose row says `abi = "linux"` starts only by spawn,
     // which tags it before it runs. Exec'd, it would read its Linux numbers
@@ -1351,7 +1413,7 @@ fn exec_bound_image_digest(elf: &[u8], digest: &[u8; 32]) -> i64 {
                 "[EXEC] REFUSED: {} is a Linux image; it starts only by spawn under its row",
                 profile.image,
             );
-            return azos_abi::error::Errno::EACCES.to_syscall_ret();
+            return Err(azos_abi::error::Errno::EACCES.to_syscall_ret());
         }
     }
     // RFC-0049 M1: an image with a topology row of its own runs under that
@@ -1373,46 +1435,17 @@ fn exec_bound_image_digest(elf: &[u8], digest: &[u8; 32]) -> i64 {
                 "[MEM] exec REFUSED: {} runs under a locked row but its profile can fork or demand-page",
                 profile.image,
             );
-            return azos_abi::error::Errno::EACCES.to_syscall_ret();
+            return Err(azos_abi::error::Errno::EACCES.to_syscall_ret());
         }
     }
-    let r = azos_sched::exec_user_mem(elf, mem.map(|(_, m)| m));
-    if r == 0 {
-        // U07-3 (audit unit-07): `exec_user` never touches the filter — by
-        // design, matching Linux's "seccomp survives execve"
-        // (`process.rs::exec_user`'s own doc). That is the wrong default
-        // for THIS project's own guarantee, which `seccomp.rs:327-332`
-        // states as fact: every image's row is bound to its digest, so an
-        // already-confined task (e.g. ABITEST, whose row grants
-        // `SYS_EXEC`/`SYS_EXECPATH` with 53 syscalls, `seccomp.rs:581`)
-        // executing a narrower-profiled image must land on THAT image's
-        // row, not keep its own, wider one.
-        //
-        // `install_image_profile` — what the autorun loader and the shell
-        // call — will not do this: it is documented one-way and refuses
-        // when a filter is already enabled, which is exactly the state a
-        // confined ring-3 caller is always in. This installs the executed
-        // image's row unconditionally instead, only after `exec_user`
-        // returned 0 — a failed exec (`-1`) leaves the caller's own filter
-        // and its own still-running image untouched, so there is no
-        // wrong-filter/old-image window to unwind.
-        if let Some(profile) = azos_sched::seccomp::image_for_digest(&digest) {
-            azos_sched::set_current_syscall_filter(
-                azos_sched::seccomp::image_filter(profile),
-            );
-        }
-        // Wave 11 (LEASE2): the old image is gone, so is everything it held
-        // in user space. Robust words it held become OWNER_DIED and their
-        // waiters are woken (Linux runs the robust list at exec too), and its
-        // lease mappings are dropped BEFORE the old address space is torn
-        // down by the exec hand-off's consumer — a lease revoke edits the
-        // lessee's page table from another task, and it must never find a
-        // root that no longer exists (`lease.rs`, "Page-table lifetime").
-        let me = azos_sched::current_task_tid();
-        let _ = crate::vdso_notify::notify_robust_exit(me);
-        azos_ipc::lease::lease_exec(me);
+    // Wave 15 (plan 4a): admitted, not committed. The caller drops
+    // `EXEC_BOUNCE` and then commits (`exec_finish`), which ends the other
+    // threads first: a stopped thread waiting for that lock would never
+    // reach the return to user mode where a stop ends it.
+    match azos_sched::process::exec_prepare_mem(elf, mem.map(|(_, m)| m)) {
+        Some(p) => Ok((p, digest)),
+        None => Err(-1),
     }
-    r
 }
 
 pub fn sys_execpath(path_ptr: u64) -> i64 {
@@ -1426,7 +1459,7 @@ pub fn sys_execpath(path_ptr: u64) -> i64 {
     let path_len = path_buf.iter().position(|&b| b == 0).unwrap_or(0);
     if path_len == 0 { return -1; }
     let path = &path_buf[..path_len];
-    if let Err(e) = exec_end_other_threads() { return exec_dethread_errno(e); }
+    if let Err(e) = exec_validate_late_canary() { return e; }
 
     // Read the ELF into the fixed kernel bounce buffer. An earlier version grew
     // an unbounded `Vec` on the kernel heap: a large file on the mounted FAT32
@@ -1448,7 +1481,12 @@ pub fn sys_execpath(path_ptr: u64) -> i64 {
         Ok(v) => v,
         Err(_) => return -1,
     };
-    exec_bound_image_digest(&buf[..v.total], &v.digest)
+    let prepared = exec_bound_image_digest(&buf[..v.total], &v.digest);
+    drop(buf);
+    match prepared {
+        Ok((p, digest)) => exec_finish(p, &digest),
+        Err(e) => e,
+    }
 }
 
 // `SYS_SLEEP` and `SYS_SLEEP_UNTIL`: `crate::sleep` (RFC-0044).

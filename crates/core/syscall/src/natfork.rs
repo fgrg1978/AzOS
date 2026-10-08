@@ -86,6 +86,19 @@ pub fn record_row_named(tid: u32, key: &[u8]) {
     }
 }
 
+/// Wave 15 (plan 4a): the seed row recorded for the process on slot `from`
+/// (its leader's) moves to slot `to`, which now holds the process's TID
+/// `tid` (an exec from a thread that was not the leader).
+pub fn hand_over(from: usize, to: usize, tid: u32) {
+    if from >= MAX_TASKS || to >= MAX_TASKS {
+        return;
+    }
+    let v = ROW[from].swap(0, Ordering::AcqRel);
+    if v >> 32 == tid as u64 {
+        ROW[to].store(v, Ordering::Release);
+    }
+}
+
 /// The row `tid` was seeded from, if it was.
 pub fn row_of(tid: u32) -> Option<usize> {
     let idx = azos_sched::idx_for_tid(tid)?;
