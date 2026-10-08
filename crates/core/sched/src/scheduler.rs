@@ -3037,8 +3037,9 @@ pub fn set_task_exit_hook(f: fn(u32)) {
 /// identity from the leader (`exec_take_over`) with `(from_idx, to_idx, tid)`:
 /// what other crates keep per pool slot for the process (`azos_ipc`'s
 /// capability table, the seed row `natfork` recorded) moves from the
-/// leader's slot to the thread's, now named `tid`. Registered by the kernel
-/// at boot, as [`TASK_EXIT_HOOK`].
+/// leader's slot to the thread's, which the TID swap right after names
+/// `tid`. Called with interrupts off, before that swap. Registered by the
+/// kernel at boot, as [`TASK_EXIT_HOOK`].
 static TASK_IDENTITY_HOOK: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
@@ -3376,6 +3377,19 @@ unsafe fn exec_take_over(idx: usize, lead: u32) -> Option<u32> {
     // still runs (a sibling's fault would charge the budget being moved).
     let by = crate::group::claim_handover(lead)?;
     let to = idx_for_tid(by)?;
+    // Interrupts off from the table move to the TID swap, on this hart: the
+    // hook moves the capability table first, and until the swap below the
+    // process id still names this slot, so every grant into the process
+    // meanwhile resolves again and waits (`cap_store::claim_slot`,
+    // `still_owned`). Off, nothing can stretch that wait on this hart, and a
+    // grantor here cannot spin on a swap that cannot run.
+    let irqs = azos_arch::ARCH.disable_all();
+    let raw = TASK_IDENTITY_HOOK.load(Ordering::Acquire);
+    if raw != 0 {
+        // SAFETY: registered by `set_task_identity_hook` from a `fn(usize, usize, u32)`.
+        let f: fn(usize, usize, u32) = unsafe { core::mem::transmute(raw) };
+        f(idx, to, lead);
+    }
     {
         let _pool = PoolGuard::acquire();
         // SAFETY: both slots valid under the pool lock; the thread in `to`
@@ -3404,13 +3418,8 @@ unsafe fn exec_take_over(idx: usize, lead: u32) -> Option<u32> {
             // in `idx_for_tid` finds and repairs them on first use.
         }
     }
+    azos_arch::ARCH.restore(irqs);
     signal::hand_over(idx, to);
-    let raw = TASK_IDENTITY_HOOK.load(Ordering::Acquire);
-    if raw != 0 {
-        // SAFETY: registered by `set_task_identity_hook` from a `fn(usize, usize, u32)`.
-        let f: fn(usize, usize, u32) = unsafe { core::mem::transmute(raw) };
-        f(idx, to, lead);
-    }
     Some(by)
 }
 

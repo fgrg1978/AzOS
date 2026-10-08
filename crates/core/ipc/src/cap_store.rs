@@ -76,6 +76,16 @@ const NO_OWNER: u32 = 0;
 const FRESH_OWNER: AtomicU32 = AtomicU32::new(NO_OWNER);
 static OWNER: [AtomicU32; MAX_TASKS] = [FRESH_OWNER; MAX_TASKS];
 
+/// Wave 15 (plan 4a): per slot, the process id whose table [`hand_over`]
+/// moved out of it (0 for none). That process id still resolves to this slot
+/// until the scheduler swaps the two slots' TIDs, a moment later: a caller
+/// that resolves it here meanwhile must resolve again ([`claim_stale`], [`slot_owner`]), and
+/// a caller that resolved it before the move must not write into the table
+/// it locks afterwards ([`still_owned`]). Stale once the swap is done (the
+/// process id never names this slot again; TIDs are never reused), and
+/// cleared when the slot is claimed by its next occupant.
+static HANDING: [AtomicU32; MAX_TASKS] = [FRESH_OWNER; MAX_TASKS];
+
 /// What happened to a capability, as the [`CapEventHook`] is told (wave 11,
 /// LEASE3). `slot` is a table's task-pool slot index, the identity a holder
 /// has here; `resource` is the slot's packed resource as stored.
@@ -167,7 +177,13 @@ fn slot_for(tid: u32) -> Option<usize> {
     if azos_sched::group::any_groups() {
         return slot_for_member(idx, tid);
     }
-    claim_slot(idx, tid);
+    // Lazy reset on slot reuse. `swap` makes the claim atomic against
+    // another hart resolving the same slot concurrently: exactly one caller
+    // observes the stale owner and performs the wipe.
+    let prev = OWNER[idx].swap(tid, Ordering::AcqRel);
+    if prev != tid {
+        return claim_stale(idx, prev, tid, tid);
+    }
     Some(idx)
 }
 
@@ -175,42 +191,99 @@ fn slot_for(tid: u32) -> Option<usize> {
 /// slot. Out of line so the common path keeps its registers.
 #[inline(never)]
 fn slot_for_member(idx: usize, tid: u32) -> Option<usize> {
+    let (idx, owner) = member_owner(idx, tid)?;
+    let prev = OWNER[idx].swap(owner, Ordering::AcqRel);
+    if prev != owner {
+        return claim_stale(idx, prev, owner, tid);
+    }
+    Some(idx)
+}
+
+/// The slot whose table a task in slot `idx` (TID `tid`) uses, and the TID
+/// that owns it: its thread group's leader's, or its own.
+#[inline]
+fn member_owner(idx: usize, tid: u32) -> Option<(usize, u32)> {
     let lead = azos_sched::group::table_lead_of_idx(idx);
-    let (idx, tid) = if lead != 0 && lead != tid {
+    let (idx, owner) = if lead != 0 && lead != tid {
         (azos_sched::idx_for_tid(lead)?, lead)
     } else {
         (idx, tid)
     };
-    if idx >= MAX_TASKS {
+    (idx < MAX_TASKS).then_some((idx, owner))
+}
+
+/// A claim for `owner` (the table owner `tid` resolves to) found slot `idx`
+/// held by `prev`: wipe the previous occupant's table, or (wave 15) resolve `tid` again
+/// when its table was just handed away from `idx` ([`hand_over`]). Out of
+/// line: `slot_for` runs on every typed-capability syscall, and inlining
+/// this grew it on that path (measured, wave 11 LEASE3: +5 instructions per
+/// typed call on riscv64). Not `#[cold]`, which reshapes the hot caller.
+#[inline(never)]
+fn claim_stale(idx: usize, prev: u32, owner: u32, tid: u32) -> Option<usize> {
+    if wipe_claimed(idx, prev, owner) {
+        Some(idx)
+    } else {
+        slot_owner(tid).map(|(idx, _)| idx)
+    }
+}
+
+/// [`slot_for`], with the TID that owns the table it resolved to (`tid`, or
+/// its thread group's leader). For the calls that write into another task's
+/// table and re-check it under the lock ([`still_owned`]). Resolves again,
+/// spinning, while the table it finds has just been handed away
+/// ([`hand_over`]): the scheduler swaps the TIDs with interrupts off on that
+/// hart, so the wait is the length of that swap.
+fn slot_owner(tid: u32) -> Option<(usize, u32)> {
+    if tid == NO_OWNER {
         return None;
     }
-    claim_slot(idx, tid);
-    Some(idx)
-}
-
-/// Register `tid` as the owner of `idx`, wiping the table if it belonged to a
-/// previous occupant.
-fn claim_slot(idx: usize, tid: u32) {
-    // Lazy reset on slot reuse. `swap` makes the claim atomic against
-    // another hart resolving the same slot concurrently: exactly one caller
-    // observes the stale owner and performs the wipe.
-    let prev = OWNER[idx].swap(tid, Ordering::AcqRel);
-    if prev != tid {
-        wipe_claimed(idx, prev);
+    loop {
+        let idx = azos_sched::idx_for_tid(tid)?;
+        if idx >= MAX_TASKS {
+            return None;
+        }
+        let (idx, owner) = if azos_sched::group::any_groups() {
+            member_owner(idx, tid)?
+        } else {
+            (idx, tid)
+        };
+        let prev = OWNER[idx].swap(owner, Ordering::AcqRel);
+        if prev == owner || wipe_claimed(idx, prev, owner) {
+            return Some((idx, owner));
+        }
+        core::hint::spin_loop();
     }
 }
 
-/// The wipe half of [`claim_slot`], out of line: `slot_for` runs on every
-/// typed-capability syscall, and inlining the hook call here grew it on that
-/// path (measured, wave 11 LEASE3: +5 instructions per typed call on
-/// riscv64). Not `#[cold]`, which reshapes the hot caller instead.
+/// After locking `idx`'s table, resolved for `owner`: is it still `owner`'s?
+/// `false` when [`hand_over`] moved it away in between, or moved it before
+/// and the swap that re-points `owner` has not happened yet: the caller must
+/// not write into the (now empty) table, and resolves again. For the calls that
+/// write into another task's table ([`grant`], [`move_cap`], [`revoke`]);
+/// a task's calls on its own table cannot race its own hand-over (every
+/// other thread of the process has gone, and the exec'ing one is waiting).
+#[inline]
+fn still_owned(idx: usize, owner: u32) -> bool {
+    OWNER[idx].load(Ordering::Acquire) == owner && HANDING[idx].load(Ordering::Acquire) != owner
+}
+
+/// Wipe slot `idx`'s table for its new owner `tid` (its previous occupant
+/// was `prev`): `false`, wiping nothing, when `tid`'s own table was just
+/// handed away from `idx` ([`hand_over`]) and `tid` must resolve again.
 #[inline(never)]
-fn wipe_claimed(idx: usize, prev: u32) {
+fn wipe_claimed(idx: usize, prev: u32, tid: u32) -> bool {
+    // Wave 15: `tid`'s table left this slot ([`hand_over`]); its TID is about
+    // to name the slot it went to. Nothing to wipe, nothing to claim.
+    if HANDING[idx].load(Ordering::Acquire) == tid {
+        return false;
+    }
     let mut table = CAP_TABLES[idx].lock();
+    HANDING[idx].store(NO_OWNER, Ordering::Release);
     *table = CapTable::empty();
     if prev != NO_OWNER {
         cap_event(CapEvent::Wiped { slot: idx });
     }
+    true
 }
 
 /// Returns `true` iff `tid` currently maps to a live task-pool slot.
@@ -248,18 +321,24 @@ pub fn grant<T: CapTarget>(
     perms: CapPerms,
     resource: u32,
 ) -> Option<Cap<T>> {
-    let idx = slot_for(tid)?;
-    let mut table = CAP_TABLES[idx].lock();
-    table.grant(perms, resource)
+    loop {
+        let (idx, owner) = slot_owner(tid)?;
+        let mut table = CAP_TABLES[idx].lock();
+        if still_owned(idx, owner) {
+            return table.grant(perms, resource);
+        }
+    }
 }
 
 /// Revoke a single cap.
 pub fn revoke<T: CapTarget>(tid: u32, cap: Cap<T>) {
-    let idx = match slot_for(tid) {
-        Some(i) => i,
-        None => return,
+    let (idx, mut table) = loop {
+        let Some((idx, owner)) = slot_owner(tid) else { return };
+        let table = CAP_TABLES[idx].lock();
+        if still_owned(idx, owner) {
+            break (idx, table);
+        }
     };
-    let mut table = CAP_TABLES[idx].lock();
     let held = table.peek_raw(cap.raw());
     table.revoke(cap);
     if let Some((kind, _, resource)) = held {
@@ -299,8 +378,16 @@ pub fn reset(tid: u32) {
 /// Wave 15 (plan 4a): an exec'ing thread takes its process's identity from
 /// the leader (`azos_sched::scheduler::exec_take_over`): the table in slot
 /// `from` (the leader's) becomes slot `to`'s, owned by `tid` (the process
-/// id, now `to`'s TID), and `from` is left empty and unowned. Both locks in
+/// id, which the scheduler moves to `to` right after, interrupts off on its
+/// hart throughout), and `from` is left empty and unowned. Both locks in
 /// index order.
+///
+/// No capability granted into the process meanwhile is lost: a writer that
+/// locked `from` before this ran wrote into the table that moved; one that
+/// resolved `from` before and locks it after finds it no longer `tid`'s
+/// ([`still_owned`]) and resolves again; one that resolves `tid` to `from`
+/// before the swap is turned back by [`claim_stale`] and [`slot_owner`] ([`HANDING`]) until the
+/// swap makes `tid` name `to`, which already holds the table.
 pub fn hand_over(from: usize, to: usize, tid: u32) {
     if from >= MAX_TASKS || to >= MAX_TASKS || from == to {
         return;
@@ -313,6 +400,11 @@ pub fn hand_over(from: usize, to: usize, tid: u32) {
     core::mem::swap(src, dst);
     *src = CapTable::empty();
     OWNER[to].store(tid, Ordering::Release);
+    HANDING[to].store(NO_OWNER, Ordering::Release);
+    // Before the TIDs are swapped: until then `tid` still resolves to
+    // `from`, and every caller that does is sent to resolve again
+    // (`claim_stale`, `slot_owner`, `still_owned`) instead of writing into the empty table.
+    HANDING[from].store(tid, Ordering::Release);
     OWNER[from].store(NO_OWNER, Ordering::Release);
 }
 
@@ -392,8 +484,23 @@ pub fn move_cap(
     handle: CapHandle,
     rights: Option<CapPerms>,
 ) -> Result<CapHandle, CapError> {
-    let from_idx = slot_for(from_tid).ok_or(CapError::Stale)?;
-    let to_idx = slot_for(to_tid).ok_or(CapError::Stale)?;
+    loop {
+        if let Some(r) = move_cap_once(from_tid, to_tid, handle, rights) {
+            return r;
+        }
+    }
+}
+
+/// One attempt of [`move_cap`]: `None` when a table it resolved was handed
+/// to another slot before it was locked (wave 15): resolve again.
+fn move_cap_once(
+    from_tid: u32,
+    to_tid: u32,
+    handle: CapHandle,
+    rights: Option<CapPerms>,
+) -> Option<Result<CapHandle, CapError>> {
+    let Some((from_idx, from_owner)) = slot_owner(from_tid) else { return Some(Err(CapError::Stale)) };
+    let Some((to_idx, to_owner)) = slot_owner(to_tid) else { return Some(Err(CapError::Stale)) };
 
     // (3) Same table: one lock, or this deadlocks on itself. Taking the
     // capability out and putting it straight back would also churn a
@@ -402,13 +509,16 @@ pub fn move_cap(
     // one path that accepts a stale handle or a rights escalation.
     if from_idx == to_idx {
         let table = CAP_TABLES[from_idx].lock();
-        let (_, perms, _) = table.peek_raw(handle).ok_or(CapError::Stale)?;
+        if !still_owned(from_idx, from_owner) {
+            return None;
+        }
+        let Some((_, perms, _)) = table.peek_raw(handle) else { return Some(Err(CapError::Stale)) };
         if let Some(want) = rights {
             if !perms.contains(want) {
-                return Err(CapError::MissingPerms);
+                return Some(Err(CapError::MissingPerms));
             }
         }
-        return Ok(handle);
+        return Some(Ok(handle));
     }
 
     // (1) Ordered acquire: lowest slot index first, whichever way the
@@ -416,12 +526,26 @@ pub fn move_cap(
     let (lo, hi) = if from_idx < to_idx { (from_idx, to_idx) } else { (to_idx, from_idx) };
     let mut lo_tab = CAP_TABLES[lo].lock();
     let mut hi_tab = CAP_TABLES[hi].lock();
+    if !still_owned(from_idx, from_owner) || !still_owned(to_idx, to_owner) {
+        return None;
+    }
     let (sender, receiver) = if from_idx == lo {
         (&mut *lo_tab, &mut *hi_tab)
     } else {
         (&mut *hi_tab, &mut *lo_tab)
     };
+    Some(move_locked(sender, receiver, from_idx, to_idx, handle, rights))
+}
 
+/// The move itself, both tables locked and still their owners'.
+fn move_locked(
+    sender: &mut CapTable,
+    receiver: &mut CapTable,
+    from_idx: usize,
+    to_idx: usize,
+    handle: CapHandle,
+    rights: Option<CapPerms>,
+) -> Result<CapHandle, CapError> {
     let (kind, perms, resource) = sender.peek_raw(handle).ok_or(CapError::Stale)?;
     // `DUP` gates transfer to a different task (O3.4): checked before
     // anything is touched, same as the free-slot check below.
