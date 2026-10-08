@@ -438,6 +438,25 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
 
     // Must be a valid, leaf, COW-marked PTE.
     if !ARCH.pte_is_valid(pte) || !ARCH.pte_is_cow(pte) || !ARCH.pte_is_leaf(pte, 0) {
+        // Already broken (CTXHUNT, 2026-10-08): two threads of one process
+        // stored to the same COW page on two harts; one broke it, the other
+        // faulted through its own read-only translation before the
+        // shootdown reached it and walked to the broken entry. That store
+        // was always allowed: retry it. It used to answer `NotMapped`, and
+        // the trap killed the thread (a fork child's two threads bumping one
+        // counter: 27-43 kills in 400 iterations). Only an entry a store
+        // cannot fault on (writable, accessed, dirty: what `pte_break_cow`
+        // makes) is retried, so a genuine write to a read-only page still
+        // dies. Gate canary only: the old answer.
+        if ARCH.pte_is_valid(pte) && ARCH.pte_is_leaf(pte, 0) && !ARCH.pte_is_cow(pte)
+            && !cfg!(feature = "cow-spurious-canary")
+        {
+            let p = ARCH.pte_perms(pte);
+            if p.user && p.write && p.dirty && p.accessed {
+                ARCH.flush_tlb_page(aligned_addr);
+                return Ok(());
+            }
+        }
         return Err(KernelError::NotMapped);
     }
     // Defence in depth (wave 13, W^X): `fork_cow` marks only writable pages

@@ -52,6 +52,9 @@ fork-demand-canary = []
 # Gate canary only (wave 14): a COW break always copies, also when the
 # breaking task is the frame's last holder.
 cow-reuse-canary = []
+# A store fault on a COW page another thread already broke answers
+# "not COW" (the trap kills the thread), as before CTXHUNT.
+cow-spurious-canary = []
 # Canary only (wave 14, SPAWNCACHE): the verified-image cache shares every
 # page of a kept image, writable data included (`image_frames.rs`). The
 # syscall-tests shared-text rows must go red.
