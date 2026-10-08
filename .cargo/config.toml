@@ -1,6 +1,11 @@
 [build]
 target = "riscv64imac-unknown-none-elf"
 
+# The target-feature line is the default riscv64 baseline level
+# (Kconfig RISCV64_LEVEL_RV64IMAC) for a plain `cargo build`; the Kconfig is
+# the source (tools/kconfig_to_cargo.py --rustflags), and
+# crates/core/limits/build.rs refuses a kernel build whose target features
+# disagree with its Kconfig (e.g. a `require`d Zbb missing from these flags).
 [target.riscv64imac-unknown-none-elf]
 rustflags = [
     "-C", "link-arg=-Tkernel/linker.ld",

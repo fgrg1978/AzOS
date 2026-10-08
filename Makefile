@@ -322,7 +322,7 @@ K1_LINKER   := kernel/linker-k1.ld
 # default to `require`) through tools/kconfig_to_cargo.py --rustflags, the one
 # emitter every kernel rule uses; crates/core/limits/build.rs refuses a kernel
 # build whose target features disagree with its Kconfig.
-K1_RUSTFLAGS = -C link-arg=-T$(K1_LINKER) $(shell python3 tools/kconfig_to_cargo.py --rustflags $(K1_KCONFIG))
+K1_RUSTFLAGS := -C link-arg=-T$(K1_LINKER)
 K1_BIN      := build/kernel-k1.bin
 
 # RVV: QEMU CPU model with Vector 1.0 extension (VLEN=128).
@@ -2230,7 +2230,8 @@ k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG) build/disk-board-k1.img
 	$(call require_board_key,K1)
 	$(call check_board_priv_if_given,K1)
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
-	KCONFIG_CONFIG="$(CURDIR)/$(K1_KCONFIG)" RUSTFLAGS="$(K1_RUSTFLAGS)" \
+	KCONFIG_CONFIG="$(CURDIR)/$(K1_KCONFIG)" \
+	RUSTFLAGS="$(K1_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags $(K1_KCONFIG))" \
 	$(CARGO) build --release -p azos_kernel --features board-image \
 		$$(python3 tools/kconfig_to_cargo.py $(K1_KCONFIG) | tr -s ' ') \
 		--config "build.rustflags=['-C','link-arg=-T$(K1_LINKER)']"

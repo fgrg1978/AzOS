@@ -222,7 +222,10 @@ choice
       bytes of state per task. probe: compiled in; the vector state and the
       vector kernels are used only when cpu@0 declares V, the scalar ones
       otherwise. n (the default without V hardware): compiled out, scalar
-      kernels. require: a hart without V is refused.
+      kernels -- unless a cargo feature composes `rvv` anyway (`make
+      build-rvv`/`qemu-rvv`'s hand-passed `--features rvv`, the `k1`
+      feature's edge): such a build is treated as probe, and the [ISA] line
+      says so. require: a hart without V is refused.
 
     config RV_V_NEVER
         bool "n: never use it"
