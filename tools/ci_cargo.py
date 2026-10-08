@@ -38,7 +38,9 @@ puts the stored ELF back at the path cargo writes it to, after unlinking that
 path first: cargo hard-links it to `deps/kernel-<hash>`, and copying through
 the link would rewrite cargo's own artifact for another feature set. Only
 successful builds are stored, so a canary that must fail to build always runs
-cargo. The gate (tools/ci_check.sh) keeps one run's cache by default, and
+cargo. Every miss of a cacheable build appends to `<cache>/misses.log` what
+differed from the last build with the same argv (a key part, or the deps
+whose content changed). The gate (tools/ci_check.sh) keeps one run's cache by default, and
 under CI_TIER=rows a cache in build/kcache that persists between runs, bounded
 by CI_KCACHE_MAX_MB (least recently used entries go first).
 """
@@ -179,27 +181,48 @@ def toolchain(argv):
 
 
 def key_of(argv):
+    """(key, parts): the key, and the hash of each thing in it (for misses.log)."""
     state = source_state(os.getcwd())
     tc = toolchain(argv)
     if state is None or tc is None:
-        return None
+        return None, None
     top = git(["rev-parse", "--show-toplevel"], os.getcwd()).decode().strip()
-    h = hashlib.sha256()
-    h.update(json.dumps(argv).encode())
-    h.update(os.getcwd().encode())
-    h.update(tc)
+    parts = {"argv": json.dumps(argv), "cwd": os.getcwd(),
+             "toolchain": hashlib.sha256(tc).hexdigest()}
     names = set(tree_env_names(top, state))
     for k in sorted(os.environ):
         if KEY_ENV_RE.match(k) or k in names:
-            h.update(("%s=%s\0" % (k, os.environ[k])).encode())
+            parts["env " + k] = hashlib.sha256(os.environ[k].encode()).hexdigest()
     for var in ("KCONFIG_CONFIG", "TOPOLOGY_PUBKEY_PATH", "PROD_PUBKEY_PATH"):
         p = os.environ.get(var)
-        h.update(("%s:" % var).encode())
-        if p:
-            sha_file(p, h)
-    sha_file(os.path.join(top, ".config"), h)
-    h.update(state.encode())
-    return h.hexdigest()
+        parts["file $" + var] = sha_file(p).hexdigest() if p else "unset"
+    parts["file .config"] = sha_file(os.path.join(top, ".config")).hexdigest()
+    parts["source state"] = state
+    h = hashlib.sha256()
+    for k in sorted(parts):
+        h.update(("%s=%s\0" % (k, parts[k])).encode())
+    return h.hexdigest(), parts
+
+
+def note_miss(argv, parts, why):
+    """CACHE/misses.log: why a cacheable build missed, against the last one."""
+    last = os.path.join(CACHE, "last-%s.json" % hashlib.sha256(
+        (parts["argv"] + parts["cwd"]).encode()).hexdigest()[:24])
+    if not why:
+        try:
+            old = json.load(open(last))
+            why = sorted(k for k in set(old) | set(parts) if old.get(k) != parts.get(k)) or ["?"]
+        except (OSError, ValueError):
+            why = ["first build of this argv"]
+    log_path = os.path.join(CACHE, "misses.log")
+    try:
+        if os.path.exists(log_path) and os.path.getsize(log_path) > (1 << 20):
+            os.replace(log_path, log_path + ".old")
+        with open(log_path, "a") as f:
+            f.write("%s\t%s\t%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), " ".join(argv), "; ".join(why)))
+        json.dump(parts, open(last, "w"))
+    except OSError:
+        pass
 
 
 def deps_of(artifact):
@@ -218,14 +241,6 @@ def deps_of(artifact):
         for p in rest.replace("\\ ", "\0").split():
             out.add(p.replace("\0", " "))
     return sorted(out)
-
-
-def deps_hash(paths):
-    h = hashlib.sha256()
-    for p in paths:
-        h.update(p.encode())
-        sha_file(p, h)
-    return h.hexdigest()
 
 
 def clone(src, dst):
@@ -264,13 +279,17 @@ def main():
     argv = sys.argv[1:]
     t0 = time.time()
     artifact = cacheable(argv) if CACHE else None
-    key = key_of(argv) if artifact else None
+    key, parts = key_of(argv) if artifact else (None, None)
+    why = None
     if key:
         ent = os.path.join(CACHE, key)
         meta = os.path.join(ent, "meta.json")
         if os.path.exists(meta):
             m = json.load(open(meta))
-            if deps_hash(m["deps"]) == m["deps_hash"]:
+            dh = m.get("dep_hashes", {})
+            changed = [p for p in m["deps"] if sha_file(p).hexdigest() != dh.get(p)]
+            why = ["dep " + p for p in changed[:5]]
+            if not changed:
                 try:
                     os.unlink(artifact)
                 except FileNotFoundError:
@@ -287,6 +306,7 @@ def main():
                 return m["rc"]
     rc, out, err = run_real(argv, capture=bool(key))
     if key:
+        note_miss(argv, parts, why)
         sys.stdout.buffer.write(out); sys.stdout.flush()
         sys.stderr.buffer.write(err); sys.stderr.flush()
         deps = deps_of(artifact) if rc == 0 else None
@@ -297,7 +317,8 @@ def main():
             shutil.copy2(artifact + ".d", os.path.join(tmp, "elf.d"))
             open(os.path.join(tmp, "out"), "wb").write(out)
             open(os.path.join(tmp, "err"), "wb").write(err)
-            json.dump({"rc": rc, "deps": deps, "deps_hash": deps_hash(deps)},
+            json.dump({"rc": rc, "deps": deps,
+                       "dep_hashes": {p: sha_file(p).hexdigest() for p in deps}},
                       open(os.path.join(tmp, "meta.json"), "w"))
             ent = os.path.join(CACHE, key)
             shutil.rmtree(ent, ignore_errors=True)

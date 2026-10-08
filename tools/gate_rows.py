@@ -16,6 +16,12 @@ network, fault injection, wall-clock judgement, more than one boot).
                          grouped by (ISA, features, QEMU options)
   gate_rows.py --icount  rows that boot under -icount (load-independent
                          candidates for GATE_JOBS above 4)
+  gate_rows.py --needs   read row keys on stdin, print them and, after them,
+                         every row they need (tools/gate_needs.tsv), transitively
+  gate_rows.py --selfbuild rv|arm
+                         rows whose own function builds that ISA's kernel
+                         (kbuild/kq, a64_kbuild): under CI_TIER=rows the gate
+                         does not build a deferred top-level kernel for them
 
 The manifest is tools/gate_rows.tsv: `key<TAB>tier<TAB>deps`, where tier is
 n1 (may run in `make check1` when the diff maps to it) or n2 (full gate only),
@@ -30,6 +36,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(ROOT, "tools", "ci_check.sh")
 MANIFEST = os.path.join(ROOT, "tools", "gate_rows.tsv")
+NEEDS = os.path.join(ROOT, "tools", "gate_needs.tsv")
 
 PAR_RE = re.compile(r'^\s*((?:[A-Z_][A-Z0-9_]*=(?:"[^"]*"|\S*)\s+)*)(par|par_row|host_job)\s+(.*)$')
 FN_RE = re.compile(r'^(\s*)([a-zA-Z_][a-zA-Z_0-9]*)\(\)\s*\{')
@@ -278,6 +285,53 @@ def check_manifest():
     return 1 if (missing or stale or bad) else 0
 
 
+def read_needs():
+    """tools/gate_needs.tsv: row key -> the keys it needs, in file order."""
+    out = {}
+    if os.path.exists(NEEDS):
+        for line in open(NEEDS):
+            if line.startswith("#") or not line.strip():
+                continue
+            key, _, rest = line.rstrip("\n").partition("\t")
+            out.setdefault(key, []).extend(k.strip() for k in rest.split(";") if k.strip())
+    return out
+
+
+def needs_closure(keys):
+    needs, out, seen = read_needs(), [], set()
+    todo = list(keys)
+    while todo:
+        k = todo.pop(0)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(k)
+        todo.extend(needs.get(k, []))
+    return out
+
+
+def check_needs(text=None):
+    """Every key gate_needs.tsv names is a label the gate prints or keys."""
+    text = text if text is not None else open(GATE).read()
+    bad = 0
+    for key, deps in read_needs().items():
+        for k in [key] + deps:
+            if ('"%s' % k) not in text:
+                print("gate_rows: gate_needs.tsv names '%s', which tools/ci_check.sh never prints" % k)
+                bad = 1
+    return bad
+
+
+def selfbuild(isa):
+    pat = r"\b(kbuild|kq)\b" if isa == "rv" else r"\ba64_kbuild(_out)?\b"
+    out = []
+    for r in rows():
+        if (isa == "rv" and r["fn"] == "kq") or re.search(pat, r["body"] or ""):
+            if r["key"] not in out:
+                out.append(r["key"])
+    return out
+
+
 def groups():
     table = {}
     total = 0
@@ -312,7 +366,16 @@ def main(argv):
         print("gate_rows: %d rows written to %s" % (write_manifest(), MANIFEST))
         return 0
     if "--check" in argv:
-        return check_manifest()
+        return check_manifest() | check_needs()
+    if "--selfbuild" in argv:
+        for k in selfbuild(argv[argv.index("--selfbuild") + 1]):
+            print(k)
+        return 0
+    if "--needs" in argv:
+        keys = [l.rstrip("\n") for l in sys.stdin if l.strip()]
+        for k in needs_closure(keys):
+            print(k)
+        return 0
     if "--groups" in argv:
         groups()
         return 0

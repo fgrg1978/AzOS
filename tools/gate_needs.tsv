@@ -1,0 +1,18 @@
+# Gate row needs: <row key><TAB><key>[; <key>...]. Under CI_TIER=rows a listed
+# row also runs every row it needs (transitively): the build rows whose image it
+# boots or inspects. tools/ci_check.sh expands CI_ROWS with this closure
+# (tools/gate_rows.py --needs); `gate_rows.py --check` requires every key here
+# to be a label the gate prints. A row that boots a kernel its own prep or a
+# top-level kbuild makes needs no line: those builds run on demand.
+stack frames: fleet	fleet (+linker); fleet config applied
+stack chain: fleet	fleet (+linker); fleet config applied
+fleet: boots in 1 GiB	fleet (+linker); fleet config applied
+stack frames: embedded	embedded (+linker); embedded config applied
+stack chain: embedded	embedded (+linker); embedded config applied
+embedded: boots in 64 MiB	embedded (+linker); embedded config applied
+embedded: boots in 16 MiB	embedded (+linker); embedded config applied
+aarch64 boots (ARMv8.5)	aarch64 smoke (build)
+aarch64 boots (ARMv8.0)	aarch64 smoke (build)
+aarch64 boots at EL2 (ARMv8.5)	aarch64 smoke (build)
+generic: riscv64 boots, abitest	generic: riscv64 builds, no robot crate
+generic: aarch64 boots, abitest	generic: aarch64 builds, no robot crate

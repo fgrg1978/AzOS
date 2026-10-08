@@ -113,7 +113,10 @@ CI_TIMING=""
 printf() {
     case "${1:-}" in
         "  %-26s"*) CI_ROW_LABEL="${2%...}"; PAR_SEEN="${PAR_SEEN:-}${CI_ROW_LABEL}
-" ;;
+"
+            # A row is starting: a kernel a deferred kbuild left pending is
+            # built before the row can read it (CI_TIER=rows; see ci_kb_defer).
+            [ -n "${CI_KPEND_RV+x}${CI_KPEND_A64+x}" ] && ci_kflush ;;
     esac
     builtin printf "$@"
 }
@@ -169,6 +172,9 @@ ci_phase_report() {
     if [ -n "${CI_ROWS_TSV:-}" ]; then
         echo "  per row, build/run split: $CI_ROWS_TSV"
         ci_kcache_report
+        if [ "$CI_TIER" = rows ]; then
+            echo "  kernels: ${CI_KDEFERRED:-0} top-level builds deferred, ${CI_KFLUSHED:-0} of them built for a kept row"
+        fi
         ci_slowest "$CI_ROWS_TSV" 20
     fi
 }
@@ -200,6 +206,7 @@ ci_phase "setup, lints, image tables"
 kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     local feats="$1"; shift
     par_shared "kbuild $feats" || return 1
+    if [ $# -eq 0 ] && ci_kb_defer rv "$feats"; then return 0; fi
     if "$CARGO" build --release --features "$feats" "$@" >/dev/null 2>&1; then
         return 0
     fi
@@ -1139,16 +1146,34 @@ fi
 # runs every row.
 #
 # CI_TIER=rows (wave 15, the N1 tier; `make check1` drives it): only the rows
-# whose key is a line of CI_ROWS (or of the file CI_ROWS_FILE) run, `par` rows,
-# `build` rows and host suites alike; every other one of those prints
-# `skipped (CI_TIER=rows)`. The few checks the gate runs outside those helpers
-# (image tables, isa guards, lints) still run. A listed key that no row uses
-# fails the gate, as FAST_ROWS does. tools/rows_for_diff.py writes the list.
+# whose key is a line of CI_ROWS (or of the file CI_ROWS_FILE) run, plus the
+# rows they need (tools/gate_needs.tsv, transitively): `par` rows, `build` rows,
+# host suites and the rows written outside those helpers (`ci_row`) alike; every
+# other one prints `skipped (CI_TIER=rows)`, and the setup only skipped rows use
+# (their disks, fixtures and kernels) is not made. Still run: the image tables
+# every kernel includes, and three sub-second lints (arch cfg, boot seq, the
+# rows manifest). A listed key that no row uses fails the gate, as FAST_ROWS
+# does. tools/rows_for_diff.py writes the list. Kernels: see ci_kb_defer.
 CI_TIER="${CI_TIER:-full}"
 case "$CI_TIER" in full|fast|rows) ;; *) echo "ci_check: CI_TIER must be full, fast or rows, not '$CI_TIER'"; exit 2 ;; esac
 if [ "$CI_TIER" = rows ]; then
     if [ -n "${CI_ROWS_FILE:-}" ]; then CI_ROWS="$(cat "$CI_ROWS_FILE")" || exit 2; fi
     [ -n "${CI_ROWS:-}" ] || { echo "ci_check: CI_TIER=rows needs CI_ROWS or CI_ROWS_FILE"; exit 2; }
+    # And the rows those rows need (tools/gate_needs.tsv: the build rows whose
+    # image they boot), transitively, so a listed boot row never meets a
+    # skipped build.
+    CI_ROWS_ASKED="$CI_ROWS"
+    CI_ROWS="$(printf '%s\n' "$CI_ROWS" | python3 "$REPO_ROOT/tools/gate_rows.py" --needs)" \
+        || { echo "ci_check: tools/gate_rows.py --needs failed"; exit 2; }
+    CI_ROWS_ADDED="$(printf '%s\n' "$CI_ROWS" | grep -vxF -f <(printf '%s\n' "$CI_ROWS_ASKED" | grep .))"
+    if [ -n "$CI_ROWS_ADDED" ]; then
+        echo "CI_TIER=rows: also running what the listed rows need:"
+        printf '%s\n' "$CI_ROWS_ADDED" | sed 's/^/  + /'
+    fi
+    # The `par` rows whose own function builds each ISA's kernel: a deferred
+    # top-level build of that ISA is not made for them (see ci_kb_defer).
+    CI_SELF_RV="$(python3 "$REPO_ROOT/tools/gate_rows.py" --selfbuild rv)" || exit 2
+    CI_SELF_A64="$(python3 "$REPO_ROOT/tools/gate_rows.py" --selfbuild arm)" || exit 2
 fi
 # GATE_JOBS (wave 15) is the QEMU job count; CI_JOBS, its older name, still works.
 CI_JOBS="${GATE_JOBS:-${CI_JOBS:-4}}"
@@ -1335,6 +1360,118 @@ fast_unseen() { # FAST_ROWS keys no `par` call used: a renamed row the list miss
         printf '%s' "$PAR_SEEN" | grep -qxF -- "$k" || echo "$k"
     done
 }
+# ── CI_TIER=rows: rows outside `par`, and kernels built only when read ──────
+#
+# ci_wants <key>...: does this run keep any of these rows? Always, outside
+# CI_TIER=rows. For the setup a group of rows shares (disks, a kernel), so a
+# run that keeps none of them does not make it.
+ci_wants() {
+    [ "${CI_TIER:-full}" = rows ] || return 0
+    local k
+    for k; do fast_keeps "$k" && return 0; done
+    return 1
+}
+# ci_skip_rows <key>...: print each one's skip line (none is kept).
+ci_skip_rows() { local k; for k; do ci_tier_skips "$k"; done; return 0; }
+# ci_row <key> <command> [args...]: a row the gate runs outside `par` and
+# `build` (a lint, a disassembly, a build canary, an image check). Under
+# CI_TIER=rows an unlisted one prints its skip line instead; elsewhere, and
+# when kept, it runs as before. The inline form, for a row written in place:
+#   if ci_row_begin <key>; then ...; fi; ci_row_end
+ci_row() {
+    local key="$1"; shift
+    ci_tier_skips "$key" && return 0
+    ci_row_open; "$@"; ci_row_end
+}
+ci_row_begin() { ci_tier_skips "$1" && return 1; ci_row_open; return 0; }
+ci_row_open() {
+    ci_kflush
+    [ -n "${CI_IN_ROW:-}" ] && return 0
+    CI_IN_ROW=1; CI_ROW_OPENED=1
+}
+ci_row_end() { if [ "${CI_ROW_OPENED:-0}" = 1 ]; then CI_IN_ROW=""; CI_ROW_OPENED=0; fi; return 0; }
+
+# Deferred kernel builds (CI_TIER=rows; CI_KDEFER=0 turns them off).
+#
+# The gate's top level rebuilds the kernel before every group of rows that
+# boots it: ~75 `kbuild`/`a64_kbuild` calls, most of them `qemu` again after a
+# smoke feature set. Under CI_TIER=rows most of those groups are skipped, and
+# after an edit each of those builds is a real one. So there a top-level call
+# (not inside a row, not a `par` job, no extra cargo arguments, the build
+# environment as the gate set it) only records the feature set and DELETES
+# the binary it would write; the build runs when something can read it:
+#   * a kept `par` row, before its prep (`par`);
+#   * any row that prints its label (the printf wrapper), and every `ci_row`;
+#   * the few top-level lines that copy the kernel without a row (ci_kflush).
+# A later call for the same ISA replaces the pending one: nothing read it.
+# Deleting the binary is what makes this safe: a reader this list missed finds
+# NO kernel and fails, it never boots the previous feature set's.
+CI_KB_ENV_VARS="KCONFIG_CONFIG PROD_PUBKEY_PATH TOPOLOGY_PUBKEY_PATH CARGO_TARGET_DIR RUSTFLAGS CARGO_BUILD_RUSTFLAGS CARGO_ENCODED_RUSTFLAGS"
+ci_kb_env() { # the build environment, as one comparable string
+    local v
+    for v in $CI_KB_ENV_VARS; do
+        if [ -n "${!v+x}" ]; then builtin printf '%s=%q;' "$v" "${!v}"; else builtin printf '%s unset;' "$v"; fi
+    done
+}
+ci_kb_env_snapshot() { # once, after the gate has exported its build environment
+    local v
+    CI_KB_ENV0="$(ci_kb_env)"; CI_KB_ENV0_SH=""
+    for v in $CI_KB_ENV_VARS; do
+        if [ -n "${!v+x}" ]; then CI_KB_ENV0_SH="${CI_KB_ENV0_SH}export $v=$(builtin printf '%q' "${!v}");"
+        else CI_KB_ENV0_SH="${CI_KB_ENV0_SH}unset $v;"; fi
+    done
+}
+ci_kb_defer() { # ci_kb_defer rv|a64 <features>: 0 when the build is deferred
+    [ "${CI_TIER:-full}" = rows ] && [ "${CI_KDEFER:-1}" = 1 ] || return 1
+    [ -z "$PAR_JOB" ] && [ -z "$PAR_KEY" ] && [ -z "${CI_IN_ROW:-}" ] && [ -z "${CI_KFLUSHING:-}" ] || return 1
+    [ -n "${CI_KB_ENV0:-}" ] && [ "$(ci_kb_env)" = "$CI_KB_ENV0" ] || return 1
+    case "$1" in
+        rv)  CI_KPEND_RV="$2"; rm -f "$RV_KERNEL_OUT" ;;
+        a64) CI_KPEND_A64="$2"; rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" ;;
+        *) return 1 ;;
+    esac
+    CI_KDEFERRED=$((${CI_KDEFERRED:-0} + 1))
+    return 0
+}
+ci_kflush() { # ci_kflush [rv|a64]: build what ci_kb_defer left pending (both ISAs by default)
+    [ -n "${CI_KPEND_RV+x}${CI_KPEND_A64+x}" ] || return 0
+    [ -z "${CI_KFLUSHING:-}" ] || return 0
+    local rv="${CI_KPEND_RV-}" rvset="${CI_KPEND_RV+x}" a64="${CI_KPEND_A64-}" a64set="${CI_KPEND_A64+x}"
+    case "${1:-}" in
+        rv)  a64set="" ;;
+        a64) rvset="" ;;
+    esac
+    [ -n "$rvset" ] && unset CI_KPEND_RV
+    [ -n "$a64set" ] && unset CI_KPEND_A64
+    # A subshell, so the environment restored is the deferred call's and goes
+    # away after; a failed build prints its own FAIL row and is counted here.
+    if [ -n "$rvset" ]; then
+        ( CI_KFLUSHING=1; eval "$CI_KB_ENV0_SH"; kbuild "$rv" ) || FAIL=$((FAIL + 1))
+        CI_KFLUSHED=$((${CI_KFLUSHED:-0} + 1))
+    fi
+    if [ -n "$a64set" ]; then
+        ( CI_KFLUSHING=1; eval "$CI_KB_ENV0_SH"
+          a64_kbuild "$a64" >/dev/null 2>&1 && exit 0
+          printf "  %-26s" "aarch64 build --features ${a64}..."; echo "FAIL"
+          echo "      the aarch64 kernel did NOT build; there is no kernel on disk for the"
+          echo "      row below. By hand: cargo build --release --target aarch64-unknown-none-softfloat"
+          echo "      -p azos_kernel --features \"${a64}\" (KCONFIG_CONFIG=\$AARCH64_CONFIG, linker-aarch64.ld)"
+          exit 1 ) || FAIL=$((FAIL + 1))
+        CI_KFLUSHED=$((${CI_KFLUSHED:-0} + 1))
+    fi
+    return 0
+}
+# ci_kernel_gone rv|a64: a skipped group's setup would have built the kernel
+# the rows after it boot; with it skipped there is NO kernel, never the
+# previous one (and nothing pending stands in for it).
+ci_kernel_gone() {
+    case "$1" in
+        rv)  unset CI_KPEND_RV; rm -f "$RV_KERNEL_OUT" ;;
+        a64) unset CI_KPEND_A64; rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" ;;
+    esac
+}
+RV_KERNEL_OUT="$KERNEL"
+ci_kb_env_snapshot
 par() { # par [-a] [-h] [-n <qemus>] [-s|-w] <key> <command> [args...]
     local serial=0 hold=0 always=0 host=0 need=1
     while :; do
@@ -1354,6 +1491,13 @@ par() { # par [-a] [-h] [-n <qemus>] [-s|-w] <key> <command> [args...]
         SKIP=$((SKIP + 1))
         builtin printf "  %-26s%s\n" "${key}..." "skipped (CI_TIER=${CI_TIER})"
         return 0
+    fi
+    # A kept row reads the kernels a deferred kbuild left pending, unless its
+    # own function builds that ISA's (a row that still reads the pending one
+    # then finds no kernel at all: ci_kb_defer deleted it).
+    if [ "$host" != 1 ] && [ -z "$PAR_JOB" ]; then
+        printf '%s\n' "${CI_SELF_RV:-}" | grep -qxF -- "$key" || ci_kflush rv
+        printf '%s\n' "${CI_SELF_A64:-}" | grep -qxF -- "$key" || ci_kflush a64
     fi
     # Inline: one job at a time, a serial row, or a `par` inside a job.
     if [ "$CI_JOBS" -le 1 ] || [ "$serial" = 1 ] || [ -n "$PAR_JOB" ]; then
@@ -1757,12 +1901,14 @@ echo ""
 # ANY core -> scaffolding edge appears. It was written to tolerate the three
 # that existed — a check that starts red gets ignored, not fixed — and it
 # ratcheted down as each closed. Run `tools/tcb_check.sh` directly for detail.
+if ci_row_begin "TCB crate boundary"; then
 printf "  %-26s" "TCB crate boundary..."
 if tcb_out="$(bash "${REPO_ROOT}/tools/tcb_check.sh" 2>&1)"; then
     ok
 else
     bad; printf '%s\n' "$tcb_out" | sed 's/^/      /'
 fi
+fi; ci_row_end
 
 # Syscall-number single-source-of-truth check (follow-on to 1195b1e).
 #
@@ -1797,6 +1943,7 @@ fi
 # discriminant instead of a named const, and any restatement outside Rust
 # entirely — `../AzOSRobotBrain/protocol.py` mirrors some of these numbers, and
 # watching that side is the protocol-sync skill's job, not this check's.
+if ci_row_begin "syscall-number literals"; then
 printf "  %-26s" "syscall-number literals..."
 sys_nr_tmp="$(mktemp)"
 (
@@ -1851,6 +1998,7 @@ else
     ok
 fi
 rm -f "$sys_nr_tmp"
+fi; ci_row_end
 
 # Arch contract lint (tools/arch_cfg_lint.py): every `cfg(target_arch)` in
 # shared code needs an else branch or a `compile_error!`, or a new ISA
@@ -1923,12 +2071,14 @@ echo "[1/4] Building all feature combinations..."
 # for riscv64 and aarch64, whose facades re-export those modules, and the arch
 # cfg lint does not see it (it is not a cfg). Wave 15 integration: the per-hart
 # loopback guard did exactly that, and only `make ARCH=x86_64 check` failed.
+if ci_row_begin "x86_64: make check"; then
 printf "  %-26s" "x86_64: make check..."
 if x86_out="$(make ARCH=x86_64 check 2>&1)"; then
     ok
 else
     bad; printf '%s\n' "$x86_out" | grep -A6 '^error' | sed -n 1,40p | sed 's/^/      /'
 fi
+fi; ci_row_end
 
 # No forced recompile here any more. This line used to `touch` every .rs file
 # under crates/ domains/ kernel/ because "rustc only emits warnings when it
@@ -2073,6 +2223,7 @@ isa_guard() { # isa_guard <label> <expect: none|some>
 # compiled only where NEON is part of the target (`vector.rs`). The KERNEL is
 # built for `aarch64-unknown-none-softfloat` (see "The KERNEL on aarch64"
 # below), which compiles this crate a second time without NEON.
+if ci_row_begin "aarch64 crate (ARMv8.5)"; then
 printf "  %-26s" "aarch64 crate (ARMv8.5)..."
 if aarch_out="$(RUSTFLAGS="" KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release --target aarch64-unknown-none \
         -p azos_arch_aarch64 --config "build.rustflags=[]" 2>&1)" \
@@ -2081,6 +2232,7 @@ if aarch_out="$(RUSTFLAGS="" KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --r
 else
     bad; printf '%s\n' "$aarch_out" | grep -E "^(error|warning)" | head -5
 fi
+fi; ci_row_end
 
 # aarch64, actually BOOTED. The build row above proves it compiles; these prove
 # the port runs: EL2→EL1, GICv3, an IRQ, an SVC, a second PE via PSCI, a
@@ -2146,6 +2298,7 @@ aarch64_smoke_row() { # aarch64_smoke_row <label> <cpu-args> <expect: met|unmet>
         echo "      log kept: $log"; return
     fi
 }
+if ci_row_begin "aarch64 smoke (build)"; then
 printf "  %-26s" "aarch64 smoke (build)..."
 # NO `RUSTFLAGS=""` here. The crate's own `.cargo/config.toml` passes
 # `-C link-arg=-T./aarch64-virt.ld`, and an empty RUSTFLAGS in the environment
@@ -2159,6 +2312,11 @@ if as_out="$(cd tests/qemu/aarch64-smoke && env -u RUSTFLAGS -u CARGO_BUILD_RUST
         -Z build-std-features=compiler-builtins-mem 2>&1)" \
    && ! printf '%s\n' "$as_out" | grep -qE "^(error|warning)"; then ok
 else bad; printf '%s\n' "$as_out" | grep -E "^(error|warning)" | head -5; fi
+else
+    # Skipped: the boot rows below (which name this row in gate_needs.tsv)
+    # never find a previous run's binary.
+    rm -f tests/qemu/aarch64-smoke/target/aarch64-unknown-none/release/aarch64_smoke
+fi; ci_row_end
 QEMU_AARCH64_MACH=",mte=on" par "aarch64 boots (ARMv8.5)" aarch64_smoke_row "aarch64 boots (ARMv8.5)" "max,pauth=on" met
 QEMU_AARCH64_MACH=""        par "aarch64 boots (ARMv8.0)" aarch64_smoke_row "aarch64 boots (ARMv8.0)" "cortex-a72"   unmet
 
@@ -2205,8 +2363,9 @@ A64_IMG="$A64_IMG_OUT"
 # is not matched and still fails the row.
 A64_KNOWN_NOISE='prod pubkey|packages contain code that will be rejected by a future version of Rust: core v0\.0\.0 \([^,]*\)$'
 
-printf "  %-26s" "aarch64 kernel (build)..."
 rm -f "$A64_KERNEL" "$A64_IMG"
+if ci_row_begin "aarch64 kernel (build)"; then
+printf "  %-26s" "aarch64 kernel (build)..."
 # `env -u RUSTFLAGS`, NOT `RUSTFLAGS=""` like the arch-crate row above: cargo
 # gives an environment RUSTFLAGS — even an empty one — precedence over
 # `build.rustflags`, so `RUSTFLAGS=""` silently drops the linker script and the
@@ -2252,6 +2411,12 @@ if a64k_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH6
 else
     bad; printf '%s\n' "$a64k_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
 fi
+else
+    # Skipped (CI_TIER=rows): the rows below still boot this kernel, the
+    # default feature set. A deferred build of the same set, made only if one
+    # of them is kept (see ci_kb_defer).
+    a64_kbuild "" >/dev/null 2>&1 || true
+fi; ci_row_end
 
 # ── The aarch64 kernel names no FP/SIMD register outside the lazy-FP code ────
 # The trap path no longer saves the interrupted task's V0-V31/FPSR/FPCR (user
@@ -2262,6 +2427,7 @@ fi
 # every instruction naming an FP/SIMD register or FPCR/FPSR must sit in one of
 # the symbols the script allows by name. Canaries: the gate-186 hard-float
 # kernel fails it (144 functions); so does dropping one allowed name.
+if ci_row_begin "aarch64 kernel FP-free"; then
 printf "  %-26s" "aarch64 kernel FP-free..."
 if [ ! -f "$A64_KERNEL" ]; then
     bad; echo "      not built: $A64_KERNEL"
@@ -2270,6 +2436,7 @@ elif fpfree_out="$(bash tools/aarch64_fp_free_check.sh "$A64_KERNEL" 2>&1)"; the
 else
     bad; printf '%s\n' "$fpfree_out" | head -12 | sed 's|^|      |'
 fi
+fi; ci_row_end
 
 # ── Trap-path code size (wave 14, LOGLEVEL) ─────────────────────────────────
 # The first Rust frames of every trap, the syscall path included, pinned to
@@ -2317,7 +2484,7 @@ trap_size_row() { # trap_size_row <label> <elf> <symbol-suffix>=<bytes>...
 # paths and the row was already red on main (aarch64 1356 B; riscv64
 # trap_handler 54 B, handle_ecall 568 B, then 582 with NRCPUS). vsbench
 # -icount syscall-floor did not move: 180 riscv64, 152 aarch64.
-trap_size_row "aarch64: trap path size" "$A64_KERNEL" aarch64_trap_entry=1356 7aarch6412svc_dispatch=488
+ci_row "aarch64: trap path size" trap_size_row "aarch64: trap path size" "$A64_KERNEL" aarch64_trap_entry=1356 7aarch6412svc_dispatch=488
 
 aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected entry EL> <smp>
     local label="$1" mach="$2" el="$3" smp="${4:-2}"
@@ -3103,6 +3270,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
 }
 a64_kbuild() { # a64_kbuild <comma-separated-features>
     par_shared "a64_kbuild $1" || return 1
+    if [ $# -eq 1 ] && ci_kb_defer a64 "$1"; then return 0; fi
     a64_kbuild_out "$@"
 }
 
@@ -3888,14 +4056,14 @@ par "aarch64 INA219 placed in kernel" drvplace_row "aarch64 INA219 placed in ker
 a64_kbuild "qemu" || true
 par "aarch64 INA219 placement canary" drvplace_row "aarch64 INA219 placement canary" arm "qemu,ring3-drv-smoke,ina219-placement-canary" ina-canary
 a64_kbuild "qemu" || true
-drvplace_build_canary_row "aarch64 INA219 placement build canary" arm
+ci_row "aarch64 INA219 placement build canary" drvplace_build_canary_row "aarch64 INA219 placement build canary" arm
 par "aarch64 restart = always / no" drvplace_row "aarch64 restart = always / no" arm "qemu,restart-smoke" restart
 a64_kbuild "qemu" || true
 par "aarch64 restart key canary" drvplace_row "aarch64 restart key canary" arm "qemu,restart-canary" restart-canary
 a64_kbuild "qemu" || true
 par "aarch64 buzzer placed in kernel" drvplace_row "aarch64 buzzer placed in kernel" arm "qemu,ring3-drv-smoke,buzzer-kernel" buzz-kernel
 a64_kbuild "qemu" || true
-drvplace_build_canary_row "aarch64 buzzer placement build canary" arm \
+ci_row "aarch64 buzzer placement build canary" drvplace_build_canary_row "aarch64 buzzer placement build canary" arm \
     buzzer-placement-build-canary "DRV_BUZZER_PLACEMENT: the drivers crate and the topology disagree"
 
 # ── Guard-page fault proof (aarch64 parity program, task 1) ─────────────────
@@ -5677,8 +5845,8 @@ spectre_v1_disasm_row() { # <label> <isa: rv|arm>
     bad; echo "      config says $want, dispatch_slow says $has ($elf)"
     printf '%s\n' "$dis" | grep -E '^ +[0-9a-f]+:' | sed -n '1,24p' | sed 's|^|        |'
 }
-spectre_v1_disasm_row "spectre v1 mask (disasm)"         rv
-spectre_v1_disasm_row "aarch64 spectre v1 mask (disasm)" arm
+ci_row "spectre v1 mask (disasm)" spectre_v1_disasm_row "spectre v1 mask (disasm)"         rv
+ci_row "aarch64 spectre v1 mask (disasm)" spectre_v1_disasm_row "aarch64 spectre v1 mask (disasm)" arm
 
 # ── io_ring: each SQ entry is copied out of the ring page exactly once ──────
 #
@@ -5729,8 +5897,8 @@ ioring_sqe_once_row() { # <label> <isa: rv|arm>
     bad; echo "      sqe_snapshot loads $bytes bytes (want 32) and has $calls call sites (want 1) in $elf"
     printf '%s\n' "$dis" | sed -n '1,24p' | sed 's|^|        |'
 }
-ioring_sqe_once_row "ioring: SQE copied once"         rv
-ioring_sqe_once_row "aarch64 ioring: SQE copied once" arm
+ci_row "ioring: SQE copied once" ioring_sqe_once_row "ioring: SQE copied once"         rv
+ci_row "aarch64 ioring: SQE copied once" ioring_sqe_once_row "aarch64 ioring: SQE copied once" arm
 
 # ── riscv64: the guard pages really TRAP, not just read as unmapped ────────
 #
@@ -6183,14 +6351,17 @@ par "aarch64: entropy seeds pool" aarch64_entropy_row
 if a64_kbuild "qemu"; then
     mkdir -p "$CI_LOG_DIR"
     ENTSEED_A64_IMG="$CI_LOG_DIR/kernel-entseed-a64.img"
-    cp "$A64_IMG" "$ENTSEED_A64_IMG"
+    if ci_wants "aarch64: persisted seed rotates" "aarch64: persisted seed seeds" \
+            "aarch64: seed diskless unchanged" "aarch64: seed spares the filesystem"; then
+        ci_kflush; cp "$A64_IMG" "$ENTSEED_A64_IMG"
+    fi
     par "aarch64: persisted seed rotates" entseed_rotate_row aarch64
     par "aarch64: persisted seed seeds" entseed_alone_row aarch64
     par "aarch64: seed diskless unchanged" entseed_diskless_row aarch64
     par "aarch64: seed spares the filesystem" entseed_noheadroom_row aarch64
     if a64_kbuild "qemu,orderly-reboot-smoke"; then
         ENTSEED_ORD_A64_IMG="$CI_LOG_DIR/kernel-entseed-ord-a64.img"
-        cp "$A64_IMG" "$ENTSEED_ORD_A64_IMG"
+        if ci_wants "aarch64: seed refreshed at reboot"; then ci_kflush; cp "$A64_IMG" "$ENTSEED_ORD_A64_IMG"; fi
         par "aarch64: seed refreshed at reboot" entseed_orderly_row aarch64
     else
         printf "  %-26s" "aarch64: seed refreshed at reboot..."; bad
@@ -7361,7 +7532,7 @@ rt7_drone_default_row() {
         echo "      qemu .config:  $(grep 'PANIC_POLICY' "$PRIMARY_CONFIG" | tr '\n' ' ')"
     fi
 }
-rt7_drone_default_row
+ci_row "rt7: drone → contain" rt7_drone_default_row
 # Virtual time (-icount shift=0,sleep=off), so in parallel. On wall time the
 # smoke's rates and still times measured the host: the guest clock runs while
 # the host deschedules a vCPU thread, and under -smp 2 behavior's one-shot
@@ -7700,8 +7871,7 @@ board_volume_row() {
         || { bad; echo "      the board volume's signatures (CONFIG, ML data, topology) were not verified under the board key"; return; }
     ok
 }
-board_volume_row
-
+ci_row "board: volume = topology" board_volume_row
 # U12-3 proof rows: a fresh build of each column immediately followed by the
 # check that its `azos_limits` came from that column's own defconfig, not
 # from whatever this shell's ambient `.config` (or another column's pinned
@@ -7709,10 +7879,9 @@ board_volume_row
 # `target/.../release` triple `build_board` is about to reuse below, which is
 # exactly why the check runs BEFORE `build_board`, not after.
 kbuild "qemu"
-primary_config_applied
+ci_row "primary config applied" primary_config_applied
 a64_kbuild "qemu" >/dev/null 2>&1 || true
-aarch64_config_applied
-
+ci_row "aarch64 config applied" aarch64_config_applied
 build_board "vf2 (+linker)"       vf2
 board_config_applied "vf2 config applied" vf2
 isa_guard   "vf2: no B extension" none
@@ -7733,7 +7902,7 @@ k1_refuses_to_build_row() {
         printf '%s\n' "$out" | grep -E "^error" | head -3 | sed 's/^/      /'
     fi
 }
-k1_refuses_to_build_row
+ci_row "k1: refuses to build (V2.3)" k1_refuses_to_build_row
 # (k1 config applied: no k1 binary to check under V2.3 — see k1_refuses_to_build_row)
 # (k1: B extension guard removed with V2.3 — there is no k1 binary to inspect)
 # The fleet profile: 1024 TCP connections, a 1022 MiB linker region. See
@@ -7744,7 +7913,9 @@ if fleet_config; then
     KCONFIG_CONFIG="$FLEET_CONFIG" CARGO_TARGET_DIR="$FLEET_DIR" RUSTFLAGS="$FLEET_RUSTFLAGS" \
         build "fleet (+linker)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$FLEET_CONFIG")
     fleet_config_applied
-    if [ "$FAIL" -eq "$fail_before" ]; then FLEET_BUILT=1; fi
+    # A skipped row (CI_TIER=rows) leaves FAIL alone too: only a build that
+    # ran and passed, with its config check, makes the fleet kernel bootable.
+    if [ "$FAIL" -eq "$fail_before" ] && ci_wants "fleet (+linker)" && ci_wants "fleet config applied"; then FLEET_BUILT=1; fi
 else
     printf "  %-26s" "fleet (+linker)..."
     bad; echo "      could not expand config/defconfigs/robot-fleet.config with python3 -m olddefconfig"
@@ -7754,7 +7925,8 @@ if embedded_config; then
     # shellcheck disable=SC2046
     KCONFIG_CONFIG="$EMBEDDED_CONFIG" CARGO_TARGET_DIR="$EMBEDDED_DIR" RUSTFLAGS="$EMBEDDED_RUSTFLAGS" \
         build "embedded (+linker)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$EMBEDDED_CONFIG")
-    if [ "$FAIL" -eq "$fail_before" ] && embedded_config_applied; then EMBEDDED_BUILT=1; fi
+    if [ "$FAIL" -eq "$fail_before" ] && embedded_config_applied \
+       && ci_wants "embedded (+linker)" && ci_wants "embedded config applied"; then EMBEDDED_BUILT=1; fi
 else
     printf "  %-26s" "embedded (+linker)..."
     bad; echo "      could not expand config/defconfigs/robot-embedded.config with python3 -m olddefconfig"
@@ -7816,8 +7988,7 @@ topology_key_row() {
     fi
     if [ -z "$why" ]; then ok; else bad; echo "      $why"; fi
 }
-topology_key_row
-
+ci_row "topology key: no default" topology_key_row
 # ── current_cpu_id() against the hardware id, BOTH ISAs ─────────────────────
 #
 # Closes the 2026-09-25 "current_cpu_id() may have lied" finding. The probe
@@ -7998,16 +8169,20 @@ fi
 # Not under crates/: the allow-list and BPF program of the Linux+seccomp
 # column of vsbench, checked against userspace/bench/vsbench/src/abi_linux.rs.
 test_host "linux-seccomp-launch" "${REPO_ROOT}/tools/linux_seccomp_launch/host-tests"
+if ci_row_begin "kconfig_to_cargo tests"; then
 printf "  %-26s" "kconfig_to_cargo tests..."
 if kc_out="$(python3 "${REPO_ROOT}/tools/test_kconfig_to_cargo.py" 2>&1)"; then ok
 else bad; printf '%s\n' "$kc_out" | grep -E "FAIL|ERROR" | sed 's/^/      /'; fi
+fi; ci_row_end
 # The generated "Userspace programs" menu (config/Kconfig.userspace): the
 # board defaults are the topology's images, a program directory added or
 # deleted under userspace/ enters or leaves the menu, a console program that
 # is gone falls back with a warning.
+if ci_row_begin "gen_userspace_kconfig"; then
 printf "  %-26s" "gen_userspace_kconfig..."
 if us_out="$(python3 "${REPO_ROOT}/tools/test_gen_userspace_kconfig.py" 2>&1)"; then ok
 else bad; printf '%s\n' "$us_out" | grep -E "^FAIL|Error" | sed 's/^/      /'; fi
+fi; ci_row_end
 
 # K-C5: encrypt-link-tests asserts the LINK_ENCRYPT_ENFORCED const in BOTH
 # feature states, and the enforced arm only compiles under the feature —
@@ -8055,6 +8230,7 @@ test_host_features "topology(restart)" \
 # (`validate-canary`), so exactly the three tests that expect a refusal must
 # fail, and nothing else. A build error is its own FAIL (third bucket), not a
 # passing canary.
+if ci_row_begin "energy(validate-canary)"; then
 printf "  %-26s" "energy(validate-canary)..."
 if host_cargo en_out "${REPO_ROOT}/tests/host/energy-tests" test --release --features validate-canary; then
     bad; echo "      the suite passed with validation disabled: no test pins it"
@@ -8070,6 +8246,7 @@ else
         bad; echo "      expected exactly the three refusal tests to fail, got: ${en_failed:-none}"
     fi
 fi
+fi; ci_row_end
 # RFC-0051 E3/E4 invariant canaries (wave 13): each removes one floor from
 # `azos_energy` and exactly its invariant tests must fail — I1 (the
 # deadline floor ignores reservations), I6 (the WCET floor is the slowest
@@ -8078,6 +8255,7 @@ for en_c in "i1:governor::deadline_floor_covers_admitted_density_with_margin gov
             "i6:governor::i1_and_i6_hold_everywhere governor::safety_floor_is_the_first_opp_at_the_wcet_reference " \
             "i3:idle::i3_holds_for_any_history idle::rt_slack_caps_the_exit_latency "; do
     en_f="${en_c%%:*}"; en_want="${en_c#*:}"
+    ci_row_begin "energy(${en_f}-canary)" || { ci_row_end; continue; }
     printf "  %-26s" "energy(${en_f}-canary)..."
     if en_out=$( (cd "${REPO_ROOT}/tests/host/energy-tests" && "$CARGO" test --release --features "${en_f}-canary" 2>&1) ); then
         bad; echo "      the suite passed with the ${en_f} floor removed: no test pins it"
@@ -8091,6 +8269,7 @@ for en_c in "i1:governor::deadline_floor_covers_admitted_density_with_margin gov
             bad; echo "      expected exactly: ${en_want}— got: ${en_failed:-none}"
         fi
     fi
+    ci_row_end
 done
 
 # RFC-0053 L0: the `lx-server` topology (LXSRV.ELF started, no capability).
@@ -8133,8 +8312,10 @@ lx_emul_nostd_row() {
     done
     ok
 }
-lx_emul_nostd_row
-if make lx-modules >/dev/null 2>&1; then
+ci_row "lx-emul no_std (rv, arm)" lx_emul_nostd_row
+if ! ci_wants "lx-loader-tests"; then
+    ci_skip_rows "lx-loader-tests"
+elif make lx-modules >/dev/null 2>&1; then
     test_host "lx-loader-tests" "${REPO_ROOT}/tests/host/lx-loader-tests"
 else
     printf "  %-26s" "lx-loader-tests..."; bad; echo "      make lx-modules failed (LX_CC=${LX_CC:-clang})"
@@ -8145,9 +8326,9 @@ lx_lint_row() { # <label> <args>
     if out="$(python3 "${REPO_ROOT}/tools/lx_license_lint.py" $args 2>&1)"; then ok
     else bad; printf '%s\n' "$out" | sed -n '1,6p' | sed 's/^/      /'; fi
 }
-lx_lint_row "lx: licence lint" ""
-lx_lint_row "lx: licence lint canary" "--self-test"
-lx_lint_row "lx: submodule == pin" "--pin"
+ci_row "lx: licence lint" lx_lint_row "lx: licence lint" ""
+ci_row "lx: licence lint canary" lx_lint_row "lx: licence lint canary" "--self-test"
+ci_row "lx: submodule == pin" lx_lint_row "lx: submodule == pin" "--pin"
 lx_kconfig_row() {
     local label="lx: Kconfig gates"
     printf "  %-26s" "${label}..."
@@ -8175,7 +8356,7 @@ lx_kconfig_row() {
     done
     ok
 }
-lx_kconfig_row
+ci_row "lx: Kconfig gates" lx_kconfig_row
 # ── RFC-0053 L1: Linux modules built by Linux's Kbuild (wave 13, L1) ────────
 #
 # `tools/lx_kbuild/run.sh` runs Kbuild for both ISAs inside the pinned
@@ -8232,9 +8413,9 @@ lx_kbuild_row() { # <label> <mode: modules|repro|canary>
         else bad; printf '%s\n' "$out" | sed -n '1,6p' | sed 's/^/      /'; fi ;;
     esac
 }
-lx_kbuild_row "lx: Kbuild modules (container)" modules
-lx_kbuild_row "lx: Kbuild reproducible" repro
-lx_kbuild_row "lx: Kbuild lint canary" canary
+ci_row "lx: Kbuild modules (container)" lx_kbuild_row "lx: Kbuild modules (container)" modules
+ci_row "lx: Kbuild reproducible" lx_kbuild_row "lx: Kbuild reproducible" repro
+ci_row "lx: Kbuild lint canary" lx_kbuild_row "lx: Kbuild lint canary" canary
 # Wave 12 (DRVPLACE): the kernel placement of the buzzer (no BUZZDRV.ELF row).
 test_host_features "topology(drvplace buzzer)" \
     "${REPO_ROOT}/tests/host/topology-tests" "buzzer-kernel,ring3-driver-start"
@@ -8263,7 +8444,7 @@ gate_pgroup_row() {
         ok
     fi
 }
-gate_pgroup_row
+ci_row "gate: host groups killed" gate_pgroup_row
 
 echo ""
 ci_phase "[3/4] QEMU rows"
@@ -8342,20 +8523,26 @@ else
             bad; echo "$out" | sed 's/^/      /'
         fi
     }
-    frame_row "stack frames: qemu" "$KERNEL" 8192
-    if [ "$FLEET_BUILT" = "1" ]; then frame_row "stack frames: fleet" "$FLEET_KERNEL" 8192; fi
-    if [ "$EMBEDDED_BUILT" = "1" ]; then frame_row "stack frames: embedded" "$EMBEDDED_KERNEL" 8192; fi
+    ci_row "stack frames: qemu" frame_row "stack frames: qemu" "$KERNEL" 8192
+    # Under CI_TIER=rows these need the fleet/embedded build rows
+    # (tools/gate_needs.tsv); without a passing build they are not run.
+    if [ "$FLEET_BUILT" = "1" ]; then ci_row "stack frames: fleet" frame_row "stack frames: fleet" "$FLEET_KERNEL" 8192
+    else ci_skip_rows "stack frames: fleet"; fi
+    if [ "$EMBEDDED_BUILT" = "1" ]; then ci_row "stack frames: embedded" frame_row "stack frames: embedded" "$EMBEDDED_KERNEL" 8192
+    else ci_skip_rows "stack frames: embedded"; fi
     # U12-3: $KERNEL here is built from $PRIMARY_CONFIG (see the primary-column
     # export above), not the workspace `.config` — reading CONFIG_KERNEL_STACK_
     # SIZE_KB from `.config` would be the exact config/binary split this whole
     # change exists to close, reintroduced in one row.
-    chain_row "stack chain: qemu" "$KERNEL" "$PRIMARY_CONFIG"
-    if [ "$FLEET_BUILT" = "1" ]; then chain_row "stack chain: fleet" "$FLEET_KERNEL" "$FLEET_CONFIG"; fi
-    if [ "$EMBEDDED_BUILT" = "1" ]; then chain_row "stack chain: embedded" "$EMBEDDED_KERNEL" "$EMBEDDED_CONFIG"; fi
+    ci_row "stack chain: qemu" chain_row "stack chain: qemu" "$KERNEL" "$PRIMARY_CONFIG"
+    if [ "$FLEET_BUILT" = "1" ]; then ci_row "stack chain: fleet" chain_row "stack chain: fleet" "$FLEET_KERNEL" "$FLEET_CONFIG"
+    else ci_skip_rows "stack chain: fleet"; fi
+    if [ "$EMBEDDED_BUILT" = "1" ]; then ci_row "stack chain: embedded" chain_row "stack chain: embedded" "$EMBEDDED_KERNEL" "$EMBEDDED_CONFIG"
+    else ci_skip_rows "stack chain: embedded"; fi
     # The trap-path size pins (`trap_size_row`, defined beside the aarch64
     # kernel rows): the riscv64 qemu kernel just built.
     # Re-pinned in the wave-15 integration (see the aarch64 row's note).
-    trap_size_row "riscv64: trap path size" "$KERNEL" riscv64_trap_handler=54 9exception12handle_ecall=582
+    ci_row "riscv64: trap path size" trap_size_row "riscv64: trap path size" "$KERNEL" riscv64_trap_handler=54 9exception12handle_ecall=582
     par_row qemu_run "boot + SMP scheduling" "Completed 2000 iterations" 60 -smp 4
     # kernel_main's last line, printed just before the boot hart enters the
     # scheduler: everything above it ran, watchdog::hw_init() included. A timer
@@ -8513,14 +8700,17 @@ else
     # one volume, a seed that is the only source, and the diskless boot.
     mkdir -p "$CI_LOG_DIR"
     ENTSEED_RV_KERNEL="$CI_LOG_DIR/kernel-entseed-rv"
-    cp "$KERNEL" "$ENTSEED_RV_KERNEL"
+    if ci_wants "riscv64: persisted seed rotates" "riscv64: persisted seed seeds" \
+            "riscv64: seed diskless unchanged" "riscv64: seed spares the filesystem"; then
+        ci_kflush; cp "$KERNEL" "$ENTSEED_RV_KERNEL"
+    fi
     par "riscv64: persisted seed rotates" entseed_rotate_row riscv64
     par "riscv64: persisted seed seeds" entseed_alone_row riscv64
     par "riscv64: seed diskless unchanged" entseed_diskless_row riscv64
     par "riscv64: seed spares the filesystem" entseed_noheadroom_row riscv64
     if kbuild "qemu,orderly-reboot-smoke"; then
         ENTSEED_ORD_RV_KERNEL="$CI_LOG_DIR/kernel-entseed-ord-rv"
-        cp "$KERNEL" "$ENTSEED_ORD_RV_KERNEL"
+        if ci_wants "riscv64: seed refreshed at reboot"; then ci_kflush; cp "$KERNEL" "$ENTSEED_ORD_RV_KERNEL"; fi
         par "riscv64: seed refreshed at reboot" entseed_orderly_row riscv64
     else
         printf "  %-26s" "riscv64: seed refreshed at reboot..."; bad
@@ -8543,7 +8733,9 @@ else
     # The embedded image (config/defconfigs/robot-embedded.config, kernel/linker-embedded.ld)
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
     # from the device tree.
-    if [ "$EMBEDDED_BUILT" = "1" ] && make_disk build/disk.img \
+    if ! ci_wants "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"; then
+        ci_skip_rows "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"
+    elif [ "$EMBEDDED_BUILT" = "1" ] && make_disk build/disk.img \
        && product_testkey_disk "$EMBEDDED_CONFIG" build/disk-embedded64-testkey.img \
        && product_testkey_disk "$EMBEDDED_CONFIG" build/disk-embedded16-testkey.img; then
         KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 64 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 64M \
@@ -8608,7 +8800,9 @@ else
         fi
         ok; rm -f "$log"
     }
-    if [ "$FLEET_BUILT" = "1" ] && make_disk build/disk.img \
+    if ! ci_wants "fleet: boots in 1 GiB"; then
+        ci_skip_rows "fleet: boots in 1 GiB"
+    elif [ "$FLEET_BUILT" = "1" ] && make_disk build/disk.img \
        && product_testkey_disk "$FLEET_CONFIG" build/disk-fleet-testkey.img; then
         # Alone: on a loaded host TCG stretches timer_isr past its WCET bound,
         # the `[WCET] VIOLATION` lines overflow the console buffer while ring 3
@@ -8837,6 +9031,12 @@ else
     # a volume already carrying `active_slot=r` from an earlier run would pass
     # without the kernel steering anything.
     SECBOOT_TEST_KEY="${REPO_ROOT}/tools/keys/test_pub.bin"
+    SECBOOT_RV_ROWS=("secure boot key embedded" "secure boot rejects unsigned" "secure boot accepts signed"
+        "secure boot rejects bad sig" "secure boot falls to R" "secure boot records unfit B")
+    if ! ci_wants "${SECBOOT_RV_ROWS[@]}"; then
+    # CI_TIER=rows keeps none of them: no fixtures, no kernel.
+    ci_skip_rows "secure boot key embedded"; ci_kernel_gone rv
+    else
     rm -f build/disk.img build/disk-signed.img build/disk-badsig.img \
           build/disk-recovery.img build/disk-badslotb.img
     make_disk build/disk.img build/disk-signed.img build/disk-badsig.img \
@@ -8870,6 +9070,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         echo "      the 'cryptography' package, so tools/gen_test_key.py died"
         echo "      during the fixture build), or PROD_PUBKEY_PATH was passed"
         echo "      relative instead of absolute."
+    fi
     fi
 
     # CONTROL: no .SIG at all. Asserts the reason as well as the refusal, so
@@ -9256,7 +9457,14 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         ok; rm -f "$log"
     }
     A64_SECBOOT_BUILT=0
-    aarch64_secure_boot_block
+    if ci_wants "aarch64 secboot (build)" "aarch64 secboot key" "aarch64 secboot unsigned" \
+            "aarch64 secboot signed" "aarch64 secboot bad sig" "aarch64 secboot falls to R"; then
+        aarch64_secure_boot_block
+    else
+        ci_skip_rows "aarch64 secboot (build)" "aarch64 secboot key" "aarch64 secboot unsigned" \
+            "aarch64 secboot signed" "aarch64 secboot bad sig"
+        ci_kernel_gone a64
+    fi
     if [ "$A64_SECBOOT_BUILT" = 1 ]; then
         par "aarch64 secboot falls to R" aarch64_secure_boot_recovery
     fi
@@ -10138,7 +10346,9 @@ PY
     huge_cfg="$PRIMARY_DIR/qemu-huge.config"
     cp "$PRIMARY_CONFIG" "$huge_cfg" && echo "CONFIG_LOCKED_HUGE_LEAVES=y" >>"$huge_cfg" \
         && KCONFIG_CONFIG="$huge_cfg" python3 -m olddefconfig >/dev/null 2>&1
-    if grep -q '^CONFIG_LOCKED_HUGE_LEAVES=y$' "$huge_cfg" \
+    if ! ci_wants "mem: locked region, 0 faults"; then
+        ci_skip_rows "mem: locked region, 0 faults"
+    elif grep -q '^CONFIG_LOCKED_HUGE_LEAVES=y$' "$huge_cfg" \
        && KCONFIG_CONFIG="$huge_cfg" CARGO_TARGET_DIR=target/riscv-huge \
             "$CARGO" build --release --features qemu,huge-leaves-smoke >/dev/null 2>&1; then
         rm -f build/disk-uhello.img
@@ -12585,9 +12795,7 @@ PYEOF
         fi
         ok
     }
-    estop_release_authority_binary_canary
-
-
+    ci_row "safety: no test-only e-stop proof in the kernel binary" estop_release_authority_binary_canary
     # THE PHYSICAL KILL SWITCH — the third of the four e-stop sources, and the
     # one QEMU cannot present by itself.
     #
@@ -13496,7 +13704,11 @@ PYEOF
     sup_window_cfg="${PRIMARY_DIR}/sup-window.config"
     sed 's/^CONFIG_SUP_RESTART_INTERVAL_S=.*/CONFIG_SUP_RESTART_INTERVAL_S=5/' \
         "$PRIMARY_CONFIG" >"$sup_window_cfg"
-    if ! grep -q '^CONFIG_SUP_RESTART_INTERVAL_S=5$' "$sup_window_cfg"; then
+    if ! ci_wants "userspace: supervisor restart window"; then
+        # Skipped (CI_TIER=rows): leave what the block leaves, the plain kernel.
+        ci_skip_rows "userspace: supervisor restart window"
+        kbuild "qemu"
+    elif ! grep -q '^CONFIG_SUP_RESTART_INTERVAL_S=5$' "$sup_window_cfg"; then
         printf "  %-26s" "userspace: supervisor restart window..."
         bad; echo "      $PRIMARY_CONFIG has no CONFIG_SUP_RESTART_INTERVAL_S to shorten"
     else
@@ -13601,11 +13813,11 @@ PYEOF
     # row key `restart` (`drvplace_row`, defined beside the aarch64 rows).
     par_row drvplace_row "drivers: INA219 placed in kernel" rv "qemu,ring3-drv-smoke,ina219-kernel" ina-kernel
     par_row drvplace_row "drivers: INA219 placement canary" rv "qemu,ring3-drv-smoke,ina219-placement-canary" ina-canary
-    drvplace_build_canary_row "drivers: INA219 placement build canary" rv
+    ci_row "drivers: INA219 placement build canary" drvplace_build_canary_row "drivers: INA219 placement build canary" rv
     par_row drvplace_row "drivers: restart = always / no" rv "qemu,restart-smoke" restart
     par_row drvplace_row "drivers: restart key canary" rv "qemu,restart-canary" restart-canary
     par_row drvplace_row "drivers: buzzer placed in kernel" rv "qemu,ring3-drv-smoke,buzzer-kernel" buzz-kernel
-    drvplace_build_canary_row "drivers: buzzer placement build canary" rv \
+    ci_row "drivers: buzzer placement build canary" drvplace_build_canary_row "drivers: buzzer placement build canary" rv \
         buzzer-placement-build-canary "DRV_BUZZER_PLACEMENT: the drivers crate and the topology disagree"
 
     # ── Seccomp image binding ───────────────────────────────────────────
@@ -16026,6 +16238,7 @@ tracectl start sched
         [ -f "$img" ] && printf '%s\n' "$img"
     }
     for ush_isa in rv arm; do
+        if ! ci_wants "sh: lockdown ($ush_isa)"; then ci_skip_rows "sh: lockdown ($ush_isa)"; continue; fi
         ush_lk="$(ush_lockdown_kernel "$ush_isa")"
         if [ -z "$ush_lk" ]; then
             printf "  %-26s" "sh: lockdown ($ush_isa)..."; bad; echo "      the lockdown kernel did not build"
@@ -16174,6 +16387,10 @@ power suspend" 150 \
 x=con; echo bb\$x-ok
 #wait bbcon-ok"
     for con_isa in rv arm; do
+        # CI_TIER=rows keeping neither row of this ISA: no BusyBox build.
+        con_keys=("console: busybox sh ($con_isa)")
+        [ "$con_isa" = rv ] && con_keys+=("console: busybox sh canary, plain spawn (rv)")
+        if ! ci_wants "${con_keys[@]}"; then ci_skip_rows "${con_keys[@]}"; continue; fi
         if ! lx_busybox_ready; then
             printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (no zig or no pinned tarball on this host; see make busybox)"
             continue
@@ -16192,7 +16409,9 @@ x=con; echo bb\$x-ok
                 "[DRVLAUNCH] BUSYBOX.ELF started" "bbcon-ok"
         fi
     done
-    [ -f build/disk-signed.img ] || make_disk build/disk-signed.img
+    if ci_wants "console: init= ignored under secure boot (rv)" "console: init= canary, check compiled out (rv)"; then
+        [ -f build/disk-signed.img ] || make_disk build/disk-signed.img
+    fi
     con_k=""; con_wanted "console: init= ignored under secure boot (rv)" \
         && con_k="$(PROD_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" con_kernel rv sboot qemu,secure-boot-enforced)"
     CON_FORBID='DRVLAUNCH\] TOOLBOX.ELF started|the console program of this boot' \
@@ -16472,10 +16691,15 @@ x=con; echo bb\$x-ok
         fi
         ok; rm -f "$log" "$log.robot"
     }
-    generic_build_row rv
+    # Skipped (CI_TIER=rows), a build row deletes its image: the boot row
+    # below finds none rather than a previous run's (tools/gate_needs.tsv
+    # names the build row for it).
+    if ci_row_begin "generic: riscv64 builds, no robot crate"; then generic_build_row rv
+    else rm -f "$GENERIC_DIR/riscv64imac-unknown-none-elf/release/kernel"; fi; ci_row_end
     par "generic: riscv64 boots, abitest" generic_boot_row rv
     a64_kbuild "qemu" >/dev/null 2>&1 || true
-    generic_build_row arm
+    if ci_row_begin "generic: aarch64 builds, no robot crate"; then generic_build_row arm
+    else rm -f "$GENERIC_DIR/aarch64-unknown-none-softfloat/release/kernel"; fi; ci_row_end
     par "generic: aarch64 boots, abitest" generic_boot_row arm
 
     # ── Energy-aware scheduling, stages E0-E2 (RFC-0051, wave 12 ENERGY) ─────
@@ -16890,6 +17114,7 @@ fi
 # pinned toolchain build std from source, and that toolchain has no rust-src.
 # The row passes only if Kani reports every harness the two files declare as
 # verified. Not installed: a SKIP line, counted neither way.
+if ci_row_begin "formal: Kani harnesses"; then
 printf "  %-26s" "formal: Kani harnesses..."
 if ! "$CARGO" kani --version >/dev/null 2>&1; then
     echo "SKIP (cargo kani not installed: nothing was verified)"
@@ -16910,6 +17135,7 @@ else
             | sed -n 1,20p | sed 's/^/        /'
     fi
 fi
+fi; ci_row_end
 
 par_drain
 if [ "$CI_TIER" != full ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then
