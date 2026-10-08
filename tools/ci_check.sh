@@ -16029,6 +16029,168 @@ power suspend" 150 \
             "holds no launch grant for POWER.ELF (recorded)" "not permitted"
     done
 
+    # ── console program (make config > Userspace programs) ─────────────────
+    #
+    # CONSOLE_PROGRAM picks what the kernel starts on the console; its row
+    # says start = true (crates/core/topology/src/builder.rs). The native
+    # shell (the default) is every `sh:` row above. Here: BusyBox `sh` as the
+    # console program, started by the kernel (`spawn_console`: argv `sh`,
+    # descriptors 0-2 on the console, console input claimed and lent to it),
+    # booted on the BusyBox volume, which also carries SH.ELF: the native
+    # shell must not start, and the recovery console must not take over.
+    # Canary `console-spawn-canary` (rv): the console program started as any
+    # other row (no argv, no console); `bbcon-ok` never prints. Then
+    # `init=` on the kernel command line under secure boot: ignored, and the
+    # log says so (canary `cmdline-init-canary`: the check compiled out, the
+    # refusal line is missing). Each kernel is built from the primary
+    # column's config plus the lines given, in a target dir of its own (as
+    # `sh: lockdown` does).
+    con_kernel() { # con_kernel <rv|arm> <tag> <features> [CONFIG_X=v...] -> prints the image path
+        local isa="$1" tag="$2" feats="$3"; shift 3
+        local dir="$REPO_ROOT/target/con-$tag-$isa" base tmp cfg elf img l k
+        if [ "$isa" = rv ]; then base="$PRIMARY_CONFIG"; else base="$AARCH64_CONFIG"; fi
+        mkdir -p "$dir"; cfg="$dir/con.config"; tmp="$(mktemp -d)"
+        cp "$base" "$tmp/c.config"
+        for l in "$@"; do
+            k="${l%%=*}"
+            grep -v -e "^$k=" -e "^# $k is not set" "$tmp/c.config" >"$tmp/d"; mv "$tmp/d" "$tmp/c.config"
+            printf '%s\n' "$l" >>"$tmp/c.config"
+        done
+        # A choice keeps the member it was given only with the old one gone.
+        grep -v '^CONFIG_CONSOLE_PROGRAM_SH=y$' "$tmp/c.config" >"$tmp/d"; mv "$tmp/d" "$tmp/c.config"
+        if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1); then
+            rm -rf "$tmp"; return
+        fi
+        for l in "$@"; do grep -qxF -- "$l" "$tmp/c.config" || { rm -rf "$tmp"; return; }; done
+        cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"
+        rm -rf "$tmp"
+        if [ "$isa" = rv ]; then
+            elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
+            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --features "$feats" >/dev/null 2>&1
+            img="$elf"
+        else
+            elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
+            env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
+                "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+                --features "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >/dev/null 2>&1
+            [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
+                -O binary "$elf" "$img" 2>/dev/null
+        fi
+        [ -f "$img" ] && printf '%s\n' "$img"
+    }
+    con_row() { # con_row <label> <rv|arm> <kernel> <disk> <append> <PASS|FAIL> <script> <limit-s> <marker>...
+        local label="$1" isa="$2" kern="$3" disk="$4" app="$5" expect="$6" script="$7" limit="$8"; shift 8
+        printf "  %-26s" "${label}..."
+        local slug log fifo img kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/con-${slug}.log"; fifo="$CI_LOG_DIR/con-${slug}.fifo"
+        img="$CI_LOG_DIR/con-${slug}.img"; kimg="$CI_LOG_DIR/con-${slug}-kernel"
+        mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$fifo" "$img" "$kimg"
+        if [ -z "$kern" ] || [ ! -f "$kern" ]; then bad; echo "      the kernel did not build"; return; fi
+        if [ ! -f "$disk" ]; then bad; echo "      no volume $disk"; return; fi
+        cp "$disk" "$img"; cp "$kern" "$kimg"
+        if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; return; fi
+        par_ready
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        local qa=(); [ -n "$app" ] && qa=(-append "$app")
+        if [ "$isa" = rv ]; then
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 ${qa[@]+"${qa[@]}"} \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
+        else
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                -kernel "$kimg" ${qa[@]+"${qa[@]}"} -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
+        fi
+        local pid=$! t0 verdict="" line i
+        exec 8>"$fifo"
+        t0=$(date +%s)
+        con_alive() {
+            kill -0 "$pid" 2>/dev/null || { verdict=exited; return 1; }
+            if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then verdict=crash; return 1; fi
+            [ $(( $(date +%s) - t0 )) -lt "$limit" ] || { verdict=timeout; return 1; }
+        }
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if [ "${line#\#wait }" != "$line" ]; then
+                while con_alive && ! grep -aqE "${line#\#wait }" "$log"; do sleep 0.5; done
+                [ -n "$verdict" ] && break; continue
+            fi
+            if [ "${line#\#sleep }" != "$line" ]; then sleep "${line#\#sleep }"; continue; fi
+            for ((i = 0; i < ${#line}; i++)); do printf '%s' "${line:i:1}" >&8; sleep 0.02; done
+            printf '\r' >&8
+        done <<< "$script"
+        sleep 1
+        kill "$pid" 2>/dev/null
+        for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        exec 8>&-
+        rm -f "$fifo" "$img" "$kimg"
+        local missing="" forbidden="" m
+        for m in "$@"; do grep -aqF -- "$m" "$log" || missing="$missing [$m]"; done
+        if [ -n "${CON_FORBID:-}" ] && grep -aqE -- "$CON_FORBID" "$log"; then
+            forbidden="$(grep -aE -m1 -- "$CON_FORBID" "$log" | tr -d '\r')"
+        fi
+        if [ "$verdict" = crash ]; then missing="$missing [kernel crash]"; fi
+        if [ "$expect" = FAIL ]; then
+            if [ -n "$missing" ] || [ -n "$forbidden" ]; then
+                ok; echo "      canary failed as it must:${missing}${forbidden:+ forbidden: $forbidden}"; rm -f "$log"
+            else
+                bad; echo "      the canary build passed: the row does not discriminate"; echo "      log kept: $log"
+            fi
+            return
+        fi
+        if [ -z "$missing" ] && [ -z "$forbidden" ]; then
+            ok; rm -f "$log"
+        else
+            bad
+            [ -n "$missing" ] && echo "      missing:$missing (stopped: ${verdict:-script done})"
+            [ -n "$forbidden" ] && echo "      forbidden line printed: $forbidden"
+            echo "      log kept: $log"
+        fi
+    }
+    # A kernel only for a row this tier runs (CI_TIER=rows/fast skip the rest).
+    con_wanted() { [ "${CI_TIER:-full}" = full ] || fast_keeps "$1"; }
+    con_bb_script="#wait has the console
+#sleep 2
+x=con; echo bb\$x-ok
+#wait bbcon-ok"
+    for con_isa in rv arm; do
+        if ! lx_busybox_ready; then
+            printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (no zig or no pinned tarball on this host; see make busybox)"
+            continue
+        fi
+        if [ "$con_isa" = rv ]; then con_disk=build/disk-busybox.img; else con_disk=build/disk-aarch64-busybox.img; fi
+        con_k=""; con_wanted "console: busybox sh ($con_isa)" \
+            && con_k="$(con_kernel "$con_isa" bbsh qemu CONFIG_CONSOLE_PROGRAM_BUSYBOX_SH=y 'CONFIG_CONSOLE_PATH="/fat/BUSYBOX.ELF"')"
+        CON_FORBID='robot> |PAGE FAULT|SECCOMP|DRVLAUNCH\] SH.ELF started' \
+            par_row con_row "console: busybox sh ($con_isa)" "$con_isa" "$con_k" "$con_disk" "" PASS "$con_bb_script" 150 \
+            "[DRVLAUNCH] BUSYBOX.ELF started" "[CONSOLE] user shell tid=" "bbcon-ok"
+        if [ "$con_isa" = rv ]; then
+            con_k=""; con_wanted "console: busybox sh canary, plain spawn (rv)" \
+                && con_k="$(con_kernel rv bbsh-canary qemu,console-spawn-canary CONFIG_CONSOLE_PROGRAM_BUSYBOX_SH=y)"
+            CON_FORBID='robot> ' \
+                par_row con_row "console: busybox sh canary, plain spawn ($con_isa)" rv "$con_k" "$con_disk" "" FAIL "$con_bb_script" 90 \
+                "[DRVLAUNCH] BUSYBOX.ELF started" "bbcon-ok"
+        fi
+    done
+    [ -f build/disk-signed.img ] || make_disk build/disk-signed.img
+    con_k=""; con_wanted "console: init= ignored under secure boot (rv)" \
+        && con_k="$(PROD_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" con_kernel rv sboot qemu,secure-boot-enforced)"
+    CON_FORBID='DRVLAUNCH\] TOOLBOX.ELF started|the console program of this boot' \
+        par_row con_row "console: init= ignored under secure boot (rv)" rv "$con_k" build/disk-signed.img "init=/fat/TOOLBOX.ELF" PASS \
+        "#wait recovery console" 120 \
+        "Slot A signature: verified" "[CMDLINE] init=/fat/TOOLBOX.ELF" "[CONSOLE] init=/fat/TOOLBOX.ELF ignored: secure boot is on"
+    con_k=""; con_wanted "console: init= canary, check compiled out (rv)" \
+        && con_k="$(PROD_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" con_kernel rv sboot-canary qemu,secure-boot-enforced,cmdline-init-canary)"
+    CON_FORBID='DRVLAUNCH\] TOOLBOX.ELF started|the console program of this boot' \
+        par_row con_row "console: init= canary, check compiled out (rv)" rv "$con_k" build/disk-signed.img "init=/fat/TOOLBOX.ELF" FAIL \
+        "#wait recovery console|has the console|TOOLBOX.ELF started" 120 \
+        "[CONSOLE] init=/fat/TOOLBOX.ELF ignored: secure boot is on"
+
     # ── sh: safe mode (both ISAs) ──────────────────────────────────────────
     #
     # Safe mode hands the console to the recovery console at once: the

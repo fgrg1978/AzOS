@@ -73,6 +73,24 @@ class ComputeManifestTests(unittest.TestCase):
         self.assertEqual(manifest, [("GPIODRV.ELF", "build/gpio_drv.elf")])
 
 
+class SelectedImagesTests(unittest.TestCase):
+    """tools/gen_board_manifest.py::selected_images — `make config`'s
+    "Userspace programs" choices on top of the topology's images."""
+
+    AVAILABLE = {"SH.ELF": "build/sh.elf", "HELLO.ELF": "build/hello.elf", "UHELLO.ELF": "build/uhello.elf"}
+
+    def test_a_selected_image_ships_beside_the_declared_ones(self):
+        cfg = "CONFIG_USERSPACE_SH=y\nCONFIG_USERSPACE_HELLO=y\n# CONFIG_USERSPACE_UHELLO is not set\n"
+        extras, unselected = gen_board_manifest.selected_images(cfg, ["SH.ELF"], self.AVAILABLE)
+        self.assertEqual(extras, ["HELLO.ELF"])
+        self.assertEqual(unselected, [])
+
+    def test_a_declared_image_left_out_is_reported(self):
+        cfg = "# CONFIG_USERSPACE_SH is not set\n"
+        _, unselected = gen_board_manifest.selected_images(cfg, ["SH.ELF"], self.AVAILABLE)
+        self.assertEqual(unselected, ["SH.ELF"])
+
+
 class CheckBoardDiskTests(unittest.TestCase):
     """tools/check_board_disk.py::diff — the post-build anti-drift check."""
 
