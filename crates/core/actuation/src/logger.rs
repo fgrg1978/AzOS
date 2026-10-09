@@ -1062,7 +1062,8 @@ pub fn logger_defer_io(job: fn()) -> bool {
 
 /// A function the flusher runs at the end of every pass (0: none): the
 /// kernel's printer of what must never print from where it happened
-/// (lockdep's reports, Kconfig LOCKDEP=y outside ktest).
+/// (lockdep's reports, Kconfig LOCKDEP=y outside ktest; read only when
+/// `lockdep::DRAIN_IN_LOG`).
 static PASS_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 /// Run `f` at the end of every flusher pass (task context, no lock held;
@@ -1096,7 +1097,9 @@ pub fn logger_flusher_pass() -> u32 {
             job();
         }
     }
-    let hook = PASS_HOOK.load(Ordering::Acquire);
+    // Only lockdep's printer uses it (LOCKDEP=y outside ktest); otherwise
+    // compiled out.
+    let hook = if azos_sync::lockdep::DRAIN_IN_LOG { PASS_HOOK.load(Ordering::Acquire) } else { 0 };
     if hook != 0 {
         // SAFETY: only `logger_set_pass_hook` stores here, and it stores a `fn()`.
         let hook: fn() = unsafe { core::mem::transmute::<usize, fn()>(hook) };
