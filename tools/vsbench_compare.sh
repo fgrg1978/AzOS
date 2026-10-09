@@ -315,6 +315,31 @@ VSBENCH_SECCOMP="${VSBENCH_SECCOMP:-0}"
 # suite, and the seccomp column (whose check is "every lane the unfiltered
 # column measured") is refused with it.
 VSBENCH_LANES="${VSBENCH_LANES:-}"
+# Wave 15: both sides' disk, the SAME drive line: modern virtio-mmio and this
+# QEMU cache mode (writeback: a guest FLUSH is a host fdatasync; the `disk`
+# lanes compare fsync at the same durability only with the same mode).
+VSBENCH_DISK_CACHE="${VSBENCH_DISK_CACHE:-writeback}"
+# VSBENCH_BLK_TRACE=1: QEMU traces every virtio-blk request of each boot into
+# `<log>.blktrace`, and the summary counts reads, writes and the rest — a
+# FLUSH is a request that is neither (this QEMU has no flush event; the only
+# other type, GET_ID, neither guest sends after probe). With the boot's own
+# requests subtracted (a run of another section), the `disk` section's
+# flushes per fsync show whether each side's fsync reached the device.
+VSBENCH_BLK_TRACE="${VSBENCH_BLK_TRACE:-0}"
+blk_trace_args() { # blk_trace_args <log>
+    [ "$VSBENCH_BLK_TRACE" = 1 ] || return 0
+    rm -f "$1.blktrace"
+    printf '%s\n' -trace virtio_blk_req_complete -trace virtio_blk_handle_write \
+        -trace virtio_blk_handle_read -D "$1.blktrace"
+}
+blk_trace_summary() { # blk_trace_summary <label> <log>
+    [ "$VSBENCH_BLK_TRACE" = 1 ] && [ -f "$2.blktrace" ] || return 0
+    local all w r
+    all=$(grep -c '^virtio_blk_req_complete' "$2.blktrace")
+    w=$(grep -c '^virtio_blk_handle_write' "$2.blktrace")
+    r=$(grep -c '^virtio_blk_handle_read' "$2.blktrace")
+    echo "vsbench: blk trace $1: requests=$all reads=$r writes=$w flushes=$((all - r - w))"
+}
 if [ -n "$VSBENCH_LANES" ]; then
     printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch|disk)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch|disk))*$' \
         || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,switch,disk" >&2; exit 1; }
@@ -480,10 +505,12 @@ boot_azos() { # boot_azos <kernel> <log> <disk copy>
         printf '%s\n' "$VSBENCH_LANES" >"$3.lanes"
         mcopy -o -i "$3" "$3.lanes" ::VSBLANES.TXT || die "could not add VSBLANES.TXT to $3"
     fi
+    local tr=(); while IFS= read -r a; do tr[${#tr[@]}]="$a"; done < <(blk_trace_args "$2")
     "$QEMU" -machine virt -nographic -bios default -smp "$VSBENCH_SMP" $ICOUNT_ARGS ${BOOT_EXTRA:-} \
+        ${tr[@]+"${tr[@]}"} \
         -kernel "$1" \
         -global virtio-mmio.force-legacy=false \
-        -drive "file=$3,if=none,format=raw,id=hd0" \
+        -drive "file=$3,if=none,format=raw,id=hd0,cache=$VSBENCH_DISK_CACHE" \
         -device virtio-blk-device,drive=hd0 >"$2" 2>&1 &
     local pid=$!
     for _ in $(seq 1 "${BOOT_WAIT:-$WAIT_SECS}"); do
@@ -494,6 +521,8 @@ boot_azos() { # boot_azos <kernel> <log> <disk copy>
 }
 boot_azos "$KM_KERNEL" "$KM_LOG" "$WORK/k-bench-minimal.img"
 boot_azos "$KP_KERNEL" "$KP_LOG" "$WORK/k-product.img"
+blk_trace_summary azos-min "$KM_LOG"
+blk_trace_summary azos-product "$KP_LOG"
 
 # ── Linux side ────────────────────────────────────────────────────────────
 if [ ! -f "$LINUX_IMAGE" ]; then
@@ -516,9 +545,12 @@ fi
 # lanes (file-write): the same file system on the same emulated disk.
 boot_linux() { # boot_linux <initramfs> <log> [extra cmdline]
     cp "$REPO_ROOT/build/disk-vsbench.img" "$2.disk.img"
+    local tr=(); while IFS= read -r a; do tr[${#tr[@]}]="$a"; done < <(blk_trace_args "$2")
     "$QEMU" -machine virt -nographic -bios default -smp "$VSBENCH_SMP" $ICOUNT_ARGS ${BOOT_EXTRA:-} \
+        ${tr[@]+"${tr[@]}"} \
         -kernel "$LINUX_IMAGE" -initrd "$1" \
-        -drive "file=$2.disk.img,if=none,format=raw,id=hd0" \
+        -global virtio-mmio.force-legacy=false \
+        -drive "file=$2.disk.img,if=none,format=raw,id=hd0,cache=$VSBENCH_DISK_CACHE" \
         -device virtio-blk-device,drive=hd0 \
         -append "rdinit=/init console=ttyS0${3:+ $3}${VSBENCH_LANES:+ VSBENCH_LANES=$VSBENCH_LANES}" >"$2" 2>&1 &
     local pid=$!
@@ -557,6 +589,7 @@ if [ -n "$L_LOG" ]; then
     chmod +x "$WORK/root/init"
     pack_initramfs "$WORK/root" "$WORK/initramfs.cpio" || die "could not build the initramfs"
     boot_linux "$WORK/initramfs.cpio" "$L_LOG"
+    blk_trace_summary linux "$L_LOG"
 fi
 
 # ── Linux + seccomp side ──────────────────────────────────────────────────
