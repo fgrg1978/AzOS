@@ -58,6 +58,17 @@ if [ "$tier" = n0 ]; then
     fi
 fi
 
+# `make help` must not name a target the Makefile lacks (tools/check_make_help.sh).
+if [ "$tier" = n0 ]; then
+    printf "  %-26s" "make help targets..."
+    if out="$(bash tools/check_make_help.sh 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 for s in $suites; do
     printf "  %-26s" "host ${s#tests/host/}..."
     if out="$(cd "$s" && cargo test --release 2>&1)" \
