@@ -88,6 +88,13 @@ pub fn now_ticks() -> u64 {
         .wrapping_add(scale.apply(tsc.wrapping_sub(BASE_TSC.load(Ordering::Relaxed))))
 }
 
+/// The clock's conversion as ring 3 applies it (the vDSO's counter scale):
+/// `(TSC at base, ticks at base, 32.32 multiplier)`, so that
+/// `base_ticks + ((tsc - base_tsc) * mult >> 32)` is [`now_ticks`].
+pub fn counter_scale() -> (u64, u64, u64) {
+    (BASE_TSC.load(Ordering::Relaxed), BASE_TICKS.load(Ordering::Relaxed), TO_TICKS.load(Ordering::Relaxed))
+}
+
 /// The TSC value at clock tick `ticks` (rounded up; a past tick gives a
 /// past TSC value).
 #[inline(always)]

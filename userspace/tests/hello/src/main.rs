@@ -27,6 +27,23 @@
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 compile_error!("hello: no syscall instruction for this ISA (aarch64, x86_64; riscv64 has hello.S)");
 
+// x86_64 process entry (System V): the kernel starts an image with rsp
+// 16-byte aligned, and a function expects rsp + 8 aligned (a `call` pushed
+// its return address). The programs' `_start` is a Rust function, so the image enters here instead (`ENTRY(_azos_entry)` in each
+// `user_x86_64.ld`): realign, call `_start` with the kernel's rdi/rsi
+// untouched (the spawn startup block arrives in rsi), never return.
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".globl _azos_entry",
+    ".type _azos_entry, @function",
+    "_azos_entry:",
+    "    xor ebp, ebp",
+    "    and rsp, -16",
+    "    call _start",
+    "    ud2",
+    ".size _azos_entry, . - _azos_entry",
+);
+
 use azos_abi::syscall_nr::{SYS_WRITE, SYS_EXIT};
 
 

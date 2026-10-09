@@ -16,5 +16,4 @@
 2	userspace/bench/latbench/src/main.rs
 2	userspace/bench/vsbench/src/bench_core.rs
 8	userspace/services/lxsrv/src/main.rs
-8	userspace/tests/abitest/src/main.rs
 12	userspace/tests/captest/src/main.rs

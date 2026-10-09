@@ -276,4 +276,12 @@ pub trait ArchEntry {
     /// on every wake, or `None` while the timebase is unknown or there is no
     /// vDSO.
     fn vdso_clock(&self) -> Option<(u64, u64)>;
+
+    /// The conversion ring 3 applies to its counter to get the kernel
+    /// clock's ticks, `(counter at base, ticks at base, 32.32 multiplier)`
+    /// (`azos_abi::vdso::VDSO_COUNTER_*`), when that counter does not run at
+    /// TIMER_FREQ and ring 3 may read it; `Some` also makes the vDSO say
+    /// the counter is native. `None` where the counter is the clock or is
+    /// not read from ring 3.
+    fn vdso_counter_scale(&self) -> Option<(u64, u64, u64)>;
 }

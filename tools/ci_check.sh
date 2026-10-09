@@ -11197,10 +11197,14 @@ PY
     #                               own (ring-3 read and write of the console);
     #                               no panic, no x86 trap report
     #   x86_64 abitest              ABITEST.ELF autorun, -smp 2: every check,
-    #                               read back; the one known gap is aarch64's
-    #                               (`vdso flags bit 0: rdtime native`: the
-    #                               kernel publishes no TSC scale, libsys
-    #                               read_time_csr says why)
+    #                               read back, none may fail (the vDSO's TSC
+    #                               scale makes `rdtsc` native: aarch64's one
+    #                               known gap is not x86_64's); the `sse:`
+    #                               checks hold XMM0-XMM15/MXCSR across fork
+    #                               and 300 yields in four tasks
+    #   x86_64 abitest fork-FP canary  canary=x86-fork-fp-skip: a forked
+    #                               child starts from the initial FP image;
+    #                               the `sse:` fork check alone fails
     #   x86_64 ipctest              IPCTEST.ELF autorun, -smp 2: phase A's
     #                               1600 calls and every check
     #   x86_64 image digest canary  the abitest volume with one byte appended
@@ -11269,7 +11273,10 @@ PY
                      stop='IPCTEST\] [0-9]+ check\(s\) run' ;;
             canary)  label="x86_64 image digest canary"; disk_t=build/disk-x86_64-abitest.img
                      stop='matches no seccomp image profile' ;;
+            fpcanary) label="x86_64 abitest fork-FP canary"; disk_t=build/disk-x86_64-abitest.img
+                     stop='ABITEST\] [0-9]+ check\(s\) run' ;;
         esac
+        local -a app=(); [ "$which" = fpcanary ] && app=(-append canary=x86-fork-fp-skip)
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -11282,7 +11289,7 @@ PY
             rm -f "$elf"
         fi
         par_ready
-        x86_qemu "$kimg" "$log" 300 "$stop|KERNEL PANIC" -smp 2 \
+        x86_qemu "$kimg" "$log" 300 "$stop|KERNEL PANIC" -smp 2 ${app[@]+"${app[@]}"} \
             -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0
         # The `FAILED: N` line follows the summary; the FAIL lines precede it.
         rm -f "$kimg" "$disk"
@@ -11291,6 +11298,13 @@ PY
             canary)
                 if ! grep -aqF "[AUTORUN] REFUSED: /fat/ABITEST.ELF" "$log"; then why="autorun did not refuse the altered ABITEST.ELF"
                 elif grep -aqF "[ABITEST]" "$log"; then why="the altered ABITEST.ELF ran"
+                fi ;;
+            fpcanary)
+                fail_lines="$(grep -a '\[ABITEST\]  FAIL  ' "$log" | sed 's/^\[ABITEST\]  FAIL  //')"
+                if ! grep -aqE "\[ABITEST\] [0-9]+ check\(s\) run" "$log"; then why="abitest never printed its own summary line"
+                elif [ "$(printf '%s\n' "$fail_lines" | grep -c .)" != 1 ] \
+                        || ! printf '%s\n' "$fail_lines" | qgrep -qF "sse: fork() child starts with the parent's"; then
+                    why="expected the sse fork check alone to fail, got: $(printf '%s\n' "$fail_lines" | sed -n 1,4p | tr '\n' ';')"
                 fi ;;
             *)
                 local tagw; tagw="$(printf '%s' "$which" | tr 'a-z' 'A-Z')"
@@ -11301,8 +11315,7 @@ PY
                 else
                     fail_lines="$(grep -a "\[$tagw\]  FAIL  " "$log" | sed "s/^\[$tagw\]  FAIL  //")"
                     fails="$(printf '%s\n' "$fail_lines" | grep -c .)"
-                    if [ "$fails" -gt 0 ] && ! { [ "$which" = abitest ] && [ "$fails" -eq 1 ] \
-                            && printf '%s\n' "$fail_lines" | qgrep -qF "vdso flags bit 0: rdtime native"; }; then
+                    if [ "$fails" -gt 0 ]; then
                         why="$which reported $fails failure(s): $(printf '%s\n' "$fail_lines" | sed -n 1,4p | tr '\n' ';')"
                     fi
                 fi ;;
@@ -11314,6 +11327,7 @@ PY
     par "x86_64 abitest" x86_autorun_row abitest
     par "x86_64 ipctest" x86_autorun_row ipctest
     par "x86_64 image digest canary" x86_autorun_row canary
+    par "x86_64 abitest fork-FP canary" x86_autorun_row fpcanary
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

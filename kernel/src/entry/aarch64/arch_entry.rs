@@ -166,6 +166,11 @@ impl ArchEntry for Entry {
     /// The vDSO clock on aarch64: the tick count and `CNTVCT_EL0` in ms at
     /// the live `CNTFRQ_EL0` captured at boot. `None` until both are known.
     #[inline(always)]
+    fn vdso_counter_scale(&self) -> Option<(u64, u64, u64)> {
+        // Ring 3 converts `cntvct_el0` with the vDSO's timebase itself.
+        None
+    }
+
     fn vdso_clock(&self) -> Option<(u64, u64)> {
         let hz = crate::entry::aarch64::VDSO_TIMEBASE_HZ.load(Ordering::Relaxed);
         let now = azos_drv_sys::timebase::now();

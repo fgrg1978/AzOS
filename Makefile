@@ -2542,27 +2542,30 @@ $(X86_64_KCONFIG): config/defconfigs/qemu-x86_64.config $(wildcard Kconfig confi
 
 # ── x86_64 userspace ────────────────────────────────────────────────────────
 #
-# The ring-3 programs for `x86_64-unknown-none`, into `build/x86_64/`, bound
-# by their own digest table (`build/image_hashes_x86_64.rs`, which
-# crates/core/sched/src/seccomp.rs `include!`s on x86_64), exactly as the
-# aarch64 set is. Each crate's `.cargo/config.toml` carries the target's link
-# flags (`user_x86_64.ld`, static relocation, the small code model); the
-# baseline (Kconfig X86_64_LEVEL and every `require`d extension) comes from
-# the kernel's own expanded config through `kconfig_to_cargo.py
-# --user-rustflags`, at recipe time, so an image is always built for the
-# level the kernel refuses CPUs below. The target is soft-float: these images
-# carry no SSE/x87 state.
+# The ring-3 programs for `userspace/x86_64-azos-user.json`, into
+# `build/x86_64/`, bound by their own digest table
+# (`build/image_hashes_x86_64.rs`, which crates/core/sched/src/seccomp.rs
+# `include!`s on x86_64), exactly as the aarch64 set is. The target is
+# bare-metal x86_64 with the hard-float System V ABI (SSE/SSE2, as every
+# x86-64 CPU has; the kernel alone is soft-float), static and in the small
+# code model: a JSON spec, because rustc's `x86_64-unknown-none` is
+# soft-float. Each crate's `.cargo/config.toml` carries the link flags
+# (`user_x86_64.ld`); the baseline (Kconfig X86_64_LEVEL and every
+# `require`d extension, the SIMD ones included) comes from the kernel's own
+# expanded config through `kconfig_to_cargo.py --user-rustflags`, at recipe
+# time, so an image is always built for the level the kernel refuses CPUs
+# below.
 #
 # HELLO.ELF is `userspace/tests/hello`, the Rust stand-in aarch64 also uses
 # for riscv64's hand-assembled `hello.S` (its binary keeps the crate's
 # `hello_aarch64` name). Not in the set yet: syscall_test (aarch64-only),
-# latbench/vsbench/vssrv (their timer is a
-# raw counter converted at the vDSO's TIMER_FREQ; the TSC is not that clock),
+# latbench/vsbench/vssrv (they read the raw counter and convert it at the
+# vDSO's TIMER_FREQ; on x86_64 that counter is the TSC, at its own rate),
 # captest (board RTC/IRQ fixtures) and lxsrv (the Linux personality's
 # register layout is aarch64/riscv64 only).
-TARGET_X86_64 := x86_64-unknown-none
+TARGET_X86_64 := x86_64-azos-user
 X86_64_DIR    := build/x86_64
-X86_64_UFLAGS  = --target $(TARGET_X86_64) \
+X86_64_UFLAGS  = -Zjson-target-spec --target $(CURDIR)/userspace/$(TARGET_X86_64).json \
 	--config 'target.$(TARGET_X86_64).rustflags=['"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(CURDIR)/$(X86_64_KCONFIG))"']'
 X86_64_UBUILT := target/$(TARGET_X86_64)/release
 HELLO_ELF_X86_64     := $(X86_64_DIR)/hello.elf
@@ -2594,6 +2597,7 @@ IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) UHELLO.ELF=$(UHELLO_ELF_X86_6
               FLIGHT.ELF=$(FLIGHT_ELF_X86_64) BEHAVIOR.ELF=$(BEHAVIOR_ELF_X86_64) \
               CONFIG.ELF=$(CONFIG_ELF_X86_64) OTA.ELF=$(OTA_ELF_X86_64)
 IMAGE_ELF_PATHS_X86_64 := $(foreach e,$(IMAGE_ELFS_X86_64),$(lastword $(subst =, ,$(e))))
+$(IMAGE_ELF_PATHS_X86_64): userspace/$(TARGET_X86_64).json
 IMAGE_HASHES_X86_64 := build/image_hashes_x86_64.rs
 
 $(IMAGE_HASHES_X86_64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_X86_64)

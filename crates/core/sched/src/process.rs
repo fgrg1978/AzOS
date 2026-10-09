@@ -2597,7 +2597,11 @@ pub fn thread_create_impl(
     // trap path builds one only for fork and clone), so the stack, the
     // thread pointer (FS base) and the `(0, stack, arg)` the entry is
     // promised (rdi, rsi, rdx) are written here; everything else starts
-    // zeroed. Without them the thread entered ring 3 with rsp = 0.
+    // zeroed. Without them the thread entered ring 3 with rsp = 0. A native
+    // entry is a System V function entered as if called: rsp + 8 is the
+    // 16-byte-aligned `stack` (the slot below it stands for a return
+    // address the `-> !` entry never uses). A Linux clone resumes after its
+    // `syscall` on `stack` itself, as Linux does.
     #[cfg(all(target_arch = "x86_64", target_os = "none"))]
     {
         use azos_arch::fork_regs::gpr;
@@ -2605,8 +2609,9 @@ pub fn thread_create_impl(
         if let Some(t) = tls {
             r.fs_base = t;
         }
-        r.gpr[gpr::RSI] = stack;
         if let Some(a) = arg {
+            r.rsp = stack - 8;
+            r.gpr[gpr::RSI] = stack;
             r.gpr[gpr::RDX] = a;
         }
     }

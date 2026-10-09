@@ -419,7 +419,7 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
 
     // M01: the vDSO timing page user space reads directly, at the timebase
     // the ISA reports. Before any task can exec.
-    crate::install_vdso(a.timebase_hz());
+    crate::install_vdso(a.timebase_hz(), a.vdso_counter_scale());
 
     // ---- Interrupts: the controller, the console line, ring-3 lines, then
     // the timer. The boot CPU's own tick is armed where the ISA's

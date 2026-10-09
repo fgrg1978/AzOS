@@ -103,6 +103,16 @@ impl ArchEntry for Entry {
         }
     }
 
+    /// The TSC's scale to the clock (`azos_arch::timer`'s calibration, final
+    /// before the vDSO is installed): ring 3 reads the TSC (`CR4.TSD`
+    /// clear) and converts it exactly as `now_ticks` does.
+    fn vdso_counter_scale(&self) -> Option<(u64, u64, u64)> {
+        if cfg!(feature = "vdso-force-syscall") {
+            return None;
+        }
+        Some(azos_arch::timer::counter_scale())
+    }
+
     /// The vDSO clock: tick count and the clock (TIMER_FREQ) in ms.
     fn vdso_clock(&self) -> Option<(u64, u64)> {
         let hz = azos_arch::timer::TICK_HZ;

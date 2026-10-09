@@ -154,6 +154,11 @@ impl ArchEntry for Entry {
     /// The vDSO clock on riscv64: the watchdog tick count and `rdtime` in ms
     /// at the fixed `TIMER_FREQ`. No vDSO page under `no-mmu`.
     #[inline(always)]
+    fn vdso_counter_scale(&self) -> Option<(u64, u64, u64)> {
+        // `rdtime` already counts at TIMER_FREQ: nothing to convert.
+        None
+    }
+
     fn vdso_clock(&self) -> Option<(u64, u64)> {
         #[cfg(not(feature = "no-mmu"))]
         {

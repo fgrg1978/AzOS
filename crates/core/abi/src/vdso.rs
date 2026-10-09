@@ -165,6 +165,22 @@ pub const VTP_SENSOR_ACQ_NS: usize = 48;
 
 /// Byte offset of the `hwcap` word in the vDSO page.
 pub const VDSO_HWCAP_OFFSET: usize = 40;
+
+// ── Counter scale (`VdsoData::counter_*`, byte offsets 48..72) ──────────────
+//
+// Where the counter ring 3 reads (`rdtsc` on x86_64) does not run at the
+// kernel clock's rate (TIMER_FREQ), the kernel publishes its own conversion,
+// written once before the first user task:
+//   ticks = ticks_base + ((counter - counter_base) * mult) >> 32
+// (64x64 -> 128-bit product). All three are 0 where the counter IS the clock
+// (riscv64 `rdtime`) or ring 3 does not read it (aarch64 today).
+
+/// Byte offset of the counter value at the conversion's base.
+pub const VDSO_COUNTER_BASE_OFFSET: usize = 48;
+/// Byte offset of the clock tick count at the conversion's base.
+pub const VDSO_TICKS_BASE_OFFSET: usize = 56;
+/// Byte offset of the 32.32 fixed-point counter-to-tick multiplier.
+pub const VDSO_COUNTER_MULT_OFFSET: usize = 64;
 /// aarch64 FEAT_CRC32: `crc32{b,h,w,x}` / `crc32c*` (ID_AA64ISAR0_EL1.CRC32 >= 1).
 pub const HWCAP_A64_CRC32: u64 = 1 << 0;
 /// aarch64 FEAT_AES: `aese`/`aesd`/`aesmc`/`aesimc` (ISAR0.AES >= 1).

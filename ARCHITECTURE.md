@@ -730,7 +730,8 @@ command line; every aarch64 boot in the gate uses the `Image`.
   registers (`+lse`, `+rcpc`, ...); the user images get the whole list.
   The soft-float x86_64 kernel likewise gets `-C target-cpu=x86-64-vN` and
   only the integer `require` extensions (`+popcnt`, `+bmi2`, `+adx`, ...); its
-  user images take the same `target-cpu` on the same soft-float target. The
+  user images are hard-float (`userspace/x86_64-azos-user.json`, SSE2 and up)
+  and get the level's SIMD too. The
   boot checks the level before anything that depends on it. On aarch64 that
   is the first hook, before the first lock: a `+lse` kernel on an Armv8.0
   core would otherwise fault at its first atomic instead of saying why. A CPU
@@ -784,8 +785,12 @@ x86_64 port is the latest: `make qemu-x86_64` boots it on QEMU `-M microvm`
 `QEMU_X86_64_DISK=build/disk-x86_64.img` its FAT volume is a virtio-blk device
 in the microvm virtio-mmio window and the console program runs in ring 3.
 The x86_64 user images (`make userspace-x86_64`, into `build/x86_64/`) are
-linked by each program's `user_x86_64.ld` for `x86_64-unknown-none`, which
-is soft-float: they carry no SSE or x87 state. libsys enters the kernel with
+linked by each program's `user_x86_64.ld` for `userspace/x86_64-azos-user.json`,
+a bare-metal hard-float System V target (rustc's `x86_64-unknown-none` is
+soft-float); libsys's `_azos_entry` realigns the stack and calls the
+program's `_start`, and the kernel keeps each task's XMM/MXCSR state across
+switches and forks. The TSC is read in ring 3: the vDSO publishes the
+kernel's TSC-to-clock conversion (`VDSO_COUNTER_*`). libsys enters the kernel with
 `syscall` (number in rax, arguments in rdi, rsi, rdx, r10, r8, r9; the
 fast-IPC replies come back in rdx, rsi, rdi, r8, r9, r10), and they are bound
 by their own digest table, `build/image_hashes_x86_64.rs`. The shared page-table walks follow
@@ -801,11 +806,12 @@ roots are level-2 tables, that step is constant-folded away.
   through these; the facade refuses to compile for a bare-metal target it has
   no branch for.
 - **`kernel/src/entry/<isa>/`**: `boot_hooks.rs` and `arch_entry.rs`, the
-  kernel's `ArchEntry` (36 methods, four associated types, a
+  kernel's `ArchEntry` (37 methods, four associated types, a
   `PAGE_TABLES` name and a `CONSOLE_MMIO` flag: the 27 early-boot hooks `boot::early_main` calls, the
   late VirtIO map, the boot-once text patch, the secondary-CPU wake, the
   scheduler hand-off, the four
-  secondary-CPU steps the shared `secondary_main` calls, the vDSO clock);
+  secondary-CPU steps the shared `secondary_main` calls, the vDSO clock and
+  counter scale);
   `kernel/src/entry/<isa>.rs` with the `TrapFrame` and its `TrapContext` (11
   methods); and `asm/boot.S` (exports `_start`, calls `kernel_main` and, per
   secondary CPU, `secondary_main`; x86_64 enters a secondary through a

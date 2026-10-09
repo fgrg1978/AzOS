@@ -49,6 +49,12 @@
 #![no_std]
 #![no_main]
 
+// The raw syscalls, the fault and FP probes below select their instructions
+// per ISA; on an ISA with no branch the build stops here instead of losing
+// a check.
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("abitest: no syscall instruction for this ISA (riscv64, aarch64, x86_64)");
+
 use azos_libsys as sys;
 
 static mut FAILURES: u32 = 0;
@@ -255,6 +261,15 @@ pub extern "C" fn _start() -> ! {
     check_fork_copies_neon_state();
     #[cfg(target_arch = "aarch64")]
     check_neon_state_is_per_task();
+    // x86_64: the same two properties for XMM0-XMM15 and MXCSR (the
+    // images are hard-float; the kernel saves the state on a switch and
+    // copies it on fork, kernel/src/entry/x86_64/fp.rs).
+    // arch-only: x86_64's FP probe (XMM/MXCSR); aarch64 has its NEON twin, riscv64 images use no FP registers.
+    #[cfg(target_arch = "x86_64")]
+    check_fork_copies_sse_state();
+    // arch-only: x86_64's FP probe (XMM/MXCSR); aarch64 has its NEON twin, riscv64 images use no FP registers.
+    #[cfg(target_arch = "x86_64")]
+    check_sse_state_is_per_task();
     check_udp_client_server();
     // After every check that reaps with `wait()`: the spawned child is reaped
     // by TID, and a notice left behind by a failure here must not be taken by
@@ -310,9 +325,11 @@ pub extern "C" fn _start() -> ! {
 //
 // Syscall numbers restated from crates/core/abi/src/syscall_nr.rs (libsys
 // imports them privately); the kernel's aarch64 dispatcher reads x8.
-#[cfg(target_arch = "aarch64")]
+// arch-only: the syscall numbers the FP probes (aarch64, x86_64) issue raw.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 const NEON_SYS_YIELD: u64 = 11;
-#[cfg(target_arch = "aarch64")]
+// arch-only: the syscall numbers the FP probes (aarch64, x86_64) issue raw.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 const NEON_SYS_FORK: u64 = 12;
 
 /// Fill V0-V31 with `p + n` in both lanes and FPCR with `fpcr`, make one
@@ -554,6 +571,171 @@ fn check_fork_copies_neon_state() {
     }
     expect_eq(b"neon: fork() child reaped", reaped, pid);
     expect_eq(b"neon: fork() child starts with the parent's V0-V31/FPCR", status as isize, 0);
+}
+
+// ── FP state (x86_64): every task keeps its own XMM0-XMM15/MXCSR ────────
+
+/// Load XMM0-XMM15 with `p + n` in both quadwords and MXCSR with the
+/// default plus `rc` (rounding control, bits 14:13), make one syscall (`nr`:
+/// yield, or fork), then store everything back. One asm block, so nothing
+/// but the kernel can touch the registers in between. Returns (rax, OR of
+/// every quadword's difference from its expected value, and MXCSR's).
+// arch-only: x86_64's FP probe (XMM/MXCSR); aarch64 has its NEON twin, riscv64 images use no FP registers.
+#[cfg(target_arch = "x86_64")]
+fn sse_fill_syscall_check(p: u64, rc: u32, nr: u64) -> (isize, u64) {
+    const MXCSR_DEFAULT: u32 = 0x1F80;
+    let input: [u64; 32] = core::array::from_fn(|k| p + (k / 2) as u64);
+    let mut output = [0u64; 32];
+    let mx_in: u32 = MXCSR_DEFAULT | rc;
+    let mut mx_out: u32 = 0;
+    let rv: isize;
+    unsafe {
+        core::arch::asm!(
+            "ldmxcsr [{mxi}]",
+            "movdqu xmm0, [{i} + 0]",
+            "movdqu xmm1, [{i} + 16]",
+            "movdqu xmm2, [{i} + 32]",
+            "movdqu xmm3, [{i} + 48]",
+            "movdqu xmm4, [{i} + 64]",
+            "movdqu xmm5, [{i} + 80]",
+            "movdqu xmm6, [{i} + 96]",
+            "movdqu xmm7, [{i} + 112]",
+            "movdqu xmm8, [{i} + 128]",
+            "movdqu xmm9, [{i} + 144]",
+            "movdqu xmm10, [{i} + 160]",
+            "movdqu xmm11, [{i} + 176]",
+            "movdqu xmm12, [{i} + 192]",
+            "movdqu xmm13, [{i} + 208]",
+            "movdqu xmm14, [{i} + 224]",
+            "movdqu xmm15, [{i} + 240]",
+            "syscall",
+            "movdqu [{o} + 0], xmm0",
+            "movdqu [{o} + 16], xmm1",
+            "movdqu [{o} + 32], xmm2",
+            "movdqu [{o} + 48], xmm3",
+            "movdqu [{o} + 64], xmm4",
+            "movdqu [{o} + 80], xmm5",
+            "movdqu [{o} + 96], xmm6",
+            "movdqu [{o} + 112], xmm7",
+            "movdqu [{o} + 128], xmm8",
+            "movdqu [{o} + 144], xmm9",
+            "movdqu [{o} + 160], xmm10",
+            "movdqu [{o} + 176], xmm11",
+            "movdqu [{o} + 192], xmm12",
+            "movdqu [{o} + 208], xmm13",
+            "movdqu [{o} + 224], xmm14",
+            "movdqu [{o} + 240], xmm15",
+            "stmxcsr [{mxo}]",
+            "ldmxcsr [{mxd}]",
+            i = in(reg) input.as_ptr(),
+            o = in(reg) output.as_mut_ptr(),
+            mxi = in(reg) &mx_in,
+            mxo = in(reg) &mut mx_out,
+            mxd = in(reg) &MXCSR_DEFAULT,
+            inlateout("rax") nr as isize => rv,
+            // Not late: `syscall` writes them, and the pointers above are
+            // read after it.
+            out("rcx") _,
+            out("r11") _,
+            out("xmm0") _,
+            out("xmm1") _,
+            out("xmm2") _,
+            out("xmm3") _,
+            out("xmm4") _,
+            out("xmm5") _,
+            out("xmm6") _,
+            out("xmm7") _,
+            out("xmm8") _,
+            out("xmm9") _,
+            out("xmm10") _,
+            out("xmm11") _,
+            out("xmm12") _,
+            out("xmm13") _,
+            out("xmm14") _,
+            out("xmm15") _,
+            options(nostack),
+        );
+    }
+    let mut acc = (mx_out ^ mx_in) as u64;
+    for k in 0..32 {
+        acc |= output[k] ^ input[k];
+    }
+    (rv, acc)
+}
+
+/// `rounds` yields, each after loading XMM0-XMM15/MXCSR with a fresh
+/// pattern derived from `seed`; the rounds in which anything came back
+/// changed.
+// arch-only: x86_64's FP probe (XMM/MXCSR); aarch64 has its NEON twin, riscv64 images use no FP registers.
+#[cfg(target_arch = "x86_64")]
+fn sse_task_rounds(seed: u64, rc: u32, rounds: u64) -> u64 {
+    (0..rounds).filter(|r| sse_fill_syscall_check(seed ^ (r << 8), rc, NEON_SYS_YIELD).1 != 0).count() as u64
+}
+
+/// Four tasks (this one and three forked children) each load their own
+/// XMM0-XMM15 and MXCSR rounding mode and yield 300 times, checking every
+/// register after every yield: a save or restore the switch skipped shows
+/// up as another task's values.
+// arch-only: x86_64's FP probe (XMM/MXCSR); aarch64 has its NEON twin, riscv64 images use no FP registers.
+#[cfg(target_arch = "x86_64")]
+fn check_sse_state_is_per_task() {
+    const ROUNDS: u64 = 300;
+    const CHILDREN: u64 = 3;
+    let mut pids = [0isize; CHILDREN as usize];
+    for k in 0..CHILDREN {
+        let pid = sys::fork();
+        if pid == 0 {
+            let bad = sse_task_rounds(0x5EED_0000_0000_0000 | ((k + 1) << 40), ((k + 1) as u32) << 13, ROUNDS);
+            sys::exit(if bad > 100 { 100 } else { bad as i32 });
+        }
+        pids[k as usize] = pid;
+    }
+    let forked = pids.iter().all(|&p| p > 0);
+    expect_true(b"sse: fork three FP-using children", forked);
+    let own_bad = sse_task_rounds(0x5EED_0000_0000_0000, 0, ROUNDS);
+    let mut child_bad: isize = 0;
+    let mut reaped = 0;
+    let mut deadline = Deadline::in_ms(30_000);
+    while !deadline.expired() {
+        if reaped == CHILDREN || !forked { break; }
+        let mut status: i32 = -1;
+        let r = sys::wait_status(&mut status as *mut i32);
+        if r > 0 {
+            reaped += 1;
+            child_bad += status as isize;
+        } else {
+            sys::sleep(1);
+        }
+    }
+    expect_eq(b"sse: all three children reaped", reaped as isize, CHILDREN as isize);
+    expect_eq(b"sse: parent's XMM0-XMM15/MXCSR survived 300 yields", own_bad as isize, 0);
+    expect_eq(b"sse: children's XMM0-XMM15/MXCSR survived 300 yields each", child_bad, 0);
+}
+
+/// `fork()` hands the child the parent's XMM0-XMM15 and MXCSR: both sides
+/// read back exactly what the parent loaded before the `syscall`.
+// arch-only: x86_64's FP probe (XMM/MXCSR); aarch64 has its NEON twin, riscv64 images use no FP registers.
+#[cfg(target_arch = "x86_64")]
+fn check_fork_copies_sse_state() {
+    const P: u64 = 0xF0F0_1234_0000_0000;
+    const MXCSR_RC_UP: u32 = 2 << 13;
+    let (pid, acc) = sse_fill_syscall_check(P, MXCSR_RC_UP, NEON_SYS_FORK);
+    if pid == 0 {
+        sys::exit(if acc == 0 { 0 } else { 1 });
+    }
+    expect_true(b"sse: fork() inside the FP probe", pid > 0);
+    if pid <= 0 { return; }
+    expect_eq(b"sse: parent's XMM0-XMM15/MXCSR survive fork()", (acc != 0) as isize, 0);
+    let mut status: i32 = -12345;
+    let mut reaped = -1isize;
+    let mut deadline = Deadline::in_ms(20_000);
+    while !deadline.expired() {
+        reaped = sys::wait_status(&mut status as *mut i32);
+        if reaped > 0 { break; }
+        sys::sleep(1);
+    }
+    expect_eq(b"sse: fork() child reaped", reaped, pid);
+    expect_eq(b"sse: fork() child starts with the parent's XMM0-XMM15/MXCSR", status as isize, 0);
 }
 
 /// Ask `brk` for far more than any budget allows, and report what was granted.

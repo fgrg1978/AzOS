@@ -112,6 +112,14 @@ pub struct VdsoData {
     /// AT_HWCAP analogue. Written once by [`vdso_set_hwcap`] during boot,
     /// before the first user task; outside the seqlock like `flags`.
     pub hwcap: AtomicU64,
+    /// The counter scale (`azos_abi::vdso::VDSO_COUNTER_*`): the counter at
+    /// the conversion's base, the clock's ticks there, and the 32.32
+    /// multiplier. Written once by [`vdso_set_counter_scale`] before the
+    /// first user task (x86_64: the TSC's calibration, which never changes
+    /// after boot); outside the seqlock like `timebase_hz`. Zero elsewhere.
+    pub counter_base: AtomicU64,
+    pub ticks_base: AtomicU64,
+    pub counter_mult: AtomicU64,
 }
 
 // libsys reads the page by raw offset (`crates/core/libsys/src/lib.rs`,
@@ -126,6 +134,9 @@ const _: () = {
     assert!(core::mem::offset_of!(VdsoData, uptime_ms) == 24);
     assert!(core::mem::offset_of!(VdsoData, timebase_hz) == 32);
     assert!(core::mem::offset_of!(VdsoData, hwcap) == azos_abi::vdso::VDSO_HWCAP_OFFSET);
+    assert!(core::mem::offset_of!(VdsoData, counter_base) == azos_abi::vdso::VDSO_COUNTER_BASE_OFFSET);
+    assert!(core::mem::offset_of!(VdsoData, ticks_base) == azos_abi::vdso::VDSO_TICKS_BASE_OFFSET);
+    assert!(core::mem::offset_of!(VdsoData, counter_mult) == azos_abi::vdso::VDSO_COUNTER_MULT_OFFSET);
 };
 
 // ---------------------------------------------------------------------------
@@ -166,6 +177,17 @@ pub fn vdso_set_hwcap(hwcap: u64) {
     if phys == 0 { return; }
     let data = unsafe { &*(crate::addr::phys_to_virt(phys) as *const VdsoData) };
     data.hwcap.store(hwcap, Ordering::Release);
+}
+
+/// Publish the counter scale (`VdsoData::counter_*`). Called once during
+/// boot, after [`vdso_init`] and before the first user task.
+pub fn vdso_set_counter_scale(counter_base: u64, ticks_base: u64, mult: u64) {
+    let phys = VDSO_PHYS.load(Ordering::Relaxed) as usize;
+    if phys == 0 { return; }
+    let data = unsafe { &*(crate::addr::phys_to_virt(phys) as *const VdsoData) };
+    data.counter_base.store(counter_base, Ordering::Relaxed);
+    data.ticks_base.store(ticks_base, Ordering::Relaxed);
+    data.counter_mult.store(mult, Ordering::Release);
 }
 
 pub fn vdso_init() {

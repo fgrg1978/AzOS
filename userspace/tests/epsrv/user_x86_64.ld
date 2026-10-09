@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
 /* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
-/* Linker script for a ring-3 user ELF, x86_64 (`x86_64-unknown-none`).
+/* Linker script for a ring-3 user ELF, x86_64 (`userspace/x86_64-azos-user.json`).
  *
  * Same layout as `user.ld` and `user_aarch64.ld`: loads at VA 0x10000, and
  * each segment starts on a page of its own, because the loader gives every
@@ -8,18 +8,18 @@
  * refuses an image in which two segments with different permissions share a
  * page (crates/core/sched/src/process.rs).
  *
- * `.cargo/config.toml` passes `-zmax-page-size=4096` (rust-lld's x86_64
- * default is 4 KiB already; spelled out so the program headers cannot drift
- * with the linker), `-C relocation-model=static` (the target defaults to a
- * static PIE whose `.rela.dyn` the loader never applies) and
- * `-C code-model=small` (the target defaults to the kernel code model, the
- * top 2 GiB) and `-z norelro` (no RELRO segment: nothing is relocated, so
- * nothing is made read-only after it, and a RELRO page of its own would be
- * one more permission boundary the loader has to see).
+ * The target is `userspace/x86_64-azos-user.json` (hard-float, static,
+ * small code model); `.cargo/config.toml` passes `-zmax-page-size=4096`
+ * (rust-lld's x86_64 default already; spelled out so the program headers
+ * cannot drift with the linker) and `-z norelro` (no RELRO segment:
+ * nothing is relocated, so nothing is made read-only after it, and a RELRO
+ * page of its own would be one more permission boundary the loader sees).
  */
 
 OUTPUT_FORMAT(elf64-x86-64)
-ENTRY(_start)
+/* libsys's `_azos_entry` aligns the stack as System V asks and calls
+ * `_start` (crates/core/libsys/src/lib.rs). */
+ENTRY(_azos_entry)
 
 SECTIONS
 {

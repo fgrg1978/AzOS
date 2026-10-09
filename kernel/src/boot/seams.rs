@@ -25,9 +25,10 @@ use crate::*;
 /// optimisation, RFC-0041 §A) is NOT set here for aarch64: it is a
 /// RISC-V-specific ABI promise about a RISC-V-specific instruction, and
 /// aarch64 has no equivalent wired yet. Ring 3 there still gets the vDSO's
-/// cooked `uptime_ms`/`uptime_ticks` fields; only the sub-tick-granularity
-/// `rdtime` fast path is riscv64-only.
-pub(crate) fn install_vdso(timebase_hz: u64) {
+/// cooked `uptime_ms`/`uptime_ticks` fields. x86_64 sets it with
+/// `counter_scale` (`ArchEntry::vdso_counter_scale`): the TSC's conversion
+/// to the clock, which ring 3 applies to its own `rdtsc`.
+pub(crate) fn install_vdso(timebase_hz: u64, counter_scale: Option<(u64, u64, u64)>) {
     #[cfg(not(feature = "no-mmu"))]
     {
         azos_mm::vdso::vdso_init();
@@ -39,6 +40,13 @@ pub(crate) fn install_vdso(timebase_hz: u64) {
         azos_mm::vdso::vdso_set_timebase(timebase_hz);
         #[cfg(all(feature = "qemu", not(feature = "vdso-force-syscall"), target_arch = "riscv64"))]
         azos_mm::vdso::vdso_set_flags(azos_mm::vdso::VDSO_FLAG_RDTIME_NATIVE);
+        // An ISA whose ring-3 counter runs at another rate (x86_64's TSC)
+        // publishes the kernel's own conversion; ring 3 then reads the
+        // counter natively, with the clock's semantics.
+        if let Some((counter_base, ticks_base, mult)) = counter_scale {
+            azos_mm::vdso::vdso_set_counter_scale(counter_base, ticks_base, mult);
+            azos_mm::vdso::vdso_set_flags(azos_mm::vdso::VDSO_FLAG_RDTIME_NATIVE);
+        }
         let hwcap = detect_hwcap();
         azos_mm::vdso::vdso_set_hwcap(hwcap);
         kprintln!("[VDSO] Shared timing page ready at user VA {:#x}", azos_mm::vdso::VDSO_USER_BASE);
@@ -47,7 +55,7 @@ pub(crate) fn install_vdso(timebase_hz: u64) {
     }
     #[cfg(feature = "no-mmu")]
     {
-        let _ = timebase_hz;
+        let _ = (timebase_hz, counter_scale);
     }
 }
 
