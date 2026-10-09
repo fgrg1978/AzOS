@@ -10840,6 +10840,7 @@ PY
     x86_qemu() { # x86_qemu <image> <log> <secs> <stop ERE or ""> [qemu args...]; sets X86_QRC
         local img="$1" log="$2" secs="$3" stop="$4" i=0; shift 4
         while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        : >"$log"   # exists before the first poll reads it
         qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 "$@" -kernel "$img" </dev/null >"$log" 2>&1 &
         local pid=$!
