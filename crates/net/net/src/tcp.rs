@@ -1949,6 +1949,10 @@ pub fn send_data(idx: usize, data: &[u8]) -> i32 {
     let end = start.wrapping_add(n as u32);
     let mut t = TCP.lock();
     let c = &mut t.conns[idx];
+    // `advertise` above counted the ACK this segment carried as sent; it was
+    // not. Hold one again (N6), so the end of the pass or the timer sends it
+    // rather than the peer's retransmission timer finding out.
+    c.hold_ack(now, false, true);
     if c.seq == end && seq_le(c.snd_una, start) {
         c.seq = start;
         if seq_lt(start, c.rtx_next) {
