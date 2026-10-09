@@ -164,12 +164,15 @@ pub(crate) fn net_poll_task(_: usize) {
                 let early = azos_drv_sys::timebase::now() < dl;
                 let dispatched = NET_MSI_WAKES[1].load(Ordering::Relaxed);
                 let other = NET_MSI_WAKES[0].load(Ordering::Relaxed);
+                // "RX MSI" on virtio-pci (a gate row reads that line), "RX
+                // interrupt" on the virtio-mmio line (Kconfig NET_RX_IRQ).
+                let what = if azos_drv_virtio::virtio::net::msi_armed() { "RX MSI" } else { "RX interrupt" };
                 if dispatched != 0 {
-                    kprintln!("[NET-POLL] RX MSI woke this task: rx {} -> {}, dispatched={} other={} early={}",
-                        rx_seen, rx, dispatched, other, if early { "y" } else { "n" });
+                    kprintln!("[NET-POLL] {} woke this task: rx {} -> {}, dispatched={} other={} early={}",
+                        what, rx_seen, rx, dispatched, other, if early { "y" } else { "n" });
                 } else {
-                    kprintln!("[NET-POLL] RX MSI taken but no ISR wake dispatched: rx {} -> {}, other={}",
-                        rx_seen, rx, other);
+                    kprintln!("[NET-POLL] {} taken but no ISR wake dispatched: rx {} -> {}, other={}",
+                        what, rx_seen, rx, other);
                 }
             }
             rx_seen = rx;

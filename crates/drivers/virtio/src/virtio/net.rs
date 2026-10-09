@@ -1099,10 +1099,16 @@ where
     Ok(())
 }
 
+/// `true` once a virtio-pci NIC's MSI-X vectors are programmed (not for
+/// the virtio-mmio line, which [`irq_driven`] also reports).
+pub fn msi_armed() -> bool {
+    MSI_ARMED.load(Ordering::Acquire)
+}
+
 /// One line with the per-vector MSI counts, `tag` saying when it was taken.
-/// Prints nothing unless the NIC is in IRQ mode.
+/// Prints nothing unless the NIC is virtio-pci in MSI mode.
 pub fn print_msi_counts(tag: &str) {
-    if !irq_driven() {
+    if !msi_armed() {
         return;
     }
     let c = msi_counts();
