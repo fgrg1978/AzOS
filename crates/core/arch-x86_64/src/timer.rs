@@ -63,7 +63,7 @@ impl TscSource {
             TscSource::Cpuid15 => "CPUID 15H",
             TscSource::Hypervisor => "hypervisor leaf 0x40000010",
             TscSource::Hpet => "HPET",
-            TscSource::Pit => "PIT channel 2",
+            TscSource::Pit => "PIT channel 0",
             TscSource::Cpuid16 => "CPUID 16H (nominal)",
         }
     }
@@ -156,28 +156,39 @@ fn rate_hypervisor() -> Option<u64> {
 const TSC_HZ_MIN: u64 = 1_000_000;
 const TSC_HZ_MAX: u64 = 100_000_000_000;
 
-/// The TSC against the PIT's channel 2 (gated by port 0x61, polled on its
-/// OUT bit): no interrupt, no IOAPIC route needed.
+/// The TSC against the PIT's channel 0, read through the latch command:
+/// its gate is always on, unlike channel 2's, which hangs off port 0x61 and
+/// a PC speaker QEMU microvm does not have. Mode 0 from 0xFFFF counts down
+/// once; IRQ 0 stays masked (interrupts are off and the IOAPIC pin masked).
 fn rate_pit(ms: u32) -> Option<u64> {
-    let count = encode::pit_count_for_ms(ms)?;
-    let saved = hw::inb(0x61);
-    hw::outb(0x61, (saved & !0x02) | 0x01); // gate on, speaker off
-    hw::outb(0x43, 0xB0); // channel 2, lobyte/hibyte, mode 0, binary
-    hw::outb(0x42, count as u8);
-    hw::outb(0x42, (count >> 8) as u8);
+    let want = encode::pit_count_for_ms(ms)? as u64;
+    let read = || {
+        hw::outb(0x43, 0x00); // latch channel 0
+        let lo = hw::inb(0x40) as u64;
+        let hi = hw::inb(0x40) as u64;
+        lo | hi << 8
+    };
+    hw::outb(0x43, 0x30); // channel 0, lobyte/hibyte, mode 0, binary
+    hw::outb(0x40, 0xFF);
+    hw::outb(0x40, 0xFF);
+    let c0 = read();
     let t0 = hw::rdtsc();
-    // A missing PIT reads 0xFF: OUT "high" at once, caught by the range check.
+    // A missing PIT reads 0xFFFF forever: bounded, then the range check.
     let mut spins: u64 = 0;
-    while hw::inb(0x61) & 0x20 == 0 {
+    let elapsed = loop {
+        let d = c0.saturating_sub(read());
+        if d >= want {
+            break d;
+        }
         spins += 1;
-        if spins > 1 << 28 {
-            hw::outb(0x61, saved);
+        // A 54 ms window takes a few thousand latch reads even at one VM
+        // exit each; a million means no PIT.
+        if spins > 1 << 20 {
             return None;
         }
-    }
+    };
     let t1 = hw::rdtsc();
-    hw::outb(0x61, saved);
-    encode::rate_from_window(t1 - t0, count as u64, encode::PIT_HZ)
+    encode::rate_from_window(t1 - t0, elapsed, encode::PIT_HZ)
         .filter(|hz| (TSC_HZ_MIN..=TSC_HZ_MAX).contains(hz))
 }
 
@@ -210,7 +221,7 @@ fn rate_hpet(ms: u32) -> Option<u64> {
             break d;
         }
         spins += 1;
-        if spins > 1 << 28 {
+        if spins > 1 << 24 {
             break 0;
         }
     };

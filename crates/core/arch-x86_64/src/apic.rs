@@ -81,11 +81,24 @@ pub fn id() -> u32 {
 /// until `timer::init_local`. `cpu` is the dense CPU number.
 pub fn init_local(cpu: usize) {
     let base = hw::rdmsr(APIC_BASE_MSR);
-    // xAPIC first, then x2APIC: the disabled -> x2APIC transition is invalid.
-    hw::wrmsr(APIC_BASE_MSR, base | APIC_BASE_EN);
     if x2apic() {
+        // xAPIC first, then x2APIC: the disabled -> x2APIC transition is
+        // invalid.
+        if base & APIC_BASE_EXTD == 0 {
+            hw::wrmsr(APIC_BASE_MSR, base | APIC_BASE_EN);
+        }
         hw::wrmsr(APIC_BASE_MSR, base | APIC_BASE_EN | APIC_BASE_EXTD);
+    } else if base & APIC_BASE_EXTD != 0 {
+        // Firmware left x2APIC on and Kconfig says n: x2APIC -> xAPIC must
+        // pass through disabled (SDM 11.12.5).
+        hw::wrmsr(APIC_BASE_MSR, base & !(APIC_BASE_EN | APIC_BASE_EXTD));
+        hw::wrmsr(APIC_BASE_MSR, (base & !APIC_BASE_EXTD) | APIC_BASE_EN);
+    } else {
+        hw::wrmsr(APIC_BASE_MSR, base | APIC_BASE_EN);
     }
+    // Software-enable first: while SVR[8] is clear every LVT stays masked
+    // and writes that unmask one are ignored (SDM 11.4.7.2).
+    write(LAPIC_SVR, svr(SPURIOUS_VECTOR));
     write(LAPIC_TPR, 0);
     write(LAPIC_LVT_TIMER, lvt_timer(TIMER_VECTOR, TimerMode::OneShot, true));
     let mut lint = [LVT_MASKED; 2];
@@ -106,7 +119,6 @@ pub fn init_local(cpu: usize) {
     // ESR is write-then-read; two writes clear a stale error.
     write(LAPIC_ESR, 0);
     write(LAPIC_ESR, 0);
-    write(LAPIC_SVR, svr(SPURIOUS_VECTOR));
     eoi();
 }
 

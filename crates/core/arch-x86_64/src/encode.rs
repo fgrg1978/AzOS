@@ -323,7 +323,7 @@ pub const fn tsc_hz_from_hv_leaf(eax: u32) -> Option<u64> {
 /// The 8254 PIT input clock.
 pub const PIT_HZ: u64 = 1_193_182;
 
-/// The channel-2 reload for a `ms` window: `None` past the 16-bit counter
+/// The PIT counts in a `ms` window: `None` past the 16-bit counter
 /// (54 ms) or for 0.
 pub const fn pit_count_for_ms(ms: u32) -> Option<u16> {
     let c = PIT_HZ * ms as u64 / 1000;

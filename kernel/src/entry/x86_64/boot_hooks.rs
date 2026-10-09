@@ -288,7 +288,7 @@ pub fn reserve_firmware_table(_fw_table: usize) {
 pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
     const PAGE: usize = 0x1000;
     let p = platform();
-    let mut w = [(0usize, 0usize); 3 + azos_arch::acpi::MAX_IOAPICS];
+    let mut w = [(0usize, 0usize); 4 + azos_arch::acpi::MAX_IOAPICS];
     let mut n = 0;
     let mut add = |base: usize, len: usize| {
         if n < w.len() && len != 0 {
@@ -303,10 +303,20 @@ pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
     if let Some(h) = p.acpi.hpet {
         add(h.addr as usize, PAGE);
     }
-    if let (Some(lo), Some(hi)) = (p.virtio().iter().map(|d| d.base).min(),
-                                   p.virtio().iter().map(|d| d.base + d.size).max()) {
-        let lo = lo as usize & !(PAGE - 1);
-        add(lo, ((hi as usize + PAGE - 1) & !(PAGE - 1)) - lo);
+    // The window the drivers scan (`platform::hw::VIRTIO_MMIO_*`: every slot
+    // is read, present or not), plus any command-line transport outside it.
+    let (wbase, wlen) = (azos_limits::X86_VIRTIO_MMIO_BASE,
+                         azos_limits::X86_VIRTIO_MMIO_MAX * azos_limits::X86_VIRTIO_MMIO_STRIDE);
+    let page_span = |lo: usize, hi: usize| (lo & !(PAGE - 1), ((hi + PAGE - 1) & !(PAGE - 1)) - (lo & !(PAGE - 1)));
+    if wlen != 0 {
+        let (b, l) = page_span(wbase, wbase + wlen);
+        add(b, l);
+    }
+    let outside = p.virtio().iter().filter(|d| (d.base as usize) < wbase || (d.base + d.size) as usize > wbase + wlen);
+    if let (Some(lo), Some(hi)) = (outside.clone().map(|d| d.base as usize).min(),
+                                   outside.map(|d| (d.base + d.size) as usize).max()) {
+        let (b, l) = page_span(lo, hi);
+        add(b, l);
     }
     w.into_iter().take(n)
 }
@@ -373,6 +383,19 @@ pub fn irqchip_init(hart_id: usize, _fw_table: usize) {
     let gsis = azos_arch::ioapic::init();
     kprintln!("[APIC] LAPIC ID {} on, {} IOAPIC GSIs masked, device vectors from {}",
               azos_arch::apic::id(), gsis, azos_arch::apic::IRQ_VECTOR_BASE);
+    // The virtio-mmio lines: redirected to this CPU, still masked; a driver
+    // that takes interrupts only unmasks.
+    let me = azos_arch::apic::id();
+    let mut routed = 0;
+    for d in platform().virtio() {
+        let (level, active_low) = azos_arch::ioapic::default_trigger(d.gsi);
+        if azos_arch::ioapic::route(d.gsi, me, level, active_low, true) {
+            routed += 1;
+        }
+    }
+    if routed != 0 {
+        kprintln!("[APIC] {} virtio-mmio GSI(s) redirected (masked)", routed);
+    }
 }
 
 /// Nothing: `timer_init` unmasks (RFLAGS.IF) once the tick is armed, as
