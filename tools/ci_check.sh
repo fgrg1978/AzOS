@@ -10892,7 +10892,7 @@ PY
     #   ktest fork FP runtime canary (x86)  canary=x86-fork-fp-skip: a forked
     #                               child starts from the initial FP image;
     #                               x86_ring3_syscall_fork_fp alone not ok
-    KTEST_N_X86=14
+    KTEST_N_X86=15
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2"
