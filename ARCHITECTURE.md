@@ -794,7 +794,7 @@ roots are level-2 tables, that step is constant-folded away.
   no branch for.
 - **`kernel/src/entry/<isa>/`**: `boot_hooks.rs` and `arch_entry.rs`, the
   kernel's `ArchEntry` (36 methods, four associated types, a
-  `PAGE_TABLES` name and a `CONSOLE_MMIO` flag: the 26 early-boot hooks `boot::early_main` calls, the
+  `PAGE_TABLES` name and a `CONSOLE_MMIO` flag: the 27 early-boot hooks `boot::early_main` calls, the
   late VirtIO map, the boot-once text patch, the secondary-CPU wake, the
   scheduler hand-off, the four
   secondary-CPU steps the shared `secondary_main` calls, the vDSO clock);

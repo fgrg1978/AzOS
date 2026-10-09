@@ -63,7 +63,7 @@ fn main() {
     // tools/check_board_keys.py). Host builds (the test crates) are not
     // images and keep the fallback.
     let bare = env::var("CARGO_CFG_TARGET_OS").map(|o| o == "none").unwrap_or(false);
-    if dev_key && explicit.is_none() && bare && release_config(&manifest_dir) {
+    if dev_key && explicit.is_none() && bare && release_config() {
         fail("Kconfig BUILD_TYPE_RELEASE refuses the TEST key: the `dev-key` feature \
               (the kernel's `qemu` feature) would embed tools/keys/test_pub.bin; set \
               TOPOLOGY_PUBKEY_PATH to the fleet's public key (`make vf2`/`k1`/`rpi5`/\
@@ -178,13 +178,17 @@ fn emit_target_cfgs() {
     }
 }
 
-/// Is the build's .config (KCONFIG_CONFIG, else the workspace `.config`,
-/// as `azos_limits` reads it) a release build (Kconfig BUILD_TYPE_RELEASE)?
-fn release_config(manifest_dir: &str) -> bool {
+/// Does the build name a release configuration (KCONFIG_CONFIG with Kconfig
+/// BUILD_TYPE_RELEASE)? Only an explicit KCONFIG_CONFIG counts: every kernel
+/// build the Makefile and the gate run sets it, while the QEMU disks' ring-3
+/// services (`--features dev-key`, no KCONFIG_CONFIG) are QEMU-only images
+/// and must keep building after `make defconfig-<board>` leaves a release
+/// workspace `.config`.
+fn release_config() -> bool {
     println!("cargo:rerun-if-env-changed=KCONFIG_CONFIG");
-    let path = env::var("KCONFIG_CONFIG").map(PathBuf::from).unwrap_or_else(|_| {
-        PathBuf::from(manifest_dir).join("..").join("..").join("..").join(".config")
-    });
+    let Ok(path) = env::var("KCONFIG_CONFIG").map(PathBuf::from) else {
+        return false;
+    };
     println!("cargo:rerun-if-changed={}", path.display());
     fs::read_to_string(&path)
         .map(|c| c.lines().any(|l| l.trim() == "CONFIG_BUILD_TYPE_RELEASE=y"))
