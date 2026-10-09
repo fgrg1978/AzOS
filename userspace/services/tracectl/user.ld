@@ -2,20 +2,15 @@
 /* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
 /* Linker script for a ring-3 user ELF. Loads at VA 0x10000.
  *
- * Every writable section is aligned to a 4 KiB page boundary, on purpose.
+ * Each segment starts on a page of its own, on purpose: the kernel loader
+ * gives every page exactly the permissions of the one PT_LOAD segment it
+ * belongs to, and refuses an image in which two segments with different
+ * permissions share a page (their union would make .rodata executable or
+ * writable). Without the alignment below the binary does not load.
  *
- * The kernel loader maps a page once, with the permissions of the first
- * PT_LOAD segment that touches it, and it refuses to add WRITE to a page that
- * already carries EXEC — W^X is not negotiable for a robot that runs code
- * loaded off a USB-exported FAT volume. Without this alignment .text and
- * .data land in the same page, and the binary either fails to load or (worse,
- * and what actually happened) loads read-only and takes a Store page fault on
- * the first write to a `static mut`. `abitest` hit the fault; `captest` had
- * the identical layout and passed for months only because it never wrote its
- * failure counter.
- *
- * Costs at most 8 KiB of padding per binary. That is nothing next to a fault
- * that only appears once a test starts failing.
+ * .rodata moves to the next page at the same offset in it (what lld and GNU
+ * ld do for a new segment): no file padding, one more page of address space.
+ * The first writable byte is page-aligned (at most 4 KiB of padding).
  */
 
 OUTPUT_ARCH(riscv)
@@ -29,7 +24,10 @@ SECTIONS
         *(.text .text.*)
     }
 
-    /* Read-only data may share the .text page: both are non-writable. */
+    /* Read-only data starts a page of its own: the loader refuses a page
+     * shared by segments with different permissions. */
+    . = ALIGN(4096) + (. & 4095);
+
     .rodata : {
         *(.rodata .rodata.*)
     }

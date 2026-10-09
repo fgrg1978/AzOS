@@ -5,12 +5,9 @@
  * `crates/core/abi/src/syscall_nr.rs`).
  *
  * Mirrors `user.ld` (the RISC-V script every userspace program already uses)
- * register-for-register in intent: loads at VA 0x10000, and every writable
- * section starts its own 4 KiB page so a future loader's "map once, with the
- * first PT_LOAD segment's permissions, and never add WRITE to a page that
- * already carries EXEC" rule (W^X, not negotiable — see `user.ld`'s own
- * comment) has the same page boundaries to work with on this ISA as it does
- * on RISC-V.
+ * register-for-register in intent: loads at VA 0x10000, and each segment
+ * starts on a page of its own, because the loader refuses an image in which
+ * two segments with different permissions share a page (see `user.ld`).
  *
  * **aarch64-specific wrinkle RISC-V does not have.** `rust-lld`'s default
  * `-z max-page-size` for `aarch64-unknown-none` is 64 KiB, not 4 KiB — so
@@ -37,7 +34,11 @@ SECTIONS
         *(.text .text.*)
     }
 
-    /* Read-only data may share the .text page: both are non-writable. */
+    /* Read-only data starts a page of its own (the next page, at the same
+     * offset in it: no file padding): the loader refuses a page shared by
+     * segments with different permissions. */
+    . = ALIGN(CONSTANT(MAXPAGESIZE)) + (. & (CONSTANT(MAXPAGESIZE) - 1));
+
     .rodata : {
         *(.rodata .rodata.*)
     }
