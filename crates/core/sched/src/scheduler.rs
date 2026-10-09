@@ -2430,7 +2430,10 @@ fn run_placement_probe(fill: usize) {
 /// measuring: the printer competes for CPU and is not comparable with a
 /// vsbench run.
 #[cfg(feature = "bench-minimal")]
-const BENCH_MINIMAL_KEEP: [&str; 3] = ["idle", "autorun", "ipc-census"];
+/// `fs-wb` (wave 15) is the FAT32 write-back cache's own flusher: parked, a
+/// disk lane's writer would do every write-back itself, which is not the
+/// file system being measured (Linux's flusher threads run on its side).
+const BENCH_MINIMAL_KEEP: [&str; 4] = ["idle", "autorun", "ipc-census", "fs-wb"];
 
 /// Entry point substituted for every non-allowlisted task under
 /// `bench-minimal`: block forever and never consume a cycle.
