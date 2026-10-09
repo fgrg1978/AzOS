@@ -1992,11 +1992,10 @@ mod flight_recorder {
     /// recorder taking the board down with it, so this runs the real
     /// contention instead of trusting the ordering by inspection alone.
     ///
-    /// This crate's `azos_sync` (see `Cargo.toml`) is the
-    /// `cap_test_sync` stand-in over `std::sync::Mutex` (`tests/host/cap-tests/
-    /// shims/sync`), so `LOG_FILE` and `LOG_RING` really do block a whole OS
-    /// thread here -- a lock-order inversion would hang this test, not just
-    /// run it slower. A watchdog thread bounds that: if the workers below
+    /// Since wave 15 the ring takes no lock (producers claim slots with a
+    /// CAS) and `LOG_FILE` is the recorder's own non-PI flush lock, whose
+    /// waiters yield the OS thread here (`cap_test_sync`'s `WaitQueue`): a
+    /// hang would still be a lock bug, and this test still bounds it. A watchdog thread bounds that: if the workers below
     /// have not finished within 5 s of real contention, it reports the hang
     /// and aborts the process outright, rather than letting one deadlocked
     /// test wedge the rest of the suite behind a shared static the way a
@@ -2062,6 +2061,103 @@ mod flight_recorder {
         // Drain whatever the workers left so the next test's precondition
         // (`logger_ring_len() == 0` in `begin()`) holds.
         let _ = logger_flush();
+        logger_shutdown();
+    }
+}
+
+/// Wave 15, owner rule: an RT task never does block I/O. The ring is
+/// lock-free and the RT caller's flush is handed to the log flusher.
+#[cfg(test)]
+mod flight_recorder_rt {
+    use super::logger::*;
+    use super::flight_recorder::{begin, decode_file};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    fn rt_yes() -> bool { true }
+    fn rt_no() -> bool { false }
+
+    /// An RT caller's durable record is NOT written by the caller: it gets
+    /// `Deferred`, the medium is untouched, the record waits on the ring,
+    /// and one flusher pass puts it on the medium.
+    #[test]
+    fn an_rt_durable_record_is_written_by_the_flusher_not_the_caller() {
+        let _g = begin(0x0A0B_0C0D);
+        logger_init().expect("mount succeeds");
+        let before = decode_file(0).len();
+        logger_set_rt_probe(rt_yes);
+        let r = log_safety_violation_durable(SAFETY_ESTOP, 9, 0xE57);
+        logger_set_rt_probe(rt_no);
+        assert_eq!(r, Err(LogStorageError::Deferred), "an RT caller must not flush");
+        assert_eq!(decode_file(0).len(), before, "the RT caller wrote the medium");
+        assert_eq!(logger_ring_len(), 1, "the record waits on the ring");
+        logger_flusher_pass();
+        let recs = decode_file(0);
+        assert_eq!(recs.len(), before + 1, "one flusher pass writes it");
+        let last = recs.last().unwrap();
+        assert_eq!((last.kind, last.payload[0], last.payload[1]), (LOG_EVT_SAFETY_VIOLATION, SAFETY_ESTOP, 9));
+        assert_eq!(logger_ring_len(), 0);
+        logger_shutdown();
+    }
+
+    static JOB_RAN: AtomicUsize = AtomicUsize::new(0);
+    fn job() { JOB_RAN.fetch_add(1, Ordering::SeqCst); }
+
+    /// A deferred I/O job runs on the flusher's next pass, once.
+    #[test]
+    fn a_deferred_io_job_runs_once_on_the_flusher() {
+        let _g = begin(0x0A0B_0C0E);
+        let n = JOB_RAN.load(Ordering::SeqCst);
+        assert!(logger_defer_io(job));
+        assert_eq!(JOB_RAN.load(Ordering::SeqCst), n, "the poster ran its own job");
+        logger_flusher_pass();
+        logger_flusher_pass();
+        assert_eq!(JOB_RAN.load(Ordering::SeqCst), n + 1);
+    }
+
+    /// Four producers push past capacity while a consumer flushes: no record
+    /// is torn, none is written twice, each producer's records stay in
+    /// order, and every record pushed is on the medium or counted dropped.
+    #[test]
+    fn concurrent_producers_past_capacity_tear_nothing_and_lose_nothing_uncounted() {
+        let _g = begin(0x0A0B_0C0F);
+        logger_init().expect("mount succeeds");
+        let dropped0 = logger_analytics().events_dropped;
+        const PER: u32 = 4000;
+        const THREADS: u32 = 4;
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let s2 = stop.clone();
+        let flusher = std::thread::spawn(move || {
+            while !s2.load(Ordering::SeqCst) { let _ = logger_flush(); }
+        });
+        let pushers: Vec<_> = (0..THREADS).map(|t| std::thread::spawn(move || {
+            for i in 0..PER {
+                let x = ((t << 24) | i) as i32;
+                log_waypoint(x, !x, (x as u16) ^ 0x5A5A, 0x77);
+            }
+        })).collect();
+        for p in pushers { p.join().unwrap(); }
+        stop.store(true, Ordering::SeqCst);
+        flusher.join().unwrap();
+        let _ = logger_flush();
+        assert_eq!(logger_ring_len(), 0);
+        let mut last = [None::<u32>; THREADS as usize];
+        let mut written = 0u32;
+        for r in decode_file(0).iter().filter(|r| r.kind == LOG_EVT_WAYPOINT) {
+            let x = i32::from_le_bytes(r.payload[0..4].try_into().unwrap());
+            let y = i32::from_le_bytes(r.payload[4..8].try_into().unwrap());
+            let idx = u16::from_le_bytes([r.payload[8], r.payload[9]]);
+            assert!(y == !x && idx == (x as u16) ^ 0x5A5A && r.payload[10] == 0x77, "torn record x={x:#x}");
+            let (t, i) = ((x as u32) >> 24, (x as u32) & 0xFF_FFFF);
+            if let Some(prev) = last[t as usize] {
+                assert!(i > prev, "thread {t}: record {i} after {prev} (duplicate or reordered)");
+            }
+            last[t as usize] = Some(i);
+            written += 1;
+        }
+        let dropped = logger_analytics().events_dropped - dropped0;
+        assert!(written <= THREADS * PER);
+        assert!(written + dropped >= THREADS * PER,
+            "{} pushed, {written} written, {dropped} dropped: a loss went uncounted", THREADS * PER);
         logger_shutdown();
     }
 }

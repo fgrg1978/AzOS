@@ -244,6 +244,30 @@ config LAT_TRACE
       transition and every trap entry/exit reads the counter once.
 
 # ---------------------------------------------------------------------------
+# Real-time tasks never do block I/O (wave 15, owner rule)
+# ---------------------------------------------------------------------------
+
+config RT_BLOCK_IO_CHECK
+    bool "Panic when a real-time task enters the block layer"
+    default y if LOG_LEVEL_DEBUG
+    default n
+    help
+      Owner rule: a real-time task (base priority below the scheduler's
+      RT threshold, 12) never does block I/O. Its flight-recorder records
+      go through the logger's ring and the non-RT log flusher task writes
+      them (LOG_FLUSHER_PRIORITY). With this on, every entry into
+      crates/drivers/block (read, write, flush) asks the scheduler whether
+      the calling task is real-time and panics naming the task if it is,
+      so a new path from an RT task to the disk fails the first boot that
+      takes it.
+
+      Off (default in every deployment profile, which build at log level
+      warn): the check is not compiled; the block layer is the device
+      call. On (default in the QEMU development configs, which select
+      LOG_LEVEL_DEBUG): one indirect call and a priority load per block
+      request, the same on riscv64, aarch64 and x86_64, and no RAM.
+
+# ---------------------------------------------------------------------------
 # Kernel event tracer (wave 15)
 # ---------------------------------------------------------------------------
 

@@ -139,3 +139,11 @@ pub mod waitqueue {
     /// No scheduler: the real one's pre-registration answer.
     pub fn caller_tid() -> u32 { u32::MAX }
 }
+
+/// The real `preempt::critical_section` surface. The host has no preemption
+/// counter; the guard is a unit (threads stay preemptible, which only makes
+/// the lock-free code under test face more interleavings, never fewer).
+pub mod preempt {
+    pub struct PreemptGuard;
+    pub fn critical_section() -> PreemptGuard { PreemptGuard }
+}

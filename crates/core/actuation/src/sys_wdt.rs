@@ -51,12 +51,14 @@ pub fn set_boot_good_hook(delay_s: u32, mark: fn()) {
 ///    first reads low: latches the e-stop, records it durably, stops both
 ///    motors and disarms the ESC.
 ///
-/// 3b. **Flush** — the pending capability-denial summary, then the flight
-///    recorder.
+/// 3b. **Flush** — the pending capability-denial summary, then a flush
+///    request to the `log-flush` task (this task is RT and never does block
+///    I/O itself).
 ///
 /// 4. **Driver health** — `driver_check_health` with the time in ms.
 ///
-/// 5. **OTA boot-good mark** — once, through `BOOT_GOOD_HOOK`.
+/// 5. **OTA boot-good mark** — once, through `BOOT_GOOD_HOOK`, handed to the
+///    `log-flush` task (it writes BOOTMETA).
 pub fn system_wdt_task(_: usize) {
     kprintln!("[WDT] Phase 16 system watchdog running");
     let mut last_tick    = TICK_COUNT.load(Ordering::Relaxed);
@@ -334,16 +336,15 @@ pub fn system_wdt_task(_: usize) {
         // best-effort and returns the count it wrote; a failure here must not
         // stop the watchdog doing its actual job.
         //
-        // Here rather than at the call sites because `rt_motor_task` runs the
-        // 1 kHz control loop under a 500 ms watchdog, and a flush blocks on the
-        // block device for however long its poll budget allows. This task
-        // already wakes every ~500 ms and already does I/O-shaped work, so it
-        // is the one place a synchronous write costs nothing that was going to
-        // be spent on control.
+        // Here rather than at the call sites: this task wakes every ~500 ms,
+        // so the request is the periodic flush. The write itself runs in the
+        // `log-flush` task, outside the RT band.
         // A flood that stopped has no further denial to close its window;
         // write its count now, so this pass's flush carries it to disk.
         azos_syscall::handlers::cap_denial_flush_pending();
-        let _ = crate::logger::logger_flush();
+        // This task is RT (11): it never does block I/O (owner rule, wave
+        // 15). The `log-flush` task writes the ring; this only wakes it.
+        crate::logger::logger_request_flush();
 
         // ── 4. Driver health check (AQ2) ────────────────────────────────
         // Detect stalled drivers (no heartbeat) and trigger auto-restart.
@@ -369,8 +370,12 @@ pub fn system_wdt_task(_: usize) {
             // which writes BOOTMETA to disk.
             let boot_good_hook = *BOOT_GOOD_HOOK.lock();
             if let Some((boot_good_delay_s, mark_boot_good)) = boot_good_hook {
-                if elapsed_s >= boot_good_delay_s as u64 {
-                    mark_boot_good();
+                // The mark writes BOOTMETA: block I/O, which this RT task
+                // hands to the `log-flush` task (owner rule, wave 15). A full
+                // job table is retried on the next pass.
+                if elapsed_s >= boot_good_delay_s as u64
+                    && crate::logger::logger_defer_io(mark_boot_good)
+                {
                     boot_good_marked = true;
                 }
             }

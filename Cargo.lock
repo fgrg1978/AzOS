@@ -250,6 +250,7 @@ dependencies = [
  "azos_drv_base",
  "azos_drv_sys",
  "azos_drv_virtio",
+ "azos_limits",
  "azos_sync",
 ]
 
@@ -356,6 +357,7 @@ dependencies = [
  "azos_drv_base",
  "azos_drv_irqchip",
  "azos_drv_sys",
+ "azos_limits",
  "azos_mm",
  "azos_pci",
  "azos_sync",

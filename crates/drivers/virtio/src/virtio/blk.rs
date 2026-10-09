@@ -21,6 +21,7 @@ use super::{mmio_read, mmio_write, probe, virtq_init,
 use azos_drv_api::block::FlushError;
 use azos_drv_sys::kprintln;
 use azos_sync::pi_mutex::PiMutex;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 // ---- Constants (from virtio_blk.h) ----
 
@@ -77,78 +78,131 @@ static mut BLK_DEV: BlkDev = BlkDev {
     failed:   false,
 };
 
-/// Serializes every path that touches `BLK_DEV`, the virtqueue, or the DMA
-/// staging statics below. The driver is a strictly one-request-at-a-time
-/// protocol over shared `static mut` state; without this lock two harts
-/// calling `read`/`write` concurrently interleave stagings into the single
-/// `BLK_DMA_BUF`, corrupt the free-descriptor accounting, and race the
-/// header/status statics mid-DMA. (The syscall layer serializes per-CPU
-/// only, which is not enough on SMP.)
+/// Serializes every path that touches `BLK_DEV` and the virtqueue: device
+/// setup, building and submitting a chain, reaping the used ring, and
+/// freeing a completed chain's descriptors. On SMP two harts doing that
+/// concurrently would corrupt the free-descriptor accounting and race the
+/// ring indices. (The syscall layer serializes per-CPU only.)
 ///
-/// Held across the whole multi-chunk transfer, including the bounded
-/// busy-wait for completion — the same discipline as the C kernel, just made
-/// explicit.
-/// **A `PiMutex`, not a `SpinLock`, and that is now a correctness requirement
-/// rather than a preference.**
+/// **Not held across the device request** (owner rule F1, wave 15). A request
+/// is submitted under it and then waited for WITHOUT it: the waiter polls,
+/// taking the lock only for each short reap of the used ring. Each in-flight
+/// request owns a staging slot ([`slot_claim`]), so nothing the device is
+/// DMAing into is reachable by another request. The lock's sections are a
+/// few hundred instructions — no wait on the device — so a contended taker
+/// waits for bookkeeping, never for the disk, and its priority inheritance
+/// never stretches across I/O.
 ///
-/// This lock is held across a whole transfer, including a poll whose deadline
-/// is 500 ms. That budget is deliberate -- it exists to bound a DEAD device,
-/// not to police a slow one -- but it means the critical section is
-/// unbounded in the only sense that matters here.
-///
-/// As of K-C29 step 2 every `SpinLock` section is non-preemptible on its hart.
-/// Under a `SpinLock` this section would therefore have made real-time dispatch
-/// latency on whichever hart runs block I/O up to half a second: longer than
-/// the watchdog, and five hundred times the 1 kHz control period. The fix for a
-/// priority-inversion class would have created a far worse latency bomb than the
-/// inversion it removed.
-///
-/// `PiMutexGuard` deliberately takes no preempt count, so the holder stays
-/// preemptible for the whole transfer; a waiter yields rather than spinning, so
-/// it does not burn a hart either, and priority inheritance keeps a low-priority
-/// holder from being starved by the task waiting on it.
-///
-/// Safe at boot despite yielding: `init()` is the only caller that runs before
-/// the scheduler exists, it is single-threaded and uncontended, and `PiMutex`'s
-/// fast path is a plain CAS that never reaches the yielding branch.
+/// Safe at boot despite yielding: `init()` runs before the scheduler exists,
+/// single-threaded and uncontended, and `PiMutex`'s fast path is a plain CAS
+/// that never reaches the yielding branch.
 static BLK_LOCK: PiMutex<()> = PiMutex::new(());
 
-// ---- DMA staging area ----
+// ---- DMA staging slots ----
 //
 // The device is NEVER handed a pointer into caller memory. A VirtIO request
 // cannot be cancelled or recalled: once the chain is in the avail ring the
 // device owns those buffers until it posts a used-ring entry, and if we give
-// up waiting (see the timeout path in `blk_rw`) it may still DMA into them
-// arbitrarily later. A caller buffer is very often a stack frame that has been
-// popped and reused by then, so a late write would silently corrupt unrelated
-// state far from the call site.
+// up waiting (see the timeout path in `wait_done`) it may still DMA into them
+// until `latch_dead` resets it. A caller buffer is very often a stack frame
+// that has been popped and reused by then, so a late write would silently
+// corrupt unrelated state far from the call site.
 //
 // Every buffer in a request therefore lives in driver-owned `static` storage
-// whose lifetime is the lifetime of the kernel. Transfers larger than the
-// staging area are split into chunks by the public `read`/`write` wrappers.
+// whose lifetime is the lifetime of the kernel: slot `i` is `BLK_REQ_HDR[i]`,
+// `BLK_DMA_BUF[i]` and `BLK_STATUS[i]`. Up to `BLK_SLOTS` requests are in
+// flight at once, one per slot (Kconfig `VIRTIO_BLK_INFLIGHT`). Transfers
+// larger than one slot's staging area are split into chunks by the public
+// `read`/`write` wrappers, all on the slot they claimed.
 //
-// Re-verified 2026-09-06 (claims_check audit): every descriptor `.addr` set
-// in this file points at a driver-owned static — `BLK_REQ_HDR`, `BLK_DMA_BUF`
-// or `BLK_STATUS` — never at a caller-supplied pointer (grep `\.addr` in this
-// file: five sites, three in `blk_rw` and two in `blk_flush`, none derived
-// from `buf`/`dst`/`src`). The caller's `buf`
-// only ever meets `copy_nonoverlapping`, never a descriptor: `write()` stages
-// caller bytes into `BLK_DMA_BUF` *before* `blk_rw` submits the chain, and
-// `read()` copies `BLK_DMA_BUF` out to the caller *after* `blk_rw` has
-// returned (i.e. after the device posted its used-ring entry) — the
-// caller's own memory is never in the descriptor, before or during DMA.
-// Re-check the grep if a new descriptor-setup site is added anywhere in
-// this driver.
+// Every descriptor `.addr` set in this file points at a slot's static —
+// never at a caller-supplied pointer (grep `\.addr` in this file: five
+// sites, three in `blk_rw` and two in `flush`, none derived from
+// `buf`/`dst`/`src`). The caller's `buf` only ever meets
+// `copy_nonoverlapping`: `write()` stages caller bytes into its slot *before*
+// `blk_rw` submits the chain, and `read()` copies its slot out to the caller
+// *after* `blk_rw` has returned (i.e. after the device posted the used-ring
+// entry). Re-check the grep if a descriptor-setup site is added.
 const BLK_DMA_SECTORS: usize = 8;
 const BLK_DMA_BYTES:   usize = BLK_DMA_SECTORS * SECTOR_SIZE; // 4 KiB
+
+/// Requests in flight at once (Kconfig `VIRTIO_BLK_INFLIGHT`). A read or
+/// write takes 3 descriptors, so the queue bounds it.
+const BLK_SLOTS: usize = azos_limits::VIRTIO_BLK_INFLIGHT as usize;
+const _: () = assert!(BLK_SLOTS >= 1 && BLK_SLOTS * 3 <= super::VIRTIO_QUEUE_SIZE && BLK_SLOTS <= 32);
 
 #[repr(C, align(512))]
 struct DmaBuf([u8; BLK_DMA_BYTES]);
 
-// Static request buffers (aligned, single-request protocol like the C kernel)
-static mut BLK_REQ_HDR: BlkReqHdr = BlkReqHdr { req_type: 0, reserved: 0, sector: 0 };
-static mut BLK_STATUS:  u8         = 0xFF;
-static mut BLK_DMA_BUF: DmaBuf     = DmaBuf([0u8; BLK_DMA_BYTES]);
+// Static request buffers, one set per slot.
+static mut BLK_REQ_HDR: [BlkReqHdr; BLK_SLOTS] =
+    [const { BlkReqHdr { req_type: 0, reserved: 0, sector: 0 } }; BLK_SLOTS];
+static mut BLK_STATUS:  [u8; BLK_SLOTS] = [0xFF; BLK_SLOTS];
+static mut BLK_DMA_BUF: [DmaBuf; BLK_SLOTS] = [const { DmaBuf([0u8; BLK_DMA_BYTES]) }; BLK_SLOTS];
+
+/// Head descriptor of slot `i`'s in-flight chain, `NO_CHAIN` when none.
+/// Written under `BLK_LOCK`; read by the reaper under it.
+static SLOT_HEAD: [AtomicUsize; BLK_SLOTS] = [const { AtomicUsize::new(NO_CHAIN) }; BLK_SLOTS];
+/// Slot `i`'s chain completed (set by whichever task reaped it).
+static SLOT_DONE: [AtomicBool; BLK_SLOTS] = [const { AtomicBool::new(false) }; BLK_SLOTS];
+const NO_CHAIN: usize = usize::MAX;
+
+/// Slot ownership: bit `i` set while a request owns slot `i`. Claimed with
+/// `fetch_or`; a caller that finds every slot taken sleeps (no priority
+/// inheritance: the owner is waiting on the device, not on a CPU) until a
+/// release bumps `SLOT_GEN`, re-checked under the queue's lock.
+static SLOT_BUSY: AtomicU32 = AtomicU32::new(0);
+static SLOT_GEN:  AtomicU32 = AtomicU32::new(0);
+static SLOT_WQ:   azos_sync::waitqueue::WaitQueue = azos_sync::waitqueue::WaitQueue::new();
+
+/// A claimed staging slot; released on drop.
+struct SlotClaim(usize);
+
+fn slot_claim() -> SlotClaim {
+    let all: u32 = if BLK_SLOTS == 32 { u32::MAX } else { (1u32 << BLK_SLOTS) - 1 };
+    loop {
+        let gen = SLOT_GEN.load(Ordering::SeqCst);
+        let free = !SLOT_BUSY.load(Ordering::SeqCst) & all;
+        if free != 0 {
+            let bit = 1u32 << free.trailing_zeros();
+            if SLOT_BUSY.fetch_or(bit, Ordering::SeqCst) & bit == 0 {
+                return SlotClaim(free.trailing_zeros() as usize);
+            }
+            continue;
+        }
+        SLOT_WQ.wait_if(|| SLOT_GEN.load(Ordering::SeqCst) == gen);
+    }
+}
+
+impl Drop for SlotClaim {
+    fn drop(&mut self) {
+        SLOT_BUSY.fetch_and(!(1u32 << self.0), Ordering::SeqCst);
+        SLOT_GEN.fetch_add(1, Ordering::SeqCst);
+        SLOT_WQ.wake_all();
+    }
+}
+
+/// `blk-wait-probe` (the `lat-fat` smoke): waits for a completion, and those
+/// made with a `PiMutex` held that the request's caller did not hold when it
+/// entered the driver — `BLK_LOCK` across the device request, the F1 shape.
+#[cfg(feature = "blk-wait-probe")]
+static WAITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "blk-wait-probe")]
+static WAITS_LOCKED: AtomicU32 = AtomicU32::new(0);
+
+/// `(waits, waits with a driver PiMutex held)`; the second must be 0.
+#[cfg(feature = "blk-wait-probe")]
+pub fn wait_probe_counts() -> (u32, u32) {
+    (WAITS.load(Ordering::Relaxed), WAITS_LOCKED.load(Ordering::Relaxed))
+}
+
+#[inline(always)]
+fn caller_pi_held() -> u32 {
+    #[cfg(feature = "blk-wait-probe")]
+    { azos_sync::pi_mutex::held_by(azos_sync::waitqueue::caller_tid()) }
+    #[cfg(not(feature = "blk-wait-probe"))]
+    { 0 }
+}
 
 // ---- Feature negotiation ----
 
@@ -326,35 +380,71 @@ const BLK_TIMEOUT_US: u64 = 500_000;
 /// the per-request one.
 const BLK_FLUSH_TIMEOUT_US: u64 = 4 * BLK_TIMEOUT_US;
 
-/// Put the chain headed by `head` in the avail ring and wait, bounded by
-/// `timeout_us` of wall-clock time, for the device to post that chain's
-/// used-ring entry. `Err` carries the reason; the caller must then call
-/// [`latch_dead`] and must not free the chain's descriptors.
-///
-/// Caller must hold `BLK_LOCK`.
-#[inline(always)]
-unsafe fn submit_and_wait(vdev: &VirtioDev, vq: &mut Virtq, head: usize, timeout_us: u64)
-    -> Result<(), &'static str>
-{
-    virtq_submit(vdev, 0, head, vq);
-    let deadline = azos_drv_sys::timebase::now()
-        + timeout_us * azos_drv_irqchip::clint::TIMER_FREQ / 1_000_000;
-    loop {
-        match virtq_poll(vq) {
-            // Only the completion for OUR chain counts. The device reports
-            // which chain completed via the used-ring `id`; a value other
-            // than `head` is a completion we never submitted. Accepting it
-            // would report success on a request whose DMA has not happened
-            // (and whose buffers the device may still write later), so it is
-            // treated exactly like a timeout.
-            Some(id) if id == head => return Ok(()),
-            Some(_) => return Err("foreign completion id"),
+/// Reap every completion the device has posted: mark the slot whose chain
+/// it names done. A completion naming no in-flight chain is a device not
+/// following the protocol — it would make some later request appear complete
+/// before its DMA happened — so the driver latches dead. Caller holds
+/// `BLK_LOCK`.
+unsafe fn reap(dev: &mut BlkDev) {
+    while let Some(id) = virtq_poll(&mut dev.vq) {
+        match (0..BLK_SLOTS).find(|&i| {
+            SLOT_HEAD[i].load(Ordering::Relaxed) == id && !SLOT_DONE[i].load(Ordering::Relaxed)
+        }) {
+            Some(i) => SLOT_DONE[i].store(true, Ordering::Release),
             None => {
-                if azos_drv_sys::timebase::now() >= deadline {
-                    return Err("request timeout");
-                }
+                latch_dead(dev, "foreign completion id");
+                return;
             }
         }
+    }
+}
+
+/// Put slot `slot`'s chain, headed by `head`, in the avail ring. Caller
+/// holds `BLK_LOCK`; the wait ([`wait_done`]) runs without it.
+unsafe fn submit(dev: &mut BlkDev, slot: usize, head: usize) {
+    SLOT_DONE[slot].store(false, Ordering::Relaxed);
+    SLOT_HEAD[slot].store(head, Ordering::Relaxed);
+    virtq_submit(&dev.vdev, 0, head, &mut dev.vq);
+}
+
+/// Wait, WITHOUT `BLK_LOCK`, for slot `slot`'s chain to complete, bounded by
+/// `timeout_us` of wall-clock time. Each poll takes the lock only to reap the
+/// used ring (another request's waiter may have reaped ours already).
+/// `Err` when the device latched dead meanwhile or the deadline passed (the
+/// driver is then latched dead here); the caller must then not free the
+/// chain's descriptors.
+fn wait_done(slot: usize, timeout_us: u64, pi_base: u32) -> Result<(), ()> {
+    let deadline = azos_drv_sys::timebase::now()
+        + timeout_us * azos_drv_irqchip::clint::TIMER_FREQ / 1_000_000;
+    #[cfg(feature = "blk-wait-probe")]
+    WAITS.fetch_add(1, Ordering::Relaxed);
+    // Gate canary: the pre-F1 shape, the lock held across the whole wait.
+    let _canary = if cfg!(feature = "blk-lock-wait-canary") { Some(BLK_LOCK.lock()) } else { None };
+    #[cfg(feature = "blk-wait-probe")]
+    if caller_pi_held() > pi_base {
+        WAITS_LOCKED.fetch_add(1, Ordering::Relaxed);
+    }
+    let _ = pi_base;
+    loop {
+        if SLOT_DONE[slot].load(Ordering::Acquire) {
+            return Ok(());
+        }
+        {
+            let _g = if _canary.is_some() { None } else { Some(BLK_LOCK.lock()) };
+            let dev = unsafe { &mut *(&raw mut BLK_DEV) };
+            unsafe { reap(dev) };
+            if SLOT_DONE[slot].load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if dev.failed {
+                return Err(());
+            }
+            if azos_drv_sys::timebase::now() >= deadline {
+                unsafe { latch_dead(dev, "request timeout") };
+                return Err(());
+            }
+        }
+        core::hint::spin_loop();
     }
 }
 
@@ -392,118 +482,116 @@ unsafe fn latch_dead(dev: &mut BlkDev, reason: &str) {
     azos_drv_sys::kerr!("[VIRTIO-BLK] Error: {} - device reset, block I/O disabled", reason);
 }
 
-/// Internal read/write of one chunk — submits a 3-descriptor chain
-/// (header | data | status). The data descriptor always points at the
-/// driver-owned staging buffer `BLK_DMA_BUF`, never at caller memory;
-/// `read`/`write` copy in and out around this call.
+/// Internal read/write of one chunk on slot `slot` — a 3-descriptor chain
+/// (header | data | status). The data descriptor always points at the slot's
+/// driver-owned staging buffer, never at caller memory; `read`/`write` copy
+/// in and out around this call. Submitted under `BLK_LOCK`, waited for
+/// without it.
 ///
 /// `count` must be in `1..=BLK_DMA_SECTORS`; anything else is rejected.
-///
-/// Caller must hold `BLK_LOCK`.
-unsafe fn blk_rw(sector: u64, count: u32, write: bool) -> Result<(), ()> {
+fn blk_rw(slot: usize, sector: u64, count: u32, write: bool, pi_base: u32) -> Result<(), ()> {
+    let (d_hdr, d_data, d_status) = {
+        let _guard = BLK_LOCK.lock();
+        let dev = unsafe { &mut *(&raw mut BLK_DEV) };
+
+        // A previous request timed out: the device was reset and the driver
+        // stays dead until reboot.
+        if dev.failed || !dev.ready { return Err(()); }
+
+        // Queue must be live: a null table would be a null deref below, and
+        // `virtq_submit` divides by `vq.num`.
+        if dev.vq.desc.is_null() || dev.vq.num == 0 { return Err(()); }
+
+        if count == 0 || count as usize > BLK_DMA_SECTORS { return Err(()); }
+
+        // `sector + count` can overflow with a hostile LBA; overflow-checks are
+        // on in release, so a plain add is a panic (== board reset). Check it.
+        let end = sector.checked_add(count as u64).ok_or(())?;
+        if end > dev.capacity {
+            azos_drv_sys::kerr!("[VIRTIO-BLK] Error: sector out of range");
+            return Err(());
+        }
+        if write && dev.readonly {
+            azos_drv_sys::kerr!("[VIRTIO-BLK] Error: disk is read-only");
+            return Err(());
+        }
+
+        // Anything the device posted is reaped first: a completion naming no
+        // in-flight chain latches the driver dead here, before this request
+        // could be mistaken for complete.
+        unsafe { reap(dev) };
+        if dev.failed { return Err(()); }
+
+        // SAFETY: this task owns slot `slot` (`SlotClaim`), so its header and
+        // status are not in any in-flight chain.
+        unsafe {
+            BLK_REQ_HDR[slot].req_type = if write { BLK_T_OUT } else { BLK_T_IN };
+            BLK_REQ_HDR[slot].reserved = 0;
+            BLK_REQ_HDR[slot].sector   = sector;
+            BLK_STATUS[slot]           = 0xFF;
+        }
+
+        let vq = &mut dev.vq;
+        // Allocate 3 descriptors: [header] → [data] → [status]. The queue
+        // holds 3 per slot (`BLK_SLOTS` assert), so this does not fail while
+        // the driver is alive.
+        let d_hdr    = unsafe { virtq_alloc_desc(vq) }.ok_or(())?;
+        let d_data   = unsafe { virtq_alloc_desc(vq) }.ok_or_else(|| unsafe { virtq_free_desc(vq, d_hdr); })?;
+        let d_status = unsafe { virtq_alloc_desc(vq) }.ok_or_else(|| unsafe {
+            virtq_free_desc(vq, d_hdr);
+            virtq_free_desc(vq, d_data);
+        })?;
+
+        // count <= BLK_DMA_SECTORS was checked above (in this function), so
+        // this cannot exceed BLK_DMA_BYTES; `checked_mul` is redundant defence.
+        let data_len = (count as usize).checked_mul(SECTOR_SIZE).ok_or(())?;
+
+        unsafe {
+            // Descriptor 0: request header (device reads)
+            let p = vq.desc.add(d_hdr);
+            (*p).addr  = super::dma_addr_of(&raw const BLK_REQ_HDR[slot]);
+            (*p).len   = core::mem::size_of::<BlkReqHdr>() as u32;
+            (*p).flags = VIRTQ_DESC_F_NEXT;
+            (*p).next  = d_data as u16;
+
+            // Descriptor 1: data — the slot's driver-owned staging area.
+            let p = vq.desc.add(d_data);
+            (*p).addr  = super::dma_addr_of(&raw const BLK_DMA_BUF[slot]);
+            (*p).len   = data_len as u32;
+            (*p).flags = VIRTQ_DESC_F_NEXT | if !write { VIRTQ_DESC_F_WRITE } else { 0 };
+            (*p).next  = d_status as u16;
+
+            // Descriptor 2: status byte (device writes)
+            let p = vq.desc.add(d_status);
+            (*p).addr  = super::dma_addr_of(&raw const BLK_STATUS[slot]);
+            (*p).len   = 1;
+            (*p).flags = VIRTQ_DESC_F_WRITE;
+            (*p).next  = 0;
+
+            submit(dev, slot, d_hdr);
+        }
+        (d_hdr, d_data, d_status)
+    };
+
+    // The device request, waited for without BLK_LOCK. On failure the chain's
+    // descriptors stay quarantined (`latch_dead`).
+    wait_done(slot, BLK_TIMEOUT_US, pi_base)?;
+
+    let _guard = BLK_LOCK.lock();
     let dev = unsafe { &mut *(&raw mut BLK_DEV) };
-
-    // A previous request timed out: the device was reset and may still have
-    // been mid-DMA into the statics above. Submitting anything else would
-    // reuse buffers the device might still be writing, so the driver stays
-    // dead until reboot. See the timeout path below.
-    if dev.failed || !dev.ready { return Err(()); }
-
-    let vq = &mut dev.vq;
-
-    // Queue must be live: a null table would be a null deref below, and
-    // `virtq_submit` divides by `vq.num`.
-    if vq.desc.is_null() || vq.num == 0 { return Err(()); }
-
-    if count == 0 || count as usize > BLK_DMA_SECTORS { return Err(()); }
-
-    // `sector + count` can overflow with a hostile LBA; overflow-checks are on
-    // in release, so a plain add is a panic (== board reset). Check it.
-    let end = sector.checked_add(count as u64).ok_or(())?;
-    if end > dev.capacity {
-        azos_drv_sys::kerr!("[VIRTIO-BLK] Error: sector out of range");
-        return Err(());
+    SLOT_HEAD[slot].store(NO_CHAIN, Ordering::Relaxed);
+    unsafe {
+        virtq_free_desc(&mut dev.vq, d_hdr);
+        virtq_free_desc(&mut dev.vq, d_data);
+        virtq_free_desc(&mut dev.vq, d_status);
     }
-    if write && dev.readonly {
-        azos_drv_sys::kerr!("[VIRTIO-BLK] Error: disk is read-only");
-        return Err(());
-    }
-
-    // The driver is idle here (strictly one request at a time, BLK_LOCK held
-    // by our caller), so the used ring must be empty. An entry now can only
-    // be a duplicate or forged completion — a device not following the
-    // protocol. Left in the ring, it would make the NEXT request appear
-    // complete the instant it was submitted, before any DMA happened, and
-    // the caller would consume stale staging-buffer contents as disk data.
-    // Same remedy as a timeout: reset, latch dead. (No descriptors are
-    // allocated yet, so there is nothing to quarantine.)
-    if virtq_poll(vq).is_some() {
-        latch_dead(dev, "spurious completion while idle");
-        return Err(());
-    }
-
-    // Prepare request header
-    BLK_REQ_HDR.req_type = if write { BLK_T_OUT } else { BLK_T_IN };
-    BLK_REQ_HDR.reserved = 0;
-    BLK_REQ_HDR.sector   = sector;
-    BLK_STATUS           = 0xFF;
-
-    // Allocate 3 descriptors: [header] → [data] → [status]
-    let d_hdr    = virtq_alloc_desc(vq).ok_or(())?;
-    let d_data   = virtq_alloc_desc(vq).ok_or_else(|| { virtq_free_desc(vq, d_hdr); })?;
-    let d_status = virtq_alloc_desc(vq).ok_or_else(|| {
-        virtq_free_desc(vq, d_hdr);
-        virtq_free_desc(vq, d_data);
-    })?;
-
-    // count <= BLK_DMA_SECTORS was checked above, so this cannot overflow and
-    // cannot exceed BLK_DMA_BYTES — the staging buffer is always large enough.
-    // Re-verified 2026-09-06 (claims_check audit): "checked above" means
-    // line 235 in *this* function (`if count == 0 || count as usize >
-    // BLK_DMA_SECTORS { return Err(()); }`), not merely a contract the
-    // `read`/`write` wrappers happen to uphold — `blk_rw` re-validates its
-    // own `count` argument regardless of caller. BLK_DMA_SECTORS = 8,
-    // SECTOR_SIZE = 512, so the product is <= 4096 = BLK_DMA_BYTES; the
-    // `checked_mul` is redundant defense, not the only guard.
-    let data_len = (count as usize).checked_mul(SECTOR_SIZE).ok_or(())?;
-
-    // Descriptor 0: request header (device reads)
-    let p = vq.desc.add(d_hdr);
-    (*p).addr  = super::dma_addr_of(&raw const BLK_REQ_HDR);
-    (*p).len   = core::mem::size_of::<BlkReqHdr>() as u32;
-    (*p).flags = VIRTQ_DESC_F_NEXT;
-    (*p).next  = d_data as u16;
-
-    // Descriptor 1: data buffer — always the driver-owned staging area, so a
-    // late DMA after a timeout can only land in memory this driver owns.
-    let p = vq.desc.add(d_data);
-    (*p).addr  = super::dma_addr_of(&raw const BLK_DMA_BUF);
-    (*p).len   = data_len as u32;
-    (*p).flags = VIRTQ_DESC_F_NEXT | if !write { VIRTQ_DESC_F_WRITE } else { 0 };
-    (*p).next  = d_status as u16;
-
-    // Descriptor 2: status byte (device writes)
-    let p = vq.desc.add(d_status);
-    (*p).addr  = super::dma_addr_of(&raw const BLK_STATUS);
-    (*p).len   = 1;
-    (*p).flags = VIRTQ_DESC_F_WRITE;
-    (*p).next  = 0;
-
-    // Submit and busy-wait for completion (same as C kernel)
-    if let Err(reason) = submit_and_wait(&dev.vdev, vq, d_hdr, BLK_TIMEOUT_US) {
-        latch_dead(dev, reason);
-        return Err(());
-    }
-
-    virtq_free_desc(vq, d_hdr);
-    virtq_free_desc(vq, d_data);
-    virtq_free_desc(vq, d_status);
 
     // The status byte was written by the device via DMA; read it volatile so
     // the 0xFF sentinel store above cannot be constant-propagated into this
-    // comparison. (Ordering is provided by the acquire fence in `virtq_poll`,
-    // which sits between observing the used index and this load.)
-    let status = core::ptr::read_volatile(&raw const BLK_STATUS);
+    // comparison. (Ordering: the acquire fence in `virtq_poll` sits between
+    // observing the used index and the reaper's release of `SLOT_DONE`, which
+    // `wait_done` acquired.)
+    let status = unsafe { core::ptr::read_volatile(&raw const BLK_STATUS[slot]) };
     if status != BLK_S_OK {
         azos_drv_sys::kerr!("[VIRTIO-BLK] Error: status {}", status);
         return Err(());
@@ -514,29 +602,28 @@ unsafe fn blk_rw(sector: u64, count: u32, write: bool) -> Result<(), ()> {
 
 // ---- Public API ----
 
-/// True while the driver may touch the staging buffer and submit requests.
-/// False before init() and forever after a timeout, when the device may still
-/// own `BLK_DMA_BUF`. Checked before staging, not just before submitting.
-///
-/// Must be called with `BLK_LOCK` held.
+/// True while the driver may submit requests. False before init() and forever
+/// after a timeout. Checked before staging, not just before submitting.
 fn usable() -> bool {
+    let _guard = BLK_LOCK.lock();
     let dev = unsafe { &*(&raw const BLK_DEV) };
     dev.ready && !dev.failed
 }
 
 /// Read `count` sectors starting at `sector` into `buf`.
 ///
-/// Transfers via the driver's staging buffer in chunks of at most
-/// `BLK_DMA_SECTORS`; `buf` is never exposed to the device. Returns `Err` on a
-/// short buffer or a bad count instead of panicking (release builds abort on
-/// panic, which on this target is a board reset).
+/// Transfers via a staging slot in chunks of at most `BLK_DMA_SECTORS`; `buf`
+/// is never exposed to the device. Returns `Err` on a short buffer or a bad
+/// count instead of panicking (release builds abort on panic, which on this
+/// target is a board reset).
 pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-    // Held for the whole multi-chunk transfer: the staging buffer, the
-    // request statics and the virtqueue are all shared mutable state.
-    let _guard = BLK_LOCK.lock();
-    if !usable() { return Err(()); }
+    let pi_base = caller_pi_held();
     let total = (count as usize).checked_mul(SECTOR_SIZE).ok_or(())?;
     if total == 0 || buf.len() < total { return Err(()); }
+    // Held for the whole multi-chunk transfer: the slot's staging buffer is
+    // this request's alone.
+    let slot = slot_claim();
+    if !usable() { return Err(()); }
 
     let mut done: u32 = 0;
     while done < count {
@@ -546,17 +633,17 @@ pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
         let end   = off.checked_add(bytes).ok_or(())?;
         let lba   = sector.checked_add(done as u64).ok_or(())?;
 
-        unsafe { blk_rw(lba, chunk as u32, false)? };
+        blk_rw(slot.0, lba, chunk as u32, false, pi_base)?;
 
         // Staging -> caller. `get_mut` rather than an index so a later edit
         // cannot reintroduce a panicking slice.
         let dst = buf.get_mut(off..end).ok_or(())?;
-        // SAFETY: the device has posted the used-ring entry (virtq_poll
-        // succeeded, which fences Acquire), so it is done with the staging
-        // buffer. `bytes <= BLK_DMA_BYTES` and `dst.len() == bytes`.
+        // SAFETY: the device has posted this slot's used-ring entry
+        // (`wait_done` acquired it), so it is done with the staging buffer,
+        // and the slot is this task's. `bytes <= BLK_DMA_BYTES`.
         unsafe {
             core::ptr::copy_nonoverlapping(
-                (&raw const BLK_DMA_BUF) as *const u8, dst.as_mut_ptr(), bytes);
+                (&raw const BLK_DMA_BUF[slot.0]) as *const u8, dst.as_mut_ptr(), bytes);
         }
 
         done += chunk as u32;
@@ -570,11 +657,12 @@ pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
 /// leaves the earlier chunks committed to the disk — same as any multi-sector
 /// request that fails mid-flight; callers must not assume atomicity.
 pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-    // Held for the whole multi-chunk transfer — see `read`.
-    let _guard = BLK_LOCK.lock();
-    if !usable() { return Err(()); }
+    let pi_base = caller_pi_held();
     let total = (count as usize).checked_mul(SECTOR_SIZE).ok_or(())?;
     if total == 0 || buf.len() < total { return Err(()); }
+    // Held for the whole multi-chunk transfer — see `read`.
+    let slot = slot_claim();
+    if !usable() { return Err(()); }
 
     let mut done: u32 = 0;
     while done < count {
@@ -585,16 +673,15 @@ pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
         let lba   = sector.checked_add(done as u64).ok_or(())?;
 
         let src = buf.get(off..end).ok_or(())?;
-        // SAFETY: no request is in flight (BLK_LOCK serializes callers, the
-        // driver is strictly one request at a time and latches dead on
-        // timeout), so the device does not own the staging buffer here.
+        // SAFETY: the slot is this task's and its previous chain (if any)
+        // completed, so the device does not own its staging buffer here.
         // `bytes <= BLK_DMA_BYTES`.
         unsafe {
             core::ptr::copy_nonoverlapping(
-                src.as_ptr(), (&raw mut BLK_DMA_BUF) as *mut u8, bytes);
+                src.as_ptr(), (&raw mut BLK_DMA_BUF[slot.0]) as *mut u8, bytes);
         }
 
-        unsafe { blk_rw(lba, chunk as u32, true)? };
+        blk_rw(slot.0, lba, chunk as u32, true, pi_base)?;
 
         done += chunk as u32;
     }
@@ -603,68 +690,77 @@ pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
 
 /// Commit every write the device has completed to stable storage: one
 /// `VIRTIO_BLK_T_FLUSH` request, a two-descriptor chain (header, status),
-/// waited for like any other request.
+/// submitted and waited for like any other request.
 ///
 /// `Err(Unsupported)` when the device did not offer `VIRTIO_BLK_F_FLUSH`
 /// (the request is then never sent: virtio 1.2 section 5.2.6.2 forbids it)
 /// or answered `VIRTIO_BLK_S_UNSUPP`. `Err(Io)` before `init()`, after the
 /// driver latched dead, on a timeout, or on any other status. Never `Ok`
 /// without the device having answered `VIRTIO_BLK_S_OK` to a flush.
+///
+/// A flush covers the writes that COMPLETED before it was submitted; one
+/// still in flight on another slot is not ordered by it (virtio 1.2 section
+/// 5.2.6.4) — every caller that claims durability flushes after its own
+/// writes returned.
 pub fn flush() -> Result<(), FlushError> {
+    let pi_base = caller_pi_held();
+    let slot = slot_claim();
+    let (d_hdr, d_status) = {
+        let _guard = BLK_LOCK.lock();
+        let dev = unsafe { &mut *(&raw mut BLK_DEV) };
+        if !(dev.ready && !dev.failed) { return Err(FlushError::Io); }
+        if !dev.flush { return Err(FlushError::Unsupported); }
+        if dev.vq.desc.is_null() || dev.vq.num == 0 { return Err(FlushError::Io); }
+        unsafe { reap(dev) };
+        if dev.failed { return Err(FlushError::Io); }
+
+        // `sector` is reserved for T_FLUSH and must be zero.
+        unsafe {
+            BLK_REQ_HDR[slot.0].req_type = BLK_T_FLUSH;
+            BLK_REQ_HDR[slot.0].reserved = 0;
+            BLK_REQ_HDR[slot.0].sector   = 0;
+            BLK_STATUS[slot.0]           = 0xFF;
+        }
+
+        // No data descriptor: a flush carries no payload, and a zero-length
+        // buffer in the chain is something a device may reject outright.
+        let vq = &mut dev.vq;
+        let d_hdr    = unsafe { virtq_alloc_desc(vq) }.ok_or(FlushError::Io)?;
+        let d_status = unsafe { virtq_alloc_desc(vq) }.ok_or_else(|| {
+            unsafe { virtq_free_desc(vq, d_hdr) };
+            FlushError::Io
+        })?;
+
+        unsafe {
+            let p = vq.desc.add(d_hdr);
+            (*p).addr  = super::dma_addr_of(&raw const BLK_REQ_HDR[slot.0]);
+            (*p).len   = core::mem::size_of::<BlkReqHdr>() as u32;
+            (*p).flags = VIRTQ_DESC_F_NEXT;
+            (*p).next  = d_status as u16;
+
+            let p = vq.desc.add(d_status);
+            (*p).addr  = super::dma_addr_of(&raw const BLK_STATUS[slot.0]);
+            (*p).len   = 1;
+            (*p).flags = VIRTQ_DESC_F_WRITE;
+            (*p).next  = 0;
+
+            submit(dev, slot.0, d_hdr);
+        }
+        (d_hdr, d_status)
+    };
+
+    wait_done(slot.0, BLK_FLUSH_TIMEOUT_US, pi_base).map_err(|_| FlushError::Io)?;
+
     let _guard = BLK_LOCK.lock();
-    if !usable() { return Err(FlushError::Io); }
     let dev = unsafe { &mut *(&raw mut BLK_DEV) };
-    if !dev.flush { return Err(FlushError::Unsupported); }
-    unsafe { blk_flush(dev) }
-}
-
-/// Caller must hold `BLK_LOCK`; `dev` must be usable with FLUSH negotiated.
-unsafe fn blk_flush(dev: &mut BlkDev) -> Result<(), FlushError> {
-    let vq = &mut dev.vq;
-    if vq.desc.is_null() || vq.num == 0 { return Err(FlushError::Io); }
-
-    // Idle-ring check, as in `blk_rw`.
-    if virtq_poll(vq).is_some() {
-        latch_dead(dev, "spurious completion while idle");
-        return Err(FlushError::Io);
+    SLOT_HEAD[slot.0].store(NO_CHAIN, Ordering::Relaxed);
+    unsafe {
+        virtq_free_desc(&mut dev.vq, d_hdr);
+        virtq_free_desc(&mut dev.vq, d_status);
     }
-
-    // `sector` is reserved for T_FLUSH and must be zero.
-    BLK_REQ_HDR.req_type = BLK_T_FLUSH;
-    BLK_REQ_HDR.reserved = 0;
-    BLK_REQ_HDR.sector   = 0;
-    BLK_STATUS           = 0xFF;
-
-    // No data descriptor: a flush carries no payload, and a zero-length
-    // buffer in the chain is something a device may reject outright.
-    let d_hdr    = virtq_alloc_desc(vq).ok_or(FlushError::Io)?;
-    let d_status = virtq_alloc_desc(vq).ok_or_else(|| {
-        virtq_free_desc(vq, d_hdr);
-        FlushError::Io
-    })?;
-
-    let p = vq.desc.add(d_hdr);
-    (*p).addr  = super::dma_addr_of(&raw const BLK_REQ_HDR);
-    (*p).len   = core::mem::size_of::<BlkReqHdr>() as u32;
-    (*p).flags = VIRTQ_DESC_F_NEXT;
-    (*p).next  = d_status as u16;
-
-    let p = vq.desc.add(d_status);
-    (*p).addr  = super::dma_addr_of(&raw const BLK_STATUS);
-    (*p).len   = 1;
-    (*p).flags = VIRTQ_DESC_F_WRITE;
-    (*p).next  = 0;
-
-    if let Err(reason) = submit_and_wait(&dev.vdev, vq, d_hdr, BLK_FLUSH_TIMEOUT_US) {
-        latch_dead(dev, reason);
-        return Err(FlushError::Io);
-    }
-
-    virtq_free_desc(vq, d_hdr);
-    virtq_free_desc(vq, d_status);
 
     // Volatile for the same reason as in `blk_rw`.
-    match core::ptr::read_volatile(&raw const BLK_STATUS) {
+    match unsafe { core::ptr::read_volatile(&raw const BLK_STATUS[slot.0]) } {
         BLK_S_OK => Ok(()),
         BLK_S_UNSUPP => {
             azos_drv_sys::kerr!("[VIRTIO-BLK] Error: flush answered UNSUPP after FLUSH was negotiated");

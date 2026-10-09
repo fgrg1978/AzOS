@@ -895,11 +895,18 @@ lat-canary = ["lat-smoke", "lat-trace"]
 # reading raw sectors. The `lat: ... FAT writes` rows.
 # Wave 15 (FM): it also counts FAT device I/O issued under a held PiMutex
 # (`pi_io=` in `[LAT] load`; owner rule F1 wants 0).
-lat-fat = ["lat-smoke", "azos_fs/fat-pi-io-probe"]
+lat-fat = ["lat-smoke", "azos_fs/fat-pi-io-probe", "azos_drv_virtio/blk-wait-probe"]
 # Its canary: a `SpinLock` held across each FAT update (crates/fs/fs/src/fat32.rs).
 fat-mutate-spin-canary = ["lat-fat", "lat-trace", "azos_fs/fat-mutate-spin-canary"]
 # F1 canary: a `PiMutex` held across each FAT update; `pi_io=` goes non-zero.
 fat-mutate-pi-canary = ["lat-fat", "azos_fs/fat-mutate-pi-canary"]
+# Wave 15 (RL), owner rule F1: virtio-blk holds `BLK_LOCK` across each
+# completion wait again; `[LAT] blk waits_locked=` goes non-zero.
+blk-lock-wait-canary = ["lat-fat", "azos_drv_virtio/blk-lock-wait-canary"]
+# Wave 15 (RL), owner rule "an RT task never does block I/O": the flight
+# recorder treats every caller as non-RT, so rt-motor's durable SAFE STOP
+# record flushes in rt-motor and RT_BLOCK_IO_CHECK must panic naming it.
+rt-io-canary = ["azos_actuation/rt-flush-canary"]
 # Wave 11 (PSTORE): gate rows `pstore: ...`. After /fat mounts, a boot that
 # found no RAM panic record panics with the VFS lock held and reboots warm;
 # the next boot must recover the record into /fat/CRASH.LOG. See

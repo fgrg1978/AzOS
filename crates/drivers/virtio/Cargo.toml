@@ -17,6 +17,13 @@ k1  = []
 # every build would be dead weight there. Enabled by `kernel`'s own `pci`
 # feature.
 pci = ["dep:azos_pci"]
+# Wave 15, owner rule F1: virtio-blk counts its completion waits and those
+# made with a driver PiMutex held (`blk::wait_probe_counts`); the `lat-fat`
+# smoke prints them. Costs two atomic adds per request.
+blk-wait-probe = []
+# Gate canary only: hold `BLK_LOCK` across the whole completion wait again
+# (the pre-F1 shape); `blk-wait-probe` must count every wait as locked.
+blk-lock-wait-canary = ["blk-wait-probe"]
 
 [dependencies]
 azos_arch        = { workspace = true }
@@ -26,4 +33,5 @@ azos_drv_api     = { workspace = true }
 azos_drv_base    = { workspace = true }
 azos_drv_irqchip = { workspace = true }
 azos_drv_sys     = { workspace = true }
+azos_limits      = { workspace = true }
 azos_pci         = { workspace = true, optional = true }

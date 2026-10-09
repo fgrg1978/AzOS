@@ -205,8 +205,38 @@ fn io(r: impl FnOnce() -> Result<(), ()>) -> Result<(), ()> {
     r
 }
 
+/// Kconfig `RT_BLOCK_IO_CHECK`: the kernel's "a real-time task is calling"
+/// check, run at every entry into this layer. Owner rule: an RT task never
+/// does block I/O; the kernel's check panics naming the task. `0` until the
+/// kernel registers it (boot, before the first task), and never registered
+/// with the option off, where [`rt_io_check`] compiles to nothing.
+static RT_IO_CHECK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Register the check [`RT_IO_CHECK`] runs. A no-op with `RT_BLOCK_IO_CHECK` off.
+pub fn set_rt_io_check(f: fn()) {
+    if azos_limits::RT_BLOCK_IO_CHECK {
+        RT_IO_CHECK.store(f as usize, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Run the registered check. Called by every entry below, and by the one
+/// path to the device that does not come through here (ring-3
+/// `SYS_DISK_READ`/`SYS_DISK_WRITE`, which call `virtio::blk` directly).
+#[inline(always)]
+pub fn rt_io_check() {
+    if azos_limits::RT_BLOCK_IO_CHECK {
+        let f = RT_IO_CHECK.load(core::sync::atomic::Ordering::Acquire);
+        if f != 0 {
+            // SAFETY: only `set_rt_io_check` stores here, and it stores a `fn()`.
+            let f: fn() = unsafe { core::mem::transmute::<usize, fn()>(f) };
+            f();
+        }
+    }
+}
+
 #[inline]
 pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+    rt_io_check();
     io(|| BACKEND.read(sector, count, buf))
 }
 
@@ -215,6 +245,7 @@ pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
 /// a failed multi-sector write may have landed in part.
 #[inline]
 pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+    rt_io_check();
     let r = io(|| BACKEND.write(sector, count, buf));
     crate::write_observer::notify(sector, count);
     r
@@ -226,6 +257,7 @@ pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
 /// `crates/fs/fs/src/fat32.rs`.
 #[inline]
 pub fn write_quiet(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+    rt_io_check();
     io(|| BACKEND.write(sector, count, buf))
 }
 
@@ -246,5 +278,6 @@ pub fn set_write_observer(f: fn(u64, u32)) {
 /// See [`BlockDevice::flush`].
 #[inline]
 pub fn flush() -> Result<(), FlushError> {
+    rt_io_check();
     BACKEND.flush()
 }

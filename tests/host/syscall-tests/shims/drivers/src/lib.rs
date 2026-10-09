@@ -558,6 +558,8 @@ pub mod write_observer;
 
 /// Mirrors the one `azos_drv_block::blkdev` entry `handlers.rs` names.
 pub mod blkdev {
+    /// The real one runs the kernel's RT_BLOCK_IO_CHECK; the host has no RT task.
+    pub fn rt_io_check() {}
     pub fn note_external_write(sector: u64, count: u32) {
         crate::write_observer::notify(sector, count);
     }

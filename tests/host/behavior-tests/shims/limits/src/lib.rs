@@ -30,3 +30,5 @@ pub const RC_STICK_FULL_SCALE_PCT: usize = 100;
 pub const GEOFENCE: bool = true;
 pub const GEOFENCE_RADIUS_M: usize = 100;
 pub const GEOFENCE_MIN_SATELLITES: usize = 4;
+pub const LOG_RING_ENTRIES: usize = 128;
+pub const LOG_FLUSHER_JOBS: usize = 4;

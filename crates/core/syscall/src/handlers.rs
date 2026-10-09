@@ -2614,6 +2614,7 @@ pub fn sys_disk_read(sector: u64, count: u64, buf: u64, sel: u64) -> i64 {
     static DISK_RD_BUF: PiMutex<[u8; DISK_BOUNCE_BYTES]> =
         PiMutex::new([0u8; DISK_BOUNCE_BYTES]);
     let mut kbuf = DISK_RD_BUF.lock();
+    azos_drv_block::blkdev::rt_io_check();
     match azos_drv_virtio::virtio::blk::read(sector, count as u32, &mut kbuf[..byte_len]) {
         Ok(()) => {
             if !azos_sched::copy_to_user(buf as usize, kbuf.as_ptr(), byte_len) {
@@ -2643,6 +2644,7 @@ pub fn sys_disk_write(sector: u64, count: u64, buf: u64, sel: u64) -> i64 {
     if !azos_sched::copy_from_user(kbuf.as_mut_ptr(), buf as usize, byte_len) {
         return -1;
     }
+    azos_drv_block::blkdev::rt_io_check();
     let r = azos_drv_virtio::virtio::blk::write(sector, count as u32, &kbuf[..byte_len]);
     // The FAT32 block cache may hold these sectors (a partition holder can
     // write the mounted volume's own partition): tell it, after the device

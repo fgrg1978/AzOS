@@ -9,6 +9,9 @@ description = "The actuation authority every domain shares: e-stop latch, releas
 [features]
 # `qemu`: sys_wdt's frozen-timer threshold for a TCG guest (see sys_wdt.rs).
 qemu = []
+# Gate canary only (kernel `rt-io-canary`): the RT-caller probe is ignored,
+# so an RT task's `logger_flush` does the block I/O itself.
+rt-flush-canary = []
 
 [dependencies]
 azos_arch     = { workspace = true }

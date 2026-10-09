@@ -6625,6 +6625,22 @@ pub fn current_task_priority() -> u32 {
     }
 }
 
+/// Base priority (no donation) of the task running on this CPU, or
+/// `IDLE_PRIORITY` if none is current: the task's own class, which is what
+/// the owner rule "an RT task never does block I/O" is about
+/// (`RT_BLOCK_IO_CHECK`). Per CPU like [`current_task_priority`].
+pub fn current_task_base_priority() -> u32 {
+    let cpu = current_cpu_id();
+    unsafe {
+        let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+        if idx == usize::MAX {
+            crate::task::IDLE_PRIORITY
+        } else {
+            TASKS[idx].base_priority.load(Ordering::Relaxed)
+        }
+    }
+}
+
 /// Parent TID of the task running on this CPU, or `0` if none is current (or
 /// it has no recorded parent). Mirrors [`current_task_tid`] exactly: the same
 /// `PER_CPU[cpu].current_idx` cache, O(1), no `idx_for_tid` scan — a scan is

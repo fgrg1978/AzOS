@@ -953,6 +953,76 @@ config FAT32_SECTOR_CLAIM_SLOTS
       couple of atomic instructions per FAT entry update, the same on
       riscv64, aarch64 and x86_64. Lower it only to measure contention.
 
+config LOG_RING_ENTRIES
+    int "Flight-recorder ring entries (power of two)"
+    range 16 4096
+    default 64 if PROFILE_EMBEDDED
+    default 128 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 128
+    help
+      crates/core/actuation/src/logger.rs: records the flight recorder holds
+      in RAM until the log flusher writes them. The ring is lock-free (one
+      compare-and-swap per record, many producers, one consumer): a
+      real-time task logs into it and never waits. Full, a new record
+      evicts the oldest, counted in the logger's `events_dropped`. Must be
+      a power of two.
+
+      Cost: 40 bytes of RAM per entry (32-byte record + sequence word),
+      5 KiB at 128; no instructions depend on it. Raise it when
+      `events_dropped` climbs between two flushes; embedded boards
+      default to 64.
+
+config LOG_FLUSHER_PRIORITY
+    int "Log flusher task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 12 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 12
+    help
+      kernel/src/boot/sched.rs, `log-flush`: the kernel task that writes
+      the flight recorder's ring to disk and runs the block I/O that
+      real-time tasks hand it (owner rule: an RT task never does block
+      I/O). Woken by every flush request; an RT task's `*_durable` record
+      is on disk once this task has run one flush after the request, so
+      its priority is that bound. 12 is the most urgent priority outside
+      the RT band (time-sliced, so it cannot starve the band's peers).
+
+      Cost: one kernel task (its stack, KERNEL_STACK_SIZE_KB) on every
+      ISA. Lower it (a larger number) only if logging must yield to
+      every other normal task.
+
+config LOG_FLUSHER_JOBS
+    int "Deferred block-I/O job slots on the log flusher"
+    range 1 16
+    default 4 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 4
+    help
+      One-shot jobs a real-time task hands the log flusher instead of
+      doing block I/O itself (the OTA boot-good mark from the RT system
+      watchdog). A full table refuses the job and the RT task retries on
+      its next pass.
+
+      Cost: one machine word of RAM per slot; the flusher scans them on
+      every pass.
+
+config VIRTIO_BLK_INFLIGHT
+    int "virtio-blk requests in flight at once (1-5)"
+    range 1 5
+    default 2 if PROFILE_EMBEDDED
+    default 4 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 4
+    help
+      crates/drivers/virtio/src/virtio/blk.rs: each in-flight request owns
+      a staging slot (request header, 4 KiB bounce buffer, status byte).
+      A request is submitted under the driver's lock and waited for
+      without it (owner rule F1: no lock held across device I/O), so up to
+      this many tasks have requests in the device at once; one more sleeps
+      for a free slot. Five is the most the 16-entry virtqueue holds (three
+      descriptors per request).
+
+      Cost: 4 KiB + 17 bytes of RAM per slot; nothing per request beyond
+      the reaper's scan of this many slots. 1 serialises every request
+      (the pre-F1 behaviour, without the lock across the wait).
+
 config EXEC_IMAGE_CACHE_KB
     int "Verified exec image cache (KiB of frames; 0 = off)"
     range 0 65536

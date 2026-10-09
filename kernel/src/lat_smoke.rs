@@ -372,6 +372,10 @@ fn rt_task(num_cpus: usize) {
     {
         let (mine, all) = azos_fs::fat32::fat32_pi_io_counts();
         kprintln!("[LAT] fat pi_io={} pi_io_all={}", mine, all);
+        // Wave 15 (RL): virtio-blk completion waits, and those made with a
+        // driver PiMutex held (BLK_LOCK across the request; must be 0).
+        let (waits, locked) = azos_drv_virtio::virtio::blk::wait_probe_counts();
+        kprintln!("[LAT] blk waits={} waits_locked={}", waits, locked);
     }
     #[cfg(feature = "lat-trace")]
     {

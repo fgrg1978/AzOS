@@ -14,6 +14,8 @@ description = "Host-side tests for the brain wire protocol in domains/robot/beha
 # this declaration rustc's `unexpected_cfgs` lint fires on both files even
 # though the feature is (correctly) never enabled.
 [features]
+# logger.rs's RT-flush gate canary (wave 15): a known value, never enabled.
+rt-flush-canary = []
 # Wave 15: `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`
 # exists only under `rc-input` in the real crate; on here so the suite tests
 # both (the files are pulled in by `#[path]`).

@@ -446,9 +446,17 @@ fixed mount table. There are three implementations:
   sector sleeps on a wait queue without priority inheritance until the first
   publishes, so a real-time waiter never inherits disk latency. The allocator
   scans without a claim and confirms its candidate on the claimed sector. The
-  VirtIO block driver's lock is a priority-inheritance mutex, and the cache
-  lock is released before a request goes to the device. A real-time task on
-  the writer's CPU keeps its period while FAT32 writes.
+  VirtIO block driver submits a request under its lock and waits for the
+  completion without it. Each request in flight owns a staging slot
+  (`VIRTIO_BLK_INFLIGHT`, up to five), and a request that finds every slot
+  taken sleeps without priority inheritance. The cache lock is released
+  before a request goes to the device. A real-time task on the writer's CPU
+  keeps its period while FAT32 writes.
+- **Real-time tasks do no block I/O.** A task whose own priority is in the
+  real-time band never enters the block layer. With `RT_BLOCK_IO_CHECK`
+  (on in the development configs) the block layer panics, naming the task,
+  if one does. The only exception is the crash-log write of a task that is
+  already panicking.
 - **Write observer.** Writers that reach the medium without going through
   FAT32 call a write observer. These are the raw disk call and the USB
   mass-storage gadget. FAT32 registers the observer to drop the cache lines a
@@ -498,7 +506,19 @@ PCI transport exists, but the kernel uses it only in self-tests.
 **Flight recorder.** Safety events are written to `LOG/LOGNNNNN.BIN` on the
 FAT32 volume.
 Each boot opens a new file whose serial number continues from the highest one
-on disk. At boot the recorder is replayed to restore the e-stop latch and the
+on disk.
+Records first go into a lock-free ring in RAM (`LOG_RING_ENTRIES`). A
+producer claims a slot with one compare-and-swap and never waits for a lock.
+When the ring is full, the new record evicts the oldest one, and the loss is
+counted. Records leave the ring only once the medium has taken them.
+The `log-flush` task writes the ring to disk (`LOG_FLUSHER_PRIORITY`, outside
+the real-time band). The flush lock is a sleeping lock without priority
+inheritance, and no real-time task takes it.
+A real-time task that asks for a flush, or for a durable record such as an
+e-stop, does not wait for it. It wakes `log-flush` and returns. Its record is
+on disk once `log-flush` has run one flush after the request. A durable record
+from any other task is flushed and synced before the call returns.
+The real-time system watchdog also hands its OTA boot-good mark to `log-flush`. At boot the recorder is replayed to restore the e-stop latch and the
 release nonce floor.
 
 **Crash log.** The panic handler first writes a record to a reserved RAM

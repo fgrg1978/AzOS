@@ -5974,6 +5974,62 @@ PY
 par_row rt_watchdog_record_row "rt watchdog recorded"          rv  ""                     PASS
 par_row rt_watchdog_record_row "rt watchdog recorded, canary"  rv  ",rtwd-record-canary"  FAIL
 par_row rt_watchdog_record_row "aarch64 rt watchdog recorded"  arm ""                     PASS
+
+# ── Wave 15 (RL): an RT task never does block I/O ───────────────────────────
+#
+# Owner rule. The dev configs (LOG_LEVEL debug) build RT_BLOCK_IO_CHECK in:
+# the block layer panics when a task whose own priority is in the RT band
+# enters it. So every dev-config boot above that reaches rt-motor's SAFE
+# STOP and the RT watchdog's flushes (the `rt watchdog recorded` rows) is
+# the passing side: those records now reach the disk through the
+# `log-flush` task. This canary (`rt-io-canary`: the flight recorder treats
+# every caller as non-RT) puts rt-motor's durable SAFE STOP flush back in
+# rt-motor, and the check must stop the kernel naming it.
+rt_io_canary_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" kimg=""
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img"
+    if [ "$isa" = "rv" ]; then
+        kbuild "qemu,rt-io-canary" || { bad; echo "      riscv64 kernel (qemu,rt-io-canary) did not build"; return; }
+        make_disk build/disk.img; cp build/disk.img "$img"
+        kimg="$CI_LOG_DIR/${tag}-kernel.elf"; cp "$KERNEL" "$kimg"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        a64_kbuild "qemu,rt-io-canary" || { bad; echo "      aarch64 kernel (qemu,rt-io-canary) did not build"; return; }
+        make_disk build/disk-aarch64.img; cp build/disk-aarch64.img "$img"
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aq 'KERNEL PANIC' "$log" 2>/dev/null && { sleep 1; break; }
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img" "$kimg"
+    # Anchored on what only the check's panic prints: its site and the task.
+    if tr -d '\r' <"$log" | grep -a -A3 'KERNEL PANIC' | qgrep -q '^  at kernel/src/boot/sched\.rs:' \
+       && tr -d '\r' <"$log" | grep -a -A3 'KERNEL PANIC' | qgrep -q 'task=rt-motor$'; then
+        ok; echo "      rt-motor's own flush stopped the kernel at the block layer (canary)"; rm -f "$log"
+    else
+        bad; echo "      no RT_BLOCK_IO_CHECK panic naming rt-motor:"
+        grep -a -m4 -A3 'KERNEL PANIC\|SAFE STOP' "$log" | sed 's/^/        /'
+        echo "      log kept: $log"
+    fi
+}
+par_row rt_io_canary_row "rt: RT block I/O panics, canary (rv)"  rv
+par_row rt_io_canary_row "rt: RT block I/O panics, canary (arm)" arm
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 
@@ -15093,6 +15149,32 @@ PYEOF
                 bad; echo "      no '[LAT] fat pi_io=<n> pi_io_all=<n>' line"; echo "      log kept: $log"; return
             fi ;;
         esac
+        # Wave 15 (RL), owner rule F1: virtio-blk waits for a completion with
+        # no driver PiMutex held (`BLK_LOCK` only around submit/reap). A
+        # `lat-fat` kernel prints `[LAT] blk waits=<n> waits_locked=<n>`;
+        # the PASS rows need waits > 0 and waits_locked = 0, the BLKCANARY
+        # rows (`BLK_LOCK` held across the wait again) waits_locked > 0.
+        local blk_line="" blk_locked=""
+        case "$feats" in *lat-fat*|*blk-lock-wait-canary*)
+            blk_line="$(grep -a '^\[LAT\] blk waits=' "$clean" | sed -n 1p)"
+            blk_locked="$(printf '%s\n' "$blk_line" | sed -n 's/^\[LAT\] blk waits=[1-9][0-9]* waits_locked=\([0-9][0-9]*\)$/\1/p')"
+            if [ -z "$blk_locked" ]; then
+                bad; echo "      no '[LAT] blk waits=<n> waits_locked=<n>' line: ${blk_line:-none}"; echo "      log kept: $log"; return
+            fi ;;
+        esac
+        if [ "$expect" = BLKCANARY ]; then
+            if [ "$blk_locked" != 0 ]; then
+                ok; echo "      completion waits with BLK_LOCK held: ${blk_line#\[LAT\] } (canary)"; rm -f "$log" "$clean"
+            else
+                bad; echo "      the BLK_LOCK canary counted no locked wait: ${blk_line#\[LAT\] }"
+                echo "      log kept: $log"
+            fi
+            return
+        fi
+        if [ -n "$blk_locked" ] && [ "$blk_locked" != 0 ]; then
+            bad; echo "      virtio-blk waited for the device with BLK_LOCK held (F1): ${blk_line#\[LAT\] }"
+            echo "      log kept: $log"; return
+        fi
         if [ "$expect" = PICANARY ]; then
             if [ "$pi_io" != 0 ]; then
                 ok; echo "      FAT device I/O under a held PiMutex: pi_io=${pi_io} (canary)"; rm -f "$log" "$clean"
@@ -15110,6 +15192,7 @@ PYEOF
             if grep -aq '^\[LAT\] PASS ' "$clean"; then
                 ok; echo "      ${result#\[LAT\] }"
                 [ -n "$pi_io" ] && grep -a '^\[LAT\] fat pi_io=' "$clean" | sed -n '1s/^\[LAT\] /      /p'
+                [ -n "$blk_line" ] && printf '      %s\n' "${blk_line#\[LAT\] }"
                 rm -f "$log" "$clean"
             else
                 bad; echo "      ${result}"; grep -a '^\[LAT\] FAIL ' "$clean" | sed 's/^/      /'
@@ -15327,6 +15410,12 @@ PYEOF
     # and must count the I/O under it.
     par_row -s lat_wake_row "lat: riscv64 FAT PI-across-I/O canary" rv "qemu,fat-mutate-pi-canary" PICANARY
     par_row -s lat_wake_row "lat: aarch64 FAT PI-across-I/O canary" arm "qemu,fat-mutate-pi-canary" PICANARY
+    # Wave 15 (RL), owner rule F1: virtio-blk's `BLK_LOCK` is not held
+    # across the device request (submit under it, wait without it). The
+    # rows above require `waits_locked=0`; these canaries hold it across
+    # each wait again and must count the waits under it.
+    par_row -s lat_wake_row "lat: riscv64 virtio-blk lock-across-wait canary" rv "qemu,blk-lock-wait-canary" BLKCANARY
+    par_row -s lat_wake_row "lat: aarch64 virtio-blk lock-across-wait canary" arm "qemu,blk-lock-wait-canary" BLKCANARY
 
     # ── aarch64: idle wakeups/s (tickless), wave 11 ONESHOT ─────────────────
     #

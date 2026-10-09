@@ -123,6 +123,12 @@ pub(crate) fn install_sched_hooks() {
         // global current-tid is wrong the moment a second core exists.
         azos_sched::scheduler::current_task_tid,
     );
+    // Owner rule (wave 15): an RT task never does block I/O. Dev builds
+    // (Kconfig RT_BLOCK_IO_CHECK) panic at the block layer's entry.
+    azos_drv_block::blkdev::set_rt_io_check(rt_block_io_check);
+    // The flight recorder asks the same question: an RT caller of
+    // `logger_flush` hands the flush to the `log-flush` task.
+    azos_actuation::logger::logger_set_rt_probe(current_task_is_rt);
     // The user-driver proxy's block/wake/donation. Without it an in-kernel
     // client of a ring-3 driver refuses every call (`ProxyError::CannotBlock`)
     // — deliberately not a fallback to spinning, which would keep every
@@ -407,4 +413,34 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
     azos_sched::rt::exempt_from_band_cap(idx);
     kprintln!("[SCHED] Created sys-wdt task (Phase 16: canaries + timer liveness) \
                [hart {}]", hart);
+    // Owner rule (wave 15): an RT task never does block I/O. The watchdog
+    // above is RT (11): its periodic flush, its durable e-stop records and
+    // the OTA boot-good mark go to this task, outside the RT band. Created
+    // with it so every kernel that runs the watchdog runs the flusher.
+    azos_sched::task_create(
+        "log-flush", azos_actuation::logger::logger_flusher_task, 0,
+        azos_limits::LOG_FLUSHER_PRIORITY as u32);
+    kprintln!("[SCHED] Created log-flush task (prio {})", azos_limits::LOG_FLUSHER_PRIORITY);
+}
+
+/// Whether the task running on this CPU is real-time: its own (base)
+/// priority is in the RT band. A donation does not make a task RT.
+fn current_task_is_rt() -> bool {
+    azos_sched::RT_PRIORITY_THRESHOLD > azos_sched::scheduler::current_task_base_priority()
+}
+
+/// Kconfig `RT_BLOCK_IO_CHECK`: the block layer's entry check. A task whose
+/// own (base) priority is in the RT band has reached the disk — the owner
+/// rule says it never does; its records go through the logger's ring and the
+/// `log-flush` task. Panics naming the task (dev builds only; the option is
+/// off in every deployment profile, where nothing registers this). Not once
+/// a panic is under way: the panic path's crash-log dump is the one disk
+/// write a dying RT task makes.
+fn rt_block_io_check() {
+    if current_task_is_rt() && !azos_common::is_panicked() {
+        panic!("[RT-IO] tid {} '{}' (base prio {}) entered the block layer: \
+                an RT task never does block I/O",
+            azos_sched::current_task_tid(), azos_sched::current_task_name(),
+            azos_sched::scheduler::current_task_base_priority());
+    }
 }
