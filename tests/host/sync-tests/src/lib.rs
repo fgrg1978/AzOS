@@ -169,6 +169,91 @@ mod lockdep_tests {
         user_return();
         assert_eq!(violations(), 0);
         assert_eq!(stats(), Stats::default());
+        // N1b's entry points are inert too.
+        scope_per_cpu();
+        scope_cpu_owned(3);
+        contended(&c, 1, Kind::PiMutex, 1 << 31 | 2);
+        assert_eq!(holder_word(), 0);
+        hold_unbounded();
+        assert_eq!(stats(), Stats::default());
+    }
+
+    type Cl = Classes<64, 8>;
+
+    #[test]
+    fn irq_inference_needs_both_contexts() {
+        let t = Cl::new();
+        let c = class(Kind::Spin);
+        let i = t.slot(&held(&c, 1));
+        assert_ne!(i, NO_CLASS);
+        assert_eq!(t.slot(&held(&c, 2)), i, "one class, one slot, whatever the instance");
+        assert!(t.infer(i, false, false, 0x10).is_none(), "task context, interrupts off: neither");
+        assert!(t.infer(i, true, false, 0x20).is_none(), "interrupt context alone: IRQ-safe, fine");
+        assert!(t.infer(i, true, false, 0x21).is_none());
+        assert_eq!(t.infer(i, false, true, 0x30), Some((0x20, 0x30)),
+                   "then task context with interrupts on: the inversion, first sites kept");
+        let d = class(Kind::Spin);
+        let j = t.slot(&held(&d, 3));
+        assert!(t.infer(j, false, true, 0x40).is_none(), "interrupts on alone: IRQ-unsafe, fine");
+        assert_eq!(t.infer(j, true, false, 0x50), Some((0x50, 0x40)), "either order");
+    }
+
+    #[test]
+    fn hold_histogram_and_top() {
+        assert_eq!(hold_bucket(0, 8), 0);
+        assert_eq!(hold_bucket(1, 8), 1);
+        assert_eq!(hold_bucket(3, 8), 2);
+        assert_eq!(hold_bucket(4, 8), 3);
+        assert_eq!(hold_bucket(1 << 40, 8), 7, "the last bucket takes the rest");
+        let t = Cl::new();
+        let (a, b) = (class(Kind::Spin), class(Kind::PiMutex));
+        let (ia, ib) = (t.slot(&held(&a, 1)), t.slot(&Held { kind: Kind::PiMutex, ..held(&b, 2) }));
+        // Site words are `&'static Location`s (printed by `HoldLine`).
+        let site = Location::caller() as *const Location<'static> as usize;
+        t.hold(ia, 10, 1, site);
+        t.hold(ia, 500, 50, site);
+        t.hold(ib, 90, 9, site);
+        let ca = t.get(ia as usize).unwrap();
+        assert_eq!((ca.holds, ca.max_ticks), (2, 500));
+        assert_eq!(ca.hist[1] + ca.hist[6], 2);
+        assert_eq!(t.get(ib as usize).unwrap().kind, Kind::PiMutex);
+        let mut order = Vec::new();
+        t.top(5, |c| order.push(c.max_ticks));
+        assert_eq!(order, vec![500, 90], "longest first, each once");
+        let line = format!("{}", HoldLine(&ca));
+        assert!(line.starts_with("lockdep: hold SpinLock") && line.contains("holds=2"), "{line}");
+    }
+
+    #[test]
+    fn full_class_table_is_counted() {
+        let t: Classes<2, 4> = Classes::new();
+        let k: Vec<Held> = (1..=3u32).map(|i| Held { key: class_key("y", i, 0, 1), ..Held::EMPTY }).collect();
+        assert_ne!(t.slot(&k[0]), NO_CLASS);
+        assert_ne!(t.slot(&k[1]), NO_CLASS);
+        assert_eq!(t.slot(&k[2]), NO_CLASS);
+        assert_eq!(t.counts(), (2, 1));
+        assert!(t.infer(NO_CLASS, true, false, 1).is_none());
+        t.hold(NO_CLASS, 1, 1, 1);
+    }
+
+    #[test]
+    fn new_reports_print_their_numbers() {
+        let c = class(Kind::Spin);
+        let h = held(&c, 1);
+        let mut r = Report::EMPTY;
+        r.what = What::HoldOverLimit;
+        r.held = h;
+        r.value = 250;
+        r.value2 = 100;
+        let line = format!("{}", r);
+        assert!(line.contains("held 250 us, limit 100 us"), "{line}");
+        assert!(What::HoldOverLimitNote.is_note() && !What::HoldOverLimit.is_note());
+        r.what = What::RtCrossCpu;
+        r.taken = Held { kind: Kind::PiMutex, ..h };
+        r.value = 1;
+        r.value2 = 2;
+        let line = format!("{}", r);
+        assert!(line.contains("RT task on CPU 1") && line.contains("one on CPU 2"), "{line}");
     }
 }
 

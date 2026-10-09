@@ -57,6 +57,9 @@ fn holder(_: usize) {
     let (v0, p0) = azos_sched::scheduler::current_task_switches();
     {
         let mut g = LOCK.lock();
+        // Held across ticks on purpose (the scenario): not a hold lockdep
+        // bounds by LOCK_MAX_HOLD_US.
+        azos_sync::lockdep::hold_unbounded();
         let end = now() + ms(HOLD_MS);
         while now() < end {
             *g = g.wrapping_add(1);

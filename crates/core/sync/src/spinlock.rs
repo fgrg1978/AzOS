@@ -103,6 +103,26 @@ impl<T> SpinLock<T> {
     /// `IrqSaveGuard` restores the original interrupt state on drop.
     ///
     /// Use this when the lock is (or may be) shared with an IRQ handler.
+    /// Lockdep's class key for this lock (`lockdep::class_info`).
+    #[cfg(feature = "lockdep")]
+    pub fn lockdep_key(&self) -> u32 {
+        self.class.key()
+    }
+
+    /// [`lock`](Self::lock) for `scope::Object` of `level`: lockdep also
+    /// checks the level order (`paired`: the second lock of a `lock_pair`).
+    #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
+    #[inline(always)]
+    #[allow(dead_code)] // used by `scope`, which the host tests do not pull in
+    pub(crate) fn lock_level(&self, _level: u8, _paired: bool) -> SpinLockGuard<'_, T> {
+        let _preempt = critical_section();
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::acquire_level(&self.class, self as *const Self as usize,
+            crate::lockdep::Kind::Spin, false, _level, _paired, core::panic::Location::caller());
+        self.acquire_spin();
+        SpinLockGuard { lock: self, _preempt }
+    }
+
     #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
     pub fn lock_irqsave(&self) -> IrqSaveGuard<'_, T> {
         // Through `arch-api`, not `sstatus` directly: the ISA owns what the

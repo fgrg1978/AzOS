@@ -235,6 +235,8 @@ fn keys_init(text: (usize, usize)) {
             rx += 1;
         }
     }
+    // Not printed under the lock (interrupts off): lockdep's hold bound.
+    drop(_g);
     azos_drv_sys::kprintln!(
         "[TRACE] static keys: {} sites, {} rewritten, {} refused; now {} nop, {} branch; text RX at {}/{} sites; alias {:#x} mapped={}",
         sites().count(), done, refused, nop, branch, rx, sites().count(), alias,

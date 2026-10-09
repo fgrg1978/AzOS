@@ -777,11 +777,36 @@ interrupt context are ordered only among themselves. A sleep or a device wait
 virtio-blk completion wait) with a SpinLock held, with interrupts off or in
 an interrupt, a lock still held on a return to user mode (checked on the trap
 paths of all three ISAs) and a task exiting with a lock are reported too.
-Reports are queued, never printed from the lock path, and the ktest runner
-prints them and fails the test that was running, or the run. Off, no lock
-carries a class and no path calls the checker: the kernel is the same,
-instruction for instruction. Longer cycles, interrupt-safety inference and
-lock-hold times are not checked yet.
+Interrupt safety is inferred per class, as Linux does with one state: a
+class taken in interrupt context and also taken with interrupts on in task
+context is reported without the interrupt having to arrive at the wrong
+moment. Every hold is timed with the platform timer into a per-class
+histogram; a SpinLock held past `LOCK_MAX_HOLD_US` is a violation with
+`LOCKDEP_HOLD_ENFORCE`, the default on hardware boards, and a note on the
+QEMU board, where emulated time follows host load. A PiMutex or SleepLock
+contended by real-time tasks on two CPUs is reported: until proxy
+execution, such tasks share only SpinLocks. Reports are queued, never
+printed from the lock path; the ktest runner prints them and fails the test
+that was running, or the run, and prints the classes with the longest
+holds. With `LOCKDEP=y` outside ktest the `log-flush` task prints them. Off,
+no lock carries a class and no path calls the checker: the kernel is the
+same, instruction for instruction. Cycles longer than two locks are not
+searched.
+
+**Lock scopes.** Who may touch per-CPU and shared state is part of its type
+(`crates/core/sync/src/scope.rs`). A `PerCpu<T>` is used only by its own
+CPU with preemption off, proved by a token (a preemption guard, a SpinLock
+guard, or `IrqOff` for exclusive access); it has no lock. A `CpuOwned<T>`
+has a SpinLock per CPU: another CPU's is locked only from task context,
+since remote work from an interrupt goes through a deferred list and an
+IPI. A `Global<T>` is a lock any CPU takes, and an `Object<T, LEVEL>` is a
+lock per object taken in a fixed level order, checked at compile time when
+the outer guard is in hand and by lockdep otherwise; two of one level are
+taken together in address order. Lockdep checks at run time what the types
+cannot: another CPU's `CpuOwned` locked in interrupt context, and a
+`PerCpu` reached with preemption on. `azos_percpu::PerCpuRemote` is the
+storage under them, any CPU's instance from any CPU; the per-CPU timer
+heaps are a `PerCpu`, the APS policy state a `CpuOwned`.
 
 **Decision records.** With Kconfig `DECISION_RECORDS`, boot deadline and
 memory admission, the real-time band cap, a woken task's move to another CPU

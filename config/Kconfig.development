@@ -713,8 +713,8 @@ config LOCKDEP_Y
     help
       Compiled into every kernel of this configuration (the kernel cargo
       feature `lockdep`), at the cost stated under "In ktest kernels".
-      Outside a ktest run nothing prints the reports yet; they are counted
-      (`azos_sync::lockdep::stats`).
+      Outside a ktest run the `log-flush` task prints the reports (never a
+      lock path), with the counters and the longest holds.
 
 endchoice
 
@@ -727,7 +727,7 @@ config LOCKDEP_MAX_DEPTH
       (saved at a context switch). 20 is Linux's MAX_LOCK_DEPTH, the bound
       its proof argument assumes; AzOS paths hold a handful. A deeper
       nesting is reported (a violation) and the extra locks not tracked.
-      32 bytes per entry per CPU (NR_CPUS) and per task (MAX_TASKS) when
+      48 bytes per entry per CPU (NR_CPUS) and per task (MAX_TASKS) when
       lockdep is compiled in; nothing otherwise. Same on every ISA and
       profile.
 
@@ -760,12 +760,12 @@ config LOCKDEP_CHAINS
 config LOCKDEP_REPORTS
     int "Lockdep: violation reports queued for printing"
     range 1 256
-    default 16
+    default 64
     help
       Distinct violations kept, with both classes and acquisition sites,
       until the ktest runner prints them (never printed from inside a lock
       path: the console takes locks). Later ones are counted and fail the
-      run but are not described. About 100 bytes each when compiled in.
+      run but are not described. About 150 bytes each when compiled in.
 
 config LOCK_MAX_HOLD_US
     int "Longest a SpinLock may be held (us): the IRQs-off bound"
@@ -776,10 +776,90 @@ config LOCK_MAX_HOLD_US
     help
       The owner's "never an unbounded IRQs-off spin" as a number: the
       longest a SpinLock (the RawSpinLock role: preemption off, and with
-      `lock_irqsave` interrupts off) may be held. The lockdep hold
-      histogram (N1 part b) enforces it in ktest kernels; until then the
-      ktest runner prints it with the lockdep summary. No cost: a constant.
-      Lower it for a tighter interrupt-latency budget.
+      `lock_irqsave` interrupts off) may be held. Lockdep times every hold
+      (per-class histogram, printed with the ktest summary) and reports a
+      SpinLock held longer, as a violation with LOCKDEP_HOLD_ENFORCE and as
+      a note without it. No cost of its own: a constant. Lower it for a
+      tighter interrupt-latency budget.
+
+config LOCKDEP_HOLD_ENFORCE
+    bool "Lockdep: a SpinLock held past LOCK_MAX_HOLD_US fails the run"
+    default n if BOARD_QEMU
+    default y
+    help
+      With lockdep compiled in, a SpinLock hold longer than
+      LOCK_MAX_HOLD_US is a violation (the ktest runner fails the test
+      that was running). Off, the same hold is printed as a note and
+      fails nothing; the histogram is kept either way. Hold times are the
+      platform timer's ticks: on the QEMU board (TCG without -icount, the
+      gate's ktest rows) they are host wall time, tens of times a
+      hardware board's and inflated whenever the host deschedules a vCPU,
+      so there the default is off and the notes are the list to triage.
+      On by default on every hardware board. No cost: a constant.
+
+config LOCKDEP_CLASSES
+    int "Lockdep: lock classes tracked per class (table size)"
+    range 64 16384
+    default 256 if PROFILE_EMBEDDED
+    default 1024 if PROFILE_FLEET
+    default 512
+    help
+      Slots of the per-class table that holds what is known about each
+      lock class: where it was taken in interrupt context and where with
+      interrupts on (the IRQ-safety inference), its longest hold and its
+      hold histogram. 64 + 4 x LOCKDEP_HOLD_BUCKETS bytes per slot when
+      lockdep is compiled in. A class that finds the table full is not
+      inferred or timed, and the summary counts it: raise this then.
+
+config LOCKDEP_HOLD_BUCKETS
+    int "Lockdep: hold-time histogram buckets per class"
+    range 4 32
+    default 16
+    help
+      Power-of-two microsecond buckets of each class's hold histogram
+      (bucket k counts holds below 2^k us; the last takes the rest). 16
+      reaches 32 ms. 4 bytes per bucket per LOCKDEP_CLASSES slot.
+
+config LOCKDEP_HOLD_TOP
+    int "Lockdep: classes the summary prints by longest hold"
+    range 0 64
+    default 8
+    help
+      The ktest summary (and LOCKDEP=y's log) prints this many classes,
+      longest maximum hold first, each with its declaration site, hold
+      count and histogram. Printing only; no cost on a lock path.
+
+config LOCKDEP_IRQ_INFERENCE
+    bool "Lockdep: infer interrupt safety per class"
+    default y
+    help
+      A class seen taken in interrupt context and also taken with
+      interrupts on in task context is reported (an interrupt arriving
+      while the task holds it, on that CPU, spins forever): Linux's
+      hardirq-safe/unsafe inference, one state (AzOS has no softirq).
+      Per acquisition: one class-table probe and a flag test. Off, not
+      compiled.
+
+config LOCKDEP_SCOPE_CHECKS
+    bool "Lockdep: check lock scopes (PerCpu, CpuOwned, Object levels)"
+    default y
+    help
+      Checks the scope types of `azos_sync::scope`: another CPU's
+      CpuOwned taken in interrupt context (remote work from an interrupt
+      goes through a deferred list), a PerCpu reached with preemption on,
+      an Object lock taken under one of an equal or higher level. Per
+      scoped access: a hart-id read and two flag tests. Off, not compiled.
+
+config LOCKDEP_RT_CROSS_CPU
+    bool "Lockdep: report a sleeping lock contended by RT tasks on two CPUs"
+    default y
+    help
+      Owner rule F7 (until proxy execution): real-time tasks on different
+      CPUs share only a SpinLock. A PiMutex or SleepLock whose holder and
+      contender are both real-time (base priority below
+      RT_PRIORITY_THRESHOLD) on different CPUs is reported. One word per
+      sleeping lock and a check on its contended path only. Off, not
+      compiled.
 
 config CANARY_RUNTIME
     bool "Runtime gate canaries: canary=<name>[,<name>] on the kernel command line"

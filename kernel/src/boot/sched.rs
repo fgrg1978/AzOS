@@ -74,6 +74,17 @@ pub(crate) fn install_sched_hooks() {
     );
     // A deferred TICK preemption, paid at the guard drop: counted as one.
     azos_sync::preempt::set_resched_callback(azos_sched::task_preempt_deferred);
+    // Kconfig LOCKDEP (owner rule F7): which task is real-time, by its base
+    // priority (its class, not a donation). With LOCKDEP=y outside ktest
+    // the `log-flush` task prints lockdep's reports (never a lock path).
+    if azos_sync::lockdep::RT_CROSS_CPU {
+        azos_sync::lockdep::set_rt_probe(|| {
+            azos_sched::scheduler::current_task_base_priority() < azos_sched::RT_PRIORITY_THRESHOLD
+        });
+    }
+    if azos_sync::lockdep::DRAIN_IN_LOG {
+        azos_actuation::logger::logger_set_pass_hook(crate::lockdep_log::drain);
+    }
     // W3-F7: this hook used to be `handle_revoke_all`, which cleans only the
     // legacy global handle table. Two other per-task resource classes leaked
     // through it: typed capabilities (`cap_store`, whose own doc claimed

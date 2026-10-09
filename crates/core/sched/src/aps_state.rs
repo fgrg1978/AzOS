@@ -75,8 +75,12 @@ const FRESH_CPU_STATE: SpinLock<CpuSchedV2> = SpinLock::new(CpuSchedV2::new());
 /// `nr_cpu_ids`) answers `None` from [`with_cpu`], as an out-of-range id did.
 /// (Before the areas are attached `ncpu()` is 1 and CPU 0's slot is still
 /// `POISON`: nothing here runs before `kernel_main` attaches them.)
-pub(crate) static V2_STATE: azos_percpu::PerCpu<SpinLock<CpuSchedV2>> =
-    azos_percpu::PerCpu::with_init(v2_state_init);
+///
+/// Scope `CpuOwned` (`azos_sync::scope`): another CPU's state is locked
+/// only from task context (admission, the window anchor); lockdep reports
+/// it from an interrupt.
+pub(crate) static V2_STATE: azos_sync::scope::CpuOwned<CpuSchedV2> =
+    azos_sync::scope::CpuOwned::with_init(v2_state_init);
 
 /// Initial per-CPU state, written in place when the CPU's area is attached.
 unsafe fn v2_state_init(p: *mut SpinLock<CpuSchedV2>) {
@@ -103,9 +107,8 @@ pub fn with_cpu<R>(cpu: usize, f: impl FnOnce(&mut CpuSchedV2) -> R) -> Option<R
     if cpu >= crate::scheduler::ncpu() {
         return None;
     }
-    // SAFETY: every CPU below `ncpu()` has an area, never freed.
-    let slot = unsafe { &*V2_STATE.ptr(cpu) };
-    let mut state = slot.lock_irqsave();
+    // Every CPU below `ncpu()` has an area, never freed.
+    let mut state = V2_STATE.lock_on(cpu);
     Some(f(&mut *state))
 }
 
@@ -113,8 +116,8 @@ pub fn with_cpu<R>(cpu: usize, f: impl FnOnce(&mut CpuSchedV2) -> R) -> Option<R
 /// window-anchor path at boot).
 pub fn for_each_cpu(mut f: impl FnMut(usize, &mut CpuSchedV2)) {
     for cpu in 0..crate::scheduler::ncpu() {
-        // SAFETY: every CPU below `ncpu()` has an area (see `with_cpu`).
-        let mut state = unsafe { &*V2_STATE.ptr(cpu) }.lock_irqsave();
+        // Every CPU below `ncpu()` has an area (see `with_cpu`).
+        let mut state = V2_STATE.lock_on(cpu);
         f(cpu, &mut *state);
     }
 }

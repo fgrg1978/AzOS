@@ -17,6 +17,8 @@ mod panic;
 // Kconfig KTEST: the in-kernel test runner (crates/core/ktest is the registry).
 #[cfg(feature = "ktest")]
 mod ktest;
+// Kconfig LOCKDEP: prints lockdep's reports and hold summary (task context).
+mod lockdep_log;
 // Panic record in reserved RAM, recovered into /fat/CRASH.LOG on the next
 // boot (Kconfig `PSTORE_SIZE_KB`).
 mod pstore;
@@ -2835,10 +2837,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         // return type itself — no explicit `use` needed.
         static UART_DRV: azos_drv_sys::uart_driver::UartDriver =
             azos_drv_sys::uart_driver::UartDriver::new();
-        match azos_drv_base::runtime::registry::REGISTRY
-            .lock()
-            .register(&UART_DRV)
-        {
+        // The guard ends with the statement: no print under the registry lock.
+        let reg = azos_drv_base::runtime::registry::REGISTRY.lock().register(&UART_DRV);
+        match reg {
             Ok(()) => kprintln!("[REG]  UART registered into driver registry"),
             Err(e) => azos_drv_sys::kerr!("[REG]  UART register FAILED: {:?}", e),
         }
@@ -2865,10 +2866,8 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         // hardware families side by side (different DRV_KIND_*).
         static GPIO_DRV: azos_drv_gpio::gpio_driver::GpioDriver =
             azos_drv_gpio::gpio_driver::GpioDriver::new();
-        match azos_drv_base::runtime::registry::REGISTRY
-            .lock()
-            .register(&GPIO_DRV)
-        {
+        let reg = azos_drv_base::runtime::registry::REGISTRY.lock().register(&GPIO_DRV);
+        match reg {
             Ok(()) => kprintln!("[REG]  GPIO registered into driver registry"),
             Err(e) => azos_drv_sys::kerr!("[REG]  GPIO register FAILED: {:?}", e),
         }
@@ -2878,10 +2877,8 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         // hardware models (char / pin / bus).
         static I2C_DRV: azos_drv_bus::i2c_driver::I2cDriver =
             azos_drv_bus::i2c_driver::I2cDriver::new();
-        match azos_drv_base::runtime::registry::REGISTRY
-            .lock()
-            .register(&I2C_DRV)
-        {
+        let reg = azos_drv_base::runtime::registry::REGISTRY.lock().register(&I2C_DRV);
+        match reg {
             Ok(()) => kprintln!("[REG]  I2C  registered into driver registry"),
             Err(e) => azos_drv_sys::kerr!("[REG]  I2C  register FAILED: {:?}", e),
         }
@@ -2889,10 +2886,8 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         // A3a.4 — fourth: multi-parameter actuator (PWM).
         static PWM_DRV: azos_drv_actuator::pwm_driver::PwmDriver =
             azos_drv_actuator::pwm_driver::PwmDriver::new();
-        match azos_drv_base::runtime::registry::REGISTRY
-            .lock()
-            .register(&PWM_DRV)
-        {
+        let reg = azos_drv_base::runtime::registry::REGISTRY.lock().register(&PWM_DRV);
+        match reg {
             Ok(()) => kprintln!("[REG]  PWM  registered into driver registry"),
             Err(e) => azos_drv_sys::kerr!("[REG]  PWM  register FAILED: {:?}", e),
         }
@@ -2901,10 +2896,8 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         // Pure software (no MMIO) — composes PWM + encoders.
         static MOTOR_DRV: azos_drv_actuator::motor_driver::MotorPidDriver =
             azos_drv_actuator::motor_driver::MotorPidDriver::new();
-        match azos_drv_base::runtime::registry::REGISTRY
-            .lock()
-            .register(&MOTOR_DRV)
-        {
+        let reg = azos_drv_base::runtime::registry::REGISTRY.lock().register(&MOTOR_DRV);
+        match reg {
             Ok(()) => kprintln!("[REG]  MTR  registered into driver registry"),
             Err(e) => azos_drv_sys::kerr!("[REG]  MTR  register FAILED: {:?}", e),
         }

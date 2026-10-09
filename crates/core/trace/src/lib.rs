@@ -86,9 +86,12 @@ unsafe impl Sync for Producer {}
 /// Each CPU's producer (the ring control: head, drops, its ring's address),
 /// in its per-CPU area (wave 15, NRCPUS), one cache line a CPU. All-zero is
 /// `TraceProducer::empty()`, a producer that is not live and records nothing.
-static CPUS: azos_percpu::PerCpu<Producer> =
+///
+/// Scope: a bare `PerCpuRemote` for now: written by its own CPU only
+/// (`PerCpu`), read racily by statistics and the panic dump from any CPU.
+static CPUS: azos_percpu::PerCpuRemote<Producer> =
     // SAFETY: all-zero bytes are `Producer(UnsafeCell::new(TraceProducer::empty()))`.
-    unsafe { azos_percpu::PerCpu::zeroed() };
+    unsafe { azos_percpu::PerCpuRemote::zeroed() };
 
 /// The per-CPU variables this crate keeps in the areas, for the kernel's
 /// `setup_per_cpu_areas`.

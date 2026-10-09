@@ -88,6 +88,17 @@ pub(crate) const NAMES: &[&str] = &[
     // `lockdep_no_spinlock_across_block_io`).
     "lockdep-abba",
     "lockdep-spin-blk",
+    // kernel/src/ktest.rs (N1b): another CPU's CpuOwned from interrupt
+    // context; a PerCpu reached with preemption on; an IRQ-safe class
+    // taken with interrupts on; a SpinLock held twice LOCK_MAX_HOLD_US; a
+    // PiMutex contended by RT tasks on two CPUs (rule F7). Tests
+    // `lockdep_scope_rules`, `lockdep_irq_safe_class_taken_irqsave`,
+    // `lockdep_spinlock_hold_bounded`, `lockdep_rt_tasks_share_only_spinlocks`.
+    "lockdep-scope-irq",
+    "lockdep-scope-preempt",
+    "lockdep-irq-inversion",
+    "lockdep-hold",
+    "lockdep-rt-pi",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

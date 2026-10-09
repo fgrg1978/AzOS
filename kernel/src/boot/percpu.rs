@@ -50,7 +50,7 @@ const MAX_PERCPU_VARS: usize = 16;
 
 /// Filler for the unused tail of the variable list.
 // SAFETY: `()` is zero-sized; any bytes are a valid `()`.
-static NO_VAR: azos_percpu::PerCpu<()> = unsafe { azos_percpu::PerCpu::zeroed() };
+static NO_VAR: azos_percpu::PerCpuRemote<()> = unsafe { azos_percpu::PerCpuRemote::zeroed() };
 
 /// Bytes of one per-CPU area, as `setup_per_cpu_areas` laid it out (0 before).
 static AREA_BYTES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
@@ -66,6 +66,8 @@ fn with_percpu_vars<R>(f: impl FnOnce(&[&'static dyn azos_percpu::PerCpuVar]) ->
     };
     azos_sched::for_each_percpu_var(&mut add);
     azos_trace::for_each_percpu_var(&mut add);
+    #[cfg(feature = "ktest")]
+    crate::ktest::for_each_percpu_var(&mut add);
     f(&vars[..n])
 }
 

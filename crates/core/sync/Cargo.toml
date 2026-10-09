@@ -9,6 +9,7 @@ publish = false
 azos_limits = { workspace = true }
 azos_arch = { workspace = true }
 azos_common = { workspace = true }
+azos_percpu = { workspace = true }
 
 [features]
 # Masked-window tracer hooks on the preemption counter and the spinlock

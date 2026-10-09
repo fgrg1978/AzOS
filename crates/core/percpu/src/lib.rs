@@ -9,12 +9,12 @@
 //! | `cpu_online_mask`         | [`online`], kept separate (hotplug-ready) |
 //! | `nr_cpu_ids`              | [`nr_cpu_ids`] = last possible + 1      |
 //! | `setup_per_cpu_areas()`   | [`area_bytes`] + [`attach_area`], called by the kernel for each possible CPU |
-//! | `per_cpu_ptr(&v, cpu)`    | [`PerCpu::ptr`]                         |
+//! | `per_cpu_ptr(&v, cpu)`    | [`PerCpuRemote::ptr`]                   |
 //!
 //! **What is static and what is not.** [`NR_CPUS`] is a ceiling: it sizes the
-//! masks (one bit per CPU) and each [`PerCpu`] variable's pointer table (one
+//! masks (one bit per CPU) and each [`PerCpuRemote`] variable's pointer table (one
 //! word per CPU). The per-CPU *state* is not sized by it: every variable
-//! declared as a [`PerCpu`] lives in the per-CPU areas, which the kernel
+//! declared as a [`PerCpuRemote`] lives in the per-CPU areas, which the kernel
 //! allocates at boot from the frame allocator for the CPUs the DTB names and
 //! no others. A ceiling of 64 on a four-core board therefore costs 64 words
 //! per variable, not 64 copies of the state.
@@ -32,8 +32,17 @@
 //! bounds check, as a static array did. A CPU id below it that has no area
 //! (above `nr_cpu_ids`, or a hole in the possible mask) holds [`POISON`], a
 //! non-canonical address on Sv39 and on aarch64, so a dereference faults at a
-//! recognisable address instead of reading another CPU's state; [`PerCpu::get`]
+//! recognisable address instead of reading another CPU's state; [`PerCpuRemote::get`]
 //! is the checked form that answers `None` and counts it ([`oor_count`]).
+//!
+//! **Scopes (owner decision 09-10, survey F6).** [`PerCpuRemote`] is the
+//! storage: any CPU id reaches any CPU's instance, and what that access may
+//! do is the user's contract. New code does not use it directly: the scope
+//! types in `azos_sync::scope` wrap it — `PerCpu<T>` (this CPU only,
+//! preemption off), `CpuOwned<T>` (a lock per CPU; another CPU's only from
+//! task context) — and lockdep checks their rules. The variables still
+//! declared as a bare [`PerCpuRemote`] are the ones whose access pattern is
+//! none of those yet (each says which it wants).
 //!
 //! **Hotplug.** None yet. The possible mask is fixed at boot and areas are
 //! never freed; the online mask is separate so that taking a CPU offline
@@ -50,13 +59,13 @@ const _: () = assert!(NR_CPUS >= 1, "NR_CPUS must be at least 1");
 /// Words in a [`CpuMask`].
 pub const MASK_WORDS: usize = NR_CPUS.div_ceil(64);
 
-/// The pointer a [`PerCpu`] slot holds for a CPU without an area. Bits 63..39
+/// The pointer a [`PerCpuRemote`] slot holds for a CPU without an area. Bits 63..39
 /// are not a sign extension of bit 38 (Sv39) and bits 55..48 are not all
 /// equal (aarch64, 48-bit or narrower VA, with or without top-byte-ignore), so
 /// any access within 2^32 bytes of it is a translation fault on both ISAs.
 pub const POISON: usize = 0xDEAD_C0DE_0000_0000;
 
-/// Alignment of a per-CPU area, and the most a [`PerCpu`] variable may ask
+/// Alignment of a per-CPU area, and the most a [`PerCpuRemote`] variable may ask
 /// for. A page: areas come from the frame allocator.
 pub const AREA_ALIGN: usize = 4096;
 
@@ -297,7 +306,7 @@ pub const fn clamp_discovered(dtb_count: usize) -> (usize, bool) {
 
 // ── per-CPU variables ───────────────────────────────────────────────────────
 
-/// Accesses through [`PerCpu::get`] that found no area. **Must stay zero** on a
+/// Accesses through [`PerCpuRemote::get`] that found no area. **Must stay zero** on a
 /// correct kernel; a self-check reads it.
 static OOR: AtomicU32 = AtomicU32::new(0);
 
@@ -307,20 +316,22 @@ pub fn oor_count() -> u32 {
 }
 
 /// One per-CPU variable of type `T`: an instance in each CPU's area, reached
-/// through a table of pointers indexed by CPU id.
+/// through a table of pointers indexed by CPU id — any CPU's, from any CPU
+/// (Linux's `per_cpu_ptr`). The scope types in `azos_sync::scope` are built
+/// on it (see the crate docs); a bare one is a variable not migrated yet.
 ///
 /// Declared as a `static`; it holds no `T` itself. Before [`attach_area`] ran
 /// for a CPU, that CPU's slot is [`POISON`].
-pub struct PerCpu<T> {
+pub struct PerCpuRemote<T> {
     ptrs: [AtomicPtr<T>; NR_CPUS],
     init: Option<unsafe fn(*mut T)>,
 }
 
 // SAFETY: the table is atomics; what a `T` instance allows across CPUs is the
 // owner's contract, exactly as for the static array it replaces.
-unsafe impl<T> Sync for PerCpu<T> {}
+unsafe impl<T> Sync for PerCpuRemote<T> {}
 
-impl<T> PerCpu<T> {
+impl<T> PerCpuRemote<T> {
     const UNSET: AtomicPtr<T> = AtomicPtr::new(core::ptr::without_provenance_mut(POISON));
 
     /// A variable whose initial value is all zero bytes (the area is zeroed).
@@ -381,7 +392,7 @@ pub trait PerCpuVar: Sync {
     unsafe fn attach(&self, cpu: usize, p: *mut u8);
 }
 
-impl<T> PerCpuVar for PerCpu<T> {
+impl<T> PerCpuVar for PerCpuRemote<T> {
     fn size(&self) -> usize {
         core::mem::size_of::<T>()
     }
@@ -389,7 +400,7 @@ impl<T> PerCpuVar for PerCpu<T> {
         core::mem::align_of::<T>()
     }
     fn attached(&self, cpu: usize) -> bool {
-        PerCpu::attached(self, cpu)
+        PerCpuRemote::attached(self, cpu)
     }
     unsafe fn attach(&self, cpu: usize, p: *mut u8) {
         let t = p as *mut T;

@@ -70,15 +70,15 @@ mod tests {
         assert_eq!(nr_cpu_ids(), 1, "the boot CPU always exists");
     }
 
-    static A: PerCpu<u64> = unsafe { PerCpu::zeroed() };
+    static A: PerCpuRemote<u64> = unsafe { PerCpuRemote::zeroed() };
     unsafe fn b_init(p: *mut [u32; 25]) {
         unsafe { p.write([7; 25]) };
     }
-    static B: PerCpu<[u32; 25]> = PerCpu::with_init(b_init);
+    static B: PerCpuRemote<[u32; 25]> = PerCpuRemote::with_init(b_init);
     #[repr(align(64))]
     #[allow(dead_code)]
     struct Line([u8; 64]);
-    static C: PerCpu<Line> = unsafe { PerCpu::zeroed() };
+    static C: PerCpuRemote<Line> = unsafe { PerCpuRemote::zeroed() };
 
     /// The allocator: each variable at its own alignment inside the area, the
     /// initialiser run, every CPU its own instance, and a CPU without an area

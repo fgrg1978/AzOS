@@ -792,6 +792,7 @@ dependencies = [
  "azos_arch",
  "azos_common",
  "azos_limits",
+ "azos_percpu",
 ]
 
 [[package]]

@@ -11107,8 +11107,11 @@ PY
     # +2 lockdep_lock_order_consistent, lockdep_no_spinlock_across_block_io
     # (wave 15, N1: Kconfig LOCKDEP_KTEST rides in every ktest kernel, and
     # any lockdep violation turns the running test, or the run, red).
-    KTEST_N_RV=29
-    KTEST_N_ARM=29
+    # +4 lockdep_scope_rules, lockdep_irq_safe_class_taken_irqsave,
+    # lockdep_spinlock_hold_bounded, lockdep_rt_tasks_share_only_spinlocks
+    # (wave 15, N1b: scope types, IRQ-safety inference, hold times, F7).
+    KTEST_N_RV=33
+    KTEST_N_ARM=33
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match] [disk image target]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
@@ -11235,8 +11238,16 @@ PY
     # `canary=lockdep-spin-blk` holds a SpinLock across a block-layer read
     # (`lockdep_no_spinlock_across_block_io`, the rt7 shape). Neither
     # deadlocks: lockdep reports, and the runner fails the test. One boot.
-    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk"
-    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io"
+    # N1b adds, in the same boot: `lockdep-scope-irq` (another CPU's
+    # CpuOwned from interrupt context) and `lockdep-scope-preempt` (a PerCpu
+    # with an assumed token, preemption on) -> lockdep_scope_rules;
+    # `lockdep-irq-inversion` (an IRQ-safe class taken with interrupts on)
+    # -> lockdep_irq_safe_class_taken_irqsave; `lockdep-hold` (a SpinLock
+    # held twice LOCK_MAX_HOLD_US) -> lockdep_spinlock_hold_bounded;
+    # `lockdep-rt-pi` (a PiMutex contended by RT tasks on CPUs 1 and 2,
+    # rule F7) -> lockdep_rt_tasks_share_only_spinlocks.
+    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk,lockdep-scope-irq,lockdep-scope-preempt,lockdep-irq-inversion,lockdep-hold,lockdep-rt-pi"
+    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io lockdep_scope_rules lockdep_irq_safe_class_taken_irqsave lockdep_spinlock_hold_bounded lockdep_rt_tasks_share_only_spinlocks"
     KTEST_LOCKDEP_RE='^# lockdep: lock order inversion \(ABBA\); holding SpinLock kernel/src/ktest\.rs:'
     par "ktest lockdep canaries (rv)" ktest_row "ktest lockdep canaries (rv)" rv "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
     par "ktest lockdep canaries (arm)" ktest_row "ktest lockdep canaries (arm)" arm "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
@@ -11317,7 +11328,8 @@ PY
     #                               frame again; camera_one_encode_per_frame
     #                               alone not ok
     # +2 the lockdep tests (N1), as on rv and arm.
-    KTEST_N_X86=31
+    # +4 the N1b lockdep tests, as on rv and arm.
+    KTEST_N_X86=35
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

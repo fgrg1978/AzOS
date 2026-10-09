@@ -752,9 +752,12 @@ static mut PER_CPU: [PerCpuSched; MAX_CPUS] = [const { EMPTY_CPU }; MAX_CPUS];
 /// of 16 bytes per CPU, the same in every profile (the links are in
 /// [`RQ_NEXT`]). Allocated at boot for the possible CPUs only (all-zero is the
 /// empty list) and reached through [`cpu_queues`].
-pub(crate) static PER_CPU_QUEUES: azos_percpu::PerCpu<[PrioQueue; NUM_PRIORITIES]> =
+///
+/// Scope: a bare `PerCpuRemote` for now; with its per-CPU lock array it is
+/// the `CpuOwned` shape (wakeups enqueue on another CPU's queue).
+pub(crate) static PER_CPU_QUEUES: azos_percpu::PerCpuRemote<[PrioQueue; NUM_PRIORITIES]> =
     // SAFETY: a `ReadyList` is atomics only; all-zero is the empty list.
-    unsafe { azos_percpu::PerCpu::zeroed() };
+    unsafe { azos_percpu::PerCpuRemote::zeroed() };
 
 /// `cpu`'s ready queues, in its per-CPU area. `cpu` must be below [`ncpu`]
 /// (a CPU past it holds `azos_percpu::POISON`, and the access faults there).
@@ -10103,11 +10106,18 @@ pub mod timer_sleepers {
     /// board has, not with `NR_CPUS`. Before `setup_per_cpu_areas` no CPU
     /// has one, and no task can sleep yet; a tick in that window finds no
     /// heap and does nothing (see [`attached`]). Off, only CPU 0's is used.
-    pub(crate) static TIMER_HEAPS: azos_percpu::PerCpu<TimerHeap<MAX_TASKS>> =
-        azos_percpu::PerCpu::with_init(init_heap);
+    ///
+    /// Scope `PerCpu` (`azos_sync::scope`, the first instance of the owner's
+    /// scope types): each heap is touched by its own CPU only, interrupts
+    /// masked; lockdep checks both at each access. Off
+    /// (SCHED_TIMER_HEAP_PER_CPU=n) the one heap every CPU uses is CPU 0's
+    /// instance behind the global lock: a Global scope, reached through
+    /// `PerCpu::storage`.
+    pub(crate) static TIMER_HEAPS: azos_sync::scope::PerCpu<TimerHeap<MAX_TASKS>> =
+        azos_sync::scope::PerCpu::with_init(init_heap);
 
     unsafe fn init_heap(p: *mut TimerHeap<MAX_TASKS>) {
-        // SAFETY: `PerCpu::attach`'s contract: zeroed, aligned, ours.
+        // SAFETY: `PerCpuVar::attach`'s contract: zeroed, aligned, ours.
         unsafe { TimerHeap::init_zeroed(p) }
     }
 
@@ -10165,10 +10175,19 @@ pub mod timer_sleepers {
 
         #[inline]
         fn heap(&mut self) -> &mut TimerHeap<MAX_TASKS> {
+            let p: *mut TimerHeap<MAX_TASKS> = if PER_CPU {
+                // SAFETY: the guard masked interrupts before it read `h`
+                // (`local`, `on`): this CPU's heap. Lockdep checks both.
+                let irq = unsafe { azos_sync::scope::IrqOff::assume() };
+                TIMER_HEAPS.with_mut_on(&irq, self.h, |t| t as *mut _)
+            } else {
+                // SAFETY: the one shared heap, under the global `LOCKS[0]`.
+                unsafe { TIMER_HEAPS.storage() }.ptr(self.h)
+            };
             // SAFETY: `LOCKS[h]` is held for the guard's lifetime, the
             // returned borrow cannot outlive `&mut self`, and every caller
             // checked `attached(h)` (the instance is never freed).
-            unsafe { &mut *TIMER_HEAPS.ptr(self.h) }
+            unsafe { &mut *p }
         }
     }
 

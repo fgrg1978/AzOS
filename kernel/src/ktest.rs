@@ -96,7 +96,7 @@ static LOCKDEP_IN_TESTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Print the lockdep reports queued since the last call, one line each.
 fn lockdep_print() {
-    azos_sync::lockdep::drain(|r| kprintln!("# {}", r));
+    crate::lockdep_log::reports("# ");
 }
 
 /// Run every early test (boot hart, no task has run) and print TAP. With no
@@ -194,9 +194,12 @@ fn lockdep_summary() -> usize {
     }
     lockdep_print();
     let st = azos_sync::lockdep::stats();
-    kprintln!("\n# lockdep: violations={} notes={} edges={} chains={} unmatched-releases={} unprinted={} checked: switches={} sleeps={} user-returns={} hold-bound={}us",
+    kprintln!("\n# lockdep: violations={} notes={} edges={} chains={} unmatched-releases={} unprinted={} checked: switches={} sleeps={} user-returns={} scopes={} contended={} classes={} classes-full={} hold-bound={}us{}",
         st.violations, st.notes, st.edges, st.chains, st.unmatched, azos_sync::lockdep::dropped(),
-        st.switches, st.sleep_checks, st.user_returns, azos_sync::lockdep::MAX_HOLD_US);
+        st.switches, st.sleep_checks, st.user_returns, st.scope_checks, st.contended, st.classes,
+        st.classes_full, azos_sync::lockdep::MAX_HOLD_US,
+        if azos_sync::lockdep::HOLD_ENFORCE { "" } else { " (not enforced)" });
+    crate::lockdep_log::holds("# ");
     (st.violations as usize).saturating_sub(LOCKDEP_IN_TESTS.load(Ordering::Relaxed))
 }
 
@@ -466,6 +469,211 @@ azos_ktest::ktest_late! {
         let held = if canary!("lockdep-spin-blk") { Some(LD_IO.lock()) } else { None };
         let _ = azos_drv_block::blkdev::read(0, 1, &mut sector);
         drop(held);
+        Ok(())
+    }
+}
+
+// ── Lockdep, part b (N1b): scopes, IRQ safety, hold times, rule F7 ──────────
+//
+// Each test does the legal half; its runtime canary plants the violation the
+// check exists for, and the runner turns the report into `not ok`. Interrupt
+// context is simulated with `isr_depth::enter`/`exit` under `IrqOff`: what
+// lockdep reads, without a canary on the tick path.
+
+fn ld_on(what: &'static str, on: bool) -> Result<(), &'static str> {
+    if azos_sync::lockdep::ON && on { Ok(()) } else { Err(what) }
+}
+
+/// `f` as if in an interrupt handler on this CPU (interrupts off, the ISR
+/// depth this CPU's trap arm keeps raised).
+fn ld_as_irq<R>(f: impl FnOnce(usize) -> R) -> R {
+    use azos_arch::Cpu as _;
+    let _irq = azos_sync::scope::IrqOff::new();
+    let me = azos_arch::ARCH.hart_id();
+    azos_sync::isr_depth::enter(me);
+    let r = f(me);
+    azos_sync::isr_depth::exit(me);
+    r
+}
+
+pub(crate) static LD_OWNED: azos_sync::scope::CpuOwned<u32> = azos_sync::scope::CpuOwned::with_init(ld_owned_init);
+unsafe fn ld_owned_init(p: *mut azos_sync::SpinLock<u32>) {
+    // SAFETY: `PerCpuVar::attach`'s contract: zeroed, aligned, ours.
+    unsafe { p.write(azos_sync::SpinLock::new(0)) };
+}
+// SAFETY: all-zero is a valid u32.
+pub(crate) static LD_PERCPU: azos_sync::scope::PerCpu<u32> = unsafe { azos_sync::scope::PerCpu::zeroed() };
+
+/// The per-CPU variables the tests below keep in the areas.
+pub(crate) fn for_each_percpu_var(f: &mut dyn FnMut(&'static dyn azos_percpu::PerCpuVar)) {
+    f(&LD_OWNED);
+    f(&LD_PERCPU);
+}
+
+static LD_OBJ_AS: azos_sync::scope::Object<u32, 1> = azos_sync::scope::Object::new(0);
+static LD_OBJ_F1: azos_sync::scope::Object<u32, 2> = azos_sync::scope::Object::new(0);
+static LD_OBJ_F2: azos_sync::scope::Object<u32, 2> = azos_sync::scope::Object::new(0);
+
+azos_ktest::ktest_late! {
+    fn lockdep_scope_rules() {
+        ld_on("LOCKDEP or LOCKDEP_SCOPE_CHECKS is off in this ktest kernel", azos_sync::lockdep::SCOPE_CHECKS)?;
+        use azos_arch::Cpu as _;
+        let n = azos_percpu::nr_cpu_ids();
+        let checks = azos_sync::lockdep::stats().scope_checks;
+        // CpuOwned: another CPU's from task context, this CPU's from an
+        // interrupt; PerCpu with earned tokens; Objects in level order.
+        let me = { let _irq = azos_sync::scope::IrqOff::new(); azos_arch::ARCH.hart_id() };
+        let other = (me + 1) % n;
+        *LD_OWNED.lock_on(other) += 1;
+        ld_as_irq(|me| *LD_OWNED.lock_on(me) += 1);
+        {
+            let irq = azos_sync::scope::IrqOff::new();
+            LD_PERCPU.with_mut(&irq, |v| *v += 1);
+            let p = azos_sync::critical_section();
+            LD_PERCPU.with(&p, |v| { let _ = *v; });
+        }
+        {
+            let a = LD_OBJ_AS.lock();
+            let _f = LD_OBJ_F1.lock_under(&a);
+        }
+        {
+            let (mut x, mut y) = azos_sync::scope::Object::lock_pair(&LD_OBJ_F1, &LD_OBJ_F2);
+            *x += 1;
+            *y += 1;
+        }
+        // `canary=lockdep-scope-irq`: another CPU's CpuOwned from interrupt
+        // context. `canary=lockdep-scope-preempt`: a PerCpu reached with a
+        // token assumed while interrupts and preemption are on.
+        if canary!("lockdep-scope-irq") && n > 1 {
+            ld_as_irq(|_| *LD_OWNED.lock_on(other) += 1);
+        }
+        if canary!("lockdep-scope-preempt") {
+            // SAFETY: deliberately false (the canary): interrupts are on.
+            let tok = unsafe { azos_sync::scope::IrqOff::assume() };
+            LD_PERCPU.with_mut(&tok, |v| *v += 1);
+        }
+        if azos_sync::lockdep::stats().scope_checks == checks {
+            return Err("no scoped access reached lockdep's scope check");
+        }
+        Ok(())
+    }
+}
+
+static LD_IRQ: azos_sync::SpinLock<u32> = azos_sync::SpinLock::new(0);
+
+azos_ktest::ktest_late! {
+    fn lockdep_irq_safe_class_taken_irqsave() {
+        ld_on("LOCKDEP or LOCKDEP_IRQ_INFERENCE is off in this ktest kernel", azos_sync::lockdep::IRQ_INFERENCE)?;
+        if !azos_sync::preempt::irqs_enabled() {
+            return Err("the late runner runs with interrupts off: the task-side half tests nothing");
+        }
+        // Taken in interrupt context: the class is IRQ-safe from here.
+        ld_as_irq(|_| *LD_IRQ.lock() += 1);
+        // The legal task-side use: interrupts off while held.
+        *LD_IRQ.lock_irqsave() += 1;
+        // `canary=lockdep-irq-inversion`: with interrupts on, where the
+        // interrupt that takes it would spin on this CPU forever.
+        if canary!("lockdep-irq-inversion") {
+            *LD_IRQ.lock() += 1;
+        }
+        Ok(())
+    }
+}
+
+static LD_HOLD: azos_sync::SpinLock<u32> = azos_sync::SpinLock::new(0);
+
+azos_ktest::ktest_late! {
+    fn lockdep_spinlock_hold_bounded() {
+        ld_on("LOCKDEP is off in this ktest kernel", true)?;
+        use azos_arch::Cpu as _;
+        let limit = azos_sync::lockdep::hold_limit_ticks();
+        if limit == 0 {
+            return Err("lockdep has no timebase (set_timebase_hz): holds are not timed");
+        }
+        let key = LD_HOLD.lockdep_key();
+        let holds = azos_sync::lockdep::class_info(key).map_or(0, |c| c.holds);
+        *LD_HOLD.lock() += 1;
+        if azos_sync::lockdep::class_info(key).map_or(0, |c| c.holds) != holds + 1 {
+            return Err("a SpinLock hold was not added to its class's histogram");
+        }
+        // `canary=lockdep-hold`: hold it twice LOCK_MAX_HOLD_US (an
+        // iteration cap backs the timer up).
+        if canary!("lockdep-hold") {
+            let mut g = LD_HOLD.lock();
+            let t0 = azos_arch::ARCH.now_ticks();
+            let mut spins = 0u64;
+            while azos_arch::ARCH.now_ticks().wrapping_sub(t0) <= 2 * limit && spins < 1 << 32 {
+                core::hint::spin_loop();
+                spins += 1;
+            }
+            *g += 1;
+            drop(g);
+            // With LOCKDEP_HOLD_ENFORCE the runner fails this test on
+            // lockdep's report; without it (the QEMU board's default:
+            // emulated wall time is host load) the report is a note, and
+            // this check fails it. Not asserted unarmed: one increment under
+            // an emulator is not guaranteed to stay under the bound.
+            if azos_sync::lockdep::class_info(key).map_or(0, |c| c.max_ticks) > limit {
+                return Err("LD_HOLD was held past LOCK_MAX_HOLD_US (lockdep's hold histogram)");
+            }
+        }
+        Ok(())
+    }
+}
+
+// Rule F7: a holder on CPU 1 and a contender on CPU 2, both kernel tasks;
+// the holder is real-time, and so is the contender only under the canary.
+static LD_PI: azos_sync::PiMutex<u32> = azos_sync::PiMutex::new(0);
+static LD_PI_HELD: AtomicBool = AtomicBool::new(false);
+static LD_PI_DONE: AtomicUsize = AtomicUsize::new(0);
+static LD_PI_CONTENDED0: AtomicUsize = AtomicUsize::new(0);
+
+fn ld_pi_holder(_: usize) {
+    use azos_arch::Cpu as _;
+    let mut g = LD_PI.lock();
+    LD_PI_HELD.store(true, Ordering::Release);
+    // Until the contender has reached the contended path (bounded).
+    let t0 = azos_arch::ARCH.now_ticks();
+    let cap = azos_sync::lockdep::hold_limit_ticks().max(1) * 10_000;
+    let mut spins = 0u64;
+    while (azos_sync::lockdep::stats().contended as usize) == LD_PI_CONTENDED0.load(Ordering::Acquire)
+        && azos_arch::ARCH.now_ticks().wrapping_sub(t0) < cap
+        && spins < 1 << 32
+    {
+        core::hint::spin_loop();
+        spins += 1;
+    }
+    *g += 1;
+    drop(g);
+    LD_PI_DONE.fetch_add(1, Ordering::Release);
+}
+
+fn ld_pi_contender(_: usize) {
+    while !LD_PI_HELD.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    *LD_PI.lock() += 1;
+    LD_PI_DONE.fetch_add(1, Ordering::Release);
+}
+
+azos_ktest::ktest_late! {
+    fn lockdep_rt_tasks_share_only_spinlocks() {
+        ld_on("LOCKDEP or LOCKDEP_RT_CROSS_CPU is off in this ktest kernel", azos_sync::lockdep::RT_CROSS_CPU)?;
+        if azos_percpu::nr_cpu_ids() < 3 {
+            return Err("needs 3 CPUs (the runner on 0, a holder on 1, a contender on 2)");
+        }
+        let rt = azos_sched::RT_PRIORITY_THRESHOLD - 2;
+        let contender = if canary!("lockdep-rt-pi") { rt } else { azos_sched::DEFAULT_PRIORITY };
+        LD_PI_HELD.store(false, Ordering::Release);
+        LD_PI_DONE.store(0, Ordering::Release);
+        let c0 = azos_sync::lockdep::stats().contended as usize;
+        LD_PI_CONTENDED0.store(c0, Ordering::Release);
+        azos_sched::task_create_affinity("ld-pi-holder", ld_pi_holder, 0, rt, 1);
+        azos_sched::task_create_affinity("ld-pi-contender", ld_pi_contender, 0, contender, 2);
+        wait("the PiMutex holder and contender did not both finish", || LD_PI_DONE.load(Ordering::Acquire) == 2)?;
+        if azos_sync::lockdep::stats().contended as usize == c0 {
+            return Err("the PiMutex was never contended: rule F7 was not exercised");
+        }
         Ok(())
     }
 }

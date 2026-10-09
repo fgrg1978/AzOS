@@ -382,6 +382,9 @@ pub struct PiMutex<T> {
     /// Lockdep class: the constructor's call site (`lockdep` feature only).
     #[cfg(feature = "lockdep")]
     class:              crate::lockdep::LockClass,
+    /// Lockdep (rule F7): the holder's CPU and RT-ness, `lockdep::holder_word`.
+    #[cfg(feature = "lockdep")]
+    ld_holder:          AtomicU32,
 }
 
 // Safety: PiMutex provides exclusive access; data is only reachable through
@@ -404,6 +407,8 @@ impl<T> PiMutex<T> {
             pi_state:           SpinLock::new(()),
             #[cfg(feature = "lockdep")]
             class:              crate::lockdep::LockClass::here(crate::lockdep::Kind::PiMutex),
+            #[cfg(feature = "lockdep")]
+            ld_holder:          AtomicU32::new(0),
         }
     }
 
@@ -414,6 +419,7 @@ impl<T> PiMutex<T> {
     fn ld_acquired(&self) {
         crate::lockdep::acquired(&self.class, self as *const Self as usize,
             crate::lockdep::Kind::PiMutex, false, core::panic::Location::caller());
+        self.ld_holder.store(crate::lockdep::holder_word(), Ordering::Relaxed);
     }
 
     /// Acquire the mutex, spinning until available.
@@ -440,6 +446,9 @@ impl<T> PiMutex<T> {
         }
 
         // Slow path: contention — apply priority inheritance.
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::contended(&self.class, self as *const Self as usize,
+            crate::lockdep::Kind::PiMutex, self.ld_holder.load(Ordering::Relaxed));
         //
         // Identity is sampled once: this task cannot migrate or change base
         // priority underneath itself while it is the one executing here.
@@ -664,7 +673,10 @@ impl<T> core::ops::DerefMut for PiMutexGuard<'_, T> {
 impl<T> Drop for PiMutexGuard<'_, T> {
     fn drop(&mut self) {
         #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self.mutex as *const PiMutex<T> as usize, crate::lockdep::Kind::PiMutex);
+        {
+            self.mutex.ld_holder.store(0, Ordering::Relaxed);
+            crate::lockdep::release(self.mutex as *const PiMutex<T> as usize, crate::lockdep::Kind::PiMutex);
+        }
         self.mutex.release();
     }
 }

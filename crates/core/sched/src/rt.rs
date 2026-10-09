@@ -124,7 +124,11 @@ unsafe fn rt_cpu_init(p: *mut RtCpu) {
 }
 
 /// Every hart's [`RtCpu`].
-pub(crate) static RT_CPU: azos_percpu::PerCpu<RtCpu> = azos_percpu::PerCpu::with_init(rt_cpu_init);
+///
+/// Scope: not one of `azos_sync::scope`'s yet (a bare `PerCpuRemote`): the
+/// owner-hart state wants a `PerCpu`, the set is read by other harts
+/// lock-free (a `PerCpu<_, true>` read), admission writes under `ADMIT`.
+pub(crate) static RT_CPU: azos_percpu::PerCpuRemote<RtCpu> = azos_percpu::PerCpuRemote::with_init(rt_cpu_init);
 
 /// `cpu`'s reservation set. `cpu < ncpu()`.
 #[inline(always)]

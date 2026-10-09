@@ -1060,6 +1060,17 @@ pub fn logger_defer_io(job: fn()) -> bool {
     false
 }
 
+/// A function the flusher runs at the end of every pass (0: none): the
+/// kernel's printer of what must never print from where it happened
+/// (lockdep's reports, Kconfig LOCKDEP=y outside ktest).
+static PASS_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+/// Run `f` at the end of every flusher pass (task context, no lock held;
+/// the periodic flush request makes that about twice a second).
+pub fn logger_set_pass_hook(f: fn()) {
+    PASS_HOOK.store(f as usize, Ordering::Release);
+}
+
 /// The log flusher task body: sleep until a request, flush the ring, run the
 /// deferred jobs, repeat. Spawned by the kernel at `LOG_FLUSHER_PRIORITY`.
 pub fn logger_flusher_task(_: usize) {
@@ -1084,6 +1095,12 @@ pub fn logger_flusher_pass() -> u32 {
             let job: fn() = unsafe { core::mem::transmute::<usize, fn()>(job) };
             job();
         }
+    }
+    let hook = PASS_HOOK.load(Ordering::Acquire);
+    if hook != 0 {
+        // SAFETY: only `logger_set_pass_hook` stores here, and it stores a `fn()`.
+        let hook: fn() = unsafe { core::mem::transmute::<usize, fn()>(hook) };
+        hook();
     }
     FLUSH_DONE.store(seen, Ordering::Release);
     seen
