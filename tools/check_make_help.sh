@@ -15,9 +15,10 @@ db=$(mktemp "${TMPDIR:-/tmp}/make_db.XXXXXX") || exit 2
 trap 'rm -f "$db"' EXIT
 make -qp help >"$db" 2>/dev/null
 
-# Section entries only: two spaces, a target-looking word, two spaces. The
+# Section entries only: two spaces, then a target-looking word (continuation
+# lines are indented deeper). The
 # "Variables" section lists assignments, not targets.
-names=$(awk '/^Variables$/ {exit} /^  [A-Za-z0-9_.\/-]+  / {print $1}' "$help")
+names=$(awk '/^Variables$/ {exit} /^  [A-Za-z0-9_.\/-]+( |$)/ {print $1}' "$help")
 [ -n "$names" ] || { echo "[HELP] no targets found in $help"; exit 1; }
 
 # Explicit targets, and pattern rules turned into shell globs.

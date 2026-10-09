@@ -931,7 +931,7 @@ busybox-one:
 	  sed -i '' -e "/^# $$k is not set$$/d" -e "/^$$k=/d" .config; echo "$$l" >> .config; done
 	yes "" | $(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) oldconfig >/dev/null
 	BUSYBOX_ZIG=$(BUSYBOX_ZIG) BUSYBOX_ZIG_TARGET=$(ISA)-linux-musl \
-	  $(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) CC=$(CURDIR)/tools/busybox_cc.sh \
+	  $(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) CC="$(CURDIR)/tools/busybox_cc.sh" \
 	  AR="$(BUSYBOX_ZIG) ar" STRIP=$(dir $(LX_CC))llvm-strip NM=$(dir $(LX_CC))llvm-nm \
 	  OBJCOPY=$(dir $(LX_CC))llvm-objcopy busybox
 	cp $(BUSYBOX_WORK)/$(ISA)/src/busybox $(BUSYBOX_WORK)/busybox-$(ISA).elf
@@ -2598,7 +2598,7 @@ $(RPI5_KCONFIG): config/defconfigs/rpi5.config \
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 	@grep -q '^CONFIG_BOARD_RPI5=y$$' $@ || { echo "[RPI5] $@ lost CONFIG_BOARD_RPI5"; exit 1; }
 
-rpi5: $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
+rpi5: $(KCONFIG_CONFIG) $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(RPI5_KCONFIG)" $(AARCH64_KTARGET_ENV) \
 	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/kconfig_to_cargo.py --rustflags $(RPI5_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel --features azos_topology/dev-key \
@@ -2680,7 +2680,7 @@ define topo_bind
 	@mkdir -p $(dir $(4)); dev="$(or $(TOPO_DEVICE),$$(python3 tools/device_provision.py --show --id-only $(5)))"; \
 	case "$$dev" in [0-9a-f][0-9a-f]*) ;; *) echo "[TOPO] $(5): no device record (tools/device_provision.py) to bind the topology to"; exit 1;; esac; \
 	echo "$$dev" > $(4).device
-	$(call topo_emit,$(1),$(2),$(3),$(4),--device $$(cat $(CURDIR)/$(4).device) --counter $(TOPO_COUNTER))
+	$(call topo_emit,$(1),$(2),$(3),$(4),--device $$(cat "$(CURDIR)/$(4).device") --counter $(TOPO_COUNTER))
 	python3 tools/gen_config_sig.py $(4)/CAPS.TOM --priv "$(6)" --out $(4)/CAPS.SIG
 	for f in CAPS.TOM CAPS.SIG SCHED.TOM; do mcopy -o -i $(5) $(4)/$$f ::$$f || exit 1; done
 	@mdel -i $(5) ::SCHED.SIG >/dev/null 2>&1 || true
