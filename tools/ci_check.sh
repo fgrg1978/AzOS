@@ -244,7 +244,16 @@ kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     local feats="$1"; shift
     par_shared "kbuild $feats" || return 1
     if [ $# -eq 0 ] && ci_kb_defer rv "$feats"; then return 0; fi
+    # Built now (a row's own build, or an environment the deferral does not
+    # cover, e.g. secure boot's PROD_PUBKEY_PATH): it supersedes a pending
+    # deferred build, which a later `par` would otherwise flush OVER it and
+    # boot instead (wave 15: the three secure-boot rows booted `qemu` under
+    # CI_TIER=rows). `.features` names what the binary was built with, for
+    # `ci_kernel_check`.
+    [ -z "$PAR_JOB" ] && [ -z "${CI_KFLUSHING:-}" ] && [ $# -eq 0 ] && unset CI_KPEND_RV
+    rm -f "${KERNEL}.features"
     if "$CARGO" build --release --features "$feats" "$@" >/dev/null 2>&1; then
+        [ $# -eq 0 ] && [ -z "${CARGO_TARGET_DIR:-}" ] && builtin printf '%s\n' "$feats" >"${KERNEL}.features"
         return 0
     fi
     printf "  %-26s" "build --features ${feats}..."
@@ -1502,7 +1511,7 @@ ci_kb_defer() { # ci_kb_defer rv|a64 <features>: 0 when the build is deferred
     [ -z "$PAR_JOB" ] && [ -z "$PAR_KEY" ] && [ -z "${CI_IN_ROW:-}" ] && [ -z "${CI_KFLUSHING:-}" ] || return 1
     [ -n "${CI_KB_ENV0:-}" ] && [ "$(ci_kb_env)" = "$CI_KB_ENV0" ] || return 1
     case "$1" in
-        rv)  CI_KPEND_RV="$2"; rm -f "$RV_KERNEL_OUT" ;;
+        rv)  CI_KPEND_RV="$2"; rm -f "$RV_KERNEL_OUT" "${RV_KERNEL_OUT}.features" ;;
         a64) CI_KPEND_A64="$2"; rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" ;;
         *) return 1 ;;
     esac
@@ -1800,10 +1809,25 @@ ci_marker() { # ci_marker <marker>
 # would turn the census row falsely green — so any drop fails the row.
 QEMU_FAIL_RE="${QEMU_FAIL_RE:-FAILED:|PAGE FAULT\] OUT OF MEMORY|RFC [0-9/]+ FAIL|\[(DHCPSMOKE|PISMOKE|PIFLUSH)\] FAIL|\[gpio_drv\] .*FAILED|\[mlsrv\] .*FAILED|\[APS\] +smoke FAIL|loopback FAIL|service_discover FAILED|\[GGUF\] [0-2]/3 tests passed|Pipe create FAILED|\[FATAL\]|\[CONSOLE\] dropped}"
 
+# ci_kernel_check: 0 when the riscv64 kernel on disk is the build the rows
+# being run need (`CI_EXPECT_RV`, set by a group around its rows; no
+# expectation, no check). Otherwise the row FAILS naming both feature sets,
+# instead of reporting a verdict about some other kernel.
+ci_kernel_check() {
+    [ -n "${CI_EXPECT_RV:-}" ] || return 0
+    local got
+    got="$(cat "${KERNEL}.features" 2>/dev/null)"
+    [ "$got" = "$CI_EXPECT_RV" ] && return 0
+    bad
+    echo "      the kernel on disk was built with --features '${got:-unknown}';"
+    echo "      this row needs '${CI_EXPECT_RV}' (a later build replaced it)"
+    return 1
+}
 qemu_run() { # qemu_run <label> <success-marker> <timeout-s> <qemu-args...>
     local label="$1" marker limit="$3"
     marker="$(ci_marker "$2")"; shift 3
     printf "  %-26s" "${label}..."
+    ci_kernel_check || return
     # An empty marker matches the first byte of any log: a row that passes
     # without looking (it happened once, to a whole tier, through an argument
     # shifted away before it was read).
@@ -9585,6 +9609,8 @@ else
           build/disk-recovery.img build/disk-badslotb.img
     PROD_PUBKEY_PATH="$SECBOOT_TEST_KEY" \
         kbuild "qemu,secure-boot-enforced"
+    # Every secure-boot row below boots THIS build (ci_kernel_check).
+    CI_EXPECT_RV="qemu,secure-boot-enforced"
 
     # Prove the key actually made it into the binary BEFORE booting anything.
     # Without this, a broken PROD_PUBKEY_PATH degrades into three confusing
@@ -9680,6 +9706,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
             echo "      (unsigned slot A + SIGNED KERN_R.BIN) was not built."; return
         fi
         job_disk build/disk-recovery.img
+        ci_kernel_check || return
         par_ready
 
         "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
@@ -9783,6 +9810,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         -device virtio-blk-device,drive=hd0
     }
     par "secure boot records unfit B" secure_boot_unfit_rows
+    unset CI_EXPECT_RV
 
     # ── The SAME secure-boot verdicts, on aarch64 ───────────────────────────
     #
