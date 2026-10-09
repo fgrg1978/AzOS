@@ -97,6 +97,9 @@ static CSI_POWERED: AtomicBool = AtomicBool::new(false);
 static CSI_WIDTH: AtomicU16 = AtomicU16::new(0);
 static CSI_HEIGHT: AtomicU16 = AtomicU16::new(0);
 static CSI_FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
+/// JPEG encodes done ([`csi_capture_jpeg_stamped`] calls that produced a
+/// frame). The camera pipeline's ktest checks it moves once per frame.
+static CSI_JPEG_ENCODES: AtomicU32 = AtomicU32::new(0);
 
 // Store format as u8 (0 = Gray8, 1 = Rgb565).
 static CSI_FMT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
@@ -317,7 +320,14 @@ pub fn csi_capture_jpeg_stamped(jpeg_buf: &mut [u8]) -> (usize, u64) {
     let acq = azos_drv_sys::timebase::now();
 
     // Encode to minimal JPEG.
+    CSI_JPEG_ENCODES.fetch_add(1, Ordering::Relaxed);
     (encode_gray_jpeg(&raw[..raw_size], cap_w, cap_h, jpeg_buf), acq)
+}
+
+/// JPEG encodes so far (every [`csi_capture_jpeg_stamped`] that took the
+/// scratch buffer and encoded a frame).
+pub fn csi_jpeg_encodes() -> u32 {
+    CSI_JPEG_ENCODES.load(Ordering::Relaxed)
 }
 
 /// Generate a synthetic grayscale test pattern.

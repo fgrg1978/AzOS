@@ -2,7 +2,7 @@
 name = "azos_cam_ring"
 version = "0.1.0"
 edition = "2021"
-description = "Lock-free SPSC frame ring for zero-copy camera pipelines (S1/S6). Pure no_std; no heap. Host-testable via tests/host/cam-ring-tests."
+description = "Camera frame rings: lock-free SPSC (S1/S6) and the fan-out ring of the camera pipeline (B2). Pure no_std; no heap. Host-testable via tests/host/cam-ring-tests."
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 

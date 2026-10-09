@@ -485,6 +485,7 @@ dependencies = [
  "azos_baro",
  "azos_behavior",
  "azos_bench",
+ "azos_cam_ring",
  "azos_camera",
  "azos_chaos",
  "azos_common",

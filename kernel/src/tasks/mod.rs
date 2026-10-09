@@ -22,6 +22,11 @@ pub(crate) use buzzer_host::*;
 // Wave 11 (SHMRING): kernel-produced sensor streams.
 mod streams;
 pub(crate) use streams::*;
+// Wave 15 (B2): the camera's one capture task and its frame ring.
+#[cfg(any(feature = "domain-robot", feature = "camera"))]
+mod cam_capture;
+#[cfg(any(feature = "domain-robot", feature = "camera"))]
+pub(crate) use cam_capture::*;
 #[cfg(feature = "domain-robot")]
 mod camera;
 #[cfg(feature = "domain-robot")]

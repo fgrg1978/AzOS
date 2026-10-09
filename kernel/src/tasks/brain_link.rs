@@ -379,11 +379,15 @@ pub(crate) fn brain_tx_begin(fd: azos_net::tcp::TcpHandle) {
 /// The session ends now: queued bytes are forgotten and brain-tx stops
 /// using the socket before the caller closes it.
 pub(crate) fn brain_tx_end() {
-    let mut s = BRAIN_TXQ.lock();
-    s.q.reset();
-    s.fd = None;
-    s.close_when_drained = false;
-    s.paused = false;
+    {
+        let mut s = BRAIN_TXQ.lock();
+        s.q.reset();
+        s.fd = None;
+        s.close_when_drained = false;
+        s.paused = false;
+    }
+    // The session's inline camera sender goes with it (B2).
+    camera_inline_consumer(false);
 }
 
 /// The session ends once what is queued is on the wire (or the queue

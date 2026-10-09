@@ -313,6 +313,7 @@ pub(crate) fn behavior_task(_: usize) {
                 }
 
                 // A camera frame every CAMERA_SEND_INTERVAL passes (~2 Hz),
+                // the newest in the camera frame ring,
                 // here only when no camera connection is configured
                 // (`behavior_camera_port` = 0); otherwise `camera_tx_task`
                 // sends it on its own connection (C1). Only on an encrypted
@@ -325,10 +326,13 @@ pub(crate) fn behavior_task(_: usize) {
                 camera_cycle += 1;
                 if camera_cycle >= CAMERA_SEND_INTERVAL {
                     camera_cycle = 0;
-                    if link.is_some()
+                    let inline = link.is_some()
                         && azos_config::BEHAVIOR_CAMERA_PORT.load(Ordering::Relaxed) == 0
-                        && azos_drv_sensor::csi::csi_is_ready()
-                    {
+                        && azos_drv_sensor::csi::csi_is_ready();
+                    // The ring's link cursor (wave 15, B2): attached while
+                    // this path sends; the capture task encodes, not this loop.
+                    camera_inline_consumer(inline);
+                    if inline {
                         let _cam_queued = send_camera_sealed(&mut link, &mut enc_salt);
                     }
                 }

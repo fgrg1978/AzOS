@@ -11103,8 +11103,9 @@ PY
     # (crates/core/chaos) and check the fault is refused cleanly, leaks
     # nothing and is counted; the `decision_*` tests read the boot's
     # admission record and a capability denial's (crates/core/decision).
-    KTEST_N_RV=26
-    KTEST_N_ARM=26
+    # +1 camera_one_encode_per_frame (wave 15, B2).
+    KTEST_N_RV=27
+    KTEST_N_ARM=27
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
@@ -11195,8 +11196,10 @@ PY
     # written (`decision_admission_recorded`, `decision_cap_denial_recorded`);
     # `ioring-fsync-inline` (K1): an io_ring OP_FSYNC waits for the device in
     # the submit and completes there (`ioring_fsync_completes_after_flush`).
-    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip,chaos-leak,decision-skip,ioring-fsync-inline"
-    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded ioring_fsync_completes_after_flush"
+    # `camera-encode-per-consumer`: each camera ring consumer encodes its own
+    # frame again, three encodes per frame (`camera_one_encode_per_frame`).
+    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip,chaos-leak,decision-skip,ioring-fsync-inline,camera-encode-per-consumer"
+    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded ioring_fsync_completes_after_flush camera_one_encode_per_frame"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     # A64_PAN=probe: `canary=pan-patch-skip` leaves every UserAccess site the
@@ -11269,8 +11272,13 @@ PY
     #                               alone not ok
     # +9 with Kconfig CHAOS / DECISION_RECORDS (`chaos`, `decisions` ride in
     # every x86 ktest kernel, as on rv and arm); +2 x86_low_half_maps_no_ram,
-    # x86_direct_map_image_alias_read_only.
-    KTEST_N_X86=28
+    # x86_direct_map_image_alias_read_only; +1 camera_one_encode_per_frame
+    # (wave 15, B2).
+    #   ktest camera encode canary (x86)  canary=camera-encode-per-consumer:
+    #                               each camera ring consumer encodes its own
+    #                               frame again; camera_one_encode_per_frame
+    #                               alone not ok
+    KTEST_N_X86=29
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -11386,6 +11394,8 @@ PY
         "$KTEST_CHAOS_INERT" "canary=chaos-inert"
     par "ktest low-half alias runtime canary (x86)" x86_ktest_row "ktest low-half alias runtime canary (x86)" "" \
         "x86_low_half_maps_no_ram" "canary=x86-low-alias"
+    par "ktest camera encode canary (x86)" x86_ktest_row "ktest camera encode canary (x86)" "" \
+        "camera_one_encode_per_frame" "canary=camera-encode-per-consumer"
 
     # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
     #

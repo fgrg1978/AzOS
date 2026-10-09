@@ -7,8 +7,10 @@
 //!   publishes the completed scan ([`lidar_scan_hook`]). Nothing feeds the
 //!   parser on any board yet; under `LIDAR_SIM` (QEMU) [`lidar_sim_task`]
 //!   does, with generated packets.
-//! * Camera (Kconfig `STREAM_CAMERA_RING`): [`camera_stream_task`] captures a
-//!   JPEG every `STREAM_CAMERA_PERIOD_MS` while a task has the stream mapped.
+//! * Camera (Kconfig `STREAM_CAMERA_RING`): a consumer of the camera frame
+//!   ring (`cam_capture.rs`); the capture task publishes each frame it
+//!   captured while a task has the stream mapped ([`camera_stream_consume`]),
+//!   every `STREAM_CAMERA_PERIOD_MS`.
 //!
 //! The authority model, the drop policy and the trust boundary are in
 //! `crates/core/ipc/src/stream_ring.rs`'s doc; `SYS_SENSOR_READ_TYPED` stays
@@ -75,9 +77,11 @@ pub(crate) fn streams_init() {
     if azos_limits::LIDAR_SIM {
         azos_sched::task_create("lidar-sim", lidar_sim_task, 0, azos_sched::DEFAULT_PRIORITY);
     }
+    // The camera's one producer (wave 15, B2), for the stream and, on a
+    // robot image, the brain link's sender.
     #[cfg(any(feature = "domain-robot", feature = "camera"))]
-    if camera {
-        azos_sched::task_create("cam-stream", camera_stream_task, 0,
+    if camera || cfg!(feature = "domain-robot") {
+        azos_sched::task_create("cam-capture", crate::tasks::camera_capture_task, 0,
                                     azos_sched::DEFAULT_PRIORITY);
     }
 }
@@ -101,38 +105,28 @@ fn lidar_sim_task(_: usize) {
     }
 }
 
-/// Kconfig `STREAM_CAMERA_RING`: one JPEG every `STREAM_CAMERA_PERIOD_MS`
-/// while a task has the stream mapped. The capture is the expensive part
-/// (simulated: a generated frame and its compression), so nothing is
-/// captured for nobody.
-///
-/// **Captured into this task's own buffer, then copied into the slot.** The
-/// publish runs under the stream's spinlock with interrupts off, and
-/// `csi_capture_jpeg` takes a sleeping mutex and compresses a frame; neither
-/// belongs inside that window. The second copy (at most `JPEG_MAX_SIZE`
-/// bytes) is the price.
+/// Does `stream.camera` have a reader now? The capture task attaches the
+/// stream's cursor only then: nothing is captured for nobody.
 #[cfg(any(feature = "domain-robot", feature = "camera"))]
-fn camera_stream_task(_: usize) {
-    use azos_drv_sensor::csi::JPEG_MAX_SIZE;
-    static mut FRAME: [u8; JPEG_MAX_SIZE] = [0; JPEG_MAX_SIZE];
-    // SAFETY: only this task touches FRAME.
-    let frame = unsafe { &mut *core::ptr::addr_of_mut!(FRAME) };
-    let period = azos_limits::STREAM_CAMERA_PERIOD_MS as u64;
-    loop {
-        sleep_ms(period);
-        if !stream_ring::stream_has_consumer(Stream::Camera) {
-            continue;
-        }
-        let (n, acq) = azos_drv_sensor::csi::csi_capture_jpeg_stamped(frame);
-        if n == 0 {
-            continue;
-        }
-        let src = &frame[..n];
+pub(crate) fn camera_stream_wanted() -> bool {
+    Stream::Camera.enabled() && stream_ring::stream_has_consumer(Stream::Camera)
+}
+
+/// The stream's read of the camera frame ring: its next frame, copied from
+/// the pinned ring slot into the stream's slot under the stream's lock (the
+/// one copy; the capture and the encode ran outside it), stamped at
+/// acquisition. `false`: no new frame. With the stream off the frame is
+/// taken and published nowhere.
+#[cfg(any(feature = "domain-robot", feature = "camera"))]
+pub(crate) fn camera_stream_consume() -> bool {
+    use crate::tasks::{camera_with_frame, CamConsumer};
+    camera_with_frame(CamConsumer::Stream, |src, acq| {
         after_publish(stream_ring::stream_publish(Stream::Camera, ticks_to_ns(acq), |dst, room| {
             let k = src.len().min(room);
-            // SAFETY: `dst` is `room` bytes of the ring's slot.
+            // SAFETY: `dst` is `room` bytes of the stream's slot.
             unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, k) };
             k
         }));
-    }
+    })
+    .is_some()
 }

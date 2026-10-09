@@ -1045,6 +1045,7 @@ azos_drv_virtio    = { workspace = true }
 azos_drv_block     = { workspace = true }
 azos_drv_net       = { workspace = true }
 azos_drv_sensor    = { workspace = true }
+azos_cam_ring      = { workspace = true }
 azos_drv_actuator  = { workspace = true }
 azos_drv_npu       = { workspace = true, optional = true }
 azos_drv_power     = { workspace = true }

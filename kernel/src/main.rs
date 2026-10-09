@@ -2192,6 +2192,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // delays the behavior loop.
     #[cfg(feature = "domain-robot")]
     if azos_config::BEHAVIOR_CAMERA_PORT.load(Ordering::Relaxed) != 0 {
+        CAMERA_TX_TASK.store(true, core::sync::atomic::Ordering::Release);
         azos_sched::task_create_affinity(
             "camera-tx", camera_tx_task, 0,
             azos_sched::BEHAVIOR_PRIORITY + 1, 2);

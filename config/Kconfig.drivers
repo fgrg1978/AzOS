@@ -328,7 +328,78 @@ config STREAM_CAMERA_PERIOD_MS
     default 100
     range 10 1000
     help
-      Used only with STREAM_CAMERA_RING.
+      Used only with STREAM_CAMERA_RING: the capture period while a task
+      has `stream.camera` mapped (the camera frame ring's producer captures
+      at the shortest period any attached consumer asks for).
+
+config CAMERA_RING_SLOTS
+    int "Camera frame ring: slots"
+    default 4 if PROFILE_EMBEDDED
+    default 4 if PROFILE_EDGE
+    default 8 if PROFILE_FLEET
+    default 4
+    range 4 16
+    help
+      Wave 15 (B2). One capture task captures and JPEG-encodes each camera
+      frame once into this ring (crates/drivers/cam-ring, FanoutRing); the
+      brain link's sender (camera-tx, or the behavior task's inline path)
+      and the shared-memory stream (stream.camera) each read it with a
+      cursor of their own. The JPEG is encoded once per frame whatever the
+      number of consumers.
+
+      Cost: SLOTS x 19,200 B of .bss (the JPEG bound, csi::JPEG_MAX_SIZE)
+      on images with the robot domain or the camera; 4 slots = 76,800 B.
+      Per frame the producer scans the slots twice (a few loads each).
+
+      The minimum, 4, is what the ring needs for its two consumers never
+      to tear a frame and the producer never to wait: one slot pinned per
+      consumer, the newest frame, the one being written. More slots only
+      matter under CAMERA_RING_BACKPRESSURE, where they are frames a slow
+      consumer may fall behind before capture stops; with the default
+      overwrite policy both consumers read the newest frame. The same on
+      every ISA.
+
+choice CAMERA_RING_POLICY
+    prompt "Camera frame ring: when a consumer lags"
+    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_EMBEDDED
+    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_EDGE
+    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_FLEET
+    default CAMERA_RING_OVERWRITE_OLDEST
+    help
+      What the capture task does when every free slot of the camera frame
+      ring holds a frame some attached consumer has not taken yet.
+
+config CAMERA_RING_OVERWRITE_OLDEST
+    bool "Overwrite the oldest frame (the latest frame wins)"
+    help
+      Capture never waits on a consumer: a slow TCP sender loses the frames
+      overwritten meanwhile (counted) and takes the newest one next, with
+      its own acquisition stamp. The stream keeps its cadence.
+
+config CAMERA_RING_BACKPRESSURE
+    bool "Back-pressure (capture waits for the slowest consumer)"
+    help
+      The producer refuses a frame (counted, no capture) rather than
+      overwrite one an attached consumer is owed. A sender stuck behind a
+      closed TCP window then holds back capture, and the stream with it.
+      Only for a consumer that must see every frame.
+
+endchoice
+
+config CAMERA_TX_CAPTURE_PERIOD_MS
+    int "Camera frame ring: capture period for the brain link's sender"
+    default 250
+    range 10 1000
+    help
+      The capture period the brain link's camera sender asks for while it
+      is attached (the ring captures at the shortest period any attached
+      consumer asks for; with no consumer attached nothing is captured).
+      The sender takes the newest frame at most every 500 ms
+      (azos_behavior::camera_tx::FRAME_PERIOD_MS, or the behavior task's
+      ~2 Hz inline path); capturing at half that period means each send
+      finds a frame no older than this. Cost: one capture + JPEG encode
+      per period. Raise it to save CPU when only the brain link takes
+      frames; the frame it sends gets older by as much.
 
 config LIDAR_SIM
     bool "Synthetic LD19 LiDAR on QEMU (feeds the real parser)"

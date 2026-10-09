@@ -22,17 +22,27 @@ impl CameraPkt {
     }
 }
 
-/// Capture one JPEG (`csi_capture_jpeg`, capped at `JPEG_CAP_W`×`JPEG_CAP_H`)
-/// and frame it as a `PKT_CAMERA` packet in `cam.pkt`. Returns the packet's
-/// length, 0 when there was no frame. The raw GRAY8 frame has no packet: at
-/// 320×240 it exceeds both the envelope's inner limit and the brain-protocol
-/// length field.
+/// The brain link's next camera frame, framed as a `PKT_CAMERA` packet in
+/// `cam.pkt`: the newest frame of the camera frame ring this consumer has
+/// not taken (wave 15, B2: captured and encoded once by the capture task,
+/// capped at `JPEG_CAP_W`×`JPEG_CAP_H`). Returns the packet's length, 0 when
+/// there is no new frame or it does not fit the packet; never waits for a
+/// capture. The raw GRAY8 frame has no packet: at 320×240 it exceeds both
+/// the envelope's inner limit and the brain-protocol length field.
 fn camera_packet(cam: &mut CameraPkt) -> usize {
     use azos_behavior::brain_protocol::{
         build_packet, encode_camera_header, CAMERA_FMT_JPEG, CAMERA_HDR_SIZE, FRAME_OVERHEAD,
         PKT_CAMERA,
     };
-    let jpeg_len = azos_drv_sensor::csi::csi_capture_jpeg(&mut cam.payload[CAMERA_HDR_SIZE..]);
+    let room = &mut cam.payload[CAMERA_HDR_SIZE..];
+    let jpeg_len = camera_with_frame(CamConsumer::Link, |jpeg, _acq| {
+        if jpeg.len() > room.len() {
+            return 0;
+        }
+        room[..jpeg.len()].copy_from_slice(jpeg);
+        jpeg.len()
+    })
+    .unwrap_or(0);
     if jpeg_len == 0 {
         return 0;
     }
@@ -49,6 +59,25 @@ fn camera_packet(cam: &mut CameraPkt) -> usize {
     build_packet(
         PKT_CAMERA, &cam.payload[..payload_len], &mut cam.pkt[..payload_len + FRAME_OVERHEAD],
     )
+}
+
+/// Set once `camera-tx` is created: it then owns the ring's link cursor,
+/// and the behavior task's inline path never touches it.
+pub(crate) static CAMERA_TX_TASK: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// The behavior task's inline sender attaches the ring's link cursor while
+/// its link can carry camera frames, and detaches it when the link ends
+/// (`brain_tx_end`). A no-op when `camera-tx` owns the cursor.
+pub(crate) fn camera_inline_consumer(on: bool) {
+    if CAMERA_TX_TASK.load(Ordering::Acquire) {
+        return;
+    }
+    if on {
+        camera_consumer_attach(CamConsumer::Link);
+    } else {
+        camera_consumer_detach(CamConsumer::Link);
+    }
 }
 
 /// One camera frame on the control connection's established RFC-0019 link,
@@ -135,7 +164,12 @@ pub(crate) fn camera_tx_task(_: usize) {
                     until_ms.saturating_mul(ticks_per_ms),
                 ));
             }
-            Step::Dial { generation } => match camera_dial(port as u16, &mut salt) {
+            Step::Dial { generation } => match {
+                // Attach before the dial: the capture task has a frame by
+                // the time the handshake is done.
+                camera_consumer_attach(CamConsumer::Link);
+                camera_dial(port as u16, &mut salt)
+            } {
                 Some((f, l)) => {
                     fd = Some(f);
                     link = Some(l);
@@ -144,7 +178,10 @@ pub(crate) fn camera_tx_task(_: usize) {
                     policy.dialed(generation, now_ms);
                     kprintln!("[CAM-TX] connected fd={} (control session {})", f.slot(), generation);
                 }
-                None => policy.dial_failed(get_time() / ticks_per_ms),
+                None => {
+                    camera_consumer_detach(CamConsumer::Link);
+                    policy.dial_failed(get_time() / ticks_per_ms)
+                }
             },
             Step::Frame => {
                 let sealed = match (link.as_mut(), fd) {
@@ -176,9 +213,13 @@ pub(crate) fn camera_tx_task(_: usize) {
                     fd.close();
                 }
                 kprintln!("[CAM-TX] closed ({:?}) after {} frames", why, policy.frames());
+                let (produced, refused, overwritten, encodes) = camera_ring_stats();
+                kprintln!("[CAM] ring: {} frames captured, {} JPEG encodes, {} refused, {} overwritten unread",
+                          produced, encodes, refused, overwritten);
                 fd = None;
                 link = None;
                 tx.carry.reset();
+                camera_consumer_detach(CamConsumer::Link);
                 policy.closed(get_time() / ticks_per_ms);
             }
         }
@@ -228,8 +269,9 @@ fn camera_dial(
 }
 
 /// One frame on the camera connection: `camera_packet`, sealed into this
-/// task's own carry. Returns whether a frame was sealed; none is captured
-/// while the previous message is still owed to the socket.
+/// task's own carry. Returns whether a frame was sealed; none is taken from
+/// the ring while the previous message is still owed to the socket (the
+/// capture task keeps capturing meanwhile).
 fn camera_send_frame(
     fd: azos_net::tcp::TcpHandle,
     l: &mut azos_behavior::encrypt_link::EncryptLink,

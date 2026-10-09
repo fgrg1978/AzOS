@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side tests for `azos_cam_ring` (S1/S6).
+//! Host-side tests for `azos_cam_ring` (S1/S6, and the B2 fan-out ring).
+
+#[cfg(test)]
+mod fanout_tests;
 
 #[cfg(test)]
 mod tests {

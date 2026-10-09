@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Lock-free SPSC camera frame ring (S1/S6 — high-throughput multi-stream).
+//! Lock-free SPSC camera frame ring (S1/S6 — high-throughput multi-stream),
+//! and [`FanoutRing`], the one-producer / many-consumer ring the kernel's
+//! camera pipeline uses (module [`fanout`]).
 //!
 //! # Design
 //!
@@ -61,6 +63,9 @@
 //!   is independent of whether the target's `usize` is 32 or 64 bits.
 
 #![no_std]
+
+pub mod fanout;
+pub use fanout::{FanoutRing, FrameRef, Policy};
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
