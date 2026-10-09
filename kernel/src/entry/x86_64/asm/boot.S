@@ -217,6 +217,17 @@ long_entry:
     xorw %ax, %ax
     movw %ax, %fs
     movw %ax, %gs
+    // Paint the boot stack and the red zone under it (BOOT_STACK_PAINT,
+    // "STAKSTAK") before anything runs on it in long mode, so
+    // `boot_stack_report` (kernel/src/boot/stacks.rs) can read back how deep
+    // kernel_main went; nothing pushed by the 32-bit path is used again.
+    movabsq $_stack_redzone, %rdi
+    movabsq $_stack_end, %rcx
+    subq %rdi, %rcx
+    shrq $3, %rcx
+    movabsq $0x5354414B5354414B, %rax
+    cld
+    rep stosq
     movabsq $_stack_end, %rax
     movq %rax, %rsp
     // GS base = the boot CPU's PerCpu (X86_64_PERCPU[0], cpu_init.rs): its

@@ -62,7 +62,11 @@ SECTIONS
     .bss : { *(.bss .bss.*) *(COMMON) }
     _bss_end = .;
 
-    . = ALIGN(16);
+    /* The red zone below the boot stack separates it from the last statics
+     * of .bss; boot.S paints both and `boot_stack_report` reads them back. */
+    . = ALIGN(4K);
+    _stack_redzone = .;
+    . += BOOT_STACK_REDZONE;
     _stack_start = .;
     . += BOOT_STACK_SIZE;
     _stack_end = .;
