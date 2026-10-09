@@ -208,6 +208,9 @@ pub use process::{
 pub fn for_each_percpu_var(f: &mut dyn FnMut(&'static dyn azos_percpu::PerCpuVar)) {
     f(&scheduler::PER_CPU_QUEUES);
     f(&scheduler::rt::RT_CPU);
+    // `sched-timer-heap`: each CPU's timer-sleeper heap (12 B x MAX_TASKS).
+    #[cfg(feature = "sched-timer-heap")]
+    f(&scheduler::timer_sleepers::TIMER_HEAPS);
     #[cfg(feature = "sched-aps")]
     f(&aps_state::V2_STATE);
 }

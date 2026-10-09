@@ -10005,13 +10005,7 @@ pub mod timer_sleepers {
     use super::{TaskState, WaitReason, MAX_TASKS, TASKS, TASK_VALID};
     use crate::timer_heap::TimerHeap;
     use azos_arch::Interrupts;
-    use core::cell::UnsafeCell;
     use core::sync::atomic::{AtomicBool, Ordering};
-
-    struct HeapCell(UnsafeCell<TimerHeap<MAX_TASKS>>);
-    // SAFETY: only reached through `Guard`, which serialises every access
-    // with `LOCK` and masks interrupts while held.
-    unsafe impl Sync for HeapCell {}
 
     // `SCHED_TIMER_HEAP_PER_CPU` (owner decision, wave 15 VW): one heap per
     // CPU, like Linux's per-CPU hrtimer bases. A sleeper is armed on the
@@ -10025,8 +10019,25 @@ pub mod timer_sleepers {
     const PER_CPU: bool = azos_limits::SCHED_TIMER_HEAP_PER_CPU;
     const NHEAPS: usize = if PER_CPU { super::MAX_CPUS } else { 1 };
 
-    static HEAPS: [HeapCell; NHEAPS] =
-        [const { HeapCell(UnsafeCell::new(TimerHeap::new())) }; NHEAPS];
+    /// The heaps, in the per-CPU areas (allocated at boot from the frame
+    /// allocator, for the possible CPUs only): RAM scales with the CPUs the
+    /// board has, not with `NR_CPUS`. Before `setup_per_cpu_areas` no CPU
+    /// has one, and no task can sleep yet; a tick in that window finds no
+    /// heap and does nothing (see [`attached`]). Off, only CPU 0's is used.
+    pub(crate) static TIMER_HEAPS: azos_percpu::PerCpu<TimerHeap<MAX_TASKS>> =
+        azos_percpu::PerCpu::with_init(init_heap);
+
+    unsafe fn init_heap(p: *mut TimerHeap<MAX_TASKS>) {
+        // SAFETY: `PerCpu::attach`'s contract: zeroed, aligned, ours.
+        unsafe { TimerHeap::init_zeroed(p) }
+    }
+
+    /// Has heap `h` its per-CPU instance yet?
+    #[inline(always)]
+    fn attached(h: usize) -> bool {
+        TIMER_HEAPS.attached(h)
+    }
+
     static LOCKS: [AtomicBool; NHEAPS] = [const { AtomicBool::new(false) }; NHEAPS];
     /// The heap that holds each slot's live entry: written at every arm,
     /// under that heap's lock. An entry left in another heap by an earlier
@@ -10075,9 +10086,10 @@ pub mod timer_sleepers {
 
         #[inline]
         fn heap(&mut self) -> &mut TimerHeap<MAX_TASKS> {
-            // SAFETY: `LOCKS[h]` is held for the guard's lifetime, and the
-            // returned borrow cannot outlive `&mut self`.
-            unsafe { &mut *HEAPS[self.h].0.get() }
+            // SAFETY: `LOCKS[h]` is held for the guard's lifetime, the
+            // returned borrow cannot outlive `&mut self`, and every caller
+            // checked `attached(h)` (the instance is never freed).
+            unsafe { &mut *TIMER_HEAPS.ptr(self.h) }
         }
     }
 
@@ -10109,6 +10121,9 @@ pub mod timer_sleepers {
     #[inline]
     pub(super) fn arm(idx: usize, deadline: u64) {
         let mut g = Guard::local();
+        if !attached(g.h) {
+            return; // no task sleeps before the per-CPU areas exist
+        }
         OWNER[idx].store(g.h as u8, Ordering::Relaxed);
         g.heap().arm(idx, deadline);
     }
@@ -10134,7 +10149,10 @@ pub mod timer_sleepers {
     /// Drop `idx`'s entry (tick-probe cleanup).
     #[allow(dead_code)]
     pub(super) fn cancel(idx: usize) {
-        Guard::local().heap().cancel(idx);
+        let mut g = Guard::local();
+        if attached(g.h) {
+            g.heap().cancel(idx);
+        }
     }
 
     /// `ipc-census`: per slot, ticks that popped it and are not yet
@@ -10168,6 +10186,9 @@ pub mod timer_sleepers {
     pub(super) fn nearest() -> Option<u64> {
         let mut g = Guard::local();
         let h = g.h;
+        if !attached(h) {
+            return None;
+        }
         g.heap().peek_live(|s| live_on(h, s))
     }
 
@@ -10182,6 +10203,13 @@ pub mod timer_sleepers {
         #[inline]
         pub(super) fn here() -> Self {
             Due { h: here() }
+        }
+
+        /// Has this pass's heap its instance yet (a tick before
+        /// `setup_per_cpu_areas` has nothing to pop)?
+        #[inline]
+        pub(super) fn ready(&self) -> bool {
+            attached(self.h)
         }
     }
 
@@ -10560,8 +10588,12 @@ pub mod timer_sleepers {
 /// another hart (`timer_heap`'s `wake_due_*` tests).
 #[cfg(feature = "sched-timer-heap")]
 pub(crate) fn wake_expired_timers_heap(now_ticks: u64) {
+    let due = timer_sleepers::Due::here();
+    if !due.ready() {
+        return;
+    }
     crate::timer_heap::wake_due::<MAX_TASKS, { azos_limits::SCHED_TIMER_WAKE_BATCH }, _>(
-        &timer_sleepers::Due::here(),
+        &due,
         now_ticks,
     );
     #[cfg(feature = "ipc-census")]

@@ -63,11 +63,12 @@ config SCHED_TIMER_HEAP_PER_CPU
       spinning ISR waits until the next virtual deadline (measured: 50 ms
       timer ISRs on riscv64 -smp 2).
 
-      Cost: 12 B x MAX_TASKS per CPU (NR_CPUS heaps), plus 1 B per task
-      slot: 48 KiB at the edge profile's 64 tasks x 64 CPUs, 3 MiB at
-      fleet's 4096 x 64. Lower NR_CPUS to the real hart count on a board
-      where that matters. Instructions per sleep and per tick: one byte
-      store and the hart id read, none of them on another CPU's lines.
+      Cost: 12 B x MAX_TASKS per CPU the board has (in each CPU's
+      per-CPU area, from the frame allocator at boot; NR_CPUS does not
+      scale it), plus 1 B per task slot: 768 B per CPU at the edge
+      profile's 64 tasks, 48 KiB per CPU at fleet's 4096. Off, one heap
+      (CPU 0's area). Instructions per sleep and per tick: one byte store
+      and the hart id read, none of them on another CPU's lines.
 
 config SCHED_TIMER_WAKE_BATCH
     int "Timer sleepers popped per heap lock hold (sched-timer-heap)"

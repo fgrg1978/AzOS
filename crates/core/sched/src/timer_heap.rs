@@ -47,6 +47,23 @@ impl<const N: usize> TimerHeap<N> {
         Self { deadline: [0; N], slot: [0; N], pos: [NOT_ARMED; N], len: 0 }
     }
 
+    /// [`TimerHeap::new`] written in place on ZEROED memory (a per-CPU area):
+    /// only `pos` is not zero when empty. Never builds the heap on a stack.
+    ///
+    /// # Safety
+    /// `p` is valid for writes of one `Self`, aligned, and zeroed.
+    pub unsafe fn init_zeroed(p: *mut Self) {
+        #[allow(clippy::let_unit_value)]
+        let () = Self::FITS;
+        // SAFETY: the caller's contract; `pos` is a plain `[u16; N]`.
+        unsafe {
+            let pos = core::ptr::addr_of_mut!((*p).pos) as *mut u16;
+            for i in 0..N {
+                pos.add(i).write(NOT_ARMED);
+            }
+        }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.len

@@ -80,6 +80,9 @@ pub fn dispatch(vector: u8) -> bool {
             if let Some(slot) = IPI_RECEIVED.get(azos_sched::smp::current_cpu_id()) {
                 slot.fetch_add(1, Ordering::Release);
             }
+            // `SCHED_REMOTE_WAKE_DEFER`: queue the wakes another CPU left for
+            // this one (see the riscv64 SSIP arm). One load when none.
+            azos_sched::scheduler::drain_remote_wakes();
             apic::eoi();
             true
         }
