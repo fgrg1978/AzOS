@@ -44,6 +44,7 @@ fn isa() -> &'static str {
 /// bits wide, so a failure reason there still reaches the host as 0, which
 /// was measured). aarch64's PSCI `SYSTEM_OFF` has no reason field, so QEMU
 /// exits 0 either way there; the gate reads the TAP lines on both ISAs.
+/// x86_64 QEMU exits 3 on a failed run, 1 on a clean one (isa-debug-exit).
 fn power_off(failed: bool) -> ! {
     // Once the scheduler runs, kernel output may sit in the console's TX
     // ring or deferred buffer: put it on the wire first, or the summary
@@ -60,6 +61,12 @@ fn power_off(failed: bool) -> ! {
             // the write ends the machine.
             unsafe { core::ptr::write_volatile(base as *mut u32, FINISHER_FAIL | (1 << 16)) };
         }
+    }
+    // x86_64 QEMU: the isa-debug-exit port carries a status (QEMU exits with
+    // 2 * value + 1): 1 here, so a failed run exits 3 and a clean one 1.
+    #[cfg(all(target_arch = "x86_64", target_os = "none", feature = "qemu"))]
+    if failed {
+        azos_arch::hw::outl(azos_arch::hw::DEBUG_EXIT_PORT, 1);
     }
     let _ = failed;
     use azos_arch::Boot;

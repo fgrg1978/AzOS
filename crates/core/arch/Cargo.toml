@@ -17,7 +17,7 @@ rvv     = ["azos_arch_riscv64/rvv"]
 # RFC-0046 stage 1a canary: the ITS skips MAPTI, so a device's MSI never
 # becomes an LPI (aarch64 only: the dependency is target-specific, so a riscv64 build never compiles it).
 its-skip-mapti = ["azos_arch_aarch64/its-skip-mapti"]
-tlb-local-only = ["azos_arch_riscv64/tlb-local-only", "azos_arch_aarch64/tlb-local-only"]
+tlb-local-only = ["azos_arch_riscv64/tlb-local-only", "azos_arch_aarch64/tlb-local-only", "azos_arch_x86_64?/tlb-local-only"]
 tlb-bound-canary = ["azos_arch_riscv64/tlb-bound-canary"]
 # One-clock canary: CNTVOFF_EL2 left nonzero at the EL2 drop (aarch64 only).
 cntvoff-canary = ["azos_arch_aarch64/cntvoff-canary"]

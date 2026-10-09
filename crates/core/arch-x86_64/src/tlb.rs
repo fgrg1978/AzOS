@@ -292,6 +292,9 @@ pub fn shootdown(me: usize, root_phys: usize, va: usize, len: usize) -> usize {
     // PTE store(s) before the loads of the published roots.
     fence(Ordering::SeqCst);
     let mask = remote_mask(|c| AZOS_HART_CR3[c].load(Ordering::Relaxed), hart_bound(), me, root_phys);
+    // `tlb-local-only` (gate canary): the mask is kept, the IPIs are not
+    // sent, so a CPU on the root keeps its stale entry.
+    #[cfg(not(feature = "tlb-local-only"))]
     if mask != 0 {
         remote(me, mask, root_phys, va, len);
     }

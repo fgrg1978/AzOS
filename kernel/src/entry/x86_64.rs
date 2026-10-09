@@ -343,6 +343,10 @@ fn handle_page_fault(frame: &mut TrapFrame) {
     if azos_trace::fault_on() {
         azos_trace::raw::page_fault(fault_va as u64, frame.error_code as u32, azos_sched::current_task_tid());
     }
+    #[cfg(all(feature = "qemu", any(feature = "tlb-smoke", feature = "ktest")))]
+    if !frame.came_from_user() && tlb_probe_fixup(frame) {
+        return;
+    }
     if frame.came_from_user() {
         let user_pt = azos_sched::current_user_pt();
         if user_pt != 0 {
@@ -388,6 +392,24 @@ fn page_fault_note_lease(fault_va: usize, show: bool) {
             tid, fault_va, lease, azos_ipc::lease::lease_seal_faults(),
         );
     }
+}
+
+/// The TLB probe's one load (`smokes/tlb_probe.rs`) faulted: resume after
+/// it with RAX = 0 and RDX = `14 << 32 | error code`, as its riscv64 and
+/// aarch64 versions resume from their private trap vectors.
+#[cfg(all(feature = "qemu", any(feature = "tlb-smoke", feature = "ktest")))]
+fn tlb_probe_fixup(frame: &mut TrapFrame) -> bool {
+    unsafe extern "C" {
+        static azos_tlb_probe_load_insn: u8;
+        static azos_tlb_probe_resume: u8;
+    }
+    if frame.rip != (&raw const azos_tlb_probe_load_insn) as u64 {
+        return false;
+    }
+    frame.regs[gpr::RAX] = 0;
+    frame.regs[gpr::RDX] = (idt::PF as u64) << 32 | frame.error_code;
+    frame.rip = (&raw const azos_tlb_probe_resume) as u64;
+    true
 }
 
 /// Vectors 0..31 other than #PF: NMI is counted and returns; a ring-3

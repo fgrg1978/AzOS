@@ -29,7 +29,12 @@ pub const PROBE_PRIO: u32 = 4;
 
 /// Far from every mapping on both ISAs (riscv64 vpn2 = 128; inside
 /// aarch64's 39-bit TTBR0 range); P is private. Checked at run time anyway.
+#[cfg(not(target_arch = "x86_64"))]
 const VA: usize = 0x20_0000_0000;
+/// x86_64: PML4 slot 1 (512 GiB). Slot 0 is the kernel's, copied into P
+/// whole, and a mapping there would land in the kernel's own PDPT.
+#[cfg(target_arch = "x86_64")]
+const VA: usize = 0x80_0000_0000;
 /// Second page: removed through `unmap_user_range_and_free`, the batched
 /// path `munmap` takes, where `VA` goes through `vmm::unmap` (shm, io_ring,
 /// mmap unwind, MMIO rollback).
@@ -62,6 +67,8 @@ fn live_root() -> u64 {
     { azos_arch::csr::read_satp() as u64 }
     #[cfg(target_arch = "aarch64")]
     { azos_arch::sysregs::read_ttbr0_el1() & ((1 << 48) - 1) }
+    #[cfg(target_arch = "x86_64")]
+    { azos_arch::mmu::cr3_root(azos_arch::mmu::cpu::read_cr3()) as u64 }
 }
 
 /// Wave 9: a kernel task created by a task that runs on a user root (the
@@ -79,7 +86,8 @@ struct Load { value: u64, cause: u64 }
 
 unsafe extern "C" {
     /// One 8-byte load from `va` with the trap vector pointed at a handler
-    /// of its own; `cause` 0 = no fault, else `scause` / `ESR_EL1`.
+    /// of its own; `cause` 0 = no fault, else `scause` / `ESR_EL1` / on
+    /// x86_64 `vector << 32 | error code` (the #PF handler's fixup).
     /// Interrupts are masked for the window and restored. Two-word
     /// aggregate: returned in a0/a1 (LP64) or x0/x1 (AAPCS64).
     fn azos_tlb_probe_load(va: usize) -> Load;
@@ -153,6 +161,29 @@ core::arch::global_asm!(
     ".popsection",
 );
 
+// x86_64: no private IDT. The #PF handler recognises the load's address
+// (`azos_tlb_probe_load_insn`) in a kernel fault and resumes at
+// `azos_tlb_probe_resume` with RAX = 0 and RDX = the cause
+// (`entry::x86_64::tlb_probe_fixup`). Returned in RAX:RDX (SysV).
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".pushsection .text.azos_tlb_probe_load, \"ax\"",
+    ".globl azos_tlb_probe_load",
+    ".globl azos_tlb_probe_load_insn",
+    ".globl azos_tlb_probe_resume",
+    "azos_tlb_probe_load:",
+    "    pushfq",
+    "    cli",
+    "    xorl %edx, %edx",
+    "azos_tlb_probe_load_insn:",
+    "    movq (%rdi), %rax",
+    "azos_tlb_probe_resume:",
+    "    popfq",
+    "    ret",
+    ".popsection",
+    options(att_syntax),
+);
+
 /// The value this ISA's context switch installs for "address space rooted
 /// at `root`" (riscv64 `satp`, aarch64 raw `TTBR0_EL1`).
 fn as_value(root: usize) -> usize {
@@ -160,6 +191,8 @@ fn as_value(root: usize) -> usize {
     { azos_arch::mmu::make_satp(root, 0) }
     #[cfg(target_arch = "aarch64")]
     { root }
+    #[cfg(target_arch = "x86_64")]
+    { azos_arch::ArchPlatform::user_root_word(&azos_arch::ARCH, root, 0) }
 }
 
 /// Does the hart's translation register name `root` right now?
@@ -168,6 +201,8 @@ fn running_on(root: usize) -> bool {
     { azos_arch::csr::read_satp() == azos_arch::mmu::make_satp(root, 0) }
     #[cfg(target_arch = "aarch64")]
     { (azos_arch::sysregs::read_ttbr0_el1() as usize) & ((1 << 48) - 1) == root }
+    #[cfg(target_arch = "x86_64")]
+    { azos_arch::mmu::cr3_root(azos_arch::mmu::cpu::read_cr3()) == root }
 }
 
 /// The remote harts the shootdown must reach, read the way it reads them.
@@ -181,6 +216,12 @@ fn remote_mask(root: usize) -> usize {
     }
     #[cfg(target_arch = "aarch64")]
     { let _ = root; 0 }
+    #[cfg(target_arch = "x86_64")]
+    {
+        azos_arch::tlb::remote_mask(
+            |h| azos_arch::tlb::AZOS_HART_CR3[h].load(Ordering::SeqCst),
+            azos_arch::tlb::TLB_MAX_HARTS, azos_arch::ARCH.hart_id(), root)
+    }
 }
 
 /// Is `cause` the translation fault an unmapped page must raise?
@@ -189,6 +230,8 @@ fn is_translation_fault(cause: u64) -> bool {
     { cause == 13 } // load page fault
     #[cfg(target_arch = "aarch64")]
     { (cause >> 26) & 0x3f == 0x25 && cause & 0x3c == 0x04 } // DABT same EL, translation L0-3
+    #[cfg(target_arch = "x86_64")]
+    { cause >> 32 == 14 && cause & 1 == 0 } // #PF, not present
 }
 
 fn irq_off() -> usize {
@@ -197,6 +240,21 @@ fn irq_off() -> usize {
     unsafe { core::arch::asm!("csrrci {0}, sstatus, 2", out(reg) saved) };
     #[cfg(target_arch = "aarch64")]
     unsafe { core::arch::asm!("mrs {0}, daif", "msr daifset, #2", out(reg) saved) };
+    // x86_64: the shootdown is a maskable IPI (no firmware does it, as
+    // riscv64's SBI does), so the toucher cannot sit with IF clear: the
+    // runner would wait for its ack forever. Instead the LAPIC's task
+    // priority holds back every class below 15 (the tick, devices) and IF
+    // stays set, so only the system vectors (TLB, call, resched) arrive.
+    // A reschedule IPI in the window is caught by the toucher (`IPI_RECEIVED`).
+    #[cfg(target_arch = "x86_64")]
+    {
+        let f: usize;
+        unsafe { core::arch::asm!("pushfq", "pop {0}", "cli", out(reg) f) };
+        let tpr = azos_arch::apic::read(azos_arch::encode::LAPIC_TPR) as usize;
+        azos_arch::apic::write(azos_arch::encode::LAPIC_TPR, X86_TPR_SYSTEM_ONLY);
+        unsafe { core::arch::asm!("sti") };
+        saved = (f & (1 << 9)) | (tpr << 32);
+    }
     saved
 }
 
@@ -205,6 +263,26 @@ fn irq_restore(saved: usize) {
     if saved & 2 != 0 { unsafe { core::arch::asm!("csrsi sstatus, 2") } }
     #[cfg(target_arch = "aarch64")]
     unsafe { core::arch::asm!("msr daif, {0}", in(reg) saved) };
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe { core::arch::asm!("cli") };
+        azos_arch::apic::write(azos_arch::encode::LAPIC_TPR, (saved >> 32) as u32);
+        if saved & (1 << 9) != 0 { unsafe { core::arch::asm!("sti") } }
+    }
+}
+
+/// The task priority that blocks LAPIC classes 0..14 (vectors below 0xF0).
+#[cfg(target_arch = "x86_64")]
+const X86_TPR_SYSTEM_ONLY: u32 = 0xE0;
+/// Reschedule IPIs taken on this CPU (x86_64): one inside the toucher's
+/// window would switch it off P and flush, which reads as a pass.
+fn resched_ipis() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::entry::x86_64::irq::IPI_RECEIVED[azos_arch::ARCH.hart_id()].load(Ordering::SeqCst)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { 0 }
 }
 
 fn fill(frame: usize, word: u64) {
@@ -221,6 +299,8 @@ fn hz() -> u64 {
     { azos_drv_sys::timebase::TIMER_FREQ }
     #[cfg(target_arch = "aarch64")]
     { azos_arch::timer::freq_hz() }
+    #[cfg(target_arch = "x86_64")]
+    { azos_arch::timer::TICK_HZ }
 }
 
 fn sleep_ms(ms: u64) {
@@ -249,6 +329,9 @@ fn toucher(_: usize) {
     let own = azos_arch::csr::read_satp() as u64;
     #[cfg(target_arch = "aarch64")]
     let own = 0u64;
+    // x86_64: the kernel PML4's CR3 word (`kernel_task_satp`).
+    #[cfg(target_arch = "x86_64")]
+    let own = azos_arch::mmu::cpu::read_cr3();
     // Become a task whose address space is P, then leave the hart so the
     // scheduler's own switch path installs it.
     azos_sched::set_current_user_info(as_value(root) as u64, 0, 0);
@@ -261,6 +344,7 @@ fn toucher(_: usize) {
 
     // From here to the second load: no interrupt, so no switch, so no flush.
     let saved = irq_off();
+    let ipis = resched_ipis();
     TOUCH_HART.store(azos_arch::ARCH.hart_id(), Ordering::SeqCst);
     if running_on(root) {
         let r = unsafe { azos_tlb_probe_load(VA) };
@@ -282,6 +366,10 @@ fn toucher(_: usize) {
             let r = unsafe { azos_tlb_probe_load(VA2) };
             SECOND2.store(r.value, Ordering::SeqCst);
             SECOND2_CAUSE.store(r.cause, Ordering::SeqCst);
+            if resched_ipis() != ipis {
+                // Switched away and back: the reads prove nothing.
+                SECOND_CAUSE.store(u64::MAX - 2, Ordering::SeqCst);
+            }
         }
     } else {
         FIRST_CAUSE.store(u64::MAX - 1, Ordering::SeqCst); // P was never installed
@@ -404,6 +492,9 @@ fn expected_cause() -> u64 {
     { 13 }
     #[cfg(target_arch = "aarch64")]
     { 0x9600_0007 }
+    // x86_64: #PF, error code 0 (supervisor read of a not-present page).
+    #[cfg(target_arch = "x86_64")]
+    { 14 << 32 }
 }
 
 /// Who the shootdown must signal: on riscv64 exactly the toucher's CPU (an
@@ -416,6 +507,9 @@ fn expected_mask(touch: usize) -> usize {
     { 1usize << touch }
     #[cfg(target_arch = "aarch64")]
     { let _ = touch; 0 }
+    // x86_64: an IPI per CPU that runs on the root, as riscv64.
+    #[cfg(target_arch = "x86_64")]
+    { 1usize << touch }
 }
 
 // Cross-CPU TLB shootdown, observed: CPU 1 unmaps two pages of a private

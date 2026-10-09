@@ -2514,8 +2514,10 @@ check: | $(CHECK_TABLE_$(ARCH))
 # ── x86_64: build and boot (QEMU microvm, PVH) ─────────────────────────────
 # `make ARCH=x86_64 x86_64` builds the kernel ELF; `make qemu-x86_64` boots it
 # on `-M microvm` (PVH entry via -kernel, COM1 on stdio, isa-debug-exit so a
-# stop ends QEMU with a status). It reaches the banner and stops at the first
-# piece not ported yet, with a message. Same Kconfig expansion as `check`.
+# stop ends QEMU with a status). It boots to the kernel shell; there are no
+# x86_64 user images yet. Same Kconfig expansion as `check`.
+# X86_64_FEATURES adds cargo features (`make x86_64 X86_64_FEATURES=ktest`).
+X86_64_FEATURES ?=
 X86_64_KCONFIG := build/x86_64.config
 X86_64_ELF     := target/x86_64-unknown-none/release/kernel
 X86_64_IMG     := build/kernel-x86_64.elf
@@ -2542,7 +2544,8 @@ x86_64: $(X86_64_KCONFIG) build/image_hashes.rs
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(X86_64_KCONFIG)" \
 	    RUSTFLAGS="-C link-arg=-T$(X86_64_LINKER) -C relocation-model=static $(X86_64_DALEK) $$(python3 tools/kconfig_to_cargo.py --rustflags $(X86_64_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel \
-	    $$(python3 tools/kconfig_to_cargo.py $(X86_64_KCONFIG) | tr -s ' ')
+	    $$(python3 tools/kconfig_to_cargo.py $(X86_64_KCONFIG) | tr -s ' ') \
+	    $(if $(X86_64_FEATURES),--features $(X86_64_FEATURES))
 	@mkdir -p build
 	cp $(X86_64_ELF) $(X86_64_IMG)
 	@echo "[X86_64] Built $(X86_64_IMG)"
