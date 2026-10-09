@@ -1227,12 +1227,11 @@ unsafe fn ring_doorbell(cpu: usize, idx: usize, appended: bool) {
 // Owner decision (wave 15, VW): a wake of a task on ANOTHER CPU never spins
 // on that CPU's queue lock. The waker tries the lock once; if it is held it
 // pushes the slot onto the target's lock-free list (`wake_list`) and rings
-// the doorbell, and the target queues it under its own lock at its next
-// `do_schedule` (or doorbell). Measured (riscv64 `-icount`, rt7): this path
+// the doorbell, and the target queues it under its own lock in the
+// doorbell's interrupt arm. Measured (riscv64 `-icount`, rt7): this path
 // is taken 0-2 times a boot, and every `try_wake_task` stage stays under
-// 3 us; the ~50 ms timer-ISR stall rt7 hits is the global
-// `timer_sleepers::LOCK` spin (`wake_expired_timers`, `nearest_timer_deadline`),
-// which this does not change.
+// 3 us; the ~50 ms timer-ISR stall rt7 hit was the global timer-heap lock
+// (now per CPU, `SCHED_TIMER_HEAP_PER_CPU`).
 
 /// Each CPU's deferred-wake list head (`wake_list::NIL` when empty).
 static REMOTE_WAKE_HEAD: [AtomicU32; MAX_CPUS] =
@@ -1285,9 +1284,12 @@ unsafe fn remote_wake_try(cpu: usize, idx: usize) -> Option<bool> {
     Some(appended)
 }
 
-/// Queue this CPU's deferred wakes, oldest first. Called at the head of
-/// `do_schedule` (every path to a pick, and to idle, passes it) and from
-/// the doorbell's interrupt arm on each ISA. One relaxed load when empty.
+/// Queue this CPU's deferred wakes, oldest first. Called only from the
+/// doorbell's interrupt arm on each ISA (owner decision: not at
+/// `do_schedule` entry, which every context switch would pay). No wake is
+/// lost before idle: every push is followed by the doorbell, and a pending
+/// doorbell both ends `wfi` and is taken as soon as interrupts are
+/// unmasked, whatever the hart was doing. One relaxed load when empty.
 #[inline(always)]
 unsafe fn remote_wake_drain_on(cpu: usize) {
     if azos_limits::SCHED_REMOTE_WAKE_DEFER
@@ -5856,10 +5858,6 @@ unsafe fn do_schedule(why: SwitchReason) {
     let cpu = current_cpu_id();
     #[cfg(feature = "exit-stale-hart-canary")]
     let cpu = stale_hart_canary::take(cpu);
-    // `SCHED_REMOTE_WAKE_DEFER`: wakes other CPUs left for this one are
-    // queued before the pick, so neither the pick nor the idle arm below
-    // can miss them.
-    remote_wake_drain_on(cpu);
     #[cfg(feature = "ctx-probe")]
     {
         ctx_probe::check_running(ctx_probe::ENTRY);
@@ -9925,7 +9923,7 @@ pub fn nearest_timer_deadline() -> Option<u64> {
     {
         let got = timer_sleepers::nearest();
         #[cfg(feature = "ipc-census")]
-        timer_sleepers::check_nearest(got, nearest_timer_deadline_sweep());
+        timer_sleepers::check_nearest(got, nearest_timer_deadline_sweep_where(timer_sleepers::owned_here));
         got
     }
     #[cfg(not(feature = "sched-timer-heap"))]
@@ -9933,16 +9931,23 @@ pub fn nearest_timer_deadline() -> Option<u64> {
 }
 
 /// The O(`MAX_TASKS`) sweep: the whole of `nearest_timer_deadline` without
-/// `sched-timer-heap`, the ground truth for its census cross-check with it.
+/// `sched-timer-heap` (its census cross-check sweeps this CPU's slots only).
+#[cfg_attr(feature = "sched-timer-heap", allow(dead_code))]
+fn nearest_timer_deadline_sweep() -> Option<u64> {
+    nearest_timer_deadline_sweep_where(|_| true)
+}
+
+/// The sweep over the slots `keep` selects (the census: this CPU's heap's).
 #[cfg_attr(
     all(feature = "sched-timer-heap", not(feature = "ipc-census")),
     allow(dead_code)
 )]
-fn nearest_timer_deadline_sweep() -> Option<u64> {
+#[inline(always)]
+fn nearest_timer_deadline_sweep_where(keep: impl Fn(usize) -> bool) -> Option<u64> {
     let mut min_deadline: Option<u64> = None;
     unsafe {
         for i in 0..MAX_TASKS {
-            if !TASK_VALID[i].load(Ordering::Relaxed) { continue; }
+            if !TASK_VALID[i].load(Ordering::Relaxed) || !keep(i) { continue; }
             let task = task_ref(i);
             // Acquire pairs with block_current's Release commit: it publishes
             // the `wait_reason` (and deadline) we read next (K-C17).
@@ -10008,46 +10013,104 @@ pub mod timer_sleepers {
     // with `LOCK` and masks interrupts while held.
     unsafe impl Sync for HeapCell {}
 
-    static HEAP: HeapCell = HeapCell(UnsafeCell::new(TimerHeap::new()));
-    static LOCK: AtomicBool = AtomicBool::new(false);
+    // `SCHED_TIMER_HEAP_PER_CPU` (owner decision, wave 15 VW): one heap per
+    // CPU, like Linux's per-CPU hrtimer bases. A sleeper is armed on the
+    // heap of the CPU it blocks on, and only that CPU's tick pops it and
+    // programs its comparator from it, so each lock below is taken only by
+    // its own CPU (interrupts masked) and never waits on another hart.
+    // Before (one global lock): 28 contended acquires a boot on riscv64
+    // `-icount -smp 2`, the longest spin 50 ms inside the tick ISR, its
+    // holder a hart `-icount` was not running. Off, there is one heap
+    // (index 0) and the old global lock.
+    const PER_CPU: bool = azos_limits::SCHED_TIMER_HEAP_PER_CPU;
+    const NHEAPS: usize = if PER_CPU { super::MAX_CPUS } else { 1 };
+
+    static HEAPS: [HeapCell; NHEAPS] =
+        [const { HeapCell(UnsafeCell::new(TimerHeap::new())) }; NHEAPS];
+    static LOCKS: [AtomicBool; NHEAPS] = [const { AtomicBool::new(false) }; NHEAPS];
+    /// The heap that holds each slot's live entry: written at every arm,
+    /// under that heap's lock. An entry left in another heap by an earlier
+    /// sleep is stale there: that heap drops it instead of waking or
+    /// re-arming it.
+    static OWNER: [core::sync::atomic::AtomicU8; MAX_TASKS] =
+        [const { core::sync::atomic::AtomicU8::new(0) }; MAX_TASKS];
+    const _: () = assert!(NHEAPS <= u8::MAX as usize);
+
+    /// This CPU's heap. Interrupts must be masked (the hart cannot change).
+    #[inline(always)]
+    fn here() -> usize {
+        if PER_CPU { crate::smp::current_cpu_id().min(NHEAPS - 1) } else { 0 }
+    }
 
     struct Guard {
+        h: usize,
         prev: azos_arch::InterruptState,
     }
 
     impl Guard {
+        /// This CPU's heap: interrupts masked BEFORE the hart id is read.
         #[inline]
-        fn acquire() -> Self {
+        fn local() -> Self {
             let prev = azos_arch::ARCH.disable_all();
-            while LOCK
+            Self::take(here(), prev)
+        }
+
+        /// Heap `h`, read by a caller already masked on that CPU.
+        #[inline]
+        fn on(h: usize) -> Self {
+            let prev = azos_arch::ARCH.disable_all();
+            Self::take(h, prev)
+        }
+
+        #[inline(always)]
+        fn take(h: usize, prev: azos_arch::InterruptState) -> Self {
+            while LOCKS[h]
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_err()
             {
                 core::hint::spin_loop();
             }
-            Guard { prev }
+            Guard { h, prev }
         }
 
         #[inline]
         fn heap(&mut self) -> &mut TimerHeap<MAX_TASKS> {
-            // SAFETY: `LOCK` is held for the guard's lifetime, and the
+            // SAFETY: `LOCKS[h]` is held for the guard's lifetime, and the
             // returned borrow cannot outlive `&mut self`.
-            unsafe { &mut *HEAP.0.get() }
+            unsafe { &mut *HEAPS[self.h].0.get() }
         }
     }
 
     impl Drop for Guard {
         #[inline]
         fn drop(&mut self) {
-            LOCK.store(false, Ordering::Release);
+            LOCKS[self.h].store(false, Ordering::Release);
             azos_arch::ARCH.restore(self.prev);
         }
     }
 
-    /// `block_current`'s arm, after the commit left `idx` `Blocked`.
+    /// `slot`'s live deadline, if heap `h` owns it.
+    #[inline]
+    fn live_on(h: usize, slot: usize) -> Option<u64> {
+        if OWNER[slot].load(Ordering::Relaxed) as usize != h {
+            return None;
+        }
+        still_sleeping(slot)
+    }
+
+    /// Does this CPU's heap own `slot`? (Census cross-checks.)
+    #[cfg(feature = "ipc-census")]
+    pub(super) fn owned_here(slot: usize) -> bool {
+        OWNER[slot].load(Ordering::Relaxed) as usize == here()
+    }
+
+    /// `block_current`'s arm, after the commit left `idx` `Blocked`: on the
+    /// heap of the CPU it blocks on.
     #[inline]
     pub(super) fn arm(idx: usize, deadline: u64) {
-        Guard::acquire().heap().arm(idx, deadline);
+        let mut g = Guard::local();
+        OWNER[idx].store(g.h as u8, Ordering::Relaxed);
+        g.heap().arm(idx, deadline);
     }
 
     /// The deadline `slot` still sleeps on, if it is `Blocked` on a timer.
@@ -10071,7 +10134,7 @@ pub mod timer_sleepers {
     /// Drop `idx`'s entry (tick-probe cleanup).
     #[allow(dead_code)]
     pub(super) fn cancel(idx: usize) {
-        Guard::acquire().heap().cancel(idx);
+        Guard::local().heap().cancel(idx);
     }
 
     /// `ipc-census`: per slot, ticks that popped it and are not yet
@@ -10103,25 +10166,42 @@ pub mod timer_sleepers {
     /// early interrupt, and an entry whose slot sleeps on a different
     /// deadline is moved to it, not dropped.
     pub(super) fn nearest() -> Option<u64> {
-        Guard::acquire().heap().peek_live(still_sleeping)
+        let mut g = Guard::local();
+        let h = g.h;
+        g.heap().peek_live(|s| live_on(h, s))
     }
 
     /// The live heap and task table as `timer_heap::wake_due` sees them.
-    pub(super) struct Due;
+    /// A tick's pass over the heap `h` of the CPU taking the tick.
+    pub(super) struct Due {
+        h: usize,
+    }
+
+    impl Due {
+        /// For the calling CPU, whose interrupts are masked (the tick ISR).
+        #[inline]
+        pub(super) fn here() -> Self {
+            Due { h: here() }
+        }
+    }
 
     impl crate::timer_heap::DueSleepers<MAX_TASKS> for Due {
         #[inline]
         fn locked<R>(&self, f: impl FnOnce(&mut TimerHeap<MAX_TASKS>) -> R) -> R {
-            f(Guard::acquire().heap())
+            f(Guard::on(self.h).heap())
         }
 
         #[inline]
         fn live(&self, slot: usize) -> Option<u64> {
-            still_sleeping(slot)
+            live_on(self.h, slot)
         }
 
         #[inline]
         fn wake(&self, slot: usize, now: u64) {
+            // Stale here: the slot slept again on another CPU's heap since.
+            if OWNER[slot].load(Ordering::Relaxed) as usize != self.h {
+                return;
+            }
             super::try_wake_task(slot, &|r: &WaitReason| {
                 matches!(r, WaitReason::Timer(d) if now >= *d)
             });
@@ -10227,7 +10307,7 @@ pub mod timer_sleepers {
         if matches!(heap, Some(hd) if hd < sd) {
             return (Mismatch::HeapEarlier, None);
         }
-        let mut g = Guard::acquire();
+        let mut g = Guard::local();
         let h = g.heap();
         let mut class = Mismatch::Gone;
         let mut note = None;
@@ -10281,7 +10361,7 @@ pub mod timer_sleepers {
         let mut first: Option<(usize, u64, u64, SleeperWhy)> = None;
         let mut opened: Option<LostNote> = None;
         let mut closed: Option<LostNote> = None;
-        let mut g = Guard::acquire();
+        let mut g = Guard::local();
         let h = g.heap();
         unsafe {
             for i in 0..MAX_TASKS {
@@ -10290,7 +10370,7 @@ pub mod timer_sleepers {
                     let t = &*core::ptr::addr_of!(TASKS[i]);
                     if t.state_acquire() == TaskState::Blocked {
                         if let WaitReason::Timer(d) = t.wait_reason {
-                            if now >= d && h.armed_deadline(i) != Some(d) {
+                            if now >= d && owned_here(i) && h.armed_deadline(i) != Some(d) {
                                 suspect = Some(d);
                             }
                         }
@@ -10481,7 +10561,7 @@ pub mod timer_sleepers {
 #[cfg(feature = "sched-timer-heap")]
 pub(crate) fn wake_expired_timers_heap(now_ticks: u64) {
     crate::timer_heap::wake_due::<MAX_TASKS, { azos_limits::SCHED_TIMER_WAKE_BATCH }, _>(
-        &timer_sleepers::Due,
+        &timer_sleepers::Due::here(),
         now_ticks,
     );
     #[cfg(feature = "ipc-census")]

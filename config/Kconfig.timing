@@ -45,6 +45,30 @@ config SCHED_HZ_FLOOR
       `crates/core/limits/build.rs` validates `SCHED_HZ_FLOOR <= SCHED_HZ` at
       every build so a drift is a hard build error, not a silent one.
 
+config SCHED_TIMER_HEAP_PER_CPU
+    bool "One timer-sleeper heap per CPU (sched-timer-heap)"
+    default y
+    help
+      With the `sched-timer-heap` cargo feature, each CPU keeps its own
+      heap of timer sleepers, like Linux's per-CPU hrtimer bases. A task
+      that sleeps on a timer is armed on the heap of the CPU it blocks
+      on; that CPU's tick ISR pops it and that CPU's tickless comparator
+      is programmed from it. Every heap lock is taken only by its own CPU,
+      with interrupts masked, so it is never contended across CPUs.
+
+      Off: one heap and one lock for the whole machine (the old shape).
+      Every CPU's tick ISR and every timer sleep then spins on the same
+      lock with interrupts masked; when the holder's hart is not running
+      (QEMU -icount runs harts one at a time; a preempted vCPU), the
+      spinning ISR waits until the next virtual deadline (measured: 50 ms
+      timer ISRs on riscv64 -smp 2).
+
+      Cost: 12 B x MAX_TASKS per CPU (NR_CPUS heaps), plus 1 B per task
+      slot: 48 KiB at the edge profile's 64 tasks x 64 CPUs, 3 MiB at
+      fleet's 4096 x 64. Lower NR_CPUS to the real hart count on a board
+      where that matters. Instructions per sleep and per tick: one byte
+      store and the hart id read, none of them on another CPU's lines.
+
 config SCHED_TIMER_WAKE_BATCH
     int "Timer sleepers popped per heap lock hold (sched-timer-heap)"
     range 1 64
@@ -323,8 +347,8 @@ config SCHED_REMOTE_WAKE_DEFER
       before; if it is held (or earlier wakes for that CPU are still
       pending) the task is pushed onto the target CPU's lock-free deferred
       wake list and the reschedule IPI is sent. The target queues it with
-      its own lock at its next schedule point, which the IPI starts. A
-      wake for the waker's own CPU is unchanged.
+      its own lock when it takes that IPI. A wake for the waker's own CPU
+      is unchanged.
 
       Why: a remote wake from any context, the timer ISR included,
       must not spin with interrupts masked on a lock another hart holds;

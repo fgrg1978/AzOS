@@ -9,9 +9,9 @@
 //! holder may not run until this hart stops (QEMU `-icount` runs the harts
 //! one at a time; a preempted vCPU behaves the same). When the target's lock
 //! is held the waker now pushes the slot here instead and rings the target's
-//! doorbell; the target enqueues it on its own queue, with its own lock, at
-//! its next `do_schedule` (the doorbell's reschedule leads there). This is
-//! the shape of Linux's `ttwu_queue_wakelist` / `sched_ttwu_pending`.
+//! doorbell; the target enqueues it on its own queue, with its own lock, in
+//! the doorbell's interrupt arm. This is the shape of Linux's
+//! `ttwu_queue_wakelist` / `sched_ttwu_pending`.
 //!
 //! One link per task slot is enough: a slot is pushed only by the waker that
 //! won its Blocked→Ready transition, and it cannot block again (so cannot be
