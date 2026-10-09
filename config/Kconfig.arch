@@ -1435,28 +1435,6 @@ config X86_XSAVE_AREA_BYTES
       proportional to the components in use, not to this size.  fleet
       defaults to AVX-512 (server parts have it); edge and embedded to AVX.
 
-config X86_IPI_VECTOR
-    int "IDT vector of the inter-processor interrupt"
-    range 32 254
-    default 253
-    help
-      The vector Interrupts::send_ipi raises on the target CPU (reschedule,
-      TLB shootdown and the other cross-CPU requests share it, as the SSIP
-      and SGI do on riscv64 and aarch64).  It sits in the highest priority
-      class so it is not held behind device interrupts.  253 is Linux's
-      RESCHEDULE_VECTOR.  Must differ from X86_SPURIOUS_VECTOR and lie above
-      the device range.
-
-config X86_SPURIOUS_VECTOR
-    int "IDT vector of the LAPIC spurious interrupt"
-    range 32 255
-    default 255
-    help
-      The LAPIC delivers this vector when an interrupt is withdrawn before
-      it is acknowledged; the handler counts it and sends no EOI.  255 is
-      Linux's choice (and keeps the low four bits set, which P6-era APICs
-      required).
-
 config X86_SYSRET
     bool "Return from system calls with sysretq"
     default y

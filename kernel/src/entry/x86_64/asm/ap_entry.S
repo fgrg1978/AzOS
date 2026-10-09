@@ -8,7 +8,8 @@
 // on the kernel's page tables, GDT and IDT, interrupts off, with %rdi = the
 // dense CPU number and no stack. As riscv64's `_secondary_start`: range
 // check, stack = AZOS_SECONDARY_SP[cpu] (0 = no per-CPU area: park), the
-// per-CPU base (GS base = cpu, `Cpu::hart_id`), then `secondary_main(cpu)`.
+// provisional GS base, then `x86_64_secondary_entry(cpu)` (entry/x86_64/smp.rs),
+// which loads this CPU's own tables before `secondary_main(cpu)`.
 // AZOS_SECONDARY_SP holds physical addresses: the x86_64 kernel maps
 // itself 1:1 (`azos_mm::addr::KERNEL_PHYS_TO_VIRT_OFFSET` = 0).
 
@@ -28,7 +29,7 @@ _secondary_start:
     xorl %edx, %edx
     wrmsr
     xorl %ebp, %ebp
-    call secondary_main
+    call x86_64_secondary_entry
 2:  cli
     hlt
     jmp 2b

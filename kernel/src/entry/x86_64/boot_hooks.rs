@@ -322,7 +322,7 @@ pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
 }
 
 /// The paging choices: each extension's Kconfig policy over the probe.
-fn paging_caps() -> azos_arch::mmu::PagingCaps {
+pub(crate) fn paging_caps() -> azos_arch::mmu::PagingCaps {
     use azos_arch_api::isa::x86_64 as p;
     let f = azos_arch::features::detect();
     azos_arch::mmu::PagingCaps {
@@ -353,17 +353,23 @@ pub fn mmu_enabled() {
     }
 }
 
-pub fn restrict_low_half() {
-    todo!("x86_64: restrict_low_half: drop the boot identity map from the low PML4 half")
-}
+/// Nothing to drop: `enable_paging` replaced boot.S's 0..4 GiB identity
+/// tables with the kernel's own, which map RAM, the image and the recorded
+/// device windows only, and the kernel links in the low half (riscv64's
+/// layout, not aarch64's TTBR1 split).
+pub fn restrict_low_half() {}
 
-pub fn verify_guards() {
-    todo!("x86_64: verify_guards: page-walk readback of page 0 and the stack guards")
-}
+/// The guards' report and fault probes are the generic ones (`early_main`),
+/// as on riscv64.
+pub fn verify_guards() {}
 
 /// CR4.SMEP / CR4.SMAP (`mmu::cpu::enable_access_protection`), read back.
 pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
     let st = azos_arch::mmu::cpu::enable_access_protection(&paging_caps());
+    // From the next trap entry on, `trap_entry.S` runs `clac` (delivery
+    // does not clear RFLAGS.AC). Interrupts are still off here.
+    crate::entry::x86_64::cpu_init::X86_64_SMAP_ON
+        .store(st.smap as u8, core::sync::atomic::Ordering::Release);
     kprintln!("[MM] x86_64 SMEP={} SMAP={}", st.smep, st.smap);
     crate::boot_stack_report();
 }
@@ -380,6 +386,10 @@ pub fn irqchip_init(hart_id: usize, _fw_table: usize) {
         azos_arch::platform_impl::mask_8259();
     }
     azos_arch::apic::init_local(hart_id);
+    // The TLB shootdown: a fixed-vector IPI per target CPU, served by
+    // `tlb::handle_ipi` on each (x86 has no broadcast invalidate).
+    azos_arch::tlb::register_ipi_sender(send_tlb_ipi);
+    crate::entry::x86_64::irq::set_tlb_ipi_handler(serve_tlb_ipi);
     let gsis = azos_arch::ioapic::init();
     kprintln!("[APIC] LAPIC ID {} on, {} IOAPIC GSIs masked, device vectors from {}",
               azos_arch::apic::id(), gsis, azos_arch::apic::IRQ_VECTOR_BASE);
@@ -396,6 +406,21 @@ pub fn irqchip_init(hart_id: usize, _fw_table: usize) {
     if routed != 0 {
         kprintln!("[APIC] {} virtio-mmio GSI(s) redirected (masked)", routed);
     }
+}
+
+fn send_tlb_ipi(mut mask: usize) {
+    while mask != 0 {
+        let cpu = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        if !azos_arch::apic::send_ipi(cpu, azos_arch::encode::TLB_VECTOR) {
+            azos_drv_sys::kerr!("[TLB] CPU {} has no reachable APIC ID: shootdown IPI not sent", cpu);
+        }
+    }
+}
+
+fn serve_tlb_ipi() {
+    use azos_arch::{Cpu, ARCH};
+    azos_arch::tlb::handle_ipi(ARCH.hart_id());
 }
 
 /// Nothing: `timer_init` unmasks (RFLAGS.IF) once the tick is armed, as
@@ -472,8 +497,53 @@ pub fn timer_init() {
     kprintln!("[TRAP] interrupts on (RFLAGS.IF)");
 }
 
+/// Three facts the rest of the boot relies on, each printed PASS/FAILED:
+/// an `int3` in ring 0 comes back (IDT, the trap frame, `iretq`), an NMI
+/// sent to this CPU comes back (its IST stack and the paranoid GS entry),
+/// and the periodic tick arrives at about its rate.
 pub fn boot_selftests() {
-    todo!("x86_64: boot_selftests: int3 returns, ticks arrive, IST stack used")
+    use core::sync::atomic::Ordering;
+    use azos_arch::{Cpu, ARCH};
+    let x = crate::entry::x86_64::KERNEL_BREAKPOINTS.load(Ordering::Relaxed);
+    // SAFETY: #BP is a trap the handler counts and returns from.
+    unsafe { core::arch::asm!("int3", options(nostack)) };
+    let after = crate::entry::x86_64::KERNEL_BREAKPOINTS.load(Ordering::Relaxed);
+    if after == x + 1 {
+        kprintln!("[TRAP] int3 self-test: PASS (returned)");
+    } else {
+        azos_drv_sys::kerr!("[TRAP] FAILED: int3 self-test: {} breakpoints counted, expected {}", after - x, 1);
+    }
+
+    let n = crate::entry::x86_64::NMIS.load(Ordering::Relaxed);
+    let sent = azos_arch::apic::send_raw(azos_arch::apic::id(), azos_arch::encode::ICR_DM_NMI | azos_arch::encode::ICR_ASSERT);
+    let hz = azos_arch::timer::TICK_HZ;
+    let deadline = ARCH.now_ticks().wrapping_add(hz / 10);
+    while crate::entry::x86_64::NMIS.load(Ordering::Relaxed) == n && ARCH.now_ticks() < deadline {
+        core::hint::spin_loop();
+    }
+    if sent && crate::entry::x86_64::NMIS.load(Ordering::Relaxed) > n {
+        kprintln!("[TRAP] NMI self-test: PASS (IST {} returned)", azos_arch::idt::ist_for(azos_arch::idt::NMI));
+    } else {
+        azos_drv_sys::kerr!("[TRAP] FAILED: NMI self-test: sent={} taken={}", sent,
+            crate::entry::x86_64::NMIS.load(Ordering::Relaxed) - n);
+    }
+
+    const TICK_TARGET: u64 = 5;
+    let tick = &crate::entry::x86_64::irq::TICK_COUNT;
+    let before = tick.load(Ordering::Acquire);
+    let start = ARCH.now_ticks();
+    let deadline = start.wrapping_add(hz.saturating_mul(2));
+    while tick.load(Ordering::Acquire) < before + TICK_TARGET && ARCH.now_ticks() < deadline {
+        ARCH.wfi();
+    }
+    let got = tick.load(Ordering::Acquire) - before;
+    let ms = ARCH.now_ticks().wrapping_sub(start) / (hz / 1000).max(1);
+    let want_ms = 1000 * TICK_TARGET / azos_drv_sys::timebase::sched_hz_get().max(1);
+    if got >= TICK_TARGET {
+        kprintln!("[TIMER] tick self-test: PASS ({} ticks in {} ms, expected ~{} ms)", got, ms, want_ms);
+    } else {
+        azos_drv_sys::kerr!("[TIMER] FAILED: only {} of {} ticks in {} ms (expected ~{} ms)", got, TICK_TARGET, ms, want_ms);
+    }
 }
 
 /// Device windows mapped once the heap exists (PCIe ECAM from the MCFG,
@@ -505,5 +575,8 @@ pub fn arch_enter_scheduler(_hart_id: usize) -> ! {
         use azos_arch::Interrupts;
         let _ = azos_arch::ARCH.disable_all();
     }
+    // Open the preemption gate with interrupts off, as riscv64 and aarch64
+    // do: `x86_64_trap_resched` returns early until this is set.
+    crate::entry::x86_64::SCHED_LIVE.store(true, core::sync::atomic::Ordering::Release);
     azos_sched::start()
 }

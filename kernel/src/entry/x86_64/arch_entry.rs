@@ -73,8 +73,8 @@ impl ArchEntry for Entry {
     }
 
     /// Join the shootdown IPI set (x86 has no broadcast TLB invalidate).
-    fn secondary_tlb_online(&self, _cpu: usize) {
-        todo!("x86_64: secondary_tlb_online: add this CPU to the shootdown IPI mask")
+    fn secondary_tlb_online(&self, cpu: usize) {
+        azos_arch::tlb::note_hart_online(cpu);
     }
 
     /// This CPU's LAPIC in the boot CPU's mode (x2APIC or xAPIC): spurious

@@ -24,7 +24,7 @@
 pub(crate) mod cpu_init;
 pub(crate) mod fp;
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{TrapClass, TrapContext};
 use azos_arch::fork_regs::gpr;
@@ -126,9 +126,12 @@ impl TrapContext for TrapFrame {
         }
     }
 
-    /// The IDT vector (the irqchip maps it to a line).
+    /// The line: the vector minus the IOAPIC block's first vector
+    /// (`apic::IRQ_VECTOR_BASE`); wraps for a system vector below it.
     #[inline]
-    fn irq_number(&self) -> usize { self.vector as usize }
+    fn irq_number(&self) -> usize {
+        (self.vector as usize).wrapping_sub(azos_arch::apic::IRQ_VECTOR_BASE as usize)
+    }
 
     #[inline]
     fn fault_addr(&self) -> usize { self.cr2 as usize }
@@ -159,49 +162,10 @@ impl TrapContext for TrapFrame {
     fn set_syscall_return(&mut self, v: usize) { self.regs[gpr::RAX] = v as u64 }
 }
 
-// ── Vectors (Kconfig) ───────────────────────────────────────────────────────
-
-/// First device-interrupt vector (Kconfig `X86_IRQ_VECTOR_BASE`).
-pub const IRQ_VECTOR_BASE: usize = azos_limits::X86_IRQ_VECTOR_BASE;
-/// The IPI vector (Kconfig `X86_IPI_VECTOR`).
-pub const IPI_VECTOR: usize = azos_limits::X86_IPI_VECTOR;
-/// The LAPIC spurious vector (Kconfig `X86_SPURIOUS_VECTOR`).
-pub const SPURIOUS_VECTOR: usize = azos_limits::X86_SPURIOUS_VECTOR;
-
-const _: () = assert!(IRQ_VECTOR_BASE >= idt::FIRST_INTERRUPT && IPI_VECTOR > IRQ_VECTOR_BASE);
-const _: () = assert!(IPI_VECTOR != SPURIOUS_VECTOR && SPURIOUS_VECTOR > IRQ_VECTOR_BASE);
-const _: () = assert!(IPI_VECTOR < idt::VECTORS && SPURIOUS_VECTOR < idt::VECTORS);
-
-/// The irqchip's half of a device interrupt: `dispatch(vector)` runs the
-/// handler, `eoi()` acknowledges at the LAPIC. Installed by the LAPIC /
-/// IOAPIC driver ([`set_irq_hooks`]); until then a device vector is
-/// counted in [`UNROUTED_IRQS`] and nothing else happens.
-pub struct IrqHooks {
-    pub dispatch: fn(usize),
-    pub eoi: fn(),
-}
-
-static IRQ_HOOKS: AtomicUsize = AtomicUsize::new(0);
-/// Device vectors taken before any irqchip installed its hooks.
-pub static UNROUTED_IRQS: AtomicU64 = AtomicU64::new(0);
-/// LAPIC spurious interrupts (no EOI is sent for them).
-pub static SPURIOUS_IRQS: AtomicU64 = AtomicU64::new(0);
-/// IPIs received.
-pub static IPIS: AtomicU64 = AtomicU64::new(0);
 /// NMIs taken (each one returns; nothing else is done with them yet).
 pub static NMIS: AtomicU64 = AtomicU64::new(0);
-
-/// Install the irqchip hooks (once, before interrupts are enabled).
-#[allow(dead_code)] // the LAPIC/IOAPIC driver's call, not ported yet
-pub fn set_irq_hooks(hooks: &'static IrqHooks) {
-    IRQ_HOOKS.store(hooks as *const IrqHooks as usize, Ordering::Release);
-}
-
-fn irq_hooks() -> Option<&'static IrqHooks> {
-    let p = IRQ_HOOKS.load(Ordering::Acquire);
-    // SAFETY: only `set_irq_hooks` stores here, from a `&'static`.
-    (p != 0).then(|| unsafe { &*(p as *const IrqHooks) })
-}
+/// `int3` taken in ring 0 (the boot self-test's); each one returns.
+pub static KERNEL_BREAKPOINTS: AtomicU64 = AtomicU64::new(0);
 
 // ── Reschedule on the way out (riscv64 / aarch64 shape) ─────────────────────
 
@@ -360,25 +324,13 @@ fn trace_sys_exit(frame: &TrapFrame) {
         frame.regs[gpr::RAX] as i64);
 }
 
-/// A vector >= 32: the IPI, the spurious vector, or a device line for the
-/// irqchip.
+/// A vector >= 32: `irq::dispatch` owns the whole map (timer, IPIs, LAPIC
+/// error and spurious, the masked 8259s, the IOAPIC lines) and sends the
+/// EOI itself; a true return asks for a reschedule on the way out.
 fn handle_irq(vector: usize) {
-    if vector == SPURIOUS_VECTOR {
-        SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
     let _scope = azos_trace::IrqScope::enter(vector as u32);
-    let hooks = irq_hooks();
-    if vector == IPI_VECTOR {
-        IPIS.fetch_add(1, Ordering::Relaxed);
+    if irq::dispatch(vector as u8) {
         request_resched();
-    } else if let Some(h) = hooks {
-        (h.dispatch)(vector);
-    } else {
-        UNROUTED_IRQS.fetch_add(1, Ordering::Relaxed);
-    }
-    if let Some(h) = hooks {
-        (h.eoi)();
     }
 }
 
@@ -445,6 +397,11 @@ fn handle_exception(frame: &mut TrapFrame) {
     let v = frame.vector as usize;
     if v == idt::NMI {
         NMIS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    if v == idt::BP && !frame.came_from_user() {
+        // A trap: RIP is already past the `int3`.
+        KERNEL_BREAKPOINTS.fetch_add(1, Ordering::Relaxed);
         return;
     }
     if frame.came_from_user() && v != idt::DF && v != idt::MC {

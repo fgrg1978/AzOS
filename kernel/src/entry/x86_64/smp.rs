@@ -17,6 +17,20 @@ core::arch::global_asm!(
     options(att_syntax)
 );
 
+/// The Rust half of `_secondary_start`: this CPU's own GDT + TSS (IST), the
+/// shared IDT, its GS-relative per-CPU area, the `syscall` MSRs and FP
+/// state (`cpu_init::init_cpu`), then its paging registers (PAT, WP, PGE,
+/// PCIDE) and SMEP/SMAP as the boot CPU chose them, before the common
+/// `secondary_main`. Interrupts are off throughout.
+#[unsafe(no_mangle)]
+pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
+    super::cpu_init::init_cpu(cpu);
+    let caps = crate::boot_hooks::paging_caps();
+    let _ = azos_arch::mmu::cpu::setup_paging_regs(&caps);
+    let _ = azos_arch::mmu::cpu::enable_access_protection(&caps);
+    crate::boot::smp::secondary_main(cpu)
+}
+
 /// Ticks a secondary must take before it counts as running its timer.
 const MIN_TICKS: u64 = 3;
 

@@ -5,10 +5,10 @@
 //! differs per CPU is the TSS the IST indices refer to).
 //!
 //! Vectors 0..31 are the architectural exceptions. 32..255 are interrupts:
-//! device IRQs (IOAPIC lines and MSIs, from the configured base up), the
-//! IPI, and the LAPIC spurious vector, numbered by the kernel's Kconfig
-//! (`X86_IRQ_VECTOR_BASE`, `X86_IPI_VECTOR`, `X86_SPURIOUS_VECTOR`). Every
-//! one of the 256 has a stub; which are routed is the irqchip's business.
+//! device IRQs (IOAPIC lines and MSIs, from Kconfig `X86_IRQ_VECTOR_BASE`
+//! up), and from 0xE0 the timer, the IPIs and the LAPIC error and spurious
+//! vectors (the map is `encode`'s). Every one of the 256 has a stub; which
+//! are routed is the irqchip's business.
 //!
 //! Pure functions and tables only (no `asm!`), host-tested.
 

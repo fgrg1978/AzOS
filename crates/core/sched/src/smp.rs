@@ -240,12 +240,10 @@ pub unsafe fn wake_harts(num_cpus: usize) -> usize {
     // `NUM_ONLINE_CPUS` below stays the prefix the scheduler walks.
     azos_percpu::set_cpu_online(boot, true);
     // The boot hart publishes roots too; other harts' shootdowns must scan it.
-    #[cfg(target_arch = "riscv64")]
+    // riscv64 and x86_64 have no broadcast invalidate, so the boot CPU joins
+    // the shootdown's IPI scan (aarch64 needs nothing: TLBI ...IS).
+    #[cfg(any(target_arch = "riscv64", all(target_arch = "x86_64", target_os = "none")))]
     azos_arch::tlb::note_hart_online(boot);
-    // x86_64 skeleton: no broadcast invalidate there either, so the boot CPU
-    // joins the shootdown's IPI mask (aarch64 needs nothing: TLBI ...IS).
-    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-    todo!("x86_64: wake_harts: add the boot CPU to the TLB-shootdown IPI mask");
 
     for hart_id in 0..num_cpus {
         if hart_id == boot {

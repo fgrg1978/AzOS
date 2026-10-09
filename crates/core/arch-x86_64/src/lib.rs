@@ -262,8 +262,18 @@ impl Vector for X86_64 {
     /// SSE2 is baseline on x86_64; AVX2 only behind `features::detect().avx2`
     /// (Kconfig `X86_AVX2`), inside a kernel FPU section that saves the
     /// interrupted task's state eagerly (`fpu`).
-    fn dot_f32(&self, _a: &[f32], _b: &[f32]) -> f32 { todo!("x86_64: dot_f32: SSE2 / AVX2 under kernel_fpu_begin") }
-    fn is_accelerated(&self) -> bool { todo!("x86_64: is_accelerated") }
+    ///
+    /// The kernel is built soft-float (`x86_64-unknown-none`), so this is the
+    /// portable loop until a kernel FPU section exists; `is_accelerated`
+    /// says so.
+    fn dot_f32(&self, a: &[f32], b: &[f32]) -> f32 {
+        let mut acc = 0.0f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            acc += x * y;
+        }
+        acc
+    }
+    fn is_accelerated(&self) -> bool { false }
 }
 
 /// The user-access window: `stac` on open, `clac` on drop, both only with
@@ -283,16 +293,30 @@ impl Drop for UserAccess {
 impl ArchPlatform for X86_64 {
     /// x86 instruction fetch snoops the data cache (self-modifying code is
     /// coherent after a serializing instruction): no clean needed.
-    fn icache_needs_dcache_clean(&self) -> bool { todo!("x86_64: icache_needs_dcache_clean: false (coherent I/D)") }
-    unsafe fn dcache_clean(&self, _va: usize, _len: usize) { todo!("x86_64: dcache_clean: no-op (coherent)") }
-    /// A serializing instruction on every CPU (`cpuid`/`serialize`), by IPI.
-    fn icache_sync_all(&self) { todo!("x86_64: icache_sync_all: IPI + serialize on every CPU") }
+    fn icache_needs_dcache_clean(&self) -> bool { false }
+    unsafe fn dcache_clean(&self, _va: usize, _len: usize) {}
+    /// A serializing instruction on every CPU: `cpuid` here, and on every
+    /// other CPU that has published a root the shootdown IPI with an empty
+    /// range (its `iretq` serializes), waited for as a shootdown is.
+    fn icache_sync_all(&self) {
+        on_x86!({
+            let _ = platform_impl::cpuid(0, 0);
+            tlb::shootdown_kernel(self.hart_id(), 0, 0);
+        }, "x86_64: icache_sync_all: IPI + serialize on every CPU")
+    }
     /// `invlpg` locally, then an IPI shootdown to every CPU (globals too).
     fn flush_tlb_page_all(&self, _va: usize) {
         on_x86!({ tlb::shootdown_kernel(self.hart_id(), _va, PAGE_SIZE); }, "x86_64: flush_tlb_page_all: invlpg + IPI shootdown")
     }
     /// `rep stosb` (ERMS/FSRM).
-    unsafe fn zero_memory(&self, _va: usize, _len: usize) { todo!("x86_64: zero_memory: rep stosb") }
+    unsafe fn zero_memory(&self, _va: usize, _len: usize) {
+        // SAFETY: the caller owns `[_va, _va + _len)`, mapped writable. DF is
+        // clear in the kernel (the ABI; every entry path clears it).
+        on_x86!(unsafe {
+            core::arch::asm!("rep stosb", inout("rdi") _va => _, inout("rcx") _len => _,
+                in("al") 0u8, options(nostack, preserves_flags));
+        }, "x86_64: zero_memory: rep stosb")
+    }
     /// The CR3 value: PML4 PA | PCID.
     fn user_root_word(&self, root_phys: usize, asid: u16) -> usize {
         mmu::make_cr3(root_phys, asid, mmu::pcid_on()) as usize
