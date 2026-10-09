@@ -605,7 +605,8 @@ $(TOPOLOGY_KEY_STAMP): FORCE
 # 32-byte Ed25519 public key). There is no test-key escape hatch any more:
 # `DEV_KEYS=1` is refused for a board, and so is a TOPOLOGY_PUBKEY_PATH whose
 # bytes equal tools/keys/test_pub.bin.
-BOARD_TOPOLOGY_KEY := $(if $(TOPOLOGY_PUBKEY_PATH),$(abspath $(TOPOLOGY_PUBKEY_PATH)))
+# abspath through python: make's $(abspath) splits a path at its spaces.
+BOARD_TOPOLOGY_KEY := $(if $(TOPOLOGY_PUBKEY_PATH),$(shell python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' '$(TOPOLOGY_PUBKEY_PATH)'))
 define require_board_key
 	@[ -n "$(BOARD_TOPOLOGY_KEY)" ] || { echo "[$(1)] refusing: no topology/config key. Set TOPOLOGY_PUBKEY_PATH to the fleet's 32-byte Ed25519 public key. A board image never carries the test key (DEV_KEYS=1 is for QEMU disks only)."; exit 1; }
 	@[ -f "$(BOARD_TOPOLOGY_KEY)" ] || { echo "[$(1)] refusing: TOPOLOGY_PUBKEY_PATH=$(BOARD_TOPOLOGY_KEY) does not exist."; exit 1; }
@@ -618,7 +619,7 @@ endef
 # half of TOPOLOGY_PUBKEY_PATH, or is tools/keys/test_priv.bin. The kernel
 # targets (`vf2`/`k1`/`build-fleet`) embed only the public key; they check the
 # pair only when a private key is given, so a build host need not hold it.
-BOARD_SIGN_PRIV := $(if $(TOPOLOGY_PRIVKEY_PATH),$(abspath $(TOPOLOGY_PRIVKEY_PATH)))
+BOARD_SIGN_PRIV := $(if $(TOPOLOGY_PRIVKEY_PATH),$(shell python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' '$(TOPOLOGY_PRIVKEY_PATH)'))
 define require_board_priv
 	@[ -n "$(BOARD_SIGN_PRIV)" ] || { echo "[$(1)] refusing: no signing key. Set TOPOLOGY_PRIVKEY_PATH to the private half (32-byte seed) of TOPOLOGY_PUBKEY_PATH; the board volume is never signed with the test key."; exit 1; }
 	@[ -f "$(BOARD_SIGN_PRIV)" ] || { echo "[$(1)] refusing: TOPOLOGY_PRIVKEY_PATH=$(BOARD_SIGN_PRIV) does not exist."; exit 1; }
@@ -925,7 +926,7 @@ busybox-one:
 	rm -rf $(BUSYBOX_WORK)/$(ISA)/src && mkdir -p $(BUSYBOX_WORK)/$(ISA)/src
 	tar -xjf $(BUSYBOX_TARBALL) -C $(BUSYBOX_WORK)/$(ISA)/src --strip-components=1
 	$(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) allnoconfig >/dev/null
-	@set -e; cd "$(BUSYBOX_WORK)/$(ISA)/src" && grep -v '^#' $(CURDIR)/$(BUSYBOX_FRAGMENT) | while IFS= read -r l; do \
+	@set -e; cd "$(BUSYBOX_WORK)/$(ISA)/src" && grep -v '^#' "$(CURDIR)/$(BUSYBOX_FRAGMENT)" | while IFS= read -r l; do \
 	  [ -n "$$l" ] || continue; k=$${l%%=*}; \
 	  sed -i '' -e "/^# $$k is not set$$/d" -e "/^$$k=/d" .config; echo "$$l" >> .config; done
 	yes "" | $(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) oldconfig >/dev/null
@@ -1682,12 +1683,12 @@ build/board_manifest.txt: build/board_elfs.list tools/gen_board_manifest.py $(ML
 $(BOARD_DIR)/mlp.sig: build/mlp.rmlp tools/gen_config_sig.py $(BOARD_PRIV_STAMP)
 	$(call require_board_priv,BOARD-SIG)
 	@mkdir -p $(BOARD_DIR)
-	python3 tools/gen_config_sig.py build/mlp.rmlp --priv $(BOARD_SIGN_PRIV) --out $@
+	python3 tools/gen_config_sig.py build/mlp.rmlp --priv "$(BOARD_SIGN_PRIV)" --out $@
 
 $(BOARD_DIR)/policy.sig: build/policy.gguf tools/gen_config_sig.py $(BOARD_PRIV_STAMP)
 	$(call require_board_priv,BOARD-SIG)
 	@mkdir -p $(BOARD_DIR)
-	python3 tools/gen_config_sig.py build/policy.gguf --priv $(BOARD_SIGN_PRIV) --out $@
+	python3 tools/gen_config_sig.py build/policy.gguf --priv "$(BOARD_SIGN_PRIV)" --out $@
 
 # Wave 15 (TOPOSIGN follow-up, owner round 73): every product image path ships
 # its FAT volume, because a product kernel defaults to
@@ -1752,7 +1753,7 @@ build/disk-board.img build/disk-board-k1.img build/disk-board-fleet.img: \
 	@rm -f $@.tmp_board_config.ini $@.tmp_board_bootmeta
 	python3 tools/check_board_disk.py $@ $@.manifest
 	python3 tools/check_board_keys.py disk $@ $(IMAGE_HASHES_BOARD) $(MLSRV_ELF) tools/keys/test_pub.bin
-	python3 tools/check_board_keys.py sigs $@ $(BOARD_TOPOLOGY_KEY)
+	python3 tools/check_board_keys.py sigs $@ "$(BOARD_TOPOLOGY_KEY)"
 	@echo "[DISK] Board FAT32 image (topology-derived, signed topology for $(BOARD_VOL_KCONFIG)): $@ (autorun=$(AUTORUN_ELF))"
 
 .PHONY: board-elfs
@@ -2680,7 +2681,7 @@ define topo_bind
 	case "$$dev" in [0-9a-f][0-9a-f]*) ;; *) echo "[TOPO] $(5): no device record (tools/device_provision.py) to bind the topology to"; exit 1;; esac; \
 	echo "$$dev" > $(4).device
 	$(call topo_emit,$(1),$(2),$(3),$(4),--device $$(cat $(CURDIR)/$(4).device) --counter $(TOPO_COUNTER))
-	python3 tools/gen_config_sig.py $(4)/CAPS.TOM --priv $(6) --out $(4)/CAPS.SIG
+	python3 tools/gen_config_sig.py $(4)/CAPS.TOM --priv "$(6)" --out $(4)/CAPS.SIG
 	for f in CAPS.TOM CAPS.SIG SCHED.TOM; do mcopy -o -i $(5) $(4)/$$f ::$$f || exit 1; done
 	@mdel -i $(5) ::SCHED.SIG >/dev/null 2>&1 || true
 endef
