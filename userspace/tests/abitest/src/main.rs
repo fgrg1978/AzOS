@@ -146,27 +146,46 @@ fn outln(s: &[u8]) {
 ///
 /// `vdso_uptime_ms()` reads 0 when no vDSO page is published; the wait then
 /// falls back to a pass ceiling instead of never ending.
+///
+/// The clock that follows the host's also jumps with it. A host that stops
+/// QEMU's threads (gs2: the row ran 3-15x its usual time) lets a deadline
+/// pass while this loop ran nothing, and the wait failed with its event done
+/// or about to be: a 25 s SIGSTOP in the thread storm failed the join of a
+/// thread whose word already read 0, and the reap of a child that had exited.
+/// So a gap between two passes longer than any pass can take (`STALL_MS`;
+/// the longest body blocks 100 ms) is time the loop was not running, and it
+/// moves the deadline by as much: the wait gets its whole budget of running
+/// time. A wait still expires when the guest runs and the event does not come.
 struct Deadline {
     end_ms: u64,
+    last_ms: u64,
     passes: u32,
 }
 
 impl Deadline {
     /// Passes allowed when there is no clock to read.
     const NO_CLOCK_PASSES: u32 = 200_000;
+    /// A gap between two passes longer than this is a stall, not a pass.
+    const STALL_MS: u64 = 1_000;
 
     fn in_ms(ms: u64) -> Self {
         let now = sys::vdso_uptime_ms();
-        Deadline { end_ms: if now == 0 { 0 } else { now + ms }, passes: 0 }
+        Deadline { end_ms: if now == 0 { 0 } else { now + ms }, last_ms: now, passes: 0 }
     }
 
-    /// Counts one pass; true once the deadline has gone by.
+    /// Counts one pass; true once the deadline has gone by in running time.
     fn expired(&mut self) -> bool {
         self.passes += 1;
         if self.end_ms == 0 {
             return self.passes > Self::NO_CLOCK_PASSES;
         }
-        sys::vdso_uptime_ms() >= self.end_ms
+        let now = sys::vdso_uptime_ms();
+        let gap = now.saturating_sub(self.last_ms);
+        if gap > Self::STALL_MS {
+            self.end_ms += gap;
+        }
+        self.last_ms = now;
+        now >= self.end_ms
     }
 }
 
@@ -2213,6 +2232,12 @@ fn check_thread_storm() {
     for round in 0..STORM_ROUNDS {
         // The spinners run a millisecond, both bumping one counter on its
         // copy-on-write page, before the exit stops them.
+        // What each step saw, for the line a failed round prints: the
+        // pid/tid, the reaped pid and status, and the guest ms it took. A
+        // deadline that ran out reads ~20000 (reap) or ~5000 (join) here;
+        // a wrong status at a short time is the kernel, not the clock.
+        let mut seen = [[0isize; 4]; 3];
+        let t0 = sys::vdso_uptime_ms();
         let pid = sys::fork();
         if pid == 0 {
             let _ = sys::thread_create(t_spin, t_stack_top(0), 0, core::ptr::null_mut());
@@ -2223,21 +2248,46 @@ fn check_thread_storm() {
         if pid > 0 {
             let (got, st) = reap_by_tid(pid);
             if got == pid && st == 7 { code_ok += 1; }
+            seen[0] = [pid, got, st as isize, 0];
         }
+        let t1 = sys::vdso_uptime_ms();
+        seen[0][3] = (t1 - t0) as isize;
         T_CTID[2].store(u32::MAX, AO::Release);
         let t = sys::thread_create(t_exit_now, t_stack_top(2), 0, T_CTID[2].as_ptr());
-        if t > 0 && t_join(2) { joined += 1; }
+        let j = t > 0 && t_join(2);
+        if j { joined += 1; }
+        let t2 = sys::vdso_uptime_ms();
+        seen[1] = [t, j as isize, T_CTID[2].load(AO::Acquire) as isize, (t2 - t1) as isize];
         let pid = sys::fork();
         if pid == 0 {
             let _ = sys::thread_create(t_spin, t_stack_top(0), 0, core::ptr::null_mut());
             let _ = sys::thread_create(t_null_store, t_stack_top(1), 0, core::ptr::null_mut());
             sys::exit(7);
         }
-        if pid > 0 && reap_by_tid(pid).0 == pid { faulted_reaped += 1; }
+        if pid > 0 {
+            let (got, st) = reap_by_tid(pid);
+            if got == pid { faulted_reaped += 1; }
+            seen[2] = [pid, got, st as isize, 0];
+        }
+        seen[2][3] = (sys::vdso_uptime_ms() - t2) as isize;
         // One failed round answers each check: stop, so a canary that
         // breaks the join (`threads-no-cleartid-canary`) does not wait out
         // every round's deadline.
-        if code_ok + joined + faulted_reaped != 3 * (round + 1) { break; }
+        if code_ok + joined + faulted_reaped != 3 * (round + 1) {
+            out(b"[ABITEST] thread storm: round ");
+            print_i(round as isize);
+            let names: [&[u8]; 3] = [b" stopped. spin pid=", b" | join tid=", b" | fault pid="];
+            let mid: [&[u8]; 3] = [b" got=", b" ok=", b" got="];
+            let third: [&[u8]; 3] = [b" st=", b" ctid=", b" st="];
+            for k in 0..3 {
+                out(names[k]); print_i(seen[k][0]);
+                out(mid[k]); print_i(seen[k][1]);
+                out(third[k]); print_i(seen[k][2]);
+                out(b" ms="); print_i(seen[k][3]);
+            }
+            out(b"\n");
+            break;
+        }
     }
     expect_eq(b"thread storm: every spinning child exits with its own code", code_ok as isize,
               STORM_ROUNDS as isize);
