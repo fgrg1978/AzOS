@@ -70,6 +70,8 @@ rename-two-records-canary = []
 # Wave 15 canary: FAT32 writable opens take the whole-file proxy again
 # (load on open, journaled rewrite on close) instead of writing in place.
 fat-proxy-writes-canary = []
+# Wave 15 canary: every allocation scans the FAT from sector 0 again.
+alloc-hint-canary = []
 #   ro-stream-off: read-only opens take the whole-file proxy again
 #   write-gen:     writes no longer move FAT32's write generation
 ro-stream-off-canary = []

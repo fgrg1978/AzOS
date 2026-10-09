@@ -7010,6 +7010,29 @@ mod writeback {
         let _ = super::vfs::vfs_close(&mut t, fd);
     }
 
+    /// **An allocation starts where the last one found room** (FSInfo's
+    /// `nxt_free`, in RAM): with the first 2000 clusters taken (16 full FAT
+    /// sectors), 50 allocations look at a handful of FAT sectors each time,
+    /// not all 16 again — under write-back those reads evicted the clean
+    /// lines a busy writer needs.
+    ///
+    /// **Canary.** `alloc-hint-canary`: every allocation scans from sector 0.
+    #[test]
+    fn an_allocation_starts_at_the_last_free_entry() {
+        let _g = serial();
+        let g = Geom { fat_sz32: 32, total_sectors: 32 + 2 * 32 + 3000, ..Geom::default() };
+        let mut img = build(&g);
+        for c in 2..2000u32 { set_fat(&mut img, &g, c, 0x0FFF_FFFF); }
+        super::swap_medium(img);
+        assert_eq!(fat32::fat32_mount(), Ok(()));
+        let _ = fat32::fat32_alloc_cluster().expect("first");
+        let before = fat32::fat32_cache_counters();
+        for _ in 0..50 { fat32::fat32_alloc_cluster().expect("room"); }
+        let after = fat32::fat32_cache_counters();
+        let looks = (after.hits + after.misses) - (before.hits + before.misses);
+        assert!(looks < 50 * 4, "{looks} FAT-sector lookups for 50 allocations");
+    }
+
     /// xorshift64*, so a failing seed replays.
     struct Rng(u64);
     impl Rng {
@@ -7131,5 +7154,6 @@ mod writeback {
         assert_eq!(cuts, 24);
     }
 }
+
 
 

@@ -334,7 +334,14 @@ fn sleep_for_completion(slot: usize, deadline: u64) -> bool {
     } else {
         // SAFETY: only `set_irq_mode` stores here, and it stores a `fn(u64) -> bool`.
         let f: fn(u64) -> bool = unsafe { core::mem::transmute::<usize, fn(u64) -> bool>(f) };
-        let s = f(deadline);
+        // One slice at a time, never straight to the deadline: an idle CPU
+        // under QEMU `-icount ... sleep=off` jumps its clock to the next
+        // timer, and a sleep to the deadline would declare the device dead
+        // before the host had answered (Kconfig `VIRTIO_BLK_IRQ_SLICE_US`).
+        let slice = azos_limits::VIRTIO_BLK_IRQ_SLICE_US as u64
+            * azos_drv_irqchip::clint::TIMER_FREQ / 1_000_000;
+        let until = deadline.min(azos_drv_sys::timebase::now().saturating_add(slice.max(1)));
+        let s = f(until);
         if s { IRQ_SLEPT.fetch_add(1, Ordering::Relaxed); }
         s
     };

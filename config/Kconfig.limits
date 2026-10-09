@@ -1157,6 +1157,23 @@ config VIRTIO_BLK_SLOT_KB
       Cost: this many KiB of RAM (.bss) per VIRTIO_BLK_INFLIGHT slot: 128 KiB
       at edge's 32 x 4. Larger means fewer requests per run.
 
+config VIRTIO_BLK_IRQ_SLICE_US
+    int "virtio-blk: longest sleep of a waiter between completion checks (us)"
+    range 100 100000
+    default 1000 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 1000
+    help
+      crates/drivers/virtio/src/virtio/blk.rs: a task waiting for a disk
+      request sleeps until the device's interrupt wakes it, but never longer
+      than this before it checks again. The request's own deadline (500 ms,
+      after which the device is declared dead) is counted in these slices,
+      so an emulator that jumps an idle clock to the next timer (QEMU
+      -icount sleep=off) cannot reach it in one jump.
+
+      Cost: one timer wake per slice while a request is outstanding (none
+      when the interrupt arrives first). Larger: fewer wakes; smaller: a
+      lost interrupt is noticed sooner.
+
 config VIRTIO_BLK_INFLIGHT
     int "virtio-blk requests in flight at once (1-5)"
     range 1 5

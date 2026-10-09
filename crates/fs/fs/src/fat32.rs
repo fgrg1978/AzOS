@@ -1514,6 +1514,7 @@ pub fn fat32_mount() -> Result<(), ()> {
     // A new volume (or the same one after an unmount): no cached free count
     // carries over.
     free_count_invalidate();
+    ALLOC_HINT.store(0, core::sync::atomic::Ordering::Relaxed);
 
     let mut sector0 = [0u8; SECTOR_SIZE];
     read_sector(0, &mut sector0)?;
@@ -2235,6 +2236,10 @@ pub fn fat32_alloc_cluster() -> Result<u32, ()> {
 
 /// [`fat32_alloc_cluster`] without the canaries' old lock, for the canary
 /// build of `chain_nth_or_extend`, which holds that lock itself.
+/// The FAT sector (relative to the FAT start) the last allocation found a
+/// free entry in; the next scan starts there. Reset at mount.
+static ALLOC_HINT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 fn fat32_alloc_cluster_inner() -> Result<u32, ()> {
     // **Closed by the write-path audit, 2026-09-23 — this does NOT hand back
     // an out-of-range cluster, and here is why rather than an assertion.**
@@ -2248,26 +2253,45 @@ fn fat32_alloc_cluster_inner() -> Result<u32, ()> {
     // event on this volume, and both correctly return `Err(())`. Verified with
     // a discriminating host test (`alloc_cluster_never_hands_out_a_cluster_past_the_data_region`
     // in fs-tests).
-    let (fat_start, fat_sz32, root_cluster) = {
+    let (fat_start, fat_sz32, root_cluster, data_clusters) = {
         let v = FAT32.lock();
-        (v.fat_start, v.fat_sz32, v.root_cluster)
+        (v.fat_start, v.fat_sz32, v.root_cluster, v.data_clusters)
     };
     if fat_sz32 == 0 { return Err(()); }
+    // Entries past the data region read free in the FAT's last sector; a
+    // scan that starts mid-FAT reaches them before it wraps to the free
+    // clusters below, so they are skipped here, not refused.
+    let last_valid = data_clusters.saturating_add(FAT32_FIRST_DATA_CLUSTER);
 
-    for sec_idx in 0..fat_sz32 {
+    // Wave 15: start where the last allocation found room (FSInfo's
+    // `nxt_free`, kept in RAM), wrapping once: a scan from FAT sector 0
+    // walked every full sector before it on each allocation, and under the
+    // write-back cache those reads evicted the clean lines a busy writer
+    // needs. Same search order otherwise, so the same "disk full" verdict.
+    let hint = if cfg!(feature = "alloc-hint-canary") {
+        0
+    } else {
+        ALLOC_HINT.load(core::sync::atomic::Ordering::Relaxed).min(fat_sz32 - 1)
+    };
+    for k in 0..fat_sz32 {
+        let sec_idx = (hint + k) % fat_sz32;
         let mut buf = [0u8; SECTOR_SIZE];
         // Checked, not saturating: saturating would silently rescan the last
         // addressable sector and hand out a cluster number that does not
         // correspond to the entry we actually read.
         let sec = match fat_start.checked_add(sec_idx) { Some(v) => v, None => return Err(()) };
         if read_sector(sec, &mut buf).is_err() { return Err(()); }
-        if first_free_in_fat_sector(&buf, sec_idx, root_cluster)?.is_none() { continue; }
+        match first_free_in_fat_sector(&buf, sec_idx, root_cluster)? {
+            Some(c) if c < last_valid => {}
+            _ => continue,
+        }
         // A candidate. Confirm it on a current copy of the sector, under its
         // claim, and mark it there.
         let _claim = fat_sector_claim(sec_idx);
         if read_sector(sec, &mut buf).is_err() { return Err(()); }
-        let Some(cluster) = first_free_in_fat_sector(&buf, sec_idx, root_cluster)? else {
-            continue; // another updater took them: scan on
+        let cluster = match first_free_in_fat_sector(&buf, sec_idx, root_cluster)? {
+            Some(c) if c < last_valid => c,
+            _ => continue, // another updater took them: scan on
         };
         // Mark as end-of-chain (allocated). A failure part-way leaves the
         // copies disagreeing — typically copy 0 marked and a mirror not — and
@@ -2280,6 +2304,7 @@ fn fat32_alloc_cluster_inner() -> Result<u32, ()> {
             let _ = fat32_write_fat_entry_claimed(cluster, 0);
             return Err(());
         }
+        ALLOC_HINT.store(sec_idx, core::sync::atomic::Ordering::Relaxed);
         return Ok(cluster);
     }
     Err(()) // Disk full
