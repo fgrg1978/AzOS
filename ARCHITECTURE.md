@@ -509,7 +509,11 @@ neighbour discovery, ICMPv6 echo and UDP; TCP over IPv6 is not connected to
 sockets. Ring 3 uses BSD-style socket calls and capability-typed socket calls.
 TCP delays acknowledgements (RFC 1122): in-order data is acknowledged every
 second full-sized segment, at the end of a receive pass, on our own data, or
-after `TCP_DELACK_MS`. A task waiting for a handshake, an incoming connection,
+after `TCP_DELACK_MS`. A connection is reached through a handle that carries
+its slot's generation, so an operation through a handle whose slot was freed
+and reissued does nothing. A connect that names no local port takes a free
+one from the ephemeral range (`TCP_EPHEMERAL_PORT_MIN..MAX`), skipping ports
+held by live or TIME-WAIT connections. A task waiting for a handshake, an incoming connection,
 the send window, an ARP reply or a DNS answer blocks until the receive path
 wakes it, with its timeout as the bound.
 
