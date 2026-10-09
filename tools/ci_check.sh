@@ -5090,6 +5090,96 @@ par_row wx_row "aarch64 fork: store to code faults"  arm qemu ok
 par_row wx_row "fork: W^X canary"                    rv  qemu,cow-ro-canary canary
 par_row wx_row "aarch64 fork: W^X canary"            arm qemu,cow-ro-canary canary
 
+# ── Wave 15 (VI): each user page gets its own segment's permissions ─────────
+#
+# Two PT_LOAD segments sharing a page took the union of their permissions,
+# so the `.rodata` on the last `.text` page was executable. The loader maps
+# each page with its own segment's permissions only and refuses an image
+# whose segments mapped differently share a page
+# (`elf_bounds::check_page_sharing`, host tests in sched-wake-tests); every
+# `userspace/*/user*.ld` starts `.rodata` on a page of its own. abitest's
+# `check_rodata_not_executable`: a fork child calls a `ret` held in `.rodata`
+# and dies 128+SIGSEGV (`elfperm:`). Canary `rodata-exec-canary` (read-only
+# segments mapped read-execute, the old split): the child returns, exits 0x66.
+# The lint reads every built user ELF's program headers: no page is touched
+# by two segments mapped differently (cargo does not relink on a `.ld` edit).
+elfperm_row() { # <label> <isa: rv|arm> <features> <ok|canary>
+    local label="$1" isa="$2" feats="$3" want="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f build/disk-abitest.img
+        make_disk build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled|AUTORUN\] REFUSED' last="elfperm: a call into .rodata faults"
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "$last" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "$fault" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted or refused abitest:"
+        grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "$last" "$log"; then
+        bad; echo "      abitest never reached its elfperm check"; echo "      log kept: $log"; return
+    fi
+    case "$want" in
+    ok)
+        if grep -aqF "[ABITEST]   ok   elfperm: a call into .rodata faults (128+SIGSEGV)" "$log"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      a call into .rodata did not die 128+SIGSEGV:" ;;
+    canary)
+        if grep -aqF "[ABITEST] elfperm: the .rodata call child status=102" "$log"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (read-only mapped read-execute) did not run .rodata:" ;;
+    esac
+    grep -a "elfperm:" "$log" | tr -d '\r' | sed -n '1,4s|^|        |p'
+    echo "      log kept: $log"
+}
+par_row elfperm_row "elf: .rodata not executable"         rv  qemu ok
+par_row elfperm_row "aarch64 elf: .rodata not executable" arm qemu ok
+par_row elfperm_row "elf: rodata-exec canary"             rv  qemu,rodata-exec-canary canary
+par_row elfperm_row "aarch64 elf: rodata-exec canary"     arm qemu,rodata-exec-canary canary
+if ci_row_begin "elf: user images, one mapping per page"; then
+    printf "  %-26s" "elf: user images, one mapping per page..."
+    if epp_out="$(python3 "${REPO_ROOT}/tools/elf_page_perms.py" --self-test 2>&1)" \
+       && epp_out="$(python3 "${REPO_ROOT}/tools/elf_page_perms.py" build/*.elf build/aarch64/*.elf 2>&1)"; then
+        ok
+    else
+        bad; printf '%s\n' "$epp_out" | sed -n 1,8p | sed 's/^/      /'
+    fi
+    ci_row_end
+fi
+
 # ── mmap: PROT_READ/PROT_WRITE are exact (wave 13, security) ──────────────
 #
 # `mmap` mapped every page read-write whatever `prot` said, so a PROT_READ
@@ -8315,6 +8405,11 @@ host_job host_canary_row "perm: vdso mprotect canary (host)" syscall-tests vdso-
     mprotect_never_makes_the_vdso_writable
 host_job host_canary_row "perm: lease seal map by thread canary" syscall-tests lease-sealed-by-thread-canary \
     a_sibling_threads_release_forgets_the_seal
+# Wave 15 (VI): `elf-mixed-page-canary` accepts a page shared by two
+# segments mapped differently (their union, as before): the refusal test in
+# sched-wake-tests (`elf_bounds_tests`) must fail.
+host_job host_canary_row "elf: mixed-page canary (host)" sched-wake-tests elf-mixed-page-canary \
+    a_page_shared_by_segments_mapped_differently_is_refused
 
 # net-tests again at the fleet ring. The run above compiles `crates/net/net` from
 # the workspace `.config` (the 128 KiB ring of edge); this one from the config

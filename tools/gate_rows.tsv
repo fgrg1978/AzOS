@@ -81,6 +81,10 @@ fork: store to code faults	n1	crates/core/mm/** crates/core/percpu/** crates/cor
 aarch64 fork: store to code faults	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 fork: W^X canary	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 fork: W^X canary	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
+elf: .rodata not executable	n1	crates/core/sched/** userspace/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 elf: .rodata not executable	n1	crates/core/sched/** userspace/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+elf: rodata-exec canary	n1	crates/core/sched/** userspace/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
+aarch64 elf: rodata-exec canary	n1	crates/core/sched/** userspace/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 mmap: PROT_READ is read-only	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 mmap: PROT_READ read-only	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 mmap: prot canary	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
@@ -165,6 +169,7 @@ aarch64 cpuid matches hw	n1	crates/core/sched/** crates/core/percpu/** crates/co
 perm: lease seal by thread canary	n1	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs crates/core/ipc/** crates/core/channel/** crates/core/pubsub/** crates/core/spsc/** crates/core/service/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/**
 perm: vdso mprotect canary (host)	n1	crates/core/mm/** crates/core/percpu/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/**
 perm: lease seal map by thread canary	n1	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs crates/core/ipc/** crates/core/channel/** crates/core/pubsub/** crates/core/spsc/** crates/core/service/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/**
+elf: mixed-page canary (host)	n1	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs
 boot + SMP scheduling	n1	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
 boot: kernel_main completes	n1	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs
 shell answers help	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/** kernel/src/boot/early.rs

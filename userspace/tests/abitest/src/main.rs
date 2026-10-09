@@ -220,6 +220,7 @@ pub extern "C" fn _start() -> ! {
     check_fork_inherits_descriptors();
     check_fork_child_holds_only_its_row();
     check_fork_keeps_code_read_only();
+    check_rodata_not_executable();
     check_mmap_prot();
     // Wave 13 (THREADS): native threads. They reap their own children.
     check_thread_storm();
@@ -2830,6 +2831,37 @@ fn check_fork_keeps_code_read_only() {
     // The parent's code and data are untouched by the children's attempts.
     expect_eq(b"wx: the read-only word is unchanged", unsafe { core::ptr::read_volatile(&RO_WORD) } as isize,
               0x5752_5f4f_5f4e_4c59u64 as isize);
+}
+
+/// Read-only data is never executable (wave 15, VI). A page two `PT_LOAD`
+/// segments shared took the union of their permissions, so the `.rodata`
+/// on the last `.text` page ran. The loader now maps each page with its own
+/// segment's permissions only (and refuses an image whose segments mapped
+/// differently share a page), and `user*.ld` starts `.rodata` on a page of
+/// its own. A fork child calls a `ret` instruction held in `.rodata`: it
+/// dies 128 + SIGSEGV. Canary `rodata-exec-canary` (gate row): read-only
+/// segments map read-execute, the call returns and the child exits 0x66.
+fn check_rodata_not_executable() {
+    #[cfg(target_arch = "riscv64")]
+    static RET: [u32; 1] = [0x0000_8067]; // jalr x0, 0(ra)
+    #[cfg(target_arch = "aarch64")]
+    static RET: [u32; 1] = [0xd65f_03c0]; // ret
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    compile_error!("elfperm: no `ret` encoding for this ISA");
+    let ro = core::hint::black_box(RET.as_ptr() as usize);
+    let pid = sys::fork();
+    if pid == 0 {
+        // SAFETY: the point of the check; on a correct kernel the call
+        // faults at its first fetch and the child never returns from it.
+        let f: extern "C" fn() = unsafe { core::mem::transmute(ro) };
+        f();
+        sys::exit(0x66);
+    }
+    let (got, st) = if pid > 0 { reap_by_tid(pid) } else { (-1, -1) };
+    out(b"[ABITEST] elfperm: the .rodata call child status=");
+    print_i(st as isize);
+    outln(b"");
+    expect_true(b"elfperm: a call into .rodata faults (128+SIGSEGV)", got == pid && st == 139);
 }
 
 /// `mmap`'s `prot` is honoured (wave 13, security): a store to a
