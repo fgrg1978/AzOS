@@ -207,6 +207,7 @@ pub fn cpu_features(_fw: &()) {
         e("umip", "X86_UMIP", p::UMIP, f.umip),
         e("pku", "X86_PKU", p::PKU, f.pku),
         e("la57", "X86_LA57", p::LA57, f.la57),
+        e("gbpages", "X86_GBPAGES", p::GBPAGES, f.gbpages),
         e("cet-ibt", "X86_CET_IBT", p::CET_IBT, f.cet_ibt),
         e("cet-shstk", "X86_CET_SHSTK", p::CET_SHSTK, f.cet_shstk),
         e("xsaveopt", "X86_XSAVEOPT", p::XSAVEOPT, f.xsaveopt),
@@ -334,7 +335,7 @@ pub(crate) fn paging_caps() -> azos_arch::mmu::PagingCaps {
     azos_arch::mmu::PagingCaps {
         pcid: p::PCID.gate(f.pcid),
         invpcid: p::PCID.gate(f.invpcid),
-        gbpages: p::GBPAGES.gate(azos_arch::mmu::cpu::has_gbpages()),
+        gbpages: p::GBPAGES.gate(f.gbpages),
         smep: p::SMEP.gate(f.smep),
         smap: p::SMAP.gate(f.smap),
     }

@@ -55,6 +55,8 @@ pub struct CpuidLeaves {
     pub ld1_eax: u32,
     /// CPUID.0x80000001:ECX.
     pub e1_ecx: u32,
+    /// CPUID.0x80000001:EDX.
+    pub e1_edx: u32,
     /// CPUID.0x80000007:EDX.
     pub e7_edx: u32,
 }
@@ -110,6 +112,8 @@ mod bit {
     // CPUID.0x80000001:ECX
     pub const LAHF_LM: u32 = 0;
     pub const LZCNT: u32 = 5;
+    // CPUID.0x80000001:EDX
+    pub const PDPE1GB: u32 = 26;
     // CPUID.0x80000007:EDX
     pub const INVARIANT_TSC: u32 = 8;
 }
@@ -181,6 +185,8 @@ pub struct X86Features {
     pub pku: bool,
     /// CPUID.(7,0):ECX[16]. Clear: 4-level paging (48-bit VA).
     pub la57: bool,
+    /// CPUID.0x80000001:EDX[26]. Clear: no 1 GiB leaves (2 MiB ones only).
+    pub gbpages: bool,
     /// CPUID.(7,0):EDX[20]. Clear: no ENDBR64 enforcement.
     pub cet_ibt: bool,
     /// CPUID.(7,0):ECX[7]. Clear: no shadow stack.
@@ -204,7 +210,7 @@ impl X86Features {
     /// Nothing detected: what a host build reads.
     pub const NONE: Self = decode(&CpuidLeaves {
         l1_ecx: 0, l1_edx: 0, l7_ebx: 0, l7_ecx: 0, l7_edx: 0,
-        xcr0_supported: 0, ld1_eax: 0, e1_ecx: 0, e7_edx: 0,
+        xcr0_supported: 0, ld1_eax: 0, e1_ecx: 0, e1_edx: 0, e7_edx: 0,
     });
 }
 
@@ -248,6 +254,7 @@ pub const fn decode(r: &CpuidLeaves) -> X86Features {
         umip: has(c7, bit::UMIP),
         pku: has(c7, bit::PKU),
         la57: has(c7, bit::LA57),
+        gbpages: has(r.e1_edx, bit::PDPE1GB),
         cet_ibt: has(d7, bit::CET_IBT),
         cet_shstk: has(c7, bit::CET_SS),
         xsave,
@@ -352,7 +359,8 @@ pub fn read_cpuid() -> CpuidLeaves {
             r.ld1_eax = q(0xD, 1).eax;
         }
         if max_ext >= 0x8000_0001 {
-            r.e1_ecx = q(0x8000_0001, 0).ecx;
+            let e1 = q(0x8000_0001, 0);
+            (r.e1_ecx, r.e1_edx) = (e1.ecx, e1.edx);
         }
         if max_ext >= 0x8000_0007 {
             r.e7_edx = q(0x8000_0007, 0).edx;
@@ -420,7 +428,7 @@ mod tests {
         [f.sse4_2, f.popcnt, f.avx, f.avx2, f.bmi1, f.bmi2, f.fma, f.movbe, f.avx512f,
          f.avx512bw, f.avx512cd, f.avx512dq, f.avx512vl, f.aes, f.pclmulqdq, f.sha_ni,
          f.rdrand, f.rdseed, f.adx, f.fsgsbase, f.pcid, f.invpcid, f.smep, f.smap, f.umip,
-         f.pku, f.la57, f.cet_ibt, f.cet_shstk, f.xsave, f.xsaveopt, f.xsaves, f.x2apic,
+         f.pku, f.la57, f.gbpages, f.cet_ibt, f.cet_shstk, f.xsave, f.xsaveopt, f.xsaves, f.x2apic,
          f.tsc_deadline, f.invariant_tsc].iter().filter(|&&b| b).count()
     }
 
@@ -455,6 +463,7 @@ mod tests {
         one(|r| r.l7_ecx = 1 << 2, |f| f.umip, "umip");
         one(|r| r.l7_ecx = 1 << 3, |f| f.pku, "pku");
         one(|r| r.l7_ecx = 1 << 16, |f| f.la57, "la57");
+        one(|r| r.e1_edx = 1 << 26, |f| f.gbpages, "pdpe1gb");
         one(|r| r.l7_edx = 1 << 20, |f| f.cet_ibt, "cet-ibt");
         one(|r| r.l7_ecx = 1 << 7, |f| f.cet_shstk, "cet-shstk");
         one(|r| r.l1_ecx = 1 << 26, |f| f.xsave, "xsave");

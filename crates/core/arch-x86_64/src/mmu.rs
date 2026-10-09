@@ -783,31 +783,6 @@ pub mod cpu {
         unsafe { asm!("wrmsr", in("ecx") msr, in("eax") v as u32, in("edx") (v >> 32) as u32, options(nostack, preserves_flags)) };
     }
 
-    /// CPUID.80000001H:EDX[26] (1 GiB pages). `cpuid` clobbers rbx, which
-    /// LLVM reserves, hence the save.
-    pub fn has_gbpages() -> bool {
-        let edx: u32;
-        // SAFETY: cpuid has no side effect; rbx is restored.
-        unsafe {
-            asm!("mov {t}, rbx", "cpuid", "mov rbx, {t}", t = out(reg) _,
-                 inout("eax") 0x8000_0001u32 => _, inout("ecx") 0u32 => _, out("edx") edx,
-                 options(nomem, nostack, preserves_flags));
-        }
-        edx & (1 << 26) != 0
-    }
-
-    /// CPUID.(7,0):ECX[16] (LA57).
-    pub fn has_la57() -> bool {
-        let ecx: u32;
-        // SAFETY: as `has_gbpages`.
-        unsafe {
-            asm!("mov {t}, rbx", "cpuid", "mov rbx, {t}", t = out(reg) _,
-                 inout("eax") 7u32 => _, inout("ecx") 0u32 => ecx, out("edx") _,
-                 options(nomem, nostack, preserves_flags));
-        }
-        ecx & (1 << 16) != 0
-    }
-
     /// `invlpg`: this CPU's entries for `va` in the current PCID, and its
     /// global entry for `va` if any.
     #[inline(always)]
