@@ -242,6 +242,7 @@ pub unsafe fn wake_harts(num_cpus: usize) -> usize {
     // The boot hart publishes roots too; other harts' shootdowns must scan it.
     // riscv64 and x86_64 have no broadcast invalidate, so the boot CPU joins
     // the shootdown's IPI scan (aarch64 needs nothing: TLBI ...IS).
+    // arch-only: aarch64's broadcast TLBI has no scan to join.
     #[cfg(any(target_arch = "riscv64", all(target_arch = "x86_64", target_os = "none")))]
     azos_arch::tlb::note_hart_online(boot);
 

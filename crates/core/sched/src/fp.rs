@@ -42,7 +42,7 @@ pub fn reset(idx: usize) {
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]
         TLS[idx].store(0, Ordering::Relaxed);
         // x86_64: a Linux task's thread pointer is its FS base.
-        #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
         TLS[idx].store(0, Ordering::Relaxed);
     }
 }
@@ -55,7 +55,7 @@ static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
 /// x86_64: each Linux task's FS base (musl's thread pointer),
 /// kept per slot like aarch64's `TPIDR_EL0` above.
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
 
@@ -91,7 +91,7 @@ pub fn switch_slow(prev: usize, next: usize) {
     // per CPU in IA32_FS_BASE: saved and loaded like TPIDR_EL0 above
     // (`rdfsbase`/`wrfsbase` once X86_FSGSBASE is wired). Its FP/SIMD file
     // is the ISA's FPU path's (kernel/src/entry/x86_64/fp.rs), not here.
-    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
     if azos_limits::LINUX_ABI && prev != next {
         use azos_arch::{cpu::IA32_FS_BASE, hw};
         if prev < MAX_TASKS && crate::scheduler::slot_is_linux(prev) {

@@ -9,13 +9,13 @@
 4	kernel/src/mlsf_bench.rs
 2	kernel/src/smokes/mod.rs
 4	kernel/src/smokes/selftest.rs
-20	kernel/src/smokes/tlb_probe.rs
+1	kernel/src/smokes/tlb_probe.rs
 2	kernel/src/tasks/system.rs
 10	kernel/src/trap/exception.rs
 10	kernel/src/trap/interrupt.rs
 2	userspace/bench/latbench/src/main.rs
 2	userspace/bench/vsbench/src/bench_core.rs
 8	userspace/services/lxsrv/src/main.rs
-18	userspace/tests/abitest/src/main.rs
+8	userspace/tests/abitest/src/main.rs
 12	userspace/tests/captest/src/main.rs
 2	userspace/tests/ipctest/src/main.rs

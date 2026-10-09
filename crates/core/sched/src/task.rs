@@ -34,10 +34,10 @@ pub use azos_limits::MAX_TASKS;
 pub type UserRegs = [u64; 32];
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub type UserRegs = azos_arch::fork_regs::ForkRegs;
-/// x86_64: the 15 GPRs, RSP, RFLAGS, FS/GS bases and an XSAVE image
-/// (Kconfig `X86_XSAVE_AREA_BYTES`), see that struct's module doc.
+// x86_64: the 15 GPRs, RSP, RFLAGS, FS/GS bases and an XSAVE image
+// (Kconfig `X86_XSAVE_AREA_BYTES`), see that struct's module doc.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
-pub type UserRegs = azos_arch::fork_regs::ForkRegs<{ azos_limits::X86_XSAVE_AREA_BYTES }>;
+pub type UserRegs = azos_arch::fork_regs::TaskForkRegs;
 #[cfg(not(any(
     target_arch = "riscv64",
     all(target_arch = "aarch64", target_os = "none"),

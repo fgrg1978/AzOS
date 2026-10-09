@@ -20,6 +20,11 @@
 //!     address space no longer owns → `[TLB-SMOKE] STALE READ`, a line only
 //!     that path prints.
 
+// Every site below has a riscv64, an aarch64 and an x86_64 arm: a fourth
+// ISA must port the probe (its fault-catching load, roots and masks).
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("tlb_probe: no arm for this ISA (port live_root, the probe load, remote_mask, ...)");
+
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use azos_arch::{PagePerms, Cpu};
 use azos_drv_sys::kprintln;

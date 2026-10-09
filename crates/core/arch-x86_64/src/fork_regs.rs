@@ -33,6 +33,12 @@ pub mod gpr {
     pub const COUNT: usize = 15;
 }
 
+/// [`ForkRegs`] at the kernel's configured XSAVE area (Kconfig
+/// `X86_XSAVE_AREA_BYTES`): the type a task slot holds. Kernel builds only
+/// (the symbol exists under ARCH_X86_64).
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub type TaskForkRegs = ForkRegs<{ azos_limits::X86_XSAVE_AREA_BYTES }>;
+
 /// A forked child's starting ring-3 context.
 #[repr(C, align(64))]
 #[derive(Clone, Copy, Debug)]

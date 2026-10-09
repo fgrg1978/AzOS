@@ -2652,6 +2652,7 @@ pub fn try_task_create_init(
                     let stack_top = task_stack_top(idx);
                     // x86_64: `context_switch` jumps to the entry, which the
                     // SysV ABI enters with RSP = 8 mod 16, as after a `call`.
+                    // arch-only: the other ISAs enter at the slice's aligned end.
                     #[cfg(all(target_arch = "x86_64", target_os = "none"))]
                     let stack_top = stack_top - 8;
 
