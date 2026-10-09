@@ -970,8 +970,9 @@ pub const UART_IRQ: u32 = 32;
 /// way the RISC-V numbers above were.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub const UART_IRQ: u32 = 33;
-/// x86_64 skeleton: COM1 is legacy IRQ 4, an IOAPIC GSI (placeholder until
-/// the port routes it).
+/// x86_64: COM1 is ISA IRQ 4. The boot hook routes it through the IOAPIC
+/// (to the GSI a MADT override names, recorded in `entry/x86_64/irq.rs`
+/// `COM1_GSI`) for RX and the THR-empty TX interrupt alike.
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 pub const UART_IRQ: u32 = 4;
 
