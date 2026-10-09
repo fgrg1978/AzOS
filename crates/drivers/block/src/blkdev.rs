@@ -177,8 +177,8 @@ pub fn capacity_sectors() -> u64 {
 }
 
 /// Block reads and writes that answered an error since boot, the device's
-/// and injected ones alike (Kconfig CHAOS, point `disk-io`). Counted on the
-/// error path only.
+/// and injected ones alike (Kconfig CHAOS, point `disk-io`). Counted only
+/// with CHAOS built in; off, nothing is counted and [`io`] is the device call.
 static IO_ERRORS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// See [`IO_ERRORS`].
@@ -192,9 +192,12 @@ fn note_io_error() {
 }
 
 /// The device's answer, or an injected I/O error (point `disk-io`, before
-/// the device is touched), counted in [`IO_ERRORS`] either way.
+/// the device is touched), counted in [`IO_ERRORS`] either way (CHAOS on).
 #[inline(always)]
 fn io(r: impl FnOnce() -> Result<(), ()>) -> Result<(), ()> {
+    if !azos_chaos::ON {
+        return r();
+    }
     let r = if azos_chaos::fire(azos_chaos::Point::DiskIo) { Err(()) } else { r() };
     if r.is_err() {
         note_io_error();
