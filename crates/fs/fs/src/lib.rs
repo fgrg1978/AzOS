@@ -27,6 +27,9 @@ pub use fat32::{
     fat32_alloc_cluster, fat32_free_chain, fat32_sync,
     fat32_journal_idle, fat32_check_root_chain,
     fat32_locks_available, fat32_write_epoch,
+    // Write-back (wave 15): the `fs-wb` task's pass, its hooks and gauges.
+    fat32_writeback_tick, fat32_writeback_hooks, fat32_writeback_period_ms,
+    fat32_writeback_dirty, fat32_set_writeback, fat32_writeback_now, fat32_write_file_queued,
     // File-level API (phase AS).
     fat32_mount_volume, fat32_unmount,
     fat32_open, fat32_read, fat32_write, fat32_seek, fat32_fsync, fat32_close,

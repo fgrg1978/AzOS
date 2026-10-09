@@ -451,8 +451,23 @@ fixed mount table. There are three implementations:
 
 **FAT32 details:**
 
-- **Block cache.** FAT32 reads and writes through a shared block cache in
-  write-through mode, sized per profile.
+- **Block cache.** FAT32 reads and writes through a shared block cache,
+  sized per profile. With `FS_WRITEBACK` (the default) it is write-back: a
+  write dirties a cache line and returns. Each journal barrier closes an
+  epoch without I/O. Dirty lines reach the device oldest epoch first, with a
+  device flush between epochs; consecutive dirty sectors of one epoch go out
+  as one multi-sector request. Re-writing a line of an older, unwritten
+  epoch keeps the old contents as a shadow line until it is written. A power
+  cut therefore leaves a prefix of epochs plus part of one, the states the
+  write-through journal allowed. `fsync`, `sync` and the durable records
+  (e-stop and safety records, OTA marks, the crash log) return only after
+  their writes are flushed; a close queues. A device that cannot flush
+  mounts write-through. The
+  `fs-wb` task writes the rest back by age (`FS_WRITEBACK_MAX_AGE_MS`: 1 s in
+  the robot domain, 5 s otherwise) and by dirty-line watermark. A writer
+  never evicts a dirty line under the cache lock; it writes back with the
+  lock released and retries. Another reader of the medium makes FAT32 write
+  back first; another writer drops only the sectors it wrote.
 - **Journal.** A one-sector journal is replayed at mount.
 - **Locks across device I/O.** No lock held across a device request turns
   preemption off. The FAT holds no mutex across device I/O: a FAT entry
@@ -462,8 +477,10 @@ fixed mount table. There are three implementations:
   scans without a claim and confirms its candidate on the claimed sector. The
   VirtIO block driver submits a request under its lock and waits for the
   completion without it. Each request in flight owns a staging slot
-  (`VIRTIO_BLK_INFLIGHT`, up to five), and a request that finds every slot
-  taken sleeps without priority inheritance. The cache lock is released
+  (`VIRTIO_BLK_INFLIGHT`, up to five, `VIRTIO_BLK_SLOT_KB` each), and a
+  request that finds every slot taken sleeps without priority inheritance.
+  A write larger than one slot is submitted on every free slot before its
+  first wait. The cache lock is released
   before a request goes to the device. A real-time task on the writer's CPU
   keeps its period while FAT32 writes.
 - **No priority-inheritance mutex across a device wait, for any task.** A

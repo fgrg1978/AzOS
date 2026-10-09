@@ -431,6 +431,55 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
     kprintln!("[SCHED] Created log-flush task (prio {})", azos_limits::LOG_FLUSHER_PRIORITY);
 }
 
+/// The `fs-wb` task's TID once it runs (0 before): the watermark waker's target.
+static FS_WB_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Set by a writer that crossed the dirty watermark; ends the task's sleep.
+static FS_WB_KICK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn fs_wb_now_ms() -> u64 {
+    azos_drv_sys::timebase::now() / (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1)
+}
+
+/// FAT32's watermark waker (any task context, no lock held).
+fn fs_wb_wake() {
+    use core::sync::atomic::Ordering::SeqCst;
+    if FS_WB_KICK.swap(true, SeqCst) { return; }
+    let tid = FS_WB_TID.load(SeqCst);
+    if tid != 0 {
+        azos_sched::scheduler::wake_task_by_tid(tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
+    }
+}
+
+/// Kconfig `FS_WRITEBACK`: the task that writes the FAT32 cache's dirty lines
+/// back (`azos_fs::fat32_writeback_tick`) every quarter of
+/// `FS_WRITEBACK_MAX_AGE_MS`, or at once when a writer crosses
+/// `FS_WRITEBACK_WATERMARK_PCT`. Never RT (owner rule: an RT task never does
+/// block I/O). Created by `kernel_main` on every ISA once FAT32 is mounted;
+/// with the option off it is not created.
+fn fs_writeback_task(_: usize) {
+    use core::sync::atomic::Ordering::SeqCst;
+    FS_WB_TID.store(azos_sync::waitqueue::caller_tid(), SeqCst);
+    let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
+    loop {
+        FS_WB_KICK.store(false, SeqCst);
+        azos_fs::fat32_writeback_tick(fs_wb_now_ms());
+        let end = azos_drv_sys::timebase::now() + azos_fs::fat32_writeback_period_ms() * per_ms;
+        while azos_drv_sys::timebase::now() < end && !FS_WB_KICK.load(SeqCst) {
+            azos_sched::task_block(azos_sched::WaitReason::Timer(end));
+        }
+    }
+}
+
+pub(crate) fn create_fs_writeback_task() {
+    if !azos_limits::FS_WRITEBACK { return; }
+    azos_fs::fat32_writeback_hooks(fs_wb_now_ms, fs_wb_wake);
+    azos_sched::task_create(
+        "fs-wb", fs_writeback_task, 0, azos_limits::FS_WRITEBACK_PRIORITY as u32);
+    kprintln!("[SCHED] Created fs-wb task (prio {}, age {} ms, watermark {}%)",
+        azos_limits::FS_WRITEBACK_PRIORITY, azos_limits::FS_WRITEBACK_MAX_AGE_MS,
+        azos_limits::FS_WRITEBACK_WATERMARK_PCT);
+}
+
 /// Whether the task running on this CPU is real-time: its own (base)
 /// priority is in the RT band. A donation does not make a task RT.
 fn current_task_is_rt() -> bool {

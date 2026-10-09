@@ -123,8 +123,11 @@ static BLK_LOCK: PiMutex<()> = PiMutex::new(());
 // `blk_rw` submits the chain, and `read()` copies its slot out to the caller
 // *after* `blk_rw` has returned (i.e. after the device posted the used-ring
 // entry). Re-check the grep if a descriptor-setup site is added.
-const BLK_DMA_SECTORS: usize = 8;
-const BLK_DMA_BYTES:   usize = BLK_DMA_SECTORS * SECTOR_SIZE; // 4 KiB
+/// Sectors per slot's staging buffer (Kconfig `VIRTIO_BLK_SLOT_KB`; was a
+/// fixed 8 = 4 KiB): the largest transfer one request carries.
+const BLK_DMA_SECTORS: usize = azos_limits::VIRTIO_BLK_SLOT_KB as usize * 1024 / SECTOR_SIZE;
+const BLK_DMA_BYTES:   usize = BLK_DMA_SECTORS * SECTOR_SIZE;
+const _: () = assert!(BLK_DMA_SECTORS >= 8);
 
 /// Requests in flight at once (Kconfig `VIRTIO_BLK_INFLIGHT`). A read or
 /// write takes 3 descriptors, so the queue bounds it.
@@ -157,6 +160,22 @@ static SLOT_WQ:   azos_sync::waitqueue::WaitQueue = azos_sync::waitqueue::WaitQu
 
 /// A claimed staging slot; released on drop.
 struct SlotClaim(usize);
+
+/// A free slot right now, or `None` (never sleeps): the extra slots a
+/// multi-request write pipelines over.
+fn slot_try_claim() -> Option<SlotClaim> {
+    let all: u32 = if BLK_SLOTS == 32 { u32::MAX } else { (1u32 << BLK_SLOTS) - 1 };
+    loop {
+        let free = !SLOT_BUSY.load(Ordering::SeqCst) & all;
+        if free == 0 {
+            return None;
+        }
+        let bit = 1u32 << free.trailing_zeros();
+        if SLOT_BUSY.fetch_or(bit, Ordering::SeqCst) & bit == 0 {
+            return Some(SlotClaim(free.trailing_zeros() as usize));
+        }
+    }
+}
 
 fn slot_claim() -> SlotClaim {
     let all: u32 = if BLK_SLOTS == 32 { u32::MAX } else { (1u32 << BLK_SLOTS) - 1 };
@@ -490,6 +509,17 @@ unsafe fn latch_dead(dev: &mut BlkDev, reason: &str) {
 ///
 /// `count` must be in `1..=BLK_DMA_SECTORS`; anything else is rejected.
 fn blk_rw(slot: usize, sector: u64, count: u32, write: bool, pi_base: u32) -> Result<(), ()> {
+    let chain = blk_submit(slot, sector, count, write)?;
+    blk_complete(slot, chain, pi_base)
+}
+
+/// The descriptors of one submitted request chain.
+#[derive(Clone, Copy)]
+struct Chain(usize, usize, usize);
+
+/// First half of [`blk_rw`]: build and submit slot `slot`'s chain under
+/// `BLK_LOCK`; nothing is waited for.
+fn blk_submit(slot: usize, sector: u64, count: u32, write: bool) -> Result<Chain, ()> {
     let (d_hdr, d_data, d_status) = {
         let _guard = BLK_LOCK.lock();
         let dev = unsafe { &mut *(&raw mut BLK_DEV) };
@@ -572,7 +602,13 @@ fn blk_rw(slot: usize, sector: u64, count: u32, write: bool, pi_base: u32) -> Re
         }
         (d_hdr, d_data, d_status)
     };
+    Ok(Chain(d_hdr, d_data, d_status))
+}
 
+/// Second half of [`blk_rw`]: wait (without `BLK_LOCK`) for slot `slot`'s
+/// chain, free its descriptors and read its status.
+fn blk_complete(slot: usize, chain: Chain, pi_base: u32) -> Result<(), ()> {
+    let Chain(d_hdr, d_data, d_status) = chain;
     // The device request, waited for without BLK_LOCK. On failure the chain's
     // descriptors stay quarantined (`latch_dead`).
     wait_done(slot, BLK_TIMEOUT_US, pi_base)?;
@@ -653,39 +689,70 @@ pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
 
 /// Write `count` sectors starting at `sector` from `buf`.
 ///
-/// Chunked like `read`. A failure part-way through a multi-chunk transfer
-/// leaves the earlier chunks committed to the disk — same as any multi-sector
-/// request that fails mid-flight; callers must not assume atomicity.
+/// Chunked like `read`, but pipelined (wave 15): the chunks go out on every
+/// slot free at entry, up to `VIRTIO_BLK_INFLIGHT` requests in the device at
+/// once. A failure part-way through leaves other chunks committed to the
+/// disk — same as any multi-sector request that fails mid-flight; callers
+/// must not assume atomicity.
 pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
     let pi_base = caller_pi_held();
     let total = (count as usize).checked_mul(SECTOR_SIZE).ok_or(())?;
     if total == 0 || buf.len() < total { return Err(()); }
-    // Held for the whole multi-chunk transfer — see `read`.
-    let slot = slot_claim();
+    let chunks = (count as usize).div_ceil(BLK_DMA_SECTORS);
+    // The first slot is waited for; more are taken only if free now, up to
+    // one per chunk: a multi-request write (a coalesced write-back run)
+    // keeps up to `VIRTIO_BLK_INFLIGHT` requests in the device at once
+    // instead of one round trip per chunk. Its chunks carry no order among
+    // themselves (one write; `flush` covers only completed requests, and
+    // this returns only once every chunk completed).
+    let mut slots: [Option<SlotClaim>; BLK_SLOTS] = [const { None }; BLK_SLOTS];
+    slots[0] = Some(slot_claim());
+    let mut k = 1usize;
+    while k < BLK_SLOTS && k < chunks && !cfg!(feature = "blk-serial-write-canary") {
+        match slot_try_claim() {
+            Some(c) => { slots[k] = Some(c); k += 1; }
+            None => break,
+        }
+    }
     if !usable() { return Err(()); }
 
+    let mut inflight: [Option<Chain>; BLK_SLOTS] = [None; BLK_SLOTS];
+    let mut result: Result<(), ()> = Ok(());
     let mut done: u32 = 0;
+    let mut i = 0usize;
     while done < count {
-        let chunk = core::cmp::min((count - done) as usize, BLK_DMA_SECTORS);
-        let bytes = chunk.checked_mul(SECTOR_SIZE).ok_or(())?;
-        let off   = (done as usize).checked_mul(SECTOR_SIZE).ok_or(())?;
-        let end   = off.checked_add(bytes).ok_or(())?;
-        let lba   = sector.checked_add(done as u64).ok_or(())?;
-
-        let src = buf.get(off..end).ok_or(())?;
-        // SAFETY: the slot is this task's and its previous chain (if any)
-        // completed, so the device does not own its staging buffer here.
-        // `bytes <= BLK_DMA_BYTES`.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                src.as_ptr(), (&raw mut BLK_DMA_BUF[slot.0]) as *mut u8, bytes);
+        let j = i % k;
+        let slot = match &slots[j] { Some(c) => c.0, None => { result = Err(()); break; } };
+        // The slot's previous chunk first: its staging buffer is reused.
+        if let Some(ch) = inflight[j].take() {
+            if blk_complete(slot, ch, pi_base).is_err() { result = Err(()); break; }
         }
-
-        blk_rw(slot.0, lba, chunk as u32, true, pi_base)?;
-
+        let chunk = core::cmp::min((count - done) as usize, BLK_DMA_SECTORS);
+        let bytes = chunk * SECTOR_SIZE;
+        let off = done as usize * SECTOR_SIZE;
+        let lba = match sector.checked_add(done as u64) { Some(l) => l, None => { result = Err(()); break; } };
+        let src = match buf.get(off..off + bytes) { Some(b) => b, None => { result = Err(()); break; } };
+        // SAFETY: the slot is this task's and its previous chain (if any)
+        // completed just above, so the device does not own its staging
+        // buffer. `bytes <= BLK_DMA_BYTES`.
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.as_ptr(), (&raw mut BLK_DMA_BUF[slot]) as *mut u8, bytes);
+        }
+        match blk_submit(slot, lba, chunk as u32, true) {
+            Ok(ch) => inflight[j] = Some(ch),
+            Err(()) => { result = Err(()); break; }
+        }
         done += chunk as u32;
+        i += 1;
     }
-    Ok(())
+    // Every submitted chunk completes before its slot is released: the
+    // device owns the staging buffer until then.
+    for j in 0..k {
+        if let (Some(ch), Some(c)) = (inflight[j].take(), &slots[j]) {
+            if blk_complete(c.0, ch, pi_base).is_err() { result = Err(()); }
+        }
+    }
+    result
 }
 
 /// Commit every write the device has completed to stable storage: one

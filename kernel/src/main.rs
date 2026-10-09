@@ -2105,6 +2105,11 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     smokes::energy_smoke::spawn();
 
     // Create IPC/signal/service demo task (Phase 8).
+    // Wave 15 (WRITEBACK): FAT32's write-back task, on every ISA whose boot
+    // mounted the volume (Kconfig `FS_WRITEBACK`; a no-op with it off).
+    if azos_fs::fat32_mounted() {
+        create_fs_writeback_task();
+    }
     azos_sched::task_create("ipc-demo", ipc_demo_task, 0, azos_sched::DEFAULT_PRIORITY);
     kprintln!("[SCHED] Created ipc-demo task");
 

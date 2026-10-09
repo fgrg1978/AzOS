@@ -563,4 +563,8 @@ pub mod blkdev {
     pub fn note_external_write(sector: u64, count: u32) {
         crate::write_observer::notify(sector, count);
     }
+    /// The kernel's `blkdev::note_external_read` (wave 15): the read observer.
+    pub fn note_external_read(sector: u64, count: u32) {
+        crate::write_observer::before_read(sector, count);
+    }
 }

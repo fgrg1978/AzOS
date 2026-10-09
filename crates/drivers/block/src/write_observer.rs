@@ -53,3 +53,27 @@ pub fn notify(sector: u64, count: u32) {
         f(sector, count);
     }
 }
+
+/// The read observer (wave 15, WRITEBACK) as a `fn(u64, u32)` address; 0 = none.
+static READ_OBSERVER: AtomicUsize = AtomicUsize::new(0);
+
+/// Install `f` as the observer called before every medium read that is not
+/// the cache owner's own (FAT32 under Kconfig `FS_WRITEBACK`: it writes back
+/// the dirty sectors in the range first).
+pub fn set_read(f: fn(u64, u32)) {
+    READ_OBSERVER.store(f as usize, Ordering::Release);
+}
+
+/// Sectors `[sector, sector + count)` are about to be read by someone other
+/// than the cache owner. Call BEFORE the read, with no lock held: the
+/// observer may wait on the device.
+#[inline]
+pub fn before_read(sector: u64, count: u32) {
+    let f = READ_OBSERVER.load(Ordering::Acquire);
+    if f != 0 {
+        // SAFETY: the only non-zero value ever stored is a `fn(u64, u32)`
+        // cast to `usize` by `set_read`.
+        let f: fn(u64, u32) = unsafe { core::mem::transmute::<usize, fn(u64, u32)>(f) };
+        f(sector, count);
+    }
+}

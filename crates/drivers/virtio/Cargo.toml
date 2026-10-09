@@ -7,6 +7,9 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
+# Wave 15 canary: a multi-request write waits for each chunk before the
+# next (one request in the device at a time), as before the pipelined write.
+blk-serial-write-canary = []
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []

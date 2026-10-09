@@ -2653,6 +2653,8 @@ pub fn sys_disk_read(sector: u64, count: u64, buf: u64, sel: u64) -> i64 {
         azos_sync::SleepLock::new([0u8; DISK_BOUNCE_BYTES]);
     let mut kbuf = DISK_RD_BUF.lock();
     azos_drv_block::blkdev::rt_io_check();
+    // FAT32's write-back cache writes any queued sector of this range first.
+    azos_drv_block::blkdev::note_external_read(sector, count as u32);
     match azos_drv_virtio::virtio::blk::read(sector, count as u32, &mut kbuf[..byte_len]) {
         Ok(()) => {
             if !azos_sched::copy_to_user(buf as usize, kbuf.as_ptr(), byte_len) {

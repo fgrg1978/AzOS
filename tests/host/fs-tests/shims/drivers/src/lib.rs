@@ -102,6 +102,11 @@ pub fn disk_durable_image() -> Vec<u8> {
     d.durable.clone().unwrap_or_else(|| d.data.clone())
 }
 
+/// The whole medium as the device holds it now (volatile cache included).
+pub fn disk_image() -> Vec<u8> {
+    DISK.lock().unwrap().as_ref().expect("no disk loaded").data.clone()
+}
+
 /// Set how `blkdev::flush` answers.
 pub fn disk_flush_mode(m: FlushMode) {
     if let Some(d) = DISK.lock().unwrap().as_mut() { d.flush_mode = m; }
@@ -212,7 +217,24 @@ pub fn disk_before_write(f: Option<fn()>) {
 pub mod blkdev {
     use super::*;
 
+    /// The kernel's `blkdev::read`: the read observer, then the device read.
     pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+        super::write_observer::before_read(sector, count);
+        read_quiet(sector, count, buf)
+    }
+
+    /// The kernel's `blkdev::note_external_read`.
+    pub fn note_external_read(sector: u64, count: u32) {
+        super::write_observer::before_read(sector, count);
+    }
+
+    /// The kernel's `blkdev::set_read_observer`.
+    pub fn set_read_observer(f: fn(u64, u32)) {
+        super::write_observer::set_read(f);
+    }
+
+    /// The kernel's `blkdev::read_quiet`: the device read alone.
+    pub fn read_quiet(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
         {
             let mut g = DISK.lock().unwrap();
             let d = g.as_mut().ok_or(())?;

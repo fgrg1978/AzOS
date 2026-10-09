@@ -162,7 +162,10 @@ fn write_whole<const N: usize>(
         return WriteResult::NotWritten;
     }
     vfs::vfs_write(table, fd, entry.as_ptr(), entry.len());
-    if vfs::vfs_close(table, fd) == 0 {
+    // Durable before the call returns: a close is not a durability point
+    // under FAT32's write-back cache (wave 15), an fsync is.
+    let synced = vfs::vfs_fsync(table, fd).is_ok();
+    if vfs::vfs_close(table, fd) == 0 && synced {
         WriteResult::Written
     } else {
         WriteResult::FlushFailed

@@ -302,6 +302,22 @@ fn swap_medium(img: Vec<u8>) {
     for s in 0..64 { fat32::fat32_cache_invalidate(s); }
 }
 
+/// Run the rest of a test with the FAT32 cache in write-through mode, the
+/// pre-wave-15 behaviour (the shim builds with Kconfig `FS_WRITEBACK` on).
+/// For tests whose property is write-through's: a device write per FAT32
+/// write, in program order, failing where it is issued. Restored on drop.
+#[must_use]
+pub struct WriteThrough;
+pub fn write_through() -> WriteThrough {
+    fat32::fat32_set_writeback(false).expect("switch to write-through");
+    WriteThrough
+}
+impl Drop for WriteThrough {
+    fn drop(&mut self) {
+        let _ = fat32::fat32_set_writeback(true);
+    }
+}
+
 #[cfg(test)]
 mod mount_tests {
     use super::{fat32, image::*};
@@ -1275,6 +1291,7 @@ mod write_path {
     #[test]
     fn truncate_crash_before_the_old_chain_is_freed_still_frees_it_on_recovery() {
         let _g = serial();
+        let _wt = crate::write_through();
         let g = Geom::default(); // spc=1, num_fats=2, fat_sz32=8, rsvd=32
         let mut img = build(&g);
         set_fat(&mut img, &g, 2, 0x0FFF_FFFF); // root: single cluster, EOC
@@ -1339,6 +1356,7 @@ mod write_path {
     #[test]
     fn rename_onto_an_existing_destination_replaces_it_and_removes_the_source() {
         let _g = serial();
+        let _wt = crate::write_through();
         let g = Geom::default();
         mount(build(&g));
 
@@ -1869,6 +1887,7 @@ mod vfs_open_close {
     #[test]
     fn a_close_whose_flush_fails_reports_it() {
         let _g = serial();
+        let _wt = crate::write_through();
         fresh_volume();
         let mut t = vfs::ScratchFds::new();
 
@@ -2690,6 +2709,7 @@ mod durability {
     #[test]
     fn fsync_flushes_before_the_directory_entry_and_after_it() {
         let _g = serial();
+        let _wt = crate::write_through();
         fresh();
         let f = create();
         assert_eq!(fat32::fat32_write(f, RECORD), Ok(RECORD.len()));
@@ -2909,6 +2929,11 @@ mod power_cut {
         let _ = disk_take_log();
         let _ = disk_events();
         op();
+        // Write-back: what the operation queued goes out now, epoch by epoch
+        // with a flush between (a no-op write-through, where it already did).
+        if fat32::fat32_writeback_dirty().0 > 0 {
+            assert_eq!(fat32::fat32_writeback_now(), Ok(()));
+        }
         let log = disk_take_log();
         let flushes = log.iter().filter(|e| **e == LogEntry::Flush).count();
         let states = crash_states(&pristine, &log);
@@ -3037,7 +3062,9 @@ mod power_cut {
         let f = cut_everywhere(with_file(&n, &old),
             || assert_eq!(fat32::fat32_unlink_path(b"REC.DAT"), Ok(())),
             |img| one_of(&n, b"/REC.DAT", img, &[Some(&old[..]), None]));
-        assert_eq!(f, 2, "unlink: record barrier + mutation barrier");
+        // Write-back: the journal clear left queued goes out in a third
+        // epoch, after the mutation's flush, with the write-back's own flush.
+        assert_eq!(f, 3, "unlink: record barrier + mutation barrier + the clear's write-back");
     }
 
     #[test]
@@ -3096,7 +3123,7 @@ mod power_cut {
                 }
                 Ok(())
             });
-        assert_eq!(f, 2, "rename to a new name: 2 unlink barriers");
+        assert_eq!(f, 3, "rename to a new name: 2 unlink barriers + the clear's write-back");
     }
 
     /// The gate row's probe (`fat32_check_root_chain`) must itself see a
@@ -3132,6 +3159,7 @@ mod power_cut {
     #[test]
     fn a_barrier_over_a_device_that_cannot_flush_refuses() {
         let _g = serial();
+        let _wt = crate::write_through();
         let n = name(b"REC", b"DAT");
         let old = pattern(OLD, 0x11);
         let before = with_file(&n, &old);
@@ -3147,7 +3175,16 @@ mod power_cut {
         let m = name(b"NEW", b"DAT");
         assert_eq!(fat32::fat32_write_file(&m, &pattern(NEW, 0x77)), Err(()));
         let ev = disk_events();
-        assert_eq!(ev.last(), Some(&journal), "create wrote past its first barrier: {ev:?}");
+        // Write-back writes the barrier's epoch in block order, so the
+        // record need not be last; what must hold is that nothing of the
+        // next step (a directory or data sector) went out: only the record
+        // and the FAT sectors the allocation before it dirtied.
+        let g = Geom::default();
+        let fat_end = (g.rsvd as u64) + g.num_fats as u64 * g.fat_sz32 as u64;
+        assert!(ev.contains(&journal), "create never wrote its record: {ev:?}");
+        assert!(ev.iter().all(|e| *e == journal
+            || matches!(e, DiskEvent::Write(s) if (g.rsvd as u64..fat_end).contains(s))),
+            "create wrote past its first barrier: {ev:?}");
         // Unlink: the dirent survives.
         assert_eq!(fat32::fat32_unlink_path(b"REC.DAT"), Err(()));
 
@@ -4128,6 +4165,7 @@ mod full_root_create {
     #[test]
     fn vfs_create_of_a_new_root_file_lands_on_a_full_root() {
         let _g = serial();
+        let _wt = crate::write_through();
         let g = full_root_volume();
         let mut t = vfs::ScratchFds::new();
         let rec = b"seq=2\nactive_slot=r\ncrc=00000000\n";
@@ -4150,6 +4188,7 @@ mod full_root_create {
     #[test]
     fn empty_create_extends_a_full_root_directory() {
         let _g = serial();
+        let _wt = crate::write_through();
         let g = full_root_volume();
         let key = fat32::Fat32Fs.key_for(b"empty.bin").unwrap();
         assert_eq!(fat32::Fat32Fs.create(&key), Ok(()));
@@ -4231,6 +4270,7 @@ mod full_root_create {
     #[test]
     fn a_failed_fat_mirror_write_in_the_allocator_leaks_no_cluster() {
         let _g = serial();
+        let _wt = crate::write_through();
         let g = plain_volume();
         let free = free_clusters();
         let mirror = g.rsvd as u64 + g.fat_sz32 as u64;
@@ -4272,6 +4312,7 @@ mod full_root_create {
     #[test]
     fn a_failed_final_link_in_dir_insert_leaks_no_cluster() {
         let _g = serial();
+        let _wt = crate::write_through();
         let g = full_root_volume();
         let at = link_ordinal(&g);
         for (case, nth) in [("copy 0", at), ("mirror", at + 1)] {
@@ -4324,6 +4365,7 @@ mod full_root_create {
     #[test]
     fn a_multi_sector_write_that_fails_part_way_returns_the_bytes_written() {
         let _g = serial();
+        let _wt = crate::write_through();
         let buf: Vec<u8> = (0..3 * SECTOR).map(|i| (i % 251) as u8).collect();
         let data = data_write_ordinals(&buf);
         assert_eq!(data.len(), 3, "precondition: three data sectors");
@@ -4355,6 +4397,7 @@ mod full_root_create {
     #[test]
     fn a_write_that_places_nothing_keeps_no_cluster() {
         let _g = serial();
+        let _wt = crate::write_through();
         let buf = [0x5Au8; SECTOR];
         let data = data_write_ordinals(&buf);
         assert_eq!(data.len(), 1, "precondition: one data sector");
@@ -4472,6 +4515,7 @@ mod concurrent_fat_mutators {
     #[test]
     fn two_allocators_in_one_fat_sector_get_distinct_clusters() {
         let _g = serial();
+        let _wt = crate::write_through();
         let g = plain_volume();
         let (a, b) = race(fat32::fat32_alloc_cluster, fat32::fat32_alloc_cluster);
         let (a, b) = (a.expect("A allocates"), b.expect("B allocates"));
@@ -4493,6 +4537,7 @@ mod concurrent_fat_mutators {
     #[test]
     fn a_free_during_an_allocation_in_the_same_fat_sector_is_not_lost() {
         let _g = serial();
+        let _wt = crate::write_through();
         let g = Geom::default();
         let mut img = build(&g);
         set_fat(&mut img, &g, 2, EOC);
@@ -5017,6 +5062,7 @@ mod herm_wave11 {
     #[test]
     fn rename_on_a_failing_device_is_io_and_keeps_the_source() {
         let _g = serial();
+        let _wt = crate::write_through();
         fresh_volume();
         let src = n83(b"SRC", b"BIN");
         put(&src, b"keep me");
@@ -5088,6 +5134,7 @@ mod herm_wave11 {
     #[test]
     fn a_refused_write_is_reported_and_fsync_does_not_claim_the_lost_bytes() {
         let _g = serial();
+        let _wt = crate::write_through();
         fresh_volume();
         let f = open_new(b"/REC.LOG");
         assert_eq!(fat32::fat32_write(f, b"first"), Ok(5));
@@ -5183,6 +5230,7 @@ mod herm_wave11 {
     #[test]
     fn vfs_close_reports_a_failed_flush() {
         let _g = serial();
+        let _wt = crate::write_through();
         fresh_volume();
         let mut t = vfs::ScratchFds::new();
         let fd = vfs::vfs_open(&mut t, b"/fat/REC.LOG", vfs::O_WRONLY | vfs::O_CREAT);
@@ -5212,6 +5260,7 @@ mod herm_wave11 {
     #[test]
     fn journal_sector_writes_per_operation() {
         let _g = serial();
+        let _wt = crate::write_through();
         fresh_volume();
         let a = n83(b"A", b"BIN");
         let b = n83(b"B", b"BIN");
@@ -6006,6 +6055,7 @@ mod fatcache {
     #[test]
     fn a_write_racing_a_fill_is_not_installed() {
         let _g = serial();
+        let _wt = crate::write_through();
         fresh_volume();
         assert_eq!(fat32::fat32_write_file(&NAME, &body(8)), Ok(()));
         let (cl, _) = fat32::fat32_lookup_root(&NAME).unwrap();
@@ -6152,8 +6202,10 @@ mod bcache_sets {
         rd(&mut c, &mut d, 0);
         assert_eq!(d.reads.len(), 66, "block 0 was the victim");
 
+        // Wave 15: write-back is set-associative too (evicting a dirty line
+        // writes every older epoch first, so the choice need not be global).
         let wb = Big::new(512, Mode::WriteBack);
-        assert_eq!((wb.line_count(), wb.ways()), (64, 64));
+        assert_eq!((wb.line_count(), wb.ways()), (64, MAX_WAYS));
         // 12 lines: one set of 8, the remainder unused.
         let odd: BlockCache<{ 12 * 512 }, 12> = BlockCache::new(512, Mode::WriteThrough);
         assert_eq!((odd.line_count(), odd.ways()), (8, 8));
@@ -6564,6 +6616,7 @@ mod content_stamp {
     #[test]
     fn every_epoch_bump_follows_the_bytes_it_reports() {
         let _g = serial();
+        let _wt = crate::write_through();
         volume();
         SEEN.lock().unwrap().clear();
         fs_test_drivers::disk_before_write(Some(record_epoch));
@@ -6578,3 +6631,438 @@ mod content_stamp {
             fat32::fat32_write_epoch(), last);
     }
 }
+
+/// Wave 15 (WRITEBACK): the FAT32 cache in `Mode::WriteBack` (Kconfig
+/// `FS_WRITEBACK`). The cache's split write-back API first, against a
+/// recording device; then FAT32 on the shim disk: coalescing, coherence
+/// with other readers and writers of the medium, and power cuts at random
+/// points with the dirty lines dropped.
+#[cfg(test)]
+mod writeback {
+    use super::{bcache::{BlockCache, Dirty, Mode}, fat32, image::*, serial};
+    use fs_test_drivers::{blkdev, disk_events, disk_peek, disk_take_log, disk_writeback, disk_durable_image,
+                          DiskEvent, LogEntry};
+
+    type C = BlockCache<{ 16 * 512 }, 16>;
+
+    fn blk(fill: u8) -> [u8; 512] { [fill; 512] }
+
+    fn dirty(c: &mut C, b: u64, fill: u8) {
+        assert!(matches!(c.write_dirty(b, &blk(fill)), Dirty::Done { .. }), "block {b} must dirty");
+    }
+
+    /// **Contiguous dirty blocks of one epoch leave as ONE run**, lowest
+    /// first; a gap ends it.
+    ///
+    /// **Canary.** `wb-no-coalesce-canary`: every run is one block.
+    #[test]
+    fn consecutive_dirty_blocks_of_one_epoch_are_one_run() {
+        let mut c = C::new(512, Mode::WriteBack);
+        for b in [12u64, 10, 11, 13, 20] { dirty(&mut c, b, b as u8); }
+        let mut buf = vec![0u8; 8 * 512];
+        let r = c.checkout_run(u64::MAX, 8, &mut buf).expect("a run");
+        assert_eq!((r.block, r.blocks, r.sectors, r.flush_first), (10, 4, 4, false));
+        assert_eq!(buf[512 * 3], 13, "the run's bytes, in block order");
+        c.checkin(&r, true);
+        let r = c.checkout_run(u64::MAX, 8, &mut buf).expect("the second run");
+        assert_eq!((r.block, r.blocks), (20, 1));
+        c.checkin(&r, true);
+        assert_eq!(c.dirty_count(), 0);
+        assert_eq!(c.dirty_count(), c.dirty_scan());
+    }
+
+    /// **A later epoch's run is preceded by a flush** once an older epoch
+    /// went out, and never coalesces with it.
+    ///
+    /// **Canary.** `wb-no-ordering-flush-canary`: `flush_first` stays false.
+    #[test]
+    fn a_later_epoch_waits_for_a_flush() {
+        let mut c = C::new(512, Mode::WriteBack);
+        dirty(&mut c, 5, 1);
+        c.barrier();
+        dirty(&mut c, 6, 2);
+        dirty(&mut c, 3, 3);
+        let mut buf = vec![0u8; 8 * 512];
+        let r = c.checkout_run(u64::MAX, 8, &mut buf).unwrap();
+        assert_eq!((r.block, r.blocks, r.epoch, r.flush_first), (5, 1, 0, false), "oldest epoch first, 6 not merged");
+        assert!(c.checkout_run(0, 8, &mut buf).is_some(), "still dirty until checkin");
+        c.checkin(&r, true);
+        assert!(c.checkout_run(0, 8, &mut buf).is_none(), "`upto` stops at the epoch");
+        let r = c.checkout_run(u64::MAX, 8, &mut buf).unwrap();
+        assert_eq!((r.block, r.blocks, r.epoch, r.flush_first), (3, 1, 1, true));
+        c.note_ordering_flush();
+        c.checkin(&r, true);
+        let r = c.checkout_run(u64::MAX, 8, &mut buf).unwrap();
+        assert_eq!((r.block, r.flush_first), (6, false), "same epoch after the flush: no second flush");
+    }
+
+    /// **An older epoch's unwritten line is never overwritten in place**:
+    /// re-dirtying it keeps the old contents as a shadow (no I/O) that goes
+    /// out first, in its own epoch; with no free line in the set,
+    /// `write_dirty` asks for a write-back instead. A full set of dirty
+    /// lines asks too (it never evicts a dirty one).
+    ///
+    /// **Canaries.** `wb-epoch-merge-canary`: the newer bytes replace the
+    /// older epoch's, which then never reach the device.
+    /// `wb-no-shadow-canary`: the re-dirty asks for a write-back.
+    #[test]
+    fn re_dirtying_an_older_epoch_keeps_a_shadow() {
+        let mut c = C::new(512, Mode::WriteBack);
+        dirty(&mut c, 7, 1);
+        c.barrier();
+        dirty(&mut c, 7, 2);
+        assert_eq!(c.dirty_count(), 2, "the epoch-0 shadow and the epoch-1 line");
+        let mut probe = [0u8; 512];
+        assert!(c.peek(7, &mut probe) && probe[0] == 2, "reads see the newest bytes");
+        let mut buf = vec![0u8; 512];
+        let r = c.checkout_run(u64::MAX, 1, &mut buf).unwrap();
+        assert_eq!((r.epoch, buf[0]), (0, 1), "the epoch-0 bytes go out first");
+        c.checkin(&r, true);
+        let r = c.checkout_run(u64::MAX, 1, &mut buf).unwrap();
+        assert_eq!((r.epoch, buf[0], r.flush_first), (1, 2, true));
+        c.checkin(&r, true);
+        assert_eq!(c.dirty_count(), 0);
+        assert_eq!(c.dirty_count(), c.dirty_scan());
+        // One set of 8 ways (16 lines, 2 sets) full of dirty lines: a new
+        // block of that set must wait for a write-back, but a re-dirty of an
+        // older epoch parks its shadow in the other set.
+        let mut d = C::new(512, Mode::WriteBack);
+        for k in 0..8u64 { dirty(&mut d, k * 2, 9); }
+        assert_eq!(d.write_dirty(16, &blk(9)), Dirty::NeedWriteback(0));
+        d.barrier();
+        dirty(&mut d, 0, 8);
+        assert_eq!(d.dirty_count(), 9);
+        assert!(d.peek(0, &mut probe) && probe[0] == 8);
+        let r = d.checkout_run(u64::MAX, 1, &mut buf).unwrap();
+        assert_eq!((r.block, r.epoch, buf[0]), (0, 0, 9), "the parked epoch-0 bytes go out first");
+        d.checkin(&r, true);
+        assert_eq!(d.dirty_count(), d.dirty_scan());
+        // Every line dirty: no room anywhere.
+        let mut e = C::new(512, Mode::WriteBack);
+        for k in 0..16u64 { dirty(&mut e, k, 1); }
+        e.barrier();
+        assert_eq!(e.write_dirty(3, &blk(2)), Dirty::NeedWriteback(0), "no line for a shadow");
+        assert_eq!(e.dirty_count(), e.dirty_scan());
+    }
+
+    /// **A line dirtied while its run is on the wire stays dirty.**
+    #[test]
+    fn a_write_racing_its_run_is_not_lost() {
+        let mut c = C::new(512, Mode::WriteBack);
+        dirty(&mut c, 4, 1);
+        let mut buf = vec![0u8; 512];
+        let r = c.checkout_run(u64::MAX, 1, &mut buf).unwrap();
+        dirty(&mut c, 4, 2);
+        c.checkin(&r, true);
+        assert_eq!(c.dirty_count(), 1, "the newer bytes still need writing");
+        let r = c.checkout_run(u64::MAX, 1, &mut buf).unwrap();
+        assert_eq!(buf[0], 2);
+        c.checkin(&r, false);
+        assert_eq!(c.dirty_count(), 1, "a failed write keeps the line dirty");
+    }
+
+    const N1: [u8; 11] = *b"WB1     DAT";
+
+    fn fresh() {
+        super::vfs_open_close::fresh_volume();
+        let _ = disk_events();
+    }
+
+    fn pattern(len: usize, seed: u8) -> Vec<u8> {
+        (0..len).map(|i| seed.wrapping_add((i % 251) as u8)).collect()
+    }
+
+    /// **A streaming write waits on nothing; fsync writes it as coalesced
+    /// requests, then flushes.** 12 data sectors of consecutive clusters
+    /// go out in at most two requests instead of twelve.
+    #[test]
+    fn a_streaming_write_is_queued_then_coalesced_at_fsync() {
+        let _g = serial();
+        fresh();
+        let f = fat32::fat32_open(fat32::Volume::assume_mounted(), b"/WB1.DAT",
+            fat32::open_flags::WRITE | fat32::open_flags::CREATE).expect("open");
+        let data = pattern(12 * 512, 3);
+        assert_eq!(fat32::fat32_write(f, &data), Ok(data.len()));
+        let ev = disk_events();
+        assert!(ev.is_empty(), "a queued write touched the device: {ev:?}");
+        assert_eq!(fat32::fat32_fsync(f), Ok(()));
+        let ev = disk_events();
+        let g = Geom::default();
+        let data_start = (g.rsvd as u64) + g.num_fats as u64 * g.fat_sz32 as u64;
+        let data_writes = ev.iter().filter(|e| matches!(e, DiskEvent::Write(s) if *s >= data_start)).count();
+        assert!(data_writes <= 3, "12 data sectors in {data_writes} requests: {ev:?}");
+        assert_eq!(ev.last(), Some(&DiskEvent::Flush), "fsync ends in a flush: {ev:?}");
+        let (cl, size) = fat32::fat32_lookup_root(&N1).expect("listed");
+        assert_eq!(size as usize, data.len());
+        let first = cluster_sector(&g, cl) as u64;
+        assert_eq!(disk_peek(first).unwrap(), data[..512], "the bytes are on the device");
+        let _ = fat32::fat32_close(f);
+    }
+
+    /// **A reader of the medium that is not FAT32 never reads a sector a
+    /// returned write left dirty**: `blkdev::read`'s observer writes it back
+    /// first.
+    ///
+    /// **Canary.** `wb-read-observer-canary`: the raw read sees the old bytes.
+    #[test]
+    fn a_raw_reader_sees_queued_writes() {
+        let _g = serial();
+        fresh();
+        let f = fat32::fat32_open(fat32::Volume::assume_mounted(), b"/WB1.DAT",
+            fat32::open_flags::WRITE | fat32::open_flags::CREATE).expect("open");
+        let data = pattern(512, 0x40);
+        assert_eq!(fat32::fat32_write(f, &data), Ok(512));
+        let (dirty, _) = fat32::fat32_writeback_dirty();
+        assert!(dirty > 0, "the write is queued");
+        // The data sector is the file's first cluster (first free: 3).
+        let s = cluster_sector(&Geom::default(), 3) as u64;
+        let mut raw = [0u8; 512];
+        blkdev::read(s, 1, &mut raw).unwrap();
+        assert_eq!(raw[..], data[..], "the raw reader must see the queued bytes");
+        let _ = fat32::fat32_close(f);
+    }
+
+    /// **A long external write drops only its own range**: the pending
+    /// writes of other sectors survive it and still reach the device.
+    ///
+    /// **Canary.** `wb-observer-drop-canary`: the whole cache is dropped,
+    /// dirty lines with it, and the file's bytes never reach the device.
+    #[test]
+    fn a_long_external_write_keeps_other_pending_writes() {
+        let _g = serial();
+        fresh();
+        let f = fat32::fat32_open(fat32::Volume::assume_mounted(), b"/WB1.DAT",
+            fat32::open_flags::WRITE | fat32::open_flags::CREATE).expect("open");
+        let data = pattern(512, 0x51);
+        assert_eq!(fat32::fat32_write(f, &data), Ok(512));
+        // 16 sectors near the end of the volume, far from the file.
+        let far = Geom::default().total_sectors as u64 - 16;
+        blkdev::write(far, 16, &[0xEEu8; 16 * 512]).unwrap();
+        assert_eq!(fat32::fat32_fsync(f), Ok(()));
+        let s = cluster_sector(&Geom::default(), 3) as u64;
+        assert_eq!(disk_peek(s).unwrap(), data[..], "the queued write was dropped");
+        let _ = fat32::fat32_close(f);
+    }
+
+    /// **A run read overlays the cache's newer lines** on what the device
+    /// returned: sector 1 of a 3-sector run is dirty, sector 0 is not
+    /// cached, so the run goes to the device and must not return sector 1's
+    /// old bytes.
+    ///
+    /// **Canary.** `wb-run-overlay-canary`.
+    #[test]
+    fn a_run_read_returns_the_queued_bytes_not_the_devices() {
+        let _g = serial();
+        fresh();
+        let old = pattern(3 * 512, 1);
+        assert_eq!(fat32::fat32_write_file(&N1, &old), Ok(()));
+        let (cl, _) = fat32::fat32_lookup_root(&N1).unwrap();
+        let s0 = cluster_sector(&Geom::default(), cl) as u32;
+        let f = fat32::fat32_open(fat32::Volume::assume_mounted(), b"/WB1.DAT", fat32::open_flags::WRITE).unwrap();
+        assert!(fat32::fat32_seek(f, fat32::SeekFrom::Start(512)).is_ok());
+        let new = pattern(512, 0x90);
+        assert_eq!(fat32::fat32_write(f, &new), Ok(512));
+        fat32::fat32_cache_invalidate(s0); // clean: just forgotten
+        let mut out = vec![0u8; 3 * 512];
+        assert_eq!(fat32::fat32_read_chain(cl, &mut out), 3 * 512);
+        assert_eq!(out[512..1024], new[..], "the run returned the device's stale sector");
+        assert_eq!(out[..512], old[..512]);
+        let _ = fat32::fat32_close(f);
+    }
+
+    /// **A VFS close of a FAT32 file queues; `sync` lands it.** The proxy's
+    /// close (`write_all`, the journaled whole-file write) touches no device;
+    /// the following `sync` writes it epoch by epoch with flushes between,
+    /// and the file is on the medium.
+    ///
+    /// **Canary.** `wb-close-flushes-canary`: the close waits on the device.
+    #[test]
+    fn a_vfs_close_queues_and_sync_lands_it() {
+        let _g = serial();
+        fresh();
+        let data = pattern(3000, 0x33);
+        let mut t = super::vfs::ScratchFds::new();
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/WB1.DAT", super::vfs::O_WRONLY | super::vfs::O_CREAT);
+        assert!(fd >= 0, "open");
+        assert_eq!(super::vfs::vfs_write(&mut t, fd, data.as_ptr(), data.len()), data.len() as i32);
+        let _ = disk_events();
+        assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+        let ev = disk_events();
+        assert!(ev.is_empty(), "the close waited on the device: {ev:?}");
+        assert_eq!(fat32::fat32_sync(), Ok(()));
+        let ev = disk_events();
+        let flushes = ev.iter().filter(|e| **e == DiskEvent::Flush).count();
+        assert!(flushes >= 2, "epochs separated by flushes: {ev:?}");
+        let (cl, size) = fat32::fat32_lookup_root(&N1).expect("listed");
+        assert_eq!(size as usize, data.len());
+        let first = cluster_sector(&Geom::default(), cl) as u64;
+        assert_eq!(disk_peek(first).unwrap(), data[..512]);
+    }
+
+    /// **A journal barrier is an epoch, not a device flush**: the queued
+    /// whole-file write issues no I/O at all.
+    ///
+    /// **Canary.** `wb-barrier-flushes-canary`: every barrier flushes.
+    #[test]
+    fn journal_barriers_queue_as_epochs() {
+        let _g = serial();
+        fresh();
+        assert_eq!(fat32::fat32_write_file_queued(&N1, &pattern(700, 9)), Ok(()));
+        assert_eq!(fat32::fat32_write_file_queued(&N1, &pattern(900, 10)), Ok(()));
+        let ev = disk_events();
+        assert!(ev.is_empty(), "a queued create and overwrite touched the device: {ev:?}");
+        assert_eq!(fat32::fat32_writeback_now(), Ok(()));
+        let (cl, size) = fat32::fat32_lookup_root(&N1).unwrap();
+        let mut out = vec![0u8; size as usize];
+        assert_eq!(fat32::fat32_read_chain(cl, &mut out), 900);
+        assert!(out == pattern(900, 10));
+    }
+
+    /// **A device that cannot flush mounts write-through**: write-back's
+    /// order is made of flushes, so without them every write goes to the
+    /// device at once, as before wave 15, and the journal fails closed.
+    #[test]
+    fn a_device_that_cannot_flush_mounts_write_through() {
+        let _g = serial();
+        let g = Geom::default();
+        let mut img = build(&g);
+        set_fat(&mut img, &g, 2, 0x0FFF_FFFF);
+        super::swap_medium(img);
+        fs_test_drivers::disk_flush_mode(fs_test_drivers::FlushMode::Unsupported);
+        assert_eq!(fat32::fat32_mount(), Ok(()));
+        let f = fat32::fat32_open(fat32::Volume::assume_mounted(), b"/WB1.DAT",
+            fat32::open_flags::WRITE | fat32::open_flags::CREATE).expect("open");
+        let _ = disk_events();
+        assert_eq!(fat32::fat32_write(f, &pattern(512, 1)), Ok(512));
+        let ev = disk_events();
+        fs_test_drivers::disk_flush_mode(fs_test_drivers::FlushMode::Ok);
+        let _ = fat32::fat32_close(f);
+        assert!(!ev.is_empty(), "the write must reach the device at once");
+        // Back to write-back for the next test's mount.
+        let _ = fat32::fat32_unmount(fat32::Volume::assume_mounted());
+        let _ = fat32::fat32_set_writeback(true);
+    }
+
+    /// xorshift64*, so a failing seed replays.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12; self.0 ^= self.0 << 25; self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: u64) -> u64 { self.next() % n.max(1) }
+    }
+
+    fn n83(i: usize) -> [u8; 11] {
+        let mut n = *b"F00     DAT";
+        n[1] = b'0' + (i / 10) as u8;
+        n[2] = b'0' + (i % 10) as u8;
+        n
+    }
+
+    /// **Power cut at a random point, dirty lines dropped: the volume stays
+    /// consistent.** A random mix of journaled creates and streaming writes
+    /// (some aged out by the `fs-wb` tick, some fsynced, some left dirty)
+    /// runs on a volatile-cache disk; the cut keeps everything flushed
+    /// before a random point of the device log plus a random subset of the
+    /// writes since the last flush, and loses the cache. After the remount:
+    /// the journal is idle, every listed file's chain is sound, and every
+    /// file whose durable step completed before the cut reads back exactly.
+    ///
+    /// **Canary.** `wb-flush-no-writeback-canary` (a barrier/fsync flushes
+    /// without writing the queue back): fsynced bytes are missing, or a
+    /// later epoch lands without an earlier one.
+    #[test]
+    fn a_power_cut_at_a_random_point_leaves_a_consistent_volume() {
+        let _g = serial();
+        let mut rng = Rng(0x5EED_2026_0A09);
+        let mut cuts = 0;
+        for round in 0..24 {
+            fresh();
+            let pristine = fs_test_drivers::disk_image();
+            disk_writeback();
+            let _ = disk_take_log();
+            // (name, bytes, log length when it became durable)
+            let mut done: Vec<([u8; 11], Vec<u8>, usize)> = Vec::new();
+            let mut logged = 0usize;
+            let mut log: Vec<LogEntry> = Vec::new();
+            let take = |log: &mut Vec<LogEntry>, logged: &mut usize| {
+                log.extend(disk_take_log());
+                *logged = log.len();
+            };
+            for i in 0..6 {
+                let name = n83(round % 4 * 6 + i);
+                let len = 1 + rng.below(1500) as usize;
+                let data = pattern(len, rng.next() as u8);
+                let kind = rng.below(3);
+                if kind == 0 {
+                    assert_eq!(fat32::fat32_write_file(&name, &data), Ok(()));
+                    take(&mut log, &mut logged);
+                    done.push((name, data, logged));
+                } else if kind == 1 {
+                    // The VFS close's shape: queued; durable only after a sync.
+                    assert_eq!(fat32::fat32_write_file_queued(&name, &data), Ok(()));
+                    if rng.below(2) == 0 {
+                        assert_eq!(fat32::fat32_sync(), Ok(()));
+                        take(&mut log, &mut logged);
+                        done.push((name, data, logged));
+                    }
+                } else {
+                    let mut path = b"/F00.DAT".to_vec();
+                    path[2] = name[1]; path[3] = name[2];
+                    let f = fat32::fat32_open(fat32::Volume::assume_mounted(), &path,
+                        fat32::open_flags::WRITE | fat32::open_flags::CREATE).expect("open");
+                    let half = len / 2;
+                    assert_eq!(fat32::fat32_write(f, &data[..half]), Ok(half));
+                    if rng.below(2) == 0 { fat32::fat32_writeback_tick(u64::MAX / 2); }
+                    assert_eq!(fat32::fat32_write(f, &data[half..]), Ok(len - half));
+                    if rng.below(3) == 0 {
+                        // Left open and dirty: the cut may take it.
+                        continue;
+                    }
+                    assert_eq!(fat32::fat32_fsync(f), Ok(()));
+                    take(&mut log, &mut logged);
+                    done.push((name, data, logged));
+                    let _ = fat32::fat32_close(f);
+                }
+            }
+            take(&mut log, &mut logged);
+            // The cut: a random point of the log; a random subset of the
+            // writes since the last flush before it survives.
+            let p = rng.below(log.len() as u64 + 1) as usize;
+            let last_flush = log[..p].iter().rposition(|e| *e == LogEntry::Flush).map_or(0, |k| k + 1);
+            let mut img = pristine.clone();
+            for (k, e) in log[..p].iter().enumerate() {
+                if let LogEntry::Write(s, d) = e {
+                    if k < last_flush || rng.below(2) == 0 {
+                        let off = *s as usize * SECTOR;
+                        img[off..off + SECTOR].copy_from_slice(d);
+                    }
+                }
+            }
+            let _ = disk_durable_image();
+            super::swap_medium(img);
+            assert_eq!(fat32::fat32_mount(), Ok(()), "round {round}: a cut image must mount");
+            assert!(fat32::fat32_journal_idle(), "round {round}: journal busy after mount");
+            for i in 0..24 {
+                let name = n83(i);
+                if let Err(why) = fat32::fat32_check_root_chain(&name) {
+                    panic!("round {round} cut {p}/{}: {}: {why}", log.len(), String::from_utf8_lossy(&name));
+                }
+            }
+            for (name, data, at) in &done {
+                if *at > last_flush { continue; }
+                let (cl, size) = fat32::fat32_lookup_root(name)
+                    .unwrap_or_else(|_| panic!("round {round}: a durable file is gone"));
+                assert_eq!(size as usize, data.len(), "round {round}: durable size");
+                let mut out = vec![0u8; data.len()];
+                assert_eq!(fat32::fat32_read_chain(cl, &mut out), data.len());
+                assert!(out == *data, "round {round}: a durable file's bytes differ");
+            }
+            cuts += 1;
+        }
+        assert_eq!(cuts, 24);
+    }
+}
+
+

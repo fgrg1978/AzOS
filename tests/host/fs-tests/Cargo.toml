@@ -33,6 +33,29 @@ fatcache-observer-canary = []
 fatcache-writethrough-canary = []
 fatcache-token-canary = []
 fatcache-run-bypass-canary = []
+# Wave 15 (WRITEBACK) canaries, one per write-back property of the block
+# cache (crates/fs/fs/src/bcache.rs, fat32.rs). Each must turn an fs-tests
+# `writeback` test red. Never in a real build.
+#   epoch-merge:       an older epoch's dirty line is overwritten in place
+#   no-ordering-flush: a run of a later epoch goes out with no flush first
+#   no-coalesce:       every run is one block (no multi-sector requests)
+#   observer-drop:     a long external write drops EVERY dirty line
+#   run-overlay:       a run read keeps the device's bytes over dirty lines
+#   read-observer:     a reader that is not FAT32 reads a sector still dirty
+#   flush-no-writeback: a journal barrier/fsync flushes without writing back
+#   no-shadow:         re-dirtying an older epoch writes back instead of shadowing
+#   barrier-flushes:   a journal barrier is a device flush (the write-through cost)
+#   close-flushes:     a VFS close of a FAT32 file waits for the device again
+wb-epoch-merge-canary = []
+wb-no-ordering-flush-canary = []
+wb-no-coalesce-canary = []
+wb-observer-drop-canary = []
+wb-run-overlay-canary = []
+wb-read-observer-canary = []
+wb-flush-no-writeback-canary = []
+wb-no-shadow-canary = []
+wb-barrier-flushes-canary = []
+wb-close-flushes-canary = []
 #   ro-stream-off: read-only opens take the whole-file proxy again
 #   write-gen:     writes no longer move FAT32's write generation
 ro-stream-off-canary = []

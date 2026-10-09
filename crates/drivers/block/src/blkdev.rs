@@ -234,10 +234,38 @@ pub fn rt_io_check() {
     }
 }
 
+/// Read the medium. A block-cache owner that keeps writes back
+/// ([`crate::write_observer::before_read`], FAT32 under Kconfig
+/// `FS_WRITEBACK`) first writes any it holds for these sectors, so this
+/// reader never sees a sector older than a write that already returned.
 #[inline]
 pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
     rt_io_check();
+    crate::write_observer::before_read(sector, count);
     io(|| BACKEND.read(sector, count, buf))
+}
+
+/// [`read`] without the read observer: for the cache owner itself, whose
+/// reads already look in its cache first.
+#[inline]
+pub fn read_quiet(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+    rt_io_check();
+    io(|| BACKEND.read(sector, count, buf))
+}
+
+/// For a reader of the boot medium that does not go through [`read`]
+/// (ring-3 `SYS_DISK_READ`, which calls `virtio::blk` directly): call
+/// before reading.
+#[inline]
+pub fn note_external_read(sector: u64, count: u32) {
+    crate::write_observer::before_read(sector, count);
+}
+
+/// Install the observer every [`read`] calls first (the FAT32 block cache
+/// in write-back mode).
+#[inline]
+pub fn set_read_observer(f: fn(u64, u32)) {
+    crate::write_observer::set_read(f);
 }
 
 /// Write the medium, then tell the block-cache owner which sectors moved

@@ -559,6 +559,7 @@ pub fn fat32_claims_held_by(tid: u32) -> u32 {
     use core::sync::atomic::Ordering::SeqCst;
     if tid == 0 { return 0; }
     FAT_SECTOR_OWNER.iter().filter(|o| o.load(SeqCst) == tid).count() as u32
+        + (WB_OWNER.load(SeqCst) == tid) as u32
 }
 
 /// `fat-pi-io-probe` (the `lat-fat` smoke): FAT32 device I/O issued while
@@ -784,7 +785,7 @@ struct BlkDev;
 impl crate::bcache::BlockIo for BlkDev {
     type FlushErr = FsError;
     fn read(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-        azos_drv_block::blkdev::read(dev_lba(lba), count, buf)
+        azos_drv_block::blkdev::read_quiet(dev_lba(lba), count, buf)
     }
     fn write(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
         // Quiet: this runs with `SECTOR_CACHE` held (`device_flush`'s
@@ -794,6 +795,246 @@ impl crate::bcache::BlockIo for BlkDev {
     fn flush(&mut self) -> Result<(), FsError> {
         device_flush_raw()
     }
+}
+
+// ── Write-back (wave 15, WRITEBACK) ─────────────────────────────────────────
+//
+// Kconfig `FS_WRITEBACK`: the cache above runs in `Mode::WriteBack`. A
+// `write_sector` dirties a line (`BlockCache::write_dirty`) and returns; the
+// device sees the dirty lines later, oldest epoch first, as coalesced
+// multi-sector runs (`wb_write_back`), from one of:
+//
+// * `device_flush` — every journal barrier, `fat32_fsync`, `fat32_sync*`,
+//   and `fat32_write_file`'s final flush: everything dirty goes out, then a
+//   device flush. Every durability point of the write-through design is a
+//   `device_flush`, so each still returns only once its writes are durable.
+// * the `fs-wb` task (`fat32_writeback_tick`): by age
+//   (`FS_WRITEBACK_MAX_AGE_MS`) and dirty-line watermark.
+// * a writer whose block's line holds an older epoch, or whose set has no
+//   clean line (`Dirty::NeedWriteback`): it writes back through that epoch
+//   itself, then retries.
+// * a reader of the medium that is not this file (`blkdev::read`'s
+//   observer, `fat32_before_medium_read`): dirty lines in its range go out
+//   first, so it never reads a stale sector.
+//
+// Ordering. `device_flush` closes the cache's epoch, so the epochs are the
+// intervals between this file's flushes. Within one, the device may persist
+// any subset of the writes even with write-through (a volatile write cache
+// confirms a write it may still lose); across them, `checkout_run` puts a
+// flush between the last write of one epoch and the first of the next. A
+// cut therefore leaves a state the write-through design could leave too:
+// crash consistency is unchanged, and the journal's recovery covers it
+// (`tests/host/fs-tests` `writeback`: every cut of every epoch).
+//
+// No lock across the device (owner rule F1): runs are copied out under
+// `SECTOR_CACHE` into `WB_STAGE` and written with it released. One flusher
+// at a time (`WB_OWNER`, a claim like the FAT-sector ones: a sleeping wait,
+// never a spinlock across I/O): a second one could put an epoch-`e` block on
+// the wire while an older one was still in flight, which no flush orders.
+// Lock order: FAT-sector claim -> write-back claim -> `SECTOR_CACHE`.
+
+/// Kconfig `FS_WRITEBACK`.
+const WB: bool = azos_limits::FS_WRITEBACK;
+
+/// Sectors in one coalesced write-back request (Kconfig `FS_WRITEBACK_RUN_KB`).
+const WB_RUN_SECTORS: usize = if WB {
+    let n = azos_limits::FS_WRITEBACK_RUN_KB * 1024 / SECTOR_SIZE;
+    if n == 0 { 1 } else { n }
+} else {
+    1
+};
+
+/// The staging buffer a run is copied into; only the write-back claim's
+/// holder touches it.
+struct WbStage(core::cell::UnsafeCell<[u8; WB_RUN_SECTORS * SECTOR_SIZE]>);
+// SAFETY: accessed only by the holder of the write-back claim (`WbClaim`).
+unsafe impl Sync for WbStage {}
+static WB_STAGE: WbStage = WbStage(core::cell::UnsafeCell::new([0u8; WB_RUN_SECTORS * SECTOR_SIZE]));
+
+/// The task holding the write-back claim (`caller_tid`), 0 when free.
+static WB_BUSY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static WB_OWNER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static WB_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static WB_WQ: azos_sync::waitqueue::WaitQueue = azos_sync::waitqueue::WaitQueue::new();
+
+/// The mode the next configure of the cache takes: `WB` until
+/// [`fat32_set_writeback`] changes it.
+static WB_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(WB);
+
+/// Sticky: a write-back no caller was waiting for (the task, a reader's)
+/// failed. The next `fat32_sync_checked` / `fat32_fsync` reports `Io` and
+/// clears it (Linux's errseq, reduced to one volume-wide bit).
+static WB_ERROR: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// `WB_CLOCK()` (milliseconds) when the cache went from clean to dirty;
+/// 0 while clean. The age the `fs-wb` task compares.
+static WB_DIRTY_SINCE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// `fn() -> u64` milliseconds, registered by the kernel (`fat32_writeback_hooks`);
+/// 0 until then (host tests: age is driven through `fat32_writeback_tick`).
+static WB_CLOCK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// `fn()` that wakes the `fs-wb` task (watermark crossed); 0 = none.
+static WB_WAKE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Register the kernel's clock (milliseconds) and the `fs-wb` task's waker.
+pub fn fat32_writeback_hooks(clock_ms: fn() -> u64, wake: fn()) {
+    use core::sync::atomic::Ordering::Release;
+    WB_CLOCK.store(clock_ms as usize, Release);
+    WB_WAKE.store(wake as usize, Release);
+}
+
+fn wb_now_ms() -> u64 {
+    let f = WB_CLOCK.load(core::sync::atomic::Ordering::Acquire);
+    if f == 0 { return 1; }
+    // SAFETY: only `fat32_writeback_hooks` stores here, and it stores a `fn() -> u64`.
+    let f: fn() -> u64 = unsafe { core::mem::transmute::<usize, fn() -> u64>(f) };
+    f().max(1)
+}
+
+fn wb_wake() {
+    let f = WB_WAKE.load(core::sync::atomic::Ordering::Acquire);
+    if f != 0 {
+        // SAFETY: only `fat32_writeback_hooks` stores here, and it stores a `fn()`.
+        let f: fn() = unsafe { core::mem::transmute::<usize, fn()>(f) };
+        f();
+    }
+}
+
+/// The write-back claim; released on drop.
+struct WbClaim;
+
+/// Take the write-back claim, sleeping while another flusher holds it.
+/// Never called with a `SpinLock` held; never nested.
+fn wb_claim() -> WbClaim {
+    use core::sync::atomic::Ordering::SeqCst;
+    loop {
+        let gen = WB_GEN.load(SeqCst);
+        if !WB_BUSY.swap(true, SeqCst) {
+            WB_OWNER.store(azos_sync::waitqueue::caller_tid(), SeqCst);
+            return WbClaim;
+        }
+        WB_WQ.wait_if(|| WB_GEN.load(SeqCst) == gen);
+    }
+}
+
+impl Drop for WbClaim {
+    fn drop(&mut self) {
+        use core::sync::atomic::Ordering::SeqCst;
+        WB_OWNER.store(0, SeqCst);
+        WB_BUSY.store(false, SeqCst);
+        WB_GEN.fetch_add(1, SeqCst);
+        WB_WQ.wake_all();
+    }
+}
+
+/// Write back every dirty line of an epoch `<= upto`, oldest epoch first, as
+/// coalesced runs, `SECTOR_CACHE` released across each device request. A
+/// run of a later epoch than one already written since the last flush is
+/// preceded by a device flush (the epoch rule; `Unsupported` passes, as in
+/// `fat32_fsync`'s ordering flush: such a device gives no ordering to keep).
+/// On a failed write the run stays dirty, nothing later is written, and the
+/// error is returned.
+fn wb_write_back(_claim: &WbClaim, upto: u64) -> Result<(), FsError> {
+    loop {
+        // SAFETY: the claim makes this task the stage's only user.
+        let stage = unsafe { &mut *WB_STAGE.0.get() };
+        let run = SECTOR_CACHE.lock().checkout_run(upto, WB_RUN_SECTORS, stage);
+        let Some(run) = run else {
+            if SECTOR_CACHE.lock().dirty_count() == 0 {
+                WB_DIRTY_SINCE.store(0, core::sync::atomic::Ordering::Relaxed);
+            }
+            return Ok(());
+        };
+        if run.flush_first {
+            match device_flush_raw() {
+                Ok(()) | Err(FsError::Unsupported) => {}
+                Err(e) => return Err(e),
+            }
+            SECTOR_CACHE.lock().note_ordering_flush();
+        }
+        pi_io_probe();
+        let bytes = run.sectors as usize * SECTOR_SIZE;
+        let r = azos_drv_block::blkdev::write_quiet(dev_lba(run.lba), run.sectors, &stage[..bytes]);
+        SECTOR_CACHE.lock().checkin(&run, r.is_ok());
+        if r.is_err() {
+            return Err(FsError::Io);
+        }
+    }
+}
+
+/// The `fs-wb` task's pass at `now_ms`: write everything back and flush when
+/// the oldest unsynced write is `FS_WRITEBACK_MAX_AGE_MS` old or the dirty
+/// share reached `FS_WRITEBACK_WATERMARK_PCT`. Returns whether it wrote. A
+/// failure is kept for the next fsync/sync (`WB_ERROR`).
+pub fn fat32_writeback_tick(now_ms: u64) -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    if !WB { return false; }
+    let (dirty, lines) = {
+        let c = SECTOR_CACHE.lock();
+        (c.dirty_count(), c.line_count())
+    };
+    if dirty == 0 { return false; }
+    let since = WB_DIRTY_SINCE.load(Relaxed);
+    let aged = since != 0
+        && now_ms.saturating_sub(since) >= azos_limits::FS_WRITEBACK_MAX_AGE_MS as u64;
+    if !aged && !wb_over_watermark(dirty, lines) { return false; }
+    if device_flush().is_err() {
+        WB_ERROR.store(true, Relaxed);
+    }
+    true
+}
+
+/// Write every queued write back and flush the device now (what `sync`
+/// does without settling the journal). A no-op flush under write-through.
+pub fn fat32_writeback_now() -> Result<(), FsError> {
+    device_flush()
+}
+
+/// The `fs-wb` task's wait between passes: a quarter of the age bound.
+pub fn fat32_writeback_period_ms() -> u64 {
+    (azos_limits::FS_WRITEBACK_MAX_AGE_MS as u64 / 4).max(1)
+}
+
+/// Dirty lines and lines in the FAT32 cache (diagnostics, the `fs-wb` rows).
+pub fn fat32_writeback_dirty() -> (usize, usize) {
+    let c = SECTOR_CACHE.lock();
+    (c.dirty_count(), c.line_count())
+}
+
+fn wb_over_watermark(dirty: usize, lines: usize) -> bool {
+    dirty * 100 >= lines * azos_limits::FS_WRITEBACK_WATERMARK_PCT as usize
+}
+
+/// `blkdev::read`'s observer: a reader that is not this file is about to
+/// read MEDIUM sectors `[lba, lba + count)`. Dirty lines in that range go to
+/// the device first (all of them, oldest epoch first: a partial write-back
+/// could not keep the epoch rule). Called with no FAT32 lock held.
+pub fn fat32_before_medium_read(lba: u64, count: u32) {
+    use core::sync::atomic::Ordering::Relaxed;
+    if !WB || cfg!(feature = "wb-read-observer-canary") { return; }
+    let base = VOL_BASE.load(Relaxed);
+    let end = base.saturating_add(VOL_SECTORS.load(Relaxed));
+    let first = lba.max(base);
+    let last = lba.saturating_add(count as u64).min(end);
+    if count == 0 || first >= last { return; }
+    if !SECTOR_CACHE.lock().any_dirty_in(first - base, last - first) { return; }
+    let claim = wb_claim();
+    if wb_write_back(&claim, u64::MAX).is_err() {
+        WB_ERROR.store(true, Relaxed);
+    }
+}
+
+/// Switch the FAT32 cache between write-back and write-through at run time
+/// (host tests; a kernel canary). Writes every dirty line back first.
+pub fn fat32_set_writeback(on: bool) -> Result<(), FsError> {
+    if on && !WB { return Err(FsError::Unsupported); }
+    WB_ON.store(on, core::sync::atomic::Ordering::Relaxed);
+    let claim = wb_claim();
+    wb_write_back(&claim, u64::MAX)?;
+    let mut c = SECTOR_CACHE.lock();
+    if c.line_count() == 0 { return Ok(()); }
+    let mode = if on { crate::bcache::Mode::WriteBack } else { crate::bcache::Mode::WriteThrough };
+    c.configure(SECTOR_SIZE, mode, 0).map_err(|_| FsError::Io)
 }
 
 // ── Where the volume starts on the medium ────────────────────────────────────
@@ -881,7 +1122,7 @@ fn select_volume() -> (u64, u64) {
             None => continue,
         };
         let mut s0 = [0u8; SECTOR_SIZE];
-        if azos_drv_block::blkdev::read(start, 1, &mut s0).is_err() {
+        if azos_drv_block::blkdev::read_quiet(start, 1, &mut s0).is_err() {
             continue;
         }
         let bpb = unsafe { &*(s0.as_ptr() as *const Fat32Bpb) };
@@ -907,6 +1148,7 @@ fn select_volume() -> (u64, u64) {
 pub fn fat32_locks_available() -> bool {
     FAT32.try_lock().is_some() && SECTOR_CACHE.try_lock().is_some()
         && FAT_SECTOR_BUSY.load(core::sync::atomic::Ordering::SeqCst) == 0
+        && !WB_BUSY.load(core::sync::atomic::Ordering::SeqCst)
 }
 
 /// Invalidate every cache line touching `sector` — call after an
@@ -948,9 +1190,12 @@ pub fn fat32_on_medium_write(lba: u64, count: u32) {
     let n = last - first;
     {
         let mut c = SECTOR_CACHE.lock();
-        if n > EXTERNAL_WRITE_RANGE_MAX {
+        if n > EXTERNAL_WRITE_RANGE_MAX && c.dirty_count() == 0 {
             c.invalidate_all();
         } else {
+            // Write-back with dirty lines: `invalidate_range` drops exactly
+            // the range (one O(lines) scan past a set's worth), never the
+            // pending writes of other sectors.
             c.invalidate_range(first - base, n);
         }
     }
@@ -967,7 +1212,9 @@ fn fat32_cache_reset() {
             // First mount: O(lines) once. Cannot fail: 512 is a valid block
             // size for any SECTOR_CACHE_BYTES (a multiple of 512), and a
             // write-through cache is never dirty.
-            let _ = c.configure(SECTOR_SIZE, crate::bcache::Mode::WriteThrough, 0);
+            let on = WB && WB_ON.load(core::sync::atomic::Ordering::Relaxed);
+            let mode = if on { crate::bcache::Mode::WriteBack } else { crate::bcache::Mode::WriteThrough };
+            let _ = c.configure(SECTOR_SIZE, mode, 0);
         } else {
             // Every later mount: a generation bump, O(1).
             c.invalidate_all();
@@ -978,6 +1225,9 @@ fn fat32_cache_reset() {
     // new value.
     write_gen_bump();
     azos_drv_block::blkdev::set_write_observer(fat32_on_medium_write);
+    if WB {
+        azos_drv_block::blkdev::set_read_observer(fat32_before_medium_read);
+    }
 }
 
 /// Drop every cache line, regardless of which sector it holds.
@@ -1013,7 +1263,7 @@ fn read_sector(sector: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), ()> {
     // Miss — fetch from the device with the cache lock released.
     crate::census::count(crate::census::DEV_READS);
     pi_io_probe();
-    azos_drv_block::blkdev::read(dev_lba(sector as u64), 1, buf)?;
+    azos_drv_block::blkdev::read_quiet(dev_lba(sector as u64), 1, buf)?;
     SECTOR_CACHE.lock().install(sector as u64, buf, token);
     Ok(())
 }
@@ -1249,7 +1499,26 @@ pub fn fat32_mount() -> Result<(), ()> {
 
     // Recover from any incomplete operations before power loss.
     drop(v);
+    // Write-back orders its epochs with device flushes; a device that cannot
+    // flush gives no order, so this mount stays write-through (whose journal
+    // barriers then refuse, fail closed, as before).
+    if WB && WB_ON.load(core::sync::atomic::Ordering::Relaxed) {
+        let wt = matches!(device_flush_raw(), Err(FsError::Unsupported));
+        let mut c = SECTOR_CACHE.lock();
+        let want = if wt { crate::bcache::Mode::WriteThrough } else { crate::bcache::Mode::WriteBack };
+        if c.mode() != want && c.dirty_count() == 0 {
+            let _ = c.configure(SECTOR_SIZE, want, 0);
+        }
+    }
     fat32_journal_recover()?;
+    // Write-back: what recovery repaired is on the medium before the volume
+    // is used (a second cut must not find the same journal record again).
+    if WB && SECTOR_CACHE.lock().dirty_count() != 0 {
+        match device_flush() {
+            Ok(()) | Err(FsError::Unsupported) => {}
+            Err(_) => return Err(()),
+        }
+    }
 
     Ok(())
 }
@@ -1323,10 +1592,17 @@ fn read_run_cached(first: u32, run: u32, dst: &mut [u8]) -> Result<(), ()> {
     };
     let o = hit as usize * SECTOR_SIZE;
     crate::census::count(crate::census::DEV_READS);
-    azos_drv_block::blkdev::read(dev_lba((first + hit) as u64), run - hit, &mut dst[o..])?;
+    azos_drv_block::blkdev::read_quiet(dev_lba((first + hit) as u64), run - hit, &mut dst[o..])?;
     for k in hit..run {
         let o = k as usize * SECTOR_SIZE;
         let mut c = SECTOR_CACHE.lock();
+        // Write-back: a line present now is newer than the device's copy
+        // (dirty, or written after the read) — it answers, not the device.
+        if WB && c.mode() == crate::bcache::Mode::WriteBack && !cfg!(feature = "wb-run-overlay-canary")
+            && c.peek((first + k) as u64, &mut dst[o..o + SECTOR_SIZE])
+        {
+            continue;
+        }
         // The canary installs whatever the device returned, however stale:
         // the token is re-read after the fact instead of before the read.
         let t = if cfg!(feature = "fatcache-token-canary") { c.lookup_miss_token() } else { token };
@@ -1732,6 +2008,30 @@ pub fn fat32_mounted() -> bool {
 /// fresh contents (write-through). Without invalidation a later
 /// read_sector() would return stale cached data even after a write.
 fn write_sector(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
+    if WB {
+        loop {
+            let r = SECTOR_CACHE.lock().write_dirty(sector as u64, buf);
+            match r {
+                crate::bcache::Dirty::Done { first } => {
+                    if first {
+                        WB_DIRTY_SINCE.store(wb_now_ms(), core::sync::atomic::Ordering::Relaxed);
+                    }
+                    write_gen_bump();
+                    let (dirty, lines) = fat32_writeback_dirty();
+                    if wb_over_watermark(dirty, lines) { wb_wake(); }
+                    return Ok(());
+                }
+                crate::bcache::Dirty::NeedWriteback(epoch) => {
+                    let claim = wb_claim();
+                    if wb_write_back(&claim, epoch).is_err() {
+                        write_gen_bump();
+                        return Err(());
+                    }
+                }
+                crate::bcache::Dirty::Uncached => break,
+            }
+        }
+    }
     // Quiet: this path keeps the cache coherent itself, just below; the
     // block layer's observer is for writers that do not.
     // Gate canary only: the bump BEFORE the bytes land (the class of order
@@ -2446,6 +2746,20 @@ pub fn fat32_write_file(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
     }
 }
 
+/// [`fat32_write_file`] without its final flush, under write-back: the
+/// journaled create/overwrite is queued in the cache, its steps ordered by
+/// epochs, and returns without waiting on the device. A cut before the
+/// write-back leaves the old file or the new one, as for the durable call;
+/// what is not promised is WHICH until an fsync/sync (or the `fs-wb` task's
+/// age bound) has run. The VFS proxy's close and fsync use it (fsync then
+/// flushes: `FileSystem::fsync`). Write-through: exactly `fat32_write_file`.
+pub fn fat32_write_file_queued(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
+    if !wb_active() || cfg!(feature = "wb-close-flushes-canary") {
+        return fat32_write_file(name83, data);
+    }
+    write_file_journaled(name83, data)
+}
+
 /// The journaled create/overwrite protocol behind [`fat32_write_file`].
 fn write_file_journaled(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
     if !FAT32.lock().mounted { return Err(()); }
@@ -2669,6 +2983,26 @@ pub fn fat32_unlink_path(name: &[u8]) -> Result<(), ()> {
 /// before the cache was shared (`tests/host/fs-tests` `durability`/`power_cut`
 /// assert that sequence).
 fn device_flush() -> Result<(), FsError> {
+    if WB && SECTOR_CACHE.lock().mode() == crate::bcache::Mode::WriteBack {
+        // Write-back: under the claim, close the epoch FIRST (a write made
+        // after this point is not this flush's to make durable, and cannot
+        // keep it running), write back through it, then flush the device.
+        let claim = wb_claim();
+        let upto = {
+            let mut c = SECTOR_CACHE.lock();
+            let e = c.epoch();
+            c.barrier();
+            e
+        };
+        if !cfg!(feature = "wb-flush-no-writeback-canary") {
+            wb_write_back(&claim, upto)?;
+        }
+        let r = device_flush_raw();
+        if r.is_ok() {
+            SECTOR_CACHE.lock().note_flushed();
+        }
+        return r;
+    }
     {
         let mut c = SECTOR_CACHE.lock();
         match c.write_back_all(&mut BlkDev) {
@@ -2710,7 +3044,27 @@ fn device_flush_raw() -> Result<(), FsError> {
 /// place, its caller is told the result is not durable either way, and
 /// nothing is replayed from it at mount.
 fn journal_barrier() -> Result<(), ()> {
-    device_flush().map_err(|_| ())
+    order_barrier().map_err(|_| ())
+}
+
+/// Whether the FAT32 cache is in write-back mode now.
+fn wb_active() -> bool {
+    WB && SECTOR_CACHE.lock().mode() == crate::bcache::Mode::WriteBack
+}
+
+/// Every write issued before this reaches the medium before any issued
+/// after it. Write-through: a device flush (`device_flush`). Write-back: the
+/// cache's epoch closes — no I/O; the write-back puts the flush between the
+/// two epochs when it writes them (`checkout_run`'s `flush_first`), and a
+/// cut leaves the same states as with the flush here. A write-back mount
+/// requires a device that flushes (`fat32_mount` probes it), so the
+/// fail-closed rule for `Unsupported` above holds by construction.
+fn order_barrier() -> Result<(), FsError> {
+    if wb_active() && !cfg!(feature = "wb-barrier-flushes-canary") {
+        SECTOR_CACHE.lock().barrier();
+        return Ok(());
+    }
+    device_flush()
 }
 
 /// `true` when the journal sector holds no PENDING or COMMITTED record —
@@ -2780,7 +3134,13 @@ fn journal_settle() -> Result<(), ()> {
 pub fn fat32_sync_checked() -> Result<(), FsError> {
     if !FAT32.lock().mounted { return Err(FsError::NotMounted); }
     journal_settle().map_err(|()| FsError::Io)?;
-    device_flush()
+    device_flush()?;
+    wb_take_error()
+}
+
+/// `Err(Io)` once after a write-back no caller waited for failed.
+fn wb_take_error() -> Result<(), FsError> {
+    if WB_ERROR.swap(false, core::sync::atomic::Ordering::Relaxed) { Err(FsError::Io) } else { Ok(()) }
 }
 
 /// [`fat32_sync_checked`] with the error folded to `()`, for the callers and
@@ -3285,7 +3645,7 @@ fn dir_insert(
     // (a device that cannot flush orders nothing, as before); an I/O error
     // is. Once per directory extension, never on the common insert.
     let first_sector = match filled {
-        Ok(sec) if matches!(device_flush(), Ok(()) | Err(FsError::Unsupported)) => sec,
+        Ok(sec) if matches!(order_barrier(), Ok(()) | Err(FsError::Unsupported)) => sec,
         _ => {
             fat32_free_chain(new_clus);
             return Err(FsError::Io);
@@ -3846,7 +4206,7 @@ pub fn fat32_seek(file: Fat32File, whence: SeekFrom) -> Result<u32, FsError> {
 pub fn fat32_fsync(file: Fat32File) -> Result<(), FsError> {
     let snapshot = snapshot_handle(file)?;
     if !snapshot.dirty { return Ok(()); }
-    match device_flush() {
+    match order_barrier() {
         Ok(()) | Err(FsError::Unsupported) => {}
         Err(e) => return Err(e),
     }
@@ -3858,6 +4218,7 @@ pub fn fat32_fsync(file: Fat32File) -> Result<(), FsError> {
     )?;
     let _ = journal_settle();
     device_flush()?;
+    wb_take_error()?;
     with_handle(file, |e| { e.dirty = false; Ok(()) })
 }
 
@@ -4160,7 +4521,9 @@ impl crate::vfs::FileSystem for Fat32Fs {
     #[inline]
     fn write_all(&self, key: &crate::vfs::InodeKey, src: &[u8]) -> Result<(), ()> {
         let name83: [u8; 11] = key.bytes[..11].try_into().map_err(|_| ())?;
-        fat32_write_file(&name83, src)
+        // Queued under write-back (wave 15): a close is not a durability
+        // point; `fsync` (below, `fat32_sync_checked`) is.
+        fat32_write_file_queued(&name83, src)
     }
 
     /// Deletes the directory entry and then frees the cluster chain, which
@@ -4307,7 +4670,8 @@ impl crate::vfs::FileSystem for Fat32Fs {
     fn create(&self, key: &crate::vfs::InodeKey) -> Result<(), crate::vfs::FsErr> {
         let name83: [u8; 11] = key.bytes[..11].try_into().map_err(|_| crate::vfs::FsErr::Invalid)?;
         if fat32_lookup_root(&name83).is_ok() { return Ok(()); }
-        fat32_write_file(&name83, &[]).map_err(|()| crate::vfs::FsErr::Io)
+        // Queued under write-back, like `write_all`: durable at fsync/sync.
+        fat32_write_file_queued(&name83, &[]).map_err(|()| crate::vfs::FsErr::Io)
     }
 
     /// Every length through the journaled whole-file write, the path every
@@ -4333,7 +4697,7 @@ impl crate::vfs::FileSystem for Fat32Fs {
         if keep > 0 && fat32_read_chain(e.cluster, &mut buf[..keep]) != keep {
             return Err(FsErr::Io);
         }
-        fat32_write_file(&name83, &buf).map_err(|()| FsErr::Io)
+        fat32_write_file_queued(&name83, &buf).map_err(|()| FsErr::Io)
     }
 
     /// An empty root-directory subdirectory: its dirent is removed first
@@ -4540,7 +4904,12 @@ fn fat32_free_clusters_scan() -> Result<u32, ()> {
         let first = s.checked_mul((SECTOR_SIZE / 4) as u32).ok_or(())?;
         if first >= last { break; }
         let lba = fat_start.checked_add(s).ok_or(())?;
-        azos_drv_block::blkdev::read(dev_lba(lba as u64), 1, &mut buf)?;
+        // The cache first: under write-back it may hold a FAT sector the
+        // device does not have yet. Not installed on a miss (a scan of the
+        // whole FAT would evict everything hot).
+        if !SECTOR_CACHE.lock().peek(lba as u64, &mut buf) {
+            azos_drv_block::blkdev::read_quiet(dev_lba(lba as u64), 1, &mut buf)?;
+        }
         for k in 0..SECTOR_SIZE / 4 {
             let c = first + k as u32;
             if c < FAT32_FIRST_DATA_CLUSTER { continue; }

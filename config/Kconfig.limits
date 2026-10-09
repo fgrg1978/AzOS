@@ -956,6 +956,87 @@ config FS_BLOCK_CACHE_KB
       per 512 B line (6.25 %), the same on riscv64 and aarch64: 544 KiB at
       edge's 512, 68 KiB at embedded's 64.
 
+config FS_WRITEBACK
+    bool "FAT32 write-back block cache (writes queue in RAM; fsync/sync make them durable)"
+    default y if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
+    default y
+    help
+      crates/fs/fs/src/fat32.rs, crates/fs/fs/src/bcache.rs: FAT32 writes
+      dirty the block cache (FS_BLOCK_CACHE_KB) instead of waiting on the
+      device. A journal barrier closes an epoch without I/O; dirty lines go
+      out oldest epoch first with a device flush between epochs, and
+      contiguous dirty sectors of one epoch as one multi-sector request.
+      fsync, sync and every durable record (e-stop and SAFETY records, the
+      log flusher, OTA and boot-good marks, CRASH.LOG) still reach the device
+      and are flushed before their call returns; a VFS close queues. The
+      `fs-wb` task writes the rest back by age (FS_WRITEBACK_MAX_AGE_MS) and
+      dirty-line watermark (FS_WRITEBACK_WATERMARK_PCT). Crash consistency:
+      a cut leaves a prefix of epochs plus part of one, the same states the
+      write-through journal's flushes allow. A device that cannot flush
+      mounts write-through.
+
+      Cost: one kernel task (KERNEL_STACK_SIZE_KB) and the run buffer
+      (FS_WRITEBACK_RUN_KB) of RAM; per write, a cache copy instead of a
+      device request. n: write-through, every write waits on the device
+      (the pre-wave-15 behaviour) and the task and buffer are not built.
+
+config FS_WRITEBACK_MAX_AGE_MS
+    int "FAT32 write-back: oldest unsynced write before the fs-wb task writes it (ms)"
+    range 50 60000
+    default 1000 if DOMAIN_ROBOT
+    default 5000 if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
+    default 5000
+    help
+      The bound on how long a write that no fsync/sync followed stays only
+      in RAM (and is lost at a power cut). The robot domain keeps 1 s; every
+      other domain 5 s (Linux's dirty_expire is 30 s). The task wakes every
+      quarter of this, so the bound is this plus a quarter.
+
+      Cost: lower means more, smaller device requests and more flushes; a
+      wake-up of the task (a few hundred instructions when nothing is dirty)
+      every quarter period.
+
+config FS_WRITEBACK_WATERMARK_PCT
+    int "FAT32 write-back: dirty share of the cache that wakes the fs-wb task (%)"
+    range 5 95
+    default 25 if PROFILE_EMBEDDED
+    default 50 if PROFILE_EDGE || PROFILE_FLEET
+    default 50
+    help
+      When this share of the cache's lines is dirty, a writer wakes the
+      fs-wb task instead of waiting for the age. A writer that finds its
+      set with no clean line writes back itself whatever this is.
+
+      Cost: lower bounds the RAM held by unsynced data and the work a later
+      fsync does; higher coalesces more.
+
+config FS_WRITEBACK_RUN_KB
+    int "FAT32 write-back: largest single device write of a coalesced run (KiB)"
+    range 1 1024
+    default 16 if PROFILE_EMBEDDED
+    default 64 if PROFILE_EDGE || PROFILE_FLEET
+    default 64
+    help
+      Consecutive dirty sectors of one epoch are copied into a static
+      buffer of this size and written as one request (the virtio-blk driver
+      splits it over its in-flight slots, VIRTIO_BLK_SLOT_KB each).
+
+      Cost: this many KiB of RAM (.bss); a larger run is fewer requests.
+
+config FS_WRITEBACK_PRIORITY
+    int "FAT32 write-back task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 20
+    help
+      kernel/src/boot/sched.rs, `fs-wb`: the task that writes the FAT32
+      cache's dirty lines back by age and watermark. Never real-time (owner
+      rule: an RT task never does block I/O); below the log flusher (12) so
+      durable records go first.
+
+      Cost: none beyond the task. A smaller number writes back sooner under
+      CPU load.
+
 config FAT32_SECTOR_CLAIM_SLOTS
     int "FAT32 FAT-sector claim slots (1-64; concurrent FAT updates)"
     range 1 64
@@ -1060,6 +1141,22 @@ config LOG_FLUSHER_JOBS
       Cost: one machine word of RAM per slot; the flusher scans them on
       every pass.
 
+config VIRTIO_BLK_SLOT_KB
+    int "virtio-blk bounce buffer per in-flight slot (KiB; one request's largest transfer)"
+    range 4 128
+    default 4  if PROFILE_EMBEDDED
+    default 32 if PROFILE_EDGE || PROFILE_FLEET
+    default 4
+    help
+      crates/drivers/virtio/src/virtio/blk.rs: each slot's driver-owned
+      DMA staging buffer (the device never sees caller memory). A transfer
+      larger than one slot is split; a write of several slots' worth is
+      submitted on every free slot before the first wait (up to
+      VIRTIO_BLK_INFLIGHT requests in the device at once). Was a fixed 4 KiB.
+
+      Cost: this many KiB of RAM (.bss) per VIRTIO_BLK_INFLIGHT slot: 128 KiB
+      at edge's 32 x 4. Larger means fewer requests per run.
+
 config VIRTIO_BLK_INFLIGHT
     int "virtio-blk requests in flight at once (1-5)"
     range 1 5
@@ -1068,14 +1165,14 @@ config VIRTIO_BLK_INFLIGHT
     default 4
     help
       crates/drivers/virtio/src/virtio/blk.rs: each in-flight request owns
-      a staging slot (request header, 4 KiB bounce buffer, status byte).
+      a staging slot (request header, VIRTIO_BLK_SLOT_KB bounce buffer, status byte).
       A request is submitted under the driver's lock and waited for
       without it (owner rule F1: no lock held across device I/O), so up to
       this many tasks have requests in the device at once; one more sleeps
       for a free slot. Five is the most the 16-entry virtqueue holds (three
       descriptors per request).
 
-      Cost: 4 KiB + 17 bytes of RAM per slot; nothing per request beyond
+      Cost: VIRTIO_BLK_SLOT_KB + 17 bytes of RAM per slot; nothing per request beyond
       the reaper's scan of this many slots. 1 serialises every request
       (the pre-F1 behaviour, without the lock across the wait).
 

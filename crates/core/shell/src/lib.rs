@@ -973,6 +973,7 @@ fn cmd_traj_flush() {
     }
     azos_fs::vfs_write(&mut fd_table, fd, buf.as_ptr(), pos);
     azos_fs::vfs_close(&mut fd_table, fd);
+    let _ = azos_fs::fat32_sync();
     azos_drv_sys::kconsoleln!("[TRAJ] Flushed {} points ({} bytes) → /fat/TRAJ.CSV",
         written, pos);
 }
@@ -1999,6 +2000,9 @@ fn cmd_config(args: &[&[u8]; MAX_ARGS], argc: usize) {
         }
         let written = azos_fs::vfs_write(&mut fd_table, fd, buf.as_ptr(), n);
         azos_fs::vfs_close(&mut fd_table, fd);
+        // A close queues under FAT32's write-back cache; "saved" means on
+        // the medium.
+        let _ = azos_fs::fat32_sync();
         azos_drv_sys::kconsoleln!("[CFG] saved {} bytes to /fat/CONFIG.INI", written);
         return;
     }
