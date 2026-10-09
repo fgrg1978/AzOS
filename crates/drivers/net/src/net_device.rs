@@ -117,6 +117,18 @@ pub fn recv(buf: &mut [u8]) -> Result<usize, NetError> {
     }
 }
 
+/// Hand up to `max` received frames to `f` through the backend chosen by
+/// [`select`] (`NetDevice::recv_batch`): by reference on virtio-net, one
+/// copy each on board Ethernet. 0 when nothing is selected or queued.
+#[inline]
+pub fn recv_batch(max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+    match ACTIVE_BACKEND.load(Ordering::Relaxed) {
+        BACKEND_ETH => crate::eth::EthNetDevice.recv_batch(max, f),
+        BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.recv_batch(max, f),
+        _ => 0,
+    }
+}
+
 /// MAC of the backend chosen by [`select`]; all-zero if none.
 #[inline]
 pub fn mac() -> [u8; 6] {

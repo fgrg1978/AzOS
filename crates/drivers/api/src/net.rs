@@ -41,4 +41,25 @@ pub trait NetDevice: Send + Sync {
     fn tx_batch_begin(&self) {}
     /// Close a batch and announce everything it queued: a flush point.
     fn tx_batch_end(&self) {}
+    /// Hand up to `max` received frames to `f`, in arrival order, and
+    /// return how many. Each slice is valid only during its `f` call. A
+    /// backend that owns its RX buffers passes them in place (virtio-net:
+    /// one lock to pop the batch, none while `f` runs, one to re-post).
+    /// Default: [`recv`](Self::recv) into a stack buffer, one copy per frame.
+    fn recv_batch(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+        let mut buf = [0u8; ETH_FRAME_MAX];
+        let mut n = 0;
+        while n < max {
+            match self.recv(&mut buf) {
+                Ok(len) if len > 0 => { f(&buf[..len.min(buf.len())]); n += 1; }
+                _ => break,
+            }
+        }
+        n
+    }
 }
+
+/// Largest Ethernet frame a backend hands up (header + 1500-byte payload,
+/// no FCS, no VLAN tag): the size of [`NetDevice::recv_batch`]'s default
+/// buffer.
+pub const ETH_FRAME_MAX: usize = 1514;

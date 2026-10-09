@@ -227,6 +227,19 @@ pub fn set_rx_owner_bypass(on: bool) {
     RX_OWNER_BYPASS.store(on, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Runtime canary `net-rx-copy` (Kconfig `CANARY_RUNTIME` only): the
+/// receive pass copies each frame out under the driver lock again.
+static RX_COPY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Arm the `net-rx-copy` canary. Inert unless `CANARY_RUNTIME`.
+pub fn set_rx_copy(on: bool) {
+    RX_COPY.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Cycles spent in receive passes that took frames, and those frames.
+static RX_PASS_CYCLES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static RX_PASS_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// `net_poll` calls that found another pass in progress and left it a
 /// request instead of draining (N8), since boot.
 pub fn rx_pass_contended() -> u64 {
@@ -252,14 +265,8 @@ fn net_poll_pass() -> bool {
         (cfg.mac, cfg.ip)
     };
 
-    let mut buf = [0u8; ethernet::ETH_FRAME_MAX];
-    let mut drained = 0usize;
-    net_tx_batch_begin();
-    while drained < MAX_DRAIN_PER_CALL {
-        let n = net_raw_recv(&mut buf);
-        if n == 0 { break; }
-        drained += 1;
-        if let Some((hdr, payload)) = ethernet::parse(&buf[..n]) {
+    let mut handle = |frame: &[u8]| {
+        if let Some((hdr, payload)) = ethernet::parse(frame) {
             match hdr.ethertype() {
                 ethernet::ETH_TYPE_ARP  => arp::handle(payload, &mac, &ip),
                 ethernet::ETH_TYPE_IP   => ip::handle(payload, &mac, &ip),
@@ -267,6 +274,36 @@ fn net_poll_pass() -> bool {
                 _                       => {}
             }
         }
+    };
+    let t0 = azos_drv_sys::wcet::read_cycles();
+    let mut drained = 0usize;
+    net_tx_batch_begin();
+    if azos_limits::CANARY_RUNTIME && RX_COPY.load(core::sync::atomic::Ordering::Relaxed) {
+        // Canary `net-rx-copy`: the path before N2 step 2, a lock and a
+        // copy into a zeroed stack buffer per frame.
+        let mut buf = [0u8; ethernet::ETH_FRAME_MAX];
+        while drained < MAX_DRAIN_PER_CALL {
+            let n = net_raw_recv(&mut buf);
+            if n == 0 { break; }
+            drained += 1;
+            handle(&buf[..n]);
+        }
+    } else {
+        // IO-QUEUES N2 step 2: frames come in batches, by reference into
+        // the NIC's own buffers (`NetDevice::recv_batch`).
+        while drained < MAX_DRAIN_PER_CALL {
+            let n = azos_drv_net::net_device::recv_batch(MAX_DRAIN_PER_CALL - drained, &mut handle);
+            if n == 0 { break; }
+            drained += n;
+        }
+    }
+    if drained != 0 {
+        // Receive cost: the drain and the protocol work it did, per frame
+        // (`ifconfig`). Cycles on riscv64 (instructions under -icount);
+        // 0 where `read_cycles` has no counter yet (aarch64, x86_64).
+        let dt = azos_drv_sys::wcet::read_cycles().wrapping_sub(t0);
+        RX_PASS_CYCLES.fetch_add(dt, core::sync::atomic::Ordering::Relaxed);
+        RX_PASS_FRAMES.fetch_add(drained as u64, core::sync::atomic::Ordering::Relaxed);
     }
     // End of the pass (N6): the ACKs this drain held leave now, one per
     // connection, however many of its segments arrived in the pass —
@@ -367,7 +404,10 @@ pub fn net_info() {
     }
     // N8: `net_poll` calls that found a pass in progress and left the owner
     // a request rather than draining beside it.
-    azos_drv_sys::kconsoleln!("[NET]       rx passes: {} contended", rx_pass_contended());
+    let (cy, fr) = (RX_PASS_CYCLES.load(core::sync::atomic::Ordering::Relaxed),
+                    RX_PASS_FRAMES.load(core::sync::atomic::Ordering::Relaxed));
+    azos_drv_sys::kconsoleln!("[NET]       rx passes: {} contended, {} frames in {} cycles ({} per frame)",
+        rx_pass_contended(), fr, cy, if fr != 0 { cy / fr } else { 0 });
     let (fired, late) = tcp::timer_lateness();
     let tpus = (azos_drv_sys::timebase::TIMER_FREQ / 1_000_000).max(1);
     azos_drv_sys::kconsoleln!("[NET]       tcp timers: {} fired, latest {} us past its deadline",

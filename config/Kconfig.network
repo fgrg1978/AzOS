@@ -363,6 +363,25 @@ config NET_TX_BATCH_MAX
       trades that per-frame cost for up to this many frames of added
       latency inside one burst.
 
+config NET_RX_BATCH_MAX
+    int "virtio-net RX frames popped per lock and handed up by reference"
+    range 1 128
+    default 4  if PROFILE_EMBEDDED
+    default 64 if PROFILE_FLEET
+    default 16
+    help
+      crates/drivers/virtio/src/virtio/net.rs, recv_batch: one lock pops up
+      to this many received frames, the lock is dropped while the stack
+      handles them in place (no copy out of the RX buffer), and one more
+      lock re-posts the buffers. 1 = a lock pair per frame.
+
+      At most NET_VIRTIO_RXQ_SIZE / 2 (build.rs checks it): the popped
+      buffers are off the ring until the batch has been handled, and the
+      device needs the other half to keep receiving meanwhile.
+
+      Cost: 4 B of stack per entry in recv_batch; buffers out of the ring
+      for one batch's protocol work. Same on every ISA.
+
 config NET_RX_IRQ
     bool "virtio-net-mmio RX interrupt instead of timer polling"
     default y

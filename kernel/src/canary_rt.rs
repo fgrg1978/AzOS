@@ -63,6 +63,10 @@ pub(crate) const NAMES: &[&str] = &[
     // single owner of the pass (N8; the OTA stress counts resets and lost
     // transfers, `[NET] rx passes: 0 contended`).
     "net-rx-two-consumers",
+    // boot/net.rs: the receive pass copies each frame out under the driver
+    // lock again, one lock per frame (N2 step 2; `ifconfig`'s rx cycles per
+    // frame move back).
+    "net-rx-copy",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

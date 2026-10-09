@@ -536,6 +536,52 @@ mod virtio_net_device {
     fn mac_is_zero_before_init() {
         assert_eq!(VirtioNetDevice.mac(), [0u8; 6]);
     }
+
+    /// `recv_batch` on an unready device hands nothing up.
+    #[test]
+    fn recv_batch_on_an_unready_device_is_empty() {
+        let mut calls = 0;
+        assert_eq!(VirtioNetDevice.recv_batch(16, &mut |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+    }
+
+    /// A backend with only `recv` (board Ethernet): three queued frames.
+    struct Fifo(std::sync::Mutex<Vec<Vec<u8>>>);
+    impl NetDevice for Fifo {
+        fn send(&self, f: &[u8]) -> Result<usize, NetError> { Ok(f.len()) }
+        fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
+            let mut q = self.0.lock().unwrap();
+            if q.is_empty() { return Ok(0); }
+            let f = q.remove(0);
+            buf[..f.len()].copy_from_slice(&f);
+            Ok(f.len())
+        }
+        fn mac(&self) -> [u8; 6] { [0; 6] }
+        fn is_ready(&self) -> bool { true }
+    }
+
+    /// **Discriminates (IO-QUEUES N2 step 2).** The default `recv_batch`
+    /// hands frames up in arrival order, whole, and stops at `max` (the rest
+    /// stays queued for the next call) or when the backend is empty.
+    /// Canary: ignore `max` and the first call takes all three.
+    #[test]
+    fn the_default_recv_batch_keeps_order_and_stops_at_max() {
+        let dev = Fifo(std::sync::Mutex::new(vec![vec![1; 60], vec![2; 1514], vec![3; 61]]));
+        let mut seen: Vec<(u8, usize)> = Vec::new();
+        assert_eq!(dev.recv_batch(2, &mut |f| seen.push((f[0], f.len()))), 2);
+        assert_eq!(seen, vec![(1, 60), (2, 1514)]);
+        assert_eq!(dev.recv_batch(8, &mut |f| seen.push((f[0], f.len()))), 1);
+        assert_eq!(seen[2], (3, 61));
+        assert_eq!(dev.recv_batch(8, &mut |_| panic!("nothing is queued")), 0);
+    }
+
+    /// **Pins the Kconfig relation build.rs enforces:** a batch's buffers
+    /// are off the ring while the stack handles them; half stays posted.
+    #[test]
+    fn the_rx_batch_leaves_half_the_ring_posted() {
+        assert!(azos_limits::NET_RX_BATCH_MAX >= 1);
+        assert!(azos_limits::NET_RX_BATCH_MAX <= azos_limits::NET_VIRTIO_RXQ_SIZE / 2);
+    }
 }
 
 // `unused_imports` as well as `dead_code`: without the `vf2` feature the file's

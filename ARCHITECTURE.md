@@ -551,7 +551,9 @@ wakes it, with its timeout as the bound.
 
 **VirtIO.** The VirtIO drivers cover block, network and entropy devices.
 Block and network run over the MMIO transport (legacy and modern). A modern
-PCI transport exists, but the kernel uses it only in self-tests.
+PCI transport exists, but the kernel uses it only in self-tests. The network
+driver pops received frames in batches under one lock and hands them to the
+stack in place, without copying them out of its receive buffers.
 
 ## Safety and records
 

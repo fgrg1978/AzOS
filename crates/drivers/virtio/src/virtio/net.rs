@@ -127,7 +127,6 @@ struct NetState {
     txq:     Virtq,
     mac:     [u8; 6],
     ready:   bool,
-    rx_bufs: [[u8; RX_BUF_SIZE]; NUM_RX_BUFS],
     /// Driver-owned TX staging. The device is never handed a caller address:
     /// `send` returns as soon as the frame is queued, so a caller buffer could
     /// be reused or popped off the stack while the device is still reading it.
@@ -168,7 +167,6 @@ impl NetState {
             txq:     Virtq::zeroed(),
             mac:     [0u8; 6],
             ready:   false,
-            rx_bufs: [[0u8; RX_BUF_SIZE]; NUM_RX_BUFS],
             tx_bufs: [[0u8; TX_BUF_SIZE]; NUM_TX_BUFS],
             tx_dropped: 0,
             notify:  [0; 2],
@@ -187,6 +185,38 @@ impl NetState {
 unsafe impl Send for NetState {}
 
 static NET: SpinLock<NetState> = SpinLock::new(NetState::zeroed());
+
+/// The RX buffers, outside `NET` (IO-QUEUES N2 step 2): a frame popped off
+/// the used ring is handed to the stack in place, with no lock held, and
+/// its buffer goes back on the ring under `NET` afterwards ([`recv_batch`]).
+/// Buffer `b` belongs to descriptor `b` for good (see [`poll_recv`]).
+struct RxBufs(core::cell::UnsafeCell<[[u8; RX_BUF_SIZE]; NUM_RX_BUFS]>);
+// SAFETY: buffer `b` is written by the device only while descriptor `b` is
+// posted, and read only by the one caller that popped `b` off the used ring
+// (under `NET`) until that caller posts it again (under `NET`); two callers
+// never hold the same slot.
+unsafe impl Sync for RxBufs {}
+static RX_BUFS: RxBufs =
+    RxBufs(core::cell::UnsafeCell::new([[0u8; RX_BUF_SIZE]; NUM_RX_BUFS]));
+
+/// CPU address of RX buffer `b` (`b < NUM_RX_BUFS`).
+#[inline(always)]
+fn rx_buf_ptr(b: usize) -> *mut u8 {
+    // SAFETY: in bounds for `b < NUM_RX_BUFS`, which every caller checks.
+    unsafe { (RX_BUFS.0.get() as *mut [u8; RX_BUF_SIZE]).add(b) as *mut u8 }
+}
+
+/// What the device is given for RX buffer `b`.
+#[inline(always)]
+fn rx_buf_dma(b: usize) -> u64 {
+    super::dma_addr_of(rx_buf_ptr(b) as *const u8)
+}
+
+/// Frames one [`recv_batch`] call pops under one lock (Kconfig
+/// `NET_RX_BATCH_MAX`); their buffers are off the ring until the batch has
+/// been handed to the stack.
+const RX_BATCH: usize = azos_limits::NET_RX_BATCH_MAX;
+const _: () = assert!(RX_BATCH >= 1 && RX_BATCH <= NUM_RX_BUFS);
 
 // ---- MSI-X (virtio-pci IRQ mode) ----
 //
@@ -344,7 +374,7 @@ pub fn init() -> Result<(), ()> {
         // Collect RX buffer pointers before mutably borrowing rxq
         let mut rx_ptrs = [0u64; NUM_RX_BUFS];
         for b in 0..NUM_RX_BUFS {
-            rx_ptrs[b] = super::dma_addr_of(net.rx_bufs[b].as_ptr());
+            rx_ptrs[b] = rx_buf_dma(b);
         }
 
         // Post every RX buffer, one doorbell for the lot. The free list is
@@ -611,38 +641,59 @@ fn tx_ring_full(net: &mut NetState) {
 pub fn tx_dropped() -> u32 { NET.lock().tx_dropped }
 
 
-/// Poll for a received Ethernet frame.  Copies data into `buf`, returns byte count.
-/// Returns 0 if no packet is available.
+/// Take the next good frame off the RX used ring: `(slot, frame length)`,
+/// the frame being `rx_buf_ptr(slot)[hdr .. hdr + len]`. The slot is the
+/// caller's until it hands it back with [`rx_repost`]. `None`: the ring is
+/// empty (in IRQ mode, RX interrupts are back on and the gate closed).
 ///
-/// The buffer goes back on the RX ring at once; its doorbell follows the
-/// batch rule (`tx_batch_begin`: one doorbell at the end of the pass) and
-/// the device's NO_NOTIFY. In IRQ mode the pass keeps RX interrupts off
-/// while it finds frames and turns them back on when the ring is empty,
-/// before closing the gate and looking once more (NAPI).
-pub fn poll_recv(buf: &mut [u8]) -> usize {
-    // IRQ mode: no RX interrupt since the ring was last found empty ->
-    // nothing to read, and the ring is not touched. Always open when polled.
-    if !RX_PENDING.load(Ordering::Acquire) { return 0; }
-
-    let mut net = NET.lock();
-    if !net.ready { return 0; }
-
-    // Use _with_len so we know the actual frame length — without it we'd
-    // hand the network stack the entire RX_BUF_SIZE and ethertype/headers
-    // would be parsed out of stale buffer contents (silently broken: ARP
-    // never matches, TCP SYN never seen, accept() never returns).
-    let (desc_idx, dev_len) = loop {
+/// In IRQ mode the pass keeps RX interrupts off while it finds frames and
+/// turns them back on when the ring is empty, before closing the gate and
+/// looking once more (NAPI).
+fn rx_pop(net: &mut NetState) -> Option<(usize, usize)> {
+    loop {
+        // `_with_len`: the frame length, not the whole buffer (stale bytes
+        // past it would be parsed as headers).
         match unsafe { crate::virtio::virtq_poll_with_len(&mut net.rxq) } {
-            Some(x) => {
+            Some((desc_idx, dev_len)) => {
                 if net.irq && net.rx_irq_on {
                     // Draining: no interrupt per frame while this pass runs.
                     net.rx_irq_on = false;
                     unsafe { virtq_set_avail_flags(&mut net.rxq, VIRTQ_AVAIL_F_NO_INTERRUPT) };
                 }
-                break x;
+                // RX descriptors are paired 1:1 with buffers at init
+                // (descriptor `b` is allocated for buffer `b` from a fresh
+                // free list, and a buffer always goes back on its own
+                // descriptor), so the descriptor index IS the slot: O(1).
+                // The descriptor's `addr` (what the device was given) is
+                // still compared with the slot's, so a descriptor the table
+                // no longer agrees with is repaired instead of read.
+                if desc_idx < NUM_RX_BUFS
+                    && unsafe { (*net.rxq.desc.add(desc_idx)).addr } == rx_buf_dma(desc_idx)
+                {
+                    // `dev_len` comes from the DEVICE and includes the
+                    // virtio-net header: clamp it to our buffer (an
+                    // over-long report used to slice out of range, a panic,
+                    // i.e. a board reset triggered by an inbound frame).
+                    let hdr_len = net_hdr_size(&net.dev);
+                    let avail = RX_BUF_SIZE.saturating_sub(hdr_len);
+                    let frame_len = dev_len.saturating_sub(hdr_len).min(avail);
+                    net.stats.rx_frames += 1;
+                    return Some((desc_idx, frame_len));
+                }
+                // A descriptor whose addr does not match its buffer (device
+                // corruption, or a scrubbed descriptor that leaked through
+                // the free list). Freeing it would shrink the ring for good;
+                // restore the 1:1 pairing and put the buffer back instead.
+                // Only an out-of-range index, which `virtq_poll_with_len`
+                // already rejects, would reach the free.
+                if desc_idx < NUM_RX_BUFS {
+                    rx_repost(net, desc_idx);
+                } else {
+                    unsafe { virtq_free_desc(&mut net.rxq, desc_idx) };
+                }
             }
             None => {
-                if !net.irq { return 0; }
+                if !net.irq { return None; }
                 // Empty: interrupts back on, then close the gate, then look
                 // once more. A frame used before the flag store is seen by
                 // the look; one used after it interrupts and re-opens the
@@ -654,83 +705,94 @@ pub fn poll_recv(buf: &mut [u8]) -> usize {
                 }
                 RX_PENDING.store(false, Ordering::SeqCst);
                 fence(Ordering::SeqCst);
-                if !unsafe { virtq_has_used(&net.rxq) } { return 0; }
+                if !unsafe { virtq_has_used(&net.rxq) } { return None; }
                 RX_PENDING.store(true, Ordering::Relaxed);
             }
         }
+    }
+}
+
+/// Give RX buffer `slot` back to the device on its own descriptor.
+/// Rewrites addr/len as well as flags: two stores, and the
+/// descriptor<->buffer pairing holds even if something scribbled on the
+/// table (`virtq_free_desc` scrubs addr/len to 0, so a descriptor that ever
+/// passed through the free list would otherwise go back pointing at 0).
+#[inline(always)]
+fn rx_repost(net: &mut NetState, slot: usize) {
+    let addr = rx_buf_dma(slot);
+    unsafe {
+        let d = net.rxq.desc.add(slot);
+        (*d).addr  = addr;
+        (*d).len   = RX_BUF_SIZE as u32;
+        (*d).flags = VIRTQ_DESC_F_WRITE;
+        (*d).next  = 0;
+        rx_requeue(net, slot);
+    }
+}
+
+/// Poll for a received Ethernet frame.  Copies data into `buf`, returns byte count.
+/// Returns 0 if no packet is available.
+///
+/// One frame, one lock, one copy: the path [`recv_batch`] replaces for the
+/// stack, kept for `NetDevice::recv` callers and the `net-rx-copy` canary.
+/// The buffer goes back on the RX ring at once; its doorbell follows the
+/// batch rule (`tx_batch_begin`: one doorbell at the end of the pass) and
+/// the device's NO_NOTIFY.
+pub fn poll_recv(buf: &mut [u8]) -> usize {
+    // IRQ mode: no RX interrupt since the ring was last found empty ->
+    // nothing to read, and the ring is not touched. Always open when polled.
+    if !RX_PENDING.load(Ordering::Acquire) { return 0; }
+
+    let mut net = NET.lock();
+    if !net.ready { return 0; }
+    let Some((slot, len)) = rx_pop(&mut net) else { return 0 };
+    let hdr_len = net_hdr_size(&net.dev);
+    let n = len.min(buf.len());
+    // SAFETY: `slot` was just popped (ours until re-posted); `hdr_len + n`
+    // is within RX_BUF_SIZE by `rx_pop`'s clamp.
+    unsafe { core::ptr::copy_nonoverlapping(rx_buf_ptr(slot).add(hdr_len), buf.as_mut_ptr(), n) };
+    rx_repost(&mut net, slot);
+    n
+}
+
+/// Hand up to `max` received frames to `f`, in ring order, each by
+/// reference into its RX buffer, and return how many (IO-QUEUES N2 step 2).
+///
+/// One lock pops up to `NET_RX_BATCH_MAX` used entries; the lock is dropped
+/// while `f` runs (the stack may transmit, which takes it); one more lock
+/// re-posts every buffer, with one doorbell decision under the batch rule.
+/// No copy here: the frame is read where the device wrote it. A slice is
+/// valid only for the duration of its `f` call.
+pub fn recv_batch(max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+    if !RX_PENDING.load(Ordering::Acquire) { return 0; }
+    let mut got = [(0u16, 0u16); RX_BATCH];
+    let want = max.min(RX_BATCH);
+    let mut k = 0usize;
+    let hdr_len = {
+        let mut net = NET.lock();
+        if !net.ready { return 0; }
+        while k < want {
+            match rx_pop(&mut net) {
+                Some((slot, len)) => { got[k] = (slot as u16, len as u16); k += 1; }
+                None => break,
+            }
+        }
+        net_hdr_size(&net.dev)
     };
-
-    // RX descriptors are paired 1:1 with buffers at init (descriptor `b` is
-    // allocated for `rx_bufs[b]` from a fresh free list, and a buffer always
-    // goes back on its own descriptor), so the descriptor index IS the slot:
-    // O(1), where a linear search over every buffer used to run per frame.
-    // The descriptor's `addr` (a PHYSICAL address: what the device was
-    // given) is still compared with the slot's, so a descriptor the table
-    // no longer agrees with falls to the repair below instead of being read.
-    let slot_ok = desc_idx < NUM_RX_BUFS
-        && unsafe { (*net.rxq.desc.add(desc_idx)).addr }
-            == super::dma_addr_of(net.rx_bufs[desc_idx].as_ptr());
-    if slot_ok {
-        let slot = desc_idx;
-        // dev_len includes the VirtIO net header; subtract it to get the
-        // Ethernet frame length.
-        //
-        // Clamp against our own buffer: `dev_len` is written by the DEVICE into
-        // the used ring and is not trustworthy. `virtq_poll_with_len` documents
-        // that the caller must cap it, and this caller did not — a device
-        // reporting more than RX_BUF_SIZE produced an out-of-range slice, which
-        // panics, and `panic = "abort"` makes that a board reset triggered by
-        // an inbound frame.
-        let hdr_len   = net_hdr_size(&net.dev);
-        let avail     = RX_BUF_SIZE.saturating_sub(hdr_len);
-        let frame_len = dev_len.saturating_sub(hdr_len).min(avail);
-        let packet = &net.rx_bufs[slot][hdr_len..hdr_len + frame_len];
-        let n = packet.len().min(buf.len());
-        buf[..n].copy_from_slice(&packet[..n]);
-        net.stats.rx_frames += 1;
-
-        // Re-queue the buffer.
-        // Rewrite addr/len as well as flags: it costs two stores and restores
-        // the descriptor↔buffer invariant even if something scribbled on the
-        // descriptor table (virtq_free_desc scrubs addr/len to 0 these days,
-        // so a descriptor that ever passed through the free list would
-        // otherwise be re-queued pointing at address 0).
-        let addr = super::dma_addr_of(net.rx_bufs[slot].as_ptr());
-        unsafe {
-            let d = net.rxq.desc.add(desc_idx);
-            (*d).addr  = addr;
-            (*d).len   = RX_BUF_SIZE as u32;
-            (*d).flags = VIRTQ_DESC_F_WRITE;
-            (*d).next  = 0;
-            rx_requeue(&mut net, desc_idx);
-        }
-
-        return n;
+    if k == 0 { return 0; }
+    for &(slot, len) in &got[..k] {
+        // SAFETY: popped above, so this caller owns the slot until the
+        // re-post below; `hdr_len + len` is within RX_BUF_SIZE (`rx_pop`).
+        let frame = unsafe {
+            core::slice::from_raw_parts(rx_buf_ptr(slot as usize).add(hdr_len), len as usize)
+        };
+        f(frame);
     }
-
-    // Descriptor's addr doesn't match its rx_buf (device corruption, or a
-    // scrubbed descriptor that leaked through the free list). Freeing it here
-    // — the previous behaviour — permanently shrank the RX ring: with only
-    // NUM_RX_BUFS buffers, a handful of these and the node goes deaf. RX
-    // descriptors are paired 1:1 with rx_bufs[desc_idx] at init (allocated in
-    // order from a fresh free list), so when the index is in range we can
-    // restore that pairing and put the buffer back in service. Only an
-    // out-of-range index — which virtq_poll_with_len already rejects — would
-    // fall through to a free.
-    if desc_idx < NUM_RX_BUFS {
-        let addr = super::dma_addr_of(net.rx_bufs[desc_idx].as_ptr());
-        unsafe {
-            let d = net.rxq.desc.add(desc_idx);
-            (*d).addr  = addr;
-            (*d).len   = RX_BUF_SIZE as u32;
-            (*d).flags = VIRTQ_DESC_F_WRITE;
-            (*d).next  = 0;
-            rx_requeue(&mut net, desc_idx);
-        }
-    } else {
-        unsafe { virtq_free_desc(&mut net.rxq, desc_idx) };
+    let mut net = NET.lock();
+    for &(slot, _) in &got[..k] {
+        rx_repost(&mut net, slot as usize);
     }
-    0
+    k
 }
 
 /// Hand RX descriptor `desc_idx` (already filled in) back to the device:
@@ -884,6 +946,11 @@ impl NetDevice for VirtioNetDevice {
     #[inline]
     fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
         Ok(poll_recv(buf))
+    }
+
+    #[inline]
+    fn recv_batch(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+        recv_batch(max, f)
     }
 
     #[inline]
@@ -1058,7 +1125,7 @@ where
     // Post every RX buffer, one notify for the lot.
     let mut rx_ptrs = [0u64; NUM_RX_BUFS];
     for b in 0..NUM_RX_BUFS {
-        rx_ptrs[b] = super::dma_addr_of(net.rx_bufs[b].as_ptr());
+        rx_ptrs[b] = rx_buf_dma(b);
     }
     for b in 0..NUM_RX_BUFS {
         if let Some(desc_idx) = unsafe { virtq_alloc_desc(&mut net.rxq) } {

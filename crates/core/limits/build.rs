@@ -740,6 +740,20 @@ fn run_validations(cfg: &ConfigMap) {
         }
     }
 
+    if let (Some(rxq), Some(batch)) =
+        (get_u64(cfg, "NET_VIRTIO_RXQ_SIZE"), get_u64(cfg, "NET_RX_BATCH_MAX"))
+    {
+        if batch == 0 || batch > rxq / 2 {
+            panic!(
+                "validation FAIL: NET_RX_BATCH_MAX ({batch}) must be in 1..=NET_VIRTIO_RXQ_SIZE/2 \
+                 ({}): a batch's buffers are off the RX ring until the stack has handled them, \
+                 and the device needs the rest to keep receiving. Fix: lower NET_RX_BATCH_MAX \
+                 or raise NET_VIRTIO_RXQ_SIZE in .config.",
+                rxq / 2
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // TCP_BUF_SIZE lower bound: the send ring (the same size) must hold
     // DUP_ACK_THRESHOLD + 1 full-size segments, or no loss can be repaired by

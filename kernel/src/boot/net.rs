@@ -77,6 +77,11 @@ pub(crate) fn install_net() -> bool {
             azos_net::set_rx_owner_bypass(true);
             kprintln!("[CANARY] net-rx-two-consumers: every net_poll drains on its own");
         }
+        // Runtime canary: a lock and a copy per received frame again.
+        if canary!("net-rx-copy") {
+            azos_net::set_rx_copy(true);
+            kprintln!("[CANARY] net-rx-copy: one lock and one copy per received frame");
+        }
         install_net_irq();
         if azos_limits::NET_TX_BATCH_SELFCHECK {
             net_tx_batch_selfcheck();
