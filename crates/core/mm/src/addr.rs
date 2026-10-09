@@ -40,18 +40,26 @@ use azos_arch::{PAGE_SIZE, PAGE_SHIFT};
 // offset stops being zero. [`virt_to_phys`] is the explicit inverse for
 // exactly that case: a symbol's own address (a VA once the kernel links
 // high) that must be handed to hardware as a PA.
-// aarch64 and x86_64 KERNEL builds: the kernel links and executes in the
-// upper half (aarch64 TTBR1; x86_64 the top 2 GiB, `kernel/linker-x86_64.ld`),
-// so a symbol's own address sits this far above the physical byte the
-// loader placed it at, and RAM is reached at the same offset. riscv64 keeps
-// the identity. `target_os = "none"` is load-bearing: a bare
-// `target_arch = "aarch64"` also matches this Mac (and `x86_64` an Intel
-// one), and setting the offset for host test builds broke
-// `mm-tests`/`syscall-tests` on 2026-09-23.
-#[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none"))]
+// The two offsets, per KERNEL build (riscv64 and every host test build keep
+// the identity; `target_os = "none"` is load-bearing: a bare
+// `target_arch = "aarch64"` also matches this Mac, and setting the offset
+// for host test builds broke `mm-tests`/`syscall-tests` on 2026-09-23):
+//   - `KERNEL_PHYS_TO_VIRT_OFFSET`, where RAM is reached: aarch64's
+//     `KERNEL_VA_OFFSET` (TTBR1); x86_64's direct map `DIRECT_MAP_BASE`.
+//   - `KERNEL_IMAGE_OFFSET`, how far the image links above its load address:
+//     the same as the RAM offset on aarch64 (one offset); on x86_64 the top
+//     2 GiB (`KERNEL_VA_OFFSET`, -mcmodel=kernel), apart from the direct map,
+//     so all of RAM, not 2 GiB of it, is reachable.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub const KERNEL_PHYS_TO_VIRT_OFFSET: usize = azos_arch::mmu::KERNEL_VA_OFFSET as usize;
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub const KERNEL_PHYS_TO_VIRT_OFFSET: usize = azos_arch::mmu::DIRECT_MAP_BASE as usize;
 #[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
 pub const KERNEL_PHYS_TO_VIRT_OFFSET: usize = 0;
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub const KERNEL_IMAGE_OFFSET: usize = azos_arch::mmu::KERNEL_VA_OFFSET as usize;
+#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+pub const KERNEL_IMAGE_OFFSET: usize = KERNEL_PHYS_TO_VIRT_OFFSET;
 
 /// Convert a physical address of kernel-owned memory (a page-table frame,
 /// a PMM page, a COW page) into the address the kernel should dereference
@@ -63,12 +71,19 @@ pub const fn phys_to_virt(pa: usize) -> usize {
 }
 
 /// Inverse of [`phys_to_virt`]: given the kernel's own view of an address
-/// (typically `some_symbol as *const _ as usize`), produce the physical
-/// address a device (PSCI, virtio, DMA) must be handed instead. Identity
-/// today on both ISAs — see the module doc above.
+/// (a symbol's address, or a direct-map pointer such as a heap buffer),
+/// produce the physical address a device (PSCI, virtio, DMA) must be handed
+/// instead. Identity on riscv64; on aarch64 the one offset; on x86_64 the
+/// image offset for an image address (at or above `KERNEL_IMAGE_OFFSET`),
+/// the direct-map base otherwise. The image test folds away where the two
+/// offsets are equal.
 #[inline(always)]
 pub const fn virt_to_phys(va: usize) -> usize {
-    va - KERNEL_PHYS_TO_VIRT_OFFSET
+    if KERNEL_IMAGE_OFFSET != KERNEL_PHYS_TO_VIRT_OFFSET && va >= KERNEL_IMAGE_OFFSET {
+        va - KERNEL_IMAGE_OFFSET
+    } else {
+        va - KERNEL_PHYS_TO_VIRT_OFFSET
+    }
 }
 
 /// A physical address.

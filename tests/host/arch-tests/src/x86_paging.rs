@@ -142,13 +142,16 @@ mod tests {
         assert!(!is_canonical(0x0100_0000_0000_0000, 5));
         assert_eq!(user_top(4), 0x0000_8000_0000_0000);
         assert_eq!(user_top(5), 0x0100_0000_0000_0000);
-        // The kernel links in the top 2 GiB (-mcmodel=kernel): PML4 slot 511,
-        // PDPT slot 510; PML5 slot 511 under LA57. One offset maps 2 GiB.
+        // The image links in the top 2 GiB (-mcmodel=kernel): PML4 slot 511,
+        // PDPT slot 510; PML5 slot 511 under LA57. RAM is in the direct map,
+        // Linux's physmap: PML4 slot 273, 64 TiB, the same PML5 slot.
         assert_eq!(KERNEL_VA_OFFSET, 0xFFFF_FFFF_8000_0000);
         assert_eq!((vpn(KERNEL_VA_OFFSET as usize, 3), vpn(KERNEL_VA_OFFSET as usize, 2)), (511, 510));
         assert_eq!(vpn(KERNEL_VA_OFFSET as usize, 4), 511);
         assert!(vpn(KERNEL_VA_OFFSET as usize, 3) >= KERNEL_HALF_FIRST_SLOT);
-        assert_eq!(DIRECT_MAP_BYTES, 2 << 30);
+        assert_eq!(DIRECT_MAP_BASE, 0xFFFF_8880_0000_0000);
+        assert_eq!((vpn(DIRECT_MAP_BASE as usize, 3), vpn(DIRECT_MAP_BASE as usize, 4)), (273, 511));
+        assert_eq!(DIRECT_MAP_BYTES, 64 << 40);
         assert!(is_user_va(0x7FFF_FFFF_F000, 4) && !is_user_va(KERNEL_VA_OFFSET as usize, 4));
     }
 

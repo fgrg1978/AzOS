@@ -28,9 +28,11 @@
 //      through isa-debug-exit when QEMU has one, then halt).
 //   3. Clear .bss; page tables in 2 MiB pages: 0..4 GiB 1:1 (PML4[0]: the
 //      code running now, the firmware tables `platform_impl::discover`
-//      reads by physical address, the LAPIC/IOAPIC/HPET windows), and
-//      PA 0..2 GiB again at KVA (PML4[511], PDPT[510..511] -> the first two
-//      identity PDs: the kernel image and RAM, where Rust runs).
+//      reads by physical address, the LAPIC/IOAPIC/HPET windows); the same
+//      PDPT again at DMB, the direct map (PML4[273]: the frames the PMM and
+//      `vmm::init` touch before the kernel's tables are live); and PA
+//      0..2 GiB at KVA (PML4[511], PDPT[510..511] -> the first two identity
+//      PDs: the kernel image, where Rust runs).
 //      With Kconfig X86_LA57 allowing it and CPUID reporting it, a PML5
 //      above that PML4 (slots 0 and 511 both name it) and CR4.LA57
 //      (5-level paging; mmu.rs reads CR4).
@@ -52,6 +54,14 @@
 .equ COM1, 0x3F8
 .equ DEBUG_EXIT, 0xF4
 .equ KVA, {kva}
+.equ DMB, {dmb}
+.equ DMB_ROOT_SLOT, ((DMB >> 39) & 511)
+.if (DMB >> 30) & 511
+.error "DIRECT_MAP_BASE must be 512 GiB-aligned: its slot reuses the 1:1 PDPT"
+.endif
+.if ((DMB >> 48) & 511) - ((KVA >> 48) & 511)
+.error "DIRECT_MAP_BASE and KERNEL_VA_OFFSET must share their PML5 slot (one PML4 under LA57)"
+.endif
 // linker-x86_64.ld ASSERTs its literal against this: a drift fails to link.
 .globl _kernel_va_offset_check
 .set _kernel_va_offset_check, {kva}
@@ -151,6 +161,10 @@ _start:
     movl $(boot_pdpt_hi - KVA), %eax
     orl $0x3, %eax
     movl %eax, (KVA_ROOT_SLOT * 8)(%ebp)
+    // PML4[DMB_ROOT_SLOT] -> the 1:1 PDPT: PA 0..4 GiB at DMB too.
+    movl $(boot_pdpt - KVA), %eax
+    orl $0x3, %eax
+    movl %eax, (DMB_ROOT_SLOT * 8)(%ebp)
     movl $(boot_pdpt - KVA), %ebp
     movl $(boot_pdpt_hi - KVA + KVA_PDPT_SLOT * 8), %edi
     xorl %esi, %esi

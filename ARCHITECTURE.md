@@ -262,10 +262,11 @@ authority, the kernel also latches the e-stop and writes a safety record.
   16 KiB or 64 KiB granule, chosen at build time. x86_64 uses 4-level
   paging, or 5-level (LA57) when Kconfig allows it and the CPU has it. On
   aarch64 the kernel is linked in the upper half and runs from TTBR1, and
-  TTBR0 holds the user space. On x86_64 the kernel is linked in the top
-  2 GiB (the compiler's kernel code model) and reaches RAM at the same
-  offset, so it maps RAM below 2 GiB only; every user root shares the
-  kernel's top-level entry. On both, the low half of the kernel's own
+  TTBR0 holds the user space. On x86_64 the kernel image is linked in the top
+  2 GiB (the compiler's kernel code model) and RAM is reached through a
+  separate direct map (Linux's physmap base, 64 TiB), with the firmware
+  map's holes left out of it; every user root shares the kernel's
+  top-level entries. On both, the low half of the kernel's own
   table holds device windows only, which the boot reads back.
 - **Kernel W^X.** Once paging is on, the kernel image is mapped with text
   read-execute, read-only data read-only, and data read-write. Execute

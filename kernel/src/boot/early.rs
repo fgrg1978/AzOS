@@ -184,6 +184,21 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
                 halt();
             }
         }
+        // The image at its link address, where that is not inside the RAM
+        // map `init` built (x86_64: image in the top 2 GiB, RAM in the
+        // direct map). Constant-folded away on riscv64 and aarch64.
+        if azos_mm::addr::KERNEL_IMAGE_OFFSET != azos_mm::addr::KERNEL_PHYS_TO_VIRT_OFFSET {
+            let text_pa = azos_mm::addr::virt_to_phys(unsafe { &crate::_text_start as *const u8 as usize });
+            match azos_mm::vmm::map_kernel_image(text_pa, kernel_end_pa) {
+                Ok(n) => kprintln!("[MM] Kernel image mapped at {:#x} ({} KiB), RAM in the direct map at {:#x}",
+                                   azos_mm::addr::KERNEL_IMAGE_OFFSET + text_pa, n >> 10,
+                                   azos_mm::addr::phys_to_virt(0)),
+                Err(e) => {
+                    azos_drv_sys::kerr!("[MM] FAILED: kernel image map: {:?}", e);
+                    halt();
+                }
+            }
+        }
 
         // Device windows, mapped before the table goes live: the console
         // (where it is memory-mapped), then the ISA's and board's own. Each is

@@ -355,6 +355,8 @@ global_asm!(
     // One constant, three consumers (Rust, this asm, linker-x86_64.ld's
     // ASSERT against `_kernel_va_offset_check`), as on aarch64.
     kva = const azos_arch::mmu::KERNEL_VA_OFFSET,
+    // The direct map's base (RAM, page tables), mapped by boot.S's tables too.
+    dmb = const azos_arch::mmu::DIRECT_MAP_BASE,
     options(att_syntax),
 );
 // The trap entry and the switch: every TrapFrame / PerCpu / TaskContext /

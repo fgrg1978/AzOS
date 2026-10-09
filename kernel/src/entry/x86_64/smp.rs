@@ -14,7 +14,7 @@ use super::irq::{CORE_ONLINE, IPI_RECEIVED, TICK_PER_HART};
 core::arch::global_asm!(
     include_str!("asm/ap_entry.S"),
     max_harts = const crate::MAX_HARTS,
-    kva = const azos_arch::mmu::KERNEL_VA_OFFSET,
+    dmb = const azos_arch::mmu::DIRECT_MAP_BASE,
     options(att_syntax)
 );
 

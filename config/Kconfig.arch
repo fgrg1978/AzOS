@@ -1388,30 +1388,17 @@ config X86_KERNEL_GLOBAL_PAGES
     default y
     help
       Every kernel leaf carries G, so its TLB entry survives a CR3 write
-      (CR4.PGE). Sound because the kernel links in the upper half
-      (azos_arch::mmu::KERNEL_VA_OFFSET, PML4 slot 511) and every user
-      root points at the kernel's own PDPT there: a kernel leaf is the
-      same word in every address space. The device windows in the low
+      (CR4.PGE). Sound because the kernel lives in the upper half (the
+      image at KERNEL_VA_OFFSET, PML4 slot 511; RAM in the direct map at
+      DIRECT_MAP_BASE, slot 273 on) and every user root points at the
+      kernel's own PDPTs there: a kernel leaf is the same word in every
+      address space. The device windows in the low
       half are KERNEL_RW leaves too (G); a task's table borrows or copies
       them unchanged, and an unmap drops a G entry (invlpg, or the global
       flush). Cost of n: every address-space switch also drops the
       kernel's TLB entries, and the kernel re-walks its own text, data and
       stacks after each switch (dozens of misses per switch). Say n to
       measure that cost, or to rule G out while chasing a stale mapping.
-
-config X86_KERNEL_VA_HEADROOM_MB
-    int "Kernel VA kept free above RAM in the 2 GiB offset map (MiB)"
-    range 16 1024
-    default 64
-    help
-      The kernel links and maps RAM at KERNEL_VA_OFFSET (the top 2 GiB,
-      -mcmodel=kernel), so it maps physical memory below 2 GiB only. The
-      frame allocator stops this many MiB short of that, so the VAs just
-      above RAM stay inside the window: the text-patching alias slots
-      (crates/core/mm/src/text_poke.rs, 8 x 2 MiB above RAM) live there.
-      RAM it leaves out is unused (a boot warning says how much). Raise it
-      only for more late kernel mappings above RAM; it costs that much RAM
-      on a machine with 2 GiB or more, nothing below.
 
 # ── x86_64 trap entry and FP state ─────────────────────────────────────────
 # kernel/src/entry/x86_64/ (cpu_init.rs, fp.rs, asm/trap_entry.S).

@@ -154,32 +154,38 @@ pub const fn user_top(levels: usize) -> usize {
     1 << (va_bits(levels) - 1)
 }
 
-/// The kernel's one VA offset, as aarch64's TTBR1 split has one: the image
-/// links `KERNEL_VA_OFFSET` above the physical address the loader put it
-/// at (`kernel/linker-x86_64.ld`, VMA/LMA), and every RAM frame the kernel
-/// touches is reached at `pa + KERNEL_VA_OFFSET`
-/// (`crates/core/mm/src/addr.rs`, `phys_to_virt`). The top 2 GiB: the
-/// `x86_64-unknown-none` target compiles with `-mcmodel=kernel`, whose
-/// absolute symbol references are sign-extended 32-bit, so the image must
-/// sit there (Linux's `__START_KERNEL_map`). PML4 slot 511 (PML5 slot 511,
-/// PML4 slot 511 under LA57); its PDPT slots 510 and 511 map PA 0..2 GiB.
-///
-/// The price of one offset is [`DIRECT_MAP_BYTES`]: the kernel maps RAM
-/// below 2 GiB only. Linux's split (a direct map at `0xFFFF_8880_...` plus
-/// the image alias) lifts it, at the cost of a two-range `virt_to_phys`.
+/// The kernel IMAGE's offset: the image links `KERNEL_VA_OFFSET` above the
+/// physical address the loader put it at (`kernel/linker-x86_64.ld`,
+/// VMA/LMA). The top 2 GiB: the `x86_64-unknown-none` target compiles with
+/// `-mcmodel=kernel`, whose absolute symbol references are sign-extended
+/// 32-bit, so the image must sit there (Linux's `__START_KERNEL_map`). PML4
+/// slot 511 (PML5 slot 511, PML4 slot 511 under LA57), PDPT slot 510 on.
+/// Only the image is mapped here; RAM is reached through [`DIRECT_MAP_BASE`].
 pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_FFFF_8000_0000;
-/// Link address of the kernel image's PA 0: [`KERNEL_VA_OFFSET`] itself
-/// (one offset for the image and RAM).
+/// [`KERNEL_VA_OFFSET`] under the name the link layout uses.
 pub const KERNEL_IMAGE_BASE: u64 = KERNEL_VA_OFFSET;
-/// Bytes of physical memory, from PA 0, the kernel's offset map covers:
-/// the VA space above [`KERNEL_VA_OFFSET`] (2 GiB). RAM above it is left
+/// The direct map: every physical byte the kernel manages (RAM, page
+/// tables, frames) is reached at `pa + DIRECT_MAP_BASE`
+/// (`crates/core/mm/src/addr.rs`, `phys_to_virt`). Linux's `physmap` base
+/// (`page_offset_base` with 4-level paging): PML4 slot 273, a 512 GiB
+/// boundary, so its first PDPT indexes PA directly. Canonical under LA57
+/// too (PML5 slot 511, the image's), so one constant serves both depths.
+pub const DIRECT_MAP_BASE: u64 = 0xFFFF_8880_0000_0000;
+/// Bytes of physical memory the direct map can cover: 64 TiB (PML4 slots
+/// 273..400), Linux's 4-level `MAX_PHYSMEM_BITS` = 46. RAM above it is left
 /// out of the frame allocator (`boot_hooks::firmware_memory`).
-pub const DIRECT_MAP_BYTES: u64 = KERNEL_VA_OFFSET.wrapping_neg();
+pub const DIRECT_MAP_BYTES: u64 = 1 << 46;
 const _: () = assert!(KERNEL_VA_OFFSET & ((1 << 30) - 1) == 0, "1 GiB-aligned: the boot tables map it with PDPT entries");
 const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 3) == PT_ENTRIES - 1);
 const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 4) == PT_ENTRIES - 1);
 const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 2) == PT_ENTRIES - 2);
 const _: () = assert!(!is_user_va(KERNEL_VA_OFFSET as usize, LEVELS_4) && !is_user_va(KERNEL_VA_OFFSET as usize, LEVELS_5));
+const _: () = assert!(DIRECT_MAP_BASE & ((1 << 39) - 1) == 0, "512 GiB-aligned: boot.S points its slot at the 1:1 PDPT");
+const _: () = assert!(vpn(DIRECT_MAP_BASE as usize, 3) >= KERNEL_HALF_FIRST_SLOT);
+const _: () = assert!(vpn(DIRECT_MAP_BASE as usize, 4) == vpn(KERNEL_VA_OFFSET as usize, 4));
+const _: () = assert!(is_canonical(DIRECT_MAP_BASE as usize, LEVELS_4) && is_canonical(DIRECT_MAP_BASE as usize, LEVELS_5));
+const _: () = assert!(vpn((DIRECT_MAP_BASE + DIRECT_MAP_BYTES - 1) as usize, 3) < vpn(KERNEL_VA_OFFSET as usize, 3),
+    "the direct map ends below the image's slot");
 
 /// Is `va` in the user half (under either depth's lower canonical half)?
 #[inline]

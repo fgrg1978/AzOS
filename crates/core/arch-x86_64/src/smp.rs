@@ -135,8 +135,7 @@ fn pa_of<T>(p: *const T) -> u64 {
 /// # Safety
 /// Boot CPU, from `firmware_table`, after `platform_impl::discover`, no AP
 /// started; `kernel_end` is the image's end (a kernel VA). The trampoline
-/// page is written at its [`KERNEL_VA_OFFSET`] alias (below 1 MiB, inside
-/// the offset map at every stage of the boot).
+/// page is written through the direct map (boot.S maps PA 0..4 GiB there).
 pub unsafe fn install(kernel_end: usize) -> Result<u64, InstallError> {
     let tramp = platform().trampoline_pa.ok_or(InstallError::NoTrampolinePage)?;
     let pml4 = &raw mut X86_AP_PML4;
@@ -165,7 +164,7 @@ pub unsafe fn install(kernel_end: usize) -> Result<u64, InstallError> {
         }
         let src = &raw const x86_ap_trampoline_start;
         let len = (&raw const x86_ap_trampoline_end) as usize - src as usize;
-        core::ptr::copy_nonoverlapping(src, (tramp as usize + kva) as *mut u8, len);
+        core::ptr::copy_nonoverlapping(src, (tramp + crate::mmu::DIRECT_MAP_BASE) as usize as *mut u8, len);
     }
     Ok(tramp)
 }

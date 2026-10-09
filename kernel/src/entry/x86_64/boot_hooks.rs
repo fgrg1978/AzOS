@@ -222,36 +222,36 @@ pub fn cpu_features(_fw: &()) {
     ]);
 }
 
-/// RAM above this is left out: the kernel reaches RAM through its one
-/// offset map (`azos_arch::mmu::KERNEL_VA_OFFSET`, the top 2 GiB), which
-/// covers `DIRECT_MAP_BYTES` from PA 0, less Kconfig
-/// `X86_KERNEL_VA_HEADROOM_MB` kept for the VAs above RAM (text_poke's
-/// alias slots). Below 4 GiB either way: the PMM's span maps as normal
-/// memory, and on a PC the span past 4 GiB would cross the 32-bit MMIO hole
-/// (LAPIC, IOAPIC, HPET, PCI windows).
-const LOW_RAM_LIMIT: u64 = {
-    let map = azos_arch::mmu::DIRECT_MAP_BYTES - (azos_limits::X86_KERNEL_VA_HEADROOM_MB as u64) * (1 << 20);
-    if map < (1 << 32) { map } else { 1 << 32 }
-};
+/// RAM above this is left out: the direct map
+/// (`azos_arch::mmu::DIRECT_MAP_BASE`) covers `DIRECT_MAP_BYTES` (64 TiB)
+/// from PA 0. The PMM's span crosses the PC's 32-bit MMIO hole when RAM
+/// continues above 4 GiB; `kernel_mmio_windows` takes every E820 hole back
+/// out of the direct map before the kernel's table goes live, so no device
+/// page is mapped as normal memory.
+const RAM_LIMIT: u64 = azos_arch::mmu::DIRECT_MAP_BYTES;
 
-/// One range for the PMM: 0 to the end of the highest RAM entry below 4 GiB
-/// (the holes inside it are reserved by `reserve_firmware_table`); the CPUs
-/// the MADT lists, the boot CPU first.
+/// One range for the PMM: 0 to the end of the highest RAM entry (the holes
+/// inside it are reserved by `reserve_firmware_table`); the CPUs the MADT
+/// lists, the boot CPU first. The PMM manages at most Kconfig `RAM_SIZE`
+/// MiB of that span (its bitmap), said here when the span is larger.
 pub fn firmware_memory(_fw: &()) -> azos_arch::FirmwareMemory {
     let p = platform();
     let high: u64 = p.memmap().iter()
         .filter(|e| e.kind == azos_arch::bootinfo::E820_RAM)
-        .map(|e| e.addr.saturating_add(e.size).saturating_sub(e.addr.max(LOW_RAM_LIMIT)))
+        .map(|e| e.addr.saturating_add(e.size).saturating_sub(e.addr.max(RAM_LIMIT)))
         .sum();
     if high != 0 {
-        azos_drv_sys::kwarn!("[MEM] {} MiB of RAM above {} MiB not used (the kernel's offset map, \
-                              KERNEL_VA_OFFSET, less X86_KERNEL_VA_HEADROOM_MB)",
-                             high >> 20, LOW_RAM_LIMIT >> 20);
+        azos_drv_sys::kwarn!("[MEM] {} MiB of RAM above the direct map's {} GiB not used",
+                             high >> 20, RAM_LIMIT >> 30);
     }
-    let (mem_start, mem_size, from_firmware) = match azos_arch::bootinfo::ram_span(p.memmap(), LOW_RAM_LIMIT) {
+    let (mem_start, mem_size, from_firmware) = match azos_arch::bootinfo::ram_span(p.memmap(), RAM_LIMIT) {
         Some((s, e)) => (s as usize, (e - s) as usize, true),
         None => (0, crate::FALLBACK_MEM_SIZE, false),
     };
+    if mem_size > azos_limits::RAM_SIZE << 20 {
+        azos_drv_sys::kwarn!("[MEM] RAM span {} MiB, the frame allocator manages Kconfig RAM_SIZE = {} MiB of it",
+                             mem_size >> 20, azos_limits::RAM_SIZE);
+    }
     azos_arch::FirmwareMemory {
         mem_start,
         mem_size,
@@ -302,11 +302,86 @@ pub fn reserve_firmware_table(_fw_table: usize) {
     kprintln!("[MM] Reserved {} KiB of memory-map holes, {} KiB of boot information", holes >> 10, boot >> 10);
 }
 
+/// [`azos_arch::mmu::TableMem`] over the direct map (every table frame is
+/// RAM the direct map covers, under boot.S's tables and the kernel's).
+struct DirectTables;
+impl azos_arch::mmu::TableMem for DirectTables {
+    fn read(&self, table: usize, idx: usize) -> u64 {
+        // SAFETY: a table frame reached from a live root: RAM in the direct map.
+        unsafe { core::ptr::read_volatile((azos_mm::addr::phys_to_virt(table) + idx * 8) as *const u64) }
+    }
+    fn write(&mut self, table: usize, idx: usize, word: u64) {
+        // SAFETY: as `read`; the boot CPU edits the kernel's table before
+        // any other CPU or task uses it.
+        unsafe { core::ptr::write_volatile((azos_mm::addr::phys_to_virt(table) + idx * 8) as *mut u64, word) }
+    }
+    fn alloc_table(&mut self) -> Option<usize> { None }
+}
+
+/// `vmm::init` mapped the PMM's whole span into the direct map as normal
+/// memory, E820 holes included: on a PC with RAM above 4 GiB that span
+/// crosses the 32-bit MMIO hole (LAPIC, IOAPIC, HPET, PCI windows). Take
+/// every page no RAM entry covers back out, whole 2 MiB leaves where a hole
+/// spans one, single pages (split) at its edges, so no device page has a
+/// write-back alias. Returns the bytes removed.
+fn unmap_direct_map_holes() -> u64 {
+    const MEGA: usize = 2 << 20;
+    let kpt = azos_mm::vmm::kernel_pagetable();
+    let end = azos_mm::vmm::ram_end() as u64;
+    let levels = azos_arch::mmu::levels();
+    let mut removed = 0u64;
+    azos_arch::bootinfo::for_each_hole(platform().memmap(), end, |s, l| {
+        let (mut pa, e) = (s as usize, (s + l) as usize);
+        while pa < e {
+            let va = azos_mm::addr::phys_to_virt(pa);
+            if pa & (MEGA - 1) == 0 && pa + MEGA <= e && azos_mm::vmm::leaf_level(kpt, va) == Some(1) {
+                let _ = azos_arch::mmu::unmap(&mut DirectTables, kpt, levels, va);
+                pa += MEGA;
+                removed += MEGA as u64;
+            } else {
+                azos_mm::vmm::unmap_kernel(kpt, va);
+                pa += azos_arch::PAGE_SIZE;
+                removed += azos_arch::PAGE_SIZE as u64;
+            }
+        }
+    });
+    removed
+}
+
 /// The device windows the kernel tables map before paging is on: the xAPIC
 /// page (none in x2APIC mode), each IOAPIC, the HPET, the virtio-mmio
-/// transports.
+/// transports. First, the E820 holes leave the direct map
+/// ([`unmap_direct_map_holes`]): this is the hook that runs between
+/// `vmm::init` and the table going live.
 pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
     const PAGE: usize = 0x1000;
+    let holes = unmap_direct_map_holes();
+    // Read it back: no direct-map leaf may touch an E820 hole.
+    let (dmb, top) = (azos_arch::mmu::DIRECT_MAP_BASE as usize, azos_arch::mmu::levels() - 1);
+    let slot = azos_arch::mmu::vpn(dmb, top);
+    let end = azos_mm::vmm::ram_end() as u64;
+    let (mut leaves, mut bad, mut first) = (0usize, 0usize, 0usize);
+    azos_arch::mmu::for_each_leaf(&DirectTables, azos_mm::vmm::kernel_pagetable(), top + 1, slot..slot + 1,
+        &mut |va, leaf| {
+            if va < dmb || va - dmb >= azos_arch::mmu::DIRECT_MAP_BYTES as usize {
+                return; // the image's map, which shares the root slot under LA57
+            }
+            leaves += 1;
+            let (s, e) = (leaf.phys as u64, (leaf.phys + azos_arch::mmu::level_size(leaf.level)) as u64);
+            let mut hit = false;
+            azos_arch::bootinfo::for_each_hole(platform().memmap(), end, |hs, hl| hit |= hs < e && s < hs + hl);
+            if hit {
+                bad += 1;
+                if first == 0 { first = va; }
+            }
+        });
+    if bad == 0 {
+        kprintln!("[MM] Direct map at {:#x}: RAM 0..{:#x} in {} leaves, {} KiB of E820 holes left unmapped",
+                  dmb, end, leaves, holes >> 10);
+    } else {
+        azos_drv_sys::kerr!("[MM] FAILED: direct map: {} of {} leaves touch an E820 hole (first VA {:#x})",
+                            bad, leaves, first);
+    }
     let p = platform();
     let mut w = [(0usize, 0usize); 4 + azos_arch::acpi::MAX_IOAPICS];
     let mut n = 0;
@@ -390,10 +465,10 @@ pub fn mmu_enabled() {
 /// table maps, read back from the table itself.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LowHalf {
-    /// 4 KiB pages of leaves whose frames lie above RAM (device windows).
+    /// 4 KiB pages of leaves outside every RAM entry (device windows).
     pub device_pages: usize,
-    /// 4 KiB pages of leaves whose frames are RAM the kernel maps (below
-    /// `vmm::ram_end()`: the image, the heap, every PMM frame).
+    /// 4 KiB pages of leaves that touch an E820 RAM entry (the image, the
+    /// heap, every PMM frame).
     pub ram_pages: usize,
     /// The first such RAM leaf, `(va, pa)`.
     pub first_ram: Option<(usize, usize)>,
@@ -402,29 +477,23 @@ pub(crate) struct LowHalf {
 }
 
 /// Walk the user half of `root` (a kernel or a task root): every leaf
-/// sorted into device and RAM pages. Pure reads through the offset map.
+/// sorted into device and RAM pages (E820). Pure reads through the direct map.
 /// A task's own pages are RAM too, so a task root is audited before its
 /// user pages exist, or the caller counts `user_leaves` apart.
 pub(crate) fn audit_low_half(root: usize) -> LowHalf {
-    use azos_arch::mmu::{self as m, TableMem};
-    struct Tables;
-    impl TableMem for Tables {
-        fn read(&self, table: usize, idx: usize) -> u64 {
-            // SAFETY: a table frame the walk reached from a live root: RAM,
-            // inside the kernel's offset map.
-            unsafe { core::ptr::read_volatile((azos_mm::addr::phys_to_virt(table) + idx * 8) as *const u64) }
-        }
-        fn write(&mut self, _: usize, _: usize, _: u64) {}
-        fn alloc_table(&mut self) -> Option<usize> { None }
-    }
-    let ram_end = azos_mm::vmm::ram_end();
+    use azos_arch::mmu as m;
+    let map = platform().memmap();
+    let is_ram = |pa: usize, len: usize| map.iter().any(|e| {
+        e.kind == azos_arch::bootinfo::E820_RAM && (e.addr as usize) < pa + len && pa < e.addr.saturating_add(e.size) as usize
+    });
     let mut a = LowHalf::default();
-    m::for_each_leaf(&Tables, root, m::levels(), 0..m::KERNEL_HALF_FIRST_SLOT, &mut |va, leaf| {
-        let pages = m::level_size(leaf.level) / azos_arch::PAGE_SIZE;
+    m::for_each_leaf(&DirectTables, root, m::levels(), 0..m::KERNEL_HALF_FIRST_SLOT, &mut |va, leaf| {
+        let size = m::level_size(leaf.level);
+        let pages = size / azos_arch::PAGE_SIZE;
         if leaf.word & m::US != 0 {
             a.user_leaves += 1;
         }
-        if leaf.phys < ram_end {
+        if is_ram(leaf.phys, size) {
             a.ram_pages += pages;
             a.first_ram.get_or_insert((va, leaf.phys));
         } else {
@@ -434,14 +503,41 @@ pub(crate) fn audit_low_half(root: usize) -> LowHalf {
     a
 }
 
+/// The image's text and read-only data, seen through the direct map, made
+/// read-only and never executable: the NX sweep took X off that alias
+/// (it is RAM outside the image's own VAs), but it stays writable, and a
+/// writable alias of the text is the write W^X exists to deny. The same
+/// planner and readback as the image (`wx::plan` through
+/// `vmm::enforce_wx`/`verify_wx`, with an empty text range), on the alias.
+fn protect_image_alias() {
+    use azos_mm::addr::{phys_to_virt, virt_to_phys};
+    // SAFETY: linker symbols' addresses, not dereferenced.
+    let (t, r) = unsafe { (&crate::_text_start as *const u8 as usize, &crate::_rodata_end as *const u8 as usize) };
+    let page = azos_arch::PAGE_SIZE;
+    let a = phys_to_virt(virt_to_phys(t)) & !(page - 1);
+    let e = (phys_to_virt(virt_to_phys(r)) + page - 1) & !(page - 1);
+    let unsplit = azos_mm::vmm::split_mega_range(a, e);
+    azos_mm::vmm::enforce_wx(a, a, a, e, e, e);
+    let rep = azos_mm::vmm::verify_wx(a, a, a, e, e, e);
+    if rep.is_clean() && unsplit == 0 {
+        kprintln!("[MM] Image alias in the direct map: {} pages read-only, not executable", rep.checked);
+    } else {
+        azos_drv_sys::kerr!("[MM] FAILED: image alias in the direct map: {} checked, {} W+X, {} wrong-flags, \
+                             {} unmapped, {} unsplit, first bad {:#x}",
+            rep.checked, rep.write_exec, rep.wrong_flags, rep.unmapped, rep.unsplit_megapage + unsplit, rep.first_bad);
+    }
+}
+
 /// The low half after the switch: `vmm::enable_paging` replaced boot.S's
-/// tables (PA 0..4 GiB 1:1 beside the high map) with the kernel's own,
-/// which map RAM at `KERNEL_VA_OFFSET` only and the recorded device windows
-/// 1:1. Read that back from the live root: no RAM page below the kernel
-/// half, so the user image range (`0x1_0000` up) is free on every ISA and a
-/// kernel bug cannot reach a frame by its physical number. The AP
-/// trampoline needs nothing here: an AP starts on `smp::install`'s own
-/// tables and jumps high before it loads this root.
+/// tables (PA 0..4 GiB 1:1 beside the direct map and the image map) with
+/// the kernel's own, which map RAM in the direct map, the image at
+/// `KERNEL_VA_OFFSET` and the recorded device windows 1:1. Read that back
+/// from the live root: no RAM page below the kernel half, so the user image
+/// range (`0x1_0000` up) is free on every ISA and a kernel bug cannot reach
+/// a frame by its physical number. The AP trampoline needs nothing here: an
+/// AP starts on `smp::install`'s own tables and jumps high before it loads
+/// this root. Then the image's direct-map alias loses W
+/// ([`protect_image_alias`]), the step W^X/NX left to the ISA.
 pub fn restrict_low_half() {
     let kpt = azos_mm::vmm::kernel_pagetable();
     let live = azos_arch::mmu::cr3_root(azos_arch::mmu::cpu::read_cr3()) == kpt;
@@ -454,6 +550,7 @@ pub fn restrict_low_half() {
             "[MM] FAILED: low half maps {} RAM page(s) (first VA {:#x} -> PA {:#x}) beside {} MMIO pages",
             a.ram_pages, va, pa, a.device_pages),
     }
+    protect_image_alias();
 }
 
 /// The null and stack guards read back from the page table (the aarch64

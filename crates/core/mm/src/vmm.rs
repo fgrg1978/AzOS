@@ -1567,6 +1567,33 @@ pub fn init(mem_start: usize, mem_size: usize) -> KResult<()> {
     Ok(())
 }
 
+/// Map the kernel image `[pa_start, pa_end)` at its link address
+/// (`pa + addr::KERNEL_IMAGE_OFFSET`), where that differs from the RAM map
+/// [`init`] built (x86_64: the image in the top 2 GiB, RAM in the direct
+/// map); nothing to do where they are one map. Megapages for the aligned
+/// bulk, `KERNEL_RWX` as `init` maps RAM: the W^X pass that follows splits
+/// and tightens it. Returns the bytes mapped.
+pub fn map_kernel_image(pa_start: usize, pa_end: usize) -> KResult<usize> {
+    let off = crate::addr::KERNEL_IMAGE_OFFSET;
+    if off == crate::addr::KERNEL_PHYS_TO_VIRT_OFFSET {
+        return Ok(0);
+    }
+    let kpt = *KERNEL_PT.lock();
+    let start = pa_start & !(PAGE_SIZE - 1);
+    let end = (pa_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let mut pa = start;
+    while pa < end {
+        if pa & (MEGA_SIZE - 1) == 0 && pa + MEGA_SIZE <= end {
+            map_mega(kpt, pa + off, pa, PagePerms::KERNEL_RWX)?;
+            pa += MEGA_SIZE;
+        } else {
+            map(kpt, pa + off, pa, PagePerms::KERNEL_RWX)?;
+            pa += PAGE_SIZE;
+        }
+    }
+    Ok(end - start)
+}
+
 /// Map an MMIO region with identity mapping (vaddr == paddr).
 ///
 /// Maps `size` bytes of device memory starting at `base` using 4 KiB pages
