@@ -7888,7 +7888,8 @@ ci_row "rt7: drone → contain" rt7_drone_default_row
 # "rt-motor lost its period" (145 vs 290 heartbeats, wave 15); with 12 host
 # busy loops 4/7 runs failed and after < before in all 7. Under -icount, 20/20
 # PASS at 493-499 heartbeats per 500 ms in both windows, 10 of them with the
-# sweep spanning the after window (2026-10-06).
+# sweep spanning the after window (2026-10-06). The sweep has since left
+# behavior for its own `bench-boot` task (BOOT_BENCH_PRIORITY, default 28).
 par "rt7: panic contain (rv)" rt7_row rv contain
 par "rt7: panic spin (rv)" rt7_row rv spin
 par "rt7: panic contain (arm)" rt7_row arm contain
@@ -15777,14 +15778,15 @@ PYEOF
     # 2 ms deadline behind the upper one's 5 ms: refused with `levels`).
     # `-smp 2`: `u70-hart1`/`u93-hart1`, the sets on hart 1 alone: under
     # -icount both harts share one virtual clock, so two loaded harts each
-    # see half of it and only one hart is loaded at a time. aarch64 only: on
-    # riscv64 the hart-1 phases miss (333/375 jobs at 70 %, 263/375 at 93 %,
-    # wave 15) with the stolen-clock signature (CBS overruns on jobs that
-    # computed 95 % of their budget), almost as many as with both harts
-    # loaded (190 vs 200 of 200 for the 5 ms task): riscv64 hart 0 keeps
-    # executing while nothing is scheduled on it, where aarch64's idles.
-    # Open (idle_wait / console drain / keepalive at -smp 2; same class as
-    # the "hart 2 starved under -icount" item).
+    # see half of it and only one hart is loaded at a time. The riscv64
+    # hart-1 row first missed 333/375 jobs at 70 % and 263/375 at 93 % with
+    # the stolen-clock signature (CBS overruns on jobs that computed 95 % of
+    # their budget): hart 0 was not idle but spinning, IRQs off, on the
+    # global timer-sleeper lock held by hart 1, which -icount does not run
+    # while hart 0 spins (up to 50 ms per tick). Every idle path halts (rv
+    # and arm `wfi`, x86 `hlt`); the lock is per CPU since
+    # SCHED_TIMER_HEAP_PER_CPU. Canary: that symbol off brings back 292/375
+    # and 280/375 misses (riscv64, 2026-10-09); on, 0/375 at shift 0 and 1.
     # Canaries: `rt-util-cbs-canary` (no budget charging) fails `overrun`;
     # `rt-util-wake-canary` (the CBS wake rule tests q/t, the bandwidth,
     # instead of q/d, the density) fails `suspend`; `rt-util-admit-canary`
@@ -15867,6 +15869,7 @@ PYEOF
     par_row sched_rt_util_row "sched-rt-util: aarch64 CBS canary" arm 1 "qemu,rt-util-cbs-canary" overrun
     par_row sched_rt_util_row "sched-rt-util: aarch64 wake rule canary" arm 1 "qemu,rt-util-wake-canary" suspend
     par_row sched_rt_util_row "sched-rt-util: aarch64 levels canary" arm 1 "qemu,rt-util-admit-canary" mixed
+    par_row sched_rt_util_row "sched-rt-util: riscv64 hart 1" rv 2 "qemu,sched-rt-util" PASS
 
     # ── Priority inversion through fast IPC (wave 11 PIFAST, RFC-0052 R4) ──
     #

@@ -105,17 +105,14 @@ pub(crate) fn behavior_task(_: usize) {
     const WCET_AUTOREPORT_INTERVAL_SEC: u64 = 10;
     #[cfg(feature = "qemu")]
     let mut wcet_autoreport_deadline: u64 = azos_drv_sys::timebase::now();
-    // 2026-05-30: also fire `azos_bench::run_all` ONCE shortly after
-    // boot to emit a synthetic [BENCH-RES] baseline.  Shell-injected
+    // 2026-05-30: also start `azos_bench::run_all` ONCE shortly after
+    // boot to emit a synthetic [BENCH-RES] baseline. Shell-injected
     // `bench` command via the harness FIFO has proven unreliable end-to-
     // end (auto-report fires but shell-input does not reach the parser
     // under QEMU TCG SMP), so we trigger from a task that demonstrably
-    // runs.  100 iterations per microbench keeps the run under 1 s and
-    // avoids dominating bench scenario time.
+    // runs. The sweep itself runs in `bench_boot_task`, not here.
     #[cfg(feature = "qemu")]
     let mut bench_run_all_done: bool = false;
-    #[cfg(feature = "qemu")]
-    const BENCH_RUN_ALL_ITERS: u64 = 100;
 
     // Per-step timing (`[BSTEP]`, printed with the WCET auto-report).
     let mut step_stats = behavior_step::StepStats::new();
@@ -1331,16 +1328,13 @@ pub(crate) fn behavior_task(_: usize) {
                 #[cfg(not(feature = "no-ml"))]
                 ml_link.report();
             }
-            // One-shot synthetic bench run.  See bench_run_all_done
-            // declaration for rationale.
+            // One-shot synthetic bench run, in a task of its own at
+            // `BOOT_BENCH_PRIORITY` (see `bench_boot_task`).
             if !bench_run_all_done {
                 bench_run_all_done = true;
-                azos_bench::run_all(BENCH_RUN_ALL_ITERS);
-                // K-C5: the auth bench calls `wrap` unkeyed, and under
-                // `link-encrypt-enforced` that burns the one-shot (tx, NoKey)
-                // announcement slot — the first REAL denial would then print
-                // nothing. Re-arm after the synthetic sweep.
-                azos_behavior::auth_envelope::reset_denial_announcements();
+                let _ = azos_sched::task_create(
+                    "bench-boot", bench_boot_task, 0,
+                    azos_limits::BOOT_BENCH_PRIORITY as u32);
             }
         }
 
@@ -1355,4 +1349,27 @@ pub(crate) fn behavior_task(_: usize) {
             + azos_drv_sys::timebase::TIMER_FREQ / 10;
         azos_sched::task_block(azos_sched::WaitReason::Timer(sleep_deadline));
     }
+}
+
+/// The one-shot `[BENCH-RES]` sweep (`qemu` builds that keep info lines),
+/// started once by the behavior loop.
+///
+/// **Not in the behavior loop.** The sweep never blocks: hashing, X25519
+/// and the other microbenches for about 17 s of virtual time at riscv64
+/// `-icount shift=3` (8 ns an instruction, so up to ~2 G instructions, ~2 s
+/// at shift 0). Run inline, it held `behavior` (priority 14, pinned to hart 2)
+/// Running for all of it: the control loop stopped for that long, and every
+/// less urgent task pinned to hart 2 got nothing — the `timer heap raced`
+/// smoke's hart-2 sleepers never ran under `-icount shift>=1` (8 tasks
+/// Ready on hart 2's queue, the priority guard refusing each pick). Here it
+/// runs at `BOOT_BENCH_PRIORITY` (default 28, below every boot task, above
+/// idle), on whichever CPU the least-loaded placement picks.
+#[cfg(feature = "qemu")]
+fn bench_boot_task(_arg: usize) {
+    azos_bench::run_all(azos_limits::BOOT_BENCH_ITERS as u64);
+    // K-C5: the auth bench calls `wrap` unkeyed, and under
+    // `link-encrypt-enforced` that burns the one-shot (tx, NoKey)
+    // announcement slot — the first REAL denial would then print
+    // nothing. Re-arm after the synthetic sweep.
+    azos_behavior::auth_envelope::reset_denial_announcements();
 }

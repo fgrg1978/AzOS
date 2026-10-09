@@ -669,4 +669,33 @@ config DECISION_RECORDS_ENTRIES
       migrating wakes evict the boot admission records you want to read;
       read only when DECISION_RECORDS is on.
 
+config BOOT_BENCH_ITERS
+    int "Boot [BENCH-RES] sweep: iterations per microbenchmark"
+    range 1 100000
+    default 100
+    help
+      A `qemu` build that keeps info lines (LOG_LEVEL >= INFO) runs the
+      robot bench sweep (`azos_bench::run_all`, 49 `[BENCH-RES]` lines)
+      once, shortly after boot, in the `bench-boot` task. Each
+      microbenchmark runs this many iterations (best of a few runs). At
+      100 the sweep is up to ~2 G instructions on riscv64 (about 17 s of
+      virtual time at `-icount shift=3`); time scales linearly. Raise it for steadier
+      numbers, lower it to shorten boot scenarios. No cost in a build
+      without the `qemu` feature or below LOG_LEVEL INFO.
+
+config BOOT_BENCH_PRIORITY
+    int "Boot [BENCH-RES] sweep: task priority"
+    range 1 30
+    default 28
+    help
+      Priority of the one-shot `bench-boot` task (lower is more urgent;
+      16 is the default task priority, 31 the idle task's). The sweep
+      never blocks, so whatever it outranks on its CPU waits for all of
+      it: run from the behavior task (priority 14) it stopped the control
+      loop and starved every less urgent task on hart 2 for the whole
+      sweep. The default sits below every boot task, so the sweep takes
+      only time no other task wants (its numbers can include preemption).
+      Raise its urgency only to measure on an otherwise loaded system.
+      No cost in a build without the `qemu` feature.
+
 endmenu # Development & Debug
