@@ -53,6 +53,33 @@ pub fn boot_banner(hart_id: usize, fw_table: usize) {
     kprintln!("[BOOT] Baseline:   x86-64-v{} (checked by boot.S before Rust)", crate::X86_64_LEVEL);
 }
 
+/// The PVH `start_info` command line, NUL-terminated at `cmdline_paddr`
+/// (`ArchEntry::kernel_cmdline`).
+pub fn kernel_cmdline(fw_table: usize, out: &mut [u8]) -> Option<usize> {
+    if fw_table == 0 {
+        return None;
+    }
+    // SAFETY: boot.S passes the PVH start_info's physical address, identity
+    // mapped (0..4 GiB) by boot.S's page tables.
+    let si = unsafe { &*(fw_table as *const HvmStartInfo) };
+    if si.magic != PVH_MAGIC || si.cmdline_paddr == 0 {
+        return None;
+    }
+    let p = si.cmdline_paddr as usize as *const u8;
+    let mut n = 0;
+    while n < out.len() {
+        // SAFETY: a NUL-terminated string at cmdline_paddr (identity mapped),
+        // read up to its NUL or `out`'s length.
+        let b = unsafe { p.add(n).read() };
+        if b == 0 {
+            break;
+        }
+        out[n] = b;
+        n += 1;
+    }
+    Some(n)
+}
+
 /// The PVH `hvm_start_info` and its memory map, printed. Done: the console
 /// (COM1, polled), the banner, this. Not yet: the ACPI tables (RSDP -> MADT
 /// for the CPUs, `discover_cpus` with `source: "MADT"`), the frame

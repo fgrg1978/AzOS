@@ -133,6 +133,13 @@ pub trait ArchEntry {
     fn firmware_table(&self, hart_id: usize, fw_table: usize, dt: Option<Self::DeviceTree>)
         -> Self::Firmware;
 
+    /// The kernel command line the firmware handed over, copied into `out`
+    /// (cut to its length); the byte count, or `None` without one. The
+    /// device tree's `/chosen/bootargs` (riscv64, aarch64; QEMU `-append`),
+    /// the PVH `start_info` command line (x86_64). Called by `early_main`
+    /// before paging, with the firmware's physical pointer.
+    fn kernel_cmdline(&self, fw_table: usize, out: &mut [u8]) -> Option<usize>;
+
     /// Choose the interrupt controller the table describes (riscv64: PLIC or
     /// AIA) and bind the table's devices.
     fn irqchip_probe(&self, fw: &Self::Firmware);

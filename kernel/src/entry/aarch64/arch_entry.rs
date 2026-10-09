@@ -31,6 +31,9 @@ impl ArchEntry for Entry {
         crate::boot_hooks::firmware_table(hart_id, fw_table, dt)
     }
     #[inline(always)]
+    fn kernel_cmdline(&self, fw_table: usize, out: &mut [u8]) -> Option<usize> {
+        crate::boot_hooks::kernel_cmdline(fw_table, out)
+    }
     fn irqchip_probe(&self, fw: &Self::Firmware) { crate::boot_hooks::irqchip_probe(fw) }
     #[inline(always)]
     fn timer_probe(&self, fw: &Self::Firmware) { crate::boot_hooks::timer_probe(fw) }

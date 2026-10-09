@@ -143,6 +143,15 @@ pub fn boot_banner(hart_id: usize, dtb_ptr: usize) {
     kprintln!("[BOOT] FP/SIMD at EL1: 1.5*1.5+0.25 = {}", fp);
 }
 
+/// `/chosen/bootargs` of the device tree at `dtb_ptr` (`ArchEntry::kernel_cmdline`).
+pub fn kernel_cmdline(dtb_ptr: usize, out: &mut [u8]) -> Option<usize> {
+    if dtb_ptr == 0 {
+        return None;
+    }
+    // SAFETY: the firmware's device-tree pointer, as `dtb_parse` reads it.
+    unsafe { azos_dtb::dtb_bootargs(dtb_ptr as *const u8, out) }
+}
+
 /// Print what the DTB says (`dt`: `early_main`'s parse of it).
 #[inline(always)]
 pub fn firmware_table(_hart_id: usize, dtb_ptr: usize, dt: Option<azos_dtb::DtbInfo>) -> Firmware {
