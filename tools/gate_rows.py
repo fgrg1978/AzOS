@@ -38,7 +38,13 @@ GATE = os.path.join(ROOT, "tools", "ci_check.sh")
 MANIFEST = os.path.join(ROOT, "tools", "gate_rows.tsv")
 NEEDS = os.path.join(ROOT, "tools", "gate_needs.tsv")
 
-PAR_RE = re.compile(r'^\s*((?:[A-Z_][A-Z0-9_]*=(?:"[^"]*"|\S*)\s+)*)(par|par_row|host_job)\s+(.*)$')
+PAR_RE = re.compile(r"^\s*((?:[A-Z_][A-Z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S*)\s+)*)(par|par_row|host_job)\s+(.*)$")
+FOR_RE = re.compile(r'^(\s*)for\s+(\w+)\s+in\s+([^;$`()]+?)\s*;\s*do\s*$')
+ASSIGN_RE = re.compile(r'^\s*(\w+)=(?:"([^"$`]*)"|([\w.-]+))\s*$')
+# `name=a; [ "$loopvar" = x ] && name=b`: a name derived from a loop variable.
+DERIVE_RE = re.compile(r'^\s*(\w+)=([\w.-]+);\s*\[\s+"\$(\w+)"\s+=\s+([\w.-]+)\s+\]\s*&&\s*\1=([\w.-]+)\s*$')
+IF_RE = re.compile(r'^(\s*)if\s+\[\s+"\$(\w+)"\s+(=|!=)\s+"?([\w.-]+)"?\s+\]\s*;\s*then\s*$')
+VAR_RE = re.compile(r'\$\{(\w+)\}|\$(\w+)')
 FN_RE = re.compile(r'^(\s*)([a-zA-Z_][a-zA-Z_0-9]*)\(\)\s*\{')
 
 # Subsystem -> (key/function/feature regex, path globs). A row depends on the
@@ -62,7 +68,9 @@ SUBSYS = [
      "crates/core/topology/** crates/core/ota/** crates/core/crypto/** crates/core/config/** crates/core/azos-config/**"),
     ("safety", r"safety|e-stop|estop|watchdog|wdt|envelope|reflex|geofence|actuation|behavior|panic|safe mode",
      "crates/core/actuation/** domains/robot/** kernel/src/panic.rs kernel/src/behavior_*.rs"),
-    ("lx", r"\blx\b|lx:|linux", "lx/** crates/core/lx-loader/** crates/core/linux-abi/**"),
+    ("lx", r"\blx\b|lx:|linux",
+     "lx/** crates/core/lx-loader/** crates/core/linux-abi/** userspace/tests/lx* "
+     "crates/core/syscall/src/linux.rs"),
     ("trace", r"trace|flight recorder", "crates/core/trace/** kernel/src/lat_trace.rs"),
     ("energy", r"energy|power", "crates/core/energy/** crates/drivers/power/**"),
     ("ml", r"\bml\b|ml |ml-|gguf|mlsrv|npu", "crates/core/ml/** crates/drivers/npu/** kernel/src/mlsf_bench.rs"),
@@ -119,7 +127,56 @@ GENERIC = {"qemu_run", "a64_qemu_run", "kq"}
 KB_RE = re.compile(r'^\s*(a64_kbuild|kbuild)\s+"([^"$]*)"')
 
 
+def split_tolerant(text):
+    """shlex.split, keeping the words before a quote left open at the end of
+    the line (a row's script argument is a multi-line string)."""
+    lex = shlex.shlex(text, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    toks = []
+    while True:
+        try:
+            t = lex.get_token()
+        except ValueError:
+            return toks
+        if t is None:
+            return toks
+        toks.append(t)
+
+
+def _vars_in(*texts):
+    return {a or b for t in texts for a, b in VAR_RE.findall(t)}
+
+
+def _subst(text, env):
+    return VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
+
+
+def _expansions(loops, derived, consts, used):
+    """Every {var: value} binding of the loop variables (and the names derived
+    from them) in `used`, one per iteration combination."""
+    need = set(used)
+    for v in list(need):
+        if v in derived:
+            need.add(derived[v][0])
+    combos = [dict()]
+    for v, vals in loops:
+        if v in need:
+            combos = [dict(c, **{v: x}) for c in combos for x in vals]
+    for c in combos:
+        for name, (src, table, default) in derived.items():
+            if name in used and src in c:
+                c[name] = table.get(c[src], default)
+        for name, val in consts.items():
+            c.setdefault(name, val)
+    return combos
+
+
 def rows(text=None):
+    """The gate's rows. A key built from a literal `for v in a b; do` loop
+    variable (or a name derived from one) is expanded once per iteration, so
+    the manifest names every label the gate prints; a key with any other
+    shell variable is left out, as it cannot be known statically."""
     text = text if text is not None else open(GATE).read()
     fns = functions(text)
     current = {"rv": "qemu", "arm": "qemu"}  # the kernel a top-level row boots
@@ -127,7 +184,43 @@ def rows(text=None):
     for a, b, _ in fns.values():
         in_fn.update(range(a, b + 1))
     out = []
+    loops, derived, consts = [], {}, {}  # loops: (indent, var, [values])
+    conds = []  # open `if [ "$v" = x ]` blocks on a loop variable: [indent, v, op, x]
     for ln, line in joined_lines(text):
+        f = FOR_RE.match(line)
+        if f:
+            loops.append((f.group(1), f.group(2), [w.strip("\"'") for w in f.group(3).split()]))
+            continue
+        im = IF_RE.match(line)
+        if im and im.group(2) in {lp[1] for lp in loops} | set(derived):
+            conds.append([im.group(1), im.group(2), im.group(3), im.group(4)])
+            continue
+        cm = re.match(r"^(\s*)(else|fi)\b", line)
+        if cm and conds and conds[-1][0] == cm.group(1):
+            if cm.group(2) == "fi":
+                conds.pop()
+            else:
+                conds[-1][2] = "!=" if conds[-1][2] == "=" else "="
+            continue
+        d = re.match(r"^(\s*)done\b", line)
+        if d:
+            ind = d.group(1)
+            while loops and len(loops[-1][0]) >= len(ind):
+                loops.pop()
+            while conds and len(conds[-1][0]) >= len(ind):
+                conds.pop()
+            continue
+        dm = DERIVE_RE.match(line)
+        if dm and any(lp[1] == dm.group(3) for lp in loops):
+            prev = derived.get(dm.group(1))
+            table = dict(prev[1]) if prev and prev[0] == dm.group(3) else {}
+            table[dm.group(4)] = dm.group(5)
+            derived[dm.group(1)] = (dm.group(3), table, dm.group(2))
+            continue
+        am = ASSIGN_RE.match(line)
+        if am and not line.lstrip().startswith("#"):
+            consts[am.group(1)] = am.group(2) if am.group(2) is not None else am.group(3)
+            continue
         k = KB_RE.match(line)
         if k:
             current["arm" if k.group(1) == "a64_kbuild" else "rv"] = k.group(2) or "default"
@@ -135,10 +228,7 @@ def rows(text=None):
         if not m or line.lstrip().startswith("#"):
             continue
         env, verb, rest = m.group(1), m.group(2), m.group(3)
-        try:
-            toks = shlex.split(rest.split(" #", 1)[0])
-        except ValueError:
-            continue
+        toks = split_tolerant(rest.split(" #", 1)[0])
         flags = []
         if verb == "host_job":
             if len(toks) < 2:
@@ -157,18 +247,30 @@ def rows(text=None):
             else:
                 key, fn, args = toks[0], toks[1], toks[2:]
         if "$" in key:
-            continue  # a key built at run time (loop rows): not in the manifest
-        body = fns.get(fn, (0, 0, "")) if fn not in GENERIC else (0, 0, "")
-        if fn == "kq" and args:
-            prior = args[0]
+            used = _vars_in(key) | _vars_in(*args) | {c[1] for c in conds}
+            variants, seen_keys = [], set()
+            for env_v in _expansions([(v, vals) for _, v, vals in loops], derived, consts, used):
+                k2 = _subst(key, env_v)
+                if any((env_v.get(c[1]) == c[3]) != (c[2] == "=") for c in conds):
+                    continue  # inside an `if` this iteration does not take
+                if "$" not in k2 and k2 not in seen_keys:
+                    seen_keys.add(k2)
+                    variants.append((k2, [_subst(a, env_v) for a in args]))
         else:
-            prior = current["arm" if fn == "a64_qemu_run" else "rv"]
-        out.append({
-            "prior": prior if fn in GENERIC else None,
-            "key": key, "line": ln, "flags": flags, "fn": fn, "args": args,
-            "env": env.strip(), "body": body[2], "range": (body[0], body[1]),
-            "in_fn": ln in in_fn,
-        })
+            variants = [(key, args)]
+        body = fns.get(fn, (0, 0, "")) if fn not in GENERIC else (0, 0, "")
+        for key_i, args_i in variants:
+            if fn == "kq" and args_i:
+                prior = args_i[0]
+            else:
+                prior = current["arm" if fn == "a64_qemu_run" else "rv"]
+            out.append({
+                "prior": prior if fn in GENERIC else None,
+                "key": key_i, "line": ln, "flags": flags, "fn": fn, "args": args_i,
+                "env": env.strip(), "body": body[2], "range": (body[0], body[1]),
+                "in_fn": ln in in_fn,
+                "template": key if key_i != key else None,
+            })
     return out
 
 
@@ -233,6 +335,14 @@ def deps_of(r):
 
 def tier_of(r):
     hz = hazards(r)
+    # A Linux-personality row drives one private boot through ushell_row's
+    # fifo and gives it a wall-clock limit: those are the helper's mechanics
+    # (its body is what the hazard patterns see), not the row's own hazards,
+    # so such a row may run in `make check1` when the diff maps to it.
+    if r["fn"] == "ushell_row" and r["key"].startswith("linux:"):
+        own = hazards(dict(r, body=""))
+        if not {"serial", "peer", "wallclock"} & set(own):
+            return "n1"
     if "serial" in hz or "peer" in hz or "wallclock" in hz:
         return "n2"
     return "n1"
@@ -271,7 +381,15 @@ def write_manifest():
 
 
 def check_manifest():
+    text = open(GATE).read()
     keys = {r["key"] for r in rows()}
+    bad_label = 0
+    for r in rows():
+        # An expanded label is real only if the gate text holds the template
+        # it came from (a literal one: the label itself).
+        if ('"%s' % (r["template"] or r["key"])) not in text:
+            print("gate_rows: row '%s' is not printed by tools/ci_check.sh" % r["key"])
+            bad_label = 1
     man = read_manifest()
     missing = sorted(keys - set(man))
     stale = sorted(set(man) - keys)
@@ -282,7 +400,7 @@ def check_manifest():
     bad = [k for k, (t, _) in man.items() if t not in ("n1", "n2")]
     for k in bad:
         print("gate_rows: row '%s' has tier '%s' (n1 or n2)" % (k, man[k][0]))
-    return 1 if (missing or stale or bad) else 0
+    return 1 if (missing or stale or bad or bad_label) else 0
 
 
 def read_needs():
@@ -314,9 +432,10 @@ def check_needs(text=None):
     """Every key gate_needs.tsv names is a label the gate prints or keys."""
     text = text if text is not None else open(GATE).read()
     bad = 0
+    known = {r["key"] for r in rows(text)}
     for key, deps in read_needs().items():
         for k in [key] + deps:
-            if ('"%s' % k) not in text:
+            if k not in known and ('"%s' % k) not in text:
                 print("gate_rows: gate_needs.tsv names '%s', which tools/ci_check.sh never prints" % k)
                 bad = 1
     return bad

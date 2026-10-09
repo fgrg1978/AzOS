@@ -64,6 +64,13 @@ def gate_lines(base):
     return out
 
 
+def specificity(path, globs):
+    """Length of the literal prefix of the longest glob that matches `path`
+    (0 when none does): a row that names the changed file outranks one that
+    only names its directory tree."""
+    return max((len(re.split(r"[*?\[]", g, maxsplit=1)[0]) for g in globs if match(path, [g])), default=0)
+
+
 def match(path, globs):
     for g in globs:
         if fnmatch.fnmatch(path, g) or (g.endswith("/**") and path.startswith(g[:-2])):
@@ -81,12 +88,15 @@ def pick_rows(paths, lines, explain):
     man = gate_rows.read_manifest()
     rows = gate_rows.rows()
     fns = gate_rows.functions(open(gate_rows.GATE).read())
-    picked, why = [], {}
+    picked, why, rank = [], {}, {}
 
-    def add(key, reason):
+    def add(key, reason, score=10 ** 6):
+        # Rows picked for any reason but a deps glob keep the top rank; a deps
+        # hit ranks by how specifically its glob names the changed path.
         if key not in why:
             picked.append(key)
             why[key] = reason
+        rank[key] = max(rank.get(key, 0), score)
 
     for k in SMOKES:
         add(k, "smoke boot")
@@ -99,13 +109,14 @@ def pick_rows(paths, lines, explain):
         tier, deps = man.get(r["key"], ("n2", ""))
         hit = [p for p in paths if match(p, deps.split())]
         if hit:
-            add(r["key"], "deps: %s" % hit[0])
+            add(r["key"], "deps: %s" % hit[0], max(specificity(p, deps.split()) for p in hit))
         a, b = r["range"]
         if lines and (r["line"] in lines or (a and lines & set(range(a, b + 1)))):
             add(r["key"], "gate row edited")
     n1, n2 = [], []
     for k in picked:
         (n1 if man.get(k, ("n1",))[0] == "n1" or k in SMOKES else n2).append(k)
+    n1.sort(key=lambda k: -rank.get(k, 0))  # stable: gate order within a rank
     cap = int(os.environ.get("GATE_N1_MAX_ROWS", "16"))
     kept, dropped = n1[:cap], n1[cap:]
     if n2:
