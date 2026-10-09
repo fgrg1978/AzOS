@@ -111,7 +111,7 @@ impl WaitQueue {
     ///
     /// If scheduler callbacks are not yet registered (early boot), this
     /// degrades to a no-op spin — the caller must handle the fallback.
-    pub fn wait(&mut self) {
+    pub fn wait(&self) {
         let tid = caller_tid();
         if tid == u32::MAX {
             // No scheduler running — spin fallback.
@@ -183,7 +183,7 @@ impl WaitQueue {
     /// non-blocking predicate — an atomic load, not another lock and never
     /// anything that can yield. Passing something that blocks here deadlocks
     /// the waker.
-    pub fn wait_if(&mut self, should_sleep: impl Fn() -> bool) {
+    pub fn wait_if(&self, should_sleep: impl Fn() -> bool) {
         let tid = caller_tid();
         if tid == u32::MAX {
             // No scheduler running — spin fallback, as in `wait`.
@@ -198,11 +198,15 @@ impl WaitQueue {
             if !should_sleep() {
                 return;
             }
-            if inner.count < WAITQUEUE_CAPACITY {
-                let slot = inner.count;
-                inner.waiters[slot] = tid;
-                inner.count = slot + 1;
+            // A full queue would block a task no wake can reach. A
+            // `wait_if` caller re-checks its condition in a loop, so return
+            // instead: it retries (a spin) rather than sleeping forever.
+            if inner.count >= WAITQUEUE_CAPACITY {
+                return;
             }
+            let slot = inner.count;
+            inner.waiters[slot] = tid;
+            inner.count = slot + 1;
         }
 
         let block_ptr = WQ_BLOCK_FN.load(Ordering::Acquire);
@@ -214,7 +218,7 @@ impl WaitQueue {
 
     /// Wake one waiting task (FIFO order).
     /// Returns `true` if a task was woken, `false` if the queue was empty.
-    pub fn wake_one(&mut self) -> bool {
+    pub fn wake_one(&self) -> bool {
         let tid = {
             let mut inner = self.inner.lock_irqsave();
             if inner.count == 0 {
@@ -235,7 +239,7 @@ impl WaitQueue {
 
     /// Wake all waiting tasks.
     /// Returns the number of tasks woken.
-    pub fn wake_all(&mut self) -> usize {
+    pub fn wake_all(&self) -> usize {
         let (n, tids) = {
             let mut inner = self.inner.lock_irqsave();
             let n = inner.count;
@@ -280,7 +284,7 @@ fn current_task_tid() -> u32 {
 
 /// The caller's own task id: the registered per-CPU accessor when there is
 /// one, and the single global only as a pre-registration fallback.
-fn caller_tid() -> u32 {
+pub fn caller_tid() -> u32 {
     let ptr = WQ_TID_FN.load(Ordering::Acquire);
     if ptr != 0 {
         let f: fn() -> u32 = unsafe { core::mem::transmute(ptr) };

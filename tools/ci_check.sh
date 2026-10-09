@@ -15081,9 +15081,36 @@ PYEOF
             bad; echo "      the load did not all run: ${load:-no load line}"
             echo "      log kept: $log"; return
         fi
+        # Wave 15 (FM), owner rule F1: a `lat-fat` kernel counts FAT32 device
+        # I/O the FAT writer issued while it held a PiMutex (`[LAT] fat
+        # pi_io=`; it takes none itself, so any is FAT32's own). It
+        # must be 0; the PICANARY rows (a PiMutex held across each FAT update,
+        # the VF shape) must count some. Anchored on the whole value.
+        local pi_io=""
+        case "$feats" in *lat-fat*|*fat-mutate-pi-canary*)
+            pi_io="$(grep -a '^\[LAT\] fat pi_io=' "$clean" | sed -n '1s/^\[LAT\] fat pi_io=\([0-9][0-9]*\) pi_io_all=[0-9][0-9]*$/\1/p')"
+            if [ -z "$pi_io" ]; then
+                bad; echo "      no '[LAT] fat pi_io=<n> pi_io_all=<n>' line"; echo "      log kept: $log"; return
+            fi ;;
+        esac
+        if [ "$expect" = PICANARY ]; then
+            if [ "$pi_io" != 0 ]; then
+                ok; echo "      FAT device I/O under a held PiMutex: pi_io=${pi_io} (canary)"; rm -f "$log" "$clean"
+            else
+                bad; echo "      the PiMutex canary counted no FAT I/O under it: pi_io=${pi_io}"
+                echo "      log kept: $log"
+            fi
+            return
+        fi
+        if [ -n "$pi_io" ] && [ "$pi_io" != 0 ]; then
+            bad; echo "      FAT device I/O under a held PiMutex (F1): pi_io=${pi_io}"
+            echo "      log kept: $log"; return
+        fi
         if [ "$expect" = PASS ]; then
             if grep -aq '^\[LAT\] PASS ' "$clean"; then
-                ok; echo "      ${result#\[LAT\] }"; rm -f "$log" "$clean"
+                ok; echo "      ${result#\[LAT\] }"
+                [ -n "$pi_io" ] && grep -a '^\[LAT\] fat pi_io=' "$clean" | sed -n '1s/^\[LAT\] /      /p'
+                rm -f "$log" "$clean"
             else
                 bad; echo "      ${result}"; grep -a '^\[LAT\] FAIL ' "$clean" | sed 's/^/      /'
                 echo "      log kept: $log"
@@ -15216,9 +15243,10 @@ PYEOF
     # ran with preemption off on the writer's hart — and under -icount the
     # length followed host load: one cause of the intermittent `rt7: panic
     # contain` row, whose contained panic appends CRASH.LOG on the control
-    # hart. Now a `PiMutex`. Measured (tracer on, 2026-10-09): preempt-off max riscv64
+    # hart. Then a `PiMutex` (VF), measured (tracer on, 2026-10-09): preempt-off max riscv64
     # 9.93 ms -> 11.5 us, aarch64 1.70 ms -> 11.4 us; wake max riscv64
-    # 9.79 ms -> 9.2 us, aarch64 1.25 ms -> 8.1 us.
+    # 9.79 ms -> 9.2 us, aarch64 1.25 ms -> 8.1 us. Now (FM) no lock at all
+    # across the FAT update's I/O: per-FAT-sector claims (see below).
     #
     # The canary rows build `fat-mutate-spin-canary` (the `SpinLock` back,
     # with the tracer): `[LAT] FAIL`, and the tracer's worst preempt-off
@@ -15276,7 +15304,7 @@ PYEOF
             echo "      log kept: $log"; return
         fi
         if ! grep -aq '^\[LAT\] FAIL ' "$clean"; then
-            bad; echo "      the SpinLock FAT_MUTATE did not fail the bound: ${result}"
+            bad; echo "      the FAT spinlock canary did not fail the bound: ${result}"
             echo "      log kept: $log"; return
         fi
         top="$(grep -a '^\[LATTRACE\] run preempt top1 ' "$clean" | sed -n 1p)"
@@ -15292,6 +15320,13 @@ PYEOF
     par_row -s fat_lat_canary_row "lat: riscv64 FAT spinlock canary" rv "qemu,fat-mutate-spin-canary"
     par_row -s lat_wake_row "lat: aarch64 wake-up, FAT writes" arm "qemu,lat-fat" PASS
     par_row -s fat_lat_canary_row "lat: aarch64 FAT spinlock canary" arm "qemu,fat-mutate-spin-canary"
+    # Wave 15 (FM), owner rule F1: `FAT_MUTATE` (a PiMutex held across the
+    # FAT update's virtio-blk I/O) is gone; FAT-sector claims (fat32.rs
+    # `fat_sector_claim`) hold nothing across I/O. The rows above require
+    # `pi_io=0`; these canaries hold a PiMutex across each FAT update again
+    # and must count the I/O under it.
+    par_row -s lat_wake_row "lat: riscv64 FAT PI-across-I/O canary" rv "qemu,fat-mutate-pi-canary" PICANARY
+    par_row -s lat_wake_row "lat: aarch64 FAT PI-across-I/O canary" arm "qemu,fat-mutate-pi-canary" PICANARY
 
     # ── aarch64: idle wakeups/s (tickless), wave 11 ONESHOT ─────────────────
     #

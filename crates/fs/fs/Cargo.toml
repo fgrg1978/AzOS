@@ -57,11 +57,21 @@ content-stamp-off-canary = []
 # Wave 14 vsbench diagnostic: `crates/fs/fs/src/census.rs` prints where a
 # backend open/read/close goes. Enabled through the kernel's `file-census`.
 file-census = []
-# Wave 15 (VF) gate canary: `FAT_MUTATE` is a `SpinLock` again (preemption
-# off across the allocator's device I/O). The `lat: ... FAT writes canary`
-# rows must print `[LAT] FAIL` with a fat32.rs site as the worst
-# preempt-off window. Never in a real build.
+# Wave 15 (VF) gate canary: a `SpinLock` is held across every FAT-sector
+# claim (preemption off across the FAT update's device I/O). The `lat: ...
+# FAT spinlock canary` rows must print `[LAT] FAIL` with a fat32.rs site as
+# the worst preempt-off window. Never in a real build.
 fat-mutate-spin-canary = []
+# Wave 15 (FM) canary: a `PiMutex` is held across every FAT-sector claim (the
+# VF shape, F1 broken); `fat-pi-io-probe` must count FAT device I/O under it.
+fat-mutate-pi-canary = []
+# Wave 15 (FM): count FAT32 device I/O issued while the task holds a
+# `PiMutex` (`fat32_pi_io_count`); the `lat-fat` smoke prints it. Costs a
+# PI-table scan per FAT32 device I/O, so diagnostic builds only.
+fat-pi-io-probe = []
+# Wave 15 (FM) host canary: FAT-sector claims exclude nothing; fs-tests'
+# concurrent-mutator test must lose an update. Never in a real build.
+fat-sector-claim-canary = []
 
 [dependencies]
 azos_mm = { workspace = true }

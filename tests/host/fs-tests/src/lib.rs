@@ -4279,6 +4279,135 @@ mod full_root_create {
     }
 }
 
+// ── Concurrent FAT mutators with no lock across I/O (wave 15, FM) ────────────
+//
+// Owner rule F1: no mutex is held across a device wait, so two FAT updaters
+// can be inside their device I/O at once. What keeps them correct is the
+// FAT-sector claim (`fat_sector_claim` in fat32.rs). Each test parks thread A
+// inside its FAT write (the shim's before-write hook, before the bytes land)
+// and runs thread B's update on the SAME FAT sector meanwhile. With the claim,
+// B waits for A's publish; A's park is bounded, so a correct build finishes in
+// well under a second and a broken one fails instead of hanging.
+//
+// Canary: `--features fat-sector-claim-canary` (the claim excludes nothing):
+// both tests fail.
+#[cfg(test)]
+mod concurrent_fat_mutators {
+    use super::{fat32, image::*, serial};
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::time::{Duration, Instant};
+
+    const EOC: u32 = 0x0FFF_FFFF;
+
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static PARKED: AtomicBool = AtomicBool::new(false);
+    static B_DONE: AtomicBool = AtomicBool::new(false);
+    /// `fat32_claims_held_by` for A's task while A was parked (the host's
+    /// `caller_tid` is `u32::MAX` on every thread).
+    static A_CLAIMS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    /// `fat32_locks_available` while A was parked inside its claim.
+    static A_LOCKS_FREE: AtomicBool = AtomicBool::new(true);
+    std::thread_local!(static IS_A: core::cell::Cell<bool> = const { core::cell::Cell::new(false) });
+
+    /// Thread A's first device write parks until B is done (broken build:
+    /// B ran its whole update in A's window) or 300 ms passed (correct build:
+    /// B is waiting on A's claim and cannot finish until A publishes).
+    fn park_a() {
+        if !IS_A.with(|a| a.get()) || !ARMED.swap(false, SeqCst) { return; }
+        A_CLAIMS.store(fat32::fat32_claims_held_by(u32::MAX), SeqCst);
+        A_LOCKS_FREE.store(fat32::fat32_locks_available(), SeqCst);
+        PARKED.store(true, SeqCst);
+        let t0 = Instant::now();
+        while !B_DONE.load(SeqCst) && t0.elapsed() < Duration::from_millis(300) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn plain_volume() -> Geom {
+        let g = Geom::default();
+        let mut img = build(&g);
+        set_fat(&mut img, &g, 2, EOC);
+        super::swap_medium(img);
+        assert_eq!(fat32::fat32_mount(), Ok(()), "the fixture must mount");
+        g
+    }
+
+    fn fat_entry_copy(g: &Geom, copy: u32, cluster: u32) -> u32 {
+        let byte = cluster as usize * 4;
+        let lba = g.rsvd as u64 + (copy * g.fat_sz32) as u64 + (byte / SECTOR) as u64;
+        let sec = fs_test_drivers::disk_peek(lba).expect("FAT sector in the image");
+        let o = byte % SECTOR;
+        u32::from_le_bytes([sec[o], sec[o + 1], sec[o + 2], sec[o + 3]]) & 0x0FFF_FFFF
+    }
+
+    /// Run `a` on thread A (parked inside its first FAT write) and, once A is
+    /// parked, `b` on thread B. Returns both results.
+    fn race<RA: Send + 'static, RB: Send + 'static>(
+        a: fn() -> RA,
+        b: fn() -> RB,
+    ) -> (RA, RB) {
+        PARKED.store(false, SeqCst);
+        B_DONE.store(false, SeqCst);
+        ARMED.store(true, SeqCst);
+        fs_test_drivers::disk_before_write(Some(park_a));
+        let ta = std::thread::spawn(move || { IS_A.with(|x| x.set(true)); a() });
+        let t0 = Instant::now();
+        while !PARKED.load(SeqCst) {
+            assert!(t0.elapsed() < Duration::from_secs(5), "precondition: A never reached its FAT write");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let tb = std::thread::spawn(move || { let r = b(); B_DONE.store(true, SeqCst); r });
+        let rb = tb.join().expect("thread B");
+        let ra = ta.join().expect("thread A");
+        fs_test_drivers::disk_before_write(None);
+        ARMED.store(false, SeqCst);
+        (ra, rb)
+    }
+
+    /// **Two allocators, one FAT sector.** A scanned, found cluster 3 free and
+    /// is writing its mark; B scans the same sector meanwhile. Unclaimed, B
+    /// sees 3 free too and both files would own cluster 3 (U09-2).
+    #[test]
+    fn two_allocators_in_one_fat_sector_get_distinct_clusters() {
+        let _g = serial();
+        let g = plain_volume();
+        let (a, b) = race(fat32::fat32_alloc_cluster, fat32::fat32_alloc_cluster);
+        let (a, b) = (a.expect("A allocates"), b.expect("B allocates"));
+        assert_ne!(a, b, "two allocations handed out the same cluster");
+        assert_eq!(A_CLAIMS.load(SeqCst), 1,
+                   "inside its FAT write A must read as holding one claim (the panic policy's check)");
+        assert!(!A_LOCKS_FREE.load(SeqCst),
+                "with a claim out, the panic path must not see the FAT32 locks as free");
+        for copy in 0..2 {
+            assert_eq!(fat_entry_copy(&g, copy, a), EOC, "A's cluster {a} must read allocated (copy {copy})");
+            assert_eq!(fat_entry_copy(&g, copy, b), EOC, "B's cluster {b} must read allocated (copy {copy})");
+        }
+    }
+
+    /// **An allocator and a freer, one FAT sector.** Cluster 5 is allocated;
+    /// A is mid-way through marking cluster 3 (it read the sector, its write
+    /// is in flight) when B frees cluster 5. Unclaimed, A's sector write
+    /// carries the old "5 = allocated" bytes over B's free: cluster 5 leaks.
+    #[test]
+    fn a_free_during_an_allocation_in_the_same_fat_sector_is_not_lost() {
+        let _g = serial();
+        let g = Geom::default();
+        let mut img = build(&g);
+        set_fat(&mut img, &g, 2, EOC);
+        set_fat(&mut img, &g, 4, EOC);
+        set_fat(&mut img, &g, 5, EOC);
+        super::swap_medium(img);
+        assert_eq!(fat32::fat32_mount(), Ok(()), "the fixture must mount");
+        let (a, ()) = race(fat32::fat32_alloc_cluster, || fat32::fat32_free_chain(5));
+        assert_eq!(a, Ok(3), "A allocates the first free cluster");
+        for copy in 0..2 {
+            assert_eq!(fat_entry_copy(&g, copy, 3), EOC, "A's mark must land (copy {copy})");
+            assert_eq!(fat_entry_copy(&g, copy, 5), 0, "B's free must survive A's write (copy {copy})");
+            assert_eq!(fat_entry_copy(&g, copy, 4), EOC, "an untouched entry stays (copy {copy})");
+        }
+    }
+}
+
 // ── FAT32 inside a partition (wave 9, FS2) ───────────────────────────────────
 //
 // A medium with an MBR at LBA 0 and the FAT32 volume at LBA 2048: the driver

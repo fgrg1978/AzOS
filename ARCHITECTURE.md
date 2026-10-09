@@ -441,10 +441,14 @@ fixed mount table. There are three implementations:
   write-through mode, sized per profile.
 - **Journal.** A one-sector journal is replayed at mount.
 - **Locks across device I/O.** No lock held across a device request turns
-  preemption off. The cluster allocator's lock and the VirtIO block driver's
-  lock are priority-inheritance mutexes, and the cache lock is released before
-  a request goes to the device. A real-time task on the writer's CPU keeps its
-  period while FAT32 writes.
+  preemption off. The FAT holds no mutex across device I/O: a FAT entry
+  update claims its FAT sector in a bitmap, and a second updater of the same
+  sector sleeps on a wait queue without priority inheritance until the first
+  publishes, so a real-time waiter never inherits disk latency. The allocator
+  scans without a claim and confirms its candidate on the claimed sector. The
+  VirtIO block driver's lock is a priority-inheritance mutex, and the cache
+  lock is released before a request goes to the device. A real-time task on
+  the writer's CPU keeps its period while FAT32 writes.
 - **Write observer.** Writers that reach the medium without going through
   FAT32 call a write observer. These are the raw disk call and the USB
   mass-storage gadget. FAT32 registers the observer to drop the cache lines a

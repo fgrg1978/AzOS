@@ -116,7 +116,10 @@ fn capture(hart: usize, tid: u32) -> PanicContext {
         in_isr: azos_sync::isr_depth::in_isr(hart),
         preempt_depth: azos_sync::preempt::depth(),
         irqs_were_enabled: azos_sync::preempt::irqs_enabled(),
-        pi_held: azos_sync::pi_mutex::held_by(tid),
+        // Locks nobody else would release: held `PiMutex`es and FAT-sector
+        // claims (crates/fs/fs/src/fat32.rs, F1: not a mutex, same rule).
+        pi_held: azos_sync::pi_mutex::held_by(tid)
+            .saturating_add(azos_fs::fat32::fat32_claims_held_by(tid)),
         second_panic,
         already_panicked: azos_common::is_panicked(),
         culprit,

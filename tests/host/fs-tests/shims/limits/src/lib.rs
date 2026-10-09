@@ -35,6 +35,9 @@ pub const TMPFS_MAX_KB: usize = 2048;
 /// fixture volume's working set, so the tests that assert "served from RAM"
 /// assert it at a size a 16 MiB board ships with.
 pub const FS_BLOCK_CACHE_KB: usize = 64;
+/// Kconfig `FAT32_SECTOR_CLAIM_SLOTS` (fat32.rs's FAT-sector claims): the
+/// shipped default on every profile.
+pub const FAT32_SECTOR_CLAIM_SLOTS: usize = 64;
 /// config/Kconfig.arch `PAGE_SHIFT` (procfs' meminfo scales page counts by it):
 /// 4 KiB, the value every host build models.
 pub const PAGE_SHIFT: usize = 12;

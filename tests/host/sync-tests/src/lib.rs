@@ -765,7 +765,7 @@ mod tests {
         let _g = guard();
         arm_callback();
 
-        let mut wq = super::waitqueue::WaitQueue::new();
+        let wq = super::waitqueue::WaitQueue::new();
         with_a_current_tid(|| wq.wait_if(|| false));
         assert_eq!(wq.len(), 0, "a satisfied condition must not enqueue anyone");
         assert!(wq.is_empty());
@@ -786,7 +786,7 @@ mod tests {
         static CALLS: AtomicU32 = AtomicU32::new(0);
         CALLS.store(0, Ordering::SeqCst);
 
-        let mut wq = super::waitqueue::WaitQueue::new();
+        let wq = super::waitqueue::WaitQueue::new();
         with_a_current_tid(|| wq.wait_if(|| {
             CALLS.fetch_add(1, Ordering::SeqCst);
             // Preemption is off for the whole hold, and the predicate runs
@@ -810,7 +810,7 @@ mod tests {
         let _g = guard();
         arm_callback();
 
-        let mut wq = super::waitqueue::WaitQueue::new();
+        let wq = super::waitqueue::WaitQueue::new();
         assert!(!wq.wake_one(), "empty queue: nothing to wake");
         assert_eq!(preempt::depth(), 0, "the early return must still drop the guard");
     }

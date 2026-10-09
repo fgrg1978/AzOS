@@ -120,3 +120,22 @@ pub mod pi_mutex {
 pub mod spinlock {
     pub use super::{Guard, IrqSaveGuard, SpinLock, SpinLockGuard};
 }
+
+/// The real `WaitQueue`'s `wait_if`/`wake_all` surface. The host has no
+/// scheduler to block on, so `wait_if` yields the thread when the condition
+/// still holds (the caller re-checks in a loop, exactly as it must against
+/// the real queue's spurious returns); `wake_all` has nobody to wake.
+pub mod waitqueue {
+    pub struct WaitQueue;
+
+    impl WaitQueue {
+        pub const fn new() -> Self { WaitQueue }
+        pub fn wait_if(&self, should_sleep: impl Fn() -> bool) {
+            if should_sleep() { std::thread::yield_now(); }
+        }
+        pub fn wake_all(&self) -> usize { 0 }
+    }
+
+    /// No scheduler: the real one's pre-registration answer.
+    pub fn caller_tid() -> u32 { u32::MAX }
+}

@@ -234,6 +234,7 @@ fn disk_task(_: usize) {
     use azos_fs::vfs::{O_CREAT, O_TRUNC, O_WRONLY};
     let mut data = alloc::vec![0u8; FAT_BYTES];
     let mut fds = azos_fs::ScratchFds::new();
+    azos_fs::fat32::fat32_pi_io_watch(azos_sched::current_task_tid());
     let mut n = 0u8;
     while !DONE.load(Ordering::Acquire) {
         sleep_us(if RUNNING.load(Ordering::Acquire) { FAT_GAP_US } else { 10_000 });
@@ -364,6 +365,14 @@ fn rt_task(num_cpus: usize) {
     kprintln!("[LAT] load spam_lines={} disk_reads={} disk_errors={} hog_rounds={}",
               SPAM_LINES.load(Ordering::Relaxed), DISK_READS.load(Ordering::Relaxed),
               DISK_ERRORS.load(Ordering::Relaxed), HOG_ROUNDS.load(Ordering::Relaxed));
+    // F1: FAT device I/O issued under a held PiMutex — by the FAT writer below
+    // (must be 0: it holds none itself, so any is FAT32's), and by any task
+    // (information: other subsystems' locks).
+    #[cfg(feature = "lat-fat")]
+    {
+        let (mine, all) = azos_fs::fat32::fat32_pi_io_counts();
+        kprintln!("[LAT] fat pi_io={} pi_io_all={}", mine, all);
+    }
     #[cfg(feature = "lat-trace")]
     {
         crate::lat_trace::print_summary("run", 5);

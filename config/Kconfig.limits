@@ -931,6 +931,28 @@ config FS_BLOCK_CACHE_KB
       per 512 B line (6.25 %), the same on riscv64 and aarch64: 544 KiB at
       edge's 512, 68 KiB at embedded's 64.
 
+config FAT32_SECTOR_CLAIM_SLOTS
+    int "FAT32 FAT-sector claim slots (1-64; concurrent FAT updates)"
+    range 1 64
+    default 64 if PROFILE_FLEET || PROFILE_EDGE
+    default 64 if PROFILE_EMBEDDED
+    default 64
+    help
+      crates/fs/fs/src/fat32.rs, FAT_SECTOR_BUSY: a FAT entry update (cluster
+      allocation, free, chain link) reads a FAT sector, patches 4 bytes and
+      writes it to every FAT copy. No mutex is held across that device I/O
+      (an RT waiter must not inherit disk latency through priority
+      inheritance); instead the update claims its FAT sector in a one-word
+      bitmap, slot = sector % this value, and a second updater of the same
+      slot sleeps on a wait queue (no PI) until the first publishes.
+      Updates to different slots run concurrently.  1 serialises every FAT
+      update (the pre-F1 behaviour, without PI); 64 gives the most
+      concurrency.
+
+      Cost: none in RAM (the bitmap is one u64 whatever the value) and a
+      couple of atomic instructions per FAT entry update, the same on
+      riscv64, aarch64 and x86_64. Lower it only to measure contention.
+
 config EXEC_IMAGE_CACHE_KB
     int "Verified exec image cache (KiB of frames; 0 = off)"
     range 0 65536

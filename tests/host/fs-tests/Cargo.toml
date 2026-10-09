@@ -47,9 +47,14 @@ content-stamp-off-canary = []
 # The kernel's `file-census` diagnostic (census.rs). Declared so the cfg is
 # known; never enabled here (it prints through the kernel timebase).
 file-census = []
-# Wave 15 (VF): the kernel gate's `FAT_MUTATE` SpinLock canary. Declared so
-# the cfg is known; the host shim's two lock types behave the same.
+# Wave 15 (VF): the kernel gate's FAT spinlock canary. Declared so the cfg
+# is known; the host shim's two lock types behave the same.
 fat-mutate-spin-canary = []
+# Wave 15 (FM): declared so the cfgs are known. `fat-sector-claim-canary` is
+# the concurrent-mutator test's canary; the other two are kernel-only.
+fat-sector-claim-canary = []
+fat-mutate-pi-canary = []
+fat-pi-io-probe = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources

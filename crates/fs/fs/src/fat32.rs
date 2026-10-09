@@ -450,48 +450,158 @@ impl Fat32Vol {
 
 static FAT32: SpinLock<Fat32Vol> = SpinLock::new(Fat32Vol::new());
 
-/// U09-2: a volume-wide mutation lock spanning cluster allocation and the
-/// FAT write that claims it.
+/// FAT-sector claims: how concurrent FAT mutators stay correct with NO
+/// mutex held across device I/O (owner rule F1, wave 15 FM).
 ///
-/// `fat32_alloc_cluster` used to snapshot `FAT32` just to read `fat_start`/
-/// `fat_sz32`, drop it, scan FAT sectors through the cache, then call
-/// `fat32_write_fat_entry` — which does its OWN independent snapshot-then-
-/// read-modify-write. No lock spanned the pair: two harts (the logger's
-/// backend and an OTA/CRASH.LOG writer, say) could both scan, both see
-/// entry N free, and both write EOC over it — one file's data silently
-/// aliasing another's. This lock is held for the full scan-then-mark in
-/// `fat32_alloc_cluster` and across `fat32_free_chain`'s walk, so an
-/// allocator and a freer (or two allocators) cannot interleave. It does
-/// NOT (yet) extend to `chain_nth_or_extend`'s two follow-up link writes
-/// after allocating — closing that fully needs `fat32_alloc_cluster` split
-/// into a "caller already holds the lock" inner version, which is a larger
-/// change than this pass made; noted rather than silently left half done.
+/// **What needs excluding.** A FAT entry update (`fat32_write_fat_entry`)
+/// reads its FAT sector, patches 4 bytes and writes the sector to every FAT
+/// copy. Two updates of different entries in the SAME sector, interleaved,
+/// lose one (the second write carries the first's old bytes); two allocators
+/// that both see entry N free both claim it (U09-2: one file's data aliasing
+/// another's). Both are per-sector read-modify-write races.
 ///
-/// **A `PiMutex`, not a `SpinLock` (wave 15, VF).** Every section under this
-/// lock does device I/O: the allocation scan reads FAT sectors (a cache miss
-/// is a virtio-blk round trip) and every entry write goes to each FAT copy.
-/// As a `SpinLock` the holder ran with preemption off for all of it — the lat
-/// smoke's FAT-write load measured 7.24 ms preempt-off at `fat32_free_chain`
-/// and 1.47 ms at `fat32_alloc_cluster` on riscv64 under `-icount`, and a
-/// real-time task on that hart waited that long (`[LAT] max_ns=7194700`).
-/// The length follows the device, so under `-icount` it followed host load:
-/// one cause of the intermittent `rt7: panic contain` row, whose contained
-/// panic appends CRASH.LOG on the control hart (the other, still open, is a
-/// timer-ISR wake of a task on the other hart that spins ~50 ms under
-/// riscv64 `-smp 2 -icount`). The sections stay exactly as
-/// long (scan-then-mark must stay atomic, above); only the holder is now
-/// preemptible, as `BLK_LOCK`'s holder already is, and a waiter yields with
-/// priority inheritance instead of spinning. Lock order: this, then the
-/// `FAT32`/`SECTOR_CACHE` spinlocks (never held across I/O), then
-/// `BLK_LOCK`. Never taken under a `SpinLock`. The reset-path panic handler
-/// checks it with `try_lock` ([`fat32_locks_available`]) before writing.
+/// **The protocol.** An updater claims the FAT sector's slot (`sector %
+/// FAT32_SECTOR_CLAIM_SLOTS`) in [`FAT_SECTOR_BUSY`] with one `fetch_or`, does
+/// its read-modify-write I/O, and publishes by clearing the bit, bumping
+/// [`FAT_SECTOR_GEN`] and waking [`FAT_SECTOR_WQ`]. A second updater of the
+/// same slot sleeps on that wait queue — no priority inheritance, so an RT
+/// waiter never boosts a task that is waiting on the disk, and the holder
+/// keeps its own priority — and retries after the publish. The allocator
+/// scans without any claim, then claims the candidate's sector and re-reads
+/// it: every write to that sector happens under the claim, so the re-read
+/// is current and the free entry it finds is really free. Nobody holds two
+/// claims, so there is no lock order and no deadlock. `chain_nth_or_extend`
+/// needs no wider hold: once the fresh cluster reads end-of-chain no scan
+/// can hand it out, so "allocate, then link" is safe as two claims.
 ///
-/// `fat-mutate-spin-canary` puts the `SpinLock` back: the `lat: ... FAT
-/// writes` canary rows must then fail and name these sites.
-#[cfg(not(feature = "fat-mutate-spin-canary"))]
-static FAT_MUTATE: azos_sync::pi_mutex::PiMutex<()> = azos_sync::pi_mutex::PiMutex::new(());
+/// **History.** U09-2 introduced `FAT_MUTATE`, held for the whole scan-then-
+/// mark and the free walk; wave 15 (VF) made it a `PiMutex` (as a `SpinLock`
+/// its device I/O ran preempt-off: 7.24 ms at `fat32_free_chain` on riscv64
+/// under `-icount`). As a `PiMutex` it was held across the virtio-blk wait,
+/// so a priority-1 waiter donated its priority to a task waiting on the
+/// device and inherited disk latency (MUTEX survey, F1). The claim replaces
+/// it; durability and write order are unchanged (every write is still the
+/// same write-through `write_sector`, in the same order).
+///
+/// The reset-path panic handler refuses to write while any claim is out
+/// ([`fat32_locks_available`]). Claims are taken only outside `SpinLock`s.
+///
+/// Canaries put the old `FAT_MUTATE` back around the whole allocation, the
+/// extend branch's alloc-and-link and the whole free walk
+/// ([`FAT_MUTATE_CANARY`]): `fat-mutate-spin-canary` as a `SpinLock`
+/// (preempt-off across the I/O: the `lat: ... FAT spinlock canary` rows),
+/// `fat-mutate-pi-canary` as a `PiMutex` (the VF shape: `[LAT] fat pi_io=`
+/// goes non-zero). `fat-sector-claim-canary` claims nothing
+/// (fs-tests' concurrent-mutator tests lose an update / double-allocate).
+static FAT_SECTOR_BUSY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Bumped on every claim release; a waiter sleeps only while it is unchanged.
+static FAT_SECTOR_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// The task holding each slot's claim (`caller_tid`), 0 when free: a task
+/// that panics holding a claim must not be contained, because nobody would
+/// ever release it ([`fat32_claims_held_by`], the panic policy's check 4).
+static FAT_SECTOR_OWNER: [core::sync::atomic::AtomicU32; 64] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 64];
+/// Updaters waiting for a claimed slot.
+static FAT_SECTOR_WQ: azos_sync::waitqueue::WaitQueue = azos_sync::waitqueue::WaitQueue::new();
+/// Kconfig `FAT32_SECTOR_CLAIM_SLOTS` (1..=64): bits of [`FAT_SECTOR_BUSY`] used.
+const FAT_SECTOR_SLOTS: u32 = {
+    let n = azos_limits::FAT32_SECTOR_CLAIM_SLOTS;
+    assert!(n >= 1 && n <= 64, "FAT32_SECTOR_CLAIM_SLOTS must be 1..=64");
+    n as u32
+};
 #[cfg(feature = "fat-mutate-spin-canary")]
-static FAT_MUTATE: SpinLock<()> = SpinLock::new(());
+static FAT_MUTATE_CANARY: SpinLock<()> = SpinLock::new(());
+#[cfg(feature = "fat-mutate-pi-canary")]
+static FAT_MUTATE_CANARY: azos_sync::pi_mutex::PiMutex<()> = azos_sync::pi_mutex::PiMutex::new(());
+
+/// A claim on one FAT sector's slot; released (published) on drop.
+struct FatSectorClaim {
+    bit: u64,
+    slot: usize,
+}
+
+/// Claim the slot of FAT sector `fat_sector_off` (relative to the FAT
+/// start, so the same for every copy), sleeping while another updater holds it.
+fn fat_sector_claim(fat_sector_off: u32) -> FatSectorClaim {
+    use core::sync::atomic::Ordering::SeqCst;
+    let slot = (fat_sector_off % FAT_SECTOR_SLOTS) as usize;
+    let bit = if cfg!(feature = "fat-sector-claim-canary") { 0 } else { 1u64 << slot };
+    loop {
+        // Read the generation BEFORE trying: a release between the failed
+        // try and the sleep then changes it, and `wait_if` (which re-checks
+        // under the queue's lock) does not sleep through that publish.
+        let gen = FAT_SECTOR_GEN.load(SeqCst);
+        if FAT_SECTOR_BUSY.fetch_or(bit, SeqCst) & bit == 0 {
+            FAT_SECTOR_OWNER[slot].store(azos_sync::waitqueue::caller_tid(), SeqCst);
+            return FatSectorClaim {
+                bit,
+                slot,
+            };
+        }
+        FAT_SECTOR_WQ.wait_if(|| FAT_SECTOR_GEN.load(SeqCst) == gen);
+    }
+}
+
+impl Drop for FatSectorClaim {
+    fn drop(&mut self) {
+        use core::sync::atomic::Ordering::SeqCst;
+        FAT_SECTOR_OWNER[self.slot].store(0, SeqCst);
+        FAT_SECTOR_BUSY.fetch_and(!self.bit, SeqCst);
+        FAT_SECTOR_GEN.fetch_add(1, SeqCst);
+        FAT_SECTOR_WQ.wake_all();
+    }
+}
+
+/// FAT-sector claims task `tid` holds (0 or 1: claims never nest). The panic
+/// path adds it to the task's held `PiMutex` count: a claim abandoned by a
+/// contained task would block every later update of its FAT sectors.
+pub fn fat32_claims_held_by(tid: u32) -> u32 {
+    use core::sync::atomic::Ordering::SeqCst;
+    if tid == 0 { return 0; }
+    FAT_SECTOR_OWNER.iter().filter(|o| o.load(SeqCst) == tid).count() as u32
+}
+
+/// `fat-pi-io-probe` (the `lat-fat` smoke): FAT32 device I/O issued while
+/// the issuing task held a `PiMutex` — the F1 violation. Counted at the FAT32
+/// layer, before `blkdev` takes its own `BLK_LOCK`. [`FAT_PI_IO`] counts every
+/// task; [`FAT_PI_IO_WATCHED`] only the task [`fat32_pi_io_watch`] names (the
+/// smoke's FAT writer, which holds no `PiMutex` of its own: whatever it counts
+/// was taken inside FAT32).
+#[cfg(feature = "fat-pi-io-probe")]
+static FAT_PI_IO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "fat-pi-io-probe")]
+static FAT_PI_IO_WATCHED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "fat-pi-io-probe")]
+static FAT_PI_IO_WATCH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+#[inline(always)]
+fn pi_io_probe() {
+    #[cfg(feature = "fat-pi-io-probe")]
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        let tid = azos_sync::waitqueue::caller_tid();
+        if azos_sync::pi_mutex::held_by(tid) != 0 {
+            FAT_PI_IO.fetch_add(1, Relaxed);
+            if tid != 0 && tid == FAT_PI_IO_WATCH.load(Relaxed) {
+                FAT_PI_IO_WATCHED.fetch_add(1, Relaxed);
+            }
+        }
+    }
+}
+
+/// Name the task whose PI-held FAT I/O [`fat32_pi_io_counts`] reports first.
+#[cfg(feature = "fat-pi-io-probe")]
+pub fn fat32_pi_io_watch(tid: u32) {
+    FAT_PI_IO_WATCH.store(tid, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// FAT32 device I/Os issued with a `PiMutex` held: (by the watched task, by
+/// any task). 0 for the watched FAT writer = F1 holds inside FAT32.
+#[cfg(feature = "fat-pi-io-probe")]
+pub fn fat32_pi_io_counts() -> (u32, u32) {
+    use core::sync::atomic::Ordering::Relaxed;
+    (FAT_PI_IO_WATCHED.load(Relaxed), FAT_PI_IO.load(Relaxed))
+}
 
 /// First data sector of `cluster`, or `None` if the whole cluster does not fit
 /// in the u32 sector space.
@@ -729,9 +839,9 @@ fn select_volume() -> (u64, u64) {
 }
 
 /// Non-blocking check for whether the FAT32 locks (`FAT32` volume state,
-/// `SECTOR_CACHE` and the allocator's `FAT_MUTATE`) are all currently free.
-/// `FAT_MUTATE` is a `PiMutex` whose contended path yields, which the panic
-/// handler must not reach.
+/// `SECTOR_CACHE`) are free and no FAT-sector claim ([`FAT_SECTOR_BUSY`])
+/// is out. A claimed sector's next updater sleeps on a wait queue, which the
+/// panic handler must not reach.
 ///
 /// Intended for callers that must never block (e.g. the panic handler),
 /// mirroring `vfs::vfs_fs_lock_available()`. Any FAT32-backed VFS
@@ -742,7 +852,7 @@ fn select_volume() -> (u64, u64) {
 /// locks can be taken by another hart right after this returns `true`.
 pub fn fat32_locks_available() -> bool {
     FAT32.try_lock().is_some() && SECTOR_CACHE.try_lock().is_some()
-        && FAT_MUTATE.try_lock().is_some()
+        && FAT_SECTOR_BUSY.load(core::sync::atomic::Ordering::SeqCst) == 0
 }
 
 /// Invalidate every cache line touching `sector` — call after an
@@ -848,6 +958,7 @@ fn read_sector(sector: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), ()> {
     };
     // Miss — fetch from the device with the cache lock released.
     crate::census::count(crate::census::DEV_READS);
+    pi_io_probe();
     azos_drv_block::blkdev::read(dev_lba(sector as u64), 1, buf)?;
     SECTOR_CACHE.lock().install(sector as u64, buf, token);
     Ok(())
@@ -1572,6 +1683,7 @@ fn write_sector(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
     // Gate canary only: the bump BEFORE the bytes land (the class of order
     // the comment below rules out).
     if cfg!(feature = "write-gen-early-canary") { write_gen_bump(); }
+    pi_io_probe();
     let r = azos_drv_block::blkdev::write_quiet(dev_lba(sector as u64), 1, buf);
     if r.is_err() {
         // What the device holds now is unknown; the old line must not answer.
@@ -1596,7 +1708,17 @@ fn write_sector(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
 /// Write a FAT32 entry for `cluster` to all FAT table copies.
 ///
 /// The upper 4 bits of the existing entry are preserved (as per FAT32 spec).
+/// Claims the entry's FAT sector for the read-modify-write
+/// ([`fat_sector_claim`]); never call it while holding a claim.
 fn fat32_write_fat_entry(cluster: u32, value: u32) -> Result<(), ()> {
+    let _claim = fat_sector_claim(cluster / FAT32_ENTRIES_PER_SECTOR);
+    fat32_write_fat_entry_claimed(cluster, value)
+}
+
+/// The body of [`fat32_write_fat_entry`], for a caller that already holds the
+/// claim on `cluster`'s FAT sector (the allocator, which re-read that sector
+/// under it). Without the claim this is the lost-update race the claim closes.
+fn fat32_write_fat_entry_claimed(cluster: u32, value: u32) -> Result<(), ()> {
     let (fat_start, fat_sz32, num_fats, data_clusters) = {
         let v = FAT32.lock();
         (v.fat_start, v.fat_sz32, v.num_fats, v.data_clusters)
@@ -1657,35 +1779,34 @@ fn fat32_write_fat_entry(cluster: u32, value: u32) -> Result<(), ()> {
 
 /// Scan the FAT for a free cluster (entry == 0), mark it as end-of-chain,
 /// and return its cluster number.
+///
+/// No lock spans the scan (F1: nothing is held across the device reads it
+/// may miss into). A candidate is confirmed under its FAT sector's claim
+/// ([`fat_sector_claim`]): the sector is re-read there — every write to it
+/// happens under that claim, so the copy read is current — and the first
+/// entry still free is marked. If another updater took them all in between,
+/// the scan moves on.
 pub fn fat32_alloc_cluster() -> Result<u32, ()> {
-    // U09-2: held for the whole scan-then-mark, so a second hart's
-    // `fat32_alloc_cluster`/`fat32_free_chain` cannot interleave with this
-    // one and claim (or free) the same entry this scan is about to mark.
-    let _mutate = FAT_MUTATE.lock();
-    fat32_alloc_cluster_locked()
+    #[cfg(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))]
+    let _canary = FAT_MUTATE_CANARY.lock();
+    fat32_alloc_cluster_inner()
 }
 
-/// The body of [`fat32_alloc_cluster`], for a caller that ALREADY holds
-/// `FAT_MUTATE` — `chain_nth_or_extend`'s extend branch, so its allocation
-/// and the two link writes that follow it are one atomic unit under the
-/// same lock, not two separate critical sections an interleaving hart could
-/// split apart. Calling this without holding the lock is the exact bug
-/// U09-2 closed; the public wrapper above is the only caller allowed to
-/// skip acquiring it first, because it just did.
-fn fat32_alloc_cluster_locked() -> Result<u32, ()> {
+/// [`fat32_alloc_cluster`] without the canaries' old lock, for the canary
+/// build of `chain_nth_or_extend`, which holds that lock itself.
+fn fat32_alloc_cluster_inner() -> Result<u32, ()> {
     // **Closed by the write-path audit, 2026-09-23 — this does NOT hand back
     // an out-of-range cluster, and here is why rather than an assertion.**
     // This scans `0..fat_sz32` sectors of FAT entries in ascending cluster
-    // order, and `fat32_write_fat_entry` below (called with `?`) refuses to
-    // mark any cluster `>= chain_walk_limit(fat_sz32, data_clusters)`. Every
-    // in-range cluster number sorts below every out-of-range one, so the
-    // scan always exhausts the legitimate range before it can reach an
-    // illegitimate free entry — "no free cluster in range" and "the first
-    // free entry found is out of range" are the same event on this volume,
-    // and both correctly return `Err(())` via that same `?`. Verified with a
-    // discriminating host test (`alloc_cluster_never_hands_out_a_cluster_past_the_data_region`
-    // in fs-tests) rather than left as the open question the prior audit
-    // comment (2026-09-21) left it as.
+    // order, and `fat32_write_fat_entry_claimed` below (called with `?`)
+    // refuses to mark any cluster `>= chain_walk_limit(fat_sz32,
+    // data_clusters)`. Every in-range cluster number sorts below every
+    // out-of-range one, so the scan always exhausts the legitimate range
+    // before it can reach an illegitimate free entry — "no free cluster in
+    // range" and "the first free entry found is out of range" are the same
+    // event on this volume, and both correctly return `Err(())`. Verified with
+    // a discriminating host test (`alloc_cluster_never_hands_out_a_cluster_past_the_data_region`
+    // in fs-tests).
     let (fat_start, fat_sz32, root_cluster) = {
         let v = FAT32.lock();
         (v.fat_start, v.fat_sz32, v.root_cluster)
@@ -1699,49 +1820,66 @@ fn fat32_alloc_cluster_locked() -> Result<u32, ()> {
         // correspond to the entry we actually read.
         let sec = match fat_start.checked_add(sec_idx) { Some(v) => v, None => return Err(()) };
         if read_sector(sec, &mut buf).is_err() { return Err(()); }
-        for i in 0..FAT32_ENTRIES_PER_SECTOR {
-            let cluster = match sec_idx
-                .checked_mul(FAT32_ENTRIES_PER_SECTOR)
-                .and_then(|c| c.checked_add(i))
-            {
-                Some(c) => c,
-                None => return Err(()),
-            };
-            if cluster < FAT32_FIRST_DATA_CLUSTER { continue; }
-            // The root directory's first cluster is in use whatever its FAT
-            // entry says. A volume that marks it free (fs-fuzz, wave 12)
-            // used to have it handed out: as a file's data over the root's
-            // entries, or as the root's own extension, linking it to itself.
-            if cluster == root_cluster { continue; }
-            let off   = (i * 4) as usize;
-            let entry = u32::from_le_bytes([
-                buf[off], buf[off + 1], buf[off + 2], buf[off + 3],
-            ]) & 0x0FFF_FFFF;
-            if entry == 0 {
-                // Mark as end-of-chain (allocated). A failure part-way leaves
-                // the copies disagreeing — typically copy 0 marked and a
-                // mirror not — and copy 0 is the one every scan reads, so
-                // the cluster would read allocated and be referenced by
-                // nothing: one cluster leaked per failed allocation. Put the
-                // entry back to free (best effort: if this fails too, the
-                // device is failing and there is nothing better to do)
-                // before reporting the failure.
-                if fat32_write_fat_entry(cluster, 0x0FFF_FFFF).is_err() {
-                    let _ = fat32_write_fat_entry(cluster, 0);
-                    return Err(());
-                }
-                return Ok(cluster);
-            }
+        if first_free_in_fat_sector(&buf, sec_idx, root_cluster)?.is_none() { continue; }
+        // A candidate. Confirm it on a current copy of the sector, under its
+        // claim, and mark it there.
+        let _claim = fat_sector_claim(sec_idx);
+        if read_sector(sec, &mut buf).is_err() { return Err(()); }
+        let Some(cluster) = first_free_in_fat_sector(&buf, sec_idx, root_cluster)? else {
+            continue; // another updater took them: scan on
+        };
+        // Mark as end-of-chain (allocated). A failure part-way leaves the
+        // copies disagreeing — typically copy 0 marked and a mirror not — and
+        // copy 0 is the one every scan reads, so the cluster would read
+        // allocated and be referenced by nothing: one cluster leaked per
+        // failed allocation. Put the entry back to free (best effort: if this
+        // fails too, the device is failing and there is nothing better to do)
+        // before reporting the failure.
+        if fat32_write_fat_entry_claimed(cluster, 0x0FFF_FFFF).is_err() {
+            let _ = fat32_write_fat_entry_claimed(cluster, 0);
+            return Err(());
         }
+        return Ok(cluster);
     }
     Err(()) // Disk full
 }
 
+/// The first free entry in FAT sector `sec_idx` (contents `buf`), skipping
+/// the reserved clusters 0/1 and the root directory's first cluster.
+/// `Err` only on cluster-number overflow.
+fn first_free_in_fat_sector(
+    buf: &[u8; SECTOR_SIZE],
+    sec_idx: u32,
+    root_cluster: u32,
+) -> Result<Option<u32>, ()> {
+    for i in 0..FAT32_ENTRIES_PER_SECTOR {
+        let cluster = sec_idx
+            .checked_mul(FAT32_ENTRIES_PER_SECTOR)
+            .and_then(|c| c.checked_add(i))
+            .ok_or(())?;
+        if cluster < FAT32_FIRST_DATA_CLUSTER { continue; }
+        // The root directory's first cluster is in use whatever its FAT
+        // entry says. A volume that marks it free (fs-fuzz, wave 12) used to
+        // have it handed out: as a file's data over the root's entries, or as
+        // the root's own extension, linking it to itself.
+        if cluster == root_cluster { continue; }
+        let off = (i * 4) as usize;
+        let entry = u32::from_le_bytes([
+            buf[off], buf[off + 1], buf[off + 2], buf[off + 3],
+        ]) & 0x0FFF_FFFF;
+        if entry == 0 { return Ok(Some(cluster)); }
+    }
+    Ok(None)
+}
+
 /// Free all clusters in a chain starting at `start`.
 pub fn fat32_free_chain(start: u32) {
-    // U09-2: same lock `fat32_alloc_cluster` holds, so a free cannot
-    // interleave with an in-progress allocation scan either.
-    let _mutate = FAT_MUTATE.lock();
+    #[cfg(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))]
+    let _canary = FAT_MUTATE_CANARY.lock();
+    // No hold across the walk: each entry write claims its own FAT sector
+    // (`fat32_write_fat_entry`). `next` is read before its cluster is freed,
+    // so a cluster an allocator takes the instant it is freed is never
+    // followed.
     let (fat_sz32, data_clusters) = { let v = FAT32.lock(); (v.fat_sz32, v.data_clusters) };
     // Cycle guard — see `chain_walk_limit`. This loop looks self-terminating on
     // a cycle (freeing FAT[2] makes the next lookup return 0), but that relies
@@ -3201,17 +3339,16 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
     for _ in 0..n {
         let next = fat32_next_cluster(cur).map_err(|()| FsError::Io)?;
         if next < FAT32_FIRST_DATA_CLUSTER || next >= FAT32_EOC {
-            // U09-2 (completed): allocate AND both link writes under one
-            // `FAT_MUTATE` hold, so another hart's allocator cannot land
-            // between "claim a fresh cluster" and "splice it into this
-            // chain" — the gap the two-call version left open even after
-            // `fat32_alloc_cluster` itself became atomic.
-            let _mutate = FAT_MUTATE.lock();
-            let fresh = fat32_alloc_cluster_locked().map_err(|()| FsError::NoSpace)?;
+            // U09-2: once `fresh` reads end-of-chain no allocator can take
+            // it, so allocation and the link below need no common hold —
+            // each entry write claims its own FAT sector (F1: nothing is held
+            // across the device I/O).
+            #[cfg(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))]
+            let _canary = FAT_MUTATE_CANARY.lock(); // the old hold: alloc + both links
+            let fresh = fat32_alloc_cluster_inner().map_err(|()| FsError::NoSpace)?;
             // A failed link would leak `fresh` (allocated, in no chain):
             // undo it as `dir_insert` does, and give `fresh` back only when
-            // `cur` is end-of-chain again in every copy. Under `FAT_MUTATE`,
-            // so the give-back is the entry write, not `fat32_free_chain`.
+            // `cur` is end-of-chain again in every copy.
             if fat32_write_fat_entry(cur, fresh).is_err() {
                 if fat32_write_fat_entry(cur, FAT32_END_OF_CHAIN).is_ok() {
                     let _ = fat32_write_fat_entry(fresh, 0);
