@@ -102,6 +102,9 @@ pub fn net_poll() {
 
 static NET_POLLS: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
 
+/// No net-poll task here: the recv/accept syscalls drain inline (N8).
+pub fn poller_running() -> bool { false }
+
 /// Test-only control surface: make [`net_poll`] count from 0 (`false`: back
 /// to `todo!()`).
 pub fn shim_arm_net_poll(armed: bool) {

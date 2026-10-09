@@ -3666,7 +3666,13 @@ pub fn sys_recv_syscall(fd: u64, buf_ptr: u64, len: u64, _flags: u64) -> i64 {
     // `send_segment_opts` → `ip::send_flags` below it, with a nested trap on
     // top, ran past the 12 KiB a kernel task stack has above its guard page:
     // every ring-3 e-stop boot ended in a kernel page fault.
-    azos_net::net_poll();
+    //
+    // N8: only when no net-poll task runs. When it does, it is the receive
+    // path's consumer (RX interrupt or its poll period), and a drain from
+    // here would only queue a request on its pass (`azos_net::rx_owner`).
+    if !azos_net::poller_running() {
+        azos_net::net_poll();
+    }
     recv_bounced(fd, buf_ptr, (len as usize).min(4096))
 }
 

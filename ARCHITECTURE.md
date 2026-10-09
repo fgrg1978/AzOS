@@ -536,6 +536,9 @@ fixed mount table. There are three implementations:
 ARP, IPv4, UDP, TCP, DHCP, DNS, NTP and IGMP. IPv6 covers link-local addressing,
 neighbour discovery, ICMPv6 echo and UDP; TCP over IPv6 is not connected to
 sockets. Ring 3 uses BSD-style socket calls and capability-typed socket calls.
+One receive pass runs at a time: the net-poll task drains the NIC, and a call
+from another task that finds a pass in progress leaves the owner a request
+instead of draining beside it, so frames reach the protocols in ring order.
 TCP delays acknowledgements (RFC 1122): in-order data is acknowledged every
 second full-sized segment, at the end of a receive pass, on our own data, or
 after `TCP_DELACK_MS`. A connection is reached through a handle that carries

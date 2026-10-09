@@ -419,6 +419,92 @@ mod tcp;
 #[cfg(test)]
 mod tcp_handle;
 
+/// N8: the owner bit that makes `net_poll`'s receive pass single-consumer.
+#[allow(dead_code)]
+#[path = "../../../../crates/net/net/src/rx_owner.rs"]
+mod rx_owner;
+
+#[cfg(test)]
+mod rx_owner_tests {
+    use super::rx_owner::PassOwner;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    /// A call made while a pass runs (another hart, modelled here by a call
+    /// from inside the pass) drains nothing and returns at once; the owner
+    /// runs exactly one more pass for it before letting go.
+    #[test]
+    fn a_call_during_a_pass_does_not_drain_beside_it_and_gets_one_more_pass() {
+        static OWNER: PassOwner = PassOwner::new();
+        let passes = AtomicU64::new(0);
+        let inner_ran = AtomicBool::new(false);
+        let r = OWNER.run(|| {
+            let n = passes.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                let r2 = OWNER.run(|| { inner_ran.store(true, Ordering::SeqCst); false });
+                assert!(!r2, "the contender must return false");
+            }
+            false
+        });
+        assert!(!r);
+        assert!(!inner_ran.load(Ordering::SeqCst),
+            "a second consumer drained beside the pass in progress");
+        assert_eq!(passes.load(Ordering::SeqCst), 2,
+            "the owner must run one more pass for the request it was left");
+        assert_eq!(OWNER.contended(), 1);
+    }
+
+    /// No request: one pass. Budget hit: the caller is told, no rerun here.
+    #[test]
+    fn one_pass_without_a_request_and_budget_hit_is_reported() {
+        let owner = PassOwner::new();
+        let mut n = 0;
+        assert!(!owner.run(|| { n += 1; false }));
+        assert_eq!(n, 1);
+        assert!(owner.run(|| { n += 1; true }));
+        assert_eq!(n, 2);
+        assert_eq!(owner.contended(), 0);
+    }
+
+    /// Four threads hammering one owner: never two passes at once, and every
+    /// call that returned `false` was followed by a pass that started after
+    /// it (no stranded request: the pass counter ends past every call's mark).
+    #[test]
+    fn concurrent_callers_never_overlap_and_no_request_is_lost() {
+        let owner = Arc::new(PassOwner::new());
+        let inside = Arc::new(AtomicBool::new(false));
+        let overlaps = Arc::new(AtomicU64::new(0));
+        let started = Arc::new(AtomicU64::new(0));
+        let mut hs = Vec::new();
+        for _ in 0..4 {
+            let (owner, inside, overlaps, started) =
+                (owner.clone(), inside.clone(), overlaps.clone(), started.clone());
+            hs.push(std::thread::spawn(move || {
+                let mut latest_call_mark = 0u64;
+                for _ in 0..20_000 {
+                    latest_call_mark = started.load(Ordering::SeqCst);
+                    owner.run(|| {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        if inside.swap(true, Ordering::SeqCst) {
+                            overlaps.fetch_add(1, Ordering::SeqCst);
+                        }
+                        std::hint::spin_loop();
+                        inside.store(false, Ordering::SeqCst);
+                        false
+                    });
+                }
+                latest_call_mark
+            }));
+        }
+        let marks: Vec<u64> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(overlaps.load(Ordering::SeqCst), 0, "two passes ran at once");
+        let total = started.load(Ordering::SeqCst);
+        for m in marks {
+            assert!(total > m, "a request was left with no pass after it");
+        }
+    }
+}
+
 /// TCP options on the wire: window scaling (RFC 7323), SACK (RFC 2018) and
 /// MSS, from SYNs that carry them — the harness in `tcp_rx` sends none.
 #[cfg(test)]

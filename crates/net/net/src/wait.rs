@@ -38,6 +38,12 @@ pub fn set_hooks(current_tid: fn() -> u32, block_until: fn(u64) -> bool, wake: f
     BLOCK_UNTIL.store(block_until as usize, Ordering::Release);
 }
 
+/// Whether [`set_hooks`] ran (and [`clear_hooks`] did not since): the
+/// kernel's net-poll task registers them when it starts.
+pub fn hooks_registered() -> bool {
+    BLOCK_UNTIL.load(Ordering::Acquire) != 0
+}
+
 /// Unregister the hooks: every wait is the caller's `yield_fn` again. For
 /// host tests that install fakes and must leave the next test as it found it.
 pub fn clear_hooks() {

@@ -59,6 +59,10 @@ pub(crate) const NAMES: &[&str] = &[
     // The same for the probe's ring-3 console writes only
     // (`uart::console_write_ring3`), after its kernel lines went out.
     "rt-console-own-user",
+    // boot/net.rs: every `net_poll` drains the RX ring on its own again, no
+    // single owner of the pass (N8; the OTA stress counts resets and lost
+    // transfers, `[NET] rx passes: 0 contended`).
+    "net-rx-two-consumers",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

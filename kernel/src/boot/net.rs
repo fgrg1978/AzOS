@@ -72,6 +72,11 @@ pub(crate) fn install_net() -> bool {
             azos_drv_virtio::virtio::net::set_kick_every_frame(true);
             kprintln!("[CANARY] net-kick-per-frame: one doorbell per frame");
         }
+        // Runtime canary: two receive passes may run at once again (N8).
+        if canary!("net-rx-two-consumers") {
+            azos_net::set_rx_owner_bypass(true);
+            kprintln!("[CANARY] net-rx-two-consumers: every net_poll drains on its own");
+        }
         install_net_irq();
         if azos_limits::NET_TX_BATCH_SELFCHECK {
             net_tx_batch_selfcheck();

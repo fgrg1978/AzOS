@@ -674,17 +674,16 @@ pub fn socket_recv(fd: i32, buf: &mut [u8]) -> i32 {
     };
     if slot < 0 { return -1; }
     match kind {
+        // `recv` returns -1 for a closing connection with nothing left to
+        // read, deciding under the lock it reads the ring with. This arm used
+        // to read the state again after that call returned 0: a pass on
+        // another hart that delivered the last segments and the FIN in
+        // between made it report "closed" with those bytes still unread
+        // (seen on the OTA stress, N8: "Connection lost (56916/65536 bytes
+        // received)" after the guest had ACKed the FIN).
         SockKind::Tcp => {
             let Some(h) = h else { return -1 };
-            let n = h.recv(buf);
-            if n == 0 {
-                // Return -1 when connection is closing and no data remains.
-                let state = h.state();
-                if state == tcp::TcpState::CloseWait || state == tcp::TcpState::Closed {
-                    return -1;
-                }
-            }
-            n
+            h.recv(buf)
         }
         SockKind::Udp => udp::recv(slot as usize, buf),
         SockKind::Free => -1,

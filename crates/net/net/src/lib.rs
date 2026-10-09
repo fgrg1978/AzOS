@@ -17,6 +17,8 @@ pub mod udp;
 pub mod seq;
 pub mod tcp;
 pub mod wait;
+// N8: one receive pass at a time (`net_poll`'s owner bit).
+pub mod rx_owner;
 pub mod socket;
 #[allow(dead_code)]
 pub mod dhcp;
@@ -205,6 +207,41 @@ pub fn net_init() {
 /// queued: the caller should run another pass soon rather than wait for an
 /// interrupt that, with RX interrupts off for the drain, will not come.
 pub fn net_poll() -> bool {
+    // N8: one pass at a time, whoever calls. A caller that finds a pass in
+    // progress returns at once; the owner runs one more pass for it.
+    if azos_limits::CANARY_RUNTIME && RX_OWNER_BYPASS.load(core::sync::atomic::Ordering::Relaxed) {
+        return net_poll_pass();
+    }
+    RX_OWNER.run(net_poll_pass)
+}
+
+/// The owner of the receive pass (N8): see [`rx_owner`].
+static RX_OWNER: rx_owner::PassOwner = rx_owner::PassOwner::new();
+
+/// Runtime canary `net-rx-two-consumers` (Kconfig `CANARY_RUNTIME` only):
+/// every `net_poll` drains on its own again, as before N8.
+static RX_OWNER_BYPASS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Arm the `net-rx-two-consumers` canary. Inert unless `CANARY_RUNTIME`.
+pub fn set_rx_owner_bypass(on: bool) {
+    RX_OWNER_BYPASS.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// `net_poll` calls that found another pass in progress and left it a
+/// request instead of draining (N8), since boot.
+pub fn rx_pass_contended() -> u64 {
+    RX_OWNER.contended()
+}
+
+/// Whether the net-poll task is running (it registers the network wait
+/// hooks when it starts): then it is the receive path's consumer and an
+/// inline `net_poll` from another task only adds a request to its pass.
+pub fn poller_running() -> bool {
+    wait::hooks_registered()
+}
+
+/// One receive pass: the body of [`net_poll`], run by its owner only.
+fn net_poll_pass() -> bool {
     /// Bound the drain so we don't starve other tasks if the device is
     /// flooding (e.g. broadcast storm): `CONFIG_NET_RX_DRAIN_PER_POLL`, 64 by
     /// default ≈ one Ethernet line-rate burst.
@@ -328,6 +365,9 @@ pub fn net_info() {
             q.tx_frames, q.tx_doorbells, q.tx_skipped, q.tx_dropped,
             q.rx_frames, q.rx_doorbells, q.rx_skipped, q.irqs);
     }
+    // N8: `net_poll` calls that found a pass in progress and left the owner
+    // a request rather than draining beside it.
+    azos_drv_sys::kconsoleln!("[NET]       rx passes: {} contended", rx_pass_contended());
     let (fired, late) = tcp::timer_lateness();
     let tpus = (azos_drv_sys::timebase::TIMER_FREQ / 1_000_000).max(1);
     azos_drv_sys::kconsoleln!("[NET]       tcp timers: {} fired, latest {} us past its deadline",
