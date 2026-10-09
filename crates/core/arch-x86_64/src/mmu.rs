@@ -250,7 +250,7 @@ pub fn levels() -> usize {
     if LA57_NEVER { LEVELS_4 } else { LEVELS.load(Ordering::Relaxed) }
 }
 
-/// Record the depth boot.S chose (`cpu::enable_paging` reads CR4.LA57).
+/// Record the depth boot.S chose (`cpu::setup_paging_regs` reads CR4.LA57).
 pub fn set_levels(levels: usize) {
     LEVELS.store(if levels == LEVELS_5 && !LA57_NEVER { LEVELS_5 } else { LEVELS_4 }, Ordering::Relaxed);
 }
@@ -673,7 +673,7 @@ impl<F: FnMut() -> Option<usize>> TableMem for DirectMap<F> {
 // ── The instructions (x86_64 only) ───────────────────────────────────────
 
 /// What the boot found and its Kconfig policies allow, for
-/// [`cpu::enable_paging`] and [`cpu::enable_access_protection`].
+/// [`cpu::setup_paging_regs`] and [`cpu::enable_access_protection`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PagingCaps {
     /// CR4.PCIDE (Kconfig `X86_PCID`, CPUID.1:ECX[17]).
@@ -866,7 +866,7 @@ pub mod cpu {
     /// when `caps.pcid`. EFER.NXE (boot.S) is read back, never set here: a
     /// leaf with NX and no NXE is a reserved-bit fault, so a clear NXE is
     /// reported for the caller to refuse the boot. Every CPU runs it.
-    pub fn enable_paging(caps: &PagingCaps) -> PagingState {
+    pub fn setup_paging_regs(caps: &PagingCaps) -> PagingState {
         set_levels(if read_cr4() & CR4_LA57 != 0 { LEVELS_5 } else { LEVELS_4 });
         set_gbpages(caps.gbpages);
         // PAT before any PCD/PWT leaf is built, so index 3 is UC.

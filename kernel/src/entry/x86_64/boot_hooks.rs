@@ -204,12 +204,12 @@ fn paging_caps() -> azos_arch::mmu::PagingCaps {
     }
 }
 
-/// PAT, CR0.WP, CR4.PGE/PCIDE (`mmu::cpu::enable_paging`), read back. A
+/// PAT, CR0.WP, CR4.PGE/PCIDE (`mmu::cpu::setup_paging_regs`), read back. A
 /// clear EFER.NXE (boot.S sets it) or a `require`d LA57 / 1 GiB pages the
 /// CPU lacks stops the boot here.
 pub fn mmu_enabled() {
     use azos_arch_api::isa::{x86_64 as p, ExtPolicy};
-    let st = azos_arch::mmu::cpu::enable_paging(&paging_caps());
+    let st = azos_arch::mmu::cpu::setup_paging_regs(&paging_caps());
     kprintln!("[MM] x86_64 paging: {}-level, NXE={} WP={} PGE={} PCIDE={} PAT={:#x}",
         st.levels, st.nxe, st.wp, st.pge, st.pcide, st.pat);
     if !st.nxe {
