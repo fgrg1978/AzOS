@@ -166,6 +166,11 @@ pub fn discard_current() {
 /// The current task's ring-3 FP state, for a fork: from the registers when
 /// live, else from its area, else the initial image.
 pub fn snapshot_current(out: &mut [u8; AREA_BYTES]) {
+    // Runtime canary: the child starts from the initial image instead.
+    if canary!("x86-fork-fp-skip") {
+        fpu::init_area(out);
+        return;
+    }
     let _m = IrqMask::new();
     let Some((area, tid)) = current_area() else {
         fpu::init_area(out);

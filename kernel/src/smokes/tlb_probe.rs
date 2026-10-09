@@ -276,6 +276,12 @@ fn irq_restore(saved: usize) {
     }
 }
 
+/// `SECOND_CAUSE` of a run whose window a reschedule IPI interrupted.
+const VOIDED: u64 = u64::MAX - 2;
+/// Runs the ktest makes before it calls the scenario unmeasurable.
+#[cfg(feature = "ktest")]
+const VOIDED_RETRIES: u32 = 4;
+
 /// The task priority that blocks LAPIC classes 0..14 (vectors below 0xF0).
 #[cfg(target_arch = "x86_64")]
 const X86_TPR_SYSTEM_ONLY: u32 = 0xE0;
@@ -373,7 +379,7 @@ fn toucher(_: usize) {
             SECOND2_CAUSE.store(r.cause, Ordering::SeqCst);
             if resched_ipis() != ipis {
                 // Switched away and back: the reads prove nothing.
-                SECOND_CAUSE.store(u64::MAX - 2, Ordering::SeqCst);
+                SECOND_CAUSE.store(VOIDED, Ordering::SeqCst);
             }
         }
     } else {
@@ -391,6 +397,13 @@ fn toucher(_: usize) {
 }
 
 pub fn runner(touch_hart: usize) {
+    // A fresh scenario (the x86_64 ktest runs it again when a reschedule
+    // IPI voided the toucher's window).
+    STAGE.store(0, Ordering::SeqCst);
+    for v in [&FIRST, &SECOND, &SECOND2] { v.store(0, Ordering::SeqCst); }
+    for v in [&FIRST_CAUSE, &SECOND_CAUSE, &SECOND2_CAUSE, &KTASK_ROOT, &KTASK_CREATOR_ROOT] {
+        v.store(u64::MAX, Ordering::SeqCst);
+    }
     let me = azos_arch::ARCH.hart_id();
     // A boot-created kernel task: this is the kernel's root.
     let kernel_root = live_root();
@@ -538,6 +551,16 @@ azos_ktest::ktest_late! {
             return Err("needs 3 CPUs (runner on CPU 1, toucher on CPU 2)");
         }
         crate::ktest::probe("tlb-probe", runner, TOUCH, PROBE_PRIO, 1)?;
+        // x86_64: a reschedule IPI inside the toucher's window voids the run
+        // (`resched_ipis`); run it again, a bounded number of times.
+        let mut tries = 1;
+        while SECOND_CAUSE.load(Ordering::SeqCst) == VOIDED && tries < VOIDED_RETRIES {
+            crate::ktest::probe("tlb-probe", runner, TOUCH, PROBE_PRIO, 1)?;
+            tries += 1;
+        }
+        if SECOND_CAUSE.load(Ordering::SeqCst) == VOIDED {
+            return Err("every run was voided by a reschedule IPI in the toucher's window");
+        }
         if STAGE.load(Ordering::SeqCst) < 4 {
             return Err("the scenario stopped before the second reads (see the [TLB-SMOKE] line)");
         }

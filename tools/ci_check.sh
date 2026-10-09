@@ -10829,10 +10829,16 @@ PY
     #                               ticks and the reschedule IPI
     #   x86_64: baseline canary     -cpu qemu64 (below x86-64-v2): boot.S
     #                               refuses before Rust, nothing else runs
-    #   ktest (x86)                 the ktest plan, -smp 4, every test ok
+    #   ktest (x86)                 the ktest plan, -smp 4, every test ok;
+    #                               x86_ring3_syscall_fork_fp is the ring-3
+    #                               syscall / fork / FP check in place of a
+    #                               user image (kernel/src/smokes/x86_64_ring3.rs)
     #   ktest tlb local-only canary (x86)  the shootdown sends no IPI:
     #                               tlb_shootdown_cross_cpu alone not ok
-    KTEST_N_X86=13
+    #   ktest fork FP runtime canary (x86)  canary=x86-fork-fp-skip: a forked
+    #                               child starts from the initial FP image;
+    #                               x86_ring3_syscall_fork_fp alone not ok
+    KTEST_N_X86=14
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2"
@@ -10889,15 +10895,16 @@ PY
         "AzOS shell|KERNEL PANIC"
     par "x86_64: baseline canary (qemu64)" x86_boot_row "x86_64: baseline canary (qemu64)" 1 qemu64 \
         "[X86] CPU below the configured baseline" "below the configured baseline"
-    x86_ktest_row() { # x86_ktest_row <label> <extra features or ""> <expected not-ok names>
+    x86_ktest_row() { # x86_ktest_row <label> <extra features or ""> <expected not-ok names> [kernel command line]
         local label="$1" extra="$2" want="$3" why="" k plan got
+        local -a app=(); [ -n "${4:-}" ] && app=(-append "$4")
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
         x86_kbuild "ktest$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=ktest$extra did not build"; return; }
         par_ready
-        x86_qemu "$kimg" "$log" 300 "" -smp 4
+        x86_qemu "$kimg" "$log" 300 "" -smp 4 ${app[@]+"${app[@]}"}
         rm -f "$kimg"
         plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
         got="$(sed -n 's/^not ok [0-9][0-9]* - \([A-Za-z0-9_]*\)\( #.*\)\{0,1\}$/\1/p' "$log" | grep . | sort | tr '\n' ' ')"
@@ -10925,6 +10932,8 @@ PY
     }
     par "ktest (x86)" x86_ktest_row "ktest (x86)" "" ""
     par "ktest tlb local-only canary (x86)" x86_ktest_row "ktest tlb local-only canary (x86)" ",tlb-local-only" "tlb_shootdown_cross_cpu"
+    par "ktest fork FP runtime canary (x86)" x86_ktest_row "ktest fork FP runtime canary (x86)" "" \
+        "x86_ring3_syscall_fork_fp" "canary=x86-fork-fp-skip"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

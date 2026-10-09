@@ -702,9 +702,12 @@ and development aids.
 ## Adding an ISA
 
 A port is a list of methods the compiler asks for, plus a few files. The
-x86_64 skeleton is the template: `make qemu-x86_64` boots it on QEMU
-`-M microvm` (PVH entry, long mode, COM1), prints the banner and stops at the
-first method still a `todo!()` naming the x86 mechanism.
+x86_64 port is the latest: `make qemu-x86_64` boots it on QEMU `-M microvm`
+(PVH entry, long mode, COM1) to the kernel shell, with every CPU the MADT
+names; it has no user images. The shared page-table walks follow
+`Mmu::levels()`: a root above level 2 (x86_64's PML4, a PML5 under LA57) is
+walked down to its level-2 tables first, and on riscv64 and aarch64, whose
+roots are level-2 tables, that step is constant-folded away.
 
 - **`crates/core/arch-<isa>`** implements every trait `crates/core/arch-api`
   exports, on a zero-sized type the facade (`crates/core/arch`) names `ARCH`:

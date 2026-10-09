@@ -30,6 +30,9 @@ pub(crate) const NAMES: &[&str] = &[
     // kernel_main: `install_procfs` is skipped
     // (ktest `procfs_entries_registered`).
     "procfs-skip",
+    // entry/x86_64/fp.rs: a fork's child gets the initial FP state, not the
+    // parent's (ktest `x86_ring3_syscall_fork_fp`, x86_64 only).
+    "x86-fork-fp-skip",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

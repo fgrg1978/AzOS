@@ -71,6 +71,10 @@ pub(crate) mod ring3_drv_smoke;
 #[cfg(feature = "qemu")]
 #[cfg(any(feature = "tlb-smoke", feature = "ktest"))]
 pub(crate) mod tlb_probe;
+// arch-only: x86_64 has no user images yet; riscv64 and aarch64 reach ring
+// 3 through theirs (the rows that boot them).
+#[cfg(all(feature = "ktest", target_arch = "x86_64"))]
+pub(crate) mod x86_64_ring3;
 #[cfg(feature = "irq-order-probe")]
 pub(crate) mod irq_order_probe;
 #[cfg(any(feature = "pi-smoke", feature = "ktest"))]
