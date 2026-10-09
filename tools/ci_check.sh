@@ -15406,7 +15406,7 @@ PYEOF
         # preemption off (`[LAT] fat preempt_off_io=`, a count: it does not
         # follow host load). Every `lat-fat` kernel these rows boot must
         # print 0; the `FAT spinlock canary` rows below must count some.
-        case "$feats" in *lat-fat*|*fat-mutate-pi-canary*|*blk-lock-wait-canary*)
+        case "$feats" in *lat-fat*|*fat-mutate-pi-canary*|*fat-mutate-spin-canary*|*blk-lock-wait-canary*)
             local np_io
             np_io="$(grep -a '^\[LAT\] fat preempt_off_io=' "$clean" | sed -n '1s/^\[LAT\] fat preempt_off_io=\([0-9][0-9]*\) preempt_off_io_all=[0-9][0-9]*$/\1/p')"
             if [ "$np_io" != 0 ]; then
