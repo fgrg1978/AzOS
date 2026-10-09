@@ -103,12 +103,12 @@ watchdog.
 
 Measured with the same-QEMU harness (`userspace/bench/vsbench`,
 `tools/vsbench_compare.sh`) on riscv64 under `-icount`, which counts guest
-instructions per operation, not hardware time, from one run per path. On
-every compared path AzOS is ahead of Linux or at parity: it executes from
-about 24% fewer instructions per operation (system call) to about 80% fewer
-(IPC round trip), with context switching under load about 77%, process
-spawn about 40% and memory map about 70% fewer, while file I/O and UDP are
-within about 5%. No hardware has been measured.
+instructions per operation, not hardware time, from one run per path. Against
+Linux on the same harness, AzOS executes about 24% fewer instructions per
+system call and about 80% fewer per IPC round trip; context switching under
+load, process spawn and memory map take about 77%, 40% and 70% fewer, and
+file I/O and UDP are within about 5%. These are instruction counts under an
+emulator: no hardware has been measured.
 
 ## Status
 
