@@ -461,9 +461,7 @@ static NET: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
 static EGRESS: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
 /// The TCP bulk lanes' stream (`tcp_open`).
 static TCP: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
-/// The socket index of the previous TCP bulk stream, and how many sends this
-/// one had refused (see `tcp_send`).
-static TCP_LAST_FD: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(-1);
+/// How many sends the current TCP bulk stream had refused (see `tcp_send`).
 static TCP_REFUSED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 impl Net for AzosAbi {
@@ -544,23 +542,13 @@ impl Net for AzosAbi {
         super::bench_core::parse_port(&buf[..n as usize])
     }
 
-    /// **Not on the previous stream's socket index.** This kernel derives
-    /// the source port from the index (`0xC000 + fd`, `sys_connect_syscall`),
-    /// so a second stream on the index the first one just closed reuses its
-    /// whole 4-tuple, and the host, still closing the old connection, refuses
-    /// the new SYN: measured, `tcp-bulk-rx` failed `rc=-4001` after
-    /// `tcp-bulk-tx`. Linux picks a fresh ephemeral port; here the index is
-    /// stepped past the old one by holding it while a second socket is made.
+    /// The source port is the kernel's: `connect` asks for local port 0 and
+    /// the TCP layer picks a free ephemeral one, so back-to-back streams
+    /// never share a 4-tuple.
     fn tcp_open(&self, port: u16) -> Result<(), i64> {
         use core::sync::atomic::Ordering::Relaxed;
-        let mut fd = sys::socket(2, 1, 0);      // AF_INET, SOCK_STREAM
-        if fd >= 0 && fd == TCP_LAST_FD.load(Relaxed) {
-            let other = sys::socket(2, 1, 0);
-            let _ = sys::sock_shutdown(fd as u64);
-            fd = other;
-        }
+        let fd = sys::socket(2, 1, 0);          // AF_INET, SOCK_STREAM
         if fd < 0 { return Err(-2000 + fd as i64); }
-        TCP_LAST_FD.store(fd, Relaxed);
         TCP_REFUSED.store(0, Relaxed);
         // Blocks until the handshake completes (or fails).
         let rc = sys::connect(fd as u64, &sys::sockaddr_in(super::bench_core::TCP_HOST_IP, port));

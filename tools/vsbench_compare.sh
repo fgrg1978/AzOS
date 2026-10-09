@@ -318,17 +318,14 @@ RING_LANES_RE='^(ring-|ioring-|drvring-|drv-call|frame-stream)'
 # kernel. Linux's equivalent (softirq) is part of every Linux boot, so the
 # product kernel, daemons and all, is the comparable AzOS here.
 #
-# ITS BRAIN LINK IS OFF (`behavior_server_port=0` in that boot's CONFIG.INI,
-# re-signed): disk-vsbench.img points it at 10.0.2.2:9000, which on user
-# networking is the host, which answers RST. Measured with it on (empty
-# VSBENCH_TCP_AZOS_CONFIG, the canary): 3 of 3 boots, `tcp-bulk-tx` got a FIN
-# from its OWN side after ~460 KB with no close from the lane (pcap) and
-# failed `rc=-3001`; with it off, 0 of 6. ATTRIBUTED, by reading the code, not
-# observed: kernel/src/tasks/behavior.rs waits out the handshake and then
-# `tcp::close(tcp_fd)`s by index, and the RST had already freed that slot for
-# `connect` to hand to vsbench (camera.rs has the same pattern). A kernel
-# defect, not a benchmark one; Linux runs no such daemon, so neither side
-# gets one here.
+# ITS BRAIN LINK STAYS ON. disk-vsbench.img points it at 10.0.2.2:9000, which
+# on user networking is the host, which answers RST. Until SK it cut the lane:
+# the behavior task closed, by index, the TCP slot its refused connect had
+# had after the RST freed it for vsbench's `connect` (3 of 3 boots `FAIL
+# rc=-3001`). FIXED by SK (generation-checked TcpHandle): a stale handle no
+# longer closes the slot's next owner. `VSBENCH_TCP_AZOS_CONFIG=key=value`
+# still overrides one CONFIG.INI line of the TCP boot (re-signed with the
+# TEST key), e.g. `behavior_server_port=0` to take the brain link out.
 #
 # Reported per lane and side: guest ns per KiB, which under `-icount` is
 # instructions per KiB of the whole guest; bytes/s on the guest clock; bytes/s
@@ -344,9 +341,9 @@ VSBENCH_TCP="${VSBENCH_TCP:-1}"
 VSBENCH_TCP_SMP="${VSBENCH_TCP_SMP:-1}"
 TCP_ICOUNT_ARGS="-icount shift=0,sleep=off"
 TCP_LINUX_IP="ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off"
-# The AzOS TCP boot's CONFIG.INI override (see "ITS BRAIN LINK IS OFF");
-# empty keeps disk-vsbench.img's brain link, the canary for that finding.
-VSBENCH_TCP_AZOS_CONFIG="${VSBENCH_TCP_AZOS_CONFIG-behavior_server_port=0}"
+# The AzOS TCP boot's CONFIG.INI override (see "ITS BRAIN LINK STAYS ON");
+# empty, the default, ships disk-vsbench.img's CONFIG.INI unchanged.
+VSBENCH_TCP_AZOS_CONFIG="${VSBENCH_TCP_AZOS_CONFIG:-}"
 LINUX_IMAGE="${VSBENCH_LINUX_IMAGE:-$HOME/devel/vms/riscv/Image}"
 WAIT_SECS="${WAIT_SECS:-60}"
 WORK="${VSBENCH_WORK:-$REPO_ROOT/build/vsbench-compare}"
@@ -718,7 +715,14 @@ fi
 KD_LOG="$WORK/azos-bench-minimal-ringdet.log"
 LD_LOG="$WORK/linux-ringdet.log"
 RING_DET_RAN=0
-if [ "$VSBENCH_RING_DET" = "1" ] && [ "$VSBENCH_ICOUNT" != "1" ]; then
+# A `VSBENCH_LANES` run measures the ring lanes only with `ipc` (ring-*,
+# drv-*, frame-stream) or `ioring` (ioring-*): without either, the pass had
+# nothing to parse and failed "parsed NO ring lanes" (`VSBENCH_LANES=tcp`).
+RING_DET_LANES_ON=1
+if [ -n "$VSBENCH_LANES" ] && ! printf ',%s,' "$VSBENCH_LANES" | grep -qE ',(ipc|ioring),'; then
+    RING_DET_LANES_ON=0
+fi
+if [ "$VSBENCH_RING_DET" = "1" ] && [ "$VSBENCH_ICOUNT" != "1" ] && [ "$RING_DET_LANES_ON" = "1" ]; then
     BOOT_EXTRA="$RING_DET_ARGS" BOOT_WAIT="${WAIT_SECS_RING_DET:-$((WAIT_SECS * 3))}" \
         boot_azos "$KM_KERNEL" "$KD_LOG" "$WORK/k-bench-minimal-ringdet.img"
     if [ -n "$L_LOG" ]; then
