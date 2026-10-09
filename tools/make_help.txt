@@ -71,6 +71,7 @@ Release & OTA
 Maintenance
   clean                  Remove build artifacts.
   prune                  Delete stale build variants (PRUNE_ARGS=--dry-run to only report).
+  worktree-seed          Seed a fresh worktree's cargo caches from another (FROM=<worktree>; SEED_ARGS=--dry-run).
   make-mlp               Generate build/mlp.rmlp (the ML weight file).
   make-gguf              Generate build/policy.gguf.
 

@@ -525,6 +525,14 @@ PRUNE_ARGS ?= --quiet
 prune:
 	@python3 tools/prune_build.py $(PRUNE_ARGS)
 
+# A fresh worktree's first build, from another worktree's cargo target dirs
+# (tools/worktree_seed.py): APFS clones, keeping only the units that cannot
+# depend on the tree's path (build-std, crates.io); every path package is
+# rebuilt here. `make worktree-seed FROM=~/azos-wt/<other>`.
+.PHONY: worktree-seed
+worktree-seed:
+	@test -n "$(FROM)" || { echo "usage: make worktree-seed FROM=<another worktree>"; exit 2; }
+	@python3 tools/worktree_seed.py $(SEED_ARGS) "$(FROM)"
 
 # Build kernel with RVV 1.0 support (requires QEMU with -cpu rv64,v=true).
 build-rvv: $(IMAGE_HASHES) $(QEMU_DEV_KCONFIG)
