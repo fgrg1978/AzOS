@@ -194,6 +194,26 @@ config LX_ACCEPT_UNCONFINED_DMA
 
 endif # LINUX_DRIVERS
 
+config LX_MODULE_TOKENS
+    int "Module verification tokens live at once"
+    range 1 64
+    default 4 if PROFILE_EMBEDDED
+    default 4 if PROFILE_EDGE
+    default 4 if PROFILE_FLEET
+    default 4
+    help
+      Slots in the table of one-shot tokens SYS_MODULE_VERIFY grants and
+      SYS_MODULE_MAP_X consumes (crates/core/syscall/src/module_ops.rs,
+      built only with LX_SERVER_SKELETON). Each token is bound to the
+      verifying task and is dropped when that task exits. A grant with
+      every slot taken evicts one, and its owner must verify again.
+
+      Cost: 24 B of .bss per slot on riscv64 and aarch64 (96 B at the
+      default), and a scan of the table per verify, map and task exit
+      (a few instructions per slot; nothing when LX_SERVER_SKELETON is off).
+      Raise it only when more Linux driver servers than this start at once.
+      Outside the LINUX_DRIVERS block so the constant always exists.
+
 config USERSPACE_GPL
     bool "Allow third-party GPL userspace programs (e.g. BusyBox)"
     default n

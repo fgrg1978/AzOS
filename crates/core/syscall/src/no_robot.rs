@@ -29,6 +29,8 @@ pub mod robot {
 
     /// `azos_robot::MOTOR_REFUSED_HALTED`; never returned here.
     pub const MOTOR_REFUSED_HALTED: i32 = -2;
+    /// No motors without the Robot domain: the commander table is empty.
+    pub const MAX_MOTORS: usize = 0;
 
     /// No motor driver: every id is refused as `motor_init` refuses a bad one.
     pub fn motor_init(_id: u32, _pwm_ch: u32, _dir_a: u32, _dir_b: u32) -> i32 { -1 }

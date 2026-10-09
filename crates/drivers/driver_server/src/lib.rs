@@ -274,6 +274,30 @@ impl DriverQueue {
         self.count -= 1;
         Some(r)
     }
+
+    /// Drop the queued request carrying `token`, keeping the others in
+    /// order. `false` when no queued request carries it (the driver already
+    /// fetched it, or it was never queued). Bounded by the queue depth.
+    pub fn remove_token(&mut self, token: u64) -> bool {
+        let mut found = None;
+        for k in 0..self.count {
+            let i = (self.tail + k) % DRIVER_REQUEST_QUEUE_DEPTH;
+            if self.entries[i].token == token {
+                found = Some(k);
+                break;
+            }
+        }
+        let Some(k) = found else { return false };
+        // Close the gap: every later entry moves one place towards the tail.
+        for j in k..self.count - 1 {
+            let to = (self.tail + j) % DRIVER_REQUEST_QUEUE_DEPTH;
+            let from = (self.tail + j + 1) % DRIVER_REQUEST_QUEUE_DEPTH;
+            self.entries[to] = self.entries[from];
+        }
+        self.head = (self.head + DRIVER_REQUEST_QUEUE_DEPTH - 1) % DRIVER_REQUEST_QUEUE_DEPTH;
+        self.count -= 1;
+        true
+    }
 }
 
 /// Replies kept for polling clients: [`REPLY_RING_DEPTH`] entries, each
@@ -947,10 +971,24 @@ pub fn driver_unpark(kind: u32, tid: u32) -> bool {
 /// Client side, when its wait ends: withdraw its waiter row and take the
 /// reply delivered to it, if any. After this the row is free and a reply for
 /// `token` goes to the ring ([`ReplyRing`]) instead — answered into the void.
+///
+/// **A client that gives up cancels its request.** When the row had no reply
+/// yet (`Armed`: the wait timed out or was refused), the request is taken off
+/// the kind's queue in the same `REGISTRY` hold if the driver has not
+/// fetched it, so the driver never runs an operation nobody waits for (a
+/// motor write or an I2C transaction the client already reported as failed).
+/// One the driver already fetched cannot be recalled: its reply goes to the
+/// ring as before.
 pub fn driver_withdraw_waiter(kind: u32, tid: u32, token: u64) -> reply_wait::Withdrawn {
     let mut reg = REGISTRY.lock();
     match reg.find_kind(kind) {
-        Some(slot) => slot.waiters.withdraw(tid, token),
+        Some(slot) => {
+            let w = slot.waiters.withdraw(tid, token);
+            if matches!(w, reply_wait::Withdrawn::Armed) && !cfg!(feature = "driver-cancel-skip-canary") {
+                let _ = slot.queue.lock().remove_token(token);
+            }
+            w
+        }
         None => reply_wait::Withdrawn::NotArmed,
     }
 }

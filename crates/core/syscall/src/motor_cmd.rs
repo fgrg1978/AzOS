@@ -107,6 +107,7 @@ pub fn sys_motor_move_typed(cap_raw: u64, dir: u64, speed_pct: u64) -> i64 {
         return Errno::EINVAL.to_syscall_ret();
     }
     let (rc, applied) = motor_set_reporting(id, d, speed_pct as u32);
+    crate::motor_commander::note(id, tid, applied);
     let r = motor_rc_ret(rc);
 
     // Same `[ACTSMOKE]` shape as `sys_motor_speed_typed` /

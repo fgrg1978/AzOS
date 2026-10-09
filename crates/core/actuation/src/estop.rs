@@ -468,6 +468,23 @@ pub const ESTOP_ACTION_RC_LINK_LOSS: u8 = 12;
 /// width in microseconds.
 pub const ESTOP_ACTION_RC_KILL: u8 = 13;
 
+/// `SAFETY_ESTOP` action code of the SAFE STOP a dead motor commander's
+/// exit makes (wave 15, owner decision; Kconfig `MOTOR_COMMANDER_EXIT_STOP`,
+/// `crates/core/syscall/src/motor_commander.rs`): the wheels a ring-3 task
+/// left at a non-zero duty are set to duty 0 when it exits or dies.
+/// `detail` is [`commander_lost_detail`]. It does NOT latch
+/// (`logger::estop_action_latches` answers `None`, as for the self-check's
+/// 7): the machine is stopped, not locked, and a restarted commander drives
+/// again.
+pub const ESTOP_ACTION_COMMANDER_LOST: u8 = 14;
+
+/// `detail` of an [`ESTOP_ACTION_COMMANDER_LOST`] record: the dead task's
+/// TID in the low 24 bits, the wheels it commanded (bit `i` = wheel `i`) in
+/// the top 8.
+pub const fn commander_lost_detail(tid: u32, wheels: u32) -> u32 {
+    ((wheels & 0xff) << 24) | (tid & 0x00ff_ffff)
+}
+
 /// Top bit of a ring-3 stop's `detail`: the latch was taken within
 /// [`ESTOP_RELATCH_WINDOW_TICKS`] of an operator clear. The low 31 bits carry
 /// the latching tid.

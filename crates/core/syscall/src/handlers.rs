@@ -2998,6 +2998,7 @@ fn motor_direction_reporting(id: u32, dir: u64) -> i64 {
         _ => return azos_abi::error::Errno::EINVAL.to_syscall_ret(),
     };
     let (rc, applied) = motor_set_reporting(id, d, 50);  // default 50% speed
+    crate::motor_commander::note_current(id, applied);
     let r = motor_rc_ret(rc);
 
     // Same readback marker as `sys_motor_speed_typed`, and reflex is why it
@@ -3067,6 +3068,7 @@ pub fn sys_motor_speed_typed(cap_raw: u64, speed_pct: u64) -> i64 {
     } else {
         motor_set_reporting(id, MotorDir::Forward, speed_pct as u32)
     };
+    crate::motor_commander::note(id, tid, applied);
     let r = motor_rc_ret(rc);
 
     // The marker that says ring 3 COMMANDED a motor, not merely that it ran.

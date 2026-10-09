@@ -3123,6 +3123,17 @@ mod estop_latch_survives_a_reset {
         assert_eq!(boot(vec![Some(file(&[estop(3), estop(ring3)]))]), BootLatch::Armed(ring3));
     }
 
+    /// Wave 15: a dead motor commander's SAFE STOP (action 14) is recorded and
+    /// never latches, so the next boot reads the record before it.
+    #[test]
+    fn a_commander_lost_record_neither_latches_nor_releases() {
+        let lost = super::safety::ESTOP_ACTION_COMMANDER_LOST;
+        assert_eq!(estop_action_latches(lost), None);
+        assert_eq!(boot(vec![Some(file(&[estop(lost)]))]), BootLatch::Released);
+        assert_eq!(boot(vec![Some(file(&[estop(0), estop(lost)]))]), BootLatch::Armed(0));
+        assert_eq!(super::safety::commander_lost_detail(0x1234, 0b10), 0x0200_1234);
+    }
+
     /// The self-check's synthetic record is neither a stop nor a clear, so it
     /// must not change what the record before it said.
     #[test]

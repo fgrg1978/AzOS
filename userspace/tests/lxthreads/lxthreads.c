@@ -10,7 +10,8 @@
  * thread-list lock released by the kernel's clear-tid wake), and one open
  * file description written by two threads. Wave 13: signals across threads
  * (a process-directed signal, a tgkill to a blocked thread, a fatal default
- * action in a threaded child).
+ * action in a threaded child). Wave 15: a leader's pthread_exit while a
+ * thread runs (its clear-tid word, which holds musl's thread-list lock).
  *
  * Every check prints `lxthr: <name> ok` or `lxthr: <name> FAIL`, and the
  * last line is `lxthr: done failures=<n>`.
@@ -181,6 +182,61 @@ static void signals(void)
           w == pid && WIFSIGNALED(st) && WTERMSIG(st) == SIGTERM);
 }
 
+/* Wave 15: the leader's clear-tid word. musl's start code hands the kernel
+ * its thread-list lock with set_tid_address, and pthread_exit holds that lock
+ * across SYS_exit, relying on the kernel's clear-tid write and wake to
+ * release it once the thread is gone. A leader that ends with pthread_exit
+ * while another thread runs must therefore have its word cleared like any
+ * thread's (Linux mm_release), or the next pthread_create in the process
+ * waits on the lock forever. The thread joins the leader first (musl marks
+ * it exited only after taking the lock), so its pthread_create can only
+ * proceed through the kernel's clear: no timing is assumed. */
+static pthread_t leader_self;
+
+static void *noop(void *a) { return a; }
+
+static void *after_leader(void *a)
+{
+    (void)a;
+    pthread_join(leader_self, 0);
+    pthread_t u;
+    if (pthread_create(&u, 0, noop, 0) != 0)
+        _exit(5);
+    pthread_join(u, 0);
+    _exit(7);
+}
+
+/* The child's own backstop: a wedged child ends itself (exit_group from a
+ * thread takes no lock), since signalling another process is outside this
+ * program's row profile. */
+static void *backstop(void *a)
+{
+    (void)a;
+    for (int i = 0; i < 300; i++)
+        nap_ms(10);
+    _exit(9);
+}
+
+static void leader_exit(void)
+{
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) {
+        leader_self = pthread_self();
+        pthread_t t, b;
+        if (pthread_create(&b, 0, backstop, 0) != 0 || pthread_create(&t, 0, after_leader, 0) != 0)
+            _exit(4);
+        pthread_exit(0);
+    }
+    int st = 0;
+    pid_t w = waitpid(pid, &st, 0);
+    if (w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 9)
+        printf("lxthr: leader-exit child wedged (ended itself after 3 s)\n");
+    printf("lxthr: leader-exit child status 0x%x\n", st);
+    check("a leader's pthread_exit releases its clear-tid word",
+          w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 7);
+}
+
 int main(void)
 {
     pthread_t t[NT];
@@ -240,6 +296,7 @@ int main(void)
     check("a second round of threads", created == 2 && joined == 2 && counter == 2L * ITERS);
 
     signals();
+    leader_exit();
 
     printf("lxthr: done failures=%d\n", fails);
     fflush(stdout);

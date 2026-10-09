@@ -95,6 +95,8 @@ pub(crate) mod drv_contain_smoke;
 pub(crate) mod timer_heap_smoke;
 #[cfg(any(feature = "preempt-account-smoke", feature = "ktest"))]
 pub(crate) mod preempt_account_smoke;
+#[cfg(all(feature = "ktest", feature = "domain-robot"))]
+pub(crate) mod commander_exit;
 #[cfg(feature = "tail-smoke")]
 pub(crate) mod tail_smoke;
 #[cfg(feature = "energy-smoke")]

@@ -472,6 +472,10 @@ PCI transport exists, but the kernel uses it only in self-tests.
   drive below the e-stop layer and the obstacle stop, through the
   envelope. The geofence is armed at the first trusted GPS fix; a breach
   latches the e-stop. Each latch writes a safety record.
+- **Dead commander.** When a ring-3 task that left a wheel turning exits
+  or dies, its exit sets that wheel to duty 0 and writes a safety record.
+  The e-stop is not latched, so a restarted commander can drive again
+  (`MOTOR_COMMANDER_EXIT_STOP`).
 
 **Watchdogs:**
 

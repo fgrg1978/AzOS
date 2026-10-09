@@ -245,6 +245,20 @@ fn task_release_all_resources(tid: u32) {
             kprintln!("[MEM] locked task {} exits: faults={} peak={} pages", tid, faults, peak);
         }
     }
+    // Wave 15 (owner decision): a ring-3 task that dies commanding a wheel
+    // leaves it at a SAFE STOP (duty 0), first of all, and the stop is
+    // recorded with its reason; it does not latch the e-stop (Kconfig
+    // `MOTOR_COMMANDER_EXIT_STOP`, `azos_syscall::motor_commander`).
+    let (taken, stopped) = azos_syscall::motor_commander::exit_stop(tid);
+    if taken != 0 {
+        use azos_actuation::{estop, logger};
+        let detail = estop::commander_lost_detail(tid, taken);
+        let _ = logger::log_safety_violation_durable(
+            logger::SAFETY_ESTOP, estop::ESTOP_ACTION_COMMANDER_LOST, detail);
+        azos_drv_sys::kwarn!(
+            "[MOTOR] commander tid {} exited: wheels {:#x} SAFE STOP (duty 0 on {:#x}; SAFETY_ESTOP action {} detail {:#x}, not latched)",
+            tid, taken, stopped, estop::ESTOP_ACTION_COMMANDER_LOST, detail);
+    }
     // RFC-0049 M4: is this a supervised driver the kernel will restart? Then
     // its driver-server slot, its named endpoints and its service names are
     // HELD for the successor instead of released (everything else is released
@@ -268,6 +282,12 @@ fn task_release_all_resources(tid: u32) {
         kprintln!("[KILL] {} child(ren) of tid {} stopped with it (die-with-parent)", orphans, tid);
     }
     let _ = azos_sched::scheduler::take_current_forced_exit();
+    // The dying task's slot, resolved once for the per-slot releases below;
+    // valid until the slot is freed, long after this hook.
+    let slot = azos_sched::scheduler::idx_for_tid(tid);
+    if let Some(idx) = slot {
+        azos_sched::scheduler::seal_forced_stop(idx, tid);
+    }
     // A task killed mid-flood must not take its suppressed-denial count with it.
     azos_syscall::handlers::cap_denial_task_exit(tid);
     // Wave 11 (LEASE2): robust notify words this task still holds become
@@ -318,6 +338,24 @@ fn task_release_all_resources(tid: u32) {
         let freed = ops.release_all(tid);
         if freed > 0 {
             kprintln!("[FS] reclaimed {} fd(s) from task {}", freed, tid);
+        }
+    }
+    // Wave 15 (COHERENCE-AUDIT, dead client): pub/sub subscriptions are
+    // keyed by pool slot, so they go while the slot still resolves (a later
+    // task in the slot must not be woken for them); a Linux module server's
+    // unused verification tokens go with it instead of holding a slot until
+    // some later grant evicts them.
+    if let Some(idx) = slot {
+        let subs = azos_pubsub::topic_unsubscribe_all(idx);
+        if subs > 0 {
+            kprintln!("[PUBSUB] dropped {} subscription(s) of task {}", subs, tid);
+        }
+    }
+    #[cfg(feature = "lx-server")]
+    {
+        let tokens = azos_syscall::module_ops::module_tokens_release(tid);
+        if tokens > 0 {
+            kprintln!("[LX] dropped {} module token(s) of task {}", tokens, tid);
         }
     }
     // Driver-server slots. Nothing released these either: a ring-3 driver that

@@ -116,6 +116,10 @@ pub mod ioring_ops;
 // private). `#[path]`, not `include!`, for the same reason as `file_ops`.
 #[path = "../../../../crates/core/syscall/src/motor_cmd.rs"]
 pub mod motor_cmd;
+// Wave 15: the motor-commander table the typed motor handlers note into,
+// the real file. At the crate root, where the kernel's `lib.rs` declares it.
+#[path = "../../../../crates/core/syscall/src/motor_commander.rs"]
+pub mod motor_commander;
 
 // `SYS_LINK_KEY_READ_TYPED` (591, U06-9). At the crate root, same reason as
 // `motor_cmd`: it names `crate::handlers::{E_CONTAINED, note_typed_denial}`
@@ -135,6 +139,114 @@ pub mod families;
 // Wave 15: the kernel tracer's control call (632), the real file.
 #[path = "../../../../crates/core/syscall/src/trace_ctl.rs"]
 pub mod trace_ctl;
+// Wave 15 (COHERENCE-AUDIT, dead client): the module-token table, the real
+// file, and its exit release.
+#[path = "../../../../crates/core/syscall/src/module_tokens.rs"]
+pub mod module_tokens;
+
+// Wave 15 (COHERENCE-AUDIT, dead client): the pub/sub bus, the real file,
+// for its exit release. Its `#![no_std]` is the crate root's attribute, inert
+// here.
+#[allow(unused_attributes)]
+#[path = "../../../../crates/core/pubsub/src/lib.rs"]
+pub mod pubsub;
+
+#[cfg(test)]
+mod pubsub_exit_tests {
+    use crate::pubsub::*;
+
+    /// A task's subscriptions die with it: its pool slot is dropped from
+    /// every topic and the other subscribers stay. Canary
+    /// `pubsub-exit-keep-canary` (no release): the dead slot is still
+    /// subscribed, and a later task in that slot would be woken for it.
+    #[test]
+    fn an_exiting_task_is_dropped_from_every_topic() {
+        let a = topic_create(b"/t/exit/a", 4).expect("topic a");
+        let b = topic_create(b"/t/exit/b", 4).expect("topic b");
+        let (dead, live) = (5usize, 6usize);
+        assert!(topic_subscribe(a, dead) && topic_subscribe(b, dead));
+        assert!(topic_subscribe(a, live));
+        assert_eq!(topic_subscriber_count(a), 2);
+        assert_eq!(topic_unsubscribe_all(dead), 2, "the exiting slot's subscriptions were not dropped");
+        assert_eq!(topic_subscriber_count(a), 1, "the live subscriber went too, or the dead one stayed");
+        assert_eq!(topic_subscriber_count(b), 0);
+        assert_eq!(topic_unsubscribe_all(dead), 0, "a second release found something");
+        // The freed fan-out slot is reusable.
+        assert!(topic_subscribe(b, live));
+        assert_eq!(topic_subscriber_count(b), 1);
+    }
+}
+
+#[cfg(test)]
+mod motor_commander_tests {
+    use crate::motor_commander::Commanders;
+
+    /// A wheel left turning names its commander; a stop (by anyone) clears
+    /// it; a refused write changes nothing; the commander's exit takes
+    /// exactly the wheels it still names, once, and never a wheel another
+    /// task took over.
+    #[test]
+    fn an_exiting_commander_takes_only_the_wheels_it_left_turning() {
+        let c: Commanders<4> = Commanders::new();
+        c.note(0, 40, Some(30));
+        c.note(1, 40, Some(50));
+        c.note(2, 40, Some(20));
+        c.note(3, 40, None);
+        assert_eq!(c.commander(3), 0, "a refused write named a commander");
+        c.note(1, 41, Some(10));
+        c.note(2, 42, Some(0));
+        assert_eq!(c.commander(2), 0, "a stopped wheel still names a commander");
+        assert_eq!(c.release(40), 0b0001, "wheel 0 only: 1 was taken over, 2 stopped");
+        assert_eq!(c.release(40), 0, "a second exit took the wheels again");
+        assert_eq!(c.commander(1), 41);
+        assert_eq!(c.release(0), 0, "TID 0 names no task");
+        c.note(9, 40, Some(30));
+        assert_eq!(c.release(40), 0, "an out-of-range wheel was noted");
+    }
+}
+
+#[cfg(test)]
+mod module_tokens_tests {
+    use crate::module_tokens::Tokens;
+
+    /// A task that exits holding a token frees its slot at once: the next
+    /// four tasks each get a free slot and nobody's token is evicted, and
+    /// the dead task's TID, reused, cannot map with the old token. Canary
+    /// `module-token-leak-canary` (no release): the dead token still holds
+    /// its slot and a fourth live task evicts one of the others.
+    #[test]
+    fn a_dead_tasks_token_is_released_at_exit() {
+        let mut t: Tokens<4> = Tokens::new();
+        let dead = t.grant(10, 0x11, 3);
+        assert_eq!(t.release_all(10), 1, "the exiting task's token was not released");
+        assert_eq!(t.live_of(10), 0);
+        // Four live servers verify: with the dead token gone, all four fit.
+        let mut slots = [0usize; 4];
+        for (k, tid) in [20u32, 21, 22, 23].iter().enumerate() {
+            slots[k] = t.grant(*tid, 0x21 + 2 * k as u32, 1);
+        }
+        for (k, tid) in [20u32, 21, 22, 23].iter().enumerate() {
+            assert_eq!(t.live_of(*tid), 1, "tid {} lost its token to an eviction", tid);
+            assert_eq!(t.take(slots[k] + 1, *tid, 0x21 + 2 * k as u32), Some(1));
+        }
+        // A reused TID 10 never inherits the dead token.
+        assert_eq!(t.take(dead + 1, 10, 0x11), None);
+    }
+
+    /// The token is one-shot and bound to its task and nonce.
+    #[test]
+    fn a_token_is_one_shot_and_bound_to_its_task() {
+        let mut t: Tokens<4> = Tokens::new();
+        let s = t.grant(7, 0x31, 2) + 1;
+        assert_eq!(t.take(s, 8, 0x31), None, "another task used the token");
+        assert_eq!(t.take(s, 7, 0x33), None, "a wrong nonce was accepted");
+        assert_eq!(t.take(0, 7, 0x31), None);
+        assert_eq!(t.take(5, 7, 0x31), None);
+        assert_eq!(t.take(s, 7, 0x31), Some(2));
+        assert_eq!(t.take(s, 7, 0x31), None, "the token was used twice");
+        assert_eq!(t.release_all(7), 0, "a consumed token is not live");
+    }
+}
 
 // Wave 6 (front V): the per-task vDSO page and notify/wait handlers. A
 // sibling of `link_key` for the same reason; `#[path]`, not `include!`.

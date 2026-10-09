@@ -10715,6 +10715,9 @@ PY
     #   procfs_entries_registered     canary=procfs-skip (no install_procfs)
     #   mm_zicboz_zero_fill (rv)      zicboz-skip-canary (DTB Zicboz ignored)
     #   kheap_slab_selftest           slab-freelist-canary (panics in slab.rs)
+    #   motor_commander_exit_stops_its_wheels  commander-exit-nostop-canary
+    #                                 (a dead commander's wheel is taken, not
+    #                                 stopped; wave 15, owner decision)
     # Late canaries that break memory safety or the safety layer for the
     # whole boot keep a boot each, and their row names only their test:
     #   tlb_shootdown_cross_cpu             tlb-local-only (rv, arm),
@@ -10726,8 +10729,8 @@ PY
     # `mm: NX outside the image` (riscv64 only before; both ISAs now),
     # `mm: Zicboz zeroes pages` and `aarch64: procfs registered` (both ISAs
     # now), and the late tests' rows above.
-    KTEST_N_RV=14
-    KTEST_N_ARM=13
+    KTEST_N_RV=15
+    KTEST_N_ARM=14
     KTEST_FEATS="qemu,ktest"
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
@@ -10797,8 +10800,8 @@ PY
     }
     par "ktest (rv)" ktest_row "ktest (rv)" rv "" ""
     par "ktest (arm)" ktest_row "ktest (arm)" arm "" ""
-    KTEST_CANARIES=",wx-skip-canary,nx-skip-canary,percpu-oor-canary"
-    KTEST_CANARIED="mm_wx_image mm_nx_outside_image percpu_areas_and_oor_refusal"
+    KTEST_CANARIES=",wx-skip-canary,nx-skip-canary,percpu-oor-canary,commander-exit-nostop-canary"
+    KTEST_CANARIED="mm_wx_image mm_nx_outside_image percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels"
     par "ktest canaries (rv)" ktest_row "ktest canaries (rv)" rv "$KTEST_CANARIES,zicboz-skip-canary" \
         "$KTEST_CANARIED mm_zicboz_zero_fill"
     par "ktest canaries (arm)" ktest_row "ktest canaries (arm)" arm "$KTEST_CANARIES" "$KTEST_CANARIED"
@@ -16698,6 +16701,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr: a process signal lands on an unblocked thread ok" \
                 "lxthr: tgkill to a blocked thread stays pending on it ok" \
                 "lxthr: a fatal signal ends every thread; wait sees WIFSIGNALED ok" \
+                "lxthr: a leader's pthread_exit releases its clear-tid word ok" \
                 "lxthr: done failures=0" "after-lxthr 0"
             # Wave 13 (SIGNALS) canaries over the same run: a process-directed
             # signal always to the leader (which blocks it); a tgkill posted
@@ -16719,6 +16723,19 @@ echo after-lxthr \$?" 150 \
                 "lxthr
 echo after-lxthr \$?" 120 \
                 "lxthr: tls distinct per thread ok" "lxthr: done failures=0"
+            # Wave 15 (COHERENCE-AUDIT): `leader-cleartid-canary` never clears
+            # a thread-group leader's clear-tid word, so the thread left after
+            # the leader's pthread_exit waits on musl's thread-list lock and
+            # the child's backstop thread ends it after 3 s. A PASS row on the lines only that
+            # failure prints (not a FAIL row, which a run that never reached
+            # lxthr would also pass): the wedge, the check's FAIL, and that
+            # check alone failing.
+            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: leader clear-tid canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,leader-cleartid-canary" PASS \
+                "lxthr
+echo after-lxthr \$?" 150 \
+                "lxthr: leader-exit child wedged" \
+                "lxthr: a leader's pthread_exit releases its clear-tid word FAIL" \
+                "lxthr: done failures=1"
         else
             printf "  %-26s%s\n" "linux: pthreads ($ush_isa)..." "SKIP (no zig on this host; see make lxthreads)"
         fi

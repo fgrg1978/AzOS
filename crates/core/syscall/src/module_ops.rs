@@ -51,25 +51,23 @@ include!("../../../../build/module_hashes.rs"); // host builds: the riscv64 tabl
 
 /// Longest 8.3 module name (`NAME1234.KO` is 11; one spare).
 const NAME_MAX: usize = 12;
-/// Live tokens at once. A server verifies and maps one module at a time; four
-/// lets a few servers start in parallel without one evicting another's.
-const SLOTS: usize = 4;
+/// Live tokens at once (Kconfig `LX_MODULE_TOKENS`). A server verifies and
+/// maps one module at a time; the default four lets a few servers start in
+/// parallel without one evicting another's.
+const SLOTS: usize = azos_limits::LX_MODULE_TOKENS;
 
-#[derive(Clone, Copy)]
-struct Slot {
-    live: bool,
-    tid: u32,
-    nonce: u32,
-    /// Pages the token allows to become executable.
-    max_pages: usize,
-}
-
-static TOKENS: azos_sync::SpinLock<[Slot; SLOTS]> =
-    azos_sync::SpinLock::new([Slot { live: false, tid: 0, nonce: 0, max_pages: 0 }; SLOTS]);
+static TOKENS: azos_sync::SpinLock<crate::module_tokens::Tokens<SLOTS>> =
+    azos_sync::SpinLock::new(crate::module_tokens::Tokens::new());
 static NONCE: AtomicU32 = AtomicU32::new(0x4c58_0001);
 static REFUSALS: AtomicU32 = AtomicU32::new(0);
 static GRANTS: AtomicU32 = AtomicU32::new(0);
 static MAPPED: AtomicU32 = AtomicU32::new(0);
+
+/// Task `tid` has exited: its unused tokens go with it (the exit hook,
+/// `kernel/src/boot/sched.rs`). Returns how many were dropped.
+pub fn module_tokens_release(tid: u32) -> usize {
+    TOKENS.lock().release_all(tid)
+}
 
 /// Verification refusals since boot (digest or name not in the table).
 pub fn module_refusals() -> u32 {
@@ -142,18 +140,7 @@ pub fn sys_module_verify(buf: u64, len: u64, name_ptr: u64, name_len: u64) -> i6
     let page = azos_arch::PAGE_SIZE as u64;
     let max_pages = len.div_ceil(page) as usize;
     let nonce = NONCE.fetch_add(0x9e37_79b9, Ordering::Relaxed) | 1;
-    let slot = {
-        let mut t = TOKENS.lock();
-        // A server's previous unused token is replaced, not stacked; else the
-        // first free slot; else one is evicted (its owner just gets
-        // `-EPERM` at MAP_X and verifies again).
-        let i = t.iter().position(|s| s.live && s.tid == tid)
-            .or_else(|| t.iter().position(|s| !s.live))
-            // Rotates through the slots as the nonce advances.
-            .unwrap_or((nonce >> 1) as usize % SLOTS);
-        t[i] = Slot { live: true, tid, nonce, max_pages };
-        i
-    };
+    let slot = TOKENS.lock().grant(tid, nonce, max_pages);
     GRANTS.fetch_add(1, Ordering::Relaxed);
     kprintln!(
         "[LX] module verified: tid {} {} sha256 {:02x}{:02x}{:02x}{:02x}... ({} bytes, up to {} pages executable)",
@@ -169,18 +156,9 @@ pub fn sys_module_map_x(token: u64, addr: u64, len: u64) -> i64 {
     let tid = azos_sched::current_task_tid();
     let slot = (token >> 32) as usize;
     let nonce = token as u32;
-    let max_pages = {
-        let mut t = TOKENS.lock();
-        if slot == 0 || slot > SLOTS {
-            return err(Errno::EPERM);
-        }
-        let s = &mut t[slot - 1];
-        if !s.live || s.tid != tid || s.nonce != nonce {
-            return err(Errno::EPERM);
-        }
-        // One attempt per verification, whatever happens below.
-        s.live = false;
-        s.max_pages
+    // One attempt per verification, whatever happens below.
+    let Some(max_pages) = TOKENS.lock().take(slot, tid, nonce) else {
+        return err(Errno::EPERM);
     };
     let page = azos_arch::PAGE_SIZE as u64;
     if len == 0 || addr % page != 0 {

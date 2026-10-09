@@ -33,6 +33,14 @@ mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]
 vdso-write-canary = ["azos_mm/vdso-write-canary"]
 lease-forget-tid-canary = ["azos_ipc/lease-forget-tid-canary"]
 lease-sealed-by-thread-canary = ["azos_ipc/lease-sealed-by-thread-canary"]
+# Wave 15: mirrors azos_syscall's canary of the same name (the pulled-in
+# module_tokens.rs): a dead task's module tokens are kept.
+module-token-leak-canary = []
+# ... and the pulled-in pubsub lib.rs's: an exiting task keeps its subscriptions.
+pubsub-exit-keep-canary = []
+# ... and the pulled-in motor_commander.rs's gate canary (exercised by the
+# kernel ktest, declared here so the host build knows the name).
+commander-exit-nostop-canary = []
 
 [dependencies]
 # Real, pure, no_std, host-buildable as-is (crates/core/abi has zero dependencies).

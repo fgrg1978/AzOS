@@ -1611,6 +1611,8 @@ unsafe fn alloc_slot() -> Option<usize> {
             TASK_EXITING[i].store(false, Ordering::Relaxed);
             SUBREAPER[i].store(false, Ordering::Relaxed);
             EXIT_REPARENTS[i].store(false, Ordering::Relaxed);
+            // A forced stop its previous occupant left counted is settled.
+            stop_policy::forced_clear(&FORCED_ACCT[i], &FORCED_PENDING);
             core::sync::atomic::fence(Ordering::Release);
             TASK_VALID[i].store(true, Ordering::Relaxed);
             return Some(i);
@@ -3476,11 +3478,8 @@ unsafe fn exec_take_over(idx: usize, lead: u32) -> Option<u32> {
             }
             let v = SUBREAPER[idx].swap(SUBREAPER[to].load(Ordering::Relaxed), Ordering::AcqRel);
             SUBREAPER[to].store(v, Ordering::Release);
-            if STOP_TID[idx].swap(0, Ordering::AcqRel) != 0
-                && stop_policy::Stop::decode(STOP_WORD[idx].load(Ordering::Acquire)).is_some_and(|s| s.force)
-            {
-                FORCED_PENDING.fetch_sub(1, Ordering::AcqRel);
-            }
+            STOP_TID[idx].store(0, Ordering::Release);
+            stop_policy::forced_clear(&FORCED_ACCT[idx], &FORCED_PENDING);
             // The two TIDs' lookup hints now name the other slot; the scan
             // in `idx_for_tid` finds and repairs them on first use.
         }
@@ -3516,6 +3515,18 @@ unsafe fn group_exit(idx: usize, tid: u32, code: i32) -> i32 {
     }
     if lead != tid {
         member_exit(idx, tid, lead, code);
+    }
+    // Wave 15 (COHERENCE-AUDIT): the leader's own clear-tid word (Linux
+    // `set_tid_address`; musl's start code passes its thread-list lock) is
+    // cleared and woken as a member's is, while the address space is still
+    // installed, and, as Linux `mm_release` does, only while another thread
+    // shares that address space (`mm_users > 1`): alone, nobody can observe
+    // it. A leader ending by `pthread_exit` while its threads run is the
+    // case: musl holds its thread-list lock across that exit and relies on
+    // this clear to release it, so without it the next `pthread_create` or
+    // `pthread_exit` in the process waits forever.
+    if crate::group::live_members(lead) > 1 && !cfg!(feature = "leader-cleartid-canary") {
+        clear_tid_word(idx, lead);
     }
     // The leader: wait to be alone. Each member's exit wakes it; the
     // deadline is a backstop against a wake that found it not yet asleep and
@@ -4652,7 +4663,12 @@ static DWP_TID: [core::sync::atomic::AtomicU32; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU32::new(0) }; MAX_TASKS];
 /// Forced stops issued that have not ended their task yet, machine-wide:
 /// what the timer tick from user mode tests before looking at its own slot.
+/// Changed only through `stop_policy::forced_*` on [`FORCED_ACCT`], so it is
+/// always the number of slots whose word is `counted`.
 static FORCED_PENDING: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Per slot: the forced-stop accounting word (`stop_policy::forced_count`).
+static FORCED_ACCT: [core::sync::atomic::AtomicU64; MAX_TASKS] =
+    [const { core::sync::atomic::AtomicU64::new(stop_policy::ACCT_NONE) }; MAX_TASKS];
 
 /// The pure half: the ancestor relation and the request word.
 #[path = "stop_policy.rs"]
@@ -4786,8 +4802,11 @@ fn record_stop(idx: usize, tid: u32, new: stop_policy::Stop) {
     let merged = stop_policy::Stop::merge(old, new);
     STOP_WORD[idx].store(merged.encode(), Ordering::Release);
     STOP_TID[idx].store(tid, Ordering::Release);
+    if merged.force {
+        // Counted once per task, never after its exit hook sealed the slot.
+        let _ = stop_policy::forced_count(&FORCED_ACCT[idx], &FORCED_PENDING, tid);
+    }
     if merged.force && !old.is_some_and(|o| o.force) {
-        FORCED_PENDING.fetch_add(1, Ordering::AcqRel);
         // SAFETY: the slot holds `tid` (checked above); the filter is plain
         // data read by `current_syscall_verdict` through a pointer into this
         // same slot. A verdict racing these stores reads either filter, and
@@ -4854,10 +4873,29 @@ pub fn exit_if_forced() {
 pub fn take_current_forced_exit() -> Option<i32> {
     let idx = current_slot()?;
     let code = current_forced_exit()?;
-    if STOP_TID[idx].swap(0, Ordering::AcqRel) != 0 {
-        FORCED_PENDING.fetch_sub(1, Ordering::AcqRel);
+    let tid = STOP_TID[idx].swap(0, Ordering::AcqRel);
+    if tid != 0 {
+        let _ = stop_policy::forced_uncount(&FORCED_ACCT[idx], &FORCED_PENDING, tid);
     }
     Some(code)
+}
+
+/// Task `tid`, in slot `idx`, is exiting (the exit hook, after
+/// [`take_current_forced_exit`]):
+/// a forced stop still counted for it is settled, and none recorded for it
+/// from now on is counted. Without the seal, a stop that lands after the
+/// hook — the task stays valid until its slot is freed — kept the
+/// machine-wide count up for good, and every user-mode tick on every hart
+/// took the slow path ([`forced_stop_pending`]).
+pub fn seal_forced_stop(idx: usize, tid: u32) {
+    if let Some(w) = FORCED_ACCT.get(idx) {
+        stop_policy::forced_seal(w, &FORCED_PENDING, tid);
+    }
+}
+
+/// Forced stops counted and not consumed, machine-wide (ktest, procfs).
+pub fn forced_stops_pending() -> u32 {
+    FORCED_PENDING.load(Ordering::Relaxed)
 }
 
 /// `tid` (a child just spawned, still parked) dies with its parent.

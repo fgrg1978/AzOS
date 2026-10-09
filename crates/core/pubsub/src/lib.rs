@@ -10,7 +10,7 @@
 //! Topics: /sensors/imu, /sensors/lidar, /sensors/gps, /sensors/battery,
 //!         /cmd/motor, /cmd/mode, /status, /nav/waypoint, /nav/occupancy
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use azos_sync::SpinLock;
 use azos_limits::MAX_TOPICS;
 use azos_limits::MAX_SUBS_PER_TOPIC as MAX_SUBSCRIBERS_PER_TOPIC;
@@ -109,6 +109,11 @@ const EMPTY_TOPIC: TopicInfo = TopicInfo::empty();
 /// Called with a task index to wake a subscriber that may be blocked
 /// waiting for new data.  This avoids a circular dependency on the
 /// scheduler crate.
+/// Subscriptions live across every topic, maintained under the `TOPICS`
+/// lock: what lets [`topic_unsubscribe_all`] (every task exit) return
+/// without taking the lock while nobody is subscribed.
+static SUBS_LIVE: AtomicU32 = AtomicU32::new(0);
+
 static WAKE_FN_SET: AtomicBool = AtomicBool::new(false);
 static WAKE_FN: SpinLock<Option<fn(usize)>> = SpinLock::new(None);
 
@@ -214,6 +219,7 @@ pub fn topic_subscribe(topic_id: u32, task_idx: usize) -> bool {
         if t.subscribers[i] == SUBSCRIBER_SLOT_EMPTY {
             t.subscribers[i] = task_idx;
             t.sub_count = t.sub_count.saturating_add(1);
+            SUBS_LIVE.fetch_add(1, Ordering::Relaxed);
             return true;
         }
     }
@@ -238,9 +244,45 @@ pub fn topic_unsubscribe(topic_id: u32, task_idx: usize) {
         if t.subscribers[i] == task_idx {
             t.subscribers[i] = SUBSCRIBER_SLOT_EMPTY;
             t.sub_count = t.sub_count.saturating_sub(1);
+            SUBS_LIVE.fetch_sub(1, Ordering::Relaxed);
             return;
         }
     }
+}
+
+/// Task-pool slot `task_idx` is being vacated (its task exited): drop it
+/// from every topic, so a later task in that slot is never woken for
+/// subscriptions it did not make and a dead subscriber does not hold a
+/// fan-out slot. Called from the kernel's exit hook while the slot is still
+/// valid. Returns how many subscriptions were dropped. One pass over
+/// `MAX_TOPICS x MAX_SUBS_PER_TOPIC` under the table lock.
+pub fn topic_unsubscribe_all(task_idx: usize) -> usize {
+    if cfg!(feature = "pubsub-exit-keep-canary") || SUBS_LIVE.load(Ordering::Relaxed) == 0 {
+        return 0;
+    }
+    let mut topics = TOPICS.lock();
+    let mut n = 0;
+    for t in topics.iter_mut().filter(|t| t.active && t.sub_count != 0) {
+        for s in t.subscribers.iter_mut() {
+            if *s == task_idx {
+                *s = SUBSCRIBER_SLOT_EMPTY;
+                t.sub_count = t.sub_count.saturating_sub(1);
+                n += 1;
+            }
+        }
+    }
+    SUBS_LIVE.fetch_sub(n as u32, Ordering::Relaxed);
+    n
+}
+
+/// Subscribers of `topic_id` right now (0 for an invalid topic).
+pub fn topic_subscriber_count(topic_id: u32) -> usize {
+    let id = topic_id as usize;
+    if id >= MAX_TOPICS {
+        return 0;
+    }
+    let topics = TOPICS.lock();
+    if topics[id].active { topics[id].sub_count as usize } else { 0 }
 }
 
 /// Publish data to a topic.  Copies `data` into the topic buffer, increments

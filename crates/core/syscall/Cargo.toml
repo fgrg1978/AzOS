@@ -96,6 +96,12 @@ lx-loader = ["dep:azos_crypto"]
 # Gate canary only (kernel `lx-verify-canary`): skip the digest compare, so a
 # tampered module under a listed name is granted. Never in a real build.
 lx-verify-canary = ["lx-loader"]
+# Wave 15 canary, never in a real build: a task's module tokens are not
+# dropped at its exit (`tests/host/syscall-tests`, `module_tokens`).
+module-token-leak-canary = ["lx-loader"]
+# Wave 15 gate canary: a dead commander's wheels are taken off the table and
+# never stopped (ktest `motor_commander_exit_stops_its_wheels`).
+commander-exit-nostop-canary = []
 # Fast-IPC path trace. Off by default: it prints on every CALL/ACCEPT/REPLY,
 # and a UART `write` costs ~160 us per 64 bytes under QEMU, so turning it on
 # completely changes the timing under investigation.

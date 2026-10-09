@@ -271,6 +271,8 @@ pipe-nonblock-canary = ["azos_ipc/pipe-nonblock-canary"]
 # Wave 13 (THREADS) canaries, see `crates/core/sched/Cargo.toml`.
 futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]
 threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]
+leader-cleartid-canary = ["azos_sched/leader-cleartid-canary"]
+commander-exit-nostop-canary = ["azos_syscall/commander-exit-nostop-canary"]
 threads-tls-canary = ["azos_sched/threads-tls-canary"]
 elf-mixed-page-canary = ["azos_sched/elf-mixed-page-canary"]
 rodata-exec-canary = ["azos_sched/rodata-exec-canary"]

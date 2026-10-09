@@ -1504,11 +1504,15 @@ pub const ESTOP_RESTORED_UNREADABLE: u32 = 0xFFFF_FFFF;
 /// is not a stop. Everything else latches: 0/1/2 are the sources, 4 is a
 /// refused clear and, in records written before 6 existed, the ring-3 stop
 /// (both are only written while the latch holds), 5 is a restore, 6 is the
-/// ring-3 stop, and a code added later is a stop until someone says otherwise.
+/// ring-3 stop, 14 (`ESTOP_ACTION_COMMANDER_LOST`) is a dead motor
+/// commander's SAFE STOP, recorded and never latched, and a code added later
+/// is a stop until someone says otherwise.
 pub const fn estop_action_latches(action: u8) -> Option<bool> {
     match action {
         3 => Some(false),
         7 => None,
+        // The SAFE STOP of a dead motor commander: recorded, never latched.
+        crate::estop::ESTOP_ACTION_COMMANDER_LOST => None,
         _ => Some(true),
     }
 }

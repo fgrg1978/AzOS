@@ -36,8 +36,13 @@ pub mod power;
 pub mod families;
 /// Wave 15: the kernel tracer's control call (632).
 pub mod trace_ctl;
+/// Wave 15: which ring-3 task commands each wheel; its exit stops them.
+pub mod motor_commander;
 #[cfg(feature = "lx-loader")]
 pub mod module_ops;
+/// The pure token table `module_ops` keeps (host-tested).
+#[cfg(feature = "lx-loader")]
+pub mod module_tokens;
 // Without the Robot domain: what the motor and robot-sensor syscalls see in
 // place of the robot crates (see the module doc).
 #[cfg(not(feature = "domain-robot"))]

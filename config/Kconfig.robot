@@ -142,6 +142,28 @@ config ML_REPLY_TIMEOUT_US
       trip are a few thousand instructions each ([BSTEP] measures both).
       Wave 11: was a literal.
 
+config MOTOR_COMMANDER_EXIT_STOP
+    bool "A dead motor commander's wheels go to a safe stop"
+    default y if DOMAIN_ROBOT
+    default n
+    help
+      Owner decision (wave 15): when a ring-3 task that commanded a wheel
+      through the typed motor calls (560, 576, 584) exits or dies with
+      that wheel at a non-zero duty, its exit stops the wheel (duty 0,
+      coast) and writes a durable SAFETY_ESTOP record, action 14
+      (commander lost: the task and the wheels in its detail). It does
+      NOT latch the e-stop: the machine is stopped, not locked, and a
+      restarted commander drives again (rt_motor's own SAFE STOP has the
+      same contract). rt_motor_task rewrites the wheels every tick only
+      while its command channel is live, so without this a ring-3 duty
+      written after its watchdog fired stays on the channel.
+
+      Cost: one atomic store per typed motor call, and per task exit one
+      compare-and-swap per wheel (MAX_MOTORS, 4); a stop and a record
+      only when the dying task commanded a wheel. No RAM beyond 4 B per
+      wheel. Turn it off only for a robot whose ring-3 commander is meant
+      to leave its last duty running after it exits.
+
 endmenu # Safety layer and motor control
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,8 @@ azos_mm = { path = "shims/mm", package = "sched_wake_test_mm" }
 sched-timer-heap = []
 # Plan item 7 canary of `wait.rs`, declared for the same reason, never enabled.
 kill-reblock-canary = []
+# Wave 15 canary of the pulled-in `stop_policy.rs` (forced-stop accounting).
+forced-seal-skip-canary = []
 # `elf_bounds.rs` (pulled by path): the gate's canary build accepts a page
 # shared by segments mapped differently, and `elf_bounds_tests` must fail.
 elf-mixed-page-canary = []

@@ -14,3 +14,7 @@ azos_sync    = { workspace = true }
 # armed clients' rows without waking them, so each sleeps out its reply
 # budget (`tests/host/syscall-tests`, `a_released_driver_wakes_its_armed_clients`).
 driver-release-nowake-canary = []
+# Wave 15 canary, never in a real build: a client that gives up leaves its
+# request queued, so the driver still runs it (`tests/host/syscall-tests`,
+# `a_client_that_gives_up_cancels_its_queued_request`).
+driver-cancel-skip-canary = []

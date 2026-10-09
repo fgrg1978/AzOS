@@ -42,6 +42,13 @@ threads-late-start-canary = []
 # (`wait::task_block_killable` without its stop check). Either leaves the
 # `dead client` abitest line with -1 for the waits it no longer ends.
 kill-wake-timer-only-canary = []
+# Wave 15 canary, never in a real build: the exit hook consumes a task's
+# forced stop without sealing its slot, so a stop recorded after it leaks
+# the machine-wide count (`tests/host/sched-wake-tests`, `forced_count`).
+forced-seal-skip-canary = []
+# Wave 15 gate canary: a thread-group leader's clear-tid word is never
+# cleared (lxthreads' leader pthread_exit check must fail).
+leader-cleartid-canary = []
 kill-reblock-canary = []
 # Wave 15 (plan 4a) gate canary, never in a real build: an exec from a
 # process with threads leaves the other threads running across it.

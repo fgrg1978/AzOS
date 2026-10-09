@@ -264,6 +264,54 @@ fn a_timeout_disarms_and_a_late_reply_wakes_nobody() {
     assert!(driver_unregister(kind));
 }
 
+/// Wave 15 (COHERENCE-AUDIT, dead client): a client that gives up cancels
+/// the request it queued, if the driver has not fetched it. Two requests
+/// queued, the FIRST one's client times out: the driver's next fetch is the
+/// second one, and then the queue is empty — the abandoned operation never
+/// runs. Canary `driver-cancel-skip-canary` (the dequeue skipped): the fetch
+/// returns the abandoned request first.
+#[test]
+fn a_client_that_gives_up_cancels_its_queued_request() {
+    let _g = serial();
+    hooks_reset();
+    let kind = 0x9A0C;
+    let first = armed_req(kind);
+    let second = driver_submit_request_armed(kind, u32::MAX, 0, &[0x43], 8, CLIENT + 1, DEADLINE)
+        .expect("second armed submit refused");
+    let env = FakeEnv::new(CLIENT);
+    assert_eq!(wait(&env, kind, first.token), WaitOutcome::TimedOut);
+    let next = driver_fetch_request(kind).map(|r| r.token);
+    assert_eq!(next, Some(second.token),
+               "the driver fetched the request its client abandoned (or lost the live one)");
+    assert!(driver_fetch_request(kind).is_none(), "the abandoned request is still queued");
+    // A fetched request cannot be recalled: withdrawing after the fetch
+    // leaves nothing else changed and the queue stays empty.
+    assert!(driver_disarm_waiter(kind, CLIENT + 1, second.token));
+    assert!(driver_fetch_request(kind).is_none());
+    assert!(driver_unregister(kind));
+}
+
+/// `DriverQueue::remove_token` keeps FIFO order across the ring's wrap.
+#[test]
+fn removing_a_token_keeps_the_queue_order_across_the_wrap() {
+    use azos_driver_server::{DriverQueue, DRIVER_REQUEST_QUEUE_DEPTH as D};
+    let mut q = DriverQueue::new();
+    let req = |t: u64| { let mut r = DriverRequest::zeroed(); r.token = t; r };
+    // Advance the tail so the live entries straddle the end of the array.
+    for t in 0..(D as u64 - 2) { assert!(q.push(req(1000 + t))); }
+    for _ in 0..(D - 2) { q.pop(); }
+    for t in 1..=(D as u64) { assert!(q.push(req(t))); }
+    assert!(!q.push(req(99)), "the queue holds DEPTH entries");
+    assert!(q.remove_token(3));
+    assert!(!q.remove_token(3), "a token is removed once");
+    assert!(q.push(req(99)), "the removal freed one entry");
+    let mut got = Vec::new();
+    while let Some(r) = q.pop() { got.push(r.token); }
+    let mut want: Vec<u64> = (1..=(D as u64)).filter(|&t| t != 3).collect();
+    want.push(99);
+    assert_eq!(got, want);
+}
+
 /// K-C29: the scheduler refuses to block. The wait gives up after ONE block
 /// instead of spinning on refusals, and withdraws its row.
 #[test]

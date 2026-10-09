@@ -2619,6 +2619,66 @@ mod ipc_direct_wiring {
 #[cfg(test)]
 mod stop_policy_tests {
     use crate::stop_policy::*;
+    use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+    /// The forced-stop count stays balanced on every path: a stop counted
+    /// once however often it is repeated; consumed at exit; a stop recorded
+    /// AFTER the exit hook (the task is still valid until its slot is freed)
+    /// not counted; a slot reused by a new TID counted afresh; a stale
+    /// counted word taken over, not stacked. Canary `forced-seal-skip-canary`
+    /// (the hook consumes without sealing): the late stop leaks one count.
+    #[test]
+    fn the_forced_stop_count_is_balanced_on_every_path() {
+        let w = AtomicU64::new(ACCT_NONE);
+        let p = AtomicU32::new(0);
+        let n = || p.load(Ordering::Relaxed);
+        assert!(forced_count(&w, &p, 7));
+        assert!(!forced_count(&w, &p, 7), "a repeated stop was counted twice");
+        assert_eq!(n(), 1);
+        // The exit hook: consume, then seal.
+        assert!(forced_uncount(&w, &p, 7));
+        forced_seal(&w, &p, 7);
+        assert_eq!(n(), 0);
+        // A stop that lands between the hook and the slot's free.
+        let _ = forced_count(&w, &p, 7);
+        assert_eq!(n(), 0, "a stop recorded after the exit hook leaked the count");
+        // The slot is reused by TID 9, stopped, and exits without consuming
+        // (a supervised kill whose code path never took it).
+        forced_clear(&w, &p);
+        assert!(forced_count(&w, &p, 9));
+        assert_eq!(n(), 1);
+        forced_seal(&w, &p, 9);
+        assert_eq!(n(), 0, "the seal did not settle a counted stop");
+        // A stale counted word (TID 11 never reached its hook) taken over by
+        // TID 12 in the same slot: still one.
+        forced_clear(&w, &p);
+        assert!(forced_count(&w, &p, 11));
+        assert!(!forced_count(&w, &p, 12));
+        assert_eq!(n(), 1);
+        assert!(!forced_uncount(&w, &p, 11), "the stale TID's uncount hit the new TID's count");
+        assert!(forced_uncount(&w, &p, 12));
+        assert_eq!(n(), 0);
+    }
+
+    /// Two harts stopping the same task at once count it once (the CAS),
+    /// and a racing seal leaves the count at 0.
+    #[test]
+    fn concurrent_stops_and_a_seal_stay_balanced() {
+        use std::sync::Arc;
+        for _ in 0..200 {
+            let w = Arc::new(AtomicU64::new(ACCT_NONE));
+            let p = Arc::new(AtomicU32::new(0));
+            let hs: Vec<_> = (0..4).map(|k| {
+                let (w, p) = (w.clone(), p.clone());
+                std::thread::spawn(move || {
+                    if k == 3 { forced_seal(&w, &p, 5) } else { let _ = forced_count(&w, &p, 5); }
+                })
+            }).collect();
+            for h in hs { h.join().unwrap(); }
+            forced_seal(&w, &p, 5);
+            assert_eq!(p.load(Ordering::Relaxed), 0);
+        }
+    }
 
     /// parent links: 10 <- 11 <- 12 <- 13, and 20 (a kernel task) <- 21 (a
     /// supervised driver).

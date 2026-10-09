@@ -19,3 +19,7 @@ azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" 
 [features]
 # Mirrors `crates/drivers/driver_server`'s plan item 7 canary.
 driver-release-nowake-canary = []
+# Wave 15 canary, never in a real build: a client that gives up leaves its
+# request queued, so the driver still runs it (`tests/host/syscall-tests`,
+# `a_client_that_gives_up_cancels_its_queued_request`).
+driver-cancel-skip-canary = []
