@@ -416,6 +416,11 @@ pub trait Mmu: Send + Sync {
     /// other tasks' translations.
     fn flush_tlb_asid(&self, asid: u16);
 
+    /// ASID bits this hart's MMU implements (0: none). Boot only, with the
+    /// MMU on. riscv64 probes satp.ASID (ASIDLEN); aarch64 reads
+    /// ID_AA64MMFR0_EL1.ASIDBits. The default is an ISA without ASIDs.
+    fn asid_bits(&self) -> u32 { 0 }
+
     /// Invalidate the TLB entry (if any) translating `va`, on this hart only
     /// on riscv64 (aarch64's form is a broadcast). Used where a PTE change
     /// cannot leave another hart with a harmful stale entry: demand

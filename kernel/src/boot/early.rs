@@ -190,6 +190,15 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
         azos_mm::vmm::enable_paging();
         a.mmu_enabled();
 
+        // ASID space: Kconfig ASID_BITS narrowed to what this MMU implements.
+        {
+            use azos_arch::Mmu;
+            let hw = azos_arch::ARCH.asid_bits();
+            let max = azos_sched::set_hw_asid_bits(hw);
+            kprintln!("[MM] ASID: hw {} bits, ASID_BITS {}, user ASIDs 1..={} (full TLB flush on every switch)",
+                      hw, azos_limits::ASID_BITS, max);
+        }
+
         // W^X: remap the image with per-section permissions. The megapages
         // covering it are split into 4 KiB pages first, because different
         // sections need different permissions.

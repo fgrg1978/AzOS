@@ -486,6 +486,30 @@ endchoice
 
 endif # ARCH_AARCH64
 
+config ASID_BITS
+    int "Address-space ID width the allocator uses (bits)"
+    range 1 16
+    default 16
+    help
+      Width of the ASID space user address spaces draw from
+      (crates/core/sched/src/scheduler.rs, alloc_asid): ASIDs 1 to
+      2^ASID_BITS - 1, 0 being the kernel's.  The boot probes what the
+      hardware implements (riscv64: satp.ASID written all-ones and read
+      back, the spec's ASIDLEN; aarch64: ID_AA64MMFR0_EL1.ASIDBits) and
+      uses the smaller of the two; a hart with no ASID bits gets 0 for
+      every address space.  When the space runs out the allocator starts
+      again at 1 and counts a rollover.
+
+      Isolation does not rest on this number: every address-space switch
+      is a full local TLB flush on both ISAs (context_switch.S), and a
+      root is freed only after every hart has left it, so a reused ASID
+      never meets a stale entry.  The tag is what the riscv64 satp word
+      carries; aarch64 installs ASID 0.
+
+      Cost: none (one compare per fork/exec).  Change it only to test: a
+      tiny value (2: three ASIDs) makes every few forks a rollover, which
+      is what the ASID gate row runs under.
+
 config MM_DEMAND_PAGING
     bool "Demand-paged anonymous mmap"
     depends on !NO_MMU

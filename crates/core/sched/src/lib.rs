@@ -78,7 +78,7 @@ pub use scheduler::{
     exit_stat,
     task_census, wake_counters, blocked_fastipc_ids, ready_unqueued_ids, unswitched, top_runtime,
     reap_stamped_sleepers, current_snapshot,
-    alloc_asid,
+    alloc_asid, set_hw_asid_bits, asid_rollovers,
     wq_block_current, wq_wake_by_tid,
     current_syscall_filter, current_syscall_filter_enabled, set_current_syscall_filter,
     set_task_syscall_filter, task_create_filtered,

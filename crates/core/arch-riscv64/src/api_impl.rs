@@ -330,6 +330,33 @@ impl Mmu for Riscv64 {
         crate::csr::sfence_vma();
     }
 
+    /// The privileged spec's ASIDLEN probe: satp.ASID (bits 59:44) is WARL,
+    /// so all-ones written reads back as the bits the hart implements. The
+    /// root and mode are kept, the old word is restored, and the TLB is
+    /// flushed (`satp` is not republished: the root never changes here).
+    fn asid_bits(&self) -> u32 {
+        let old = crate::csr::read_satp();
+        if old >> 60 == 0 {
+            return 0; // Bare: no translation, nothing to probe
+        }
+        let back: usize;
+        // SAFETY: same root and mode as the live word; only the ASID tag
+        // changes, and the full flush drops any entry tagged with the probe.
+        unsafe {
+            core::arch::asm!(
+                "csrw satp, {probe}",
+                "csrr {back}, satp",
+                "csrw satp, {old}",
+                "sfence.vma zero, zero",
+                probe = in(reg) old | (0xFFFF << 44),
+                back = out(reg) back,
+                old = in(reg) old,
+                options(nostack),
+            );
+        }
+        ((back >> 44) & 0xFFFF).count_ones()
+    }
+
     #[inline]
     fn flush_tlb_page(&self, va: usize) {
         crate::csr::sfence_vma_addr(va);
