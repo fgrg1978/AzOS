@@ -231,7 +231,7 @@ pub const CQE_F_REFUSED: u32 = 1 << 0;
 /// yet durable or on the wire: an `OP_FILE_WRITE` is in the FAT32 write-back
 /// cache (`FS_WRITEBACK`) or written through without a device flush, an
 /// `OP_NET_SEND` is on the NIC's TX queue. An `OP_FSYNC` makes the writes
-/// durable. Set only with a non-negative result.
+/// durable. Set only with a positive result (bytes queued).
 pub const CQE_F_QUEUED: u32 = 1 << 1;
 
 /// [`CqEntry::flags`] bit: an `OP_FSYNC` completed at a flush point: every
@@ -416,6 +416,9 @@ pub struct IoRingState {
     /// the claim may have reaped before the flush ended, so the claim's
     /// release reaps once more ([`release_ring_with`]).
     pub reap_again: bool,
+    /// [`io_ring_worker_pass`] found the ring in flight: the claim's release
+    /// wakes the worker again.
+    pub kick_on_release: bool,
 }
 
 impl IoRingState {
@@ -435,6 +438,7 @@ impl IoRingState {
             charged: false,
             link: PortLink::NONE,
             reap_again: false,
+            kick_on_release: false,
         }
     }
 }
@@ -549,6 +553,14 @@ static PARKED: ParkedTable = ParkedTable(core::cell::UnsafeCell::new([ParkedSet:
 /// cleared by [`io_ring_flush_posted`] before it claims the ring. A hint only
 /// (a stale `true` costs one claim); the parked set is the truth.
 static FLUSH_PARKED: [AtomicBool; MAX_IO_RINGS] = [const { AtomicBool::new(false) }; MAX_IO_RINGS];
+
+/// Slot `i` was handed off: a pass that may not block stopped at a file entry
+/// and the worker owes the ring a pass ([`io_ring_worker_pass`]).
+static HANDOFF: [AtomicBool; MAX_IO_RINGS] = [const { AtomicBool::new(false) }; MAX_IO_RINGS];
+/// The `sq_tail` the handing-off pass saw: the worker runs up to it and no
+/// further, so it executes only what ring 3 SUBMITTED (running published but
+/// unsubmitted entries is the SQ poller's privilege, which topology gates).
+static HANDOFF_TAIL: [AtomicU32; MAX_IO_RINGS] = [const { AtomicU32::new(0) }; MAX_IO_RINGS];
 
 /// Slot `i`'s parked set.
 ///
@@ -681,6 +693,7 @@ fn create_core(owner_task: usize) -> Option<(u32, usize)> {
                     sqpoll_idle_ms: 0,
                     link: PortLink::NONE,
                     reap_again: false,
+                    kick_on_release: false,
                 };
                 // A new ring starts with nothing parked. Slot `i` was neither
                 // active nor orphaned under this lock, so no pass holds it.
@@ -943,11 +956,13 @@ fn release_ring_with(ring_id: u32, started: Option<(u32, u32)>, completed: bool)
     let mut orphan_poller = 0;
     let mut signal: Option<(PortLink, u32)> = None;
     let reap_again;
+    let kick;
     {
         let mut rings = IO_RINGS.lock_irqsave();
         let state = &mut rings[ring_id as usize];
         state.in_flight = false;
         reap_again = core::mem::take(&mut state.reap_again) && !state.orphaned;
+        kick = core::mem::take(&mut state.kick_on_release) && !state.orphaned;
         if state.orphaned {
             let phys = state.phys_addr;
             uncharge_owner(state);
@@ -976,6 +991,51 @@ fn release_ring_with(ring_id: u32, started: Option<(u32, u32)>, completed: bool)
         // A flush ended while this claim was held (`io_ring_flush_posted`).
         post_parked(ring_id as usize);
     }
+    if kick {
+        // The worker found this ring in flight: it owes it a pass still.
+        if let Some(ops) = unsafe { OPS } {
+            kick_worker(ops);
+        }
+    }
+}
+
+fn kick_worker(ops: &IoRingOps) {
+    if let Some(k) = ops.handoff_kick {
+        k();
+    }
+}
+
+/// The io_ring worker's pass (a kernel task outside the RT band, Kconfig
+/// `IORING_WORKER`): for every ring a pass handed off, claim it and run the
+/// same pass — the owner's seccomp profile, capabilities, containment and
+/// SQ order — from the entry the hand-off stopped at up to the `sq_tail` it
+/// saw, with the block layer allowed. Completions go through the CQ and the
+/// ring's port as any pass's do. A ring a pass holds is marked, and that
+/// claim's release wakes the worker again. Answers the rings it ran.
+pub fn io_ring_worker_pass() -> u32 {
+    let Some(ops) = (unsafe { OPS }) else { return 0 };
+    let mut ran = 0;
+    for i in 0..MAX_IO_RINGS {
+        if !HANDOFF[i].swap(false, Ordering::SeqCst) {
+            continue;
+        }
+        let claim = {
+            let mut rings = IO_RINGS.lock_irqsave();
+            let st = &mut rings[i];
+            if st.active && st.in_flight {
+                HANDOFF[i].store(true, Ordering::SeqCst);
+                st.kick_on_release = true;
+            }
+            claim_locked(st)
+        };
+        let Some((phys, owner_tid, owner_priv)) = claim else { continue };
+        let upto = HANDOFF_TAIL[i].load(Ordering::SeqCst);
+        // SAFETY: the claim was taken just above and is released below.
+        let out = unsafe { run_pass(i as u32, None, phys, owner_tid, owner_priv, ops, false, true, Some(upto)) };
+        release_ring_with(i as u32, None, out.n > 0);
+        ran += 1;
+    }
+    ran
 }
 
 /// The filesystem's flusher finished a flush: post every parked [`OP_FSYNC`]
@@ -1180,7 +1240,12 @@ pub struct IoRingOps {
     /// anything else drives forward at that percentage. `OP_MOTOR_SPEED` calls
     /// it once per wheel, so the halt rule and the envelope apply to each.
     pub motor_wheel:   fn(id: u32, speed_pct: u32) -> OpResult,
-    pub net_send:      fn(fd: u32, data: *const u8, len: usize) -> OpResult,
+    /// `SYS_SEND_TYPED` below the trap: resolve the `Cap<Socket>` handle `cap`
+    /// in `owner_tid`'s table (`WRITE`, with containment) as the typed call
+    /// does, record a refusal as it does, and queue at most `len` bytes on the
+    /// socket WITHOUT waiting (no ARP or window wait): `Ok(bytes queued)`,
+    /// `Ok(0)` for a closed window, `Err` for a refusal.
+    pub net_send:      fn(owner_tid: u32, cap: u32, data: *const u8, len: usize) -> OpResult,
     pub net_recv:      fn(fd: u32, buf: *mut u8, len: usize) -> OpResult,
     /// TID that owns socket `fd`, or `None` if the fd is closed / invalid.
     ///
@@ -1248,6 +1313,16 @@ pub struct IoRingOps {
     /// Has the flush `ticket` names completed? `None` while it runs, `Some(0)`
     /// once durable, `Some(-errno)` when it failed.
     pub fsync_done:    fn(ticket: u64) -> Option<i32>,
+    /// May the running task enter the block layer? `false` for a real-time
+    /// task (owner rule: RT only enqueues), and for every task when the
+    /// kernel hands off all file entries (Kconfig `IORING_FILE_HANDOFF_ALL`).
+    /// Asked once per submit or poller pass.
+    pub may_block:     fn() -> bool,
+    /// Wake the io_ring worker, which runs a handed-off ring's pass
+    /// ([`io_ring_worker_pass`]); `None` when the kernel has no worker
+    /// (Kconfig `IORING_WORKER` off): a pass that may not block then refuses
+    /// its file entries with `-EAGAIN` instead of running them.
+    pub handoff_kick:  Option<fn()>,
 }
 
 /// What [`IoRingOps::file_fsync`] answers: a flush ticket, or a refusal.
@@ -1396,8 +1471,12 @@ fn submit_claimed(
     ops: &IoRingOps,
 ) -> i32 {
     // SAFETY: the claim was taken by the caller and is released just below.
-    let out = unsafe { run_pass(ring_id, r, phys, owner_tid, owner_privileged, ops, false) };
+    let may_block = (ops.may_block)();
+    let out = unsafe { run_pass(ring_id, r, phys, owner_tid, owner_privileged, ops, false, may_block, None) };
     release_ring_with(ring_id, out.started, out.n > 0);
+    if out.handoff {
+        kick_worker(ops);
+    }
     out.n
 }
 
@@ -1411,6 +1490,8 @@ struct PassOut {
     next_deadline_ns: u64,
     /// Is a notify wait parked (which only a later look can complete)?
     words: bool,
+    /// The pass stopped at a file entry it may not run: kick the worker.
+    handoff: bool,
 }
 
 /// The body of a pass over a claimed ring. Does not release the claim.
@@ -1460,8 +1541,11 @@ unsafe fn run_pass(
     owner_privileged: bool,
     ops: &IoRingOps,
     via_poller: bool,
+    may_block: bool,
+    upto: Option<u32>,
 ) -> PassOut {
     let mut started: Option<(u32, u32)> = None;
+    let mut handoff = false;
     // SAFETY: the in-flight claim keeps `io_ring_destroy` from freeing the
     // page for the duration of this block.
     let completions = {
@@ -1486,7 +1570,11 @@ unsafe fn run_pass(
         // until the watchdog resets the board. Bound the work done per call to
         // the ring's actual physical capacity — a well-behaved producer never
         // lets more than RING_SQ_SIZE entries be outstanding at once.
-        let pending = tail.wrapping_sub(head).min(RING_SQ_SIZE as u32);
+        let mut pending = tail.wrapping_sub(head).min(RING_SQ_SIZE as u32);
+        if let Some(t) = upto {
+            // The worker runs what the handing-off pass saw submitted, no more.
+            pending = pending.min(t.wrapping_sub(head));
+        }
         let mut cq_full = false;
 
         // SAFETY: this pass holds slot `ring_id`'s in-flight claim.
@@ -1526,6 +1614,23 @@ unsafe fn run_pass(
 
             let sq_idx = (head as usize) % RING_SQ_SIZE;
             let sqe = sqe_snapshot(ring, sq_idx);
+            // A canceled entry runs nothing, so it never needs the worker.
+            if !may_block && !cancel && matches!(sqe.opcode, OP_FILE_READ | OP_FILE_WRITE | OP_FSYNC) {
+                // Owner rule: this task may not reach the block layer. Hand
+                // the rest of the pass, from this entry on, to the worker.
+                if ops.handoff_kick.is_some() {
+                    HANDOFF_TAIL[ring_id as usize].store(tail, Ordering::SeqCst);
+                    HANDOFF[ring_id as usize].store(true, Ordering::SeqCst);
+                    handoff = true;
+                    break;
+                }
+                // No worker: refused, never run inline.
+                push_cqe(ring, cq_tail, sqe.user_data, IO_ERR_WOULD_BLOCK, CQE_F_REFUSED);
+                completions += 1;
+                head = head.wrapping_add(1);
+                cancel = sqe.flags & SQE_F_LINK != 0;
+                continue;
+            }
             let linked = sqe.flags & SQE_F_LINK != 0;
             if cancel {
                 // Not run: the entry it is linked to failed. The chain goes
@@ -1590,7 +1695,7 @@ unsafe fn run_pass(
             };
             let (result, flags) = match r_entry {
                 // A write or a send that succeeded is QUEUED, not durable.
-                Ok(v) if v >= 0 && (sqe.opcode == OP_FILE_WRITE || sqe.opcode == OP_NET_SEND) => {
+                Ok(v) if v > 0 && (sqe.opcode == OP_FILE_WRITE || sqe.opcode == OP_NET_SEND) => {
                     (v, CQE_F_QUEUED)
                 }
                 Ok(v) => (v, 0),
@@ -1631,7 +1736,7 @@ unsafe fn run_pass(
             }
         }
     }
-    PassOut { n: completions, started, next_deadline_ns, words }
+    PassOut { n: completions, started, next_deadline_ns, words, handoff }
 }
 
 /// Park an entry in a free slot of `parked`; `false` when every slot is taken.
@@ -1657,6 +1762,11 @@ pub const IO_ERR_PARKED_FULL: i32 = azos_abi::error::Errno::EBUSY.to_syscall_ret
 /// refused, or (a parked barrier) completed with a failure: `-ECANCELED`, with
 /// [`CQE_F_REFUSED`].
 pub const IO_ERR_CANCELED: i32 = azos_abi::error::Errno::ECANCELED.to_syscall_ret() as i32;
+
+/// A file or fsync entry from a task that may not block (a real-time task)
+/// on a kernel with no io_ring worker to hand it to (Kconfig `IORING_WORKER`
+/// off): `-EAGAIN`, with [`CQE_F_REFUSED`]. Never run inline.
+pub const IO_ERR_WOULD_BLOCK: i32 = azos_abi::error::Errno::EAGAIN.to_syscall_ret() as i32;
 
 /// Write one completion at `cq_tail` — the value the caller's room check just
 /// read, which only this pass moves — and publish it.
@@ -2121,19 +2231,19 @@ fn dispatch_sqe(
         // is that same lookup, so the ring now applies the syscall's check
         // instead of a blanket deny. Privileged (kernel-created) rings keep
         // their bypass, exactly as `ring_cap_ok` gives them.
+        // `param0` is a `Cap<Socket>` handle in the owner's table, as the
+        // typed socket calls take it; the op-table entry resolves it (WRITE,
+        // containment) and records a refusal as `SYS_SEND_TYPED` does, then
+        // queues the bytes without waiting. A send that queued completes
+        // `CQE_F_QUEUED`.
         OP_NET_SEND => {
-            if !owner_priv && (ops.net_owner)(p0) != Some(owner_tid) {
-                (ops.note_denial)(owner_tid, CapKind::Socket);
-                return Err(IO_ERR_PERM);
-            }
-            not_contained!();
             let offset = p1 as usize;
             let len = p2 as usize;
             if !window_ok(offset, len) {
                 return Err(IO_ERR_INVALID_PARAM);
             }
             let data_ptr = data_buf[offset..].as_ptr();
-            (ops.net_send)(p0, data_ptr, len)
+            (ops.net_send)(owner_tid, p0, data_ptr, len)
         }
 
         OP_NET_RECV => {
@@ -2384,8 +2494,12 @@ pub fn io_ring_sqpoll_pass(r: u32) -> SqpollPass {
         Err(e) => return e,
     };
     // SAFETY: `poller_claim` took the claim; released just below.
-    let out = unsafe { run_pass(i, Some(r), phys, owner_tid, owner_priv, ops, true) };
+    let may_block = (ops.may_block)();
+    let out = unsafe { run_pass(i, Some(r), phys, owner_tid, owner_priv, ops, true, may_block, None) };
     release_ring_with(i, None, out.n > 0);
+    if out.handoff {
+        kick_worker(ops);
+    }
     SqpollPass::Done {
         ran: out.n.max(0) as u32,
         idle_ms,
@@ -2706,7 +2820,18 @@ mod tests {
         Ok(0)
     }
     fn nop_pwm(_c: u32, _d: u32) -> OpResult { Ok(0) }
-    fn nop_send(_f: u32, _d: *const u8, _l: usize) -> OpResult { Ok(0) }
+    /// `(owner, cap, len)` of every send that reached the socket.
+    static NET_SEEN: Mutex<Vec<(u32, u32, usize)>> = Mutex::new(Vec::new());
+    fn hook_net_send(owner: u32, cap: u32, _d: *const u8, l: usize) -> OpResult {
+        if CONTAINED.load(AOrd::SeqCst) {
+            return Err(-11);
+        }
+        if cap == BAD_CAP {
+            return Err(E_STALE);
+        }
+        NET_SEEN.lock().unwrap_or_else(|e| e.into_inner()).push((owner, cap, l));
+        Ok(l as i32)
+    }
     fn nop_recv(_f: u32, _b: *mut u8, _l: usize) -> OpResult { Ok(0) }
     fn hook_net_owner(fd: u32) -> Option<u32> {
         if fd == NET_FD { Some(NET_OWNER) } else { None }
@@ -2801,6 +2926,12 @@ mod tests {
         FLUSH_DONE.store(FLUSH_ASKED.load(AOrd::SeqCst), AOrd::SeqCst);
         io_ring_flush_posted();
     }
+    /// `false`: the submitting task is real-time (owner rule: no block I/O).
+    static MAY_BLOCK: AtomicBool = AtomicBool::new(true);
+    fn hook_may_block() -> bool { MAY_BLOCK.load(AOrd::SeqCst) }
+    /// Worker wake-ups asked for.
+    static KICKS: AtomicU32 = AtomicU32::new(0);
+    fn hook_kick() { KICKS.fetch_add(1, AOrd::SeqCst); }
     /// A syscall number standing for the notify primitive's WAIT; no real
     /// call has it.
     const TEST_NOTIFY_WAIT_NR: u64 = 0xFF0;
@@ -2822,7 +2953,7 @@ mod tests {
         i2c_write:   hook_i2c_w,
         pwm_set:     nop_pwm,
         motor_wheel: hook_motor_wheel,
-        net_send:    nop_send,
+        net_send:    hook_net_send,
         net_recv:    nop_recv,
         net_owner:   hook_net_owner,
         note_denial: hook_note_denial,
@@ -2834,6 +2965,8 @@ mod tests {
         notify_word: hook_notify_word,
         file_fsync:  hook_file_fsync,
         fsync_done:  hook_fsync_done,
+        may_block:   hook_may_block,
+        handoff_kick: Some(hook_kick),
     };
 
     /// Put the test table's hooks back to "allow, not contained, nothing seen".
@@ -2852,6 +2985,10 @@ mod tests {
         FLUSH_DONE.store(0, AOrd::SeqCst);
         FLUSH_FAILS.store(false, AOrd::SeqCst);
         for f in FLUSH_PARKED.iter() { f.store(false, AOrd::SeqCst); }
+        for f in HANDOFF.iter() { f.store(false, AOrd::SeqCst); }
+        MAY_BLOCK.store(true, AOrd::SeqCst);
+        KICKS.store(0, AOrd::SeqCst);
+        NET_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// An unimplemented opcode must REFUSE, not report success.
@@ -3331,21 +3468,22 @@ mod tests {
         assert_eq!(i2c_seen(), None);
     }
 
-    /// The net opcodes now apply the socket syscalls' own check
+    /// `OP_NET_RECV` applies the socket syscalls' own check
     /// (`socket_access_ok`: owner stamp on the fd) instead of a blanket deny.
+    /// `OP_NET_SEND` names a `Cap<Socket>` (K1): the op-table entry resolves
+    /// it in the OWNER's table, so the dispatcher hands it the owner and the
+    /// handle, and a refusal it answers completes flagged.
     #[test]
     fn net_opcodes_are_gated_on_the_sockets_owner_stamp() {
         let (_g, id, phys) = setup_unpriv();
+        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_SEND, 0x77, 0, 4, 0, 0)) }, 4);
+        assert_eq!(*NET_SEEN.lock().unwrap(), vec![(OWNER, 0x77, 4)], "the send reached the socket with the owner and handle");
+        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_SEND, BAD_CAP, 0, 4, 0, 0)) }, E_STALE);
         // The ring's owner owns NET_FD.
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_SEND, NET_FD, 0, 4, 0, 0)) }, 0);
         assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_RECV, NET_FD, 0, 4, 0, 0)) }, 0);
         // Every other fd in the space belongs to somebody else or nobody.
         for fd in 0u32..64 {
             if fd == NET_FD { continue; }
-            assert_eq!(
-                unsafe { submit_one(id, phys, sqe(OP_NET_SEND, fd, 0, 4, 0, 0)) },
-                IO_ERR_PERM, "fd {fd} was not refused"
-            );
             assert_eq!(
                 unsafe { submit_one(id, phys, sqe(OP_NET_RECV, fd, 0, 4, 0, 0)) },
                 IO_ERR_PERM, "fd {fd} was not refused"
@@ -3364,9 +3502,12 @@ mod tests {
         azos_sched::shim_set_current(OTHER, 0x2000);
         let (id, phys) = io_ring_create(OTHER as usize).unwrap();
         assert_eq!(
-            unsafe { submit_one(id, phys, sqe(OP_NET_SEND, NET_FD, 0, 4, 0, 0)) },
+            unsafe { submit_one(id, phys, sqe(OP_NET_RECV, NET_FD, 0, 4, 0, 0)) },
             IO_ERR_PERM
         );
+        // A send resolves its handle in the stranger's OWN table.
+        let _ = unsafe { submit_one(id, phys, sqe(OP_NET_SEND, 0x77, 0, 4, 0, 0)) };
+        assert_eq!(*NET_SEEN.lock().unwrap(), vec![(OTHER, 0x77, 4)]);
     }
 
     /// `data_buf` windows: the last legal byte works, one past it is refused,
@@ -3417,7 +3558,7 @@ mod tests {
         // No handles granted at all, yet every opcode runs.
         assert_eq!(unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 1, 0, 4, 0x68, 0)) }, 0);
         assert_eq!(unsafe { submit_one(id, phys, sqe(OP_MOTOR_SPEED, 0, 0, 0, 0, 0)) }, 0);
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_SEND, 999, 0, 4, 0, 0)) }, 0);
+        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_SEND, 999, 0, 4, 0, 0)) }, 4);
     }
 
     #[test]
@@ -4597,5 +4738,116 @@ mod tests {
         if RING_MAX_PARKED == 8 {
             assert_eq!(core::mem::size_of::<ParkedSet>(), 264);
         }
+    }
+
+    // ── K1 hand-off: an RT submitter never runs a file entry ───────────────
+
+    /// A real-time submitter's file and fsync entries are HANDED OFF: the
+    /// submit stops at the first one (running what precedes it), wakes the
+    /// worker, and the worker's pass runs the rest in SQ order — writes before
+    /// the fsync, so the fsync's flush covers them — up to the tail that was
+    /// SUBMITTED, never an entry published after it.
+    ///
+    /// **Canary.** Make `may_block` always true in `submit_claimed`: the
+    /// writes run in the submit (`io_seen` non-empty after it).
+    #[test]
+    fn an_rt_submitters_file_entries_are_handed_off_to_the_worker_in_order() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        MAY_BLOCK.store(false, AOrd::SeqCst);
+        let n = unsafe {
+            push_all(id, phys, &[ent(OP_NOP, 0, 0, 1), ent(OP_FILE_WRITE, FILE, 0, 2), ent(OP_NOP, 0, 0, 3),
+                                 ent(OP_FILE_WRITE, FILE, SQE_F_LINK, 4), ent(OP_FSYNC, FILE, 0, 5)])
+        };
+        assert_eq!(n, 1, "only the entry before the first file entry runs in the submit");
+        assert_eq!(unsafe { drain(phys) }, vec![(1, 0, 0)]);
+        assert!(io_seen().is_empty(), "an RT submit reached the file layer");
+        assert_eq!(KICKS.load(AOrd::SeqCst), 1, "the worker was not woken");
+        // Published after the submit, never submitted: not the worker's.
+        let ring = azos_mm::addr::phys_to_virt(phys) as *mut IoRing;
+        unsafe {
+            let t = (*ring).sq_tail.load(Ordering::Acquire);
+            (*ring).sq_entries[(t as usize) % RING_SQ_SIZE] = ent(OP_NOP, 0, 0, 6);
+            (*ring).sq_tail.store(t.wrapping_add(1), Ordering::Release);
+        }
+        assert_eq!(io_ring_worker_pass(), 1);
+        assert_eq!(unsafe { drain(phys) }, vec![(2, 8, CQE_F_QUEUED), (3, 0, 0), (4, 8, CQE_F_QUEUED)]);
+        assert_eq!(
+            io_seen(),
+            vec![(OWNER, FILE, true, 8), (OWNER, FILE, true, 8), (OWNER, FILE, false, 0)],
+            "the fsync asked for its flush before the writes it must cover"
+        );
+        assert_eq!(io_ring_worker_pass(), 0, "a second worker pass with nothing handed off");
+        flush_now(false);
+        assert_eq!(unsafe { drain(phys) }, vec![(5, 0, CQE_F_DURABLE)]);
+        // The unsubmitted entry runs at the owner's next submit.
+        assert_eq!(io_ring_submit(id), 1);
+        assert_eq!(unsafe { drain(phys) }, vec![(6, 0, 0)]);
+        assert!(io_ring_destroy(id));
+    }
+
+    /// An RT submitter's READ is handed off too; it completes (its bytes in the
+    /// ring buffer) from the worker's pass, unflagged.
+    #[test]
+    fn an_rt_submitters_read_completes_from_the_worker() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        MAY_BLOCK.store(false, AOrd::SeqCst);
+        assert_eq!(unsafe { push_all(id, phys, &[ent(OP_FILE_READ, FILE, 0, 1)]) }, 0);
+        assert!(io_seen().is_empty());
+        assert_eq!(io_ring_worker_pass(), 1);
+        assert_eq!(unsafe { drain(phys) }, vec![(1, 8, 0)]);
+        assert_eq!(io_seen(), vec![(OWNER, FILE, false, 8)]);
+        assert!(io_ring_destroy(id));
+    }
+
+    /// A task that may block keeps the inline path: no hand-off, no wake-up.
+    #[test]
+    fn a_non_rt_submitter_runs_file_entries_inline() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        assert_eq!(unsafe { push_all(id, phys, &[ent(OP_FILE_WRITE, FILE, 0, 1)]) }, 1);
+        assert_eq!(unsafe { drain(phys) }, vec![(1, 8, CQE_F_QUEUED)]);
+        assert_eq!(KICKS.load(AOrd::SeqCst), 0);
+        assert_eq!(io_ring_worker_pass(), 0);
+        assert!(io_ring_destroy(id));
+    }
+
+    /// The worker finds the ring held by another pass: it leaves the hand-off
+    /// marked, and that claim's release wakes it again; it then runs.
+    #[test]
+    fn a_handoff_found_in_flight_is_rerun_after_the_release() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        MAY_BLOCK.store(false, AOrd::SeqCst);
+        assert_eq!(unsafe { push_all(id, phys, &[ent(OP_FILE_WRITE, FILE, 0, 1)]) }, 0);
+        assert_eq!(KICKS.load(AOrd::SeqCst), 1);
+        claim_ring(id).expect("claim");
+        assert_eq!(io_ring_worker_pass(), 0, "the worker ran a ring another pass held");
+        release_ring(id);
+        assert_eq!(KICKS.load(AOrd::SeqCst), 2, "the release did not wake the worker");
+        assert_eq!(io_ring_worker_pass(), 1);
+        assert_eq!(unsafe { drain(phys) }, vec![(1, 8, CQE_F_QUEUED)]);
+        assert!(io_ring_destroy(id));
+    }
+
+    /// With no worker the RT submitter's file entry is refused (-EAGAIN), not
+    /// run inline; a canceled link behind it stays canceled.
+    #[test]
+    fn with_no_worker_an_rt_file_entry_is_refused_not_run() {
+        static NO_WORKER_OPS: IoRingOps = IoRingOps { handoff_kick: None, ..TEST_OPS };
+        let _g = setup();
+        io_ring_register_ops(&NO_WORKER_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        MAY_BLOCK.store(false, AOrd::SeqCst);
+        let n = unsafe { push_all(id, phys, &[ent(OP_FILE_WRITE, FILE, SQE_F_LINK, 1), ent(OP_FSYNC, FILE, 0, 2)]) };
+        assert_eq!(n, 2);
+        assert_eq!(unsafe { drain(phys) }, vec![(1, IO_ERR_WOULD_BLOCK, CQE_F_REFUSED), (2, IO_ERR_CANCELED, CQE_F_REFUSED)]);
+        assert!(io_seen().is_empty(), "an RT entry ran inline with no worker");
+        assert!(io_ring_destroy(id));
     }
 }

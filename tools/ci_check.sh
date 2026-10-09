@@ -11107,15 +11107,23 @@ PY
     KTEST_N_RV=27
     KTEST_N_ARM=27
     KTEST_FEATS="qemu,ktest,chaos,decisions"
-    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match]
+    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match] [disk image target]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
         local -a app=(); [ -n "${5:-}" ] && app=(-append "$5")
+        # A disk (K1): a private copy of a fresh image, so FAT32 mounts and
+        # `fs-wb` runs (the `ktest disk` rows).
+        local -a drv=() dimg=
         [ "$isa" = arm ] && n_want=$KTEST_N_ARM
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
         rm -f "$log" "$kimg"
+        if [ -n "${7:-}" ]; then
+            dimg="$CI_LOG_DIR/disk-ktest-${tag}.img"
+            fresh_disk "$7" && cp "$7" "$dimg" || { bad; echo "      disk image $7 did not build"; return; }
+            drv=(-drive "file=$dimg,if=none,format=raw,id=hd0" -device virtio-blk-device,drive=hd0)
+        fi
         if [ "$isa" = rv ]; then
             kbuild "$KTEST_FEATS$extra" || { bad; echo "      riscv64 --features $KTEST_FEATS$extra did not build"; return; }
             cp "$KERNEL" "$kimg"
@@ -11127,10 +11135,11 @@ PY
         par_ready
         while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
         if [ "$isa" = rv ]; then
-            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 ${app[@]+"${app[@]}"} </dev/null >"$log" 2>&1 &
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 ${app[@]+"${app[@]}"} \
+                ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
         else
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
-                -kernel "$kimg" ${app[@]+"${app[@]}"} </dev/null >"$log" 2>&1 &
+                -kernel "$kimg" ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
         fi
         local pid=$! i=0
         # The runner powers the machine off; the wait is only a backstop (the
@@ -11141,7 +11150,7 @@ PY
         local qrc=timeout
         if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         else wait "$pid" 2>/dev/null; qrc=$?; fi
-        rm -f "$kimg"
+        rm -f "$kimg" ${dimg:+"$dimg"}
         tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
         local plan why="" k name got
         plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
@@ -11177,6 +11186,22 @@ PY
     }
     par "ktest (rv)" ktest_row "ktest (rv)" rv "" ""
     par "ktest (arm)" ktest_row "ktest (arm)" arm "" ""
+    # K1 (io_ring hand-off): the same kernel and plan with a disk, so FAT32
+    # mounts, `fs-wb` runs and Kconfig RT_BLOCK_IO_CHECK guards the block
+    # layer: `ioring_fsync_completes_after_flush`'s RT submitter queues real
+    # FAT32 writes and an fsync through the io_ring worker and never enters
+    # the block layer. Its canary `ioring-rt-inline` runs them inline on the
+    # RT task: the check panics and the run bails out in that test.
+    # The panic line names the file only: boot/sched.rs's one panic on a
+    # block-layer path is `rt_block_io_check` ("[RT-IO] ... entered the block
+    # layer").
+    KTEST_RT_IO_PANIC='^not ok [0-9]+ - ioring_fsync_completes_after_flush # panic at kernel/src/boot/sched\.rs:'
+    par "ktest disk (rv)" ktest_row "ktest disk (rv)" rv "" "" "" "" build/disk.img
+    par "ktest disk (arm)" ktest_row "ktest disk (arm)" arm "" "" "" "" build/disk-aarch64.img
+    par "ktest disk RT-inline canary (rv)" ktest_row "ktest disk RT-inline canary (rv)" rv "" \
+        "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" build/disk.img
+    par "ktest disk RT-inline canary (arm)" ktest_row "ktest disk RT-inline canary (arm)" arm "" \
+        "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" build/disk-aarch64.img
     KTEST_CANARIES=",wx-skip-canary,nx-skip-canary,percpu-oor-canary,commander-exit-nostop-canary"
     KTEST_CANARIED="mm_wx_image mm_nx_outside_image percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels"
     par "ktest canaries (rv)" ktest_row "ktest canaries (rv)" rv "$KTEST_CANARIES,zicboz-skip-canary" \
@@ -11344,24 +11369,34 @@ PY
         "AzOS shell|KERNEL PANIC"
     par "x86_64: baseline canary (qemu64)" x86_boot_row "x86_64: baseline canary (qemu64)" 1 qemu64 \
         "[X86] CPU below the configured baseline" "below the configured baseline"
-    x86_ktest_row() { # x86_ktest_row <label> <extra features or ""> <expected not-ok names> [kernel command line]
-        local label="$1" extra="$2" want="$3" why="" k plan got
+    x86_ktest_row() { # x86_ktest_row <label> <extra features or ""> <expected not-ok names> [kernel command line] [disk image target]
+        local label="$1" extra="$2" want="$3" why="" k plan got name
         local -a app=(); [ -n "${4:-}" ] && app=(-append "$4")
+        local -a drv=(); local dimg=""
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
         x86_kbuild "ktest,chaos,decisions$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=ktest,chaos,decisions$extra did not build"; return; }
+        if [ -n "${5:-}" ]; then
+            dimg="$CI_LOG_DIR/disk-ktest-${tag}.img"
+            fresh_disk "$5" && cp "$5" "$dimg" || { bad; echo "      disk image $5 did not build"; return; }
+            drv=(-drive "file=$dimg,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0)
+        fi
         par_ready
-        x86_qemu "$kimg" "$log" 300 "" -smp 4 ${app[@]+"${app[@]}"} || { rm -f "$kimg" "$kimg.features"; return; }
-        rm -f "$kimg" "$kimg.features"
+        x86_qemu "$kimg" "$log" 300 "" -smp 4 ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} || { rm -f "$kimg" "$kimg.features" ${dimg:+"$dimg"}; return; }
+        rm -f "$kimg" "$kimg.features" ${dimg:+"$dimg"}
         plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
         got="$(sed -n 's/^not ok [0-9][0-9]* - \([A-Za-z0-9_]*\)\( #.*\)\{0,1\}$/\1/p' "$log" | grep . | sort | tr '\n' ' ')"
         want="$(printf '%s\n' $want | grep . | sort | tr '\n' ' ')"
         if [ -z "$plan" ]; then why="no TAP plan line (1..N)"
         elif [ "$plan" != "$KTEST_N_X86" ]; then why="plan 1..$plan, the gate expects $KTEST_N_X86 tests (KTEST_N_X86)"
         elif [ "$got" != "$want" ]; then why="not ok: [${got% }], expected [${want% }]"
-        elif grep -aq '^Bail out!' "$log"; then why="the run bailed out: $(grep -a '^Bail out!' "$log")"
+        elif grep -aq '^Bail out!' "$log"; then
+            # Only a canary that panics may stop the run, and only in its test
+            # (the rule `ktest_row` applies; K1's `ioring-rt-inline`).
+            for name in $want; do grep -aq "^Bail out! ktest: $name panicked" "$log" && why=bail; done
+            [ "$why" = bail ] && why="" || why="the run bailed out: $(grep -a '^Bail out!' "$log")"
         else
             k=1
             while [ "$k" -le "$plan" ]; do
@@ -11385,6 +11420,10 @@ PY
         echo "      log kept: $log"
     }
     par "ktest (x86)" x86_ktest_row "ktest (x86)" "" ""
+    # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
+    par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" build/disk-x86_64.img
+    par "ktest disk RT-inline canary (x86)" x86_ktest_row "ktest disk RT-inline canary (x86)" "" \
+        "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" build/disk-x86_64.img
     par "ktest tlb local-only canary (x86)" x86_ktest_row "ktest tlb local-only canary (x86)" ",tlb-local-only" "tlb_shootdown_cross_cpu"
     # The same boot carries K1's `ioring-fsync-inline` (an io_ring OP_FSYNC
     # completes in the submit): `ioring_fsync_completes_after_flush`.

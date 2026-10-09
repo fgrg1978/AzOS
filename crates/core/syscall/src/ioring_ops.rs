@@ -56,7 +56,44 @@ pub const KERNEL_IORING_OPS_TABLE: IoRingOps = IoRingOps {
     notify_word,
     file_fsync,
     fsync_done,
+    may_block,
+    handoff_kick: if azos_limits::IORING_WORKER { Some(handoff_kick) } else { None },
 };
+
+/// The io_ring worker's waker, registered by the kernel when it creates the
+/// worker task (Kconfig `IORING_WORKER`); 0 until then.
+static WORKER_WAKE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// Runtime canary `ioring-rt-inline` (set by the kernel at boot): an RT
+/// submitter's file entries run inline again, so the RT block-I/O check
+/// fires.
+pub static RT_INLINE_CANARY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Register the io_ring worker's waker (the kernel, once its task exists).
+pub fn set_worker_wake(f: fn()) {
+    WORKER_WAKE.store(f as usize, core::sync::atomic::Ordering::Release);
+}
+
+/// May the running task reach the block layer? Not a real-time one (its own
+/// base priority in the RT band; a donation does not count), and nobody when
+/// Kconfig `IORING_FILE_HANDOFF_ALL` hands every file entry to the worker.
+fn may_block() -> bool {
+    if azos_limits::IORING_FILE_HANDOFF_ALL {
+        return false;
+    }
+    azos_sched::scheduler::current_task_base_priority() >= azos_sched::RT_PRIORITY_THRESHOLD
+        || RT_INLINE_CANARY.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Wake the worker. Before it exists the hand-off waits for its first pass,
+/// which runs every hand-off marked so far.
+fn handoff_kick() {
+    let f = WORKER_WAKE.load(core::sync::atomic::Ordering::Acquire);
+    if f != 0 {
+        // SAFETY: only `set_worker_wake` stores here, and it stores a `fn()`.
+        let f: fn() = unsafe { core::mem::transmute::<usize, fn()>(f) };
+        f();
+    }
+}
 
 #[inline]
 const fn errno(e: Errno) -> i32 {
@@ -230,14 +267,35 @@ fn motor_wheel(id: u32, speed_pct: u32) -> OpResult {
     }
 }
 
-/// Not executed through a ring: sockets are named by `Cap<Socket>` since
-/// 567-570, which an SQE's descriptor number does not carry. `-ENOSYS` for the
-/// socket's owner; `dispatch_sqe` refuses anyone else first.
-fn net_send(_fd: u32, _data: *const u8, _len: usize) -> OpResult {
-    Err(IO_ERR_INVALID_OP)
+/// `SYS_SEND_TYPED` on a ring (K1): the `Cap<Socket>` handle resolved in the
+/// OWNER's table with `WRITE` and containment, a refusal recorded as the typed
+/// call records it, the socket's owner stamp checked as `socket_access_ok`
+/// checks it, then the bytes QUEUED with `socket_send`: one segment (at most
+/// 1460 bytes, the typed call's clamp) into the TCP send ring or a UDP
+/// datagram onto the NIC's TX queue, never waiting (no ARP or window wait:
+/// the typed call's yield loop is not taken). `Ok(bytes queued)`, `Ok(0)` for
+/// a closed window, `Ok(-1)` for a socket that cannot send.
+fn net_send(owner_tid: u32, cap_raw: u32, data: *const u8, len: usize) -> OpResult {
+    use azos_abi::cap::{CapHandle, CapKind, CapPerms};
+    use azos_ipc::cap::{targets::Socket, Cap};
+    let cap: Cap<Socket> = Cap::from_raw(CapHandle::from_raw(cap_raw));
+    let fd = match azos_ipc::cap_store::with_table(owner_tid, |t| t.get(cap, CapPerms::WRITE)) {
+        Some(Ok(fd)) => fd as i32,
+        Some(Err(e)) => return refuse(owner_tid, CapKind::Socket, e),
+        None => return Err(errno(Errno::EINVAL)),
+    };
+    if azos_net::socket_owner(fd) != Some(owner_tid) {
+        crate::handlers::note_typed_denial_for(owner_tid, CapKind::Socket, azos_ipc::cap::CapError::MissingPerms);
+        return Err(crate::handlers::E_PERM as i32);
+    }
+    // SAFETY: `dispatch_sqe` bounded the window inside the ring's buffer.
+    let src = unsafe { core::slice::from_raw_parts(data, len.min(1460)) };
+    Ok(azos_net::socket::socket_send(fd, src))
 }
 
-/// See [`net_send`].
+/// Not executed through a ring: the SQE names a bare descriptor here, and
+/// sockets are `Cap<Socket>` since 567-570. `-ENOSYS` for the socket's owner;
+/// `dispatch_sqe` refuses anyone else first.
 fn net_recv(_fd: u32, _buf: *mut u8, _len: usize) -> OpResult {
     Err(IO_ERR_INVALID_OP)
 }

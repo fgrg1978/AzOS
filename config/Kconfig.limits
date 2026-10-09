@@ -929,6 +929,53 @@ config IORING_MAX_PARKED
       occupied. Raise it for a client that keeps many timers or fsyncs in
       flight; at most 32 (the CQ size).
 
+config IORING_WORKER
+    bool "io_ring worker: runs a real-time submitter's file entries outside the RT band"
+    default y if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
+    default y
+    help
+      kernel/src/boot/sched.rs `ioring-wk`, crates/core/ipc/src/io_ring.rs
+      `io_ring_worker_pass`. Owner rule: a real-time task only enqueues and
+      never reaches the block layer. A submit (or SQ poller) pass of an RT
+      task stops at its first OP_FILE_READ, OP_FILE_WRITE or OP_FSYNC and
+      hands the rest of the pass, in SQ order and up to the tail it saw
+      submitted, to this kernel task, which completes the entries through
+      the same CQ (and port) later. n: the task is not built and an RT
+      task's file entries are refused with -EAGAIN (CQE_F_REFUSED), never
+      run inline.
+
+      Cost: one kernel task (KERNEL_STACK_SIZE_KB of stack) and 5 B of
+      static RAM per ring slot (MAX_IO_RINGS); an RT file entry costs a
+      wake-up and a context switch instead of the device time.
+
+config IORING_WORKER_PRIORITY
+    int "io_ring worker task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 20
+    help
+      The `ioring-wk` task's priority. It must stay outside the RT band
+      (the scheduler's RT threshold is 12): it is the task that may wait on
+      the disk on an RT task's behalf. Same default as FS_WRITEBACK_PRIORITY.
+
+      Cost: none. A smaller number completes handed-off entries sooner
+      under CPU load.
+
+config IORING_FILE_HANDOFF_ALL
+    bool "io_ring: hand every task's file entries to the worker, not only RT ones"
+    default n
+    help
+      n (default): a task outside the RT band runs its file entries inline
+      in the submit (a cached sector costs no device time); only RT
+      submitters hand off. y: every submitter hands off, so a submit never
+      waits on the disk, at the price of a wake-up and a context switch
+      per batch and later completions. Measured (K1 ktest, riscv64 with a
+      disk, -icount shift=0, 31 FAT32 writes + 1 fsync from a normal-
+      priority task, one run each, virtual ns): inline submit 10.2 M, fsync
+      durable 17.8 M after the submit began; hand-off submit 3 k, durable
+      19.7 M. The hand-off frees the submitter but is ~10% slower end to
+      end, so it stays off for tasks that may block.
+
 config VFS_MAX_FILES
     int "Maximum inodes in the in-kernel RAM filesystem"
     range 64 4096

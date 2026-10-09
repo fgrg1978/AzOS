@@ -351,7 +351,11 @@ address.
     `QUEUED`); an `OP_FSYNC` never waits in the submit: it parks and is
     completed `DURABLE` from the filesystem's flush task once the flush is
     done. A `LINK` flag on an entry makes the next one run only if it
-    succeeded, and a linked entry that parks holds back the rest.
+    succeeded, and a linked entry that parks holds back the rest. A
+    real-time task never runs a file entry itself: its pass stops there and
+    a kernel worker outside the real-time band runs the rest of the batch,
+    in order, completing it through the same ring. A send names a
+    `Cap<Socket>` and completes when the bytes are queued.
   - Single-producer single-consumer rings in a shared region carry data
     between tasks and from kernel sensor streams to ring 3.
 - **Notifications.** A futex-style wait and wake on a word in a

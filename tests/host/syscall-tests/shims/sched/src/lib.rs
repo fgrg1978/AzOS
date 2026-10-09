@@ -418,6 +418,9 @@ pub fn sys_brk_impl(_addr: u64) -> i64 {
 /// any other panic (`#[should_panic(expected = ...)]`, or a
 /// `catch_unwind` that inspects [`shim_take_exit_codes`] afterwards to prove
 /// ordering against another recorder, e.g. the trace ring in `shims/ipc`).
+/// Mirrors `azos_sched::RT_PRIORITY_THRESHOLD`: below it a task is real-time.
+pub const RT_PRIORITY_THRESHOLD: u32 = 12;
+
 pub const TASK_EXIT_MARKER: &str = "SHIM_TASK_EXIT_WITH_CODE";
 
 static EXIT_CODES: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
@@ -639,6 +642,17 @@ pub mod swcensus {
 pub mod scheduler {
     use crate::filter::SyscallFilter;
     use std::sync::Mutex;
+
+    /// The running task's own priority (`scheduler::current_task_base_priority`):
+    /// what io_ring's RT hand-off asks. 20 (outside the RT band) unless a test
+    /// sets another with [`shim_set_base_priority`].
+    static BASE_PRIO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(20);
+    pub fn current_task_base_priority() -> u32 {
+        BASE_PRIO.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn shim_set_base_priority(p: u32) {
+        BASE_PRIO.store(p, std::sync::atomic::Ordering::SeqCst);
+    }
 
     /// Mirrors `scheduler::task_exit_by_signal` (wave 13): the same exit as
     /// [`crate::task_exit_with_code`] (the signal it records only matters to

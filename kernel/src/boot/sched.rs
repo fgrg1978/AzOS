@@ -484,6 +484,53 @@ fn fs_writeback_task(_: usize) {
     }
 }
 
+/// The `ioring-wk` task's TID once it runs (0 before).
+static IORING_WK_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Set by a hand-off; ends the worker's sleep.
+static IORING_WK_KICK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The io_ring worker's waker (any task context, no lock held): an RT
+/// submitter's pass handed a ring off (`io_ring_worker_pass`).
+fn ioring_wk_wake() {
+    use core::sync::atomic::Ordering::SeqCst;
+    if IORING_WK_KICK.swap(true, SeqCst) { return; }
+    let tid = IORING_WK_TID.load(SeqCst);
+    if tid != 0 {
+        azos_sched::scheduler::wake_task_by_tid(tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
+    }
+}
+
+/// Kconfig `IORING_WORKER`: runs the file entries (and the passes behind
+/// them) that a real-time submitter may not run itself (owner rule: RT only
+/// enqueues). Never RT. Sleeps until kicked; the 100 ms bound only covers a
+/// kick that raced the sleep's start.
+fn ioring_worker_task(_: usize) {
+    use core::sync::atomic::Ordering::SeqCst;
+    IORING_WK_TID.store(azos_sync::waitqueue::caller_tid(), SeqCst);
+    let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
+    loop {
+        IORING_WK_KICK.store(false, SeqCst);
+        azos_ipc::io_ring::io_ring_worker_pass();
+        let end = azos_drv_sys::timebase::now() + 100 * per_ms;
+        while azos_drv_sys::timebase::now() < end && !IORING_WK_KICK.load(SeqCst) {
+            azos_sched::task_block(azos_sched::WaitReason::Timer(end));
+        }
+    }
+}
+
+/// Create the io_ring worker (Kconfig `IORING_WORKER`, every ISA, disk or
+/// not) and arm the `ioring-rt-inline` runtime canary.
+pub(crate) fn create_ioring_worker_task() {
+    if canary!("ioring-rt-inline") {
+        azos_syscall::ioring_ops::RT_INLINE_CANARY.store(true, core::sync::atomic::Ordering::SeqCst);
+    }
+    if !azos_limits::IORING_WORKER { return; }
+    azos_syscall::ioring_ops::set_worker_wake(ioring_wk_wake);
+    azos_sched::task_create(
+        "ioring-wk", ioring_worker_task, 0, azos_limits::IORING_WORKER_PRIORITY as u32);
+    kprintln!("[SCHED] Created ioring-wk task (prio {})", azos_limits::IORING_WORKER_PRIORITY);
+}
+
 pub(crate) fn create_fs_writeback_task() {
     if !azos_limits::FS_WRITEBACK { return; }
     azos_fs::fat32_writeback_hooks(fs_wb_now_ms, fs_wb_wake);

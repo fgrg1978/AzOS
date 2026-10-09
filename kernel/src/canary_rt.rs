@@ -78,6 +78,10 @@ pub(crate) const NAMES: &[&str] = &[
     // frame ring captures and encodes a frame of its own again, as before
     // B2 (ktest `camera_one_encode_per_frame`).
     "camera-encode-per-consumer",
+    // boot/sched.rs `create_ioring_worker_task`: an RT submitter's io_ring
+    // file entries run inline again, so a disk boot's RT block-I/O check
+    // panics (ktest `ioring_rt_file_entries_never_block`).
+    "ioring-rt-inline",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

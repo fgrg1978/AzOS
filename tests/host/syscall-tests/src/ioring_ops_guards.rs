@@ -30,7 +30,7 @@ use azos_drv_actuator::pwm::{set_pwm_probe, PwmOp};
 use azos_ipc::cap::targets::{Motor, Pwm, Sensor};
 use azos_ipc::cap::CapTarget;
 use azos_ipc::io_ring::{
-    CqEntry, IoRing, SqEntry, CQE_F_DURABLE, CQE_F_QUEUED, CQE_F_REFUSED, OP_FSYNC, OP_CHAN_RECV, OP_CHAN_SEND, OP_FILE_READ, OP_FILE_WRITE,
+    CqEntry, IoRing, SqEntry, CQE_F_DURABLE, CQE_F_QUEUED, CQE_F_REFUSED, OP_FSYNC, OP_NET_SEND, OP_CHAN_RECV, OP_CHAN_SEND, OP_FILE_READ, OP_FILE_WRITE,
     OP_MOTOR_SPEED, OP_NOP, OP_PWM_SET, OP_READ_SENSOR, OP_TIMER,
     RING_CQ_SIZE, RING_SQ_SIZE,
 };
@@ -575,6 +575,78 @@ fn an_fsync_entry_resolves_the_owners_handle_and_completes_after_the_flush() {
     let c = unsafe { (*ring).cq_entries[cq as usize % RING_CQ_SIZE] };
     assert_eq!(unsafe { (*ring).cq_tail.load(Ordering::Acquire) }, cq.wrapping_add(1), "the flush posted nothing");
     assert_eq!((c.user_data, done(c)), (0x5eed, (0, CQE_F_DURABLE)));
+}
+
+/// **K1: an RT submitter's file entry is handed to the worker** on the real
+/// kernel table: the submit completes nothing and the file is untouched; the
+/// worker's pass (`io_ring_worker_pass`) runs it with the OWNER's handle and
+/// completes it `CQE_F_QUEUED`. A task outside the RT band runs it inline.
+///
+/// **Canary.** `may_block` answering `true` for every task: the RT submit
+/// writes the file (`n == 1`).
+#[test]
+fn an_rt_file_entry_is_handed_to_the_worker_on_the_kernel_table() {
+    use azos_ipc::cap::targets::File;
+    let _g = serial();
+    let (s, pt) = ring3();
+    let _f = file_scene();
+    let (cap, _va, ring) = create(pt);
+    let rw = grant::<File>(s.tid, CapPerms::RW, 3) as u32;
+    azos_sched::scheduler::shim_set_base_priority(azos_sched::RT_PRIORITY_THRESHOLD - 1);
+    let (n, _) = unsafe { submit(cap, ring, sqe(OP_FILE_WRITE, rw, 0, 8)) };
+    let wrote_in_submit = FILE_WRITES.lock().unwrap().len();
+    let cq = unsafe { (*ring).cq_tail.load(Ordering::Acquire) };
+    let ran = azos_ipc::io_ring::io_ring_worker_pass();
+    azos_sched::scheduler::shim_set_base_priority(20);
+    assert_eq!((n, wrote_in_submit), (0, 0), "the RT submit ran its file entry");
+    assert_eq!(ran, 1, "the worker had nothing to run");
+    let c = unsafe { (*ring).cq_entries[cq as usize % RING_CQ_SIZE] };
+    assert_eq!(done(c), (8, CQE_F_QUEUED));
+    assert_eq!(FILE_WRITES.lock().unwrap().len(), 1, "the worker did not write the owner's file");
+    // Outside the RT band: inline, as before.
+    let (n, c) = unsafe { submit(cap, ring, sqe(OP_FILE_WRITE, rw, 0, 8)) };
+    assert_eq!((n, done(c)), (1, (8, CQE_F_QUEUED)));
+}
+
+/// **K1: `OP_NET_SEND` is `SYS_SEND_TYPED` below the trap, without the
+/// wait.** The SQE names a `Cap<Socket>` in the owner's table: a READ-only
+/// handle is refused `-ECAPPERMS` and recorded as a Socket denial, a forged
+/// one `-ECAPSTALE`; a WRITE handle on a socket another task owns is refused
+/// (the owner stamp, as `socket_access_ok`); a WRITE handle on the owner's
+/// own socket reaches `socket_send` and answers its count unflagged: an
+/// unconnected datagram socket has nowhere to send (`-1`), and nothing
+/// waited (no ARP or window yield loop).
+///
+/// **Canaries.** Resolve with `READ`: the READ handle reaches the socket.
+/// Drop the owner-stamp check: the stranger's socket answers -1, unrefused.
+#[test]
+fn a_net_send_entry_resolves_the_owners_socket_cap_and_never_waits() {
+    use azos_ipc::cap::targets::Socket;
+    use azos_ipc::cap::CapError;
+    let _g = serial();
+    let (s, pt) = ring3();
+    let _f = file_scene();
+    let (cap, _va, ring) = create(pt);
+    let mine = azos_net::socket_create_owned(azos_net::socket::AF_INET, azos_net::socket::SOCK_DGRAM,
+        azos_net::socket::IPPROTO_UDP, s.tid);
+    let theirs = azos_net::socket_create_owned(azos_net::socket::AF_INET, azos_net::socket::SOCK_DGRAM,
+        azos_net::socket::IPPROTO_UDP, s.tid + 1000);
+    assert!(mine >= 0 && theirs >= 0);
+    let ro = grant::<Socket>(s.tid, CapPerms::READ, mine as u32) as u32;
+    let wo = grant::<Socket>(s.tid, CapPerms::WRITE, mine as u32) as u32;
+    let stranger = grant::<Socket>(s.tid, CapPerms::WRITE, theirs as u32) as u32;
+
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_NET_SEND, ro, 0, 4)) };
+    assert_eq!(done(c), (Errno::ECAPPERMS.to_syscall_ret() as i32, CQE_F_REFUSED));
+    assert_eq!(typed_seen(), vec![(CapKind::Socket.denial_code(), CapError::MissingPerms.code())]);
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_NET_SEND, 0xDEAD_0000, 0, 4)) };
+    assert_eq!(done(c), (Errno::ECAPSTALE.to_syscall_ret() as i32, CQE_F_REFUSED));
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_NET_SEND, stranger, 0, 4)) };
+    assert_eq!(done(c), (crate::handlers::E_PERM as i32, CQE_F_REFUSED), "a stranger's socket was reached");
+    let (n, c) = unsafe { submit(cap, ring, sqe(OP_NET_SEND, wo, 0, 4)) };
+    assert_eq!((n, done(c)), (1, (-1, 0)), "the owner's socket was not reached, or the answer was flagged");
+    azos_net::socket_close(mine);
+    azos_net::socket_close(theirs);
 }
 
 /// **A channel entry is the typed channel call below the trap**, on a real

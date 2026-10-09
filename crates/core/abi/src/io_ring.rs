@@ -64,7 +64,8 @@ pub const OP_I2C_WRITE: u16 = 5;
 pub const OP_PWM_SET: u16 = 6;
 /// Set a wheel speed (through the actuation gate).
 pub const OP_MOTOR_SPEED: u16 = 7;
-/// Send on a socket.
+/// Queue a send on a socket: `param0` is a `Cap<Socket>` handle (WRITE), as the
+/// typed socket calls take it; completes `CQE_F_QUEUED` without waiting.
 pub const OP_NET_SEND: u16 = 8;
 /// Receive from a socket.
 pub const OP_NET_RECV: u16 = 9;
