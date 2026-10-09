@@ -47,6 +47,9 @@ content-stamp-off-canary = []
 # The kernel's `file-census` diagnostic (census.rs). Declared so the cfg is
 # known; never enabled here (it prints through the kernel timebase).
 file-census = []
+# Wave 15 (VF): the kernel gate's `FAT_MUTATE` SpinLock canary. Declared so
+# the cfg is known; the host shim's two lock types behave the same.
+fat-mutate-spin-canary = []
 
 [dependencies]
 # The real azos_sync SpinLock reads/writes RV64 sstatus in inline asm, so

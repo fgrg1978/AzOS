@@ -57,6 +57,11 @@ content-stamp-off-canary = []
 # Wave 14 vsbench diagnostic: `crates/fs/fs/src/census.rs` prints where a
 # backend open/read/close goes. Enabled through the kernel's `file-census`.
 file-census = []
+# Wave 15 (VF) gate canary: `FAT_MUTATE` is a `SpinLock` again (preemption
+# off across the allocator's device I/O). The `lat: ... FAT writes canary`
+# rows must print `[LAT] FAIL` with a fat32.rs site as the worst
+# preempt-off window. Never in a real build.
+fat-mutate-spin-canary = []
 
 [dependencies]
 azos_mm = { workspace = true }

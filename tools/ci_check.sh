@@ -14980,6 +14980,94 @@ PYEOF
     par_row -s console_window_row "console: masked window rv" rv "qemu,lat-smoke,lat-trace"
     par_row -s console_window_row "console: masked window arm" arm "qemu,lat-smoke,lat-trace"
 
+    # ── Wake-up latency under FAT32 writes (wave 15, VF) ──────────────────
+    #
+    # The lat smoke with `lat-fat`: its disk load rewrites /fat/LATFAT.BIN
+    # (6 KiB: chain allocation, free, journal barriers) every 1.37 ms, not
+    # paced by lat-rt, while lat-rt (priority 1, same hart) measures its
+    # wake-ups against the same 100 us bound. The cause these rows pin:
+    # `FAT_MUTATE` (crates/fs/fs/src/fat32.rs) was a `SpinLock`, so the
+    # allocator's FAT scan and entry writes, each a virtio-blk round trip,
+    # ran with preemption off on the writer's hart — and under -icount the
+    # length followed host load: the intermittent `rt7: panic contain` row,
+    # whose contained panic appends CRASH.LOG on the control hart. Now a
+    # `PiMutex`. Measured (tracer on, 2026-10-09): preempt-off max riscv64
+    # 9.93 ms -> 11.5 us, aarch64 1.70 ms -> 11.4 us; wake max riscv64
+    # 9.79 ms -> 9.2 us, aarch64 1.25 ms -> 8.1 us.
+    #
+    # The canary rows build `fat-mutate-spin-canary` (the `SpinLock` back,
+    # with the tracer): `[LAT] FAIL`, and the tracer's worst preempt-off
+    # site is in fat32.rs and longer than the bound. Compile errors: the
+    # build's own FAIL line.
+    fat_lat_canary_row() { # fat_lat_canary_row <label> <isa: rv|arm> <features>
+        local label="$1" isa="$2" feats="$3"
+        if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log disk kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        disk="$CI_LOG_DIR/${slug}-disk.img"
+        if [ "$isa" = rv ]; then
+            [ -f build/disk-ipctest.img.pristine ] || make_disk build/disk-ipctest.img
+            cp build/disk-ipctest.img.pristine "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            "$QEMU" -machine virt -nographic -bios default -smp 1 -icount shift=0,sleep=off \
+                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+                bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+            fi
+            cp build/disk-aarch64-ipctest.img "$disk"
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        fi
+        local pid=$! i=0
+        while [ "$i" -lt 480 ]; do
+            grep -aqE '\[LAT\] (PASS|FAIL) ' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$disk" "$kimg"
+        local clean="$log.txt" result top max
+        tr -d '\r' <"$log" >"$clean"
+        result="$(grep -a '^\[LAT\] isa=' "$clean" | sed -n 1p)"
+        if [ -z "$result" ] || grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+            bad; echo "      no [LAT] result, or the kernel stopped — log kept: $log"; return
+        fi
+        if ! grep -a '^\[LAT\] load ' "$clean" | grep -qE 'disk_reads=[1-9][0-9]* disk_errors=0 hog_rounds=[1-9]'; then
+            bad; echo "      the FAT writer or the hog did not run:"; grep -a '^\[LAT\] load ' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq '^\[LAT\] FAIL ' "$clean"; then
+            bad; echo "      the SpinLock FAT_MUTATE did not fail the bound: ${result}"
+            echo "      log kept: $log"; return
+        fi
+        top="$(grep -a '^\[LATTRACE\] run preempt top1 ' "$clean" | sed -n 1p)"
+        max="$(printf '%s\n' "$top" | sed -n 's/.* max_ns=\([0-9]*\) .*/\1/p')"
+        if ! printf '%s\n' "$top" | grep -q ' site=crates/fs/fs/src/fat32.rs:' || [ -z "$max" ] || [ "$max" -le 100000 ]; then
+            bad; echo "      the worst preempt-off window is not a fat32.rs site over 100 us: ${top:-none}"
+            echo "      log kept: $log"; return
+        fi
+        ok; echo "      ${result#\[LAT\] }"; echo "      preempt-off max ${max} ns at ${top##* site=}"
+        rm -f "$log" "$clean"
+    }
+    par_row -s lat_wake_row "lat: riscv64 wake-up, FAT writes" rv "qemu,lat-fat" PASS
+    par_row -s fat_lat_canary_row "lat: riscv64 FAT spinlock canary" rv "qemu,fat-mutate-spin-canary"
+    par_row -s lat_wake_row "lat: aarch64 wake-up, FAT writes" arm "qemu,lat-fat" PASS
+    par_row -s fat_lat_canary_row "lat: aarch64 FAT spinlock canary" arm "qemu,fat-mutate-spin-canary"
+
     # ── aarch64: idle wakeups/s (tickless), wave 11 ONESHOT ─────────────────
     #
     # The aarch64 half of `tickless_idle_wakeups_row` (riscv64 block): the same

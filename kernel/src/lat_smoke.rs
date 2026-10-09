@@ -83,6 +83,7 @@ const PERIODS: usize = 2_000;
 const SETTLE_MS: u64 = 1_500;
 /// Spam every this many periods (2 ms at 1 ms, as when it slept 2 ms).
 const SPAM_EVERY: usize = 2;
+#[cfg(not(feature = "lat-fat"))]
 const DISK_SECTORS: u32 = 8;
 
 /// Upper bound on the worst wake-up latency, in nanoseconds of
@@ -209,6 +210,53 @@ fn spam_task(_: usize) {
     }
 }
 
+/// `lat-fat`: the disk load writes through FAT32 instead of reading raw
+/// sectors. Each round rewrites [`FAT_PATH`] whole ([`FAT_BYTES`], a few
+/// clusters on every image the rows boot): the VFS flush allocates a new
+/// chain, frees the old one and crosses the journal's device barriers — the
+/// shape of a CRASH.LOG append on the control hart.
+///
+/// Not paced by `lat-rt`'s kicks: a write that starts right after a sample
+/// has a whole period before the next deadline, so a preempt-off window
+/// shorter than the period never met one (the `SpinLock` canary measured
+/// 0.83 ms windows on aarch64 and still passed at 85 us, paced). The writer
+/// sleeps [`FAT_GAP_US`] between rounds instead — not a multiple of the
+/// period, so the rounds sweep its phase and the hog below it still runs.
+#[cfg(feature = "lat-fat")]
+const FAT_PATH: &[u8] = b"/fat/LATFAT.BIN";
+#[cfg(feature = "lat-fat")]
+const FAT_BYTES: usize = 6 * 1024;
+#[cfg(feature = "lat-fat")]
+const FAT_GAP_US: u64 = 1_370;
+
+#[cfg(feature = "lat-fat")]
+fn disk_task(_: usize) {
+    use azos_fs::vfs::{O_CREAT, O_TRUNC, O_WRONLY};
+    let mut data = alloc::vec![0u8; FAT_BYTES];
+    let mut fds = azos_fs::ScratchFds::new();
+    let mut n = 0u8;
+    while !DONE.load(Ordering::Acquire) {
+        sleep_us(if RUNNING.load(Ordering::Acquire) { FAT_GAP_US } else { 10_000 });
+        if !RUNNING.load(Ordering::Acquire) {
+            continue;
+        }
+        n = n.wrapping_add(1);
+        data.iter_mut().for_each(|b| *b = n);
+        let fd = azos_fs::vfs::vfs_open(&mut fds, FAT_PATH, O_WRONLY | O_CREAT | O_TRUNC);
+        let ok = fd >= 0 && {
+            let w = azos_fs::vfs::vfs_write(&mut fds, fd, data.as_ptr(), data.len());
+            // Closed whatever the write did: the close is the flush.
+            azos_fs::vfs::vfs_close(&mut fds, fd) == 0 && w == data.len() as i32
+        };
+        if ok {
+            DISK_READS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            DISK_ERRORS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(not(feature = "lat-fat"))]
 fn disk_task(_: usize) {
     DISK_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     let mut buf = [0u8; 512 * DISK_SECTORS as usize];

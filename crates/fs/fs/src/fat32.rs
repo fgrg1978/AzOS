@@ -466,6 +466,29 @@ static FAT32: SpinLock<Fat32Vol> = SpinLock::new(Fat32Vol::new());
 /// after allocating — closing that fully needs `fat32_alloc_cluster` split
 /// into a "caller already holds the lock" inner version, which is a larger
 /// change than this pass made; noted rather than silently left half done.
+///
+/// **A `PiMutex`, not a `SpinLock` (wave 15, VF).** Every section under this
+/// lock does device I/O: the allocation scan reads FAT sectors (a cache miss
+/// is a virtio-blk round trip) and every entry write goes to each FAT copy.
+/// As a `SpinLock` the holder ran with preemption off for all of it — the lat
+/// smoke's FAT-write load measured 7.24 ms preempt-off at `fat32_free_chain`
+/// and 1.47 ms at `fat32_alloc_cluster` on riscv64 under `-icount`, and a
+/// real-time task on that hart waited that long (`[LAT] max_ns=7194700`).
+/// The length follows the device, so under `-icount` it followed host load:
+/// the cause of the intermittent `rt7: panic contain` row, whose contained
+/// panic appends CRASH.LOG on the control hart. The sections stay exactly as
+/// long (scan-then-mark must stay atomic, above); only the holder is now
+/// preemptible, as `BLK_LOCK`'s holder already is, and a waiter yields with
+/// priority inheritance instead of spinning. Lock order: this, then the
+/// `FAT32`/`SECTOR_CACHE` spinlocks (never held across I/O), then
+/// `BLK_LOCK`. Never taken under a `SpinLock`. The reset-path panic handler
+/// checks it with `try_lock` ([`fat32_locks_available`]) before writing.
+///
+/// `fat-mutate-spin-canary` puts the `SpinLock` back: the `lat: ... FAT
+/// writes` canary rows must then fail and name these sites.
+#[cfg(not(feature = "fat-mutate-spin-canary"))]
+static FAT_MUTATE: azos_sync::pi_mutex::PiMutex<()> = azos_sync::pi_mutex::PiMutex::new(());
+#[cfg(feature = "fat-mutate-spin-canary")]
 static FAT_MUTATE: SpinLock<()> = SpinLock::new(());
 
 /// First data sector of `cluster`, or `None` if the whole cluster does not fit
@@ -703,8 +726,10 @@ fn select_volume() -> (u64, u64) {
     (0, 0)
 }
 
-/// Non-blocking check for whether the FAT32 locks (`FAT32` volume state and
-/// `SECTOR_CACHE`) are both currently free.
+/// Non-blocking check for whether the FAT32 locks (`FAT32` volume state,
+/// `SECTOR_CACHE` and the allocator's `FAT_MUTATE`) are all currently free.
+/// `FAT_MUTATE` is a `PiMutex` whose contended path yields, which the panic
+/// handler must not reach.
 ///
 /// Intended for callers that must never block (e.g. the panic handler),
 /// mirroring `vfs::vfs_fs_lock_available()`. Any FAT32-backed VFS
@@ -715,6 +740,7 @@ fn select_volume() -> (u64, u64) {
 /// locks can be taken by another hart right after this returns `true`.
 pub fn fat32_locks_available() -> bool {
     FAT32.try_lock().is_some() && SECTOR_CACHE.try_lock().is_some()
+        && FAT_MUTATE.try_lock().is_some()
 }
 
 /// Invalidate every cache line touching `sector` — call after an

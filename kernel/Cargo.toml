@@ -878,6 +878,12 @@ lat-smoke = ["qemu"]
 # Its canary: a task on the same hart masks interrupts for 20 ms three times.
 # The tracer must name that site and the latency row must print `[LAT] FAIL`.
 lat-canary = ["lat-smoke", "lat-trace"]
+# Wave 15 (VF): the lat smoke's disk load writes through FAT32 (a whole-file
+# rewrite per kick: chain allocation, free, journal barriers) instead of
+# reading raw sectors. The `lat: ... FAT writes` rows.
+lat-fat = ["lat-smoke"]
+# Its canary: `FAT_MUTATE` back to a `SpinLock` (crates/fs/fs/src/fat32.rs).
+fat-mutate-spin-canary = ["lat-fat", "lat-trace", "azos_fs/fat-mutate-spin-canary"]
 # Wave 11 (PSTORE): gate rows `pstore: ...`. After /fat mounts, a boot that
 # found no RAM panic record panics with the VFS lock held and reboots warm;
 # the next boot must recover the record into /fat/CRASH.LOG. See
