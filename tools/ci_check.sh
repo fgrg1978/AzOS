@@ -14955,8 +14955,10 @@ PYEOF
     #   cbs   — a hard reservation that never stops (1 ms per 10 ms) beside
     #           two that must keep their deadlines; it must be throttled.
     #   admit — run-time admission refuses a band over-subscription with
-    #           EBUSY and a `[SCHED-RT] admission REFUSED` line, and a hart
-    #           over-subscription likewise.
+    #           EBUSY and a `[SCHED-RT] admission REFUSED` line, a hart
+    #           over-subscription likewise, and (wave 15) a non-band
+    #           reservation whose 10 ms deadline sits behind the band's 6 ms
+    #           (`levels`, rt_core::levels_fit).
     #   ring3 — the row lookup SYS_SPAWN/autorun apply keeps a profiled
     #           band row's priority with its reservation and raises a band
     #           row without one to the ring-3 floor (12).
@@ -15048,6 +15050,111 @@ PYEOF
     par_row sched_rt_row "sched-rt: aarch64 CBS canary" arm "qemu,rt-cbs-canary" cbs
     par_row sched_rt_row "sched-rt: aarch64 admission canary" arm "qemu,rt-admit-canary" admit
     par_row sched_rt_row "sched-rt: aarch64 exemption canary" arm "qemu,rt-exempt-canary" exempt
+
+    # ── SCHED-RT near the admission bound (wave 15, VB) ──
+    #
+    # `kernel/src/rt_util_smoke.rs` (feature `sched-rt-util`) loads a hart up
+    # to what run-time admission accepts and counts every late job, under
+    # `-icount shift=0,sleep=off`. One verdict line per phase,
+    # `[RTUTIL] <phase> PASS|FAIL <isa>`, FAIL only from the failure path.
+    # `-smp 1`: `u70-h1`/`u93-h1` (four hard-CBS reservations at 70 % and
+    # 93 % density, each job computing 95 % of its budget: zero misses),
+    # `overrun` (a 1/10 ms server computing 6 ms per job is throttled, the
+    # others keep every deadline), `suspend` (a 50 %-density server with a
+    # 2 ms deadline that computes 400 us and sleeps 20 us must not take more
+    # than its density: its 40 % neighbour keeps every deadline), `mixed`
+    # (two reservations at different levels, 75 % in all, the lower one's
+    # 2 ms deadline behind the upper one's 5 ms: refused with `levels`).
+    # `-smp 2`: `u70-hart1`/`u93-hart1`, the sets on hart 1 alone: under
+    # -icount both harts share one virtual clock, so two loaded harts each
+    # see half of it and only one hart is loaded at a time. aarch64 only: on
+    # riscv64 the hart-1 phases miss (333/375 jobs at 70 %, 263/375 at 93 %,
+    # wave 15) with the stolen-clock signature (CBS overruns on jobs that
+    # computed 95 % of their budget, timer-ISR jitter up to 51 ms) and the
+    # boot's `behavior` task (re-pinned to hart 1 at -smp 2) logging 1.5 s
+    # steps; unattributed, open.
+    # Canaries: `rt-util-cbs-canary` (no budget charging) fails `overrun`;
+    # `rt-util-wake-canary` (the CBS wake rule tests q/t, the bandwidth,
+    # instead of q/d, the density) fails `suspend`; `rt-util-admit-canary`
+    # (no admission) fails `mixed`. Compile-error bucket: a kernel that does
+    # not build is its own FAIL.
+    sched_rt_util_row() { # <label> <isa: rv|arm> <smp: 1|2> <features> <expect: PASS|phase>
+        local label="$1" isa="$2" smp="$3" feats="$4" expect="$5"
+        if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        if [ "$isa" = rv ]; then
+            kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+            par_ready
+            "$QEMU" -machine virt -nographic -bios default -smp "$smp" -icount shift=0,sleep=off \
+                -kernel "$kimg" >"$log" 2>&1 &
+        else
+            if ! a64_kbuild "$feats"; then
+                bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+            fi
+            kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+            par_ready
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" \
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" >"$log" 2>&1 &
+        fi
+        # 900 x 0.5 s: about 35 s of host time when it passes (the phases
+        # leave idle time for -icount to skip); a canary's overrunner leaves
+        # none.
+        local pid=$! i=0
+        while [ "$i" -lt 900 ]; do
+            grep -aq '\[RTUTIL\] done ' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; sleep 1; kill -0 "$pid" 2>/dev/null && kill -9 "$pid"; wait "$pid" 2>/dev/null
+        rm -f "$kimg"
+        local clean="$log.txt"
+        tr -d '\r' <"$log" >"$clean"
+        if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+            bad; echo "      the kernel stopped:"; grep -aiE -m3 'panic|\[FATAL\]|AARCH64-TRAP' "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"; return
+        fi
+        if ! grep -aq '^\[RTUTIL\] done ' "$clean"; then
+            bad; echo "      no [RTUTIL] done line within the timeout — log kept: $log"; return
+        fi
+        local c phases="u70-h1 u93-h1 overrun suspend mixed"
+        [ "$smp" = 1 ] || phases="u70-hart1 u93-hart1"
+        if [ "$expect" = PASS ]; then
+            for c in $phases; do
+                if ! grep -aq "^\[RTUTIL\] $c PASS " "$clean"; then
+                    bad; grep -a "^\[RTUTIL\] $c \|^\[RTUTIL\] task [a-z0-9]* $c .* misses=[1-9]" "$clean" | sed -n 1,6p | sed 's/^/      /'
+                    echo "      log kept: $log"; return
+                fi
+            done
+            ok
+            for c in $phases; do
+                grep -a "^\[RTUTIL\] $c PASS " "$clean" | cut -d' ' -f2- | sed 's/ band_throttles=.*//; s/^/      /'
+            done
+            rm -f "$log" "$clean"
+            return
+        fi
+        if grep -aq "^\[RTUTIL\] $expect FAIL " "$clean"; then
+            ok; grep -a "^\[RTUTIL\] $expect FAIL " "$clean" | cut -d' ' -f2- | sed 's/^/      /'
+            rm -f "$log" "$clean"
+        else
+            bad; echo "      the $expect canary did not fail its phase:"
+            grep -a "^\[RTUTIL\] $expect " "$clean" | sed 's/^/      /'
+            echo "      log kept: $log"
+        fi
+    }
+    par_row sched_rt_util_row "sched-rt-util: riscv64 near the bound" rv 1 "qemu,sched-rt-util" PASS
+    par_row sched_rt_util_row "sched-rt-util: riscv64 CBS canary" rv 1 "qemu,rt-util-cbs-canary" overrun
+    par_row sched_rt_util_row "sched-rt-util: riscv64 wake rule canary" rv 1 "qemu,rt-util-wake-canary" suspend
+    par_row sched_rt_util_row "sched-rt-util: riscv64 levels canary" rv 1 "qemu,rt-util-admit-canary" mixed
+    par_row sched_rt_util_row "sched-rt-util: aarch64 near the bound" arm 1 "qemu,sched-rt-util" PASS
+    par_row sched_rt_util_row "sched-rt-util: aarch64 hart 1" arm 2 "qemu,sched-rt-util" PASS
+    par_row sched_rt_util_row "sched-rt-util: aarch64 CBS canary" arm 1 "qemu,rt-util-cbs-canary" overrun
+    par_row sched_rt_util_row "sched-rt-util: aarch64 wake rule canary" arm 1 "qemu,rt-util-wake-canary" suspend
+    par_row sched_rt_util_row "sched-rt-util: aarch64 levels canary" arm 1 "qemu,rt-util-admit-canary" mixed
 
     # ── Priority inversion through fast IPC (wave 11 PIFAST, RFC-0052 R4) ──
     #

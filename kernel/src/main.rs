@@ -78,6 +78,9 @@ mod lat_smoke;
 // RT band budget and EDF + CBS rows (`sched-rt-smoke`), see the module doc.
 #[cfg(feature = "sched-rt-smoke")]
 mod rt_smoke;
+// Admitted deadlines near the admission bound (`sched-rt-util`), see the module doc.
+#[cfg(feature = "sched-rt-util")]
+mod rt_util_smoke;
 
 // The crate root used to hold every boot step, trap handler, kernel task and
 // boot smoke in one file. They now live in these four module trees; each tree
@@ -2002,6 +2005,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // Wave 11 (SCHED-RT): band budget, EDF + CBS, admission, see `rt_smoke`.
     #[cfg(feature = "sched-rt-smoke")]
     rt_smoke::spawn();
+    // Wave 15: admitted deadlines near the admission bound, see `rt_util_smoke`.
+    #[cfg(feature = "sched-rt-util")]
+    rt_util_smoke::spawn();
     // RT7: panic policy by profile, see `smokes::rt_panic_smoke`.
     #[cfg(feature = "rt-panic-canary")]
     smokes::rt_panic_smoke::spawn();

@@ -883,6 +883,18 @@ rt-edf-canary = ["sched-rt-smoke", "azos_sched/rt-edf-canary"]
 rt-cbs-canary = ["sched-rt-smoke", "azos_sched/rt-cbs-canary"]
 rt-admit-canary = ["sched-rt-smoke", "azos_sched/rt-admit-canary"]
 rt-exempt-canary = ["sched-rt-smoke", "azos_sched/rt-exempt-canary"]
+# Wave 15 (`sched-rt-util:` rows): admitted reservations near the admission
+# bound (70 % and 93 % per hart, one and two harts), an overrunner, and two
+# reservations at different levels; see kernel/src/rt_util_smoke.rs.
+sched-rt-util = ["qemu"]
+# Its canary: no CBS budget charging, so the overrunner makes the others miss.
+rt-util-cbs-canary = ["sched-rt-util", "azos_sched/rt-cbs-canary"]
+# Its wake-rule canary: the CBS wake test uses q/t again, so the `suspend`
+# phase's self-suspending server makes its neighbour miss.
+rt-util-wake-canary = ["sched-rt-util", "azos_sched/rt-wake-rate-canary"]
+# Its admission canary: every well-formed reservation is admitted, so the
+# `mixed` phase's low-level reservation is admitted and misses.
+rt-util-admit-canary = ["sched-rt-util", "azos_sched/rt-admit-canary"]
 # RT7 (RFC-0052 §5.5, row R6): an observer on hart 1 arms the flight
 # controller and a culprit kernel task on hart 0 (the control hart) panics.
 # Under Kconfig PANIC_POLICY_CONTAIN the panic must be contained and the
