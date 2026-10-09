@@ -22,8 +22,8 @@
 //   4. CR3: the incoming task's root word (TASK_SATP_OFFSET: PML4 | PCID,
 //      maybe bit 63 = keep the PCID's TLB entries) when it differs from the
 //      live CR3 (bit 63 ignored: a read never returns it); task_satp 0 keeps
-//      the live root (no kernel root is published yet). Published at
-//      %gs:cr3 for the TLB shootdown scan. The kernel half is in every
+//      the live root (no kernel root is published yet). Published in
+//      AZOS_HART_CR3[cpu] for the TLB shootdown scan, before the write. The kernel half is in every
 //      PML4, so this code keeps running across the write.
 //   5. Jump to the incoming PC.
 //
@@ -45,7 +45,6 @@
 .equ TASK_SATP_OFFSET,       {task_satp_off}
 .equ TASK_CTX_SAVING_OFFSET, {context_saving_off}
 .equ PC_FP_LIVE, {pc_fp_live}
-.equ PC_CR3,     {pc_cr3}
 
 .section .text
 .balign 16
@@ -103,7 +102,11 @@ restore_new_task:
     btrq $63, %r8                    // a CR3 read never returns the no-flush bit
     cmpq %rdx, %r8
     je ctx_skip_pt_switch
-    movq %rcx, %gs:PC_CR3
+    // Publish before the write (tlb::publish's order): AZOS_HART_CR3[cpu],
+    // the array the shootdown scans; the CPU id is %gs:0.
+    movq %gs:0, %r9
+    leaq AZOS_HART_CR3(%rip), %r10
+    movq %rcx, (%r10,%r9,8)
     movq %rcx, %cr3
 ctx_skip_pt_switch:
     // 5.

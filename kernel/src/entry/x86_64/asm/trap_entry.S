@@ -73,7 +73,6 @@
 .equ PC_USER_RSP,   {pc_user_rsp}
 .equ PC_FP_LIVE,    {pc_fp_live}
 .equ PC_TSS_RSP0,   {pc_tss_rsp0}
-.equ PC_CR3,        {pc_cr3}
 .equ SYSCALL_VEC,   {syscall_vector}
 .equ FIRST_IRQ_VEC, {first_interrupt}
 .equ USER_CS,       {user_cs}
@@ -218,8 +217,12 @@ trap_return:
     cli
     testq %rbx, %rbx
     jz 1f
+    // Published for the TLB shootdown scan (AZOS_HART_CR3[cpu]), before
+    // the write, as tlb::publish orders it.
+    movq %gs:0, %rcx
+    leaq AZOS_HART_CR3(%rip), %rdx
+    movq %rbx, (%rdx,%rcx,8)
     movq %rbx, %cr3
-    movq %rbx, %gs:PC_CR3            // published for the TLB shootdown scan
 1:  testb $3, TF_CS(%rsp)
     jz ret_kernel
 

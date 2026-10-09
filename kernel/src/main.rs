@@ -386,7 +386,6 @@ global_asm!(
     pc_user_rsp    = const azos_arch::cpu::PERCPU_USER_RSP,
     pc_fp_live     = const azos_arch::cpu::PERCPU_FP_LIVE,
     pc_tss_rsp0    = const azos_arch::cpu::PERCPU_TSS_RSP0,
-    pc_cr3         = const azos_arch::cpu::PERCPU_CR3,
     syscall_vector = const azos_arch::idt::SYSCALL_VECTOR,
     first_interrupt = const azos_arch::idt::FIRST_INTERRUPT,
     user_cs        = const azos_arch::gdt::USER_CS,
@@ -412,7 +411,6 @@ global_asm!(
     task_satp_off = const core::mem::offset_of!(azos_sched::task::Task, task_satp),
     context_saving_off = const core::mem::offset_of!(azos_sched::task::Task, context_saving),
     pc_fp_live = const azos_arch::cpu::PERCPU_FP_LIVE,
-    pc_cr3     = const azos_arch::cpu::PERCPU_CR3,
     options(att_syntax),
 );
 

@@ -142,7 +142,7 @@ fn asm_stub_lists_match_the_idt_module() {
 fn percpu_offsets_the_asm_uses() {
     assert_eq!(cpu::PERCPU_CPU_ID, 0, "hart_id is `mov %gs:0`");
     assert_eq!(cpu::PERCPU_TSS_RSP0, core::mem::offset_of!(PerCpu, tss) + 4);
-    let offs = [cpu::PERCPU_CPU_ID, cpu::PERCPU_KERNEL_RSP, cpu::PERCPU_USER_RSP, cpu::PERCPU_FP_LIVE, cpu::PERCPU_CR3];
+    let offs = [cpu::PERCPU_CPU_ID, cpu::PERCPU_KERNEL_RSP, cpu::PERCPU_USER_RSP, cpu::PERCPU_FP_LIVE];
     for (i, a) in offs.iter().enumerate() {
         for b in &offs[i + 1..] {
             assert_ne!(a, b);

@@ -110,7 +110,6 @@ pub fn init_cpu(cpu: usize) {
         }
         let tss_base = (&raw const (*area).tss) as u64;
         (*area).gdt = gdt::table(tss_base);
-        (*area).cr3 = cpu::read_cr3();
     }
 
     cpu::set_percpu(cpu);

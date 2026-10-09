@@ -37,11 +37,10 @@ pub struct PerCpu {
     /// The FP area whose state is live in this CPU's registers, 0 when
     /// none (`kernel/src/entry/x86_64/fp.rs`).
     pub fp_live: u64,
-    /// The CR3 word last installed on this CPU (the context switch and
-    /// trap_return publish it), for the TLB shootdown's holder scan.
-    pub cr3: u64,
     /// Words reserved for the entry path (keeps `gdt` 64-byte aligned).
-    pub _reserved: [u64; 2],
+    /// The CR3 word a CPU runs on is published in `tlb::AZOS_HART_CR3`,
+    /// the array the shootdown scans, not here.
+    pub _reserved: [u64; 3],
     /// This CPU's GDT (its TSS descriptor names this CPU's `tss`).
     pub gdt: [u64; GDT_ENTRIES],
     /// This CPU's TSS.
@@ -57,8 +56,7 @@ impl PerCpu {
             kernel_rsp: 0,
             user_rsp: 0,
             fp_live: 0,
-            cr3: 0,
-            _reserved: [0; 2],
+            _reserved: [0; 3],
             gdt: [0; GDT_ENTRIES],
             tss: Tss::new(),
         }
@@ -76,7 +74,6 @@ pub const PERCPU_CPU_ID: usize = core::mem::offset_of!(PerCpu, cpu_id);
 pub const PERCPU_KERNEL_RSP: usize = core::mem::offset_of!(PerCpu, kernel_rsp);
 pub const PERCPU_USER_RSP: usize = core::mem::offset_of!(PerCpu, user_rsp);
 pub const PERCPU_FP_LIVE: usize = core::mem::offset_of!(PerCpu, fp_live);
-pub const PERCPU_CR3: usize = core::mem::offset_of!(PerCpu, cr3);
 /// TSS.RSP0, as a GS offset.
 pub const PERCPU_TSS_RSP0: usize = core::mem::offset_of!(PerCpu, tss) + crate::gdt::TSS_RSP0;
 
