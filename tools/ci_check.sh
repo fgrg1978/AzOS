@@ -8157,6 +8157,8 @@ done
 # keeps the lease seal and the lease's end widens the next read-only page at
 # that address (syscall-tests typed_ipc). vdso-write-canary: mprotect(RW)
 # makes the shared vDSO frame writable (syscall-tests mmap_guards).
+# lease-sealed-by-thread-canary: a sibling thread of a sealed lease's lessor
+# maps the sealed region writable (the same typed_ipc test, its first half).
 host_canary_row() { # <label> <suite> <feature> <test fn>
     local label="$1" suite="$2" feat="$3" test="$4" out
     ci_tier_skips "$label" && return 0
@@ -8175,6 +8177,8 @@ host_job host_canary_row "perm: lease seal by thread canary" syscall-tests lease
     a_sibling_threads_release_forgets_the_seal
 host_job host_canary_row "perm: vdso mprotect canary (host)" syscall-tests vdso-write-canary \
     mprotect_never_makes_the_vdso_writable
+host_job host_canary_row "perm: lease seal map by thread canary" syscall-tests lease-sealed-by-thread-canary \
+    a_sibling_threads_release_forgets_the_seal
 
 # net-tests again at the fleet ring. The run above compiles `crates/net/net` from
 # the workspace `.config` (the 128 KiB ring of edge); this one from the config

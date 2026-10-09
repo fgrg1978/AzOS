@@ -153,7 +153,7 @@ pub mod group {
     pub fn table_lead_of_idx(idx: usize) -> u32 { syscall_test_sched::group::table_lead_of_idx(idx) }
     pub fn any_groups() -> bool { syscall_test_sched::group::any_groups() }
     pub fn proc_of(_idx: usize, tid: u32) -> u32 { tid }
-    pub fn proc_tid(tid: u32) -> u32 { tid }
+    pub fn proc_tid(tid: u32) -> u32 { syscall_test_sched::group::proc_tid(tid) }
     pub fn shares_tables(_tid: u32) -> bool { false }
     pub fn live_members(_leader: u32) -> u32 { 1 }
     pub fn current_group_ending() -> bool { false }

@@ -243,6 +243,9 @@ vdso-write-canary = ["azos_mm/vdso-write-canary"]
 # Gate canary only (wave 15, security): a sibling thread's shm release keeps
 # the lease seal, whose end then widens the next mapping at that address.
 lease-forget-tid-canary = ["azos_ipc/lease-forget-tid-canary"]
+# Gate canary only (wave 15, security): a sibling thread of a sealed lease's
+# lessor maps the sealed region writable.
+lease-sealed-by-thread-canary = ["azos_ipc/lease-sealed-by-thread-canary"]
 fork-demand-canary = ["azos_mm/fork-demand-canary"]
 cow-reuse-canary = ["azos_mm/cow-reuse-canary"]
 cow-spurious-canary = ["azos_mm/cow-spurious-canary"]

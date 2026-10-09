@@ -1817,10 +1817,19 @@ pub fn lease_reap_expired() -> usize {
 /// names? `SYS_SHM_MAP_TYPED` maps the region read-only for it then, so a
 /// lessor that had no mapping at grant cannot map one writable during the
 /// seal. That mapping is not the seal's: it stays read-only after the lease.
+///
+/// `tid` is the mapping PROCESS (the caller passes its process TID); a seal
+/// granted by any of its threads counts (wave 15, security: matching the
+/// granting thread's TID alone let a sibling thread map the sealed region
+/// writable). Gate canary `lease-sealed-by-thread-canary`: thread TID only.
 pub fn lease_sealed_by(tid: u32, shm_ref: u32) -> bool {
     let table = LEASES.lock_irqsave();
     table.entries.iter().any(|e| {
-        e.sealed && e.lessor_tid == tid && e.shm_ref == shm_ref
+        let lessor = e.lessor_tid == tid
+            || (!cfg!(feature = "lease-sealed-by-thread-canary")
+                && azos_sched::group::any_groups()
+                && azos_sched::group::proc_tid(e.lessor_tid) == tid);
+        e.sealed && lessor && e.shm_ref == shm_ref
             && matches!(e.state, LeaseState::Pending | LeaseState::Active)
     })
 }

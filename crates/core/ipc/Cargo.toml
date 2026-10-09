@@ -15,6 +15,9 @@ text-poke-wx-canary = []
 # Wave 15 gate canary (security): `lease_forget_seal` matches the seal by the
 # releasing THREAD again, so a sibling thread's release leaves it behind.
 lease-forget-tid-canary = []
+# Wave 15 gate canary (security): `lease_sealed_by` matches the lessor thread
+# only, so a sibling thread maps a sealed region writable.
+lease-sealed-by-thread-canary = []
 default = []
 # M40 (audit U10-6): gates `seed_one_cap_outcome`'s `CapKind::Motor` arm the
 # same way `crates/core/topology`'s parser and builder already gate the word

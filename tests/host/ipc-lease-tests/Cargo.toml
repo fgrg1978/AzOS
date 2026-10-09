@@ -43,6 +43,11 @@ irq-pending-canary = []
 # lost-wakeup test in that file's suite fails (the event in the gap wakes
 # nobody).
 port-recheck-canary = []
+# `crates/core/ipc/src/lease.rs`'s wave-15 canaries (exercised by
+# syscall-tests, where threads exist); declared so the pulled file's cfgs are
+# known here. Never enabled.
+lease-forget-tid-canary = []
+lease-sealed-by-thread-canary = []
 # `crates/core/ipc/src/port.rs`'s capability-binding canary (wave 11, LEASE3):
 # `port_cap_event` ignores every event; the revoke test in that file's suite
 # fails (the revoked capability's binding still delivers).

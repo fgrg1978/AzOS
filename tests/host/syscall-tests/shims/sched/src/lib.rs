@@ -1066,7 +1066,14 @@ pub mod group {
     }
     pub fn any_groups() -> bool { MEMBER.load(Ordering::SeqCst) != 0 }
     pub fn proc_of(_idx: usize, tid: u32) -> u32 { tid }
-    pub fn proc_tid(tid: u32) -> u32 { tid }
+    /// The member set with [`shim_set_member`] answers its leader.
+    pub fn proc_tid(tid: u32) -> u32 {
+        let m = MEMBER.load(Ordering::SeqCst);
+        if m != 0 && MEMBER_TID.load(Ordering::SeqCst) == tid { m as u32 } else { tid }
+    }
+    static MEMBER_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    /// Test-only: the member's own TID, for [`proc_tid`].
+    pub fn shim_set_member_tid(tid: u32) { MEMBER_TID.store(tid, Ordering::SeqCst); }
     pub fn shares_tables(_tid: u32) -> bool { false }
     pub fn live_members(_leader: u32) -> u32 { 1 }
     pub fn current_group_ending() -> bool { false }

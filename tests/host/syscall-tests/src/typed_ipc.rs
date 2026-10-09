@@ -929,8 +929,14 @@ fn a_sealed_grant_takes_the_lessors_write_until_the_lease_ends() {
 /// window address was reused, and the lease's end then added write to the
 /// read-only page mapped there next.
 ///
-/// **Canary.** Feature `lease-forget-tid-canary` (match by thread again): the
+/// The other half: a seal a thread grants on a region its process has not
+/// mapped makes the process's later mapping of it read-only, whichever thread
+/// maps it.
+///
+/// **Canaries.** Feature `lease-forget-tid-canary` (match by thread again): the
 /// record survives the leader's release and the next page becomes writable.
+/// Feature `lease-sealed-by-thread-canary`: the leader maps the sealed region
+/// writable.
 #[test]
 fn a_sibling_threads_release_forgets_the_seal() {
     use azos_abi::syscall_nr::LEASE_GRANT_SEAL;
@@ -943,9 +949,13 @@ fn a_sibling_threads_release_forgets_the_seal() {
     // `t2` is a thread of `a`: its own pool slot, `a`'s capability table.
     ipc_task_pool::shim_bind(t2, SLOT_B);
     azos_sched::group::shim_set_member(SLOT_B, a);
+    azos_sched::group::shim_set_member_tid(t2);
     struct Ungroup;
     impl Drop for Ungroup {
-        fn drop(&mut self) { azos_sched::group::shim_set_member(0, 0); }
+        fn drop(&mut self) {
+            azos_sched::group::shim_set_member(0, 0);
+            azos_sched::group::shim_set_member_tid(0);
+        }
     }
     let _ug = Ungroup;
     azos_ipc::lease::set_seal_hook(host_seal);
@@ -955,6 +965,26 @@ fn a_sibling_threads_release_forgets_the_seal() {
     let va = sys_shm_map_typed(cap);
     assert!(va > 0, "map: {va}");
     let va = va as usize;
+    // A seal from thread `t2` on a region the process has not mapped: the
+    // leader's mapping made during the seal is read-only too.
+    // Canary `lease-sealed-by-thread-canary`: it is writable.
+    let late = handle(sys_shm_create_typed(1, 1));
+    azos_sched::set_current_task_tid(t2);
+    azos_sched::set_current_proc_tid(a);
+    let id2 = sys_ipc_lease_grant_typed(late, a as u64 | LEASE_GRANT_SEAL, 0);
+    assert!(id2 >= 0, "the second sealed grant was refused: {id2}");
+    azos_sched::set_current_proc_tid(0);
+    become_task(a, pt);
+    let lva = sys_shm_map_typed(late);
+    assert!(lva > 0, "map: {lva}");
+    assert!(!writable(pt, lva as usize), "a sibling thread's seal let the leader map the region writable");
+    azos_sched::set_current_task_tid(t2);
+    azos_sched::set_current_proc_tid(a);
+    assert_eq!(sys_ipc_lease_free(id2 as u64), 0);
+    azos_sched::set_current_proc_tid(0);
+    become_task(a, pt);
+    assert_eq!(sys_shm_release_typed(late), 0);
+
     // Thread `t2` of process `a` grants the sealed lease.
     azos_sched::set_current_task_tid(t2);
     azos_sched::set_current_proc_tid(a);

@@ -12,6 +12,7 @@ description = "Host stand-in for azos_ipc, used only by tests/host/syscall-tests
 irq-pending-canary = []
 # The pulled `lease.rs`'s wave-15 canary: matches a seal by thread again.
 lease-forget-tid-canary = []
+lease-sealed-by-thread-canary = []
 # Declared for the pulled `port.rs`'s `cfg(feature = "port-recheck-canary")`.
 port-recheck-canary = []
 # And for its `cfg(feature = "port-revoke-canary")` (wave 11, LEASE3).
