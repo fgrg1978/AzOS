@@ -2532,7 +2532,7 @@ QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-r
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
 .PHONY: x86_64 qemu-x86_64
-$(X86_64_KCONFIG): config/defconfigs/qemu-x86_64.config
+$(X86_64_KCONFIG): config/defconfigs/qemu-x86_64.config $(wildcard Kconfig config/Kconfig*)
 	@mkdir -p build
 	cp config/defconfigs/qemu-x86_64.config $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
