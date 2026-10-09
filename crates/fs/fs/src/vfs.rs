@@ -2588,7 +2588,16 @@ pub fn fd_fsync_finish(mut work: FsyncWork) -> Result<(), FsErr> {
             w.and_then(|()| backend.fsync(&backing.key))
         }
     };
-    fd_free(&mut work.lone, 0);
+    // The lent reference. If it is the last one (the descriptor was closed
+    // during the sync: that close saw this reference and did not flush), a
+    // write that landed after the copy is flushed here; nobody else can
+    // reach the inode any more, so the flush needs no lock.
+    let last = FS.lock().inodes[idx as usize].ref_count <= 1;
+    if last {
+        let _ = vfs_close(&mut work.lone, 0);
+    } else {
+        fd_free(&mut work.lone, 0);
+    }
     r
 }
 
