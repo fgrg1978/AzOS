@@ -126,6 +126,8 @@ pub mod spinlock {
 /// lockdep: they check nothing.
 pub mod lockdep {
     pub const ON: bool = false;
+    /// The log-flush task's lockdep printer (the flusher reads it).
+    pub const DRAIN_IN_LOG: bool = false;
     pub fn might_sleep(_what: &'static str) {}
     pub fn might_wait_device(_what: &'static str) {}
 }
