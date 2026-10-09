@@ -573,6 +573,16 @@ static FAT_PI_IO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32:
 static FAT_PI_IO_WATCHED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 #[cfg(feature = "fat-pi-io-probe")]
 static FAT_PI_IO_WATCH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// The same probe for FAT32 device I/O issued with preemption off on the
+/// issuing hart (a `SpinLock` or any other critical section held, or
+/// interrupts masked): the device round trip then runs inside the
+/// preempt-off window. A count, not a duration: how long that window lasts
+/// in virtual time follows when the host completes the request (also under
+/// `-icount`), how many requests it spans does not.
+#[cfg(feature = "fat-pi-io-probe")]
+static FAT_NOPREEMPT_IO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "fat-pi-io-probe")]
+static FAT_NOPREEMPT_IO_WATCHED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 #[inline(always)]
 fn pi_io_probe() {
@@ -586,6 +596,12 @@ fn pi_io_probe() {
                 FAT_PI_IO_WATCHED.fetch_add(1, Relaxed);
             }
             pi_io_site_record(tid);
+        }
+        if azos_sync::preempt::disabled() || !azos_sync::preempt::irqs_enabled() {
+            FAT_NOPREEMPT_IO.fetch_add(1, Relaxed);
+            if tid != 0 && tid == FAT_PI_IO_WATCH.load(Relaxed) {
+                FAT_NOPREEMPT_IO_WATCHED.fetch_add(1, Relaxed);
+            }
         }
     }
 }
@@ -630,6 +646,15 @@ pub fn fat32_pi_io_watch(tid: u32) {
 pub fn fat32_pi_io_counts() -> (u32, u32) {
     use core::sync::atomic::Ordering::Relaxed;
     (FAT_PI_IO_WATCHED.load(Relaxed), FAT_PI_IO.load(Relaxed))
+}
+
+/// FAT32 device I/Os issued with preemption off: (by the watched task, by any
+/// task). 0 for the watched FAT writer = no FAT update holds a spinning lock
+/// across a device round trip.
+#[cfg(feature = "fat-pi-io-probe")]
+pub fn fat32_preempt_off_io_counts() -> (u32, u32) {
+    use core::sync::atomic::Ordering::Relaxed;
+    (FAT_NOPREEMPT_IO_WATCHED.load(Relaxed), FAT_NOPREEMPT_IO.load(Relaxed))
 }
 
 /// First data sector of `cluster`, or `None` if the whole cluster does not fit

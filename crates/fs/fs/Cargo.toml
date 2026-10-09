@@ -59,14 +59,16 @@ content-stamp-off-canary = []
 file-census = []
 # Wave 15 (VF) gate canary: a `SpinLock` is held across every FAT-sector
 # claim (preemption off across the FAT update's device I/O). The `lat: ...
-# FAT spinlock canary` rows must print `[LAT] FAIL` with a fat32.rs site as
-# the worst preempt-off window. Never in a real build.
+# FAT spinlock canary` rows must count FAT device I/O issued with preemption
+# off (`[LAT] fat preempt_off_io=`), a count that does not follow host load.
+# Never in a real build.
 fat-mutate-spin-canary = []
 # Wave 15 (FM) canary: a `PiMutex` is held across every FAT-sector claim (the
 # VF shape, F1 broken); `fat-pi-io-probe` must count FAT device I/O under it.
 fat-mutate-pi-canary = []
 # Wave 15 (FM): count FAT32 device I/O issued while the task holds a
-# `PiMutex` (`fat32_pi_io_count`); the `lat-fat` smoke prints it. Costs a
+# `PiMutex` (`fat32_pi_io_count`), and with preemption off
+# (`fat32_preempt_off_io_counts`); the `lat-fat` smoke prints both. Costs a
 # PI-table scan per FAT32 device I/O, so diagnostic builds only.
 # It also records which `PiMutex`es were held (`fat32_pi_io_sites`).
 fat-pi-io-probe = ["azos_sync/pi-held-trace"]

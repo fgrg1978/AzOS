@@ -383,6 +383,11 @@ fn rt_task(num_cpus: usize) {
             kprintln!("[LAT] fat pi_io_site tid={} outer={:#x}({}) inner={:#x}({}) n={}",
                       tid, outer, name(outer), inner, name(inner), n);
         });
+        // And with preemption off (a spinning lock across the round trip):
+        // the writer's count must be 0; the `fat-mutate-spin-canary` rows
+        // need it non-zero, a count that does not follow host load.
+        let (mine, all) = azos_fs::fat32::fat32_preempt_off_io_counts();
+        kprintln!("[LAT] fat preempt_off_io={} preempt_off_io_all={}", mine, all);
         // Wave 15 (RL): virtio-blk completion waits, and those made with a
         // driver PiMutex held (BLK_LOCK across the request; must be 0).
         let (waits, locked) = azos_drv_virtio::virtio::blk::wait_probe_counts();

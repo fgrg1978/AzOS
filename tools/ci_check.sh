@@ -15402,6 +15402,18 @@ PYEOF
                 bad; echo "      no '[LAT] blk waits=<n> waits_locked=<n>' line: ${blk_line:-none}"; echo "      log kept: $log"; return
             fi ;;
         esac
+        # Wave 15 (BR): FAT32 device I/O the FAT writer issued with
+        # preemption off (`[LAT] fat preempt_off_io=`, a count: it does not
+        # follow host load). Every `lat-fat` kernel these rows boot must
+        # print 0; the `FAT spinlock canary` rows below must count some.
+        case "$feats" in *lat-fat*|*fat-mutate-pi-canary*|*blk-lock-wait-canary*)
+            local np_io
+            np_io="$(grep -a '^\[LAT\] fat preempt_off_io=' "$clean" | sed -n '1s/^\[LAT\] fat preempt_off_io=\([0-9][0-9]*\) preempt_off_io_all=[0-9][0-9]*$/\1/p')"
+            if [ "$np_io" != 0 ]; then
+                bad; echo "      FAT device I/O with preemption off, or no '[LAT] fat preempt_off_io=<n> preempt_off_io_all=<n>' line: preempt_off_io=${np_io:-none}"
+                echo "      log kept: $log"; return
+            fi ;;
+        esac
         if [ "$expect" = BLKCANARY ]; then
             if [ "$blk_locked" != 0 ]; then
                 ok; echo "      completion waits with BLK_LOCK held: ${blk_line#\[LAT\] } (canary)"; rm -f "$log" "$clean"
@@ -15449,6 +15461,7 @@ PYEOF
             if grep -aq '^\[LAT\] PASS ' "$clean"; then
                 ok; echo "      ${result#\[LAT\] }"
                 [ -n "$pi_io" ] && grep -a '^\[LAT\] fat pi_io=' "$clean" | sed -n '1s/^\[LAT\] /      /p'
+                grep -a '^\[LAT\] fat preempt_off_io=' "$clean" | sed -n '1s/^\[LAT\] /      /p'
                 [ -n "$blk_line" ] && printf '      %s\n' "${blk_line#\[LAT\] }"
                 rm -f "$log" "$clean"
             else
@@ -15589,9 +15602,9 @@ PYEOF
     # across the FAT update's I/O: per-FAT-sector claims (see below).
     #
     # The canary rows build `fat-mutate-spin-canary` (the `SpinLock` back,
-    # with the tracer): `[LAT] FAIL`, and the tracer's worst preempt-off
-    # site is in fat32.rs and longer than the bound. Compile errors: the
-    # build's own FAIL line.
+    # with the tracer): the FAT writer issues device I/O with preemption off
+    # (`[LAT] fat preempt_off_io=` > 0; the rows above require 0). Compile
+    # errors: the build's own FAIL line.
     fat_lat_canary_row() { # fat_lat_canary_row <label> <isa: rv|arm> <features>
         local label="$1" isa="$2" feats="$3"
         if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
@@ -15643,17 +15656,24 @@ PYEOF
             bad; echo "      the FAT writer or the hog did not run:"; grep -a '^\[LAT\] load ' "$clean" | sed 's/^/      /'
             echo "      log kept: $log"; return
         fi
-        if ! grep -aq '^\[LAT\] FAIL ' "$clean"; then
-            bad; echo "      the FAT spinlock canary did not fail the bound: ${result}"
+        # The verdict is a COUNT (wave 15, BR): FAT device I/O the FAT writer
+        # issued with preemption off. The window's LENGTH is not a verdict:
+        # under -icount the virtual clock still runs while the host serves
+        # the virtio-blk request (and jumps to the next timer when the hart
+        # idles), so the same kernel measured 61 us to 3.5 ms against the
+        # 100 us bound depending on host load. Length and `[LAT]` verdict
+        # are printed for information only.
+        local np_line np_io
+        np_line="$(grep -a '^\[LAT\] fat preempt_off_io=' "$clean" | sed -n 1p)"
+        np_io="$(printf '%s\n' "$np_line" | sed -n 's/^\[LAT\] fat preempt_off_io=\([0-9][0-9]*\) preempt_off_io_all=[0-9][0-9]*$/\1/p')"
+        if [ -z "$np_io" ] || [ "$np_io" = 0 ]; then
+            bad; echo "      the FAT spinlock canary counted no FAT I/O with preemption off: ${np_line:-no '[LAT] fat preempt_off_io=' line}"
             echo "      log kept: $log"; return
         fi
         top="$(grep -a '^\[LATTRACE\] run preempt top1 ' "$clean" | sed -n 1p)"
         max="$(printf '%s\n' "$top" | sed -n 's/.* max_ns=\([0-9]*\) .*/\1/p')"
-        if ! printf '%s\n' "$top" | qgrep -q ' site=crates/fs/fs/src/fat32.rs:' || [ -z "$max" ] || [ "$max" -le 100000 ]; then
-            bad; echo "      the worst preempt-off window is not a fat32.rs site over 100 us: ${top:-none}"
-            echo "      log kept: $log"; return
-        fi
-        ok; echo "      ${result#\[LAT\] }"; echo "      preempt-off max ${max} ns at ${top##* site=}"
+        ok; echo "      FAT device I/O with preemption off: preempt_off_io=${np_io} (canary)"
+        echo "      info: ${result#\[LAT\] }"; echo "      info: preempt-off max ${max:-?} ns at ${top##* site=}"
         rm -f "$log" "$clean"
     }
     par_row -s lat_wake_row "lat: riscv64 wake-up, FAT writes" rv "qemu,lat-fat" PASS
