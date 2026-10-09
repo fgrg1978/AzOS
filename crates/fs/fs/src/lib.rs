@@ -30,6 +30,8 @@ pub use fat32::{
     // Write-back (wave 15): the `fs-wb` task's pass, its hooks and gauges.
     fat32_writeback_tick, fat32_writeback_hooks, fat32_writeback_period_ms,
     fat32_writeback_dirty, fat32_set_writeback, fat32_writeback_now, fat32_write_file_queued,
+    // io_ring OP_FSYNC (K1): flush tickets served by the `fs-wb` task.
+    fat32_flush_request, fat32_flush_done, fat32_flush_service,
     // File-level API (phase AS).
     fat32_mount_volume, fat32_unmount,
     fat32_open, fat32_read, fat32_write, fat32_seek, fat32_fsync, fat32_close,

@@ -25,7 +25,11 @@ use azos_ipc::io_ring::{IoRingOps, OpResult, IO_ERR_INVALID_OP};
 use azos_robot::{motor_set_reporting, motor_stop_reporting, MotorDir, MOTOR_REFUSED_HALTED};
 
 /// The table `io_ring_register_ops` installs.
-pub static KERNEL_IORING_OPS: IoRingOps = IoRingOps {
+pub static KERNEL_IORING_OPS: IoRingOps = KERNEL_IORING_OPS_TABLE;
+
+/// [`KERNEL_IORING_OPS`] as a constant, for a table that replaces a few
+/// entries with struct-update syntax (the K1 ktest's file stand-in).
+pub const KERNEL_IORING_OPS_TABLE: IoRingOps = IoRingOps {
     syscall_allowed,
     write_contained,
     read_sensor,
@@ -50,6 +54,8 @@ pub static KERNEL_IORING_OPS: IoRingOps = IoRingOps {
     // answered `-ENOSYS` on a kernel that had the syscall.
     notify_wait_nr: Some(azos_abi::syscall_nr::SYS_NOTIFY_WAIT),
     notify_word,
+    file_fsync,
+    fsync_done,
 };
 
 #[inline]
@@ -302,6 +308,35 @@ fn file_io(owner_tid: u32, cap_raw: u32, write: bool, buf: *mut u8, len: usize) 
         ops.read_as(owner_tid, fd, unsafe { core::slice::from_raw_parts_mut(buf, len) })
     };
     Ok(n.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+}
+
+/// `OP_FSYNC` (K1): the handle resolved in the OWNER's table as
+/// `SYS_FSYNC_TYPED` resolves it (any permission; a directory-tree handle is
+/// the wrong kind), then a flush is ASKED for the owner's descriptor. The
+/// submitter never waits on the device: the flusher (`fs-wb`) does the I/O
+/// and `io_ring_flush_posted` completes the entry.
+fn file_fsync(owner_tid: u32, cap_raw: u32) -> azos_ipc::io_ring::OpResult64 {
+    use azos_abi::cap::{CapHandle, CapKind, CapPerms};
+    use azos_ipc::cap::{targets::File, Cap};
+    let cap: Cap<File> = Cap::from_raw(CapHandle::from_raw(cap_raw));
+    let fd = match azos_ipc::cap_store::with_table(owner_tid, |t| t.get(cap, CapPerms::NONE)) {
+        Some(Ok(fd)) if azos_ipc::file_cap::is_tree_resource(fd) => {
+            return refuse(owner_tid, CapKind::File, azos_ipc::cap::CapError::WrongKind).map(|_| 0)
+        }
+        Some(Ok(fd)) => fd as i32,
+        Some(Err(e)) => return refuse(owner_tid, CapKind::File, e).map(|_| 0),
+        None => return Err(errno(Errno::EINVAL)),
+    };
+    let Some(ops) = crate::file_ops::file_ops() else { return Err(-1) };
+    ops.fsync_request_as(owner_tid, fd).map_err(|e| e.clamp(i32::MIN as i64, -1) as i32)
+}
+
+/// Has flush `ticket` completed (`FileOps::fsync_done`)?
+fn fsync_done(ticket: u64) -> Option<i32> {
+    match crate::file_ops::file_ops() {
+        Some(ops) => ops.fsync_done(ticket).map(|r| r.clamp(i32::MIN as i64, 0) as i32),
+        None => Some(-1),
+    }
 }
 
 /// A channel call's answer: a capability refusal is refused and recorded, the

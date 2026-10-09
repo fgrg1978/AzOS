@@ -11087,8 +11087,8 @@ PY
     # (crates/core/chaos) and check the fault is refused cleanly, leaks
     # nothing and is counted; the `decision_*` tests read the boot's
     # admission record and a capability denial's (crates/core/decision).
-    KTEST_N_RV=25
-    KTEST_N_ARM=25
+    KTEST_N_RV=26
+    KTEST_N_ARM=26
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
@@ -11176,9 +11176,11 @@ PY
     # hit), armed by the command line.
     # `chaos-leak`: an injected frame failure loses a frame
     # (`chaos_frame_alloc_no_leak`); `decision-skip`: no decision record is
-    # written (`decision_admission_recorded`, `decision_cap_denial_recorded`).
-    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip,chaos-leak,decision-skip"
-    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded"
+    # written (`decision_admission_recorded`, `decision_cap_denial_recorded`);
+    # `ioring-fsync-inline` (K1): an io_ring OP_FSYNC waits for the device in
+    # the submit and completes there (`ioring_fsync_completes_after_flush`).
+    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip,chaos-leak,decision-skip,ioring-fsync-inline"
+    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded ioring_fsync_completes_after_flush"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     # A64_PAN=probe: `canary=pan-patch-skip` leaves every UserAccess site the
@@ -11252,7 +11254,7 @@ PY
     # +9 with Kconfig CHAOS / DECISION_RECORDS (`chaos`, `decisions` ride in
     # every x86 ktest kernel, as on rv and arm); +2 x86_low_half_maps_no_ram,
     # x86_direct_map_image_alias_read_only.
-    KTEST_N_X86=27
+    KTEST_N_X86=28
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -11360,8 +11362,10 @@ PY
     }
     par "ktest (x86)" x86_ktest_row "ktest (x86)" "" ""
     par "ktest tlb local-only canary (x86)" x86_ktest_row "ktest tlb local-only canary (x86)" ",tlb-local-only" "tlb_shootdown_cross_cpu"
+    # The same boot carries K1's `ioring-fsync-inline` (an io_ring OP_FSYNC
+    # completes in the submit): `ioring_fsync_completes_after_flush`.
     par "ktest fork FP runtime canary (x86)" x86_ktest_row "ktest fork FP runtime canary (x86)" "" \
-        "x86_ring3_syscall_fork_fp" "canary=x86-fork-fp-skip"
+        "x86_ring3_syscall_fork_fp ioring_fsync_completes_after_flush" "canary=x86-fork-fp-skip,ioring-fsync-inline"
     par "ktest chaos-inert canary (x86)" x86_ktest_row "ktest chaos-inert canary (x86)" "" \
         "$KTEST_CHAOS_INERT" "canary=chaos-inert"
     par "ktest low-half alias runtime canary (x86)" x86_ktest_row "ktest low-half alias runtime canary (x86)" "" \

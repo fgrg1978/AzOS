@@ -298,6 +298,7 @@ mod error_tests {
             Errno::ENOSYS,
             Errno::ENAMETOOLONG,
             Errno::ENOTEMPTY,
+            Errno::ECANCELED,
             Errno::ENOTOWNER,
             Errno::ECAPKIND,
             Errno::ECAPPERMS,

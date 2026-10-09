@@ -38,6 +38,9 @@ azos_arch = { path = "shims/arch", package = "ipc_lease_test_arch" }
 # `crates/core/ipc/src/irq_bind.rs`'s canary, host side: with it on, the pending
 # tests in that file's suite fail (a delivery before the wait is lost).
 irq-pending-canary = []
+# io_ring K1 canary: OP_FSYNC completes in the submit (the synchronous answer),
+# so `a_write_is_queued_and_its_fsync_completes_only_after_the_flush` goes red.
+ioring-sync-fsync-canary = []
 # `crates/core/ipc/src/port.rs`'s canary: `port_wait_begin_at` checks for an
 # event and registers the waiter in two `PORTS` holds instead of one; the
 # lost-wakeup test in that file's suite fails (the event in the gap wakes

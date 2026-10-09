@@ -37,6 +37,16 @@ pub const SQ_F_SQPOLL: u32 = 1 << 0;
 pub const SQ_F_NEED_WAKEUP: u32 = 1 << 1;
 /// `CqEntry::flags` bit: the kernel refused the entry; `result` is `-Errno`.
 pub const CQE_F_REFUSED: u32 = 1 << 0;
+/// `CqEntry::flags` bit: the operation was accepted onto a queue (the FAT32
+/// write-back cache, a NIC TX ring) and is not yet durable or on the wire.
+pub const CQE_F_QUEUED: u32 = 1 << 1;
+/// `CqEntry::flags` bit: an `OP_FSYNC` completed at a flush point: every
+/// write queued before it reached the device and the device flushed.
+pub const CQE_F_DURABLE: u32 = 1 << 2;
+/// `SqEntry::flags` bit: link the next entry to this one. The next entry
+/// runs only if this one completed now and succeeded; otherwise it
+/// completes with `-ECANCELED` and `CQE_F_REFUSED` without running.
+pub const SQE_F_LINK: u16 = 1 << 0;
 
 /// No operation: completes with 0 (batching measurements).
 pub const OP_NOP: u16 = 0;
@@ -76,3 +86,6 @@ pub const OP_TIMER: u16 = 16;
 pub const OP_NOTIFY_WAIT: u16 = 17;
 /// Ask for a kernel SQ poller (topology permit required).
 pub const OP_SQPOLL_START: u16 = 18;
+/// Make the writes queued before it durable (twin of the typed fsync);
+/// completes with `CQE_F_DURABLE` after the flush, never by waiting in submit.
+pub const OP_FSYNC: u16 = 19;

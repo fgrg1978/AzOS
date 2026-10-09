@@ -16,10 +16,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 // The page layout, opcodes and flags: one definition in `crates/core/abi`, which the
 // kernel's `IoRing` is asserted against at compile time.
 pub use azos_abi::io_ring::{
-    CQ_ENTRIES, CQ_HEAD, CQ_SIZE, CQ_TAIL, CQE_F_REFUSED, DATA, DATA_SIZE, OP_CHAN_RECV,
-    OP_CHAN_SEND, OP_FILE_READ, OP_FILE_WRITE, OP_NOP, OP_NOTIFY_WAIT, OP_READ_GPIO,
+    CQ_ENTRIES, CQ_HEAD, CQ_SIZE, CQ_TAIL, CQE_F_DURABLE, CQE_F_QUEUED, CQE_F_REFUSED, DATA, DATA_SIZE, OP_CHAN_RECV,
+    OP_CHAN_SEND, OP_FILE_READ, OP_FILE_WRITE, OP_FSYNC, OP_NOP, OP_NOTIFY_WAIT, OP_READ_GPIO,
     OP_READ_SENSOR, OP_SQPOLL_START, OP_TIMER, OP_WRITE_GPIO, SQ_ENTRIES, SQ_FLAGS,
-    SQ_F_NEED_WAKEUP, SQ_F_SQPOLL, SQ_HEAD, SQ_SIZE, SQ_TAIL,
+    SQE_F_LINK, SQ_F_NEED_WAKEUP, SQ_F_SQPOLL, SQ_HEAD, SQ_SIZE, SQ_TAIL,
 };
 
 /// One completion: `(user_data, result, flags)`.

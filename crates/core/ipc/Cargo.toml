@@ -38,6 +38,9 @@ irq-pending-canary = []
 # `port.rs`'s lost-wakeup canary. Only its host suite (`tests/host/ipc-lease-tests`)
 # acts on it (`cfg(all(test, ...))`); declared here so the cfg is known.
 port-recheck-canary = []
+# io_ring K1 canary: OP_FSYNC completes in the submit (the synchronous answer),
+# so `a_write_is_queued_and_its_fsync_completes_only_after_the_flush` goes red.
+ioring-sync-fsync-canary = []
 # `port.rs`'s capability-binding canary (wave 11, LEASE3): `port_cap_event`
 # ignores every event, so a binding outlives a revoke. Host suite only.
 port-revoke-canary = []

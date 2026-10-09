@@ -175,6 +175,20 @@ pub trait FileOps: Sync {
     /// implementation still applies its owner check.
     fn fsync(&self, _fd: i32) -> i64 { -1 }
 
+    /// io_ring `OP_FSYNC` (K1): for descriptor `fd` of task `tid`, ASK for a
+    /// flush of every write queued so far and answer its ticket, without
+    /// waiting on the device (the flusher task does the I/O). `Err` with a
+    /// negative errno for a descriptor `tid` does not own. The default runs
+    /// [`FileOps::fsync`] inline and answers ticket 0 (always done): a seam
+    /// with no flusher stays correct, synchronously.
+    fn fsync_request_as(&self, _tid: u32, fd: i32) -> Result<u64, i64> {
+        match self.fsync(fd) { 0 => Ok(0), e => Err(e) }
+    }
+
+    /// Has flush `ticket` completed? `None` while it runs, `Some(0)` once
+    /// durable, `Some(-errno)` when it failed.
+    fn fsync_done(&self, _ticket: u64) -> Option<i64> { Some(0) }
+
     /// `SYS_STATFS`: capacity and free space of the filesystem `path` is on.
     fn statfs(&self, _path: &[u8]) -> Result<StatFsOut, i64> { Err(-1) }
 }

@@ -70,6 +70,10 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/net.rs: with EVENT_IDX negotiated, interrupts are still switched
     // with avail.flags, which the device ignores (`ifconfig` irqs ~ frames).
     "net-event-idx-flags",
+    // boot/seams.rs `fsync_request_as`: an io_ring OP_FSYNC flushes inline,
+    // the submitter waiting on the device, and completes in the submit
+    // (ktest `ioring_fsync_completes_after_flush`; the K1 "before" number).
+    "ioring-fsync-inline",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

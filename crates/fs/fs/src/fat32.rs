@@ -1073,6 +1073,73 @@ pub fn fat32_writeback_tick(now_ms: u64) -> bool {
     true
 }
 
+// ── Flush tickets (io_ring `OP_FSYNC`, K1) ────────────────────────────────
+//
+// An asynchronous fsync: the asker takes a ticket and wakes the `fs-wb` task;
+// the task runs `fat32_sync_checked` (journal settle, write back every epoch,
+// device flush) and marks every ticket asked before the sync began done. A
+// write made before a ticket was taken is in that ticket's flush: the task
+// reads the asked count BEFORE it syncs. Never waits in the asker: an RT
+// submitter only enqueues. With no `fs-wb` task (FS_WRITEBACK=n, or before it
+// runs) the asker syncs inline, as write-through writes wait anyway.
+
+/// Last ticket asked for.
+static FLUSH_ASKED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Every ticket `<=` this is done.
+static FLUSH_DONE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Tickets `[FLUSH_FAIL_LO, FLUSH_FAIL_HI]` were covered by a failed flush
+/// (the union of every failure: an error is never lost, a ticket a later
+/// failure's range spans may read -EIO although its own flush succeeded).
+static FLUSH_FAIL_LO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(u64::MAX);
+static FLUSH_FAIL_HI: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// One flush on behalf of every ticket in `(done, upto]`.
+fn flush_for_tickets(upto: u64) {
+    use core::sync::atomic::Ordering::SeqCst;
+    let from = FLUSH_DONE.load(SeqCst) + 1;
+    if fat32_sync_checked().is_err() {
+        FLUSH_FAIL_LO.fetch_min(from, SeqCst);
+        FLUSH_FAIL_HI.fetch_max(upto, SeqCst);
+    }
+    FLUSH_DONE.fetch_max(upto, SeqCst);
+}
+
+/// Ask for a flush of every write made so far; answers the ticket to wait
+/// for with [`fat32_flush_done`]. Wakes the `fs-wb` task and returns; with no
+/// task to wake, flushes inline (write-through mode).
+pub fn fat32_flush_request() -> u64 {
+    use core::sync::atomic::Ordering::SeqCst;
+    let t = FLUSH_ASKED.fetch_add(1, SeqCst) + 1;
+    if WB && WB_WAKE.load(SeqCst) != 0 {
+        wb_wake();
+    } else {
+        flush_for_tickets(t);
+    }
+    t
+}
+
+/// `None` while ticket `t`'s flush runs; `Some(Ok)` once durable,
+/// `Some(Err(Io))` when a flush covering it failed.
+pub fn fat32_flush_done(t: u64) -> Option<Result<(), FsError>> {
+    use core::sync::atomic::Ordering::SeqCst;
+    if FLUSH_DONE.load(SeqCst) < t { return None; }
+    if FLUSH_FAIL_LO.load(SeqCst) <= t && t <= FLUSH_FAIL_HI.load(SeqCst) {
+        Some(Err(FsError::Io))
+    } else {
+        Some(Ok(()))
+    }
+}
+
+/// The `fs-wb` task's half: run one flush for every ticket asked so far.
+/// Returns whether it ran one (the caller then posts the completions).
+pub fn fat32_flush_service() -> bool {
+    use core::sync::atomic::Ordering::SeqCst;
+    let upto = FLUSH_ASKED.load(SeqCst);
+    if upto <= FLUSH_DONE.load(SeqCst) { return false; }
+    flush_for_tickets(upto);
+    true
+}
+
 /// Write every queued write back and flush the device now (what `sync`
 /// does without settling the journal). A no-op flush under write-through.
 pub fn fat32_writeback_now() -> Result<(), FsError> {

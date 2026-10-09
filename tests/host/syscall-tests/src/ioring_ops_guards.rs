@@ -30,7 +30,7 @@ use azos_drv_actuator::pwm::{set_pwm_probe, PwmOp};
 use azos_ipc::cap::targets::{Motor, Pwm, Sensor};
 use azos_ipc::cap::CapTarget;
 use azos_ipc::io_ring::{
-    CqEntry, IoRing, SqEntry, CQE_F_REFUSED, OP_CHAN_RECV, OP_CHAN_SEND, OP_FILE_READ, OP_FILE_WRITE,
+    CqEntry, IoRing, SqEntry, CQE_F_DURABLE, CQE_F_QUEUED, CQE_F_REFUSED, OP_FSYNC, OP_CHAN_RECV, OP_CHAN_SEND, OP_FILE_READ, OP_FILE_WRITE,
     OP_MOTOR_SPEED, OP_NOP, OP_PWM_SET, OP_READ_SENSOR, OP_TIMER,
     RING_CQ_SIZE, RING_SQ_SIZE,
 };
@@ -444,6 +444,15 @@ impl crate::file_ops::FileOps for RingDisk {
         FILE_WRITES.lock().unwrap_or_else(|e| e.into_inner()).push(src.to_vec());
         src.len() as i64
     }
+    fn fsync_request_as(&self, tid: u32, fd: i32) -> Result<u64, i64> {
+        if fd != 3 || !crate::file_ops::fd_owned_by(fd3_owner(), tid, 0) {
+            return Err(Errno::EBADF.to_syscall_ret());
+        }
+        Ok(FLUSH_ASKED.fetch_add(1, Ordering::SeqCst) as u64 + 1)
+    }
+    fn fsync_done(&self, ticket: u64) -> Option<i64> {
+        (FLUSH_DONE.load(Ordering::SeqCst) as u64 >= ticket).then_some(0)
+    }
     fn lseek(&self, _fd: i32, _offset: i64, _whence: i32) -> i64 { -1 }
     fn dup(&self, _fd: i32) -> i64 { -1 }
     fn dup2(&self, _oldfd: i32, _newfd: i32) -> i64 { -1 }
@@ -455,6 +464,9 @@ impl crate::file_ops::FileOps for RingDisk {
 }
 
 static RING_DISK: RingDisk = RingDisk;
+/// `RingDisk`'s flush tickets: asked, and done (the test is the flusher).
+static FLUSH_ASKED: AtomicU32 = AtomicU32::new(0);
+static FLUSH_DONE: AtomicU32 = AtomicU32::new(0);
 static FILE_WRITES: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
 /// Every typed denial record, `(kind code, reason code)`.
@@ -518,7 +530,7 @@ fn a_file_entry_resolves_the_owners_handle_and_records_a_refusal() {
     assert!(FILE_WRITES.lock().unwrap().is_empty(), "a refused write reached the file");
 
     let (_, c) = unsafe { submit(cap, ring, sqe(OP_FILE_WRITE, rw, 0, 8)) };
-    assert_eq!(done(c), (8, 0));
+    assert_eq!(done(c), (8, CQE_F_QUEUED), "a write completes queued (K1)");
 
     azos_ipc::cap::degraded_set(true);
     let (_, c) = unsafe { submit(cap, ring, sqe(OP_FILE_WRITE, rw, 0, 8)) };
@@ -528,6 +540,41 @@ fn a_file_entry_resolves_the_owners_handle_and_records_a_refusal() {
     azos_ipc::cap::degraded_set(false);
     assert_eq!(typed_seen().len(), 1, "containment was recorded as a denial");
     assert_eq!(FILE_WRITES.lock().unwrap().len(), 1);
+}
+
+/// **K1: an `OP_FSYNC` entry is `SYS_FSYNC_TYPED` below the trap, without
+/// the wait.** The owner's `Cap<File>` resolves with any permission (a READ
+/// handle syncs, as Linux's fsync on a read-only descriptor); a forged handle
+/// is refused `-ECAPSTALE` and recorded. The submit answers no completion for
+/// it: the entry parks on its flush ticket and completes `CQE_F_DURABLE` only
+/// when the flusher posts (`io_ring_flush_posted`).
+///
+/// **Canary** `ioring-sync-fsync-canary` (shim ipc): the fsync completes in
+/// the submit, `n == 1`.
+#[test]
+fn an_fsync_entry_resolves_the_owners_handle_and_completes_after_the_flush() {
+    use azos_ipc::cap::targets::File;
+    use azos_ipc::cap::CapError;
+    let _g = serial();
+    let (s, pt) = ring3();
+    let _f = file_scene();
+    let (cap, _va, ring) = create(pt);
+    let rd = grant::<File>(s.tid, CapPerms::READ, 3) as u32;
+
+    let (n, c) = unsafe { submit(cap, ring, sqe(OP_FSYNC, 0xDEAD_0000, 0, 0)) };
+    assert_eq!((n, done(c)), (1, (Errno::ECAPSTALE.to_syscall_ret() as i32, CQE_F_REFUSED)));
+    assert_eq!(typed_seen(), vec![(CapKind::File.denial_code(), CapError::Stale.code())]);
+
+    let asked = FLUSH_ASKED.load(Ordering::SeqCst);
+    let (n, _) = unsafe { submit(cap, ring, sqe(OP_FSYNC, rd, 0, 0)) };
+    assert_eq!(n, 0, "the fsync completed in the submit, before its flush");
+    assert_eq!(FLUSH_ASKED.load(Ordering::SeqCst), asked + 1, "the fsync asked for no flush");
+    let cq = unsafe { (*ring).cq_tail.load(Ordering::Acquire) };
+    FLUSH_DONE.store(asked + 1, Ordering::SeqCst);
+    azos_ipc::io_ring::io_ring_flush_posted();
+    let c = unsafe { (*ring).cq_entries[cq as usize % RING_CQ_SIZE] };
+    assert_eq!(unsafe { (*ring).cq_tail.load(Ordering::Acquire) }, cq.wrapping_add(1), "the flush posted nothing");
+    assert_eq!((c.user_data, done(c)), (0x5eed, (0, CQE_F_DURABLE)));
 }
 
 /// **A channel entry is the typed channel call below the trap**, on a real

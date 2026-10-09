@@ -103,3 +103,6 @@ pub(crate) mod tail_smoke;
 pub(crate) mod energy_smoke;
 #[cfg(feature = "ktest")]
 pub(crate) mod rt_console;
+// K1: an io_ring fsync completes after the flush, posted by the flush path.
+#[cfg(feature = "ktest")]
+pub(crate) mod ioring_k1;

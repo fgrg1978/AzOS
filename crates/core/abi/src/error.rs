@@ -84,6 +84,9 @@ pub enum Errno {
     ENAMETOOLONG = 36,
     /// Directory not empty (`SYS_RMDIR`; Linux's value).
     ENOTEMPTY = 39,
+    /// Operation canceled (Linux's value): an io_ring entry linked
+    /// (`SQE_F_LINK`) to one that failed or did not complete in its pass.
+    ECANCELED = 125,
     /// Not the object's owner, or not otherwise authorized for this call —
     /// `-99`, the value `crates/core/syscall`'s handlers have returned as their
     /// own `E_PERM` since before this table existed (`handlers.rs::E_PERM`,
@@ -172,6 +175,7 @@ impl Errno {
             36 => Some(Errno::ENAMETOOLONG),
             38 => Some(Errno::ENOSYS),
             39 => Some(Errno::ENOTEMPTY),
+            125 => Some(Errno::ECANCELED),
             99 => Some(Errno::ENOTOWNER),
             200 => Some(Errno::ECAPKIND),
             201 => Some(Errno::ECAPPERMS),
@@ -216,6 +220,7 @@ impl fmt::Display for Errno {
             Errno::ENOSYS => "function not implemented",
             Errno::ENAMETOOLONG => "file name too long",
             Errno::ENOTEMPTY => "directory not empty",
+            Errno::ECANCELED => "operation canceled",
             Errno::ENOTOWNER => "not the object's owner, or not otherwise authorized",
             Errno::ECAPKIND => "capability has wrong kind",
             Errno::ECAPPERMS => "capability missing required permission",

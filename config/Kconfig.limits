@@ -910,6 +910,24 @@ config MAX_IO_RINGS
       Ceiling: 256 (a compile-time assertion in io_ring.rs: the Cap<IoRing>
       index is 8 bits); the Kconfig range already stops there.
 
+config IORING_MAX_PARKED
+    int "io_ring: entries one ring holds parked (timers, waits, fsyncs)"
+    range 1 32
+    default 8 if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
+    default 8
+    help
+      crates/core/ipc/src/io_ring.rs, RING_MAX_PARKED (was the literal 8).
+      An OP_TIMER, OP_NOTIFY_WAIT or OP_FSYNC that cannot complete in its
+      pass parks here instead of blocking the submitter; each parked entry
+      reserves one CQ slot (of 32), so at most this many completions are
+      held back from new entries. A ring that holds this many refuses the
+      next parking entry with -EBUSY (CQE_F_REFUSED).
+
+      Cost: 24 B of .bss per parked slot per ring (MAX_IO_RINGS x this),
+      the same on every ISA; a pass scans the slots only while one is
+      occupied. Raise it for a client that keeps many timers or fsyncs in
+      flight; at most 32 (the CQ size).
+
 config VFS_MAX_FILES
     int "Maximum inodes in the in-kernel RAM filesystem"
     range 64 4096

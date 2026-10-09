@@ -347,7 +347,11 @@ address.
   - Shared-memory regions can be mapped by several tasks.
   - `io_ring` is a submission and completion ring shared between a task and
     the kernel. The kernel checks each entry against the task's filter and
-    capabilities.
+    capabilities. A file write or a send completes when it is queued (flag
+    `QUEUED`); an `OP_FSYNC` never waits in the submit: it parks and is
+    completed `DURABLE` from the filesystem's flush task once the flush is
+    done. A `LINK` flag on an entry makes the next one run only if it
+    succeeded, and a linked entry that parks holds back the rest.
   - Single-producer single-consumer rings in a shared region carry data
     between tasks and from kernel sensor streams to ring 3.
 - **Notifications.** A futex-style wait and wake on a word in a

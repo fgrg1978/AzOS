@@ -471,6 +471,11 @@ fn fs_writeback_task(_: usize) {
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
     loop {
         FS_WB_KICK.store(false, SeqCst);
+        // io_ring OP_FSYNC (K1): a flush asked for runs now, whatever the
+        // age, and its completions are posted from here.
+        if azos_fs::fat32_flush_service() {
+            azos_ipc::io_ring::io_ring_flush_posted();
+        }
         azos_fs::fat32_writeback_tick(fs_wb_now_ms());
         let end = azos_drv_sys::timebase::now() + azos_fs::fat32_writeback_period_ms() * per_ms;
         while azos_drv_sys::timebase::now() < end && !FS_WB_KICK.load(SeqCst) {

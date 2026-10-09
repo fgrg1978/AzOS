@@ -750,6 +750,28 @@ pub(crate) fn install_ring3_seams() {
                 });
                 match r { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
+            fn fsync_request_as(&self, tid: u32, fd: i32) -> Result<u64, i64> {
+                {
+                    let t = KERNEL_FD_TABLE.lock();
+                    if !azos_syscall::file_ops::fd_owned_by(
+                        azos_fs::fd_owner(&t, fd), tid, azos_fs::FD_NO_OWNER) {
+                        return Err(azos_abi::error::Errno::EBADF.to_syscall_ret());
+                    }
+                }
+                // The synchronous answer K1 replaced: the submitter waits
+                // for the device (ktest `ioring_fsync_completes_after_flush`).
+                if canary!("ioring-fsync-inline") {
+                    return match self.fsync(fd) { 0 => Ok(0), e => Err(e) };
+                }
+                // FAT32's fsync is the volume's (`fat32_sync_checked`), so a
+                // volume flush ticket is this descriptor's.
+                Ok(azos_fs::fat32_flush_request())
+            }
+            fn fsync_done(&self, ticket: u64) -> Option<i64> {
+                if ticket == 0 { return Some(0); }
+                azos_fs::fat32_flush_done(ticket)
+                    .map(|r| if r.is_ok() { 0 } else { azos_abi::error::Errno::EIO.to_syscall_ret() })
+            }
             fn statfs(&self, path: &[u8]) -> Result<azos_syscall::file_ops::StatFsOut, i64> {
                 let st = azos_fs::vfs_statfs(path).map_err(fs_errno)?;
                 Ok(azos_syscall::file_ops::StatFsOut {

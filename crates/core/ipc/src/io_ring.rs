@@ -20,7 +20,7 @@
 //!   CQ (Completion Queue): kernel writes results, userspace reads
 //!   Data buffer: large results (LiDAR scans, camera frames)
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use azos_sync::SpinLock;
 
 use crate::cap::objref;
@@ -115,6 +115,26 @@ pub const CHAN_MSG_MAX: usize = 64;
 /// op table's own rules (the motor layer's halt rule among them).
 pub const OP_SQPOLL_START: u16 = 18;
 
+/// Make every write queued before this entry durable (twin of
+/// `SYS_FSYNC_TYPED`: `param0` is a `Cap<File>`, any permission). Never waits
+/// in the submit: the entry asks the filesystem's flusher for a flush
+/// ([`IoRingOps::file_fsync`] answers a ticket) and parks; it completes with
+/// [`CQE_F_DURABLE`] once that flush is done ([`IoRingOps::fsync_done`]), from
+/// the flush path ([`io_ring_flush_posted`]) or the ring's next pass,
+/// whichever claims the ring first. A real-time submitter only enqueues.
+pub const OP_FSYNC: u16 = 19;
+
+/// [`SqEntry::flags`] bit: the next entry runs only after this one completed
+/// in its pass with a non-negative result. A failed or refused linked entry
+/// completes the next one with `-ECANCELED` and [`CQE_F_REFUSED`] without
+/// running it (and so on down the chain). A linked entry that PARKS (an
+/// `OP_FSYNC`, a timer) is a barrier: the pass stops consuming the SQ until
+/// it completes; if it then fails, the next entry is canceled. The chain is
+/// the run of LINK entries in SQ order; writes before an `OP_FSYNC` are in
+/// its flush by SQ order alone, the link adds "do not run the fsync if the
+/// write failed" and, the other way, "nothing after the fsync before it".
+pub const SQE_F_LINK: u16 = 1 << 0;
+
 /// [`IoRing::sq_flags`] bit: an SQ poller runs this ring.
 pub const SQ_F_SQPOLL: u32 = 1 << 0;
 /// [`IoRing::sq_flags`] bit: the poller has parked; ring 3 must call
@@ -124,10 +144,12 @@ pub const SQ_F_SQPOLL: u32 = 1 << 0;
 /// the other.
 pub const SQ_F_NEED_WAKEUP: u32 = 1 << 1;
 
-/// Most entries (timers and waits) one ring holds parked at once. Each parked
+/// Most entries (timers, waits and fsyncs) one ring holds parked at once
+/// (Kconfig `IORING_MAX_PARKED`, default 8). Each parked
 /// entry holds one reserved completion slot, so a parked entry can always
 /// complete; the reservation counts against the CQ's back-pressure.
-pub const RING_MAX_PARKED: usize = 8;
+pub const RING_MAX_PARKED: usize = azos_limits::IORING_MAX_PARKED;
+const _: () = assert!(RING_MAX_PARKED >= 1 && RING_MAX_PARKED <= RING_CQ_SIZE);
 
 // ---------------------------------------------------------------------------
 // Shared structures (mapped in both kernel and userspace)
@@ -205,6 +227,18 @@ pub struct CqEntry {
 /// pin).
 pub const CQE_F_REFUSED: u32 = 1 << 0;
 
+/// [`CqEntry::flags`] bit: the operation was ACCEPTED ONTO A QUEUE and is not
+/// yet durable or on the wire: an `OP_FILE_WRITE` is in the FAT32 write-back
+/// cache (`FS_WRITEBACK`) or written through without a device flush, an
+/// `OP_NET_SEND` is on the NIC's TX queue. An `OP_FSYNC` makes the writes
+/// durable. Set only with a non-negative result.
+pub const CQE_F_QUEUED: u32 = 1 << 1;
+
+/// [`CqEntry::flags`] bit: an `OP_FSYNC` completed at a flush point: every
+/// write queued before it was written back and the device flushed. Set only
+/// with result 0; a failed flush completes with `-EIO` and no flag.
+pub const CQE_F_DURABLE: u32 = 1 << 2;
+
 // The ring page is ABI: ring 3 reads and writes it at the address
 // `SYS_IORING_CREATE_TYPED` returns. These pin the offsets it relies on.
 const _: () = {
@@ -238,6 +272,10 @@ const _: () = {
     assert!(OP_TIMER == azos_abi::io_ring::OP_TIMER);
     assert!(OP_NOTIFY_WAIT == azos_abi::io_ring::OP_NOTIFY_WAIT);
     assert!(OP_SQPOLL_START == azos_abi::io_ring::OP_SQPOLL_START);
+    assert!(OP_FSYNC == azos_abi::io_ring::OP_FSYNC);
+    assert!(SQE_F_LINK == azos_abi::io_ring::SQE_F_LINK);
+    assert!(CQE_F_QUEUED == azos_abi::io_ring::CQE_F_QUEUED);
+    assert!(CQE_F_DURABLE == azos_abi::io_ring::CQE_F_DURABLE);
     assert!(SQ_F_SQPOLL == azos_abi::io_ring::SQ_F_SQPOLL);
     assert!(SQ_F_NEED_WAKEUP == azos_abi::io_ring::SQ_F_NEED_WAKEUP);
     assert!(CQE_F_REFUSED == azos_abi::io_ring::CQE_F_REFUSED);
@@ -374,6 +412,10 @@ pub struct IoRingState {
     /// reads it when its claim is released and signals that port after the
     /// table lock is dropped ([`release_ring_with`]).
     pub link: PortLink,
+    /// [`io_ring_flush_posted`] found the ring in flight: the pass holding
+    /// the claim may have reaped before the flush ended, so the claim's
+    /// release reaps once more ([`release_ring_with`]).
+    pub reap_again: bool,
 }
 
 impl IoRingState {
@@ -392,6 +434,7 @@ impl IoRingState {
             sqpoll_idle_ms: 0,
             charged: false,
             link: PortLink::NONE,
+            reap_again: false,
         }
     }
 }
@@ -453,6 +496,8 @@ enum ParkedOn {
     Timer(u64),
     /// [`OP_NOTIFY_WAIT`]: `(Cap<Shm> handle, offset, expected)`.
     Word(u32, u32, u32),
+    /// [`OP_FSYNC`]: the flush ticket [`IoRingOps::file_fsync`] answered.
+    Flush(u64),
 }
 
 /// One parked entry: what it waits for and the tag its completion carries.
@@ -460,6 +505,8 @@ enum ParkedOn {
 struct Parked {
     on: ParkedOn,
     user_data: u64,
+    /// The entry carried [`SQE_F_LINK`]: it is the ring's barrier.
+    link: bool,
 }
 
 /// The entries one ring holds parked, kernel-side (never on the shared page,
@@ -469,10 +516,19 @@ struct ParkedSet {
     e: [Parked; RING_MAX_PARKED],
     /// Occupied entries; each holds one reserved completion slot.
     n: u32,
+    /// A linked entry is parked: the SQ is not consumed until it completes.
+    barrier: bool,
+    /// The barrier completed with a failure: cancel the next SQ entry.
+    cancel_next: bool,
 }
 
 impl ParkedSet {
-    const EMPTY: Self = Self { e: [Parked { on: ParkedOn::Free, user_data: 0 }; RING_MAX_PARKED], n: 0 };
+    const EMPTY: Self = Self {
+        e: [Parked { on: ParkedOn::Free, user_data: 0, link: false }; RING_MAX_PARKED],
+        n: 0,
+        barrier: false,
+        cancel_next: false,
+    };
 }
 
 /// Per-slot parked sets.
@@ -488,6 +544,11 @@ struct ParkedTable(core::cell::UnsafeCell<[ParkedSet; MAX_IO_RINGS]>);
 // protocol or the table lock.
 unsafe impl Sync for ParkedTable {}
 static PARKED: ParkedTable = ParkedTable(core::cell::UnsafeCell::new([ParkedSet::EMPTY; MAX_IO_RINGS]));
+
+/// Slot `i` may hold a parked [`OP_FSYNC`]: set by the pass that parks one,
+/// cleared by [`io_ring_flush_posted`] before it claims the ring. A hint only
+/// (a stale `true` costs one claim); the parked set is the truth.
+static FLUSH_PARKED: [AtomicBool; MAX_IO_RINGS] = [const { AtomicBool::new(false) }; MAX_IO_RINGS];
 
 /// Slot `i`'s parked set.
 ///
@@ -619,6 +680,7 @@ fn create_core(owner_task: usize) -> Option<(u32, usize)> {
                     charged,
                     sqpoll_idle_ms: 0,
                     link: PortLink::NONE,
+                    reap_again: false,
                 };
                 // A new ring starts with nothing parked. Slot `i` was neither
                 // active nor orphaned under this lock, so no pass holds it.
@@ -880,10 +942,12 @@ fn release_ring_with(ring_id: u32, started: Option<(u32, u32)>, completed: bool)
     if ring_id as usize >= MAX_IO_RINGS { return; }
     let mut orphan_poller = 0;
     let mut signal: Option<(PortLink, u32)> = None;
+    let reap_again;
     {
         let mut rings = IO_RINGS.lock_irqsave();
         let state = &mut rings[ring_id as usize];
         state.in_flight = false;
+        reap_again = core::mem::take(&mut state.reap_again) && !state.orphaned;
         if state.orphaned {
             let phys = state.phys_addr;
             uncharge_owner(state);
@@ -908,6 +972,49 @@ fn release_ring_with(ring_id: u32, started: Option<(u32, u32)>, completed: bool)
             io_ring_clear_link(r, link);
         }
     }
+    if reap_again {
+        // A flush ended while this claim was held (`io_ring_flush_posted`).
+        post_parked(ring_id as usize);
+    }
+}
+
+/// The filesystem's flusher finished a flush: post every parked [`OP_FSYNC`]
+/// it made durable, from here, so the completion does not wait for the ring's
+/// next submit. Called by the kernel's `fs-wb` task (never RT) with no lock
+/// held. A ring a pass holds is marked, and that claim's release posts.
+pub fn io_ring_flush_posted() {
+    for i in 0..MAX_IO_RINGS {
+        if FLUSH_PARKED[i].swap(false, Ordering::SeqCst) {
+            post_parked(i);
+        }
+    }
+}
+
+/// Claim slot `i` and complete its parked entries that are ready; when a pass
+/// holds the claim, leave the reap to that claim's release.
+fn post_parked(i: usize) {
+    let Some(ops) = (unsafe { OPS }) else { return };
+    let claim = {
+        let mut rings = IO_RINGS.lock_irqsave();
+        let st = &mut rings[i];
+        if st.active && st.in_flight {
+            st.reap_again = true;
+        }
+        claim_locked(st)
+    };
+    let Some((phys, owner_tid, _)) = claim else { return };
+    // SAFETY: the claim keeps the page alive and makes this the only user of
+    // slot `i`'s parked set until the release below.
+    let done = unsafe {
+        let ring = azos_mm::addr::phys_to_virt(phys) as *mut IoRing;
+        let parked = parked_of(i);
+        let n = reap_parked(ring, parked, ops, owner_tid);
+        if parked.e.iter().any(|p| matches!(p.on, ParkedOn::Flush(_))) {
+            FLUSH_PARKED[i].store(true, Ordering::Release);
+        }
+        n
+    };
+    release_ring_with(i as u32, None, done > 0);
 }
 
 /// Store `link` as the port ring `r` reports completions to
@@ -1132,7 +1239,19 @@ pub struct IoRingOps {
     /// the region or not 4-aligned. Re-resolved on every look, so a revoked
     /// capability ends a parked wait.
     pub notify_word:   fn(owner_tid: u32, shm_cap: u32, offset: u32) -> Result<u32, i32>,
+    /// [`OP_FSYNC`] below the trap: resolve the `Cap<File>` handle `cap` in
+    /// `owner_tid`'s table as `SYS_FSYNC_TYPED` does (any permission), and
+    /// ASK the filesystem's flusher for a flush of every write queued so far.
+    /// Never waits on the device. `Ok(ticket)` to wait for with
+    /// [`IoRingOps::fsync_done`], `Err` for a refusal.
+    pub file_fsync:    fn(owner_tid: u32, cap: u32) -> OpResult64,
+    /// Has the flush `ticket` names completed? `None` while it runs, `Some(0)`
+    /// once durable, `Some(-errno)` when it failed.
+    pub fsync_done:    fn(ticket: u64) -> Option<i32>,
 }
+
+/// What [`IoRingOps::file_fsync`] answers: a flush ticket, or a refusal.
+pub type OpResult64 = Result<u64, i32>;
 
 /// Global dispatch table, `None` until [`io_ring_register_ops`] runs.
 static mut OPS: Option<&'static IoRingOps> = None;
@@ -1381,6 +1500,11 @@ unsafe fn run_pass(
         // The CQ slots new entries may use: those the parked entries hold are
         // not theirs. Kept in a local, and moved with every park below.
         let mut room = RING_CQ_SIZE as u32 - parked.n;
+        // A parked linked entry is a barrier: nothing behind it runs yet.
+        let pending = if parked.barrier { 0 } else { pending };
+        // `SQE_F_LINK`: the previous entry was linked and did not succeed.
+        let mut cancel = pending != 0 && core::mem::take(&mut parked.cancel_next);
+        let mut flush_parked = false;
         for _ in 0..pending {
             // **Back-pressure: an entry runs only if its completion can be
             // recorded.** The CQ is written at `cq_tail % RING_CQ_SIZE`, and
@@ -1402,16 +1526,41 @@ unsafe fn run_pass(
 
             let sq_idx = (head as usize) % RING_SQ_SIZE;
             let sqe = sqe_snapshot(ring, sq_idx);
+            let linked = sqe.flags & SQE_F_LINK != 0;
+            if cancel {
+                // Not run: the entry it is linked to failed. The chain goes
+                // on while the canceled entries are linked too.
+                push_cqe(ring, cq_tail, sqe.user_data, IO_ERR_CANCELED, CQE_F_REFUSED);
+                completions += 1;
+                head = head.wrapping_add(1);
+                cancel = linked;
+                continue;
+            }
 
             let r_entry = match dispatch_entry(
                 &sqe, &mut (*ring).data_buf, ops, owner_tid, owner_privileged,
             ) {
                 Step::Done(res) => res,
                 // Rare paths, out of line so they do not weigh on the loop.
+                Step::Durable(res) => {
+                    push_cqe(ring, cq_tail, sqe.user_data, res, if res == 0 { CQE_F_DURABLE } else { 0 });
+                    completions += 1;
+                    head = head.wrapping_add(1);
+                    cancel = linked && res != 0;
+                    continue;
+                }
                 Step::Park(on) => {
-                    if park_entry(parked, on, sqe.user_data) {
+                    if park_entry(parked, on, sqe.user_data, linked) {
+                        if matches!(on, ParkedOn::Flush(_)) {
+                            FLUSH_PARKED[ring_id as usize].store(true, Ordering::SeqCst);
+                            flush_parked = true;
+                        }
                         room -= 1;
                         head = head.wrapping_add(1);
+                        if linked {
+                            // The barrier: the rest waits for its completion.
+                            break;
+                        }
                         continue;
                     }
                     // Every parked slot is taken: refused, and completed now
@@ -1440,12 +1589,25 @@ unsafe fn run_pass(
                 }
             };
             let (result, flags) = match r_entry {
+                // A write or a send that succeeded is QUEUED, not durable.
+                Ok(v) if v >= 0 && (sqe.opcode == OP_FILE_WRITE || sqe.opcode == OP_NET_SEND) => {
+                    (v, CQE_F_QUEUED)
+                }
                 Ok(v) => (v, 0),
                 Err(errno) => (errno, CQE_F_REFUSED),
             };
             push_cqe(ring, cq_tail, sqe.user_data, result, flags);
             completions += 1;
             head = head.wrapping_add(1);
+            if linked {
+                cancel = result < 0 || flags & CQE_F_REFUSED != 0;
+            }
+        }
+
+        if flush_parked {
+            // A flush that ended between the entry's look and its hint above
+            // found no hint to post by: look once more, after the hint.
+            completions += reap_parked(ring, parked, ops, owner_tid);
         }
 
         // Advance SQ head
@@ -1464,7 +1626,8 @@ unsafe fn run_pass(
             match p.on {
                 ParkedOn::Timer(d) => next_deadline_ns = next_deadline_ns.min(d),
                 ParkedOn::Word(..) => words = true,
-                ParkedOn::Free => {}
+                // Posted by the flush path (`io_ring_flush_posted`).
+                ParkedOn::Flush(_) | ParkedOn::Free => {}
             }
         }
     }
@@ -1473,11 +1636,12 @@ unsafe fn run_pass(
 
 /// Park an entry in a free slot of `parked`; `false` when every slot is taken.
 #[inline(never)]
-fn park_entry(parked: &mut ParkedSet, on: ParkedOn, user_data: u64) -> bool {
+fn park_entry(parked: &mut ParkedSet, on: ParkedOn, user_data: u64, link: bool) -> bool {
     match parked.e.iter_mut().find(|p| p.on == ParkedOn::Free) {
         Some(slot) => {
-            *slot = Parked { on, user_data };
+            *slot = Parked { on, user_data, link };
             parked.n += 1;
+            parked.barrier |= link;
             true
         }
         None => false,
@@ -1488,6 +1652,11 @@ fn park_entry(parked: &mut ParkedSet, on: ParkedOn, user_data: u64) -> bool {
 /// already holds [`RING_MAX_PARKED`] parked entries: `-EBUSY`, with
 /// [`CQE_F_REFUSED`]. Drain a parked entry (let it complete) and resubmit.
 pub const IO_ERR_PARKED_FULL: i32 = azos_abi::error::Errno::EBUSY.to_syscall_ret() as i32;
+
+/// An entry not run because the [`SQE_F_LINK`] entry before it failed, was
+/// refused, or (a parked barrier) completed with a failure: `-ECANCELED`, with
+/// [`CQE_F_REFUSED`].
+pub const IO_ERR_CANCELED: i32 = azos_abi::error::Errno::ECANCELED.to_syscall_ret() as i32;
 
 /// Write one completion at `cq_tail` — the value the caller's room check just
 /// read, which only this pass moves — and publish it.
@@ -1525,6 +1694,10 @@ unsafe fn reap_parked(ring: *mut IoRing, parked: &mut ParkedSet, ops: &IoRingOps
                 Ok(_) => Ok(0),
                 Err(e) => Err(e),
             },
+            ParkedOn::Flush(ticket) => match (ops.fsync_done)(ticket) {
+                None => continue,
+                Some(r) => Ok(r),
+            },
         };
         let cq_head = (*ring).cq_head.load(Ordering::Acquire);
         let cq_tail = (*ring).cq_tail.load(Ordering::Acquire);
@@ -1532,11 +1705,17 @@ unsafe fn reap_parked(ring: *mut IoRing, parked: &mut ParkedSet, ops: &IoRingOps
             break;
         }
         let (result, flags) = match r {
+            Ok(0) if matches!(p.on, ParkedOn::Flush(_)) => (0, CQE_F_DURABLE),
             Ok(v) => (v, 0),
             Err(e) => (e, CQE_F_REFUSED),
         };
         push_cqe(ring, cq_tail, p.user_data, result, flags);
-        p.on = ParkedOn::Free;
+        if p.link {
+            // The barrier is down; a failure cancels what it guarded.
+            parked.barrier = false;
+            parked.cancel_next = result < 0;
+        }
+        *p = Parked { on: ParkedOn::Free, user_data: 0, link: false };
         parked.n -= 1;
         done += 1;
     }
@@ -1546,6 +1725,8 @@ unsafe fn reap_parked(ring: *mut IoRing, parked: &mut ParkedSet, ops: &IoRingOps
 /// What one SQ entry does in a pass: completes now, or parks.
 enum Step {
     Done(OpResult),
+    /// An [`OP_FSYNC`] whose flush was already done: completes now, durable.
+    Durable(i32),
     Park(ParkedOn),
     /// [`OP_SQPOLL_START`], admitted by seccomp; the pass decides the rest.
     StartSqpoll,
@@ -1602,6 +1783,24 @@ fn dispatch_entry(
             }
             Step::StartSqpoll
         }
+        OP_FSYNC => {
+            if !(ops.syscall_allowed)(owner_tid, azos_abi::syscall_nr::SYS_FSYNC_TYPED) {
+                return Step::Done(Err(IO_ERR_SECCOMP));
+            }
+            let ticket = match (ops.file_fsync)(owner_tid, sqe.param0) {
+                Ok(t) => t,
+                Err(e) => return Step::Done(Err(e)),
+            };
+            // The canary restores the synchronous answer: the entry completes
+            // in the submit, durable or not.
+            if cfg!(feature = "ioring-sync-fsync-canary") {
+                return Step::Durable(0);
+            }
+            match (ops.fsync_done)(ticket) {
+                Some(r) => Step::Durable(r),
+                None => Step::Park(ParkedOn::Flush(ticket)),
+            }
+        }
         _ => Step::Done(dispatch_sqe(sqe, data_buf, ops, owner_tid, owner_priv)),
     }
 }
@@ -1642,6 +1841,7 @@ pub const fn opcode_nr(opcode: u16) -> Option<u64> {
         OP_CHAN_RECV => Some(nr::SYS_CHAN_READ_TYPED),
         OP_TIMER => Some(nr::SYS_SLEEP_UNTIL),
         OP_SQPOLL_START => Some(nr::SYS_IORING_SUBMIT_TYPED),
+        OP_FSYNC => Some(nr::SYS_FSYNC_TYPED),
         // `OP_NOTIFY_WAIT`'s number is the op table's (`notify_wait_nr`).
         _ => None,
     }
@@ -2574,6 +2774,33 @@ mod tests {
     fn hook_deadline_reached(deadline: u64) -> bool {
         NOW_NS.load(AOrd::SeqCst) >= deadline
     }
+    /// Flush tickets: the last one asked for, and the last one done (the
+    /// test plays the flusher). `FLUSH_FAILS`: the done flush failed.
+    static FLUSH_ASKED: AtomicU64 = AtomicU64::new(0);
+    static FLUSH_DONE: AtomicU64 = AtomicU64::new(0);
+    static FLUSH_FAILS: AtomicBool = AtomicBool::new(false);
+    fn hook_file_fsync(owner: u32, cap: u32) -> OpResult64 {
+        if cap == BAD_CAP {
+            return Err(E_STALE);
+        }
+        IO_SEEN.lock().unwrap_or_else(|e| e.into_inner()).push((owner, cap, false, 0));
+        Ok(FLUSH_ASKED.fetch_add(1, AOrd::SeqCst) + 1)
+    }
+    fn hook_fsync_done(ticket: u64) -> Option<i32> {
+        if FLUSH_DONE.load(AOrd::SeqCst) < ticket {
+            None
+        } else if FLUSH_FAILS.load(AOrd::SeqCst) {
+            Some(azos_abi::error::Errno::EIO.to_syscall_ret() as i32)
+        } else {
+            Some(0)
+        }
+    }
+    /// The flusher finishes every flush asked so far, and posts.
+    fn flush_now(fail: bool) {
+        FLUSH_FAILS.store(fail, AOrd::SeqCst);
+        FLUSH_DONE.store(FLUSH_ASKED.load(AOrd::SeqCst), AOrd::SeqCst);
+        io_ring_flush_posted();
+    }
     /// A syscall number standing for the notify primitive's WAIT; no real
     /// call has it.
     const TEST_NOTIFY_WAIT_NR: u64 = 0xFF0;
@@ -2605,6 +2832,8 @@ mod tests {
         deadline_reached: hook_deadline_reached,
         notify_wait_nr: Some(TEST_NOTIFY_WAIT_NR),
         notify_word: hook_notify_word,
+        file_fsync:  hook_file_fsync,
+        fsync_done:  hook_fsync_done,
     };
 
     /// Put the test table's hooks back to "allow, not contained, nothing seen".
@@ -2619,6 +2848,10 @@ mod tests {
         NOW_NS.store(0, AOrd::SeqCst);
         WORD.store(0, AOrd::SeqCst);
         REVOKED.store(false, AOrd::SeqCst);
+        FLUSH_ASKED.store(0, AOrd::SeqCst);
+        FLUSH_DONE.store(0, AOrd::SeqCst);
+        FLUSH_FAILS.store(false, AOrd::SeqCst);
+        for f in FLUSH_PARKED.iter() { f.store(false, AOrd::SeqCst); }
     }
 
     /// An unimplemented opcode must REFUSE, not report success.
@@ -3634,6 +3867,7 @@ mod tests {
             (OP_FILE_WRITE, SYS_FILE_WRITE_TYPED, 565),
             (OP_CHAN_SEND, SYS_CHAN_WRITE_TYPED, 528),
             (OP_CHAN_RECV, SYS_CHAN_READ_TYPED, 529),
+            (OP_FSYNC, SYS_FSYNC_TYPED, 600),
         ];
         for (op, nr, literal) in table {
             assert_eq!(opcode_nr(op), Some(nr), "opcode {op}");
@@ -3644,7 +3878,7 @@ mod tests {
         }
         assert!(motor_seen().is_empty() && SENSOR_CALLS.load(AOrd::SeqCst) == 0);
         assert!(io_seen().is_empty(), "a denied file or channel entry reached its hook");
-        for op in [OP_NOP, OP_CAMERA_CAPTURE, OP_IRQ_WAIT, OP_NOTIFY_WAIT, 19, u16::MAX] {
+        for op in [OP_NOP, OP_CAMERA_CAPTURE, OP_IRQ_WAIT, OP_NOTIFY_WAIT, 20, u16::MAX] {
             assert_eq!(opcode_nr(op), None, "opcode {op}");
         }
     }
@@ -3803,7 +4037,7 @@ mod tests {
         let (_g, id, phys) = setup_unpriv();
         let r = |e| unsafe { done(submit_one_cqe(id, phys, e)) };
         assert_eq!(r(sqe(OP_FILE_READ, 0x11, 0, 16, 0, 0)), (16, 0));
-        assert_eq!(r(sqe(OP_FILE_WRITE, 0x12, 64, 8, 0, 0)), (8, 0));
+        assert_eq!(r(sqe(OP_FILE_WRITE, 0x12, 64, 8, 0, 0)), (8, CQE_F_QUEUED), "a write completes queued");
         assert_eq!(r(sqe(OP_CHAN_SEND, 0x13, 0, 100, 0, 0)), (64, 0), "clamped to one message");
         assert_eq!(r(sqe(OP_CHAN_RECV, 0x14, 0, 32, 0, 0)), (32, 0));
         assert_eq!(
@@ -4190,5 +4424,169 @@ mod tests {
         assert_eq!(io_ring_submit(id), 1);
         let p2 = PortLink { port: 0x4242, epoch: 0, slot: 0 };
         assert_eq!(io_ring_set_link(r, p2, PortLink::NONE), Ok(LinkSet::Stored { ready: true }), "the dead link was cleared");
+    }
+
+    // ── K1 (b)(c): queued writes, a durable fsync, linked entries ─────────
+
+    /// Push `sqes` onto the ring and submit once; answers the submit's count.
+    unsafe fn push_all(id: u32, phys: usize, sqes: &[SqEntry]) -> i32 {
+        let ring = azos_mm::addr::phys_to_virt(phys) as *mut IoRing;
+        let mut tail = (*ring).sq_tail.load(Ordering::Acquire);
+        for e in sqes {
+            (*ring).sq_entries[(tail as usize) % RING_SQ_SIZE] = *e;
+            tail = tail.wrapping_add(1);
+        }
+        (*ring).sq_tail.store(tail, Ordering::Release);
+        io_ring_submit(id)
+    }
+
+    /// Every unread completion, consumed: `(user_data, result, flags)`.
+    unsafe fn drain(phys: usize) -> Vec<(u64, i32, u32)> {
+        let ring = azos_mm::addr::phys_to_virt(phys) as *mut IoRing;
+        let mut head = (*ring).cq_head.load(Ordering::Acquire);
+        let tail = (*ring).cq_tail.load(Ordering::Acquire);
+        let mut out = Vec::new();
+        while head != tail {
+            let c = (*ring).cq_entries[(head as usize) % RING_CQ_SIZE];
+            out.push((c.user_data, c.result, c.flags));
+            head = head.wrapping_add(1);
+        }
+        (*ring).cq_head.store(head, Ordering::Release);
+        out
+    }
+
+    fn ent(opcode: u16, cap: u32, flags: u16, ud: u64) -> SqEntry {
+        SqEntry { opcode, flags, param0: cap, param1: 0, param2: 8, addr: 0, reg: 0, user_data: ud }
+    }
+
+    const FILE: u32 = 7;
+
+    /// A file write completes QUEUED; an fsync behind it does NOT complete in
+    /// the submit, and its CQE arrives, DURABLE, only once the flusher has
+    /// finished, posted from the flush path with no second submit.
+    ///
+    /// **Canary** `ioring-sync-fsync-canary` (the fsync answers in the
+    /// submit): red at "no fsync CQE before the flush".
+    #[test]
+    fn a_write_is_queued_and_its_fsync_completes_only_after_the_flush() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        let mut batch = Vec::new();
+        for i in 0..4 { batch.push(ent(OP_FILE_WRITE, FILE, 0, i)); }
+        batch.push(ent(OP_FSYNC, FILE, 0, 99));
+        let n = unsafe { push_all(id, phys, &batch) };
+        assert_eq!(n, 4, "the four writes complete in the submit, the fsync does not");
+        let cqes = unsafe { drain(phys) };
+        assert_eq!(cqes.len(), 4);
+        for (i, c) in cqes.iter().enumerate() {
+            assert_eq!(*c, (i as u64, 8, CQE_F_QUEUED), "write {i} completes queued");
+        }
+        assert!(cqes.iter().all(|c| c.0 != 99), "no fsync CQE before the flush");
+        // A second submit with nothing new: still parked.
+        assert_eq!(io_ring_submit(id), 0, "the fsync completed before its flush");
+        assert_eq!(FLUSH_ASKED.load(AOrd::SeqCst), 1, "the fsync asked for one flush");
+        // The flusher finishes: the flush path posts the completion.
+        flush_now(false);
+        let cqes = unsafe { drain(phys) };
+        assert_eq!(cqes, vec![(99, 0, CQE_F_DURABLE)], "the fsync completes durable from the flush path");
+        assert!(io_ring_destroy(id));
+    }
+
+    /// A failed flush completes the fsync with -EIO and no DURABLE flag.
+    #[test]
+    fn a_failed_flush_completes_the_fsync_without_durable() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        assert_eq!(unsafe { push_all(id, phys, &[ent(OP_FSYNC, FILE, 0, 5)]) }, 0);
+        flush_now(true);
+        let eio = azos_abi::error::Errno::EIO.to_syscall_ret() as i32;
+        assert_eq!(unsafe { drain(phys) }, vec![(5, eio, 0)]);
+        assert!(io_ring_destroy(id));
+    }
+
+    /// Flags: a refusal is REFUSED only (never QUEUED); a read is neither.
+    #[test]
+    fn a_refused_write_is_not_queued_and_a_read_is_not_queued() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        let n = unsafe {
+            push_all(id, phys, &[ent(OP_FILE_WRITE, BAD_CAP, 0, 1), ent(OP_FILE_READ, FILE, 0, 2),
+                                 ent(OP_FSYNC, BAD_CAP, 0, 3)])
+        };
+        assert_eq!(n, 3);
+        assert_eq!(unsafe { drain(phys) }, vec![(1, E_STALE, CQE_F_REFUSED), (2, 8, 0), (3, E_STALE, CQE_F_REFUSED)]);
+        assert_eq!(FLUSH_ASKED.load(AOrd::SeqCst), 0, "a refused fsync asks for no flush");
+        assert!(io_ring_destroy(id));
+    }
+
+    /// LINK write -> fsync: a failed write cancels the fsync (no flush is
+    /// asked); a good one lets it run. Positive control: without LINK the
+    /// fsync runs after the failed write.
+    #[test]
+    fn a_linked_fsync_is_canceled_by_its_failed_write() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        let n = unsafe { push_all(id, phys, &[ent(OP_FILE_WRITE, BAD_CAP, SQE_F_LINK, 1), ent(OP_FSYNC, FILE, 0, 2)]) };
+        assert_eq!(n, 2);
+        assert_eq!(unsafe { drain(phys) }, vec![(1, E_STALE, CQE_F_REFUSED), (2, IO_ERR_CANCELED, CQE_F_REFUSED)]);
+        assert_eq!(FLUSH_ASKED.load(AOrd::SeqCst), 0, "a canceled fsync asked for a flush");
+        // Control: no LINK, the fsync runs (parks).
+        let n = unsafe { push_all(id, phys, &[ent(OP_FILE_WRITE, BAD_CAP, 0, 3), ent(OP_FSYNC, FILE, 0, 4)]) };
+        assert_eq!(n, 1);
+        assert_eq!(FLUSH_ASKED.load(AOrd::SeqCst), 1);
+        // A good linked write: the fsync runs.
+        flush_now(false);
+        let _ = unsafe { drain(phys) };
+        let n = unsafe { push_all(id, phys, &[ent(OP_FILE_WRITE, FILE, SQE_F_LINK, 5), ent(OP_FSYNC, FILE, 0, 6)]) };
+        assert_eq!(n, 1);
+        assert_eq!(FLUSH_ASKED.load(AOrd::SeqCst), 2);
+        flush_now(false);
+        assert_eq!(unsafe { drain(phys) }, vec![(5, 8, CQE_F_QUEUED), (6, 0, CQE_F_DURABLE)]);
+        assert!(io_ring_destroy(id));
+    }
+
+    /// LINK fsync -> write: the parked fsync is a barrier; the write behind it
+    /// runs only after the flush, and a failed flush cancels it.
+    #[test]
+    fn a_linked_fsync_is_a_barrier_for_the_next_entry() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        let n = unsafe { push_all(id, phys, &[ent(OP_FSYNC, FILE, SQE_F_LINK, 1), ent(OP_FILE_WRITE, FILE, 0, 2)]) };
+        assert_eq!(n, 0, "the write ran past its barrier");
+        assert!(io_seen().iter().all(|s| !s.2), "the write reached the file before the flush");
+        assert_eq!(io_ring_submit(id), 0, "the barrier fell before the flush");
+        flush_now(false);
+        assert_eq!(unsafe { drain(phys) }, vec![(1, 0, CQE_F_DURABLE)]);
+        assert_eq!(io_ring_submit(id), 1);
+        assert_eq!(unsafe { drain(phys) }, vec![(2, 8, CQE_F_QUEUED)]);
+        // A failed barrier cancels.
+        let n = unsafe { push_all(id, phys, &[ent(OP_FSYNC, FILE, SQE_F_LINK, 3), ent(OP_FILE_WRITE, FILE, 0, 4)]) };
+        assert_eq!(n, 0);
+        flush_now(true);
+        assert_eq!(io_ring_submit(id), 1);
+        let eio = azos_abi::error::Errno::EIO.to_syscall_ret() as i32;
+        assert_eq!(unsafe { drain(phys) }, vec![(3, eio, 0), (4, IO_ERR_CANCELED, CQE_F_REFUSED)]);
+        assert!(io_ring_destroy(id));
+    }
+
+    /// The flush ends while a pass holds the ring: the claim's release posts.
+    #[test]
+    fn a_flush_ending_mid_pass_is_posted_at_the_release() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        assert_eq!(unsafe { push_all(id, phys, &[ent(OP_FSYNC, FILE, 0, 1)]) }, 0);
+        let (p, owner, _) = claim_ring(id).expect("claim");
+        assert_eq!((p, owner), (phys, OWNER));
+        flush_now(false);
+        assert!(unsafe { drain(phys) }.is_empty(), "posted while another pass held the ring");
+        release_ring(id);
+        assert_eq!(unsafe { drain(phys) }, vec![(1, 0, CQE_F_DURABLE)]);
+        assert!(io_ring_destroy(id));
     }
 }
