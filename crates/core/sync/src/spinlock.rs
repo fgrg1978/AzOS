@@ -201,7 +201,7 @@ impl<T> SpinLock<T> {
     #[inline(always)]
     fn release(&self) {
         #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self as *const Self as usize);
+        crate::lockdep::release(self as *const Self as usize, crate::lockdep::Kind::Spin);
         self.locked.store(false, Ordering::Release);
     }
 }

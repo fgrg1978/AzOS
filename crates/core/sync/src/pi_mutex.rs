@@ -664,7 +664,7 @@ impl<T> core::ops::DerefMut for PiMutexGuard<'_, T> {
 impl<T> Drop for PiMutexGuard<'_, T> {
     fn drop(&mut self) {
         #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self.mutex as *const PiMutex<T> as usize);
+        crate::lockdep::release(self.mutex as *const PiMutex<T> as usize, crate::lockdep::Kind::PiMutex);
         self.mutex.release();
     }
 }

@@ -131,7 +131,7 @@ impl<T> core::ops::DerefMut for SleepLockGuard<'_, T> {
 impl<T> Drop for SleepLockGuard<'_, T> {
     fn drop(&mut self) {
         #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self.lock as *const SleepLock<T> as usize);
+        crate::lockdep::release(self.lock as *const SleepLock<T> as usize, crate::lockdep::Kind::Sleep);
         let tid = self.lock.owner.swap(0, Ordering::Relaxed);
         note_released(tid);
         self.lock.busy.store(false, Ordering::Release);

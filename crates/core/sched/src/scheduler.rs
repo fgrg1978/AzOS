@@ -8411,6 +8411,10 @@ fn wait_reason_tag(r: WaitReason) -> u8 {
 /// Moves it from Running → Blocked, then reschedules.
 pub fn block_current(cpu: usize, reason: WaitReason) {
     if cpu >= MAX_CPUS { return; }
+    // Lockdep (Kconfig LOCKDEP, N1): every task sleep (timed, WaitQueue,
+    // IPC) passes here; a SpinLock held, IRQs off or interrupt context is
+    // reported with the lock's class and site. No instruction when off.
+    azos_sync::lockdep::might_sleep("scheduler block");
 
     // K-C29: refuse to park a task that is inside a critical section.
     //

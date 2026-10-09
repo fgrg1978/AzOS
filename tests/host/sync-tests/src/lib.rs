@@ -124,6 +124,9 @@ mod lockdep_tests {
         let c = class(Kind::Spin);
         let a = held(&c, 1);
         assert_eq!(g.check(&[a], &a).map(|r| r.what), Some(What::Recursive));
+        // A wrapper and the SpinLock at its address are two locks.
+        let w = Held { kind: Kind::PiMutex, key: class_key("w", 1, 1, 2), ..a };
+        assert!(g.check(&[w], &a).map_or(true, |r| r.what != What::Recursive));
         let a2 = held(&c, 2);
         let r = g.check(&[a], &a2).expect("same class nested is a note");
         assert!(r.what.is_note());
@@ -144,11 +147,12 @@ mod lockdep_tests {
         let mut s: HeldStack<2> = HeldStack::new();
         let c = class(Kind::Spin);
         assert!(s.push(held(&c, 1)) && s.push(held(&c, 2)));
+        assert!(!s.pop(1, Kind::PiMutex), "same address, other kind: not this lock");
         assert!(!s.push(held(&c, 3)), "past the depth: not recorded");
-        assert!(s.pop(1), "out of order");
-        assert!(s.pop(3), "the lost push's release is absorbed");
-        assert!(!s.pop(9), "a release never taken is unmatched");
-        assert!(s.pop(2) && s.is_empty());
+        assert!(s.pop(1, Kind::Spin), "out of order");
+        assert!(s.pop(3, Kind::Spin), "the lost push's release is absorbed");
+        assert!(!s.pop(9, Kind::Spin), "a release never taken is unmatched");
+        assert!(s.pop(2, Kind::Spin) && s.is_empty());
         let mut t: HeldStack<2> = HeldStack::new();
         s.push(held(&c, 7));
         t.copy_from(&s);

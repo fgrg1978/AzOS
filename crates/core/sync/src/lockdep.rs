@@ -164,6 +164,11 @@ impl Held {
     pub const EMPTY: Held = Held { addr: 0, key: 0, kind: Kind::Spin, irqsave: false, irq_ctx: false, class: None, site: None };
 
     /// The entry for taking the lock at `addr` of class `c`.
+    ///
+    /// Identity is the address AND the kind: a `PiMutex` or `SleepLock` may
+    /// share its address with the SpinLock inside it (its first field after
+    /// reordering), and taking that inner lock while the wrapper is held is
+    /// not the holder taking it again.
     pub fn new(c: &LockClass, addr: usize, kind: Kind, irqsave: bool, irq_ctx: bool,
                site: &'static Location<'static>) -> Self {
         // A zero-filled lock (no constructor ran) is classed by address.
@@ -201,13 +206,14 @@ impl<const D: usize> HeldStack<D> {
         }
     }
 
-    /// Forget the innermost entry for `addr` (guards are not always dropped
-    /// in order). `false` when there is none and no lost push to absorb it.
-    pub fn pop(&mut self, addr: usize) -> bool {
+    /// Forget the innermost entry for the `kind` lock at `addr` (guards are
+    /// not always dropped in order). `false` when there is none and no lost
+    /// push to absorb it.
+    pub fn pop(&mut self, addr: usize, kind: Kind) -> bool {
         let mut i = self.n;
         while i > 0 {
             i -= 1;
-            if self.e[i].addr == addr {
+            if self.e[i].addr == addr && self.e[i].kind == kind {
                 self.e.copy_within(i + 1..self.n, i);
                 self.n -= 1;
                 return true;
@@ -441,7 +447,7 @@ impl<const E: usize, const C: usize> Graph<E, C> {
     /// the same context against the edge table (an inversion stops the walk;
     /// otherwise the new orders are recorded and the chain cached).
     pub fn check(&self, held: &[Held], new: &Held) -> Option<Report> {
-        if let Some(h) = held.iter().rev().find(|h| h.addr == new.addr) {
+        if let Some(h) = held.iter().rev().find(|h| h.addr == new.addr && h.kind == new.kind) {
             return Some(Report::new(What::Recursive, *h, *new));
         }
         let mut ch: u64 = 0x6c6f_636b_6465_7031 ^ new.irq_ctx as u64;
@@ -604,18 +610,18 @@ fn acquire_slow(c: &LockClass, addr: usize, kind: Kind, irqsave: bool, site: &'s
     });
 }
 
-/// The lock at `addr` was released.
+/// The `kind` lock at `addr` was released.
 #[inline]
-pub fn release(addr: usize) {
+pub fn release(addr: usize, kind: Kind) {
     if ON {
-        release_slow(addr);
+        release_slow(addr, kind);
     }
 }
 
 #[inline(never)]
-fn release_slow(addr: usize) {
+fn release_slow(addr: usize, kind: Kind) {
     with_cpu(|cpu, _| {
-        if !cpu.held.pop(addr) {
+        if !cpu.held.pop(addr, kind) {
             UNMATCHED.fetch_add(1, Ordering::Relaxed);
         }
     });
