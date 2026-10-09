@@ -459,6 +459,12 @@ unsafe impl Sync for NetSlot {}
 static NET: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
 /// The egress lane's socket (`egress_setup`).
 static EGRESS: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
+/// The TCP bulk lanes' stream (`tcp_open`).
+static TCP: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
+/// The socket index of the previous TCP bulk stream, and how many sends this
+/// one had refused (see `tcp_send`).
+static TCP_LAST_FD: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(-1);
+static TCP_REFUSED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 impl Net for AzosAbi {
     fn net_ready(&self) -> bool {
@@ -524,6 +530,90 @@ impl Net for AzosAbi {
         if !ok { return false; }
         let out = [0x5Au8; NET_PAYLOAD];
         sys::send(fd as u64, &out, 0) == NET_PAYLOAD as isize
+    }
+
+    /// `/fat/VSBTCP.TXT`: the port, in decimal. Only the TCP pass's disk
+    /// carries it.
+    fn tcp_peer_port(&self) -> Option<u16> {
+        let h = sys::file_open_typed(b"/fat/VSBTCP.TXT\0", 0);
+        if h < 0 { return None; }
+        let mut buf = [0u8; 8];
+        let n = sys::file_read_typed(h as u32, &mut buf);
+        let _ = sys::close_typed(h as u32);
+        if n <= 0 { return None; }
+        super::bench_core::parse_port(&buf[..n as usize])
+    }
+
+    /// **Not on the previous stream's socket index.** This kernel derives
+    /// the source port from the index (`0xC000 + fd`, `sys_connect_syscall`),
+    /// so a second stream on the index the first one just closed reuses its
+    /// whole 4-tuple, and the host, still closing the old connection, refuses
+    /// the new SYN: measured, `tcp-bulk-rx` failed `rc=-4001` after
+    /// `tcp-bulk-tx`. Linux picks a fresh ephemeral port; here the index is
+    /// stepped past the old one by holding it while a second socket is made.
+    fn tcp_open(&self, port: u16) -> Result<(), i64> {
+        use core::sync::atomic::Ordering::Relaxed;
+        let mut fd = sys::socket(2, 1, 0);      // AF_INET, SOCK_STREAM
+        if fd >= 0 && fd == TCP_LAST_FD.load(Relaxed) {
+            let other = sys::socket(2, 1, 0);
+            let _ = sys::sock_shutdown(fd as u64);
+            fd = other;
+        }
+        if fd < 0 { return Err(-2000 + fd as i64); }
+        TCP_LAST_FD.store(fd, Relaxed);
+        TCP_REFUSED.store(0, Relaxed);
+        // Blocks until the handshake completes (or fails).
+        let rc = sys::connect(fd as u64, &sys::sockaddr_in(super::bench_core::TCP_HOST_IP, port));
+        if rc != 0 {
+            let _ = sys::sock_shutdown(fd as u64);
+            return Err(-4000 + rc as i64);
+        }
+        unsafe { *TCP.0.get() = (fd, true) };
+        Ok(())
+    }
+
+    /// 0 when the send window or buffer is full; this kernel copies at most
+    /// 1460 bytes per call.
+    ///
+    /// **-1 is answered as 0 and counted.** `tcp::send_data` answers -1 both
+    /// for a connection that cannot send and for a segment that did not leave
+    /// (`send_segment_with_window` failed, e.g. the NIC's TX ring full: it
+    /// takes the bytes back, so nothing of the call is in the stream and the
+    /// connection is intact). The lane cannot tell them apart from the
+    /// return value, so it does not try: a dead connection is caught by the
+    /// lane's next `recv`, which answers -1 for it, and a stream that stops
+    /// moving fails on `TCP_STALL_NS`. The count is printed with the lane
+    /// (`sends refused`); 0 in every run so far.
+    #[inline(always)]
+    fn tcp_send(&self, buf: &[u8]) -> isize {
+        let (fd, ok) = unsafe { *TCP.0.get() };
+        if !ok { return -1; }
+        let r = sys::send(fd as u64, buf, 0);
+        if r == -1 {
+            TCP_REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            return 0;
+        }
+        r
+    }
+
+    fn tcp_send_refused(&self) -> u64 {
+        TCP_REFUSED.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Runs the stack's receive path (`net_poll`) first, then reads at most
+    /// 4096 bytes; -1 once the peer has closed and nothing is left.
+    #[inline(always)]
+    fn tcp_recv(&self, buf: &mut [u8]) -> isize {
+        let (fd, ok) = unsafe { *TCP.0.get() };
+        if !ok { return -1; }
+        sys::recv(fd as u64, buf, 0)
+    }
+
+    fn tcp_close(&self) {
+        let (fd, ok) = unsafe { *TCP.0.get() };
+        if !ok { return; }
+        let _ = sys::sock_shutdown(fd as u64);
+        unsafe { *TCP.0.get() = (-1, false) };
     }
 
     fn net_echo(&self, n: u64) {

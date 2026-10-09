@@ -848,6 +848,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
             // Wave 15 (WRITEBACK): the `file-wr+fsync` lane. Appended.
             SYS_FSYNC_TYPED,
+            // Wave 15: the TCP bulk lanes close their stream (socket,
+            // connect, send and recv are listed above). Appended.
+            SYS_SOCK_SHUTDOWN,
         ],
         audit: false,
     },

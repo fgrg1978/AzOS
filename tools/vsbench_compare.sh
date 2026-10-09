@@ -297,6 +297,51 @@ VSBENCH_SMP="${VSBENCH_SMP:-4}"
 VSBENCH_RING_DET="${VSBENCH_RING_DET:-1}"
 RING_DET_ARGS="-accel tcg,thread=single -icount shift=0,sleep=off"
 RING_LANES_RE='^(ring-|ioring-|drvring-|drv-call|frame-stream)'
+
+# ── VSBENCH_TCP: TCP bulk to a host peer, both kernels (wave 15) ───────────
+#
+# `tcp-bulk-tx` and `tcp-bulk-rx` move TCP_BULK_BYTES (4 MiB) one way each
+# between the guest and `tools/vsbench_tcp_peer.py` on the host, over QEMU
+# user networking (`-netdev user`, the host is 10.0.2.2), the same QEMU line
+# for both kernels. They need a NIC, which the main boots do not have (adding
+# one would move `nic-egress` on both sides), so they run in a pass of their
+# own: one more boot of the PRODUCT kernel and of the Linux initramfs,
+# filtered to the `tcp` section, always under `-icount shift=0,sleep=off` at
+# `-smp $VSBENCH_TCP_SMP` (1 by default). Linux gets `ip=` on its command
+# line; AzOS's compiled default address is already 10.0.2.15/24 gw 10.0.2.2.
+#
+# WHY THE PRODUCT KERNEL, not the gate's `bench-minimal` one: AzOS's TCP
+# needs its `net-poll` task, which `bench-minimal` parks. `connect` waits for
+# the ARP reply and the SYN-ACK by sleeping, and nothing processes received
+# frames while it sleeps (a ring-3 `recv` does, which is why `udp-roundtrip`
+# works there): measured, both lanes `FAIL rc=-4001` (connect) on the gate
+# kernel. Linux's equivalent (softirq) is part of every Linux boot, so the
+# product kernel, daemons and all, is the comparable AzOS here.
+#
+# ITS BRAIN LINK IS OFF (`behavior_server_port=0` in that boot's CONFIG.INI,
+# re-signed): disk-vsbench.img points it at 10.0.2.2:9000, which on user
+# networking is the host, which answers RST. The kernel's behavior task then
+# closes, 2 s later, the TCP slot its refused connect HAD, by index; the RST
+# had freed that slot and `connect` had handed it to vsbench's stream.
+# Measured: `tcp-bulk-tx` got a FIN from its own side after ~460 KB, with no
+# close from the lane (pcap), `FAIL rc=-3001`. A kernel defect, not a
+# benchmark one (kernel/src/tasks/behavior.rs, `tcp::close(tcp_fd)` after the
+# handshake wait); Linux runs no such daemon, so neither side gets one here.
+#
+# Reported per lane and side: guest ns per KiB, which under `-icount` is
+# instructions per KiB of the whole guest; bytes/s on the guest clock; bytes/s
+# on the host's wall clock (the peer's log); and ACKs per data segment,
+# counted from a `filter-dump` pcap of the NIC by tools/vsbench_tcp_pcap.py,
+# the same code for both kernels. The host side runs beside the guest, so
+# polls that wait on it are guest instructions too: these lanes are NOT
+# bit-exact, unlike the other `-icount` lanes. Read the spread of several runs.
+# Assertions 1-3 hold for the pass: both sides reach `done`, no `FAIL rc=`,
+# and each AzOS TCP lane has a Linux number. `VSBENCH_TCP=0` skips the pass;
+# a `VSBENCH_LANES` without `tcp` skips it as well.
+VSBENCH_TCP="${VSBENCH_TCP:-1}"
+VSBENCH_TCP_SMP="${VSBENCH_TCP_SMP:-1}"
+TCP_ICOUNT_ARGS="-icount shift=0,sleep=off"
+TCP_LINUX_IP="ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off"
 LINUX_IMAGE="${VSBENCH_LINUX_IMAGE:-$HOME/devel/vms/riscv/Image}"
 WAIT_SECS="${WAIT_SECS:-60}"
 WORK="${VSBENCH_WORK:-$REPO_ROOT/build/vsbench-compare}"
@@ -307,7 +352,8 @@ VSBENCH_SECCOMP="${VSBENCH_SECCOMP:-0}"
 #
 # A comma list of section keys (see `Lanes` in
 # userspace/bench/vsbench/src/bench_core.rs): ipc, mem, proc, thread, vdso,
-# ioring, shell, timer, net, switch. The floors and the unloaded yield always
+# ioring, shell, timer, net, tcp, switch. `tcp` selects only the TCP pass
+# (VSBENCH_TCP below); the other keys filter the main boots. The floors and the unloaded yield always
 # run. Unset (the default) changes nothing: no file is added to the AzOS disk
 # and no word to the Linux command line. Set, AzOS reads it from
 # /fat/VSBLANES.TXT in its own disk copy and Linux from init's environment.
@@ -341,8 +387,8 @@ blk_trace_summary() { # blk_trace_summary <label> <log>
     echo "vsbench: blk trace $1: requests=$all reads=$r writes=$w flushes=$((all - r - w))"
 }
 if [ -n "$VSBENCH_LANES" ]; then
-    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch|disk)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch|disk))*$' \
-        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,switch,disk" >&2; exit 1; }
+    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk))*$' \
+        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,tcp,switch,disk" >&2; exit 1; }
     [ "$VSBENCH_SECCOMP" = "1" ] && { echo "vsbench: VSBENCH_LANES and VSBENCH_SECCOMP=1 do not mix" >&2; exit 1; }
     echo "vsbench: lanes filtered to: $VSBENCH_LANES" >&2
 fi
@@ -379,18 +425,32 @@ die() { echo "vsbench: $*" >&2; exit 1; }
 
 # ── Assertion 3's justification table: AzOS lanes with no Linux object ────
 #
-# `<lane label>\t<one-line reason>`, the label exactly as `lane_values`
-# extracts it (padding before ` =` stripped, inner spaces kept). A row is a
-# claim that Linux has nothing to measure for that lane; the verdict fails a
-# row whose lane Linux reports after all, and a row whose lane the gate column
+# `<lane label>\t<section key>\t<one-line reason>`, the label exactly as
+# `lane_values` extracts it (padding before ` =` stripped, inner spaces kept),
+# the section the `VSBENCH_LANES` key that runs the lane. A row is a claim
+# that Linux has nothing to measure for that lane; the verdict fails a row
+# whose lane Linux reports after all, and a row whose lane the gate column
 # did not measure (see the header, assertion 3). `printf` rather than a
 # heredoc, so the separator is a real tab without a literal one in the source.
 justified_azos_only() {
-    printf '%s\t%s\n' \
-        'sensor-read-call' 'Linux has no sensor syscall: nothing reads a typed sensor through the kernel' \
-        'sensor-read-vdso' "Linux's vDSO publishes no sensor data: there is no page to read a sensor from" \
-        'sensor-read-ts' 'Linux has no sensor syscall: nothing reads a stamped sensor sample through the kernel' \
-        'taskinfo [vdso]' "Linux's vDSO publishes no per-task counters; the call path is 'taskinfo [call]' (getrusage)"
+    printf '%s\t%s\t%s\n' \
+        'sensor-read-call' vdso 'Linux has no sensor syscall: nothing reads a typed sensor through the kernel' \
+        'sensor-read-vdso' vdso "Linux's vDSO publishes no sensor data: there is no page to read a sensor from" \
+        'sensor-read-ts' vdso 'Linux has no sensor syscall: nothing reads a stamped sensor sample through the kernel' \
+        'taskinfo [vdso]' vdso "Linux's vDSO publishes no per-task counters; the call path is 'taskinfo [call]' (getrusage)"
+}
+
+# The rows of `justified_azos_only` that apply to this run: all of them, or,
+# with `VSBENCH_LANES`, those of the sections it runs. Without this a filtered
+# run failed check (c) on every row of a section it never ran ("STALE
+# justification ... did not measure these lanes"), which is true and says
+# nothing: the filter, not a rename, is why the lane is absent.
+justified_rows() {
+    if [ -n "$VSBENCH_LANES" ]; then
+        justified_azos_only | awk -F '\t' -v on=",$VSBENCH_LANES," 'index(on, "," $2 ",") > 0'
+    else
+        justified_azos_only
+    fi
 }
 
 # Has this side reached its LAST lane? Used both to stop waiting and, at the
@@ -407,7 +467,9 @@ justified_azos_only() {
 # it is spelled out here.
 completion_lane() { # completion_lane <log> <side>
     # A filtered run without `switch` has no last lane: its end is `done`.
-    if [ -n "$VSBENCH_LANES" ] && ! printf ',%s,' "$VSBENCH_LANES" | grep -q ',switch,'; then
+    # `BOOT_LANES`, when set, is the boot's own filter (the TCP pass's `tcp`).
+    local lanes="${BOOT_LANES-$VSBENCH_LANES}"
+    if [ -n "$lanes" ] && ! printf ',%s,' "$lanes" | grep -q ',switch,'; then
         tr -d '\r' <"$1" 2>/dev/null | grep -qF "[VSBENCH] side=$2 done"
         return
     fi
@@ -499,14 +561,37 @@ stop_qemu() { # stop_qemu <pid>
     wait "$1" 2>/dev/null
 }
 
+# Per-boot overrides, set as a prefix of the call (the TCP pass): BOOT_LANES
+# (the filter; `VSBENCH_LANES` otherwise), BOOT_SMP, BOOT_ICOUNT (replaces
+# `$ICOUNT_ARGS`, so `-icount` is never given twice), BOOT_TCP_PORT (the host
+# peer: /fat/VSBTCP.TXT on AzOS, `VSBENCH_TCP_PORT=` on Linux), BOOT_EXTRA
+# (more QEMU arguments), BOOT_APPEND (more Linux command-line words) and
+# BOOT_CONFIG_SET (`key=value`: that key's line of the disk copy's CONFIG.INI
+# replaced, and CONFIG.SIG re-signed with the TEST key for the copy's own
+# device id, as the Makefile signs it).
 boot_azos() { # boot_azos <kernel> <log> <disk copy>
+    local lanes="${BOOT_LANES-$VSBENCH_LANES}"
     cp "$REPO_ROOT/build/disk-vsbench.img" "$3"
-    if [ -n "$VSBENCH_LANES" ]; then
-        printf '%s\n' "$VSBENCH_LANES" >"$3.lanes"
+    if [ -n "$lanes" ]; then
+        printf '%s\n' "$lanes" >"$3.lanes"
         mcopy -o -i "$3" "$3.lanes" ::VSBLANES.TXT || die "could not add VSBLANES.TXT to $3"
     fi
+    if [ -n "${BOOT_TCP_PORT:-}" ]; then
+        printf '%s\n' "$BOOT_TCP_PORT" >"$3.tcp"
+        mcopy -o -i "$3" "$3.tcp" ::VSBTCP.TXT || die "could not add VSBTCP.TXT to $3"
+    fi
+    if [ -n "${BOOT_CONFIG_SET:-}" ]; then
+        mtype -i "$3" ::CONFIG.INI | tr -d '\r' \
+            | awk -v kv="$BOOT_CONFIG_SET" 'BEGIN { split(kv, a, "=") } $0 ~ "^" a[1] "=" { print kv; next } { print }' \
+            >"$3.ini" \
+            && grep -qx "$BOOT_CONFIG_SET" "$3.ini" \
+            && python3 "$REPO_ROOT/tools/gen_config_sig.py" "$3.ini" --config-v2 --counter 1 \
+                --image "$3" --priv "$REPO_ROOT/tools/keys/test_priv.bin" --out "$3.sig" >/dev/null \
+            && mcopy -o -i "$3" "$3.ini" ::CONFIG.INI && mcopy -o -i "$3" "$3.sig" ::CONFIG.SIG \
+            || die "could not set $BOOT_CONFIG_SET in $3's CONFIG.INI"
+    fi
     local tr=(); while IFS= read -r a; do tr[${#tr[@]}]="$a"; done < <(blk_trace_args "$2")
-    "$QEMU" -machine virt -nographic -bios default -smp "$VSBENCH_SMP" $ICOUNT_ARGS ${BOOT_EXTRA:-} \
+    "$QEMU" -machine virt -nographic -bios default -smp "${BOOT_SMP:-$VSBENCH_SMP}" ${BOOT_ICOUNT-$ICOUNT_ARGS} ${BOOT_EXTRA:-} \
         ${tr[@]+"${tr[@]}"} \
         -kernel "$1" \
         -global virtio-mmio.force-legacy=false \
@@ -544,15 +629,16 @@ fi
 # virtio-blk device, which `disk_setup` mounts `vfat` at /mnt for the `disk`
 # lanes (file-write): the same file system on the same emulated disk.
 boot_linux() { # boot_linux <initramfs> <log> [extra cmdline]
+    local lanes="${BOOT_LANES-$VSBENCH_LANES}"
     cp "$REPO_ROOT/build/disk-vsbench.img" "$2.disk.img"
     local tr=(); while IFS= read -r a; do tr[${#tr[@]}]="$a"; done < <(blk_trace_args "$2")
-    "$QEMU" -machine virt -nographic -bios default -smp "$VSBENCH_SMP" $ICOUNT_ARGS ${BOOT_EXTRA:-} \
+    "$QEMU" -machine virt -nographic -bios default -smp "${BOOT_SMP:-$VSBENCH_SMP}" ${BOOT_ICOUNT-$ICOUNT_ARGS} ${BOOT_EXTRA:-} \
         ${tr[@]+"${tr[@]}"} \
         -kernel "$LINUX_IMAGE" -initrd "$1" \
         -global virtio-mmio.force-legacy=false \
         -drive "file=$2.disk.img,if=none,format=raw,id=hd0,cache=$VSBENCH_DISK_CACHE" \
         -device virtio-blk-device,drive=hd0 \
-        -append "rdinit=/init console=ttyS0${3:+ $3}${VSBENCH_LANES:+ VSBENCH_LANES=$VSBENCH_LANES}" >"$2" 2>&1 &
+        -append "rdinit=/init console=ttyS0${3:+ $3}${BOOT_APPEND:+ $BOOT_APPEND}${lanes:+ VSBENCH_LANES=$lanes}${BOOT_TCP_PORT:+ VSBENCH_TCP_PORT=$BOOT_TCP_PORT}" >"$2" 2>&1 &
     local pid=$!
     for _ in $(seq 1 "${BOOT_WAIT:-$WAIT_SECS}"); do
         completion_lane "$2" linux && break
@@ -635,6 +721,50 @@ if [ "$VSBENCH_RING_DET" = "1" ] && [ "$VSBENCH_ICOUNT" != "1" ]; then
             boot_linux "$WORK/initramfs.cpio" "$LD_LOG"
     fi
     RING_DET_RAN=1
+fi
+
+# ── The TCP bulk pass (see VSBENCH_TCP) ─────────────────────────────────
+KT_LOG="$WORK/azos-product-tcp.log"
+LT_LOG="$WORK/linux-tcp.log"
+TCP_RAN=0
+TCP_PEER_PID=""
+# Start the host peer for one boot; sets TCP_PORT (empty if it did not start).
+tcp_peer_start() { # tcp_peer_start <tag>
+    rm -f "$WORK/tcp-$1.port"
+    python3 "$REPO_ROOT/tools/vsbench_tcp_peer.py" --port-file "$WORK/tcp-$1.port" \
+        --log "$WORK/tcp-$1.peer.log" 2>"$WORK/tcp-$1.peer.err" &
+    TCP_PEER_PID=$!
+    for _ in $(seq 1 100); do [ -s "$WORK/tcp-$1.port" ] && break; sleep 0.1; done
+    TCP_PORT="$(tr -dc '0-9' <"$WORK/tcp-$1.port" 2>/dev/null)"
+}
+tcp_peer_stop() {
+    [ -n "$TCP_PEER_PID" ] && { kill "$TCP_PEER_PID" 2>/dev/null; wait "$TCP_PEER_PID" 2>/dev/null; }
+    TCP_PEER_PID=""
+}
+# QEMU arguments of one TCP boot: the NIC on user networking, and its pcap.
+tcp_net_args() { # tcp_net_args <pcap>
+    printf '%s' "-netdev user,id=tn0 -device virtio-net-device,netdev=tn0 -object filter-dump,id=tf0,netdev=tn0,file=$1,maxlen=128"
+}
+if [ "$VSBENCH_TCP" = "1" ] && { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBENCH_LANES" | grep -q ',tcp,'; }; then
+    tcp_peer_start azos
+    if [ -n "$TCP_PORT" ]; then
+        BOOT_LANES=tcp BOOT_SMP="$VSBENCH_TCP_SMP" BOOT_ICOUNT="$TCP_ICOUNT_ARGS" BOOT_TCP_PORT="$TCP_PORT" \
+            BOOT_CONFIG_SET=behavior_server_port=0 \
+            BOOT_EXTRA="$(tcp_net_args "$WORK/tcp-azos.pcap")" BOOT_WAIT="${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}" \
+            boot_azos "$KP_KERNEL" "$KT_LOG" "$WORK/k-product-tcp.img"
+    fi
+    tcp_peer_stop
+    if [ -n "$L_LOG" ]; then
+        tcp_peer_start linux
+        if [ -n "$TCP_PORT" ]; then
+            BOOT_LANES=tcp BOOT_SMP="$VSBENCH_TCP_SMP" BOOT_ICOUNT="$TCP_ICOUNT_ARGS" BOOT_TCP_PORT="$TCP_PORT" \
+                BOOT_APPEND="$TCP_LINUX_IP" BOOT_EXTRA="$(tcp_net_args "$WORK/tcp-linux.pcap")" \
+                BOOT_WAIT="${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}" \
+                boot_linux "$WORK/initramfs.cpio" "$LT_LOG"
+        fi
+        tcp_peer_stop
+    fi
+    TCP_RAN=1
 fi
 
 # ── Verdict ───────────────────────────────────────────────────────────────
@@ -852,10 +982,10 @@ format moved and this script did not ($KM_LOG)" >&2
     # `justified_azos_only`, and every row must still be needed (header,
     # assertion 3, a-c). Lane names hold spaces and `[`, so every lookup is a
     # whole-field `awk` match or a `comm` of sorted files, never a regex.
-    justified_azos_only >"$WORK/justified.tsv"
+    justified_rows >"$WORK/justified.tsv"
     cut -f1 "$WORK/justified.tsv" | sort -u >"$WORK/justified.lanes"
     reason() { # reason <lane>
-        awk -F '\t' -v l="$1" '$1 == l { print $2; exit }' "$WORK/justified.tsv"
+        awk -F '\t' -v l="$1" '$1 == l { print $3; exit }' "$WORK/justified.tsv"
     }
     comm -23 "$WORK/km.lanes" "$WORK/l.lanes" >"$WORK/km.missing"
     missing="$(comm -23 "$WORK/km.missing" "$WORK/justified.lanes")"
@@ -1028,6 +1158,90 @@ if [ "$RING_DET_RAN" = "1" ]; then
         printf '%s\n' "$lane" | grep -qE "^($LANES_NOT_COMPARABLE)\b" && note="  (not compared)"
         printf "    %-16s %16s %14s%s\n" "$lane" "$(rcell kd.tsv.all "$lane")" "$(rcell ld.tsv.all "$lane")" "$note"
     done
+    echo ""
+fi
+
+# ── TCP bulk pass: its own assertions and table ──────────────────────────
+if [ "$TCP_RAN" = "1" ]; then
+    # One cell of the pass's numbers: `tcp_field <file> <lane> <key>` from
+    # `key=value` words on the line that starts with <lane>.
+    tcp_field() {
+        awk -v l="$2" -v k="$3" '$1 == l { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == k) { print kv[2]; exit } } }' "$1" 2>/dev/null
+    }
+    # Guest bytes/s from the lane's prose line.
+    tcp_guest_bps() { # tcp_guest_bps <log> <lane>
+        tr -d '\r' <"$1" 2>/dev/null | grep -oE "\[VSBENCH\] $2: [0-9]+ bytes, [0-9]+ bytes/s" \
+            | sed -E 's/.* bytes, ([0-9]+) bytes\/s/\1/' | sed -n 1p
+    }
+    tcp_side() { # tcp_side <side> <log> <tag>  -> $WORK/tcp-<tag>.rows
+        local lane
+        : >"$WORK/tcp-$3.rows"
+        [ -f "$WORK/tcp-$3.pcap" ] && python3 "$REPO_ROOT/tools/vsbench_tcp_pcap.py" "$WORK/tcp-$3.pcap" \
+            >"$WORK/tcp-$3.acks" 2>/dev/null
+        # Kept only on request (VSBENCH_TCP_KEEP_PCAP=1): ~10 MiB per boot.
+        [ "${VSBENCH_TCP_KEEP_PCAP:-0}" = "1" ] || rm -f "$WORK/tcp-$3.pcap"
+        lane_values "$2" "$1" | grep -E '^tcp-bulk-' >"$WORK/tcp-$3.tsv"
+        for lane in tcp-bulk-tx tcp-bulk-rx; do
+            local dir="${lane#tcp-bulk-}"
+            printf '%s side=%s instr_per_kib=%s guest_Bps=%s host_Bps=%s data_segs=%s payload_per_seg=%s acks_per_seg=%s retx=%s rst=%s\n' \
+                "$lane" "$1" \
+                "$(awk -F '\t' -v l="$lane" '$1 == l { print $2; exit }' "$WORK/tcp-$3.tsv")" \
+                "$(tcp_guest_bps "$2" "$lane")" \
+                "$(sed -nE "s/^dir=$dir bytes=.* bytes_per_s=([0-9]+)\$/\1/p" "$WORK/tcp-$3.peer.log" 2>/dev/null | sed -n 1p)" \
+                "$(tcp_field "$WORK/tcp-$3.acks" "$lane" data_segs)" \
+                "$(tcp_field "$WORK/tcp-$3.acks" "$lane" payload_per_seg)" \
+                "$(tcp_field "$WORK/tcp-$3.acks" "$lane" acks_per_seg)" \
+                "$(tcp_field "$WORK/tcp-$3.acks" "$lane" retx)" \
+                "$(tcp_field "$WORK/tcp-$3.acks" "$lane" rst)" >>"$WORK/tcp-$3.rows"
+        done
+    }
+    BOOT_LANES=tcp completion_lane "$KT_LOG" azos \
+        || { echo "vsbench: the azos-product TCP pass did not reach its end ($KT_LOG)" >&2; rc=1; }
+    if grep -q "FAIL rc=" "$KT_LOG" 2>/dev/null; then
+        echo "vsbench: a azos-product TCP lane failed:" >&2
+        grep "FAIL rc=" "$KT_LOG" >&2
+        rc=1
+    fi
+    if tr -d '\r' <"$KT_LOG" 2>/dev/null | grep -qF "$BENCH_MINIMAL_BANNER"; then
+        echo "vsbench: the azos-product TCP pass booted a bench-minimal kernel ($KT_LOG)" >&2
+        rc=1
+    fi
+    tcp_side azos "$KT_LOG" azos
+    if [ ! -s "$WORK/tcp-azos.tsv" ]; then
+        echo "vsbench: parsed NO TCP lanes from the azos-product TCP pass ($KT_LOG)" >&2
+        rc=1
+    fi
+    : >"$WORK/tcp-linux.rows"
+    if [ -n "$L_LOG" ]; then
+        BOOT_LANES=tcp completion_lane "$LT_LOG" linux \
+            || { echo "vsbench: the Linux TCP pass did not reach its end ($LT_LOG)" >&2; rc=1; }
+        if grep -q "FAIL rc=" "$LT_LOG" 2>/dev/null; then
+            echo "vsbench: a Linux TCP lane failed:" >&2
+            grep "FAIL rc=" "$LT_LOG" >&2
+            rc=1
+        fi
+        tcp_side linux "$LT_LOG" linux
+        missing="$(cut -f1 "$WORK/tcp-azos.tsv" | sort -u | comm -23 - <(cut -f1 "$WORK/tcp-linux.tsv" | sort -u))"
+        if [ -n "$missing" ]; then
+            echo "vsbench: azos-product TCP lanes with no Linux counterpart in the TCP pass:" >&2
+            echo "$missing" | sed 's/^/           /' >&2
+            rc=1
+        fi
+    fi
+    echo "  vsbench TCP bulk, $((4 * 1024)) KiB each way to a host peer over -netdev user,"
+    echo "  azos = the product kernel (bench-minimal parks net-poll; see VSBENCH_TCP),"
+    echo "  under $TCP_ICOUNT_ARGS, -smp $VSBENCH_TCP_SMP. instr/KiB is the whole guest;"
+    echo "  host B/s is the peer's wall clock; acks/seg from the NIC's pcap. Not bit-exact."
+    printf "    %-12s %-6s %10s %12s %12s %7s %6s %8s %6s %5s\n" lane side instr/KiB "guest B/s" "host B/s" segs "B/seg" acks/seg retx rst
+    cat "$WORK/tcp-azos.rows" "$WORK/tcp-linux.rows" | sort -s -k1,1 | while read -r lane side rest; do
+        f() { printf '%s\n' "$rest" | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+        v() { local x; x="$(f "$1")"; printf '%s' "${x:--}"; }
+        printf "    %-12s %-6s %10s %12s %12s %7s %6s %8s %6s %5s\n" "$lane" "${side#side=}" \
+            "$(v instr_per_kib)" "$(v guest_Bps)" "$(v host_Bps)" "$(v data_segs)" "$(v payload_per_seg)" \
+            "$(v acks_per_seg)" "$(v retx)" "$(v rst)"
+    done
+    # One machine-readable line per row, for scripts that collect several runs.
+    sed 's/^/vsbench-tcp: /' "$WORK/tcp-azos.rows" "$WORK/tcp-linux.rows"
     echo ""
 fi
 

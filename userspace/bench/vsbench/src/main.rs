@@ -33,6 +33,7 @@ use bench_core::{
     IPC_RENDEZVOUS_TRIES, IPC_RETRY_BUDGET, IPC_SENTINEL, N,
     N_BRK, N_FAULT_PAGES, N_IPC, N_IPC_TOTAL, N_IPC_WARM, N_MEM, N_MEM_ROUNDS, N_PROC,
     N_EGRESS, N_LOAD_PEERS, N_LOAD_PEER_ITERS, N_LOAD_PEER_STAMPS, N_LOAD_WARMUP, N_LOAD_YIELDS, N_NET, N_SLOW, N_VDSO, PAGE,
+    TCP_BULK_BYTES, TCP_CHUNK, TCP_CMD_RX, TCP_CMD_TX, TCP_DONE, TCP_STALL_NS,
 };
 
 #[cfg(feature = "azos")]
@@ -1887,6 +1888,144 @@ fn net_lane(abi: &(impl Abi + Net + Proc), floor_ns: u64) {
     }
 }
 
+/// TCP bulk, both directions, against a host peer over QEMU user networking
+/// (wave 15): `tcp-bulk-tx` (the guest sends [`TCP_BULK_BYTES`]) and
+/// `tcp-bulk-rx` (the guest receives them). One op is one KiB, so ns/op is
+/// guest nanoseconds per KiB, and under `-icount shift=0` (the TCP pass of
+/// `tools/vsbench_compare.sh` always runs so) instructions per KiB: the
+/// whole guest, kernel and application, at one hart.
+///
+/// **One algorithm on both kernels**, as `udp-roundtrip`: non-blocking calls
+/// and a yield when nothing moved. AzOS cannot block in `send` or `recv`, and
+/// in a `bench-minimal` boot nothing else runs its network stack: a `recv`
+/// is what processes received frames (ACKs included), so a `send` that took
+/// nothing is followed by a `recv` on both sides before the yield.
+///
+/// **What the number holds, and what it cannot.** The clock runs from the
+/// request to the last byte (rx) or to the peer's [`TCP_DONE`] after its
+/// last read (tx), so it covers the whole transfer. The host side (slirp
+/// and the peer) runs on host threads beside the guest: guest instructions
+/// spent polling while the host works are counted, and how many depends on
+/// the host. Read the spread of several runs before reading a difference.
+fn tcp_bulk_lanes(abi: &(impl Abi + Net), floor_ns: u64) {
+    let Some(port) = abi.tcp_peer_port() else {
+        abi.write(b"[VSBENCH] tcp-bulk: no host peer on this boot (the TCP pass \
+of tools/vsbench_compare.sh brings one), no number\n");
+        return;
+    };
+    tcp_bulk_one(abi, port, true, floor_ns);
+    tcp_bulk_one(abi, port, false, floor_ns);
+}
+
+/// The data buffer of the TCP bulk lanes: one chunk, reused. A static, not
+/// a stack array: [`TCP_CHUNK`] is more than a ring-3 stack should carry.
+struct TcpBuf(core::cell::UnsafeCell<[u8; TCP_CHUNK]>);
+unsafe impl Sync for TcpBuf {}
+static TCP_BUF: TcpBuf = TcpBuf(core::cell::UnsafeCell::new([0xA5; TCP_CHUNK]));
+
+fn tcp_bulk_one(abi: &(impl Abi + Net), port: u16, tx: bool, floor_ns: u64) {
+    let label: &[u8] = if tx { b"tcp-bulk-tx" } else { b"tcp-bulk-rx" };
+    if let Err(code) = abi.tcp_open(port) {
+        fail_line(abi, label, code);
+        return;
+    }
+    // Single-threaded: the only reference to the buffer while this runs.
+    let buf = unsafe { &mut *TCP_BUF.0.get() };
+    let total = TCP_BULK_BYTES as usize;
+    let n = (total as u32).to_be_bytes();
+    let req = [if tx { TCP_CMD_TX } else { TCP_CMD_RX }, n[0], n[1], n[2], n[3]];
+    let mut calls = 0u64;      // calls that moved at least one byte
+    let mut empty = 0u64;      // polls that moved nothing (each then yields)
+    let mut one = [0u8; 1];
+    // When a call last moved a byte. Each poll that moved nothing counts
+    // and yields; `TCP_STALL_NS` without progress fails the lane (-110).
+    let mut stalled_at = bench_core::rdtime();
+    let idle = |empty: &mut u64, at: &mut u64, moved: bool| -> Result<(), i64> {
+        let now = bench_core::rdtime();
+        if moved { *at = now; return Ok(()); }
+        *empty += 1;
+        if ticks_to_ns(now - *at) > TCP_STALL_NS { return Err(-110); }
+        abi.yield_now();
+        Ok(())
+    };
+
+    let t0 = bench_core::rdtime();
+    let res: Result<(), i64> = (|| {
+        // The request: five bytes, normally one call.
+        let mut off = 0usize;
+        while off < req.len() {
+            let r = abi.tcp_send(&req[off..]);
+            if r < 0 { return Err(-1000 + r as i64); }
+            off += r as usize;
+            idle(&mut empty, &mut stalled_at, r > 0)?;
+        }
+        let mut done = 0usize;
+        if tx {
+            while done < total {
+                let len = (total - done).min(TCP_CHUNK);
+                let r = abi.tcp_send(&buf[..len]);
+                if r < 0 { return Err(-2000 + r as i64); }
+                if r > 0 {
+                    done += r as usize;
+                    calls += 1;
+                } else {
+                    // Nothing taken: let the stack read its ACKs. The peer
+                    // sends nothing before the last byte, so a byte here is
+                    // a protocol error.
+                    let g = abi.tcp_recv(&mut one);
+                    if g != 0 { return Err(-3000 + g as i64); }
+                }
+                idle(&mut empty, &mut stalled_at, r > 0)?;
+            }
+            // The peer's answer: every byte reached its `read`.
+            loop {
+                let g = abi.tcp_recv(&mut one);
+                if g < 0 { return Err(-4000 + g as i64); }
+                if g > 0 {
+                    if one[0] != TCP_DONE { return Err(-4999); }
+                    break;
+                }
+                idle(&mut empty, &mut stalled_at, false)?;
+            }
+        } else {
+            while done < total {
+                let len = (total - done).min(TCP_CHUNK);
+                let r = abi.tcp_recv(&mut buf[..len]);
+                if r < 0 { return Err(-5000 + r as i64); }
+                if r > 0 {
+                    done += r as usize;
+                    calls += 1;
+                }
+                idle(&mut empty, &mut stalled_at, r > 0)?;
+            }
+        }
+        Ok(())
+    })();
+    let t1 = bench_core::rdtime();
+    abi.tcp_close();
+    if let Err(code) = res {
+        // -110: no progress for TCP_STALL_NS.
+        fail_line(abi, label, code);
+        return;
+    }
+    report(abi, label, t1 - t0, TCP_BULK_BYTES / 1024, floor_ns);
+    let ns = ticks_to_ns(t1 - t0).max(1);
+    abi.write(b"[VSBENCH] ");
+    abi.write(label);
+    abi.write(b": ");
+    put_u(abi, TCP_BULK_BYTES);
+    abi.write(b" bytes, ");
+    put_u(abi, (TCP_BULK_BYTES as u128 * 1_000_000_000 / ns as u128) as u64);
+    abi.write(b" bytes/s guest clock, ");
+    put_u(abi, calls);
+    abi.write(if tx { b" sends" } else { b" recvs" });
+    abi.write(b" that moved data, ");
+    put_u(abi, empty);
+    abi.write(b" empty polls, ");
+    put_u(abi, abi.tcp_send_refused());
+    abi.write(b" sends refused\n");
+}
+
 /// Fork without reaping, until the kernel refuses. Exists to make
 /// `sys_fork_impl`'s task-pool-exhausted refusal (`ForkRefusalSite::
 /// PoolExhausted`, `crates/core/sched/src/process.rs`) fire on demand in a QEMU
@@ -2348,6 +2487,10 @@ fn run<A: Abi + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
         nic_egress_lane(abi, floor_ns);
         net_lane(abi, floor_ns);
     }
+    // 6b. Wave 15: TCP bulk against a host peer. Only a boot with a NIC and
+    //     a peer measures it (the TCP pass of tools/vsbench_compare.sh);
+    //     every other boot prints one line and moves on.
+    if lanes.on(b"tcp") { tcp_bulk_lanes(abi, floor_ns); }
 
     if lanes.on(b"switch") { loaded_switch_lane(abi, floor_ns, unloaded_yield_ns); }
 

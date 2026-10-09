@@ -114,8 +114,9 @@ pub trait Abi {
 ///
 /// Keys: `ipc` (ipc-roundtrip and the ring/drv/frame lanes on its peer),
 /// `mem`, `proc`, `thread`, `vdso`, `ioring`, `shell`, `timer`, `net`
-/// (nic-egress, udp-roundtrip), `switch` (switch-loaded, yield-switch),
-/// `disk` (file-write, file-wr+fsync; wave 15).
+/// (nic-egress, udp-roundtrip), `tcp` (tcp-bulk-tx, tcp-bulk-rx: only with a
+/// host peer, see [`Net::tcp_peer_port`]), `switch` (switch-loaded,
+/// yield-switch), `disk` (file-write, file-wr+fsync; wave 15).
 /// AzOS reads it from `/fat/VSBLANES.TXT`, Linux from its environment;
 /// `tools/vsbench_compare.sh` puts it in both.
 pub struct Lanes {
@@ -814,7 +815,70 @@ pub trait Net {
     /// Send one `NET_PAYLOAD`-byte datagram on the egress socket. `false`
     /// when the kernel refused it (no NIC, or its TX ring was full).
     fn egress_send(&self) -> bool { false }
+
+    /// TCP bulk lanes (wave 15): the TCP port of the host peer
+    /// (`tools/vsbench_tcp_peer.py`), reached at [`TCP_HOST_IP`] through QEMU
+    /// user networking. Only the TCP pass of `tools/vsbench_compare.sh` boots
+    /// with a NIC and hands one over (AzOS: `/fat/VSBTCP.TXT`, Linux:
+    /// `VSBENCH_TCP_PORT=` in init's environment); `None` everywhere else,
+    /// and then the lanes print why they have no number.
+    fn tcp_peer_port(&self) -> Option<u16> { None }
+
+    /// Open a TCP stream to `TCP_HOST_IP:port`. `Err` as for `net_setup`:
+    /// -2xxx socket, -4xxx connect.
+    fn tcp_open(&self, _port: u16) -> Result<(), i64> { Err(-1) }
+
+    /// Non-blocking send on the stream: bytes taken (> 0), 0 when the stack
+    /// took nothing now (window or buffer full), < 0 on error.
+    fn tcp_send(&self, _buf: &[u8]) -> isize { -1 }
+
+    /// Non-blocking receive: bytes read (> 0), 0 when nothing is there yet,
+    /// < 0 on error or when the peer closed.
+    fn tcp_recv(&self, _buf: &mut [u8]) -> isize { -1 }
+
+    /// Close the stream opened by [`Net::tcp_open`].
+    fn tcp_close(&self) {}
+
+    /// Sends of the current stream the kernel refused without closing it,
+    /// which `tcp_send` answered as 0 (AzOS: the NIC's TX ring full).
+    fn tcp_send_refused(&self) -> u64 { 0 }
 }
+
+/// A decimal port from a file or an environment value: digits up to the
+/// first non-digit; `None` for no digits, 0, or more than 65535.
+pub fn parse_port(src: &[u8]) -> Option<u16> {
+    let mut v = 0u32;
+    let mut any = false;
+    for &b in src {
+        if !b.is_ascii_digit() { break; }
+        v = v * 10 + (b - b'0') as u32;
+        if v > u16::MAX as u32 { return None; }
+        any = true;
+    }
+    if any && v != 0 { Some(v as u16) } else { None }
+}
+
+/// Bytes each TCP bulk lane moves, one way.
+pub const TCP_BULK_BYTES: u64 = 4 << 20;
+
+/// Bytes handed to one `send`, and the size of one `recv` buffer, on both
+/// sides. What a kernel takes per call is its own (AzOS copies at most 1460
+/// per `send` and 4096 per `recv`); the application asks the same on both.
+pub const TCP_CHUNK: usize = 16 * 1024;
+
+/// QEMU user networking's address for the host (`-netdev user`).
+pub const TCP_HOST_IP: [u8; 4] = [10, 0, 2, 2];
+
+/// Give a TCP bulk lane up after this long without a byte of progress, in
+/// guest nanoseconds (under `-icount shift=0`, instructions).
+pub const TCP_STALL_NS: u64 = 4_000_000_000;
+
+/// The request a lane sends first: one of these, then the byte count as a
+/// big-endian `u32`. `TX`: the guest sends the bytes and the peer answers
+/// [`TCP_DONE`] once it has read them all. `RX`: the peer sends them.
+pub const TCP_CMD_TX: u8 = b'S';
+pub const TCP_CMD_RX: u8 = b'R';
+pub const TCP_DONE: u8 = b'K';
 
 /// Datagrams timed by the NIC egress lane. Each one leaves through the NIC:
 /// syscall, UDP/IP, and the driver's descriptor + notify.

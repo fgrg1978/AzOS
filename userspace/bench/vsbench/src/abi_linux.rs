@@ -180,6 +180,10 @@ impl Abi for LinuxAbi {
 /// Address of the value of `VSBENCH_LANES=` in init's environment, or 0.
 static LANES_ENV: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 const LANES_KEY: &[u8] = b"VSBENCH_LANES=";
+/// Address of the value of `VSBENCH_TCP_PORT=` (the TCP pass's host peer),
+/// or 0.
+static TCP_PORT_ENV: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+const TCP_PORT_KEY: &[u8] = b"VSBENCH_TCP_PORT=";
 
 /// `TCSBRK` with a non-zero argument is `tcdrain`: return once everything
 /// written to the terminal has been transmitted.
@@ -482,11 +486,12 @@ pub fn init_args(sp: usize) -> bool {
     loop {
         let p = arg(e);
         if p == 0 { break; }
-        let starts = LANES_KEY.iter().enumerate()
+        let starts = |key: &[u8]| key.iter().enumerate()
             .all(|(i, &k)| unsafe { core::ptr::read((p + i) as *const u8) } == k);
-        if starts {
+        if starts(LANES_KEY) {
             LANES_ENV.store(p + LANES_KEY.len(), core::sync::atomic::Ordering::Relaxed);
-            break;
+        } else if starts(TCP_PORT_KEY) {
+            TCP_PORT_ENV.store(p + TCP_PORT_KEY.len(), core::sync::atomic::Ordering::Relaxed);
         }
         e += 1;
     }
@@ -931,6 +936,8 @@ pub const SYS_SENDTO: usize = 206;
 pub const SYS_RECVFROM: usize = 207;
 /// Do not block in `recvfrom`.
 const MSG_DONTWAIT: usize = 0x40;
+/// No `SIGPIPE` from a send on a closed stream: an error return instead.
+const MSG_NOSIGNAL: usize = 0x4000;
 pub const SYS_IOCTL: usize = 29;
 /// `SIOCSIFFLAGS`: set an interface's flags.
 const SIOCSIFFLAGS: usize = 0x8914;
@@ -972,6 +979,8 @@ fn sockaddr_in(ip: [u8; 4], port: u16) -> [u8; 16] {
 struct NetSlot(core::cell::UnsafeCell<(isize, bool)>);
 unsafe impl Sync for NetSlot {}
 static NET: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
+/// The TCP bulk lanes' stream (`tcp_open`).
+static TCP: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
 
 impl Net for LinuxAbi {
     fn net_ready(&self) -> bool { true }
@@ -1028,6 +1037,72 @@ impl Net for LinuxAbi {
         if !ok { return; }
         let out = [super::bench_core::NET_STOP; NET_PAYLOAD];
         unsafe { syscall6(SYS_SENDTO, fd as usize, out.as_ptr() as usize, NET_PAYLOAD, 0, 0, 0); }
+    }
+
+    /// `VSBENCH_TCP_PORT=` from init's environment (a kernel command-line
+    /// word, as `VSBENCH_LANES`). The TCP pass also puts `ip=` on the command
+    /// line, so the kernel has configured `eth0` before init runs.
+    fn tcp_peer_port(&self) -> Option<u16> {
+        let p = TCP_PORT_ENV.load(core::sync::atomic::Ordering::Relaxed);
+        if p == 0 { return None; }
+        let mut buf = [0u8; 8];
+        let mut n = 0usize;
+        while n < buf.len() {
+            let b = unsafe { core::ptr::read((p + n) as *const u8) };
+            if b == 0 { break; }
+            buf[n] = b;
+            n += 1;
+        }
+        super::bench_core::parse_port(&buf[..n])
+    }
+
+    fn tcp_open(&self, port: u16) -> Result<(), i64> {
+        let fd = unsafe { syscall3(SYS_SOCKET, 2, 1, 0) };   // AF_INET, SOCK_STREAM
+        if fd < 0 { return Err(-2000 + fd as i64); }
+        let peer = sockaddr_in(super::bench_core::TCP_HOST_IP, port);
+        // Blocking connect, as AzOS's.
+        let rc = unsafe { syscall3(SYS_CONNECT, fd as usize, peer.as_ptr() as usize, 16) };
+        if rc < 0 {
+            unsafe { syscall1(SYS_CLOSE, fd as usize) };
+            return Err(-4000 + rc as i64);
+        }
+        unsafe { *TCP.0.get() = (fd, true) };
+        Ok(())
+    }
+
+    /// `MSG_DONTWAIT`, as the AzOS call (which cannot block): `EAGAIN` is 0.
+    #[inline(always)]
+    fn tcp_send(&self, buf: &[u8]) -> isize {
+        let (fd, ok) = unsafe { *TCP.0.get() };
+        if !ok { return -1; }
+        let r = unsafe {
+            syscall6(SYS_SENDTO, fd as usize, buf.as_ptr() as usize, buf.len(),
+                     MSG_DONTWAIT | MSG_NOSIGNAL, 0, 0)
+        };
+        if r == EAGAIN { 0 } else { r }
+    }
+
+    /// `MSG_DONTWAIT`: `EAGAIN` is 0, end of stream is -1 (AzOS's answer).
+    #[inline(always)]
+    fn tcp_recv(&self, buf: &mut [u8]) -> isize {
+        let (fd, ok) = unsafe { *TCP.0.get() };
+        if !ok { return -1; }
+        let r = unsafe {
+            syscall6(SYS_RECVFROM, fd as usize, buf.as_mut_ptr() as usize, buf.len(),
+                     MSG_DONTWAIT, 0, 0)
+        };
+        match r {
+            EAGAIN => 0,
+            0 => -1,
+            r => r,
+        }
+    }
+
+    fn tcp_close(&self) {
+        let (fd, ok) = unsafe { *TCP.0.get() };
+        if !ok { return; }
+        unsafe { syscall1(SYS_CLOSE, fd as usize) };
+        unsafe { *TCP.0.get() = (-1, false) };
     }
 
     fn net_echo(&self, n: u64) {
