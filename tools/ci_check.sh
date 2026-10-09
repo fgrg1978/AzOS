@@ -17222,6 +17222,31 @@ echo after-lx" 150 \
 echo after-lx" 150 \
             "lx: mprot: mprotect(RW) on the vDSO is refused ok" "lx: mprot: a store to the vDSO faults ok"
     done
+
+    # ── Wave 15 (VI): signals across an exec from a thread, both ISAs ───────
+    #
+    # LXHELLO's `stage_exec_signals`: a fork child's thread that is not its
+    # leader execs; the new image holds the child's PID, both pending signals
+    # (the process's, posted while the leader held it, and the thread's own),
+    # the thread's mask, a caught signal back at SIG_DFL and an ignored one
+    # still SIG_IGN, and it takes the SIGWINCH the parent keeps sending to
+    # that PID (`exec-sig:` checks). Canary `exec-sig-handover-canary`: the
+    # leader's pending set is dropped at the identity hand-over, so the
+    # process's pending signal is missing.
+    for ush_isa in rv arm; do
+        USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: signals across a thread's exec ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
+            "lxhello
+echo after-lx" 150 \
+            "lx: exec-sig: the process's pending signal is kept ok" "lx: exec-sig: the thread's own pending signal is kept ok" \
+            "lx: exec-sig: the exec'ing thread's mask is kept ok" "lx: exec-sig: a caught signal is back to SIG_DFL ok" \
+            "lx: exec-sig: an ignored signal stays SIG_IGN ok" \
+            "lx: exec-sig: the parent's kill of the original PID reaches the new image ok" \
+            "lx: exec-sig: a thread's exec keeps the PID, its pending signals and mask ok"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: exec-sig handover canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,exec-sig-handover-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: exec-sig: the process's pending signal is kept ok"
+    done
     a64_kbuild "qemu" >/dev/null 2>&1 || true
 
     kbuild "qemu"

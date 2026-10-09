@@ -53,6 +53,7 @@ typedef unsigned char u8;
 #define NR_uname           160
 #define NR_getpid          172
 #define NR_getppid         173
+#define NR_gettid          178
 #define NR_brk             214
 #define NR_clone           220
 #define NR_execve          221
@@ -501,6 +502,160 @@ static void stage_signals(void)
     check("signal delivered at an interrupt", cs == 9, "status", cs);
 }
 
+// ── Wave 15 (VI): signals across an exec from a thread that is not the
+// leader ──────────────────────────────────────────────────────────────────
+//
+// POSIX (and Linux's de_thread): the exec'ing thread goes on as the process,
+// under its PID; pending signals are kept (the process's and the thread's
+// own), the thread's mask is kept, caught signals go back to SIG_DFL and
+// ignored ones stay ignored. A fork child C: its leader catches SIGUSR1,
+// ignores SIGHUP, blocks {SIGUSR2, SIGALRM} and has SIGUSR2 posted to the
+// process (pending at the leader: every member blocks it). A thread T (raw
+// CLONE_THREAD) sets its own mask {SIGUSR2, SIGPROF}, has SIGPROF posted to
+// itself, and execs this image (`exec-sig`). The new image checks each
+// property and then waits for SIGWINCH, which the parent keeps sending to
+// C's PID: a signal to the original PID reaches the new image. Its exit code
+// is 0x40 plus a bit per failed property.
+// Canary `exec-sig-handover-canary`: the leader's pending set is not handed
+// to the exec'ing thread (bit 1).
+
+#define SIGHUP   1
+#define SIGALRM 14
+#define SIGPROF 27
+#define SIGWINCH 28
+#define EXSIG_OK 0x40
+
+// Start a thread of this process on `stack_top` running `fn` (which must
+// not return into a caller: there is none); the parent gets the TID.
+i64 lx_thread_spawn(u64 flags, void *stack_top, void (*fn)(void));
+#if defined(__riscv)
+__asm__(".globl lx_thread_spawn\n"
+        "lx_thread_spawn:\n"
+        "  addi a1, a1, -16\n"
+        "  sd a2, 0(a1)\n"
+        "  li a2, 0\n"
+        "  li a3, 0\n"
+        "  li a4, 0\n"
+        "  li a7, 220\n"
+        "  ecall\n"
+        "  bnez a0, 1f\n"
+        "  ld t0, 0(sp)\n"
+        "  jalr t0\n"
+        "  li a0, 0x31\n"
+        "  li a7, 94\n"
+        "  ecall\n"
+        "1: ret\n");
+#else
+__asm__(".globl lx_thread_spawn\n"
+        "lx_thread_spawn:\n"
+        "  sub x1, x1, #16\n"
+        "  str x2, [x1]\n"
+        "  mov x2, #0\n"
+        "  mov x3, #0\n"
+        "  mov x4, #0\n"
+        "  mov x8, #220\n"
+        "  svc #0\n"
+        "  cbnz x0, 1f\n"
+        "  ldr x9, [sp]\n"
+        "  blr x9\n"
+        "  mov x0, #0x31\n"
+        "  mov x8, #94\n"
+        "  svc #0\n"
+        "1: ret\n");
+#endif
+
+static char exsig_stack[16384] __attribute__((aligned(16)));
+static volatile int exsig_winch;
+static void on_winch(int s, void *info, void *uc) { (void)info; (void)uc; if (s == SIGWINCH) exsig_winch = 1; }
+
+static u64 sigbit(int s) { return 1UL << (s - 1); }
+
+// T, the thread that is not the leader: its own mask and pending signal,
+// then the exec. Never returns.
+static void exsig_thread(void)
+{
+    u64 m = sigbit(SIGUSR2) | sigbit(SIGPROF);
+    lx_sc4(NR_rt_sigprocmask, 2 /* SIG_SETMASK */, &m, 0, 8);
+    lx_sc3(NR_tgkill, lx_sc0(NR_getpid), lx_sc0(NR_gettid), SIGPROF);
+    char *argv[] = { "lxhello", "exec-sig", 0 };
+    lx_sc3(NR_execve, "/proc/self/exe", argv, 0);
+    lx_sc1(NR_exit_group, 0x30);
+}
+
+// The image T exec'd. Never returns.
+static void exsig_image(void)
+{
+    int bits = 0;
+    u64 pend = 0, mask = 0;
+    struct ksa a;
+    lx_sc2(NR_rt_sigpending, &pend, 8);
+    lx_sc4(NR_rt_sigprocmask, 0, 0, &mask, 8);
+    put("lx: exec-sig: pending="); putn((i64)pend); put(" mask="); putn((i64)mask); flush();
+    check("exec-sig: the process's pending signal is kept", (pend & sigbit(SIGUSR2)) != 0, "pending", (i64)pend);
+    if (!(pend & sigbit(SIGUSR2))) bits |= 1;
+    check("exec-sig: the thread's own pending signal is kept", (pend & sigbit(SIGPROF)) != 0, "pending", (i64)pend);
+    if (!(pend & sigbit(SIGPROF))) bits |= 2;
+    int mask_ok = (mask & sigbit(SIGUSR2)) && (mask & sigbit(SIGPROF)) && !(mask & sigbit(SIGALRM));
+    check("exec-sig: the exec'ing thread's mask is kept", mask_ok, "mask", (i64)mask);
+    if (!mask_ok) bits |= 4;
+    memset(&a, 0, sizeof a);
+    lx_sc4(NR_rt_sigaction, SIGUSR1, 0, &a, 8);
+    check("exec-sig: a caught signal is back to SIG_DFL", a.handler == 0, "handler", (i64)(u64)a.handler);
+    if (a.handler != 0) bits |= 8;
+    memset(&a, 0, sizeof a);
+    lx_sc4(NR_rt_sigaction, SIGHUP, 0, &a, 8);
+    check("exec-sig: an ignored signal stays SIG_IGN", (u64)a.handler == 1, "handler", (i64)(u64)a.handler);
+    if ((u64)a.handler != 1) bits |= 16;
+    exsig_winch = 0;
+    set_handler(SIGWINCH, on_winch, 0);
+    i64 end = mono_ns() + 10000000000L;
+    while (!exsig_winch && mono_ns() < end) {
+        struct timespec d = { 0, 5 * 1000000L };
+        lx_sc2(NR_nanosleep, &d, 0);
+    }
+    check("exec-sig: the parent's kill of the original PID reaches the new image", exsig_winch, "seen", exsig_winch);
+    if (!exsig_winch) bits |= 32;
+    lx_sc1(NR_exit_group, EXSIG_OK | bits);
+}
+
+static void stage_exec_signals(void)
+{
+    i64 pid = lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0);
+    if (pid == 0) {
+        set_handler(SIGUSR1, on_sig, 0);
+        set_disp(SIGHUP, 1 /* SIG_IGN */);
+        u64 lm = sigbit(SIGUSR2) | sigbit(SIGALRM);
+        lx_sc4(NR_rt_sigprocmask, 2 /* SIG_SETMASK */, &lm, 0, 8);
+        lx_sc2(NR_kill, lx_sc0(NR_getpid), SIGUSR2);
+        // CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD
+        i64 t = lx_thread_spawn(0x10f00, exsig_stack + sizeof exsig_stack, exsig_thread);
+        if (t <= 0) lx_sc1(NR_exit_group, 0x32);
+        // The leader waits to be ended by T's exec.
+        i64 end = mono_ns() + 10000000000L;
+        while (mono_ns() < end) {
+            struct timespec d = { 0, 10 * 1000000L };
+            lx_sc2(NR_nanosleep, &d, 0);
+        }
+        lx_sc1(NR_exit_group, 0x33);
+    }
+    int st = 0;
+    i64 w = 0, end = mono_ns() + 20000000000L;
+    while (pid > 0 && mono_ns() < end) {
+        lx_sc2(NR_kill, pid, SIGWINCH);
+        w = lx_sc4(NR_wait4, pid, &st, 1 /* WNOHANG */, 0);
+        if (w == pid) break;
+        struct timespec d = { 0, 20 * 1000000L };
+        lx_sc2(NR_nanosleep, &d, 0);
+    }
+    if (pid > 0 && w != pid) {
+        lx_sc2(NR_kill, pid, 9);
+        w = lx_sc4(NR_wait4, pid, &st, 0, 0);
+    }
+    int code = w != pid ? -1 : (st & 0x7f) ? 1000 + (st & 0x7f) : (st >> 8) & 0xff;
+    put("lx: exec-sig: child status="); putn(code); flush();
+    check("exec-sig: a thread's exec keeps the PID, its pending signals and mask", code == EXSIG_OK, "status", code);
+}
+
 static volatile u64 bench_hits;
 static void on_bench(int s, void *info, void *uc) { (void)s; (void)info; (void)uc; bench_hits++; }
 
@@ -580,6 +735,9 @@ static void run(i64 *sp)
         bench();
         put("lx: bench done"); flush();
         lx_sc1(NR_exit_group, 0);
+    }
+    if (argc == 2 && seq(argv[1], "exec-sig")) {
+        exsig_image();
     }
     if (argc == 2 && seq(argv[1], "exec-child")) {
         put("lx: exec child argc="); putn(argc); put(" ok"); flush();
@@ -861,6 +1019,7 @@ static void run(i64 *sp)
 
     stage3();
     stage_signals();
+    stage_exec_signals();
     stage_orphans();
 
     put("lx: done failures="); putn(failures); flush();

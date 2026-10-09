@@ -28,6 +28,10 @@ threads-tls-canary = []
 # two-way split). Gate rows: host `elf_bounds` tests, abitest `elfperm:`.
 elf-mixed-page-canary = []
 rodata-exec-canary = []
+# Wave 15 (VI): an exec from a thread that is not the leader drops the
+# leader's pending signals instead of handing them to the exec'ing thread
+# (signal_state::hand_over). Gate rows: LXHELLO's `exec-sig:` checks.
+exec-sig-handover-canary = []
 # A new thread first runs user code at least 100 ms after its creation (the
 # late start a loaded host gives it): a thread check that sleeps to "let the
 # thread park" fails every boot with it.

@@ -274,6 +274,7 @@ threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]
 threads-tls-canary = ["azos_sched/threads-tls-canary"]
 elf-mixed-page-canary = ["azos_sched/elf-mixed-page-canary"]
 rodata-exec-canary = ["azos_sched/rodata-exec-canary"]
+exec-sig-handover-canary = ["azos_sched/exec-sig-handover-canary"]
 threads-late-start-canary = ["azos_sched/threads-late-start-canary"]
 # Wave 15 (plan 4a) canaries: an exec leaves the other threads running
 # (`azos_sched`); an object a thread creates is booked to the thread, not to

@@ -408,7 +408,12 @@ pub(crate) fn hand_over(from: usize, to: usize) {
     let (ft, tt) = (TID[from].load(Ordering::Acquire), TID[to].load(Ordering::Acquire));
     TID[to].store(ft, Ordering::Release);
     TID[from].store(tt, Ordering::Release);
-    PENDING[to].fetch_or(PENDING[from].swap(0, Ordering::AcqRel), Ordering::AcqRel);
+    // Canary `exec-sig-handover-canary` (gate rows `linux: exec-sig
+    // handover canary`): the leader's pending set is dropped, not handed over.
+    let moved = PENDING[from].swap(0, Ordering::AcqRel);
+    if !cfg!(feature = "exec-sig-handover-canary") {
+        PENDING[to].fetch_or(moved, Ordering::AcqRel);
+    }
     IGNORED[to].store(IGNORED[from].load(Ordering::Acquire), Ordering::Release);
     SENDER[to].store(SENDER[from].load(Ordering::Acquire), Ordering::Release);
     resync(from);
