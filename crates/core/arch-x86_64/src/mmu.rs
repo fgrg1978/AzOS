@@ -34,8 +34,9 @@
 //! drops them. Keeping them (P2 of VM-DESIGN §2.4) is [`CR3_NOFLUSH`] plus an
 //! ASID allocator with generations; nothing here has to change shape for it.
 //!
-//! **Global kernel leaves.** Kernel leaves carry G (Kconfig
-//! `X86_KERNEL_GLOBAL_PAGES`) so a CR3 write keeps them. Sound only while
+//! **Global kernel leaves.** With Kconfig `X86_KERNEL_GLOBAL_PAGES`
+//! (default n until the kernel links high) kernel leaves carry G so a CR3
+//! write keeps them. Sound only while
 //! the kernel half is the same in every root (every user PML4 shares the
 //! kernel's upper-half entries, [`KERNEL_HALF_FIRST_SLOT`]); a kernel
 //! mapping that changes is dropped by `invlpg` (which drops G entries) or by
@@ -869,7 +870,9 @@ pub mod cpu {
     pub fn setup_paging_regs(caps: &PagingCaps) -> PagingState {
         set_levels(if read_cr4() & CR4_LA57 != 0 { LEVELS_5 } else { LEVELS_4 });
         set_gbpages(caps.gbpages);
-        // PAT before any PCD/PWT leaf is built, so index 3 is UC.
+        // PAT before any PCD/PWT leaf is built, so index 3 is UC. No wbinvd
+        // or TLB dance: indices 0 (WB) and 3 (UC), the only ones a PTE of
+        // this port selects, keep their reset values; 1/2/5/6/7 change.
         wrmsr(IA32_PAT, PAT_VALUE);
         let cr0 = read_cr0();
         if cr0 & CR0_WP == 0 {

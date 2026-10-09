@@ -1385,15 +1385,20 @@ endchoice
 
 config X86_KERNEL_GLOBAL_PAGES
     bool "Global (G) kernel leaves"
-    default y
+    default n
     help
       Every kernel leaf carries G, so its TLB entry survives a CR3 write
-      (CR4.PGE). Sound because every root shares the kernel half's
-      tables. Cost of n: every address-space switch drops the kernel's
-      TLB entries too, and the kernel re-walks its own text, data and
-      stacks after each switch (dozens of misses per switch; a measurable
-      share of a cross-address-space IPC round trip). n only to rule G
-      out while hunting a stale kernel translation.
+      (CR4.PGE). Sound only while every root shares the kernel's tables,
+      i.e. once the kernel links in the upper half (KERNEL_HALF_FIRST_SLOT
+      and up, shared by every user root). Until then the kernel lives in
+      the low half like riscv64's, and a user root may hold a private
+      copy of a kernel table: a later change to a kernel leaf (W^X strip,
+      late MMIO, text poke) would then survive a switch in G form.
+      Cost of n: every address-space switch drops the kernel's TLB
+      entries too, and the kernel re-walks its own text, data and stacks
+      after each switch (dozens of misses per switch). Turn it on (and
+      make it the default) with the higher-half relink.
+
 endif # ARCH_X86_64
 
 # ---------------------------------------------------------------------------
