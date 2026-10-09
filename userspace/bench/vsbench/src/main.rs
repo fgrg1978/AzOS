@@ -22,6 +22,11 @@
 #![cfg_attr(feature = "linux", no_std)]
 #![cfg_attr(feature = "linux", no_main)]
 
+// vsbench runs on riscv64 and aarch64; an x86_64 build needs the Linux side
+// ported (syscall numbers, `syscall` + r10, clone order) and an x86 TSC clock.
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+compile_error!("vsbench: riscv64 and aarch64 only (x86_64 port pending)");
+
 mod bench_core;
 /// The wire protocol, shared with `userspace/bench/vssrv` through `#[path]`. The
 /// server LOOP is deliberately not declared here — see `ipc_proto.rs`.

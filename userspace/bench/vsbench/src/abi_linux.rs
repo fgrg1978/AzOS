@@ -18,6 +18,11 @@
 //! build; it calls a different syscall and quietly reports a different
 //! measurement, which is the worst possible failure for a benchmark.
 
+// vsbench runs on riscv64 and aarch64; an x86_64 build needs the Linux side
+// ported (syscall numbers, `syscall` + r10, clone order) and an x86 TSC clock.
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+compile_error!("vsbench: riscv64 and aarch64 only (x86_64 port pending)");
+
 use super::bench_core::{
     Abi, Ipc, Mem, Net, Proc, Role, Shell, Vdso, IPC_SENTINEL, NET_PAYLOAD, NET_POLL_BUDGET,
     SPAWN_NAP_NS,
