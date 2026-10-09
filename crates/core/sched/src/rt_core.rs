@@ -167,6 +167,9 @@ pub struct Cbs {
     pub density_ppm: u32,
     /// Booked against the hart's band cap too.
     pub band: bool,
+    /// The priority level (ready-queue bucket) admission booked it at: the
+    /// cross-level check ([`levels_fit`]) reads it.
+    pub level: u32,
 }
 
 impl Cbs {
@@ -174,7 +177,7 @@ impl Cbs {
     pub const NONE: Self = Self {
         q: 0, t: 0, d: 0, hard: false, budget: 0, deadline: 0,
         throttled: false, release_due: false, overruns: 0, cpu: 0, density_ppm: 0,
-        band: false,
+        band: false, level: 0,
     };
 
     /// A reservation that has not been released yet (its first pick releases it).
@@ -182,7 +185,7 @@ impl Cbs {
         Self {
             q, t, d, hard, budget: 0, deadline: 0,
             throttled: false, release_due: true, overruns: 0, cpu, density_ppm,
-            band: false,
+            band: false, level: 0,
         }
     }
 
@@ -195,18 +198,38 @@ impl Cbs {
     /// The CBS release rule (Abeni & Buttazzo), applied when the task becomes
     /// runnable again at `now`: keep the current `(budget, deadline)` only if
     /// the deadline is still ahead and the budget left fits the reserved
-    /// bandwidth up to it (`budget / (deadline - now) <= q / t`); otherwise
+    /// density up to it (`budget / (deadline - now) <= q / d`); otherwise
     /// start a new server period: `deadline = now + d`, full budget. Returns
     /// whether a new period was started.
+    ///
+    /// The rate is the density `q / d` that admission books, not the
+    /// bandwidth `q / t`: a new period's deadline is `now + d`, so with
+    /// `q / t` a server whose `d < t` that sleeps briefly with budget left
+    /// took a full budget and a deadline `d` away at every wake, and ran
+    /// above its density at the head of the hart's EDF order (wave 15: a
+    /// 50 % server that computes 400 us and sleeps 20 us made a 40 %
+    /// neighbour miss every job). With `q / d` the work it gets between a
+    /// release and the deadline it holds never exceeds its density times
+    /// that span, the bound the density admission relies on. Linux's
+    /// `dl_entity_overflow` compares against `dl_deadline` likewise.
     #[inline]
     pub fn release(&mut self, now: u64) -> bool {
+        self.release_at_rate(now, self.d)
+    }
+
+    /// [`Cbs::release`] with the rate `q / span`: `span = d` is the rule;
+    /// `span = t` is the old bandwidth test, kept for the kernel's
+    /// `rt-wake-rate-canary` and the host test that shows what it lets
+    /// through.
+    #[inline]
+    pub fn release_at_rate(&mut self, now: u64, span: u64) -> bool {
         self.release_due = false;
         if self.throttled {
             // Still owes the rest of its period: replenishment decides.
             return false;
         }
         let fresh = self.deadline <= now
-            || (self.budget as u128) * (self.t as u128)
+            || (self.budget as u128) * (span as u128)
                 > ((self.deadline - now) as u128) * (self.q as u128);
         if fresh {
             self.deadline = now.saturating_add(self.d);
@@ -286,6 +309,11 @@ pub enum Refusal {
     BandCap,
     /// The task already holds a reservation, or the per-hart set is full.
     Busy,
+    /// The hart has room for the density, but its reservations sit at
+    /// different priority levels and a level could miss a deadline: EDF
+    /// orders reservations inside one level only, the levels above run first
+    /// whatever their deadlines ([`levels_fit`]).
+    Levels,
 }
 
 impl Refusal {
@@ -295,7 +323,7 @@ impl Refusal {
     pub const fn errno(self) -> i32 {
         match self {
             Refusal::Malformed => 22,
-            Refusal::NoRoom | Refusal::BandCap | Refusal::Busy => 16,
+            Refusal::NoRoom | Refusal::BandCap | Refusal::Busy | Refusal::Levels => 16,
         }
     }
     /// For the refusal line.
@@ -305,6 +333,7 @@ impl Refusal {
             Refusal::NoRoom => "no-room",
             Refusal::BandCap => "band-cap",
             Refusal::Busy => "busy",
+            Refusal::Levels => "levels",
         }
     }
 }
@@ -351,21 +380,96 @@ pub fn fits(load: HartLoad, density: u32, band: bool, band_limit_ppm: u32) -> Re
 pub fn first_fit(loads: &[HartLoad], mask: u32, density: u32, band: bool, band_limit_ppm: u32)
     -> Result<usize, Refusal>
 {
+    first_fit_by(loads, mask, density, band, band_limit_ppm, |_| true)
+}
+
+/// [`first_fit`] with one more test per hart, `levels_ok(hart)` (the
+/// cross-level check, [`levels_fit`]): a hart whose density fits but whose
+/// levels do not is skipped, and refuses with [`Refusal::Levels`].
+pub fn first_fit_by(loads: &[HartLoad], mask: u32, density: u32, band: bool, band_limit_ppm: u32,
+    levels_ok: impl Fn(usize) -> bool) -> Result<usize, Refusal>
+{
     let mut why = Refusal::NoRoom;
     for (h, l) in loads.iter().enumerate().take(32) {
         if mask & (1u32 << h) == 0 {
             continue;
         }
         match fits(*l, density, band, band_limit_ppm) {
-            Ok(()) => return Ok(h),
+            Ok(()) if levels_ok(h) => return Ok(h),
+            Ok(()) => why = Refusal::Levels,
             Err(e) => {
-                if e == Refusal::BandCap {
+                if e == Refusal::BandCap && why != Refusal::Levels {
                     why = e;
                 }
             }
         }
     }
     Err(why)
+}
+
+/// One reservation of a hart, as [`levels_fit`] reads it: its level, budget
+/// and relative deadline (any one time unit), and density.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Booked {
+    pub level: u32,
+    pub q: u64,
+    pub d: u64,
+    pub density_ppm: u32,
+}
+
+/// Can every reservation of one hart keep its deadlines when they sit at
+/// different priority levels? The dispatch orders reservations by deadline
+/// inside a level only; a level above runs first whatever its deadlines, so
+/// the density sum (all [`fits`] checks) is not enough: two reservations at
+/// 75 % in all, the lower one with a 2 ms deadline behind 5 ms of the upper
+/// one, miss every job (wave 15, `sched-rt-util` `mixed`).
+///
+/// The test, for each level `l` present, with `dmin` its shortest relative
+/// deadline:
+///
+/// `sum(density, levels <= l) + sum(q, levels < l) / dmin <= 1`
+///
+/// Why it is enough (sufficient, not necessary). A hard CBS server above `l`
+/// takes at most `density * L + q` of any window of length `L`: the wake
+/// rule ([`Cbs::release`]) keeps its work between a release and the deadline
+/// it holds within its density of that span, and `q` covers the budget it
+/// carries into the window (the end of one server period and the start of
+/// the next can be back to back). Level `l`'s own demand in a window of
+/// length `L >= dmin` is at most `sum(density, l) * L` (a constrained
+/// sporadic task's demand bound), and none below `dmin`. EDF meets level
+/// `l`'s deadlines when, for every `L >= dmin`, that demand fits in what the
+/// levels above leave; the carried budgets weigh most at `L = dmin`, which
+/// is the test. Same-level sets reduce to the density sum.
+///
+/// Outside the model: tasks above `l` that hold no reservation (the kernel's
+/// own loops, a band task without a profile), priority donation that moves a
+/// reservation's task to another level while it holds a lock, and
+/// non-preemptible kernel sections.
+pub fn levels_fit(booked: &[Booked]) -> bool {
+    for b in booked {
+        let l = b.level;
+        let mut dmin = u64::MAX;
+        let (mut dens, mut carry) = (0u64, 0u128);
+        for o in booked {
+            if o.level == l {
+                dmin = dmin.min(o.d);
+            }
+            if o.level <= l {
+                dens += o.density_ppm as u64;
+            }
+            if o.level < l {
+                carry += o.q as u128;
+            }
+        }
+        if dmin == 0 {
+            return false;
+        }
+        let carry_ppm = (carry * PPM as u128).div_ceil(dmin as u128);
+        if dens as u128 + carry_ppm > PPM as u128 {
+            return false;
+        }
+    }
+    true
 }
 
 /// Microseconds to counter ticks at `freq` Hz, rounded up (a reservation is

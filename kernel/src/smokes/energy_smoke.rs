@@ -249,6 +249,7 @@ mod gov {
         let me = self_idx();
         let r = azos_sched::rt::Reservation {
             runtime_us: 60, period_us: 1_000, deadline_us: 100, hard: false, cpu_mask: 1 << CPU, band: false,
+            level: BUSY_PRIO,
         };
         match azos_sched::rt::reserve(me, r) {
             Ok(_) => RT_STATE.store(1, Ordering::Release),

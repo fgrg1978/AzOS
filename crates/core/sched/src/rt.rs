@@ -305,6 +305,18 @@ unsafe fn res(cpu: usize, k: usize) -> &'static mut Cbs {
     unsafe { &mut (*(*RT_CPU.ptr(cpu)).res.get())[k] }
 }
 
+/// The CBS release rule at a wake (`Cbs::release`). `rt-wake-rate-canary`
+/// tests the budget against the bandwidth `q / t` instead of the density
+/// `q / d`: a self-suspending server with `d < t` then runs above its density.
+#[inline(always)]
+fn wake(r: &mut Cbs, now: u64) {
+    if cfg!(feature = "rt-wake-rate-canary") {
+        r.release_at_rate(now, r.t);
+    } else {
+        r.release(now);
+    }
+}
+
 /// Apply the clock to the hart's reservations at `now`: replenish the
 /// throttled ones whose deadline has come, release the ones that woke.
 #[inline]
@@ -315,7 +327,7 @@ unsafe fn refresh_set(cpu: usize, now: u64) {
             r.replenish_if_due(now);
         }
         if r.release_due && unsafe { task_ref(idx) }.state() == TaskState::Ready {
-            r.release(now);
+            wake(r, now);
         }
     }
 }
@@ -422,7 +434,7 @@ unsafe fn on_switch_slow(cpu: usize, next_idx: usize, next_prio: u32) {
         if let Some(k) = slot_of(cpu, next_idx) {
             let r = unsafe { res(cpu, k) };
             if r.release_due {
-                r.release(now);
+                wake(r, now);
             }
             o.cur = next_idx;
             o.cur_slot = k;
@@ -662,6 +674,44 @@ pub struct Reservation {
     /// The task runs in the band (its priority is, or will be once admitted,
     /// below `RT_PRIORITY_THRESHOLD`): the hart's band cap applies.
     pub band: bool,
+    /// The priority the task runs at once admitted (set after `reserve` on
+    /// the spawn and autorun paths, so it is declared here): the
+    /// cross-level check ([`rt_core::levels_fit`]) books it.
+    pub level: u32,
+}
+
+/// The cross-level check for `cpu` with `cand` added (`rt_core::levels_fit`).
+/// Under `ADMIT`; reads only what admission wrote before publishing a slot
+/// (`q`, `d`, `density_ppm`, `level`), never the owner's budget/deadline.
+fn levels_ok(cpu: usize, cand: rt_core::Booked) -> bool {
+    if !ADMIT_ON {
+        return true;
+    }
+    let mut b = [cand; SET_CAP + 1];
+    let mut n = 1;
+    for k in 0..SET_CAP {
+        if set_of(cpu)[k].load(Ordering::Acquire) == usize::MAX {
+            continue;
+        }
+        // SAFETY: a published slot; its admission fields never change while
+        // it is published (the owner hart writes budget and deadline only).
+        let r = unsafe { &*(res(cpu, k) as *const Cbs) };
+        b[n] = rt_core::Booked { level: r.level, q: r.q, d: r.d, density_ppm: r.density_ppm };
+        n += 1;
+    }
+    rt_core::levels_fit(&b[..n])
+}
+
+/// `r` as the cross-level check books it.
+fn booked(r: &Reservation, density: u32) -> rt_core::Booked {
+    let freq = azos_drv_sys::timebase::TIMER_FREQ;
+    let d_us = if r.deadline_us == 0 { r.period_us } else { r.deadline_us };
+    rt_core::Booked {
+        level: prio_bucket(r.level) as u32,
+        q: rt_core::us_to_ticks(r.runtime_us, freq),
+        d: rt_core::us_to_ticks(d_us, freq),
+        density_ppm: density,
+    }
 }
 
 /// Run-time admission: give task `idx` the reservation `r`, on the first hart
@@ -694,8 +744,10 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         if (0..ncpu()).any(|c| slot_of(c, idx).is_some()) {
             return Err(Refusal::Busy);
         }
+        let cand = booked(&r, density);
         let cpu = if ADMIT_ON {
-            rt_core::first_fit(&load[..online], mask, density, r.band, BAND_LIMIT_PPM)?
+            rt_core::first_fit_by(&load[..online], mask, density, r.band, BAND_LIMIT_PPM,
+                |h| levels_ok(h, cand))?
         } else if mask != 0 {
             mask.trailing_zeros() as usize
         } else {
@@ -714,6 +766,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
                 r.hard, cpu as u8, density,
             );
             res(cpu, k).band = r.band;
+            res(cpu, k).level = cand.level;
         }
         t.cpu_affinity = cpu as i8;
         load[cpu].total_ppm = load[cpu].total_ppm.saturating_add(density);
@@ -742,9 +795,9 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
             ADMITTED.fetch_add(1, Ordering::Relaxed);
             azos_drv_sys::kprintln!(
                 "[SCHED-RT] admitted tid={} hart={} runtime_us={} period_us={} deadline_us={} \
-                 {} band={} density_ppm={} hart_load_ppm={} band_load_ppm={}",
+                 {} band={} level={} density_ppm={} hart_load_ppm={} band_load_ppm={}",
                 tid, cpu, r.runtime_us, r.period_us, r.deadline_us,
-                if r.hard { "hard" } else { "soft" }, r.band, density, load.total_ppm, load.band_ppm,
+                if r.hard { "hard" } else { "soft" }, r.band, r.level, density, load.total_ppm, load.band_ppm,
             );
             Ok(cpu)
         }
@@ -836,7 +889,8 @@ pub fn check(r: &Reservation) -> Result<usize, Refusal> {
     if !ADMIT_ON {
         return if mask != 0 { Ok(mask.trailing_zeros() as usize) } else { Err(Refusal::NoRoom) };
     }
-    rt_core::first_fit(&load[..online], mask, density, r.band, BAND_LIMIT_PPM)
+    let cand = booked(r, density);
+    rt_core::first_fit_by(&load[..online], mask, density, r.band, BAND_LIMIT_PPM, |h| levels_ok(h, cand))
 }
 
 /// Give task `idx` the base priority `prio`, re-bucketing it if it is queued,

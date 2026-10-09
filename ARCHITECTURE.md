@@ -196,7 +196,11 @@ authority, the kernel also latches the e-stop and writes a safety record.
   boot, the deadline rows of the topology are admitted against the number of
   CPUs found at boot and against the band cap. A set that does not
   fit stops the boot. Reservations made after boot are placed on an online
-  CPU, first fit, against the same limit.
+  CPU, first fit, against the same limit. EDF orders reservations only within
+  one priority level, so a CPU whose reservations sit at different levels
+  must also pass a cross-level test: for each level, its density plus the
+  density of the levels above, plus their budgets over its shortest deadline,
+  must not exceed the CPU. A reservation that fails it is refused.
 - **SMP.** The kernel places a waking unpinned task on a suitable CPU and
   signals other CPUs with an inter-processor interrupt (SBI on riscv64,
   GICv3 SGI on aarch64). Tasks are not stolen between run queues at run time.

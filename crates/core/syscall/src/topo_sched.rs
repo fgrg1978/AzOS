@@ -149,6 +149,8 @@ pub fn row_reservation(name: &[u8]) -> Option<azos_sched::rt::Reservation> {
         hard: true,
         cpu_mask,
         band: prio < MIN_TASK_PRIORITY,
+        // What `resolve` applies to a row with a reservation (floor 0).
+        level: azos_topology::ring3_priority(prio, 0, MAX_TASK_PRIORITY).0,
     })
 }
 

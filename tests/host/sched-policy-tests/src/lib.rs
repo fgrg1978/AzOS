@@ -1213,6 +1213,60 @@ mod rt_core_tests {
         assert_eq!((c.deadline, c.budget), (600, 10));
     }
 
+    /// A constrained server (`d < t`) is held to its density `q / d`: with
+    /// budget left and its deadline close, a wake keeps the period while the
+    /// budget fits `q / d` (the bandwidth `q / t` would have opened a new one).
+    #[test]
+    fn a_constrained_server_keeps_its_period_while_the_density_fits() {
+        let mut c = Cbs::new(10, 100, 20, true, 0, 0);
+        c.release(0);
+        c.charge(5);
+        // 5 left, 12 to the deadline: 5/12 <= 10/20, kept (5/12 > 10/100).
+        assert!(!c.release(8));
+        assert_eq!((c.deadline, c.budget), (20, 5));
+        let mut old = Cbs::new(10, 100, 20, true, 0, 0);
+        old.release(0);
+        old.charge(5);
+        assert!(old.release_at_rate(8, 100), "the q/t test opens a new period here");
+        // 5 left, 8 to the deadline: 5/8 > 10/20, a new period.
+        assert!(c.release(12));
+        assert_eq!((c.deadline, c.budget), (32, 10));
+    }
+
+    /// The bound the density admission relies on: a server that computes and
+    /// sleeps in any pattern gets, from a release to the deadline it holds,
+    /// at most `q / d` of that span (plus one budget of rounding), here over
+    /// 10,000 ticks of a run-1-sleep-1 pattern. The `q / t` test let it run
+    /// half the time.
+    #[test]
+    fn a_self_suspending_server_never_runs_above_its_density() {
+        for (span_is_d, limit) in [(true, true), (false, false)] {
+            let (q, t, d) = (10u64, 200u64, 40u64);
+            let mut c = Cbs::new(q, t, d, true, 0, 0);
+            let (mut now, mut ran) = (0u64, 0u64);
+            while now < 10_000 {
+                if c.throttled {
+                    now = now.max(c.deadline);
+                    c.replenish_if_due(now);
+                }
+                if span_is_d { c.release(now); } else { c.release_at_rate(now, t); }
+                if c.throttled {
+                    continue;
+                }
+                // Run one tick, then sleep one.
+                ran += 1;
+                now += 1;
+                if c.charge(1) {
+                    c.exhaust(now);
+                }
+                c.release_due = true;
+                now += 1;
+            }
+            let bound = 10_000 * q / d + q;
+            assert_eq!(ran <= bound, limit, "ran {} of 10000, density bound {}", ran, bound);
+        }
+    }
+
     #[test]
     fn a_hard_overrun_is_counted_and_throttled_until_its_deadline() {
         let mut c = Cbs::new(10, 100, 100, true, 0, 0);
@@ -1249,6 +1303,48 @@ mod rt_core_tests {
         c.exhaust(10);
         assert!(!c.throttled);
         assert_eq!((c.deadline, c.budget, c.overruns), (200, 10, 1));
+    }
+
+    // ── cross-level admission ─────────────────────────────────────────────
+
+    fn bk(level: u32, q: u64, t: u64, d: u64) -> Booked {
+        Booked { level, q, d, density_ppm: density_ppm(q, t, d).unwrap() }
+    }
+
+    /// The wave-15 `mixed` pair: 75 % of density, but H's 5 ms at level 4 run
+    /// before L's 2 ms deadline at level 6. Refused; at one level it fits.
+    #[test]
+    fn a_short_deadline_below_a_long_budget_is_refused() {
+        assert!(!levels_fit(&[bk(4, 5_000, 20_000, 20_000), bk(6, 1_000, 20_000, 2_000)]));
+        assert!(levels_fit(&[bk(4, 5_000, 20_000, 20_000), bk(4, 1_000, 20_000, 2_000)]));
+        // Upside down (the short deadline above) it fits too.
+        assert!(levels_fit(&[bk(4, 1_000, 20_000, 2_000), bk(6, 5_000, 20_000, 20_000)]));
+    }
+
+    /// One level: exactly the density sum.
+    #[test]
+    fn one_level_is_the_density_sum() {
+        assert!(levels_fit(&[bk(4, 5_000, 10_000, 10_000), bk(4, 5_000, 10_000, 10_000)]));
+        assert!(!levels_fit(&[bk(4, 5_000, 10_000, 10_000), bk(4, 5_001, 10_000, 10_000)]));
+    }
+
+    /// The carried budget is real: a 6/10 ms server can run [d-6, d] and,
+    /// replenished at d, [d, d+6]; a 3/10 ms reservation below it released at
+    /// d-4 then gets nothing by d+6. Refused, while a 10/100 ms one fits.
+    #[test]
+    fn a_carried_budget_counts_against_the_level_below() {
+        assert!(!levels_fit(&[bk(4, 6_000, 10_000, 10_000), bk(20, 3_000, 10_000, 10_000)]));
+        assert!(levels_fit(&[bk(4, 6_000, 10_000, 10_000), bk(20, 10_000, 100_000, 100_000)]));
+    }
+
+    /// `first_fit_by`: a hart whose density fits but whose levels do not is
+    /// skipped (the next hart takes it), and alone it refuses with `Levels`.
+    #[test]
+    fn first_fit_skips_a_hart_whose_levels_do_not_fit() {
+        let loads = [HartLoad::default(), HartLoad::default()];
+        assert_eq!(first_fit_by(&loads, 0b11, 100_000, false, 950_000, |h| h == 1), Ok(1));
+        assert_eq!(first_fit_by(&loads, 0b01, 100_000, false, 950_000, |h| h == 1), Err(Refusal::Levels));
+        assert_eq!(Refusal::Levels.errno(), 16);
     }
 
     #[test]

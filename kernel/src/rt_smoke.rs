@@ -23,16 +23,21 @@
 //!   finished after its deadline. Canary `rt-edf-canary` (FIFO inside the
 //!   level): A waits for B's 4 ms and misses.
 //! * **cbs** — X (hard CBS, 1 ms per 10 ms) never stops running once it
-//!   starts; A2 (same level, 1.5/10 ms, deadline 3 ms) and C (level
-//!   [`EDF_PRIO`]+2, 2/20 ms, deadline 10 ms) must keep their deadlines.
+//!   starts; A2 (1.5/10 ms, deadline 3 ms) and C (2/20 ms, deadline 10 ms),
+//!   all three at level [`EDF_PRIO`], must keep their deadlines. (C sat two
+//!   levels lower until wave 15; the cross-level admission check refuses it
+//!   there: X and A2 may carry 2.5 ms of budget into C's 10 ms.)
 //!   PASS: no miss, and X was throttled (its overrun counter grew). Canary
 //!   `rt-cbs-canary` (no charging): X's deadline never moves, it keeps the
 //!   level, A2 and C miss.
 //! * **admit** — run-time admission on hart 0: a band reservation of 60 %
-//!   fits; a second of 40 % does not fit the band cap (95 %) and is REFUSED
-//!   with `EBUSY` and a `[SCHED-RT] admission REFUSED` line; a non-band one of
-//!   30 % fits; a non-band one of 20 % does not fit the hart. Canary
-//!   `rt-admit-canary` (no admission): the over-subscriptions are accepted.
+//!   (6/10 ms) fits; a second of 40 % does not fit the band cap (95 %) and is
+//!   REFUSED with `EBUSY` and a `[SCHED-RT] admission REFUSED` line; a
+//!   non-band one (level 20) of 10 % with a 100 ms deadline fits; one of 35 %
+//!   does not fit the hart; one of 10 % with a 10 ms deadline fits the
+//!   density but not the levels (`levels`: the band's 6 ms run first,
+//!   `rt_core::levels_fit`). Canary `rt-admit-canary` (no admission): the
+//!   over-subscriptions are accepted.
 //! * **exempt** — during the `band` check the best-effort task also watches
 //!   rt-motor's heartbeat while the band is throttled. The safety loops are
 //!   exempt from the cap (owner decision), so rt-motor (1 ms period) must keep
@@ -359,10 +364,10 @@ fn ctl_task(_: usize) {
     let x = azos_sched::task_create_affinity("rt-cbs-x", x_task, end as usize, EDF_PRIO, HART);
     let a2 = start_periodic("rt-cbs-a2", 2, EDF_PRIO, Periodic {
         period: ms(10), deadline: us(3_000), work: us(1_000), offset: t0 + us(300), end, stats: &STAT_A2 });
-    let c = start_periodic("rt-cbs-c", 3, EDF_PRIO + 2, Periodic {
+    let c = start_periodic("rt-cbs-c", 3, EDF_PRIO, Periodic {
         period: ms(20), deadline: ms(10), work: us(1_500), offset: t0 + us(500), end, stats: &STAT_C });
     let band = |runtime_us, period_us, deadline_us| Reservation {
-        runtime_us, period_us, deadline_us, hard: true, cpu_mask: 1 << HART, band: true };
+        runtime_us, period_us, deadline_us, hard: true, cpu_mask: 1 << HART, band: true, level: EDF_PRIO };
     let ok = reserve_or_say(x, "rt-cbs-x", band(1_000, 10_000, 0))
         & reserve_or_say(a2, "rt-cbs-a2", band(1_500, 10_000, 3_000))
         & reserve_or_say(c, "rt-cbs-c", band(2_000, 20_000, 10_000));
@@ -383,18 +388,23 @@ fn ctl_task(_: usize) {
     // ── admit ──
     let mk = |prio| azos_sched::task_create_affinity("rt-adm", idle_holder, 0, prio, HART);
     let (h1, h2, h3, h4) = (mk(EDF_PRIO), mk(EDF_PRIO), mk(20), mk(20));
-    let r = |runtime_us, band| Reservation {
-        runtime_us, period_us: 10_000, deadline_us: 0, hard: true, cpu_mask: 1 << HART, band };
-    let r1 = rt::reserve(h1, r(6_000, true));
-    let r2 = rt::reserve(h2, r(4_000, true));
-    let r3 = rt::reserve(h3, r(3_000, false));
-    let r4 = rt::reserve(h4, r(2_000, false));
+    let h5 = mk(20);
+    let r = |runtime_us, period_us, band| Reservation {
+        runtime_us, period_us, deadline_us: 0, hard: true, cpu_mask: 1 << HART, band,
+        level: if band { EDF_PRIO } else { 20 } };
+    let r1 = rt::reserve(h1, r(6_000, 10_000, true));
+    let r2 = rt::reserve(h2, r(4_000, 10_000, true));
+    let r3 = rt::reserve(h3, r(10_000, 100_000, false));
+    let r4 = rt::reserve(h4, r(35_000, 100_000, false));
+    let r5 = rt::reserve(h5, r(1_000, 10_000, false));
     let (_, _, admitted, refused, arm_calls, arm_writes) = rt::stats();
     verdict("admit",
-        r1.is_ok() && r2 == Err(Refusal::BandCap) && r3.is_ok() && r4 == Err(Refusal::NoRoom),
-        format_args!("band60={:?} band40={:?} errno={} nonband30={:?} nonband20={:?} admitted={} refused={}",
+        r1.is_ok() && r2 == Err(Refusal::BandCap) && r3.is_ok() && r4 == Err(Refusal::NoRoom)
+            && r5 == Err(Refusal::Levels),
+        format_args!("band60={:?} band40={:?} errno={} nonband10of100ms={:?} nonband35of100ms={:?} \
+            nonband10of10ms={:?} admitted={} refused={}",
             r1.map(|_| "ok"), r2.map(|_| "ok"), r2.err().map_or(0, |e| -e.errno()),
-            r3.map(|_| "ok"), r4.map(|_| "ok"), admitted, refused));
+            r3.map(|_| "ok"), r4.map(|_| "ok"), r5.map(|_| "ok"), admitted, refused));
     HOLD.store(false, Ordering::Release);
 
     ring3_check();

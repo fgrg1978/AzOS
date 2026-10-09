@@ -154,7 +154,7 @@ fn controller(_: usize) {
         if mode == 0 {
             let r = azos_sched::rt::Reservation {
                 runtime_us: CBS_RUNTIME_US, period_us: PERIOD_US, deadline_us: 0, hard: false,
-                cpu_mask: 1 << HART as u32, band: true,
+                cpu_mask: 1 << HART as u32, band: true, level: RT_PRIO,
             };
             if let Err(e) = azos_sched::rt::reserve(idx, r) {
                 kprintln!("[TAIL] rt-cbs reservation refused: {}", e.name());

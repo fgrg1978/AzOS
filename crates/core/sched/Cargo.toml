@@ -110,6 +110,9 @@ rt-edf-canary = []
 rt-cbs-canary = []
 # Run-time admission accepts every well-formed reservation.
 rt-admit-canary = []
+# The CBS wake rule tests the budget against the bandwidth q/t, not the
+# density q/d: a self-suspending server with d < t runs above its density.
+rt-wake-rate-canary = []
 # The kernel safety loops lose their band-budget exemption: rt-motor is
 # throttled with the rest of the band and misses periods.
 rt-exempt-canary = []
