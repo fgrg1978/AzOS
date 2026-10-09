@@ -84,11 +84,6 @@ pub use socket::{
     SOCK_OWNER_KERNEL,
 };
 
-/// The kernel crate's TX doorbell batch (`crates/net/net/src/lib.rs`, Q2):
-/// the host has no NIC to ring, so a batch is nothing.
-pub fn net_tx_batch_begin() {}
-pub fn net_tx_batch_end() {}
-
 pub fn net_info() {
     shim_fwd::hit("net_info".into(), |_| ())
 }
