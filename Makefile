@@ -525,6 +525,7 @@ PRUNE_ARGS ?= --quiet
 prune:
 	@python3 tools/prune_build.py $(PRUNE_ARGS)
 
+
 # Build kernel with RVV 1.0 support (requires QEMU with -cpu rv64,v=true).
 build-rvv: $(IMAGE_HASHES) $(QEMU_DEV_KCONFIG)
 	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) --features rvv,qemu $${isa:+--config "$$isa"}
@@ -2483,9 +2484,15 @@ CHECK_DEFCONFIG_riscv64 := config/defconfigs/qemu.config
 CHECK_DEFCONFIG_aarch64 := config/defconfigs/qemu-aarch64.config
 CHECK_DEFCONFIG_x86_64  := config/defconfigs/qemu-x86_64.config
 CHECK_KCONFIG := build/check-$(ARCH).config
+# The image table the kernel `include!`s, made when missing (order-only: a
+# type-check never waits for a userspace rebuild; `make` refreshes the table).
+# Without it a fresh worktree's `make check0` failed in azos_sched.
+CHECK_TABLE_riscv64 := $(IMAGE_HASHES)
+CHECK_TABLE_aarch64 := $(IMAGE_HASHES_AARCH64)
+CHECK_TABLE_x86_64  := $(IMAGE_HASHES)
 
 .PHONY: check
-check:
+check: | $(CHECK_TABLE_$(ARCH))
 	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
 	@mkdir -p build
 	cp "$(CHECK_DEFCONFIG_$(ARCH))" "$(CHECK_KCONFIG)"
