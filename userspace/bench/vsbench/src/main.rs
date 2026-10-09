@@ -505,9 +505,12 @@ extern "C" fn lk_partner<A: Threads>() -> ! {
 /// `lock-contended`: two threads of one process take one futex mutex (the
 /// three-state mutex `pthread_mutex_lock` reduces to) [`N_THR`] times each,
 /// and a holder keeps the lock until the other thread is queued on it
-/// ([`lk_hold`]). So every number here is a CONTENDED acquisition path: the
-/// fast CAS failing, the waiter's `futex` wait, the holder's `futex` wake,
-/// and the switches between them, per acquisition.
+/// ([`lk_hold`]). At `-smp 1` that gives one contended round per two
+/// acquisitions on both kernels (measured: 200 waits, 201 wakes over 399):
+/// one thread's fast CAS fails and it sleeps in `futex`, the holder's release
+/// wakes it, and the woken thread then takes the freed lock without waiting.
+/// The number is the window over all 2 x [`N_THR`] - 1 acquisitions, so it
+/// carries the waits, wakes, yields and switches of those rounds.
 ///
 /// The first acquisition is outside the window: the main thread takes the
 /// lock and holds it until the new partner has run into it, so how long a
