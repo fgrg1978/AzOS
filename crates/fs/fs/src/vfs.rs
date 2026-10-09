@@ -340,6 +340,13 @@ pub trait FileSystem: Sync {
     /// the proxy). Defaults to `streaming()`.
     fn stream_reads(&self) -> bool { self.streaming() }
 
+    /// `true` for a [`streaming`](Self::streaming) backend whose READ-ONLY
+    /// opens still take the read-handle path (`stream_reads`,
+    /// `read_at_handle`) instead of the generic streaming open (FAT32 since
+    /// wave 15: its writable opens stream, its read-only ones keep the
+    /// start-cluster handle). Default `false`.
+    fn ro_handles(&self) -> bool { false }
+
     /// What a read-only stream keeps from its open's `stat`, handed back to
     /// every [`read_at_handle`](Self::read_at_handle) (FAT32: the start
     /// cluster and the volume's write generation).
@@ -1469,7 +1476,8 @@ fn try_backend_stream_open_at(
     (backend, sub): (&'static dyn FileSystem, &[u8]),
     flags: u32,
 ) -> Option<u32> {
-    if !backend.streaming() {
+    let writes = flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND) != 0;
+    if !backend.streaming() || (!writes && backend.ro_handles()) {
         return try_backend_ro_stream_open(backend, sub, flags);
     }
     let key = match backend.key_for(sub) {
@@ -2598,17 +2606,14 @@ pub fn vfs_fsync<const N: usize>(table: &mut FdTableN<N>, fd: i32) -> Result<(),
 
 /// [`vfs_fsync`] in two halves, for a table whose lock must not be held
 /// across the device (owner rule F1). Under the lock, [`fd_fsync_begin`]
-/// lends the descriptor (its inode stays alive) and, when the proxy is
-/// dirty, copies its bytes and marks it clean (a write after this marks it
-/// dirty again). Outside it, [`fd_fsync_finish`] writes the copy and syncs
-/// the file; a failed write marks the proxy dirty again.
+/// lends the descriptor (its inode stays alive); outside it,
+/// [`fd_fsync_finish`] asks the backend to make the file durable.
 pub struct FsyncWork {
     lone: LoneFd,
-    copy: Option<alloc::vec::Vec<u8>>,
 }
 
 /// First half of [`vfs_fsync`] (see [`FsyncWork`]): `Err` when there is
-/// nothing to lend, or the copy of a dirty proxy found no memory.
+/// nothing to lend, or the file is a proxy holding unwritten bytes.
 pub fn fd_fsync_begin<const N: usize>(table: &FdTableN<N>, fd: i32) -> Result<FsyncWork, FsErr> {
     if fd < 0 || fd as usize >= N { return Err(FsErr::Invalid); }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, N) as i32;
@@ -2616,25 +2621,17 @@ pub fn fd_fsync_begin<const N: usize>(table: &FdTableN<N>, fd: i32) -> Result<Fs
     let idx = table.fds[fd as usize].inode_idx;
     if idx == NO_IDX || idx as usize >= MAX_FILES { return Err(FsErr::Invalid); }
     let (lone, _) = fd_lend(table, fd).ok_or(FsErr::Invalid)?;
-    let mut work = FsyncWork { lone, copy: None };
-    let (backing, data_ptr, size) = {
-        let fs = FS.lock();
-        let n = &fs.inodes[idx as usize];
-        (n.backing, n.data, n.size)
-    };
-    if backing.fs.is_some() && backing.dirty {
-        let mut v = alloc::vec::Vec::new();
-        if v.try_reserve_exact(size as usize).is_err() {
-            fd_free(&mut work.lone, 0);
-            return Err(FsErr::NoSpace);
-        }
-        if size > 0 && !data_ptr.is_null() {
-            // Safety: the descriptor keeps the inode alive, and the table's
-            // lock (held by the caller) excludes every write to its bytes.
-            v.extend_from_slice(unsafe { core::slice::from_raw_parts(data_ptr, size as usize) });
-        }
-        FS.lock().inodes[idx as usize].backing.dirty = false;
-        work.copy = Some(v);
+    let mut work = FsyncWork { lone };
+    let backing = FS.lock().inodes[idx as usize].backing;
+    // Wave 15: no heap copy of the file. Every writable backend streams
+    // (FAT32's writes go in place through its write-back cache, tmpfs is
+    // RAM), so the fsync below has nothing to carry: `backend.fsync` writes
+    // the cache back and flushes. A proxy with bytes held back is a backend
+    // that does not stream; writing it would mean waiting on the device
+    // under this table's lock (F1), so its fsync is refused instead.
+    if backing.fs.is_some() && backing.dirty && !backing.streaming {
+        fd_free(&mut work.lone, 0);
+        return Err(FsErr::Unsupported);
     }
     Ok(work)
 }
@@ -2645,21 +2642,11 @@ pub fn fd_fsync_finish(mut work: FsyncWork) -> Result<(), FsErr> {
     let backing = FS.lock().inodes[idx as usize].backing;
     let r = match backing.fs {
         None => Ok(()),
-        Some(backend) => {
-            let w = match &work.copy {
-                Some(bytes) => backend.write_all(&backing.key, bytes).map_err(|()| FsErr::Io),
-                None => Ok(()),
-            };
-            if w.is_err() {
-                FS.lock().inodes[idx as usize].backing.dirty = true;
-            }
-            w.and_then(|()| backend.fsync(&backing.key))
-        }
+        Some(backend) => backend.fsync(&backing.key),
     };
     // The lent reference. If it is the last one (the descriptor was closed
-    // during the sync: that close saw this reference and did not flush), a
-    // write that landed after the copy is flushed here; nobody else can
-    // reach the inode any more, so the flush needs no lock.
+    // during the sync), its close runs here; nobody else can reach the
+    // inode any more, so it needs no lock.
     let last = FS.lock().inodes[idx as usize].ref_count <= 1;
     if last {
         let _ = vfs_close(&mut work.lone, 0);

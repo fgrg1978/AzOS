@@ -14,6 +14,7 @@ use super::{
     VIRTIO_MMIO_DEVICE_FEATURES, VIRTIO_MMIO_DEVICE_FEATURES_SEL,
     VIRTIO_MMIO_DRIVER_FEATURES, VIRTIO_MMIO_DRIVER_FEATURES_SEL,
     VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE,
+    VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
 };
 use super::{mmio_read, mmio_write, probe, virtq_init,
             virtq_alloc_desc, virtq_free_desc, virtq_submit, virtq_poll,
@@ -201,6 +202,146 @@ impl Drop for SlotClaim {
     }
 }
 
+// ---- Completion by interrupt (wave 15) ----
+//
+// The device raises its virtio-mmio line when it posts a used-ring entry.
+// Once the kernel has wired that line (`set_irq_mode`, after the interrupt
+// controller routes it), a waiter in task context SLEEPS until the line's
+// handler (`irq`) wakes it, instead of spinning on the used ring: no CPU is
+// spent waiting, and under `-icount` host disk latency no longer turns into
+// guest instructions. The handler only acknowledges the device and wakes the
+// waiters by TID (a wake that lands before the waiter blocks is stamped and
+// its block returns at once, so none is lost); the waiter reaps the ring
+// itself, under `BLK_LOCK`, as before. Bounded: the sleep ends at the
+// request's deadline too, and a waiter that cannot block (no scheduler yet,
+// interrupts or preemption off: early boot, the panic path) spins as before.
+
+/// The wired line (`u32::MAX` while polled), and the device's MMIO base for
+/// the handler's acknowledge.
+static IRQ_LINE: AtomicU32 = AtomicU32::new(u32::MAX);
+static IRQ_BASE: AtomicUsize = AtomicUsize::new(0);
+/// Interrupts taken / waits that slept (diagnostics, `blk_irq_counts`).
+static IRQ_TAKEN: AtomicU32 = AtomicU32::new(0);
+static IRQ_SLEPT: AtomicU32 = AtomicU32::new(0);
+/// The task waiting on slot `i`'s request (0: none, or not sleeping).
+static SLOT_WAITER: [AtomicU32; BLK_SLOTS] = [const { AtomicU32::new(0) }; BLK_SLOTS];
+/// The kernel's hooks: block the caller until woken or `deadline` (timebase
+/// ticks), `false` when it cannot block; wake task `tid`.
+static BLOCK_FN: AtomicUsize = AtomicUsize::new(0);
+static WAKE_FN: AtomicUsize = AtomicUsize::new(0);
+
+/// The virtio-mmio slot `init` found the device in (`usize::MAX`: none).
+static FOUND_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+fn mmio_base() -> Option<usize> {
+    let _guard = BLK_LOCK.lock();
+    let dev = unsafe { &*(&raw const BLK_DEV) };
+    if dev.ready { Some(dev.vdev.base as usize) } else { None }
+}
+
+/// `(slot, physical address)` of the virtio-mmio transport the block device
+/// is on, once `init` succeeded: the kernel maps it to its interrupt line.
+pub fn mmio_slot() -> Option<(usize, usize)> {
+    mmio_base()?;
+    let i = FOUND_SLOT.load(Ordering::Acquire);
+    if i == usize::MAX { return None; }
+    Some((i, VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STEP))
+}
+
+/// Take completions by interrupt on `line` from now on. Call BEFORE the
+/// interrupt controller enables `line` (its handler must already recognise
+/// it: [`irq`]); the device's pending interrupt is acknowledged here.
+pub fn set_irq_mode(line: u32, block_until: fn(u64) -> bool, wake: fn(u32)) {
+    if cfg!(feature = "blk-poll-canary") { return; }
+    let Some(base) = mmio_base() else { return; };
+    BLOCK_FN.store(block_until as usize, Ordering::Release);
+    WAKE_FN.store(wake as usize, Ordering::Release);
+    IRQ_BASE.store(base, Ordering::Release);
+    IRQ_LINE.store(line, Ordering::Release);
+    // Every completion so far raised the line and nobody acknowledged it:
+    // clear it now, so a level line is not asserted the moment the
+    // controller enables it, and an edge line can rise again.
+    // SAFETY: as in `irq`.
+    unsafe {
+        let b = base as *mut u32;
+        let status = mmio_read(b, VIRTIO_MMIO_INTERRUPT_STATUS);
+        mmio_write(b, VIRTIO_MMIO_INTERRUPT_ACK, status);
+    }
+}
+
+/// `true` once completions come by interrupt.
+pub fn irq_mode() -> bool {
+    IRQ_LINE.load(Ordering::Acquire) != u32::MAX
+}
+
+/// `(interrupts taken, waits that slept)`.
+pub fn blk_irq_counts() -> (u32, u32) {
+    (IRQ_TAKEN.load(Ordering::Relaxed), IRQ_SLEPT.load(Ordering::Relaxed))
+}
+
+/// The interrupt handler's arm for `line` (interrupt context, any CPU):
+/// `None` when the line is not this device's; otherwise acknowledge the
+/// device and wake every sleeping waiter, `Some(true)` when one was woken.
+pub fn irq(line: u32) -> Option<bool> {
+    if line != IRQ_LINE.load(Ordering::Acquire) {
+        return None;
+    }
+    let base = IRQ_BASE.load(Ordering::Acquire) as *mut u32;
+    // SAFETY: `base` is the device's mapped MMIO window (`set_irq_mode`
+    // took it from the initialised device); the two registers are the
+    // virtio-mmio interrupt status and acknowledge.
+    unsafe {
+        let status = mmio_read(base, VIRTIO_MMIO_INTERRUPT_STATUS);
+        mmio_write(base, VIRTIO_MMIO_INTERRUPT_ACK, status);
+    }
+    IRQ_TAKEN.fetch_add(1, Ordering::Relaxed);
+    let wake = WAKE_FN.load(Ordering::Acquire);
+    if wake == 0 {
+        return Some(false);
+    }
+    // SAFETY: only `set_irq_mode` stores here, and it stores a `fn(u32)`.
+    let wake: fn(u32) = unsafe { core::mem::transmute::<usize, fn(u32)>(wake) };
+    let mut woke = false;
+    for w in SLOT_WAITER.iter() {
+        let tid = w.load(Ordering::Acquire);
+        if tid != 0 {
+            wake(tid);
+            woke = true;
+        }
+    }
+    Some(woke)
+}
+
+/// Sleep until the line's next interrupt or `deadline`; `false` when the
+/// caller cannot sleep (then it spins, as in polled mode).
+fn sleep_for_completion(slot: usize, deadline: u64) -> bool {
+    if !irq_mode() { return false; }
+    let f = BLOCK_FN.load(Ordering::Acquire);
+    if f == 0 { return false; }
+    let tid = azos_sync::waitqueue::caller_tid();
+    if tid == 0 || tid == u32::MAX { return false; }
+    SLOT_WAITER[slot].store(tid, Ordering::Release);
+    // Re-check after publishing the waiter: a completion posted before the
+    // store raised its interrupt before anyone could be woken.
+    let done = {
+        let _g = BLK_LOCK.lock();
+        let dev = unsafe { &mut *(&raw mut BLK_DEV) };
+        unsafe { reap(dev) };
+        SLOT_DONE[slot].load(Ordering::Acquire) || dev.failed
+    };
+    let slept = if done {
+        true
+    } else {
+        // SAFETY: only `set_irq_mode` stores here, and it stores a `fn(u64) -> bool`.
+        let f: fn(u64) -> bool = unsafe { core::mem::transmute::<usize, fn(u64) -> bool>(f) };
+        let s = f(deadline);
+        if s { IRQ_SLEPT.fetch_add(1, Ordering::Relaxed); }
+        s
+    };
+    SLOT_WAITER[slot].store(0, Ordering::Release);
+    slept
+}
+
 /// `blk-wait-probe` (the `lat-fat` smoke): waits for a completion, and those
 /// made with a `PiMutex` held that the request's caller did not hold when it
 /// entered the driver — `BLK_LOCK` across the device request, the F1 shape.
@@ -312,6 +453,7 @@ pub fn init() -> Result<(), ()> {
         unsafe {
             if probe(addr, &mut dev.vdev).is_ok() && dev.vdev.device_id == VIRTIO_DEV_BLOCK {
                 kprintln!("[VIRTIO-BLK] Found block device at {:#x}", addr);
+                FOUND_SLOT.store(i, Ordering::Release);
                 found = true;
                 break;
             }
@@ -448,6 +590,7 @@ fn wait_done(slot: usize, timeout_us: u64, pi_base: u32) -> Result<(), ()> {
         if SLOT_DONE[slot].load(Ordering::Acquire) {
             return Ok(());
         }
+        let can_sleep = _canary.is_none();
         {
             let _g = if _canary.is_some() { None } else { Some(BLK_LOCK.lock()) };
             let dev = unsafe { &mut *(&raw mut BLK_DEV) };
@@ -463,7 +606,9 @@ fn wait_done(slot: usize, timeout_us: u64, pi_base: u32) -> Result<(), ()> {
                 return Err(());
             }
         }
-        core::hint::spin_loop();
+        if !(can_sleep && sleep_for_completion(slot, deadline)) {
+            core::hint::spin_loop();
+        }
     }
 }
 

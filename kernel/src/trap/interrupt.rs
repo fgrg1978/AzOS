@@ -466,6 +466,10 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                                 request_resched(hart as usize);
                             }
                         }
+                    } else if let Some(woke) = azos_drv_virtio::virtio::blk::irq(irq) {
+                        // Wave 15: a disk request completed; its waiter
+                        // sleeps until this wake (`boot::blk_irq`).
+                        if woke { request_resched(hart as usize); }
                     } else if azos_drv_virtio::virtio::net::msi_irq(irq) {
                         if net_msi_wake() {
                             request_resched(hart as usize);

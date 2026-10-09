@@ -20,6 +20,8 @@ mod energy;
 pub(crate) use energy::*;
 mod sched;
 pub(crate) use sched::*;
+mod blk_irq;
+pub(crate) use blk_irq::*;
 mod net;
 pub(crate) use net::*;
 mod seams;

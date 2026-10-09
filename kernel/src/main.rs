@@ -2110,6 +2110,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     if azos_fs::fat32_mounted() {
         create_fs_writeback_task();
     }
+    // Wave 15: disk completions by interrupt (every ISA), once the
+    // scheduler exists to put waiters to sleep.
+    wire_virtio_blk_irq();
     azos_sched::task_create("ipc-demo", ipc_demo_task, 0, azos_sched::DEFAULT_PRIORITY);
     kprintln!("[SCHED] Created ipc-demo task");
 

@@ -1134,6 +1134,14 @@ fn handle_irq(_frame: &mut TrapFrame) {
     // Both calls take `lock_irqsave` spinlocks (bindings, ports) and wake by
     // enqueueing — the PL011 arm's shape. No `schedule()` here (IRQ stack):
     // only the reschedule flag. No FP.
+    // Wave 15: the virtio-blk line (`boot::blk_irq`): the device is
+    // acknowledged and its sleeping waiter woken by TID; the waiter reaps.
+    if let Some(woke) = azos_drv_virtio::virtio::blk::irq(intid) {
+        azos_arch::gic::eoir1(intid);
+        if woke { request_resched(); }
+        return;
+    }
+
     if azos_arch::gic::user_spi_in_range(intid)
         && azos_arch::gic::user_spi_owned(intid)
     {

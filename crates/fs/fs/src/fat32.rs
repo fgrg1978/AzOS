@@ -186,6 +186,14 @@ const JOURNAL_OP_UNLINK: u8 = 4;
 /// function and the recovery arm below for why both replay steps are
 /// idempotent.
 const JOURNAL_OP_OVERWRITE: u8 = 5;
+/// Wave 15: `fat32_rename` over an existing file, ONE record. `dir_sector`/
+/// `dir_offset`: the destination's dirent; `cluster`/`size`: the source's
+/// chain and size, which the destination takes; `fat_value`: the
+/// destination's old chain, freed. In `_reserved`: the source dirent's
+/// sector (`[0..4]`), offset (`[4..6]`) and 8.3 name (`[6..17]`), which is
+/// deleted. Replayed whole at mount once PENDING is durable, so a cut leaves
+/// the rename undone or done, never both names on one chain.
+const JOURNAL_OP_RENAME: u8 = 6;
 
 /// Journal magic bytes — "JRNL".
 const JOURNAL_MAGIC: [u8; 4] = [b'J', b'R', b'N', b'L'];
@@ -239,6 +247,7 @@ impl JournalEntry {
         buf[16..20].copy_from_slice(&self.dir_sector.to_le_bytes());
         buf[20..22].copy_from_slice(&self.dir_offset.to_le_bytes());
         buf[22..26].copy_from_slice(&self.size.to_le_bytes());
+        buf[26..].copy_from_slice(&self._reserved);
     }
 
     /// Deserialize journal entry from a 512-byte sector buffer.
@@ -252,6 +261,7 @@ impl JournalEntry {
         entry.dir_sector = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
         entry.dir_offset = u16::from_le_bytes([buf[20], buf[21]]);
         entry.size = u32::from_le_bytes([buf[22], buf[23], buf[24], buf[25]]);
+        entry._reserved.copy_from_slice(&buf[26..]);
         entry
     }
 }
@@ -279,6 +289,79 @@ fn fat32_journal_clear() -> Result<(), ()> {
 /// Check and replay journal on mount.
 /// If journal has PENDING entry -> roll back (free allocated clusters).
 /// If journal has COMMITTED entry -> complete (clear journal).
+/// The first cluster the dirent at `(sector, off)` names, or `None` when
+/// the location is outside the data region or unreadable (U09-10: journal
+/// fields come off an attacker-writable volume).
+fn dirent_first_cluster_at(sector: u32, off: u16) -> Option<(u32, [u8; SECTOR_SIZE])> {
+    let (data_start, data_clusters, spc) = {
+        let v = FAT32.lock();
+        (v.data_start, v.data_clusters, v.secs_per_clus.max(1))
+    };
+    let data_end = data_start.saturating_add(data_clusters.saturating_mul(spc));
+    let off = off as usize;
+    if sector < data_start || sector >= data_end || off + DIRENT_SIZE > SECTOR_SIZE || off % DIRENT_SIZE != 0 {
+        return None;
+    }
+    let mut buf = [0u8; SECTOR_SIZE];
+    read_sector(sector, &mut buf).ok()?;
+    let hi = u16::from_le_bytes([buf[off + DIRENT_OFF_FST_CLUS_HI], buf[off + DIRENT_OFF_FST_CLUS_HI + 1]]);
+    let lo = u16::from_le_bytes([buf[off + DIRENT_OFF_FST_CLUS_LO], buf[off + DIRENT_OFF_FST_CLUS_LO + 1]]);
+    Some((((hi as u32) << 16) | lo as u32, buf))
+}
+
+/// Apply a `JOURNAL_OP_RENAME` record: the destination dirent takes the
+/// source's cluster and size, the source dirent is deleted, the
+/// destination's old chain is freed. Every step writes a recorded target
+/// state, so a replay over a partly applied rename reproduces the same
+/// bytes; the record is discarded when the dirents it names do not hold
+/// what it says (either before or after the rename).
+fn journal_replay_rename(entry: &JournalEntry) {
+    let src_sector = u32::from_le_bytes([entry._reserved[0], entry._reserved[1], entry._reserved[2], entry._reserved[3]]);
+    let src_off = u16::from_le_bytes([entry._reserved[4], entry._reserved[5]]);
+    let mut src_name = [0u8; 11];
+    src_name.copy_from_slice(&entry._reserved[6..17]);
+    let dst_ok = matches!(dirent_first_cluster_at(entry.dir_sector, entry.dir_offset),
+        Some((c, _)) if c == entry.fat_value || c == entry.cluster);
+    let src = dirent_first_cluster_at(src_sector, src_off);
+    let src_ok = match &src {
+        Some((c, buf)) => {
+            let o = src_off as usize;
+            // Before the delete: the source's name and chain; after it: a
+            // deleted slot.
+            (buf[o..o + 11] == src_name && *c == entry.cluster) || buf[o] == DIRENT_MARK_DELETED
+        }
+        None => false,
+    };
+    if !dst_ok || !src_ok {
+        azos_drv_sys::kwarn!("[FAT32] Journal recovery: RENAME entry does not match its dirents — discarded");
+        return;
+    }
+    azos_drv_sys::kprintln!("[FAT32] Journal recovery: completing rename (clus={}, old_clus={})",
+        entry.cluster, entry.fat_value);
+    let _ = rename_apply(entry.dir_sector, entry.dir_offset, src_sector, src_off, &src_name,
+        entry.cluster, entry.size, entry.fat_value);
+}
+
+/// The three writes of a rename over an existing file (see
+/// `JOURNAL_OP_RENAME`), in an order whose every prefix leaves one name on
+/// the chain: destination first, then the source deleted, then the old
+/// chain freed.
+fn rename_apply(dst_sector: u32, dst_off: u16, src_sector: u32, src_off: u16, src_name: &[u8; 11],
+                cluster: u32, size: u32, old_chain: u32) -> Result<(), ()> {
+    fat32_update_dirent_clus_size(dst_sector, dst_off, cluster, size)?;
+    let mut buf = [0u8; SECTOR_SIZE];
+    read_sector(src_sector, &mut buf)?;
+    let o = src_off as usize;
+    if buf[o..o + 11] == *src_name {
+        buf[o] = DIRENT_MARK_DELETED;
+        write_sector(src_sector, &buf)?;
+    }
+    if old_chain >= FAT32_FIRST_DATA_CLUSTER && old_chain != cluster {
+        fat32_free_chain(old_chain);
+    }
+    Ok(())
+}
+
 fn fat32_journal_recover() -> Result<(), ()> {
     let entry = fat32_journal_read()?;
 
@@ -366,6 +449,10 @@ fn fat32_journal_recover() -> Result<(), ()> {
             if entry.fat_value >= FAT32_FIRST_DATA_CLUSTER {
                 fat32_free_chain(entry.fat_value);
             }
+            fat32_journal_clear()
+        }
+        JOURNAL_PENDING if entry.op_type == JOURNAL_OP_RENAME => {
+            journal_replay_rename(&entry);
             fat32_journal_clear()
         }
         JOURNAL_PENDING => {
@@ -2457,18 +2544,16 @@ pub fn fat32_unlink_root(name83: &[u8; 11]) -> Result<(), ()> {
 /// instead of writing the live name directly and having a failed
 /// verification take the live image down with it.
 ///
-/// **What is journaled, and what is not.** Installing `old_name83`'s
-/// cluster/size at `new_name83`'s dirent (and freeing whatever chain
-/// `new_name83` used to own) is journaled as one `OVERWRITE` record —
-/// exactly the record `fat32_write_file`'s overwrite path already writes,
-/// replayed by the same recovery arm, so a crash during THIS half recovers
-/// the same way. Removing `old_name83`'s own dirent afterward is a second,
-/// separate `UNLINK` record (the same shape `fat32_unlink_root` writes).
-/// **A crash between the two leaves BOTH names present, pointing at the
-/// same cluster** — never neither, never a freed-out-from-under-a-live-name
-/// chain, but a caller that cares must check for and clean up the
-/// duplicate. Making the whole rename one journal record is a larger
-/// change (a new op type, a new recovery arm) than this pass made.
+/// **Atomic, as far as FAT allows (wave 15).** Over an existing file it is
+/// one journal record (`JOURNAL_OP_RENAME`): a cut leaves either the old
+/// destination with the source still present, or the new destination with
+/// the source gone — never both names on one chain, never neither, and the
+/// destination's bytes are the old file's or the new one's, whole. To a new
+/// name it is an in-place rewrite of the source dirent's 8.3 name (one
+/// sector write). What it does NOT promise: durability (an fsync/sync makes
+/// it so), and crossing directories (root-directory names only). Together
+/// with an in-place write this is the atomic-replace recipe: write a temp
+/// file, fsync it, rename it over the live name.
 pub fn fat32_rename(
     old_name83: &[u8; 11],
     new_name83: &[u8; 11],
@@ -2498,79 +2583,53 @@ pub fn fat32_rename(
 
     match dest {
         Some(d) => {
+            // Over an existing file: ONE journal record (`JOURNAL_OP_RENAME`)
+            // covers the destination's new chain, the source's deletion and
+            // the old chain's free. The first barrier puts the source chain
+            // (written by an earlier call that need not have flushed it)
+            // ahead of the record; once the record is durable, recovery
+            // completes the rename.
             let dest_old_cluster = d.cluster;
-            // Destination exists: reuse its dirent slot, journaled the same
-            // way an ordinary overwrite is.
             let (dest_sector, dest_offset) = io!(fat32_find_dirent_location(new_name83));
-            // Same three barriers as `write_file_journaled`'s overwrite arm,
-            // for the same reasons: the source chain was written by some
-            // earlier call that need not have flushed it, and this record
-            // is replayed onto it at mount.
             io!(journal_barrier());
+            let mut reserved = [0u8; JOURNAL_RESERVED_SIZE];
+            reserved[0..4].copy_from_slice(&src_sector.to_le_bytes());
+            reserved[4..6].copy_from_slice(&src_offset.to_le_bytes());
+            reserved[6..17].copy_from_slice(old_name83);
             let journal = JournalEntry {
                 magic: JOURNAL_MAGIC,
                 state: JOURNAL_PENDING,
-                op_type: JOURNAL_OP_OVERWRITE,
+                op_type: if cfg!(feature = "rename-two-records-canary") { JOURNAL_OP_OVERWRITE } else { JOURNAL_OP_RENAME },
                 _pad: [0; 2],
                 cluster: src_cluster,
                 fat_value: dest_old_cluster,
                 dir_sector: dest_sector,
                 dir_offset: dest_offset,
                 size: src_size,
-                _reserved: [0; JOURNAL_RESERVED_SIZE],
+                _reserved: reserved,
             };
             io!(fat32_journal_write(&journal));
             io!(journal_barrier());
-            io!(fat32_update_dirent_clus_size(dest_sector, dest_offset, src_cluster, src_size));
-            if dest_old_cluster >= FAT32_FIRST_DATA_CLUSTER {
-                fat32_free_chain(dest_old_cluster);
-            }
+            io!(rename_apply(dest_sector, dest_offset, src_sector, src_offset, old_name83,
+                src_cluster, src_size, dest_old_cluster));
             io!(journal_barrier());
             let committed = JournalEntry { state: JOURNAL_COMMITTED, ..journal };
             io!(fat32_journal_write(&committed));
             io!(fat32_journal_clear());
         }
         None => {
-            // Destination does not exist: insert a fresh dirent for it.
-            // Best-effort, not journaled — a crash here leaves the file
-            // reachable under its OLD name only, never lost and never
-            // cross-linked, so it is not the case this function's own
-            // journaling was written to protect against. The source's own
-            // attribute byte is kept (a directory stays a directory), and
-            // a failed insert says why: no free slot or no free cluster to
-            // extend the directory is `NoSpace`, a device failure `Io`.
-            let root_cluster = FAT32.lock().root_cluster;
-            dir_insert(root_cluster, new_name83, src_cluster, src_size, src.attr)
-                .map_err(fs_err)?;
+            // To a new name: the source's own dirent is renamed in place —
+            // eleven bytes of one sector, one device write, so a cut leaves
+            // the old name or the new one, never both and never neither. The
+            // slot, attributes, chain and size are untouched.
+            let mut sec_buf = [0u8; SECTOR_SIZE];
+            io!(read_sector(src_sector, &mut sec_buf));
+            let o = src_offset as usize;
+            if sec_buf[o..o + 11] != *old_name83 { return Err(FsErr::Io); }
+            sec_buf[o..o + 11].copy_from_slice(new_name83);
+            io!(write_sector(src_sector, &sec_buf));
         }
     }
-
-    // Remove the source dirent — same journal shape `fat32_unlink_root`
-    // uses, minus any chain free (the cluster now belongs to `new_name83`).
-    let mut sec_buf = [0u8; SECTOR_SIZE];
-    io!(read_sector(src_sector, &mut sec_buf));
-    let unlink_journal = JournalEntry {
-        magic: JOURNAL_MAGIC,
-        state: JOURNAL_PENDING,
-        op_type: JOURNAL_OP_UNLINK,
-        _pad: [0; 2],
-        cluster: 0,
-        fat_value: 0,
-        dir_sector: src_sector,
-        dir_offset: src_offset,
-        size: 0,
-        _reserved: [0; JOURNAL_RESERVED_SIZE],
-    };
-    // The first barrier also orders the destination dirent (either arm
-    // above) ahead of this deletion, so a cut never loses both names.
-    io!(fat32_journal_write(&unlink_journal));
-    io!(journal_barrier());
-    sec_buf[src_offset as usize] = 0xE5;
-    io!(write_sector(src_sector, &sec_buf));
-    io!(journal_barrier());
-    let unlink_committed = JournalEntry { state: JOURNAL_COMMITTED, ..unlink_journal };
-    io!(fat32_journal_write(&unlink_committed));
-    io!(fat32_journal_clear());
     Ok(())
 }
 
@@ -4242,6 +4301,34 @@ pub fn fat32_close(file: Fat32File) -> Result<(), FsError> {
     synced
 }
 
+/// Release a handle WITHOUT making it durable (wave 15): a dirty handle's
+/// directory entry (size, first cluster) is written after an ordering
+/// barrier — the data and the chain are in an earlier epoch, so a cut never
+/// leaves an entry over bytes the device does not have — and nothing is
+/// flushed. The VFS's in-place writes use it; `fat32_close` (= fsync) stays
+/// the durable close of this API.
+pub fn fat32_release(file: Fat32File) -> Result<(), FsError> {
+    let snapshot = snapshot_handle(file)?;
+    let r = if snapshot.dirty {
+        match order_barrier() {
+            Ok(()) | Err(FsError::Unsupported) => dir_update_meta(
+                snapshot.dir_sector, snapshot.dir_offset, snapshot.first_cluster, snapshot.size),
+            Err(e) => Err(e),
+        }
+    } else {
+        Ok(())
+    };
+    with_handle(file, |e| {
+        e.in_use = false;
+        e.dirty = false;
+        e.pos = 0;
+        e.size = 0;
+        e.first_cluster = 0;
+        Ok(())
+    })?;
+    r
+}
+
 /// Return `(position, size)` for an open file.  Useful for tests.
 pub fn fat32_file_stat(file: Fat32File) -> Result<(u32, u32), FsError> {
     with_handle(file, |e| Ok((e.pos, e.size)))
@@ -4538,11 +4625,22 @@ impl crate::vfs::FileSystem for Fat32Fs {
         Ok(())
     }
 
-    /// Read-only opens stream (wave 14): no whole-file load for `open` +
-    /// `read`. Writable opens keep the proxy, whose journaled whole-file
-    /// rewrite is unchanged.
+    /// Read-only opens stream through the read handle (wave 14): no
+    /// whole-file load for `open` + `read`.
     #[inline]
     fn stream_reads(&self) -> bool { true }
+
+    /// Writable opens stream too (wave 15, owner decision): reads and writes
+    /// go to the file in place through the block cache, as on Linux — no
+    /// whole-file proxy load on open and no journaled whole-file rewrite on
+    /// close. A write is not atomic; an atomic replace is a temp file,
+    /// fsync, then `rename` over the live name (`fat32_rename`).
+    #[inline]
+    fn streaming(&self) -> bool { !cfg!(feature = "fat-proxy-writes-canary") }
+
+    /// Read-only opens keep the read-handle path above.
+    #[inline]
+    fn ro_handles(&self) -> bool { true }
 
     /// The start cluster `stat` found, with the volume's write generation
     /// then (see `WRITE_GEN`).
@@ -4652,9 +4750,14 @@ impl crate::vfs::FileSystem for Fat32Fs {
             Ok(_)  => fat32_write(file, src).map_err(|_| ()),
             Err(_) => Err(()),
         };
-        let _ = fat32_fsync(file);
-        let _ = fat32_close(file);
-        result
+        // The directory entry follows the data and the FAT chain in a later
+        // epoch (`fat32_release`); no flush — `fsync` is the durability
+        // point (`FileSystem::fsync`, `fat32_sync_checked`).
+        let released = fat32_release(file);
+        match (result, released) {
+            (Ok(n), Ok(())) => Ok(n),
+            _ => Err(()),
+        }
     }
 
     // ── RFC-0048 P2 ──────────────────────────────────────────────────────
@@ -4689,6 +4792,21 @@ impl crate::vfs::FileSystem for Fat32Fs {
         let e = fat32_lookup_root_entry(&name83).map_err(|()| FsErr::NotFound)?;
         if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
         if len == e.size as u64 { return Ok(()); }
+        if len == 0 && !cfg!(feature = "fat-proxy-writes-canary") {
+            // Wave 15, the `O_TRUNC` of an in-place write: the entry first
+            // (no chain, size 0), then — one epoch later — the old chain
+            // freed. A cut leaves the old file or an empty one; at worst
+            // the old chain leaks, it is never named by a live entry while
+            // free. No journal record, no whole-file rewrite.
+            let (sector, off) = fat32_find_dirent_location(&name83).map_err(|()| FsErr::Io)?;
+            fat32_update_dirent_clus_size(sector, off, 0, 0).map_err(|()| FsErr::Io)?;
+            if e.cluster >= FAT32_FIRST_DATA_CLUSTER {
+                order_barrier().or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) })
+                    .map_err(fs_err)?;
+                fat32_free_chain(e.cluster);
+            }
+            return Ok(());
+        }
         let len = u32::try_from(len).map_err(|_| FsErr::NoSpace)? as usize;
         let mut buf = alloc::vec::Vec::new();
         buf.try_reserve_exact(len).map_err(|_| FsErr::NoSpace)?;

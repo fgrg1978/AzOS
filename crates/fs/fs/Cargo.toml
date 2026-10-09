@@ -53,7 +53,7 @@ fatcache-run-bypass-canary = []
 #   flush-no-writeback: a journal barrier/fsync flushes without writing back
 #   no-shadow:         re-dirtying an older epoch writes back instead of shadowing
 #   barrier-flushes:   a journal barrier is a device flush (the write-through cost)
-#   close-flushes:     a VFS close of a FAT32 file waits for the device again
+#   close-flushes:     a queued whole-file write (create, truncate) waits for the device again
 wb-epoch-merge-canary = []
 wb-no-ordering-flush-canary = []
 wb-no-coalesce-canary = []
@@ -64,6 +64,12 @@ wb-flush-no-writeback-canary = []
 wb-no-shadow-canary = []
 wb-barrier-flushes-canary = []
 wb-close-flushes-canary = []
+# Wave 15 canary: a rename over a file is journaled as a plain OVERWRITE
+# record (the source dirent is not part of it): a cut can leave both names.
+rename-two-records-canary = []
+# Wave 15 canary: FAT32 writable opens take the whole-file proxy again
+# (load on open, journaled rewrite on close) instead of writing in place.
+fat-proxy-writes-canary = []
 #   ro-stream-off: read-only opens take the whole-file proxy again
 #   write-gen:     writes no longer move FAT32's write generation
 ro-stream-off-canary = []

@@ -461,13 +461,22 @@ fixed mount table. There are three implementations:
   cut therefore leaves a prefix of epochs plus part of one, the states the
   write-through journal allowed. `fsync`, `sync` and the durable records
   (e-stop and safety records, OTA marks, the crash log) return only after
-  their writes are flushed; a close queues. A device that cannot flush
-  mounts write-through. The
+  their writes are flushed; a close does no I/O. A device that cannot
+  flush mounts write-through. The
   `fs-wb` task writes the rest back by age (`FS_WRITEBACK_MAX_AGE_MS`: 1 s in
   the robot domain, 5 s otherwise) and by dirty-line watermark. A writer
   never evicts a dirty line under the cache lock; it writes back with the
   lock released and retries. Another reader of the medium makes FAT32 write
   back first; another writer drops only the sectors it wrote.
+- **Writes in place.** A writable open reads and writes the file in place
+  through the block cache, as on Linux: no whole-file load on open, no
+  rewrite on close; the directory entry follows the data one epoch later.
+  `O_TRUNC` to zero clears the entry, then frees the chain an epoch later.
+  A write is not atomic. Atomic replace is a temp file, `fsync`, then
+  `rename` over the live name: over an existing file `rename` is one
+  journal record (a cut leaves the old file with the source still named,
+  or the new one with the source gone), to a new name an in-place rewrite
+  of the 8.3 name in one sector.
 - **Journal.** A one-sector journal is replayed at mount.
 - **Locks across device I/O.** No lock held across a device request turns
   preemption off. The FAT holds no mutex across device I/O: a FAT entry
@@ -480,7 +489,10 @@ fixed mount table. There are three implementations:
   (`VIRTIO_BLK_INFLIGHT`, up to five, `VIRTIO_BLK_SLOT_KB` each), and a
   request that finds every slot taken sleeps without priority inheritance.
   A write larger than one slot is submitted on every free slot before its
-  first wait. The cache lock is released
+  first wait. Completions arrive by interrupt on every ISA (riscv64 PLIC or
+  APLIC, aarch64 GIC SPI, x86_64 IOAPIC): a waiting task sleeps until the
+  line's handler wakes it, bounded by the request's deadline; before the
+  scheduler runs, or with interrupts or preemption off, it polls. The cache lock is released
   before a request goes to the device. A real-time task on the writer's CPU
   keeps its period while FAT32 writes.
 - **No priority-inheritance mutex across a device wait, for any task.** A

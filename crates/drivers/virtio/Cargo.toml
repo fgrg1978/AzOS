@@ -10,6 +10,9 @@ publish = false
 # Wave 15 canary: a multi-request write waits for each chunk before the
 # next (one request in the device at a time), as before the pipelined write.
 blk-serial-write-canary = []
+# Wave 15 canary: the block device stays polled (its waiters spin) even
+# where the kernel wires its interrupt line.
+blk-poll-canary = []
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []

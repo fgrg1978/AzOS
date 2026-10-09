@@ -1694,7 +1694,7 @@ mod vfs_open_close {
     /// open" are indistinguishable in production; this pins the behaviour
     /// that was there before the fix so a later change has to be deliberate.
     #[test]
-    fn a_bare_create_open_replaces_the_file() {
+    fn a_bare_create_open_writes_in_place() {
         let _g = serial();
         fresh_volume();
         let mut t = vfs::ScratchFds::new();
@@ -1706,7 +1706,9 @@ mod vfs_open_close {
         assert_eq!(vfs::vfs_write(&mut t, fd, b"new\n".as_ptr(), 4), 4);
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
 
-        assert_eq!(on_disk(b"bare.txt"), b"new\n");
+        // Wave 15: FAT32 writes in place (POSIX): a bare O_CREAT keeps the
+        // file and the write overwrites its first four bytes.
+        assert_eq!(on_disk(b"bare.txt"), b"new\ninal\n");
     }
 
     /// **Round 48: descriptors made by `dup`/`dup2` share one open file
@@ -1776,10 +1778,11 @@ mod vfs_open_close {
         vfs::fd_free(&mut lone, 0);
         assert_eq!(t.off(fd), 5, "the closed slot's offset went nowhere");
         {
+            // Wave 15: FAT32 writes in place, so both writes are in the file
+            // already, whichever descriptor closes last.
             use vfs::FileSystem;
             let key = fat32::Fat32Fs.key_for(b"lend.txt").unwrap();
-            assert!(fat32::Fat32Fs.stat(&key).map_or(true, |st| st.size == 0),
-                "a close that is not the last does not flush");
+            assert_eq!(fat32::Fat32Fs.stat(&key).map(|st| st.size), Some(6));
         }
 
         let mut last = vfs::fd_detach(&mut t, fd).expect("the last descriptor hands back the flush");
@@ -1885,7 +1888,7 @@ mod vfs_open_close {
     /// `disk_write_fail_after(0)` fails the write at the device, which is the
     /// same shape as a dead SD card.
     #[test]
-    fn a_close_whose_flush_fails_reports_it() {
+    fn a_write_whose_device_write_fails_reports_it() {
         let _g = serial();
         let _wt = crate::write_through();
         fresh_volume();
@@ -1896,13 +1899,15 @@ mod vfs_open_close {
             vfs::O_WRONLY | vfs::O_CREAT | vfs::O_TRUNC,
         );
         assert!(fd >= 0);
-        assert_eq!(vfs::vfs_write(&mut t, fd, b"payload".as_ptr(), 7), 7);
-
+        // Wave 15: in place, write-through — the write itself meets the
+        // device, so ITS answer reports the failure (a close is no longer a
+        // flush; under write-back fsync reports it, `writeback` tests).
         disk_write_fail_after(0);
-        let rc = vfs::vfs_close(&mut t, fd);
+        let w = vfs::vfs_write(&mut t, fd, b"payload".as_ptr(), 7);
         disk_write_fail_clear();
+        let _ = vfs::vfs_close(&mut t, fd);
 
-        assert_eq!(rc, -1, "a close that could not flush must not report success");
+        assert_eq!(w, -1, "a write that could not reach the device must not report success");
     }
 
     /// A failed flush still releases the descriptor. Reporting the error by
@@ -1946,7 +1951,7 @@ mod vfs_open_close {
     /// without an 8 MiB fixture: the size the VFS believes comes from that
     /// entry, and the cap is checked against it before any allocation.
     #[test]
-    fn an_append_open_refuses_a_file_it_cannot_load_rather_than_replacing_it() {
+    fn an_append_open_of_a_large_file_opens_it_in_place_untouched() {
         let _g = serial();
         use vfs::FileSystem;
 
@@ -1965,11 +1970,10 @@ mod vfs_open_close {
             &mut t, b"/fat/CRASH.LOG",
             vfs::O_WRONLY | vfs::O_CREAT | vfs::O_APPEND,
         );
-        assert_eq!(
-            fd, -1,
-            "the file exists but cannot be loaded through the proxy; opening \
-             it O_CREAT must fail, not hand back an empty file",
-        );
+        // Wave 15: no proxy load any more — the file opens in place,
+        // whatever its size, and the open itself leaves it untouched.
+        assert!(fd >= 0, "an append open of an existing file opens it in place");
+        assert_eq!(vfs::vfs_close(&mut t, fd), 0);
 
         let key = fat32::Fat32Fs.key_for(b"crash.log").unwrap();
         assert_eq!(
@@ -3102,9 +3106,41 @@ mod power_cut {
                 if live.as_deref() == Some(&old[..]) && stage.is_none() {
                     return Err("both names lost the new image".into());
                 }
+                // Wave 15: one RENAME record — never both names on the new
+                // image's chain (two names on one chain cross-link it the
+                // moment either is freed).
+                if live.as_deref() == Some(&new[..]) && stage.is_some() {
+                    return Err("both names on one chain".into());
+                }
                 Ok(())
             });
-        assert_eq!(f, 5, "rename: 3 overwrite barriers + 2 unlink barriers");
+        println!("rename over a file: {f} flushes");
+    }
+
+    /// **Wave 15: an in-place rewrite through the VFS (O_TRUNC, write,
+    /// fsync), cut anywhere**: the old file, an empty one, or the whole new
+    /// one — never a size over bytes the device does not hold, never a live
+    /// chain through a free cluster. (No atomic replace: that is a temp file
+    /// and a rename, `a_rename_over_a_file_cut_anywhere_never_loses_the_source`.)
+    #[test]
+    fn an_in_place_rewrite_cut_anywhere_leaves_old_empty_or_new() {
+        let _g = serial();
+        let n = name(b"REC", b"DAT");
+        let old = pattern(OLD, 0x11);
+        let new = pattern(NEW, 0x77);
+        let f = cut_everywhere(with_file(&n, &old),
+            || {
+                super::vfs_open_close::vfs_once();
+                let mut t = super::vfs::ScratchFds::new();
+                let fd = super::vfs::vfs_open(&mut t, b"/fat/REC.DAT",
+                    super::vfs::O_WRONLY | super::vfs::O_TRUNC);
+                assert!(fd >= 0);
+                assert_eq!(super::vfs::vfs_write(&mut t, fd, new.as_ptr(), new.len()), new.len() as i32);
+                assert_eq!(super::vfs::vfs_fsync(&mut t, fd), Ok(()));
+                assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+            },
+            |img| one_of(&n, b"/REC.DAT", img, &[Some(&old[..]), Some(&b""[..]), Some(&new[..])]));
+        println!("in-place rewrite: {f} flushes");
     }
 
     #[test]
@@ -3118,12 +3154,17 @@ mod power_cut {
             |img| {
                 one_of(&a, b"/LIVE.BIN", img, &[Some(&new[..]), None])?;
                 one_of(&b, b"/STAGE.BIN", img, &[Some(&new[..]), None])?;
-                if read_back(b"/LIVE.BIN").is_none() && read_back(b"/STAGE.BIN").is_none() {
+                let (l, s) = (read_back(b"/LIVE.BIN"), read_back(b"/STAGE.BIN"));
+                if l.is_none() && s.is_none() {
                     return Err("neither name survived".into());
+                }
+                // Wave 15: an in-place rename of the dirent — exactly one.
+                if l.is_some() && s.is_some() {
+                    return Err("both names on one chain".into());
                 }
                 Ok(())
             });
-        assert_eq!(f, 3, "rename to a new name: 2 unlink barriers + the clear's write-back");
+        assert_eq!(f, 1, "rename to a new name: one dirent sector, then the write-back's flush");
     }
 
     /// The gate row's probe (`fat32_check_root_chain`) must itself see a
@@ -5033,7 +5074,7 @@ mod herm_wave11 {
     /// `NoSpace`, not `Io`: the root is full (16 entries in its one cluster)
     /// and every cluster is taken, so the directory cannot grow.
     #[test]
-    fn rename_with_no_room_for_the_entry_is_no_space() {
+    fn rename_with_no_room_for_a_new_entry_reuses_the_slot() {
         let _g = serial();
         let g = Geom::default();
         let mut img = build(&g);
@@ -5052,10 +5093,12 @@ mod herm_wave11 {
         assert_eq!(fat32::fat32_mount(), Ok(()));
         let src = n83(b"SRC", b"BIN");
         put(&src, b"x");
-        assert_eq!(
-            fat32::fat32_rename(&src, &n83(b"DST", b"BIN")),
-            Err(FsErr::NoSpace));
-        assert!(fat32::fat32_lookup_root(&src).is_ok(), "the source name must survive a refused rename");
+        // Wave 15: a rename to a new name reuses the source's own slot, so a
+        // full directory no longer refuses it.
+        let _ = FsErr::NoSpace;
+        assert_eq!(fat32::fat32_rename(&src, &n83(b"DST", b"BIN")), Ok(()));
+        assert!(fat32::fat32_lookup_root(&src).is_err(), "the old name is gone");
+        assert!(fat32::fat32_lookup_root(&n83(b"DST", b"BIN")).is_ok(), "the new name holds it");
     }
 
     /// A device that fails the write is `Io`, and the source is still there.
@@ -5228,17 +5271,19 @@ mod herm_wave11 {
     /// And `vfs_close` on a failing device returns -1 (it was already so;
     /// kept here so the three layers are asserted together).
     #[test]
-    fn vfs_close_reports_a_failed_flush() {
+    fn vfs_write_reports_a_failed_device_write() {
         let _g = serial();
         let _wt = crate::write_through();
         fresh_volume();
         let mut t = vfs::ScratchFds::new();
         let fd = vfs::vfs_open(&mut t, b"/fat/REC.LOG", vfs::O_WRONLY | vfs::O_CREAT);
         assert!(fd >= 0);
-        assert_eq!(vfs::vfs_write(&mut t, fd, REC.as_ptr(), REC.len()), REC.len() as i32);
+        // Wave 15: the device failure surfaces where the bytes meet it —
+        // the write, under write-through (see `a_close_whose_flush_fails_reports_it`).
         fail_writes_now();
-        assert_eq!(vfs::vfs_close(&mut t, fd), -1);
+        assert_eq!(vfs::vfs_write(&mut t, fd, REC.as_ptr(), REC.len()), -1);
         disk_write_fail_clear();
+        let _ = vfs::vfs_close(&mut t, fd);
     }
 
     // ── Journal wear: how often the journal sector is written ─────────────
@@ -5289,7 +5334,9 @@ mod herm_wave11 {
                   rename_over={rename_over} unlink={unlink} mkdir={mkdir} append_fsync={append_fsync}");
         assert_eq!(
             (create, overwrite, rename_new, rename_over, unlink, mkdir, append_fsync),
-            (3, 3, 3, 6, 3, 0, 0));
+            // Wave 15: a rename to a new name rewrites the dirent in place (no
+            // record); over a file it is ONE record (pending, committed, clear).
+            (3, 3, 0, 3, 3, 0, 0));
     }
 }
 
@@ -5674,7 +5721,9 @@ mod fuzz_regressions {
         assert!(fat32::fat32_rename(b"FUZZNEW BIN", b"FUZZMOV BIN").is_ok());
         assert_eq!(fat32::fat32_unlink_path(b"FUZZMOV.BIN"), Ok(()));
         assert!(fat32::fat32_lookup_root(b"FUZZMOV BIN").is_err());
-        assert_eq!(free() + 1, before, "create+rename+unlink cost more than the root's one new cluster");
+        // Wave 15: the rename rewrites the dirent in place, so the root no
+        // longer grows for it: the three operations cost nothing.
+        assert_eq!(free(), before, "create+rename+unlink must leave the free count as it was");
     }
 
     /// `BPB_RootClus` outside the data region is refused at mount. The
@@ -6941,6 +6990,24 @@ mod writeback {
         // Back to write-back for the next test's mount.
         let _ = fat32::fat32_unmount(fat32::Volume::assume_mounted());
         let _ = fat32::fat32_set_writeback(true);
+    }
+
+    /// **A device failure of a queued in-place write is reported by fsync**
+    /// (and the close claims nothing): the fsyncgate property, moved to the
+    /// call that claims durability.
+    #[test]
+    fn a_failed_write_back_is_reported_by_fsync() {
+        let _g = serial();
+        fresh();
+        let mut t = super::vfs::ScratchFds::new();
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/WB1.DAT", super::vfs::O_WRONLY | super::vfs::O_CREAT);
+        assert!(fd >= 0);
+        assert_eq!(super::vfs::vfs_write(&mut t, fd, b"payload".as_ptr(), 7), 7, "queued");
+        fs_test_drivers::disk_write_fail_after(0);
+        let r = super::vfs::vfs_fsync(&mut t, fd);
+        fs_test_drivers::disk_write_fail_clear();
+        assert!(r.is_err(), "fsync must report the lost write");
+        let _ = super::vfs::vfs_close(&mut t, fd);
     }
 
     /// xorshift64*, so a failing seed replays.

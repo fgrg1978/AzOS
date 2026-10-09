@@ -459,6 +459,15 @@ fn fs_wb_wake() {
 fn fs_writeback_task(_: usize) {
     use core::sync::atomic::Ordering::SeqCst;
     FS_WB_TID.store(azos_sync::waitqueue::caller_tid(), SeqCst);
+    // Evidence for the interrupt-driven disk (wave 15, `boot::blk_irq`): one
+    // read from task context, then the driver's counts. Taken > 0 and slept
+    // > 0: a waiter slept and the line woke it.
+    if azos_drv_virtio::virtio::blk::irq_mode() {
+        let mut s0 = [0u8; 512];
+        let _ = azos_drv_block::blkdev::read_quiet(0, 1, &mut s0);
+        let (taken, slept) = azos_drv_virtio::virtio::blk::blk_irq_counts();
+        kprintln!("[VIRTIO-BLK] by interrupt: {} taken, {} waits slept", taken, slept);
+    }
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
     loop {
         FS_WB_KICK.store(false, SeqCst);

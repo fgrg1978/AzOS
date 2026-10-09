@@ -911,6 +911,10 @@ fat-mutate-pi-canary = ["lat-fat", "azos_fs/fat-mutate-pi-canary"]
 # Wave 15 (RL), owner rule F1: virtio-blk holds `BLK_LOCK` across each
 # completion wait again; `[LAT] blk waits_locked=` goes non-zero.
 blk-lock-wait-canary = ["lat-fat", "azos_drv_virtio/blk-lock-wait-canary"]
+# Wave 15 canary: virtio-blk stays polled (its waiters spin) although its
+# interrupt line is wired: the `[VIRTIO-BLK] completions by interrupt` line
+# says NOT taken, and blk_irq_counts stays (0, 0).
+blk-poll-canary = ["azos_drv_virtio/blk-poll-canary"]
 # Wave 15 (RL), owner rule "an RT task never does block I/O": the flight
 # recorder treats every caller as non-RT, so rt-motor's durable SAFE STOP
 # record flushes in rt-motor and RT_BLOCK_IO_CHECK must panic naming it.
