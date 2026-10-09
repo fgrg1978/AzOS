@@ -2860,23 +2860,33 @@ mod power_cut {
     }
 
     /// The clusters `n83`'s dirent names, or why the chain is unsound:
-    /// a link to a free (0) or out-of-range cluster, or a length that does
-    /// not match the size.
+    /// a link to a free (0) or out-of-range cluster, a chain that does not
+    /// end, or one shorter than the size. A sound tail past the size (it
+    /// ends in EOC) is legal, as in `fat32_check_root_chain` (FW2): what a
+    /// cut between an extension and the entry naming it leaves.
     fn chain(img: &[u8], n83: &[u8; 11]) -> Result<Vec<u32>, String> {
-        let Some((first, size)) = dirent(img, n83) else { return Ok(Vec::new()) };
+        chain_and_tail(img, n83).map(|(c, _)| c)
+    }
+
+    /// [`chain`], and the length of the sound tail past the size.
+    fn chain_and_tail(img: &[u8], n83: &[u8; 11]) -> Result<(Vec<u32>, usize), String> {
+        let Some((first, size)) = dirent(img, n83) else { return Ok((Vec::new(), 0)) };
         let want = (size as usize).div_ceil(SECTOR);
         let mut out = Vec::new();
         let mut c = first;
-        while want > 0 && out.len() <= want {
+        while want > 0 {
             if !(2..200).contains(&c) { return Err(format!("link to cluster {c:#x}")); }
+            if out.len() >= 200 { return Err("chain does not end".into()); }
             out.push(c);
             let v = fat(img, c);
             if v == 0 { return Err(format!("cluster {c} of a live chain is FREE in the FAT")); }
             if v >= EOC_MIN { break; }
             c = v;
         }
-        if out.len() != want { return Err(format!("chain of {} clusters for size {size}", out.len())); }
-        Ok(out)
+        if out.len() < want { return Err(format!("chain of {} clusters for size {size}", out.len())); }
+        let tail = out.len() - want;
+        out.truncate(want);
+        Ok((out, tail))
     }
 
     fn read_back(path: &[u8]) -> Option<Vec<u8>> {
@@ -3296,6 +3306,133 @@ mod power_cut {
         println!("eight appends: {f} flushes");
     }
 
+    /// Create `/fat/NEW.DAT`, write `chunks`, and run a write-back (the
+    /// `fs-wb` pass's `device_flush`) after the first `wb_after` of them;
+    /// close, no fsync.
+    fn writes_with_a_write_back_between(chunks: &[&[u8]], wb_after: usize) {
+        super::vfs_open_close::vfs_once();
+        let mut t = super::vfs::ScratchFds::new();
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/NEW.DAT",
+            super::vfs::O_WRONLY | super::vfs::O_CREAT);
+        assert!(fd >= 0);
+        for (i, c) in chunks.iter().enumerate() {
+            if i == wb_after { assert_eq!(fat32::fat32_writeback_now(), Ok(())); }
+            assert_eq!(super::vfs::vfs_write(&mut t, fd, c.as_ptr(), c.len()), c.len() as i32);
+        }
+        assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+    }
+
+    /// The judge of a `writes_with_a_write_back_between` run: nothing, or a
+    /// prefix of `new` ending at a write boundary (`step` bytes per write),
+    /// over a sound chain. Counts in `tails` the cut states whose chain runs
+    /// past the size (the window FW2 is about).
+    fn prefix_over_a_sound_chain(img: &[u8], new: &[u8], step: usize, tails: &core::cell::Cell<usize>)
+        -> Result<(), String>
+    {
+        let n = name(b"NEW", b"DAT");
+        let (_, tail) = chain_and_tail(img, &n)?;
+        if tail > 0 { tails.set(tails.get() + 1); }
+        let prefixes: Vec<Vec<u8>> = (0..=new.len() / step).map(|k| new[..k * step].to_vec()).collect();
+        let mut legal: Vec<Option<&[u8]>> = vec![None];
+        legal.extend(prefixes.iter().map(|p| Some(&p[..])));
+        one_of(&n, b"/NEW.DAT", img, &legal)
+    }
+
+    /// **FW2: a write-back in the middle of a write sequence, cut
+    /// anywhere.** Two writes, the `fs-wb` pass (it writes their chain, then
+    /// the entry naming 800 bytes), two writes that extend the chain, the
+    /// pass again. A cut after the second pass wrote the extension and
+    /// before it wrote the entry leaves the old size over a longer chain:
+    /// sound (it ends in EOC), and `fat32_check_root_chain` passes on it.
+    /// The test asserts that cut state is reached (`tails > 0`).
+    ///
+    /// **Canary.** `fat-check-exact-chain-canary`: the checker refuses the
+    /// tail again.
+    #[test]
+    fn a_write_back_mid_sequence_cut_anywhere_leaves_a_sound_chain() {
+        let _g = serial();
+        let n = name(b"NEW", b"DAT");
+        let new = pattern(1600, 0x5A); // four 512-byte clusters
+        let chunks: Vec<&[u8]> = new.chunks(400).collect();
+        let pristine = { remount(fresh_image()); disk_durable_image() };
+        let tails = core::cell::Cell::new(0usize);
+        let f = cut_everywhere(pristine,
+            || writes_with_a_write_back_between(&chunks, 2),
+            |img| {
+                prefix_over_a_sound_chain(img, &new, 400, &tails)?;
+                // The driver's own checker, on the mounted cut image.
+                match fat32::fat32_check_root_chain(&n) {
+                    Ok(_) => Ok(()),
+                    Err(why) => Err(format!("fat32_check_root_chain: {why}")),
+                }
+            });
+        println!("mid-sequence write-back: {f} flushes, {} cut states with a tail", tails.get());
+        assert!(tails.get() > 0, "no cut state left the chain longer than the size: the window was not reached");
+        // Reclaimed: the next write past the size reuses the tail (no new
+        // cluster), so a cut leaks it only until the file grows again.
+        assert_eq!(read_back(b"/NEW.DAT").as_deref(), Some(&new[..]));
+    }
+
+    /// **FW2: the tail is reused by the file's next extension.** A cut
+    /// image whose entry names 800 bytes over a four-cluster chain: an
+    /// append of 800 bytes allocates nothing, and the chain is exact again.
+    #[test]
+    fn a_tail_past_the_size_is_reused_by_the_next_write() {
+        let _g = serial();
+        let g = Geom::default();
+        let n = name(b"NEW", b"DAT");
+        let new = pattern(1600, 0x5A);
+        let mut img = { remount(fresh_image()); assert_eq!(fat32::fat32_write_file(&n, &new), Ok(())); disk_durable_image() };
+        let clusters = chain(&img, &n).expect("sound");
+        assert_eq!(clusters.len(), 4);
+        // The entry's size back to 800: what the cut leaves.
+        let root = cluster_sector(&g, 2) * SECTOR;
+        let e = (0..16).find(|e| img[root + e * 32..root + e * 32 + 11] == n).expect("listed");
+        img[root + e * 32 + 28..root + e * 32 + 32].copy_from_slice(&800u32.to_le_bytes());
+        assert_eq!(chain_and_tail(&img, &n), Ok((clusters[..2].to_vec(), 2)), "premise: a two-cluster tail");
+        remount(img);
+        assert!(fat32::fat32_check_root_chain(&n).is_ok());
+        super::vfs_open_close::vfs_once();
+        let free0 = super::vfs::vfs_statfs(b"/fat").expect("statfs").blocks_free;
+        let mut t = super::vfs::ScratchFds::new();
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/NEW.DAT", super::vfs::O_WRONLY | super::vfs::O_APPEND);
+        assert!(fd >= 0);
+        assert_eq!(super::vfs::vfs_write(&mut t, fd, new[800..].as_ptr(), 800), 800);
+        assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+        assert_eq!(fat32::fat32_sync(), Ok(()));
+        assert_eq!(super::vfs::vfs_statfs(b"/fat").expect("statfs").blocks_free, free0, "the append allocated");
+        let after = disk_durable_image();
+        assert_eq!(chain_and_tail(&after, &n), Ok((clusters, 0)));
+        assert_eq!(read_back(b"/NEW.DAT").as_deref(), Some(&new[..]));
+    }
+
+    /// **FW2: an extension across a FAT sector, cut anywhere.** Clusters
+    /// 3..=126 taken, so the file's first cluster is 127 (the last entry of
+    /// FAT sector 0) and its extension 128 (the first of sector 1): the
+    /// link and the new cluster's end-of-chain mark are two sector writes.
+    /// No cut may leave the link without the mark (a chain through a FREE
+    /// cluster, which the allocator would hand out again).
+    ///
+    /// **Canary.** `fw-tail-link-unordered-canary`: no barrier between them.
+    #[test]
+    fn an_extension_across_a_fat_sector_cut_anywhere_never_links_a_free_cluster() {
+        let _g = serial();
+        let g = Geom::default();
+        let new = pattern(800, 0x3C); // clusters 127 and 128
+        let chunks: Vec<&[u8]> = new.chunks(400).collect();
+        let mut img = fresh_image();
+        for c in 3u32..127 { set_fat(&mut img, &g, c, 0x0FFF_FFFF); }
+        let pristine = { remount(img); disk_durable_image() };
+        let tails = core::cell::Cell::new(0usize);
+        let f = cut_everywhere(pristine,
+            || writes_with_a_write_back_between(&chunks, 1),
+            |img| prefix_over_a_sound_chain(img, &new, 400, &tails));
+        let n = name(b"NEW", b"DAT");
+        assert_eq!(chain(&disk_durable_image(), &n), Ok(vec![127, 128]), "premise: the chain crosses FAT sectors");
+        println!("extension across a FAT sector: {f} flushes, {} cut states with a tail", tails.get());
+        assert!(tails.get() > 0, "the window was not reached");
+    }
+
     /// The vsbench `file-write 4K` lane on the host: `iters` times create
     /// or truncate, write 4 KiB, close, no fsync; then the write-back.
     /// Returns (epochs opened, device writes, device flushes) of the whole
@@ -3549,6 +3686,12 @@ mod power_cut {
         assert_eq!(buf, old, "premise: the content check alone passes");
         assert_eq!(fat32::fat32_check_root_chain(&n), Err("a live chain runs through a FREE cluster"));
         assert_eq!(fat32::fat32_check_root_chain(&name(b"NONE", b"")), Ok(None));
+        // FW2: a tail past the size is sound only if it ends. The last
+        // cluster linked back to the first: refused, not walked forever.
+        let mut cyc = img.clone();
+        cyc[off..off + 4].copy_from_slice(&first.to_le_bytes());
+        remount(cyc);
+        assert_eq!(fat32::fat32_check_root_chain(&n), Err("chain does not end (a cycle)"));
     }
 
     /// A device that cannot flush (`Unsupported`) gives no ordering, so a

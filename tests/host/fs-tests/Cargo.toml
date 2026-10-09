@@ -65,6 +65,13 @@ fw-free-one-held-canary = []
 # Wave 15 (FW) canary: an in-place write walks its chain from the first
 # cluster for every sector again, and rewrites each new cluster's EOC.
 fw-chain-walk-canary = []
+# Wave 15 (FW2) canary: an in-place extension links a new cluster in a
+# later FAT sector without ordering its end-of-chain mark first (a cut can
+# leave a chain through a FREE cluster).
+fw-tail-link-unordered-canary = []
+# Wave 15 (FW2) canary: `fat32_check_root_chain` refuses a sound tail past
+# the size again (the state a cut between an extension and its entry leaves).
+fat-check-exact-chain-canary = []
 # Wave 15 canary: a rename over a file is journaled as a plain OVERWRITE
 # record (the source dirent is not part of it): a cut can leave both names.
 rename-two-records-canary = []

@@ -485,8 +485,16 @@ fixed mount table. There are three implementations:
   the device once, after them, at the write-back or the `fsync` that
   closes both epochs. Readers find the entry through the cache, so they see
   the new size at once; a plain write to a line held ahead joins its epoch.
-  A cut leaves the old entry or one naming a whole prefix. Write-through
-  orders each entry with a flush. `O_TRUNC` to zero clears the entry (also
+  A cut leaves the old entry or one naming a whole prefix. The chain is
+  extended before the entry naming the new size, so a cut after a
+  write-back wrote the entry and before the next one wrote it again can
+  leave the old size over a longer chain. That tail ends in end-of-chain:
+  a new cluster's end-of-chain mark reaches the medium before the link to
+  it (an epoch boundary where the two are in different FAT sectors, once
+  per 128 clusters). Reads stop at the size; the file's next write past it
+  reuses the tail, and a truncate or unlink frees it. Until then it is
+  leaked space, as Linux's FAT driver leaves it and fsck.fat trims it.
+  Write-through orders each entry with a flush. `O_TRUNC` to zero clears the entry (also
   written ahead) and holds the old chain.
   A write is not atomic. Atomic replace is a temp file, `fsync`, then
   `rename` over the live name: over an existing file `rename` is one

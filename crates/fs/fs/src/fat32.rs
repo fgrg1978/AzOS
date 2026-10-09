@@ -3451,10 +3451,22 @@ pub fn fat32_journal_idle() -> bool {
 ///
 /// `Ok(None)`: no such dirent. `Ok(Some((first_cluster, size)))`: every
 /// cluster the chain visits is an in-range data cluster the FAT does not
-/// call free, the chain ends in EOC, and its length is exactly what `size`
-/// needs. `Err(reason)` otherwise. For the power-cut gate row: a dirent
-/// over a chain the FAT freed reads back correctly until the clusters are
-/// reused, so a content check alone cannot see it.
+/// call free, the chain ends in EOC, and it covers `size`: exactly, or with
+/// a sound tail past it. `Err(reason)` otherwise. For the power-cut gate
+/// row: a dirent over a chain the FAT freed reads back correctly until the
+/// clusters are reused, so a content check alone cannot see it.
+///
+/// The tail (FW2): an in-place write extends the chain before the entry
+/// naming the new size reaches the medium (the entry follows its chain), so
+/// a cut between a write-back that wrote the entry and the next one that
+/// writes the extension leaves the old size over a longer chain. Reads stop
+/// at the size; the file's next write past its size reuses the tail
+/// (`chain_nth_or_extend` follows the chain before it allocates), and a
+/// truncate or unlink frees it with the chain (`free_chain_unlocked` runs to
+/// EOC). Until then it is leaked space, as after any cut before a free;
+/// Linux's FAT driver reads such a file the same way and fsck.fat trims it.
+/// A tail through a FREE cluster is not sound: `chain_nth_or_extend` orders
+/// a new cluster's end-of-chain mark before the link to it.
 pub fn fat32_check_root_chain(name83: &[u8; 11]) -> Result<Option<(u32, u32)>, &'static str> {
     let (first, size) = match fat32_lookup_root(name83) {
         Ok(v) => v,
@@ -3470,6 +3482,7 @@ pub fn fat32_check_root_chain(name83: &[u8; 11]) -> Result<Option<(u32, u32)>, &
         return if first == 0 { Ok(Some((0, 0))) } else { Err("empty file names a cluster") };
     }
     let last_valid = data_clusters.saturating_add(FAT32_FIRST_DATA_CLUSTER);
+    let limit = data_clusters as u64;
     let mut cluster = first;
     let mut seen = 0u64;
     loop {
@@ -3477,13 +3490,18 @@ pub fn fat32_check_root_chain(name83: &[u8; 11]) -> Result<Option<(u32, u32)>, &
             return Err("link to a cluster outside the data region");
         }
         seen += 1;
-        if seen > want { return Err("chain longer than its size"); }
+        // Past the size: a tail is sound if it ends in EOC (see above). A
+        // walk longer than the data region is a cycle.
+        if seen > limit { return Err("chain does not end (a cycle)"); }
+        if seen > want && cfg!(feature = "fat-check-exact-chain-canary") {
+            return Err("chain longer than its size");
+        }
         let next = fat32_next_cluster(cluster).map_err(|()| "FAT unreadable")?;
         if next == 0 { return Err("a live chain runs through a FREE cluster"); }
         if next >= FAT32_EOC { break; }
         cluster = next;
     }
-    if seen != want { return Err("chain shorter than its size"); }
+    if seen < want { return Err("chain shorter than its size"); }
     Ok(Some((first, size)))
 }
 
@@ -4149,6 +4167,26 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
             #[cfg(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))]
             let _canary = FAT_MUTATE_CANARY.lock(); // the old hold: alloc + both links
             let fresh = fat32_alloc_cluster_inner().map_err(|()| FsError::NoSpace)?;
+            // FW2: `fresh`'s end-of-chain mark reaches the medium before the
+            // link to it. In one FAT sector the two are one sector write;
+            // across a sector boundary they are two lines of one epoch, and
+            // a cut could leave the link without the mark: a chain through
+            // a FREE cluster, which the allocator hands out again while
+            // this file's next extension (or its free) still follows the
+            // link into it. A barrier between them, once per FAT sector of
+            // chain (128 clusters): write-back closes an epoch (no I/O),
+            // write-through flushes. A cut then leaves at worst a sound
+            // tail past the size (`fat32_check_root_chain`).
+            if fresh / FAT32_ENTRIES_PER_SECTOR != cur / FAT32_ENTRIES_PER_SECTOR
+                && !cfg!(feature = "fw-tail-link-unordered-canary")
+            {
+                if let Err(e) = order_barrier() {
+                    if e != FsError::Unsupported {
+                        let _ = fat32_write_fat_entry(fresh, 0);
+                        return Err(e);
+                    }
+                }
+            }
             // A failed link would leak `fresh` (allocated, in no chain):
             // undo it as `dir_insert` does, and give `fresh` back only when
             // `cur` is end-of-chain again in every copy.
