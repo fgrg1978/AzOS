@@ -6,6 +6,7 @@
 /// VF2: clock gating skeleton via JH7110 CRG (Clock Reset Generator).
 
 
+use azos_arch::{Cpu, ARCH};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 /// Power management state.
@@ -48,11 +49,9 @@ pub fn pm_init() {
 /// Returns immediately after an interrupt wakes the hart.
 pub fn pm_idle() {
     PM_STATE.store(PmState::Idle as u8, Ordering::Release);
-    // riscv64 and aarch64 share the `wfi` mnemonic; x86_64 halts.
-    #[cfg(not(target_arch = "x86_64"))]
-    unsafe { core::arch::asm!("wfi") };
-    #[cfg(target_arch = "x86_64")]
-    unsafe { core::arch::asm!("hlt") };
+    // The arch idle hook (`Cpu::wfi`): `wfi` on riscv64/aarch64, `hlt` on
+    // x86_64, and whatever an ISA's idle path ever adds, in one place.
+    ARCH.wfi();
     PM_STATE.store(PmState::Active as u8, Ordering::Release);
 }
 
@@ -63,11 +62,7 @@ pub fn pm_idle() {
 pub fn pm_suspend() {
     PM_STATE.store(PmState::Suspend as u8, Ordering::Release);
     azos_drv_sys::kprintln!("[PM] System suspended -- WFI");
-    // riscv64 and aarch64 share the `wfi` mnemonic; x86_64 halts.
-    #[cfg(not(target_arch = "x86_64"))]
-    unsafe { core::arch::asm!("wfi") };
-    #[cfg(target_arch = "x86_64")]
-    unsafe { core::arch::asm!("hlt") };
+    ARCH.wfi(); // the arch idle hook, as in `pm_idle`
     // Woken by interrupt
     PM_STATE.store(PmState::Active as u8, Ordering::Release);
     azos_drv_sys::kprintln!("[PM] Resumed from suspend");

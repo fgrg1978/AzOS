@@ -11,4 +11,5 @@ publish = false
 vf2 = []
 
 [dependencies]
+azos_arch = { workspace = true }
 azos_drv_sys = { workspace = true }

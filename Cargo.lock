@@ -299,6 +299,7 @@ dependencies = [
 name = "azos_drv_power"
 version = "0.1.0"
 dependencies = [
+ "azos_arch",
  "azos_drv_sys",
 ]
 
