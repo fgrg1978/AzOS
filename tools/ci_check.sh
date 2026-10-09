@@ -10816,6 +10816,115 @@ PY
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
 
+    # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
+    #
+    # `make x86_64` (X86_64_FEATURES adds cargo features), booted by hand-made
+    # QEMU lines like the Makefile's `qemu-x86_64`. Kernel only: there are no
+    # x86_64 user images, so "boots" means the kernel shell on COM1.
+    #   x86_64: boots to the shell  the boot self-tests (int3, a self-NMI on
+    #                               its IST stack, the tick), W^X, the
+    #                               scheduler, the shell prompt; no panic,
+    #                               no FAILED, no x86 trap report
+    #   x86_64: smp 2               CPU 1 started by INIT-SIPI-SIPI, takes its
+    #                               ticks and the reschedule IPI
+    #   x86_64: baseline canary     -cpu qemu64 (below x86-64-v2): boot.S
+    #                               refuses before Rust, nothing else runs
+    #   ktest (x86)                 the ktest plan, -smp 4, every test ok
+    #   ktest tlb local-only canary (x86)  the shootdown sends no IPI:
+    #                               tlb_shootdown_cross_cpu alone not ok
+    KTEST_N_X86=13
+    x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
+        par_shared "x86_64 kernel ${1:-plain}" || return 1
+        make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2"
+    }
+    x86_qemu() { # x86_qemu <image> <log> <secs> <stop ERE or ""> [qemu args...]; sets X86_QRC
+        local img="$1" log="$2" secs="$3" stop="$4" i=0; shift 4
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 "$@" -kernel "$img" </dev/null >"$log" 2>&1 &
+        local pid=$!
+        while [ "$i" -lt $((secs * 2)) ] && kill -0 "$pid" 2>/dev/null; do
+            [ -n "$stop" ] && tr -d '\r' <"$log" | grep -aqE "$stop" && break
+            i=$((i + 1)); sleep 0.5
+        done
+        X86_QRC=exited
+        if kill -0 "$pid" 2>/dev/null; then
+            X86_QRC=stopped; kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null
+        fi
+        wait "$pid" 2>/dev/null
+        tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+    }
+    x86_boot_row() { # x86_boot_row <label> <smp> <cpu model> <want lines, |-separated fixed strings> <stop ERE>
+        local label="$1" smp="$2" cpu="$3" want="$4" stop="$5" why="" w
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
+        x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
+        par_ready
+        x86_qemu "$kimg" "$log" 60 "$stop" -smp "$smp" -cpu "$cpu"
+        rm -f "$kimg"
+        local IFS='|'
+        for w in $want; do
+            grep -aqF -- "$w" "$log" || { why="missing: $w"; break; }
+        done
+        unset IFS
+        if [ -z "$why" ] && [ "$cpu" = max ]; then
+            grep -aqE 'KERNEL PANIC|FAILED|\[X86-TRAP\]' "$log" \
+                && why="$(grep -aE 'KERNEL PANIC|FAILED|\[X86-TRAP\]' "$log" | sed -n 1p)"
+        fi
+        if [ -z "$why" ] && [ "$cpu" != max ] && grep -aqF 'AzOS Rust kernel booted' "$log"; then
+            why="a CPU below the baseline reached Rust"
+        fi
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      $why"; echo "      log kept: $log"
+    }
+    X86_SHELL="AzOS shell — type 'help' for commands"
+    par "x86_64: boots to the shell" x86_boot_row "x86_64: boots to the shell" 1 max \
+        "[TRAP] int3 self-test: PASS|[TRAP] NMI self-test: PASS|[TIMER] tick self-test: PASS|[MM] W^X ok|[SCHED] Starting scheduler on boot CPU|$X86_SHELL" \
+        "AzOS shell|KERNEL PANIC"
+    par "x86_64: smp 2" x86_boot_row "x86_64: smp 2" 2 max \
+        "[SMP] CPU 1 online: APIC ID 1|[SMP] CPU 1 took|[IPI] sent by CPU 0, received by CPU 1|$X86_SHELL" \
+        "AzOS shell|KERNEL PANIC"
+    par "x86_64: baseline canary (qemu64)" x86_boot_row "x86_64: baseline canary (qemu64)" 1 qemu64 \
+        "[X86] CPU below the configured baseline" "below the configured baseline"
+    x86_ktest_row() { # x86_ktest_row <label> <extra features or ""> <expected not-ok names>
+        local label="$1" extra="$2" want="$3" why="" k plan got
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
+        x86_kbuild "ktest$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=ktest$extra did not build"; return; }
+        par_ready
+        x86_qemu "$kimg" "$log" 300 "" -smp 4
+        rm -f "$kimg"
+        plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
+        got="$(sed -n 's/^not ok [0-9][0-9]* - \([A-Za-z0-9_]*\)\( #.*\)\{0,1\}$/\1/p' "$log" | grep . | sort | tr '\n' ' ')"
+        want="$(printf '%s\n' $want | grep . | sort | tr '\n' ' ')"
+        if [ -z "$plan" ]; then why="no TAP plan line (1..N)"
+        elif [ "$plan" != "$KTEST_N_X86" ]; then why="plan 1..$plan, the gate expects $KTEST_N_X86 tests (KTEST_N_X86)"
+        elif [ "$got" != "$want" ]; then why="not ok: [${got% }], expected [${want% }]"
+        elif grep -aq '^Bail out!' "$log"; then why="the run bailed out: $(grep -a '^Bail out!' "$log")"
+        else
+            k=1
+            while [ "$k" -le "$plan" ]; do
+                [ "$(grep -acE "^(not )?ok $k - " "$log")" = 1 ] || { why="test $k reported $(grep -acE "^(not )?ok $k - " "$log") times"; break; }
+                k=$((k + 1))
+            done
+            [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
+                && why="no matching summary line"
+        fi
+        [ -z "$why" ] && [ "$X86_QRC" = stopped ] && why="QEMU did not power off"
+        if [ -z "$why" ]; then
+            ok; grep -a '^# ktest:' "$log" | sed 's/^/      /'; rm -f "$log"; return
+        fi
+        bad; echo "      $why"
+        grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    }
+    par "ktest (x86)" x86_ktest_row "ktest (x86)" "" ""
+    par "ktest tlb local-only canary (x86)" x86_ktest_row "ktest tlb local-only canary (x86)" ",tlb-local-only" "tlb_shootdown_cross_cpu"
+
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #
     # aarch64's `read_daif`/`write_daif`/`enable_irq` were `nomem`, so LLVM
