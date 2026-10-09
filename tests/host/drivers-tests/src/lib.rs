@@ -3345,23 +3345,35 @@ mod ads1115;
 #[cfg(test)]
 mod ads1115_pipeline {
     use super::ads1115::*;
-    use azos_drv_bus::i2c::ADS;
+    use azos_drv_bus::i2c::{ADS, HOOK};
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// The chip, the hook and the driver state are global: one test at a time.
+    static SERIAL: Mutex<()> = Mutex::new(());
 
     fn reset(busy: u32) {
-        ADS.with(|a| {
-            let mut a = a.borrow_mut();
+        *HOOK.lock().unwrap() = None;
+        {
+            let mut a = ADS.lock().unwrap();
             *a = Default::default();
             a.busy_polls = busy;
             a.result = [1000, 2000, 3000, 4000];
-        });
+        }
         ads1115_init(0, ADS1115_ADDR_GND);
     }
     fn txns() -> u32 {
-        ADS.with(|a| core::mem::take(&mut a.borrow_mut().txns))
+        core::mem::take(&mut ADS.lock().unwrap().txns)
+    }
+    fn set_left(n: u32) {
+        ADS.lock().unwrap().left = n;
     }
 
     #[test]
     fn the_pipelined_read_never_polls_and_lags_one_call() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         // The blocking read: start, then poll through the busy reads.
         reset(500);
         assert_eq!(ads1115_read_raw(0), Some(1000));
@@ -3370,20 +3382,20 @@ mod ads1115_pipeline {
 
         // Pipelined: the first call has nothing yet and only starts.
         reset(500);
-        assert_eq!(ads1115_read_raw_pipelined(0), None, "no conversion was pending");
+        assert_eq!(ads1115_read_raw_pipelined(0), None, "no conversion was in flight");
         assert_eq!(txns(), 1, "the first call is the start alone");
-        // A period later the conversion is done (the chip took < 100 ms):
-        // ready bit, result, next start: three transactions, no polling.
-        ADS.with(|a| a.borrow_mut().left = 0);
+        // A period later the conversion is done: ready bit, result, next
+        // start: three transactions, no polling.
+        set_left(0);
         assert_eq!(ads1115_read_raw_pipelined(0), Some(1000));
         assert_eq!(txns(), 3);
         // Not done yet when called: no value, no wait, the next one started.
-        ADS.with(|a| a.borrow_mut().left = 5);
+        set_left(5);
         assert_eq!(ads1115_read_raw_pipelined(0), None);
         assert!(txns() <= 3);
         // A blocking read of another channel in between replaces the
         // pipelined conversion: the next pipelined call does not take it.
-        ADS.with(|a| a.borrow_mut().busy_polls = 0);
+        ADS.lock().unwrap().busy_polls = 0;
         assert_eq!(ads1115_read_raw(2), Some(3000));
         assert_eq!(ads1115_read_raw_pipelined(0), None, "channel 2's result is not channel 0's");
         assert_eq!(ads1115_read_raw_pipelined(0), Some(1000));
@@ -3397,5 +3409,69 @@ mod ads1115_pipeline {
             assert_eq!(ads1115_read_battery_mv(1, 2), Some(500));
             assert!(txns() <= 3);
         }
+    }
+
+    // The interleaving: a second context (the SYS_SENSOR blocking read of
+    // channel 2) is let in after EVERY bus transaction of the battery
+    // pipeline's units on armed steps. The device queue holds it until the
+    // unit ends; a sample must never carry channel 2's value. Canary
+    // `ads1115-queue-canary` (units outside the queue): the blocking read
+    // lands between the pipeline's ready check and its result read, and
+    // channel 2's 3000 is published as channel 0's.
+    thread_local! { static IS_A: Cell<bool> = const { Cell::new(false) }; }
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static GO: AtomicBool = AtomicBool::new(false);
+    static DONE: AtomicU32 = AtomicU32::new(0);
+    static STOP: AtomicBool = AtomicBool::new(false);
+
+    fn let_b_in() {
+        if !IS_A.with(|a| a.get()) || !ARMED.load(Ordering::SeqCst) {
+            return;
+        }
+        let before = DONE.load(Ordering::SeqCst);
+        GO.store(true, Ordering::SeqCst);
+        // B runs now if the queue lets it; otherwise it waits for the unit.
+        let t = Instant::now();
+        while DONE.load(Ordering::SeqCst) == before && t.elapsed() < Duration::from_millis(30) {
+            std::thread::sleep(Duration::from_micros(200));
+        }
+    }
+
+    #[test]
+    fn no_unit_lands_inside_another_and_no_sample_names_another_channel() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset(0);
+        STOP.store(false, Ordering::SeqCst);
+        GO.store(false, Ordering::SeqCst);
+        *HOOK.lock().unwrap() = Some(let_b_in);
+        let b = std::thread::spawn(|| {
+            let mut got = Vec::new();
+            while !STOP.load(Ordering::SeqCst) {
+                if GO.swap(false, Ordering::SeqCst) {
+                    got.push(ads1115_read_raw(2));
+                    DONE.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    std::thread::sleep(Duration::from_micros(100));
+                }
+            }
+            got
+        });
+        IS_A.with(|a| a.set(true));
+        let mut a_vals = Vec::new();
+        for step in 0..32 {
+            ARMED.store(step % 2 == 0, Ordering::SeqCst);
+            a_vals.push(ads1115_read_raw_pipelined(0));
+        }
+        ARMED.store(false, Ordering::SeqCst);
+        IS_A.with(|a| a.set(false));
+        STOP.store(true, Ordering::SeqCst);
+        let b_vals = b.join().unwrap();
+        *HOOK.lock().unwrap() = None;
+        assert!(a_vals.iter().all(|v| v.is_none() || *v == Some(1000)),
+                "a channel-0 sample carried another channel's value: {a_vals:?}");
+        assert!(b_vals.iter().all(|v| v.is_none() || *v == Some(3000)), "{b_vals:?}");
+        assert!(a_vals.iter().filter(|v| v.is_some()).count() >= 3,
+                "the pipeline still delivers between the blocking reads: {a_vals:?}");
+        assert!(b_vals.len() >= 6, "the other context ran: {}", b_vals.len());
     }
 }

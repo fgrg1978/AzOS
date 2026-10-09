@@ -18,6 +18,9 @@ ina219-kernel = []
 # Gate canary (S2): the pipelined ADS1115 read is the blocking start-and-poll
 # read again (drivers-tests' ads1115 pipeline test fails).
 ads1115-pipeline-canary = []
+# Gate canary (S2): an ADS1115 unit runs outside the device queue, so another
+# caller's unit can land inside it (drivers-tests' interleaving test fails).
+ads1115-queue-canary = []
 
 [dependencies]
 azos_abi           = { workspace = true }

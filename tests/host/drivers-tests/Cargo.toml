@@ -52,3 +52,5 @@ blk-wait-probe = []
 blk-lock-wait-canary = []
 # S2 canary: the pipelined ADS1115 read is the blocking one again.
 ads1115-pipeline-canary = []
+# S2 canary: an ADS1115 unit runs outside the device queue.
+ads1115-queue-canary = []

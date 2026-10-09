@@ -10,6 +10,8 @@
 
 use azos_drv_bus::i2c::{i2c_read, i2c_write};
 use azos_sync::SpinLock;
+use azos_sync::waitqueue::WaitQueue;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 // ── I2C addresses (active-low ADDR pin wiring) ─────────────────────────────
 
@@ -124,9 +126,9 @@ struct Ads1115State {
     gain:        u16,
     rate:        u16,
     initialized: bool,
-    /// S2: the channel whose single-shot conversion the pipelined read
-    /// started last (and nobody has restarted since), or `None`.
-    pending:     Option<u8>,
+    /// S2: the channel of the single-shot conversion the last queued unit
+    /// started and no unit has consumed or replaced since, or `None`.
+    inflight:    Option<u8>,
 }
 
 impl Ads1115State {
@@ -137,7 +139,7 @@ impl Ads1115State {
             gain:        GAIN_4_096V,
             rate:        RATE_128,
             initialized: false,
-            pending:     None,
+            inflight:    None,
         }
     }
 
@@ -159,7 +161,127 @@ impl Ads1115State {
     }
 }
 
+/// The device's settings and the conversion in flight. Held only to copy
+/// them in and out of a unit, never across a bus transaction.
 static ADC: SpinLock<Ads1115State> = SpinLock::new(Ads1115State::new());
+
+/// The device's transaction queue: every bus access to the chip is one UNIT
+/// (select a channel, start its single-shot conversion, read a result) and
+/// the units run whole, one at a time, in the order they were queued (a
+/// ticket per unit, FIFO: a caller that queued first is never overtaken, so
+/// the 10 Hz battery pipeline cannot starve a SYS_SENSOR read, nor the
+/// reverse). A waiter sleeps on `wq` (no priority inheritance: a blocking
+/// unit waits on the bus; no real-time task reads the ADC).
+struct UnitQueue {
+    next: AtomicU32,
+    serving: AtomicU32,
+    wq: WaitQueue,
+}
+
+static QUEUE: UnitQueue = UnitQueue { next: AtomicU32::new(0), serving: AtomicU32::new(0), wq: WaitQueue::new() };
+
+impl UnitQueue {
+    fn enter(&self) {
+        let t = self.next.fetch_add(1, Ordering::SeqCst);
+        while self.serving.load(Ordering::SeqCst) != t {
+            self.wq.wait_if(|| self.serving.load(Ordering::SeqCst) != t);
+        }
+    }
+    fn leave(&self) {
+        self.serving.fetch_add(1, Ordering::SeqCst);
+        self.wq.wake_all();
+    }
+}
+
+/// The MUX field of the config register.
+const MUX_MASK: u16 = 0b111 << 12;
+
+fn mux_of(channel: u8) -> u16 {
+    match channel {
+        1 => MUX_SINGLE_1,
+        2 => MUX_SINGLE_2,
+        3 => MUX_SINGLE_3,
+        _ => MUX_SINGLE_0,
+    }
+}
+
+/// One queued unit, its channel recorded in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unit {
+    /// Select + start + wait for the conversion + read it.
+    Blocking(u8),
+    /// Read the conversion the previous unit of this channel started (if it
+    /// is still the one in flight and done), then select + start the next.
+    Pipelined(u8),
+}
+
+/// A result is published only when the chip's own config readback (taken
+/// with the ready bit, inside the unit) names the unit's channel: a
+/// conversion of another channel is never reported as this one.
+fn checked(channel: u8, cfg_readback: u16, v: Option<u16>) -> Option<i16> {
+    if cfg_readback & MUX_MASK == mux_of(channel) { v.map(|v| v as i16) } else { None }
+}
+
+/// Run one unit against `st`, a copy of the device state (its turn in the
+/// queue taken).
+fn run_unit(st: &mut Ads1115State, unit: Unit) -> Option<i16> {
+    let (bus, addr) = (st.bus, st.addr);
+    match unit {
+        Unit::Blocking(ch) => {
+            // This conversion replaces any one a pipelined unit started.
+            st.inflight = None;
+            if !write_reg(bus, addr, REG_CONFIG, st.config_word(ch)) {
+                return None;
+            }
+            for _ in 0..CONVERSION_POLL_ITERS {
+                if let Some(cfg) = read_reg(bus, addr, REG_CONFIG) {
+                    if cfg & CONFIG_OS_START != 0 {
+                        return checked(ch, cfg, read_reg(bus, addr, REG_CONVERSION));
+                    }
+                }
+            }
+            None
+        }
+        Unit::Pipelined(ch) => {
+            let mut out = None;
+            if st.inflight.take() == Some(ch) {
+                if let Some(cfg) = read_reg(bus, addr, REG_CONFIG) {
+                    if cfg & CONFIG_OS_START != 0 {
+                        out = checked(ch, cfg, read_reg(bus, addr, REG_CONVERSION));
+                    }
+                }
+            }
+            if write_reg(bus, addr, REG_CONFIG, st.config_word(ch)) {
+                st.inflight = Some(ch);
+            }
+            out
+        }
+    }
+}
+
+/// Queue `unit` on the device, run it in its turn, publish its result.
+/// `None` before `ads1115_init`.
+fn submit(unit: Unit) -> Option<i16> {
+    // Gate canary: the unit runs outside the queue (the shape before it):
+    // another caller's unit can land between this one's ready check and
+    // its result read.
+    let queued = !cfg!(feature = "ads1115-queue-canary");
+    if queued {
+        QUEUE.enter();
+    }
+    let mut st = { let g = ADC.lock(); Ads1115State { ..*g } };
+    let out = if st.initialized {
+        let out = run_unit(&mut st, unit);
+        ADC.lock().inflight = st.inflight;
+        out
+    } else {
+        None
+    };
+    if queued {
+        QUEUE.leave();
+    }
+    out
+}
 
 // ── I2C helpers ────────────────────────────────────────────────────────────
 
@@ -189,74 +311,34 @@ pub fn ads1115_init(i2c_bus: u8, addr: u8) {
     state.gain = GAIN_4_096V;
     state.rate = RATE_128;
     state.initialized = true;
-    state.pending = None;
+    state.inflight = None;
 }
 
-/// Read the raw 16-bit signed ADC value from a single-ended channel (0-3).
+/// Read the raw 16-bit signed ADC value from a single-ended channel (0-3):
+/// one blocking unit on the device queue.
 pub fn ads1115_read_raw(channel: u8) -> Option<i16> {
     if channel > 3 { return None; }
-    let state = ADC.lock();
-    if !state.initialized { return None; }
-    let mut state = state;
-    let bus = state.bus;
-    let addr = state.addr;
-    let config = state.config_word(channel);
-    // This conversion replaces any the pipelined read had started.
-    state.pending = None;
-    drop(state);
-
-    // Start single-shot conversion
-    if !write_reg(bus, addr, REG_CONFIG, config) {
-        return None;
-    }
-
-    // Poll until conversion complete (OS bit = 1)
-    for _ in 0..CONVERSION_POLL_ITERS {
-        if let Some(cfg) = read_reg(bus, addr, REG_CONFIG) {
-            if cfg & CONFIG_OS_START != 0 {
-                // Conversion done — read result
-                return read_reg(bus, addr, REG_CONVERSION).map(|v| v as i16);
-            }
-        }
-    }
-    None
+    submit(Unit::Blocking(channel))
 }
 
 /// S2: the pipelined read of `channel`, for a caller that samples it
-/// periodically (`sensor_slow_task`, 10 Hz): the result of the conversion
-/// the PREVIOUS call started, then the next conversion started. Never
-/// polls: at most three I2C transactions (the config register's ready bit,
-/// the result, the next start) instead of the blocking read's
-/// start-then-poll loop of up to [`CONVERSION_POLL_ITERS`] locked reads.
-/// The value is one call period older (the conversion itself takes
-/// 1.2-125 ms by rate, less than any sane period). `None`: no conversion of
-/// this channel was pending (the first call, a channel switch, a blocking
-/// read in between), the previous one is not done yet, or the bus failed;
-/// the caller's "0 = no reading" stays honest.
+/// periodically (`sensor_slow_task`, 10 Hz): one unit on the device queue
+/// that takes the result of the conversion the previous unit of this
+/// channel started, then starts the next. Never polls: at most three I2C
+/// transactions (ready bit and MUX, result, next start) instead of the
+/// blocking read's start-then-poll loop of up to [`CONVERSION_POLL_ITERS`]
+/// reads. The value is one call period older (the conversion takes
+/// 1.2-125 ms by rate). `None`: no conversion of this channel in flight
+/// (the first call, a channel switch, a blocking unit in between), not done
+/// yet, the chip's MUX not this channel's, or the bus failed; the caller's
+/// "0 = no reading" stays honest. Never another channel's value.
 pub fn ads1115_read_raw_pipelined(channel: u8) -> Option<i16> {
     if channel > 3 { return None; }
     if cfg!(feature = "ads1115-pipeline-canary") {
         // Gate canary: the blocking start-and-poll read this replaced.
         return ads1115_read_raw(channel);
     }
-    let mut state = ADC.lock();
-    if !state.initialized { return None; }
-    let (bus, addr) = (state.bus, state.addr);
-    let config = state.config_word(channel);
-    let ready = state.pending.take() == Some(channel);
-    drop(state);
-    let out = if ready {
-        match read_reg(bus, addr, REG_CONFIG) {
-            Some(cfg) if cfg & CONFIG_OS_START != 0 => read_reg(bus, addr, REG_CONVERSION).map(|v| v as i16),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    if write_reg(bus, addr, REG_CONFIG, config) {
-        ADC.lock().pending = Some(channel);
-    }
-    out
+    submit(Unit::Pipelined(channel))
 }
 
 /// Raw counts to millivolts at the current gain.
