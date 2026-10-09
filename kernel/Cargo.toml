@@ -237,6 +237,12 @@ cow-ro-canary = ["azos_mm/cow-ro-canary"]
 # Gate canary only (wave 14, security): a fork child's mprotect(RW) of a page
 # its parent shares read-only writes the parent's frame again.
 mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]
+# Gate canary only (wave 15, security): mprotect(RW) on the vDSO page is
+# granted again (in place while the frame has no other counted holder).
+vdso-write-canary = ["azos_mm/vdso-write-canary"]
+# Gate canary only (wave 15, security): a sibling thread's shm release keeps
+# the lease seal, whose end then widens the next mapping at that address.
+lease-forget-tid-canary = ["azos_ipc/lease-forget-tid-canary"]
 fork-demand-canary = ["azos_mm/fork-demand-canary"]
 cow-reuse-canary = ["azos_mm/cow-reuse-canary"]
 cow-spurious-canary = ["azos_mm/cow-spurious-canary"]

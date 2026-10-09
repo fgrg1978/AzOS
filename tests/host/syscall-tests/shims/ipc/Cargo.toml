@@ -10,6 +10,8 @@ description = "Host stand-in for azos_ipc, used only by tests/host/syscall-tests
 # Declared so the pulled `irq_bind.rs`'s `cfg(feature = "irq-pending-canary")`
 # is a known cfg here; never enabled.
 irq-pending-canary = []
+# The pulled `lease.rs`'s wave-15 canary: matches a seal by thread again.
+lease-forget-tid-canary = []
 # Declared for the pulled `port.rs`'s `cfg(feature = "port-recheck-canary")`.
 port-recheck-canary = []
 # And for its `cfg(feature = "port-revoke-canary")` (wave 11, LEASE3).

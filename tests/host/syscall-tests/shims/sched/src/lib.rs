@@ -1051,9 +1051,20 @@ pub use driver::{driver_register, driver_start, driver_heartbeat_with_time, driv
 /// Wave 13 (THREADS): `azos_sched::group` as host tests see it: a world
 /// with no thread groups, every task its own process.
 pub mod group {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    /// Test-only: one thread-group member, `(slot << 32) | leader TID`, or 0.
+    static MEMBER: AtomicU64 = AtomicU64::new(0);
+    /// Test-only control surface (wave 15): the task in pool slot `idx` is a
+    /// thread of `lead`, sharing its capability table; `lead == 0` clears it.
+    pub fn shim_set_member(idx: usize, lead: u32) {
+        MEMBER.store(if lead == 0 { 0 } else { ((idx as u64) << 32) | lead as u64 }, Ordering::SeqCst);
+    }
     pub fn lead_of_idx(_idx: usize) -> u32 { 0 }
-    pub fn table_lead_of_idx(_idx: usize) -> u32 { 0 }
-    pub fn any_groups() -> bool { false }
+    pub fn table_lead_of_idx(idx: usize) -> u32 {
+        let m = MEMBER.load(Ordering::SeqCst);
+        if m != 0 && (m >> 32) as usize == idx { m as u32 } else { 0 }
+    }
+    pub fn any_groups() -> bool { MEMBER.load(Ordering::SeqCst) != 0 }
     pub fn proc_of(_idx: usize, tid: u32) -> u32 { tid }
     pub fn proc_tid(tid: u32) -> u32 { tid }
     pub fn shares_tables(_tid: u32) -> bool { false }
@@ -1065,4 +1076,18 @@ pub mod group {
 }
 
 /// Wave 13: the process id; with no thread groups, the task's own.
-pub fn current_proc_tid() -> u32 { current_task_tid() }
+/// Wave 15: [`set_current_proc_tid`] makes the current task a thread of
+/// another process (0 puts it back).
+pub fn current_proc_tid() -> u32 {
+    match CURRENT_PROC_TID.load(Ordering::SeqCst) {
+        0 => current_task_tid(),
+        p => p,
+    }
+}
+
+static CURRENT_PROC_TID: AtomicU32 = AtomicU32::new(0);
+
+/// Test-only control surface — not part of the real `azos_sched` API.
+pub fn set_current_proc_tid(tid: u32) {
+    CURRENT_PROC_TID.store(tid, Ordering::SeqCst);
+}

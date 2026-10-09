@@ -937,8 +937,9 @@ pub fn sys_shm_release_typed(cap_raw: u64) -> i64 {
         // Wave 11 (LEASE3): a seal naming this mapping is forgotten before
         // its PTEs go and its window can be reused, so a later end of the
         // lease cannot widen whatever is mapped at `va` next.
-        // A lease's seal is its lessee THREAD's (`lease.rs`), as before.
-        azos_ipc::lease::lease_forget_seal(azos_sched::current_task_tid(), va);
+        // Matched by this address space: the seal may be a sibling thread's.
+        azos_ipc::lease::lease_forget_seal(azos_sched::current_task_tid(),
+                                           azos_sched::current_user_pt(), va);
         unmap_user_pages(va, pages);
         // With its PTEs gone, the addresses go back to the task's window.
         let _ = azos_sched::process::release_user_window(va, pages);

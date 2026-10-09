@@ -1825,13 +1825,25 @@ pub fn lease_sealed_by(tid: u32, shm_ref: u32) -> bool {
     })
 }
 
-/// `tid` is removing its mapping at `va` (`SYS_SHM_RELEASE_TYPED`, before the
-/// PTEs go and the window is given back): a seal naming it is forgotten, so a
-/// later end of the lease cannot widen whatever is mapped at `va` next.
-pub fn lease_forget_seal(tid: u32, va: usize) {
+/// The address space rooted at `root` is removing its mapping at `va`
+/// (`SYS_SHM_RELEASE_TYPED`, before the PTEs go and the window is given
+/// back): a seal naming it is forgotten, so a later end of the lease cannot
+/// widen whatever is mapped at `va` next.
+///
+/// Matched by address space, not by lessor TID (wave 15, security): the
+/// mapping is the process's, the seal its granting THREAD's, so a sibling
+/// thread's release left the record behind, and the lease's end then added
+/// write to whatever read-only mapping took the window. Gate canary
+/// `lease-forget-tid-canary`: matched by `tid` again.
+pub fn lease_forget_seal(tid: u32, root: usize, va: usize) {
     let mut table = LEASES.lock_irqsave();
     for e in table.entries.iter_mut() {
-        if e.lessor_tid == tid && e.seal.root != 0 && e.seal.va == va {
+        let mine = if cfg!(feature = "lease-forget-tid-canary") {
+            e.lessor_tid == tid
+        } else {
+            e.seal.root == root
+        };
+        if mine && e.seal.root != 0 && e.seal.va == va {
             e.seal = SealMap::NONE;
         }
     }

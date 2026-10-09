@@ -8147,6 +8147,35 @@ for c in $HOST_SUITES; do
         *) host_job test_host "$c" "${REPO_ROOT}/tests/host/${c}" ;;
     esac
 done
+# ── Wave 15 (VA): user-page permission canaries, host side ──────────────────
+#
+# A permission fix's host test is in its suite above; its canary is a gate
+# feature that puts the hole back. host_canary_row builds the suite with the
+# feature (a target dir of its own, so the suite's own build stays warm) and
+# requires exactly the named test to fail: if it passes, the test above
+# proves nothing. lease-forget-tid-canary: a sibling thread's shm release
+# keeps the lease seal and the lease's end widens the next read-only page at
+# that address (syscall-tests typed_ipc). vdso-write-canary: mprotect(RW)
+# makes the shared vDSO frame writable (syscall-tests mmap_guards).
+host_canary_row() { # <label> <suite> <feature> <test fn>
+    local label="$1" suite="$2" feat="$3" test="$4" out
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    CARGO_TARGET_DIR="${REPO_ROOT}/target/host-canary/${suite}" \
+        host_cargo out "${REPO_ROOT}/tests/host/${suite}" test --release --features "$feat" -- "$test"
+    if echo "$out" | grep -qE "::${test} \.\.\. FAILED" \
+       && echo "$out" | grep -qE "test result: FAILED\. 0 passed; 1 failed"; then
+        ok; echo "$out" | grep -m1 -A1 "panicked at" | sed -n 2p | sed 's/^/      canary caught: /'
+    else
+        bad; echo "      $suite --features $feat: $test did not fail alone"
+        echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
+    fi
+}
+host_job host_canary_row "perm: lease seal by thread canary" syscall-tests lease-forget-tid-canary \
+    a_sibling_threads_release_forgets_the_seal
+host_job host_canary_row "perm: vdso mprotect canary (host)" syscall-tests vdso-write-canary \
+    mprotect_never_makes_the_vdso_writable
+
 # net-tests again at the fleet ring. The run above compiles `crates/net/net` from
 # the workspace `.config` (the 128 KiB ring of edge); this one from the config
 # `fleet_config` expands (a 16 KiB ring, 1024 connections), the same way the
@@ -16819,6 +16848,25 @@ x=con; echo bb\$x-ok
         par_row energy_row "energy: $en_name I1 canary" "$en_isa" "qemu,energy-i1-canary" gov
         par_row energy_row "energy: $en_name I3 canary" "$en_isa" "qemu,energy-i3-canary" idle
         par_row energy_row "energy: $en_name rt-slack canary" "$en_isa" "qemu,energy-slack-canary" idle
+    done
+
+    # ── Wave 15 (VA): the vDSO page is never writable, both ISAs ───────────
+    #
+    # Every address space maps the ONE vDSO frame read-only. mprotect(RW) on it
+    # set the write bit in place while the frame had no other counted holder,
+    # so a Linux task could rewrite the page every task reads its clock from.
+    # LXHELLO asks mprotect(RW) on 0x20000000 (-EACCES) and has a fork child
+    # store to it (SIGSEGV). Canary `vdso-write-canary`: the mprotect is
+    # granted and the child's store lands, so both markers go.
+    for ush_isa in rv arm; do
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "perm: vdso mprotect refused ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
+            "lxhello
+echo after-lx" 150 \
+            "lx: mprot: mprotect(RW) on the vDSO is refused ok" "lx: mprot: a store to the vDSO faults ok"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "perm: vdso mprotect canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,vdso-write-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: mprot: mprotect(RW) on the vDSO is refused ok" "lx: mprot: a store to the vDSO faults ok"
     done
     a64_kbuild "qemu" >/dev/null 2>&1 || true
 

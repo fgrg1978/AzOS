@@ -4085,6 +4085,13 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
             azos_mm::vmm::UserPage::Leaf { exec: true } if write => {
                 return Errno::EACCES.to_syscall_ret();
             }
+            // Wave 15: the vDSO and signal-trampoline frames are the
+            // kernel's, one for every address space; never writable.
+            azos_mm::vmm::UserPage::Leaf { .. }
+                if write && azos_mm::vmm::user_leaf_is_kernel_shared(user_pt, va) =>
+            {
+                return Errno::EACCES.to_syscall_ret();
+            }
             // Wave 14: a reserved page is not missing (it is charged and
             // committed on first touch); its region takes the new `prot`.
             azos_mm::vmm::UserPage::Missing if !none && !azos_mm::pager::contains(user_pt, va) => {

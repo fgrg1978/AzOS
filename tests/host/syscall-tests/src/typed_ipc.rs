@@ -66,6 +66,7 @@ impl Drop for Scene {
         let _ = azos_sched::shim_take_blocks();
         azos_sched::set_current_user_pt(0);
         azos_sched::set_current_task_tid(0);
+        azos_sched::set_current_proc_tid(0);
         for ch in 0..azos_ipc::channel::MAX_CHANNELS {
             let _ = azos_ipc::channel_destroy(ch);
         }
@@ -918,6 +919,62 @@ fn a_sealed_grant_takes_the_lessors_write_until_the_lease_ends() {
     assert_eq!(sys_ipc_lease_free(id2 as u64), 0);
     assert!(!writable(pt, lva as usize), "the late mapping stays read-only after the lease");
     assert_eq!(sys_shm_release_typed(late), 0);
+    let _ = ipc_sched_shim::shim_take_lease_accept_wakes();
+}
+
+/// Wave 15 (security): a seal is forgotten when its ADDRESS SPACE releases
+/// the sealed mapping, whichever thread does it. The seal is recorded under
+/// the granting thread, the mapping under the process; matching the release
+/// by thread left the record behind when a sibling released the region, the
+/// window address was reused, and the lease's end then added write to the
+/// read-only page mapped there next.
+///
+/// **Canary.** Feature `lease-forget-tid-canary` (match by thread again): the
+/// record survives the leader's release and the next page becomes writable.
+#[test]
+fn a_sibling_threads_release_forgets_the_seal() {
+    use azos_abi::syscall_nr::LEASE_GRANT_SEAL;
+    use azos_mm::vmm::user_write_would_be_permitted as writable;
+    let _g = serial();
+    let a = fresh_tid();
+    let t2 = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let pt = ring3(a, SLOT_A);
+    // `t2` is a thread of `a`: its own pool slot, `a`'s capability table.
+    ipc_task_pool::shim_bind(t2, SLOT_B);
+    azos_sched::group::shim_set_member(SLOT_B, a);
+    struct Ungroup;
+    impl Drop for Ungroup {
+        fn drop(&mut self) { azos_sched::group::shim_set_member(0, 0); }
+    }
+    let _ug = Ungroup;
+    azos_ipc::lease::set_seal_hook(host_seal);
+    let _ = ipc_sched_shim::shim_take_lease_accept_wakes();
+
+    let cap = handle(sys_shm_create_typed(1, 1));
+    let va = sys_shm_map_typed(cap);
+    assert!(va > 0, "map: {va}");
+    let va = va as usize;
+    // Thread `t2` of process `a` grants the sealed lease.
+    azos_sched::set_current_task_tid(t2);
+    azos_sched::set_current_proc_tid(a);
+    let id = sys_ipc_lease_grant_typed(cap, a as u64 | LEASE_GRANT_SEAL, 0);
+    assert!(id >= 0, "the sealed grant was refused: {id}");
+    assert_eq!(azos_ipc::lease::lease_seal_info(id as usize).1.va, va, "the seal names the mapping");
+    assert!(!writable(pt, va), "precondition: sealed");
+    // The leader releases the region: the seal is forgotten.
+    azos_sched::set_current_proc_tid(0);
+    become_task(a, pt);
+    assert_eq!(sys_shm_release_typed(cap), 0);
+    let left = azos_ipc::lease::lease_seal_info(id as usize).1;
+    // A read-only page takes the address; the lease's end must not widen it.
+    let frame = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
+    azos_mm::vmm::map(pt, va, frame, PagePerms { accessed: true, ..PagePerms::USER_RO }).expect("map");
+    azos_sched::set_current_task_tid(t2);
+    azos_sched::set_current_proc_tid(a);
+    assert_eq!(sys_ipc_lease_free(id as u64), 0, "the lessor thread frees its lease");
+    assert!(!writable(pt, va), "the lease's end made the next read-only mapping writable");
+    assert_eq!(left, azos_ipc::lease::SealMap::NONE, "a sibling thread's release left the seal behind");
     let _ = ipc_sched_shim::shim_take_lease_accept_wakes();
 }
 

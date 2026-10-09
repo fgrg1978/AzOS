@@ -1488,3 +1488,40 @@ fn mprotect_shared_lands_on_a_private_copy() {
     azos_mm::vmm::protect_user_range(pt, RO_VA, RO_VA + PAGE_SIZE, true);
     assert_eq!(azos_mm::vmm::translate_user(pt, RO_VA, true), Some(ro_frame), "sole: written in place");
 }
+
+/// **The vDSO page never becomes writable through a user's table (wave 15,
+/// security).** Every address space maps the one vDSO frame read-only. With
+/// no other counted holder (no fork since boot), `protect_user_range` set the
+/// write bit in place, so a task's `mprotect(RW)` and store rewrote the page
+/// every task reads its clock from; with one, it made the leaf copy-on-write.
+/// Now neither `mprotect` nor the lease give-back adds write to it, and
+/// `sys_mprotect` refuses the range (`user_leaf_is_kernel_shared`).
+///
+/// **Canary.** Feature `vdso-write-canary`: the leaf is writable in place.
+#[test]
+fn mprotect_never_makes_the_vdso_writable() {
+    let _g = serial();
+    if azos_mm::vdso::vdso_phys() == 0 {
+        azos_mm::vdso::vdso_init();
+    }
+    let vdso = azos_mm::vdso::vdso_phys();
+    assert_ne!(vdso, 0, "precondition: a vDSO page");
+    let pt = fresh_user_pt();
+    const VA: usize = 0x2_6000;
+    let ro = PagePerms { accessed: true, ..PagePerms::USER_RO };
+    azos_mm::vmm::map(pt, VA, vdso, ro).unwrap();
+    assert_eq!(azos_mm::vmm::protect_user_range(pt, VA, VA + PAGE_SIZE, true), 0,
+        "mprotect(RW) changed the vDSO leaf");
+    assert_eq!(azos_mm::vmm::set_user_range_write(pt, VA, VA + PAGE_SIZE, true), 0,
+        "the lease give-back changed the vDSO leaf");
+    assert_eq!(azos_mm::vmm::translate_user(pt, VA, true), None, "the vDSO is writable");
+    assert_eq!(azos_mm::vmm::translate_user(pt, VA, false), Some(vdso), "and still readable");
+    assert!(azos_mm::vmm::user_leaf_is_kernel_shared(pt, VA), "sys_mprotect must see the vDSO leaf");
+    // An ordinary read-only page next to it is still made writable.
+    const OWN: usize = 0x2_7000;
+    let own = a_page();
+    azos_mm::vmm::map(pt, OWN, own, ro).unwrap();
+    assert!(!azos_mm::vmm::user_leaf_is_kernel_shared(pt, OWN));
+    assert_eq!(azos_mm::vmm::protect_user_range(pt, OWN, OWN + PAGE_SIZE, true), 1);
+    assert_eq!(azos_mm::vmm::translate_user(pt, OWN, true), Some(own));
+}

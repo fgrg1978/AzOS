@@ -30,6 +30,8 @@ digest-recheck-canary = []
 # ... and the kept-frames canary of the pulled-in `image_frames.rs`.
 image-share-all-canary = ["azos_mm/image-share-all-canary"]
 mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]
+vdso-write-canary = ["azos_mm/vdso-write-canary"]
+lease-forget-tid-canary = ["azos_ipc/lease-forget-tid-canary"]
 
 [dependencies]
 # Real, pure, no_std, host-buildable as-is (crates/core/abi has zero dependencies).

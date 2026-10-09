@@ -2265,6 +2265,32 @@ pub enum UserPage {
 }
 
 /// Classify the page at `vaddr` (page-aligned) of the user table `pt_phys`.
+/// The kernel's frames every address space maps the same (the vDSO data page,
+/// the signal trampoline): a user's page table never gets write on them.
+/// `mprotect(RW)` on the vDSO wrote the one global frame in place while it
+/// had no other counted holder, and made it copy-on-write otherwise. Gate
+/// canary `vdso-write-canary`: answers `false`.
+fn kernel_shared_user_frame(phys: usize) -> bool {
+    if cfg!(feature = "vdso-write-canary") {
+        return false;
+    }
+    let vdso = crate::vdso::vdso_phys();
+    let tramp = crate::vdso::sigtramp_phys();
+    (vdso != 0 && phys == vdso) || (tramp != 0 && phys == tramp)
+}
+
+/// Does the user leaf at `vaddr` map a [`kernel_shared_user_frame`]? What
+/// `mprotect` refuses a write over (`-EACCES`).
+pub fn user_leaf_is_kernel_shared(pt_phys: usize, vaddr: usize) -> bool {
+    match user_l0_leaf(pt_phys, vaddr) {
+        Some(ptr) => {
+            let pte = unsafe { core::ptr::read_volatile(ptr) };
+            ARCH.pte_perms(pte).user && kernel_shared_user_frame(ARCH.pte_phys(pte))
+        }
+        None => false,
+    }
+}
+
 pub fn user_page(pt_phys: usize, vaddr: usize) -> UserPage {
     if write_would_enter_kernel_table(pt_phys, vaddr) {
         return UserPage::Other;
@@ -2310,7 +2336,7 @@ pub fn protect_user_range(pt_phys: usize, start: usize, end: usize, write: bool)
                 let new = if ARCH.pte_is_valid(pte) && ARCH.pte_is_leaf(pte, 0) {
                     let f = ARCH.pte_perms(pte);
                     let cow = ARCH.pte_is_cow(pte);
-                    if !f.user || (write && f.exec) {
+                    if !f.user || (write && (f.exec || kernel_shared_user_frame(ARCH.pte_phys(pte)))) {
                         None
                     } else if write && cow {
                         None
@@ -2395,7 +2421,8 @@ pub fn set_user_range_write(pt_phys: usize, start: usize, end: usize, write: boo
         if let Some(l0_ptr) = user_l0_leaf(pt_phys, va) {
             let pte: u64 = unsafe { core::ptr::read_volatile(l0_ptr) };
             let f = ARCH.pte_perms(pte);
-            if f.user && f.write != write && !(write && f.exec)
+            if f.user && f.write != write
+                && !(write && (f.exec || kernel_shared_user_frame(ARCH.pte_phys(pte))))
                 && rewrite_leaf_write(l0_ptr, pte, f, write)
             {
                 changed += 1;

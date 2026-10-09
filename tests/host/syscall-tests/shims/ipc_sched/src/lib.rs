@@ -27,9 +27,10 @@ pub fn current_task_tid() -> u32 {
     syscall_test_sched::current_task_tid()
 }
 
-/// The calling process (wave 15): a host task is its own process.
+/// The calling process (wave 15): a host task is its own process unless a
+/// test says otherwise (`syscall_test_sched::set_current_proc_tid`).
 pub fn current_proc_tid() -> u32 {
-    current_task_tid()
+    syscall_test_sched::current_proc_tid()
 }
 
 pub fn current_user_pt() -> usize {
@@ -144,11 +145,13 @@ pub fn shim_take_port_timed_wakes() -> Vec<u32> {
 static PORT_TIMED_WAKES: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
 /// Wave 13 (THREADS): `azos_sched::group` as host tests see it: a world
-/// with no thread groups, every task its own process.
+/// with no thread groups, every task its own process — unless a test makes
+/// one task a thread of another (`syscall_test_sched::group::shim_set_member`,
+/// wave 15), whose capability table it then shares.
 pub mod group {
     pub fn lead_of_idx(_idx: usize) -> u32 { 0 }
-    pub fn table_lead_of_idx(_idx: usize) -> u32 { 0 }
-    pub fn any_groups() -> bool { false }
+    pub fn table_lead_of_idx(idx: usize) -> u32 { syscall_test_sched::group::table_lead_of_idx(idx) }
+    pub fn any_groups() -> bool { syscall_test_sched::group::any_groups() }
     pub fn proc_of(_idx: usize, tid: u32) -> u32 { tid }
     pub fn proc_tid(tid: u32) -> u32 { tid }
     pub fn shares_tables(_tid: u32) -> bool { false }

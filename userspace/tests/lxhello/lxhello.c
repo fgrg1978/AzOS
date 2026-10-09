@@ -722,6 +722,21 @@ static void run(i64 *sp)
         check("mprot: a fork child's mprotect(RW) write is its own", p4 == 0 && c > 0 && st == 0, "status", st);
         check("mprot: the parent's read-only page is unchanged",
               (i64)sh > 0 && ((volatile u8 *)sh)[0] == 0x5a, "byte", (i64)sh > 0 ? ((volatile u8 *)sh)[0] : -1);
+        // Wave 15 (security): the vDSO page (VDSO_USER_BASE, 0x20000000) is
+        // the kernel's, ONE frame every process maps read-only. mprotect(RW)
+        // is refused and a store to it still faults. Canary
+        // `vdso-write-canary`: the mprotect is granted (in place while the
+        // frame has no other counted holder) and the child's store lands.
+        {
+            u64 vd = 0x20000000;
+            i64 pv = lx_sc3(NR_mprotect, vd, 4096, 3);
+            check("mprot: mprotect(RW) on the vDSO is refused", pv == -13, "rc", pv);
+            st = -1;
+            c = lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0);
+            if (c == 0) { ((volatile u8 *)vd)[4095] = 1; lx_sc1(NR_exit_group, 0x77); }
+            if (c > 0) lx_sc4(NR_wait4, c, &st, 0, 0);
+            check("mprot: a store to the vDSO faults", c > 0 && SEGV(st), "status", st);
+        }
         if ((i64)sh > 0) lx_sc2(NR_munmap, sh, 4096);
         if ((i64)ro > 0) lx_sc2(NR_munmap, ro, 4096);
         if ((i64)rw > 0) lx_sc2(NR_munmap, rw, 4096);

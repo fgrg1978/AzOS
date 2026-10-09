@@ -51,6 +51,7 @@ cow-spurious-canary = []
 image-share-all-canary = []
 # ... and the wave 14 security canary in the pulled-in `vmm.rs`.
 mprotect-shared-canary = []
+vdso-write-canary = []
 # ... and `cfg(feature = "vdso-write-window")` in the pulled-in `vdso.rs`
 # (wave 13, RT7). Off: the real write.
 vdso-write-window = []

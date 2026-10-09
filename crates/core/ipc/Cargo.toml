@@ -12,6 +12,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 # Wave 15 gate canary: a static-key write goes through the EXECUTABLE text
 # mapping instead of the alias; W^X must stop it with a store fault.
 text-poke-wx-canary = []
+# Wave 15 gate canary (security): `lease_forget_seal` matches the seal by the
+# releasing THREAD again, so a sibling thread's release leaves it behind.
+lease-forget-tid-canary = []
 default = []
 # M40 (audit U10-6): gates `seed_one_cap_outcome`'s `CapKind::Motor` arm the
 # same way `crates/core/topology`'s parser and builder already gate the word

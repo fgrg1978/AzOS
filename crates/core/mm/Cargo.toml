@@ -64,3 +64,4 @@ image-share-all-canary = []
 # fork child's mprotect(RW) writes its parent's page. The `linux: fork child
 # mprotect` rows and syscall-tests `mprotect_shared` must go red.
 mprotect-shared-canary = []
+vdso-write-canary = []
