@@ -134,6 +134,10 @@ fn observer_task(_: usize) {
     latch_check();
 
     let contained0 = azos_common::panic_policy::contained_count();
+    // With the masked-window tracer: the windows from here on are the
+    // panic's and the containment's (printed after the watch below).
+    #[cfg(feature = "lat-trace")]
+    azos_arch::lat_hook::lat::reset();
     azos_sched::task_create_affinity("rt7-culprit", culprit_task, 0,
         azos_sched::DEFAULT_PRIORITY, CULPRIT_HART);
 
@@ -153,15 +157,27 @@ fn observer_task(_: usize) {
     let end = t_spawn + ms(CONTAIN_WAIT_MS);
     let mut gone_at: Option<u64> = None;
     let mut tid = 0;
+    // Where the longest stand-still ended, and the observer's own worst
+    // oversleep and where: a stand-still that coincides with the observer's
+    // own late wake stopped both harts, not the control hart alone.
+    let (mut still_at, mut late_max, mut late_at) = (0u64, 0u64, 0u64);
     loop {
-        sleep_until(now() + ms(1));
+        let target = now() + ms(1);
+        sleep_until(target);
         let t = now();
+        if t - target > late_max {
+            late_max = t - target;
+            late_at = t - t_spawn;
+        }
         let hb = azos_actuation::watchdog::control_heartbeat();
         if hb != last_hb {
             last_hb = hb;
             last_adv = t;
         }
-        still_max = still_max.max(t - last_adv);
+        if t - last_adv > still_max {
+            still_max = t - last_adv;
+            still_at = t - t_spawn;
+        }
         if tid == 0 {
             tid = CULPRIT_TID.load(Ordering::Acquire);
         }
@@ -180,7 +196,12 @@ fn observer_task(_: usize) {
     let panicked = azos_common::is_panicked();
     kprintln!("[RT7-SMOKE] isolations={} culprit tid={} gone={} global_panic={} \
                heartbeat still max {} us", isolations, tid, culprit_gone, panicked, still_us);
+    kprintln!("[RT7-SMOKE] still max ends at +{} ms; observer late max {} us at +{} ms; culprit gone at +{} ms",
+        still_at / ms(1), late_max * 1_000_000 / TIMER_FREQ, late_at / ms(1),
+        gone_at.map(|g| (g - t_spawn) / ms(1)).unwrap_or(u64::MAX));
 
+    #[cfg(feature = "lat-trace")]
+    crate::lat_trace::print_summary("rt7", 6);
     let (hb_after, ft_after, el_after) = window(now());
     kprintln!("[RT7-SMOKE] after: heartbeat +{} flight ticks +{} in {} ms",
         hb_after, ft_after, el_after);

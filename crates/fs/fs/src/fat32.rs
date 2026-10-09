@@ -475,8 +475,10 @@ static FAT32: SpinLock<Fat32Vol> = SpinLock::new(Fat32Vol::new());
 /// and 1.47 ms at `fat32_alloc_cluster` on riscv64 under `-icount`, and a
 /// real-time task on that hart waited that long (`[LAT] max_ns=7194700`).
 /// The length follows the device, so under `-icount` it followed host load:
-/// the cause of the intermittent `rt7: panic contain` row, whose contained
-/// panic appends CRASH.LOG on the control hart. The sections stay exactly as
+/// one cause of the intermittent `rt7: panic contain` row, whose contained
+/// panic appends CRASH.LOG on the control hart (the other, still open, is a
+/// timer-ISR wake of a task on the other hart that spins ~50 ms under
+/// riscv64 `-smp 2 -icount`). The sections stay exactly as
 /// long (scan-then-mark must stay atomic, above); only the holder is now
 /// preemptible, as `BLK_LOCK`'s holder already is, and a waiter yields with
 /// priority inheritance instead of spinning. Lock order: this, then the

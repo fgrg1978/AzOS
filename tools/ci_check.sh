@@ -14989,9 +14989,9 @@ PYEOF
     # `FAT_MUTATE` (crates/fs/fs/src/fat32.rs) was a `SpinLock`, so the
     # allocator's FAT scan and entry writes, each a virtio-blk round trip,
     # ran with preemption off on the writer's hart — and under -icount the
-    # length followed host load: the intermittent `rt7: panic contain` row,
-    # whose contained panic appends CRASH.LOG on the control hart. Now a
-    # `PiMutex`. Measured (tracer on, 2026-10-09): preempt-off max riscv64
+    # length followed host load: one cause of the intermittent `rt7: panic
+    # contain` row, whose contained panic appends CRASH.LOG on the control
+    # hart. Now a `PiMutex`. Measured (tracer on, 2026-10-09): preempt-off max riscv64
     # 9.93 ms -> 11.5 us, aarch64 1.70 ms -> 11.4 us; wake max riscv64
     # 9.79 ms -> 9.2 us, aarch64 1.25 ms -> 8.1 us.
     #
