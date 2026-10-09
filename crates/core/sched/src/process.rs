@@ -108,8 +108,7 @@ const VDSO_FITS_BELOW_USER_CEILING: bool =
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const PT_LOAD: u32 = 1;
-const PF_X: u32 = 1;
-const PF_W: u32 = 2;
+use elf_bounds::{PF_W, PF_X};
 
 /// Ceiling for everything userspace places in the low VA region: the loaded
 /// image and the `brk` heap.
@@ -837,6 +836,9 @@ fn load_elf_into(
     // vaddr order, and then relies on it; nothing checked it. See
     // `elf_bounds::check_pt_load`.
     let mut prev_seg_end: usize = 0;
+    // How the last accepted segment is mapped: a segment that starts on the
+    // page it ends on must be mapped alike (`elf_bounds::check_page_sharing`).
+    let mut prev_perms: Option<elf_bounds::SegPerms> = None;
 
     for i in 0..e_phnum {
         // Bounded ph offset — `i * e_phentsize` must not overflow, and
@@ -884,7 +886,14 @@ fn load_elf_into(
             elf_bounds::SegCheck::Empty     => continue,
             elf_bounds::SegCheck::Reject(_) => return None,
             elf_bounds::SegCheck::Load(r)   => {
+                let perms = elf_bounds::seg_perms(p_flags);
+                if elf_bounds::check_page_sharing(prev_seg_end, prev_perms, p_vaddr, perms, PAGE_SIZE)
+                    .is_err()
+                {
+                    return None;
+                }
                 prev_seg_end = r.seg_end;
+                prev_perms = Some(perms);
                 (r.va_start, r.va_end)
             }
         };
@@ -919,17 +928,23 @@ fn load_elf_into(
         // and jump there, with the entry-point check satisfied by a separate,
         // well-formed PF_X segment.
         //
-        // Three-way now, and `.rodata` loses the X bit it never needed:
-        // `userspace/*/user.ld` puts all code in `.text` and page-aligns the
-        // first writable byte, so the only real-image page sharing is
-        // `.rodata` on the `.text` page — which still resolves to "already
-        // sufficient" in `add_user_leaf_perms` and is left RX.
-        let flags = if p_flags & PF_W != 0 {
-            PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW }
-        } else if p_flags & PF_X != 0 {
-            PagePerms { accessed: true, ..PagePerms::USER_RX }
-        } else {
-            PagePerms { accessed: true, ..PagePerms::USER_RO }
+        // Three-way now (`elf_bounds::seg_perms`), and `.rodata` loses the X
+        // bit it never needed. A page two segments share used to take the
+        // union of their permissions, so `.rodata` on the last `.text` page
+        // stayed executable; such an image is refused now unless both are
+        // mapped alike (`check_page_sharing` above), and every
+        // `userspace/*/user*.ld` starts `.rodata` on a page of its own.
+        //
+        // Canary `rodata-exec-canary`: the old two-way split (read-only maps
+        // read-execute); abitest's `elfperm:` check then runs its `.rodata`.
+        let flags = match elf_bounds::seg_perms(p_flags) {
+            elf_bounds::SegPerms::ReadWrite => {
+                PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW }
+            }
+            elf_bounds::SegPerms::ReadOnly if !cfg!(feature = "rodata-exec-canary") => {
+                PagePerms { accessed: true, ..PagePerms::USER_RO }
+            }
+            _ => PagePerms { accessed: true, ..PagePerms::USER_RX },
         };
 
         if va_end > brk_va { brk_va = va_end; }
@@ -963,18 +978,13 @@ fn load_elf_into(
             // and their final PTE flags are what user mode will be held to.
             let phys = match vmm::translate_user(user_pt, va, false) {
                 Some(existing) => {
-                    // The page is already mapped by an earlier segment. Its
-                    // flags were fixed then and never revisited, which is how
-                    // a `.rodata` segment ending mid-page could leave the
-                    // following `.data`/`.bss` segment read-only: the first
-                    // store to a `static mut` there faulted. `abitest` hit
-                    // exactly that; `captest` shares the layout and survived
-                    // only because it never writes its counter.
-                    //
-                    // Widen to whatever THIS segment needs. W^X is preserved
-                    // inside `add_user_leaf_perms`: an `.rodata`/`.data`
-                    // overlap is repairable, a `.text`/`.data` overlap is
-                    // refused rather than silently made writable-executable.
+                    // The page is already mapped by the previous segment,
+                    // which `check_page_sharing` above required to be mapped
+                    // exactly like this one: the widening below finds the
+                    // permissions already there and changes nothing. It
+                    // stays as the backstop it was before that check (an
+                    // `.rodata`/`.data` page widened, a `.text`/`.data` one
+                    // refused rather than made writable-executable).
                     //
                     // The other half of W^X is ours: `add_user_leaf_perms`
                     // refuses WRITE onto an EXEC leaf, but nothing there

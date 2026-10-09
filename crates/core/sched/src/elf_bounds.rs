@@ -64,6 +64,70 @@ pub enum SegReject {
     FileRangeOutOfBlob,
     /// This segment starts below the end of the previous one.
     Descending,
+    /// This segment starts on the page the previous one ends on, and the two
+    /// are mapped with different permissions ([`seg_perms`]): one page table
+    /// entry cannot hold both, and their union would make read-only data
+    /// executable or writable.
+    SharedPageMixedPerms,
+}
+
+/// `PF_X` and `PF_W` of a program header's `p_flags` (ELF spec).
+pub const PF_X: u32 = 1;
+pub const PF_W: u32 = 2;
+
+/// The permissions the loader maps a `PT_LOAD` segment with, from its
+/// `p_flags`. Three classes, W^X in both directions: writable is never
+/// executable (an `RWX` header maps read-write), and a read-only segment is
+/// never executable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegPerms {
+    ReadOnly,
+    ReadExec,
+    ReadWrite,
+}
+
+/// [`SegPerms`] of a header's `p_flags`.
+pub fn seg_perms(p_flags: u32) -> SegPerms {
+    if p_flags & PF_W != 0 {
+        SegPerms::ReadWrite
+    } else if p_flags & PF_X != 0 {
+        SegPerms::ReadExec
+    } else {
+        SegPerms::ReadOnly
+    }
+}
+
+/// May a segment mapped `perms`, starting at `p_vaddr`, follow one mapped
+/// `prev` that ended (unaligned) at `prev_seg_end`?
+///
+/// A page gets exactly the permissions of the one segment it belongs to. A
+/// page both segments touch would need two permission sets in one page table
+/// entry; mapping it with their union (what the loader did) made the
+/// `.rodata` sharing the last `.text` page executable. So a shared page is
+/// accepted only when both segments are mapped alike; otherwise the image is
+/// refused, whatever its header says. Linkers place a segment with other
+/// permissions on a page of its own (lld, GNU ld, and every
+/// `userspace/*/user*.ld`), so no well-formed image is lost. Segments arrive
+/// in ascending order ([`check_pt_load`]), so the previous segment is the
+/// only one that can share this one's first page.
+///
+/// `prev` is `None` for the first loaded segment.
+pub fn check_page_sharing(
+    prev_seg_end: usize,
+    prev: Option<SegPerms>,
+    p_vaddr: usize,
+    perms: SegPerms,
+    page_size: usize,
+) -> Result<(), SegReject> {
+    let Some(prev) = prev else { return Ok(()) };
+    if cfg!(feature = "elf-mixed-page-canary") || prev == perms || prev_seg_end == 0 {
+        return Ok(());
+    }
+    let mask = !(page_size - 1);
+    if (prev_seg_end - 1) & mask == p_vaddr & mask {
+        return Err(SegReject::SharedPageMixedPerms);
+    }
+    Ok(())
 }
 
 /// Verdict for one `PT_LOAD` program header.

@@ -272,6 +272,8 @@ pipe-nonblock-canary = ["azos_ipc/pipe-nonblock-canary"]
 futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]
 threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]
 threads-tls-canary = ["azos_sched/threads-tls-canary"]
+elf-mixed-page-canary = ["azos_sched/elf-mixed-page-canary"]
+rodata-exec-canary = ["azos_sched/rodata-exec-canary"]
 threads-late-start-canary = ["azos_sched/threads-late-start-canary"]
 # Wave 15 (plan 4a) canaries: an exec leaves the other threads running
 # (`azos_sched`); an object a thread creates is booked to the thread, not to

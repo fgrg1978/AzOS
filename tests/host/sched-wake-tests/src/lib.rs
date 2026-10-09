@@ -2023,7 +2023,9 @@ mod user_window_tests {
 
 #[cfg(test)]
 mod elf_bounds_tests {
-    use super::elf_bounds::{check_pt_load, page_up, SegCheck, SegLimits, SegReject};
+    use super::elf_bounds::{
+        check_page_sharing, check_pt_load, page_up, seg_perms, SegCheck, SegLimits, SegPerms, SegReject,
+    };
 
     /// The real limits, spelled out because this crate cannot depend on
     /// `azos_mm` (RISC-V CSRs) or `azos_sched` (ditto).
@@ -2278,6 +2280,56 @@ mod elf_bounds_tests {
                 }
             }
         }
+    }
+
+    /// Wave 15 (VI): a page two segments share took the union of their
+    /// permissions, so `.rodata` on the last `.text` page was executable.
+    /// A segment that starts on the page the previous one ends on, mapped
+    /// differently, refuses the image: code then rodata, rodata then data,
+    /// code then data. Canary `elf-mixed-page-canary` (gate row): accepted.
+    #[test]
+    fn a_page_shared_by_segments_mapped_differently_is_refused() {
+        use SegPerms::*;
+        let p = LIM.page_size;
+        // .text 0x10000..0x10100 (RX), .rodata from 0x10100 (R): one page.
+        assert_eq!(check_page_sharing(0x10100, Some(ReadExec), 0x10100, ReadOnly, p),
+                   Err(SegReject::SharedPageMixedPerms));
+        // A gap inside the page is still the same page.
+        assert_eq!(check_page_sharing(0x10100, Some(ReadExec), 0x10ff8, ReadOnly, p),
+                   Err(SegReject::SharedPageMixedPerms));
+        assert_eq!(check_page_sharing(0x11391, Some(ReadOnly), 0x11394, ReadWrite, p),
+                   Err(SegReject::SharedPageMixedPerms));
+        assert_eq!(check_page_sharing(0x10850, Some(ReadExec), 0x10850, ReadWrite, p),
+                   Err(SegReject::SharedPageMixedPerms));
+        assert_eq!(check_page_sharing(0x10850, Some(ReadWrite), 0x10900, ReadExec, p),
+                   Err(SegReject::SharedPageMixedPerms));
+    }
+
+    /// What the refusal leaves alone: the first segment; a segment on the
+    /// next page at the same offset (the layout `user*.ld`, lld and GNU ld
+    /// produce); a previous segment that ends exactly on a page boundary;
+    /// two segments mapped alike sharing a page.
+    #[test]
+    fn segments_on_pages_of_their_own_or_mapped_alike_load() {
+        use SegPerms::*;
+        let p = LIM.page_size;
+        assert_eq!(check_page_sharing(0, None, 0x10000, ReadExec, p), Ok(()));
+        assert_eq!(check_page_sharing(0x10850, Some(ReadExec), 0x11850, ReadOnly, p), Ok(()));
+        assert_eq!(check_page_sharing(0x11000, Some(ReadExec), 0x11000, ReadOnly, p), Ok(()));
+        assert_eq!(check_page_sharing(0x100e000, Some(ReadWrite), 0x100e090, ReadWrite, p), Ok(()));
+        assert_eq!(check_page_sharing(0x10850, Some(ReadOnly), 0x10900, ReadOnly, p), Ok(()));
+    }
+
+    /// The mapping class of a header: writable is never executable, and
+    /// read-only (with or without PF_R) is never executable.
+    #[test]
+    fn seg_perms_is_wx_both_ways() {
+        assert_eq!(seg_perms(7), SegPerms::ReadWrite);
+        assert_eq!(seg_perms(6), SegPerms::ReadWrite);
+        assert_eq!(seg_perms(5), SegPerms::ReadExec);
+        assert_eq!(seg_perms(1), SegPerms::ReadExec);
+        assert_eq!(seg_perms(4), SegPerms::ReadOnly);
+        assert_eq!(seg_perms(0), SegPerms::ReadOnly);
     }
 
     #[test]

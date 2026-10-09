@@ -22,6 +22,12 @@ cpuid-probe-canary = ["cpuid-probe"]
 futex-wake-noop-canary = []
 threads-no-cleartid-canary = []
 threads-tls-canary = []
+# Wave 15 (VI): the ELF loader's page permissions. `elf-mixed-page-canary`
+# accepts a page shared by segments mapped differently (their union, as
+# before); `rodata-exec-canary` maps read-only segments read-execute (the old
+# two-way split). Gate rows: host `elf_bounds` tests, abitest `elfperm:`.
+elf-mixed-page-canary = []
+rodata-exec-canary = []
 # A new thread first runs user code at least 100 ms after its creation (the
 # late start a loaded host gives it): a thread check that sleeps to "let the
 # thread park" fails every boot with it.

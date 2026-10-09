@@ -668,6 +668,11 @@ pub fn map_mega(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) ->
 /// unsafe layout and should fail loudly rather than silently produce a W+X
 /// page. Returns `Err(KernelError::InvalidArg)` in that case.
 ///
+/// Wave 15: the loader now refuses, before it gets here, an image in which
+/// two segments mapped differently share a page
+/// (`elf_bounds::check_page_sharing`), so the widening finds the bits already
+/// there; this stays the backstop for W^X on a shared page.
+///
 /// Only ever widens: bits already present are kept, and the USER bit is
 /// required up front so this cannot be aimed at a kernel mapping.
 ///
