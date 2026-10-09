@@ -5344,15 +5344,7 @@ fn trace_tx(src_port: u16, dst_ip: &[u8; 4], dst_port: u16,
 /// verification (a valid segment yields 0).  `udp.rs` reuses this rather than
 /// carrying a second copy of the fold loop.
 pub(crate) fn tcp_checksum(pseudo_sum: u32, data: &[u8]) -> u16 {
-    let mut sum = pseudo_sum;
-    let mut i = 0;
-    while i + 1 < data.len() {
-        sum += u16::from_be_bytes([data[i], data[i + 1]]) as u32;
-        i += 2;
-    }
-    if i < data.len() {
-        sum += (data[i] as u32) << 8;
-    }
+    let mut sum = crate::checksum::sum_be16(pseudo_sum, data);
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }

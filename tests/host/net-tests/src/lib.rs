@@ -419,6 +419,52 @@ mod tcp;
 #[cfg(test)]
 mod tcp_handle;
 
+#[cfg(test)]
+mod checksum_sum {
+    use super::checksum::sum_be16;
+
+    /// The sum this replaced: one big-endian 16-bit word per step.
+    fn reference(mut sum: u32, data: &[u8]) -> u32 {
+        let mut i = 0;
+        while i + 1 < data.len() {
+            sum += u16::from_be_bytes([data[i], data[i + 1]]) as u32;
+            i += 2;
+        }
+        if i < data.len() { sum += (data[i] as u32) << 8; }
+        sum
+    }
+    fn fold(mut s: u32) -> u16 {
+        while s >> 16 != 0 { s = (s & 0xFFFF) + (s >> 16); }
+        s as u16
+    }
+
+    /// **Discriminates.** Every length 0..=1600 at every start offset 0..8
+    /// (both parities against the 8-byte boundary), random bytes and all
+    /// 0xFF (the carry-heavy case), with a pseudo-header sum on top: the
+    /// folded sum equals the word-at-a-time one. Canaries: drop the
+    /// odd-start byte swap, or the end-around carry, and it fails.
+    #[test]
+    fn the_eight_byte_sum_equals_the_word_at_a_time_sum() {
+        let mut x: u32 = 0x1234_5678;
+        let mut buf = vec![0u8; 1700];
+        for b in buf.iter_mut() {
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *b = x as u8;
+        }
+        let ones = vec![0xFFu8; 1700];
+        for data in [&buf, &ones] {
+            for off in 0..8 {
+                for len in 0..=1600 {
+                    let d = &data[off..off + len];
+                    let init = 0x0004_FFF3;
+                    assert_eq!(fold(sum_be16(init, d)), fold(reference(init, d)),
+                        "len {len} off {off}");
+                }
+            }
+        }
+    }
+}
+
 /// N8: the owner bit that makes `net_poll`'s receive pass single-consumer.
 #[allow(dead_code)]
 #[path = "../../../../crates/net/net/src/rx_owner.rs"]
