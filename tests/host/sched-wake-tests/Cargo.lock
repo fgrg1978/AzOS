@@ -7,6 +7,20 @@ name = "azos-config"
 version = "0.1.0"
 
 [[package]]
+name = "azos_chaos"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
+
+[[package]]
+name = "azos_decision"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
+
+[[package]]
 name = "azos_limits"
 version = "0.1.0"
 dependencies = [
@@ -18,6 +32,8 @@ dependencies = [
 name = "azos_sched_wake_tests"
 version = "0.1.0"
 dependencies = [
+ "azos_chaos",
+ "azos_decision",
  "azos_limits",
  "sched_wake_test_mm",
  "sched_wake_test_sync",

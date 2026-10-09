@@ -301,6 +301,14 @@ pub(crate) fn note_typed_denial_recorded(tid: u32, kind: azos_abi::cap::CapKind,
     if let Some(f) = r {
         if admit_denial_record_for(tid, kind.denial_code()) {
             f(kind.denial_code(), e.code());
+            // Kconfig DECISION_RECORDS: the same denial, under the same
+            // per-task bound, as an explained decision. Off: nothing.
+            azos_decision::record(
+                azos_decision::Rule::CapDenial,
+                azos_decision::Verdict::Deny,
+                tid,
+                [kind.denial_code() as u64, e.code() as u64, 0],
+            );
             note_denial_recorded(tid);
             return true;
         }

@@ -276,6 +276,8 @@ members = [
     "crates/core/crypto",
     "crates/core/trace",
     "crates/core/ktest",
+    "crates/core/chaos",
+    "crates/core/decision",
     "crates/core/efi",
     "crates/drivers/driver_server",
     # Driver framework API surface (host-testable, no riscv deps).
@@ -399,6 +401,8 @@ azos_encrypt_link = { path = "crates/net/encrypt-link" }
 azos_pubsub    = { path = "crates/core/pubsub" }
 azos_trace     = { path = "crates/core/trace" }
 azos_ktest     = { path = "crates/core/ktest" }
+azos_chaos     = { path = "crates/core/chaos" }
+azos_decision  = { path = "crates/core/decision" }
 azos_efi       = { path = "crates/core/efi" }
 azos_driver_server = { path = "crates/drivers/driver_server" }
 azos_crypto    = { path = "crates/core/crypto" }

@@ -10789,10 +10789,15 @@ PY
     # `mm: NX outside the image` (riscv64 only before; both ISAs now),
     # `mm: Zicboz zeroes pages` and `aarch64: procfs registered` (both ISAs
     # now), and the late tests' rows above.
-    KTEST_N_RV=15
-    KTEST_N_ARM=14
-    KTEST_FEATS="qemu,ktest"
-    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line]
+    # Kconfig CHAOS and DECISION_RECORDS ride in every ktest kernel
+    # (`chaos`, `decisions`): the `chaos_*` tests arm each injection point
+    # (crates/core/chaos) and check the fault is refused cleanly, leaks
+    # nothing and is counted; the `decision_*` tests read the boot's
+    # admission record and a capability denial's (crates/core/decision).
+    KTEST_N_RV=24
+    KTEST_N_ARM=23
+    KTEST_FEATS="qemu,ktest,chaos,decisions"
+    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
         local -a app=(); [ -n "${5:-}" ] && app=(-append "$5")
         [ "$isa" = arm ] && n_want=$KTEST_N_ARM
@@ -10847,6 +10852,7 @@ PY
             [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
                 && why="no matching summary line"
         fi
+        if [ -z "$why" ] && [ -n "${6:-}" ] && ! grep -aqE "$6" "$log"; then why="no line matching: $6"; fi
         if [ -z "$why" ] && [ "$qrc" = timeout ]; then why="QEMU did not power off"
         elif [ -z "$why" ] && [ "$isa" = rv ] && [ -z "$want" ] && [ "$qrc" != 0 ]; then why="QEMU exit status $qrc after a clean run"
         elif [ -z "$why" ] && [ "$isa" = rv ] && [ -n "$want" ] && [ "$qrc" != 1 ]; then why="QEMU exit status $qrc after a failed run, not 1"
@@ -10874,10 +10880,27 @@ PY
     par "ktest IMU frozen-stamp canary (arm)" ktest_row "ktest IMU frozen-stamp canary (arm)" arm ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition"
     # Runtime canaries: the pass row's kernel (`qemu,ktest`, a kernel-cache
     # hit), armed by the command line.
-    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip"
-    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered"
+    # `chaos-leak`: an injected frame failure loses a frame
+    # (`chaos_frame_alloc_no_leak`); `decision-skip`: no decision record is
+    # written (`decision_admission_recorded`, `decision_cap_denial_recorded`).
+    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip,chaos-leak,decision-skip"
+    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
+    # Wave 15 (plan 7b): `canary=chaos-inert` arms no injection point, so
+    # every `chaos_*` test but the parser's reports `not ok` (one boot: the
+    # inert registry would also hide `chaos-leak`, which rides above).
+    KTEST_CHAOS_INERT="chaos_disk_io_error_recorded chaos_frame_alloc_no_leak chaos_heap_alloc_refused chaos_ipc_send_refused chaos_spurious_irq_tolerated chaos_timer_wake_late_not_lost"
+    par "ktest chaos-inert canary (rv)" ktest_row "ktest chaos-inert canary (rv)" rv "" "$KTEST_CHAOS_INERT" "canary=chaos-inert"
+    par "ktest chaos-inert canary (arm)" ktest_row "ktest chaos-inert canary (arm)" arm "" "$KTEST_CHAOS_INERT" "canary=chaos-inert"
+    # The command line's arming, end to end: delayed timer wakes (1 in 8
+    # sweeps) and unsolicited IPIs (1 in 4) from the end of boot init to the
+    # power-off, under a fixed seed. Every ktest stays `ok` and both points
+    # fired (the runner's `# chaos:` summary lines).
+    KTEST_SOAK="chaos=timer-wake:8,spurious-irq:4 chaos_seed=7"
+    KTEST_SOAK_RE="^# chaos: timer-wake rate=8 checked=[0-9]+ fired=[1-9][0-9]*\$"
+    par "ktest chaos soak (rv)" ktest_row "ktest chaos soak (rv)" rv "" "" "$KTEST_SOAK" "$KTEST_SOAK_RE"
+    par "ktest chaos soak (arm)" ktest_row "ktest chaos soak (arm)" arm "" "" "$KTEST_SOAK" "$KTEST_SOAK_RE"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
@@ -10967,7 +10990,7 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
-        x86_kbuild "ktest$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=ktest$extra did not build"; return; }
+        x86_kbuild "ktest,chaos,decisions$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=ktest,chaos,decisions$extra did not build"; return; }
         par_ready
         x86_qemu "$kimg" "$log" 300 "" -smp 4 ${app[@]+"${app[@]}"}
         rm -f "$kimg"

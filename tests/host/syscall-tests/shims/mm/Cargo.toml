@@ -7,6 +7,8 @@ publish = false
 description = "Host stand-in for azos_mm, used only by tests/host/syscall-tests. NOT part of the kernel."
 
 [dependencies]
+# Kconfig CHAOS sites in the #[path]-pulled sources (off on the host).
+azos_chaos = { path = "../../../../../crates/core/chaos" }
 # Renamed so the pulled `crates/core/mm/src/*.rs` files' own `use azos_arch::…`
 # resolve unchanged.
 azos_arch = { path = "../arch", package = "syscall_test_arch" }

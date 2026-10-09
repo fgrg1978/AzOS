@@ -67,6 +67,9 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
     // Kconfig CANARY_RUNTIME: `canary=` on the command line, before the
     // first `canary!` site (the stack guards below).
     crate::canary_rt::arm_from_cmdline(|out| a.kernel_cmdline(fw_table, out));
+    // Kconfig CHAOS / DECISION_RECORDS: `chaos=` held until boot init is
+    // done, and both subsystems' runtime canaries.
+    crate::boot::chaos::arm_from_cmdline(|out| a.kernel_cmdline(fw_table, out));
     // The boot protocol, from the table itself: an FDT (riscv64, aarch64) or
     // not (x86_64's PVH start_info). Only an FDT has a `totalsize` to keep
     // out of pstore's way below.

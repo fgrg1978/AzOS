@@ -453,7 +453,9 @@ pub fn channel_send(ch: usize, data: &[u8]) -> i32 {
     if chan.state != ChannelState::Active {
         return -1;
     }
-    if chan.is_full() {
+    // Kconfig CHAOS, point `ipc-send`: refused as a full ring is, before
+    // anything is enqueued. Off: a constant `false`.
+    if chan.is_full() || azos_chaos::fire(azos_chaos::Point::IpcSend) {
         return -1;
     }
 
@@ -631,7 +633,7 @@ pub fn channel_send_cap(
     let mut pool = POOL.lock();
     let i = live_index(&pool, r)?;
     let chan = &mut pool.channels[i];
-    if chan.is_full() {
+    if chan.is_full() || azos_chaos::fire(azos_chaos::Point::IpcSend) {
         return Err(ChannelCapError::Full);
     }
     push(chan, data);

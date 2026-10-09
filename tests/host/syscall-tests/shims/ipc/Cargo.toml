@@ -21,6 +21,8 @@ port-recheck-canary = []
 port-revoke-canary = []
 
 [dependencies]
+# Kconfig CHAOS sites in the #[path]-pulled sources (off on the host).
+azos_chaos = { path = "../../../../../crates/core/chaos" }
 azos_trace = { path = "../../../../../crates/core/trace" }
 # Real, pure, host-buildable.
 azos_abi = { path = "../../../../../crates/core/abi" }

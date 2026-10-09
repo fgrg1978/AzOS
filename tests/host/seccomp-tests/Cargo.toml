@@ -9,6 +9,12 @@ description = "Host-side tests for the syscall filter (AQ11): crates/core/sched/
 # Run with:  cd tests/host/seccomp-tests && cargo test --release
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_decision = { path = "../../../crates/core/decision" }
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
 # The real syscall numbers, not a copy. `seccomp.rs` redeclares them as local
 # `const`s with a comment saying they "must match azos_syscall::numbers
 # exactly" — a claim nothing enforced until this suite did.

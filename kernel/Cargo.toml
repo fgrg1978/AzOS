@@ -841,6 +841,13 @@ switch-census = ["azos_sched/switch-census"]
 # Kconfig KTEST (wave 15): the in-kernel test registry's runner
 # (kernel/src/ktest.rs) and every `ktest!` test. Off: none of it is compiled.
 ktest = ["dep:azos_ktest"]
+# Kconfig CHAOS (config/Kconfig.development): the fault-injection registry
+# and its sites (crates/core/chaos). Cargo unifies the crate's `on` feature,
+# so every crate that asks a point sees it on. Never with secure-boot-enforced.
+chaos = ["azos_chaos/on"]
+# Kconfig DECISION_RECORDS: explainable decision records and /proc/decisions
+# (crates/core/decision).
+decisions = ["azos_decision/on"]
 # Gate canaries for two ktest tests (wave 15): the boot skips `enforce_wx`
 # (the image keeps its boot-time RWX leaves) or `strip_exec_outside_image`
 # (RAM outside the image stays executable). `mm_wx_image` /
@@ -1058,6 +1065,8 @@ azos_msc       = { workspace = true }
 azos_pubsub    = { workspace = true }
 azos_trace     = { workspace = true }
 azos_ktest     = { workspace = true, optional = true }
+azos_chaos     = { workspace = true }
+azos_decision  = { workspace = true }
 # Wave 15: the trace ring layout (the cost probe reads its own ring).
 azos_spsc      = { workspace = true }
 azos_topology  = { workspace = true }

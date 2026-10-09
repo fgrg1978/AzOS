@@ -52,6 +52,12 @@ file-census = []
 fat-mutate-spin-canary = []
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_decision = { path = "../../../crates/core/decision" }
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
 # The real azos_sync SpinLock reads/writes RV64 sstatus in inline asm, so
 # it neither compiles nor runs on the host. cap-tests already carries a
 # Mutex-backed stand-in with the same surface; reusing it beats a second copy

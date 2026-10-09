@@ -69,6 +69,9 @@ emit-target-aarch64 = ["azos_topology/emit-target-aarch64"]
 deadline-levels-canary = ["azos_topology/deadline-levels-canary"]
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
 azos_abi = { path = "../../../crates/core/abi" }
 azos_crypto = { path = "../../../crates/core/crypto" }
 azos_topology = { path = "../../../crates/core/topology" }

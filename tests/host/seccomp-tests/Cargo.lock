@@ -3,8 +3,19 @@
 version = 4
 
 [[package]]
+name = "azos-config"
+version = "0.1.0"
+
+[[package]]
 name = "azos_abi"
 version = "1.0.0"
+
+[[package]]
+name = "azos_chaos"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
 
 [[package]]
 name = "azos_crypto"
@@ -12,6 +23,21 @@ version = "0.1.0"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
+]
+
+[[package]]
+name = "azos_decision"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
+
+[[package]]
+name = "azos_limits"
+version = "0.1.0"
+dependencies = [
+ "azos-config",
+ "sha2",
 ]
 
 [[package]]
@@ -26,7 +52,9 @@ name = "azos_seccomp_tests"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_chaos",
  "azos_crypto",
+ "azos_decision",
  "azos_linux_abi",
  "azos_syscall_numbers",
 ]

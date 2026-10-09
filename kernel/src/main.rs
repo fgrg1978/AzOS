@@ -2719,6 +2719,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     #[cfg(feature = "ktest")]
     ktest::run();
 
+    // Kconfig CHAOS: the command line's injection points fire from here on.
+    boot::chaos::go_live();
+
     ARCH_ENTRY.wake_secondaries(num_cpus);
 
     // The boot hart's timer interrupt stays off until the end of kernel_main

@@ -150,6 +150,9 @@ pub fn wake_by_port(port_id: u32) {
 /// With `sched-timer-heap` only the due sleepers are visited
 /// (`scheduler::timer_sleepers`); without it, every slot is.
 pub fn wake_expired_timers(now_ticks: u64) {
+    // Kconfig CHAOS (points `spurious-irq`, `timer-wake`): the clock this
+    // sweep runs at. Off: `now_ticks`, nothing compiled.
+    let now_ticks = scheduler::chaos_sweep_now(now_ticks);
     #[cfg(feature = "sched-timer-heap")]
     scheduler::wake_expired_timers_heap(now_ticks);
     #[cfg(not(feature = "sched-timer-heap"))]

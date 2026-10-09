@@ -18,6 +18,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_chaos"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
+
+[[package]]
 name = "azos_common"
 version = "0.1.0"
 
@@ -27,6 +34,13 @@ version = "0.1.0"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
+]
+
+[[package]]
+name = "azos_decision"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
 ]
 
 [[package]]
@@ -61,6 +75,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_arch_api",
+ "azos_decision",
  "azos_drv_api",
  "azos_limits",
  "azos_trace",
@@ -332,6 +347,7 @@ name = "syscall_test_ipc"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_chaos",
  "azos_limits",
  "azos_trace",
  "cap_test_sync",
@@ -365,6 +381,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_arch_api",
+ "azos_chaos",
  "azos_common",
  "azos_limits",
  "cap_test_sync",

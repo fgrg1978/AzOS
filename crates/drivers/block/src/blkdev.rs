@@ -176,9 +176,35 @@ pub fn capacity_sectors() -> u64 {
     BACKEND.capacity_sectors()
 }
 
+/// Block reads and writes that answered an error since boot, the device's
+/// and injected ones alike (Kconfig CHAOS, point `disk-io`). Counted on the
+/// error path only.
+static IO_ERRORS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// See [`IO_ERRORS`].
+pub fn io_errors() -> u32 {
+    IO_ERRORS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+#[cold]
+fn note_io_error() {
+    IO_ERRORS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The device's answer, or an injected I/O error (point `disk-io`, before
+/// the device is touched), counted in [`IO_ERRORS`] either way.
+#[inline(always)]
+fn io(r: impl FnOnce() -> Result<(), ()>) -> Result<(), ()> {
+    let r = if azos_chaos::fire(azos_chaos::Point::DiskIo) { Err(()) } else { r() };
+    if r.is_err() {
+        note_io_error();
+    }
+    r
+}
+
 #[inline]
 pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-    BACKEND.read(sector, count, buf)
+    io(|| BACKEND.read(sector, count, buf))
 }
 
 /// Write the medium, then tell the block-cache owner which sectors moved
@@ -186,7 +212,7 @@ pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
 /// a failed multi-sector write may have landed in part.
 #[inline]
 pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-    let r = BACKEND.write(sector, count, buf);
+    let r = io(|| BACKEND.write(sector, count, buf));
     crate::write_observer::notify(sector, count);
     r
 }
@@ -197,7 +223,7 @@ pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
 /// `crates/fs/fs/src/fat32.rs`.
 #[inline]
 pub fn write_quiet(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-    BACKEND.write(sector, count, buf)
+    io(|| BACKEND.write(sector, count, buf))
 }
 
 /// For a writer of the boot medium that does not go through [`write`]

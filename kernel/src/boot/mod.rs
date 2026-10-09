@@ -26,6 +26,8 @@ mod seams;
 pub(crate) use seams::*;
 mod procfs;
 pub(crate) use procfs::*;
+// Kconfig CHAOS / DECISION_RECORDS: command line, canaries, ktests.
+pub(crate) mod chaos;
 mod robot;
 pub(crate) use robot::*;
 mod ota;

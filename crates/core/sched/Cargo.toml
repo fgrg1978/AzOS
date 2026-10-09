@@ -238,6 +238,8 @@ azos_arch_api = { workspace = true }
 azos_sync = { workspace = true }
 azos_common = { workspace = true }
 azos_limits = { workspace = true }
+azos_chaos = { workspace = true }
+azos_decision = { workspace = true }
 # Wave 15: the tracer's sched and proc tracepoints (depends on abi, spsc and
 # limits only, so this closes no cycle).
 azos_trace = { workspace = true }

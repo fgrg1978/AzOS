@@ -350,15 +350,25 @@ fn admit(
     use azos_topology::{AdmissionError, MemoryRefusal};
 
     // 1. Deadlines and the band.
+    use azos_decision::{record, Rule, Verdict};
+    let rows = topo.tasks().len() as u64;
     let r = match topo.deadline_admission(num_cpus) {
         Ok(r) => r,
-        Err(e) if mode == Mode::Final => halt_refused(format_args!(
-            "[TOPO] Deadline admission REFUSED on {} CPU(s): {:?}", num_cpus, e)),
-        Err(e) => return Err(SignedRefusal::Admission(e)),
+        Err(e) => {
+            record(Rule::DeadlineAdmission, Verdict::Refuse, num_cpus as u32, [0, rows, 0]);
+            if mode == Mode::Final {
+                halt_refused(format_args!("[TOPO] Deadline admission REFUSED on {} CPU(s): {:?}", num_cpus, e));
+            }
+            return Err(SignedRefusal::Admission(e));
+        }
     };
+    record(Rule::DeadlineAdmission, Verdict::Admit, num_cpus as u32, [r.placed as u64, rows, 0]);
     if r.placed > 0 {
         kprintln!("[TOPO] Deadline admission: {} real-time task(s) placed on {} CPU(s)", r.placed, num_cpus);
-        if let Err(e) = band_check(topo, &r) {
+        let band = band_check(topo, &r);
+        let v = if band.is_ok() { Verdict::Admit } else { Verdict::Refuse };
+        record(Rule::RtBandCap, v, num_cpus as u32, [r.placed as u64, azos_limits::RT_BAND_CAP_PCT as u64, 0]);
+        if let Err(e) = band {
             if mode == Mode::Final {
                 halt_refused(format_args!("[TOPO] Deadline admission REFUSED: {:?} — the band's rows on that CPU exceed \
                      RT_BAND_CAP_PCT={} %", e, azos_limits::RT_BAND_CAP_PCT));
@@ -398,6 +408,7 @@ fn admit(
         ),
         Err(_) => {
             let e = MemoryRefusal::DmaPool { need: pool, free: free_before };
+            record(Rule::MemoryAdmission, Verdict::Refuse, rows as u32, [pool, free_before, 0]);
             if mode == Mode::Final {
                 halt_refused(format_args!("[TOPO] Memory admission REFUSED: {:?}", e));
             }
@@ -407,11 +418,19 @@ fn admit(
     let reserve = kernel_reserve_pages();
     let free = azos_topology::units_for(azos_mm::pmm::free_pages() as u64, page);
     match topo.memory_admission(free, reserve, azos_topology::RING3_DEFAULT_PAGES, &may_fork) {
-        Ok(m) => kprintln!(
-            "[TOPO] Memory admission: {} ring-3 row(s) ({} locked, {} forking), {} instance(s): {} locked + {} ceiling + {} COW copy + {} kernel reserve = {} of {} free pages",
-            m.rows, m.locked_rows, m.fork_rows, m.instances, m.locked_pages, m.ceiling_pages, m.cow_pages, m.reserve_pages, m.need, m.free,
-        ),
+        Ok(m) => {
+            record(Rule::MemoryAdmission, Verdict::Admit, m.rows as u32, [m.need as u64, m.free as u64, m.reserve_pages as u64]);
+            kprintln!(
+                "[TOPO] Memory admission: {} ring-3 row(s) ({} locked, {} forking), {} instance(s): {} locked + {} ceiling + {} COW copy + {} kernel reserve = {} of {} free pages",
+                m.rows, m.locked_rows, m.fork_rows, m.instances, m.locked_pages, m.ceiling_pages, m.cow_pages, m.reserve_pages, m.need, m.free,
+            )
+        }
         Err(e) => {
+            let need = match e {
+                AdmissionError::Memory(MemoryRefusal::Overcommit { need, .. }) => need,
+                _ => 0,
+            };
+            record(Rule::MemoryAdmission, Verdict::Refuse, rows as u32, [need, free, reserve as u64]);
             if mode == Mode::Final {
                 halt_refused(format_args!("[TOPO] Memory admission REFUSED: {:?}", e));
             }

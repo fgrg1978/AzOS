@@ -357,7 +357,23 @@ pub fn alloc_contiguous_aligned(n: usize, align: usize) -> KResult<PhysAddr> {
 
 /// The bitmap-scan half of `alloc_page`, shared with `alloc_page_uninit`.
 /// Returns a freshly claimed (but NOT zeroed) page.
+/// Kconfig CHAOS, point `frame-alloc`: an injected failure answers
+/// `OutOfMemory` exactly as an empty bitmap does, before the lock. Off, the
+/// check is a constant `false` and this is [`alloc_page_scan`].
+#[inline(always)]
 fn alloc_page_raw() -> KResult<PhysAddr> {
+    if azos_chaos::fire(azos_chaos::Point::FrameAlloc) {
+        // Gate canary `canary=chaos-leak`: the failure path loses a frame,
+        // which the `chaos_frame_alloc_no_leak` ktest must catch.
+        if azos_chaos::leak_canary() {
+            let _ = alloc_page_scan();
+        }
+        return Err(KernelError::OutOfMemory);
+    }
+    alloc_page_scan()
+}
+
+fn alloc_page_scan() -> KResult<PhysAddr> {
     // Everything that touches the bitmap happens in this inner block, so
     // the lock (and the preemption-disabled section that comes with it,
     // per SpinLock::lock()) is dropped before the page is zeroed by the

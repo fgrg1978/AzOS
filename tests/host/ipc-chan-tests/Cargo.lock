@@ -22,12 +22,20 @@ name = "azos_abi"
 version = "1.0.0"
 
 [[package]]
+name = "azos_chaos"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
+
+[[package]]
 name = "azos_ipc_chan_tests"
 version = "0.1.0"
 dependencies = [
  "azos-sched-hostshim",
  "azos-sync-hostshim",
  "azos_abi",
+ "azos_chaos",
  "azos_limits",
  "wcet-macro",
 ]

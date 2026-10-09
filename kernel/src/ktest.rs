@@ -137,6 +137,15 @@ fn run_phase(phase: usize, first: usize) -> usize {
 }
 
 fn summary(n: usize, failed: usize) -> ! {
+    // Kconfig CHAOS: what the injection points did over the whole boot (a
+    // command-line soak row reads that its points fired).
+    #[cfg(feature = "chaos")]
+    for p in azos_chaos::POINTS {
+        let (rate, checked, fired) = azos_chaos::stats(p);
+        if checked != 0 {
+            kprintln!("\n# chaos: {} rate={} checked={} fired={}", p.name(), rate, checked, fired);
+        }
+    }
     kprintln!("\n# ktest: {} tests, {} passed, {} failed ({})", n, n - failed, failed, isa());
     power_off(failed != 0)
 }

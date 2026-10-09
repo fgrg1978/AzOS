@@ -294,6 +294,11 @@ fn dealloc_small(ptr: *mut u8, layout: Layout) {
 
 unsafe impl GlobalAlloc for LockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Kconfig CHAOS, point `heap-alloc` (test scope only): null, as an
+        // exhausted heap answers. Off: a constant `false`.
+        if azos_chaos::fire(azos_chaos::Point::HeapAlloc) {
+            return null_mut();
+        }
         #[cfg(feature = "kheap-census")]
         let t0 = crate::kheap_census::now();
         let p = unsafe { inner_alloc(layout) };

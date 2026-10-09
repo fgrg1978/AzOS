@@ -335,6 +335,10 @@ KCONFIG_TO_CARGO_FEATURE: dict[str, Optional[str]] = {
     # The in-kernel test registry and runner (config/Kconfig.development):
     # off means the `ktest!` tests and the runner are not compiled.
     "CONFIG_KTEST": "ktest",
+    # Fault injection and decision records (config/Kconfig.development): off
+    # means the registry, the ring and every site are not compiled.
+    "CONFIG_CHAOS": "chaos",
+    "CONFIG_DECISION_RECORDS": "decisions",
 
     # Optional buses and display drivers (config/Kconfig.drivers, wave 11).
     # Each is a kernel feature that already existed with no Kconfig symbol;

@@ -9,6 +9,9 @@ description = "Host-side tests for the computation inside the driver class crate
 # Run with:  cd tests/host/drivers-tests && cargo test --release
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
 azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
 azos_mm = { path = "shims/mm", package = "drv_test_mm" }
 azos_arch = { path = "shims/arch", package = "drv_test_arch" }

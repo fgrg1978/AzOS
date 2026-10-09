@@ -33,6 +33,15 @@ pub(crate) const NAMES: &[&str] = &[
     // entry/x86_64/fp.rs: a fork's child gets the initial FP state, not the
     // parent's (ktest `x86_ring3_syscall_fork_fp`, x86_64 only).
     "x86-fork-fp-skip",
+    // boot/chaos.rs: `azos_chaos::arm` arms nothing (every `chaos_*` ktest
+    // but the parser's).
+    "chaos-inert",
+    // boot/chaos.rs: an injected frame failure loses a frame
+    // (ktest `chaos_frame_alloc_no_leak`).
+    "chaos-leak",
+    // boot/chaos.rs: no decision record is written (ktests
+    // `decision_admission_recorded`, `decision_cap_denial_recorded`).
+    "decision-skip",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

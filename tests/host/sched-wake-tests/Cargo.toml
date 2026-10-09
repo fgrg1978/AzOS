@@ -7,6 +7,12 @@ publish = false
 description = "Host-side tests for the K-C10 TID-directed wake logic in crates/core/sched/src/wait.rs. Excluded from workspace."
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_decision = { path = "../../../crates/core/decision" }
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
 # task.rs re-exports MAX_TASKS from this leaf; it has no runtime dependencies
 # of its own, so it compiles for the host unchanged.
 azos_limits = { path = "../../../crates/core/limits" }

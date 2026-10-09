@@ -40,6 +40,12 @@ pub(crate) fn install_procfs() {
     // Masked-window tracer read-out; absent (and not counted) by default.
     #[cfg(feature = "lat-trace")]
     lat_trace::install_procfs();
+    // Kconfig CHAOS: each injection point's rate and counts.
+    #[cfg(feature = "chaos")]
+    azos_fs::procfs_register(azos_fs::ProcNs::Proc, b"chaos", gen_proc_chaos);
+    // Kconfig DECISION_RECORDS: the explained decisions, newest first.
+    #[cfg(feature = "decisions")]
+    azos_fs::procfs_register(azos_fs::ProcNs::Proc, b"decisions", gen_proc_decisions);
     kprintln!("[FS] procfs/sysfs ready ({} entries)", azos_fs::procfs_count());
 }
 
@@ -146,6 +152,60 @@ impl core::fmt::Write for ProcW<'_> {
     }
 }
 
+/// `/proc/chaos` (Kconfig CHAOS): one line per injection point.
+#[cfg(feature = "chaos")]
+fn gen_proc_chaos(buf: &mut [u8]) -> usize {
+    use core::fmt::Write;
+    let mut w = ProcW { b: buf, n: 0 };
+    let _ = write!(w, "seed {}\n", azos_chaos::seed());
+    for p in azos_chaos::POINTS {
+        let (rate, checked, fired) = azos_chaos::stats(p);
+        if write!(w, "{} rate={} checked={} fired={}\n", p.name(), rate, checked, fired).is_err() {
+            break;
+        }
+    }
+    w.n
+}
+
+/// One `/proc/decisions` line: the rule, the verdict, the subject, the
+/// numbers by name and the alternative the rule rejected.
+#[cfg(feature = "decisions")]
+pub(crate) fn decision_line(w: &mut impl core::fmt::Write, r: &azos_decision::Record) -> core::fmt::Result {
+    let Some(info) = r.rule_info() else { return write!(w, "{} rule={}\n", r.seq, r.rule) };
+    write!(w, "{} {} {} {}={}", r.seq, info.name, r.verdict_name(), info.subject, r.subject)?;
+    for (k, v) in info.fields.iter().zip(r.n) {
+        if *k != "-" {
+            write!(w, " {}={}", k, v)?;
+        }
+    }
+    write!(w, " rejected=\"{}\"\n", r.rejected())
+}
+
+/// `/proc/decisions` (Kconfig DECISION_RECORDS): newest first, as many as
+/// fit, after a header with the count written since boot.
+#[cfg(feature = "decisions")]
+fn gen_proc_decisions(buf: &mut [u8]) -> usize {
+    use core::fmt::Write;
+    let mut w = ProcW { b: buf, n: 0 };
+    let last = azos_decision::total();
+    if write!(w, "# {} decisions since boot, ring {}, newest first\n", last, azos_decision::ENTRIES).is_err() {
+        return w.n;
+    }
+    let first = last.saturating_sub(azos_decision::ENTRIES as u64 - 1).max(1);
+    let mut seq = last;
+    while seq >= first && seq != 0 {
+        if let Some(r) = azos_decision::get(seq) {
+            let mark = w.n;
+            if decision_line(&mut w, &r).is_err() {
+                w.n = mark;
+                break;
+            }
+        }
+        seq -= 1;
+    }
+    w.n
+}
+
 const PROC_TASKS_HEADER: &str = "  TID  PPID PRI S NAME\n";
 
 fn proc_task_line(w: &mut ProcW, r: &azos_sched::TaskRow) -> core::fmt::Result {
@@ -245,7 +305,10 @@ mod ktests {
 
     azos_ktest::ktest! {
         fn procfs_entries_registered() {
-            let want = PATHS.len() + if cfg!(feature = "lat-trace") { 2 } else { 0 };
+            let want = PATHS.len()
+                + if cfg!(feature = "lat-trace") { 2 } else { 0 }
+                + cfg!(feature = "chaos") as usize
+                + cfg!(feature = "decisions") as usize;
             if azos_fs::procfs_count() != want {
                 return Err("procfs/sysfs does not hold exactly the built-in entries");
             }

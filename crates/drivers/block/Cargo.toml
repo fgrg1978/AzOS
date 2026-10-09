@@ -24,3 +24,4 @@ azos_drv_api    = { workspace = true }
 azos_drv_base   = { workspace = true }
 azos_drv_sys    = { workspace = true }
 azos_drv_virtio = { workspace = true }
+azos_chaos      = { workspace = true }

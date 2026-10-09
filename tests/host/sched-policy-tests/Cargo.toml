@@ -13,6 +13,12 @@ description = "Host-side tests for the W4 multi-policy scheduler. Excluded from 
 # Run with:  cd tests/host/sched-policy-tests && cargo +stable test
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_decision = { path = "../../../crates/core/decision" }
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
 azos_abi = { path = "../../../crates/core/abi" }
 
 [dev-dependencies]

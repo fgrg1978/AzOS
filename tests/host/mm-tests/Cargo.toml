@@ -9,6 +9,9 @@ description = "Host-side tests for the physical page allocator in crates/core/mm
 # Run with:  cd tests/host/mm-tests && cargo test --release
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
 azos_arch = { path = "shims/arch", package = "mm_test_arch" }
 # Real crate, not a shim: `azos_arch_api` is pure `no_std`, no asm, no
 # target-specific code (see its own Cargo.toml description) — exactly the

@@ -43,6 +43,9 @@ pubsub-exit-keep-canary = []
 commander-exit-nostop-canary = []
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_decision = { path = "../../../crates/core/decision" }
 # Real, pure, no_std, host-buildable as-is (crates/core/abi has zero dependencies).
 azos_abi = { path = "../../../crates/core/abi" }
 # Wave 14 (SPAWNCACHE): `image_cache.rs` sizes its kept frames by Kconfig

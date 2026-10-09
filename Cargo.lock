@@ -149,6 +149,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_chaos"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
+
+[[package]]
 name = "azos_common"
 version = "0.1.0"
 
@@ -162,6 +169,13 @@ version = "0.1.0"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
+]
+
+[[package]]
+name = "azos_decision"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
 ]
 
 [[package]]
@@ -231,6 +245,7 @@ dependencies = [
 name = "azos_drv_block"
 version = "0.1.0"
 dependencies = [
+ "azos_chaos",
  "azos_drv_api",
  "azos_drv_base",
  "azos_drv_sys",
@@ -436,6 +451,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_arch",
+ "azos_chaos",
  "azos_common",
  "azos_drv_actuator",
  "azos_drv_base",
@@ -467,9 +483,11 @@ dependencies = [
  "azos_behavior",
  "azos_bench",
  "azos_camera",
+ "azos_chaos",
  "azos_common",
  "azos_config",
  "azos_crypto",
+ "azos_decision",
  "azos_dfu",
  "azos_display",
  "azos_driver_server",
@@ -568,6 +586,7 @@ dependencies = [
  "azos_abi",
  "azos_arch",
  "azos_arch_api",
+ "azos_chaos",
  "azos_common",
  "azos_limits",
  "azos_percpu",
@@ -690,8 +709,10 @@ dependencies = [
  "azos_abi",
  "azos_arch",
  "azos_arch_api",
+ "azos_chaos",
  "azos_common",
  "azos_crypto",
+ "azos_decision",
  "azos_drv_base",
  "azos_drv_sys",
  "azos_energy",
@@ -778,6 +799,7 @@ dependencies = [
  "azos_arch_api",
  "azos_common",
  "azos_crypto",
+ "azos_decision",
  "azos_driver_server",
  "azos_drv_actuator",
  "azos_drv_api",

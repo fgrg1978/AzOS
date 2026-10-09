@@ -13,6 +13,7 @@ azos_arch_api = { workspace = true }
 azos_sync = { workspace = true }
 azos_common = { workspace = true }
 azos_limits = { workspace = true }
+azos_chaos = { workspace = true }
 linked_list_allocator = { workspace = true }
 
 [features]

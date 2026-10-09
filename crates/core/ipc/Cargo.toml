@@ -58,6 +58,7 @@ azos_drv_sensor   = { workspace = true }
 azos_drv_actuator = { workspace = true }
 azos_arch = { workspace = true }
 azos_limits = { workspace = true }
+azos_chaos = { workspace = true }
 azos_spsc = { workspace = true }
 azos_trace = { workspace = true }
 wcet-macro = { path = "../wcet-macro" }

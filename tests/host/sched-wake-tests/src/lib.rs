@@ -125,6 +125,9 @@ pub mod scheduler {
         LOG.lock().unwrap().push(Call::Sweep { idx, accepts });
     }
 
+    /// Kconfig CHAOS stand-in: no injection on the host, the clock as given.
+    pub fn chaos_sweep_now(now_ticks: u64) -> u64 { now_ticks }
+
     /// Plan item 7 stand-ins: no forced stop is ever pending on the host.
     pub fn forced_stop_pending() -> bool { false }
     pub fn current_forced_exit() -> Option<i32> { None }

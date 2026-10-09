@@ -566,4 +566,83 @@ config CANARY_RUNTIME
       On: one device-tree walk at boot (KERNEL_CMDLINE_MAX bytes on the
       boot stack) and 8 bytes of .bss.
 
+config CHAOS
+    bool "Fault injection (chaos=<point>:<rate> on the kernel command line)"
+    default y if KTEST
+    default n
+    depends on !SECURE_BOOT_ENFORCED
+    help
+      Compiles the fault-injection registry (crates/core/chaos) and its
+      six named injection points: frame-alloc (the page allocator answers
+      out of memory), heap-alloc (the kernel heap answers null; test scope
+      only, the kernel's heap allocations are infallible), ipc-send (a
+      channel send answers "ring full"), timer-wake (the timer sweep wakes
+      sleepers CHAOS_TIMER_DELAY_US late), spurious-irq (the tick rings an
+      IPI with no cause at another CPU) and disk-io (a block read or write
+      answers an I/O error). A point is armed from the kernel command line,
+      `chaos=<point>:<rate>[,...]` (one failure in <rate> calls, applied
+      once boot init is done) with `chaos_seed=<n>`, or from a ktest; the
+      `chaos_*` ktests check that each fault is refused cleanly and leaks
+      nothing. /proc/chaos lists each point's rate and counts.
+
+      On by default only in a KTEST kernel. Off in every deployment profile
+      and impossible with SECURE_BOOT_ENFORCED: a command line must not be
+      able to fail a signed image's allocations. Off: every site compiles
+      to the code it was before (`fire` is a constant false). On: one load
+      and a branch per site call while its point is disarmed, about 300
+      bytes of .bss. Maps to the kernel cargo feature `chaos`.
+
+config CHAOS_SEED
+    int "Fault injection: default seed"
+    range 1 2147483647
+    default 1
+    help
+      The seed of every injection point's generator when the command line
+      gives no `chaos_seed=`. The same seed, arming and call order fail the
+      same calls, so a failure found under one seed replays under it.
+      No cost.
+
+config CHAOS_TIMER_DELAY_US
+    int "Fault injection: how late an injected timer-wake fault wakes (us)"
+    range 100 1000000
+    default 2000
+    help
+      When the timer-wake point fires, the sweep runs as if the clock were
+      this far behind, so a sleeper due within the window is woken on a
+      later sweep instead (late, never lost). Larger values stress
+      deadline-sensitive code harder; with a tickless idle the next sweep
+      can come as soon as the next timer interrupt. No cost while CHAOS is
+      off; one subtraction per fired sweep when on.
+
+config DECISION_RECORDS
+    bool "Explainable decision records (/proc/decisions)"
+    default y if KTEST
+    default n
+    help
+      Boot deadline admission, the real-time band cap, boot memory
+      admission, the placement of a woken task on a CPU other than its last
+      one, and typed capability denials each write one record naming the
+      rule, the verdict, the subject, the numbers the rule compared and the
+      alternative it rejected (crates/core/decision). /proc/decisions shows
+      the ring, oldest first.
+
+      Off by default outside a KTEST kernel, because the wake-placement
+      record sits on the wake path. Off: every record site compiles out.
+      On: a migrating wake pays about 40 instructions and five stores, the
+      admission and denial paths the same per record, and the ring costs
+      DECISION_RECORDS_ENTRIES x 40 bytes of .bss. Turn it on to see why a
+      topology was refused or why tasks move. Maps to the kernel cargo
+      feature `decisions`.
+
+config DECISION_RECORDS_ENTRIES
+    int "Explainable decision records: ring depth"
+    range 8 4096
+    default 16 if PROFILE_EMBEDDED
+    default 256 if PROFILE_FLEET
+    default 64
+    help
+      Records kept; the oldest is overwritten. 40 bytes each. Raise it when
+      migrating wakes evict the boot admission records you want to read;
+      read only when DECISION_RECORDS is on.
+
 endmenu # Development & Debug

@@ -8450,8 +8450,29 @@ unsafe fn wake_target_cpu(idx: usize, task: &Task) -> usize {
             // defect K-C14 half-fixed by moving off the hardcoded CPU 0.
             // Approximate and unlocked, like the metric it replaces: a stale
             // sample costs one suboptimal placement, never correctness.
-            find_best_cpu(task.priority.load(Ordering::Relaxed), idx).min(ncpu() - 1)
+            let prio = task.priority.load(Ordering::Relaxed);
+            let cpu = find_best_cpu(prio, idx).min(ncpu() - 1);
+            // Kconfig DECISION_RECORDS: a move off the task's last CPU is
+            // explained (the rejected alternative is staying). Off: nothing.
+            if azos_decision::ON {
+                note_wake_move(task, cpu, prio);
+            }
+            cpu
         },
+    }
+}
+
+/// The wake-placement record of [`wake_target_cpu`]: only a migration.
+#[inline(never)]
+fn note_wake_move(task: &Task, cpu: usize, prio: u32) {
+    let last = task.context.tp as usize;
+    if last != cpu && last < ncpu() {
+        azos_decision::record(
+            azos_decision::Rule::WakePlacement,
+            azos_decision::Verdict::Place,
+            task.tid,
+            [cpu as u64, last as u64, prio as u64],
+        );
     }
 }
 
@@ -9393,6 +9414,35 @@ fn kick_hart(cpu: usize) {
     // riscv64: SBI IPI to `cpu` (its error code ignored, as before);
     // aarch64: SGI 0.
     azos_arch::Interrupts::send_ipi(&azos_arch::ARCH, cpu);
+}
+
+/// Kconfig CHAOS, asked once per timer sweep (`wait::wake_expired_timers`),
+/// off the wake decisions themselves. Point `spurious-irq` rings an
+/// unsolicited doorbell ([`chaos_spurious_ipi`]); point `timer-wake` returns
+/// a clock `CHAOS_TIMER_DELAY_US` behind, so a sleeper due in that window
+/// wakes on a later sweep (late, not lost). Off: `now_ticks`.
+#[inline(always)]
+pub(crate) fn chaos_sweep_now(now_ticks: u64) -> u64 {
+    if azos_chaos::fire(azos_chaos::Point::SpuriousIrq) {
+        chaos_spurious_ipi();
+    }
+    if azos_chaos::fire(azos_chaos::Point::TimerWake) {
+        let per_us = (azos_drv_sys::timebase::TIMER_FREQ / 1_000_000).max(1);
+        now_ticks.saturating_sub(azos_limits::CHAOS_TIMER_DELAY_US * per_us)
+    } else {
+        now_ticks
+    }
+}
+
+/// Kconfig CHAOS, point `spurious-irq`: ring the next online CPU's doorbell
+/// with nothing queued for it, so that CPU takes an interrupt it finds no
+/// cause for. Called from the timer sweep only when the point fires.
+#[cold]
+pub(crate) fn chaos_spurious_ipi() {
+    let n = NUM_ONLINE_CPUS.load(Ordering::Acquire).min(MAX_CPUS);
+    if n > 1 {
+        kick_hart((current_cpu_id() + 1) % n);
+    }
 }
 
 /// Times [`ipc_wake_then_block`] switched directly (census builds only).

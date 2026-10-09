@@ -13,6 +13,9 @@ description = "Host-side tests for the ownership/bounds logic in crates/core/ipc
 # Run with:  cd tests/host/ipc-chan-tests && cargo test
 
 [dependencies]
+# Kconfig CHAOS / DECISION_RECORDS sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
 # Host stand-ins. Their `[lib] name` is the kernel crate's name, so the
 # `#[path]`-included sources resolve `use azos_sync::SpinLock;` and
 # `azos_sched::current_task_tid()` without being edited.

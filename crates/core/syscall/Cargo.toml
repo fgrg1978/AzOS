@@ -38,6 +38,7 @@ azos_driver_server = { workspace = true }
 azos_topology = { workspace = true }
 # `nospec` (Spectre v1 index masking, Kconfig MITIGATION_SPECTRE_V1_INDEX).
 azos_limits = { workspace = true }
+azos_decision = { workspace = true }
 # RFC-0047: the Linux personality's numbers and layouts (pure, no state).
 azos_linux_abi = { workspace = true }
 # RFC-0053 L0b: SHA-256 of a module for `SYS_MODULE_VERIFY` (`lx-loader` only).

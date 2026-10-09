@@ -592,6 +592,25 @@ the plan to match the expected count and every result to be `ok`, and boots
 the same kernel built with the tests' canaries to require exactly those
 tests' `not ok`.
 
+**Fault injection.** With Kconfig `CHAOS` (development only, never with
+secure boot) `crates/core/chaos` adds named injection points: frame
+allocation, heap allocation, channel send, timer wake (the sweep wakes
+sleepers late), spurious interrupts (an IPI with no cause) and block I/O.
+Each fails the way the real fault does. A point is armed from a test, or for
+one boot from the command line (`chaos=<point>:<rate>`, `chaos_seed=<n>`),
+which takes effect once boot init is done; a fixed seed fails the same calls.
+The `chaos_*` ktests check that each fault is refused cleanly, leaves no
+frame or heap byte behind, and is counted; `/proc/chaos` shows the counts.
+The kernel's heap allocations are infallible, so the heap point is armed only
+from a test. Off, every point is a constant `false`.
+
+**Decision records.** With Kconfig `DECISION_RECORDS`, boot deadline and
+memory admission, the real-time band cap, a woken task's move to another CPU
+and typed capability denials each write one fixed-size record: the rule, the
+verdict, the subject, the numbers compared and the rejected alternative.
+`crates/core/decision` keeps them in a lock-free ring, and `/proc/decisions`
+prints it. Off, the record sites compile out.
+
 ## Configuration and profiles
 
 `make config` runs Kconfig over `Kconfig` and `config/Kconfig.*`.
