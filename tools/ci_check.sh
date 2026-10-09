@@ -759,7 +759,7 @@ entseed_boot() { # entseed_boot <riscv64|aarch64> <disk|-> <log> <rng yes|no> <s
     local rngarg="" diskarg=""
     [ "$rng" = yes ] && rngarg="-device virtio-rng-device"
     [ "$disk" != "-" ] && diskarg="-drive file=$disk,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0"
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     if [ "$isa" = riscv64 ]; then
         # shellcheck disable=SC2086
         "$QEMU" -machine virt -nographic -bios default -kernel "${ENTSEED_RV_KERNEL}" -smp 2 \
@@ -972,7 +972,7 @@ entseed_orderly_row() { # entseed_orderly_row <riscv64|aarch64>
     if [ "$isa" = riscv64 ]; then dsrc=build/disk.img; else dsrc=build/disk-aarch64.img; fi
     rm -f "$dsrc"; make_disk "$dsrc"; cp "$dsrc" "$disk"
     par_ready
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     if [ "$isa" = riscv64 ]; then
         par_ready
         "$QEMU" -machine virt -nographic -bios default -kernel "${ENTSEED_ORD_RV_KERNEL}" -no-reboot -smp 2 \
@@ -1247,9 +1247,9 @@ par_ready() { # the row's prep is done: let the gate run on
 }
 par_qemu_count() { # par_qemu_count [mine]: QEMU processes host-wide, or this gate's
     if [ "${1:-}" = mine ]; then
-        echo $(( $(pgrep -g "$PAR_PGID" -x qemu-system-riscv64 | wc -l) + $(pgrep -g "$PAR_PGID" -x qemu-system-aarch64 | wc -l) ))
+        echo $(( $(pgrep -g "$PAR_PGID" -x qemu-system-riscv64 | wc -l) + $(pgrep -g "$PAR_PGID" -x qemu-system-aarch64 | wc -l) + $(pgrep -g "$PAR_PGID" -x qemu-system-x86_64 | wc -l) ))
     else
-        echo $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) ))
+        echo $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) ))
     fi
 }
 par_kill_tree() { # par_kill_tree <pid>: a job and everything it started
@@ -7439,7 +7439,7 @@ pstore_row() { # pstore_row <isa: rv|arm> <mode: valid|corrupt>
     if ! make "$src_disk" >/dev/null 2>&1; then bad; echo "      make $src_disk failed"; return; fi
     cp "$src_disk" "$disk"
     par_ready   # the wait below happens in the job, not in the gate
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     if [ "$isa" = rv ]; then
         par_ready
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
@@ -7623,7 +7623,7 @@ rt7_row() { # rt7_row <isa: rv|arm> <mode: contain|spin|reset>
     fi
     cp "$src_disk" "$disk"
     par_ready   # the wait below happens in the job, not in the gate
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     if [ "$isa" = rv ]; then
         par_ready
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
@@ -7850,7 +7850,7 @@ drvcontain_row() { # drvcontain_row <isa: rv|arm> [features]
     fi
     cp "$src_disk" "$disk"
     par_ready
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     if [ "$isa" = rv ]; then
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
             -global virtio-mmio.force-legacy=false \
@@ -7922,7 +7922,7 @@ theap_row() { # theap_row <isa: rv|arm> [features]
         cp "$A64_IMG" "$kimg"
     fi
     par_ready
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     if [ "$isa" = rv ]; then
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 </dev/null >"$log" 2>&1 &
     else
@@ -7993,7 +7993,7 @@ nrcpus_row() { # nrcpus_row <isa: rv|arm> <NR_CPUS> <smp> <features> <expect: PA
     fi
     rm -f "$log.build"
     par_ready
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     if [ "$isa" = rv ]; then
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "$smp" </dev/null >"$log" 2>&1 &
     else
@@ -10746,7 +10746,7 @@ PY
             cp "$A64_IMG" "$kimg"
         fi
         par_ready
-        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
         if [ "$isa" = rv ]; then
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 ${app[@]+"${app[@]}"} </dev/null >"$log" 2>&1 &
         else
@@ -10829,7 +10829,8 @@ PY
     #                               ticks and the reschedule IPI
     #   x86_64: baseline canary     -cpu qemu64 (below x86-64-v2): boot.S
     #                               refuses before Rust, nothing else runs
-    #   ktest (x86)                 the ktest plan, -smp 4, every test ok;
+    #   ktest (x86)                 the ktest plan, -smp 4, every test ok, QEMU
+    #                               exit status 1 (3 for the canary rows);
     #                               x86_ring3_syscall_fork_fp is the ring-3
     #                               syscall / fork / FP check in place of a
     #                               user image (kernel/src/smokes/x86_64_ring3.rs)
@@ -10854,11 +10855,12 @@ PY
             [ -n "$stop" ] && tr -d '\r' <"$log" | grep -aqE "$stop" && break
             i=$((i + 1)); sleep 0.5
         done
-        X86_QRC=exited
+        X86_QRC=stopped
         if kill -0 "$pid" 2>/dev/null; then
-            X86_QRC=stopped; kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null
+            kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        else
+            wait "$pid" 2>/dev/null; X86_QRC=$?
         fi
-        wait "$pid" 2>/dev/null
         tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
     }
     x86_boot_row() { # x86_boot_row <label> <smp> <cpu model> <want lines, |-separated fixed strings> <stop ERE>
@@ -10922,7 +10924,12 @@ PY
             [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
                 && why="no matching summary line"
         fi
-        [ -z "$why" ] && [ "$X86_QRC" = stopped ] && why="QEMU did not power off"
+        # The verdict also rides on QEMU's exit status (isa-debug-exit, see
+        # kernel/src/ktest.rs power_off): 1 after a clean run, 3 after a failed one.
+        if [ -z "$why" ] && [ "$X86_QRC" = stopped ]; then why="QEMU did not power off"
+        elif [ -z "$why" ] && [ -z "$want" ] && [ "$X86_QRC" != 1 ]; then why="QEMU exit status $X86_QRC after a clean run, not 1"
+        elif [ -z "$why" ] && [ -n "$want" ] && [ "$X86_QRC" != 3 ]; then why="QEMU exit status $X86_QRC after a failed run, not 3"
+        fi
         if [ -z "$why" ]; then
             ok; grep -a '^# ktest:' "$log" | sed 's/^/      /'; rm -f "$log"; return
         fi
@@ -15988,7 +15995,7 @@ PYEOF
             && mcopy -o -i "$disk" "$disk.lanes" ::VSBLANES.TXT \
             || { bad; echo "      could not prepare $disk"; return; }
         par_ready
-        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
         if [ "$isa" = rv ]; then
             "$QEMU" -machine virt -nographic -bios default -smp 1 -icount shift=0,sleep=off \
                 -kernel "$kimg" -global virtio-mmio.force-legacy=false \
@@ -16112,7 +16119,7 @@ PYEOF
         fi
         if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; return; fi
         par_ready   # the wait below happens in the job, not in the gate
-        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
         if [ "$isa" = rv ]; then
             par_ready
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${USH_SMP:-4}" ${USH_QEMU_EXTRA:-} \
@@ -16918,7 +16925,7 @@ power suspend" 150 \
         cp "$disk" "$img"; cp "$kern" "$kimg"
         if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; return; fi
         par_ready
-        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
         local qa=(); [ -n "$app" ] && qa=(-append "$app")
         if [ "$isa" = rv ]; then
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 ${qa[@]+"${qa[@]}"} \
@@ -17057,7 +17064,7 @@ x=con; echo bb\$x-ok
         fi
         for n in 1 2 3 4; do
             log="$CI_LOG_DIR/ush-safe-mode-$tag-boot$n.log"
-            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
             if [ "$isa" = rv ]; then
                 par_ready
                 "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -no-reboot -smp 4 \
@@ -17225,7 +17232,7 @@ x=con; echo bb\$x-ok
             rm -f build/disk-abitest.img; make_disk build/disk-abitest.img
             cp "$elf" "$img"; cp build/disk-abitest.img "$disk"
             par_ready   # the wait below happens in the job, not in the gate
-            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
             par_ready
             "$QEMU" -machine virt -nographic -bios default -kernel "$img" -smp 4 \
                 -global virtio-mmio.force-legacy=false \
@@ -17246,7 +17253,7 @@ x=con; echo bb\$x-ok
             fi
             cp build/disk-aarch64-abitest.img "$disk"
             par_ready   # the wait below happens in the job, not in the gate
-            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+            while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
             par_ready
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$img" -global virtio-mmio.force-legacy=false \
@@ -17558,7 +17565,7 @@ PY
         rm -f "$ko"
     fi
     par_ready   # the wait below happens in the job, not in the gate
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     if [ "$isa" = rv ]; then
         par_ready
         # `zknh`: the same board with the SHA-2 scalar extension declared.

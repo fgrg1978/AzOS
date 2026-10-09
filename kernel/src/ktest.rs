@@ -63,14 +63,21 @@ fn power_off(failed: bool) -> ! {
         }
     }
     // x86_64 QEMU: the isa-debug-exit port carries a status (QEMU exits with
-    // 2 * value + 1): 1 here, so a failed run exits 3 and a clean one 1.
+    // 2 * value + 1): a failed run exits 3, a clean one 1. Written ONCE, then
+    // halt: the write only requests the exit, and a second one (`shutdown`'s
+    // own 0) could land first and turn a failed run's 3 into 1.
+    // arch-only: no other ISA's QEMU machine has a status port the ktest uses.
     #[cfg(all(target_arch = "x86_64", target_os = "none", feature = "qemu"))]
-    if failed {
-        azos_arch::hw::outl(azos_arch::hw::DEBUG_EXIT_PORT, 1);
+    {
+        azos_arch::hw::outl(azos_arch::hw::DEBUG_EXIT_PORT, failed as u32);
+        azos_arch::hw::halt_forever()
     }
-    let _ = failed;
-    use azos_arch::Boot;
-    azos_arch::ARCH.shutdown()
+    #[cfg(not(all(target_arch = "x86_64", target_os = "none", feature = "qemu")))]
+    {
+        let _ = failed;
+        use azos_arch::Boot;
+        azos_arch::ARCH.shutdown()
+    }
 }
 
 /// Early tests that failed, carried to the late runner's summary.
