@@ -2187,6 +2187,7 @@ fn merge_kernel_l2(kpt: usize, user_pt: usize) {
 /// gigapage leaf (no L1 table to speak of). Used by the teardown and COW
 /// walkers to recognise a table that is *borrowed* from the kernel PT rather
 /// than owned by the user PT they are traversing.
+#[inline(never)]
 pub(crate) fn kernel_l1_in(kpt: usize, vpn2: usize) -> Option<usize> {
     if kpt == 0 || vpn2 >= entries_per_table() { return None; }
     let kpte: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(kpt + vpn2 * 8)) as *const u64) };
