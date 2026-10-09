@@ -34,6 +34,12 @@ fork-bomb = []
 # sixth task in the window (the contamination wave 15 found and fixed).
 switch-peer-canary = []
 echo-stop-canary = []
+# N0 canaries (wave 15), never in a real run. `lock-canary`: `lock-contended`
+# never counts a futex wait, so the lane must refuse as "never contended".
+# `ring-stream-canary`: the Linux ring wakes on EVERY push, the per-item
+# kernel entry the `ring-stream` check exists to catch.
+lock-canary = []
+ring-stream-canary = []
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys", optional = true }

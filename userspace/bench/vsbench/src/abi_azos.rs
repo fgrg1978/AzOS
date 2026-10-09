@@ -25,6 +25,23 @@ impl super::bench_core::Threads for AzosAbi {
     fn futex_wait(w: &core::sync::atomic::AtomicU32, val: u32) -> i64 { sys::futex_wait(w, val, 0) as i64 }
     fn futex_wake(w: &core::sync::atomic::AtomicU32, n: u32) -> i64 { sys::futex_wake(w, n) as i64 }
     fn join_wait(w: &core::sync::atomic::AtomicU32, val: u32) -> i64 { sys::futex_wait(w, val, 0) as i64 }
+    fn thread_yield() { core::hint::black_box(sys::yield_now()); }
+}
+
+impl super::bench_core::Handles for AzosAbi {
+    /// Nothing to acquire: the bench endpoint capability is in this task's
+    /// table from boot (`spawn_peer` resolves the same one).
+    fn handle_setup(&self) -> Result<u64, i64> {
+        match sys::cap_lookup(sys::CapKind::Endpoint as u8, 1) {
+            h if h > 0 => Ok(1),
+            rc => Err(rc as i64),
+        }
+    }
+    #[inline(always)]
+    fn handle_lookup(&self, res: u64) -> i64 {
+        sys::cap_lookup(sys::CapKind::Endpoint as u8, res as u32) as i64
+    }
+    fn handle_release(&self, _h: u64) {}
 }
 
 impl Abi for AzosAbi {

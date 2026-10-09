@@ -602,6 +602,25 @@ pub trait Threads {
     /// private waiter does not see (the keys differ), so the join waits
     /// shared there; AzOS has one kind.
     fn join_wait(w: &core::sync::atomic::AtomicU32, val: u32) -> i64;
+    /// Give up the CPU from a thread body (`sched_yield` / AzOS yield): the
+    /// same call as [`Abi::yield_now`], callable without the ABI value.
+    fn thread_yield();
+}
+
+/// N0 (wave 15): resolve a handle this task already holds, in its own table.
+///
+/// AzOS: `SYS_CAP_LOOKUP` on the bench endpoint capability, a read of the
+/// task's capability table. Linux: `fcntl(fd, F_GETFD)` on a held file
+/// descriptor, a read of the task's fd table (`fdget` under RCU) and nothing
+/// else. Both are one syscall whose work is the handle table's read side,
+/// which is what QSBR on the capability tables (MODERN-OS-PLAN N3/N5) moves.
+pub trait Handles {
+    /// Acquire the handle the lane resolves. `Err` if there is none.
+    fn handle_setup(&self) -> Result<u64, i64>;
+    /// Resolve it once; negative on failure.
+    fn handle_lookup(&self, h: u64) -> i64;
+    /// Drop what `handle_setup` acquired.
+    fn handle_release(&self, h: u64);
 }
 
 /// Iterations of the thread lanes.

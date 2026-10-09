@@ -27,7 +27,7 @@ mod bench_core;
 /// server LOOP is deliberately not declared here — see `ipc_proto.rs`.
 mod ipc_proto;
 use bench_core::{
-    batch, batch_tail, ns_per_op, rel_x100, ticks_to_ns, Abi, Ipc, Mem, Net, Proc, Role, Shell, Tail,
+    batch, batch_tail, ns_per_op, rel_x100, ticks_to_ns, Abi, Handles, Ipc, Mem, Net, Proc, Role, Shell, Tail,
     Threads, N_THR,
     Vdso, N_DUP, N_FILE, N_PIPE, N_PIPE_OPEN, N_SPAWN, PIPE_MSG, N_DISK, DISK_WRITE_BYTES,
     IPC_RENDEZVOUS_TRIES, IPC_RETRY_BUDGET, IPC_SENTINEL, N,
@@ -418,6 +418,166 @@ fn thread_lanes<A: Abi + Threads>(abi: &A, floor_ns: u64) {
     A::futex_wake(&PP_WORD, 1);
     thr_join::<A>(1);
     report(abi, b"futex wake+wait rt", t_pp, N_THR, floor_ns);
+    lock_contended_lane::<A>(abi, floor_ns);
+}
+
+// ── N0 (wave 15): a contended lock, both sides ──────────────────────────────
+
+/// The lock word: 0 free, 1 held, 2 held with (possible) waiters — the
+/// three-state futex mutex of Drepper's "Futexes Are Tricky", which is what
+/// glibc's and musl's `pthread_mutex_lock` reduce to.
+static LK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// The counter the critical section increments by load, yield, store: lost
+/// updates are how a lock that does not exclude shows itself.
+static LK_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Futex waits taken inside `lk_lock`, both threads: the contention counter.
+static LK_WAITS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Futex wakes issued by `lk_unlock`, both threads.
+static LK_WAKES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// The partner's start gate: 0 until the main thread opens the window.
+static LK_GO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn lk_lock<A: Threads>() {
+    use core::sync::atomic::Ordering::{Acquire, Relaxed};
+    if LK_WORD.compare_exchange(0, 1, Acquire, Relaxed).is_ok() { return; }
+    let mut c = LK_WORD.swap(2, Acquire);
+    while c != 0 {
+        A::futex_wait(&LK_WORD, 2);
+        // The canary (`lock-canary`): the contention counter is never bumped,
+        // so the lane must refuse its number as "never contended".
+        #[cfg(not(feature = "lock-canary"))]
+        LK_WAITS.fetch_add(1, Relaxed);
+        c = LK_WORD.swap(2, Acquire);
+    }
+}
+
+fn lk_unlock<A: Threads>() {
+    use core::sync::atomic::Ordering::{Relaxed, Release};
+    if LK_WORD.swap(0, Release) == 2 {
+        LK_WAKES.fetch_add(1, Relaxed);
+        A::futex_wake(&LK_WORD, 1);
+    }
+}
+
+/// Each thread's "still has acquisitions to make" flag (0 main, 1 partner).
+static LK_ACTIVE: [core::sync::atomic::AtomicU32; 2] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 2];
+/// Yields taken while holding the lock, both threads.
+static LK_YIELDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Hold the lock (yielding) until the OTHER thread has found it held and
+/// marked it contended (word 2), or has no acquisitions left. This is what
+/// makes the lane contended on one hart without depending on how a kernel's
+/// `sched_yield` treats a just-created thread: the holder keeps yielding
+/// until the other side has actually run into the lock.
+fn lk_hold<A: Threads>(me: usize) {
+    use core::sync::atomic::Ordering::{Acquire, Relaxed};
+    while LK_WORD.load(Acquire) != 2 && LK_ACTIVE[1 - me].load(Acquire) != 0 {
+        LK_YIELDS.fetch_add(1, Relaxed);
+        A::thread_yield();
+    }
+}
+
+/// One thread's share of `lock-contended`: `n` acquisitions, each holding
+/// the lock across a load and a store of [`LK_COUNT`] until the other thread
+/// is queued on it ([`lk_hold`]).
+fn lk_work<A: Threads>(me: usize, n: u64) {
+    use core::sync::atomic::Ordering::{Relaxed, Release};
+    for _ in 0..n {
+        lk_lock::<A>();
+        let v = LK_COUNT.load(Relaxed);
+        lk_hold::<A>(me);
+        LK_COUNT.store(v + 1, Relaxed);
+        lk_unlock::<A>();
+    }
+    LK_ACTIVE[me].store(0, Release);
+}
+
+extern "C" fn lk_partner<A: Threads>() -> ! {
+    use core::sync::atomic::Ordering::Acquire;
+    while LK_GO.load(Acquire) == 0 {
+        A::futex_wait(&LK_GO, 0);
+    }
+    lk_work::<A>(1, N_THR);
+    A::thread_exit()
+}
+
+/// `lock-contended`: two threads of one process take one futex mutex (the
+/// three-state mutex `pthread_mutex_lock` reduces to) [`N_THR`] times each,
+/// and a holder keeps the lock until the other thread is queued on it
+/// ([`lk_hold`]). So every number here is a CONTENDED acquisition path: the
+/// fast CAS failing, the waiter's `futex` wait, the holder's `futex` wake,
+/// and the switches between them, per acquisition.
+///
+/// The first acquisition is outside the window: the main thread takes the
+/// lock and holds it until the new partner has run into it, so how long a
+/// kernel takes to first run a just-created thread (Linux CFS places it a
+/// slice ahead, and its `sched_yield` does not pick it until the creator has
+/// burnt that slice) is not in the number. The window is the other
+/// 2 x [`N_THR`] - 1 acquisitions and the join.
+///
+/// What each scheduler then does is ITS policy and is printed: futex waits
+/// (the contention counter), wakes, yields while holding, and the switches.
+/// Refused, not printed, when the counter says the lock was never contended
+/// or when [`LK_COUNT`] lost an update (the lock did not exclude).
+fn lock_contended_lane<A: Abi + Threads>(abi: &A, floor_ns: u64) {
+    use core::sync::atomic::Ordering::{Relaxed, Release};
+    LK_WORD.store(0, Release);
+    LK_COUNT.store(0, Release);
+    LK_WAITS.store(0, Release);
+    LK_WAKES.store(0, Release);
+    LK_YIELDS.store(0, Release);
+    LK_GO.store(0, Release);
+    LK_ACTIVE[0].store(1, Release);
+    LK_ACTIVE[1].store(1, Release);
+    let r = A::thread_spawn(lk_partner::<A>, thr_stack_top(1), &THR_CTID[1]);
+    if r <= 0 {
+        fail_line(abi, b"lock-contended spawn", r);
+        return;
+    }
+    // The first acquisition, outside the window (see above).
+    lk_lock::<A>();
+    LK_GO.store(1, Release);
+    A::futex_wake(&LK_GO, 1);
+    lk_hold::<A>(0);
+    LK_COUNT.store(LK_COUNT.load(Relaxed) + 1, Relaxed);
+    let (w0, k0, y0) = (LK_WAITS.load(Relaxed), LK_WAKES.load(Relaxed), LK_YIELDS.load(Relaxed));
+    let sw0 = abi.ctx_switches();
+    let t = batch(1, || {
+        lk_unlock::<A>();
+        lk_work::<A>(0, N_THR - 1);
+        thr_join::<A>(1);
+    });
+    let sw1 = abi.ctx_switches();
+    let n = 2 * N_THR - 1;
+    let count = LK_COUNT.load(Relaxed);
+    let waits = LK_WAITS.load(Relaxed) - w0;
+    let wakes = LK_WAKES.load(Relaxed) - k0;
+    let yields = LK_YIELDS.load(Relaxed) - y0;
+    abi.write(b"[VSBENCH] ");
+    abi.write(SIDE);
+    abi.write(b" lock-contended: waits=");
+    put_u(abi, waits as u64);
+    abi.write(b" wakes=");
+    put_u(abi, wakes as u64);
+    abi.write(b" yields=");
+    put_u(abi, yields as u64);
+    if let (Some((v0, i0)), Some((v1, i1))) = (sw0, sw1) {
+        abi.write(b" switches=");
+        put_u(abi, (v1 - v0) + (i1 - i0));
+    }
+    abi.write(b" over ");
+    put_u(abi, n);
+    abi.write(b" acquisitions (first-run yields outside: ");
+    put_u(abi, y0 as u64);
+    abi.write(b")\n");
+    if count as u64 != 2 * N_THR {
+        fail_line(abi, b"lock-contended lost an update (the lock did not exclude)", count as i64);
+    } else if waits == 0 {
+        fail_line(abi, b"lock-contended was never contended", 0);
+    } else {
+        report(abi, b"lock-contended", t, n, floor_ns);
+    }
 }
 
 /// Wave 15 (`disk`): the disk file-write lanes.
@@ -542,6 +702,105 @@ fn proc_lanes(abi: &(impl Abi + Proc), floor_ns: u64) {
 /// exit-at-once program; `pipe-rw` one `PIPE_MSG`-byte write and its read
 /// back in the same task; `pipe+close` creating a pipe and closing both
 /// ends. A lane that fails prints `FAIL rc=` and no number.
+/// Round trips of `pipe-pingpong`, as `ipc-roundtrip`'s.
+const N_PIPE_PP: u64 = 500;
+const N_PIPE_PP_WARM: u64 = 50;
+
+/// `pipe-pingpong` (N0, wave 15): 8 bytes to a FORKED child over one pipe
+/// and its answer back over another, the same code on both kernels. It is
+/// the cross-address-space ping-pong of MODERN-OS-PLAN N0/N12, and it is
+/// exactly what Linux's `ipc-roundtrip` does; on AzOS it puts the pipe path
+/// beside the fast call (`ipc-roundtrip`) between the same kind of peers.
+/// The parent's context switches over the window are printed: both sides
+/// must BLOCK here, so about two per round trip at `-smp 1`.
+fn pipe_pingpong_lane(abi: &(impl Abi + Proc + Shell), floor_ns: u64) {
+    let (a_r, a_w) = match abi.pipe_open() {
+        Ok(p) => p,
+        Err(e) => { fail_line(abi, b"pipe-pingpong pipe", e); return; }
+    };
+    let (b_r, b_w) = match abi.pipe_open() {
+        Ok(p) => p,
+        Err(e) => { abi.pipe_close(a_r, a_w); fail_line(abi, b"pipe-pingpong pipe", e); return; }
+    };
+    match abi.spawn_peer_raw() {
+        Some(true) => {
+            abi.fd_close(a_w);
+            abi.fd_close(b_r);
+            loop {
+                let mut m = [0u8; 8];
+                if !read_full(abi, a_r, &mut m) { break; }
+                let v = u64::from_le_bytes(m);
+                if abi.fd_write(b_w, &v.wrapping_add(1).to_le_bytes()) != 8 { break; }
+                if v == IPC_SENTINEL { break; }
+            }
+            abi.exit_child()
+        }
+        Some(false) => {}
+        None => {
+            abi.pipe_close(a_r, a_w);
+            abi.pipe_close(b_r, b_w);
+            fail_line(abi, b"pipe-pingpong fork", -1);
+            return;
+        }
+    }
+    abi.fd_close(a_r);
+    abi.fd_close(b_w);
+    let mut bad = 0u64;
+    let mut trip = |v: u64| {
+        let mut m = [0u8; 8];
+        if abi.fd_write(a_w, &v.to_le_bytes()) != 8 || !read_full(abi, b_r, &mut m)
+            || u64::from_le_bytes(m) != v.wrapping_add(1)
+        {
+            bad += 1;
+        }
+    };
+    for i in 0..N_PIPE_PP_WARM { trip(i); }
+    let sw0 = abi.ctx_switches();
+    let mut i = 0u64;
+    let t = batch(N_PIPE_PP, || { trip(i); i += 1; });
+    let sw1 = abi.ctx_switches();
+    trip(IPC_SENTINEL);
+    abi.fd_close(a_w);
+    abi.fd_close(b_r);
+    if bad != 0 {
+        fail_line(abi, b"pipe-pingpong wrong or missing answers", -(bad as i64));
+        return;
+    }
+    report(abi, b"pipe-pingpong", t, N_PIPE_PP, floor_ns);
+    if let (Some((v0, i0)), Some((v1, i1))) = (sw0, sw1) {
+        abi.write(b"[VSBENCH] ");
+        abi.write(SIDE);
+        abi.write(b" pipe-pingpong switches = ");
+        put_u(abi, (v1 - v0) + (i1 - i0));
+        abi.write(b" over ");
+        put_u(abi, N_PIPE_PP);
+        abi.write(b" round trips\n");
+    }
+}
+
+/// `cap-lookup` (N0, wave 15): resolve a handle this task holds, in its own
+/// table, [`N_VDSO`] times — AzOS `SYS_CAP_LOOKUP` on the bench endpoint,
+/// Linux `fcntl(F_GETFD)` on a held descriptor (`bench_core::Handles`).
+/// Under `-icount` the number is the instructions of one lookup INCLUDING
+/// the syscall entry, so read it against `syscall-floor` of the same run.
+fn cap_lookup_lane(abi: &(impl Abi + Handles), floor_ns: u64) {
+    let h = match abi.handle_setup() {
+        Ok(h) => h,
+        Err(e) => { fail_line(abi, b"cap-lookup setup", e); return; }
+    };
+    let mut err = 0i64;
+    let t = batch(N_VDSO, || {
+        let r = abi.handle_lookup(h);
+        if r < 0 { err = r; }
+    });
+    abi.handle_release(h);
+    if err != 0 {
+        fail_line(abi, b"cap-lookup", err);
+    } else {
+        report(abi, b"cap-lookup", t, N_VDSO, floor_ns);
+    }
+}
+
 fn shell_lanes(abi: &(impl Abi + Shell), floor_ns: u64) {
     let mut err = 0i64;
     let t_spawn = batch(N_SPAWN, || {
@@ -2372,7 +2631,7 @@ fn sqpoll_lanes(abi: &impl Abi, floor_ns: u64) {
     }
 }
 
-fn run<A: Abi + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
+fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
     abi.write(b"[VSBENCH] side=");
     abi.write(SIDE);
     abi.write(b" start\n");
@@ -2466,6 +2725,12 @@ fn run<A: Abi + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
     // 4e. Wave 12: the user shell's primitives (`bench_core::Shell`), both
     //     sides. Appended before the closing floor, so no lane above moves.
     if lanes.on(b"shell") { shell_lanes(abi, floor_ns); }
+    // N0 (wave 15): the cross-AS pipe ping-pong and the handle lookup, both
+    // sides, appended inside `shell` before the closing floor.
+    if lanes.on(b"shell") {
+        pipe_pingpong_lane(abi, floor_ns);
+        cap_lookup_lane(abi, floor_ns);
+    }
 
     // 4f. Wave 13 (RT7): periodic timer wake jitter, both sides. Appended
     //     before the closing floor, so no lane above moves.

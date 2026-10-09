@@ -815,6 +815,10 @@ $(CAPTEST_ELF): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/src/stream.rs $(CAPTES
 # with and changes only when the set does, so a canary ELF can never be
 # reused by a later default build.
 VSBENCH_FEATURES ?=
+# The disk copies of VSBENCH.ELF are STRIPPED (N0, wave 15): the autorun
+# loader refuses an ELF of AUTORUN_ELF_MAX (128 KiB) or more, and about 60 KiB
+# of the unstripped file was `.symtab`/`.strtab`, which no loader reads. The
+# loaded segments are byte-identical; the symbols stay in the cargo target.
 VSBENCH_FEATURES_ARG := $(if $(strip $(VSBENCH_FEATURES)),$(comma)$(strip $(VSBENCH_FEATURES)))
 build/vsbench.features: FORCE
 	@mkdir -p build
@@ -826,7 +830,7 @@ $(VSBENCH_ELF): $(VSBENCH_DIR)/src/main.rs $(VSBENCH_DIR)/src/bench_core.rs $(VS
                $(LIBSYS_SRC) build/vsbench.features
 	@mkdir -p build
 	cd $(VSBENCH_DIR) && $(USPACE_BUILD) --features azos$(VSBENCH_FEATURES_ARG)
-	cp $(VSBENCH_BUILT) $@
+	$(AARCH64_OBJCOPY) --strip-all $(VSBENCH_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(LATBENCH_ELF): $(LATBENCH_DIR)/src/main.rs $(LATBENCH_DIR)/Cargo.toml $(LATBENCH_DIR)/user.ld \
@@ -1268,7 +1272,7 @@ $(VSBENCH_ELF_AARCH64): $(VSBENCH_DIR)/src/main.rs $(VSBENCH_DIR)/src/bench_core
                $(LIBSYS_SRC) build/vsbench.features
 	@mkdir -p $(AARCH64_DIR)
 	cd $(VSBENCH_DIR) && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) --features azos$(VSBENCH_FEATURES_ARG)
-	cp $(VSBENCH_DIR)/$(AARCH64_UTARGET)/$(TARGET_AARCH64)/release/vsbench $@
+	$(AARCH64_OBJCOPY) --strip-all $(VSBENCH_DIR)/$(AARCH64_UTARGET)/$(TARGET_AARCH64)/release/vsbench $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(LATBENCH_ELF_AARCH64): $(LATBENCH_DIR)/src/main.rs $(LATBENCH_DIR)/Cargo.toml $(LATBENCH_DIR)/user_aarch64.ld \

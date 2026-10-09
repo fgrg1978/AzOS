@@ -311,9 +311,9 @@ mod tests {
     #[test]
     fn the_program_is_the_list_plus_five_instructions() {
         // The vsbench method quotes these two numbers.
-        assert_eq!(ALLOWED.len(), 28);
+        assert_eq!(ALLOWED.len(), 33);
         assert_eq!(LEN, ALLOWED.len() + 5);
-        assert_eq!(program().len(), 33);
+        assert_eq!(program().len(), 38);
     }
 
     #[test]

@@ -94,7 +94,7 @@
 # competitors' own stamps (see `loaded_switch_lane`) show what one op holds:
 #
 #     azos:  4.00 competitor yields per measurer yield (round-robin of five)
-#     linux: 0.50-0.95 (EEVDF re-picks the measurer after about one)
+#     linux: 0.50-0.95 (CFS -- the reference kernel is 6.4-rc4, not EEVDF -- re-picks the measurer after about one)
 #
 # so `switch-loaded` is ~5 yields of work on AzOS and ~2 on Linux. And both
 # sides had a sixth task in the window: `udp-roundtrip`'s echo, left polling

@@ -118,6 +118,26 @@ impl super::bench_core::Threads for LinuxAbi {
         // `FUTEX_WAIT` (0), shared: `CLONE_CHILD_CLEARTID`'s wake is shared.
         unsafe { syscall4(SYS_FUTEX, w.as_ptr() as usize, 0, val as usize, 0) as i64 }
     }
+    fn thread_yield() { unsafe { core::hint::black_box(syscall0(SYS_SCHED_YIELD)); } }
+}
+
+/// `fcntl`, generic ABI 25 (x86-64 72); `F_GETFD` 1.
+pub const SYS_FCNTL: usize = 25;
+const F_GETFD: usize = 1;
+
+impl super::bench_core::Handles for LinuxAbi {
+    /// A held read-only descriptor on `/init` (`Shell::file_hold`'s file).
+    fn handle_setup(&self) -> Result<u64, i64> {
+        let fd = unsafe { syscall4(SYS_OPENAT, AT_FDCWD as usize, b"/init\0".as_ptr() as usize, 0, 0) };
+        if fd < 0 { Err(fd as i64) } else { Ok(fd as u64) }
+    }
+    #[inline(always)]
+    fn handle_lookup(&self, fd: u64) -> i64 {
+        unsafe { syscall3(SYS_FCNTL, fd as usize, F_GETFD, 0) as i64 }
+    }
+    fn handle_release(&self, fd: u64) {
+        unsafe { syscall1(SYS_CLOSE, fd as usize) };
+    }
 }
 
 impl Abi for LinuxAbi {
@@ -1257,6 +1277,13 @@ fn ring_sleep(s: RingSleep, woke: impl FnOnce(), stats: &mut RingStats) {
 fn ring_push(r: &SpscRing, v: u64, stats: &mut RingStats) {
     loop {
         match r.try_push(v) {
+            #[cfg(feature = "ring-stream-canary")]
+            RingStep::Done => {
+                stats.wakes += 1;
+                let _ = futex_wake(r.base, 1);
+                return;
+            }
+            #[cfg(not(feature = "ring-stream-canary"))]
             RingStep::Done => return,
             RingStep::DoneWake { addr } => {
                 stats.wakes += 1;
@@ -1399,6 +1426,7 @@ pub fn ring_lanes(abi: &impl Abi, floor_ns: u64) {
     let mut st = RingStats::default();
     let mut peer_entries = 0u64;
     let mut peer_hart = u64::MAX;
+    let sw_st0 = abi.ctx_switches();
     let t_st = batch(1, || {
         for i in 0..N_RING_STREAM {
             ring_push(&req, ring_tag(TAG_STREAM, i), &mut st);
@@ -1407,6 +1435,7 @@ pub fn ring_lanes(abi: &impl Abi, floor_ns: u64) {
         peer_entries = ring_pop(&resp, &mut st);
         peer_hart = ring_pop(&resp, &mut st);
     });
+    let sw_st1 = abi.ctx_switches();
     let (peer_count, peer_ops) = (peer_entries >> 32, peer_entries & 0xFFFF_FFFF);
     let my_hart = abi.current_cpu().unwrap_or(u64::MAX - 1);
     let client_ops = st.waits + st.wakes;
@@ -1425,10 +1454,36 @@ pub fn ring_lanes(abi: &impl Abi, floor_ns: u64) {
     put_u(abi, my_hart);
     abi.write(b" server hart=");
     put_u(abi, peer_hart);
+    // The client's own context switches over the stream window (`getrusage`).
+    let sw = match (sw_st0, sw_st1) {
+        (Some((v0, i0)), Some((v1, i1))) => Some((v1 - v0) + (i1 - i0)),
+        _ => None,
+    };
+    if let Some(n) = sw {
+        abi.write(b" client switches=");
+        put_u(abi, n);
+    }
     abi.write(b"\n");
-    if my_hart == peer_hart && (client_ops + peer_ops) * RING_CANARY_DIVISOR > N_RING_STREAM {
-        fail_line(abi, b"ring-stream entered the kernel while neither empty nor full",
-            (client_ops + peer_ops) as i64);
+    // The canary, bounded by what the scheduler did (N0, wave 15). AzOS's
+    // bound (`main.rs`) assumes the two sides alternate in whole ring-fulls on
+    // one hart. Linux does not: it preempts a waker for the task it woke, and
+    // its tick preempts the producer mid-ring, so the consumer drains a
+    // partly full ring and sleeps on EMPTY. Every such entry is legitimate
+    // (the ring core enters only on `Blocked` or on `DoneWake` to a side that
+    // announced its sleep), but their number measures the scheduler: 571
+    // against a bound of 512 at `-smp 1` under `-icount`, a FAIL in every run.
+    //
+    // What a broken ring does instead is enter WITHOUT a switch behind it (a
+    // wake on every push, a spurious `Blocked` whose wait returns at once).
+    // Sharing one hart, each side runs only while the other is switched out,
+    // and one run enters at most twice (one wake, then one wait that ends
+    // it), so a correct ring stays within 4 x (client switches + 1). The lane
+    // fails only when BOTH bounds are exceeded: more than the ring-full bound
+    // AND more than the switches explain.
+    let ops = client_ops + peer_ops;
+    let sched_bound = sw.map(|n| 4 * (n + 1)).unwrap_or(0);
+    if my_hart == peer_hart && ops * RING_CANARY_DIVISOR > N_RING_STREAM && ops > sched_bound {
+        fail_line(abi, b"ring-stream entered the kernel while neither empty nor full", ops as i64);
     }
 
     ring_push(&req, ring_tag(TAG_STOP, 0), &mut st);

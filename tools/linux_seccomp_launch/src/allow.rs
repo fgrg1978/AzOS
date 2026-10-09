@@ -75,14 +75,20 @@ const fn v(nr: u32, name: &'static str) -> Syscall {
 /// Ascending by number. The BPF program compares in this order, which is the
 /// same linear, ascending shape as the AzOS image profile scan
 /// (`SyscallFilter::is_allowed` in `crates/core/sched/src/filter.rs`).
-pub const ALLOWED: [Syscall; 28] = [
+pub const ALLOWED: [Syscall; 33] = [
     v(23, "SYS_DUP"),
+    // N0 (wave 15): `cap-lookup`'s Linux twin, `fcntl(fd, F_GETFD)`.
+    v(25, "SYS_FCNTL"),
     v(29, "SYS_IOCTL"),
+    // Wave 15 `disk` lanes: mount the vfat disk at /mnt, then fsync.
+    v(34, "SYS_MKDIRAT"),
+    v(40, "SYS_MOUNT"),
     v(56, "SYS_OPENAT"),
     v(57, "SYS_CLOSE"),
     v(59, "SYS_PIPE2"),
     v(63, "SYS_READ"),
     v(64, "SYS_WRITE"),
+    v(82, "SYS_FSYNC"),
     v(93, "SYS_EXIT"),
     v(98, "SYS_FUTEX"),
     v(113, "SYS_CLOCK_GETTIME"),
@@ -96,6 +102,8 @@ pub const ALLOWED: [Syscall; 28] = [
     v(203, "SYS_CONNECT"),
     v(206, "SYS_SENDTO"),
     v(207, "SYS_RECVFROM"),
+    // Wave 15 `nic-egress`: SO_BROADCAST / SO_BINDTODEVICE.
+    v(208, "SYS_SETSOCKOPT"),
     v(214, "SYS_BRK"),
     v(215, "SYS_MUNMAP"),
     v(220, "SYS_CLONE"),
