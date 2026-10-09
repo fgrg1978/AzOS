@@ -4754,9 +4754,12 @@ pub fn sys_i2c_read_typed(
     let mut buf = [0u8; I2C_TYPED_MAX_BYTES];
     let cap: Cap<I2c> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
     let tid = azos_sched::current_task_tid();
-    let result = azos_ipc::cap_store::with_table(tid, |table| {
-        azos_ipc::i2c_cap::i2c_read_cap(table, cap, reg as u8, &mut buf[..n])
+    // Resolve under the table lock, transfer after it (wave 15, S1: the
+    // transfer sleeps between controller steps).
+    let access = azos_ipc::cap_store::with_table(tid, |table| {
+        azos_ipc::i2c_cap::i2c_read_cap(table, cap)
     });
+    let result = access.map(|a| a.and_then(|a| a.read(reg as u8, &mut buf[..n])));
     let got = match result {
         Some(Ok(v)) => v,
         Some(Err(e)) => return errno_for_i2c_err(e),
@@ -4802,9 +4805,10 @@ pub fn sys_i2c_write_typed(cap_raw: u64, in_ptr: u64, in_len: u64) -> i64 {
 
     let cap: Cap<I2c> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
     let tid = azos_sched::current_task_tid();
-    let result = azos_ipc::cap_store::with_table(tid, |table| {
-        azos_ipc::i2c_cap::i2c_write_cap(table, cap, &buf[..n])
+    let access = azos_ipc::cap_store::with_table(tid, |table| {
+        azos_ipc::i2c_cap::i2c_write_cap(table, cap)
     });
+    let result = access.map(|a| a.and_then(|a| a.write(&buf[..n])));
     match result {
         Some(Ok(())) => 0,
         Some(Err(e)) => errno_for_i2c_err(e),
@@ -4820,9 +4824,10 @@ pub fn sys_i2c_detect_typed(cap_raw: u64) -> i64 {
 
     let cap: Cap<I2c> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
     let tid = azos_sched::current_task_tid();
-    let result = azos_ipc::cap_store::with_table(tid, |table| {
+    let access = azos_ipc::cap_store::with_table(tid, |table| {
         azos_ipc::i2c_cap::i2c_detect_cap(table, cap)
     });
+    let result = access.map(|a| a.map(|a| a.detect()));
     match result {
         Some(Ok(v)) => v as i64,
         Some(Err(e)) => errno_for_i2c_err(e),

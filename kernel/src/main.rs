@@ -2209,6 +2209,12 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         azos_sched::RT_MOTOR_PRIORITY, 1); // RT priority, hart 1
     #[cfg(feature = "domain-robot")]
     azos_sched::rt::exempt_from_band_cap(imu);
+    // Wave 15 (S1): the imu task only queues its reads; on the VisionFive 2
+    // this task runs the DesignWare controller's steps (board validation
+    // pending; the QEMU simulation completes at submit).
+    #[cfg(all(feature = "domain-robot", feature = "vf2"))]
+    azos_sched::task_create("i2c-svc", i2c_service_task, 0,
+        azos_limits::I2C_SERVICE_PRIORITY as u32);
     #[cfg(feature = "domain-robot")]
     azos_sched::task_create("odom", odom_task, 0, azos_sched::BEHAVIOR_PRIORITY);
     #[cfg(feature = "domain-robot")]

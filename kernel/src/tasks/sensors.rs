@@ -6,18 +6,93 @@ use crate::*;
 
 /// IMU sensor task — reads IMU at 100 Hz, writes to sensor bus.
 /// RT priority: IMU data must be fresh for safety layer L0.
+///
+/// Kconfig `IMU_SAMPLE_QUEUED` (default, wave 15 S1): an RT task only
+/// enqueues. Each tick collects the burst read queued earlier (if it has
+/// finished) and queues the next one; the bus's service step puts it on the
+/// wire. A read that fails or is not finished yet publishes nothing, so the
+/// bus sample ages and L0's staleness check sees it. `IMU_SAMPLE_POLLED`:
+/// the synchronous read in this task, as before.
 pub(crate) fn imu_task(_: usize) {
-    kprintln!("[IMU-TASK] Started (100 Hz, RT priority)");
+    kprintln!("[IMU-TASK] Started (100 Hz, RT priority, {})",
+              if azos_limits::IMU_SAMPLE_QUEUED { "queued reads" } else { "polled reads" });
     const IMU_INTERVAL: u64 = azos_drv_sys::timebase::TIMER_FREQ / 100;
+    let mut pending: Option<u32> = None;
     loop {
-        // Stamped by the driver at the read: the bus ages the sample from
-        // its acquisition, not from this publication.
-        if let Some((d, acq)) = azos_imu::imu_read_scaled_stamped() {
-            azos_behavior::sensor_bus::SENSOR_BUS.update_imu_at(d.accel_mg, d.gyro_mdps, acq);
-            azos_behavior::sensor_bus::SENSOR_BUS.update_temp(d.temp_cdeg);
+        if azos_limits::IMU_SAMPLE_QUEUED {
+            imu_queued_tick(&mut pending);
+        } else if let Some((d, acq)) = azos_imu::imu_read_scaled_stamped() {
+            // Stamped by the driver at the read: the bus ages the sample
+            // from its acquisition, not from this publication.
+            imu_publish(&d, acq);
         }
         let dl = azos_drv_sys::timebase::now() + IMU_INTERVAL;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
+    }
+}
+
+fn imu_publish(d: &azos_imu::ImuData, acq: u64) {
+    azos_behavior::sensor_bus::SENSOR_BUS.update_imu_at(d.accel_mg, d.gyro_mdps, acq);
+    azos_behavior::sensor_bus::SENSOR_BUS.update_temp(d.temp_cdeg);
+}
+
+/// One tick of the queued IMU path: collect the read in flight if it has
+/// finished, then queue the next one (and collect it at once if the bus
+/// finished it at submit: the QEMU simulation). Never waits.
+fn imu_queued_tick(pending: &mut Option<u32>) {
+    let collect = |t: u32, pending: &mut Option<u32>| {
+        if let Some(r) = azos_imu::imu_take(t) {
+            *pending = None;
+            if let Some((d, acq)) = r {
+                imu_publish(&d, acq);
+            }
+        }
+    };
+    if let Some(t) = *pending {
+        collect(t, pending);
+    }
+    if pending.is_none() {
+        *pending = azos_imu::imu_submit(azos_drv_sys::timebase::now());
+        if let Some(t) = *pending {
+            collect(t, pending);
+        }
+    }
+}
+
+/// VisionFive 2: the I2C controllers' service step (`i2c::i2c_service`) for
+/// queued transactions, until the controller interrupt is wired. Sleeps
+/// `I2C_SERVICE_POLL_US` between steps while a bus has work; parks
+/// otherwise until a submit wakes it. Not in the RT band: it sleeps.
+#[cfg(feature = "vf2")]
+pub(crate) fn i2c_service_task(_: usize) {
+    use azos_drv_sys::timebase::{now, TIMER_FREQ};
+    I2C_SVC_TID.store(azos_sched::current_task_tid(), Ordering::Release);
+    azos_drv_bus::i2c::set_service_kick(i2c_service_kick);
+    kprintln!("[I2C] service task started (board validation pending)");
+    loop {
+        let t = now();
+        let mut busy = false;
+        for bus in 0..azos_drv_bus::i2c::I2C_BUS_COUNT as u8 {
+            busy |= azos_drv_bus::i2c::i2c_service(bus, t);
+        }
+        let wait = if busy {
+            TIMER_FREQ * azos_limits::I2C_SERVICE_POLL_US as u64 / 1_000_000
+        } else {
+            TIMER_FREQ // a lost wake costs at most this
+        };
+        azos_sched::task_block(azos_sched::WaitReason::Timer(now() + wait.max(1)));
+    }
+}
+
+#[cfg(feature = "vf2")]
+static I2C_SVC_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+#[cfg(feature = "vf2")]
+fn i2c_service_kick() {
+    let tid = I2C_SVC_TID.load(Ordering::Acquire);
+    if tid != 0 {
+        azos_sched::scheduler::wake_task_by_tid(
+            tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
     }
 }
 

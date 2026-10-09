@@ -11,6 +11,7 @@
 pub mod i2c_driver;
 
 pub mod i2c;
+pub mod i2c_txn;
 
 // SPI master driver (sim on QEMU; Cadence SPI on VF2).
 #[allow(dead_code)]

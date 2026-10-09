@@ -3648,3 +3648,372 @@ mod ads1115_pipeline {
         assert!(b_vals.len() >= 6, "the other context ran: {}", b_vals.len());
     }
 }
+
+// ── i2c_txn.rs: queued DesignWare I2C transactions (wave 15, S1) ─────────────
+//
+// The controller state machine runs here against a model of the DesignWare
+// APB I2C: TX and RX FIFOs of a given depth, IC_STATUS, the raw interrupt
+// status with thresholds and mask, and one slave (an MPU-6050-like register
+// file). The model counts the two silent failures of the real controller:
+// a DATA_CMD write to a full TX FIFO (dropped) and a read executed with the
+// RX FIFO full (overflow). Board validation of the MMIO glue is pending.
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/bus/src/i2c_txn.rs"]
+mod i2c_txn;
+
+#[cfg(test)]
+mod i2c_txn_model {
+    use super::i2c_txn::*;
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+
+    struct Model {
+        tx_depth: usize,
+        rx_depth: usize,
+        tx: RefCell<VecDeque<u32>>,
+        rx: RefCell<VecDeque<u8>>,
+        regs: RefCell<[u8; 128]>,
+        ptr: Cell<usize>,
+        /// The next write after a start is the register pointer.
+        addr_phase: Cell<bool>,
+        present: u8,
+        tar: Cell<u32>,
+        mask: Cell<u32>,
+        rx_tl: Cell<u32>,
+        tx_tl: Cell<u32>,
+        stop_det: Cell<bool>,
+        abrt: Cell<bool>,
+        dropped_writes: Cell<u32>,
+        rx_overflows: Cell<u32>,
+        /// Register reads and writes: what one service step costs.
+        accesses: Cell<u32>,
+    }
+
+    impl Model {
+        fn new(tx_depth: usize, rx_depth: usize) -> Self {
+            let mut regs = [0u8; 128];
+            for (i, r) in regs.iter_mut().enumerate() {
+                *r = (i as u8).wrapping_mul(7).wrapping_add(3);
+            }
+            Model {
+                tx_depth,
+                rx_depth,
+                tx: RefCell::new(VecDeque::new()),
+                rx: RefCell::new(VecDeque::new()),
+                regs: RefCell::new(regs),
+                ptr: Cell::new(0),
+                addr_phase: Cell::new(true),
+                present: 0x68,
+                tar: Cell::new(0),
+                mask: Cell::new(0),
+                rx_tl: Cell::new(0),
+                tx_tl: Cell::new(0),
+                stop_det: Cell::new(false),
+                abrt: Cell::new(false),
+                dropped_writes: Cell::new(0),
+                rx_overflows: Cell::new(0),
+                accesses: Cell::new(0),
+            }
+        }
+
+        fn raw(&self) -> u32 {
+            let mut v = 0;
+            if self.tx.borrow().len() as u32 <= self.tx_tl.get() { v |= INTR_TX_EMPTY; }
+            if self.rx.borrow().len() as u32 > self.rx_tl.get() { v |= INTR_RX_FULL; }
+            if self.stop_det.get() { v |= INTR_STOP_DET; }
+            if self.abrt.get() { v |= INTR_TX_ABRT; }
+            v
+        }
+
+        /// The interrupt line: raw status under the mask.
+        fn irq(&self) -> bool {
+            self.raw() & self.mask.get() != 0
+        }
+
+        /// One byte time on the wire: execute the oldest command.
+        fn step(&self) {
+            let Some(cmd) = self.tx.borrow_mut().pop_front() else { return };
+            if self.tar.get() as u8 != self.present {
+                // Address NACK: the controller flushes the TX FIFO and aborts.
+                self.tx.borrow_mut().clear();
+                self.abrt.set(true);
+                return;
+            }
+            if cmd & CMD_READ != 0 {
+                if self.rx.borrow().len() >= self.rx_depth {
+                    self.rx_overflows.set(self.rx_overflows.get() + 1);
+                } else {
+                    let p = self.ptr.get();
+                    self.rx.borrow_mut().push_back(self.regs.borrow()[p % 128]);
+                    self.ptr.set(p + 1);
+                }
+            } else if self.addr_phase.get() {
+                self.ptr.set((cmd & 0xFF) as usize);
+                self.addr_phase.set(false);
+            } else {
+                let p = self.ptr.get();
+                self.regs.borrow_mut()[p % 128] = (cmd & 0xFF) as u8;
+                self.ptr.set(p + 1);
+            }
+            if cmd & CMD_STOP != 0 {
+                self.stop_det.set(true);
+                self.addr_phase.set(true);
+            }
+        }
+    }
+
+    impl DwRegs for Model {
+        fn rd(&self, off: usize) -> u32 {
+            self.accesses.set(self.accesses.get() + 1);
+            match off {
+                IC_RAW_INTR_STAT => self.raw(),
+                IC_STATUS => {
+                    let mut s = 0;
+                    if self.tx.borrow().len() < self.tx_depth { s |= STATUS_TFNF; }
+                    if !self.rx.borrow().is_empty() { s |= STATUS_RFNE; }
+                    s
+                }
+                IC_DATA_CMD => self.rx.borrow_mut().pop_front().unwrap_or(0) as u32,
+                IC_RXFLR => self.rx.borrow().len() as u32,
+                IC_CLR_INTR => { self.stop_det.set(false); self.abrt.set(false); 0 }
+                IC_CLR_TX_ABRT => { self.abrt.set(false); 0 }
+                IC_CLR_STOP_DET => { self.stop_det.set(false); 0 }
+                IC_INTR_MASK => self.mask.get(),
+                _ => 0,
+            }
+        }
+        fn wr(&self, off: usize, val: u32) {
+            self.accesses.set(self.accesses.get() + 1);
+            match off {
+                IC_TAR => self.tar.set(val),
+                IC_INTR_MASK => self.mask.set(val),
+                IC_RX_TL => self.rx_tl.set(val),
+                IC_TX_TL => self.tx_tl.set(val),
+                IC_DATA_CMD => {
+                    if self.tx.borrow().len() >= self.tx_depth {
+                        self.dropped_writes.set(self.dropped_writes.get() + 1);
+                    } else {
+                        self.tx.borrow_mut().push_back(val);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    const TIMEOUT: u64 = 10_000;
+
+    /// Interrupt-driven: the bus advances one byte per tick; `service` runs
+    /// only when the modelled interrupt line is up (plus the submit's kick).
+    /// Returns (completion, interrupts taken, ticks).
+    fn run_irq<const D: usize>(bus: &mut I2cBus<D>, m: &Model, ticket: u32) -> (Completion, u32, u64) {
+        let mut irqs = 0;
+        bus.service(m, 0, TIMEOUT); // the submitter's kick starts it
+        for t in 1..TIMEOUT * 2 {
+            m.step();
+            if m.irq() {
+                irqs += 1;
+                bus.service(m, t, TIMEOUT);
+            }
+            if let Some(c) = bus.take(ticket) {
+                return (c, irqs, t);
+            }
+        }
+        panic!("transaction {ticket} never finished");
+    }
+
+    /// The IMU's burst: register 0x3B, 14 bytes, on a controller with an
+    /// 8-entry FIFO (less than the 15 commands). Correct bytes, no dropped
+    /// command, no RX overflow, and a few interrupts instead of a poll per
+    /// byte.
+    #[test]
+    fn an_imu_burst_read_runs_from_the_interrupt() {
+        let m = Model::new(8, 8);
+        let mut bus = I2cBus::<4>::new(8);
+        let t = bus.submit(0x68, &[0x3B], 14).unwrap();
+        let (c, irqs, ticks) = run_irq(&mut bus, &m, t);
+        assert!(c.ok);
+        assert_eq!(c.rd_len, 14);
+        let want: Vec<u8> = (0x3B..0x3B + 14).map(|i: usize| (i as u8).wrapping_mul(7).wrapping_add(3)).collect();
+        assert_eq!(&c.rd[..14], &want[..]);
+        assert_eq!(m.dropped_writes.get(), 0, "a DATA_CMD write hit a full TX FIFO");
+        assert_eq!(m.rx_overflows.get(), 0, "a read ran with the RX FIFO full");
+        assert!(irqs <= 6, "{irqs} interrupts for one 15-command transfer");
+        assert!(ticks <= 20, "{ticks} byte times for 15 bytes");
+        assert!(bus.is_idle());
+    }
+
+    /// A controller whose RX FIFO (2) is smaller than its TX FIFO (8) and
+    /// than the read (20): the refill keeps reads in flight within the RX
+    /// room, so nothing overflows, and TFNF keeps every command.
+    #[test]
+    fn a_small_rx_fifo_never_overflows_or_drops() {
+        let m = Model::new(8, 2);
+        let mut bus = I2cBus::<4>::new(2);
+        let t = bus.submit(0x68, &[0x10], 20).unwrap();
+        let (c, _, _) = run_irq(&mut bus, &m, t);
+        assert!(c.ok);
+        assert_eq!(m.dropped_writes.get(), 0);
+        assert_eq!(m.rx_overflows.get(), 0);
+    }
+
+    /// The canary bucket for the RX-room rule: the same engine told the RX
+    /// FIFO is 8 deep on a controller whose RX FIFO holds 2 pushes reads it
+    /// cannot hold, and the model sees the overflow. (The property above is
+    /// the rule's, not the model's leniency.)
+    #[test]
+    fn a_wrong_rx_depth_overflows_the_model() {
+        let m = Model::new(8, 2);
+        let mut bus = I2cBus::<4>::new(8);
+        let t = bus.submit(0x68, &[0x10], 20).unwrap();
+        bus.service(&m, 0, TIMEOUT);
+        for k in 1..400u64 {
+            m.step();
+            m.step();
+            m.step();
+            bus.service(&m, k, TIMEOUT);
+            if bus.take(t).is_some() { break; }
+        }
+        assert!(m.rx_overflows.get() > 0, "the model did not see the overrun");
+    }
+
+    /// A write-only transaction finishes on STOP_DET; the register is written.
+    #[test]
+    fn a_write_finishes_on_stop() {
+        let m = Model::new(8, 8);
+        let mut bus = I2cBus::<4>::new(8);
+        let t = bus.submit(0x68, &[0x6B, 0x00, 0x42], 0).unwrap();
+        let (c, _, _) = run_irq(&mut bus, &m, t);
+        assert!(c.ok);
+        assert_eq!(m.regs.borrow()[0x6B], 0x00);
+        assert_eq!(m.regs.borrow()[0x6C], 0x42);
+    }
+
+    /// No device at the address: TX_ABRT ends the transaction as failed and
+    /// counted, and the next one runs.
+    #[test]
+    fn a_nack_fails_the_transaction_and_the_queue_moves_on() {
+        let m = Model::new(8, 8);
+        let mut bus = I2cBus::<4>::new(8);
+        let bad = bus.submit(0x50, &[0x00], 2).unwrap();
+        let good = bus.submit(0x68, &[0x75], 1).unwrap();
+        let (c, _, _) = run_irq(&mut bus, &m, bad);
+        assert!(!c.ok);
+        assert_eq!(bus.aborts, 1);
+        let (c2, _, _) = run_irq(&mut bus, &m, good);
+        assert!(c2.ok);
+    }
+
+    /// A bus that never moves (the wire stuck): the timeout finishes the
+    /// transaction as failed; service never waits.
+    #[test]
+    fn a_stuck_bus_times_out() {
+        let m = Model::new(8, 8);
+        let mut bus = I2cBus::<4>::new(8);
+        let t = bus.submit(0x68, &[0x3B], 14).unwrap();
+        bus.service(&m, 0, 100);
+        assert!(bus.take(t).is_none());
+        bus.service(&m, 99, 100);
+        assert!(bus.take(t).is_none());
+        bus.service(&m, 100, 100);
+        let c = bus.take(t).expect("no timeout");
+        assert!(!c.ok);
+        assert_eq!(bus.timeouts, 1);
+        assert_eq!(c.at, 100, "the completion is stamped by the step that ended it");
+    }
+
+    /// A full queue refuses (counted); the caller never waits.
+    #[test]
+    fn a_full_queue_refuses() {
+        let mut bus = I2cBus::<2>::new(8);
+        assert!(bus.submit(0x68, &[0], 1).is_ok());
+        assert!(bus.submit(0x68, &[0], 1).is_ok());
+        assert_eq!(bus.submit(0x68, &[0], 1), Err(SubmitError::Full));
+        assert_eq!(bus.refused, 1);
+        assert_eq!(bus.submit(0x68, &[0; 5], 1), Err(SubmitError::BadLength));
+    }
+
+    /// The synchronous path (wave 15): a 100-byte read on the caller's own
+    /// buffer (`submit_ext`), waited for with `wait_completion`. The bus
+    /// lock (a step) is held for a bounded number of register accesses and
+    /// for NO byte time: the wire moves only while the caller sleeps. Before
+    /// wave 15 the lock was held for every byte time of the transfer
+    /// (101 here; 15 for the IMU, ~1.35 ms at 100 kHz).
+    #[test]
+    fn a_synchronous_transfer_holds_the_lock_per_step_never_across_the_wire() {
+        let m = Model::new(8, 8);
+        let mut bus = I2cBus::<4>::new(8);
+        let wr = [0x00u8];
+        let mut rd = [0u8; 100];
+        let t = unsafe { bus.submit_ext(0x68, wr.as_ptr(), 1, rd.as_mut_ptr(), rd.len()) }.unwrap();
+        let bus = std::cell::RefCell::new(bus);
+        let (mut steps, mut worst, mut sleeps) = (0u32, 0u32, 0u32);
+        let clock = std::cell::Cell::new(0u64);
+        let c = wait_completion(
+            || {
+                steps += 1;
+                let before = m.accesses.get();
+                let mut b = bus.borrow_mut();
+                b.service(&m, clock.get(), 1_000_000);
+                worst = worst.max(m.accesses.get() - before);
+                b.take(t)
+            },
+            || {
+                // The wire moves while the caller sleeps: 4 byte times.
+                for _ in 0..4 { m.step(); }
+                clock.set(clock.get() + 4);
+                sleeps += 1;
+                true
+            },
+        );
+        assert!(c.ok);
+        let want: Vec<u8> = (0..100usize).map(|i| (i as u8).wrapping_mul(7).wrapping_add(3)).collect();
+        assert_eq!(&rd[..], &want[..], "the bytes landed in the caller's buffer");
+        assert_eq!(m.dropped_writes.get() + m.rx_overflows.get(), 0);
+        eprintln!("[I2C-WINDOW] sync 100-byte read: {steps} steps, worst {worst} register accesses \
+                   per lock hold, 0 byte times under the lock, {sleeps} sleeps (before: 101 byte times under it)");
+        assert!(worst <= 40, "a lock hold made {worst} register accesses");
+    }
+
+    /// One service step is bounded by the FIFO depth, not by the transfer:
+    /// the polled (no interrupt line) mode costs a few register accesses per
+    /// step, never a spin on the wire.
+    #[test]
+    fn one_service_step_is_bounded() {
+        let m = Model::new(8, 8);
+        let mut bus = I2cBus::<4>::new(8);
+        let t = bus.submit(0x68, &[0x3B], 14).unwrap();
+        let mut worst = 0;
+        for k in 0..100u64 {
+            let before = m.accesses.get();
+            bus.service(&m, k, TIMEOUT);
+            worst = worst.max(m.accesses.get() - before);
+            if bus.take(t).is_some() { break; }
+            m.step();
+        }
+        assert!(bus.take(t).unwrap().ok);
+        assert!(worst <= 40, "a service step made {worst} register accesses");
+    }
+}
+
+// The QEMU simulation's queued read (i2c.rs `sim::i2c_submit_read`): it
+// completes at submit, stamped with the caller's clock, through the same
+// per-bus completion slots the DesignWare path fills.
+#[cfg(test)]
+mod i2c_sim_queued {
+    use super::i2c;
+
+    #[test]
+    fn a_queued_sim_read_completes_at_submit() {
+        i2c::i2c_init();
+        let t = i2c::i2c_submit_read(0, 0x68, 0x75, 1, 1234).expect("refused");
+        let c = i2c::i2c_take(0, t).expect("not complete at submit");
+        assert!(c.ok);
+        assert_eq!(c.rd[0], 0x68, "WHO_AM_I");
+        assert_eq!(c.at, 1234);
+        // No device: completes as failed, never waits.
+        let t2 = i2c::i2c_submit_read(0, 0x51, 0x00, 2, 1300).expect("refused");
+        assert!(!i2c::i2c_take(0, t2).unwrap().ok);
+        assert!(i2c::i2c_submit_read(0, 0x68, 0x00, 0, 1).is_none());
+    }
+}

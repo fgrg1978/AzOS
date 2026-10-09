@@ -75,18 +75,13 @@ pub fn i2c_bus_lock_slot(bus: u8) -> Option<usize> {
 ///
 /// # Why `SpinLock`, and why `PiMutex` was rejected
 ///
-/// `PiMutex` is the better fit on latency and was the first choice, but it
-/// cannot be taken here **because its acquire path yields**
-/// (`crates/core/sync/src/pi_mutex.rs:234`), and one caller reaches this code
-/// holding a `SpinLock`:
-///
-/// ```text
-/// sys_i2c_read_typed / _write_typed / _detect_typed
-///   -> cap_store::with_table            (holds CAP_TABLES[i].lock(),
-///                                        crates/core/ipc/src/cap_store.rs:210)
-///     -> i2c_cap::i2c_read_cap          (crates/core/ipc/src/i2c_cap.rs:82)
-///       -> i2c_read                     (here)
-/// ```
+/// `PiMutex` was the first choice, but its acquire path yields
+/// (`crates/core/sync/src/pi_mutex.rs:234`), and the lock is taken inside a
+/// controller step that may run with preemption already off (a caller under
+/// a `SpinLock`, early boot). Until wave 15 the typed syscall path called
+/// the transfer inside `cap_store::with_table` (the table's `SpinLock`); it
+/// now resolves the capability there and transfers after releasing it
+/// (`i2c_cap::I2cAccess`).
 ///
 /// Preempt depth is per **hart**, not per task (`crates/core/sync/src/preempt.rs:73`
 /// — one `PreemptSlot` per hart), so yielding while a `SpinLockGuard` is
@@ -106,21 +101,14 @@ pub fn i2c_bus_lock_slot(bus: u8) -> Option<usize> {
 ///
 /// `SpinLock::lock()` opens a critical section before it spins
 /// (`crates/core/sync/src/spinlock.rs:64`) and the guard carries the
-/// `PreemptGuard` (`:162`) — K-C29 step 2, already landed. So the holder
-/// cannot be evicted by the tick, and **preemption is disabled for the
-/// whole transfer**. That window is long: `wait_tfne` polls up to 100_000
-/// times and the read collect loop up to 1_000_000, both bare volatile
-/// `IC_STATUS` reads, over a 100 kHz bus where a 14-byte IMU read is
-/// ~1.35 ms of wire time. On a wedged or absent device it is the full
-/// timeout. This is a real cost to the RT band and it is the reason to
-/// prefer `PiMutex` once the call site above no longer holds a lock across
-/// the transfer.
-///
-/// Note that the typed syscall path *already* pays this today: `with_table`
-/// holds a `SpinLock` across the whole transfer, so preemption is already
-/// off for its duration. What this change adds is the same window on the
-/// paths that do not go through a cap table (`imu_task`, `sensor_ahrs_task`,
-/// the shell).
+/// `PreemptGuard` (`:162`), so preemption is off while it is held. Since
+/// wave 15 (S1) it is held only for ONE service step of `crate::i2c_txn`
+/// (`dw_i2c::step`): the register accesses that move the FIFOs, bounded by
+/// the FIFO depth, never a wait on the wire. Before, it was held for the
+/// whole transfer polling `IC_STATUS` (~1.35 ms for the IMU's 14 bytes at
+/// 100 kHz, the full poll bound on a wedged device). Synchronous callers
+/// sleep between steps; the typed syscall path resolves the capability
+/// under the table lock and transfers after releasing it.
 ///
 /// # Why this cannot deadlock
 ///
@@ -130,13 +118,45 @@ pub fn i2c_bus_lock_slot(bus: u8) -> Option<usize> {
 ///   helper, unlike `gpio`/`pwm`/`esc`), so nothing else on this hart can
 ///   re-enter and contend. `lock_irqsave` would therefore buy nothing.
 /// * Cross hart: a waiter spins only for the length of the holder's
-///   transfer, which is bounded by the two loop counts above, and the
-///   holder cannot be descheduled. So the holder always reaches release.
+///   step, which is bounded by the FIFO depth, and the holder cannot be
+///   descheduled. So the holder always reaches release.
 /// * Recursion is the one way to hang this, and it is avoided by
 ///   construction: `i2c_scan` deliberately does **not** take the lock,
 ///   because it calls `i2c_detect`, which does.
 pub static I2C_BUS_LOCKS: [azos_sync::SpinLock<()>; I2C_BUS_COUNT] =
     [const { azos_sync::SpinLock::new(()) }; I2C_BUS_COUNT];
+
+// ── Queued transactions (wave 15, IO-QUEUES-AUDIT S1) ─────────────────────────
+//
+// A caller that may not wait for the wire (the real-time `imu` task) queues a
+// transaction with `i2c_submit_read` and collects it later with `i2c_take`;
+// `crate::i2c_txn` is the queue and the DesignWare state machine. On the
+// VisionFive 2 the `i2c-svc` task (or the controller's interrupt, once its
+// line is wired) runs `i2c_service`, one bounded step at a time; the QEMU
+// simulation transfers at submit. The synchronous entry points below stay
+// for callers that hold a lock across the transfer (the capability-table
+// syscall path), and wait for a queued transaction on their bus to finish
+// before they touch `IC_TAR`.
+
+/// Kconfig `I2C_TXN_QUEUE_DEPTH`: transactions queued per bus, and
+/// completions kept per bus.
+pub const I2C_TXN_QUEUE_DEPTH: usize = azos_limits::I2C_TXN_QUEUE_DEPTH as usize;
+
+/// Kconfig `I2C_DW_RX_FIFO_DEPTH`: the DesignWare controller's RX FIFO
+/// depth; reads in flight never exceed it.
+pub const I2C_DW_RX_FIFO_DEPTH: usize = azos_limits::I2C_DW_RX_FIFO_DEPTH as usize;
+
+/// One transaction queue and state machine per bus (`i2c_bus_lock_slot`).
+pub static I2C_QUEUES: [azos_sync::SpinLock<crate::i2c_txn::I2cBus<I2C_TXN_QUEUE_DEPTH>>; I2C_BUS_COUNT] =
+    [const { azos_sync::SpinLock::new(crate::i2c_txn::I2cBus::new(I2C_DW_RX_FIFO_DEPTH)) }; I2C_BUS_COUNT];
+
+/// The finished transaction `ticket` on `bus`, if it has finished: its
+/// bytes, whether every byte moved, and the clock value of the step that
+/// finished it. Never waits.
+pub fn i2c_take(bus: u8, ticket: u32) -> Option<crate::i2c_txn::Completion> {
+    let slot = i2c_bus_lock_slot(bus)?;
+    I2C_QUEUES.get(slot)?.lock().take(ticket)
+}
 
 #[derive(Clone, Copy)]
 pub struct I2cDevice {
@@ -369,6 +389,28 @@ mod sim {
         I2C.lock().find(bus, addr).is_some()
     }
 
+    /// Queue a read of `len` bytes from register `reg` of `addr` (see the
+    /// queued-transaction section above). The simulation has no wire: the
+    /// transfer runs here and the completion is stamped `now`. `None` when
+    /// the queue refuses (full, or a length above `TXN_RD_MAX`).
+    pub fn i2c_submit_read(bus: u8, addr: u8, reg: u8, len: usize, now: u64) -> Option<u32> {
+        if len == 0 || len > crate::i2c_txn::TXN_RD_MAX {
+            return None;
+        }
+        let slot = i2c_bus_lock_slot(bus)?;
+        let q = I2C_QUEUES.get(slot)?;
+        let ticket = q.lock().alloc_ticket();
+        let mut buf = [0u8; crate::i2c_txn::TXN_RD_MAX];
+        let ok = i2c_read(bus, addr, reg, &mut buf[..len]) == len as i32;
+        q.lock().complete_now(ticket, ok, &buf[..len], now);
+        Some(ticket)
+    }
+
+    /// Nothing to step: the simulation completes at submit.
+    pub fn i2c_service(_bus: u8, _now: u64) -> bool {
+        false
+    }
+
     pub fn i2c_scan(bus: u8) {
         let state = I2C.lock();
         azos_drv_sys::kconsoleln!("[I2C] Scanning bus {}:", bus);
@@ -433,20 +475,18 @@ pub use sim::*;
 #[cfg(feature = "vf2")]
 mod dw_i2c {
     use azos_drv_base::platform::hw::{I2C0_BASE, I2C1_BASE};
-    use super::{i2c_bus_lock_slot, I2C_BUS_COUNT, I2C_BUS_LOCKS};
+    use super::{i2c_bus_lock_slot, I2C_BUS_COUNT, I2C_BUS_LOCKS, I2C_QUEUES};
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
 
     // Register offsets
     const IC_CON:        usize = 0x00;
-    const IC_TAR:        usize = 0x04;
-    const IC_DATA_CMD:   usize = 0x10;
     const IC_SS_SCL_HCNT: usize = 0x14;
     const IC_SS_SCL_LCNT: usize = 0x18;
     const IC_ENABLE:     usize = 0x6C;
-    const IC_STATUS:     usize = 0x70;
-    #[allow(dead_code)]
-    const IC_RXFLR:      usize = 0x78;
-    const IC_CLR_INTR:   usize = 0x80;
+    // 0x40 in the DW_apb_i2c databook; this read 0x80 (IC_TX_ABRT_SOURCE,
+    // which clears nothing) before wave 15. Board validation pending.
+    const IC_CLR_INTR:   usize = 0x40;
 
     // IC_CON bits
     const CON_MASTER:    u32 = 1 << 0;
@@ -455,15 +495,9 @@ mod dw_i2c {
     const CON_RESTART:   u32 = 1 << 5;
     const CON_SLAVE_DIS: u32 = 1 << 6;
 
-    // IC_STATUS bits
-    const STATUS_TFNF: u32 = 1 << 1;   // TX FIFO not full — safe to push IC_DATA_CMD
-    const STATUS_RFNE: u32 = 1 << 3;   // RX FIFO not empty
-    const STATUS_TFE:  u32 = 1 << 2;   // TX FIFO empty (transfer done)
-    const STATUS_MA:   u32 = 1 << 5;   // master activity
-
-    // IC_DATA_CMD bits
-    const CMD_READ: u32 = 1 << 8;
-    const CMD_STOP: u32 = 1 << 9;
+    // The transfer registers and bits (IC_TAR, IC_DATA_CMD, IC_STATUS, the
+    // interrupt registers) are `crate::i2c_txn`'s: every transfer, queued
+    // or synchronous, runs through its state machine.
 
     fn bus_base(bus: u8) -> Option<usize> {
         match bus {
@@ -481,35 +515,6 @@ mod dw_i2c {
     #[inline(always)]
     fn wr(base: usize, off: usize, val: u32) {
         unsafe { core::ptr::write_volatile((base + off) as *mut u32, val) }
-    }
-
-    fn wait_tfne(base: usize) -> bool {
-        // Wait for TX FIFO empty (transfer complete), with timeout.
-        for _ in 0..100_000u32 {
-            if rd(base, IC_STATUS) & STATUS_TFE != 0
-                && rd(base, IC_STATUS) & STATUS_MA == 0 {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// U05-6 fix: a DW I2C silently DROPS a write to a full TX FIFO — there
-    /// is no queueing behind the wire. Every `wr(base, IC_DATA_CMD, ..)`
-    /// below used to fire back-to-back with no `IC_STATUS.TFNF` check, so a
-    /// transfer longer than the FIFO (e.g. the 26-byte BMP280 calibration
-    /// read the `sim` path seeds — `i2c.rs`'s QEMU module) came back short
-    /// and silent. Bounded at 10_000 iterations — the FIFO drains at the
-    /// bus clock rate (~100 kHz here), so a real slot opens in far fewer
-    /// polls than that; hitting the bound means the bus is stuck, not that
-    /// the wait was too short.
-    fn wait_tfnf(base: usize) -> bool {
-        for _ in 0..10_000u32 {
-            if rd(base, IC_STATUS) & STATUS_TFNF != 0 {
-                return true;
-            }
-        }
-        false
     }
 
     fn init_bus(base: usize) {
@@ -543,84 +548,65 @@ mod dw_i2c {
         }
     }
 
+    /// A synchronous transfer (wave 15, S1): the transaction goes on the
+    /// bus queue like a queued one, on the caller's own buffers, and the
+    /// caller waits for its completion SLEEPING between service steps
+    /// (`set_sleep_hook`). Preemption is off only inside each step (the bus
+    /// lock: a few register accesses, bounded by the FIFO depth), never
+    /// across wire time. A context that may not sleep (before the
+    /// scheduler, under a spinlock, in an interrupt) steps without sleeping
+    /// in between: still no lock held across the wire. A timeout
+    /// (`I2C_XFER_TIMEOUT_US`) ends the transaction as failed.
+    fn transfer(bus: u8, addr: u8, wr: &[u8], rd: &mut [u8]) -> Option<crate::i2c_txn::Completion> {
+        let base = bus_base(bus)?;
+        let slot = i2c_bus_lock_slot(bus)?;
+        let q = I2C_QUEUES.get(slot)?;
+        let ticket = loop {
+            // SAFETY: `wr` and `rd` outlive the wait below, which returns
+            // only with this ticket's completion (a timeout finishes it).
+            let r = unsafe { q.lock().submit_ext(addr, wr.as_ptr(), wr.len(), rd.as_mut_ptr(), rd.len()) };
+            match r {
+                Ok(t) => break t,
+                Err(crate::i2c_txn::SubmitError::Full) => {
+                    // The queue drains by the steps; this caller runs them too.
+                    let _ = step(base, slot);
+                    if !sleep_between_steps() { core::hint::spin_loop(); }
+                }
+                Err(_) => return None,
+            }
+        };
+        Some(crate::i2c_txn::wait_completion(
+            || {
+                let _ = step(base, slot);
+                q.lock().take(ticket)
+            },
+            sleep_between_steps,
+        ))
+    }
+
     pub fn i2c_write(bus: u8, addr: u8, data: &[u8]) -> i32 {
         if data.is_empty() { return -1; }
-        let base = match bus_base(bus) { Some(b) => b, None => return -1 };
-        // Held across {write IC_TAR .. transfer complete}: that whole span is
-        // one transaction against shared bus state, not just the TAR write.
-        let slot = match i2c_bus_lock_slot(bus) { Some(s) => s, None => return -1 };
-        let _bus_guard = match I2C_BUS_LOCKS.get(slot) { Some(m) => m.lock(), None => return -1 };
-        wr(base, IC_TAR, addr as u32);
-        wr(base, IC_ENABLE, 1);
-        for (i, &b) in data.iter().enumerate() {
-            let stop = if i + 1 == data.len() { CMD_STOP } else { 0 };
-            if !wait_tfnf(base) { return -1; }
-            wr(base, IC_DATA_CMD, b as u32 | stop);
+        match transfer(bus, addr, data, &mut []) {
+            Some(c) if c.ok => 0,
+            _ => -1,
         }
-        if !wait_tfne(base) { return -1; }
-        0
     }
 
     pub fn i2c_read(bus: u8, addr: u8, reg: u8, buf: &mut [u8]) -> i32 {
         if buf.is_empty() { return -1; }
-        let base = match bus_base(bus) { Some(b) => b, None => return -1 };
-        // Held across {write IC_TAR, write reg, issue reads, drain RX FIFO}.
-        // Releasing after the address write would leave exactly the race this
-        // exists to close, with the read half unprotected.
-        let slot = match i2c_bus_lock_slot(bus) { Some(s) => s, None => return -1 };
-        let _bus_guard = match I2C_BUS_LOCKS.get(slot) { Some(m) => m.lock(), None => return -1 };
-        // Write register address
-        wr(base, IC_TAR, addr as u32);
-        wr(base, IC_ENABLE, 1);
-        if !wait_tfnf(base) { return -1; }
-        wr(base, IC_DATA_CMD, reg as u32); // write register address
-        // Issue read commands
-        for i in 0..buf.len() {
-            let stop = if i + 1 == buf.len() { CMD_STOP } else { 0 };
-            if !wait_tfnf(base) { return -1; }
-            wr(base, IC_DATA_CMD, CMD_READ | stop);
+        // A SHORT READ IS A FAILURE, NOT A COUNT: a NACK or a timeout
+        // returns -1, never 0 or a partial count (callers that test `n < 0`
+        // must not read a buffer the device never wrote).
+        let n = buf.len();
+        match transfer(bus, addr, &[reg], buf) {
+            Some(c) if c.ok => n as i32,
+            _ => -1,
         }
-        // Collect received bytes
-        let mut received = 0usize;
-        for _ in 0..1_000_000u32 {
-            if rd(base, IC_STATUS) & STATUS_RFNE != 0 {
-                buf[received] = (rd(base, IC_DATA_CMD) & 0xFF) as u8;
-                received += 1;
-                if received == buf.len() { break; }
-            }
-        }
-        // A SHORT READ IS A FAILURE, NOT A COUNT.
-        //
-        // This used to `return received as i32` unconditionally. When the
-        // device never answered, the poll loop above ran out and `received`
-        // was 0 — so the function returned **0**, which every caller that
-        // tests `n < 0` reads as success over a buffer it never wrote. A dead
-        // sensor became a reading of zero: `ina219` publishing 0 V,
-        // `i2c_read_cap` handing ring 3 `Ok(0)`, `i2c_driver` `Ok(0)`. A
-        // partial read was worse, because it looked like a positive result.
-        //
-        // Callers that already compared against the expected length
-        // (`baro`: `< 26`, `< 6`; `ads1115`: `== 2`; `imu`: `< 14`) were
-        // right, and this makes the ones that did not right as well. Nothing
-        // asks for a zero-length read — `buf.is_empty()` is refused at the
-        // top — so no legitimate call loses a result.
-        if received != buf.len() { return -1; }
-        received as i32
     }
 
     pub fn i2c_detect(bus: u8, addr: u8) -> bool {
-        // Send a 0-byte write and check for ACK (quick-write probe)
-        let base = match bus_base(bus) { Some(b) => b, None => return false };
-        // Probing writes IC_TAR too, so it races the sensor tasks exactly as
-        // the transfer paths do. `i2c_scan` calls this in a loop and must NOT
-        // hold the lock itself: `SpinLock` is not recursive, so a scan holding
-        // it would deadlock hard on the first probe.
-        let slot = match i2c_bus_lock_slot(bus) { Some(s) => s, None => return false };
-        let _bus_guard = match I2C_BUS_LOCKS.get(slot) { Some(m) => m.lock(), None => return false };
-        wr(base, IC_TAR, addr as u32);
-        wr(base, IC_ENABLE, 1);
-        wr(base, IC_DATA_CMD, CMD_STOP); // zero-length write → address-only
-        wait_tfne(base)
+        // A one-byte write of 0x00 with STOP (as before): ACKed or aborted.
+        matches!(transfer(bus, addr, &[0], &mut []), Some(c) if c.ok)
     }
 
     /// Deliberately takes no lock: each `i2c_detect` below is individually
@@ -641,6 +627,90 @@ mod dw_i2c {
             }
             azos_drv_sys::kconsoleln!();
         }
+    }
+
+    /// The controller's registers for `crate::i2c_txn`.
+    struct Mmio(usize);
+
+    impl crate::i2c_txn::DwRegs for Mmio {
+        #[inline]
+        fn rd(&self, off: usize) -> u32 { rd(self.0, off) }
+        #[inline]
+        fn wr(&self, off: usize, val: u32) { wr(self.0, off, val) }
+    }
+
+    /// Kconfig `I2C_XFER_TIMEOUT_US` in timebase ticks.
+    fn xfer_timeout() -> u64 {
+        azos_limits::I2C_XFER_TIMEOUT_US as u64 * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000
+    }
+
+    /// Wakes the `i2c-svc` task (registered by the kernel); 0: none.
+    static SERVICE_KICK: AtomicUsize = AtomicUsize::new(0);
+
+    /// Register what a submit calls to get its transaction serviced.
+    pub fn set_service_kick(f: fn()) {
+        SERVICE_KICK.store(f as usize, Ordering::Release);
+    }
+
+    fn kick() {
+        let f = SERVICE_KICK.load(Ordering::Acquire);
+        if f != 0 {
+            // SAFETY: only `set_service_kick` stores here, and it stores a `fn()`.
+            let f: fn() = unsafe { core::mem::transmute::<usize, fn()>(f) };
+            f();
+        }
+    }
+
+    /// Queue a read of `len` bytes from register `reg` of `addr` on `bus`
+    /// (the queued-transaction section at the top of this file). Never
+    /// waits; the service step puts it on the wire. `None` when the queue
+    /// refuses (full, counted, or a bad length). `_now` keeps the signature
+    /// of the simulation's, which completes at submit.
+    pub fn i2c_submit_read(bus: u8, addr: u8, reg: u8, len: usize, _now: u64) -> Option<u32> {
+        bus_base(bus)?;
+        let slot = i2c_bus_lock_slot(bus)?;
+        let ticket = I2C_QUEUES.get(slot)?.lock().submit(addr, &[reg], len).ok()?;
+        kick();
+        Some(ticket)
+    }
+
+    /// One bounded step of `bus`'s controller (`crate::i2c_txn`): from the
+    /// `i2c-svc` task, or the controller's interrupt once its line is
+    /// wired. Returns whether the bus still has work (queued or on the wire).
+    pub fn i2c_service(bus: u8, _now: u64) -> bool {
+        let Some(base) = bus_base(bus) else { return false };
+        let Some(slot) = i2c_bus_lock_slot(bus) else { return false };
+        step(base, slot)
+    }
+
+    /// One step under the bus lock (`I2C_BUS_LOCKS`, also taken by
+    /// `i2c_init`) and the queue's: the only preemption-off window of a
+    /// transfer. Returns whether the bus still has work.
+    fn step(base: usize, slot: usize) -> bool {
+        let (Some(m), Some(q)) = (I2C_BUS_LOCKS.get(slot), I2C_QUEUES.get(slot)) else { return false };
+        let _bus_guard = m.lock();
+        let mut qg = q.lock();
+        let _ = qg.service(&Mmio(base), azos_drv_sys::timebase::now(), xfer_timeout());
+        !qg.is_idle()
+    }
+
+    /// The kernel's "sleep `us` if this context may sleep" (registered at
+    /// boot); returns whether it slept. 0: nothing registered (early boot).
+    static SLEEP_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+    /// Register the sleep a synchronous transfer waits with.
+    pub fn set_sleep_hook(f: fn(u64) -> bool) {
+        SLEEP_HOOK.store(f as usize, Ordering::Release);
+    }
+
+    fn sleep_between_steps() -> bool {
+        let f = SLEEP_HOOK.load(Ordering::Acquire);
+        if f == 0 {
+            return false;
+        }
+        // SAFETY: only `set_sleep_hook` stores here, and it stores a `fn(u64) -> bool`.
+        let f: fn(u64) -> bool = unsafe { core::mem::transmute::<usize, fn(u64) -> bool>(f) };
+        f(azos_limits::I2C_SERVICE_POLL_US as u64)
     }
 
     pub fn i2c_info() {

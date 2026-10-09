@@ -149,6 +149,37 @@ pub fn imu_read_scaled() -> Option<ImuData> {
 /// [`imu_read_raw_stamped`]).
 pub fn imu_read_scaled_stamped() -> Option<(ImuData, u64)> {
     let (raw, acq) = imu_read_raw_stamped()?;
+    Some((scale(&raw), acq))
+}
+
+/// Queue the 14-byte burst read (wave 15, S1: Kconfig `IMU_SAMPLE_QUEUED`)
+/// on the IMU's bus; never waits for the wire. The ticket goes to
+/// [`imu_take`]. `None` before `imu_init` found the chip, or when the bus
+/// queue refuses (full).
+pub fn imu_submit(now: u64) -> Option<u32> {
+    let (bus, addr, ready) = (IMU_BUS.load(Ordering::Relaxed), IMU_ADDR.load(Ordering::Relaxed), IMU_READY.load(Ordering::Acquire));
+    if !ready { return None; }
+    i2c::i2c_submit_read(bus, addr, REG_ACCEL_XOUT_H, 14, now)
+}
+
+/// The queued read `ticket`: `None` while it is on the wire, `Some(None)`
+/// when it finished without a full burst (NACK, timeout), `Some(Some(..))`
+/// with the scaled sample and its acquisition time — the clock value of the
+/// step that collected the last byte, as [`imu_read_raw_stamped`] stamps
+/// right after its transfer returns.
+pub fn imu_take(ticket: u32) -> Option<Option<(ImuData, u64)>> {
+    let c = i2c::i2c_take(IMU_BUS.load(Ordering::Relaxed), ticket)?;
+    if !c.ok || c.rd_len < 14 {
+        return Some(None);
+    }
+    let mut raw = [0u8; 14];
+    raw.copy_from_slice(&c.rd[..14]);
+    Some(Some((scale(&raw), freeze::stamp(c.at))))
+}
+
+/// The MPU-6050 burst (accel, temp, gyro, big-endian) in physical units,
+/// calibration offsets applied.
+fn scale(raw: &[u8; 14]) -> ImuData {
 
     // Helper: big-endian i16 from two bytes.
     let i16be = |hi: u8, lo: u8| -> i16 {
@@ -168,7 +199,7 @@ pub fn imu_read_scaled_stamped() -> Option<(ImuData, u64)> {
     let off_ay = azos_config::CFG_IMU_OFFSET_AY.load(Ordering::Relaxed) as i32;
     let off_az = azos_config::CFG_IMU_OFFSET_AZ.load(Ordering::Relaxed) as i32;
 
-    Some((ImuData {
+    ImuData {
         accel_mg:  [
             ax * 1000 / 16384 - off_ax,
             ay * 1000 / 16384 - off_ay,
@@ -176,7 +207,7 @@ pub fn imu_read_scaled_stamped() -> Option<(ImuData, u64)> {
         ],
         gyro_mdps: [gx * 1000 / 131,   gy * 1000 / 131,   gz * 1000 / 131],
         temp_cdeg: tr * 100 / 340 + 3653,
-    }, acq))
+    }
 }
 
 /// Print IMU status info.

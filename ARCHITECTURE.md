@@ -413,6 +413,20 @@ motor and ESC, RC receiver, I2C with the IMU, rangefinder, the battery ADC,
 UART and the boot block devices. The build tool refuses a configuration that
 places one of them in ring 3.
 
+**Queued I2C transactions.** A caller that may not wait for the bus, such as
+the real-time IMU task, queues a transaction per bus and collects the result
+on a later tick. The result is stamped when its last byte arrives
+(`I2C_TXN_QUEUE_DEPTH`, `IMU_SAMPLE_QUEUED`). On the DesignWare controller, a
+service step moves the FIFOs: it reads what has arrived and refills the
+commands, bounded by the FIFO depth. A task runs the step until the
+controller's interrupt line is wired. A NACK or a timeout ends the
+transaction as failed. A synchronous caller queues its transfer the same
+way, on its own buffers. It sleeps between the steps of its transfer and
+holds the bus lock only within a step. The typed I2C system calls check the
+capability under the table lock and transfer after releasing it. The QEMU
+simulation completes a transaction at submit. The DesignWare path has not
+run on hardware.
+
 In the current tree, ring-3 driver rows are started only in QEMU builds,
 whose disks carry the driver images.
 

@@ -130,6 +130,10 @@ pub(crate) fn install_sched_hooks() {
     // to the console (Kconfig CONSOLE_RT_APPEND_ONLY); dev builds (Kconfig
     // RT_CONSOLE_WIRE_CHECK) panic if one waits for the wire.
     azos_drv_sys::uart::set_rt_console_hooks(rt_console_caller, rt_console_wire_check);
+    // Wave 15 (S1): a synchronous I2C transfer sleeps between the
+    // controller steps of its own transaction (VisionFive 2 DesignWare).
+    #[cfg(feature = "vf2")]
+    azos_drv_bus::i2c::set_sleep_hook(i2c_sleep_us);
     // The flight recorder asks the same question: an RT caller of
     // `logger_flush` hands the flush to the `log-flush` task.
     azos_actuation::logger::logger_set_rt_probe(current_task_is_rt);
@@ -459,6 +463,24 @@ fn rt_console_wire_check() {
             azos_sched::current_task_tid(), azos_sched::current_task_name(),
             azos_sched::scheduler::current_task_base_priority());
     }
+}
+
+/// A synchronous I2C transfer's wait between controller steps: sleep `us`
+/// if this context may sleep (a task, preemption on, interrupts on), else
+/// return `false` and the caller steps again at once (early boot, a caller
+/// under a spinlock).
+#[cfg(feature = "vf2")]
+fn i2c_sleep_us(us: u64) -> bool {
+    use azos_arch::Interrupts;
+    if azos_sched::current_task_tid() == 0
+        || azos_sync::preempt::depth() != 0
+        || !azos_arch::ARCH.interrupts_enabled()
+    {
+        return false;
+    }
+    let ticks = (azos_drv_sys::timebase::TIMER_FREQ * us / 1_000_000).max(1);
+    azos_sched::task_block(azos_sched::WaitReason::Timer(azos_drv_sys::timebase::now() + ticks));
+    true
 }
 
 /// Kconfig `RT_BLOCK_IO_CHECK`: the block layer's entry check. A task whose

@@ -342,6 +342,94 @@ config LIDAR_SIM
       rows; each point's distance encodes (revolution, index) so a
       consumer can check a scan arrived intact and in order.
 
+menu "I2C bus transactions"
+
+config I2C_TXN_QUEUE_DEPTH
+    int "I2C: queued transactions per bus"
+    range 2 64
+    default 2 if PROFILE_EMBEDDED
+    default 8 if PROFILE_FLEET
+    default 4
+    help
+      Wave 15 (IO-QUEUES-AUDIT S1). A caller that may not wait for the
+      wire (the real-time `imu` task) queues an I2C transaction and
+      collects it later (crates/drivers/bus/src/i2c_txn.rs); this many wait
+      per bus, and this many finished results stay readable. A submission
+      to a full queue is refused and counted, never waited for. Costs about
+      (16 + 48) bytes per entry per bus (4 buses). Raise it when several
+      tasks queue on one bus.
+
+config I2C_DW_RX_FIFO_DEPTH
+    int "I2C: DesignWare controller RX FIFO depth (entries)"
+    range 2 256
+    default 8
+    help
+      Read commands in flight never exceed this, so the controller's
+      receive FIFO cannot overflow; it also sets the RX interrupt
+      threshold. Must not exceed the hardware's depth (IC_COMP_PARAM_1
+      bits 15:8, plus one): a larger value lets reads overrun the FIFO.
+      Board validation pending (VisionFive 2): QEMU has no DesignWare I2C.
+
+config I2C_XFER_TIMEOUT_US
+    int "I2C: queued transaction timeout (us)"
+    range 500 1000000
+    default 5000
+    help
+      A queued transaction not finished this long after it started is
+      ended as failed (counted); a stuck bus then feeds the sensor's
+      staleness check, never a wait. The IMU's 14-byte read is ~1.35 ms of
+      wire at 100 kHz. No RAM or instruction cost.
+
+config I2C_SERVICE_POLL_US
+    int "I2C: service step period while a transaction is on the wire (us)"
+    range 50 10000
+    default 200
+    help
+      The `i2c-svc` task (VisionFive 2) runs one bounded controller step
+      this often while its bus has work, sleeping in between, until the
+      controller's interrupt line is wired (then the interrupt runs the
+      same step). A synchronous caller sleeps this long between the steps
+      of its own transfer; preemption is off only inside a step. With an 8-entry FIFO a 14-byte read needs about two
+      refills; shorter: lower latency, more timer wakes. Idle buses cost
+      nothing (the submit wakes the task).
+
+config I2C_SERVICE_PRIORITY
+    int "I2C: priority of the i2c-svc task"
+    range 12 30
+    default 12
+    help
+      Highest non-real-time priority by default: it serves the real-time
+      IMU's queued reads, and it waits (sleeps) between steps, so it may
+      not be in the RT band (below 12). A synchronous transfer (sensor
+      init, the typed I2C syscalls, the AHRS) steps its own transaction
+      and sleeps I2C_SERVICE_POLL_US between steps, so it does not depend
+      on this task.
+
+choice
+    prompt "IMU sample source"
+    default IMU_SAMPLE_QUEUED
+    help
+      How the real-time `imu` task gets its 100 Hz sample.
+
+config IMU_SAMPLE_QUEUED
+    bool "Queued read, re-armed from the task's tick (no wait)"
+    help
+      The task queues the 14-byte burst (I2C_TXN_QUEUE_DEPTH) and
+      publishes the finished one on a later tick, stamped at acquisition;
+      it never waits for the wire (owner rule: RT tasks only enqueue). On
+      the QEMU simulation the read completes at submit.
+
+config IMU_SAMPLE_POLLED
+    bool "Synchronous read in the task (before wave 15)"
+    help
+      The task does a synchronous transfer and sleeps until it is done
+      (~1.35 ms per read at 100 kHz on the real bus): the RT task waits
+      for I/O. Only for comparison.
+
+endchoice
+
+endmenu # I2C bus transactions
+
 comment "IOMMU: crates/drivers/iommu is not used by the kernel (feature iommu only adds pci)"
 comment "Always compiled, no switch: FAT32/tmpfs/procfs, the network stack, the CSI driver, native drivers"
 

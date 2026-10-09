@@ -68,54 +68,71 @@ pub fn i2c_grant_cap(
     crate::cap_store::grant::<crate::cap::targets::I2c>(tid, perms, resource)
 }
 
-/// Typed `i2c_read`: validate cap (requires `READ`), read
-/// `buf.len()` bytes from register `reg`. Returns bytes read.
+/// The slave a typed I2C call resolved its capability to, and the one
+/// operation the checked permission allows. Resolved under the caller's
+/// capability-table lock, used after releasing it (wave 15, S1): the
+/// transfer sleeps between controller steps and may not run under a
+/// `SpinLock`. The permission was checked at the resolution, like an open
+/// descriptor's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct I2cAccess {
+    pub bus: u8,
+    pub addr: u8,
+}
+
+impl I2cAccess {
+    /// Read `buf.len()` bytes from register `reg`. Returns bytes read.
+    pub fn read(self, reg: u8, buf: &mut [u8]) -> Result<usize, I2cCapError> {
+        if buf.is_empty() {
+            return Err(I2cCapError::BadLen);
+        }
+        let n = i2c_read(self.bus, self.addr, reg, buf);
+        if n < 0 { Err(I2cCapError::DriverFault) } else { Ok(n as usize) }
+    }
+
+    /// Write `data` (by I2C convention `data[0]` is the register address).
+    pub fn write(self, data: &[u8]) -> Result<(), I2cCapError> {
+        if data.is_empty() {
+            return Err(I2cCapError::BadLen);
+        }
+        if i2c_write(self.bus, self.addr, data) == 0 { Ok(()) } else { Err(I2cCapError::DriverFault) }
+    }
+
+    /// 1 if the slave ACKs an address probe, 0 otherwise.
+    pub fn detect(self) -> u32 {
+        u32::from(i2c_detect(self.bus, self.addr))
+    }
+}
+
+/// Typed `i2c_read`: validate cap (requires `READ`); the read itself is
+/// [`I2cAccess::read`], after the table lock is released.
 pub fn i2c_read_cap(
     table: &CapTable,
     cap: Cap<crate::cap::targets::I2c>,
-    reg: u8,
-    buf: &mut [u8],
-) -> Result<usize, I2cCapError> {
-    if buf.is_empty() {
-        return Err(I2cCapError::BadLen);
-    }
+) -> Result<I2cAccess, I2cCapError> {
     let res = table.get(cap, CapPerms::READ)?;
     let (bus, addr) = unpack_resource(res);
-    let n = i2c_read(bus, addr, reg, buf);
-    if n < 0 {
-        Err(I2cCapError::DriverFault)
-    } else {
-        Ok(n as usize)
-    }
+    Ok(I2cAccess { bus, addr })
 }
 
-/// Typed `i2c_write`: validate cap (requires `WRITE`), write
-/// `data` to the slave. `data[0]` is by I2C convention the
-/// register address.
+/// Typed `i2c_write`: validate cap (requires `WRITE`); the write itself is
+/// [`I2cAccess::write`], after the table lock is released.
 pub fn i2c_write_cap(
     table: &CapTable,
     cap: Cap<crate::cap::targets::I2c>,
-    data: &[u8],
-) -> Result<(), I2cCapError> {
-    if data.is_empty() {
-        return Err(I2cCapError::BadLen);
-    }
+) -> Result<I2cAccess, I2cCapError> {
     let res = table.get(cap, CapPerms::WRITE)?;
     let (bus, addr) = unpack_resource(res);
-    if i2c_write(bus, addr, data) == 0 {
-        Ok(())
-    } else {
-        Err(I2cCapError::DriverFault)
-    }
+    Ok(I2cAccess { bus, addr })
 }
 
-/// Typed `i2c_detect`: validate cap (requires `READ`), returns
-/// 1 if the slave ACKs an address probe, 0 otherwise.
+/// Typed `i2c_detect`: validate cap (requires `READ`); the probe itself is
+/// [`I2cAccess::detect`], after the table lock is released.
 pub fn i2c_detect_cap(
     table: &CapTable,
     cap: Cap<crate::cap::targets::I2c>,
-) -> Result<u32, I2cCapError> {
+) -> Result<I2cAccess, I2cCapError> {
     let res = table.get(cap, CapPerms::READ)?;
     let (bus, addr) = unpack_resource(res);
-    Ok(u32::from(i2c_detect(bus, addr)))
+    Ok(I2cAccess { bus, addr })
 }
