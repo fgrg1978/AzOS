@@ -97,3 +97,13 @@ fn enable_line(gsi: u32) -> bool {
     azos_drv_irqchip::user_irq::mark_kernel(gsi);
     azos_arch::ioapic::set_masked(gsi, false)
 }
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+fn line_of(_slot: usize, _base: usize) -> Option<u32> {
+    None
+}
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+fn enable_line(_line: u32) -> bool {
+    false
+}
