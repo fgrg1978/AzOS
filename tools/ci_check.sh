@@ -60,6 +60,31 @@ if [ ! -f "$REPO_ROOT/tools/keys/test_pub.bin" ]; then
 fi
 export TOPOLOGY_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin"
 
+# The key every RELEASE image of this gate (vf2, fleet, embedded) embeds
+# (owner decision, wave 15): a BUILD_TYPE_RELEASE build refuses the TEST key,
+# also when its path is given (crates/core/topology/build.rs compares the
+# bytes). A throwaway, non-test Ed25519 pair, kept under build/ (gitignored)
+# so the release kernels stay cached between runs and made once per worktree;
+# never a key from tools/keys. Dev builds keep the test key above. The release
+# boot rows sign their volumes with the private half (`product_gatekey_disk`).
+GATE_RELEASE_PRIV="$REPO_ROOT/build/gate-keys/release_priv.bin"
+GATE_RELEASE_PUB="$REPO_ROOT/build/gate-keys/release_pub.bin"
+mkdir -p "$REPO_ROOT/build/gate-keys"
+python3 - "$REPO_ROOT" "$GATE_RELEASE_PRIV" "$GATE_RELEASE_PUB" <<'PYEOF' || { echo "FATAL: could not make the gate's release key pair" >&2; exit 1; }
+import os, sys
+root, priv_path, pub_path = sys.argv[1:4]
+sys.path.insert(0, os.path.join(root, "tools"))
+import check_board_keys as c
+test_pub = c.read_optional(os.path.join(root, "tools", "keys", "test_pub.bin"))
+seed = c.read_optional(priv_path) or b""
+if len(seed) != 32 or (test_pub is not None and c.derive_public(seed) == test_pub):
+    seed = os.urandom(32)
+    open(priv_path, "wb").write(seed)
+pub = c.derive_public(seed)
+if c.read_optional(pub_path) != pub:
+    open(pub_path, "wb").write(pub)
+PYEOF
+
 # Refuse to run on a tree carrying iCloud duplicates.
 #
 # The repository lives under iCloud Drive, which resolves a sync conflict by
@@ -311,7 +336,7 @@ build_board() {
         return
     fi
     local out rc
-    out="$(KCONFIG_CONFIG="${REPO_ROOT}/target/board-${feat}/${feat}.config" \
+    out="$(TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="${REPO_ROOT}/target/board-${feat}/${feat}.config" \
            RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release --features "$feat" \
            --config "build.rustflags=['-C','link-arg=-T$ld']" 2>&1)"; rc=$?
     # The exit status counts here too, as in `build`. Warnings do too, as of
@@ -8265,7 +8290,7 @@ ci_row "k1: refuses to build (V2.3)" k1_refuses_to_build_row
 if fleet_config; then
     fail_before=$FAIL
     # shellcheck disable=SC2046
-    KCONFIG_CONFIG="$FLEET_CONFIG" CARGO_TARGET_DIR="$FLEET_DIR" RUSTFLAGS="$FLEET_RUSTFLAGS" \
+    TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$FLEET_CONFIG" CARGO_TARGET_DIR="$FLEET_DIR" RUSTFLAGS="$FLEET_RUSTFLAGS" \
         build "fleet (+linker)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$FLEET_CONFIG")
     fleet_config_applied
     # A skipped row (CI_TIER=rows) leaves FAIL alone too: only a build that
@@ -8278,7 +8303,7 @@ fi
 if embedded_config; then
     fail_before=$FAIL
     # shellcheck disable=SC2046
-    KCONFIG_CONFIG="$EMBEDDED_CONFIG" CARGO_TARGET_DIR="$EMBEDDED_DIR" RUSTFLAGS="$EMBEDDED_RUSTFLAGS" \
+    TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$EMBEDDED_CONFIG" CARGO_TARGET_DIR="$EMBEDDED_DIR" RUSTFLAGS="$EMBEDDED_RUSTFLAGS" \
         build "embedded (+linker)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$EMBEDDED_CONFIG")
     if [ "$FAIL" -eq "$fail_before" ] && embedded_config_applied \
        && ci_wants "embedded (+linker)" && ci_wants "embedded config applied"; then EMBEDDED_BUILT=1; fi
@@ -8344,6 +8369,50 @@ topology_key_row() {
     if [ -z "$why" ]; then ok; else bad; echo "      $why"; fi
 }
 ci_row "topology key: no default" topology_key_row
+# ── A release image refuses the TEST key, by content (owner decision, wave 15) ──
+#
+# BUILD_TYPE_RELEASE: `crates/core/topology/build.rs` fails a bare-metal build
+# whose KCONFIG_CONFIG selects it when the key it would embed is the TEST key,
+# whether it comes from the `dev-key` fallback or from TOPOLOGY_PUBKEY_PATH
+# (bytes compared with tools/keys/test_pub.bin, so a copy under another name
+# is refused too). Observed on the topology crate itself, bare target, in a
+# target dir of its own:
+#   (a) the fleet (release) config + the TEST key named by path: refused, on a
+#       line naming BUILD_TYPE_RELEASE and TOPOLOGY_PUBKEY_PATH;
+#   (b) the same with a byte-for-byte copy of the TEST key: refused;
+#   (c) the same with the gate's throwaway release key: builds (so (a)/(b)
+#       cannot pass on an unrelated compile error);
+#   (d) the dev (primary) config + the TEST key: builds, dev builds keep it.
+# Canary (by hand, 2026-10-09): drop the `refuse_test_key(&arr)` call in
+# build.rs's explicit-key arm — (a) and (b) go red ("the build did not refuse").
+release_testkey_row() {
+    printf "  %-26s" "topology key: release refuses test..."
+    local tdir="$REPO_ROOT/target/releasekey" tgt=riscv64imac-unknown-none-elf out rc why="" copy
+    copy="$(mktemp)"; cp "$REPO_ROOT/tools/keys/test_pub.bin" "$copy"
+    if ! fleet_config; then why="could not expand the fleet config"; fi
+    local k
+    for k in "$REPO_ROOT/tools/keys/test_pub.bin" "$copy"; do
+        [ -z "$why" ] || break
+        out="$(TOPOLOGY_PUBKEY_PATH="$k" KCONFIG_CONFIG="$FLEET_CONFIG" CARGO_TARGET_DIR="$tdir" \
+               "$CARGO" build --release -p azos_topology --target "$tgt" 2>&1)"; rc=$?
+        if [ "$rc" -eq 0 ] || ! printf '%s\n' "$out" | qgrep -q "azos_topology: BUILD_TYPE_RELEASE .* refuses the TEST signing key: TOPOLOGY_PUBKEY_PATH"; then
+            why="(a/b) the release build did not refuse the TEST key $k (rc=$rc)"
+        fi
+    done
+    if [ -z "$why" ]; then
+        out="$(TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$FLEET_CONFIG" CARGO_TARGET_DIR="$tdir" \
+               "$CARGO" build --release -p azos_topology --target "$tgt" 2>&1)" \
+            || why="(c) the release build with the gate's release key failed: $(printf '%s\n' "$out" | grep -m1 -E '^error|error:')"
+    fi
+    if [ -z "$why" ]; then
+        out="$(TOPOLOGY_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" KCONFIG_CONFIG="$PRIMARY_CONFIG" CARGO_TARGET_DIR="$tdir" \
+               "$CARGO" build --release -p azos_topology --target "$tgt" 2>&1)" \
+            || why="(d) the dev build with the TEST key failed: $(printf '%s\n' "$out" | grep -m1 -E '^error|error:')"
+    fi
+    rm -f "$copy"
+    if [ -z "$why" ]; then ok; else bad; echo "      $why"; fi
+}
+ci_row "topology key: release refuses test" release_testkey_row
 # ── current_cpu_id() against the hardware id, BOTH ISAs ─────────────────────
 #
 # Closes the 2026-09-25 "current_cpu_id() may have lied" finding. The probe
@@ -9115,14 +9184,21 @@ else
     # TOPOLOGY_SOURCE_SIGNED_REQUIRED and halt without the signed topology, so
     # their QEMU boots get a volume carrying one: the plain disk plus that
     # profile's topology (its .config and kconfig_to_cargo features), bound
-    # to the disk's device id. SIGNED WITH THE TEST KEY, and named `-testkey`
-    # for it: the gate builds these kernels with the test public key
-    # (TOPOLOGY_PUBKEY_PATH, exported at the top); a product volume is never
-    # signed with it (`make vf2`/`k1`/`build-fleet` refuse). One image per
-    # boot: the boot writes the counter floor and the flight recorder.
-    product_testkey_disk() { # <.config> <out image>
-        cp build/disk.img "$2" && make topo-volume TOPO_IMAGE="$2" TOPO_ISA=riscv64 TOPO_KCONFIG_RISCV64="$1" \
-            TOPO_KERNEL_FEATURES="$(python3 tools/kconfig_to_cargo.py "$1" | sed -n 's/.*--features //p')" >/dev/null 2>&1
+    # to the disk's device id. These are BUILD_TYPE_RELEASE kernels, which
+    # refuse the TEST key (crates/core/topology/build.rs): they are built with
+    # the gate's throwaway release key ($GATE_RELEASE_PUB, top of this file)
+    # and the volume's CAPS.SIG and CONFIG.SIG are signed with its private
+    # half. One image per boot: the boot writes the counter floor and the
+    # flight recorder.
+    product_gatekey_disk() { # <.config> <out image>
+        local img="$2" ini="$2.tmp_config.ini" sig="$2.tmp_config.sig" rc
+        cp build/disk.img "$img" \
+          && make topo-volume TOPO_IMAGE="$img" TOPO_ISA=riscv64 TOPO_KCONFIG_RISCV64="$1" TOPO_PRIV="$GATE_RELEASE_PRIV" \
+                TOPO_KERNEL_FEATURES="$(python3 tools/kconfig_to_cargo.py "$1" | sed -n 's/.*--features //p')" >/dev/null 2>&1 \
+          && mcopy -n -i "$img" ::CONFIG.INI "$ini" \
+          && python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$img" --priv "$GATE_RELEASE_PRIV" --out "$sig" >/dev/null \
+          && mcopy -o -i "$img" "$sig" ::CONFIG.SIG
+        rc=$?; rm -f "$ini" "$sig"; return $rc
     }
     # The embedded image (config/defconfigs/robot-embedded.config, kernel/linker-embedded.ld)
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
@@ -9130,17 +9206,17 @@ else
     if ! ci_wants "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"; then
         ci_skip_rows "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"
     elif [ "$EMBEDDED_BUILT" = "1" ] && make_disk build/disk.img \
-       && product_testkey_disk "$EMBEDDED_CONFIG" build/disk-embedded64-testkey.img \
-       && product_testkey_disk "$EMBEDDED_CONFIG" build/disk-embedded16-testkey.img; then
+       && product_gatekey_disk "$EMBEDDED_CONFIG" build/disk-embedded64-gatekey.img \
+       && product_gatekey_disk "$EMBEDDED_CONFIG" build/disk-embedded16-gatekey.img; then
         KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 64 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 64M \
-            -global virtio-mmio.force-legacy=false -drive file=build/disk-embedded64-testkey.img,if=none,format=raw,id=hd0 \
+            -global virtio-mmio.force-legacy=false -drive file=build/disk-embedded64-gatekey.img,if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0
         KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 16 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 16M \
-            -global virtio-mmio.force-legacy=false -drive file=build/disk-embedded16-testkey.img,if=none,format=raw,id=hd0 \
+            -global virtio-mmio.force-legacy=false -drive file=build/disk-embedded16-gatekey.img,if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0
     else
         for row in "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"; do
-            printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass, or its test-key topology volume was not built; not booted"; done
+            printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass, or its gate-key topology volume was not built; not booted"; done
     fi
     # The fleet image (config/defconfigs/robot-fleet.config, kernel/linker-fleet.ld), whose
     # tables are sized for 4096 tasks. Its first boots found three faults the
@@ -9163,7 +9239,7 @@ else
         rm -f "$log"
         par_ready   # $FLEET_KERNEL is built once, in [1/4], into its own target dir
         "$QEMU" -machine virt -nographic -bios default -kernel "$FLEET_KERNEL" -smp 4 -m 1G \
-            -global virtio-mmio.force-legacy=false -drive file=build/disk-fleet-testkey.img,if=none,format=raw,id=hd0 \
+            -global virtio-mmio.force-legacy=false -drive file=build/disk-fleet-gatekey.img,if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
         pid=$!
         while [ "$n" -lt 240 ]; do
@@ -9200,14 +9276,14 @@ else
     if ! ci_wants "fleet: boots in 1 GiB"; then
         ci_skip_rows "fleet: boots in 1 GiB"
     elif [ "$FLEET_BUILT" = "1" ] && make_disk build/disk.img \
-       && product_testkey_disk "$FLEET_CONFIG" build/disk-fleet-testkey.img; then
+       && product_gatekey_disk "$FLEET_CONFIG" build/disk-fleet-gatekey.img; then
         # Alone: on a loaded host TCG stretches timer_isr past its WCET bound,
         # the `[WCET] VIOLATION` lines overflow the console buffer while ring 3
         # holds it, and `[CONSOLE] dropped` fails the row (seen 2026-10-03 with
         # four jobs and other fronts' QEMUs running).
         par -s "fleet: boots in 1 GiB" fleet_boot_scenario
     else
-        printf "  %-26s" "fleet: boots in 1 GiB..."; bad; echo "      fleet build row did not pass, or its test-key topology volume was not built; not booted"
+        printf "  %-26s" "fleet: boots in 1 GiB..."; bad; echo "      fleet build row did not pass, or its gate-key topology volume was not built; not booted"
     fi
 
     # W^X, read back from the page table rather than announced.

@@ -29,6 +29,14 @@
 //!   not been generated (every signature check then fails closed);
 //! * neither: the build FAILS, with one line saying which two to choose from.
 //!
+//! **No TEST key in a release image** (Kconfig `BUILD_TYPE_RELEASE`, owner
+//! decision wave 15): a bare-metal build whose `KCONFIG_CONFIG` selects it
+//! fails when the key it would embed is the TEST key, through the `dev-key`
+//! fallback and also when `TOPOLOGY_PUBKEY_PATH` names it (compared by bytes
+//! against `tools/keys/test_pub.bin`, so a copy under another name is refused
+//! too). The `make` board targets refuse the same key earlier, with
+//! `tools/check_board_keys.py`.
+//!
 //! An empty `TOPOLOGY_PUBKEY_PATH` counts as unset (a Makefile `export` of an
 //! unset variable passes an empty one).
 
@@ -63,12 +71,30 @@ fn main() {
     // tools/check_board_keys.py). Host builds (the test crates) are not
     // images and keep the fallback.
     let bare = env::var("CARGO_CFG_TARGET_OS").map(|o| o == "none").unwrap_or(false);
-    if dev_key && explicit.is_none() && bare && release_config() {
+    let release = bare && release_config();
+    let explicit_given = explicit.is_some();
+    if dev_key && explicit.is_none() && release {
         fail("Kconfig BUILD_TYPE_RELEASE refuses the TEST key: the `dev-key` feature \
               (the kernel's `qemu` feature) would embed tools/keys/test_pub.bin; set \
               TOPOLOGY_PUBKEY_PATH to the fleet's public key (`make vf2`/`k1`/`rpi5`/\
               `build-fleet`), or select BUILD_TYPE_DEV");
     }
+    // The same refusal by CONTENT for a key named explicitly: a release image
+    // never embeds the TEST key whatever path (or copy) TOPOLOGY_PUBKEY_PATH
+    // names. The TEST key is tools/keys/test_pub.bin (generated per clone, so
+    // there is no constant to compare against); absent, there is no test key
+    // to confuse it with.
+    let refuse_test_key = |bytes: &[u8; PUBKEY_LEN]| {
+        println!("cargo:rerun-if-changed={}", default_path.display());
+        if explicit_given && release
+            && fs::read(&default_path).map(|t| t[..] == bytes[..]).unwrap_or(false)
+        {
+            fail("BUILD_TYPE_RELEASE (Kconfig BUILD_TYPE) refuses the TEST signing key: \
+                  TOPOLOGY_PUBKEY_PATH names a key whose bytes equal tools/keys/test_pub.bin; \
+                  set TOPOLOGY_PUBKEY_PATH to the fleet's own public key, or select \
+                  BUILD_TYPE_DEV");
+        }
+    };
 
     let bytes: [u8; PUBKEY_LEN] = match (explicit, dev_key) {
         (Some(p), _) => {
@@ -78,6 +104,7 @@ fn main() {
                 Ok(data) if data.len() == PUBKEY_LEN => {
                     let mut arr = [0u8; PUBKEY_LEN];
                     arr.copy_from_slice(&data);
+                    refuse_test_key(&arr);
                     arr
                 }
                 Ok(data) => fail(&format!(

@@ -619,7 +619,7 @@ BOARD_TOPOLOGY_KEY := $(if $(TOPOLOGY_PUBKEY_PATH),$(shell python3 -c 'import os
 define require_board_key
 	@[ -n "$(BOARD_TOPOLOGY_KEY)" ] || { echo "[$(1)] refusing: no topology/config key. Set TOPOLOGY_PUBKEY_PATH to the fleet's 32-byte Ed25519 public key. A board image never carries the test key (DEV_KEYS=1 is for QEMU disks only)."; exit 1; }
 	@[ -f "$(BOARD_TOPOLOGY_KEY)" ] || { echo "[$(1)] refusing: TOPOLOGY_PUBKEY_PATH=$(BOARD_TOPOLOGY_KEY) does not exist."; exit 1; }
-	@python3 tools/check_board_keys.py key "$(BOARD_TOPOLOGY_KEY)" tools/keys/test_pub.bin || { echo "[$(1)] refusing: TOPOLOGY_PUBKEY_PATH names the TEST key."; exit 1; }
+	@python3 tools/check_board_keys.py key "$(BOARD_TOPOLOGY_KEY)" tools/keys/test_pub.bin || { echo "[$(1)] refusing: a board image is a BUILD_TYPE_RELEASE build and BUILD_TYPE_RELEASE refuses the TEST signing key; TOPOLOGY_PUBKEY_PATH names the TEST key (tools/keys/test_pub.bin or a copy of it). Name the fleet's own public key."; exit 1; }
 endef
 
 # The board volume is SIGNED, so it also needs the private half:
