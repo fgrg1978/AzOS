@@ -460,11 +460,13 @@ fixed mount table. There are three implementations:
   (real-time tasks use it for in-memory and device files) and is never held
   across device I/O. An open runs on a private table and the descriptor
   then moves into the shared one. A read or write of a streaming file runs
-  on a lent copy of the descriptor that keeps the file alive, and its offset
-  is published under the lock afterwards. A close flushes a dirty file
-  outside the lock once its last descriptor is gone, and `fsync` writes a
-  copy of the bytes. Two threads that transfer through one shared
-  description at the same moment may both start from the same offset. The
+  on a lent copy of the descriptor that keeps the file alive, under the open
+  file description's position lock (a sleeping lock without priority
+  inheritance, as Linux's `f_pos_lock`), so two threads sharing a
+  description never transfer at the same offset. Its offset is published
+  under the table lock afterwards. In-memory files keep the table lock. A
+  close flushes a dirty file outside the lock once its last descriptor is
+  gone, and `fsync` writes a copy of the bytes. The
   panic path counts sleeping locks a task holds the same way it counts held
   mutexes.
 - **Real-time tasks do no block I/O.** A task whose own priority is in the

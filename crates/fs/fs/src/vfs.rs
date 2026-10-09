@@ -326,6 +326,13 @@ pub trait FileSystem: Sync {
     /// keeps the proxy path: `read_all` on open, `write_all` on a dirty close.
     fn streaming(&self) -> bool { false }
 
+    /// `true` when this backend's reads and writes wait on a device (the
+    /// default); `false` for a RAM-resident one (tmpfs, procfs). A streaming
+    /// file of a device-backed backend transfers with the descriptor table
+    /// released and under its description's position lock (owner rule F1,
+    /// `fd_stream_transfer`); a RAM-resident one keeps the table's lock.
+    fn device_backed(&self) -> bool { true }
+
     /// `true` for a backend whose READ-ONLY opens may stream through
     /// [`read_at_handle`](Self::read_at_handle) even though it is not
     /// [`streaming`](Self::streaming): no whole-file load to serve a few
@@ -1628,12 +1635,12 @@ pub fn fd_free<const N: usize>(table: &mut FdTableN<N>, fd: i32) {
 // * `open`: every device access (the backend lookup, the proxy load, the
 //   create) happens before `fd_alloc`, so the seam opens into a
 //   `ScratchFds` and [`fd_adopt`] moves the descriptor into the table.
-// * `read`/`write` on a streaming backend file ([`fd_streams`]): the
-//   descriptor is lent ([`fd_lend`]: a one-slot table holding its own
-//   inode reference, so a concurrent close cannot free the inode under the
-//   I/O) and its offset is published back by [`fd_settle`]. Two threads
-//   of one process transferring through ONE description at once may both
-//   start from the same offset (Linux serialises that with `f_pos_lock`).
+// * `read`/`write` on a device-backed streaming file ([`fd_streams`],
+//   [`fd_stream_transfer`]): under the description's position lock
+//   ([`DESC_POS`], Linux's `f_pos_lock`) the descriptor is lent
+//   ([`fd_lend`]: a one-slot table holding its own inode reference, so a
+//   concurrent close cannot free the inode under the I/O) and its offset is
+//   published back by [`fd_settle`].
 // * `close` of the last descriptor naming an inode ([`fd_detach`]): the
 //   flush of a dirty proxy runs on the detached copy. A close that leaves
 //   other descriptors on the inode does not flush: the last close does
@@ -1644,8 +1651,8 @@ pub fn fd_free<const N: usize>(table: &mut FdTableN<N>, fd: i32) {
 /// part of an operation.
 pub type LoneFd = FdTableN<1>;
 
-/// Does descriptor `fd` name a streaming backend file (whose reads and
-/// writes reach the device)?
+/// Does descriptor `fd` name a streaming file of a device-backed backend
+/// (whose reads and writes wait on the device)?
 pub fn fd_streams<const N: usize>(table: &FdTableN<N>, fd: i32) -> bool {
     if fd < 0 || fd as usize >= N { return false; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, N);
@@ -1653,7 +1660,8 @@ pub fn fd_streams<const N: usize>(table: &FdTableN<N>, fd: i32) -> bool {
     if !e.in_use || e.inode_idx == NO_IDX || e.inode_idx as usize >= MAX_FILES { return false; }
     let fs = FS.lock();
     let n = &fs.inodes[e.inode_idx as usize];
-    n.itype == INODE_FILE && n.backing.fs.is_some() && n.backing.streaming
+    n.itype == INODE_FILE && n.backing.streaming
+        && n.backing.fs.map_or(false, |b| b.device_backed())
 }
 
 /// A copy of open descriptor `fd` as slot 0 of a [`LoneFd`], with its
@@ -1686,6 +1694,66 @@ pub fn fd_settle<const N: usize>(table: &mut FdTableN<N>, fd: i32, desc: u16, lo
     {
         table.descs[d].offset = lone.descs[0].offset;
     }
+}
+
+/// Position locks, one per open file description index (Linux `f_pos_lock`,
+/// 3.14): a read or write of a device-backed streaming file holds its
+/// description's lock from taking the offset to publishing the new one, so
+/// two threads sharing one description never transfer at the same offset.
+/// A `SleepLock` (no priority inheritance: it is held across the device
+/// wait, owner rule F1); only non-RT tasks take it, since real-time tasks do
+/// no block I/O. Never held while waiting for the descriptor table, and the
+/// table is never held while waiting for it. Indexed by description slot;
+/// a slot reused while a transfer holds its lock only waits for it.
+static DESC_POS: [azos_sync::SleepLock<()>; MAX_FDS] =
+    [const { azos_sync::SleepLock::new(()) }; MAX_FDS];
+
+/// Read (`write` false) or write `len` bytes at `buf` through descriptor
+/// `fd` of a device-backed streaming file ([`fd_streams`]) without holding
+/// the table's lock across the device: `with_table` runs a closure under
+/// that lock. Under the description's position lock ([`DESC_POS`]) the
+/// descriptor is lent ([`fd_lend`]), transferred with `around_io()`'s value
+/// alive (a gate canary's hook; `|| ()` otherwise) and settled
+/// ([`fd_settle`]). -1 when `fd` is not open.
+pub fn fd_stream_transfer<const N: usize, G>(
+    with_table: &dyn Fn(&mut dyn FnMut(&mut FdTableN<N>)),
+    around_io: impl Fn() -> G,
+    fd: i32, write: bool, buf: *mut u8, len: usize,
+) -> i64 {
+    if fd < 0 || fd as usize >= N { return -1; }
+    let fd = azos_limits::nospec::array_index_nospec(fd as usize, N) as i32;
+    let mut desc = None;
+    with_table(&mut |t| {
+        if t.fds[fd as usize].in_use { desc = Some(t.fds[fd as usize].desc); }
+    });
+    let Some(desc) = desc else { return -1 };
+    // Gate canary `fd-pos-lock-canary`: no position lock (two sharers may
+    // transfer at one offset).
+    let _pos = if cfg!(feature = "fd-pos-lock-canary") {
+        None
+    } else {
+        Some(DESC_POS[desc as usize % MAX_FDS].lock())
+    };
+    let mut lent = None;
+    with_table(&mut |t| {
+        let e = &t.fds[fd as usize];
+        if e.in_use && e.desc == desc { lent = fd_lend(t, fd); }
+    });
+    let Some((mut lone, desc)) = lent else { return -1 };
+    let n = {
+        let _io = around_io();
+        if write {
+            vfs_write(&mut lone, 0, buf as *const u8, len)
+        } else {
+            vfs_read(&mut lone, 0, buf, len)
+        }
+    };
+    with_table(&mut |t| {
+        fd_settle(t, fd, desc, &lone);
+        // The lent inode reference (no device access).
+        fd_free(&mut lone, 0);
+    });
+    n as i64
 }
 
 /// Move descriptor `sfd` of `from` into a free slot of `table` (with a new

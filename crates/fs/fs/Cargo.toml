@@ -70,6 +70,10 @@ fat-mutate-pi-canary = []
 # PI-table scan per FAT32 device I/O, so diagnostic builds only.
 # It also records which `PiMutex`es were held (`fat32_pi_io_sites`).
 fat-pi-io-probe = ["azos_sync/pi-held-trace"]
+# Wave 15 (PI) canary: `fd_stream_transfer` takes no position lock; two
+# threads sharing one open file description can transfer at one offset
+# (fs-tests `shared_description_never_repeats_an_offset` must fail).
+fd-pos-lock-canary = []
 # Wave 15 (FM) host canary: FAT-sector claims exclude nothing; fs-tests'
 # concurrent-mutator test must lose an update. Never in a real build.
 fat-sector-claim-canary = []

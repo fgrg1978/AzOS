@@ -317,11 +317,11 @@ pub(crate) fn install_ring3_seams() {
         }
 
         /// `read` (`write` false) or `write` of `fd`, checked by the caller
-        /// under `t`: a streaming backend file transfers on a lent copy of
-        /// the descriptor with the table released (owner rule F1), and its
-        /// offset is published under the lock again; ramfs, proxy and device
-        /// files (a copy, or the console: no device wait) under the lock as
-        /// before. Takes the guard and releases it.
+        /// under `t`: a device-backed streaming file transfers with the
+        /// table released, under its description's position lock (owner
+        /// rule F1; `azos_fs::fd_stream_transfer`); ramfs, tmpfs, proxy and
+        /// device files (a copy, or the console: no device wait) under the
+        /// lock as before. Takes the guard and releases it.
         fn fd_transfer(
             mut t: azos_sync::pi_mutex::PiMutexGuard<'_, azos_fs::FdTable>,
             fd: i32, write: bool, buf: *mut u8, len: usize,
@@ -333,21 +333,10 @@ pub(crate) fn install_ring3_seams() {
                     azos_fs::vfs_read(&mut *t, fd, buf, len)
                 } as i64;
             }
-            let Some((mut lone, desc)) = azos_fs::fd_lend(&t, fd) else { return -1 };
             drop(t);
-            let n = {
-                let _c = fd_canary_hold();
-                if write {
-                    azos_fs::vfs_write(&mut lone, 0, buf as *const u8, len)
-                } else {
-                    azos_fs::vfs_read(&mut lone, 0, buf, len)
-                }
-            };
-            let mut t = KERNEL_FD_TABLE.lock();
-            azos_fs::fd_settle(&mut *t, fd, desc, &lone);
-            // The lent inode reference (no device access).
-            azos_fs::fd_free(&mut lone, 0);
-            n as i64
+            azos_fs::fd_stream_transfer(
+                &|f: &mut dyn FnMut(&mut azos_fs::FdTable)| f(&mut *KERNEL_FD_TABLE.lock()),
+                fd_canary_hold, fd, write, buf, len)
         }
 
         impl azos_syscall::file_ops::FileOps for KernelFileOps {

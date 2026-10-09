@@ -1770,6 +1770,59 @@ mod vfs_open_close {
         assert_eq!(on_disk(b"lend.txt"), b"hello!");
     }
 
+    /// Wave 15 (PI): two threads sharing ONE open file description (a dup)
+    /// read a device-backed streaming file with the table's lock released
+    /// (`fd_stream_transfer`); the description's position lock (Linux
+    /// `f_pos_lock`) makes every record come out exactly once — no offset
+    /// read twice, none skipped.
+    ///
+    /// **Canary.** `--features fd-pos-lock-canary` (no position lock): both
+    /// threads lend the same offset and a record repeats.
+    #[test]
+    fn shared_description_never_repeats_an_offset() {
+        let _g = serial();
+        fresh_volume();
+        const RECS: u16 = 2048;
+        let data: Vec<u8> = (0..RECS).flat_map(|i| i.to_le_bytes()).collect();
+        {
+            let mut w = vfs::ScratchFds::new();
+            let fd = vfs::vfs_open(&mut w, b"/fat/POS.BIN", vfs::O_WRONLY | vfs::O_CREAT | vfs::O_TRUNC);
+            assert!(fd >= 0);
+            assert_eq!(vfs::vfs_write(&mut w, fd, data.as_ptr(), data.len()), data.len() as i32);
+            assert_eq!(vfs::vfs_close(&mut w, fd), 0);
+        }
+        let table = std::sync::Mutex::new(vfs::ScratchFds::new());
+        let fd = vfs::vfs_open(&mut table.lock().unwrap(), b"/fat/POS.BIN", vfs::O_RDONLY);
+        assert!(fd >= 0);
+        assert!(vfs::fd_streams(&table.lock().unwrap(), fd), "a read-only FAT32 open streams");
+        let d = vfs::fd_dup(&mut table.lock().unwrap(), fd);
+        assert!(d >= 0);
+        let with = |f: &mut dyn FnMut(&mut vfs::ScratchFds)| f(&mut table.lock().unwrap());
+        let wref = &with;
+        let mut all: Vec<u16> = std::thread::scope(|s| {
+            let hs: Vec<_> = [fd, d].into_iter().map(|x| s.spawn(move || {
+                let mut got = Vec::new();
+                loop {
+                    let mut b = [0u8; 2];
+                    let n = vfs::fd_stream_transfer(wref, || (), x, false, b.as_mut_ptr(), 2);
+                    if n <= 0 { break; }
+                    assert_eq!(n, 2);
+                    got.push(u16::from_le_bytes(b));
+                }
+                got
+            })).collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "a record was read twice: two transfers at one offset");
+        assert_eq!(all, (0..RECS).collect::<Vec<_>>(), "every record exactly once");
+        let mut t = table.lock().unwrap();
+        assert_eq!(vfs::vfs_close(&mut t, d), 0);
+        assert_eq!(vfs::vfs_close(&mut t, fd), 0);
+    }
+
     /// The description is counted: each descriptor holds one reference,
     /// a close drops one, the description outlives every close but the last,
     /// and the last one frees it for reuse (a new open starts at offset 0).

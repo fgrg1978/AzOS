@@ -18,6 +18,8 @@ doctest = false
 [features]
 # Round 48 canary: per-descriptor offsets (see crates/fs/fs).
 fd-private-offset-canary = []
+# Wave 15 (PI) canary: no per-description position lock (see crates/fs/fs).
+fd-pos-lock-canary = []
 # Wave 14 canary: per-sector `fat32_read_chain` (see crates/fs/fs).
 read-chain-sector-canary = []
 # Wave 14 (FATCACHE) canaries, one per coherence path of the block cache

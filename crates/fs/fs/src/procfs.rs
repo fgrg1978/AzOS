@@ -337,6 +337,9 @@ const _: () = assert!(6 + PROCFS_PATH_LEN - 1 <= 64);
 const _: () = assert!(PROCFS_PATH_LEN - 1 <= crate::vfs::INODE_KEY_LEN);
 
 impl crate::vfs::FileSystem for ProcFs {
+    /// RAM-resident: no device wait (owner rule F1 does not apply).
+    fn device_backed(&self) -> bool { false }
+
     #[inline]
     fn fs_type(&self) -> u32 { FS_TYPE_PROCFS }
 
