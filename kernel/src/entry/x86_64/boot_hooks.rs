@@ -630,6 +630,21 @@ pub fn timebase_hz() -> u64 {
     azos_arch::timer::TICK_HZ
 }
 
+/// The IOAPIC GSI of the virtio-mmio transport at `base` (Kconfig
+/// `NET_RX_IRQ`): the boot's discovery, already redirected to the boot CPU
+/// and masked by [`irqchip_init`].
+#[inline(always)]
+pub fn net_mmio_line(_slot: usize, base: usize) -> Option<u32> {
+    platform().virtio_gsi(base as u64)
+}
+
+/// Unmask `line` (redirected by [`irqchip_init`]); `irq::device` dispatches
+/// it to the NIC.
+#[inline(always)]
+pub fn net_mmio_unmask(_hart: usize, line: u32) {
+    let _ = azos_arch::ioapic::set_masked(line, false);
+}
+
 /// The 8259s remapped and masked, this CPU's LAPIC on, every IOAPIC pin
 /// masked.
 pub fn irqchip_init(hart_id: usize, _fw_table: usize) {

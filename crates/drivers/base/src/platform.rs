@@ -52,6 +52,10 @@ pub mod hw {
     pub const RAM_BASE:    usize = 0x8000_0000;
     /// Kernel load address (above OpenSBI 2 MiB reservation).
     pub const KERNEL_LOAD: usize = 0x8020_0000;
+    /// PLIC source of virtio-mmio slot 0 (`hw/riscv/virt.c` `VIRTIO_IRQ`);
+    /// slot `n` is source `VIRTIO_IRQ_BASE + n`. Read by the kernel's
+    /// `boot_hooks::net_mmio_line` (Kconfig `NET_RX_IRQ`).
+    pub const VIRTIO_IRQ_BASE: u32 = 1;
 
     // GPIO/PWM/I2C are simulated in QEMU; no MMIO addresses needed.
 
@@ -733,10 +737,9 @@ pub mod hw {
     pub const VIRTIO_MMIO_COUNT: usize = 32;
     /// GIC INTID of slot 0 (SPI 16 → INTID 32 + 16). Slot `n`'s INTID is
     /// `VIRTIO_IRQ_BASE + n` — same "SPI = 32 + n" convention `uart.rs`'s
-    /// `UART_IRQ` already uses for this board (SPI 1 → INTID 33). Not
-    /// consumed anywhere yet: no aarch64 driver reads it through the GIC (or
-    /// takes any interrupt at all) before this crate's IRQ dispatch exists —
-    /// today's transport polls (see `azos_drv_virtio::virtio::mod` module doc).
+    /// `UART_IRQ` already uses for this board (SPI 1 → INTID 33), edge
+    /// triggered (`hw/arm/virt.c` `create_virtio_devices`). Read by the
+    /// kernel's `boot_hooks::net_mmio_line` (Kconfig `NET_RX_IRQ`).
     pub const VIRTIO_IRQ_BASE: u32 = 48;
 
     // ── RTC (PL031) ───────────────────────────────────────────────────────────

@@ -6,7 +6,9 @@
 /// `get_mac`, `is_ready`, and `VirtioNetDevice` over them):
 ///
 ///  * virtio-MMIO ([`init`]): probes the QEMU `virt` MMIO window for a net
-///    device (device_id = 1). Polled: nothing enables its interrupt line.
+///    device (device_id = 1). Polled until the kernel wires the transport's
+///    line ([`enable_mmio_irq`], Kconfig `NET_RX_IRQ`); then RX runs in the
+///    same gated IRQ mode as virtio-pci with MSI, through [`mmio_irq`].
 ///  * virtio-pci modern ([`init_pci`], `pci` feature): a `1af4:1041`
 ///    function found by the kernel's bus-0 enumeration. With an MSI route
 ///    (riscv64 AIA/IMSIC, aarch64 GICv3 ITS) it runs in IRQ mode: MSI-X
@@ -18,16 +20,18 @@
 /// Both set up RX queue (0) and TX queue (1). `init_pci` runs first when a
 /// PCI NIC is present; `init` then returns `Ok` without probing MMIO.
 
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use super::{
     VirtioDev, Virtq,
-    VIRTIO_DEV_NET, VIRTIO_QUEUE_SIZE,
+    VIRTIO_DEV_NET,
     VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE,
-    probe, init as virtio_init, virtq_init,
-    virtq_alloc_desc, virtq_free_desc, virtq_submit, virtq_poll,
+    probe, init as virtio_init, virtq_init_sized,
+    virtq_alloc_desc, virtq_free_desc, virtq_poll,
     virtq_publish, virtq_has_used, virtq_set_avail_flags, VIRTQ_AVAIL_F_NO_INTERRUPT,
+    virtq_device_wants_kick, virtq_notify_mmio,
     mmio_read, mmio_write, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_DRIVER_OK,
+    VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
 };
 use azos_sync::SpinLock;
 
@@ -66,7 +70,10 @@ fn net_hdr_size(dev: &VirtioDev) -> usize {
 // ---- RX buffers ----
 
 const RX_BUF_SIZE: usize = 1526; // 1514 ETH + 12 VirtIO net hdr (with padding)
-const NUM_RX_BUFS: usize = VIRTIO_QUEUE_SIZE / 2;
+/// Kconfig `NET_VIRTIO_RXQ_SIZE`: the RX ring size requested, and one
+/// buffer per entry (an RX frame takes one descriptor). Was
+/// `VIRTIO_QUEUE_SIZE / 2` = 8.
+const NUM_RX_BUFS: usize = azos_limits::NET_VIRTIO_RXQ_SIZE as usize;
 
 // ---- TX buffers ----
 
@@ -74,8 +81,45 @@ const NUM_RX_BUFS: usize = VIRTIO_QUEUE_SIZE / 2;
 const TX_BUF_SIZE: usize = 1514;
 /// One slot per descriptor index so a frame's buffer is identified by the very
 /// descriptor that references it — no separate allocator, and the buffer is
-/// live for exactly as long as the device owns the descriptor.
-const NUM_TX_BUFS: usize = VIRTIO_QUEUE_SIZE;
+/// live for exactly as long as the device owns the descriptor. Kconfig
+/// `NET_VIRTIO_TXQ_SIZE` (was `VIRTIO_QUEUE_SIZE` = 16): two descriptors
+/// per frame, so half of it is frames in flight.
+const NUM_TX_BUFS: usize = azos_limits::NET_VIRTIO_TXQ_SIZE as usize;
+/// Kconfig `NET_TX_BATCH_MAX`: inside a batch, frames published before
+/// the doorbell is rung anyway.
+const TX_BATCH_MAX: u16 = azos_limits::NET_TX_BATCH_MAX as u16;
+
+/// Whether `send` rings the TX doorbell for the frame it just published
+/// (subject to the device's NO_NOTIFY, [`virtq_device_wants_kick`]):
+/// outside any batch at once, as before batching existed; inside one only
+/// when `pending` frames reach the batch bound; always under the
+/// `net-kick-per-frame` canary.
+#[inline(always)]
+pub const fn tx_kick_now(depth: u16, pending: u16, batch_max: u16, every_frame: bool) -> bool {
+    every_frame || depth == 0 || pending >= batch_max
+}
+
+/// Queue counters, all since boot. `*_doorbells` are the MMIO notify
+/// writes actually issued; `*_skipped` the ones the device's NO_NOTIFY
+/// made unnecessary; `tx_frames / tx_doorbells` is frames per doorbell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetQueueStats {
+    pub tx_frames: u64,
+    pub tx_doorbells: u64,
+    pub tx_skipped: u64,
+    pub tx_dropped: u32,
+    pub rx_frames: u64,
+    pub rx_doorbells: u64,
+    pub rx_skipped: u64,
+    pub irqs: u32,
+}
+
+impl NetQueueStats {
+    const fn zeroed() -> Self {
+        NetQueueStats { tx_frames: 0, tx_doorbells: 0, tx_skipped: 0, tx_dropped: 0,
+                        rx_frames: 0, rx_doorbells: 0, rx_skipped: 0, irqs: 0 }
+    }
+}
 
 struct NetState {
     dev:     VirtioDev,
@@ -101,6 +145,19 @@ struct NetState {
     /// IRQ mode: TX completion interrupts currently requested (the ring
     /// filled up; the next reclaim switches them off again).
     tx_cb_on: bool,
+    /// Open TX batches ([`tx_batch_begin`]); 0 = every send rings at once.
+    tx_depth: u16,
+    /// Frames published on the TX ring since the last doorbell decision.
+    tx_pending: u16,
+    /// RX buffers re-posted since the last doorbell decision.
+    rx_pending: u16,
+    /// IRQ mode: RX interrupts currently wanted (`rxq avail.flags` = 0).
+    /// Off while a pass drains the ring, back on when it finds it empty.
+    rx_irq_on: bool,
+    /// Runtime canary `net-kick-per-frame`: a doorbell per frame (TX) and
+    /// per re-posted buffer (RX), NO_NOTIFY ignored — the pre-batching cost.
+    kick_every_frame: bool,
+    stats: NetQueueStats,
 }
 
 impl NetState {
@@ -117,6 +174,12 @@ impl NetState {
             notify:  [0; 2],
             irq:     false,
             tx_cb_on: false,
+            tx_depth: 0,
+            tx_pending: 0,
+            rx_pending: 0,
+            rx_irq_on: true,
+            kick_every_frame: false,
+            stats: NetQueueStats::zeroed(),
         }
     }
 }
@@ -193,8 +256,16 @@ pub fn msi_counts() -> [u32; NUM_VECTORS] {
     ]
 }
 
-/// `true` when the NIC is virtio-pci in IRQ mode: the RX ring is read only
-/// after an RX MSI, so whatever calls `net_poll` must be woken by one.
+/// RX interrupts taken so far: RX MSIs (virtio-pci) plus MMIO-line
+/// interrupts ([`mmio_irq`]; one line carries both queues there).
+pub fn rx_irq_count() -> u32 {
+    MSI_COUNT[VEC_RX as usize].load(Ordering::Relaxed)
+        .wrapping_add(MMIO_IRQ_COUNT.load(Ordering::Relaxed))
+}
+
+/// `true` when the NIC is in IRQ mode (virtio-pci with MSI, or virtio-mmio
+/// with its line wired): the RX ring is read only after an RX interrupt,
+/// so whatever calls `net_poll` must be woken by one.
 pub fn irq_driven() -> bool {
     IRQ_MODE.load(Ordering::Relaxed)
 }
@@ -205,7 +276,7 @@ pub fn transport() -> &'static str {
     if !net.ready {
         "none"
     } else if net.notify[0] == 0 {
-        "mmio"
+        if net.irq { "mmio-irq" } else { "mmio" }
     } else if net.irq {
         "pci-irq"
     } else {
@@ -240,8 +311,8 @@ pub fn init() -> Result<(), ()> {
         unsafe { virtio_init(&mut dev) }?;
 
         // Set up RX queue (0) and TX queue (1)
-        unsafe { virtq_init(&mut dev, 0, &mut net.rxq) }?;
-        unsafe { virtq_init(&mut dev, 1, &mut net.txq) }?;
+        unsafe { virtq_init_sized(&mut dev, 0, &mut net.rxq, NUM_RX_BUFS) }?;
+        unsafe { virtq_init_sized(&mut dev, 1, &mut net.txq, NUM_TX_BUFS) }?;
 
         // Read MAC address from config space (bytes 0-5).
         //
@@ -276,7 +347,10 @@ pub fn init() -> Result<(), ()> {
             rx_ptrs[b] = super::dma_addr_of(net.rx_bufs[b].as_ptr());
         }
 
-        // Populate RX queue with buffers
+        // Post every RX buffer, one doorbell for the lot. The free list is
+        // fresh, so descriptor `b` is allocated for buffer `b`: the pairing
+        // `poll_recv` relies on (descriptor index == buffer slot). A device
+        // that granted fewer entries than NUM_RX_BUFS gets `rxq.num`.
         for b in 0..NUM_RX_BUFS {
             if let Some(desc_idx) = unsafe { virtq_alloc_desc(&mut net.rxq) } {
                 unsafe {
@@ -284,10 +358,11 @@ pub fn init() -> Result<(), ()> {
                     (*net.rxq.desc.add(desc_idx)).len   = RX_BUF_SIZE as u32;
                     (*net.rxq.desc.add(desc_idx)).flags = VIRTQ_DESC_F_WRITE;
                     (*net.rxq.desc.add(desc_idx)).next  = 0;
-                    virtq_submit(&dev, 0, desc_idx, &mut net.rxq);
+                    let _ = virtq_publish(&mut net.rxq, desc_idx);
                 }
             }
         }
+        unsafe { virtq_notify_mmio(&dev, 0) };
 
         net.dev   = dev;
         net.ready = true;
@@ -401,7 +476,6 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
     let len = data.len();
     net.tx_bufs[data_idx][..len].copy_from_slice(data);
     let buf_ptr = super::dma_addr_of(net.tx_bufs[data_idx].as_ptr());
-    let dev = net.dev;
 
     unsafe {
         (*net.txq.desc.add(hdr_idx)).addr  = super::dma_addr_of(TX_HDR.as_ptr());
@@ -414,16 +488,108 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
         (*net.txq.desc.add(data_idx)).flags = 0;
         (*net.txq.desc.add(data_idx)).next  = 0;
 
-        let notify = net.notify[1];
-        if notify == 0 {
-            virtq_submit(&dev, 1, hdr_idx, &mut net.txq);
-        } else if virtq_publish(&mut net.txq, hdr_idx) {
-            // virtio-pci notify: the queue index, 16 bits (virtio 1.x §4.1.5.2).
-            core::ptr::write_volatile(notify as *mut u16, 1);
-        }
+        // Published at once (the device may pick it up on its own if it is
+        // already draining); the doorbell follows the batch rule.
+        let _ = virtq_publish(&mut net.txq, hdr_idx);
+    }
+    net.stats.tx_frames += 1;
+    net.tx_pending = net.tx_pending.saturating_add(1);
+    if tx_kick_now(net.tx_depth, net.tx_pending, TX_BATCH_MAX, net.kick_every_frame) {
+        tx_kick(&mut net);
     }
 
     Ok(())
+}
+
+/// Ring doorbell `q` (0 = RX, 1 = TX) through this NIC's transport.
+#[inline(always)]
+unsafe fn ring_doorbell(net: &NetState, q: u16) {
+    let notify = net.notify[q as usize];
+    if notify == 0 {
+        virtq_notify_mmio(&net.dev, q as u32);
+    } else {
+        // virtio-pci notify: the queue index, 16 bits (virtio 1.x §4.1.5.2).
+        core::ptr::write_volatile(notify as *mut u16, q);
+    }
+}
+
+/// Announce the TX frames published since the last decision: one doorbell
+/// for all of them, or none while the device reports NO_NOTIFY (it is
+/// draining the ring and re-reads `avail.idx` before it stops).
+#[inline]
+fn tx_kick(net: &mut NetState) {
+    if net.tx_pending == 0 { return; }
+    net.tx_pending = 0;
+    if net.kick_every_frame || unsafe { virtq_device_wants_kick(&net.txq) } {
+        unsafe { ring_doorbell(net, 1) };
+        net.stats.tx_doorbells += 1;
+    } else {
+        net.stats.tx_skipped += 1;
+    }
+}
+
+/// [`tx_kick`] for the RX buffers re-posted since the last decision.
+#[inline]
+fn rx_kick(net: &mut NetState) {
+    if net.rx_pending == 0 { return; }
+    net.rx_pending = 0;
+    if net.kick_every_frame || unsafe { virtq_device_wants_kick(&net.rxq) } {
+        unsafe { ring_doorbell(net, 0) };
+        net.stats.rx_doorbells += 1;
+    } else {
+        net.stats.rx_skipped += 1;
+    }
+}
+
+/// Open a TX batch: until the matching [`tx_batch_end`], `send` publishes
+/// frames without ringing the doorbell (up to `NET_TX_BATCH_MAX` of them)
+/// and `poll_recv` re-posts RX buffers without one. Batches nest and may be
+/// open on several harts at once; any `tx_batch_end` or [`flush`] rings for
+/// everything pending. A caller must not block with a batch open — close it
+/// first (the TCP `send_all_*` loops close it around every wait) — or the
+/// frames of other tasks published meanwhile wait for it, up to the batch
+/// bound.
+pub fn tx_batch_begin() {
+    let mut net = NET.lock();
+    if net.ready {
+        net.tx_depth = net.tx_depth.saturating_add(1);
+    }
+}
+
+/// Close a batch opened by [`tx_batch_begin`] and ring the doorbells for
+/// what it published: a flush point.
+pub fn tx_batch_end() {
+    let mut net = NET.lock();
+    net.tx_depth = net.tx_depth.saturating_sub(1);
+    if net.ready {
+        tx_kick(&mut net);
+        rx_kick(&mut net);
+    }
+}
+
+/// Ring the doorbells for everything published so far, batch or not.
+pub fn flush() {
+    let mut net = NET.lock();
+    if net.ready {
+        tx_kick(&mut net);
+        rx_kick(&mut net);
+    }
+}
+
+/// Queue counters since boot (frames, doorbells issued and skipped, drops).
+pub fn queue_stats() -> NetQueueStats {
+    let net = NET.lock();
+    let mut st = net.stats;
+    st.tx_dropped = net.tx_dropped;
+    st.irqs = MMIO_IRQ_COUNT.load(Ordering::Relaxed);
+    st
+}
+
+/// Runtime canary `net-kick-per-frame` (the kernel arms it from the
+/// command line): a doorbell per TX frame and per RX re-post, ignoring
+/// batches and NO_NOTIFY — what the driver did before wave 15.
+pub fn set_kick_every_frame(on: bool) {
+    NET.lock().kick_every_frame = on;
 }
 
 /// The TX ring had no room for a frame: count the drop and, in IRQ mode,
@@ -432,6 +598,9 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
 #[cold]
 fn tx_ring_full(net: &mut NetState) {
     net.tx_dropped = net.tx_dropped.saturating_add(1);
+    // Inside a batch the ring can be full of frames nobody announced yet:
+    // announce them, or the device never drains what would free the room.
+    tx_kick(net);
     if net.irq && !net.tx_cb_on {
         net.tx_cb_on = true;
         unsafe { virtq_set_avail_flags(&mut net.txq, 0) };
@@ -444,9 +613,15 @@ pub fn tx_dropped() -> u32 { NET.lock().tx_dropped }
 
 /// Poll for a received Ethernet frame.  Copies data into `buf`, returns byte count.
 /// Returns 0 if no packet is available.
+///
+/// The buffer goes back on the RX ring at once; its doorbell follows the
+/// batch rule (`tx_batch_begin`: one doorbell at the end of the pass) and
+/// the device's NO_NOTIFY. In IRQ mode the pass keeps RX interrupts off
+/// while it finds frames and turns them back on when the ring is empty,
+/// before closing the gate and looking once more (NAPI).
 pub fn poll_recv(buf: &mut [u8]) -> usize {
-    // IRQ mode: no RX MSI since the ring was last found empty -> nothing
-    // to read, and the ring is not touched. Always open on MMIO/polled.
+    // IRQ mode: no RX interrupt since the ring was last found empty ->
+    // nothing to read, and the ring is not touched. Always open when polled.
     if !RX_PENDING.load(Ordering::Acquire) { return 0; }
 
     let mut net = NET.lock();
@@ -458,12 +633,25 @@ pub fn poll_recv(buf: &mut [u8]) -> usize {
     // never matches, TCP SYN never seen, accept() never returns).
     let (desc_idx, dev_len) = loop {
         match unsafe { crate::virtio::virtq_poll_with_len(&mut net.rxq) } {
-            Some(x) => break x,
+            Some(x) => {
+                if net.irq && net.rx_irq_on {
+                    // Draining: no interrupt per frame while this pass runs.
+                    net.rx_irq_on = false;
+                    unsafe { virtq_set_avail_flags(&mut net.rxq, VIRTQ_AVAIL_F_NO_INTERRUPT) };
+                }
+                break x;
+            }
             None => {
                 if !net.irq { return 0; }
-                // Close the gate, then look once more: a frame whose MSI
-                // landed before the store below is seen here; one whose
-                // MSI lands after it re-opens the gate itself.
+                // Empty: interrupts back on, then close the gate, then look
+                // once more. A frame used before the flag store is seen by
+                // the look; one used after it interrupts and re-opens the
+                // gate itself. The SeqCst fence orders both stores before
+                // the `used.idx` load.
+                if !net.rx_irq_on {
+                    net.rx_irq_on = true;
+                    unsafe { virtq_set_avail_flags(&mut net.rxq, 0) };
+                }
                 RX_PENDING.store(false, Ordering::SeqCst);
                 fence(Ordering::SeqCst);
                 if !unsafe { virtq_has_used(&net.rxq) } { return 0; }
@@ -472,20 +660,18 @@ pub fn poll_recv(buf: &mut [u8]) -> usize {
         }
     };
 
-    // The descriptor points to one of our rx_bufs
-    // A descriptor's `addr` is what the DEVICE was given: a PHYSICAL address.
-    // Reading the received bytes through it needs the kernel's own view —
-    // identity on riscv64, the upper half on aarch64. This read was the last
-    // of the physical-as-virtual assumptions the upper-half migration
-    // uncovered: the device delivered the packet (used.idx moved) and the
-    // driver then parsed whatever the raw number pointed at.
-    let rx_buf_ptr =
-        azos_mm::addr::phys_to_virt(unsafe { (*net.rxq.desc.add(desc_idx)).addr } as usize);
-    // Find which rx_buf slot this is
-    let slot_opt = (0..NUM_RX_BUFS).find(|&s| {
-        net.rx_bufs[s].as_ptr() as usize == rx_buf_ptr
-    });
-    if let Some(slot) = slot_opt {
+    // RX descriptors are paired 1:1 with buffers at init (descriptor `b` is
+    // allocated for `rx_bufs[b]` from a fresh free list, and a buffer always
+    // goes back on its own descriptor), so the descriptor index IS the slot:
+    // O(1), where a linear search over every buffer used to run per frame.
+    // The descriptor's `addr` (a PHYSICAL address: what the device was
+    // given) is still compared with the slot's, so a descriptor the table
+    // no longer agrees with falls to the repair below instead of being read.
+    let slot_ok = desc_idx < NUM_RX_BUFS
+        && unsafe { (*net.rxq.desc.add(desc_idx)).addr }
+            == super::dma_addr_of(net.rx_bufs[desc_idx].as_ptr());
+    if slot_ok {
+        let slot = desc_idx;
         // dev_len includes the VirtIO net header; subtract it to get the
         // Ethernet frame length.
         //
@@ -501,8 +687,9 @@ pub fn poll_recv(buf: &mut [u8]) -> usize {
         let packet = &net.rx_bufs[slot][hdr_len..hdr_len + frame_len];
         let n = packet.len().min(buf.len());
         buf[..n].copy_from_slice(&packet[..n]);
+        net.stats.rx_frames += 1;
 
-        // Re-queue the buffer (copy dev before mutable rxq borrow).
+        // Re-queue the buffer.
         // Rewrite addr/len as well as flags: it costs two stores and restores
         // the descriptor↔buffer invariant even if something scribbled on the
         // descriptor table (virtq_free_desc scrubs addr/len to 0 these days,
@@ -521,7 +708,7 @@ pub fn poll_recv(buf: &mut [u8]) -> usize {
         return n;
     }
 
-    // Descriptor's addr doesn't match any rx_buf (device corruption, or a
+    // Descriptor's addr doesn't match its rx_buf (device corruption, or a
     // scrubbed descriptor that leaked through the free list). Freeing it here
     // — the previous behaviour — permanently shrank the RX ring: with only
     // NUM_RX_BUFS buffers, a handful of these and the node goes deaf. RX
@@ -546,17 +733,94 @@ pub fn poll_recv(buf: &mut [u8]) -> usize {
     0
 }
 
-/// Hand RX descriptor `desc_idx` (already filled in) back to the device,
-/// through whichever transport this NIC uses.
+/// Hand RX descriptor `desc_idx` (already filled in) back to the device:
+/// published at once, so the ring is never left short of a buffer; the
+/// doorbell rings now outside a batch, at the batch's end inside one.
 #[inline(always)]
 unsafe fn rx_requeue(net: &mut NetState, desc_idx: usize) {
-    let notify = net.notify[0];
-    if notify == 0 {
-        let dev = net.dev;
-        virtq_submit(&dev, 0, desc_idx, &mut net.rxq);
-    } else if virtq_publish(&mut net.rxq, desc_idx) {
-        core::ptr::write_volatile(notify as *mut u16, 0);
+    let _ = virtq_publish(&mut net.rxq, desc_idx);
+    net.rx_pending = net.rx_pending.saturating_add(1);
+    if net.tx_depth == 0 || net.kick_every_frame {
+        rx_kick(net);
     }
+}
+
+// ---- RX interrupt on the virtio-mmio transport (Kconfig NET_RX_IRQ) ----
+//
+// Outside `NET`, like the MSI state: `mmio_irq` runs in interrupt context.
+
+/// The interrupt line the kernel wired for the MMIO NIC (`u32::MAX`: none).
+static MMIO_IRQ_LINE: AtomicU32 = AtomicU32::new(u32::MAX);
+/// The MMIO NIC's register base, for the handler's status read + ACK.
+static MMIO_IRQ_BASE: AtomicUsize = AtomicUsize::new(0);
+/// Interrupts [`mmio_irq`] accepted.
+static MMIO_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// The MMIO NIC's transport slot in the `VIRTIO_MMIO_*` window and that
+/// slot's register base, or `None` (no NIC, or the NIC is virtio-pci).
+/// The kernel turns the slot into its interrupt line per ISA.
+pub fn mmio_slot() -> Option<(usize, usize)> {
+    let net = NET.lock();
+    if !net.ready || net.notify[0] != 0 || net.dev.base.is_null() {
+        return None;
+    }
+    let base = net.dev.base as usize;
+    let off = base.checked_sub(VIRTIO_BASE)?;
+    if off % VIRTIO_MMIO_STRIDE != 0 || off / VIRTIO_MMIO_STRIDE >= VIRTIO_MMIO_SLOTS {
+        return None;
+    }
+    Some((off / VIRTIO_MMIO_STRIDE, VIRTIO_BASE + off))
+}
+
+/// Switch the MMIO NIC to IRQ mode on interrupt line `line` (the number
+/// the kernel's dispatcher will pass to [`mmio_irq`]). Call BEFORE the line
+/// is unmasked at the interrupt controller. TX completions stop
+/// interrupting (`avail.flags` NO_INTERRUPT; ring-full turns them on, as on
+/// virtio-pci); RX stays open until a pass finds the ring empty, so frames
+/// already queued are drained without waiting for an interrupt. Returns
+/// `false` (nothing changed) when there is no MMIO NIC.
+pub fn enable_mmio_irq(line: u32) -> bool {
+    let mut net = NET.lock();
+    if !net.ready || net.notify[0] != 0 || net.dev.base.is_null() {
+        return false;
+    }
+    MMIO_IRQ_BASE.store(net.dev.base as usize, Ordering::Relaxed);
+    MMIO_IRQ_LINE.store(line, Ordering::Release);
+    net.tx_cb_on = false;
+    unsafe { virtq_set_avail_flags(&mut net.txq, VIRTQ_AVAIL_F_NO_INTERRUPT) };
+    net.rx_irq_on = true;
+    unsafe { virtq_set_avail_flags(&mut net.rxq, 0) };
+    net.irq = true;
+    IRQ_MODE.store(true, Ordering::Release);
+    true
+}
+
+/// Interrupt-path hook for the MMIO NIC: `line` is what the interrupt
+/// controller reported (PLIC/APLIC source, GIC INTID, IOAPIC GSI). Returns
+/// `true` when it is this NIC's line: the device's interrupt is
+/// acknowledged (the line is level on PLIC/IOAPIC: unacknowledged it fires
+/// again at once) and, for a used-buffer interrupt, the RX gate opened.
+/// The caller then wakes whatever drains the ring. Lock-free, bounded.
+#[inline]
+pub fn mmio_irq(line: u32) -> bool {
+    if line != MMIO_IRQ_LINE.load(Ordering::Acquire) {
+        return false;
+    }
+    let base = MMIO_IRQ_BASE.load(Ordering::Relaxed) as *mut u32;
+    if base.is_null() {
+        return false;
+    }
+    let status = unsafe { mmio_read(base, VIRTIO_MMIO_INTERRUPT_STATUS) };
+    if status != 0 {
+        unsafe { mmio_write(base, VIRTIO_MMIO_INTERRUPT_ACK, status) };
+    }
+    MMIO_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+    // Bit 0: used buffer (RX or TX — a TX completion only interrupts while
+    // the TX ring is full, and opening the gate for it costs one ring look).
+    if status & 1 != 0 {
+        RX_PENDING.store(true, Ordering::Release);
+    }
+    true
 }
 
 /// Print network device info.
@@ -623,6 +887,16 @@ impl NetDevice for VirtioNetDevice {
     #[inline]
     fn is_ready(&self) -> bool {
         is_ready()
+    }
+
+    #[inline]
+    fn tx_batch_begin(&self) {
+        tx_batch_begin()
+    }
+
+    #[inline]
+    fn tx_batch_end(&self) {
+        tx_batch_end()
     }
 }
 
@@ -726,10 +1000,11 @@ where
     dev.begin(VIRTIO_NET_F_MAC, 0).map_err(PciNetError::Negotiate)?;
     dev.set_msix_config_vector(if irq { VEC_CONFIG } else { VIRTIO_PCI_NO_VECTOR });
 
-    // Rings: one zeroed page each, sized VIRTIO_QUEUE_SIZE, then shrunk to
-    // whatever the device agreed to.
-    let q = VIRTIO_QUEUE_SIZE as u16;
+    // Rings: one zeroed page each, sized NUM_RX_BUFS / NUM_TX_BUFS (Kconfig
+    // NET_VIRTIO_RXQ_SIZE / _TXQ_SIZE), then shrunk to whatever the device
+    // agreed to.
     for (qi, vec) in [(0u16, VEC_RX), (1u16, VEC_TX)] {
+        let q = if qi == 0 { NUM_RX_BUFS as u16 } else { NUM_TX_BUFS as u16 };
         let vq = if qi == 0 { &mut net.rxq } else { &mut net.txq };
         let (d, a, u) = unsafe { super::virtq_alloc_rings(vq, q) }
             .map_err(|_| PciNetError::NoMemory)?;

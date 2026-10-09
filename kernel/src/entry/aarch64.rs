@@ -1103,6 +1103,17 @@ fn handle_irq(_frame: &mut TrapFrame) {
         return;
     }
 
+    // The virtio-mmio NIC's SPI (Kconfig NET_RX_IRQ, edge on QEMU `virt`):
+    // acknowledged at the device, RX gate open; wake the poll task like an
+    // RX MSI. One atomic compare for every other SPI.
+    if azos_drv_virtio::virtio::net::mmio_irq(intid) {
+        if crate::net_msi_wake() {
+            request_resched();
+        }
+        azos_arch::gic::eoir1(intid);
+        return;
+    }
+
     // An SPI a ring-3 driver bound (`SYS_IRQ_BIND` / `SYS_PORT_BIND_TYPED`),
     // delivered mask-until-ACK — riscv64's dispatch pair, `irq_dispatch` +
     // `wake_by_irq` (`kernel/src/trap/interrupt.rs`'s `INT_EXTERNAL_S` arm), plus the

@@ -74,18 +74,24 @@ pub(crate) fn net_poll_task(_: usize) {
     /// real rate means raising `sched_hz` (config, 10..10_000) or waking this
     /// task from the NIC IRQ instead of a timer — both design changes, neither
     /// made here.
-    const NET_POLL_INTERVAL: u64 = azos_drv_base::platform::hw::TIMER_FREQ / 1000;
+    /// Kconfig `NET_POLL_PERIOD_US` (default 1000: the 1 ms above).
+    const NET_POLL_INTERVAL: u64 =
+        azos_drv_base::platform::hw::TIMER_FREQ * azos_limits::NET_POLL_PERIOD_US / 1_000_000;
     /// virtio-pci IRQ mode: RX wakes this task through [`net_msi_wake`], so
     /// the timer only drives `tcp_tick` (retransmission/keep-alive
     /// deadlines, which read the clock themselves) — 10 Hz, and only while
     /// `tcp::tick_needed()` says a connection has a clock-driven deadline.
-    const NET_TICK_IRQ_MODE: u64 = azos_drv_base::platform::hw::TIMER_FREQ / 10;
+    /// Kconfig `NET_IRQ_TICK_PERIOD_MS` (default 100).
+    const NET_TICK_IRQ_MODE: u64 =
+        azos_drv_base::platform::hw::TIMER_FREQ * azos_limits::NET_IRQ_TICK_PERIOD_MS / 1000;
     /// IRQ mode or no NIC, with no TCP deadline pending: nothing but an RX
     /// MSI or a [`net_timer_kick`] can give this task work, so it sleeps
     /// this long.
     /// A self-heal bound, not a poll: 60 s, the same ceiling an idle
     /// non-boot hart gets (`timebase::IDLE_HART_CEILING_US`).
-    const NET_IDLE_CEILING_IRQ_MODE: u64 = azos_drv_base::platform::hw::TIMER_FREQ * 60;
+    /// Kconfig `NET_IRQ_IDLE_CEILING_MS` (default 60 000).
+    const NET_IDLE_CEILING_IRQ_MODE: u64 =
+        azos_drv_base::platform::hw::TIMER_FREQ * azos_limits::NET_IRQ_IDLE_CEILING_MS / 1000;
 
     NET_POLL_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     // N7: tasks waiting on a network event (handshake, window, ARP reply,
@@ -114,13 +120,25 @@ pub(crate) fn net_poll_task(_: usize) {
     // wake took this task out of its timer sleep (`net_msi_wake`); `early`
     // says whether it then ran before that timer would have fired (it can
     // lose the CPU to other tasks for longer than that — informational).
-    let mut rx_seen = azos_drv_virtio::virtio::net::msi_counts()[1];
+    let mut rx_seen = azos_drv_virtio::virtio::net::rx_irq_count();
     let mut announced = !azos_drv_virtio::virtio::net::irq_driven();
 
     loop {
-        azos_net::net_poll();
+        let more = azos_net::net_poll();
         // AR: TCP tick — drive retransmissions, TIME-WAIT, keep-alive timers.
+        // One TX batch: the retransmissions it sends share doorbells.
+        azos_net::net_tx_batch_begin();
         azos_net::tcp::tcp_tick();
+        azos_net::net_tx_batch_end();
+        if more {
+            // The pass stopped at NET_RX_DRAIN_PER_POLL with frames possibly still
+            // queued. In IRQ mode RX interrupts are off while a drain is in
+            // progress, so no interrupt would wake this task for them: run
+            // another pass now, after letting this priority's peers run.
+            NET_POLL_ITERS.fetch_add(1, Ordering::Relaxed);
+            azos_sched::task_yield();
+            continue;
+        }
         let period = if !tick_on_demand {
             NET_POLL_INTERVAL
         } else if azos_net::tcp::tick_needed() {
@@ -140,7 +158,7 @@ pub(crate) fn net_poll_task(_: usize) {
         let dl = azos_drv_sys::timebase::now() + period;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
         if !announced {
-            let rx = azos_drv_virtio::virtio::net::msi_counts()[1];
+            let rx = azos_drv_virtio::virtio::net::rx_irq_count();
             if rx != rx_seen {
                 announced = true;
                 let early = azos_drv_sys::timebase::now() < dl;

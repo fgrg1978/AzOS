@@ -448,6 +448,21 @@ pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
 #[inline(always)]
 pub fn irq_enable_early() {}
 
+/// The GIC INTID of virtio-mmio transport `slot` (Kconfig `NET_RX_IRQ`):
+/// QEMU `virt` wires slot `n` to SPI 16 + n, INTID `VIRTIO_IRQ_BASE + n`.
+#[inline(always)]
+pub fn net_mmio_line(slot: usize, _base: usize) -> Option<u32> {
+    Some(hw::VIRTIO_IRQ_BASE + slot as u32)
+}
+
+/// Route `line` (an edge SPI on QEMU `virt`) to this PE and enable it.
+/// `entry::aarch64::handle_irq` dispatches it to the NIC.
+#[inline(always)]
+pub fn net_mmio_unmask(_hart: usize, line: u32) {
+    let mpidr = azos_arch::mpidr::read_mpidr().raw;
+    gic::route_spi(line, mpidr, true);
+}
+
 /// The PL011's receive/transmit interrupt.
 #[inline(always)]
 pub fn console_irq(_hart_id: usize, dtb_ptr: usize) {

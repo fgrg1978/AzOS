@@ -127,6 +127,37 @@ pub fn mac() -> [u8; 6] {
     }
 }
 
+/// Open a TX batch on the backend chosen by [`select`] (see
+/// `NetDevice::tx_batch_begin`): sends until [`tx_batch_end`] may share one
+/// doorbell. No-op without a backend, and on board Ethernet.
+#[inline]
+pub fn tx_batch_begin() {
+    match ACTIVE_BACKEND.load(Ordering::Relaxed) {
+        BACKEND_ETH => crate::eth::EthNetDevice.tx_batch_begin(),
+        BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.tx_batch_begin(),
+        _ => {}
+    }
+}
+
+/// Close the batch [`tx_batch_begin`] opened and announce what it queued.
+#[inline]
+pub fn tx_batch_end() {
+    match ACTIVE_BACKEND.load(Ordering::Relaxed) {
+        BACKEND_ETH => crate::eth::EthNetDevice.tx_batch_end(),
+        BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.tx_batch_end(),
+        _ => {}
+    }
+}
+
+/// The virtio-net queue counters (frames, doorbells issued and skipped,
+/// drops, interrupts) when virtio-net is the active backend.
+pub fn virtio_queue_stats() -> Option<azos_drv_virtio::virtio::net::NetQueueStats> {
+    match ACTIVE_BACKEND.load(Ordering::Relaxed) {
+        BACKEND_VIRTIO => Some(azos_drv_virtio::virtio::net::queue_stats()),
+        _ => None,
+    }
+}
+
 /// Whether [`select`] found a usable backend.
 #[inline]
 pub fn is_ready() -> bool {

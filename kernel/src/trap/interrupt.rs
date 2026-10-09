@@ -466,8 +466,17 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                                 request_resched(hart as usize);
                             }
                         }
-                    } else if azos_drv_virtio::virtio::net::msi_irq(irq) && net_msi_wake() {
-                        request_resched(hart as usize);
+                    } else if azos_drv_virtio::virtio::net::msi_irq(irq) {
+                        if net_msi_wake() {
+                            request_resched(hart as usize);
+                        }
+                    } else if azos_drv_virtio::virtio::net::mmio_irq(irq) {
+                        // The virtio-mmio NIC's PLIC/APLIC source (Kconfig
+                        // NET_RX_IRQ): acknowledged at the device, RX gate
+                        // open; wake the poll task like an RX MSI.
+                        if net_msi_wake() {
+                            request_resched(hart as usize);
+                        }
                     }
 
                     // F00.3: Dispatch to userspace IRQ bindings (ports, a

@@ -34,4 +34,11 @@ pub trait NetDevice: Send + Sync {
     fn mac(&self) -> [u8; 6];
     /// Whether the backend has completed bring-up.
     fn is_ready(&self) -> bool;
+    /// Open a TX batch: until the matching [`tx_batch_end`](Self::tx_batch_end)
+    /// the backend may publish frames (and re-post RX buffers) without
+    /// telling the device each time. Default: nothing — every `send` is
+    /// announced at once.
+    fn tx_batch_begin(&self) {}
+    /// Close a batch and announce everything it queued: a flush point.
+    fn tx_batch_end(&self) {}
 }

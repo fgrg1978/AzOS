@@ -2015,6 +2015,10 @@ pub fn send_all_with_yield<F: FnMut()>(
 ) -> usize {
     let mut sent_total: usize = 0;
     let mut yields: u32 = 0;
+    // One TX batch per run of segments: their frames share doorbells. It is
+    // closed (flushed) around every yield, so nothing waits on a task that
+    // is not running, and the segments the peer must ACK are on the wire.
+    crate::net_tx_batch_begin();
     while sent_total < data.len() && yields < SEND_ALL_MAX_YIELDS {
         let n = send_data(idx, &data[sent_total..]);
         if n < 0 {
@@ -2023,12 +2027,15 @@ pub fn send_all_with_yield<F: FnMut()>(
         }
         if n == 0 {
             // Peer window closed / cwnd not yet open — yield and retry.
+            crate::net_tx_batch_end();
             yield_fn();
+            crate::net_tx_batch_begin();
             yields += 1;
             continue;
         }
         sent_total += n as usize;
     }
+    crate::net_tx_batch_end();
     sent_total
 }
 
@@ -2066,6 +2073,8 @@ pub fn send_all_until<F: FnMut()>(
     let mut waits: u32 = 0;
     // N7: an ACK that opens the window wakes this task (see `crate::wait`).
     let armed = crate::wait::TCP_WAITERS.arm();
+    // TX batch as in `send_all_with_yield`: closed around every wait.
+    crate::net_tx_batch_begin();
     while sent_total < data.len() {
         let n = send_data(idx, &data[sent_total..]);
         if n < 0 {
@@ -2077,12 +2086,15 @@ pub fn send_all_until<F: FnMut()>(
             {
                 break;
             }
+            crate::net_tx_batch_end();
             armed.wait(start.wrapping_add(budget_ticks), &mut wait_fn);
+            crate::net_tx_batch_begin();
             waits += 1;
             continue;
         }
         sent_total += n as usize;
     }
+    crate::net_tx_batch_end();
     sent_total
 }
 

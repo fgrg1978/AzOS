@@ -50,6 +50,23 @@ pub const VIRTIO_DEV_BLOCK:  u32 = 2;
 pub const VIRTIO_DEV_RNG:    u32 = 4;
 pub const VIRTIO_QUEUE_SIZE: usize = 16;
 
+/// Capacity of the ring arrays every [`Virtq`] carries (`avail.ring`,
+/// `used.ring`, `desc_used`): the largest queue any driver here asks for —
+/// [`VIRTIO_QUEUE_SIZE`] (blk, rng) or the virtio-net rings (Kconfig
+/// `NET_VIRTIO_RXQ_SIZE` / `NET_VIRTIO_TXQ_SIZE`). A queue's actual size is
+/// `Virtq::num`, and every index is taken modulo it, so a queue smaller than
+/// the capacity uses the first `num` entries of each array — which is also
+/// where the device looks: the split-ring entry offsets (`4 + 2*i`,
+/// `4 + 8*i`) do not depend on the queue size.
+pub const VIRTQ_CAPACITY: usize = {
+    let mut c = VIRTIO_QUEUE_SIZE;
+    if azos_limits::NET_VIRTIO_RXQ_SIZE as usize > c { c = azos_limits::NET_VIRTIO_RXQ_SIZE as usize; }
+    if azos_limits::NET_VIRTIO_TXQ_SIZE as usize > c { c = azos_limits::NET_VIRTIO_TXQ_SIZE as usize; }
+    c
+};
+// One page of descriptors (16 B each), and `free_count`/`free_head` are u16.
+const _: () = assert!(VIRTQ_CAPACITY <= 256 && VIRTQ_CAPACITY.is_power_of_two());
+
 // ---- MMIO transport window (one definition, three former copies) ----
 //
 // `blk.rs`, `net.rs` and `rng.rs`'s `device` submodule each hardcoded their
@@ -113,12 +130,14 @@ pub struct VirtqDesc {
     pub next:  u16,
 }
 
+/// The driver area. `used_event` (VIRTIO_F_EVENT_IDX) sits at
+/// `ring[num]`, after the queue's own entries, so it is not a field here:
+/// no driver negotiates EVENT_IDX (see [`virtq_device_wants_kick`]).
 #[repr(C, packed)]
 pub struct VirtqAvail {
     pub flags:      u16,
     pub idx:        u16,
-    pub ring:       [u16; VIRTIO_QUEUE_SIZE],
-    pub used_event: u16,
+    pub ring:       [u16; VIRTQ_CAPACITY],
 }
 
 #[repr(C, packed)]
@@ -127,12 +146,13 @@ pub struct VirtqUsedElem {
     pub len: u32,
 }
 
+/// The device area. `avail_event` (VIRTIO_F_EVENT_IDX) sits at
+/// `ring[num]`; not a field, for the reason [`VirtqAvail`] gives.
 #[repr(C, packed)]
 pub struct VirtqUsed {
     pub flags:       u16,
     pub idx:         u16,
-    pub ring:        [VirtqUsedElem; VIRTIO_QUEUE_SIZE],
-    pub avail_event: u16,
+    pub ring:        [VirtqUsedElem; VIRTQ_CAPACITY],
 }
 
 // ---- VirtQueue state ----
@@ -143,9 +163,9 @@ pub struct Virtq {
     pub used:          *mut VirtqUsed,
     pub num:           u16,
     pub free_head:     u16,
-    pub free_count:    u8,
+    pub free_count:    u16,
     pub last_used_idx: u16,
-    pub desc_used:     [bool; VIRTIO_QUEUE_SIZE],
+    pub desc_used:     [bool; VIRTQ_CAPACITY],
     /// Used-ring entries consumed whose `id` was out of range. Nonzero means
     /// the device wrote garbage into the used ring — a device fault, not a
     /// driver state. The entry is still consumed (see `virtq_poll_with_len`:
@@ -165,7 +185,7 @@ impl Virtq {
             free_head:     0,
             free_count:    0,
             last_used_idx: 0,
-            desc_used:     [false; VIRTIO_QUEUE_SIZE],
+            desc_used:     [false; VIRTQ_CAPACITY],
             bad_completions: 0,
         }
     }
@@ -312,24 +332,35 @@ pub unsafe fn init(dev: &mut VirtioDev) -> Result<(), ()> {
 
 // ---- virtq_init (port of virtq_init in virtio.c) ----
 
-/// Initialize a virtqueue. Handles both legacy (v1) and modern (v2).
+/// Initialize a virtqueue of [`VIRTIO_QUEUE_SIZE`] entries (or fewer, if
+/// the device offers fewer). Handles both legacy (v1) and modern (v2).
 pub unsafe fn virtq_init(dev: &mut VirtioDev, queue_idx: u32, vq: &mut Virtq) -> Result<(), ()> {
+    virtq_init_sized(dev, queue_idx, vq, VIRTIO_QUEUE_SIZE)
+}
+
+/// [`virtq_init`] for a queue of `want` entries (a power of two, at most
+/// [`VIRTQ_CAPACITY`]); the device may grant fewer (`QUEUE_NUM_MAX`).
+pub unsafe fn virtq_init_sized(dev: &mut VirtioDev, queue_idx: u32, vq: &mut Virtq, want: usize) -> Result<(), ()> {
     use azos_mm::pmm;
 
     mmio_write(dev.base, VIRTIO_MMIO_QUEUE_SEL, queue_idx);
 
     let max_size = mmio_read(dev.base, VIRTIO_MMIO_QUEUE_NUM_MAX);
-    if max_size == 0 {
+    if max_size == 0 || want == 0 || want > VIRTQ_CAPACITY {
         return Err(());
     }
 
-    let queue_size = (max_size as usize).min(VIRTIO_QUEUE_SIZE) as u16;
+    // A device maximum below `want` that is not a power of two (legal on
+    // the legacy transport only) still yields a power of two here.
+    let mut queue_size = want.min(max_size as usize);
+    while !queue_size.is_power_of_two() { queue_size &= queue_size - 1; }
+    let queue_size = queue_size as u16;
     vq.num = queue_size;
 
     if dev.version == 1 {
         // Legacy mode: contiguous memory block
         // Layout: [desc_table | avail_ring | padding_to_page | used_ring]
-        // For VIRTIO_QUEUE_SIZE=16: total ~4230 bytes = 2 pages.
+        // For 16 entries: total ~4230 bytes = 2 pages; for 256, 3 pages.
         let desc_size  = 16 * queue_size as usize;
         let avail_size = 6 + 2 * queue_size as usize;
         let page_sz    = azos_arch::PAGE_SIZE;
@@ -403,7 +434,7 @@ pub unsafe fn virtq_init(dev: &mut VirtioDev, queue_idx: u32, vq: &mut Virtq) ->
 
 unsafe fn init_free_list(vq: &mut Virtq, queue_size: u16) {
     vq.free_head     = 0;
-    vq.free_count    = queue_size as u8;
+    vq.free_count    = queue_size;
     vq.last_used_idx = 0;
 
     for i in 0..queue_size as usize {
@@ -494,14 +525,14 @@ pub unsafe fn virtq_publish(vq: &mut Virtq, desc_head: usize) -> bool {
 /// Allocate the three rings of a split virtqueue for a transport that is
 /// told their addresses by the caller (virtio-pci common cfg), one zeroed
 /// page each, and thread the descriptor free list for `queue_size`
-/// entries (`1..=VIRTIO_QUEUE_SIZE`). Returns the rings' PHYSICAL
+/// entries (`1..=VIRTQ_CAPACITY`). Returns the rings' PHYSICAL
 /// addresses `(desc, avail, used)` — the device's view.
 ///
 /// The MMIO transport does the same inside [`virtq_init`], interleaved
 /// with its register writes; this is the allocation half alone.
 pub unsafe fn virtq_alloc_rings(vq: &mut Virtq, queue_size: u16) -> Result<(u64, u64, u64), ()> {
     use azos_mm::pmm;
-    if queue_size == 0 || queue_size as usize > VIRTIO_QUEUE_SIZE {
+    if queue_size == 0 || queue_size as usize > VIRTQ_CAPACITY {
         return Err(());
     }
     let desc_page  = pmm::alloc_page().map_err(|_| ())?.0;
@@ -524,7 +555,7 @@ pub unsafe fn virtq_alloc_rings(vq: &mut Virtq, queue_size: u16) -> Result<(u64,
 /// Re-thread the free list for a smaller size than [`virtq_alloc_rings`]
 /// was given — for a device that agreed to fewer entries than requested.
 pub unsafe fn virtq_resize(vq: &mut Virtq, queue_size: u16) {
-    if queue_size == 0 || queue_size as usize > VIRTIO_QUEUE_SIZE || vq.desc.is_null() {
+    if queue_size == 0 || queue_size as usize > VIRTQ_CAPACITY || vq.desc.is_null() {
         return;
     }
     vq.num = queue_size;
@@ -543,6 +574,42 @@ pub unsafe fn virtq_set_avail_flags(vq: &mut Virtq, flags: u16) {
         return;
     }
     core::ptr::write_volatile(core::ptr::addr_of_mut!((*vq.avail).flags), flags);
+}
+
+/// `used.flags` bit 0 (virtio 1.x 2.7.10; `VRING_USED_F_NO_NOTIFY` on the
+/// legacy transport, same bit, same meaning): the device does not need a
+/// doorbell for buffers added now — it is already processing the queue
+/// and will look at `avail.idx` again before it stops.
+pub const VIRTQ_USED_F_NO_NOTIFY: u16 = 1;
+
+/// After publishing new avail entries: does the device want a doorbell?
+/// `false` while it reports [`VIRTQ_USED_F_NO_NOTIFY`]. Advisory in the
+/// other direction only — a doorbell the device did not need is harmless —
+/// so a stale read can cost a redundant doorbell but never a lost one,
+/// PROVIDED the read is ordered after the `avail.idx` store: the device
+/// clears the flag and then re-reads `avail.idx` (QEMU's
+/// `virtio_queue_set_notification` + re-check), so a driver that sees the
+/// flag still set after its index store is visible has published an
+/// index the device's re-read will see. Hence the full fence: store ->
+/// load ordering, which the Release fences of [`virtq_publish`] do not
+/// give (virtio 1.x 2.7.13.3, "a memory barrier before reading flags").
+///
+/// Not EVENT_IDX: no driver here negotiates it, so `avail_event` is never
+/// written by the device and is not read.
+#[inline(always)]
+pub unsafe fn virtq_device_wants_kick(vq: &Virtq) -> bool {
+    if vq.used.is_null() {
+        return false;
+    }
+    fence(Ordering::SeqCst);
+    core::ptr::read_volatile(core::ptr::addr_of!((*vq.used).flags)) & VIRTQ_USED_F_NO_NOTIFY == 0
+}
+
+/// The virtio-mmio doorbell alone: tell the device `queue_idx` has new
+/// avail entries. [`virtq_submit`] is publish + this.
+#[inline(always)]
+pub unsafe fn virtq_notify_mmio(dev: &VirtioDev, queue_idx: u32) {
+    mmio_write(dev.base, VIRTIO_MMIO_QUEUE_NOTIFY, queue_idx);
 }
 
 /// Has the device written a used entry this driver has not consumed yet?

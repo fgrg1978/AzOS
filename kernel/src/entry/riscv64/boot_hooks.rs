@@ -361,6 +361,27 @@ pub fn irq_enable_early() {
     azos_arch::ARCH.enable_all();
 }
 
+/// The interrupt line of virtio-mmio transport `slot` (Kconfig
+/// `NET_RX_IRQ`): QEMU `virt` wires slot `n` to PLIC source
+/// `VIRTIO_IRQ_BASE + n`. VF2/K1 have no virtio-mmio window.
+#[inline(always)]
+pub fn net_mmio_line(slot: usize, _base: usize) -> Option<u32> {
+    #[cfg(not(any(feature = "vf2", feature = "k1")))]
+    { Some(azos_drv_base::platform::hw::VIRTIO_IRQ_BASE + slot as u32) }
+    #[cfg(any(feature = "vf2", feature = "k1"))]
+    { let _ = slot; None }
+}
+
+/// Route (AIA: APLIC source -> this hart's IMSIC) and enable `line` for
+/// `hart`, as [`console_irq`] does for the UART.
+#[inline(always)]
+pub fn net_mmio_unmask(hart: usize, line: u32) {
+    if let Some(cfg) = azos_drv_irqchip::irqchip::wire_aia_source(line, hart as u32) {
+        kprintln!("[IRQ] APLIC source {} -> hart {} sourcecfg={:#x}", line, hart, cfg);
+    }
+    azos_drv_irqchip::irqchip::enable_irq(hart as u32, line);
+}
+
 /// UART RX interrupt (IRQ 10): characters go to the ring buffer. On AIA the
 /// APLIC source is first routed to this hart, identity 10.
 #[inline(always)]

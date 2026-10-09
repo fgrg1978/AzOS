@@ -65,8 +65,81 @@ pub(crate) fn install_net() -> bool {
     let nic_present = azos_drv_virtio::virtio::net::init().is_ok();
     if nic_present {
         kprintln!("[NET] VirtIO net OK");
+        // Runtime canary: a doorbell per frame again (batching and the
+        // device's NO_NOTIFY ignored), so the doorbell count can be seen to
+        // move back to one per frame.
+        if canary!("net-kick-per-frame") {
+            azos_drv_virtio::virtio::net::set_kick_every_frame(true);
+            kprintln!("[CANARY] net-kick-per-frame: one doorbell per frame");
+        }
+        install_net_irq();
+        if azos_limits::NET_TX_BATCH_SELFCHECK {
+            net_tx_batch_selfcheck();
+        }
     } else {
         kprintln!("[NET] VirtIO net not found (no NIC)");
     }
     nic_present
+}
+
+/// Kconfig `NET_TX_BATCH_SELFCHECK`: three frames inside one TX batch must
+/// take no doorbell decision until the batch ends, and exactly one there
+/// (with `NET_TX_BATCH_MAX` >= 3; a smaller bound decides every MAX frames)
+/// (a decision is a doorbell rung, or one skipped because the device
+/// reported NO_NOTIFY — which of the two depends on the device's timing,
+/// the count of decisions does not). Under `canary=net-kick-per-frame`
+/// every frame decides: FAIL. The frames are broadcasts of the local
+/// experimental EtherType 0x88B5, which every receiver drops.
+#[inline(never)]
+fn net_tx_batch_selfcheck() {
+    use azos_drv_virtio::virtio::net as vnet;
+    const FRAMES: u64 = 3;
+    let mut f = [0u8; 60];
+    f[0..6].copy_from_slice(&[0xff; 6]);
+    f[6..12].copy_from_slice(&vnet::get_mac());
+    f[12..14].copy_from_slice(&0x88B5u16.to_be_bytes());
+    let decisions = |q: vnet::NetQueueStats| q.tx_doorbells + q.tx_skipped;
+    let s0 = vnet::queue_stats();
+    vnet::tx_batch_begin();
+    let mut sent = 0u64;
+    for _ in 0..FRAMES {
+        if vnet::send(&f).is_ok() { sent += 1; }
+    }
+    let s1 = vnet::queue_stats();
+    vnet::tx_batch_end();
+    let s2 = vnet::queue_stats();
+    let inside = decisions(s1) - decisions(s0);
+    let at_end = decisions(s2) - decisions(s1);
+    // NET_TX_BATCH_MAX below FRAMES rings inside the batch by design.
+    let max = azos_limits::NET_TX_BATCH_MAX as u64;
+    let (want_inside, want_end) = (FRAMES / max, (FRAMES % max != 0) as u64);
+    let ok = sent == FRAMES && s2.tx_frames - s0.tx_frames == FRAMES
+        && inside == want_inside && at_end == want_end;
+    kprintln!("[NET] TX batch self-check: {} frames, doorbell decisions in batch {}, at flush {}: {}",
+        sent, inside, at_end, if ok { "PASS" } else { "FAIL" });
+}
+
+/// Kconfig `NET_RX_IRQ`: wire the virtio-mmio NIC's interrupt line, so the
+/// net poll task is woken by traffic instead of a 1 ms timer. The line is
+/// per ISA (`boot_hooks::net_mmio_line`: PLIC/APLIC source, GIC SPI,
+/// IOAPIC GSI); the driver is switched to IRQ mode BEFORE the line is
+/// unmasked, so the first interrupt finds its handler armed. A virtio-pci
+/// NIC (MSI) has no MMIO slot and is left as it is.
+#[inline(always)]
+fn install_net_irq() {
+    if !azos_limits::NET_RX_IRQ {
+        return;
+    }
+    let Some((slot, base)) = azos_drv_virtio::virtio::net::mmio_slot() else {
+        return;
+    };
+    let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
+    match crate::boot_hooks::net_mmio_line(slot, base) {
+        Some(line) if azos_drv_virtio::virtio::net::enable_mmio_irq(line) => {
+            crate::boot_hooks::net_mmio_unmask(hart, line);
+            kprintln!("[NET] virtio-net-mmio slot {} RX interrupt: line {} -> hart {}",
+                slot, line, hart);
+        }
+        _ => kprintln!("[NET] virtio-net-mmio slot {}: no interrupt line here, polled", slot),
+    }
 }

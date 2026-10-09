@@ -709,6 +709,38 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
+    // virtio-net rings (wave 15 N1/N2): split-ring sizes are powers of two
+    // (virtio 1.x 2.7: Queue Size), and a TX batch must fit in the frames
+    // the TX ring holds (2 descriptors per frame), or a batch fills the ring
+    // before its doorbell announces any of it. Absent keys (an old .config)
+    // are skipped: the Rust side then fails to compile on the missing const.
+    // -----------------------------------------------------------------------
+    for key in ["NET_VIRTIO_RXQ_SIZE", "NET_VIRTIO_TXQ_SIZE"] {
+        if let Some(q) = get_u64(cfg, key) {
+            if q < 2 || q > 256 || (q & (q - 1)) != 0 {
+                panic!(
+                    "validation FAIL: {key} ({q}) is not a power of two in 2..=256. \
+                     A split virtqueue's size is a power of two and one page holds \
+                     256 descriptors. Fix: pick 16, 32, 64, 128 or 256 in .config."
+                );
+            }
+        }
+    }
+    if let (Some(txq), Some(batch)) =
+        (get_u64(cfg, "NET_VIRTIO_TXQ_SIZE"), get_u64(cfg, "NET_TX_BATCH_MAX"))
+    {
+        if batch == 0 || batch > txq / 2 {
+            panic!(
+                "validation FAIL: NET_TX_BATCH_MAX ({batch}) must be in 1..=NET_VIRTIO_TXQ_SIZE/2 \
+                 ({}): the TX ring holds NET_VIRTIO_TXQ_SIZE/2 frames, and a batch larger than \
+                 that fills it before ringing the doorbell. Fix: lower NET_TX_BATCH_MAX or \
+                 raise NET_VIRTIO_TXQ_SIZE in .config.",
+                txq / 2
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // TCP_BUF_SIZE lower bound: the send ring (the same size) must hold
     // DUP_ACK_THRESHOLD + 1 full-size segments, or no loss can be repaired by
     // fast retransmit or SACK recovery and every one waits for the

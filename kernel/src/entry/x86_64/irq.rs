@@ -146,7 +146,13 @@ fn device(gsi: u32) -> bool {
         azos_sched::wake_by_irq(gsi);
         return true;
     }
-    // Kernel virtio-mmio lines: the drivers poll today (aarch64 parity).
+    // The virtio-mmio NIC's GSI (Kconfig NET_RX_IRQ): acknowledged at the
+    // device first (a level line), then EOI; wake the poll task.
+    if azos_drv_virtio::virtio::net::mmio_irq(gsi) {
+        apic::eoi();
+        return crate::net_msi_wake();
+    }
+    // Other kernel virtio-mmio lines: their drivers poll.
     apic::eoi();
     false
 }

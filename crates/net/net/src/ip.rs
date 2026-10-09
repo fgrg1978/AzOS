@@ -321,7 +321,16 @@ fn send_flags(
     // not depend on the destination MAC. That lets loopback and wire share
     // this buffer instead of each carrying its own. The header is written
     // straight into it, so options cost no second buffer on the stack.
-    let mut ip_payload = [0u8; ETH_MTU];
+    //
+    // Built in place, behind room for the Ethernet header: the frame is
+    // finished by writing 14 bytes in front instead of copying the whole
+    // packet into a second 1.5 KB stack buffer (IO-QUEUES N5: copies per
+    // transmitted frame 3 -> 2; the last one is the driver's staging copy,
+    // which the asynchronous TX ring needs).
+    const ETH_HDR: usize = ethernet::EthHdr::SIZE;
+    let mut frame = [0u8; ethernet::ETH_FRAME_MAX];
+    if ETH_HDR + total_len > frame.len() { return -1; }
+    let (eth_hdr, ip_payload) = frame.split_at_mut(ETH_HDR);
     if build_header_flags(&mut ip_payload[..hdr_len], proto, our_ip, dst_ip,
                           options, payload.len() as u16, flags) != hdr_len {
         return -1;
@@ -452,13 +461,10 @@ fn send_flags(
         }
     };
 
-    let frame_len = ethernet::EthHdr::SIZE + total_len;
-    // Use a fixed-size stack frame (max Ethernet frame)
-    let mut frame = [0u8; ethernet::ETH_FRAME_MAX];
-    if frame_len > frame.len() { return -1; }
-
-    ethernet::build(&mut frame[..frame_len], &dst_mac, our_mac, ETH_TYPE_IP,
-                    &ip_payload[..total_len]);
+    let frame_len = ETH_HDR + total_len;
+    eth_hdr[0..6].copy_from_slice(&dst_mac);
+    eth_hdr[6..12].copy_from_slice(our_mac);
+    eth_hdr[12..14].copy_from_slice(&ETH_TYPE_IP.to_be_bytes());
 
     if super::net_raw_send(&frame[..frame_len]) > 0 { 0 } else { -1 }
 }

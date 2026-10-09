@@ -371,6 +371,16 @@ pub fn net_raw_send(frame: &[u8]) -> i32 {
     frame.len() as i32
 }
 
+/// `crate::net_tx_batch_begin`/`_end` as `tcp.rs` sees them: the depth of
+/// open TX batches, so a test can check none is held across a wait.
+pub static TX_BATCH_DEPTH: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+pub fn net_tx_batch_begin() {
+    TX_BATCH_DEPTH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+pub fn net_tx_batch_end() {
+    TX_BATCH_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// `super::net_get_mac`, used by `ethernet::send_ipv6`.
 pub fn net_get_mac() -> [u8; 6] {
     [0x02, 0x00, 0x00, 0x00, 0x00, 0x02]
@@ -2679,8 +2689,15 @@ mod tcp_retransmission_slot {
         let peer_port = 42403u16;
         let data: Vec<u8> = (0..6000u32).map(|i| (i % 251) as u8).collect();
         let mut waits = 0u32;
+        let mut held_across_wait = 0u32;
         let wait_fn = || {
             waits += 1;
+            // IO-QUEUES N1: the TX batch is closed (its frames announced)
+            // around every wait. Canary: drop the end/begin pair around
+            // `wait_fn` in `send_all_until` and this counts every wait.
+            if crate::TX_BATCH_DEPTH.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                held_across_wait += 1;
+            }
             if let Some(seg) = outbound().last() {
                 let ack_for = seg.seq.wrapping_add(seg.payload_len as u32);
                 deliver(&segment(peer_port, port, theirs, ack_for, ACK, 8192, &[]));
@@ -2689,6 +2706,9 @@ mod tcp_retransmission_slot {
         let sent = tcp::send_all_until(idx, &data, 10_000_000, wait_fn);
         assert_eq!(sent, data.len(), "all 6000 bytes should have been accepted");
         assert!(waits > 0, "6000 bytes exceed the initial cwnd: the window must have closed once");
+        assert_eq!(held_across_wait, 0, "a TX batch was held open across a wait");
+        assert_eq!(crate::TX_BATCH_DEPTH.load(std::sync::atomic::Ordering::SeqCst), 0,
+                   "send_all_until left a TX batch open");
     }
 
     /// `send_all_until` with a spent budget gives up at the first closed

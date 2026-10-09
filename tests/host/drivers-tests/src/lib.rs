@@ -232,15 +232,14 @@ mod virtq {
         // and deliberately not `Copy`, so `[x; N]` does not apply. That is the
         // real layout the device sees, and the tests use it unchanged.
         let desc = Box::leak(Box::new(
-            core::array::from_fn::<VirtqDesc, VIRTIO_QUEUE_SIZE, _>(
+            core::array::from_fn::<VirtqDesc, VIRTQ_CAPACITY, _>(
                 |_| VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 })));
         let avail = Box::leak(Box::new(VirtqAvail {
-            flags: 0, idx: 0, ring: [0; VIRTIO_QUEUE_SIZE], used_event: 0 }));
+            flags: 0, idx: 0, ring: [0; VIRTQ_CAPACITY] }));
         let used = Box::leak(Box::new(VirtqUsed {
             flags: 0, idx: 0,
-            ring: core::array::from_fn::<VirtqUsedElem, VIRTIO_QUEUE_SIZE, _>(
-                |_| VirtqUsedElem { id: 0, len: 0 }),
-            avail_event: 0 }));
+            ring: core::array::from_fn::<VirtqUsedElem, VIRTQ_CAPACITY, _>(
+                |_| VirtqUsedElem { id: 0, len: 0 }) }));
         // Free list: 0 -> 1 -> ... -> num-1
         for i in 0..num as usize { desc[i].next = (i as u16) + 1; }
         let mut vq = Virtq::zeroed();
@@ -249,7 +248,7 @@ mod virtq {
         vq.used = used;
         vq.num = num;
         vq.free_head = 0;
-        vq.free_count = num as u8;
+        vq.free_count = num;
         vq
     }
 
@@ -419,6 +418,70 @@ mod virtq {
         assert_eq!(super::virtio::VIRTIO_MMIO_BASE, 0x1000_1000);
         assert_eq!(super::virtio::VIRTIO_MMIO_STRIDE, 0x1000);
         assert_eq!(super::virtio::VIRTIO_MMIO_COUNT, 8);
+    }
+
+    /// **Discriminates (IO-QUEUES N1).** The doorbell is skipped only while
+    /// the device sets `used.flags` NO_NOTIFY. Canary: make
+    /// `virtq_device_wants_kick` return `true` unconditionally (the
+    /// pre-wave-15 behaviour) and the second assertion fails; invert the bit
+    /// test and the first one does.
+    #[test]
+    fn the_doorbell_is_skipped_only_while_the_device_says_no_notify() {
+        unsafe {
+            let vq = queue(16);
+            assert!(virtq_device_wants_kick(&vq), "flags 0: the device needs a doorbell");
+            (*vq.used).flags = VIRTQ_USED_F_NO_NOTIFY;
+            assert!(!virtq_device_wants_kick(&vq), "NO_NOTIFY: the device is draining");
+            (*vq.used).flags = 0;
+            assert!(virtq_device_wants_kick(&vq));
+        }
+    }
+
+    /// **Discriminates.** A queue of the virtio-net size (Kconfig, larger
+    /// than blk's 16) publishes at `idx % num` and wraps there, inside the
+    /// arrays `VIRTQ_CAPACITY` sizes. Canary: size the ring arrays by
+    /// `VIRTIO_QUEUE_SIZE` again and this indexes out of bounds (panics).
+    #[test]
+    fn a_net_sized_queue_publishes_within_its_own_size_and_wraps() {
+        let num = super::virtio::VIRTQ_CAPACITY as u16;
+        assert!(num as usize >= azos_limits::NET_VIRTIO_RXQ_SIZE as usize);
+        assert!(num as usize >= azos_limits::NET_VIRTIO_TXQ_SIZE as usize);
+        unsafe {
+            let mut vq = queue(num);
+            for i in 0..(num as usize + 3) {
+                assert!(virtq_publish(&mut vq, i % num as usize));
+            }
+            assert_eq!({ (*vq.avail).idx }, num + 3);
+            assert_eq!({ (*vq.avail).ring[2] }, 2, "entry num+2 wrapped onto slot 2");
+        }
+    }
+}
+
+#[cfg(test)]
+mod virtio_net_batch {
+    use super::virtio::net::tx_kick_now;
+
+    /// **Discriminates (IO-QUEUES N1).** The batching rule: outside a batch
+    /// every frame rings (no frame may wait for a flush point that is not
+    /// coming); inside one, only at the bound; always under the canary.
+    /// Canary: drop the `depth == 0` arm and the first assertion fails — a
+    /// lone DHCP DISCOVER would sit unannounced.
+    #[test]
+    fn a_frame_outside_a_batch_rings_at_once_and_inside_only_at_the_bound() {
+        let max = 16;
+        assert!(tx_kick_now(0, 1, max, false), "no batch open: ring now");
+        assert!(!tx_kick_now(1, 1, max, false), "batch open, 1 of 16: wait");
+        assert!(!tx_kick_now(2, 15, max, false));
+        assert!(tx_kick_now(1, 16, max, false), "bound reached: ring");
+        assert!(tx_kick_now(1, 1, max, true), "net-kick-per-frame canary: ring");
+    }
+
+    /// **Pins the Kconfig relation build.rs enforces:** a batch fits in the
+    /// frames the TX ring holds (two descriptors per frame).
+    #[test]
+    fn the_batch_bound_fits_in_the_tx_ring() {
+        assert!(azos_limits::NET_TX_BATCH_MAX >= 1);
+        assert!(azos_limits::NET_TX_BATCH_MAX <= azos_limits::NET_VIRTIO_TXQ_SIZE / 2);
     }
 }
 

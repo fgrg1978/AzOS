@@ -262,4 +262,142 @@ config UDP_RX_SLOTS
       slots; 64 slots (the range limit) would be 761,856 B of slots.  It does not
       depend on MAX_SOCKETS.
 
+# ---------------------------------------------------------------------------
+# NIC queues (wave 15 IO-QUEUES N1/N2/N3: were VIRTIO_QUEUE_SIZE = 16 and
+# literals in crates/drivers/virtio/src/virtio/net.rs, crates/net/net/src/lib.rs
+# and kernel/src/tasks/net_poll.rs)
+# ---------------------------------------------------------------------------
+
+config NET_VIRTIO_RXQ_SIZE
+    int "virtio-net RX ring entries (= posted RX buffers)"
+    range 2 256
+    default 16  if PROFILE_EMBEDDED
+    default 256 if PROFILE_FLEET
+    default 64
+    help
+      crates/drivers/virtio/src/virtio/net.rs NUM_RX_BUFS: the RX virtqueue
+      size requested from the device (it may grant fewer), and the number
+      of receive buffers posted on it, one descriptor each.  A power of two
+      (split-ring index arithmetic) and at most 256 (one 4 KiB page of
+      descriptors); crates/core/limits/build.rs refuses anything else.
+
+      What it buys: frames the NIC holds while nothing drains it.  In poll
+      mode a 13 ms wake gap was measured (kernel/src/tasks/net_poll.rs):
+      64 buffers carry ~4,900 frames/s across it, 16 carry ~1,200 (the old
+      8 carried ~615).  Raise it for a receive-heavy node.
+
+      Cost: 1,526 B of RAM per entry (.bss, the same on every ISA) plus the
+      page-backed ring: 97,664 B of buffers at edge's 64, 24,416 B at
+      embedded's 16, 390,656 B at fleet's 256 (was 12,208 B: 8 buffers).
+      Instructions per frame do not depend on it.
+
+config NET_VIRTIO_TXQ_SIZE
+    int "virtio-net TX ring entries (2 per frame in flight)"
+    range 4 256
+    default 16  if PROFILE_EMBEDDED
+    default 256 if PROFILE_FLEET
+    default 64
+    help
+      crates/drivers/virtio/src/virtio/net.rs NUM_TX_BUFS: the TX virtqueue
+      size requested from the device.  Each frame takes two descriptors
+      (virtio-net header, then the frame), so half of it is frames in
+      flight; a send that finds the ring full is refused (QueueFull) and
+      counted.  A power of two, at most 256 (build.rs checks both).
+
+      Cost: 1,514 B of RAM per entry (.bss: one staging buffer per
+      descriptor index): 96,896 B at edge's 64, 24,224 B at embedded's 16
+      (the old size), 387,584 B at fleet's 256.  Lower it on a node that
+      only sends control traffic; raise it with NET_TX_BATCH_MAX for bulk
+      TCP senders.
+
+config NET_TX_BATCH_MAX
+    int "virtio-net TX frames published per doorbell inside a batch"
+    range 1 128
+    default 4  if PROFILE_EMBEDDED
+    default 64 if PROFILE_FLEET
+    default 16
+    help
+      Inside a TX batch (one net_poll pass, one TCP send_all_* burst
+      between waits) frames are published on the TX ring without ringing
+      the doorbell; it rings once when the batch ends, or after this many
+      frames, whichever comes first.  A send outside any batch rings at
+      once, as before, so no frame waits for a flush point that is not
+      coming.  Either way the doorbell is skipped while the device reports
+      it is already draining the ring (used.flags NO_NOTIFY, virtio 1.x
+      2.7.10; the legacy transport defines it too).
+
+      1 = one doorbell per frame (the behaviour before wave 15).  At most
+      NET_VIRTIO_TXQ_SIZE / 2, the frames the ring holds (build.rs checks
+      it), or a batch could fill the ring before announcing it.
+
+      Cost: nothing in RAM.  A doorbell is an MMIO store that exits to the
+      device model (QEMU) or crosses the bus (hardware); a larger batch
+      trades that per-frame cost for up to this many frames of added
+      latency inside one burst.
+
+config NET_RX_IRQ
+    bool "virtio-net-mmio RX interrupt instead of timer polling"
+    default y
+    help
+      On the virtio-mmio NIC (QEMU virt on riscv64 and aarch64, microvm on
+      x86_64) take the transport's interrupt line (PLIC/APLIC source, GIC
+      SPI, IOAPIC GSI) and wake the net poll task only on traffic.  The
+      handler acknowledges the device and opens the RX gate; the pass
+      switches RX interrupts off while it drains (avail.flags
+      NO_INTERRUPT) and back on once the ring is empty, then looks at the
+      ring once more so a frame landing in between is not missed.  TX
+      completions interrupt only while the TX ring is full.  The
+      virtio-pci NIC with an MSI route was already interrupt-driven.
+
+      n = the poll task wakes every NET_POLL_PERIOD_US whatever the
+      traffic.  Cost of y: an interrupt per RX burst instead of a timer
+      wake per period; a missed interrupt is bounded by
+      NET_IRQ_IDLE_CEILING_MS.
+
+config NET_TX_BATCH_SELFCHECK
+    bool "Boot self-check of virtio-net TX doorbell batching"
+    default y if CANARY_RUNTIME
+    help
+      kernel/src/boot/net.rs: right after the NIC comes up, open a TX batch,
+      queue three broadcast frames of the local experimental EtherType
+      0x88B5 (dropped by any receiver), and check that no doorbell decision
+      was taken inside the batch and exactly one at its end.  Prints
+      `[NET] TX batch self-check: ... PASS` (or FAIL), which the gate rows
+      `network: TX doorbell batching (rv|arm)` read; the runtime canary
+      `canary=net-kick-per-frame` turns it to FAIL.
+
+      Cost: three 60-byte frames on the wire at boot and a few hundred
+      instructions, once.  On by default where runtime canaries are
+      (development images); n in product images.
+
+config NET_POLL_PERIOD_US
+    int "net poll task period while the NIC is polled (us)"
+    range 100 1000000
+    default 1000
+    help
+      kernel/src/tasks/net_poll.rs (was TIMER_FREQ / 1000): how often the
+      net poll task drains the NIC and runs the TCP timers when there is no
+      RX interrupt.  Cost: one task wake per period; RX latency up to one
+      period.
+
+config NET_IRQ_TICK_PERIOD_MS
+    int "net poll task TCP-timer period with an RX interrupt (ms)"
+    range 1 10000
+    default 100
+    help
+      kernel/src/tasks/net_poll.rs (was TIMER_FREQ / 10): with an RX
+      interrupt the poll task still wakes this often while a TCP connection
+      has a timer running.  Cost: one wake per period while TCP is busy;
+      lower tightens TCP timer accuracy.
+
+config NET_IRQ_IDLE_CEILING_MS
+    int "net poll task longest sleep with an RX interrupt (ms)"
+    range 10 3600000
+    default 60000
+    help
+      kernel/src/tasks/net_poll.rs (was TIMER_FREQ * 60): with an RX
+      interrupt and no TCP timer running, the longest the poll task
+      sleeps.  It bounds a lost RX interrupt: a frame whose interrupt never
+      arrives is still drained within this long.  Cost: one wake per period.
+
 endmenu # Network

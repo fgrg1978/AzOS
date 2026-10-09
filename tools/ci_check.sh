@@ -3153,6 +3153,61 @@ aarch64_dhcp_row() {
 }
 par "aarch64 network: DHCP lease" aarch64_dhcp_row
 
+# IO-QUEUES N1 (wave 15): virtio-net TX doorbell batching. The boot self-check
+# (Kconfig NET_TX_BATCH_SELFCHECK, kernel/src/boot/net.rs) queues three frames
+# inside one TX batch and counts doorbell decisions (rung, or skipped on the
+# device's NO_NOTIFY): none inside the batch, one at its end. Decisions, not
+# doorbells, so the device's timing cannot move the line. Canary row: the
+# runtime canary `canary=net-kick-per-frame` (a doorbell per frame) must turn
+# it to "in batch 3, at flush 0: FAIL". Defined here, used for arm below and
+# for rv in the network block.
+net_tx_batch_row() { # net_tx_batch_row <label> <rv|arm> <PASS|FAIL> [kernel command line]
+    local label="$1" isa="$2" want="$3" app="${4:-}"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log img
+    log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
+    rm -f "$log"
+    if [ "$isa" = rv ]; then
+        kbuild "qemu" || { bad; echo "      riscv64 --features qemu did not build"; return; }
+        img="$CI_LOG_DIR/kernel-txbatch-${want}-rv.elf"; cp "$KERNEL" "$img"
+    else
+        [ -f "$A64_IMG" ] || { bad; echo "      not built: $A64_IMG"; return; }
+        img="$CI_LOG_DIR/kernel-txbatch-${want}-arm.img"; cp "$A64_IMG" "$img"
+    fi
+    par_ready
+    if [ "$isa" = rv ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$img" ${app:+-append "$app"} \
+            -netdev user,id=net0 -device virtio-net-device,netdev=net0 </dev/null >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$img" ${app:+-append "$app"} -global virtio-mmio.force-legacy=false \
+            -netdev user,id=net0 -device virtio-net-device,netdev=net0 </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 120 ]; do
+        grep -aqE "\[NET\] TX batch self-check: .*(PASS|FAIL)" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img"
+    local line
+    line="$(tr -d '\r' < "$log" | grep -a '\[NET\] TX batch self-check:' | sed -n 1p)"
+    if [ "$want" = PASS ] \
+       && printf '%s\n' "$line" | grep -qE ': 3 frames, doorbell decisions in batch 0, at flush 1: PASS$'; then
+        ok; rm -f "$log"
+    elif [ "$want" = FAIL ] && grep -aqF "[CANARY] net-kick-per-frame: one doorbell per frame" "$log" \
+       && printf '%s\n' "$line" | grep -qE ': 3 frames, doorbell decisions in batch 3, at flush 0: FAIL$'; then
+        ok; rm -f "$log"
+    else
+        bad; echo "      expected the TX batch self-check to $want, got: ${line:-no self-check line}"
+        echo "      log kept: $log"
+    fi
+}
+par "aarch64 network: TX doorbell batching" net_tx_batch_row "aarch64 network: TX doorbell batching" arm PASS
+par "aarch64 network: TX batch canary" net_tx_batch_row "aarch64 network: TX batch canary" arm FAIL "canary=net-kick-per-frame"
+
 # ── aarch64: flight recorder + e-stop latch (aarch64 parity task S2) ────────
 #
 # `install_flight_recorder` (kernel/src/boot/robot.rs) is the shared function both
@@ -9377,6 +9432,10 @@ else
     # server-id checks with no way to exercise them at all.
     par "network: DHCP lease" kq "qemu,dhcp-smoke" "network: DHCP lease" "DHCPSMOKE] PASS" 90 \
         -netdev user,id=net0 -device virtio-net-device,netdev=net0
+    # IO-QUEUES N1: TX doorbell batching and its runtime canary (the row is
+    # defined with the aarch64 network rows).
+    par "network: TX doorbell batching" net_tx_batch_row "network: TX doorbell batching" rv PASS
+    par "network: TX batch canary" net_tx_batch_row "network: TX batch canary" rv FAIL "canary=net-kick-per-frame"
 
     # Userspace: ELF load from FAT32, exec into ring 3, and the syscall ABI
     # (getpid/write/brk/exit). SYSTEST.ELF sat unused on the disk image for

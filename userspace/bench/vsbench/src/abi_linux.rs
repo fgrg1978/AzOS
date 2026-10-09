@@ -1008,7 +1008,66 @@ impl Net for LinuxAbi {
             }
         }
     }
+
+    /// The AzOS lane's twin (wave 15, IO-QUEUES N1): a UDP socket connected
+    /// to `255.255.255.255:9`, every datagram through the NIC driver. With
+    /// no init, `eth0` is down and has no address: brought up here with the
+    /// address AzOS takes from QEMU's user network (10.0.2.15), and the
+    /// socket bound to it (`SO_BINDTODEVICE`), because Linux routes the
+    /// limited broadcast only on a given device when there is no default
+    /// route. `SO_BROADCAST` is what Linux requires to send to it at all.
+    /// No NIC: the first ioctl fails and the lane prints no number.
+    fn egress_setup(&self) -> Result<(), i64> {
+        let fd = unsafe { syscall3(SYS_SOCKET, 2, 2, 0) };   // AF_INET, SOCK_DGRAM
+        if fd < 0 { return Err(-2000 + fd as i64); }
+        let mut ifr = [0u8; 40];
+        ifr[..4].copy_from_slice(b"eth0");
+        ifr[16..32].copy_from_slice(&sockaddr_in([10, 0, 2, 15], 0));
+        let ra = unsafe { syscall3(SYS_IOCTL, fd as usize, SIOCSIFADDR, ifr.as_ptr() as usize) };
+        if ra < 0 { return Err(-5000 + ra as i64); }
+        let mut ifr = [0u8; 40];
+        ifr[..4].copy_from_slice(b"eth0");
+        ifr[16..18].copy_from_slice(&IFF_UP_RUNNING.to_ne_bytes());
+        let ru = unsafe { syscall3(SYS_IOCTL, fd as usize, SIOCSIFFLAGS, ifr.as_ptr() as usize) };
+        if ru < 0 { return Err(-6000 + ru as i64); }
+        let one: i32 = 1;
+        let dev = *b"eth0\0";
+        unsafe {
+            let rb = syscall5(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_BROADCAST,
+                              &one as *const i32 as usize, 4);
+            if rb < 0 { return Err(-7000 + rb as i64); }
+            let rd = syscall5(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_BINDTODEVICE,
+                              dev.as_ptr() as usize, dev.len());
+            if rd < 0 { return Err(-8000 + rd as i64); }
+            let peer = sockaddr_in([255, 255, 255, 255], 9);
+            let rc = syscall3(SYS_CONNECT, fd as usize, peer.as_ptr() as usize, 16);
+            if rc < 0 { return Err(-4000 + rc as i64); }
+            *EGRESS.0.get() = (fd, true);
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn egress_send(&self) -> bool {
+        let (fd, ok) = unsafe { *EGRESS.0.get() };
+        if !ok { return false; }
+        let out = [0x5Au8; NET_PAYLOAD];
+        unsafe {
+            syscall6(SYS_SENDTO, fd as usize, out.as_ptr() as usize, NET_PAYLOAD, 0, 0, 0)
+                == NET_PAYLOAD as isize
+        }
+    }
 }
+
+/// The egress lane's socket (`egress_setup`).
+static EGRESS: NetSlot = NetSlot(core::cell::UnsafeCell::new((-1isize, false)));
+/// `setsockopt` (generic ABI 208), `SOL_SOCKET`, `SO_BROADCAST`,
+/// `SO_BINDTODEVICE`; `SIOCSIFADDR`: set an interface's IPv4 address.
+pub const SYS_SETSOCKOPT: usize = 208;
+const SOL_SOCKET: usize = 1;
+const SO_BROADCAST: usize = 6;
+const SO_BINDTODEVICE: usize = 25;
+const SIOCSIFADDR: usize = 0x8916;
 
 // ── Wave 6 counterparts: futex, the SPSC ring, io_uring ─────────────────────
 //

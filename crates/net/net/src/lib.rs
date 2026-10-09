@@ -195,9 +195,16 @@ pub fn net_init() {
 /// Poll for incoming packets and process them.
 /// Should be called periodically (e.g. from timer handler or shell loop).
 ///
-/// Drains the entire RX queue per call (up to `MAX_DRAIN_PER_CALL` frames)
-/// instead of just one — otherwise the kernel falls behind under load.
-pub fn net_poll() {
+/// Drains up to `NET_RX_DRAIN_PER_POLL` frames per call (Kconfig) instead of
+/// just one — otherwise the kernel falls behind under load.
+/// The pass is one TX batch: the replies it sends and the RX buffers it
+/// re-posts are announced to the NIC with one doorbell each, at the end of
+/// the pass (`net_tx_batch_begin`).
+///
+/// Returns `true` when the budget ran out with frames possibly still
+/// queued: the caller should run another pass soon rather than wait for an
+/// interrupt that, with RX interrupts off for the drain, will not come.
+pub fn net_poll() -> bool {
     /// Bound the drain so we don't starve other tasks if the device is
     /// flooding (e.g. broadcast storm): `CONFIG_NET_RX_DRAIN_PER_POLL`, 64 by
     /// default ≈ one Ethernet line-rate burst.
@@ -209,9 +216,12 @@ pub fn net_poll() {
     };
 
     let mut buf = [0u8; ethernet::ETH_FRAME_MAX];
-    for _ in 0..MAX_DRAIN_PER_CALL {
+    let mut drained = 0usize;
+    net_tx_batch_begin();
+    while drained < MAX_DRAIN_PER_CALL {
         let n = net_raw_recv(&mut buf);
         if n == 0 { break; }
+        drained += 1;
         if let Some((hdr, payload)) = ethernet::parse(&buf[..n]) {
             match hdr.ethertype() {
                 ethernet::ETH_TYPE_ARP  => arp::handle(payload, &mac, &ip),
@@ -222,10 +232,28 @@ pub fn net_poll() {
         }
     }
     // End of the pass (N6): the ACKs this drain held leave now, one per
-    // connection, however many of its segments arrived in the pass.
+    // connection, however many of its segments arrived in the pass —
+    // inside the TX batch, so they share its doorbell.
     if tcp::TCP_DELACK_PASS_FLUSH {
         tcp::flush_held_acks(false);
     }
+    net_tx_batch_end();
+    drained == MAX_DRAIN_PER_CALL
+}
+
+/// Open a TX batch on the active NIC: frames sent until
+/// [`net_tx_batch_end`] may share one doorbell (at most `NET_TX_BATCH_MAX`
+/// frames wait). Never hold one across a block or a yield: close it first,
+/// or other tasks' frames wait with it. Nests.
+#[inline]
+pub fn net_tx_batch_begin() {
+    azos_drv_net::net_device::tx_batch_begin();
+}
+
+/// Close the batch [`net_tx_batch_begin`] opened; announces its frames.
+#[inline]
+pub fn net_tx_batch_end() {
+    azos_drv_net::net_device::tx_batch_end();
 }
 
 /// Send an ICMP ping to `dst_ip`.  Returns 0 on success, -1 on ARP miss.
@@ -291,6 +319,14 @@ pub fn net_info() {
     );
     if !cfg.ready {
         azos_drv_sys::kconsoleln!("[NET]       (not ready — no VirtIO net)");
+    }
+    // IO-QUEUES N1/N2: frames per doorbell is tx_frames / tx_doorbells.
+    if let Some(q) = azos_drv_net::net_device::virtio_queue_stats() {
+        azos_drv_sys::kconsoleln!(
+            "[NET]       queues: tx {} frames {} doorbells {} skipped {} dropped, \
+             rx {} frames {} doorbells {} skipped, {} irqs",
+            q.tx_frames, q.tx_doorbells, q.tx_skipped, q.tx_dropped,
+            q.rx_frames, q.rx_doorbells, q.rx_skipped, q.irqs);
     }
 }
 
