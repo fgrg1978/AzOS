@@ -125,6 +125,10 @@ pub mod scheduler {
         LOG.lock().unwrap().push(Call::Sweep { idx, accepts });
     }
 
+    /// Plan item 7 stand-ins: no forced stop is ever pending on the host.
+    pub fn forced_stop_pending() -> bool { false }
+    pub fn current_forced_exit() -> Option<i32> { None }
+
     pub fn wake_task_by_tid(tid: u32, pred: &dyn Fn(&WaitReason) -> bool) -> bool {
         let accepts = accepted(pred);
         LOG.lock().unwrap().push(Call::ByTid { tid, accepts });

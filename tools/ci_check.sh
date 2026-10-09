@@ -4488,6 +4488,88 @@ zombie_row() { # <label> <isa: rv|arm>
 par_row zombie_row "exit: unreaped notices kept" rv
 par_row zombie_row "aarch64 unreaped notices"    arm
 
+# ── plan item 7: a killed client reaches its exit path, BOTH ISAs ───────────
+#
+# Every per-client release (leases, ports, shm, fast-IPC slots, sockets, fds)
+# runs from the exit hook, so a forced kill that leaves its target blocked
+# releases nothing. ipctest's phase K forks children that block where nothing
+# will wake them (a `notify_wait` with no deadline, a port wait, an idle
+# fast-IPC accept, a 30 s sleep), force-kills each with signal 9, and reads
+# the status it is reaped with within 3 s:
+#
+#   [IPCTEST] killed waits: notify=137 port=137 accept=137 sleep=137
+#
+# -1 is a child the kill never ended. The row reads the line, not the run's
+# verdict: phase A after it has a stall detector of its own (`userspace: IPC`).
+# The pipe half of plan item 7 (`PIPE_NONBLOCK` after dead tasks' pipes) is
+# an abitest check, read by the abitest rows.
+#
+# Canaries, run by hand (plan item 7 report; on riscv64 the unfixed kernel
+# read -1 for all four, the same children run from abitest):
+# `--features qemu,kill-wake-timer-only-canary` -> port=-1 accept=-1 (rv);
+# `kill-reblock-canary` -> all four -1 (rv, arm).
+dead_client_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "qemu"; then bad; echo "      riscv64 kernel (qemu) did not build"; return; fi
+        rm -f build/disk-ipctest.img
+        make_disk build/disk-ipctest.img
+        cp "$KERNEL" "$kcopy"; cp build/disk-ipctest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "qemu"; then bad; echo "      aarch64 kernel (qemu) did not build"; return; fi
+        if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp build/disk-aarch64-ipctest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "[IPCTEST] killed waits: notify=" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local line
+    line="$(grep -a "\[IPCTEST\] killed waits: notify=" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ -z "$line" ]; then
+        bad; echo "      ipctest never printed its killed-waits line"
+        echo "      log kept: $log"; return
+    fi
+    num() { printf '%s\n' "$line" | sed -n "s/.* $1=\(-\{0,1\}[0-9][0-9]*\).*/\1/p"; }
+    if [ "$(num notify)" = 137 ] && [ "$(num port)" = 137 ] && [ "$(num accept)" = 137 ] \
+        && [ "$(num sleep)" = 137 ]; then
+        ok; rm -f "$log"; return
+    fi
+    bad; echo "      want notify=137 port=137 accept=137 sleep=137, read:"
+    echo "        $line"
+    echo "      log kept: $log"
+}
+par "kill: dead client released" dead_client_row "kill: dead client released" rv
+par "aarch64 dead client"        dead_client_row "aarch64 dead client"        arm
+
 # ── proc: hidepid=2 task view, BOTH ISAs (wave 12, owner round 48) ─────────
 #
 # `/proc/tasks` shows a reader only itself and its descendants unless it holds

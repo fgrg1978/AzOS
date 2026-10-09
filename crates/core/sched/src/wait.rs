@@ -83,6 +83,48 @@ pub fn task_block_outcome(reason: WaitReason) -> BlockOutcome {
     }
 }
 
+/// [`task_block_outcome`] for a wait a task makes in a syscall of its own:
+/// with a forced stop (`SYS_TASK_KILL` force) pending for the caller it does
+/// not block at all and answers [`BlockOutcome::Refused`], which every caller
+/// already turns into "withdraw and return". The syscall then returns, and
+/// the task ends at its next syscall (its filter is empty) or tick.
+///
+/// **Why (plan item 7).** Every per-client release runs from the exit hook,
+/// so a killed task that stays blocked releases nothing: its leases, ports,
+/// shared memory, fast-IPC slots stay booked for the life of the board.
+/// `task_stop` wakes a forced target out of any wait; without this check the
+/// woken task blocks again (a `notify_wait` with no deadline, a port wait, a
+/// fast-IPC accept) and nothing ever wakes it a second time.
+///
+/// One relaxed load when no forced stop is pending anywhere.
+pub fn task_block_killable(reason: WaitReason) -> BlockOutcome {
+    #[cfg(not(feature = "kill-reblock-canary"))]
+    if current_task_killed() {
+        return BlockOutcome::Refused;
+    }
+    task_block_outcome(reason)
+}
+
+/// [`task_block`] for a wait in a task's own syscall whose caller has no
+/// use for the outcome (a bounded retry loop that re-tests its condition):
+/// with a forced stop pending it does not block, so the loop spends its
+/// remaining turns at once and returns. One relaxed load more than
+/// [`task_block`] when no forced stop is pending anywhere.
+pub fn task_block_unless_killed(reason: WaitReason) {
+    #[cfg(not(feature = "kill-reblock-canary"))]
+    if current_task_killed() {
+        return;
+    }
+    task_block(reason);
+}
+
+/// Is a forced stop pending for the calling task? For a wait that does not
+/// block through [`task_block_killable`] (a sleep that spins out a refused
+/// block) and must end early instead.
+pub fn current_task_killed() -> bool {
+    scheduler::forced_stop_pending() && scheduler::current_forced_exit().is_some()
+}
+
 /// Wake all tasks blocked on a specific IRQ.
 pub fn wake_by_irq(irq: u32) {
     wake_matching(|r| matches!(r, WaitReason::Irq(i) if *i == irq));

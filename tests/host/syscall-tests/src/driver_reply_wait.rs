@@ -361,6 +361,33 @@ fn release_clears_the_queue_and_the_waiters() {
     assert!(driver_unregister(other));
 }
 
+/// Plan item 7: a driver that dies with a client armed on it wakes that
+/// client, which ends its wait at once with no reply (the proxy's "posted but
+/// gone" arm, reported `TimedOut`) instead of sleeping out its reply budget.
+///
+/// Canary: `--features azos_driver_server/driver-release-nowake-canary` (the
+/// release clears the rows and wakes nobody): no wake is recorded and the
+/// client's clock reads its deadline.
+#[test]
+fn a_released_driver_wakes_its_armed_clients() {
+    let _g = serial();
+    hooks_reset();
+    let kind = 0x9A0A;
+    const DYING: u32 = DRIVER + 40;
+    assert!(driver_register(kind, DYING, 0, 0, 0));
+    let a = driver_submit_request_armed(kind, u32::MAX, 0, &[0x42], 8, CLIENT, DEADLINE)
+        .expect("armed submit refused");
+    let env = FakeEnv::new(CLIENT);
+    *env.on_block.borrow_mut() = Some(Box::new(move || {
+        // The driver dies while the client sleeps: its exit hook's release.
+        assert_eq!(azos_driver_server::driver_release_all(DYING), 1);
+    }));
+    let (o, r) = wait_as(&env, kind, CLIENT, a);
+    assert_eq!(wakes(), vec![(CLIENT, DEADLINE)], "the release woke no armed client");
+    assert_eq!(env.now.get(), 0, "the client slept out its reply budget");
+    assert_eq!((o, r.is_none()), (WaitOutcome::Replied, true), "a released kind delivered a reply");
+}
+
 // ── One reply slot per request (wave 9, item 4b) ─────────────────────────────
 //
 // Before: `last_reply` was one per kind, so with two clients of one driver

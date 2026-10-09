@@ -126,6 +126,13 @@ pub struct Pipe {
     /// `Cap<Pipe>` handles, it has no owner, and the untyped calls above
     /// refuse it.
     pub typed:           bool,
+    /// RFC-0055 `PIPE_NONBLOCK`: a read of an empty typed pipe (a write to a
+    /// full one) answers `-EAGAIN` instead of parking. Kept in the pipe, so it
+    /// goes with it: the per-machine side table it lived in (16 entries) was
+    /// cleared only by an explicit close, and the pipes of tasks that died
+    /// holding them used it up until every later `PIPE_NONBLOCK` was silently
+    /// ignored (plan item 7).
+    pub nonblock:        bool,
     /// RFC-0055: bumped every time the slot is handed out, never 0, packed
     /// into the capability's resource so a handle to a freed pipe is stale.
     pub gen:             u16,
@@ -154,6 +161,7 @@ impl Pipe {
             id:              0,
             owner:           0,
             typed:           false,
+            nonblock:        false,
             gen:             0,
             count:           0,
             rd_waiter:       0,
@@ -654,6 +662,22 @@ pub fn pipe_typed_held_by(creator: u32) -> usize {
 }
 
 /// `(readers, writers, bytes queued)` of a live typed pipe.
+/// Set typed pipe `resource`'s `PIPE_NONBLOCK` flag. `false` for a stale
+/// resource.
+pub fn pipe_typed_set_nonblock(resource: u32, on: bool) -> bool {
+    let mut pool = PIPES.lock();
+    let Some(idx) = typed_slot(&pool, resource) else { return false };
+    // The gate canary never records the flag.
+    pool.pipes[idx].nonblock = on && !cfg!(feature = "pipe-nonblock-canary");
+    true
+}
+
+/// Is typed pipe `resource` `PIPE_NONBLOCK`? `false` for a stale resource.
+pub fn pipe_typed_nonblock(resource: u32) -> bool {
+    let pool = PIPES.lock();
+    typed_slot(&pool, resource).is_some_and(|idx| pool.pipes[idx].nonblock)
+}
+
 pub fn pipe_typed_state(resource: u32) -> Option<(u32, u32, usize)> {
     let pool = PIPES.lock();
     let idx = typed_slot(&pool, resource)?;

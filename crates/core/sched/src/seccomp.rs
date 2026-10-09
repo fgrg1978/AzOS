@@ -780,6 +780,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // numbers of their own since they left 592's and 112's argument
             // space. Only this image calls them.
             SYS_NOTIFY_ROBUST, SYS_IPC_LEASE_ACCEPT_MAP,
+            // Plan item 7, phase K: force-kill its own children blocked in
+            // the waits above (not ABITEST: its row is the widest).
+            SYS_TASK_KILL,
         ],
         audit: false,
     },

@@ -18,6 +18,9 @@ lease-forget-tid-canary = []
 # Wave 15 gate canary (security): `lease_sealed_by` matches the lessor thread
 # only, so a sibling thread maps a sealed region writable.
 lease-sealed-by-thread-canary = []
+# Plan item 7 gate canary, never in a real build: `PIPE_NONBLOCK` is never
+# recorded, so the `dead client` abitest line reads nonblock=137.
+pipe-nonblock-canary = []
 default = []
 # M40 (audit U10-6): gates `seed_one_cap_outcome`'s `CapKind::Motor` arm the
 # same way `crates/core/topology`'s parser and builder already gate the word

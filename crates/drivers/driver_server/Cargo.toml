@@ -8,3 +8,9 @@ publish = false
 [dependencies]
 azos_abi     = { workspace = true }
 azos_sync    = { workspace = true }
+
+[features]
+# Plan item 7 canary, never in a real build: a driver's release clears its
+# armed clients' rows without waking them, so each sleeps out its reply
+# budget (`tests/host/syscall-tests`, `a_released_driver_wakes_its_armed_clients`).
+driver-release-nowake-canary = []

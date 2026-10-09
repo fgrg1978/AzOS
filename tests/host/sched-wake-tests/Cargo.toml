@@ -31,3 +31,5 @@ azos_mm = { path = "shims/mm", package = "sched_wake_test_mm" }
 # never enabled, so the host build compiles the sweep branch without an
 # `unexpected_cfgs` warning; the heap itself is tested through `timer_heap`.
 sched-timer-heap = []
+# Plan item 7 canary of `wait.rs`, declared for the same reason, never enabled.
+kill-reblock-canary = []

@@ -156,8 +156,9 @@ impl azos_ipc::notify::NotifyEnv for KernelNotifyEnv {
         azos_drv_sys::timebase::now()
     }
     fn block(&self, deadline: u64) -> bool {
-        use azos_sched::{task_block_outcome, BlockOutcome, WaitReason};
-        task_block_outcome(WaitReason::Timer(deadline)) == BlockOutcome::Refused
+        // Killable: a forced kill ends a wait with no deadline (plan item 7).
+        use azos_sched::{task_block_killable, BlockOutcome, WaitReason};
+        task_block_killable(WaitReason::Timer(deadline)) == BlockOutcome::Refused
     }
     fn wake(&self, tid: u32, deadline: u64) {
         azos_sched::scheduler::wake_task_by_tid(

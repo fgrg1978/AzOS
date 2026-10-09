@@ -777,6 +777,12 @@ mod profiles {
     /// it (the kernel's lend is the authority), its 611 a `kill` of its own
     /// descendants (the same ancestry `SYS_TASK_KILL` checks).
     ///
+    /// Plan item 7: `IPCTEST.ELF` lists 611 too, for phase K, which
+    /// force-kills its own fork children blocked in the waits it exercises
+    /// (the same ancestry check `SYS_TASK_KILL` makes of the shell). A QEMU
+    /// test image with an enforced row, like `VSBENCH.ELF`'s 608; the widest
+    /// row (`ABITEST.ELF`) has no room for those waits.
+    ///
     /// **Canary.** Add `SYS_CONSOLE_WAIT` to `TOOLBOX.ELF`'s row: red, naming
     /// it.
     #[test]
@@ -784,7 +790,11 @@ mod profiles {
         use azos_abi::syscall_nr::{SYS_CONSOLE_WAIT, SYS_SPAWN_EX, SYS_TASK_KILL};
         for n in [SYS_CONSOLE_WAIT, SYS_SPAWN_EX, SYS_TASK_KILL] {
             let holders: &[&str] =
-                if n == SYS_SPAWN_EX { &["SH.ELF", "VSBENCH.ELF"] } else { &["SH.ELF", "LXHELLO.ELF"] };
+                match n {
+                    SYS_SPAWN_EX => &["SH.ELF", "VSBENCH.ELF"],
+                    SYS_TASK_KILL => &["SH.ELF", "LXHELLO.ELF", "IPCTEST.ELF"],
+                    _ => &["SH.ELF", "LXHELLO.ELF"],
+                };
             let n = n as u16;
             for ip in IMAGE_PROFILES {
                 assert_eq!(
@@ -2104,6 +2114,8 @@ mod image_profiles {
                 // Wave 11 (LEASE3): the robust ops and accept-and-map on
                 // numbers of their own.
                 nr::SYS_NOTIFY_ROBUST, nr::SYS_IPC_LEASE_ACCEPT_MAP,
+                // Plan item 7, phase K: force-kills its own blocked children.
+                nr::SYS_TASK_KILL,
             ]),
         );
         // The two raw probes resolve through a fn parameter and a literal.

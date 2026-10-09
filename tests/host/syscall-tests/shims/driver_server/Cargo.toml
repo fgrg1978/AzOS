@@ -15,3 +15,7 @@ azos_abi = { path = "../../../../../crates/core/abi" }
 # `crates/drivers/driver_server` otherwise only needs a SpinLock -- reused from
 # tests/host/cap-tests, same reasons as everywhere else in this crate.
 azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
+
+[features]
+# Mirrors `crates/drivers/driver_server`'s plan item 7 canary.
+driver-release-nowake-canary = []

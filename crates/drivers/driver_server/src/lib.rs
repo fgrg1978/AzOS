@@ -533,28 +533,72 @@ pub fn driver_owner_tid(kind: u32) -> Option<u32> {
 /// before giving up.
 pub fn driver_release_all(tid: u32) -> usize {
     if tid == 0 { return 0; }
-    let mut reg = REGISTRY.lock();
     let mut freed = 0usize;
-    for (i, slot) in reg.slots.iter_mut().enumerate() {
-        if slot.active.load(Ordering::Acquire) && slot.driver_tid == tid {
+    // One slot per pass: its clients are woken after `REGISTRY` is dropped,
+    // as a reply's are.
+    loop {
+        let rows = {
+            let mut reg = REGISTRY.lock();
+            let Some(i) = reg.slots.iter().position(|s| {
+                s.active.load(Ordering::Acquire) && s.driver_tid == tid
+            }) else {
+                break;
+            };
+            let slot = &mut reg.slots[i];
             slot.active.store(false, Ordering::Release);
             slot.driver_tid = 0;
             slot.orphan_of = 0;
             clear_stop(slot);
             slot.irq_pending.store(false, Ordering::Relaxed);
-            // Nobody will answer these tokens now; each client ends at its
-            // own deadline. The rows and the queued requests are cleared so a
-            // later registration of this slot — possibly for another kind —
-            // is not handed requests addressed to the driver that died.
-            let _ = slot.waiters.clear();
-            reset_posted(i);
+            // Nobody will answer these tokens now. The rows and the queued
+            // requests are cleared so a later registration of this slot —
+            // possibly for another kind — is not handed requests addressed
+            // to the driver that died, and the armed clients are told.
+            let rows = release_rows(i, slot);
             slot.parked = None;
             *slot.queue.lock() = DriverQueue::new();
             *slot.replies.lock() = ReplyRing::new();
-            freed += 1;
-        }
+            rows
+        };
+        wake_released(&rows);
+        freed += 1;
     }
     freed
+}
+
+/// Clear slot `i`'s armed client rows for a release, and mark each row's
+/// token posted: a client woken by [`wake_released`] then finds its reply
+/// "posted", withdraws, finds no row, and ends its wait at once as
+/// `TimedOut` (`UserDriverProxy::call_timeout_us`'s "posted but gone" arm).
+/// Tokens are unique per slot for the boot, so no later client of the slot
+/// can match a token marked here. Call with `REGISTRY` held.
+///
+/// **Why (plan item 7).** The rows used to be dropped and nobody woken: every
+/// client of a driver that died slept out its whole reply budget
+/// (`PROXY_REPLY_TIMEOUT_MS`) before learning the kind was gone.
+fn release_rows(i: usize, slot: &mut DriverSlot) -> [Option<reply_wait::ReplyWaiter>; reply_wait::MAX_REPLY_WAITERS] {
+    let rows = slot.waiters.clear();
+    reset_posted(i);
+    if let Some(posted) = REPLY_POSTED.get(i) {
+        for (a, w) in posted.iter().zip(rows.iter()) {
+            if let Some(w) = w {
+                a.store(w.token, Ordering::Release);
+            }
+        }
+    }
+    rows
+}
+
+/// Wake the clients [`release_rows`] cleared. Call with `REGISTRY` dropped.
+fn wake_released(rows: &[Option<reply_wait::ReplyWaiter>; reply_wait::MAX_REPLY_WAITERS]) {
+    #[cfg(feature = "driver-release-nowake-canary")]
+    { let _ = rows; }
+    #[cfg(not(feature = "driver-release-nowake-canary"))]
+    if let Some(h) = reply_wait::proxy_hooks() {
+        for w in rows.iter().flatten() {
+            (h.wake)(w.tid, w.deadline);
+        }
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -615,20 +659,26 @@ pub fn driver_adopt(dead_tid: u32, heir: u32) -> usize {
 /// have at its death: the supervisor could not create a successor.
 pub fn driver_release_orphans(dead_tid: u32) -> usize {
     if dead_tid == 0 { return 0; }
-    let mut reg = REGISTRY.lock();
     let mut n = 0usize;
-    for slot in reg.slots.iter_mut() {
-        if slot.active.load(Ordering::Acquire) && slot.driver_tid == 0
-            && slot.orphan_of == dead_tid
-        {
+    loop {
+        let rows = {
+            let mut reg = REGISTRY.lock();
+            let Some(i) = reg.slots.iter().position(|s| {
+                s.active.load(Ordering::Acquire) && s.driver_tid == 0 && s.orphan_of == dead_tid
+            }) else {
+                break;
+            };
+            let slot = &mut reg.slots[i];
             slot.active.store(false, Ordering::Release);
             slot.orphan_of = 0;
             slot.irq_pending.store(false, Ordering::Relaxed);
-            let _ = slot.waiters.clear();
+            let rows = release_rows(i, slot);
             slot.parked = None;
             *slot.queue.lock() = DriverQueue::new();
-            n += 1;
-        }
+            rows
+        };
+        wake_released(&rows);
+        n += 1;
     }
     n
 }
@@ -710,8 +760,9 @@ pub fn driver_take_stop_code(kind: u32, tid: u32) -> Option<i32> {
 
 /// Unregister a driver. Called on process exit / explicit unregister.
 pub fn driver_unregister(kind: u32) -> bool {
-    let mut reg = REGISTRY.lock();
-    if let Some(i) = reg.find_kind_idx(kind) {
+    let rows = {
+        let mut reg = REGISTRY.lock();
+        let Some(i) = reg.find_kind_idx(kind) else { return false };
         let slot = &mut reg.slots[i];
         slot.active.store(false, Ordering::Release);
         slot.driver_tid = 0;
@@ -719,15 +770,14 @@ pub fn driver_unregister(kind: u32) -> bool {
         clear_stop(slot);
         slot.irq_pending.store(false, Ordering::Relaxed);
         // Same reason as `driver_release_all`.
-        let _ = slot.waiters.clear();
-        reset_posted(i);
+        let rows = release_rows(i, slot);
         slot.parked = None;
         *slot.queue.lock() = DriverQueue::new();
         *slot.replies.lock() = ReplyRing::new();
-        true
-    } else {
-        false
-    }
+        rows
+    };
+    wake_released(&rows);
+    true
 }
 
 /// Enqueue a client request. Returns the issued token, or 0 on failure

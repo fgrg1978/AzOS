@@ -264,6 +264,10 @@ cow-spurious-canary = ["azos_mm/cow-spurious-canary"]
 fork-commit-race-canary = ["azos_mm/fork-commit-race-canary"]
 mmap-prot-canary = ["azos_syscall/mmap-prot-canary"]
 demand-region-canary = ["azos_mm/demand-region-canary"]
+# Plan item 7 (coherence) canaries, see `crates/core/{sched,ipc}/Cargo.toml`.
+kill-wake-timer-only-canary = ["azos_sched/kill-wake-timer-only-canary"]
+kill-reblock-canary = ["azos_sched/kill-reblock-canary"]
+pipe-nonblock-canary = ["azos_ipc/pipe-nonblock-canary"]
 # Wave 13 (THREADS) canaries, see `crates/core/sched/Cargo.toml`.
 futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]
 threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]

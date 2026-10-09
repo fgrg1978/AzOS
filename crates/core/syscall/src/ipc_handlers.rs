@@ -597,7 +597,9 @@ pub fn sys_port_wait_typed(cap_raw: u64, out_ptr: u64) -> i64 {
         return Errno::EFAULT.to_syscall_ret();
     }
     let waited = azos_ipc::port::port_wait_ref_at(r, tid, port_now_ns, |until| {
-        azos_sched::task_block(port_block_reason(r, until))
+        // Killable (plan item 7): a forced kill ends the wait in at most
+        // `PORT_WAIT_TURNS` turns instead of re-blocking each time.
+        azos_sched::task_block_unless_killed(port_block_reason(r, until));
     });
     match waited {
         Ok(event) => copy_port_event_out(out_ptr, &event),
@@ -624,7 +626,7 @@ pub fn sys_port_wait_until_typed(cap_raw: u64, out_ptr: u64, deadline_ns: u64) -
     use azos_abi::error::Errno;
     use azos_ipc::cap::{targets::Port, Cap};
     use azos_ipc::port::PortCapError;
-    use azos_sched::{task_block_outcome, BlockOutcome};
+    use azos_sched::{task_block_killable, BlockOutcome};
 
     if out_ptr == 0 {
         return Errno::EINVAL.to_syscall_ret();
@@ -642,7 +644,7 @@ pub fn sys_port_wait_until_typed(cap_raw: u64, out_ptr: u64, deadline_ns: u64) -
         return Errno::EFAULT.to_syscall_ret();
     }
     let waited = azos_ipc::port::port_wait_until_ref(r, tid, deadline_ns, port_now_ns, |until| {
-        task_block_outcome(port_block_reason(r, until)) == BlockOutcome::Refused
+        task_block_killable(port_block_reason(r, until)) == BlockOutcome::Refused
     });
     match waited {
         Ok(Some(event)) => copy_port_event_out(out_ptr, &event),

@@ -251,6 +251,9 @@ pub extern "C" fn _start() -> ! {
     // one child: a second live child during those assertions would be a
     // second thing `wait()` could reap.
     check_endpoint_exchange();
+    // Plan item 7 (coherence): dead tasks' pipes leave nothing behind. After
+    // every check that reaps with `wait()`: it reaps its own children by TID.
+    check_nonblock_survives_dead_pipes();
     // LAST, and it must stay last: this one LATCHES the machine's e-stop, so
     // every motor write for the rest of the boot is clamped to zero. Any check
     // placed after it would be running on a robot that has been shut down.
@@ -1567,6 +1570,93 @@ fn check_service_name_dies_with_its_task() {
     expect_eq(b"service: registering child reaped", reaped, pid);
     expect_eq(b"service: the child registered its name", status as isize, 0);
     expect_eq(b"service: a dead task's name is released", sys::service_discover(NAME), -1);
+}
+
+/// Signal a forced kill carries in the dead-pipes check.
+const DEAD_PIPES_SIGNO: u64 = 9;
+/// How long the last child may take to read its empty pipe.
+const DEAD_PIPES_REAP_MS: u64 = 3_000;
+
+/// Poll `waitpid(pid)` for `ms` milliseconds: the reaped status, or -1.
+fn reap_within(pid: isize, ms: u64) -> i32 {
+    let mut st: i32 = -12345;
+    let mut deadline = Deadline::in_ms(ms);
+    while !deadline.expired() {
+        if sys::waitpid(pid as u32, &mut st as *mut i32) > 0 {
+            return st;
+        }
+        sys::sleep(2);
+    }
+    -1
+}
+
+/// Pipes each `PIPE_NONBLOCK` filler child creates, at most.
+const NONBLOCK_FILL_PER_CHILD: usize = 8;
+/// Pipes the filler children create in all: more than any per-machine table of
+/// non-blocking pipes the kernel ever kept (16).
+const NONBLOCK_FILL_TOTAL: usize = 24;
+
+/// A non-blocking pipe stays non-blocking after many dead tasks' non-blocking
+/// pipes: children create `PIPE_NONBLOCK` pipes and exit holding them, then a
+/// last child reads its own empty `PIPE_NONBLOCK` pipe. Returns that child's
+/// status: 0 (`-EAGAIN`), 1 (another answer), 137 (it blocked and was killed).
+fn nonblock_survives_dead_pipes() -> i32 {
+    let mut made = 0usize;
+    let mut rounds = 0;
+    while made < NONBLOCK_FILL_TOTAL && rounds < 8 {
+        rounds += 1;
+        let pid = sys::fork();
+        if pid == 0 {
+            let mut n = 0;
+            while n < NONBLOCK_FILL_PER_CHILD {
+                let mut p = [0u32; 2];
+                if sys::pipe_typed(&mut p, sys::PIPE_NONBLOCK) != 0 {
+                    break;
+                }
+                n += 1;
+            }
+            sys::exit(n as i32);
+        }
+        if pid <= 0 {
+            return -2;
+        }
+        let st = reap_within(pid, 20_000);
+        if st <= 0 {
+            break;
+        }
+        made += st as usize;
+    }
+    let pid = sys::fork();
+    if pid == 0 {
+        let mut p = [0u32; 2];
+        if sys::pipe_typed(&mut p, sys::PIPE_NONBLOCK) != 0 {
+            sys::exit(2);
+        }
+        let mut b = [0u8; 1];
+        let rc = sys::read(p[0] as u64, &mut b);
+        sys::exit(if rc == -11 { 0 } else { 1 });
+    }
+    if pid <= 0 {
+        return -2;
+    }
+    let st = reap_within(pid, DEAD_PIPES_REAP_MS);
+    if st == -1 {
+        let _ = sys::task_kill(pid as u32, sys::KILL_FORCE, DEAD_PIPES_SIGNO, 0);
+        return reap_within(pid, DEAD_PIPES_REAP_MS);
+    }
+    st
+}
+
+/// **`PIPE_NONBLOCK` survives dead tasks' pipes** (plan item 7). The flag
+/// lived in a 16-entry per-machine table cleared only by an explicit close,
+/// so the pipes of tasks that died holding them used it up and every later
+/// `PIPE_NONBLOCK` was silently ignored: the last child's read blocked (and
+/// was killed, 137). The flag now lives in the pipe and goes with it.
+///
+/// Canary `pipe-nonblock-canary` (the flag is never recorded): 137.
+fn check_nonblock_survives_dead_pipes() {
+    let st = nonblock_survives_dead_pipes();
+    expect_eq(b"dead pipes: PIPE_NONBLOCK after dead tasks' non-blocking pipes", st as isize, 0);
 }
 
 /// Pages the larger measured child grows its break by.

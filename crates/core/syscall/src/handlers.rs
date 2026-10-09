@@ -6537,7 +6537,7 @@ pub fn sys_ipc_lease_accept(lessor: u64) -> i64 {
     // (owner decision 2026-09-14, replacing a wake without a mark,
     // after which the woken lessee blocked again).
     match azos_ipc::lease::lease_accept_wait(lessee, lessor, || {
-        azos_sched::task_block(azos_sched::WaitReason::LeaseAccept(lessee, lessor))
+        azos_sched::task_block_unless_killed(azos_sched::WaitReason::LeaseAccept(lessee, lessor));
     }) {
         Ok((lease_id, _shm_id)) => lease_id as i64,
         Err(_) => -1,
@@ -6585,7 +6585,7 @@ pub fn sys_ipc_lease_accept_map(lessor: u64, out_va: u64) -> i64 {
         return Errno::EFAULT.to_syscall_ret();
     }
     let lease_id = match lease::lease_accept_wait(lessee, lessor, || {
-        azos_sched::task_block(azos_sched::WaitReason::LeaseAccept(lessee, lessor))
+        azos_sched::task_block_unless_killed(azos_sched::WaitReason::LeaseAccept(lessee, lessor));
     }) {
         Ok((id, _)) => id,
         Err(_) => return -1,
@@ -6772,10 +6772,10 @@ pub fn sys_drv_irq_wait(irq: u64) -> i64 {
     match irq_wait_begin(irq, tid) {
         IrqWaitStart::Pending => 0,
         IrqWaitStart::Registered => {
-            let _ = azos_sched::task_block_outcome(azos_sched::WaitReason::Irq(irq));
+            let _ = azos_sched::task_block_killable(azos_sched::WaitReason::Irq(irq));
             irq_wait_bound_ret(irq_wait_end(irq, tid))
         }
-        IrqWaitStart::Unbound => irq_wait_ret(azos_sched::task_block_outcome(
+        IrqWaitStart::Unbound => irq_wait_ret(azos_sched::task_block_killable(
             azos_sched::WaitReason::Irq(irq),
         )),
     }

@@ -411,7 +411,9 @@ fn fast_ipc_call_arm(
                         if _turn == 0 {
                             azos_sched::scheduler::fast_ipc_call_handoff(server_tid, handle);
                         } else {
-                            azos_sched::task_block(
+                            // Killable (plan item 7): a forced kill spends
+                            // the remaining turns without blocking.
+                            azos_sched::task_block_unless_killed(
                                 azos_sched::WaitReason::FastIpcClient(handle)
                             );
                         }
@@ -834,7 +836,9 @@ fn fast_ipc_accept_into_waking(
                     Some((client, h)) => azos_sched::scheduler::fast_ipc_reply_handoff(
                         client, h, server_tid,
                     ),
-                    None => azos_sched::task_block(
+                    // Killable (plan item 7): an idle server killed in its
+                    // accept spends the remaining turns without blocking.
+                    None => azos_sched::task_block_unless_killed(
                         azos_sched::WaitReason::FastIpcServer(server_tid)
                     ),
                 }

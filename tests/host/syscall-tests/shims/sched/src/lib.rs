@@ -773,6 +773,25 @@ pub enum BlockOutcome {
 /// answers the programmed outcome. Which outcome the real scheduler produces
 /// is proved in `tests/host/sched-wake-tests`; this only lets a test see what the
 /// handler does with each one. `harness.rs::reset_state` disarms it.
+/// Host stand-in for `azos_sched::task_block_killable` (plan item 7): no
+/// forced stop is ever pending here, so it is the block, answering the armed
+/// outcome or `Returned`.
+pub fn task_block_killable(reason: WaitReason) -> BlockOutcome {
+    let armed = *BLOCK_OUTCOME.lock().unwrap_or_else(|e| e.into_inner());
+    task_block(reason);
+    armed.unwrap_or(BlockOutcome::Returned)
+}
+
+/// Host stand-in for `azos_sched::task_block_unless_killed`: the block.
+pub fn task_block_unless_killed(reason: WaitReason) {
+    task_block(reason);
+}
+
+/// Host stand-in: no forced stop is ever pending in this crate's tests.
+pub fn current_task_killed() -> bool {
+    false
+}
+
 pub fn task_block_outcome(reason: WaitReason) -> BlockOutcome {
     let armed = *BLOCK_OUTCOME.lock().unwrap_or_else(|e| e.into_inner());
     match armed {

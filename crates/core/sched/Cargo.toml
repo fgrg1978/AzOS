@@ -26,6 +26,13 @@ threads-tls-canary = []
 # late start a loaded host gives it): a thread check that sleeps to "let the
 # thread park" fails every boot with it.
 threads-late-start-canary = []
+# Plan item 7 canaries, never in a real build: a forced kill wakes only a
+# `Timer` wait (the target parked on a port or a fast-IPC exchange stays
+# parked); a killed task woken from a wait blocks again
+# (`wait::task_block_killable` without its stop check). Either leaves the
+# `dead client` abitest line with -1 for the waits it no longer ends.
+kill-wake-timer-only-canary = []
+kill-reblock-canary = []
 # Wave 15 (plan 4a) gate canary, never in a real build: an exec from a
 # process with threads leaves the other threads running across it.
 exec-no-dethread-canary = []

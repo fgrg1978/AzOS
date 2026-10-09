@@ -3236,6 +3236,7 @@ pub extern "C" fn _start() -> ! {
     phase_s();
     phase_x();
     phase_p();
+    phase_k_killed_waits();
     phase_a_race();
 
     let failed = unsafe { FAILURES };
@@ -3252,6 +3253,93 @@ pub extern "C" fn _start() -> ! {
         l.flush();
         sys::exit(1);
     }
+}
+
+// ── Phase K: a forced kill ends a task blocked anywhere (plan item 7) ──────
+//
+// Every per-client release (leases, ports, shared memory, fast-IPC slots,
+// sockets, descriptors) runs from the exit hook, so a forced kill that leaves
+// its target blocked releases nothing. The kill used to wake only `Timer`
+// waits, and the notify, port, fast-IPC accept and sleep waits went back to
+// sleep. Each child below blocks where nothing will ever wake it and must be
+// reaped with `128 + K_SIGNO` within `K_REAP_MS`.
+//
+// One line for the gate rows: `[IPCTEST] killed waits: notify=137 ...`, -1
+// for a child the kill never ended.
+//
+// Canaries (the unfixed kernel read -1 for all four):
+// `kill-wake-timer-only-canary` -> port=-1 accept=-1;
+// `kill-reblock-canary` -> all four -1.
+
+/// The signal phase K's kills carry: the reaped status is `128 + K_SIGNO`.
+const K_SIGNO: u64 = 9;
+/// How long a killed child may take to be reaped.
+const K_REAP_MS: u32 = 3_000;
+/// How long the parent lets a child reach its wait before the kill.
+const K_SETTLE_MS: u64 = 50;
+/// A child's exit code when its wait returned before the kill: it never
+/// blocked, so its line proves nothing.
+const K_NOT_BLOCKED: i32 = 0x33;
+
+/// Fork a child that runs `block`, force-kill it, and return the status it
+/// is reaped with (-1: still blocked; -2: no fork; -3: the kill refused).
+fn k_kill_blocked(block: fn()) -> isize {
+    let pid = sys::fork();
+    if pid == 0 {
+        block();
+        sys::exit(K_NOT_BLOCKED);
+    }
+    if pid <= 0 {
+        return -2;
+    }
+    sys::sleep(K_SETTLE_MS);
+    if sys::task_kill(pid as u32, sys::KILL_FORCE, K_SIGNO, 0) < 0 {
+        return -3;
+    }
+    match reap_within(pid as u32, K_REAP_MS) {
+        Some(st) => st as isize,
+        None => -1,
+    }
+}
+
+fn k_block_notify() {
+    let cap = sys::shm_create_typed(1, sys::SHM_RW);
+    let va = if cap >= 0 { sys::shm_map_typed(cap as u32) } else { -1 };
+    if va > 0 {
+        let _ = sys::notify_wait(va as usize, 0, sys::NOTIFY_FOREVER);
+    }
+}
+
+fn k_block_port() {
+    let p = sys::port_create_typed();
+    if p >= 0 {
+        let mut ev = [0u8; sys::PORT_EVENT_BYTES];
+        let _ = sys::port_wait_typed(p as u32, &mut ev);
+    }
+}
+
+fn k_block_accept() {
+    let _ = sys::fast_ipc_accept_req();
+}
+
+fn k_block_sleep() {
+    sys::sleep(30_000);
+}
+
+fn phase_k_killed_waits() {
+    let want = 128 + K_SIGNO as isize;
+    let notify = k_kill_blocked(k_block_notify);
+    let port = k_kill_blocked(k_block_port);
+    let accept = k_kill_blocked(k_block_accept);
+    let sleep = k_kill_blocked(k_block_sleep);
+    let mut l = Line::new();
+    l.s(b"[IPCTEST] killed waits: notify=").i(notify).s(b" port=").i(port)
+        .s(b" accept=").i(accept).s(b" sleep=").i(sleep);
+    l.flush();
+    expect_eq(b"K/a forced kill ends a notify_wait with no deadline", notify, want);
+    expect_eq(b"K/a forced kill ends a port wait with no deadline", port, want);
+    expect_eq(b"K/a forced kill ends an idle fast-IPC accept", accept, want);
+    expect_eq(b"K/a forced kill ends a sleep", sleep, want);
 }
 
 #[panic_handler]

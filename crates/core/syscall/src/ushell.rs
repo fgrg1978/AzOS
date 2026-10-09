@@ -171,23 +171,11 @@ pub fn sys_console_wait(buf: u64, len: u64, timeout_ns: u64, a3: u64) -> i64 {
 
 // ── SYS_PIPE_TYPED (607) and the pipe arms of 564/565/566 ───────────────────
 
-/// Pipes created with `PIPE_NONBLOCK`, by resource. A small set: it only has
-/// to remember the flag for the pipes alive at once.
-static NONBLOCK: azos_sync::SpinLock<[u32; 16]> = azos_sync::SpinLock::new([0; 16]);
-
-fn nonblock_set(resource: u32, on: bool) {
-    let mut t = NONBLOCK.lock();
-    if on {
-        if let Some(e) = t.iter_mut().find(|e| **e == 0 || **e == resource) {
-            *e = resource;
-        }
-    } else if let Some(e) = t.iter_mut().find(|e| **e == resource) {
-        *e = 0;
-    }
-}
-
+/// Is typed pipe `resource` `PIPE_NONBLOCK`? The flag lives in the pipe and
+/// goes with it (plan item 7: a side table here was used up by the pipes of
+/// tasks that died holding them).
 fn nonblock(resource: u32) -> bool {
-    resource != 0 && NONBLOCK.lock().contains(&resource)
+    resource != 0 && azos_ipc::pipe::pipe_typed_nonblock(resource)
 }
 
 /// `SYS_PIPE_TYPED`: see `azos_abi::syscall_nr::SYS_PIPE_TYPED`.
@@ -222,7 +210,7 @@ pub fn sys_pipe_typed(out_ptr: u64, flags: u64) -> i64 {
         return err(Errno::EMFILE);
     };
     if flags & PIPE_NONBLOCK != 0 {
-        nonblock_set(resource, true);
+        let _ = azos_ipc::pipe::pipe_typed_set_nonblock(resource, true);
     }
     let h = [rd.raw().as_raw(), wr.raw().as_raw()];
     let mut bytes = [0u8; 8];
@@ -234,7 +222,6 @@ pub fn sys_pipe_typed(out_ptr: u64, flags: u64) -> i64 {
             t.revoke(wr);
         });
         azos_ipc::pipe::pipe_typed_abandon(resource);
-        nonblock_set(resource, false);
         return err(Errno::EFAULT);
     }
     0
@@ -347,9 +334,6 @@ pub fn sys_pipe_close(cap_raw: u64) -> i64 {
     match got {
         Some(Ok((perms, resource))) => {
             let w = azos_ipc::pipe::pipe_typed_drop_end(resource, perms.contains(CapPerms::WRITE));
-            if azos_ipc::pipe::pipe_typed_state(resource).is_none() {
-                nonblock_set(resource, false);
-            }
             wake(w);
             0
         }

@@ -3392,7 +3392,7 @@ fn stop_slot(idx: usize) {
             tid
         }
     };
-    wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(_)));
+    wake_stopped(tid, true);
 }
 
 /// Wave 15 (plan 4a): the leader's half of an exec by another of its
@@ -4728,8 +4728,23 @@ pub fn task_stop(tid: u32, force: bool, signo: u8) -> bool {
         }
     }
     record_stop(idx, tid, stop_policy::Stop { force, signo });
-    wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(_)));
+    wake_stopped(tid, force);
     true
+}
+
+/// Wake a task just asked to stop. A request wakes the `Timer` waits that
+/// answer `-EINTR` (the console, pipe and sleep waits). A forced stop wakes
+/// it out of ANY wait (plan item 7): every wait a task makes in its own
+/// syscall blocks through `wait::task_block_killable`, which refuses to block
+/// again once the stop is pending, so the task returns and ends; woken from a
+/// `Timer` wait only, a task parked on a port, a fast-IPC exchange or a lease
+/// stayed parked, and its exit hook, which releases everything it held, never
+/// ran.
+fn wake_stopped(tid: u32, force: bool) {
+    #[cfg(not(feature = "kill-wake-timer-only-canary"))]
+    wake_task_by_tid(tid, &|r| force || matches!(r, WaitReason::Timer(_)));
+    #[cfg(feature = "kill-wake-timer-only-canary")]
+    { let _ = force; wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(_))); }
 }
 
 /// Record stop request `new` for task `tid` in slot `idx` (merged with one

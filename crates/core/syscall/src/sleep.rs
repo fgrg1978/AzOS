@@ -19,9 +19,14 @@ use azos_drv_sys::timebase::{now as get_time, TIMER_FREQ};
 /// refused again on every turn, so that caller waits on the counter instead of
 /// re-entering the scheduler in a loop.
 fn block_until(deadline: u64) {
-    use azos_sched::{task_block_outcome, BlockOutcome, WaitReason};
+    use azos_sched::{task_block_killable, BlockOutcome, WaitReason};
     while get_time() < deadline {
-        if task_block_outcome(WaitReason::Timer(deadline)) == BlockOutcome::Refused {
+        if task_block_killable(WaitReason::Timer(deadline)) == BlockOutcome::Refused {
+            // A forced kill ends the sleep (plan item 7): the task dies at
+            // its next syscall instead of sleeping out its deadline first.
+            if azos_sched::current_task_killed() {
+                return;
+            }
             while get_time() < deadline {
                 core::hint::spin_loop();
             }
