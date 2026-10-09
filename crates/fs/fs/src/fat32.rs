@@ -2570,7 +2570,9 @@ fn defer_free(first: u32, size: u32) -> Result<(), FsError> {
     // write-through's "free one epoch later". One barrier then serves
     // `FS_DEFERRED_FREE_SLOTS` more holds, not one.
     if wb_active() && !cfg!(feature = "fw-free-one-held-canary") {
-        let top = SECTOR_CACHE.lock().barrier();
+        // Through `barrier_closing`, like every other barrier, so the
+        // `wb-barrier-flushes-canary` build flushes here too (FW2).
+        let top = barrier_closing()?;
         fat32_free_chain(first);
         release_held(top);
         return Ok(());
@@ -3418,11 +3420,21 @@ fn wb_active() -> bool {
 /// requires a device that flushes (`fat32_mount` probes it), so the
 /// fail-closed rule for `Unsupported` above holds by construction.
 fn order_barrier() -> Result<(), FsError> {
+    barrier_closing().map(|_| ())
+}
+
+/// [`order_barrier`], returning the highest epoch it closed: every write
+/// issued before it is in that epoch or an earlier one. Write-back: the
+/// cache's barrier (no I/O). Write-through, and the
+/// `wb-barrier-flushes-canary` build: a device flush, which closes the same
+/// epochs and makes them durable. Every barrier FAT32 puts between its own
+/// writes goes through here, so the canary reaches each of them.
+fn barrier_closing() -> Result<u64, FsError> {
     if wb_active() && !cfg!(feature = "wb-barrier-flushes-canary") {
-        SECTOR_CACHE.lock().barrier();
-        return Ok(());
+        return Ok(SECTOR_CACHE.lock().barrier());
     }
-    device_flush()
+    let top = SECTOR_CACHE.lock().top_epoch();
+    device_flush().map(|()| top)
 }
 
 /// `true` when the journal sector holds no PENDING or COMMITTED record —

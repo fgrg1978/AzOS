@@ -3341,6 +3341,39 @@ mod power_cut {
         assert!(flushes as u64 <= bound + 3, "{flushes} flushes for 40 rewrites");
     }
 
+    /// **A full hold table closes epochs, no device I/O** (FW2): two more
+    /// truncate + write + close of one file than `FS_DEFERRED_FREE_SLOTS`,
+    /// no fsync. The first past the table takes the full-table path (one
+    /// barrier, then every held chain freed into the next epoch), and none
+    /// of it reaches the device before the write-back.
+    ///
+    /// **Canary.** `wb-barrier-flushes-canary`: every barrier FAT32 puts
+    /// between its own writes flushes, the full-table one included.
+    #[test]
+    fn a_full_hold_table_frees_without_device_io() {
+        let _g = serial();
+        let n = name(b"REC", b"DAT");
+        remount(with_file(&n, &pattern(OLD, 0x11)));
+        super::vfs_open_close::vfs_once();
+        let v = pattern(400, 0x42); // one 512-byte cluster per version
+        let _ = disk_events();
+        for _ in 0..azos_limits::FS_DEFERRED_FREE_SLOTS + 2 {
+            let mut t = super::vfs::ScratchFds::new();
+            let fd = super::vfs::vfs_open(&mut t, b"/fat/REC.DAT",
+                super::vfs::O_WRONLY | super::vfs::O_TRUNC);
+            assert!(fd >= 0);
+            assert_eq!(super::vfs::vfs_write(&mut t, fd, v.as_ptr(), v.len()), v.len() as i32);
+            assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+        }
+        let ev = disk_events();
+        // The full-table path ran: it emptied the table, and only the last
+        // truncate's one-cluster chain is held now.
+        assert_eq!(fat32::fat32_held_clusters(), 1, "the full-table path did not run");
+        assert!(ev.is_empty(), "past the hold table the truncates touched the device: {ev:?}");
+        assert_eq!(fat32::fat32_sync(), Ok(()));
+        assert_eq!(read_back(b"/REC.DAT").as_deref(), Some(&v[..]));
+    }
+
     /// **A write of n clusters reads the chain once** (wave 15, FW): one
     /// 8 KiB `write` to a new file (16 clusters of 512 B) looks up O(n)
     /// sectors in the cache: 80. Walking the chain from its first cluster
