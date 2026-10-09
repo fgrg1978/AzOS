@@ -320,13 +320,15 @@ RING_LANES_RE='^(ring-|ioring-|drvring-|drv-call|frame-stream)'
 #
 # ITS BRAIN LINK IS OFF (`behavior_server_port=0` in that boot's CONFIG.INI,
 # re-signed): disk-vsbench.img points it at 10.0.2.2:9000, which on user
-# networking is the host, which answers RST. The kernel's behavior task then
-# closes, 2 s later, the TCP slot its refused connect HAD, by index; the RST
-# had freed that slot and `connect` had handed it to vsbench's stream.
-# Measured: `tcp-bulk-tx` got a FIN from its own side after ~460 KB, with no
-# close from the lane (pcap), `FAIL rc=-3001`. A kernel defect, not a
-# benchmark one (kernel/src/tasks/behavior.rs, `tcp::close(tcp_fd)` after the
-# handshake wait); Linux runs no such daemon, so neither side gets one here.
+# networking is the host, which answers RST. Measured with it on (empty
+# VSBENCH_TCP_AZOS_CONFIG, the canary): 3 of 3 boots, `tcp-bulk-tx` got a FIN
+# from its OWN side after ~460 KB with no close from the lane (pcap) and
+# failed `rc=-3001`; with it off, 0 of 6. ATTRIBUTED, by reading the code, not
+# observed: kernel/src/tasks/behavior.rs waits out the handshake and then
+# `tcp::close(tcp_fd)`s by index, and the RST had already freed that slot for
+# `connect` to hand to vsbench (camera.rs has the same pattern). A kernel
+# defect, not a benchmark one; Linux runs no such daemon, so neither side
+# gets one here.
 #
 # Reported per lane and side: guest ns per KiB, which under `-icount` is
 # instructions per KiB of the whole guest; bytes/s on the guest clock; bytes/s
@@ -342,6 +344,9 @@ VSBENCH_TCP="${VSBENCH_TCP:-1}"
 VSBENCH_TCP_SMP="${VSBENCH_TCP_SMP:-1}"
 TCP_ICOUNT_ARGS="-icount shift=0,sleep=off"
 TCP_LINUX_IP="ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off"
+# The AzOS TCP boot's CONFIG.INI override (see "ITS BRAIN LINK IS OFF");
+# empty keeps disk-vsbench.img's brain link, the canary for that finding.
+VSBENCH_TCP_AZOS_CONFIG="${VSBENCH_TCP_AZOS_CONFIG-behavior_server_port=0}"
 LINUX_IMAGE="${VSBENCH_LINUX_IMAGE:-$HOME/devel/vms/riscv/Image}"
 WAIT_SECS="${WAIT_SECS:-60}"
 WORK="${VSBENCH_WORK:-$REPO_ROOT/build/vsbench-compare}"
@@ -741,6 +746,8 @@ tcp_peer_stop() {
     [ -n "$TCP_PEER_PID" ] && { kill "$TCP_PEER_PID" 2>/dev/null; wait "$TCP_PEER_PID" 2>/dev/null; }
     TCP_PEER_PID=""
 }
+# `die` exits from inside the pass too: the peer must not outlive the script.
+trap tcp_peer_stop EXIT
 # QEMU arguments of one TCP boot: the NIC on user networking, and its pcap.
 tcp_net_args() { # tcp_net_args <pcap>
     printf '%s' "-netdev user,id=tn0 -device virtio-net-device,netdev=tn0 -object filter-dump,id=tf0,netdev=tn0,file=$1,maxlen=128"
@@ -749,7 +756,7 @@ if [ "$VSBENCH_TCP" = "1" ] && { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBE
     tcp_peer_start azos
     if [ -n "$TCP_PORT" ]; then
         BOOT_LANES=tcp BOOT_SMP="$VSBENCH_TCP_SMP" BOOT_ICOUNT="$TCP_ICOUNT_ARGS" BOOT_TCP_PORT="$TCP_PORT" \
-            BOOT_CONFIG_SET=behavior_server_port=0 \
+            BOOT_CONFIG_SET="$VSBENCH_TCP_AZOS_CONFIG" \
             BOOT_EXTRA="$(tcp_net_args "$WORK/tcp-azos.pcap")" BOOT_WAIT="${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}" \
             boot_azos "$KP_KERNEL" "$KT_LOG" "$WORK/k-product-tcp.img"
     fi
