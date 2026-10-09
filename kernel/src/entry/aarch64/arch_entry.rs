@@ -139,8 +139,10 @@ impl ArchEntry for Entry {
     /// first (Relaxed), `CORE_ONLINE` last (Release) — the boot CPU's Acquire
     /// load of `CORE_ONLINE` makes every store before it visible in one step.
     /// The hart id is re-derived through `current_cpu_id()` (a fresh
-    /// `MRS TPIDR_EL1`), not the argument, so boot.S's canary (b) — drop its
-    /// `msr TPIDR_EL1` — fails THIS readback rather than passing it.
+    /// `MRS TPIDR_EL1`), not the argument. boot.S's canary (b) — drop its
+    /// `msr TPIDR_EL1` — does NOT fail this readback: `secondary_main` has
+    /// already rewritten `TPIDR_EL1` (`set_percpu_base`). It fails the
+    /// TTBR0/TTBR1 and CPACR_EL1 readbacks the earlier boot code publishes.
     #[inline(always)]
     fn secondary_publish_online(&self, cpu: usize) {
         let mpidr_raw = azos_arch::mpidr::read_mpidr().raw;

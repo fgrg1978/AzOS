@@ -74,10 +74,11 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
                 let got_id = crate::entry::aarch64::CORE_HART_ID[hart].load(Ordering::Acquire);
                 kprintln!("[SMP] hart {} online: MPIDR_EL1={:#x} current_cpu_id()={}",
                     hart, mpidr, got_id);
-                // MARKER, asserted by the gate — canary (b) (drop the
-                // TPIDR_EL1 write on secondaries) must fail exactly this
-                // line: `got_id` then reads back as whatever TPIDR_EL1
-                // reset to (0 on QEMU), never `hart`.
+                // MARKER, asserted by the gate: `got_id` is `TPIDR_EL1` as
+                // the secondary read it, which `secondary_main` set with
+                // `set_percpu_base`. boot.S's canary (b) (drop its own
+                // TPIDR_EL1 write) passes this line and fails the TTBR and
+                // CPACR_EL1 readbacks below instead.
                 if got_id != hart as u64 {
                     azos_drv_sys::kerr!("[SMP] FAILED: hart {} current_cpu_id() reported {} \
                                (TPIDR_EL1 not set to this core's own id)", hart, got_id);

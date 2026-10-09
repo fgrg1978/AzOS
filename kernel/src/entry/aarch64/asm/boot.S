@@ -405,10 +405,14 @@ _aarch64_secondary_entry:
     // ── Publish hart id into TPIDR_EL1 ──────────────────────────────────
     // Same reason as the primary's own write above: every `PER_CPU[...]`
     // access in `crates/core/sched` depends on `current_cpu_id()` reading the
-    // right core. Canary (b) — drop this line — must fail the
-    // `CORE_HART_ID` readback marker, not silently corrupt scheduling: with
-    // it missing, `TPIDR_EL1` keeps whatever PSCI `CPU_ON` reset it to
-    // (`0` on QEMU), so every secondary would misidentify itself as hart 0.
+    // right core. Canary (b) — drop this line — must fail the boot, not
+    // silently corrupt scheduling: with it missing, `TPIDR_EL1` keeps
+    // whatever PSCI `CPU_ON` reset it to (`0` on QEMU), so everything this
+    // secondary runs before `secondary_main` acts as hart 0. It fails the
+    // per-hart TTBR0/TTBR1 and CPACR_EL1 readbacks (published from that
+    // early code into hart 0's slot), NOT the `CORE_HART_ID` marker:
+    // `secondary_main` (kernel/src/boot/smp.rs) rewrites `TPIDR_EL1` with
+    // `set_percpu_base` before `secondary_publish_online` reads it back.
     msr     TPIDR_EL1, x20
 
     // ── FP/SIMD access for EL1 (CPACR_EL1.FPEN = 0b01, EL0 traps) ────────

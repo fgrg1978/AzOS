@@ -587,19 +587,19 @@ pub static AARCH64_KERNEL_TTBR0: AtomicU64 = AtomicU64::new(0);
 /// This core's MPIDR_EL1, published by each secondary right after its own
 /// MMU is on (a plain store is safe post-MMU; nothing reads this before
 /// then) — the boot CPU's SMP bring-up reads it back as the "each core
-/// online with its MPIDR" marker, and canary (b) (no `TPIDR_EL1` write on
-/// secondaries) is checked against `CORE_HART_ID` below, not this array,
-/// since a wrong `TPIDR_EL1` does not change what `MPIDR_EL1` itself reads.
+/// online with its MPIDR" marker. A wrong `TPIDR_EL1` does not change what
+/// `MPIDR_EL1` itself reads, so this array says nothing about canary (b)
+/// (boot.S's secondary `TPIDR_EL1` write dropped); see `CORE_HART_ID`.
 pub static CORE_MPIDR: [AtomicU64; crate::MAX_HARTS] =
     [const { AtomicU64::new(0) }; crate::MAX_HARTS];
 
 /// This core's OWN read-back of `current_cpu_id()` (i.e. `TPIDR_EL1`),
-/// published alongside [`CORE_MPIDR`]. Canary (b) — skip writing `TPIDR_EL1`
-/// on secondaries — must fail exactly this marker: `CORE_HART_ID[hart_id]`
-/// then reads back as `0` (whatever `TPIDR_EL1` resets to, on QEMU) instead
-/// of `hart_id`, on every secondary except (coincidentally) hart 1's own
-/// affinity-only checks. The boot CPU's readback loop reports `FAILED:` when
-/// `CORE_HART_ID[h] != h`.
+/// published alongside [`CORE_MPIDR`]. The boot CPU's readback loop reports
+/// `FAILED:` when `CORE_HART_ID[h] != h`. It is read after `secondary_main`
+/// rewrites `TPIDR_EL1` (`set_percpu_base`), so canary (b) — boot.S's
+/// secondary `TPIDR_EL1` write dropped — passes it; that canary fails
+/// through [`CORE_TTBR0`]/[`CORE_TTBR1`] and the CPACR_EL1 readback, which
+/// the earlier boot code publishes into hart 0's slot (measured, `-smp 4`).
 pub static CORE_HART_ID: [AtomicU64; crate::MAX_HARTS] =
     [const { AtomicU64::new(u64::MAX) }; crate::MAX_HARTS];
 
