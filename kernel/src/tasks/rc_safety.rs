@@ -117,7 +117,7 @@ pub(crate) fn fence_tick(state: &SensorState) {
     { let _ = state; return; }
     #[cfg(not(feature = "fence-arm-canary"))]
     if let Some((lat, lon, radius)) = azos_behavior::safety::geofence_arm_home(state) {
-        azos_drv_sys::kwarn!("[GEOFENCE] armed at home fix ({},{}) udeg, radius {} m",
+        azos_drv_sys::kprintln!("[GEOFENCE] armed at home fix ({},{}) udeg, radius {} m",
                              lat, lon, radius);
     }
 }

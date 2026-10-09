@@ -17427,13 +17427,16 @@ par_row rcfence_row "geofence: no-fence canary (arm)"                arm "qemu,f
 
 # Off compiles out: the robot QEMU config with RC_INPUT=n and GEOFENCE=n,
 # cargo arguments from tools/kconfig_to_cargo.py (which must drop exactly the
-# two features), into target/rcfence-off/ so no row's kernel is touched. Zero
+# two features), into target/generic/ so no row's kernel is touched. Zero
 # warnings, and `llvm-nm` finds none of the subsystems' symbols
 # (rc_safety / rc_link / geofence) in the ELF — after finding them in the
 # default robot kernel of the same ISA, so a query gone blind cannot pass.
 rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
     local label="$1" isa="$2" defc cfg args log out rc elf on_elf triple nmb n_on n_off
-    local dir="${REPO_ROOT}/target/rcfence-off"
+    # The Generic rows' target dir: same toolchain and dependencies, so cargo
+    # reuses core/alloc and every crate and relinks only what the features
+    # change, instead of a second build-std tree per ISA.
+    local dir="${REPO_ROOT}/target/generic"
     local re='rc_safety|rc_link|geofence'
     if [ "$isa" = rv ]; then
         defc=qemu; triple=riscv64imac-unknown-none-elf
