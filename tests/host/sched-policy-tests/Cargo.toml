@@ -13,5 +13,6 @@ description = "Host-side tests for the W4 multi-policy scheduler. Excluded from 
 # Run with:  cd tests/host/sched-policy-tests && cargo +stable test
 
 [dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
 
 [dev-dependencies]

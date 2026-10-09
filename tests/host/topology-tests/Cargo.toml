@@ -66,6 +66,7 @@ lx-server = ["azos_topology/lx-server"]
 # topology a kernel of one ISA builds, kernel-only rows included.
 emit-target-riscv64 = ["azos_topology/emit-target-riscv64"]
 emit-target-aarch64 = ["azos_topology/emit-target-aarch64"]
+deadline-levels-canary = ["azos_topology/deadline-levels-canary"]
 
 [dependencies]
 azos_abi = { path = "../../../crates/core/abi" }

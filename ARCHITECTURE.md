@@ -200,7 +200,10 @@ authority, the kernel also latches the e-stop and writes a safety record.
   one priority level, so a CPU whose reservations sit at different levels
   must also pass a cross-level test: for each level, its density plus the
   density of the levels above, plus their budgets over its shortest deadline,
-  must not exceed the CPU. A reservation that fails it is refused.
+  must not exceed the CPU. Boot and run-time admission apply the same test
+  to the same levels: a topology row that fails it on every CPU it may use
+  stops the boot, naming the row and the levels, and a reservation made
+  after boot that fails it is refused.
 - **SMP.** The kernel places a waking unpinned task on a suitable CPU and
   signals other CPUs with an inter-processor interrupt (SBI on riscv64,
   GICv3 SGI on aarch64). Tasks are not stolen between run queues at run time.

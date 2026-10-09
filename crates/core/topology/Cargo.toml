@@ -177,6 +177,8 @@ linux-threads-test = ["linux-abi-test"]
 # Boot with `-smp 1` to see it. Its own row, because the pair above is refused
 # before the second check is ever reached and could not notice it being removed.
 deadline-hart-canary = []
+# Boot admission skips the cross-level check (`deadline::levels_on`).
+deadline-levels-canary = []
 # Wave 11 SCHED-RT rows (`sched-rt-smoke` in kernel/Cargo.toml): two profiled
 # `safety_critical` rows, `rt-edf-a` and `rt-edf-b`, pinned to CPU 0, whose kernel tasks
 # take their EDF + CBS reservations from these rows. Never in a real build.

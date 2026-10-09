@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "azos_abi"
+version = "1.0.0"
+
+[[package]]
 name = "azos_sched_policy_tests"
 version = "0.1.0"
+dependencies = [
+ "azos_abi",
+]

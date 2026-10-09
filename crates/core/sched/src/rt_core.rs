@@ -16,9 +16,9 @@
 //! scheduler tick (RFC-0052 F5a). Every sum saturates: an overflow here would
 //! be a panic inside the timer interrupt under `overflow-checks`.
 
-/// One CPU is this many parts per million (same scale as
-/// `azos_topology::deadline::PPM`).
-pub const PPM: u64 = 1_000_000;
+/// One CPU is this many parts per million (the scale the cross-level rule
+/// and the topology's boot check share).
+pub use azos_abi::rt_levels::PPM;
 
 // ───────────────────────────── band budget ─────────────────────────────────
 
@@ -407,70 +407,10 @@ pub fn first_fit_by(loads: &[HartLoad], mask: u32, density: u32, band: bool, ban
     Err(why)
 }
 
-/// One reservation of a hart, as [`levels_fit`] reads it: its level, budget
-/// and relative deadline (any one time unit), and density.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Booked {
-    pub level: u32,
-    pub q: u64,
-    pub d: u64,
-    pub density_ppm: u32,
-}
-
-/// Can every reservation of one hart keep its deadlines when they sit at
-/// different priority levels? The dispatch orders reservations by deadline
-/// inside a level only; a level above runs first whatever its deadlines, so
-/// the density sum (all [`fits`] checks) is not enough: two reservations at
-/// 75 % in all, the lower one with a 2 ms deadline behind 5 ms of the upper
-/// one, miss every job (wave 15, `sched-rt-util` `mixed`).
-///
-/// The test, for each level `l` present, with `dmin` its shortest relative
-/// deadline:
-///
-/// `sum(density, levels <= l) + sum(q, levels < l) / dmin <= 1`
-///
-/// Why it is enough (sufficient, not necessary). A hard CBS server above `l`
-/// takes at most `density * L + q` of any window of length `L`: the wake
-/// rule ([`Cbs::release`]) keeps its work between a release and the deadline
-/// it holds within its density of that span, and `q` covers the budget it
-/// carries into the window (the end of one server period and the start of
-/// the next can be back to back). Level `l`'s own demand in a window of
-/// length `L >= dmin` is at most `sum(density, l) * L` (a constrained
-/// sporadic task's demand bound), and none below `dmin`. EDF meets level
-/// `l`'s deadlines when, for every `L >= dmin`, that demand fits in what the
-/// levels above leave; the carried budgets weigh most at `L = dmin`, which
-/// is the test. Same-level sets reduce to the density sum.
-///
-/// Outside the model: tasks above `l` that hold no reservation (the kernel's
-/// own loops, a band task without a profile), priority donation that moves a
-/// reservation's task to another level while it holds a lock, and
-/// non-preemptible kernel sections.
-pub fn levels_fit(booked: &[Booked]) -> bool {
-    for b in booked {
-        let l = b.level;
-        let mut dmin = u64::MAX;
-        let (mut dens, mut carry) = (0u64, 0u128);
-        for o in booked {
-            if o.level == l {
-                dmin = dmin.min(o.d);
-            }
-            if o.level <= l {
-                dens += o.density_ppm as u64;
-            }
-            if o.level < l {
-                carry += o.q as u128;
-            }
-        }
-        if dmin == 0 {
-            return false;
-        }
-        let carry_ppm = (carry * PPM as u128).div_ceil(dmin as u128);
-        if dens as u128 + carry_ppm > PPM as u128 {
-            return false;
-        }
-    }
-    true
-}
+/// The cross-level check ([`levels_fit`]) and what it reads ([`Booked`]):
+/// one copy in `azos_abi::rt_levels`, which the topology's boot admission
+/// applies too, so a set admitted at boot is admitted here.
+pub use azos_abi::rt_levels::{levels_fit, Booked};
 
 /// Microseconds to counter ticks at `freq` Hz, rounded up (a reservation is
 /// never shorter than declared). Saturating.

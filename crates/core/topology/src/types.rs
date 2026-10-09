@@ -967,6 +967,26 @@ impl<'a> Topology<'a> {
         crate::deadline::band_entry(prio, admitted, t.mem_locked)
     }
 
+    /// The priority level task `ti`'s reservation runs at: its priority
+    /// clamped into its class, capped at
+    /// [`MAX_ROW_LEVEL`](crate::deadline::MAX_ROW_LEVEL) (what `resolve`
+    /// applies to a row with a reservation, floor 0). Boot admission books
+    /// this level and run-time `reserve` is handed the same one
+    /// (`azos_syscall::topo_sched::row_reservation`), so both apply the
+    /// cross-level rule to the same set. An unknown row or class gives the
+    /// raw priority, capped.
+    pub fn row_level(&self, ti: usize) -> u32 {
+        let Some(t) = self.tasks().get(ti) else { return crate::deadline::MAX_ROW_LEVEL };
+        let prio = match self.find_class(&t.class_name) {
+            Some(c) => {
+                let (lo, hi) = c.priority_range;
+                t.priority.clamp(lo, hi.max(lo))
+            }
+            None => t.priority,
+        };
+        crate::apply::ring3_priority(prio as u32, 0, crate::deadline::MAX_ROW_LEVEL).0
+    }
+
     /// Can every real-time task in a class with `admission_control` meet its
     /// deadline on the `ncpus` CPUs it may run on?
     ///
@@ -979,7 +999,7 @@ impl<'a> Topology<'a> {
         for (i, c) in self.classes().iter().enumerate() {
             budget[i] = (c.cpu_budget_max_pct.min(100) as u32) * (PPM / 100);
         }
-        let mut items = [Item { task: 0, class: 0, profile: SchedProfile::NONE }; MAX_PROFILED];
+        let mut items = [Item { task: 0, class: 0, level: 0, profile: SchedProfile::NONE }; MAX_PROFILED];
         let mut n = 0usize;
         for (ti, t) in self.tasks().iter().enumerate() {
             if !t.profile.is_declared() {
@@ -994,7 +1014,7 @@ impl<'a> Topology<'a> {
             if n == MAX_PROFILED {
                 return Err(AdmissionError::Deadline(DeadlineRefusal::TooManyProfiles));
             }
-            items[n] = Item { task: ti as u16, class: ci as u8, profile: t.profile };
+            items[n] = Item { task: ti as u16, class: ci as u8, level: self.row_level(ti), profile: t.profile };
             n += 1;
         }
         admit(&items[..n], ncpus, &budget).map_err(AdmissionError::Deadline)

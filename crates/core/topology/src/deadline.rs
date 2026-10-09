@@ -39,8 +39,14 @@
 
 use crate::types::MAX_CLASSES;
 
-/// One CPU is this many parts per million.
-pub const PPM: u32 = 1_000_000;
+/// One CPU is this many parts per million (the scheduler's scale, shared
+/// through `azos_abi::rt_levels`).
+pub const PPM: u32 = azos_abi::rt_levels::PPM as u32;
+
+/// Highest priority level a row's reservation runs at: the scheduler's
+/// `MAX_TASK_PRIORITY` (`IDLE_PRIORITY - 1`). `azos_syscall::topo_sched`
+/// asserts the two are equal at compile time, like [`RT_BAND_THRESHOLD`].
+pub const MAX_ROW_LEVEL: u32 = 30;
 
 /// CPUs a profile's mask can name. `cpu_mask` is a `u32`.
 pub const MAX_ADMISSION_CPUS: usize = 32;
@@ -132,6 +138,20 @@ pub enum DeadlineRefusal {
         /// Index of the task in the topology.
         task: u16,
     },
+    /// Room on a CPU for the task's density, but the reservations placed
+    /// there sit at different priority levels and a level could miss a
+    /// deadline (`azos_abi::rt_levels::levels_fit`, the rule run-time
+    /// `reserve` applies too: wave 15). Reported for the last CPU tried.
+    Levels {
+        /// Index of the task in the topology.
+        task: u16,
+        /// The CPU whose set the task did not fit.
+        cpu: u8,
+        /// The priority level the task's reservation runs at.
+        level: u32,
+        /// The level whose deadlines that set could not guarantee.
+        failing_level: u32,
+    },
     /// More profiled tasks than one admission run will consider.
     TooManyProfiles,
 }
@@ -182,6 +202,9 @@ pub struct Item {
     pub task: u16,
     /// Index of the task's class, `< MAX_CLASSES`.
     pub class: u8,
+    /// Priority level its reservation runs at (`Topology::row_level`): the
+    /// cross-level check reads it.
+    pub level: u32,
     /// The declared profile.
     pub profile: SchedProfile,
 }
@@ -310,6 +333,8 @@ pub fn admit(
     let mut class_load = [[0u32; MAX_CLASSES]; MAX_ADMISSION_CPUS];
     let mut placed: u16 = 0;
     let mut placement = [(0u16, 0u8); MAX_PROFILED];
+    // CPU each item was placed on, by item index; `u8::MAX` = not yet.
+    let mut item_cpu = [u8::MAX; MAX_PROFILED];
 
     for _ in 0..items.len() {
         // Densest unplaced item; the first of equals wins because `>` is strict.
@@ -331,6 +356,7 @@ pub fn admit(
 
         let mut fit: Option<usize> = None;
         let mut had_room_on_a_cpu = false;
+        let mut levels: Option<(u8, u32)> = None;
         for cpu in 0..ncpus {
             if mask & (1u32 << cpu) == 0 {
                 continue;
@@ -342,6 +368,10 @@ pub fn admit(
             if class_load[cpu][class].saturating_add(d) > class_budget_ppm[class] {
                 continue;
             }
+            if let Err(l) = levels_on(items, &density, &item_cpu, cpu, pick) {
+                levels = Some((cpu as u8, l));
+                continue;
+            }
             fit = Some(cpu);
             break;
         }
@@ -350,11 +380,48 @@ pub fn admit(
                 cpu_load[cpu] += d;
                 class_load[cpu][class] += d;
                 placement[placed as usize] = (it.task, cpu as u8);
+                item_cpu[pick] = cpu as u8;
                 placed += 1;
             }
-            None if had_room_on_a_cpu => return Err(DeadlineRefusal::ClassBudget { task: it.task }),
-            None => return Err(DeadlineRefusal::NoCpuFits { task: it.task }),
+            // Mirrors run-time `first_fit_by`: a CPU with room whose levels
+            // do not fit is the most specific reason.
+            None => return Err(match levels {
+                Some((cpu, failing_level)) =>
+                    DeadlineRefusal::Levels { task: it.task, cpu, level: it.level, failing_level },
+                None if had_room_on_a_cpu => DeadlineRefusal::ClassBudget { task: it.task },
+                None => DeadlineRefusal::NoCpuFits { task: it.task },
+            }),
         }
     }
     Ok(Report { cpu_load_ppm: cpu_load, placed, placement })
+}
+
+/// The cross-level check (`azos_abi::rt_levels::levels_check`) for `cpu`'s
+/// placed items (`item_cpu[i] == cpu`) plus item `cand`. `Err` names the
+/// level that fails. O(n²) with n <= MAX_PROFILED, like the placement.
+fn levels_on(
+    items: &[Item],
+    density: &[u32; MAX_PROFILED],
+    item_cpu: &[u8; MAX_PROFILED],
+    cpu: usize,
+    cand: usize,
+) -> Result<(), u32> {
+    use azos_abi::rt_levels::{levels_check, Booked};
+    if cfg!(feature = "deadline-levels-canary") {
+        return Ok(());
+    }
+    let booked = |i: usize| {
+        let p = &items[i].profile;
+        let d = if p.deadline_us == 0 { p.period_us } else { p.deadline_us };
+        Booked { level: items[i].level, q: p.runtime_us as u64, d: d as u64, density_ppm: density[i] }
+    };
+    let mut b = [booked(cand); MAX_PROFILED + 1];
+    let mut n = 1;
+    for i in 0..items.len() {
+        if item_cpu[i] as usize == cpu {
+            b[n] = booked(i);
+            n += 1;
+        }
+    }
+    levels_check(&b[..n])
 }

@@ -2521,6 +2521,13 @@ cpu_budget_min_pct  = 5
 cpu_budget_max_pct  = 100
 policy              = \"cfs\"
 priority_range      = [16, 30]
+
+[class.rt_wide]
+cpu_budget_min_pct  = 10
+cpu_budget_max_pct  = 100
+policy              = \"edf\"
+admission_control   = true
+priority_range      = [0, 11]
 ";
 
     fn topo(caps: &'static str) -> Result<Topology<'static>, ParseError> {
@@ -2671,7 +2678,7 @@ priority_range      = [16, 30]
                 let cpu = (next() % ncpus as u64) as usize;
                 let d = ((runtime as u64 * PPM as u64) + period as u64 - 1) / period as u64;
                 sum[cpu] += d;
-                items.push(Item { task: i as u16, class: 0, profile: SchedProfile { period_us: period, runtime_us: runtime, deadline_us: 0, cpu_mask: 1 << cpu } });
+                items.push(Item { task: i as u16, class: 0, level: 0, profile: SchedProfile { period_us: period, runtime_us: runtime, deadline_us: 0, cpu_mask: 1 << cpu } });
             }
             let want = (0..ncpus).all(|c| sum[c] <= PPM as u64);
             assert_eq!(admit(&items, ncpus, &budget).is_ok(), want, "round {round}: sums {:?}", &sum[..ncpus]);
@@ -2746,6 +2753,53 @@ priority_range      = [16, 30]
         assert_eq!(r.band_check(|_| true, density, 950_000), Err(DeadlineRefusal::BandCap { task: 1 }));
         assert_eq!(r.band_check(|task| task == 0, density, 950_000), Ok(()), "only `a` in the band");
         assert_eq!(r.band_check(|_| true, density, 1_000_000), Ok(()), "no cap");
+    }
+
+    /// A locked `rt_wide` row at `priority`.
+    fn task_at(name: &str, priority: u8, profile: &str) -> String {
+        format!("[task.{name}]\nclass = \"rt_wide\"\npriority = {priority}\nmem = \"locked\"\nmem_pages = 1\n{profile}\ncaps = []\n\n")
+    }
+
+    /// Wave 15: boot admission applies the cross-level rule run-time
+    /// `reserve` applies (`azos_abi::rt_levels::levels_fit`). 25 % + 5 % of
+    /// one CPU fits by density, but the level-6 row's 2 ms deadline sits
+    /// behind 5 ms of the level-4 row: refused at boot, naming the row, its
+    /// level and the level that fails, instead of passing boot and being
+    /// refused at `reserve()`. Same set as `sched-policy-tests` `rt_core`.
+    #[test]
+    fn a_mixed_level_set_that_fits_by_density_is_refused_at_boot() {
+        let t = topo(leak(
+            task_at("hi", 4, "period_us = 20000\nruntime_us = 5000\ncpu_mask = 1")
+                + &task_at("lo", 6, "period_us = 20000\nruntime_us = 1000\ndeadline_us = 2000\ncpu_mask = 1"),
+        )).unwrap();
+        assert_eq!(t.row_level(0), 4);
+        assert_eq!(t.row_level(1), 6);
+        match t.admission_check() {
+            Err(AdmissionError::Deadline(DeadlineRefusal::Levels { task, cpu, level, failing_level })) =>
+                assert_eq!((task, cpu, level, failing_level), (0, 0, 4, 6),
+                    "`lo` (denser) is placed first; `hi` above it breaks level 6"),
+            other => panic!("a mixed-level set that misses deadlines was admitted at boot: {other:?}"),
+        }
+        // A second CPU it may use takes it: the rule skips a CPU, like `first_fit_by`.
+        let t = topo(leak(
+            task_at("hi", 4, "period_us = 20000\nruntime_us = 5000\ncpu_mask = 3")
+                + &task_at("lo", 6, "period_us = 20000\nruntime_us = 1000\ndeadline_us = 2000\ncpu_mask = 3"),
+        )).unwrap();
+        let r = t.deadline_admission(2).expect("one per CPU");
+        assert_eq!((r.cpu_of(1), r.cpu_of(0)), (Some(0), Some(1)));
+    }
+
+    /// The same two reservations at one level reduce to the density sum: admitted.
+    #[test]
+    fn the_same_set_at_one_level_is_admitted_at_boot() {
+        let t = topo(leak(
+            task_at("hi", 4, "period_us = 20000\nruntime_us = 5000\ncpu_mask = 1")
+                + &task_at("lo", 4, "period_us = 20000\nruntime_us = 1000\ndeadline_us = 2000\ncpu_mask = 1"),
+        )).unwrap();
+        assert!(t.admission_check().is_ok());
+        let r = t.deadline_admission(1).expect("one level, 75 % of one CPU");
+        assert_eq!(r.placed, 2);
+        assert_eq!(r.cpu_load_ppm[0], 750_000);
     }
 }
 

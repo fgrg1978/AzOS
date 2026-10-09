@@ -57,6 +57,8 @@ pub mod exit_status;
 pub mod io_ring;
 pub mod ml_srv;
 pub mod power;
+/// Wave 15: the cross-level admission rule boot and run-time admission share.
+pub mod rt_levels;
 /// Wave 12: the flight, behavior, config and OTA typed calls (615..=618).
 pub mod families;
 pub mod sensor_sample;

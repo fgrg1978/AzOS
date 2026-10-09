@@ -142,6 +142,8 @@ pub fn row_reservation(name: &[u8]) -> Option<azos_sched::rt::Reservation> {
     let (lo, hi) = class.priority_range;
     let prio = task.priority.clamp(lo, hi.max(lo)) as u32;
     let p = task.profile;
+    // The level boot admission booked for this row (cross-level rule).
+    let level = topo.row_level(ti);
     Some(azos_sched::rt::Reservation {
         runtime_us: p.runtime_us as u64,
         period_us: p.period_us as u64,
@@ -150,7 +152,7 @@ pub fn row_reservation(name: &[u8]) -> Option<azos_sched::rt::Reservation> {
         cpu_mask,
         band: prio < MIN_TASK_PRIORITY,
         // What `resolve` applies to a row with a reservation (floor 0).
-        level: azos_topology::ring3_priority(prio, 0, MAX_TASK_PRIORITY).0,
+        level,
     })
 }
 
@@ -166,6 +168,8 @@ pub fn row_band_entry(name: &[u8]) -> Option<azos_topology::BandEntry> {
 
 // The topology's band threshold is the scheduler's.
 const _: () = assert!(azos_topology::RT_BAND_THRESHOLD as u32 == azos_sched::RT_PRIORITY_THRESHOLD);
+// The level boot admission books a row at is the one `reserve` is handed.
+const _: () = assert!(azos_topology::deadline::MAX_ROW_LEVEL == MAX_TASK_PRIORITY);
 
 /// [`resolve`] for a program: its image's row, else `fallback`'s (if given).
 /// Returns the decision and the row name it came from.
