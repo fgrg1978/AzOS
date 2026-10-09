@@ -10925,7 +10925,9 @@ PY
     #   ktest fork FP runtime canary (x86)  canary=x86-fork-fp-skip: a forked
     #                               child starts from the initial FP image;
     #                               x86_ring3_syscall_fork_fp alone not ok
-    KTEST_N_X86=15
+    # +9 with Kconfig CHAOS / DECISION_RECORDS (`chaos`, `decisions` ride in
+    # every x86 ktest kernel, as on rv and arm).
+    KTEST_N_X86=24
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2"
@@ -11027,6 +11029,8 @@ PY
     par "ktest tlb local-only canary (x86)" x86_ktest_row "ktest tlb local-only canary (x86)" ",tlb-local-only" "tlb_shootdown_cross_cpu"
     par "ktest fork FP runtime canary (x86)" x86_ktest_row "ktest fork FP runtime canary (x86)" "" \
         "x86_ring3_syscall_fork_fp" "canary=x86-fork-fp-skip"
+    par "ktest chaos-inert canary (x86)" x86_ktest_row "ktest chaos-inert canary (x86)" "" \
+        "$KTEST_CHAOS_INERT" "canary=chaos-inert"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #
