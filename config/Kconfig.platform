@@ -99,7 +99,7 @@ config TIMER_FREQ
 # ---------------------------------------------------------------------------
 config RAM_SIZE
     int "RAM size (MiB)"
-    default 8192 if ARCH_X86_64
+    default 1024 if ARCH_X86_64
     default 256  if BOARD_QEMU
     default 8192 if BOARD_VF2
     default 4096 if BOARD_K1
