@@ -67,6 +67,10 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
     // Kconfig CANARY_RUNTIME: `canary=` on the command line, before the
     // first `canary!` site (the stack guards below).
     crate::canary_rt::arm_from_cmdline(|out| a.kernel_cmdline(fw_table, out));
+    // The boot protocol, from the table itself: an FDT (riscv64, aarch64) or
+    // not (x86_64's PVH start_info). Only an FDT has a `totalsize` to keep
+    // out of pstore's way below.
+    let fw_is_fdt = dt.is_some();
     let fw = a.firmware_table(hart_id, fw_table, dt);
     a.irqchip_probe(&fw);
     a.timer_probe(&fw);
@@ -109,8 +113,8 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
     let kernel_end_pa = azos_mm::addr::virt_to_phys(kernel_end_aligned);
     kprintln!("[MM] Kernel end:  {:#x} (aligned: {:#x})", kernel_end, kernel_end_aligned);
     if mem.from_firmware {
-        kprintln!("[MM] RAM detected via DTB: {:#x} - {:#x} ({} MiB)",
-            mem_start, crate::mem_range_end(mem_start, mem_size), mem_size >> 20);
+        kprintln!("[MM] RAM detected via {}: {:#x} - {:#x} ({} MiB)",
+            if fw_is_fdt { "DTB" } else { "the firmware memory map" }, mem_start, crate::mem_range_end(mem_start, mem_size), mem_size >> 20);
     } else {
         kprintln!("[MM] RAM fallback (no DTB): {:#x} - {:#x} ({} MiB)",
             mem_start, crate::mem_range_end(mem_start, mem_size), mem_size >> 20);
@@ -142,7 +146,7 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
     // Panic record region (pstore): the top of RAM, out of the allocator
     // before anything allocates. QEMU may put the firmware table near the top
     // of RAM, so its range is passed to rule out an overlap.
-    let fw_range = if fw_table != 0 {
+    let fw_range = if fw_is_fdt {
         unsafe { azos_dtb::dtb_probe(fw_table as *const u8) }
             .map(|(_, total)| (fw_table, fw_table + total as usize))
     } else {

@@ -743,6 +743,8 @@ fn load_elf_impl(elf: &[u8], file_len: usize, copy: bool) -> Option<ExecContext>
     const EXPECTED_MACHINE: u16 = 0xf3;  // EM_RISCV
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     const EXPECTED_MACHINE: u16 = 0xb7;  // EM_AARCH64
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    const EXPECTED_MACHINE: u16 = 0x3e;  // EM_X86_64
     // Host builds (e.g. `cargo test` on aarch64-apple-darwin, where
     // `target_arch = "aarch64"` but `target_os != "none"`) compile this
     // function too (this module has no host-exclusion at the `mod` level)
@@ -757,7 +759,7 @@ fn load_elf_impl(elf: &[u8], file_len: usize, copy: bool) -> Option<ExecContext>
     // function's ENTIRE pre-existing behavior there (the literal was
     // `0xf3` unconditionally before this task); it is not a claim that a
     // host build ever really execs anything.
-    #[cfg(not(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none"))))]
+    #[cfg(not(any(target_arch = "riscv64", all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none"))))]
     const EXPECTED_MACHINE: u16 = 0xf3;  // EM_RISCV — see comment above
     if r16(elf, 18) != EXPECTED_MACHINE { return None; }
 

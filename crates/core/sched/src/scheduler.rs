@@ -2428,6 +2428,9 @@ pub fn try_task_create_affinity(
 /// **aarch64**: `0`, the sentinel `context_switch.S` resolves to
 /// `AARCH64_KERNEL_TTBR0` (the device-only low-half root); the kernel itself
 /// lives in `TTBR1_EL1`.
+///
+/// **x86_64**: the CR3 word of the kernel's PML4 (PCID 0), cached as on
+/// riscv64; 0 before `vmm::init` (`context_switch.S` keeps the live root).
 #[inline]
 pub fn kernel_task_satp() -> u64 {
     #[cfg(target_arch = "riscv64")]
@@ -2446,7 +2449,26 @@ pub fn kernel_task_satp() -> u64 {
         KERNEL_SATP.store(satp, Ordering::Relaxed);
         satp
     }
-    #[cfg(not(target_arch = "riscv64"))]
+    // x86_64: the kernel's PML4 word, so a kernel task does not keep the
+    // last user root live in CR3 (published, that root could never be torn
+    // down: `root_holders` would refuse it while this CPU names it).
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    {
+        use azos_arch::ArchPlatform;
+        static KERNEL_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let cached = KERNEL_CR3.load(Ordering::Relaxed);
+        if cached != 0 {
+            return cached;
+        }
+        let kpt = azos_mm::vmm::kernel_pagetable();
+        if kpt == 0 {
+            return 0;
+        }
+        let w = azos_arch::ARCH.user_root_word(kpt, 0) as u64;
+        KERNEL_CR3.store(w, Ordering::Relaxed);
+        w
+    }
+    #[cfg(not(any(target_arch = "riscv64", all(target_arch = "x86_64", target_os = "none"))))]
     { 0 }
 }
 
