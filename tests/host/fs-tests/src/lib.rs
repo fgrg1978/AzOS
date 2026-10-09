@@ -2935,9 +2935,14 @@ mod power_cut {
         op();
         // Write-back: what the operation queued goes out now, epoch by epoch
         // with a flush between (a no-op write-through, where it already did).
-        if fat32::fat32_writeback_dirty().0 > 0 {
+        // Until clean: a flush frees the chains held for it (`defer_free`)
+        // into a new epoch, which the next pass writes, so those cuts are
+        // checked too.
+        for _ in 0..4 {
+            if fat32::fat32_writeback_dirty().0 == 0 { break; }
             assert_eq!(fat32::fat32_writeback_now(), Ok(()));
         }
+        assert_eq!(fat32::fat32_writeback_dirty().0, 0, "write-back did not settle");
         let log = disk_take_log();
         let flushes = log.iter().filter(|e| **e == LogEntry::Flush).count();
         let states = crash_states(&pristine, &log);
@@ -3055,7 +3060,9 @@ mod power_cut {
         let f = cut_everywhere(with_file(&n, &old),
             || assert_eq!(fat32::fat32_write_file(&n, &new), Ok(())),
             |img| one_of(&n, b"/REC.DAT", img, &[Some(&old[..]), Some(&new[..])]));
-        assert_eq!(f, 4, "overwrite: chain, record and mutation barriers + final flush");
+        // + the write-back of the old chain's free, held until the final
+        // flush made the cleared record durable (`defer_free`).
+        assert_eq!(f, 5, "overwrite: chain, record and mutation barriers + final flush + the free");
     }
 
     #[test]
@@ -3083,7 +3090,7 @@ mod power_cut {
                 assert_eq!(fat32::fat32_close(h), Ok(()));
             },
             |img| one_of(&n, b"/REC.DAT", img, &[Some(&old[..]), Some(&b""[..])]));
-        assert_eq!(f, 4, "truncate: 2 barriers, then close's fsync (2 flushes)");
+        assert_eq!(f, 5, "truncate: 2 barriers, close's fsync (2 flushes), the held chain's free");
     }
 
     #[test]
@@ -3141,6 +3148,123 @@ mod power_cut {
             },
             |img| one_of(&n, b"/REC.DAT", img, &[Some(&old[..]), Some(&b""[..]), Some(&new[..])]));
         println!("in-place rewrite: {f} flushes");
+    }
+
+    /// Open `/fat/REC.DAT` with `O_TRUNC`, write `data`, fsync, close.
+    /// Returns the device flushes before the fsync and those of the fsync.
+    fn rewrite_in_place(data: &[u8]) -> (usize, usize) {
+        let _ = disk_take_log();
+        rewrite_in_place_counting(data, &|| disk_take_log().iter().filter(|e| **e == LogEntry::Flush).count())
+    }
+
+    /// [`rewrite_in_place`] with the flush counter given (`cut_everywhere`
+    /// needs the log left alone).
+    fn rewrite_in_place_counting(data: &[u8], flushes: &dyn Fn() -> usize) -> (usize, usize) {
+        super::vfs_open_close::vfs_once();
+        let mut t = super::vfs::ScratchFds::new();
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/REC.DAT", super::vfs::O_WRONLY | super::vfs::O_TRUNC);
+        assert!(fd >= 0);
+        assert_eq!(super::vfs::vfs_write(&mut t, fd, data.as_ptr(), data.len()), data.len() as i32);
+        let before = flushes();
+        assert_eq!(super::vfs::vfs_fsync(&mut t, fd), Ok(()));
+        let fsync = flushes();
+        assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+        assert_eq!(flushes(), 0, "close does no I/O");
+        (before, fsync)
+    }
+
+    /// **Wave 15 (FD): the fsync of an in-place rewrite is two device
+    /// flushes** (it was three): the truncated chain is held, not freed one
+    /// epoch after the entry, so the entry, the new chain and the data
+    /// share one epoch and the new entry is the second. The held chain is
+    /// freed by the fsync's flush into the next epoch, which the NEXT
+    /// rewrite's fsync carries: two again, no flush of its own.
+    #[test]
+    fn an_in_place_rewrite_fsync_issues_two_flushes() {
+        let _g = serial();
+        let n = name(b"REC", b"DAT");
+        let old = pattern(OLD, 0x11);
+        let new = pattern(NEW, 0x77);
+        let newer = pattern(OLD, 0x33);
+        remount(with_file(&n, &old));
+        let free0 = super::vfs::vfs_statfs(b"/fat").expect("statfs").blocks_free;
+        assert_eq!(rewrite_in_place(&new), (0, 2), "first rewrite: (before fsync, fsync) flushes");
+        assert_eq!(fat32::fat32_held_clusters(), 0, "the fsync's flush freed the held chain");
+        assert_eq!(rewrite_in_place(&newer), (0, 2), "second rewrite carries the first one's free");
+        assert_eq!(read_back(b"/REC.DAT").as_deref(), Some(&newer[..]));
+        assert_eq!(fat32::fat32_writeback_now(), Ok(()));
+        let free1 = super::vfs::vfs_statfs(b"/fat").expect("statfs").blocks_free;
+        assert_eq!(free1, free0, "every chain the rewrites took away is free again");
+    }
+
+    /// **A held chain is not reused, and statfs counts it free.** After the
+    /// truncate statfs reports the old chain's clusters as free; the write
+    /// that follows (before any flush) allocates around them; the fsync's
+    /// flush frees them, and the write-back after it puts the frees on the
+    /// medium.
+    #[test]
+    fn a_held_chain_is_not_reused_and_statfs_counts_it_free() {
+        let _g = serial();
+        let n = name(b"REC", b"DAT");
+        let old = pattern(OLD, 0x11);
+        let new = pattern(NEW, 0x77);
+        let img = with_file(&n, &old);
+        let old_chain = chain(&img, &n).expect("sound");
+        remount(img);
+        super::vfs_open_close::vfs_once();
+        let free0 = super::vfs::vfs_statfs(b"/fat").expect("statfs").blocks_free;
+        let mut t = super::vfs::ScratchFds::new();
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/REC.DAT", super::vfs::O_WRONLY | super::vfs::O_TRUNC);
+        assert!(fd >= 0);
+        assert_eq!(fat32::fat32_held_clusters() as usize, old_chain.len());
+        assert_eq!(super::vfs::vfs_statfs(b"/fat").expect("statfs").blocks_free,
+            free0 + old_chain.len() as u64, "held clusters count as free");
+        assert_eq!(super::vfs::vfs_write(&mut t, fd, new.as_ptr(), new.len()), new.len() as i32);
+        assert_eq!(super::vfs::vfs_fsync(&mut t, fd), Ok(()));
+        assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+        assert_eq!(fat32::fat32_held_clusters(), 0, "the fsync's flush freed it");
+        let after = disk_durable_image();
+        let new_chain = chain(&after, &n).expect("sound");
+        assert!(new_chain.iter().all(|c| !old_chain.contains(c)),
+            "the write reused a held cluster: old {old_chain:?}, new {new_chain:?}");
+        assert!(old_chain.iter().all(|&c| fat(&after, c) != 0), "premise: frees not written yet");
+        assert_eq!(fat32::fat32_writeback_now(), Ok(()));
+        let after = disk_durable_image();
+        assert!(old_chain.iter().all(|&c| fat(&after, c) == 0), "the held chain's free reached the medium");
+    }
+
+    /// The `REC.DAT` image with every free data cluster taken (leaked
+    /// single-cluster chains): the only room is the file's own chain.
+    fn full_volume_with_file(n83: &[u8; 11], data: &[u8]) -> Vec<u8> {
+        let g = Geom::default();
+        let mut img = with_file(n83, data);
+        let data_start = g.rsvd as usize + g.num_fats as usize * g.fat_sz32 as usize;
+        let clusters = (g.total_sectors - data_start) / g.spc as usize;
+        for c in 2..(2 + clusters) as u32 {
+            if fat(&img, c) == 0 { set_fat(&mut img, &g, c, 0x0FFF_FFFF); }
+        }
+        img
+    }
+
+    /// **Disk full while a chain is held: the allocation flushes once,
+    /// frees it and goes on** (never ENOSPC for space statfs reported), and
+    /// every cut is the old file, an empty one or the new one, whole.
+    #[test]
+    fn an_in_place_rewrite_of_a_full_volume_flushes_once_more_instead_of_enospc() {
+        let _g = serial();
+        let n = name(b"REC", b"DAT");
+        let old = pattern(OLD, 0x11);
+        let new = pattern(NEW, 0x77);
+        let img = full_volume_with_file(&n, &old);
+        remount(img.clone());
+        super::vfs_open_close::vfs_once();
+        assert_eq!(super::vfs::vfs_statfs(b"/fat").expect("statfs").blocks_free, 0, "premise: full");
+        assert_eq!(rewrite_in_place(&new), (1, 2), "one forced flush, then the fsync's two");
+        assert_eq!(read_back(b"/REC.DAT").as_deref(), Some(&new[..]));
+        let f = cut_everywhere(img,
+            || { let _ = rewrite_in_place_counting(&new, &|| 0); },
+            |img| one_of(&n, b"/REC.DAT", img, &[Some(&old[..]), Some(&b""[..]), Some(&new[..])]));
+        println!("full-volume in-place rewrite: {f} flushes");
     }
 
     #[test]

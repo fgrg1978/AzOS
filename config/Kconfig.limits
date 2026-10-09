@@ -1023,6 +1023,44 @@ config FS_WRITEBACK_RUN_KB
 
       Cost: this many KiB of RAM (.bss); a larger run is fewer requests.
 
+config FS_DEFERRED_FREE
+    bool "FAT32 write-back: free a truncated or replaced chain once its unlinking entry is durable"
+    depends on FS_WRITEBACK
+    default y if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
+    default y
+    help
+      crates/fs/fs/src/fat32.rs, `defer_free`: the chain that an O_TRUNC to
+      zero, an overwrite or a rename over a file takes away from a name
+      stays allocated in the FAT, so no allocation can hand it out, until
+      the flush that makes the directory entry no longer naming it durable.
+      That flush then frees it into the next epoch, with no flush of its
+      own. An in-place rewrite (O_TRUNC, write, fsync) is then two epochs
+      and two device flushes, not three, and a cut still leaves the old
+      file, an empty one or the new one, whole. statfs counts a held chain
+      as free. An allocation that finds the volume full while chains are
+      held flushes once, frees them and retries instead of failing.
+
+      Cost: FS_DEFERRED_FREE_SLOTS * 16 B of RAM; per held chain, its free
+      (a few hundred instructions) moves from the truncate to the flush.
+      n: the truncate frees one epoch after its entry (one more flush per
+      in-place rewrite) and the journaled replacements free inside their
+      record, as before.
+
+config FS_DEFERRED_FREE_SLOTS
+    int "FAT32 write-back: chains held until their unlinking entry is durable"
+    range 1 256
+    default 8 if PROFILE_EMBEDDED
+    default 32 if PROFILE_EDGE || PROFILE_FLEET
+    default 32
+    help
+      How many truncated or replaced chains (FS_DEFERRED_FREE) wait for the
+      next flush at once. A deferral that finds every slot taken falls
+      back to the undeferred order for that chain: an epoch barrier, then
+      the free (one more flush at write-back, no I/O now).
+
+      Cost: 16 B of RAM per slot; the release at each flush walks the
+      slots. Raise it when many files are rewritten between two fsyncs.
+
 config FS_WRITEBACK_PRIORITY
     int "FAT32 write-back task priority (outside the RT band: 12..30)"
     range 12 30

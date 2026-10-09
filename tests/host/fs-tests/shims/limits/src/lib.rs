@@ -42,6 +42,10 @@ pub const FS_WRITEBACK: bool = true;
 pub const FS_WRITEBACK_RUN_KB: usize = 16;
 pub const FS_WRITEBACK_WATERMARK_PCT: usize = 25;
 pub const FS_WRITEBACK_MAX_AGE_MS: usize = 1000;
+/// Kconfig `FS_DEFERRED_FREE` / `FS_DEFERRED_FREE_SLOTS` (fat32.rs's held
+/// chains): embedded's defaults.
+pub const FS_DEFERRED_FREE: bool = true;
+pub const FS_DEFERRED_FREE_SLOTS: usize = 8;
 /// Kconfig `FAT32_SECTOR_CLAIM_SLOTS` (fat32.rs's FAT-sector claims): the
 /// shipped default on every profile.
 pub const FAT32_SECTOR_CLAIM_SLOTS: usize = 64;

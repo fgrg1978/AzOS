@@ -339,15 +339,17 @@ fn journal_replay_rename(entry: &JournalEntry) {
     azos_drv_sys::kprintln!("[FAT32] Journal recovery: completing rename (clus={}, old_clus={})",
         entry.cluster, entry.fat_value);
     let _ = rename_apply(entry.dir_sector, entry.dir_offset, src_sector, src_off, &src_name,
-        entry.cluster, entry.size, entry.fat_value);
+        entry.cluster, entry.size, entry.fat_value, true);
 }
 
 /// The three writes of a rename over an existing file (see
 /// `JOURNAL_OP_RENAME`), in an order whose every prefix leaves one name on
 /// the chain: destination first, then the source deleted, then the old
-/// chain freed.
+/// chain freed (`free_old`: recovery; a live rename under `defer_frees`
+/// holds it until its record is cleared instead).
+#[allow(clippy::too_many_arguments)]
 fn rename_apply(dst_sector: u32, dst_off: u16, src_sector: u32, src_off: u16, src_name: &[u8; 11],
-                cluster: u32, size: u32, old_chain: u32) -> Result<(), ()> {
+                cluster: u32, size: u32, old_chain: u32, free_old: bool) -> Result<(), ()> {
     fat32_update_dirent_clus_size(dst_sector, dst_off, cluster, size)?;
     let mut buf = [0u8; SECTOR_SIZE];
     read_sector(src_sector, &mut buf)?;
@@ -356,7 +358,7 @@ fn rename_apply(dst_sector: u32, dst_off: u16, src_sector: u32, src_off: u16, sr
         buf[o] = DIRENT_MARK_DELETED;
         write_sector(src_sector, &buf)?;
     }
-    if old_chain >= FAT32_FIRST_DATA_CLUSTER && old_chain != cluster {
+    if free_old && old_chain >= FAT32_FIRST_DATA_CLUSTER && old_chain != cluster {
         fat32_free_chain(old_chain);
     }
     Ok(())
@@ -1286,6 +1288,9 @@ pub fn fat32_on_medium_write(lba: u64, count: u32) {
             c.invalidate_range(first - base, n);
         }
     }
+    // The FAT may have changed under the held chains: forget them (they
+    // leak) rather than free clusters another writer may now use.
+    held_reset();
     write_gen_bump();
 }
 
@@ -1515,6 +1520,7 @@ pub fn fat32_mount() -> Result<(), ()> {
     // carries over.
     free_count_invalidate();
     ALLOC_HINT.store(0, core::sync::atomic::Ordering::Relaxed);
+    held_reset();
 
     let mut sector0 = [0u8; SECTOR_SIZE];
     read_sector(0, &mut sector0)?;
@@ -2241,6 +2247,21 @@ pub fn fat32_alloc_cluster() -> Result<u32, ()> {
 static ALLOC_HINT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 fn fat32_alloc_cluster_inner() -> Result<u32, ()> {
+    match alloc_scan() {
+        Ok(c) => Ok(c),
+        // Full, but chains are held for the next flush (`defer_free`):
+        // flush now, which frees every held chain, and scan once more.
+        // Not in the FAT_MUTATE canary builds, whose caller may hold the
+        // lock the flush's frees would take.
+        Err(()) if fat32_held_clusters() > 0
+            && !cfg!(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))
+            && device_flush().is_ok() => alloc_scan(),
+        Err(()) => Err(()),
+    }
+}
+
+/// One scan of the FAT for a free entry (see [`fat32_alloc_cluster`]).
+fn alloc_scan() -> Result<u32, ()> {
     // **Closed by the write-path audit, 2026-09-23 — this does NOT hand back
     // an out-of-range cluster, and here is why rather than an assertion.**
     // This scans `0..fat_sz32` sectors of FAT entries in ascending cluster
@@ -2342,6 +2363,13 @@ fn first_free_in_fat_sector(
 pub fn fat32_free_chain(start: u32) {
     #[cfg(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))]
     let _canary = FAT_MUTATE_CANARY.lock();
+    free_chain_unlocked(start);
+}
+
+/// [`fat32_free_chain`] without the canaries' old lock: the release of held
+/// chains runs inside an allocation that a canary build may call with that
+/// lock held.
+fn free_chain_unlocked(start: u32) {
     // No hold across the walk: each entry write claims its own FAT sector
     // (`fat32_write_fat_entry`). `next` is read before its cluster is freed,
     // so a cluster an allocator takes the instant it is freed is never
@@ -2363,6 +2391,113 @@ pub fn fat32_free_chain(start: u32) {
         let _ = fat32_write_fat_entry(cluster, 0); // Mark as free
         cluster = next;
     }
+}
+
+// ── Deferred frees (wave 15, `FS_DEFERRED_FREE`) ─────────────────────────────
+//
+// The chain an O_TRUNC to zero, an overwrite or a rename over a file takes
+// away from its name is HELD: it stays allocated in the FAT, so the
+// allocator cannot hand it out (it scans for zero entries), until the epoch
+// holding the write that stopped naming it is durable. The flush that makes
+// it durable (`device_flush`) then frees it, into the next epoch, with no
+// flush of its own; the next flush carries it. Before it, a cut finds the
+// chain still allocated and unnamed (a leak, never a live entry over free
+// clusters, never the old file's clusters holding new bytes); after it, the
+// unlinking entry is on the medium, so freeing and reusing the clusters can
+// no longer reach a name. A journaled replacement holds its chain until its
+// record is cleared: replaying a record whose clear did not land frees the
+// old chain again, which must not have been reused.
+//
+// RAM only: a mount, an unmount or a writer of the medium that is not this
+// file drops the list, and the chains leak (never freed wrongly).
+
+/// One held chain: its first cluster (0 = slot empty), its clusters (from
+/// the size that named it, for statfs) and the cache epoch whose flush
+/// releases it.
+#[derive(Copy, Clone)]
+struct HeldChain { first: u32, clusters: u32, epoch: u64 }
+
+const HELD_SLOTS: usize = azos_limits::FS_DEFERRED_FREE_SLOTS;
+static HELD: SpinLock<[HeldChain; HELD_SLOTS]> =
+    SpinLock::new([HeldChain { first: 0, clusters: 0, epoch: 0 }; HELD_SLOTS]);
+/// Sum of the held chains' `clusters`: what statfs counts as free on top of
+/// the FAT's zero entries.
+static HELD_CLUSTERS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Whether a chain taken away now is held (write-back with
+/// `FS_DEFERRED_FREE`). Write-through flushes at every barrier, so it keeps
+/// the undeferred order.
+fn defer_frees() -> bool {
+    azos_limits::FS_DEFERRED_FREE && wb_active()
+}
+
+/// Clusters held for a later free (statfs counts them free).
+pub fn fat32_held_clusters() -> u32 {
+    HELD_CLUSTERS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Hold `first`'s chain (named by `size` bytes) until the epoch current now
+/// is durable. Call it AFTER the write that stops naming the chain, so that
+/// write is in this epoch or an earlier one. When every slot is taken, the
+/// undeferred order: close the epoch, then free into the next one (the
+/// write-back puts a flush between them). `Err` only from that barrier; the
+/// chain then leaks.
+fn defer_free(first: u32, size: u32) -> Result<(), FsError> {
+    if first < FAT32_FIRST_DATA_CLUSTER { return Ok(()); }
+    if cfg!(feature = "deferred-free-canary") {
+        // Canary: the chain is freed at once, in the unlinking write's own
+        // epoch, and the allocator may reuse it there.
+        fat32_free_chain(first);
+        return Ok(());
+    }
+    let bpc = FAT32.lock().bytes_per_clus.max(1);
+    let clusters = size.div_ceil(bpc).max(1);
+    let epoch = SECTOR_CACHE.lock().epoch();
+    {
+        let mut h = HELD.lock();
+        if let Some(s) = h.iter_mut().find(|s| s.first == 0) {
+            *s = HeldChain { first, clusters, epoch };
+            HELD_CLUSTERS.fetch_add(clusters, core::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
+    }
+    match order_barrier() {
+        Ok(()) | Err(FsError::Unsupported) => {}
+        Err(e) => return Err(e),
+    }
+    fat32_free_chain(first);
+    Ok(())
+}
+
+/// Free every held chain whose epoch is `<= upto`, which the caller has
+/// just made durable. Called with no FAT32 lock and no write-back claim
+/// held: the frees write FAT sectors through the cache. Returns how many.
+fn release_held(upto: u64) -> usize {
+    let mut n = 0;
+    loop {
+        let first = {
+            let mut h = HELD.lock();
+            match h.iter_mut().find(|s| s.first != 0 && s.epoch <= upto) {
+                Some(s) => {
+                    HELD_CLUSTERS.fetch_sub(s.clusters, core::sync::atomic::Ordering::Relaxed);
+                    let f = s.first;
+                    *s = HeldChain { first: 0, clusters: 0, epoch: 0 };
+                    f
+                }
+                None => return n,
+            }
+        };
+        free_chain_unlocked(first);
+        n += 1;
+    }
+}
+
+/// Forget every held chain (they leak): a new volume, or the medium changed
+/// under this file.
+fn held_reset() {
+    let mut h = HELD.lock();
+    for s in h.iter_mut() { *s = HeldChain { first: 0, clusters: 0, epoch: 0 }; }
+    HELD_CLUSTERS.store(0, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Write `data` into the sectors of `cluster`, zero-padding the last sector.
@@ -2615,6 +2750,7 @@ pub fn fat32_rename(
             // ahead of the record; once the record is durable, recovery
             // completes the rename.
             let dest_old_cluster = d.cluster;
+            let defer = defer_frees();
             let (dest_sector, dest_offset) = io!(fat32_find_dirent_location(new_name83));
             io!(journal_barrier());
             let mut reserved = [0u8; JOURNAL_RESERVED_SIZE];
@@ -2636,11 +2772,16 @@ pub fn fat32_rename(
             io!(fat32_journal_write(&journal));
             io!(journal_barrier());
             io!(rename_apply(dest_sector, dest_offset, src_sector, src_offset, old_name83,
-                src_cluster, src_size, dest_old_cluster));
+                src_cluster, src_size, dest_old_cluster, !defer));
             io!(journal_barrier());
             let committed = JournalEntry { state: JOURNAL_COMMITTED, ..journal };
             io!(fat32_journal_write(&committed));
             io!(fat32_journal_clear());
+            // Held until the clear is durable (`defer_free`): recovery of a
+            // record whose clear did not land frees this chain again.
+            if defer && dest_old_cluster != src_cluster {
+                let _ = defer_free(dest_old_cluster, d.size);
+            }
         }
         None => {
             // To a new name: the source's own dirent is renamed in place —
@@ -2852,8 +2993,8 @@ fn write_file_journaled(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
     // live? Nothing is modified here — the old file is still fully intact
     // after this block, whichever branch `fat32_write_file` takes below.
     let overwrite = match fat32_lookup_root(name83) {
-        Ok((old_cluster, _old_size)) => match fat32_find_dirent_location(name83) {
-            Ok((dir_sector, dir_offset)) => Some((old_cluster, dir_sector, dir_offset)),
+        Ok((old_cluster, old_size)) => match fat32_find_dirent_location(name83) {
+            Ok((dir_sector, dir_offset)) => Some((old_cluster, old_size, dir_sector, dir_offset)),
             // Lookup found it but the location scan didn't (e.g. a
             // concurrent-looking, mid-directory-walk mismatch) — fail
             // closed rather than silently falling back to a second dirent
@@ -2866,7 +3007,7 @@ fn write_file_journaled(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
     let bytes_per_clus = FAT32.lock().bytes_per_clus as usize;
     if bytes_per_clus == 0 { return Err(()); }
 
-    if let Some((old_cluster, dir_sector, dir_offset)) = overwrite {
+    if let Some((old_cluster, old_size, dir_sector, dir_offset)) = overwrite {
         // ── Overwrite path ──────────────────────────────────────────────
         let new_cluster = if data.is_empty() {
             0u32
@@ -2906,8 +3047,9 @@ fn write_file_journaled(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
         // record nor the new dirent did: a live dirent over free clusters.
         journal_barrier()?;
 
+        let defer = defer_frees();
         fat32_update_dirent_clus_size(dir_sector, dir_offset, new_cluster, data.len() as u32)?;
-        if old_cluster >= FAT32_FIRST_DATA_CLUSTER {
+        if !defer && old_cluster >= FAT32_FIRST_DATA_CLUSTER {
             fat32_free_chain(old_cluster);
         }
         // Barrier 2: the mutation before the commit. A COMMITTED (or
@@ -2917,7 +3059,12 @@ fn write_file_journaled(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
 
         let committed = JournalEntry { state: JOURNAL_COMMITTED, ..journal };
         fat32_journal_write(&committed)?;
-        return fat32_journal_clear();
+        fat32_journal_clear()?;
+        // Held until the clear is durable (`defer_free`): recovery of a
+        // PENDING record frees the old chain again, so it must not have
+        // been reused before the clear landed.
+        if defer { let _ = defer_free(old_cluster, old_size); }
+        return Ok(());
     }
 
     // ── Create path (no existing file) — unchanged ordering ─────────────
@@ -3084,6 +3231,13 @@ fn device_flush() -> Result<(), FsError> {
         let r = device_flush_raw();
         if r.is_ok() {
             SECTOR_CACHE.lock().note_flushed();
+        }
+        drop(claim);
+        // Every epoch `<= upto` is durable now: free the chains their
+        // unlinking writes released (`defer_free`), into the epoch just
+        // opened. Outside the claim: a free may have to write back.
+        if r.is_ok() && !cfg!(feature = "wb-flush-no-writeback-canary") {
+            release_held(upto);
         }
         return r;
     }
@@ -3481,6 +3635,12 @@ pub fn fat32_unmount(_vol: Volume) -> Result<(), FsError> {
         }
     }
     let _ = fat32_sync();
+    // That flush freed the held chains into a new epoch (`defer_free`):
+    // write it too, or the invalidation below drops the frees.
+    if SECTOR_CACHE.lock().dirty_count() > 0 {
+        let _ = device_flush();
+    }
+    held_reset();
     // Mark volume unmounted.
     FAT32.lock().mounted = false;
     // U09-6: drop every cached sector on unmount too, not just on the next
@@ -4028,8 +4188,9 @@ pub fn fat32_open(_vol: Volume, path: &[u8], flags: u32) -> Result<Fat32File, Fs
         // to order ahead of the record: the new side is empty).
         journal_barrier().map_err(|()| FsError::Io)?;
 
+        let defer = defer_frees();
         dir_update_meta(dir_sector, dir_offset, 0, 0)?;
-        if old_cluster >= FAT32_FIRST_DATA_CLUSTER {
+        if !defer && old_cluster >= FAT32_FIRST_DATA_CLUSTER {
             fat32_free_chain(old_cluster);
         }
         journal_barrier().map_err(|()| FsError::Io)?;
@@ -4037,6 +4198,8 @@ pub fn fat32_open(_vol: Volume, path: &[u8], flags: u32) -> Result<Fat32File, Fs
         let committed = JournalEntry { state: JOURNAL_COMMITTED, ..journal };
         fat32_journal_write(&committed).map_err(|()| FsError::Io)?;
         fat32_journal_clear().map_err(|()| FsError::Io)?;
+        // Held until the clear is durable, as in `write_file_journaled`.
+        if defer { let _ = defer_free(old_cluster, entry.size); }
 
         entry.first_cluster = 0;
         entry.size = 0;
@@ -4819,16 +4982,24 @@ impl crate::vfs::FileSystem for Fat32Fs {
         if len == e.size as u64 { return Ok(()); }
         if len == 0 && !cfg!(feature = "fat-proxy-writes-canary") {
             // Wave 15, the `O_TRUNC` of an in-place write: the entry first
-            // (no chain, size 0), then — one epoch later — the old chain
-            // freed. A cut leaves the old file or an empty one; at worst
-            // the old chain leaks, it is never named by a live entry while
-            // free. No journal record, no whole-file rewrite.
+            // (no chain, size 0), then the old chain freed, never in the
+            // same epoch. Write-back holds it (`defer_free`) until the
+            // flush that makes this entry durable, so the new data and
+            // chain share the entry's epoch and an fsync is two flushes;
+            // write-through frees one epoch later. A cut leaves the old
+            // file or an empty one; at worst the old chain leaks, it is
+            // never named by a live entry while free. No journal record,
+            // no whole-file rewrite.
             let (sector, off) = fat32_find_dirent_location(&name83).map_err(|()| FsErr::Io)?;
             fat32_update_dirent_clus_size(sector, off, 0, 0).map_err(|()| FsErr::Io)?;
             if e.cluster >= FAT32_FIRST_DATA_CLUSTER {
-                order_barrier().or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) })
-                    .map_err(fs_err)?;
-                fat32_free_chain(e.cluster);
+                if defer_frees() {
+                    defer_free(e.cluster, e.size).map_err(fs_err)?;
+                } else {
+                    order_barrier().or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) })
+                        .map_err(fs_err)?;
+                    fat32_free_chain(e.cluster);
+                }
             }
             return Ok(());
         }
@@ -4885,10 +5056,13 @@ impl crate::vfs::FileSystem for Fat32Fs {
             if !v.mounted { return Err(crate::vfs::FsErr::NotFound); }
             (v.bytes_per_clus, v.data_clusters)
         };
-        let free = fat32_free_clusters().map_err(|()| crate::vfs::FsErr::Io)?;
+        // Held chains (`defer_free`) count as free: the allocator flushes
+        // and frees them rather than report the volume full.
+        let free = (fat32_free_clusters().map_err(|()| crate::vfs::FsErr::Io)? as u64
+            + fat32_held_clusters() as u64).min(clusters as u64);
         Ok(crate::vfs::StatFs {
             fs_type: crate::vfs::FS_TYPE_FAT32, block_size: bpc,
-            blocks: clusters as u64, blocks_free: free as u64,
+            blocks: clusters as u64, blocks_free: free,
             files: 0, files_free: 0, name_max: 12,
         })
     }

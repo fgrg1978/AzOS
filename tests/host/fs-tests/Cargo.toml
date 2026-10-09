@@ -64,6 +64,10 @@ rename-two-records-canary = []
 fat-proxy-writes-canary = []
 # Wave 15 canary: every allocation scans the FAT from sector 0 again.
 alloc-hint-canary = []
+# Wave 15 (FD) canary: a truncated or replaced chain is freed at once, in
+# the epoch of the write that unlinks it, instead of held until that write
+# is durable (`defer_free`): a cut can leave the old name over reused clusters.
+deferred-free-canary = []
 #   ro-stream-off: read-only opens take the whole-file proxy again
 #   write-gen:     writes no longer move FAT32's write generation
 ro-stream-off-canary = []
