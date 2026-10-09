@@ -702,8 +702,9 @@ config LOCKDEP_KTEST
     help
       On in kernels built with KTEST (the gate's `ktest` rows) only; every
       other kernel is as with Off. The default in development builds.
-      Costs, in those kernels: 16 bytes in every lock (its class key and
-      declaration site), the tables below, and per acquisition, with
+      Costs, in those kernels: 16 bytes in a SpinLock (its class key and
+      declaration site) and 20 in a PiMutex or SleepLock (also its
+      holder's CPU and RT-ness), the tables below, and per acquisition, with
       interrupts briefly off, a hash of the held chain plus, for a chain
       not seen before, one table probe per held lock.
 
