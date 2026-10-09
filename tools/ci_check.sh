@@ -15070,9 +15070,11 @@ PYEOF
     # see half of it and only one hart is loaded at a time. aarch64 only: on
     # riscv64 the hart-1 phases miss (333/375 jobs at 70 %, 263/375 at 93 %,
     # wave 15) with the stolen-clock signature (CBS overruns on jobs that
-    # computed 95 % of their budget, timer-ISR jitter up to 51 ms) and the
-    # boot's `behavior` task (re-pinned to hart 1 at -smp 2) logging 1.5 s
-    # steps; unattributed, open.
+    # computed 95 % of their budget), almost as many as with both harts
+    # loaded (190 vs 200 of 200 for the 5 ms task): riscv64 hart 0 keeps
+    # executing while nothing is scheduled on it, where aarch64's idles.
+    # Open (idle_wait / console drain / keepalive at -smp 2; same class as
+    # the "hart 2 starved under -icount" item).
     # Canaries: `rt-util-cbs-canary` (no budget charging) fails `overrun`;
     # `rt-util-wake-canary` (the CBS wake rule tests q/t, the bandwidth,
     # instead of q/d, the density) fails `suspend`; `rt-util-admit-canary`
