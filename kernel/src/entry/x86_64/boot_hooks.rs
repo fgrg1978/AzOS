@@ -572,6 +572,34 @@ pub fn verify_guards() {
     }
 }
 
+// The image's text and read-only data, reached through the direct map, are
+// read-only and not executable (`protect_image_alias`), and the image's own
+// text mapping stays read-execute.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest! {
+    fn x86_direct_map_image_alias_read_only() {
+        use azos_arch::mmu as m;
+        let kpt = azos_mm::vmm::kernel_pagetable();
+        // SAFETY: linker symbols' addresses, not dereferenced.
+        let (t, r) = unsafe { (&crate::_text_start as *const u8 as usize, &crate::_rodata_start as *const u8 as usize) };
+        let leaf = |va: usize| m::translate(&DirectTables, kpt, m::levels(), va);
+        for va in [t, r] {
+            let alias = azos_mm::addr::phys_to_virt(azos_mm::addr::virt_to_phys(va));
+            let Some(l) = leaf(alias) else { return Err("the image's direct-map alias is not mapped") };
+            if l.word & m::RW != 0 {
+                return Err("the image's direct-map alias is writable");
+            }
+            if l.word & m::NX == 0 {
+                return Err("the image's direct-map alias is executable");
+            }
+        }
+        match leaf(t) {
+            Some(l) if l.word & m::NX == 0 && l.word & m::RW == 0 => Ok(()),
+            _ => Err("the image's own text mapping is not read-execute"),
+        }
+    }
+}
+
 // The user half of the kernel's table and of a fresh task table holds no
 // RAM: the kernel lives in the upper half (`KERNEL_VA_OFFSET`). Canary:
 // `canary=x86-low-alias` (`mmu_enabled`) maps the kernel's first text page

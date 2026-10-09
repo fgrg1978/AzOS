@@ -10931,8 +10931,9 @@ PY
     #                               kernel linked high); x86_low_half_maps_no_ram
     #                               alone not ok
     # +9 with Kconfig CHAOS / DECISION_RECORDS (`chaos`, `decisions` ride in
-    # every x86 ktest kernel, as on rv and arm); +1 x86_low_half_maps_no_ram.
-    KTEST_N_X86=25
+    # every x86 ktest kernel, as on rv and arm); +2 x86_low_half_maps_no_ram,
+    # x86_direct_map_image_alias_read_only.
+    KTEST_N_X86=26
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2"
