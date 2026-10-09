@@ -17566,6 +17566,40 @@ echo after-lx" 150 \
 echo after-lx" 150 \
             "lx: exec-sig: the process's pending signal is kept ok"
     done
+
+    # ── Wave 15: robust futex lists and a process signal on an ending thread ─
+    #
+    # LXHELLO's `stage_robust`: a fork child's raw CLONE_THREAD thread
+    # registers a robust list (set_robust_list) and ends with SYS_exit (not
+    # musl's pthread_exit, which walks the list itself): the lock it held and
+    # the child contends becomes OWNER_DIED|WAITERS and the child's futex
+    # wait is woken, a lock another TID holds is left alone, a self-linked
+    # entry ends at LINUX_ROBUST_LIST_LIMIT and the list_op_pending lock is
+    # handled after it. Canary `robust-list-canary` (the list is never
+    # walked): the wait times out and the locks stay held.
+    # `stage_sig_retarget`: a kill(getpid()) that can land only on a thread
+    # (the leader blocks it) is not lost when that thread ends (the leader's
+    # exec ends it): the thread handled it, or it is pending in the new
+    # image. Canary `sig-exit-retarget-canary`: the thread's exit drops it.
+    for ush_isa in rv arm; do
+        USH_DISK=lxabi USH_FORBID='robot> |lx: robust.* FAIL|lx: retarget.* FAIL|SECCOMP' par_row ushell_row "linux: robust list and signal retarget at a thread's exit ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
+            "lxhello
+echo after-lx" 150 \
+            "lx: robust: set_robust_list takes only Linux's head length ok" \
+            "lx: robust: a held contended lock becomes OWNER_DIED and its waiter wakes ok" \
+            "lx: robust: a lock another thread holds is left alone ok" \
+            "lx: robust: a cyclic list ends at the limit and the pending lock is handled ok" \
+            "lx: robust: a thread's exit releases the robust locks it held ok" \
+            "lx: retarget: a process signal pending on a thread that ends stays the process's ok"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: robust list canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,robust-list-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: robust: a thread's exit releases the robust locks it held ok"
+        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: signal retarget canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,sig-exit-retarget-canary" FAIL \
+            "lxhello
+echo after-lx" 150 \
+            "lx: retarget: a process signal pending on a thread that ends stays the process's ok"
+    done
     a64_kbuild "qemu" >/dev/null 2>&1 || true
 
     kbuild "qemu"

@@ -22,6 +22,11 @@ cpuid-probe-canary = ["cpuid-probe"]
 futex-wake-noop-canary = []
 threads-no-cleartid-canary = []
 threads-tls-canary = []
+# Wave 15 canaries, never in a real build: a Linux thread's robust futex list
+# is never walked at its exit; a process-directed signal pending on a thread
+# that ends is dropped with it instead of going back to the process.
+robust-list-canary = []
+sig-exit-retarget-canary = []
 # Wave 15 (VI): the ELF loader's page permissions. `elf-mixed-page-canary`
 # accepts a page shared by segments mapped differently (their union, as
 # before); `rodata-exec-canary` maps read-only segments read-execute (the old

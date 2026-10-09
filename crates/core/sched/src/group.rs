@@ -35,7 +35,8 @@
 //! that made them, until the process exits. Booked to the thread, by
 //! design, is what names a thread as the one to wake or call: fast-IPC
 //! slots, endpoints it serves, service names, driver slots, IRQ wake
-//! bindings, leases and their seals, its signal state and robust list.
+//! bindings, leases and their seals, its signal state and robust lists (the
+//! native robust notify words and the Linux `set_robust_list` head).
 //!
 //! # Exec
 //!
@@ -118,6 +119,11 @@ pub(crate) fn take_thread_only(idx: usize) -> bool {
 /// at its thread-list lock right before exiting.
 static CLEAR_TID: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 
+/// Per pool slot: the user address of the thread's robust futex list head
+/// (Linux `set_robust_list`), walked when the task ends; 0 for none. A new
+/// task starts without one (Linux: `robust_list = NULL` in a clone).
+static ROBUST_HEAD: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
+
 #[derive(Clone, Copy)]
 struct Group {
     /// Leader TID; 0 = free entry.
@@ -152,6 +158,7 @@ pub(crate) fn slot_reset(idx: usize) {
     if idx < MAX_TASKS {
         LEAD[idx].store(0, Ordering::Relaxed);
         CLEAR_TID[idx].store(0, Ordering::Relaxed);
+        ROBUST_HEAD[idx].store(0, Ordering::Relaxed);
         THREAD_ONLY[idx].store(false, Ordering::Relaxed);
     }
 }
@@ -237,6 +244,19 @@ pub fn set_current_clear_tid(addr: u64) {
     if let Some(idx) = crate::scheduler::current_slot() {
         set_clear_tid(idx, addr);
     }
+}
+
+/// Set the current task's robust futex list head (`set_robust_list`; 0
+/// drops it, as an exec does).
+pub fn set_current_robust_list(head: u64) {
+    if let Some(idx) = crate::scheduler::current_slot() {
+        ROBUST_HEAD[idx].store(head, Ordering::Release);
+    }
+}
+
+/// Take the robust list head of the task in slot `idx` (0 for none).
+pub(crate) fn take_robust_list(idx: usize) -> u64 {
+    if idx < MAX_TASKS { ROBUST_HEAD[idx].swap(0, Ordering::AcqRel) } else { 0 }
 }
 
 /// Take the clear-tid word of the task in slot `idx` (0 for none).

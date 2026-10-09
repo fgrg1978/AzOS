@@ -3649,7 +3649,16 @@ unsafe fn group_exit(idx: usize, tid: u32, code: i32) -> i32 {
     let lead = crate::group::lead_of_idx(idx);
     if lead == 0 {
         let _ = crate::group::take_thread_only(idx);
+        // A process with no other thread: nobody of its own can wait on its
+        // robust words, but they are marked as Linux marks them.
+        robust_list_exit(idx, tid, tid);
         return code;
+    }
+    // The leader's robust words go before it waits to be alone: the
+    // siblings it outlives in that wait may be the ones blocked on them
+    // (a member walks its own in `member_exit`).
+    if lead == tid {
+        robust_list_exit(idx, tid, lead);
     }
     if !crate::group::take_thread_only(idx) && crate::group::begin_exit(lead, code) {
         let mut members = [0u32; crate::group::GROUP_THREADS_MAX as usize];
@@ -3709,10 +3718,46 @@ unsafe fn clear_tid_word(idx: usize, proc_id: u32) {
     }
 }
 
+/// Walk the robust futex list of the task in slot `idx` (thread `tid` of
+/// process `proc_id`; Linux `set_robust_list`) while its address space is
+/// installed: each lock word it still owns becomes `FUTEX_OWNER_DIED` and
+/// one waiter on it is woken (`azos_linux_abi::robust`). Bounded by Kconfig
+/// `LINUX_ROBUST_LIST_LIMIT`. Run before the clear-tid wake: a joiner may
+/// free the thread's stack, where musl keeps the list head, once that word
+/// is cleared.
+fn robust_list_exit(idx: usize, tid: u32, proc_id: u32) {
+    let head = crate::group::take_robust_list(idx);
+    // Gate canary only: the list is never walked (a lock its owner died
+    // holding stays held; the next locker sleeps).
+    if head == 0 || cfg!(feature = "robust-list-canary") {
+        return;
+    }
+    struct Mem(u32);
+    impl azos_linux_abi::robust::RobustMem for Mem {
+        fn read_u64(&mut self, addr: u64) -> Option<u64> {
+            let mut b = [0u8; 8];
+            crate::process::copy_from_user(b.as_mut_ptr(), addr as usize, 8).then(|| u64::from_ne_bytes(b))
+        }
+        fn read_u32(&mut self, addr: u64) -> Option<u32> {
+            let mut b = [0u8; 4];
+            crate::process::copy_from_user(b.as_mut_ptr(), addr as usize, 4).then(|| u32::from_ne_bytes(b))
+        }
+        fn cas_u32(&mut self, addr: u64, old: u32, new: u32) -> Result<(), Option<u32>> {
+            crate::process::user_cas_u32(addr as usize, old, new)
+        }
+        fn wake_one(&mut self, addr: u64) {
+            let _ = crate::futex::wake_in(self.0, addr, 1);
+        }
+    }
+    let limit = azos_limits::LINUX_ROBUST_LIST_LIMIT as u32;
+    let _ = azos_linux_abi::robust::exit_robust_list(&mut Mem(proc_id), head, tid, limit);
+}
+
 /// The exit of a thread-group member that is not the leader (see
 /// [`group_exit`]). Never returns.
 unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
     TASK_EXITING[idx].store(true, Ordering::Release);
+    robust_list_exit(idx, tid, lead);
     clear_tid_word(idx, lead);
     TASK_EXIT_CODE[idx].store(code, Ordering::Relaxed);
     {

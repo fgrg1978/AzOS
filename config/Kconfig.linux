@@ -265,12 +265,33 @@ config LINUX_ABI
       seeded from its row and shares the parent's open descriptions),
       wait4, and execve (into another Linux row only with a launch
       grant); threads (clone with CLONE_THREAD, futex, set_tid_address,
-      exit and exit_group: a process's threads share its memory,
-      capabilities and descriptors); signals inside the compartment (kill,
+      set_robust_list, exit and exit_group: a process's threads share its
+      memory, capabilities and descriptors); signals inside the compartment (kill,
       tgkill, sigaction, sigprocmask, sigreturn, SIGCHLD, SIGPIPE, console
       ^C), mprotect (read/write exactly; adding PROT_EXEC is refused), and
       console input for the shell's foreground job. Not yet: posix_spawn's
       CLONE_VM | CLONE_VFORK child with a stack, requeue and
       priority-inheritance futexes.
+
+config LINUX_ROBUST_LIST_LIMIT
+    int "Linux personality: robust futex list entries walked at a thread's exit"
+    range 1 65536
+    default 256 if PROFILE_EMBEDDED
+    default 2048
+    help
+      A Linux thread registers a list of the robust mutexes it holds
+      (set_robust_list); when it ends, the kernel walks the list and marks
+      each lock word it still owns FUTEX_OWNER_DIED, waking one waiter, so
+      the next locker gets EOWNERDEAD instead of sleeping forever. The list
+      is in the thread's own memory and untrusted: the walk visits at most
+      this many entries (plus the in-flight one), so a cyclic list cannot
+      hold the exit. Linux's ROBUST_LIST_LIMIT is 2048.
+
+      Costs no RAM. Each entry visited costs two user-page translations and
+      a compare-and-swap at the thread's exit (a few hundred instructions);
+      the bound caps a hostile list's exit at limit times that. The same on
+      every ISA. Lower it on an embedded profile where an exit must stay
+      short; raise it only for a program that really holds more robust
+      locks at once. Unused without LINUX_ABI.
 
 endmenu # Linux compatibility

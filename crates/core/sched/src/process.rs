@@ -1839,6 +1839,32 @@ pub fn copy_to_user(user_dst: usize, kernel_src: *const u8, len: usize) -> bool 
     true
 }
 
+/// Compare-and-swap the current task's 32-bit user word at `user_addr`
+/// (4-aligned): `old` becomes `new` atomically against every other thread of
+/// the process, as a futex word needs (the robust list walk at a thread's
+/// exit). `Ok(())` on success, `Err(Some(current))` when the word held
+/// another value, `Err(None)` when it is not a writable user word. The page
+/// is validated as [`copy_to_user`]'s (`VALID + USER + WRITE`), and the CAS
+/// goes through the kernel's own mapping of the frame.
+pub fn user_cas_u32(user_addr: usize, old: u32, new: u32) -> Result<(), Option<u32>> {
+    if user_addr & 3 != 0 {
+        return Err(None);
+    }
+    let user_pt = crate::scheduler::current_user_pt();
+    if user_pt == 0 {
+        return Err(None);
+    }
+    let Some(pa) = vmm::translate_user(user_pt, user_addr, true) else { return Err(None) };
+    let _ua = ARCH.user_access();
+    // SAFETY: `translate_user` validated a writable user page and `pa` is
+    // 4-aligned within it; the kernel's direct map of a RAM frame is valid
+    // for an atomic 32-bit access.
+    let w = unsafe { &*(azos_mm::addr::phys_to_virt(pa) as *const core::sync::atomic::AtomicU32) };
+    w.compare_exchange(old, new, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire)
+        .map(|_| ())
+        .map_err(Some)
+}
+
 /// Copy a NUL-terminated C string from user space into `dst` (at most
 /// `dst.len()` bytes including the NUL). Returns the number of bytes copied
 /// (excluding the NUL) on success, or `None` on fault / missing terminator /

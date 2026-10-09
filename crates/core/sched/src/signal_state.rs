@@ -29,7 +29,10 @@
 //! the console's `^C`) goes to a member that does not block it, the leader
 //! first ([`deliver_to`]). Linux keeps a process-directed signal in a shared
 //! pending set any member may later take; here it is posted to the member
-//! chosen at that moment (to the leader when every member blocks it).
+//! chosen at that moment (to the leader when every member blocks it), and
+//! marked as the process's ([`PROC_PENDING`]): if that member ends before it
+//! takes the signal, its exit ([`detach`]) posts it to the process again, so
+//! another member (or the leader) takes it, as Linux's shared set would.
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -41,6 +44,10 @@ use crate::task::WaitReason;
 static TID: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
 /// Posted, not yet taken (bit `n - 1` for signal `n`).
 static PENDING: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
+/// The bits of [`PENDING`] that were posted to the process ([`post`]), not
+/// to this thread ([`post_thread`]): what goes back to the process when the
+/// thread ends with them still pending.
+static PROC_PENDING: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 /// The task's signal mask (`rt_sigprocmask`).
 static BLOCKED: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 /// Signals whose disposition discards them on arrival: `SIG_IGN`, or
@@ -126,6 +133,7 @@ pub fn attach(tid: u32, blocked: u64, ignored: u64) -> bool {
 fn detach_slot(idx: usize) {
     TID[idx].store(0, Ordering::Release);
     PENDING[idx].store(0, Ordering::Release);
+    PROC_PENDING[idx].store(0, Ordering::Release);
     resync(idx);
     if RESTORE[idx].swap(0, Ordering::AcqRel) != 0 {
         WORK.fetch_sub(1, Ordering::AcqRel);
@@ -135,9 +143,35 @@ fn detach_slot(idx: usize) {
 
 /// `tid` is exiting: its slot's words go, so the counter does not keep every
 /// later return to user mode on the slow path.
+///
+/// Wave 15: a process-directed signal still pending on a thread that is not
+/// its process's leader is posted to the process again (Linux keeps it in
+/// the shared pending set, which outlives any one thread), unless the whole
+/// process is ending. Its thread-directed ones end with it, as on Linux.
+/// The slot stops taking posts first (`TID` 0), then its pending set is
+/// taken; a post racing the two sees the 0 and takes its bit back
+/// ([`post_one`]), so exactly one side re-posts it.
 pub fn detach(tid: u32) {
-    if let Some(idx) = slot_of(tid) {
-        detach_slot(idx);
+    let Some(idx) = slot_of(tid) else { return };
+    let lead = crate::group::lead_of_idx(idx);
+    TID[idx].store(0, Ordering::SeqCst);
+    let moved = PENDING[idx].swap(0, Ordering::SeqCst) & PROC_PENDING[idx].swap(0, Ordering::AcqRel);
+    let sender = SENDER[idx].load(Ordering::Relaxed);
+    detach_slot(idx);
+    // Gate canary only: the signal is dropped with the thread.
+    if moved == 0
+        || lead == 0
+        || lead == tid
+        || crate::group::exiting(lead).is_some()
+        || cfg!(feature = "sig-exit-retarget-canary")
+    {
+        return;
+    }
+    let mut m = moved;
+    while m != 0 {
+        let sig = m.trailing_zeros() + 1;
+        m &= m - 1;
+        let _ = post(lead, sig, sender);
     }
 }
 
@@ -180,12 +214,18 @@ pub fn deliver_to(tid: u32, sig: u32) -> u32 {
 /// ([`deliver_to`]). Lock-free: callable from a syscall, an exit and an
 /// interrupt handler.
 pub fn post(tid: u32, sig: u32, sender: u32) -> Posted {
-    post_thread(deliver_to(tid, sig), sig, sender)
+    post_one(deliver_to(tid, sig), sig, sender, Some(tid))
 }
 
 /// Post `sig` to exactly thread `tid` (`tkill`/`tgkill`): if it blocks it,
 /// it stays pending on that thread.
 pub fn post_thread(tid: u32, sig: u32, sender: u32) -> Posted {
+    post_one(tid, sig, sender, None)
+}
+
+/// Post `sig` to thread `tid`; `process`: the process it was posted to
+/// ([`post`]), `None` for a thread-directed post.
+fn post_one(tid: u32, sig: u32, sender: u32, process: Option<u32>) -> Posted {
     let Some(idx) = slot_of(tid) else { return Posted::NotLinux };
     let b = bit(sig);
     if b == 0 {
@@ -198,7 +238,17 @@ pub fn post_thread(tid: u32, sig: u32, sender: u32) -> Posted {
         return Posted::Discarded;
     }
     SENDER[idx].store(sender, Ordering::Relaxed);
-    PENDING[idx].fetch_or(b, Ordering::AcqRel);
+    if process.is_some() {
+        PROC_PENDING[idx].fetch_or(b, Ordering::AcqRel);
+    }
+    PENDING[idx].fetch_or(b, Ordering::SeqCst);
+    // The thread began to end meanwhile ([`detach`] cleared its TID): take
+    // the bit back if its exit did not, and post it to the process again.
+    if let Some(p) = process {
+        if TID[idx].load(Ordering::SeqCst) == 0 && PENDING[idx].fetch_and(!b, Ordering::AcqRel) & b != 0 {
+            return post(p, sig, sender);
+        }
+    }
     resync(idx);
     POSTED.fetch_add(1, Ordering::Relaxed);
     if BLOCKED[idx].load(Ordering::Acquire) & b == 0 && tid != super::current_task_tid() {
@@ -234,6 +284,7 @@ pub fn take_current() -> Option<(u32, u32)> {
         let sig = ready.trailing_zeros() + 1;
         let b = bit(sig);
         if PENDING[idx].compare_exchange(p, p & !b, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            PROC_PENDING[idx].fetch_and(!b, Ordering::AcqRel);
             resync(idx);
             DELIVERED.fetch_add(1, Ordering::Relaxed);
             return Some((sig, SENDER[idx].load(Ordering::Relaxed)));
@@ -272,6 +323,7 @@ pub fn set_current_ignored(ignored: u64) {
     let set = |i: usize| {
         IGNORED[i].store(ign, Ordering::Release);
         PENDING[i].fetch_and(!ign, Ordering::AcqRel);
+        PROC_PENDING[i].fetch_and(!ign, Ordering::AcqRel);
         resync(i);
     };
     set(idx);
@@ -411,7 +463,9 @@ pub(crate) fn hand_over(from: usize, to: usize) {
     // Canary `exec-sig-handover-canary` (gate rows `linux: exec-sig
     // handover canary`): the leader's pending set is dropped, not handed over.
     let moved = PENDING[from].swap(0, Ordering::AcqRel);
+    let moved_proc = PROC_PENDING[from].swap(0, Ordering::AcqRel);
     if !cfg!(feature = "exec-sig-handover-canary") {
+        PROC_PENDING[to].fetch_or(moved_proc & moved, Ordering::AcqRel);
         PENDING[to].fetch_or(moved, Ordering::AcqRel);
     }
     IGNORED[to].store(IGNORED[from].load(Ordering::Acquire), Ordering::Release);

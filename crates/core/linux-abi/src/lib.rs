@@ -145,6 +145,7 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     // Wave 13: `FUTEX_WAIT`/`FUTEX_WAKE` (and their `_BITSET` forms with a
     // full mask), private to the process.
     (nr::FUTEX, "futex", &[k::SYS_FUTEX_WAIT as u16, k::SYS_FUTEX_WAKE as u16]),
+    // Wave 15: the robust futex list walked at the thread's exit.
     (nr::SET_ROBUST_LIST, "set_robust_list", &[]),
     (nr::NANOSLEEP, "nanosleep", &[k::SYS_SLEEP_UNTIL as u16]),
     (nr::CLOCK_GETTIME, "clock_gettime", &[]),
@@ -490,6 +491,9 @@ pub fn utsname_bytes(arch: Arch, nodename: &[u8]) -> [u8; UTSNAME_SIZE] {
 /// Signal delivery's frames, default actions and the console line
 /// discipline (wave 13).
 pub mod signal;
+
+/// The robust futex list walked at a thread's exit (wave 15).
+pub mod robust;
 
 /// Signal numbers and `rt_sigprocmask` operations (RFC-0047 P3: signals
 /// live inside the Linux compartment).

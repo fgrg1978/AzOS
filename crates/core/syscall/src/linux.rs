@@ -514,7 +514,16 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> i64 {
         })
         .unwrap_or(0o022),
         nr::GETPPID => azos_sched::scheduler::current_task_parent_tid() as i64,
-        nr::SET_ROBUST_LIST => 0,
+        // Wave 15: the head of this thread's robust futex list, walked at its
+        // exit (`scheduler::robust_list_exit`). Linux's only length, else
+        // `-EINVAL`; the address is checked when it is walked.
+        nr::SET_ROBUST_LIST => {
+            if a1 != lx::robust::HEAD_LEN {
+                return neg(le::EINVAL);
+            }
+            azos_sched::group::set_current_robust_list(a0);
+            0
+        }
         nr::SCHED_GETAFFINITY => {
             // `sched_getaffinity(pid, size, mask)`: one CPU set; the kernel
             // answers the bytes written (a `long`).
@@ -1811,6 +1820,14 @@ pub fn on_return_to_user(
         // Gate canary only: nothing is ever delivered.
         return changed;
     }
+    // Wave 15: a task a forced stop is ending (`SIGKILL`, an `exit_group` or
+    // exec of a sibling) runs no handler, as Linux's `fatal_signal_pending`:
+    // its signals stay pending, so a process-directed one goes back to the
+    // process at its exit (`signal_state::detach`) instead of being taken
+    // into a frame whose handler is cut off by the stop.
+    if azos_sched::scheduler::current_forced_exit().is_some() {
+        return changed;
+    }
     let me = azos_sched::current_task_tid();
     while let Some((s, sender)) = sigst::take_current() {
         // The action and, for a handler, the mask its frame saves
@@ -2246,6 +2263,8 @@ fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
         return neg(le::EINTR);
     }
     let _ = azos_sched::process::exec_commit(prepared);
+    // The robust list named the old image's memory (Linux drops it at exec).
+    azos_sched::group::set_current_robust_list(0);
     let me = azos_sched::current_task_tid();
     if cross {
         enter_row(me, profile, own);

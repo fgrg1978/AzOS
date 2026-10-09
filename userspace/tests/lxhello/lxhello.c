@@ -40,8 +40,11 @@ typedef unsigned char u8;
 #define NR_writev          66
 #define NR_newfstatat      79
 #define NR_fstat           80
+#define NR_exit            93
 #define NR_exit_group      94
 #define NR_set_tid_address 96
+#define NR_futex           98
+#define NR_set_robust_list 99
 #define NR_nanosleep       101
 #define NR_clock_gettime   113
 #define NR_kill            129
@@ -87,6 +90,8 @@ typedef unsigned char u8;
 #define ESRCH  3
 #define EINTR  4
 #define EPIPE  32
+#define EINVAL 22
+#define ETIMEDOUT 110
 
 static i64 lx_sc6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f)
 {
@@ -656,6 +661,182 @@ static void stage_exec_signals(void)
     check("exec-sig: a thread's exec keeps the PID, its pending signals and mask", code == EXSIG_OK, "status", code);
 }
 
+// ── Wave 15: robust futex lists at a thread's exit ────────────────────────
+//
+// Linux's `exit_robust_list`: a thread that ends holding a robust lock has
+// its word marked FUTEX_OWNER_DIED (keeping FUTEX_WAITERS) and one waiter
+// woken, so the next locker sees EOWNERDEAD instead of sleeping forever.
+// musl's pthread_exit walks the list itself, so a pthread test proves
+// nothing about the kernel: the thread here ends with a raw SYS_exit. In a
+// fork child C, thread T registers a list (word at entry - 8, as musl's
+// `_m_lock` before `_m_next`): E1 held by T and contended by C (C sets
+// FUTEX_WAITERS and sleeps on it, 3 s timeout), E2 held by another TID,
+// E3 held by T and linked to itself (the walk must end at the limit), and
+// E4 held by T as `list_op_pending` only (handled after the walk: it
+// changes only if the walk ended). Exit code 0x50 plus a bit per failure.
+// Canary `robust-list-canary` (the list is never walked): C's wait times
+// out and every word stays held.
+
+#define FUTEX_WAIT_PRIVATE 128
+#define FUTEX_WAITERS    0x80000000u
+#define FUTEX_OWNER_DIED 0x40000000u
+#define ROBUST_OK 0x50
+
+struct rb_ent { volatile u32 lock; u32 pad; u64 next; };
+static struct rb_ent rb_e1, rb_e2, rb_e3, rb_e4;
+static struct { u64 next; i64 off; u64 pending; } rb_head;
+static volatile int rb_ready;
+static volatile i64 rb_badlen, rb_set;
+static char rb_stack[16384] __attribute__((aligned(16)));
+
+static void nap(long ms)
+{
+    struct timespec d = { 0, ms * 1000000L };
+    lx_sc2(NR_nanosleep, &d, 0);
+}
+
+// T: take the four words, register the list, wait to be contended, end.
+static void rb_thread(void)
+{
+    u32 me = (u32)lx_sc0(NR_gettid);
+    rb_e1.lock = me;
+    rb_e2.lock = 12345;
+    rb_e3.lock = me;
+    rb_e4.lock = me;
+    rb_head.next = (u64)&rb_e1.next;
+    rb_e1.next = (u64)&rb_e2.next;
+    rb_e2.next = (u64)&rb_e3.next;
+    rb_e3.next = (u64)&rb_e3.next;
+    rb_head.off = -8;
+    rb_head.pending = (u64)&rb_e4.next;
+    rb_badlen = lx_sc2(NR_set_robust_list, &rb_head, 23);
+    rb_set = lx_sc2(NR_set_robust_list, &rb_head, 24);
+    rb_ready = 1;
+    i64 end = mono_ns() + 5000000000L;
+    while (!(rb_e1.lock & FUTEX_WAITERS) && mono_ns() < end)
+        nap(2);
+    // Let C reach its futex wait, then end this thread alone.
+    nap(30);
+    lx_sc1(NR_exit, 0);
+    for (;;) {}
+}
+
+static void stage_robust(void)
+{
+    i64 pid = lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0);
+    if (pid == 0) {
+        int bits = 0;
+        i64 t = lx_thread_spawn(0x10f00, rb_stack + sizeof rb_stack, rb_thread);
+        if (t <= 0) lx_sc1(NR_exit_group, 0x4f);
+        i64 end = mono_ns() + 5000000000L;
+        while (!rb_ready && mono_ns() < end)
+            nap(2);
+        u32 held = rb_e1.lock;
+        rb_e1.lock = held | FUTEX_WAITERS;
+        struct timespec to = { 3, 0 };
+        i64 r = lx_sc4(NR_futex, &rb_e1.lock, FUTEX_WAIT_PRIVATE, held | FUTEX_WAITERS, &to);
+        // E4 changes last: the walk has ended once it does.
+        end = mono_ns() + 3000000000L;
+        while (rb_e4.lock == held && mono_ns() < end)
+            nap(2);
+        put("lx: robust: set="); putn(rb_set); put(" badlen="); putn(rb_badlen); put(" wait="); putn(r);
+        put(" e1="); putn(rb_e1.lock); put(" e2="); putn(rb_e2.lock); put(" e3="); putn(rb_e3.lock);
+        put(" e4="); putn(rb_e4.lock); flush();
+        int len_ok = rb_set == 0 && rb_badlen == -EINVAL;
+        check("robust: set_robust_list takes only Linux's head length", len_ok, "badlen", rb_badlen);
+        if (!len_ok) bits |= 1;
+        int e1_ok = r != -ETIMEDOUT && rb_e1.lock == (FUTEX_OWNER_DIED | FUTEX_WAITERS);
+        check("robust: a held contended lock becomes OWNER_DIED and its waiter wakes", e1_ok, "wait", r);
+        if (!e1_ok) bits |= 2;
+        int e2_ok = rb_e2.lock == 12345;
+        check("robust: a lock another thread holds is left alone", e2_ok, "e2", rb_e2.lock);
+        if (!e2_ok) bits |= 4;
+        int e3_ok = rb_e3.lock == FUTEX_OWNER_DIED && rb_e4.lock == FUTEX_OWNER_DIED;
+        check("robust: a cyclic list ends at the limit and the pending lock is handled", e3_ok, "e4", rb_e4.lock);
+        if (!e3_ok) bits |= 8;
+        lx_sc1(NR_exit_group, ROBUST_OK | bits);
+    }
+    int code = wait_status(pid);
+    put("lx: robust: child status="); putn(code); flush();
+    check("robust: a thread's exit releases the robust locks it held", code == ROBUST_OK, "status", code);
+}
+
+// ── Wave 15: a process signal pending on a thread that ends ───────────────
+//
+// A process-directed signal is the process's, not the thread's it was
+// handed to: Linux keeps it in the shared pending set, so a thread that
+// ends without taking it leaves it to the others. In a fork child C, the
+// leader catches SIGUSR1 but blocks it; thread T unblocks it and parks on a
+// futex. C's kill(getpid(), SIGUSR1) can land only on T. C then execs this
+// image (`exec-retarget`), which ends T. The signal must not be lost:
+// either T ran its handler (it writes a byte to a pipe the parent holds) or
+// the signal is pending in the new image (the exec keeps C's mask). Canary
+// `sig-exit-retarget-canary`: T's exit drops it.
+
+#define RETARGET_OK 0x60
+static volatile int rt_ready, rt_wfd = -1;
+static volatile u32 rt_park;
+static char rt_stack[16384] __attribute__((aligned(16)));
+static void on_rt(int s, void *info, void *uc)
+{
+    (void)s; (void)info; (void)uc;
+    lx_sc3(NR_write, rt_wfd, "h", 1);
+}
+
+static void rt_thread(void)
+{
+    u64 none = 0;
+    lx_sc4(NR_rt_sigprocmask, 2 /* SIG_SETMASK */, &none, 0, 8);
+    rt_ready = 1;
+    for (;;)
+        lx_sc4(NR_futex, &rt_park, FUTEX_WAIT_PRIVATE, 0, 0);
+}
+
+// The image C exec'd into. Never returns.
+static void retarget_image(void)
+{
+    u64 pend = 0;
+    lx_sc2(NR_rt_sigpending, &pend, 8);
+    put("lx: retarget: pending after the exec="); putn((i64)pend); flush();
+    lx_sc1(NR_exit_group, (pend & sigbit(SIGUSR1)) ? RETARGET_OK : RETARGET_OK + 1);
+}
+
+static void stage_sig_retarget(void)
+{
+    int fds[2] = { -1, -1 };
+    if (lx_sc2(NR_pipe2, fds, 0) != 0) {
+        check("retarget: pipe2", 0, "rc", -1);
+        return;
+    }
+    i64 pid = lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0);
+    if (pid == 0) {
+        lx_sc1(NR_close, fds[0]);
+        rt_wfd = fds[1];
+        set_handler(SIGUSR1, on_rt, 0);
+        u64 m = sigbit(SIGUSR1);
+        lx_sc4(NR_rt_sigprocmask, 2 /* SIG_SETMASK */, &m, 0, 8);
+        i64 t = lx_thread_spawn(0x10f00, rt_stack + sizeof rt_stack, rt_thread);
+        if (t <= 0) lx_sc1(NR_exit_group, 0x5f);
+        i64 end = mono_ns() + 5000000000L;
+        while (!rt_ready && mono_ns() < end)
+            nap(2);
+        nap(50);
+        lx_sc2(NR_kill, lx_sc0(NR_getpid), SIGUSR1);
+        nap(50);
+        char *argv[] = { "lxhello", "exec-retarget", 0 };
+        lx_sc3(NR_execve, "/proc/self/exe", argv, 0);
+        lx_sc1(NR_exit_group, 0x5e);
+    }
+    lx_sc1(NR_close, fds[1]);
+    int code = wait_status(pid);
+    char b = 0;
+    i64 n = lx_sc3(NR_read, fds[0], &b, 1);
+    lx_sc1(NR_close, fds[0]);
+    put("lx: retarget: child status="); putn(code); put(" handled by the thread="); putn(n == 1); flush();
+    check("retarget: a process signal pending on a thread that ends stays the process's",
+          code == RETARGET_OK || (n == 1 && code == RETARGET_OK + 1), "status", code);
+}
+
 static volatile u64 bench_hits;
 static void on_bench(int s, void *info, void *uc) { (void)s; (void)info; (void)uc; bench_hits++; }
 
@@ -738,6 +919,9 @@ static void run(i64 *sp)
     }
     if (argc == 2 && seq(argv[1], "exec-sig")) {
         exsig_image();
+    }
+    if (argc == 2 && seq(argv[1], "exec-retarget")) {
+        retarget_image();
     }
     if (argc == 2 && seq(argv[1], "exec-child")) {
         put("lx: exec child argc="); putn(argc); put(" ok"); flush();
@@ -1020,6 +1204,8 @@ static void run(i64 *sp)
     stage3();
     stage_signals();
     stage_exec_signals();
+    stage_robust();
+    stage_sig_retarget();
     stage_orphans();
 
     put("lx: done failures="); putn(failures); flush();

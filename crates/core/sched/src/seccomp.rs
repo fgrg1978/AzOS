@@ -1018,6 +1018,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // Wave 13: `clone` also reaches the thread create (derived from
             // the personality's table: LXHELLO itself forks only).
             SYS_THREAD_CREATE,
+            // Wave 15: `futex` (a robust lock's waiter, a parked thread).
+            SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
         ],
         audit: false,
     },

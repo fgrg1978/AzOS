@@ -502,3 +502,207 @@ mod tests {
         assert!(wifexited(wait_status(0)) && wexitstatus(wait_status(0)) == 0);
     }
 }
+
+/// Wave 15: the robust futex list walked at a Linux thread's exit
+/// (`crates/core/linux-abi/src/robust.rs`), over a sparse fake memory.
+#[cfg(test)]
+mod robust_list {
+    use azos_linux_abi::robust::*;
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Mem {
+        bytes: BTreeMap<u64, u8>,
+        woken: Vec<u64>,
+        /// One CAS on this word sees FUTEX_WAITERS set first (a racing waiter).
+        race_waiter_on: Option<u64>,
+    }
+    impl Mem {
+        fn put64(&mut self, a: u64, v: u64) {
+            for (i, b) in v.to_le_bytes().iter().enumerate() {
+                self.bytes.insert(a + i as u64, *b);
+            }
+        }
+        fn put32(&mut self, a: u64, v: u32) {
+            for (i, b) in v.to_le_bytes().iter().enumerate() {
+                self.bytes.insert(a + i as u64, *b);
+            }
+        }
+        fn get32(&self, a: u64) -> Option<u32> {
+            let mut b = [0u8; 4];
+            for (i, x) in b.iter_mut().enumerate() {
+                *x = *self.bytes.get(&(a + i as u64))?;
+            }
+            Some(u32::from_le_bytes(b))
+        }
+    }
+    impl RobustMem for Mem {
+        fn read_u64(&mut self, a: u64) -> Option<u64> {
+            let mut b = [0u8; 8];
+            for (i, x) in b.iter_mut().enumerate() {
+                *x = *self.bytes.get(&(a.checked_add(i as u64)?))?;
+            }
+            Some(u64::from_le_bytes(b))
+        }
+        fn read_u32(&mut self, a: u64) -> Option<u32> {
+            self.get32(a)
+        }
+        fn cas_u32(&mut self, a: u64, old: u32, new: u32) -> Result<(), Option<u32>> {
+            let cur = self.get32(a).ok_or(None)?;
+            if self.race_waiter_on == Some(a) {
+                self.race_waiter_on = None;
+                self.put32(a, cur | FUTEX_WAITERS);
+                return Err(Some(cur | FUTEX_WAITERS));
+            }
+            if cur != old {
+                return Err(Some(cur));
+            }
+            self.put32(a, new);
+            Ok(())
+        }
+        fn wake_one(&mut self, a: u64) {
+            self.woken.push(a);
+        }
+    }
+
+    const HEAD: u64 = 0x1000;
+    const TID: u32 = 42;
+    /// Lock word at entry + OFF (musl's `_m_lock` sits before `_m_next`).
+    const OFF: i64 = -8;
+
+    /// head -> entries... -> head, pending as given; word of entry e at e-8.
+    fn list(m: &mut Mem, entries: &[u64], pending: u64) {
+        let mut prev = HEAD;
+        for &e in entries {
+            m.put64(prev, e);
+            prev = e;
+        }
+        m.put64(prev, HEAD);
+        m.put64(HEAD + 8, OFF as u64);
+        m.put64(HEAD + 16, pending);
+    }
+
+    #[test]
+    fn a_held_contended_word_becomes_owner_died_and_wakes_one() {
+        let mut m = Mem::default();
+        list(&mut m, &[0x2008], 0);
+        m.put32(0x2000, TID | FUTEX_WAITERS);
+        let w = exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.get32(0x2000), Some(FUTEX_OWNER_DIED | FUTEX_WAITERS));
+        assert_eq!(m.woken, vec![0x2000]);
+        assert_eq!((w.entries, w.owner_died, w.woken), (1, 1, 1));
+    }
+
+    #[test]
+    fn an_uncontended_word_is_marked_and_wakes_nobody() {
+        let mut m = Mem::default();
+        list(&mut m, &[0x2008], 0);
+        m.put32(0x2000, TID);
+        exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.get32(0x2000), Some(FUTEX_OWNER_DIED));
+        assert!(m.woken.is_empty());
+    }
+
+    #[test]
+    fn a_word_another_thread_holds_is_left_alone() {
+        let mut m = Mem::default();
+        list(&mut m, &[0x2008, 0x3008], 0);
+        m.put32(0x2000, 7 | FUTEX_WAITERS);
+        m.put32(0x3000, TID);
+        let w = exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.get32(0x2000), Some(7 | FUTEX_WAITERS));
+        assert_eq!(m.get32(0x3000), Some(FUTEX_OWNER_DIED));
+        assert_eq!(w.owner_died, 1);
+    }
+
+    #[test]
+    fn a_waiter_racing_the_cas_is_seen_and_woken() {
+        let mut m = Mem::default();
+        list(&mut m, &[0x2008], 0);
+        m.put32(0x2000, TID);
+        m.race_waiter_on = Some(0x2000);
+        exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.get32(0x2000), Some(FUTEX_OWNER_DIED | FUTEX_WAITERS));
+        assert_eq!(m.woken, vec![0x2000]);
+    }
+
+    #[test]
+    fn a_cyclic_list_ends_at_the_limit_and_the_pending_word_is_still_handled() {
+        let mut m = Mem::default();
+        // head -> A -> A -> A ... never back to head.
+        m.put64(HEAD, 0x2008);
+        m.put64(0x2008, 0x2008);
+        m.put64(HEAD + 8, OFF as u64);
+        m.put64(HEAD + 16, 0x4008);
+        m.put32(0x2000, TID);
+        m.put32(0x4000, TID | FUTEX_WAITERS);
+        let w = exit_robust_list(&mut m, HEAD, TID, 16);
+        assert_eq!(w.entries, 16 + 1, "the limit, then the pending entry");
+        assert_eq!(w.owner_died, 2, "the cycled word once, then the pending one");
+        assert_eq!(m.get32(0x4000), Some(FUTEX_OWNER_DIED | FUTEX_WAITERS));
+    }
+
+    #[test]
+    fn the_pending_entry_is_not_handled_twice_when_it_is_also_listed() {
+        let mut m = Mem::default();
+        list(&mut m, &[0x2008], 0x2008);
+        m.put32(0x2000, TID | FUTEX_WAITERS);
+        let w = exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(w.entries, 1);
+        assert_eq!(m.woken, vec![0x2000]);
+    }
+
+    #[test]
+    fn a_pending_word_left_zero_still_wakes_one() {
+        let mut m = Mem::default();
+        list(&mut m, &[], 0x5008);
+        m.put32(0x5000, 0);
+        exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.get32(0x5000), Some(0));
+        assert_eq!(m.woken, vec![0x5000]);
+    }
+
+    #[test]
+    fn an_unreadable_next_stops_the_walk_without_the_pending_word() {
+        let mut m = Mem::default();
+        m.put64(HEAD, 0x2008);
+        m.put64(HEAD + 8, OFF as u64);
+        m.put64(HEAD + 16, 0x4008);
+        m.put32(0x2000, TID);
+        m.put32(0x4000, TID);
+        // 0x2008 (the entry's own `next`) is not mapped.
+        exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.get32(0x2000), Some(FUTEX_OWNER_DIED), "the entry itself is handled");
+        assert_eq!(m.get32(0x4000), Some(TID), "Linux returns before the pending word");
+    }
+
+    #[test]
+    fn an_unreadable_or_absent_head_does_nothing() {
+        let mut m = Mem::default();
+        assert_eq!(exit_robust_list(&mut m, 0, TID, 2048), Walked::default());
+        assert_eq!(exit_robust_list(&mut m, HEAD, TID, 2048), Walked::default());
+    }
+
+    #[test]
+    fn the_pi_bit_is_masked_and_a_pi_word_wakes_nobody() {
+        let mut m = Mem::default();
+        list(&mut m, &[0x2008 | 1], 0);
+        m.put32(0x2000, TID | FUTEX_WAITERS);
+        exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.get32(0x2000), Some(FUTEX_OWNER_DIED | FUTEX_WAITERS));
+        assert!(m.woken.is_empty());
+    }
+
+    #[test]
+    fn an_unaligned_word_or_a_tid_wider_than_the_mask_is_refused() {
+        let mut m = Mem::default();
+        list(&mut m, &[0x2009], 0);
+        m.put32(0x2001, TID);
+        exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.get32(0x2001), Some(TID));
+        let mut m = Mem::default();
+        list(&mut m, &[0x2008], 0);
+        m.put32(0x2000, 5);
+        assert_eq!(exit_robust_list(&mut m, HEAD, (1 << 30) | 5, 2048), Walked::default());
+    }
+}
