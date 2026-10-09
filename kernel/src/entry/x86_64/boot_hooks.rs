@@ -30,7 +30,10 @@ pub fn pre_console() {}
 /// `syscall` MSRs and ring 3's FP state (`entry::x86_64::cpu_init`).
 /// Interrupts stay masked.
 pub fn trap_init() {
-    crate::entry::x86_64::cpu_init::init_boot_cpu()
+    crate::entry::x86_64::cpu_init::init_boot_cpu();
+    // The paging depth (CR4.LA57, boot.S's choice) before `vmm::init`
+    // builds the kernel's tables at it.
+    azos_arch::mmu::cpu::note_paging_depth();
 }
 
 /// The banner and the PVH entry facts.

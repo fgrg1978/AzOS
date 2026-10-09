@@ -98,6 +98,9 @@ pub static mut X86_AP_PML4: PageTable = PageTable([0; 512]);
 pub static mut X86_AP_PDPT: PageTable = PageTable([0; 512]);
 #[unsafe(no_mangle)]
 pub static mut X86_AP_PD: PageTable = PageTable([0; 512]);
+/// Above [`X86_AP_PML4`] when the boot CPU runs 5-level paging (LA57).
+#[unsafe(no_mangle)]
+pub static mut X86_AP_PML5: PageTable = PageTable([0; 512]);
 
 const PTE_P: u64 = 1;
 const PTE_RW: u64 = 1 << 1;
@@ -129,6 +132,7 @@ pub unsafe fn install(kernel_end: usize) -> Result<u64, InstallError> {
     // SAFETY: the caller's contract: no AP runs, nothing else touches these.
     unsafe {
         (*pml4).0[0] = pdpt as u64 | PTE_P | PTE_RW;
+        (*(&raw mut X86_AP_PML5)).0[0] = pml4 as u64 | PTE_P | PTE_RW;
         (*pdpt).0[0] = pd as u64 | PTE_P | PTE_RW;
         for (i, e) in (*pd).0.iter_mut().enumerate() {
             *e = ((i as u64) << 21) | PTE_P | PTE_RW | PTE_PS;

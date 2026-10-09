@@ -414,13 +414,16 @@ pub fn runner(touch_hart: usize) {
     };
     let pt = match vmm::create_pagetable() { Ok(p) => p, Err(_) => {
         kprintln!("[TLB-SMOKE] FAILED: no page table"); return; } };
-    vmm::copy_kernel_entries_to_user(pt);
+    // The probe pages first, then the kernel's entries (the loader's order):
+    // under x86_64's LA57 the kernel's whole PML4 would otherwise be copied
+    // into P's root, and `VA` would fall inside a table the kernel owns.
     if vmm::va_is_kernel_mapped(VA) || vmm::va_is_kernel_mapped(VA2)
         || vmm::map(pt, VA, frame, PagePerms::KERNEL_RW).is_err()
         || vmm::map(pt, VA2, frame2, PagePerms::KERNEL_RW).is_err() {
         kprintln!("[TLB-SMOKE] FAILED: could not map the probe page");
         return;
     }
+    vmm::copy_kernel_entries_to_user(pt);
     fill(frame, OLD);
     fill(frame2, OLD);
     P_ROOT.store(pt, Ordering::SeqCst);

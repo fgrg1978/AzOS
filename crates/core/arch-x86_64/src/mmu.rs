@@ -837,13 +837,20 @@ pub mod cpu {
         }
     }
 
+    /// Record the depth boot.S chose (CR4.LA57). The boot CPU calls it
+    /// before the kernel's tables are built (`ArchEntry::trap_init`): they
+    /// must have the depth the CPU will walk.
+    pub fn note_paging_depth() {
+        set_levels(if read_cr4() & CR4_LA57 != 0 { LEVELS_5 } else { LEVELS_4 });
+    }
+
     /// Paging setup on this CPU, after boot.S's long-mode entry: the depth
     /// (CR4.LA57 is boot.S's choice), the PAT, CR0.WP, CR4.PGE, and CR4.PCIDE
     /// when `caps.pcid`. EFER.NXE (boot.S) is read back, never set here: a
     /// leaf with NX and no NXE is a reserved-bit fault, so a clear NXE is
     /// reported for the caller to refuse the boot. Every CPU runs it.
     pub fn setup_paging_regs(caps: &PagingCaps) -> PagingState {
-        set_levels(if read_cr4() & CR4_LA57 != 0 { LEVELS_5 } else { LEVELS_4 });
+        note_paging_depth();
         set_gbpages(caps.gbpages);
         // PAT before any PCD/PWT leaf is built, so index 3 is UC. No wbinvd
         // or TLB dance: indices 0 (WB) and 3 (UC), the only ones a PTE of

@@ -14,7 +14,7 @@ impl ArchEntry for Entry {
     type DeviceTree = azos_dtb::DtbInfo;
     type IrqController = azos_dtb::IrqController;
     type IrqTriggers = azos_dtb::IrqTriggers;
-    const PAGE_TABLES: &'static str = "x86-64 4-level page tables";
+    const PAGE_TABLES: &'static str = "x86-64 4-level page tables, 5 under LA57";
 
     fn pre_console(&self) { crate::boot_hooks::pre_console() }
     fn trap_init(&self) { crate::boot_hooks::trap_init() }

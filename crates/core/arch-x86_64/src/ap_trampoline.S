@@ -60,9 +60,18 @@ x86_ap_start32:
     movw %ax, %ss
     movl %cr4, %eax
     orl $(1 << 5), %eax                 // PAE
+    // CR4.LA57 cannot change in long mode: an AP joins a 5-level boot CPU
+    // with LA57 set here and a PML5 above its first PML4.
+    movl X86_AP_BOOT+{off_cr4}, %ecx
+    testl $(1 << 12), %ecx
+    jz 3f
+    orl $(1 << 12), %eax                // LA57
     movl %eax, %cr4
+    movl $X86_AP_PML5, %eax
+    jmp 4f
+3:  movl %eax, %cr4
     movl $X86_AP_PML4, %eax
-    movl %eax, %cr3
+4:  movl %eax, %cr3
     movl $0xC0000080, %ecx              // EFER
     rdmsr
     orl $((1 << 8) | (1 << 11)), %eax   // LME | NXE
