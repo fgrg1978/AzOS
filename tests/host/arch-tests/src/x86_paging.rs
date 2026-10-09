@@ -76,8 +76,10 @@ mod tests {
         assert_eq!(pt & PS, 0);
         let pd = make_leaf_with(0x20_0000, PagePerms::KERNEL_RW, 1, false).unwrap();
         assert_ne!(pd & PS, 0);
-        // A level-0 word with bit 7 (PAT) is still a 4 KiB leaf.
+        // A level-0 word with bit 7 (PAT) is still a 4 KiB leaf, and a
+        // level-0 word is never a table pointer, PS or not.
         assert!(is_leaf(pt | PAT_4K, 0));
+        assert!(!is_table(pt, 0) && !is_table(pt | PAT_4K, 0));
         // A table pointer is never a leaf above level 0, and a PS word is
         // never a table.
         let t = make_table(0x9000);
