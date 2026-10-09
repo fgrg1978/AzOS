@@ -107,8 +107,10 @@ instructions per operation, not hardware time, from one run per path. Against
 Linux on the same harness, AzOS executes about 24% fewer instructions per
 system call and about 80% fewer per IPC round trip; context switching under
 load (per context switch, one CPU), process spawn and memory map take about
-80%, 40% and 70% fewer, and file I/O and UDP are within about 5%. These are instruction counts under an
-emulator: no hardware has been measured.
+80%, 40% and 70% fewer, and file I/O and UDP are within about 5%. These are
+instruction counts under an emulator: they leave out TLB and cache misses (AzOS
+today flushes the whole TLB on every address-space switch), and no hardware has
+been measured.
 
 ## Status
 
