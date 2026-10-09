@@ -2432,11 +2432,24 @@ extern "C" fn x_arg(_z: u64, _stack: u64, arg: u64) -> ! {
     sys::thread_exit(0)
 }
 
+/// The port the leader of [`exec_from_threads_child`] parks on while
+/// another of its threads execs (`u32::MAX`: none).
+static X_EXEC_PORT: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// How long [`x_exec_try`] lets the leader reach its port wait first.
+const EXEC_SETTLE_MS: u64 = 50;
+
 /// A thread that is not its process's leader execs ABITEST.ELF; it stores
-/// the answer only when the exec failed.
+/// the answer only when the exec failed, and then wakes the leader (a timer
+/// event on its port).
 extern "C" fn x_exec_try(_z: u64, _stack: u64, _arg: u64) -> ! {
+    sys::sleep(EXEC_SETTLE_MS);
     let rc = sys::execpath(sys::cstr!(b"/fat/ABITEST.ELF"));
     X_RC.store(rc as i64 as u64, AO::Release);
+    let port = X_EXEC_PORT.load(AO::Acquire);
+    if port != u32::MAX {
+        let _ = sys::port_bind_timer(port, sys::vdso_now_ns(), 1);
+    }
     sys::thread_exit(0)
 }
 
@@ -2487,7 +2500,8 @@ fn check_thread_objects() {
 /// still run (the exec checks before it ends anyone). It forks a child of
 /// its own (the exec'd image's proof that it is one: [`exec_alone_mode`]),
 /// sees its threads and that child in `/proc/tasks`, and a thread that is
-/// not its leader execs ABITEST.ELF. The new image finds itself alone
+/// not its leader execs ABITEST.ELF while the leader is parked in a port
+/// wait with no deadline (not a timer wait). The new image finds itself alone
 /// (`/proc/tasks`: itself and its child, no thread) and that child's parent
 /// is itself: it holds the PID the child was forked under, which is also the
 /// PID this parent's `waitpid` reaps it by.
@@ -2495,7 +2509,9 @@ fn check_thread_objects() {
 /// Canaries (gate rows): `exec-no-dethread-canary` (the threads are left
 /// running across the exec), `exec-validate-late-canary` (the threads end
 /// before the image is checked, so the refused execs end them),
-/// `exec-no-pid-swap-canary` (the thread that is not the leader is refused).
+/// `exec-no-pid-swap-canary` (the thread that is not the leader is refused),
+/// `kill-wake-timer-only-canary` (the exec's stop wakes only timer waits:
+/// the parked leader never ends, and the exec waits for it for good).
 fn check_exec_from_threads() {
     let pid = sys::fork();
     if pid == 0 {
@@ -2506,6 +2522,11 @@ fn check_exec_from_threads() {
         return;
     }
     let (got, st) = reap_by_tid(pid);
+    if got != pid {
+        // Not reaped in time (the exec never finished): end the child.
+        let _ = sys::task_kill(pid as u32, sys::KILL_FORCE, 9, 0);
+        let _ = reap_by_tid(pid);
+    }
     out(b"[ABITEST] exec-threads: child status=");
     print_i(st as isize);
     outln(b"");
@@ -2550,15 +2571,28 @@ fn exec_from_threads_child() -> ! {
            gc > 0 && both && shown.iter().any(|r| r.0 == gc as u32 && r.1 == me), n as isize);
     // A thread that is not the leader execs. On success the image runs as
     // this process (this PID), and this thread, stopped like the spinners,
-    // never comes back from its sleep.
+    // never comes back from its wait. The wait is a port wait with no
+    // deadline, which nothing but the exec's stop (or a failed exec's timer
+    // event) ends: the exec must wake the leader out of a wait that is not a
+    // timer wait (plan item 7's forced wake), or it waits for it for good.
     out(b"[ABITEST] exec-threads: pid ");
     print_i(me as isize);
     outln(b" before the exec");
     X_RC.store(u64::MAX, AO::Release);
-    let t = sys::thread_create(x_exec_try, t_stack_top(2), 0, core::ptr::null_mut());
-    let mut deadline = Deadline::in_ms(10_000);
-    while t > 0 && X_RC.load(AO::Acquire) == u64::MAX && !deadline.expired() {
-        sys::sleep(1);
+    let port = sys::port_create_typed();
+    X_EXEC_PORT.store(if port >= 0 { port as u32 } else { u32::MAX }, AO::Release);
+    let t = if port >= 0 {
+        sys::thread_create(x_exec_try, t_stack_top(2), 0, core::ptr::null_mut())
+    } else {
+        -1
+    };
+    let mut ev = [0u8; sys::PORT_EVENT_BYTES];
+    while t > 0 && X_RC.load(AO::Acquire) == u64::MAX {
+        // -EAGAIN: eight wakes with nothing queued; wait again.
+        let rc = sys::port_wait_typed(port as u32, &mut ev);
+        if rc < 0 && rc != -11 {
+            break;
+        }
     }
     out(b"[ABITEST] exec-threads: the exec from a thread returned ");
     print_i(X_RC.load(AO::Acquire) as i64 as isize);

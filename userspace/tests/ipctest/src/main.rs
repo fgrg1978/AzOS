@@ -3268,8 +3268,10 @@ pub extern "C" fn _start() -> ! {
 // for a child the kill never ended.
 //
 // Canaries (the unfixed kernel read -1 for all four):
-// `kill-wake-timer-only-canary` -> port=-1 accept=-1;
-// `kill-reblock-canary` -> all four -1.
+// `kill-wake-timer-only-canary` -> port=-1 accept=-1 lease=-1;
+// `kill-reblock-canary` -> all five -1. The lease wait (a lease that never
+// expires, granted to a task that never accepts it) re-blocked after the
+// kill's wake until `lease_wait_return_as` checked for the stop.
 
 /// The signal phase K's kills carry: the reaped status is `128 + K_SIGNO`.
 const K_SIGNO: u64 = 9;
@@ -3326,20 +3328,41 @@ fn k_block_sleep() {
     sys::sleep(30_000);
 }
 
+/// The TID phase K's lease child grants its lease to (the ipctest task,
+/// which never accepts it): set before the fork, read by the child.
+static K_LESSEE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Grant a lease that never expires to a task that never accepts it and wait
+/// for its return (`SYS_IPC_LEASE_WAIT`): nothing ends this wait but the kill.
+fn k_block_lease() {
+    let shm = sys::shm_create_typed(1, sys::SHM_RW);
+    if shm < 0 || sys::shm_map_typed(shm as u32) <= 0 {
+        return;
+    }
+    let id = sys::lease_grant(shm as u32, K_LESSEE.load(core::sync::atomic::Ordering::Relaxed), 0);
+    let lc = if id >= 0 { sys::cap_lookup(sys::CapKind::Lease as u8, id as u32) } else { -1 };
+    if lc > 0 {
+        let _ = sys::lease_wait(lc as u32);
+    }
+}
+
 fn phase_k_killed_waits() {
     let want = 128 + K_SIGNO as isize;
     let notify = k_kill_blocked(k_block_notify);
     let port = k_kill_blocked(k_block_port);
     let accept = k_kill_blocked(k_block_accept);
     let sleep = k_kill_blocked(k_block_sleep);
+    K_LESSEE.store(sys::getpid() as u32, core::sync::atomic::Ordering::Relaxed);
+    let lease = k_kill_blocked(k_block_lease);
     let mut l = Line::new();
     l.s(b"[IPCTEST] killed waits: notify=").i(notify).s(b" port=").i(port)
-        .s(b" accept=").i(accept).s(b" sleep=").i(sleep);
+        .s(b" accept=").i(accept).s(b" sleep=").i(sleep).s(b" lease=").i(lease);
     l.flush();
     expect_eq(b"K/a forced kill ends a notify_wait with no deadline", notify, want);
     expect_eq(b"K/a forced kill ends a port wait with no deadline", port, want);
     expect_eq(b"K/a forced kill ends an idle fast-IPC accept", accept, want);
     expect_eq(b"K/a forced kill ends a sleep", sleep, want);
+    expect_eq(b"K/a forced kill ends a lease wait nobody answers", lease, want);
 }
 
 #[panic_handler]

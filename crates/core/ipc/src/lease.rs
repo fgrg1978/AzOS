@@ -1123,6 +1123,9 @@ pub enum LeaseWaitEnd {
     NoLease,
     /// `caller` is not the lease's lessor (and is not privileged).
     NotLessor,
+    /// A forced stop is pending for the caller: it stopped waiting, the
+    /// lease untouched (its exit hook frees it).
+    Killed,
 }
 
 /// [`lease_wait_return`] with the caller named: the body `SYS_IPC_LEASE_WAIT`
@@ -1180,8 +1183,18 @@ pub fn lease_wait_return_as(lease_id: usize, caller: u32, privileged: bool) -> L
         && azos_sched::donate_priority(me, lessee);
 
     // Block until the buffer is back (returned or expired). Woken by
-    // wq_wake_by_tid from the returner / expiry path.
+    // wq_wake_by_tid from the returner / expiry path, and by a forced stop
+    // (`task_stop`, which wakes a forced target out of any wait): a lessor
+    // being killed stops waiting, or a non-expiring lease nobody returns
+    // keeps it parked for good, and with it the `exit_group` or exec that
+    // waits for it to end.
+    let mut killed = false;
     while !lease_is_returned(lease_id) {
+        // Gate canary only: the killed lessor blocks again.
+        if !cfg!(feature = "kill-reblock-canary") && azos_sched::current_task_killed() {
+            killed = true;
+            break;
+        }
         azos_sched::wq_block_current();
     }
 
@@ -1190,6 +1203,9 @@ pub fn lease_wait_return_as(lease_id: usize, caller: u32, privileged: bool) -> L
     // counter only returns the task to its base priority when it hits zero.
     if donated {
         azos_sched::return_donation(lessee);
+    }
+    if killed {
+        return LeaseWaitEnd::Killed;
     }
     let returned = LEASES.lock_irqsave().entries[lease_id].state == LeaseState::Returned;
     if returned { LeaseWaitEnd::Returned } else { lease_wait_expired(lease_id) }

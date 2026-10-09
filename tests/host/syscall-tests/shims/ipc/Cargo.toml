@@ -13,6 +13,8 @@ irq-pending-canary = []
 # The pulled `lease.rs`'s wave-15 canary: matches a seal by thread again.
 lease-forget-tid-canary = []
 lease-sealed-by-thread-canary = []
+# The pulled `lease.rs`'s plan-item-7 canary (a killed lessor blocks again).
+kill-reblock-canary = []
 # Declared for the pulled `port.rs`'s `cfg(feature = "port-recheck-canary")`.
 port-recheck-canary = []
 # And for its `cfg(feature = "port-revoke-canary")` (wave 11, LEASE3).

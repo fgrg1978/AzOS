@@ -18,7 +18,18 @@
 //               for a recognised Image load, never for a bare ELF
 //               `-kernel` (x0 == 0 there; verified empirically, not
 //               assumed — see this task's report for the QEMU behavior
-//               this depended on).
+//               this depended on). Measured again 2026-10-09 on QEMU
+//               11.0.0 (`-S`, monitor `xp`, `-append` given): for the ELF,
+//               x0 = 0 at `_start` and RAM base 0x4000_0000 reads zeros.
+//               For a non-Linux image QEMU places the DTB only in the RAM
+//               below the image's lowest address (here 512 KiB, up to
+//               0x4008_0000), and `virt`'s DTB is 1 MiB (totalsize
+//               0x100000, padded), so it is silently left out. Given a
+//               packed copy (`-dtb`, 8 KiB) QEMU does put it, bootargs and
+//               all, at 0x4000_0000, but x0 is still 0: only a probe of RAM
+//               base would find it, and nothing here probes. An ELF boot
+//               therefore has no device tree and no command line (`init=`,
+//               `canary=`): boot the Image (`kernel.img`), as the gate does.
 //   CurrentEL = EL2 if `-M virt,virtualization=on` gives the guest a
 //               real EL2, EL1 otherwise.
 //   Everything else implementation-defined.

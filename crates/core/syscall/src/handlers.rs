@@ -6659,7 +6659,8 @@ pub fn sys_ipc_lease_return(lease_id: u64) -> i64 {
 
 /// `SYS_IPC_LEASE_WAIT` (602): a0 = `Cap<Lease>` (`READ`). The lessor blocks
 /// until the lease is returned (0) or expires (1), donating its priority to
-/// the lessee meanwhile (`lease::lease_wait_return_as`). -1: the lease is
+/// the lessee meanwhile (`lease::lease_wait_return_as`); `-EINTR` when a
+/// forced stop ends the wait (the caller is being killed). -1: the lease is
 /// free or the caller is not its lessor. A capability refusal is its errno,
 /// recorded like every typed denial.
 pub fn sys_ipc_lease_wait(cap_raw: u64) -> i64 {
@@ -6677,6 +6678,7 @@ pub fn sys_ipc_lease_wait(cap_raw: u64) -> i64 {
         LeaseWaitEnd::Returned => 0,
         LeaseWaitEnd::Expired => 1,
         LeaseWaitEnd::NoLease | LeaseWaitEnd::NotLessor => -1,
+        LeaseWaitEnd::Killed => azos_abi::error::Errno::EINTR.to_syscall_ret(),
     }
 }
 

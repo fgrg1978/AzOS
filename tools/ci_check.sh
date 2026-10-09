@@ -1153,8 +1153,8 @@ fi
 # host suites and the rows written outside those helpers (`ci_row`) alike; every
 # other one prints `skipped (CI_TIER=rows)`, and the setup only skipped rows use
 # (their disks, fixtures and kernels) is not made. Still run: the image tables
-# every kernel includes, and three sub-second lints (arch cfg, boot seq, the
-# rows manifest). A listed key that no row uses fails the gate, as FAST_ROWS
+# every kernel includes, and four sub-second lints (arch cfg, boot seq, the
+# rows manifest, aarch64 boots the Image). A listed key that no row uses fails the gate, as FAST_ROWS
 # does. tools/rows_for_diff.py writes the list. Kernels: see ci_kb_defer.
 CI_TIER="${CI_TIER:-full}"
 case "$CI_TIER" in full|fast|rows) ;; *) echo "ci_check: CI_TIER must be full, fast or rows, not '$CI_TIER'"; exit 2 ;; esac
@@ -1395,7 +1395,9 @@ fast_unseen() { # FAST_ROWS keys no `par` call used: a renamed row the list miss
     [ "$CI_TIER" = rows ] && list="$CI_ROWS"
     printf '%s\n' "$list" | while IFS= read -r k; do
         [ -n "$k" ] || continue
-        printf '%s' "$PAR_SEEN" | grep -qxF -- "$k" || echo "$k"
+        # A here-string, not `printf | grep -q`: under pipefail grep -q's
+        # early exit can fail the printf (EPIPE) and report a row that ran.
+        grep -qxF -- "$k" <<<"$PAR_SEEN" || echo "$k"
     done
 }
 # ── CI_TIER=rows: rows outside `par`, and kernels built only when read ──────
@@ -2076,6 +2078,41 @@ if grm_out="$(python3 "${REPO_ROOT}/tools/gate_rows.py" --check 2>&1)"; then
     ok
 else
     bad; printf '%s\n' "$grm_out" | sed -n 1,10p | sed 's/^/      /'
+fi
+
+# aarch64 boots the Image, never the ELF (wave 15): QEMU `virt` hands the
+# device tree, and with it the command line (`init=`, `canary=`), only to an
+# arm64 `Image` (`kernel.img`, in x0). Booted as an ELF the kernel gets x0 = 0
+# and no DTB (kernel/src/entry/aarch64/asm/boot.S says why), so a row that
+# boots the ELF silently loses its boot arguments. This flags a
+# `-kernel` within six lines after an aarch64 QEMU command that names the ELF
+# (`$A64_KERNEL`, `$kelf`, `$elf`, `$(AARCH64_ELF)`, `.../release/kernel`).
+# The row also runs the check on a planted line, which must be flagged.
+a64_elf_boot_hits() { # <file>...: one line per aarch64 QEMU boot handed the ELF
+    local q="qemu-system-""aarch64"
+    awk -v q="$q" '
+        index($0, q) { n = 6 }
+        /qemu-system-riscv64|"\$QEMU"/ { n = 0 }
+        n > 0 {
+            if ($0 ~ /-kernel[[:space:]]+"?\$\{?(A64_KERNEL|kelf|elf)\}?"?([[:space:]]|$)/ \
+                || $0 ~ /-kernel[[:space:]]+\$\(AARCH64_ELF\)/ \
+                || $0 ~ /-kernel[[:space:]]+"?[^[:space:]]*\/release\/kernel"?([[:space:]]|$)/)
+                print FILENAME ":" FNR ": " $0
+            n--
+        }' "$@"
+}
+printf "  %-26s" "aarch64 boots the Image..."
+a64_lint_tmp="$(mktemp)"
+builtin printf '%s -M virt -nographic \\\n    -kernel "$%s" >log 2>&1 &\n' "qemu-system-""aarch64" A64_KERNEL >"$a64_lint_tmp"
+a64_lint_planted="$(a64_elf_boot_hits "$a64_lint_tmp")"; rm -f "$a64_lint_tmp"
+a64_lint_out="$(cd "$REPO_ROOT" && a64_elf_boot_hits tools/ci_check.sh Makefile tools/vsbench_aarch64.sh)"
+if [ -z "$a64_lint_planted" ]; then
+    bad; echo "      the check missed a planted ELF boot: it checks nothing"
+elif [ -n "$a64_lint_out" ]; then
+    bad; echo "      aarch64 QEMU boots handed the ELF (no DTB, no command line); boot kernel.img:"
+    printf '%s\n' "$a64_lint_out" | sed -n 1,10p | sed 's/^/        /'
+else
+    ok
 fi
 
 echo ""
@@ -4494,10 +4531,11 @@ par_row zombie_row "aarch64 unreaped notices"    arm
 # runs from the exit hook, so a forced kill that leaves its target blocked
 # releases nothing. ipctest's phase K forks children that block where nothing
 # will wake them (a `notify_wait` with no deadline, a port wait, an idle
-# fast-IPC accept, a 30 s sleep), force-kills each with signal 9, and reads
+# fast-IPC accept, a 30 s sleep, a `SYS_IPC_LEASE_WAIT` on a lease that never
+# expires and is never accepted), force-kills each with signal 9, and reads
 # the status it is reaped with within 3 s:
 #
-#   [IPCTEST] killed waits: notify=137 port=137 accept=137 sleep=137
+#   [IPCTEST] killed waits: notify=137 port=137 accept=137 sleep=137 lease=137
 #
 # -1 is a child the kill never ended. The row reads the line, not the run's
 # verdict: phase A after it has a stall detector of its own (`userspace: IPC`).
@@ -4507,7 +4545,9 @@ par_row zombie_row "aarch64 unreaped notices"    arm
 # Canaries, run by hand (plan item 7 report; on riscv64 the unfixed kernel
 # read -1 for all four, the same children run from abitest):
 # `--features qemu,kill-wake-timer-only-canary` -> port=-1 accept=-1 (rv);
-# `kill-reblock-canary` -> all four -1 (rv, arm).
+# `kill-reblock-canary` -> all four -1 (rv, arm). The lease wait (wave 15):
+# both canaries -> lease=-1; before `lease_wait_return_as` checked for the
+# stop, the killed lessor blocked again (lease=-1 on the fixed scheduler).
 dead_client_row() { # <label> <isa: rv|arm>
     local label="$1" isa="$2"
     printf "  %-26s" "${label}..."
@@ -4560,10 +4600,10 @@ dead_client_row() { # <label> <isa: rv|arm>
     fi
     num() { printf '%s\n' "$line" | sed -n "s/.* $1=\(-\{0,1\}[0-9][0-9]*\).*/\1/p"; }
     if [ "$(num notify)" = 137 ] && [ "$(num port)" = 137 ] && [ "$(num accept)" = 137 ] \
-        && [ "$(num sleep)" = 137 ]; then
+        && [ "$(num sleep)" = 137 ] && [ "$(num lease)" = 137 ]; then
         ok; rm -f "$log"; return
     fi
-    bad; echo "      want notify=137 port=137 accept=137 sleep=137, read:"
+    bad; echo "      want notify=137 port=137 accept=137 sleep=137 lease=137, read:"
     echo "        $line"
     echo "      log kept: $log"
 }
@@ -4919,7 +4959,12 @@ par_row threads_row "aarch64 threads: cow spurious canary"   arm qemu,cow-spurio
 # not the leader is refused: no exec'd image), `thread-objects-canary` (the
 # port is booked to the thread) and, aarch64 only, `thread-regs-canary` (a
 # new thread starts with zeroed registers: its argument reads 0).
-exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|validatelate|nopidswap|objects|regs>
+# The leader waits for the exec parked in a port wait with no deadline, not
+# a timer wait: the exec's stop must wake it out of any wait (plan item 7's
+# forced wake), or the exec waits for it for good. Canary
+# `kill-wake-timer-only-canary` (the stop wakes only timer waits): no
+# `[EXEC] ... ended` line, and the parent's bounded `waitpid` fails.
+exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|validatelate|nopidswap|objects|regs|parked>
     local label="$1" isa="$2" feats="$3" want="$4"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
@@ -4949,9 +4994,12 @@ exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|validatel
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     fi
-    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled'
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled' cap=240
     local last="exec-threads: waitpid(the child's PID) reaps the exec'd image"
-    while [ "$i" -lt 240 ]; do
+    # The aarch64 parked-leader canary row read its line at about 300 s of
+    # its run (2026-10-09), past the other rows' 240.
+    [ "$want" = parked ] && cap=480
+    while [ "$i" -lt "$cap" ]; do
         grep -aqF "$last" "$log" 2>/dev/null && break
         grep -aqiE "$fault" "$log" 2>/dev/null && break
         kill -0 "$pid" 2>/dev/null || break
@@ -4980,14 +5028,14 @@ exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|validatel
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary ($feats) left the exec working; read $oks ok, $ended ended:" ;;
-    objects|validatelate|nopidswap|regs)
+    objects|validatelate|nopidswap|regs|parked)
         case "$want" in
         objects)      need="proc objects: a port a thread made outlives the thread" ;;
         validatelate) need="exec-threads: a refused exec leaves both threads running" ;;
-        nopidswap)    need="exec-threads: waitpid(the child's PID) reaps the exec'd image" ;;
+        nopidswap|parked) need="exec-threads: waitpid(the child's PID) reaps the exec'd image" ;;
         regs)         need="args: a new thread receives its argument" ;;
         esac
-        if [ "$ended" = 0 ] || [ "$want" != nopidswap ]; then
+        if [ "$ended" = 0 ] || { [ "$want" != nopidswap ] && [ "$want" != parked ]; }; then
             if printf '%s\n' "$fails" | grep -qF "$need"; then
                 ok; rm -f "$log"; return
             fi
@@ -5008,6 +5056,8 @@ par_row exec_threads_row "aarch64 exec threads: validate-late"   arm qemu,exec-v
 par_row exec_threads_row "exec threads: no-pid-swap canary"      rv  qemu,exec-no-pid-swap-canary nopidswap
 par_row exec_threads_row "aarch64 exec threads: no-pid-swap"     arm qemu,exec-no-pid-swap-canary nopidswap
 par_row exec_threads_row "aarch64 thread args: regs canary"      arm qemu,thread-regs-canary regs
+par_row exec_threads_row "exec threads: parked-leader canary"    rv  qemu,kill-wake-timer-only-canary parked
+par_row exec_threads_row "aarch64 exec threads: parked leader"   arm qemu,kill-wake-timer-only-canary parked
 
 # ── fork: W^X across copy-on-write (wave 13, security) ─────────────────────
 #

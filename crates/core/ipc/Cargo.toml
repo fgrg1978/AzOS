@@ -9,6 +9,10 @@ publish = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 
 [features]
+# Plan item 7 gate canary, never in a real build (the kernel's
+# `kill-reblock-canary` turns it on with the scheduler's): a killed lessor in
+# `SYS_IPC_LEASE_WAIT` blocks again, so ipctest's phase K reads lease=-1.
+kill-reblock-canary = []
 # Wave 15 gate canary: a static-key write goes through the EXECUTABLE text
 # mapping instead of the alias; W^X must stop it with a store fault.
 text-poke-wx-canary = []

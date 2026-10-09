@@ -645,6 +645,11 @@ secure boot on, `init=` is ignored and the boot log says so.
 Development builds (Kconfig `CANARY_RUNTIME`, never with secure boot) also
 read `canary=<name>[,<name>]` there: it arms named gate canaries for one
 boot, so a canary test boots the same kernel as the test it checks.
+On aarch64 the command line arrives only with a device tree, which the
+loader hands over in `x0` when it boots the kernel as an arm64 `Image`
+(the `kernel.img` that `llvm-objcopy -O binary` makes from the ELF). QEMU
+`virt` booting the ELF itself passes no device tree, so that boot has no
+command line; every aarch64 boot in the gate uses the `Image`.
 
 **CPU baseline and extensions.** Every ISA is configured the same way
 (`config/Kconfig.arch`):

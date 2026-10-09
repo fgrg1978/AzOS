@@ -48,6 +48,8 @@ struct FakeSched {
     /// `mm_discharge_tid`), and each TID's limit (absent = no limit).
     charged: Vec<(u32, u32)>,
     limits: Vec<(u32, u32)>,
+    /// `current_task_killed`'s answer (`shim_set_killed`).
+    killed: bool,
 }
 
 static SCHED: Mutex<Option<FakeSched>> = Mutex::new(None);
@@ -256,6 +258,16 @@ static IRQ_WAITER_WAKES: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::n
 /// last call (the record is drained).
 pub fn shim_take_irq_waiter_wakes() -> Vec<(u32, u32)> {
     std::mem::take(&mut *IRQ_WAITER_WAKES.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Pretend a forced stop is (or is not) pending for the current task.
+pub fn shim_set_killed(on: bool) {
+    with(|s| s.killed = on);
+}
+
+/// Host stand-in for `azos_sched::current_task_killed` (`shim_set_killed`).
+pub fn current_task_killed() -> bool {
+    with(|s| s.killed)
 }
 
 /// Never called by the tests — `lease_wait_return` blocks, and a host stand-in

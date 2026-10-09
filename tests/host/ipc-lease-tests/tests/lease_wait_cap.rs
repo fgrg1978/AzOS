@@ -17,6 +17,8 @@
 //! The blocking half (donation for the span of the wait) needs the scheduler:
 //! it is the `lease-pi3-smoke` QEMU row.
 //!
+//! A lessor being killed stops waiting at once (`Killed`, plan item 7).
+//!
 //! **Canaries (run by hand, wave-9 PROXY2 report):** drop the `NotLessor`
 //! check in `lease_wait_return_as` → the stranger test fails (a boost to the
 //! lessee is recorded, then the shim panics in the block); drop the revoke in
@@ -79,6 +81,28 @@ fn an_expired_lease_answers_expired() {
     let mut woken = [u32::MAX; MAX_LEASES];
     let _ = lease_tick(u64::MAX / 2, &mut woken);
     assert_eq!(lease_wait_return_as(id, LESSOR, false), LeaseWaitEnd::Expired);
+}
+
+/// A lessor being killed stops waiting (plan item 7): a forced stop wakes it
+/// out of the wait, and on a lease that never expires and that nobody returns
+/// it would otherwise block again for good, and with it the `exit_group` or
+/// exec waiting for it to end. It answers `Killed` without blocking (the
+/// shim panics on a block), returns the donation it made, and leaves the
+/// lease as it was for its exit hook. Canary `kill-reblock-canary`: the loop
+/// blocks again and the shim panics.
+#[test]
+fn a_killed_lessor_stops_waiting_on_a_lease_nobody_returns() {
+    let _g = serial();
+    azos_sched::shim_set_priority(LESSOR, 4);
+    azos_sched::shim_set_priority(LESSEE, 24);
+    let id = grant(0);
+    azos_sched::shim_set_killed(true);
+    assert_eq!(lease_wait_return_as(id, LESSOR, false), LeaseWaitEnd::Killed);
+    assert_eq!(azos_sched::shim_boosts().len(), azos_sched::shim_restores().len(),
+               "the killed lessor kept its donation to the lessee");
+    azos_sched::shim_set_killed(false);
+    assert_eq!(lease_accept(LESSEE, LESSOR).map(|(l, _)| l), Some(id),
+               "the killed wait changed the lease");
 }
 
 #[test]

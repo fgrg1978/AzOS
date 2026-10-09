@@ -48,6 +48,10 @@ port-recheck-canary = []
 # known here. Never enabled.
 lease-forget-tid-canary = []
 lease-sealed-by-thread-canary = []
+# `lease.rs`'s plan-item-7 canary: a killed lessor blocks again in
+# `lease_wait_return_as`; `a_killed_lessor_stops_waiting` reaches the
+# shim's block and panics.
+kill-reblock-canary = []
 # `crates/core/ipc/src/port.rs`'s capability-binding canary (wave 11, LEASE3):
 # `port_cap_event` ignores every event; the revoke test in that file's suite
 # fails (the revoked capability's binding still delivers).

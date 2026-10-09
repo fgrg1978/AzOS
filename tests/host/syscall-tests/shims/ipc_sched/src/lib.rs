@@ -108,6 +108,11 @@ pub fn wq_block_current() {
     todo!("not reached by any test in this crate")
 }
 
+/// No forced stop is ever pending in this crate's tests.
+pub fn current_task_killed() -> bool {
+    false
+}
+
 pub fn task_priority(_tid: u32) -> Option<u32> {
     None
 }
