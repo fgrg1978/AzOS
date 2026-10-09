@@ -74,6 +74,20 @@ pub static X86_AP_BOOT: ApBoot = ApBoot {
     ack: AtomicU64::new(0),
 };
 
+/// The trampoline's stack for its one far return (`X86_AP_STACK_TOP` is
+/// its end); 16-byte aligned.
+#[repr(C, align(16))]
+pub struct ApStack(pub [u64; 8]);
+#[unsafe(no_mangle)]
+pub static mut X86_AP_STACK: ApStack = ApStack([0; 8]);
+core::arch::global_asm!(
+    ".pushsection .data.x86_ap_stack_top, \"aw\"",
+    ".balign 8",
+    ".globl X86_AP_STACK_TOP",
+    ".set X86_AP_STACK_TOP, X86_AP_STACK + 64",
+    ".popsection",
+);
+
 #[repr(C, align(4096))]
 pub struct PageTable(pub [u64; 512]);
 

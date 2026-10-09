@@ -279,6 +279,12 @@ pub fn reserve_firmware_table(_fw_table: usize) {
             boot += len;
         }
     });
+    // The AP trampoline page (`smp::install` wrote it): every INIT-SIPI-SIPI
+    // starts an AP there, so the PMM must never hand it out.
+    if let Some(t) = p.trampoline_pa {
+        azos_mm::pmm::reserve_range(t as usize, azos_arch::PAGE_SIZE);
+        boot += azos_arch::PAGE_SIZE as u64;
+    }
     kprintln!("[MM] Reserved {} KiB of memory-map holes, {} KiB of boot information", holes >> 10, boot >> 10);
 }
 

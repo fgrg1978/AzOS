@@ -74,6 +74,10 @@ x86_ap_start32:
 
 .code64
 x86_ap_start64:
+    // A SIPI leaves RSP 0: the far return below needs a stack. One AP runs
+    // this at a time (the boot CPU waits for its ack, written after the
+    // last push), and `_secondary_start` loads the CPU's own stack first.
+    leaq X86_AP_STACK_TOP(%rip), %rsp
     leaq X86_AP_BOOT(%rip), %rsi
     // The kernel's own tables and control state, as the boot CPU runs.
     movq {off_cr3}(%rsi), %rax
