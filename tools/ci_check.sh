@@ -6772,6 +6772,14 @@ par "aarch64: IPC plumbing up" aarch64_ipc_plumbing_row
 # (no `behavior_camera_port`, autorun does no networking), so every line is
 # behavior's. Canary, by hand: the behavior dial's closure put back to
 # `azos_sched::task_yield`: FAIL on both ISAs (152,378-503,780 polls).
+#
+# Wave 15 (N7): the wait no longer polls at all. `resolve_peer_mac` registers
+# behavior in `azos_net::wait::ARP_WAITERS` and blocks until the reply's
+# `arp::handle` wakes it or the budget ends, so a wait no reply ends is ONE
+# block: measured 1 1 1 on both ISAs (2026-10-09). The bound is now 3.
+# Canary, by hand: the poller's `azos_net::wait::set_hooks` call removed (no
+# hooks, every wait is the 1 ms sleep again): 300-313 (riscv64) and 278-304
+# (aarch64) polls, FAIL.
 behavior_arp_sleep_row() { # behavior_arp_sleep_row rv|a64
     local isa="$1" label log kern disk pid i
     if [ "$isa" = "a64" ]; then label="aarch64 behavior ARP sleeps"; else label="network: behavior ARP sleeps"; fi
@@ -6822,8 +6830,8 @@ behavior_arp_sleep_row() { # behavior_arp_sleep_row rv|a64
         bad; echo "      behavior never gave up a 500 ms ARP wait ($waits lines) — log kept: $log"; return
     fi
     max="$(printf '%s\n' "$spins" | sort -n | sed -n '$p')"
-    if [ "$max" -gt 500 ]; then
-        bad; echo "      an ARP wait took $max polls in 500 ms: more than one per ms is a yield-poll"
+    if [ "$max" -gt 3 ]; then
+        bad; echo "      an ARP wait took $max polls in 500 ms: the wait polls instead of blocking until the reply (N7)"
         echo "      (per wait: $(printf '%s' "$spins" | tr '\n' ' ')) — log kept: $log"; return
     fi
     ok; echo "      $waits waits of 500 ms, at most $max polls each"

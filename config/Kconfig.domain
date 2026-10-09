@@ -69,8 +69,8 @@ choice
           deployment profile it changes the network defaults (each can be
           set by hand under "Resource Limits" / "Network"):
             TCP_MAX_CONNS 8 -> 64, TCP_BUF_SIZE 131072 -> 16384:
-              64 x 38,856 B = 2,486,784 B of TCP tables, against
-              8 x 268,232 B = 2,145,856 B on Edge (+340,928 B);
+              64 x 38,880 B = 2,488,320 B of TCP tables, against
+              8 x 268,256 B = 2,146,048 B on Edge (+342,272 B);
             MAX_SOCKETS 16 -> 128 (+112 UDP-sized slots);
             ARP_CACHE_SIZE 16 -> 64, ARP_PENDING_SIZE 8 -> 16,
             DNS_CACHE_SIZE 4 -> 16, UDP_RX_SLOTS 4 -> 16.

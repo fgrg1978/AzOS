@@ -32,9 +32,9 @@ config TCP_BUF_SIZE
 
       Per profile: 131072 (128 KiB) for edge and embedded, 16384 (16 KiB)
       for fleet.  One connection is size_of::<TcpConn>() =
-      2 × TCP_BUF_SIZE + 6,088 B, and the table of TCP_MAX_CONNS of them
-      is static (.bss): 8 × 268,232 B for edge, 4 × 268,232 B for
-      embedded, 1024 × 38,856 B = 37.9 MiB for fleet (262 MiB at 131072).
+      2 × TCP_BUF_SIZE + 6,112 B, and the table of TCP_MAX_CONNS of them
+      is static (.bss): 8 × 268,256 B for edge, 4 × 268,256 B for
+      embedded, 1024 × 38,880 B = 38.0 MiB for fleet (262 MiB at 131072).
       Larger rings improve throughput
       on high-latency links (BDP = RTT × bandwidth).
 
@@ -53,6 +53,156 @@ config TCP_BUF_SIZE
       at 8 connections).  See TCP_MAX_CONNS for the per-connection and total
       figures.  Ceiling: a power of two in 8192..1,048,576 (build.rs refuses
       anything else).
+
+# ---------------------------------------------------------------------------
+# TCP acknowledgements (RFC 1122 4.2.3.2, RFC 5681 4.2) and receive-path waits
+# ---------------------------------------------------------------------------
+config TCP_DELACK_MS
+    int "TCP delayed-ACK bound (ms); 0 = acknowledge every segment at once"
+    range 0 500
+    default 40
+    help
+      Longest an in-order data segment's acknowledgement may be held
+      (crates/net/net/src/tcp.rs, TCP_DELACK_TICKS). An ACK held this
+      long is sent from tcp_tick; one the receive path sends earlier
+      (TCP_DELACK_SEGS, TCP_DELACK_PASS_FLUSH, out-of-order data, a
+      closing window) or one that rides on our own data leaves sooner.
+      40 ms is Linux's minimum delayed-ACK timeout (TCP_DELACK_MIN);
+      RFC 1122 caps it at 500 ms and RFC 5681 at "less than 500 ms".
+
+      0 restores the pre-wave-15 behaviour, one pure ACK per in-order
+      segment, and is the canary for the coalescing.
+
+      Cost: 16 B per connection (deadline + counters, .bss); a pure ACK
+      saved is a frame build, a TX lock and a doorbell (~1,000-2,000
+      instructions on both ISAs). The same on riscv64, aarch64 and x86_64:
+      the bound is a protocol figure, not an ISA one. Lower it when a peer
+      runs Nagle with small writes and no TCP_NODELAY and
+      TCP_DELACK_PASS_FLUSH is n (each small write then waits this long
+      for its ACK).
+
+config TCP_DELACK_SEGS
+    int "Full-sized segments received before an immediate ACK"
+    range 1 16
+    default 2
+    help
+      RFC 1122 4.2.3.2 / RFC 5681 4.2: an ACK SHOULD be generated for at
+      least every second full-sized segment. Once this many SMSS of
+      in-order data are unacknowledged the receive path sends the ACK
+      at once (tcp.rs, process_inbound_payload). 2 is the RFC and Linux
+      figure; 1 acknowledges every full-sized segment (the sender's
+      slow start grows fastest, twice the ACK frames). Higher values
+      cut ACK frames further but slow a sender's congestion window
+      growth (RFC 3465 byte counting is capped at 2 SMSS per ACK).
+
+      Cost: none in RAM; one compare per in-order segment.
+
+config TCP_DELACK_PASS_FLUSH
+    bool "Flush held ACKs at the end of each network poll pass"
+    default y
+    help
+      y: every ACK held during one net_poll pass (one RX drain) leaves
+      when the pass ends, one per connection, so ACK latency is at most
+      one pass and a burst of N segments costs about N / 2 pure ACKs.
+      n: held ACKs wait for our own data to carry them, for
+      TCP_DELACK_SEGS, or for TCP_DELACK_MS (the Linux behaviour; a
+      request/response peer then gets the ACK on our reply).
+
+      Cost: one connection-table scan per pass while any ACK is held
+      (skipped by a flag otherwise). Same default on every ISA and
+      profile until a board measurement says otherwise.
+
+config TCP_WINDOW_UPDATE_SHIFT
+    int "Window update sent at once when the edge moves by ring >> N"
+    range 0 8
+    default 2
+    help
+      crates/net/net/src/tcp.rs, TCP_WINDOW_UPDATE_BYTES = TCP_BUF_SIZE >> N.
+      A recv() that opens the receive window by at least this much sends
+      the window update as a pure ACK at once; a smaller opening is held
+      like a delayed ACK (TCP_DELACK_MS) and rides on the next data ACK
+      or the end of the next poll pass. Linux's half-window rule
+      (tcp_cleanup_rbuf) also applies.
+
+      Larger N: more, earlier updates; a sender limited by our ring
+      (BDP > TCP_BUF_SIZE) keeps more of it in flight. Smaller N: fewer
+      pure ACKs. Measured on the host stack-to-stack harness (20 ms RTT,
+      ring-limited): see tests/host/net-tests tcp_throughput.
+
+      Cost: none in RAM; one compare per recv() that returns data. The
+      same on riscv64, aarch64 and x86_64.
+
+config NET_WAIT_SLOTS
+    int "Tasks that can wait on one kind of network event at once"
+    range 1 64
+    default 2 if PROFILE_EMBEDDED
+    default 16 if PROFILE_FLEET
+    default 8
+    help
+      crates/net/net/src/wait.rs, NET_WAIT_SLOTS: a task waiting for a TCP
+      handshake, an incoming connection, the send window (one queue) or an
+      ARP reply (another) registers its TID here and is woken by the
+      receive path when the event lands, instead of sleeping 1 ms and
+      looking again. A waiter beyond this many falls back to that poll;
+      nothing is lost, only latency and wakes.
+
+      Cost: 4 B per slot per queue (.bss, 2 queues + 1 DNS slot: 68 B at
+      8), the same on riscv64, aarch64 and x86_64. A notify with no waiter
+      is one atomic load; with waiters, one scan of the slots and a
+      scheduler wake per waiter (~300-500 instructions each).
+
+config NET_DNS_TIMEOUT_MS
+    int "How long one DNS query waits for its answer (ms)"
+    range 100 30000
+    default 2000
+    help
+      crates/net/net/src/dns.rs, resolve_with_yield: the bound on one
+      query (was a literal 2 s). The resolver is woken by the answer
+      (NET_WAIT_SLOTS), so this is only what an unanswered query costs
+      its caller.
+
+      Cost: none in RAM. The same on every ISA; raise it on slow uplinks.
+
+config NET_ACCEPT_WAIT_MS
+    int "How long SYS_ACCEPT waits for a connection (ms)"
+    range 100 600000
+    default 10000
+    help
+      crates/core/syscall/src/handlers.rs, ACCEPT_WAIT_MS (was a literal).
+      accept() returns -1 after this long with no Established connection.
+      The caller is woken by the handshake's last segment
+      (NET_WAIT_SLOTS), so this bounds only an idle listener's call.
+
+      Cost: none in RAM. The same on every ISA.
+
+config TCP_RECV_MAX_PER_CALL
+    int "Most bytes one TCP recv() copies out"
+    range 512 65536
+    default 1024 if PROFILE_EMBEDDED
+    default 4096
+    help
+      crates/net/net/src/tcp.rs, TCP_RECV_MAX_PER_CALL: the copy out of
+      the receive ring runs with the TCP lock held, so this bounds that
+      hold (a short read is ordinary TCP; callers loop).
+
+      Cost: none in RAM; up to this many byte copies under the TCP lock
+      per call (~1 instruction per byte on riscv64, aarch64 and x86_64).
+      Raise it for bulk receivers on a core with no other network user.
+
+config NET_RX_DRAIN_PER_POLL
+    int "Frames drained from the NIC per net_poll pass"
+    range 1 1024
+    default 16 if PROFILE_EMBEDDED
+    default 64
+    help
+      crates/net/net/src/lib.rs, net_poll: the most frames one pass takes
+      off the receive ring before it ends (and flushes held ACKs, see
+      TCP_DELACK_PASS_FLUSH). 64 is one line-rate burst; a smaller bound
+      shortens the pass on a small core at the price of more passes.
+
+      Cost: none in RAM; bounds the pass at about this many frames' worth
+      of protocol work (~2,000-5,000 instructions each on riscv64,
+      aarch64 and x86_64).
 
 # ---------------------------------------------------------------------------
 # ARP, DNS and UDP tables (wave 11: were literals in crates/net/net)

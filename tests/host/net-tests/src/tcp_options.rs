@@ -325,15 +325,15 @@ fn an_active_open_offers_both_options_in_a_syn_whose_window_is_not_scaled() {
 
 /// A connection is its two rings, each `TCP_BUF_SIZE` bytes from `.config`, and
 /// a fixed amount of state, so the static table follows the configured size
-/// byte for byte. `STATE` was measured on 2026-09-14: 268,232 B per connection
-/// at 131072 (edge, embedded) and 38,856 B at 16384 (fleet), the figures
+/// byte for byte. `STATE` was measured on 2026-09-14 (6,088 B) and grew by 24 B in wave 15 (delayed-ACK state, N6): 268,256 B per connection
+/// at 131072 (edge, embedded) and 38,880 B at 16384 (fleet), the figures
 /// `config/Kconfig.limits` quotes. `STATE` is exact on purpose:
 /// whoever adds or resizes a `TcpConn` field updates it here, together with
 /// those figures in `config/Kconfig.limits` (also quoted in
 /// `config/Kconfig.network` and `config/defconfigs/fleet.config`).
 #[test]
 fn a_connection_is_two_rings_of_the_configured_size_plus_fixed_state() {
-    const STATE: usize = 6_088;
+    const STATE: usize = 6_112;
     let one = core::mem::size_of::<tcp::TcpConn>();
     println!(
         "[tcp-size] TCP_BUF_SIZE {TCP_BUF_SIZE} B: size_of::<TcpConn>() = {one} B, \

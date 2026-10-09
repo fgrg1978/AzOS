@@ -483,6 +483,11 @@ fixed mount table. There are three implementations:
 ARP, IPv4, UDP, TCP, DHCP, DNS, NTP and IGMP. IPv6 covers link-local addressing,
 neighbour discovery, ICMPv6 echo and UDP; TCP over IPv6 is not connected to
 sockets. Ring 3 uses BSD-style socket calls and capability-typed socket calls.
+TCP delays acknowledgements (RFC 1122): in-order data is acknowledged every
+second full-sized segment, at the end of a receive pass, on our own data, or
+after `TCP_DELACK_MS`. A task waiting for a handshake, an incoming connection,
+the send window, an ARP reply or a DNS answer blocks until the receive path
+wakes it, with its timeout as the bound.
 
 **VirtIO.** The VirtIO drivers cover block, network and entropy devices.
 Block and network run over the MMIO transport (legacy and modern). A modern

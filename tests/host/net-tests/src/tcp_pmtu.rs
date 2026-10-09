@@ -378,7 +378,9 @@ fn a_valid_frag_needed_resends_the_flight_at_the_new_size_without_a_congestion_r
         k += 1;
         assert!(k < 20);
     }
-    assert_eq!(k, 3, "cwnd must be 4160 after the flight's ACK, not one segment");
+    // Slow start counts bytes (RFC 3465, L = 2 SMSS): the ACK of 2920 bytes
+    // grows 2920 by 2 x 1240, to 5400 -- four segments of the new MSS.
+    assert_eq!(k, 4, "cwnd must be 5400 after the flight's ACK, not one segment");
 }
 
 /// The lowered MSS is one connection's (the owner's rule: per connection, no

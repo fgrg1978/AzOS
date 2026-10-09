@@ -550,6 +550,9 @@ pub fn handle(payload: &[u8], our_mac: &[u8; 6], our_ip: &[u8; 4]) {
     // would keep a packet queued behind an ARP round trip we no longer need.
     if let Some((ip, mac)) = learned {
         crate::ip::arp_resolved(&ip, &mac);
+        // N7: a task resolving this address (`tcp::resolve_peer_mac`) looks
+        // again now. No lock is held here.
+        crate::wait::ARP_WAITERS.notify();
     }
 
     // A request claimed a different MAC for an address we already hold. Ask

@@ -481,6 +481,8 @@ pub fn socket_connect_with_yield<F: FnMut()>(
         .saturating_mul(azos_drv_sys::timebase::TIMER_FREQ) / 1_000_000;
     let start = azos_drv_sys::timebase::now();
     let mut yields: u32 = 0;
+    // N7: the SYN-ACK (or the RST) wakes this task (see `crate::wait`).
+    let armed = crate::wait::TCP_WAITERS.arm();
     loop {
         match tcp::conn_state(slot as usize) {
             tcp::TcpState::Established => break,
@@ -492,7 +494,7 @@ pub fn socket_connect_with_yield<F: FnMut()>(
         {
             return -1;
         }
-        yield_fn();
+        armed.wait(start.wrapping_add(budget_ticks), &mut yield_fn);
         yields += 1;
     }
 

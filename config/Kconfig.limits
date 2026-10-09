@@ -136,19 +136,19 @@ config TCP_MAX_CONNS
       Static connection-control-block (CCB) array size.  DOMAIN_GATEWAY
       on the Edge profile starts it at 64, with TCP_BUF_SIZE 16384.  Each entry
       costs TCP_BUF_SIZE × 2 bytes of buffer memory (RX + TX) plus
-      6,088 B of connection state, 4 × 1,468 B of it the out-of-order
-      queue: size_of::<TcpConn>() (crates/net/net/src/tcp.rs) is 268,232 B
-      at TCP_BUF_SIZE = 131072 and 38,856 B at 16384.  TCP_BUF_SIZE is
+      6,112 B of connection state, 4 × 1,468 B of it the out-of-order
+      queue: size_of::<TcpConn>() (crates/net/net/src/tcp.rs) is 268,256 B
+      at TCP_BUF_SIZE = 131072 and 38,880 B at 16384.  TCP_BUF_SIZE is
       per profile (config/Kconfig.network), so the static table is
-      4 × 268,232 B embedded, 8 × 268,232 B edge and 1024 × 38,856 B
-      (37.9 MiB) fleet.
+      4 × 268,256 B embedded, 8 × 268,256 B edge and 1024 × 38,880 B
+      (38.0 MiB) fleet.
       Must be at most MAX_SOCKETS - 4 (the build refuses less).
 
-      Cost: 2 x TCP_BUF_SIZE + 6,088 B of RAM per connection, the same on
-      riscv64 and aarch64: 268,232 B at the 131072-byte ring, 38,856 B at
-      16384.  At the default: edge (8 connections) 2,145,888 B = 2.05 MiB;
-      embedded (4) 1,072,960 B = 1.02 MiB; fleet (1024, 16384-byte rings)
-      39,788,576 B = 37.9 MiB.  The table is in .data (its initial state is not
+      Cost: 2 x TCP_BUF_SIZE + 6,112 B of RAM per connection, the same on
+      riscv64 and aarch64: 268,256 B at the 131072-byte ring, 38,880 B at
+      16384.  At the default: edge (8 connections) 2,146,080 B = 2.05 MiB;
+      embedded (4) 1,073,056 B = 1.02 MiB; fleet (1024, 16384-byte rings)
+      39,813,152 B = 38.0 MiB.  The table is in .data (its initial state is not
       all zero), so it is in the image file as well as in RAM.  A connection
       lookup scans the table (with a one-entry hint).  No code ceiling below
       the Kconfig range.

@@ -329,6 +329,8 @@ struct Report {
     /// reneging, seen from the wire.
     reneged: usize,
     data_frames: usize,
+    /// Segments from the receiving side with no payload: its ACKs (N6).
+    pure_acks: usize,
     lost: usize,
     dropped: usize,
     corrupt: bool,
@@ -367,6 +369,7 @@ fn run(sc: &Scenario) -> Report {
     let mut delivered = 0u64;
     let mut stack_corrupt = false;
     let (mut data_frames, mut lost) = (0usize, 0usize);
+    let mut pure_acks = 0usize;
     let mut done_after = None;
     let mut lost_at: Option<(u32, u64)> = None;
     let mut repair_after = None;
@@ -450,6 +453,9 @@ fn run(sc: &Scenario) -> Report {
                 }
                 ab.push(now, s);
             } else {
+                if payload_of(&s).is_empty() {
+                    pure_acks += 1;
+                }
                 // The receiver's SACK option names every range it holds (four
                 // entries fit four blocks). A range reported earlier that is
                 // still above the cumulative ACK must be inside a block now.
@@ -503,6 +509,11 @@ fn run(sc: &Scenario) -> Report {
         while let Some(s) = ba.pop_due(now) {
             tcp::handle_checked(&PEER_IP, &OUR_IP, &s);
         }
+        // What the kernel's `net_poll` does when its drain ends (N6): the
+        // ACKs this pass held leave now.
+        if tcp::TCP_DELACK_PASS_FLUSH {
+            tcp::flush_held_acks(false);
+        }
         if now % TICK == 0 {
             tcp::tcp_tick();
         }
@@ -512,6 +523,7 @@ fn run(sc: &Scenario) -> Report {
         delivered,
         reneged,
         data_frames,
+        pure_acks,
         lost,
         dropped: ab.dropped,
         corrupt: stack_corrupt || model.map_or(false, |m| m.corrupt),
@@ -540,8 +552,8 @@ fn bytes_delivered_per_round_trip() {
             });
             println!(
                 "[tcp-throughput] {name:40} {:>7} B/RTT over {RTTS} RTTs of 20 ms \
-                 ({} B, {} data frames, {} lost, {} queue drops)",
-                r.delivered / RTTS, r.delivered, r.data_frames, r.lost, r.dropped,
+                 ({} B, {} data frames, {} pure ACKs, {} lost, {} queue drops)",
+                r.delivered / RTTS, r.delivered, r.data_frames, r.pure_acks, r.lost, r.dropped,
             );
             assert!(!r.corrupt, "{name}: a byte arrived that the sender never offered at that offset");
             assert!(r.delivered > 0, "{name}: nothing was delivered");
@@ -570,6 +582,35 @@ fn bytes_delivered_per_round_trip() {
         one(&format!("{who}, periodic 1-in-100 loss"), 0, 0, Loss::Periodic(100));
         one(&format!("{who}, 10 Mbit/s, 32-frame queue"), 10, 32, Loss::None);
     }
+}
+
+/// N6 (wave 15): a bulk transfer to this stack's receiver costs at most about
+/// one pure ACK per two data segments (RFC 1122 §4.2.3.2), not one per segment
+/// plus one per `recv` as before, and the window stays as open as it was.
+///
+/// Measured on this harness, 200 RTTs of 20 ms, clean: 23,648 pure ACKs for
+/// 17,481 data frames (1.35 per frame) and 126,961 B/RTT before; 9,851 for
+/// 17,268 (0.57) and 125,406 B/RTT after. Canary: `CONFIG_TCP_DELACK_MS=0`
+/// (acknowledge every segment at once) fails the ACK bound.
+#[test]
+fn a_bulk_transfer_is_acknowledged_every_second_segment() {
+    if azos_limits::TCP_DELACK_MS == 0 {
+        println!("[tcp-throughput] delayed ACK configured off (the canary): the ACK bound below must fail");
+    }
+    let _g = begin();
+    let r = run(&Scenario {
+        receiver: Receiver::Stack, rtt_ms: 20, mbps: 0, queue: 0, loss: Loss::None,
+        rtts: 200, limit: u64::MAX,
+    });
+    println!("[tcp-throughput] delayed ACK: {} pure ACKs for {} data frames, {} B/RTT",
+             r.pure_acks, r.data_frames, r.delivered / 200);
+    assert!(!r.corrupt);
+    assert!(r.pure_acks * 10 <= r.data_frames * 6,
+        "{} pure ACKs for {} data frames: more than ~one per two segments",
+        r.pure_acks, r.data_frames);
+    // The window must not close for want of an update: within 2% of what the
+    // ring allows per round trip (the per-segment-ACK figure, 126,961).
+    assert!(r.delivered / 200 >= 124_000, "{} B/RTT: window updates held too long", r.delivered / 200);
 }
 
 /// One data segment in the middle of a transfer is lost. The stream must

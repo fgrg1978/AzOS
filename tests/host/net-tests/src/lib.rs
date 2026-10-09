@@ -394,6 +394,12 @@ pub fn net_random_fill(buf: &mut [u8]) -> bool {
     }
 }
 
+/// The waiter queues `tcp`, `arp` and `dns` notify (N7). No hooks are
+/// registered here, so every wait is the caller's own `yield_fn`, as before.
+#[allow(dead_code)]
+#[path = "../../../../crates/net/net/src/wait.rs"]
+mod wait;
+
 #[allow(dead_code)]
 #[path = "../../../../crates/net/net/src/tcp.rs"]
 mod tcp;
@@ -691,8 +697,13 @@ mod tcp_rx {
         s
     }
 
+    /// One segment in, as one `net_poll` pass: the ACK it holds (N6) leaves
+    /// when the pass ends, as the kernel's poller sends it.
     pub(crate) fn deliver(seg: &[u8]) {
         tcp::handle_checked(&PEER_IP, &OUR_IP, seg);
+        if tcp::TCP_DELACK_PASS_FLUSH {
+            tcp::flush_held_acks(false);
+        }
     }
 
     /// Parsed view of a segment the stack put on the wire.
@@ -1428,36 +1439,52 @@ mod tcp_window_sites {
         );
     }
 
-    /// The window update `recv` sends on every successful read. This is the
-    /// segment that tells a peer it may resume: once the window reaches zero
-    /// the peer stops sending, so there is no inbound segment left to
-    /// piggyback an ACK on and this is the only trigger there is.
+    /// The window update `recv` sends. This is the segment that tells a peer
+    /// it may resume: once the window reaches zero the peer stops sending, so
+    /// there is no inbound segment left to piggyback an ACK on.
+    ///
+    /// Since wave 15 (N6) it is no longer one pure ACK per read:
+    /// - a read that opens less than one SMSS sends nothing (RFC 1122
+    ///   §4.2.3.3 receiver SWS);
+    /// - a larger one, while the peer still has most of its window, is held
+    ///   like a delayed ACK and leaves from `tcp_tick` after `TCP_DELACK_MS`
+    ///   -- and must then carry the live free space, not a constant;
+    /// - draining the ring opens it past `TCP_WINDOW_UPDATE_SHIFT` and goes
+    ///   at once, advertising the full clamp.
     ///
     /// **Read only a little.** The first version of this test drained 16 KiB
     /// and then allowed itself `|| n >= 8 * 1024` — a disjunction that let it
-    /// pass without looking at the window at all. It was the one window site
-    /// of five that a constant could still be smuggled into. Reading 1 KiB out
-    /// of 72 leaves the buffer far enough past the clamp that the advertised
-    /// value has to be below the ceiling.
+    /// pass without looking at the window at all. Reading 4 KiB of 72 leaves
+    /// the buffer far enough past the clamp that the advertised value has to
+    /// be below the ceiling.
     #[test]
     fn the_window_update_after_a_read_carries_the_new_free_space() {
         let _g = begin();
         let (idx, _ours, _theirs) = established_with_full_buffer(7201, 42100);
+        let t0 = azos_drv_irqchip::clint::get_time();
 
         let mut buf = [0u8; 1024];
-        let n = tcp::recv(idx, &mut buf);
-        assert_eq!(n, 1024, "there should be buffered data to read");
-        assert_eq!(
-            wire::sent_count(), 1,
-            "a successful read must emit exactly one window update",
-        );
+        assert_eq!(tcp::recv(idx, &mut buf), 1024, "there should be buffered data to read");
+        assert_eq!(wire::sent_count(), 0, "a read that opens less than one SMSS must not advertise");
+        let mut buf = [0u8; 3072];
+        assert_eq!(tcp::recv(idx, &mut buf), 3072);
+        assert_eq!(wire::sent_count(), 0,
+            "an update the peer does not need yet is held, not sent per read");
+
+        if azos_limits::TCP_DELACK_MS != 0 {
+            azos_drv_irqchip::clint::set_test_time(
+                t0 + (azos_limits::TCP_DELACK_MS as u64 + 1)
+                    * (azos_drv_sys::timebase::TIMER_FREQ / 1000));
+            tcp::tcp_tick();
+        }
+        assert_eq!(wire::sent_count(), 1, "the held update must leave once, when its delay runs out");
         assert!(
             last_window() < EMPTY_WINDOW,
             "the window update advertised {} with {} KiB still unread",
-            last_window(), PAST_CLAMP_KIB - 1,
+            last_window(), PAST_CLAMP_KIB - 4,
         );
 
-        // Draining the rest must reopen it all the way.
+        // Draining the rest must reopen it all the way, without waiting.
         let mut big = [0u8; 8192];
         while tcp::recv(idx, &mut big) > 0 {}
         assert_eq!(
@@ -3933,6 +3960,9 @@ mod ip_input {
 
     fn deliver(p: &[u8]) {
         ip::handle(p, &OUR_MAC, &OUR_IP);
+        if tcp::TCP_DELACK_PASS_FLUSH {
+            tcp::flush_held_acks(false);
+        }
     }
 
     /// A TCP SYN, checksummed for the given IP endpoints.
@@ -8899,5 +8929,117 @@ pub mod fuzz_entry {
             let _ = dns::parse_response(data, id);
             let _ = dns::parse_response(data, id ^ 1);
         }
+    }
+}
+
+/// N7 (wave 15): a task waiting on the network is woken by the segment that
+/// changes what it waits for, instead of sleeping 1 ms and looking again.
+///
+/// The kernel's hooks are replaced by fakes: "block until the deadline" is
+/// where the receive path runs (the peer's ACK is delivered from inside it,
+/// as `net_poll` would deliver it while the sender sleeps), and "wake" records
+/// whom the receive path woke. A block that ends with no wake recorded is a
+/// block that only its deadline would have ended.
+#[cfg(test)]
+mod net_wait {
+    use super::tcp_rx::*;
+    use super::{tcp, wait, wire};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Mutex;
+
+    const ACK: u8 = 0x10;
+    const TID: u32 = 42;
+
+    static BLOCKS: AtomicU32 = AtomicU32::new(0);
+    static WOKEN_IN_BLOCK: AtomicU32 = AtomicU32::new(0);
+    static WAKES: AtomicU32 = AtomicU32::new(0);
+    /// (local port, peer port, peer's sequence) for the fake block's ACK.
+    static PEER: Mutex<Option<(u16, u16, u32)>> = Mutex::new(None);
+
+    fn current() -> u32 { TID }
+    fn wake(tid: u32) {
+        assert_eq!(tid, TID, "only the registered waiter may be woken");
+        WAKES.fetch_add(1, Ordering::SeqCst);
+    }
+    /// The peer acknowledges everything sent so far while the sender sleeps.
+    fn block(_deadline: u64) -> bool {
+        BLOCKS.fetch_add(1, Ordering::SeqCst);
+        let before = WAKES.load(Ordering::SeqCst);
+        let (port, peer_port, theirs) = PEER.lock().unwrap().expect("peer set");
+        if let Some(seg) = outbound().last() {
+            let ack_for = seg.seq.wrapping_add(seg.payload_len as u32);
+            deliver(&segment(peer_port, port, theirs, ack_for, ACK, 8192, &[]));
+        }
+        if WAKES.load(Ordering::SeqCst) > before {
+            WOKEN_IN_BLOCK.fetch_add(1, Ordering::SeqCst);
+        }
+        true
+    }
+
+    /// Hooks off again even if an assertion fails, so no later test sees them.
+    struct Hooks;
+    impl Hooks {
+        fn install() -> Self {
+            for c in [&BLOCKS, &WOKEN_IN_BLOCK, &WAKES] { c.store(0, Ordering::SeqCst); }
+            wait::set_hooks(current, block, wake);
+            Hooks
+        }
+    }
+    impl Drop for Hooks {
+        fn drop(&mut self) { wait::clear_hooks(); }
+    }
+
+    /// `send_all_until` (the brain link's sender) blocked on a closed window:
+    /// every block is ended by the window-opening ACK's wake, and the old
+    /// wait (the caller's `wait_fn`, a 1 ms sleep in the kernel) never runs.
+    /// Canary: without the notify in `tcp::handle_checked`, WOKEN_IN_BLOCK
+    /// stays 0.
+    #[test]
+    fn a_window_opening_ack_wakes_the_blocked_sender() {
+        let _g = begin();
+        let (idx, _ours, theirs) = establish(7301, 43001, 0x9a00_0000);
+        *PEER.lock().unwrap() = Some((7301, 43001, theirs));
+        let _h = Hooks::install();
+        let data: Vec<u8> = (0..6000u32).map(|i| (i % 251) as u8).collect();
+        let mut polls = 0u32;
+        let sent = tcp::send_all_until(idx, &data, 10_000_000, || polls += 1);
+        assert_eq!(sent, data.len(), "all 6000 bytes should have been accepted");
+        let blocks = BLOCKS.load(Ordering::SeqCst);
+        println!("[net-wait] send window: {blocks} blocks, {} ended by a wake, {polls} polls",
+                 WOKEN_IN_BLOCK.load(Ordering::SeqCst));
+        assert!(blocks > 0, "6000 bytes exceed the initial cwnd: the sender must have waited");
+        assert_eq!(WOKEN_IN_BLOCK.load(Ordering::SeqCst), blocks,
+            "every wait must be ended by the ACK's wake, not by its deadline");
+        assert_eq!(polls, 0, "with the hooks in place the 1 ms poll must not run");
+        let _ = wire::sent_count();
+    }
+
+    /// No waiter armed: a segment costs no wake at all.
+    #[test]
+    fn a_segment_with_no_waiter_wakes_nobody() {
+        let _g = begin();
+        let (idx, _ours, theirs) = establish(7302, 43002, 0x9b00_0000);
+        let _h = Hooks::install();
+        assert!(tcp::send_data(idx, b"x") > 0);
+        let seg = *outbound().last().unwrap();
+        deliver(&segment(43002, 7302, theirs, seg.seq.wrapping_add(1), ACK, 8192, &[]));
+        assert_eq!(WAKES.load(Ordering::SeqCst), 0, "nobody waits, nobody may be woken");
+    }
+
+    /// Every slot taken: the next waiter is not armed and its wait is the
+    /// caller's own fallback, exactly as before N7.
+    #[test]
+    fn a_waiter_beyond_the_slots_falls_back_to_its_own_wait() {
+        let _g = begin();
+        let _h = Hooks::install();
+        let held: Vec<_> = (0..wait::NET_WAIT_SLOTS).map(|_| wait::TCP_WAITERS.arm()).collect();
+        assert!(held.iter().all(|a| a.is_armed()));
+        let extra = wait::TCP_WAITERS.arm();
+        assert!(!extra.is_armed(), "no free slot: unarmed");
+        let mut fell_back = 0;
+        extra.wait(0, &mut || fell_back += 1);
+        assert_eq!(fell_back, 1);
+        drop(held);
+        assert!(wait::TCP_WAITERS.arm().is_armed(), "slots are returned on drop");
     }
 }

@@ -16,6 +16,7 @@ pub mod udp;
 // Pure sequence arithmetic, split out of tcp.rs so a host suite can reach it.
 pub mod seq;
 pub mod tcp;
+pub mod wait;
 pub mod socket;
 #[allow(dead_code)]
 pub mod dhcp;
@@ -198,8 +199,9 @@ pub fn net_init() {
 /// instead of just one — otherwise the kernel falls behind under load.
 pub fn net_poll() {
     /// Bound the drain so we don't starve other tasks if the device is
-    /// flooding (e.g. broadcast storm). 64 ≈ one Ethernet line-rate burst.
-    const MAX_DRAIN_PER_CALL: usize = 64;
+    /// flooding (e.g. broadcast storm): `CONFIG_NET_RX_DRAIN_PER_POLL`, 64 by
+    /// default ≈ one Ethernet line-rate burst.
+    const MAX_DRAIN_PER_CALL: usize = azos_limits::NET_RX_DRAIN_PER_POLL;
 
     let (mac, ip) = {
         let cfg = NET_CFG.lock();
@@ -218,6 +220,11 @@ pub fn net_poll() {
                 _                       => {}
             }
         }
+    }
+    // End of the pass (N6): the ACKs this drain held leave now, one per
+    // connection, however many of its segments arrived in the pass.
+    if tcp::TCP_DELACK_PASS_FLUSH {
+        tcp::flush_held_acks(false);
     }
 }
 

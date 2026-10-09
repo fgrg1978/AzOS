@@ -88,6 +88,11 @@ pub(crate) fn net_poll_task(_: usize) {
     const NET_IDLE_CEILING_IRQ_MODE: u64 = azos_drv_base::platform::hw::TIMER_FREQ * 60;
 
     NET_POLL_TID.store(azos_sched::current_task_tid(), Ordering::Release);
+    // N7: tasks waiting on a network event (handshake, window, ARP reply,
+    // DNS answer, accept) block until the receive path wakes them instead
+    // of sleeping 1 ms and looking again. Registered here, on every NIC
+    // mode: before this task runs nothing can deliver those events anyway.
+    azos_net::wait::set_hooks(azos_sched::current_task_tid, net_wait_block, net_wait_wake);
     let irq_mode = azos_drv_virtio::virtio::net::irq_driven();
     let no_nic = !azos_drv_net::net_device::is_ready();
     // Arm the timer only while `tcp_tick` has a deadline: in IRQ mode an RX
@@ -122,6 +127,14 @@ pub(crate) fn net_poll_task(_: usize) {
             NET_TICK_IRQ_MODE
         } else {
             NET_IDLE_CEILING_IRQ_MODE
+        };
+        // N6: a held ACK (a `recv` window update, or one the pass flush
+        // leaves to the timer) must leave within TCP_DELACK_MS, not at the
+        // 100 ms IRQ-mode tick.
+        let period = if azos_net::tcp::acks_held() {
+            period.min(azos_net::tcp::delack_ticks().max(1))
+        } else {
+            period
         };
         NET_POLL_ITERS.fetch_add(1, Ordering::Relaxed);
         let dl = azos_drv_sys::timebase::now() + period;
@@ -171,6 +184,21 @@ fn net_timer_kick() {
     let woke = tid != 0 && azos_sched::scheduler::wake_task_by_tid(
         tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
     NET_TIMER_KICKS.fetch_add(woke as u32, Ordering::Relaxed);
+}
+
+/// `azos_net::wait` block hook: sleep until `deadline` or a wake from the
+/// receive path. `false` when the scheduler refused to block (K-C29: a
+/// critical section is open), so the caller falls back to its own wait.
+fn net_wait_block(deadline: u64) -> bool {
+    azos_sched::task_block_killable(azos_sched::WaitReason::Timer(deadline))
+        != azos_sched::BlockOutcome::Refused
+}
+
+/// `azos_net::wait` wake hook: the event a waiter registered for landed.
+/// Same wake as [`net_msi_wake`]: stamped if the waiter has not blocked yet.
+fn net_wait_wake(tid: u32) {
+    let _ = azos_sched::scheduler::wake_task_by_tid(
+        tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
 }
 
 /// [`net_timer_kick`] calls that dispatched the poller.

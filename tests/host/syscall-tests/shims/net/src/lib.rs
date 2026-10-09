@@ -67,6 +67,12 @@ mod udp;
 #[path = "../../../../../../crates/net/net/src/tcp.rs"]
 mod tcp;
 
+/// N7 waiter queues (`sys_accept` arms `TCP_WAITERS`). No hooks are
+/// registered here, so every wait is the caller's fallback, as before.
+#[allow(dead_code)]
+#[path = "../../../../../../crates/net/net/src/wait.rs"]
+pub mod wait;
+
 #[allow(dead_code)]
 #[path = "../../../../../../crates/net/net/src/socket.rs"]
 pub mod socket;

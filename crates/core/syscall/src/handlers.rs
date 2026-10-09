@@ -3437,12 +3437,14 @@ pub fn sys_listen_syscall(fd: u64, _backlog: u64) -> i64 {
 }
 
 /// How long `SYS_ACCEPT` waits for an Established connection before it
-/// answers -1, in milliseconds of counter time.
-pub(crate) const ACCEPT_WAIT_MS: u64 = 10_000;
+/// answers -1, in milliseconds of counter time (`CONFIG_NET_ACCEPT_WAIT_MS`).
+pub(crate) const ACCEPT_WAIT_MS: u64 = azos_limits::NET_ACCEPT_WAIT_MS as u64;
 
 /// SYS_ACCEPT: a0=fd, a1=addr_out (ignored), a2=addrlen_out (ignored).
-/// Polls until an Established connection is ready, sleeping 1 ms between
-/// looks, for at most [`ACCEPT_WAIT_MS`]; returns new fd or -1.
+/// Waits until an Established connection is ready, for at most
+/// [`ACCEPT_WAIT_MS`]; returns new fd or -1. Woken by the segment that
+/// completes the handshake (N7, `azos_net::wait::TCP_WAITERS`); it used to
+/// sleep 1 ms between looks.
 ///
 /// The bound used to be 50,000 `task_yield()` calls: a count of how much CPU
 /// the host gave the guest, not a time, and a yield never hands the hart to a
@@ -3471,16 +3473,28 @@ pub fn sys_accept(fd: u64, _addr_out: u64, _addrlen_out: u64) -> i64 {
         Some(o) => o,
         None    => return -1,
     };
-    let mut accepted = -1i64;
-    crate::sleep::wait_until_ms(ACCEPT_WAIT_MS, 1, || {
-        azos_net::net_poll();
+    let deadline = azos_drv_sys::timebase::now()
+        .saturating_add(crate::sleep::ms_to_ticks(ACCEPT_WAIT_MS));
+    // Registered before the first look: a handshake completing between the
+    // look and the block wakes this task (see `azos_net::wait`). With every
+    // slot taken it is the old 1 ms poll.
+    let armed = azos_net::wait::TCP_WAITERS.arm();
+    loop {
+        // Armed, the poller drains the NIC and its segments wake this task;
+        // a second drain from here would only race it (two consumers of one
+        // RX ring can hand the handshake's last ACK and the first data
+        // segment to different harts, out of order). Unarmed it is the old
+        // poll, which drains for itself.
+        if !armed.is_armed() {
+            azos_net::net_poll();
+        }
         // The accepted connection is stamped to the *accepting* task, so the
         // new fd is reachable by this caller and nobody else.
         let r = socket_accept_owned(fd as i32, owner);
-        if r >= 0 { accepted = r as i64; }
-        r >= 0
-    });
-    accepted
+        if r >= 0 { return r as i64; }
+        if azos_drv_sys::timebase::now() >= deadline { return -1; }
+        armed.wait(deadline, &mut || crate::sleep::sleep_ms(1));
+    }
 }
 
 /// SYS_CONNECT: a0=fd, a1=sockaddr_ptr, a2=addrlen.

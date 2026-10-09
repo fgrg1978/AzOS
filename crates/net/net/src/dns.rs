@@ -344,10 +344,14 @@ pub fn resolve_with_yield(hostname: &str, yield_fn: fn()) -> Option<[u8; 4]> {
     // reaches `handle_response`, which takes the same non-reentrant spinlock,
     // and the hart would spin on itself forever.  Every access below is
     // therefore in its own scope.
-    let timeout_ticks = 2 * azos_drv_sys::timebase::TIMER_FREQ; // 2 seconds
+    let timeout_ticks = azos_limits::NET_DNS_TIMEOUT_MS as u64
+        * azos_drv_sys::timebase::TIMER_FREQ / 1000;
     let deadline = now + timeout_ticks;
     let mut answered = false;
     let mut result: Option<[u8; 4]> = None;
+    // N7: the answer's `handle_response` wakes this task (see `crate::wait`).
+    let armed = crate::wait::DNS_WAITERS.arm();
+    let mut yield_fn = yield_fn;
     while azos_drv_sys::timebase::now() < deadline {
         super::net_poll();
         {
@@ -365,7 +369,7 @@ pub fn resolve_with_yield(hostname: &str, yield_fn: fn()) -> Option<[u8; 4]> {
             }
         }
         if answered { break; }
-        yield_fn();
+        armed.wait(deadline, &mut yield_fn);
     }
 
     // Disarm: from here on nothing is routed to the resolver and nothing may
@@ -429,6 +433,9 @@ pub fn handle_response(src_ip: &[u8; 4], src_port: u16, dst_port: u16, data: &[u
     q.response[..n].copy_from_slice(data);
     q.response_len   = n;
     q.response_ready = true;
+    drop(q);
+    // N7: the resolver waiting on this answer looks now (lock dropped above).
+    crate::wait::DNS_WAITERS.notify();
 }
 
 // ---------------------------------------------------------------------------

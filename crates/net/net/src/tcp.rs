@@ -73,7 +73,7 @@ const TCP_SND_BUF_MASK: usize = TCP_SND_BUF_SIZE - 1;
 /// A short read is not a failure in TCP -- returning fewer bytes than asked for
 /// is ordinary and every correct caller already loops -- so the cap costs
 /// nothing but an extra call.
-const TCP_RECV_MAX_PER_CALL: usize = 4096;
+const TCP_RECV_MAX_PER_CALL: usize = azos_limits::TCP_RECV_MAX_PER_CALL;
 
 /// TCP Maximum Segment Size — max payload bytes per segment.
 /// Standard Ethernet MTU (1500) minus IP header (20) minus TCP header (20).
@@ -150,6 +150,7 @@ const TCP_OPT_MAX: usize = TCP_HDR_MAX - TCP_HDR_MIN;
 const TCP_FIN: u8 = 0x01;
 const TCP_SYN: u8 = 0x02;
 const TCP_RST: u8 = 0x04;
+const TCP_PSH: u8 = 0x08;
 const TCP_ACK: u8 = 0x10;
 
 // ---------------------------------------------------------------------------
@@ -392,6 +393,64 @@ const FIN_WAIT2_TIMEOUT_MS: u64 = 60_000;
 /// `motor_pid`, `wcet` and `bench` already used it. All of `crates/net/net` did
 /// not.
 const TICKS_PER_MS: u64 = azos_drv_sys::timebase::TIMER_FREQ / 1_000;
+
+// ---------------------------------------------------------------------------
+// Delayed acknowledgements (RFC 1122 §4.2.3.2, RFC 5681 §4.2)
+// ---------------------------------------------------------------------------
+
+/// Longest an in-order segment's ACK is held (`CONFIG_TCP_DELACK_MS`), in
+/// ticks. 0: every in-order segment is acknowledged at once, as before wave 15.
+const TCP_DELACK_TICKS: u64 = azos_limits::TCP_DELACK_MS as u64 * TICKS_PER_MS;
+
+/// Full-sized segments of unacknowledged in-order data that force the ACK out
+/// at once (`CONFIG_TCP_DELACK_SEGS`; RFC 1122: "at least every second").
+const TCP_DELACK_SEGS: u32 = azos_limits::TCP_DELACK_SEGS as u32;
+const _: () = assert!(TCP_DELACK_SEGS >= 1, "CONFIG_TCP_DELACK_SEGS must be at least 1");
+
+/// A read that moves the advertised right edge by this much sends the window
+/// update at once instead of holding it (`CONFIG_TCP_WINDOW_UPDATE_SHIFT`:
+/// the ring >> shift). Between this and the half-window rule, a sender
+/// limited by our ring sees most of it each round trip.
+const TCP_WINDOW_UPDATE_BYTES: u32 =
+    (TCP_BUF_SIZE >> azos_limits::TCP_WINDOW_UPDATE_SHIFT) as u32;
+
+/// Held ACKs leave at the end of each `net_poll` pass (`CONFIG_TCP_DELACK_PASS_FLUSH`).
+pub const TCP_DELACK_PASS_FLUSH: bool = azos_limits::TCP_DELACK_PASS_FLUSH;
+
+/// Some connection may hold an ACK: set (after the connection's own
+/// `ack_pending`, under the lock) by whoever holds one, cleared by the scan
+/// in [`flush_held_acks`] before it looks. A pass with nothing held costs one
+/// atomic swap instead of a table scan.
+static ACK_HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Pure ACKs, by what sent them: `[at once on the receive path, end of a poll
+/// pass, delayed-ACK timer, window update from recv, piggybacked on our own
+/// segment (no pure ACK needed)]`. Relaxed counters for the gate and QEMU rows.
+static ACK_STATS: [core::sync::atomic::AtomicU64; 5] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; 5];
+const ACKS_NOW: usize = 0;
+const ACKS_PASS: usize = 1;
+const ACKS_TIMER: usize = 2;
+const ACKS_WINDOW: usize = 3;
+const ACKS_PIGGYBACK: usize = 4;
+
+/// [`ACK_STATS`], in its order.
+pub fn ack_stats() -> [u64; 5] {
+    core::array::from_fn(|i| ACK_STATS[i].load(core::sync::atomic::Ordering::Relaxed))
+}
+
+fn ack_count(which: usize) {
+    ACK_STATS[which].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether any connection holds an ACK (the poller shortens its sleep to
+/// [`TCP_DELACK_TICKS`] while one does).
+pub fn acks_held() -> bool {
+    ACK_HELD.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// [`TCP_DELACK_TICKS`], for the poller's sleep bound.
+pub const fn delack_ticks() -> u64 { TCP_DELACK_TICKS }
 
 // ---------------------------------------------------------------------------
 // Keep-alive
@@ -765,6 +824,27 @@ pub struct TcpConn {
     // --- FIN state machine (F01) ---
     fin_seq:          u32,            // sequence number of our FIN
     time_wait_start:  u64,            // tick when TimeWait began
+
+    // --- Delayed ACK (RFC 1122 §4.2.3.2, RFC 5681 §4.2; wave 15 N6) ---
+    /// RCV.NXT has moved past what our last segment acknowledged and no ACK
+    /// has left for it yet. Cleared by every segment we send that carries the
+    /// current `ack` (see [`TcpConn::advertise`]).
+    ack_pending:      bool,
+    /// The held ACK came with PSH or a short segment: the read that empties
+    /// the ring sends it (Linux `ICSK_ACK_PUSHED` in `tcp_cleanup_rbuf`).
+    ack_pushed:       bool,
+    /// The held ACK answers data that arrived in a poll pass, which flushes
+    /// it when it ends (`TCP_DELACK_PASS_FLUSH`). A window update `recv`
+    /// held is not: it waits for the next data ACK or the timer.
+    ack_rx:           bool,
+    /// When a held ACK must leave (tick), set when it starts being held.
+    ack_due:          u64,
+    /// In-order bytes taken since the last ACK we sent.
+    rcv_unacked:      u32,
+    /// The right edge of the window our last ACK advertised (RCV.NXT +
+    /// window). Only grows; a stale (lower) value makes `recv` update early,
+    /// never late.
+    rcv_adv:          u32,
 }
 
 impl TcpConn {
@@ -828,6 +908,13 @@ impl TcpConn {
 
             fin_seq:       0,
             time_wait_start: 0,
+
+            ack_pending:   false,
+            ack_pushed:    false,
+            ack_rx:        false,
+            ack_due:       0,
+            rcv_unacked:   0,
+            rcv_adv:       0,
         }
     }
 
@@ -884,6 +971,12 @@ impl TcpConn {
             seg.valid = false;
         }
         self.ooo_recent       = 0;
+        self.ack_pending      = false;
+        self.ack_pushed       = false;
+        self.ack_rx           = false;
+        self.ack_due          = 0;
+        self.rcv_unacked      = 0;
+        self.rcv_adv          = 0;
         // U06-2: was NOT cleared here. `accept()` (below) hands a slot to the
         // caller only `!was_accepted`, and this flag was cleared only on the
         // RST arm and the SynRcvd reaper — never on an orderly close
@@ -950,6 +1043,114 @@ impl TcpConn {
     fn adv_window(&self) -> u16 {
         adv_window(rx_free_space(self), self.rcv_wscale)
     }
+
+    /// [`adv_window`](Self::adv_window) for a segment that is about to leave
+    /// carrying `self.ack`: whatever ACK was held is now sent with it, and the
+    /// right edge it advertises is remembered for `recv`'s window-update rule.
+    fn advertise(&mut self) -> u16 {
+        let win = self.adv_window();
+        if self.ack_pending { ack_count(ACKS_PIGGYBACK); }
+        self.note_ack_sent(win);
+        win
+    }
+
+    fn note_ack_sent(&mut self, win: u16) {
+        self.ack_pending = false;
+        self.ack_pushed  = false;
+        self.ack_rx      = false;
+        self.rcv_unacked = 0;
+        let edge = self.ack.wrapping_add((win as u32) << self.rcv_wscale);
+        // Only forward: a window field rounded down by the scale must not
+        // make the remembered edge retreat.
+        if edge.wrapping_sub(self.rcv_adv) < 1u32 << 31 { self.rcv_adv = edge; }
+    }
+
+    /// The pure ACK this connection would send now, recorded as sent.
+    fn take_ack(&mut self) -> AckOut {
+        let win = self.adv_window();
+        let mut opts = [0u8; TCP_OPT_MAX];
+        let opts_len = sack_option(self, &mut opts);
+        self.note_ack_sent(win);
+        AckOut {
+            dst: self.remote_ip, sp: self.local_port, dp: self.remote_port,
+            seq: self.seq, ack: self.ack, win, opts, opts_len,
+        }
+    }
+
+    /// Hold the ACK for what just arrived instead of sending it now.
+    /// `rx`: it answers inbound data (the end of the poll pass sends it);
+    /// otherwise it is a window update from `recv` (the timer or the next
+    /// data ACK sends it).
+    fn hold_ack(&mut self, now: u64, pushed: bool, rx: bool) {
+        if !self.ack_pending {
+            self.ack_pending = true;
+            self.ack_due = now.wrapping_add(TCP_DELACK_TICKS);
+        }
+        self.ack_pushed |= pushed;
+        self.ack_rx     |= rx;
+        ACK_HELD.store(true, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// A pure ACK snapshotted under the TCP lock, sent after it is dropped.
+struct AckOut {
+    dst: [u8; 4], sp: u16, dp: u16, seq: u32, ack: u32, win: u16,
+    opts: [u8; TCP_OPT_MAX], opts_len: usize,
+}
+
+fn send_ack(mac: &[u8; 6], ip: &[u8; 4], a: &AckOut) {
+    send_segment_opts(mac, ip, &a.dst, a.sp, a.dp, TCP_ACK, a.seq, a.ack, a.win,
+                      &a.opts[..a.opts_len], &[]);
+}
+
+/// Send the ACKs connections hold: at the end of a poll pass
+/// (`due_only == false`) every one that answers inbound data, and any whose
+/// [`TCP_DELACK_TICKS`] ran out; from `tcp_tick` (`due_only`) only the latter.
+/// Returns how many left. A pass with nothing held costs one atomic swap.
+pub fn flush_held_acks(due_only: bool) -> usize {
+    use core::sync::atomic::Ordering;
+    if !ACK_HELD.swap(false, Ordering::AcqRel) { return 0; }
+    let now = azos_drv_sys::timebase::now();
+    const BATCH: usize = 4;
+    let mut sent = 0usize;
+    let mut still_held = false;
+    let mut idx = 0usize;
+    while idx < TCP_MAX_CONNS {
+        // Up to BATCH ACKs per lock hold; none is sent with the lock held.
+        let mut out: [Option<AckOut>; BATCH] = [const { None }; BATCH];
+        let mut n = 0usize;
+        let (mac, ip) = {
+            let mut t = TCP.lock();
+            let (mac, ip) = (t.our_mac, t.our_ip);
+            while idx < TCP_MAX_CONNS && n < BATCH {
+                let c = &mut t.conns[idx];
+                idx += 1;
+                if !c.ack_pending { continue; }
+                if !matches!(c.state, TcpState::Established | TcpState::CloseWait
+                             | TcpState::FinWait1 | TcpState::FinWait2) {
+                    c.ack_pending = false;
+                    continue;
+                }
+                if (due_only || !c.ack_rx) && (now.wrapping_sub(c.ack_due) as i64) < 0 {
+                    still_held = true;
+                    continue;
+                }
+                out[n] = Some(c.take_ack());
+                n += 1;
+            }
+            (mac, ip)
+        };
+        for a in out[..n].iter().flatten() {
+            send_ack(&mac, &ip, a);
+            ack_count(if due_only { ACKS_TIMER } else { ACKS_PASS });
+        }
+        sent += n;
+    }
+    if still_held { ACK_HELD.store(true, Ordering::Release); }
+    sent
+}
+
+impl TcpConn {
 
     /// The largest receive window this connection can ever have advertised,
     /// in bytes: what "in window" means for an inbound segment.
@@ -1589,6 +1790,9 @@ fn resolve_peer_mac<F: FnMut()>(
     // NUD-style unicast re-check when the cached entry, though solicited, has
     // gone stale (`ARP_REACHABLE_TICKS`) — see its own doc.
     if crate::arp::lookup_solicited_verified(our_mac, our_ip, dst_ip).is_some() { return true; }
+    // N7: registered before the request leaves and before every look below,
+    // so the reply's `arp::handle` wakes this task (see `crate::wait`).
+    let armed = crate::wait::ARP_WAITERS.arm();
     crate::arp::send_request(our_mac, our_ip, dst_ip);
 
     let freq = azos_drv_sys::timebase::TIMER_FREQ;
@@ -1614,7 +1818,7 @@ fn resolve_peer_mac<F: FnMut()>(
         if spins >= ARP_RESOLVE_SPIN_CAP {
             return false;   // clock is not advancing; do not hang here
         }
-        yield_fn();
+        armed.wait(start.wrapping_add(deadline_ticks), &mut yield_fn);
         spins += 1;
     }
 }
@@ -1704,7 +1908,7 @@ pub fn send_data(idx: usize, data: &[u8]) -> i32 {
             c.rtt_time = now;
         }
         c.last_activity = now;
-        (mac, ip, start, n, c.ack, c.remote_ip, c.local_port, c.remote_port, c.adv_window())
+        (mac, ip, start, n, c.ack, c.remote_ip, c.local_port, c.remote_port, c.advertise())
     };
     let send_data_slice = &data[..n];
 
@@ -1856,6 +2060,8 @@ pub fn send_all_until<F: FnMut()>(
     let start = azos_drv_sys::timebase::now();
     let mut sent_total: usize = 0;
     let mut waits: u32 = 0;
+    // N7: an ACK that opens the window wakes this task (see `crate::wait`).
+    let armed = crate::wait::TCP_WAITERS.arm();
     while sent_total < data.len() {
         let n = send_data(idx, &data[sent_total..]);
         if n < 0 {
@@ -1867,7 +2073,7 @@ pub fn send_all_until<F: FnMut()>(
             {
                 break;
             }
-            wait_fn();
+            armed.wait(start.wrapping_add(budget_ticks), &mut wait_fn);
             waits += 1;
             continue;
         }
@@ -1879,7 +2085,7 @@ pub fn send_all_until<F: FnMut()>(
 /// Read received data from a connection.  Returns bytes read, 0 if none.
 pub fn recv(idx: usize, buf: &mut [u8]) -> i32 {
     if idx >= TCP_MAX_CONNS { return -1; }
-    let (n, send_window_update, params) = {
+    let (n, params, kick) = {
         let mut t = TCP.lock();
         let c = &mut t.conns[idx];
         let avail = c.rx_available();
@@ -1895,36 +2101,48 @@ pub fn recv(idx: usize, buf: &mut [u8]) -> i32 {
             buf[i] = c.rx_buf[c.rx_head & TCP_BUF_MASK];
             c.rx_head = (c.rx_head + 1) & TCP_BUF_MASK;
         }
-        // Send a window-update ACK on every successful read. Without this,
-        // after the peer fills our window it stalls forever — there's no
-        // other trigger to advertise the now-free space (the only ACK path
-        // is on inbound segments, but the peer stops sending when window=0).
-        let win_after   = c.adv_window();
-        let send_update = n > 0;
-        let remote_ip   = c.remote_ip;
-        let local_port  = c.local_port;
-        let remote_port = c.remote_port;
-        let seq         = c.seq;
-        let ack         = c.ack;
-        // An ACK like any other, so it repeats what is still held out of
-        // order (RFC 2018 §4).
-        let mut opts    = [0u8; TCP_OPT_MAX];
-        let opts_len    = sack_option(c, &mut opts);
-        let our_mac     = t.our_mac;
-        let our_ip      = t.our_ip;
-        let params = if send_update {
-            Some((our_mac, our_ip, remote_ip,
-                  local_port, remote_port,
-                  seq, ack, win_after, opts, opts_len))
-        } else { None };
-        (n, send_update, params)
+        // Window update (N6). It used to go out as a pure ACK on EVERY read
+        // that returned a byte. Now, with RFC 1122 §4.2.3.3's receiver SWS
+        // floor (the edge must move by min(ring/2, SMSS)):
+        // - at once when the peer is close to stalling on it: the window we
+        //   can offer is at least twice what is left of the one last
+        //   advertised (Linux's `tcp_cleanup_rbuf` rule), or this read
+        //   emptied the ring while an ACK for a pushed (PSH or short)
+        //   segment is held (the request was consumed, its ACK need not wait
+        //   for a reply to ride on);
+        // - otherwise held like a delayed ACK: the next data segment's ACK,
+        //   the end of the next poll pass or `TCP_DELACK_TICKS` carries it,
+        //   one update however many reads happened in between.
+        let free     = rx_free_space(c) as u32;
+        let left     = c.rcv_adv.wrapping_sub(c.ack);
+        let left     = if left >= 1u32 << 31 { 0 } else { left };
+        let gain     = c.ack.wrapping_add(free).wrapping_sub(c.rcv_adv);
+        let gain     = if gain >= 1u32 << 31 { 0 } else { gain };
+        let sws      = ((TCP_BUF_SIZE / 2) as u32).min(c.smss());
+        let opened   = n > 0 && gain >= sws;
+        let urgent   = TCP_DELACK_TICKS == 0
+            || (opened && (free >= left.saturating_mul(2) || gain >= TCP_WINDOW_UPDATE_BYTES))
+            || (n > 0 && c.ack_pending && c.ack_pushed && c.rx_available() == 0);
+        let mut kick = false;
+        let params   = if urgent {
+            let a = c.take_ack();
+            Some((t.our_mac, t.our_ip, a))
+        } else {
+            if opened {
+                kick = !c.ack_pending;
+                c.hold_ack(azos_drv_sys::timebase::now(), false, false);
+            }
+            None
+        };
+        (n, params, kick)
     };
-    if send_window_update {
-        if let Some((mac, ip, dst_ip, sp, dp, seq, ack, win, opts, opts_len)) = params {
-            send_segment_opts(&mac, &ip, &dst_ip, sp, dp,
-                              TCP_ACK, seq, ack, win, &opts[..opts_len], &[]);
-        }
+    if let Some((mac, ip, a)) = params {
+        send_ack(&mac, &ip, &a);
+        ack_count(ACKS_WINDOW);
     }
+    // A held update made outside a poll pass: a poller parked on a long
+    // timer must learn that `tcp_tick` has a deadline sooner.
+    if kick { timer_kick(); }
     n as i32
 }
 
@@ -1971,10 +2189,11 @@ pub fn abort(idx: usize) {
 /// the two callers below disagree on purpose about what to do when it is not.
 fn send_fin_and_advance(idx: usize) -> bool {
     let (mac, ip, state, seq, ack_val, dst_ip, src_port, dst_port, win) = {
-        let t = TCP.lock();
-        let c = &t.conns[idx];
-        (t.our_mac, t.our_ip, c.state, c.seq, c.ack, c.remote_ip, c.local_port, c.remote_port,
-         c.adv_window())
+        let mut t = TCP.lock();
+        let (mac, ip) = (t.our_mac, t.our_ip);
+        let c = &mut t.conns[idx];
+        (mac, ip, c.state, c.seq, c.ack, c.remote_ip, c.local_port, c.remote_port,
+         c.advertise())
     };
     let next_state = match state {
         TcpState::Established => TcpState::FinWait1,
@@ -2084,6 +2303,10 @@ pub fn handle_checked(src_ip: &[u8; 4], dst_ip: &[u8; 4], data: &[u8]) {
     if tcp_checksum(pseudo, data) != 0 { return; }
 
     handle(src_ip, data);
+    // N7: whatever this segment changed — a handshake completed, a
+    // connection reset, a window opened — the tasks waiting on TCP look
+    // again now, not at their next 1 ms poll. No lock is held here.
+    crate::wait::TCP_WAITERS.notify();
 }
 
 /// Store an inbound data payload against a connection's receive state (or
@@ -2102,8 +2325,11 @@ pub fn handle_checked(src_ip: &[u8; 4], dst_ip: &[u8; 4], data: &[u8]) {
 fn process_inbound_payload(
     idx: usize, mac: &[u8; 6], ip: &[u8; 4], src_ip: &[u8; 4],
     dst_port: u16, src_port: u16, seq: u32, payload: &[u8],
-    expected_ack: u32, rcv_wnd: u32, fin: bool, now: u64,
+    expected_ack: u32, rcv_wnd: u32, fin: bool, psh: bool, now: u64,
 ) {
+    // Every ACK this sends is built from the connection itself (`take_ack`);
+    // the segment's addressing is only read by the `qemu` trace.
+    let _ = (src_ip, dst_port, src_port, fin);
     if payload.is_empty() { return; }
     // A segment that starts behind RCV.NXT. Peers retransmit whole segments,
     // so one that overlaps what already arrived is ordinary, and matching on
@@ -2147,19 +2373,39 @@ fn process_inbound_payload(
         }
         c.ack = seq.wrapping_add(stored);
         c.last_activity = now;
+        c.rcv_unacked = c.rcv_unacked.saturating_add(stored);
 
         // Flush any OOO segments that are now contiguous
+        let had_ooo = c.ooo_buf.iter().any(|s| s.valid);
         flush_ooo_segments(c);
 
+        // N6: hold the ACK (RFC 1122 §4.2.3.2) unless one of these says the
+        // peer needs it now:
+        // - delayed ACK configured off (`TCP_DELACK_MS = 0`);
+        // - `TCP_DELACK_SEGS` full-sized segments unacknowledged (RFC 5681
+        //   §4.2: at least every second one);
+        // - the segment filled (part of) a hole (RFC 5681 §4.2: immediately),
+        //   or something is still held beyond one (its SACK blocks);
+        // - the ring could not take it all, or less than a segment of window
+        //   is left: the sender is about to stall and must learn why.
+        // A FIN riding along is answered by its own ACK right after this.
+        let smss = c.smss();
+        let quick = TCP_DELACK_TICKS == 0
+            || c.rcv_unacked >= TCP_DELACK_SEGS.saturating_mul(smss)
+            || had_ooo
+            || (stored as usize) < payload.len()
+            || rx_free_space(c) < smss as usize;
+        if !quick {
+            let pushed = psh || (payload.len() as u32) < smss;
+            c.hold_ack(now, pushed, true);
+            return;
+        }
         // Send ACK with actual free window (flow control — F01), and SACK
         // blocks for whatever is still held beyond a remaining hole.
-        let win = c.adv_window();
-        let mut opts = [0u8; TCP_OPT_MAX];
-        let opts_len = sack_option(c, &mut opts);
-        let (seq_n, ack_n) = (c.seq, c.ack);
+        let a = c.take_ack();
         drop(t);
-        send_segment_opts(mac, ip, src_ip, dst_port, src_port,
-                          TCP_ACK, seq_n, ack_n, win, &opts[..opts_len], &[]);
+        send_ack(mac, ip, &a);
+        ack_count(ACKS_NOW);
     } else if seq.wrapping_sub(expected_ack) < rcv_wnd {
         // Out-of-order but within window — buffer it (F01)
         let mut t = TCP.lock();
@@ -2169,15 +2415,13 @@ fn process_inbound_payload(
         c.last_activity = now;
         // Send duplicate ACK (signals missing data to sender). With SACK it
         // also says exactly what did arrive, so the sender need not resend it.
-        let win = c.adv_window();
-        let mut opts = [0u8; TCP_OPT_MAX];
-        let opts_len = sack_option(c, &mut opts);
-        let (seq_n, ack_n) = (c.seq, c.ack);
+        // Never held (RFC 5681 §4.2: out-of-order data is ACKed at once).
+        let a = c.take_ack();
         drop(t);
         #[cfg(feature = "qemu")]
-        trace_tx(dst_port, src_ip, src_port, TCP_ACK, seq_n, ack_n, &[]);
-        send_segment_opts(mac, ip, src_ip, dst_port, src_port,
-                          TCP_ACK, seq_n, ack_n, win, &opts[..opts_len], &[]);
+        trace_tx(dst_port, src_ip, src_port, TCP_ACK, a.seq, a.ack, &[]);
+        send_ack(mac, ip, &a);
+        ack_count(ACKS_NOW);
     }
     // else: outside window, already filtered by the caller (or, for
     // FinWait1/FinWait2 which run no acceptability gate up front, simply left
@@ -2376,6 +2620,9 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                     c.rtx_next = c.seq;
                     c.ack   = seq.wrapping_add(1);
                     c.state = TcpState::Established;
+                    // What our SYN advertised (unscaled): the edge `recv`'s
+                    // window-update rule measures from until an ACK moves it.
+                    c.rcv_adv = c.ack.wrapping_add(TCP_WINDOW_SIZE as u32);
                     c.remote_mss    = peer_opts.mss;
                     // Our SYN offered both options (`SynOffer::ALL`), so each
                     // is on exactly when this SYN-ACK carries it back.
@@ -2392,8 +2639,9 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                 }
                 // The first segment without SYN: its window is scaled.
                 let (seq_n, ack_n, win) = {
-                    let t = TCP.lock();
-                    (t.conns[idx].seq, t.conns[idx].ack, t.conns[idx].adv_window())
+                    let mut t = TCP.lock();
+                    let c = &mut t.conns[idx];
+                    (c.seq, c.ack, c.advertise())
                 };
                 send_segment(&mac, &ip, src_ip, dst_port, src_port, TCP_ACK, seq_n, ack_n, &[], win);
             }
@@ -2464,11 +2712,12 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                     c.snd_una  = c.seq;
                     c.rtx_next = c.seq;
                     c.state    = TcpState::Established;
+                    c.rcv_adv  = c.ack.wrapping_add(TCP_WINDOW_SIZE as u32);
                     // Still a SYN, so still unscaled.
                     c.remote_window = peer_win as u32;
                     c.last_activity = now;
                     c.keepalive_probes = 0;
-                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.adv_window());
+                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
                     drop(t);
                     send_segment(&mac, &ip, src_ip, dst_port, src_port,
                                  TCP_ACK, seq_n, ack_n, &[], win);
@@ -2478,6 +2727,8 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                 c.snd_una  = c.seq;
                 c.rtx_next = c.seq;
                 c.state = TcpState::Established;
+                // Our SYN-ACK's window (unscaled): see the SynSent arm.
+                c.rcv_adv = c.ack.wrapping_add(TCP_WINDOW_SIZE as u32);
                 // Not a SYN, so scaled by whatever the SYN exchange agreed.
                 c.remote_window = (peer_win as u32) << c.snd_wscale;
                 c.last_activity = now;
@@ -2573,7 +2824,8 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
 
                 // --- Payload processing with OOO reassembly (F01) ---
                 process_inbound_payload(idx, &mac, &ip, src_ip, dst_port, src_port,
-                                        seq, payload, expected_ack, rcv_wnd, fin, now);
+                                        seq, payload, expected_ack, rcv_wnd, fin,
+                                        flags & TCP_PSH != 0, now);
 
                 // --- FIN handling ---
                 if flags & TCP_FIN != 0 {
@@ -2604,7 +2856,7 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                     c.ack = c.ack.wrapping_add(1); // FIN consumes one sequence number
                     c.state = TcpState::CloseWait;
                     c.last_activity = now;
-                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.adv_window());
+                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
                     drop(t);
                     // ACK the FIN
                     send_segment(&mac, &ip, src_ip, dst_port, src_port,
@@ -2629,7 +2881,8 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                     (t.conns[idx].ack, t.conns[idx].rcv_wnd_max())
                 };
                 process_inbound_payload(idx, &mac, &ip, src_ip, dst_port, src_port,
-                                        seq, payload, expected_ack, rcv_wnd, fin, now);
+                                        seq, payload, expected_ack, rcv_wnd, fin,
+                                        flags & TCP_PSH != 0, now);
                 ack_data_in_fin_state(idx, &mac, &ip, seq, ack_num, flags, peer_win,
                                       payload.len(), expected_ack, rcv_wnd,
                                       &data[TCP_HDR_MIN..off], now);
@@ -2663,7 +2916,7 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                             c.ack = fin_next_ack(seq, payload.len());
                             c.state = TcpState::TimeWait;
                             c.time_wait_start = now;
-                            let (seq_n, ack_n, win) = (c.seq, c.ack, c.adv_window());
+                            let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
                             drop(t);
                             send_segment(&mac, &ip, src_ip, dst_port, src_port,
                                          TCP_ACK, seq_n, ack_n, &[], win);
@@ -2687,7 +2940,7 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                     c.ack = fin_next_ack(seq, payload.len());
                     c.state = TcpState::TimeWait;
                     c.time_wait_start = now;
-                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.adv_window());
+                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
                     drop(t);
                     send_segment(&mac, &ip, src_ip, dst_port, src_port,
                                  TCP_ACK, seq_n, ack_n, &[], win);
@@ -2700,7 +2953,7 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                 };
                 process_inbound_payload(idx, &mac, &ip, src_ip, dst_port, src_port,
                                         seq, payload, expected_ack, rcv_wnd,
-                                        flags & TCP_FIN != 0, now);
+                                        flags & TCP_FIN != 0, flags & TCP_PSH != 0, now);
                 if flags & TCP_FIN != 0 {
                     let mut t = TCP.lock();
                     let c = &mut t.conns[idx];
@@ -2715,7 +2968,7 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                     c.ack = fin_next_ack(seq, payload.len());
                     c.state = TcpState::TimeWait;
                     c.time_wait_start = now;
-                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.adv_window());
+                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
                     drop(t);
                     send_segment(&mac, &ip, src_ip, dst_port, src_port,
                                  TCP_ACK, seq_n, ack_n, &[], win);
@@ -2767,7 +3020,7 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                         let mut t = TCP.lock();
                         let c = &mut t.conns[idx];
                         c.time_wait_start = now;
-                        (c.seq, c.ack, c.adv_window())
+                        (c.seq, c.ack, c.advertise())
                     };
                     send_segment(&mac, &ip, src_ip, dst_port, src_port,
                                  TCP_ACK, seq_n, ack_n, &[], win);
@@ -3166,15 +3419,23 @@ fn process_ack(
     retransmit(idx, mac, ip, resend);
 }
 
-/// Grow `cwnd` for `acked` newly acknowledged bytes: slow start below
-/// `ssthresh` (at most one segment per ACK, RFC 5681 §3.1), congestion
-/// avoidance above it (about one segment per window). Never past the send
-/// ring, which is all that can ever be in flight.
+/// Grow `cwnd` for `acked` newly acknowledged bytes, counted in BYTES
+/// (RFC 3465, as Linux does): slow start below `ssthresh` grows by what the
+/// ACK covers, up to L = 2 SMSS per ACK; congestion avoidance above it by
+/// SMSS × acked / cwnd, about one segment per window of bytes acknowledged.
+/// Counting per ACK instead (at most one SMSS each, the RFC 5681 §3.1
+/// minimum) halves both rates against a receiver that delays its ACKs to
+/// every second segment, as RFC 1122 asks and this stack's own receiver does
+/// (N6). Never past the send ring, which is all that can ever be in flight.
 fn grow_cwnd(c: &mut TcpConn, acked: u32, smss: u32) {
     let inc = if c.cwnd < c.ssthresh {
-        acked.min(smss)
+        // Never past ssthresh in one step: the rest of this ACK belongs to
+        // congestion avoidance (Linux `tcp_slow_start`), so a cumulative ACK
+        // after a timeout does not jump the window over the halved estimate.
+        acked.min(smss.saturating_mul(2)).min(c.ssthresh - c.cwnd)
     } else {
-        (smss * smss / c.cwnd.max(1)).max(1)
+        let acked = acked.min(c.cwnd.max(1)) as u64;
+        ((smss as u64 * acked / c.cwnd.max(1) as u64) as u32).max(1)
     };
     c.cwnd = c.cwnd.saturating_add(inc).min(TCP_SND_BUF_SIZE as u32);
 }
@@ -3258,7 +3519,7 @@ fn retransmit(idx: usize, mac: &[u8; 6], ip: &[u8; 4], resend: Resend) {
                 }
             }
             c.rtt_on = false;
-            (s, len, c.ack, c.remote_ip, c.local_port, c.remote_port, c.adv_window())
+            (s, len, c.ack, c.remote_ip, c.local_port, c.remote_port, c.advertise())
         };
         // Live window, same reason as `send_data`: a retransmission carrying
         // the constant would reopen a window we had already closed.
@@ -3537,7 +3798,7 @@ fn send_invalid_ack(idx: usize, mac: &[u8; 6], ip: &[u8; 4], now: u64) {
         // An ACK like any other, so it repeats what is held out of order.
         let mut opts = [0u8; TCP_OPT_MAX];
         let opts_len = sack_option(c, &mut opts);
-        (c.remote_ip, c.local_port, c.remote_port, c.seq, c.ack, c.adv_window(), opts, opts_len)
+        (c.remote_ip, c.local_port, c.remote_port, c.seq, c.ack, c.advertise(), opts, opts_len)
     };
     #[cfg(feature = "qemu")]
     trace_tx(lp, &rip, rp, TCP_ACK, seq_n, ack_n, &[]);
@@ -3825,6 +4086,17 @@ fn timer_kick() {
 }
 
 pub fn tcp_tick() {
+    // Delayed ACKs whose `TCP_DELACK_TICKS` ran out (N6). Before the timers
+    // below, so a retransmission decided this tick is not preceded by an ACK
+    // the peer has been waiting on longer.
+    flush_held_acks(true);
+    tcp_timers();
+    // N7: a handshake given up, a connection timed out: its waiter learns
+    // now rather than at its own deadline.
+    crate::wait::TCP_WAITERS.notify();
+}
+
+fn tcp_timers() {
     let now = azos_drv_sys::timebase::now();
     let (mac, ip) = { let t = TCP.lock(); (t.our_mac, t.our_ip) };
 
