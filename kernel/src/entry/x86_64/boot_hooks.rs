@@ -503,31 +503,6 @@ pub(crate) fn audit_low_half(root: usize) -> LowHalf {
     a
 }
 
-/// The image's text and read-only data, seen through the direct map, made
-/// read-only and never executable: the NX sweep took X off that alias
-/// (it is RAM outside the image's own VAs), but it stays writable, and a
-/// writable alias of the text is the write W^X exists to deny. The same
-/// planner and readback as the image (`wx::plan` through
-/// `vmm::enforce_wx`/`verify_wx`, with an empty text range), on the alias.
-fn protect_image_alias() {
-    use azos_mm::addr::{phys_to_virt, virt_to_phys};
-    // SAFETY: linker symbols' addresses, not dereferenced.
-    let (t, r) = unsafe { (&crate::_text_start as *const u8 as usize, &crate::_rodata_end as *const u8 as usize) };
-    let page = azos_arch::PAGE_SIZE;
-    let a = phys_to_virt(virt_to_phys(t)) & !(page - 1);
-    let e = (phys_to_virt(virt_to_phys(r)) + page - 1) & !(page - 1);
-    let unsplit = azos_mm::vmm::split_mega_range(a, e);
-    azos_mm::vmm::enforce_wx(a, a, a, e, e, e);
-    let rep = azos_mm::vmm::verify_wx(a, a, a, e, e, e);
-    if rep.is_clean() && unsplit == 0 {
-        kprintln!("[MM] Image alias in the direct map: {} pages read-only, not executable", rep.checked);
-    } else {
-        azos_drv_sys::kerr!("[MM] FAILED: image alias in the direct map: {} checked, {} W+X, {} wrong-flags, \
-                             {} unmapped, {} unsplit, first bad {:#x}",
-            rep.checked, rep.write_exec, rep.wrong_flags, rep.unmapped, rep.unsplit_megapage + unsplit, rep.first_bad);
-    }
-}
-
 /// The low half after the switch: `vmm::enable_paging` replaced boot.S's
 /// tables (PA 0..4 GiB 1:1 beside the direct map and the image map) with
 /// the kernel's own, which map RAM in the direct map, the image at
@@ -536,8 +511,7 @@ fn protect_image_alias() {
 /// range (`0x1_0000` up) is free on every ISA and a kernel bug cannot reach
 /// a frame by its physical number. The AP trampoline needs nothing here: an
 /// AP starts on `smp::install`'s own tables and jumps high before it loads
-/// this root. Then the image's direct-map alias loses W
-/// ([`protect_image_alias`]), the step W^X/NX left to the ISA.
+/// this root.
 pub fn restrict_low_half() {
     let kpt = azos_mm::vmm::kernel_pagetable();
     let live = azos_arch::mmu::cr3_root(azos_arch::mmu::cpu::read_cr3()) == kpt;
@@ -550,7 +524,6 @@ pub fn restrict_low_half() {
             "[MM] FAILED: low half maps {} RAM page(s) (first VA {:#x} -> PA {:#x}) beside {} MMIO pages",
             a.ram_pages, va, pa, a.device_pages),
     }
-    protect_image_alias();
 }
 
 /// The null and stack guards read back from the page table (the aarch64
@@ -573,7 +546,7 @@ pub fn verify_guards() {
 }
 
 // The image's text and read-only data, reached through the direct map, are
-// read-only and not executable (`protect_image_alias`), and the image's own
+// read-only and not executable (`boot::early_main`'s alias pass), and the image's own
 // text mapping stays read-execute.
 #[cfg(feature = "ktest")]
 azos_ktest::ktest! {

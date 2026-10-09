@@ -318,6 +318,32 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
                     left.bytes() >> 20, left.megapages, left.pages, left.first,
                 );
             }
+
+            // Where the image is mapped twice (x86_64: its link address and
+            // its frames in the direct map), the alias of its text and
+            // read-only data is made read-only too: the NX sweep took X off
+            // it (RAM outside the image's VAs) but left it writable, and a
+            // writable alias of the text is the write W^X denies. The same
+            // planner and readback, with an empty text range. Constant-folded
+            // away where the image and RAM share one map (riscv64, aarch64).
+            if azos_mm::addr::KERNEL_IMAGE_OFFSET != azos_mm::addr::KERNEL_PHYS_TO_VIRT_OFFSET {
+                use azos_mm::addr::{phys_to_virt, virt_to_phys};
+                let a0 = phys_to_virt(virt_to_phys(text_start)) & !(PAGE_SIZE - 1);
+                let e0 = (phys_to_virt(virt_to_phys(ro_end)) + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                let unsplit = azos_mm::vmm::split_mega_range(a0, e0);
+                azos_mm::vmm::enforce_wx(a0, a0, a0, e0, e0, e0);
+                let rep = azos_mm::vmm::verify_wx(a0, a0, a0, e0, e0, e0);
+                if rep.is_clean() && unsplit == 0 {
+                    kprintln!("[MM] Image alias in the RAM map: {} pages read-only, not executable", rep.checked);
+                } else {
+                    azos_drv_sys::kerr!(
+                        "[MM] FAILED: image alias in the RAM map: {} checked, {} W+X, {} wrong-flags, \
+                         {} unmapped, {} unsplit, first bad {:#x}",
+                        rep.checked, rep.write_exec, rep.wrong_flags, rep.unmapped,
+                        rep.unsplit_megapage + unsplit, rep.first_bad,
+                    );
+                }
+            }
         }
 
         a.restrict_low_half();
