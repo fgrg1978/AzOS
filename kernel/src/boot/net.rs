@@ -82,6 +82,13 @@ pub(crate) fn install_net() -> bool {
             azos_net::set_rx_copy(true);
             kprintln!("[CANARY] net-rx-copy: one lock and one copy per received frame");
         }
+        // Runtime canary: EVENT_IDX negotiated, interrupts switched by flags.
+        if canary!("net-event-idx-flags") {
+            azos_drv_virtio::virtio::net::set_event_idx_flags_canary(true);
+            kprintln!("[CANARY] net-event-idx-flags: interrupts switched by avail.flags");
+        }
+        kprintln!("[NET] virtio-net EVENT_IDX: {}",
+            if azos_drv_virtio::virtio::net::event_idx() { "on" } else { "off" });
         install_net_irq();
         if azos_limits::NET_TX_BATCH_SELFCHECK {
             net_tx_batch_selfcheck();

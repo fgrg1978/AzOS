@@ -173,6 +173,13 @@ pub struct Virtq {
     /// counter is the ONLY trace the fault leaves; drivers should treat a
     /// nonzero value as reason to distrust the device.
     pub bad_completions: u16,
+    /// VIRTIO_F_EVENT_IDX negotiated for this queue's device: kicks follow
+    /// the device's `avail_event`, interrupts the driver's `used_event`,
+    /// and both flags fields are ignored (virtio 1.x 2.7.7, 2.7.10).
+    pub event_idx: bool,
+    /// `avail.idx` at the last kick decision ([`virtq_kick_decision`]):
+    /// the `old` of the EVENT_IDX test.
+    pub kick_idx: u16,
 }
 
 impl Virtq {
@@ -187,6 +194,8 @@ impl Virtq {
             last_used_idx: 0,
             desc_used:     [false; VIRTQ_CAPACITY],
             bad_completions: 0,
+            event_idx:     false,
+            kick_idx:      0,
         }
     }
 }
@@ -274,6 +283,12 @@ pub unsafe fn probe(base_addr: usize, dev: &mut VirtioDev) -> Result<(), ()> {
 /// Initialize a VirtIO device (feature negotiation, status handshake).
 /// Follows the VirtIO initialization sequence from the spec.
 pub unsafe fn init(dev: &mut VirtioDev) -> Result<(), ()> {
+    init_with(dev, 0).map(|_| ())
+}
+
+/// [`init`], also accepting the optional feature bits of word 0 in
+/// `want_low` that the device offers. Returns the bits accepted.
+pub unsafe fn init_with(dev: &mut VirtioDev, want_low: u32) -> Result<u32, ()> {
     // Step 1: Reset
     mmio_write(dev.base, VIRTIO_MMIO_STATUS, 0);
 
@@ -305,9 +320,10 @@ pub unsafe fn init(dev: &mut VirtioDev) -> Result<(), ()> {
     // invisibly, because QEMU `virt` exposes legacy v1 slots and the gate
     // never exercises a v2 slot.
     mmio_write(dev.base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0);
-    let _features = mmio_read(dev.base, VIRTIO_MMIO_DEVICE_FEATURES);
+    let features = mmio_read(dev.base, VIRTIO_MMIO_DEVICE_FEATURES);
+    let accepted = features & want_low;
     mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
-    mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES, 0);
+    mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES, accepted);
 
     if dev.version != 1 {
         const VIRTIO_F_VERSION_1_BIT0: u32 = 1 << 0; // bit 32 overall, bit 0 of word 1
@@ -327,7 +343,7 @@ pub unsafe fn init(dev: &mut VirtioDev) -> Result<(), ()> {
         return Err(());
     }
 
-    Ok(())
+    Ok(accepted)
 }
 
 // ---- virtq_init (port of virtq_init in virtio.c) ----
@@ -603,6 +619,65 @@ pub unsafe fn virtq_device_wants_kick(vq: &Virtq) -> bool {
     }
     fence(Ordering::SeqCst);
     core::ptr::read_volatile(core::ptr::addr_of!((*vq.used).flags)) & VIRTQ_USED_F_NO_NOTIFY == 0
+}
+
+/// VIRTIO_F_EVENT_IDX (feature bit 29, word 0): the driver and the device
+/// each publish the ring index at which they want to be told next, in place
+/// of the NO_INTERRUPT / NO_NOTIFY flags.
+pub const VIRTIO_F_EVENT_IDX: u32 = 1 << 29;
+
+/// The EVENT_IDX test (virtio 1.x 2.7.7.2, Linux `vring_need_event`): with
+/// the index moving `old -> new`, did it pass `event`? Wrapping u16 maths.
+#[inline(always)]
+pub const fn vring_need_event(event: u16, new: u16, old: u16) -> bool {
+    new.wrapping_sub(event).wrapping_sub(1) < new.wrapping_sub(old)
+}
+
+/// `used_event`: the driver area's word after `ring[num]`.
+#[inline(always)]
+unsafe fn used_event_ptr(vq: &Virtq) -> *mut u16 {
+    (vq.avail as *mut u8).add(4 + 2 * vq.num as usize) as *mut u16
+}
+
+/// `avail_event`: the device area's word after `ring[num]`.
+#[inline(always)]
+unsafe fn avail_event_ptr(vq: &Virtq) -> *const u16 {
+    (vq.used as *const u8).add(4 + 8 * vq.num as usize) as *const u16
+}
+
+/// After publishing new avail entries: ring the doorbell? Without
+/// EVENT_IDX, [`virtq_device_wants_kick`]. With it, only if `avail.idx`
+/// moved past the device's `avail_event` since the last decision. Same
+/// store -> load ordering requirement, same full fence.
+#[inline(always)]
+pub unsafe fn virtq_kick_decision(vq: &mut Virtq) -> bool {
+    if !vq.event_idx || vq.used.is_null() || vq.num == 0 {
+        return virtq_device_wants_kick(vq);
+    }
+    fence(Ordering::SeqCst);
+    let new = core::ptr::read_volatile(core::ptr::addr_of!((*vq.avail).idx));
+    let old = vq.kick_idx;
+    vq.kick_idx = new;
+    vring_need_event(core::ptr::read_volatile(avail_event_ptr(vq)), new, old)
+}
+
+/// Ask for an interrupt on the next used entry (`on`), or for none. With
+/// EVENT_IDX the device ignores `avail.flags`: `used_event` = the next
+/// entry we will consume arms it; half the index space ahead disarms it
+/// (the device's test cannot pass until 32,768 more completions).
+/// Without it, `avail.flags` NO_INTERRUPT. Either way a hint: the caller
+/// re-checks the ring after arming.
+#[inline(always)]
+pub unsafe fn virtq_set_interrupts(vq: &mut Virtq, on: bool) {
+    if vq.avail.is_null() {
+        return;
+    }
+    if vq.event_idx && vq.num != 0 {
+        let ev = if on { vq.last_used_idx } else { vq.last_used_idx.wrapping_add(0x8000) };
+        core::ptr::write_volatile(used_event_ptr(vq), ev);
+    } else {
+        virtq_set_avail_flags(vq, if on { 0 } else { VIRTQ_AVAIL_F_NO_INTERRUPT });
+    }
 }
 
 /// The virtio-mmio doorbell alone: tell the device `queue_idx` has new

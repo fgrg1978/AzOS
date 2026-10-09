@@ -437,6 +437,72 @@ mod virtq {
         }
     }
 
+    /// **Discriminates (VIRTIO_F_EVENT_IDX).** The spec's test: notify when
+    /// the index moved past `event`, wrap-around included. Canary: `<=` for
+    /// `<` and the "nothing published" row flips.
+    #[test]
+    fn vring_need_event_matches_the_spec_across_the_wrap() {
+        use super::virtio::vring_need_event as need;
+        assert!(need(5, 6, 5), "6 passes event 5");
+        assert!(!need(6, 6, 5), "6 reaches event 6 but does not pass it");
+        assert!(need(7, 10, 5), "a batch 5..10 passes 7");
+        assert!(!need(12, 10, 5), "event ahead of the batch");
+        assert!(need(0xFFFF, 1, 0xFFFE), "across the u16 wrap");
+        assert!(!need(2, 1, 0xFFFE), "ahead, across the wrap");
+        assert!(!need(5, 5, 5), "nothing published");
+        assert!(!need(4, 5, 5), "nothing published, event behind: still no doorbell");
+    }
+
+    /// **Discriminates.** With EVENT_IDX the doorbell follows the device's
+    /// `avail_event` (`used.ring[num]`), not `used.flags`: NO_NOTIFY set but
+    /// avail_event passed -> ring; flags clear but avail_event ahead -> no.
+    /// Each decision consumes the published range (`kick_idx`).
+    #[test]
+    fn with_event_idx_the_kick_follows_avail_event_not_the_flags() {
+        unsafe {
+            let mut vq = queue(16);
+            vq.event_idx = true;
+            let avail_event = (vq.used as *mut u8).add(4 + 8 * 16) as *mut u16;
+            (*vq.used).flags = VIRTQ_USED_F_NO_NOTIFY;
+            *avail_event = 0;
+            virtq_publish(&mut vq, 0);
+            assert!(virtq_kick_decision(&mut vq), "idx 0 -> 1 passes avail_event 0");
+            virtq_publish(&mut vq, 1);
+            assert!(!virtq_kick_decision(&mut vq), "1 -> 2: device still at 0, told already");
+            (*vq.used).flags = 0;
+            *avail_event = 9;
+            virtq_publish(&mut vq, 2);
+            assert!(!virtq_kick_decision(&mut vq), "flags clear, but event 9 is ahead");
+            vq.event_idx = false;
+            virtq_publish(&mut vq, 3);
+            assert!(virtq_kick_decision(&mut vq), "without EVENT_IDX the flags rule");
+        }
+    }
+
+    /// **Discriminates.** With EVENT_IDX interrupts are switched through
+    /// `used_event` (`avail.ring[num]`): on = the next entry to consume, off =
+    /// half the index space away; `avail.flags` is left alone (the device
+    /// ignores it). Without, the flag. Canary (`net-event-idx-flags` at
+    /// runtime): the flags path with EVENT_IDX negotiated stalls RX in QEMU.
+    #[test]
+    fn with_event_idx_interrupts_are_switched_by_used_event() {
+        unsafe {
+            let mut vq = queue(16);
+            vq.event_idx = true;
+            vq.last_used_idx = 7;
+            let used_event = (vq.avail as *mut u8).add(4 + 2 * 16) as *mut u16;
+            virtq_set_interrupts(&mut vq, true);
+            assert_eq!(*used_event, 7);
+            assert!(super::virtio::vring_need_event(*used_event, 8, 7), "next entry interrupts");
+            virtq_set_interrupts(&mut vq, false);
+            assert!(!super::virtio::vring_need_event(*used_event, 7 + 16, 7), "a full ring does not");
+            assert_eq!({ (*vq.avail).flags }, 0);
+            vq.event_idx = false;
+            virtq_set_interrupts(&mut vq, false);
+            assert_eq!({ (*vq.avail).flags }, VIRTQ_AVAIL_F_NO_INTERRUPT);
+        }
+    }
+
     /// **Discriminates.** A queue of the virtio-net size (Kconfig, larger
     /// than blk's 16) publishes at `idx % num` and wraps there, inside the
     /// arrays `VIRTQ_CAPACITY` sizes. Canary: size the ring arrays by

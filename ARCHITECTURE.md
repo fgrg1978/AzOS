@@ -553,7 +553,9 @@ wakes it, with its timeout as the bound.
 Block and network run over the MMIO transport (legacy and modern). A modern
 PCI transport exists, but the kernel uses it only in self-tests. The network
 driver pops received frames in batches under one lock and hands them to the
-stack in place, without copying them out of its receive buffers.
+stack in place, without copying them out of its receive buffers. On modern
+transports it negotiates `VIRTIO_F_EVENT_IDX`: doorbells and interrupts are
+requested by ring index rather than by the notification flags.
 
 ## Safety and records
 

@@ -382,6 +382,22 @@ config NET_RX_BATCH_MAX
       Cost: 4 B of stack per entry in recv_batch; buffers out of the ring
       for one batch's protocol work. Same on every ISA.
 
+config NET_VIRTIO_EVENT_IDX
+    bool "virtio-net: negotiate VIRTIO_F_EVENT_IDX on modern transports"
+    default y
+    help
+      crates/drivers/virtio/src/virtio/net.rs: offer VIRTIO_F_EVENT_IDX
+      (virtio 1.x 2.7.7) on virtio-mmio version 2 and virtio-pci. The
+      driver then asks for its next interrupt by ring index (used_event)
+      and rings the doorbell only when avail.idx passes the device's
+      avail_event, instead of the NO_INTERRUPT / NO_NOTIFY flags. The
+      legacy virtio-mmio transport keeps the flags either way.
+
+      Cost: no RAM; two 16-bit reads/writes of the ring per doorbell or
+      interrupt decision, where the flags took one. Same on every ISA and
+      profile; turn it off to compare doorbell and interrupt counts
+      (`ifconfig` queues line) or for a device whose EVENT_IDX is broken.
+
 config NET_RX_IRQ
     bool "virtio-net-mmio RX interrupt instead of timer polling"
     default y

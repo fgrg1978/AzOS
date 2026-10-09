@@ -10194,9 +10194,12 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
             bad; echo "      the kernel took an exception — log kept: $log"; return
         fi
+        # tx=0 or 1 before DHCP: with VIRTIO_F_EVENT_IDX QEMU signals the first used
+        # entry of a queue unconditionally (signalled_used_valid), so the TX self-check's
+        # first completion interrupts once; TX completions stay off after that.
         if grep -aqE "NET\] virtio-net-pci [0-9a-f:.]+ mode=irq msix=y " "$log" \
             && grep -aqF "[PCI] host bridge: ECAM 0x4010000000 (dtb), mem32 0x10000000+0x2eff0000 (dtb)" "$log" \
-            && grep -aqF "NET] msix counts (before dhcp): config=0 rx=0 tx=0" "$log" \
+            && grep -aqE "NET\] msix counts \(before dhcp\): config=0 rx=0 tx=[01]([^0-9]|$)" "$log" \
             && grep -aqF "[DHCPSMOKE] PASS" "$log" \
             && grep -aqE "NET\] msix counts \(after dhcp\): config=[0-9]+ rx=[1-9]" "$log"; then
             ok; rm -f "$log"
@@ -15296,9 +15299,12 @@ PYEOF
         if grep -aqE "EXCEPTION\]|panic" "$log" 2>/dev/null; then
             bad; echo "      fault on the AIA machine — log kept: $log"; return
         fi
+        # tx=0 or 1 before DHCP: with VIRTIO_F_EVENT_IDX QEMU signals the first used
+        # entry of a queue unconditionally (signalled_used_valid), so the TX self-check's
+        # first completion interrupts once; TX completions stay off after that.
         if grep -aqE "NET\] virtio-net-pci [0-9a-f:.]+ mode=irq msix=y " "$log" \
             && grep -aqF "[PCI] host bridge: ECAM 0x30000000 (dtb), mem32 0x40000000+0x40000000 (dtb)" "$log" \
-            && grep -aqF "NET] msix counts (before dhcp): config=0 rx=0 tx=0" "$log" \
+            && grep -aqE "NET\] msix counts \(before dhcp\): config=0 rx=0 tx=[01]([^0-9]|$)" "$log" \
             && grep -aqF "[DHCPSMOKE] PASS" "$log" \
             && grep -aqE "NET\] msix counts \(after dhcp\): config=[0-9]+ rx=[1-9]" "$log"; then
             ok; rm -f "$log"

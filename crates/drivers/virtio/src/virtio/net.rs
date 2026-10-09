@@ -26,10 +26,11 @@ use super::{
     VirtioDev, Virtq,
     VIRTIO_DEV_NET,
     VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE,
-    probe, init as virtio_init, virtq_init_sized,
+    probe, virtq_init_sized,
     virtq_alloc_desc, virtq_free_desc, virtq_poll,
     virtq_publish, virtq_has_used, virtq_set_avail_flags, VIRTQ_AVAIL_F_NO_INTERRUPT,
-    virtq_device_wants_kick, virtq_notify_mmio,
+    virtq_notify_mmio, virtq_kick_decision, virtq_set_interrupts,
+    init_with as virtio_init_with, VIRTIO_F_EVENT_IDX,
     mmio_read, mmio_write, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_DRIVER_OK,
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
 };
@@ -88,6 +89,10 @@ const NUM_TX_BUFS: usize = azos_limits::NET_VIRTIO_TXQ_SIZE as usize;
 /// Kconfig `NET_TX_BATCH_MAX`: inside a batch, frames published before
 /// the doorbell is rung anyway.
 const TX_BATCH_MAX: u16 = azos_limits::NET_TX_BATCH_MAX as u16;
+
+/// Kconfig `NET_VIRTIO_EVENT_IDX`: offer VIRTIO_F_EVENT_IDX on the modern
+/// transports (virtio-mmio version 2, virtio-pci).
+const EVENT_IDX_WANTED: bool = azos_limits::NET_VIRTIO_EVENT_IDX;
 
 /// Whether `send` rings the TX doorbell for the frame it just published
 /// (subject to the device's NO_NOTIFY, [`virtq_device_wants_kick`]):
@@ -153,6 +158,10 @@ struct NetState {
     /// IRQ mode: RX interrupts currently wanted (`rxq avail.flags` = 0).
     /// Off while a pass drains the ring, back on when it finds it empty.
     rx_irq_on: bool,
+    /// Runtime canary `net-event-idx-flags`: with EVENT_IDX negotiated,
+    /// interrupts are still switched with `avail.flags`, which the device
+    /// then ignores (an interrupt per used entry).
+    ei_flags_canary: bool,
     /// Runtime canary `net-kick-per-frame`: a doorbell per frame (TX) and
     /// per re-posted buffer (RX), NO_NOTIFY ignored — the pre-batching cost.
     kick_every_frame: bool,
@@ -176,6 +185,7 @@ impl NetState {
             tx_pending: 0,
             rx_pending: 0,
             rx_irq_on: true,
+            ei_flags_canary: false,
             kick_every_frame: false,
             stats: NetQueueStats::zeroed(),
         }
@@ -338,11 +348,17 @@ pub fn init() -> Result<(), ()> {
         if dev.device_id != VIRTIO_DEV_NET { continue; }
 
         // Initialize the device
-        unsafe { virtio_init(&mut dev) }?;
+        // EVENT_IDX on the modern transport only (Kconfig
+        // NET_VIRTIO_EVENT_IDX); the legacy one keeps the flags.
+        let want = if EVENT_IDX_WANTED && dev.version != 1 { VIRTIO_F_EVENT_IDX } else { 0 };
+        let accepted = unsafe { virtio_init_with(&mut dev, want) }?;
 
         // Set up RX queue (0) and TX queue (1)
         unsafe { virtq_init_sized(&mut dev, 0, &mut net.rxq, NUM_RX_BUFS) }?;
         unsafe { virtq_init_sized(&mut dev, 1, &mut net.txq, NUM_TX_BUFS) }?;
+        let ei = accepted & VIRTIO_F_EVENT_IDX != 0;
+        net.rxq.event_idx = ei;
+        net.txq.event_idx = ei;
 
         // Read MAC address from config space (bytes 0-5).
         //
@@ -478,7 +494,7 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
     if net.tx_cb_on && net.txq.free_count >= 2 {
         // Room again: back to no TX completion interrupts.
         net.tx_cb_on = false;
-        unsafe { virtq_set_avail_flags(&mut net.txq, VIRTQ_AVAIL_F_NO_INTERRUPT) };
+        irqs(&mut net, Q_TX, false);
     }
 
     // Two descriptors per frame: VirtIO header, then payload.
@@ -550,7 +566,7 @@ unsafe fn ring_doorbell(net: &NetState, q: u16) {
 fn tx_kick(net: &mut NetState) {
     if net.tx_pending == 0 { return; }
     net.tx_pending = 0;
-    if net.kick_every_frame || unsafe { virtq_device_wants_kick(&net.txq) } {
+    if net.kick_every_frame || unsafe { virtq_kick_decision(&mut net.txq) } {
         unsafe { ring_doorbell(net, 1) };
         net.stats.tx_doorbells += 1;
     } else {
@@ -563,7 +579,7 @@ fn tx_kick(net: &mut NetState) {
 fn rx_kick(net: &mut NetState) {
     if net.rx_pending == 0 { return; }
     net.rx_pending = 0;
-    if net.kick_every_frame || unsafe { virtq_device_wants_kick(&net.rxq) } {
+    if net.kick_every_frame || unsafe { virtq_kick_decision(&mut net.rxq) } {
         unsafe { ring_doorbell(net, 0) };
         net.stats.rx_doorbells += 1;
     } else {
@@ -615,6 +631,36 @@ pub fn queue_stats() -> NetQueueStats {
     st
 }
 
+/// Queue indices of the two virtqueues.
+const Q_RX: u16 = 0;
+const Q_TX: u16 = 1;
+
+/// Interrupts on queue `q` on or off ([`virtq_set_interrupts`]: `used_event`
+/// with EVENT_IDX, `avail.flags` without).
+#[inline(always)]
+fn irqs(net: &mut NetState, q: u16, on: bool) {
+    let canary = net.ei_flags_canary;
+    let vq = if q == Q_RX { &mut net.rxq } else { &mut net.txq };
+    unsafe {
+        if canary {
+            virtq_set_avail_flags(vq, if on { 0 } else { VIRTQ_AVAIL_F_NO_INTERRUPT });
+        } else {
+            virtq_set_interrupts(vq, on);
+        }
+    }
+}
+
+/// Whether EVENT_IDX was negotiated with the NIC (Kconfig
+/// `NET_VIRTIO_EVENT_IDX`, modern transports only).
+pub fn event_idx() -> bool {
+    NET.lock().rxq.event_idx
+}
+
+/// Runtime canary `net-event-idx-flags` (see `NetState::ei_flags_canary`).
+pub fn set_event_idx_flags_canary(on: bool) {
+    NET.lock().ei_flags_canary = on;
+}
+
 /// Runtime canary `net-kick-per-frame` (the kernel arms it from the
 /// command line): a doorbell per TX frame and per RX re-post, ignoring
 /// batches and NO_NOTIFY — what the driver did before wave 15.
@@ -633,7 +679,7 @@ fn tx_ring_full(net: &mut NetState) {
     tx_kick(net);
     if net.irq && !net.tx_cb_on {
         net.tx_cb_on = true;
-        unsafe { virtq_set_avail_flags(&mut net.txq, 0) };
+        irqs(net, Q_TX, true);
     }
 }
 
@@ -658,7 +704,7 @@ fn rx_pop(net: &mut NetState) -> Option<(usize, usize)> {
                 if net.irq && net.rx_irq_on {
                     // Draining: no interrupt per frame while this pass runs.
                     net.rx_irq_on = false;
-                    unsafe { virtq_set_avail_flags(&mut net.rxq, VIRTQ_AVAIL_F_NO_INTERRUPT) };
+                    irqs(net, Q_RX, false);
                 }
                 // RX descriptors are paired 1:1 with buffers at init
                 // (descriptor `b` is allocated for buffer `b` from a fresh
@@ -701,7 +747,7 @@ fn rx_pop(net: &mut NetState) -> Option<(usize, usize)> {
                 // the `used.idx` load.
                 if !net.rx_irq_on {
                     net.rx_irq_on = true;
-                    unsafe { virtq_set_avail_flags(&mut net.rxq, 0) };
+                    irqs(net, Q_RX, true);
                 }
                 RX_PENDING.store(false, Ordering::SeqCst);
                 fence(Ordering::SeqCst);
@@ -856,9 +902,9 @@ pub fn enable_mmio_irq(line: u32) -> bool {
     MMIO_IRQ_BASE.store(net.dev.base as usize, Ordering::Relaxed);
     MMIO_IRQ_LINE.store(line, Ordering::Release);
     net.tx_cb_on = false;
-    unsafe { virtq_set_avail_flags(&mut net.txq, VIRTQ_AVAIL_F_NO_INTERRUPT) };
+    irqs(&mut net, Q_TX, false);
     net.rx_irq_on = true;
-    unsafe { virtq_set_avail_flags(&mut net.rxq, 0) };
+    irqs(&mut net, Q_RX, true);
     net.irq = true;
     IRQ_MODE.store(true, Ordering::Release);
     true
@@ -1071,7 +1117,9 @@ where
     }
     let mut dev = VirtioPciDevice::new(KernelBar::new(dev_base), &caps, n, common_bar)
         .ok_or(PciNetError::NoVirtioCaps)?;
-    dev.begin(VIRTIO_NET_F_MAC, 0).map_err(PciNetError::Negotiate)?;
+    let want = VIRTIO_NET_F_MAC | if EVENT_IDX_WANTED { VIRTIO_F_EVENT_IDX } else { 0 };
+    dev.begin(want, 0).map_err(PciNetError::Negotiate)?;
+    let ei = dev.driver_features_low() & VIRTIO_F_EVENT_IDX != 0;
     dev.set_msix_config_vector(if irq { VEC_CONFIG } else { VIRTIO_PCI_NO_VECTOR });
 
     // Rings: one zeroed page each, sized NUM_RX_BUFS / NUM_TX_BUFS (Kconfig
@@ -1104,8 +1152,10 @@ where
         let off = dev.queue_notify_off_of(1);
         dev.queue_notify_offset(off)
     };
+    net.rxq.event_idx = ei;
+    net.txq.event_idx = ei;
     if irq && !TX_IRQ_ALWAYS {
-        unsafe { virtq_set_avail_flags(&mut net.txq, VIRTQ_AVAIL_F_NO_INTERRUPT) };
+        irqs(&mut net, Q_TX, false);
     }
 
     // MAC: six bytes at the start of the device config (virtio-net

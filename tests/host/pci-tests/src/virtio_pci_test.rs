@@ -234,6 +234,8 @@ fn negotiate_masks_driver_features_to_what_device_actually_offers() {
     dev.negotiate_features(0xffff_ffff, 0).unwrap();
     let driver_low = dev.mmio_read_driver_features(0);
     assert_eq!(driver_low, 0xff, "driver must not claim bits the device never offered");
+    // What virtio-net reads back to learn whether EVENT_IDX (bit 29) stuck.
+    assert_eq!(dev.driver_features_low(), 0xff);
 }
 
 // -----------------------------------------------------------------------

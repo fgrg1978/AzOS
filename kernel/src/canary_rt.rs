@@ -67,6 +67,9 @@ pub(crate) const NAMES: &[&str] = &[
     // lock again, one lock per frame (N2 step 2; `ifconfig`'s rx cycles per
     // frame move back).
     "net-rx-copy",
+    // boot/net.rs: with EVENT_IDX negotiated, interrupts are still switched
+    // with avail.flags, which the device ignores (`ifconfig` irqs ~ frames).
+    "net-event-idx-flags",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

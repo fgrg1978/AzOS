@@ -277,6 +277,13 @@ impl<M: Mmio> VirtioPciDevice<M> {
         Ok(())
     }
 
+    /// The feature bits 0..31 the driver wrote in [`negotiate_features`]
+    /// (what both sides agreed to, once FEATURES_OK stuck).
+    pub fn driver_features_low(&mut self) -> u32 {
+        self.mmio.write32(self.c(common_off::DRIVER_FEATURE_SELECT), 0);
+        self.mmio.read32(self.c(common_off::DRIVER_FEATURE))
+    }
+
     /// Full reset -> acknowledge -> driver -> negotiate -> driver_ok
     /// sequence (virtio 1.x spec §3.1.1), for a caller with no queues to
     /// set up. A caller with queues uses [`Self::begin`], then
