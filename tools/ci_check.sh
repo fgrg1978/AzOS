@@ -25,6 +25,16 @@
 
 set -uo pipefail
 
+# qgrep: `grep -q` at the end of a pipe, made safe under pipefail. grep -q
+# exits on its first match; if the writer still has bytes to send it takes
+# SIGPIPE and the pipeline reports 141, so a match reads as "absent". The
+# writer has bytes left whenever its output outgrows the pipe, and a macOS
+# pipe is as small as 512 B while the host is short of pipe memory (many
+# builds): `printf "$PAR_SEEN" | grep -qxF` (20 KiB) then missed 300 of 300
+# and "kept rows exist" failed a row that ran. qgrep keeps the pipe open
+# and drains it after grep, so the writer never sees a closed reader.
+qgrep() { local rc; grep "$@"; rc=$?; cat >/dev/null; return "$rc"; }
+
 CARGO="${CARGO:-cargo}"
 # Every cargo call goes through tools/ci_cargo.py (gate speed, wave 15): it
 # times the call for the row's build/boot split and, for a kernel build, reuses
@@ -236,7 +246,7 @@ build() {
     # that never ran (not found, not executable) prints no `^error`, and the row
     # used to read `ok` with nothing compiled. Every row calling this expects a
     # successful build, so none relies on a nonzero exit being ignored.
-    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -qE "^error"; then
+    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | qgrep -qE "^error"; then
         bad; printf '%s\n' "$out" | grep -E "^error" | head -5
         if [ "$rc" -ne 0 ]; then echo "      cargo exited $rc"; fi
         return
@@ -261,7 +271,7 @@ build() {
     # defect. That one shape is excluded by pattern, not by name, so a second
     # build script gets the same treatment without editing this line.
     if printf '%s\n' "$out" | grep -E "^warning:" \
-         | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
+         | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
         bad
         printf '%s\n' "$out" | grep -E "^warning:" \
           | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]" | head -5
@@ -308,11 +318,11 @@ build_board() {
     # U12-5: this used to check `^error` only, so vf2/k1 — the only two rows
     # that build a kernel that actually ships — passed with any number of
     # warnings while every other feature combination's build was held to zero.
-    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -qE "^error"; then
+    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | qgrep -qE "^error"; then
         bad; printf '%s\n' "$out" | grep -E "^error" | head -5
         if [ "$rc" -ne 0 ]; then echo "      cargo exited $rc"; fi
     elif printf '%s\n' "$out" | grep -E "^warning:" \
-         | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
+         | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
         bad
         printf '%s\n' "$out" | grep -E "^warning:" \
           | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]" | head -5
@@ -610,8 +620,8 @@ test_host() {
     printf "  %-26s" "${label}..."
     touch "${crate}/src/lib.rs" 2>/dev/null || true
     if host_cargo out "${crate}" test --release \
-       && ! echo "$out" | grep -q "test result: FAILED" \
-       && ! echo "$out" | grep -qE "^warning: .*generated"; then
+       && ! echo "$out" | qgrep -q "test result: FAILED" \
+       && ! echo "$out" | qgrep -qE "^warning: .*generated"; then
         ok
     else
         bad
@@ -1369,14 +1379,14 @@ $1
         | tr ';' '\n' | sed 's/^ *//; s/ *$//')"
     for ((i = PAR_HEAD; i <= PAR_N; i++)); do
         par_job_running "$i" || continue
-        printf '%s\n' "$needs" | grep -qxF -- "$(cat "$PAR_DIR/$i.key")" || continue
+        printf '%s\n' "$needs" | qgrep -qxF -- "$(cat "$PAR_DIR/$i.key")" || continue
         until par_job_done "$i"; do sleep 0.5; done
     done
     return 0
 }
 fast_keeps() {
-    if [ "$CI_TIER" = rows ]; then printf '%s\n' "${CI_ROWS:-}" | grep -qxF -- "$1"; return; fi
-    printf '%s\n' "${FAST_ROWS:-}" | grep -qxF -- "$1"
+    if [ "$CI_TIER" = rows ]; then printf '%s\n' "${CI_ROWS:-}" | qgrep -qxF -- "$1"; return; fi
+    printf '%s\n' "${FAST_ROWS:-}" | qgrep -qxF -- "$1"
 }
 # ci_tier_skips <key>: under CI_TIER=rows, an unlisted build/host row prints
 # its skip line and the caller returns; elsewhere it never skips.
@@ -1537,8 +1547,8 @@ par() { # par [-a] [-h] [-n <qemus>] [-s|-w] <key> <command> [args...]
     # own function builds that ISA's (a row that still reads the pending one
     # then finds no kernel at all: ci_kb_defer deleted it).
     if [ "$host" != 1 ] && [ -z "$PAR_JOB" ]; then
-        printf '%s\n' "${CI_SELF_RV:-}" | grep -qxF -- "$key" || ci_kflush rv
-        printf '%s\n' "${CI_SELF_A64:-}" | grep -qxF -- "$key" || ci_kflush a64
+        printf '%s\n' "${CI_SELF_RV:-}" | qgrep -qxF -- "$key" || ci_kflush rv
+        printf '%s\n' "${CI_SELF_A64:-}" | qgrep -qxF -- "$key" || ci_kflush a64
     fi
     # Inline: one job at a time, a serial row, or a `par` inside a job.
     if [ "$CI_JOBS" -le 1 ] || [ "$serial" = 1 ] || [ -n "$PAR_JOB" ]; then
@@ -1922,7 +1932,7 @@ shell_help_row() { # shell_help_row <label> <isa: rv|arm>
                # `readline` echoes each accepted byte, so an echoed `help`
                # separates "input never reached the shell" from "the command
                # ran and its output was lost".
-               if tr -d '\r' <"$log" | grep -aqE '(^|robot> )help$'; then e=yes; else e=no; fi
+               if tr -d '\r' <"$log" | qgrep -aqE '(^|robot> )help$'; then e=yes; else e=no; fi
                echo "      prompt seen, sent 'help\\r' ${sent}x, no help table; echoed: $e"
            fi
            tail -3 "$log" | tr -d '\r' | sed 's/^/      /'
@@ -2009,7 +2019,7 @@ sys_nr_tmp="$(mktemp)"
             [ -n "$hitline" ] || continue
             name="$(printf '%s' "$hitline" | grep -oE 'SYS_[A-Za-z0-9_]+' | head -1)"
             [ -n "$name" ] || continue
-            if printf '%s\n' "$canon_names" | grep -qx "$name"; then
+            if printf '%s\n' "$canon_names" | qgrep -qx "$name"; then
                 printf '%s:%s\n' "$f" "$hitline"
             fi
         done < <(grep -nE '^[[:space:]]*(pub[[:space:]]+)?(const|static)[[:space:]]+SYS_[A-Za-z0-9_]+[[:space:]]*:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*(0x)?[0-9]' "$f" 2>/dev/null)
@@ -2305,7 +2315,7 @@ if ci_row_begin "aarch64 crate (ARMv8.5)"; then
 printf "  %-26s" "aarch64 crate (ARMv8.5)..."
 if aarch_out="$(RUSTFLAGS="" KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release --target aarch64-unknown-none \
         -p azos_arch_aarch64 --config "build.rustflags=[]" 2>&1)" \
-   && ! printf '%s\n' "$aarch_out" | grep -qE "^(error|warning)"; then
+   && ! printf '%s\n' "$aarch_out" | qgrep -qE "^(error|warning)"; then
     ok
 else
     bad; printf '%s\n' "$aarch_out" | grep -E "^(error|warning)" | head -5
@@ -2388,7 +2398,7 @@ if as_out="$(cd tests/qemu/aarch64-smoke && env -u RUSTFLAGS -u CARGO_BUILD_RUST
         "$CARGO" +nightly build --release \
         --target aarch64-unknown-none -Z build-std=core,compiler_builtins \
         -Z build-std-features=compiler-builtins-mem 2>&1)" \
-   && ! printf '%s\n' "$as_out" | grep -qE "^(error|warning)"; then ok
+   && ! printf '%s\n' "$as_out" | qgrep -qE "^(error|warning)"; then ok
 else bad; printf '%s\n' "$as_out" | grep -E "^(error|warning)" | head -5; fi
 else
     # Skipped: the boot rows below (which name this row in gate_needs.tsv)
@@ -2457,7 +2467,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
         printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
         return 1
     fi
-    if printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+    if printf '%s\n' "$out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE"; then
         printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
         return 1
     fi
@@ -2499,7 +2509,7 @@ printf "  %-26s" "aarch64 kernel (build)..."
 if a64k_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release --target aarch64-unknown-none-softfloat \
         -p azos_kernel \
         --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
-   && ! printf '%s\n' "$a64k_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+   && ! printf '%s\n' "$a64k_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
    && [ -f "$A64_KERNEL" ]; then
     # ── ELF → arm64 Image (task 1) ──────────────────────────────────────────
     # `boot.S`'s `_start` opens with the 64-byte arm64 Linux boot-protocol
@@ -3068,7 +3078,7 @@ aarch64_dhcp_row() {
     if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
             --target aarch64-unknown-none-softfloat -p azos_kernel --features dhcp-smoke \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
-       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
        || [ ! -f "$dhcp_kernel" ]; then
         bad; echo "      dhcp-smoke aarch64 kernel did NOT build:"
         printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
@@ -3143,7 +3153,7 @@ aarch64_flight_recorder_row() {
             --target aarch64-unknown-none-softfloat -p azos_kernel \
             --features qemu,estop-latch-smoke \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
-       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE" \
+       || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
        || [ ! -f "$fr_kernel" ]; then
         bad; echo "      estop-latch-smoke aarch64 kernel did NOT build:"
         printf '%s\n' "$build_out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
@@ -3441,7 +3451,7 @@ aarch64_abitest_row() {
     if [ "$fails" -eq 0 ]; then
         ok; rm -f "$log"; return
     fi
-    if [ "$fails" -eq 1 ] && printf '%s\n' "$fail_lines" | grep -qF "vdso flags bit 0: rdtime native"; then
+    if [ "$fails" -eq 1 ] && printf '%s\n' "$fail_lines" | qgrep -qF "vdso flags bit 0: rdtime native"; then
         ok; rm -f "$log"; return
     fi
     bad; echo "      abitest reported $fails failure(s), not the one known aarch64 gap:"
@@ -4139,7 +4149,7 @@ drvplace_build_canary_row() { # <label> <isa: rv|arm> [<feature> <assertion text
             --features "qemu,$feat" \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"
     fi
-    if printf '%s\n' "$out" | grep -qF "$text"; then
+    if printf '%s\n' "$out" | qgrep -qF "$text"; then
         ok
     else
         bad; echo "      the mismatched placement built, or failed on something else:"
@@ -4513,7 +4523,7 @@ zombie_row() { # <label> <isa: rv|arm>
     znum() { printf '%s\n' "$line" | sed -n "s/.* $1=+\{0,1\}\([0-9][0-9]*\).*/\1/p"; }
     local forked reaped drops refusals
     forked="$(znum forked)"; reaped="$(znum reaped)"; drops="$(znum drops)"; refusals="$(znum refusals)"
-    if printf '%s\n' "$line" | grep -qF " refused=yes " \
+    if printf '%s\n' "$line" | qgrep -qF " refused=yes " \
         && [ "${forked:-0}" -ge 1 ] 2>/dev/null && [ "${reaped:-x}" = "$forked" ] \
         && [ "${drops:-x}" = 0 ] && [ "${refusals:-0}" -ge 1 ] 2>/dev/null; then
         ok; rm -f "$log"; return
@@ -4688,8 +4698,8 @@ proc_view_row() { # <label> <isa: rv|arm> <features> <hidden|canary>
         fi
         bad; echo "      want rows=3, grandchild>0, 11 ok and no FAIL proc-view lines; read ($oks ok):"
     else
-        if printf '%s\n' "$fails" | grep -qF "lists nothing else (hidepid)" \
-            && printf '%s\n' "$fails" | grep -qF "a foreign live TID) does not open"; then
+        if printf '%s\n' "$fails" | qgrep -qF "lists nothing else (hidepid)" \
+            && printf '%s\n' "$fails" | qgrep -qF "a foreign live TID) does not open"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary (filter compiled out) still hid every foreign task; read ($oks ok):"
@@ -4774,13 +4784,13 @@ natfork_row() { # <label> <isa: rv|arm> <features> <ok|noinherit|copy>
         if [ "$oks" = 16 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
         bad; echo "      want 16 ok and no FAIL natfork lines; read $oks ok:" ;;
     noinherit)
-        if printf '%s\n' "$fails" | grep -qF "parent and child wrote one inherited fd -> [ab]" \
-            && printf '%s\n' "$fails" | grep -qF "moved the parent's offset"; then
+        if printf '%s\n' "$fails" | qgrep -qF "parent and child wrote one inherited fd -> [ab]" \
+            && printf '%s\n' "$fails" | qgrep -qF "moved the parent's offset"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary (nothing inherited) still passed the descriptor checks; read $oks ok:" ;;
     copy)
-        if printf '%s\n' "$fails" | grep -qF "runtime port is stale in the child"; then
+        if printf '%s\n' "$fails" | qgrep -qF "runtime port is stale in the child"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary (parent's handles kept) still found the port stale; read $oks ok:" ;;
@@ -4791,7 +4801,7 @@ natfork_row() { # <label> <isa: rv|arm> <features> <ok|noinherit|copy>
         fi
         bad; echo "      want the seal refusal line, 16 ok and no FAIL natfork lines; read $oks ok:" ;;
     noseal)
-        if printf '%s\n' "$fails" | grep -qF "holds its row's entropy cap at the parent's handle"; then
+        if printf '%s\n' "$fails" | qgrep -qF "holds its row's entropy cap at the parent's handle"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary (edited template served) still passed the row-capability check; read $oks ok:" ;;
@@ -4914,7 +4924,7 @@ threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|nocle
         noclear)   need="both joined through their cleared word" ;;
         cowkill)   need="thread storm: every spinning child exits with its own code" ;;
         esac
-        if printf '%s\n' "$fails" | grep -qF "$need"; then
+        if printf '%s\n' "$fails" | qgrep -qF "$need"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary ($want) still passed '$need'; read $oks ok:" ;;
@@ -5024,7 +5034,7 @@ exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|validatel
     nodethread)
         # The fixed exec's line absent, and the exec'd image NOT alone: its
         # old threads still listed (both ISAs, 2026-10-08: 2 rows left).
-        if [ "$ended" = 0 ] && printf '%s\n' "$fails" | grep -qF "exec-threads: the exec'd image is alone"; then
+        if [ "$ended" = 0 ] && printf '%s\n' "$fails" | qgrep -qF "exec-threads: the exec'd image is alone"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary ($feats) left the exec working; read $oks ok, $ended ended:" ;;
@@ -5036,7 +5046,7 @@ exec_threads_row() { # <label> <isa: rv|arm> <features> <ok|nodethread|validatel
         regs)         need="args: a new thread receives its argument" ;;
         esac
         if [ "$ended" = 0 ] || { [ "$want" != nopidswap ] && [ "$want" != parked ]; }; then
-            if printf '%s\n' "$fails" | grep -qF "$need"; then
+            if printf '%s\n' "$fails" | qgrep -qF "$need"; then
                 ok; rm -f "$log"; return
             fi
         fi
@@ -5126,8 +5136,8 @@ wx_row() { # <label> <isa: rv|arm> <features> <ok|canary>
         if [ "$oks" = 4 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
         bad; echo "      want 4 ok and no FAIL wx lines; read $oks ok:" ;;
     canary)
-        if printf '%s\n' "$fails" | grep -qF "store to its code faults" \
-            && printf '%s\n' "$fails" | grep -qF "read() into a fork child's code is refused"; then
+        if printf '%s\n' "$fails" | qgrep -qF "store to its code faults" \
+            && printf '%s\n' "$fails" | qgrep -qF "read() into a fork child's code is refused"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary (code copy-on-write) still faulted the store; read $oks ok:" ;;
@@ -5294,8 +5304,8 @@ mprot_row() { # <label> <isa: rv|arm> <features> <ok|canary>
         if [ "$oks" = 7 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
         bad; echo "      want 7 ok and no FAIL mprot lines; read $oks ok:" ;;
     canary)
-        if printf '%s\n' "$fails" | grep -qF "store to PROT_READ memory faults" \
-            && printf '%s\n' "$fails" | grep -qF "read() into PROT_READ memory is refused"; then
+        if printf '%s\n' "$fails" | qgrep -qF "store to PROT_READ memory faults" \
+            && printf '%s\n' "$fails" | qgrep -qF "read() into PROT_READ memory is refused"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary (read-write mappings) still faulted the store; read $oks ok:" ;;
@@ -5374,14 +5384,14 @@ orphan_row() { # <label> <isa: rv|arm> <features> <adopted|canary>
     oks="$(grep -a "\[ABITEST\]   ok   orphans: " "$log" | wc -l | tr -d ' ')"
     fails="$(grep -a "\[ABITEST\]  FAIL  orphans: " "$log" | tr -d '\r')"
     if [ "$want" = adopted ]; then
-        if printf '%s\n' "$line" | grep -qE " children=1 orphan=[1-9][0-9]*$" \
+        if printf '%s\n' "$line" | qgrep -qE " children=1 orphan=[1-9][0-9]*$" \
             && [ "$oks" = 11 ] && [ -z "$fails" ]; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      want children=1, an orphan TID, 11 ok and no FAIL orphan lines; read ($oks ok):"
     else
-        if printf '%s\n' "$fails" | grep -qF "shows the orphan as init's child" \
-            && printf '%s\n' "$fails" | grep -qF "a subreaper adopts and reaps its orphan"; then
+        if printf '%s\n' "$fails" | qgrep -qF "shows the orphan as init's child" \
+            && printf '%s\n' "$fails" | qgrep -qF "a subreaper adopts and reaps its orphan"; then
             ok; rm -f "$log"; return
         fi
         bad; echo "      the canary (re-parenting compiled out) still adopted the orphans; read ($oks ok):"
@@ -6019,7 +6029,7 @@ ml_data_sig_row() { # <label> <isa: rv|arm> <mode: signed|tampered|nosig>
             done ;;
         nosig)
             if ! mdel -i "$img" ::MLP.SIG ::POLICY.SIG 2>/dev/null \
-               || mdir -i "$img" :: 2>/dev/null | grep -qE "^(MLP|POLICY) +SIG"; then
+               || mdir -i "$img" :: 2>/dev/null | qgrep -qE "^(MLP|POLICY) +SIG"; then
                 bad; echo "      could not delete MLP.SIG/POLICY.SIG from $img"; return
             fi ;;
     esac
@@ -6118,9 +6128,9 @@ spectre_v1_disasm_row() { # <label> <isa: rv|arm>
            --stop-address="$(printf '0x%x' $((0x$start + 0x$size)))" "$elf")"
     local has=off
     if [ "$isa" = rv ]; then
-        printf '%s\n' "$dis" | grep -A1 -E '[[:space:]]sltu[[:space:]]' | grep -qE '[[:space:]]neg[[:space:]]' && has=on
+        printf '%s\n' "$dis" | grep -A1 -E '[[:space:]]sltu[[:space:]]' | qgrep -qE '[[:space:]]neg[[:space:]]' && has=on
     else
-        printf '%s\n' "$dis" | grep -qE '[[:space:]]csdb' && has=on
+        printf '%s\n' "$dis" | qgrep -qE '[[:space:]]csdb' && has=on
     fi
     if [ "$has" = "$want" ]; then ok; return; fi
     bad; echo "      config says $want, dispatch_slow says $has ($elf)"
@@ -6403,7 +6413,7 @@ aarch64_console_route_row() {
     fi
     # 2b. ...and none of them was routed through the canary console.
     if grep -a "CANARY>" "$log" 2>/dev/null \
-       | grep -q "\[BOOT\]\|\[SCHED\]\|\[MM\]"; then
+       | qgrep -q "\[BOOT\]\|\[SCHED\]\|\[MM\]"; then
         bad; echo "      kernel kprintln! output was routed through the console"
         echo "      abstraction — the panic path must stay direct:"
         grep -a "CANARY>" "$log" | grep "\[BOOT\]\|\[SCHED\]\|\[MM\]" \
@@ -6772,7 +6782,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
         bad; echo "      $cfg does not carry CONFIG_PAGE_SHIFT=${shift_want}"; return
     fi
     feats="$(python3 tools/kconfig_to_cargo.py "$cfg" | sed -n 's/.*--features \([^ ]*\).*/\1/p')"
-    if ! printf '%s' ",$feats," | grep -q ",page-${g}k,"; then
+    if ! printf '%s' ",$feats," | qgrep -q ",page-${g}k,"; then
         bad; echo "      tools/kconfig_to_cargo.py did not emit page-${g}k for $cfg (got: $feats)"; return
     fi
     if ! make AARCH64_PAGE_SIZE="$bytes" "build/image_hashes_aarch64_${g}k.rs" \
@@ -6785,7 +6795,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
     if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
             "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
             --features "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
-       || printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+       || printf '%s\n' "$out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE"; then
         bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
     fi
     local a64_objcopy img="$CI_LOG_DIR/kernel-aarch64-${g}k.img" disk="$CI_LOG_DIR/disk-aarch64-${g}k-run.img"
@@ -6831,7 +6841,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
     fi
     fail_lines="$(grep -a '\[ABITEST\]  FAIL  ' "$log" | sed 's/^\[ABITEST\]  FAIL  //')"
     fails="$(printf '%s\n' "$fail_lines" | grep -c .)"
-    if [ "$fails" -gt 1 ] || { [ "$fails" -eq 1 ] && ! printf '%s\n' "$fail_lines" | grep -qF "vdso flags bit 0: rdtime native"; }; then
+    if [ "$fails" -gt 1 ] || { [ "$fails" -eq 1 ] && ! printf '%s\n' "$fail_lines" | qgrep -qF "vdso flags bit 0: rdtime native"; }; then
         bad; echo "      abitest reported $fails failure(s), not the one known aarch64 gap:"
         printf '%s\n' "$fail_lines" | sed 's|^|        |'
         echo "      log kept: $log"; return
@@ -6842,7 +6852,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
         mm="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="target/aarch64-granule-mismatch" \
             "$CARGO" check --release --target aarch64-unknown-none-softfloat -p azos_kernel \
             --features "$nofeat" 2>&1)"
-        if ! printf '%s\n' "$mm" | grep -q "page size mismatch"; then
+        if ! printf '%s\n' "$mm" | qgrep -q "page size mismatch"; then
             bad; echo "      a 16 KiB .config built WITHOUT page-16k was not refused (no 'page size mismatch'):"
             printf '%s\n' "$mm" | grep -E "^error" | head -3 | sed 's|^|        |'
             return
@@ -6905,7 +6915,7 @@ stream_ring_row() { # stream_ring_row <riscv64|aarch64> <on|fallback>
         kelf="$tdir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$kelf"
         if ! out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release \
                 --features "$feats" 2>&1)" \
-           || printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+           || printf '%s\n' "$out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE"; then
             bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
         fi
         cp build/disk-captest.img "$disk"
@@ -6920,7 +6930,7 @@ stream_ring_row() { # stream_ring_row <riscv64|aarch64> <on|fallback>
         if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
                 "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
                 --features "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
-           || printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vqE "$A64_KNOWN_NOISE"; then
+           || printf '%s\n' "$out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE"; then
             bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
         fi
         local objcopy img="$CI_LOG_DIR/kernel-stream-$isa-$mode.img"
@@ -7230,7 +7240,7 @@ boot_count_row() {
     plain="$(mtype -i "$disk_copy" ::BOOTMETA 2>/dev/null | tr -d '\r' | grep -a '^boot_count=')"
     dual="$( { mtype -i "$disk_copy" ::BOOTMETA.A 2>/dev/null; mtype -i "$disk_copy" ::BOOTMETA.B 2>/dev/null; } \
         | tr -d '\r' | grep -a '^boot_count=' | tr '\n' ' ')"
-    if [ "$plain" != "boot_count=0" ] || ! printf '%s' "$dual" | grep -q 'boot_count=0 '; then
+    if [ "$plain" != "boot_count=0" ] || ! printf '%s' "$dual" | qgrep -q 'boot_count=0 '; then
         bad; echo "      after boot 2 the volume holds plain '$plain', dual records '$dual' (want boot_count=0)"
         echo "      logs kept: $log1 $log2 (disk: $disk_copy)"; return
     fi
@@ -7416,7 +7426,7 @@ orderly_reboot_row() {
     if [ "$exited" != yes ] \
        || ! grep -aqF "[BOOTCNT] 0 unconfirmed boot(s) before this one (no BOOTMETA.A/.B record on this volume); this boot recorded as unconfirmed" "$log1" \
        || grep -aqE "!!! KERNEL PANIC !!!|OTA\] Boot marked good" "$log1" \
-       || [ "$plain" != "boot_count=0" ] || ! printf '%s' "$dual" | grep -q 'boot_count=0 '; then
+       || [ "$plain" != "boot_count=0" ] || ! printf '%s' "$dual" | qgrep -q 'boot_count=0 '; then
         bad; echo "      boot 1 (exited on its reboot: $exited) left plain '$plain', dual '$dual' (want boot_count=0):"
         grep -a "BOOTCNT\]\|ORDERLY\]\|OTA\] \(Boot\|orderly\)\|PANIC" "$log1" | tr -d '\r' | sed 's/^/        /'
         echo "      log kept: $log1 (disk: $disk)"; return
@@ -7552,7 +7562,7 @@ pstore_row() { # pstore_row <isa: rv|arm> <mode: valid|corrupt>
             grep -a "PSTORE" "$log" | tr -d '\r' | sed 's/^/        /'
             echo "      log kept: $log"; return
         fi
-        if ! printf '%s\n' "$crash" | grep -aq "^\[pstore\] \[t=[0-9]*\] hart=.*pstore-smoke: deliberate panic with the VFS FS lock held$" \
+        if ! printf '%s\n' "$crash" | qgrep -aq "^\[pstore\] \[t=[0-9]*\] hart=.*pstore-smoke: deliberate panic with the VFS FS lock held$" \
            || [ "$(printf '%s\n' "$crash" | grep -c .)" != 1 ]; then
             bad; echo "      /fat/CRASH.LOG on the volume does not hold exactly the recovered record:"
             printf '%s\n' "$crash" | sed -n '1,4p' | sed 's/^/        /'
@@ -7571,9 +7581,9 @@ pstore_row() { # pstore_row <isa: rv|arm> <mode: valid|corrupt>
             grep -a "PSTORE" "$log" | tr -d '\r' | sed 's/^/        /'
             echo "      log kept: $log"; return
         fi
-        if ! printf '%s\n' "$crash" | grep -aq "^\[pstore\] corrupt record discarded: checksum stored 0x" \
+        if ! printf '%s\n' "$crash" | qgrep -aq "^\[pstore\] corrupt record discarded: checksum stored 0x" \
            || [ "$(printf '%s\n' "$crash" | grep -c .)" != 1 ] \
-           || printf '%s\n' "$crash" | grep -aqF "deliberate panic"; then
+           || printf '%s\n' "$crash" | qgrep -aqF "deliberate panic"; then
             bad; echo "      /fat/CRASH.LOG should hold the discard note and none of the damaged text:"
             printf '%s\n' "$crash" | sed -n '1,4p' | sed 's/^/        /'
             echo "      log kept: $log (disk: $disk)"; return
@@ -7752,7 +7762,7 @@ rt7_row() { # rt7_row <isa: rv|arm> <mode: contain|spin|reset>
         fi
         local crash
         crash="$(mtype -i "$disk" ::CRASH.LOG 2>/dev/null | tr -d '\r')"
-        if ! printf '%s\n' "$crash" | grep -aq "^\[t=[0-9]*\] hart=0 task=rt7-culprit CONTAINED at .*rt-panic-canary: deliberate panic in a non-safety kernel task$" \
+        if ! printf '%s\n' "$crash" | qgrep -aq "^\[t=[0-9]*\] hart=0 task=rt7-culprit CONTAINED at .*rt-panic-canary: deliberate panic in a non-safety kernel task$" \
            || [ "$(printf '%s\n' "$crash" | grep -c .)" != 1 ]; then
             bad; echo "      /fat/CRASH.LOG does not hold exactly the CONTAINED entry:"
             printf '%s\n' "$crash" | sed -n '1,4p' | sed 's/^/        /'
@@ -8038,7 +8048,7 @@ nrcpus_row() { # nrcpus_row <isa: rv|arm> <NR_CPUS> <smp> <features> <expect: PA
         "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" -O binary "$elf" "$kimg" \
             || { bad; echo "      llvm-objcopy failed on $elf"; return; }
     fi
-    if grep -E "^(warning|error)" "$log.build" | grep -vqE "${A64_KNOWN_NOISE:-^$}"; then
+    if grep -E "^(warning|error)" "$log.build" | qgrep -vqE "${A64_KNOWN_NOISE:-^$}"; then
         bad; grep -E "^(warning|error)" "$log.build" | sed -n '1,4p' | sed 's/^/      /'; return
     fi
     rm -f "$log.build"
@@ -8111,15 +8121,15 @@ board_volume_row() {
     # no-key case must not inherit it.
     out="$(env -u TOPOLOGY_PUBKEY_PATH -u TOPOLOGY_PRIVKEY_PATH make build/board/mlsrv.elf DEV_KEYS=1 2>&1)" \
         && { bad; echo "      a board ML service built with DEV_KEYS=1 and no named key"; return; }
-    printf '%s\n' "$out" | grep -aq "refusing: no topology/config key" \
+    printf '%s\n' "$out" | qgrep -aq "refusing: no topology/config key" \
         || { bad; echo "      DEV_KEYS=1 board build failed, but not with the no-key refusal"; return; }
     out="$(make build/board/mlsrv.elf TOPOLOGY_PUBKEY_PATH=tools/keys/test_pub.bin 2>&1)" \
         && { bad; echo "      a board ML service built with the test key named by path"; return; }
-    printf '%s\n' "$out" | grep -aq "names the TEST key" \
+    printf '%s\n' "$out" | qgrep -aq "names the TEST key" \
         || { bad; echo "      test-key board build failed, but not with the test-key refusal"; return; }
     out="$(make build/disk-board.img TOPOLOGY_PUBKEY_PATH="$PWD/build/board/gate_pub.bin" TOPOLOGY_PRIVKEY_PATH=tools/keys/test_priv.bin 2>&1)" \
         && { bad; echo "      a board volume was signed with the test private key"; return; }
-    printf '%s\n' "$out" | grep -aq "is the test key\|TEST key" \
+    printf '%s\n' "$out" | qgrep -aq "is the test key\|TEST key" \
         || { bad; echo "      test-key signing failed, but not with the test-key refusal"; return; }
     # shellcheck disable=SC2086
     if ! out="$(make build/disk-board.img $gate_keys 2>&1)"; then
@@ -8137,7 +8147,7 @@ board_volume_row() {
     while read -r line; do
         [ -n "$line" ] || continue
         name="${line%%=*}"; stem="${name%.ELF}"
-        if ! mdir -i build/disk-board.img ::/ 2>/dev/null | grep -aqi "$stem"; then
+        if ! mdir -i build/disk-board.img ::/ 2>/dev/null | qgrep -aqi "$stem"; then
             missing="$missing $name"
         fi
     done < build/board_manifest.txt
@@ -8145,10 +8155,10 @@ board_volume_row() {
         bad; echo "      manifest entries not on the built image:$missing"
         return
     fi
-    printf '%s\n' "$out" | grep -aq "^CONFIG.SIG verified" \
-        && printf '%s\n' "$out" | grep -aq "^MLP.RML verified" \
-        && printf '%s\n' "$out" | grep -aq "^POLICY.GGF verified" \
-        && printf '%s\n' "$out" | grep -aq "^CAPS.TOM/SCHED.TOM verified, bound (counter Some(1))" \
+    printf '%s\n' "$out" | qgrep -aq "^CONFIG.SIG verified" \
+        && printf '%s\n' "$out" | qgrep -aq "^MLP.RML verified" \
+        && printf '%s\n' "$out" | qgrep -aq "^POLICY.GGF verified" \
+        && printf '%s\n' "$out" | qgrep -aq "^CAPS.TOM/SCHED.TOM verified, bound (counter Some(1))" \
         || { bad; echo "      the board volume's signatures (CONFIG, ML data, topology) were not verified under the board key"; return; }
     ok
 }
@@ -8174,9 +8184,9 @@ k1_refuses_to_build_row() {
     printf "  %-26s" "k1: refuses to build (V2.3)..."
     local out
     out="$(KCONFIG_CONFIG="$K1_ISA_KCONFIG" RUSTFLAGS="-C link-arg=-Tkernel/linker-k1.ld $K1_ISA" "$CARGO" build --release --features k1 --keep-going 2>&1)"  # --keep-going: the refusals sit in four driver class crates; without it cargo stops at the first
-    if printf '%s\n' "$out" | grep -q "no real K1 GPIO driver exists yet" \
-        && printf '%s\n' "$out" | grep -q "no real K1 PWM driver exists yet" \
-        && ! printf '%s\n' "$out" | grep -q "Finished"; then
+    if printf '%s\n' "$out" | qgrep -q "no real K1 GPIO driver exists yet" \
+        && printf '%s\n' "$out" | qgrep -q "no real K1 PWM driver exists yet" \
+        && ! printf '%s\n' "$out" | qgrep -q "Finished"; then
         ok
     else
         bad; echo "      the k1 build did not refuse with the expected compile_error! messages"
@@ -8239,7 +8249,7 @@ topology_key_row() {
     local dir="$REPO_ROOT/tests/host/topology-tests" tdir="$REPO_ROOT/target/topokey" out rc why=""
     out="$(cd "$dir" && env -u TOPOLOGY_PUBKEY_PATH CARGO_TARGET_DIR="$tdir" \
            "$CARGO" check --no-default-features 2>&1)"; rc=$?
-    if [ "$rc" -eq 0 ] || ! printf '%s\n' "$out" | grep -q "azos_topology: no signing key for a production build"; then
+    if [ "$rc" -eq 0 ] || ! printf '%s\n' "$out" | qgrep -q "azos_topology: no signing key for a production build"; then
         why="(a) the build did not refuse (rc=$rc)"
     fi
     if [ -z "$why" ]; then
@@ -8249,7 +8259,7 @@ topology_key_row() {
     if [ -z "$why" ]; then
         out="$(cd "$dir" && TOPOLOGY_PUBKEY_PATH=/nonexistent/topology_pub.bin CARGO_TARGET_DIR="$tdir" \
                "$CARGO" check --no-default-features 2>&1)"; rc=$?
-        if [ "$rc" -eq 0 ] || ! printf '%s\n' "$out" | grep -q "TOPOLOGY_PUBKEY_PATH=/nonexistent/topology_pub.bin cannot be read"; then
+        if [ "$rc" -eq 0 ] || ! printf '%s\n' "$out" | qgrep -q "TOPOLOGY_PUBKEY_PATH=/nonexistent/topology_pub.bin cannot be read"; then
             why="(c) a missing named key did not fail the build (rc=$rc)"
         fi
     fi
@@ -8257,10 +8267,10 @@ topology_key_row() {
         local f
         for f in qemu vf2 k1; do
             out="$("$CARGO" tree -e features -p azos_kernel --features "$f" -i azos_topology 2>&1)"
-            if ! printf '%s\n' "$out" | grep -q 'azos_topology feature "default"'; then
+            if ! printf '%s\n' "$out" | qgrep -q 'azos_topology feature "default"'; then
                 why="(d) cargo tree --features $f did not list azos_topology"; break
             fi
-            if printf '%s\n' "$out" | grep -q 'azos_topology feature "dev-key"'; then
+            if printf '%s\n' "$out" | qgrep -q 'azos_topology feature "dev-key"'; then
                 [ "$f" = qemu ] || { why="(d) --features $f enables dev-key"; break; }
             else
                 [ "$f" != qemu ] || { why="(d) --features qemu does not enable dev-key"; break; }
@@ -8346,7 +8356,7 @@ cpuid_probe_row() { # <label> <isa: rv|arm> <smp>
 
     local cpuid; cpuid="$(grep -a '\[CPUID\]' "$log" | tr -d '\r')"
     # 1. The hammer at the old fork-probe position ran and saw nothing.
-    if ! printf '%s\n' "$cpuid" | grep -qE 'old fork-probe position: [0-9]+ reads, wrong id 0, user_pt!=0 0$'; then
+    if ! printf '%s\n' "$cpuid" | qgrep -qE 'old fork-probe position: [0-9]+ reads, wrong id 0, user_pt!=0 0$'; then
         bad; echo "      the boot-hart hammer is missing or saw a wrong id / a user page table:"
         printf '%s\n' "$cpuid" | sed -n '1,3p' | sed 's|^|        |'
         echo "      log kept: $log"; return
@@ -8442,8 +8452,8 @@ host_canary_row() { # <label> <suite> <feature> <test fn>
     printf "  %-26s" "${label}..."
     CARGO_TARGET_DIR="${REPO_ROOT}/target/host-canary/${suite}" \
         host_cargo out "${REPO_ROOT}/tests/host/${suite}" test --release --features "$feat" -- "$test"
-    if echo "$out" | grep -qE "::${test} \.\.\. FAILED" \
-       && echo "$out" | grep -qE "test result: FAILED\. 0 passed; 1 failed"; then
+    if echo "$out" | qgrep -qE "::${test} \.\.\. FAILED" \
+       && echo "$out" | qgrep -qE "test result: FAILED\. 0 passed; 1 failed"; then
         ok; echo "$out" | grep -m1 -A1 "panicked at" | sed -n 2p | sed 's/^/      canary caught: /'
     else
         bad; echo "      $suite --features $feat: $test did not fail alone"
@@ -8514,7 +8524,7 @@ test_host_features() { # test_host_features <label> <crate-dir> <features>
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     if host_cargo out "${crate}" test --release --features "$feats" \
-       && ! echo "$out" | grep -q "test result: FAILED"; then
+       && ! echo "$out" | qgrep -q "test result: FAILED"; then
         ok
     else
         bad
@@ -8556,7 +8566,7 @@ if host_cargo en_out "${REPO_ROOT}/tests/host/energy-tests" test --release --fea
     bad; echo "      the suite passed with validation disabled: no test pins it"
 # Only rustc/cargo-build print these; a failing test run ends in
 # "error: test failed", which must NOT read as a build error.
-elif echo "$en_out" | grep -qE "^error(\[E[0-9]+\]|: could not compile)"; then
+elif echo "$en_out" | qgrep -qE "^error(\[E[0-9]+\]|: could not compile)"; then
     bad; echo "      did not compile:"; echo "$en_out" | grep -m3 -E "^error" | sed 's/^/        /'
 else
     en_failed="$(echo "$en_out" | sed -n 's/^test \([a-z_:]*\) \.\.\. FAILED$/\1/p' | sort | tr '\n' ' ')"
@@ -8579,7 +8589,7 @@ for en_c in "i1:governor::deadline_floor_covers_admitted_density_with_margin gov
     printf "  %-26s" "energy(${en_f}-canary)..."
     if en_out=$( (cd "${REPO_ROOT}/tests/host/energy-tests" && "$CARGO" test --release --features "${en_f}-canary" 2>&1) ); then
         bad; echo "      the suite passed with the ${en_f} floor removed: no test pins it"
-    elif echo "$en_out" | grep -qE "^error(\[E[0-9]+\]|: could not compile)"; then
+    elif echo "$en_out" | qgrep -qE "^error(\[E[0-9]+\]|: could not compile)"; then
         bad; echo "      did not compile:"; echo "$en_out" | grep -m3 -E "^error" | sed 's/^/        /'
     else
         en_failed="$(echo "$en_out" | sed -n 's/^test \([a-z0-9_:]*\) \.\.\. FAILED$/\1/p' | sort | tr '\n' ' ')"
@@ -8626,7 +8636,7 @@ lx_emul_nostd_row() {
     for t in riscv64imac-unknown-none-elf aarch64-unknown-none; do
         if ! out="$( (cd "${REPO_ROOT}/lx/emul" && CARGO_TARGET_DIR="${REPO_ROOT}/lx/emul/target/cross" \
                 "$CARGO" +nightly build --release --target "$t" -Zbuild-std=core) 2>&1)" \
-           || printf '%s\n' "$out" | grep -qE "^warning"; then
+           || printf '%s\n' "$out" | qgrep -qE "^warning"; then
             bad; printf '%s\n' "$out" | grep -m3 -E "^(error|warning)" | sed 's/^/      /'; return
         fi
     done
@@ -8663,7 +8673,7 @@ lx_kconfig_row() {
         printf '%s\n' $lines >> "$cfg"
         if out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release -p azos_limits 2>&1)"; then
             got=build
-        elif printf '%s\n' "$out" | grep -q "validation FAIL"; then
+        elif printf '%s\n' "$out" | qgrep -q "validation FAIL"; then
             got=refuse
         else
             got=error
@@ -8715,7 +8725,7 @@ lx_kbuild_row() { # <label> <mode: modules|repro|canary>
             bad; printf '%s\n' "$out" | sed -n '1,6p' | sed 's/^/      /'; return
         fi
         out="$( (cd "${REPO_ROOT}/tests/host/lx-loader-tests" && "$CARGO" test --release kbuild_ 2>&1) )"
-        if echo "$out" | grep -q "test result: ok. 3 passed" && ! echo "$out" | grep -qE "SKIP|FAILED|^warning: .*generated"; then
+        if echo "$out" | qgrep -q "test result: ok. 3 passed" && ! echo "$out" | qgrep -qE "SKIP|FAILED|^warning: .*generated"; then
             ok
         else
             bad; echo "$out" | grep -m4 -E "^error|SKIP|test result|panicked at" | sed 's/^/      /'
@@ -8758,7 +8768,7 @@ gate_pgroup_row() {
     fi
     if cout="$(CI_PGROUP_KILL_CANARY=1 bash "${REPO_ROOT}/tools/gate_pgroup_selftest.sh" 2>&1)"; then
         bad; echo "      canary passed: the self-test does not see a surviving orphan"
-    elif ! printf '%s\n' "$cout" | grep -q "^FAIL: orphan .* outlived"; then
+    elif ! printf '%s\n' "$cout" | qgrep -q "^FAIL: orphan .* outlived"; then
         bad; printf '%s\n' "$cout" | sed -n 1,3p | sed 's/^/      canary: /'
     else
         ok
@@ -14432,7 +14442,7 @@ PYEOF
             fi
             return
         fi
-        if ! tr -d '\r' <"$log" | grep -q '^\[WDT\] no watchdog armed: no idle keepalive'; then
+        if ! tr -d '\r' <"$log" | qgrep -q '^\[WDT\] no watchdog armed: no idle keepalive'; then
             bad; echo "      the boot did not report 'no watchdog armed' — log kept: $log"; return
         fi
         if [ "$delta" -le "$IDLE_WAKES_MAX_30S" ]; then
@@ -15032,7 +15042,7 @@ PYEOF
         # the missing arm in 3 boots of 5), so it must show exactly that.
         local want_load='spam_lines=[1-9][0-9]* disk_reads=[1-9][0-9]* disk_errors=0 hog_rounds=[1-9]'
         [ "$expect" = PERIODIC ] && want_load='spam_lines=0 disk_reads=0 disk_errors=0 hog_rounds=[1-9]'
-        if ! printf '%s\n' "$load" | grep -qE "$want_load"; then
+        if ! printf '%s\n' "$load" | qgrep -qE "$want_load"; then
             bad; echo "      the load did not all run: ${load:-no load line}"
             echo "      log kept: $log"; return
         fi
@@ -15068,12 +15078,12 @@ PYEOF
             bad; echo "      a ${site} masked window did not fail the row: ${result}"
             echo "      log kept: $log"; return
         fi
-        if ! grep -a '^\[LATTRACE\] run irq top1 ' "$clean" | grep -qF " site=${site} "; then
+        if ! grep -a '^\[LATTRACE\] run irq top1 ' "$clean" | qgrep -qF " site=${site} "; then
             bad; echo "      the tracer's worst irq site is not the canary's (${site}):"
             grep -a '^\[LATTRACE\] run irq top1 ' "$clean" | sed 's/^/      /'
             echo "      log kept: $log"; return
         fi
-        if ! grep -a '^\[LATTRACE\] proc irqsoff | start ' "$clean" | grep -qxF "[LATTRACE] proc irqsoff | start ${site}"; then
+        if ! grep -a '^\[LATTRACE\] proc irqsoff | start ' "$clean" | qgrep -qxF "[LATTRACE] proc irqsoff | start ${site}"; then
             bad; echo "      /proc/irqsoff does not name the canary site (${site}):"
             grep -a '^\[LATTRACE\] proc irqsoff' "$clean" | sed 's/^/      /'
             echo "      log kept: $log"; return
@@ -15145,7 +15155,7 @@ PYEOF
         if [ -z "$sites" ]; then
             bad; echo "      no [LATTRACE] run irq lines — log kept: $log"; return
         fi
-        if ! printf '%s\n' "$sites" | grep -q 'site=crates/drivers/sys/src/uart.rs:'; then
+        if ! printf '%s\n' "$sites" | qgrep -q 'site=crates/drivers/sys/src/uart.rs:'; then
             bad; echo "      no console window among the traced sites (did the load print?):"
             printf '%s\n' "$sites" | sed 's/^/      /'; echo "      log kept: $log"; return
         fi
@@ -15226,7 +15236,7 @@ PYEOF
         if [ -z "$result" ] || grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
             bad; echo "      no [LAT] result, or the kernel stopped — log kept: $log"; return
         fi
-        if ! grep -a '^\[LAT\] load ' "$clean" | grep -qE 'disk_reads=[1-9][0-9]* disk_errors=0 hog_rounds=[1-9]'; then
+        if ! grep -a '^\[LAT\] load ' "$clean" | qgrep -qE 'disk_reads=[1-9][0-9]* disk_errors=0 hog_rounds=[1-9]'; then
             bad; echo "      the FAT writer or the hog did not run:"; grep -a '^\[LAT\] load ' "$clean" | sed 's/^/      /'
             echo "      log kept: $log"; return
         fi
@@ -15236,7 +15246,7 @@ PYEOF
         fi
         top="$(grep -a '^\[LATTRACE\] run preempt top1 ' "$clean" | sed -n 1p)"
         max="$(printf '%s\n' "$top" | sed -n 's/.* max_ns=\([0-9]*\) .*/\1/p')"
-        if ! printf '%s\n' "$top" | grep -q ' site=crates/fs/fs/src/fat32.rs:' || [ -z "$max" ] || [ "$max" -le 100000 ]; then
+        if ! printf '%s\n' "$top" | qgrep -q ' site=crates/fs/fs/src/fat32.rs:' || [ -z "$max" ] || [ "$max" -le 100000 ]; then
             bad; echo "      the worst preempt-off window is not a fat32.rs site over 100 us: ${top:-none}"
             echo "      log kept: $log"; return
         fi
@@ -15745,7 +15755,7 @@ PYEOF
             echo "      log kept: $log"; return
         fi
         # Every loaded call ran against a running hog.
-        if ! printf '%s\n' "$loaded" | grep -qE 'calls=1000 .* hog_bursts=[1-9][0-9]* '; then
+        if ! printf '%s\n' "$loaded" | qgrep -qE 'calls=1000 .* hog_bursts=[1-9][0-9]* '; then
             bad; echo "      the hog did not run: $loaded"; echo "      log kept: $log"; return
         fi
         if [ "$expect" = PASS ]; then
@@ -17256,7 +17266,7 @@ x=con; echo bb\$x-ok
         if [ "$rc" -ne 0 ]; then
             bad; grep -E "^error" "$log" | head -5 | sed 's/^/      /'; echo "      log kept: $log"; return
         fi
-        if grep -E "^warning:" "$log" | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]|future version of Rust"; then
+        if grep -E "^warning:" "$log" | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]|future version of Rust"; then
             bad; grep -E "^warning:" "$log" | head -5 | sed 's/^/      /'; echo "      log kept: $log"; return
         fi
         elf="$GENERIC_DIR/${triple}/release/kernel"
@@ -17348,7 +17358,7 @@ x=con; echo bb\$x-ok
         fails="$(grep -a '\[ABITEST\]  FAIL  ' "$log" | sed 's/^\[ABITEST\]  FAIL  //')"
         if [ -n "$fails" ] && { [ "$isa" = rv ] \
              || [ "$(printf '%s\n' "$fails" | grep -c .)" -ne 1 ] \
-             || ! printf '%s\n' "$fails" | grep -qF "vdso flags bit 0: rdtime native"; }; then
+             || ! printf '%s\n' "$fails" | qgrep -qF "vdso flags bit 0: rdtime native"; }; then
             bad; echo "      abitest failed on the Generic kernel:"; printf '%s\n' "$fails" | sed 's/^/        /'
             echo "      log kept: $log"; return
         fi
@@ -17732,7 +17742,7 @@ PY
                 why="lxsrv did not read $hex from the vDSO, or lxbase did not pick '$crc' ($(grep -aoE 'lxbase crc32_le: .*' "$log" | sed -n 1p | tr -d '\r'))"
             elif ! grep -aqF "[CRYPTO] sha256 blocks: $sha" "$log"; then
                 why="the kernel SHA-256 is not on '$sha'"
-            elif [ -z "$hz" ] || ! tr -d '\r' < "$log" | grep -aqE "; counter hz $hz\$"; then
+            elif [ -z "$hz" ] || ! tr -d '\r' < "$log" | qgrep -aqE "; counter hz $hz\$"; then
                 why="lxsrv's counter frequency is not the kernel's ($hz Hz)"
             elif ! grep -aqE "\[LX\] xz_dec\.ko decompressed XZTEST\.XZ: .* equal to the pattern; .*: PASS" "$log"; then
                 why="xz_dec.ko did not decompress XZTEST.XZ correctly on this path"
@@ -17942,9 +17952,9 @@ rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
         bad; echo "      could not expand a ${defc} config with RC_INPUT=n GEOFENCE=n"; return
     fi
     args="$(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$cfg")"
-    if printf '%s' "$args" | grep -qE 'rc-input|geofence' \
-       || ! printf '%s' "$args" | grep -q -- '--no-default-features' \
-       || ! printf '%s' "$args" | grep -q 'domain-robot'; then
+    if printf '%s' "$args" | qgrep -qE 'rc-input|geofence' \
+       || ! printf '%s' "$args" | qgrep -q -- '--no-default-features' \
+       || ! printf '%s' "$args" | qgrep -q 'domain-robot'; then
         bad; echo "      kconfig_to_cargo did not drop exactly rc-input and geofence: $args"; return
     fi
     if [ "$isa" = rv ]; then
@@ -17961,7 +17971,7 @@ rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
     if [ "$rc" -ne 0 ]; then
         bad; grep -E "^error" "$log" | head -5 | sed 's/^/      /'; echo "      log kept: $log"; return
     fi
-    if grep -E "^warning:" "$log" | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]|future version of Rust"; then
+    if grep -E "^warning:" "$log" | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]|future version of Rust"; then
         bad; grep -E "^warning:" "$log" | head -5 | sed 's/^/      /'; echo "      log kept: $log"; return
     fi
     elf="$dir/${triple}/release/kernel"
@@ -18039,7 +18049,7 @@ else
         --target-dir "${REPO_ROOT}/target/kani" 2>&1)"
     rmdir "$kani_cwd" 2>/dev/null
     if [ -n "$kani_want" ] && [ "$kani_want" -gt 0 ] \
-       && printf '%s\n' "$kani_out" | grep -qF "Complete - ${kani_want} successfully verified harnesses, 0 failures, ${kani_want} total."; then
+       && printf '%s\n' "$kani_out" | qgrep -qF "Complete - ${kani_want} successfully verified harnesses, 0 failures, ${kani_want} total."; then
         ok
     else
         bad; echo "      expected ${kani_want:-?} verified harnesses; Kani said:"

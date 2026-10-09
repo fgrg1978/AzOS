@@ -13,6 +13,8 @@
 # tools/rows_for_diff.py for how paths map to rows and suites.
 # GATE_DRY=1 prints what would run and runs nothing.
 set -uo pipefail
+# qgrep: grep -q at the end of a pipe, safe under pipefail (see tools/ci_check.sh).
+qgrep() { local rc; grep "$@"; rc=$?; cat >/dev/null; return "$rc"; }
 cd "$(dirname "$0")/.." || exit 2
 tier="${1:-}"
 base="${GATE_BASE:-HEAD}"
@@ -37,7 +39,7 @@ if [ "$tier" = n0 ]; then
     for arch in riscv64 aarch64 x86_64; do
         printf "  %-26s" "check ${arch}..."
         if out="$(make ARCH="$arch" check 2>&1)" \
-           && { [ "$arch" = x86_64 ] || ! printf '%s\n' "$out" | grep -E '^warning:' | grep -qvE "$noise"; }; then
+           && { [ "$arch" = x86_64 ] || ! printf '%s\n' "$out" | grep -E '^warning:' | qgrep -qvE "$noise"; }; then
             echo ok
         else
             echo FAIL; fail=1
@@ -72,8 +74,8 @@ fi
 for s in $suites; do
     printf "  %-26s" "host ${s#tests/host/}..."
     if out="$(cd "$s" && cargo test --release 2>&1)" \
-       && ! printf '%s\n' "$out" | grep -q 'test result: FAILED' \
-       && ! printf '%s\n' "$out" | grep -qE '^warning: .*generated'; then
+       && ! printf '%s\n' "$out" | qgrep -q 'test result: FAILED' \
+       && ! printf '%s\n' "$out" | qgrep -qE '^warning: .*generated'; then
         echo ok
     else
         echo FAIL; fail=1

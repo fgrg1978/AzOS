@@ -11,6 +11,8 @@
 # Usage: bash tools/ci_full.sh
 
 set -euo pipefail
+# qgrep: grep -q at the end of a pipe, safe under pipefail (see tools/ci_check.sh).
+qgrep() { local rc; grep "$@"; rc=$?; cat >/dev/null; return "$rc"; }
 
 OS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BRAIN_DIR="$OS_DIR/../AzOSRobotBrain"
@@ -45,13 +47,13 @@ check_build() {
     printf "  %-30s" "${label}..."
     local out rc
     out="$("$@" 2>&1)"; rc=$?
-    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -qE "^error"; then
+    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | qgrep -qE "^error"; then
         echo "FAIL"; FAIL=$((FAIL + 1))
         printf '%s\n' "$out" | grep -E "^error" | sed -n '1,5p' | sed 's/^/      /'
         return
     fi
     if printf '%s\n' "$out" | grep -E "^warning:" \
-         | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
+         | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
         echo "FAIL (warnings)"; FAIL=$((FAIL + 1))
         printf '%s\n' "$out" | grep -E "^warning:" \
           | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]" | sed -n '1,5p' | sed 's/^/      /'
@@ -93,8 +95,8 @@ if [ -d "$BRAIN_DIR" ]; then
     printf "  %-30s" "pytest..."
     PYTEST_OUT=$(python3 -m pytest tests/ -q --tb=line 2>&1)
     RESULT="$(printf '%s\n' "$PYTEST_OUT" | sed -n '$p')"
-    if printf '%s\n' "$RESULT" | grep -q "passed" \
-       && ! printf '%s\n' "$RESULT" | grep -qE '[0-9]+ failed'; then
+    if printf '%s\n' "$RESULT" | qgrep -q "passed" \
+       && ! printf '%s\n' "$RESULT" | qgrep -qE '[0-9]+ failed'; then
         echo "PASS ($RESULT)"
         PASS=$((PASS + 1))
     else
