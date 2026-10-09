@@ -16976,7 +16976,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr: execve from a thread: the exec'ing thread is the only one left (gettid == getpid) FAIL" \
                 "lxthr: done failures="
         else
-            printf "  %-26s%s\n" "linux: pthreads ($ush_isa)..." "SKIP (no zig on this host; see make lxthreads)"
+            printf "  %-26s%s\n" "linux: pthreads ($ush_isa)..." "SKIP (make lxthreads failed; see $CI_LOG_DIR/lxthreads-build.log)"
         fi
         # Wave 14 (security): a fork shares a read-only page with its child as
         # it is; the child's mprotect(RW) made the leaf writable in place and
