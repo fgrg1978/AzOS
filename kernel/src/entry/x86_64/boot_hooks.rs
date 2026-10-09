@@ -124,26 +124,54 @@ pub fn timer_probe(_fw: &()) {
     todo!("x86_64: timer_probe: TSC-deadline (CPUID.01H:ECX[24]), invariant TSC, HPET from ACPI")
 }
 
-/// The `[ISA]` line: each extension's Kconfig choice (X86_*, n / probe /
-/// require) against CPUID (`features::detect`, not ported yet). Each user
-/// must also gate on the same policy (`azos_arch_api::isa::x86_64`).
+/// The `[ISA]` line: the baseline level (`features::check_baseline`, which
+/// powers off below it, naming the missing feature) and each extension's
+/// Kconfig choice (X86_*, n / probe / require) against CPUID
+/// (`features::detect`); a `require` the CPU lacks powers off too. Each
+/// user must also gate on the same policy (`azos_arch_api::isa::x86_64`).
 pub fn cpu_features(_fw: &()) {
     use azos_arch_api::isa::{x86_64 as p, Ext};
-    if let Err(missing) = azos_arch::features::check_baseline() {
+    if let Err(missing) = azos_arch::features::check_baseline(p::LEVEL_NUM) {
         crate::boot::isa::refuse_level(p::LEVEL, missing);
     }
     let f = azos_arch::features::detect();
     let e = |name, symbol, policy, present| Ext { name, symbol, policy, present };
     crate::boot::isa::report(p::LEVEL, &[
+        e("sse4.2", "X86_SSE4_2", p::SSE4_2, f.sse4_2),
+        e("popcnt", "X86_POPCNT", p::POPCNT, f.popcnt),
+        e("xsave", "X86_XSAVE", p::XSAVE, f.xsave),
+        e("avx", "X86_AVX", p::AVX, f.avx),
+        e("avx2", "X86_AVX2", p::AVX2, f.avx2),
+        e("bmi1", "X86_BMI1", p::BMI1, f.bmi1),
+        e("bmi2", "X86_BMI2", p::BMI2, f.bmi2),
+        e("fma", "X86_FMA", p::FMA, f.fma),
+        e("movbe", "X86_MOVBE", p::MOVBE, f.movbe),
+        e("avx512f", "X86_AVX512F", p::AVX512F, f.avx512f),
+        e("avx512bw", "X86_AVX512BW", p::AVX512BW, f.avx512bw),
+        e("avx512cd", "X86_AVX512CD", p::AVX512CD, f.avx512cd),
+        e("avx512dq", "X86_AVX512DQ", p::AVX512DQ, f.avx512dq),
+        e("avx512vl", "X86_AVX512VL", p::AVX512VL, f.avx512vl),
+        e("aes", "X86_AES", p::AES, f.aes),
+        e("pclmulqdq", "X86_PCLMULQDQ", p::PCLMULQDQ, f.pclmulqdq),
+        e("sha-ni", "X86_SHA_NI", p::SHA_NI, f.sha_ni),
+        e("rdrand", "X86_RDRAND", p::RDRAND, f.rdrand),
+        e("rdseed", "X86_RDSEED", p::RDSEED, f.rdseed),
+        e("adx", "X86_ADX", p::ADX, f.adx),
+        e("fsgsbase", "X86_FSGSBASE", p::FSGSBASE, f.fsgsbase),
+        e("pcid", "X86_PCID", p::PCID, f.pcid),
+        e("invpcid", "X86_INVPCID", p::INVPCID, f.invpcid),
         e("smep", "X86_SMEP", p::SMEP, f.smep),
         e("smap", "X86_SMAP", p::SMAP, f.smap),
-        e("pcid", "X86_PCID", p::PCID, f.pcid && f.invpcid),
-        e("fsgsbase", "X86_FSGSBASE", p::FSGSBASE, f.fsgsbase),
-        e("tsc-deadline", "X86_TSC_DEADLINE", p::TSC_DEADLINE, f.tsc_deadline),
-        e("x2apic", "X86_X2APIC", p::X2APIC, f.x2apic),
+        e("umip", "X86_UMIP", p::UMIP, f.umip),
+        e("pku", "X86_PKU", p::PKU, f.pku),
+        e("la57", "X86_LA57", p::LA57, f.la57),
+        e("cet-ibt", "X86_CET_IBT", p::CET_IBT, f.cet_ibt),
+        e("cet-shstk", "X86_CET_SHSTK", p::CET_SHSTK, f.cet_shstk),
         e("xsaveopt", "X86_XSAVEOPT", p::XSAVEOPT, f.xsaveopt),
-        e("avx2", "X86_AVX2", p::AVX2, f.avx2),
-        e("sha-ni", "X86_SHA_NI", p::SHA_NI, f.sha_ni),
+        e("xsaves", "X86_XSAVES", p::XSAVES, f.xsaves),
+        e("x2apic", "X86_X2APIC", p::X2APIC, f.x2apic),
+        e("tsc-deadline", "X86_TSC_DEADLINE", p::TSC_DEADLINE, f.tsc_deadline),
+        e("invariant-tsc", "X86_INVARIANT_TSC", p::INVARIANT_TSC, f.invariant_tsc),
     ]);
 }
 

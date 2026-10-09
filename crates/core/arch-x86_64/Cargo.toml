@@ -9,5 +9,10 @@ description = "x86_64 port skeleton: every arch-api trait with todo!() bodies na
 [lib]
 name = "azos_arch_x86_64"
 
+[features]
+# Host-test canary (tests/host/arch-tests): features.rs forgets the XCR0
+# YMM state check, so `the_vector_extensions_need_their_xsave_state` fails.
+x86-cpuid-canary = []
+
 [dependencies]
 azos_arch_api = { path = "../arch-api" }

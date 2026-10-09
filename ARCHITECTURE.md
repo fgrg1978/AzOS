@@ -646,12 +646,14 @@ boot, so a canary test boots the same kernel as the test it checks.
 (`config/Kconfig.arch`):
 
 - A **baseline level**: `RISCV64_LEVEL` (rv64imac, rv64gc, rv64gcv),
-  `AARCH64_LEVEL` (Armv8.0 to 8.5) or `X86_64_LEVEL` (x86-64 v1 to v3).
+  `AARCH64_LEVEL` (Armv8.0 to 8.5) or `X86_64_LEVEL` (x86-64 v1 to v4).
   It is the only thing codegen assumes for the kernel and the user images.
   `tools/kconfig_to_cargo.py --rustflags` and `--user-rustflags` turn it into
   target features. They use stable feature names, never `+v8.Na`. The
   soft-float aarch64 kernel gets only the features that need no SIMD
-  registers (`+lse`, `+rcpc`, ...); the user images get the whole list. The
+  registers (`+lse`, `+rcpc`, ...); the user images get the whole list.
+  The soft-float x86_64 kernel likewise gets `-C target-cpu=x86-64-vN` and
+  only the integer `require` extensions (`+popcnt`, `+bmi2`, `+adx`, ...). The
   boot checks the level before anything that depends on it. On aarch64 that
   is the first hook, before the first lock: a `+lse` kernel on an Armv8.0
   core would otherwise fault at its first atomic instead of saying why. A CPU
@@ -663,16 +665,23 @@ boot, so a canary test boots the same kernel as the test it checks.
   or `require` (part of the baseline: target features where the ISA allows,
   and a CPU without it is refused). riscv64 has Zicboz, Sstc, Svpbmt, Zba,
   Zbb, Zbs, V and AIA. aarch64 has LSE, PAN, CRC32, PAuth, BTI, MTE, SVE, AES,
-  PMULL and SHA2. x86_64 has SMEP, SMAP, PCID, FSGSBASE, TSC-deadline,
-  x2APIC, XSAVEOPT, AVX2 and SHA-NI. Some of these are detected and reported
+  PMULL and SHA2. x86_64 has the extensions of its levels (SSE4.2, POPCNT;
+  XSAVE, AVX, AVX2, BMI1, BMI2, FMA, MOVBE; AVX-512 F/BW/CD/DQ/VL), AES-NI,
+  PCLMULQDQ, SHA-NI, RDRAND, RDSEED, ADX, FSGSBASE, PCID, INVPCID, SMEP,
+  SMAP, UMIP, PKU, LA57, CET-IBT, CET shadow stack, XSAVEOPT, XSAVES,
+  x2APIC, TSC-deadline and invariant TSC, read from CPUID leaves 1, 7, 0xD,
+  0x80000001 and 0x80000007. Some of these are detected and reported
   only, because no kernel path uses them yet; each symbol's help says which.
   For those, `n` and `probe` differ only in the boot line.
-- **Per-board defaults** say what a board has. QEMU uses rv64imac and
-  Armv8.0 with everything on `probe` (V is `n`). The VisionFive 2 uses
+- **Per-board defaults** say what a board has. QEMU uses rv64imac,
+  Armv8.0 and x86-64-v2 with everything on `probe` (V is `n`). The VisionFive 2 uses
   rv64gc. The K1 uses rv64gcv with Zba/Zbb/Zbs and V set to `require`. The
   Raspberry Pi 5 uses Armv8.2 with LSE set to `require` and PAuth, BTI, MTE
   and SVE set to `n`. A level that contains an extension forces `require` on
-  it: Armv8.1 implies LSE, PAN and CRC32, 8.3 PAuth, 8.5 BTI, and x86-64-v3 AVX2.
+  it: Armv8.1 implies LSE, PAN and CRC32, 8.3 PAuth, 8.5 BTI, x86-64-v2 SSE4.2
+  and POPCNT, v3 XSAVE, AVX, AVX2, BMI1/2, FMA and MOVBE, v4 AVX-512. On
+  x86_64 an extension whose prerequisite is `n` is `n` too (AVX needs XSAVE,
+  AVX2 needs AVX, CET needs XSAVES), and `make config` offers nothing else.
 
 The boot prints one line with the baseline and each extension's state:
 `[ISA] baseline=rv64imac zicboz=probed-present sstc=probed-present ... v=n`.

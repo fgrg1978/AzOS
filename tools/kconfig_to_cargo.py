@@ -77,6 +77,50 @@ X86_64_LEVEL_TO_CPU: dict[str, str] = {
     "CONFIG_X86_64_LEVEL_V1": "x86-64",
     "CONFIG_X86_64_LEVEL_V2": "x86-64-v2",
     "CONFIG_X86_64_LEVEL_V3": "x86-64-v3",
+    "CONFIG_X86_64_LEVEL_V4": "x86-64-v4",
+}
+# x86_64: what `-C target-cpu=<level>` enables on the soft-float kernel
+# target (`rustc --print cfg --target x86_64-unknown-none -C target-cpu=...`;
+# SIMD stays off, so v4 adds nothing over v3), and what it adds on the user
+# images on top of that. Both lists are cumulative from their level.
+X86_64_LEVEL_FEATURES: list[tuple[int, list[str], list[str]]] = [
+    # (level, kernel, user-only)
+    (2, ["cmpxchg16b", "lahfsahf", "popcnt"], ["sse3", "ssse3", "sse4.1", "sse4.2"]),
+    (3, ["bmi1", "bmi2", "lzcnt", "movbe", "xsave"], ["avx", "avx2", "f16c", "fma"]),
+    (4, [], ["avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"]),
+]
+X86_64_LEVEL_NUM: dict[str, int] = {
+    "CONFIG_X86_64_LEVEL_V1": 1, "CONFIG_X86_64_LEVEL_V2": 2,
+    "CONFIG_X86_64_LEVEL_V3": 3, "CONFIG_X86_64_LEVEL_V4": 4,
+}
+# `require` → (kernel features, user-only features). Integer extensions
+# reach both; SIMD ones only the user images. The system extensions (SMEP,
+# SMAP, PCID, INVPCID, FSGSBASE, UMIP, PKU, LA57, CET, x2APIC, TSC-deadline,
+# invariant TSC) change no codegen: `require` only refuses the CPU.
+X86_64_REQUIRE_FEATURES: dict[str, tuple[list[str], list[str]]] = {
+    "CONFIG_X86_SSE4_2_REQUIRE":    ([], ["sse4.2"]),
+    "CONFIG_X86_POPCNT_REQUIRE":    (["popcnt"], []),
+    "CONFIG_X86_XSAVE_REQUIRE":     (["xsave"], []),
+    "CONFIG_X86_AVX_REQUIRE":       ([], ["avx"]),
+    "CONFIG_X86_AVX2_REQUIRE":      ([], ["avx2"]),
+    "CONFIG_X86_BMI1_REQUIRE":      (["bmi1"], []),
+    "CONFIG_X86_BMI2_REQUIRE":      (["bmi2"], []),
+    "CONFIG_X86_FMA_REQUIRE":       ([], ["fma"]),
+    "CONFIG_X86_MOVBE_REQUIRE":     (["movbe"], []),
+    "CONFIG_X86_AVX512F_REQUIRE":   ([], ["avx512f"]),
+    "CONFIG_X86_AVX512BW_REQUIRE":  ([], ["avx512bw"]),
+    "CONFIG_X86_AVX512CD_REQUIRE":  ([], ["avx512cd"]),
+    "CONFIG_X86_AVX512DQ_REQUIRE":  ([], ["avx512dq"]),
+    "CONFIG_X86_AVX512VL_REQUIRE":  ([], ["avx512vl"]),
+    "CONFIG_X86_AES_REQUIRE":       ([], ["aes"]),
+    "CONFIG_X86_PCLMULQDQ_REQUIRE": ([], ["pclmulqdq"]),
+    "CONFIG_X86_SHA_NI_REQUIRE":    ([], ["sha"]),
+    "CONFIG_X86_RDRAND_REQUIRE":    (["rdrand"], []),
+    "CONFIG_X86_RDSEED_REQUIRE":    (["rdseed"], []),
+    "CONFIG_X86_ADX_REQUIRE":       (["adx"], []),
+    # XSAVEOPT/XSAVES imply XSAVE in rustc's feature graph.
+    "CONFIG_X86_XSAVEOPT_REQUIRE":  (["xsave", "xsaveopt"], []),
+    "CONFIG_X86_XSAVES_REQUIRE":    (["xsave", "xsaves"], []),
 }
 
 # riscv64: the level's codegen features. Zaamo/Zalrsc are the A extension
@@ -126,6 +170,8 @@ AARCH64_REQUIRE_FEATURES: dict[str, tuple[list[str], list[str]]] = {
 CONTROLLED_FEATURES: dict[str, list[str]] = {
     "CONFIG_ARCH_RISCV64": ["zba", "zbb", "zbs"],
     "CONFIG_ARCH_AARCH64": ["lse", "rcpc"],
+    "CONFIG_ARCH_X86_64": ["cmpxchg16b", "lahfsahf", "popcnt", "bmi1", "bmi2", "lzcnt", "movbe",
+                           "xsave", "xsaveopt", "xsaves", "adx", "rdrand", "rdseed"],
 }
 
 
@@ -151,7 +197,13 @@ def isa_features(cfg: dict[str, str], user: bool) -> list[str]:
             if on(key):
                 feats += kern + (uonly if user else [])
     elif on("CONFIG_ARCH_X86_64"):
-        pass
+        level = max((n for k, n in X86_64_LEVEL_NUM.items() if on(k)), default=2)
+        for lvl, kern, uonly in X86_64_LEVEL_FEATURES:
+            if lvl <= level:
+                feats += kern + (uonly if user else [])
+        for key, (kern, uonly) in X86_64_REQUIRE_FEATURES.items():
+            if on(key):
+                feats += kern + (uonly if user else [])
     else:
         feats += RISCV64_BASE_FEATURES
         feats += [f for k, f in RISCV64_REQUIRE_FEATURES.items() if on(k)]
@@ -165,12 +217,17 @@ def baseline_rustflags(cfg: dict[str, str], user: bool = False, skip_base: bool 
     `skip_base`: leave out riscv64's level features, which
     .cargo/config.toml and every riscv64 user crate's target already carry
     (for a `--config` that merges with them)."""
-    if cfg.get("CONFIG_ARCH_X86_64") == "y":
-        for key, cpu in X86_64_LEVEL_TO_CPU.items():
-            if cfg.get(key) == "y":
-                return f"-C target-cpu={cpu}"
-        return "-C target-cpu=x86-64-v2"
     feats = isa_features(cfg, user)
+    if cfg.get("CONFIG_ARCH_X86_64") == "y":
+        # The level is `target-cpu`; only the `require` extras beyond it
+        # are spelled out as target features.
+        cpu = next((c for k, c in X86_64_LEVEL_TO_CPU.items() if cfg.get(k) == "y"), "x86-64-v2")
+        level = max((n for k, n in X86_64_LEVEL_NUM.items() if cfg.get(k) == "y"), default=2)
+        implied = [f for lvl, kern, uonly in X86_64_LEVEL_FEATURES if lvl <= level
+                   for f in kern + uonly]
+        extra = [f for f in feats if f not in implied]
+        flags = f"-C target-cpu={cpu}"
+        return flags + (f" -C target-feature={','.join('+' + f for f in extra)}" if extra else "")
     if skip_base:
         feats = [f for f in feats if f not in RISCV64_BASE_FEATURES]
     return f"-C target-feature={','.join('+' + f for f in feats)}" if feats else ""
@@ -550,8 +607,7 @@ def main() -> int:
         return 0
 
     if target_features:
-        arch = next((k for k in CONTROLLED_FEATURES if cfg.get(k) == "y"),
-                    "CONFIG_ARCH_RISCV64" if cfg.get("CONFIG_ARCH_X86_64") != "y" else "")
+        arch = next((k for k in CONTROLLED_FEATURES if cfg.get(k) == "y"), "CONFIG_ARCH_RISCV64")
         print("require=" + ",".join(isa_features(cfg, user=False)))
         print("control=" + ",".join(CONTROLLED_FEATURES.get(arch, [])))
         return 0

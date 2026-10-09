@@ -618,6 +618,41 @@ def test_isa_level_and_require_reach_the_codegen() -> None:
         assert "control=lse,rcpc" in _isa(t / "a85.config", "--target-features")
 
 
+def test_x86_64_level_and_require_reach_the_codegen() -> None:
+    """x86_64: the level is `-C target-cpu`; a `require` integer extension
+    reaches the kernel and the user images, a `require` SIMD one only the
+    user images (the kernel is soft-float); the QEMU defconfig is v2 with
+    every other extension on `probe`; a level forces `require` on its
+    extensions and an `n` prerequisite forces `n` on its dependants."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        out = _expand((DEFCONFIGS_DIR / "qemu-x86_64.config").read_text().splitlines(), t, "q.config")
+        assert "CONFIG_X86_64_LEVEL_V2=y" in out
+        assert "CONFIG_X86_SSE4_2_REQUIRE=y" in out and "CONFIG_X86_POPCNT_REQUIRE=y" in out
+        for ext in ("AVX2", "AVX512F", "AES", "SHA_NI", "RDSEED", "CET_SHSTK", "LA57", "INVARIANT_TSC"):
+            assert f"CONFIG_X86_{ext}_PROBE=y" in out, ext
+        assert _isa(t / "q.config", "--rustflags") == "-C target-cpu=x86-64-v2"
+        assert _isa(t / "q.config", "--target-features").startswith("require=cmpxchg16b,lahfsahf,popcnt\n")
+        _expand(["CONFIG_ARCH_X86_64=y", "CONFIG_X86_64_LEVEL_V4=y", "CONFIG_X86_ADX_REQUIRE=y",
+                 "CONFIG_X86_AES_REQUIRE=y", "CONFIG_X86_XSAVES_REQUIRE=y"], t, "v4.config")
+        assert _isa(t / "v4.config", "--rustflags") == \
+            "-C target-cpu=x86-64-v4 -C target-feature=+adx,+xsaves"
+        assert _isa(t / "v4.config", "--user-rustflags") == \
+            "-C target-cpu=x86-64-v4 -C target-feature=+aes,+adx,+xsaves"
+        tf = _isa(t / "v4.config", "--target-features")
+        assert "require=cmpxchg16b,lahfsahf,popcnt,bmi1,bmi2,lzcnt,movbe,xsave,adx,xsaves" in tf, tf
+        assert "aes" not in tf and "avx" not in tf, tf
+        out = _expand(["CONFIG_ARCH_X86_64=y", "CONFIG_X86_64_LEVEL_V3=y", "CONFIG_X86_AVX2_NEVER=y"],
+                      t, "v3.config")
+        assert "CONFIG_X86_AVX2_REQUIRE=y" in out, "v3 left AVX2 at n"
+        out = _expand(["CONFIG_ARCH_X86_64=y", "CONFIG_X86_64_LEVEL_V1=y", "CONFIG_X86_XSAVE_NEVER=y",
+                       "CONFIG_X86_AVX2_REQUIRE=y"], t, "v1.config")
+        assert "CONFIG_X86_AVX_NEVER=y" in out and "CONFIG_X86_AVX2_NEVER=y" in out, "AVX2 without XSAVE"
+        assert _isa(t / "v1.config", "--rustflags") == "-C target-cpu=x86-64"
+
+
 def test_page_size_reaches_the_build() -> None:
     """config/Kconfig.arch's aarch64 granule choice emits `page-16k`/`page-64k`
     and PAGE_SHIFT 14/16; 4 KiB emits neither (it is their absence), and a
@@ -944,6 +979,7 @@ def _run_all_tests() -> int:
         test_no_defconfig_enables_unimplemented_options,
         test_page_size_reaches_the_build,
         test_isa_level_and_require_reach_the_codegen,
+        test_x86_64_level_and_require_reach_the_codegen,
         test_lx_server_skeleton_reaches_the_build,
         test_profile_defconfigs_generic_robot_variants_robot,
         test_generic_drops_only_the_domain_feature,

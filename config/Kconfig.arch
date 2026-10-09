@@ -579,10 +579,17 @@ config MM_PRECOMMIT_RT
 #   1. the compile-time BASELINE (X86_64_LEVEL), the only thing codegen may
 #      assume, checked at boot: a CPU below it is refused with a message;
 #   2. optional extensions, each a runtime CPUID probe before use with a
-#      fallback, emitted only inside gated asm, never as a global
-#      target-feature;
+#      fallback (crates/core/arch-x86_64/src/features.rs), emitted only
+#      inside gated asm unless set to `require`;
 #   3. each extension a three-way choice X86_* (n / probe / require, the
-#      model above); per-board defaults say what a board has.
+#      model above); per-board defaults say what a board has. `require`
+#      adds the extension's target feature (tools/kconfig_to_cargo.py): the
+#      integer ones to the kernel and the user images, the SIMD ones to the
+#      user images only (the kernel is soft-float). A level that contains
+#      an extension offers only `require` for it, and an extension whose
+#      prerequisite is `n` (AVX without XSAVE, AVX2 without AVX, ...) offers
+#      only `n`: a contradiction cannot be configured, and a hand-edited
+#      .config that has one is refused by crates/core/limits/build.rs.
 
 if ARCH_X86_64
 
@@ -590,8 +597,8 @@ choice
     prompt "x86_64 baseline micro-architecture level"
     default X86_64_LEVEL_V2
     help
-      The psABI level codegen assumes for the whole kernel
-      (`-C target-cpu=x86-64[-vN]`, tools/kconfig_to_cargo.py). Anything
+      The psABI level codegen assumes for the whole kernel and the user
+      images (`-C target-cpu=x86-64[-vN]`, tools/kconfig_to_cargo.py). Anything
       above it is an optional extension (X86_* below). The boot CPU
       checks the level's CPUID bits before anything else and refuses to
       boot below it. Higher levels let the compiler use wider instructions
@@ -608,18 +615,510 @@ choice
           Nehalem (2008) and later, every QEMU `-cpu` model newer than
           qemu64 with `+sse4.2,+popcnt`. The default.
     config X86_64_LEVEL_V3
-        bool "x86-64-v3 (AVX2, BMI2, FMA, MOVBE)"
+        bool "x86-64-v3 (AVX, AVX2, BMI1/2, F16C, FMA, LZCNT, MOVBE, XSAVE)"
         help
           Haswell (2013) and later. AVX2 becomes baseline; kernel FP/SIMD
-          use still needs the FPU-section discipline (FP_XSAVE_EAGER).
+          use still needs the FPU-section discipline (FP_XSAVE_EAGER). The
+          soft-float kernel gains only the integer part (+bmi1, +bmi2,
+          +lzcnt, +movbe, +xsave); the user images get all of it.
+    config X86_64_LEVEL_V4
+        bool "x86-64-v4 (+ AVX-512 F, BW, CD, DQ, VL)"
+        help
+          Skylake-SP / Ice Lake / Zen 4 and later. The kernel's codegen is
+          the same as v3 (AVX-512 is SIMD, which the soft-float kernel never
+          emits); the user images get AVX-512 everywhere, and every task's
+          XSAVE area grows by the 2 KiB ZMM/opmask state. Excludes every
+          client Intel CPU from Alder Lake on (AVX-512 fused off).
+endchoice
+
+choice
+    prompt "SSE4.2 (with SSE3, SSSE3, SSE4.1)"
+    default X86_SSE4_2_REQUIRE if !X86_64_LEVEL_V1
+    default X86_SSE4_2_PROBE
+    help
+      CPUID.1:ECX[20] (and [0], [9], [19]). SIMD: the soft-float kernel
+      never emits it; require adds +sse4.2 to the user images' codegen.
+      probe: reported in the [ISA] line only (no kernel path uses it). Cost:
+      none. Part of x86-64-v2: at that level and above only `require` is
+      offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_SSE4_2_NEVER
+        bool "n: never use it"
+        depends on X86_64_LEVEL_V1
+    config X86_SSE4_2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on X86_64_LEVEL_V1
+    config X86_SSE4_2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "POPCNT"
+    default X86_POPCNT_REQUIRE if !X86_64_LEVEL_V1
+    default X86_POPCNT_PROBE
+    help
+      CPUID.1:ECX[23]. require adds +popcnt to the kernel and user codegen
+      (count_ones() becomes one instruction instead of a ~12-instruction bit
+      trick). probe: reported only. Cost: none. Part of x86-64-v2: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_POPCNT_NEVER
+        bool "n: never use it"
+        depends on X86_64_LEVEL_V1
+    config X86_POPCNT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on X86_64_LEVEL_V1
+    config X86_POPCNT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "XSAVE (XSAVE/XRSTOR, XCR0)"
+    default X86_XSAVE_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_XSAVE_PROBE
+    help
+      CPUID.1:ECX[26]: the extended FP state save (fpu.rs, FP_XSAVE_EAGER)
+      and the XCR0 register every AVX state needs. Fallback: FXSAVE (512 B,
+      x87/SSE only), which also means no AVX anywhere. require adds +xsave.
+      Cost: the XSAVE area per task (576 B + each enabled component). Part
+      of x86-64-v3: at that level and above only `require` is offered (the
+      level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_XSAVE_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_XSAVE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_XSAVE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AVX (256-bit SIMD, YMM state)"
+    default X86_AVX_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_AVX_PROBE
+    help
+      CPUID.1:ECX[28] and the XCR0 YMM component (CPUID.(0xD,0)). User
+      images only (require adds +avx to their codegen); the kernel reaches
+      it only inside an FPU section. Cost: +256 B of YMM state per task in
+      the XSAVE area. Needs X86_XSAVE. Part of x86-64-v3: at that level and
+      above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_AVX_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2) && !X86_XSAVE_NEVER
+    config X86_AVX_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVE_NEVER
+endchoice
+
+choice
+    prompt "AVX2 (256-bit integer SIMD)"
+    default X86_AVX2_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_AVX2_PROBE
+    help
+      CPUID.(7,0):EBX[5] plus the AVX state. Used ONLY inside the Vector
+      impl's dot product, behind the probe and the FPU section. Fallback:
+      SSE2 (baseline). require adds +avx2 to the user images. Cost: the YMM
+      half of the FP save area (shared with X86_AVX). Needs X86_AVX. Part of
+      x86-64-v3: at that level and above only `require` is offered (the
+      level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX2_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_AVX2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2) && !X86_AVX_NEVER
+    config X86_AVX2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX_NEVER
+endchoice
+
+choice
+    prompt "BMI1 (ANDN, BEXTR, BLSI, BLSR, TZCNT)"
+    default X86_BMI1_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_BMI1_PROBE
+    help
+      CPUID.(7,0):EBX[3]. Integer: require adds +bmi1 to the kernel and the
+      user images (shorter bit-field and lowest-set-bit code). probe:
+      reported only. Cost: none. Part of x86-64-v3: at that level and above
+      only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_BMI1_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_BMI1_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_BMI1_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "BMI2 (BZHI, PDEP, PEXT, SHLX/SHRX, MULX)"
+    default X86_BMI2_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_BMI2_PROBE
+    help
+      CPUID.(7,0):EBX[8]. Integer: require adds +bmi2 to the kernel and the
+      user images (flag-free shifts; no CL-register pressure). probe:
+      reported only. PDEP/PEXT are microcoded (~250 cycles) on AMD before
+      Zen 3. Cost: none. Part of x86-64-v3: at that level and above only
+      `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_BMI2_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_BMI2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_BMI2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "FMA3 (fused multiply-add)"
+    default X86_FMA_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_FMA_PROBE
+    help
+      CPUID.1:ECX[12] plus the AVX state. User images only (require adds
+      +fma). Cost: none beyond X86_AVX's state. Needs X86_AVX. Part of
+      x86-64-v3: at that level and above only `require` is offered (the
+      level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_FMA_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_FMA_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2) && !X86_AVX_NEVER
+    config X86_FMA_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX_NEVER
+endchoice
+
+choice
+    prompt "MOVBE (byte-swapping load/store)"
+    default X86_MOVBE_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_MOVBE_PROBE
+    help
+      CPUID.1:ECX[22]. Integer: require adds +movbe to the kernel and the
+      user images (big-endian network fields load in one instruction).
+      probe: reported only. Cost: none. Part of x86-64-v3: at that level and
+      above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_MOVBE_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_MOVBE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_MOVBE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AVX-512 Foundation"
+    default X86_AVX512F_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512F_PROBE
+    help
+      CPUID.(7,0):EBX[16] and the XCR0 opmask/ZMM components (bits 5..7).
+      User images only (require adds +avx512f). Cost: +2 KiB of ZMM/opmask
+      state per task in the XSAVE area, and frequency drops on some Intel
+      parts while 512-bit code runs. Needs X86_AVX2. Part of x86-64-v4: at
+      that level and above only `require` is offered (the level compiles it
+      in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512F_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512F_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX2_NEVER
+    config X86_AVX512F_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX2_NEVER
+endchoice
+
+choice
+    prompt "AVX-512 Byte and Word"
+    default X86_AVX512BW_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512BW_PROBE
+    help
+      CPUID.(7,0):EBX[30]. User images only (require adds +avx512bw). Cost:
+      none beyond X86_AVX512F. Needs X86_AVX512F. Part of x86-64-v4: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512BW_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512BW_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX512F_NEVER
+    config X86_AVX512BW_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX512F_NEVER
+endchoice
+
+choice
+    prompt "AVX-512 Conflict Detection"
+    default X86_AVX512CD_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512CD_PROBE
+    help
+      CPUID.(7,0):EBX[28]. User images only (require adds +avx512cd). Cost:
+      none beyond X86_AVX512F. Needs X86_AVX512F. Part of x86-64-v4: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512CD_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512CD_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX512F_NEVER
+    config X86_AVX512CD_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX512F_NEVER
+endchoice
+
+choice
+    prompt "AVX-512 Doubleword and Quadword"
+    default X86_AVX512DQ_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512DQ_PROBE
+    help
+      CPUID.(7,0):EBX[17]. User images only (require adds +avx512dq). Cost:
+      none beyond X86_AVX512F. Needs X86_AVX512F. Part of x86-64-v4: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512DQ_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512DQ_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX512F_NEVER
+    config X86_AVX512DQ_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX512F_NEVER
+endchoice
+
+choice
+    prompt "AVX-512 Vector Length (128/256-bit forms)"
+    default X86_AVX512VL_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512VL_PROBE
+    help
+      CPUID.(7,0):EBX[31]. User images only (require adds +avx512vl). Cost:
+      none beyond X86_AVX512F. Needs X86_AVX512F. Part of x86-64-v4: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512VL_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512VL_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX512F_NEVER
+    config X86_AVX512VL_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX512F_NEVER
+endchoice
+
+choice
+    prompt "AES-NI"
+    default X86_AES_PROBE
+    help
+      CPUID.1:ECX[25]. User images only (require adds +aes): link encryption
+      and TLS in ring 3 run AES in ~1 cycle/byte instead of ~15. probe:
+      reported only (the kernel's crypto is portable). Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AES_NEVER
+        bool "n: never use it"
+    config X86_AES_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_AES_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "PCLMULQDQ (carry-less multiply)"
+    default X86_PCLMULQDQ_PROBE
+    help
+      CPUID.1:ECX[1]. User images only (require adds +pclmulqdq): GCM's
+      GHASH and CRC folding. probe: reported only. Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_PCLMULQDQ_NEVER
+        bool "n: never use it"
+    config X86_PCLMULQDQ_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_PCLMULQDQ_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "SHA-NI (SHA-1/SHA-256 instructions)"
+    default X86_SHA_NI_PROBE
+    help
+      CPUID.(7,0):EBX[29]: the secure-boot hash through sha256rnds2 (not
+      wired yet: reported only). require adds +sha to the user images.
+      Fallback: the portable SHA-256 (crates/core/crypto). Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_SHA_NI_NEVER
+        bool "n: never use it"
+    config X86_SHA_NI_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SHA_NI_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "RDRAND (DRBG output)"
+    default X86_RDRAND_PROBE
+    help
+      CPUID.1:ECX[30]. An entropy source for the boot pool (not wired yet:
+      reported only). require adds +rdrand. Fallback: the pool's other
+      sources. Cost: none; each RDRAND is ~100-500 cycles.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_RDRAND_NEVER
+        bool "n: never use it"
+    config X86_RDRAND_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_RDRAND_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "RDSEED (conditioned entropy)"
+    default X86_RDSEED_PROBE
+    help
+      CPUID.(7,0):EBX[18]. A seed source for the entropy pool (not wired
+      yet: reported only). require adds +rdseed. Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_RDSEED_NEVER
+        bool "n: never use it"
+    config X86_RDSEED_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_RDSEED_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "ADX (ADCX/ADOX)"
+    default X86_ADX_PROBE
+    help
+      CPUID.(7,0):EBX[19]. Integer: require adds +adx to the kernel and user
+      codegen (two carry chains for multi-precision arithmetic: Ed25519,
+      RSA). probe: reported only. Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_ADX_NEVER
+        bool "n: never use it"
+    config X86_ADX_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_ADX_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "FSGSBASE (rd/wrgsbase)"
+    default X86_FSGSBASE_PROBE
+    help
+      CR4.FSGSBASE after CPUID.(7,0):EBX[0]:
+      Cpu::percpu_base/set_percpu_base without an MSR access (tens of cycles
+      less per kernel entry). Fallback: rdmsr/wrmsr IA32_GS_BASE. Not a
+      codegen feature (rustc has no stable +fsgsbase): require only refuses
+      a CPU without it.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_FSGSBASE_NEVER
+        bool "n: never use it"
+    config X86_FSGSBASE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_FSGSBASE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "PCID (tagged TLB)"
+    default X86_PCID_PROBE
+    help
+      CR4.PCIDE after CPUID.1:ECX[17]. Keeps TLB entries across address-
+      space switches (the ASID of Mmu::switch_pt). Fallback: a full flush on
+      every CR3 write. Cost: none; saves the TLB refill after each switch.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_PCID_NEVER
+        bool "n: never use it"
+    config X86_PCID_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_PCID_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "INVPCID (targeted TLB invalidation)"
+    default X86_INVPCID_PROBE
+    help
+      CPUID.(7,0):EBX[10]: flush one PCID or every non-global entry with one
+      instruction. Fallback: CR4.PGE toggle / CR3 reload. Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_INVPCID_NEVER
+        bool "n: never use it"
+    config X86_INVPCID_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_INVPCID_REQUIRE
+        bool "require: baseline; refuse to boot without it"
 endchoice
 
 choice
     prompt "SMEP (supervisor-mode execution prevention)"
     default X86_SMEP_PROBE
     help
-      CR4.SMEP after CPUID.(EAX=7,ECX=0):EBX[7]. Cost: none at runtime.
-      Off: the kernel may execute user pages (an exploit primitive).
+      CR4.SMEP after CPUID.(7,0):EBX[7]. Cost: none at runtime. Off: the
+      kernel may execute user pages (an exploit primitive).
       n: the fallback always. probe: the CPUID probe picks. require: the
       boot refuses a CPU without it.
 
@@ -635,7 +1134,7 @@ choice
     prompt "SMAP (supervisor-mode access prevention)"
     default X86_SMAP_PROBE
     help
-      CR4.SMAP after CPUID.(EAX=7,ECX=0):EBX[20]; the user-access window
+      CR4.SMAP after CPUID.(7,0):EBX[20]; the user-access window
       (ArchPlatform::user_access) is stac/clac. Cost: two instructions per
       user copy. Fallback: no window (every kernel access to user memory
       allowed), as without the bit.
@@ -651,57 +1150,143 @@ choice
 endchoice
 
 choice
-    prompt "PCID / INVPCID (tagged TLB)"
-    default X86_PCID_PROBE
+    prompt "UMIP (user-mode instruction prevention)"
+    default X86_UMIP_PROBE
     help
-      CR4.PCIDE after CPUID.1:ECX[17] (PCID) and CPUID.7:EBX[10] (INVPCID).
-      Keeps TLB entries across address-space switches (the ASID of
-      Mmu::switch_pt). Fallback: a full flush on every CR3 write.
+      CR4.UMIP after CPUID.(7,0):ECX[2]: SGDT/SIDT/SLDT/SMSW/STR fault in
+      ring 3, so user code cannot read kernel table addresses. Cost: none.
+      Fallback: the instructions stay legal (a KASLR leak).
       n: the fallback always. probe: the CPUID probe picks. require: the
       boot refuses a CPU without it.
 
-    config X86_PCID_NEVER
+    config X86_UMIP_NEVER
         bool "n: never use it"
-    config X86_PCID_PROBE
+    config X86_UMIP_PROBE
         bool "probe: use it when the boot finds it, fall back otherwise"
-    config X86_PCID_REQUIRE
+    config X86_UMIP_REQUIRE
         bool "require: baseline; refuse to boot without it"
 endchoice
 
 choice
-    prompt "FSGSBASE (rd/wrgsbase)"
-    default X86_FSGSBASE_PROBE
+    prompt "PKU (protection keys for user pages)"
+    default X86_PKU_PROBE
     help
-      CR4.FSGSBASE after CPUID.7:EBX[0]: Cpu::percpu_base/set_percpu_base
-      without an MSR access (tens of cycles less per kernel entry).
-      Fallback: rdmsr/wrmsr IA32_GS_BASE.
+      CPUID.(7,0):ECX[3]: 16 user page keys in PKRU (XSAVE component 9), for
+      pkey_mprotect. Cost: +8 B of XSAVE state per task. Fallback: no
+      pkey_mprotect (EINVAL, as Linux without the bit). Needs X86_XSAVE.
       n: the fallback always. probe: the CPUID probe picks. require: the
       boot refuses a CPU without it.
 
-    config X86_FSGSBASE_NEVER
+    config X86_PKU_NEVER
         bool "n: never use it"
-    config X86_FSGSBASE_PROBE
+    config X86_PKU_PROBE
         bool "probe: use it when the boot finds it, fall back otherwise"
-    config X86_FSGSBASE_REQUIRE
+        depends on !X86_XSAVE_NEVER
+    config X86_PKU_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVE_NEVER
+endchoice
+
+choice
+    prompt "LA57 (5-level paging, 57-bit VA)"
+    default X86_LA57_PROBE
+    help
+      CPUID.(7,0):ECX[16]. The MMU stays 4-level (Mmu::levels = 4) until a
+      5-level walk lands: reported only. Cost when used: one more table
+      level per walk and per TLB miss. require only refuses a CPU without
+      it.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_LA57_NEVER
+        bool "n: never use it"
+    config X86_LA57_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_LA57_REQUIRE
         bool "require: baseline; refuse to boot without it"
 endchoice
 
 choice
-    prompt "LAPIC TSC-deadline timer"
-    default X86_TSC_DEADLINE_PROBE
+    prompt "CET indirect-branch tracking"
+    default X86_CET_IBT_PROBE
     help
-      CPUID.1:ECX[24]: Interrupts::set_timer_deadline writes
-      IA32_TSC_DEADLINE in TSC ticks. Fallback: the LAPIC one-shot count
-      calibrated against the TSC.
+      CPUID.(7,0):EDX[20]: indirect jumps and calls must land on ENDBR64.
+      Not wired yet: reported only. Cost when used: an ENDBR64 per function
+      entry (4 B); the CET state is an XSAVES supervisor component. Needs
+      X86_XSAVES.
       n: the fallback always. probe: the CPUID probe picks. require: the
       boot refuses a CPU without it.
 
-    config X86_TSC_DEADLINE_NEVER
+    config X86_CET_IBT_NEVER
         bool "n: never use it"
-    config X86_TSC_DEADLINE_PROBE
+    config X86_CET_IBT_PROBE
         bool "probe: use it when the boot finds it, fall back otherwise"
-    config X86_TSC_DEADLINE_REQUIRE
+        depends on !X86_XSAVES_NEVER
+    config X86_CET_IBT_REQUIRE
         bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVES_NEVER
+endchoice
+
+choice
+    prompt "CET shadow stack"
+    default X86_CET_SHSTK_PROBE
+    help
+      CPUID.(7,0):ECX[7]: a hardware return-address stack (the x86 twin of
+      aarch64 PAuth return signing). Not wired yet: reported only. Cost when
+      used: one shadow-stack page set per task and the CET XSAVES state.
+      Needs X86_XSAVES.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_CET_SHSTK_NEVER
+        bool "n: never use it"
+    config X86_CET_SHSTK_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_XSAVES_NEVER
+    config X86_CET_SHSTK_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVES_NEVER
+endchoice
+
+choice
+    prompt "XSAVEOPT (modified-only FP save)"
+    default X86_XSAVEOPT_PROBE
+    help
+      CPUID.(0xD,1):EAX[0]: XSAVE that skips components unchanged since the
+      last XRSTOR. Faster FP save on every switch. Fallback: XSAVE, then
+      FXSAVE. require adds +xsaveopt. Needs X86_XSAVE.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_XSAVEOPT_NEVER
+        bool "n: never use it"
+    config X86_XSAVEOPT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_XSAVE_NEVER
+    config X86_XSAVEOPT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVE_NEVER
+endchoice
+
+choice
+    prompt "XSAVES (compact, supervisor-state FP save)"
+    default X86_XSAVES_PROBE
+    help
+      CPUID.(0xD,1):EAX[3]: compacted XSAVE area with the init/modified
+      optimisations and supervisor components (CET, PT). Smaller save area
+      per task. Fallback: XSAVEOPT / XSAVE. require adds +xsaves. Needs
+      X86_XSAVE.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_XSAVES_NEVER
+        bool "n: never use it"
+    config X86_XSAVES_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_XSAVE_NEVER
+    config X86_XSAVES_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVE_NEVER
 endchoice
 
 choice
@@ -709,7 +1294,7 @@ choice
     default X86_X2APIC_PROBE
     help
       CPUID.1:ECX[21]: LAPIC registers as MSRs, IPIs as one wrmsr to the
-      ICR. Fallback: xAPIC MMIO at the IA32_APIC_BASE address.
+      ICR. Fallback: xAPIC MMIO at the IA32_APIC_BASE address. Cost: none.
       n: the fallback always. probe: the CPUID probe picks. require: the
       boot refuses a CPU without it.
 
@@ -722,58 +1307,40 @@ choice
 endchoice
 
 choice
-    prompt "XSAVEOPT / XSAVES (compact, modified-only FP save)"
-    default X86_XSAVEOPT_PROBE
+    prompt "LAPIC TSC-deadline timer"
+    default X86_TSC_DEADLINE_PROBE
     help
-      CPUID.(EAX=0xD,ECX=1):EAX[0] (XSAVEOPT), [3] (XSAVES). Smaller and
-      faster FP save on every switch. Fallback: XSAVE, then FXSAVE.
+      CPUID.1:ECX[24]: Interrupts::set_timer_deadline writes
+      IA32_TSC_DEADLINE in TSC ticks. Fallback: the LAPIC one-shot count
+      calibrated against the TSC. Cost: none.
       n: the fallback always. probe: the CPUID probe picks. require: the
       boot refuses a CPU without it.
 
-    config X86_XSAVEOPT_NEVER
+    config X86_TSC_DEADLINE_NEVER
         bool "n: never use it"
-    config X86_XSAVEOPT_PROBE
+    config X86_TSC_DEADLINE_PROBE
         bool "probe: use it when the boot finds it, fall back otherwise"
-    config X86_XSAVEOPT_REQUIRE
+    config X86_TSC_DEADLINE_REQUIRE
         bool "require: baseline; refuse to boot without it"
 endchoice
 
 choice
-    prompt "AVX2 in the Vector impl"
-    default X86_AVX2_REQUIRE if X86_64_LEVEL_V3
-    default X86_AVX2_NEVER
+    prompt "Invariant TSC"
+    default X86_INVARIANT_TSC_PROBE
     help
-      CPUID.7:EBX[5] plus XCR0 YMM state. Used ONLY inside the Vector
-      impl's dot product, behind the probe and the FPU section. Fallback:
-      SSE2 (baseline). Cost: the YMM half of the FP save area.
+      CPUID.0x80000007:EDX[8]: the TSC runs at a constant rate in every
+      C/P-state, so it can be the clock source. Fallback: recalibrate
+      against the HPET. Cost: none.
       n: the fallback always. probe: the CPUID probe picks. require: the
       boot refuses a CPU without it.
 
-    config X86_AVX2_NEVER
+    config X86_INVARIANT_TSC_NEVER
         bool "n: never use it"
-    config X86_AVX2_PROBE
+    config X86_INVARIANT_TSC_PROBE
         bool "probe: use it when the boot finds it, fall back otherwise"
-    config X86_AVX2_REQUIRE
+    config X86_INVARIANT_TSC_REQUIRE
         bool "require: baseline; refuse to boot without it"
 endchoice
-
-choice
-    prompt "SHA-NI (SHA-256 instructions)"
-    default X86_SHA_NI_NEVER
-    help
-      CPUID.7:EBX[29]: the secure-boot hash through sha256rnds2. Fallback:
-      the portable SHA-256 (crates/core/crypto).
-      n: the fallback always. probe: the CPUID probe picks. require: the
-      boot refuses a CPU without it.
-
-    config X86_SHA_NI_NEVER
-        bool "n: never use it"
-    config X86_SHA_NI_PROBE
-        bool "probe: use it when the boot finds it, fall back otherwise"
-    config X86_SHA_NI_REQUIRE
-        bool "require: baseline; refuse to boot without it"
-endchoice
-
 endif # ARCH_X86_64
 
 # ---------------------------------------------------------------------------

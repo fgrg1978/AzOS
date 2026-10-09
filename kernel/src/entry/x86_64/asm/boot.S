@@ -70,11 +70,14 @@ _start:
     jz refuse_baseline
 .endif
 .if X86_LEVEL >= 3
-    // v3: CPUID.1:ECX FMA(12) MOVBE(22) OSXSAVE(27) AVX(28)
+    // v3: CPUID.1:ECX FMA(12) MOVBE(22) XSAVE(26) AVX(28) F16C(29).
+    // XSAVE, not OSXSAVE(27): OSXSAVE mirrors CR4.OSXSAVE, which nothing
+    // has set yet, so testing it refused every CPU. The XCR0 YMM state is
+    // checked from Rust (features::check_baseline, CPUID 0xD).
     movl $1, %eax
     cpuid
-    andl $0x18401000, %ecx
-    cmpl $0x18401000, %ecx
+    andl $0x34401000, %ecx
+    cmpl $0x34401000, %ecx
     jne refuse_baseline
     // CPUID.7.0:EBX BMI1(3) AVX2(5) BMI2(8)
     movl $7, %eax
@@ -88,6 +91,15 @@ _start:
     cpuid
     testl $0x20, %ecx
     jz refuse_baseline
+.endif
+.if X86_LEVEL >= 4
+    // v4: CPUID.7.0:EBX AVX512F(16) AVX512DQ(17) AVX512CD(28) AVX512BW(30) AVX512VL(31)
+    movl $7, %eax
+    xorl %ecx, %ecx
+    cpuid
+    andl $0xD0030000, %ebx
+    cmpl $0xD0030000, %ebx
+    jne refuse_baseline
 .endif
 
     // ── 3. clear .bss, build the identity map ───────────────────────────

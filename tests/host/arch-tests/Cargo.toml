@@ -12,6 +12,9 @@ description = "Host-side tests for the pure parts of crates/core/arch-riscv64 an
 # `crates/core/arch-riscv64/src/tlb.rs` (pulled in below) reads it: the scan-bound
 # canary, under which `tlb_bound` must fail.
 tlb-bound-canary = []
+# x86_64 CPUID decode (crates/core/arch-x86_64/src/features.rs) ignores the
+# XCR0 YMM state: `the_vector_extensions_need_their_xsave_state` fails.
+x86-cpuid-canary = []
 
 [dependencies]
 azos_limits = { path = "../../../crates/core/limits" }

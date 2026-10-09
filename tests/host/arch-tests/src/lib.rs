@@ -146,6 +146,15 @@ mod tlb_mask {
 #[path = "../../../../crates/core/arch-aarch64/src/features.rs"]
 mod aarch64_features;
 
+// The x86_64 CPUID decoding, for the same reason: a bit index off by one
+// reports the neighbouring extension, and a vector extension read without
+// its XCR0 state is one the OS can never enable. `read_cpuid()` answers all
+// zeros off bare metal, which is itself asserted. Canary: `--features
+// x86-cpuid-canary`.
+#[allow(dead_code)]
+#[path = "../../../../crates/core/arch-x86_64/src/features.rs"]
+mod x86_64_features;
+
 // M38/U10-3: VMSAv8-64 PTE attribute encode/decode is the aarch64-side twin
 // of `mmu` above — pure bit arithmetic, no `cfg(target_arch)` gate anywhere
 // in the file, and exactly the kind of mistake that is silent: the ret2usr

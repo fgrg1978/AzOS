@@ -191,8 +191,30 @@ fn validate_isa_levels(cfg: &ConfigMap) {
             bad.push("FP_SVE saves SVE state but A64_SVE is n".to_string());
         }
     }
-    if on("ARCH_X86_64") && on("X86_64_LEVEL_V3") && !on("X86_AVX2_REQUIRE") {
-        bad.push("X86_AVX2 must be `require` at x86-64-v3 (the level compiles AVX2 in)".to_string());
+    if on("ARCH_X86_64") {
+        // config/Kconfig.arch hides these choices' contradicting members;
+        // a hand-edited .config is refused here.
+        let level = [("X86_64_LEVEL_V4", 4), ("X86_64_LEVEL_V3", 3), ("X86_64_LEVEL_V1", 1)]
+            .iter().find(|(k, _)| on(k)).map(|&(_, l)| l).unwrap_or(2);
+        for (ext, from) in [("X86_SSE4_2", 2), ("X86_POPCNT", 2), ("X86_XSAVE", 3), ("X86_AVX", 3),
+                            ("X86_AVX2", 3), ("X86_BMI1", 3), ("X86_BMI2", 3), ("X86_FMA", 3),
+                            ("X86_MOVBE", 3), ("X86_AVX512F", 4), ("X86_AVX512BW", 4),
+                            ("X86_AVX512CD", 4), ("X86_AVX512DQ", 4), ("X86_AVX512VL", 4)] {
+            if level >= from && !on(&format!("{ext}_REQUIRE")) {
+                bad.push(format!("{ext} must be `require` at x86-64-v{level} (x86-64-v{from} includes it)"));
+            }
+        }
+        // An extension whose prerequisite is `n` can never be used.
+        for (ext, needs) in [("X86_AVX", "X86_XSAVE"), ("X86_AVX2", "X86_AVX"), ("X86_FMA", "X86_AVX"),
+                             ("X86_AVX512F", "X86_AVX2"), ("X86_AVX512BW", "X86_AVX512F"),
+                             ("X86_AVX512CD", "X86_AVX512F"), ("X86_AVX512DQ", "X86_AVX512F"),
+                             ("X86_AVX512VL", "X86_AVX512F"), ("X86_PKU", "X86_XSAVE"),
+                             ("X86_XSAVEOPT", "X86_XSAVE"), ("X86_XSAVES", "X86_XSAVE"),
+                             ("X86_CET_IBT", "X86_XSAVES"), ("X86_CET_SHSTK", "X86_XSAVES")] {
+            if !on(&format!("{ext}_NEVER")) && on(&format!("{needs}_NEVER")) {
+                bad.push(format!("{ext} is not n but {needs}, which it needs, is n"));
+            }
+        }
     }
     if on("ARCH_RISCV64") && on("RISCV64_LEVEL_RV64GCV") && on("RV_V_PROBE") {
         bad.push("RV_V is probe but the level rv64gcv says every hart has V: use require (or n)".to_string());

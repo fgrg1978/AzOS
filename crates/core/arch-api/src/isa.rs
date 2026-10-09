@@ -209,22 +209,52 @@ pub mod aarch64 {
 pub mod x86_64 {
     use super::ExtPolicy;
 
-    /// The baseline's name, as the boot line prints it.
-    pub const LEVEL: &str = if azos_limits::X86_64_LEVEL_V3 {
-        "x86-64-v3"
+    /// The baseline as a psABI level number (1..=4).
+    pub const LEVEL_NUM: u8 = if azos_limits::X86_64_LEVEL_V4 {
+        4
+    } else if azos_limits::X86_64_LEVEL_V3 {
+        3
     } else if azos_limits::X86_64_LEVEL_V1 {
-        "x86-64"
+        1
     } else {
-        "x86-64-v2"
+        2
     };
+    /// The baseline's name, as the boot line prints it.
+    pub const LEVEL: &str = ["x86-64", "x86-64-v2", "x86-64-v3", "x86-64-v4"][LEVEL_NUM as usize - 1];
 
+    pub const SSE4_2: ExtPolicy = ext_policy!(X86_SSE4_2_NEVER, X86_SSE4_2_REQUIRE);
+    pub const POPCNT: ExtPolicy = ext_policy!(X86_POPCNT_NEVER, X86_POPCNT_REQUIRE);
+    pub const XSAVE: ExtPolicy = ext_policy!(X86_XSAVE_NEVER, X86_XSAVE_REQUIRE);
+    pub const AVX: ExtPolicy = ext_policy!(X86_AVX_NEVER, X86_AVX_REQUIRE);
+    pub const AVX2: ExtPolicy = ext_policy!(X86_AVX2_NEVER, X86_AVX2_REQUIRE);
+    pub const BMI1: ExtPolicy = ext_policy!(X86_BMI1_NEVER, X86_BMI1_REQUIRE);
+    pub const BMI2: ExtPolicy = ext_policy!(X86_BMI2_NEVER, X86_BMI2_REQUIRE);
+    pub const FMA: ExtPolicy = ext_policy!(X86_FMA_NEVER, X86_FMA_REQUIRE);
+    pub const MOVBE: ExtPolicy = ext_policy!(X86_MOVBE_NEVER, X86_MOVBE_REQUIRE);
+    pub const AVX512F: ExtPolicy = ext_policy!(X86_AVX512F_NEVER, X86_AVX512F_REQUIRE);
+    pub const AVX512BW: ExtPolicy = ext_policy!(X86_AVX512BW_NEVER, X86_AVX512BW_REQUIRE);
+    pub const AVX512CD: ExtPolicy = ext_policy!(X86_AVX512CD_NEVER, X86_AVX512CD_REQUIRE);
+    pub const AVX512DQ: ExtPolicy = ext_policy!(X86_AVX512DQ_NEVER, X86_AVX512DQ_REQUIRE);
+    pub const AVX512VL: ExtPolicy = ext_policy!(X86_AVX512VL_NEVER, X86_AVX512VL_REQUIRE);
+    pub const AES: ExtPolicy = ext_policy!(X86_AES_NEVER, X86_AES_REQUIRE);
+    pub const PCLMULQDQ: ExtPolicy = ext_policy!(X86_PCLMULQDQ_NEVER, X86_PCLMULQDQ_REQUIRE);
+    pub const SHA_NI: ExtPolicy = ext_policy!(X86_SHA_NI_NEVER, X86_SHA_NI_REQUIRE);
+    pub const RDRAND: ExtPolicy = ext_policy!(X86_RDRAND_NEVER, X86_RDRAND_REQUIRE);
+    pub const RDSEED: ExtPolicy = ext_policy!(X86_RDSEED_NEVER, X86_RDSEED_REQUIRE);
+    pub const ADX: ExtPolicy = ext_policy!(X86_ADX_NEVER, X86_ADX_REQUIRE);
+    pub const FSGSBASE: ExtPolicy = ext_policy!(X86_FSGSBASE_NEVER, X86_FSGSBASE_REQUIRE);
+    pub const PCID: ExtPolicy = ext_policy!(X86_PCID_NEVER, X86_PCID_REQUIRE);
+    pub const INVPCID: ExtPolicy = ext_policy!(X86_INVPCID_NEVER, X86_INVPCID_REQUIRE);
     pub const SMEP: ExtPolicy = ext_policy!(X86_SMEP_NEVER, X86_SMEP_REQUIRE);
     pub const SMAP: ExtPolicy = ext_policy!(X86_SMAP_NEVER, X86_SMAP_REQUIRE);
-    pub const PCID: ExtPolicy = ext_policy!(X86_PCID_NEVER, X86_PCID_REQUIRE);
-    pub const FSGSBASE: ExtPolicy = ext_policy!(X86_FSGSBASE_NEVER, X86_FSGSBASE_REQUIRE);
-    pub const TSC_DEADLINE: ExtPolicy = ext_policy!(X86_TSC_DEADLINE_NEVER, X86_TSC_DEADLINE_REQUIRE);
-    pub const X2APIC: ExtPolicy = ext_policy!(X86_X2APIC_NEVER, X86_X2APIC_REQUIRE);
+    pub const UMIP: ExtPolicy = ext_policy!(X86_UMIP_NEVER, X86_UMIP_REQUIRE);
+    pub const PKU: ExtPolicy = ext_policy!(X86_PKU_NEVER, X86_PKU_REQUIRE);
+    pub const LA57: ExtPolicy = ext_policy!(X86_LA57_NEVER, X86_LA57_REQUIRE);
+    pub const CET_IBT: ExtPolicy = ext_policy!(X86_CET_IBT_NEVER, X86_CET_IBT_REQUIRE);
+    pub const CET_SHSTK: ExtPolicy = ext_policy!(X86_CET_SHSTK_NEVER, X86_CET_SHSTK_REQUIRE);
     pub const XSAVEOPT: ExtPolicy = ext_policy!(X86_XSAVEOPT_NEVER, X86_XSAVEOPT_REQUIRE);
-    pub const AVX2: ExtPolicy = ext_policy!(X86_AVX2_NEVER, X86_AVX2_REQUIRE);
-    pub const SHA_NI: ExtPolicy = ext_policy!(X86_SHA_NI_NEVER, X86_SHA_NI_REQUIRE);
+    pub const XSAVES: ExtPolicy = ext_policy!(X86_XSAVES_NEVER, X86_XSAVES_REQUIRE);
+    pub const X2APIC: ExtPolicy = ext_policy!(X86_X2APIC_NEVER, X86_X2APIC_REQUIRE);
+    pub const TSC_DEADLINE: ExtPolicy = ext_policy!(X86_TSC_DEADLINE_NEVER, X86_TSC_DEADLINE_REQUIRE);
+    pub const INVARIANT_TSC: ExtPolicy = ext_policy!(X86_INVARIANT_TSC_NEVER, X86_INVARIANT_TSC_REQUIRE);
 }

@@ -347,13 +347,7 @@ global_asm!(
 // any code compiled for that level runs.
 // arch-only: x86_64's own asm files and level; each ISA includes its own.
 #[cfg(target_arch = "x86_64")]
-const X86_64_LEVEL: u32 = if azos_limits::X86_64_LEVEL_V3 {
-    3
-} else if azos_limits::X86_64_LEVEL_V1 {
-    1
-} else {
-    2
-};
+const X86_64_LEVEL: u32 = azos_arch_api::isa::x86_64::LEVEL_NUM as u32;
 #[cfg(target_arch = "x86_64")]
 global_asm!(
     include_str!("entry/x86_64/asm/boot.S"),
