@@ -33,6 +33,181 @@ fn entries_per_table() -> usize { ARCH.entries_per_table() }
 #[inline]
 fn root_entries() -> usize { ARCH.root_entries() }
 
+/// The root's trait level: 2 on riscv64 (Sv39) and aarch64, whose roots are
+/// level-2 tables; 3 on x86_64 (PML4), 4 under LA57 (PML5). A constant on
+/// the first two, so every walk below folds to its three-level form there
+/// and costs nothing it did not cost before.
+#[inline(always)]
+pub(crate) fn root_level() -> usize { ARCH.levels() - 1 }
+
+/// The level-2 table that maps `vaddr` under `root`, or 0 when an upper
+/// entry is empty. `root` itself on a three-level MMU (the loop is dead
+/// there); on x86_64 the walk through the PML4 (and PML5) entry, which are
+/// always tables (PS is reserved above level 2).
+#[inline(always)]
+pub(crate) fn l2_table(root: usize, vaddr: usize) -> usize {
+    if root_level() <= 2 || root == 0 {
+        return root;
+    }
+    l2_table_upper(root, vaddr)
+}
+
+#[inline(never)]
+fn l2_table_upper(root: usize, vaddr: usize) -> usize {
+    let mut pt = root;
+    let mut level = root_level();
+    while level > 2 {
+        let e = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(pt + ARCH.vpn(vaddr, level) * 8)) as *const u64) };
+        if !ARCH.pte_is_table(e, level) {
+            return 0;
+        }
+        pt = ARCH.pte_phys(e);
+        level -= 1;
+    }
+    pt
+}
+
+/// [`l2_table`], allocating (charged to `root`'s owner) any upper table that
+/// is missing: the `walk(.., alloc = true)` half.
+#[inline(always)]
+fn l2_table_alloc(root: usize, vaddr: usize) -> KResult<usize> {
+    if root_level() <= 2 {
+        return Ok(root);
+    }
+    l2_table_alloc_upper(root, vaddr)
+}
+
+#[inline(never)]
+fn l2_table_alloc_upper(root: usize, vaddr: usize) -> KResult<usize> {
+    let mut pt = root;
+    let mut level = root_level();
+    while level > 2 {
+        let pte_ptr = (crate::addr::phys_to_virt(pt + ARCH.vpn(vaddr, level) * 8)) as *mut u64;
+        let pte = unsafe { core::ptr::read_volatile(pte_ptr) };
+        if ARCH.pte_is_table(pte, level) {
+            pt = ARCH.pte_phys(pte);
+        } else if ARCH.pte_is_valid(pte) {
+            return Err(KernelError::AlreadyMapped);
+        } else {
+            let new_pt = alloc_table(root)?;
+            let new_pte = ARCH.pte_make_table(new_pt.as_usize());
+            // SAFETY: `pte_ptr` is an aligned entry of a live table page. CAS
+            // as in `walk`: threads of one process share the root.
+            let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
+            match slot.compare_exchange(pte, new_pte, core::sync::atomic::Ordering::AcqRel,
+                                        core::sync::atomic::Ordering::Acquire) {
+                Ok(_) => pt = new_pt.as_usize(),
+                Err(cur) => {
+                    let _ = pmm::free_page(new_pt);
+                    let _ = table_charge(root, false);
+                    if !ARCH.pte_is_table(cur, level) {
+                        return Err(KernelError::NotMapped);
+                    }
+                    pt = ARCH.pte_phys(cur);
+                }
+            }
+        }
+        level -= 1;
+    }
+    Ok(pt)
+}
+
+/// Slots of a level-2 table: the root's count on a three-level MMU (an
+/// aarch64 16/64 KiB granule's root indexes 8/64), a full table otherwise.
+#[inline(always)]
+pub(crate) fn l2_slots() -> usize {
+    if root_level() <= 2 { root_entries() } else { entries_per_table() }
+}
+
+/// The VA bits an index at `level` selects, the top level's upper half
+/// sign-extended (x86_64's canonical form; riscv64's Sv39 never gets here).
+#[inline]
+fn upper_va(level: usize, idx: usize) -> usize {
+    let shift = PAGE_SHIFT + level * IDX_BITS;
+    let va = idx << shift;
+    if level == root_level() && idx >= entries_per_table() / 2 {
+        va | !((1usize << (shift + IDX_BITS)) - 1)
+    } else {
+        va
+    }
+}
+
+/// Run `f(user_l2, kernel_l2, va_base)` for every level-2 table `user_pt`
+/// reaches through tables of its own: `(user_pt, kernel root, 0)` once on a
+/// three-level MMU. On x86_64 every PML4 (PML5) entry is followed, except
+/// one that is the kernel's own entry copied in by
+/// [`copy_kernel_entries_to_user`] (borrowed wholesale: nothing of the
+/// task's is below it). `kernel_l2` is the kernel's level-2 table on the
+/// same path, 0 if it has none; `va_base` the VA the table's index 0 maps.
+#[inline(always)]
+pub(crate) fn for_each_user_l2(user_pt: usize, kpt: usize,
+                               mut f: impl FnMut(usize, usize, usize) -> KResult<()>) -> KResult<()> {
+    if root_level() <= 2 {
+        return f(user_pt, kpt, 0);
+    }
+    user_l2_upper(user_pt, kpt, root_level(), 0, &mut f)
+}
+
+#[inline(never)]
+fn user_l2_upper(u: usize, k: usize, level: usize, base: usize,
+                 f: &mut dyn FnMut(usize, usize, usize) -> KResult<()>) -> KResult<()> {
+    if level <= 2 {
+        return f(u, k, base);
+    }
+    let n = if level == root_level() { root_entries() } else { entries_per_table() };
+    let mut next = 0usize;
+    loop {
+        let i = next_valid(u, next, n);
+        if i >= n { break; }
+        next = i + 1;
+        let ue = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(u + i * 8)) as *const u64) };
+        if !ARCH.pte_is_table(ue, level) { continue; }
+        let uc = ARCH.pte_phys(ue);
+        let kc = if k != 0 {
+            let ke = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(k + i * 8)) as *const u64) };
+            if ARCH.pte_is_table(ke, level) { ARCH.pte_phys(ke) } else { 0 }
+        } else { 0 };
+        if kc != 0 && kc == uc {
+            continue; // the kernel's table, borrowed wholesale
+        }
+        user_l2_upper(uc, kc, level - 1, base | upper_va(level, i), f)?;
+    }
+    Ok(())
+}
+
+/// Free the tables below the root and at or above level 2 that `user_pt`
+/// owns (x86_64's PDPTs and, under LA57, PML4s), leaving any borrowed from
+/// the kernel; their contents below level 2 are already gone. Nothing on a
+/// three-level MMU, where the root is the level-2 table.
+#[inline(always)]
+fn free_user_upper_tables(user_pt: usize, kpt: usize) {
+    if root_level() > 2 {
+        free_upper(user_pt, kpt, root_level());
+    }
+}
+
+#[inline(never)]
+fn free_upper(u: usize, k: usize, level: usize) {
+    if level <= 2 { return; }
+    let n = if level == root_level() { root_entries() } else { entries_per_table() };
+    for i in 0..n {
+        let ue = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(u + i * 8)) as *const u64) };
+        if !ARCH.pte_is_table(ue, level) { continue; }
+        let uc = ARCH.pte_phys(ue);
+        let kc = if k != 0 {
+            let ke = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(k + i * 8)) as *const u64) };
+            if ARCH.pte_is_table(ke, level) { ARCH.pte_phys(ke) } else { 0 }
+        } else { 0 };
+        if kc != 0 && kc == uc { continue; }
+        if level > 3 {
+            free_upper(uc, kc, level - 1);
+        }
+        // `uc` is the task's table at level - 1 (at level 3, a level-2
+        // table whose own tables the level-2 teardown already freed).
+        let _ = pmm::free_page(PhysAddr::new(uc));
+    }
+}
+
 /// Index bits per level: a table is one page of 8-byte entries (9 at 4 KiB).
 const IDX_BITS: usize = PAGE_SHIFT - 3;
 /// Entries per table as a constant, for loops over one table's worth of
@@ -326,9 +501,10 @@ pub fn create_pagetable() -> KResult<usize> {
 /// L0 under that L1. These are the same two comparisons
 /// `destroy_user_pagetable_skip_range` already makes to decide what it must
 /// not free — stated once here so the two cannot drift.
-fn kernel_table_at(vpn2: usize, vpn1: Option<usize>) -> usize {
-    let kpt = *KERNEL_PT.lock();
+fn kernel_table_at(vaddr: usize, vpn1: Option<usize>) -> usize {
+    let kpt = l2_table(*KERNEL_PT.lock(), vaddr);
     if kpt == 0 { return 0; }
+    let vpn2 = ARCH.vpn(vaddr, 2);
     let kl2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(kpt + vpn2 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(kl2) || ARCH.pte_is_leaf(kl2, 2) { return 0; }
     let k_l1 = ARCH.pte_phys(kl2);
@@ -364,20 +540,25 @@ pub fn write_would_enter_kernel_table(pt_phys: usize, vaddr: usize) -> bool {
     let kpt = *KERNEL_PT.lock();
     if kpt == 0 || pt_phys == kpt { return false; }
 
+    let ul2 = l2_table(pt_phys, vaddr);
+    if ul2 == 0 { return false; }               // nothing there yet; walk will allocate ours
+    // x86_64: a PML4 (PML5) entry copied from the kernel makes the whole
+    // level-2 table the kernel's.
+    if root_level() > 2 && ul2 == l2_table(kpt, vaddr) { return true; }
     let vpn2 = ARCH.vpn(vaddr, 2);
-    let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(pt_phys + vpn2 * 8)) as *const u64) };
+    let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(ul2 + vpn2 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(l2) { return false; }  // nothing there yet; walk will allocate ours
     if ARCH.pte_is_leaf(l2, 2) { return false; } // a gigapage is not a table to descend into
 
     let u_l1 = ARCH.pte_phys(l2);
-    if u_l1 == kernel_table_at(vpn2, None) {
+    if u_l1 == kernel_table_at(vaddr, None) {
         return true;                            // L1 borrowed wholesale from the kernel
     }
 
     let vpn1 = ARCH.vpn(vaddr, 1);
     let l1: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(u_l1 + vpn1 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(l1) || ARCH.pte_is_leaf(l1, 1) { return false; }
-    ARCH.pte_phys(l1) == kernel_table_at(vpn2, Some(vpn1))
+    ARCH.pte_phys(l1) == kernel_table_at(vaddr, Some(vpn1))
 }
 
 /// Is `[start, end)` (page-aligned) empty in the user table `pt_phys` — no
@@ -421,7 +602,7 @@ pub fn user_range_vacant(pt_phys: usize, start: usize, end: usize) -> bool {
 pub(crate) fn walk(pt_phys: usize, vaddr: usize, alloc: bool) -> KResult<*mut u64> {
     let mut pt = pt_phys;
 
-    for level in (1..=2).rev() {
+    for level in (1..=root_level()).rev() {
         let vpn = ARCH.vpn(vaddr, level);
 
         let pte_ptr = (crate::addr::phys_to_virt(pt + vpn * 8)) as *mut u64;
@@ -610,8 +791,9 @@ pub fn map_mega(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) ->
     }
 
     // Walk L2 to find/create the L1 table
+    let l2t = l2_table_alloc(pt_phys, vaddr)?;
     let vpn2 = ARCH.vpn(vaddr, 2);
-    let l2_pte_ptr = (crate::addr::phys_to_virt(pt_phys + vpn2 * 8)) as *mut u64;
+    let l2_pte_ptr = (crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *mut u64;
     let l2_pte = unsafe { core::ptr::read_volatile(l2_pte_ptr) };
 
     let l1_pt = if ARCH.pte_is_valid(l2_pte) {
@@ -695,7 +877,7 @@ pub fn add_user_leaf_perms(pt_phys: usize, vaddr: usize, add: PagePerms) -> KRes
     // so a superpage here is the kernel's merged entries or a locked row's
     // region (`map_user_mega_range`, read-write for the task's life): not
     // ours to widen either way.
-    for level in (0..3).rev() {
+    for level in (0..=root_level()).rev() {
         let vpn = ARCH.vpn(vaddr, level);
         let pte_ptr = (crate::addr::phys_to_virt(pt + vpn * 8)) as *mut u64;
         let pte: u64 = unsafe { core::ptr::read_volatile(pte_ptr) };
@@ -758,8 +940,10 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
         return;
     }
     // Walk L2 → L1 to detect megapage before reaching walk().
+    let l2t = l2_table(pt_phys, vaddr);
+    if l2t == 0 { return; }
     let vpn2 = ARCH.vpn(vaddr, 2);
-    let l2_pte = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(pt_phys + vpn2 * 8)) as *const u64) };
+    let l2_pte = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(l2_pte) || ARCH.pte_is_leaf(l2_pte, 2) {
         // Not mapped, or gigapage (1 GiB) — cannot split, just return.
         return;
@@ -822,7 +1006,7 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
 /// region really is mapped with level-1 leaves (Kconfig `LOCKED_HUGE_LEAVES`).
 pub fn leaf_level(pt_phys: usize, vaddr: usize) -> Option<usize> {
     let mut pt = pt_phys;
-    for level in (0..3).rev() {
+    for level in (0..=root_level()).rev() {
         let pte: u64 = unsafe {
             core::ptr::read_volatile((crate::addr::phys_to_virt(pt + ARCH.vpn(vaddr, level) * 8)) as *const u64)
         };
@@ -904,8 +1088,10 @@ pub fn map_user_mega_range(pt_phys: usize, vaddr: usize, paddr: usize, len: usiz
 /// Is the level-1 entry that would map `vaddr`'s 2 MiB slot empty (no leaf,
 /// no table)? `true` also when the root has no table for it yet.
 fn l1_slot_is_empty(pt_phys: usize, vaddr: usize) -> bool {
+    let l2t = l2_table(pt_phys, vaddr);
+    if l2t == 0 { return true; }
     let l2: u64 = unsafe {
-        core::ptr::read_volatile((crate::addr::phys_to_virt(pt_phys + ARCH.vpn(vaddr, 2) * 8)) as *const u64)
+        core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + ARCH.vpn(vaddr, 2) * 8)) as *const u64)
     };
     if !ARCH.pte_is_valid(l2) { return true; }
     if ARCH.pte_is_leaf(l2, 2) { return false; }
@@ -921,20 +1107,20 @@ fn l1_slot_is_empty(pt_phys: usize, vaddr: usize) -> bool {
 /// tables its merged entries point at.
 pub fn table_frames(root: usize) -> usize {
     if root == 0 { return 0; }
+    table_frames_at(root, root_level())
+}
+
+/// `pt` (a table at `level`) plus every table below it; a level-1 table's
+/// level-0 children are counted, not read.
+fn table_frames_at(pt: usize, level: usize) -> usize {
     let mut n = 1usize;
-    for vpn2 in 0..root_entries() {
-        let l2: u64 = unsafe {
-            core::ptr::read_volatile((crate::addr::phys_to_virt(root + vpn2 * 8)) as *const u64)
+    let slots = if level == root_level() { root_entries() } else { entries_per_table() };
+    for i in 0..slots {
+        let e: u64 = unsafe {
+            core::ptr::read_volatile((crate::addr::phys_to_virt(pt + i * 8)) as *const u64)
         };
-        if !ARCH.pte_is_table(l2, 2) { continue; }
-        n += 1;
-        let l1_pt = ARCH.pte_phys(l2);
-        for vpn1 in 0..entries_per_table() {
-            let l1: u64 = unsafe {
-                core::ptr::read_volatile((crate::addr::phys_to_virt(l1_pt + vpn1 * 8)) as *const u64)
-            };
-            if ARCH.pte_is_table(l1, 1) { n += 1; }
-        }
+        if !ARCH.pte_is_table(e, level) { continue; }
+        n += if level == 1 { 1 } else { table_frames_at(ARCH.pte_phys(e), level - 1) };
     }
     n
 }
@@ -944,7 +1130,8 @@ pub fn table_frames(root: usize) -> usize {
 /// Handles pages and level-1/level-2 leaves (2 MiB / 1 GiB at 4 KiB) correctly.
 pub fn translate(pt_phys: usize, vaddr: usize) -> Option<usize> {
     // Walk inline to detect megapages at each level.
-    let mut pt = pt_phys;
+    let mut pt = l2_table(pt_phys, vaddr);
+    if pt == 0 { return None; }
 
     // L2
     let vpn2 = ARCH.vpn(vaddr, 2);
@@ -1078,7 +1265,8 @@ fn reserved_write_permitted(pt_phys: usize, vaddr: usize) -> bool {
 /// level to be read at the wrong shift, and only one of them would have a test
 /// pointing at it.
 fn user_leaf(pt_phys: usize, vaddr: usize) -> Option<(u64, usize)> {
-    let mut pt = pt_phys;
+    let mut pt = l2_table(pt_phys, vaddr);
+    if pt == 0 { return None; }
 
     // L2 — kernel gigapages reach this leaf (copied wholesale into user PTs),
     // so the USER check must be applied here too.
@@ -1121,7 +1309,8 @@ fn user_leaf_ok(
             crate::cow::handle_cow_fault(pt_phys, vaddr).ok()?;
             // Re-translate: the fresh leaf now has WRITE set. Guard against a
             // pathological re-fault by using the plain permission read.
-            let mut pt = pt_phys;
+            let mut pt = l2_table(pt_phys, vaddr);
+            if pt == 0 { return None; }
             let l2 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(pt + ARCH.vpn(vaddr, 2) * 8)) as *const u64) };
             if !ARCH.pte_is_valid(l2) { return None; }
             if ARCH.pte_is_leaf(l2, 2) {
@@ -1235,7 +1424,12 @@ pub fn split_mega_range(start: usize, end: usize) -> usize {
         let vpn2 = ARCH.vpn(addr, 2);
         let vpn1 = ARCH.vpn(addr, 1);
 
-        let l2_pte_ptr = (crate::addr::phys_to_virt(kpt + vpn2 * 8)) as *const u64;
+        let l2t = l2_table(kpt, addr);
+        if l2t == 0 {
+            addr += MEGA_SIZE;
+            continue;
+        }
+        let l2_pte_ptr = (crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *const u64;
         let l2_pte = unsafe { core::ptr::read_volatile(l2_pte_ptr) };
         if !ARCH.pte_is_valid(l2_pte) || ARCH.pte_is_leaf(l2_pte, 2) {
             addr += MEGA_SIZE;
@@ -1612,7 +1806,12 @@ fn for_each_leaf_outside_image(
             addr = image_end;
             continue;
         }
-        let l2_ptr = (crate::addr::phys_to_virt(pt_phys + ARCH.vpn(addr, 2) * 8)) as *mut u64;
+        let l2t = l2_table(pt_phys, addr);
+        if l2t == 0 {
+            addr = (addr & !(MEGA_SIZE - 1)) + MEGA_SIZE;
+            continue;
+        }
+        let l2_ptr = (crate::addr::phys_to_virt(l2t + ARCH.vpn(addr, 2) * 8)) as *mut u64;
         let l2 = unsafe { core::ptr::read_volatile(l2_ptr) };
         if !ARCH.pte_is_valid(l2) {
             addr = (addr & !(MEGA_SIZE - 1)) + MEGA_SIZE;
@@ -1723,8 +1922,10 @@ pub fn verify_no_exec_outside_image(
 /// unsplit megapage would read as a well-behaved page here. So this descends
 /// by hand instead of asking `walk`.
 fn megapage_leaf_at(pt_phys: usize, vaddr: usize) -> bool {
+    let l2t = l2_table(pt_phys, vaddr);
+    if l2t == 0 { return false; }
     let l2 = unsafe {
-        core::ptr::read_volatile((crate::addr::phys_to_virt(pt_phys + ARCH.vpn(vaddr, 2) * 8)) as *const u64)
+        core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + ARCH.vpn(vaddr, 2) * 8)) as *const u64)
     };
     if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) {
         // A gigapage leaf at L2 is the same problem one level up; an invalid
@@ -1885,11 +2086,52 @@ pub fn copy_kernel_entries_to_user(user_pt: usize) {
     #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
     {
     let kpt = *KERNEL_PT.lock();
+    merge_kernel_entries(kpt, user_pt, root_level());
+    }
+}
 
+/// [`copy_kernel_entries_to_user`] at one level: above level 2 (x86_64) a
+/// kernel entry the task lacks is copied, one both have is descended; at
+/// level 2 the merge below.
+#[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+#[inline(always)]
+fn merge_kernel_entries(kpt: usize, user_pt: usize, level: usize) {
+    if level <= 2 {
+        merge_kernel_l2(kpt, user_pt);
+    } else {
+        merge_kernel_upper(kpt, user_pt, level);
+    }
+}
+
+#[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+#[inline(never)]
+fn merge_kernel_upper(kpt: usize, user_pt: usize, level: usize) {
+    let n = if level == root_level() { root_entries() } else { entries_per_table() };
+    let mut next = 0usize;
+    loop {
+        let i = next_valid(kpt, next, n);
+        if i >= n { break; }
+        next = i + 1;
+        let kpte: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(kpt + i * 8)) as *const u64) };
+        if !ARCH.pte_is_table(kpte, level) { continue; }
+        let upte_ptr = (crate::addr::phys_to_virt(user_pt + i * 8)) as *mut u64;
+        let upte: u64 = unsafe { core::ptr::read_volatile(upte_ptr) };
+        if !ARCH.pte_is_valid(upte) {
+            unsafe { core::ptr::write_volatile(upte_ptr, kpte) };
+        } else if ARCH.pte_is_table(upte, level) && ARCH.pte_phys(upte) != ARCH.pte_phys(kpte) {
+            merge_kernel_entries(ARCH.pte_phys(kpte), ARCH.pte_phys(upte), level - 1);
+        }
+    }
+}
+
+/// The two-level merge: `kpt` and `user_pt` are level-2 tables (the roots on
+/// riscv64; on x86_64 the PDPTs one path reaches).
+#[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+fn merge_kernel_l2(kpt: usize, user_pt: usize) {
     let mut vpn2_next = 0usize;
     loop {
-        let vpn2 = next_valid(kpt, vpn2_next, root_entries());
-        if vpn2 >= root_entries() { break; }
+        let vpn2 = next_valid(kpt, vpn2_next, l2_slots());
+        if vpn2 >= l2_slots() { break; }
         vpn2_next = vpn2 + 1;
         let kpte: u64 = unsafe {
             core::ptr::read_volatile((crate::addr::phys_to_virt(kpt + vpn2 * 8)) as *const u64)
@@ -1930,16 +2172,15 @@ pub fn copy_kernel_entries_to_user(user_pt: usize) {
         }
         // Both sides have leaf entries (megapages) — kernel PT owns it, skip.
     }
-    }
 }
-/// The kernel's L1 table for VPN[2] slot `vpn2`, if the kernel PT has one.
+/// The kernel's L1 table for VPN[2] slot `vpn2` of the kernel level-2 table
+/// `kpt` ([`for_each_user_l2`]'s `kernel_l2`), if it has one.
 ///
 /// Returns `None` when the kernel has no entry there, or when the entry is a
 /// gigapage leaf (no L1 table to speak of). Used by the teardown and COW
 /// walkers to recognise a table that is *borrowed* from the kernel PT rather
 /// than owned by the user PT they are traversing.
-pub(crate) fn kernel_l1_table(vpn2: usize) -> Option<usize> {
-    let kpt = *KERNEL_PT.lock();
+pub(crate) fn kernel_l1_in(kpt: usize, vpn2: usize) -> Option<usize> {
     if kpt == 0 || vpn2 >= entries_per_table() { return None; }
     let kpte: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(kpt + vpn2 * 8)) as *const u64) };
     if ARCH.pte_is_valid(kpte) && !ARCH.pte_is_leaf(kpte, 2) { Some(ARCH.pte_phys(kpte)) } else { None }
@@ -2016,11 +2257,46 @@ pub fn kernel_entry_collision(user_pt: usize) -> Option<(usize, usize)> {
     }
     let kpt = *KERNEL_PT.lock();
     if kpt == 0 { return None; }
+    kernel_collision_at(kpt, user_pt, root_level())
+}
 
+#[inline(always)]
+fn kernel_collision_at(kpt: usize, user_pt: usize, level: usize) -> Option<(usize, usize)> {
+    if level <= 2 {
+        kernel_collision_l2(kpt, user_pt)
+    } else {
+        kernel_collision_upper(kpt, user_pt, level)
+    }
+}
+
+/// Above level 2 (x86_64): a kernel entry the task lacks is copied whole by
+/// the merge; one both have as different tables is compared one level down.
+#[inline(never)]
+fn kernel_collision_upper(kpt: usize, user_pt: usize, level: usize) -> Option<(usize, usize)> {
+    let n = if level == root_level() { root_entries() } else { entries_per_table() };
+    let mut next = 0usize;
+    loop {
+        let i = next_valid(kpt, next, n);
+        if i >= n { break; }
+        next = i + 1;
+        let kpte: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(kpt + i * 8)) as *const u64) };
+        if !ARCH.pte_is_table(kpte, level) { continue; }
+        let upte: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(user_pt + i * 8)) as *const u64) };
+        if !ARCH.pte_is_valid(upte) { continue; }
+        if !ARCH.pte_is_table(upte, level) { return Some((i, entries_per_table())); }
+        if ARCH.pte_phys(upte) == ARCH.pte_phys(kpte) { continue; }
+        if let Some(c) = kernel_collision_at(ARCH.pte_phys(kpte), ARCH.pte_phys(upte), level - 1) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+fn kernel_collision_l2(kpt: usize, user_pt: usize) -> Option<(usize, usize)> {
     let mut vpn2_next = 0usize;
     loop {
-        let vpn2 = next_valid(kpt, vpn2_next, root_entries());
-        if vpn2 >= root_entries() { break; }
+        let vpn2 = next_valid(kpt, vpn2_next, l2_slots());
+        if vpn2 >= l2_slots() { break; }
         vpn2_next = vpn2 + 1;
         let kpte: u64 = unsafe {
             core::ptr::read_volatile((crate::addr::phys_to_virt(kpt + vpn2 * 8)) as *const u64)
@@ -2505,8 +2781,10 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
 /// nothing mapped).
 fn user_l0_leaf(pt_phys: usize, vaddr: usize) -> Option<*mut u64> {
     if write_would_enter_kernel_table(pt_phys, vaddr) { return None; }
+    let l2t = l2_table(pt_phys, vaddr);
+    if l2t == 0 { return None; }
     let vpn2 = ARCH.vpn(vaddr, 2);
-    let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(pt_phys + vpn2 * 8)) as *const u64) };
+    let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) { return None; }
     let vpn1 = ARCH.vpn(vaddr, 1);
     let l1: u64 = unsafe {
@@ -2535,8 +2813,10 @@ fn take_user_leaf(pt_phys: usize, vaddr: usize, skip_lo: usize, skip_hi: usize) 
     // one as a 4 KiB page would hand `page_decref` the base of a 2 MiB region.
     // Neither is ever created by `map`, so reaching one means a kernel mapping,
     // and it is not ours to touch.
+    let l2t = l2_table(pt_phys, vaddr);
+    if l2t == 0 { return None; }
     let vpn2 = ARCH.vpn(vaddr, 2);
-    let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(pt_phys + vpn2 * 8)) as *const u64) };
+    let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) { return None; }
 
     let vpn1 = ARCH.vpn(vaddr, 1);
@@ -2617,89 +2897,94 @@ pub fn destroy_user_pagetable_skip_range(pt_phys: usize, skip_lo: usize, skip_hi
     let vdso_phys = crate::vdso::vdso_phys();
     let tramp_phys = crate::vdso::sigtramp_phys();
 
-    let mut vpn2_next = 0usize;
-    loop {
-        let vpn2 = crate::vmm::next_valid(pt_phys, vpn2_next, root_entries());
-        if vpn2 >= root_entries() { break; }
-        vpn2_next = vpn2 + 1;
-        let l2: u64 = unsafe {
-            core::ptr::read_volatile((crate::addr::phys_to_virt(pt_phys + vpn2 * 8)) as *const u64)
-        };
-        // Gigapage leaves are only ever created by the kernel mapper.
-        if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) { continue; }
-        let u_l1 = ARCH.pte_phys(l2);
-
-        // Which L1 table does the kernel use for this slot (if any)?
-        let k_l1 = if kpt != 0 {
-            let kpte: u64 = unsafe {
-                core::ptr::read_volatile((crate::addr::phys_to_virt(kpt + vpn2 * 8)) as *const u64)
-            };
-            if ARCH.pte_is_valid(kpte) && !ARCH.pte_is_leaf(kpte, 2) { ARCH.pte_phys(kpte) } else { 0 }
-        } else { 0 };
-
-        if k_l1 != 0 && k_l1 == u_l1 {
-            continue; // borrowed wholesale from the kernel PT — not ours to free
-        }
-
-        let mut vpn1_next = 0usize;
+    let _ = for_each_user_l2(pt_phys, kpt, |u_l2, k_l2, base| {
+        let mut vpn2_next = 0usize;
         loop {
-            let vpn1 = crate::vmm::next_valid(u_l1, vpn1_next, entries_per_table());
-            if vpn1 >= entries_per_table() { break; }
-            vpn1_next = vpn1 + 1;
-            let l1: u64 = unsafe {
-                core::ptr::read_volatile((crate::addr::phys_to_virt(u_l1 + vpn1 * 8)) as *const u64)
+            let vpn2 = crate::vmm::next_valid(u_l2, vpn2_next, l2_slots());
+            if vpn2 >= l2_slots() { break; }
+            vpn2_next = vpn2 + 1;
+            let l2: u64 = unsafe {
+                core::ptr::read_volatile((crate::addr::phys_to_virt(u_l2 + vpn2 * 8)) as *const u64)
             };
-            // A level-1 leaf is never this table's to free: a kernel mapping
-            // (the aarch64 device windows) or a locked row's region
-            // (`map_user_mega_range`, Kconfig LOCKED_HUGE_LEAVES), whose frames
-            // are the row's for the whole boot (`crate::huge`) — leave it alone.
-            if !ARCH.pte_is_valid(l1) || ARCH.pte_is_leaf(l1, 1) { continue; }
-            let u_l0 = ARCH.pte_phys(l1);
+            // Gigapage leaves are only ever created by the kernel mapper.
+            if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) { continue; }
+            let u_l1 = ARCH.pte_phys(l2);
 
-            if k_l1 != 0 {
-                let kl1: u64 = unsafe {
-                    core::ptr::read_volatile((crate::addr::phys_to_virt(k_l1 + vpn1 * 8)) as *const u64)
+            // Which L1 table does the kernel use for this slot (if any)?
+            let k_l1 = if k_l2 != 0 {
+                let kpte: u64 = unsafe {
+                    core::ptr::read_volatile((crate::addr::phys_to_virt(k_l2 + vpn2 * 8)) as *const u64)
                 };
-                if ARCH.pte_is_valid(kl1) && !ARCH.pte_is_leaf(kl1, 1) && ARCH.pte_phys(kl1) == u_l0 {
-                    continue; // merged kernel L0 table — not ours to free
-                }
+                if ARCH.pte_is_valid(kpte) && !ARCH.pte_is_leaf(kpte, 2) { ARCH.pte_phys(kpte) } else { 0 }
+            } else { 0 };
+
+            if k_l1 != 0 && k_l1 == u_l1 {
+                continue; // borrowed wholesale from the kernel PT — not ours to free
             }
 
-            let mut refs: Option<crate::cow::RefBatch<'static>> = None;
-            let mut vpn0_next = 0usize;
-            // A leaf table wholly inside the skipped window owns no frame:
-            // only the table itself goes (wave 13: not walked).
-            let lo = (vpn2 << L2_SHIFT) | (vpn1 << L1_SHIFT);
-            if lo >= skip_lo && lo + (1usize << L1_SHIFT) <= skip_hi {
-                vpn0_next = entries_per_table();
-            }
+            let mut vpn1_next = 0usize;
             loop {
-                let vpn0 = crate::vmm::next_valid(u_l0, vpn0_next, entries_per_table());
-                if vpn0 >= entries_per_table() { break; }
-                vpn0_next = vpn0 + 1;
-                let l0: u64 = unsafe {
-                    core::ptr::read_volatile((crate::addr::phys_to_virt(u_l0 + vpn0 * 8)) as *const u64)
+                let vpn1 = crate::vmm::next_valid(u_l1, vpn1_next, entries_per_table());
+                if vpn1 >= entries_per_table() { break; }
+                vpn1_next = vpn1 + 1;
+                let l1: u64 = unsafe {
+                    core::ptr::read_volatile((crate::addr::phys_to_virt(u_l1 + vpn1 * 8)) as *const u64)
                 };
-                if !ARCH.pte_is_valid(l0) || !ARCH.pte_is_leaf(l0, 0) { continue; }
-                // A leaf without USER is a kernel mapping that found its way
-                // in — never ours to free.
-                //
-                // USER leaves installed by `shm_map_user`/`mmio_map_user` are
-                // *not* owned by this address space either — that is what
-                // `skip_lo..skip_hi` exists for (see the function doc); the
-                // construction-failure paths pass an empty window because no
-                // such mapping can exist before the loader/fork returns.
-                let va = (vpn2 << L2_SHIFT) | (vpn1 << L1_SHIFT) | (vpn0 << PAGE_SHIFT);
-                let refs = refs.get_or_insert_with(crate::cow::ref_batch);
-                if user_leaf_is_task_owned_in(l0, va, skip_lo, skip_hi, vdso_phys, tramp_phys, refs) {
-                    let _ = pmm::free_page(PhysAddr::new(ARCH.pte_phys(l0)));
+                // A level-1 leaf is never this table's to free: a kernel mapping
+                // (the aarch64 device windows) or a locked row's region
+                // (`map_user_mega_range`, Kconfig LOCKED_HUGE_LEAVES), whose frames
+                // are the row's for the whole boot (`crate::huge`) — leave it alone.
+                if !ARCH.pte_is_valid(l1) || ARCH.pte_is_leaf(l1, 1) { continue; }
+                let u_l0 = ARCH.pte_phys(l1);
+
+                if k_l1 != 0 {
+                    let kl1: u64 = unsafe {
+                        core::ptr::read_volatile((crate::addr::phys_to_virt(k_l1 + vpn1 * 8)) as *const u64)
+                    };
+                    if ARCH.pte_is_valid(kl1) && !ARCH.pte_is_leaf(kl1, 1) && ARCH.pte_phys(kl1) == u_l0 {
+                        continue; // merged kernel L0 table — not ours to free
+                    }
                 }
+
+                let mut refs: Option<crate::cow::RefBatch<'static>> = None;
+                let mut vpn0_next = 0usize;
+                // A leaf table wholly inside the skipped window owns no frame:
+                // only the table itself goes (wave 13: not walked).
+                let lo = base | (vpn2 << L2_SHIFT) | (vpn1 << L1_SHIFT);
+                if lo >= skip_lo && lo + (1usize << L1_SHIFT) <= skip_hi {
+                    vpn0_next = entries_per_table();
+                }
+                loop {
+                    let vpn0 = crate::vmm::next_valid(u_l0, vpn0_next, entries_per_table());
+                    if vpn0 >= entries_per_table() { break; }
+                    vpn0_next = vpn0 + 1;
+                    let l0: u64 = unsafe {
+                        core::ptr::read_volatile((crate::addr::phys_to_virt(u_l0 + vpn0 * 8)) as *const u64)
+                    };
+                    if !ARCH.pte_is_valid(l0) || !ARCH.pte_is_leaf(l0, 0) { continue; }
+                    // A leaf without USER is a kernel mapping that found its way
+                    // in — never ours to free.
+                    //
+                    // USER leaves installed by `shm_map_user`/`mmio_map_user` are
+                    // *not* owned by this address space either — that is what
+                    // `skip_lo..skip_hi` exists for (see the function doc); the
+                    // construction-failure paths pass an empty window because no
+                    // such mapping can exist before the loader/fork returns.
+                    let va = base | (vpn2 << L2_SHIFT) | (vpn1 << L1_SHIFT) | (vpn0 << PAGE_SHIFT);
+                    let refs = refs.get_or_insert_with(crate::cow::ref_batch);
+                    if user_leaf_is_task_owned_in(l0, va, skip_lo, skip_hi, vdso_phys, tramp_phys, refs) {
+                        let _ = pmm::free_page(PhysAddr::new(ARCH.pte_phys(l0)));
+                    }
+                }
+                drop(refs);
+                let _ = pmm::free_page(PhysAddr::new(u_l0));
             }
-            drop(refs);
-            let _ = pmm::free_page(PhysAddr::new(u_l0));
+            let _ = pmm::free_page(PhysAddr::new(u_l1));
         }
-        let _ = pmm::free_page(PhysAddr::new(u_l1));
-    }
+
+        Ok(())
+    });
+    free_user_upper_tables(pt_phys, kpt);
 
     meta_remove(pt_phys);
     let _ = pmm::free_page(PhysAddr::new(pt_phys));

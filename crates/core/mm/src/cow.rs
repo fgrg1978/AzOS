@@ -150,249 +150,256 @@ fn fork_cow_inner<const CONCURRENT: bool>(
     // Walk L2. Every root slot, also under an aarch64 16/64 KiB granule whose
     // root indexes only 8/64 of them: the root is a whole zeroed page, so the
     // rest read empty. Kept at `entries` so this loop is the one c1afd98 had.
-    let mut vpn2_next = 0usize;
-    loop {
-        let vpn2 = crate::vmm::next_valid(parent_pt, vpn2_next, entries);
-        if vpn2 >= entries { break; }
-        vpn2_next = vpn2 + 1;
-        let l2_pte = unsafe {
-            core::ptr::read_volatile((crate::addr::phys_to_virt(parent_pt + vpn2 * 8)) as *const u64)
-        };
-        if !ARCH.pte_is_valid(l2_pte) || ARCH.pte_is_leaf(l2_pte, 2) {
-            continue; // Skip gigapages (kernel mapping).
-        }
-        let l1_pt = ARCH.pte_phys(l2_pte);
-
-        // Defence in depth against the loader ordering bug (audit finding 2 /
-        // 3): if `copy_kernel_entries_to_user` ever runs on an empty user PT
-        // again, `parent_pt.L2[vpn2]` is a pointer to the *kernel's* L1 table,
-        // and this walk would rewrite kernel PTEs — clearing WRITE and setting
-        // the COW marker on the kernel's own mappings, in every address space
-        // at once. Recognise a borrowed kernel table and never descend into it;
-        // there is nothing forkable down there in any case (kernel leaves have
-        // no USER bit).
-        let kernel_l1 = vmm::kernel_l1_table(vpn2);
-        if kernel_l1 == Some(l1_pt) {
-            continue;
-        }
-
-        // Walk L1.
-        let mut vpn1_next = 0usize;
+    // Every level-2 table the parent owns: its root on riscv64 and aarch64,
+    // each PDPT on x86_64 (`vmm::for_each_user_l2`, borrowed kernel tables
+    // skipped).
+    let kpt = vmm::kernel_pagetable();
+    vmm::for_each_user_l2(parent_pt, kpt, |parent_l2, k_l2, base| {
+        let mut vpn2_next = 0usize;
         loop {
-            let vpn1 = crate::vmm::next_valid(l1_pt, vpn1_next, entries);
-            if vpn1 >= entries { break; }
-            vpn1_next = vpn1 + 1;
-            let l1_pte = unsafe {
-                core::ptr::read_volatile((crate::addr::phys_to_virt(l1_pt + vpn1 * 8)) as *const u64)
+            let vpn2 = crate::vmm::next_valid(parent_l2, vpn2_next, entries);
+            if vpn2 >= entries { break; }
+            vpn2_next = vpn2 + 1;
+            let l2_pte = unsafe {
+                core::ptr::read_volatile((crate::addr::phys_to_virt(parent_l2 + vpn2 * 8)) as *const u64)
             };
-            if !ARCH.pte_is_valid(l1_pte) || ARCH.pte_is_leaf(l1_pte, 1) {
-                continue; // Skip megapages.
+            if !ARCH.pte_is_valid(l2_pte) || ARCH.pte_is_leaf(l2_pte, 2) {
+                continue; // Skip gigapages (kernel mapping).
             }
-            let l0_pt = ARCH.pte_phys(l1_pte);
+            let l1_pt = ARCH.pte_phys(l2_pte);
 
-            // Same guard one level down: at VPN[2]=0 the user owns the L1
-            // table but individual slots point at the kernel's L0 tables
-            // (CLINT, PLIC, UART), merged in by
-            // `copy_kernel_entries_to_user`.
-            if let Some(k_l1) = kernel_l1 {
-                let kl1_pte = unsafe {
-                    core::ptr::read_volatile((crate::addr::phys_to_virt(k_l1 + vpn1 * 8)) as *const u64)
-                };
-                if ARCH.pte_is_valid(kl1_pte) && !ARCH.pte_is_leaf(kl1_pte, 1)
-                    && ARCH.pte_phys(kl1_pte) == l0_pt
-                {
-                    continue;
-                }
-            }
-
-            // Walk L0 (4 KiB pages). The child's leaf table for this range is
-            // walked to (and made) once, at its first page, and its entries
-            // written by index after that; the refcount table is held over
-            // the whole leaf table (wave 13: a walk and a lock per page were
-            // ~150 of a fork's ~600 instructions per page).
-            let mut child_l0: *mut u64 = core::ptr::null_mut();
-            let mut refs: Option<crate::cow_table::RefBatch<'static>> = None;
-            let mut vpn0_next = 0usize;
-            // A leaf table wholly inside the shm/MMIO window holds nothing a
-            // child gets (see `fork_cow`): not walked at all (wave 13).
-            {
-                const L0_SPAN_SHIFT: usize = azos_arch_api::PAGE_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
-                const L1_SPAN_SHIFT: usize = L0_SPAN_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
-                let lo = (vpn2 << L1_SPAN_SHIFT) | (vpn1 << L0_SPAN_SHIFT);
-                let hi = lo + (1usize << L0_SPAN_SHIFT);
-                if lo >= skip_lo && hi <= skip_hi {
-                    continue;
-                }
-            }
-            // A table with no valid entry, and no demand marker either, is
-            // unhooked from the parent (not while other threads may walk it).
-            // `next_present` finds both, so "nothing from index 0" is the
-            // whole-table blank test (it was a valid-entry scan followed by a
-            // second, word-by-word one).
-            if !CONCURRENT
-                && pruned.n < PRUNE_MAX
-                && crate::vmm::next_present(l0_pt, 0, entries) >= entries
-            {
-                let l1_ptr = crate::addr::phys_to_virt(l1_pt + vpn1 * 8) as *mut u64;
-                unsafe { core::ptr::write_volatile(l1_ptr, 0) };
-                pruned.tables[pruned.n] = l0_pt;
-                pruned.n += 1;
+            // Defence in depth against the loader ordering bug (audit finding 2 /
+            // 3): if `copy_kernel_entries_to_user` ever runs on an empty user PT
+            // again, `parent_pt.L2[vpn2]` is a pointer to the *kernel's* L1 table,
+            // and this walk would rewrite kernel PTEs — clearing WRITE and setting
+            // the COW marker on the kernel's own mappings, in every address space
+            // at once. Recognise a borrowed kernel table and never descend into it;
+            // there is nothing forkable down there in any case (kernel leaves have
+            // no USER bit).
+            let kernel_l1 = vmm::kernel_l1_in(k_l2, vpn2);
+            if kernel_l1 == Some(l1_pt) {
                 continue;
             }
+
+            // Walk L1.
+            let mut vpn1_next = 0usize;
             loop {
-                let vpn0 = crate::vmm::next_present(l0_pt, vpn0_next, entries);
-                if vpn0 >= entries { break; }
-                vpn0_next = vpn0 + 1;
-                let l0_pte_ptr = (crate::addr::phys_to_virt(l0_pt + vpn0 * 8)) as *mut u64;
-                let l0_pte = unsafe { core::ptr::read_volatile(l0_pte_ptr) };
-                if !ARCH.pte_is_valid(l0_pte) {
-                    // A demand reservation (wave 14): the child gets the same
-                    // marker, so its first touch of the page faults in a
-                    // fresh zero page of its own, as the parent's would. No
-                    // frame, so no refcount and no change to the parent's
-                    // entry. Until wave 14 the walk saw valid entries only
-                    // and a child silently lost every reservation: a store to
-                    // one killed it. Since `brk` reserves instead of
-                    // allocating, that would have been every child's heap.
-                    if ARCH.pte_is_demand(l0_pte) && !cfg!(feature = "fork-demand-canary") {
-                        let vaddr = leaf_vaddr(vpn2, vpn1, vpn0);
-                        if vaddr >= skip_lo && vaddr < skip_hi {
-                            continue;
+                let vpn1 = crate::vmm::next_valid(l1_pt, vpn1_next, entries);
+                if vpn1 >= entries { break; }
+                vpn1_next = vpn1 + 1;
+                let l1_pte = unsafe {
+                    core::ptr::read_volatile((crate::addr::phys_to_virt(l1_pt + vpn1 * 8)) as *const u64)
+                };
+                if !ARCH.pte_is_valid(l1_pte) || ARCH.pte_is_leaf(l1_pte, 1) {
+                    continue; // Skip megapages.
+                }
+                let l0_pt = ARCH.pte_phys(l1_pte);
+
+                // Same guard one level down: at VPN[2]=0 the user owns the L1
+                // table but individual slots point at the kernel's L0 tables
+                // (CLINT, PLIC, UART), merged in by
+                // `copy_kernel_entries_to_user`.
+                if let Some(k_l1) = kernel_l1 {
+                    let kl1_pte = unsafe {
+                        core::ptr::read_volatile((crate::addr::phys_to_virt(k_l1 + vpn1 * 8)) as *const u64)
+                    };
+                    if ARCH.pte_is_valid(kl1_pte) && !ARCH.pte_is_leaf(kl1_pte, 1)
+                        && ARCH.pte_phys(kl1_pte) == l0_pt
+                    {
+                        continue;
+                    }
+                }
+
+                // Walk L0 (4 KiB pages). The child's leaf table for this range is
+                // walked to (and made) once, at its first page, and its entries
+                // written by index after that; the refcount table is held over
+                // the whole leaf table (wave 13: a walk and a lock per page were
+                // ~150 of a fork's ~600 instructions per page).
+                let mut child_l0: *mut u64 = core::ptr::null_mut();
+                let mut refs: Option<crate::cow_table::RefBatch<'static>> = None;
+                let mut vpn0_next = 0usize;
+                // A leaf table wholly inside the shm/MMIO window holds nothing a
+                // child gets (see `fork_cow`): not walked at all (wave 13).
+                {
+                    const L0_SPAN_SHIFT: usize = azos_arch_api::PAGE_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
+                    const L1_SPAN_SHIFT: usize = L0_SPAN_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
+                    let lo = base | (vpn2 << L1_SPAN_SHIFT) | (vpn1 << L0_SPAN_SHIFT);
+                    let hi = lo + (1usize << L0_SPAN_SHIFT);
+                    if lo >= skip_lo && hi <= skip_hi {
+                        continue;
+                    }
+                }
+                // A table with no valid entry, and no demand marker either, is
+                // unhooked from the parent (not while other threads may walk it).
+                // `next_present` finds both, so "nothing from index 0" is the
+                // whole-table blank test (it was a valid-entry scan followed by a
+                // second, word-by-word one).
+                if !CONCURRENT
+                    && pruned.n < PRUNE_MAX
+                    && crate::vmm::next_present(l0_pt, 0, entries) >= entries
+                {
+                    let l1_ptr = crate::addr::phys_to_virt(l1_pt + vpn1 * 8) as *mut u64;
+                    unsafe { core::ptr::write_volatile(l1_ptr, 0) };
+                    pruned.tables[pruned.n] = l0_pt;
+                    pruned.n += 1;
+                    continue;
+                }
+                loop {
+                    let vpn0 = crate::vmm::next_present(l0_pt, vpn0_next, entries);
+                    if vpn0 >= entries { break; }
+                    vpn0_next = vpn0 + 1;
+                    let l0_pte_ptr = (crate::addr::phys_to_virt(l0_pt + vpn0 * 8)) as *mut u64;
+                    let l0_pte = unsafe { core::ptr::read_volatile(l0_pte_ptr) };
+                    if !ARCH.pte_is_valid(l0_pte) {
+                        // A demand reservation (wave 14): the child gets the same
+                        // marker, so its first touch of the page faults in a
+                        // fresh zero page of its own, as the parent's would. No
+                        // frame, so no refcount and no change to the parent's
+                        // entry. Until wave 14 the walk saw valid entries only
+                        // and a child silently lost every reservation: a store to
+                        // one killed it. Since `brk` reserves instead of
+                        // allocating, that would have been every child's heap.
+                        if ARCH.pte_is_demand(l0_pte) && !cfg!(feature = "fork-demand-canary") {
+                            let vaddr = base | leaf_vaddr(vpn2, vpn1, vpn0);
+                            if vaddr >= skip_lo && vaddr < skip_hi {
+                                continue;
+                            }
+                            if child_l0.is_null() {
+                                let p = vmm::walk(child_pt, vaddr, true)?;
+                                child_l0 = unsafe { p.sub(vpn0) };
+                            }
+                            // SAFETY: the child's leaf table walked above, entry vpn0.
+                            unsafe { core::ptr::write_volatile(child_l0.add(vpn0), l0_pte) };
+                            *markers += 1;
+                            // The run of reservations after it (a grown heap is
+                            // one) is copied word for word, about six
+                            // instructions each, without going back through the
+                            // walk's search and per-entry decoding.
+                            // `vaddr` is outside the window: below it, the run
+                            // stops where the window starts; above, nothing does.
+                            let lim = if vaddr < skip_lo {
+                                entries.min(vpn0 + (skip_lo - vaddr) / PAGE_SIZE)
+                            } else {
+                                entries
+                            };
+                            let src = crate::addr::phys_to_virt(l0_pt) as *const u64;
+                            let mut i = vpn0_next;
+                            while i < lim {
+                                // SAFETY: entry `i` of the same two leaf tables.
+                                let w = unsafe { core::ptr::read_volatile(src.add(i)) };
+                                if ARCH.pte_is_valid(w) || !ARCH.pte_is_demand(w) {
+                                    break;
+                                }
+                                unsafe { core::ptr::write_volatile(child_l0.add(i), w) };
+                                i += 1;
+                            }
+                            *markers += i - vpn0_next;
+                            vpn0_next = i;
                         }
-                        if child_l0.is_null() {
-                            let p = vmm::walk(child_pt, vaddr, true)?;
-                            child_l0 = unsafe { p.sub(vpn0) };
-                        }
+                        continue;
+                    }
+                    if !ARCH.pte_is_leaf(l0_pte, 0) {
+                        continue;
+                    }
+
+                    // Only COW user pages. One decode of the permissions serves
+                    // this test and the writable test below.
+                    let mut perms = ARCH.pte_perms(l0_pte);
+                    if !perms.user {
+                        continue;
+                    }
+
+                    let vaddr = base | leaf_vaddr(vpn2, vpn1, vpn0);
+
+                    // The shm/MMIO window is neither COW nor shared (see
+                    // `fork_cow`). Checked before the addref, or every skipped
+                    // page would still take a refcount entry.
+                    if vaddr >= skip_lo && vaddr < skip_hi {
+                        continue;
+                    }
+
+                    // The child's leaf table, before any reference is taken: a
+                    // failure here leaves nothing to give back.
+                    if child_l0.is_null() {
+                        let p = vmm::walk(child_pt, vaddr, true)?;
+                        child_l0 = unsafe { p.sub(vpn0) };
+                    }
+
+                    let mut l0_pte = l0_pte;
+                    let cow_pte = loop {
+                    let phys = ARCH.pte_phys(l0_pte);
+
+                    // Wave 13: the riscv64 sigreturn trampoline is the kernel's,
+                    // read-execute in every address space. The child gets the
+                    // same leaf: never copy-on-write, so no store fault can ever
+                    // turn it into a private writable copy of an executable page.
+                    // (Inside the compare-and-swap loop: `break None` leaves it
+                    // and moves on to the next entry with nothing to give back.)
+                    if tramp != 0 && phys == tramp {
                         // SAFETY: the child's leaf table walked above, entry vpn0.
                         unsafe { core::ptr::write_volatile(child_l0.add(vpn0), l0_pte) };
-                        *markers += 1;
-                        // The run of reservations after it (a grown heap is
-                        // one) is copied word for word, about six
-                        // instructions each, without going back through the
-                        // walk's search and per-entry decoding.
-                        // `vaddr` is outside the window: below it, the run
-                        // stops where the window starts; above, nothing does.
-                        let lim = if vaddr < skip_lo {
-                            entries.min(vpn0 + (skip_lo - vaddr) / PAGE_SIZE)
-                        } else {
-                            entries
-                        };
-                        let src = crate::addr::phys_to_virt(l0_pt) as *const u64;
-                        let mut i = vpn0_next;
-                        while i < lim {
-                            // SAFETY: entry `i` of the same two leaf tables.
-                            let w = unsafe { core::ptr::read_volatile(src.add(i)) };
-                            if ARCH.pte_is_valid(w) || !ARCH.pte_is_demand(w) {
-                                break;
+                        break None;
+                    }
+
+                    // Track the shared page BEFORE either PTE is touched.
+                    //
+                    // Ordering matters for safety, not just tidiness: if the
+                    // refcount table fills up after the child's PTE is written,
+                    // the child maps a page the table does not know about, and the
+                    // error teardown then decrefs it, gets `true` ("sole owner"),
+                    // and frees a frame the parent is still executing out of.
+                    // Addref-first means "present in the child" implies "tracked
+                    // with refcount >= 2", so teardown can never free a live page.
+                    refs.get_or_insert_with(crate::cow_table::ref_batch).addref(phys)?;
+
+                    // Only a WRITABLE page becomes copy-on-write (wave 13,
+                    // security). A read-only or executable page (text, rodata)
+                    // is shared as it is, frame counted, entry unchanged: a store
+                    // to it must fault as the protection violation it is. Marked
+                    // COW, the break used to hand the storer a private WRITABLE
+                    // copy that kept the execute bit: writable code in the child,
+                    // W^X broken (found by the SIGNALS front). Gate canary
+                    // `cow-ro-canary` brings that back.
+                    let writable = perms.write;
+                    if !writable && !cfg!(feature = "cow-ro-canary") {
+                        unsafe { core::ptr::write_volatile(child_l0.add(vpn0), l0_pte) };
+                        break None;
+                    }
+                    // Parent: clear WRITE, set COW marker. By compare-and-swap
+                    // (wave 13): a thread of the process may break or unmap this
+                    // page meanwhile (the fork holds its layout lock, not its
+                    // faults). Then the reference goes back and the entry is
+                    // taken again as it now is.
+                    let cow_pte = ARCH.pte_share_cow(l0_pte);
+                    if !CONCURRENT {
+                        unsafe { core::ptr::write_volatile(l0_pte_ptr, cow_pte) };
+                        break Some(cow_pte);
+                    }
+                    // SAFETY: an aligned entry of the parent's live leaf table.
+                    let slot = unsafe { &*(l0_pte_ptr as *const core::sync::atomic::AtomicU64) };
+                    match slot.compare_exchange(l0_pte, cow_pte, core::sync::atomic::Ordering::AcqRel,
+                                                core::sync::atomic::Ordering::Acquire) {
+                        Ok(_) => break Some(cow_pte),
+                        Err(cur) => {
+                            let _ = refs.as_mut().map(|r| r.decref(phys));
+                            perms = ARCH.pte_perms(cur);
+                            if !ARCH.pte_is_valid(cur) || !ARCH.pte_is_leaf(cur, 0) || !perms.user {
+                                break None;
                             }
-                            unsafe { core::ptr::write_volatile(child_l0.add(i), w) };
-                            i += 1;
+                            l0_pte = cur;
                         }
-                        *markers += i - vpn0_next;
-                        vpn0_next = i;
                     }
-                    continue;
-                }
-                if !ARCH.pte_is_leaf(l0_pte, 0) {
-                    continue;
-                }
+                    };
+                    let Some(cow_pte) = cow_pte else { continue };
 
-                // Only COW user pages. One decode of the permissions serves
-                // this test and the writable test below.
-                let mut perms = ARCH.pte_perms(l0_pte);
-                if !perms.user {
-                    continue;
+                    // Child: same physical page, same COW word, same index in its
+                    // own leaf table.
+                    unsafe { core::ptr::write_volatile(child_l0.add(vpn0), cow_pte) };
                 }
-
-                let vaddr = leaf_vaddr(vpn2, vpn1, vpn0);
-
-                // The shm/MMIO window is neither COW nor shared (see
-                // `fork_cow`). Checked before the addref, or every skipped
-                // page would still take a refcount entry.
-                if vaddr >= skip_lo && vaddr < skip_hi {
-                    continue;
-                }
-
-                // The child's leaf table, before any reference is taken: a
-                // failure here leaves nothing to give back.
-                if child_l0.is_null() {
-                    let p = vmm::walk(child_pt, vaddr, true)?;
-                    child_l0 = unsafe { p.sub(vpn0) };
-                }
-
-                let mut l0_pte = l0_pte;
-                let cow_pte = loop {
-                let phys = ARCH.pte_phys(l0_pte);
-
-                // Wave 13: the riscv64 sigreturn trampoline is the kernel's,
-                // read-execute in every address space. The child gets the
-                // same leaf: never copy-on-write, so no store fault can ever
-                // turn it into a private writable copy of an executable page.
-                // (Inside the compare-and-swap loop: `break None` leaves it
-                // and moves on to the next entry with nothing to give back.)
-                if tramp != 0 && phys == tramp {
-                    // SAFETY: the child's leaf table walked above, entry vpn0.
-                    unsafe { core::ptr::write_volatile(child_l0.add(vpn0), l0_pte) };
-                    break None;
-                }
-
-                // Track the shared page BEFORE either PTE is touched.
-                //
-                // Ordering matters for safety, not just tidiness: if the
-                // refcount table fills up after the child's PTE is written,
-                // the child maps a page the table does not know about, and the
-                // error teardown then decrefs it, gets `true` ("sole owner"),
-                // and frees a frame the parent is still executing out of.
-                // Addref-first means "present in the child" implies "tracked
-                // with refcount >= 2", so teardown can never free a live page.
-                refs.get_or_insert_with(crate::cow_table::ref_batch).addref(phys)?;
-
-                // Only a WRITABLE page becomes copy-on-write (wave 13,
-                // security). A read-only or executable page (text, rodata)
-                // is shared as it is, frame counted, entry unchanged: a store
-                // to it must fault as the protection violation it is. Marked
-                // COW, the break used to hand the storer a private WRITABLE
-                // copy that kept the execute bit: writable code in the child,
-                // W^X broken (found by the SIGNALS front). Gate canary
-                // `cow-ro-canary` brings that back.
-                let writable = perms.write;
-                if !writable && !cfg!(feature = "cow-ro-canary") {
-                    unsafe { core::ptr::write_volatile(child_l0.add(vpn0), l0_pte) };
-                    break None;
-                }
-                // Parent: clear WRITE, set COW marker. By compare-and-swap
-                // (wave 13): a thread of the process may break or unmap this
-                // page meanwhile (the fork holds its layout lock, not its
-                // faults). Then the reference goes back and the entry is
-                // taken again as it now is.
-                let cow_pte = ARCH.pte_share_cow(l0_pte);
-                if !CONCURRENT {
-                    unsafe { core::ptr::write_volatile(l0_pte_ptr, cow_pte) };
-                    break Some(cow_pte);
-                }
-                // SAFETY: an aligned entry of the parent's live leaf table.
-                let slot = unsafe { &*(l0_pte_ptr as *const core::sync::atomic::AtomicU64) };
-                match slot.compare_exchange(l0_pte, cow_pte, core::sync::atomic::Ordering::AcqRel,
-                                            core::sync::atomic::Ordering::Acquire) {
-                    Ok(_) => break Some(cow_pte),
-                    Err(cur) => {
-                        let _ = refs.as_mut().map(|r| r.decref(phys));
-                        perms = ARCH.pte_perms(cur);
-                        if !ARCH.pte_is_valid(cur) || !ARCH.pte_is_leaf(cur, 0) || !perms.user {
-                            break None;
-                        }
-                        l0_pte = cur;
-                    }
-                }
-                };
-                let Some(cow_pte) = cow_pte else { continue };
-
-                // Child: same physical page, same COW word, same index in its
-                // own leaf table.
-                unsafe { core::ptr::write_volatile(child_l0.add(vpn0), cow_pte) };
             }
         }
-    }
+        Ok(())
+    })?;
 
     Ok(())
 }
