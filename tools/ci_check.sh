@@ -12319,7 +12319,7 @@ PY
             echo "      AUTORUN_PRIORITY block in kernel/src/main.rs)"
             echo "      logs kept: $log $blog"; return
         fi
-        ok; rm -f "$log" "$blog"
+        ok; mv -f "$log" "$log.green"; mv -f "$blog" "$blog.green"   # the last green pair, to diff a red one against
     }
     par -s "userspace: the brain lies" brain_lies_scenario   # the brain peer on a host port of its own
 
@@ -13987,7 +13987,7 @@ PYEOF
             grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        ok; rm -f "$log" "$blog"
+        ok; mv -f "$log" "$log.green"; mv -f "$blog" "$blog.green"   # the last green pair, to diff a red one against
     }
     par_row -s link_peer_scenario "link: rfc-0019 end to end" 0   # the peer on a host port of its own
     # C1: the same link with camera frames on a connection of their own.
