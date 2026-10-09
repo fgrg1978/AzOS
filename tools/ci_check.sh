@@ -1288,6 +1288,9 @@ par_ready() { # the row's prep is done: let the gate run on
     [ -f "${KERNEL}.features" ] && ci_clone "${KERNEL}.features" "$k.kernel.features"
     ci_clone "$KERNEL" "$k.kernel"; KERNEL="$k.kernel"
     if [ -n "${A64_KERNEL:-}" ]; then
+        # Its `.features` likewise, for `a64_kernel_check`.
+        rm -f "$k.a64-kernel.img.features"
+        [ -f "${A64_IMG}.features" ] && ci_clone "${A64_IMG}.features" "$k.a64-kernel.img.features"
         ci_clone "$A64_KERNEL" "$k.a64-kernel"; A64_KERNEL="$k.a64-kernel"
         ci_clone "$A64_IMG" "$k.a64-kernel.img"; A64_IMG="$k.a64-kernel.img"
     fi
@@ -1361,6 +1364,7 @@ par_reap() {
         # riscv64 kernel with its debug info is ~47 MB, one per job) and the
         # wave-15 integration gate died of a full disk at the INA219 rows.
         rm -f "$PAR_DIR/$n.kernel" "$PAR_DIR/$n.kernel.features" "$PAR_DIR/$n.a64-kernel" "$PAR_DIR/$n.a64-kernel.img" \
+            "$PAR_DIR/$n.a64-kernel.img.features" \
             "$PAR_DIR/$n.disk."* "$PAR_DIR/$n.bacc"
         PAR_HEAD=$((n + 1))
         if [ -n "$pid" ]; then
@@ -1518,7 +1522,7 @@ ci_kb_defer() { # ci_kb_defer rv|a64 <features>: 0 when the build is deferred
     [ -n "${CI_KB_ENV0:-}" ] && [ "$(ci_kb_env)" = "$CI_KB_ENV0" ] || return 1
     case "$1" in
         rv)  CI_KPEND_RV="$2"; rm -f "$RV_KERNEL_OUT" "${RV_KERNEL_OUT}.features" ;;
-        a64) CI_KPEND_A64="$2"; rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" ;;
+        a64) CI_KPEND_A64="$2"; rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" "${A64_IMG_OUT}.features" ;;
         *) return 1 ;;
     esac
     CI_KDEFERRED=$((${CI_KDEFERRED:-0} + 1))
@@ -1558,7 +1562,7 @@ ci_kflush() { # ci_kflush [rv|a64]: build what ci_kb_defer left pending (both IS
 ci_kernel_gone() {
     case "$1" in
         rv)  unset CI_KPEND_RV; rm -f "$RV_KERNEL_OUT" ;;
-        a64) unset CI_KPEND_A64; rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" ;;
+        a64) unset CI_KPEND_A64; rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" "${A64_IMG_OUT}.features" ;;
     esac
 }
 RV_KERNEL_OUT="$KERNEL"
@@ -1819,20 +1823,35 @@ QEMU_FAIL_RE="${QEMU_FAIL_RE:-FAILED:|PAGE FAULT\] OUT OF MEMORY|RFC [0-9/]+ FAI
 # being run need (`CI_EXPECT_RV`, set by a group around its rows; no
 # expectation, no check). Otherwise the row FAILS naming both feature sets,
 # instead of reporting a verdict about some other kernel.
-ci_kernel_check() {
-    [ -n "${CI_EXPECT_RV:-}" ] || return 0
-    local got
-    got="$(cat "${KERNEL}.features" 2>/dev/null)"
-    [ "$got" = "$CI_EXPECT_RV" ] && return 0
+# The same check on the other two ISAs: `a64_kernel_check` (`CI_EXPECT_A64`
+# against `${A64_IMG}.features`, the image every aarch64 row boots) and
+# `x86_kernel_check <image>` (`CI_EXPECT_X86` against `<image>.features`,
+# the row's private copy; X86_64_FEATURES terms, so "" is the plain kernel).
+ci_kernel_check_file() { # ci_kernel_check_file <kernel> <expected features>
+    local k="$1" want="$2" got
+    got="$(cat "${k}.features" 2>/dev/null)"
+    [ -f "${k}.features" ] && [ "$got" = "$want" ] && return 0
     bad
-    if [ ! -f "${KERNEL}.features" ]; then
-        echo "      no ${KERNEL}.features: nothing says what this kernel was built"
-        echo "      with; this row needs '${CI_EXPECT_RV}'"
+    if [ ! -f "${k}.features" ]; then
+        echo "      no ${k}.features: nothing says what this kernel was built"
+        echo "      with; this row needs '${want}'"
     else
-        echo "      ${KERNEL} was built with --features '${got}';"
-        echo "      this row needs '${CI_EXPECT_RV}'"
+        echo "      ${k} was built with --features '${got}';"
+        echo "      this row needs '${want}'"
     fi
     return 1
+}
+ci_kernel_check() {
+    [ -n "${CI_EXPECT_RV:-}" ] || return 0
+    ci_kernel_check_file "$KERNEL" "$CI_EXPECT_RV"
+}
+a64_kernel_check() {
+    [ -n "${CI_EXPECT_A64+x}" ] || return 0
+    ci_kernel_check_file "$A64_IMG" "$CI_EXPECT_A64"
+}
+x86_kernel_check() { # x86_kernel_check <image>
+    [ -n "${CI_EXPECT_X86+x}" ] || return 0
+    ci_kernel_check_file "$1" "$CI_EXPECT_X86"
 }
 qemu_run() { # qemu_run <label> <success-marker> <timeout-s> <qemu-args...>
     local label="$1" marker limit="$3"
@@ -2514,7 +2533,7 @@ A64_KNOWN_NOISE='prod pubkey|packages contain code that will be rejected by a fu
 # deferred build (ci_kb_defer) is made by whichever later row flushes it.
 a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64_IMG_OUT
     local feats="$1"
-    rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT"
+    rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" "${A64_IMG_OUT}.features"
     local out
     # KCONFIG_CONFIG pinned to config/defconfigs/qemu-aarch64.config (U12-3): without
     # this override every aarch64 build inherited the exported primary-column
@@ -2537,6 +2556,10 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     [ -x "$a64_objcopy" ] || return 1
     "$a64_objcopy" -O binary "$A64_KERNEL_OUT" "$A64_IMG_OUT" 2>/dev/null
     [ -f "$A64_IMG_OUT" ] || return 1
+    # What the image was built with, for `a64_kernel_check` (as `kbuild`
+    # writes `${KERNEL}.features`). Written before the FP-free proof's cached
+    # early return below; removed again if that proof fails.
+    builtin printf '%s\n' "$feats" >"${A64_IMG_OUT}.features"
     # Same FP-free proof as the "aarch64 kernel FP-free" row, on this feature
     # set's own ELF (more crates are linked in than in the no-feature build).
     # The proof is a function of the ELF's bytes and of the checker: an ELF
@@ -2549,6 +2572,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     fi
     if ! fpfree="$(bash tools/aarch64_fp_free_check.sh "$A64_KERNEL_OUT" 2>&1)"; then
         printf '%s\n' "$fpfree" | head -8
+        rm -f "${A64_IMG_OUT}.features"
         return 1
     fi
     if [ -n "$fpkey" ]; then mkdir -p "${fpkey%/*}"; : >"$fpkey"; fi
@@ -2556,10 +2580,15 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
 a64_kbuild() { # a64_kbuild <comma-separated-features>
     par_shared "a64_kbuild $1" || return 1
     if [ $# -eq 1 ] && ci_kb_defer a64 "$1"; then return 0; fi
+    # Built now: it supersedes a pending deferred build, which a later `par`
+    # would otherwise flush OVER it (as `kbuild` does for riscv64): the
+    # aarch64 secure-boot rows, built with PROD_PUBKEY_PATH and so never
+    # deferred, would boot a pending `qemu` kernel instead.
+    [ -z "$PAR_JOB" ] && [ -z "${CI_KFLUSHING:-}" ] && unset CI_KPEND_A64
     a64_kbuild_out "$@"
 }
 
-rm -f "$A64_KERNEL" "$A64_IMG"
+rm -f "$A64_KERNEL" "$A64_IMG" "${A64_IMG}.features"
 if ci_row_begin "aarch64 kernel (build)"; then
 printf "  %-26s" "aarch64 kernel (build)..."
 # `env -u RUSTFLAGS`, NOT `RUSTFLAGS=""` like the arch-crate row above: cargo
@@ -2582,6 +2611,8 @@ if a64k_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH6
     if [ -x "$A64_OBJCOPY" ] \
        && "$A64_OBJCOPY" -O binary "$A64_KERNEL" "$A64_IMG" 2>/dev/null \
        && [ -f "$A64_IMG" ]; then
+        # No --features: an empty `.features`, as `kbuild ""` writes.
+        builtin printf '\n' >"${A64_IMG}.features"
         # Header sanity, independent of a QEMU boot: magic at 0x38, and
         # image_size (0x10) must equal `_kernel_end - _start` — a `nm`
         # cross-check, not a second guess at the linker's arithmetic.
@@ -2685,6 +2716,7 @@ ci_row "aarch64: trap path size" trap_size_row "aarch64: trap path size" "$A64_K
 aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected entry EL> <smp> [cpu] [extra marker]
     local label="$1" mach="$2" el="$3" smp="${4:-2}" cpu="${5:-max,pauth=on}" extra="${6:-}"
     printf "  %-26s" "${label}..."
+    a64_kernel_check || return
     local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
     mkdir -p "$CI_LOG_DIR"; rm -f "$log"
     if [ ! -f "$A64_IMG" ]; then bad; echo "      not built: $A64_IMG"; return; fi
@@ -9847,6 +9879,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     a64_qemu_run() { # a64_qemu_run <label> <success-marker> <timeout-s> <disk-img>
         local label="$1" marker="$2" limit="$3" disk="$4"
         printf "  %-26s" "${label}..."
+        a64_kernel_check || return
         mkdir -p "$CI_LOG_DIR"
         local slug log
         slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
@@ -9910,6 +9943,8 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         printf "  %-26s" "aarch64 secboot (build)..."
         if PROD_PUBKEY_PATH="$SECBOOT_TEST_KEY" a64_kbuild "qemu,secure-boot-enforced"; then
             ok
+            # Every aarch64 secure-boot row below boots THIS build (a64_kernel_check).
+            CI_EXPECT_A64="qemu,secure-boot-enforced"
         else
             bad; echo "      the aarch64 kernel did not build with"
             echo "      --features qemu,secure-boot-enforced — the four rows"
@@ -9978,6 +10013,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         # check below pins it rather than assuming it.
         local label="aarch64 secboot falls to R"
         printf "  %-26s" "${label}..."
+        a64_kernel_check || return
         mkdir -p "$CI_LOG_DIR"
         local log="$CI_LOG_DIR/aarch64-secure-boot-recovery.log"
         rm -f "$log"
@@ -10049,6 +10085,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     if [ "$A64_SECBOOT_BUILT" = 1 ]; then
         par "aarch64 secboot falls to R" aarch64_secure_boot_recovery
     fi
+    unset CI_EXPECT_A64
 
     # Runs AFTER the secure-boot block on purpose: `a64_kbuild "pci"` deletes
     # and rebuilds $A64_KERNEL/$A64_IMG. Gate 182e (2026-09-26) had this row
@@ -10064,6 +10101,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         local label="pci: bus 0 enumerates (aarch64)"
         printf "  %-26s" "${label}..."
         a64_kbuild "pci" || return
+        a64_kernel_check || return
         dd if=/dev/zero of="$CI_LOG_DIR/pci-blk-a64.img" bs=1M count=8 2>/dev/null
         dd if=/dev/zero of="$CI_LOG_DIR/pci-nvme-a64.img" bs=1M count=8 2>/dev/null
         local log="$CI_LOG_DIR/pci-enum-aarch64.log"
@@ -10135,6 +10173,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         a64_kbuild "pci" || return
+        a64_kernel_check || return
         local log="$CI_LOG_DIR/pci-its-aarch64.log"
         pci_its_boot_aarch64 "$log"
         if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
@@ -10157,6 +10196,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         a64_kbuild "pci,its-skip-mapti" || return
+        a64_kernel_check || return
         local log="$CI_LOG_DIR/pci-its-canary-aarch64.log"
         pci_its_boot_aarch64 "$log"
         # Printed only when the device completed (used=1) and vector 1's
@@ -10200,6 +10240,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         a64_kbuild "pci,dhcp-smoke" || { bad; echo "      pci,dhcp-smoke aarch64 kernel did NOT build (row not run)"; return; }
+        a64_kernel_check || return
         local log="$CI_LOG_DIR/pci-net-dhcp-aarch64.log"
         pci_net_dhcp_boot_aarch64 "$log"
         if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
@@ -10225,6 +10266,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         mkdir -p "$CI_LOG_DIR"
         a64_kbuild "pci,dhcp-smoke,azos_pci/msix-enable-canary" \
             || { bad; echo "      canary aarch64 kernel did NOT build (row not run)"; return; }
+        a64_kernel_check || return
         local log="$CI_LOG_DIR/pci-net-dhcp-canary-aarch64.log"
         pci_net_dhcp_boot_aarch64 "$log"
         if grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
@@ -11062,6 +11104,7 @@ PY
             cp "$KERNEL" "$kimg"
         else
             a64_kbuild "$KTEST_FEATS$extra" || { bad; echo "      aarch64 --features $KTEST_FEATS$extra did not build"; return; }
+            a64_kernel_check || return
             cp "$A64_IMG" "$kimg"
         fi
         par_ready
@@ -11212,10 +11255,17 @@ PY
     KTEST_N_X86=27
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
-        make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2"
+        # The copy is the row's own kernel (no `par_ready` clone needed): its
+        # `.features` (the X86_64_FEATURES terms, "" for the plain kernel)
+        # travels with it, for `x86_kernel_check`.
+        rm -f "$2" "$2.features"
+        make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2" \
+            && builtin printf '%s\n' "$1" >"$2.features"
     }
     x86_qemu() { # x86_qemu <image> <log> <secs> <stop ERE or ""> [qemu args...]; sets X86_QRC
         local img="$1" log="$2" secs="$3" stop="$4" i=0; shift 4
+        X86_QRC=refused
+        x86_kernel_check "$img" || return 1
         while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
         : >"$log"   # exists before the first poll reads it
         qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot \
@@ -11241,8 +11291,8 @@ PY
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
         x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
         par_ready
-        x86_qemu "$kimg" "$log" 60 "$stop" -smp "$smp" -cpu "$cpu"
-        rm -f "$kimg"
+        x86_qemu "$kimg" "$log" 60 "$stop" -smp "$smp" -cpu "$cpu" || { rm -f "$kimg" "$kimg.features"; return; }
+        rm -f "$kimg" "$kimg.features"
         local IFS='|'
         for w in $want; do
             grep -aqF -- "$w" "$log" || { why="missing: $w"; break; }
@@ -11276,8 +11326,8 @@ PY
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
         x86_kbuild "ktest,chaos,decisions$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=ktest,chaos,decisions$extra did not build"; return; }
         par_ready
-        x86_qemu "$kimg" "$log" 300 "" -smp 4 ${app[@]+"${app[@]}"}
-        rm -f "$kimg"
+        x86_qemu "$kimg" "$log" 300 "" -smp 4 ${app[@]+"${app[@]}"} || { rm -f "$kimg" "$kimg.features"; return; }
+        rm -f "$kimg" "$kimg.features"
         plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
         got="$(sed -n 's/^not ok [0-9][0-9]* - \([A-Za-z0-9_]*\)\( #.*\)\{0,1\}$/\1/p' "$log" | grep . | sort | tr '\n' ' ')"
         want="$(printf '%s\n' $want | grep . | sort | tr '\n' ' ')"
@@ -11355,6 +11405,7 @@ PY
         local log="$CI_LOG_DIR/x86-first-user-task.log" kimg="$CI_LOG_DIR/kernel-x86-first-user-task"
         local disk="$CI_LOG_DIR/disk-x86-first-user-task.img"
         x86_disk_prep build/disk-x86_64.img "$kimg" "$disk" || return
+        x86_kernel_check "$kimg" || { rm -f "$kimg" "$kimg.features" "$disk"; return; }
         par_ready
         while [ "$(par_qemu_count)" -ge 4 ]; do sleep 2; done
         : >"$log"; rm -f "$log.end"
@@ -11378,7 +11429,7 @@ PY
         kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         : >"$log.end"; sleep 1; rm -f "$log.end"
         tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
-        rm -f "$kimg" "$disk"
+        rm -f "$kimg" "$kimg.features" "$disk"
         local IFS='|'
         # The prompt and the typed line are checked apart: kernel log lines
         # may land between the prompt and what the shell echoes back.
@@ -11416,14 +11467,15 @@ PY
         if [ "$which" = canary ]; then
             local elf="$CI_LOG_DIR/x86-${tag}-ABITEST.ELF"
             mcopy -n -i "$disk" ::ABITEST.ELF "$elf" && printf '\0' >>"$elf" && mcopy -o -i "$disk" "$elf" ::ABITEST.ELF \
-                || { bad; echo "      could not alter ABITEST.ELF on the volume copy"; rm -f "$kimg" "$disk" "$elf"; return; }
+                || { bad; echo "      could not alter ABITEST.ELF on the volume copy"; rm -f "$kimg" "$kimg.features" "$disk" "$elf"; return; }
             rm -f "$elf"
         fi
         par_ready
         x86_qemu "$kimg" "$log" 300 "$stop|KERNEL PANIC" -smp 2 ${app[@]+"${app[@]}"} \
-            -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0
+            -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+            || { rm -f "$kimg" "$kimg.features" "$disk"; return; }
         # The `FAILED: N` line follows the summary; the FAIL lines precede it.
-        rm -f "$kimg" "$disk"
+        rm -f "$kimg" "$kimg.features" "$disk"
         local why="" fails fail_lines
         case "$which" in
             canary)
