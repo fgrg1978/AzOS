@@ -141,13 +141,13 @@ const USER_LOW_MAX: usize = 0x0200_0000; // 32 MiB — CLINT base
 pub mod elf_bounds;
 
 /// The instruction alignment an image's entry point must have (see the
-/// entry check in `load_elf_into`). Host builds load riscv64 images
-/// (`tests/host/syscall-tests`' `exec_binding`), so they take its 2.
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
-const ENTRY_ALIGN: u64 = 4;
+/// entry check in `load_elf_into`): riscv64's 2 everywhere but x86_64.
+/// aarch64 keeps the check it always had (2; its instructions are 4-byte,
+/// so 4 is the tighter value). Host builds load riscv64 images
+/// (`tests/host/syscall-tests`' `exec_binding`).
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 const ENTRY_ALIGN: u64 = 1;
-#[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
+#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
 const ENTRY_ALIGN: u64 = 2;
 
 /// The address limits `elf_bounds` enforces, taken from their real
@@ -1092,9 +1092,9 @@ fn load_elf_into(
 
     // Reject an entry point we cannot vouch for: one off the ISA's
     // instruction alignment is malformed by construction. RISC-V fetches on
-    // 2-byte boundaries (compressed instructions), aarch64 on 4; x86_64
-    // instructions start on any byte (its `_start` is wherever the linker
-    // put it, odd as often as not), so there it constrains nothing.
+    // 2-byte boundaries (compressed instructions; aarch64 shares the check);
+    // x86_64 instructions start on any byte (its `_start` is wherever the
+    // linker put it, odd as often as not), so there it constrains nothing.
     //
     // `e_entry` needs no bound of its own, above or below: `entry_ok` is only
     // ever set from inside a segment that already passed
