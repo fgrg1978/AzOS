@@ -720,7 +720,8 @@ first method still a `todo!()` naming the x86 mechanism.
   secondary-CPU steps the shared `secondary_main` calls, the vDSO clock);
   `kernel/src/entry/<isa>.rs` with the `TrapFrame` and its `TrapContext` (11
   methods); and `asm/boot.S` (exports `_start`, calls `kernel_main` and, per
-  secondary CPU, `secondary_main`), `asm/trap_entry.S` (the vector table and
+  secondary CPU, `secondary_main`; x86_64 enters a secondary through a
+  real-mode trampoline below 1 MiB and `asm/ap_entry.S`), `asm/trap_entry.S` (the vector table and
   the return path, calling the ISA's Rust dispatcher) and
   `asm/context_switch.S` (exports `context_switch`).
 - **`kernel/linker-<isa>.ld`**, defining the section symbols the shared code

@@ -173,3 +173,151 @@ config HDMI_HEIGHT
       real display mode, not independently.
 
 endmenu # Platform / Board
+
+# ---------------------------------------------------------------------------
+# x86_64 platform: boot information, ACPI, LAPIC/IOAPIC, clock, AP start.
+# crates/core/arch-x86_64/src/{platform_impl,acpi,apic,ioapic,timer,smp}.rs
+# ---------------------------------------------------------------------------
+if ARCH_X86_64
+menu "x86_64 platform (ACPI, APIC, timer, SMP)"
+
+config X86_CMDLINE_MAX
+    int "Kernel command-line bytes kept from the PVH start_info"
+    range 64 8192
+    default 512 if PROFILE_EMBEDDED
+    default 1024
+    help
+      The PVH start_info's command line is copied into a static buffer
+      of this size (RAM: exactly this many bytes of .bss; no per-boot
+      instruction cost beyond the copy). A longer line is cut and the
+      boot log says so; only `virtio_mmio.device=` entries are read
+      from it today. Raise it if a launcher passes long lines.
+
+config X86_IRQ_VECTOR_BASE
+    int "IDT vector of GSI 0 (IOAPIC device lines)"
+    range 48 200
+    default 48
+    help
+      Device line GSI n is delivered on vector BASE + n. Below it sit
+      the exceptions (0-31) and the remapped, masked 8259s (32-47);
+      from 0xE0 up the timer, IPI, error and spurious vectors, so
+      0xE0 - BASE GSIs are routable (176 at the default; QEMU microvm
+      uses 48, a PC usually 24 per IOAPIC). The LAPIC's priority class
+      is vector >> 4: raise BASE to put every device line in a higher
+      class. No RAM or instruction cost.
+
+config X86_IOAPIC_FALLBACK_BASE
+    hex "IOAPIC MMIO base when there is no MADT"
+    default 0xFEC00000
+    help
+      Without ACPI (QEMU microvm acpi=off) the one IOAPIC is assumed at
+      this address with GSI base 0; with a MADT its entries are used.
+      The PC address is 0xFEC00000. No cost.
+
+config X86_VIRTIO_MMIO_BASE
+    hex "First virtio-mmio transport (QEMU microvm)"
+    default 0xFEB00000
+    help
+      The virtio-mmio window the drivers scan when the kernel command
+      line carries no `virtio_mmio.device=` entries (microvm passes them
+      only without ACPI). 0xFEB00000 is QEMU microvm's VIRTIO_MMIO_BASE.
+      No cost.
+
+config X86_VIRTIO_MMIO_STRIDE
+    hex "virtio-mmio transport stride"
+    default 0x200
+    help
+      Bytes between transports in the window (microvm: 512). No cost.
+
+config X86_VIRTIO_MMIO_MAX
+    int "virtio-mmio transports kept and scanned"
+    range 0 32
+    default 8 if PROFILE_EMBEDDED
+    default 24
+    help
+      The transports the platform records (from the command line, or
+      microvm's layout: 24 with its second IOAPIC, else 8) and the
+      drivers probe at boot: one MMIO read pair per slot, 16 bytes of
+      RAM each. 0 compiles virtio-mmio discovery down to nothing.
+
+config X86_HPET
+    bool "Calibrate the TSC against the HPET"
+    default y
+    help
+      With an ACPI HPET table, measure the TSC against the HPET main
+      counter (exact femtosecond period) rather than the PIT. Costs
+      X86_TSC_CALIBRATE_MS of boot time either way; n leaves the PIT,
+      which QEMU microvm always has.
+
+config X86_TSC_FREQ_CPUID
+    bool "Trust the TSC rate CPUID reports (leaf 15H, hypervisor leaf)"
+    default y
+    help
+      When CPUID 15H (crystal x ratio) or the hypervisor timing leaf
+      0x40000010 reports the TSC rate, take it and skip the measurement
+      (saves X86_TSC_CALIBRATE_MS of boot). n always measures, for a
+      CPU or hypervisor that reports a wrong rate.
+
+config X86_TSC_CALIBRATE_MS
+    int "TSC (and LAPIC timer) calibration window (ms)"
+    range 1 54
+    default 10 if PROFILE_EMBEDDED
+    default 20
+    help
+      Boot time spent measuring the TSC against the HPET or PIT (and,
+      without TSC-deadline, the LAPIC timer against the TSC). The error
+      is about one reference tick over the window: at 20 ms with the
+      PIT, ~40 ppm. 54 is the PIT counter's limit. No runtime cost.
+
+config X86_LAPIC_TIMER_DIVIDE
+    int "LAPIC timer divide (one-shot fallback)"
+    range 1 128
+    default 16
+    help
+      Used only without TSC-deadline. The LAPIC counter runs at the
+      APIC clock / this (1, 2, 4, ..., 128): a smaller divide gives a
+      finer one-shot (resolution = divide / APIC clock) but a shorter
+      longest timeout (2^32 counts). Must be a power of two (a compile
+      error otherwise). No RAM cost.
+
+config X86_AP_TRAMPOLINE_PA
+    hex "AP real-mode trampoline page (0 = choose)"
+    default 0x0
+    help
+      INIT-SIPI-SIPI starts each secondary CPU in real mode at a 4 KiB
+      page below 1 MiB. 0 takes the highest RAM page under 640 KiB that
+      no boot information (start_info, memory map, command line, ACPI
+      tables) occupies; a fixed address is used only if it passes the
+      same checks. One page of low memory, never freed.
+
+config X86_AP_INIT_DELAY_US
+    int "Wait after INIT before the first STARTUP IPI (us)"
+    range 0 100000
+    default 10000
+    help
+      Intel's MP protocol waits 10 ms after INIT; CPUs since the Pentium
+      4 and every hypervisor need none (Linux's init_udelay=0 on modern
+      parts). Boot time per secondary CPU; 0 is fine on QEMU and recent
+      hardware.
+
+config X86_AP_SIPI_DELAY_US
+    int "Wait after each STARTUP IPI (us)"
+    range 0 10000
+    default 200
+    help
+      The MP protocol's 200 us between the two STARTUP IPIs. Boot time
+      per secondary CPU only when the first STARTUP was not acknowledged.
+
+config X86_AP_START_TIMEOUT_MS
+    int "Wait for a secondary CPU to acknowledge its start (ms)"
+    range 1 10000
+    default 1000 if BOARD_QEMU
+    default 100
+    help
+      After the second STARTUP IPI, how long the boot CPU waits for the
+      AP's trampoline to reach 64-bit mode before reporting it as not
+      started. Only spent on a CPU that does not come up; QEMU's TCG
+      is slower to reach it than hardware.
+
+endmenu
+endif # ARCH_X86_64

@@ -657,8 +657,8 @@ mod pl011 {
 
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 mod com16550_pio {
-    //! COM1, polled: enough for the boot banner and the panic path. The IRQ
-    //! half (IER, the IOAPIC route) is still `todo!()`.
+    //! COM1: polled for the boot banner and the panic path, RX by interrupt
+    //! once `enable_irq` runs (the IOAPIC route is the boot hook's).
     const COM1: u16 = 0x3F8;
     const REG_THR: u16 = 0;
     const REG_IER: u16 = 1;
@@ -669,6 +669,7 @@ mod com16550_pio {
     const LSR_DR: u8 = 0x01;
     const LSR_THRE: u8 = 0x20;
     const LSR_TEMT: u8 = 0x40;
+    const IER_RX_AVAIL: u8 = 0x01;
 
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
@@ -713,8 +714,36 @@ mod com16550_pio {
         }
     }
     pub fn getc_raw() -> u8 { inb(REG_THR) }
-    pub fn enable_irq() { todo!("x86_64: uart enable_irq: IER + IOAPIC GSI 4") }
-    pub fn irq_handler() -> bool { todo!("x86_64: uart irq_handler") }
+    /// RX interrupts on (IER bit 0); MCR OUT2 (set by `init`) gates the
+    /// line to the PIC/IOAPIC on a PC. The IOAPIC route is the boot hook's.
+    pub fn enable_irq() {
+        super::IRQ_MODE.store(true, super::Ordering::Release);
+        outb(REG_IER, inb(REG_IER) | IER_RX_AVAIL);
+    }
+    /// Drain the RX FIFO into the shared ring (the 16550 MMIO back end's
+    /// loop, over port I/O). True if a byte arrived.
+    pub fn irq_handler() -> bool {
+        if !super::IRQ_MODE.load(super::Ordering::Relaxed) {
+            return false;
+        }
+        let mut any = false;
+        while inb(REG_LSR) & LSR_DR != 0 {
+            let c = inb(REG_THR);
+            any = true;
+            if super::rx_intercept(c) {
+                continue;
+            }
+            let head = super::RX_HEAD.load(super::Ordering::Relaxed);
+            let next = (head + 1) % super::RX_BUF_CAP;
+            if next != super::RX_TAIL.load(super::Ordering::Acquire) {
+                // SAFETY: single producer (this handler, interrupts off);
+                // the slot is not visible to the consumer until RX_HEAD moves.
+                unsafe { super::RX_BUF[head] = c; }
+                super::RX_HEAD.store(next, super::Ordering::Release);
+            }
+        }
+        any
+    }
     /// Writes into free FIFO room only (THRE: the 16-byte FIFO is empty).
     pub fn tx_fill(src: &[u8]) -> usize {
         if !can_write() {

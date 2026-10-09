@@ -1651,7 +1651,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         azos_bench::run_all_quiescent(BENCH_BOOT_ITERS);
         kprintln!("[BENCH-RES] ── boot-bench complete, halting ──");
         loop {
-            unsafe { core::arch::asm!("wfi"); }
+            azos_arch::Cpu::wfi(&azos_arch::ARCH);
         }
     }
 

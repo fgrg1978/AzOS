@@ -10,8 +10,8 @@
 //
 // Exports:
 //   _start                 boot CPU entry (the PVH note's target)
-//   _secondary_start       AP entry after INIT-SIPI-SIPI (not wired yet: a
-//                          real AP needs a 16-bit trampoline below 1 MiB)
+//   (the AP entry `_secondary_start` is entry/x86_64/asm/ap_entry.S, reached
+//    through crates/core/arch-x86_64/src/ap_trampoline.S)
 // Calls:
 //   kernel_main(hart_id = 0, fw_table = start_info)
 //   x86_64_early_exception(vector, error_code, rip)   any CPU exception
@@ -52,7 +52,6 @@
 .section .text.boot, "ax"
 .code32
 .globl _start
-.globl _secondary_start
 _start:
     cli
     cld
@@ -208,12 +207,6 @@ refuse_baseline:
 6:  cli
     hlt
     jmp 6b
-
-_secondary_start:
-    // APs are not started yet (Boot::hart_start is todo!()).
-    cli
-    hlt
-    jmp _secondary_start
 
 .code64
 long_entry:

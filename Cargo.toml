@@ -84,6 +84,9 @@ exclude = [
     # arch-tests pulls the pure halves of arch-riscv64 (Sv39 arithmetic, PMP
     # encoding) via #[path]; the rest of that crate is inline asm.
     "tests/host/arch-tests",
+    # x86-platform-tests pulls the pure halves of arch-x86_64 (ACPI tables,
+    # PVH boot information, APIC/IOAPIC words, clock scaling) via #[path].
+    "tests/host/x86-platform-tests",
     # drivers-tests pulls driver modules via #[path]; their `crate::` paths
     # resolve to the test crate, which provides root-level stand-ins for the
     # MMIO modules.

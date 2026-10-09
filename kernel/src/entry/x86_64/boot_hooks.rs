@@ -1,37 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! x86_64 boot hooks — SKELETON, matched to `entry/{riscv64,aarch64}/
-//! boot_hooks.rs`. `arch_entry.rs` exposes them as the `ArchEntry` impl;
-//! the generic early boot (`boot::early_main`) calls them. Each hook past
-//! the banner and the PVH memory map is a `todo!()` naming the x86 mechanism.
+//! x86_64 boot hooks, matched to `entry/{riscv64,aarch64}/boot_hooks.rs`.
+//! `arch_entry.rs` exposes them as the `ArchEntry` impl; the generic early
+//! boot (`boot::early_main`) calls them. The platform hooks (boot
+//! information, ACPI, APIC, timer, SMP) are implemented over
+//! `azos_arch::{platform_impl, acpi, apic, ioapic, timer, smp}`; the others
+//! are still `todo!()`s naming the x86 mechanism.
 
 use azos_drv_sys::kprintln;
 
-/// PVH `hvm_start_info` (xen/include/public/arch-x86/hvm/start_info.h).
-#[repr(C)]
-struct HvmStartInfo {
-    magic: u32,
-    version: u32,
-    flags: u32,
-    nr_modules: u32,
-    modlist_paddr: u64,
-    cmdline_paddr: u64,
-    rsdp_paddr: u64,
-    memmap_paddr: u64,
-    memmap_entries: u32,
-    reserved: u32,
-}
+use azos_arch::platform_impl::{platform, Source};
 
-/// One PVH memory-map entry (E820 types: 1 = RAM).
-#[repr(C)]
-struct HvmMemmapEntry {
-    addr: u64,
-    size: u64,
-    kind: u32,
-    reserved: u32,
+fn source_name(s: Source) -> &'static str {
+    match s {
+        Source::None => "none",
+        Source::Pvh => "PVH start_info",
+        Source::Scan => "BIOS-area scan",
+        Source::Madt => "MADT",
+        Source::Fallback => "fallback",
+        Source::Cmdline => "kernel command line",
+        Source::MicrovmLayout => "microvm layout",
+    }
 }
-
-const PVH_MAGIC: u32 = 0x336e_c578;
 
 /// Nothing to read before the console.
 pub fn pre_console() {}
@@ -63,8 +53,8 @@ pub fn kernel_cmdline(fw_table: usize, out: &mut [u8]) -> Option<usize> {
     }
     // SAFETY: boot.S passes the PVH start_info's physical address, identity
     // mapped (0..4 GiB) by boot.S's page tables.
-    let si = unsafe { &*(fw_table as *const HvmStartInfo) };
-    if si.magic != PVH_MAGIC || si.cmdline_paddr == 0 {
+    let si = unsafe { &*(fw_table as *const azos_arch::bootinfo::HvmStartInfo) };
+    if si.magic != azos_arch::bootinfo::PVH_MAGIC || si.cmdline_paddr == 0 {
         return None;
     }
     let p = si.cmdline_paddr as usize as *const u8;
@@ -82,48 +72,98 @@ pub fn kernel_cmdline(fw_table: usize, out: &mut [u8]) -> Option<usize> {
     Some(n)
 }
 
-/// The PVH `hvm_start_info` and its memory map, printed. Done: the console
-/// (COM1, polled), the banner, this. Not yet: the ACPI tables (RSDP -> MADT
-/// for the CPUs, `discover_cpus` with `source: "MADT"`), the frame
-/// allocator, the kernel page tables, the heap, the LAPIC/IOAPIC, the TSC
-/// calibration: the boot stops here with a `todo!()` the panic handler
-/// prints.
+/// The PVH `hvm_start_info` (memory map, command line, RSDP) and the ACPI
+/// tables, read once into `azos_arch::platform_impl` while boot.S's
+/// identity map is live; then the AP trampoline is installed.
 pub fn firmware_table(_hart_id: usize, fw_table: usize, _dt: Option<azos_dtb::DtbInfo>) {
-    // SAFETY: boot.S passes the PVH start_info's physical address, identity
-    // mapped (0..4 GiB) by boot.S's page tables.
-    let si = unsafe { &*(fw_table as *const HvmStartInfo) };
-    if si.magic != PVH_MAGIC {
-        kprintln!("[BOOT] PVH start_info magic {:#x} != {:#x}", si.magic, PVH_MAGIC);
-    } else {
-        kprintln!("[BOOT] PVH v{} flags={:#x} modules={} rsdp={:#x}",
-                  si.version, si.flags, si.nr_modules, si.rsdp_paddr);
-        let mut ram = 0u64;
-        if si.version >= 1 && si.memmap_paddr != 0 {
-            for i in 0..si.memmap_entries as usize {
-                // SAFETY: memmap_entries entries at memmap_paddr (identity mapped).
-                let e = unsafe { &*((si.memmap_paddr as usize + i * core::mem::size_of::<HvmMemmapEntry>()) as *const HvmMemmapEntry) };
-                kprintln!("[MEM] {:#012x}+{:#010x} type {}", e.addr, e.size, e.kind);
-                if e.kind == 1 {
-                    ram += e.size;
-                }
-            }
-        }
-        kprintln!("[MEM] RAM: {} KiB", ram / 1024);
+    // SAFETY: boot CPU, once, before any other CPU or interrupt; boot.S's
+    // 0..4 GiB identity map is still the live one.
+    unsafe { azos_arch::platform_impl::discover(fw_table) };
+    let p = platform();
+    match p.start_info {
+        None => azos_drv_sys::kwarn!("[BOOT] PVH start_info at {:#x}: bad magic (want {:#x})",
+                                     fw_table, azos_arch::bootinfo::PVH_MAGIC),
+        Some(si) => kprintln!("[BOOT] PVH v{} flags={:#x} modules={} rsdp={:#x}",
+                              si.version, si.flags, si.nr_modules, si.rsdp_paddr),
     }
-    let _ = si.cmdline_paddr;
-    let _ = si.modlist_paddr;
-    let _ = si.reserved;
-
-
-    todo!("x86_64: firmware_table: ACPI RSDP -> MADT CPUs, the PVH E820 map into FirmwareMemory")
+    let mut ram = 0u64;
+    for e in p.memmap() {
+        kprintln!("[MEM] {:#012x}+{:#010x} type {}", e.addr, e.size, e.kind);
+        if e.kind == azos_arch::bootinfo::E820_RAM {
+            ram += e.size;
+        }
+    }
+    if p.memmap_dropped != 0 {
+        azos_drv_sys::kwarn!("[MEM] {} memory-map entries past the {} kept were ignored",
+                             p.memmap_dropped, azos_arch::bootinfo::MAX_MEM_ENTRIES);
+    }
+    kprintln!("[MEM] RAM: {} KiB", ram / 1024);
+    if p.cmdline_len != 0 {
+        let line = core::str::from_utf8(p.cmdline()).unwrap_or("<not UTF-8>");
+        kprintln!("[BOOT] cmdline: {}", line);
+        if p.cmdline_full_len > p.cmdline_len {
+            azos_drv_sys::kwarn!("[BOOT] cmdline cut at {} of {} bytes (X86_CMDLINE_MAX)",
+                                 p.cmdline_len, p.cmdline_full_len);
+        }
+    }
+    match p.acpi_err {
+        None => kprintln!("[ACPI] RSDP {:#x} ({}) rev {} via {}: {} tables, {} bad",
+                          p.acpi.rsdp, source_name(p.rsdp_source), p.acpi.revision,
+                          if p.acpi.xsdt { "XSDT" } else { "RSDT" }, p.acpi.n_tables, p.acpi.bad_tables),
+        Some(e) => azos_drv_sys::kwarn!("[ACPI] no usable tables ({:?}): one CPU, IOAPIC at {:#x}",
+                                        e, azos_limits::X86_IOAPIC_FALLBACK_BASE),
+    }
+    for &(sig, pa, len) in p.acpi.tables() {
+        kprintln!("[ACPI]   {} {:#x} len {}", core::str::from_utf8(&sig).unwrap_or("????"), pa, len);
+    }
+    for m in p.acpi.mcfg() {
+        kprintln!("[ACPI] MCFG: segment {} buses {}..={} ECAM {:#x}", m.segment, m.bus_start, m.bus_end, m.base);
+    }
+    if p.virtio_bad != 0 {
+        azos_drv_sys::kwarn!("[VIRTIO] {} malformed virtio_mmio.device= entries ignored", p.virtio_bad);
+    }
+    kprintln!("[VIRTIO] {} virtio-mmio transport(s) from the {}", p.n_virtio, source_name(p.virtio_source));
+    let kernel_end = unsafe { &crate::_kernel_end as *const u8 as usize };
+    // SAFETY: boot CPU, after `discover`, identity map live, no AP started.
+    match unsafe { azos_arch::smp::install(kernel_end) } {
+        Ok(pa) => kprintln!("[SMP] AP trampoline at {:#x} (STARTUP vector {:#x})", pa, pa >> 12),
+        Err(e) => azos_drv_sys::kwarn!("[SMP] no AP start possible: {:?}", e),
+    }
 }
 
+/// The MADT's interrupt controllers, and the LAPIC mode for every CPU.
 pub fn irqchip_probe(_fw: &()) {
-    todo!("x86_64: irqchip_probe: MADT LAPIC/IOAPIC entries, x2APIC (CPUID.01H:ECX[21])")
+    let p = platform();
+    let x2 = azos_arch::apic::select_mode();
+    kprintln!("[APIC] {} mode, LAPIC {:#x}, boot CPU APIC ID {}",
+              if x2 { "x2APIC" } else { "xAPIC" }, p.lapic_pa, p.bsp_apic_id);
+    if let Some(m) = p.madt() {
+        for io in m.ioapics() {
+            kprintln!("[APIC] IOAPIC id {} at {:#x}, GSI base {}", io.id, io.addr, io.gsi_base);
+        }
+        for o in m.isos() {
+            kprintln!("[APIC] override: ISA IRQ {} -> GSI {} (flags {:#x})", o.source, o.gsi, o.flags);
+        }
+        if m.malformed != 0 {
+            azos_drv_sys::kwarn!("[APIC] {} malformed MADT entries skipped", m.malformed);
+        }
+    }
 }
 
+/// The TSC rate (the clock switches to TIMER_FREQ units here, before any
+/// timestamp the PMM or later code keeps) and the timer mode.
 pub fn timer_probe(_fw: &()) {
-    todo!("x86_64: timer_probe: TSC-deadline (CPUID.01H:ECX[24]), invariant TSC, HPET from ACPI")
+    use azos_arch::timer;
+    let src = timer::calibrate();
+    let deadline = timer::select_mode();
+    kprintln!("[TIMER] TSC {} Hz from {}{}, clock at {} Hz; timer: {}",
+              timer::tsc_hz(), src.name(),
+              if timer::invariant_tsc() { " (invariant)" } else { " (NOT invariant)" },
+              timer::TICK_HZ,
+              if deadline { "TSC-deadline" } else { "LAPIC one-shot" });
+    if let Some(h) = platform().acpi.hpet {
+        kprintln!("[TIMER] HPET at {:#x}", h.addr);
+    }
 }
 
 /// The `[ISA]` line: the baseline level (`features::check_baseline`, which
@@ -177,20 +217,98 @@ pub fn cpu_features(_fw: &()) {
     ]);
 }
 
+/// RAM above this is left out: the kernel maps the PMM's span as normal
+/// memory, and on a PC the span past 4 GiB would cross the 32-bit MMIO hole
+/// (LAPIC, IOAPIC, HPET, PCI windows).
+const LOW_RAM_LIMIT: u64 = 1 << 32;
+
+/// One range for the PMM: 0 to the end of the highest RAM entry below 4 GiB
+/// (the holes inside it are reserved by `reserve_firmware_table`); the CPUs
+/// the MADT lists, the boot CPU first.
 pub fn firmware_memory(_fw: &()) -> azos_arch::FirmwareMemory {
-    todo!("x86_64: firmware_memory: E820 RAM ranges, MADT processor count, BSP APIC id")
+    let p = platform();
+    let high: u64 = p.memmap().iter()
+        .filter(|e| e.kind == azos_arch::bootinfo::E820_RAM)
+        .map(|e| e.addr.saturating_add(e.size).saturating_sub(e.addr.max(LOW_RAM_LIMIT)))
+        .sum();
+    if high != 0 {
+        azos_drv_sys::kwarn!("[MEM] {} MiB of RAM above 4 GiB not used", high >> 20);
+    }
+    let (mem_start, mem_size, from_firmware) = match azos_arch::bootinfo::ram_span(p.memmap(), LOW_RAM_LIMIT) {
+        Some((s, e)) => (s as usize, (e - s) as usize, true),
+        None => (0, crate::FALLBACK_MEM_SIZE, false),
+    };
+    azos_arch::FirmwareMemory {
+        mem_start,
+        mem_size,
+        from_firmware,
+        cpu_count: p.n_cpus,
+        boot_cpu: 0,
+        cpu_source: if p.cpu_source == Source::Madt { "MADT" } else { "CPUID (no MADT)" },
+    }
 }
 
-pub fn firmware_done(_fw_table: usize, _num_cpus: usize) {
-    todo!("x86_64: firmware_done: print the APIC/timer choices")
+/// The CPU table as numbered: dense index -> APIC ID.
+pub fn firmware_done(_fw_table: usize, num_cpus: usize) {
+    let p = platform();
+    for cpu in 0..num_cpus.min(p.n_cpus) {
+        kprintln!("[SMP] CPU {}: APIC ID {}", cpu, p.apic_ids[cpu]);
+    }
+    if p.cpus_over_limit != 0 {
+        azos_drv_sys::kwarn!("[SMP] {} CPU(s) past NR_CPUS={} not used", p.cpus_over_limit, azos_limits::NR_CPUS);
+    }
 }
 
+/// Everything in the PMM's span that is not RAM (E820 holes, reserved, ACPI,
+/// NVS), and the boot information (start_info, memory map, command line,
+/// ACPI tables) wherever it sits in RAM.
 pub fn reserve_firmware_table(_fw_table: usize) {
-    todo!("x86_64: reserve_firmware_table: the ACPI tables and the PVH start_info page")
+    let p = platform();
+    let end = (azos_mm::pmm::total_pages() * azos_arch::PAGE_SIZE) as u64;
+    let mut holes = 0u64;
+    azos_arch::bootinfo::for_each_hole(p.memmap(), end, |s, l| {
+        azos_mm::pmm::reserve_range(s as usize, l as usize);
+        holes += l;
+    });
+    let mut boot = 0u64;
+    p.for_each_boot_span(|s, l| {
+        if s < end {
+            let a = s & !0xFFF;
+            let len = ((s + l + 0xFFF) & !0xFFF) - a;
+            azos_mm::pmm::reserve_range(a as usize, len as usize);
+            boot += len;
+        }
+    });
+    kprintln!("[MM] Reserved {} KiB of memory-map holes, {} KiB of boot information", holes >> 10, boot >> 10);
 }
 
-pub fn kernel_mmio_windows() -> core::iter::Empty<(usize, usize)> {
-    todo!("x86_64: kernel_mmio_windows: LAPIC (0xFEE00000), IOAPIC, HPET as UC pages")
+/// The device windows the kernel tables map before paging is on: the xAPIC
+/// page (none in x2APIC mode), each IOAPIC, the HPET, the virtio-mmio
+/// transports.
+pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
+    const PAGE: usize = 0x1000;
+    let p = platform();
+    let mut w = [(0usize, 0usize); 3 + azos_arch::acpi::MAX_IOAPICS];
+    let mut n = 0;
+    let mut add = |base: usize, len: usize| {
+        if n < w.len() && len != 0 {
+            w[n] = (base, len);
+            n += 1;
+        }
+    };
+    if let Some(base) = azos_arch::apic::mmio_window() {
+        add(base, PAGE);
+    }
+    azos_arch::ioapic::for_each_window(|base| add(base, PAGE));
+    if let Some(h) = p.acpi.hpet {
+        add(h.addr as usize, PAGE);
+    }
+    if let (Some(lo), Some(hi)) = (p.virtio().iter().map(|d| d.base).min(),
+                                   p.virtio().iter().map(|d| d.base + d.size).max()) {
+        let lo = lo as usize & !(PAGE - 1);
+        add(lo, ((hi as usize + PAGE - 1) & !(PAGE - 1)) - lo);
+    }
+    w.into_iter().take(n)
 }
 
 /// The paging choices: each extension's Kconfig policy over the probe.
@@ -240,44 +358,95 @@ pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
     crate::boot_stack_report();
 }
 
+/// The clock's rate: `now_ticks` counts TIMER_FREQ (the TSC scaled).
 pub fn timebase_hz() -> u64 {
-    todo!("x86_64: timebase_hz: invariant TSC frequency (CPUID.15H, or HPET calibration)")
+    azos_arch::timer::TICK_HZ
 }
 
-pub fn irqchip_init(_hart_id: usize, _fw_table: usize) {
-    todo!("x86_64: irqchip_init: mask the 8259 PICs, x2APIC enable, IOAPIC redirection table")
+/// The 8259s remapped and masked, this CPU's LAPIC on, every IOAPIC pin
+/// masked.
+pub fn irqchip_init(hart_id: usize, _fw_table: usize) {
+    if platform().madt().map_or(true, |m| m.flags & 1 != 0) {
+        azos_arch::platform_impl::mask_8259();
+    }
+    azos_arch::apic::init_local(hart_id);
+    let gsis = azos_arch::ioapic::init();
+    kprintln!("[APIC] LAPIC ID {} on, {} IOAPIC GSIs masked, device vectors from {}",
+              azos_arch::apic::id(), gsis, azos_arch::apic::IRQ_VECTOR_BASE);
 }
 
-pub fn irq_enable_early() {
-    todo!("x86_64: irq_enable_early: sti once the IDT and LAPIC are live")
-}
+/// Nothing: `timer_init` unmasks (RFLAGS.IF) once the tick is armed, as
+/// on aarch64.
+pub fn irq_enable_early() {}
 
+/// COM1 (ISA IRQ 4, or its MADT override) through the IOAPIC to this CPU,
+/// RX interrupts on.
 pub fn console_irq(_hart_id: usize, _fw_table: usize) {
-    todo!("x86_64: console_irq: COM1 IRQ 4 through the IOAPIC, IER RX/TX")
+    let p = platform();
+    let (gsi, level, active_low) = p.isa_irq(4);
+    if azos_arch::ioapic::route(gsi, azos_arch::apic::id(), level, active_low, false) {
+        azos_drv_irqchip::user_irq::mark_kernel(gsi);
+        crate::entry::x86_64::irq::COM1_GSI.store(gsi, core::sync::atomic::Ordering::Relaxed);
+        azos_drv_sys::uart::enable_irq();
+        kprintln!("[UART] COM1 RX interrupt on GSI {} ({}, active-{})", gsi,
+                  if level { "level" } else { "edge" }, if active_low { "low" } else { "high" });
+    } else {
+        azos_drv_sys::kwarn!("[UART] COM1 GSI {} not routable: console stays polled", gsi);
+    }
 }
 
+/// None: no device tree; triggers come from the MADT overrides at route time.
 pub fn irq_trigger_controller() -> Option<azos_dtb::IrqController> {
-    todo!("x86_64: irq_trigger_controller: none (no device tree); triggers come from the MADT")
+    None
 }
 
-pub fn irq_triggers(_triggers: Option<azos_dtb::IrqTriggers>) {
-    todo!("x86_64: irq_triggers: MADT interrupt source overrides (polarity, trigger)")
-}
+/// Nothing to record: `ioapic::default_trigger` reads the MADT overrides.
+pub fn irq_triggers(_triggers: Option<azos_dtb::IrqTriggers>) {}
 
+/// A ring-3 line's release: mask and reset its redirection entry.
 pub fn line_release() -> fn(u32) {
-    todo!("x86_64: line_release: mask the IOAPIC redirection entry")
+    azos_drv_irqchip::user_irq::release
 }
 
-pub fn irq_routing_init(_hart_id: usize) {
-    todo!("x86_64: irq_routing_init: MSI/MSI-X address = LAPIC of the boot CPU")
+/// The boot CPU takes ring-3 lines first; MSI/MSI-X target its LAPIC
+/// (`apic::msi`).
+pub fn irq_routing_init(hart_id: usize) {
+    azos_drv_irqchip::user_irq::set_boot_hart(hart_id as u32);
+    if let Some((addr, _)) = azos_arch::apic::msi(hart_id, azos_arch::apic::IRQ_VECTOR_BASE) {
+        kprintln!("[IRQ] MSI address for CPU {}: {:#x}", hart_id, addr);
+    }
 }
 
+/// The MADT gave the APIC IDs and `firmware_table` installed the
+/// trampoline: say what AP start will use.
 pub fn smp_probe(_fw_table: usize) {
-    todo!("x86_64: smp_probe: MADT APIC ids for INIT-SIPI-SIPI, the real-mode trampoline page")
+    let p = platform();
+    match p.trampoline_pa {
+        Some(pa) => kprintln!("[SMP] {} CPU(s); APs start by INIT-SIPI-SIPI at {:#x}", p.n_cpus, pa),
+        None => kprintln!("[SMP] {} CPU(s); no trampoline page: boot CPU only", p.n_cpus),
+    }
 }
 
+/// The LAPIC timer (measured against the TSC when it is the one-shot
+/// counter), the periodic tick, then interrupts on.
 pub fn timer_init() {
-    todo!("x86_64: timer_init: TSC frequency (CPUID.15H or HPET calibration), LAPIC TSC-deadline tick")
+    use azos_arch::timer;
+    if !timer::deadline_mode() {
+        match timer::calibrate_lapic() {
+            Some(hz) => kprintln!("[TIMER] LAPIC timer {} Hz (divide {})", hz, azos_limits::X86_LAPIC_TIMER_DIVIDE),
+            None => azos_drv_sys::kerr!("[TIMER] FAILED: the LAPIC timer did not count"),
+        }
+    }
+    timer::init_local();
+    let hz = azos_drv_sys::timebase::sched_hz_get();
+    let period = core::cmp::max(1, timer::TICK_HZ / hz);
+    crate::entry::x86_64::irq::arm_periodic_timer(period);
+    kprintln!("[TIMER] periodic tick armed: period={} ticks (~{} Hz)", period, hz);
+    {
+        use azos_arch::Interrupts;
+        azos_arch::ARCH.enable_all();
+    }
+    kprintln!("[TRAP] interrupts on (RFLAGS.IF)");
 }
 
 pub fn boot_selftests() {
@@ -286,17 +455,32 @@ pub fn boot_selftests() {
 
 /// Device windows mapped once the heap exists (PCIe ECAM from the MCFG,
 /// the HPET, the IOAPIC).
+/// The PCIe ECAM windows of the MCFG (the HPET, the IOAPICs and virtio-mmio
+/// were mapped with the kernel tables). A not-present -> present change
+/// needs no TLB flush on x86.
 pub fn arch_map_late_mmio() {
-    todo!("x86_64: arch_map_late_mmio: ECAM (MCFG), HPET, IOAPIC")
+    for m in platform().acpi.mcfg() {
+        if azos_mm::vmm::map_mmio_region(m.base as usize, m.size() as usize).is_err() {
+            azos_drv_sys::kwarn!("[PCI] ECAM {:#x} (+{:#x}) not mapped", m.base, m.size());
+        }
+    }
 }
 
 /// INIT-SIPI-SIPI to each MADT APIC ID up to `num_cpus`, with the real-mode
 /// trampoline copied below 1 MiB.
-pub fn arch_wake_secondaries(_num_cpus: usize) {
-    todo!("x86_64: arch_wake_secondaries: INIT-SIPI-SIPI per MADT entry")
+pub fn arch_wake_secondaries(num_cpus: usize) {
+    crate::entry::x86_64::smp::wake_secondaries(num_cpus)
 }
 
 /// Arm the boot CPU's LAPIC TSC-deadline tick and enter the scheduler.
+/// Hand off to the scheduler with interrupts off: `start()` dispatches the
+/// first task, whose context enables them (the window aarch64's K-A12 note
+/// describes).
 pub fn arch_enter_scheduler(_hart_id: usize) -> ! {
-    todo!("x86_64: arch_enter_scheduler: LAPIC tick, sti, idle")
+    kprintln!("[SCHED] Starting scheduler on boot CPU — tasks will now preempt...");
+    {
+        use azos_arch::Interrupts;
+        let _ = azos_arch::ARCH.disable_all();
+    }
+    azos_sched::start()
 }

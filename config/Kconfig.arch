@@ -1435,16 +1435,6 @@ config X86_XSAVE_AREA_BYTES
       proportional to the components in use, not to this size.  fleet
       defaults to AVX-512 (server parts have it); edge and embedded to AVX.
 
-config X86_IRQ_VECTOR_BASE
-    int "First IDT vector for device interrupts"
-    range 32 239
-    default 32
-    help
-      IOAPIC lines and MSIs are numbered from this vector up; 0..31 are the
-      CPU's exceptions.  The LAPIC delivers by priority class (vector / 16),
-      so a higher base gives devices a higher class.  Linux starts at 0x20
-      (32) as well.  Costs nothing; every vector has an entry stub.
-
 config X86_IPI_VECTOR
     int "IDT vector of the inter-processor interrupt"
     range 32 254

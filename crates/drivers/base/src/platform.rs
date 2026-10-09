@@ -810,7 +810,7 @@ pub mod hw {
 // arch-only: one platform table per ISA (see aarch64's above).
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub mod hw {
-    pub const PLATFORM_NAME: &str = "PC (x86_64 skeleton)";
+    pub const PLATFORM_NAME: &str = "PC / QEMU microvm (x86_64)";
     /// COM1 is an I/O PORT (0x3F8), not an MMIO address; the uart driver's
     /// x86 back end uses port I/O.
     pub const UART_BASE:   usize = 0x3F8;
@@ -821,17 +821,23 @@ pub mod hw {
     /// RAM starts at 0 on a PC; the kernel loads at 1 MiB (linker-x86_64.ld).
     pub const RAM_BASE:    usize = 0;
     pub const KERNEL_LOAD: usize = 0x10_0000;
-    /// The TSC rate (CPUID.15H, or calibrated against the HPET/PIT).
+    /// The TSC rate (CPUID.15H, or calibrated against the HPET/PIT by
+    /// `azos_arch::timer::calibrate`; 0 before it). `now_ticks` itself runs
+    /// at TIMER_FREQ.
     pub fn timer_freq_hw() -> u64 {
-        todo!("x86_64: hw::timer_freq_hw: CPUID.15H / TSC calibration")
+        azos_arch::timer::tsc_hz()
     }
     /// Device windows come from ACPI (MCFG ECAM, HPET, IOAPIC), not a table.
     pub const MMIO_REGIONS: &[super::MmioRegion] = &[];
-    /// No virtio-mmio on a PC: virtio is PCI (crates/drivers/virtio pci.rs).
-    pub const VIRTIO_MMIO_BASE:  usize = 0;
-    pub const VIRTIO_MMIO_STRIDE: usize = 0x200;
-    pub const VIRTIO_MMIO_COUNT: usize = 0;
-    pub const VIRTIO_IRQ_BASE: u32 = 0;
+    /// QEMU microvm's virtio-mmio window (Kconfig `X86_VIRTIO_MMIO_*`; the
+    /// drivers probe each slot's magic). On a PC virtio is PCI instead.
+    pub const VIRTIO_MMIO_BASE:  usize = azos_limits::X86_VIRTIO_MMIO_BASE;
+    pub const VIRTIO_MMIO_STRIDE: usize = azos_limits::X86_VIRTIO_MMIO_STRIDE;
+    pub const VIRTIO_MMIO_COUNT: usize = azos_limits::X86_VIRTIO_MMIO_MAX;
+    /// microvm's GSI of transport 0 with its second IOAPIC (24); the line of
+    /// each transport is the boot's discovery, not this constant
+    /// (`azos_arch::platform_impl::platform().virtio_gsi`).
+    pub const VIRTIO_IRQ_BASE: u32 = 24;
     /// CMOS RTC at I/O ports 0x70/0x71, IRQ 8.
     pub const RTC_BASE: usize = 0x70;
     pub const RTC_IRQ: u32 = 8;

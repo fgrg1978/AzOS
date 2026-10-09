@@ -41,6 +41,27 @@ pub mod idt;
 pub mod mmu;
 pub mod tlb;
 
+// The platform (front X4): boot information, ACPI, LAPIC/IOAPIC, the clock
+// and timer, AP start. x86_64 only, so the host stub still exports just the
+// contract; `encode`/`bootinfo`/`acpi` are pure and host-tested through
+// `#[path]` (tests/host/x86-platform-tests).
+#[cfg(target_arch = "x86_64")]
+pub mod encode;
+#[cfg(target_arch = "x86_64")]
+pub mod bootinfo;
+#[cfg(target_arch = "x86_64")]
+pub mod acpi;
+#[cfg(target_arch = "x86_64")]
+pub mod platform_impl;
+#[cfg(target_arch = "x86_64")]
+pub mod apic;
+#[cfg(target_arch = "x86_64")]
+pub mod ioapic;
+#[cfg(target_arch = "x86_64")]
+pub mod timer;
+#[cfg(target_arch = "x86_64")]
+pub mod smp;
+
 /// The x86 body on x86_64; on the host (this crate is also the facade's fake
 /// ISA) the `todo!()` naming it.
 macro_rules! on_x86 {
@@ -92,7 +113,7 @@ impl Cpu for X86_64 {
     /// Invariant TSC (`rdtsc`, `CPUID.80000007H:EDX[8]`), frequency from
     /// `CPUID.15H` or calibrated against the HPET/PIT.
     fn now_ticks(&self) -> u64 {
-        on_x86!(hw::rdtsc(), "x86_64: now_ticks: invariant TSC via rdtsc")
+        on_x86!(timer::now_ticks(), "x86_64: now_ticks: invariant TSC via rdtsc")
     }
     /// The CPU id stored at `%gs:0`: the kernel GS base is this CPU's
     /// `cpu::PerCpu` (swapped with `IA32_KERNEL_GS_BASE` by `swapgs` on
@@ -128,9 +149,13 @@ impl Interrupts for X86_64 {
         on_x86!(hw::rflags() & hw::RFLAGS_IF != 0, "x86_64: interrupts_enabled: pushfq, test IF")
     }
     /// LAPIC timer in TSC-deadline mode (`IA32_TSC_DEADLINE`), one-shot.
-    fn set_timer_deadline(&self, _deadline_ticks: u64) { todo!("x86_64: set_timer_deadline: wrmsr IA32_TSC_DEADLINE") }
+    fn set_timer_deadline(&self, _deadline_ticks: u64) {
+        on_x86!(timer::set_deadline(_deadline_ticks), "x86_64: set_timer_deadline: wrmsr IA32_TSC_DEADLINE")
+    }
     /// A fixed-vector IPI through the LAPIC ICR (x2APIC `wrmsr 0x830`).
-    fn send_ipi(&self, _target_hart: usize) { todo!("x86_64: send_ipi: LAPIC ICR fixed vector") }
+    fn send_ipi(&self, _target_hart: usize) {
+        on_x86!({ apic::send_ipi(_target_hart, encode::RESCHED_VECTOR); }, "x86_64: send_ipi: LAPIC ICR fixed vector")
+    }
 }
 
 impl Mmu for X86_64 {
@@ -229,7 +254,7 @@ impl Boot for X86_64 {
     /// INIT-SIPI-SIPI through the LAPIC ICR to the APIC ID from the MADT,
     /// with a real-mode trampoline below 1 MiB (`kernel/src/entry/x86_64/asm/boot.S`).
     fn hart_start(&self, _hart_id: usize, _start_pc: usize, _opaque: usize) -> Result<(), HartStartError> {
-        todo!("x86_64: hart_start: INIT-SIPI-SIPI to the MADT APIC ID")
+        on_x86!(smp::hart_start(_hart_id, _start_pc, _opaque), "x86_64: hart_start: INIT-SIPI-SIPI to the MADT APIC ID")
     }
 }
 

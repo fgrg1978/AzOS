@@ -257,6 +257,7 @@ pub fn set_boot_hart(hart: u32) {
 /// x86_64 skeleton (and any further ISA): the IOAPIC (`crate::apic`).
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 pub fn set_boot_hart(hart: u32) {
+    EXT_HART.store(hart, Ordering::Release);
     crate::apic::set_boot_hart(hart)
 }
 

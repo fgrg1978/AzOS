@@ -183,11 +183,26 @@ pub unsafe fn wake_hart(hart_id: usize) -> isize {
     }
 }
 
-/// x86_64 skeleton (and any further ISA): INIT-SIPI-SIPI to the MADT APIC
-/// ID of `hart_id` through `Boot::hart_start`.
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-pub unsafe fn wake_hart(_hart_id: usize) -> isize {
-    todo!("x86_64: wake_hart: Boot::hart_start (INIT-SIPI-SIPI) to the MADT APIC ID")
+unsafe extern "C" {
+    /// The 64-bit AP entry (kernel/src/entry/x86_64/asm/ap_entry.S): %rdi =
+    /// the CPU number, which it also uses for its stack and per-CPU base.
+    fn _secondary_start();
+}
+
+/// x86_64 (and any further ISA): INIT-SIPI-SIPI to the MADT APIC ID of
+/// `hart_id` through `Boot::hart_start`, which returns once the AP has
+/// reached 64-bit mode. 0 on success, -1 otherwise (logged).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+pub unsafe fn wake_hart(hart_id: usize) -> isize {
+    let entry = _secondary_start as *const () as usize;
+    match azos_arch::Boot::hart_start(&azos_arch::ARCH, hart_id, entry, hart_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            azos_drv_sys::kwarn!("[SMP] CPU {} INIT-SIPI-SIPI failed: {:?}", hart_id, e);
+            -1
+        }
+    }
 }
 
 /// Start every secondary hart in `0..num_cpus` (boot hart excluded — it is

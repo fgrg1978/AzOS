@@ -30,6 +30,11 @@ use super::{TrapClass, TrapContext};
 use azos_arch::fork_regs::gpr;
 use azos_arch::{cpu, gdt, idt};
 
+/// Interrupt dispatch (vectors >= 32) and the tick.
+pub mod irq;
+/// Secondary-CPU entry and bring-up check.
+pub(crate) mod smp;
+
 /// The register file `trap_entry.S` saves (layout fixed by that asm, which
 /// takes every offset from this struct).
 #[repr(C, align(16))]

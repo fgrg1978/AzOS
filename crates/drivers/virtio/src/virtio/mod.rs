@@ -69,17 +69,25 @@ pub const VIRTIO_QUEUE_SIZE: usize = 16;
 // side has no "same value on real hardware too" excuse to share.
 /// First VirtIO-MMIO slot. RISC-V QEMU `virt`: `hw/riscv/virt.c`'s
 /// `VIRT_VIRTIO` MemMapEntry.
-#[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+#[cfg(not(any(all(target_arch = "aarch64", target_os = "none"), all(target_arch = "x86_64", target_os = "none"))))]
 pub const VIRTIO_MMIO_BASE: usize = 0x1000_1000;
-#[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+#[cfg(not(any(all(target_arch = "aarch64", target_os = "none"), all(target_arch = "x86_64", target_os = "none"))))]
 pub const VIRTIO_MMIO_STRIDE: usize = 0x1000;
-#[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+#[cfg(not(any(all(target_arch = "aarch64", target_os = "none"), all(target_arch = "x86_64", target_os = "none"))))]
 pub const VIRTIO_MMIO_COUNT: usize = 8;
 
 /// aarch64 QEMU `virt` — see `platform::hw::VIRTIO_MMIO_BASE`'s doc for the
 /// DTB fetch this was confirmed against (32 slots, 0x200 stride, base
 /// 0x0A00_0000).
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub use azos_drv_base::platform::hw::{
+    VIRTIO_MMIO_BASE, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_COUNT,
+};
+
+/// x86_64 (QEMU microvm): the window `platform::hw` takes from Kconfig
+/// `X86_VIRTIO_MMIO_*`; each transport's GSI is the boot's discovery
+/// (`azos_arch::platform_impl::platform().virtio_gsi`).
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub use azos_drv_base::platform::hw::{
     VIRTIO_MMIO_BASE, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_COUNT,
 };

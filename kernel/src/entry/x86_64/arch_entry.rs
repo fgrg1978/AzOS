@@ -77,24 +77,37 @@ impl ArchEntry for Entry {
         todo!("x86_64: secondary_tlb_online: add this CPU to the shootdown IPI mask")
     }
 
-    /// This CPU's LAPIC: x2APIC enable (IA32_APIC_BASE), spurious vector,
-    /// TPR 0; the IPI vector unmasked.
-    fn secondary_irq_init(&self, _cpu: usize) {
-        todo!("x86_64: secondary_irq_init: LAPIC x2APIC enable, SVR, TPR")
+    /// This CPU's LAPIC in the boot CPU's mode (x2APIC or xAPIC): spurious
+    /// vector, TPR 0, LINT/NMI, error vector; then it may take ring-3 lines.
+    fn secondary_irq_init(&self, cpu: usize) {
+        azos_arch::apic::init_local(cpu);
+        azos_drv_irqchip::user_irq::hart_ready(cpu as u32);
     }
 
-    /// The LAPIC timer in TSC-deadline mode at the boot CPU's period.
+    /// The LAPIC timer in the boot CPU's mode, at the boot CPU's period.
     fn secondary_timer_init(&self, _cpu: usize) {
-        todo!("x86_64: secondary_timer_init: LAPIC TSC-deadline tick")
+        azos_arch::timer::init_local();
+        let period = crate::entry::x86_64::irq::TICK_PERIOD.load(core::sync::atomic::Ordering::Relaxed);
+        if period != 0 {
+            crate::entry::x86_64::irq::arm_periodic_timer(period);
+        }
     }
 
     /// The online flag the boot CPU's `wake_secondaries` waits on.
-    fn secondary_publish_online(&self, _cpu: usize) {
-        todo!("x86_64: secondary_publish_online: Release-store this CPU's online flag")
+    fn secondary_publish_online(&self, cpu: usize) {
+        if let Some(slot) = crate::entry::x86_64::irq::CORE_ONLINE.get(cpu) {
+            slot.store(true, core::sync::atomic::Ordering::Release);
+        }
     }
 
-    /// The vDSO clock: tick count and TSC in ms.
+    /// The vDSO clock: tick count and the clock (TIMER_FREQ) in ms.
     fn vdso_clock(&self) -> Option<(u64, u64)> {
-        todo!("x86_64: vdso_clock: ticks, rdtsc / (tsc_hz / 1000)")
+        let hz = azos_arch::timer::TICK_HZ;
+        let now = azos_drv_sys::timebase::now();
+        if now != 0 && hz >= 1000 {
+            Some((crate::entry::x86_64::irq::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed), now / (hz / 1000)))
+        } else {
+            None
+        }
     }
 }

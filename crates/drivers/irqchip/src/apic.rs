@@ -1,48 +1,70 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! LAPIC / IOAPIC — x86_64 port SKELETON, the counterpart of `plic`/`aplic`/
-//! `imsic`/`irqchip` (riscv64) and the GIC in `azos_arch_aarch64::gic`.
-//! Every body is a `todo!()` naming the mechanism; nothing here runs.
+//! LAPIC / IOAPIC behind `user_irq` (ring-3 line ownership), the x86_64
+//! counterpart of `plic`/`aplic`/`imsic` (riscv64) and the GIC in
+//! `azos_arch_aarch64::gic`. The chips themselves are
+//! `azos_arch::{apic, ioapic}`: here only the ownership bookkeeping and
+//! the routing call.
 //!
-//! * The LAPIC is per-CPU (x2APIC: MSRs 0x800+, Kconfig `X86_X2APIC`; else MMIO
-//!   at IA32_APIC_BASE): spurious vector, TPR, EOI, the timer
-//!   (TSC-deadline) and IPIs (ICR).
-//! * IOAPICs (addresses and GSI bases from the ACPI MADT) route external
-//!   lines: one 64-bit redirection entry per GSI (vector, destination APIC
-//!   ID, mask, trigger/polarity from the MADT interrupt source overrides).
-//! * MSI/MSI-X (PCIe) target a LAPIC directly (address 0xFEEx_xxxx).
+//! * The LAPIC is per-CPU (x2APIC or xAPIC MMIO), brought up by the boot
+//!   hooks (`apic::init_local`).
+//! * A ring-3 line is an IOAPIC GSI: one redirection entry (vector =
+//!   `IRQ_VECTOR_BASE` + GSI, destination = the hart's APIC ID, trigger
+//!   from the binder, else the MADT override / virtio / ISA / PCI default).
+//! * MSI/MSI-X target a LAPIC directly (`azos_arch::apic::msi`).
 
-/// This CPU's LAPIC: enable (x2APIC mode), spurious vector, TPR 0.
-pub fn init(_hart: u32) {
-    todo!("x86_64: apic::init: x2APIC enable via IA32_APIC_BASE, SVR, TPR 0")
+use azos_arch::ioapic;
+
+/// This CPU's LAPIC (the boot hooks already do this; kept for callers that
+/// bring a hart up through the irqchip API).
+pub fn init(hart: u32) {
+    azos_arch::apic::init_local(hart as usize)
 }
 
-/// Record the CPU external lines go to by default (the IOAPIC destination).
-pub fn set_boot_hart(_hart: u32) {
-    todo!("x86_64: apic::set_boot_hart: default IOAPIC destination APIC ID")
+/// The boot CPU takes external lines from now on.
+pub fn set_boot_hart(hart: u32) {
+    hart_ready(hart)
 }
 
 /// This CPU may now be a ring-3 line's destination.
-pub fn hart_ready(_hart: u32) {
-    todo!("x86_64: apic::hart_ready: CPU joins the IOAPIC destination set")
+pub fn hart_ready(hart: u32) {
+    crate::user_irq::note_hart_ready(hart)
 }
 
-/// Route GSI `irq` to CPU `hart` (`edge`: trigger mode, else the MADT's).
-pub fn bind(_irq: u32, _hart: u32, _edge: Option<bool>) -> bool {
-    todo!("x86_64: apic::bind: IOAPIC redirection entry (vector, dest APIC ID, trigger)")
+/// Take GSI `irq` for ring 3 and route it to `hart` (`edge`: the binder's
+/// trigger, else the line's default), unmasked.
+pub fn bind(irq: u32, hart: u32, edge: Option<bool>) -> bool {
+    if !crate::user_irq::mark(irq) {
+        return false;
+    }
+    let dest = azos_arch::platform_impl::platform().apic_id(hart as usize);
+    let (level, active_low) = ioapic::default_trigger(irq);
+    let level = edge.map_or(level, |e| !e);
+    let routed = dest.is_some_and(|d| ioapic::route(irq, d, level, active_low, false));
+    if !routed {
+        let _ = crate::user_irq::unmark(irq);
+        return false;
+    }
+    crate::user_irq::set_route(irq, hart);
+    true
 }
 
 /// Mask GSI `irq` (redirection entry bit 16).
-pub fn mask(_irq: u32) {
-    todo!("x86_64: apic::mask: IOAPIC RTE mask bit")
+pub fn mask(irq: u32) {
+    ioapic::set_masked(irq, true);
 }
 
 /// Unmask GSI `irq`.
-pub fn unmask(_irq: u32) {
-    todo!("x86_64: apic::unmask: IOAPIC RTE mask bit clear")
+pub fn unmask(irq: u32) {
+    ioapic::set_masked(irq, false);
 }
 
-/// Return GSI `irq` to its masked, unrouted state.
-pub fn release(_irq: u32) {
-    todo!("x86_64: apic::release: mask and reset the RTE")
+/// Return a ring-3 GSI to its masked, unrouted state and drop the
+/// ownership (riscv64's `release`); a line ring 3 does not own is untouched.
+pub fn release(irq: u32) {
+    if !crate::user_irq::owned(irq) {
+        return;
+    }
+    ioapic::release(irq);
+    let _ = crate::user_irq::unmark(irq);
 }
