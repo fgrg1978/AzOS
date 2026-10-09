@@ -678,8 +678,9 @@ fn serve_tlb_ipi() {
 /// on aarch64.
 pub fn irq_enable_early() {}
 
-/// COM1 (ISA IRQ 4, or its MADT override) through the IOAPIC to this CPU,
-/// RX interrupts on.
+/// COM1 (ISA IRQ 4, or its MADT override) through the IOAPIC to this CPU:
+/// RX interrupts on, and console output through the TX ring, fed by the
+/// THR-empty interrupt on the same line (`uart::enable_tx_irq`).
 pub fn console_irq(_hart_id: usize, _fw_table: usize) {
     let p = platform();
     let (gsi, level, active_low) = p.isa_irq(4);
@@ -689,6 +690,8 @@ pub fn console_irq(_hart_id: usize, _fw_table: usize) {
         azos_drv_sys::uart::enable_irq();
         kprintln!("[UART] COM1 RX interrupt on GSI {} ({}, active-{})", gsi,
                   if level { "level" } else { "edge" }, if active_low { "low" } else { "high" });
+        // The same line now feeds COM1 from the console's TX ring.
+        azos_drv_sys::uart::enable_tx_irq();
     } else {
         azos_drv_sys::kwarn!("[UART] COM1 GSI {} not routable: console stays polled", gsi);
     }
@@ -821,6 +824,13 @@ pub fn arch_wake_secondaries(num_cpus: usize) {
 /// first task, whose context enables them (the window aarch64's K-A12 note
 /// describes).
 pub fn arch_enter_scheduler(_hart_id: usize) -> ! {
+    // C1: by now the boot output since `console_irq` went out through the TX
+    // ring, a FIFO load per THR-empty interrupt (interrupts are on since
+    // `timer_init`). The x86 boot row reads this line; `console-tx-sync`
+    // (its canary) leaves the console polled.
+    let (tx_on, tx_hwm, tx_irqs) = azos_drv_sys::uart::console_tx_stats();
+    kprintln!("[UART] COM1 TX {} ({} THR-empty interrupt(s), ring high-water {} B)",
+              if tx_on && tx_irqs > 0 { "interrupt-driven" } else { "polled" }, tx_irqs, tx_hwm);
     kprintln!("[SCHED] Starting scheduler on boot CPU — tasks will now preempt...");
     {
         use azos_arch::Interrupts;

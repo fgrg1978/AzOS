@@ -352,8 +352,8 @@ mod ns16550a {
     }
 
     /// Size of the 16550A transmit FIFO, enabled in [`init`] via
-    /// `FCR_ENABLE_FIFO`.
-    const TX_FIFO_DEPTH: usize = 16;
+    /// `FCR_ENABLE_FIFO`. Kconfig `UART_16550_TX_FIFO_DEPTH` (default 16).
+    const TX_FIFO_DEPTH: usize = azos_limits::UART_16550_TX_FIFO_DEPTH;
 
     /// Write a whole slice, polling the line-status register once per FIFO
     /// load instead of once per byte.
@@ -650,15 +650,18 @@ mod pl011 {
 }
 
 // ============================================================
-// x86_64 skeleton (and any further ISA): the PC's COM1 is a 16550 too, but
-// behind PORT I/O (0x3F8, `in`/`out`), not MMIO, with its IRQ on IOAPIC
-// GSI 4. Every body is a `todo!()` naming that; nothing here runs.
+// x86_64 (and any further ISA): the PC's COM1 is a 16550 too, but behind
+// PORT I/O (0x3F8, `in`/`out`), not MMIO, with its IRQ on IOAPIC GSI 4
+// (ISA IRQ 4 or its MADT override). Off x86_64 the port bodies are
+// `todo!()`s naming that; nothing there runs.
 // ============================================================
 
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 mod com16550_pio {
-    //! COM1: polled for the boot banner and the panic path, RX by interrupt
-    //! once `enable_irq` runs (the IOAPIC route is the boot hook's).
+    //! COM1: polled for the boot banner and the panic path; once the boot
+    //! hook has routed the line, RX by interrupt (`enable_irq`) and TX from
+    //! the console's ring by the THR-empty interrupt (`enable_tx_irq`), one
+    //! FIFO load per interrupt, as the MMIO 16550.
     const COM1: u16 = 0x3F8;
     const REG_THR: u16 = 0;
     const REG_IER: u16 = 1;
@@ -670,6 +673,10 @@ mod com16550_pio {
     const LSR_THRE: u8 = 0x20;
     const LSR_TEMT: u8 = 0x40;
     const IER_RX_AVAIL: u8 = 0x01;
+    const IER_THR_EMPTY: u8 = 0x02;
+    /// The 16550A transmit FIFO (`init` turns it on): THRE with the FIFOs on
+    /// means all of it is free. Kconfig `UART_16550_TX_FIFO_DEPTH`.
+    const TX_FIFO_DEPTH: usize = azos_limits::UART_16550_TX_FIFO_DEPTH;
 
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
@@ -708,9 +715,17 @@ mod com16550_pio {
         }
         outb(REG_THR, c);
     }
+    /// The synchronous path (boot before the ring, panic, halt, reset): one
+    /// LSR read per FIFO load, not per byte. Each port access is a VM exit
+    /// under a hypervisor, and on hardware the wait is the line rate.
     pub fn write_bytes(bytes: &[u8]) {
-        for &b in bytes {
-            putc_raw(b);
+        for chunk in bytes.chunks(TX_FIFO_DEPTH) {
+            while !can_write() {
+                core::hint::spin_loop();
+            }
+            for &b in chunk {
+                outb(REG_THR, b);
+            }
         }
     }
     pub fn getc_raw() -> u8 { inb(REG_THR) }
@@ -744,19 +759,43 @@ mod com16550_pio {
         }
         any
     }
-    /// Writes into free FIFO room only (THRE: the 16-byte FIFO is empty).
+    /// Writes into free FIFO room only (THRE: the whole FIFO is empty).
     pub fn tx_fill(src: &[u8]) -> usize {
         if !can_write() {
             return 0;
         }
-        let n = src.len().min(16);
+        let n = src.len().min(TX_FIFO_DEPTH);
         for &b in &src[..n] {
             outb(REG_THR, b);
         }
         n
     }
-    /// Polled: there is no TX interrupt to arm yet.
-    pub fn tx_irq_set(_on: bool) {}
+    /// Unmask/mask the THR-empty interrupt (IER bit 1, ETBEI). With THRE
+    /// already set, unmasking raises it at once (16550, and QEMU's model).
+    /// Called under the UART lock.
+    pub fn tx_irq_set(on: bool) {
+        let ier = inb(REG_IER);
+        outb(REG_IER, if on { ier | IER_THR_EMPTY } else { ier & !IER_THR_EMPTY });
+    }
+    /// End of the COM1 interrupt, UART lock held. ISA IRQ 4 is EDGE-triggered
+    /// at the IOAPIC, and one 16550 output carries RX and THR-empty: if a
+    /// cause is still pending here (a byte arrived after the RX drain while
+    /// THR-empty held the line up, or the reverse), the line never dropped
+    /// since the edge that was taken and no new one will come — the console
+    /// would go deaf and its TX ring would stall. Masking every cause and
+    /// restoring them makes the 16550 drop the output and raise it again for
+    /// whatever is still pending: a fresh edge, taken after the EOI. Nothing
+    /// pending: no write. (A level-triggered PLIC/GIC line needs none of this.)
+    pub fn irq_rearm() {
+        let ier = inb(REG_IER);
+        let lsr = inb(REG_LSR);
+        let rx = ier & IER_RX_AVAIL != 0 && lsr & LSR_DR != 0;
+        let tx = ier & IER_THR_EMPTY != 0 && lsr & LSR_THRE != 0;
+        if rx || tx {
+            outb(REG_IER, 0);
+            outb(REG_IER, ier);
+        }
+    }
     pub fn tx_wait_idle() {
         while inb(REG_LSR) & LSR_TEMT == 0 {
             core::hint::spin_loop();
@@ -2196,6 +2235,36 @@ pub fn irq_handler() -> bool {
     tx_irq();
     rx
 }
+
+/// x86_64 COM1, after [`irq_handler`] and before the EOI: re-raise the
+/// edge-triggered line if a cause is still pending (`com16550_pio::irq_rearm`).
+/// Under the UART lock: it rewrites IER, which a writer on another CPU
+/// read-modify-writes (`tx_irq_set`) under the same lock. In bypass the
+/// halting CPU owns the wire and maybe the lock: nothing.
+#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+pub fn irq_rearm() {
+    if !IRQ_MODE.load(Ordering::Relaxed) {
+        return;
+    }
+    let _guard = loop {
+        if let Some(g) = try_acquire() {
+            break g;
+        }
+        if BYPASS.load(Ordering::Relaxed) {
+            return;
+        }
+        core::hint::spin_loop();
+    };
+    if !BYPASS.load(Ordering::Relaxed) {
+        hw::irq_rearm();
+    }
+}
+
+/// Level-triggered console lines (PLIC, GIC) stay asserted while a cause is
+/// pending: nothing to re-raise.
+#[cfg(not(all(target_os = "none", target_arch = "x86_64")))]
+#[inline(always)]
+pub fn irq_rearm() {}
 
 // ---- RX wake: a reader parked until the RX interrupt fires ----
 //

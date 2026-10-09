@@ -132,6 +132,8 @@ fn device(gsi: u32) -> bool {
             resched = tid != 0
                 && azos_sched::scheduler::wake_task_by_tid(tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
         }
+        // Edge-triggered: a cause still pending gets a fresh edge.
+        azos_drv_sys::uart::irq_rearm();
         apic::eoi();
         return resched;
     }

@@ -11055,7 +11055,11 @@ PY
     #   x86_64: boots to the shell  the boot self-tests (int3, a self-NMI on
     #                               its IST stack, the tick), W^X, the
     #                               scheduler, the shell prompt; no panic,
-    #                               no FAILED, no x86 trap report
+    #                               no FAILED, no x86 trap report; COM1's
+    #                               output went through the TX ring by the
+    #                               THR-empty interrupt (C1; the canary
+    #                               X86_64_FEATURES=console-tx-sync prints
+    #                               "polled" and fails it)
     #   x86_64: smp 2               CPU 1 started by INIT-SIPI-SIPI, takes its
     #                               ticks and the reschedule IPI
     #   x86_64: baseline canary     -cpu qemu64 (below x86-64-v2): boot.S
@@ -11129,7 +11133,7 @@ PY
     }
     X86_SHELL="AzOS shell — type 'help' for commands"
     par "x86_64: boots to the shell" x86_boot_row "x86_64: boots to the shell" 1 max \
-        "[TRAP] int3 self-test: PASS|[TRAP] NMI self-test: PASS|[TIMER] tick self-test: PASS|[MM] W^X ok|[SCHED] Starting scheduler on boot CPU|$X86_SHELL" \
+        "[TRAP] int3 self-test: PASS|[TRAP] NMI self-test: PASS|[TIMER] tick self-test: PASS|[MM] W^X ok|[UART] COM1 TX interrupt-driven|[SCHED] Starting scheduler on boot CPU|$X86_SHELL" \
         "AzOS shell|KERNEL PANIC"
     par "x86_64: smp 2" x86_boot_row "x86_64: smp 2" 2 max \
         "[SMP] CPU 1 online: APIC ID 1|[SMP] CPU 1 took|[IPI] sent by CPU 0, received by CPU 1|$X86_SHELL" \

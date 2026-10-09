@@ -105,6 +105,22 @@ config CONSOLE_TX_IRQ_BUDGET
       the 16-byte FIFO fills first, so this never binds; under QEMU,
       which transmits instantly, it is the bound.
 
+config UART_16550_TX_FIFO_DEPTH
+    int "Console: 16550 transmit FIFO depth (bytes per THR-empty)"
+    range 1 256
+    default 16
+    help
+      crates/drivers/sys/src/uart.rs, TX_FIFO_DEPTH of the MMIO 16550
+      (riscv64 QEMU virt, VF2/K1) and of the x86_64 port-I/O COM1. With
+      the FIFOs on, THR-empty means the whole FIFO is free, so this many
+      bytes go out per line-status read on the synchronous path and per
+      TX interrupt on the ring path. 16 is the 16550A (and QEMU's model);
+      a 16750 or a DesignWare APB UART built with a deeper FIFO can take
+      64 or more. Too large overruns the FIFO and drops console bytes; too
+      small costs one more status read (an MMIO access or, on x86_64, a
+      VM exit under a hypervisor) and one more interrupt per that many
+      bytes. Costs no RAM. Unused by the PL011 (aarch64).
+
 # ---------------------------------------------------------------------------
 # Optional drivers and buses (each maps to a kernel cargo feature)
 # ---------------------------------------------------------------------------
