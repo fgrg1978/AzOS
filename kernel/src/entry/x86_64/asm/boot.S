@@ -26,11 +26,13 @@
 //      With Kconfig X86_LA57 allowing it and CPUID reporting it, a PML5
 //      above that PML4 and CR4.LA57 (5-level paging; mmu.rs reads CR4).
 //   4. CR4.PAE, CR3, EFER.LME|NXE, CR0.PG|WP, the 64-bit GDT, far jump.
-//   5. 64-bit: data segments, stack, GS base = hart id 0 (Cpu::hart_id),
-//      the IDT (every exception vector reports and stops: no triple fault).
+//   5. 64-bit: data segments, stack, GS base = the boot CPU's PerCpu
+//      (Cpu::hart_id reads id 0 from it), an early IDT (every exception
+//      vector reports and stops: no triple fault) until trap_init loads the
+//      real one (entry/x86_64/cpu_init.rs).
 //   6. call kernel_main; halt if it returns.
-// The FPU/SSE state is not enabled: the kernel is soft-float
-// (x86_64-unknown-none). User FP will be switched EAGERLY (fpu.rs).
+// The FPU/SSE state is not enabled here: the kernel is soft-float
+// (x86_64-unknown-none). trap_init enables it for ring 3 (fpu.rs).
 
 .equ X86_LEVEL, {x86_level}
 .equ COM1, 0x3F8
@@ -224,11 +226,13 @@ long_entry:
     movw %ax, %gs
     movabsq $_stack_end, %rax
     movq %rax, %rsp
-    // GS base = 0: the per-CPU base is the hart id, as on riscv64 (tp) and
-    // aarch64 (TPIDR_EL1).
+    // GS base = the boot CPU's PerCpu (X86_64_PERCPU[0], cpu_init.rs): its
+    // first word, the CPU id 0, is Cpu::hart_id / percpu_base (`%gs:0`), as
+    // tp is on riscv64 and TPIDR_EL1 on aarch64.
+    movabsq $X86_64_PERCPU, %rax
+    movq %rax, %rdx
+    shrq $32, %rdx
     movl $0xC0000101, %ecx
-    xorl %eax, %eax
-    xorl %edx, %edx
     wrmsr
 
     // ── 5. IDT: vectors 0..31 report and stop ───────────────────────────

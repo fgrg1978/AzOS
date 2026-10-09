@@ -6,8 +6,10 @@
 //! names the x86 mechanism it stands for. Structure only — no instruction
 //! here has run, and nothing builds this crate by default.
 //!
-//! It exports the contract and the ported modules listed below, nothing
-//! else. So `cargo check` of a shared crate against it (the facade's
+//! It exports the contract and the ISA-private modules listed below, and
+//! nothing that stands in for another ISA's (`apic`, `trap`, ...; `cpu`,
+//! `fork_regs`, `mmu` and `tlb` share a name with riscv64's/aarch64's but
+//! not their functions). So `cargo check` of a shared crate against it (the facade's
 //! `stub` feature, or a bare-metal `x86_64` target) fails exactly where that
 //! crate still reaches past the contract into an ISA module, and that error
 //! list is what a port must add (`tools/arch_stub_check.py`).
@@ -17,9 +19,11 @@
 //!
 //! Beyond the contract, ISA-private modules: [`features`] (the
 //! baseline / n-probe-require `X86_*` model every ISA uses), [`fpu`]
-//! (EAGER FP save: x86 never switches FP lazily), [`mmu`] (paging, PTE
-//! encoding, CR3/CR4, the table walker) and [`tlb`] (the CR3 publication
-//! and the IPI shootdown), the last two under the same names as riscv64's.
+//! (FP save at switch, restore on the way to ring 3: never a #NM trap),
+//! [`gdt`] / [`idt`] (descriptor tables and their pure encoders), [`cpu`]
+//! (the GS-relative per-CPU area, `syscall` MSRs), [`fork_regs`], [`mmu`]
+//! (paging, PTE encoding, CR3/CR4, the table walker) and [`tlb`] (the CR3
+//! publication and the IPI shootdown).
 //!
 //! What an x86_64 port adds beyond these methods: `kernel/src/entry/x86_64/`
 //! (boot hooks, `ArchEntry`, `TrapContext`, `boot.S`/`trap_entry.S`/
@@ -27,9 +31,13 @@
 //! for CPU discovery, LAPIC/IOAPIC in `crates/drivers/irqchip`, and the
 //! `compile_error!("x86_64: ...")` branches the shared crates carry.
 
+pub mod cpu;
 pub mod features;
+pub mod fork_regs;
 pub mod fpu;
+pub mod gdt;
 pub mod hw;
+pub mod idt;
 pub mod mmu;
 pub mod tlb;
 
@@ -63,7 +71,7 @@ impl Cpu for X86_64 {
     /// This CPU's index: the LAPIC/x2APIC ID mapped to a dense CPU number
     /// (`CPUID.0BH`/`1FH`, or the GS-relative per-CPU slot once it exists).
     fn hart_id(&self) -> usize {
-        on_x86!(hw::rdmsr(hw::IA32_GS_BASE) as usize, "x86_64: hart_id: x2APIC ID -> dense CPU index (per-CPU slot via GS)")
+        on_x86!(cpu::percpu_id(), "x86_64: hart_id: the dense CPU id at %gs:0 (cpu::PerCpu)")
     }
     /// `sti; hlt` with interrupts in the state the caller left them.
     /// `hlt`. With interrupts masked nothing but an NMI ends it: that is a
@@ -86,14 +94,15 @@ impl Cpu for X86_64 {
     fn now_ticks(&self) -> u64 {
         on_x86!(hw::rdtsc(), "x86_64: now_ticks: invariant TSC via rdtsc")
     }
-    /// `IA32_GS_BASE` (`rdgsbase`), swapped with `IA32_KERNEL_GS_BASE` by
-    /// `swapgs` on every user/kernel transition.
+    /// The CPU id stored at `%gs:0`: the kernel GS base is this CPU's
+    /// `cpu::PerCpu` (swapped with `IA32_KERNEL_GS_BASE` by `swapgs` on
+    /// every user/kernel transition), whose first word is the id.
     fn percpu_base(&self) -> usize {
-        on_x86!(hw::rdmsr(hw::IA32_GS_BASE) as usize, "x86_64: percpu_base: rdgsbase (kernel GS)")
+        on_x86!(cpu::percpu_id(), "x86_64: percpu_base: the CPU id at %gs:0")
     }
-    /// `wrgsbase` / `wrmsr IA32_GS_BASE`.
+    /// `wrmsr IA32_GS_BASE` = CPU `_base`'s `PerCpu`, stamped with the id.
     fn set_percpu_base(&self, _base: usize) {
-        on_x86!(hw::wrmsr(hw::IA32_GS_BASE, _base as u64), "x86_64: set_percpu_base: wrgsbase / IA32_GS_BASE")
+        on_x86!(cpu::set_percpu(_base), "x86_64: set_percpu_base: IA32_GS_BASE = &PerCpu[id]")
     }
 }
 

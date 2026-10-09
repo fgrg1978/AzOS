@@ -1398,6 +1398,87 @@ config X86_KERNEL_GLOBAL_PAGES
       entries too, and the kernel re-walks its own text, data and stacks
       after each switch (dozens of misses per switch). Turn it on (and
       make it the default) with the higher-half relink.
+# ── x86_64 trap entry and FP state ─────────────────────────────────────────
+# kernel/src/entry/x86_64/ (cpu_init.rs, fp.rs, asm/trap_entry.S).
+
+config X86_IST_STACK_SIZE_KB
+    int "IST stack for #DF, NMI and #MC, each (KiB)"
+    range 2 8
+    default 4
+    help
+      The three exceptions that may arrive on a stack the kernel cannot
+      trust (#DF after a fault while pushing, NMI and #MC because they
+      ignore IF and can land inside syscall_entry before it leaves the user
+      RSP) each get a known-good stack through the TSS IST slots.  They are
+      carved from the TOP of each CPU's interrupt stack
+      (INTERRUPT_STACK_SIZE_KB), so this costs no RAM of its own: it leaves
+      INTERRUPT_STACK_SIZE_KB - 3 x this for device interrupt handlers, and
+      the build refuses less than 4 KiB left.  4 KiB is Linux's
+      EXCEPTION_STKSZ on every configuration without KASAN, and the same on
+      every profile here: the handlers print and stop (#DF, #MC) or count
+      (NMI), whatever the board.  Raise it only if a handler grows.
+
+config X86_XSAVE_AREA_BYTES
+    int "Per-task FP/SIMD save area (bytes, a multiple of 64)"
+    range 576 8192
+    default 2752 if PROFILE_FLEET
+    default 1024
+    help
+      The XSAVE image each task slot keeps for its ring-3 FP/SIMD state, and
+      the copy a forked child inherits (Task::fork_regs).  The boot enables
+      the largest XCR0 set that fits: AVX-512 needs about 2.7 KiB, AVX 832
+      bytes, x87+SSE 576.  A CPU whose set does not fit is limited to the
+      next smaller one, so user code there sees no AVX-512 (or no AVX).
+      Cost: 2 x this x MAX_TASKS of .bss (edge, 64 tasks: 128 KiB at the
+      1 KiB default; fleet, 4096 tasks at 2752: 22 MiB); time: one
+      XSAVEOPT/XRSTOR pair per context switch that changes the ring-3 owner,
+      proportional to the components in use, not to this size.  fleet
+      defaults to AVX-512 (server parts have it); edge and embedded to AVX.
+
+config X86_IRQ_VECTOR_BASE
+    int "First IDT vector for device interrupts"
+    range 32 239
+    default 32
+    help
+      IOAPIC lines and MSIs are numbered from this vector up; 0..31 are the
+      CPU's exceptions.  The LAPIC delivers by priority class (vector / 16),
+      so a higher base gives devices a higher class.  Linux starts at 0x20
+      (32) as well.  Costs nothing; every vector has an entry stub.
+
+config X86_IPI_VECTOR
+    int "IDT vector of the inter-processor interrupt"
+    range 32 254
+    default 253
+    help
+      The vector Interrupts::send_ipi raises on the target CPU (reschedule,
+      TLB shootdown and the other cross-CPU requests share it, as the SSIP
+      and SGI do on riscv64 and aarch64).  It sits in the highest priority
+      class so it is not held behind device interrupts.  253 is Linux's
+      RESCHEDULE_VECTOR.  Must differ from X86_SPURIOUS_VECTOR and lie above
+      the device range.
+
+config X86_SPURIOUS_VECTOR
+    int "IDT vector of the LAPIC spurious interrupt"
+    range 32 255
+    default 255
+    help
+      The LAPIC delivers this vector when an interrupt is withdrawn before
+      it is acknowledged; the handler counts it and sends no EOI.  255 is
+      Linux's choice (and keeps the low four bits set, which P6-era APICs
+      required).
+
+config X86_SYSRET
+    bool "Return from system calls with sysretq"
+    default y
+    help
+      y: a system call returns through sysretq when the frame still holds
+      what syscall saved (RIP = RCX, RFLAGS = R11), RIP is canonical and
+      RFLAGS has neither TF nor RF; anything else takes iretq.  That is
+      Linux's rule: a non-canonical RIP makes sysretq fault in ring 0 on
+      Intel with the user RSP already loaded (CVE-2012-0217).
+      n: always iretq, which is microcoded and slower than sysretq on every
+      system call (not measured here yet); the simplest return path, for
+      bring-up or bisecting.
 
 endif # ARCH_X86_64
 

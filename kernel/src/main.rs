@@ -354,10 +354,66 @@ global_asm!(
     x86_level = const X86_64_LEVEL,
     options(att_syntax),
 );
+// The trap entry and the switch: every TrapFrame / PerCpu / TaskContext /
+// Task offset read off the real structs (B2-01), as for the other ISAs.
 #[cfg(target_arch = "x86_64")]
-global_asm!(include_str!("entry/x86_64/asm/trap_entry.S"), options(att_syntax));
+global_asm!(
+    include_str!("entry/x86_64/asm/trap_entry.S"),
+    tf_size        = const core::mem::size_of::<entry::x86_64::TrapFrame>(),
+    tf_cr2         = const core::mem::offset_of!(entry::x86_64::TrapFrame, cr2),
+    tf_gs_saved    = const core::mem::offset_of!(entry::x86_64::TrapFrame, gs_saved),
+    tf_vector      = const core::mem::offset_of!(entry::x86_64::TrapFrame, vector),
+    tf_rip         = const core::mem::offset_of!(entry::x86_64::TrapFrame, rip),
+    tf_cs          = const core::mem::offset_of!(entry::x86_64::TrapFrame, cs),
+    tf_rflags      = const core::mem::offset_of!(entry::x86_64::TrapFrame, rflags),
+    tf_rsp         = const core::mem::offset_of!(entry::x86_64::TrapFrame, rsp),
+    r_rax          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::RAX),
+    r_rbx          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::RBX),
+    r_rcx          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::RCX),
+    r_rdx          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::RDX),
+    r_rsi          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::RSI),
+    r_rdi          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::RDI),
+    r_rbp          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::RBP),
+    r_r8           = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::R8),
+    r_r9           = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::R9),
+    r_r10          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::R10),
+    r_r11          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::R11),
+    r_r12          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::R12),
+    r_r13          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::R13),
+    r_r14          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::R14),
+    r_r15          = const entry::x86_64::tf_reg(azos_arch::fork_regs::gpr::R15),
+    pc_kernel_rsp  = const azos_arch::cpu::PERCPU_KERNEL_RSP,
+    pc_user_rsp    = const azos_arch::cpu::PERCPU_USER_RSP,
+    pc_fp_live     = const azos_arch::cpu::PERCPU_FP_LIVE,
+    pc_tss_rsp0    = const azos_arch::cpu::PERCPU_TSS_RSP0,
+    pc_cr3         = const azos_arch::cpu::PERCPU_CR3,
+    syscall_vector = const azos_arch::idt::SYSCALL_VECTOR,
+    first_interrupt = const azos_arch::idt::FIRST_INTERRUPT,
+    user_cs        = const azos_arch::gdt::USER_CS,
+    user_ds        = const azos_arch::gdt::USER_DS,
+    irq_handler_stack = const entry::x86_64::cpu_init::IRQ_HANDLER_STACK,
+    rflags_tf_rf   = const azos_arch::cpu::RFLAGS_TF | azos_arch::cpu::RFLAGS_RF,
+    use_sysret     = const azos_limits::X86_SYSRET as u32,
+    options(att_syntax),
+);
 #[cfg(target_arch = "x86_64")]
-global_asm!(include_str!("entry/x86_64/asm/context_switch.S"), options(att_syntax));
+global_asm!(
+    include_str!("entry/x86_64/asm/context_switch.S"),
+    ctx_ra  = const core::mem::offset_of!(azos_sched::task::TaskContext, ra),
+    ctx_sp  = const core::mem::offset_of!(azos_sched::task::TaskContext, sp),
+    ctx_rbx = const core::mem::offset_of!(azos_sched::task::TaskContext, rbx),
+    ctx_rbp = const core::mem::offset_of!(azos_sched::task::TaskContext, rbp),
+    ctx_r12 = const core::mem::offset_of!(azos_sched::task::TaskContext, r12),
+    ctx_r13 = const core::mem::offset_of!(azos_sched::task::TaskContext, r13),
+    ctx_r14 = const core::mem::offset_of!(azos_sched::task::TaskContext, r14),
+    ctx_r15 = const core::mem::offset_of!(azos_sched::task::TaskContext, r15),
+    ctx_pc  = const core::mem::offset_of!(azos_sched::task::TaskContext, pc),
+    task_satp_off = const core::mem::offset_of!(azos_sched::task::Task, task_satp),
+    context_saving_off = const core::mem::offset_of!(azos_sched::task::Task, context_saving),
+    pc_fp_live = const azos_arch::cpu::PERCPU_FP_LIVE,
+    pc_cr3     = const azos_arch::cpu::PERCPU_CR3,
+    options(att_syntax),
+);
 
 /// The CPU ceiling (Kconfig `NR_CPUS`, through `azos_percpu`): the bound on
 /// every table assembly or early boot indexes by CPU id (`boot.S`'s range

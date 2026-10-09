@@ -7,6 +7,9 @@
 //! use to bypass it.
 
 #[cfg(test)]
+mod x86_desc;
+
+#[cfg(test)]
 mod tests {
     use azos_arch::{
         ArchImpl, ArchPlatform, Boot, Cpu, Interrupts, Mmu, Vector, ARCH, PAGE_SHIFT, PAGE_SIZE,

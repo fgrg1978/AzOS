@@ -423,7 +423,11 @@ pub fn spawn_release(child: SpawnPrepared) -> bool {
     // to replay, only the entry PC and this one stack pointer.
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     { regs.sp_el0 = child.user_sp; regs.gpr[1] = child.startup; }
-    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+    // x86_64: RSP is banked outside the GPR file too; rsi is the second
+    // argument register (a1 / x1 above).
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    { regs.rsp = child.user_sp; regs.gpr[azos_arch::fork_regs::gpr::RSI] = child.startup; }
+    #[cfg(not(any(all(target_arch = "aarch64", target_os = "none"), all(target_arch = "x86_64", target_os = "none"))))]
     { regs[2] = child.user_sp; regs[11] = child.startup; }
     crate::scheduler::set_task_fork_ctx(
         child.idx, child.tid, child.entry, child.user_sp, child.satp, &regs,

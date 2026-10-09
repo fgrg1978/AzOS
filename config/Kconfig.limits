@@ -777,8 +777,9 @@ config INTERRUPT_STACK_SIZE_KB
     range 2 64
     default 8 if ARCH_RISCV64
     default 8 if ARCH_AARCH64
-    # x86_64: the IST stacks (#DF, NMI, #MC) come out of the same area.
-    default 16 if ARCH_X86_64
+    # x86_64: the IST stacks (#DF, NMI, #MC, X86_IST_STACK_SIZE_KB each)
+    # come out of the top of the same area; 20 leaves riscv64's 8 KiB below.
+    default 20 if ARCH_X86_64
     help
       A dedicated stack per hart for interrupt handlers, separate from the
       task kernel stack.  On rv64 it is WIRED UP since 2026-09-16: the trap

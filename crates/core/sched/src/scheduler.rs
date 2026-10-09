@@ -2628,6 +2628,10 @@ pub fn try_task_create_init(
 
                     // Stack grows down; top is the (ABI-aligned) end of the slice.
                     let stack_top = task_stack_top(idx);
+                    // x86_64: `context_switch` jumps to the entry, which the
+                    // SysV ABI enters with RSP = 8 mod 16, as after a `call`.
+                    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+                    let stack_top = stack_top - 8;
 
                     let entry_addr = task_entry_wrapper as *const () as usize as CtxReg;
                     let target_cpu = pick_target_cpu(affinity, priority, idx);

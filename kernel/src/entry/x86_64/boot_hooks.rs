@@ -36,10 +36,12 @@ const PVH_MAGIC: u32 = 0x336e_c578;
 /// Nothing to read before the console.
 pub fn pre_console() {}
 
-/// Nothing yet: no IDT is built, so a fault before the banner triple-faults
-/// (boot.S runs with interrupts off). The x86 mechanism is `lidt` with a
-/// 256-entry IDT and IST stacks from the TSS.
-pub fn trap_init() {}
+/// The boot CPU's GDT + TSS (IST stacks), the 256-vector IDT, the
+/// `syscall` MSRs and ring 3's FP state (`entry::x86_64::cpu_init`).
+/// Interrupts stay masked.
+pub fn trap_init() {
+    crate::entry::x86_64::cpu_init::init_boot_cpu()
+}
 
 /// The banner and the PVH entry facts.
 pub fn boot_banner(hart_id: usize, fw_table: usize) {

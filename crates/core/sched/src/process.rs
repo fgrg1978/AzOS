@@ -1379,11 +1379,23 @@ pub unsafe fn sret_to_user(entry: usize, user_sp: usize, satp: usize) -> ! {
     unsafe { aarch64_enter_user(entry as u64, user_sp as u64, satp as u64) }
 }
 
-/// x86_64 skeleton (and any further ISA): load the user CR3, swapgs, and
-/// `sysretq` (or `iretq`) to `entry` with RSP = `user_sp`.
-#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+/// x86_64: delegates to the kernel's `x86_64_enter_user`
+/// (`kernel/src/entry/x86_64.rs`), which builds a `TrapFrame` (every GPR
+/// zero, user selectors, IF set) and returns through `trap_entry.S`'s
+/// `trap_return` like every trap: CR3 when `satp != 0`, the initial FP
+/// state, then `iretq`.
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub unsafe fn sret_to_user(entry: usize, user_sp: usize, satp: usize) -> ! {
+    unsafe extern "C" {
+        fn x86_64_enter_user(entry: u64, user_sp: u64, cr3: u64) -> !;
+    }
+    unsafe { x86_64_enter_user(entry as u64, user_sp as u64, satp as u64) }
+}
+
+/// Any further ISA: not ported.
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))))]
 pub unsafe fn sret_to_user(_entry: usize, _user_sp: usize, _satp: usize) -> ! {
-    todo!("x86_64: sret_to_user: mov cr3; swapgs; sysretq to ring 3")
+    todo!("sret_to_user: not ported to this ISA")
 }
 
 /// SRET into user mode restoring a forked child's **complete** register file
@@ -1529,11 +1541,23 @@ pub unsafe fn sret_to_user_forked(entry: usize, satp: usize, regs: &crate::task:
     unsafe { aarch64_enter_user_forked(entry as u64, satp as u64, regs) }
 }
 
-/// x86_64 skeleton (and any further ISA): restore the forked child's
-/// registers from `regs` (rax = 0) and return to ring 3 through `iretq`.
-#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+/// x86_64: delegates to the kernel's `x86_64_enter_user_forked`
+/// (`kernel/src/entry/x86_64.rs`): the child's registers from `regs`
+/// (`azos_arch::fork_regs::ForkRegs`, with its XSAVE image), rax = 0, FS/GS
+/// bases, then `trap_return`'s `iretq`. `entry` is the parent's RIP after
+/// its `syscall`, unchanged (`child_resume_pc`).
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub unsafe fn sret_to_user_forked(entry: usize, satp: usize, regs: &crate::task::UserRegs) -> ! {
+    unsafe extern "C" {
+        fn x86_64_enter_user_forked(entry: u64, cr3: u64, regs: *const crate::task::UserRegs) -> !;
+    }
+    unsafe { x86_64_enter_user_forked(entry as u64, satp as u64, regs) }
+}
+
+/// Any further ISA: not ported.
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))))]
 pub unsafe fn sret_to_user_forked(_entry: usize, _satp: usize, _regs: &crate::task::UserRegs) -> ! {
-    todo!("x86_64: sret_to_user_forked: restore UserRegs, rax = 0, iretq")
+    todo!("sret_to_user_forked: not ported to this ISA")
 }
 
 // ── User-space memory access ──────────────────────────────────────────────────
@@ -2020,9 +2044,13 @@ fn child_resume_pc(sepc: u64) -> u64 {
     { sepc + 4 }
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     { sepc }
+    // x86_64: `syscall` leaves RIP (RCX) past itself, like aarch64's ELR.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    { sepc }
     #[cfg(not(any(
         target_arch = "riscv64",
         all(target_arch = "aarch64", target_os = "none"),
+        all(target_arch = "x86_64", target_os = "none"),
     )))]
     { sepc + 4 }
 }

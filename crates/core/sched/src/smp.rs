@@ -317,9 +317,16 @@ pub fn current_cpu_id() -> usize {
     unsafe {
         core::arch::asm!("mrs {}, TPIDR_EL1", out(reg) id, options(nostack, nomem));
     }
+    // x86_64: the kernel GS base is this CPU's `PerCpu`, whose first word is
+    // the id (`azos_arch::cpu`); ring 3 reaches GS only through `swapgs`,
+    // which the trap entry undoes before any Rust runs.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    {
+        id = azos_arch::cpu::percpu_id();
+    }
     // A host build (tests) has no per-hart register and no SMP: everything runs
     // on "CPU 0", which is what the host shims already assume.
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", all(target_arch = "x86_64", target_os = "none"))))]
     {
         id = 0;
     }

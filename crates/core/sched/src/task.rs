@@ -34,9 +34,14 @@ pub use azos_limits::MAX_TASKS;
 pub type UserRegs = [u64; 32];
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub type UserRegs = azos_arch::fork_regs::ForkRegs;
+/// x86_64: the 15 GPRs, RSP, RFLAGS, FS/GS bases and an XSAVE image
+/// (Kconfig `X86_XSAVE_AREA_BYTES`), see that struct's module doc.
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub type UserRegs = azos_arch::fork_regs::ForkRegs<{ azos_limits::X86_XSAVE_AREA_BYTES }>;
 #[cfg(not(any(
     target_arch = "riscv64",
     all(target_arch = "aarch64", target_os = "none"),
+    all(target_arch = "x86_64", target_os = "none"),
 )))]
 pub type UserRegs = [u64; 32];
 
@@ -295,8 +300,8 @@ const _: () = assert!(core::mem::size_of::<TaskContext>() == 128);
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 const _: () = assert!(core::mem::size_of::<TaskContext>() == 184);
 
-// x86_64 skeleton: ra,sp (2) + rbx,rbp,r12..r15 (6) + pc,tp (2) = 10 fields =
-// 80 bytes; its context_switch.S hard-codes these offsets.
+// x86_64: ra,sp (2) + rbx,rbp,r12..r15 (6) + pc,tp (2) = 10 fields = 80
+// bytes; its context_switch.S takes every offset from `offset_of!`.
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 const _: () = assert!(core::mem::size_of::<TaskContext>() == 80);
 

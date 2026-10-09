@@ -6,10 +6,10 @@
 
 #![cfg(target_arch = "x86_64")]
 
-/// IA32_GS_BASE: the kernel's per-CPU base (the hart id, as on the other ISAs).
+/// IA32_GS_BASE: the kernel GS base, the address of this CPU's `cpu::PerCpu`.
 pub const IA32_GS_BASE: u32 = 0xC000_0101;
-/// RFLAGS.IF.
-pub const RFLAGS_IF: u64 = 1 << 9;
+/// RFLAGS.IF (one definition: `cpu.rs`).
+pub use crate::cpu::RFLAGS_IF;
 /// QEMU `isa-debug-exit` (`-device isa-debug-exit,iobase=0xf4,iosize=4`):
 /// a write of `v` exits QEMU with status `(v << 1) | 1`. Ignored elsewhere.
 pub const DEBUG_EXIT_PORT: u16 = 0xF4;
