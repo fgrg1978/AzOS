@@ -1544,6 +1544,8 @@ fn check_fault_kills_only_the_child() {
             core::arch::asm!("udf #0");
             #[cfg(target_arch = "riscv64")]
             core::arch::asm!("unimp");
+            #[cfg(target_arch = "x86_64")]
+            core::arch::asm!("ud2");
         }
         sys::exit(0);
     }
@@ -2930,7 +2932,9 @@ fn check_rodata_not_executable() {
     static RET: [u32; 1] = [0x0000_8067]; // jalr x0, 0(ra)
     #[cfg(target_arch = "aarch64")]
     static RET: [u32; 1] = [0xd65f_03c0]; // ret
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    #[cfg(target_arch = "x86_64")]
+    static RET: [u32; 1] = [0x0000_00c3]; // ret (one byte, c3)
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
     compile_error!("elfperm: no `ret` encoding for this ISA");
     let ro = core::hint::black_box(RET.as_ptr() as usize);
     let pid = sys::fork();
@@ -3379,6 +3383,20 @@ fn issue_nr4(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> isize {
             in("x3") a3,
             options(nostack),
         );
+        // x86_64: rax = number, a0..a3 in rdi rsi rdx r10; `syscall` writes
+        // rcx and r11.
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            in("r10") a3,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -3814,6 +3832,14 @@ fn unknown_syscall() -> isize {
             lateout("x0") ret,
             options(nostack),
         );
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") 999isize => ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -3930,6 +3956,17 @@ fn issue_nr(nr: u64, a0: u64, a1: u64, a2: u64) -> isize {
             in("x2") a2,
             options(nostack),
         );
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -3956,6 +3993,17 @@ fn issue_retired_nr(nr: u64, a0: u64, a1: u64, a2: u64) -> isize {
             inlateout("x0") a0 as isize => ret,
             in("x1") a1,
             in("x2") a2,
+            options(nostack),
+        );
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            lateout("rcx") _,
+            lateout("r11") _,
             options(nostack),
         );
     }

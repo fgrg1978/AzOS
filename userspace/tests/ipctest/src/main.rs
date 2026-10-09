@@ -124,6 +124,11 @@
 #![no_std]
 #![no_main]
 
+// The raw fork in `spawn` selects its trap instruction per ISA; on
+// an ISA with no branch the build stops here instead of losing the trap.
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("ipctest: no syscall instruction for this ISA (riscv64, aarch64, x86_64)");
+
 use azos_libsys as sys;
 
 // ── Test bookkeeping ────────────────────────────────────────────────────────
@@ -749,6 +754,22 @@ fn spawn(role: u32, arg: u32) -> isize {
             out("x13") _, out("x14") _, out("x15") _, out("x16") _, out("x17") _,
             out("x21") _, out("x22") _, out("x23") _, out("x24") _,
             out("x25") _, out("x26") _, out("x27") _, out("x28") _,
+            options(nostack),
+        );
+        // x86_64 twin. `r12` stands in for `s11`: a callee-saved register the
+        // compiler may not assume survives the trap. `rbx` and `rbp` cannot be
+        // listed (LLVM reserves them), like RISC-V's `s0`/`s1`. Every other
+        // general register is declared clobbered for the same reason as above;
+        // `syscall` itself writes rcx and r11.
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") NR_FORK as isize => pid,
+            inout("r12") FORK_CANARY => observed,
+            out("rdi") _, out("rsi") _, out("rdx") _,
+            out("r8") _, out("r9") _, out("r10") _,
+            out("rcx") _, out("r11") _,
+            out("r13") _, out("r14") _, out("r15") _,
             options(nostack),
         );
     }

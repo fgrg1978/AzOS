@@ -729,7 +729,8 @@ command line; every aarch64 boot in the gate uses the `Image`.
   soft-float aarch64 kernel gets only the features that need no SIMD
   registers (`+lse`, `+rcpc`, ...); the user images get the whole list.
   The soft-float x86_64 kernel likewise gets `-C target-cpu=x86-64-vN` and
-  only the integer `require` extensions (`+popcnt`, `+bmi2`, `+adx`, ...). The
+  only the integer `require` extensions (`+popcnt`, `+bmi2`, `+adx`, ...); its
+  user images take the same `target-cpu` on the same soft-float target. The
   boot checks the level before anything that depends on it. On aarch64 that
   is the first hook, before the first lock: a `+lse` kernel on an Armv8.0
   core would otherwise fault at its first atomic instead of saying why. A CPU
@@ -779,8 +780,15 @@ and development aids.
 
 A port is a list of methods the compiler asks for, plus a few files. The
 x86_64 port is the latest: `make qemu-x86_64` boots it on QEMU `-M microvm`
-(PVH entry, long mode, COM1) to the kernel shell, with every CPU the MADT
-names; it has no user images. The shared page-table walks follow
+(PVH entry, long mode, COM1) with every CPU the MADT names, and with
+`QEMU_X86_64_DISK=build/disk-x86_64.img` its FAT volume is a virtio-blk device
+in the microvm virtio-mmio window and the console program runs in ring 3.
+The x86_64 user images (`make userspace-x86_64`, into `build/x86_64/`) are
+linked by each program's `user_x86_64.ld` for `x86_64-unknown-none`, which
+is soft-float: they carry no SSE or x87 state. libsys enters the kernel with
+`syscall` (number in rax, arguments in rdi, rsi, rdx, r10, r8, r9; the
+fast-IPC replies come back in rdx, rsi, rdi, r8, r9, r10), and they are bound
+by their own digest table, `build/image_hashes_x86_64.rs`. The shared page-table walks follow
 `Mmu::levels()`: a root above level 2 (x86_64's PML4, a PML5 under LA57) is
 walked down to its level-2 tables first, and on riscv64 and aarch64, whose
 roots are level-2 tables, that step is constant-folded away.

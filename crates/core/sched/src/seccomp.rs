@@ -1062,7 +1062,7 @@ mod riscv64_image_table {
 }
 #[cfg(all(target_arch = "riscv64", target_os = "none"))]
 use riscv64_image_table::IMAGE_SHA256;
-#[cfg(not(all(any(target_arch = "riscv64", target_arch = "aarch64"), target_os = "none")))]
+#[cfg(not(all(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
 include!("../../../../build/image_hashes.rs"); // host builds: the riscv64 (QEMU) table
 // Host builds (`cargo test` on aarch64-apple-darwin, `target_arch =
 // "aarch64"` but `target_os != "none"`) fall through to the riscv64 table
@@ -1099,6 +1099,18 @@ mod aarch64_image_table {
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 use aarch64_image_table::IMAGE_SHA256;
 
+// **x86_64: its own table** (`make build/image_hashes_x86_64.rs`, from the
+// `build/x86_64/*.elf` the x86_64 disk images carry), for the same reason the
+// aarch64 one exists: an x86_64 kernel binds the digests of x86_64 images, so
+// an image built for another ISA, or rebuilt after the table, is refused by
+// digest. One 4 KiB page size, so one table.
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+mod x86_64_image_table {
+    include!("../../../../build/image_hashes_x86_64.rs"); // missing? run `make build/image_hashes_x86_64.rs`
+}
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+use x86_64_image_table::IMAGE_SHA256;
+
 // ── Third-party images (RFC-0047, Kconfig USERSPACE_GPL + BUSYBOX) ──────────
 //
 // Built only by `make busybox`, from a pinned upstream release, never part of
@@ -1123,6 +1135,7 @@ mod aarch64_thirdparty_table {
 }
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 use aarch64_thirdparty_table::THIRDPARTY_SHA256;
+// x86_64 builds no third-party image yet: the fallback below, empty.
 #[cfg(not(all(any(target_arch = "riscv64", target_arch = "aarch64"), target_os = "none")))]
 const THIRDPARTY_SHA256: &[(&str, [u8; 32])] = &[];
 

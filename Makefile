@@ -2497,7 +2497,7 @@ CHECK_KCONFIG := build/check-$(ARCH).config
 # Without it a fresh worktree's `make check0` failed in azos_sched.
 CHECK_TABLE_riscv64 := $(IMAGE_HASHES)
 CHECK_TABLE_aarch64 := $(IMAGE_HASHES_AARCH64)
-CHECK_TABLE_x86_64  := $(IMAGE_HASHES)
+CHECK_TABLE_x86_64  := build/image_hashes_x86_64.rs
 
 .PHONY: check
 check: | $(CHECK_TABLE_$(ARCH))
@@ -2514,8 +2514,10 @@ check: | $(CHECK_TABLE_$(ARCH))
 # ── x86_64: build and boot (QEMU microvm, PVH) ─────────────────────────────
 # `make ARCH=x86_64 x86_64` builds the kernel ELF; `make qemu-x86_64` boots it
 # on `-M microvm` (PVH entry via -kernel, COM1 on stdio, isa-debug-exit so a
-# stop ends QEMU with a status). It boots to the kernel shell; there are no
-# x86_64 user images yet. Same Kconfig expansion as `check`.
+# stop ends QEMU with a status). With `QEMU_X86_64_DISK=<FAT image>` (e.g.
+# build/disk-x86_64.img) the volume is a virtio-blk-device on the microvm
+# virtio-mmio window and the console program runs in ring 3; without one it
+# stops at the kernel shell. Same Kconfig expansion as `check`.
 # X86_64_FEATURES adds cargo features (`make x86_64 X86_64_FEATURES=ktest`).
 X86_64_FEATURES ?=
 X86_64_KCONFIG := build/x86_64.config
@@ -2538,9 +2540,228 @@ $(X86_64_KCONFIG): config/defconfigs/qemu-x86_64.config $(wildcard Kconfig confi
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 	@grep -q '^CONFIG_ARCH_X86_64=y$$' $@ || { echo "[X86_64] $@ lost CONFIG_ARCH_X86_64"; exit 1; }
 
-# build/image_hashes.rs: the seccomp table; x86_64 has no user images yet and
-# takes the riscv64 one (crates/core/sched/src/seccomp.rs, the non-bare arm).
-x86_64: $(X86_64_KCONFIG) build/image_hashes.rs
+# ── x86_64 userspace ────────────────────────────────────────────────────────
+#
+# The ring-3 programs for `x86_64-unknown-none`, into `build/x86_64/`, bound
+# by their own digest table (`build/image_hashes_x86_64.rs`, which
+# crates/core/sched/src/seccomp.rs `include!`s on x86_64), exactly as the
+# aarch64 set is. Each crate's `.cargo/config.toml` carries the target's link
+# flags (`user_x86_64.ld`, static relocation, the small code model); the
+# baseline (Kconfig X86_64_LEVEL and every `require`d extension) comes from
+# the kernel's own expanded config through `kconfig_to_cargo.py
+# --user-rustflags`, at recipe time, so an image is always built for the
+# level the kernel refuses CPUs below. The target is soft-float: these images
+# carry no SSE/x87 state.
+#
+# HELLO.ELF is `userspace/tests/hello`, the Rust stand-in aarch64 also uses
+# for riscv64's hand-assembled `hello.S` (its binary keeps the crate's
+# `hello_aarch64` name). Not in the set yet: syscall_test (aarch64-only),
+# latbench/vsbench/vssrv (their timer is a
+# raw counter converted at the vDSO's TIMER_FREQ; the TSC is not that clock),
+# captest (board RTC/IRQ fixtures) and lxsrv (the Linux personality's
+# register layout is aarch64/riscv64 only).
+TARGET_X86_64 := x86_64-unknown-none
+X86_64_DIR    := build/x86_64
+X86_64_UFLAGS  = --target $(TARGET_X86_64) \
+	--config 'target.$(TARGET_X86_64).rustflags=['"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(CURDIR)/$(X86_64_KCONFIG))"']'
+X86_64_UBUILT := target/$(TARGET_X86_64)/release
+HELLO_ELF_X86_64     := $(X86_64_DIR)/hello.elf
+UHELLO_ELF_X86_64    := $(X86_64_DIR)/uhello.elf
+EPSRV_ELF_X86_64     := $(X86_64_DIR)/epsrv.elf
+REFLEX_ELF_X86_64    := $(X86_64_DIR)/reflex.elf
+BRAINCLI_ELF_X86_64  := $(X86_64_DIR)/brain_client.elf
+ABITEST_ELF_X86_64   := $(X86_64_DIR)/abitest.elf
+IPCTEST_ELF_X86_64   := $(X86_64_DIR)/ipctest.elf
+GPIO_DRV_ELF_X86_64  := $(X86_64_DIR)/gpio_drv.elf
+BUZZ_DRV_ELF_X86_64  := $(X86_64_DIR)/buzz_drv.elf
+INA_DRV_ELF_X86_64   := $(X86_64_DIR)/ina_drv.elf
+MLSRV_ELF_X86_64     := $(X86_64_DIR)/mlsrv.elf
+SH_ELF_X86_64        := $(X86_64_DIR)/sh.elf
+TOOLBOX_ELF_X86_64   := $(X86_64_DIR)/toolbox.elf
+POWER_ELF_X86_64     := $(X86_64_DIR)/power.elf
+TRACECTL_ELF_X86_64  := $(X86_64_DIR)/tracectl.elf
+FLIGHT_ELF_X86_64    := $(X86_64_DIR)/flight.elf
+BEHAVIOR_ELF_X86_64  := $(X86_64_DIR)/behavior.elf
+CONFIG_ELF_X86_64    := $(X86_64_DIR)/config.elf
+OTA_ELF_X86_64       := $(X86_64_DIR)/ota.elf
+IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) UHELLO.ELF=$(UHELLO_ELF_X86_64) EPSRV.ELF=$(EPSRV_ELF_X86_64) \
+              REFLEX.ELF=$(REFLEX_ELF_X86_64) BRAINCLI.ELF=$(BRAINCLI_ELF_X86_64) \
+              ABITEST.ELF=$(ABITEST_ELF_X86_64) IPCTEST.ELF=$(IPCTEST_ELF_X86_64) \
+              GPIODRV.ELF=$(GPIO_DRV_ELF_X86_64) BUZZDRV.ELF=$(BUZZ_DRV_ELF_X86_64) INADRV.ELF=$(INA_DRV_ELF_X86_64) \
+              MLSRV.ELF=$(MLSRV_ELF_X86_64) \
+              SH.ELF=$(SH_ELF_X86_64) TOOLBOX.ELF=$(TOOLBOX_ELF_X86_64) POWER.ELF=$(POWER_ELF_X86_64) \
+              TRACECTL.ELF=$(TRACECTL_ELF_X86_64) \
+              FLIGHT.ELF=$(FLIGHT_ELF_X86_64) BEHAVIOR.ELF=$(BEHAVIOR_ELF_X86_64) \
+              CONFIG.ELF=$(CONFIG_ELF_X86_64) OTA.ELF=$(OTA_ELF_X86_64)
+IMAGE_ELF_PATHS_X86_64 := $(foreach e,$(IMAGE_ELFS_X86_64),$(lastword $(subst =, ,$(e))))
+IMAGE_HASHES_X86_64 := build/image_hashes_x86_64.rs
+
+$(IMAGE_HASHES_X86_64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_X86_64)
+	@mkdir -p build
+	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_X86_64)
+
+.PHONY: userspace-x86_64
+userspace-x86_64: $(IMAGE_ELF_PATHS_X86_64)
+
+$(HELLO_ELF_X86_64): $(HELLO_DIR)/src/main.rs $(HELLO_DIR)/Cargo.toml $(HELLO_DIR)/user_x86_64.ld $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(HELLO_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(HELLO_DIR)/$(X86_64_UBUILT)/hello_aarch64 $@
+
+$(UHELLO_ELF_X86_64): $(UHELLO_DIR)/src/main.rs $(UHELLO_DIR)/Cargo.toml $(UHELLO_DIR)/user_x86_64.ld \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(UHELLO_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(UHELLO_DIR)/$(X86_64_UBUILT)/uhello $@
+
+$(EPSRV_ELF_X86_64): $(EPSRV_DIR)/src/main.rs $(EPSRV_DIR)/Cargo.toml $(EPSRV_DIR)/user_x86_64.ld \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(EPSRV_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(EPSRV_DIR)/$(X86_64_UBUILT)/epsrv $@
+
+$(REFLEX_ELF_X86_64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml $(REFLEX_DIR)/user_x86_64.ld \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(REFLEX_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(REFLEX_DIR)/$(X86_64_UBUILT)/reflex $@
+
+$(BRAINCLI_ELF_X86_64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml $(BRAINCLI_DIR)/user_x86_64.ld \
+               domains/robot/behavior/src/auth_envelope_core.rs crates/net/encrypt-link/src/lib.rs \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(BRAINCLI_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(BRAINCLI_DIR)/$(X86_64_UBUILT)/brain_client $@
+
+$(ABITEST_ELF_X86_64): $(ABITEST_DIR)/src/main.rs $(ABITEST_DIR)/Cargo.toml $(ABITEST_DIR)/user_x86_64.ld \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(ABITEST_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(ABITEST_DIR)/$(X86_64_UBUILT)/abitest $@
+
+$(IPCTEST_ELF_X86_64): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml $(IPCTEST_DIR)/user_x86_64.ld \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(IPCTEST_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(IPCTEST_DIR)/$(X86_64_UBUILT)/ipctest $@
+
+$(GPIO_DRV_ELF_X86_64): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml $(GPIO_DRV_DIR)/user_x86_64.ld \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(GPIO_DRV_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(GPIO_DRV_DIR)/$(X86_64_UBUILT)/gpio_drv $@
+
+$(BUZZ_DRV_ELF_X86_64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/Cargo.toml $(BUZZ_DRV_DIR)/user_x86_64.ld \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(BUZZ_DRV_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	python3 tools/chip_source_check.py buzzer $(BUZZ_DRV_DIR)/$(X86_64_UBUILT)/buzz_drv
+	cp $(BUZZ_DRV_DIR)/$(X86_64_UBUILT)/buzz_drv $@
+
+$(INA_DRV_ELF_X86_64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
+               $(INA_DRV_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(INA_DRV_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	python3 tools/chip_source_check.py ina219 $(INA_DRV_DIR)/$(X86_64_UBUILT)/ina_drv
+	cp $(INA_DRV_DIR)/$(X86_64_UBUILT)/ina_drv $@
+
+$(MLSRV_ELF_X86_64): $(MLSRV_DEPS) $(MLSRV_DIR)/user_x86_64.ld $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(MLSRV_DIR) && $(MLSRV_QEMU_BUILD) $(X86_64_UFLAGS) $(MLSRV_KEY_FEATURES)
+	cp $(MLSRV_DIR)/$(X86_64_UBUILT)/mlsrv $@
+
+$(SH_ELF_X86_64): $(SH_SRC) $(SH_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(SH_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(SH_DIR)/$(X86_64_UBUILT)/sh $@
+
+$(TOOLBOX_ELF_X86_64): $(TOOLBOX_SRC) $(TOOLBOX_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(TOOLBOX_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(TOOLBOX_DIR)/$(X86_64_UBUILT)/toolbox $@
+
+$(POWER_ELF_X86_64): $(POWER_SRC) $(POWER_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(POWER_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(POWER_DIR)/$(X86_64_UBUILT)/power $@
+
+$(TRACECTL_ELF_X86_64): $(TRACECTL_SRC) $(TRACECTL_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(TRACECTL_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(TRACECTL_DIR)/$(X86_64_UBUILT)/tracectl $@
+
+$(FLIGHT_ELF_X86_64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(FAMTOOLS_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin flight
+	cp $(FAMTOOLS_DIR)/$(X86_64_UBUILT)/flight $@
+
+$(BEHAVIOR_ELF_X86_64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(FAMTOOLS_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin behavior
+	cp $(FAMTOOLS_DIR)/$(X86_64_UBUILT)/behavior $@
+
+$(CONFIG_ELF_X86_64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(FAMTOOLS_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin config
+	cp $(FAMTOOLS_DIR)/$(X86_64_UBUILT)/config $@
+
+$(OTA_ELF_X86_64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(FAMTOOLS_DIR) && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin ota
+	cp $(FAMTOOLS_DIR)/$(X86_64_UBUILT)/ota $@
+
+# ── x86_64 disk images ──────────────────────────────────────────────────────
+#
+# The aarch64 images' recipe with the x86_64 ELFs: a 32 MiB FAT32 volume and
+# its reserved tail, CONFIG.INI signed with the test key, the ML service's
+# weights. `disk-x86_64.img` names no autorun image (the console program,
+# Kconfig CONSOLE_PROGRAM, is the first user task); the others autorun one
+# test. QEMU attaches it as a virtio-blk-device on microvm's virtio-mmio
+# window (`QEMU_X86_64_DISK` below).
+build/disk-x86_64.img:         AUTORUN_ELF_X86_64 :=
+build/disk-x86_64-abitest.img: AUTORUN_ELF_X86_64 := /fat/ABITEST.ELF
+build/disk-x86_64-ipctest.img: AUTORUN_ELF_X86_64 := /fat/IPCTEST.ELF
+build/disk-x86_64.img build/disk-x86_64-abitest.img build/disk-x86_64-ipctest.img: \
+		$(IMAGE_ELF_PATHS_X86_64) build/mlp.rmlp build/policy.gguf build/mlp.sig build/policy.sig \
+		tools/keys/test_priv.bin $(CONFIG_SIG_TOOLS)
+	@mkdir -p build
+	dd if=/dev/zero of=$@ bs=1M count=32
+	dd if=/dev/zero of=$@ bs=512 count=8 seek=65536 conv=notrunc
+	mkfs.fat -F 32 -n "ROBTOS" $@ 32768
+	@printf "net_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nautorun=$(AUTORUN_ELF_X86_64)\n" > $@.tmp_config.ini
+	@printf "active_slot=a\nboot_count=0\nlast_good=a\nfw_version_a=0\nfw_version_b=0\n" > $@.tmp_bootmeta
+	mcopy -i $@ $(HELLO_ELF_X86_64) ::HELLO.ELF
+	mcopy -i $@ $(UHELLO_ELF_X86_64) ::UHELLO.ELF
+	mcopy -i $@ $(EPSRV_ELF_X86_64) ::EPSRV.ELF
+	mcopy -i $@ $(REFLEX_ELF_X86_64) ::REFLEX.ELF
+	mcopy -i $@ $(BRAINCLI_ELF_X86_64) ::BRAINCLI.ELF
+	mcopy -i $@ $(ABITEST_ELF_X86_64) ::ABITEST.ELF
+	mcopy -i $@ $(IPCTEST_ELF_X86_64) ::IPCTEST.ELF
+	mcopy -i $@ $(GPIO_DRV_ELF_X86_64) ::GPIODRV.ELF
+	mcopy -i $@ $(BUZZ_DRV_ELF_X86_64) ::BUZZDRV.ELF
+	mcopy -i $@ $(INA_DRV_ELF_X86_64) ::INADRV.ELF
+	mcopy -i $@ $(MLSRV_ELF_X86_64) ::MLSRV.ELF
+	mcopy -i $@ $(SH_ELF_X86_64) ::SH.ELF
+	mcopy -i $@ $(TOOLBOX_ELF_X86_64) ::TOOLBOX.ELF
+	mcopy -i $@ $(POWER_ELF_X86_64) ::POWER.ELF
+	mcopy -i $@ $(TRACECTL_ELF_X86_64) ::TRACECTL.ELF
+	mcopy -i $@ $(FLIGHT_ELF_X86_64) ::FLIGHT.ELF
+	mcopy -i $@ $(BEHAVIOR_ELF_X86_64) ::BEHAVIOR.ELF
+	mcopy -i $@ $(CONFIG_ELF_X86_64) ::CONFIG.ELF
+	mcopy -i $@ $(OTA_ELF_X86_64) ::OTA.ELF
+	mcopy -i $@ build/mlp.rmlp ::MLP.RML
+	mcopy -i $@ build/policy.gguf ::POLICY.GGF
+	mcopy -i $@ build/mlp.sig ::MLP.SIG
+	mcopy -i $@ build/policy.sig ::POLICY.SIG
+	$(call provision_and_sign_config,$@.tmp_config.ini,$@.tmp_config.sig)
+	mcopy -i $@ $@.tmp_config.ini ::CONFIG.INI
+	mcopy -i $@ $@.tmp_config.sig ::CONFIG.SIG
+	mcopy -i $@ $@.tmp_bootmeta ::BOOTMETA
+	@rm -f $@.tmp_config.ini $@.tmp_config.sig $@.tmp_bootmeta
+	@echo "[DISK] x86_64 FAT32 image: $@ (autorun=$(AUTORUN_ELF_X86_64))"
+
+# The seccomp table of the x86_64 images (crates/core/sched/src/seccomp.rs).
+x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(X86_64_KCONFIG)" \
 	    RUSTFLAGS="-C link-arg=-T$(X86_64_LINKER) -C relocation-model=static $(X86_64_DALEK) $$(python3 tools/kconfig_to_cargo.py --rustflags $(X86_64_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel \
@@ -2550,8 +2771,10 @@ x86_64: $(X86_64_KCONFIG) build/image_hashes.rs
 	cp $(X86_64_ELF) $(X86_64_IMG)
 	@echo "[X86_64] Built $(X86_64_IMG)"
 
-qemu-x86_64: x86_64
-	qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -kernel $(X86_64_IMG)
+QEMU_X86_64_DISK ?=
+qemu-x86_64: x86_64 $(QEMU_X86_64_DISK)
+	qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -kernel $(X86_64_IMG) \
+	    $(if $(QEMU_X86_64_DISK),-drive file=$(QEMU_X86_64_DISK)$(comma)if=none$(comma)format=raw$(comma)id=d0 -device virtio-blk-device$(comma)drive=d0)
 
 .PHONY: aarch64 qemu-aarch64 qemu-aarch64-el2
 

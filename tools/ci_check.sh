@@ -11049,8 +11049,9 @@ PY
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
     # `make x86_64` (X86_64_FEATURES adds cargo features), booted by hand-made
-    # QEMU lines like the Makefile's `qemu-x86_64`. Kernel only: there are no
-    # x86_64 user images, so "boots" means the kernel shell on COM1.
+    # QEMU lines like the Makefile's `qemu-x86_64`. These rows attach no
+    # disk, so "boots" means the kernel shell on COM1 (the userspace rows
+    # below attach one).
     #   x86_64: boots to the shell  the boot self-tests (int3, a self-NMI on
     #                               its IST stack, the tick), W^X, the
     #                               scheduler, the shell prompt; no panic,
@@ -11183,6 +11184,136 @@ PY
         "$KTEST_CHAOS_INERT" "canary=chaos-inert"
     par "ktest low-half alias runtime canary (x86)" x86_ktest_row "ktest low-half alias runtime canary (x86)" "" \
         "x86_low_half_maps_no_ram" "canary=x86-low-alias"
+
+    # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
+    #
+    # The x86_64 images (`make userspace-x86_64`, bound by
+    # build/image_hashes_x86_64.rs) on a virtio-blk-device in microvm's
+    # virtio-mmio window, the same kernel `make x86_64` builds.
+    #   x86_64: first user task     build/disk-x86_64.img: the console program
+    #                               (SH.ELF, Kconfig CONSOLE_PROGRAM) starts
+    #                               from the volume, takes the console, and
+    #                               answers a typed `echo` with a line of its
+    #                               own (ring-3 read and write of the console);
+    #                               no panic, no x86 trap report
+    #   x86_64 abitest              ABITEST.ELF autorun, -smp 2: every check,
+    #                               read back; the one known gap is aarch64's
+    #                               (`vdso flags bit 0: rdtime native`: the
+    #                               kernel publishes no TSC scale, libsys
+    #                               read_time_csr says why)
+    #   x86_64 ipctest              IPCTEST.ELF autorun, -smp 2: phase A's
+    #                               1600 calls and every check
+    #   x86_64 image digest canary  the abitest volume with one byte appended
+    #                               to ABITEST.ELF: the x86_64 table binds no
+    #                               such bytes, autorun refuses it, abitest
+    #                               never runs (the same image bytes pass the
+    #                               row above, so the table is what decides)
+    x86_disk_prep() { # x86_disk_prep <disk target> <kernel copy> <disk copy>
+        x86_kbuild "" "$2" || { bad; echo "      make x86_64 did not build"; return 1; }
+        make "$1" >/dev/null 2>&1 || { bad; echo "      make $1 did not build"; return 1; }
+        cp "$1" "$3"
+    }
+    x86_user_shell_row() {
+        local label="x86_64: first user task" why="" w
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/x86-first-user-task.log" kimg="$CI_LOG_DIR/kernel-x86-first-user-task"
+        local disk="$CI_LOG_DIR/disk-x86-first-user-task.img"
+        x86_disk_prep build/disk-x86_64.img "$kimg" "$disk" || return
+        par_ready
+        while [ "$(par_qemu_count)" -ge 4 ]; do sleep 2; done
+        : >"$log"; rm -f "$log.end"
+        # The input waits for the shell to own the console (typed earlier it
+        # would reach the kernel's console instead), and the feeder ends with
+        # QEMU (`$log.end`), not on a timer of its own.
+        ( i=0
+          while [ "$i" -lt 120 ] && [ ! -e "$log.end" ] && ! grep -aqF 'has the console' "$log"; do sleep 0.5; i=$((i + 1)); done
+          sleep 1; printf 'echo x86-ring3-echo\r'
+          while [ "$i" -lt 160 ] && [ ! -e "$log.end" ]; do sleep 0.5; i=$((i + 1)); done ) |
+        qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+            -kernel "$kimg" >"$log" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt 160 ] && kill -0 "$pid" 2>/dev/null; do
+            tr -d '\r' <"$log" | grep -aqx 'x86-ring3-echo' && break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 1
+        kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        : >"$log.end"; sleep 1; rm -f "$log.end"
+        tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+        rm -f "$kimg" "$disk"
+        local IFS='|'
+        # The prompt and the typed line are checked apart: kernel log lines
+        # may land between the prompt and what the shell echoes back.
+        for w in "[DRVLAUNCH] SH.ELF started tid=" "[CONSOLE] user shell tid=" "azos\$ " "echo x86-ring3-echo"; do
+            grep -aqF -- "$w" "$log" || { why="missing: $w"; break; }
+        done
+        unset IFS
+        # The answer is a line of its own, not the typed command echoed back.
+        [ -z "$why" ] && ! grep -aqx 'x86-ring3-echo' "$log" && why="the shell never printed its echo"
+        if [ -z "$why" ] && grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$log"; then
+            why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$log" | sed -n 1p)"
+        fi
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      $why"; echo "      log kept: $log"
+    }
+    par "x86_64: first user task" x86_user_shell_row
+    x86_autorun_row() { # x86_autorun_row <abitest|ipctest|canary>
+        local which="$1" label tag disk_t stop
+        case "$which" in
+            abitest) label="x86_64 abitest"; disk_t=build/disk-x86_64-abitest.img
+                     stop='ABITEST\] [0-9]+ check\(s\) run' ;;
+            ipctest) label="x86_64 ipctest"; disk_t=build/disk-x86_64-ipctest.img
+                     stop='IPCTEST\] [0-9]+ check\(s\) run' ;;
+            canary)  label="x86_64 image digest canary"; disk_t=build/disk-x86_64-abitest.img
+                     stop='matches no seccomp image profile' ;;
+        esac
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" disk="$CI_LOG_DIR/disk-x86-${tag}.img"
+        x86_disk_prep "$disk_t" "$kimg" "$disk" || return
+        if [ "$which" = canary ]; then
+            local elf="$CI_LOG_DIR/x86-${tag}-ABITEST.ELF"
+            mcopy -n -i "$disk" ::ABITEST.ELF "$elf" && printf '\0' >>"$elf" && mcopy -o -i "$disk" "$elf" ::ABITEST.ELF \
+                || { bad; echo "      could not alter ABITEST.ELF on the volume copy"; rm -f "$kimg" "$disk" "$elf"; return; }
+            rm -f "$elf"
+        fi
+        par_ready
+        x86_qemu "$kimg" "$log" 300 "$stop|KERNEL PANIC" -smp 2 \
+            -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0
+        # The `FAILED: N` line follows the summary; the FAIL lines precede it.
+        rm -f "$kimg" "$disk"
+        local why="" fails fail_lines
+        case "$which" in
+            canary)
+                if ! grep -aqF "[AUTORUN] REFUSED: /fat/ABITEST.ELF" "$log"; then why="autorun did not refuse the altered ABITEST.ELF"
+                elif grep -aqF "[ABITEST]" "$log"; then why="the altered ABITEST.ELF ran"
+                fi ;;
+            *)
+                local tagw; tagw="$(printf '%s' "$which" | tr 'a-z' 'A-Z')"
+                if ! grep -aqE "\[$tagw\] [0-9]+ check\(s\) run" "$log"; then why="$which never printed its own summary line"
+                elif [ "$which" = ipctest ] && ! grep -aqF "[IPCTEST] all=1600 of 1600 OK" "$log"; then
+                    why="phase A did not complete all 1600 calls: $(grep -a 'IPCTEST\] all=' "$log" | sed -n 1p)"
+                elif grep -aq "\[MM\] page-table root" "$log"; then why="a teardown found its root still live"
+                else
+                    fail_lines="$(grep -a "\[$tagw\]  FAIL  " "$log" | sed "s/^\[$tagw\]  FAIL  //")"
+                    fails="$(printf '%s\n' "$fail_lines" | grep -c .)"
+                    if [ "$fails" -gt 0 ] && ! { [ "$which" = abitest ] && [ "$fails" -eq 1 ] \
+                            && printf '%s\n' "$fail_lines" | qgrep -qF "vdso flags bit 0: rdtime native"; }; then
+                        why="$which reported $fails failure(s): $(printf '%s\n' "$fail_lines" | sed -n 1,4p | tr '\n' ';')"
+                    fi
+                fi ;;
+        esac
+        [ -z "$why" ] && grep -aq "KERNEL PANIC" "$log" && why="$(grep -a 'KERNEL PANIC' "$log" | sed -n 1p)"
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      $why"; echo "      log kept: $log"
+    }
+    par "x86_64 abitest" x86_autorun_row abitest
+    par "x86_64 ipctest" x86_autorun_row ipctest
+    par "x86_64 image digest canary" x86_autorun_row canary
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

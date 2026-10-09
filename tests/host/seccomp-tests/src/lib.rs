@@ -2680,7 +2680,8 @@ mod image_profiles {
             .lines()
             .filter_map(|l| {
                 let (var, name) = l.trim().strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
-                (var.starts_with("$(") && !var.contains("_AARCH64") && name.ends_with(".ELF"))
+                (var.starts_with("$(") && !var.contains("_AARCH64") && !var.contains("_X86_64")
+                    && name.ends_with(".ELF"))
                     .then(|| (name.to_string(), var.to_string()))
             })
             .filter(|p| seen.insert(p.clone()))
@@ -2734,6 +2735,47 @@ mod image_profiles {
             .filter_map(|l| {
                 let (var, name) = l.trim().strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
                 (var.starts_with("$(") && var.contains("_AARCH64") && name.ends_with(".ELF"))
+                    .then(|| (name.to_string(), var.to_string()))
+            })
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
+    }
+
+    /// The x86_64 mirror of `image_elfs_rule_aarch64`: `IMAGE_ELFS_X86_64`'s
+    /// `(NAME, $(VAR))` tokens in order.
+    fn image_elfs_rule_x86_64() -> Vec<(String, String)> {
+        let mut on = false;
+        let mut text = String::new();
+        for l in MAKEFILE.lines() {
+            on |= l.starts_with("IMAGE_ELFS_X86_64 :=");
+            if on {
+                text.push_str(l.trim_end_matches('\\'));
+                text.push(' ');
+                if !l.ends_with('\\') {
+                    break;
+                }
+            }
+        }
+        assert!(on, "the Makefile has no IMAGE_ELFS_X86_64");
+        text.trim_start_matches("IMAGE_ELFS_X86_64 :=")
+            .split_whitespace()
+            .map(|t| {
+                let (name, var) = t.split_once('=').unwrap_or_else(|| panic!("IMAGE_ELFS_X86_64 token {t}"));
+                (name.to_string(), var.to_string())
+            })
+            .collect()
+    }
+
+    /// The x86_64 mirror of `image_recipe_copies_aarch64`: the
+    /// `mcopy -i $@ $(..._X86_64) ::NAME.ELF` lines of the x86_64 disk
+    /// recipe, which the riscv64 scan excludes as it excludes `_AARCH64`.
+    fn image_recipe_copies_x86_64() -> Vec<(String, String)> {
+        let mut seen = std::collections::BTreeSet::new();
+        MAKEFILE
+            .lines()
+            .filter_map(|l| {
+                let (var, name) = l.trim().strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
+                (var.starts_with("$(") && var.contains("_X86_64") && name.ends_with(".ELF"))
                     .then(|| (name.to_string(), var.to_string()))
             })
             .filter(|p| seen.insert(p.clone()))
@@ -2818,6 +2860,19 @@ mod image_profiles {
             "IMAGE_ELFS_AARCH64 vs the aarch64 disk-image recipe's mcopy lines",
         );
         assert!(rule.len() >= 13, "found only {rule:?} in the aarch64 Makefile image recipe");
+    }
+
+    /// The x86_64 mirror of the aarch64 test above: the x86_64 digest table
+    /// (`IMAGE_ELFS_X86_64`) hashes exactly what the x86_64 disk recipe
+    /// copies, under the same names, in the same order.
+    #[test]
+    fn the_x86_64_hash_rule_lists_exactly_what_the_x86_64_image_recipe_copies() {
+        let rule = image_elfs_rule_x86_64();
+        assert_eq!(
+            rule, image_recipe_copies_x86_64(),
+            "IMAGE_ELFS_X86_64 vs the x86_64 disk-image recipe's mcopy lines",
+        );
+        assert!(rule.len() >= 13, "found only {rule:?} in the x86_64 Makefile image recipe");
     }
 
     /// Every row is bound to one digest and every digest to a row, in Makefile
@@ -3041,10 +3096,11 @@ mod image_profiles {
         // 25 with the kernel tracer's reader (wave 15).
         // +1 riscv64 since wave 11 BOARDIMG: the board volume's own ML service
         // (the same crate, the named key), `$(MLSRV_ELF_BOARD)`.
+        // +19 x86_64 (wave 15): `IMAGE_ELFS_X86_64`, one recipe per image.
         assert_eq!(
             recipes,
-            rust_images + 25 + 1,
-            "expected {rust_images} riscv64 + 25 aarch64 + 1 board $(USPACE_BUILD) recipes",
+            rust_images + 25 + 1 + 19,
+            "expected {rust_images} riscv64 + 25 aarch64 + 1 board + 19 x86_64 $(USPACE_BUILD) recipes",
         );
 
         let key = WRAPPER

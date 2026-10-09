@@ -140,6 +140,16 @@ const USER_LOW_MAX: usize = 0x0200_0000; // 32 MiB — CLINT base
 #[path = "elf_bounds.rs"]
 pub mod elf_bounds;
 
+/// The instruction alignment an image's entry point must have (see the
+/// entry check in `load_elf_into`). Host builds load riscv64 images
+/// (`tests/host/syscall-tests`' `exec_binding`), so they take its 2.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+const ENTRY_ALIGN: u64 = 4;
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+const ENTRY_ALIGN: u64 = 1;
+#[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
+const ENTRY_ALIGN: u64 = 2;
+
 /// The address limits `elf_bounds` enforces, taken from their real
 /// definitions. This is the only place they are named together; `elf_bounds`
 /// declares none of them itself, so there is nothing to drift.
@@ -1080,9 +1090,11 @@ fn load_elf_into(
         }
     }
 
-    // Reject an entry point we cannot vouch for. RISC-V fetches on 2-byte
-    // boundaries (compressed instructions), so an odd address is malformed by
-    // construction.
+    // Reject an entry point we cannot vouch for: one off the ISA's
+    // instruction alignment is malformed by construction. RISC-V fetches on
+    // 2-byte boundaries (compressed instructions), aarch64 on 4; x86_64
+    // instructions start on any byte (its `_start` is wherever the linker
+    // put it, odd as often as not), so there it constrains nothing.
     //
     // `e_entry` needs no bound of its own, above or below: `entry_ok` is only
     // ever set from inside a segment that already passed
@@ -1090,7 +1102,7 @@ fn load_elf_into(
     // `USER_GUARD_LIMIT..USER_LOW_MAX`. That is worth stating because it is
     // the only ELF-supplied address here that is *not* checked directly —
     // it is handed straight to `sret_to_user` as sepc.
-    if !entry_ok || (e_entry & 1) != 0 {
+    if !entry_ok || e_entry % ENTRY_ALIGN != 0 {
         return None;
     }
     finish_user_space(user_pt, e_entry, brk_va, frames)
@@ -2581,7 +2593,24 @@ pub fn thread_create_impl(
             r.gpr[2] = a;
         }
     }
-    #[cfg(not(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none"))))]
+    // x86_64: like aarch64, the native call arrives with no snapshot (the
+    // trap path builds one only for fork and clone), so the stack, the
+    // thread pointer (FS base) and the `(0, stack, arg)` the entry is
+    // promised (rdi, rsi, rdx) are written here; everything else starts
+    // zeroed. Without them the thread entered ring 3 with rsp = 0.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    {
+        use azos_arch::fork_regs::gpr;
+        r.rsp = stack;
+        if let Some(t) = tls {
+            r.fs_base = t;
+        }
+        r.gpr[gpr::RSI] = stack;
+        if let Some(a) = arg {
+            r.gpr[gpr::RDX] = a;
+        }
+    }
+    #[cfg(not(any(target_arch = "riscv64", all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none"))))]
     let _ = (&mut r, tls);
     if !crate::scheduler::set_task_fork_ctx(child_idx, child, entry, stack, satp, &r) {
         return EAGAIN;

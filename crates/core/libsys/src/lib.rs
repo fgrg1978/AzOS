@@ -29,6 +29,11 @@
 
 #![no_std]
 
+// Every syscall primitive below selects its trap instruction per ISA; on
+// an ISA with no branch the build stops here instead of losing the trap.
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("libsys: no syscall instruction for this ISA (riscv64, aarch64, x86_64)");
+
 use core::arch::asm;
 
 mod pure;
@@ -252,9 +257,17 @@ fn read_time_csr() -> u64 {
     unsafe { core::arch::asm!("rdtime {}", out(reg) t, options(nomem, nostack)); }
     #[cfg(target_arch = "aarch64")]
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t, options(nomem, nostack)); }
-    // x86_64 skeleton: the invariant TSC.
-    #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-    todo!("x86_64: libsys read_time_csr: rdtsc");
+    // x86_64: the TSC (`CR4.TSD` clear, so `rdtsc` runs in ring 3). These are
+    // TSC cycles, NOT the kernel's TIMER_FREQ clock (`azos_arch::timer`
+    // scales the TSC by a boot-calibrated factor ring 3 is not told), which
+    // is why the kernel does not set `VDSO_FLAG_RDTIME_NATIVE` on x86_64 and
+    // [`uptime`]/[`vdso_now_ns`] take the trap there.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (lo, hi): (u32, u32);
+        unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)); }
+        t = ((hi as u64) << 32) | lo as u64;
+    }
     t
 }
 
@@ -843,10 +856,17 @@ unsafe fn syscall0(nr: u64) -> isize {
             lateout("x0") ret,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys syscall0: the `syscall` instruction");
+        // x86_64: `syscall`, number in rax, arguments in rdi rsi rdx r10 r8
+        // r9 (a0..a5; the kernel's `SYSCALL_ARGS`), result in rax. The
+        // instruction itself writes rcx (return RIP) and r11 (RFLAGS).
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -869,10 +889,18 @@ unsafe fn syscall1(nr: u64, a0: u64) -> isize {
             inlateout("x0") a0 as isize => ret,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys syscall1: the `syscall` instruction");
+        // x86_64: `syscall`, number in rax, arguments in rdi rsi rdx r10 r8
+        // r9 (a0..a5; the kernel's `SYSCALL_ARGS`), result in rax. The
+        // instruction itself writes rcx (return RIP) and r11 (RFLAGS).
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -897,10 +925,19 @@ unsafe fn syscall2(nr: u64, a0: u64, a1: u64) -> isize {
             in("x1") a1,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys syscall2: the `syscall` instruction");
+        // x86_64: `syscall`, number in rax, arguments in rdi rsi rdx r10 r8
+        // r9 (a0..a5; the kernel's `SYSCALL_ARGS`), result in rax. The
+        // instruction itself writes rcx (return RIP) and r11 (RFLAGS).
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -927,10 +964,20 @@ unsafe fn syscall3(nr: u64, a0: u64, a1: u64, a2: u64) -> isize {
             in("x2") a2,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys syscall3: the `syscall` instruction");
+        // x86_64: `syscall`, number in rax, arguments in rdi rsi rdx r10 r8
+        // r9 (a0..a5; the kernel's `SYSCALL_ARGS`), result in rax. The
+        // instruction itself writes rcx (return RIP) and r11 (RFLAGS).
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -959,10 +1006,21 @@ unsafe fn syscall4(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> isize {
             in("x3") a3,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys syscall4: the `syscall` instruction");
+        // x86_64: `syscall`, number in rax, arguments in rdi rsi rdx r10 r8
+        // r9 (a0..a5; the kernel's `SYSCALL_ARGS`), result in rax. The
+        // instruction itself writes rcx (return RIP) and r11 (RFLAGS).
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            in("r10") a3,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -993,10 +1051,22 @@ unsafe fn syscall5(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> isiz
             in("x4") a4,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys syscall5: the `syscall` instruction");
+        // x86_64: `syscall`, number in rax, arguments in rdi rsi rdx r10 r8
+        // r9 (a0..a5; the kernel's `SYSCALL_ARGS`), result in rax. The
+        // instruction itself writes rcx (return RIP) and r11 (RFLAGS).
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            in("r10") a3,
+            in("r8") a4,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -1029,10 +1099,23 @@ unsafe fn syscall6(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64
             in("x5") a5,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys syscall6: the `syscall` instruction");
+        // x86_64: `syscall`, number in rax, arguments in rdi rsi rdx r10 r8
+        // r9 (a0..a5; the kernel's `SYSCALL_ARGS`), result in rax. The
+        // instruction itself writes rcx (return RIP) and r11 (RFLAGS).
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            in("r10") a3,
+            in("r8") a4,
+            in("r9") a5,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     ret
 }
@@ -3035,10 +3118,24 @@ pub fn fast_ipc_call_full(
             lateout("x6") _,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys fast_ipc_call_full: the `syscall` instruction");
+        // x86_64: arguments in rdi rsi rdx r10 r8 r9 (a0..a5), the reply in
+        // the kernel's `SYSCALL_OUT` order: a1..a6 come back in rdx rsi rdi
+        // r8 r9 r10 (kernel/src/entry/x86_64.rs). Every one of them is declared
+        // written, as a1..a6 are on riscv64; rcx/r11 belong to `syscall`.
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") SYS_IPC_FAST_CALL as isize => ret,
+            inlateout("rdi") server_tid as u64 => r3,
+            inlateout("rsi") words[0] => r2,
+            inlateout("rdx") words[1] => r1,
+            inlateout("r10") words[2] => _,
+            inlateout("r8") words[3] => _,
+            lateout("r9") _,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     if ret < 0 { return None; }
     Some([ret as u64, r1, r2, r3])
@@ -3126,10 +3223,24 @@ pub fn fast_ipc_call_ep_moving(
             lateout("x6") _,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys fast_ipc_call_ep_moving: the `syscall` instruction");
+        // x86_64: arguments in rdi rsi rdx r10 r8 r9 (a0..a5), the reply in
+        // the kernel's `SYSCALL_OUT` order: a1..a6 come back in rdx rsi rdi
+        // r8 r9 r10 (kernel/src/entry/x86_64.rs). Every one of them is declared
+        // written, as a1..a6 are on riscv64; rcx/r11 belong to `syscall`.
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") SYS_IPC_FAST_CALL_EP as isize => ret,
+            inlateout("rdi") endpoint as u64 => r3,
+            inlateout("rsi") words[0] => r2,
+            inlateout("rdx") words[1] => r1,
+            inlateout("r10") words[2] => _,
+            inlateout("r8") words[3] => _,
+            inlateout("r9") moving as u64 => _,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     if ret < 0 { return None; }
     Some([ret as u64, r1, r2, r3])
@@ -3262,10 +3373,24 @@ pub fn fast_ipc_accept_req() -> Option<FastRequest> {
             lateout("x6") moved,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys fast_ipc_accept_req: the `syscall` instruction");
+        // x86_64: arguments in rdi rsi rdx r10 r8 r9 (a0..a5), the reply in
+        // the kernel's `SYSCALL_OUT` order: a1..a6 come back in rdx rsi rdi
+        // r8 r9 r10 (kernel/src/entry/x86_64.rs). Every one of them is declared
+        // written, as a1..a6 are on riscv64; rcx/r11 belong to `syscall`.
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") SYS_IPC_FAST_ACCEPT as isize => ret,
+            inlateout("rsi") FAST_ACCEPT_SENTINEL => w0,
+            lateout("rdx") caller,
+            lateout("rdi") w1,
+            lateout("r8") w2,
+            lateout("r9") w3,
+            lateout("r10") moved,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     if ret < 0 {
         return None;
@@ -3406,10 +3531,24 @@ pub fn fast_ipc_reply_accept(
             lateout("x6") moved,
             options(nostack),
         );
-        // x86_64 skeleton: `syscall` with rax = number, args in rdi rsi rdx
-        // r10 r8 r9, rcx/r11 clobbered (the Linux x86_64 convention).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-        todo!("x86_64: libsys fast_ipc_reply_accept: the `syscall` instruction");
+        // x86_64: arguments in rdi rsi rdx r10 r8 r9 (a0..a5), the reply in
+        // the kernel's `SYSCALL_OUT` order: a1..a6 come back in rdx rsi rdi
+        // r8 r9 r10 (kernel/src/entry/x86_64.rs). Every one of them is declared
+        // written, as a1..a6 are on riscv64; rcx/r11 belong to `syscall`.
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "syscall",
+            inlateout("rax") SYS_IPC_FAST_REPLY_ACCEPT => ret,
+            inlateout("rdi") handle => w1,
+            inlateout("rsi") FAST_ACCEPT_SENTINEL => w0,
+            inlateout("rdx") words[0] => caller,
+            inlateout("r10") words[1] => moved,
+            inlateout("r8") words[2] => w2,
+            inlateout("r9") words[3] => w3,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
     }
     match ret as isize {
         r if r >= 0 => Ok(Some(fast_request(ret, caller, [w0, w1, w2, w3], moved as u32))),

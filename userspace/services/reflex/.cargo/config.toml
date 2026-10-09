@@ -31,3 +31,17 @@ rustflags = [
     "-C", "link-arg=--no-eh-frame-hdr",
     "-C", "code-model=small",
 ]
+
+# x86_64 — built with an explicit `--target`, like aarch64 above. The target
+# is soft-float (no SSE/x87 state in these images) and defaults to a static
+# PIE in the kernel code model; see `user_x86_64.ld`'s header for the flags.
+[target.x86_64-unknown-none]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tuser_x86_64.ld",
+    "-C", "link-arg=-zmax-page-size=4096",
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "link-arg=-znorelro",
+    "-C", "relocation-model=static",
+    "-C", "code-model=small",
+]
