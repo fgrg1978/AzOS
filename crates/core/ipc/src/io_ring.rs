@@ -4589,4 +4589,13 @@ mod tests {
         assert_eq!(unsafe { drain(phys) }, vec![(1, 0, CQE_F_DURABLE)]);
         assert!(io_ring_destroy(id));
     }
+
+    /// The RAM `IORING_MAX_PARKED` and `MAX_IO_RINGS` help texts quote.
+    #[test]
+    fn parked_slot_and_ring_state_sizes_match_the_kconfig_help() {
+        assert_eq!(core::mem::size_of::<Parked>(), 32);
+        if RING_MAX_PARKED == 8 {
+            assert_eq!(core::mem::size_of::<ParkedSet>(), 264);
+        }
+    }
 }

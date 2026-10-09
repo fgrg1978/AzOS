@@ -902,9 +902,10 @@ config MAX_IO_RINGS
       (a compile-time assertion in io_ring.rs). Each ring is one 4 KiB
       shared page, allocated when the ring is created.
 
-      Cost: 268 B of static RAM per ring slot (the ring table, 68 B, and its
-      parked-waiter set, 200 B, .data and .bss: 4,296 B at the default 16),
-      the same on riscv64 and aarch64; plus one 4 KiB page-allocator frame
+      Cost: 333 B of static RAM per ring slot (the ring table, 68 B, its
+      parked-waiter set, 264 B at IORING_MAX_PARKED=8, and a flush hint,
+      1 B; .data and .bss: 5,328 B at the default 16), the same on every
+      ISA; plus one 4 KiB page-allocator frame
       for each ring that exists, so up to 64 KiB of frames at 16 rings, 1 MiB
       at 256.
       Ceiling: 256 (a compile-time assertion in io_ring.rs: the Cap<IoRing>
@@ -923,7 +924,7 @@ config IORING_MAX_PARKED
       held back from new entries. A ring that holds this many refuses the
       next parking entry with -EBUSY (CQE_F_REFUSED).
 
-      Cost: 24 B of .bss per parked slot per ring (MAX_IO_RINGS x this),
+      Cost: 32 B of .bss per parked slot per ring (MAX_IO_RINGS x this),
       the same on every ISA; a pass scans the slots only while one is
       occupied. Raise it for a client that keeps many timers or fsyncs in
       flight; at most 32 (the CQ size).

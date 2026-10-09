@@ -1097,7 +1097,9 @@ static FLUSH_FAIL_HI: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomic
 fn flush_for_tickets(upto: u64) {
     use core::sync::atomic::Ordering::SeqCst;
     let from = FLUSH_DONE.load(SeqCst) + 1;
-    if fat32_sync_checked().is_err() {
+    // No volume mounted: nothing of FAT32's to flush (a RAM descriptor's
+    // fsync is 0, as the synchronous call answers), not a failure.
+    if matches!(fat32_sync_checked(), Err(e) if e != FsError::NotMounted) {
         FLUSH_FAIL_LO.fetch_min(from, SeqCst);
         FLUSH_FAIL_HI.fetch_max(upto, SeqCst);
     }

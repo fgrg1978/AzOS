@@ -7116,6 +7116,35 @@ mod writeback {
         let _ = fat32::fat32_set_writeback(true);
     }
 
+    /// **K1 flush tickets** (io_ring `OP_FSYNC`): with no `fs-wb` task to
+    /// wake the asker flushes inline; a ticket is done once its flush ran,
+    /// `Err(Io)` when that flush failed, and a later ticket's clean flush is
+    /// `Ok`. With no volume mounted there is nothing to flush: `Ok`, as the
+    /// synchronous fsync of a RAM descriptor answers.
+    ///
+    /// **Canary.** Drop the `NotMounted` arm in `flush_for_tickets`: the
+    /// unmounted ticket reads `Err(Io)`.
+    #[test]
+    fn a_flush_ticket_is_done_after_its_flush_and_carries_its_failure() {
+        let _g = serial();
+        let _ = fat32::fat32_unmount(fat32::Volume::assume_mounted());
+        let t = fat32::fat32_flush_request();
+        assert_eq!(fat32::fat32_flush_done(t), Some(Ok(())), "unmounted: nothing to flush");
+        fresh();
+        let f = fat32::fat32_open(fat32::Volume::assume_mounted(), b"/K1.DAT",
+            fat32::open_flags::WRITE | fat32::open_flags::CREATE).expect("open");
+        assert_eq!(fat32::fat32_write(f, &pattern(512, 3)), Ok(512));
+        fs_test_drivers::disk_write_fail_after(0);
+        let bad = fat32::fat32_flush_request();
+        fs_test_drivers::disk_write_fail_clear();
+        assert_eq!(fat32::fat32_flush_done(bad), Some(Err(fat32::FsError::Io)), "the failed flush is reported");
+        assert_eq!(fat32::fat32_write(f, &pattern(512, 4)), Ok(512));
+        let good = fat32::fat32_flush_request();
+        assert_eq!(fat32::fat32_flush_done(good), Some(Ok(())), "a later clean flush is not the old failure");
+        assert_eq!(fat32::fat32_flush_done(good + 1), None, "a ticket not asked for is not done");
+        let _ = fat32::fat32_close(f);
+    }
+
     /// **A device failure of a queued in-place write is reported by fsync**
     /// (and the close claims nothing): the fsyncgate property, moved to the
     /// call that claims durability.
