@@ -1338,6 +1338,42 @@ par_drain() { # wait for every job and print what is left, in order
     while [ "$PAR_HEAD" -le "$PAR_N" ]; do par_reap; [ "$PAR_HEAD" -le "$PAR_N" ] && sleep 0.5; done
     CI_T_LAST=$SECONDS
 }
+# par_phase_end: the end of a stage ([1/4] -> [2/4], [3/4] -> [3b/4]). The
+# full and fast tiers wait there for every job, as they always have. Under
+# CI_TIER=rows (GATE_PHASE_OVERLAP=1, its default) the jobs run on into the
+# next stage: the few rows a targeted run keeps are spread over the stages,
+# and a drain there made a 66 s row in [1/4] and the ktest rows in [3/4] run
+# one after the other. Nothing after the boundary reads what a job does after
+# `par_ready` (its boots use only its own copies, see above), the output stays
+# in written order (the main shell's goes to a segment), and the rows that
+# must start after another `par` row say so in tools/gate_needs.tsv
+# (par_wait_needs). GATE_PHASE_OVERLAP=0 restores the drain.
+par_phase_end() {
+    if [ "${CI_TIER:-full}" = rows ] && [ "${GATE_PHASE_OVERLAP:-1}" = 1 ]; then return 0; fi
+    par_drain
+}
+# par_wait_needs <key>: before a row's job starts, every running job of a row
+# it needs (tools/gate_needs.tsv, direct needs) has finished. The build rows
+# there run in this shell, in written order, so today this waits for nothing;
+# it is what keeps a dependency on a `par` row once stages overlap.
+GATE_NEEDS_TSV="$(grep -v '^#' "$REPO_ROOT/tools/gate_needs.tsv")"
+GATE_NEEDS_KEYS="
+$(printf '%s\n' "$GATE_NEEDS_TSV" | cut -f1)
+"
+par_wait_needs() {
+    case "$GATE_NEEDS_KEYS" in *"
+$1
+"*) ;; *) return 0 ;; esac
+    local needs i
+    needs="$(printf '%s\n' "$GATE_NEEDS_TSV" | awk -F'\t' -v k="$1" '$1 == k {print $2}' \
+        | tr ';' '\n' | sed 's/^ *//; s/ *$//')"
+    for ((i = PAR_HEAD; i <= PAR_N; i++)); do
+        par_job_running "$i" || continue
+        printf '%s\n' "$needs" | grep -qxF -- "$(cat "$PAR_DIR/$i.key")" || continue
+        until par_job_done "$i"; do sleep 0.5; done
+    done
+    return 0
+}
 fast_keeps() {
     if [ "$CI_TIER" = rows ]; then printf '%s\n' "${CI_ROWS:-}" | grep -qxF -- "$1"; return; fi
     printf '%s\n' "${FAST_ROWS:-}" | grep -qxF -- "$1"
@@ -1517,8 +1553,10 @@ par() { # par [-a] [-h] [-n <qemus>] [-s|-w] <key> <command> [args...]
         [ -z "$PAR_JOB" ] && CI_T_LAST=$SECONDS
         return 0
     fi
-    # Wait for a slot, printing what has finished meanwhile.
+    # Wait for the `par` rows this one needs, then for a slot, printing what
+    # has finished meanwhile.
     par_seg_close
+    par_wait_needs "$key"
     local others mine running
     while :; do
         par_reap
@@ -8126,7 +8164,7 @@ par "cpuid matches hardware" cpuid_probe_row "cpuid matches hardware" rv 4
 par "aarch64 cpuid matches hw" cpuid_probe_row "aarch64 cpuid matches hw" arm 4
 
 echo ""
-par_drain
+par_phase_end
 ci_phase "[2/4] host test suites"
 echo "[2/4] Running host test suites..."
 # Every crate in the tree that carries #[test] functions. Until 2026-08-20
@@ -17276,7 +17314,7 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # fuzzes from them for FUZZ_SECS (default 30) seconds; see tools/fuzz.sh. New
 # inputs go to target/fuzz-work, never into the tree. A missing cargo-fuzz is a
 # FAIL, as a missing QEMU is; CI_SKIP_FUZZ=1 is the explicit opt-out.
-par_drain
+par_phase_end
 ci_phase "[3b/4] fuzzing + Kani"
 echo ""
 echo "[3b/4] Fuzzing and bounded proofs (host)..."
