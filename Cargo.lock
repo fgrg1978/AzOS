@@ -331,6 +331,7 @@ dependencies = [
  "azos_drv_gpio",
  "azos_drv_sys",
  "azos_ina219",
+ "azos_limits",
  "azos_sync",
 ]
 

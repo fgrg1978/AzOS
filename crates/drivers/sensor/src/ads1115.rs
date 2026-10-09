@@ -111,8 +111,10 @@ const ADC_MAX: i32 = 32767;
 
 // ── Timing constants ───────────────────────────────────────────────────────
 
-/// Maximum conversion time at 8 SPS = 125 ms; poll up to 150 ms
-const CONVERSION_POLL_ITERS: u32 = 150_000;
+/// The blocking read's bound on config-register polls (each one locked I2C
+/// read) while a conversion runs: at 8 SPS a conversion takes 125 ms.
+/// Kconfig `ADS1115_CONVERSION_POLL_ITERS` (default 150000).
+const CONVERSION_POLL_ITERS: u32 = azos_limits::ADS1115_CONVERSION_POLL_ITERS as u32;
 
 // ── Driver state ───────────────────────────────────────────────────────────
 
@@ -122,6 +124,9 @@ struct Ads1115State {
     gain:        u16,
     rate:        u16,
     initialized: bool,
+    /// S2: the channel whose single-shot conversion the pipelined read
+    /// started last (and nobody has restarted since), or `None`.
+    pending:     Option<u8>,
 }
 
 impl Ads1115State {
@@ -132,6 +137,7 @@ impl Ads1115State {
             gain:        GAIN_4_096V,
             rate:        RATE_128,
             initialized: false,
+            pending:     None,
         }
     }
 
@@ -183,6 +189,7 @@ pub fn ads1115_init(i2c_bus: u8, addr: u8) {
     state.gain = GAIN_4_096V;
     state.rate = RATE_128;
     state.initialized = true;
+    state.pending = None;
 }
 
 /// Read the raw 16-bit signed ADC value from a single-ended channel (0-3).
@@ -190,9 +197,12 @@ pub fn ads1115_read_raw(channel: u8) -> Option<i16> {
     if channel > 3 { return None; }
     let state = ADC.lock();
     if !state.initialized { return None; }
+    let mut state = state;
     let bus = state.bus;
     let addr = state.addr;
     let config = state.config_word(channel);
+    // This conversion replaces any the pipelined read had started.
+    state.pending = None;
     drop(state);
 
     // Start single-shot conversion
@@ -212,9 +222,45 @@ pub fn ads1115_read_raw(channel: u8) -> Option<i16> {
     None
 }
 
-/// Read ADC channel and convert to millivolts using current gain setting.
-pub fn ads1115_read_mv(channel: u8) -> Option<i32> {
-    let raw = ads1115_read_raw(channel)? as i32;
+/// S2: the pipelined read of `channel`, for a caller that samples it
+/// periodically (`sensor_slow_task`, 10 Hz): the result of the conversion
+/// the PREVIOUS call started, then the next conversion started. Never
+/// polls: at most three I2C transactions (the config register's ready bit,
+/// the result, the next start) instead of the blocking read's
+/// start-then-poll loop of up to [`CONVERSION_POLL_ITERS`] locked reads.
+/// The value is one call period older (the conversion itself takes
+/// 1.2-125 ms by rate, less than any sane period). `None`: no conversion of
+/// this channel was pending (the first call, a channel switch, a blocking
+/// read in between), the previous one is not done yet, or the bus failed;
+/// the caller's "0 = no reading" stays honest.
+pub fn ads1115_read_raw_pipelined(channel: u8) -> Option<i16> {
+    if channel > 3 { return None; }
+    if cfg!(feature = "ads1115-pipeline-canary") {
+        // Gate canary: the blocking start-and-poll read this replaced.
+        return ads1115_read_raw(channel);
+    }
+    let mut state = ADC.lock();
+    if !state.initialized { return None; }
+    let (bus, addr) = (state.bus, state.addr);
+    let config = state.config_word(channel);
+    let ready = state.pending.take() == Some(channel);
+    drop(state);
+    let out = if ready {
+        match read_reg(bus, addr, REG_CONFIG) {
+            Some(cfg) if cfg & CONFIG_OS_START != 0 => read_reg(bus, addr, REG_CONVERSION).map(|v| v as i16),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if write_reg(bus, addr, REG_CONFIG, config) {
+        ADC.lock().pending = Some(channel);
+    }
+    out
+}
+
+/// Raw counts to millivolts at the current gain.
+fn raw_to_mv(raw: i16) -> Option<i32> {
     let pga_idx = {
         let state = ADC.lock();
         state.pga_index()
@@ -225,6 +271,11 @@ pub fn ads1115_read_mv(channel: u8) -> Option<i32> {
     // To avoid overflow: (raw * fsr_uv) / ADC_MAX / 1000
     let uv = (raw as i64 * fsr_uv as i64) / ADC_MAX as i64;
     Some((uv / 1000) as i32)
+}
+
+/// Read ADC channel and convert to millivolts using current gain setting.
+pub fn ads1115_read_mv(channel: u8) -> Option<i32> {
+    raw_to_mv(ads1115_read_raw(channel)?)
 }
 
 /// Set the PGA gain.  Use one of the `GAIN_*` constants.
@@ -243,8 +294,15 @@ pub fn ads1115_set_rate(rate: u16) {
 ///
 /// `divider_ratio` is the integer ratio (e.g., 2 for a 1:1 divider that halves Vbat).
 /// Returns battery voltage in millivolts.
+///
+/// Kconfig `ADS1115_PIPELINE` (S2): through [`ads1115_read_raw_pipelined`],
+/// one call period older and never polling; off, the blocking read.
 pub fn ads1115_read_battery_mv(channel: u8, divider_ratio: u32) -> Option<u32> {
-    let mv = ads1115_read_mv(channel)?;
+    let mv = if azos_limits::ADS1115_PIPELINE {
+        raw_to_mv(ads1115_read_raw_pipelined(channel)?)?
+    } else {
+        ads1115_read_mv(channel)?
+    };
     if mv < 0 { return None; }
     Some(mv as u32 * divider_ratio)
 }

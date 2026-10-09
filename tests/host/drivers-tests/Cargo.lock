@@ -43,6 +43,7 @@ dependencies = [
  "azos_limits",
  "cap_test_sync",
  "drv_test_arch",
+ "drv_test_bus",
  "drv_test_mm",
 ]
 
@@ -121,6 +122,10 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "drv_test_bus"
+version = "0.1.0"
 
 [[package]]
 name = "drv_test_mm"

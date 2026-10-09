@@ -15,6 +15,9 @@ k1  = []
 # behind the ring-3 proxy. The kernel's own `ina219-kernel` forwards here and
 # to the topology, which then declares no INADRV.ELF row.
 ina219-kernel = []
+# Gate canary (S2): the pipelined ADS1115 read is the blocking start-and-poll
+# read again (drivers-tests' ads1115 pipeline test fails).
+ads1115-pipeline-canary = []
 
 [dependencies]
 azos_abi           = { workspace = true }
@@ -25,3 +28,4 @@ azos_drv_api       = { workspace = true }
 azos_drv_bus       = { workspace = true }
 azos_drv_gpio      = { workspace = true }
 azos_drv_sys       = { workspace = true }
+azos_limits        = { workspace = true }

@@ -266,6 +266,35 @@ choice DRV_BUZZER_PLACEMENT
 
 endchoice
 
+config ADS1115_PIPELINE
+    bool "ADS1115 ADC: pipelined battery reading (no conversion polling)"
+    default y
+    help
+      crates/drivers/sensor/src/ads1115.rs, ads1115_read_battery_mv (the
+      10 Hz sensor_slow_task and SYS_SENSOR's battery). y: each read takes
+      the conversion the previous one started (its ready bit, its result)
+      and starts the next one: at most 3 I2C transactions, never a poll,
+      the value one period (100 ms) older; the first read after boot has no
+      value (battery 0 = "no reading", which every safety check skips).
+      n: start a conversion and poll its ready bit, up to
+      ADS1115_CONVERSION_POLL_ITERS locked I2C reads in the sensor task
+      (about 8 ms of bus at 128 SPS, 125 ms at 8 SPS). Costs no RAM either
+      way; the same on every ISA. Say n only to debug a board whose ADS1115
+      loses the started conversion between periods.
+
+config ADS1115_CONVERSION_POLL_ITERS
+    int "ADS1115 ADC: most config-register polls of one blocking read"
+    range 1000 10000000
+    default 150000
+    help
+      crates/drivers/sensor/src/ads1115.rs, CONVERSION_POLL_ITERS: the
+      blocking read (ads1115_read_mv, and the battery when
+      ADS1115_PIPELINE=n) polls the conversion-ready bit at most this many
+      times, each a locked I2C read, before it gives up with no value. A
+      conversion takes 125 ms at 8 SPS; raise it only for an I2C bus fast
+      enough that 150000 reads take less than that. Costs no RAM; bounds
+      the read's worst case at this many bus transactions.
+
 config STREAM_LIDAR_RING
     bool "LiDAR scans to ring 3 through a shared-memory ring (stream.lidar)"
     default n

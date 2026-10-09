@@ -3331,3 +3331,71 @@ mod buzzer_chip {
         assert_eq!(m, format!("AZOS-CHIP-SRC buzzer {:016x}", azos_buzzer::SOURCE_HASH));
     }
 }
+
+// ── ADS1115 pipelined read (wave 15, S2) ────────────────────────────────────
+//
+// `ads1115.rs` over `shims/bus`'s scripted chip: a conversion reads busy for
+// `busy_polls` config reads. The blocking read polls through all of them; the
+// pipelined one takes the conversion the previous call started and starts the
+// next, never polling. One test: the driver state is one static.
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/sensor/src/ads1115.rs"]
+mod ads1115;
+
+#[cfg(test)]
+mod ads1115_pipeline {
+    use super::ads1115::*;
+    use azos_drv_bus::i2c::ADS;
+
+    fn reset(busy: u32) {
+        ADS.with(|a| {
+            let mut a = a.borrow_mut();
+            *a = Default::default();
+            a.busy_polls = busy;
+            a.result = [1000, 2000, 3000, 4000];
+        });
+        ads1115_init(0, ADS1115_ADDR_GND);
+    }
+    fn txns() -> u32 {
+        ADS.with(|a| core::mem::take(&mut a.borrow_mut().txns))
+    }
+
+    #[test]
+    fn the_pipelined_read_never_polls_and_lags_one_call() {
+        // The blocking read: start, then poll through the busy reads.
+        reset(500);
+        assert_eq!(ads1115_read_raw(0), Some(1000));
+        let blocking = txns();
+        assert!(blocking > 500, "the blocking read polls: {blocking} transactions");
+
+        // Pipelined: the first call has nothing yet and only starts.
+        reset(500);
+        assert_eq!(ads1115_read_raw_pipelined(0), None, "no conversion was pending");
+        assert_eq!(txns(), 1, "the first call is the start alone");
+        // A period later the conversion is done (the chip took < 100 ms):
+        // ready bit, result, next start: three transactions, no polling.
+        ADS.with(|a| a.borrow_mut().left = 0);
+        assert_eq!(ads1115_read_raw_pipelined(0), Some(1000));
+        assert_eq!(txns(), 3);
+        // Not done yet when called: no value, no wait, the next one started.
+        ADS.with(|a| a.borrow_mut().left = 5);
+        assert_eq!(ads1115_read_raw_pipelined(0), None);
+        assert!(txns() <= 3);
+        // A blocking read of another channel in between replaces the
+        // pipelined conversion: the next pipelined call does not take it.
+        ADS.with(|a| a.borrow_mut().busy_polls = 0);
+        assert_eq!(ads1115_read_raw(2), Some(3000));
+        assert_eq!(ads1115_read_raw_pipelined(0), None, "channel 2's result is not channel 0's");
+        assert_eq!(ads1115_read_raw_pipelined(0), Some(1000));
+        // A channel switch starts over.
+        assert_eq!(ads1115_read_raw_pipelined(1), None);
+        assert_eq!(ads1115_read_raw_pipelined(1), Some(2000));
+        // The battery path takes the pipeline (Kconfig ADS1115_PIPELINE=y):
+        // 2000 counts at 4.096 V full scale = 250 mV, divider 2.
+        if azos_limits::ADS1115_PIPELINE {
+            let _ = txns();
+            assert_eq!(ads1115_read_battery_mv(1, 2), Some(500));
+            assert!(txns() <= 3);
+        }
+    }
+}

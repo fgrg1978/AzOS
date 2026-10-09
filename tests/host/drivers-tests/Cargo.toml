@@ -14,6 +14,8 @@ description = "Host-side tests for the computation inside the driver class crate
 azos_chaos = { path = "../../../crates/core/chaos" }
 azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
 azos_mm = { path = "shims/mm", package = "drv_test_mm" }
+# S2 (wave 15): ads1115.rs, pulled via #[path], over a scripted ADS1115.
+azos_drv_bus = { path = "shims/bus", package = "drv_test_bus" }
 azos_arch = { path = "shims/arch", package = "drv_test_arch" }
 # `motor_pid.rs` reads Kconfig `PID_DT_MS` (wave 11); the real crate, as
 # cap-tests uses it.
@@ -48,3 +50,5 @@ pci = []
 # virtio/blk.rs's F1 probe and its canary (wave 15): known values, never enabled.
 blk-wait-probe = []
 blk-lock-wait-canary = []
+# S2 canary: the pipelined ADS1115 read is the blocking one again.
+ads1115-pipeline-canary = []
