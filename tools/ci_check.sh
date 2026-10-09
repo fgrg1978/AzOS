@@ -11282,6 +11282,7 @@ PY
             wait "$pid" 2>/dev/null; X86_QRC=$?
         fi
         tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+        return 0   # only a refused kernel returns 1: its callers stop on it
     }
     x86_boot_row() { # x86_boot_row <label> <smp> <cpu model> <want lines, |-separated fixed strings> <stop ERE>
         local label="$1" smp="$2" cpu="$3" want="$4" stop="$5" why="" w
