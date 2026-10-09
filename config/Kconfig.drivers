@@ -388,6 +388,9 @@ endchoice
 
 config CAMERA_TX_CAPTURE_PERIOD_MS
     int "Camera frame ring: capture period for the brain link's sender"
+    default 250 if PROFILE_EMBEDDED
+    default 250 if PROFILE_EDGE
+    default 250 if PROFILE_FLEET
     default 250
     range 10 1000
     help
@@ -399,7 +402,10 @@ config CAMERA_TX_CAPTURE_PERIOD_MS
       ~2 Hz inline path); capturing at half that period means each send
       finds a frame no older than this. Cost: one capture + JPEG encode
       per period. Raise it to save CPU when only the brain link takes
-      frames; the frame it sends gets older by as much.
+      frames; the frame it sends gets older by as much. The same on every
+      profile and ISA today: the sender's 500 ms period is not per profile.
+      With no consumer attached and no camera stream in the image the
+      capture task does not wake at all.
 
 config LIDAR_SIM
     bool "Synthetic LD19 LiDAR on QEMU (feeds the real parser)"

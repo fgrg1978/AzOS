@@ -21,7 +21,7 @@
 use crate::kprintln;
 use azos_cam_ring::{FanoutRing, Policy};
 use azos_drv_sensor::csi::{self, JPEG_MAX_SIZE};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// A reader of the camera frame ring.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -42,8 +42,18 @@ type CamRing = FanoutRing<{ azos_limits::CAMERA_RING_SLOTS as usize }, JPEG_MAX_
 /// Kconfig `CAMERA_RING_SLOTS` x one JPEG each, .bss.
 static CAM_RING: CamRing = CamRing::new(POLICY);
 
+/// The capture task's tid (0 until it runs): an attach wakes it from an
+/// idle block.
+static CAPTURE_TID: AtomicU32 = AtomicU32::new(0);
+
 pub(crate) fn camera_consumer_attach(c: CamConsumer) {
+    let was = CAM_RING.any_attached();
     CAM_RING.attach(c as usize);
+    let tid = CAPTURE_TID.load(Ordering::Acquire);
+    if !was && tid != 0 {
+        azos_sched::scheduler::wake_task_by_tid(
+            tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
+    }
 }
 
 pub(crate) fn camera_consumer_detach(c: CamConsumer) {
@@ -99,26 +109,30 @@ fn own_encode<R>(f: impl FnOnce(&[u8], u64) -> R) -> Option<R> {
     r
 }
 
-/// The capture period: the shortest any attached consumer asks for; with
-/// none attached, how often to look again.
-fn capture_period_ms() -> u64 {
+/// The capture period: the shortest any attached consumer asks for. With
+/// none attached: `STREAM_CAMERA_PERIOD_MS` when the image has the camera
+/// stream (the task polls for a mapped `stream.camera`, as the stream's own
+/// task did before B2), else `None`: block until a link attach wakes it.
+fn capture_period_ms() -> Option<u64> {
     let stream = azos_limits::STREAM_CAMERA_PERIOD_MS as u64;
     let link = azos_limits::CAMERA_TX_CAPTURE_PERIOD_MS as u64;
     match (CAM_RING.is_attached(CamConsumer::Stream as usize), CAM_RING.is_attached(CamConsumer::Link as usize)) {
-        (true, true) => stream.min(link),
-        (true, false) => stream,
-        (false, true) => link,
-        (false, false) => stream.min(link),
+        (true, true) => Some(stream.min(link)),
+        (true, false) => Some(stream),
+        (false, true) => Some(link),
+        (false, false) => crate::tasks::camera_stream_built().then_some(stream),
     }
 }
 
 /// The producer. Created by `streams_init` when the image has a consumer.
 pub(crate) fn camera_capture_task(_: usize) {
     use azos_drv_sys::timebase::{now, TIMER_FREQ};
+    CAPTURE_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     kprintln!("[CAM] capture task up: ring of {} x {} B, {}",
               CamRing::capacity(), CamRing::slot_size(),
               match POLICY { Policy::OverwriteOldest => "overwrite-oldest", Policy::Backpressure => "backpressure" });
     loop {
+        let was_attached = CAM_RING.any_attached();
         let stream = crate::tasks::camera_stream_wanted();
         if stream {
             camera_consumer_attach(CamConsumer::Stream);
@@ -128,9 +142,20 @@ pub(crate) fn camera_capture_task(_: usize) {
         if CAM_RING.any_attached() && camera_capture_once() && stream {
             crate::tasks::camera_stream_consume();
         }
-        let end = now() + capture_period_ms() * (TIMER_FREQ / 1000);
-        while now() < end {
-            azos_sched::task_block(azos_sched::WaitReason::Timer(end));
+        match capture_period_ms() {
+            Some(ms) => {
+                let end = now() + ms * (TIMER_FREQ / 1000);
+                while now() < end && !(CAM_RING.any_attached() && !was_attached) {
+                    azos_sched::task_block(azos_sched::WaitReason::Timer(end));
+                }
+            }
+            // No consumer and no stream to poll for: no wake-up until a
+            // link consumer attaches (`camera_consumer_attach` wakes this).
+            None => {
+                while !CAM_RING.any_attached() {
+                    azos_sched::task_block(azos_sched::WaitReason::Timer(u64::MAX));
+                }
+            }
         }
     }
 }

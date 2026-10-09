@@ -10,8 +10,10 @@
 //!
 //! # Policies
 //!
-//! - [`Policy::OverwriteOldest`]: the producer never waits and never refuses.
-//!   It writes into the oldest slot that holds neither the newest frame nor a
+//! - [`Policy::OverwriteOldest`]: the producer never waits. It refuses a
+//!   frame only after `4 * N` claim attempts all lost a race to a consumer
+//!   pinning the chosen slot (bounded retries, counted in
+//!   [`FanoutRing::refused`]; not seen in the host stress test). It writes into the oldest slot that holds neither the newest frame nor a
 //!   frame a consumer is reading; a consumer that lagged loses the frames
 //!   overwritten meanwhile (counted in [`FanoutRing::overwritten`]) and its
 //!   next read skips to what is left ([`FrameRef::skipped`]).
@@ -254,7 +256,7 @@ impl<const N: usize, const SZ: usize, const C: usize> FanoutRing<N, SZ, C> {
 
     /// Claim a slot for the next frame. `None`: [`Policy::Backpressure`]
     /// refused (every free slot holds a frame an attached consumer has not
-    /// taken). Under [`Policy::OverwriteOldest`] this always succeeds. The
+    /// taken), or every one of the bounded attempts lost a pin race. The
     /// slot is the producer's until [`commit`](Self::commit) or
     /// [`abort`](Self::abort); call one of them before claiming again.
     #[allow(clippy::mut_from_ref)]
@@ -343,7 +345,9 @@ impl<const N: usize, const SZ: usize, const C: usize> FanoutRing<N, SZ, C> {
     pub fn refused(&self) -> u64 {
         self.refused.load(Ordering::Relaxed)
     }
-    /// Frames overwritten before an attached consumer took them.
+    /// Frames overwritten before an attached consumer took them. With a
+    /// consumer that reads only the newest frame this counts the frames it
+    /// passes over by design, not a loss.
     pub fn overwritten(&self) -> u64 {
         self.overwritten.load(Ordering::Relaxed)
     }

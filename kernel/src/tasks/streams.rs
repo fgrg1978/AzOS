@@ -105,6 +105,12 @@ fn lidar_sim_task(_: usize) {
     }
 }
 
+/// Does this image have the camera stream (Kconfig `STREAM_CAMERA_RING`)?
+#[cfg(any(feature = "domain-robot", feature = "camera"))]
+pub(crate) fn camera_stream_built() -> bool {
+    Stream::Camera.enabled()
+}
+
 /// Does `stream.camera` have a reader now? The capture task attaches the
 /// stream's cursor only then: nothing is captured for nobody.
 #[cfg(any(feature = "domain-robot", feature = "camera"))]

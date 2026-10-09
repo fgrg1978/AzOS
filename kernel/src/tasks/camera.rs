@@ -214,7 +214,7 @@ pub(crate) fn camera_tx_task(_: usize) {
                 }
                 kprintln!("[CAM-TX] closed ({:?}) after {} frames", why, policy.frames());
                 let (produced, refused, overwritten, encodes) = camera_ring_stats();
-                kprintln!("[CAM] ring: {} frames captured, {} JPEG encodes, {} refused, {} overwritten unread",
+                kprintln!("[CAM] ring: {} frames captured, {} JPEG encodes, {} refused, {} passed over (newest-frame reader)",
                           produced, encodes, refused, overwritten);
                 fd = None;
                 link = None;
