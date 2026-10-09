@@ -1757,6 +1757,29 @@ pub fn sys_file_write_typed(cap_raw: u64, buf: u64, count: u64) -> i64 {
     }
 }
 
+/// The typed file write over bytes already in a kernel buffer (the Linux
+/// personality's `writev` gather, K2): the same `WRITE` check and the same
+/// containment refusal as [`sys_file_write_typed`] from ring 3, then ONE
+/// `write` of all of it (one hold of the description's position lock).
+pub(crate) fn file_write_typed_kbuf(cap_raw: u64, src: &[u8]) -> i64 {
+    match file_fd_for(cap_raw, azos_abi::cap::CapPerms::WRITE) {
+        Ok(fd) => {
+            if untyped_write_contained() { return E_CONTAINED; }
+            match file_ops() { Some(o) => o.write(fd as i32, src), None => -1 }
+        }
+        Err(e) => e,
+    }
+}
+
+/// The typed file read into a kernel buffer (the Linux `readv` scatter
+/// source, K2): the `READ` check of [`sys_file_read_typed`], ONE `read`.
+pub(crate) fn file_read_typed_kbuf(cap_raw: u64, dst: &mut [u8]) -> i64 {
+    match file_fd_for(cap_raw, azos_abi::cap::CapPerms::READ) {
+        Ok(fd) => match file_ops() { Some(o) => o.read(fd as i32, dst), None => -1 },
+        Err(e) => e,
+    }
+}
+
 /// `SYS_CLOSE_TYPED` (566): a0=cap. Revoke the capability and release what it
 /// names, chosen by the handle's kind.
 ///

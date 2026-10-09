@@ -74,8 +74,9 @@ const DIR_PATH_MAX: usize = 96;
 const CWD_MAX: usize = 64;
 /// Longest path an open/stat call resolves.
 const PATH_MAX: usize = 256;
-/// Bytes one read or write moves at most (the native clamp).
-const IO_MAX: usize = 4096;
+/// Bytes one read, write, readv or writev moves at most (at most the native
+/// clamp, 4096). Kconfig `LINUX_IO_MAX`.
+const IO_MAX: usize = azos_limits::LINUX_IO_MAX;
 /// Signals with an action slot (1..=64).
 const NSIG: usize = 64;
 /// Longest image path `/proc/self/exe` resolves to.
@@ -652,14 +653,25 @@ fn console_lent_to_me() -> bool {
 /// typed bytes echoed; blocks on the RX interrupt (a clock ceiling bounds a
 /// lost wake) and ends with `-EINTR` when a signal is to be delivered.
 fn console_read(buf: u64, n: u64) -> i64 {
-    if n == 0 || cfg!(feature = "linux-console-eof-canary") || !console_lent_to_me() {
+    let mut out = [0u8; sig::LINE_MAX];
+    let want = (n as usize).min(sig::LINE_MAX);
+    let r = console_read_k(&mut out[..want]);
+    if r > 0 && !put_user(buf, &out[..r as usize]) {
+        return neg(le::EFAULT);
+    }
+    r
+}
+
+/// [`console_read`] into a kernel buffer (at most a line): its count, 0 for
+/// end of file, or a negative errno. `readv`'s source too (K2).
+fn console_read_k(out: &mut [u8]) -> i64 {
+    if out.is_empty() || cfg!(feature = "linux-console-eof-canary") || !console_lent_to_me() {
         return 0;
     }
     reach(k::SYS_CONSOLE_WAIT);
     use azos_drv_sys::uart;
     let me = azos_sched::current_task_tid();
-    let want = (n as usize).min(sig::LINE_MAX);
-    let mut out = [0u8; sig::LINE_MAX];
+    let want = out.len().min(sig::LINE_MAX);
     loop {
         // At most 16 input bytes per hold of the lock, their echo (at most
         // 4 bytes each) kept here and written after the lock is dropped: the
@@ -712,7 +724,7 @@ fn console_read(buf: u64, n: u64) -> i64 {
             continue;
         }
         if let Some(k) = got {
-            return if put_user(buf, &out[..k]) { k as i64 } else { neg(le::EFAULT) };
+            return k as i64;
         }
         if crate::ushell::stop_requested() {
             return neg(le::EINTR);
@@ -755,30 +767,95 @@ pub fn console_signal(s: u32) {
     }
 }
 
-/// `readv`/`writev`: the segments in order, stopping at the first short or
-/// failed one (what a regular file or pipe does).
+/// The calling thread's memory, for the iovec walk.
+struct UserIov;
+
+impl lx::iov::IovMem for UserIov {
+    fn word(&mut self, addr: u64) -> Option<u64> {
+        get_u64(addr)
+    }
+    fn copy_in(&mut self, dst: &mut [u8], base: u64) -> bool {
+        get_user(base, dst)
+    }
+    fn copy_out(&mut self, base: u64, src: &[u8]) -> bool {
+        put_user(base, src)
+    }
+    fn writable(&mut self, base: u64, len: usize) -> bool {
+        base != 0 && azos_sched::user_range_prepare_write(base as usize, len)
+    }
+}
+
+/// `readv`/`writev` (K2): ONE transfer per call, as Linux. `writev` gathers
+/// the segments into one bounce of [`IO_MAX`] bytes and makes one typed
+/// write: one console line under the ring-3 writers' lock, one pipe write
+/// (whole or waiting whole up to `PIPE_BUF`), one file write under the
+/// description's position lock. So no other writer of the same description
+/// lands between two segments. `readv` makes one read and scatters it.
+/// The walk itself, and its checks, are `azos_linux_abi::iov`.
 fn sys_rwv(fd: u64, iov: u64, cnt: u64, write: bool) -> i64 {
-    if cnt > 1024 {
-        return neg(le::EINVAL);
+    let e = match fd_get(fd) {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    match e.kind {
+        Kind::Dir => return neg(le::EISDIR),
+        Kind::Closed => return neg(le::EBADF),
+        Kind::Console | Kind::Handle => {}
     }
-    let mut total: i64 = 0;
-    for i in 0..cnt {
-        let (Some(base), Some(len)) = (get_u64(iov + i * 16), get_u64(iov + i * 16 + 8)) else {
-            return if total > 0 { total } else { neg(le::EFAULT) };
-        };
-        if len == 0 {
-            continue;
-        }
-        let r = if write { sys_write(fd, base, len) } else { sys_read(fd, base, len) };
-        if r < 0 {
-            return if total > 0 { total } else { r };
-        }
-        total += r;
-        if (r as u64) < len {
-            break;
-        }
+    let mut k = core::mem::MaybeUninit::<[u8; IO_MAX]>::uninit();
+    let buf = crate::handlers::bounce_zeroed(&mut k, IO_MAX);
+    if write {
+        lx::iov::writev(&mut UserIov, iov, cnt, buf, |b| write_kbuf(&e, b))
+    } else {
+        lx::iov::readv(&mut UserIov, iov, cnt, buf, |b| read_kbuf(&e, b))
     }
-    total
+}
+
+/// One typed write of kernel bytes to the descriptor `e` (Console or Handle).
+fn write_kbuf(e: &FdEnt, b: &[u8]) -> i64 {
+    match e.kind {
+        Kind::Console => {
+            reach(k::SYS_WRITE);
+            azos_drv_sys::uart::console_write_ring3(b);
+            b.len() as i64
+        }
+        Kind::Handle => {
+            reach(k::SYS_FILE_WRITE_TYPED);
+            let pipe = crate::ushell::is_pipe_handle(e.handle as u64);
+            let r = if pipe {
+                crate::ushell::pipe_write_kbuf(e.handle as u64, b)
+            } else {
+                crate::handlers::file_write_typed_kbuf(e.handle as u64, b)
+            };
+            let r = lx::errno_from_native(r, le::EIO);
+            // As `sys_write`: a pipe nobody reads raises SIGPIPE.
+            if pipe && r == -le::EPIPE && !cfg!(feature = "linux-sigpipe-canary") {
+                let me = azos_sched::current_task_tid();
+                let _ = sigst::post(me, lx::sig::SIGPIPE as u32, 0);
+            }
+            r
+        }
+        Kind::Dir => neg(le::EISDIR),
+        Kind::Closed => neg(le::EBADF),
+    }
+}
+
+/// One typed read into a kernel buffer from the descriptor `e`.
+fn read_kbuf(e: &FdEnt, b: &mut [u8]) -> i64 {
+    match e.kind {
+        Kind::Console => console_read_k(b),
+        Kind::Handle => {
+            reach(k::SYS_FILE_READ_TYPED);
+            let r = if crate::ushell::is_pipe_handle(e.handle as u64) {
+                crate::ushell::pipe_read_kbuf(e.handle as u64, b)
+            } else {
+                crate::handlers::file_read_typed_kbuf(e.handle as u64, b)
+            };
+            lx::errno_from_native(r, le::EIO)
+        }
+        Kind::Dir => neg(le::EISDIR),
+        Kind::Closed => neg(le::EBADF),
+    }
 }
 
 fn sys_openat(dirfd: u64, path_ptr: u64, flags: u64) -> i64 {

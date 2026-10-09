@@ -294,4 +294,24 @@ config LINUX_ROBUST_LIST_LIMIT
       short; raise it only for a program that really holds more robust
       locks at once. Unused without LINUX_ABI.
 
+config LINUX_IO_MAX
+    int "Linux personality: bytes one read/write/readv/writev moves at most"
+    range 256 4096
+    default 4096
+    help
+      crates/core/syscall/src/linux.rs, IO_MAX. A call asking for more
+      returns a short count, which every Linux program handles (a regular
+      file's write may be short; libc's stdio loops). readv/writev gather
+      or scatter through ONE bounce buffer of this size on the syscall
+      stack and make ONE transfer, so a writev of at most this many bytes
+      is atomic with respect to the description's other writers: one
+      console line, one pipe write (all or nothing up to PIPE_BUF = 4096),
+      one file write under the description's position lock. At most 4096,
+      the native clamp and the pipe's PIPE_BUF.
+
+      Costs this many bytes of kernel stack during the call, no static
+      RAM; the gather is one memcpy per segment instead of one syscall
+      path per segment. Lower it only on a task stack too small for 4 KiB
+      of bounce; the same on every ISA. Unused without LINUX_ABI.
+
 endmenu # Linux compatibility

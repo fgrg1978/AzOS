@@ -257,20 +257,33 @@ pub fn sys_pipe_read(cap_raw: u64, buf: u64, count: u64) -> i64 {
     if !user_writable(buf, n) {
         return err(Errno::EFAULT);
     }
-    let me = azos_sched::current_task_tid();
     let mut k = core::mem::MaybeUninit::<[u8; IO_MAX]>::uninit();
     let k = crate::handlers::bounce_zeroed(&mut k, n);
+    let got = pipe_read_res(res, k);
+    if got > 0 && !azos_sched::copy_to_user(buf as usize, k.as_ptr(), got as usize) {
+        return err(Errno::EFAULT);
+    }
+    got
+}
+
+/// A `Cap<Pipe>` read end into a kernel buffer (the Linux `readv` source,
+/// K2): one pipe read of at most `k.len()` bytes, waiting as
+/// [`sys_pipe_read`] does.
+pub(crate) fn pipe_read_kbuf(cap_raw: u64, k: &mut [u8]) -> i64 {
+    match pipe_resource(cap_raw, CapPerms::READ) {
+        Ok(res) if !k.is_empty() => pipe_read_res(res, k),
+        Ok(_) => 0,
+        Err(e) => e,
+    }
+}
+
+fn pipe_read_res(res: u32, k: &mut [u8]) -> i64 {
+    let me = azos_sched::current_task_tid();
     loop {
         let (io, w) = azos_ipc::pipe::pipe_typed_read(res, k, me);
         wake(w);
         match io {
-            PipeIo::Done(got) => {
-                return if azos_sched::copy_to_user(buf as usize, k.as_ptr(), got) {
-                    got as i64
-                } else {
-                    err(Errno::EFAULT)
-                };
-            }
+            PipeIo::Done(got) => return got as i64,
             PipeIo::Eof => return 0,
             PipeIo::Stale => return err(Errno::ECAPSTALE),
             PipeIo::Broken => return err(Errno::EPIPE),
@@ -299,6 +312,21 @@ pub fn sys_pipe_write(cap_raw: u64, buf: u64, count: u64) -> i64 {
     let Some(k) = crate::handlers::bounce_from_user(&mut k, buf, n) else {
         return err(Errno::EFAULT);
     };
+    pipe_write_res(res, k)
+}
+
+/// A `Cap<Pipe>` write end from a kernel buffer (the Linux `writev`
+/// gather, K2): ONE pipe write, so up to `PIPE_BUF_SIZE` bytes go in whole
+/// or wait whole (`pipe_typed_write`), as Linux's `PIPE_BUF` promise.
+pub(crate) fn pipe_write_kbuf(cap_raw: u64, k: &[u8]) -> i64 {
+    match pipe_resource(cap_raw, CapPerms::WRITE) {
+        Ok(res) if !k.is_empty() => pipe_write_res(res, k),
+        Ok(_) => 0,
+        Err(e) => e,
+    }
+}
+
+fn pipe_write_res(res: u32, k: &[u8]) -> i64 {
     let me = azos_sched::current_task_tid();
     loop {
         let (io, w) = azos_ipc::pipe::pipe_typed_write(res, k, me);

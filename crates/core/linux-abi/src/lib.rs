@@ -495,6 +495,9 @@ pub mod signal;
 /// The robust futex list walked at a thread's exit (wave 15).
 pub mod robust;
 
+/// `readv`/`writev` as one transfer each: the iovec walk (wave 15, K2).
+pub mod iov;
+
 /// Signal numbers and `rt_sigprocmask` operations (RFC-0047 P3: signals
 /// live inside the Linux compartment).
 pub mod sig {

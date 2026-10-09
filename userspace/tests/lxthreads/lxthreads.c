@@ -11,8 +11,9 @@
  * file description written by two threads. Wave 13: signals across threads
  * (a process-directed signal, a tgkill to a blocked thread, a fatal default
  * action in a threaded child). Wave 15: a leader's pthread_exit while a
- * thread runs (its clear-tid word, which holds musl's thread-list lock), and
- * an execve from a thread that is not the leader.
+ * thread runs (its clear-tid word, which holds musl's thread-list lock), an
+ * execve from a thread that is not the leader, and a writev that is one
+ * transfer (no other writer of the pipe between its segments).
  *
  * Every check prints `lxthr: <name> ok` or `lxthr: <name> FAIL`, and the
  * last line is `lxthr: done failures=<n>`.
@@ -28,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #define NT 4
@@ -324,6 +326,72 @@ static void exec_from_thread(void)
     check("execve from a thread: the new image creates and joins a thread", image && !(code & 4));
 }
 
+/* Wave 15 (K2): a writev is ONE transfer. The pipe (4096 bytes, PIPE_BUF)
+ * is filled to 100 bytes of room; a thread writevs 50 + 3000 bytes of 'A',
+ * which as one write waits whole for 3050 bytes of room. Main then writes
+ * 40 bytes of 'M' and drains the pipe. One transfer: the A bytes are one
+ * run after the M bytes. The per-segment loop this replaced (canary
+ * `writev-per-segment-canary`) puts the 50 in at once, waits on the 3000,
+ * and the M bytes land between the two segments. */
+#define WV_FILL 3996
+#define WV_A1 50
+#define WV_A2 3000
+#define WV_M 40
+static int wv_fd[2] = {-1, -1};
+
+static void *wv_writer(void *arg)
+{
+    (void)arg;
+    static char a1[WV_A1], a2[WV_A2];
+    memset(a1, 'A', sizeof a1);
+    memset(a2, 'A', sizeof a2);
+    struct iovec v[2] = {{a1, sizeof a1}, {a2, sizeof a2}};
+    return (void *)(long)writev(wv_fd[1], v, 2);
+}
+
+static void writev_atomic(void)
+{
+    static char fill[WV_FILL], got[WV_FILL + WV_M + WV_A1 + WV_A2];
+    char m[WV_M];
+    pthread_t t;
+    void *r = 0;
+    long have = 0, want = (long)sizeof got;
+    if (pipe(wv_fd) != 0) {
+        check("writev is one transfer: no other writer between its segments", 0);
+        return;
+    }
+    memset(fill, 'F', sizeof fill);
+    memset(m, 'M', sizeof m);
+    long f = write(wv_fd[1], fill, sizeof fill);
+    int made = f == WV_FILL && pthread_create(&t, 0, wv_writer, 0) == 0;
+    nap_ms(200); /* the writer is waiting for room by now */
+    long w = made ? write(wv_fd[1], m, sizeof m) : -1;
+    while (made && have < want) {
+        long n = read(wv_fd[0], got + have, (size_t)(want - have));
+        if (n <= 0)
+            break;
+        have += n;
+    }
+    if (made)
+        pthread_join(t, &r);
+    close(wv_fd[0]);
+    close(wv_fd[1]);
+    long first = -1, run = 0;
+    for (long i = 0; i < have; i++) {
+        if (got[i] == 'A') {
+            if (first < 0)
+                first = i;
+            run++;
+        } else if (first >= 0 && run < WV_A1 + WV_A2) {
+            break; /* the A bytes were split */
+        }
+    }
+    printf("lxthr: writev wrote %ld, pipe gave %ld bytes, first A run %ld at %ld\n",
+           (long)r, have, run, first);
+    check("writev is one transfer: no other writer between its segments",
+          made && w == WV_M && have == want && (long)r == WV_A1 + WV_A2 && run == WV_A1 + WV_A2);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "exec-image") == 0)
@@ -387,6 +455,7 @@ int main(int argc, char **argv)
     signals();
     leader_exit();
     exec_from_thread();
+    writev_atomic();
 
     printf("lxthr: done failures=%d\n", fails);
     fflush(stdout);

@@ -287,6 +287,9 @@ threads-late-start-canary = ["azos_sched/threads-late-start-canary"]
 # leader is refused its exec (`azos_sched`); an exec ends the other threads
 # before it checks the image (`azos_syscall`).
 exec-no-dethread-canary = ["azos_sched/exec-no-dethread-canary"]
+# Wave 15 (K2) gate canary: a Linux writev makes one write per iovec again,
+# so another writer lands between two segments (the LXTHR writev check FAILs).
+writev-per-segment-canary = ["azos_linux_abi/writev-per-segment-canary"]
 thread-objects-canary = ["azos_syscall/thread-objects-canary"]
 exec-no-pid-swap-canary = ["azos_sched/exec-no-pid-swap-canary"]
 exec-validate-late-canary = ["azos_syscall/exec-validate-late-canary"]

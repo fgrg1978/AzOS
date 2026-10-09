@@ -17217,6 +17217,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr: execve from a thread: the exec'ing thread is the only one left (gettid == getpid) ok" \
                 "lxthr: execve from a thread: the new image creates and joins a thread ok" \
                 "ended 3 other thread(s) before replacing its image" \
+                "lxthr: writev is one transfer: no other writer between its segments ok" \
                 "lxthr: done failures=0" "after-lxthr 0"
             # Wave 13 (SIGNALS) canaries over the same run: a process-directed
             # signal always to the leader (which blocks it); a tgkill posted
@@ -17266,6 +17267,17 @@ echo after-lxthr \$?" 150 \
 echo after-lxthr \$?" 150 \
                 "lxthr: execve from a thread: the exec'ing thread is the only one left (gettid == getpid) FAIL" \
                 "lxthr: done failures="
+            # Wave 15 (K2): a Linux writev is ONE transfer (LXTHR's
+            # `writev_atomic`: a thread's 50 + 3000-byte writev waits whole
+            # for pipe room; main's 40-byte write lands before it, never
+            # between its segments). Canary `writev-per-segment-canary` (one
+            # write per iovec again): a PASS row on the check's FAIL line,
+            # which only a run that reached it prints.
+            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: writev one transfer canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,writev-per-segment-canary" PASS \
+                "lxthr
+echo after-lxthr \$?" 150 \
+                "lxthr: writev is one transfer: no other writer between its segments FAIL" \
+                "lxthr: done failures=1"
         else
             printf "  %-26s%s\n" "linux: pthreads ($ush_isa)..." "SKIP (make lxthreads failed; see $CI_LOG_DIR/lxthreads-build.log)"
         fi

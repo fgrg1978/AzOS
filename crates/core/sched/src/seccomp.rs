@@ -1178,6 +1178,8 @@ pub const THIRDPARTY_PROFILES: &[ImageProfile] = &[
             // Wave 15: a thread that is not the leader execs this image
             // again (`/proc/self/exe`): the dethread and the PID hand-over.
             SYS_EXECPATH,
+            // Wave 15 (K2): the writev check writes into a pipe of its own.
+            SYS_PIPE_TYPED,
         ],
         audit: false,
     },

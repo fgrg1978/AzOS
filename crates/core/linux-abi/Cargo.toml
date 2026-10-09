@@ -8,3 +8,9 @@ description = "The Linux personality's pure half (RFC-0047): Linux syscall numbe
 
 [dependencies]
 azos_abi = { path = "../abi" }
+
+[features]
+# Gate canary (K2): writev makes one write per iovec again, so another
+# writer can land between two segments; the writev atomicity host test and
+# the Linux personality row fail.
+writev-per-segment-canary = []

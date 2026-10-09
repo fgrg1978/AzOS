@@ -706,3 +706,203 @@ mod robust_list {
         assert_eq!(exit_robust_list(&mut m, HEAD, (1 << 30) | 5, 2048), Walked::default());
     }
 }
+
+/// Wave 15 (K2): `readv`/`writev` as ONE transfer each
+/// (`crates/core/linux-abi/src/iov.rs`), over a sparse fake memory.
+#[cfg(test)]
+mod iov_walk {
+    use azos_linux_abi::errno as le;
+    use azos_linux_abi::iov::*;
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Mem {
+        bytes: BTreeMap<u64, u8>,
+    }
+    impl Mem {
+        fn put(&mut self, at: u64, b: &[u8]) {
+            for (i, &x) in b.iter().enumerate() {
+                self.bytes.insert(at + i as u64, x);
+            }
+        }
+        /// An iovec array at `at` naming `segs` (base, len).
+        fn iovs(&mut self, at: u64, segs: &[(u64, u64)]) {
+            for (i, &(b, l)) in segs.iter().enumerate() {
+                self.put(at + 16 * i as u64, &b.to_le_bytes());
+                self.put(at + 16 * i as u64 + 8, &l.to_le_bytes());
+            }
+        }
+        /// `len` writable zero bytes at `at`.
+        fn room(&mut self, at: u64, len: usize) {
+            self.put(at, &vec![0; len]);
+        }
+        fn get(&self, at: u64, len: usize) -> Vec<u8> {
+            (0..len as u64).map(|i| self.bytes[&(at + i)]).collect()
+        }
+    }
+    impl IovMem for Mem {
+        fn word(&mut self, addr: u64) -> Option<u64> {
+            let mut w = [0u8; 8];
+            for (i, b) in w.iter_mut().enumerate() {
+                *b = *self.bytes.get(&(addr + i as u64))?;
+            }
+            Some(u64::from_le_bytes(w))
+        }
+        fn copy_in(&mut self, dst: &mut [u8], base: u64) -> bool {
+            for (i, d) in dst.iter_mut().enumerate() {
+                match self.bytes.get(&(base + i as u64)) {
+                    Some(&b) => *d = b,
+                    None => return false,
+                }
+            }
+            true
+        }
+        fn copy_out(&mut self, base: u64, src: &[u8]) -> bool {
+            if !self.writable(base, src.len()) {
+                return false;
+            }
+            self.put(base, src);
+            true
+        }
+        fn writable(&mut self, base: u64, len: usize) -> bool {
+            (0..len as u64).all(|i| self.bytes.contains_key(&(base + i)))
+        }
+    }
+
+    const IOV_A: u64 = 0x1000;
+    const IOV_B: u64 = 0x2000;
+
+    /// One writer's memory: three segments "<tag>1-" "<tag>2-" "<tag>3\n".
+    fn writer(tag: u8, data_at: u64, iov_at: u64) -> Mem {
+        let mut m = Mem::default();
+        let segs: Vec<Vec<u8>> = (1..=3u8)
+            .map(|k| vec![tag, b'0' + k, if k == 3 { b'\n' } else { b'-' }])
+            .collect();
+        let mut table = Vec::new();
+        for (i, s) in segs.iter().enumerate() {
+            let at = data_at + 0x100 * i as u64;
+            m.put(at, s);
+            table.push((at, s.len() as u64));
+        }
+        m.iovs(iov_at, &table);
+        m
+    }
+
+    /// The property: writer B runs (here: re-entered from inside A's write,
+    /// the instant A's first transfer is on the shared description) and
+    /// still never lands between two of A's segments. Today's code makes
+    /// ONE write per writev; the per-segment loop it replaced (the canary
+    /// `writev-per-segment-canary`) lets B in after "A1-".
+    #[test]
+    fn a_writev_is_one_transfer_no_other_writer_between_its_segments() {
+        let stream = std::cell::RefCell::new(Vec::<u8>::new());
+        let mut b_ran = false;
+        let mut a = writer(b'A', 0x10_000, IOV_A);
+        let mut buf_a = [0u8; 4096];
+        let r = writev(&mut a, IOV_A, 3, &mut buf_a, |bytes| {
+            stream.borrow_mut().extend_from_slice(bytes);
+            if !b_ran {
+                b_ran = true;
+                let mut b = writer(b'B', 0x20_000, IOV_B);
+                let mut buf_b = [0u8; 4096];
+                let rb = writev(&mut b, IOV_B, 3, &mut buf_b, |bb| {
+                    stream.borrow_mut().extend_from_slice(bb);
+                    bb.len() as i64
+                });
+                assert_eq!(rb, 9);
+            }
+            bytes.len() as i64
+        });
+        assert_eq!(r, 9);
+        let s = String::from_utf8(stream.into_inner()).unwrap();
+        assert!(s == "A1-A2-A3\nB1-B2-B3\n", "segments interleaved: {s:?}");
+    }
+
+    #[test]
+    fn writev_checks_every_entry_before_the_transfer() {
+        let mut m = writer(b'A', 0x10_000, IOV_A);
+        let mut buf = [0u8; 64];
+        let mut calls = 0;
+        // More than UIO_MAXIOV entries.
+        assert_eq!(writev(&mut m, IOV_A, UIO_MAXIOV + 1, &mut buf, |_| { calls += 1; 0 }), -le::EINVAL);
+        // A length negative as ssize_t in the LAST entry, after the gather
+        // filled the buffer: still EINVAL, nothing written.
+        m.iovs(IOV_A + 3 * 16, &[(0x10_000, u64::MAX)]);
+        assert_eq!(writev(&mut m, IOV_A, 4, &mut buf[..3], |_| { calls += 1; 0 }), -le::EINVAL);
+        // The array itself unreadable.
+        assert_eq!(writev(&mut m, 0xdead_0000, 1, &mut buf, |_| { calls += 1; 0 }), -le::EFAULT);
+        assert_eq!(calls, 0);
+        // No entries, or only empty ones: 0, no write.
+        m.iovs(IOV_B, &[(0x10_000, 0), (0, 0)]);
+        assert_eq!(writev(&mut m, IOV_B, 2, &mut buf, |_| { calls += 1; 0 }), 0);
+        assert_eq!(writev(&mut m, IOV_B, 0, &mut buf, |_| { calls += 1; 0 }), 0);
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn writev_cut_at_the_bounce_and_short_at_a_faulting_segment() {
+        let mut m = writer(b'A', 0x10_000, IOV_A);
+        let mut got = Vec::new();
+        let mut buf = [0u8; 7];
+        // 9 bytes into a 7-byte bounce: one write of the first 7.
+        assert_eq!(writev(&mut m, IOV_A, 3, &mut buf, |b| { got.push(b.to_vec()); b.len() as i64 }), 7);
+        assert_eq!(got, vec![b"A1-A2-A".to_vec()]);
+        // Segment 2 unmapped: what came before it, in one write.
+        m.iovs(IOV_A + 16, &[(0xbad_0000, 3)]);
+        got.clear();
+        let mut buf = [0u8; 64];
+        assert_eq!(writev(&mut m, IOV_A, 3, &mut buf, |b| { got.push(b.to_vec()); b.len() as i64 }), 3);
+        assert_eq!(got, vec![b"A1-".to_vec()]);
+        // Segment 1 unmapped: EFAULT, nothing written.
+        m.iovs(IOV_A, &[(0xbad_0000, 3)]);
+        got.clear();
+        assert_eq!(writev(&mut m, IOV_A, 3, &mut buf, |b| { got.push(b.to_vec()); 0 }), -le::EFAULT);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn readv_is_one_read_scattered_in_order() {
+        let mut m = Mem::default();
+        m.room(0x30_000, 2);
+        m.room(0x31_000, 0);
+        m.room(0x32_000, 5);
+        m.iovs(IOV_A, &[(0x30_000, 2), (0x31_000, 0), (0x32_000, 5)]);
+        let mut buf = [0u8; 4096];
+        let mut reads = Vec::new();
+        let r = readv(&mut m, IOV_A, 3, &mut buf, |b| {
+            reads.push(b.len());
+            b[..6].copy_from_slice(b"hello\n");
+            6
+        });
+        assert_eq!(r, 6);
+        assert_eq!(reads, vec![7], "one read, of the segments' total");
+        assert_eq!(m.get(0x30_000, 2), b"he");
+        assert_eq!(m.get(0x32_000, 5), b"llo\n\0");
+    }
+
+    #[test]
+    fn readv_checks_destinations_before_the_destructive_read() {
+        let mut m = Mem::default();
+        m.room(0x30_000, 4);
+        let mut buf = [0u8; 64];
+        let mut reads = 0;
+        // First destination unmapped: EFAULT, the read never happens.
+        m.iovs(IOV_A, &[(0xbad_0000, 4), (0x30_000, 4)]);
+        assert_eq!(readv(&mut m, IOV_A, 2, &mut buf, |_| { reads += 1; 4 }), -le::EFAULT);
+        assert_eq!(reads, 0);
+        // Second unmapped: the read is cut to the first (nothing consumed
+        // that could not be delivered).
+        m.iovs(IOV_A, &[(0x30_000, 4), (0xbad_0000, 4)]);
+        let r = readv(&mut m, IOV_A, 2, &mut buf, |b| {
+            reads += 1;
+            assert_eq!(b.len(), 4);
+            b.copy_from_slice(b"abcd");
+            4
+        });
+        assert_eq!((r, reads), (4, 1));
+        assert_eq!(m.get(0x30_000, 4), b"abcd");
+        // A read error passes through.
+        m.iovs(IOV_A, &[(0x30_000, 4)]);
+        assert_eq!(readv(&mut m, IOV_A, 1, &mut buf, |_| -le::EAGAIN), -le::EAGAIN);
+    }
+}
