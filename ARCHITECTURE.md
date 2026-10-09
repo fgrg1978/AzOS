@@ -474,8 +474,16 @@ fixed mount table. There are three implementations:
   back first; another writer drops only the sectors it wrote.
 - **Writes in place.** A writable open reads and writes the file in place
   through the block cache, as on Linux: no whole-file load on open, no
-  rewrite on close; the directory entry follows the data one epoch later.
-  `O_TRUNC` to zero clears the entry and holds the old chain.
+  rewrite on close. Under write-back the directory entry (size, first
+  cluster) is written ahead, into the epoch after the current one, with no
+  barrier: consecutive writes of a file share one epoch for their data and
+  chain, and the entry is one cache line rewritten in place that reaches
+  the device once, after them, at the write-back or the `fsync` that
+  closes both epochs. Readers find the entry through the cache, so they see
+  the new size at once; a plain write to a line held ahead joins its epoch.
+  A cut leaves the old entry or one naming a whole prefix. Write-through
+  orders each entry with a flush. `O_TRUNC` to zero clears the entry (also
+  written ahead) and holds the old chain.
   A write is not atomic. Atomic replace is a temp file, `fsync`, then
   `rename` over the live name: over an existing file `rename` is one
   journal record (a cut leaves the old file with the source still named,
@@ -492,8 +500,11 @@ fixed mount table. There are three implementations:
   one or the new one, whole. A cut before the free reaches the medium
   leaks the chain. `statfs` counts held chains as free; an allocation
   that finds the volume full while chains are held flushes once, frees
-  them and retries. A mount, an unmount or another writer of the medium
-  forgets the held chains (they leak). Write-through frees one epoch
+  them and retries. A hold that finds every slot taken
+  (`FS_DEFERRED_FREE_SLOTS`) closes the epochs and frees every held chain
+  into the next one, which the write-back writes after a flush. A mount, an
+  unmount or another writer of the medium forgets the held chains (they
+  leak). Write-through frees one epoch
   after the entry.
 - **Journal.** A one-sector journal is replayed at mount.
 - **Locks across device I/O.** No lock held across a device request turns

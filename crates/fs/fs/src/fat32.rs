@@ -1444,6 +1444,20 @@ pub fn fat32_cache_counters() -> crate::bcache::CacheStats {
     SECTOR_CACHE.lock().stats()
 }
 
+/// The FAT32 cache's current epoch (diagnostics, host tests: a barrier
+/// moves it by one).
+#[allow(dead_code)]
+pub fn fat32_cache_epoch() -> u64 {
+    SECTOR_CACHE.lock().epoch()
+}
+
+/// Distinct epochs among the FAT32 cache's dirty lines (diagnostics, host
+/// tests).
+#[allow(dead_code)]
+pub fn fat32_dirty_epochs() -> usize {
+    SECTOR_CACHE.lock().dirty_epochs()
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Offset of the boot-sector signature within sector 0. NOT part of
@@ -2171,9 +2185,26 @@ pub fn fat32_mounted() -> bool {
 /// fresh contents (write-through). Without invalidation a later
 /// read_sector() would return stale cached data even after a write.
 fn write_sector(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
+    write_sector_in(sector, buf, false)
+}
+
+/// [`write_sector`] into the epoch after the current one, with no barrier
+/// (`BlockCache::write_dirty_ahead`); write-back only — a write-through
+/// cache answers `Uncached` and the sector goes to the device now, which
+/// the caller must have ordered itself. For a directory entry that names
+/// data and a chain written in the current epoch (wave 15, FW).
+fn write_sector_ahead(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
+    write_sector_in(sector, buf, true)
+}
+
+fn write_sector_in(sector: u32, buf: &[u8; SECTOR_SIZE], ahead: bool) -> Result<(), ()> {
     if WB {
         loop {
-            let r = SECTOR_CACHE.lock().write_dirty(sector as u64, buf);
+            let r = if ahead {
+                SECTOR_CACHE.lock().write_dirty_ahead(sector as u64, buf)
+            } else {
+                SECTOR_CACHE.lock().write_dirty(sector as u64, buf)
+            };
             match r {
                 crate::bcache::Dirty::Done { first } => {
                     if first {
@@ -2521,7 +2552,9 @@ fn defer_free(first: u32, size: u32) -> Result<(), FsError> {
     }
     let bpc = FAT32.lock().bytes_per_clus.max(1);
     let clusters = size.div_ceil(bpc).max(1);
-    let epoch = SECTOR_CACHE.lock().epoch();
+    // The top epoch: the unlinking write may be an entry written ahead
+    // (`write_sector_ahead`), and the chain is held until it is durable.
+    let epoch = SECTOR_CACHE.lock().top_epoch();
     {
         let mut h = HELD.lock();
         if let Some(s) = h.iter_mut().find(|s| s.first == 0) {
@@ -2529,6 +2562,18 @@ fn defer_free(first: u32, size: u32) -> Result<(), FsError> {
             HELD_CLUSTERS.fetch_add(clusters, core::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
+    }
+    // Every slot is taken. Write-back (wave 15, FW): close the epochs
+    // (`barrier` returns the highest one closed) and free into the next
+    // one this chain AND every held one: each unlinking write is in a
+    // closed epoch, so the write-back puts a flush before the frees, as
+    // write-through's "free one epoch later". One barrier then serves
+    // `FS_DEFERRED_FREE_SLOTS` more holds, not one.
+    if wb_active() && !cfg!(feature = "fw-free-one-held-canary") {
+        let top = SECTOR_CACHE.lock().barrier();
+        fat32_free_chain(first);
+        release_held(top);
+        return Ok(());
     }
     match order_barrier() {
         Ok(()) | Err(FsError::Unsupported) => {}
@@ -2927,6 +2972,14 @@ fn fat32_find_dirent_location(name83: &[u8; 11]) -> Result<(u32, u16), ()> {
 fn fat32_update_dirent_clus_size(
     dir_sector: u32, dir_offset: u16, cluster: u32, size: u32,
 ) -> Result<(), ()> {
+    dirent_clus_size_in(dir_sector, dir_offset, cluster, size, false)
+}
+
+/// [`fat32_update_dirent_clus_size`], the sector written ahead
+/// (`write_sector_ahead`) when `ahead`.
+fn dirent_clus_size_in(
+    dir_sector: u32, dir_offset: u16, cluster: u32, size: u32, ahead: bool,
+) -> Result<(), ()> {
     let off = dir_offset as usize;
     if off + DIRENT_SIZE > SECTOR_SIZE { return Err(()); }
     let mut sec_buf = [0u8; SECTOR_SIZE];
@@ -2941,7 +2994,7 @@ fn fat32_update_dirent_clus_size(
     sec_buf[off + DIRENT_OFF_FILE_SIZE + 1] = ((size >> 8) & 0xFF) as u8;
     sec_buf[off + DIRENT_OFF_FILE_SIZE + 2] = ((size >> 16) & 0xFF) as u8;
     sec_buf[off + DIRENT_OFF_FILE_SIZE + 3] = ((size >> 24) & 0xFF) as u8;
-    write_sector(dir_sector, &sec_buf)
+    if ahead { write_sector_ahead(dir_sector, &sec_buf) } else { write_sector(dir_sector, &sec_buf) }
 }
 
 /// Allocate a fresh cluster chain and write `data` into it, extending one
@@ -3288,12 +3341,10 @@ fn device_flush() -> Result<(), FsError> {
         // after this point is not this flush's to make durable, and cannot
         // keep it running), write back through it, then flush the device.
         let claim = wb_claim();
-        let upto = {
-            let mut c = SECTOR_CACHE.lock();
-            let e = c.epoch();
-            c.barrier();
-            e
-        };
+        // `barrier` returns the highest epoch it closed: the one a
+        // directory entry was written ahead into (`write_sector_ahead`)
+        // when there is one, so this flush makes it durable too.
+        let upto = SECTOR_CACHE.lock().barrier();
         if !cfg!(feature = "wb-flush-no-writeback-canary") {
             wb_write_back(&claim, upto)?;
         }
@@ -4013,6 +4064,18 @@ fn dir_update_meta(
     first_cluster: u32,
     size: u32,
 ) -> Result<(), FsError> {
+    dir_update_meta_in(dir_sector, dir_offset, first_cluster, size, false)
+}
+
+/// [`dir_update_meta`] with the sector written ahead (`write_sector_ahead`)
+/// when `ahead`.
+fn dir_update_meta_in(
+    dir_sector: u32,
+    dir_offset: u16,
+    first_cluster: u32,
+    size: u32,
+    ahead: bool,
+) -> Result<(), FsError> {
     let mut buf = [0u8; SECTOR_SIZE];
     read_sector(dir_sector, &mut buf).map_err(|()| FsError::Io)?;
     let off = dir_offset as usize;
@@ -4024,7 +4087,8 @@ fn dir_update_meta(
         .copy_from_slice(&lo.to_le_bytes());
     buf[off + DIRENT_OFF_FILE_SIZE..off + DIRENT_OFF_FILE_SIZE + 4]
         .copy_from_slice(&size.to_le_bytes());
-    write_sector(dir_sector, &buf).map_err(|()| FsError::Io)?;
+    if ahead { write_sector_ahead(dir_sector, &buf) } else { write_sector(dir_sector, &buf) }
+        .map_err(|()| FsError::Io)?;
     Ok(())
 }
 
@@ -4082,7 +4146,12 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
                 }
                 return Err(FsError::Io);
             }
-            fat32_write_fat_entry(fresh, FAT32_END_OF_CHAIN).map_err(|()| FsError::Io)?;
+            // `fresh` is already end-of-chain in every copy: the allocator
+            // marked it so under its sector's claim (wave 15, FW: this
+            // rewrote it, a FAT read-modify-write per copy per cluster).
+            if cfg!(feature = "fw-chain-walk-canary") {
+                fat32_write_fat_entry(fresh, FAT32_END_OF_CHAIN).map_err(|()| FsError::Io)?;
+            }
             cur = fresh;
         } else {
             cur = next;
@@ -4433,11 +4502,22 @@ fn write_loop(
     spc: u32,
     data_start: u32,
 ) -> Result<(), FsError> {
+    // Wave 15 (FW): the last (index, cluster) reached. The next sector is in
+    // that cluster or the one after it, one FAT step away, so a write of n
+    // clusters reads O(n) FAT entries, not the O(n^2) of a walk from the
+    // first cluster per sector.
+    let mut cursor: Option<(u32, u32)> = None;
     while *written < buf.len() {
         let written_now = *written;
         let cluster_index = e.pos / bytes_per_clus;
         let offset_in_cluster = (e.pos % bytes_per_clus) as usize;
-        let cluster = chain_nth_or_extend(e.first_cluster, cluster_index)?;
+        let cluster = match cursor {
+            Some((i, c)) if i == cluster_index && !cfg!(feature = "fw-chain-walk-canary") => c,
+            Some((i, c)) if i + 1 == cluster_index && !cfg!(feature = "fw-chain-walk-canary") =>
+                chain_nth_or_extend(c, 1)?,
+            _ => chain_nth_or_extend(e.first_cluster, cluster_index)?,
+        };
+        cursor = Some((cluster_index, cluster));
         let first_sector = cluster_first_sector(data_start, cluster, spc)
             .ok_or(FsError::Io)?;
 
@@ -4559,14 +4639,24 @@ pub fn fat32_close(file: Fat32File) -> Result<(), FsError> {
 }
 
 /// Release a handle WITHOUT making it durable (wave 15): a dirty handle's
-/// directory entry (size, first cluster) is written after an ordering
-/// barrier — the data and the chain are in an earlier epoch, so a cut never
-/// leaves an entry over bytes the device does not have — and nothing is
-/// flushed. The VFS's in-place writes use it; `fat32_close` (= fsync) stays
-/// the durable close of this API.
+/// directory entry (size, first cluster) goes in a later epoch than the
+/// data and the chain it names — a cut never leaves an entry over bytes the
+/// device does not have — and nothing is flushed. The VFS's in-place writes
+/// use it; `fat32_close` (= fsync) stays the durable close of this API.
+///
+/// Write-back (wave 15, FW): the entry is written AHEAD, into the epoch
+/// after the current one, with no barrier. Consecutive writes of one file
+/// then share one epoch for their data and chain, the entry is one cache
+/// line rewritten in place, and it reaches the device once, after them,
+/// at the write-back or the fsync that closes both epochs. Every reader
+/// looks the entry up through the cache, so it sees the new size at once.
+/// Write-through: an ordering barrier (a device flush), then the entry.
 pub fn fat32_release(file: Fat32File) -> Result<(), FsError> {
     let snapshot = snapshot_handle(file)?;
-    let r = if snapshot.dirty {
+    let r = if snapshot.dirty && wb_active() && !cfg!(feature = "fw-entry-per-write-canary") {
+        dir_update_meta_in(snapshot.dir_sector, snapshot.dir_offset,
+            snapshot.first_cluster, snapshot.size, true)
+    } else if snapshot.dirty {
         match order_barrier() {
             Ok(()) | Err(FsError::Unsupported) => dir_update_meta(
                 snapshot.dir_sector, snapshot.dir_offset, snapshot.first_cluster, snapshot.size),
@@ -4998,19 +5088,25 @@ impl crate::vfs::FileSystem for Fat32Fs {
         let name83: [u8; 11] = key.bytes[..11].try_into().map_err(|_| ())?;
         let mut path_buf = [0u8; 13];
         let n = name83_to_path(&name83, &mut path_buf);
+        let t0 = crate::census::now();
         let file = fat32_open(
             Volume { _private: () },
             &path_buf[..n],
             open_flags::WRITE | open_flags::CREATE,
         ).map_err(|_| ())?;
+        let t1 = crate::census::now();
+        crate::census::add(crate::census::W_LOOKUP, t0, t1);
         let result = match fat32_seek(file, SeekFrom::Start(offset)) {
             Ok(_)  => fat32_write(file, src).map_err(|_| ()),
             Err(_) => Err(()),
         };
+        let t2 = crate::census::now();
+        crate::census::add(crate::census::W_DATA, t1, t2);
         // The directory entry follows the data and the FAT chain in a later
         // epoch (`fat32_release`); no flush — `fsync` is the durability
         // point (`FileSystem::fsync`, `fat32_sync_checked`).
         let released = fat32_release(file);
+        crate::census::add(crate::census::W_ENTRY, t2, crate::census::now());
         match (result, released) {
             (Ok(n), Ok(())) => Ok(n),
             _ => Err(()),
@@ -5044,43 +5140,59 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// that is a second journaled path to keep correct, and a FAT32 file is
     /// already held whole in memory by the proxy that opens it.)
     fn truncate(&self, key: &crate::vfs::InodeKey, len: u64) -> Result<(), crate::vfs::FsErr> {
-        use crate::vfs::FsErr;
-        let name83: [u8; 11] = key.bytes[..11].try_into().map_err(|_| FsErr::Invalid)?;
-        let e = fat32_lookup_root_entry(&name83).map_err(|()| FsErr::NotFound)?;
-        if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
-        if len == e.size as u64 { return Ok(()); }
-        if len == 0 && !cfg!(feature = "fat-proxy-writes-canary") {
-            // Wave 15, the `O_TRUNC` of an in-place write: the entry first
-            // (no chain, size 0), then the old chain freed, never in the
-            // same epoch. Write-back holds it (`defer_free`) until the
-            // flush that makes this entry durable, so the new data and
-            // chain share the entry's epoch and an fsync is two flushes;
-            // write-through frees one epoch later. A cut leaves the old
-            // file or an empty one; at worst the old chain leaks, it is
-            // never named by a live entry while free. No journal record,
-            // no whole-file rewrite.
-            let (sector, off) = fat32_find_dirent_location(&name83).map_err(|()| FsErr::Io)?;
-            fat32_update_dirent_clus_size(sector, off, 0, 0).map_err(|()| FsErr::Io)?;
-            if e.cluster >= FAT32_FIRST_DATA_CLUSTER {
-                if defer_frees() {
-                    defer_free(e.cluster, e.size).map_err(fs_err)?;
-                } else {
-                    order_barrier().or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) })
-                        .map_err(fs_err)?;
-                    fat32_free_chain(e.cluster);
+        let t0 = crate::census::now();
+        let r = (|| -> Result<(), crate::vfs::FsErr> {
+            use crate::vfs::FsErr;
+            let name83: [u8; 11] = key.bytes[..11].try_into().map_err(|_| FsErr::Invalid)?;
+            let e = fat32_lookup_root_entry(&name83).map_err(|()| FsErr::NotFound)?;
+            if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
+            if len == e.size as u64 { return Ok(()); }
+            if len == 0 && !cfg!(feature = "fat-proxy-writes-canary") {
+                // Wave 15, the `O_TRUNC` of an in-place write: the entry first
+                // (no chain, size 0), then the old chain freed, never in the
+                // same epoch. Write-back holds it (`defer_free`) until the
+                // flush that makes this entry durable, so the new data and
+                // chain share the entry's epoch and an fsync is two flushes;
+                // write-through frees one epoch later. A cut leaves the old
+                // file or an empty one; at worst the old chain leaks, it is
+                // never named by a live entry while free. No journal record,
+                // no whole-file rewrite.
+                //
+                // Wave 15 (FW): with the old chain held, the cleared entry is
+                // written AHEAD (`write_sector_ahead`), like the entry an
+                // in-place write leaves: nothing in the current epoch depends
+                // on it (the held chain cannot be reallocated), so a truncate
+                // and the writes after it share the current epoch for their
+                // data and one later epoch for the entry. The held chain is
+                // stamped with that later epoch (`defer_free`). A chain freed
+                // at once (write-through, `FS_DEFERRED_FREE` off) keeps the
+                // entry in the current epoch, ordered before the free.
+                let (sector, off) = fat32_find_dirent_location(&name83).map_err(|()| FsErr::Io)?;
+                let ahead = defer_frees() && !cfg!(feature = "fw-entry-per-write-canary");
+                dirent_clus_size_in(sector, off, 0, 0, ahead).map_err(|()| FsErr::Io)?;
+                if e.cluster >= FAT32_FIRST_DATA_CLUSTER {
+                    if defer_frees() {
+                        defer_free(e.cluster, e.size).map_err(fs_err)?;
+                    } else {
+                        order_barrier().or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) })
+                            .map_err(fs_err)?;
+                        fat32_free_chain(e.cluster);
+                    }
                 }
+                return Ok(());
             }
-            return Ok(());
-        }
-        let len = u32::try_from(len).map_err(|_| FsErr::NoSpace)? as usize;
-        let mut buf = alloc::vec::Vec::new();
-        buf.try_reserve_exact(len).map_err(|_| FsErr::NoSpace)?;
-        buf.resize(len, 0u8);
-        let keep = len.min(e.size as usize);
-        if keep > 0 && fat32_read_chain(e.cluster, &mut buf[..keep]) != keep {
-            return Err(FsErr::Io);
-        }
-        fat32_write_file_queued(&name83, &buf).map_err(|()| FsErr::Io)
+            let len = u32::try_from(len).map_err(|_| FsErr::NoSpace)? as usize;
+            let mut buf = alloc::vec::Vec::new();
+            buf.try_reserve_exact(len).map_err(|_| FsErr::NoSpace)?;
+            buf.resize(len, 0u8);
+            let keep = len.min(e.size as usize);
+            if keep > 0 && fat32_read_chain(e.cluster, &mut buf[..keep]) != keep {
+                return Err(FsErr::Io);
+            }
+            fat32_write_file_queued(&name83, &buf).map_err(|()| FsErr::Io)
+        })();
+        crate::census::add(crate::census::TRUNC, t0, crate::census::now());
+        r
     }
 
     /// An empty root-directory subdirectory: its dirent is removed first

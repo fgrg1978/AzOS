@@ -2259,6 +2259,17 @@ fn vfs_read_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *mut u8
 /// Write to a file descriptor.
 /// Returns bytes written on success, -1 on error.
 pub fn vfs_write<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *const u8, count: usize) -> i32 {
+    if !cfg!(feature = "file-census") || !census_backend_fd(table, fd) {
+        return vfs_write_inner(table, fd, buf, count);
+    }
+    let t0 = crate::census::now();
+    let r = vfs_write_inner(table, fd, buf, count);
+    crate::census::add(crate::census::WRITE, t0, crate::census::now());
+    crate::census::write_done();
+    r
+}
+
+fn vfs_write_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *const u8, count: usize) -> i32 {
     if fd < 0 || fd as usize >= N { return -1; }
     // Masked after the check (Spectre v1, `azos_limits::nospec`).
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, N) as i32;

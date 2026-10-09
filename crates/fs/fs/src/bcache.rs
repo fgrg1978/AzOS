@@ -238,6 +238,10 @@ pub struct BlockCache<const BYTES: usize, const LINES: usize> {
     mode: Mode,
     clock: u64,
     epoch: u64,
+    /// The highest epoch a [`write_dirty_ahead`](Self::write_dirty_ahead)
+    /// put a line in (`epoch + 1` at most); [`barrier`](Self::barrier)
+    /// closes it together with `epoch`.
+    ahead: u64,
     /// Bumped by every write and invalidation; see `lookup_miss_token`.
     wseq: u64,
     /// Lowest epoch among lines written to the device since the last flush,
@@ -272,6 +276,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             mode,
             clock: 1,
             epoch: 0,
+            ahead: 0,
             wseq: 0,
             pending_lo: None,
             ndirty: 0,
@@ -299,6 +304,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             mode: Mode::WriteThrough,
             clock: 0,
             epoch: 0,
+            ahead: 0,
             wseq: 0,
             pending_lo: None,
             ndirty: 0,
@@ -365,6 +371,9 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     pub fn stats(&self) -> CacheStats { self.stats }
     pub fn reset_stats(&mut self) { self.stats = CacheStats::default(); }
     pub fn epoch(&self) -> u64 { self.epoch }
+    /// The highest epoch a dirty line may be in now: the current one, or
+    /// the one after it when a line was written ahead into it.
+    pub fn top_epoch(&self) -> u64 { self.epoch.max(self.ahead) }
 
     /// Dirty lines. O(1): a counter every transition keeps exact.
     pub fn dirty_count(&self) -> usize {
@@ -386,6 +395,17 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         }
         let g = self.gen;
         self.tags[..self.lines].iter().filter(|t| t.gen == g && t.dirty).map(|t| t.epoch).min()
+    }
+
+    /// Distinct epochs among the dirty lines (diagnostics and host tests:
+    /// how many ordered groups a write-back of everything would write).
+    /// O(lines^2) at worst; never on a hot path.
+    pub fn dirty_epochs(&self) -> usize {
+        let g = self.gen;
+        let live = || self.tags[..self.lines].iter().filter(move |t| t.gen == g && t.dirty);
+        live().enumerate()
+            .filter(|&(i, t)| !live().take(i).any(|u| u.epoch == t.epoch))
+            .count()
     }
 
     fn sectors(&self) -> u32 { (self.block / SECTOR_BYTES) as u32 }
@@ -699,8 +719,13 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// Callers never pass a live dirty victim (it is written back, or
     /// refused, first).
     fn fill(&mut self, i: usize, block: u64, src: &[u8], dirty: bool) {
+        self.fill_at(i, block, src, dirty, self.epoch);
+    }
+
+    /// [`fill`](Self::fill) into `epoch` (the current one, or the one after
+    /// it for an ahead write).
+    fn fill_at(&mut self, i: usize, block: u64, src: &[u8], dirty: bool, epoch: u64) {
         self.line_mut(i).copy_from_slice(src);
-        let epoch = self.epoch;
         let dseq = if dirty { self.next_dseq() } else { 0 };
         self.tags[i] = Tag { block, epoch, last_use: 0, gen: self.gen, dirty, dseq, shadow: false, away: false };
         if dirty { self.ndirty += 1; }
@@ -787,6 +812,11 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             return Ok(());
         }
         if let Some(i) = self.find(block) {
+            // A line written ahead (`write_dirty_ahead`): this write joins
+            // its epoch, which closes the current one first.
+            if self.tags[i].dirty && self.tags[i].epoch > self.epoch {
+                self.epoch = self.tags[i].epoch;
+            }
             // Re-dirtying a line that belongs to an older, still-unwritten
             // epoch: write the old contents first, so the older epoch is
             // complete on the device before this block moves forward.
@@ -822,13 +852,44 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     ///
     /// [`update_if_present`]: Self::update_if_present
     pub fn write_dirty(&mut self, block: u64, src: &[u8]) -> Dirty {
+        self.write_dirty_in(block, src, false)
+    }
+
+    /// [`write_dirty`](Self::write_dirty) into the epoch AFTER the current
+    /// one, without closing the current one (wave 15, FW): the block reaches
+    /// the device after every block of the current epoch, including those
+    /// written after this call, until the next [`barrier`](Self::barrier),
+    /// which closes both. FAT32 puts a file's directory entry here: the
+    /// writes of one open file then share one epoch for their data and
+    /// chain, and the entry naming them is one line, rewritten in place and
+    /// written once.
+    ///
+    /// The epoch rule still holds when a write-back takes this line before
+    /// the current epoch is closed (`NeedWriteback` of it, another reader of
+    /// the medium): the current epoch's lines written so far go first, a
+    /// flush follows (`pending_lo`), and a current-epoch line dirtied later
+    /// is written in a later pass; the entry depends only on lines dirtied
+    /// before it. A plain write of a line held ahead joins that epoch.
+    pub fn write_dirty_ahead(&mut self, block: u64, src: &[u8]) -> Dirty {
+        self.write_dirty_in(block, src, true)
+    }
+
+    fn write_dirty_in(&mut self, block: u64, src: &[u8], ahead: bool) -> Dirty {
         if src.len() != self.block || self.lines == 0 || self.mode == Mode::WriteThrough {
             return Dirty::Uncached;
         }
         let first = self.ndirty == 0;
+        let mut te = if ahead { self.epoch.saturating_add(1) } else { self.epoch };
         if let Some(i) = self.find(block) {
             let t = self.tags[i];
-            if t.dirty && t.epoch < self.epoch && !cfg!(feature = "wb-epoch-merge-canary") {
+            if t.dirty && t.epoch > te {
+                // Held ahead: a plain write joins its epoch (the current one
+                // closes); an ahead write already targets it.
+                te = t.epoch;
+                if !ahead { self.epoch = te; }
+            }
+            if ahead { self.ahead = self.ahead.max(te); }
+            if t.dirty && t.epoch < te && !cfg!(feature = "wb-epoch-merge-canary") {
                 // Keep the older epoch's contents as a shadow for write-back
                 // and put the new contents in another line of the set — no
                 // I/O. Without a clean or empty line to take, write back.
@@ -839,7 +900,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
                 if v != i && !(self.live(v) && self.tags[v].dirty) {
                     self.wseq = self.wseq.wrapping_add(1);
                     self.tags[i].shadow = true;
-                    self.fill(v, block, src, true);
+                    self.fill_at(v, block, src, true, te);
                     return Dirty::Done { first };
                 }
                 // The set is all dirty (often: versions of this very block,
@@ -855,7 +916,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
                 self.naway += 1;
                 self.ndirty += 1;
                 self.line_mut(i).copy_from_slice(src);
-                self.tags[i].epoch = self.epoch;
+                self.tags[i].epoch = te;
                 self.tags[i].dseq = self.next_dseq();
                 self.touch(i);
                 return Dirty::Done { first };
@@ -864,7 +925,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             self.line_mut(i).copy_from_slice(src);
             if !t.dirty { self.ndirty += 1; }
             self.tags[i].dirty = true;
-            self.tags[i].epoch = self.epoch;
+            self.tags[i].epoch = te;
             self.tags[i].dseq = self.next_dseq();
             self.touch(i);
             return Dirty::Done { first };
@@ -873,8 +934,9 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         if self.live(v) && self.tags[v].dirty {
             return Dirty::NeedWriteback(self.tags[v].epoch);
         }
+        if ahead { self.ahead = self.ahead.max(te); }
         self.wseq = self.wseq.wrapping_add(1);
-        self.fill(v, block, src, true);
+        self.fill_at(v, block, src, true, te);
         Dirty::Done { first }
     }
 
@@ -982,10 +1044,14 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         self.stats.ordering_flushes = self.stats.ordering_flushes.saturating_add(1);
     }
 
-    /// Close the current epoch: every write after this is ordered after
-    /// every write before it.
-    pub fn barrier(&mut self) {
-        self.epoch = self.epoch.saturating_add(1);
+    /// Close the current epoch, and the one after it if a line was written
+    /// ahead into it: every write after this is ordered after every write
+    /// before it. Returns the highest epoch closed (what a write-back must
+    /// reach to make everything before the barrier durable).
+    pub fn barrier(&mut self) -> u64 {
+        let top = self.epoch.max(self.ahead);
+        self.epoch = top.saturating_add(1);
+        top
     }
 
     /// Write every dirty line, oldest epoch first, without the final flush.

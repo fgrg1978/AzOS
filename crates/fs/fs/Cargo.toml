@@ -64,6 +64,15 @@ wb-flush-no-writeback-canary = []
 wb-no-shadow-canary = []
 wb-barrier-flushes-canary = []
 wb-close-flushes-canary = []
+# Wave 15 (FW) canary: every in-place write closes an epoch for its own
+# directory-entry update again (N writes, N+1 epochs).
+fw-entry-per-write-canary = []
+# Wave 15 (FW) canary: a hold that finds every slot taken frees only its own
+# chain after a barrier (one barrier per truncate past the slots).
+fw-free-one-held-canary = []
+# Wave 15 (FW) canary: an in-place write walks its chain from the first
+# cluster for every sector again, and rewrites each new cluster's EOC.
+fw-chain-walk-canary = []
 # Wave 15 canary: a rename over a file is journaled as a plain OVERWRITE
 # record (the source dirent is not part of it): a cut can leave both names.
 rename-two-records-canary = []

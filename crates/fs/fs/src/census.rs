@@ -15,6 +15,12 @@
 //! `inode` (inode slot) and `fd` (descriptor). Counters (per open): FAT32
 //! sector-cache hits and misses and device read requests.
 //!
+//! Writes (wave 15, FW), a second line every [`EVERY`] backend writes:
+//! `write` (all of `vfs_write` on a backend inode), inside FAT32's
+//! `write_at` `lookup` (the name to a handle), `data` (seek, chain and
+//! sectors) and `entry` (the directory-entry update); and `trunc` (FAT32's
+//! `truncate`, inside an `O_TRUNC` open).
+//!
 //! Without the feature every function here is an empty inline function.
 
 pub const OPEN: usize = 0;
@@ -28,9 +34,16 @@ pub const KEY: usize = 7;
 pub const INODE: usize = 8;
 pub const FD: usize = 9;
 pub const DEV_READS: usize = 10;
-pub const SLOTS: usize = 11;
+pub const WRITE: usize = 11;
+pub const TRUNC: usize = 12;
+pub const W_LOOKUP: usize = 13;
+pub const W_DATA: usize = 14;
+pub const W_ENTRY: usize = 15;
+pub const SLOTS: usize = 16;
 pub const TIMED: usize = 10;
-pub const EVERY: u64 = 100;
+/// Operations per printed line: the `disk` lanes' 40 iterations each fill
+/// two lines, so one at least is all lane.
+pub const EVERY: u64 = 20;
 
 #[cfg(feature = "file-census")]
 mod imp {
@@ -72,9 +85,22 @@ mod imp {
             dh / e, (dh % e) * 100 / e, dm / e, (dm % e) * 100 / e, dev / e, (dev % e) * 100 / e,
         );
     }
+    pub static NW: AtomicU64 = AtomicU64::new(0);
+    /// One backend write finished: every [`EVERY`](super::EVERY), print
+    /// the write phases' averages since the last line.
+    pub fn write_done() {
+        let n = NW.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % super::EVERY != 0 { return; }
+        let f = azos_drv_sys::timebase::TIMER_FREQ;
+        let avg = |i: usize| ACC[i].swap(0, Ordering::Relaxed).saturating_mul(1_000_000_000 / f) / super::EVERY;
+        azos_drv_sys::kprintln!(
+            "[FILE-CENSUS-W] writes={} avg_ns write={} lookup={} data={} entry={} trunc={}",
+            n, avg(super::WRITE), avg(super::W_LOOKUP), avg(super::W_DATA), avg(super::W_ENTRY), avg(super::TRUNC),
+        );
+    }
 }
 #[cfg(feature = "file-census")]
-pub use imp::{add, count, now, open_done};
+pub use imp::{add, count, now, open_done, write_done};
 
 #[cfg(not(feature = "file-census"))]
 #[inline(always)]
@@ -88,3 +114,6 @@ pub fn count(_: usize) {}
 #[cfg(not(feature = "file-census"))]
 #[inline(always)]
 pub fn open_done() {}
+#[cfg(not(feature = "file-census"))]
+#[inline(always)]
+pub fn write_done() {}

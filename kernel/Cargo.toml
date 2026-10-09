@@ -889,6 +889,12 @@ spawn-log = ["azos_syscall/spawn-log", "azos_sched/spawn-log"]
 # Wave 14 vsbench diagnostic: per-phase cost of a backend file open/read/close
 # (crates/fs/fs/src/census.rs). Never in a shipped build.
 file-census = ["azos_fs/file-census"]
+# Wave 15 (FW) canaries, for a before/after vsbench `disk` run: an in-place
+# write closes an epoch for its own entry again; a full hold table frees one
+# chain per barrier again.
+fw-entry-per-write-canary = ["azos_fs/fw-entry-per-write-canary"]
+fw-free-one-held-canary = ["azos_fs/fw-free-one-held-canary"]
+fw-chain-walk-canary = ["azos_fs/fw-chain-walk-canary"]
 # The worst-case wake-up latency rows (cyclictest/timerlat shape): a priority-1
 # kernel task wakes on an absolute 1 ms period while kernel tasks spam the
 # console and read the disk, and reports max/p99 against a per-ISA bound.

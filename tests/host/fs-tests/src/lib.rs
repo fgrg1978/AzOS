@@ -3197,6 +3197,206 @@ mod power_cut {
         assert_eq!(free1, free0, "every chain the rewrites took away is free again");
     }
 
+    /// Open `/fat/REC.DAT` with `O_TRUNC` and write `data` in `n` `write`
+    /// calls, then fsync and close. Returns the cache epochs the writes
+    /// opened, the distinct epochs among the dirty lines before the fsync,
+    /// and the device flushes of the fsync (0 unless `count`:
+    /// `cut_everywhere` needs the log left alone).
+    fn n_writes_then_fsync(data: &[u8], n: usize, count: bool) -> (u64, usize, usize) {
+        super::vfs_open_close::vfs_once();
+        let mut t = super::vfs::ScratchFds::new();
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/REC.DAT", super::vfs::O_WRONLY | super::vfs::O_TRUNC);
+        assert!(fd >= 0);
+        let e0 = fat32::fat32_cache_epoch();
+        let step = data.len().div_ceil(n);
+        for c in data.chunks(step) {
+            assert_eq!(super::vfs::vfs_write(&mut t, fd, c.as_ptr(), c.len()), c.len() as i32);
+        }
+        let opened = fat32::fat32_cache_epoch() - e0;
+        let dirty = fat32::fat32_dirty_epochs();
+        if count { let _ = disk_take_log(); }
+        assert_eq!(super::vfs::vfs_fsync(&mut t, fd), Ok(()));
+        let fsync = if count { disk_take_log().iter().filter(|e| **e == LogEntry::Flush).count() } else { 0 };
+        assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+        (opened, dirty, fsync)
+    }
+
+    /// **Wave 15 (FW): consecutive writes to one open file share one
+    /// epoch.** Eight `write` calls open no epoch; the dirty lines before
+    /// the fsync are two epochs (the data, the chain and the truncating
+    /// entry; then the entry naming the new size, written once), and the
+    /// fsync is two device flushes, as for one write. Before FW every write
+    /// closed an epoch for its own entry update: 8, 9 and 9.
+    #[test]
+    fn eight_writes_share_one_epoch_and_one_entry_update() {
+        let _g = serial();
+        let n = name(b"REC", b"DAT");
+        let old = pattern(OLD, 0x11);
+        let new = pattern(800, 0x77);
+        remount(with_file(&n, &old));
+        let (opened, dirty, fsync) = n_writes_then_fsync(&new, 8, true);
+        println!("8 writes: {opened} epochs opened, {dirty} dirty epochs, {fsync} fsync flushes");
+        assert_eq!((opened, dirty, fsync), (0, 2, 2), "(epochs opened, dirty epochs, fsync flushes)");
+        assert_eq!(read_back(b"/REC.DAT").as_deref(), Some(&new[..]));
+    }
+
+    /// **Eight writes, cut anywhere: the old file or a prefix of the new
+    /// one the entry names whole** — never an entry over clusters the
+    /// device does not have (`one_of` checks the chain against the size).
+    #[test]
+    fn eight_writes_cut_anywhere_leave_old_empty_or_new() {
+        let _g = serial();
+        let n = name(b"REC", b"DAT");
+        let old = pattern(OLD, 0x11);
+        let new = pattern(800, 0x77);
+        let f = cut_everywhere(with_file(&n, &old),
+            || { let _ = n_writes_then_fsync(&new, 8, false); },
+            |img| {
+                // A write is not atomic: any prefix the entry names whole is
+                // legal (since FW only the empty file or the whole one occur).
+                let prefixes: Vec<Vec<u8>> = (0..=8).map(|k| new[..k * 100].to_vec()).collect();
+                let mut legal: Vec<Option<&[u8]>> = vec![Some(&old[..])];
+                legal.extend(prefixes.iter().map(|p| Some(&p[..])));
+                one_of(&n, b"/REC.DAT", img, &legal)
+            });
+        println!("eight writes: {f} flushes");
+    }
+
+    /// **Eight appends to a new file without fsync, cut anywhere** (the
+    /// write-back writes them): nothing, or a prefix the entry names whole
+    /// — never an entry over clusters the device does not have.
+    #[test]
+    fn eight_appends_to_a_new_file_cut_anywhere_leave_nothing_empty_or_all() {
+        let _g = serial();
+        let n = name(b"NEW", b"DAT");
+        let new = pattern(800, 0x5A);
+        let mut pristine = fresh_image();
+        {
+            remount(pristine.clone());
+            pristine = disk_durable_image();
+        }
+        let f = cut_everywhere(pristine,
+            || {
+                super::vfs_open_close::vfs_once();
+                let mut t = super::vfs::ScratchFds::new();
+                let fd = super::vfs::vfs_open(&mut t, b"/fat/NEW.DAT",
+                    super::vfs::O_WRONLY | super::vfs::O_CREAT);
+                assert!(fd >= 0);
+                for c in new.chunks(100) {
+                    assert_eq!(super::vfs::vfs_write(&mut t, fd, c.as_ptr(), c.len()), c.len() as i32);
+                }
+                assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+            },
+            |img| {
+                let prefixes: Vec<Vec<u8>> = (0..=8).map(|k| new[..k * 100].to_vec()).collect();
+                let mut legal: Vec<Option<&[u8]>> = vec![None];
+                legal.extend(prefixes.iter().map(|p| Some(&p[..])));
+                one_of(&n, b"/NEW.DAT", img, &legal)
+            });
+        println!("eight appends: {f} flushes");
+    }
+
+    /// The vsbench `file-write 4K` lane on the host: `iters` times create
+    /// or truncate, write 4 KiB, close, no fsync; then the write-back.
+    /// Returns (epochs opened, device writes, device flushes) of the whole
+    /// run, the write-back included.
+    fn lane_file_write(iters: usize) -> (u64, usize, usize) {
+        super::vfs_open_close::vfs_once();
+        let data = [0xA5u8; 4096];
+        let _ = disk_take_log();
+        let e0 = fat32::fat32_cache_epoch();
+        for _ in 0..iters {
+            let mut t = super::vfs::ScratchFds::new();
+            let fd = super::vfs::vfs_open(&mut t, b"/fat/VSBW.DAT",
+                super::vfs::O_WRONLY | super::vfs::O_CREAT | super::vfs::O_TRUNC);
+            assert!(fd >= 0);
+            assert_eq!(super::vfs::vfs_write(&mut t, fd, data.as_ptr(), data.len()), 4096);
+            assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+        }
+        let opened = fat32::fat32_cache_epoch() - e0;
+        for _ in 0..4 {
+            if fat32::fat32_writeback_dirty().0 == 0 { break; }
+            assert_eq!(fat32::fat32_writeback_now(), Ok(()));
+        }
+        let log = disk_take_log();
+        let flushes = log.iter().filter(|e| **e == LogEntry::Flush).count();
+        (opened, log.len() - flushes, flushes)
+    }
+
+    /// **The lane's I/O shape** (`--nocapture` prints it): 40 iterations on
+    /// the 256-sector test volume (512-byte clusters: 8 per iteration).
+    /// Before FW: 71 epochs opened, 444 device writes, 73 flushes (a
+    /// barrier per write for its entry, and one per truncate once the
+    /// `FS_DEFERRED_FREE_SLOTS` holds were taken). Now the truncate's entry
+    /// and the write's go ahead, and a full hold table is emptied by one
+    /// barrier: two epochs per `FS_DEFERRED_FREE_SLOTS + 1` iterations.
+    #[test]
+    fn the_file_write_lane_io_shape() {
+        let _g = serial();
+        remount(fresh_image());
+        let (opened, writes, flushes) = lane_file_write(40);
+        println!("file-write lane x40: {opened} epochs opened, {writes} device writes, {flushes} flushes");
+        let bound = 2 * 40u64.div_ceil(azos_limits::FS_DEFERRED_FREE_SLOTS as u64 + 1);
+        assert!(opened <= bound, "{opened} epochs opened for 40 rewrites, bound {bound}");
+        assert!(flushes as u64 <= bound + 3, "{flushes} flushes for 40 rewrites");
+    }
+
+    /// **A write of n clusters reads the chain once** (wave 15, FW): one
+    /// 8 KiB `write` to a new file (16 clusters of 512 B) looks up O(n)
+    /// sectors in the cache: 80. Walking the chain from its first cluster
+    /// for every sector (16 * 15 / 2 = 120 FAT reads), and rewriting each
+    /// new cluster's end-of-chain mark, made it 200. Canary:
+    /// `fw-chain-walk-canary`.
+    #[test]
+    fn a_write_of_n_clusters_reads_the_chain_once() {
+        let _g = serial();
+        remount(fresh_image());
+        super::vfs_open_close::vfs_once();
+        let data = pattern(16 * 512, 0x21);
+        let mut t = super::vfs::ScratchFds::new();
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/BIG.DAT", super::vfs::O_WRONLY | super::vfs::O_CREAT);
+        assert!(fd >= 0);
+        let c0 = fat32::fat32_cache_counters();
+        assert_eq!(super::vfs::vfs_write(&mut t, fd, data.as_ptr(), data.len()), data.len() as i32);
+        let c1 = fat32::fat32_cache_counters();
+        assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+        let lookups = (c1.hits + c1.misses) - (c0.hits + c0.misses);
+        println!("16-cluster write: {lookups} cache lookups");
+        assert!(lookups <= 100, "{lookups} cache lookups for a 16-cluster write");
+        assert_eq!(read_back(b"/BIG.DAT").as_deref(), Some(&data[..]));
+    }
+
+    /// **The lane's loop, cut anywhere**: twelve truncate + write + close
+    /// of one file, no fsync, past the hold table (8 slots), then the
+    /// write-back. A cut leaves the old file, an empty one, or one of the
+    /// versions written, whole — never an entry over a chain that was
+    /// freed or not written.
+    #[test]
+    fn a_truncate_rewrite_loop_cut_anywhere_leaves_a_whole_version() {
+        let _g = serial();
+        let n = name(b"REC", b"DAT");
+        let old = pattern(OLD, 0x11);
+        let versions: Vec<Vec<u8>> = (0..12u8).map(|i| pattern(400, 0x40 + i)).collect();
+        let f = cut_everywhere(with_file(&n, &old),
+            || {
+                super::vfs_open_close::vfs_once();
+                for v in &versions {
+                    let mut t = super::vfs::ScratchFds::new();
+                    let fd = super::vfs::vfs_open(&mut t, b"/fat/REC.DAT",
+                        super::vfs::O_WRONLY | super::vfs::O_TRUNC);
+                    assert!(fd >= 0);
+                    assert_eq!(super::vfs::vfs_write(&mut t, fd, v.as_ptr(), v.len()), v.len() as i32);
+                    assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
+                }
+            },
+            |img| {
+                let mut legal: Vec<Option<&[u8]>> = vec![Some(&old[..]), Some(&b""[..])];
+                legal.extend(versions.iter().map(|v| Some(&v[..])));
+                one_of(&n, b"/REC.DAT", img, &legal)
+            });
+        println!("truncate-rewrite loop: {f} flushes");
+    }
+
     /// **A held chain is not reused, and statfs counts it free.** After the
     /// truncate statfs reports the old chain's clusters as free; the write
     /// that follows (before any flush) allocates around them; the fsync's
@@ -6828,6 +7028,34 @@ mod writeback {
     /// first; a gap ends it.
     ///
     /// **Canary.** `wb-no-coalesce-canary`: every run is one block.
+    #[test]
+    fn an_ahead_line_leaves_after_the_current_epoch_and_a_barrier_closes_both() {
+        // Wave 15 (FW): block 5 written ahead, then block 9 in the current
+        // epoch AFTER it: the write-back takes 9 first, and 5 after a flush.
+        let mut c = C::new(512, Mode::WriteBack);
+        let e = c.epoch();
+        assert!(matches!(c.write_dirty_ahead(5, &blk(1)), Dirty::Done { .. }));
+        dirty(&mut c, 9, 2);
+        assert!(matches!(c.write_dirty_ahead(5, &blk(3)), Dirty::Done { .. }), "rewritten in place");
+        assert_eq!((c.epoch(), c.top_epoch(), c.dirty_epochs(), c.dirty_count()), (e, e + 1, 2, 2));
+        let mut buf = vec![0u8; 8 * 512];
+        let r = c.checkout_run(u64::MAX, 8, &mut buf).expect("a run");
+        assert_eq!((r.block, r.epoch, r.flush_first), (9, e, false));
+        c.checkin(&r, true);
+        let r = c.checkout_run(u64::MAX, 8, &mut buf).expect("the ahead run");
+        assert_eq!((r.block, r.epoch, r.flush_first, buf[0]), (5, e + 1, true, 3));
+        c.checkin(&r, true);
+        // A plain write to a line held ahead joins its epoch, never demotes it.
+        assert!(matches!(c.write_dirty_ahead(6, &blk(4)), Dirty::Done { .. }));
+        dirty(&mut c, 6, 5);
+        assert_eq!(c.epoch(), e + 1, "the plain write joined the ahead epoch");
+        assert_eq!(c.dirty_epochs(), 1);
+        // The barrier closes the ahead epoch too and says so.
+        assert!(matches!(c.write_dirty_ahead(7, &blk(6)), Dirty::Done { .. }));
+        assert_eq!(c.barrier(), e + 2);
+        assert_eq!(c.epoch(), e + 3);
+    }
+
     #[test]
     fn consecutive_dirty_blocks_of_one_epoch_are_one_run() {
         let mut c = C::new(512, Mode::WriteBack);
