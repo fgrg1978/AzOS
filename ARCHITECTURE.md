@@ -668,7 +668,7 @@ boot, so a canary test boots the same kernel as the test it checks.
   PMULL and SHA2. x86_64 has the extensions of its levels (SSE4.2, POPCNT;
   XSAVE, AVX, AVX2, BMI1, BMI2, FMA, MOVBE; AVX-512 F/BW/CD/DQ/VL), AES-NI,
   PCLMULQDQ, SHA-NI, RDRAND, RDSEED, ADX, FSGSBASE, PCID, INVPCID, SMEP,
-  SMAP, UMIP, PKU, LA57, CET-IBT, CET shadow stack, XSAVEOPT, XSAVES,
+  SMAP, UMIP, PKU, LA57 (5-level paging), 1 GiB pages, CET-IBT, CET shadow stack, XSAVEOPT, XSAVES,
   x2APIC, TSC-deadline and invariant TSC, read from CPUID leaves 1, 7, 0xD,
   0x80000001 and 0x80000007. Some of these are detected and reported
   only, because no kernel path uses them yet; each symbol's help says which.

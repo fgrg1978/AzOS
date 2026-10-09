@@ -6,8 +6,8 @@
 //! names the x86 mechanism it stands for. Structure only — no instruction
 //! here has run, and nothing builds this crate by default.
 //!
-//! It exports the contract and NOTHING else: no `cpu`, `mmu`, `apic`, ...
-//! modules. So `cargo check` of a shared crate against it (the facade's
+//! It exports the contract and the ported modules listed below, nothing
+//! else. So `cargo check` of a shared crate against it (the facade's
 //! `stub` feature, or a bare-metal `x86_64` target) fails exactly where that
 //! crate still reaches past the contract into an ISA module, and that error
 //! list is what a port must add (`tools/arch_stub_check.py`).
@@ -15,9 +15,11 @@
 //! The same crate is the facade's host-side fake ISA (`azos_arch/stub`):
 //! the method list is one list, so the skeleton and the stub cannot drift.
 //!
-//! Beyond the contract, two ISA-private modules: [`features`] (the
-//! baseline / n-probe-require `X86_*` model every ISA uses) and
-//! [`fpu`] (EAGER FP save: x86 never switches FP lazily).
+//! Beyond the contract, ISA-private modules: [`features`] (the
+//! baseline / n-probe-require `X86_*` model every ISA uses), [`fpu`]
+//! (EAGER FP save: x86 never switches FP lazily), [`mmu`] (paging, PTE
+//! encoding, CR3/CR4, the table walker) and [`tlb`] (the CR3 publication
+//! and the IPI shootdown), the last two under the same names as riscv64's.
 //!
 //! What an x86_64 port adds beyond these methods: `kernel/src/entry/x86_64/`
 //! (boot hooks, `ArchEntry`, `TrapContext`, `boot.S`/`trap_entry.S`/
@@ -28,6 +30,8 @@
 pub mod features;
 pub mod fpu;
 pub mod hw;
+pub mod mmu;
+pub mod tlb;
 
 /// The x86 body on x86_64; on the host (this crate is also the facade's fake
 /// ISA) the `todo!()` naming it.
@@ -123,51 +127,76 @@ impl Interrupts for X86_64 {
 impl Mmu for X86_64 {
     /// 4 KiB base pages (2 MiB / 1 GiB leaves at levels 1 and 2).
     const PAGE_SIZE: usize = PAGE_SIZE;
-    /// 4-level paging (PML4); 5-level (LA57) is a later choice.
-    fn levels(&self) -> usize { todo!("x86_64: levels: 4 (PML4, LA57 off)") }
-    /// 512 eight-byte entries per table.
-    fn entries_per_table(&self) -> usize { todo!("x86_64: entries_per_table: 512") }
-    fn vpn(&self, _va: usize, _level: usize) -> usize { todo!("x86_64: vpn: 9-bit index per level from bit 12") }
-    fn pte_empty(&self) -> u64 { todo!("x86_64: pte_empty: 0 (P clear)") }
-    /// Present bit (bit 0).
-    fn pte_is_valid(&self, _word: u64) -> bool { todo!("x86_64: pte_is_valid: P bit") }
-    /// P set and PS clear above level 0.
-    fn pte_is_table(&self, _word: u64, _level: usize) -> bool { todo!("x86_64: pte_is_table: P && !PS") }
-    /// Level 0, or PS set at level 1/2.
-    fn pte_is_leaf(&self, _word: u64, _level: usize) -> bool { todo!("x86_64: pte_is_leaf: level 0 or PS") }
-    /// Bits 12..51 (MAXPHYADDR from `CPUID.80000008H`).
-    fn pte_phys(&self, _word: u64) -> usize { todo!("x86_64: pte_phys: bits 12..MAXPHYADDR") }
-    fn pte_make_table(&self, _pa: usize) -> u64 { todo!("x86_64: pte_make_table: P|RW|US") }
-    /// P, RW, US, NX (bit 63, `EFER.NXE`), G for kernel pages, PAT via PWT/PCD.
-    fn pte_make_leaf(&self, _pa: usize, _perms: PagePerms, _level: usize) -> Result<u64, MmuError> {
-        todo!("x86_64: pte_make_leaf: P|RW|US|NX|G, PS above level 0")
+    /// 4-level paging (PML4), 5 under LA57 (boot.S's choice, Kconfig `X86_LA57`).
+    #[inline]
+    fn levels(&self) -> usize { mmu::levels() }
+    #[inline]
+    fn entries_per_table(&self) -> usize { mmu::PT_ENTRIES }
+    #[inline]
+    fn vpn(&self, va: usize, level: usize) -> usize { mmu::vpn(va, level) }
+    #[inline]
+    fn pte_empty(&self) -> u64 { mmu::empty() }
+    #[inline]
+    fn pte_is_valid(&self, word: u64) -> bool { mmu::is_valid(word) }
+    #[inline]
+    fn pte_is_table(&self, word: u64, level: usize) -> bool { mmu::is_table(word, level) }
+    #[inline]
+    fn pte_is_leaf(&self, word: u64, level: usize) -> bool { mmu::is_leaf(word, level) }
+    #[inline]
+    fn pte_phys(&self, word: u64) -> usize { mmu::phys_addr(word) }
+    #[inline]
+    fn pte_make_table(&self, pa: usize) -> u64 { mmu::make_table(pa) }
+    #[inline]
+    fn pte_make_leaf(&self, pa: usize, perms: PagePerms, level: usize) -> Result<u64, MmuError> {
+        mmu::make_leaf(pa, perms, level)
     }
-    fn pte_perms(&self, _word: u64) -> PagePerms { todo!("x86_64: pte_perms: decode RW/US/NX") }
-    /// A software-available bit (9..11) marks COW.
-    fn pte_is_cow(&self, _word: u64) -> bool { todo!("x86_64: pte_is_cow: software bit 9") }
-    fn pte_share_cow(&self, _word: u64) -> u64 { todo!("x86_64: pte_share_cow: clear RW, set COW bit") }
-    fn pte_break_cow(&self, _word: u64) -> u64 { todo!("x86_64: pte_break_cow: set RW, clear COW bit") }
-    /// Not-present with a software encoding of the permissions.
-    fn pte_make_demand(&self, _perms: PagePerms) -> u64 { todo!("x86_64: pte_make_demand: P clear, perms in bits 1..") }
-    fn pte_is_demand(&self, _word: u64) -> bool { todo!("x86_64: pte_is_demand") }
-    fn pte_demand_perms(&self, _word: u64) -> PagePerms { todo!("x86_64: pte_demand_perms") }
-    /// `mov cr3` with the PCID in bits 0..11 (`CR4.PCIDE`), bit 63 to keep the TLB.
-    fn switch_pt(&self, _root_phys: usize, _asid: u16) { todo!("x86_64: switch_pt: mov cr3, root|PCID") }
-    /// The kernel half lives in every PML4 (shared upper entries); a
+    #[inline]
+    fn pte_perms(&self, word: u64) -> PagePerms { mmu::perms_of(word) }
+    #[inline]
+    fn pte_is_cow(&self, word: u64) -> bool { mmu::is_cow(word) }
+    #[inline]
+    fn pte_share_cow(&self, word: u64) -> u64 { mmu::share_cow(word) }
+    #[inline]
+    fn pte_break_cow(&self, word: u64) -> u64 { mmu::break_cow(word) }
+    #[inline]
+    fn pte_make_demand(&self, perms: PagePerms) -> u64 { mmu::make_demand(perms) }
+    #[inline]
+    fn pte_is_demand(&self, word: u64) -> bool { mmu::is_demand(word) }
+    #[inline]
+    fn pte_demand_perms(&self, word: u64) -> PagePerms { mmu::demand_perms(word) }
+    /// Publish, then `mov cr3, root|PCID` (no-flush clear: the incoming
+    /// PCID's entries go, as every switch flushes on the other ISAs).
+    fn switch_pt(&self, _root_phys: usize, _asid: u16) {
+        on_x86!(tlb::switch_root(self.hart_id(), _root_phys, _asid), "x86_64: switch_pt: mov cr3, root|PCID")
+    }
+    /// The kernel half lives in every root (shared upper PML4 entries); a
     /// kernel-only root is a CR3 write with PCID 0.
-    fn switch_kernel_pt(&self, _root_phys: usize) { todo!("x86_64: switch_kernel_pt: mov cr3, PCID 0") }
-    /// CR4.PGE toggle (global pages too), or `invpcid` type 2.
-    fn flush_tlb_all(&self) { todo!("x86_64: flush_tlb_all: invpcid all / CR4.PGE toggle") }
-    /// `invpcid` type 1 (single context).
-    fn flush_tlb_asid(&self, _asid: u16) { todo!("x86_64: flush_tlb_asid: invpcid single-context") }
-    /// `invlpg`.
-    fn flush_tlb_page(&self, _va: usize) { todo!("x86_64: flush_tlb_page: invlpg") }
-    /// No broadcast invalidate on x86: an IPI to every CPU holding the root,
-    /// each running `invlpg` (Linux `flush_tlb_mm_range`).
-    fn tlb_shootdown(&self, _root_phys: usize, _va: usize, _len: usize) -> usize {
-        todo!("x86_64: tlb_shootdown: IPI to holders + invlpg each")
+    fn switch_kernel_pt(&self, _root_phys: usize) {
+        on_x86!(tlb::switch_root(self.hart_id(), _root_phys, 0), "x86_64: switch_kernel_pt: mov cr3, PCID 0")
     }
-    fn root_holders(&self, _root_phys: usize) -> usize { todo!("x86_64: root_holders: per-CPU CR3 publication scan") }
+    /// `invpcid` type 2 (globals too), else a CR4.PGE toggle.
+    fn flush_tlb_all(&self) {
+        on_x86!(mmu::cpu::flush_all(), "x86_64: flush_tlb_all: invpcid all / CR4.PGE toggle")
+    }
+    /// `invpcid` type 1 (single context), else a CR3 reload of the live PCID.
+    fn flush_tlb_asid(&self, _asid: u16) {
+        on_x86!(mmu::cpu::flush_asid(_asid), "x86_64: flush_tlb_asid: invpcid single-context")
+    }
+    /// 12 with CR4.PCIDE, else 0.
+    fn asid_bits(&self) -> u32 {
+        if mmu::pcid_on() { mmu::PCID_BITS } else { 0 }
+    }
+    /// `invlpg`.
+    fn flush_tlb_page(&self, _va: usize) {
+        on_x86!(mmu::cpu::invlpg(_va), "x86_64: flush_tlb_page: invlpg")
+    }
+    /// No broadcast invalidate on x86: an IPI to every CPU holding the root,
+    /// each running `invlpg` (`tlb.rs`; Linux `flush_tlb_mm_range`).
+    fn tlb_shootdown(&self, _root_phys: usize, _va: usize, _len: usize) -> usize {
+        on_x86!(tlb::shootdown(self.hart_id(), _root_phys, _va, _len), "x86_64: tlb_shootdown: IPI to holders + invlpg each")
+    }
+    #[inline]
+    fn root_holders(&self, root_phys: usize) -> usize { tlb::holders(root_phys) }
 }
 
 impl Boot for X86_64 {
@@ -203,8 +232,19 @@ impl Vector for X86_64 {
     fn is_accelerated(&self) -> bool { todo!("x86_64: is_accelerated") }
 }
 
-/// The user-access window: `stac` on open, `clac` on drop (SMAP).
+/// The user-access window: `stac` on open, `clac` on drop, both only with
+/// CR4.SMAP set (they are #UD on a CPU without SMAP).
 pub struct UserAccess;
+
+impl Drop for UserAccess {
+    #[inline]
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        if mmu::smap_on() {
+            mmu::cpu::clac();
+        }
+    }
+}
 
 impl ArchPlatform for X86_64 {
     /// x86 instruction fetch snoops the data cache (self-modifying code is
@@ -213,14 +253,28 @@ impl ArchPlatform for X86_64 {
     unsafe fn dcache_clean(&self, _va: usize, _len: usize) { todo!("x86_64: dcache_clean: no-op (coherent)") }
     /// A serializing instruction on every CPU (`cpuid`/`serialize`), by IPI.
     fn icache_sync_all(&self) { todo!("x86_64: icache_sync_all: IPI + serialize on every CPU") }
-    /// `invlpg` locally, then an IPI shootdown.
-    fn flush_tlb_page_all(&self, _va: usize) { todo!("x86_64: flush_tlb_page_all: invlpg + IPI shootdown") }
+    /// `invlpg` locally, then an IPI shootdown to every CPU (globals too).
+    fn flush_tlb_page_all(&self, _va: usize) {
+        on_x86!({ tlb::shootdown_kernel(self.hart_id(), _va, PAGE_SIZE); }, "x86_64: flush_tlb_page_all: invlpg + IPI shootdown")
+    }
     /// `rep stosb` (ERMS/FSRM).
     unsafe fn zero_memory(&self, _va: usize, _len: usize) { todo!("x86_64: zero_memory: rep stosb") }
     /// The CR3 value: PML4 PA | PCID.
-    fn user_root_word(&self, _root_phys: usize, _asid: u16) -> usize { todo!("x86_64: user_root_word: PML4 PA | PCID") }
-    fn install_user_root_local(&self, _word: usize) { todo!("x86_64: install_user_root_local: mov cr3") }
+    fn user_root_word(&self, root_phys: usize, asid: u16) -> usize {
+        mmu::make_cr3(root_phys, asid, mmu::pcid_on()) as usize
+    }
+    /// Publish, then `mov cr3`.
+    fn install_user_root_local(&self, _word: usize) {
+        on_x86!(tlb::install_word(self.hart_id(), _word as u64), "x86_64: install_user_root_local: mov cr3")
+    }
     type UserAccess = UserAccess;
     /// `stac` (SMAP), `clac` when the value drops.
-    fn user_access(&self) -> UserAccess { todo!("x86_64: user_access: stac / clac (SMAP)") }
+    #[inline]
+    fn user_access(&self) -> UserAccess {
+        #[cfg(target_arch = "x86_64")]
+        if mmu::smap_on() {
+            mmu::cpu::stac();
+        }
+        UserAccess
+    }
 }

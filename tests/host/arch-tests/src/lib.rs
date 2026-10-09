@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side tests for the pure parts of `crates/core/arch-riscv64`.
+//! Host-side tests for the pure parts of `crates/core/arch-riscv64` (and
+//! of the aarch64 and x86_64 paging code, further down).
 //!
 //! **WHY.** 1375 lines with no test of any kind, and it is where the bug of
 //! 2026-08-31 lived: `sie.SSIE` was never enabled on secondary harts, so the
@@ -20,6 +21,9 @@ mod mmu;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/arch-riscv64/src/pmp.rs"]
 mod pmp;
+
+// x86_64 paging and shootdown (wave 15, front X3).
+mod x86_paging;
 
 // Wave 8 TLB shootdown: which harts a revoke must interrupt. A wrong mask is
 // silent in the direction that matters — a hart left out keeps a stale

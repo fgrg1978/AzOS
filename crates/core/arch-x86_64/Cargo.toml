@@ -16,3 +16,4 @@ x86-cpuid-canary = []
 
 [dependencies]
 azos_arch_api = { path = "../arch-api" }
+azos_limits = { path = "../limits" }

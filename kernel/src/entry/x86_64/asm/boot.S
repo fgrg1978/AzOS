@@ -23,6 +23,8 @@
 //      through isa-debug-exit when QEMU has one, then halt).
 //   3. Clear .bss; identity page tables for 0..4 GiB in 2 MiB pages (RAM,
 //      and the LAPIC/IOAPIC windows for later).
+//      With Kconfig X86_LA57 allowing it and CPUID reporting it, a PML5
+//      above that PML4 and CR4.LA57 (5-level paging; mmu.rs reads CR4).
 //   4. CR4.PAE, CR3, EFER.LME|NXE, CR0.PG|WP, the 64-bit GDT, far jump.
 //   5. 64-bit: data segments, stack, GS base = hart id 0 (Cpu::hart_id),
 //      the IDT (every exception vector reports and stops: no triple fault).
@@ -134,12 +136,32 @@ _start:
     cmpl $2048, %esi
     jne 2b
 
+    // LA57 (Kconfig X86_LA57, AZOS_X86_LA57_POLICY: 0 n, 1 probe,
+    // 2 require): CR4.LA57 can change only with long mode off, so the
+    // depth is chosen here. PML5[0] -> the PML4 above; CR3 names the PML5.
+    // A `require` on a CPU without it is refused by the mmu_enabled hook.
+    movl $boot_pml4, %edi            // the root CR3 gets
+    cmpl $0, AZOS_X86_LA57_POLICY
+    je la57_done
+    movl $7, %eax
+    xorl %ecx, %ecx
+    cpuid
+    testl $(1 << 16), %ecx           // CPUID.(7,0):ECX.LA57
+    jz la57_done
+    movl $boot_pml4, %eax
+    orl $0x3, %eax
+    movl %eax, boot_pml5
+    movl %cr4, %eax
+    orl $(1 << 12), %eax             // LA57
+    movl %eax, %cr4
+    movl $boot_pml5, %edi
+la57_done:
+
     // ── 4. long mode ────────────────────────────────────────────────────
     movl %cr4, %eax
     orl $(1 << 5), %eax              // PAE
     movl %eax, %cr4
-    movl $boot_pml4, %eax
-    movl %eax, %cr3
+    movl %edi, %cr3
     movl $0xC0000080, %ecx           // EFER
     rdmsr
     orl $((1 << 8) | (1 << 11)), %eax   // LME | NXE
@@ -322,6 +344,8 @@ pvh_start_info:
 
 .section .bss
 .balign 4096
+boot_pml5:
+    .skip 4096
 boot_pml4:
     .skip 4096
 boot_pdpt:

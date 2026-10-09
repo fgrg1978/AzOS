@@ -191,8 +191,36 @@ pub fn kernel_mmio_windows() -> core::iter::Empty<(usize, usize)> {
     todo!("x86_64: kernel_mmio_windows: LAPIC (0xFEE00000), IOAPIC, HPET as UC pages")
 }
 
+/// The paging choices: each extension's Kconfig policy over the probe.
+fn paging_caps() -> azos_arch::mmu::PagingCaps {
+    use azos_arch_api::isa::x86_64 as p;
+    let f = azos_arch::features::detect();
+    azos_arch::mmu::PagingCaps {
+        pcid: p::PCID.gate(f.pcid),
+        invpcid: p::PCID.gate(f.invpcid),
+        gbpages: p::GBPAGES.gate(azos_arch::mmu::cpu::has_gbpages()),
+        smep: p::SMEP.gate(f.smep),
+        smap: p::SMAP.gate(f.smap),
+    }
+}
+
+/// PAT, CR0.WP, CR4.PGE/PCIDE (`mmu::cpu::enable_paging`), read back. A
+/// clear EFER.NXE (boot.S sets it) or a `require`d LA57 / 1 GiB pages the
+/// CPU lacks stops the boot here.
 pub fn mmu_enabled() {
-    todo!("x86_64: mmu_enabled: CR3 loaded with the kernel PML4, CR4.PGE/PCIDE")
+    use azos_arch_api::isa::{x86_64 as p, ExtPolicy};
+    let st = azos_arch::mmu::cpu::enable_paging(&paging_caps());
+    kprintln!("[MM] x86_64 paging: {}-level, NXE={} WP={} PGE={} PCIDE={} PAT={:#x}",
+        st.levels, st.nxe, st.wp, st.pge, st.pcide, st.pat);
+    if !st.nxe {
+        panic!("x86_64: EFER.NXE is clear: every NX leaf would be a reserved-bit fault");
+    }
+    if p::LA57 == ExtPolicy::Require && st.levels != azos_arch::mmu::LEVELS_5 {
+        panic!("x86_64: Kconfig X86_LA57=require and the CPU has no LA57");
+    }
+    if p::GBPAGES == ExtPolicy::Require && !azos_arch::mmu::gbpages() {
+        panic!("x86_64: Kconfig X86_GBPAGES=require and the CPU has no 1 GiB pages");
+    }
 }
 
 pub fn restrict_low_half() {
@@ -203,8 +231,11 @@ pub fn verify_guards() {
     todo!("x86_64: verify_guards: page-walk readback of page 0 and the stack guards")
 }
 
+/// CR4.SMEP / CR4.SMAP (`mmu::cpu::enable_access_protection`), read back.
 pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
-    todo!("x86_64: post_heap: SMEP/SMAP enable (CR4) and their readback")
+    let st = azos_arch::mmu::cpu::enable_access_protection(&paging_caps());
+    kprintln!("[MM] x86_64 SMEP={} SMAP={}", st.smep, st.smap);
+    crate::boot_stack_report();
 }
 
 pub fn timebase_hz() -> u64 {

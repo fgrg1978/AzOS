@@ -530,14 +530,33 @@ config ASID_BITS
       again at 1 and counts a rollover.
 
       Isolation does not rest on this number: every address-space switch
-      is a full local TLB flush on both ISAs (context_switch.S), and a
-      root is freed only after every hart has left it, so a reused ASID
-      never meets a stale entry.  The tag is what the riscv64 satp word
-      carries; aarch64 installs ASID 0.
+      is a full local TLB flush on every ISA (context_switch.S; on x86_64
+      the CR3 write drops the incoming PCID's entries), and a root is
+      freed only after every hart has left it, so a reused ASID never
+      meets a stale entry.  The tag is what the riscv64 satp word
+      carries, and its low 12 bits are the x86_64 PCID (CR4.PCIDE);
+      aarch64 installs ASID 0.
 
       Cost: none (one compare per fork/exec).  Change it only to test: a
       tiny value (2: three ASIDs) makes every few forks a rollover, which
       is what the ASID gate row runs under.
+
+config TLB_FLUSH_CEILING_PAGES
+    int "Pages above which a ranged TLB flush drops the whole address space"
+    range 1 4096
+    default 33
+    help
+      A shootdown or local flush of more than this many pages flushes the
+      whole address space (x86_64: the PCID's non-global entries; the
+      kernel's own range: everything) instead of one invalidation per
+      page. Linux's tlb_single_page_flush_ceiling, also 33. Read by
+      x86_64 (crates/core/arch-x86_64/src/tlb.rs); riscv64 and aarch64
+      still invalidate page by page.
+
+      Cost: below the ceiling one invlpg (~100-200 cycles) per page, on
+      every CPU signalled; above it one full flush plus the re-walks it
+      causes. Raise it for workloads that unmap mid-sized ranges of a
+      big, hot working set; lower it on CPUs with a slow invlpg.
 
 config MM_DEMAND_PAGING
     bool "Demand-paged anonymous mmap"
@@ -1188,15 +1207,19 @@ choice
 endchoice
 
 choice
-    prompt "LA57 (5-level paging, 57-bit VA)"
-    default X86_LA57_PROBE
+    prompt "LA57 (5-level paging)"
+    default X86_LA57_NEVER
     help
-      CPUID.(7,0):ECX[16]. The MMU stays 4-level (Mmu::levels = 4) until a
-      5-level walk lands: reported only. Cost when used: one more table
-      level per walk and per TLB miss. require only refuses a CPU without
+      CR4.LA57 after CPUID.(EAX=7,ECX=0):ECX[16]: 57-bit virtual
+      addresses (64 PiB of user space instead of 128 TiB) through a PML5
+      above the PML4. boot.S decides it before paging is on (CR4.LA57
+      cannot change in long mode), and crates/core/arch-x86_64/src/mmu.rs
+      reads the depth back from CR4. Cost: one more level on every TLB
+      miss (one more memory access per walk, 4 KiB more per address
+      space). Only for a machine whose RAM or VA needs exceed 64/128 TiB.
+      n: 4-level always (the depth is then a compile-time 4). probe: 5
+      levels when the CPU has it. require: the boot refuses a CPU without
       it.
-      n: the fallback always. probe: the CPUID probe picks. require: the
-      boot refuses a CPU without it.
 
     config X86_LA57_NEVER
         bool "n: never use it"
@@ -1341,6 +1364,36 @@ choice
     config X86_INVARIANT_TSC_REQUIRE
         bool "require: baseline; refuse to boot without it"
 endchoice
+choice
+    prompt "1 GiB pages (PDPE1GB)"
+    default X86_GBPAGES_PROBE
+    help
+      Level-2 (PDPT) leaves after CPUID.80000001H:EDX[26]: one TLB entry
+      per GiB for the kernel's direct map and the big fixed regions that
+      ask for them. Cost: none at runtime. Fallback: Mmu::pte_make_leaf
+      refuses a level-2 leaf and the caller maps 2 MiB leaves.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_GBPAGES_NEVER
+        bool "n: never use it"
+    config X86_GBPAGES_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_GBPAGES_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+config X86_KERNEL_GLOBAL_PAGES
+    bool "Global (G) kernel leaves"
+    default y
+    help
+      Every kernel leaf carries G, so its TLB entry survives a CR3 write
+      (CR4.PGE). Sound because every root shares the kernel half's
+      tables. Cost of n: every address-space switch drops the kernel's
+      TLB entries too, and the kernel re-walks its own text, data and
+      stacks after each switch (dozens of misses per switch; a measurable
+      share of a cross-address-space IPC round trip). n only to rule G
+      out while hunting a stale kernel translation.
 endif # ARCH_X86_64
 
 # ---------------------------------------------------------------------------

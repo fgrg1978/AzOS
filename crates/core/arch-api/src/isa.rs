@@ -257,4 +257,5 @@ pub mod x86_64 {
     pub const X2APIC: ExtPolicy = ext_policy!(X86_X2APIC_NEVER, X86_X2APIC_REQUIRE);
     pub const TSC_DEADLINE: ExtPolicy = ext_policy!(X86_TSC_DEADLINE_NEVER, X86_TSC_DEADLINE_REQUIRE);
     pub const INVARIANT_TSC: ExtPolicy = ext_policy!(X86_INVARIANT_TSC_NEVER, X86_INVARIANT_TSC_REQUIRE);
+    pub const GBPAGES: ExtPolicy = ext_policy!(X86_GBPAGES_NEVER, X86_GBPAGES_REQUIRE);
 }
