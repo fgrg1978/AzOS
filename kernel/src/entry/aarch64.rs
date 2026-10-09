@@ -854,6 +854,9 @@ fn handle_irq(_frame: &mut TrapFrame) {
         // comment on `TrapClass::Interrupt` for why that stack split
         // matters). `request_resched()` targets THIS core's own slot via
         // `current_cpu_id()`.
+        // `SCHED_REMOTE_WAKE_DEFER`: queue the wakes another core left for
+        // this one first (see the riscv64 arm). One load when there are none.
+        azos_sched::scheduler::drain_remote_wakes();
         request_resched();
         azos_arch::gic::eoir1(intid);
         return;

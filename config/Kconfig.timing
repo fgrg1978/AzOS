@@ -314,6 +314,28 @@ config SCHED_SWITCH_COUNTERS
       read 0. Turn on wherever switch statistics or vsbench's switch
       lanes are wanted.
 
+config SCHED_REMOTE_WAKE_DEFER
+    bool "Defer a contended wake onto another CPU to that CPU"
+    default y
+    help
+      A wake whose task goes to ANOTHER CPU's ready queue tries that
+      queue's lock once. If it is free the task is queued at once, as
+      before; if it is held (or earlier wakes for that CPU are still
+      pending) the task is pushed onto the target CPU's lock-free deferred
+      wake list and the reschedule IPI is sent. The target queues it with
+      its own lock at its next schedule point, which the IPI starts. A
+      wake for the waker's own CPU is unchanged.
+
+      Why: a remote wake from any context, the timer ISR included,
+      must not spin with interrupts masked on a lock another hart holds;
+      the holder may not run until this hart stops (QEMU -icount runs
+      harts one at a time; a preempted vCPU does the same).
+
+      Cost: 4 bytes per task slot and per CPU. An uncontended remote wake
+      runs the same lock instruction it always did; a contended one costs
+      a CAS push, an IPI and a drain on the target instead of the spin.
+      Turn off only to measure the old spinning remote enqueue.
+
 config SCHED_SAVING_GATE_US
     int "Longest wait for a picked task's context save (us)"
     range 10 100000

@@ -2965,3 +2965,98 @@ mod reap_flag_gate {
     }
 
 }
+
+// Wave 15 (VW): the per-CPU deferred remote-wake list
+// (`SCHED_REMOTE_WAKE_DEFER`): lock-free MPSC push, FIFO drain.
+#[path = "../../../../crates/core/sched/src/wake_list.rs"]
+pub mod wake_list;
+
+#[cfg(test)]
+mod wake_list_tests {
+    use super::wake_list::{drain, is_empty, push, NIL};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Arc;
+
+    fn links(n: usize) -> Vec<AtomicU32> {
+        (0..n).map(|_| AtomicU32::new(NIL)).collect()
+    }
+
+    #[test]
+    fn drain_returns_push_order() {
+        let head = AtomicU32::new(NIL);
+        let next = links(8);
+        assert!(is_empty(&head));
+        for s in [3, 1, 7, 0] {
+            push(&head, &next, s);
+        }
+        let mut got = Vec::new();
+        assert_eq!(drain(&head, &next, |s| got.push(s)), 4);
+        assert_eq!(got, vec![3, 1, 7, 0]);
+        assert!(is_empty(&head));
+        assert_eq!(drain(&head, &next, |_| panic!("empty")), 0);
+    }
+
+    /// A slot queued by the drain can be woken and pushed again (here: from
+    /// inside the callback, the earliest it can happen); the walk must not
+    /// follow the rewritten link.
+    #[test]
+    fn repush_during_drain_is_kept_for_the_next_drain() {
+        let head = AtomicU32::new(NIL);
+        let next = links(4);
+        push(&head, &next, 0);
+        push(&head, &next, 1);
+        push(&head, &next, 2);
+        let mut got = Vec::new();
+        drain(&head, &next, |s| {
+            got.push(s);
+            if s == 0 {
+                push(&head, &next, 0);
+            }
+        });
+        assert_eq!(got, vec![0, 1, 2]);
+        let mut again = Vec::new();
+        drain(&head, &next, |s| again.push(s));
+        assert_eq!(again, vec![0]);
+    }
+
+    /// Many producers, one consumer draining concurrently: every slot comes
+    /// out exactly once, and each producer's slots in its push order.
+    #[test]
+    fn mpsc_no_loss_no_duplicate_per_producer_fifo() {
+        const P: usize = 4;
+        const PER: usize = 2000;
+        let head = Arc::new(AtomicU32::new(NIL));
+        let next: Arc<Vec<AtomicU32>> = Arc::new(links(P * PER));
+        let hs: Vec<_> = (0..P)
+            .map(|p| {
+                let (h, n) = (head.clone(), next.clone());
+                std::thread::spawn(move || {
+                    for k in 0..PER {
+                        push(&h, &n, p * PER + k);
+                    }
+                })
+            })
+            .collect();
+        let mut got = Vec::new();
+        while got.len() < P * PER {
+            drain(&head, &next, |s| got.push(s));
+            std::hint::spin_loop();
+        }
+        for h in hs {
+            h.join().unwrap();
+        }
+        drain(&head, &next, |s| got.push(s));
+        assert_eq!(got.len(), P * PER);
+        let mut seen = vec![false; P * PER];
+        let mut last = [None::<usize>; P];
+        for &s in &got {
+            assert!(!seen[s], "slot {s} drained twice");
+            seen[s] = true;
+            let p = s / PER;
+            if let Some(l) = last[p] {
+                assert!(s > l, "producer {p}: {s} after {l}");
+            }
+            last[p] = Some(s);
+        }
+    }
+}

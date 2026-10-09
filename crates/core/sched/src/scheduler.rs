@@ -1159,6 +1159,15 @@ unsafe fn cpu_enqueue_locked(cpu: usize, idx: usize) -> bool {
         let _g = CpuLockGuard::acquire(cpu);
         cpu_enqueue(cpu, idx)
     }; // guard dropped before the SBI call below — never ecall holding a lock.
+    ring_doorbell(cpu, idx, appended);
+    appended
+}
+
+/// The K-C15 doorbell of [`cpu_enqueue_locked`], shared with the deferred
+/// remote wake (`SCHED_REMOTE_WAKE_DEFER`, [`remote_wake_try`]).
+#[inline(always)]
+unsafe fn ring_doorbell(cpu: usize, idx: usize, appended: bool) {
+    let _ = idx;
 
     // K-C15: tell the target hart it has work.
     //
@@ -1211,7 +1220,115 @@ unsafe fn cpu_enqueue_locked(cpu: usize, idx: usize) -> bool {
             wakelat::ipi_sent(rc != 0);
         }
     }
-    appended
+}
+
+// ── Deferred remote wakes (`SCHED_REMOTE_WAKE_DEFER`) ──────────────────────
+//
+// Owner decision (wave 15, VW): a wake of a task on ANOTHER CPU never spins
+// on that CPU's queue lock. The waker tries the lock once; if it is held it
+// pushes the slot onto the target's lock-free list (`wake_list`) and rings
+// the doorbell, and the target queues it under its own lock at its next
+// `do_schedule` (or doorbell). Measured (riscv64 `-icount`, rt7): this path
+// is taken 0-2 times a boot, and every `try_wake_task` stage stays under
+// 3 us; the ~50 ms timer-ISR stall rt7 hits is the global
+// `timer_sleepers::LOCK` spin (`wake_expired_timers`, `nearest_timer_deadline`),
+// which this does not change.
+
+/// Each CPU's deferred-wake list head (`wake_list::NIL` when empty).
+static REMOTE_WAKE_HEAD: [AtomicU32; MAX_CPUS] =
+    [const { AtomicU32::new(crate::wake_list::NIL) }; MAX_CPUS];
+/// The intrusive link of each task slot while it waits in a list.
+static REMOTE_WAKE_NEXT: [AtomicU32; MAX_TASKS] =
+    [const { AtomicU32::new(crate::wake_list::NIL) }; MAX_TASKS];
+/// Wakes deferred / drained / dropped at the drain (slot no longer valid).
+static REMOTE_WAKE_DEFERRED: AtomicU32 = AtomicU32::new(0);
+static REMOTE_WAKE_DRAINED: AtomicU32 = AtomicU32::new(0);
+static REMOTE_WAKE_STALE: AtomicU32 = AtomicU32::new(0);
+
+/// (deferred, drained, stale) since boot: the evidence the path ran.
+pub fn remote_wake_counts() -> (u32, u32, u32) {
+    (
+        REMOTE_WAKE_DEFERRED.load(Ordering::Relaxed),
+        REMOTE_WAKE_DRAINED.load(Ordering::Relaxed),
+        REMOTE_WAKE_STALE.load(Ordering::Relaxed),
+    )
+}
+
+/// A remote wake's enqueue without the spin: `Some(appended)` when the
+/// target's lock was free and its deferred list empty (queued here, exactly
+/// as [`cpu_enqueue_locked`] would have); `None` when the caller must defer.
+/// The list is tested under the lock, and the drain empties it under the
+/// same lock, so a direct wake never overtakes a deferred one.
+///
+/// A target past the online prefix keeps the direct path: nothing runs its
+/// `do_schedule` to drain, and `rebalance_from_offline_cpus` rescues only
+/// what is in its queue.
+#[inline(always)]
+unsafe fn remote_wake_try(cpu: usize, idx: usize) -> Option<bool> {
+    if cpu >= NUM_ONLINE_CPUS.load(Ordering::Relaxed) {
+        return Some(cpu_enqueue_locked(cpu, idx));
+    }
+    let prev = azos_arch::ARCH.disable_all();
+    if CPU_LOCKS[cpu].swap(1, Ordering::Acquire) != 0 {
+        azos_arch::ARCH.restore(prev);
+        return None;
+    }
+    if !crate::wake_list::is_empty(&REMOTE_WAKE_HEAD[cpu]) {
+        CPU_LOCKS[cpu].store(0, Ordering::Release);
+        azos_arch::ARCH.restore(prev);
+        return None;
+    }
+    let appended = cpu_enqueue(cpu, idx);
+    CPU_LOCKS[cpu].store(0, Ordering::Release);
+    azos_arch::ARCH.restore(prev);
+    ring_doorbell(cpu, idx, appended);
+    Some(appended)
+}
+
+/// Queue this CPU's deferred wakes, oldest first. Called at the head of
+/// `do_schedule` (every path to a pick, and to idle, passes it) and from
+/// the doorbell's interrupt arm on each ISA. One relaxed load when empty.
+#[inline(always)]
+unsafe fn remote_wake_drain_on(cpu: usize) {
+    if azos_limits::SCHED_REMOTE_WAKE_DEFER
+        && !crate::wake_list::is_empty(&REMOTE_WAKE_HEAD[cpu])
+    {
+        remote_wake_drain_slow(cpu);
+    }
+}
+
+/// [`remote_wake_drain_on`] for the calling CPU, from any context (the IPI
+/// arms of `kernel/src/trap/interrupt.rs` and `kernel/src/entry/aarch64.rs`).
+pub fn drain_remote_wakes() {
+    unsafe { remote_wake_drain_on(current_cpu_id()) }
+}
+
+#[inline(never)]
+unsafe fn remote_wake_drain_slow(cpu: usize) {
+    let valid = |i: usize| i < MAX_TASKS && TASK_VALID[i].load(Ordering::Relaxed);
+    // With the APS backend live each entry also needs its policy mirror,
+    // which takes the policy's own lock: queue them one by one, outside
+    // `CPU_LOCKS`, like a direct wake does.
+    if aps_dispatch_enabled() {
+        let n = crate::wake_list::drain(&REMOTE_WAKE_HEAD[cpu], &REMOTE_WAKE_NEXT, |i| {
+            if !valid(i) {
+                REMOTE_WAKE_STALE.fetch_add(1, Ordering::Relaxed);
+            } else if !wake_enqueue_post(cpu, i, cpu_enqueue_locked(cpu, i)) {
+                WAKE_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        REMOTE_WAKE_DRAINED.fetch_add(n as u32, Ordering::Relaxed);
+        return;
+    }
+    let _g = CpuLockGuard::acquire(cpu);
+    let n = crate::wake_list::drain(&REMOTE_WAKE_HEAD[cpu], &REMOTE_WAKE_NEXT, |i| {
+        if !valid(i) {
+            REMOTE_WAKE_STALE.fetch_add(1, Ordering::Relaxed);
+        } else if !cpu_enqueue(cpu, i) {
+            WAKE_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    REMOTE_WAKE_DRAINED.fetch_add(n as u32, Ordering::Relaxed);
 }
 
 /// U02-1 fix. `cpu_enqueue_locked` plus the APS mirror, for the four wake
@@ -1252,11 +1369,37 @@ unsafe fn cpu_enqueue_locked(cpu: usize, idx: usize) -> bool {
 /// would itself be the stale kind `aps_pick_ready` exists to clean up.
 #[inline]
 unsafe fn wake_enqueue_locked(cpu: usize, idx: usize) -> bool {
-    let appended = cpu_enqueue_locked(cpu, idx);
+    // `SCHED_REMOTE_WAKE_DEFER`: another CPU's queue is never spun on — a
+    // held lock defers the wake to that CPU (see `remote_wake_try`). Its own
+    // queue keeps the direct path.
+    let appended = if azos_limits::SCHED_REMOTE_WAKE_DEFER && cpu != current_cpu_id() {
+        match remote_wake_try(cpu, idx) {
+            Some(appended) => appended,
+            None => {
+                crate::wake_list::push(&REMOTE_WAKE_HEAD[cpu], &REMOTE_WAKE_NEXT, idx);
+                REMOTE_WAKE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+                ring_doorbell(cpu, idx, true);
+                if azos_trace::sched_on() {
+                    azos_trace::raw::sched_wakeup(task_ref(idx).tid, cpu as u32, current_task_tid());
+                }
+                // The refusal, if any, is counted by the drain.
+                return true;
+            }
+        }
+    } else {
+        cpu_enqueue_locked(cpu, idx)
+    };
     // Wave 15 (TRACE): every wake that queues a task passes here.
     if azos_trace::sched_on() {
         azos_trace::raw::sched_wakeup(task_ref(idx).tid, cpu as u32, current_task_tid());
     }
+    wake_enqueue_post(cpu, idx, appended)
+}
+
+/// The APS mirror of a wake that `appended` to `cpu`'s legacy queue.
+#[inline(always)]
+unsafe fn wake_enqueue_post(cpu: usize, idx: usize, appended: bool) -> bool {
+    let _ = (cpu, idx);
     #[cfg(feature = "sched-aps")]
     if appended && aps_dispatch_enabled() {
         let task = task_mut(idx);
@@ -5713,6 +5856,10 @@ unsafe fn do_schedule(why: SwitchReason) {
     let cpu = current_cpu_id();
     #[cfg(feature = "exit-stale-hart-canary")]
     let cpu = stale_hart_canary::take(cpu);
+    // `SCHED_REMOTE_WAKE_DEFER`: wakes other CPUs left for this one are
+    // queued before the pick, so neither the pick nor the idle arm below
+    // can miss them.
+    remote_wake_drain_on(cpu);
     #[cfg(feature = "ctx-probe")]
     {
         ctx_probe::check_running(ctx_probe::ENTRY);
@@ -8639,6 +8786,7 @@ pub fn try_wake_task(idx: usize, pred: &dyn Fn(&WaitReason) -> bool) {
         wake_enqueue_locked(target_cpu, idx);
     }
 }
+
 
 // ── WaitQueue support ───────────────────────────────────────────────────────
 

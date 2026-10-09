@@ -196,6 +196,10 @@ fn observer_task(_: usize) {
     let panicked = azos_common::is_panicked();
     kprintln!("[RT7-SMOKE] isolations={} culprit tid={} gone={} global_panic={} \
                heartbeat still max {} us", isolations, tid, culprit_gone, panicked, still_us);
+    // Print only (wave 15, VW): did a remote wake take the deferred path?
+    let (deferred, drained, stale) = azos_sched::scheduler::remote_wake_counts();
+    kprintln!("[RT7-SMOKE] remote wakes deferred={} drained={} stale={} (defer={})",
+        deferred, drained, stale, azos_limits::SCHED_REMOTE_WAKE_DEFER);
     kprintln!("[RT7-SMOKE] still max ends at +{} ms; observer late max {} us at +{} ms; culprit gone at +{} ms",
         still_at / ms(1), late_max * 1_000_000 / TIMER_FREQ, late_at / ms(1),
         gone_at.map(|g| (g - t_spawn) / ms(1)).unwrap_or(u64::MAX));

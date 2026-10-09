@@ -30,6 +30,7 @@ pub mod ready_list;
 /// Wave 11 SCHED-RT: band budget and EDF + CBS arithmetic (host-tested).
 pub mod rt_core;
 pub mod timer_heap;
+pub mod wake_list;
 pub mod scheduler;
 pub mod swcensus;
 pub mod smp;

@@ -521,6 +521,10 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
             // wakes from `wfi()`, finds nothing has asked it to do anything,
             // and goes straight back to sleep with a runnable task sitting in
             // its own queue.
+            // `SCHED_REMOTE_WAKE_DEFER`: queue the wakes another hart left
+            // for this one (its try of our queue lock failed). One load when
+            // there are none.
+            azos_sched::scheduler::drain_remote_wakes();
             request_resched(azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize);
         }
         _ => {
