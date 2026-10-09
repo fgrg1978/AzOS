@@ -1525,6 +1525,87 @@ mod tcp_window_sites {
         );
     }
 
+    /// **TCP deadlines on the kernel timer (wave 15).** `next_deadline` is
+    /// exactly when `tcp_tick` retransmits: one tick early nothing leaves,
+    /// at the deadline the segment does, and the next deadline is the
+    /// backed-off RTO from there. The net poll task sleeps until this value,
+    /// so an RTO no longer waits for a periodic tick. Canary: make
+    /// `conn_deadline` ignore `flight()` (or add the old 100 ms tick to it)
+    /// and the first or second assertion fails.
+    #[test]
+    fn the_rto_fires_at_next_deadline_and_not_a_tick_before() {
+        let _g = begin();
+        let (idx, _ours, _theirs) = established_with_full_buffer(7203, 42300);
+        let t0 = azos_drv_irqchip::clint::get_time();
+        assert!(tcp::send_data(idx, b"unacked") > 0);
+        wire::clear_sent();
+        let rto = tcp::conn_rtt(idx).unwrap().rto_ticks;
+        let d = tcp::next_deadline().expect("data in flight has a deadline");
+        assert!(d <= t0 + rto + 1 && d >= t0, "deadline {d} not at the RTO (t0 {t0}, rto {rto})");
+
+        azos_drv_irqchip::clint::set_test_time(d - 1);
+        tcp::tcp_tick();
+        assert_eq!(wire::sent_count(), 0, "nothing may be retransmitted before the deadline");
+
+        azos_drv_irqchip::clint::set_test_time(d);
+        tcp::tcp_tick();
+        assert_eq!(wire::sent_count(), 1, "the RTO must fire at its deadline");
+        let d2 = tcp::next_deadline().unwrap();
+        assert_eq!(d2, d + 2 * rto, "the next deadline is the backed-off RTO");
+    }
+
+    /// **Delayed ACK on time (wave 15).** A held window update's deadline is
+    /// at most `TCP_DELACK_MS` away, and `tcp_tick` at that tick sends it.
+    /// With the poll task sleeping until `next_deadline`, the ACK leaves at
+    /// 40 ms (plus the timer's own latency), not at a 100 ms poll tick.
+    #[test]
+    fn a_held_ack_is_due_within_the_delack_delay() {
+        if azos_limits::TCP_DELACK_MS == 0 { return; }
+        let _g = begin();
+        let (idx, _ours, _theirs) = established_with_full_buffer(7204, 42400);
+        let t0 = azos_drv_irqchip::clint::get_time();
+        let mut buf = [0u8; 4096];
+        assert_eq!(tcp::recv(idx, &mut buf), 4096);
+        assert_eq!(wire::sent_count(), 0, "the update is held");
+        let delack = azos_limits::TCP_DELACK_MS as u64 * (azos_drv_sys::timebase::TIMER_FREQ / 1000);
+        let d = tcp::next_deadline().expect("a held ACK has a deadline");
+        assert!(d <= t0 + delack, "held-ACK deadline {d} later than t0 {t0} + {delack}");
+        azos_drv_irqchip::clint::set_test_time(d);
+        tcp::tcp_tick();
+        assert_eq!(wire::sent_count(), 1, "the held ACK must leave at its deadline");
+    }
+
+    static KICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    fn count_kick() { KICKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+
+    /// **A deadline armed while the poll task sleeps wakes it (wave 15).**
+    /// The task publishes its wake (`poll_sleep_until`); a `send_data` that
+    /// starts an RTO earlier than that kicks it, and the same send while it
+    /// runs (`poll_running`) does not. Canary: drop `note_conn` from
+    /// `send_data` and the first assertion fails (the RTO would wait for
+    /// the 60 s ceiling).
+    #[test]
+    fn an_earlier_deadline_armed_elsewhere_kicks_the_sleeping_poll_task() {
+        use std::sync::atomic::Ordering;
+        let _g = begin();
+        let (idx, ours, theirs) = established_with_full_buffer(7205, 42500);
+        tcp::set_timer_kick(count_kick);
+        // Asleep until the nearest deadline there is (the keep-alive, 30 s).
+        let dl = tcp::next_deadline().expect("an established connection has a keep-alive");
+        assert!(tcp::poll_sleep_until(dl), "nothing due earlier yet");
+        KICKS.store(0, Ordering::SeqCst);
+        assert!(tcp::send_data(idx, b"x") > 0);
+        let kicked = KICKS.load(Ordering::SeqCst);
+        // Acknowledge it, then the same while the task runs.
+        deliver(&segment(42500, 7205, theirs, ours.wrapping_add(1), 0x10, 4096, &[]));
+        tcp::poll_running();
+        KICKS.store(0, Ordering::SeqCst);
+        assert!(tcp::send_data(idx, b"y") > 0);
+        let running = KICKS.load(Ordering::SeqCst);
+        assert!(kicked >= 1, "an RTO armed under a far wake did not kick the poll task");
+        assert_eq!(running, 0, "a deadline armed while the poll task runs needs no kick");
+    }
+
     /// The fast-retransmit path, reached after three duplicate ACKs
     /// (RFC 5681 §3.2) rather than by the timer.
     ///

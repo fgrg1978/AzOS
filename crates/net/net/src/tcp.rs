@@ -1135,6 +1135,7 @@ pub fn flush_held_acks(due_only: bool) -> usize {
                     still_held = true;
                     continue;
                 }
+                if due_only { timer_fired(c.ack_due, now); }
                 out[n] = Some(c.take_ack());
                 n += 1;
             }
@@ -1837,6 +1838,13 @@ fn resolve_peer_mac<F: FnMut()>(
 /// RFC 5681 §3.1) and by the send ring. Each byte sent is copied into the ring
 /// once, and every retransmission is cut from there.
 pub fn send_data(idx: usize, data: &[u8]) -> i32 {
+    let n = send_data_inner(idx, data);
+    // The first byte in flight starts the retransmission timer.
+    if n > 0 { note_conn(idx); }
+    n
+}
+
+fn send_data_inner(idx: usize, data: &[u8]) -> i32 {
     if idx >= TCP_MAX_CONNS { return -1; }
     let now = azos_drv_sys::timebase::now();
     // Reserve the range and copy it into the send ring under ONE lock hold:
@@ -2100,6 +2108,13 @@ pub fn send_all_until<F: FnMut()>(
 
 /// Read received data from a connection.  Returns bytes read, 0 if none.
 pub fn recv(idx: usize, buf: &mut [u8]) -> i32 {
+    let n = recv_inner(idx, buf);
+    // A held window update has a delayed-ACK deadline.
+    if n > 0 { note_conn(idx); }
+    n
+}
+
+fn recv_inner(idx: usize, buf: &mut [u8]) -> i32 {
     if idx >= TCP_MAX_CONNS { return -1; }
     let (n, params, kick) = {
         let mut t = TCP.lock();
@@ -2241,7 +2256,8 @@ fn send_fin_and_advance(idx: usize) -> bool {
 
 pub fn close(idx: usize) {
     if idx >= TCP_MAX_CONNS { return; }
-    if send_fin_and_advance(idx) { return; }
+    // The FIN's retransmission timer (or FIN-WAIT/LAST-ACK's).
+    if send_fin_and_advance(idx) { note_conn(idx); return; }
     // For any other state, force close: tell the peer nothing, free the slot.
     let mut t = TCP.lock();
     t.conns[idx].state = TcpState::Closed;
@@ -2308,6 +2324,14 @@ pub fn accept(local_port: u16) -> i32 {
 /// Unlike UDP the TCP checksum is mandatory (RFC 793 §3.1): there is no
 /// "sender opted out" encoding, so any mismatch is an unconditional drop.
 pub fn handle_checked(src_ip: &[u8; 4], dst_ip: &[u8; 4], data: &[u8]) {
+    handle_checked_inner(src_ip, dst_ip, data);
+    // A segment taken outside the net poll task (loopback delivery from a
+    // sender's syscall, a `net_poll` from the shell or a boot smoke) may
+    // have armed a TCP deadline the sleeping poll task does not know about.
+    note_all();
+}
+
+fn handle_checked_inner(src_ip: &[u8; 4], dst_ip: &[u8; 4], data: &[u8]) {
     if data.len() < TCP_HDR_MIN { return; }
     // TCP carries no length field of its own — the segment length comes from
     // the IP total length, i.e. exactly what `ip::handle` sliced for us.
@@ -4101,6 +4125,131 @@ fn timer_kick() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TCP deadlines on the kernel timer (wave 15: the stack is woken when a timer
+// falls due, not by the net poll task's cadence)
+// ---------------------------------------------------------------------------
+
+/// When the net poll task will next wake by itself, in ticks; 0 while it
+/// runs (it recomputes its deadline before sleeping, so nothing it arms
+/// needs a kick). Set by [`poll_sleep_until`] / [`poll_running`].
+static POLL_WAKE_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// TCP timer events that fired (delayed ACK, RTO, SYN/FIN retry, keep-alive)
+/// and the latest any of them fired past its deadline, in ticks: how well the
+/// stack is woken at its deadlines (QEMU rows read them with gdb).
+static TIMER_FIRED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static TIMER_LATE_MAX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn timer_fired(due: u64, now: u64) {
+    use core::sync::atomic::Ordering;
+    TIMER_FIRED.fetch_add(1, Ordering::Relaxed);
+    TIMER_LATE_MAX.fetch_max(now.saturating_sub(due), Ordering::Relaxed);
+}
+
+/// `(timer events fired, latest past its deadline in ticks)`.
+pub fn timer_lateness() -> (u64, u64) {
+    use core::sync::atomic::Ordering;
+    (TIMER_FIRED.load(Ordering::Relaxed), TIMER_LATE_MAX.load(Ordering::Relaxed))
+}
+
+/// The earliest tick at which [`tcp_tick`] has work for connection `c`: a
+/// held ACK's delay, the SYN/FIN retry, FIN-WAIT-2's timeout, the persist
+/// probe, the retransmission timeout, TIME-WAIT's end, the keep-alive
+/// probe. It mirrors the conditions of `tcp_timers` (a deadline here never
+/// lies later than the one `tcp_tick` acts on; 0 means "at once": a persist
+/// cycle to start or reset, which `tcp_tick` does on its next run).
+fn conn_deadline(c: &TcpConn) -> Option<u64> {
+    let mut d: Option<u64> = None;
+    let mut at = |t: u64| d = Some(d.map_or(t, |x: u64| x.min(t)));
+    // Only where `flush_held_acks` sends it; it drops the rest itself.
+    if c.ack_pending && matches!(c.state, TcpState::Established | TcpState::CloseWait
+                                 | TcpState::FinWait1 | TcpState::FinWait2) {
+        at(c.ack_due);
+    }
+    let ms = |v: u64| v * TICKS_PER_MS;
+    match c.state {
+        TcpState::Closed | TcpState::Listen => {}
+        TcpState::SynSent | TcpState::SynRcvd => at(c.retx_time + ms(SYN_RETRY_INTERVAL_MS)),
+        TcpState::FinWait2 => at(c.retx_time + ms(FIN_WAIT2_TIMEOUT_MS)),
+        TcpState::FinWait1 | TcpState::LastAck if c.flight() == 0 =>
+            at(c.retx_time + ms(SYN_RETRY_INTERVAL_MS)),
+        _ => {
+            let est = matches!(c.state, TcpState::Established | TcpState::CloseWait);
+            if est && c.remote_window == 0 {
+                if c.persist_time == 0 {
+                    at(0);
+                } else {
+                    let iv = if c.persist_ticks == 0 { ms(PERSIST_INITIAL_MS) } else { c.persist_ticks };
+                    at(c.persist_time + iv);
+                }
+            } else {
+                if c.persist_ticks != 0 { at(0); }
+                if c.flight() != 0 { at(c.retx_time + c.rto_ticks); }
+                if c.state == TcpState::TimeWait { at(c.time_wait_start + ms(TIME_WAIT_MS)); }
+                if est && c.flight() == 0 { at(c.last_activity + KEEPALIVE_INTERVAL_TICKS); }
+            }
+        }
+    }
+    d
+}
+
+/// The earliest tick at which [`tcp_tick`] has work on any connection, or
+/// `None` when no clock can give it any. The net poll task sleeps until
+/// this (bounded by its ceiling), on the kernel's timer: no periodic tick.
+pub fn next_deadline() -> Option<u64> {
+    let t = TCP.lock();
+    t.conns.iter().filter_map(conn_deadline).min()
+}
+
+/// The net poll task is running: nothing armed now needs a kick.
+pub fn poll_running() {
+    POLL_WAKE_AT.store(0, core::sync::atomic::Ordering::SeqCst);
+}
+
+/// The net poll task is about to sleep until `dl`. Publishes it, then looks
+/// once more: a deadline armed after the caller's own [`next_deadline`]
+/// but before this store was not kicked, and is seen here instead. Returns
+/// `false` (do not sleep; run again) when one earlier than `dl` exists.
+/// One armed after the store kicks the task ([`set_timer_kick`]), which
+/// is stamped if the task has not blocked yet.
+pub fn poll_sleep_until(dl: u64) -> bool {
+    use core::sync::atomic::Ordering;
+    POLL_WAKE_AT.store(dl.max(1), Ordering::SeqCst);
+    match next_deadline() {
+        Some(d) if d < dl => { POLL_WAKE_AT.store(0, Ordering::SeqCst); false }
+        _ => true,
+    }
+}
+
+/// Kick the poll task if `d` falls before its next wake.
+fn note_deadline(d: Option<u64>) {
+    let Some(d) = d else { return };
+    let w = POLL_WAKE_AT.load(core::sync::atomic::Ordering::SeqCst);
+    if w != 0 && d < w {
+        timer_kick();
+    }
+}
+
+/// [`note_deadline`] for connection `idx`, from a caller outside the poll
+/// task that just changed it (O(1); nothing while the poll task runs).
+fn note_conn(idx: usize) {
+    if idx >= TCP_MAX_CONNS
+        || POLL_WAKE_AT.load(core::sync::atomic::Ordering::SeqCst) == 0
+    {
+        return;
+    }
+    let d = { let t = TCP.lock(); conn_deadline(&t.conns[idx]) };
+    note_deadline(d);
+}
+
+/// [`note_deadline`] over every connection (the receive path, which does
+/// not say which connection it touched; nothing while the poll task runs).
+fn note_all() {
+    if POLL_WAKE_AT.load(core::sync::atomic::Ordering::SeqCst) == 0 { return; }
+    note_deadline(next_deadline());
+}
+
 pub fn tcp_tick() {
     // Delayed ACKs whose `TCP_DELACK_TICKS` ran out (N6). Before the timers
     // below, so a retransmission decided this tick is not preceded by an ACK
@@ -4152,6 +4301,7 @@ fn tcp_timers() {
         if state == TcpState::SynSent || state == TcpState::SynRcvd {
             let interval = SYN_RETRY_INTERVAL_MS * TICKS_PER_MS;
             if now.saturating_sub(retx_time) >= interval {
+                timer_fired(retx_time + interval, now);
                 if retx_count >= SYN_MAX_RETRIES {
                     // Budget spent — free the slot.
                     let mut t = TCP.lock();
@@ -4363,6 +4513,7 @@ fn tcp_timers() {
         // Also reached from FinWait1 and LastAck while data is in flight; see
         // the teardown branch above.
         if outstanding && now.saturating_sub(retx_time) >= rto {
+            timer_fired(retx_time + rto, now);
             if retx_count >= RETX_MAX_ATTEMPTS {
                 // Connection is dead — close it
                 let mut t = TCP.lock();
@@ -4465,6 +4616,7 @@ fn tcp_timers() {
         // Established).
         if (state == TcpState::Established || state == TcpState::CloseWait) && !outstanding {
             if now.saturating_sub(last_act) >= KEEPALIVE_INTERVAL_TICKS {
+                timer_fired(last_act + KEEPALIVE_INTERVAL_TICKS, now);
                 if ka_probes >= KEEPALIVE_MAX_PROBES {
                     // No response — close connection
                     let mut t = TCP.lock();

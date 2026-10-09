@@ -350,7 +350,7 @@ config NET_RX_IRQ
       virtio-pci NIC with an MSI route was already interrupt-driven.
 
       n = the poll task wakes every NET_POLL_PERIOD_US whatever the
-      traffic.  Cost of y: an interrupt per RX burst instead of a timer
+      traffic.  Either way TCP timers run at their own deadlines.  Cost of y: an interrupt per RX burst instead of a timer
       wake per period; a missed interrupt is bounded by
       NET_IRQ_IDLE_CEILING_MS.
 
@@ -380,24 +380,16 @@ config NET_POLL_PERIOD_US
       RX interrupt.  Cost: one task wake per period; RX latency up to one
       period.
 
-config NET_IRQ_TICK_PERIOD_MS
-    int "net poll task TCP-timer period with an RX interrupt (ms)"
-    range 1 10000
-    default 100
-    help
-      kernel/src/tasks/net_poll.rs (was TIMER_FREQ / 10): with an RX
-      interrupt the poll task still wakes this often while a TCP connection
-      has a timer running.  Cost: one wake per period while TCP is busy;
-      lower tightens TCP timer accuracy.
-
 config NET_IRQ_IDLE_CEILING_MS
     int "net poll task longest sleep with an RX interrupt (ms)"
     range 10 3600000
     default 60000
     help
       kernel/src/tasks/net_poll.rs (was TIMER_FREQ * 60): with an RX
-      interrupt and no TCP timer running, the longest the poll task
-      sleeps.  It bounds a lost RX interrupt: a frame whose interrupt never
-      arrives is still drained within this long.  Cost: one wake per period.
+      interrupt (or no NIC) and no TCP deadline pending, the longest the
+      poll task sleeps; TCP deadlines (delayed ACK, RTO, persist,
+      keep-alive) wake it on time on the kernel timer.  It bounds a lost
+      RX interrupt: a frame whose interrupt never arrives is still drained
+      within this long.  Cost: one wake per period.
 
 endmenu # Network

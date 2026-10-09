@@ -33,16 +33,18 @@ use crate::*;
 /// Three modes, chosen once at task start from `virtio::net::irq_driven()`
 /// and `net_device::is_ready()` (the NIC backend is selected once, by
 /// `net_init()`, before this task is created):
-/// - Poll mode (a NIC with no interrupt reaching this task, e.g. virtio-mmio):
-///   the loop runs on the `NET_POLL_INTERVAL` timer alone.
-/// - IRQ mode (virtio-pci with MSI/MSI-X, both ISAs): an RX MSI wakes this
-///   task through [`net_msi_wake`]; the timer only drives `tcp_tick`, and only
-///   while `tcp::tick_needed()` is true. A connection that leaves
-///   `Closed`/`Listen` elsewhere wakes it through [`net_timer_kick`].
-/// - No NIC: nothing can arrive to poll for, so the timer is armed exactly as
-///   in IRQ mode, only while `tcp::tick_needed()` (a loopback connection to
-///   our own address still needs `tcp_tick`), and [`net_timer_kick`] wakes
-///   it. Measured 2026-09-28, riscv64 `--features qemu`, -smp 1, no NIC,
+/// In every mode the task sleeps until the nearest TCP deadline
+/// (`tcp::next_deadline`: delayed ACK, RTO, SYN/FIN retry, persist,
+/// TIME-WAIT, keep-alive) on the kernel's timer, and a deadline armed
+/// elsewhere that falls earlier wakes it through [`net_timer_kick`]
+/// (`tcp::poll_sleep_until`). On top of that:
+/// - Poll mode (a NIC with no interrupt reaching this task): never longer
+///   than `NET_POLL_INTERVAL`.
+/// - IRQ mode (virtio-pci with MSI/MSI-X, or the virtio-mmio line, Kconfig
+///   `NET_RX_IRQ`): an RX interrupt wakes this task through [`net_msi_wake`];
+///   with no TCP deadline it sleeps up to the self-heal ceiling.
+/// - No NIC: as IRQ mode (a loopback connection to our own address still
+///   has TCP deadlines). Measured 2026-09-28, riscv64 `--features qemu`, -smp 1, no NIC,
 ///   30 s idle: 17 900 iterations (596/s) with the 1 ms timer, 0 without.
 ///   Timer interrupts did not move measurably (603/s -> 616/s): `rt-motor`
 ///   and `flight-ctrl` also sleep 1 ms, and the tick coalesces the three.
@@ -77,13 +79,6 @@ pub(crate) fn net_poll_task(_: usize) {
     /// Kconfig `NET_POLL_PERIOD_US` (default 1000: the 1 ms above).
     const NET_POLL_INTERVAL: u64 =
         azos_drv_base::platform::hw::TIMER_FREQ * azos_limits::NET_POLL_PERIOD_US / 1_000_000;
-    /// virtio-pci IRQ mode: RX wakes this task through [`net_msi_wake`], so
-    /// the timer only drives `tcp_tick` (retransmission/keep-alive
-    /// deadlines, which read the clock themselves) — 10 Hz, and only while
-    /// `tcp::tick_needed()` says a connection has a clock-driven deadline.
-    /// Kconfig `NET_IRQ_TICK_PERIOD_MS` (default 100).
-    const NET_TICK_IRQ_MODE: u64 =
-        azos_drv_base::platform::hw::TIMER_FREQ * azos_limits::NET_IRQ_TICK_PERIOD_MS / 1000;
     /// IRQ mode or no NIC, with no TCP deadline pending: nothing but an RX
     /// MSI or a [`net_timer_kick`] can give this task work, so it sleeps
     /// this long.
@@ -104,12 +99,11 @@ pub(crate) fn net_poll_task(_: usize) {
     // Arm the timer only while `tcp_tick` has a deadline: in IRQ mode an RX
     // MSI brings frames, and with no NIC no frame can arrive at all.
     let tick_on_demand = irq_mode || no_nic;
-    if tick_on_demand {
-        // A connection leaving `Closed`/`Listen` outside this task (a
-        // `connect` from a syscall, a SYN drained by another reader) wakes
-        // this task, which then re-reads `tick_needed` below.
-        azos_net::tcp::set_timer_kick(net_timer_kick);
-    }
+    // A TCP deadline armed outside this task (a `connect`, the first byte
+    // of a `send`, a held window update from `recv`, a FIN from `close`,
+    // a segment delivered by loopback) earlier than this task's wake kicks
+    // it (`tcp::poll_sleep_until`), on every NIC mode.
+    azos_net::tcp::set_timer_kick(net_timer_kick);
     if no_nic {
         kprintln!("[NET-POLL] no NIC ready: no poll timer, tcp_tick only while a connection needs it");
     }
@@ -124,6 +118,9 @@ pub(crate) fn net_poll_task(_: usize) {
     let mut announced = !azos_drv_virtio::virtio::net::irq_driven();
 
     loop {
+        // Running: TCP deadlines armed from here on are picked up by the
+        // computation below, so they need no kick.
+        azos_net::tcp::poll_running();
         let more = azos_net::net_poll();
         // AR: TCP tick — drive retransmissions, TIME-WAIT, keep-alive timers.
         // One TX batch: the retransmissions it sends share doorbells.
@@ -139,23 +136,23 @@ pub(crate) fn net_poll_task(_: usize) {
             azos_sched::task_yield();
             continue;
         }
-        let period = if !tick_on_demand {
-            NET_POLL_INTERVAL
-        } else if azos_net::tcp::tick_needed() {
-            NET_TICK_IRQ_MODE
-        } else {
-            NET_IDLE_CEILING_IRQ_MODE
+        // The next wake: the nearest TCP deadline (delayed ACK, RTO, SYN/FIN
+        // retry, persist, TIME-WAIT, keep-alive — `tcp::next_deadline`), on
+        // the kernel's timer, bounded by the poll period (polled NIC) or by
+        // the self-heal ceiling (RX interrupt, or no NIC). TCP timing no
+        // longer depends on this task's cadence: a 40 ms delayed ACK leaves
+        // at 40 ms, not at the next 100 ms tick.
+        let now = azos_drv_sys::timebase::now();
+        let ceiling = now + if !tick_on_demand { NET_POLL_INTERVAL } else { NET_IDLE_CEILING_IRQ_MODE };
+        let dl = match azos_net::tcp::next_deadline() {
+            Some(d) => d.max(now + 1).min(ceiling),
+            None => ceiling,
         };
-        // N6: a held ACK (a `recv` window update, or one the pass flush
-        // leaves to the timer) must leave within TCP_DELACK_MS, not at the
-        // 100 ms IRQ-mode tick.
-        let period = if azos_net::tcp::acks_held() {
-            period.min(azos_net::tcp::delack_ticks().max(1))
-        } else {
-            period
-        };
+        if !azos_net::tcp::poll_sleep_until(dl) {
+            // A nearer deadline was armed meanwhile: run again.
+            continue;
+        }
         NET_POLL_ITERS.fetch_add(1, Ordering::Relaxed);
-        let dl = azos_drv_sys::timebase::now() + period;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
         if !announced {
             let rx = azos_drv_virtio::virtio::net::rx_irq_count();
@@ -196,10 +193,10 @@ pub(crate) fn net_msi_wake() -> bool {
     woke
 }
 
-/// Registered with `tcp::set_timer_kick` in IRQ mode: a TCP connection left
-/// `Closed`/`Listen`, so `tcp_tick` has deadlines again. Same wake as
-/// [`net_msi_wake`] (stamped if the task is not asleep yet, so a kick that
-/// lands between `tick_needed` and `task_block` is not lost), counted apart.
+/// Registered with `tcp::set_timer_kick`: a TCP deadline earlier than this
+/// task's wake was armed elsewhere. Same wake as [`net_msi_wake`] (stamped
+/// if the task is not asleep yet, so a kick that lands between
+/// `poll_sleep_until` and `task_block` is not lost), counted apart.
 fn net_timer_kick() {
     let tid = NET_POLL_TID.load(Ordering::Acquire);
     let woke = tid != 0 && azos_sched::scheduler::wake_task_by_tid(

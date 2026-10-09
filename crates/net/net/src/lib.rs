@@ -328,6 +328,10 @@ pub fn net_info() {
             q.tx_frames, q.tx_doorbells, q.tx_skipped, q.tx_dropped,
             q.rx_frames, q.rx_doorbells, q.rx_skipped, q.irqs);
     }
+    let (fired, late) = tcp::timer_lateness();
+    let tpus = (azos_drv_sys::timebase::TIMER_FREQ / 1_000_000).max(1);
+    azos_drv_sys::kconsoleln!("[NET]       tcp timers: {} fired, latest {} us past its deadline",
+        fired, late / tpus);
 }
 
 /// Set a static IP configuration.
