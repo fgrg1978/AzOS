@@ -3971,6 +3971,109 @@ mod brain_tx_carry {
     }
 }
 
+// ── Wave 15 (B1): the behavior task enqueues, `brain-tx` drains ───────────
+#[cfg(test)]
+mod brain_tx_queue {
+    use super::brain_tx::{Lane, TxQueue};
+
+    const STALL: u64 = 2_000;
+
+    fn msg(tag: u8, len: usize) -> Vec<u8> {
+        (0..len).map(|i| tag.wrapping_add(i as u8)).collect()
+    }
+
+    /// Telemetry can never take the room a control message needs: with the
+    /// queue full up to the reserve, telemetry is refused (counted) and a
+    /// control message is still admitted.
+    #[test]
+    fn telemetry_never_fills_the_control_reserve() {
+        let mut q = TxQueue::<1024>::new(256);
+        let mut n = 0;
+        while q.push(Lane::Telemetry, &msg(1, 100), 0) {
+            n += 1;
+        }
+        assert_eq!(n, 7, "7 x 100 B fit below the 256 B reserve of 1024");
+        assert_eq!(q.telemetry_dropped, 1);
+        assert!(q.admits(Lane::Control, 200));
+        assert!(q.push(Lane::Control, &msg(2, 200), 0), "control refused behind telemetry");
+        assert_eq!(q.control_refused, 0);
+        assert_eq!(q.admitted, [1, 7]);
+    }
+
+    /// The canary bucket: with no reserve (the single-lane queue this
+    /// replaces), telemetry fills the queue and the control message is
+    /// refused — the property above is the reserve's, not the queue's.
+    #[test]
+    fn without_a_reserve_telemetry_starves_control() {
+        let mut q = TxQueue::<1024>::new(0);
+        while q.push(Lane::Telemetry, &msg(1, 100), 0) {}
+        assert!(!q.push(Lane::Control, &msg(2, 200), 0));
+        assert_eq!(q.control_refused, 1);
+    }
+
+    /// One FIFO of wire bytes: the order of admission is the order on the
+    /// wire (sealed records may not be reordered), across the wrap, with a
+    /// socket that takes odd amounts.
+    #[test]
+    fn bytes_leave_in_admission_order_across_the_wrap() {
+        let mut q = TxQueue::<300>::new(50);
+        let mut wire = Vec::new();
+        let mut expect = Vec::new();
+        let mut take = [7usize, 0, 13, 100, 1, 64].iter().cycle();
+        for k in 0..40u8 {
+            let lane = if k % 5 == 0 { Lane::Control } else { Lane::Telemetry };
+            let m = msg(k, 37 + (k as usize * 11) % 60);
+            if q.push(lane, &m, k as u64) {
+                expect.extend_from_slice(&m);
+            }
+            q.drain(|b| { let n = (*take.next().unwrap()).min(b.len()); wire.extend_from_slice(&b[..n]); n }, || k as u64, STALL);
+        }
+        while !q.is_empty() {
+            q.drain(|b| { wire.extend_from_slice(b); b.len() }, || 0, STALL);
+        }
+        assert_eq!(wire, expect);
+    }
+
+    /// A socket that takes nothing for the stall bound marks the queue
+    /// stalled; any progress clears it.
+    #[test]
+    fn a_queue_the_socket_does_not_take_stalls() {
+        let mut q = TxQueue::<512>::new(64);
+        assert!(q.push(Lane::Control, &msg(3, 80), 100));
+        assert_eq!(q.drain(|_| 0, || 100 + STALL - 1, STALL), 0);
+        assert!(!q.is_stalled());
+        q.drain(|_| 0, || 100 + STALL, STALL);
+        assert!(q.is_stalled());
+        q.drain(|b| b.len().min(10), || 100 + STALL + 1, STALL);
+        assert!(!q.is_stalled(), "progress must clear the stall");
+        assert_eq!(q.pending_len(), 0);
+    }
+
+    /// The stall clock starts at the push that made the queue non-empty,
+    /// not at the last drain of an earlier, finished message.
+    #[test]
+    fn the_stall_clock_starts_at_the_first_queued_byte() {
+        let mut q = TxQueue::<512>::new(64);
+        assert!(q.push(Lane::Telemetry, &msg(4, 20), 0));
+        q.drain(|b| b.len(), || 0, STALL);
+        assert!(q.push(Lane::Telemetry, &msg(5, 20), 10 * STALL));
+        q.drain(|_| 0, || 10 * STALL + 1, STALL);
+        assert!(!q.is_stalled());
+    }
+
+    /// A new session forgets the bytes, keeps the per-boot counters.
+    #[test]
+    fn reset_forgets_bytes_not_counters() {
+        let mut q = TxQueue::<256>::new(200);
+        assert!(q.push(Lane::Telemetry, &msg(6, 50), 0));
+        assert!(!q.push(Lane::Telemetry, &msg(6, 50), 0));
+        q.reset();
+        assert!(q.is_empty() && !q.is_stalled());
+        assert_eq!(q.telemetry_dropped, 1);
+        assert!(q.front().is_empty());
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Q1.3 / Q1.4 (owner decisions, 2026-09-25) — the actuation gate fails
 // closed with no gate installed, and an admitted actuation command gets a

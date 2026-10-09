@@ -2171,6 +2171,13 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         azos_sched::BEHAVIOR_PRIORITY, 2);
     #[cfg(feature = "domain-robot")]
     kprintln!("[SCHED] Created behavior task (subsumption L0-L3) [hart 2]");
+    // Wave 15 (B1): the behavior task only queues its brain-link messages;
+    // this task puts them on the socket. Below behavior on its hart, so a
+    // closed TCP window never delays the subsumption loop.
+    #[cfg(feature = "domain-robot")]
+    azos_sched::task_create_affinity(
+        "brain-tx", brain_tx_task, 0,
+        azos_limits::BRAIN_TX_PRIORITY as u32, 2);
     // C1: camera frames on a brain connection of their own, only when
     // CONFIG.INI sets `behavior_camera_port` (applied at boot, above). Below
     // behavior on the same hart, so a camera send, capture or handshake never

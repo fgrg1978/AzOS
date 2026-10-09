@@ -53,22 +53,19 @@ fn camera_packet(cam: &mut CameraPkt) -> usize {
 
 /// One camera frame on the control connection's established RFC-0019 link,
 /// when no camera connection is configured: `camera_packet` through
-/// `send_framed` — envelope, then sealed as a multi-record message. Returns
-/// bytes sent, 0 when there was no frame.
+/// `enqueue_framed` on the telemetry lane — envelope, then sealed as a
+/// multi-record message into the `brain-tx` queue. Nothing is captured
+/// unless the queue has room for the largest frame above the control
+/// reserve (wave 15, B1). Returns the wire bytes queued, 0 when there was no
+/// frame or no room.
 pub(crate) fn send_camera_sealed(
-    fd: usize,
     link: &mut Option<azos_behavior::encrypt_link::EncryptLink>,
     salt: &mut u64,
-) -> i32 {
+) -> usize {
+    use azos_behavior::brain_tx::Lane;
     static mut CAM: CameraPkt = CameraPkt::new();
-    if link.is_none() {
+    if link.is_none() || !brain_tx_has_room(Lane::Telemetry, CAMERA_WIRE_MAX) {
         return 0;
-    }
-    // A sealed message still owed to the socket goes first; while any of it
-    // remains, no frame is captured and nothing is sealed.
-    let drained = brain_tx_drain(fd) as i32;
-    if !brain_tx_carry().is_empty() {
-        return drained;
     }
     // SAFETY: only the behavior task calls this function.
     let cam: &mut CameraPkt = unsafe { &mut *core::ptr::addr_of_mut!(CAM) };
@@ -76,7 +73,7 @@ pub(crate) fn send_camera_sealed(
     if pkt_len == 0 {
         return 0;
     }
-    send_framed(fd, &cam.pkt[..pkt_len], link, salt)
+    enqueue_framed(Lane::Telemetry, &cam.pkt[..pkt_len], link, salt)
 }
 
 /// C1: camera frames on a brain connection of their own, to

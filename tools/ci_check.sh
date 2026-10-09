@@ -5940,8 +5940,10 @@ par_row ml_service_absent_row "aarch64 ml service absent"  arm ""               
 # `rt_motor_task`'s watchdog (no motor command for 500 ms -> SAFE STOP) writes
 # a `SAFETY_RT_WATCHDOG` (0x19) record on its transitions only: the first SAFE
 # STOP (durable), the first clear, then one repeats record per window that saw
-# more (`RtWatchdogReports`, crates/core/actuation/src/logger.rs). The boot has
-# no brain, so the watchdog flaps every couple of seconds; `rtwd-window-smoke`
+# more (`RtWatchdogReports`, crates/core/actuation/src/logger.rs).
+# `rtwd-window-smoke` withholds the behavior task's motor command 0.8 s of
+# every 2 s, so the watchdog flaps on a schedule (before wave 15 B1 the
+# brainless boot's 2 s dial stalls in the behavior loop did that), and
 # closes a window every 5 s instead of 60. Once the console shows a window's
 # count the boot stops and the recorder file is read off the volume with
 # mtools, from the host:

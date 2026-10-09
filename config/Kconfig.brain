@@ -30,4 +30,88 @@ config MULTISTREAM_SCHED_PRIORITY
       with the bench_boot capture + dashboard. Outside DOMAIN_ROBOT the
       option is hidden and reads as n (FIFO).
 
+config BRAIN_TX_QUEUE_BYTES
+    int "Brain link: control-socket transmit queue (bytes)"
+    range 4096 262144
+    default 12288 if PROFILE_EMBEDDED
+    default 32768 if PROFILE_FLEET
+    default 16384
+    help
+      Wave 15 (IO-QUEUES-AUDIT B1). The behavior task seals each message
+      for the brain into this queue and returns; the `brain-tx` task
+      (BRAIN_TX_PRIORITY) puts it on the socket, waiting for the TCP window
+      there and not in the subsumption loop. One FIFO of sealed wire bytes
+      (RFC-0019 records cannot be dropped or reordered once sealed).
+
+      Costs this many bytes of .bss. A camera frame sent on the control
+      connection (no `behavior_camera_port`) is about 8.5 KiB and is only
+      admitted with that much room above BRAIN_TX_CONTROL_RESERVE_BYTES;
+      below ~10 KiB the control connection carries no camera frames.
+      Raise it for a slow or lossy link where telemetry frames are dropped
+      (the `[BRAIN-TX]` counters), lower it on a RAM-tight board that sends
+      no camera frames on this connection.
+
+config BRAIN_TX_CONTROL_RESERVE_BYTES
+    int "Brain link: queue bytes only control messages may use"
+    range 256 65536
+    default 1024
+    help
+      Telemetry (sensor and camera frames) is admitted only while this much
+      of BRAIN_TX_QUEUE_BYTES stays free, so control messages (the status
+      packet, an RFC-0019 REJECT) are never refused because telemetry
+      filled the queue. A refused telemetry frame is dropped before it is
+      sealed and counted. No RAM of its own. Raise it if control messages
+      grow beyond ~1 KiB sealed.
+
+config BRAIN_TX_PRIORITY
+    int "Brain link: priority of the brain-tx sender task"
+    range 12 30
+    default 15
+    help
+      The task that dials the brain for the behavior task (DHCP, connect,
+      the RFC-0019 handshake) and drains BRAIN_TX_QUEUE_BYTES to the
+      socket. Below the behavior task (14) on the same hart, so a send or a
+      dial never delays the subsumption loop; above the default priority
+      (16) so the queue does not wait behind background work. Not in the
+      RT band (12 and below): it waits on the network.
+
+config BRAIN_TX_IDLE_PARK_MS
+    int "Brain link: brain-tx park with an empty queue (ms)"
+    range 10 10000
+    default 100
+    help
+      How long the sender sleeps when nothing is queued. The behavior task
+      wakes it at the end of each tick that queued bytes, so this only
+      bounds the delay of a lost wake. One timer wake per period.
+
+config BRAIN_TX_STALL_MS
+    int "Brain link: end the session after the socket takes nothing (ms)"
+    range 1100 60000
+    default 2000
+    help
+      Queued bytes the socket has taken none of for this long end the
+      session (fail closed); the next tick dials a fresh handshake. Above
+      one TCP retransmission timeout (1000 ms) so one lost segment does not
+      end a healthy session; below the brain's shortest comms timeout
+      (3 s, drone) so the brain does not declare the link lost first.
+
+config BRAIN_SEND_BUDGET_US
+    int "Brain link: longest blocking send (us)"
+    range 10000 5000000
+    default 500000
+    help
+      Bound of the blocking sends left outside the queue: the RFC-0019
+      handshake's frames (HELLO reply, REJECT), sent by the brain-tx task
+      while it dials (the behavior task never waits for them). The order of
+      the motor watchdog (500 ms without a command SAFE-STOPs).
+
+config BRAIN_NET_WAIT_POLL_MS
+    int "Brain link: network wait poll period (ms)"
+    range 1 100
+    default 1
+    help
+      The sleep between polls of a brain-link network wait (handshake
+      frames, ARP, the sender's closed TCP window). Shorter: lower latency
+      after the event, more timer wakes (one per period while waiting).
+
 endmenu # Brain Server Link

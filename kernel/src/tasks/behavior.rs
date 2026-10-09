@@ -43,31 +43,19 @@ pub(crate) fn behavior_task(_: usize) {
     kprintln!("[BEHAVIOR]  Layers: L0=estop L1=avoid L2=vla L3=explore");
     kprintln!("[BEHAVIOR] ========================================");
 
-    // DHCP auto-discovery (if dhcp=1 in CONFIG.INI)
-    if azos_config::CFG_NET_DHCP.load(Ordering::Relaxed) != 0 {
-        kprintln!("[BEHAVIOR] Running DHCP auto-discovery...");
-        let ok = azos_net::dhcp::dhcp_start(net_wait_sleep);
-        if !ok {
-            azos_drv_sys::kwarn!("[BEHAVIOR] DHCP failed — using static IP config");
-        }
-    }
+    // DHCP auto-discovery (dhcp=1 in CONFIG.INI) runs in the brain-tx task,
+    // before its first dial (wave 15, B1): a wait on the network.
 
     // TCP connection state (local to this task)
     let mut tcp_fd: i32 = -1;
     let mut tcp_connected = false;
-    // Local port of the next brain dial, from the dynamic range (RFC 6335).
-    // A fixed port names the same 4-tuple on every redial, and `tcp::connect`
-    // refuses a 4-tuple whose previous connection is still closing; a fresh
-    // port reconnects at once and leaves that connection to finish. Seeded
-    // from the clock so a reboot does not redial a 4-tuple the brain may still
-    // hold open.
-    let mut brain_port_seq: u16 = (azos_drv_sys::timebase::now() % 16_384) as u16;
+    // The dial (its local port, the handshake) is brain-tx's (`brain_dial`).
     // RFC-0019 encrypted link: established per TCP connection (fresh ephemeral
     // keys each time → forward secrecy ON A SEEDED BOOT ONLY — see
     // `derive_ephemeral_priv`'s doc; an unseeded, non-enforced build still
     // establishes a link with no such property), `None` when plaintext/HMAC-only.
-    // `enc_salt` feeds the ephemeral-key + nonce derivation so successive
-    // connections/packets don't reuse entropy.
+    // `enc_salt` feeds the record-nonce derivation so successive packets
+    // don't reuse entropy (the handshake's salt is brain-tx's).
     let mut link: Option<azos_behavior::encrypt_link::EncryptLink> = None;
     let mut enc_salt: u64 = 0;
     // RFC-0019: the wall-clock deadline for the established link's next rekey.
@@ -171,164 +159,47 @@ pub(crate) fn behavior_task(_: usize) {
         if azos_behavior::remote_is_enabled() {
             // Network polling is handled by the dedicated net-poll task (Phase U1).
 
-            // Connect if not yet connected
+            // Connect if not yet connected. Wave 15 (B1): brain-tx dials
+            // and runs the RFC-0019 handshake (`brain_dial`); this loop only
+            // asks for a session and adopts the one it publishes, so it
+            // never waits for the network.
             if !tcp_connected {
                 let ip   = azos_behavior::remote_server_ip();
                 let port = azos_behavior::remote_server_port();
-                if port > 0 {
-                    // connect_with_yield resolves ARP first, then sends SYN —
-                    // avoids the "first SYN dropped silently due to ARP miss
-                    // → close-and-reconnect loop" pattern that previously cost
-                    // ~1.5-2 s on every initial connection under SLIRP/QEMU.
-                    let src_port = 49_152 + brain_port_seq % 16_384;
-                    brain_port_seq = brain_port_seq.wrapping_add(1);
-                    // The ARP wait sleeps between polls (`net_wait_sleep`):
-                    // `resolve_peer_mac` bounds it by CONNECT_ARP_BUDGET_US.
-                    tcp_fd = azos_net::tcp::connect_with_yield(
-                        ip, port, src_port, net_wait_sleep,
-                    );
-                    if tcp_fd >= 0 {
-                        // `tcp::connect` only sends SYN; it returns immediately
-                        // with state = SynSent.  We MUST wait for the handshake
-                        // to advance to Established before sending the first
-                        // StatusPacket — otherwise `send_data` returns -1, the
-                        // end-of-iteration `conn_state` check marks the link as
-                        // dead, the next iteration calls `connect` again and
-                        // we burn TCP_MAX_CONNS slots in a loop without ever
-                        // pushing a single byte to the brain.  Yield-poll with
-                        // a hard cap so a peer that refuses to ACK doesn't
-                        // hang the behavior task forever.
-                        //
-                        // Cap by WALL-CLOCK time, not yield count.  yield is
-                        // cheap (just gives CPU to the next ready task), so a
-                        // pure yield count caps quickly without giving the
-                        // SYN-ACK time to physically arrive via the virtio-net
-                        // interrupt.
-                        //
-                        // Empirical observation 2026-05-29 bench: ~33% of
-                        // handshake attempts under QEMU TCG SMP-4 stall in
-                        // SynSent.  Trace: SLIRP NAT under TCG thread-starves
-                        // when 4 emulated harts run on one host thread, so an
-                        // occasional SYN or SYN-ACK is dropped.  TCP's normal
-                        // retransmit at `RTO_INITIAL_MS = 1000` (defined in
-                        // `crates/net/net/src/tcp.rs:135`) would recover, but the
-                        // previous 500 ms deadline here was SHORTER than RTO
-                        // → no retransmit chance, deterministic failure on any
-                        // dropped SYN.  Bumped to TIMER_FREQ * 2 (= 2 s wall)
-                        // so the TCP layer gets at least one SYN retransmit
-                        // before we give up.  The wait is paid once per
-                        // (re)connection, so the worst-case cost is +1.5 s on
-                        // the first behavior iteration when there's loss.
-                        let handshake_deadline = azos_drv_sys::timebase::now()
-                            + azos_drv_sys::timebase::TIMER_FREQ * 2;
-                        // SLEEP-poll, never yield-poll. This used to be a
-                        // `task_yield()` busy-loop: ~200k yields per 2 s
-                        // window at behavior's priority. Under strict
-                        // priority dispatch a yield re-enqueues the yielder,
-                        // so every same-or-lower-priority task sharing this
-                        // hart got NOTHING for the whole 2 s except the
-                        // 100 ms retry gap — measured as watchdog storms on
-                        // rt-motor's heartbeat path and as the phase-A
-                        // throughput floor (~0.8 s/exchange while a brainless
-                        // scenario retried forever; the 22-08 audit's
-                        // "unidentified remaining bottleneck"). A TCP
-                        // handshake is a WAIT, not work: poll the state at
-                        // 10 ms — same 2 s deadline, 200 polls, and the hart
-                        // belongs to whoever has real work in between.
-                        let mut waited = 0u32;
-                        while azos_drv_sys::timebase::now() < handshake_deadline
-                            && azos_net::tcp::conn_state(tcp_fd as usize)
-                               != azos_net::tcp::TcpState::Established
-                        {
-                            let next_poll = azos_drv_sys::timebase::now()
-                                + azos_drv_sys::timebase::TIMER_FREQ / 100;
-                            azos_sched::task_block(
-                                azos_sched::WaitReason::Timer(next_poll));
-                            waited += 1;
-                        }
-                        let st_after = azos_net::tcp::conn_state(tcp_fd as usize);
-                        if st_after != azos_net::tcp::TcpState::Established {
-                            // Handshake didn't complete in 2 s; close the
-                            // half-open socket and let the next iteration
-                            // retry after the 100 ms loop sleep.
-                            kprintln!("[BRAIN] handshake stalled (state={}) after {} polls / 2s",
-                                      st_after as u8, waited);
-                            azos_net::tcp::close(tcp_fd as usize);
-                            tcp_fd = -1;
-                        } else {
+                match brain_dial_take() {
+                    Some(DialOutcome::Ready { fd, link: l }) => {
+                        tcp_fd = fd;
                         tcp_connected = true;
                         azos_behavior::remote_set_connected(true);
                         azos_behavior::remote_set_socket(tcp_fd);
                         // Deactivate offline mode — brain is back
                         azos_behavior::offline::offline_deactivate();
-                        kprintln!("[BRAIN] connected fd={} (handshake took {} polls)",
-                                  tcp_fd, waited);
-
-                        // ── RFC-0019 encrypted-link handshake ──────────────
-                        // If `link_encrypt=1` in CONFIG.INI, run the responder
-                        // handshake NOW, before any packet is sent (the brain,
-                        // as initiator, speaks first). No silent fallback: if
-                        // the flag is set but no LINK.KEY is present, or the
-                        // handshake fails, drop the connection rather than send
-                        // plaintext.
-                        //
-                        // K-C5: under `link-encrypt-enforced` the handshake is
-                        // unconditional — the `cfg!` is OR'ed here rather than
-                        // written into CFG_LINK_ENCRYPT, because that flag is
-                        // re-applied by config_apply from a CONFIG.INI that
-                        // lives on the USB-exposed FAT volume: a file must not
-                        // be able to disarm a compiled-in policy.
-                        link = None;
-                        if azos_config::CFG_LINK_ENCRYPT.load(Ordering::Relaxed)
-                            || cfg!(feature = "link-encrypt-enforced")
-                        {
-                            match azos_behavior::auth_envelope::link_key_copy() {
-                                Some(psk) => {
-                                    enc_salt = enc_salt.wrapping_add(1);
-                                    match brain_responder_handshake(
-                                        tcp_fd as usize, psk, now ^ enc_salt,
-                                    ) {
-                                        Some(l) => {
-                                            link = Some(l);
-                                            brain_rx_stream().reset();
-                                            // No bytes sealed under an earlier
-                                            // session may reach this one.
-                                            brain_tx_carry().reset();
-                                            link_rekey_deadline = now
-                                                + BRAIN_LINK_REKEY_SECS
-                                                    * azos_drv_sys::timebase::TIMER_FREQ;
-                                            kprintln!("[BRAIN] RFC-0019 encrypted link established");
-                                            // K-C5: re-arm the one-shot denial
-                                            // announcements — a denial hours
-                                            // after this handshake must print
-                                            // again, not be swallowed by a bit
-                                            // set before it.
-                                            azos_behavior::auth_envelope::reset_denial_announcements();
-                                        }
-                                        None => {
-                                            azos_drv_sys::kwarn!("[BRAIN] RFC-0019 handshake failed — closing");
-                                            azos_net::tcp::close(tcp_fd as usize);
-                                            tcp_fd = -1;
-                                            tcp_connected = false;
-                                            azos_behavior::remote_set_connected(false);
-                                        }
-                                    }
-                                }
-                                None => {
-                                    kprintln!("[BRAIN] CFG_LINK_ENCRYPT set but no LINK.KEY — \
-                                               closing (RFC-0019: no plaintext fallback)");
-                                    azos_net::tcp::close(tcp_fd as usize);
-                                    tcp_fd = -1;
-                                    tcp_connected = false;
-                                    azos_behavior::remote_set_connected(false);
-                                }
-                            }
+                        link = l;
+                        brain_rx_stream().reset();
+                        if link.is_some() {
+                            link_rekey_deadline = now
+                                + BRAIN_LINK_REKEY_SECS
+                                    * azos_drv_sys::timebase::TIMER_FREQ;
+                            // K-C5: re-arm the one-shot denial announcements —
+                            // a denial hours after this handshake must print
+                            // again, not be swallowed by a bit set before it.
+                            azos_behavior::auth_envelope::reset_denial_announcements();
                         }
+                    }
+                    Some(DialOutcome::Failed) => {}
+                    None => {
+                        if port > 0 {
+                            brain_dial_request(ip, port);
+                        }
+                    }
+                }
 
-                        // Send StatusPacket immediately on connect (only if the
-                        // link is still up — the handshake above may have
-                        // dropped it). `send_framed` wraps + optionally encrypts.
-                        if tcp_connected {
+                // Send StatusPacket immediately on adopting a session.
+                // `enqueue_framed` wraps + optionally encrypts.
+                if tcp_connected {
+                    // The session's queue (wave 15, B1): no byte
+                    // queued for an earlier session may reach this one.
+                    brain_tx_begin(tcp_fd);
                             let uptime_s = (now / azos_drv_sys::timebase::TIMER_FREQ) as u32;
                             let mut st_payload = [0u8; STATUS_PAYLOAD_SIZE];
                             encode_status_packet(
@@ -343,20 +214,17 @@ pub(crate) fn behavior_task(_: usize) {
                             );
                             let mut st_frame = [0u8; STATUS_FRAME_SIZE];
                             let st_len = build_packet(PKT_STATUS, &st_payload, &mut st_frame);
-                            let st_sent = send_framed(
-                                tcp_fd as usize, &st_frame[..st_len], &mut link, &mut enc_salt,
+                            let st_sent = enqueue_framed(
+                                azos_behavior::brain_tx::Lane::Control,
+                                &st_frame[..st_len], &mut link, &mut enc_salt,
                             );
-                            kprintln!("[BRAIN] status sent: frame={} wire={} enc={}",
+                            brain_tx_kick();
+                            kprintln!("[BRAIN] status queued: frame={} wire={} enc={}",
                                       st_len, st_sent, link.is_some() as u8);
                             // C1: a camera connection may pair with this
                             // session now; it closes when the session ends
                             // (`remote_set_connected(false)`).
                             azos_behavior::camera_tx::control_session_ready();
-                        }
-                        }  // end of `else` (handshake reached Established)
-                    } else {
-                        kprintln!("[BRAIN] connect failed rc={}", tcp_fd);
-                    }
                 }
             }
 
@@ -392,13 +260,13 @@ pub(crate) fn behavior_task(_: usize) {
                     state.sensor_flags,
                 );
 
-                // Frame and send. Wrap the framed packet in the auth envelope
+                // Frame and queue. Wrap the framed packet in the auth envelope
                 // (identity passthrough when no LINK.KEY is loaded).
                 let mut sp_frame = [0u8; SENSOR_FRAME_SIZE];
                 let sp_len = build_packet(PKT_SENSOR, &sp_payload, &mut sp_frame);
-                // Wrap + (RFC-0019) encrypt + send-all in one place. #39 fix
-                // (loop until the full frame is on the wire) lives inside
-                // send_framed via send_all_with_yield.
+                // Wrap + (RFC-0019) encrypt + queue in one place
+                // (`enqueue_framed`); the `brain-tx` task puts it on the wire
+                // (wave 15, B1: this loop never waits for the socket).
                 // I2 experiment: one-shot head-of-line hold-off probe under the
                 // compile-time multi-stream policy. Only when multi-stream is on.
                 #[cfg(feature = "qemu")]
@@ -408,15 +276,21 @@ pub(crate) fn behavior_task(_: usize) {
                     // The probe writes its frames raw, outside the sealed-record
                     // carry, so it runs only on a link with no RFC-0019 session:
                     // raw bytes inside a sealed stream would end the session.
+                    // It writes the socket itself: only with nothing queued,
+                    // and brain-tx stays off the socket meanwhile.
                     if azos_config::CFG_MULTI_STREAM.load(Ordering::Relaxed)
                         && link.is_none()
-                        && !I2_DONE.swap(true, Ordering::Relaxed)
+                        && !I2_DONE.load(Ordering::Relaxed)
+                        && brain_tx_quiesce()
                     {
+                        I2_DONE.store(true, Ordering::Relaxed);
                         i2_holdoff_probe(tcp_fd as usize);
+                        brain_tx_resume();
                     }
                 }
-                let sent = send_framed(
-                    tcp_fd as usize, &sp_frame[..sp_len], &mut link, &mut enc_salt,
+                let sent = enqueue_framed(
+                    azos_behavior::brain_tx::Lane::Telemetry,
+                    &sp_frame[..sp_len], &mut link, &mut enc_salt,
                 );
                 // One-shot diagnostic on first sensor send attempt (qemu only).
                 // Localises whether the sensor pump never reaches send (= task
@@ -426,7 +300,7 @@ pub(crate) fn behavior_task(_: usize) {
                     use core::sync::atomic::AtomicBool;
                     static SENSOR_LOGGED: AtomicBool = AtomicBool::new(false);
                     if !SENSOR_LOGGED.swap(true, Ordering::Relaxed) {
-                        kprintln!("[BRAIN] first sensor send: frame={} wire={} enc={}",
+                        kprintln!("[BRAIN] first sensor queued: frame={} wire={} enc={}",
                                   sp_len, sent, link.is_some() as u8);
                     }
                 }
@@ -451,14 +325,18 @@ pub(crate) fn behavior_task(_: usize) {
                         && azos_config::BEHAVIOR_CAMERA_PORT.load(Ordering::Relaxed) == 0
                         && azos_drv_sensor::csi::csi_is_ready()
                     {
-                        let _cam_sent =
-                            send_camera_sealed(tcp_fd as usize, &mut link, &mut enc_salt);
+                        let _cam_queued = send_camera_sealed(&mut link, &mut enc_salt);
                     }
                 }
+                // The tick's flush point: brain-tx puts what this tick queued
+                // on the wire.
+                brain_tx_kick();
 
                 // Check connection state
                 let conn_state = azos_net::tcp::conn_state(tcp_fd as usize);
                 if conn_state != azos_net::tcp::TcpState::Established {
+                    brain_tx_report("connection lost");
+                    brain_tx_end();
                     tcp_connected = false;
                     tcp_fd = -1;
                     // Drop the encrypted channel — a reconnect performs a fresh
@@ -570,48 +448,44 @@ pub(crate) fn behavior_task(_: usize) {
                     // REJECT unless there is nothing left to seal it with,
                     // close, and reconnect next tick with a fresh handshake.
                     azos_drv_sys::kwarn!("[BRAIN] RFC-0019 record layer: {:?} — closing", e);
-                    if let Some(l) = link.as_mut() {
-                        // Best effort, through the carry: the REJECT record goes
-                        // out only behind a fully sent message, never into the
-                        // middle of one, and is skipped when the socket will not
-                        // take the rest. The session ends either way.
-                        brain_tx_drain(tcp_fd as usize);
-                        let nr = azos_behavior::encrypt_link::fresh_nonce_rand(enc_salt);
-                        enc_salt = enc_salt.wrapping_add(1);
-                        let sealed = brain_tx_carry().seal_with(
-                            azos_drv_sys::timebase::now(),
-                            |out| {
-                                let mut rec = [0u8; azos_behavior::encrypt_link::ENC_OVERHEAD];
-                                let rn = l.seal_reject(&nr, &mut rec);
-                                if rn == 0 { 0 } else { frame_wire(&rec[..rn], out) }
-                            },
-                        );
-                        if sealed.is_ok() {
-                            brain_tx_drain(tcp_fd as usize);
-                        }
+                    // Best effort, through the queue (control lane): the
+                    // REJECT record goes out behind the whole messages queued
+                    // before it, never into the middle of one, and brain-tx
+                    // closes the socket once it is out (or the queue stalls).
+                    // The session ends here either way; this loop never waits.
+                    brain_tx_report("record layer");
+                    let queued = match link.as_mut() {
+                        Some(l) => enqueue_reject(l, &mut enc_salt),
+                        None => false,
+                    };
+                    if queued {
+                        brain_tx_end_after_flush();
+                        brain_tx_kick();
+                    } else {
+                        brain_tx_end();
+                        azos_net::tcp::close(tcp_fd as usize);
                     }
-                    azos_net::tcp::close(tcp_fd as usize);
                     tcp_connected = false;
                     tcp_fd = -1;
                     link = None;
-                    brain_tx_carry().reset();
                     azos_behavior::remote_set_connected(false);
                     azos_behavior::offline::offline_activate();
                 }
-                // RFC-0019, fail closed: a sealed message the socket has taken
-                // no byte of for BRAIN_TX_STALL_MS ends the session like a
+                // Fail closed: queued bytes the socket has taken none of for
+                // BRAIN_TX_STALL_MS (brain-tx's verdict) end the session like a
                 // terminal record — close, drop the link, offline — and the
                 // next tick dials a fresh handshake. No REJECT: it could only
                 // queue behind the bytes that are not moving.
-                if link.is_some() && brain_tx_carry().is_stalled() {
-                    azos_drv_sys::kwarn!("[BRAIN] RFC-0019 tx stalled: {} sealed bytes unsent for {} ms — closing",
-                              brain_tx_carry().pending_len(),
-                              azos_behavior::brain_tx::BRAIN_TX_STALL_MS);
+                let (tx_stalled, tx_pending) = brain_tx_stalled();
+                if tcp_connected && tx_stalled {
+                    azos_drv_sys::kwarn!("[BRAIN] tx stalled: {} queued bytes unsent for {} ms — closing",
+                              tx_pending, azos_behavior::brain_tx::BRAIN_TX_STALL_MS);
+                    brain_tx_report("stalled");
+                    brain_tx_end();
                     azos_net::tcp::close(tcp_fd as usize);
                     tcp_connected = false;
                     tcp_fd = -1;
                     link = None;
-                    brain_tx_carry().reset();
                     azos_behavior::remote_set_connected(false);
                     azos_behavior::offline::offline_activate();
                 }
@@ -1299,7 +1173,20 @@ pub(crate) fn behavior_task(_: usize) {
         let output = arbitrate(&state, &mlp_result);
 
         // ── 5. Publish motor command ─────────────────────────────────────
-        if output.cmd.valid {
+        // `rtwd-window-smoke` (gate row `rt watchdog recorded`): withhold
+        // the command 8 ticks of every 20 (~0.8 s of every 2 s), so the
+        // motor watchdog flaps on a schedule. The row used to rely on this
+        // loop stalling 2 s in every failed brain dial; since wave 15 (B1)
+        // the dial is brain-tx's and the loop never stalls on the network.
+        #[cfg(feature = "rtwd-window-smoke")]
+        let withhold = {
+            use core::sync::atomic::AtomicU32;
+            static TICK: AtomicU32 = AtomicU32::new(0);
+            TICK.fetch_add(1, Ordering::Relaxed) % 20 >= 12
+        };
+        #[cfg(not(feature = "rtwd-window-smoke"))]
+        let withhold = false;
+        if output.cmd.valid && !withhold {
             let sl = output.cmd.speed_l.clamp(-100, 100);
             let sr = output.cmd.speed_r.clamp(-100, 100);
             azos_robot::motor_cmd_publish(sl, sr);

@@ -32,3 +32,6 @@ pub const GEOFENCE_RADIUS_M: usize = 100;
 pub const GEOFENCE_MIN_SATELLITES: usize = 4;
 pub const LOG_RING_ENTRIES: usize = 128;
 pub const LOG_FLUSHER_JOBS: usize = 4;
+
+/// Kconfig `BRAIN_TX_STALL_MS` (wave 15, B1), at its default.
+pub const BRAIN_TX_STALL_MS: u64 = 2_000;
