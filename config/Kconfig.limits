@@ -417,6 +417,30 @@ config MAX_CAPS_TOTAL
       used; the Kconfig range (1,048,576) is above it, and the fleet default
       of 65,536 is one over.
 
+config SYSCALL_FILTER_MAX
+    int "Syscall filter entries per image profile"
+    range 99 255
+    default 128
+    help
+      Size of each task's allow-list of system calls (per-image seccomp
+      profile, crates/core/sched/src/filter.rs). The widest profile must
+      leave a quarter of the list free (checked by host seccomp-tests), so
+      the next profile that grows trips in a test, not on a board.
+
+      Cost: 2 bytes per entry in every task slot. The filter check itself
+      costs no instructions at any size: the dispatcher answers from the
+      640-bit bitmap, and only a number past the bitmap (never a real
+      syscall) scans the list, stopping at the profile's own count. The
+      Task slot does grow: 128 entries take riscv64's Task from 1216 to
+      1280 bytes (aarch64 1856 to 1920), and on riscv64 LLVM lowers the
+      slot multiply by 1280 to two shifts and an add instead of li+mul,
+      +1 instruction on getpid (vsbench syscall-floor 180 -> 181).
+
+      Floor 99: the widest profile (ABITEST.ELF) lists 74, and 74 is three
+      quarters of 99. Ceiling 255: the count is a u8. One default for every
+      ISA and profile: the same images, so the same widest profile, ship
+      on all of them.
+
 config MAX_CAPS_PER_TASK
     int "Maximum capabilities per task"
     range 8 512

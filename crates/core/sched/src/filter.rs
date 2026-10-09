@@ -34,11 +34,13 @@
 /// hard-coded offset.
 ///
 /// 96 since wave 9 (owner decision): the widest image profile (ABITEST.ELF,
-/// audit mode) listed 62 of 64. Since wave 7 the dispatcher answers from the
+/// audit mode) listed 62 of 64. A Kconfig int since wave 15
+/// (`CONFIG_SYSCALL_FILTER_MAX`, default 128): ABITEST.ELF reached 74 of 96,
+/// past the quarter-free margin `tests/host/seccomp-tests` keeps. Since wave 7 the dispatcher answers from the
 /// bitmap ([`SYSCALL_FILTER_BITMAP_BITS`]), so the list length costs no
 /// syscall; it is kept for the audit and spawn-plan comparisons and costs
 /// another 64 bytes per `Task` (4 KiB of task pool).
-pub const SYSCALL_FILTER_MAX: usize = 96;
+pub const SYSCALL_FILTER_MAX: usize = azos_limits::SYSCALL_FILTER_MAX;
 
 /// Syscall numbers the membership bitmap covers: `0..SYSCALL_FILTER_BITMAP_BITS`.
 ///
@@ -108,26 +110,33 @@ pub struct SyscallFilter {
     pub(crate) bits: [u32; BITMAP_WORDS],
 }
 
-// The layout the `Task` offset tripwires in `task.rs` were computed with.
-// `enabled` at 0, `allowed` at 2 (96 x u16 = 192 bytes, wave 9; was 64 x u16),
-// `count` at 194, `audit` at 195 (the byte after `count`), and `bits` at 196,
-// which is already 4-aligned, so nothing is inserted before any of them.
-// 196 + 80 = 276 (was 212 with 64 entries). The `TASK_SATP_OFFSET` tripwires
-// in `task.rs` moved by the same 64.
+// The layout, derived from `SYSCALL_FILTER_MAX` (Kconfig, default 128) rather
+// than restated as numbers, so resizing the list is a `make config` choice and
+// not an edit here. `enabled` at 0, `allowed` at 2 (`SYSCALL_FILTER_MAX` x
+// u16), `count` right after the list, `audit` in the byte after `count`, and
+// `bits` at the next 4-byte boundary. With 128 entries: count 258, audit 259,
+// bits 260, size 340 (96 entries: 194/195/196/276). The `Task` tripwires in
+// `task.rs` add `SYSCALL_FILTER_SIZE` to the frozen offset of
+// `syscall_filter`, and the context-switch assembly is fed `task_satp`'s
+// offset by `offset_of!`, so nothing else has a number to update.
+pub const SYSCALL_FILTER_COUNT_OFFSET: usize = 2 + 2 * SYSCALL_FILTER_MAX;
+pub const SYSCALL_FILTER_AUDIT_OFFSET: usize = SYSCALL_FILTER_COUNT_OFFSET + 1;
+pub const SYSCALL_FILTER_BITS_OFFSET: usize = (SYSCALL_FILTER_AUDIT_OFFSET + 1 + 3) & !3;
+pub const SYSCALL_FILTER_SIZE: usize = SYSCALL_FILTER_BITS_OFFSET + 4 * BITMAP_WORDS;
 const _: () = assert!(
-    core::mem::size_of::<SyscallFilter>() == 276,
+    core::mem::size_of::<SyscallFilter>() == SYSCALL_FILTER_SIZE,
     "SyscallFilter changed size: every Task offset after syscall_filter moves",
 );
 const _: () = assert!(
-    core::mem::offset_of!(SyscallFilter, count) == 2 + 2 * SYSCALL_FILTER_MAX,
+    core::mem::offset_of!(SyscallFilter, count) == SYSCALL_FILTER_COUNT_OFFSET,
     "`count` follows the list",
 );
 const _: () = assert!(
-    core::mem::offset_of!(SyscallFilter, audit) == 195,
+    core::mem::offset_of!(SyscallFilter, audit) == SYSCALL_FILTER_AUDIT_OFFSET,
     "`audit` must sit in the byte after `count`",
 );
 const _: () = assert!(
-    core::mem::offset_of!(SyscallFilter, bits) == 196,
+    core::mem::offset_of!(SyscallFilter, bits) == SYSCALL_FILTER_BITS_OFFSET,
     "`bits` is appended after `audit`; the other fields must not move",
 );
 // `count` is a `u8`: the list must stay addressable by it.

@@ -1644,6 +1644,16 @@ const _: () = assert!(core::mem::offset_of!(Task, tid) == 80);
 
 pub const TASK_SATP_OFFSET: usize = core::mem::offset_of!(Task, task_satp);
 
+/// Offset of `syscall_filter`, the last field before `task_satp`. The
+/// per-target tripwires below freeze THIS number; `task_satp` follows the
+/// filter at the next 8-byte boundary, so its offset is derived from
+/// `SYSCALL_FILTER_SIZE` (`CONFIG_SYSCALL_FILTER_MAX`) instead of restated.
+const TASK_FILTER_OFFSET: usize = core::mem::offset_of!(Task, syscall_filter);
+const _: () = assert!(
+    TASK_SATP_OFFSET == (TASK_FILTER_OFFSET + crate::filter::SYSCALL_FILTER_SIZE + 7) & !7,
+    "`task_satp` must follow `syscall_filter` directly",
+);
+
 // **The comment that stood here was wrong, and it cost a wrong fix before it
 // was checked.** It said this offset "MUST match TASK_SATP_OFFSET in
 // context_switch.S" and that a failure means editing the `.S`. It does not:
@@ -1661,6 +1671,12 @@ pub const TASK_SATP_OFFSET: usize = core::mem::offset_of!(Task, task_satp);
 // number to update, rather than something that happens by accident to a
 // structure `context_switch.S` walks. It guards nothing on its own.
 //
+// The per-target numbers below are `syscall_filter`'s offset; with the
+// default 128-entry filter (340 bytes) `task_satp` lands at 576 (riscv64),
+// 632 (aarch64), 480 (host), 528 (x86_64): on riscv64 232 + 340 = 572,
+// rounded up to `task_satp`'s 8-byte alignment (232 + 276 = 508 -> 512 with
+// 96 entries). The history that follows is of
+// `task_satp`'s offset with the 96-entry filter.
 // 512 as of wave 11 (SCHED-RT): -32 when the dead EDF path's
 // `DeadlineParams` (4 x u64) left the TCB; reservations live per hart now
 // (`scheduler::rt`).
@@ -1675,30 +1691,30 @@ pub const TASK_SATP_OFFSET: usize = core::mem::offset_of!(Task, task_satp);
 // tripwire a few lines up).
 #[cfg(target_arch = "riscv64")]
 const _: () = assert!(
-    TASK_SATP_OFFSET == 512,
+    TASK_FILTER_OFFSET == 232,
     "Task layout changed. Nothing in the assembly needs editing — it derives \
      this offset. Update the number here once you have confirmed the change \
      was intended."
 );
-// aarch64 bare metal: 512 + (184 - 128) = 568.
+// aarch64 bare metal: 232 + (184 - 128) = 288 (satp was 568 with 96 entries).
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 const _: () = assert!(
-    TASK_SATP_OFFSET == 568,
+    TASK_FILTER_OFFSET == 288,
     "Task layout changed. Nothing in the assembly needs editing — it derives \
      this offset. Update the number here once you have confirmed the change \
      was intended."
 );
-// Host: 512 + (32 - 128) = 416.
+// Host: 232 + (32 - 128) = 136 (satp was 416 with 96 entries).
 #[cfg(not(any(target_arch = "riscv64", target_os = "none")))]
 const _: () = assert!(
-    TASK_SATP_OFFSET == 416,
+    TASK_FILTER_OFFSET == 136,
     "Task layout changed. Nothing in the assembly needs editing — it derives \
      this offset. Update the number here once you have confirmed the change \
      was intended."
 );
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 const _: () = assert!(
-    TASK_SATP_OFFSET == 464,
+    TASK_FILTER_OFFSET == 184,
     "Task layout changed. Nothing in the assembly needs editing — it derives \
      this offset. Update the number here once you have confirmed the change \
      was intended."

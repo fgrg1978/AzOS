@@ -192,7 +192,7 @@ const COMMON: &[u16] = &[
 // `SYS_I2C_SCAN` 222, which SENSOR does not grant), `SYS_PWM_SET_DUTY_PCT_TYPED`
 // (549), the PID family `SYS_MOTOR_TICK_TYPED` (551), `SYS_MOTOR_ENABLED_TYPED`
 // (553), `SYS_MOTOR_SET_GAINS_TYPED` (554), `SYS_MOTOR_RESET_TYPED` (555), and
-// `SYS_MOTOR_ENABLE_TYPED` (552, arms the PID loop). `SYSCALL_FILTER_MAX` is 96
+// `SYS_MOTOR_ENABLE_TYPED` (552, arms the PID loop). `SYSCALL_FILTER_MAX` is 128 by default
 // and MOTOR sits well under it.
 //
 // The two untyped survivors: `SYS_ADC_READ` (410) and `SYS_MOTOR_CREATE` (230)
@@ -657,8 +657,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // AUDIT MODE. abitest asserts the kernel's answer to wrong and missing
     // arguments, stubs and absent dispatch arms, so each such call is in the
     // row. `999`, unclaimed and issued raw to watch the default arm refuse it,
-    // is outside the row, goes through and is recorded. The widest row, 64 of
-    // `SYSCALL_FILTER_MAX` (96 since wave 9, 64 before).
+    // is outside the row, goes through and is recorded. The widest row, 74 of
+    // `SYSCALL_FILTER_MAX` (Kconfig, default 128 since wave 15; 96 since wave 9, 64 before).
     //
     // Differs from its derivation: SYS_MKDIR, SYS_DISK_READ and
     // SYS_DISK_WRITE appear in its source and are never
@@ -670,6 +670,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_GETCHAR, SYS_EXIT, SYS_GETPID, SYS_YIELD,
             SYS_FORK, SYS_EXEC, SYS_WAIT, SYS_SLEEP, SYS_EXECPATH,
             SYS_WRITE, SYS_SLEEP_UNTIL,
+            // The exec test parks the leader in a port wait (bind a timer, wait).
+            SYS_PORT_BIND_TYPED, SYS_PORT_WAIT_TYPED,
             SYS_MEMINFO, SYS_TASKINFO, SYS_UPTIME,
             SYS_STAT, SYS_CHDIR, SYS_GETCWD, SYS_MOUNT, SYS_UMOUNT, SYS_SYNC,
             SYS_NET_GETIP, SYS_DRV_HEARTBEAT,

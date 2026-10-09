@@ -55,6 +55,7 @@ dependencies = [
  "azos_chaos",
  "azos_crypto",
  "azos_decision",
+ "azos_limits",
  "azos_linux_abi",
  "azos_syscall_numbers",
 ]

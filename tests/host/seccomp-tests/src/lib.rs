@@ -240,16 +240,27 @@ mod filter_semantics {
     ///
     /// Wave 9: the list grew from 64 to 96 entries (`SYSCALL_FILTER_MAX`), so
     /// `count`/`audit`/`bits` each moved by 64 and the struct is 276 bytes.
+    ///
+    /// Wave 15: the length is `CONFIG_SYSCALL_FILTER_MAX` (default 128), so
+    /// the offsets are written as functions of it, independently of the
+    /// constants `filter.rs` derives: `count` after the list, `audit` the
+    /// next byte, `bits` at the next 4-byte boundary, 80 bytes of bitmap.
     #[test]
     fn the_audit_byte_and_the_bitmap_moved_nothing() {
         use core::mem::{offset_of, size_of};
-        assert_eq!(SYSCALL_FILTER_MAX, 96);
-        assert_eq!(size_of::<SyscallFilter>(), 276);
+        let n = azos_limits::SYSCALL_FILTER_MAX;
+        assert_eq!(SYSCALL_FILTER_MAX, n, "the filter reads its length from Kconfig");
+        let count = 2 + 2 * n;
+        let bits = (count + 2).next_multiple_of(4);
         assert_eq!(offset_of!(SyscallFilter, enabled), 0);
         assert_eq!(offset_of!(SyscallFilter, allowed), 2);
-        assert_eq!(offset_of!(SyscallFilter, count), 194);
-        assert_eq!(offset_of!(SyscallFilter, audit), 195);
-        assert_eq!(offset_of!(SyscallFilter, bits), 196);
+        assert_eq!(offset_of!(SyscallFilter, count), count);
+        assert_eq!(offset_of!(SyscallFilter, audit), count + 1);
+        assert_eq!(offset_of!(SyscallFilter, bits), bits);
+        assert_eq!(size_of::<SyscallFilter>(), bits + 80);
+        if n == 128 {
+            assert_eq!(size_of::<SyscallFilter>(), 340, "the default's size, named in filter.rs");
+        }
     }
 }
 
@@ -2607,8 +2618,10 @@ mod image_profiles {
         // three port calls of the native fork check (wave 13, NATFORK); 70
         // with the four thread calls (wave 13, THREADS); 71 with
         // `SYS_TASK_SUBREAPER` (wave 13, the orphan check); 72 with mmap
-        // (wave 13, the mmap prot check): the quarter-free limit exactly.
-        assert_eq!(image_filter(row("ABITEST.ELF")).count, 72, "the widest row, named in its comment");
+        // (wave 13, the mmap prot check): the quarter-free limit exactly;
+        // 74 with the typed port bind/wait of the exec test (wave 15), which
+        // is why the list became `CONFIG_SYSCALL_FILTER_MAX`, default 128.
+        assert_eq!(image_filter(row("ABITEST.ELF")).count, 74, "the widest row, named in its comment");
     }
 
     // ── Bound to the bytes, not the name (owner decision 2026-09-14) ─────

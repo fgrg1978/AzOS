@@ -26,6 +26,8 @@ azos_abi = { path = "../../../crates/core/abi" }
 azos_linux_abi = { path = "../../../crates/core/linux-abi" }
 # `seccomp.rs` hashes images with `azos_crypto::sha256`, as in the kernel.
 azos_crypto = { path = "../../../crates/core/crypto" }
+# `filter.rs` sizes its list from `azos_limits::SYSCALL_FILTER_MAX` (Kconfig).
+azos_limits = { path = "../../../crates/core/limits" }
 
 # Reproduce the kernel's release profile: a suite that does not is testing a
 # different program.
