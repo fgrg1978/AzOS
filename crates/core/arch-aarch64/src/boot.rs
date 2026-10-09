@@ -112,8 +112,24 @@ _azos_drop_to_el1:
     // — so PSTATE.PAN is SET automatically on every EL0->EL1 exception,
     // matching riscv64's SUM starting clear. See sysregs::SCTLR_EL1_SPAN
     // and sysregs::UserAccess for the read/write side of this.
+    //
+    // Only when PAN is in use: Kconfig `A64_PAN` not `n` and the core has
+    // FEAT_PAN (ID_AA64MMFR1_EL1.PAN != 0). Otherwise SPAN stays 1 (it is
+    // RES1 on an Armv8.0 core, and under `n` a cleared SPAN would set PAN on
+    // every exception with no UserAccess window ever clearing it) and the
+    // SPSR_EL2.PAN bit below stays 0 (RES0 without FEAT_PAN). x11 carries
+    // the decision to that write.
     mov     x10, #0x0838            // SCTLR_EL1 reserved-bits mask
-    movk    x10, #0x3045, lsl #16
+    movk    x10, #0x30C5, lsl #16   // SPAN=1
+    mov     x11, #0
+.if {pan_allowed}
+    mrs     x12, ID_AA64MMFR1_EL1
+    ubfx    x12, x12, #20, #4
+    cbz     x12, 1f
+    bic     x10, x10, #(1 << 23)    // SPAN=0
+    mov     x11, #(1 << 22)         // SPSR_EL2.PAN=1
+1:
+.endif
     msr     SCTLR_EL1, x10
 
     // CPACR_EL1.FPEN = 0b11 (bits [21:20]). Explicit movz with
@@ -129,7 +145,7 @@ _azos_drop_to_el1:
     // before any task exists, did NOT fault without this — PSTATE.PAN's
     // reset value is not "protected" on its own).
     mov     x10, #0x3C5             // SPSR_EL2 = EL1h, DAIF masked
-    orr     x10, x10, #(1 << 22)    // + PAN=1
+    orr     x10, x10, x11           // + PAN=1 when PAN is in use (above)
     msr     SPSR_EL2, x10
 
     msr     ELR_EL2, lr
@@ -138,6 +154,7 @@ _azos_drop_to_el1:
     off0 = const (CNTVOFF_INIT & 0xFFFF) as u16,
     off1 = const ((CNTVOFF_INIT >> 16) & 0xFFFF) as u16,
     off2 = const ((CNTVOFF_INIT >> 32) & 0xFFFF) as u16,
+    pan_allowed = const azos_arch_api::isa::aarch64::PAN.allowed() as u8,
 );
 
 /// Drop the calling thread from EL2 to EL1.

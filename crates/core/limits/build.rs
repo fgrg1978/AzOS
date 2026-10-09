@@ -182,7 +182,7 @@ fn validate_isa_levels(cfg: &ConfigMap) {
         let minor = [("AARCH64_LEVEL_8_5", 5), ("AARCH64_LEVEL_8_4", 4), ("AARCH64_LEVEL_8_3", 3),
                      ("AARCH64_LEVEL_8_2", 2), ("AARCH64_LEVEL_8_1", 1)]
             .iter().find(|(k, _)| on(k)).map(|&(_, m)| m).unwrap_or(0);
-        for (ext, from) in [("A64_LSE", 1), ("A64_CRC32", 1), ("A64_PAUTH", 3), ("A64_BTI", 5)] {
+        for (ext, from) in [("A64_LSE", 1), ("A64_CRC32", 1), ("A64_PAN", 1), ("A64_PAUTH", 3), ("A64_BTI", 5)] {
             if minor >= from && !on(&format!("{ext}_REQUIRE")) {
                 bad.push(format!("{ext} must be `require` at Armv8.{minor} (Armv8.{from} includes it)"));
             }

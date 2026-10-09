@@ -2537,8 +2537,8 @@ trap_size_row() { # trap_size_row <label> <elf> <symbol-suffix>=<bytes>...
 # -icount syscall-floor did not move: 180 riscv64, 152 aarch64.
 ci_row "aarch64: trap path size" trap_size_row "aarch64: trap path size" "$A64_KERNEL" aarch64_trap_entry=1356 7aarch6412svc_dispatch=488
 
-aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected entry EL> <smp>
-    local label="$1" mach="$2" el="$3" smp="${4:-2}"
+aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected entry EL> <smp> [cpu] [extra marker]
+    local label="$1" mach="$2" el="$3" smp="${4:-2}" cpu="${5:-max,pauth=on}" extra="${6:-}"
     printf "  %-26s" "${label}..."
     local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
     mkdir -p "$CI_LOG_DIR"; rm -f "$log"
@@ -2547,7 +2547,7 @@ aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected en
     # actually exercises task 1's whole point: x0 carries a real FDT only
     # for a recognised Image load.
     par_ready
-    qemu-system-aarch64 -M "virt,gic-version=3$mach" -cpu max,pauth=on -smp "$smp" \
+    qemu-system-aarch64 -M "virt,gic-version=3$mach" -cpu "$cpu" -smp "$smp" \
         -nographic -kernel "$A64_IMG" >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 40 ]; do
@@ -2611,7 +2611,7 @@ aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected en
              "interleaved" \
              "preemptions observed:" \
              "x20 survived every context switch" \
-             "smp-migrate-probe ran on"; do
+             "smp-migrate-probe ran on" ${extra:+"$extra"}; do
         grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m"
     done
     # The GICR frame count itself (item 1 of this task's brief: canary (a) —
@@ -2679,6 +2679,22 @@ aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected en
 par "aarch64 kernel boots (EL1)"        aarch64_kernel_row "aarch64 kernel boots (EL1)"        ""                     1 2
 par "aarch64 kernel boots (EL2)"        aarch64_kernel_row "aarch64 kernel boots (EL2)"        ",virtualization=on"   2 2
 par "aarch64 kernel boots (EL1, -smp 4)" aarch64_kernel_row "aarch64 kernel boots (EL1, -smp 4)" ""                    1 4
+
+# ── VE (wave 15): the kernel on an Armv8.0 core ─────────────────────────────
+#
+# Every row above boots `-cpu max`. "aarch64 boots (ARMv8.0)" boots the SMOKE
+# binary on cortex-a72, not this kernel, which is how the kernel stopped
+# booting on every Armv8.0 core without a red row: boot.S set PSTATE.PAN with
+# `MSR PAN, #1` (FEAT_PAN is Armv8.1), UNDEFINED on an A53/A72 before
+# VBAR_EL1 was set, so the console stayed empty. Now boot.S, the EL2 drop and
+# every UserAccess window key on ID_AA64MMFR1_EL1.PAN under Kconfig `A64_PAN`
+# (probe at the 8.0 level). Same kernel image, same markers as the EL1/EL2
+# rows, plus the [ISA] line naming PAN absent, so the row ties to the probe.
+# EL2 too: `_azos_drop_to_el1` writes SCTLR_EL1.SPAN and SPSR_EL2.PAN.
+# Canary: `--features a64-pan-unprobed-canary` (the unprobed `MSR PAN` back):
+# an empty log, every marker missing.
+par "aarch64 kernel boots on cortex-a53 (8.0)" aarch64_kernel_row "aarch64 kernel boots on cortex-a53 (8.0)" "" 1 2 cortex-a53 "pan=probed-absent"
+par "aarch64 kernel boots on cortex-a53 (8.0, EL2)" aarch64_kernel_row "aarch64 kernel boots on cortex-a53 (8.0, EL2)" ",virtualization=on" 2 2 cortex-a53 "pan=probed-absent"
 par "aarch64 shell answers help" shell_help_row "aarch64 shell answers help" arm
 
 # ── aarch64: PL011 console RX on interrupts (wave 7) ─────────────────────────

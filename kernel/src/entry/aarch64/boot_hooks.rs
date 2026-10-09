@@ -63,6 +63,9 @@ pub fn pre_console() {
     if let Some(missing) = azos_arch::features::level_missing(&regs, policy::LEVEL_MINOR) {
         crate::boot::isa::refuse_level(policy::LEVEL, missing);
     }
+    // `A64_PAN=probe`: every UserAccess window keys on this answer, the one
+    // boot.S already acted on for PSTATE.PAN. Before the first task exists.
+    azos_arch::sysregs::pan_init(regs.pan());
 }
 
 /// Nothing: boot.S sets `VBAR_EL1` before any Rust runs.
@@ -180,6 +183,7 @@ pub fn cpu_features(_fw: &Firmware) {
     let e = |name, symbol, policy, present| Ext { name, symbol, policy, present };
     crate::boot::isa::report(policy::LEVEL, &[
         e("lse", "A64_LSE", policy::LSE, f.lse),
+        e("pan", "A64_PAN", policy::PAN, regs.pan()),
         e("crc32", "A64_CRC32", policy::CRC32, f.crc32),
         e("pauth", "A64_PAUTH", policy::PAUTH, f.pauth),
         e("bti", "A64_BTI", policy::BTI, f.bti),

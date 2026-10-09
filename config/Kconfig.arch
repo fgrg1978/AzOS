@@ -347,6 +347,35 @@ choice
 endchoice
 
 choice
+    prompt "Privileged Access Never (FEAT_PAN)"
+    default A64_PAN_REQUIRE if !AARCH64_LEVEL_8_0
+    default A64_PAN_PROBE
+    help
+      PSTATE.PAN makes EL1 fault on any load or store to an EL0-accessible
+      page outside an explicit user-access window, the aarch64 counterpart
+      of riscv64's sstatus.SUM starting clear. `MSR PAN, #imm` is UNDEFINED
+      on an Armv8.0 core (Cortex-A53/A72), so the instruction must never
+      run where the ID register says the feature is absent.
+
+      require: every user-access window is an unconditional `MSR PAN`
+      (2 instructions, no branch); the boot refuses a CPU without it.
+      Armv8.1 includes it (a level >= 8.1 with PAN not `require` is a
+      build error). probe: boot.S sets PAN only when ID_AA64MMFR1_EL1.PAN
+      is non-zero, and each window costs one byte load and a branch more
+      (the boot's answer, kept in a static); on a core without it the
+      kernel runs with no PAN protection and the [ISA] line says
+      `pan=probed-absent`. n: PAN is never set and SCTLR_EL1.SPAN stays 1:
+      no cost, no protection.
+
+    config A64_PAN_NEVER
+        bool "n: never use it"
+    config A64_PAN_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_PAN_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
     prompt "CRC32 instructions (FEAT_CRC32)"
     default A64_CRC32_REQUIRE if !AARCH64_LEVEL_8_0
     default A64_CRC32_PROBE

@@ -192,8 +192,24 @@ _entry_after_header:
     // "protection off" — the pan-probe read a USER-tagged page from EL1
     // and did NOT fault). Written here, after the two entry paths
     // converge, holds for both from this point on.
+    //
+    // FEAT_PAN is Armv8.1: on an Armv8.0 core (Cortex-A53/A72) `MSR PAN`
+    // is UNDEFINED and, with VBAR_EL1 not yet set, the boot dies silently
+    // here. So it runs only when Kconfig `A64_PAN` is not `n` AND
+    // ID_AA64MMFR1_EL1.PAN [23:20] is non-zero, under `require` too: a
+    // `require`d PAN on a core without it must reach the [ISA] refusal
+    // instead of dying here. `pan_unprobed` is the canary
+    // (`a64-pan-unprobed-canary`): the instruction back without the probe.
+.if {pan_allowed}
+.if {pan_unprobed} == 0
+    mrs     x9, ID_AA64MMFR1_EL1
+    ubfx    x9, x9, #20, #4
+    cbz     x9, 1f
+.endif
     .arch_extension pan
     msr     PAN, #1
+1:
+.endif
 
     // ── Install the exception vector table ──────────────────────────────
     //
@@ -404,9 +420,18 @@ _aarch64_secondary_entry:
     msr     CPACR_EL1, x9
     isb
 
-    // PAN is ALSO banked per-PE (O3.2) — same reason as CPACR_EL1 above.
+    // PAN is ALSO banked per-PE (O3.2) — same reason as CPACR_EL1 above,
+    // and probed the same way as the primary's (Armv8.0 has no FEAT_PAN).
+.if {pan_allowed}
+.if {pan_unprobed} == 0
+    mrs     x9, ID_AA64MMFR1_EL1
+    ubfx    x9, x9, #20, #4
+    cbz     x9, 1f
+.endif
     .arch_extension pan
     msr     PAN, #1
+1:
+.endif
 
     // ── Install the exception vector table ──────────────────────────────
     // Banked per-PE, same as CPACR_EL1 above — VBAR_EL1 is not inherited

@@ -379,6 +379,11 @@ guard-fault-probe-null  = []
 # O3.2 (owner decision, PAN/SUM): touches a USER-tagged page from EL1/S-mode
 # OUTSIDE any UserAccess guard — must fault now that SPAN=0/SUM starts clear.
 pan-probe = []
+# The Armv8.0 boot's canary: boot.S sets PSTATE.PAN with no
+# ID_AA64MMFR1_EL1.PAN probe, the assumption that kept the kernel off every
+# Armv8.0 core. Must fail "aarch64 kernel boots on cortex-a53 (8.0)" (an
+# UNDEFINED instruction before VBAR_EL1: an empty console).
+a64-pan-unprobed-canary = []
 # Gate-only: makes early boot call `sys_fork_impl` from kernel context, so
 # fork-refusal site 1 (`KernelTask`) fires deterministically on BOTH ISAs and
 # the gate can observe the per-site diagnostic actually firing. A counter no

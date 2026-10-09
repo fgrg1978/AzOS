@@ -7,6 +7,8 @@ aarch64 boots at EL2 (ARMv8.5)	n2	crates/core/arch-aarch64/** kernel/linker-aarc
 aarch64 kernel boots (EL1)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 kernel boots (EL2)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 kernel boots (EL1, -smp 4)	n2	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
+aarch64 kernel boots on cortex-a53 (8.0)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+aarch64 kernel boots on cortex-a53 (8.0, EL2)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 aarch64 shell answers help	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 pl011 rx irq count	n2	crates/drivers/** kernel/src/drv_supervisor.rs kernel/src/console_mode.rs crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 userspace	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs

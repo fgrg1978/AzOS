@@ -504,21 +504,50 @@ pub const SCTLR_EL1_SPAN: u64 = 1 << 23;
 /// that touches EL0-taggeed memory faults instead of silently succeeding —
 /// that fault IS the protection PAN exists for.
 ///
-/// `MSR PAN, #0/#1` is the immediate form (FEAT_PAN, mandatory under the
-/// ARMv8.5-A baseline owner decision 97 targets) — no register round trip,
-/// no read-modify-write, unlike `DAIF`.
+/// `MSR PAN, #0/#1` is the immediate form: no register round trip, no
+/// read-modify-write, unlike `DAIF`. It is FEAT_PAN (Armv8.1) and UNDEFINED
+/// on an Armv8.0 core, so it runs only as Kconfig `A64_PAN` allows:
+/// `require` emits it unconditionally (every level >= 8.1, the Raspberry
+/// Pi 5), `probe` only when the boot found the feature ([`pan_init`]),
+/// `n` never.
 pub struct UserAccess;
+
+/// `A64_PAN=probe` only: the boot's answer (ID_AA64MMFR1_EL1.PAN), stored
+/// once by [`pan_init`] on the boot CPU before any task exists. Never read
+/// under `require` or `n`: [`pan_in_use`] folds to a constant there.
+static PAN_PRESENT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Record whether this CPU implements FEAT_PAN (`IdRegs::pan`). Called once,
+/// before the first [`UserAccess`]; boot.S makes the same decision for the
+/// initial `PSTATE.PAN` from the same register.
+pub fn pan_init(present: bool) {
+    PAN_PRESENT.store(present, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Is `PSTATE.PAN` in use on this boot: a constant under `require`/`n`,
+/// the boot probe's answer under `probe`.
+#[inline(always)]
+pub fn pan_in_use() -> bool {
+    use azos_arch_api::isa::{aarch64::PAN, ExtPolicy};
+    match PAN {
+        ExtPolicy::Require => true,
+        ExtPolicy::Never => false,
+        ExtPolicy::Probe => PAN_PRESENT.load(core::sync::atomic::Ordering::Relaxed),
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 impl UserAccess {
     #[inline(always)]
     pub fn enable() -> Self {
-        unsafe {
-            core::arch::asm!(
-                ".arch_extension pan",
-                "msr PAN, #0",
-                options(nomem, nostack, preserves_flags),
-            );
+        if pan_in_use() {
+            unsafe {
+                core::arch::asm!(
+                    ".arch_extension pan",
+                    "msr PAN, #0",
+                    options(nomem, nostack, preserves_flags),
+                );
+            }
         }
         UserAccess
     }
@@ -534,12 +563,14 @@ impl UserAccess {
 impl Drop for UserAccess {
     #[inline(always)]
     fn drop(&mut self) {
-        unsafe {
-            core::arch::asm!(
-                ".arch_extension pan",
-                "msr PAN, #1",
-                options(nomem, nostack, preserves_flags),
-            );
+        if pan_in_use() {
+            unsafe {
+                core::arch::asm!(
+                    ".arch_extension pan",
+                    "msr PAN, #1",
+                    options(nomem, nostack, preserves_flags),
+                );
+            }
         }
     }
 }

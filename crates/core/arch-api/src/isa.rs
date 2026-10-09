@@ -194,6 +194,7 @@ pub mod aarch64 {
         [LEVEL_MINOR as usize];
 
     pub const LSE: ExtPolicy = ext_policy!(A64_LSE_NEVER, A64_LSE_REQUIRE);
+    pub const PAN: ExtPolicy = ext_policy!(A64_PAN_NEVER, A64_PAN_REQUIRE);
     pub const CRC32: ExtPolicy = ext_policy!(A64_CRC32_NEVER, A64_CRC32_REQUIRE);
     pub const PAUTH: ExtPolicy = ext_policy!(A64_PAUTH_NEVER, A64_PAUTH_REQUIRE);
     pub const BTI: ExtPolicy = ext_policy!(A64_BTI_NEVER, A64_BTI_REQUIRE);

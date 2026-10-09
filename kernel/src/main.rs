@@ -265,6 +265,10 @@ global_asm!(
     // The same tie for the granule: linker-aarch64.ld ASSERTs its
     // `AZOS_PAGE_SIZE` (kernel/build.rs) against `_azos_page_size_check`.
     page_size = const azos_arch::PAGE_SIZE,
+    // Kconfig `A64_PAN` not `n`: boot.S may set PSTATE.PAN (when the ID
+    // register says the core has it). The canary drops that probe.
+    pan_allowed = const azos_arch_api::isa::aarch64::PAN.allowed() as u8,
+    pan_unprobed = const cfg!(feature = "a64-pan-unprobed-canary") as u8,
 );
 
 // TrapFrame layout + vector-number constants (B2-01 pattern): read off the

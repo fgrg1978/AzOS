@@ -143,6 +143,12 @@ impl IdRegs {
     pub const fn sve(&self) -> bool {
         field(self.pfr0, 32) >= 1
     }
+
+    /// FEAT_PAN: ID_AA64MMFR1_EL1.PAN [23:20] >= 1. Absent on Armv8.0
+    /// cores, where `MSR PAN, #imm` is UNDEFINED.
+    pub const fn pan(&self) -> bool {
+        field(self.mmfr1, 20) >= 1
+    }
 }
 
 /// Which register a level check reads.
@@ -374,6 +380,12 @@ mod tests {
             assert_eq!(level_missing(&r, lvl - 1), None, "{name} is not needed below 8.{lvl}");
         }
         assert!(all.sve() && !a76.sve());
+        // FEAT_PAN (boot.S and UserAccess key on it): MMFR1 [23:20] only.
+        // The A53 has none; the A76 reports PAN2 (2); a neighbour field set
+        // alone is not PAN.
+        assert!(!a53.pan() && a76.pan() && all.pan());
+        let neighbours = IdRegs { mmfr1: !(0xF << 20), ..a53 };
+        assert!(!neighbours.pan());
     }
 
     #[test]
