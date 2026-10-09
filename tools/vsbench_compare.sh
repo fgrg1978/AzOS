@@ -316,8 +316,8 @@ VSBENCH_SECCOMP="${VSBENCH_SECCOMP:-0}"
 # column measured") is refused with it.
 VSBENCH_LANES="${VSBENCH_LANES:-}"
 if [ -n "$VSBENCH_LANES" ]; then
-    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch))*$' \
-        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,switch" >&2; exit 1; }
+    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch|disk)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|switch|disk))*$' \
+        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,switch,disk" >&2; exit 1; }
     [ "$VSBENCH_SECCOMP" = "1" ] && { echo "vsbench: VSBENCH_LANES and VSBENCH_SECCOMP=1 do not mix" >&2; exit 1; }
     echo "vsbench: lanes filtered to: $VSBENCH_LANES" >&2
 fi
@@ -511,9 +511,15 @@ fi
 # Stops at the last lane, or once PID 1 is gone: `Attempted to kill init!` is
 # printed after PID 1's last write, so nothing is lost by stopping there, and a
 # run that died early does not sit out the whole `WAIT_SECS`.
+# Wave 15: Linux gets its own copy of the AzOS disk image (FAT32) on the same
+# virtio-blk device, which `disk_setup` mounts `vfat` at /mnt for the `disk`
+# lanes (file-write): the same file system on the same emulated disk.
 boot_linux() { # boot_linux <initramfs> <log> [extra cmdline]
+    cp "$REPO_ROOT/build/disk-vsbench.img" "$2.disk.img"
     "$QEMU" -machine virt -nographic -bios default -smp "$VSBENCH_SMP" $ICOUNT_ARGS ${BOOT_EXTRA:-} \
         -kernel "$LINUX_IMAGE" -initrd "$1" \
+        -drive "file=$2.disk.img,if=none,format=raw,id=hd0" \
+        -device virtio-blk-device,drive=hd0 \
         -append "rdinit=/init console=ttyS0${3:+ $3}${VSBENCH_LANES:+ VSBENCH_LANES=$VSBENCH_LANES}" >"$2" 2>&1 &
     local pid=$!
     for _ in $(seq 1 "${BOOT_WAIT:-$WAIT_SECS}"); do

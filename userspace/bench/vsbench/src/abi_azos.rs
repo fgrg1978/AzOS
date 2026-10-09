@@ -366,6 +366,23 @@ impl Shell for AzosAbi {
         Ok(())
     }
 
+    fn disk_setup(&self) -> Result<(), i64> { Ok(()) }
+
+    fn disk_write_close(&self, data: &[u8], fsync: bool) -> Result<(), i64> {
+        // O_RDWR | O_CREAT | O_TRUNC.
+        let h = sys::file_open_typed(DISK_PATH, 0x242);
+        if h < 0 {
+            return Err(h as i64);
+        }
+        let n = sys::file_write_typed(h as u32, data);
+        let s = if fsync { sys::fsync_typed(h as u32) } else { 0 };
+        let c = sys::close_typed(h as u32);
+        if n != data.len() as isize { return Err(n as i64); }
+        if s != 0 { return Err(s as i64); }
+        if c != 0 { return Err(c as i64); }
+        Ok(())
+    }
+
     fn tmp_open_read_close(&self, buf: &mut [u8]) -> Result<(), i64> {
         let h = sys::file_open_typed(TMP_PATH, 0);
         if h < 0 {
@@ -382,6 +399,8 @@ impl Shell for AzosAbi {
 
 /// `tmp-ord`'s file: ramfs, under the autorun row's `/tmp` tree grant.
 const TMP_PATH: &[u8] = b"/tmp/VSB.TMP\0";
+/// Wave 15 `file-write`: a FAT32 file on the boot disk.
+const DISK_PATH: &[u8] = b"/fat/VSBW.DAT\0";
 
 /// Poll attempts before `fork_exit_wait` gives up.
 ///

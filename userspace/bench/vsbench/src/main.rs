@@ -29,7 +29,7 @@ mod ipc_proto;
 use bench_core::{
     batch, batch_tail, ns_per_op, rel_x100, ticks_to_ns, Abi, Ipc, Mem, Net, Proc, Role, Shell, Tail,
     Threads, N_THR,
-    Vdso, N_DUP, N_FILE, N_PIPE, N_PIPE_OPEN, N_SPAWN, PIPE_MSG,
+    Vdso, N_DUP, N_FILE, N_PIPE, N_PIPE_OPEN, N_SPAWN, PIPE_MSG, N_DISK, DISK_WRITE_BYTES,
     IPC_RENDEZVOUS_TRIES, IPC_RETRY_BUDGET, IPC_SENTINEL, N,
     N_BRK, N_FAULT_PAGES, N_IPC, N_IPC_TOTAL, N_IPC_WARM, N_MEM, N_MEM_ROUNDS, N_PROC,
     N_EGRESS, N_LOAD_PEERS, N_LOAD_PEER_ITERS, N_LOAD_PEER_STAMPS, N_LOAD_WARMUP, N_LOAD_YIELDS, N_NET, N_SLOW, N_VDSO, PAGE,
@@ -417,6 +417,40 @@ fn thread_lanes<A: Abi + Threads>(abi: &A, floor_ns: u64) {
     A::futex_wake(&PP_WORD, 1);
     thr_join::<A>(1);
     report(abi, b"futex wake+wait rt", t_pp, N_THR, floor_ns);
+}
+
+/// Wave 15 (`disk`): the disk file-write lanes.
+fn disk_lanes(abi: &(impl Abi + Shell), floor_ns: u64) {
+    // Wave 15: create/truncate + write 4 KiB + close on the DISK file
+    // system (AzOS FAT32 with its write-back cache; Linux vfat on the same
+    // kind of virtio-blk disk), without and with an fsync before the close.
+    match abi.disk_setup() {
+        Err(e) => {
+            abi.write(b"[VSBENCH] file-write: FAIL setup rc=");
+            put_i(abi, e);
+            abi.write(b"\n");
+        }
+        Ok(()) => {
+            let data = [0xA5u8; DISK_WRITE_BYTES];
+            for (fsync, label) in [(false, &b"file-write 4K"[..]), (true, &b"file-wr+fsync"[..])] {
+                let mut err = 0i64;
+                let t = batch(N_DISK, || {
+                    if err == 0 {
+                        if let Err(e) = abi.disk_write_close(&data, fsync) { err = e; }
+                    }
+                });
+                if err != 0 {
+                    abi.write(b"[VSBENCH] ");
+                    abi.write(label);
+                    abi.write(b": FAIL rc=");
+                    put_i(abi, err);
+                    abi.write(b"\n");
+                } else {
+                    report(abi, label, t, N_DISK, floor_ns);
+                }
+            }
+        }
+    }
 }
 
 fn proc_lanes(abi: &(impl Abi + Proc), floor_ns: u64) {
@@ -2265,6 +2299,7 @@ fn run<A: Abi + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
     // 4b. Heap and processes: two operations the harness used without ever
     //     measuring.
     if lanes.on(b"proc") { proc_lanes(abi, floor_ns); }
+    if lanes.on(b"disk") { disk_lanes(abi, floor_ns); }
     // 4b'. Wave 13: threads of one process, both sides.
     if lanes.on(b"thread") { thread_lanes::<A>(abi, floor_ns); }
 

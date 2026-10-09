@@ -114,7 +114,8 @@ pub trait Abi {
 ///
 /// Keys: `ipc` (ipc-roundtrip and the ring/drv/frame lanes on its peer),
 /// `mem`, `proc`, `thread`, `vdso`, `ioring`, `shell`, `timer`, `net`
-/// (nic-egress, udp-roundtrip), `switch` (switch-loaded, yield-switch).
+/// (nic-egress, udp-roundtrip), `switch` (switch-loaded, yield-switch),
+/// `disk` (file-write, file-wr+fsync; wave 15).
 /// AzOS reads it from `/fat/VSBLANES.TXT`, Linux from its environment;
 /// `tools/vsbench_compare.sh` puts it in both.
 pub struct Lanes {
@@ -646,7 +647,20 @@ pub trait Shell {
     /// reads `/fat` on AzOS (FAT32 over virtio-blk) and the initramfs on
     /// Linux, so its gap is mostly the disk; this lane is RAM on both sides.
     fn tmp_open_read_close(&self, buf: &mut [u8]) -> Result<(), i64>;
+    /// Wave 15: make the side's DISK file system writable (AzOS: `/fat`,
+    /// FAT32 over virtio-blk, nothing to do; Linux: devtmpfs, then the same
+    /// kind of FAT32 image on its own virtio-blk disk mounted `vfat` at
+    /// `/mnt`). Once, untimed.
+    fn disk_setup(&self) -> Result<(), i64>;
+    /// Wave 15 `file-write`: create-or-truncate the disk file, write `data`,
+    /// `fsync` it when asked, close it.
+    fn disk_write_close(&self, data: &[u8], fsync: bool) -> Result<(), i64>;
 }
+
+/// `file-write`: iterations of create/truncate + write 4 KiB + close.
+pub const N_DISK: u64 = 40;
+/// Bytes per `file-write` iteration.
+pub const DISK_WRITE_BYTES: usize = 4096;
 
 /// `file-ord`: iterations of open + read 64 B + close.
 pub const N_FILE: u64 = 200;

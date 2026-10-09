@@ -613,6 +613,45 @@ impl Shell for LinuxAbi {
         Ok(())
     }
 
+    fn disk_setup(&self) -> Result<(), i64> {
+        unsafe {
+            // /dev from devtmpfs (the initramfs has none), then the disk.
+            syscall3(SYS_MKDIRAT, AT_FDCWD as usize, b"/dev\0".as_ptr() as usize, 0o755);
+            let r = syscall5(SYS_MOUNT, b"devtmpfs\0".as_ptr() as usize, b"/dev\0".as_ptr() as usize,
+                             b"devtmpfs\0".as_ptr() as usize, 0, 0);
+            if r < 0 && r != -16 { return Err(r as i64); } // EBUSY: already there
+            syscall3(SYS_MKDIRAT, AT_FDCWD as usize, b"/mnt\0".as_ptr() as usize, 0o755);
+            // The reference kernel has no iso8859-1 NLS (vfat's default
+            // iocharset): ask for utf8, and fall back to `msdos` (the same
+            // FAT driver and write path, 8.3 names, which this file has).
+            let mut r = syscall5(SYS_MOUNT, b"/dev/vda\0".as_ptr() as usize, b"/mnt\0".as_ptr() as usize,
+                                 b"vfat\0".as_ptr() as usize, 0, b"iocharset=utf8\0".as_ptr() as usize);
+            if r < 0 {
+                r = syscall5(SYS_MOUNT, b"/dev/vda\0".as_ptr() as usize, b"/mnt\0".as_ptr() as usize,
+                             b"msdos\0".as_ptr() as usize, 0, 0);
+            }
+            if r < 0 { return Err(r as i64); }
+        }
+        Ok(())
+    }
+
+    fn disk_write_close(&self, data: &[u8], fsync: bool) -> Result<(), i64> {
+        // O_RDWR | O_CREAT | O_TRUNC, 0644.
+        let fd = unsafe {
+            syscall4(SYS_OPENAT, AT_FDCWD as usize, DISK_PATH.as_ptr() as usize, 0o1102, 0o644)
+        };
+        if fd < 0 {
+            return Err(fd as i64);
+        }
+        let n = unsafe { syscall3(SYS_WRITE, fd as usize, data.as_ptr() as usize, data.len()) };
+        let s = if fsync { unsafe { syscall1(SYS_FSYNC, fd as usize) } } else { 0 };
+        let c = unsafe { syscall1(SYS_CLOSE, fd as usize) };
+        if n != data.len() as isize { return Err(n as i64); }
+        if s != 0 { return Err(s as i64); }
+        if c != 0 { return Err(c as i64); }
+        Ok(())
+    }
+
     fn tmp_open_read_close(&self, buf: &mut [u8]) -> Result<(), i64> {
         let fd = unsafe { syscall4(SYS_OPENAT, AT_FDCWD as usize, TMP_PATH.as_ptr() as usize, 0, 0) };
         if fd < 0 {
@@ -629,6 +668,11 @@ impl Shell for LinuxAbi {
 
 /// `openat` (asm-generic).
 pub const SYS_OPENAT: usize = 56;
+const SYS_MKDIRAT: usize = 34;
+const SYS_MOUNT: usize = 40;
+const SYS_FSYNC: usize = 82;
+/// Wave 15 `file-write`: a file on the vfat disk `disk_setup` mounts.
+const DISK_PATH: &[u8] = b"/mnt/vsbw.dat\0";
 /// `dup` (asm-generic).
 pub const SYS_DUP: usize = 23;
 /// `AT_FDCWD`.

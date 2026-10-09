@@ -846,6 +846,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_SPAWN_EX, SYS_PIPE_TYPED, SYS_FILE_WRITE_TYPED,
             // Wave 13: the thread lanes (`thread create+join`, `futex wake+wait rt`).
             SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
+            // Wave 15 (WRITEBACK): the `file-wr+fsync` lane. Appended.
+            SYS_FSYNC_TYPED,
         ],
         audit: false,
     },
