@@ -622,13 +622,14 @@ config KHEAP_SLAB_KEEP_EMPTY
 
 config KHEAP_SLAB_DEBUG
     bool "Poison freed objects and check red zones"
-    default y if LOG_LEVEL_DEBUG && BOARD_QEMU
+    default y if LOG_LEVEL_DEBUG && BUILD_TYPE_DEV
     help
       A freed small object is filled with 0x6b and checked on its next
       allocation (a write after free panics with the object's address); the
       bytes between the requested size and the class size are filled with
       0xbb and checked on free (an overrun panics). On by default only in
-      the debug QEMU development configurations, never in a product build.
+      a development build (BUILD_TYPE) at the debug log level, the QEMU
+      development configurations, never in a release build by default.
       Cost: a fill and a scan of the object on every alloc and free (about
       size/8 to size instructions each), nothing in RAM.
 

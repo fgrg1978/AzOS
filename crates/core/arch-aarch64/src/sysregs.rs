@@ -536,17 +536,80 @@ pub fn pan_in_use() -> bool {
     }
 }
 
+/// `A64_PAN=probe`: the key and kinds of a PAN boot-once site in
+/// `.azos_keys` (`azos_trace::jump::{KEY_A64_PAN, KIND_A64_PAN_CLR,
+/// KIND_A64_PAN_SET}`; the kernel asserts they agree). This crate sees only
+/// `azos_arch_api`, so the numbers are mirrored here.
+pub const PAN_SITE_KEY: u32 = 64;
+/// See [`PAN_SITE_KEY`]: the window's `msr PAN, #0`.
+pub const PAN_SITE_KIND_CLR: u32 = 3;
+/// See [`PAN_SITE_KEY`]: the window's closing `msr PAN, #1`.
+pub const PAN_SITE_KIND_SET: u32 = 4;
+
+/// `A64_PAN=probe`, one boot-once site: an aligned 32-bit instruction linked
+/// as `b` to a slow path that tests [`PAN_PRESENT`] and runs the `msr` when
+/// it is set, and recorded in `.azos_keys`. The boot rewrites the site ONCE,
+/// on the boot CPU before any secondary starts, to the `msr` itself (the
+/// CPU has FEAT_PAN) or to a `nop` (an Armv8.0 core), so after boot the
+/// window costs what `require` or `n` costs: no load, no branch. A kernel
+/// that cannot patch keeps the branch and stays correct.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+macro_rules! pan_site {
+    ($kind:expr, $imm:literal) => {
+        // SAFETY: one instruction and a table entry; the slow path is the
+        // runtime test, correct whichever word the site holds. No `nomem`:
+        // the window's user access must not move across the site.
+        unsafe {
+            core::arch::asm!(
+                "2: b {slow}",
+                ".pushsection .azos_keys, \"a\"",
+                ".balign 8",
+                ".8byte 2b",
+                ".8byte {slow}",
+                ".4byte {key}",
+                ".4byte {kind}",
+                ".popsection",
+                slow = label {
+                    if PAN_PRESENT.load(core::sync::atomic::Ordering::Relaxed) {
+                        // SAFETY: FEAT_PAN is present (the boot probe).
+                        unsafe {
+                            core::arch::asm!(
+                                ".arch_extension pan",
+                                concat!("msr PAN, #", $imm),
+                                options(nostack, preserves_flags),
+                            );
+                        }
+                    }
+                },
+                key = const PAN_SITE_KEY,
+                kind = const $kind,
+                options(nostack, preserves_flags),
+            );
+        }
+    };
+}
+
 #[cfg(target_arch = "aarch64")]
 impl UserAccess {
     #[inline(always)]
     pub fn enable() -> Self {
-        if pan_in_use() {
-            unsafe {
+        use azos_arch_api::isa::{aarch64::PAN, ExtPolicy};
+        match PAN {
+            ExtPolicy::Require => unsafe {
                 core::arch::asm!(
                     ".arch_extension pan",
                     "msr PAN, #0",
                     options(nomem, nostack, preserves_flags),
                 );
+            },
+            ExtPolicy::Never => {}
+            #[cfg(target_os = "none")]
+            ExtPolicy::Probe => pan_site!(PAN_SITE_KIND_CLR, "0"),
+            #[cfg(not(target_os = "none"))]
+            ExtPolicy::Probe => {
+                if pan_in_use() {
+                    unsafe { core::arch::asm!(".arch_extension pan", "msr PAN, #0", options(nomem, nostack, preserves_flags)) };
+                }
             }
         }
         UserAccess
@@ -563,13 +626,23 @@ impl UserAccess {
 impl Drop for UserAccess {
     #[inline(always)]
     fn drop(&mut self) {
-        if pan_in_use() {
-            unsafe {
+        use azos_arch_api::isa::{aarch64::PAN, ExtPolicy};
+        match PAN {
+            ExtPolicy::Require => unsafe {
                 core::arch::asm!(
                     ".arch_extension pan",
                     "msr PAN, #1",
                     options(nomem, nostack, preserves_flags),
                 );
+            },
+            ExtPolicy::Never => {}
+            #[cfg(target_os = "none")]
+            ExtPolicy::Probe => pan_site!(PAN_SITE_KIND_SET, "1"),
+            #[cfg(not(target_os = "none"))]
+            ExtPolicy::Probe => {
+                if pan_in_use() {
+                    unsafe { core::arch::asm!(".arch_extension pan", "msr PAN, #1", options(nomem, nostack, preserves_flags)) };
+                }
             }
         }
     }

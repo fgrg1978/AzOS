@@ -95,3 +95,26 @@ fn the_table_parses_whole_entries_only() {
     assert_eq!(sites[2], KeySite { site: RV[2].0, target: RV[2].1, key: 2, kind: KIND_RV_JAL });
     assert!(parse(&raw[..raw.len() - 1]).is_none());
 }
+
+// A64_PAN=probe boot-once sites: the linked `b` and the two `msr` words as
+// the assembler emitted them in a built kernel (copy_to_user's window,
+// llvm-objdump: `b` 0x1400000b at the site, `msr PAN, #0` d500409f and
+// `msr PAN, #1` d500419f in its slow paths).
+#[test]
+fn a_pan_site_is_patched_to_the_assembler_s_msr_or_nop() {
+    let clr = KeySite { site: 0xffff_ff80_401a_8590, target: 0xffff_ff80_401a_85bc, key: KEY_A64_PAN, kind: KIND_A64_PAN_CLR };
+    let set = KeySite { site: 0xffff_ff80_401a_85ac, target: 0xffff_ff80_401a_85cc, key: KEY_A64_PAN, kind: KIND_A64_PAN_SET };
+    assert_eq!(clr.pan_linked(), Ok(0x1400_000b));
+    assert_eq!(set.pan_linked(), Ok(0x1400_0008));
+    assert_eq!(clr.pan_word(true), Ok(0xd500_409f));
+    assert_eq!(set.pan_word(true), Ok(0xd500_419f));
+    assert_eq!(clr.pan_word(false), Ok(A64_NOP));
+    assert_eq!(set.pan_word(false), Ok(A64_NOP));
+    // Not a trace key: the trace patcher's encoders refuse it, and a trace
+    // site is not a PAN site.
+    assert_eq!(clr.word(true), Err(SiteError::Kind));
+    let tr = KeySite { site: A64[0].0, target: A64[0].1, key: 1, kind: KIND_A64_B };
+    assert_eq!(tr.pan_word(true), Err(SiteError::Kind));
+    assert_eq!(tr.pan_linked(), Err(SiteError::Kind));
+    assert!(KEY_A64_PAN >= 32);
+}

@@ -46,11 +46,17 @@ pub(crate) const NAMES: &[&str] = &[
     // is mapped 1:1 in the low half again (ktest `x86_low_half_maps_no_ram`,
     // x86_64 only).
     "x86-low-alias",
+    // entry/aarch64/pan_patch.rs: the A64_PAN=probe sites are not rewritten
+    // at boot (ktest `a64_pan_sites_patched`, aarch64 only).
+    "pan-patch-skip",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 
-/// Built in, and not refused by a signed image.
-pub(crate) const ON: bool = azos_limits::CANARY_RUNTIME && !cfg!(feature = "secure-boot-enforced");
+/// Built in, and not refused by a signed image or a release build (Kconfig
+/// already makes CANARY_RUNTIME depend on BUILD_TYPE_DEV).
+pub(crate) const ON: bool = azos_limits::CANARY_RUNTIME
+    && azos_limits::BUILD_TYPE_DEV
+    && !cfg!(feature = "secure-boot-enforced");
 
 /// The armed canaries, one bit per [`NAMES`] index. Written once on the boot
 /// hart before any other hart or task runs.

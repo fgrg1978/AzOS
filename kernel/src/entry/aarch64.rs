@@ -21,6 +21,7 @@ use super::{TrapClass, TrapContext};
 
 pub mod fp_lazy;
 pub(crate) mod board_map;
+pub(crate) mod pan_patch;
 pub(crate) mod selftests;
 pub(crate) mod smp;
 

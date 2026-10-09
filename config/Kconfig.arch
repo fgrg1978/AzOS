@@ -361,9 +361,14 @@ choice
       (2 instructions, no branch); the boot refuses a CPU without it.
       Armv8.1 includes it (a level >= 8.1 with PAN not `require` is a
       build error). probe: boot.S sets PAN only when ID_AA64MMFR1_EL1.PAN
-      is non-zero, and each window costs one byte load and a branch more
-      (the boot's answer, kept in a static); on a core without it the
-      kernel runs with no PAN protection and the [ISA] line says
+      is non-zero; each window's two sites are linked as a branch to a
+      byte load and test of the boot's answer, and the boot rewrites every
+      site once, before the secondaries start, to the `MSR PAN` itself or
+      to a `nop` (kernel/src/entry/aarch64/pan_patch.rs, through the
+      static-key text patcher; the `[PAN] boot patch` line counts them).
+      After boot a window costs what `require` (FEAT_PAN) or `n` (none)
+      costs; 24 bytes of .rodata per site. On a core without it the kernel
+      runs with no PAN protection and the [ISA] line says
       `pan=probed-absent`. n: PAN is never set and SCTLR_EL1.SPAN stays 1:
       no cost, no protection.
 

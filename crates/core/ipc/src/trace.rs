@@ -214,16 +214,18 @@ fn apply(classes: u32, mask: u32) -> (usize, usize) {
 
 /// Set the patcher up and bring every site in line with the boot mask.
 fn keys_init(text: (usize, usize)) {
-    let sites = azos_trace::key_sites();
+    // The trace classes' sites only: keys >= 32 are other boot-once sites
+    // (aarch64 PAN, `azos_trace::jump::KEY_A64_PAN`) with their own census.
+    let sites = || azos_trace::key_sites().iter().filter(|s| s.key < 32);
     let Some(alias) = azos_mm::text_poke::init(text.0, text.1) else {
         azos_drv_sys::kwarn!(
-            "[TRACE] static keys: no text alias, {} sites stay branches (the mask test)", sites.len());
+            "[TRACE] static keys: no text alias, {} sites stay branches (the mask test)", sites().count());
         return;
     };
     let _g = KEYS.lock_irqsave();
     let (done, refused) = apply(azos_trace::CLASSES, azos_trace::mask());
     let (mut nop, mut branch, mut rx) = (0, 0, 0);
-    for s in sites {
+    for s in sites() {
         match s.state(site_word(s)) {
             Ok(true) => branch += 1,
             Ok(false) => nop += 1,
@@ -235,7 +237,7 @@ fn keys_init(text: (usize, usize)) {
     }
     azos_drv_sys::kprintln!(
         "[TRACE] static keys: {} sites, {} rewritten, {} refused; now {} nop, {} branch; text RX at {}/{} sites; alias {:#x} mapped={}",
-        sites.len(), done, refused, nop, branch, rx, sites.len(), alias,
+        sites().count(), done, refused, nop, branch, rx, sites().count(), alias,
         azos_mm::text_poke::alias_mapped(),
     );
 }

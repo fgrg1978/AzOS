@@ -1808,6 +1808,8 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // class assignment from RFC-0005 declarations. Shared with aarch64's
     // kernel_main — see `install_topology`'s own doc.
     install_topology(num_cpus);
+    // Kconfig BUILD_TYPE (dev: test machinery and the TEST key allowed).
+    kprintln!("[BOOT] build type: {}", if azos_limits::BUILD_TYPE_RELEASE { "release" } else { "dev" });
     // The kernel command line: `init=` (secure boot off) names this boot's
     // console program. Read before anything ring 3 starts.
     crate::console_mode::read_cmdline(dtb_ptr);
@@ -2708,6 +2710,10 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         let text = unsafe { (&_text_start as *const u8 as usize, &_text_end as *const u8 as usize) };
         azos_ipc::trace::init(num_cpus, ts_hz, text);
         azos_trace::cpu_online();
+        // Boot-once text rewrites (aarch64 `A64_PAN=probe`: every user-access
+        // window site becomes `msr PAN` or `nop`), after the trace patcher's
+        // alias exists and before any secondary runs the text.
+        ARCH_ENTRY.boot_patch(text.0, text.1);
         #[cfg(feature = "trace-cost-probe")]
         crate::smokes::trace_cost_probe(ts_hz);
         #[cfg(feature = "lat-trace")]

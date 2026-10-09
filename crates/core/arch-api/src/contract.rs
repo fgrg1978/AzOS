@@ -234,6 +234,15 @@ pub trait ArchEntry {
     /// Map device windows the early map did not cover, once the heap exists.
     fn map_late_mmio(&self);
 
+    /// Boot-once instruction rewrites of the kernel text `[text_start,
+    /// text_end)`, on the boot CPU after the page tables and the trace
+    /// patcher exist and BEFORE any secondary starts (a rewrite here may use
+    /// an instruction the ISA does not allow to change under a running CPU).
+    /// aarch64: the `A64_PAN=probe` user-access sites become `msr PAN` or
+    /// `nop` from the boot probe. riscv64 (SUM is in every S-mode) and
+    /// x86_64 (no probed user-access instruction yet): nothing.
+    fn boot_patch(&self, text_start: usize, text_end: usize);
+
     /// Start every secondary CPU up to `num_cpus` (SBI HSM, PSCI, INIT-SIPI).
     fn wake_secondaries(&self, num_cpus: usize);
 

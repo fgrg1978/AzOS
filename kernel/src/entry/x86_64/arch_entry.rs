@@ -66,6 +66,7 @@ impl ArchEntry for Entry {
         crate::boot_hooks::arch_map_late_mmio()
     }
 
+    fn boot_patch(&self, _text_start: usize, _text_end: usize) {}
     fn wake_secondaries(&self, num_cpus: usize) {
         crate::boot_hooks::arch_wake_secondaries(num_cpus)
     }

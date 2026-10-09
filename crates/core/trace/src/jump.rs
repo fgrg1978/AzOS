@@ -39,6 +39,26 @@ pub const KIND_RV_JAL: u32 = 1;
 /// aarch64: `b target` / `nop`.
 pub const KIND_A64_B: u32 = 2;
 
+/// aarch64 boot-once PAN sites (Kconfig `A64_PAN=probe`; not a trace key):
+/// the `UserAccess` window's `msr PAN, #0` ([`KIND_A64_PAN_CLR`]) and its
+/// closing `msr PAN, #1` ([`KIND_A64_PAN_SET`]). Linked as `b target`, a
+/// slow path that tests the boot's probe answer at run time (correct before
+/// any patch, on any core); rewritten ONCE, on the boot CPU before the
+/// secondaries start, to the `msr` when the CPU has FEAT_PAN and to the nop
+/// when it does not ([`KeySite::pan_word`]). Once only, because MSR is not in
+/// the ARM ARM's list of instructions another PE may run while it changes
+/// (B2.2.5; B and NOP are). Recorded under [`KEY_A64_PAN`] so the trace
+/// patcher, which rewrites keys below 32 only, never touches them.
+pub const KIND_A64_PAN_CLR: u32 = 3;
+/// See [`KIND_A64_PAN_CLR`].
+pub const KIND_A64_PAN_SET: u32 = 4;
+/// The key of every PAN site (>= 32: no trace class).
+pub const KEY_A64_PAN: u32 = 64;
+/// aarch64 `msr PAN, #0` (MSR immediate: op1 0, CRn 4, CRm #imm, op2 4).
+pub const A64_MSR_PAN_0: u32 = 0xd500_409f;
+/// aarch64 `msr PAN, #1`.
+pub const A64_MSR_PAN_1: u32 = 0xd500_419f;
+
 /// riscv64 `nop` (`addi x0, x0, 0`), the 4-byte form (never `c.nop`).
 pub const RV_NOP: u32 = 0x0000_0013;
 /// aarch64 `nop`.
@@ -124,6 +144,30 @@ impl KeySite {
             Ok(false)
         } else {
             Err(SiteError::Unexpected)
+        }
+    }
+
+    /// A PAN site ([`KIND_A64_PAN_CLR`] / [`KIND_A64_PAN_SET`]): the word it
+    /// is patched to, the `msr` when the CPU has FEAT_PAN (`present`) and
+    /// the nop when it does not.
+    pub fn pan_word(&self, present: bool) -> Result<u32, SiteError> {
+        if self.site & 3 != 0 {
+            return Err(SiteError::Misaligned);
+        }
+        match (self.kind, present) {
+            (KIND_A64_PAN_CLR, true) => Ok(A64_MSR_PAN_0),
+            (KIND_A64_PAN_SET, true) => Ok(A64_MSR_PAN_1),
+            (KIND_A64_PAN_CLR | KIND_A64_PAN_SET, false) => Ok(A64_NOP),
+            _ => Err(SiteError::Kind),
+        }
+    }
+
+    /// A PAN site's linked form, the `b` to its slow path: the only word the
+    /// boot patch overwrites.
+    pub fn pan_linked(&self) -> Result<u32, SiteError> {
+        match self.kind {
+            KIND_A64_PAN_CLR | KIND_A64_PAN_SET => a64_b(self.site, self.target).ok_or(SiteError::Range),
+            _ => Err(SiteError::Kind),
         }
     }
 }

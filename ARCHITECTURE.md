@@ -708,7 +708,8 @@ in-kernel shell remains the recovery console. With secure boot off,
 `init=/fat/NAME.ELF` on the kernel command line (`/chosen/bootargs`) names
 another image for one boot, provided that image has a topology row. With
 secure boot on, `init=` is ignored and the boot log says so.
-Development builds (Kconfig `CANARY_RUNTIME`, never with secure boot) also
+Development builds (Kconfig `BUILD_TYPE_DEV` and `CANARY_RUNTIME`, never with
+secure boot) also
 read `canary=<name>[,<name>]` there: it arms named gate canaries for one
 boot, so a canary test boots the same kernel as the test it checks.
 On aarch64 the command line arrives only with a device tree, which the
@@ -792,9 +793,10 @@ roots are level-2 tables, that step is constant-folded away.
   through these; the facade refuses to compile for a bare-metal target it has
   no branch for.
 - **`kernel/src/entry/<isa>/`**: `boot_hooks.rs` and `arch_entry.rs`, the
-  kernel's `ArchEntry` (34 methods, four associated types, a
+  kernel's `ArchEntry` (36 methods, four associated types, a
   `PAGE_TABLES` name and a `CONSOLE_MMIO` flag: the 26 early-boot hooks `boot::early_main` calls, the
-  late VirtIO map, the secondary-CPU wake, the scheduler hand-off, the four
+  late VirtIO map, the boot-once text patch, the secondary-CPU wake, the
+  scheduler hand-off, the four
   secondary-CPU steps the shared `secondary_main` calls, the vDSO clock);
   `kernel/src/entry/<isa>.rs` with the `TrapFrame` and its `TrapContext` (11
   methods); and `asm/boot.S` (exports `_start`, calls `kernel_main` and, per

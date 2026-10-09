@@ -8,6 +8,50 @@
 menu "Development & Debug"
 
 # ---------------------------------------------------------------------------
+# Build type (owner decision, wave 15)
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Build type"
+    default BUILD_TYPE_DEV if BOARD_QEMU
+    default BUILD_TYPE_RELEASE
+    help
+      What the image is for. The test-only machinery below depends on it,
+      so a release image cannot carry it whatever else the .config says.
+
+      Development (default on the QEMU board: the qemu*, edge,
+      robot-edge and experimental defconfigs, and every QEMU kernel the
+      Makefile builds from build/qemu-dev.config): gate canaries armed from
+      the command line (CANARY_RUNTIME), fault injection (CHAOS), the
+      in-kernel tests (KTEST) and the real-time block-I/O check
+      (RT_BLOCK_IO_CHECK) may be enabled, and the image may embed the TEST
+      signing key (tools/keys/test_pub.bin, the `dev-key` feature every
+      QEMU kernel uses).
+
+      Release (default on every other board: the embedded, fleet,
+      robot-embedded, robot-fleet, vf2, k1 and rpi5 defconfigs): those four
+      options are forced off (a `ktest` or `chaos` cargo feature on a
+      release .config does not compile), the build refuses the TEST key
+      (the `dev-key` fallback in crates/core/topology/build.rs; every
+      `make` board target through tools/check_board_keys.py), and the
+      image needs the fleet key in TOPOLOGY_PUBKEY_PATH. Secure boot stays
+      its own option (SECURE_BOOT_ENFORCED): a release usually enables it,
+      nothing forces it yet.
+
+      No cost: it selects what may be compiled. This is the minimal axis;
+      the full one (a certifiable release, `make release`, signing kept
+      apart from the build host) is a later step and will extend this
+      choice, not replace it.
+
+    config BUILD_TYPE_DEV
+        bool "Development: test machinery and the TEST key allowed"
+
+    config BUILD_TYPE_RELEASE
+        bool "Release: test machinery forced off, TEST key refused"
+
+endchoice
+
+# ---------------------------------------------------------------------------
 # TCP trace probes
 # ---------------------------------------------------------------------------
 
@@ -249,6 +293,7 @@ config LAT_TRACE
 
 config RT_BLOCK_IO_CHECK
     bool "Panic when a real-time task enters the block layer"
+    depends on BUILD_TYPE_DEV
     default y if LOG_LEVEL_DEBUG
     default n
     help
@@ -266,6 +311,7 @@ config RT_BLOCK_IO_CHECK
       call. On (default in the QEMU development configs, which select
       LOG_LEVEL_DEBUG): one indirect call and a priority load per block
       request, the same on riscv64, aarch64 and x86_64, and no RAM.
+      Development builds only (BUILD_TYPE).
 
 # ---------------------------------------------------------------------------
 # Kernel event tracer (wave 15)
@@ -515,6 +561,7 @@ config SWITCH_CENSUS_DUMP_MIN
 
 config KTEST
     bool "In-kernel tests (ktest): run every registered test at boot, then power off"
+    depends on BUILD_TYPE_DEV
     default n
     help
       Compiles every `ktest!` and `ktest_late!` test (crates/core/ktest) and
@@ -535,6 +582,8 @@ config KTEST
       tests' code and 32 bytes of `.rodata` per test, one more kernel task
       when a late test exists, and the boot stops after the run. Maps to
       the kernel cargo feature `ktest` (tools/kconfig_to_cargo.py).
+      Development builds only (BUILD_TYPE): the `ktest` feature on a release
+      .config does not compile.
 
 config KTEST_LATE_PRIORITY
     int "Priority of the late ktest runner task"
@@ -566,7 +615,7 @@ config CANARY_RUNTIME
     bool "Runtime gate canaries: canary=<name>[,<name>] on the kernel command line"
     default y if LOG_LEVEL_DEBUG
     default n
-    depends on !SECURE_BOOT_ENFORCED
+    depends on BUILD_TYPE_DEV && !SECURE_BOOT_ENFORCED
     help
       Lets a gate canary be armed for one boot from the kernel command
       line (the device tree's /chosen/bootargs; QEMU -append), so a canary
@@ -582,8 +631,8 @@ config CANARY_RUNTIME
       keep cargo-feature canaries (compiled out, zero instructions).
 
       On by default in the QEMU development configs (the ones at
-      LOG_LEVEL_DEBUG, which the gate builds). Off in every deployment
-      profile, and impossible with SECURE_BOOT_ENFORCED (the kernel also
+      LOG_LEVEL_DEBUG, which the gate builds). Impossible in a release
+      build (BUILD_TYPE), and with SECURE_BOOT_ENFORCED (the kernel also
       refuses it under the `secure-boot-enforced` cargo feature): a
       command line must not weaken a signed image. Off: the parser, the
       names and every site compile out (`canary!` is a constant false).
@@ -594,7 +643,7 @@ config CHAOS
     bool "Fault injection (chaos=<point>:<rate> on the kernel command line)"
     default y if KTEST
     default n
-    depends on !SECURE_BOOT_ENFORCED
+    depends on BUILD_TYPE_DEV && !SECURE_BOOT_ENFORCED
     help
       Compiles the fault-injection registry (crates/core/chaos) and its
       six named injection points: frame-alloc (the page allocator answers
@@ -609,8 +658,9 @@ config CHAOS
       `chaos_*` ktests check that each fault is refused cleanly and leaks
       nothing. /proc/chaos lists each point's rate and counts.
 
-      On by default only in a KTEST kernel. Off in every deployment profile
-      and impossible with SECURE_BOOT_ENFORCED: a command line must not be
+      On by default only in a KTEST kernel. Impossible in a release build
+      (BUILD_TYPE; the `chaos` feature on a release .config does not
+      compile) and with SECURE_BOOT_ENFORCED: a command line must not be
       able to fail a signed image's allocations. Off: every site compiles
       to the code it was before (`fire` is a constant false). On: one load
       and a branch per site call while its point is disarmed, about 300

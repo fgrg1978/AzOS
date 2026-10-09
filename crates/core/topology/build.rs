@@ -57,6 +57,18 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TOPOLOGY_PUBKEY_PATH");
     let explicit = env::var("TOPOLOGY_PUBKEY_PATH").ok().filter(|p| !p.is_empty());
     let dev_key = env::var_os("CARGO_FEATURE_DEV_KEY").is_some();
+    // Kconfig BUILD_TYPE_RELEASE: a bare-metal image built from a release
+    // .config never embeds the TEST key through the `dev-key` fallback
+    // (the `make` board targets refuse an explicit TEST key path with
+    // tools/check_board_keys.py). Host builds (the test crates) are not
+    // images and keep the fallback.
+    let bare = env::var("CARGO_CFG_TARGET_OS").map(|o| o == "none").unwrap_or(false);
+    if dev_key && explicit.is_none() && bare && release_config(&manifest_dir) {
+        fail("Kconfig BUILD_TYPE_RELEASE refuses the TEST key: the `dev-key` feature \
+              (the kernel's `qemu` feature) would embed tools/keys/test_pub.bin; set \
+              TOPOLOGY_PUBKEY_PATH to the fleet's public key (`make vf2`/`k1`/`rpi5`/\
+              `build-fleet`), or select BUILD_TYPE_DEV");
+    }
 
     let bytes: [u8; PUBKEY_LEN] = match (explicit, dev_key) {
         (Some(p), _) => {
@@ -164,6 +176,19 @@ fn emit_target_cfgs() {
     if arm {
         println!("cargo:rustc-cfg=topo_arch_aarch64");
     }
+}
+
+/// Is the build's .config (KCONFIG_CONFIG, else the workspace `.config`,
+/// as `azos_limits` reads it) a release build (Kconfig BUILD_TYPE_RELEASE)?
+fn release_config(manifest_dir: &str) -> bool {
+    println!("cargo:rerun-if-env-changed=KCONFIG_CONFIG");
+    let path = env::var("KCONFIG_CONFIG").map(PathBuf::from).unwrap_or_else(|_| {
+        PathBuf::from(manifest_dir).join("..").join("..").join("..").join(".config")
+    });
+    println!("cargo:rerun-if-changed={}", path.display());
+    fs::read_to_string(&path)
+        .map(|c| c.lines().any(|l| l.trim() == "CONFIG_BUILD_TYPE_RELEASE=y"))
+        .unwrap_or(false)
 }
 
 /// Stop the build with one line on stderr (cargo prints it under the failing

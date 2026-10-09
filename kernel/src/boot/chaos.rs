@@ -13,6 +13,11 @@ use azos_drv_sys::kprintln;
 
 #[cfg(all(feature = "chaos", feature = "secure-boot-enforced"))]
 compile_error!("Kconfig CHAOS must not reach a signed image: a command line would fail its allocations");
+#[cfg(feature = "chaos")]
+const _: () = assert!(
+    !azos_limits::BUILD_TYPE_RELEASE,
+    "Kconfig CHAOS must not reach a release build (BUILD_TYPE_RELEASE): drop the `chaos` feature"
+);
 
 /// Read `chaos=` / `chaos_seed=` (held until [`go_live`]) and arm the
 /// runtime canaries of both subsystems. `early_main`, after the canaries

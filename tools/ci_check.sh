@@ -2761,9 +2761,9 @@ aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected en
     fi
     ok; rm -f "$log"
 }
-par "aarch64 kernel boots (EL1)"        aarch64_kernel_row "aarch64 kernel boots (EL1)"        ""                     1 2
-par "aarch64 kernel boots (EL2)"        aarch64_kernel_row "aarch64 kernel boots (EL2)"        ",virtualization=on"   2 2
-par "aarch64 kernel boots (EL1, -smp 4)" aarch64_kernel_row "aarch64 kernel boots (EL1, -smp 4)" ""                    1 4
+par "aarch64 kernel boots (EL1)"        aarch64_kernel_row "aarch64 kernel boots (EL1)"        ""                     1 2 "max,pauth=on" "[PAN] boot patch (pan=probed-present): every site msr"
+par "aarch64 kernel boots (EL2)"        aarch64_kernel_row "aarch64 kernel boots (EL2)"        ",virtualization=on"   2 2 "max,pauth=on" "[PAN] boot patch (pan=probed-present): every site msr"
+par "aarch64 kernel boots (EL1, -smp 4)" aarch64_kernel_row "aarch64 kernel boots (EL1, -smp 4)" ""                    1 4 "max,pauth=on" "[PAN] boot patch (pan=probed-present): every site msr"
 
 # ── VE (wave 15): the kernel on an Armv8.0 core ─────────────────────────────
 #
@@ -2778,8 +2778,15 @@ par "aarch64 kernel boots (EL1, -smp 4)" aarch64_kernel_row "aarch64 kernel boot
 # EL2 too: `_azos_drop_to_el1` writes SCTLR_EL1.SPAN and SPSR_EL2.PAN.
 # Canary: `--features a64-pan-unprobed-canary` (the unprobed `MSR PAN` back):
 # an empty log, every marker missing.
-par "aarch64 kernel boots on cortex-a53 (8.0)" aarch64_kernel_row "aarch64 kernel boots on cortex-a53 (8.0)" "" 1 2 cortex-a53 "pan=probed-absent"
-par "aarch64 kernel boots on cortex-a53 (8.0, EL2)" aarch64_kernel_row "aarch64 kernel boots on cortex-a53 (8.0, EL2)" ",virtualization=on" 2 2 cortex-a53 "pan=probed-absent"
+# The extra marker is the boot-once PAN patch's census (kernel/src/entry/
+# aarch64/pan_patch.rs): under A64_PAN=probe every UserAccess site, linked as
+# a branch to the runtime test, is rewritten before the secondaries start to
+# `msr PAN` (`-cpu max`, the rows above) or `nop` (here), so a window costs
+# no load and no branch after boot. Canary: `canary=pan-patch-skip` leaves
+# every site a branch; the line then reads "0 of N sites ..., N still branch"
+# (and ktest `a64_pan_sites_patched` goes not ok).
+par "aarch64 kernel boots on cortex-a53 (8.0)" aarch64_kernel_row "aarch64 kernel boots on cortex-a53 (8.0)" "" 1 2 cortex-a53 "[PAN] boot patch (pan=probed-absent): every site nop"
+par "aarch64 kernel boots on cortex-a53 (8.0, EL2)" aarch64_kernel_row "aarch64 kernel boots on cortex-a53 (8.0, EL2)" ",virtualization=on" 2 2 cortex-a53 "[PAN] boot patch (pan=probed-absent): every site nop"
 par "aarch64 shell answers help" shell_help_row "aarch64 shell answers help" arm
 
 # ── aarch64: PL011 console RX on interrupts (wave 7) ─────────────────────────
@@ -10852,7 +10859,7 @@ PY
     # nothing and is counted; the `decision_*` tests read the boot's
     # admission record and a capability denial's (crates/core/decision).
     KTEST_N_RV=24
-    KTEST_N_ARM=23
+    KTEST_N_ARM=24
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
@@ -10944,6 +10951,10 @@ PY
     KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
+    # A64_PAN=probe: `canary=pan-patch-skip` leaves every UserAccess site the
+    # slow-path branch (kernel/src/entry/aarch64/pan_patch.rs); only
+    # `a64_pan_sites_patched` goes not ok. aarch64 only.
+    par "ktest pan-patch-skip canary (arm)" ktest_row "ktest pan-patch-skip canary (arm)" arm "" "a64_pan_sites_patched" "canary=pan-patch-skip"
     # Wave 15 (plan 7b): `canary=chaos-inert` arms no injection point, so
     # every `chaos_*` test but the parser's reports `not ok` (one boot: the
     # inert registry would also hide `chaos-leak`, which rides above).

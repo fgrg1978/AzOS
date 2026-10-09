@@ -33,6 +33,13 @@
 //! read them from [`note_image`].
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+// Kconfig KTEST depends on BUILD_TYPE_DEV; the cargo feature alone must not
+// put the tests (and their power-off) into a release image either.
+const _: () = assert!(
+    !azos_limits::BUILD_TYPE_RELEASE,
+    "Kconfig KTEST must not reach a release build (BUILD_TYPE_RELEASE): drop the `ktest` feature"
+);
+
 use azos_drv_sys::kprintln;
 
 fn isa() -> &'static str {
