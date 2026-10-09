@@ -1824,13 +1824,15 @@ pub fn lease_reap_expired() -> usize {
 /// writable). Gate canary `lease-sealed-by-thread-canary`: thread TID only.
 pub fn lease_sealed_by(tid: u32, shm_ref: u32) -> bool {
     let table = LEASES.lock_irqsave();
+    // `proc_tid` is lock-free (`group::LEAD` atomics), so it may run under
+    // `LEASES`; it is asked last, only for a live sealed lease on this region.
     table.entries.iter().any(|e| {
-        let lessor = e.lessor_tid == tid
-            || (!cfg!(feature = "lease-sealed-by-thread-canary")
-                && azos_sched::group::any_groups()
-                && azos_sched::group::proc_tid(e.lessor_tid) == tid);
-        e.sealed && lessor && e.shm_ref == shm_ref
+        e.sealed && e.shm_ref == shm_ref
             && matches!(e.state, LeaseState::Pending | LeaseState::Active)
+            && (e.lessor_tid == tid
+                || (!cfg!(feature = "lease-sealed-by-thread-canary")
+                    && azos_sched::group::any_groups()
+                    && azos_sched::group::proc_tid(e.lessor_tid) == tid))
     })
 }
 
