@@ -2578,6 +2578,31 @@ qemu-aarch64: aarch64
 qemu-aarch64-el2: aarch64
 	qemu-system-aarch64 -M virt,gic-version=3,virtualization=on $(QEMU_AARCH64_KERNEL_FLAGS) -kernel $(AARCH64_IMG)
 
+# ── Raspberry Pi 5 (BCM2712, aarch64) — not ported ──────────────────────────
+# `make defconfig-rpi5` selects the board in .config. `make rpi5` expands the
+# same profile into build/rpi5.config and builds the aarch64 kernel from it;
+# the build stops at the compile_error! in kernel/src/entry/aarch64.rs, which
+# says what the port still needs (GICv2 backend, BCM2712 PL011 console,
+# firmware boot). The target exists so the board is visible, and it fails
+# honestly until the port is done. The topology build script wants a signing
+# key even though nothing here is ever linked, so the dev key stands in
+# (`azos_topology/dev-key`); the board flow (`require_board_key`) replaces it
+# when the port produces an image.
+RPI5_KCONFIG := build/rpi5.config
+.PHONY: rpi5
+$(RPI5_KCONFIG): config/defconfigs/rpi5.config \
+		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
+	@mkdir -p build
+	cp config/defconfigs/rpi5.config $@
+	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
+	@grep -q '^CONFIG_BOARD_RPI5=y$$' $@ || { echo "[RPI5] $@ lost CONFIG_BOARD_RPI5"; exit 1; }
+
+rpi5: $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(RPI5_KCONFIG)" $(AARCH64_KTARGET_ENV) \
+	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/kconfig_to_cargo.py --rustflags $(RPI5_KCONFIG))" \
+	    $(CARGO) build --release -p azos_kernel --features azos_topology/dev-key \
+	    $$(python3 tools/kconfig_to_cargo.py $(RPI5_KCONFIG) | tr -s ' ')
+
 # ── Signed capability topology files (wave 15 TOPOSIGN) ─────────────────────
 #
 # Kconfig TOPOLOGY_SOURCE: a kernel installs /fat/CAPS.TOM + CAPS.SIG and
