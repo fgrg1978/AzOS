@@ -2792,7 +2792,10 @@ pub extern "C" fn _start() -> ! {
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub extern "C" fn _start() -> ! {
-    core::arch::naked_asm!("mv a0, sp", "j {0}", sym linux_main)
+    #[cfg(target_arch = "riscv64")]
+    core::arch::naked_asm!("mv a0, sp", "j {0}", sym linux_main);
+    #[cfg(target_arch = "aarch64")]
+    core::arch::naked_asm!("mov x0, sp", "b {0}", sym linux_main);
 }
 
 #[cfg(feature = "linux")]

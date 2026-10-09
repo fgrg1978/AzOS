@@ -69,6 +69,25 @@
 # script reports; it does not gate. See "How to run this" below for why it
 # is not wired into `tools/ci_check.sh`'s default sequence.
 #
+# ## The Linux/aarch64 column (N0, wave 15)
+#
+# `VSBENCH_AARCH64_LINUX_IMAGE` (default `$HOME/devel/vms/arm64/Image`): an
+# arm64 Linux `Image`, raw or gzip. Present, the Linux side of vsbench is
+# built for aarch64 (`abi_linux.rs` has an `svc 0` twin of every `ecall`),
+# packed as `/init` of an uncompressed initramfs, and booted on the SAME
+# QEMU line as the aarch64 AzOS column (machine, `-smp`, `-icount`, the
+# same disk device with its own copy of the image; the CPU is the same `max`
+# with `lpa2=off`, see `LINUX_A_CPU`). Its lanes print in a
+# column of their own with the AzOS/Linux ratio. Absent, the column is
+# skipped and says so. This script neither downloads nor builds a kernel.
+#
+# The column REPORTS: a Linux lane failure is printed and does not change
+# the exit status (a distribution kernel may lack what a lane needs, e.g.
+# `vfat` built as a module fails the `disk` lanes), and an aarch64 AzOS lane
+# with no Linux number is listed by name. The only image on this machine
+# when this was written is Ubuntu 20.04.5's 5.4.0-125-generic (CFS, not
+# EEVDF), out of its installer ISO's `casper/vmlinuz`.
+#
 # ## How to run this
 #
 #   PATH="/Users/azor/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin" \
@@ -242,6 +261,59 @@ done
 kill -9 "$A_PID" 2>/dev/null; wait "$A_PID" 2>/dev/null
 
 # ── Verdict ──────────────────────────────────────────────────────────────
+# ── Linux/aarch64 (see the header) ────────────────────────────────────────
+LINUX_A_IMAGE="${VSBENCH_AARCH64_LINUX_IMAGE:-$HOME/devel/vms/arm64/Image}"
+# The AzOS line's CPU with `lpa2=off`: 5.4 predates FEAT_LPA2 and, offered it
+# by this QEMU's `max`, prints nothing at all (measured: no `Linux version`
+# line in 90 s; with `lpa2=off` it boots and runs the suite; its io_uring
+# timeout/msg-ring and `disk` lanes fail on 5.4 and are listed).
+LINUX_A_CPU="${VSBENCH_AARCH64_LINUX_CPU:-max,pauth=on,lpa2=off}"
+L_LOG="$WORK/linux-aarch64.log"
+L_RAN=0
+linux_done() { # linux_done <log>
+    tr -d '\r' <"$1" 2>/dev/null | grep -qE '\[VSBENCH\] side=linux done|Attempted to kill init'
+}
+if [ -f "$LINUX_A_IMAGE" ]; then
+    L_A_ELF="$BENCH_TARGET/vsbench-linux/aarch64-unknown-none/release/vsbench"
+    ( cd "$REPO_ROOT/userspace/bench/vsbench" \
+      && CARGO_TARGET_DIR="$BENCH_TARGET/vsbench-linux" \
+         RUSTFLAGS="-C link-arg=-Tlinux_aarch64.ld" \
+         $CARGO +nightly build --release --target aarch64-unknown-none --no-default-features \
+             --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
+    ) >"$WORK/build-linux-aarch64.log" 2>&1 \
+        || die "could not build the Linux/aarch64 vsbench ELF — see $WORK/build-linux-aarch64.log"
+    mkdir -p "$WORK/root-linux"
+    cp "$L_A_ELF" "$WORK/root-linux/init" && chmod +x "$WORK/root-linux/init"
+    ( cd "$WORK/root-linux" && find . | cpio -o -H newc ) >"$WORK/initramfs-aarch64.cpio" 2>/dev/null \
+        || die "could not pack the Linux/aarch64 initramfs"
+    L_IMG="$LINUX_A_IMAGE"
+    if gzip -t "$LINUX_A_IMAGE" 2>/dev/null; then
+        L_IMG="$WORK/linux-Image"
+        gzip -dc "$LINUX_A_IMAGE" >"$L_IMG" || die "could not gunzip $LINUX_A_IMAGE"
+    fi
+    L_DISK="$WORK/disk-linux-aarch64.img"
+    cp "$REPO_ROOT/build/disk-aarch64-vsbench.img" "$L_DISK"
+    "$QEMU_AARCH64" -M virt,gic-version=3 -cpu "$LINUX_A_CPU" -smp "$VSBENCH_SMP" $ICOUNT_ARGS -nographic \
+        -kernel "$L_IMG" -initrd "$WORK/initramfs-aarch64.cpio" \
+        -global virtio-mmio.force-legacy=false \
+        -drive "file=$L_DISK,if=none,format=raw,id=hd0" \
+        -device virtio-blk-device,drive=hd0 \
+        -append "rdinit=/init console=ttyAMA0${VSBENCH_LANES:+ VSBENCH_LANES=$VSBENCH_LANES}" >"$L_LOG" 2>&1 &
+    L_PID=$!
+    i=0
+    while [ "$i" -lt "${VSBENCH_AARCH64_LINUX_WAIT:-180}" ]; do
+        linux_done "$L_LOG" && break
+        kill -0 "$L_PID" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill "$L_PID" 2>/dev/null; sleep 2
+    kill -0 "$L_PID" 2>/dev/null && kill -9 "$L_PID" 2>/dev/null; wait "$L_PID" 2>/dev/null
+    L_RAN=1
+else
+    echo "vsbench_aarch64: no arm64 Linux at $LINUX_A_IMAGE: the Linux/aarch64 column is SKIPPED \
+(set VSBENCH_AARCH64_LINUX_IMAGE)" >&2
+fi
+
 rc=0
 for pair in "riscv64:$R_LOG" "aarch64:$A_LOG"; do
     isa="${pair%%:*}" log="${pair#*:}"
@@ -266,15 +338,25 @@ fi
 # Name AND value in one pass — see vsbench_compare.sh's `lane_values` for why
 # this is not two greps (a two-pass version silently printed `-` for both
 # sides on 5 of 14 lanes while the check passed).
-lane_values() { # lane_values <log>  ->  "<lane>\t<ns>"
+lane_values() { # lane_values <log> [side]  ->  "<lane>\t<ns>"
+    local side="${2:-azos}"
     tr -d '\r' <"$1" 2>/dev/null \
-        | grep '\[VSBENCH\] azos ' \
+        | grep "\[VSBENCH\] $side " \
         | grep ' ns/op' \
-        | sed -E 's/.*\[VSBENCH\] azos +//; s/ +=/=/; s/= *([0-9]+) ns.*/\t\1/' \
+        | sed -E "s/.*\[VSBENCH\] $side +//; s/ +=/=/; s/= *([0-9]+) ns.*/\t\1/" \
         | sort -u
 }
 lane_values "$R_LOG" >"$WORK/riscv64.tsv"
 lane_values "$A_LOG" >"$WORK/aarch64.tsv"
+: >"$WORK/linux-aarch64.tsv"
+if [ "$L_RAN" = 1 ]; then
+    lane_values "$L_LOG" linux >"$WORK/linux-aarch64.tsv"
+    linux_done "$L_LOG" || echo "vsbench_aarch64: (not counted) Linux/aarch64 did not finish ($L_LOG)" >&2
+    if grep -q "FAIL rc=" "$L_LOG" 2>/dev/null; then
+        echo "vsbench_aarch64: (not counted) Linux/aarch64 lanes that failed:" >&2
+        grep "FAIL rc=" "$L_LOG" | tr -d '\r' | sed 's/^/           /' >&2
+    fi
+fi
 [ -s "$WORK/riscv64.tsv" ] || { echo "vsbench_aarch64: parsed NO lanes from riscv64 ($R_LOG)" >&2; rc=1; }
 [ -s "$WORK/aarch64.tsv" ] || { echo "vsbench_aarch64: parsed NO lanes from aarch64 ($A_LOG)" >&2; rc=1; }
 
@@ -286,13 +368,22 @@ echo "  vsbench, -smp $VSBENCH_SMP -icount shift=0,sleep=off (deterministic inst
 echo "  Same bench-minimal build+boot, both ISAs, this run. switch-loaded is a AzOS-only"
 echo "  measure (see vsbench_compare.sh) and is not comparable across anything, ISA included,"
 echo "  in the same way the other lanes are not."
-printf "    %-18s %14s %14s\n" "lane" "aarch64" "riscv64"
+printf "    %-18s %14s %14s %14s %8s\n" "lane" "aarch64" "riscv64" "linux-aarch64" "a64/lx"
+L_MISSING=""
 while read -r lane; do
     a="$(cell "$WORK/aarch64.tsv" "$lane")"
     r="$(cell "$WORK/riscv64.tsv" "$lane")"
-    printf "    %-18s %14s %14s\n" "$lane" "${a:--}" "${r:--}"
+    l="$(cell "$WORK/linux-aarch64.tsv" "$lane")"
+    q="-"
+    if [ -n "$a" ] && [ -n "$l" ] && [ "$l" -gt 0 ]; then
+        q="$(awk -v a="$a" -v l="$l" 'BEGIN { printf "%.2f", a / l }')"
+    elif [ -n "$a" ] && [ "$L_RAN" = 1 ]; then
+        L_MISSING="$L_MISSING $lane"
+    fi
+    printf "    %-18s %14s %14s %14s %8s\n" "$lane" "${a:--}" "${r:--}" "${l:--}" "$q"
 done <"$WORK/lanes"
+[ -n "$L_MISSING" ] && echo "  (not counted) aarch64 AzOS lanes with no Linux/aarch64 number:$L_MISSING"
 echo ""
-echo "  Logs kept: $R_LOG , $A_LOG"
+if [ "$L_RAN" = 1 ]; then echo "  Logs kept: $R_LOG , $A_LOG , $L_LOG"; else echo "  Logs kept: $R_LOG , $A_LOG"; fi
 
 exit $rc

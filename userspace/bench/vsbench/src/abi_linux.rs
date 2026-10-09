@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Linux/riscv64 backend: raw `ecall`, no libc.
+//! Linux/riscv64 and Linux/aarch64 backend: raw `ecall` / `svc 0`, no libc.
+//!
+//! aarch64 (N0, wave 15): the same generic syscall numbers (both ISAs use
+//! `asm-generic/unistd.h`), `x8` for the number and `x0`-`x5` for the
+//! arguments; each riscv64 `asm!` block has an aarch64 twin under `cfg`, so
+//! the riscv64 ELF is unchanged.
 //!
 //! **Why no libc.** The comparison is kernel-vs-kernel. Going through glibc or
 //! musl would add a userspace layer to one side and not the other, and this
@@ -44,10 +49,18 @@ const RUSAGE_BYTES: usize = 2 * 16 + 14 * 8;
 unsafe fn syscall1(nr: usize, a0: usize) -> isize {
     let ret: isize;
     unsafe {
+        #[cfg(target_arch = "riscv64")]
         core::arch::asm!(
             "ecall",
             in("a7") nr,
             inlateout("a0") a0 => ret,
+            options(nostack),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc 0",
+            in("x8") nr,
+            inlateout("x0") a0 => ret,
             options(nostack),
         );
     }
@@ -58,12 +71,22 @@ unsafe fn syscall1(nr: usize, a0: usize) -> isize {
 unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> isize {
     let ret: isize;
     unsafe {
+        #[cfg(target_arch = "riscv64")]
         core::arch::asm!(
             "ecall",
             in("a7") nr,
             inlateout("a0") a0 => ret,
             in("a1") a1,
             in("a2") a2,
+            options(nostack),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc 0",
+            in("x8") nr,
+            inlateout("x0") a0 => ret,
+            in("x1") a1,
+            in("x2") a2,
             options(nostack),
         );
     }
@@ -74,10 +97,18 @@ unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> isize {
 unsafe fn syscall0(nr: usize) -> isize {
     let ret: isize;
     unsafe {
+        #[cfg(target_arch = "riscv64")]
         core::arch::asm!(
             "ecall",
             in("a7") nr,
             lateout("a0") ret,
+            options(nostack),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc 0",
+            in("x8") nr,
+            lateout("x0") ret,
             options(nostack),
         );
     }
@@ -249,11 +280,20 @@ const SIGCHLD: usize = 17;
 unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> isize {
     let ret: isize;
     unsafe {
+        #[cfg(target_arch = "riscv64")]
         core::arch::asm!(
             "ecall",
             in("a7") nr,
             inlateout("a0") a0 => ret,
             in("a1") a1,
+            options(nostack),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc 0",
+            in("x8") nr,
+            inlateout("x0") a0 => ret,
+            in("x1") a1,
             options(nostack),
         );
     }
@@ -264,6 +304,7 @@ unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> isize {
 unsafe fn syscall5(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) -> isize {
     let ret: isize;
     unsafe {
+        #[cfg(target_arch = "riscv64")]
         core::arch::asm!(
             "ecall",
             in("a7") nr,
@@ -272,6 +313,17 @@ unsafe fn syscall5(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: us
             in("a2") a2,
             in("a3") a3,
             in("a4") a4,
+            options(nostack),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc 0",
+            in("x8") nr,
+            inlateout("x0") a0 => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            in("x4") a4,
             options(nostack),
         );
     }
@@ -361,6 +413,7 @@ unsafe fn syscall6(
 ) -> isize {
     let ret: isize;
     unsafe {
+        #[cfg(target_arch = "riscv64")]
         core::arch::asm!(
             "ecall",
             in("a7") nr,
@@ -370,6 +423,18 @@ unsafe fn syscall6(
             in("a3") a3,
             in("a4") a4,
             in("a5") a5,
+            options(nostack),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc 0",
+            in("x8") nr,
+            inlateout("x0") a0 => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            in("x4") a4,
+            in("x5") a5,
             options(nostack),
         );
     }
@@ -722,6 +787,7 @@ const POLL_BOUND: u32 = 100_000;
 unsafe fn syscall7(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, entry: usize) -> isize {
     let ret: isize;
     unsafe {
+        #[cfg(target_arch = "riscv64")]
         core::arch::asm!(
             "ecall",
             "bnez a0, 2f",
@@ -736,6 +802,21 @@ unsafe fn syscall7(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: us
             in("s2") entry,
             options(nostack),
         );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc 0",
+            "cbnz x0, 2f",
+            "blr x20",
+            "2:",
+            in("x8") nr,
+            inlateout("x0") a0 => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            in("x4") a4,
+            in("x20") entry,
+            options(nostack),
+        );
     }
     ret
 }
@@ -744,6 +825,7 @@ unsafe fn syscall7(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: us
 unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> isize {
     let ret: isize;
     unsafe {
+        #[cfg(target_arch = "riscv64")]
         core::arch::asm!(
             "ecall",
             in("a7") nr,
@@ -751,6 +833,16 @@ unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> isi
             in("a1") a1,
             in("a2") a2,
             in("a3") a3,
+            options(nostack),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc 0",
+            in("x8") nr,
+            inlateout("x0") a0 => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
             options(nostack),
         );
     }
@@ -889,7 +981,13 @@ pub fn vdso_init(sp: usize) {
             let addr = load_off.wrapping_add(st_value);
             // The whole table is walked: several symbols are of interest and
             // returning on the first would leave the rest unresolved.
-            if name_eq(strtab + st_name, b"__vdso_clock_gettime") {
+            // arm64 names its vDSO entry points `__kernel_*` and has no
+            // `getcpu` in it (riscv64: `__vdso_*`, both).
+            #[cfg(target_arch = "riscv64")]
+            const CLOCK_GETTIME: &[u8] = b"__vdso_clock_gettime";
+            #[cfg(target_arch = "aarch64")]
+            const CLOCK_GETTIME: &[u8] = b"__kernel_clock_gettime";
+            if name_eq(strtab + st_name, CLOCK_GETTIME) {
                 *VDSO_FN.0.get() = addr;
             } else if name_eq(strtab + st_name, b"__vdso_getcpu") {
                 *VDSO_CPU.0.get() = addr;
