@@ -101,3 +101,5 @@ pub(crate) mod commander_exit;
 pub(crate) mod tail_smoke;
 #[cfg(feature = "energy-smoke")]
 pub(crate) mod energy_smoke;
+#[cfg(feature = "ktest")]
+pub(crate) mod rt_console;

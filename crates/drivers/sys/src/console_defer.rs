@@ -639,8 +639,50 @@ pub fn kernel_print<const N: usize, L, G, T, K, E>(
 /// preemption guard). A writer under a spinlock would otherwise keep that
 /// lock across a drain that can be preempted; it helps with one chunk and
 /// defers instead.
-pub fn may_own(irqs_on: bool, preempt_depth: u32) -> bool {
-    irqs_on && preempt_depth == 0
+///
+/// A real-time caller (`rt`: its own priority is in the RT band) never owns
+/// either (wave 15, owner rule "RT tasks only enqueue"): owning means
+/// putting other contexts' lines on the wire in the caller's time, an
+/// unbounded wait on the RT path. It appends like an interrupt handler,
+/// through a [`BandWire`].
+pub fn may_own(irqs_on: bool, preempt_depth: u32, rt: bool) -> bool {
+    !rt && irqs_on && preempt_depth == 0
+}
+
+/// A real-time caller's wire (wave 15, C2): append-only.
+///
+/// [`put`](Wire::put) takes a prefix only while the wire is a queue
+/// (`queued`: in the kernel, the TX ring its interrupt drains), a copy and
+/// no wait; on a synchronous wire (no TX interrupt yet, or an ISA without
+/// one) it takes nothing, so the whole line is deferred in the buffer and a
+/// non-RT context carries it on (the next kernel line from task context,
+/// the TX interrupt, [`idle_drain`]). [`put_all`](Wire::put_all) is the one
+/// way to wait for the wire; an RT caller never reaches it ([`kernel_print`]
+/// with `may_own` false never calls it), so it runs `on_wait` first: the
+/// kernel's dev check (Kconfig `RT_CONSOLE_WIRE_CHECK`) panics there.
+pub struct BandWire<'a, K: Wire + ?Sized> {
+    pub inner: &'a mut K,
+    pub queued: bool,
+    pub on_wait: fn(),
+}
+
+impl<K: Wire + ?Sized> Wire for BandWire<'_, K> {
+    #[inline]
+    fn put(&mut self, b: &[u8]) -> usize {
+        if self.queued { self.inner.put(b) } else { 0 }
+    }
+    fn put_all(&mut self, b: &[u8]) {
+        (self.on_wait)();
+        self.inner.put_all(b);
+    }
+    #[inline]
+    fn fits(&self, b: &[u8]) -> bool {
+        self.queued && self.inner.fits(b)
+    }
+    #[inline]
+    fn room(&self) -> usize {
+        if self.queued { self.inner.room() } else { 0 }
+    }
 }
 
 /// The idle loop's drain of a stranded residual (one a budget-limited

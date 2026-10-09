@@ -474,6 +474,16 @@ fixed mount table. There are three implementations:
   (on in the development configs) the block layer panics, naming the task,
   if one does. The only exception is the crash-log write of a task that is
   already panicking.
+- **Real-time tasks only append to the console.** A kernel log line from a
+  real-time task is copied into the UART transmit ring, or into the
+  console's deferred buffer when the ring is full or the UART has no
+  transmit interrupt. A non-real-time context drains the buffer: the next
+  kernel line from task context, the transmit interrupt, or the idle loop.
+  The real-time task never takes the console over to drain other lines and
+  never waits for room. When the buffer is full, whole lines are dropped and
+  counted (`CONSOLE_RT_APPEND_ONLY`). With `RT_CONSOLE_WIRE_CHECK` (on in the
+  development configs), a real-time task that reaches the wait for the wire
+  panics, naming the task.
 - **Write observer.** Writers that reach the medium without going through
   FAT32 call a write observer. These are the raw disk call and the USB
   mass-storage gadget. FAT32 registers the observer to drop the cache lines a

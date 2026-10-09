@@ -2934,15 +2934,15 @@ mod console_ownership {
     /// interrupt handler.
     #[test]
     fn a_writer_under_a_spinlock_does_not_take_over() {
-        assert!(may_own(true, 0));
-        assert!(!may_own(false, 0), "interrupt context may not own");
-        assert!(!may_own(true, 1), "a spinlock holder may not own");
+        assert!(may_own(true, 0, false));
+        assert!(!may_own(false, 0, false), "interrupt context may not own");
+        assert!(!may_own(true, 1, false), "a spinlock holder may not own");
         let lock = HostLock::<8192>::new();
         let residual = leave_residual(&lock, 60);
         let w = MaskedWire::new(&lock);
         let own = kern_line(1, 0);
         let depth = 1; // inside a SpinLock critical section
-        kernel_print(&lock, may_own(true, depth), || lock.1.try_lock().ok(), &mut |b: &[u8]| w.put(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(&own));
+        kernel_print(&lock, may_own(true, depth, false), || lock.1.try_lock().ok(), &mut |b: &[u8]| w.put(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(&own));
         assert_eq!(w.wire.text().as_bytes(), &residual[..DRAIN_CHUNK], "a spinlock holder drained past one chunk");
         assert!(!lock.0.lock().unwrap().is_owned(), "a spinlock holder took the console");
     }
@@ -3051,6 +3051,116 @@ mod console_ownership {
         // Deferred bytes first, the report once the buffer is empty (the
         // protocol's order since wave 9) — and the report in one piece.
         assert_eq!(text, "after\n[CONSOLE] dropped 13 kernel bytes (1 lines) while ring 3 held the console\n");
+    }
+
+    // ── Wave 15 (C2): a real-time caller only appends ──────────────────────
+    //
+    // `BandWire` is the kernel's wire for an RT caller (`uart::kernel_emit`);
+    // its `on_wait` is the dev check `RT_CONSOLE_WIRE_CHECK`, counted here.
+
+    thread_local! {
+        static RT_WAITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    fn count_rt_wait() {
+        RT_WAITS.with(|c| c.set(c.get() + 1));
+    }
+    fn rt_waits() -> usize {
+        RT_WAITS.with(|c| c.get())
+    }
+
+    /// One kernel line from task context with a residual waiting: `rt` is the
+    /// classification the kernel feeds `may_own`. Returns (did it try the
+    /// line lock, waits for the wire, the ring after the call).
+    fn residual_then_line(rt: bool) -> (bool, usize, RingWire, HostLock<8192>, Vec<u8>, Vec<u8>) {
+        RT_WAITS.with(|c| c.set(0));
+        let lock = HostLock::<8192>::new();
+        let residual = leave_residual(&lock, 60);
+        let mut ring = RingWire { out: Vec::new(), free: 1 << 20 };
+        let own = kern_line(9, 0);
+        let tried = std::cell::Cell::new(false);
+        {
+            let mut w = BandWire { inner: &mut ring, queued: true, on_wait: count_rt_wait };
+            kernel_print(
+                &lock,
+                may_own(true, 0, rt),
+                || { tried.set(true); lock.1.try_lock().ok() },
+                &mut w,
+                &mut |sink: &mut dyn FnMut(&[u8])| sink(&own),
+            );
+        }
+        (tried.get(), rt_waits(), ring, lock, residual, own)
+    }
+
+    /// The RT caller neither takes the console over nor waits for the wire:
+    /// it helps with one chunk into the ring (a copy) and appends its line
+    /// behind the residual, and a later non-RT drain puts it all out in order.
+    #[test]
+    fn an_rt_writer_never_owns_nor_waits_for_the_wire() {
+        let (tried, waits, mut ring, lock, residual, own) = residual_then_line(true);
+        assert!(!tried, "an RT writer tried the line lock (took the console over)");
+        assert_eq!(waits, 0, "an RT writer waited for the wire");
+        assert_eq!(ring.out.len(), DRAIN_CHUNK, "an RT writer moved more than one chunk");
+        let mut st = lock.0.lock().unwrap();
+        assert!(!st.is_owned() && st.stranded(), "the RT line must wait for a non-RT drain");
+        drain_all(&mut st, &mut ring);
+        assert_eq!(ring.out, [residual, own].concat(), "order lost behind the RT append");
+    }
+
+    /// The discriminating side of the check: the same call classified non-RT
+    /// (what the kernel did before wave 15 for every caller) owns the console
+    /// and waits for the wire — exactly where the dev check fires.
+    #[test]
+    fn a_non_rt_writer_in_the_same_state_does_wait_for_the_wire() {
+        let (tried, waits, ring, _lock, residual, own) = residual_then_line(false);
+        assert!(tried, "the non-RT writer did not take the console over");
+        assert!(waits > 0, "the wire-wait check would not have fired");
+        assert_eq!(ring.out, [residual, own].concat());
+    }
+
+    /// No TX interrupt yet (a synchronous wire: early boot): the RT
+    /// line is not written at all in the caller's time — it is deferred
+    /// whole — and the idle drain (a non-RT context) puts it out.
+    #[test]
+    fn an_rt_line_on_a_synchronous_wire_is_deferred_for_a_non_rt_drain() {
+        RT_WAITS.with(|c| c.set(0));
+        let lock = HostLock::<4096>::new();
+        let line = kern_line(7, 1);
+        let mut sync_wire = |_: &[u8]| panic!("an RT caller wrote to a synchronous wire");
+        {
+            let mut w = BandWire { inner: &mut sync_wire, queued: false, on_wait: count_rt_wait };
+            kernel_print(&lock, may_own(true, 0, true), || -> Option<()> { panic!("tried the line lock") },
+                         &mut w, &mut |sink: &mut dyn FnMut(&[u8])| sink(&line));
+        }
+        assert_eq!(rt_waits(), 0);
+        let stranded = lock.0.lock().unwrap().stranded();
+        assert!(stranded);
+        let w = MaskedWire::new(&lock);
+        idle_drain(&lock, stranded, || lock.1.try_lock().ok(), &mut |b: &[u8]| w.put(b));
+        assert_eq!(w.wire.text().as_bytes(), &line[..]);
+    }
+
+    /// Overflow: an RT writer facing a full buffer and a full ring drops
+    /// whole lines and counts them; it never waits.
+    #[test]
+    fn an_rt_writer_drops_whole_lines_when_full_never_waits() {
+        RT_WAITS.with(|c| c.set(0));
+        let lock = HostLock::<512>::new();
+        let mut ring = RingWire { out: Vec::new(), free: 0 };
+        for n in 0..40 {
+            let l = kern_line(5, n);
+            let mut w = BandWire { inner: &mut ring, queued: true, on_wait: count_rt_wait };
+            kernel_print(&lock, may_own(true, 0, true), || -> Option<()> { panic!("tried the line lock") },
+                         &mut w, &mut |sink: &mut dyn FnMut(&[u8])| sink(&l));
+        }
+        assert_eq!(rt_waits(), 0, "an RT writer waited on a full console");
+        let mut st = lock.0.lock().unwrap();
+        assert!(st.total_dropped_lines() > 0, "lines past the buffer were not counted");
+        drain_all(&mut st, &mut ring);
+        let text = String::from_utf8(ring.out.clone()).unwrap();
+        assert!(dropped_lines(&text) > 0, "no drop report reached the wire");
+        for l in text.lines() {
+            assert!(l.ends_with("KEND") || l.starts_with("[CONSOLE] dropped "), "a cut line: {l:?}");
+        }
     }
 }
 

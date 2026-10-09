@@ -313,6 +313,42 @@ config RT_BLOCK_IO_CHECK
       request, the same on riscv64, aarch64 and x86_64, and no RAM.
       Development builds only (BUILD_TYPE).
 
+config CONSOLE_RT_APPEND_ONLY
+    bool "Real-time callers of the kernel log only append to the console"
+    default y
+    help
+      Owner rule: a real-time task only enqueues. A kernel log line
+      (kprintln!/kwarn!/klog) from a task whose own priority is in the RT
+      band is copied into the UART TX ring (drained by the UART's TX
+      interrupt) or, when the ring is full or the console has no TX
+      interrupt yet (early boot, before it is enabled), into the console's
+      deferred buffer, which a non-RT context drains (the next task-context
+      kernel line, the TX interrupt, the idle loop). It never takes the
+      console over to drain other contexts' lines and never waits for room
+      on the wire. When the buffer is full whole lines are dropped and
+      counted ("[CONSOLE] dropped ..."), never a wait.
+
+      On (default, every profile and ISA): one indirect call and a priority
+      load per kernel line. Off: an RT caller that finds deferred output
+      drains it in its own time, as before wave 15 (up to DRAIN_BUDGET bytes
+      of wire time, ~0.7 s at 115200 baud). Only for measuring that cost.
+
+config RT_CONSOLE_WIRE_CHECK
+    bool "Panic when a real-time task waits for the console wire"
+    depends on CONSOLE_RT_APPEND_ONLY
+    default y if LOG_LEVEL_DEBUG
+    default n
+    help
+      Dev check for CONSOLE_RT_APPEND_ONLY, like RT_BLOCK_IO_CHECK: the one
+      console call that waits for room on the wire, reached by a task whose
+      own priority is in the RT band, panics naming the task. With the
+      append-only path no RT kernel line reaches it; the gate canary
+      `canary=rt-console-own` (CANARY_RUNTIME) sends one there.
+
+      On (default in the QEMU development configs, LOG_LEVEL_DEBUG): one
+      indirect call on that path only, nothing on the append path, no RAM.
+      Off (every deployment profile): not compiled.
+
 # ---------------------------------------------------------------------------
 # Kernel event tracer (wave 15)
 # ---------------------------------------------------------------------------

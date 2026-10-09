@@ -126,6 +126,10 @@ pub(crate) fn install_sched_hooks() {
     // Owner rule (wave 15): an RT task never does block I/O. Dev builds
     // (Kconfig RT_BLOCK_IO_CHECK) panic at the block layer's entry.
     azos_drv_block::blkdev::set_rt_io_check(rt_block_io_check);
+    // Owner rule (wave 15, C2): an RT caller of the kernel log only appends
+    // to the console (Kconfig CONSOLE_RT_APPEND_ONLY); dev builds (Kconfig
+    // RT_CONSOLE_WIRE_CHECK) panic if one waits for the wire.
+    azos_drv_sys::uart::set_rt_console_hooks(rt_console_caller, rt_console_wire_check);
     // The flight recorder asks the same question: an RT caller of
     // `logger_flush` hands the flush to the `log-flush` task.
     azos_actuation::logger::logger_set_rt_probe(current_task_is_rt);
@@ -427,6 +431,34 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
 /// priority is in the RT band. A donation does not make a task RT.
 fn current_task_is_rt() -> bool {
     azos_sched::RT_PRIORITY_THRESHOLD > azos_sched::scheduler::current_task_base_priority()
+}
+
+/// The console's "is the caller real-time" question (`uart::RT_CALLER_*`):
+/// the task running on this CPU has its own priority in the RT band. Gate
+/// canary `rt-console-own`: the canary's task is told to wait for the wire.
+fn rt_console_caller() -> u8 {
+    if !current_task_is_rt() {
+        return azos_drv_sys::uart::RT_CALLER_NONE;
+    }
+    if (canary!("rt-console-own") || canary!("rt-console-own-user"))
+        && crate::canary_rt::RT_CONSOLE_TID.load(core::sync::atomic::Ordering::Relaxed)
+            == azos_sched::current_task_tid()
+    {
+        return azos_drv_sys::uart::RT_CALLER_CANARY;
+    }
+    azos_drv_sys::uart::RT_CALLER_RT
+}
+
+/// Kconfig `RT_CONSOLE_WIRE_CHECK`: an RT task is about to wait for room on
+/// the console wire. Panics naming the task (dev builds only). Not once a
+/// panic is under way: the panic report goes out synchronously by design.
+fn rt_console_wire_check() {
+    if current_task_is_rt() && !azos_common::is_panicked() {
+        panic!("[RT-CONSOLE] tid {} '{}' (base prio {}) waited for the console wire: \
+                an RT task only appends",
+            azos_sched::current_task_tid(), azos_sched::current_task_name(),
+            azos_sched::scheduler::current_task_base_priority());
+    }
 }
 
 /// Kconfig `RT_BLOCK_IO_CHECK`: the block layer's entry check. A task whose

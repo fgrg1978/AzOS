@@ -53,8 +53,20 @@ pub(crate) const NAMES: &[&str] = &[
     // RX re-post, batches and NO_NOTIFY ignored (QEMU trace
     // `virtio_queue_notify` count == frames; gate rows `network: TX batch canary`).
     "net-kick-per-frame",
+    // boot/sched.rs `rt_console_caller`: a real-time task's console output
+    // waits for the wire (ktest `console_rt_lines_only_append`).
+    "rt-console-own",
+    // The same for the probe's ring-3 console writes only
+    // (`uart::console_write_ring3`), after its kernel lines went out.
+    "rt-console-own-user",
 ];
 const _: () = assert!(NAMES.len() <= 64);
+
+/// The one task `rt-console-own` applies to (the ktest
+/// `console_rt_lines_only_append`'s probe stores its own tid); `0`: none.
+/// Only that task, so every other RT line of the boot (rt-motor's) keeps
+/// the fixed path and the canary fails one test, not the run.
+pub(crate) static RT_CONSOLE_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Built in, and not refused by a signed image or a release build (Kconfig
 /// already makes CANARY_RUNTIME depend on BUILD_TYPE_DEV).

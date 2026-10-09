@@ -11001,8 +11001,8 @@ PY
     # (crates/core/chaos) and check the fault is refused cleanly, leaks
     # nothing and is counted; the `decision_*` tests read the boot's
     # admission record and a capability denial's (crates/core/decision).
-    KTEST_N_RV=24
-    KTEST_N_ARM=24
+    KTEST_N_RV=25
+    KTEST_N_ARM=25
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
@@ -11104,6 +11104,22 @@ PY
     KTEST_CHAOS_INERT="chaos_disk_io_error_recorded chaos_frame_alloc_no_leak chaos_heap_alloc_refused chaos_ipc_send_refused chaos_spurious_irq_tolerated chaos_timer_wake_late_not_lost"
     par "ktest chaos-inert canary (rv)" ktest_row "ktest chaos-inert canary (rv)" rv "" "$KTEST_CHAOS_INERT" "canary=chaos-inert"
     par "ktest chaos-inert canary (arm)" ktest_row "ktest chaos-inert canary (arm)" arm "" "$KTEST_CHAOS_INERT" "canary=chaos-inert"
+    # Wave 15 (C2): `console_rt_lines_only_append` (an RT task's kernel lines
+    # and ring-3 console writes take the append-only console path and never
+    # wait for the wire). Its
+    # runtime canary `canary=rt-console-own` sends the probe's lines to the
+    # wire wait, where RT_CONSOLE_WIRE_CHECK panics: a boot of its own, since
+    # the panic ends the run. Not on x86_64: a panic there powers the machine
+    # off from another CPU before the ktest's Bail line is out (measured: the
+    # report is cut mid-line), so `ktest (x86)` runs the pass side only.
+    par "ktest RT console canary (rv)" ktest_row "ktest RT console canary (rv)" rv "" "console_rt_lines_only_append" "canary=rt-console-own"
+    par "ktest RT console canary (arm)" ktest_row "ktest RT console canary (arm)" arm "" "console_rt_lines_only_append" "canary=rt-console-own"
+    # `canary=rt-console-own-user`: the probe's kernel lines go out (its line
+    # 159 must be on the console), then its first ring-3 console write
+    # (`uart::console_write_ring3`, what sys_write calls) is sent to the wire
+    # wait, and the check must stop the kernel there.
+    par "ktest RT console user canary (rv)" ktest_row "ktest RT console user canary (rv)" rv "" "console_rt_lines_only_append" "canary=rt-console-own-user" "probe line 159 from the RT band"
+    par "ktest RT console user canary (arm)" ktest_row "ktest RT console user canary (arm)" arm "" "console_rt_lines_only_append" "canary=rt-console-own-user" "probe line 159 from the RT band"
     # The command line's arming, end to end: delayed timer wakes (1 in 8
     # sweeps) and unsolicited IPIs (1 in 4) from the end of boot init to the
     # power-off, under a fixed seed. Every ktest stays `ok` and both points
@@ -11149,7 +11165,7 @@ PY
     # +9 with Kconfig CHAOS / DECISION_RECORDS (`chaos`, `decisions` ride in
     # every x86 ktest kernel, as on rv and arm); +2 x86_low_half_maps_no_ram,
     # x86_direct_map_image_alias_read_only.
-    KTEST_N_X86=26
+    KTEST_N_X86=27
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2"

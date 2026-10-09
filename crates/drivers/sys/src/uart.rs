@@ -1171,15 +1171,43 @@ impl fmt::Write for Sink<'_> {
 fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
     // Sampled BEFORE any lock: `acquire` masks interrupts, and the line
     // lock's own state lock raises the preemption depth.
+    let rt = rt_console_caller();
     let may_own = crate::console_defer::may_own(
         azos_arch::ARCH.interrupts_enabled(),
         azos_sync::preempt::depth(),
+        rt != RT_CALLER_NONE,
     );
     if BYPASS.load(Ordering::Relaxed) {
         let _guard = acquire();
         // SAFETY: `_guard` holds the UART lock.
         unsafe { tx_state() }.flush_sync();
         emit(&mut |b: &[u8]| write_str_translated(b));
+        return;
+    }
+    if rt != RT_CALLER_NONE {
+        // Wave 15 (C2): an RT caller only appends — into the TX ring the
+        // UART interrupt drains, or into the defer buffer a non-RT context
+        // drains — and never owns (`may_own` is false above).
+        let mut wire = crate::console_defer::BandWire {
+            inner: &mut KernelWire,
+            queued: tx_async(),
+            on_wait: rt_console_wire_wait,
+        };
+        RT_LINES.fetch_add(1, Ordering::Relaxed);
+        if rt == RT_CALLER_CANARY {
+            // Gate canary `rt-console-own`: the class this fixes, an RT
+            // caller putting its line out in its own time and waiting for
+            // room. The dev check must stop the kernel here.
+            emit(&mut |b: &[u8]| crate::console_defer::Wire::put_all(&mut wire, b));
+            return;
+        }
+        crate::console_defer::kernel_print(
+            &KernelDeferLock::<false>,
+            false,
+            || CONSOLE_LINE_LOCK.try_lock(),
+            &mut wire,
+            emit,
+        );
         return;
     }
     crate::console_defer::kernel_print(
@@ -1189,6 +1217,79 @@ fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
         &mut KernelWire,
         emit,
     );
+}
+
+/// [`rt_console_caller`]: the caller is not real-time (or nothing is
+/// registered: early boot, host builds).
+pub const RT_CALLER_NONE: u8 = 0;
+/// The caller's own priority is in the RT band: append-only.
+pub const RT_CALLER_RT: u8 = 1;
+/// An RT caller on a boot with the gate canary `rt-console-own` armed.
+pub const RT_CALLER_CANARY: u8 = 2;
+
+/// The kernel's "is the caller real-time" question, registered at boot
+/// ([`set_rt_console_hooks`]); this crate cannot see the scheduler. `0`
+/// until then (no task exists yet). Not registered with Kconfig
+/// `CONSOLE_RT_APPEND_ONLY` off.
+static RT_CALLER_FN: AtomicUsize = AtomicUsize::new(0);
+/// The dev check (Kconfig `RT_CONSOLE_WIRE_CHECK`) run when an RT caller is
+/// about to wait for the wire; `0` when the option is off.
+static RT_WIRE_CHECK_FN: AtomicUsize = AtomicUsize::new(0);
+
+/// Register the RT-caller classifier (returns one of the `RT_CALLER_*`
+/// values) and the dev wire check. Called once at boot, before the first
+/// task runs.
+pub fn set_rt_console_hooks(caller: fn() -> u8, check: fn()) {
+    if azos_limits::CONSOLE_RT_APPEND_ONLY {
+        RT_CALLER_FN.store(caller as usize, Ordering::Release);
+        if azos_limits::RT_CONSOLE_WIRE_CHECK {
+            RT_WIRE_CHECK_FN.store(check as usize, Ordering::Release);
+        }
+    }
+}
+
+#[inline]
+fn rt_console_caller() -> u8 {
+    if !azos_limits::CONSOLE_RT_APPEND_ONLY {
+        return RT_CALLER_NONE;
+    }
+    let f = RT_CALLER_FN.load(Ordering::Acquire);
+    if f == 0 {
+        return RT_CALLER_NONE;
+    }
+    // SAFETY: only `set_rt_console_hooks` stores here, and it stores a `fn() -> u8`.
+    let f: fn() -> u8 = unsafe { core::mem::transmute::<usize, fn() -> u8>(f) };
+    f()
+}
+
+/// Kernel lines real-time callers put through the append-only path.
+static RT_LINES: AtomicU32 = AtomicU32::new(0);
+/// Ring-3 console writes real-time callers put through the append-only path.
+static RT_RING3_WRITES: AtomicU32 = AtomicU32::new(0);
+/// Times a real-time caller reached the one console call that waits for the
+/// wire (none, unless the gate canary sends one there).
+static RT_WIRE_WAITS: AtomicU32 = AtomicU32::new(0);
+
+/// `(RT kernel lines appended, RT ring-3 writes appended, RT waits for the
+/// wire)` since boot: the ktest `console_rt_lines_only_append` reads them.
+pub fn rt_console_counts() -> (u32, u32, u32) {
+    (RT_LINES.load(Ordering::Relaxed), RT_RING3_WRITES.load(Ordering::Relaxed),
+     RT_WIRE_WAITS.load(Ordering::Relaxed))
+}
+
+/// [`crate::console_defer::BandWire`]'s `on_wait`: an RT caller is about to
+/// wait for the wire. Counts it, then runs the registered dev check (it
+/// panics naming the task).
+fn rt_console_wire_wait() {
+    RT_WIRE_WAITS.fetch_add(1, Ordering::Relaxed);
+    if azos_limits::RT_CONSOLE_WIRE_CHECK {
+        let f = RT_WIRE_CHECK_FN.load(Ordering::Acquire);
+        if f != 0 {
+            // SAFETY: only `set_rt_console_hooks` stores here, and it stores a `fn()`.
+            let f: fn() = unsafe { core::mem::transmute::<usize, fn()>(f) };
+            f();
+        }
+    }
 }
 
 /// Write bytes to `console`, expanding `\n` to `\r\n`, using the FIFO-aware
@@ -1322,6 +1423,33 @@ pub fn console_write(bytes: &[u8]) {
 ///   op and the kernel shell through [`write_locked`]/[`putc_locked`]
 ///   (wave 11; [`putc`] has no caller left in the kernel).
 pub fn console_write_ring3(bytes: &[u8]) {
+    // Wave 15 (C2): a ring-3 task in the RT band only appends, exactly like
+    // an RT kernel line (see `kernel_emit`): no line lock (another owner's
+    // wire time), no ownership, no wait for room. Its bytes go into the TX
+    // ring or the deferred buffer, translated on the way out; a full buffer
+    // drops whole lines, counted. The write still returns its full length.
+    let rt = rt_console_caller();
+    if rt == RT_CALLER_RT && !BYPASS.load(Ordering::Relaxed) {
+        RT_RING3_WRITES.fetch_add(1, Ordering::Relaxed);
+        let mut wire = crate::console_defer::BandWire {
+            inner: &mut KernelWire,
+            queued: tx_async(),
+            on_wait: rt_console_wire_wait,
+        };
+        crate::console_defer::kernel_print(
+            &KernelDeferLock::<true>,
+            false,
+            || CONSOLE_LINE_LOCK.try_lock(),
+            &mut wire,
+            &mut |sink: &mut dyn FnMut(&[u8])| sink(bytes),
+        );
+        return;
+    }
+    if rt != RT_CALLER_NONE {
+        // Only the gate canary `rt-console-own` gets here in the RT band:
+        // the owner path below waits for the line lock and the wire.
+        rt_console_wire_wait();
+    }
     let _line = CONSOLE_LINE_LOCK.lock();
     #[cfg(feature = "console-splice-smoke")]
     let t_call = ring3_probe::start();
