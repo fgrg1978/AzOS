@@ -1573,14 +1573,19 @@ pub fn ring_lanes(abi: &impl Abi, floor_ns: u64) {
     //
     // What a broken ring does instead is enter WITHOUT a switch behind it (a
     // wake on every push, a spurious `Blocked` whose wait returns at once).
-    // Sharing one hart, each side runs only while the other is switched out,
-    // and one run enters at most twice (one wake, then one wait that ends
-    // it), so a correct ring stays within 4 x (client switches + 1). The lane
-    // fails only when BOTH bounds are exceeded: more than the ring-full bound
-    // AND more than the switches explain.
+    // Sharing one hart, each side runs only while the other is switched out
+    // (client switches + 1 runs each, at most), and one run enters at most
+    // twice (one wake, then one wait that ends it), so a correct ring keeps
+    // EACH side within 2 x (client switches + 1). The lane fails only when
+    // both bounds are exceeded: more than the ring-full bound in total AND
+    // more than the switches explain on either side. Measured: a correct
+    // ring 290 + 287 entries against a bound of 522 per side; the
+    // `ring-stream-canary` (a wake on every push) 4119 + 1323 against 2608.
     let ops = client_ops + peer_ops;
-    let sched_bound = sw.map(|n| 4 * (n + 1)).unwrap_or(0);
-    if my_hart == peer_hart && ops * RING_CANARY_DIVISOR > N_RING_STREAM && ops > sched_bound {
+    let side_bound = sw.map(|n| 2 * (n + 1)).unwrap_or(0);
+    if my_hart == peer_hart && ops * RING_CANARY_DIVISOR > N_RING_STREAM
+        && (client_ops > side_bound || peer_ops > side_bound)
+    {
         fail_line(abi, b"ring-stream entered the kernel while neither empty nor full", ops as i64);
     }
 
