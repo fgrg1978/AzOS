@@ -6039,7 +6039,10 @@ rt_watchdog_record_row() { # <label> <isa: rv|arm> <extra features, comma-led or
         kimg="$CI_LOG_DIR/${tag}-kernel.img"
         cp "$A64_IMG" "$kimg"
     fi
-    make_disk "$disk"
+    # From scratch: `make` calls an image a boot wrote to up to date (serial
+    # rows boot the shared image in place), and its flight recorder session
+    # is then the one this boot resumes past.
+    rm -f "$disk"; make_disk "$disk"
     cp "$disk" "$img"
     if [ "$isa" = "rv" ]; then
         par_ready
@@ -6062,8 +6065,10 @@ rt_watchdog_record_row() { # <label> <isa: rv|arm> <extra features, comma-led or
         kill -0 "$pid" 2>/dev/null || break
         i=$((i + 1)); sleep 0.5
     done
-    # The clear and the count reach the volume at the recorder's periodic
-    # flush (~0.5 s); the SAFE STOP record is already there (durable).
+    # rt-motor is RT: its records (the SAFE STOP's too, since wave 15 RL)
+    # reach the volume through the `log-flush` task, which sys-wdt's ~0.5 s
+    # request wakes. The SAFE STOP and the clear are seconds old here; the
+    # count was pushed with the line just seen. Host time, no -icount.
     sleep 2
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
     [ -n "$kimg" ] && rm -f "$kimg"
@@ -6083,8 +6088,19 @@ rt_watchdog_record_row() { # <label> <isa: rv|arm> <extra features, comma-led or
 (stops=$stops clears=$clears count=${first:-none})"
         echo "      log kept: $log"; rm -f "$img"; return
     fi
-    if ! mcopy -n -i "$img" ::LOG/LOG00000.BIN "$rec" 2>/dev/null; then
-        bad; echo "      no ::LOG/LOG00000.BIN on the volume"; echo "      log kept: $log"; rm -f "$img"; return
+    # The file THIS boot wrote: `logger_init` opens the serial the boot
+    # printed (`boot_latch::apply`). A volume an earlier boot wrote holds that
+    # session's LOG00000.BIN, and this boot resumes past it; reading 00000
+    # then judged the other session's records (wave 15: a false FAIL when it
+    # had no watchdog records, a false PASS when it had).
+    local serial lfile
+    serial="$(grep -a "flight recorder resuming at serial [0-9]*" "$log" | sed -n '1s/.*resuming at serial \([0-9]*\).*/\1/p')"
+    if [ -z "$serial" ]; then
+        bad; echo "      the console never named the recorder's serial"; echo "      log kept: $log"; rm -f "$img"; return
+    fi
+    lfile="LOG$(printf '%05d' "$serial").BIN"
+    if ! mcopy -n -i "$img" "::LOG/$lfile" "$rec" 2>/dev/null; then
+        bad; echo "      no ::LOG/$lfile (this boot's serial $serial) on the volume"; echo "      log kept: $log"; rm -f "$img"; return
     fi
     rm -f "$img"
     # Header 16 B, then 32-byte records: kind at 8, payload at 12 (code,
@@ -12436,7 +12452,10 @@ PY
             AARCH64_CONFIG="$cfg" a64_kbuild "qemu" >/dev/null || { bad; echo "      aarch64 SIGNED_REQUIRED kernel did not build"; return; }
             cp "$A64_IMG" "$kimg"
         fi
-        make_disk "$base"
+        # From scratch: the record is read back off LOG00000.BIN, and an
+        # image an earlier boot wrote (`make` calls it up to date) holds that
+        # session's file there (`rt_watchdog_record_row`, wave 15).
+        rm -f "$base"; make_disk "$base"
         cp "$base" "$img"
         if [ "$isa" = rv ]; then
             par_ready
