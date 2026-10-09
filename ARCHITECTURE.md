@@ -461,6 +461,12 @@ PCI transport exists, but the kernel uses it only in self-tests.
   without the actuation profile in its topology grants none.
 - **Robot envelope.** The robot domain adds a per-robot-type safety envelope.
   It clamps every motor command before the duty-cycle write.
+- **RC receiver and geofence.** Two robot-domain options (`RC_INPUT`,
+  `GEOFENCE`; off compiles them out). Once an RC link exists, link loss
+  and the kill switch latch the e-stop, and in manual mode the sticks
+  drive below the e-stop layer and the obstacle stop, through the
+  envelope. The geofence is armed at the first trusted GPS fix; a breach
+  latches the e-stop. Each latch writes a safety record.
 
 **Watchdogs:**
 

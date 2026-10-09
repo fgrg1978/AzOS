@@ -10,8 +10,12 @@ publish = false
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []
+# The Raspberry Pi 5 board (aarch64): like vf2/k1, no `RcMode::Simulated`.
+rpi5 = []
 
 [dependencies]
 azos_common       = { workspace = true }
 azos_drv_actuator = { workspace = true }
 azos_drv_sys      = { workspace = true }
+# The SBUS byte source's partial-frame buffer (`rc_feed_byte`).
+azos_sync         = { workspace = true }

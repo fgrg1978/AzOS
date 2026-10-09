@@ -527,9 +527,9 @@ mod mode_reset {
 // `SensorBus::update_gps` in the driver's units, so the conversion to
 // micro-degrees, the snapshot and the staleness rule are the code under test
 // too. What stays out of reach here: the kernel's `update_gps` call on the
-// `CH_GPS` publish, which the `geofence-smoke` QEMU probe covers, and the fact
-// that no production code calls `geofence_set` (see the comment above
-// `static GEOFENCE` in safety.rs).
+// `CH_GPS` publish, which the `geofence-smoke` QEMU probe covers. The boot's
+// own arm (`geofence_arm_home`, wave 15) is `geofence_home_arm` below; the
+// `fence-refuse-smoke` QEMU rows cover it end to end.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1093,6 +1093,30 @@ mod arbitration {
     /// simplest one to force deterministically, and the one `safety_check`
     /// consults first), `arbitrate` must return L0's own command, applied,
     /// not merely computed.
+    /// Wave 15: the RC manual override. The sticks outrank L1's steering, the
+    /// brain (L2) and L3; L0 and L1's STOP outrank the sticks.
+    #[test]
+    fn rc_manual_outranks_autonomy_but_not_l0_or_an_obstacle_stop() {
+        let _g = serial();
+        reset();
+        super::camera_tx::control_session_ready();
+        let mut s = clean_state();
+        s.rc_manual = MotorOutput::some(100, 100);
+        let fwd = MlpResult { class: 0, valid: true };
+        let out = arbitrate(&s, &fwd);
+        assert_eq!((out.layer, out.cmd.speed_l, out.cmd.speed_r), (2, 100, 100),
+            "the sticks beat L1's go_forward");
+        let stop = MlpResult { class: 2, valid: true };
+        let out = arbitrate(&s, &stop);
+        assert_eq!((out.layer, out.cmd.speed_l, out.cmd.speed_r), (1, 0, 0),
+            "an obstacle stop beats the sticks");
+        estop_activate();
+        let out = arbitrate(&s, &fwd);
+        assert_eq!((out.layer, out.cmd.speed_l, out.cmd.speed_r), (0, 0, 0),
+            "L0 beats the sticks");
+        reset();
+    }
+
     #[test]
     fn arbitrate_returns_l0_output_on_a_real_violation() {
         let _g = serial();
@@ -4223,5 +4247,215 @@ mod ml_verdict {
         }
         assert_eq!(absent_action(MlOutcome::Verdict(CLASSES)), Some(ABSENT_MALFORMED));
         assert_eq!(absent_action(MlOutcome::Verdict(CLASS_STOP)), None);
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Wave 15: the boot arms the fence at the home fix (`safety::geofence_arm_home`).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod geofence_home_arm {
+    use super::safety::*;
+    use super::types::*;
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        super::envelope::serial()
+    }
+
+    fn fix(q: u8, sats: u8, lat: i32, lon: i32) -> SensorState {
+        let mut s = SensorState::new();
+        s.gps_fix = q;
+        s.gps_satellites = sats;
+        s.gps_lat_udeg = lat;
+        s.gps_lon_udeg = lon;
+        s
+    }
+
+    fn reset() {
+        estop_release(ReleaseAuthority::for_test());
+        safety_set_robot_type(ROBOT_TYPE_WHEELED);
+        test_reset_imu_incoherence();
+        geofence_test_reset();
+    }
+
+    /// The first trusted fix arms a fence of `GEOFENCE_RADIUS_M` around it:
+    /// a position past the radius is then Outside, one inside is Inside.
+    #[test]
+    fn the_first_trusted_fix_arms_the_fence_around_it() {
+        let _g = serial();
+        reset();
+        let home = fix(1, GEOFENCE_MIN_SATELLITES, 48_135_100, 11_582_000);
+        assert_eq!(geofence_arm_home(&home), Some((48_135_100, 11_582_000, 100)));
+        assert!(geofence_armed());
+        assert_eq!(geofence_status(&home), GeofenceStatus::Inside);
+        // 0.009 deg north ~= 1 km: outside a 100 m fence.
+        let away = fix(1, GEOFENCE_MIN_SATELLITES, 48_144_100, 11_582_000);
+        assert_eq!(geofence_status(&away), GeofenceStatus::Outside);
+        reset();
+    }
+
+    /// No arm on an untrusted fix: a simulated quality (8), or too few
+    /// satellites. The fence stays disabled and the arm is not spent.
+    #[test]
+    fn an_untrusted_fix_does_not_arm() {
+        let _g = serial();
+        reset();
+        assert_eq!(geofence_arm_home(&fix(8, 9, 1, 1)), None);
+        assert_eq!(geofence_arm_home(&fix(1, GEOFENCE_MIN_SATELLITES - 1, 1, 1)), None);
+        assert!(!geofence_armed());
+        assert!(geofence_arm_home(&fix(1, GEOFENCE_MIN_SATELLITES, 1, 1)).is_some());
+        reset();
+    }
+
+    /// Once per boot: a later fix does not move the centre, and an operator's
+    /// disable after the arm stays disabled.
+    #[test]
+    fn the_home_arm_happens_once() {
+        let _g = serial();
+        reset();
+        assert!(geofence_arm_home(&fix(1, 8, 0, 0)).is_some());
+        assert_eq!(geofence_arm_home(&fix(1, 8, 5_000_000, 0)), None);
+        geofence_disable();
+        assert_eq!(geofence_arm_home(&fix(1, 8, 0, 0)), None);
+        assert!(!geofence_armed());
+        reset();
+    }
+
+    /// A fence configured explicitly before the first fix stands: the home
+    /// arm is spent without moving it.
+    #[test]
+    fn an_explicit_fence_is_not_overwritten() {
+        let _g = serial();
+        reset();
+        geofence_set(0, 0, 10);
+        assert_eq!(geofence_arm_home(&fix(1, 8, 48_000_000, 11_000_000)), None);
+        assert_eq!(geofence_status(&fix(1, 8, 0, 0)), GeofenceStatus::Inside);
+        reset();
+    }
+
+    /// The breach latch on top of the home arm: the e-stop latches once and
+    /// the record's distance is the overshoot.
+    #[test]
+    fn a_breach_of_the_home_fence_latches_once() {
+        let _g = serial();
+        reset();
+        assert!(geofence_arm_home(&fix(1, 8, 48_135_100, 11_582_000)).is_some());
+        let away = fix(1, 8, 48_144_100, 11_582_000);
+        let first = geofence_breach_latch(&away);
+        assert!(matches!(first, Some(m) if m > 800 && m < 1000), "{:?}", first);
+        assert!(estop_is_active());
+        assert_eq!(geofence_breach_latch(&away), None, "one record per breach");
+        reset();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wave 15: the RC receiver's safety policy (`domains/robot/behavior/src/rc_link.rs`).
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+#[path = "../../../../domains/robot/behavior/src/rc_link.rs"]
+mod rc_link;
+
+#[cfg(test)]
+mod rc_link_policy {
+    use super::rc_link::*;
+
+    /// 1 MHz timer: one tick per microsecond, 1000 per ms.
+    const POLICY: RcPolicy = RcPolicy::from_limits(1_000_000);
+
+    fn sticks(set: &[(usize, u16)]) -> [u16; 16] {
+        let mut c = [1500u16; 16];
+        c[4] = 1000; // mode switch off
+        c[5] = 1000; // kill switch off
+        for &(ch, us) in set { c[ch - 1] = us; }
+        c
+    }
+
+    #[test]
+    fn the_policy_comes_from_kconfig() {
+        assert_eq!(POLICY.link_timeout_ticks, 500_000);
+        assert_eq!((POLICY.mode_channel, POLICY.kill_channel), (5, 6));
+        assert_eq!((POLICY.drive_channel, POLICY.steer_channel), (2, 1));
+    }
+
+    /// No frame ever: the receiver has no say, whatever else is reported.
+    #[test]
+    fn no_link_before_the_first_frame() {
+        assert_eq!(rc_evaluate(&POLICY, false, None, 0, 10_000_000), RcVerdict::NoLink);
+        assert_eq!(rc_evaluate(&POLICY, false, Some((sticks(&[]), true)), 0, 10_000_000),
+                   RcVerdict::NoLink);
+    }
+
+    /// The receiver's failsafe bit is link loss at once (detail 0).
+    #[test]
+    fn the_receiver_failsafe_bit_is_link_loss() {
+        let v = rc_evaluate(&POLICY, true, Some((sticks(&[]), true)), 1000, 1000);
+        assert_eq!(v, RcVerdict::LinkLoss { age_ms: None });
+        assert_eq!(link_loss_detail(None), 0);
+    }
+
+    /// A frame older than the timeout is link loss with its age; one at the
+    /// timeout is not.
+    #[test]
+    fn a_silent_link_times_out() {
+        let at = rc_evaluate(&POLICY, true, Some((sticks(&[]), false)), 0, 500_000);
+        assert_eq!(at, RcVerdict::Passive);
+        let past = rc_evaluate(&POLICY, true, Some((sticks(&[]), false)), 0, 700_000);
+        assert_eq!(past, RcVerdict::LinkLoss { age_ms: Some(700) });
+        assert_eq!(link_loss_detail(Some(700)), 700);
+    }
+
+    /// A driver that stopped handing out data after a link existed is loss.
+    #[test]
+    fn a_driver_gone_quiet_after_a_link_is_loss() {
+        assert_eq!(rc_evaluate(&POLICY, true, None, 0, 0), RcVerdict::LinkLoss { age_ms: None });
+    }
+
+    /// The kill switch outranks the mode switch.
+    #[test]
+    fn the_kill_switch_latches_over_manual() {
+        let c = sticks(&[(6, 1900), (5, 2000), (2, 2000)]);
+        assert_eq!(rc_evaluate(&POLICY, true, Some((c, false)), 0, 0),
+                   RcVerdict::Kill { pulse_us: 1900 });
+        let at = sticks(&[(6, 1700)]);
+        assert_eq!(rc_evaluate(&POLICY, true, Some((at, false)), 0, 0), RcVerdict::Passive,
+                   "at the threshold is not above it");
+    }
+
+    /// Mode switch on: full forward asks full scale on both sides; full
+    /// right steer spins in place; centred sticks within the deadband ask 0.
+    #[test]
+    fn manual_mode_mixes_the_sticks() {
+        let fwd = sticks(&[(5, 2000), (2, 2000)]);
+        assert_eq!(rc_evaluate(&POLICY, true, Some((fwd, false)), 0, 0),
+                   RcVerdict::Manual { left: 100, right: 100 });
+        let spin = sticks(&[(5, 2000), (1, 2000)]);
+        assert_eq!(rc_evaluate(&POLICY, true, Some((spin, false)), 0, 0),
+                   RcVerdict::Manual { left: 100, right: -100 });
+        let near = sticks(&[(5, 2000), (2, 1515), (1, 1485)]);
+        assert_eq!(rc_evaluate(&POLICY, true, Some((near, false)), 0, 0),
+                   RcVerdict::Manual { left: 0, right: 0 });
+        let mode_off = sticks(&[(2, 2000)]);
+        assert_eq!(rc_evaluate(&POLICY, true, Some((mode_off, false)), 0, 0), RcVerdict::Passive);
+    }
+
+    #[test]
+    fn stick_scaling_and_mixing_are_bounded() {
+        assert_eq!(stick_pct(1000, 20, 100), -100);
+        assert_eq!(stick_pct(1750, 20, 100), 50);
+        assert_eq!(stick_pct(2000, 0, 60), 60);
+        assert_eq!(mix(100, 100, 100), (100, 0));
+        assert_eq!(mix(-80, 50, 100), (-30, -100));
+    }
+
+    /// Channel 0 means "none": no kill switch, no manual mode.
+    #[test]
+    fn channel_zero_disables_a_switch() {
+        let p = RcPolicy { kill_channel: 0, mode_channel: 0, ..POLICY };
+        let c = sticks(&[(6, 2000), (5, 2000)]);
+        assert_eq!(rc_evaluate(&p, true, Some((c, false)), 0, 0), RcVerdict::Passive);
     }
 }

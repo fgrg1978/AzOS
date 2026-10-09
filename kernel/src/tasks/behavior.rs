@@ -130,6 +130,10 @@ pub(crate) fn behavior_task(_: usize) {
         behavior_ml::launch();
     }
 
+    // Wave 15: edge state of the RC receiver's console lines.
+    #[cfg(feature = "rc-input")]
+    let mut rc_mem = super::rc_safety::RcTickState::new();
+
     loop {
         let step_t0 = azos_drv_sys::timebase::now();
         #[cfg(not(feature = "no-ml"))]
@@ -1241,6 +1245,18 @@ pub(crate) fn behavior_task(_: usize) {
             state.remote_action = last_act;
         }
 
+        // ── 2b. RC receiver and geofence arm (wave 15) ───────────────────
+        //
+        // Before arbitration: the sticks go in `state.rc_manual`, which the
+        // arbiter ranks below L0 and L1's stop. Link loss and the kill switch
+        // latch the e-stop here.
+        #[cfg(any(feature = "rc-input", feature = "geofence"))]
+        super::rc_safety::note_pass();
+        #[cfg(feature = "rc-input")]
+        super::rc_safety::rc_tick(&mut state, now, &mut rc_mem);
+        #[cfg(feature = "geofence")]
+        super::rc_safety::fence_tick(&state);
+
         // ── 3. ML inference (if enabled) ─────────────────────────────────
         //
         // In the ring-3 ML service: the two range readings go out, a class
@@ -1273,6 +1289,7 @@ pub(crate) fn behavior_task(_: usize) {
         // going stale was enough. Owner decision 2026-09-16: a breach latches
         // the e-stop and is recorded, so it takes an operator to move again.
         // One record per breach: the latch itself is the guard.
+        #[cfg(feature = "geofence")]
         if let Some(overshoot_m) = azos_behavior::safety::geofence_breach_latch(&state) {
             let _ = azos_behavior::logger::log_safety_violation_durable(
                 azos_behavior::logger::SAFETY_ESTOP,

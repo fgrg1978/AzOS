@@ -6,19 +6,19 @@
 /// In QEMU (`RcMode::Simulated`), returns simulated neutral stick positions
 /// — labeled as such, and only reachable in that mode.
 ///
-/// **`RcMode::Sbus` / `RcMode::Ppm` are still not live.** [`sbus_decode`]
-/// below turns a complete 25-byte SBUS frame into channel values, and it is
-/// pure — it is handed bytes, it does not fetch them. What is still absent is
-/// the *byte source*: nothing configures a UART for 100 kbaud 8E2 inverted,
-/// nothing accumulates a frame from an RX interrupt, and nothing captures a
-/// PPM pulse train. No caller of [`sbus_decode`] exists outside host tests,
-/// so nothing ever calls [`rc_set_channels`] from real hardware.
+/// **The SBUS byte source is [`rc_feed_byte`]** (wave 15). It accumulates
+/// 25-byte frames, decodes them with [`sbus_decode`] and applies them with
+/// [`rc_apply_sbus_frame`], which marks the driver ready. A board's UART
+/// receive interrupt (100 kbaud, 8E2, signal-inverted) calls it once per byte;
+/// that UART setup is board work that has not landed, so on a board the
+/// driver stays not ready and [`rc_read`] keeps returning `None`. QEMU feeds
+/// the same function from a smoke task (`kernel/src/smokes/rc_fence.rs`), so
+/// the path a board takes is the path the gate exercises. PPM has no byte
+/// source and stays in failsafe.
 ///
-/// Selecting either mode therefore does not enable RC input; [`rc_init`]
-/// leaves the driver in failsafe/not-ready rather than handing a caller
-/// fabricated "live" stick data it would trust as a real transmitter link.
-/// [`rc_read`] returns `None` for these modes until the byte source exists
-/// and drives the decoder from live frames.
+/// [`rc_frames_seen`] counts frames from the byte source only: the
+/// `Simulated` stand-in never counts, so a plain QEMU boot has no RC link
+/// for the safety policy (`azos_behavior::rc_link`) to lose.
 ///
 /// Standard channel mapping:
 /// - CH1: Roll     (1000-2000, center 1500)
@@ -28,7 +28,7 @@
 /// - CH5: Mode switch
 /// - CH6+: Auxiliary
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 /// RC input mode.
 #[derive(Clone, Copy, PartialEq)]
@@ -51,7 +51,7 @@ pub enum RcMode {
     /// build that tries to select it must FAIL TO COMPILE. A runtime guard
     /// would still ship the code and still depend on somebody reaching it.
     /// Same principle as requiring secure boot instead of assuming it.
-    #[cfg(not(any(feature = "vf2", feature = "k1")))]
+    #[cfg(not(any(feature = "vf2", feature = "k1", feature = "rpi5")))]
     Simulated,
 }
 
@@ -226,6 +226,90 @@ pub fn sbus_frame_to_pulses(frame: &SbusFrame) -> [u16; 16] {
     out
 }
 
+/// Encode one SBUS frame: the inverse of [`sbus_decode`]. The QEMU test
+/// feeder builds the frames it pushes through [`rc_feed_byte`] with it, and the
+/// host suite checks the round trip, so the feeder cannot hand the decoder a
+/// frame the decoder reads differently.
+pub fn sbus_encode(frame: &SbusFrame) -> [u8; SBUS_FRAME_LEN] {
+    let mut out = [0u8; SBUS_FRAME_LEN];
+    out[0] = SBUS_START_BYTE;
+    for (i, ch) in frame.channels.iter().enumerate() {
+        let v = (*ch & 0x07FF) as u32;
+        let bit = i * 11;
+        let byte = 1 + bit / 8;
+        let shift = bit % 8;
+        let w = v << shift;
+        out[byte] |= w as u8;
+        out[byte + 1] |= (w >> 8) as u8;
+        if shift + 11 > 16 { out[byte + 2] |= (w >> 16) as u8; }
+    }
+    let mut flags = 0u8;
+    if frame.ch17 { flags |= SBUS_FLAG_CH17; }
+    if frame.ch18 { flags |= SBUS_FLAG_CH18; }
+    if frame.frame_lost { flags |= SBUS_FLAG_FRAME_LOST; }
+    if frame.failsafe { flags |= SBUS_FLAG_FAILSAFE; }
+    out[SBUS_FRAME_LEN - 2] = flags;
+    out[SBUS_FRAME_LEN - 1] = SBUS_END_BYTE;
+    out
+}
+
+/// The raw SBUS count for a pulse width: the inverse of
+/// [`sbus_channel_to_us`] on 880..=2159 us (exact on every multiple of 5 us).
+pub const fn sbus_us_to_raw(us: u16) -> u16 {
+    let us = if us < 880 { 880 } else { us } as u32;
+    let raw = (us - 880) * 8 / 5;
+    if raw > 0x07FF { 0x07FF } else { raw as u16 }
+}
+
+/// Partial-frame state of the SBUS byte source.
+struct SbusRx {
+    buf: [u8; SBUS_FRAME_LEN],
+    len: usize,
+}
+
+static SBUS_RX: azos_sync::SpinLock<SbusRx> =
+    azos_sync::SpinLock::new(SbusRx { buf: [0; SBUS_FRAME_LEN], len: 0 });
+
+/// Frames applied from the byte source this boot (saturating).
+static RC_FRAMES: AtomicU32 = AtomicU32::new(0);
+/// Frames dropped for bad framing (wrong end byte), for the status line.
+static RC_FRAMES_BAD: AtomicU32 = AtomicU32::new(0);
+
+/// Feed one byte from the receiver's UART. Returns `true` when this byte
+/// completed a frame that decoded and was applied.
+///
+/// Synchronisation is on the start byte: bytes are dropped until a 0x0F, and
+/// a 25-byte run whose end byte is wrong is dropped whole. (A board driver can
+/// tighten this with the inter-frame gap; the decoder's own framing check is
+/// what keeps a misaligned run from becoming stick values.)
+pub fn rc_feed_byte(b: u8) -> bool {
+    let frame = {
+        let mut rx = SBUS_RX.lock();
+        if rx.len == 0 && b != SBUS_START_BYTE { return false; }
+        let at = rx.len;
+        rx.buf[at] = b;
+        rx.len += 1;
+        if rx.len < SBUS_FRAME_LEN { return false; }
+        rx.len = 0;
+        sbus_decode(&rx.buf)
+    };
+    match frame {
+        Some(f) => { rc_apply_sbus_frame(&f); true }
+        None => { RC_FRAMES_BAD.fetch_add(1, Ordering::Relaxed); false }
+    }
+}
+
+/// Whether any frame arrived through the byte source this boot. The
+/// `Simulated` stand-in does not count: it is not a transmitter link.
+pub fn rc_frames_seen() -> bool {
+    RC_FRAMES.load(Ordering::Acquire) != 0
+}
+
+/// Frames applied from the byte source this boot.
+pub fn rc_frame_count() -> u32 {
+    RC_FRAMES.load(Ordering::Acquire)
+}
+
 static RC_READY: AtomicBool = AtomicBool::new(false);
 static RC_MODE: AtomicU8 = AtomicU8::new(0); // 0=Sbus, 1=Ppm, 2=Simulated
 static RC_FAILSAFE: AtomicBool = AtomicBool::new(true);
@@ -247,33 +331,35 @@ static mut RC_LAST_UPDATE: u64 = 0;
 /// failsafe cleared, and hands out the fixed neutral-stick array below —
 /// that is its documented job.
 ///
-/// `RcMode::Sbus` and `RcMode::Ppm` do *not* do the equivalent for real
-/// hardware: there is no decoder in this file to back them (see the module
-/// doc comment). Selecting either one leaves the driver **not ready** and
-/// **in failsafe**, so [`rc_read`] keeps returning `None` — a caller that
-/// checks it degrades (disarms / RTLs) instead of flying on a fabricated
-/// "link established" state. This must change only once a real SBUS/PPM
-/// decode routine exists and calls [`rc_set_channels`] from live frames.
+/// `RcMode::Sbus` and `RcMode::Ppm` start **not ready** and **in failsafe**,
+/// so [`rc_read`] returns `None` and a caller that checks it degrades
+/// (disarms / RTLs) instead of acting on a fabricated "link established"
+/// state. SBUS becomes ready on the first frame decoded by [`rc_feed_byte`];
+/// PPM has no byte source and never does.
 pub fn rc_init(mode: RcMode) {
     let mode_val = match mode {
         RcMode::Sbus => 0,
         RcMode::Ppm => 1,
-        #[cfg(not(any(feature = "vf2", feature = "k1")))]
+        #[cfg(not(any(feature = "vf2", feature = "k1", feature = "rpi5")))]
         RcMode::Simulated => 2,
     };
     RC_MODE.store(mode_val, Ordering::Relaxed);
+    RC_FRAMES.store(0, Ordering::Release);
+    RC_FRAMES_BAD.store(0, Ordering::Relaxed);
+    SBUS_RX.lock().len = 0;
 
     match mode {
-        #[cfg(not(any(feature = "vf2", feature = "k1")))]
+        #[cfg(not(any(feature = "vf2", feature = "k1", feature = "rpi5")))]
         RcMode::Simulated => {
             RC_FAILSAFE.store(false, Ordering::Relaxed);
             RC_READY.store(true, Ordering::Release);
         }
         RcMode::Sbus | RcMode::Ppm => {
-            // No decoder exists yet — fail closed rather than fabricate a
-            // live link. See the module doc comment.
+            // Not ready until a decoded frame arrives through
+            // `rc_feed_byte` (SBUS); PPM has no byte source at all. Fail
+            // closed rather than fabricate a live link.
             azos_drv_sys::kwarn!(
-                "[RC] WARNING: no {} decoder implemented — RC input held in failsafe (not ready)",
+                "[RC] {} receiver: held in failsafe (not ready) until a frame arrives",
                 if mode_val == 0 { "SBUS" } else { "PPM" }
             );
             RC_FAILSAFE.store(true, Ordering::Relaxed);
@@ -286,7 +372,7 @@ pub fn rc_init(mode: RcMode) {
     let mode_name = match mode {
         RcMode::Sbus => "SBUS",
         RcMode::Ppm => "PPM",
-        #[cfg(not(any(feature = "vf2", feature = "k1")))]
+        #[cfg(not(any(feature = "vf2", feature = "k1", feature = "rpi5")))]
         RcMode::Simulated => "Simulated",
     };
     azos_drv_sys::kprintln!("[RC] Initialized (mode: {})", mode_name);
@@ -295,13 +381,9 @@ pub fn rc_init(mode: RcMode) {
 /// Read current RC channel values.
 ///
 /// Returns an array of 16 channel values (1000-2000 µs range) and a failsafe
-/// flag. Returns `None` whenever the driver is not ready to hand out live
-/// data — either because [`rc_init`] was never called, or because it was
-/// called with `RcMode::Sbus`/`RcMode::Ppm`, for which no decoder exists
-/// (see the module doc comment): those modes never become ready, so this
-/// keeps returning `None` rather than synthesizing a value that looks like
-/// a live transmitter link. Only `RcMode::Simulated` (QEMU / host testing)
-/// ever makes this `Some`.
+/// flag. Returns `None` while the driver is not ready: before [`rc_init`],
+/// and in `RcMode::Sbus` until [`rc_feed_byte`] has decoded a frame (PPM
+/// never). `RcMode::Simulated` (QEMU / host testing) is ready from init.
 pub fn rc_read() -> Option<([u16; 16], bool)> {
     if !RC_READY.load(Ordering::Acquire) { return None; }
 
@@ -357,6 +439,11 @@ pub fn rc_apply_sbus_frame(frame: &SbusFrame) {
     rc_set_channels(&sbus_frame_to_pulses(frame));
     // Deliberately NOT `frame.failsafe || frame.frame_lost`.
     rc_set_failsafe(frame.failsafe);
+    // A decoded frame is a live receiver: from here `rc_read` hands out what
+    // it said (wave 15; before, nothing ever called this outside host tests).
+    let _ = RC_FRAMES.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+                                   |n| Some(n.saturating_add(1)));
+    RC_READY.store(true, Ordering::Release);
 }
 
 /// Set failsafe state (simulates signal loss).
@@ -382,7 +469,8 @@ pub fn rc_info() {
         _ => "Simulated",
     };
     let failsafe = RC_FAILSAFE.load(Ordering::Acquire);
-    azos_drv_sys::kconsoleln!("[RC] Mode: {}  Failsafe: {}", mode_name, failsafe);
+    azos_drv_sys::kconsoleln!("[RC] Mode: {}  Failsafe: {}  Frames: {} (bad {})", mode_name,
+        failsafe, RC_FRAMES.load(Ordering::Acquire), RC_FRAMES_BAD.load(Ordering::Relaxed));
 
     let channels = unsafe { RC_CHANNELS };
     azos_drv_sys::kconsoleln!("[RC] CH1(roll)={} CH2(pitch)={} CH3(thr)={} CH4(yaw)={}",

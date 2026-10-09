@@ -38,7 +38,8 @@ publish = false
 # boots) was a K-C24 rescue stranded on a tickless idle hart, not the heap
 # (`do_schedule`'s Blocked arm now rings the hart's doorbell): 0 in 200
 # after. The full gate with it on is main's to run.
-default = ["sched-o1-placement", "sched-ipc-affinity", "sched-timer-heap", "domain-robot"]
+default = ["sched-o1-placement", "sched-ipc-affinity", "sched-timer-heap", "domain-robot",
+           "rc-input", "geofence"]
 # The Robot application domain (wave 11, DOMAIN; config/Kconfig.domain
 # DOMAIN_ROBOT). Links the robot crates under domains/robot/ — behavior and
 # the brain link, the motor/sensor/flight stack, the robot safety layer
@@ -64,6 +65,17 @@ domain-robot = [
     "dep:azos_camera", "dep:azos_robot_drivers",
     "azos_shell/domain-robot", "azos_syscall/domain-robot",
 ]
+# Wave 15 (config/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
+# domain default y, off = compiled out). `rc-input`: the RC receiver feeds the
+# safety path (link loss / kill switch latch the e-stop, the sticks drive
+# through L0 and the motor envelope) — kernel/src/tasks/rc_safety.rs and
+# azos_behavior::rc_link. `geofence`: the on-board fence, armed at the first
+# trusted fix, whose breach latches the e-stop — azos_behavior::safety's E03
+# section and its kernel hook. In `default` for the same reason as
+# `domain-robot`; tools/kconfig_to_cargo.py drops each one whose symbol a
+# .config leaves n.
+rc-input = ["domain-robot", "azos_behavior?/rc-input"]
+geofence = ["domain-robot", "azos_behavior?/geofence"]
 # Bring up the CSI camera at boot in an image without the Robot domain
 # (config/Kconfig.drivers DRV_CAMERA; implied by DOMAIN_IOT_HMI). A robot image
 # brings it up with its sensors. Ring 3 reads frames through
@@ -110,7 +122,7 @@ k1 = [
     "azos_robot_drivers?/k1", "azos_ota/k1", "link-encrypt-enforced",
 ]
 # Raspberry Pi 5 (BOARD_RPI5): selectable, not ported; see entry/aarch64.rs.
-rpi5 = []
+rpi5 = ["azos_robot_drivers?/rpi5"]
 rvv  = ["azos_arch/rvv", "azos_shell/rvv", "azos_ml?/rvv", "azos_camera?/rvv"]
 # RFC-0046 stage 1a canary (aarch64): see crates/core/arch-aarch64/Cargo.toml.
 its-skip-mapti = ["azos_arch/its-skip-mapti"]
@@ -602,7 +614,24 @@ ring3-drv-start-canary = ["ring3-drv-smoke", "azos_topology/ring3-driver-start-c
 envelope-smoke = ["qemu", "domain-robot"]
 # E03 — arm a geofence around the simulated GPS fix, feed the GPS driver a fix
 # outside it and print both verdicts. Opt-in; a normal build pays nothing.
-geofence-smoke = ["qemu", "domain-robot"]
+geofence-smoke = ["qemu", "domain-robot", "geofence"]
+# Wave 15 (RC/geofence wiring), one property per boot, each read back off the
+# console AND the flight recorder (kernel/src/smokes/rc_fence.rs):
+#   rc-failsafe-smoke — SBUS frames through `rc_feed_byte`, then one with the
+#     receiver's failsafe bit: the e-stop latches and SAFETY_ESTOP/12 is on disk.
+#   rc-stick-smoke    — mode switch high, full forward stick: MotorCmd asks
+#     (100,100) and the motor envelope applies the wheeled cap.
+#   fence-refuse-smoke — the fence the BOOT armed at the home fix (the smoke
+#     never calls `geofence_set`), a fix outside it through `gps_feed_byte`:
+#     a motor write is refused and SAFETY_ESTOP/8 is on disk.
+# Each canary breaks the one wiring step its row proves; the row must print
+# its FAIL line.
+rc-failsafe-smoke = ["qemu", "rc-input"]
+rc-failsafe-canary = ["rc-failsafe-smoke"]
+rc-stick-smoke = ["qemu", "rc-input"]
+rc-stick-canary = ["rc-stick-smoke"]
+fence-refuse-smoke = ["qemu", "geofence"]
+fence-arm-canary = ["fence-refuse-smoke"]
 # Wave 11 (SENSORTS) — the IMU's acquisition stamp, from the driver to the
 # sensor bus staleness check L0 reads: prints `[SENSORTS] PASS`. Opt-in.
 sensor-ts-smoke = ["qemu", "domain-robot"]

@@ -392,7 +392,7 @@ def test_embedded_ram_size_comes_through() -> None:
         _target, features = parse_output(run_bridge(cfg))
         # The embedded profile is Generic (wave 11, owner decision): no board
         # feature, the kernel's defaults without `domain-robot`.
-        want = [f for f in _kernel_default_features() if f != "domain-robot"]
+        want = [f for f in _kernel_default_features() if f not in ROBOT_ONLY_DEFAULTS]
         assert features == want, (
             f"expanded embedded config emitted features {features}; expected {want}"
         )
@@ -664,6 +664,11 @@ def _bridge_args(cfg: Path) -> tuple[bool, list[str]]:
 
 PROFILE_DEFCONFIGS = ("edge", "embedded", "fleet")
 
+# The kernel defaults a non-robot .config builds without: the domain feature
+# and the robot subsystems it owns (tools/kconfig_to_cargo.py,
+# DEFAULT_FEATURE_SYMBOLS).
+ROBOT_ONLY_DEFAULTS = ("domain-robot", "rc-input", "geofence")
+
 
 def test_profile_defconfigs_generic_robot_variants_robot() -> None:
     """Owner decision (wave 11): the profile defconfigs (edge, embedded,
@@ -692,7 +697,8 @@ def test_profile_defconfigs_generic_robot_variants_robot() -> None:
             # Values outside the Robot menu and the brain-link switches.
             strip = lambda ls: [l for l in ls if l.startswith("CONFIG_")
                                 and not any(k in l for k in ("DOMAIN_", "ROBOT_", "LINK_",
-                                    "MULTISTREAM", "SAFETY_", "PID_DT", "ML_REPLY", "BEHAVIOR_"))]
+                                    "MULTISTREAM", "SAFETY_", "PID_DT", "ML_REPLY", "BEHAVIOR_",
+                                    "RC_", "GEOFENCE"))]
             g, r = strip(expanded[p]), strip(expanded[f"robot-{p}"])
             diff = [l for l in r if l not in g] + [l for l in g if l not in r]
             assert not diff, f"robot-{p} differs from {p} beyond the domain: {diff}"
@@ -712,8 +718,10 @@ def test_generic_drops_only_the_domain_feature() -> None:
         no_default, feats = _bridge_args(t / "g.config")
         assert no_default, "a Generic .config must build without the cargo defaults"
         assert "domain-robot" not in feats, f"Generic emitted domain-robot: {feats}"
+        for f in ROBOT_ONLY_DEFAULTS:
+            assert f not in feats, f"Generic emitted the robot feature {f}: {feats}"
         for f in defaults:
-            if f != "domain-robot":
+            if f not in ROBOT_ONLY_DEFAULTS:
                 assert f in feats, f"Generic lost the default feature {f}: {feats}"
         # The other non-robot domains build the same way.
         for dom in ("IOT_HMI", "GATEWAY", "INDUSTRIAL", "MICROKERNEL"):
@@ -723,6 +731,23 @@ def test_generic_drops_only_the_domain_feature() -> None:
         _expand(["CONFIG_DOMAIN_ROBOT=y"], t, "r.config")
         no_default, feats = _bridge_args(t / "r.config")
         assert not no_default and "domain-robot" in feats, f"Robot: {feats}"
+
+
+def test_robot_subsystem_off_drops_its_feature() -> None:
+    """Wave 15: RC_INPUT=n / GEOFENCE=n on a Robot .config builds without
+    the defaults and without that one feature, keeping `domain-robot` and
+    the other subsystem: off compiles it out."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        for sym, feat, other in (("RC_INPUT", "rc-input", "geofence"),
+                                 ("GEOFENCE", "geofence", "rc-input")):
+            _expand(["CONFIG_DOMAIN_ROBOT=y", f"# CONFIG_{sym} is not set"], t, f"{sym}.config")
+            no_default, feats = _bridge_args(t / f"{sym}.config")
+            assert no_default, f"{sym}=n kept the cargo defaults: {feats}"
+            assert feat not in feats, f"{sym}=n still emitted {feat}: {feats}"
+            assert "domain-robot" in feats and other in feats, f"{sym}=n: {feats}"
 
 
 def test_iot_hmi_implies_display_and_camera() -> None:

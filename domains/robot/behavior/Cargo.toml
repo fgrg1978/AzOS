@@ -17,6 +17,11 @@ ml-absent-canary = []
 # azos_encrypt_link, this crate only re-exports the policy surface
 # (auth_envelope::link_policy_denial and friends).
 link-encrypt-enforced = ["azos_encrypt_link/link-encrypt-enforced"]
+# Wave 15 (config/Kconfig.robot RC_INPUT / GEOFENCE), forwarded from the
+# kernel's features of the same names. `rc-input` compiles `rc_link` (the RC
+# receiver's safety policy); `geofence` compiles the E03 fence in `safety`.
+rc-input = []
+geofence = []
 
 [dependencies]
 azos_sync         = { workspace = true }

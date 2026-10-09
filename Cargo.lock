@@ -657,6 +657,7 @@ dependencies = [
  "azos_common",
  "azos_drv_actuator",
  "azos_drv_sys",
+ "azos_sync",
 ]
 
 [[package]]

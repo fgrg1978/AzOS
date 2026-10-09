@@ -495,6 +495,7 @@ fn check_wheeled(state: &SensorState) -> SafetyResult {
     // `Disabled` and `Unknown` are named explicitly here rather than folded
     // into a catch-all, so a reader (or a future diff) cannot mistake "no
     // position to check" for "checked, and inside."
+    #[cfg(feature = "geofence")]
     match geofence_status(state) {
         GeofenceStatus::Outside => {
             return SafetyResult {
@@ -554,6 +555,7 @@ fn check_drone(state: &SensorState) -> SafetyResult {
     // E03: Geofence check. `Inside`, `Disabled` and `Unknown` are named
     // explicitly rather than folded into a catch-all, so "no position to
     // check" cannot be mistaken for "checked, and inside."
+    #[cfg(feature = "geofence")]
     match geofence_status(state) {
         GeofenceStatus::Outside => {
             return SafetyResult {
@@ -666,19 +668,25 @@ fn isqrt(n: u64) -> u64 {
 // `SensorBus::GPS_MAX_AGE_TICKS`, so a receiver that goes silent reads
 // `Unknown` rather than its last `Inside`.
 //
-// `geofence_set` has no production caller (the `geofence-smoke` QEMU probe in
-// `kernel/src/smokes/safety.rs` is the only one), so on a normal boot `GEOFENCE` stays
-// disabled and geofence enforcement lives in the brain (`server.py`'s polygon
-// `Geofence` + an `EStopCmd` carrying `ESTOP_REASON_GEOFENCE`, landing on
-// `estop_activate()`).
+// The behavior loop arms the fence once per boot at the first trusted fix
+// ([`geofence_arm_home`], radius Kconfig `GEOFENCE_RADIUS_M`; wave 15 — until
+// then `geofence_set` had no production caller and the fence stayed disabled).
+// A breach then does three things: L0 turns `EmergencyStop` into
+// `MotorOutput::some(0, 0)` (`layers.rs`); [`geofence_breach_latch`] latches
+// the e-stop, so the actuation gate refuses every motor write until an
+// operator releases it; and the caller writes a durable `SAFETY_ESTOP`
+// record (`ESTOP_ACTION_GEOFENCE`, detail = metres beyond the fence). The
+// brain's polygon fence (`server.py`) is a second, independent layer.
 //
-// A breach detected here does less than the brain's: L0 turns
-// `EmergencyStop` into `MotorOutput::some(0, 0)` (`layers.rs`), which zeroes
-// the command on every tick the robot reads `Outside` — but it does not latch
-// the e-stop, disarm the ESC or write a record, and once the reading stops
-// being `Outside` (including a fix going stale, which reads `Unknown`) L1-L3
-// drive again.
+// The whole section is the `geofence` feature (Kconfig `GEOFENCE`): off, the
+// fence and its checks in `safety_check` are not compiled.
 
+#[cfg(feature = "geofence")]
+pub use self::geofence::*;
+
+#[cfg(feature = "geofence")]
+mod geofence {
+use super::*;
 use azos_sync::SpinLock;
 
 /// Geofence configuration stored in a SpinLock for atomic updates from brain.
@@ -840,7 +848,11 @@ pub const fn geofence_fix_trusted(quality: u8) -> bool {
 }
 /// Minimum satellites in use the geofence acts on: 4, the fewest that fix a
 /// position in three dimensions plus the receiver clock.
-pub const GEOFENCE_MIN_SATELLITES: u8 = 4;
+///
+/// Kconfig `GEOFENCE_MIN_SATELLITES` (wave 15; was this literal 4).
+pub const GEOFENCE_MIN_SATELLITES: u8 = azos_limits::GEOFENCE_MIN_SATELLITES as u8;
+const _: () = assert!(azos_limits::GEOFENCE_MIN_SATELLITES >= 4
+    && azos_limits::GEOFENCE_MIN_SATELLITES <= u8::MAX as usize);
 
 /// Evaluate the configured geofence against the GPS data in a sensor snapshot.
 ///
@@ -879,3 +891,43 @@ pub fn geofence_breach_latch(state: &SensorState) -> Option<u32> {
     estop_activate();
     Some(geofence_overshoot_m(state.gps_lat_udeg, state.gps_lon_udeg).unwrap_or(0))
 }
+
+/// Whether a fence is configured (radius non-zero).
+pub fn geofence_armed() -> bool {
+    GEOFENCE.lock().radius_m != 0
+}
+
+/// Set once the boot's home arm has been decided, armed or not: an operator's
+/// [`geofence_disable`] after it stays disabled.
+static HOME_ARM_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Arm the fence at the home fix: the first trusted fix of the boot, radius
+/// Kconfig `GEOFENCE_RADIUS_M`. The production caller of [`geofence_set`]
+/// (wave 15, owner decision: wire the fence); the behavior loop calls it every
+/// tick and it acts once.
+///
+/// `Some((lat_udeg, lon_udeg, radius_m))` on the tick it arms, for the caller
+/// to report. `None` before a trusted fix (same rule as [`geofence_status`]:
+/// a measured quality and `GEOFENCE_MIN_SATELLITES`), after the arm, and when
+/// something configured the fence explicitly first — that configuration
+/// stands, and the home arm is then spent.
+pub fn geofence_arm_home(state: &SensorState) -> Option<(i32, i32, u32)> {
+    if HOME_ARM_DONE.load(Ordering::Acquire) { return None; }
+    if !(geofence_fix_trusted(state.gps_fix)
+         && state.gps_satellites >= GEOFENCE_MIN_SATELLITES) {
+        return None;
+    }
+    if HOME_ARM_DONE.swap(true, Ordering::AcqRel) { return None; }
+    if geofence_armed() { return None; }
+    let radius = azos_limits::GEOFENCE_RADIUS_M as u32;
+    geofence_set(state.gps_lat_udeg, state.gps_lon_udeg, radius);
+    Some((state.gps_lat_udeg, state.gps_lon_udeg, radius))
+}
+
+/// Host tests: forget the boot's home arm and disable the fence.
+#[cfg(test)]
+pub fn geofence_test_reset() {
+    HOME_ARM_DONE.store(false, Ordering::Release);
+    geofence_disable();
+}
+} // mod geofence

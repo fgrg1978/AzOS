@@ -768,6 +768,27 @@ fn run_validations(cfg: &ConfigMap) {
                     (0 wheeled, 1 drone, 2 humanoid, 3 ackermann).");
         }
     }
+    // Wave 15 (config/Kconfig.robot, RC input): a switch that shares a
+    // channel with a stick, or the kill switch on the mode switch, turns an
+    // ordinary stick movement into a stop or a hand-over. Refused, not
+    // guessed at. Channel 0 is "none".
+    if get_bool(cfg, "RC_INPUT") {
+        let ch = |k: &str| get_u64(cfg, k).unwrap_or(0);
+        let (mode, kill) = (ch("RC_MODE_CHANNEL"), ch("RC_KILL_CHANNEL"));
+        let (drive, steer) = (ch("RC_DRIVE_CHANNEL"), ch("RC_STEER_CHANNEL"));
+        if drive == steer {
+            panic!("validation FAIL: RC_DRIVE_CHANNEL and RC_STEER_CHANNEL are both {drive}.");
+        }
+        for (name, sw) in [("RC_MODE_CHANNEL", mode), ("RC_KILL_CHANNEL", kill)] {
+            if sw != 0 && (sw == drive || sw == steer) {
+                panic!("validation FAIL: {name} ({sw}) is a stick channel \
+                        (RC_DRIVE_CHANNEL {drive}, RC_STEER_CHANNEL {steer}).");
+            }
+        }
+        if mode != 0 && mode == kill {
+            panic!("validation FAIL: RC_MODE_CHANNEL and RC_KILL_CHANNEL are both {mode}.");
+        }
+    }
     if let Some(rings) = get_u64(cfg, "MAX_IO_RINGS") {
         if !(2..=256).contains(&rings) {
             panic!("validation FAIL: MAX_IO_RINGS ({rings}) outside 2..=256 \

@@ -154,7 +154,7 @@ pub(crate) fn reflex_smoke_task(_arg: usize) {
 /// made image, so serial 0 is the only file that exists; a probe that ran long
 /// enough to rotate would need `make_log_path`, and none does.
 #[cfg(any(feature = "envelope-smoke", feature = "brain-lies-smoke", feature = "cap-deny-smoke",
-          feature = "disk-part-row", feature = "ml-kill-smoke"))]
+          feature = "disk-part-row", feature = "ml-kill-smoke", feature = "fence-refuse-smoke"))]
 pub(crate) fn find_safety_record_on_disk(code: u8, action: u8) -> (bool, u32) {
     find_safety_record_detail_on_disk(code, action, None)
 }
@@ -164,7 +164,8 @@ pub(crate) fn find_safety_record_on_disk(code: u8, action: u8) -> (bool, u32) {
 /// for, not only which kind (the seccomp audit record of syscall 116, the exec
 /// refusal of one digest).
 #[cfg(any(feature = "envelope-smoke", feature = "brain-lies-smoke", feature = "cap-deny-smoke",
-          feature = "disk-part-row", feature = "ml-kill-smoke"))]
+          feature = "disk-part-row", feature = "ml-kill-smoke", feature = "rc-failsafe-smoke",
+          feature = "fence-refuse-smoke"))]
 pub(crate) fn find_safety_record_detail_on_disk(code: u8, action: u8, detail: Option<u32>) -> (bool, u32) {
     let mut found = false;
     let mut records = 0u32;
@@ -324,15 +325,28 @@ pub(crate) fn envelope_smoke_task(_arg: usize) {
 /// Any other reading prints `[GEOFENCE] FAILED:` with what was read, so a
 /// higher-priority L0 verdict masking the fence is told apart from a fix that
 /// never reached it.
-#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "domain-robot")))]
+/// A GGA fix ~1 km north of the simulated one (Munich): 48°08.6460' N
+/// (48.1441°), 0.009° north at the same longitude, quality 1 with 4
+/// satellites (the weakest fix the fence trusts). `*59` is the XOR of every
+/// byte between `$` and `*`. Shared by `geofence-smoke` and wave 15's
+/// `fence-refuse-smoke` (`smokes/rc_fence.rs`).
+#[cfg(any(feature = "geofence-smoke", feature = "fence-refuse-smoke",
+          all(feature = "ktest", feature = "geofence")))]
+pub(crate) const OUTSIDE_GGA: &[u8] =
+    b"$GPGGA,120000.00,4808.6460,N,01134.9200,E,1,04,1.10,519.0,M,47.0,M,,*59\r\n";
+/// [`OUTSIDE_GGA`]'s latitude in the geofence's unit.
+#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "geofence")))]
+pub(crate) const OUTSIDE_LAT_UDEG: i32 = 48_144_100;
+
+#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "geofence")))]
 /// The geofence scenario's outcome, for the ktest verdict
 /// ([`safety_geofence_breach_latches_estop`]): `[GEOFENCE] FAILED` lines
 /// printed, and whether the breach held the e-stop.
 static GEOFENCE_FAILS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "domain-robot")))]
+#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "geofence")))]
 static GEOFENCE_HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "domain-robot")))]
+#[cfg(any(feature = "geofence-smoke", all(feature = "ktest", feature = "geofence")))]
 pub(crate) fn geofence_smoke_task(_arg: usize) {
     use azos_behavior::safety::{
         geofence_disable, geofence_set, geofence_status, safety_check,
@@ -346,12 +360,6 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
     /// 10 s of polls before giving up.
     const MAX_POLLS: u32 = 100;
     const RADIUS_M: u32 = 100;
-    /// 48°08.6460' N (48.1441°), 0.009° north of the simulated fix at the same
-    /// longitude. `*59` is the XOR of every byte between `$` and `*`.
-    const OUTSIDE_GGA: &[u8] =
-        b"$GPGGA,120000.00,4808.6460,N,01134.9200,E,1,04,1.10,519.0,M,47.0,M,,*59\r\n";
-    /// The same latitude in the geofence's unit.
-    const OUTSIDE_LAT_UDEG: i32 = 48_144_100;
 
     fn poll() -> SensorState {
         let dl = azos_drv_sys::timebase::now() + POLL_TICKS;
@@ -501,7 +509,7 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
 // read it.
 #[cfg(feature = "ktest")]
 azos_ktest::ktest_late! {
-    #[cfg(feature = "domain-robot")]
+    #[cfg(feature = "geofence")]
     fn safety_geofence_breach_latches_estop() {
         crate::ktest::probe("geofence-smoke", geofence_smoke_task, 0, azos_sched::DEFAULT_PRIORITY, -1)?;
         if GEOFENCE_FAILS.load(core::sync::atomic::Ordering::SeqCst) != 0 {

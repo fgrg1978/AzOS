@@ -456,6 +456,18 @@ pub const ESTOP_ACTION_TIMER_FROZEN: u8 = 10;
 /// releases it — fixing the files alone does not move it.
 pub const ESTOP_ACTION_CONFIG_AUTHORITY: u8 = 11;
 
+/// `SAFETY_ESTOP` action code of a stop latched by RC link loss (wave 15,
+/// `kernel/src/tasks/rc_safety.rs`): the receiver's own failsafe bit, or no
+/// fresh frame for Kconfig `RC_LINK_TIMEOUT_MS` after a link was established.
+/// `detail` is 0 for the receiver's bit, else the frame age in ms. Latches
+/// like every source but 3 and 7 (`logger::estop_action_latches`).
+pub const ESTOP_ACTION_RC_LINK_LOSS: u8 = 12;
+
+/// `SAFETY_ESTOP` action code of a stop latched by the RC kill switch (wave
+/// 15, Kconfig `RC_KILL_CHANNEL`). `detail` is the switch channel's pulse
+/// width in microseconds.
+pub const ESTOP_ACTION_RC_KILL: u8 = 13;
+
 /// Top bit of a ring-3 stop's `detail`: the latch was taken within
 /// [`ESTOP_RELATCH_WINDOW_TICKS`] of an operator clear. The low 31 bits carry
 /// the latching tid.

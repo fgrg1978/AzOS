@@ -144,6 +144,166 @@ config ML_REPLY_TIMEOUT_US
 
 endmenu # Safety layer and motor control
 
+# ---------------------------------------------------------------------------
+# RC receiver input and geofence (wave 15)
+# ---------------------------------------------------------------------------
+
+menu "RC input and geofence"
+
+config RC_INPUT
+    bool "RC receiver feeds the safety path"
+    default y if DOMAIN_ROBOT
+    default n
+    help
+      Wires the RC receiver (domains/robot/drivers/src/rc.rs) into the
+      behavior loop (kernel/src/tasks/rc_safety.rs; the policy is
+      domains/robot/behavior/src/rc_link.rs): a receiver failsafe or a link
+      silent for RC_LINK_TIMEOUT_MS latches the e-stop (when
+      RC_FAILSAFE_ESTOP), the kill switch latches it on every robot type,
+      and with the mode switch high the sticks drive: the arbiter ranks them
+      below L0 and L1's stop and above the brain and autonomy, and they
+      reach the motors only through the motor envelope and the actuation
+      gate. Each latch writes a durable SAFETY_ESTOP record (action 12 link
+      loss, 13 kill switch).
+
+      Nothing acts before the first frame arrives through rc_feed_byte (the
+      SBUS byte source a board's UART receive interrupt calls; QEMU feeds
+      it from a smoke task), so a robot without a transmitter is not held
+      stopped.
+
+      Cost: one rc_read and a few compares per behavior tick (100 ms) and a
+      25-byte frame buffer. n compiles the policy, the kernel hook and the
+      receiver init out (kernel feature `rc-input`); the flight controller
+      then sees no RC link and fails closed.
+
+config RC_FAILSAFE_ESTOP
+    bool "RC link loss latches the e-stop"
+    default n if ROBOT_DRONE
+    default y
+    help
+      On a ground robot, stopping is the safe reaction to losing the
+      transmitter. On a drone, stopping the motors drops it: there the
+      flight controller's own reaction (return to launch,
+      domains/robot/flight/src/failsafe.rs) is the right one, so the
+      default is n for ROBOT_DRONE. The kill switch latches either way.
+      No cost either way.
+
+config RC_LINK_TIMEOUT_MS
+    int "RC link timeout (ms)"
+    range 20 5000
+    default 300 if PROFILE_EMBEDDED
+    default 500
+    help
+      With a link established, no fresh frame for this long is link loss
+      (the receiver's own failsafe bit counts at once). SBUS sends a frame
+      every 7-14 ms, so 500 ms is ~40 missed frames: long enough to ride
+      out interference, short enough that the robot does not travel far
+      uncontrolled. The embedded profile's smaller, slower robots get
+      300 ms. The behavior loop samples every 100 ms, so a value under
+      100 acts at the next tick. No RAM or instruction cost.
+
+config RC_MODE_CHANNEL
+    int "RC channel of the manual-override switch (1-16, 0 = none)"
+    range 0 16
+    default 5
+    help
+      With this channel above RC_SWITCH_HIGH_US the sticks drive (manual
+      override of the brain); below it the brain drives. 0 disables manual
+      control: the receiver is then only a failsafe and a kill switch.
+      Channel 5 is the conventional mode switch.
+
+config RC_KILL_CHANNEL
+    int "RC channel of the kill switch (1-16, 0 = none)"
+    range 0 16
+    default 6
+    help
+      Above RC_SWITCH_HIGH_US this channel latches the e-stop (action 13).
+      The latch holds until an operator releases it, like every stop.
+      0 disables the RC kill switch.
+
+config RC_SWITCH_HIGH_US
+    int "RC switch threshold (us)"
+    range 1100 1950
+    default 1700
+    help
+      A switch channel above this pulse width is on. 1700 leaves neutral
+      (1500) and a three-position switch's middle position well below it.
+
+config RC_DRIVE_CHANNEL
+    int "RC channel of the drive (forward/back) stick (1-16)"
+    range 1 16
+    default 2
+    help
+      Manual override: this stick's deflection from 1500 us is the forward
+      speed. Channel 2 (pitch, self-centring on a mode-2 transmitter) is the
+      default, so letting go of the stick stops the robot.
+
+config RC_STEER_CHANNEL
+    int "RC channel of the steering stick (1-16)"
+    range 1 16
+    default 1
+    help
+      Manual override: this stick's deflection turns the robot by
+      differential mixing (left = drive + steer, right = drive - steer).
+
+config RC_STICK_DEADBAND_US
+    int "RC stick deadband (us)"
+    range 0 200
+    default 20
+    help
+      Deflections within this many microseconds of 1500 read as zero, so a
+      stick that does not centre exactly does not creep the robot.
+
+config RC_STICK_FULL_SCALE_PCT
+    int "RC stick full-deflection speed (percent)"
+    range 1 100
+    default 100
+    help
+      The speed full stick deflection ASKS for. The motor envelope still
+      clamps it to the robot type's cap (SAFETY_WHEELED_MAX_SPEED_PCT, the
+      low-confidence cap and the degrade level): this is a request, not a
+      bound. Lower it to give a novice operator less authority.
+
+config GEOFENCE
+    bool "On-board geofence armed at the home fix"
+    default y if DOMAIN_ROBOT
+    default n
+    help
+      Arms the circular geofence (domains/robot/behavior/src/safety.rs, E03)
+      at the first trusted GPS fix of the boot, with radius
+      GEOFENCE_RADIUS_M. Leaving it latches the e-stop with a durable
+      SAFETY_ESTOP record (action 8, detail = metres beyond the fence), and
+      the actuation gate then refuses every motor write. Before this option
+      nothing armed the fence on a normal boot.
+
+      Cost: one fence evaluation per behavior tick (an integer square root
+      only on a breach) and 16 bytes of state. n compiles the fence, its
+      checks in safety_check and the kernel hook out (kernel feature
+      `geofence`).
+
+config GEOFENCE_RADIUS_M
+    int "Geofence radius (m)"
+    range 1 100000
+    default 300 if ROBOT_DRONE
+    default 100
+    help
+      The fence is a circle of this radius around the home fix. A drone
+      needs more room than a ground robot for the same mission, and its
+      breach reaction (return to launch) flies back from beyond the edge.
+      No cost.
+
+config GEOFENCE_MIN_SATELLITES
+    int "Geofence: minimum satellites for a trusted fix"
+    range 4 32
+    default 4
+    help
+      The fence neither arms nor acts on a fix with fewer satellites in
+      use. 4 is the fewest that fix a 3-D position plus the receiver clock;
+      raise it where multipath makes a 4-satellite fix wander. Was the
+      literal GEOFENCE_MIN_SATELLITES = 4 in safety.rs. No cost.
+
+endmenu # RC input and geofence
+
 comment "Fleet OTA has no build-time option: tools/fleet_ota_deploy.py"
 
 endmenu # Robot

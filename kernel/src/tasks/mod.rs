@@ -32,6 +32,8 @@ mod brain_link;
 pub(crate) use brain_link::*;
 #[cfg(feature = "domain-robot")]
 mod behavior;
+#[cfg(any(feature = "rc-input", feature = "geofence"))]
+pub(crate) mod rc_safety;
 #[cfg(feature = "domain-robot")]
 pub(crate) use behavior::*;
 mod lease_worker;

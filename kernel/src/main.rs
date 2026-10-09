@@ -70,6 +70,16 @@ const _: () = assert!(
     "the .config selects DOMAIN_ROBOT but the kernel was built without the \
      `domain-robot` feature: build with $(python3 tools/kconfig_to_cargo.py <config>)",
 );
+// Wave 15: the same rule for the two robot subsystems the .config can turn
+// off (config/Kconfig.robot RC_INPUT, GEOFENCE). On means compiled in.
+const _: () = assert!(
+    !azos_limits::RC_INPUT || cfg!(feature = "rc-input"),
+    "the .config selects RC_INPUT but the kernel was built without the `rc-input` feature",
+);
+const _: () = assert!(
+    !azos_limits::GEOFENCE || cfg!(feature = "geofence"),
+    "the .config selects GEOFENCE but the kernel was built without the `geofence` feature",
+);
 
 // Masked-window tracer read-out (Kconfig `LAT_TRACE`), see the module doc.
 #[cfg(feature = "lat-trace")]
@@ -2533,6 +2543,18 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
             azos_sched::DEFAULT_PRIORITY,
         );
     }
+
+    // Wave 15 (RC input and geofence): one property per boot, see
+    // `smokes::rc_fence`.
+    #[cfg(feature = "rc-failsafe-smoke")]
+    azos_sched::task_create("rc-failsafe-smoke", rc_failsafe_smoke_task, 0,
+                            azos_sched::DEFAULT_PRIORITY);
+    #[cfg(feature = "rc-stick-smoke")]
+    azos_sched::task_create("rc-stick-smoke", rc_stick_smoke_task, 0,
+                            azos_sched::DEFAULT_PRIORITY);
+    #[cfg(feature = "fence-refuse-smoke")]
+    azos_sched::task_create("fence-refuse-smoke", fence_refuse_smoke_task, 0,
+                            azos_sched::DEFAULT_PRIORITY);
 
     // sensor-ts-smoke (wave 11): the IMU's acquisition stamp, from the driver
     // to the bus staleness check L0 reads (see `smokes::sensor_ts`).

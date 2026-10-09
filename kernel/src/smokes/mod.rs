@@ -37,13 +37,19 @@ mod ota;
 pub(crate) use ota::*;
 #[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke", feature = "geofence-smoke",
           feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
-          feature = "ml-kill-smoke", all(feature = "ktest", feature = "domain-robot")))]
+          feature = "ml-kill-smoke", feature = "rc-failsafe-smoke", feature = "fence-refuse-smoke",
+          all(feature = "ktest", feature = "domain-robot")))]
 mod safety;
 #[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke",
           all(feature = "geofence-smoke", not(feature = "ktest")),
           feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
-          feature = "ml-kill-smoke"))]
+          feature = "ml-kill-smoke", feature = "rc-failsafe-smoke", feature = "fence-refuse-smoke"))]
 pub(crate) use safety::*;
+// Wave 15: RC receiver and geofence wiring, one property per boot.
+#[cfg(any(feature = "rc-failsafe-smoke", feature = "rc-stick-smoke", feature = "fence-refuse-smoke"))]
+mod rc_fence;
+#[cfg(any(feature = "rc-failsafe-smoke", feature = "rc-stick-smoke", feature = "fence-refuse-smoke"))]
+pub(crate) use rc_fence::*;
 #[cfg(any(feature = "qemu", feature = "estop-gpio-smoke"))]
 mod drivers;
 #[cfg(any(feature = "qemu", feature = "estop-gpio-smoke"))]

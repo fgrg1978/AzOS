@@ -208,12 +208,15 @@ pub(crate) fn install_robot_payload_and_sensors() {
     // chain (disarm / RTL) can never fire on the machine it exists to protect.
     // The variant is now `cfg`'d out of existence on board targets, so this
     // does not compile there; `RcMode::Sbus` fails CLOSED (not ready, held in
-    // failsafe, `rc_read` returns `None`) until a real SBUS decoder calls
-    // `rc_set_channels` from live frames. Loud and useless beats quiet and
-    // fabricated.
-    #[cfg(all(feature = "domain-robot", not(any(feature = "vf2", feature = "k1"))))]
+    // failsafe, `rc_read` returns `None`) until the SBUS byte source
+    // (`rc_feed_byte`, called by the board's UART receive interrupt) decodes
+    // a frame. Loud and useless beats quiet and fabricated.
+    //
+    // Wave 15: compiled only with Kconfig `RC_INPUT` (feature `rc-input`); the
+    // receiver's say in the safety path is kernel/src/tasks/rc_safety.rs.
+    #[cfg(all(feature = "rc-input", not(any(feature = "vf2", feature = "k1", feature = "rpi5"))))]
     azos_robot_drivers::rc::rc_init(azos_robot_drivers::rc::RcMode::Simulated);
-    #[cfg(all(feature = "domain-robot", any(feature = "vf2", feature = "k1")))]
+    #[cfg(all(feature = "rc-input", any(feature = "vf2", feature = "k1", feature = "rpi5")))]
     azos_robot_drivers::rc::rc_init(azos_robot_drivers::rc::RcMode::Sbus);
     kprintln!();
 }

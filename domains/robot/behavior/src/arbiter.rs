@@ -70,6 +70,28 @@ pub fn arbitrate(state: &SensorState, _mlp: &MlpResult) -> BehaviorOutput {
     }
 
     // L1: avoid obstacle (MLP-based, only if no-ml is not set)
+    // ── RC manual override (wave 15, Kconfig `RC_INPUT`) ─────────────────
+    //
+    // The operator's sticks outrank autonomy but not safety: L0 above
+    // returned already if it had anything to say, and L1's STOP (an
+    // obstacle, or a cycle with no ML verdict, which fails closed) still
+    // stops a manually driven robot. L1's steering, L2 (the brain) and L3 do
+    // not override the operator. The command then reaches the wheels only
+    // through `rt_motor`'s motor envelope and the actuation gate.
+    #[cfg(feature = "rc-input")]
+    if state.rc_manual.valid {
+        #[cfg(not(feature = "no-ml"))]
+        if LAYER_ENABLED[1].load(Ordering::Relaxed) {
+            let out = layers::layer_avoid_obstacle(state, _mlp);
+            if out.cmd.valid && out.cmd.speed_l == 0 && out.cmd.speed_r == 0 {
+                LAST_WINNER.store(1, Ordering::Relaxed);
+                return out;
+            }
+        }
+        LAST_WINNER.store(2, Ordering::Relaxed);
+        return BehaviorOutput { cmd: state.rc_manual, layer: 2 };
+    }
+
     #[cfg(not(feature = "no-ml"))]
     if LAYER_ENABLED[1].load(Ordering::Relaxed) {
         let out = layers::layer_avoid_obstacle(state, _mlp);

@@ -703,6 +703,57 @@ mod rc_failsafe {
     /// failed too, the assertions above would be testing a `rc_read()` that
     /// always returns `None` regardless of mode, which proves nothing about
     /// the Sbus/Ppm path specifically.
+    /// Wave 15: the SBUS byte source. Sbus mode starts not ready; one frame
+    /// fed byte by byte (after line noise) makes it ready with the frame's
+    /// sticks, counts it, and a frame carrying the failsafe bit raises the
+    /// flag `rc_read` reports.
+    #[test]
+    fn the_sbus_byte_source_makes_the_driver_ready() {
+        use rc::{rc_feed_byte, sbus_encode, sbus_us_to_raw, SbusFrame};
+        let _g = serial();
+        rc::rc_init(RcMode::Sbus);
+        assert!(!rc::rc_frames_seen() && rc::rc_read().is_none());
+        let mut channels = [sbus_us_to_raw(1500); 16];
+        channels[1] = sbus_us_to_raw(2000);
+        let good = sbus_encode(&SbusFrame { channels, failsafe: false, frame_lost: false,
+                                            ch17: false, ch18: false });
+        // Noise before the start byte is dropped.
+        for b in [0x00u8, 0x55, 0xAA] { assert!(!rc_feed_byte(b)); }
+        let applied: Vec<bool> = good.iter().map(|&b| rc_feed_byte(b)).collect();
+        assert_eq!(applied.iter().filter(|&&a| a).count(), 1);
+        assert!(applied[24], "the 25th byte completes the frame");
+        assert!(rc::rc_frames_seen() && rc::rc_frame_count() == 1);
+        let (ch, fs) = rc::rc_read().expect("a decoded frame makes the driver ready");
+        assert_eq!((ch[0], ch[1], fs), (1500, 2000, false));
+        let lost = sbus_encode(&SbusFrame { channels, failsafe: true, frame_lost: false,
+                                            ch17: false, ch18: false });
+        assert!(lost.iter().map(|&b| rc_feed_byte(b)).any(|a| a));
+        assert_eq!(rc::rc_read().map(|r| r.1), Some(true), "the receiver's failsafe bit");
+        rc::rc_init(RcMode::Sbus);
+    }
+
+    /// A 25-byte run with a wrong end byte is dropped whole: no frame, no
+    /// readiness.
+    #[test]
+    fn a_misframed_run_is_dropped() {
+        use rc::{rc_feed_byte, sbus_encode, SbusFrame};
+        let _g = serial();
+        rc::rc_init(RcMode::Sbus);
+        let mut bad = sbus_encode(&SbusFrame { channels: [992; 16], failsafe: false,
+                                               frame_lost: false, ch17: false, ch18: false });
+        bad[24] = 0x77;
+        assert!(!bad.iter().map(|&b| rc_feed_byte(b)).any(|a| a));
+        assert!(!rc::rc_frames_seen() && rc::rc_read().is_none());
+    }
+
+    /// The `Simulated` stand-in is not a transmitter link: ready, no frames.
+    #[test]
+    fn simulated_mode_counts_no_frames() {
+        let _g = serial();
+        rc::rc_init(RcMode::Simulated);
+        assert!(rc::rc_is_ready() && !rc::rc_frames_seen());
+    }
+
     #[test]
     fn simulated_mode_still_reports_ready_with_failsafe_cleared() {
         let _g = serial();
@@ -710,6 +761,34 @@ mod rc_failsafe {
         assert!(rc::rc_is_ready(), "Simulated mode is the documented QEMU/host test path");
         let (_channels, failsafe) = rc::rc_read().expect("Simulated mode must be live");
         assert!(!failsafe, "Simulated mode's synthetic data is not a failsafe condition");
+    }
+}
+
+/// Wave 15: `sbus_encode` is the inverse of `sbus_decode` (the QEMU feeder
+/// builds its frames with it), and `sbus_us_to_raw` of `sbus_channel_to_us`.
+#[cfg(test)]
+mod sbus_encode_roundtrip {
+    use super::rc::*;
+
+    #[test]
+    fn encode_then_decode_is_the_identity() {
+        let mut channels = [0u16; 16];
+        for (i, c) in channels.iter_mut().enumerate() { *c = (i as u16 * 131 + 7) & 0x07FF; }
+        for (fs, lost, a, b) in [(false, false, false, false), (true, true, true, true),
+                                 (true, false, false, true)] {
+            let f = SbusFrame { channels, failsafe: fs, frame_lost: lost, ch17: a, ch18: b };
+            assert_eq!(sbus_decode(&sbus_encode(&f)), Some(f));
+        }
+        let all = SbusFrame { channels: [0x07FF; 16], failsafe: false, frame_lost: false,
+                              ch17: false, ch18: false };
+        assert_eq!(sbus_decode(&sbus_encode(&all)), Some(all));
+    }
+
+    #[test]
+    fn us_to_raw_inverts_the_pulse_mapping() {
+        for us in (1000..=2000).step_by(5) {
+            assert_eq!(sbus_channel_to_us(sbus_us_to_raw(us)), us, "{} us", us);
+        }
     }
 }
 

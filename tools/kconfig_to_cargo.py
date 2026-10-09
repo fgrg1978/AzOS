@@ -204,7 +204,7 @@ DEFAULT_TARGET = "riscv64imac-unknown-none-elf"
 #   vf2, k1, rvv, qemu, tftp-smoke, no-ml, no-mmu, secure-boot-enforced,
 #   link-auth-enforced, link-encrypt-enforced, sched-aps, lat-trace,
 #   pci, hdmi, ramfb, page-16k, page-64k, camera, domain-robot, energy,
-#   switch-census
+#   switch-census, rc-input, geofence
 #
 # `no-opensbi` and `uefi` were removed 2026-09-21 (B2-02/B2-03): neither was
 # wired to a real boot path (see kernel/Cargo.toml's [features] comment), so
@@ -306,6 +306,12 @@ KCONFIG_TO_CARGO_FEATURE: dict[str, Optional[str]] = {
     # see `domain_args` below. The other domains have no feature of their
     # own: they set defaults with `imply` / conditional defaults.
     "CONFIG_DOMAIN_ROBOT":       "domain-robot",
+    # Wave 15 (config/Kconfig.robot): the RC receiver's safety path and the
+    # geofence armed at the home fix. Both are in the kernel's `default`
+    # list like `domain-robot`, and dropped by `domain_args` when the .config
+    # leaves their symbol n.
+    "CONFIG_RC_INPUT":           "rc-input",
+    "CONFIG_GEOFENCE":           "geofence",
     # RFC-0053 L0/L0b: the module loader and the empty Linux driver server.
     # crates/core/limits/build.rs refuses LINUX_DRIVERS without it.
     "CONFIG_LX_SERVER_SKELETON": "lx-server",
@@ -365,6 +371,15 @@ def placement_violations(cfg: dict[str, str]) -> list[str]:
 # domain must leave out of the kernel's `default` list.
 DOMAIN_FEATURE = "domain-robot"
 
+# The kernel `default` features each owned by a Kconfig bool: a .config that
+# leaves the bool n builds without the feature (`domain_args`). The robot
+# subsystems depend on DOMAIN_ROBOT in Kconfig, so outside it they drop too.
+DEFAULT_FEATURE_SYMBOLS: dict[str, str] = {
+    DOMAIN_FEATURE: "CONFIG_DOMAIN_ROBOT",
+    "rc-input":     "CONFIG_RC_INPUT",
+    "geofence":     "CONFIG_GEOFENCE",
+}
+
 KERNEL_CARGO_TOML = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kernel", "Cargo.toml")
 
@@ -400,15 +415,18 @@ def domain_args(cfg: dict[str, str], feats: list[str],
                 cargo_toml: str = KERNEL_CARGO_TOML) -> tuple[bool, list[str]]:
     """Apply the application domain to the feature list.
 
-    Returns `(no_default_features, features)`. A DOMAIN_ROBOT .config keeps
-    the kernel's defaults (which include `domain-robot`). Any other domain
-    turns the defaults off and adds them back without `domain-robot`, ahead
-    of the features the .config maps to.
+    Returns `(no_default_features, features)`. A DOMAIN_ROBOT .config that
+    keeps every symbol of [`DEFAULT_FEATURE_SYMBOLS`] y keeps the kernel's
+    defaults. Any other .config turns the defaults off and adds them back
+    without the features whose symbol it leaves n (`domain-robot` outside
+    DOMAIN_ROBOT, and `rc-input` / `geofence` when those are off), ahead of
+    the features the .config maps to.
     """
-    if cfg.get("CONFIG_DOMAIN_ROBOT") == "y":
+    drop = {f for f, k in DEFAULT_FEATURE_SYMBOLS.items() if cfg.get(k) != "y"}
+    if not drop:
         return False, feats
-    defaults = [f for f in kernel_default_features(cargo_toml) if f != DOMAIN_FEATURE]
-    out = defaults + [f for f in feats if f not in defaults and f != DOMAIN_FEATURE]
+    defaults = [f for f in kernel_default_features(cargo_toml) if f not in drop]
+    out = defaults + [f for f in feats if f not in defaults and f not in drop]
     return True, out
 
 

@@ -17301,6 +17301,198 @@ par_row lx_module_row "lx: hwcap + zknh SHA-256 (rv)"          rv  "qemu,lx-serv
 par_row lx_module_row "lx: hwcap (arm)"                        arm "qemu,lx-server"        hwcap        PASS
 par_row lx_module_row "lx: hwcap canary, CRC32 bit cleared (arm)" arm "qemu,lx-server,hwcap-clear-canary" hwcap-canary FAIL
 par_row lx_module_row "lx: hwcap canary, Zbc bit cleared (rv)"    rv  "qemu,lx-server,hwcap-clear-canary" hwcap-canary FAIL
+# ── RC input and geofence wired into the safety path (wave 15) ─────────────
+#
+# Owner decision: the RC receiver and the geofence were inert (no byte source
+# fed the SBUS decoder, nothing called `geofence_set` on a normal boot). Both
+# are now Kconfig subsystems (config/Kconfig.robot RC_INPUT / GEOFENCE, robot
+# default y, kernel features `rc-input` / `geofence`), and these rows prove
+# one property per boot (kernel/src/smokes/rc_fence.rs; a latched e-stop would
+# mask the next one). The receiver and the GPS are board-blocked, so the test
+# feeders push bytes through the functions a board's UART receive interrupts
+# call: `rc_feed_byte` (SBUS frames) and `gps_feed_byte` (a GGA sentence).
+#
+#   failsafe  1 s of good frames, then frames with the receiver's failsafe
+#             bit: PASS = the kernel's `[RC] link lost (receiver failsafe) —
+#             e-stop latched (SAFETY_ESTOP action 12 detail 0)` and the
+#             probe's `[RCSMOKE] PASS failsafe` (latched, record read back off
+#             the flight recorder);
+#   stick     mode switch on, drive stick full forward: PASS = the probe saw
+#             MotorCmd (100,100) from the sticks and rt_motor printed
+#             `[ENVELOPE] refused: asked (100,100) applied (80,80)` (the
+#             wheeled cap);
+#   fence     the fence the BOOT armed at the home fix (`[GEOFENCE] armed at
+#             home fix`; the probe never calls `geofence_set`), a motor write
+#             admitted inside it, a fix ~1 km outside: PASS = `[SAFETY]
+#             geofence breach`, the same write refused at the actuation gate
+#             (MOTOR_REFUSED_HALTED, duty 0) and SAFETY_ESTOP action 8 on disk.
+#
+# Canaries (expect FAIL: the probe's `[RCSMOKE] FAIL <property>` line, which
+# only the failure prints, and no PASS line): `rc-failsafe-canary` (link loss
+# computed and ignored), `rc-stick-canary` (the sticks never reach the
+# arbiter), `fence-arm-canary` (the boot never arms the fence). A canary that
+# fails to build is its own FAIL line (compile-error bucket).
+rcfence_row() { # rcfence_row <label> <isa: rv|arm> <features> <property: failsafe|stick|fence> <expect: PASS|FAIL>
+    local label="$1" isa="$2" feats="$3" prop="$4" expect="$5"
+    if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log disk kimg
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+    disk="$CI_LOG_DIR/${slug}-disk.img"
+    if [ "$isa" = rv ]; then
+        [ -f build/disk-ipctest.img.pristine ] || make_disk build/disk-ipctest.img
+        cp build/disk-ipctest.img.pristine "$disk"
+        kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -smp 4 -kernel "$kimg" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then
+            bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
+        fi
+        if ! make build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make build/disk-aarch64-ipctest.img"; return
+        fi
+        cp build/disk-aarch64-ipctest.img "$disk"
+        kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 360 ]; do
+        grep -aqE '\[RCSMOKE\] (PASS|FAIL)' "$log" 2>/dev/null && { sleep 1; break; }
+        grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; sleep 2; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    rm -f "$disk" "$kimg"
+    local clean="$log.txt"
+    tr -d '\r' <"$log" >"$clean"
+    if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$clean"; then
+        bad; echo "      the kernel stopped:"; grep -aiE -m3 'panic|\[FATAL\]|AARCH64-TRAP' "$clean" | sed 's/^/      /'
+        echo "      log kept: $log"; return
+    fi
+    local verdict kernel_line=""
+    verdict="$(grep -a "^\[RCSMOKE\] \(PASS\|FAIL\) \($prop\|setup\):" "$clean" | sed -n 1p)"
+    case "$prop" in
+        failsafe) kernel_line='[RC] link lost (receiver failsafe) — e-stop latched (SAFETY_ESTOP action 12 detail 0)' ;;
+        stick)    kernel_line='[ENVELOPE] refused: asked (100,100) applied (80,80)' ;;
+        fence)    kernel_line='[SAFETY] geofence breach' ;;
+    esac
+    if [ -z "$verdict" ]; then
+        bad; echo "      no [RCSMOKE] $prop verdict within the timeout:"
+        grep -a '^\[RCSMOKE\]\|^\[RC\]\|^\[GEOFENCE\]' "$clean" | sed 's/^/      /'
+        echo "      log kept: $log"; return
+    fi
+    if [ "$expect" = PASS ]; then
+        if [ "${verdict#\[RCSMOKE\] PASS }" != "$verdict" ] && grep -aqF "$kernel_line" "$clean" \
+           && { [ "$prop" != fence ] || grep -aq '^\[GEOFENCE\] armed at home fix' "$clean"; }; then
+            ok; echo "      ${verdict#\[RCSMOKE\] }"; rm -f "$log" "$clean"
+        else
+            bad; echo "      $verdict"
+            grep -aqF "$kernel_line" "$clean" || echo "      missing kernel line: $kernel_line"
+            echo "      log kept: $log"
+        fi
+        return
+    fi
+    # Canary: the probe's FAIL line for this property, and no PASS line.
+    if [ "${verdict#\[RCSMOKE\] FAIL $prop:}" != "$verdict" ] \
+       && ! grep -aq "^\[RCSMOKE\] PASS $prop:" "$clean"; then
+        ok; echo "      canary red as it must be: ${verdict#\[RCSMOKE\] }"; rm -f "$log" "$clean"
+    else
+        bad; echo "      the canary did not fail its check: $verdict"; echo "      log kept: $log"
+    fi
+}
+par_row rcfence_row "rc: link loss latches the e-stop (rv)"     rv  "qemu,rc-failsafe-smoke"  failsafe PASS
+par_row rcfence_row "rc: link-loss canary (rv)"                 rv  "qemu,rc-failsafe-canary" failsafe FAIL
+par_row rcfence_row "rc: sticks bounded by the envelope (rv)"   rv  "qemu,rc-stick-smoke"     stick    PASS
+par_row rcfence_row "rc: stick canary (rv)"                     rv  "qemu,rc-stick-canary"    stick    FAIL
+par_row rcfence_row "geofence: outside refuses motors (rv)"     rv  "qemu,fence-refuse-smoke" fence    PASS
+par_row rcfence_row "geofence: no-fence canary (rv)"                 rv  "qemu,fence-arm-canary"   fence    FAIL
+par_row rcfence_row "rc: link loss latches the e-stop (arm)"    arm "qemu,rc-failsafe-smoke"  failsafe PASS
+par_row rcfence_row "rc: link-loss canary (arm)"                arm "qemu,rc-failsafe-canary" failsafe FAIL
+par_row rcfence_row "rc: sticks bounded by the envelope (arm)"  arm "qemu,rc-stick-smoke"     stick    PASS
+par_row rcfence_row "rc: stick canary (arm)"                    arm "qemu,rc-stick-canary"    stick    FAIL
+par_row rcfence_row "geofence: outside refuses motors (arm)"    arm "qemu,fence-refuse-smoke" fence    PASS
+par_row rcfence_row "geofence: no-fence canary (arm)"                arm "qemu,fence-arm-canary"   fence    FAIL
+
+# Off compiles out: the robot QEMU config with RC_INPUT=n and GEOFENCE=n,
+# cargo arguments from tools/kconfig_to_cargo.py (which must drop exactly the
+# two features), into target/rcfence-off/ so no row's kernel is touched. Zero
+# warnings, and `llvm-nm` finds none of the subsystems' symbols
+# (rc_safety / rc_link / geofence) in the ELF — after finding them in the
+# default robot kernel of the same ISA, so a query gone blind cannot pass.
+rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
+    local label="$1" isa="$2" defc cfg args log out rc elf on_elf triple nmb n_on n_off
+    local dir="${REPO_ROOT}/target/rcfence-off"
+    local re='rc_safety|rc_link|geofence'
+    if [ "$isa" = rv ]; then
+        defc=qemu; triple=riscv64imac-unknown-none-elf
+        kbuild "qemu" || return; on_elf="$KERNEL"
+    else
+        defc=qemu-aarch64; triple=aarch64-unknown-none-softfloat
+        a64_kbuild "qemu" || { printf "  %-26s" "${label}..."; bad; echo "      aarch64 qemu kernel did not build"; return; }
+        on_elf="$A64_KERNEL"
+    fi
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR" "$dir"
+    cfg="$dir/${defc}-off.config"; log="$CI_LOG_DIR/rcfence-off-${isa}.log"
+    if ! sed -e 's/^CONFIG_RC_INPUT=y$/# CONFIG_RC_INPUT is not set/' \
+             -e 's/^CONFIG_GEOFENCE=y$/# CONFIG_GEOFENCE is not set/' \
+             "${REPO_ROOT}/config/defconfigs/${defc}.config" >"$cfg" \
+       || ! printf '# CONFIG_RC_INPUT is not set\n# CONFIG_GEOFENCE is not set\n' >>"$cfg" \
+       || ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+       || ! grep -q '^CONFIG_DOMAIN_ROBOT=y$' "$cfg" || grep -q '^CONFIG_RC_INPUT=y$\|^CONFIG_GEOFENCE=y$' "$cfg"; then
+        bad; echo "      could not expand a ${defc} config with RC_INPUT=n GEOFENCE=n"; return
+    fi
+    args="$(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$cfg")"
+    if printf '%s' "$args" | grep -qE 'rc-input|geofence' \
+       || ! printf '%s' "$args" | grep -q -- '--no-default-features' \
+       || ! printf '%s' "$args" | grep -q 'domain-robot'; then
+        bad; echo "      kconfig_to_cargo did not drop exactly rc-input and geofence: $args"; return
+    fi
+    if [ "$isa" = rv ]; then
+        # shellcheck disable=SC2086
+        out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release \
+            -p azos_kernel $args 2>&1)"; rc=$?
+    else
+        # shellcheck disable=SC2086
+        out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" \
+            CARGO_TARGET_DIR="$dir" "$CARGO" build --release -p azos_kernel $args \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; rc=$?
+    fi
+    printf '%s\n' "$out" >"$log"
+    if [ "$rc" -ne 0 ]; then
+        bad; grep -E "^error" "$log" | head -5 | sed 's/^/      /'; echo "      log kept: $log"; return
+    fi
+    if grep -E "^warning:" "$log" | grep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]|future version of Rust"; then
+        bad; grep -E "^warning:" "$log" | head -5 | sed 's/^/      /'; echo "      log kept: $log"; return
+    fi
+    elf="$dir/${triple}/release/kernel"
+    nmb="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+    n_on="$("$nmb" -C "$on_elf" 2>/dev/null | grep -cE "$re")"
+    n_off="$("$nmb" -C "$elf" 2>/dev/null | grep -cE "$re")"
+    if [ "${n_on:-0}" -eq 0 ]; then
+        bad; echo "      the default robot kernel has no rc/geofence symbol: the query is blind"; return
+    fi
+    if [ "${n_off:-0}" -ne 0 ]; then
+        bad; echo "      $n_off rc/geofence symbols in the RC_INPUT=n GEOFENCE=n kernel:"
+        "$nmb" -C "$elf" | grep -E "$re" | head -5 | sed 's/^/      /'; return
+    fi
+    ok; echo "      default kernel: $n_on symbols; RC_INPUT=n GEOFENCE=n: 0"
+    rm -f "$log"
+}
+par_row rcfence_off_row "rc/geofence: off compiles out (rv)"  rv
+par_row rcfence_off_row "rc/geofence: off compiles out (arm)" arm
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 

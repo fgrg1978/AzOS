@@ -31,6 +31,9 @@ pub mod brain_tx;
 pub mod camera_tx;
 pub mod offline;
 pub mod safety;
+// Wave 15: the RC receiver's safety policy (Kconfig `RC_INPUT`).
+#[cfg(feature = "rc-input")]
+pub mod rc_link;
 pub mod balance;
 pub mod sensor_bus;
 pub mod skill_profile;

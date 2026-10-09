@@ -33,7 +33,7 @@ azos_drv_api = { path = "../../../crates/drivers/api" }
 # unexpected_cfgs -- declared rather than silenced, so the condition stays
 # visible in the source.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1", "rpi5"))'] }
 
 [profile.release]
 overflow-checks = true

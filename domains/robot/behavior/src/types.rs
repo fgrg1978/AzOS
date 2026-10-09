@@ -55,6 +55,13 @@ pub struct SensorState {
     // Remote VLA action (last received)
     pub remote_action: VlaAction,
 
+    /// RC manual override this tick (wave 15, Kconfig `RC_INPUT`): the
+    /// operator's sticks, set by the kernel's `rc_safety::rc_tick` while the
+    /// mode switch is on; `none()` otherwise. `arbiter::arbitrate` ranks it
+    /// below L0 and L1's stop, above the rest of L1-L3.
+    #[cfg(feature = "rc-input")]
+    pub rc_manual: MotorOutput,
+
     // Timestamp (CLINT ticks)
     pub timestamp: u64,
 }
@@ -84,6 +91,8 @@ impl SensorState {
             gps_fix:        0,
             gps_satellites: 0,
             remote_action: VlaAction::new(),
+            #[cfg(feature = "rc-input")]
+            rc_manual: MotorOutput::none(),
             timestamp: 0,
         }
     }
