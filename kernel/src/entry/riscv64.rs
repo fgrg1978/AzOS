@@ -159,6 +159,8 @@ pub extern "C" fn riscv64_trap_handler(frame: &mut TrapFrame) -> usize {
     // its own `enable_all`).
     #[cfg(feature = "lat-trace")]
     let lat_sstatus = frame.sstatus as usize;
+    // Lockdep (N1): no lock held when this returns to U-mode.
+    let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     match frame.class() {
         TrapClass::Interrupt => {
             #[cfg(feature = "lat-trace")]

@@ -14,6 +14,8 @@ pub mod preempt_core;
 pub mod preempt;
 /// Per-hart interrupt-context depth — see the module docs.
 pub mod isr_depth;
+/// Lockdep-lite (Kconfig LOCKDEP, wave 15 N1) — see the module docs.
+pub mod lockdep;
 
 pub use spinlock::{SpinLock, SpinLockGuard, IrqSaveGuard};
 pub use preempt::{critical_section, PreemptGuard};

@@ -54,6 +54,120 @@ pub mod waitqueue;
 #[path = "../../../../crates/core/sync/src/sleep_lock.rs"]
 pub mod sleep_lock;
 
+// Lockdep-lite (wave 15, N1). The kernel instance is off here (no `lockdep`
+// feature: every table is sized 0 and the lock paths call nothing); the
+// tests below drive its `Graph` and `HeldStack` directly.
+#[path = "../../../../crates/core/sync/src/lockdep.rs"]
+pub mod lockdep;
+
+#[path = "../../../../crates/core/sync/src/isr_depth.rs"]
+pub mod isr_depth;
+
+#[cfg(test)]
+mod lockdep_tests {
+    use super::lockdep::*;
+    use core::panic::Location;
+
+    type G = Graph<64, 64>;
+
+    #[track_caller]
+    fn class(kind: Kind) -> LockClass { LockClass::here(kind) }
+
+    #[track_caller]
+    fn held(c: &LockClass, addr: usize) -> Held {
+        Held::new(c, addr, Kind::Spin, false, false, Location::caller())
+    }
+
+    #[test]
+    fn class_is_the_declaration_site_and_kind() {
+        let (a, b) = (class(Kind::Spin), class(Kind::Spin));
+        assert_ne!(a.key(), b.key(), "two sites, two classes");
+        let c: Vec<LockClass> = (0..2).map(|_| class(Kind::Spin)).collect();
+        assert_eq!(c[0].key(), c[1].key(), "one site, one class");
+        let k = |kind| class_key("f.rs", 1, 1, kind as u8);
+        assert_ne!(k(Kind::Spin), k(Kind::PiMutex));
+        assert_ne!(k(Kind::Spin), 0);
+    }
+
+    #[test]
+    fn abba_is_reported_with_both_sites() {
+        let g = G::new();
+        let (ca, cb) = (class(Kind::Spin), class(Kind::Spin));
+        let (a, b) = (held(&ca, 0x100), held(&cb, 0x200));
+        assert!(g.check(&[], &a).is_none());
+        assert!(g.check(&[a], &b).is_none(), "A then B is a first order, not a violation");
+        assert!(g.edge(ca.key(), cb.key()).is_some());
+        assert!(g.check(&[a], &b).is_none(), "the same chain again is cached");
+        let r = g.check(&[b], &a).expect("B then A after A then B is an inversion");
+        assert_eq!(r.what, What::Inversion);
+        assert_eq!(r.held.key, cb.key());
+        assert_eq!(r.taken.key, ca.key());
+        assert!(r.reverse_site_loc().is_some() && r.reverse_held_site_loc().is_some());
+        let line = format!("{}", r);
+        assert!(line.starts_with("lockdep: lock order inversion (ABBA)"), "{line}");
+        assert!(line.contains("lib.rs"), "{line}");
+    }
+
+    #[test]
+    fn irq_context_locks_form_no_edge_with_task_locks() {
+        let g = G::new();
+        let (ca, cb) = (class(Kind::Spin), class(Kind::Spin));
+        let a = held(&ca, 1);
+        let b_irq = Held { irq_ctx: true, ..held(&cb, 2) };
+        assert!(g.check(&[a], &b_irq).is_none());
+        assert!(g.edge(ca.key(), cb.key()).is_none());
+    }
+
+    #[test]
+    fn recursion_and_same_class() {
+        let g = G::new();
+        let c = class(Kind::Spin);
+        let a = held(&c, 1);
+        assert_eq!(g.check(&[a], &a).map(|r| r.what), Some(What::Recursive));
+        let a2 = held(&c, 2);
+        let r = g.check(&[a], &a2).expect("same class nested is a note");
+        assert!(r.what.is_note());
+    }
+
+    #[test]
+    fn full_edge_table_is_reported() {
+        let g: Graph<2, 64> = Graph::new();
+        // Four classes by key (a closure has one call site, one class).
+        let k: Vec<Held> = (1..=4u32).map(|i| Held { key: class_key("x", i, 0, 1), addr: i as usize, ..Held::EMPTY }).collect();
+        assert!(g.check(&[k[0]], &k[1]).is_none());
+        assert!(g.check(&[k[0]], &k[2]).is_none());
+        assert_eq!(g.check(&[k[0]], &k[3]).map(|r| r.what), Some(What::TableFull));
+    }
+
+    #[test]
+    fn held_stack_pops_out_of_order_and_absorbs_overflow() {
+        let mut s: HeldStack<2> = HeldStack::new();
+        let c = class(Kind::Spin);
+        assert!(s.push(held(&c, 1)) && s.push(held(&c, 2)));
+        assert!(!s.push(held(&c, 3)), "past the depth: not recorded");
+        assert!(s.pop(1), "out of order");
+        assert!(s.pop(3), "the lost push's release is absorbed");
+        assert!(!s.pop(9), "a release never taken is unmatched");
+        assert!(s.pop(2) && s.is_empty());
+        let mut t: HeldStack<2> = HeldStack::new();
+        s.push(held(&c, 7));
+        t.copy_from(&s);
+        assert_eq!(t.held().len(), 1);
+        assert_eq!(t.held()[0].addr, 7);
+    }
+
+    #[test]
+    fn kernel_instance_is_inert_without_the_feature() {
+        assert!(!ON);
+        let c = class(Kind::Spin);
+        acquire(&c, 1, Kind::Spin, false, Location::caller());
+        might_sleep("test");
+        user_return();
+        assert_eq!(violations(), 0);
+        assert_eq!(stats(), Stats::default());
+    }
+}
+
 /// Wave 15 (PI), owner rule F1: a sleeping lock (or claim) a task holds is
 /// counted for the panic path, and NOT as a held `PiMutex` (the `lat-fat`
 /// smoke's F1 probe reads `pi_mutex::held_by`: a `SleepLock` held across a

@@ -222,8 +222,14 @@ pub fn set_rt_io_check(f: fn()) {
 /// Run the registered check. Called by every entry below, and by the one
 /// path to the device that does not come through here (ring-3
 /// `SYS_DISK_READ`/`SYS_DISK_WRITE`, which call `virtio::blk` directly).
+///
+/// Also the block layer's lockdep point (Kconfig LOCKDEP, N1): a request
+/// may wait for the device, so entering here with a SpinLock held, with
+/// interrupts off or in an interrupt is reported (`might_sleep`), whatever
+/// RT_BLOCK_IO_CHECK says. No instruction with lockdep off.
 #[inline(always)]
 pub fn rt_io_check() {
+    azos_sync::lockdep::might_wait_device("block I/O");
     if azos_limits::RT_BLOCK_IO_CHECK {
         let f = RT_IO_CHECK.load(core::sync::atomic::Ordering::Acquire);
         if f != 0 {

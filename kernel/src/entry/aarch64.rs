@@ -1236,6 +1236,9 @@ pub extern "C" fn aarch64_trap_resched(frame: &mut TrapFrame) {
     if !SCHED_LIVE.load(Ordering::Acquire) {
         return;
     }
+    // Lockdep (N1): no lock held when this returns to EL0 (also after a
+    // switch away and back below).
+    let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     // IRQ taken from EL0 (never a nested one): the two pieces of task work
     // that may switch away run here, on the task's own stack, not in the IRQ
     // arm of `aarch64_trap_entry` on the IRQ stack (wave 13 integration). A
@@ -1447,6 +1450,8 @@ pub extern "C" fn aarch64_trap_entry(frame: &mut TrapFrame) -> u64 {
             Some(LatTrapExit(spsr, core::panic::Location::caller()))
         }
     };
+    // Lockdep (N1): no lock held when this returns to EL0.
+    let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     match frame.class() {
         TrapClass::Syscall => {
             if !frame.came_from_user() {

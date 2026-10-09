@@ -94,7 +94,9 @@ pub struct WaitQueue {
 }
 
 impl WaitQueue {
-    /// Create a new empty WaitQueue. Usable as `static`.
+    /// Create a new empty WaitQueue. Usable as `static`. With lockdep compiled
+    /// in, the call site is its inner lock's class.
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub const fn new() -> Self {
         Self {
             inner: SpinLock::new(WaitQueueInner {
@@ -111,6 +113,7 @@ impl WaitQueue {
     ///
     /// If scheduler callbacks are not yet registered (early boot), this
     /// degrades to a no-op spin — the caller must handle the fallback.
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub fn wait(&self) {
         let tid = caller_tid();
         if tid == u32::MAX {
@@ -118,6 +121,7 @@ impl WaitQueue {
             core::hint::spin_loop();
             return;
         }
+        crate::lockdep::might_sleep("WaitQueue::wait");
 
         // Add ourselves to the waiters list. Scoped so the guard — and the
         // preemption it holds off — drops here, BEFORE blocking: the wake
@@ -183,6 +187,7 @@ impl WaitQueue {
     /// non-blocking predicate — an atomic load, not another lock and never
     /// anything that can yield. Passing something that blocks here deadlocks
     /// the waker.
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub fn wait_if(&self, should_sleep: impl Fn() -> bool) {
         let tid = caller_tid();
         if tid == u32::MAX {
@@ -190,6 +195,7 @@ impl WaitQueue {
             core::hint::spin_loop();
             return;
         }
+        crate::lockdep::might_sleep("WaitQueue::wait_if");
 
         {
             let mut inner = self.inner.lock_irqsave();

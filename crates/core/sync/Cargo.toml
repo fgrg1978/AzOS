@@ -17,3 +17,9 @@ lat-trace = ["azos_arch/lat-trace"]
 # Diagnostics: record the address of each held `PiMutex` per task
 # (`pi_mutex::held_addrs`), for the `lat-fat` smoke's F1 report.
 pi-held-trace = []
+# Lockdep-lite (Kconfig LOCKDEP, wave 15 N1): the class field in every lock,
+# the held-lock stacks and the edge table. Compiled in by this feature; it
+# checks only when Kconfig says so (`lockdep::ON`). Off: no field, no code.
+lockdep = []
+# The kernel's `ktest` feature: Kconfig LOCKDEP_KTEST turns lockdep on.
+ktest = ["lockdep"]

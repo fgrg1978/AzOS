@@ -121,6 +121,15 @@ pub mod spinlock {
     pub use super::{Guard, IrqSaveGuard, SpinLock, SpinLockGuard};
 }
 
+/// The real `lockdep`'s calls the driver crates make
+/// (`crates/core/sync/src/lockdep.rs`). The host has no scheduler and no
+/// lockdep: they check nothing.
+pub mod lockdep {
+    pub const ON: bool = false;
+    pub fn might_sleep(_what: &'static str) {}
+    pub fn might_wait_device(_what: &'static str) {}
+}
+
 /// The real `SleepLock`'s surface (`crates/core/sync/src/sleep_lock.rs`):
 /// exclusion only, over the shim's `SpinLock`. No scheduler, so nothing
 /// sleeps and no holder is counted for a panic path.

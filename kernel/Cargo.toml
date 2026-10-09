@@ -851,7 +851,11 @@ spawn-census = ["azos_syscall/spawn-census"]
 switch-census = ["azos_sched/switch-census"]
 # Kconfig KTEST (wave 15): the in-kernel test registry's runner
 # (kernel/src/ktest.rs) and every `ktest!` test. Off: none of it is compiled.
-ktest = ["dep:azos_ktest"]
+ktest = ["dep:azos_ktest", "azos_sync/ktest"]
+# Kconfig LOCKDEP_Y (wave 15, N1): lockdep-lite in every kernel of the
+# configuration (crates/core/sync/src/lockdep.rs). `ktest` pulls it in too,
+# and Kconfig LOCKDEP_N / LOCKDEP_KTEST then decide whether it checks.
+lockdep = ["azos_sync/lockdep"]
 # Kconfig CHAOS (config/Kconfig.development): the fault-injection registry
 # and its sites (crates/core/chaos). Cargo unifies the crate's `on` feature,
 # so every crate that asks a point sees it on. Never with secure-boot-enforced.

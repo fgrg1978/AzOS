@@ -99,6 +99,9 @@ pub extern "C" fn trap_resched(frame: &mut TrapFrame) {
     // returns towards the `sret` (every path below).
     #[cfg(feature = "lat-trace")]
     let _lat_exit = lat_trace::IrqExit(core::panic::Location::caller());
+    // Lockdep (N1): no lock held when this returns to U-mode (also after a
+    // switch away and back below).
+    let _ld = azos_sync::lockdep::UserReturn::arm(|| (frame.sstatus as usize) & csr::SSTATUS_SPP == 0);
     let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize;
     if !irq_stack_intact(hart) {
         azos_drv_sys::uart::console_bypass_for_halt();

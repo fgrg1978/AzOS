@@ -664,6 +664,123 @@ config KTEST_LATE_TIMEOUT_MS
       Raise it for slow emulation (-icount, TCG on a busy host); lower it to
       fail a hung run sooner. Read only when KTEST is on; no cost otherwise.
 
+# ---------------------------------------------------------------------------
+# Lock dependency checker, lockdep-lite (N1)
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Lock dependency checker (lockdep-lite)"
+    default LOCKDEP_KTEST if BUILD_TYPE_DEV
+    default LOCKDEP_N
+    help
+      crates/core/sync/src/lockdep.rs. A lock's class is the place its
+      constructor is called (`SpinLock::new`, `PiMutex::new`,
+      `SleepLock::new`, `WaitQueue::new`: the declaration site, through
+      `#[track_caller]`, no call site changes). Every acquisition checks
+      the calling CPU's held-lock stack against a global table of "A was
+      held when B was taken" edges and reports, once each:
+        * an inversion (B taken under A after A was taken under B: ABBA);
+        * a lock taken again by its holder;
+        * a sleep or a device wait (`might_sleep`: WaitQueue waits, PiMutex
+          and SleepLock acquisition, the block layer and the virtio-blk
+          wait) while a SpinLock is held, with IRQs off or in an interrupt;
+        * a lock still held on a return to user mode (the riscv64, aarch64
+          and x86_64 trap paths), and a task exiting with one.
+      Reports are queued and printed by the ktest runner; any of them turns
+      the running test (or the run) red. Printed but failing nothing
+      (notes): two locks of one class nested, and a PiMutex held across a
+      device wait (owner rule F1).
+
+config LOCKDEP_N
+    bool "Off"
+    help
+      Not compiled: no field in any lock, no instruction on any path.
+
+config LOCKDEP_KTEST
+    bool "In ktest kernels"
+    depends on BUILD_TYPE_DEV
+    help
+      On in kernels built with KTEST (the gate's `ktest` rows) only; every
+      other kernel is as with Off. The default in development builds.
+      Costs, in those kernels: 16 bytes in every lock (its class key and
+      declaration site), the tables below, and per acquisition, with
+      interrupts briefly off, a hash of the held chain plus, for a chain
+      not seen before, one table probe per held lock.
+
+config LOCKDEP_Y
+    bool "In every development kernel"
+    depends on BUILD_TYPE_DEV
+    help
+      Compiled into every kernel of this configuration (the kernel cargo
+      feature `lockdep`), at the cost stated under "In ktest kernels".
+      Outside a ktest run nothing prints the reports yet; they are counted
+      (`azos_sync::lockdep::stats`).
+
+endchoice
+
+config LOCKDEP_MAX_DEPTH
+    int "Lockdep: locks one context may hold at once"
+    range 4 64
+    default 20
+    help
+      Entries in each CPU's held-lock stack and in each task's copy of it
+      (saved at a context switch). 20 is Linux's MAX_LOCK_DEPTH, the bound
+      its proof argument assumes; AzOS paths hold a handful. A deeper
+      nesting is reported (a violation) and the extra locks not tracked.
+      32 bytes per entry per CPU (NR_CPUS) and per task (MAX_TASKS) when
+      lockdep is compiled in; nothing otherwise. Same on every ISA and
+      profile.
+
+config LOCKDEP_EDGES
+    int "Lockdep: dependency edges kept (table size)"
+    range 256 65536
+    default 2048 if PROFILE_EMBEDDED
+    default 8192 if PROFILE_FLEET
+    default 4096
+    help
+      Slots of the lock-free open-addressed table of "A held, B taken"
+      class pairs: 24 bytes each when lockdep is compiled in. A full table
+      is a violation (the checker stopped seeing new orders): raise it,
+      never ignore it. A QEMU ktest kernel records a few hundred edges.
+
+config LOCKDEP_CHAINS
+    int "Lockdep: lock chains cached as already checked (table size)"
+    range 256 65536
+    default 2048 if PROFILE_EMBEDDED
+    default 8192 if PROFILE_FLEET
+    default 4096
+    help
+      Slots of the chain-hash cache: a hash of the held classes plus the
+      one being taken, so each distinct chain is walked against the edge
+      table once (Linux's chain-key cache); it also remembers the reported
+      violations so each is reported once. 8 bytes per slot when lockdep
+      is compiled in. A full cache costs time (every acquisition rechecks
+      its chain) and may report a violation twice, never miss one.
+
+config LOCKDEP_REPORTS
+    int "Lockdep: violation reports queued for printing"
+    range 1 256
+    default 16
+    help
+      Distinct violations kept, with both classes and acquisition sites,
+      until the ktest runner prints them (never printed from inside a lock
+      path: the console takes locks). Later ones are counted and fail the
+      run but are not described. About 100 bytes each when compiled in.
+
+config LOCK_MAX_HOLD_US
+    int "Longest a SpinLock may be held (us): the IRQs-off bound"
+    range 1 100000
+    default 50 if PROFILE_EMBEDDED
+    default 200 if PROFILE_FLEET
+    default 100
+    help
+      The owner's "never an unbounded IRQs-off spin" as a number: the
+      longest a SpinLock (the RawSpinLock role: preemption off, and with
+      `lock_irqsave` interrupts off) may be held. The lockdep hold
+      histogram (N1 part b) enforces it in ktest kernels; until then the
+      ktest runner prints it with the lockdep summary. No cost: a constant.
+      Lower it for a tighter interrupt-latency budget.
+
 config CANARY_RUNTIME
     bool "Runtime gate canaries: canary=<name>[,<name>] on the kernel command line"
     default y if LOG_LEVEL_DEBUG

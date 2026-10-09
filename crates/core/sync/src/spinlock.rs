@@ -20,6 +20,9 @@ use crate::preempt::{critical_section, PreemptGuard};
 /// A simple test-and-set spinlock protecting data of type `T`.
 pub struct SpinLock<T> {
     locked: AtomicBool,
+    /// Lockdep class: the constructor's call site (`lockdep` feature only).
+    #[cfg(feature = "lockdep")]
+    class: crate::lockdep::LockClass,
     data: UnsafeCell<T>,
 }
 
@@ -28,12 +31,34 @@ unsafe impl<T: Send> Send for SpinLock<T> {}
 unsafe impl<T: Send> Sync for SpinLock<T> {}
 
 impl<T> SpinLock<T> {
-    /// Create a new unlocked SpinLock.
+    /// Create a new unlocked SpinLock. With lockdep compiled in, the call
+    /// site is the lock's class (`#[track_caller]`).
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub const fn new(data: T) -> Self {
         Self {
             locked: AtomicBool::new(false),
+            #[cfg(feature = "lockdep")]
+            class: crate::lockdep::LockClass::here(crate::lockdep::Kind::Spin),
             data: UnsafeCell::new(data),
         }
+    }
+
+    /// Lockdep: check and record this acquisition (before the spin).
+    #[cfg(feature = "lockdep")]
+    #[inline(always)]
+    #[track_caller]
+    fn ld_acquire(&self, irqsave: bool) {
+        crate::lockdep::acquire(&self.class, self as *const Self as usize,
+            crate::lockdep::Kind::Spin, irqsave, core::panic::Location::caller());
+    }
+
+    /// Lockdep: record a `try_lock` that succeeded.
+    #[cfg(feature = "lockdep")]
+    #[inline(always)]
+    #[track_caller]
+    fn ld_acquired(&self, irqsave: bool) {
+        crate::lockdep::acquired(&self.class, self as *const Self as usize,
+            crate::lockdep::Kind::Spin, irqsave, core::panic::Location::caller());
     }
 
     /// Core spin loop — shared by both lock variants.
@@ -57,7 +82,7 @@ impl<T> SpinLock<T> {
     /// **WARNING:** If this lock may be taken from an interrupt handler,
     /// use `lock_irqsave()` instead — otherwise the IRQ can preempt the
     /// holder on the same hart and deadlock.
-    #[cfg_attr(feature = "lat-trace", track_caller)]
+    #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
     pub fn lock(&self) -> SpinLockGuard<'_, T> {
         // Preemption off BEFORE the spin, not after it. Disabling after the
         // CAS leaves exactly the window this exists to close: the tick lands
@@ -65,6 +90,8 @@ impl<T> SpinLock<T> {
         // higher-priority task on the same hart then spins on a lock whose
         // owner cannot run. Linux takes the count first for the same reason.
         let _preempt = critical_section();
+        #[cfg(feature = "lockdep")]
+        self.ld_acquire(false);
         self.acquire_spin();
         SpinLockGuard { lock: self, _preempt }
     }
@@ -76,7 +103,7 @@ impl<T> SpinLock<T> {
     /// `IrqSaveGuard` restores the original interrupt state on drop.
     ///
     /// Use this when the lock is (or may be) shared with an IRQ handler.
-    #[cfg_attr(feature = "lat-trace", track_caller)]
+    #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
     pub fn lock_irqsave(&self) -> IrqSaveGuard<'_, T> {
         // Through `arch-api`, not `sstatus` directly: the ISA owns what the
         // enable state IS (`sstatus.SIE` here, `DAIF.I` on aarch64 — and with
@@ -86,6 +113,8 @@ impl<T> SpinLock<T> {
         // After SIE is off -- an interrupt cannot arrive here anyway, so the
         // count is pure arithmetic in this order -- but still before the spin.
         let _preempt = critical_section();
+        #[cfg(feature = "lockdep")]
+        self.ld_acquire(true);
         self.acquire_spin();
         IrqSaveGuard {
             lock: self,
@@ -98,7 +127,7 @@ impl<T> SpinLock<T> {
 
     /// Try to acquire the lock without spinning.
     /// Returns `None` if the lock is already held.
-    #[cfg_attr(feature = "lat-trace", track_caller)]
+    #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
         // Taken before the attempt and dropped on failure. Dropping it may
         // fire a deferred reschedule, which is legal: this is task context and
@@ -109,6 +138,8 @@ impl<T> SpinLock<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
+            #[cfg(feature = "lockdep")]
+            self.ld_acquired(false);
             Some(SpinLockGuard { lock: self, _preempt })
         } else {
             None
@@ -117,7 +148,7 @@ impl<T> SpinLock<T> {
 
     /// Try to acquire the lock with IRQ save, without spinning.
     /// Returns `None` (and restores interrupts) if the lock is already held.
-    #[cfg_attr(feature = "lat-trace", track_caller)]
+    #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
     pub fn try_lock_irqsave(&self) -> Option<IrqSaveGuard<'_, T>> {
         let prev_sstatus = ARCH.disable_all();
 
@@ -127,6 +158,8 @@ impl<T> SpinLock<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
+            #[cfg(feature = "lockdep")]
+            self.ld_acquired(true);
             Some(IrqSaveGuard {
                 lock: self,
                 prev_sstatus,
@@ -167,6 +200,8 @@ impl<T> SpinLock<T> {
     /// Release the lock (used internally by guards).
     #[inline(always)]
     fn release(&self) {
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release(self as *const Self as usize);
         self.locked.store(false, Ordering::Release);
     }
 }

@@ -196,6 +196,9 @@ pub extern "C" fn x86_64_trap_resched(frame: &mut TrapFrame) {
     if !SCHED_LIVE.load(Ordering::Acquire) {
         return;
     }
+    // Lockdep (N1): no lock held when this returns to ring 3 (also after a
+    // switch away and back below).
+    let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     if frame.came_from_user() && azos_sched::scheduler::forced_stop_pending() {
         azos_sched::scheduler::exit_if_forced();
     }
@@ -214,6 +217,8 @@ pub extern "C" fn x86_64_trap_resched(frame: &mut TrapFrame) {
 /// Returns the CR3 word to install before the return, or 0.
 #[unsafe(no_mangle)]
 pub extern "C" fn x86_64_trap_entry(frame: &mut TrapFrame) -> u64 {
+    // Lockdep (N1): no lock held when this returns to ring 3.
+    let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     match frame.class() {
         TrapClass::Syscall => syscall(frame),
         TrapClass::Interrupt => {

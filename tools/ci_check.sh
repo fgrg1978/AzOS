@@ -11104,8 +11104,11 @@ PY
     # nothing and is counted; the `decision_*` tests read the boot's
     # admission record and a capability denial's (crates/core/decision).
     # +1 camera_one_encode_per_frame (wave 15, B2).
-    KTEST_N_RV=27
-    KTEST_N_ARM=27
+    # +2 lockdep_lock_order_consistent, lockdep_no_spinlock_across_block_io
+    # (wave 15, N1: Kconfig LOCKDEP_KTEST rides in every ktest kernel, and
+    # any lockdep violation turns the running test, or the run, red).
+    KTEST_N_RV=29
+    KTEST_N_ARM=29
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match] [disk image target]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
@@ -11227,6 +11230,16 @@ PY
     KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded ioring_fsync_completes_after_flush camera_one_encode_per_frame"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
+    # Wave 15 (N1, lockdep-lite): `canary=lockdep-abba` takes the test's two
+    # SpinLocks in both orders (`lockdep_lock_order_consistent`);
+    # `canary=lockdep-spin-blk` holds a SpinLock across a block-layer read
+    # (`lockdep_no_spinlock_across_block_io`, the rt7 shape). Neither
+    # deadlocks: lockdep reports, and the runner fails the test. One boot.
+    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk"
+    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io"
+    KTEST_LOCKDEP_RE='^# lockdep: lock order inversion \(ABBA\); holding SpinLock kernel/src/ktest\.rs:'
+    par "ktest lockdep canaries (rv)" ktest_row "ktest lockdep canaries (rv)" rv "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
+    par "ktest lockdep canaries (arm)" ktest_row "ktest lockdep canaries (arm)" arm "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
     # A64_PAN=probe: `canary=pan-patch-skip` leaves every UserAccess site the
     # slow-path branch (kernel/src/entry/aarch64/pan_patch.rs); only
     # `a64_pan_sites_patched` goes not ok. aarch64 only.
@@ -11303,7 +11316,8 @@ PY
     #                               each camera ring consumer encodes its own
     #                               frame again; camera_one_encode_per_frame
     #                               alone not ok
-    KTEST_N_X86=29
+    # +2 the lockdep tests (N1), as on rv and arm.
+    KTEST_N_X86=31
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -11435,6 +11449,9 @@ PY
         "x86_low_half_maps_no_ram" "canary=x86-low-alias"
     par "ktest camera encode canary (x86)" x86_ktest_row "ktest camera encode canary (x86)" "" \
         "camera_one_encode_per_frame" "canary=camera-encode-per-consumer"
+    # N1 (lockdep-lite): see `ktest lockdep canaries (rv)`.
+    par "ktest lockdep canaries (x86)" x86_ktest_row "ktest lockdep canaries (x86)" "" \
+        "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES"
 
     # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
     #

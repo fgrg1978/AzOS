@@ -82,6 +82,12 @@ pub(crate) const NAMES: &[&str] = &[
     // file entries run inline again, so a disk boot's RT block-I/O check
     // panics (ktest `ioring_rt_file_entries_never_block`).
     "ioring-rt-inline",
+    // kernel/src/ktest.rs (N1): two SpinLocks taken in both orders, then a
+    // SpinLock held across a block-layer read; lockdep must report each
+    // (ktest `lockdep_lock_order_consistent`,
+    // `lockdep_no_spinlock_across_block_io`).
+    "lockdep-abba",
+    "lockdep-spin-blk",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

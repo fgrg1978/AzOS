@@ -54,6 +54,9 @@ pub struct SleepLock<T> {
     owner: AtomicU32,
     gen:   AtomicU32,
     wq:    WaitQueue,
+    /// Lockdep class: the constructor's call site (`lockdep` feature only).
+    #[cfg(feature = "lockdep")]
+    class: crate::lockdep::LockClass,
     data:  UnsafeCell<T>,
 }
 
@@ -67,24 +70,37 @@ pub struct SleepLockGuard<'a, T> {
 }
 
 impl<T> SleepLock<T> {
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub const fn new(v: T) -> Self {
         Self {
             busy:  AtomicBool::new(false),
             owner: AtomicU32::new(0),
             gen:   AtomicU32::new(0),
             wq:    WaitQueue::new(),
+            #[cfg(feature = "lockdep")]
+            class: crate::lockdep::LockClass::here(crate::lockdep::Kind::Sleep),
             data:  UnsafeCell::new(v),
         }
     }
 
     /// Take the lock, sleeping (no boost to the holder) while it is taken.
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub fn lock(&self) -> SleepLockGuard<'_, T> {
+        #[cfg(feature = "lockdep")]
+        {
+            crate::lockdep::might_sleep("SleepLock::lock");
+            crate::lockdep::check(&self.class, self as *const Self as usize,
+                crate::lockdep::Kind::Sleep, core::panic::Location::caller());
+        }
         loop {
             let gen = self.gen.load(Ordering::SeqCst);
             if self.busy.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
                 let tid = crate::waitqueue::caller_tid();
                 self.owner.store(tid, Ordering::Relaxed);
                 note_acquired(tid);
+                #[cfg(feature = "lockdep")]
+                crate::lockdep::acquired(&self.class, self as *const Self as usize,
+                    crate::lockdep::Kind::Sleep, false, core::panic::Location::caller());
                 return SleepLockGuard { lock: self };
             }
             self.wq.wait_if(|| self.gen.load(Ordering::SeqCst) == gen);
@@ -114,6 +130,8 @@ impl<T> core::ops::DerefMut for SleepLockGuard<'_, T> {
 
 impl<T> Drop for SleepLockGuard<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release(self.lock as *const SleepLock<T> as usize);
         let tid = self.lock.owner.swap(0, Ordering::Relaxed);
         note_released(tid);
         self.lock.busy.store(false, Ordering::Release);

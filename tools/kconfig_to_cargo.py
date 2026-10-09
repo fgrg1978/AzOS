@@ -335,6 +335,10 @@ KCONFIG_TO_CARGO_FEATURE: dict[str, Optional[str]] = {
     # The in-kernel test registry and runner (config/Kconfig.development):
     # off means the `ktest!` tests and the runner are not compiled.
     "CONFIG_KTEST": "ktest",
+    # Lockdep-lite in every kernel of the configuration (LOCKDEP_Y). The
+    # `ktest` feature pulls it in too; LOCKDEP_KTEST/LOCKDEP_N then decide
+    # at compile time whether it checks (crates/core/sync/src/lockdep.rs).
+    "CONFIG_LOCKDEP_Y": "lockdep",
     # Fault injection and decision records (config/Kconfig.development): off
     # means the registry, the ring and every site are not compiled.
     "CONFIG_CHAOS": "chaos",

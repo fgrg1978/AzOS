@@ -4250,6 +4250,8 @@ pub fn start() -> ! {
         #[cfg(feature = "energy")]
         energy::on_switch(cpu, usize::MAX, next_idx);
 
+        // Lockdep: the boot context hands over holding nothing.
+        azos_sync::lockdep::switch(None, next_idx);
         // Switch to first task (no current task to save).
         context_switch(core::ptr::null_mut(), next as *mut Task);
     }
@@ -6501,6 +6503,13 @@ unsafe fn do_schedule(why: SwitchReason) {
     if azos_trace::sched_on() {
         let (prev, prev_state) = if old_ptr.is_null() { (0, 0) } else { ((*old_ptr).tid, (*old_ptr).state() as u32) };
         azos_trace::raw::sched_switch(prev, next.tid, prev_state, why as u32);
+    }
+    // Lockdep (Kconfig LOCKDEP, N1): this CPU's held locks go with `old`
+    // and `next`'s come back. An exiting task (no saved context, or a
+    // zombie) must hold none. No instruction with lockdep off.
+    if azos_sync::lockdep::ON {
+        let keep = !old_ptr.is_null() && (*old_ptr).state() != TaskState::Zombie;
+        azos_sync::lockdep::switch(if keep { Some(old_idx) } else { None }, next_idx);
     }
     context_switch(old_ptr, next as *mut Task);
     // Returns here when the old task is rescheduled: `old_t` is this task.
@@ -9788,6 +9797,8 @@ unsafe fn direct_switch_block(cpu: usize, ti: usize, reason: WaitReason) {
         }
         #[cfg(feature = "ctx-probe")]
         ctx_probe::check_dispatch(ctx_probe::DIRECT, cpu, ti);
+        // Lockdep: as in `do_schedule`'s tail (the blocked task runs again).
+        azos_sync::lockdep::switch(Some(cur), ti);
         context_switch(task as *mut Task, next as *mut Task);
         // Resumed: woken and dispatched like any other blocked task.
         finish_switch(task as *mut Task);

@@ -90,6 +90,15 @@ fn power_off(failed: bool) -> ! {
 /// Early tests that failed, carried to the late runner's summary.
 static EARLY_FAILED: AtomicUsize = AtomicUsize::new(0);
 
+/// Lockdep violations counted while a test ran (each failed that test). The
+/// rest, at the summary, happened outside any test and fail the run.
+static LOCKDEP_IN_TESTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Print the lockdep reports queued since the last call, one line each.
+fn lockdep_print() {
+    azos_sync::lockdep::drain(|r| kprintln!("# {}", r));
+}
+
 /// Run every early test (boot hart, no task has run) and print TAP. With no
 /// late test, print the summary and power off. Otherwise create the late
 /// runner task ([`late_run`]) and return: boot goes on, the scheduler starts,
@@ -108,6 +117,8 @@ pub(crate) fn run() {
         power_off(true);
     }
     kprintln!("1..{}", early + late);
+    // Kconfig LOCKDEP (N1): what boot did before the first test.
+    lockdep_print();
     kprintln!("# ktest phase early: {} tests, boot hart, before the scheduler ({})", early, isa());
     let failed = run_phase(azos_ktest::EARLY, 0);
     if late == 0 {
@@ -130,8 +141,18 @@ fn run_phase(phase: usize, first: usize) -> usize {
         let i = first + r + 1;
         kprintln!("{}# ktest {} {}", nl, i, t.name);
         azos_ktest::set_current(Some((i, t)));
-        let verdict = (t.run)();
+        let before = azos_sync::lockdep::violations();
+        let mut verdict = (t.run)();
         azos_ktest::set_current(None);
+        // Any lockdep violation during the test fails it (Kconfig LOCKDEP).
+        let found = azos_sync::lockdep::violations().wrapping_sub(before) as usize;
+        if found != 0 {
+            LOCKDEP_IN_TESTS.fetch_add(found, Ordering::Relaxed);
+            lockdep_print();
+            if verdict.is_ok() {
+                verdict = Err("lockdep violation (the `# lockdep:` line above)");
+            }
+        }
         match verdict {
             Ok(()) => kprintln!("{}ok {} - {}", nl, i, t.name),
             Err(why) => {
@@ -153,14 +174,32 @@ fn summary(n: usize, failed: usize) -> ! {
             kprintln!("\n# chaos: {} rate={} checked={} fired={}", p.name(), rate, checked, fired);
         }
     }
+    let outside = lockdep_summary();
     kprintln!("\n# ktest: {} tests, {} passed, {} failed ({})", n, n - failed, failed, isa());
-    power_off(failed != 0)
+    if outside != 0 {
+        kprintln!("Bail out! lockdep: {} violation(s) outside any test ({})", outside, isa());
+    }
+    power_off(failed != 0 || outside != 0)
 }
 
 /// The late runner: a kernel task (Kconfig `KTEST_LATE_PRIORITY`, pinned to
 /// CPU 0) created by [`run`] before the scheduler starts. Every hart is
 /// online when it runs, and so is every boot task (the same system the
 /// smokes these tests replace booted next to).
+/// Kconfig LOCKDEP: print what is still queued and the counters; the number
+/// of violations no test was running for.
+fn lockdep_summary() -> usize {
+    if !azos_sync::lockdep::ON {
+        return 0;
+    }
+    lockdep_print();
+    let st = azos_sync::lockdep::stats();
+    kprintln!("\n# lockdep: violations={} notes={} edges={} chains={} unmatched-releases={} unprinted={} checked: switches={} sleeps={} user-returns={} hold-bound={}us",
+        st.violations, st.notes, st.edges, st.chains, st.unmatched, azos_sync::lockdep::dropped(),
+        st.switches, st.sleep_checks, st.user_returns, azos_sync::lockdep::MAX_HOLD_US);
+    (st.violations as usize).saturating_sub(LOCKDEP_IN_TESTS.load(Ordering::Relaxed))
+}
+
 fn late_run(_: usize) {
     let tests = azos_ktest::all();
     let early = azos_ktest::count(tests, azos_ktest::EARLY);
@@ -378,3 +417,56 @@ azos_ktest::ktest! {
         }
     }
 }
+
+// ── Lockdep (Kconfig LOCKDEP, N1) ───────────────────────────────────────────
+//
+// Two runtime canaries plant what lockdep exists to catch; the runner turns
+// the violation into `not ok`. Unarmed, each test does the legal half.
+
+static LD_A: azos_sync::SpinLock<u32> = azos_sync::SpinLock::new(0);
+static LD_B: azos_sync::SpinLock<u32> = azos_sync::SpinLock::new(0);
+static LD_IO: azos_sync::SpinLock<u32> = azos_sync::SpinLock::new(0);
+
+azos_ktest::ktest! {
+    fn lockdep_lock_order_consistent() {
+        if !azos_sync::lockdep::ON {
+            return Err("LOCKDEP is not on in this ktest kernel (Kconfig LOCKDEP_KTEST or LOCKDEP_Y)");
+        }
+        let edges = azos_sync::lockdep::stats().edges;
+        {
+            let mut a = LD_A.lock();
+            let mut b = LD_B.lock();
+            *a += 1;
+            *b += 1;
+        }
+        // `canary=lockdep-abba`: the other order, in the same task (an
+        // inversion needs no second CPU to be one).
+        if canary!("lockdep-abba") {
+            let mut b = LD_B.lock();
+            let mut a = LD_A.lock();
+            *a += 1;
+            *b += 1;
+        }
+        if azos_sync::lockdep::stats().edges == edges {
+            return Err("taking A then B recorded no lockdep edge");
+        }
+        Ok(())
+    }
+}
+
+azos_ktest::ktest_late! {
+    fn lockdep_no_spinlock_across_block_io() {
+        if !azos_sync::lockdep::ON {
+            return Err("LOCKDEP is not on in this ktest kernel (Kconfig LOCKDEP_KTEST or LOCKDEP_Y)");
+        }
+        // A one-sector read through the block layer (an error without a
+        // disk: the check is at the layer's entry). `canary=lockdep-spin-blk`
+        // holds a SpinLock across it, the rt7 shape.
+        let mut sector = [0u8; 512];
+        let held = if canary!("lockdep-spin-blk") { Some(LD_IO.lock()) } else { None };
+        let _ = azos_drv_block::blkdev::read(0, 1, &mut sector);
+        drop(held);
+        Ok(())
+    }
+}
+

@@ -34,3 +34,7 @@ azos_limits = { path = "../../../crates/core/limits" }
 lat-trace = []
 # `pi_mutex.rs`'s diagnostic lock-address trace (wave 15, PI); off here.
 pi-held-trace = []
+# `lockdep.rs` and the lock files carry `#[cfg(feature = "lockdep")]` and
+# read `cfg!(feature = "ktest")`; declared for the lint, never on here.
+lockdep = []
+ktest = []

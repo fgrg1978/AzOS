@@ -32,7 +32,9 @@ unsafe impl Send for Completion {}
 unsafe impl Sync for Completion {}
 
 impl Completion {
-    /// Create a new incomplete Completion. Usable as `static`.
+    /// Create a new incomplete Completion. Usable as `static`. With lockdep
+    /// compiled in, the call site is its queue's class.
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub const fn new() -> Self {
         Self {
             done: AtomicBool::new(false),

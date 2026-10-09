@@ -582,6 +582,8 @@ unsafe fn submit(dev: &mut BlkDev, slot: usize, head: usize) {
 /// driver is then latched dead here); the caller must then not free the
 /// chain's descriptors.
 fn wait_done(slot: usize, timeout_us: u64, pi_base: u32) -> Result<(), ()> {
+    // Lockdep (N1): the device wait, with nothing spinning held under it.
+    azos_sync::lockdep::might_wait_device("virtio-blk wait");
     let deadline = azos_drv_sys::timebase::now()
         + timeout_us * azos_drv_irqchip::clint::TIMER_FREQ / 1_000_000;
     #[cfg(feature = "blk-wait-probe")]

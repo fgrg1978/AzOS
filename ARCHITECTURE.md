@@ -762,6 +762,27 @@ frame or heap byte behind, and is counted; `/proc/chaos` shows the counts.
 The kernel's heap allocations are infallible, so the heap point is armed only
 from a test. Off, every point is a constant `false`.
 
+**Lock dependency checking.** With Kconfig `LOCKDEP` set to `ktest` (the
+development default) or `y`, `crates/core/sync/src/lockdep.rs` checks every
+lock acquisition in the kernel. A lock's class is where its constructor was
+called (`SpinLock::new`, `PiMutex::new`, `SleepLock::new` and
+`WaitQueue::new` take the caller's location), so call sites do not change.
+Each CPU keeps the stack of locks it holds; a task's part of it is saved and
+restored at the context switch. A fixed-size, lock-free table records which
+class was held when another was taken, and taking B under A after A was taken
+under B is reported before the lock is spun on; a cache of already-checked
+chains of held classes keeps the walk to once per chain, and locks taken in
+interrupt context are ordered only among themselves. A sleep or a device wait
+(WaitQueue waits, PiMutex and SleepLock acquisition, the block layer, the
+virtio-blk completion wait) with a SpinLock held, with interrupts off or in
+an interrupt, a lock still held on a return to user mode (checked on the trap
+paths of all three ISAs) and a task exiting with a lock are reported too.
+Reports are queued, never printed from the lock path, and the ktest runner
+prints them and fails the test that was running, or the run. Off, no lock
+carries a class and no path calls the checker: the kernel is the same,
+instruction for instruction. Longer cycles, interrupt-safety inference and
+lock-hold times are not checked yet.
+
 **Decision records.** With Kconfig `DECISION_RECORDS`, boot deadline and
 memory admission, the real-time band cap, a woken task's move to another CPU
 and typed capability denials each write one fixed-size record: the rule, the

@@ -379,6 +379,9 @@ pub struct PiMutex<T> {
     /// the boost callback, which takes scheduler locks: see "Lock order" in
     /// the module doc.
     pi_state:           SpinLock<()>,
+    /// Lockdep class: the constructor's call site (`lockdep` feature only).
+    #[cfg(feature = "lockdep")]
+    class:              crate::lockdep::LockClass,
 }
 
 // Safety: PiMutex provides exclusive access; data is only reachable through
@@ -387,7 +390,9 @@ unsafe impl<T: Send> Send for PiMutex<T> {}
 unsafe impl<T: Send> Sync for PiMutex<T> {}
 
 impl<T> PiMutex<T> {
-    /// Create a new unlocked PiMutex.
+    /// Create a new unlocked PiMutex. With lockdep compiled in, the call
+    /// site is its class (and its `pi_state`'s, as a SpinLock).
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub const fn new(data: T) -> Self {
         PiMutex {
             data:               UnsafeCell::new(data),
@@ -397,7 +402,18 @@ impl<T> PiMutex<T> {
             donations:          AtomicU32::new(0),
             epoch:              AtomicU32::new(0),
             pi_state:           SpinLock::new(()),
+            #[cfg(feature = "lockdep")]
+            class:              crate::lockdep::LockClass::here(crate::lockdep::Kind::PiMutex),
         }
+    }
+
+    /// Lockdep: record the lock held by the caller.
+    #[cfg(feature = "lockdep")]
+    #[inline(always)]
+    #[track_caller]
+    fn ld_acquired(&self) {
+        crate::lockdep::acquired(&self.class, self as *const Self as usize,
+            crate::lockdep::Kind::PiMutex, false, core::panic::Location::caller());
     }
 
     /// Acquire the mutex, spinning until available.
@@ -406,9 +422,20 @@ impl<T> PiMutex<T> {
     /// current task's priority is propagated to the lock owner to prevent
     /// priority inversion: once per acquisition of the lock, so a new owner
     /// (or the same owner taking it again) gets its own donation.
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub fn lock(&self) -> PiMutexGuard<'_, T> {
+        // Lockdep (Linux's `might_sleep` in `mutex_lock`): a PiMutex may
+        // wait, so it is checked whether or not this call does.
+        #[cfg(feature = "lockdep")]
+        {
+            crate::lockdep::might_sleep("PiMutex::lock");
+            crate::lockdep::check(&self.class, self as *const Self as usize,
+                crate::lockdep::Kind::PiMutex, core::panic::Location::caller());
+        }
         // Fast path: try to acquire immediately
         if self.try_acquire() {
+            #[cfg(feature = "lockdep")]
+            self.ld_acquired();
             return PiMutexGuard { mutex: self };
         }
 
@@ -470,6 +497,8 @@ impl<T> PiMutex<T> {
 
             // (3) Try to acquire.
             if self.try_acquire() {
+                #[cfg(feature = "lockdep")]
+                self.ld_acquired();
                 return PiMutexGuard { mutex: self };
             }
         }
@@ -524,8 +553,11 @@ impl<T> PiMutex<T> {
     /// Returns `None` if already held.
     ///
     /// Never donates: a caller that does not wait suffers no inversion.
+    #[cfg_attr(feature = "lockdep", track_caller)]
     pub fn try_lock(&self) -> Option<PiMutexGuard<'_, T>> {
         if self.try_acquire() {
+            #[cfg(feature = "lockdep")]
+            self.ld_acquired();
             Some(PiMutexGuard { mutex: self })
         } else {
             None
@@ -631,6 +663,8 @@ impl<T> core::ops::DerefMut for PiMutexGuard<'_, T> {
 
 impl<T> Drop for PiMutexGuard<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release(self.mutex as *const PiMutex<T> as usize);
         self.mutex.release();
     }
 }
