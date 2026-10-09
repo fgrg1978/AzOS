@@ -52,3 +52,6 @@ pub const FAT32_SECTOR_CLAIM_SLOTS: usize = 64;
 /// config/Kconfig.arch `PAGE_SHIFT` (procfs' meminfo scales page counts by it):
 /// 4 KiB, the value every host build models.
 pub const PAGE_SHIFT: usize = 12;
+/// config/Kconfig.development `FILE_CENSUS_EVERY` (census.rs's print period):
+/// the default.
+pub const FILE_CENSUS_EVERY: usize = 20;

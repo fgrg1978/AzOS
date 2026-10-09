@@ -591,6 +591,23 @@ config SWITCH_CENSUS_DUMP_MIN
       No cost while SWITCH_CENSUS is off; read once per SYS_TASKINFO when
       on. Raise it when a workload calls SYS_TASKINFO often.
 
+config FILE_CENSUS_EVERY
+    int "Backend operations per file-census line"
+    range 1 1000000000
+    default 20
+    help
+      The `file-census` vsbench diagnostic (crates/fs/fs/src/census.rs,
+      kernel cargo feature `file-census`, off in every build that ships)
+      sums where a backend file's open, read, close and write go and
+      prints one per-operation average line every this many backend
+      opens, and another every this many backend writes. 20: the `disk`
+      lanes' 40 iterations fill two lines each, so one at least is all
+      lane. Same on every ISA and profile: it sets a print period, not a
+      resource.
+      No cost while `file-census` is off; on, one modulo per backend open
+      and write and one console line per period. Raise it to average a
+      long lane over more operations; lower it to see a short one.
+
 # ---------------------------------------------------------------------------
 # In-kernel test registry (wave 15)
 # ---------------------------------------------------------------------------

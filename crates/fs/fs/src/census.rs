@@ -41,9 +41,9 @@ pub const W_DATA: usize = 14;
 pub const W_ENTRY: usize = 15;
 pub const SLOTS: usize = 16;
 pub const TIMED: usize = 10;
-/// Operations per printed line: the `disk` lanes' 40 iterations each fill
-/// two lines, so one at least is all lane.
-pub const EVERY: u64 = 20;
+/// Operations per printed line (Kconfig `FILE_CENSUS_EVERY`, default 20:
+/// the `disk` lanes' 40 iterations each fill two lines, so one is all lane).
+pub const EVERY: u64 = azos_limits::FILE_CENSUS_EVERY as u64;
 
 #[cfg(feature = "file-census")]
 mod imp {
