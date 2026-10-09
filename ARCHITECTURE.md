@@ -648,7 +648,7 @@ secure boot on, `init=` is ignored and the boot log says so.
   `probe` (used only when the boot probe finds it, with a fallback otherwise)
   or `require` (part of the baseline: target features where the ISA allows,
   and a CPU without it is refused). riscv64 has Zicboz, Sstc, Svpbmt, Zba,
-  Zbb, Zbs, V and AIA. aarch64 has LSE, CRC32, PAuth, BTI, MTE, SVE, AES,
+  Zbb, Zbs, V and AIA. aarch64 has LSE, PAN, CRC32, PAuth, BTI, MTE, SVE, AES,
   PMULL and SHA2. x86_64 has SMEP, SMAP, PCID, FSGSBASE, TSC-deadline,
   x2APIC, XSAVEOPT, AVX2 and SHA-NI. Some of these are detected and reported
   only, because no kernel path uses them yet; each symbol's help says which.
@@ -658,7 +658,7 @@ secure boot on, `init=` is ignored and the boot log says so.
   rv64gc. The K1 uses rv64gcv with Zba/Zbb/Zbs and V set to `require`. The
   Raspberry Pi 5 uses Armv8.2 with LSE set to `require` and PAuth, BTI, MTE
   and SVE set to `n`. A level that contains an extension forces `require` on
-  it: Armv8.1 implies LSE and CRC32, 8.3 PAuth, 8.5 BTI, and x86-64-v3 AVX2.
+  it: Armv8.1 implies LSE, PAN and CRC32, 8.3 PAuth, 8.5 BTI, and x86-64-v3 AVX2.
 
 The boot prints one line with the baseline and each extension's state:
 `[ISA] baseline=rv64imac zicboz=probed-present sstc=probed-present ... v=n`.
