@@ -1550,12 +1550,16 @@ choice
         bool "x86_64 XSAVE area, EAGER switch (512 B legacy + XSAVE header + enabled components)"
         depends on ARCH_X86_64
         help
-          x86_64 saves and restores the FP/SIMD state on EVERY context
-          switch, never lazily: lazy switching (CR0.TS + #NM) is the LazyFP
-          leak (CVE-2018-3665), and Linux removed it. aarch64's lazy path
+          x86_64 never switches FP lazily: no CR0.TS, no #NM trap on first
+          use (that is the LazyFP leak, CVE-2018-3665, and Linux removed
+          it).  A context switch that leaves ring-3 state live saves it
+          (XSAVEOPT, X86_XSAVEOPT); the incoming task's is restored (XRSTOR)
+          on its way back to ring 3, before any user instruction, as Linux
+          does since 5.2.  A switch to a kernel task and back costs one
+          save and one restore.  aarch64's lazy path
           (kernel/src/entry/aarch64/fp_lazy.rs, CPACR_EL1 trap on first use)
-          is a per-ISA choice, not a shared one. Cost: one XSAVEOPT/XRSTOR
-          pair per switch (X86_XSAVEOPT), ~0.5-1 KiB per task.
+          is a per-ISA choice, not a shared one.  The area size is
+          X86_XSAVE_AREA_BYTES.
 
 endchoice
 

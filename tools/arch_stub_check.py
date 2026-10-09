@@ -7,7 +7,8 @@
 `x86_64-unknown-none` (through `-Zbuild-std`, no installed target needed),
 where the facade selects the x86_64 port skeleton (crates/core/arch-x86_64):
 `azos_arch` then exports the arch contract (arch-api's traits, `ARCH`,
-`PAGE_SIZE`) plus the skeleton's own `features`/`fpu`, nothing else. Every error is a place that reaches past the contract, i.e.
+`PAGE_SIZE`) plus the port's ISA-private modules (`features`, `fpu`,
+`cpu`, `gdt`, `idt`, `fork_regs`, `hw`), none standing in for another ISA's. Every error is a place that reaches past the contract, i.e.
 something a new ISA would have to provide by hand. Grouped by the missing
 `azos_arch::<module>` (or by error kind otherwise), with the sites.
 

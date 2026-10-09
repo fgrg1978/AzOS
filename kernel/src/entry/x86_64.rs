@@ -307,22 +307,32 @@ fn syscall_dispatch(frame: &mut TrapFrame, num: u64, entry: azos_syscall::Syscal
         || (azos_limits::LINUX_ABI
             && num == azos_linux_abi::nr::CLONE
             && azos_sched::scheduler::current_is_linux());
-    let mut regs = azos_sched::UserRegs::default();
-    if wants_regs {
-        regs.gpr = frame.regs;
-        regs.rsp = frame.rsp;
-        regs.rflags = frame.rflags;
-        regs.fs_base = azos_arch::hw::rdmsr(cpu::IA32_FS_BASE);
+    // SYSFLOOR (aarch64's shape): the snapshot, an XSAVE image included, is
+    // built only for the calls that read it; every other call passes a
+    // static zero set and pays neither the copy nor the FP save.
+    // SAFETY: all-zero is a valid `ForkRegs` (plain integers and bytes).
+    static NO_REGS: azos_sched::UserRegs = unsafe { core::mem::zeroed() };
+    let built;
+    let user_regs: &azos_sched::UserRegs = if wants_regs {
+        let mut r = azos_sched::UserRegs::default();
+        r.gpr = frame.regs;
+        r.rsp = frame.rsp;
+        r.rflags = frame.rflags;
+        r.fs_base = azos_arch::hw::rdmsr(cpu::IA32_FS_BASE);
         // In the kernel the user's GS base sits in KERNEL_GS_BASE (swapgs).
-        regs.gs_base = azos_arch::hw::rdmsr(cpu::IA32_KERNEL_GS_BASE);
-        fp::snapshot_current(&mut regs.fp);
-    }
+        r.gs_base = azos_arch::hw::rdmsr(cpu::IA32_KERNEL_GS_BASE);
+        fp::snapshot_current(&mut r.fp);
+        built = r;
+        &built
+    } else {
+        &NO_REGS
+    };
     let a = |n: usize| frame.regs[SYSCALL_ARGS[n]];
     let mut out = azos_syscall::SyscallOut::new();
     let result = azos_syscall::syscall_dispatch_checked(
         entry, num, a(0), a(1), a(2), a(3), a(4), a(5),
         frame.rip, frame.rsp,
-        &regs,
+        user_regs,
         &mut out,
     );
     if out.written {

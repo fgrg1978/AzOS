@@ -19,10 +19,12 @@
 //      are not reordered with older stores, so the release follows every
 //      save without a fence.
 //   3. Restore the incoming callee-saved set and RSP.
-//   4. CR3: the incoming task's root word (TASK_SATP_OFFSET: PML4 | PCID)
-//      when it differs from the live CR3; published at %gs:cr3 for the TLB
-//      shootdown scan. The kernel half is in every PML4, so this code keeps
-//      running across the write.
+//   4. CR3: the incoming task's root word (TASK_SATP_OFFSET: PML4 | PCID,
+//      maybe bit 63 = keep the PCID's TLB entries) when it differs from the
+//      live CR3 (bit 63 ignored: a read never returns it); task_satp 0 keeps
+//      the live root (no kernel root is published yet). Published at
+//      %gs:cr3 for the TLB shootdown scan. The kernel half is in every
+//      PML4, so this code keeps running across the write.
 //   5. Jump to the incoming PC.
 //
 // The kernel stack top for the next ring-3 entry (TSS.RSP0, %gs:kernel_rsp)
@@ -97,7 +99,9 @@ restore_new_task:
     testq %rcx, %rcx
     jz ctx_skip_pt_switch            // no root published yet: keep this one
     movq %cr3, %rdx
-    cmpq %rdx, %rcx
+    movq %rcx, %r8
+    btrq $63, %r8                    // a CR3 read never returns the no-flush bit
+    cmpq %rdx, %r8
     je ctx_skip_pt_switch
     movq %rcx, %gs:PC_CR3
     movq %rcx, %cr3

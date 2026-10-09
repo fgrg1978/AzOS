@@ -285,8 +285,9 @@ pub struct TaskContext {
     pub d14: CtxReg,
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     pub d15: CtxReg,
-    // x86_64 SysV has no callee-saved FP/SIMD register: the whole XMM/YMM
-    // state is switched eagerly by the FPU path instead (FP_XSAVE_EAGER).
+    // x86_64 SysV has no callee-saved FP/SIMD register: the ring-3 XMM/YMM
+    // state is the FPU path's (saved at the switch, restored on the way to
+    // ring 3, never by a #NM trap: FP_XSAVE_EAGER, entry/x86_64/fp.rs).
     #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
     pub _no_callee_saved_fp: [CtxReg; 0],
 }

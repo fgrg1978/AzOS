@@ -54,6 +54,11 @@ unsafe impl Sync for PerCpuAreas {}
 #[unsafe(no_mangle)]
 pub static X86_64_PERCPU: PerCpuAreas = PerCpuAreas([const { UnsafeCell::new(PerCpu::new()) }; MAX_HARTS]);
 
+/// Set (to 1) by whoever sets CR4.SMAP on the boot CPU, before interrupts
+/// are enabled: from then on every trap entry runs `clac` (`trap_entry.S`).
+#[unsafe(no_mangle)]
+pub static X86_64_SMAP_ON: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
 /// The IDT every CPU loads (`[low, high]` quadwords per vector).
 struct Idt(UnsafeCell<[[u64; 2]; idt::VECTORS]>);
 // SAFETY: written once by the boot CPU in `init_cpu(0)`, before any other

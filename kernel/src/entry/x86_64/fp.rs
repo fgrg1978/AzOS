@@ -133,6 +133,24 @@ pub extern "C" fn x86_64_fp_restore() {
     RESTORES.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Run `f` with the SIMD registers free for the kernel (a `Vector` or
+/// crypto path compiled for SSE/AVX): a live ring-3 state is saved into its
+/// area first and the CPU left with none live, so the way back to ring 3
+/// reloads it; the kernel's values never reach ring 3. Interrupts masked
+/// for the duration (aarch64's `fp_lazy::with_kernel_simd`). Keep `f` short.
+#[allow(dead_code)] // no SIMD user in the x86_64 kernel yet
+pub fn with_kernel_simd<R>(f: impl FnOnce() -> R) -> R {
+    let _m = IrqMask::new();
+    let live = live();
+    if live != 0 {
+        // SAFETY: `live` is the area of the task running here (the module
+        // invariant), IRQs masked.
+        unsafe { fpu::save_eager(live as *mut u8) };
+        set_live(0);
+    }
+    f()
+}
+
 /// A fresh image (exec): the next return to ring 3 starts from the
 /// initial FP state.
 pub fn discard_current() {

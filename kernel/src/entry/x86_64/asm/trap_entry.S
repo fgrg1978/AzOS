@@ -81,8 +81,24 @@
 .equ IRQ_HANDLER_STACK, {irq_handler_stack}
 .equ RFLAGS_TF_RF,  {rflags_tf_rf}
 .equ USE_SYSRET,    {use_sysret}
+.equ SMAP_CLAC,     {smap_clac}
 .equ IA32_GS_BASE,  0xC0000101
 .equ STUB_ALIGN,    16
+
+// SMAP: interrupt and trap gates do not clear RFLAGS.AC, so a ring-3 task
+// with AC set (or a trap inside a stac/clac window) would run the handler
+// with SMAP open. `clac` first, once SMAP is on (X86_64_SMAP_ON, set by
+// whoever sets CR4.SMAP: `clac` is #UD on a CPU without SMAP); `iretq`
+// restores the interrupted AC. Kconfig X86_SMAP=n compiles it out.
+// `syscall` needs none: FMASK clears AC.
+.macro CLAC_IF_SMAP
+.if SMAP_CLAC
+    cmpb $0, X86_64_SMAP_ON(%rip)
+    je 77f
+    clac
+77:
+.endif
+.endm
 
 // rax..r15 into the frame at %rsp, and the two software words cleared.
 .macro SAVE_REGS
@@ -154,6 +170,7 @@ x86_64_vector_entry:
 // ── the common path ─────────────────────────────────────────────────────────
 // Stack on arrival: vector, error code, rip, cs, rflags, rsp, ss.
 trap_common:
+    CLAC_IF_SMAP
     testb $3, 24(%rsp)               // the pushed CS: from ring 3?
     jz 1f
     swapgs
@@ -244,6 +261,7 @@ ret_kernel:
 
 // ── #DF, NMI, #MC: the paranoid path (see the header) ───────────────────────
 ist_common:
+    CLAC_IF_SMAP
     subq $TF_VECTOR, %rsp
     SAVE_REGS
     cld

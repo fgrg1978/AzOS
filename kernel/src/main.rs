@@ -394,6 +394,7 @@ global_asm!(
     irq_handler_stack = const entry::x86_64::cpu_init::IRQ_HANDLER_STACK,
     rflags_tf_rf   = const azos_arch::cpu::RFLAGS_TF | azos_arch::cpu::RFLAGS_RF,
     use_sysret     = const azos_limits::X86_SYSRET as u32,
+    smap_clac      = const azos_arch_api::isa::x86_64::SMAP.allowed() as u32,
     options(att_syntax),
 );
 #[cfg(target_arch = "x86_64")]
