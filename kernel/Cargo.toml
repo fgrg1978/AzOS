@@ -809,12 +809,9 @@ ktest = ["dep:azos_ktest"]
 # `mm_nx_outside_image` must report `not ok`.
 wx-skip-canary = []
 nx-skip-canary = []
-# The boot skips `setup_stack_guard_pages`: `sched_stack_guards_unmapped`
-# must report `not ok`.
-stack-guard-skip-canary = []
-# `kernel_main` skips `install_procfs`: `procfs_entries_registered` must
-# report `not ok`.
-procfs-skip-canary = []
+# (`stack-guard-skip-canary` and `procfs-skip-canary` are runtime canaries
+# now: `canary=stack-guard-skip,procfs-skip` on the command line, Kconfig
+# CANARY_RUNTIME, kernel/src/canary_rt.rs.)
 # riscv64: the boot ignores the DTB's Zicboz (scalar fallback):
 # `mm_zicboz_zero_fill` must report `not ok`.
 zicboz-skip-canary = []

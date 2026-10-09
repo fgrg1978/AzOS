@@ -538,4 +538,32 @@ config KTEST_LATE_TIMEOUT_MS
       Raise it for slow emulation (-icount, TCG on a busy host); lower it to
       fail a hung run sooner. Read only when KTEST is on; no cost otherwise.
 
+config CANARY_RUNTIME
+    bool "Runtime gate canaries: canary=<name>[,<name>] on the kernel command line"
+    default y if LOG_LEVEL_DEBUG
+    default n
+    depends on !SECURE_BOOT_ENFORCED
+    help
+      Lets a gate canary be armed for one boot from the kernel command
+      line (the device tree's /chosen/bootargs; QEMU -append), so a canary
+      row boots the same kernel as its base row instead of building one
+      with a canary cargo feature. Each `canary!("name")` site in the
+      kernel (kernel/src/canary_rt.rs lists the names) breaks its own
+      property only when its name is armed; an unknown name in the source
+      is a compile error, an unknown name on the command line is ignored
+      with a warning.
+
+      Never on a hot path: a site costs one load and one bit test each
+      time it runs, so the syscall, IPC, context-switch and fault paths
+      keep cargo-feature canaries (compiled out, zero instructions).
+
+      On by default in the QEMU development configs (the ones at
+      LOG_LEVEL_DEBUG, which the gate builds). Off in every deployment
+      profile, and impossible with SECURE_BOOT_ENFORCED (the kernel also
+      refuses it under the `secure-boot-enforced` cargo feature): a
+      command line must not weaken a signed image. Off: the parser, the
+      names and every site compile out (`canary!` is a constant false).
+      On: one device-tree walk at boot (KERNEL_CMDLINE_MAX bytes on the
+      boot stack) and 8 bytes of .bss.
+
 endmenu # Development & Debug

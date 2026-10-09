@@ -9,6 +9,10 @@
 
 extern crate alloc;
 
+// Kconfig CANARY_RUNTIME: `canary=` on the command line arms a gate canary
+// for one boot (`canary!`). First, so the macro is in scope everywhere.
+#[macro_use]
+mod canary_rt;
 mod panic;
 // Kconfig KTEST: the in-kernel test runner (crates/core/ktest is the registry).
 #[cfg(feature = "ktest")]
@@ -646,8 +650,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
 
     // F21: Procfs + sysfs. Shared with aarch64's kernel_main — see
     // `install_procfs`'s own doc for the full reasoning and the ordering
-    // constraint. Gate canary `procfs-skip-canary` (KTEST): not installed.
-    if !cfg!(feature = "procfs-skip-canary") {
+    // constraint. Runtime gate canary `canary=procfs-skip` (KTEST): not
+    // installed.
+    if !canary!("procfs-skip") {
         install_procfs();
     }
     // Wave 12: `/proc` through the VFS, so ring 3 reads it with the file

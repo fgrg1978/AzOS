@@ -64,6 +64,9 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
     } else {
         None
     };
+    // Kconfig CANARY_RUNTIME: `canary=` on the command line, before the
+    // first `canary!` site (the stack guards below).
+    crate::canary_rt::arm_from_cmdline(|out| a.kernel_cmdline(fw_table, out));
     let fw = a.firmware_table(hart_id, fw_table, dt);
     a.irqchip_probe(&fw);
     a.timer_probe(&fw);
@@ -300,9 +303,11 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
 
         // Guard pages: the bottom 4 KiB of every task's kernel stack
         // unmapped, so an overflow faults instead of corrupting silently.
-        // Gate canary `stack-guard-skip-canary`: no task stack gets its guard.
-        #[cfg(not(feature = "stack-guard-skip-canary"))]
-        azos_sched::setup_stack_guard_pages();
+        // Runtime gate canary `canary=stack-guard-skip`: no task stack gets
+        // its guard.
+        if !canary!("stack-guard-skip") {
+            azos_sched::setup_stack_guard_pages();
+        }
         kprintln!("[MM] Stack guard pages active");
 
         a.verify_guards();

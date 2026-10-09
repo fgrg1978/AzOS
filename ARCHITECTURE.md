@@ -627,6 +627,9 @@ in-kernel shell remains the recovery console. With secure boot off,
 `init=/fat/NAME.ELF` on the kernel command line (`/chosen/bootargs`) names
 another image for one boot, provided that image has a topology row. With
 secure boot on, `init=` is ignored and the boot log says so.
+Development builds (Kconfig `CANARY_RUNTIME`, never with secure boot) also
+read `canary=<name>[,<name>]` there: it arms named gate canaries for one
+boot, so a canary test boots the same kernel as the test it checks.
 
 **CPU baseline and extensions.** Every ISA is configured the same way
 (`config/Kconfig.arch`):

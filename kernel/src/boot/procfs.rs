@@ -234,7 +234,7 @@ fn gen_proc_tasks(buf: &mut [u8]) -> usize {
 // /sys/scheduler, /sys/drivers, /proc/tasks; `lat-trace` adds two) are all
 // listed, the count is exactly that, and the providers whose content is
 // never empty return bytes through `procfs_read`. Canary
-// `procfs-skip-canary` (`kernel_main` skips `install_procfs`): `not ok`.
+// `canary=procfs-skip` (`kernel_main` skips `install_procfs`): `not ok`.
 #[cfg(feature = "ktest")]
 mod ktests {
     const PATHS: [&str; 8] = [

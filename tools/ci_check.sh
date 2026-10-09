@@ -6243,7 +6243,7 @@ aarch64_entropy_row() {
 }
 
 # The `aarch64: procfs registered` row is now the `procfs_entries_registered`
-# ktest, on both ISAs (`ktest (rv|arm)`), with its canary `procfs-skip-canary`.
+# ktest, on both ISAs (`ktest (rv|arm)`), with its canary `canary=procfs-skip`.
 
 # ── aarch64: IPC plumbing initialized ────────────────────────────────────
 #
@@ -10489,11 +10489,14 @@ PY
     # `not ok` for exactly the tests named, `ok` for the others (or a
     # `Bail out!` naming the panicking test). The four non-panicking canaries
     # share one boot: each breaks only its own test's property.
+    # The `canary=` ones are runtime canaries (Kconfig CANARY_RUNTIME,
+    # kernel/src/canary_rt.rs): their row boots the pass row's kernel with
+    # `-append canary=...` (ktest_row's 5th argument) and builds nothing.
     #   mm_wx_image                   wx-skip-canary (boot skips enforce_wx)
     #   mm_nx_outside_image           nx-skip-canary (boot strips nothing)
     #   percpu_areas_and_oor_refusal  percpu-oor-canary (area past nr_cpu_ids)
-    #   sched_stack_guards_unmapped   stack-guard-skip-canary (no guard pages)
-    #   procfs_entries_registered     procfs-skip-canary (no install_procfs)
+    #   sched_stack_guards_unmapped   canary=stack-guard-skip (no guard pages)
+    #   procfs_entries_registered     canary=procfs-skip (no install_procfs)
     #   mm_zicboz_zero_fill (rv)      zicboz-skip-canary (DTB Zicboz ignored)
     #   kheap_slab_selftest           slab-freelist-canary (panics in slab.rs)
     # Late canaries that break memory safety or the safety layer for the
@@ -10510,8 +10513,9 @@ PY
     KTEST_N_RV=14
     KTEST_N_ARM=13
     KTEST_FEATS="qemu,ktest"
-    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated>
+    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
+        local -a app=(); [ -n "${5:-}" ] && app=(-append "$5")
         [ "$isa" = arm ] && n_want=$KTEST_N_ARM
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -10528,10 +10532,10 @@ PY
         par_ready
         while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
         if [ "$isa" = rv ]; then
-            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 </dev/null >"$log" 2>&1 &
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 ${app[@]+"${app[@]}"} </dev/null >"$log" 2>&1 &
         else
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
-                -kernel "$kimg" </dev/null >"$log" 2>&1 &
+                -kernel "$kimg" ${app[@]+"${app[@]}"} </dev/null >"$log" 2>&1 &
         fi
         local pid=$! i=0
         # The runner powers the machine off; the wait is only a backstop (the
@@ -10577,8 +10581,8 @@ PY
     }
     par "ktest (rv)" ktest_row "ktest (rv)" rv "" ""
     par "ktest (arm)" ktest_row "ktest (arm)" arm "" ""
-    KTEST_CANARIES=",wx-skip-canary,nx-skip-canary,percpu-oor-canary,stack-guard-skip-canary,procfs-skip-canary"
-    KTEST_CANARIED="mm_wx_image mm_nx_outside_image percpu_areas_and_oor_refusal sched_stack_guards_unmapped procfs_entries_registered"
+    KTEST_CANARIES=",wx-skip-canary,nx-skip-canary,percpu-oor-canary"
+    KTEST_CANARIED="mm_wx_image mm_nx_outside_image percpu_areas_and_oor_refusal"
     par "ktest canaries (rv)" ktest_row "ktest canaries (rv)" rv "$KTEST_CANARIES,zicboz-skip-canary" \
         "$KTEST_CANARIED mm_zicboz_zero_fill"
     par "ktest canaries (arm)" ktest_row "ktest canaries (arm)" arm "$KTEST_CANARIES" "$KTEST_CANARIED"
@@ -10589,6 +10593,12 @@ PY
     par "ktest tlb scan-bound canary (rv)" ktest_row "ktest tlb scan-bound canary (rv)" rv ",tlb-bound-canary" "tlb_shootdown_cross_cpu"
     par "ktest IMU frozen-stamp canary (rv)" ktest_row "ktest IMU frozen-stamp canary (rv)" rv ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition"
     par "ktest IMU frozen-stamp canary (arm)" ktest_row "ktest IMU frozen-stamp canary (arm)" arm ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition"
+    # Runtime canaries: the pass row's kernel (`qemu,ktest`, a kernel-cache
+    # hit), armed by the command line.
+    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip"
+    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered"
+    par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
+    par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #
