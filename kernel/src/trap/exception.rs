@@ -56,13 +56,13 @@ fn page_fault_note_resolved(show: bool) {
 // definition, since a wrong-stack corruption from the bug this proves kills
 // the boot before any return value is observed.
 #[cfg(all(target_arch = "riscv64", feature = "irq-in-syscall-probe"))]
-pub(crate) const PROBE_IRQ_IN_SYSCALL_NR: u64 = 4_000_000;
+pub(crate) const PROBE_IRQ_IN_SYSCALL_NR: usize = 4_000_000;
 
 #[cfg(all(target_arch = "riscv64", feature = "irq-in-syscall-probe"))]
 pub(crate) fn probe_irq_in_syscall() -> usize {
     azos_arch::ARCH.enable_all();
     let tick_before = azos_actuation::watchdog::ticks();
-    let hz = azos_arch::timer::freq_hz();
+    let hz = azos_drv_sys::timebase::TIMER_FREQ;
     let deadline = azos_arch::ARCH.now_ticks() + hz / 20; // ~50 ms
     while azos_arch::ARCH.now_ticks() < deadline {}
     let tick_after = azos_actuation::watchdog::ticks();
