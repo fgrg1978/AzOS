@@ -239,10 +239,16 @@ fn isn_secret_from_pool() -> bool {
 /// `u32`-wide behaviour on the bytes that carry it).
 pub fn isn_secret_seed(entropy: u32) {
     let eb = entropy.to_le_bytes();
-    let mut s = ISN_SECRET.lock();
-    for i in 0..4 {
-        s[i] ^= eb[i];
+    {
+        let mut s = ISN_SECRET.lock();
+        for i in 0..4 {
+            s[i] ^= eb[i];
+        }
     }
+    // The ephemeral port cursor starts somewhere new on every boot, so a
+    // reboot does not redial a 4-tuple the peer may still hold.
+    let mut t = TCP.lock();
+    t.eph_next ^= entropy;
 }
 
 // ---------------------------------------------------------------------------
@@ -845,6 +851,14 @@ pub struct TcpConn {
     /// window). Only grows; a stale (lower) value makes `recv` update early,
     /// never late.
     rcv_adv:          u32,
+
+    /// Generation of this slot: bumped each time [`TcpLayer::alloc`] hands
+    /// the slot out. A [`TcpHandle`] carries the value it was issued with,
+    /// and every operation through a handle whose generation no longer
+    /// matches is refused, so a slot freed under its owner (a peer's RST, a
+    /// timer) and re-issued to someone else cannot be acted on through the
+    /// old owner's handle. Never reset: `reset_conn_state` leaves it alone.
+    gen:              u32,
 }
 
 impl TcpConn {
@@ -858,6 +872,7 @@ impl TcpConn {
             seq:          0,
             ack:          0,
             was_accepted: false,
+            gen:          0,
             rx_buf:       [0u8; TCP_BUF_SIZE],
             rx_head:      0,
             rx_tail:      0,
@@ -1191,6 +1206,9 @@ struct TcpLayer {
     /// `TCP_MAX_CONNS` itself is the "no hint yet" sentinel (`new()`'s
     /// value), since it is never a valid index.
     last_matched: usize,
+    /// Next offset into the ephemeral port range ([`TcpLayer::ephemeral_port`]);
+    /// seeded from boot entropy by [`isn_secret_seed`].
+    eph_next:     u32,
 }
 
 /// Slots `find_conn` actually examined (hint check + fallback scan combined),
@@ -1216,6 +1234,7 @@ impl TcpLayer {
             our_mac:      [0; 6],
             our_ip:       [0; 4],
             last_matched: TCP_MAX_CONNS, // out of range: "no hint yet"
+            eph_next:     0,
         }
     }
 
@@ -1255,12 +1274,98 @@ impl TcpLayer {
         None
     }
 
-    fn alloc(&self) -> Option<usize> {
+    /// A free slot, with its generation advanced: every [`TcpHandle`] issued
+    /// for an earlier owner of the slot is stale from here on. The one place
+    /// a slot changes hands, so the one place the generation moves.
+    fn alloc(&mut self) -> Option<usize> {
         for i in 0..TCP_MAX_CONNS {
-            if self.conns[i].state == TcpState::Closed { return Some(i); }
+            if self.conns[i].state == TcpState::Closed {
+                #[cfg(not(feature = "tcp-handle-gen-canary"))]
+                { self.conns[i].gen = self.conns[i].gen.wrapping_add(1); }
+                return Some(i);
+            }
         }
         None
     }
+
+    /// The handle of slot `idx` as it stands now.
+    fn handle(&self, idx: usize) -> TcpHandle {
+        TcpHandle { slot: idx as u32, gen: self.conns[idx].gen }
+    }
+
+    /// Does `r` still name the connection it was issued for?
+    #[inline]
+    fn live(&self, r: Ref) -> bool {
+        r.idx < TCP_MAX_CONNS && r.gen.map_or(true, |g| self.conns[r.idx].gen == g)
+    }
+
+    /// A free local port from the ephemeral range
+    /// (`CONFIG_TCP_EPHEMERAL_PORT_MIN..=MAX`), or `None` when every port in
+    /// it is taken. A port is taken while any slot that is not `Closed`
+    /// holds it as its local port -- listeners and `TimeWait` included, so a
+    /// fresh connect never names the 4-tuple of a connection the peer may
+    /// still hold. The cursor moves past every port handed out, so two
+    /// consecutive connects never get the same port even when the first
+    /// connection is already gone (Linux's `__inet_hash_connect` walks its
+    /// range the same way).
+    fn ephemeral_port(&mut self) -> Option<u16> {
+        let span = EPHEMERAL_SPAN;
+        for _ in 0..span {
+            let p = EPHEMERAL_MIN.wrapping_add((self.eph_next % span) as u16);
+            #[cfg(not(feature = "tcp-ephemeral-port-canary"))]
+            { self.eph_next = self.eph_next.wrapping_add(1); }
+            #[cfg(not(feature = "tcp-ephemeral-port-canary"))]
+            if self.conns.iter().any(|c| c.state != TcpState::Closed && c.local_port == p) {
+                continue;
+            }
+            return Some(p);
+        }
+        None
+    }
+}
+
+/// Lowest port of the ephemeral range (`CONFIG_TCP_EPHEMERAL_PORT_MIN`).
+pub const EPHEMERAL_MIN: u16 = azos_limits::TCP_EPHEMERAL_PORT_MIN as u16;
+/// Highest port of the ephemeral range (`CONFIG_TCP_EPHEMERAL_PORT_MAX`).
+pub const EPHEMERAL_MAX: u16 = azos_limits::TCP_EPHEMERAL_PORT_MAX as u16;
+const _: () = assert!(azos_limits::TCP_EPHEMERAL_PORT_MAX <= 65535
+    && EPHEMERAL_MIN != 0 && EPHEMERAL_MIN <= EPHEMERAL_MAX,
+    "CONFIG_TCP_EPHEMERAL_PORT_MIN must be in 1..=CONFIG_TCP_EPHEMERAL_PORT_MAX <= 65535");
+/// Ports in the ephemeral range.
+const EPHEMERAL_SPAN: u32 = EPHEMERAL_MAX as u32 - EPHEMERAL_MIN as u32 + 1;
+
+/// One TCP connection, as its owner holds it: the slot and the generation the
+/// slot had when it was issued (see `TcpConn::gen`).
+///
+/// **The only way to reach a connection from outside this crate.** Every
+/// operation on a handle whose slot has since been freed and re-issued is a
+/// no-op: `close`/`abort`/`shutdown_write` do nothing, `send` and `recv`
+/// answer -1, `state` answers `Closed`. A bare slot index has no such check:
+/// a kernel task that closed "its" slot after a wait closed whichever
+/// connection held the slot by then -- the brain link's, after a refused
+/// connect let RST free the slot and the link's dial took it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TcpHandle {
+    slot: u32,
+    gen:  u32,
+}
+
+/// What the in-crate functions below take: a slot, with the generation to
+/// check when the caller holds one. A bare `usize` (the stack itself, the
+/// socket table's tests) checks nothing; a [`TcpHandle`] checks its
+/// generation at every lock hold that touches the slot.
+#[derive(Clone, Copy)]
+pub(crate) struct Ref {
+    idx: usize,
+    gen: Option<u32>,
+}
+
+impl From<usize> for Ref {
+    fn from(idx: usize) -> Ref { Ref { idx, gen: None } }
+}
+
+impl From<TcpHandle> for Ref {
+    fn from(h: TcpHandle) -> Ref { Ref { idx: h.slot as usize, gen: Some(h.gen) } }
 }
 
 static TCP: SpinLock<TcpLayer> = SpinLock::new(TcpLayer::new());
@@ -1530,20 +1635,23 @@ pub fn set_our_ip(ip: [u8; 4]) {
 }
 
 /// Listen on a port.  Returns connection slot index or -1 on failure.
-pub fn listen(port: u16) -> i32 {
-    let (mac, ip) = { let t = TCP.lock(); (t.our_mac, t.our_ip) };
-    let _ = mac;
+/// Listen on `port`. Returns the slot index or -1. By slot: for this crate's
+/// host tests; everything else holds a [`TcpHandle`] ([`TcpHandle::listen`]).
+#[allow(dead_code)]
+pub(crate) fn listen(port: u16) -> i32 {
+    listen_h(port).map_or(-1, |h| h.slot as i32)
+}
+
+fn listen_h(port: u16) -> Option<TcpHandle> {
     let mut t = TCP.lock();
-    let idx = match t.alloc() {
-        Some(i) => i,
-        None    => return -1,
-    };
+    let ip = t.our_ip;
+    let idx = t.alloc()?;
     t.conns[idx].state      = TcpState::Listen;
     t.conns[idx].local_ip   = ip;
     t.conns[idx].local_port = port;
     t.conns[idx].remote_ip  = [0; 4];
     t.conns[idx].remote_port = 0;
-    idx as i32
+    Some(t.handle(idx))
 }
 
 
@@ -1560,10 +1668,20 @@ pub fn listen(port: u16) -> i32 {
 /// blocking-with-yield variant that issues the SYN only once ARP has
 /// resolved, eliminating the "first attempt always stalls" pattern under
 /// SLIRP/QEMU.
-pub fn connect(dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> i32 {
-    let (mac, ip) = { let t = TCP.lock(); (t.our_mac, t.our_ip) };
-    let _ = mac;
+///
+/// `src_port == 0` picks a free port from the ephemeral range under the same
+/// lock hold that takes the slot ([`TcpLayer::ephemeral_port`]); -1 when the
+/// range is exhausted. By slot: for this crate's host tests; everything else
+/// holds a [`TcpHandle`] ([`TcpHandle::connect`]).
+#[allow(dead_code)]
+pub(crate) fn connect(dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> i32 {
+    connect_h(dst_ip, dst_port, src_port).map_or(-1, |h| h.slot as i32)
+}
+
+fn connect_h(dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> Option<TcpHandle> {
     let mut t = TCP.lock();
+    let (mac, ip) = (t.our_mac, t.our_ip);
+    let src_port = if src_port == 0 { t.ephemeral_port()? } else { src_port };
 
     // **A 4-tuple held by a live connection refuses the connect.** A 4-tuple
     // names one connection (RFC 793 §2.7), and an OPEN of one that exists is
@@ -1584,7 +1702,7 @@ pub fn connect(dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> i32 {
             && c.remote_ip == dst_ip
             && c.remote_port == dst_port
         {
-            return -1;
+            return None;
         }
     }
 
@@ -1614,10 +1732,8 @@ pub fn connect(dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> i32 {
         }
     }
 
-    let idx = match t.alloc() {
-        Some(i) => i,
-        None    => return -1,
-    };
+    let idx = t.alloc()?;
+    let h = t.handle(idx);
     let mut seq = generate_isn(&ip, &dst_ip, src_port, dst_port);
     if let Some(floor) = iss_floor {
         if !seq_lt(floor, seq) {
@@ -1639,7 +1755,7 @@ pub fn connect(dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> i32 {
     // The SYN's retransmission needs `tcp_tick`, and this runs in the
     // caller's context, not the poller's: tell the poller.
     timer_kick();
-    idx as i32
+    Some(h)
 }
 
 /// Like `connect`, but yields until the ARP cache has the destination MAC
@@ -1662,12 +1778,22 @@ pub fn connect(dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> i32 {
 /// `yield_fn` is injected to keep `crates/net/net` scheduler-agnostic — same
 /// pattern as `send_all_with_yield`.  Falls back to the non-blocking
 /// `connect` after [`CONNECT_ARP_BUDGET_US`] to bound worst-case latency.
-pub fn connect_with_yield<F: FnMut()>(
+#[allow(dead_code)]
+pub(crate) fn connect_with_yield<F: FnMut()>(
+    dst_ip:   [u8; 4],
+    dst_port: u16,
+    src_port: u16,
+    yield_fn: F,
+) -> i32 {
+    connect_with_yield_h(dst_ip, dst_port, src_port, yield_fn).map_or(-1, |h| h.slot as i32)
+}
+
+fn connect_with_yield_h<F: FnMut()>(
     dst_ip:   [u8; 4],
     dst_port: u16,
     src_port: u16,
     mut yield_fn: F,
-) -> i32 {
+) -> Option<TcpHandle> {
     // Snapshot our addresses to issue the ARP request without holding TCP.lock.
     let (our_mac, our_ip) = { let t = TCP.lock(); (t.our_mac, t.our_ip) };
 
@@ -1678,7 +1804,7 @@ pub fn connect_with_yield<F: FnMut()>(
     // last-resort fallback.
     let _ = resolve_peer_mac(&our_mac, &our_ip, &dst_ip, CONNECT_ARP_BUDGET_US, &mut yield_fn);
 
-    connect(dst_ip, dst_port, src_port)
+    connect_h(dst_ip, dst_port, src_port)
 }
 
 /// Wall-clock budget for resolving the peer's MAC before a DATA segment, in µs.
@@ -1743,18 +1869,19 @@ pub const ARP_RESOLVE_SPIN_CAP: u32 = 5_000_000;
 ///
 /// **Cost in the common case: one cache lookup.** The yield loop is entered
 /// only on a miss.
-pub fn send_data_with_yield<F: FnMut()>(idx: usize, data: &[u8], mut yield_fn: F) -> i32 {
-    if idx >= TCP_MAX_CONNS { return -1; }
+pub(crate) fn send_data_with_yield<F: FnMut()>(r: impl Into<Ref>, data: &[u8], mut yield_fn: F) -> i32 {
+    let r = r.into();
     let (our_mac, our_ip, dst_ip) = {
         let t = TCP.lock();
-        (t.our_mac, t.our_ip, t.conns[idx].remote_ip)
+        if !t.live(r) { return -1; }
+        (t.our_mac, t.our_ip, t.conns[r.idx].remote_ip)
     };
     // Timed out: fall through anyway. `send_data` will fire another ARP through
     // `ip::send` and report the failure as it always did — this makes the
     // common miss survivable, it does not promise delivery to a peer that never
     // answers.
     let _ = resolve_peer_mac(&our_mac, &our_ip, &dst_ip, SEND_ARP_BUDGET_US, &mut yield_fn);
-    send_data(idx, data)
+    send_data(r, data)
 }
 
 /// Resolve the peer's MAC, bounded in TIME, before a segment goes out.
@@ -1837,21 +1964,23 @@ fn resolve_peer_mac<F: FnMut()>(
 /// `min(cwnd, peer's window)` less the bytes already in flight (RFC 793 §3.7,
 /// RFC 5681 §3.1) and by the send ring. Each byte sent is copied into the ring
 /// once, and every retransmission is cut from there.
-pub fn send_data(idx: usize, data: &[u8]) -> i32 {
-    let n = send_data_inner(idx, data);
+pub(crate) fn send_data(r: impl Into<Ref>, data: &[u8]) -> i32 {
+    let r = r.into();
+    let n = send_data_inner(r, data);
     // The first byte in flight starts the retransmission timer.
-    if n > 0 { note_conn(idx); }
+    if n > 0 { note_conn(r.idx); }
     n
 }
 
-fn send_data_inner(idx: usize, data: &[u8]) -> i32 {
-    if idx >= TCP_MAX_CONNS { return -1; }
+fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
+    let idx = r.idx;
     let now = azos_drv_sys::timebase::now();
     // Reserve the range and copy it into the send ring under ONE lock hold:
     // two senders on one connection (a kernel task and a ring-3 socket on
     // another hart) must not both be handed the same SND.NXT.
     let (mac, ip, start, n, ack_val, dst_ip, src_port, dst_port, our_win) = {
         let mut t = TCP.lock();
+        if !t.live(r) { return -1; }
         let (mac, ip) = (t.our_mac, t.our_ip);
         let c = &mut t.conns[idx];
         // RFC 1122 §4.2.2.13 half-close: once the peer's FIN has moved us to
@@ -1956,6 +2085,10 @@ fn send_data_inner(idx: usize, data: &[u8]) -> i32 {
     // it, no ACK moved SND.UNA into it (only a forged one could).
     let end = start.wrapping_add(n as u32);
     let mut t = TCP.lock();
+    // The slot changed hands while the lock was dropped: the connection
+    // these bytes were queued on is gone, and the new owner's must not be
+    // touched.
+    if !t.live(r) { return -1; }
     let c = &mut t.conns[idx];
     // `advertise` above counted the ACK this segment carried as sent; it was
     // not. Hold one again (N6), so the end of the pass or the timer sends it
@@ -1985,10 +2118,10 @@ fn send_data_inner(idx: usize, data: &[u8]) -> i32 {
 pub const SEND_ALL_MAX_YIELDS: u32 = 10_000;
 
 /// Is anything this connection sent still unacknowledged (SND.UNA != SND.NXT)?
-pub fn is_unacked(idx: usize) -> bool {
-    if idx >= TCP_MAX_CONNS { return false; }
+pub(crate) fn is_unacked(r: impl Into<Ref>) -> bool {
+    let r = r.into();
     let t = TCP.lock();
-    t.conns[idx].flight() != 0
+    t.live(r) && t.conns[r.idx].flight() != 0
 }
 
 /// Send all bytes of `data`, looping over partial `send_data` calls.
@@ -2016,11 +2149,12 @@ pub fn is_unacked(idx: usize) -> bool {
 /// Returns bytes successfully sent (≤ `data.len()`).  Callers should check
 /// `sent < data.len()` to detect partial completion (rare — peer stall).
 /// "Sent" is "handed to the wire", not "acknowledged".
-pub fn send_all_with_yield<F: FnMut()>(
-    idx: usize,
+pub(crate) fn send_all_with_yield<F: FnMut()>(
+    r: impl Into<Ref>,
     data: &[u8],
     mut yield_fn: F,
 ) -> usize {
+    let r = r.into();
     let mut sent_total: usize = 0;
     let mut yields: u32 = 0;
     // One TX batch per run of segments: their frames share doorbells. It is
@@ -2028,7 +2162,7 @@ pub fn send_all_with_yield<F: FnMut()>(
     // is not running, and the segments the peer must ACK are on the wire.
     crate::net_tx_batch_begin();
     while sent_total < data.len() && yields < SEND_ALL_MAX_YIELDS {
-        let n = send_data(idx, &data[sent_total..]);
+        let n = send_data(r, &data[sent_total..]);
         if n < 0 {
             // Connection dropped or fd invalid — caller will observe partial.
             break;
@@ -2068,12 +2202,13 @@ pub const SEND_ALL_UNTIL_SPIN_CAP: u32 = 5_000_000;
 /// `wait_fn` is called only when `send_data` answers 0 (the window is full)
 /// and the budget is not spent; a budget of 0 therefore never calls it.
 /// Returns the bytes handed to the stack, as `send_all_with_yield` does.
-pub fn send_all_until<F: FnMut()>(
-    idx: usize,
+pub(crate) fn send_all_until<F: FnMut()>(
+    r: impl Into<Ref>,
     data: &[u8],
     budget_us: u64,
     mut wait_fn: F,
 ) -> usize {
+    let r = r.into();
     let freq = azos_drv_sys::timebase::TIMER_FREQ;
     let budget_ticks = budget_us.saturating_mul(freq) / 1_000_000;
     let start = azos_drv_sys::timebase::now();
@@ -2084,7 +2219,7 @@ pub fn send_all_until<F: FnMut()>(
     // TX batch as in `send_all_with_yield`: closed around every wait.
     crate::net_tx_batch_begin();
     while sent_total < data.len() {
-        let n = send_data(idx, &data[sent_total..]);
+        let n = send_data(r, &data[sent_total..]);
         if n < 0 {
             break;
         }
@@ -2107,17 +2242,19 @@ pub fn send_all_until<F: FnMut()>(
 }
 
 /// Read received data from a connection.  Returns bytes read, 0 if none.
-pub fn recv(idx: usize, buf: &mut [u8]) -> i32 {
-    let n = recv_inner(idx, buf);
+pub(crate) fn recv(r: impl Into<Ref>, buf: &mut [u8]) -> i32 {
+    let r = r.into();
+    let n = recv_inner(r, buf);
     // A held window update has a delayed-ACK deadline.
-    if n > 0 { note_conn(idx); }
+    if n > 0 { note_conn(r.idx); }
     n
 }
 
-fn recv_inner(idx: usize, buf: &mut [u8]) -> i32 {
-    if idx >= TCP_MAX_CONNS { return -1; }
+fn recv_inner(r: Ref, buf: &mut [u8]) -> i32 {
+    let idx = r.idx;
     let (n, params, kick) = {
         let mut t = TCP.lock();
+        if !t.live(r) { return -1; }
         let c = &mut t.conns[idx];
         let avail = c.rx_available();
         if avail == 0 {
@@ -2196,10 +2333,12 @@ fn recv_inner(idx: usize, buf: &mut [u8]) -> i32 {
 /// The RST carries `snd.nxt` because that is the sequence the peer's own
 /// acceptability check expects -- a reset outside the peer's window is
 /// discarded, and a reset that is discarded is the same as sending nothing.
-pub fn abort(idx: usize) {
-    if idx >= TCP_MAX_CONNS { return; }
+pub(crate) fn abort(r: impl Into<Ref>) {
+    let r = r.into();
+    let idx = r.idx;
     let (mac, ip, state, lp, rp, rip, seq) = {
         let t = TCP.lock();
+        if !t.live(r) { return; }
         let c = &t.conns[idx];
         (t.our_mac, t.our_ip, c.state, c.local_port, c.remote_port, c.remote_ip, c.seq)
     };
@@ -2209,6 +2348,7 @@ pub fn abort(idx: usize) {
     let _ = send_segment(&mac, &ip, &rip, lp, rp, TCP_RST, seq, 0, &[], TCP_WINDOW_SIZE);
 
     let mut t = TCP.lock();
+    if !t.live(r) { return; }
     t.conns[idx].state   = TcpState::Closed;
     t.conns[idx].reset_conn_state();
 }
@@ -2218,9 +2358,11 @@ pub fn abort(idx: usize) {
 /// (passive close, the peer had already FIN'd us). Returns `true` iff a FIN
 /// was actually sent — any other state is not this function's problem, and
 /// the two callers below disagree on purpose about what to do when it is not.
-fn send_fin_and_advance(idx: usize) -> bool {
+fn send_fin_and_advance(r: Ref) -> bool {
+    let idx = r.idx;
     let (mac, ip, state, seq, ack_val, dst_ip, src_port, dst_port, win) = {
         let mut t = TCP.lock();
+        if !t.live(r) { return false; }
         let (mac, ip) = (t.our_mac, t.our_ip);
         let c = &mut t.conns[idx];
         (mac, ip, c.state, c.seq, c.ack, c.remote_ip, c.local_port, c.remote_port,
@@ -2233,6 +2375,10 @@ fn send_fin_and_advance(idx: usize) -> bool {
     };
     send_segment(&mac, &ip, &dst_ip, src_port, dst_port, TCP_FIN | TCP_ACK, seq, ack_val, &[], win);
     let mut t = TCP.lock();
+    // Freed and re-issued while the FIN was going out (a RST on another
+    // hart): the FIN was this connection's last word; the slot's new owner
+    // keeps its state. `true`: the caller has nothing left to do either.
+    if !t.live(r) { return true; }
     t.conns[idx].fin_seq = seq;
     t.conns[idx].state   = next_state;
     // Arm the teardown timer. Sending the FIN and setting the state is not
@@ -2254,14 +2400,17 @@ fn send_fin_and_advance(idx: usize) -> bool {
     true
 }
 
-pub fn close(idx: usize) {
-    if idx >= TCP_MAX_CONNS { return; }
+pub(crate) fn close(r: impl Into<Ref>) {
+    let r = r.into();
+    if r.idx >= TCP_MAX_CONNS { return; }
     // The FIN's retransmission timer (or FIN-WAIT/LAST-ACK's).
-    if send_fin_and_advance(idx) { note_conn(idx); return; }
-    // For any other state, force close: tell the peer nothing, free the slot.
+    if send_fin_and_advance(r) { note_conn(r.idx); return; }
+    // For any other state, force close: tell the peer nothing, free the slot
+    // -- unless the slot is no longer this caller's (see [`TcpHandle`]).
     let mut t = TCP.lock();
-    t.conns[idx].state = TcpState::Closed;
-    t.conns[idx].clear_send_queue();
+    if !t.live(r) { return; }
+    t.conns[r.idx].state = TcpState::Closed;
+    t.conns[r.idx].clear_send_queue();
 }
 
 /// Close only OUR send direction (`shutdown(SHUT_WR)`), leaving the receive
@@ -2283,15 +2432,23 @@ pub fn close(idx: usize) {
 /// write direction that is not open, or a connection already mid-teardown,
 /// has nothing useful to do, and must not destroy a connection in an
 /// unrelated state the way `close()`'s catch-all deliberately does.
-pub fn shutdown_write(idx: usize) {
-    if idx >= TCP_MAX_CONNS { return; }
-    send_fin_and_advance(idx);
+pub(crate) fn shutdown_write(r: impl Into<Ref>) {
+    let r = r.into();
+    if r.idx >= TCP_MAX_CONNS { return; }
+    send_fin_and_advance(r);
 }
 
 /// Accept an established TCP connection on `local_port`.
 /// Returns the connection slot index or -1 if none is ready.
-/// Marks the slot as accepted to prevent double-accept.
-pub fn accept(local_port: u16) -> i32 {
+/// Marks the slot as accepted to prevent double-accept. By slot: for this
+/// crate's host tests; everything else holds a [`TcpHandle`]
+/// ([`TcpHandle::accept`]).
+#[allow(dead_code)]
+pub(crate) fn accept(local_port: u16) -> i32 {
+    accept_h(local_port).map_or(-1, |h| h.slot as i32)
+}
+
+fn accept_h(local_port: u16) -> Option<TcpHandle> {
     let mut t = TCP.lock();
     for i in 0..TCP_MAX_CONNS {
         let c = &mut t.conns[i];
@@ -2306,10 +2463,10 @@ pub fn accept(local_port: u16) -> i32 {
             && !c.was_accepted
         {
             c.was_accepted = true;
-            return i as i32;
+            return Some(t.handle(i));
         }
     }
-    -1
+    None
 }
 
 /// Handle an incoming TCP segment with receive-side checksum validation.
@@ -3163,7 +3320,7 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
             }
             // Accept: create new connection for this peer
             let new_idx_opt = { TCP.lock().alloc() };
-            if let Some(new_idx) = new_idx_opt {
+            if let Some(mut new_idx) = new_idx_opt {
                 let our_seq = generate_isn(&ip, src_ip, dst_port, src_port);
                 let peer_opts = parse_syn_options(data, off);
                 // Echo only what the SYN offered: a SYN-ACK may carry Window
@@ -3175,6 +3332,15 @@ fn handle(src_ip: &[u8; 4], data: &[u8]) {
                 };
                 {
                     let mut t = TCP.lock();
+                    // The slot was free when the lock was dropped above; a
+                    // `connect` on another hart may have taken it since.
+                    // Claiming it anyway would hand one slot to two owners.
+                    if t.conns[new_idx].state != TcpState::Closed {
+                        match t.alloc() {
+                            Some(i) => new_idx = i,
+                            None    => return,
+                        }
+                    }
                     let c = &mut t.conns[new_idx];
                     c.state       = TcpState::SynRcvd;
                     c.local_ip    = ip;
@@ -4641,9 +4807,11 @@ fn tcp_timers() {
 }
 
 /// Return connection state for a given index.
-pub fn conn_state(idx: usize) -> TcpState {
-    if idx >= TCP_MAX_CONNS { return TcpState::Closed; }
-    TCP.lock().conns[idx].state
+pub(crate) fn conn_state(r: impl Into<Ref>) -> TcpState {
+    let r = r.into();
+    let t = TCP.lock();
+    if !t.live(r) { return TcpState::Closed; }
+    t.conns[r.idx].state
 }
 
 /// The MSS this connection negotiated with its peer.
@@ -4652,9 +4820,11 @@ pub fn conn_state(idx: usize) -> TcpState {
 /// parsing against a hand-built SYN, rather than testing `parse_syn_options`
 /// directly: the option walk is only correct if it is reached with the right
 /// `data_off`, so going through `handle_checked` is what actually proves it.
-pub fn conn_remote_mss(idx: usize) -> u16 {
-    if idx >= TCP_MAX_CONNS { return 0; }
-    TCP.lock().conns[idx].remote_mss
+pub(crate) fn conn_remote_mss(r: impl Into<Ref>) -> u16 {
+    let r = r.into();
+    let t = TCP.lock();
+    if !t.live(r) { return 0; }
+    t.conns[r.idx].remote_mss
 }
 
 /// What this connection's handshake negotiated: the Window Scale shifts
@@ -4665,10 +4835,11 @@ pub fn conn_remote_mss(idx: usize) -> u16 {
 /// ends are this stack. User-mode networking (slirp) parses nothing but the
 /// MSS, so every other boot runs the unscaled, SACK-less path and would pass
 /// the same way if the options were never offered.
-pub fn conn_negotiated(idx: usize) -> (Option<(u8, u8)>, bool) {
-    if idx >= TCP_MAX_CONNS { return (None, false); }
+pub(crate) fn conn_negotiated(r: impl Into<Ref>) -> (Option<(u8, u8)>, bool) {
+    let r = r.into();
     let t = TCP.lock();
-    let c = &t.conns[idx];
+    if !t.live(r) { return (None, false); }
+    let c = &t.conns[r.idx];
     (if c.wscale_ok { Some((c.snd_wscale, c.rcv_wscale)) } else { None }, c.sack_ok)
 }
 
@@ -4693,10 +4864,11 @@ pub struct RttEstimate {
 
 /// Read a connection's RTT estimate. For measurement: nothing in the stack
 /// reads it.
-pub fn conn_rtt(idx: usize) -> Option<RttEstimate> {
-    if idx >= TCP_MAX_CONNS { return None; }
+pub(crate) fn conn_rtt(r: impl Into<Ref>) -> Option<RttEstimate> {
+    let r = r.into();
     let t = TCP.lock();
-    let c = &t.conns[idx];
+    if !t.live(r) { return None; }
+    let c = &t.conns[r.idx];
     Some(RttEstimate {
         measured:  c.rtt_measured,
         srtt:      c.srtt,
@@ -4705,6 +4877,92 @@ pub fn conn_rtt(idx: usize) -> Option<RttEstimate> {
         timed_seq: if c.rtt_on { Some(c.rtt_seq) } else { None },
         timer_start: c.retx_time,
     })
+}
+
+// ---------------------------------------------------------------------------
+// TcpHandle: the connection API outside this crate
+// ---------------------------------------------------------------------------
+
+impl TcpHandle {
+    /// Open a connection to `dst_ip:dst_port` from `src_port` (0: a free
+    /// port from the ephemeral range). Sends the SYN and returns at once;
+    /// the connection is usable once [`TcpHandle::state`] is `Established`.
+    /// `None`: no free slot, no free ephemeral port, or the 4-tuple is held
+    /// by a live connection (see `connect`).
+    pub fn connect(dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> Option<TcpHandle> {
+        connect_h(dst_ip, dst_port, src_port)
+    }
+
+    /// [`TcpHandle::connect`] after resolving the peer's MAC, calling
+    /// `yield_fn` between looks (see `connect_with_yield`).
+    pub fn connect_with_yield<F: FnMut()>(
+        dst_ip: [u8; 4], dst_port: u16, src_port: u16, yield_fn: F,
+    ) -> Option<TcpHandle> {
+        connect_with_yield_h(dst_ip, dst_port, src_port, yield_fn)
+    }
+
+    /// Listen on `port`. `None` when no slot is free.
+    pub fn listen(port: u16) -> Option<TcpHandle> {
+        listen_h(port)
+    }
+
+    /// An established (or half-closed by the peer) connection on
+    /// `local_port` nobody has accepted yet.
+    pub fn accept(local_port: u16) -> Option<TcpHandle> {
+        accept_h(local_port)
+    }
+
+    /// The first connection on `local_port` in `state`, for checks that
+    /// look at a connection the stack opened itself (a listener's
+    /// `SynRcvd` child) rather than one they were handed.
+    pub fn find(local_port: u16, state: TcpState) -> Option<TcpHandle> {
+        let t = TCP.lock();
+        (0..TCP_MAX_CONNS)
+            .find(|&i| t.conns[i].state == state && t.conns[i].local_port == local_port)
+            .map(|i| t.handle(i))
+    }
+
+    /// The slot index, for log lines. Not a way back to the connection.
+    pub fn slot(self) -> usize { self.slot as usize }
+
+    /// Local port of the connection; 0 when the handle is stale.
+    pub fn local_port(self) -> u16 {
+        let t = TCP.lock();
+        if t.live(self.into()) { t.conns[self.slot as usize].local_port } else { 0 }
+    }
+
+    /// Connection state; `Closed` when the handle is stale.
+    pub fn state(self) -> TcpState { conn_state(self) }
+    /// See `recv`; -1 when the handle is stale.
+    pub fn recv(self, buf: &mut [u8]) -> i32 { recv(self, buf) }
+    /// See `send_data`; -1 when the handle is stale.
+    pub fn send_data(self, data: &[u8]) -> i32 { send_data(self, data) }
+    /// See `send_data_with_yield`; -1 when the handle is stale.
+    pub fn send_data_with_yield<F: FnMut()>(self, data: &[u8], yield_fn: F) -> i32 {
+        send_data_with_yield(self, data, yield_fn)
+    }
+    /// See `send_all_with_yield`; 0 when the handle is stale.
+    pub fn send_all_with_yield<F: FnMut()>(self, data: &[u8], yield_fn: F) -> usize {
+        send_all_with_yield(self, data, yield_fn)
+    }
+    /// See `send_all_until`; 0 when the handle is stale.
+    pub fn send_all_until<F: FnMut()>(self, data: &[u8], budget_us: u64, wait_fn: F) -> usize {
+        send_all_until(self, data, budget_us, wait_fn)
+    }
+    /// See `is_unacked`; false when the handle is stale.
+    pub fn is_unacked(self) -> bool { is_unacked(self) }
+    /// See `close`; a no-op when the handle is stale.
+    pub fn close(self) { close(self) }
+    /// See `abort`; a no-op when the handle is stale.
+    pub fn abort(self) { abort(self) }
+    /// See `shutdown_write`; a no-op when the handle is stale.
+    pub fn shutdown_write(self) { shutdown_write(self) }
+    /// See `conn_remote_mss`; 0 when the handle is stale.
+    pub fn remote_mss(self) -> u16 { conn_remote_mss(self) }
+    /// See `conn_negotiated`; `(None, false)` when the handle is stale.
+    pub fn negotiated(self) -> (Option<(u8, u8)>, bool) { conn_negotiated(self) }
+    /// See `conn_rtt`; `None` when the handle is stale.
+    pub fn rtt(self) -> Option<RttEstimate> { conn_rtt(self) }
 }
 
 // ---------------------------------------------------------------------------

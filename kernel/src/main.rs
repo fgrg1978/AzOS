@@ -1371,7 +1371,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
         /// line the negotiation has no QEMU coverage at all.
         fn report_opts(fd: i32) {
             match azos_net::socket_tcp_conn(fd) {
-                Some(idx) => match azos_net::tcp::conn_negotiated(idx) {
+                Some(h) => match h.negotiated() {
                     (Some((snd, rcv)), sack) =>
                         kprintln!("[NETSMOKE] opts wscale={}/{} sack={}", snd, rcv, sack as u8),
                     (None, sack) =>
@@ -3077,10 +3077,7 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
             const P_REMOTO: u16 = 7602;
             let me = azos_net::net_get_ip();
             let foreign = [10u8, 0, 2, 201];
-            let idx = tcp::listen(P_LISTEN);
-            if idx < 0 {
-                bad |= 1 << 14;
-            } else {
+            if let Some(l) = tcp::TcpHandle::listen(P_LISTEN) {
                 let mut seg = [0u8; 20];
                 seg[0..2].copy_from_slice(&P_REMOTO.to_be_bytes());
                 seg[2..4].copy_from_slice(&P_LISTEN.to_be_bytes());
@@ -3116,16 +3113,13 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
                 // 32-bit words, the SYN flag, and the pseudo-header checksum.
                 // With any of those wrong it is dropped silently and there is
                 // no transition.
-                let mut seen = false;
-                for i in 0..32 {
-                    if tcp::conn_state(i) == tcp::TcpState::SynRcvd {
-                        seen = true;
-                        tcp::close(i);
-                        break;
-                    }
+                match tcp::TcpHandle::find(P_LISTEN, tcp::TcpState::SynRcvd) {
+                    Some(c) => c.close(),
+                    None => bad |= 1 << 15,
                 }
-                if !seen { bad |= 1 << 15; }
-                tcp::close(idx as usize);
+                l.close();
+            } else {
+                bad |= 1 << 14;
             }
         }
 
@@ -3176,20 +3170,17 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
                 seg[16..18].copy_from_slice(&ck.to_be_bytes());
 
                 tcp::handle_checked(&foreign, &me, &seg[..tlen]);
-                for i in 0..32 {
-                    if tcp::conn_state(i) == tcp::TcpState::SynRcvd {
-                        let m = tcp::conn_remote_mss(i);
-                        tcp::close(i);
-                        return m;
+                match tcp::TcpHandle::find(P_L, tcp::TcpState::SynRcvd) {
+                    Some(c) => {
+                        let m = c.remote_mss();
+                        c.close();
+                        m
                     }
+                    None => 0,
                 }
-                0
             };
 
-            let l = tcp::listen(P_L);
-            if l < 0 {
-                bad |= 1 << 19;
-            } else {
+            if let Some(l) = tcp::TcpHandle::listen(P_L) {
                 // NOP(1) + unknown kind 250 len 4 + MSS 1200 + NOP padding
                 // to a 4-byte boundary: 1 + 4 + 4 + 3 = 12 bytes.
                 //
@@ -3216,7 +3207,9 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
                 if probe(&[2, 4, 0, 0, 1, 1, 1, 1], 7503) != 64 {
                     bad |= 1 << 16;
                 }
-                tcp::close(l as usize);
+                l.close();
+            } else {
+                bad |= 1 << 19;
             }
         }
 

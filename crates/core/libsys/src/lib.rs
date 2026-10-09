@@ -2328,7 +2328,10 @@ pub fn accept(fd: u64) -> isize {
 /// ABI (`sys_connect_syscall`, `handlers.rs::sys_connect_syscall`): a0 = fd,
 /// a1 = sockaddr pointer, a2 = addrlen (**ignored**). The handler blocks
 /// yielding until the TCP handshake completes, so success means connected.
-/// Local port is chosen by the kernel as `0xC000 + fd`. Refused with
+/// The kernel picks the local port: a free one from the ephemeral range
+/// (`CONFIG_TCP_EPHEMERAL_PORT_MIN..=MAX`, 49152..65535 by default) that no
+/// live or TIME-WAIT connection holds, never the previous connection's
+/// port on a reused fd. Refused with
 /// `-EAGAIN` while degraded mode is contained, like [`connect_typed`].
 pub fn connect(fd: u64, addr: &[u8; SOCKADDR_LEN]) -> isize {
     unsafe { syscall3(SYS_CONNECT, fd, addr.as_ptr() as u64, SOCKADDR_LEN as u64) }

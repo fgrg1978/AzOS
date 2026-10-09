@@ -414,6 +414,11 @@ mod wait;
 #[path = "../../../../crates/net/net/src/tcp.rs"]
 mod tcp;
 
+/// Generation-checked TCP handles (a stale one acts on nothing) and the
+/// ephemeral port allocator.
+#[cfg(test)]
+mod tcp_handle;
+
 /// TCP options on the wire: window scaling (RFC 7323), SACK (RFC 2018) and
 /// MSS, from SYNs that carry them — the harness in `tcp_rx` sends none.
 #[cfg(test)]

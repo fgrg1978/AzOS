@@ -40,27 +40,27 @@ pub(crate) fn net_wait_sleep() {
 }
 
 /// `send_all_until` with the behavior task's budget and sleeping wait.
-fn send_sleeping(fd: usize, bytes: &[u8]) -> usize {
-    azos_net::tcp::send_all_until(fd, bytes, BRAIN_SEND_BUDGET_US, net_wait_sleep)
+fn send_sleeping(fd: azos_net::tcp::TcpHandle, bytes: &[u8]) -> usize {
+    fd.send_all_until(bytes, BRAIN_SEND_BUDGET_US, net_wait_sleep)
 }
 
 /// `send_all_with_yield`, for the camera task: still a yield count (see the
 /// wave 10 INV2 report's list of the waits left counted in yields).
-pub(crate) fn send_yielding(fd: usize, bytes: &[u8]) -> usize {
-    azos_net::tcp::send_all_with_yield(fd, bytes, azos_sched::task_yield)
+pub(crate) fn send_yielding(fd: azos_net::tcp::TcpHandle, bytes: &[u8]) -> usize {
+    fd.send_all_with_yield(bytes, azos_sched::task_yield)
 }
 
 /// Receive exactly `buf.len()` bytes from TCP `fd`, sleeping between polls
 /// (`net_wait_sleep`), up to `deadline` (CLINT ticks). Returns true iff the
 /// buffer filled. Used to read the fixed-size RFC-0019 handshake frames off
 /// the stream.
-fn tcp_recv_exact(fd: usize, buf: &mut [u8], deadline: u64) -> bool {
+fn tcp_recv_exact(fd: azos_net::tcp::TcpHandle, buf: &mut [u8], deadline: u64) -> bool {
     let mut got = 0usize;
     while got < buf.len() {
         if azos_drv_sys::timebase::now() >= deadline {
             return false;
         }
-        let n = azos_net::tcp::recv(fd, &mut buf[got..]);
+        let n = fd.recv(&mut buf[got..]);
         if n > 0 {
             got += n as usize;
         } else {
@@ -87,7 +87,7 @@ fn tcp_recv_exact(fd: usize, buf: &mut [u8], deadline: u64) -> bool {
 /// cause. The CONFIRM slot is read two bytes first, so a REJECT from the
 /// brain is taken as one instead of waiting out the deadline for 34 bytes.
 pub(crate) fn brain_responder_handshake(
-    fd: usize,
+    fd: azos_net::tcp::TcpHandle,
     psk: [u8; 32],
     salt: u64,
 ) -> Option<azos_behavior::encrypt_link::EncryptLink>
@@ -309,8 +309,8 @@ const _: () = assert!(
 
 struct BrainTxShared {
     q: azos_behavior::brain_tx::TxQueue<BRAIN_TXQ_BYTES>,
-    /// The socket brain-tx sends on; -1 for none.
-    fd: i32,
+    /// The socket brain-tx sends on.
+    fd: Option<azos_net::tcp::TcpHandle>,
     /// brain-tx closes `fd` once the queue is out (or stalls).
     close_when_drained: bool,
     /// The behavior task writes `fd` directly for a moment (the I2 probe):
@@ -320,7 +320,7 @@ struct BrainTxShared {
 
 static BRAIN_TXQ: azos_sync::SpinLock<BrainTxShared> = azos_sync::SpinLock::new(BrainTxShared {
     q: azos_behavior::brain_tx::TxQueue::new(BRAIN_TXQ_RESERVE),
-    fd: -1,
+    fd: None,
     close_when_drained: false,
     paused: false,
 });
@@ -356,18 +356,23 @@ fn brain_txq_push(lane: azos_behavior::brain_tx::Lane, bytes: &[u8]) -> bool {
 /// A session starts on `fd`: no byte queued for an earlier one may reach
 /// it. A previous session still flushing (`brain_tx_end_after_flush`) is
 /// closed now.
-pub(crate) fn brain_tx_begin(fd: i32) {
+pub(crate) fn brain_tx_begin(fd: azos_net::tcp::TcpHandle) {
     let old = {
         let mut s = BRAIN_TXQ.lock();
-        let old = if s.close_when_drained { s.fd } else { -1 };
+        let old = if s.close_when_drained { s.fd } else { None };
         s.q.reset();
-        s.fd = fd;
+        s.fd = Some(fd);
         s.close_when_drained = false;
         s.paused = false;
         old
     };
-    if old >= 0 && old != fd {
-        azos_net::tcp::close(old as usize);
+    // A handle, not a slot: if the old session's slot was freed (its RST)
+    // and re-issued -- to `fd` itself, the common case -- this closes
+    // nothing.
+    if let Some(old) = old {
+        if old != fd {
+            old.close();
+        }
     }
 }
 
@@ -376,7 +381,7 @@ pub(crate) fn brain_tx_begin(fd: i32) {
 pub(crate) fn brain_tx_end() {
     let mut s = BRAIN_TXQ.lock();
     s.q.reset();
-    s.fd = -1;
+    s.fd = None;
     s.close_when_drained = false;
     s.paused = false;
 }
@@ -385,7 +390,7 @@ pub(crate) fn brain_tx_end() {
 /// stalls): brain-tx closes the socket. The caller must not close it.
 pub(crate) fn brain_tx_end_after_flush() {
     let mut s = BRAIN_TXQ.lock();
-    if s.fd >= 0 {
+    if s.fd.is_some() {
         s.close_when_drained = true;
     }
 }
@@ -448,7 +453,7 @@ pub(crate) fn brain_tx_report(why: &str) {
 pub(crate) enum DialOutcome {
     /// An established connection on `fd`, with its RFC-0019 link when the
     /// link is encrypted (`None`: plaintext or HMAC-only).
-    Ready { fd: i32, link: Option<azos_behavior::encrypt_link::EncryptLink> },
+    Ready { fd: azos_net::tcp::TcpHandle, link: Option<azos_behavior::encrypt_link::EncryptLink> },
     /// The dial or the handshake failed; the socket is closed. Ask again.
     Failed,
 }
@@ -483,7 +488,7 @@ pub(crate) fn brain_dial_take() -> Option<DialOutcome> {
 }
 
 /// brain-tx's half: take a request, dial, publish. Returns whether it dialled.
-fn brain_dial_serve(port_seq: &mut u16, salt: &mut u64) -> bool {
+fn brain_dial_serve(salt: &mut u64) -> bool {
     let req = {
         let mut c = BRAIN_CONN.lock();
         match c.want.take() {
@@ -491,7 +496,7 @@ fn brain_dial_serve(port_seq: &mut u16, salt: &mut u64) -> bool {
             None => return false,
         }
     };
-    let outcome = brain_dial(req.0, req.1, port_seq, salt);
+    let outcome = brain_dial(req.0, req.1, salt);
     let mut c = BRAIN_CONN.lock();
     c.busy = false;
     c.outcome = Some(outcome);
@@ -504,41 +509,39 @@ fn brain_dial_serve(port_seq: &mut u16, salt: &mut u64) -> bool {
 fn brain_dial(
     ip: [u8; 4],
     port: u16,
-    port_seq: &mut u16,
     salt: &mut u64,
 ) -> DialOutcome {
-    // Local port of the dial, from the dynamic range (RFC 6335). A fixed
-    // port names the same 4-tuple on every redial, and `tcp::connect`
-    // refuses a 4-tuple whose previous connection is still closing; a fresh
-    // port reconnects at once and leaves that connection to finish.
-    let src_port = 49_152 + *port_seq % 16_384;
-    *port_seq = port_seq.wrapping_add(1);
+    // Local port 0: the stack's ephemeral allocator (RFC 6335 dynamic
+    // range, `CONFIG_TCP_EPHEMERAL_PORT_*`) picks a port no live or
+    // TIME-WAIT connection holds. A fixed port names the same 4-tuple on
+    // every redial, and `tcp::connect` refuses a 4-tuple whose previous
+    // connection is still closing; a fresh port reconnects at once and
+    // leaves that connection to finish.
     // connect_with_yield resolves ARP first (sleeping between polls,
     // bounded by CONNECT_ARP_BUDGET_US), then sends SYN.
-    let fd = azos_net::tcp::connect_with_yield(ip, port, src_port, net_wait_sleep);
-    if fd < 0 {
-        kprintln!("[BRAIN] connect failed rc={}", fd);
+    let Some(fd) = azos_net::tcp::TcpHandle::connect_with_yield(ip, port, 0, net_wait_sleep) else {
+        kprintln!("[BRAIN] connect failed rc=-1");
         return DialOutcome::Failed;
-    }
+    };
     // `tcp::connect` only sends SYN. Wait for Established, sleeping 10 ms
     // per poll, for 2 s: longer than RTO_INITIAL_MS (1000) so one lost SYN
     // or SYN-ACK is retransmitted before giving up.
     let deadline = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * 2;
     let mut waited = 0u32;
     while azos_drv_sys::timebase::now() < deadline
-        && azos_net::tcp::conn_state(fd as usize) != azos_net::tcp::TcpState::Established
+        && fd.state() != azos_net::tcp::TcpState::Established
     {
         let next = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 100;
         azos_sched::task_block(azos_sched::WaitReason::Timer(next));
         waited += 1;
     }
-    let st = azos_net::tcp::conn_state(fd as usize);
+    let st = fd.state();
     if st != azos_net::tcp::TcpState::Established {
         kprintln!("[BRAIN] handshake stalled (state={}) after {} polls / 2s", st as u8, waited);
-        azos_net::tcp::close(fd as usize);
+        fd.close();
         return DialOutcome::Failed;
     }
-    kprintln!("[BRAIN] connected fd={} (handshake took {} polls)", fd, waited);
+    kprintln!("[BRAIN] connected fd={} (handshake took {} polls)", fd.slot(), waited);
 
     // RFC-0019: with `link_encrypt=1` in CONFIG.INI (or the compiled-in
     // `link-encrypt-enforced`, which a file on the USB-exposed volume must
@@ -553,19 +556,19 @@ fn brain_dial(
     let Some(psk) = azos_behavior::auth_envelope::link_key_copy() else {
         kprintln!("[BRAIN] CFG_LINK_ENCRYPT set but no LINK.KEY — \
                    closing (RFC-0019: no plaintext fallback)");
-        azos_net::tcp::close(fd as usize);
+        fd.close();
         return DialOutcome::Failed;
     };
     *salt = salt.wrapping_add(1);
     let now = azos_drv_sys::timebase::now();
-    match brain_responder_handshake(fd as usize, psk, now ^ *salt) {
+    match brain_responder_handshake(fd, psk, now ^ *salt) {
         Some(l) => {
             kprintln!("[BRAIN] RFC-0019 encrypted link established");
             DialOutcome::Ready { fd, link: Some(l) }
         }
         None => {
             azos_drv_sys::kwarn!("[BRAIN] RFC-0019 handshake failed — closing");
-            azos_net::tcp::close(fd as usize);
+            fd.close();
             DialOutcome::Failed
         }
     }
@@ -592,21 +595,20 @@ pub(crate) fn brain_tx_task(_: usize) {
     // may still hold open. The handshake's salt is a domain apart from the
     // behavior task's nonce salt (counts up from 0) and the camera task's
     // (from 1 << 63).
-    let mut port_seq: u16 = (now() % 16_384) as u16;
     let mut salt: u64 = 1 << 62;
     loop {
-        brain_dial_serve(&mut port_seq, &mut salt);
+        brain_dial_serve(&mut salt);
         let mut pending = false;
         loop {
             // One socket call per lock hold.
             let mut s = BRAIN_TXQ.lock();
-            if s.fd < 0 || s.paused || s.q.is_empty() && !s.close_when_drained {
+            let Some(fd) = s.fd else { break };
+            if s.paused || s.q.is_empty() && !s.close_when_drained {
                 break;
             }
-            let fd = s.fd as usize;
             let mut dead = false;
             let took = s.q.drain_bounded(
-                |b| match azos_net::tcp::send_data(fd, b) {
+                |b| match fd.send_data(b) {
                     n if n > 0 => n as usize,
                     n => { dead |= n < 0; 0 }
                 },
@@ -616,10 +618,10 @@ pub(crate) fn brain_tx_task(_: usize) {
             );
             if s.close_when_drained && (s.q.is_empty() || s.q.is_stalled() || dead) {
                 s.q.reset();
-                s.fd = -1;
+                s.fd = None;
                 s.close_when_drained = false;
                 drop(s);
-                azos_net::tcp::close(fd);
+                fd.close();
                 break;
             }
             pending = !s.q.is_empty();
@@ -660,12 +662,12 @@ impl BrainTx {
 /// follow them. Returns the bytes the socket took and whether `frame` was
 /// sealed.
 pub(crate) fn seal_framed(
-    fd: usize,
+    fd: azos_net::tcp::TcpHandle,
     frame: &[u8],
     l: &mut azos_behavior::encrypt_link::EncryptLink,
     salt: &mut u64,
     tx: &mut BrainTx,
-    send: fn(usize, &[u8]) -> usize,
+    send: fn(azos_net::tcp::TcpHandle, &[u8]) -> usize,
 ) -> (usize, bool) {
     let BrainTx { carry, env, wire } = tx;
     let mut sent = tx_drain(fd, carry, send);
@@ -797,9 +799,9 @@ const BRAIN_TX_STALL_TICKS: u64 = azos_behavior::brain_tx::BRAIN_TX_STALL_MS
 /// bytes taken. Marks the carry stalled once nothing has been taken for
 /// `BRAIN_TX_STALL_TICKS`; the sending task then ends the session.
 pub(crate) fn tx_drain(
-    fd: usize,
+    fd: azos_net::tcp::TcpHandle,
     carry: &mut azos_behavior::brain_tx::TxCarry<BRAIN_TX_CARRY_MAX>,
-    send: fn(usize, &[u8]) -> usize,
+    send: fn(azos_net::tcp::TcpHandle, &[u8]) -> usize,
 ) -> usize {
     carry.drain(
         |bytes| send(fd, bytes),
@@ -849,10 +851,9 @@ fn ms_policy_log_once() {
 /// before the control frame; PRIORITY chunks the bulk and lets the control
 /// frame jump ahead after the first chunk. Emits one `[I2]` line. Run once.
 #[cfg(feature = "qemu")]
-pub(crate) fn i2_holdoff_probe(fd: usize) {
+pub(crate) fn i2_holdoff_probe(fd: azos_net::tcp::TcpHandle) {
     use azos_drv_sys::wcet::read_cycles;
     use azos_multi_stream as ms;
-    use azos_net::tcp::send_all_with_yield;
     use azos_sched::task_yield;
 
     // K-C5: this probe pushes synthetic bulk straight onto the brain socket,
@@ -886,18 +887,18 @@ pub(crate) fn i2_holdoff_probe(fd: usize) {
     while off < BULK {
         let n = (BULK - off).min(CHUNK);
         let w = ms::wrap(ms::STREAM_CAMERA_BASE, &bulk[off..off + n], wire).unwrap_or(0);
-        let _ = send_all_with_yield(fd, &wire[..w], task_yield);
+        let _ = fd.send_all_with_yield(&wire[..w], task_yield);
         off += n;
         if priority && !ctrl_done {
             // Control jumps ahead after the first bulk chunk.
-            let _ = send_all_with_yield(fd, &ctrl_wire[..ctrl_len], task_yield);
+            let _ = fd.send_all_with_yield(&ctrl_wire[..ctrl_len], task_yield);
             ctrl_holdoff = read_cycles().wrapping_sub(t0);
             ctrl_done = true;
         }
     }
     if !ctrl_done {
         // FIFO: control waits for the entire bulk frame.
-        let _ = send_all_with_yield(fd, &ctrl_wire[..ctrl_len], task_yield);
+        let _ = fd.send_all_with_yield(&ctrl_wire[..ctrl_len], task_yield);
         ctrl_holdoff = read_cycles().wrapping_sub(t0);
     }
     let bulk_total = read_cycles().wrapping_sub(t0);

@@ -97,6 +97,34 @@ config TCP_DELACK_SEGS
 
       Cost: none in RAM; one compare per in-order segment.
 
+config TCP_EPHEMERAL_PORT_MIN
+    int "Lowest local port a TCP connect may pick"
+    range 1024 65535
+    default 49152
+    help
+      A connect that names no local port (SYS_CONNECT, the brain link,
+      the camera link) takes a free one from
+      TCP_EPHEMERAL_PORT_MIN..TCP_EPHEMERAL_PORT_MAX (tcp.rs,
+      TcpLayer::ephemeral_port). A port is free while no connection
+      that is not Closed holds it, TIME-WAIT included, and a cursor
+      seeded from boot entropy walks the range so two consecutive
+      connects never reuse a 4-tuple. 49152..65535 is the IANA dynamic
+      range (RFC 6335); Linux defaults to 32768..60999.
+
+      Cost: no RAM; one connection-table scan per port tried, at
+      connect only. Lower it to widen the range for a fleet node that
+      dials many peers; keep it above every port a service listens on.
+      Same default on every ISA and profile.
+
+config TCP_EPHEMERAL_PORT_MAX
+    int "Highest local port a TCP connect may pick"
+    range 1024 65535
+    default 65535
+    help
+      Upper end of the ephemeral range (see TCP_EPHEMERAL_PORT_MIN);
+      must not be below it (crates/net/net/src/tcp.rs asserts this at
+      compile time). Cost: none.
+
 config TCP_DELACK_PASS_FLUSH
     bool "Flush held ACKs at the end of each network poll pass"
     default y

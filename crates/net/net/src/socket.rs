@@ -59,6 +59,12 @@ const SOCK_OWNER_NONE: u32 = 0;
 struct Socket {
     kind:   SockKind,
     slot:   i32,   // tcp conn index or udp socket index
+    /// The TCP connection, with its generation: every TCP operation goes
+    /// through this, never through `slot`. A slot freed under the socket (a
+    /// peer's RST) and re-issued to another owner is then out of this fd's
+    /// reach -- `close` on the old fd used to close the new owner's
+    /// connection.
+    tcp:    Option<tcp::TcpHandle>,
     local:  SockAddr,
     remote: SockAddr,
     /// TID that created this socket, or [`SOCK_OWNER_KERNEL`].
@@ -96,6 +102,7 @@ impl Socket {
         Socket {
             kind:   SockKind::Free,
             slot:   -1,
+            tcp:    None,
             local:  SockAddr::new(),
             remote: SockAddr::new(),
             owner:  SOCK_OWNER_NONE,
@@ -218,6 +225,7 @@ pub fn socket_create_owned(domain: u32, sock_type: u32, _proto: u32, owner: u32)
     // own the slot could.
     t.sockets[idx].kind   = kind;
     t.sockets[idx].slot   = -1;
+    t.sockets[idx].tcp    = None;
     t.sockets[idx].local  = SockAddr::new();
     t.sockets[idx].remote = SockAddr::new();
     t.sockets[idx].owner  = owner;
@@ -243,13 +251,13 @@ pub fn socket_owner(fd: i32) -> Option<u32> {
     Some(s.owner)
 }
 
-/// The TCP connection index behind stream socket `fd`, if it has one yet.
-pub fn socket_tcp_conn(fd: i32) -> Option<usize> {
+/// The TCP connection behind stream socket `fd`, if it has one yet.
+pub fn socket_tcp_conn(fd: i32) -> Option<tcp::TcpHandle> {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return None; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS) as i32;
     let t = SOCKS.lock();
     let s = &t.sockets[fd as usize];
-    if s.kind == SockKind::Tcp && s.slot >= 0 { Some(s.slot as usize) } else { None }
+    if s.kind == SockKind::Tcp { s.tcp } else { None }
 }
 
 /// Bind a socket to a local address/port.
@@ -287,9 +295,10 @@ pub fn socket_listen_bound(fd: i32) -> i32 {
     };
     if kind != SockKind::Tcp { return -1; }
     if port == 0 { return -1; }
-    let slot = tcp::listen(port);
-    if slot < 0 { return -1; }
-    SOCKS.lock().sockets[fd_idx].slot = slot;
+    let Some(h) = tcp::TcpHandle::listen(port) else { return -1 };
+    let mut t = SOCKS.lock();
+    t.sockets[fd_idx].slot = h.slot() as i32;
+    t.sockets[fd_idx].tcp  = Some(h);
     0
 }
 
@@ -319,13 +328,13 @@ pub fn socket_accept_owned(fd: i32, owner: u32) -> i32 {
         if s.kind != SockKind::Tcp { return -1; }
         s.local.port
     };
-    let conn_idx = tcp::accept(port);
-    if conn_idx < 0 { return -1; }
+    let Some(h) = tcp::TcpHandle::accept(port) else { return -1 };
     let mut t = SOCKS.lock();
     match t.alloc() {
         Some(i) => {
             t.sockets[i].kind       = SockKind::Tcp;
-            t.sockets[i].slot       = conn_idx;
+            t.sockets[i].slot       = h.slot() as i32;
+            t.sockets[i].tcp        = Some(h);
             t.sockets[i].local      = SockAddr::new();
             t.sockets[i].local.port = port;
             t.sockets[i].remote     = SockAddr::new();
@@ -383,24 +392,25 @@ pub fn socket_connect(fd: i32, addr: &SockAddr, src_port: u16) -> i32 {
     }
 
     if kind != SockKind::Tcp { return -1; }
-    let slot = tcp::connect(addr.addr, addr.port, src_port);
-    if slot < 0 { return -1; }
+    let Some(h) = tcp::TcpHandle::connect(addr.addr, addr.port, src_port) else { return -1 };
     let mut t = SOCKS.lock();
-    t.sockets[fd].slot   = slot;
+    t.sockets[fd].slot   = h.slot() as i32;
+    t.sockets[fd].tcp    = Some(h);
     t.sockets[fd].remote = *addr;
     0
 }
 
 /// Ephemeral port for a `connect` on an unbound UDP socket.
 ///
-/// IANA dynamic range (49152–65535) and a monotonic counter: a port is not
-/// reused until the whole range wraps, so a late reply from an earlier
-/// exchange does not land on the new socket.
+/// The TCP ephemeral range (`CONFIG_TCP_EPHEMERAL_PORT_MIN..=MAX`, IANA's
+/// dynamic range by default) and a monotonic counter: a port is not reused
+/// until the whole range wraps, so a late reply from an earlier exchange
+/// does not land on the new socket.
 fn ephemeral_port() -> u16 {
-    use core::sync::atomic::{AtomicU16, Ordering};
-    static NEXT: AtomicU16 = AtomicU16::new(49152);
-    let p = NEXT.fetch_add(1, Ordering::Relaxed);
-    if p < 49152 { 49152 } else { p }
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let span = tcp::EPHEMERAL_MAX as u32 - tcp::EPHEMERAL_MIN as u32 + 1;
+    tcp::EPHEMERAL_MIN + (NEXT.fetch_add(1, Ordering::Relaxed) % span) as u16
 }
 
 /// How long a blocking connect waits for the three-way handshake, in µs of
@@ -470,9 +480,9 @@ pub fn socket_connect_with_yield<F: FnMut()>(
 
     if kind != SockKind::Tcp { return -1; }
 
-    let slot = tcp::connect_with_yield(addr.addr, addr.port, src_port,
-                                       &mut yield_fn);
-    if slot < 0 { return -1; }
+    let Some(h) = tcp::TcpHandle::connect_with_yield(addr.addr, addr.port, src_port,
+                                                     &mut yield_fn)
+    else { return -1 };
 
     // Wait out the handshake. Anything that is neither Established nor still
     // in SynSent (a RST closes the connection) is a failure, and reporting it
@@ -484,14 +494,17 @@ pub fn socket_connect_with_yield<F: FnMut()>(
     // N7: the SYN-ACK (or the RST) wakes this task (see `crate::wait`).
     let armed = crate::wait::TCP_WAITERS.arm();
     loop {
-        match tcp::conn_state(slot as usize) {
+        match h.state() {
             tcp::TcpState::Established => break,
             tcp::TcpState::SynSent => {}
-            _ => return -1,
+            _ => { h.close(); return -1; }
         }
         if azos_drv_sys::timebase::now().wrapping_sub(start) >= budget_ticks
             || yields >= CONNECT_HANDSHAKE_SPIN_CAP
         {
+            // Nobody holds the connection after this -1: give its slot
+            // back now instead of leaving it to the SYN retry timer.
+            h.close();
             return -1;
         }
         armed.wait(start.wrapping_add(budget_ticks), &mut yield_fn);
@@ -499,7 +512,8 @@ pub fn socket_connect_with_yield<F: FnMut()>(
     }
 
     let mut t = SOCKS.lock();
-    t.sockets[fd].slot   = slot;
+    t.sockets[fd].slot   = h.slot() as i32;
+    t.sockets[fd].tcp    = Some(h);
     t.sockets[fd].remote = *addr;
     0
 }
@@ -511,10 +525,10 @@ pub fn socket_listen(fd: i32, port: u16) -> i32 {
     let fd = fd as usize;
     let kind = { SOCKS.lock().sockets[fd].kind };
     if kind != SockKind::Tcp { return -1; }
-    let slot = tcp::listen(port);
-    if slot < 0 { return -1; }
+    let Some(h) = tcp::TcpHandle::listen(port) else { return -1 };
     let mut t = SOCKS.lock();
-    t.sockets[fd].slot = slot;
+    t.sockets[fd].slot = h.slot() as i32;
+    t.sockets[fd].tcp  = Some(h);
     0
 }
 
@@ -531,13 +545,14 @@ pub fn socket_listen(fd: i32, port: u16) -> i32 {
 pub fn socket_send_with_yield<F: FnMut()>(fd: i32, data: &[u8], yield_fn: F) -> i32 {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return -1; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS) as i32;
-    let (kind, slot) = {
+    let (kind, slot, h) = {
         let t = SOCKS.lock();
-        (t.sockets[fd as usize].kind, t.sockets[fd as usize].slot)
+        let s = &t.sockets[fd as usize];
+        (s.kind, s.slot, s.tcp)
     };
     if slot < 0 { return -1; }
     match kind {
-        SockKind::Tcp => tcp::send_data_with_yield(slot as usize, data, yield_fn),
+        SockKind::Tcp => h.map_or(-1, |h| h.send_data_with_yield(data, yield_fn)),
         _ => socket_send(fd, data),
     }
 }
@@ -545,13 +560,14 @@ pub fn socket_send_with_yield<F: FnMut()>(fd: i32, data: &[u8], yield_fn: F) -> 
 pub fn socket_send(fd: i32, data: &[u8]) -> i32 {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return -1; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS) as i32;
-    let (kind, slot) = {
+    let (kind, slot, h) = {
         let t = SOCKS.lock();
-        (t.sockets[fd as usize].kind, t.sockets[fd as usize].slot)
+        let s = &t.sockets[fd as usize];
+        (s.kind, s.slot, s.tcp)
     };
     if slot < 0 { return -1; }
     match kind {
-        SockKind::Tcp => tcp::send_data(slot as usize, data),
+        SockKind::Tcp => h.map_or(-1, |h| h.send_data(data)),
         // **UDP already knew how to send.** `udp::sendto` exists and works;
         // all that was missing was this layer routing to it. The destination
         // comes from the peer fixed by `connect`, because the `sendto` ABI
@@ -591,13 +607,14 @@ pub fn socket_send(fd: i32, data: &[u8]) -> i32 {
 pub fn socket_sendto(fd: i32, data: &[u8], dst: &SockAddr) -> i32 {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return -1; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS) as i32;
-    let (kind, slot) = {
+    let (kind, slot, h) = {
         let t = SOCKS.lock();
-        (t.sockets[fd as usize].kind, t.sockets[fd as usize].slot)
+        let s = &t.sockets[fd as usize];
+        (s.kind, s.slot, s.tcp)
     };
     if slot < 0 { return -1; }
     match kind {
-        SockKind::Tcp => tcp::send_data(slot as usize, data),
+        SockKind::Tcp => h.map_or(-1, |h| h.send_data(data)),
         SockKind::Udp => {
             if dst.port == 0 || dst.addr == [0, 0, 0, 0] { return -1; }
             match udp::sendto(slot, &dst.addr, dst.port, data) {
@@ -618,9 +635,10 @@ pub fn socket_sendto(fd: i32, data: &[u8], dst: &SockAddr) -> i32 {
 pub fn socket_recvfrom(fd: i32, buf: &mut [u8], src: &mut SockAddr) -> i32 {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return -1; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS) as i32;
-    let (kind, slot) = {
+    let (kind, slot, _) = {
         let t = SOCKS.lock();
-        (t.sockets[fd as usize].kind, t.sockets[fd as usize].slot)
+        let s = &t.sockets[fd as usize];
+        (s.kind, s.slot, s.tcp)
     };
     if slot < 0 { return -1; }
     match kind {
@@ -649,17 +667,19 @@ pub fn socket_recvfrom(fd: i32, buf: &mut [u8], src: &mut SockAddr) -> i32 {
 pub fn socket_recv(fd: i32, buf: &mut [u8]) -> i32 {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return -1; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS) as i32;
-    let (kind, slot) = {
+    let (kind, slot, h) = {
         let t = SOCKS.lock();
-        (t.sockets[fd as usize].kind, t.sockets[fd as usize].slot)
+        let s = &t.sockets[fd as usize];
+        (s.kind, s.slot, s.tcp)
     };
     if slot < 0 { return -1; }
     match kind {
         SockKind::Tcp => {
-            let n = tcp::recv(slot as usize, buf);
+            let Some(h) = h else { return -1 };
+            let n = h.recv(buf);
             if n == 0 {
                 // Return -1 when connection is closing and no data remains.
-                let state = tcp::conn_state(slot as usize);
+                let state = h.state();
                 if state == tcp::TcpState::CloseWait || state == tcp::TcpState::Closed {
                     return -1;
                 }
@@ -693,14 +713,15 @@ pub fn socket_recv(fd: i32, buf: &mut [u8]) -> i32 {
 pub fn socket_shutdown(fd: i32) -> i32 {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return -1; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS) as i32;
-    let (kind, slot) = {
+    let (kind, slot, h) = {
         let t = SOCKS.lock();
-        (t.sockets[fd as usize].kind, t.sockets[fd as usize].slot)
+        let s = &t.sockets[fd as usize];
+        (s.kind, s.slot, s.tcp)
     };
     if slot < 0 { return -1; }
     match kind {
         SockKind::Tcp => {
-            tcp::shutdown_write(slot as usize);
+            if let Some(h) = h { h.shutdown_write(); }
             0
         }
         _ => -1,
@@ -842,13 +863,13 @@ pub fn socket_mcast_leave(fd: i32, group: &[u8; 4]) -> Result<(), McastError> {
 /// locks, and holding `SOCKS` across them would invert the lock order that
 /// `net_poll` already relies on.
 fn close_slot(fd: usize) {
-    let (kind, slot) = {
+    let (kind, slot, h) = {
         let t = SOCKS.lock();
-        (t.sockets[fd].kind, t.sockets[fd].slot)
+        (t.sockets[fd].kind, t.sockets[fd].slot, t.sockets[fd].tcp)
     };
     if slot >= 0 {
         match kind {
-            SockKind::Tcp => tcp::close(slot as usize),
+            SockKind::Tcp => if let Some(h) = h { h.close() },
             SockKind::Udp => udp::unbind(slot as usize),
             SockKind::Free => {}
         }

@@ -47,7 +47,9 @@ pub(crate) fn behavior_task(_: usize) {
     // before its first dial (wave 15, B1): a wait on the network.
 
     // TCP connection state (local to this task)
-    let mut tcp_fd: i32 = -1;
+    // The brain connection, as a generation-checked handle: a close after a
+    // wait cannot reach a slot the stack has re-issued to someone else.
+    let mut tcp_fd: Option<azos_net::tcp::TcpHandle> = None;
     let mut tcp_connected = false;
     // The dial (its local port, the handshake) is brain-tx's (`brain_dial`).
     // RFC-0019 encrypted link: established per TCP connection (fresh ephemeral
@@ -168,10 +170,10 @@ pub(crate) fn behavior_task(_: usize) {
                 let port = azos_behavior::remote_server_port();
                 match brain_dial_take() {
                     Some(DialOutcome::Ready { fd, link: l }) => {
-                        tcp_fd = fd;
+                        tcp_fd = Some(fd);
                         tcp_connected = true;
                         azos_behavior::remote_set_connected(true);
-                        azos_behavior::remote_set_socket(tcp_fd);
+                        azos_behavior::remote_set_socket(fd.slot() as i32);
                         // Deactivate offline mode — brain is back
                         azos_behavior::offline::offline_deactivate();
                         link = l;
@@ -199,7 +201,9 @@ pub(crate) fn behavior_task(_: usize) {
                 if tcp_connected {
                     // The session's queue (wave 15, B1): no byte
                     // queued for an earlier session may reach this one.
-                    brain_tx_begin(tcp_fd);
+                    if let Some(fd) = tcp_fd {
+                        brain_tx_begin(fd);
+                    }
                             let uptime_s = (now / azos_drv_sys::timebase::TIMER_FREQ) as u32;
                             let mut st_payload = [0u8; STATUS_PAYLOAD_SIZE];
                             encode_status_packet(
@@ -228,7 +232,7 @@ pub(crate) fn behavior_task(_: usize) {
                 }
             }
 
-            if tcp_connected && tcp_fd >= 0 {
+            if let (true, Some(fd)) = (tcp_connected, tcp_fd) {
                 // RFC-0019 wall-clock rekey. The link counts records and
                 // bytes itself; the interval needs a clock, which is here.
                 if let Some(l) = link.as_mut() {
@@ -284,7 +288,7 @@ pub(crate) fn behavior_task(_: usize) {
                         && brain_tx_quiesce()
                     {
                         I2_DONE.store(true, Ordering::Relaxed);
-                        i2_holdoff_probe(tcp_fd as usize);
+                        i2_holdoff_probe(fd);
                         brain_tx_resume();
                     }
                 }
@@ -333,12 +337,12 @@ pub(crate) fn behavior_task(_: usize) {
                 brain_tx_kick();
 
                 // Check connection state
-                let conn_state = azos_net::tcp::conn_state(tcp_fd as usize);
+                let conn_state = fd.state();
                 if conn_state != azos_net::tcp::TcpState::Established {
                     brain_tx_report("connection lost");
                     brain_tx_end();
                     tcp_connected = false;
-                    tcp_fd = -1;
+                    tcp_fd = None;
                     // Drop the encrypted channel — a reconnect performs a fresh
                     // RFC-0019 handshake with new ephemeral keys (forward secrecy
                     // when the pool is seeded; see `derive_ephemeral_priv`'s doc —
@@ -369,7 +373,9 @@ pub(crate) fn behavior_task(_: usize) {
                 // Sized for several coalesced inner packets, not one: the drain
                 // loop below concatenates every envelope it decodes.
                 let mut recv_buf = [0u8; RECV_INNER_MAX * 4];
-                let n_raw = azos_net::tcp::recv(tcp_fd as usize, &mut raw_buf);
+                // Not after "connection lost" above: as before the handle,
+                // a lost connection reads nothing more this tick.
+                let n_raw = if tcp_connected { fd.recv(&mut raw_buf) } else { -1 };
                 // A terminal RFC-0019 record-layer event seen while draining.
                 let mut link_terminal: Option<azos_behavior::encrypt_link::RecordError> = None;
                 // Returns inner_len on success / identity-fallback (unkeyed);
@@ -463,10 +469,10 @@ pub(crate) fn behavior_task(_: usize) {
                         brain_tx_kick();
                     } else {
                         brain_tx_end();
-                        azos_net::tcp::close(tcp_fd as usize);
+                        fd.close();
                     }
                     tcp_connected = false;
-                    tcp_fd = -1;
+                    tcp_fd = None;
                     link = None;
                     azos_behavior::remote_set_connected(false);
                     azos_behavior::offline::offline_activate();
@@ -482,9 +488,9 @@ pub(crate) fn behavior_task(_: usize) {
                               tx_pending, azos_behavior::brain_tx::BRAIN_TX_STALL_MS);
                     brain_tx_report("stalled");
                     brain_tx_end();
-                    azos_net::tcp::close(tcp_fd as usize);
+                    fd.close();
                     tcp_connected = false;
-                    tcp_fd = -1;
+                    tcp_fd = None;
                     link = None;
                     azos_behavior::remote_set_connected(false);
                     azos_behavior::offline::offline_activate();

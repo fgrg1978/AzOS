@@ -13,6 +13,13 @@ loopback-preempt-probe = []
 # Gate canary: the loopback recursion guard back to one global flag held with
 # preemption on (the vsbench product-column udp-roundtrip loss).
 loopback-guard-canary = []
+# Canary (host tests `tcp_handle_aba`): a TCP slot keeps its generation when
+# it is re-issued, so a stale `TcpHandle` acts on the new owner's connection
+# again (the ABA the generation closes).
+tcp-handle-gen-canary = []
+# Canary (host tests `tcp_handle_aba`): the ephemeral port allocator hands out
+# one fixed port and skips nothing, as `0xC000 + fd` did for a reused fd.
+tcp-ephemeral-port-canary = []
 # Enables `[TCP-RX]` / `[TCP-TX]` per-segment trace probes in `tcp.rs`.
 # Propagated from the kernel's `qemu` feature.  Free in production builds.
 qemu = []

@@ -123,6 +123,11 @@ pub fn net_get_gateway() -> [u8; 4] {
 pub fn net_get_ip() -> [u8; 4] {
     shim_fwd::hit("net_get_ip".into(), |f| f.ip)
 }
+/// `crate::net_tx_batch_begin`/`_end` as `tcp.rs` sees them (the virtio-net
+/// TX doorbell batch): nothing to batch here.
+pub fn net_tx_batch_begin() {}
+pub fn net_tx_batch_end() {}
+
 pub fn net_get_mac() -> [u8; 6] {
     shim_fwd::hit("net_get_mac".into(), |f| f.mac)
 }

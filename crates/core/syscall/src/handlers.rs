@@ -3503,22 +3503,18 @@ pub fn sys_accept(fd: u64, _addr_out: u64, _addrlen_out: u64) -> i64 {
 /// contained, as `SYS_CONNECT_TYPED` answers — choosing where a socket talks
 /// to is a write to it.
 pub fn sys_connect_syscall(fd: u64, addr_ptr: u64, _addrlen: u64) -> i64 {
-    // Ownership gate FIRST — before `fd` is used for anything at all.
-    // Two things depend on that ordering:
-    //   1. Security: connecting another task's socket redirects its stream
-    //      to an attacker-chosen peer.
-    //   2. Liveness: the ephemeral source port below is derived from `fd`.
-    //      With `overflow-checks = true` and `panic = "abort"`, an
-    //      out-of-range `fd` (e.g. 16384, giving 0xC000 + 0x4000 = 65536)
-    //      used to overflow the u16 and abort — a full board reset, i.e. a
-    //      physical-safety event, reachable by one syscall from any task.
+    // Ownership gate FIRST — before `fd` is used for anything at all:
+    // connecting another task's socket redirects its stream to an
+    // attacker-chosen peer.
     if !socket_access_ok(fd) { return -1; }
     // Before the address is read: it is copied from user memory.
     if untyped_write_contained() { return E_CONTAINED; }
-    // Belt and braces on the port arithmetic: the gate above already bounds
-    // `fd` to 0..MAX_SOCKETS, but `saturating_add` means a future reordering
-    // of this function cannot reintroduce the panic.
-    let src_port = 0xC000u16.saturating_add(fd as u16);
+    // Local port 0: the TCP layer picks a free one from the ephemeral range
+    // (`CONFIG_TCP_EPHEMERAL_PORT_*`) under the lock that takes the slot. It
+    // was `0xC000 + fd`: a second connect on the same fd named the previous
+    // connection's 4-tuple, which the peer may still hold (TIME-WAIT) and
+    // answer with a RST.
+    let src_port = 0;
     match read_sockaddr(addr_ptr) {
         // Yield-aware: connect must not report success until the handshake
         // completes, and waiting without yielding would burn the hart.

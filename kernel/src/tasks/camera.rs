@@ -97,14 +97,13 @@ pub(crate) fn camera_tx_task(_: usize) {
     let cam: &mut CameraPkt = unsafe { &mut *core::ptr::addr_of_mut!(CAM) };
     let ticks_per_ms = TIMER_FREQ / 1000;
     let mut policy = CameraTx::new();
-    let mut fd: i32 = -1;
+    let mut fd: Option<azos_net::tcp::TcpHandle> = None;
     let mut link: Option<azos_behavior::encrypt_link::EncryptLink> = None;
     let mut rekey_deadline: u64 = 0;
     // Ephemeral keys and record nonces derive from the clock, the cycle count
     // and a salt: a salt domain apart from the behavior task's, which counts
     // up from 0.
     let mut salt: u64 = 1 << 63;
-    let mut port_seq: u16 = ((get_time() >> 3) % 16_384) as u16;
     kprintln!("[CAM-TX] camera connection task up (port {})",
               azos_config::BEHAVIOR_CAMERA_PORT.load(Ordering::Relaxed));
     loop {
@@ -126,9 +125,7 @@ pub(crate) fn camera_tx_task(_: usize) {
             control: camera_tx::control_session(),
         };
         let socket = Socket {
-            established: fd >= 0
-                && azos_net::tcp::conn_state(fd as usize)
-                    == azos_net::tcp::TcpState::Established,
+            established: fd.is_some_and(|h| h.state() == azos_net::tcp::TcpState::Established),
             carry_empty: tx.carry.is_empty(),
             stalled: tx.carry.is_stalled(),
         };
@@ -138,44 +135,48 @@ pub(crate) fn camera_tx_task(_: usize) {
                     until_ms.saturating_mul(ticks_per_ms),
                 ));
             }
-            Step::Dial { generation } => match camera_dial(port as u16, &mut port_seq, &mut salt) {
+            Step::Dial { generation } => match camera_dial(port as u16, &mut salt) {
                 Some((f, l)) => {
-                    fd = f;
+                    fd = Some(f);
                     link = Some(l);
                     tx.carry.reset();
                     rekey_deadline = get_time() + BRAIN_LINK_REKEY_SECS * TIMER_FREQ;
                     policy.dialed(generation, now_ms);
-                    kprintln!("[CAM-TX] connected fd={} (control session {})", f, generation);
+                    kprintln!("[CAM-TX] connected fd={} (control session {})", f.slot(), generation);
                 }
                 None => policy.dial_failed(get_time() / ticks_per_ms),
             },
             Step::Frame => {
-                let sealed = match link.as_mut() {
-                    Some(l) => {
+                let sealed = match (link.as_mut(), fd) {
+                    (Some(l), Some(fd)) => {
                         // RFC-0019 wall-clock rekey, as on the control
                         // connection; the link counts records and bytes itself.
                         if get_time() >= rekey_deadline {
                             l.request_rekey();
                             rekey_deadline = get_time() + BRAIN_LINK_REKEY_SECS * TIMER_FREQ;
                         }
-                        camera_send_frame(fd as usize, l, &mut salt, tx, cam)
+                        camera_send_frame(fd, l, &mut salt, tx, cam)
                     }
-                    None => false,
+                    _ => false,
                 };
                 policy.frame_done(now_ms, sealed);
             }
             Step::Drain => {
-                tx_drain(fd as usize, &mut tx.carry, send_yielding);
+                if let Some(fd) = fd {
+                    tx_drain(fd, &mut tx.carry, send_yielding);
+                }
                 azos_sched::task_block(azos_sched::WaitReason::Timer(
                     get_time() + TIMER_FREQ / 100,
                 ));
             }
             Step::Close(why) => {
-                if fd >= 0 {
-                    azos_net::tcp::close(fd as usize);
+                // A stale handle (the slot freed by a RST and re-issued
+                // since) closes nothing.
+                if let Some(fd) = fd {
+                    fd.close();
                 }
                 kprintln!("[CAM-TX] closed ({:?}) after {} frames", why, policy.frames());
-                fd = -1;
+                fd = None;
                 link = None;
                 tx.carry.reset();
                 policy.closed(get_time() / ticks_per_ms);
@@ -188,41 +189,39 @@ pub(crate) fn camera_tx_task(_: usize) {
 /// socket and the session, or `None` with the socket closed.
 fn camera_dial(
     port: u16,
-    port_seq: &mut u16,
     salt: &mut u64,
-) -> Option<(i32, azos_behavior::encrypt_link::EncryptLink)> {
+) -> Option<(azos_net::tcp::TcpHandle, azos_behavior::encrypt_link::EncryptLink)> {
     use azos_drv_sys::timebase::{now as get_time, TIMER_FREQ};
     use azos_net::tcp;
     let psk = azos_behavior::auth_envelope::link_key_copy()?;
-    let src_port = 49_152 + *port_seq % 16_384;
-    *port_seq = port_seq.wrapping_add(1);
-    let fd = tcp::connect_with_yield(
-        azos_behavior::remote_server_ip(), port, src_port, azos_sched::task_yield,
-    );
-    if fd < 0 {
-        kprintln!("[CAM-TX] connect failed rc={}", fd);
+    // Local port 0: the stack's ephemeral allocator picks one no live or
+    // TIME-WAIT connection holds.
+    let Some(fd) = tcp::TcpHandle::connect_with_yield(
+        azos_behavior::remote_server_ip(), port, 0, azos_sched::task_yield,
+    ) else {
+        kprintln!("[CAM-TX] connect failed rc=-1");
         return None;
-    }
+    };
     // A TCP handshake is a wait: sleep-poll at 10 ms, as the control dial does.
     let deadline = get_time() + TIMER_FREQ * 2;
     while get_time() < deadline
-        && tcp::conn_state(fd as usize) != tcp::TcpState::Established
+        && fd.state() != tcp::TcpState::Established
     {
         azos_sched::task_block(azos_sched::WaitReason::Timer(
             get_time() + TIMER_FREQ / 100,
         ));
     }
-    if tcp::conn_state(fd as usize) != tcp::TcpState::Established {
+    if fd.state() != tcp::TcpState::Established {
         kprintln!("[CAM-TX] connect stalled");
-        tcp::close(fd as usize);
+        fd.close();
         return None;
     }
     *salt = salt.wrapping_add(1);
-    match brain_responder_handshake(fd as usize, psk, get_time() ^ *salt) {
+    match brain_responder_handshake(fd, psk, get_time() ^ *salt) {
         Some(l) => Some((fd, l)),
         None => {
             azos_drv_sys::kwarn!("[CAM-TX] RFC-0019 handshake failed — closing");
-            tcp::close(fd as usize);
+            fd.close();
             None
         }
     }
@@ -232,7 +231,7 @@ fn camera_dial(
 /// task's own carry. Returns whether a frame was sealed; none is captured
 /// while the previous message is still owed to the socket.
 fn camera_send_frame(
-    fd: usize,
+    fd: azos_net::tcp::TcpHandle,
     l: &mut azos_behavior::encrypt_link::EncryptLink,
     salt: &mut u64,
     tx: &mut BrainTx,

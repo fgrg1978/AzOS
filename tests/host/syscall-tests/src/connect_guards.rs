@@ -234,20 +234,13 @@ fn connect_refuses_a_kernel_page_named_by_a_user_task() {
 }
 
 /// The fd side: an out-of-range `fd` must be refused *before* it is used for
-/// anything, because the ephemeral source port is derived from it —
-/// `0xC000 + fd`, which overflows a `u16` at `fd == 0x4000` and, under
-/// `overflow-checks` with `panic = "abort"`, used to abort the board.
-///
-/// **This test does NOT prove the `saturating_add` is load-bearing, and
-/// saying so is the point.** Two layers stand between ring 3 and that
-/// overflow: `socket_access_ok` bounds `fd` to `0..MAX_SOCKETS`, and the
-/// `saturating_add` catches anything that got past it. A single mutation to
-/// either one leaves the other holding, so neither can be caught by a
-/// single-mutation canary here. Verified by hand as a two-part mutation:
-/// removing only the gate still returns -1 (the saturating add absorbs
-/// `fd = 0x4000`); removing both reproduces the abort. That is
-/// defence-in-depth working, not coverage — recorded here so nobody reads
-/// this test as more than it is.
+/// anything. The ephemeral source port used to be derived from it --
+/// `0xC000 + fd`, which overflowed a `u16` at `fd == 0x4000` and, under
+/// `overflow-checks` with `panic = "abort"`, aborted the board. The port now
+/// comes from the TCP layer's allocator and no longer depends on `fd`; the
+/// historical values stay below as regression inputs for the gate
+/// (`socket_access_ok`), which is now the only layer between them and the
+/// socket table.
 #[test]
 fn connect_denies_an_out_of_range_fd() {
     let _g = serial();
