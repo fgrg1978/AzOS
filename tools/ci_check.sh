@@ -10925,9 +10925,14 @@ PY
     #   ktest fork FP runtime canary (x86)  canary=x86-fork-fp-skip: a forked
     #                               child starts from the initial FP image;
     #                               x86_ring3_syscall_fork_fp alone not ok
+    #   ktest low-half alias runtime canary (x86)  canary=x86-low-alias: the
+    #                               first kernel text page is mapped 1:1 in
+    #                               the low half again (the layout before the
+    #                               kernel linked high); x86_low_half_maps_no_ram
+    #                               alone not ok
     # +9 with Kconfig CHAOS / DECISION_RECORDS (`chaos`, `decisions` ride in
-    # every x86 ktest kernel, as on rv and arm).
-    KTEST_N_X86=24
+    # every x86 ktest kernel, as on rv and arm); +1 x86_low_half_maps_no_ram.
+    KTEST_N_X86=25
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         make x86_64 X86_64_FEATURES="$1" >/dev/null 2>&1 && cp build/kernel-x86_64.elf "$2"
@@ -11031,6 +11036,8 @@ PY
         "x86_ring3_syscall_fork_fp" "canary=x86-fork-fp-skip"
     par "ktest chaos-inert canary (x86)" x86_ktest_row "ktest chaos-inert canary (x86)" "" \
         "$KTEST_CHAOS_INERT" "canary=chaos-inert"
+    par "ktest low-half alias runtime canary (x86)" x86_ktest_row "ktest low-half alias runtime canary (x86)" "" \
+        "x86_low_half_maps_no_ram" "canary=x86-low-alias"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

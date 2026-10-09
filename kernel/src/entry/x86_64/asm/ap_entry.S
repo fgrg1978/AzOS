@@ -10,8 +10,10 @@
 // check, stack = AZOS_SECONDARY_SP[cpu] (0 = no per-CPU area: park), the
 // provisional GS base, then `x86_64_secondary_entry(cpu)` (entry/x86_64/smp.rs),
 // which loads this CPU's own tables before `secondary_main(cpu)`.
-// AZOS_SECONDARY_SP holds physical addresses: the x86_64 kernel maps
-// itself 1:1 (`azos_mm::addr::KERNEL_PHYS_TO_VIRT_OFFSET` = 0).
+// AZOS_SECONDARY_SP holds physical addresses (the stack top as a frame
+// address, what every ISA publishes); the kernel's tables are live here and
+// map RAM at `azos_arch::mmu::KERNEL_VA_OFFSET` only, so the offset is added
+// (aarch64 does the same once its MMU is on).
 
 .pushsection .text.x86_secondary, "ax"
 .code64
@@ -24,6 +26,8 @@ _secondary_start:
     movq (%rax,%rdi,8), %rsp
     testq %rsp, %rsp
     jz 2f
+    movabsq ${kva}, %rax
+    addq %rax, %rsp
     movl $0xC0000101, %ecx              // IA32_GS_BASE = cpu
     movl %edi, %eax
     xorl %edx, %edx

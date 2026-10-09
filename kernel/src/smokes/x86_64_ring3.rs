@@ -26,8 +26,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use azos_arch::PagePerms;
 use azos_mm::{addr, pmm, vmm};
 
-/// The code page: above the identity-mapped RAM (the test refuses to run
-/// when RAM reaches it) and outside every table the kernel shares.
+/// The code page: in the user half, which holds no kernel RAM (the kernel
+/// links and maps RAM at `KERNEL_VA_OFFSET`), outside every table the
+/// kernel shares.
 const CODE_VA: usize = 0x4000_0000;
 const STACK_TOP: usize = azos_sched::process::USER_STACK_TOP;
 const RESULT_VA: usize = azos_sched::process::LOCKED_ARENA_VA;
@@ -128,9 +129,6 @@ fn result(i: usize) -> u64 {
 }
 
 fn setup() -> Result<(), &'static str> {
-    if vmm::ram_end() > CODE_VA {
-        return Err("needs RAM below 1 GiB (the code page sits there)");
-    }
     let page = |_| pmm::alloc_page().map(|p| p.as_usize()).map_err(|_| "no frame");
     let (code, stack, res) = (page(0)?, page(1)?, page(2)?);
     let start = (&raw const x86_ring3_code_start) as usize;

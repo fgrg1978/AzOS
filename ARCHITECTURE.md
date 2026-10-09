@@ -259,9 +259,14 @@ authority, the kernel also latches the e-stop and writes a safety record.
 ## Memory
 
 - **Page tables.** riscv64 uses Sv39. aarch64 uses VMSAv8-64 with a 4 KiB,
-  16 KiB or 64 KiB granule, chosen at build time. On aarch64 the kernel is
-  linked in the upper half and runs from TTBR1, and TTBR0 holds the user
-  space.
+  16 KiB or 64 KiB granule, chosen at build time. x86_64 uses 4-level
+  paging, or 5-level (LA57) when Kconfig allows it and the CPU has it. On
+  aarch64 the kernel is linked in the upper half and runs from TTBR1, and
+  TTBR0 holds the user space. On x86_64 the kernel is linked in the top
+  2 GiB (the compiler's kernel code model) and reaches RAM at the same
+  offset, so it maps RAM below 2 GiB only; every user root shares the
+  kernel's top-level entry. On both, the low half of the kernel's own
+  table holds device windows only, which the boot reads back.
 - **Kernel W^X.** Once paging is on, the kernel image is mapped with text
   read-execute, read-only data read-only, and data read-write. Execute
   permission is removed from all RAM outside the image. Both properties are
@@ -745,8 +750,8 @@ roots are level-2 tables, that step is constant-folded away.
   through these; the facade refuses to compile for a bare-metal target it has
   no branch for.
 - **`kernel/src/entry/<isa>/`**: `boot_hooks.rs` and `arch_entry.rs`, the
-  kernel's `ArchEntry` (34 methods, four associated types and a
-  `PAGE_TABLES` name: the 26 early-boot hooks `boot::early_main` calls, the
+  kernel's `ArchEntry` (34 methods, four associated types, a
+  `PAGE_TABLES` name and a `CONSOLE_MMIO` flag: the 26 early-boot hooks `boot::early_main` calls, the
   late VirtIO map, the secondary-CPU wake, the scheduler hand-off, the four
   secondary-CPU steps the shared `secondary_main` calls, the vDSO clock);
   `kernel/src/entry/<isa>.rs` with the `TrapFrame` and its `TrapContext` (11

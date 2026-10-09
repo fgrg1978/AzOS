@@ -35,8 +35,8 @@
 //! ASID allocator with generations; nothing here has to change shape for it.
 //!
 //! **Global kernel leaves.** With Kconfig `X86_KERNEL_GLOBAL_PAGES`
-//! (default n until the kernel links high) kernel leaves carry G so a CR3
-//! write keeps them. Sound only while
+//! (default y: the kernel links in the upper half) kernel leaves carry G
+//! so a CR3 write keeps them. Sound only while
 //! the kernel half is the same in every root (every user PML4 shares the
 //! kernel's upper-half entries, [`KERNEL_HALF_FIRST_SLOT`]); a kernel
 //! mapping that changes is dropped by `invlpg` (which drops G entries) or by
@@ -154,23 +154,32 @@ pub const fn user_top(levels: usize) -> usize {
     1 << (va_bits(levels) - 1)
 }
 
-/// Base of the kernel's direct map of physical memory: the first address of
-/// the 4-level upper half (PML4 slot 256). Canonical under LA57 too (it
-/// sits in PML5 slot 511), so one constant serves both depths; the map
-/// covers up to 64 TiB of RAM (slots 256..383) before it reaches
-/// [`KERNEL_IMAGE_BASE`]'s slot. `phys_to_virt(pa) = pa | KERNEL_VA_OFFSET`
-/// (bits 0..46 are clear), the aarch64 idiom.
+/// The kernel's one VA offset, as aarch64's TTBR1 split has one: the image
+/// links `KERNEL_VA_OFFSET` above the physical address the loader put it
+/// at (`kernel/linker-x86_64.ld`, VMA/LMA), and every RAM frame the kernel
+/// touches is reached at `pa + KERNEL_VA_OFFSET`
+/// (`crates/core/mm/src/addr.rs`, `phys_to_virt`). The top 2 GiB: the
+/// `x86_64-unknown-none` target compiles with `-mcmodel=kernel`, whose
+/// absolute symbol references are sign-extended 32-bit, so the image must
+/// sit there (Linux's `__START_KERNEL_map`). PML4 slot 511 (PML5 slot 511,
+/// PML4 slot 511 under LA57); its PDPT slots 510 and 511 map PA 0..2 GiB.
 ///
-/// Not yet the offset `crates/core/mm/src/addr.rs` applies: the kernel still
-/// runs on boot.S's identity map until it is linked high, and mm keeps
-/// offset 0 on x86_64 until then.
-pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_8000_0000_0000;
-/// Link address of the kernel image: the top 2 GiB (`-mcmodel=kernel`,
-/// PML4 slot 511), as Linux's `__START_KERNEL_map`.
-pub const KERNEL_IMAGE_BASE: u64 = 0xFFFF_FFFF_8000_0000;
-const _: () = assert!(KERNEL_VA_OFFSET & ((1 << 47) - 1) == 0);
-const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 3) == KERNEL_HALF_FIRST_SLOT);
-const _: () = assert!(vpn(KERNEL_IMAGE_BASE as usize, 3) == PT_ENTRIES - 1);
+/// The price of one offset is [`DIRECT_MAP_BYTES`]: the kernel maps RAM
+/// below 2 GiB only. Linux's split (a direct map at `0xFFFF_8880_...` plus
+/// the image alias) lifts it, at the cost of a two-range `virt_to_phys`.
+pub const KERNEL_VA_OFFSET: u64 = 0xFFFF_FFFF_8000_0000;
+/// Link address of the kernel image's PA 0: [`KERNEL_VA_OFFSET`] itself
+/// (one offset for the image and RAM).
+pub const KERNEL_IMAGE_BASE: u64 = KERNEL_VA_OFFSET;
+/// Bytes of physical memory, from PA 0, the kernel's offset map covers:
+/// the VA space above [`KERNEL_VA_OFFSET`] (2 GiB). RAM above it is left
+/// out of the frame allocator (`boot_hooks::firmware_memory`).
+pub const DIRECT_MAP_BYTES: u64 = KERNEL_VA_OFFSET.wrapping_neg();
+const _: () = assert!(KERNEL_VA_OFFSET & ((1 << 30) - 1) == 0, "1 GiB-aligned: the boot tables map it with PDPT entries");
+const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 3) == PT_ENTRIES - 1);
+const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 4) == PT_ENTRIES - 1);
+const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 2) == PT_ENTRIES - 2);
+const _: () = assert!(!is_user_va(KERNEL_VA_OFFSET as usize, LEVELS_4) && !is_user_va(KERNEL_VA_OFFSET as usize, LEVELS_5));
 
 /// Is `va` in the user half (under either depth's lower canonical half)?
 #[inline]
@@ -633,10 +642,35 @@ pub fn share_kernel_half<M: TableMem>(mem: &mut M, kernel_root: usize, user_root
     }
 }
 
+/// Every leaf under root slots `slots` of `root`, as `f(va, leaf)` in VA
+/// order (`va` the leaf's first address, sign-extended in the upper half;
+/// `leaf.phys` its frame). Pure: the low-half audit (`restrict_low_half`,
+/// ktest `x86_low_half_maps_no_ram`) and the host tests run it.
+pub fn for_each_leaf<M: TableMem>(mem: &M, root: usize, levels: usize,
+                                  slots: core::ops::Range<usize>, f: &mut dyn FnMut(usize, Leaf)) {
+    fn walk<M: TableMem>(mem: &M, table: usize, level: usize, base: usize, slots: core::ops::Range<usize>,
+                         top: usize, f: &mut dyn FnMut(usize, Leaf)) {
+        for i in slots {
+            let w = mem.read(table, i);
+            let mut va = base | (i << level_shift(level));
+            if level == top && i >= PT_ENTRIES / 2 {
+                va |= !((1usize << (level_shift(level) + IDX_BITS)) - 1);
+            }
+            if is_leaf(w, level) {
+                f(va, Leaf { word: w, level, phys: phys_addr(w) });
+            } else if is_table(w, level) {
+                walk(mem, phys_addr(w), level - 1, va, 0..PT_ENTRIES, top, f);
+            }
+        }
+    }
+    let top = levels - 1;
+    walk(mem, root, top, 0, slots.start..slots.end.min(PT_ENTRIES), top, f);
+}
+
 /// [`TableMem`] over the kernel's own view of physical memory:
 /// `table + offset` is a dereferenceable address for every table frame
 /// (offset 0 on boot.S's identity map; [`KERNEL_VA_OFFSET`] once the
-/// direct map is the kernel's).
+/// kernel's own tables are live).
 pub struct DirectMap<F: FnMut() -> Option<usize>> {
     offset: usize,
     alloc: F,

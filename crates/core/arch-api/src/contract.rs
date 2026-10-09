@@ -114,6 +114,13 @@ pub trait ArchEntry {
     /// The page-table format, for the `[MM] Initializing VMM (...)` line.
     const PAGE_TABLES: &'static str;
 
+    /// The console UART is a memory-mapped window at
+    /// `platform::hw::UART_BASE`, which `early_main` maps with the device
+    /// windows. `false` where it is port I/O (x86_64's COM1 at 0x3F8): a
+    /// "window" there would map physical page 0 and the RAM page after it
+    /// into the low half.
+    const CONSOLE_MMIO: bool = true;
+
     /// Before the console exists: state that must be read before the first
     /// lock is taken (aarch64: `SCTLR_EL1`, proof the MMU is on before the
     /// first atomic).

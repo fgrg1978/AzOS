@@ -15,6 +15,8 @@ impl ArchEntry for Entry {
     type IrqController = azos_dtb::IrqController;
     type IrqTriggers = azos_dtb::IrqTriggers;
     const PAGE_TABLES: &'static str = "x86-64 4-level page tables, 5 under LA57";
+    /// COM1 is port I/O.
+    const CONSOLE_MMIO: bool = false;
 
     fn pre_console(&self) { crate::boot_hooks::pre_console() }
     fn trap_init(&self) { crate::boot_hooks::trap_init() }

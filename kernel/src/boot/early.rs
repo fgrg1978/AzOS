@@ -185,12 +185,15 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
             }
         }
 
-        // Device windows, mapped before the table goes live: the console on
-        // every platform, then the ISA's and board's own. Each is recorded, so
-        // a device-only user half (aarch64 TTBR0) gets the same windows.
+        // Device windows, mapped before the table goes live: the console
+        // (where it is memory-mapped), then the ISA's and board's own. Each is
+        // recorded, so a device-only user half (aarch64 TTBR0) gets the same
+        // windows.
         {
             use azos_drv_base::platform::hw;
-            let _ = azos_mm::vmm::map_mmio_region(hw::UART_BASE, 0x1000);
+            if <crate::arch_entry::Entry as ArchEntry>::CONSOLE_MMIO {
+                let _ = azos_mm::vmm::map_mmio_region(hw::UART_BASE, 0x1000);
+            }
             for (base, bytes) in a.kernel_mmio_windows() {
                 let _ = azos_mm::vmm::map_mmio_region(base, bytes);
             }

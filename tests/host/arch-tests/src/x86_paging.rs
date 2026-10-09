@@ -142,7 +142,13 @@ mod tests {
         assert!(!is_canonical(0x0100_0000_0000_0000, 5));
         assert_eq!(user_top(4), 0x0000_8000_0000_0000);
         assert_eq!(user_top(5), 0x0100_0000_0000_0000);
-        assert_eq!(vpn(KERNEL_VA_OFFSET as usize, 3), KERNEL_HALF_FIRST_SLOT);
+        // The kernel links in the top 2 GiB (-mcmodel=kernel): PML4 slot 511,
+        // PDPT slot 510; PML5 slot 511 under LA57. One offset maps 2 GiB.
+        assert_eq!(KERNEL_VA_OFFSET, 0xFFFF_FFFF_8000_0000);
+        assert_eq!((vpn(KERNEL_VA_OFFSET as usize, 3), vpn(KERNEL_VA_OFFSET as usize, 2)), (511, 510));
+        assert_eq!(vpn(KERNEL_VA_OFFSET as usize, 4), 511);
+        assert!(vpn(KERNEL_VA_OFFSET as usize, 3) >= KERNEL_HALF_FIRST_SLOT);
+        assert_eq!(DIRECT_MAP_BYTES, 2 << 30);
         assert!(is_user_va(0x7FFF_FFFF_F000, 4) && !is_user_va(KERNEL_VA_OFFSET as usize, 4));
     }
 
@@ -234,9 +240,29 @@ mod tests {
         map(&mut m, kroot, 4, 0x1000, 0x1000, 0, PagePerms::KERNEL_RW, false).unwrap();
         let uroot = m.alloc_table().unwrap();
         share_kernel_half(&mut m, kroot, uroot);
-        assert_eq!(m.read(uroot, KERNEL_HALF_FIRST_SLOT), m.read(kroot, KERNEL_HALF_FIRST_SLOT));
+        let slot = vpn(KERNEL_VA_OFFSET as usize, 3);
+        assert_ne!(m.read(kroot, slot), 0);
+        assert_eq!(m.read(uroot, slot), m.read(kroot, slot));
         assert!(translate(&m, uroot, 4, KERNEL_VA_OFFSET as usize).is_some());
         assert!(translate(&m, uroot, 4, 0x1000).is_none(), "the low half is the user's");
+    }
+
+    #[test]
+    fn leaf_walk_reports_each_half_with_canonical_vas() {
+        for levels in [4, 5] {
+            let (mut m, root) = Mem::new(64);
+            let k = KERNEL_VA_OFFSET as usize;
+            map(&mut m, root, levels, k + 0x20_0000, 0x20_0000, 1, PagePerms::KERNEL_RW, false).unwrap();
+            map(&mut m, root, levels, k + 0x1000, 0x1000, 0, PagePerms::KERNEL_RX, false).unwrap();
+            map(&mut m, root, levels, 0xFEC0_0000, 0xFEC0_0000, 0, PagePerms::MMIO, false).unwrap();
+            map(&mut m, root, levels, 0x10_000, 0x5000, 0, PagePerms::USER_RX, false).unwrap();
+            let mut low = Vec::new();
+            for_each_leaf(&m, root, levels, 0..KERNEL_HALF_FIRST_SLOT, &mut |va, l| low.push((va, l.level, l.phys)));
+            assert_eq!(low, vec![(0x10_000, 0, 0x5000), (0xFEC0_0000, 0, 0xFEC0_0000)], "levels {levels}");
+            let mut high = Vec::new();
+            for_each_leaf(&m, root, levels, KERNEL_HALF_FIRST_SLOT..PT_ENTRIES, &mut |va, l| high.push((va, l.level, l.phys)));
+            assert_eq!(high, vec![(k + 0x1000, 0, 0x1000), (k + 0x20_0000, 1, 0x20_0000)], "levels {levels}");
+        }
     }
 
     #[test]

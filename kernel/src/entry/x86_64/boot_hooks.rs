@@ -54,8 +54,9 @@ pub fn kernel_cmdline(fw_table: usize, out: &mut [u8]) -> Option<usize> {
     if fw_table == 0 {
         return None;
     }
-    // SAFETY: boot.S passes the PVH start_info's physical address, identity
-    // mapped (0..4 GiB) by boot.S's page tables.
+    // SAFETY: boot.S passes the PVH start_info's physical address, mapped
+    // 1:1 (0..4 GiB) by boot.S's page tables, which are still the live ones
+    // (`early_main` reads the command line before `vmm::enable_paging`).
     let si = unsafe { &*(fw_table as *const azos_arch::bootinfo::HvmStartInfo) };
     if si.magic != azos_arch::bootinfo::PVH_MAGIC || si.cmdline_paddr == 0 {
         return None;
@@ -221,10 +222,17 @@ pub fn cpu_features(_fw: &()) {
     ]);
 }
 
-/// RAM above this is left out: the kernel maps the PMM's span as normal
+/// RAM above this is left out: the kernel reaches RAM through its one
+/// offset map (`azos_arch::mmu::KERNEL_VA_OFFSET`, the top 2 GiB), which
+/// covers `DIRECT_MAP_BYTES` from PA 0, less Kconfig
+/// `X86_KERNEL_VA_HEADROOM_MB` kept for the VAs above RAM (text_poke's
+/// alias slots). Below 4 GiB either way: the PMM's span maps as normal
 /// memory, and on a PC the span past 4 GiB would cross the 32-bit MMIO hole
 /// (LAPIC, IOAPIC, HPET, PCI windows).
-const LOW_RAM_LIMIT: u64 = 1 << 32;
+const LOW_RAM_LIMIT: u64 = {
+    let map = azos_arch::mmu::DIRECT_MAP_BYTES - (azos_limits::X86_KERNEL_VA_HEADROOM_MB as u64) * (1 << 20);
+    if map < (1 << 32) { map } else { 1 << 32 }
+};
 
 /// One range for the PMM: 0 to the end of the highest RAM entry below 4 GiB
 /// (the holes inside it are reserved by `reserve_firmware_table`); the CPUs
@@ -236,7 +244,9 @@ pub fn firmware_memory(_fw: &()) -> azos_arch::FirmwareMemory {
         .map(|e| e.addr.saturating_add(e.size).saturating_sub(e.addr.max(LOW_RAM_LIMIT)))
         .sum();
     if high != 0 {
-        azos_drv_sys::kwarn!("[MEM] {} MiB of RAM above 4 GiB not used", high >> 20);
+        azos_drv_sys::kwarn!("[MEM] {} MiB of RAM above {} MiB not used (the kernel's offset map, \
+                              KERNEL_VA_OFFSET, less X86_KERNEL_VA_HEADROOM_MB)",
+                             high >> 20, LOW_RAM_LIMIT >> 20);
     }
     let (mem_start, mem_size, from_firmware) = match azos_arch::bootinfo::ram_span(p.memmap(), LOW_RAM_LIMIT) {
         Some((s, e)) => (s as usize, (e - s) as usize, true),
@@ -347,7 +357,20 @@ pub(crate) fn paging_caps() -> azos_arch::mmu::PagingCaps {
 /// PAT, CR0.WP, CR4.PGE/PCIDE (`mmu::cpu::setup_paging_regs`), read back. A
 /// clear EFER.NXE (boot.S sets it) or a `require`d LA57 / 1 GiB pages the
 /// CPU lacks stops the boot here.
+///
+/// Runtime canary `x86-low-alias`: the first page of kernel text is mapped
+/// 1:1 again in the kernel table's low half, as it was before the kernel
+/// linked high; `restrict_low_half` and ktest `x86_low_half_maps_no_ram`
+/// must then report it.
 pub fn mmu_enabled() {
+    if canary!("x86-low-alias") {
+        // SAFETY: a linker symbol's address, not dereferenced.
+        let pa = azos_mm::addr::virt_to_phys(unsafe { &crate::_text_start as *const u8 as usize });
+        let ok = azos_mm::vmm::map(azos_mm::vmm::kernel_pagetable(), pa, pa,
+                                   azos_arch::PagePerms::KERNEL_RO).is_ok();
+        azos_drv_sys::kwarn!("[CANARY] x86-low-alias: kernel text PA {:#x} mapped 1:1 in the low half ({})",
+                             pa, if ok { "mapped" } else { "map failed" });
+    }
     use azos_arch_api::isa::{x86_64 as p, ExtPolicy};
     let st = azos_arch::mmu::cpu::setup_paging_regs(&paging_caps());
     kprintln!("[MM] x86_64 paging: {}-level, NXE={} WP={} PGE={} PCIDE={} PAT={:#x}",
@@ -363,15 +386,135 @@ pub fn mmu_enabled() {
     }
 }
 
-/// Nothing to drop: `enable_paging` replaced boot.S's 0..4 GiB identity
-/// tables with the kernel's own, which map RAM, the image and the recorded
-/// device windows only, and the kernel links in the low half (riscv64's
-/// layout, not aarch64's TTBR1 split).
-pub fn restrict_low_half() {}
+/// What the user half (root slots below `KERNEL_HALF_FIRST_SLOT`) of a
+/// table maps, read back from the table itself.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LowHalf {
+    /// 4 KiB pages of leaves whose frames lie above RAM (device windows).
+    pub device_pages: usize,
+    /// 4 KiB pages of leaves whose frames are RAM the kernel maps (below
+    /// `vmm::ram_end()`: the image, the heap, every PMM frame).
+    pub ram_pages: usize,
+    /// The first such RAM leaf, `(va, pa)`.
+    pub first_ram: Option<(usize, usize)>,
+    /// Its leaves that are user-accessible (US).
+    pub user_leaves: usize,
+}
 
-/// The guards' report and fault probes are the generic ones (`early_main`),
-/// as on riscv64.
-pub fn verify_guards() {}
+/// Walk the user half of `root` (a kernel or a task root): every leaf
+/// sorted into device and RAM pages. Pure reads through the offset map.
+/// A task's own pages are RAM too, so a task root is audited before its
+/// user pages exist, or the caller counts `user_leaves` apart.
+pub(crate) fn audit_low_half(root: usize) -> LowHalf {
+    use azos_arch::mmu::{self as m, TableMem};
+    struct Tables;
+    impl TableMem for Tables {
+        fn read(&self, table: usize, idx: usize) -> u64 {
+            // SAFETY: a table frame the walk reached from a live root: RAM,
+            // inside the kernel's offset map.
+            unsafe { core::ptr::read_volatile((azos_mm::addr::phys_to_virt(table) + idx * 8) as *const u64) }
+        }
+        fn write(&mut self, _: usize, _: usize, _: u64) {}
+        fn alloc_table(&mut self) -> Option<usize> { None }
+    }
+    let ram_end = azos_mm::vmm::ram_end();
+    let mut a = LowHalf::default();
+    m::for_each_leaf(&Tables, root, m::levels(), 0..m::KERNEL_HALF_FIRST_SLOT, &mut |va, leaf| {
+        let pages = m::level_size(leaf.level) / azos_arch::PAGE_SIZE;
+        if leaf.word & m::US != 0 {
+            a.user_leaves += 1;
+        }
+        if leaf.phys < ram_end {
+            a.ram_pages += pages;
+            a.first_ram.get_or_insert((va, leaf.phys));
+        } else {
+            a.device_pages += pages;
+        }
+    });
+    a
+}
+
+/// The low half after the switch: `vmm::enable_paging` replaced boot.S's
+/// tables (PA 0..4 GiB 1:1 beside the high map) with the kernel's own,
+/// which map RAM at `KERNEL_VA_OFFSET` only and the recorded device windows
+/// 1:1. Read that back from the live root: no RAM page below the kernel
+/// half, so the user image range (`0x1_0000` up) is free on every ISA and a
+/// kernel bug cannot reach a frame by its physical number. The AP
+/// trampoline needs nothing here: an AP starts on `smp::install`'s own
+/// tables and jumps high before it loads this root.
+pub fn restrict_low_half() {
+    let kpt = azos_mm::vmm::kernel_pagetable();
+    let live = azos_arch::mmu::cr3_root(azos_arch::mmu::cpu::read_cr3()) == kpt;
+    let a = audit_low_half(kpt);
+    match a.first_ram {
+        None if live => kprintln!("[MM] Low half is device-only: {} MMIO pages, RAM unreachable by PA",
+                                  a.device_pages),
+        None => azos_drv_sys::kerr!("[MM] FAILED: low half: the live CR3 is not the kernel's table {:#x}", kpt),
+        Some((va, pa)) => azos_drv_sys::kerr!(
+            "[MM] FAILED: low half maps {} RAM page(s) (first VA {:#x} -> PA {:#x}) beside {} MMIO pages",
+            a.ram_pages, va, pa, a.device_pages),
+    }
+}
+
+/// The null and stack guards read back from the page table (the aarch64
+/// hook's readback): page 0 sits in the low half, which `restrict_low_half`
+/// just showed holds device windows only.
+pub fn verify_guards() {
+    let kpt = azos_mm::vmm::kernel_pagetable();
+    if azos_mm::vmm::translate(kpt, 0).is_none() {
+        kprintln!("[MM] Null guard readback: page 0 unmapped");
+    } else {
+        azos_drv_sys::kerr!("[MM] FAILED: null guard readback — page 0 still translates");
+    }
+    let (unmapped, total) = azos_sched::stack_guard_readback();
+    if unmapped == total {
+        kprintln!("[MM] Stack guard readback: {}/{} stack bottoms unmapped", unmapped, total);
+    } else {
+        azos_drv_sys::kerr!("[MM] FAILED: stack guard readback — {}/{} stack bottoms unmapped",
+                            unmapped, total);
+    }
+}
+
+// The user half of the kernel's table and of a fresh task table holds no
+// RAM: the kernel lives in the upper half (`KERNEL_VA_OFFSET`). Canary:
+// `canary=x86-low-alias` (`mmu_enabled`) maps the kernel's first text page
+// 1:1 again; this test alone goes not ok.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest! {
+    fn x86_low_half_maps_no_ram() {
+        let kpt = azos_mm::vmm::kernel_pagetable();
+        let k = audit_low_half(kpt);
+        if k.first_ram.is_some() {
+            return Err("the kernel table's user half maps RAM");
+        }
+        if k.device_pages == 0 {
+            return Err("the kernel table's user half maps no device window: the walk saw nothing");
+        }
+        if k.user_leaves != 0 {
+            return Err("the kernel table's user half has a user-accessible leaf");
+        }
+        // A task's table as exec builds it: its kernel entries merged in.
+        let root = azos_mm::vmm::create_pagetable().map_err(|_| "no page table")?;
+        azos_mm::vmm::copy_kernel_entries_to_user(root);
+        let u = audit_low_half(root);
+        // The kernel half reaches the image as the kernel's table does.
+        // SAFETY: a linker symbol's address, not dereferenced.
+        let text = unsafe { &crate::_text_start as *const u8 as usize };
+        let t = azos_mm::vmm::translate(root, text);
+        let same = t.is_some() && t == azos_mm::vmm::translate(kpt, text);
+        azos_mm::vmm::destroy_user_pagetable(root);
+        if u.first_ram.is_some() {
+            return Err("a task table's user half maps kernel RAM");
+        }
+        if u.device_pages != k.device_pages {
+            return Err("a task table's user half lacks the kernel's device windows");
+        }
+        if !same {
+            return Err("a task table does not reach the kernel image through the shared upper half");
+        }
+        Ok(())
+    }
+}
 
 /// CR4.SMEP / CR4.SMAP (`mmu::cpu::enable_access_protection`), read back.
 pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {

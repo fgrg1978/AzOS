@@ -16,17 +16,31 @@
 //   kernel_main(hart_id = 0, fw_table = start_info)
 //   x86_64_early_exception(vector, error_code, rip)   any CPU exception
 //
+// The image is LINKED at KVA (= `azos_arch::mmu::KERNEL_VA_OFFSET`, the top
+// 2 GiB) above the physical address PVH loaded it at (linker-x86_64.ld), and
+// the 32-bit stage runs with paging off: every symbol it names is written
+// `sym - KVA`, its physical address.
+//
 // Boot CPU, in order:
 //   1. 32-bit stack; save start_info.
 //   2. The Kconfig BASELINE (X86_64_LEVEL), from CPUID, before any code
 //      compiled for it runs; below it, print why on COM1 and stop (exit
 //      through isa-debug-exit when QEMU has one, then halt).
-//   3. Clear .bss; identity page tables for 0..4 GiB in 2 MiB pages (RAM,
-//      and the LAPIC/IOAPIC windows for later).
+//   3. Clear .bss; page tables in 2 MiB pages: 0..4 GiB 1:1 (PML4[0]: the
+//      code running now, the firmware tables `platform_impl::discover`
+//      reads by physical address, the LAPIC/IOAPIC/HPET windows), and
+//      PA 0..2 GiB again at KVA (PML4[511], PDPT[510..511] -> the first two
+//      identity PDs: the kernel image and RAM, where Rust runs).
 //      With Kconfig X86_LA57 allowing it and CPUID reporting it, a PML5
-//      above that PML4 and CR4.LA57 (5-level paging; mmu.rs reads CR4).
+//      above that PML4 (slots 0 and 511 both name it) and CR4.LA57
+//      (5-level paging; mmu.rs reads CR4).
 //   4. CR4.PAE, CR3, EFER.LME|NXE, CR0.PG|WP, the 64-bit GDT, far jump.
-//   5. 64-bit: data segments, stack, GS base = the boot CPU's PerCpu
+//   5. 64-bit, still at the physical address: jump to the link address,
+//      reload GDTR with the GDT's high address. The 1:1 half stays until
+//      `vmm::enable_paging` installs the kernel's own tables, whose low
+//      half holds device windows only (`restrict_low_half` reads that
+//      back); the APs start on tables of their own (smp.rs).
+//      Then data segments, stack, GS base = the boot CPU's PerCpu
 //      (Cpu::hart_id reads id 0 from it), an early IDT (every exception
 //      vector reports and stops: no triple fault) until trap_init loads the
 //      real one (entry/x86_64/cpu_init.rs).
@@ -37,6 +51,22 @@
 .equ X86_LEVEL, {x86_level}
 .equ COM1, 0x3F8
 .equ DEBUG_EXIT, 0xF4
+.equ KVA, {kva}
+// linker-x86_64.ld ASSERTs its literal against this: a drift fails to link.
+.globl _kernel_va_offset_check
+.set _kernel_va_offset_check, {kva}
+// The PML4 (and PML5) slot and the first PDPT slot of KVA, and the GiBs of
+// physical memory mapped there (one identity PD each, of the four below).
+.equ KVA_ROOT_SLOT, ((KVA >> 39) & 511)
+.equ KVA_LA57_SLOT, ((KVA >> 48) & 511)
+.equ KVA_PDPT_SLOT, ((KVA >> 30) & 511)
+.equ KVA_GIBS, ((~KVA + 1) >> 30)
+.if KVA_GIBS > 4
+.error "KERNEL_VA_OFFSET maps more than the 4 GiB boot.S's identity PDs cover"
+.endif
+.if KVA_PDPT_SLOT + KVA_GIBS > 512
+.error "KERNEL_VA_OFFSET's map runs past the end of its PDPT"
+.endif
 
 // ── PVH ELF note: XEN_ELFNOTE_PHYS32_ENTRY (18) ─────────────────────────────
 .section .note.Xen, "a", @note
@@ -46,7 +76,7 @@
     .long 18
     .asciz "Xen"
     .balign 4
-    .long _start
+    .long _start - KVA
     .balign 4
 
 .section .text.boot, "ax"
@@ -55,8 +85,8 @@
 _start:
     cli
     cld
-    movl $_stack_end, %esp
-    movl %ebx, pvh_start_info
+    movl $(_stack_end - KVA), %esp
+    movl %ebx, pvh_start_info - KVA
 
     // ── 2. baseline: CPUID bits of the configured level ─────────────────
 .if X86_LEVEL >= 2
@@ -105,34 +135,45 @@ _start:
     jne refuse_baseline
 .endif
 
-    // ── 3. clear .bss, build the identity map ───────────────────────────
-    movl $_bss_start, %edi
-    movl $_bss_end, %ecx
+    // ── 3. clear .bss, build the 1:1 and the high map ───────────────────
+    movl $(_bss_start - KVA), %edi
+    movl $(_bss_end - KVA), %ecx
     subl %edi, %ecx
     xorl %eax, %eax
     rep stosb
 
     // PML4[0] -> PDPT; PDPT[0..3] -> PD0..PD3; PDn[j] = 2 MiB leaf
-    movl $boot_pdpt, %eax
+    movl $(boot_pml4 - KVA), %ebp
+    movl $(boot_pdpt - KVA), %eax
     orl $0x3, %eax
-    movl %eax, boot_pml4
+    movl %eax, (%ebp)
+    // PML4[KVA_ROOT_SLOT] -> PDPT_HI; PDPT_HI[KVA_PDPT_SLOT + k] -> PDk
+    movl $(boot_pdpt_hi - KVA), %eax
+    orl $0x3, %eax
+    movl %eax, (KVA_ROOT_SLOT * 8)(%ebp)
+    movl $(boot_pdpt - KVA), %ebp
+    movl $(boot_pdpt_hi - KVA + KVA_PDPT_SLOT * 8), %edi
     xorl %esi, %esi
 1:  movl %esi, %eax
     shll $12, %eax
-    addl $boot_pd, %eax
+    addl $(boot_pd - KVA), %eax
     orl $0x3, %eax
-    movl %eax, boot_pdpt(,%esi,8)
-    incl %esi
+    movl %eax, (%ebp,%esi,8)
+    cmpl $KVA_GIBS, %esi
+    jae 3f
+    movl %eax, (%edi,%esi,8)
+3:  incl %esi
     cmpl $4, %esi
     jne 1b
+    movl $(boot_pd - KVA), %ebp
     xorl %esi, %esi
 2:  movl %esi, %eax
     shll $21, %eax
     orl $0x83, %eax                  // P | RW | PS
     movl %esi, %edx
     shrl $11, %edx                   // bits 32..33 of the 2 MiB frame
-    movl %eax, boot_pd(,%esi,8)
-    movl %edx, boot_pd+4(,%esi,8)
+    movl %eax, (%ebp,%esi,8)
+    movl %edx, 4(%ebp,%esi,8)
     incl %esi
     cmpl $2048, %esi
     jne 2b
@@ -141,21 +182,25 @@ _start:
     // 2 require): CR4.LA57 can change only with long mode off, so the
     // depth is chosen here. PML5[0] -> the PML4 above; CR3 names the PML5.
     // A `require` on a CPU without it is refused by the mmu_enabled hook.
-    movl $boot_pml4, %edi            // the root CR3 gets
-    cmpl $0, AZOS_X86_LA57_POLICY
+    // PML5[0] (the 1:1 half) and PML5[KVA_LA57_SLOT] (KVA) both name the
+    // PML4: its slots 0 and KVA_ROOT_SLOT are the two halves.
+    movl $(boot_pml4 - KVA), %edi    // the root CR3 gets
+    cmpl $0, AZOS_X86_LA57_POLICY - KVA
     je la57_done
     movl $7, %eax
     xorl %ecx, %ecx
     cpuid
     testl $(1 << 16), %ecx           // CPUID.(7,0):ECX.LA57
     jz la57_done
-    movl $boot_pml4, %eax
+    movl $(boot_pml4 - KVA), %eax
     orl $0x3, %eax
-    movl %eax, boot_pml5
+    movl $(boot_pml5 - KVA), %ebp
+    movl %eax, (%ebp)
+    movl %eax, (KVA_LA57_SLOT * 8)(%ebp)
     movl %cr4, %eax
     orl $(1 << 12), %eax             // LA57
     movl %eax, %cr4
-    movl $boot_pml5, %edi
+    movl %ebp, %edi
 la57_done:
 
     // ── 4. long mode ────────────────────────────────────────────────────
@@ -170,8 +215,8 @@ la57_done:
     movl %cr0, %eax
     orl $((1 << 31) | (1 << 16) | 1), %eax   // PG | WP | PE
     movl %eax, %cr0
-    lgdt gdt64_ptr
-    ljmp $0x08, $long_entry
+    lgdt gdt64_ptr - KVA
+    ljmp $0x08, $(long_entry - KVA)
 
 // Below the baseline: say why on COM1 (8N1, 115200) and stop.
 refuse_baseline:
@@ -187,7 +232,7 @@ refuse_baseline:
     movw $(COM1 + 3), %dx
     movb $0x03, %al
     outb %al, %dx
-    movl $refuse_msg, %esi
+    movl $(refuse_msg - KVA), %esi
 3:  movb (%esi), %al
     testb %al, %al
     jz 5f
@@ -210,6 +255,13 @@ refuse_baseline:
 
 .code64
 long_entry:
+    // Still at the physical address (the 1:1 half): go to the link address,
+    // then point GDTR at the GDT's own high address, so nothing the boot
+    // CPU holds names the 1:1 half once the kernel's tables replace it.
+    movabsq $long_entry_high, %rax
+    jmpq *%rax
+long_entry_high:
+    lgdt gdt64_ptr_high(%rip)
     movw $0x10, %ax
     movw %ax, %ds
     movw %ax, %es
@@ -338,7 +390,11 @@ gdt64:
     .quad 0x0000920000000000         // 0x10: data
 gdt64_ptr:
     .word gdt64_ptr - gdt64 - 1
-    .long gdt64
+    .long gdt64 - KVA
+.balign 8
+gdt64_ptr_high:
+    .word gdt64_ptr - gdt64 - 1
+    .quad gdt64
 
 .balign 8
 boot_idt_ptr:
@@ -357,6 +413,8 @@ boot_pml5:
 boot_pml4:
     .skip 4096
 boot_pdpt:
+    .skip 4096
+boot_pdpt_hi:
     .skip 4096
 boot_pd:
     .skip 4096 * 4

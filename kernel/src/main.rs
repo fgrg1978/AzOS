@@ -352,6 +352,9 @@ const X86_64_LEVEL: u32 = azos_arch_api::isa::x86_64::LEVEL_NUM as u32;
 global_asm!(
     include_str!("entry/x86_64/asm/boot.S"),
     x86_level = const X86_64_LEVEL,
+    // One constant, three consumers (Rust, this asm, linker-x86_64.ld's
+    // ASSERT against `_kernel_va_offset_check`), as on aarch64.
+    kva = const azos_arch::mmu::KERNEL_VA_OFFSET,
     options(att_syntax),
 );
 // The trap entry and the switch: every TrapFrame / PerCpu / TaskContext /

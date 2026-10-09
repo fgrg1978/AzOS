@@ -42,6 +42,10 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/chaos.rs: no decision record is written (ktests
     // `decision_admission_recorded`, `decision_cap_denial_recorded`).
     "decision-skip",
+    // entry/x86_64/boot_hooks.rs `mmu_enabled`: the first kernel text page
+    // is mapped 1:1 in the low half again (ktest `x86_low_half_maps_no_ram`,
+    // x86_64 only).
+    "x86-low-alias",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

@@ -40,20 +40,23 @@ use azos_arch::{PAGE_SIZE, PAGE_SHIFT};
 // offset stops being zero. [`virt_to_phys`] is the explicit inverse for
 // exactly that case: a symbol's own address (a VA once the kernel links
 // high) that must be handed to hardware as a PA.
-// aarch64 KERNEL builds only: the kernel links and executes in the upper
-// half (TTBR1), so a symbol's own address sits this far above the physical
-// byte the loader placed it at. `target_os = "none"` is load-bearing — a
-// bare `target_arch = "aarch64"` also matches this Mac, and setting the
-// offset for host test builds broke `mm-tests`/`syscall-tests` on 2026-09-23.
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+// aarch64 and x86_64 KERNEL builds: the kernel links and executes in the
+// upper half (aarch64 TTBR1; x86_64 the top 2 GiB, `kernel/linker-x86_64.ld`),
+// so a symbol's own address sits this far above the physical byte the
+// loader placed it at, and RAM is reached at the same offset. riscv64 keeps
+// the identity. `target_os = "none"` is load-bearing: a bare
+// `target_arch = "aarch64"` also matches this Mac (and `x86_64` an Intel
+// one), and setting the offset for host test builds broke
+// `mm-tests`/`syscall-tests` on 2026-09-23.
+#[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none"))]
 pub const KERNEL_PHYS_TO_VIRT_OFFSET: usize = azos_arch::mmu::KERNEL_VA_OFFSET as usize;
-#[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+#[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
 pub const KERNEL_PHYS_TO_VIRT_OFFSET: usize = 0;
 
 /// Convert a physical address of kernel-owned memory (a page-table frame,
 /// a PMM page, a COW page) into the address the kernel should dereference
 /// it through. Identity on riscv64 and on host builds; a real translation
-/// on an aarch64 kernel build — see the module doc above.
+/// on an aarch64 or x86_64 kernel build — see the module doc above.
 #[inline(always)]
 pub const fn phys_to_virt(pa: usize) -> usize {
     pa + KERNEL_PHYS_TO_VIRT_OFFSET
