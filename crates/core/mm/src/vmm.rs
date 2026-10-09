@@ -52,6 +52,13 @@ pub(crate) fn l2_table(root: usize, vaddr: usize) -> usize {
     l2_table_upper(root, vaddr)
 }
 
+/// [`l2_table`] found no level-2 table. Constant `false` on a three-level
+/// MMU (the root is the table), so the check costs nothing there.
+#[inline(always)]
+fn no_l2(l2t: usize) -> bool {
+    root_level() > 2 && l2t == 0
+}
+
 #[inline(never)]
 fn l2_table_upper(root: usize, vaddr: usize) -> usize {
     let mut pt = root;
@@ -541,7 +548,7 @@ pub fn write_would_enter_kernel_table(pt_phys: usize, vaddr: usize) -> bool {
     if kpt == 0 || pt_phys == kpt { return false; }
 
     let ul2 = l2_table(pt_phys, vaddr);
-    if ul2 == 0 { return false; }               // nothing there yet; walk will allocate ours
+    if no_l2(ul2) { return false; }               // nothing there yet; walk will allocate ours
     // x86_64: a PML4 (PML5) entry copied from the kernel makes the whole
     // level-2 table the kernel's.
     if root_level() > 2 && ul2 == l2_table(kpt, vaddr) { return true; }
@@ -877,7 +884,7 @@ pub fn add_user_leaf_perms(pt_phys: usize, vaddr: usize, add: PagePerms) -> KRes
     // so a superpage here is the kernel's merged entries or a locked row's
     // region (`map_user_mega_range`, read-write for the task's life): not
     // ours to widen either way.
-    for level in (0..=root_level()).rev() {
+    for level in (0..root_level() + 1).rev() {
         let vpn = ARCH.vpn(vaddr, level);
         let pte_ptr = (crate::addr::phys_to_virt(pt + vpn * 8)) as *mut u64;
         let pte: u64 = unsafe { core::ptr::read_volatile(pte_ptr) };
@@ -941,7 +948,7 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
     }
     // Walk L2 → L1 to detect megapage before reaching walk().
     let l2t = l2_table(pt_phys, vaddr);
-    if l2t == 0 { return; }
+    if no_l2(l2t) { return; }
     let vpn2 = ARCH.vpn(vaddr, 2);
     let l2_pte = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(l2_pte) || ARCH.pte_is_leaf(l2_pte, 2) {
@@ -1006,7 +1013,7 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
 /// region really is mapped with level-1 leaves (Kconfig `LOCKED_HUGE_LEAVES`).
 pub fn leaf_level(pt_phys: usize, vaddr: usize) -> Option<usize> {
     let mut pt = pt_phys;
-    for level in (0..=root_level()).rev() {
+    for level in (0..root_level() + 1).rev() {
         let pte: u64 = unsafe {
             core::ptr::read_volatile((crate::addr::phys_to_virt(pt + ARCH.vpn(vaddr, level) * 8)) as *const u64)
         };
@@ -1089,7 +1096,7 @@ pub fn map_user_mega_range(pt_phys: usize, vaddr: usize, paddr: usize, len: usiz
 /// no table)? `true` also when the root has no table for it yet.
 fn l1_slot_is_empty(pt_phys: usize, vaddr: usize) -> bool {
     let l2t = l2_table(pt_phys, vaddr);
-    if l2t == 0 { return true; }
+    if no_l2(l2t) { return true; }
     let l2: u64 = unsafe {
         core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + ARCH.vpn(vaddr, 2) * 8)) as *const u64)
     };
@@ -1131,7 +1138,7 @@ fn table_frames_at(pt: usize, level: usize) -> usize {
 pub fn translate(pt_phys: usize, vaddr: usize) -> Option<usize> {
     // Walk inline to detect megapages at each level.
     let mut pt = l2_table(pt_phys, vaddr);
-    if pt == 0 { return None; }
+    if no_l2(pt) { return None; }
 
     // L2
     let vpn2 = ARCH.vpn(vaddr, 2);
@@ -1266,7 +1273,7 @@ fn reserved_write_permitted(pt_phys: usize, vaddr: usize) -> bool {
 /// pointing at it.
 fn user_leaf(pt_phys: usize, vaddr: usize) -> Option<(u64, usize)> {
     let mut pt = l2_table(pt_phys, vaddr);
-    if pt == 0 { return None; }
+    if no_l2(pt) { return None; }
 
     // L2 — kernel gigapages reach this leaf (copied wholesale into user PTs),
     // so the USER check must be applied here too.
@@ -1310,7 +1317,7 @@ fn user_leaf_ok(
             // Re-translate: the fresh leaf now has WRITE set. Guard against a
             // pathological re-fault by using the plain permission read.
             let mut pt = l2_table(pt_phys, vaddr);
-            if pt == 0 { return None; }
+            if no_l2(pt) { return None; }
             let l2 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(pt + ARCH.vpn(vaddr, 2) * 8)) as *const u64) };
             if !ARCH.pte_is_valid(l2) { return None; }
             if ARCH.pte_is_leaf(l2, 2) {
@@ -1425,7 +1432,7 @@ pub fn split_mega_range(start: usize, end: usize) -> usize {
         let vpn1 = ARCH.vpn(addr, 1);
 
         let l2t = l2_table(kpt, addr);
-        if l2t == 0 {
+        if no_l2(l2t) {
             addr += MEGA_SIZE;
             continue;
         }
@@ -1807,7 +1814,7 @@ fn for_each_leaf_outside_image(
             continue;
         }
         let l2t = l2_table(pt_phys, addr);
-        if l2t == 0 {
+        if no_l2(l2t) {
             addr = (addr & !(MEGA_SIZE - 1)) + MEGA_SIZE;
             continue;
         }
@@ -1923,7 +1930,7 @@ pub fn verify_no_exec_outside_image(
 /// by hand instead of asking `walk`.
 fn megapage_leaf_at(pt_phys: usize, vaddr: usize) -> bool {
     let l2t = l2_table(pt_phys, vaddr);
-    if l2t == 0 { return false; }
+    if no_l2(l2t) { return false; }
     let l2 = unsafe {
         core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + ARCH.vpn(vaddr, 2) * 8)) as *const u64)
     };
@@ -2782,7 +2789,7 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
 fn user_l0_leaf(pt_phys: usize, vaddr: usize) -> Option<*mut u64> {
     if write_would_enter_kernel_table(pt_phys, vaddr) { return None; }
     let l2t = l2_table(pt_phys, vaddr);
-    if l2t == 0 { return None; }
+    if no_l2(l2t) { return None; }
     let vpn2 = ARCH.vpn(vaddr, 2);
     let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) { return None; }
@@ -2814,7 +2821,7 @@ fn take_user_leaf(pt_phys: usize, vaddr: usize, skip_lo: usize, skip_hi: usize) 
     // Neither is ever created by `map`, so reaching one means a kernel mapping,
     // and it is not ours to touch.
     let l2t = l2_table(pt_phys, vaddr);
-    if l2t == 0 { return None; }
+    if no_l2(l2t) { return None; }
     let vpn2 = ARCH.vpn(vaddr, 2);
     let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *const u64) };
     if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) { return None; }
