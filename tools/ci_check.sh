@@ -15142,10 +15142,17 @@ PYEOF
         # pi_io=`; it takes none itself, so any is FAT32's own). It
         # must be 0; the PICANARY rows (a PiMutex held across each FAT update,
         # the VF shape) must count some. Anchored on the whole value.
-        local pi_io=""
+        # Wave 15 (PI): `pi_io_all` counts the same for EVERY task (the exec
+        # bounce buffer and KERNEL_FD_TABLE were the last two, from
+        # `behavior`'s spawn of MLSRV.ELF and from MLSRV.ELF's file opens);
+        # it must be 0 too. A PISITE:<lock> canary row puts that one lock back
+        # as a PiMutex held across its I/O: pi_io_all > 0 and a
+        # `[LAT] fat pi_io_site` line naming <lock>.
+        local pi_io="" pi_io_all=""
         case "$feats" in *lat-fat*|*fat-mutate-pi-canary*)
             pi_io="$(grep -a '^\[LAT\] fat pi_io=' "$clean" | sed -n '1s/^\[LAT\] fat pi_io=\([0-9][0-9]*\) pi_io_all=[0-9][0-9]*$/\1/p')"
-            if [ -z "$pi_io" ]; then
+            pi_io_all="$(grep -a '^\[LAT\] fat pi_io=' "$clean" | sed -n '1s/^\[LAT\] fat pi_io=[0-9][0-9]* pi_io_all=\([0-9][0-9]*\)$/\1/p')"
+            if [ -z "$pi_io" ] || [ -z "$pi_io_all" ]; then
                 bad; echo "      no '[LAT] fat pi_io=<n> pi_io_all=<n>' line"; echo "      log kept: $log"; return
             fi ;;
         esac
@@ -15175,6 +15182,18 @@ PYEOF
             bad; echo "      virtio-blk waited for the device with BLK_LOCK held (F1): ${blk_line#\[LAT\] }"
             echo "      log kept: $log"; return
         fi
+        case "$expect" in PISITE:*)
+            local want_lock="${expect#PISITE:}"
+            if [ "$pi_io_all" != 0 ] \
+               && grep -aqE "^\[LAT\] fat pi_io_site tid=[0-9]+ outer=0x[0-9a-f]+\(${want_lock}\) " "$clean"; then
+                ok; echo "      FAT device I/O under ${want_lock} held as a PiMutex: pi_io_all=${pi_io_all} (canary)"; rm -f "$log" "$clean"
+            else
+                bad; echo "      the ${want_lock} canary did not show: pi_io_all=${pi_io_all}"
+                grep -a '^\[LAT\] fat pi_io_site' "$clean" | sed 's/^/      /'
+                echo "      log kept: $log"
+            fi
+            return ;;
+        esac
         if [ "$expect" = PICANARY ]; then
             if [ "$pi_io" != 0 ]; then
                 ok; echo "      FAT device I/O under a held PiMutex: pi_io=${pi_io} (canary)"; rm -f "$log" "$clean"
@@ -15186,6 +15205,11 @@ PYEOF
         fi
         if [ -n "$pi_io" ] && [ "$pi_io" != 0 ]; then
             bad; echo "      FAT device I/O under a held PiMutex (F1): pi_io=${pi_io}"
+            echo "      log kept: $log"; return
+        fi
+        if [ -n "$pi_io_all" ] && [ "$pi_io_all" != 0 ]; then
+            bad; echo "      FAT device I/O under a held PiMutex by some task (F1): pi_io_all=${pi_io_all}"
+            grep -a '^\[LAT\] fat pi_io_site' "$clean" | sed 's/^/      /'
             echo "      log kept: $log"; return
         fi
         if [ "$expect" = PASS ]; then
@@ -15416,6 +15440,14 @@ PYEOF
     # each wait again and must count the waits under it.
     par_row -s lat_wake_row "lat: riscv64 virtio-blk lock-across-wait canary" rv "qemu,blk-lock-wait-canary" BLKCANARY
     par_row -s lat_wake_row "lat: aarch64 virtio-blk lock-across-wait canary" arm "qemu,blk-lock-wait-canary" BLKCANARY
+    # Wave 15 (PI), owner rule F1 for every task: the exec/spawn bounce
+    # buffer is a SleepLock (no PI) and KERNEL_FD_TABLE is never held across
+    # a descriptor's device I/O. The PASS rows above require `pi_io_all=0`;
+    # each canary puts one of them back and the site must name it.
+    par_row -s lat_wake_row "lat: riscv64 EXEC_BOUNCE PI-across-I/O canary" rv "qemu,lat-fat,exec-bounce-pi-canary" PISITE:EXEC_BOUNCE
+    par_row -s lat_wake_row "lat: aarch64 EXEC_BOUNCE PI-across-I/O canary" arm "qemu,lat-fat,exec-bounce-pi-canary" PISITE:EXEC_BOUNCE
+    par_row -s lat_wake_row "lat: riscv64 KERNEL_FD_TABLE PI-across-I/O canary" rv "qemu,lat-fat,fd-table-pi-canary" PISITE:KERNEL_FD_TABLE
+    par_row -s lat_wake_row "lat: aarch64 KERNEL_FD_TABLE PI-across-I/O canary" arm "qemu,lat-fat,fd-table-pi-canary" PISITE:KERNEL_FD_TABLE
 
     # ── aarch64: idle wakeups/s (tickless), wave 11 ONESHOT ─────────────────
     #

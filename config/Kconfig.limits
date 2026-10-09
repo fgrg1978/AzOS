@@ -977,6 +977,37 @@ config FAT32_SECTOR_CLAIM_SLOTS
       couple of atomic instructions per FAT entry update, the same on
       riscv64, aarch64 and x86_64. Lower it only to measure contention.
 
+config PI_TRACE_DEPTH
+    int "PiMutex trace: nesting levels recorded per task (diagnostics)"
+    range 1 16
+    default 4 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 4
+    help
+      crates/core/sync/src/pi_mutex.rs, PI_HELD_ADDR: with the
+      `pi-held-trace` cargo feature (pulled in by the `lat-fat` smoke), the
+      address of each PiMutex a task holds is kept for the first this-many
+      nesting levels, so an F1 report (a device wait under a PiMutex) names
+      the lock. Deeper levels still count; their address is not kept.
+
+      Cost: only in a diagnostic build: 64 x this x 8 B of .bss (2 KiB at 4)
+      and one store per PiMutex acquisition, on every ISA. Raise it only if a
+      report shows a nesting deeper than 4.
+
+config FAT_PI_IO_SITES
+    int "FAT32 F1 probe: distinct (task, lock) sites recorded (diagnostics)"
+    range 1 64
+    default 8 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 8
+    help
+      crates/fs/fs/src/fat32.rs, PI_IO_SITE: with the `fat-pi-io-probe`
+      cargo feature (the `lat-fat` smoke), each FAT32 device I/O issued under
+      a held PiMutex is attributed to (task, outermost lock, innermost lock);
+      this many distinct sites are kept and counted, the rest only add to
+      `pi_io_all`.
+
+      Cost: only in a diagnostic build: 24 B of .bss per site and a scan of
+      this many entries per offending I/O (none when F1 holds), on every ISA.
+
 config LOG_RING_ENTRIES
     int "Flight-recorder ring entries (power of two)"
     range 16 4096

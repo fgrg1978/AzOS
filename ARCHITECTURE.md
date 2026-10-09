@@ -452,6 +452,21 @@ fixed mount table. There are three implementations:
   taken sleeps without priority inheritance. The cache lock is released
   before a request goes to the device. A real-time task on the writer's CPU
   keeps its period while FAT32 writes.
+- **No priority-inheritance mutex across a device wait, for any task.** A
+  lock that must exclude across one is a sleeping lock without priority
+  inheritance (`SleepLock`): the exec and spawn image buffer, the raw disk
+  calls' bounce buffers, the shell's spawn buffer and the flight recorder's
+  flush lock. The machine-wide descriptor table keeps priority inheritance
+  (real-time tasks use it for in-memory and device files) and is never held
+  across device I/O. An open runs on a private table and the descriptor
+  then moves into the shared one. A read or write of a streaming file runs
+  on a lent copy of the descriptor that keeps the file alive, and its offset
+  is published under the lock afterwards. A close flushes a dirty file
+  outside the lock once its last descriptor is gone, and `fsync` writes a
+  copy of the bytes. Two threads that transfer through one shared
+  description at the same moment may both start from the same offset. The
+  panic path counts sleeping locks a task holds the same way it counts held
+  mutexes.
 - **Real-time tasks do no block I/O.** A task whose own priority is in the
   real-time band never enters the block layer. With `RT_BLOCK_IO_CHECK`
   (on in the development configs) the block layer panics, naming the task,

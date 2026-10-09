@@ -181,6 +181,11 @@ fn print_hwcap(h: u64) {
 /// only their enclosing scope moved. Forcing the inline keeps riscv64's
 /// codegen at that call site the same as before this hoist; without it the
 /// compiler is free to leave a real call there instead.
+/// `lat-fat`: where `KERNEL_FD_TABLE` lives, so the F1 report names it.
+#[cfg(feature = "lat-fat")]
+pub(crate) static FD_TABLE_ADDR: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
 #[inline(always)]
 pub(crate) fn install_ring3_seams() {
     azos_fs::init();
@@ -284,8 +289,83 @@ pub(crate) fn install_ring3_seams() {
             azos_fs::fd_count_owned(t, tid) < azos_fs::MAX_FDS_PER_TASK
         }
 
+        /// Gate canary `fd-table-pi-canary` (owner rule F1): the device part
+        /// of a descriptor operation runs with `KERNEL_FD_TABLE` held again,
+        /// the shape before wave 15; the `lat-fat` smoke's `pi_io_site` must
+        /// name the table.
+        #[inline(always)]
+        fn fd_canary_hold() -> Option<azos_sync::pi_mutex::PiMutexGuard<'static, azos_fs::FdTable>> {
+            if cfg!(feature = "fd-table-pi-canary") { Some(KERNEL_FD_TABLE.lock()) } else { None }
+        }
+
+        /// Close `fd` (already checked by the caller, under `t`): the slot
+        /// under the lock, the flush of a dirty proxy outside it (owner rule
+        /// F1: `KERNEL_FD_TABLE` is a `PiMutex`, never held across a device
+        /// wait). Takes the guard and releases it.
+        fn fd_close_unlocked(
+            mut t: azos_sync::pi_mutex::PiMutexGuard<'_, azos_fs::FdTable>, fd: i32,
+        ) -> i32 {
+            let lone = azos_fs::fd_detach(&mut *t, fd);
+            drop(t);
+            match lone {
+                Some(mut lone) => {
+                    let _c = fd_canary_hold();
+                    azos_fs::vfs_close(&mut lone, 0)
+                }
+                None => 0,
+            }
+        }
+
+        /// `read` (`write` false) or `write` of `fd`, checked by the caller
+        /// under `t`: a streaming backend file transfers on a lent copy of
+        /// the descriptor with the table released (owner rule F1), and its
+        /// offset is published under the lock again; ramfs, proxy and device
+        /// files (a copy, or the console: no device wait) under the lock as
+        /// before. Takes the guard and releases it.
+        fn fd_transfer(
+            mut t: azos_sync::pi_mutex::PiMutexGuard<'_, azos_fs::FdTable>,
+            fd: i32, write: bool, buf: *mut u8, len: usize,
+        ) -> i64 {
+            if !azos_fs::fd_streams(&t, fd) {
+                return if write {
+                    azos_fs::vfs_write(&mut *t, fd, buf as *const u8, len)
+                } else {
+                    azos_fs::vfs_read(&mut *t, fd, buf, len)
+                } as i64;
+            }
+            let Some((mut lone, desc)) = azos_fs::fd_lend(&t, fd) else { return -1 };
+            drop(t);
+            let n = {
+                let _c = fd_canary_hold();
+                if write {
+                    azos_fs::vfs_write(&mut lone, 0, buf as *const u8, len)
+                } else {
+                    azos_fs::vfs_read(&mut lone, 0, buf, len)
+                }
+            };
+            let mut t = KERNEL_FD_TABLE.lock();
+            azos_fs::fd_settle(&mut *t, fd, desc, &lone);
+            // The lent inode reference (no device access).
+            azos_fs::fd_free(&mut lone, 0);
+            n as i64
+        }
+
         impl azos_syscall::file_ops::FileOps for KernelFileOps {
             fn open(&self, path: &[u8], flags: u32) -> i64 {
+                // Quota BEFORE the open (fail fast), and again under the lock
+                // that allocates the slot (`fd_adopt` below).
+                if !fd_quota_available(&KERNEL_FD_TABLE.lock()) { return -1; }
+                // Owner rule F1: every device access of an open (the backend
+                // lookup, the proxy load, the create) happens inside
+                // `vfs_open`, before its slot is allocated, so it runs on a
+                // scratch table with `KERNEL_FD_TABLE` released; the
+                // descriptor then moves into the table under the lock.
+                let mut scratch = azos_fs::ScratchFds::new();
+                let sfd = {
+                    let _c = fd_canary_hold();
+                    azos_fs::vfs_open(&mut scratch, path, flags)
+                };
+                if sfd < 0 { return -1; }
                 let mut t = KERNEL_FD_TABLE.lock();
                 // Quota BEFORE allocation, under the lock that allocates.
                 // `MAX_FDS` is the whole machine's table — sixteen slots — and
@@ -297,8 +377,17 @@ pub(crate) fn install_ring3_seams() {
                 // down, and it is why this sits inside the guard rather than
                 // above it. Same rule and same reasoning as
                 // `MAX_SOCKETS_PER_TASK`.
-                if !fd_quota_available(&t) { return -1; }
-                let fd = azos_fs::vfs_open(&mut *t, path, flags);
+                if !fd_quota_available(&t) {
+                    drop(t);
+                    azos_fs::fd_free(&mut scratch, sfd);
+                    return -1;
+                }
+                let fd = azos_fs::fd_adopt(&mut *t, &mut scratch, sfd);
+                if fd < 0 {
+                    drop(t);
+                    azos_fs::fd_free(&mut scratch, sfd);
+                    return -1;
+                }
                 // Stamp the owner here, under the same lock that allocated the
                 // slot. `crates/fs/fs` deliberately does not know about the
                 // scheduler; the kernel is the only place that holds the table
@@ -313,22 +402,24 @@ pub(crate) fn install_ring3_seams() {
                 fd as i64
             }
             fn release_all(&self, tid: u32) -> usize {
-                let mut t = KERNEL_FD_TABLE.lock();
                 // CLOSED, not freed raw (RFC-0055): a FAT32 file's bytes and
                 // size sit in its inode until `vfs_close` flushes them, and a
                 // program the user shell runs routinely exits with a moved
                 // descriptor still open (`args > f`) — freeing the slot raw
                 // lost the file. What `vfs_close` misses is still reclaimed.
+                // One descriptor at a time, each flushed with the table
+                // released (owner rule F1, `fd_close_unlocked`).
                 let mut closed = 0usize;
                 if tid != azos_fs::FD_NO_OWNER {
                     for fd in 0..azos_fs::MAX_FDS as i32 {
+                        let t = KERNEL_FD_TABLE.lock();
                         if azos_fs::fd_owner(&t, fd) == Some(tid) {
-                            azos_fs::vfs_close(&mut *t, fd);
+                            fd_close_unlocked(t, fd);
                             closed += 1;
                         }
                     }
                 }
-                closed + azos_fs::fd_release_owned(&mut *t, tid)
+                closed + azos_fs::fd_release_owned(&mut *KERNEL_FD_TABLE.lock(), tid)
             }
             fn set_owner(&self, fd: i32, from: u32, to: u32) -> i64 {
                 let mut t = KERNEL_FD_TABLE.lock();
@@ -342,37 +433,37 @@ pub(crate) fn install_ring3_seams() {
                 0
             }
             fn close(&self, fd: i32) -> i64 {
-                let mut t = KERNEL_FD_TABLE.lock();
+                let t = KERNEL_FD_TABLE.lock();
                 if !fd_caller_may_use(&t, fd) { return -1; }
-                azos_fs::vfs_close(&mut *t, fd) as i64
+                fd_close_unlocked(t, fd) as i64
             }
             fn read(&self, fd: i32, dst: &mut [u8]) -> i64 {
-                let mut t = KERNEL_FD_TABLE.lock();
+                let t = KERNEL_FD_TABLE.lock();
                 if !fd_caller_may_use(&t, fd) { return -1; }
-                azos_fs::vfs_read(&mut *t, fd, dst.as_mut_ptr(), dst.len()) as i64
+                fd_transfer(t, fd, false, dst.as_mut_ptr(), dst.len())
             }
             fn write(&self, fd: i32, src: &[u8]) -> i64 {
-                let mut t = KERNEL_FD_TABLE.lock();
+                let t = KERNEL_FD_TABLE.lock();
                 if !fd_caller_may_use(&t, fd) { return -1; }
-                azos_fs::vfs_write(&mut *t, fd, src.as_ptr(), src.len()) as i64
+                fd_transfer(t, fd, true, src.as_ptr() as *mut u8, src.len())
             }
             // On behalf of `tid` (the io_ring owner, from the SQ poller): the
             // owner stamp, under the same lock as the transfer.
             fn read_as(&self, tid: u32, fd: i32, dst: &mut [u8]) -> i64 {
-                let mut t = KERNEL_FD_TABLE.lock();
+                let t = KERNEL_FD_TABLE.lock();
                 if !azos_syscall::file_ops::fd_owned_by(
                     azos_fs::fd_owner(&t, fd), tid, azos_fs::FD_NO_OWNER) {
                     return -1;
                 }
-                azos_fs::vfs_read(&mut *t, fd, dst.as_mut_ptr(), dst.len()) as i64
+                fd_transfer(t, fd, false, dst.as_mut_ptr(), dst.len())
             }
             fn write_as(&self, tid: u32, fd: i32, src: &[u8]) -> i64 {
-                let mut t = KERNEL_FD_TABLE.lock();
+                let t = KERNEL_FD_TABLE.lock();
                 if !azos_syscall::file_ops::fd_owned_by(
                     azos_fs::fd_owner(&t, fd), tid, azos_fs::FD_NO_OWNER) {
                     return -1;
                 }
-                azos_fs::vfs_write(&mut *t, fd, src.as_ptr(), src.len()) as i64
+                fd_transfer(t, fd, true, src.as_ptr() as *mut u8, src.len())
             }
             fn lseek(&self, fd: i32, offset: i64, whence: i32) -> i64 {
                 let mut t = KERNEL_FD_TABLE.lock();
@@ -648,11 +739,19 @@ pub(crate) fn install_ring3_seams() {
                 match azos_fs::vfs_truncate(path, len) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
             fn fsync(&self, fd: i32) -> i64 {
-                let mut t = KERNEL_FD_TABLE.lock();
+                let t = KERNEL_FD_TABLE.lock();
                 if !fd_caller_may_use(&t, fd) {
                     return azos_abi::error::Errno::EBADF.to_syscall_ret();
                 }
-                match azos_fs::vfs_fsync(&mut *t, fd) { Ok(()) => 0, Err(e) => fs_errno(e) }
+                // Owner rule F1: the write and the sync outside the table's
+                // lock, on a copy of a dirty proxy's bytes.
+                let work = azos_fs::fd_fsync_begin(&t, fd);
+                drop(t);
+                let r = work.and_then(|w| {
+                    let _c = fd_canary_hold();
+                    azos_fs::fd_fsync_finish(w)
+                });
+                match r { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
             fn statfs(&self, path: &[u8]) -> Result<azos_syscall::file_ops::StatFsOut, i64> {
                 let st = azos_fs::vfs_statfs(path).map_err(fs_errno)?;
@@ -686,6 +785,9 @@ pub(crate) fn install_ring3_seams() {
 
         static KERNEL_FILE_OPS: KernelFileOps = KernelFileOps;
         azos_syscall::file_ops::set_file_ops(&KERNEL_FILE_OPS);
+        #[cfg(feature = "lat-fat")]
+        FD_TABLE_ADDR.store(&KERNEL_FD_TABLE as *const _ as usize,
+            core::sync::atomic::Ordering::Relaxed);
     }
 
     // Wave 12 (RFC-0055 S5): the flight/behavior/config/OTA typed calls run

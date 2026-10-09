@@ -21,6 +21,8 @@ mmap-prot-canary = []
 # ipc_handlers.rs. Off: the real behaviour.
 thread-objects-canary = []
 exec-validate-late-canary = []
+# Wave 15 (PI): `EXEC_BOUNCE` a `PiMutex` again (gate canary). Off here.
+exec-bounce-pi-canary = []
 # Wave 14 (DEMANDPAGE): the region pagers never resolve a fault.
 demand-region-canary = ["azos_mm/demand-region-canary"]
 # Wave 14 (SPAWNCACHE): mirrors azos_syscall's canaries of the same names

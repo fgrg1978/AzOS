@@ -585,8 +585,37 @@ fn pi_io_probe() {
             if tid != 0 && tid == FAT_PI_IO_WATCH.load(Relaxed) {
                 FAT_PI_IO_WATCHED.fetch_add(1, Relaxed);
             }
+            pi_io_site_record(tid);
         }
     }
+}
+
+/// Distinct (task, held `PiMutex`es) seen by [`pi_io_probe`]: which lock
+/// each F1 violation held. Packed (tid, outermost lock, innermost lock);
+/// first come first kept, then only counted.
+#[cfg(feature = "fat-pi-io-probe")]
+const PI_IO_SITES: usize = azos_limits::FAT_PI_IO_SITES;
+#[cfg(feature = "fat-pi-io-probe")]
+static PI_IO_SITE: azos_sync::SpinLock<[(u32, usize, usize, u32); PI_IO_SITES]> =
+    azos_sync::SpinLock::new([(0, 0, 0, 0); PI_IO_SITES]);
+
+#[cfg(feature = "fat-pi-io-probe")]
+fn pi_io_site_record(tid: u32) {
+    let mut held = [0usize; 4];
+    let n = azos_sync::pi_mutex::held_addrs(tid, &mut held);
+    let (outer, inner) = if n == 0 { (0, 0) } else { (held[0], held[n - 1]) };
+    let mut t = PI_IO_SITE.lock();
+    for e in t.iter_mut() {
+        if e.3 != 0 && e.0 == tid && e.1 == outer && e.2 == inner { e.3 += 1; return; }
+    }
+    if let Some(e) = t.iter_mut().find(|e| e.3 == 0) { *e = (tid, outer, inner, 1); }
+}
+
+/// Every recorded F1 site: `f(tid, outermost lock, innermost lock, count)`.
+#[cfg(feature = "fat-pi-io-probe")]
+pub fn fat32_pi_io_sites(mut f: impl FnMut(u32, usize, usize, u32)) {
+    let t = *PI_IO_SITE.lock();
+    for e in t.iter().filter(|e| e.3 != 0) { f(e.0, e.1, e.2, e.3); }
 }
 
 /// Name the task whose PI-held FAT I/O [`fat32_pi_io_counts`] reports first.

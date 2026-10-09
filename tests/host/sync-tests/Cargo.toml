@@ -32,3 +32,5 @@ azos_limits = { path = "../../../crates/core/limits" }
 # `unexpected_cfgs` lint recognizes the name; nothing here turns it on.
 [features]
 lat-trace = []
+# `pi_mutex.rs`'s diagnostic lock-address trace (wave 15, PI); off here.
+pi-held-trace = []

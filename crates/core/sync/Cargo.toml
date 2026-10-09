@@ -14,3 +14,6 @@ azos_common = { workspace = true }
 # Masked-window tracer hooks on the preemption counter and the spinlock
 # guards (Kconfig `LAT_TRACE`). Off: no hook, no extra guard field.
 lat-trace = ["azos_arch/lat-trace"]
+# Diagnostics: record the address of each held `PiMutex` per task
+# (`pi_mutex::held_addrs`), for the `lat-fat` smoke's F1 report.
+pi-held-trace = []

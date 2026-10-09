@@ -77,6 +77,9 @@ thread-objects-canary = []
 # the other threads before it reads and checks the image, so an exec that
 # fails leaves the process with one thread.
 exec-validate-late-canary = []
+# Wave 15 (PI) gate canary, owner rule F1: `EXEC_BOUNCE` is a `PiMutex` again,
+# held across the image read; the `lat-fat` smoke must count it.
+exec-bounce-pi-canary = []
 # Wave 13 canaries for the per-row seed template (`natfork`): an entry is
 # edited after the template is sealed (the seal must refuse it: dropped and
 # minted again), and the same with the seal check compiled out (the edited

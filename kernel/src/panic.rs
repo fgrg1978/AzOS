@@ -118,10 +118,12 @@ fn capture(hart: usize, tid: u32) -> PanicContext {
         irqs_were_enabled: azos_sync::preempt::irqs_enabled(),
         // Locks nobody else would release: held `PiMutex`es, FAT-sector
         // claims (crates/fs/fs/src/fat32.rs, F1: not a mutex, same rule) and
-        // the flight recorder's flush lock (no PI, same rule).
+        // the sleeping locks without PI held across device waits (F1: the
+        // flight recorder's flush lock, the exec bounce buffer, the file
+        // descriptor I/O claims; `azos_sync::sleep_lock`).
         pi_held: azos_sync::pi_mutex::held_by(tid)
             .saturating_add(azos_fs::fat32::fat32_claims_held_by(tid))
-            .saturating_add(azos_actuation::logger::logger_flush_lock_held_by(tid)),
+            .saturating_add(azos_sync::sleep_lock::held_by(tid)),
         second_panic,
         already_panicked: azos_common::is_panicked(),
         culprit,

@@ -121,6 +121,32 @@ pub mod spinlock {
     pub use super::{Guard, IrqSaveGuard, SpinLock, SpinLockGuard};
 }
 
+/// The real `SleepLock`'s surface (`crates/core/sync/src/sleep_lock.rs`):
+/// exclusion only, over the shim's `SpinLock`. No scheduler, so nothing
+/// sleeps and no holder is counted for a panic path.
+pub mod sleep_lock {
+    use super::{Guard, SpinLock};
+
+    pub struct SleepLock<T> {
+        inner: SpinLock<T>,
+    }
+
+    pub type SleepLockGuard<'a, T> = Guard<'a, T>;
+
+    impl<T> SleepLock<T> {
+        pub const fn new(data: T) -> Self {
+            Self { inner: SpinLock::new(data) }
+        }
+        pub fn lock(&self) -> Guard<'_, T> {
+            self.inner.lock()
+        }
+        pub fn held_by(&self, _tid: u32) -> bool { false }
+    }
+
+    pub fn held_by(_tid: u32) -> u32 { 0 }
+}
+pub use sleep_lock::SleepLock;
+
 /// The real `WaitQueue`'s `wait_if`/`wake_all` surface. The host has no
 /// scheduler to block on, so `wait_if` yields the thread when the condition
 /// still holds (the caller re-checks in a loop, exactly as it must against

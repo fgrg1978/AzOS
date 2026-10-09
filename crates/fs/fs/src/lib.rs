@@ -78,6 +78,9 @@ pub use vfs::{
     vfs_truncate, vfs_fsync,
     INODE_KEY_LEN, ZEROED_KEY, NO_BACKING, FAT32_FS,
     fd_alloc, fd_free, fd_get, fd_dup, fd_dup2,
+    // Wave 15 (PI), owner rule F1: descriptor I/O without the table's lock.
+    LoneFd, fd_streams, fd_lend, fd_settle, fd_adopt, fd_detach,
+    FsyncWork, fd_fsync_begin, fd_fsync_finish,
     fd_set_owner, fd_owner, fd_count_owned, fd_release_owned,
     FD_NO_OWNER, MAX_FDS_PER_TASK,
     vfs_open, vfs_close, vfs_read, vfs_write, vfs_lseek,

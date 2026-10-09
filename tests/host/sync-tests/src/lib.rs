@@ -51,6 +51,42 @@ pub mod pi_mutex;
 #[path = "../../../../crates/core/sync/src/waitqueue.rs"]
 pub mod waitqueue;
 
+#[path = "../../../../crates/core/sync/src/sleep_lock.rs"]
+pub mod sleep_lock;
+
+/// Wave 15 (PI), owner rule F1: a sleeping lock (or claim) a task holds is
+/// counted for the panic path, and NOT as a held `PiMutex` (the `lat-fat`
+/// smoke's F1 probe reads `pi_mutex::held_by`: a `SleepLock` held across a
+/// device wait is the allowed shape).
+#[cfg(test)]
+mod sleep_lock_tests {
+    use super::{pi_mutex, sleep_lock};
+
+    #[test]
+    fn sleep_holds_count_for_panic_not_as_pi() {
+        let tid = 0x5eed;
+        assert_eq!(sleep_lock::held_by(tid), 0);
+        sleep_lock::note_acquired(tid);
+        sleep_lock::note_acquired(tid);
+        assert_eq!(sleep_lock::held_by(tid), 2);
+        assert_eq!(pi_mutex::held_by(tid), 0);
+        sleep_lock::note_released(tid);
+        sleep_lock::note_released(tid);
+        assert_eq!(sleep_lock::held_by(tid), 0);
+    }
+
+    #[test]
+    fn sleep_lock_excludes_and_releases() {
+        static L: sleep_lock::SleepLock<u32> = sleep_lock::SleepLock::new(0);
+        {
+            let mut g = L.lock();
+            *g += 1;
+        }
+        // Released: a second take does not wait.
+        assert_eq!(*L.lock(), 1);
+    }
+}
+
 /// `PreemptGuard` must be `!Send`.
 ///
 /// The depth it decrements belongs to a *hart*, so a guard released on a hart

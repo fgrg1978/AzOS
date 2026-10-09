@@ -4,6 +4,8 @@
 
 pub mod spinlock;
 pub mod pi_mutex;
+/// Sleeping lock without priority inheritance (owner rule F1).
+pub mod sleep_lock;
 pub mod seqlock;
 pub mod waitqueue;
 pub mod completion;
@@ -16,6 +18,7 @@ pub mod isr_depth;
 pub use spinlock::{SpinLock, SpinLockGuard, IrqSaveGuard};
 pub use preempt::{critical_section, PreemptGuard};
 pub use pi_mutex::PiMutex;
+pub use sleep_lock::SleepLock;
 pub use seqlock::SeqLock;
 pub use waitqueue::WaitQueue;
 pub use completion::Completion;

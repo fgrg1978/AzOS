@@ -372,6 +372,17 @@ fn rt_task(num_cpus: usize) {
     {
         let (mine, all) = azos_fs::fat32::fat32_pi_io_counts();
         kprintln!("[LAT] fat pi_io={} pi_io_all={}", mine, all);
+        // Which PiMutex each was under (owner rule F1), by name where the
+        // lock is one F1 converted, else by address (`nm` on the kernel).
+        let name = |a: usize| -> &'static str {
+            if a == azos_syscall::handlers::exec_bounce_addr() { "EXEC_BOUNCE" }
+            else if a == crate::boot::FD_TABLE_ADDR.load(Ordering::Relaxed) { "KERNEL_FD_TABLE" }
+            else { "?" }
+        };
+        azos_fs::fat32::fat32_pi_io_sites(|tid, outer, inner, n| {
+            kprintln!("[LAT] fat pi_io_site tid={} outer={:#x}({}) inner={:#x}({}) n={}",
+                      tid, outer, name(outer), inner, name(inner), n);
+        });
         // Wave 15 (RL): virtio-blk completion waits, and those made with a
         // driver PiMutex held (BLK_LOCK across the request; must be 0).
         let (waits, locked) = azos_drv_virtio::virtio::blk::wait_probe_counts();

@@ -1721,6 +1721,55 @@ mod vfs_open_close {
         assert_eq!(on_disk(b"dup.txt"), b"abc");
     }
 
+    /// Wave 15 (PI), owner rule F1: the descriptor operations the kernel's
+    /// shared table runs without its lock. An open in a private table moves
+    /// into the shared one (`fd_adopt`); a lent copy writes and its offset is
+    /// published (`fd_lend`/`fd_settle`), but not into a slot closed in
+    /// between; a close that leaves another descriptor on the inode does not
+    /// flush, and the last one hands back the flush (`fd_detach`), which
+    /// writes the bytes.
+    #[test]
+    fn descriptor_io_without_the_table_lock() {
+        let _g = serial();
+        fresh_volume();
+        let mut private = vfs::ScratchFds::new();
+        let sfd = vfs::vfs_open(&mut private, b"/fat/LEND.TXT", vfs::O_WRONLY | vfs::O_CREAT | vfs::O_TRUNC);
+        assert!(sfd >= 0);
+        let mut t = vfs::ScratchFds::new();
+        let fd = vfs::fd_adopt(&mut t, &mut private, sfd);
+        assert!(fd >= 3, "adopted into a free slot");
+        assert!(!private.fds[sfd as usize].in_use, "moved, not copied");
+        assert_eq!(private.desc_refs(sfd), 0);
+
+        let (mut lone, desc) = vfs::fd_lend(&t, fd).expect("an open descriptor lends");
+        assert_eq!(vfs::vfs_write(&mut lone, 0, b"hello".as_ptr(), 5), 5);
+        assert_eq!(t.off(fd), 0, "nothing published before the settle");
+        vfs::fd_settle(&mut t, fd, desc, &lone);
+        vfs::fd_free(&mut lone, 0);
+        assert_eq!(t.off(fd), 5);
+
+        // A settle into a descriptor closed in between publishes nothing.
+        let d = vfs::fd_dup(&mut t, fd);
+        assert!(d >= 0);
+        let (mut lone, desc) = vfs::fd_lend(&t, d).unwrap();
+        assert_eq!(vfs::vfs_write(&mut lone, 0, b"!".as_ptr(), 1), 1);
+        assert!(vfs::fd_detach(&mut t, d).is_none(), "fd still names the inode: no flush");
+        vfs::fd_settle(&mut t, d, desc, &lone);
+        vfs::fd_free(&mut lone, 0);
+        assert_eq!(t.off(fd), 5, "the closed slot's offset went nowhere");
+        {
+            use vfs::FileSystem;
+            let key = fat32::Fat32Fs.key_for(b"lend.txt").unwrap();
+            assert!(fat32::Fat32Fs.stat(&key).map_or(true, |st| st.size == 0),
+                "a close that is not the last does not flush");
+        }
+
+        let mut last = vfs::fd_detach(&mut t, fd).expect("the last descriptor hands back the flush");
+        assert!(!t.fds[fd as usize].in_use);
+        assert_eq!(vfs::vfs_close(&mut last, 0), 0);
+        assert_eq!(on_disk(b"lend.txt"), b"hello!");
+    }
+
     /// The description is counted: each descriptor holds one reference,
     /// a close drops one, the description outlives every close but the last,
     /// and the last one frees it for reuse (a new open starts at offset 0).

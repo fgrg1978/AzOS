@@ -158,13 +158,15 @@ fn restore_callback() -> Option<fn(u32, u32)> {
 /// A no-owner sentinel for `owner_tid`.
 const NO_OWNER: u32 = u32::MAX;
 
-/// Entries of the held-count table [`held_by`] reads.
+/// Entries of a [`HeldTable`].
 const PI_HELD_SLOTS: usize = 64;
 
-/// `PiMutex` acquisitions not yet released, per task, for the panic policy's
+/// Locks acquired and not yet released, per task, for the panic policy's
 /// containment predicate (RFC-0052 §5.2 check 4): a task that panics while
-/// it holds a `PiMutex` cannot be parked, because nobody would ever release
-/// that lock.
+/// it holds a lock nobody else would release cannot be parked. One table
+/// for `PiMutex`es ([`held_by`]), one for the sleeping locks without PI
+/// (`crate::sleep_lock::held_by`, owner rule F1: the kind held across a
+/// device wait).
 ///
 /// Keyed by the exact TID: each entry packs `tid << 32 | count`, and an entry
 /// whose count is 0 is free whatever TID it last carried. An acquisition
@@ -178,15 +180,15 @@ const PI_HELD_SLOTS: usize = 64;
 ///
 /// A task can end up with two entries (its first one was freed and re-claimed
 /// by another TID while the task held a second lock further along the probe
-/// sequence). [`held_by`] sums every entry with the TID and a release lowers
-/// any one of them, so the total stays exact. When every entry is taken by
-/// another TID the acquisition is counted in [`PI_HELD_OVERFLOW`], which
-/// [`held_by`] adds for EVERY TID: an over-count, the reset path, the safe
-/// direction — never an under-count.
-static PI_HELD: [AtomicU64; PI_HELD_SLOTS] = [const { AtomicU64::new(0) }; PI_HELD_SLOTS];
-
-/// Acquisitions that found no entry (see [`PI_HELD`]).
-static PI_HELD_OVERFLOW: AtomicU32 = AtomicU32::new(0);
+/// sequence). [`HeldTable::held_by`] sums every entry with the TID and a
+/// release lowers any one of them, so the total stays exact. When every entry
+/// is taken by another TID the acquisition is counted in `overflow`, which
+/// [`HeldTable::held_by`] adds for EVERY TID: an over-count, the reset path,
+/// the safe direction — never an under-count.
+pub(crate) struct HeldTable {
+    slots:    [AtomicU64; PI_HELD_SLOTS],
+    overflow: AtomicU32,
+}
 
 #[inline(always)]
 const fn held_tid(e: u64) -> u32 {
@@ -198,65 +200,137 @@ const fn held_count(e: u64) -> u32 {
     e as u32
 }
 
-/// Count one acquisition by `tid`.
-#[inline(always)]
-fn held_raise(tid: u32) {
-    let home = tid as usize % PI_HELD_SLOTS;
-    let mut k = 0;
-    while k < PI_HELD_SLOTS {
-        let slot = &PI_HELD[(home + k) % PI_HELD_SLOTS];
-        let mut e = slot.load(Ordering::Acquire);
-        loop {
-            let next = if held_count(e) == 0 {
-                (tid as u64) << 32 | 1
-            } else if held_tid(e) == tid {
-                e + 1
-            } else {
-                break;
-            };
-            match slot.compare_exchange_weak(e, next, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return,
-                Err(now) => e = now,
+impl HeldTable {
+    pub(crate) const fn new() -> Self {
+        Self { slots: [const { AtomicU64::new(0) }; PI_HELD_SLOTS], overflow: AtomicU32::new(0) }
+    }
+
+    /// Count one acquisition by `tid`: the entry and its new count, or
+    /// `None` when it overflowed.
+    #[inline(always)]
+    pub(crate) fn raise(&self, tid: u32) -> Option<(usize, u32)> {
+        let home = tid as usize % PI_HELD_SLOTS;
+        let mut k = 0;
+        while k < PI_HELD_SLOTS {
+            let i = (home + k) % PI_HELD_SLOTS;
+            let slot = &self.slots[i];
+            let mut e = slot.load(Ordering::Acquire);
+            loop {
+                let next = if held_count(e) == 0 {
+                    (tid as u64) << 32 | 1
+                } else if held_tid(e) == tid {
+                    e + 1
+                } else {
+                    break;
+                };
+                match slot.compare_exchange_weak(e, next, Ordering::AcqRel, Ordering::Acquire) {
+                    Ok(_) => return Some((i, held_count(next))),
+                    Err(now) => e = now,
+                }
+            }
+            k += 1;
+        }
+        self.overflow.fetch_add(1, Ordering::AcqRel);
+        None
+    }
+
+    /// Undo one [`HeldTable::raise`] by `tid`.
+    #[inline(always)]
+    pub(crate) fn lower(&self, tid: u32) {
+        let home = tid as usize % PI_HELD_SLOTS;
+        let mut k = 0;
+        while k < PI_HELD_SLOTS {
+            let slot = &self.slots[(home + k) % PI_HELD_SLOTS];
+            let mut e = slot.load(Ordering::Acquire);
+            while held_count(e) != 0 && held_tid(e) == tid {
+                match slot.compare_exchange_weak(e, e - 1, Ordering::AcqRel, Ordering::Acquire) {
+                    Ok(_) => return,
+                    Err(now) => e = now,
+                }
+            }
+            k += 1;
+        }
+        // Not in the table: the raise overflowed.
+        let _ = self.overflow.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+            |n| n.checked_sub(1));
+    }
+
+    /// Acquisitions task `tid` has not released. Exact, unless an
+    /// acquisition by any task overflowed the table (then an over-count,
+    /// never an under-count). O(`PI_HELD_SLOTS`): the panic path's question.
+    pub(crate) fn held_by(&self, tid: u32) -> u32 {
+        let mut n = self.overflow.load(Ordering::Acquire);
+        for slot in self.slots.iter() {
+            let e = slot.load(Ordering::Acquire);
+            if held_count(e) != 0 && held_tid(e) == tid {
+                n = n.saturating_add(held_count(e));
             }
         }
-        k += 1;
+        n
     }
-    PI_HELD_OVERFLOW.fetch_add(1, Ordering::AcqRel);
+
+    /// `(entry, count)` of each entry task `tid` has.
+    #[cfg(feature = "pi-held-trace")]
+    fn entries_of(&self, tid: u32, mut f: impl FnMut(usize, u32)) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            let e = slot.load(Ordering::Acquire);
+            if held_count(e) != 0 && held_tid(e) == tid { f(i, held_count(e)); }
+        }
+    }
+}
+
+/// The `PiMutex` acquisitions ([`HeldTable`]).
+static PI_HELD: HeldTable = HeldTable::new();
+
+/// `pi-held-trace` (diagnostics, the `lat-fat` smoke): the address of each
+/// `PiMutex` a task holds, by nesting depth, beside its [`PI_HELD`] entry.
+/// Only the first `PI_TRACE_DEPTH` levels are kept. Off: nothing compiled.
+#[cfg(feature = "pi-held-trace")]
+const PI_TRACE_DEPTH: usize = azos_limits::PI_TRACE_DEPTH;
+#[cfg(feature = "pi-held-trace")]
+static PI_HELD_ADDR: [[AtomicUsize; PI_TRACE_DEPTH]; PI_HELD_SLOTS] =
+    [const { [const { AtomicUsize::new(0) }; PI_TRACE_DEPTH] }; PI_HELD_SLOTS];
+
+/// The `PiMutex`es task `tid` holds, outermost first (at most `out.len()`
+/// and the trace depth); returns how many were written.
+#[cfg(feature = "pi-held-trace")]
+pub fn held_addrs(tid: u32, out: &mut [usize]) -> usize {
+    let mut n = 0;
+    PI_HELD.entries_of(tid, |i, count| {
+        for d in 0..(count as usize).min(PI_TRACE_DEPTH) {
+            if n < out.len() {
+                out[n] = PI_HELD_ADDR[i][d].load(Ordering::Relaxed);
+                n += 1;
+            }
+        }
+    });
+    n
+}
+
+/// Count one acquisition by `tid` (of the mutex at `_addr`).
+#[inline(always)]
+fn held_raise(tid: u32, _addr: usize) {
+    let _r = PI_HELD.raise(tid);
+    #[cfg(feature = "pi-held-trace")]
+    if let Some((i, count)) = _r {
+        let d = count as usize - 1;
+        if d < PI_TRACE_DEPTH {
+            PI_HELD_ADDR[i][d].store(_addr, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Undo one [`held_raise`] by `tid`.
 #[inline(always)]
 fn held_lower(tid: u32) {
-    let home = tid as usize % PI_HELD_SLOTS;
-    let mut k = 0;
-    while k < PI_HELD_SLOTS {
-        let slot = &PI_HELD[(home + k) % PI_HELD_SLOTS];
-        let mut e = slot.load(Ordering::Acquire);
-        while held_count(e) != 0 && held_tid(e) == tid {
-            match slot.compare_exchange_weak(e, e - 1, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return,
-                Err(now) => e = now,
-            }
-        }
-        k += 1;
-    }
-    // Not in the table: the raise overflowed.
-    let _ = PI_HELD_OVERFLOW.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-        |n| n.checked_sub(1));
+    PI_HELD.lower(tid);
 }
 
 /// `PiMutex` acquisitions task `tid` has not released. Exact, unless an
 /// acquisition by any task overflowed the table (then an over-count, never
 /// an under-count). O([`PI_HELD_SLOTS`]): the panic path's question.
 pub fn held_by(tid: u32) -> u32 {
-    let mut n = PI_HELD_OVERFLOW.load(Ordering::Acquire);
-    for slot in PI_HELD.iter() {
-        let e = slot.load(Ordering::Acquire);
-        if held_count(e) != 0 && held_tid(e) == tid {
-            n = n.saturating_add(held_count(e));
-        }
-    }
-    n
+    PI_HELD.held_by(tid)
 }
 
 /// Plain-load spins between yields while waiting.
@@ -484,7 +558,7 @@ impl<T> PiMutex<T> {
         }
         self.owner_tid.store(tid, Ordering::Release);
         self.owner_orig_priority.store(prio, Ordering::Release);
-        held_raise(tid);
+        held_raise(tid, self as *const Self as usize);
         // A fresh owner starts with no donations: `release()` drained the
         // counter under this same lock.
         self.donations.store(0, Ordering::Release);

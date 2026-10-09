@@ -1616,6 +1616,126 @@ pub fn fd_free<const N: usize>(table: &mut FdTableN<N>, fd: i32) {
 }
 
 
+// ─── Descriptor I/O without the table's lock (owner rule F1, wave 15) ───────
+//
+// The machine-wide table is a `PiMutex` (kernel/src/boot/seams.rs
+// `KERNEL_FD_TABLE`): real-time tasks use it for ramfs and device files, so
+// it keeps priority inheritance, and so it must not be held across a device
+// wait. The helpers below let its owner do the device part of an operation
+// on a copy of ONE descriptor, outside the lock, and publish the result
+// under it:
+//
+// * `open`: every device access (the backend lookup, the proxy load, the
+//   create) happens before `fd_alloc`, so the seam opens into a
+//   `ScratchFds` and [`fd_adopt`] moves the descriptor into the table.
+// * `read`/`write` on a streaming backend file ([`fd_streams`]): the
+//   descriptor is lent ([`fd_lend`]: a one-slot table holding its own
+//   inode reference, so a concurrent close cannot free the inode under the
+//   I/O) and its offset is published back by [`fd_settle`]. Two threads
+//   of one process transferring through ONE description at once may both
+//   start from the same offset (Linux serialises that with `f_pos_lock`).
+// * `close` of the last descriptor naming an inode ([`fd_detach`]): the
+//   flush of a dirty proxy runs on the detached copy. A close that leaves
+//   other descriptors on the inode does not flush: the last close does
+//   (another descriptor may be writing into the proxy's buffer, which a
+//   flush outside the lock could see reallocated).
+
+/// A table of one descriptor (slot 0) taken out of a table for the device
+/// part of an operation.
+pub type LoneFd = FdTableN<1>;
+
+/// Does descriptor `fd` name a streaming backend file (whose reads and
+/// writes reach the device)?
+pub fn fd_streams<const N: usize>(table: &FdTableN<N>, fd: i32) -> bool {
+    if fd < 0 || fd as usize >= N { return false; }
+    let fd = azos_limits::nospec::array_index_nospec(fd as usize, N);
+    let e = &table.fds[fd];
+    if !e.in_use || e.inode_idx == NO_IDX || e.inode_idx as usize >= MAX_FILES { return false; }
+    let fs = FS.lock();
+    let n = &fs.inodes[e.inode_idx as usize];
+    n.itype == INODE_FILE && n.backing.fs.is_some() && n.backing.streaming
+}
+
+/// A copy of open descriptor `fd` as slot 0 of a [`LoneFd`], with its
+/// description's offset and a reference of its own on the inode (dropped by
+/// `fd_free(&mut lone, 0)`). Also the description index, for [`fd_settle`].
+pub fn fd_lend<const N: usize>(table: &FdTableN<N>, fd: i32) -> Option<(LoneFd, u16)> {
+    if fd < 0 || fd as usize >= N { return None; }
+    let fd = azos_limits::nospec::array_index_nospec(fd as usize, N);
+    let e = table.fds[fd];
+    if !e.in_use { return None; }
+    let mut lone = LoneFd::new();
+    lone.fds[0] = FileDesc { desc: 0, ..e };
+    lone.descs[0] = OpenDesc { offset: table.off(fd as i32), refs: 1 };
+    if e.inode_idx != NO_IDX && (e.inode_idx as usize) < MAX_FILES {
+        FS.lock().inodes[e.inode_idx as usize].ref_count += 1;
+    }
+    Some((lone, e.desc))
+}
+
+/// Publish a lent descriptor's offset to `fd`'s description, if `fd` still
+/// names the same description and inode (a close or `dup2` in between
+/// moved it: then the offset belongs to nobody).
+pub fn fd_settle<const N: usize>(table: &mut FdTableN<N>, fd: i32, desc: u16, lone: &LoneFd) {
+    if fd < 0 || fd as usize >= N { return; }
+    let fd = azos_limits::nospec::array_index_nospec(fd as usize, N);
+    let e = table.fds[fd];
+    let d = desc as usize;
+    if e.in_use && e.desc == desc && e.inode_idx == lone.fds[0].inode_idx
+        && d < N && table.descs[d].refs > 0
+    {
+        table.descs[d].offset = lone.descs[0].offset;
+    }
+}
+
+/// Move descriptor `sfd` of `from` into a free slot of `table` (with a new
+/// description at its offset, owner `FD_NO_OWNER`). The inode reference
+/// moves with it. -1 (and `from` untouched) when `table` has no free slot
+/// or description.
+pub fn fd_adopt<const N: usize, const M: usize>(table: &mut FdTableN<N>, from: &mut FdTableN<M>, sfd: i32) -> i32 {
+    if sfd < 0 || sfd as usize >= M || !from.fds[sfd as usize].in_use { return -1; }
+    let e = from.fds[sfd as usize];
+    let off = from.off(sfd);
+    for fd in 3..N {
+        if !table.fds[fd].in_use {
+            let Some(desc) = table.desc_alloc(off) else { return -1 };
+            table.fds[fd] = FileDesc { desc, owner_task: FD_NO_OWNER, ..e };
+            from.fds[sfd as usize].in_use = false;
+            let d = e.desc as usize;
+            if d < M && from.descs[d].refs > 0 { from.descs[d].refs -= 1; }
+            return fd as i32;
+        }
+    }
+    -1
+}
+
+/// Close `fd` in `table` and hand back what must still happen outside the
+/// lock: `Some(lone)` when this was the last descriptor on its inode (the
+/// caller runs `vfs_close(&mut lone, 0)`: the flush of a dirty proxy, then
+/// the inode reference); `None` when it is already done (other
+/// descriptors still name the inode; no flush — see above).
+pub fn fd_detach<const N: usize>(table: &mut FdTableN<N>, fd: i32) -> Option<LoneFd> {
+    if fd < 0 || fd as usize >= N { return None; }
+    let fd = azos_limits::nospec::array_index_nospec(fd as usize, N) as i32;
+    let e = table.fds[fd as usize];
+    if !e.in_use { return None; }
+    let last = e.inode_idx != NO_IDX && (e.inode_idx as usize) < MAX_FILES
+        && FS.lock().inodes[e.inode_idx as usize].ref_count <= 1;
+    if !last {
+        fd_free(table, fd);
+        return None;
+    }
+    let mut lone = LoneFd::new();
+    lone.fds[0] = FileDesc { desc: 0, ..e };
+    lone.descs[0] = OpenDesc { offset: table.off(fd), refs: 1 };
+    // The slot and its description share, without the inode reference
+    // (it moved to `lone`).
+    table.fds[fd as usize].in_use = false;
+    let d = e.desc as usize;
+    if d < N && table.descs[d].refs > 0 { table.descs[d].refs -= 1; }
+    Some(lone)
+}
+
 /// Most descriptors ONE ring-3 task may hold at once.
 ///
 /// `MAX_FDS` is the size of the table for the ENTIRE MACHINE, not per task —
@@ -2405,6 +2525,71 @@ pub fn vfs_fsync<const N: usize>(table: &mut FdTableN<N>, fd: i32) -> Result<(),
         FS.lock().inodes[idx as usize].backing.dirty = false;
     }
     backend.fsync(&backing.key)
+}
+
+
+/// [`vfs_fsync`] in two halves, for a table whose lock must not be held
+/// across the device (owner rule F1). Under the lock, [`fd_fsync_begin`]
+/// lends the descriptor (its inode stays alive) and, when the proxy is
+/// dirty, copies its bytes and marks it clean (a write after this marks it
+/// dirty again). Outside it, [`fd_fsync_finish`] writes the copy and syncs
+/// the file; a failed write marks the proxy dirty again.
+pub struct FsyncWork {
+    lone: LoneFd,
+    copy: Option<alloc::vec::Vec<u8>>,
+}
+
+/// First half of [`vfs_fsync`] (see [`FsyncWork`]): `Err` when there is
+/// nothing to lend, or the copy of a dirty proxy found no memory.
+pub fn fd_fsync_begin<const N: usize>(table: &FdTableN<N>, fd: i32) -> Result<FsyncWork, FsErr> {
+    if fd < 0 || fd as usize >= N { return Err(FsErr::Invalid); }
+    let fd = azos_limits::nospec::array_index_nospec(fd as usize, N) as i32;
+    if !table.fds[fd as usize].in_use { return Err(FsErr::Invalid); }
+    let idx = table.fds[fd as usize].inode_idx;
+    if idx == NO_IDX || idx as usize >= MAX_FILES { return Err(FsErr::Invalid); }
+    let (lone, _) = fd_lend(table, fd).ok_or(FsErr::Invalid)?;
+    let mut work = FsyncWork { lone, copy: None };
+    let (backing, data_ptr, size) = {
+        let fs = FS.lock();
+        let n = &fs.inodes[idx as usize];
+        (n.backing, n.data, n.size)
+    };
+    if backing.fs.is_some() && backing.dirty {
+        let mut v = alloc::vec::Vec::new();
+        if v.try_reserve_exact(size as usize).is_err() {
+            fd_free(&mut work.lone, 0);
+            return Err(FsErr::NoSpace);
+        }
+        if size > 0 && !data_ptr.is_null() {
+            // Safety: the descriptor keeps the inode alive, and the table's
+            // lock (held by the caller) excludes every write to its bytes.
+            v.extend_from_slice(unsafe { core::slice::from_raw_parts(data_ptr, size as usize) });
+        }
+        FS.lock().inodes[idx as usize].backing.dirty = false;
+        work.copy = Some(v);
+    }
+    Ok(work)
+}
+
+/// Second half of [`vfs_fsync`], with the table's lock released.
+pub fn fd_fsync_finish(mut work: FsyncWork) -> Result<(), FsErr> {
+    let idx = work.lone.fds[0].inode_idx;
+    let backing = FS.lock().inodes[idx as usize].backing;
+    let r = match backing.fs {
+        None => Ok(()),
+        Some(backend) => {
+            let w = match &work.copy {
+                Some(bytes) => backend.write_all(&backing.key, bytes).map_err(|()| FsErr::Io),
+                None => Ok(()),
+            };
+            if w.is_err() {
+                FS.lock().inodes[idx as usize].backing.dirty = true;
+            }
+            w.and_then(|()| backend.fsync(&backing.key))
+        }
+    };
+    fd_free(&mut work.lone, 0);
+    r
 }
 
 // ─── Device callbacks ─────────────────────────────────────────────────────────

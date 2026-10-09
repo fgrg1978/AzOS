@@ -931,8 +931,13 @@ const EXEC_MAX_BYTES: usize = 128 * 1024;
 ///     the allocation error path panics, and `panic = "abort"` turns that into
 ///     a reset.  A fixed static cannot exhaust anything.
 ///
-/// A `PiMutex`, same reasoning as `KERNEL_FD_TABLE` and as `CAM_BUF` in
-/// `sensor_read_dispatch`.
+/// A [`SleepLock`](azos_sync::SleepLock), not a `PiMutex` (owner rule F1,
+/// wave 15): `sys_execpath` and `SYS_SPAWN` hold it across the file read
+/// that fills it, a device wait, and a `PiMutex` held there boosts a task
+/// that is waiting on the disk. Real-time tasks never read a file
+/// (`RT_BLOCK_IO_CHECK`), so no RT waiter needs a boost from its holder.
+/// Never a `SpinLock`: see below. Gate canary `exec-bounce-pi-canary`: the
+/// `PiMutex` again (the `lat-fat` smoke's `pi_io_site` names it).
 ///
 /// What it protects, and for how long: exactly the shared BUFFER — two harts
 /// exec'ing at once must not interleave their ELF bytes; the hand-off itself
@@ -949,16 +954,25 @@ const EXEC_MAX_BYTES: usize = 128 * 1024;
 /// section is non-preemptible, so holding one here would make `SYS_EXEC` and
 /// `SYS_EXECPATH` a real-time latency floor measured in whole ELF loads.
 ///
-/// Bounded rather than unbounded — there is no disk I/O inside this particular
-/// section, `sys_execpath` having already read the file before taking it — but
-/// bounded at 128 KiB of copying plus a page-table build is not a bound worth
+/// Bounded rather than unbounded — but bounded at 128 KiB of copying plus a page-table build is not a bound worth
 /// having on a hart that also runs a 1 kHz loop.
 ///
 /// 8-aligned (wave 14): the image is hashed in place, and SHA-256 takes word
 /// loads only from an aligned start (Zbb: ~190 instructions a block fewer
 /// than byte loads). As a bare `[u8; N]` inside the mutex its start had no
 /// alignment, and the spawn census measured the odd-start rate.
-pub(crate) static EXEC_BOUNCE: PiMutex<ExecBounce> = PiMutex::new(ExecBounce([0u8; EXEC_MAX_BYTES]));
+pub(crate) static EXEC_BOUNCE: ExecBounceLock<ExecBounce> = ExecBounceLock::new(ExecBounce([0u8; EXEC_MAX_BYTES]));
+
+#[cfg(not(feature = "exec-bounce-pi-canary"))]
+pub(crate) type ExecBounceLock<T> = azos_sync::SleepLock<T>;
+#[cfg(feature = "exec-bounce-pi-canary")]
+pub(crate) type ExecBounceLock<T> = PiMutex<T>;
+
+/// Where `EXEC_BOUNCE` lives (diagnostics: the `lat-fat` smoke's F1 report
+/// names the lock by its address).
+pub fn exec_bounce_addr() -> usize {
+    &EXEC_BOUNCE as *const _ as usize
+}
 
 /// The exec bounce buffer's bytes, 8-aligned; derefs to the array.
 #[repr(C, align(8))]
@@ -2596,8 +2610,8 @@ pub fn sys_disk_read(sector: u64, count: u64, buf: u64, sel: u64) -> i64 {
     // Bounce: read into kernel stack first, copy_to_user validates user ptr.
     // Without this, a malicious user could pass a kernel address and the
     // VirtIO driver would DMA-write into kernel memory.
-    // A `PiMutex`, same reasoning as `CAM_BUF` below, and held across BOTH the
-    // driver call and the copy out.
+    // Held across BOTH the driver call and the copy out; a `SleepLock`, not a
+    // `PiMutex`, because the driver call is a device wait (owner rule F1).
     //
     // It was a `static mut` taken by `addr_of_mut!`, justified by a SAFETY
     // comment claiming "only one disk syscall in flight per CPU (syscalls run
@@ -2611,8 +2625,9 @@ pub fn sys_disk_read(sector: u64, count: u64, buf: u64, sel: u64) -> i64 {
     // worse: A filled the buffer, B overwrote it, and A wrote B's bytes to A's
     // sector — the sectors below the partition table are the flight recorder
     // and the boot image. Found by the 2026-09-19 user-pointer audit.
-    static DISK_RD_BUF: PiMutex<[u8; DISK_BOUNCE_BYTES]> =
-        PiMutex::new([0u8; DISK_BOUNCE_BYTES]);
+    // A `SleepLock` (owner rule F1): held across the device wait below.
+    static DISK_RD_BUF: azos_sync::SleepLock<[u8; DISK_BOUNCE_BYTES]> =
+        azos_sync::SleepLock::new([0u8; DISK_BOUNCE_BYTES]);
     let mut kbuf = DISK_RD_BUF.lock();
     azos_drv_block::blkdev::rt_io_check();
     match azos_drv_virtio::virtio::blk::read(sector, count as u32, &mut kbuf[..byte_len]) {
@@ -2638,8 +2653,9 @@ pub fn sys_disk_write(sector: u64, count: u64, buf: u64, sel: u64) -> i64 {
     if byte_len == 0 || byte_len > DISK_BOUNCE_BYTES { return -1; }
     // Held across the copy in AND the driver call: see `sys_disk_read`'s buffer
     // for the race this closes, which on the write side corrupted the sector.
-    static DISK_WR_BUF: PiMutex<[u8; DISK_BOUNCE_BYTES]> =
-        PiMutex::new([0u8; DISK_BOUNCE_BYTES]);
+    // A `SleepLock` (owner rule F1), as `DISK_RD_BUF`.
+    static DISK_WR_BUF: azos_sync::SleepLock<[u8; DISK_BOUNCE_BYTES]> =
+        azos_sync::SleepLock::new([0u8; DISK_BOUNCE_BYTES]);
     let mut kbuf = DISK_WR_BUF.lock();
     if !azos_sched::copy_from_user(kbuf.as_mut_ptr(), buf as usize, byte_len) {
         return -1;

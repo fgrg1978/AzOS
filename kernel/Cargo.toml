@@ -290,6 +290,11 @@ exec-no-dethread-canary = ["azos_sched/exec-no-dethread-canary"]
 thread-objects-canary = ["azos_syscall/thread-objects-canary"]
 exec-no-pid-swap-canary = ["azos_sched/exec-no-pid-swap-canary"]
 exec-validate-late-canary = ["azos_syscall/exec-validate-late-canary"]
+exec-bounce-pi-canary = ["azos_syscall/exec-bounce-pi-canary"]
+# Wave 15 (PI) gate canary, owner rule F1: the device part of a descriptor
+# operation (open, streaming read/write, close flush, fsync) runs with
+# `KERNEL_FD_TABLE` (a PiMutex) held again; the `lat-fat` smoke must count it.
+fd-table-pi-canary = []
 # Wave 15 gate canary (aarch64): a native thread's argument is not written
 # into its third argument register, so it arrives as 0.
 thread-regs-canary = ["azos_sched/thread-regs-canary"]

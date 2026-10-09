@@ -459,11 +459,13 @@ mod audit_2026_09_19 {
         assert!(
             offenders.is_empty(),
             "a shared mutable buffer with no lock is back in the syscall surface; \
-             use a `PiMutex` held across BOTH the driver call and the copy, as \
-             `DISK_RD_BUF` and `CAM_BUF` do: {offenders:?}"
+             use a lock held across BOTH the driver call and the copy, as \
+             `DISK_RD_BUF` (a `SleepLock`: owner rule F1) and `CAM_BUF` do: {offenders:?}"
         );
-        assert!(c.contains("static DISK_RD_BUF: PiMutex<"), "the read bounce lost its lock");
-        assert!(c.contains("static DISK_WR_BUF: PiMutex<"), "the write bounce lost its lock");
+        // Wave 15 (PI), owner rule F1: a `SleepLock`, not a `PiMutex` — the
+        // hold spans the device wait.
+        assert!(c.contains("static DISK_RD_BUF: azos_sync::SleepLock<"), "the read bounce lost its lock");
+        assert!(c.contains("static DISK_WR_BUF: azos_sync::SleepLock<"), "the write bounce lost its lock");
     }
 
     /// **Clamp in the wide type, then narrow.** `(x as u16).min(LIMIT)` cannot

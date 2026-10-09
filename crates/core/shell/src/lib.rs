@@ -598,9 +598,11 @@ static SPAWN_PATH_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::Ato
 /// racing `ELF_BUF`-style unguarded statics like `cmd_exec`'s (safe there
 /// only because `exec` consumes its own task and nothing else touches that
 /// buffer).
+///
+/// A `SleepLock`, not a `PiMutex` (owner rule F1): it is held across the
+/// file read, a device wait.
 #[cfg(not(feature = "no-mmu"))]
-static SPAWN_ELF_LOCK: azos_sync::pi_mutex::PiMutex<()> =
-    azos_sync::pi_mutex::PiMutex::new(());
+static SPAWN_ELF_LOCK: azos_sync::SleepLock<()> = azos_sync::SleepLock::new(());
 #[cfg(not(feature = "no-mmu"))]
 static mut SPAWN_ELF_BUF: [u8; 256 * 1024] = [0u8; 256 * 1024];
 

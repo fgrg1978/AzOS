@@ -22,7 +22,6 @@
 //!   - events_dropped         (ring-buffer overflow counter)
 //!   - flush_errors           (storage errors during flush)
 
-use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use azos_sync::waitqueue::WaitQueue;
 use azos_sync::SpinLock;
@@ -974,7 +973,7 @@ static LOG_SERIAL: AtomicU32 = AtomicU32::new(0);
 /// The flush lock: held for the WHOLE flush, which is a loop of
 /// `LogStorage::write` calls plus an `fsync` — real disk I/O on the other
 /// side of the seam. Holding it is what serialises two flushers (and makes
-/// the ring's consumer single). It is a [`FlushLock`], not a `PiMutex`
+/// the ring's consumer single). It is a `SleepLock`, not a `PiMutex`
 /// (owner rule F1, wave 15: no `PiMutex` across device I/O): no real-time
 /// task ever takes it — an RT caller of [`logger_flush`] wakes the log
 /// flusher instead — so there is no RT waiter whose priority a holder
@@ -982,87 +981,9 @@ static LOG_SERIAL: AtomicU32 = AtomicU32::new(0);
 ///
 /// Every caller is task context: the log flusher, `logger_shutdown`, and
 /// non-RT `*_durable` callers. No interrupt handler touches this.
-static LOG_FILE: FlushLock<Option<OpenLogFile>> = FlushLock::new(None);
+static LOG_FILE: azos_sync::SleepLock<Option<OpenLogFile>> = azos_sync::SleepLock::new(None);
 
-/// A sleeping lock without priority inheritance, for the flight recorder's
-/// file: the holder does device I/O, and only non-RT tasks ever take it.
-/// A contended caller sleeps on `wq` until the holder's release bumps `gen`
-/// (checked under the queue's lock: no lost wakeup). `owner` is the holder's
-/// task id, for the panic path's containment predicate
-/// ([`logger_flush_lock_held_by`]).
-struct FlushLock<T> {
-    busy:  AtomicBool,
-    owner: AtomicU32,
-    gen:   AtomicU32,
-    wq:    WaitQueue,
-    data:  UnsafeCell<T>,
-}
-
-// SAFETY: `data` is only reached through a `FlushGuard`, and `busy` admits
-// one guard at a time.
-unsafe impl<T: Send> Sync for FlushLock<T> {}
-
-struct FlushGuard<'a, T> {
-    lock: &'a FlushLock<T>,
-}
-
-impl<T> FlushLock<T> {
-    const fn new(v: T) -> Self {
-        Self {
-            busy:  AtomicBool::new(false),
-            owner: AtomicU32::new(0),
-            gen:   AtomicU32::new(0),
-            wq:    WaitQueue::new(),
-            data:  UnsafeCell::new(v),
-        }
-    }
-
-    fn lock(&self) -> FlushGuard<'_, T> {
-        loop {
-            let gen = self.gen.load(Ordering::SeqCst);
-            if self.busy.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-                self.owner.store(azos_sync::waitqueue::caller_tid(), Ordering::Relaxed);
-                return FlushGuard { lock: self };
-            }
-            self.wq.wait_if(|| self.gen.load(Ordering::SeqCst) == gen);
-        }
-    }
-
-    fn held_by(&self, tid: u32) -> bool {
-        tid != 0 && self.busy.load(Ordering::Acquire) && self.owner.load(Ordering::Relaxed) == tid
-    }
-}
-
-impl<T> core::ops::Deref for FlushGuard<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        // SAFETY: this guard is the one holder (`FlushLock::lock`).
-        unsafe { &*self.lock.data.get() }
-    }
-}
-
-impl<T> core::ops::DerefMut for FlushGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as in `deref`.
-        unsafe { &mut *self.lock.data.get() }
-    }
-}
-
-impl<T> Drop for FlushGuard<'_, T> {
-    fn drop(&mut self) {
-        self.lock.owner.store(0, Ordering::Relaxed);
-        self.lock.busy.store(false, Ordering::Release);
-        self.lock.gen.fetch_add(1, Ordering::SeqCst);
-        self.lock.wq.wake_all();
-    }
-}
-
-/// Whether task `tid` holds the flight recorder's flush lock: 0 or 1, for
-/// the panic path's containment predicate (a lock a contained task took with
-/// it would stop every later flush — the same rule as a held `PiMutex`).
-pub fn logger_flush_lock_held_by(tid: u32) -> u32 {
-    LOG_FILE.held_by(tid) as u32
-}
+// Its holder is counted for the panic path by `azos_sync::sleep_lock::held_by`.
 
 // ---------------------------------------------------------------------------
 // The log flusher: the one place RT tasks' records reach the medium.
