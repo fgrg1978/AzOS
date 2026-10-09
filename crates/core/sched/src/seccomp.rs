@@ -1162,6 +1162,9 @@ pub const THIRDPARTY_PROFILES: &[ImageProfile] = &[
             // Wave 13 (SIGNALS): sleeps between steps, and a threaded child
             // (fork, wait) ended by a signal.
             SYS_SLEEP_UNTIL, SYS_FORK, SYS_WAITPID, SYS_WAIT_STATUS,
+            // Wave 15: a thread that is not the leader execs this image
+            // again (`/proc/self/exe`): the dethread and the PID hand-over.
+            SYS_EXECPATH,
         ],
         audit: false,
     },

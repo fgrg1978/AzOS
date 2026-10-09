@@ -16921,6 +16921,11 @@ echo after-lxthr \$?" 150 \
                 "lxthr: tgkill to a blocked thread stays pending on it ok" \
                 "lxthr: a fatal signal ends every thread; wait sees WIFSIGNALED ok" \
                 "lxthr: a leader's pthread_exit releases its clear-tid word ok" \
+                "lxthr: execve from a thread: the parent reaps the new image under the forked PID ok" \
+                "lxthr: execve from a thread: the new image runs under the forked PID ok" \
+                "lxthr: execve from a thread: the exec'ing thread is the only one left (gettid == getpid) ok" \
+                "lxthr: execve from a thread: the new image creates and joins a thread ok" \
+                "ended 3 other thread(s) before replacing its image" \
                 "lxthr: done failures=0" "after-lxthr 0"
             # Wave 13 (SIGNALS) canaries over the same run: a process-directed
             # signal always to the leader (which blocks it); a tgkill posted
@@ -16955,6 +16960,21 @@ echo after-lxthr \$?" 150 \
                 "lxthr: leader-exit child wedged" \
                 "lxthr: a leader's pthread_exit releases its clear-tid word FAIL" \
                 "lxthr: done failures=1"
+            # Wave 15: a Linux execve from a thread that is not the leader
+            # (musl pthreads; the check is LXTHR's `exec_from_thread`): the
+            # kernel ends the other three threads (the leader in a timed
+            # sleep, one in a condition wait with no deadline, one in a timed
+            # sleep), the exec'ing thread takes the forked PID, and the parent
+            # reaps the new image under it. The main row reads the four
+            # checks and the kernel's `[EXEC] ... ended 3` line. Canary
+            # `exec-no-dethread-canary` (the other threads run on, the
+            # exec'ing thread keeps its own TID): a PASS row on the check's
+            # FAIL line, which only a run that reached it prints.
+            USH_DISK=lxthr USH_FORBID='robot> |ended [0-9]+ other thread' par_row ushell_row "linux: exec from a thread: dethread canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,exec-no-dethread-canary" PASS \
+                "lxthr
+echo after-lxthr \$?" 150 \
+                "lxthr: execve from a thread: the exec'ing thread is the only one left (gettid == getpid) FAIL" \
+                "lxthr: done failures="
         else
             printf "  %-26s%s\n" "linux: pthreads ($ush_isa)..." "SKIP (no zig on this host; see make lxthreads)"
         fi

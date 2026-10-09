@@ -11,7 +11,8 @@
  * file description written by two threads. Wave 13: signals across threads
  * (a process-directed signal, a tgkill to a blocked thread, a fatal default
  * action in a threaded child). Wave 15: a leader's pthread_exit while a
- * thread runs (its clear-tid word, which holds musl's thread-list lock).
+ * thread runs (its clear-tid word, which holds musl's thread-list lock), and
+ * an execve from a thread that is not the leader.
  *
  * Every check prints `lxthr: <name> ok` or `lxthr: <name> FAIL`, and the
  * last line is `lxthr: done failures=<n>`.
@@ -24,6 +25,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -237,8 +239,95 @@ static void leader_exit(void)
           w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 7);
 }
 
-int main(void)
+/* Wave 15: execve from a thread that is not the leader (POSIX: "all other
+ * threads ... shall be destroyed"; Linux de_thread). A forked child with
+ * three other threads -- the leader in a timed sleep loop, one parked in a
+ * condition wait with no deadline, one in a timed sleep loop -- has a fourth
+ * thread exec this image (`lxthr exec-image <pid>`). The new image checks it
+ * runs under the PID the parent forked, as the process's only thread
+ * (gettid() == getpid(): the exec'ing thread took the PID), and that it can
+ * still create and join a thread; it exits EXEC_OK | a bit per failed
+ * property, and the parent reaps it under the forked PID. The kernel prints
+ * that it ended 3 other threads. Canary `exec-no-dethread-canary`: the other
+ * threads run on across the exec and the exec'ing thread keeps its own TID. */
+#define EXEC_OK 0x40
+extern char **environ;
+static pthread_mutex_t ex_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ex_cv = PTHREAD_COND_INITIALIZER;
+static pid_t ex_pid;
+
+static void *ex_parked(void *a)
 {
+    pthread_mutex_lock(&ex_mu);
+    for (;;)
+        pthread_cond_wait(&ex_cv, &ex_mu);
+    return a;
+}
+
+static void *ex_napper(void *a)
+{
+    for (;;)
+        nap_ms(5);
+    return a;
+}
+
+static void *ex_execer(void *a)
+{
+    (void)a;
+    char pid[16];
+    snprintf(pid, sizeof pid, "%d", (int)ex_pid);
+    char *argv[] = { "lxthr", "exec-image", pid, 0 };
+    nap_ms(20); /* the others reach their waits first */
+    execve("/proc/self/exe", argv, environ);
+    _exit(3);
+}
+
+static int exec_image(const char *forked)
+{
+    int bits = 0;
+    pid_t me = getpid(), tid = (pid_t)syscall(SYS_gettid);
+    printf("lxthr: exec-image pid=%d tid=%d (forked pid %s)\n", (int)me, (int)tid, forked);
+    if (me != (pid_t)atoi(forked))
+        bits |= 1;
+    if (tid != me)
+        bits |= 2;
+    pthread_t t;
+    if (pthread_create(&t, 0, noop, 0) != 0 || pthread_join(t, 0) != 0)
+        bits |= 4;
+    fflush(stdout);
+    return EXEC_OK | bits;
+}
+
+static void exec_from_thread(void)
+{
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) {
+        ex_pid = getpid();
+        pthread_t p, n, e;
+        if (pthread_create(&p, 0, ex_parked, 0) != 0 || pthread_create(&n, 0, ex_napper, 0) != 0
+            || pthread_create(&e, 0, ex_execer, 0) != 0)
+            _exit(4);
+        /* The exec ends this thread; the backstop if it never comes. */
+        for (int i = 0; i < 300; i++)
+            nap_ms(10);
+        _exit(9);
+    }
+    int st = 0;
+    pid_t w = waitpid(pid, &st, 0);
+    int code = w == pid && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    int image = code >= 0 && (code & ~7) == EXEC_OK;
+    printf("lxthr: exec-from-thread child status 0x%x\n", st);
+    check("execve from a thread: the parent reaps the new image under the forked PID", image);
+    check("execve from a thread: the new image runs under the forked PID", image && !(code & 1));
+    check("execve from a thread: the exec'ing thread is the only one left (gettid == getpid)", image && !(code & 2));
+    check("execve from a thread: the new image creates and joins a thread", image && !(code & 4));
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "exec-image") == 0)
+        return exec_image(argv[2]);
     pthread_t t[NT];
     int created = 0, joined = 0, tls_ok = 1;
     tls_var = 1;
@@ -297,6 +386,7 @@ int main(void)
 
     signals();
     leader_exit();
+    exec_from_thread();
 
     printf("lxthr: done failures=%d\n", fails);
     fflush(stdout);
