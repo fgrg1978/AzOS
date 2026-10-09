@@ -273,7 +273,8 @@ authority, the kernel also latches the e-stop and writes a safety record.
     pages copy-on-write. The copy-on-write fault handler refuses an entry that
     is executable.
   - `mprotect` refuses `PROT_EXEC` and refuses write access to an executable
-    mapping. The Linux personality's `mprotect` uses the same code.
+    mapping or to the vDSO and signal-trampoline pages, which every address
+    space shares. The Linux personality's `mprotect` uses the same code.
 - **Demand paging.** Demand paging goes through a `Pager` trait
   (`crates/core/mm`). The one pager in the tree serves zero-filled anonymous
   memory. File-backed paging does not exist.
