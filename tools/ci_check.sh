@@ -1280,6 +1280,12 @@ par_ready() { # the row's prep is done: let the gate run on
     # Clones (`cp -c`, APFS copy-on-write): no disk and no copy time for a
     # kernel the job only reads; a plain copy where the filesystem has none.
     local k="$PAR_DIR/$PAR_JOB"
+    # The build's `.features` travels with its clone: `ci_kernel_check` reads
+    # `${KERNEL}.features`, and without it every boot of the job after the
+    # first read "unknown" (wave 15: `unfit slot survives reboot` failed under
+    # CI_JOBS>1, the second boot of a two-boot job, with nothing rebuilt).
+    rm -f "$k.kernel.features"
+    [ -f "${KERNEL}.features" ] && ci_clone "${KERNEL}.features" "$k.kernel.features"
     ci_clone "$KERNEL" "$k.kernel"; KERNEL="$k.kernel"
     if [ -n "${A64_KERNEL:-}" ]; then
         ci_clone "$A64_KERNEL" "$k.a64-kernel"; A64_KERNEL="$k.a64-kernel"
@@ -1354,7 +1360,7 @@ par_reap() {
         # end with it. Kept, they grew to 17 GiB by the start of [3/4] (a
         # riscv64 kernel with its debug info is ~47 MB, one per job) and the
         # wave-15 integration gate died of a full disk at the INA219 rows.
-        rm -f "$PAR_DIR/$n.kernel" "$PAR_DIR/$n.a64-kernel" "$PAR_DIR/$n.a64-kernel.img" \
+        rm -f "$PAR_DIR/$n.kernel" "$PAR_DIR/$n.kernel.features" "$PAR_DIR/$n.a64-kernel" "$PAR_DIR/$n.a64-kernel.img" \
             "$PAR_DIR/$n.disk."* "$PAR_DIR/$n.bacc"
         PAR_HEAD=$((n + 1))
         if [ -n "$pid" ]; then
@@ -1819,8 +1825,13 @@ ci_kernel_check() {
     got="$(cat "${KERNEL}.features" 2>/dev/null)"
     [ "$got" = "$CI_EXPECT_RV" ] && return 0
     bad
-    echo "      the kernel on disk was built with --features '${got:-unknown}';"
-    echo "      this row needs '${CI_EXPECT_RV}' (a later build replaced it)"
+    if [ ! -f "${KERNEL}.features" ]; then
+        echo "      no ${KERNEL}.features: nothing says what this kernel was built"
+        echo "      with; this row needs '${CI_EXPECT_RV}'"
+    else
+        echo "      ${KERNEL} was built with --features '${got}';"
+        echo "      this row needs '${CI_EXPECT_RV}'"
+    fi
     return 1
 }
 qemu_run() { # qemu_run <label> <success-marker> <timeout-s> <qemu-args...>
