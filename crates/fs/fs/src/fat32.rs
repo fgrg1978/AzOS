@@ -4173,9 +4173,10 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
             // a cut could leave the link without the mark: a chain through
             // a FREE cluster, which the allocator hands out again while
             // this file's next extension (or its free) still follows the
-            // link into it. A barrier between them, once per FAT sector of
-            // chain (128 clusters): write-back closes an epoch (no I/O),
-            // write-through flushes. A cut then leaves at worst a sound
+            // link into it. A barrier between them, once per FAT sector the
+            // chain crosses (every 128 clusters when it is contiguous; up to
+            // every cluster on a fragmented FAT): write-back closes an epoch
+            // (no I/O), write-through flushes. A cut then leaves at worst a sound
             // tail past the size (`fat32_check_root_chain`).
             if fresh / FAT32_ENTRIES_PER_SECTOR != cur / FAT32_ENTRIES_PER_SECTOR
                 && !cfg!(feature = "fw-tail-link-unordered-canary")

@@ -2861,14 +2861,20 @@ mod power_cut {
 
     /// The clusters `n83`'s dirent names, or why the chain is unsound:
     /// a link to a free (0) or out-of-range cluster, a chain that does not
-    /// end, or one shorter than the size. A sound tail past the size (it
-    /// ends in EOC) is legal, as in `fat32_check_root_chain` (FW2): what a
-    /// cut between an extension and the entry naming it leaves.
+    /// end, or a length that does not match the size. Strict: only a
+    /// write-back between writes of one open file can leave a tail past the
+    /// size, and the tests that run one use [`chain_and_tail`].
     fn chain(img: &[u8], n83: &[u8; 11]) -> Result<Vec<u32>, String> {
-        chain_and_tail(img, n83).map(|(c, _)| c)
+        let (c, tail) = chain_and_tail(img, n83)?;
+        if tail > 0 {
+            return Err(format!("chain of {} clusters for size {:?}", c.len() + tail, dirent(img, n83).map(|d| d.1)));
+        }
+        Ok(c)
     }
 
-    /// [`chain`], and the length of the sound tail past the size.
+    /// [`chain`], tolerating a sound tail past the size (it ends in EOC),
+    /// as `fat32_check_root_chain` does (FW2): what a cut between an
+    /// extension and the entry naming it leaves. Returns the tail's length.
     fn chain_and_tail(img: &[u8], n83: &[u8; 11]) -> Result<(Vec<u32>, usize), String> {
         let Some((first, size)) = dirent(img, n83) else { return Ok((Vec::new(), 0)) };
         let want = (size as usize).div_ceil(SECTOR);
@@ -2975,6 +2981,12 @@ mod power_cut {
 
     fn one_of(n83: &[u8; 11], path: &[u8], img: &[u8], legal: &[Option<&[u8]>]) -> Result<(), String> {
         chain(img, n83)?;
+        one_of_content(path, legal)
+    }
+
+    /// The content half of [`one_of`], for a judge that checked the chain
+    /// itself.
+    fn one_of_content(path: &[u8], legal: &[Option<&[u8]>]) -> Result<(), String> {
         let got = read_back(path);
         if legal.iter().any(|l| l.map(|v| v.to_vec()) == got) { return Ok(()); }
         Err(format!("{} holds {:?} bytes, not a legal outcome",
@@ -3335,7 +3347,7 @@ mod power_cut {
         let prefixes: Vec<Vec<u8>> = (0..=new.len() / step).map(|k| new[..k * step].to_vec()).collect();
         let mut legal: Vec<Option<&[u8]>> = vec![None];
         legal.extend(prefixes.iter().map(|p| Some(&p[..])));
-        one_of(&n, b"/NEW.DAT", img, &legal)
+        one_of_content(b"/NEW.DAT", &legal)
     }
 
     /// **FW2: a write-back in the middle of a write sequence, cut

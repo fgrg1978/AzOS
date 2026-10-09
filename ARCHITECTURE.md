@@ -490,8 +490,9 @@ fixed mount table. There are three implementations:
   write-back wrote the entry and before the next one wrote it again can
   leave the old size over a longer chain. That tail ends in end-of-chain:
   a new cluster's end-of-chain mark reaches the medium before the link to
-  it (an epoch boundary where the two are in different FAT sectors, once
-  per 128 clusters). Reads stop at the size; the file's next write past it
+  it (an epoch boundary where the two are in different FAT sectors: once
+  per FAT sector the chain crosses, every 128 clusters for a contiguous
+  chain). Reads stop at the size; the file's next write past it
   reuses the tail, and a truncate or unlink frees it. Until then it is
   leaked space, as Linux's FAT driver leaves it and fsck.fat trims it.
   Write-through orders each entry with a flush. `O_TRUNC` to zero clears the entry (also
