@@ -2585,12 +2585,11 @@ qemu-aarch64-el2: aarch64
 # the build stops at the compile_error! in kernel/src/entry/aarch64.rs, which
 # says what the port still needs (GICv2 backend, BCM2712 PL011 console,
 # firmware boot). The target exists so the board is visible, and it fails
-# honestly until the port is done. The topology build script wants a signing
-# key even though nothing here is ever linked, so the dev key stands in
-# (`azos_topology/dev-key`); the board flow (`require_board_key`) replaces it
-# when the port produces an image.
+# honestly until the port is done. Like every board target it needs the
+# fleet's public key (TOPOLOGY_PUBKEY_PATH) and refuses the test key; the check
+# runs first, before any user image is built.
 RPI5_KCONFIG := build/rpi5.config
-.PHONY: rpi5
+.PHONY: rpi5 rpi5-key
 $(RPI5_KCONFIG): config/defconfigs/rpi5.config \
 		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
 	@mkdir -p build
@@ -2598,10 +2597,13 @@ $(RPI5_KCONFIG): config/defconfigs/rpi5.config \
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 	@grep -q '^CONFIG_BOARD_RPI5=y$$' $@ || { echo "[RPI5] $@ lost CONFIG_BOARD_RPI5"; exit 1; }
 
-rpi5: $(KCONFIG_CONFIG) $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
-	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(RPI5_KCONFIG)" $(AARCH64_KTARGET_ENV) \
+rpi5-key:
+	$(call require_board_key,RPI5)
+
+rpi5: rpi5-key $(KCONFIG_CONFIG) $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
+	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(RPI5_KCONFIG)" $(AARCH64_KTARGET_ENV) \
 	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/kconfig_to_cargo.py --rustflags $(RPI5_KCONFIG))" \
-	    $(CARGO) build --release -p azos_kernel --features azos_topology/dev-key \
+	    $(CARGO) build --release -p azos_kernel \
 	    $$(python3 tools/kconfig_to_cargo.py $(RPI5_KCONFIG) | tr -s ' ')
 
 # ── Signed capability topology files (wave 15 TOPOSIGN) ─────────────────────

@@ -45,7 +45,7 @@ Boards
   k1                     Build for the SpacemiT K1 / BananaPi BPI-F3.
   flash-k1               Write the K1 kernel to an SD card (K1_SD=<dev>).
   k1-console             Open the K1 serial console (K1_SERIAL=<dev>).
-  rpi5                   Raspberry Pi 5: not ported; the build stops and says what is missing.
+  rpi5                   Raspberry Pi 5: not ported; needs TOPOLOGY_PUBKEY_PATH, then stops and says what is missing.
 
 Test & gate
   check0                 Quick check after an edit: type-check riscv64, aarch64 and x86_64, run the host tests the diff reaches.
