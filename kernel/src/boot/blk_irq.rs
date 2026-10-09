@@ -50,6 +50,14 @@ pub(crate) fn wire_virtio_blk_irq() {
         kprintln!("[VIRTIO-BLK] no interrupt line for slot {}: polled", slot);
         return;
     };
+    // Each virtio-mmio transport has its own line (slot -> PLIC source /
+    // GIC SPI, per-transport GSI on microvm), so the NIC's cannot be this
+    // one; a firmware that shared them would make both handlers claim the
+    // same interrupt, so the disk then stays polled.
+    if azos_drv_virtio::virtio::net::mmio_irq_line() == Some(line) {
+        kprintln!("[VIRTIO-BLK] line {} is the NIC's: polled", line);
+        return;
+    }
     // The handler must know the line (and the device's stale interrupt be
     // acknowledged) before the controller enables it: a level line already
     // asserted would otherwise be taken, unrecognised, forever.

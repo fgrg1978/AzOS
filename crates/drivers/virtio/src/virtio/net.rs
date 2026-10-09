@@ -772,6 +772,13 @@ pub fn mmio_slot() -> Option<(usize, usize)> {
     Some((off / VIRTIO_MMIO_STRIDE, VIRTIO_BASE + off))
 }
 
+/// The line the MMIO NIC was wired to, if any (`enable_mmio_irq`): the
+/// block driver's wiring checks its own line is a different one.
+pub fn mmio_irq_line() -> Option<u32> {
+    let l = MMIO_IRQ_LINE.load(Ordering::Acquire);
+    if l == u32::MAX { None } else { Some(l) }
+}
+
 /// Switch the MMIO NIC to IRQ mode on interrupt line `line` (the number
 /// the kernel's dispatcher will pass to [`mmio_irq`]). Call BEFORE the line
 /// is unmasked at the interrupt controller. TX completions stop

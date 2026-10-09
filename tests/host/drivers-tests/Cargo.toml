@@ -47,6 +47,10 @@ overflow-checks = true
 # virtio/mod.rs (pulled via #[path]) gates its PCI transport on `pci`; declared
 # here so the cfg is a known value on the host build (never enabled).
 pci = []
+# virtio/blk.rs's wave-15 canaries (never enabled here; declared so the cfg
+# is a known value).
+blk-poll-canary = []
+blk-serial-write-canary = []
 # virtio/blk.rs's F1 probe and its canary (wave 15): known values, never enabled.
 blk-wait-probe = []
 blk-lock-wait-canary = []
