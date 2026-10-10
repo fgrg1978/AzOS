@@ -163,6 +163,9 @@ pub(crate) const NAMES: &[&str] = &[
     // one owner (ktests `waitgraph_transitive_chain`,
     // `waitgraph_dl_donor_and_attr_changed`, `waitgraph_depth_cap`).
     "pi-depth-1",
+    // crates/core/sync/src/kmutex.rs `unlocked_for_io`: the mutex stays held
+    // across the device wait, rule F1 (ktest `kmutex_unlocked_for_io`).
+    "kmutex-io-held",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

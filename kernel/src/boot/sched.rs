@@ -160,6 +160,11 @@ pub(crate) fn install_sched_hooks() {
     if canary!("pi-depth-1") {
         azos_sync::waitgraph::canary_cap_depth(1);
     }
+    // N8 runtime canary: `Mutex::unlocked_for_io` keeps the mutex across
+    // the device wait (rule F1 broken); ktest `kmutex_unlocked_for_io` red.
+    if canary!("kmutex-io-held") {
+        azos_sync::kmutex::canary_io_held();
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();
@@ -183,6 +188,8 @@ pub(crate) fn install_sched_hooks() {
         // global current-tid is wrong the moment a second core exists.
         azos_sched::scheduler::current_task_tid,
     );
+    // Wave 15 N8: the kernel mutex's adaptive-spin probe and wait-graph ids.
+    azos_sync::kmutex::set_probes(&KMUTEX_PROBES);
     // Owner rule (wave 15): an RT task never does block I/O. Dev builds
     // (Kconfig RT_BLOCK_IO_CHECK) panic at the block layer's entry.
     azos_drv_block::blkdev::set_rt_io_check(rt_block_io_check);
@@ -202,6 +209,23 @@ pub(crate) fn install_sched_hooks() {
     // — deliberately not a fallback to spinning, which would keep every
     // scenario green with the block path broken.
     azos_driver_server::reply_wait::set_proxy_hooks(&PROXY_HOOKS);
+}
+
+/// `azos_sync::kmutex::Probes` (wave 15 N8). Both lock-free: the TID's
+/// published slot (`idx_for_tid`, O(1) on its hint) and the per-CPU current
+/// task (O(NR_CPUS)).
+static KMUTEX_PROBES: azos_sync::kmutex::Probes = azos_sync::kmutex::Probes {
+    on_cpu: kmutex_on_cpu,
+    graph_id: kmutex_graph_id,
+};
+
+fn kmutex_on_cpu(tid: u32) -> bool {
+    azos_sched::scheduler::idx_for_tid(tid)
+        .is_some_and(|i| azos_sched::scheduler::classes::on_cpu(i) != azos_sched::sc::NO_CPU)
+}
+
+fn kmutex_graph_id(tid: u32) -> Option<u32> {
+    azos_sched::scheduler::idx_for_tid(tid).map(|i| i as u32)
 }
 
 /// `azos_ipc::lease::SealHook` (wave 11, LEASE3): take the write
@@ -978,6 +1002,60 @@ mod waitgraph_ktests {
             };
             if pi.base_attr(t) != want {
                 return Err("ClassPi::base_attr disagrees with the task's class and base");
+            }
+            Ok(())
+        }
+    }
+}
+
+// N8: the kernel mutex in a task (late: `lock` names its caller by TID).
+// Rule F1: `unlocked_for_io` frees the mutex for the device wait, so another
+// task could take it there; lockdep notes a Mutex held across
+// `might_wait_device`. Canary `canary=kmutex-io-held` (the mutex stays held
+// across the wait): `kmutex_unlocked_for_io` is `not ok`. The PI ktests (RT
+// waiter boosts a fair owner through the graph) need N7's graph and land
+// with WAIT_GRAPH y.
+#[cfg(feature = "ktest")]
+mod kmutex_ktests {
+    use azos_sync::kmutex::Mutex;
+
+    static M: Mutex<u32> = Mutex::new(0);
+
+    azos_ktest::ktest_late! {
+        fn kmutex_unlocked_for_io() {
+            let mut g = M.lock();
+            if M.try_lock().is_some() {
+                return Err("try_lock took a held Mutex");
+            }
+            *g += 1;
+            let free = g.unlocked_for_io("ktest blk wait", || M.try_lock().map(|mut h| *h += 1).is_some());
+            if !free {
+                return Err("F1: the Mutex stayed held across the device wait");
+            }
+            if !M.is_locked() || *g != 2 {
+                return Err("the Mutex was not re-acquired after the wait");
+            }
+            drop(g);
+            if M.is_locked() {
+                return Err("the Mutex is still held after the guard dropped");
+            }
+            Ok(())
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn kmutex_held_across_device_wait_is_noted() {
+            if !azos_sync::lockdep::ON {
+                return Ok(());
+            }
+            static H: Mutex<()> = Mutex::new(());
+            let before = azos_sync::lockdep::stats().notes;
+            {
+                let _g = H.lock();
+                azos_sync::lockdep::might_wait_device("ktest device wait under a Mutex");
+            }
+            if azos_sync::lockdep::stats().notes <= before {
+                return Err("lockdep did not note a Mutex held across a device wait");
             }
             Ok(())
         }
