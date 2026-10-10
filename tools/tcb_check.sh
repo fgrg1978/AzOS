@@ -113,6 +113,7 @@ actuation channel
 config topology pubsub service multi-stream dtb
 linux-abi
 percpu trace
+chaos decision
 "
 # Wave 11 (DOMAIN): `actuation` (crates/core/actuation) is the authority
 # every domain shares — e-stop latch, signed release, flight recorder,
@@ -160,6 +161,14 @@ percpu trace
 # it can no longer sit in SCAFFOLD (that drew three CORE -> SCAFFOLD edges,
 # the row's red since c44e9b85). Its own dependencies (abi, spsc, percpu) are
 # CORE.
+
+# `chaos` and `decision` joined CORE in wave 15, by dependency direction:
+# `sched`, `mm`, `ipc` and `syscall` (and the block driver class) call their
+# injection points (Kconfig CHAOS) and decision records (Kconfig
+# DECISION_RECORDS) from their own paths, so either one in SCAFFOLD or
+# PROFILE draws CORE -> SCAFFOLD/PROFILE edges. Both depend only on `limits`
+# (CORE). Off, each compiles to constants: CHAOS's `fire` is false and
+# `record` is empty.
 
 PROFILE_CRATES="
 behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-core drivers
