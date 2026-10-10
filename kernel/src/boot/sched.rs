@@ -165,6 +165,13 @@ pub(crate) fn install_sched_hooks() {
     if canary!("kmutex-io-held") {
         azos_sync::kmutex::canary_io_held();
     }
+    // Wave 15 N13: the direct-handoff helper's scheduler side (Kconfig
+    // IPC_DIRECT_HANDOFF; n stores nothing). Runtime canary: the handoff
+    // ignores a less urgent target.
+    azos_sync::handoff::register(&azos_sched::scheduler::SCHED_HANDOFF);
+    if canary!("handoff-any-prio") {
+        azos_sched::scheduler::canary_handoff_any_prio();
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();

@@ -93,6 +93,10 @@ pub(crate) mod ipc_endpoint;
 // Wave 15 N9: the futex requeue wakes one waiter, not the herd.
 #[cfg(feature = "ktest")]
 pub(crate) mod futex_requeue;
+// N13 (Kconfig IPC_DIRECT_HANDOFF): the direct handoff refuses a less
+// urgent peer.
+#[cfg(feature = "ktest")]
+pub(crate) mod ipc_handoff;
 #[cfg(feature = "pi-flush-smoke")]
 pub(crate) mod pi_flush_probe;
 #[cfg(any(feature = "i3-smoke", feature = "ktest"))]

@@ -166,6 +166,10 @@ pub(crate) const NAMES: &[&str] = &[
     // crates/core/sync/src/kmutex.rs `unlocked_for_io`: the mutex stays held
     // across the device wait, rule F1 (ktest `kmutex_unlocked_for_io`).
     "kmutex-io-held",
+    // crates/core/sched/src/scheduler.rs `SchedHandoff`: the direct handoff
+    // does not refuse a target less urgent than the caller
+    // (ktest `ipc_handoff_refuses_less_urgent_peer`).
+    "handoff-any-prio",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 
