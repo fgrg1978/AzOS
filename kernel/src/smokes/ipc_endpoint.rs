@@ -220,9 +220,7 @@ fn many_client(k: usize) {
 
 azos_ktest::ktest_late! {
     fn ipc_endpoint_many_callers_queue() {
-        if !azos_limits::IPC_ENDPOINT_QUEUES {
-            return Err("Kconfig IPC_ENDPOINT_QUEUES is off in this ktest kernel");
-        }
+        // Both implementations: the old table holds this many in its slots.
         azos_sched::task_create_affinity("n5-many-srv", many_server, 0, PRIO, -1);
         crate::ktest::wait("the server never claimed its endpoint", || MANY_READY.load(Ordering::Acquire))?;
         for k in 0..MANY {
