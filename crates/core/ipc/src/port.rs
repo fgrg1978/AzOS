@@ -741,6 +741,18 @@ pub fn port_bind_object_as(
 ///    (`port_signal` answers false) and clears it.
 ///  * `Moved`: those sources now name the receiver's table, so a later revoke
 ///    there removes them.
+///  * Neither, for a capability without `READ`: every bind takes `READ`
+///    (`SYS_PORT_BIND_TYPED`), so such a capability made no binding and its
+///    revoke or move leaves the table's bindings alone. A task that serves
+///    an endpoint and also holds a send capability (`WRITE` only) to it keeps
+///    the binding its receive capability made when it revokes the send one,
+///    so the endpoint's no-senders notice still reaches the port (N5b).
+///  * Neither, for a capability without `READ`: every bind takes `READ`
+///    ([`port_bind_object`]'s callers), so such a capability made no binding
+///    and its revoke or move leaves the table's bindings alone. A server
+///    that holds a send capability (`WRITE` only) to its own endpoint and
+///    revokes it keeps the binding its receive capability made, so the
+///    no-senders notice reaches its port (wave 15 N5b).
 ///  * `Wiped` (the exit reset, a reused slot): every source bound from that
 ///    table is freed.
 ///
@@ -761,13 +773,13 @@ pub fn port_cap_event(e: crate::cap_store::CapEvent) {
     };
     let tag = |slot: usize| (slot as u16).wrapping_add(1);
     let (from, to, kind) = match e {
-        CapEvent::Revoked { slot, kind, resource } => match object(kind, resource) {
-            Some(k) => (tag(slot), 0u16, Some(k)),
-            None => return,
+        CapEvent::Revoked { slot, kind, perms, resource } => match object(kind, resource) {
+            Some(k) if perms.contains(CapPerms::READ) => (tag(slot), 0u16, Some(k)),
+            _ => return,
         },
-        CapEvent::Moved { from, to, kind, resource } => match object(kind, resource) {
-            Some(k) => (tag(from), tag(to), Some(k)),
-            None => return,
+        CapEvent::Moved { from, to, kind, perms, resource } => match object(kind, resource) {
+            Some(k) if perms.contains(CapPerms::READ) => (tag(from), tag(to), Some(k)),
+            _ => return,
         },
         CapEvent::Wiped { slot } => (tag(slot), 0u16, None),
     };
@@ -2738,6 +2750,40 @@ mod tests {
             port_unbind_key(r, PORT_EVENT_TIMER, 0x7).map(|g| g.n), Ok(1),
             "the timer source is still bound",
         );
+        cap_store::set_cap_event_hook(|_| {});
+    }
+
+    /// A capability without `READ` made no binding (every bind takes
+    /// `READ`): a server that also holds a send capability (`WRITE` only)
+    /// to its own endpoint keeps its binding when it revokes or moves that
+    /// one; revoking the receive capability the bind was made through still
+    /// frees it (wave 15 N5b: the no-senders notice must reach the port).
+    ///
+    /// **Canary.** Drop the `READ` guard in `port_cap_event`: the revoke of
+    /// the send capability frees the binding and the first assert fails.
+    #[test]
+    fn a_send_only_capability_revoke_or_move_keeps_the_binding() {
+        use crate::cap::targets::Endpoint as EpTarget;
+        let _g = setup();
+        fresh_tables();
+        cap_store::set_cap_event_hook(port_cap_event);
+        const EP: PortSourceKind = PortSourceKind::Endpoint(0x0E01);
+        let r = port_create_ref(A as usize).expect("create");
+        let slot_a = cap_store::table_slot(A).expect("A's table");
+        let recv: Cap<EpTarget> = cap_store::grant(A, CapPerms::RW, 0x0E01).expect("grant");
+        let send: Cap<EpTarget> = cap_store::grant(A, CapPerms::WRITE, 0x0E01).expect("grant");
+        let send2: Cap<EpTarget> =
+            cap_store::grant(A, CapPerms::WRITE.union(CapPerms::DUP), 0x0E01).expect("grant");
+        let (l, _) = port_bind_object_as(r, EP, recv.raw().as_raw(), 0xE, Some(slot_a)).expect("bind");
+        cap_store::revoke(A, send);
+        assert!(port_link_valid(l, EP), "a send capability's revoke freed the receive one's binding");
+        cap_store::move_cap(A, B, send2.raw(), None).expect("move");
+        assert!(port_signal(l, EP), "a send capability's move took the binding along");
+        assert_eq!(port_poll_ref(r).map(|e| e.key), Ok(0xE));
+        cap_store::revoke(B, Cap::<EpTarget>::from_raw(send2.raw()));
+        cap_store::revoke(A, recv);
+        assert!(!port_link_valid(l, EP), "the receive capability's revoke frees the binding");
+        assert_eq!(port_cap_bound_count(), 0);
         cap_store::set_cap_event_hook(|_| {});
     }
 

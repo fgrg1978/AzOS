@@ -126,9 +126,10 @@ static HANDING: [AtomicU32; MAX_TASKS] = [FRESH_OWNER; MAX_TASKS];
 pub enum CapEvent {
     /// The capability left `slot`'s table without moving anywhere: a
     /// [`revoke`] or a [`revoke_moved`].
-    Revoked { slot: usize, kind: crate::cap::CapKind, resource: u32 },
+    Revoked { slot: usize, kind: crate::cap::CapKind, perms: crate::cap::CapPerms, resource: u32 },
     /// The capability moved from `from`'s table into `to`'s ([`move_cap`]).
-    Moved { from: usize, to: usize, kind: crate::cap::CapKind, resource: u32 },
+    /// `perms` are the ones it had in `from`'s table.
+    Moved { from: usize, to: usize, kind: crate::cap::CapKind, perms: crate::cap::CapPerms, resource: u32 },
     /// Every capability in `slot`'s table went: the exit [`reset`], or the
     /// lazy wipe of a reused slot.
     Wiped { slot: usize },
@@ -491,8 +492,8 @@ pub fn revoke<T: CapTarget>(tid: u32, cap: Cap<T>) {
     };
     let held = table.peek_raw(cap.raw());
     table.revoke(cap);
-    if let Some((kind, _, resource)) = held {
-        cap_event(CapEvent::Revoked { slot: idx, kind, resource });
+    if let Some((kind, perms, resource)) = held {
+        cap_event(CapEvent::Revoked { slot: idx, kind, perms, resource });
     }
     drop(table);
     notices();
@@ -740,7 +741,7 @@ fn move_locked(
         .ok_or(CapError::NoSpace)?;
     // Both locks still held: a revoke of the moved capability in the
     // receiver's table cannot run before its bindings follow it there.
-    cap_event(CapEvent::Moved { from: from_idx, to: to_idx, kind, resource });
+    cap_event(CapEvent::Moved { from: from_idx, to: to_idx, kind, perms, resource });
     Ok(moved)
 }
 
@@ -762,8 +763,8 @@ pub fn revoke_moved(tid: u32, handle: CapHandle) -> bool {
     let table = CAP_TABLES[idx].lock();
     let held = table.peek_raw(handle);
     let cleared = table.revoke_raw(handle);
-    if let (true, Some((kind, _, resource))) = (cleared, held) {
-        cap_event(CapEvent::Revoked { slot: idx, kind, resource });
+    if let (true, Some((kind, perms, resource))) = (cleared, held) {
+        cap_event(CapEvent::Revoked { slot: idx, kind, perms, resource });
     }
     drop(table);
     notices();
@@ -892,9 +893,9 @@ pub fn move_caps(
         let r = move_caps_locked(sender, receiver, from_idx, to_idx, xs, out);
         if r.is_err() && !keep {
             for x in xs.iter().filter(|x| !x.dup) {
-                if let Some((kind, _, resource)) = sender.peek_raw(x.handle) {
+                if let Some((kind, perms, resource)) = sender.peek_raw(x.handle) {
                     if sender.revoke_raw(x.handle) {
-                        cap_event(CapEvent::Revoked { slot: from_idx, kind, resource });
+                        cap_event(CapEvent::Revoked { slot: from_idx, kind, perms, resource });
                     }
                 }
             }
@@ -943,7 +944,7 @@ fn move_caps_locked(
             .grant_raw_ext(kind, x.rights.unwrap_or(perms), resource, ext)
             .ok_or(CapError::NoSpace)?;
         if !x.dup {
-            cap_event(CapEvent::Moved { from: from_idx, to: to_idx, kind, resource });
+            cap_event(CapEvent::Moved { from: from_idx, to: to_idx, kind, perms, resource });
         }
     }
     Ok(xs.len())
