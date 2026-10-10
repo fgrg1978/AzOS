@@ -2510,6 +2510,9 @@ CHECK_TABLE_aarch64 := $(IMAGE_HASHES_AARCH64)
 CHECK_TABLE_x86_64  := build/image_hashes_x86_64.rs
 
 .PHONY: check
+# CHECK_FEATURES adds cargo features (`make check CHECK_FEATURES=qemu,ktest`):
+# FEATURES= is not read here, so a ktest-only file is otherwise never compiled.
+CHECK_FEATURES ?=
 check: | $(CHECK_TABLE_$(ARCH))
 	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
 	@mkdir -p build
@@ -2519,7 +2522,8 @@ check: | $(CHECK_TABLE_$(ARCH))
 	if [ -n "$$rf" ]; then export RUSTFLAGS="$$rf"; else unset RUSTFLAGS; fi; \
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CURDIR)/$(CHECK_KCONFIG)" \
 	    $(CARGO) check --release -p azos_kernel \
-	    $$(python3 tools/kconfig_to_cargo.py "$(CHECK_KCONFIG)" | tr -s ' ')
+	    $$(python3 tools/kconfig_to_cargo.py "$(CHECK_KCONFIG)" | tr -s ' ') \
+	    $(if $(CHECK_FEATURES),--features $(CHECK_FEATURES))
 
 # ── x86_64: build and boot (QEMU microvm, PVH) ─────────────────────────────
 # `make ARCH=x86_64 x86_64` builds the kernel ELF; `make qemu-x86_64` boots it

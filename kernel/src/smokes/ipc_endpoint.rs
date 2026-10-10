@@ -615,6 +615,7 @@ azos_ktest::ktest_late! {
         crate::ktest::wait("the waiter never reported", || VERDICT[3].lock().is_some())?;
         VERDICT[3].lock().take().unwrap_or(Err("no verdict"))
     }
+}
 
 // ── Reply warrant (wave 15 N11) ─────────────────────────────────────────────
 
