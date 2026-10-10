@@ -62,6 +62,8 @@ fn live_word() -> usize {
     { azos_arch::sysregs::read_ttbr0_el1() as usize }
     #[cfg(target_arch = "x86_64")]
     { azos_arch::mmu::cpu::read_cr3() as usize }
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+    compile_error!("asid_rollover: no translation-root read for this ISA")
 }
 
 fn new_root(frame: usize) -> Option<usize> {
