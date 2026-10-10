@@ -11230,8 +11230,8 @@ PY
     par "ktest tlb local-only canary (rv)" ktest_row "ktest tlb local-only canary (rv)" rv ",tlb-local-only" "tlb_shootdown_cross_cpu"
     par "ktest tlb local-only canary (arm)" ktest_row "ktest tlb local-only canary (arm)" arm ",tlb-local-only" "tlb_shootdown_cross_cpu"
     par "ktest tlb scan-bound canary (rv)" ktest_row "ktest tlb scan-bound canary (rv)" rv ",tlb-bound-canary" "tlb_shootdown_cross_cpu"
-    par "ktest IMU frozen-stamp canary (rv)" ktest_row "ktest IMU frozen-stamp canary (rv)" rv ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition"
-    par "ktest IMU frozen-stamp canary (arm)" ktest_row "ktest IMU frozen-stamp canary (arm)" arm ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition"
+    par "ktest IMU frozen-stamp canary (rv)" ktest_row "ktest IMU frozen-stamp canary (rv)" rv ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition safety_geofence_breach_latches_estop"
+    par "ktest IMU frozen-stamp canary (arm)" ktest_row "ktest IMU frozen-stamp canary (arm)" arm ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition safety_geofence_breach_latches_estop"
     # Runtime canaries: the pass row's kernel (`qemu,ktest`, a kernel-cache
     # hit), armed by the command line.
     # `chaos-leak`: an injected frame failure loses a frame

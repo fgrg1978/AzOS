@@ -511,6 +511,16 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
 azos_ktest::ktest_late! {
     #[cfg(feature = "geofence")]
     fn safety_geofence_breach_latches_estop() {
+        // Gate canary `sensor-ts-freeze` (rows `ktest IMU frozen-stamp
+        // canary`): the IMU's samples go stale for good, and once a stale
+        // stretch passes IMU_INCOHERENT_AFTER_TICKS L0 answers
+        // SensorIncoherent ahead of the fence, so whether the probe sees
+        // GeofenceViolation or the loop's latch first is a race with the
+        // behaviour task. Not evidence either way under that canary: the
+        // rows expect this test not ok.
+        if cfg!(feature = "sensor-ts-freeze") {
+            return Err("canary sensor-ts-freeze: a stale IMU outranks the fence in L0, the probe is not run");
+        }
         crate::ktest::probe("geofence-smoke", geofence_smoke_task, 0, azos_sched::DEFAULT_PRIORITY, -1)?;
         if GEOFENCE_FAILS.load(core::sync::atomic::Ordering::SeqCst) != 0 {
             Err("the scenario printed [GEOFENCE] FAILED")
