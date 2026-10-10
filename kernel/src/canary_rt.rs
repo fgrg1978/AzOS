@@ -141,6 +141,11 @@ pub(crate) const NAMES: &[&str] = &[
     // sched/futex.rs: a futex requeue wakes every waiter on the source word
     // and moves none, the herd (ktest `futex_requeue_wakes_one_not_the_herd`).
     "futex-requeue-wake-all",
+    // crates/core/sched/src/asid.rs `prepare_switch`: a hart switching into
+    // an ASID of a newer generation does not flush, so a reused ASID meets
+    // its previous owner's entries (ktest
+    // `asid_rollover_no_stale_translation`).
+    "asid-rollover-noflush",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

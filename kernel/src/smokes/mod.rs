@@ -71,6 +71,9 @@ pub(crate) mod ring3_drv_smoke;
 #[cfg(feature = "qemu")]
 #[cfg(any(feature = "tlb-smoke", feature = "ktest"))]
 pub(crate) mod tlb_probe;
+// N12: ASID rollover vs a retained TLB (uses `tlb_probe`'s fault-safe load).
+#[cfg(all(feature = "qemu", feature = "ktest"))]
+pub(crate) mod asid_rollover;
 // arch-only: x86_64 has no user images yet; riscv64 and aarch64 reach ring
 // 3 through theirs (the rows that boot them).
 #[cfg(all(feature = "ktest", target_arch = "x86_64"))]

@@ -126,6 +126,10 @@ pub(crate) fn install_sched_hooks() {
     if canary!("futex-requeue-wake-all") {
         azos_sched::futex::canary_requeue_wake_all();
     }
+    // N12 runtime canary: an ASID rollover does not flush the TLB.
+    if canary!("asid-rollover-noflush") {
+        azos_sched::asid::CANARY_NO_ROLLOVER_FLUSH.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();
