@@ -214,6 +214,118 @@ mod handoff_tests {
     }
 }
 
+// N10: the PI futex word state machine, and every PiFutexOps path that does
+// not reach the wait graph (no pi_state: the graph's bodies are N7's).
+#[cfg(test)]
+mod pi_futex_tests {
+    use super::pi_futex::*;
+    use super::waitgraph::TaskId;
+
+    /// TIDs are slot + 100 here, so a slot/TID mix-up cannot pass.
+    fn tid(t: TaskId) -> Option<u32> {
+        (t < 50).then_some(t + 100)
+    }
+
+    struct Bucket {
+        word: Option<u32>,
+        slot: u32,
+    }
+    impl PiBucket for Bucket {
+        fn pi_slot(&mut self) -> &mut u32 { &mut self.slot }
+        fn read_word(&self) -> Result<u32, UserFault> { self.word.ok_or(UserFault) }
+        fn cmpxchg_word(&mut self, expected: u32, new: u32) -> Result<u32, UserFault> {
+            let w = self.word.as_mut().ok_or(UserFault)?;
+            let seen = *w;
+            if seen == expected { *w = new; }
+            Ok(seen)
+        }
+        fn task_of_tid(&self, t: u32) -> Option<TaskId> { (100..150).contains(&t).then(|| t - 100) }
+    }
+    fn b(w: u32) -> Bucket { Bucket { word: Some(w), slot: 0 } }
+    fn lock(bk: &mut Bucket, me: TaskId, try_only: bool) -> Result<(), i32> {
+        register_tid_of(tid);
+        match PI_FUTEX.lock_pi_prepare(bk, me, try_only) {
+            LockPiStep::Acquired => Ok(()),
+            LockPiStep::Err(e) => Err(e),
+            LockPiStep::Block(_) => panic!("blocked without a pi_state"),
+        }
+    }
+
+    #[test]
+    fn word_transitions_are_linux_futex_lock_pi_atomic() {
+        assert_eq!(lock_word(0, 101), LockWord::Take { new: 101 });
+        assert_eq!(lock_word(FUTEX_OWNER_DIED, 101), LockWord::Take { new: 101 | FUTEX_OWNER_DIED });
+        assert_eq!(lock_word(FUTEX_WAITERS, 101), LockWord::Take { new: 101 });
+        assert_eq!(lock_word(101 | FUTEX_WAITERS, 101), LockWord::SelfOwned);
+        assert_eq!(lock_word(102, 101), LockWord::Owned { tid: 102, marked: 102 | FUTEX_WAITERS });
+        assert_eq!(takeover_word(102, 101), None);
+        assert_eq!(takeover_word(102 | FUTEX_OWNER_DIED | FUTEX_WAITERS, 101),
+                   Some(101 | FUTEX_OWNER_DIED | FUTEX_WAITERS));
+        assert!(may_unlock(101 | FUTEX_WAITERS | FUTEX_OWNER_DIED, 101));
+        assert!(!may_unlock(102, 101));
+        assert!(!may_unlock(0, 101));
+        assert_eq!(death_word(101 | FUTEX_WAITERS), FUTEX_OWNER_DIED | FUTEX_WAITERS);
+        assert_eq!(death_word(101), FUTEX_OWNER_DIED);
+    }
+
+    #[test]
+    fn uncontended_lock_trylock_unlock() {
+        let mut k = b(0);
+        assert_eq!(lock(&mut k, 1, false), Ok(()));
+        assert_eq!(k.word, Some(101));
+        assert_eq!(lock(&mut k, 2, true), Err(-EAGAIN));
+        assert_eq!(k.word, Some(101), "a refused trylock leaves the word");
+        assert_eq!(lock(&mut k, 1, false), Err(-EDEADLK));
+        assert_eq!(PI_FUTEX.unlock_pi(&mut k, 2), Err(-EPERM));
+        assert_eq!(PI_FUTEX.unlock_pi(&mut k, 1), Ok(None));
+        assert_eq!(k.word, Some(0));
+        assert_eq!(PI_FUTEX.unlock_pi(&mut k, 1), Err(-EPERM), "unlocking a free word");
+        // A stale WAITERS bit with no pi_state: unlock still frees the word.
+        let mut k = b(101 | FUTEX_WAITERS);
+        assert_eq!(PI_FUTEX.unlock_pi(&mut k, 1), Ok(None));
+        assert_eq!(k.word, Some(0));
+    }
+
+    #[test]
+    fn owner_died_marks_the_word_and_the_next_locker_keeps_the_bit() {
+        register_tid_of(tid);
+        let mut k = b(101 | FUTEX_WAITERS);
+        assert_eq!(PI_FUTEX.owner_died(&mut k, 2), Ok(None), "not 2's word");
+        assert_eq!(k.word, Some(101 | FUTEX_WAITERS));
+        assert_eq!(PI_FUTEX.owner_died(&mut k, 1), Ok(None));
+        assert_eq!(k.word, Some(FUTEX_OWNER_DIED | FUTEX_WAITERS));
+        assert_eq!(lock(&mut k, 2, false), Ok(()));
+        assert_eq!(k.word, Some(102 | FUTEX_OWNER_DIED), "EOWNERDEAD visible to user space");
+    }
+
+    #[test]
+    fn a_vanished_owner_is_esrch_unless_owner_died() {
+        let mut k = b(149 + 400);
+        assert_eq!(lock(&mut k, 1, false), Err(-ESRCH));
+        let mut k = b(549 | FUTEX_OWNER_DIED);
+        assert_eq!(lock(&mut k, 1, true), Ok(()));
+        assert_eq!(k.word, Some(101 | FUTEX_OWNER_DIED));
+    }
+
+    #[test]
+    fn faults_are_efault() {
+        let mut k = Bucket { word: None, slot: 0 };
+        assert_eq!(lock(&mut k, 1, false), Err(-EFAULT));
+        assert_eq!(PI_FUTEX.unlock_pi(&mut k, 1), Err(-EFAULT));
+        assert_eq!(PI_FUTEX.owner_died(&mut k, 1), Err(-EFAULT));
+    }
+
+    #[test]
+    fn nothing_registered_is_enosys() {
+        if !ENABLED {
+            assert_eq!(POOL_LEN, 0);
+            assert_eq!(sys_futex_pi(0x1000, PiCmd::Unlock), -(ENOSYS as i64));
+            assert_eq!(robust_owner_died(1, 0x1000, 1), None);
+        }
+        assert_eq!(states_in_use(), 0);
+    }
+}
+
 #[cfg(test)]
 mod qsbr_tests {
     use super::qsbr_core::*;
