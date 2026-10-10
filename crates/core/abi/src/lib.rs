@@ -55,6 +55,8 @@ pub mod drv_kind;
 pub mod error;
 pub mod exit_status;
 pub mod io_ring;
+/// Wave 15 N11: the message descriptor of ABI v2 of the call.
+pub mod ipc_msg;
 pub mod ml_srv;
 pub mod power;
 /// Wave 15: the cross-level admission rule boot and run-time admission share.

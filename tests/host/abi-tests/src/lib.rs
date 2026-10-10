@@ -1171,3 +1171,27 @@ mod trace_abi_tests {
         assert_eq!((TRACE_OP_INFO, TRACE_OP_MAP, TRACE_OP_GET_MASK, TRACE_OP_SET_MASK, TRACE_OP_REGION_BYTES), (1, 2, 3, 4, 5));
     }
 }
+
+/// Wave 15 N11: the message descriptor of ABI v2 of the call is frozen.
+#[cfg(test)]
+mod ipc_msg_tests {
+    use azos_abi::ipc_msg::*;
+
+    #[test]
+    fn the_descriptor_layout_is_frozen() {
+        assert_eq!(core::mem::size_of::<MsgDesc>(), 144);
+        assert_eq!(core::mem::size_of::<CapDesc>(), 8);
+        assert_eq!(core::mem::offset_of!(MsgDesc, badge), 8);
+        assert_eq!(core::mem::offset_of!(MsgDesc, words), 16);
+        assert_eq!(core::mem::offset_of!(MsgDesc, caps), 80);
+        assert_eq!((MSG_VERSION, MSG_WORDS_MAX, MSG_CAPS_MAX), (1, 8, 8));
+        assert_eq!((CAP_MODE_MOVE, CAP_MODE_DUP, MSG_KEEP, MSG_BADGED), (1, 2, 1, 1 << 31));
+        let mut d = MsgDesc { version: MSG_VERSION, ..MsgDesc::default() };
+        assert!(d.well_formed());
+        d.n_caps = 9;
+        assert!(!d.well_formed(), "past the ceiling");
+        d.n_caps = 0;
+        d.version = 2;
+        assert!(!d.well_formed(), "an unknown version");
+    }
+}
