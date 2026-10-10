@@ -21,6 +21,22 @@
 OUTPUT_ARCH(aarch64)
 ENTRY(_start)
 
+/* One PT_LOAD per permission, named: text RX, rodata R, data RW. Without
+ * this block lld derives the segments from the section flags, and the
+ * Makefile's 16/64 KiB builds needed `--no-rosegment` to keep the headers'
+ * R segment off `.text`'s first page, which also folded `.rodata` into the
+ * RX segment (executable, and at 64 KiB padded to its own file page). No
+ * FILEHDR/PHDRS: the headers are in no segment at any granule (at 4 KiB
+ * there is no room before 0x10000; above it they sit in the file under
+ * `.text`'s first page, unmapped), so the 4 KiB images keep their layout. */
+PHDRS
+{
+    text   PT_LOAD FLAGS(5);
+    rodata PT_LOAD FLAGS(4);
+    data   PT_LOAD FLAGS(6);
+    stack  PT_GNU_STACK FLAGS(6);
+}
+
 SECTIONS
 {
     /* Above a 4 KiB page (`make AARCH64_PAGE_SIZE=16384|65536`) the ELF and
@@ -32,7 +48,7 @@ SECTIONS
 
     .text : {
         *(.text .text.*)
-    }
+    } :text
 
     /* Read-only data starts a page of its own (the next page, at the same
      * offset in it: no file padding): the loader refuses a page shared by
@@ -41,7 +57,7 @@ SECTIONS
 
     .rodata : {
         *(.rodata .rodata.*)
-    }
+    } :rodata
 
     /* First writable byte starts its own page — see the header. The page is
      * `-z max-page-size`: 4096 from `.cargo/config.toml`, or the granule the
@@ -50,12 +66,12 @@ SECTIONS
 
     .data : {
         *(.data .data.*)
-    }
+    } :data
 
     .bss : {
         *(.bss .bss.*)
         *(COMMON)
-    }
+    } :data
 
     /DISCARD/ : {
         *(.eh_frame)

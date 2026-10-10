@@ -187,11 +187,12 @@ else
 $(error AARCH64_PAGE_SIZE must be 4096, 16384 or 65536 (an aarch64 translation granule))
 endif
 AARCH64_UTARGET   := target$(AARCH64_PG_SUFFIX)
-# `--no-rosegment`: the ELF/program headers share `.text`'s first page above
-# 4 KiB (see user_aarch64.ld), and the loader maps an executable segment only
-# onto a page it owns outright (W^X, crates/core/sched/src/process.rs), so the
-# headers must be in the RX segment rather than an R segment of their own.
-AARCH64_PG_FLAGS  := --target-dir $(AARCH64_UTARGET) --config 'target.$(TARGET_AARCH64).rustflags=["-C","link-arg=-zmax-page-size=$(AARCH64_PAGE_SIZE)","-C","link-arg=--no-rosegment"$(if $(AARCH64_USER_ISA),$(comma)$(AARCH64_USER_ISA))]'
+# Above 4 KiB the ELF/program headers share `.text`'s first page in the file
+# (see user_aarch64.ld), and the loader maps an executable segment only onto a
+# page it owns outright (W^X, crates/core/sched/src/process.rs). The script's
+# PHDRS block keeps the headers in no segment and `.rodata` in an R segment of
+# its own; `--no-rosegment`, used here before, made `.rodata` executable.
+AARCH64_PG_FLAGS  := --target-dir $(AARCH64_UTARGET) --config 'target.$(TARGET_AARCH64).rustflags=["-C","link-arg=-zmax-page-size=$(AARCH64_PAGE_SIZE)"$(if $(AARCH64_USER_ISA),$(comma)$(AARCH64_USER_ISA))]'
 endif
 AARCH64_PG_TABLE  := $(subst -,_,$(AARCH64_PG_SUFFIX))
 AARCH64_DIR    := build/aarch64$(AARCH64_PG_SUFFIX)
