@@ -212,13 +212,14 @@ impl KeySite {
 
     /// Does `word` (read from the site) hold this alternative site's linked
     /// form: the recorded word, or, recorded as 0, a branch of its ISA (`jal
-    /// zero` / `b`)? The only word the boot patch overwrites.
+    /// zero` / `b` or `bl`)? The only word the boot patch overwrites.
     pub fn alt_is_linked(&self, word: u32) -> Result<bool, SiteError> {
         self.alt_word()?;
         let linked = (self.target >> 32) as u32;
         Ok(match (self.kind, linked) {
             (KIND_RV_ALT, 0) => rv_jal_offset(word).is_some(),
-            (KIND_A64_ALT, 0) => a64_b_offset(word).is_some(),
+            // `b`, or `bl` to a shared fallback (bit 31 set).
+            (KIND_A64_ALT, 0) => a64_b_offset(word & 0x7fff_ffff).is_some(),
             (_, l) => word == l,
         })
     }

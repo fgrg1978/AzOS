@@ -296,18 +296,17 @@ impl SpinWait for crate::api_impl::Aarch64 {
                     out("x30") _,
                 );
             },
-            // The swap is a boot-once site: linked `b` to the LL/SC loop,
-            // rewritten to the `swpa` when ID_AA64ISAR0_EL1 reports LSE.
+            // The swap is a boot-once site: linked `bl` to the one shared
+            // LL/SC exchange (`azos_spin_swpa_llsc32`: x9 in, w10 out,
+            // x16/x17 scratch), rewritten to `swpa ..., w10, [x9]` when
+            // ID_AA64ISAR0_EL1 reports LSE. One word per site: no per-site
+            // fallback loop in the text.
             ExtPolicy::Probe => unsafe {
                 core::arch::asm!(
-                    "2: b 4f",
-                    "5: cbnz {t:w}, 3f",
+                    "2: bl azos_spin_swpa_llsc32",
+                    "cbnz w10, 3f",
                     "6:",
                     ".subsection 1",
-                    "4: ldaxr {t:w}, [x9]",
-                    "stxr {t2:w}, {one:w}, [x9]",
-                    "cbnz {t2:w}, 4b",
-                    "b 5b",
                     "3: bl azos_spin_tas_tramp32",
                     "b 6b",
                     ".subsection 0",
@@ -315,15 +314,16 @@ impl SpinWait for crate::api_impl::Aarch64 {
                     ".balign 8",
                     ".8byte 2b",
                     ".arch_extension lse",
-                    "swpa {one:w}, {t:w}, [x9]",
+                    "swpa {one:w}, w10, [x9]",
                     ".4byte 0",
                     ".4byte {key}",
                     ".4byte {kind}",
                     ".popsection",
                     in("x9") a.as_ptr(),
                     one = in(reg) 1u32,
-                    t = out(reg) _,
-                    t2 = out(reg) _,
+                    out("x10") _,
+                    out("x16") _,
+                    out("x17") _,
                     out("x30") _,
                     key = const SITE_KEY_CAS,
                     kind = const SITE_KIND_A64_ALT,
@@ -411,6 +411,23 @@ impl SpinWait for crate::api_impl::Aarch64 {
 extern "C" fn azos_spin_tas_slow32(a: &AtomicU32) {
     azos_arch_api::spin::tas_slow32(&crate::api_impl::AARCH64, a)
 }
+
+// `azos_spin_swpa_llsc32`: the linked form of every `tas_acquire32` probe
+// site, `swpa 1, w10, [x9]` on any core: an LDAXR/STXR loop. Clobbers only
+// w10 (the old value), x16, x17.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+core::arch::global_asm!(
+    ".pushsection .text.azos_spin_swpa_llsc32, \"ax\"",
+    ".globl azos_spin_swpa_llsc32",
+    ".p2align 2",
+    "azos_spin_swpa_llsc32:",
+    "    mov  w17, #1",
+    "1:  ldaxr w10, [x9]",
+    "    stxr w16, w17, [x9]",
+    "    cbnz w16, 1b",
+    "    ret",
+    ".popsection",
+);
 
 // `azos_spin_tas_tramp32`: entered by `bl` with the word in x9; saves x0-x18
 // and x30 (every caller-saved integer register; the kernel is soft-float),

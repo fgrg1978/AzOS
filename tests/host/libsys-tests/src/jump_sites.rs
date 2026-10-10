@@ -135,10 +135,11 @@ fn an_alternative_site_reads_its_two_words() {
                          key: KEY_SPIN_WAIT, kind: KIND_RV_ALT };
     assert_eq!(wait.alt_is_linked(RV_NOP), Ok(true));
     assert_eq!(wait.alt_is_linked(RV[0].2), Ok(false), "a branch is not this site's nop");
-    // aarch64 `casa w19, w21, [x8]` linked as a `b`.
+    // aarch64 `casa w19, w21, [x8]` linked as a `b` (a `swpa` site as a `bl`).
     let a = KeySite { site: 0xffff_ff80_4000_0000, target: 0x88f3_7d15, key: KEY_SPIN_CAS, kind: KIND_A64_ALT };
     assert_eq!(a.alt_is_linked(A64[0].2), Ok(true));
     assert_eq!(a.alt_is_linked(A64_NOP), Ok(false));
+    assert_eq!(a.alt_is_linked(A64[0].2 | 0x8000_0000), Ok(true), "a `bl` to a shared fallback too");
     // Misaligned and foreign kinds are refused.
     assert_eq!(KeySite { site: 0x8020_0002, ..cas }.alt_word(), Ok(0x2d65_25af), "rv: 2 mod 4 is a site");
     assert_eq!(KeySite { site: 0x8020_0001, ..cas }.alt_word(), Err(SiteError::Misaligned));
