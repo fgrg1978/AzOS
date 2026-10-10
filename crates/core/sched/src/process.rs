@@ -17,16 +17,11 @@ use azos_arch_api::PagePerms;
 /// today's access (`phys_to_virt`) does not actually NEED it, and why the
 /// guard is placed here anyway.
 
-/// Encode the address-space-activation value this crate's `satp`/`task_satp`
-/// fields carry: the ISA's user-root word (`ArchPlatform::user_root_word`).
-/// riscv64: a real Sv39 `satp` word (MODE|ASID|PPN), later written by
-/// `context_switch.S`'s `csrw satp`. aarch64: the bare `TTBR0_EL1` table PA,
-/// `0` meaning "keep the kernel's own table"; the ASID is unused because the
-/// kernel flushes on every address-space switch.
-#[inline]
-fn make_satp(root_pt_phys: usize, asid: u16) -> usize {
-    ARCH.user_root_word(root_pt_phys, asid)
-}
+// The address-space-activation value this crate's `satp`/`task_satp` fields
+// carry is the ISA's user-root word with its ASID
+// (`crate::asid::new_root_word`, `ArchPlatform::user_root_word`): riscv64 a
+// Sv39 `satp` word, aarch64 `TTBR0_EL1` (ASID | table PA, `0` meaning "keep
+// the kernel's own table"), x86_64 CR3 (PML4 | PCID).
 use azos_mm::{pmm, vmm, vdso};
 use azos_common::error::KernelError;
 
@@ -1275,7 +1270,7 @@ fn finish_user_space(user_pt: usize, e_entry: u64, brk_va: usize, mut frames: u3
     // Kernel pages have no USER bit — U-mode cannot access them directly.
     vmm::copy_kernel_entries_to_user(user_pt);
 
-    let user_satp = make_satp(user_pt, crate::alloc_asid()) as u64;
+    let user_satp = crate::asid::new_root_word(user_pt) as u64;
     let user_sp   = (USER_STACK_TOP - 16) as u64;
     // sstatus: SPP=0 (U-mode), SPIE=1 (enable interrupts after SRET), SIE=0
     let sstatus   = 1u64 << 5; // SPIE
@@ -2430,7 +2425,7 @@ fn fork_hooked_inner(
     let t_ph = crate::prof::t();
     // Apply the child's user page table so context_switch.S writes the
     // correct SATP when the child is scheduled.
-    let child_satp = make_satp(child_pt, crate::alloc_asid()) as u64;
+    let child_satp = crate::asid::new_root_word(child_pt) as u64;
     crate::scheduler::set_task_user_info(child_idx, child_satp, child_pt as u64, parent_brk);
     // RFC-0049 M1: the child runs under its parent's budget limit (it has no
     // row of its own) and starts charged for its page tables. It is never

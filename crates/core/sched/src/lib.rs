@@ -34,6 +34,8 @@ pub mod rt_core;
 pub mod timer_heap;
 pub mod wake_list;
 pub mod scheduler;
+/// ASIDs with generations; the switch-time TLB keep/flush decision (N12).
+pub mod asid;
 pub mod swcensus;
 pub mod smp;
 pub mod wait;

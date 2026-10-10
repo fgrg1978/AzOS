@@ -85,6 +85,8 @@
 .equ CTX_X29,  {ctx_x29}
 .equ CTX_PC,   {ctx_pc}
 .equ CTX_TP,   {ctx_tp}
+// Length of `AZOS_TLB_SWITCH_FLUSH` (`azos_arch_api::tlb_gen::HARTS`, NR_CPUS).
+.equ TLB_MAX_HARTS, {tlb_max_harts}
 .equ CTX_D8,   {ctx_d8}    // pair: d8/d9
 .equ CTX_D10,  {ctx_d10}   // pair: d10/d11
 .equ CTX_D12,  {ctx_d12}   // pair: d12/d13
@@ -287,11 +289,30 @@ restore_new_task:
     // loaded", the pre-fix behavior, never "install literal 0".
     cbz x10, ctx_skip_pt_switch
 ctx_have_satp:
+    // N12 (Kconfig TLB_RETAIN): `AZOS_TLB_SWITCH_FLUSH[hart]`, set by
+    // `azos_sched::asid::prepare_switch` on this hart just before this call:
+    // 0 = keep the TLB (user leaves are nG and the word carries the ASID),
+    // 1 = flush when the root changes (the old behaviour), 2 = flush even
+    // when it does not. The hart index is TPIDR_EL1 (see above).
+    mrs  x12, TPIDR_EL1
+    mov  x14, #1
+    cmp  x12, #TLB_MAX_HARTS
+    b.hs 2f
+    adrp x13, AZOS_TLB_SWITCH_FLUSH
+    add  x13, x13, :lo12:AZOS_TLB_SWITCH_FLUSH
+    ldr  x14, [x13, x12, lsl #3]
+2:
     mrs x11, TTBR0_EL1
     cmp x10, x11
-    b.eq ctx_skip_pt_switch
+    b.ne 3f
+    cmp  x14, #2
+    b.ne ctx_skip_pt_switch
+    b    4f
+3:
     msr TTBR0_EL1, x10
     isb                     // context-synchronize the TTBR0_EL1 write
+    cbz  x14, ctx_skip_pt_switch
+4:
     tlbi vmalle1            // stale translations under the old table
     dsb ish                 // completion of the invalidation
     isb                     // before any translation can use the new table

@@ -9,15 +9,14 @@
 //! the address space rooted at `root_phys` that was cached before the PTE
 //! change the caller made just before calling it.
 //!
-//! **Which CPUs can hold one.** Every CR3 write in this kernel leaves the
-//! no-flush bit clear (`mmu` module doc), so it drops every non-global entry
-//! of the incoming PCID, and entries under any other PCID are unreachable
-//! until that PCID's own switch-in drops them. A CPU therefore USES
-//! translations of exactly one address space: the one its CR3 names. Each
+//! **Which CPUs can hold one.** The CPUs whose CR3 names the root now: each
 //! CPU publishes that word in [`AZOS_HART_CR3`] before it writes CR3
-//! ([`switch_root`]); the CPUs to signal are those whose published root is
-//! `root_phys`. Retaining PCIDs across switches (VM-DESIGN §2.4, P2) replaces
-//! this with a per-address-space mask "ran it since its last flush".
+//! ([`switch_root`], `context_switch.S`), and those are the CPUs signalled.
+//! With Kconfig `TLB_RETAIN` the context switch sets the CR3 no-flush bit,
+//! so a CPU that ran the space earlier keeps its entries under that PCID:
+//! [`shootdown`] marks every CPU stale (`azos_arch_api::tlb_gen`), and each
+//! flushes every PCID at its next user switch. A per-address-space mask
+//! "ran it since its last flush" (VM-DESIGN §2.4) would narrow that.
 //!
 //! **Ordering (store-buffering, fenced on both sides).**
 //!   shooter:  store PTE;  mfence;  load AZOS_HART_CR3[c]
@@ -289,6 +288,12 @@ fn remote(me: usize, mask: usize, root: usize, va: usize, len: usize) {
 pub fn shootdown(me: usize, root_phys: usize, va: usize, len: usize) -> usize {
     // Local part: this CPU may be running the address space.
     do_local(local_flush_for(va, len, false, FLUSH_CEILING_PAGES));
+    // Retained PCIDs (Kconfig `TLB_RETAIN`): the local flush reaches only
+    // the current PCID and the IPIs only the CPUs on the root now, so every
+    // CPU, this one included, flushes at its next user switch
+    // (`azos_arch_api::tlb_gen`). Before the fence: a CPU switching in
+    // concurrently either sees the mark or is seen in `AZOS_HART_CR3`.
+    azos_arch_api::tlb_gen::mark_all_stale(usize::MAX);
     // PTE store(s) before the loads of the published roots.
     fence(Ordering::SeqCst);
     let mask = remote_mask(|c| AZOS_HART_CR3[c].load(Ordering::Relaxed), hart_bound(), me, root_phys);
@@ -307,6 +312,7 @@ pub fn shootdown(me: usize, root_phys: usize, va: usize, len: usize) -> usize {
 #[cfg(target_arch = "x86_64")]
 pub fn shootdown_kernel(me: usize, va: usize, len: usize) -> usize {
     do_local(local_flush_for(va, len, true, FLUSH_CEILING_PAGES));
+    azos_arch_api::tlb_gen::mark_all_stale(usize::MAX);
     fence(Ordering::SeqCst);
     let mask = remote_mask(|c| AZOS_HART_CR3[c].load(Ordering::Relaxed), hart_bound(), me, ANY_ROOT);
     if mask != 0 {

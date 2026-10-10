@@ -46,6 +46,23 @@ impl ArchPlatform for Riscv64 {
         crate::mmu::make_satp(root_phys, asid)
     }
 
+    /// `satp.ASID`, bits 59:44.
+    #[inline]
+    fn user_root_asid(&self, word: usize) -> u16 {
+        (word >> 44) as u16
+    }
+
+    #[inline]
+    fn user_root_with_asid(&self, word: usize, asid: u16) -> usize {
+        (word & !(0xFFFF << 44)) | ((asid as usize) << 44)
+    }
+
+    /// `AZOS_HART_SATP[hart]` (`tlb::publish`), what `tlb::shootdown` scans.
+    #[inline]
+    fn publish_user_root(&self, word: usize) {
+        crate::tlb::publish(crate::cpu::hart_id(), word);
+    }
+
     /// `csrw satp` + `sfence.vma` (and the TLB-holder publish `write_satp`
     /// does). Written unconditionally, as before.
     #[inline]

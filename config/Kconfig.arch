@@ -604,31 +604,54 @@ endchoice
 
 endif # ARCH_AARCH64
 
+config TLB_RETAIN
+    bool "Keep TLB entries across user address-space switches (ASID/PCID tags)"
+    default y
+    help
+      A switch between user address spaces installs the incoming root with
+      its ASID (riscv64 satp.ASID, aarch64 TTBR0_EL1.ASID with nG user
+      leaves, x86_64 PCID with the CR3 no-flush bit) and does NOT flush the
+      TLB, so a task coming back finds its translations still cached.
+      ASIDs carry a generation (crates/core/sched/src/asid.rs): when the
+      ASID space runs out the generation advances and each hart flushes
+      once before running a new-generation ASID; a space whose ASID was
+      taken re-tags at its next switch-in. A shootdown that cannot reach a
+      hart that ran the space marks that hart stale, and its next switch
+      flushes (crates/core/arch-api/src/tlb_gen.rs).
+
+      Boards whose MMU has no ASID bits (the boot probe reads 0) keep
+      flush-on-switch whatever this says.
+
+      Cost: 16 bytes of RAM per ASID (2^ASID_BITS slots); per switch a
+      few loads and one atomic swap, against a full TLB refill. Say n to
+      get the old flush on every address-space switch (for comparison, or
+      to rule the TLB out when chasing a stale-translation bug).
+
 config ASID_BITS
     int "Address-space ID width the allocator uses (bits)"
     range 1 16
+    default 8 if TLB_RETAIN && PROFILE_EMBEDDED
+    default 12 if TLB_RETAIN
     default 16
     help
       Width of the ASID space user address spaces draw from
-      (crates/core/sched/src/scheduler.rs, alloc_asid): ASIDs 1 to
-      2^ASID_BITS - 1, 0 being the kernel's.  The boot probes what the
-      hardware implements (riscv64: satp.ASID written all-ones and read
-      back, the spec's ASIDLEN; aarch64: ID_AA64MMFR0_EL1.ASIDBits) and
-      uses the smaller of the two; a hart with no ASID bits gets 0 for
-      every address space.  When the space runs out the allocator starts
-      again at 1 and counts a rollover.
+      (crates/core/sched/src/asid.rs): ASIDs 1 to 2^ASID_BITS - 1, 0
+      being the kernel's.  The cap on what the hardware offers: the boot
+      probes what the MMU implements (riscv64: satp.ASID written all-ones
+      and read back, the spec's ASIDLEN; aarch64: ID_AA64MMFR0_EL1.ASIDBits;
+      x86_64: 12 with CR4.PCIDE) and uses the smaller of the two; a hart
+      with no ASID bits gets 0 for every address space and flushes on
+      every switch.  When the space runs out the generation advances (a
+      rollover): every hart flushes once.
 
-      Isolation does not rest on this number: every address-space switch
-      is a full local TLB flush on every ISA (context_switch.S; on x86_64
-      the CR3 write drops the incoming PCID's entries), and a root is
-      freed only after every hart has left it, so a reused ASID never
-      meets a stale entry.  The tag is what the riscv64 satp word
-      carries, and its low 12 bits are the x86_64 PCID (CR4.PCIDE);
-      aarch64 installs ASID 0.
+      With TLB_RETAIN the allocator keeps one 16-byte slot per ASID, so
+      this sets RAM (8 bits: 4 KiB; 12: 64 KiB) against how often a
+      rollover forces flushes (once per 2^ASID_BITS - 1 forks/execs).
+      Without TLB_RETAIN every switch flushes and the width costs nothing.
 
-      Cost: none (one compare per fork/exec).  Change it only to test: a
-      tiny value (2: three ASIDs) makes every few forks a rollover, which
-      is what the ASID gate row runs under.
+      Change it only to test: 1 (one ASID) makes every new address space
+      a rollover, which is what the stale-translation ktest runs under;
+      2 (three ASIDs) is what the ASID gate row runs under.
 
 config TLB_FLUSH_CEILING_PAGES
     int "Pages above which a ranged TLB flush drops the whole address space"
@@ -640,7 +663,8 @@ config TLB_FLUSH_CEILING_PAGES
       kernel's own range: everything) instead of one invalidation per
       page. Linux's tlb_single_page_flush_ceiling, also 33. Read by
       x86_64 (crates/core/arch-x86_64/src/tlb.rs); riscv64 and aarch64
-      still invalidate page by page.
+      still invalidate page by page. This is the plan's
+      TLB_FLUSH_THRESHOLD_PAGES (N12).
 
       Cost: below the ceiling one invlpg (~100-200 cycles) per page, on
       every CPU signalled; above it one full flush plus the re-walks it

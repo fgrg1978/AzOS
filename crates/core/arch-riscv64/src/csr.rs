@@ -19,7 +19,12 @@ pub fn read_satp() -> usize {
 /// hart's translation root first, for the shootdown (`crate::tlb`).
 #[inline(always)]
 pub fn write_satp(val: usize) {
-    crate::tlb::publish(crate::cpu::hart_id(), val);
+    let hart = crate::cpu::hart_id();
+    crate::tlb::publish(hart, val);
+    // Installed outside `azos_sched::asid::prepare_switch`: the hart's TLB
+    // generation is unknown from here on, so its next user switch flushes
+    // (Kconfig `TLB_RETAIN`; nothing with it off).
+    azos_arch_api::tlb_gen::mark_stale(hart);
     unsafe {
         core::arch::asm!(
             "csrw satp, {}",

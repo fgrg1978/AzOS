@@ -646,6 +646,10 @@ pub mod isa;
 pub mod spin;
 pub use spin::{CasOrder, SpinWait};
 
+/// Per-hart TLB generation for retained translations across address-space
+/// switches (Kconfig `TLB_RETAIN`).
+pub mod tlb_gen;
+
 // ──────────────────────────────────────────────────────────────────────────
 // Arch contract: ArchPlatform (ISA crates) and ArchEntry (kernel boot hooks)
 // ──────────────────────────────────────────────────────────────────────────

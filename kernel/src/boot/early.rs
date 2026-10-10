@@ -223,8 +223,10 @@ pub(crate) fn early_main(hart_id: usize, fw_table: usize) -> EarlyBoot {
             use azos_arch::Mmu;
             let hw = azos_arch::ARCH.asid_bits();
             let max = azos_sched::set_hw_asid_bits(hw);
-            kprintln!("[MM] ASID: hw {} bits, ASID_BITS {}, user ASIDs 1..={} (full TLB flush on every switch)",
-                      hw, azos_limits::ASID_BITS, max);
+            kprintln!("[MM] ASID: hw {} bits, ASID_BITS {}, user ASIDs 1..={} ({})",
+                      hw, azos_limits::ASID_BITS, max,
+                      if azos_sched::asid::retaining() { "TLB kept across switches, generations" }
+                      else { "full TLB flush on every switch" });
         }
 
         // W^X: remap the image with per-section permissions. The megapages

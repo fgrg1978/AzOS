@@ -179,9 +179,15 @@ pub fn shootdown(root_phys: usize, va: usize, len: usize) -> usize {
             a += 0x1000;
         }
     }
+    let me = crate::cpu::hart_id();
+    // A hart that ran this space and switched away keeps its entries under
+    // a retained ASID (Kconfig `TLB_RETAIN`) and is not in the mask below:
+    // it flushes at its next user switch (`azos_arch_api::tlb_gen`). Stored
+    // before the fence, so a hart switching in concurrently either sees the
+    // mark or is seen in `AZOS_HART_SATP`.
+    azos_arch_api::tlb_gen::mark_all_stale(me);
     // PTE store(s) before the loads of the published roots.
     core::sync::atomic::fence(Ordering::SeqCst);
-    let me = crate::cpu::hart_id();
     let mask = remote_mask(
         |h| AZOS_HART_SATP[h].load(Ordering::Relaxed),
         hart_bound(), me, root_phys,

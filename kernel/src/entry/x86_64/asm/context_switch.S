@@ -106,7 +106,19 @@ restore_new_task:
     // the array the shootdown scans; the CPU id is %gs:0.
     movq %gs:0, %r9
     leaq AZOS_HART_CR3(%rip), %r10
-    movq %rcx, (%r10,%r9,8)
+    movq %r8, (%r10,%r9,8)           // the root word, no-flush bit clear
+    // N12 (Kconfig TLB_RETAIN): `AZOS_TLB_SWITCH_FLUSH[cpu]`, set by
+    // `azos_sched::asid::prepare_switch` on this CPU just before this call.
+    // 0: keep the incoming PCID's entries (CR3 no-flush bit); otherwise the
+    // write drops them, and on a rollover or skipped shootdown
+    // prepare_switch already flushed every PCID. CR3_NOFLUSH is only set
+    // when CR4.PCIDE is (prepare_switch writes 0 only with ASID bits).
+    movq %r8, %rcx
+    leaq AZOS_TLB_SWITCH_FLUSH(%rip), %r10
+    cmpq $0, (%r10,%r9,8)
+    jne 1f
+    btsq $63, %rcx
+1:
     movq %rcx, %cr3
 ctx_skip_pt_switch:
     // 5.

@@ -223,9 +223,10 @@ pub fn write_ttbr0_el1(root_phys: usize, asid: u16) {
 /// `context_switch.S` runs on an address-space change (`msr`, `isb`,
 /// `tlbi vmalle1`, `dsb ish`, `isb`), for a caller that must leave a user
 /// table outside a context switch: the exit path, before it frees that table
-/// (`azos_sched`'s `release_address_space_at_exit`). Local `tlbi`: no
-/// other PE can hold the table's entries, since every PE flushes on its own
-/// address-space switches and the table is only ever live on one.
+/// (`azos_sched`'s `release_address_space_at_exit`). Local `tlbi`: other
+/// PEs may still hold the table's entries under its ASID (Kconfig
+/// `TLB_RETAIN`), but no PE installs that ASID again before an ASID
+/// generation change, which flushes it first (`azos_sched::asid`).
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn install_ttbr0_flush_local(root_phys: usize) {

@@ -214,7 +214,11 @@ impl Mmu for X86_64 {
     }
     /// `invpcid` type 2 (globals too), else a CR4.PGE toggle.
     fn flush_tlb_all(&self) {
-        on_x86!(mmu::cpu::flush_all(), "x86_64: flush_tlb_all: invpcid all / CR4.PGE toggle")
+        on_x86!({
+            mmu::cpu::flush_all();
+            // Local only: other CPUs keep retained PCIDs (Kconfig `TLB_RETAIN`).
+            azos_arch_api::tlb_gen::mark_all_stale(self.hart_id());
+        }, "x86_64: flush_tlb_all: invpcid all / CR4.PGE toggle")
     }
     /// `invpcid` type 1 (single context), else a CR3 reload of the live PCID.
     fn flush_tlb_asid(&self, _asid: u16) {
@@ -226,7 +230,12 @@ impl Mmu for X86_64 {
     }
     /// `invlpg`.
     fn flush_tlb_page(&self, _va: usize) {
-        on_x86!(mmu::cpu::invlpg(_va), "x86_64: flush_tlb_page: invlpg")
+        on_x86!({
+            mmu::cpu::invlpg(_va);
+            // `invlpg` drops the CURRENT PCID's entry only: every CPU, this
+            // one included, may hold it under a retained PCID (`TLB_RETAIN`).
+            azos_arch_api::tlb_gen::mark_all_stale(usize::MAX);
+        }, "x86_64: flush_tlb_page: invlpg")
     }
     /// No broadcast invalidate on x86: an IPI to every CPU holding the root,
     /// each running `invlpg` (`tlb.rs`; Linux `flush_tlb_mm_range`).
@@ -325,9 +334,29 @@ impl ArchPlatform for X86_64 {
     fn user_root_word(&self, root_phys: usize, asid: u16) -> usize {
         mmu::make_cr3(root_phys, asid, mmu::pcid_on()) as usize
     }
+    /// The PCID, CR3 bits 11:0.
+    fn user_root_asid(&self, word: usize) -> u16 {
+        (word as u64 & mmu::CR3_PCID_MASK) as u16
+    }
+    fn user_root_with_asid(&self, word: usize, asid: u16) -> usize {
+        let w = word as u64 & !(mmu::CR3_PCID_MASK | mmu::CR3_NOFLUSH);
+        (w | (asid as u64 & mmu::CR3_PCID_MASK)) as usize
+    }
+    /// `invpcid` all contexts, else a CR4.PGE toggle: every PCID.
+    fn flush_tlb_all_contexts_local(&self) {
+        on_x86!(mmu::cpu::flush_all(), "x86_64: flush_tlb_all_contexts_local")
+    }
+    /// `AZOS_HART_CR3[cpu]` (`tlb::publish`), what `tlb::shootdown` scans.
+    fn publish_user_root(&self, _word: usize) {
+        on_x86!(tlb::publish(self.hart_id(), _word & !(mmu::CR3_NOFLUSH as usize)), "x86_64: publish_user_root")
+    }
     /// Publish, then `mov cr3`.
     fn install_user_root_local(&self, _word: usize) {
-        on_x86!(tlb::install_word(self.hart_id(), _word as u64), "x86_64: install_user_root_local: mov cr3")
+        on_x86!({
+            tlb::install_word(self.hart_id(), _word as u64);
+            // Outside the generation scheme: the next user switch flushes.
+            azos_arch_api::tlb_gen::mark_stale(self.hart_id());
+        }, "x86_64: install_user_root_local: mov cr3")
     }
     type UserAccess = UserAccess;
     /// `stac` (SMAP), `clac` when the value drops.

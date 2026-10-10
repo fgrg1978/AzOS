@@ -325,6 +325,7 @@ global_asm!(
 #[cfg(target_arch = "aarch64")]
 global_asm!(
     include_str!("entry/aarch64/asm/context_switch.S"),
+    tlb_max_harts = const azos_arch_api::tlb_gen::HARTS,
     ctx_ra  = const core::mem::offset_of!(azos_sched::task::TaskContext, ra),
     ctx_sp  = const core::mem::offset_of!(azos_sched::task::TaskContext, sp),
     ctx_x19 = const core::mem::offset_of!(azos_sched::task::TaskContext, x19),

@@ -40,11 +40,22 @@ impl ArchPlatform for Aarch64 {
         unsafe { crate::cbo::zero_memory(va, len) }
     }
 
-    /// `TTBR0_EL1` takes the bare table PA; this kernel flushes on every
-    /// address-space switch instead of tagging with an ASID.
+    /// `TTBR0_EL1`: ASID in bits 63:48 (`TCR_EL1.A1` = 0 takes it from
+    /// TTBR0), the table PA below. User leaves carry nG, so their TLB
+    /// entries are tagged with it (N12, Kconfig `TLB_RETAIN`).
     #[inline]
-    fn user_root_word(&self, root_phys: usize, _asid: u16) -> usize {
-        root_phys
+    fn user_root_word(&self, root_phys: usize, asid: u16) -> usize {
+        ((asid as usize) << 48) | (root_phys & 0x0000_ffff_ffff_fffe)
+    }
+
+    #[inline]
+    fn user_root_asid(&self, word: usize) -> u16 {
+        (word >> 48) as u16
+    }
+
+    #[inline]
+    fn user_root_with_asid(&self, word: usize, asid: u16) -> usize {
+        (word & 0x0000_ffff_ffff_ffff) | ((asid as usize) << 48)
     }
 
     /// Zero means "keep the kernel's own table" on this ISA (no root lives at
@@ -53,6 +64,9 @@ impl ArchPlatform for Aarch64 {
     fn install_user_root_local(&self, word: usize) {
         if word != 0 {
             crate::sysregs::install_ttbr0_flush_local(word);
+            // Outside the generation scheme: the next user switch flushes
+            // (Kconfig `TLB_RETAIN`).
+            azos_arch_api::tlb_gen::mark_stale(crate::cpu::hart_id());
         }
     }
 

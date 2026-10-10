@@ -185,7 +185,25 @@ restore_new_task:
     # Switch page table only if SATP actually changes.
     ld t1,  TASK_SATP_OFFSET(a1)
     csrr t2, satp
-    beq t1, t2, rvv_skip_pt_switch
+    # N12 (Kconfig TLB_RETAIN): `AZOS_TLB_SWITCH_FLUSH[hart]`, set by
+    # `azos_sched::asid::prepare_switch` on this hart just before this call:
+    # 0 = keep the TLB (ASID-tagged, same generation), 1 = flush when the
+    # root changes (TLB_RETAIN off, or no ASID bits: the old behaviour),
+    # 2 = flush even when it does not (a rollover or a skipped shootdown).
+    li   t5, 1
+    li   t3, TLB_MAX_HARTS
+    bgeu tp, t3, 2f
+    la   t3, AZOS_TLB_SWITCH_FLUSH
+    slli t4, tp, 3
+    add  t3, t3, t4
+    ld   t5, 0(t3)
+2:
+    bne t1, t2, rvv_do_pt_switch
+    li   t3, 2
+    bne  t5, t3, rvv_skip_pt_switch
+    sfence.vma zero, zero
+    j    rvv_skip_pt_switch
+rvv_do_pt_switch:
     # TLB shootdown bookkeeping — see context_switch.S. This file never
     # loads tp (header note), so tp is this hart's id throughout.
     li   t3, TLB_MAX_HARTS
@@ -197,6 +215,7 @@ restore_new_task:
     fence rw, rw
 1:
     csrw satp, t1
+    beqz t5, rvv_skip_pt_switch
     sfence.vma zero, zero
 
 rvv_skip_pt_switch:

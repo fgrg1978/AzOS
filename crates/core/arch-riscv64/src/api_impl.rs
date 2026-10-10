@@ -319,6 +319,9 @@ impl Mmu for Riscv64 {
     #[inline]
     fn flush_tlb_all(&self) {
         crate::csr::sfence_vma();
+        // Local only: harts that ran an address space earlier keep its
+        // entries under retained ASIDs (Kconfig `TLB_RETAIN`).
+        azos_arch_api::tlb_gen::mark_all_stale(crate::cpu::hart_id());
     }
 
     #[inline]
@@ -360,6 +363,10 @@ impl Mmu for Riscv64 {
     #[inline]
     fn flush_tlb_page(&self, va: usize) {
         crate::csr::sfence_vma_addr(va);
+        // `sfence.vma va, zero` covers every ASID, but only here: a hart
+        // that ran this address space and left keeps the entry under its
+        // retained ASID, so it flushes at its next switch (`TLB_RETAIN`).
+        azos_arch_api::tlb_gen::mark_all_stale(crate::cpu::hart_id());
     }
 
     #[inline]

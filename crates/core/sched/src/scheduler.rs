@@ -244,69 +244,9 @@ unsafe fn hist_reaccount(_idx: usize) {}
 /// the fallback length when no terminator is found (malformed name).
 const TASK_NAME_MAX_LEN: usize = TASK_NAME_CAPACITY - 1;
 
-/// Next ASID to allocate for user-space tasks.
-/// ASID 0 is reserved for the kernel page table.
-static NEXT_ASID: AtomicU16 = AtomicU16::new(1);
-
-/// Highest ASID [`alloc_asid`] hands out: `2^ASID_BITS - 1` (Kconfig) until
-/// the boot narrows it to what the hardware implements
-/// ([`set_hw_asid_bits`]); 0 when the hardware has no ASID bits.
-static ASID_MAX: AtomicU16 = AtomicU16::new(asid_max_for_bits(azos_limits::ASID_BITS as u32));
-
-/// Times [`alloc_asid`] ran out of ASIDs and started again at 1.
-static ASID_ROLLOVERS: AtomicU32 = AtomicU32::new(0);
-
-const fn asid_max_for_bits(bits: u32) -> u16 {
-    if bits == 0 { 0 } else if bits >= 16 { u16::MAX } else { ((1u32 << bits) - 1) as u16 }
-}
-
-/// Narrow the ASID space to the `bits` the boot hart's MMU implements (never
-/// widen it past Kconfig `ASID_BITS`). Boot only, before the first user task.
-/// Returns the highest ASID [`alloc_asid`] will hand out.
-pub fn set_hw_asid_bits(bits: u32) -> u16 {
-    let max = asid_max_for_bits(bits.min(azos_limits::ASID_BITS as u32));
-    ASID_MAX.store(max, Ordering::Relaxed);
-    max
-}
-
-/// Times the ASID space ran out and allocation started again at 1.
-pub fn asid_rollovers() -> u32 {
-    ASID_ROLLOVERS.load(Ordering::Relaxed)
-}
-
-/// Allocate an ASID for a user-space page table: 1, 2, ... up to the
-/// highest the hardware and Kconfig `ASID_BITS` allow, then 1 again
-/// (a rollover, counted). Always 0 on hardware without ASIDs.
-///
-/// An ASID is a TLB tag, not an identity: live address spaces may share
-/// one after a rollover. That is safe because every address-space switch
-/// is a full local TLB flush on both ISAs (`context_switch.S`,
-/// `trap_entry.S`, `csr::write_satp`, `install_ttbr0_flush_local`) and a
-/// root is freed only once no hart holds it (`Mmu::root_holders`): no TLB
-/// entry outlives the switch away from its address space, whatever its
-/// tag. Keeping entries across switches would need ASIDs unique among the
-/// live address spaces (a generation scheme) AND a shootdown that reaches
-/// every hart that ever ran the space, not only the ones running it now
-/// (riscv64 `tlb::shootdown` targets the latter).
-pub fn alloc_asid() -> u16 {
-    let max = ASID_MAX.load(Ordering::Relaxed);
-    if max == 0 {
-        return 0;
-    }
-    loop {
-        let current = NEXT_ASID.load(Ordering::Relaxed);
-        // `current` past `max` (or wrapped to 0 past 65535): the space ran out.
-        let rolled = current == 0 || current > max;
-        let asid = if rolled { 1 } else { current };
-        if NEXT_ASID.compare_exchange(current, asid.wrapping_add(1),
-            Ordering::Relaxed, Ordering::Relaxed).is_ok() {
-            if rolled {
-                ASID_ROLLOVERS.fetch_add(1, Ordering::Relaxed);
-            }
-            return asid;
-        }
-    }
-}
+// ASIDs, generations and the switch-time TLB decision: `crate::asid`
+// (Kconfig `TLB_RETAIN`, `ASID_BITS`).
+pub use crate::asid::{alloc_asid, asid_rollovers, set_hw_asid_bits};
 
 /// Magic value written at the bottom of each task stack (lowest address).
 ///
@@ -4264,6 +4204,8 @@ pub fn start() -> ! {
         azos_sync::lockdep::switch(None, next_idx);
         // QSBR (Kconfig RCU_QSBR, N4): a context switch is a quiescent state.
         azos_sync::qsbr::switch();
+        // N12: re-tag `next`'s ASID if a rollover took it; set the flush word.
+        crate::asid::prepare_switch(next as *mut Task);
         // Switch to first task (no current task to save).
         context_switch(core::ptr::null_mut(), next as *mut Task);
     }
@@ -6526,6 +6468,8 @@ unsafe fn do_schedule(why: SwitchReason) {
     // QSBR (Kconfig RCU_QSBR, N4): a context switch is a quiescent state.
     // One store; nothing with the option off.
     azos_sync::qsbr::switch();
+    // N12: re-tag `next`'s ASID if a rollover took it; set the flush word.
+    crate::asid::prepare_switch(next as *mut Task);
     context_switch(old_ptr, next as *mut Task);
     // Returns here when the old task is rescheduled: `old_t` is this task.
     finish_switch(old_t);
@@ -9833,6 +9777,8 @@ unsafe fn direct_switch_block(cpu: usize, ti: usize, reason: WaitReason) {
         // Lockdep: as in `do_schedule`'s tail (the blocked task runs again).
         azos_sync::lockdep::switch(Some(cur), ti);
         azos_sync::qsbr::switch();
+        // N12: as in `do_schedule`'s tail.
+        crate::asid::prepare_switch(next as *mut Task);
         context_switch(task as *mut Task, next as *mut Task);
         // Resumed: woken and dispatched like any other blocked task.
         finish_switch(task as *mut Task);

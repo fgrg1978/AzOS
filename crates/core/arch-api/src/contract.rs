@@ -55,6 +55,24 @@ pub trait ArchPlatform: Send + Sync {
     /// word; aarch64: the table PA, ASID applied at install).
     fn user_root_word(&self, root_phys: usize, asid: u16) -> usize;
 
+    /// The ASID `word` (from [`Self::user_root_word`]) carries; 0 for the
+    /// kernel's own root and on ISAs that do not tag.
+    fn user_root_asid(&self, _word: usize) -> u16 { 0 }
+
+    /// `word` with its ASID replaced by `asid` (same root).
+    fn user_root_with_asid(&self, word: usize, _asid: u16) -> usize { word }
+
+    /// Publish `word` as this CPU's user root for the shootdown scan, BEFORE
+    /// the root register write (riscv64 `AZOS_HART_SATP`, x86_64
+    /// `AZOS_HART_CR3`); a full fence follows. aarch64 shoots down by
+    /// broadcast and publishes nothing.
+    fn publish_user_root(&self, _word: usize) {}
+
+    /// Drop this CPU's entries of EVERY address-space tag, when the switch's
+    /// own flush covers only the incoming one (x86_64: a CR3 write drops
+    /// the incoming PCID only). A no-op where the switch flush is total.
+    fn flush_tlb_all_contexts_local(&self) {}
+
     /// Install `word` (from [`Self::user_root_word`]) as this CPU's user
     /// root and flush this CPU's stale translations. A zero word leaves the
     /// current root in place on ISAs where zero is not a valid root.
