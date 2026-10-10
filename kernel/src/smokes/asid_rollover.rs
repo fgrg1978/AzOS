@@ -14,11 +14,13 @@
 //! flush, so Y reads A's frame through the stale entry: `not ok`. Under
 //! QEMU it discriminates only where the emulated TLB keeps entries across
 //! a root write with an unchanged tag (aarch64: yes, `TTBR0_EL1` writes
-//! flush only on an ASID change: red, booted). QEMU 11.0 riscv64 and x86_64
-//! stay green under the canary (booted, canary armed): their emulated TLB
-//! does not keep the entry across the `satp` / CR3 write, so the row does not
-//! discriminate there; on silicon that keeps ASID-tagged entries across a
-//! root write it would.
+//! flush only on an ASID change: red, booted). QEMU 11.0 riscv64 stays
+//! green under the armed canary (booted): it does not discriminate there,
+//! and the boot does not separate whether QEMU drops the entry on the `satp`
+//! write or the skip was not reached (a STALE hart still flushes). QEMU
+//! x86_64 `-cpu max` (microvm) probes no PCID: `retaining()` is false, the
+//! test returns `ok` without running, so neither the row nor its canary says
+//! anything there.
 
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
