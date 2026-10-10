@@ -350,8 +350,8 @@ key, entropy, launch). Capabilities are minted from the topology at spawn.
 No call grants or duplicates a capability to another task; the only transfer
 is a move with a fast call. Revocation is done by the kernel.
 
-Each slot is one 64-bit word (kind, rights, generation, resource), so with
-Kconfig `RCU_QSBR` the checks above and the find-by-resource call
+Each slot's hot word is one 64-bit word (kind, rights, generation,
+resource), so with Kconfig `RCU_QSBR` the checks above and the find-by-resource call
 (`SYS_CAP_LOOKUP`) read the table without its lock: a reader sees a slot
 whole, as of one writer's store, and the tables are never freed. Writers
 still take the table's lock. Each table keeps a small direct-mapped cache
@@ -360,6 +360,17 @@ found; a hit is checked against the slot, and a grant of the key clears its
 entry, so the lowest matching slot is still the answer. Searches stop past
 the highest slot granted since the table was last wiped, and a grant's
 search for a free slot starts at the lowest slot that may be free.
+
+With Kconfig `CAP_SLOT_EXT` a slot is 128 bits: the hot word and an
+extension word holding the badge, a parent link (the slot a copy was minted
+from), and two reserved fields (eight more rights bits, an expiry epoch).
+A grant stores the extension word before the hot word that publishes it; a
+lock-free read of the extension word checks the hot word before and after,
+and a slot's generation never repeats. Only the paths that need the badge
+read the second word. A badged copy is minted only from an unbadged
+endpoint capability that carries `DUP` (`CapTable::mint_badged`; the badge
+is set once); the badge moves with the capability, the parent link does
+not.
 
 Hardware is reached through capability-typed calls. Two untyped hardware calls
 remain because they have no typed form: ADC read and motor create. MMIO and
@@ -411,6 +422,24 @@ address.
   port reports one no-senders event (code `ENOSENDERS`), posted after the
   table lock is released; a bind made when there is no sender reports one at
   once.
+
+  **Reply warrant and message descriptor (ABI v2 of the call).** The right
+  to answer an accepted call is held in its record by one task, at first
+  the server that accepted it. The holder can move it to another task (a
+  worker); from then on only that task can answer, and only once: the
+  first reply moves the record out of the accepted state and every later
+  reply is refused. A task that dies holding a warrant completes the call
+  with `-EPEERDIED`. A v2 call records the badge of the endpoint
+  capability it went through, and the server reads it on accept; a v1
+  call reads as unbadged, never as an earlier call's badge. The v2 message
+  layout is one `repr(C)` descriptor (`azos_abi::ipc_msg::MsgDesc`): a version,
+  up to `IPC_MSG_INLINE_WORDS` inline words (per ISA), and up to
+  `IPC_MSG_MAX_CAPS` capability entries, each MOVE or DUP with rights that
+  may only be lowered. The entries transfer all or nothing: every one is
+  checked under both tables' locks (live, `DUP`, rights, no slot twice,
+  room in the receiver) before the sender loses any; on a refusal the
+  MOVE entries are consumed unless the message carries `KEEP`
+  (`cap_store::move_caps`). The v1 fast call is unchanged.
 - **Channels.** Asynchronous queues of small fixed-size messages.
 - **Shared memory and rings.**
   - Shared-memory regions can be mapped by several tasks.
