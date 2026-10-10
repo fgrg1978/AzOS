@@ -727,16 +727,27 @@ def test_profile_defconfigs_generic_robot_variants_robot() -> None:
             else:
                 assert not no_default, f"{d.name}: --no-default-features on a robot image"
                 assert "domain-robot" in feats, f"{d.name}: no domain-robot in {feats}"
+        # "Differs in the domain only" is a property of what each file SETS,
+        # plus: the domain switch alone explains every expanded value. It is
+        # not "no expanded value outside the Robot menu changes": a symbol may
+        # take a per-domain default anywhere (FS_WRITEBACK_MAX_AGE_MS: 1 s in
+        # the robot domain, 5 s elsewhere), as CONFIGURABILITY asks of every
+        # symbol, and a list of Robot-menu name prefixes misses the menu's own
+        # new symbols (MOTOR_COMMANDER_EXIT_STOP).
+        settings = lambda ls: [l for l in ls if l.startswith("CONFIG_")
+                               or re.fullmatch(r"# CONFIG_\w+ is not set", l)]
         for p in PROFILE_DEFCONFIGS:
             assert f"robot-{p}" in expanded, f"no robot-{p}.config"
-            # Values outside the Robot menu and the brain-link switches.
-            strip = lambda ls: [l for l in ls if l.startswith("CONFIG_")
-                                and not any(k in l for k in ("DOMAIN_", "ROBOT_", "LINK_",
-                                    "MULTISTREAM", "SAFETY_", "PID_DT", "ML_REPLY", "BEHAVIOR_",
-                                    "RC_", "GEOFENCE"))]
-            g, r = strip(expanded[p]), strip(expanded[f"robot-{p}"])
+            g = settings((DEFCONFIGS_DIR / f"{p}.config").read_text(encoding="utf-8").splitlines())
+            r = settings((DEFCONFIGS_DIR / f"robot-{p}.config").read_text(encoding="utf-8").splitlines())
             diff = [l for l in r if l not in g] + [l for l in g if l not in r]
-            assert not diff, f"robot-{p} differs from {p} beyond the domain: {diff}"
+            assert diff == ["CONFIG_DOMAIN_ROBOT=y"], \
+                f"robot-{p} sets more than the domain beyond {p}: {diff}"
+            switched = _expand(g + ["CONFIG_DOMAIN_ROBOT=y"], t, f"switched-{p}.config")
+            g2 = [l for l in switched if l.startswith("CONFIG_")]
+            r2 = [l for l in expanded[f"robot-{p}"] if l.startswith("CONFIG_")]
+            diff = [l for l in r2 if l not in g2] + [l for l in g2 if l not in r2]
+            assert not diff, f"robot-{p} differs from {p} + DOMAIN_ROBOT: {diff}"
 
 
 def test_generic_drops_only_the_domain_feature() -> None:
