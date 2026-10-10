@@ -345,6 +345,7 @@ build_board() {
         return
     fi
     local out rc
+    BOARD_BUILT=""
     out="$(TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="${REPO_ROOT}/target/board-${feat}/${feat}.config" \
            RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release --features "$feat" \
            --config "build.rustflags=['-C','link-arg=-T$ld']" 2>&1)"; rc=$?
@@ -361,7 +362,7 @@ build_board() {
         printf '%s\n' "$out" | grep -E "^warning:" \
           | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]" | head -5
     else
-        ok
+        ok; BOARD_BUILT="$feat"
     fi
 }
 
@@ -2365,6 +2366,13 @@ isa_guard() { # isa_guard <label> <expect: none|some>
     local tools; tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
     local kernel="target/${TARGET:-riscv64imac-unknown-none-elf}/release/kernel"
     if [ ! -f "$kernel" ]; then bad; echo "      no kernel at $kernel"; return; fi
+    # The kernel at that path is the board's only if the board row above built
+    # it in this run: after a failed board build it is whatever an earlier
+    # build left (gate 4d3f71e0 counted 212 bitmanip instructions in such a
+    # leftover and blamed the vf2 build that never linked).
+    if [ -z "${BOARD_BUILT:-}" ]; then bad
+        echo "      the board build row above made no kernel in this run: nothing current to check"
+        return; fi
     n=$("$tools/llvm-objdump" -d --mattr=+zba,+zbb,+zbs "$kernel" 2>/dev/null \
         | grep -cE '[[:space:]](sh[123]add|add\.uw|andn|orn|xnor|clz|ctz|cpop|minu|maxu|sext\.b|zext\.h|rev8|orc\.b|bset|bclr|binv|bext)([[:space:]]|$)')
     case "$expect" in
