@@ -204,6 +204,18 @@ authority, the kernel also latches the e-stop and writes a safety record.
   to the same levels: a topology row that fails it on every CPU it may use
   stops the boot, naming the row and the levels, and a reservation made
   after boot that fails it is refused.
+- **Dispatch classes.** Every task has a scheduling context (SC, 64 bytes,
+  its layout fixed by a build-time size check) holding its class, its time
+  parameters and the fields the wait graph and mixed criticality use. The
+  classes are stop, deadline (tasks with an admitted reservation), real-time
+  (the band), fair and idle, in that fixed order of precedence. Each is an
+  implementation of one class interface (enqueue, dequeue, pick, tick,
+  preemption check) over the run queues above; `SCHED_CLASS_STOP`, `_DL` and
+  `_RT` remove a class from the build, fair and idle are always present. The
+  context switch still takes its pick from the priority levels and the
+  reservation sets as described above: for the real-time, fair and idle
+  classes that order is the class order, while a reservation runs first only
+  within its own level, not above the whole band.
 - **SMP.** The kernel places a waking unpinned task on a suitable CPU and
   signals other CPUs with an inter-processor interrupt (SBI on riscv64,
   GICv3 SGI on aarch64). Tasks are not stolen between run queues at run time.
