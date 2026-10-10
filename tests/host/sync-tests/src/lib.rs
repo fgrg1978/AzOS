@@ -496,6 +496,107 @@ mod sleep_lock_tests {
     }
 }
 
+/// N8: the kernel mutex without a scheduler (host): the owner-word states,
+/// exclusion, the slow unlock a marked word forces, and rule F1's release
+/// around a device wait. The graph is off here (`WAIT_GRAPH` n), so no
+/// path reaches a `waitgraph` stub.
+#[cfg(test)]
+mod kmutex_tests {
+    use super::kmutex::{word, Mutex};
+    use core::sync::atomic::Ordering;
+
+    #[test]
+    fn owner_word_states() {
+        assert_eq!(word::owned_by(0), word::BOOT_OWNER);
+        assert_eq!(word::owned_by(u32::MAX), word::BOOT_OWNER);
+        assert_eq!(word::owned_by(42), 42);
+        assert_eq!(word::owner(word::FREE), None);
+        assert_eq!(word::owner(word::WAITERS), None);
+        assert_eq!(word::owner(42 | word::WAITERS), Some(42));
+        // free -> owned: fast unlock applies; owned -> marked: it does not.
+        assert!(!word::fast_unlockable(word::FREE));
+        assert!(word::fast_unlockable(42));
+        assert!(!word::fast_unlockable(42 | word::WAITERS));
+        assert!(!word::sleep_on(42));
+        assert!(word::sleep_on(42 | word::WAITERS));
+        assert!(!word::sleep_on(word::WAITERS));
+    }
+
+    #[test]
+    fn lock_excludes_and_releases() {
+        static M: Mutex<u32> = Mutex::new(0);
+        {
+            let mut g = M.lock();
+            *g += 1;
+            assert!(M.is_locked());
+            assert!(M.try_lock().is_none(), "try_lock took a held mutex");
+        }
+        assert!(!M.is_locked());
+        assert_eq!(*M.try_lock().expect("free after drop"), 1);
+        assert_eq!(M.owner.load(Ordering::Relaxed), word::FREE);
+    }
+
+    #[test]
+    fn marked_word_takes_the_slow_unlock_and_frees() {
+        static M: Mutex<u32> = Mutex::new(0);
+        let g = M.lock();
+        // A sleeper marked the word: the one-CAS unlock must not apply.
+        M.owner.fetch_or(word::WAITERS, Ordering::Relaxed);
+        drop(g);
+        assert_eq!(M.owner.load(Ordering::Relaxed), word::FREE);
+        // A lingering mark on a free word is kept by the next owner.
+        M.owner.store(word::WAITERS, Ordering::Relaxed);
+        let g = M.lock();
+        assert!(word::sleep_on(M.owner.load(Ordering::Relaxed)));
+        drop(g);
+        assert_eq!(M.owner.load(Ordering::Relaxed), word::FREE);
+    }
+
+    #[test]
+    fn unlocked_for_io_releases_around_the_wait() {
+        static M: Mutex<u32> = Mutex::new(7);
+        let mut g = M.lock();
+        let free_in_wait = g.unlocked_for_io("host blk wait", || {
+            // Another task could take it here: the mutex is free.
+            M.try_lock().map(|mut h| { *h += 1; }).is_some()
+        });
+        assert!(free_in_wait, "F1: the mutex stayed held across the device wait");
+        assert!(M.is_locked(), "not re-acquired after the wait");
+        assert_eq!(*g, 8);
+        let t = g.unlock_for_io();
+        assert!(!M.is_locked());
+        let g = t.relock();
+        assert!(M.is_locked());
+        drop(g);
+        assert!(!M.is_locked());
+    }
+
+    #[test]
+    fn threads_exclude() {
+        use std::sync::Arc;
+        let m = Arc::new(Mutex::new(0u64));
+        let hs: Vec<_> = (0..4).map(|_| {
+            let m = m.clone();
+            std::thread::spawn(move || for _ in 0..2000 { *m.try_lock_spin() += 1; })
+        }).collect();
+        for h in hs { h.join().unwrap(); }
+        assert_eq!(*m.try_lock().unwrap(), 8000);
+    }
+
+    trait SpinTry<T> { fn try_lock_spin(&self) -> super::kmutex::MutexGuard<'_, T>; }
+    impl<T> SpinTry<T> for Mutex<T> {
+        /// `try_lock` in a loop: exclusion across host threads without the
+        /// caller identity (host threads share one TID, so `lock`'s debug
+        /// recursion check cannot tell them apart).
+        fn try_lock_spin(&self) -> super::kmutex::MutexGuard<'_, T> {
+            loop {
+                if let Some(g) = self.try_lock() { return g; }
+                std::hint::spin_loop();
+            }
+        }
+    }
+}
+
 /// `PreemptGuard` must be `!Send`.
 ///
 /// The depth it decrements belongs to a *hart*, so a guard released on a hart
