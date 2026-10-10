@@ -5316,7 +5316,12 @@ par_row wx_row "aarch64 fork: W^X canary"            arm qemu,cow-ro-canary cana
 # and dies 128+SIGSEGV (`elfperm:`). Canary `rodata-exec-canary` (read-only
 # segments mapped read-execute, the old split): the child returns, exits 0x66.
 # The lint reads every built user ELF's program headers: no page is touched
-# by two segments mapped differently (cargo does not relink on a `.ld` edit).
+# by two segments mapped differently (cargo does not relink on a `.ld` edit);
+# no executable segment maps the ELF headers (the loader refuses that too,
+# Kconfig ELF_REFUSE_EXEC_HEADERS); and, from the section headers, no
+# `.rodata` or other non-code section lies in an executable segment (GR3:
+# the riscv64 assembly tests' GNU ld script put `.rodata` in RX). The
+# granule rows run it on the 16/64 KiB images at their page size.
 elfperm_row() { # <label> <isa: rv|arm> <features> <ok|canary>
     local label="$1" isa="$2" feats="$3" want="$4"
     printf "  %-26s" "${label}..."
@@ -7026,6 +7031,13 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
         bad; echo "      make AARCH64_PAGE_SIZE=$bytes failed — log kept: $log.make"; return
     fi
     rm -f "$log.make"
+    # No image of this granule maps read-only data executable or shares a
+    # page between segments mapped differently, at the granule's own page
+    # size (`lxhello` linked `--no-rosegment` did both checks' worth).
+    if ! out="$(python3 tools/elf_page_perms.py --page "$bytes" "build/aarch64-${g}k/"*.elf 2>&1)"; then
+        bad; echo "      a ${g} KiB user image maps read-only data executable (tools/elf_page_perms.py):"
+        printf '%s\n' "$out" | sed -n 1,6p | sed 's|^|        |'; return
+    fi
     local kelf="$tdir/aarch64-unknown-none-softfloat/release/kernel"
     rm -f "$kelf"
     if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
@@ -7081,6 +7093,11 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
         bad; echo "      abitest reported $fails failure(s), not the one known aarch64 gap:"
         printf '%s\n' "$fail_lines" | sed 's|^|        |'
         echo "      log kept: $log"; return
+    fi
+    # `aarch64 elf: .rodata not executable` at this granule: abitest's own
+    # check ran and its `.rodata` call died (a skipped check prints no FAIL).
+    if ! grep -aqF "[ABITEST]   ok   elfperm: a call into .rodata faults (128+SIGSEGV)" "$log"; then
+        bad; echo "      abitest's elfperm check did not pass at ${g} KiB — log kept: $log"; return
     fi
     if [ "$g" = 16 ]; then
         local mm nofeat
@@ -11155,15 +11172,22 @@ PY
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} \
                 ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
         else
+            # Kconfig KTEST_SEMIHOSTING_EXIT: the runner's exit status rides
+            # on semihosting SYS_EXIT (PSCI SYSTEM_OFF has none).
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} -nographic \
+                -semihosting-config enable=on,target=native \
                 -kernel "$kimg" ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
         fi
         local pid=$! i=0
         # The runner powers the machine off; the wait is only a backstop (the
         # late tests take about a minute together).
         while [ "$i" -lt 600 ] && kill -0 "$pid" 2>/dev/null; do i=$((i + 1)); sleep 0.5; done
-        # riscv64 carries the verdict in QEMU's exit status (the runner fails
-        # through the sifive_test finisher): 0 for a clean run, 1 otherwise.
+        # QEMU's exit status carries the verdict too (kernel/src/ktest.rs
+        # power_off): 0 for a clean run, 1 otherwise, on riscv64 (the
+        # sifive_test finisher) and aarch64 (semihosting SYS_EXIT). The row
+        # needs BOTH the TAP lines and the status to agree: either one wrong
+        # fails it (a failed run that exits 0 was seen once in ~7 runs on
+        # riscv64, when OpenSBI's shutdown overwrote the finisher's 1).
         local qrc=timeout
         if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         else wait "$pid" 2>/dev/null; qrc=$?; fi
@@ -11190,10 +11214,20 @@ PY
                 && why="no matching summary line"
         fi
         if [ -z "$why" ] && [ -n "${6:-}" ] && ! grep -aqE "$6" "$log"; then why="no line matching: $6"; fi
-        if [ -z "$why" ] && [ "$qrc" = timeout ]; then why="QEMU did not power off"
-        elif [ -z "$why" ] && [ "$isa" = rv ] && [ -z "$want" ] && [ "$qrc" != 0 ]; then why="QEMU exit status $qrc after a clean run"
-        elif [ -z "$why" ] && [ "$isa" = rv ] && [ -n "$want" ] && [ "$qrc" != 1 ]; then why="QEMU exit status $qrc after a failed run, not 1"
+        local qwhy=""
+        if [ "$qrc" = timeout ]; then qwhy="QEMU did not power off"
+        elif [ -z "$want" ] && [ "$qrc" != 0 ]; then qwhy="QEMU exit status $qrc after a clean run"
+        elif [ -n "$want" ] && [ "$qrc" != 1 ]; then qwhy="QEMU exit status $qrc after a failed run, not 1"
         fi
+        # KTEST_STATUS_CANARY=1 (`canary=ktest-exit-pass`): the TAP lines
+        # must hold and the status check must be what fails.
+        if [ -z "$why" ] && [ "${KTEST_STATUS_CANARY:-0}" = 1 ]; then
+            case "$qwhy" in
+            *"after a failed run"*) ok; echo "      the status check fired: $qwhy"; rm -f "$log"; return ;;
+            *) why="the status check did not fire on a failed run (QEMU status $qrc)" ;;
+            esac
+        fi
+        [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
             ok; grep -a '^# ktest:' "$log" | sed 's/^/      /'; rm -f "$log"; return
         fi
@@ -11403,6 +11437,23 @@ PY
         "spin_sites_patched" "canary=spin-patch-skip"
     par "ktest spin-patch-skip canary (arm)" ktest_row "ktest spin-patch-skip canary (arm)" arm "" \
         "spin_sites_patched" "canary=spin-patch-skip"
+    # GR3: the verdict rides on QEMU's exit status as well as on the TAP
+    # lines, and a row needs both. `canary=ktest-exit-pass` drops the
+    # verdict in `power_off` (a failed run exits as a clean one: riscv64 0,
+    # aarch64 0, x86_64 1), with `decision-skip` failing two tests: the TAP
+    # lines hold and the status check alone must fail the row
+    # (KTEST_STATUS_CANARY=1 turns that into this row's ok). Without the
+    # canary the same boot is `ktest runtime canaries`' status 1.
+    KTEST_STATUS_CANARIES="canary=decision-skip,ktest-exit-pass"
+    KTEST_STATUS_CANARIED="decision_admission_recorded decision_cap_denial_recorded"
+    ktest_status_canary_row() { # ktest_status_canary_row <ktest_row|x86_ktest_row> <its args...>
+        local fn="$1"; shift
+        KTEST_STATUS_CANARY=1 "$fn" "$@"
+    }
+    par "ktest exit status canary (rv)" ktest_status_canary_row ktest_row "ktest exit status canary (rv)" rv "" \
+        "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
+    par "ktest exit status canary (arm)" ktest_status_canary_row ktest_row "ktest exit status canary (arm)" arm "" \
+        "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
@@ -11554,10 +11605,19 @@ PY
         fi
         # The verdict also rides on QEMU's exit status (isa-debug-exit, see
         # kernel/src/ktest.rs power_off): 1 after a clean run, 3 after a failed one.
-        if [ -z "$why" ] && [ "$X86_QRC" = stopped ]; then why="QEMU did not power off"
-        elif [ -z "$why" ] && [ -z "$want" ] && [ "$X86_QRC" != 1 ]; then why="QEMU exit status $X86_QRC after a clean run, not 1"
-        elif [ -z "$why" ] && [ -n "$want" ] && [ "$X86_QRC" != 3 ]; then why="QEMU exit status $X86_QRC after a failed run, not 3"
+        local qwhy=""
+        if [ "$X86_QRC" = stopped ]; then qwhy="QEMU did not power off"
+        elif [ -z "$want" ] && [ "$X86_QRC" != 1 ]; then qwhy="QEMU exit status $X86_QRC after a clean run, not 1"
+        elif [ -n "$want" ] && [ "$X86_QRC" != 3 ]; then qwhy="QEMU exit status $X86_QRC after a failed run, not 3"
         fi
+        # KTEST_STATUS_CANARY=1: see `ktest_row`.
+        if [ -z "$why" ] && [ "${KTEST_STATUS_CANARY:-0}" = 1 ]; then
+            case "$qwhy" in
+            *"after a failed run"*) ok; echo "      the status check fired: $qwhy"; rm -f "$log"; return ;;
+            *) why="the status check did not fire on a failed run (QEMU status $X86_QRC)" ;;
+            esac
+        fi
+        [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
             ok; grep -a '^# ktest:' "$log" | sed 's/^/      /'; rm -f "$log"; return
         fi
@@ -11584,6 +11644,9 @@ PY
     # N1 (lockdep-lite): see `ktest lockdep canaries (rv)`.
     par "ktest lockdep canaries (x86)" x86_ktest_row "ktest lockdep canaries (x86)" "" \
         "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES"
+    # GR3: see `ktest exit status canary (rv)`; x86_64's clean status is 1.
+    par "ktest exit status canary (x86)" ktest_status_canary_row x86_ktest_row "ktest exit status canary (x86)" "" \
+        "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
 
     # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
     #

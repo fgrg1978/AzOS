@@ -69,6 +69,9 @@ pub enum SegReject {
     /// entry cannot hold both, and their union would make read-only data
     /// executable or writable.
     SharedPageMixedPerms,
+    /// An executable segment's file range holds a byte of the ELF header or
+    /// the program header table ([`check_exec_headers`]).
+    ExecMapsHeaders,
 }
 
 /// `PF_X` and `PF_W` of a program header's `p_flags` (ELF spec).
@@ -126,6 +129,35 @@ pub fn check_page_sharing(
     let mask = !(page_size - 1);
     if (prev_seg_end - 1) & mask == p_vaddr & mask {
         return Err(SegReject::SharedPageMixedPerms);
+    }
+    Ok(())
+}
+
+/// May a segment with `p_flags`, file range `p_offset..p_offset+p_filesz`,
+/// be mapped when the ELF header and the program header table end at
+/// `headers_end` in the file?
+///
+/// A segment the loader maps executable ([`seg_perms`] `ReadExec`) whose
+/// file range covers the headers is refused. The headers are never code: a
+/// text segment that maps them is one a linker built by folding everything
+/// read-only into the RX segment, `.rodata` included (lld `--no-rosegment`,
+/// GNU ld without `-z separate-code`), so the image would run with its
+/// read-only data executable. The program headers are all the loader has
+/// (a streamed exec never sees the section headers), and this is the
+/// signature they carry; a `.rodata` placed inside the text segment by a
+/// script that keeps the headers out is named at build time instead
+/// (tools/elf_page_perms.py). lld's default layout, every `user*.ld` and
+/// GNU ld with `-z separate-code` keep the headers in a read-only segment
+/// or in none. Kconfig ELF_REFUSE_EXEC_HEADERS decides whether the loader
+/// asks.
+pub fn check_exec_headers(
+    p_flags: u32,
+    p_offset: usize,
+    p_filesz: usize,
+    headers_end: usize,
+) -> Result<(), SegReject> {
+    if seg_perms(p_flags) == SegPerms::ReadExec && p_filesz != 0 && p_offset < headers_end {
+        return Err(SegReject::ExecMapsHeaders);
     }
     Ok(())
 }

@@ -638,6 +638,25 @@ config KTEST
       Development builds only (BUILD_TYPE): the `ktest` feature on a release
       .config does not compile.
 
+config KTEST_SEMIHOSTING_EXIT
+    bool "ktest runner leaves QEMU through semihosting SYS_EXIT (aarch64)"
+    depends on ARCH_AARCH64 && BUILD_TYPE_DEV
+    default y
+    help
+      aarch64 only. QEMU's `virt` machine has no power-off that carries a
+      status (PSCI SYSTEM_OFF exits 0 after a failed run as after a clean
+      one), so with this on the ktest runner (cargo features `ktest` and
+      `qemu`) ends the run with semihosting SYS_EXIT: QEMU exits 1 after a
+      failed run, 0 after a clean one, and the gate's ktest rows read that
+      status next to the TAP summary (riscv64 has the sifive_test finisher,
+      x86_64 isa-debug-exit).
+      QEMU must run with `-semihosting-config enable=on,target=native`
+      (the gate's `ktest_row` passes it): without it the call is an
+      undefined instruction and the run ends in a trap instead of a
+      power-off. Off: PSCI SYSTEM_OFF, status 0 either way, and only the TAP
+      lines carry the verdict. Cost: one `hlt` at the end of a ktest run;
+      nothing in a kernel built without `ktest`.
+
 config KTEST_LATE_PRIORITY
     int "Priority of the late ktest runner task"
     range 1 30

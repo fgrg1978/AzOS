@@ -22,8 +22,8 @@
 //! # ktest: N tests, P passed, F failed (<isa>)
 //! ```
 //!
-//! then the machine powers off (on riscv64 QEMU, with exit status 1 when a
-//! test failed; see [`power_off`]). A test that panics cannot be resumed (the
+//! then the machine powers off, QEMU's exit status carrying the verdict on
+//! every ISA (see [`power_off`]). A test that panics cannot be resumed (the
 //! kernel does not unwind): the panic handler calls [`on_panic`], which
 //! prints that test's `not ok ... # panic at <file>:<line>` and a `Bail out!`
 //! line, so the run reads as failed and the tests after it as not run.
@@ -46,34 +46,58 @@ fn isa() -> &'static str {
     if cfg!(target_arch = "riscv64") { "riscv64" } else if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" }
 }
 
-/// Power off. On riscv64 QEMU a failed run exits through the `sifive_test`
-/// finisher with status 1 (OpenSBI's SRST shutdown writes the finisher 16
-/// bits wide, so a failure reason there still reaches the host as 0, which
-/// was measured). aarch64's PSCI `SYSTEM_OFF` has no reason field, so QEMU
-/// exits 0 either way there; the gate reads the TAP lines on both ISAs.
-/// x86_64 QEMU exits 3 on a failed run, 1 on a clean one (isa-debug-exit).
+/// Power off, with the verdict in QEMU's exit status on every ISA: a failed
+/// run must never end the machine with the status of a clean one.
+///
+/// - riscv64: the `sifive_test` finisher, `FAIL` with code 1 (QEMU exits 1).
+///   QEMU only *requests* the exit on that write, and a later finisher write
+///   overwrites the code: OpenSBI's SRST shutdown writes `PASS` (code 0).
+///   Falling through to `shutdown` after the `FAIL` write therefore ended a
+///   failed run with status 0 whenever the vCPU reached OpenSBI's write
+///   before QEMU's main loop took the first request (1 run in about 7 of
+///   `ktest IMU frozen-stamp canary (rv)` on a loaded host). So a failed run
+///   writes the finisher once and halts with interrupts off; a clean one
+///   goes through SRST (status 0).
+/// - aarch64: PSCI `SYSTEM_OFF` has no status, so with Kconfig
+///   KTEST_SEMIHOSTING_EXIT the runner leaves through semihosting `SYS_EXIT`
+///   (QEMU `-semihosting-config enable=on,target=native` exits 1 or 0).
+/// - x86_64: isa-debug-exit, 3 on a failed run, 1 on a clean one.
+///
+/// Runtime canary `ktest-exit-pass`: the verdict is dropped here, so a failed
+/// run powers off as a clean one would; the gate's ktest rows must then read
+/// the status against the TAP summary and fail.
 fn power_off(failed: bool) -> ! {
+    let failed = failed && !canary!("ktest-exit-pass");
     // Once the scheduler runs, kernel output may sit in the console's TX
     // ring or deferred buffer: put it on the wire first, or the summary
     // line is cut by the power-off (seen on a late run).
     azos_drv_sys::uart::console_flush_for_reboot();
-    // arch-only: QEMU riscv64 virt's sifive_test finisher; no other ISA's
-    // QEMU machine has a power-off that carries a status.
+    // arch-only: QEMU riscv64 virt's sifive_test finisher; aarch64 and x86_64
+    // carry the status below.
     #[cfg(all(target_arch = "riscv64", feature = "qemu"))]
     if failed {
         const FINISHER_FAIL: u32 = 0x3333;
         let base = azos_drv_base::platform::hw::TEST_FINISHER_BASE;
-        if azos_mm::vmm::map_mmio_region(base, 4).is_ok() {
-            // SAFETY: QEMU virt's test device, identity-mapped just above;
-            // the write ends the machine.
-            unsafe { core::ptr::write_volatile(base as *mut u32, FINISHER_FAIL | (1 << 16)) };
-        }
+        // `map_mmio_region` maps into the kernel table this task runs on.
+        let _ = azos_mm::vmm::map_mmio_region(base, 4);
+        use azos_arch::{Cpu, Interrupts};
+        let _ = azos_arch::ARCH.disable_all();
+        // SAFETY: QEMU virt's test device, identity-mapped just above; the
+        // write requests the exit with status 1.
+        unsafe { core::ptr::write_volatile(base as *mut u32, FINISHER_FAIL | (1 << 16)) };
+        // Never on to `shutdown`: its finisher write would replace the 1.
+        azos_arch::ARCH.halt()
+    }
+    // arch-only: QEMU aarch64 virt's only exit that carries a status.
+    #[cfg(all(target_arch = "aarch64", target_os = "none", feature = "qemu"))]
+    if azos_limits::KTEST_SEMIHOSTING_EXIT {
+        azos_arch::semihosting::exit(failed as u32)
     }
     // x86_64 QEMU: the isa-debug-exit port carries a status (QEMU exits with
     // 2 * value + 1): a failed run exits 3, a clean one 1. Written ONCE, then
     // halt: the write only requests the exit, and a second one (`shutdown`'s
     // own 0) could land first and turn a failed run's 3 into 1.
-    // arch-only: no other ISA's QEMU machine has a status port the ktest uses.
+    // arch-only: no other ISA's QEMU machine has this port.
     #[cfg(all(target_arch = "x86_64", target_os = "none", feature = "qemu"))]
     {
         azos_arch::hw::outl(azos_arch::hw::DEBUG_EXIT_PORT, failed as u32);

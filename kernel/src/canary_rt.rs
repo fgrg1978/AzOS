@@ -109,6 +109,11 @@ pub(crate) const NAMES: &[&str] = &[
     // boot; every site stays linked to the fallback (ktest
     // `spin_sites_patched`).
     "spin-patch-skip",
+    // kernel/src/ktest.rs `power_off`: the run's verdict is dropped, so a
+    // failed run powers off with a clean run's QEMU exit status (riscv64 0,
+    // aarch64 0, x86_64 1); the gate's ktest rows must fail on the status
+    // (rows `ktest exit status canary (rv|arm|x86)`).
+    "ktest-exit-pass",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

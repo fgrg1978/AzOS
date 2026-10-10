@@ -2027,7 +2027,8 @@ mod user_window_tests {
 #[cfg(test)]
 mod elf_bounds_tests {
     use super::elf_bounds::{
-        check_page_sharing, check_pt_load, page_up, seg_perms, SegCheck, SegLimits, SegPerms, SegReject,
+        check_exec_headers, check_page_sharing, check_pt_load, page_up, seg_perms, SegCheck, SegLimits,
+        SegPerms, SegReject,
     };
 
     /// The real limits, spelled out because this crate cannot depend on
@@ -2321,6 +2322,37 @@ mod elf_bounds_tests {
         assert_eq!(check_page_sharing(0x11000, Some(ReadExec), 0x11000, ReadOnly, p), Ok(()));
         assert_eq!(check_page_sharing(0x100e000, Some(ReadWrite), 0x100e090, ReadWrite, p), Ok(()));
         assert_eq!(check_page_sharing(0x10850, Some(ReadOnly), 0x10900, ReadOnly, p), Ok(()));
+    }
+
+    /// GR3: an executable segment over the ELF/program headers is the
+    /// program-header signature of `.rodata` folded into the text segment.
+    /// The 16 KiB `lxhello` linked `--no-rosegment` (one RX segment from
+    /// file offset 0, headers end 0x120) is refused; so is GNU ld's default
+    /// riscv64/aarch64 text segment (offset 0, R E). Canary: Kconfig
+    /// ELF_REFUSE_EXEC_HEADERS off (the loader skips the check).
+    #[test]
+    fn an_executable_segment_over_the_headers_is_refused() {
+        assert_eq!(check_exec_headers(5, 0, 0x96c4, 0x120), Err(SegReject::ExecMapsHeaders));
+        // One byte of the program header table is enough.
+        assert_eq!(check_exec_headers(5, 0x11f, 0x100, 0x120), Err(SegReject::ExecMapsHeaders));
+        // PF_R absent changes nothing: the loader maps it read-execute.
+        assert_eq!(check_exec_headers(1, 0, 0x100, 0x40), Err(SegReject::ExecMapsHeaders));
+    }
+
+    /// What it leaves alone: lld's default layout (headers and `.rodata` in
+    /// the R segment at offset 0, text from 0xd88); the 16/64 KiB native
+    /// `user_aarch64.ld` (text from exactly the end of the headers, which
+    /// sit in no segment); a read-only or writable segment over the headers;
+    /// an executable segment with no file bytes.
+    #[test]
+    fn segments_clear_of_the_headers_or_not_executable_load() {
+        assert_eq!(check_exec_headers(4, 0, 0xd88, 0x120), Ok(()));
+        assert_eq!(check_exec_headers(5, 0xd88, 0x8974, 0x120), Ok(()));
+        assert_eq!(check_exec_headers(5, 0x120, 0x8000, 0x120), Ok(()));
+        assert_eq!(check_exec_headers(5, 0x1000, 0x35, 0x120), Ok(()));
+        assert_eq!(check_exec_headers(6, 0, 0x100, 0x120), Ok(()));
+        assert_eq!(check_exec_headers(7, 0, 0x100, 0x120), Ok(()));
+        assert_eq!(check_exec_headers(5, 0, 0, 0x120), Ok(()));
     }
 
     /// The mapping class of a header: writable is never executable, and

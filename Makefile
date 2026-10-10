@@ -872,13 +872,12 @@ LX_CC ?= $(firstword $(wildcard /opt/homebrew/opt/llvm/bin/clang /usr/local/opt/
 LX_LLD = $(shell rustc --print sysroot)/lib/rustlib/$(shell rustc -vV | sed -n 's/^host: //p')/bin/rust-lld
 LX_CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-pic -fno-pie \
              -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdlib
-ifeq ($(AARCH64_PAGE_SIZE),4096)
-LX_A64_LDFLAGS :=
-else
-# The loader maps an executable segment only onto a page it owns: with a
-# granule above 4 KiB the headers' R segment would share text's page.
-LX_A64_LDFLAGS := --no-rosegment
-endif
+# The same default layout at every aarch64 granule: lld puts the headers and
+# `.rodata` in an R segment and starts the RX `.text` on the next page of
+# `-z max-page-size` (same file offset, no padding), so no page is shared and
+# `.rodata` is not executable. `--no-rosegment`, used above 4 KiB before,
+# folded the headers and `.rodata` into the RX segment (the loader now
+# refuses that, Kconfig ELF_REFUSE_EXEC_HEADERS; tools/elf_page_perms.py).
 
 $(LXHELLO_ELF): $(LXHELLO_DIR)/lxhello.c
 	@mkdir -p build
@@ -887,12 +886,18 @@ $(LXHELLO_ELF): $(LXHELLO_DIR)/lxhello.c
 	$(LX_LLD) -flavor gnu -static -e _start -z max-page-size=4096 -o $@ build/lxhello.o
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes, static Linux ELF)"
 
-$(LXHELLO_ELF_AARCH64): $(LXHELLO_DIR)/lxhello.c
+# The link flags as a prerequisite (rewritten only when they change): an
+# image linked with other flags, `--no-rosegment` above all, is relinked.
+LX_A64_LINK := -static -e _start -z max-page-size=$(AARCH64_PAGE_SIZE)
+$(AARCH64_DIR)/lxhello.link: FORCE
+	@mkdir -p $(AARCH64_DIR)
+	@printf '%s\n' '$(LX_A64_LINK)' | cmp -s - $@ || printf '%s\n' '$(LX_A64_LINK)' >$@
+
+$(LXHELLO_ELF_AARCH64): $(LXHELLO_DIR)/lxhello.c $(AARCH64_DIR)/lxhello.link
 	@mkdir -p $(AARCH64_DIR)
 	$(LX_CC) --target=aarch64-unknown-linux-musl -mgeneral-regs-only $(LX_CFLAGS) \
 		-c $< -o $(AARCH64_DIR)/lxhello.o
-	$(LX_LLD) -flavor gnu -static -e _start -z max-page-size=$(AARCH64_PAGE_SIZE) $(LX_A64_LDFLAGS) \
-		-o $@ $(AARCH64_DIR)/lxhello.o
+	$(LX_LLD) -flavor gnu $(LX_A64_LINK) -o $@ $(AARCH64_DIR)/lxhello.o
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes, static Linux ELF)"
 
 # ── Third-party GPL userspace: BusyBox (RFC-0055 S7, RFC-0047) ──────────────

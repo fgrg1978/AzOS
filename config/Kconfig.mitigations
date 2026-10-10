@@ -161,6 +161,30 @@ config CONSOLE_LOCKDOWN
       Cost: none on any syscall path; a production image loses the
       in-kernel console as a recovery path.
 
+config ELF_REFUSE_EXEC_HEADERS
+    bool "ELF loader: refuse an executable segment that maps the ELF headers"
+    default y
+    help
+      The loader maps every PT_LOAD with its own permissions (read-only,
+      read-execute, read-write; W^X both ways), so `.rodata` in a segment
+      of its own is never executable. A linker can still fold `.rodata`
+      into the text segment: lld `--no-rosegment`, or GNU ld without
+      `-z separate-code` (its default on riscv64 and aarch64), puts the ELF
+      header, the program headers and every read-only section in one RX
+      segment starting at file offset 0. The program headers are all the
+      loader sees, and that is the signature they carry, so with this on
+      an image whose executable segment covers the headers is refused at
+      exec (`elf_bounds::check_exec_headers`): its read-only data would run
+      as code. tools/elf_page_perms.py checks the built images, section
+      headers included, at the page size the kernel maps.
+
+      Every image the build makes, BusyBox (lld) included, keeps the
+      headers out of its text segment. Off: such an image loads, its
+      `.rodata` executable (what Linux does). Turn it off only to run an
+      unmodified Linux binary linked that way; relinking it with
+      `-z separate-code` or lld's default layout is the better fix.
+      Cost: one comparison per PT_LOAD at exec; no RAM.
+
 comment "Not implemented (no symbol until the code exists):"
 comment "  branch-predictor / buffer flush on a switch between address spaces"
 comment "  kernel page-table isolation (KPTI-equivalent)"

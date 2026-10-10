@@ -288,6 +288,13 @@ authority, the kernel also latches the e-stop and writes a safety record.
   - `mprotect` refuses `PROT_EXEC` and refuses write access to an executable
     mapping or to the vDSO and signal-trampoline pages, which every address
     space shares. The Linux personality's `mprotect` uses the same code.
+  - The ELF loader maps each `PT_LOAD` segment with its own permissions
+    (read-only, read-execute, read-write) and refuses an image in which two
+    segments mapped differently share a page, or (Kconfig
+    `ELF_REFUSE_EXEC_HEADERS`) in which an executable segment covers the ELF
+    headers, the program-header sign of read-only data linked into the text
+    segment. A build-time lint checks every user image, section headers
+    included, at the page size of each aarch64 granule.
 - **Demand paging.** Demand paging goes through a `Pager` trait
   (`crates/core/mm`). The one pager in the tree serves zero-filled anonymous
   memory. File-backed paging does not exist.
@@ -739,10 +746,12 @@ probes, priority donation, cross-CPU TLB shootdown) and waits for them on the
 clock, at most `KTEST_LATE_TIMEOUT_MS`. Both phases share one TAP plan: the
 early tests are numbered first, the late ones continue the count. After the
 last test the runner prints a summary, flushes the console and powers the
-machine off. On
-riscv64 the power-off carries the verdict (SBI system reset with a failure
-reason, so QEMU exits non-zero); aarch64's PSCI power-off has no reason
-field. The kernel does not unwind, so a panicking test cannot be resumed: the
+machine off with the verdict in QEMU's exit status on every ISA: the
+`sifive_test` finisher on riscv64 (written once, then the CPU halts, since
+OpenSBI's own shutdown would overwrite the code), semihosting `SYS_EXIT` on
+aarch64 (Kconfig `KTEST_SEMIHOSTING_EXIT`; PSCI's power-off has no status)
+and `isa-debug-exit` on x86_64. The gate's ktest rows require the status and
+the TAP summary to agree. The kernel does not unwind, so a panicking test cannot be resumed: the
 panic handler prints that test's `not ok` and a `Bail out!` line, and the
 tests after it do not run. Tests that need a boot-time value, such as the
 image layout only the ISA boot hook knows, read it from a note that hook

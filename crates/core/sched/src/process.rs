@@ -851,6 +851,10 @@ fn load_elf_into(
     // How the last accepted segment is mapped: a segment that starts on the
     // page it ends on must be mapped alike (`elf_bounds::check_page_sharing`).
     let mut prev_perms: Option<elf_bounds::SegPerms> = None;
+    // End of the ELF header and the program header table in the file
+    // (`elf_bounds::check_exec_headers`). Saturating: a bogus `e_phoff` only
+    // widens the range no executable segment may cover.
+    let headers_end = e_phoff.saturating_add(e_phentsize.saturating_mul(e_phnum)).max(64);
 
     for i in 0..e_phnum {
         // Bounded ph offset — `i * e_phentsize` must not overflow, and
@@ -901,6 +905,14 @@ fn load_elf_into(
                 let perms = elf_bounds::seg_perms(p_flags);
                 if elf_bounds::check_page_sharing(prev_seg_end, prev_perms, p_vaddr, perms, PAGE_SIZE)
                     .is_err()
+                {
+                    return None;
+                }
+                // An RX segment over the ELF/program headers: `.rodata`
+                // folded into the text segment (Kconfig
+                // ELF_REFUSE_EXEC_HEADERS; canary: the option off).
+                if azos_limits::ELF_REFUSE_EXEC_HEADERS
+                    && elf_bounds::check_exec_headers(p_flags, p_offset, p_filesz, headers_end).is_err()
                 {
                     return None;
                 }

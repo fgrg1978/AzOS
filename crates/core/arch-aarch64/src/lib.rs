@@ -76,6 +76,8 @@ pub mod mmu;
 pub mod mmu_setup;
 pub mod mpidr;
 pub mod psci;
+/// Semihosting `SYS_EXIT`: the ktest runner's exit status under QEMU.
+pub mod semihosting;
 /// SHA-256 on the ARMv8 Cryptographic Extension (wave 13).
 pub mod sha2_ce;
 /// SMP building blocks (redistributor-walk bring-up) tying `gic` +
