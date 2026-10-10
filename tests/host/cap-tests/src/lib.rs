@@ -295,6 +295,13 @@ mod cap_store_tests {
         let cli = fresh_task();
         let ep: Cap<Endpoint> = cap_store::grant(srv.tid, CapPerms::RW_DUP, 3).unwrap();
         assert_eq!(badge_of(srv.tid, ep.raw()), Some(0), "a granted capability is unbadged");
+        if !crate::cap::SLOT_EXT {
+            // Kconfig CAP_SLOT_EXT=n: one-word slots, nothing is badged.
+            let r = cap_store::with_table(srv.tid, |t| t.mint_badged(ep.raw(), 0xC11E, CapPerms::RW_DUP)).unwrap();
+            assert_eq!(r, Err(CapError::MissingPerms));
+            assert_eq!(cap_store::with_table(srv.tid, |t| t.ext_of(ep.raw())).flatten(), Some(CapExt::NONE));
+            return;
+        }
         let b = cap_store::with_table(srv.tid, |t| t.mint_badged(ep.raw(), 0xC11E, CapPerms::RW_DUP)).unwrap().unwrap();
         assert_eq!(badge_of(srv.tid, b), Some(0xC11E));
         let ext = cap_store::with_table(srv.tid, |t| t.ext_of(b)).flatten().unwrap();

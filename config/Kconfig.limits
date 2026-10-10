@@ -400,8 +400,9 @@ config IPC_MSG_INLINE_WORDS
     default 6 if ARCH_X86_64
     default 8
     help
-      Words a v2 call (SYS_IPC_CALL_V2) and its reply carry inline in the
-      message descriptor (azos_abi::ipc_msg::MsgDesc); more data goes as a
+      Words a v2 call and its reply carry inline in the message descriptor
+      (azos_abi::ipc_msg::MsgDesc; the v2 syscall arms are not wired yet,
+      so today this only bounds the descriptor); more data goes as a
       MemObj. Per ISA per owner Q3: the argument registers left free by
       the call on each (riscv64 and aarch64 8, x86_64 6), to be fixed by the
       N0 measurement. The v1 fast call keeps its four.
@@ -419,9 +420,8 @@ config IPC_MSG_MAX_CAPS
       kernel checks every entry (live, DUP right, rights subset, no slot
       twice, enough free slots in the receiver) before the sender loses
       any, then moves them all (crates/core/ipc/src/cap_store.rs,
-      move_caps). Each entry is 8 B in the descriptor and 4 B in a call
-      record (MAX_TASKS records); the check is O(entries^2), negligible at
-      this size. Raise it for a protocol that hands over more handles per
+      move_caps). Each entry is 8 B in the descriptor; the check is
+      O(entries^2), negligible at this size. Raise it for a protocol that hands over more handles per
       call; one MOVE per call (the v1 form) needs 1.
 
 config IPC_ENDPOINTS
@@ -774,15 +774,15 @@ config CAP_SLOT_EXT
     help
       Each capability slot gets a second 64-bit word beside the one every
       check reads (crates/core/ipc/src/cap.rs, CapExt): the badge a server
-      sees on a call through an endpoint capability (ABI v2 of the call),
+      sees on a v2 call through an endpoint capability (ext_of),
       the parent link of a minted copy, and two reserved fields (eight more
       rights bits, a coarse expiry epoch). Two words make the slot the
       128 bits of a CHERI capability (owner Q9). The v1 fast call never
       reads the second word.
 
       n: slots stay one word, every capability reads as unbadged, and
-      minting a badged endpoint capability (SYS_CAP_MINT_BADGED) is refused,
-      so a v2 server cannot tell its clients apart by badge.
+      minting a badged endpoint capability (CapTable::mint_badged) is
+      refused, so a v2 server cannot tell its clients apart by badge.
 
       Cost: 8 B of RAM per slot per task slot, as much again as
       MAX_CAPS_PER_TASK costs: embedded (32 x 32) 8 KiB, edge (256 x 64)

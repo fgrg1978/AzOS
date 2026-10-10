@@ -233,7 +233,10 @@ const NO_BADGE_GEN: u64 = u64::MAX;
 
 /// Records whose reply warrant was delegated to a task that is not the
 /// endpoint's server: the exit sweep looks for a dead holder only when
-/// this is not 0.
+/// this is not 0. It may over-count, never under-count: a delegated call
+/// answered through the v1 reply, withdrawn by its caller, or drained is
+/// not subtracted, and every later exit then pays one pass over the
+/// records (RECS loads). Wrapping below 0 also only means a pass.
 static DELEGATED: AtomicU32 = AtomicU32::new(0);
 
 #[inline(always)]
