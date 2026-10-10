@@ -11337,8 +11337,8 @@ PY
     # ipc_no_senders_grant_revoke_race, port_source_gone_wakes_the_waiter
     # (wave 15, N5b: Kconfig IPC_PORT_NOTICES; canaries in `ktest ipc
     # canary (rv|arm|x86)`).
-    KTEST_N_RV=63
-    KTEST_N_ARM=63
+    KTEST_N_RV=64
+    KTEST_N_ARM=64
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11702,9 +11702,14 @@ PY
     # does not count its endpoint send capabilities out: the count never
     # falls, ipc_no_senders_once_after_staggered_exits times out) and
     # `port-no-vanish` (a destroyed port source stays bound and silent:
-    # port_source_gone_wakes_the_waiter times out).
-    KTEST_IPC_CANARIES="canary=ipc-no-peer-died,ipc-no-senders-wipe,port-no-vanish,ipc-reply-twice"
-    KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died ipc_no_senders_once_after_staggered_exits port_source_gone_wakes_the_waiter ipc_reply_warrant_moves_to_worker_and_is_send_once"
+    # port_source_gone_wakes_the_waiter times out). N11: `ipc-reply-twice`
+    # (a second reply on one warrant is delivered:
+    # ipc_reply_warrant_moves_to_worker_and_is_send_once). N13
+    # (kernel/src/smokes/ipc_handoff.rs): `canary=handoff-any-prio` (the
+    # direct handoff does not refuse a less urgent peer:
+    # ipc_handoff_refuses_less_urgent_peer).
+    KTEST_IPC_CANARIES="canary=ipc-no-peer-died,ipc-no-senders-wipe,port-no-vanish,ipc-reply-twice,handoff-any-prio"
+    KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died ipc_no_senders_once_after_staggered_exits port_source_gone_wakes_the_waiter ipc_reply_warrant_moves_to_worker_and_is_send_once ipc_handoff_refuses_less_urgent_peer"
     par "ktest ipc canary (rv)" ktest_row "ktest ipc canary (rv)" rv "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
     par "ktest ipc canary (arm)" ktest_row "ktest ipc canary (arm)" arm "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
     # N9 (Kconfig FUTEX_REQUEUE, kernel/src/smokes/futex_requeue.rs), one boot
@@ -11774,7 +11779,7 @@ PY
     # +4 the N5 endpoint tests, as on rv and arm.
     # +1 the N9 futex requeue test, as on rv and arm.
     # +4 the N5b notice tests, as on rv and arm.
-    KTEST_N_X86=65
+    KTEST_N_X86=66
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
