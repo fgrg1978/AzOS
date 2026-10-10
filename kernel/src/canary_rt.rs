@@ -159,6 +159,9 @@ pub(crate) const NAMES: &[&str] = &[
     // whose call was already answered is delivered again
     // (ktest `ipc_reply_warrant_moves_to_worker_and_is_send_once`).
     "ipc-reply-twice",
+    // crates/core/sync/src/waitgraph.rs `walk`: every chain walk stops after
+    // one owner (ktest `waitgraph_transitive_chain`).
+    "pi-depth-1",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

@@ -155,6 +155,11 @@ pub(crate) fn install_sched_hooks() {
     if azos_sync::waitgraph::ENABLED {
         azos_sync::waitgraph::register_sched(&azos_sched::classes::PI);
     }
+    // N7 runtime canary: every wait-graph walk stops after one owner, so a
+    // transitive chain is not boosted past its first link.
+    if canary!("pi-depth-1") {
+        azos_sync::waitgraph::canary_cap_depth(1);
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();
@@ -761,6 +766,216 @@ mod sched_class_ktests {
             }
             if azos_sched::classes::pick_here().is_none() {
                 return Err("no class has a runnable task on this CPU");
+            }
+            Ok(())
+        }
+    }
+}
+
+// N7: the wait graph, stage 1. Early, on a private graph driven by a
+// recording scheduler (the kernel's graph moves real tasks, and it has no
+// slots without `WAIT_GRAPH`): the transitive chain A <- B <- C boosts A to
+// C and each release gives back what it no longer earns; a cycle is EDEADLK
+// with both tasks unchanged; a DL donor's absolute deadline is inherited;
+// `attr_changed` of a waiter re-boosts its owner; a chain one link past
+// PI_MAX_DEPTH is counted and not boosted at its root. Late, with
+// `WAIT_GRAPH`: the registered class hooks read the running task. Canary
+// `canary=pi-depth-1` (one owner per walk): `waitgraph_transitive_chain` is
+// `not ok`.
+#[cfg(feature = "ktest")]
+mod waitgraph_ktests {
+    use azos_sync::spinlock::SpinLock;
+    use azos_sync::waitgraph::{
+        EdgeKind, Graph, PiAttr, PiWaiters, SchedPi, TaskId, UnblockReason, WaitError, WaitObj,
+        PI_MAX_DEPTH,
+    };
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    const N: usize = 64;
+
+    struct Rec {
+        base: SpinLock<[PiAttr; N]>,
+        cur: SpinLock<[PiAttr; N]>,
+        on: [AtomicUsize; N],
+    }
+
+    impl Rec {
+        fn set_base(&self, t: TaskId, a: PiAttr) {
+            self.base.lock_irqsave()[t as usize] = a;
+            self.cur.lock_irqsave()[t as usize] = a;
+        }
+        fn cur(&self, t: TaskId) -> PiAttr {
+            self.cur.lock_irqsave()[t as usize]
+        }
+    }
+
+    impl SchedPi for Rec {
+        fn base_attr(&self, t: TaskId) -> PiAttr { self.base.lock_irqsave()[t as usize] }
+        fn boost(&self, t: TaskId, to: PiAttr) { self.cur.lock_irqsave()[t as usize] = to; }
+        fn unboost(&self, t: TaskId, to: PiAttr) { self.cur.lock_irqsave()[t as usize] = to; }
+        fn set_blocked_on(&self, t: TaskId, on: Option<WaitObj>) {
+            self.on[t as usize].store(on.map_or(0, WaitObj::addr), Ordering::Relaxed);
+        }
+        fn blocked_on(&self, t: TaskId) -> Option<WaitObj> {
+            WaitObj::from_addr(self.on[t as usize].load(Ordering::Relaxed))
+        }
+        fn on_cpu(&self, _t: TaskId) -> bool { false }
+    }
+
+    static S: Rec = Rec {
+        base: SpinLock::new([PiAttr::Fair; N]),
+        cur: SpinLock::new([PiAttr::Fair; N]),
+        on: [const { AtomicUsize::new(0) }; N],
+    };
+    static G: Graph<N> = Graph::new();
+    static REG: AtomicBool = AtomicBool::new(false);
+    static O: [PiWaiters; 48] = [const { PiWaiters::new(EdgeKind::Mutex) }; 48];
+
+    fn g() -> &'static Graph<N> {
+        if !REG.swap(true, Ordering::Relaxed) {
+            G.register_sched(&S);
+        }
+        &G
+    }
+
+    const fn rt(p: u8) -> PiAttr {
+        PiAttr::Rt { prio: p }
+    }
+
+    azos_ktest::ktest! {
+        fn waitgraph_transitive_chain() {
+            let g = g();
+            S.set_base(1, PiAttr::Fair);
+            S.set_base(2, rt(20));
+            S.set_base(3, rt(5));
+            g.set_owner(&O[0], Some(1));
+            g.set_owner(&O[1], Some(2));
+            g.block_on(2, &O[0]).map_err(|_| "B could not block on A's object")?;
+            g.block_on(3, &O[1]).map_err(|_| "C could not block on B's object")?;
+            if S.cur(2) != rt(5) {
+                return Err("B was not boosted to C");
+            }
+            if S.cur(1) != rt(5) {
+                return Err("A was not boosted to C through B (transitive inversion)");
+            }
+            if g.release(1, &O[0]) != Some(2) || S.cur(1) != PiAttr::Fair {
+                return Err("A's release did not unboost it or name B");
+            }
+            g.set_owner(&O[0], Some(2));
+            g.unblock(2, &O[0], UnblockReason::Acquired);
+            if g.release(2, &O[1]) != Some(3) || S.cur(2) != rt(20) {
+                return Err("B's release of O1 left C's boost");
+            }
+            g.unblock(3, &O[1], UnblockReason::Acquired);
+            let _ = g.release(2, &O[0]);
+            Ok(())
+        }
+    }
+
+    azos_ktest::ktest! {
+        fn waitgraph_cycle_edeadlk() {
+            let g = g();
+            S.set_base(6, rt(30));
+            S.set_base(7, rt(10));
+            g.set_owner(&O[3], Some(6));
+            g.set_owner(&O[4], Some(7));
+            g.block_on(6, &O[4]).map_err(|_| "D could not block on E's object")?;
+            let before = (S.cur(6), S.cur(7), g.stats().deadlocks);
+            if g.block_on(7, &O[3]) != Err(WaitError::Deadlock) || WaitError::Deadlock.errno() != 35 {
+                return Err("the cycle D -> E -> D was not refused with EDEADLK");
+            }
+            if S.blocked_on(7).is_some() || O[3].has_waiters() {
+                return Err("the refused block stayed enqueued");
+            }
+            if (S.cur(6), S.cur(7), g.stats().deadlocks) != (before.0, before.1, before.2 + 1) {
+                return Err("a refused block moved a priority or was not counted");
+            }
+            g.unblock(6, &O[4], UnblockReason::Interrupted);
+            Ok(())
+        }
+    }
+
+    azos_ktest::ktest! {
+        fn waitgraph_dl_donor_and_attr_changed() {
+            let g = g();
+            S.set_base(8, rt(30));
+            S.set_base(9, PiAttr::Dl { deadline_ns: 1_000 });
+            g.set_owner(&O[6], Some(8));
+            g.block_on(9, &O[6]).map_err(|_| "the DL donor could not block")?;
+            if S.cur(8) != (PiAttr::Dl { deadline_ns: 1_000 }) {
+                return Err("the owner did not inherit the DL donor's deadline");
+            }
+            S.set_base(11, PiAttr::Fair);
+            S.set_base(12, rt(40));
+            g.set_owner(&O[7], Some(11));
+            g.block_on(12, &O[7]).map_err(|_| "the RT waiter could not block")?;
+            S.set_base(12, rt(3));
+            g.attr_changed(12);
+            if S.cur(11) != rt(3) {
+                return Err("attr_changed of a waiter did not re-boost its owner");
+            }
+            g.unblock(9, &O[6], UnblockReason::Timeout);
+            g.unblock(12, &O[7], UnblockReason::Timeout);
+            if S.cur(8) != rt(30) || S.cur(11) != PiAttr::Fair {
+                return Err("leaving waiters left their owners boosted");
+            }
+            Ok(())
+        }
+    }
+
+    azos_ktest::ktest! {
+        fn waitgraph_depth_cap() {
+            let g = g();
+            // A chain of PI_MAX_DEPTH + 1 owners, built from its root.
+            let links = PI_MAX_DEPTH + 1;
+            let (first, obj0) = (13u32, 8usize);
+            if first as usize + links + 1 > N || obj0 + links > O.len() {
+                return Err("the ktest's graph is too small for PI_MAX_DEPTH");
+            }
+            for k in 0..=links as u32 {
+                S.set_base(first + k, PiAttr::Fair);
+            }
+            for k in 0..links {
+                g.set_owner(&O[obj0 + k], Some(first + k as u32));
+            }
+            for k in 1..links {
+                g.block_on(first + k as u32, &O[obj0 + k - 1]).map_err(|_| "a chain link could not block")?;
+            }
+            let capped = g.stats().depth_capped;
+            S.set_base(first + links as u32, rt(1));
+            g.block_on(first + links as u32, &O[obj0 + links - 1]).map_err(|_| "the chain's head could not block")?;
+            if g.stats().depth_capped != capped + 1 {
+                return Err("a walk past PI_MAX_DEPTH was not counted");
+            }
+            if S.cur(first) != PiAttr::Fair || S.cur(first + 1) != rt(1) {
+                return Err("the walk did not stop boosting exactly at PI_MAX_DEPTH");
+            }
+            Ok(())
+        }
+    }
+
+    // Late: the registered hooks read the running task (a created task).
+    azos_ktest::ktest_late! {
+        fn waitgraph_live_hooks() {
+            if !azos_sync::waitgraph::ENABLED {
+                return Ok(());
+            }
+            let Some(cur) = azos_sched::classes::current() else {
+                return Err("the late runner is not a task");
+            };
+            let pi = &azos_sched::classes::PI;
+            let t = cur as TaskId;
+            if pi.blocked_on(t).is_some() || !pi.on_cpu(t) {
+                return Err("the running task looks blocked or off-CPU to the graph");
+            }
+            let base = azos_sched::scheduler::current_task_base_priority();
+            let want = match azos_sched::classes::class_of(cur) {
+                Some(azos_sched::sc::Class::Rt) => PiAttr::Rt { prio: base as u8 },
+                Some(azos_sched::sc::Class::Fair) => PiAttr::Fair,
+                _ => return Ok(()),
+            };
+            if pi.base_attr(t) != want {
+                return Err("ClassPi::base_attr disagrees with the task's class and base");
             }
             Ok(())
         }
