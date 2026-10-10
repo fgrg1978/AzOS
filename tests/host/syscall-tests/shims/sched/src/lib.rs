@@ -628,6 +628,10 @@ pub fn shim_take_exec_loads() -> Vec<Vec<u8>> {
 #[path = "../../../../../../crates/core/sched/src/filter.rs"]
 pub mod filter;
 
+/// `notify.rs` (through the ipc shim) files into the futex table (N9).
+#[path = "../../../../../../crates/core/sched/src/futex_table.rs"]
+pub mod futex_table;
+
 pub mod task {
     pub use crate::filter::{SyscallFilter, TaskInit, SYSCALL_FILTER_MAX};
 }

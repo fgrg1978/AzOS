@@ -3,6 +3,12 @@
 //! Notify/wait: a futex-shaped primitive on a `u32` inside a shared-memory
 //! region (`SYS_NOTIFY_WAIT` 592 / `SYS_NOTIFY_WAKE` 593).
 //!
+//! The waiters live in the futex table (`azos_sched::futex_table`, wave 15
+//! N9) under a [`Key::Shared`]: a Linux futex without `FUTEX_PRIVATE_FLAG` on
+//! the same word files the same key, so a notify wake ends a Linux futex wait
+//! and the other way round. This file keeps the native ABI's answers and the
+//! robust-word registrations.
+//!
 //! # The key is (region, offset), never an address
 //!
 //! A waiter is filed under the packed `(index, generation)` reference of the
@@ -24,7 +30,7 @@
 //!
 //! # Lost wakeups
 //!
-//! The classic futex argument, on one lock ([`TABLE`]):
+//! The classic futex argument, on one lock (`futex_table::TABLE`):
 //!
 //! * WAIT reads the word and files the waiter under the lock.
 //! * WAKE takes the same lock — even when it finds nobody — and marks the
@@ -52,7 +58,7 @@
 //!
 //! # IRQs
 //!
-//! [`TABLE`] is only ever taken with `lock_irqsave`, so an interrupt handler
+//! `futex_table::TABLE` is only ever taken with `lock_irqsave`, so an interrupt handler
 //! may call [`notify_wake_key`] (the wake side is ISR-safe:
 //! `wake_task_by_tid` is already reached from the PLIC handler through
 //! `wait::wake_port_waiter`). The wait side runs in a syscall with IRQs on
@@ -70,7 +76,7 @@
 //! takes every row of the task and, for each word whose TID bits are still the
 //! task's, writes `(word & WAITERS) | OWNER_DIED` with the TID cleared, THEN
 //! wakes every waiter on the word with [`WaitResult::OwnerDied`]. Write
-//! before wake: a waiter that reads the word under [`TABLE`] after the write
+//! before wake: a waiter that reads the word under `futex_table::TABLE` after the write
 //! sees it changed and never sleeps; one that filed itself before is found by
 //! the wake. A word whose TID bits name someone else (released, or taken by
 //! another task) is left alone and nobody is woken.
@@ -82,152 +88,26 @@
 
 use azos_sync::SpinLock;
 
+use azos_sched::futex_table::{self as ft, Key};
+
+/// The wait/wake environment: the futex table's (wave 15 N9, notify folded
+/// into the futex table).
+pub use azos_sched::futex_table::FutexEnv as NotifyEnv;
+
 /// One waiter per task can exist at a time (a task blocks in one call), so
 /// the table never needs more rows than there are tasks.
-pub const MAX_NOTIFY_WAITERS: usize = azos_limits::MAX_TASKS;
+pub const MAX_NOTIFY_WAITERS: usize = ft::ROWS;
 
 /// `timeout_ns` meaning "no timeout".
 pub const NOTIFY_FOREVER: u64 = u64::MAX;
 
-const FREE: u8 = 0;
-const WAITING: u8 = 1;
-const WOKEN: u8 = 2;
-/// Taken by the exit sweep of a robust word's owner ([`notify_robust_exit`]).
-const WOKEN_DIED: u8 = 3;
-
-#[derive(Clone, Copy)]
-struct Waiter {
-    state: u8,
-    tid: u32,
-    region: u32,
-    offset: u32,
-    deadline: u64,
+/// The futex-table key of the word at `offset` in region `region` (owner
+/// answer Q5: `(object id, offset)`). A Linux futex without
+/// `FUTEX_PRIVATE_FLAG` on the same word files the same key.
+#[inline]
+pub fn key(region: u32, offset: u32) -> Key {
+    Key::Shared { obj: region, offset }
 }
-
-const EMPTY: Waiter = Waiter { state: FREE, tid: 0, region: 0, offset: 0, deadline: 0 };
-
-/// The waiter table. Pure data and pure methods, so the host suite drives
-/// every transition without a scheduler.
-pub struct NotifyTable {
-    w: [Waiter; MAX_NOTIFY_WAITERS],
-    /// Rows in `WAITING`. A wake that finds none returns without scanning:
-    /// that is the path a ring producer takes when its flag read raced a
-    /// consumer that had already woken.
-    waiting: usize,
-}
-
-/// What [`NotifyTable::settle`] found for a waiter that came back from a block.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Settle {
-    /// A WAKE took it. The row is freed.
-    Woken,
-    /// The exit sweep of the word's owner took it. The row is freed.
-    OwnerDied,
-    /// Still filed: a spurious return (a stamp from another reason, the
-    /// timer sweep for an earlier deadline). The row is kept.
-    Waiting,
-}
-
-impl NotifyTable {
-    pub const fn new() -> Self {
-        Self { w: [EMPTY; MAX_NOTIFY_WAITERS], waiting: 0 }
-    }
-
-    /// File `tid` as waiting on `(region, offset)` until `deadline`. `None`
-    /// when every row is taken — unreachable while each task has at most one
-    /// waiter, answered rather than assumed.
-    pub fn register(&mut self, tid: u32, region: u32, offset: u32, deadline: u64) -> Option<usize> {
-        let slot = self.w.iter().position(|x| x.state == FREE)?;
-        self.w[slot] = Waiter { state: WAITING, tid, region, offset, deadline };
-        self.waiting += 1;
-        Some(slot)
-    }
-
-    /// Mark up to `n` waiters on `(region, offset)` woken, in table order,
-    /// writing each one's `(tid, deadline)` into `out`. Returns how many.
-    /// A row already woken is not counted again: `n` counts distinct waiters.
-    pub fn wake(
-        &mut self, region: u32, offset: u32, n: u32,
-        out: &mut [(u32, u64)],
-    ) -> usize {
-        self.wake_as(region, offset, n, out, false)
-    }
-
-    /// [`wake`](Self::wake), marking each waiter taken as woken by the
-    /// owner's death when `died` (it settles as [`Settle::OwnerDied`]).
-    pub fn wake_as(
-        &mut self, region: u32, offset: u32, n: u32,
-        out: &mut [(u32, u64)], died: bool,
-    ) -> usize {
-        let mut k = 0usize;
-        if self.waiting == 0 { return 0; }
-        let mark = if died { WOKEN_DIED } else { WOKEN };
-        for x in self.w.iter_mut() {
-            if k as u64 >= n as u64 || k == out.len() { break; }
-            if x.state == WAITING && x.region == region && x.offset == offset {
-                x.state = mark;
-                out[k] = (x.tid, x.deadline);
-                k += 1;
-            }
-        }
-        self.waiting -= k;
-        k
-    }
-
-    /// The waiter in `slot` came back from its block. `tid` guards against a
-    /// caller passing somebody else's slot.
-    pub fn settle(&mut self, slot: usize, tid: u32) -> Settle {
-        let x = &mut self.w[slot];
-        if x.tid != tid || x.state == FREE {
-            // Not ours any more — cannot happen while only the filing task
-            // frees its row; treated as woken so the caller returns.
-            return Settle::Woken;
-        }
-        if x.state == WOKEN {
-            *x = EMPTY;
-            return Settle::Woken;
-        }
-        if x.state == WOKEN_DIED {
-            *x = EMPTY;
-            return Settle::OwnerDied;
-        }
-        Settle::Waiting
-    }
-
-    /// Withdraw the waiter in `slot` (timeout, refused block). Returns
-    /// whether a WAKE had taken it first, in which case the caller reports a
-    /// wake: the waker already counted it.
-    pub fn cancel(&mut self, slot: usize, tid: u32) -> bool {
-        self.cancel_settle(slot, tid) != Settle::Waiting
-    }
-
-    /// [`cancel`](Self::cancel), saying which wake took the waiter first:
-    /// [`Settle::Waiting`] when none did (the row was withdrawn).
-    pub fn cancel_settle(&mut self, slot: usize, tid: u32) -> Settle {
-        let x = &mut self.w[slot];
-        if x.tid != tid || x.state == FREE {
-            return Settle::Woken;
-        }
-        let r = match x.state {
-            WOKEN => Settle::Woken,
-            WOKEN_DIED => Settle::OwnerDied,
-            _ => {
-                self.waiting -= 1;
-                Settle::Waiting
-            }
-        };
-        *x = EMPTY;
-        r
-    }
-
-    /// Rows in use (host tests; the kernel does not need it).
-    pub fn in_use(&self) -> usize {
-        self.w.iter().filter(|x| x.state != FREE).count()
-    }
-}
-
-/// The one table, under the one lock the lost-wakeup argument needs.
-static TABLE: SpinLock<NotifyTable> = SpinLock::new(NotifyTable::new());
 
 /// How a wait ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -249,24 +129,8 @@ pub enum WaitResult {
     NoSpace,
 }
 
-/// What the wait and wake need from the rest of the kernel.
-///
-/// A trait rather than direct calls so this file depends on nothing but the
-/// lock: the kernel's implementation (`crates/core/syscall/src/vdso_notify.rs`,
-/// `KernelNotifyEnv`) blocks on `WaitReason::Timer(deadline)` and wakes by
-/// TID, and the host suite below drives the same loop with a scripted one.
-pub trait NotifyEnv {
-    /// The timebase counter, in the units `deadline` is in.
-    fn now(&self) -> u64;
-    /// Block the calling task on `WaitReason::Timer(deadline)`; `true` when
-    /// the scheduler refused to block (K-C29).
-    fn block(&self, deadline: u64) -> bool;
-    /// Wake `tid` if it is blocked on `WaitReason::Timer(deadline)` (stamping
-    /// it if it has not blocked yet). Must be callable from an interrupt.
-    fn wake(&self, tid: u32, deadline: u64);
-}
-
-/// Wait on the word at kernel address `word_kva`, keyed `(region, offset)`.
+/// Wait on the word at kernel address `word_kva`, keyed `(region, offset)`
+/// in the futex table.
 ///
 /// # Safety
 /// `word_kva` must be the kernel-visible address of a 4-byte-aligned word in
@@ -279,75 +143,28 @@ pub unsafe fn notify_wait_key<E: NotifyEnv>(
 
     // SAFETY: per the contract above; `AtomicU32` has the layout of `u32`.
     let word = unsafe { &*(word_kva as *const AtomicU32) };
-    let slot = {
-        let mut t = TABLE.lock_irqsave();
-        if word.load(Ordering::Acquire) != expected {
-            return WaitResult::ValueChanged;
-        }
-        match t.register(tid, region, offset, deadline) {
-            Some(s) => s,
-            None => return WaitResult::NoSpace,
-        }
-    };
-    loop {
-        let refused = env.block(deadline);
-        let mut t = TABLE.lock_irqsave();
-        match t.settle(slot, tid) {
-            Settle::Woken => return WaitResult::Woken,
-            Settle::OwnerDied => return WaitResult::OwnerDied,
-            Settle::Waiting => {}
-        }
-        if refused {
-            // Blocking again would be refused again: withdraw, never spin
-            // (an infinite timeout would otherwise hang this hart).
-            return withdrawn(t.cancel_settle(slot, tid), WaitResult::Refused);
-        }
-        if deadline != u64::MAX && env.now() >= deadline {
-            return withdrawn(t.cancel_settle(slot, tid), WaitResult::TimedOut);
-        }
-        // Spurious: still filed, deadline ahead. Block again.
-    }
-}
-
-/// What a withdrawn wait reports: the wake that beat the withdrawal, or
-/// `otherwise` when none did.
-fn withdrawn(s: Settle, otherwise: WaitResult) -> WaitResult {
-    match s {
-        Settle::Woken => WaitResult::Woken,
-        Settle::OwnerDied => WaitResult::OwnerDied,
-        Settle::Waiting => otherwise,
+    match ft::wait_key(env, tid, key(region, offset), &|| Some(word.load(Ordering::Acquire)), expected, deadline) {
+        ft::WaitResult::Woken => WaitResult::Woken,
+        ft::WaitResult::OwnerDied => WaitResult::OwnerDied,
+        ft::WaitResult::TimedOut => WaitResult::TimedOut,
+        ft::WaitResult::ValueChanged | ft::WaitResult::Fault => WaitResult::ValueChanged,
+        ft::WaitResult::Refused | ft::WaitResult::Stopped => WaitResult::Refused,
+        ft::WaitResult::NoSpace => WaitResult::NoSpace,
     }
 }
 
 /// Wake up to `n` waiters on `(region, offset)`. Returns how many were taken.
 ///
-/// ISR-safe when `env.wake` is: one `lock_irqsave` hold, then TID-directed
-/// wakes after it is released. Takes the lock even when nobody waits — the
-/// ordering argument in the module doc depends on it.
+/// ISR-safe when `env.wake` is: `lock_irqsave` holds, then TID-directed
+/// wakes after each is released. Takes the lock even when nobody waits.
 pub fn notify_wake_key<E: NotifyEnv>(env: &E, region: u32, offset: u32, n: u32) -> u32 {
-    notify_wake_key_as(env, region, offset, n, false)
+    ft::wake_key(env, key(region, offset), n, false)
 }
 
 /// [`notify_wake_key`], marking the waiters it takes as woken by the owner's
 /// death when `died` (their wait answers [`WaitResult::OwnerDied`]).
 fn notify_wake_key_as<E: NotifyEnv>(env: &E, region: u32, offset: u32, n: u32, died: bool) -> u32 {
-    // In batches of `WAKE_BATCH`, each taken under one hold and woken after
-    // it: a full-table array here was a 1 KiB zero-fill on every call, most
-    // of which wake one waiter or none. Every batch still takes the lock, so
-    // the empty case keeps the ordering the module doc relies on.
-    const WAKE_BATCH: usize = 8;
-    let mut total = 0u32;
-    loop {
-        let mut out = [(0u32, 0u64); WAKE_BATCH];
-        let k = TABLE.lock_irqsave().wake_as(region, offset, n - total, &mut out, died);
-        for &(tid, deadline) in &out[..k] {
-            env.wake(tid, deadline);
-        }
-        total += k as u32;
-        if k < WAKE_BATCH || total >= n {
-            return total;
-        }
-    }
+    ft::wake_key(env, key(region, offset), n, died)
 }
 
 // ── Robust words (owner-died) ───────────────────────────────────────────────
@@ -460,7 +277,7 @@ impl RobustTable {
     }
 }
 
-/// The robust registrations. Its own lock, never held with [`TABLE`]: the
+/// The robust registrations. Its own lock, never held with `futex_table::TABLE`: the
 /// sweep takes its rows out in one hold and wakes afterwards.
 static ROBUST: SpinLock<RobustTable> = SpinLock::new(RobustTable::new());
 
@@ -507,7 +324,7 @@ pub fn mark_owner_died(word: &core::sync::atomic::AtomicU32, tid: u32) -> bool {
 /// `resolve(region, offset)` answers the kernel-visible address of the word
 /// while `tid` still maps the region, `None` otherwise (a region it released,
 /// or a reissued one: the key's generation no longer resolves). The wake runs
-/// after the rows are out of [`ROBUST`] and outside [`TABLE`]'s hold, like
+/// after the rows are out of [`ROBUST`] and outside `futex_table::TABLE`'s hold, like
 /// every wake here.
 ///
 /// # Safety
@@ -536,17 +353,32 @@ pub unsafe fn notify_robust_exit<E: NotifyEnv>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use azos_sched::futex_table::{Settle, TABLE};
+
+    /// The old `(region, offset)` calls, on the folded table.
+    trait Old {
+        fn reg(&mut self, tid: u32, r: u32, o: u32, d: u64) -> Option<usize>;
+        fn wk(&mut self, r: u32, o: u32, n: u32, out: &mut [(u32, u64)]) -> usize;
+        fn wk_as(&mut self, r: u32, o: u32, n: u32, out: &mut [(u32, u64)], died: bool) -> usize;
+    }
+    impl Old for ft::FutexTable {
+        fn reg(&mut self, tid: u32, r: u32, o: u32, d: u64) -> Option<usize> { ft::FutexTable::register(self, tid, key(r, o), d) }
+        fn wk(&mut self, r: u32, o: u32, n: u32, out: &mut [(u32, u64)]) -> usize { self.wake(key(r, o), n, out) }
+        fn wk_as(&mut self, r: u32, o: u32, n: u32, out: &mut [(u32, u64)], died: bool) -> usize {
+            ft::FutexTable::wake_as(self, key(r, o), n, out, died)
+        }
+    }
 
     const R: u32 = 0x0001_0003; // any packed reference
     const FOREVER: u64 = NOTIFY_FOREVER;
 
     #[test]
     fn wake_takes_only_the_waiters_on_the_same_offset() {
-        let mut t = NotifyTable::new();
-        let a = t.register(10, R, 0, FOREVER).unwrap();
-        let b = t.register(11, R, 4, FOREVER).unwrap();
+        let mut t = ft::FutexTable::new();
+        let a = t.reg(10, R, 0, FOREVER).unwrap();
+        let b = t.reg(11, R, 4, FOREVER).unwrap();
         let mut out = [(0u32, 0u64); MAX_NOTIFY_WAITERS];
-        assert_eq!(t.wake(R, 0, u32::MAX, &mut out), 1);
+        assert_eq!(t.wk(R, 0, u32::MAX, &mut out), 1);
         assert_eq!(out[0].0, 10);
         assert_eq!(t.settle(a, 10), Settle::Woken);
         assert_eq!(t.settle(b, 11), Settle::Waiting);
@@ -554,31 +386,31 @@ mod tests {
 
     #[test]
     fn wake_takes_only_the_waiters_on_the_same_region() {
-        let mut t = NotifyTable::new();
-        let a = t.register(10, R, 0, FOREVER).unwrap();
-        let _b = t.register(11, R + 1, 0, FOREVER).unwrap();
+        let mut t = ft::FutexTable::new();
+        let a = t.reg(10, R, 0, FOREVER).unwrap();
+        let _b = t.reg(11, R + 1, 0, FOREVER).unwrap();
         let mut out = [(0u32, 0u64); MAX_NOTIFY_WAITERS];
-        assert_eq!(t.wake(R, 0, u32::MAX, &mut out), 1);
+        assert_eq!(t.wk(R, 0, u32::MAX, &mut out), 1);
         assert_eq!(t.settle(a, 10), Settle::Woken);
     }
 
     #[test]
     fn wake_counts_distinct_waiters_and_honours_n() {
-        let mut t = NotifyTable::new();
-        for tid in 1..=3 { t.register(tid, R, 8, FOREVER).unwrap(); }
+        let mut t = ft::FutexTable::new();
+        for tid in 1..=3 { t.reg(tid, R, 8, FOREVER).unwrap(); }
         let mut out = [(0u32, 0u64); MAX_NOTIFY_WAITERS];
-        assert_eq!(t.wake(R, 8, 2, &mut out), 2);
+        assert_eq!(t.wk(R, 8, 2, &mut out), 2);
         // The two already woken are not taken again.
-        assert_eq!(t.wake(R, 8, 2, &mut out), 1);
-        assert_eq!(t.wake(R, 8, 2, &mut out), 0);
+        assert_eq!(t.wk(R, 8, 2, &mut out), 1);
+        assert_eq!(t.wk(R, 8, 2, &mut out), 0);
     }
 
     #[test]
     fn a_wake_that_raced_a_timeout_is_reported_as_a_wake() {
-        let mut t = NotifyTable::new();
-        let a = t.register(10, R, 0, 1234).unwrap();
+        let mut t = ft::FutexTable::new();
+        let a = t.reg(10, R, 0, 1234).unwrap();
         let mut out = [(0u32, 0u64); MAX_NOTIFY_WAITERS];
-        assert_eq!(t.wake(R, 0, 1, &mut out), 1);
+        assert_eq!(t.wk(R, 0, 1, &mut out), 1);
         assert_eq!(out[0], (10, 1234));
         assert!(t.cancel(a, 10), "the waker counted it; the waiter must too");
         assert_eq!(t.in_use(), 0);
@@ -586,21 +418,21 @@ mod tests {
 
     #[test]
     fn cancel_frees_the_row_and_a_later_wake_finds_nobody() {
-        let mut t = NotifyTable::new();
-        let a = t.register(10, R, 0, 5).unwrap();
+        let mut t = ft::FutexTable::new();
+        let a = t.reg(10, R, 0, 5).unwrap();
         assert!(!t.cancel(a, 10));
         let mut out = [(0u32, 0u64); MAX_NOTIFY_WAITERS];
-        assert_eq!(t.wake(R, 0, 1, &mut out), 0);
+        assert_eq!(t.wk(R, 0, 1, &mut out), 0);
         assert_eq!(t.in_use(), 0);
     }
 
     #[test]
     fn the_table_holds_one_waiter_per_task() {
-        let mut t = NotifyTable::new();
+        let mut t = ft::FutexTable::new();
         for tid in 0..MAX_NOTIFY_WAITERS as u32 {
-            assert!(t.register(tid + 1, R, 0, FOREVER).is_some());
+            assert!(t.reg(tid + 1, R, 0, FOREVER).is_some());
         }
-        assert!(t.register(9999, R, 0, FOREVER).is_none());
+        assert!(t.reg(9999, R, 0, FOREVER).is_none());
     }
 
     // ── The wait loop, driven through a scripted environment ────────────────
@@ -639,7 +471,7 @@ mod tests {
         let env = script(false, |_| panic!("must not block"));
         let r = unsafe { notify_wait_key(&env, 1, 0xA1, 0, &word as *const _ as usize, 6, FOREVER) };
         assert_eq!(r, WaitResult::ValueChanged);
-        assert_eq!(TABLE.lock_irqsave().wake(0xA1, 0, 1, &mut [(0, 0); MAX_NOTIFY_WAITERS]), 0);
+        assert_eq!(TABLE.lock_irqsave().wk(0xA1, 0, 1, &mut [(0, 0); MAX_NOTIFY_WAITERS]), 0);
     }
 
     #[test]
@@ -674,7 +506,7 @@ mod tests {
         let r = unsafe { notify_wait_key(&env, 7, 0xA4, 0, &word as *const _ as usize, 0, 150) };
         assert_eq!(r, WaitResult::TimedOut);
         assert_eq!(env.blocks.get(), 5, "100 -> 150 in steps of 10");
-        assert_eq!(TABLE.lock_irqsave().wake(0xA4, 0, 1, &mut [(0, 0); MAX_NOTIFY_WAITERS]), 0,
+        assert_eq!(TABLE.lock_irqsave().wk(0xA4, 0, 1, &mut [(0, 0); MAX_NOTIFY_WAITERS]), 0,
             "a timed-out waiter leaves no row behind");
     }
 
@@ -692,7 +524,7 @@ mod tests {
         let env = script(false, |_| {});
         {
             let mut t = TABLE.lock_irqsave();
-            for tid in 100..120 { t.register(tid, 0xA6, 0, FOREVER).unwrap(); }
+            for tid in 100..120 { t.reg(tid, 0xA6, 0, FOREVER).unwrap(); }
         }
         assert_eq!(notify_wake_key(&env, 0xA6, 0, u32::MAX), 20);
         assert_eq!(notify_wake_key(&env, 0xA6, 0, u32::MAX), 0);
@@ -701,17 +533,17 @@ mod tests {
         assert_eq!(tids, (100..120).collect::<Vec<_>>());
         // Free the rows the woken waiters would have settled.
         let mut t = TABLE.lock_irqsave();
-        for i in 0..MAX_NOTIFY_WAITERS { if t.w[i].region == 0xA6 { t.w[i] = EMPTY; } }
+        t.drop_key(key(0xA6, 0));
     }
 
     #[test]
     fn a_wake_with_nobody_waiting_anywhere_takes_nobody() {
-        let mut t = NotifyTable::new();
+        let mut t = ft::FutexTable::new();
         let mut out = [(0u32, 0u64); 4];
-        assert_eq!(t.wake(R, 0, 1, &mut out), 0);
-        let a = t.register(1, R, 0, FOREVER).unwrap();
+        assert_eq!(t.wk(R, 0, 1, &mut out), 0);
+        let a = t.reg(1, R, 0, FOREVER).unwrap();
         assert!(!t.cancel(a, 1));
-        assert_eq!(t.wake(R, 0, 1, &mut out), 0, "the waiting count went back to zero");
+        assert_eq!(t.wk(R, 0, 1, &mut out), 0, "the waiting count went back to zero");
     }
 
     // ── Robust words (owner-died) ───────────────────────────────────────────
@@ -817,16 +649,16 @@ mod tests {
         robust_add(DEAD, REG, 0).unwrap();
         {
             let mut t = TABLE.lock_irqsave();
-            t.register(0x1B2, REG, 0, FOREVER).unwrap();
+            t.reg(0x1B2, REG, 0, FOREVER).unwrap();
         }
         let env = script(false, |_| {});
         assert_eq!(unsafe { notify_robust_exit(&env, DEAD, |_, _| Some(kva)) }, 0);
         assert_eq!(word.load(Ordering::Relaxed), NEXT, "the live holder's word is untouched");
         assert!(env.wakes.borrow().is_empty(), "nobody woken");
         // Free the waiter row this test filed.
-        assert_eq!(TABLE.lock_irqsave().wake(REG, 0, 1, &mut [(0, 0); 1]), 1);
+        assert_eq!(TABLE.lock_irqsave().wk(REG, 0, 1, &mut [(0, 0); 1]), 1);
         let mut t = TABLE.lock_irqsave();
-        for i in 0..MAX_NOTIFY_WAITERS { if t.w[i].region == REG { t.w[i] = EMPTY; } }
+        t.drop_key(key(REG, 0));
     }
 
     #[test]
@@ -840,12 +672,12 @@ mod tests {
 
     #[test]
     fn a_plain_wake_still_settles_as_woken() {
-        let mut t = NotifyTable::new();
-        let a = t.register(10, R, 0, FOREVER).unwrap();
-        let b = t.register(11, R, 4, FOREVER).unwrap();
+        let mut t = ft::FutexTable::new();
+        let a = t.reg(10, R, 0, FOREVER).unwrap();
+        let b = t.reg(11, R, 4, FOREVER).unwrap();
         let mut out = [(0u32, 0u64); 2];
-        assert_eq!(t.wake_as(R, 0, 1, &mut out, false), 1);
-        assert_eq!(t.wake_as(R, 4, 1, &mut out, true), 1);
+        assert_eq!(t.wk_as(R, 0, 1, &mut out, false), 1);
+        assert_eq!(t.wk_as(R, 4, 1, &mut out, true), 1);
         assert_eq!(t.settle(a, 10), Settle::Woken);
         assert_eq!(t.cancel_settle(b, 11), Settle::OwnerDied, "a died wake that beat a timeout");
     }

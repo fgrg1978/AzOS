@@ -55,6 +55,11 @@ pub mod shm;
 #[path = "../../../../crates/core/ipc/src/notify.rs"]
 pub mod notify;
 
+// The futex table's own unit tests (wave 15 N9). `notify` above files into
+// the copy the sched shim pulls in; this one is tested on its own.
+#[path = "../../../../crates/core/sched/src/futex_table.rs"]
+pub mod futex_table;
+
 // `io_ring.rs` allocates one physical page per ring; the page allocator is
 // stood in for by `shims/mm`. Its `IoRingOps` dispatch table is a struct of
 // plain `fn` pointers declared in the module itself — no driver crate is

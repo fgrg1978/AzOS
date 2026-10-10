@@ -22,6 +22,8 @@
 //! that is a slot table, not an identity, and `ring3_with_table` binds it.
 
 pub use cap_test_sched::*;
+/// The futex table `notify.rs` files into (wave 15 N9).
+pub use syscall_test_sched::futex_table;
 
 pub fn current_task_tid() -> u32 {
     syscall_test_sched::current_task_tid()

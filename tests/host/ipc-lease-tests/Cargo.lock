@@ -106,6 +106,7 @@ name = "ipc_lease_test_sched"
 version = "0.1.0"
 dependencies = [
  "azos_limits",
+ "ipc_lease_test_sync",
 ]
 
 [[package]]

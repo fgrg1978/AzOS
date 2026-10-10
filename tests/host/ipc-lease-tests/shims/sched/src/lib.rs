@@ -18,6 +18,11 @@
 
 use std::sync::Mutex;
 
+/// `notify.rs` files its waiters in the futex table (wave 15 N9): the real
+/// pure-data table, not a stand-in.
+#[path = "../../../../../../crates/core/sched/src/futex_table.rs"]
+pub mod futex_table;
+
 /// `cap_store.rs` uses `azos_sched::task::MAX_TASKS`. Taken from the real
 /// generated constant so the shim cannot drift from `.config`.
 pub mod task {

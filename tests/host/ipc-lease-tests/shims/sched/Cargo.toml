@@ -8,3 +8,5 @@ description = "Host stand-in for azos_sched, used only by tests/host/ipc-lease-t
 
 [dependencies]
 azos_limits = { path = "../../../../../crates/core/limits" }
+# `futex_table.rs` (pulled by path) takes its lock from here.
+azos_sync = { path = "../sync", package = "ipc_lease_test_sync" }

@@ -401,6 +401,65 @@ config IPC_ENDPOINTS_PER_TASK
       build). Cost: none in RAM; the fork grant (endpoint_inherit_at_fork)
       keeps this many handles on its stack (4 B each).
 
+config FUTEX_SHARED
+    bool "Linux shared futexes on shm words keyed by (region, offset)"
+    default y
+    help
+      A Linux futex without FUTEX_PRIVATE_FLAG on a word of a shm region
+      the caller maps is filed in the futex table under the region's
+      object id and the word's offset (crates/core/sched/src/futex_table.rs),
+      the key the native notify calls use, so two processes that map the
+      region at different addresses meet on it. n: every Linux futex is
+      process-private (two processes sharing a word do not meet); the
+      native notify calls are unchanged.
+      Cost: no RAM; one shm mapping lookup (a scan of the shm table under
+      its lock) on each Linux futex call without FUTEX_PRIVATE_FLAG.
+
+config FUTEX_REQUEUE
+    bool "FUTEX_REQUEUE and FUTEX_CMP_REQUEUE"
+    default y
+    help
+      The Linux futex ops that wake some waiters of one word and move the
+      rest to another without waking them (a condition variable's
+      broadcast moves its waiters onto the mutex: one runs, not the herd).
+      n: both answer -ENOSYS, and a C library falls back to waking all.
+      Cost: no RAM; ~300 B of kernel text.
+
+config FUTEX_PRIVATE_BUCKETS
+    int "Futex hash buckets per domain bank (private keys)"
+    range 1 1024
+    default 4   if PROFILE_EMBEDDED
+    default 16  if PROFILE_FLEET
+    default 8
+    help
+      A process-private futex key (process id, address) hashes into the
+      bank of its process, then into one of this many buckets of it; a
+      wake walks one bucket's chain. More buckets: shorter chains for a
+      process with many contended words. Cost: 12 B of RAM per bucket per
+      bank (FUTEX_DOMAIN_BANKS x this).
+
+config FUTEX_DOMAIN_BANKS
+    int "Futex hash banks (one per process, modulo collisions)"
+    range 1 1024
+    default 8   if PROFILE_EMBEDDED
+    default 64  if PROFILE_FLEET
+    default 16
+    help
+      Private futex keys of one process hash into one bank, chosen by its
+      process id, so two processes share bucket chains only when their ids
+      collide on a bank. Size it to the number of processes that use
+      futexes at once. Cost: FUTEX_PRIVATE_BUCKETS x 12 B of RAM per bank.
+
+config FUTEX_SHARED_BUCKETS
+    int "Futex hash buckets for shared keys (shm words, notify)"
+    range 1 1024
+    default 8   if PROFILE_EMBEDDED
+    default 64  if PROFILE_FLEET
+    default 32
+    help
+      Keys (region, offset), from the native notify calls and from Linux
+      shared futexes, hash into this many buckets. Cost: 12 B of RAM each.
+
 config IPC_FAST_SLOTS
     int "Fast-call slots of the old global table (IPC_ENDPOINT_QUEUES=n)"
     range 8 256

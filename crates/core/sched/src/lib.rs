@@ -49,6 +49,7 @@ pub mod cpuid_probe;
 /// Wave 13: thread groups and futexes.
 pub mod group;
 pub mod futex;
+pub mod futex_table;
 pub mod spawn;
 // RFC-0047 stage 3: riscv64 F/D state of Linux tasks.
 pub mod fp;
