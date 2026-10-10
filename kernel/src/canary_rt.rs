@@ -135,6 +135,9 @@ pub(crate) const NAMES: &[&str] = &[
     // accepted calls in service, so their callers are never completed
     // (ktest `ipc_server_death_completes_call_peer_died`).
     "ipc-no-peer-died",
+    // crates/core/sched/src/sc.rs `pick_in_precedence`: the class walk runs
+    // the precedence backwards, idle first (ktest `sched_class_precedence`).
+    "sched-class-invert",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

@@ -116,6 +116,11 @@ pub(crate) fn install_sched_hooks() {
     if canary!("ipc-no-peer-died") {
         azos_ipc::ep_queue::canary_no_peer_died();
     }
+    // N6 runtime canary: the dispatch-class walk runs its precedence
+    // backwards (idle > fair > RT > DL > stop).
+    if canary!("sched-class-invert") {
+        azos_sched::sc::canary_invert_precedence();
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();
@@ -660,5 +665,62 @@ fn rt_block_io_check() {
                 an RT task never does block I/O",
             azos_sched::current_task_tid(), azos_sched::current_task_name(),
             azos_sched::scheduler::current_task_base_priority());
+    }
+}
+
+// N6: the dispatch-class model. The precedence walk takes stop > DL > RT >
+// fair > idle, a compiled-out class is skipped, preemption across classes
+// follows precedence, the running task's SC holds the class its priority
+// puts it in (the hooks fired), and this CPU's live walk finds a runnable
+// task (its idle task is always queued). Canary `canary=sched-class-invert`
+// (the walk runs backwards): `not ok`.
+#[cfg(feature = "ktest")]
+mod sched_class_ktests {
+    use azos_sched::sc::{pick_in_precedence, should_preempt, Class, ClassTable, SchedClassOps};
+
+    struct Stub(Class, Option<usize>);
+    impl SchedClassOps for Stub {
+        fn class(&self) -> Class { self.0 }
+        fn enqueue(&self, _: usize, _: usize) -> bool { false }
+        fn dequeue(&self, _: usize, _: usize) -> bool { false }
+        fn pick(&self, _: usize) -> Option<usize> { self.1 }
+        fn tick(&self, _: usize, _: usize) -> bool { false }
+        fn preempt_check(&self, _: usize, cur: usize, cand: usize) -> bool { cand < cur }
+    }
+
+    static STOP: Stub = Stub(Class::Stop, None);
+    static DL: Stub = Stub(Class::Dl, Some(11));
+    static RT: Stub = Stub(Class::Rt, Some(22));
+    static FAIR: Stub = Stub(Class::Fair, Some(33));
+    static IDLE: Stub = Stub(Class::Idle, Some(44));
+
+    azos_ktest::ktest! {
+        fn sched_class_precedence() {
+            let all: ClassTable<'static> = [Some(&STOP), Some(&DL), Some(&RT), Some(&FAIR), Some(&IDLE)];
+            if pick_in_precedence(&all, 0) != Some((Class::Dl, 11)) {
+                return Err("the class walk did not take DL first (stop empty)");
+            }
+            let no_dl: ClassTable<'static> = [None, None, Some(&RT), Some(&FAIR), Some(&IDLE)];
+            if pick_in_precedence(&no_dl, 0) != Some((Class::Rt, 22)) {
+                return Err("with DL compiled out the walk did not take RT");
+            }
+            if !should_preempt(&all, 0, (Class::Fair, 33), (Class::Rt, 22))
+                || should_preempt(&all, 0, (Class::Rt, 22), (Class::Fair, 33))
+            {
+                return Err("preemption across classes does not follow precedence");
+            }
+            if let Some(cur) = azos_sched::classes::current() {
+                let sc = azos_sched::classes::class_of(cur);
+                let base = azos_sched::scheduler::current_task_base_priority();
+                if sc != Some(azos_sched::classes::class_for(cur, base)) {
+                    return Err("the running task's SC is not in its priority's class");
+                }
+            }
+            let cpu = azos_sched::smp::current_cpu_id();
+            if azos_sched::classes::pick(cpu).is_none() {
+                return Err("no class has a runnable task on this CPU");
+            }
+            Ok(())
+        }
     }
 }
