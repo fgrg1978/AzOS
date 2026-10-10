@@ -606,6 +606,21 @@ config KMUTEX_ADAPTIVE_SPIN
       task holds its CPU). Cost: no RAM; at most this many iterations of
       CPU time per contended acquire.
 
+config KMUTEX_PARK_BUCKETS
+    int "Kernel mutex: hashed sleep queues shared by every Mutex"
+    range 1 1024
+    default 8 if PROFILE_EMBEDDED || NR_CPUS = 1
+    default 32
+    help
+      A contended Mutex sleeps on one of these wait queues, chosen by the
+      mutex's address, so a Mutex carries no queue of its own (8 bytes
+      plus its wait-graph node). Two mutexes hashed to one bucket wake
+      each other's sleepers on unlock; each re-checks its word and sleeps
+      again (a spurious wake, never a lost one). Each bucket sleeps at most
+      WAITQUEUE capacity (16) tasks; more spin-retry. Raise it when many
+      mutexes are contended at once. Cost: about 80 bytes of RAM per
+      bucket; no instructions on an uncontended lock.
+
 config FUTEX_PI
     bool "PI futexes: FUTEX_LOCK_PI/UNLOCK_PI/TRYLOCK_PI and requeue-PI"
     depends on WAIT_GRAPH

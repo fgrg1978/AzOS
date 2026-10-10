@@ -139,6 +139,8 @@ pub enum Kind {
     /// SpinLock for the sleep, user-return and hold-time checks, ordered
     /// against no lock (a read section waits for nothing).
     Rcu = 4,
+    /// `kmutex::Mutex` (sleeping, priority inheritance on the wait graph).
+    Mutex = 5,
 }
 
 impl Kind {
@@ -148,6 +150,7 @@ impl Kind {
             Kind::PiMutex => "PiMutex",
             Kind::Sleep => "SleepLock",
             Kind::Rcu => "RcuRead",
+            Kind::Mutex => "Mutex",
         }
     }
 }
@@ -404,7 +407,7 @@ impl What {
             What::DepthOverflow => "held-lock stack full (LOCKDEP_MAX_DEPTH)",
             What::TableFull => "edge table full (LOCKDEP_EDGES)",
             What::SameClass => "two locks of one class nested (note)",
-            What::PiAcrossDeviceWait => "PiMutex held across a device wait (note, rule F1)",
+            What::PiAcrossDeviceWait => "PiMutex or Mutex held across a device wait (note, rule F1)",
             What::IrqInversion => "class taken in interrupt context and with interrupts on (IRQ inversion)",
             What::HoldOverLimit => "SpinLock held past LOCK_MAX_HOLD_US",
             What::HoldOverLimitNote => "SpinLock held past LOCK_MAX_HOLD_US (note)",
@@ -740,6 +743,7 @@ impl<const N: usize, const B: usize> Classes<N, B> {
             2 => Kind::PiMutex,
             3 => Kind::Sleep,
             4 => Kind::Rcu,
+            5 => Kind::Mutex,
             _ => Kind::Spin,
         };
         let l = |a: &AtomicUsize| loc_of(a.load(Ordering::Relaxed));
@@ -1142,7 +1146,7 @@ fn scope_slow(scope: Scope, site: &'static Location<'static>) {
 
 // ── RT tasks on two CPUs (owner rule F7) ─────────────────────────────────
 
-/// The word a PiMutex or SleepLock keeps for its holder while held: CPU + 1
+/// The word a PiMutex, Mutex or SleepLock keeps for its holder while held: CPU + 1
 /// in the low bits, the top bit if the holder is real-time. 0 when the
 /// check is off.
 #[inline]
@@ -1199,7 +1203,8 @@ pub fn might_sleep(what: &'static str) {
 }
 
 /// [`might_sleep`] for a wait on a device (the block layer, the virtio-blk
-/// completion wait): also notes a PiMutex held across it (rule F1).
+/// completion wait): also notes a PiMutex or `kmutex::Mutex` held across it
+/// (rule F1).
 #[inline]
 #[track_caller]
 pub fn might_wait_device(what: &'static str) {
@@ -1226,7 +1231,9 @@ fn might_sleep_at(what: &'static str, site: &'static Location<'static>, device: 
             Some(Report::new(What::SleepUnderSpin, *h, here))
         } else if !irqs_on {
             Some(Report::new(What::SleepIrqsOff, Held::EMPTY, here))
-        } else if let Some(h) = cpu.held.held().iter().rev().find(|h| device && h.kind == Kind::PiMutex) {
+        } else if let Some(h) = cpu.held.held().iter().rev()
+            .find(|h| device && matches!(h.kind, Kind::PiMutex | Kind::Mutex))
+        {
             Some(Report::new(What::PiAcrossDeviceWait, *h, here))
         } else {
             None
