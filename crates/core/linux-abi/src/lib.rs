@@ -240,6 +240,7 @@ pub mod errno {
     pub const ENAMETOOLONG: i64 = 36;
     pub const ENOSYS: i64 = 38;
     pub const ENOTEMPTY: i64 = 39;
+    pub const EDEADLK: i64 = 35;
     pub const ETIMEDOUT: i64 = 110;
 }
 
@@ -825,6 +826,15 @@ pub mod futex {
     pub const FUTEX_PRIVATE_FLAG: u64 = 128;
     pub const FUTEX_CLOCK_REALTIME: u64 = 256;
     pub const FUTEX_BITSET_MATCH_ANY: u64 = 0xffff_ffff;
+    /// Priority-inheritance operations (wave 15 N10, Kconfig `FUTEX_PI`).
+    pub const FUTEX_LOCK_PI: u64 = 6;
+    pub const FUTEX_UNLOCK_PI: u64 = 7;
+    pub const FUTEX_TRYLOCK_PI: u64 = 8;
+    pub const FUTEX_WAIT_REQUEUE_PI: u64 = 11;
+    pub const FUTEX_CMP_REQUEUE_PI: u64 = 12;
+    /// As `FUTEX_LOCK_PI`, its timeout on `CLOCK_MONOTONIC` unless
+    /// `FUTEX_CLOCK_REALTIME` is given.
+    pub const FUTEX_LOCK_PI2: u64 = 13;
 }
 
 /// `fcntl` commands.

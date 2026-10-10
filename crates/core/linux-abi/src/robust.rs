@@ -40,6 +40,14 @@ pub trait RobustMem {
     fn cas_u32(&mut self, addr: u64, old: u32, new: u32) -> Result<(), Option<u32>>;
     /// Wake one waiter on the word at `addr`.
     fn wake_one(&mut self, addr: u64);
+    /// The priority-inheritance word at `addr` (bit 0 of its list pointer)
+    /// names the dying thread: `Some(woke)` when the PI futex code took it
+    /// over (Kconfig `FUTEX_PI`, wave 15 N10: it writes `FUTEX_OWNER_DIED`
+    /// and hands the word to its top waiter, `woke`), `None` to leave the
+    /// word to this walk (PI futexes off: nobody can sleep on it).
+    fn pi_owner_died(&mut self, _addr: u64) -> Option<bool> {
+        None
+    }
 }
 
 /// What one walk did.
@@ -62,6 +70,13 @@ fn word_death(mem: &mut impl RobustMem, uaddr: u64, tid: u32, pi: bool, pending:
         return;
     }
     let Some(mut uval) = mem.read_u32(uaddr) else { return };
+    if pi && uval & FUTEX_TID_MASK == tid {
+        if let Some(woke) = mem.pi_owner_died(uaddr) {
+            w.owner_died += 1;
+            w.woken += woke as u32;
+            return;
+        }
+    }
     loop {
         if pending && !pi && uval == 0 {
             mem.wake_one(uaddr);
@@ -81,8 +96,8 @@ fn word_death(mem: &mut impl RobustMem, uaddr: u64, tid: u32, pi: bool, pending:
         }
     }
     w.owner_died += 1;
-    // A priority-inheritance word's waiters are the PI state's to wake; this
-    // kernel answers no PI futex, so none sleep on it.
+    // A priority-inheritance word's waiters are the PI state's to wake
+    // (`pi_owner_died` above); with PI futexes off none sleep on it.
     if !pi && uval & FUTEX_WAITERS != 0 {
         mem.wake_one(uaddr);
         w.woken += 1;

@@ -3685,7 +3685,7 @@ fn robust_list_exit(idx: usize, tid: u32, proc_id: u32) {
     if head == 0 || cfg!(feature = "robust-list-canary") {
         return;
     }
-    struct Mem(u32);
+    struct Mem(u32, usize);
     impl azos_linux_abi::robust::RobustMem for Mem {
         fn read_u64(&mut self, addr: u64) -> Option<u64> {
             let mut b = [0u8; 8];
@@ -3701,9 +3701,13 @@ fn robust_list_exit(idx: usize, tid: u32, proc_id: u32) {
         fn wake_one(&mut self, addr: u64) {
             let _ = crate::futex::wake_in(self.0, addr, 1);
         }
+        // Wave 15 N10: a PI word goes to the PI futex code (Kconfig FUTEX_PI).
+        fn pi_owner_died(&mut self, addr: u64) -> Option<bool> {
+            azos_sync::pi_futex::robust_owner_died(self.0, addr, self.1 as u32)
+        }
     }
     let limit = azos_limits::LINUX_ROBUST_LIST_LIMIT as u32;
-    let _ = azos_linux_abi::robust::exit_robust_list(&mut Mem(proc_id), head, tid, limit);
+    let _ = azos_linux_abi::robust::exit_robust_list(&mut Mem(proc_id, idx), head, tid, limit);
 }
 
 /// The exit of a thread-group member that is not the leader (see

@@ -516,6 +516,9 @@ mod robust_list {
         woken: Vec<u64>,
         /// One CAS on this word sees FUTEX_WAITERS set first (a racing waiter).
         race_waiter_on: Option<u64>,
+        /// N10: what the PI futex hook answers (`None`: PI futexes off).
+        pi_hook: Option<bool>,
+        pi_calls: Vec<u64>,
     }
     impl Mem {
         fn put64(&mut self, a: u64, v: u64) {
@@ -563,6 +566,10 @@ mod robust_list {
         fn wake_one(&mut self, a: u64) {
             self.woken.push(a);
         }
+        fn pi_owner_died(&mut self, a: u64) -> Option<bool> {
+            self.pi_calls.push(a);
+            self.pi_hook
+        }
     }
 
     const HEAD: u64 = 0x1000;
@@ -580,6 +587,37 @@ mod robust_list {
         m.put64(prev, HEAD);
         m.put64(HEAD + 8, OFF as u64);
         m.put64(HEAD + 16, pending);
+    }
+
+    /// N10: a held PI word goes to the PI futex code, which writes it and
+    /// wakes its new owner; the walk neither writes nor wakes. A PI word of
+    /// another owner never reaches the hook; with the hook off (FUTEX_PI n)
+    /// the walk marks the word itself and wakes nobody (no PI sleeper).
+    #[test]
+    fn a_held_pi_word_is_handed_to_the_pi_futex_code() {
+        let mut m = Mem { pi_hook: Some(true), ..Default::default() };
+        // head -> 0x2008 (PI) -> 0x3008 (PI) -> head; bit 0 marks PI.
+        list(&mut m, &[0x2008, 0x3008], 0);
+        m.put64(HEAD, 0x2008 | 1);
+        m.put64(0x2008, 0x3008 | 1);
+        m.put32(0x2000, TID | FUTEX_WAITERS);
+        m.put32(0x3000, 77 | FUTEX_WAITERS);
+        let w = exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.pi_calls, vec![0x2000]);
+        assert_eq!(m.get32(0x2000), Some(TID | FUTEX_WAITERS), "the hook owns the write");
+        assert_eq!(m.get32(0x3000), Some(77 | FUTEX_WAITERS));
+        assert!(m.woken.is_empty());
+        assert_eq!((w.entries, w.owner_died, w.woken), (2, 1, 1));
+
+        let mut m = Mem::default();
+        list(&mut m, &[0x2008], 0);
+        m.put64(HEAD, 0x2008 | 1);
+        m.put32(0x2000, TID | FUTEX_WAITERS);
+        let w = exit_robust_list(&mut m, HEAD, TID, 2048);
+        assert_eq!(m.pi_calls, vec![0x2000]);
+        assert_eq!(m.get32(0x2000), Some(FUTEX_OWNER_DIED | FUTEX_WAITERS));
+        assert!(m.woken.is_empty());
+        assert_eq!((w.entries, w.owner_died, w.woken), (1, 1, 0));
     }
 
     #[test]

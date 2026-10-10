@@ -1337,6 +1337,19 @@ fn sys_exit_thread(code: u64) -> i64 {
     sys_exit_group(code)
 }
 
+// The PI futex word and errnos (crates/core/sync/src/pi_futex.rs) are
+// Linux's and the native robust ABI's, bit for bit.
+const _: () = {
+    use azos_sync::pi_futex as pf;
+    assert!(pf::FUTEX_TID_MASK == lx::robust::FUTEX_TID_MASK && pf::FUTEX_TID_MASK == k::ROBUST_TID_MASK);
+    assert!(pf::FUTEX_OWNER_DIED == lx::robust::FUTEX_OWNER_DIED && pf::FUTEX_OWNER_DIED == k::ROBUST_OWNER_DIED);
+    assert!(pf::FUTEX_WAITERS == lx::robust::FUTEX_WAITERS && pf::FUTEX_WAITERS == k::ROBUST_WAITERS);
+    assert!(pf::EPERM as i64 == le::EPERM && pf::ESRCH as i64 == le::ESRCH && pf::EINTR as i64 == le::EINTR);
+    assert!(pf::EAGAIN as i64 == le::EAGAIN && pf::ENOMEM as i64 == le::ENOMEM && pf::EFAULT as i64 == le::EFAULT);
+    assert!(pf::EINVAL as i64 == le::EINVAL && pf::EDEADLK as i64 == le::EDEADLK);
+    assert!(pf::ENOSYS as i64 == le::ENOSYS && pf::ETIMEDOUT as i64 == le::ETIMEDOUT);
+};
+
 /// `futex(uaddr, op, val, timeout, uaddr2, val3)` (wave 13; wave 15 N9):
 /// `FUTEX_WAIT`, `FUTEX_WAKE` and their `_BITSET` forms with the full mask,
 /// `FUTEX_REQUEUE` and `FUTEX_CMP_REQUEUE` (Kconfig `FUTEX_REQUEUE`).
@@ -1345,8 +1358,10 @@ fn sys_exit_thread(code: u64) -> i64 {
 /// `FUTEX_SHARED`, the notify calls' key) and any other word is the
 /// process's, as Linux keys a shared futex on private memory by its mm.
 /// `FUTEX_WAIT`'s timeout is relative, `FUTEX_WAIT_BITSET`'s absolute on
-/// the monotonic clock. Priority-inheritance and wake-op forms are not
-/// answered.
+/// the monotonic clock. With Kconfig `FUTEX_PI` (wave 15 N10),
+/// `FUTEX_LOCK_PI`, `FUTEX_LOCK_PI2`, `FUTEX_TRYLOCK_PI` and
+/// `FUTEX_UNLOCK_PI` too, through `azos_sync::pi_futex`. Requeue-PI and
+/// wake-op forms are not answered.
 fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64) -> i64 {
     use lx::futex::*;
     let cmd = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
@@ -1410,6 +1425,31 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                 Ok((woken, moved)) => (woken + moved) as i64,
                 Err(e) => e,
             }
+        }
+        // Wave 15 N10, Kconfig FUTEX_PI: n answers ENOSYS (below) as before.
+        // The requeue-PI pair is not answered yet.
+        FUTEX_LOCK_PI | FUTEX_LOCK_PI2 | FUTEX_TRYLOCK_PI | FUTEX_UNLOCK_PI if azos_sync::pi_futex::ENABLED => {
+            use azos_sync::pi_futex::{sys_futex_pi, PiCmd};
+            if uaddr & 3 != 0 {
+                return neg(le::EINVAL);
+            }
+            let pcmd = match cmd {
+                FUTEX_TRYLOCK_PI => PiCmd::TryLock,
+                FUTEX_UNLOCK_PI => PiCmd::Unlock,
+                // Absolute on either clock: REALTIME counts from boot here
+                // (see `clock_gettime`), so both are the timer's ticks.
+                _ if timeout == 0 => PiCmd::Lock { deadline: None },
+                _ => {
+                    let mut b = [0u8; 16];
+                    if !get_user(timeout, &mut b) {
+                        return neg(le::EFAULT);
+                    }
+                    let Some(ns) = lx::timespec_ns(&b) else { return neg(le::EINVAL) };
+                    let freq = azos_drv_sys::timebase::TIMER_FREQ;
+                    PiCmd::Lock { deadline: Some(azos_abi::time::ns_to_ticks_ceil(ns, freq)) }
+                }
+            };
+            sys_futex_pi(uaddr, pcmd)
         }
         _ => unanswered(nr::FUTEX),
     }
