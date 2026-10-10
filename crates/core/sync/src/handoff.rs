@@ -125,7 +125,9 @@ pub fn stats(reason: HandoffReason) -> (u32, [u32; REFUSALS]) {
 /// Install the scheduler's implementation once at boot. Task context.
 /// With `IPC_DIRECT_HANDOFF` n this stores nothing (the implementation and
 /// its vtable are then unreferenced and the linker drops them). A second
-/// registration panics.
+/// registration panics. `#[inline(always)]` so the n fold reaches the
+/// caller and the fat pointer to the implementation is never built.
+#[inline(always)]
 pub fn register(imp: &'static dyn DirectSwitch) {
     if !ENABLED {
         return;

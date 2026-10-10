@@ -9648,9 +9648,10 @@ pub fn fast_ipc_reply_handoff(caller_tid: u32, handle: u64, server_tid: u32) {
 #[inline(never)]
 fn ipc_handoff(tid: u32, expect: WaitReason, reason: WaitReason, why: azos_sync::handoff::HandoffReason) {
     use azos_sync::handoff::HandoffRefused as R;
+    // The CPU is read with interrupts masked: the intent slot is indexed by it.
+    let sstatus = azos_arch::ARCH.disable_all();
     let cpu = current_cpu_id();
     if cpu < MAX_CPUS {
-        let sstatus = azos_arch::ARCH.disable_all();
         // SAFETY: this CPU's slot, interrupts masked until the helper returns.
         unsafe { (*HANDOFF_INTENT.0.get())[cpu] = (expect, reason) };
         let r = azos_sync::handoff::switch_to_direct(tid, why);
@@ -9663,6 +9664,8 @@ fn ipc_handoff(tid: u32, expect: WaitReason, reason: WaitReason, why: azos_sync:
             }
             Err(R::Disabled | R::LowerPriority) => {}
         }
+    } else {
+        azos_arch::ARCH.restore(sstatus);
     }
     wake_task_by_tid_ipc(tid, &|r| *r == expect);
     block_current(cpu, reason);
@@ -9699,11 +9702,12 @@ pub fn handoff_try_for_test(
     why: azos_sync::handoff::HandoffReason,
 ) -> Result<(), azos_sync::handoff::HandoffRefused> {
     use azos_sync::handoff::DirectSwitch;
+    let sstatus = azos_arch::ARCH.disable_all();
     let cpu = current_cpu_id();
     if cpu >= MAX_CPUS {
+        azos_arch::ARCH.restore(sstatus);
         return Err(azos_sync::handoff::HandoffRefused::Disabled);
     }
-    let sstatus = azos_arch::ARCH.disable_all();
     // SAFETY: this CPU's slot, interrupts masked until the switch returns.
     unsafe { (*HANDOFF_INTENT.0.get())[cpu] = (expect, reason) };
     let r = SCHED_HANDOFF.switch_to_direct(tid, why);
@@ -9759,6 +9763,8 @@ impl azos_sync::handoff::DirectSwitch for SchedHandoff {
                 return Err(R::Disabled);
             }
             // Not less urgent than the caller (lower number = more urgent).
+            // The effective priority number, not `waitgraph::PiAttr` as §5
+            // says: no SC -> PiAttr conversion exists in the scheduler yet.
             // Runtime canary `handoff-any-prio` skips this check.
             if task_ref(ti).priority.load(Ordering::Relaxed)
                 > task_ref(cur).priority.load(Ordering::Relaxed)
@@ -9769,6 +9775,10 @@ impl azos_sync::handoff::DirectSwitch for SchedHandoff {
             match wake_by_slot(Some(ti), &|r| *r == expect, true, cpu) {
                 // SAFETY: `cpu < MAX_CPUS`; `ti` was just claimed by this
                 // CPU's dispatch CAS, so nothing else dispatches it.
+                // `Ok` also when the caller's own commit found a wake
+                // already stamped (outcome 3: the target was enqueued, the
+                // caller must not block again), so the helper's `taken`
+                // count exceeds `IPC_DIRECT_SWITCHES` by those.
                 WakeOut::Claimed(ti) => {
                     direct_switch_block(cpu, ti, reason);
                     Ok(())
