@@ -845,6 +845,10 @@ fn handle_irq(_frame: &mut TrapFrame) {
     }
 
     if intid == INTID_IPI_SGI {
+        // The panic handler's stop IPI (Kconfig PANIC_QUIESCE) is SGI 0 too:
+        // once the kernel has panicked, park here (never returns, so no
+        // EOI owed). One load otherwise.
+        azos_actuation::watchdog::halt_if_panicked();
         let hart = azos_sched::smp::current_cpu_id();
         if let Some(slot) = SGI_RECEIVED.get(hart) {
             slot.fetch_add(1, Ordering::Release);

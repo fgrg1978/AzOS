@@ -6225,6 +6225,130 @@ rt_io_canary_row() { # <label> <isa: rv|arm>
 }
 par_row rt_io_canary_row "rt: RT block I/O panics, canary (rv)"  rv
 par_row rt_io_canary_row "rt: RT block I/O panics, canary (arm)" arm
+
+# ── Wave 15 (GR5): the panic report is not spliced by another CPU's output ──
+#
+# The full gate failed `rt: RT block I/O panics, canary (arm)` once in five:
+# `[AHR!S] Reference!! K pressure: 100586 PaERNEL PANIC` — the AHRS task's
+# line and the panic banner interleaved byte by byte, because the other CPU
+# kept printing until its next tick while the panicking one wrote lock-free.
+# Kconfig PANIC_QUIESCE (kernel/src/panic.rs `quiesce`): the panicking CPU
+# claims the console (other CPUs' UART writes wait), rings the others with
+# the scheduler IPI (its handler parks them) and waits for them, then prints
+# on a fresh line. `panic-splice-smoke`, -smp 3: CPU 1 floods the console
+# (kernel lines and ring-3 console writes, one per 100 us, interrupts on);
+# CPU 2 joins with kernel lines and its interrupts masked for good, so
+# nothing parks it and only the console claim keeps it out; CPU 0 panics
+# holding a SpinLock (the reset path under either policy).
+#
+# Read (\r stripped, `panic_splice_judge`): the report's lines whole
+# (`grep -x`: banner, policy, at, message, hart/task); `[PANIC] other CPUs
+# parked: 1/2 (not parked: cpu 2; ...)` — CPU 1 took the stop IPI, masked
+# CPU 2 did not; and the flood live up to the report (a `[FLOOD]` line among
+# the five non-empty lines before its first fragment, >= 150 in all) — a
+# flooder that died early passes nothing.
+#
+# Runtime canaries, same kernel:
+#   panic-stop-skip     no stop IPI, no wait: `parked: 0/2` (the report stays
+#                       whole: the console claim alone holds it). A race
+#                       against CPU 1's own tick, which parks it as it always
+#                       did: 0/2 in 25 of 30 boots (rv, arm, x86, 2026-10-10).
+#   panic-quiesce-skip  no claim either, as before: the masked CPU writes
+#                       through the report and splices it (30 of 30 boots).
+# A canary row boots up to PANIC_SPLICE_TRIES times and is green on the first
+# boot that shows its effect. The fixed kernel: 20/20 on each ISA (aarch64
+# missed a 10 ms stop wait once in 20 boots before PANIC_STOP_WAIT_US became
+# 100 ms under QEMU; it then parked 20/20).
+# x86_64 runs the same rows in its own section (x86_kbuild there).
+PANIC_SPLICE_TRIES=5
+panic_splice_judge() { # panic_splice_judge <log, \r stripped>: "<whole|spliced|nopanic> <parked n/m|none> <live|dead>"
+    local log="$1" rep=whole pk n=0 fl=dead b nb w
+    for w in '!!! KERNEL PANIC !!!' \
+             '  panic-splice-smoke: deliberate panic while another CPU floods the console' \
+             '  hart=0 task=splice-panic'; do
+        grep -aqxF -- "$w" "$log" || rep=spliced
+    done
+    grep -aqxE '\[PANIC\] policy=(reset|contain) verdict=reset reason=[a-z0-9-]+' "$log" || rep=spliced
+    grep -aqxE '  at kernel/src/smokes/panic_splice_smoke\.rs:[0-9]+' "$log" || rep=spliced
+    # The report's first trace, whatever a splice left of it: any fragment
+    # only the panic handler prints.
+    local frag='!!! K\|KERNEL PA\|verdict=\|deliberate panic\|pstore record written\|Crash counter = '
+    grep -aq "$frag" "$log" || rep=nopanic
+    # `n/m`, then `:<ids>` of the CPUs that did not park.
+    pk="$(grep -a '^\[PANIC\] other CPUs parked: ' "$log" | sed -n \
+        -e '1s/^\[PANIC\] other CPUs parked: \([0-9]*\/[0-9]*\) (not parked: cpu \([0-9 ]*\);.*/\1:\2/p' \
+        -e '1s/^\[PANIC\] other CPUs parked: \([0-9]*\/[0-9]*\)$/\1/p' | sed -n 1p)"
+    [ -n "$pk" ] || pk=none
+    n="$(grep -ac '^\[FLOOD\] [0-9]\{6\} ' "$log")"
+    b="$(grep -an "$frag" "$log" | sed -n '1s/:.*//p')"
+    if [ -n "$b" ] && [ "$n" -ge 150 ]; then
+        nb="$(sed -n "1,$((b - 1))p" "$log" | grep -avc '^$')"
+        sed -n "1,$((b - 1))p" "$log" | grep -av '^$' | sed -n "$((nb > 4 ? nb - 4 : 1)),\$p" \
+            | qgrep -aq '\[FLOOD\]' && fl=live
+    fi
+    echo "$rep $pk $fl"
+}
+# panic_splice_verdict <label-free want: pass|stop|splice> <judge output>: empty = as wanted
+panic_splice_verdict() {
+    local want="$1" got="$2"
+    case "$want" in
+        pass)   [ "$got" = "whole 1/2:2 live" ] || echo "want whole 1/2:2 live, got: $got" ;;
+        stop)   [ "$got" = "whole 0/2:1 2 live" ] || echo "want whole 0/2:1 2 live (canary), got: $got" ;;
+        splice) case "$got" in "spliced "*" live") ;; *) echo "want spliced live (canary), got: $got" ;; esac ;;
+    esac
+}
+panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|splice> [kernel command line]
+    local label="$1" isa="$2" want="$3" app="${4:-}" why="" try=1 tries=1 pid i v
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" kimg=""
+    mkdir -p "$CI_LOG_DIR"
+    if [ "$isa" = rv ]; then
+        kbuild "qemu,panic-splice-smoke" || { bad; echo "      riscv64 kernel (qemu,panic-splice-smoke) did not build"; return; }
+        kimg="$CI_LOG_DIR/${tag}-kernel.elf"; cp "$KERNEL" "$kimg"
+    else
+        a64_kbuild "qemu,panic-splice-smoke" || { bad; echo "      aarch64 kernel (qemu,panic-splice-smoke) did not build"; return; }
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
+    fi
+    par_ready
+    [ "$want" = pass ] || tries=$PANIC_SPLICE_TRIES
+    while [ "$try" -le "$tries" ]; do
+        rm -f "$log"; : >"$log"
+        if [ "$isa" = rv ]; then
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 3 \
+                ${app:+-append "$app"} </dev/null >"$log" 2>&1 &
+        else
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 3 -nographic \
+                -kernel "$kimg" ${app:+-append "$app"} </dev/null >"$log" 2>&1 &
+        fi
+        pid=$!; i=0
+        while [ "$i" -lt 120 ]; do
+            grep -aq 'Crash counter = \|\[TRACE\] cpu0' "$log" 2>/dev/null && { sleep 1; break; }
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+        v="$(panic_splice_judge "$log")"
+        why="$(panic_splice_verdict "$want" "$v")"
+        [ -z "$why" ] && break
+        try=$((try + 1))
+    done
+    rm -f "$kimg"
+    if [ -z "$why" ]; then
+        ok; echo "      $v (boot $try)"; rm -f "$log"
+    else
+        bad; echo "      $why ($tries boot(s))"
+        grep -a -m1 -B2 -A7 'KERNEL PA\|!!! K' "$log" | sed 's/^/        /'
+        echo "      log kept: $log"
+    fi
+}
+par_row panic_splice_row "panic: report not spliced by a console flood (rv)"  rv  pass
+par_row panic_splice_row "panic: report not spliced by a console flood (arm)" arm pass
+par_row panic_splice_row "panic: other CPUs parked, stop canary (rv)"         rv  stop   "canary=panic-stop-skip"
+par_row panic_splice_row "panic: other CPUs parked, stop canary (arm)"        arm stop   "canary=panic-stop-skip"
+par_row panic_splice_row "panic: report spliced, quiesce canary (rv)"         rv  splice "canary=panic-quiesce-skip"
+par_row panic_splice_row "panic: report spliced, quiesce canary (arm)"        arm splice "canary=panic-quiesce-skip"
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 
@@ -11860,6 +11984,42 @@ PY
     par "x86_64 ipctest" x86_autorun_row ipctest
     par "x86_64 image digest canary" x86_autorun_row canary
     par "x86_64 abitest fork-FP canary" x86_autorun_row fpcanary
+
+    # ── Wave 15 (GR5): the panic report is not spliced (see the rv/arm rows,
+    # `panic_splice_row`, for the property and the read). Same smoke and
+    # canaries on x86_64, -smp 2; judged by `panic_splice_judge`.
+    x86_panic_splice_row() { # x86_panic_splice_row <label> <want: pass|stop|splice> [kernel command line]
+        local label="$1" want="$2" app="${3:-}" why="" try=1 tries=1 v
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
+        x86_kbuild "panic-splice-smoke" "$kimg" || { bad; echo "      make x86_64 (panic-splice-smoke) did not build"; return; }
+        par_ready
+        local -a ap=(); [ -n "$app" ] && ap=(-append "$app")
+        [ "$want" = pass ] || tries=$PANIC_SPLICE_TRIES
+        while [ "$try" -le "$tries" ]; do
+            x86_qemu "$kimg" "$log" 60 'Crash counter = |\[TRACE\] cpu0' -smp 3 ${ap[@]+"${ap[@]}"} || { rm -f "$kimg" "$kimg.features"; return; }
+            v="$(panic_splice_judge "$log")"
+            why="$(panic_splice_verdict "$want" "$v")"
+            [ -z "$why" ] && break
+            try=$((try + 1))
+        done
+        rm -f "$kimg" "$kimg.features"
+        if [ -z "$why" ]; then
+            ok; echo "      $v (boot $try)"; rm -f "$log"
+        else
+            bad; echo "      $why ($tries boot(s))"
+            grep -a -m1 -B2 -A7 'KERNEL PA\|!!! K' "$log" | sed 's/^/        /'
+            echo "      log kept: $log"
+        fi
+    }
+    par "panic: report not spliced by a console flood (x86)" x86_panic_splice_row \
+        "panic: report not spliced by a console flood (x86)" pass
+    par "panic: other CPUs parked, stop canary (x86)" x86_panic_splice_row \
+        "panic: other CPUs parked, stop canary (x86)" stop "canary=panic-stop-skip"
+    par "panic: report spliced, quiesce canary (x86)" x86_panic_splice_row \
+        "panic: report spliced, quiesce canary (x86)" splice "canary=panic-quiesce-skip"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

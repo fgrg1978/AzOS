@@ -998,6 +998,11 @@ rt-panic-canary-spin = ["rt-panic-canary"]
 # global panic latch set — the observer checks that a motor command and the
 # ESC are refused after it (wave 13).
 rt-panic-canary-safety = ["rt-panic-canary", "azos_safety_core?/rt-panic-canary-safety"]
+# Wave 15 GR5: a kernel task on CPU 1 floods the console (kernel and ring-3
+# paths) while one on CPU 0 panics; the report must come out whole (Kconfig
+# PANIC_QUIESCE). Rows `panic: report not spliced by a console flood`; see
+# kernel/src/smokes/panic_splice_smoke.rs. No `qemu`: x86_64 builds it too.
+panic-splice-smoke = []
 # The motor-command watchdog record row (`tools/ci_check.sh`,
 # `rt_watchdog_record_row`): a 5 s report window instead of 60 s, so a short
 # boot closes one. Never in a default build.

@@ -77,6 +77,10 @@ pub fn dispatch(vector: u8) -> bool {
             true
         }
         encode::RESCHED_VECTOR => {
+            // The panic handler's stop IPI (Kconfig PANIC_QUIESCE) is this
+            // vector too: once the kernel has panicked, park here (never
+            // returns, so no EOI owed). One load otherwise.
+            azos_actuation::watchdog::halt_if_panicked();
             if let Some(slot) = IPI_RECEIVED.get(azos_sched::smp::current_cpu_id()) {
                 slot.fetch_add(1, Ordering::Release);
             }

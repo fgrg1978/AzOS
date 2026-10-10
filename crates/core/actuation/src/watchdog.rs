@@ -70,7 +70,8 @@ static WDT_LAST_ADVANCE: AtomicU64 = AtomicU64::new(0);
 /// the grace is never shorter than 400 ms and never longer than it was.
 const WDT_CONTROL_STALL_GRACE_MS: u64 = 400;
 
-/// Timer ISR: if any hart has panicked, stop this hart's actuators and park it.
+/// Timer ISR and the IPI handler (the panic handler's stop IPI): if any hart
+/// has panicked, stop this hart's actuators and park it.
 #[inline]
 pub fn halt_if_panicked() {
     // If any hart has panicked, halt this one: bring our actuators to a
@@ -81,6 +82,9 @@ pub fn halt_if_panicked() {
         // it registered their lock-free stop with `gate::
         // register_panic_stop_hook` at boot. Run here, in the same order.
         crate::gate::run_panic_stop_hooks();
+        // The panicking CPU waits for this bit before it prints (Kconfig
+        // PANIC_QUIESCE): from here on this CPU writes nothing.
+        azos_common::note_parked(azos_arch::ARCH.hart_id());
         // `Cpu::halt`, not a `wfi` loop: x86_64's `wfi` with interrupts
         // masked is the panic path's final stop and ends a QEMU run through
         // isa-debug-exit (status 1). A CPU parked here must not end the

@@ -93,6 +93,8 @@ pub(crate) mod sensor_ts;
 pub(crate) mod pifast_smoke;
 #[cfg(feature = "rt-panic-canary")]
 pub(crate) mod rt_panic_smoke;
+#[cfg(feature = "panic-splice-smoke")]
+pub(crate) mod panic_splice_smoke;
 #[cfg(feature = "drv-contain-smoke")]
 pub(crate) mod drv_contain_smoke;
 #[cfg(feature = "timer-heap-smoke")]

@@ -2088,6 +2088,10 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // RT7: panic policy by profile, see `smokes::rt_panic_smoke`.
     #[cfg(feature = "rt-panic-canary")]
     smokes::rt_panic_smoke::spawn();
+    // Wave 15 GR5: a panic while another CPU floods the console, see
+    // `smokes::panic_splice_smoke`.
+    #[cfg(feature = "panic-splice-smoke")]
+    smokes::panic_splice_smoke::spawn();
     // RT7 (wave 13): a contained panic in a kernel-placed driver's host, and
     // its restart, see `smokes::drv_contain_smoke`.
     #[cfg(feature = "drv-contain-smoke")]

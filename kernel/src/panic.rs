@@ -166,10 +166,18 @@ fn panic(info: &PanicInfo) -> ! {
     // that were here). Wave 11: `azos_actuation::gate`.
     azos_actuation::gate::run_panic_stop_hooks();
 
+    // ── Stop the other CPUs and own the console (Kconfig PANIC_QUIESCE) ──
+    // Before the first byte of the report: another CPU printing meanwhile
+    // spliced it byte by byte (`[AHR!S] Reference!! K pressure: 100586
+    // PaERNEL PANIC`, gate row `rt: RT block I/O panics, canary (arm)`).
+    let stop = quiesce(hart);
+
     // ── Print panic info (no locks — we're crashing) ────────────────────
     // Kernel output stops deferring to a ring-3 console owner from here on
     // (one atomic store, lock-free): the trace dump's `kprintln!` below must
-    // reach the wire even if the owner never runs again.
+    // reach the wire even if the owner never runs again. It also puts the
+    // TX ring on the wire first (older output, a parked CPU's partial line
+    // included); the leading `\n` below ends that line.
     azos_drv_sys::uart::console_enter_bypass();
     azos_drv_sys::uart::puts("\n!!! KERNEL PANIC !!!\n");
     azos_drv_sys::uart::puts(match POLICY {
@@ -207,6 +215,10 @@ fn panic(info: &PanicInfo) -> ! {
     azos_drv_sys::uart::puts(" task=");
     azos_drv_sys::uart::puts(task_name);
     azos_drv_sys::uart::puts("\n");
+    // After the hart/task line: rows read a fixed window below the banner.
+    if let Some(stop) = stop {
+        stop.report();
+    }
 
     // ── RAM record first (pstore): lock-free, survives a warm reboot ─────
     // Written before anything below that takes a lock, so a panic inside
@@ -229,6 +241,12 @@ fn panic(info: &PanicInfo) -> ! {
     } else {
         azos_drv_sys::uart::puts("\n");
     }
+
+    // The report's core is out. Release the console before the crash-log
+    // write: it takes FAT32/VFS locks blocking, and a CPU that did not park
+    // may hold one while it waits for the console (see
+    // `uart::console_release_panic_owner`). What follows is best-effort.
+    azos_drv_sys::uart::console_release_panic_owner();
 
     // ── Persist crash log to FAT32 (best-effort) ────────────────────────
     write_crash_log(in_pstore);
@@ -276,6 +294,91 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {
         azos_arch::ARCH.wfi();
+    }
+}
+
+/// What [`quiesce`] did: the other online CPUs it asked to stop, and which
+/// of them parked within `PANIC_STOP_WAIT_US` (bit = CPU id).
+struct Stopped {
+    want: u64,
+    parked: u64,
+}
+
+impl Stopped {
+    /// `[PANIC] other CPUs parked: <n>/<m>`, plus the ids that did not park.
+    fn report(&self) {
+        let mut nbuf = [0u8; 10];
+        let mut buf = [0u8; 20];
+        azos_drv_sys::uart::puts("[PANIC] other CPUs parked: ");
+        azos_drv_sys::uart::puts(fmt_u32((self.parked & self.want).count_ones(), &mut nbuf));
+        azos_drv_sys::uart::puts("/");
+        azos_drv_sys::uart::puts(fmt_u32(self.want.count_ones(), &mut nbuf));
+        let late = self.want & !self.parked;
+        if late != 0 {
+            azos_drv_sys::uart::puts(" (not parked: cpu");
+            for cpu in 0..64 {
+                if late & (1 << cpu) != 0 {
+                    azos_drv_sys::uart::puts(" ");
+                    azos_drv_sys::uart::puts(fmt_usize(cpu, &mut buf));
+                }
+            }
+            azos_drv_sys::uart::puts("; their console writes wait for this report)");
+        }
+        azos_drv_sys::uart::puts("\n");
+    }
+}
+
+/// Kconfig `PANIC_QUIESCE`, the reset path's step before it prints:
+///
+/// 1. Claim the console (`uart::console_claim_for_panic`): from now on any
+///    other CPU's write to the UART waits until the report is out. A CPU
+///    that finds the console claimed is a second panic racing the first:
+///    it parks like any other CPU (Linux's `panic_smp_self_stop`), so the
+///    two reports never interleave and the two handlers never wait for each
+///    other.
+/// 2. Ring every other online CPU (the scheduler's doorbell IPI on every
+///    ISA); its handler parks the CPU once the panic flag is set
+///    (`watchdog::halt_if_panicked`), as its next tick would have — only up
+///    to a tick (or a tickless sleep) later, still printing meanwhile.
+/// 3. Wait at most `PANIC_STOP_WAIT_US` for them to park. A CPU with
+///    interrupts masked through the whole wait is reported by id; its
+///    writes still wait behind step 1.
+///
+/// Returns `None` when the build or a canary turned it off. Prints nothing:
+/// the report comes after the banner ([`Stopped::report`]).
+fn quiesce(hart: usize) -> Option<Stopped> {
+    if !azos_limits::PANIC_QUIESCE || canary!("panic-quiesce-skip") {
+        return None;
+    }
+    if !azos_drv_sys::uart::console_claim_for_panic() {
+        azos_actuation::watchdog::halt_if_panicked();
+    }
+    let online = azos_sched::smp::NUM_ONLINE_CPUS.load(Ordering::Acquire)
+        .clamp(1, azos_sched::MAX_CPUS).min(64);
+    let mut want = 0u64;
+    for cpu in 0..online {
+        if cpu != hart {
+            want |= 1 << cpu;
+        }
+    }
+    if canary!("panic-stop-skip") {
+        return Some(Stopped { want, parked: azos_common::parked_mask() });
+    }
+    for cpu in 0..online {
+        if want & (1 << cpu) != 0 {
+            use azos_arch::Interrupts;
+            azos_arch::ARCH.send_ipi(cpu);
+        }
+    }
+    let per_us = (azos_drv_sys::timebase::TIMER_FREQ / 1_000_000).max(1);
+    let budget = azos_limits::PANIC_STOP_WAIT_US as u64 * per_us;
+    let t0 = azos_drv_sys::timebase::now();
+    loop {
+        let parked = azos_common::parked_mask();
+        if parked & want == want || azos_drv_sys::timebase::now().wrapping_sub(t0) >= budget {
+            return Some(Stopped { want, parked });
+        }
+        core::hint::spin_loop();
     }
 }
 

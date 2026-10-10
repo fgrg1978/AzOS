@@ -668,6 +668,16 @@ The real-time system watchdog (`sys-wdt`, on every ISA) requests a flush every
 500 ms and hands its OTA boot-good mark to `log-flush`. At boot the recorder is replayed to restore the e-stop latch and the
 release nonce floor.
 
+**Panic report.** On the reset path the panicking CPU stops the actuators,
+then claims the console: any other CPU's UART write waits until the report
+is out. It rings every other online CPU with the scheduler IPI, whose handler
+parks the CPU once the panic flag is set, and waits up to
+`PANIC_STOP_WAIT_US` for them (`PANIC_QUIESCE`). Queued console output goes
+out first and the report starts on a fresh line, so no other CPU's output
+can splice it; it names any CPU that did not park. A second CPU that panics
+meanwhile parks instead of printing. The console is released once the report's
+core lines are out, before the crash-log write.
+
 **Crash log.** The panic handler first writes a record to a reserved RAM
 area, then appends the report to `/fat/CRASH.LOG`. If the append fails, the
 next boot copies the RAM record to the file. `CRASH.LOG` rotates to

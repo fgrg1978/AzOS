@@ -1023,6 +1023,7 @@ pub fn can_read() -> bool {
 
 /// Write a single byte to the UART (blocking).
 pub fn putc(c: u8) {
+    wait_panic_owner();
     hw::putc_raw(c);
     if c == b'\n' {
         putc(b'\r');
@@ -1058,6 +1059,11 @@ pub fn getc() -> u8 {
 /// the refusal having worked, because the shell's `robot> ` prompt — written
 /// through here — landed between `REFUSED` and `: /fat/UHELLO.ELF`, and the
 /// row's fixed-string marker spans exactly that point.
+///
+/// The panic report itself is not spliced: before it prints, the panic
+/// handler parks the other CPUs and takes the console
+/// ([`console_take_for_panic`]), so every other CPU's write is dropped at
+/// the device until the report is out.
 ///
 /// # Not through `Console`, deliberately
 ///
@@ -1178,6 +1184,10 @@ fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
         rt != RT_CALLER_NONE,
     );
     if BYPASS.load(Ordering::Relaxed) {
+        // Wait out another CPU's panic report BEFORE the UART lock: waiting
+        // inside it (at the device) would make the reporting CPU's lock
+        // tries fail — its TX-ring flush and its trace dump.
+        wait_panic_owner();
         let _guard = acquire();
         // SAFETY: `_guard` holds the UART lock.
         unsafe { tx_state() }.flush_sync();
@@ -1347,7 +1357,7 @@ struct DirectHw;
 impl Console for DirectHw {
     #[inline]
     fn write_bytes(&self, bytes: &[u8]) {
-        hw::write_bytes(bytes)
+        hw_write(bytes)
     }
 }
 
@@ -1742,7 +1752,8 @@ impl TxRing {
         let mut moved = 0;
         while self.len > 0 && moved < budget {
             let end = (self.head + self.len).min(TX_RING_BYTES).min(self.head + (budget - moved));
-            let n = hw::tx_fill(&self.buf[self.head..end]);
+            // A CPU that is not the panic owner leaves the ring to it.
+            let n = if panic_foreign() { 0 } else { hw::tx_fill(&self.buf[self.head..end]) };
             if n == 0 {
                 break;
             }
@@ -1776,7 +1787,7 @@ impl TxRing {
         while self.len > 0 {
             let end = (self.head + self.len).min(TX_RING_BYTES);
             let n = end - self.head;
-            hw::write_bytes(&self.buf[self.head..end]);
+            hw_write(&self.buf[self.head..end]);
             #[cfg(feature = "console-splice-smoke")]
             lock_probe::wire(n);
             self.consume(n);
@@ -1853,7 +1864,7 @@ pub(crate) fn tx_write_wait(bytes: &[u8], translate: bool) {
             if translate {
                 write_str_translated(rest);
             } else {
-                hw::write_bytes(rest);
+                hw_write(rest);
             }
             return;
         }
@@ -1897,7 +1908,7 @@ fn tx_irq() {
         if let Some(g) = try_acquire() {
             break g;
         }
-        if BYPASS.load(Ordering::Relaxed) {
+        if BYPASS.load(Ordering::Relaxed) || panic_foreign() {
             hw::tx_irq_set(false);
             return;
         }
@@ -1906,7 +1917,10 @@ fn tx_irq() {
     let low = {
         // SAFETY: `_guard` holds the UART lock; this reference ends here.
         let tx = unsafe { tx_state() };
-        if BYPASS.load(Ordering::Relaxed) {
+        // Another CPU owns the console for its panic report: `fill` would
+        // move nothing and the interrupt would fire back to back, keeping
+        // this CPU from its stop IPI. The owner flushes the ring itself.
+        if BYPASS.load(Ordering::Relaxed) || panic_foreign() {
             hw::tx_irq_set(false);
             tx.active = false;
             return;
@@ -2038,6 +2052,79 @@ pub fn console_enter_bypass() {
         // SAFETY: `_guard` holds the UART lock for this scope.
         unsafe { tx_state() }.flush_sync();
     }
+}
+
+/// The CPU that owns the console for its panic report: its `Cpu::hart_id`
+/// plus one, 0 = none. While it is set, a write to the UART from any other
+/// CPU waits at the device until the report is out ([`wait_panic_owner`]):
+/// the TX ring's flush, the direct path ([`write_str_translated`],
+/// [`puts`]), an owner's unqueued write ([`tx_write_wait`] in bypass) and
+/// [`putc`]. The TX interrupt's fill, which must not wait, moves nothing,
+/// and [`tx_irq`] on such a CPU masks the interrupt. Nothing is dropped: a
+/// CPU that did not park prints after the report. The report releases the
+/// console before its filesystem write ([`console_release_panic_owner`]).
+///
+/// Why a gate at the device and not a lock: after [`BYPASS`] every writer
+/// goes straight to the FIFO, some under the UART lock (a kernel line) and
+/// some with no lock at all (a ring-3 owner's bytes, the panic text
+/// itself), and the CPU holding the lock may be the one that died. The
+/// panic handler first parks the other CPUs (Kconfig `PANIC_QUIESCE`, its
+/// stop IPI); this gate covers a CPU that did not park in time (interrupts
+/// masked through the whole wait). A write already past the check finishes
+/// its one call: the stop IPI's wait is what drains those.
+static PANIC_OWNER: AtomicUsize = AtomicUsize::new(0);
+
+/// A write from this CPU must not reach the wire now: another CPU owns the
+/// console for its panic report. One relaxed load when nobody does.
+#[inline(always)]
+fn panic_foreign() -> bool {
+    let o = PANIC_OWNER.load(Ordering::Relaxed);
+    o != 0 && o != azos_arch::Cpu::hart_id(&azos_arch::ARCH) + 1
+}
+
+/// Wait while another CPU owns the console for its panic report. The panic
+/// handler never waits for this CPU (it only tries the UART lock), so the
+/// wait ends when the report does — or never, if this CPU takes its tick or
+/// the stop IPI first and parks, which is the point.
+#[inline(always)]
+fn wait_panic_owner() {
+    while panic_foreign() {
+        core::hint::spin_loop();
+    }
+}
+
+/// `hw::write_bytes` behind the panic owner's gate ([`PANIC_OWNER`]).
+#[inline(always)]
+fn hw_write(bytes: &[u8]) {
+    wait_panic_owner();
+    hw::write_bytes(bytes);
+}
+
+/// The panic handler's console claim, its first step after the actuator
+/// stop: this CPU becomes the console's only writer ([`PANIC_OWNER`]).
+/// Then it parks the other CPUs and calls [`console_enter_bypass`], which
+/// puts the TX ring on the wire if the UART lock is free — older output,
+/// including a parked CPU's partial line, which the report's leading `\n`
+/// then ends. Returns false when another CPU already owns the console (it
+/// is reporting its own panic): the caller must park, not print.
+pub fn console_claim_for_panic() -> bool {
+    let me = azos_arch::Cpu::hart_id(&azos_arch::ARCH) + 1;
+    match PANIC_OWNER.compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => true,
+        Err(o) => o == me,
+    }
+}
+
+/// The panic report's core lines are out: other CPUs may write again (the
+/// console stays in bypass). Called before the crash-log write, which takes
+/// filesystem locks blocking: a CPU that did not park could hold one of
+/// them while it waits here for the console, and neither would ever move.
+/// A CPU that masked its interrupts on purpose, like
+/// `rt-panic-canary-safety`'s observer, prints after the report's core,
+/// never inside it. A no-op on a CPU that does not own the console.
+pub fn console_release_panic_owner() {
+    let me = azos_arch::Cpu::hart_id(&azos_arch::ARCH) + 1;
+    let _ = PANIC_OWNER.compare_exchange(me, 0, Ordering::AcqRel, Ordering::Relaxed);
 }
 
 /// Put deferred kernel output on the wire if the UART lock is free, with a

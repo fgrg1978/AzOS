@@ -117,6 +117,14 @@ pub(crate) const NAMES: &[&str] = &[
     "rcu-idle-qs-skip",
     "rcu-free-no-grace",
     "lockdep-rcu-sleep",
+    // kernel/src/panic.rs `quiesce`: the panic handler does not stop the
+    // other CPUs (no stop IPI, no wait); it still owns the console. The
+    // `panic: other CPUs parked` rows must fail on the parked count.
+    "panic-stop-skip",
+    // The same, and the console is not claimed either: the panic report goes
+    // out while the other CPUs keep printing, as before wave 15 GR5 (row
+    // `panic: report not spliced by a console flood` must splice).
+    "panic-quiesce-skip",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

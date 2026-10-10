@@ -219,6 +219,48 @@ config PANIC_CONTAIN_LAND_MS
       worst-case time to descend from the vehicle's operating altitude at
       the Land throttle. Read only when PANIC_POLICY_CONTAIN is set.
 
+config PANIC_QUIESCE
+    bool "Panic: stop the other CPUs and own the console before the report"
+    default y
+    help
+      On the reset path the panicking CPU, right after the actuator stop and
+      before the first byte of its report: claims the console (any other
+      CPU's UART write then waits until the report is out), rings every
+      other online CPU with the scheduler's IPI (its handler parks the CPU,
+      as the next timer tick would) and waits up to PANIC_STOP_WAIT_US for
+      them to park. The report then says "[PANIC] other CPUs parked: n/m".
+      A second CPU panicking meanwhile parks instead of printing.
+
+      Without it the other CPUs keep running until their next tick (or a
+      tickless sleep's end) and their console output splices the report
+      byte by byte: a garbled last message from the board, and gate rows
+      that read it fail.
+
+      Cost: one load and a branch in the IPI handler on every ISA (the
+      cross-CPU wake path), one relaxed load per UART write call, and on a
+      panic at most PANIC_STOP_WAIT_US. Same default on every ISA, profile
+      and mode: a crash report is worth more than either. Turn it off only
+      to reproduce the old behaviour.
+
+config PANIC_STOP_WAIT_US
+    int "Panic: how long to wait for the other CPUs to park (us)"
+    range 0 1000000
+    default 100000 if BOARD_QEMU
+    default 10000
+    help
+      The longest the panicking CPU waits for the other online CPUs to take
+      its stop IPI and park (PANIC_QUIESCE) before it prints anyway. A CPU
+      takes the IPI as soon as it unmasks interrupts, so the wait is the
+      longest interrupts-masked window on any CPU; on a board 10 ms is far
+      above every measured one (microseconds) and invisible next to the
+      report itself. Under QEMU each CPU is a host thread that a loaded host
+      can deschedule for tens of milliseconds (measured 2026-10-10: one boot
+      in twenty of panic-splice-smoke on aarch64 missed 10 ms), so 100 ms.
+      Every panic pays the whole wait when a CPU counted online never runs
+      (NUM_ONLINE_CPUS is a prefix bound) or keeps interrupts masked on
+      purpose. Linux waits up to 1 s (smp_send_stop); raise it on a board
+      whose masked windows are long. Read only when PANIC_QUIESCE is set.
+
 # ---------------------------------------------------------------------------
 # Kernel console log level
 # ---------------------------------------------------------------------------

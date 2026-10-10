@@ -533,6 +533,10 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
             // return here for a long time, and leaving SSIP set would re-enter
             // this arm immediately on the way out.
             csr::clear_sip_ssip();
+            // The panic handler's stop IPI (Kconfig PANIC_QUIESCE) is this
+            // same doorbell: once the kernel has panicked, park here. One
+            // load otherwise.
+            azos_actuation::watchdog::halt_if_panicked();
             #[cfg(feature = "ipc-census")]
             azos_sched::wakelat_ipi_recv();
             // K-C15: the whole point of the doorbell. Without this the hart
