@@ -874,6 +874,8 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
             }
             ADMITTED.fetch_add(1, Ordering::Relaxed);
             super::classes::on_reserved(idx, &r);
+            // N7: the task is DL now; where it waits, it re-sorts.
+            super::classes::pi_attr_changed(idx);
             azos_drv_sys::kprintln!(
                 "[SCHED-RT] admitted tid={} hart={} runtime_us={} period_us={} deadline_us={} \
                  {} band={} level={} density_ppm={} hart_load_ppm={} band_load_ppm={}",
@@ -993,4 +995,6 @@ pub fn set_base_priority(idx: usize, prio: u32) {
         c.apply_prio(prio);
     }
     c.unlock();
+    // N7: a boost the wait graph holds comes back on top of the new base.
+    super::classes::pi_attr_changed(idx);
 }

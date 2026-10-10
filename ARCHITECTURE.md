@@ -215,7 +215,13 @@ authority, the kernel also latches the e-stop and writes a safety record.
   context switch still takes its pick from the priority levels and the
   reservation sets as described above: for the real-time, fair and idle
   classes that order is the class order, while a reservation runs first only
-  within its own level, not above the whole band.
+  within its own level, not above the whole band. With `WAIT_GRAPH`
+  (default off) the SC's `blocked_on` names the object a task waits on in a
+  wait graph: each object keeps its waiters by urgency, an owner runs at the
+  most urgent attribute among its own and its waiters' (a deadline waiter
+  passes its absolute deadline), a chain walk carries a boost through at
+  most `PI_MAX_DEPTH` owners, and a block that would close a cycle fails
+  with `EDEADLK`. No lock uses the graph yet.
 - **SMP.** The kernel places a waking unpinned task on a suitable CPU and
   signals other CPUs with an inter-processor interrupt (SBI on riscv64,
   GICv3 SGI on aarch64). Tasks are not stolen between run queues at run time.

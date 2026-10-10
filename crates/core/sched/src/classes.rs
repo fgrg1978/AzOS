@@ -34,13 +34,24 @@
 //! A task's SC is [`SC`]`[slot]` (its own; IPC donation in N9 lends another
 //! one). The class is written where the facts are: slot creation, base
 //! priority changes, reservation admission and release — never on the switch
-//! path. `on_cpu` and `blocked_on` have no writer yet: [`on_cpu`] computes
-//! the former from the per-CPU current task (cold), the wait graph (N7)
-//! writes the latter.
+//! path. `on_cpu` has no writer yet: [`on_cpu`] computes it from the
+//! per-CPU current task (cold). `blocked_on` is written by the wait graph
+//! (N7) through [`ClassPi`].
+//!
+//! # The wait graph's scheduler side (N7)
+//!
+//! [`ClassPi`] is `azos_sync::waitgraph::SchedPi` over these classes,
+//! registered at boot with `WAIT_GRAPH`. The graph computes the effective
+//! attribute; here it becomes a Legacy priority number ([`pi_prio`]) kept per
+//! slot in `PI_PRIO`, and the live `priority` is re-bucketed under the
+//! slot's donation lock. `TaskDonation::base` reads the same floor, so a
+//! counted donor (PIFAST, lease, driver proxy, until N7's migrations move
+//! them onto the graph) returning lands on the graph's boost, not under it.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use azos_arch::Interrupts;
+use azos_sync::waitgraph::{self, PiAttr, SchedPi, TaskId, WaitObj};
 
 use crate::sc::{classify, Class, ClassTable, SchedClassOps, SchedContext, NO_CPU};
 use crate::task::{TaskState, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
@@ -148,6 +159,14 @@ pub(super) fn on_slot_reset(idx: usize, prio: u32) {
     if let Some(sc) = sc_of(idx) {
         sc.set_times(0, 0, 0);
         sc.class.store(Class::Fair as u8, Ordering::Relaxed);
+        sc.blocked_on.store(0, Ordering::Relaxed);
+    }
+    // N7: nothing of the previous occupant's graph state survives (its
+    // effective attribute, its boost floor). Under POOL_LOCK; the graph
+    // lock is a leaf below it.
+    if waitgraph::ENABLED && idx < MAX_TASKS {
+        PI_PRIO[idx].store(u32::MAX, Ordering::Relaxed);
+        waitgraph::task_exit(idx as TaskId);
     }
     on_base_priority(idx, prio);
 }
@@ -306,4 +325,122 @@ pub fn pick_here() -> Option<(Class, usize)> {
     let r = if cpu < ncpu() { crate::sc::pick_in_precedence(&TABLE, cpu) } else { None };
     azos_arch::ARCH.restore(s);
     r
+}
+
+/// Per-slot wait-graph boost as a Legacy priority number, `u32::MAX` = none.
+/// Sized 0 without `WAIT_GRAPH` (nothing writes it then).
+const PI_SLOTS: usize = if waitgraph::ENABLED { MAX_TASKS } else { 0 };
+static PI_PRIO: [AtomicU32; PI_SLOTS] = [const { AtomicU32::new(u32::MAX) }; PI_SLOTS];
+
+/// The priority floor the wait graph holds `idx` at (`u32::MAX`: none). The
+/// donation protocol's base is `min(base_priority, this)`.
+#[inline]
+pub(super) fn pi_floor(idx: usize) -> u32 {
+    if !waitgraph::ENABLED {
+        return u32::MAX;
+    }
+    PI_PRIO.get(idx).map_or(u32::MAX, |p| p.load(Ordering::Relaxed))
+}
+
+/// The Legacy priority number an effective attribute runs at. Stop and DL
+/// take the top level: the class precedence (Q6) puts them above every RT
+/// level, and Legacy dispatch has no per-task absolute deadline to install,
+/// so a DL donor's deadline stays exact in the graph (`waitgraph::effective`)
+/// and the owner runs at the top level. RT is its own number. Fair and idle
+/// do not boost (stage 1: no weight inheritance).
+pub const fn pi_prio(a: PiAttr) -> u32 {
+    match a {
+        PiAttr::Stop | PiAttr::Dl { .. } => 0,
+        PiAttr::Rt { prio } => prio as u32,
+        PiAttr::Fair | PiAttr::Idle => u32::MAX,
+    }
+}
+
+const _: () = assert!(RT_PRIORITY_THRESHOLD <= u8::MAX as u32 && IDLE_PRIORITY <= u8::MAX as u32);
+
+/// `azos_sync::waitgraph::SchedPi` over the dispatch classes.
+pub struct ClassPi;
+
+/// The hooks `boot::sched` registers with `WAIT_GRAPH`.
+pub static PI: ClassPi = ClassPi;
+
+impl ClassPi {
+    /// Install the graph's floor `p` on `idx` and move its live priority:
+    /// to `min(base, p)` with no counted donation in flight, else only
+    /// upwards (the counted return lands on the floor; `TaskDonation::base`).
+    fn write_floor(&self, idx: usize, p: u32) {
+        use crate::donation::DonationCell;
+        if idx >= MAX_TASKS || !waitgraph::ENABLED {
+            return;
+        }
+        PI_PRIO[idx].store(p, Ordering::Relaxed);
+        let c = super::TaskDonation::new(idx);
+        c.lock();
+        let target = c.base();
+        let cur = c.prio();
+        if target != cur && (c.count() == 0 || target < cur) {
+            c.apply_prio(target);
+        }
+        c.unlock();
+    }
+}
+
+impl SchedPi for ClassPi {
+    fn base_attr(&self, t: TaskId) -> PiAttr {
+        let idx = t as usize;
+        if idx >= MAX_TASKS {
+            return PiAttr::Idle;
+        }
+        let base = unsafe { task_ref(idx) }.base_priority.load(Ordering::Relaxed);
+        let rt = PiAttr::Rt { prio: base.min(u8::MAX as u32) as u8 };
+        match class_of(idx) {
+            Some(Class::Stop) => PiAttr::Stop,
+            Some(Class::Dl) => {
+                // The absolute deadline is the reservation's hart's owner
+                // state: read on that hart only; elsewhere the latest
+                // deadline keeps the class (above every RT task) and loses
+                // only the order inside DL.
+                let s = azos_arch::ARCH.disable_all();
+                let cpu = crate::smp::current_cpu_id();
+                let d = if cpu < ncpu() { unsafe { rt::dl_deadline(cpu, idx) } } else { None };
+                azos_arch::ARCH.restore(s);
+                PiAttr::Dl { deadline_ns: d.map_or(u64::MAX, |us| us.saturating_mul(1000)) }
+            }
+            Some(Class::Rt) => rt,
+            Some(Class::Idle) => PiAttr::Idle,
+            Some(Class::Fair) | None => PiAttr::Fair,
+        }
+    }
+
+    fn boost(&self, t: TaskId, to: PiAttr) {
+        self.write_floor(t as usize, pi_prio(to));
+    }
+
+    fn unboost(&self, t: TaskId, to: PiAttr) {
+        self.write_floor(t as usize, pi_prio(to));
+    }
+
+    fn set_blocked_on(&self, t: TaskId, on: Option<WaitObj>) {
+        if let Some(sc) = sc_of(t as usize) {
+            sc.blocked_on.store(on.map_or(0, WaitObj::addr), Ordering::Release);
+        }
+    }
+
+    fn blocked_on(&self, t: TaskId) -> Option<WaitObj> {
+        sc_of(t as usize).and_then(|sc| WaitObj::from_addr(sc.blocked_on.load(Ordering::Acquire)))
+    }
+
+    fn on_cpu(&self, t: TaskId) -> bool {
+        on_cpu(t as usize) != NO_CPU
+    }
+}
+
+/// A base attribute of `idx` changed (priority, reservation admitted or
+/// dropped): the wait graph re-sorts it and walks. Call with no run-queue,
+/// donation or admission lock held. Compiled out without `WAIT_GRAPH`.
+#[inline]
+pub(super) fn pi_attr_changed(idx: usize) {
+    if waitgraph::ENABLED && idx < MAX_TASKS {
+        waitgraph::attr_changed(idx as TaskId);
+    }
 }

@@ -7147,9 +7147,11 @@ pub fn set_current_sched_params(priority: u32, class_raw: u8) -> u32 {
     let sstatus = azos_arch::ARCH.disable_all();
     let cpu = current_cpu_id();
     let mut before = priority;
+    let mut changed = usize::MAX;
     unsafe {
         let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
         if idx < MAX_TASKS {
+            changed = idx;
             let task = task_mut(idx);
             before = task.base_priority.load(Ordering::Relaxed);
             #[cfg(feature = "sched-aps")]
@@ -7168,6 +7170,8 @@ pub fn set_current_sched_params(priority: u32, class_raw: u8) -> u32 {
         }
     }
     azos_arch::ARCH.restore(sstatus);
+    // N7: re-apply a wait-graph boost over the new base, and re-sort.
+    classes::pi_attr_changed(changed);
     before
 }
 
@@ -7599,8 +7603,11 @@ impl crate::donation::DonationCell for TaskDonation {
     fn prio(&self) -> u32 {
         unsafe { task_mut(self.idx).priority.load(Ordering::Relaxed) }
     }
+    /// The base, held up by the wait graph's boost (`classes::pi_floor`, a
+    /// constant `u32::MAX` without `WAIT_GRAPH`).
     fn base(&self) -> u32 {
-        unsafe { task_mut(self.idx).base_priority.load(Ordering::Relaxed) }
+        let b = unsafe { task_mut(self.idx).base_priority.load(Ordering::Relaxed) };
+        b.min(classes::pi_floor(self.idx))
     }
     fn apply_prio(&self, p: u32) {
         unsafe {

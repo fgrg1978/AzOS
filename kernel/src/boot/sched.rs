@@ -150,6 +150,11 @@ pub(crate) fn install_sched_hooks() {
     if canary!("ipc-reply-twice") {
         azos_ipc::ep_queue::canary_reply_twice();
     }
+    // N7: the wait graph's scheduler side, before the first task can block
+    // on a graph object. Compiled out without `WAIT_GRAPH`.
+    if azos_sync::waitgraph::ENABLED {
+        azos_sync::waitgraph::register_sched(&azos_sched::classes::PI);
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();

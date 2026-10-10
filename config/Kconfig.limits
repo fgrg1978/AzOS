@@ -558,9 +558,12 @@ config WAIT_GRAPH
       chain walk boosts the owner to its most urgent waiter (a deadline
       donor passes its absolute deadline). A cycle is refused with EDEADLK.
       Default n until N7 lands; n compiles every client's old path.
-      Cost: about 32 B per blockable object and a per-task PI record
-      (about 16 B x MAX_TASKS); nothing on an uncontended acquire; one
-      walk of at most PI_MAX_DEPTH steps per contended block or release.
+      Stage 1 serialises the graph under one lock (interrupts off for the
+      length of one walk); per-object locks come later, same API.
+      Cost: 24 B per blockable object and a per-task PI record (32 B x
+      MAX_TASKS: effective attribute, waiter link, owned set, boost
+      floor); nothing on an uncontended acquire; one walk of at most
+      PI_MAX_DEPTH steps per contended block or release. n: zero bytes.
 
 config PI_MAX_DEPTH
     int "Longest ownership chain a priority-inheritance walk follows"
