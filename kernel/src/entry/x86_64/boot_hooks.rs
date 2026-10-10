@@ -819,6 +819,12 @@ pub fn boot_selftests() {
     } else {
         azos_drv_sys::kerr!("[TIMER] FAILED: only {} of {} ticks in {} ms (expected ~{} ms)", got, TICK_TARGET, ms, want_ms);
     }
+    // The boot CPU's interrupt stack (`cpu_init` armed it) still carries its
+    // magic word once the ticks above were taken: the check riscv64 and
+    // aarch64 make after their tick wait.
+    if !crate::boot::irq_stack_magic_intact(0) {
+        azos_drv_sys::kerr!("[IRQSTACK] FAILED: cpu 0's IRQ-stack magic word was overwritten (overflow)");
+    }
 }
 
 /// Device windows mapped once the heap exists (PCIe ECAM from the MCFG,

@@ -2241,8 +2241,18 @@ echo "[1/4] Building all feature combinations..."
 # loopback guard did exactly that, and only `make ARCH=x86_64 check` failed.
 if ci_row_begin "x86_64: make check"; then
 printf "  %-26s" "x86_64: make check..."
+# Warnings fail it as they fail every riscv64/aarch64 `build` row below (same
+# filter: a build script's `warning: <pkg>@<version>:` line is information).
+# It only checked for errors until wave 15 (GR4), and four x86_64-only
+# warnings had piled up unseen.
 if x86_out="$(make ARCH=x86_64 check 2>&1)"; then
-    ok
+    if printf '%s\n' "$x86_out" | grep -E "^warning:" \
+         | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
+        bad; printf '%s\n' "$x86_out" | grep -E "^warning:" -A4 \
+          | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]" | sed -n 1,20p | sed 's/^/      /'
+    else
+        ok
+    fi
 else
     bad; printf '%s\n' "$x86_out" | grep -A6 '^error' | sed -n 1,40p | sed 's/^/      /'
 fi

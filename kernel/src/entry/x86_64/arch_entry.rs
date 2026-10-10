@@ -66,7 +66,11 @@ impl ArchEntry for Entry {
         crate::boot_hooks::arch_map_late_mmio()
     }
 
-    fn boot_patch(&self, _text_start: usize, _text_end: usize) {}
+    /// The shared spin-site rewrite, as on riscv64 and aarch64: x86_64 links
+    /// no `SpinWait` probe site, so it finds none and returns.
+    fn boot_patch(&self, text_start: usize, text_end: usize) {
+        crate::boot::spin_patch::patch(text_start, text_end)
+    }
     fn wake_secondaries(&self, num_cpus: usize) {
         crate::boot_hooks::arch_wake_secondaries(num_cpus)
     }

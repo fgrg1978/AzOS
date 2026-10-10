@@ -30,6 +30,17 @@ pstore-smoke = []
 # cache again, one device request per 512 bytes. The fs-tests request-count
 # test must turn red with it. Never in a real build.
 read-chain-sector-canary = []
+# Wave 15 (GR4) canaries for the FAT32 chain walkers; the fs-tests chain-walk
+# tests must turn red with each. Never in a real build.
+#   fat-medium-bound-canary: the mount takes a BPB claiming more sectors than
+#     the bare medium holds (the walk bound then comes from the claim).
+#   fat-walk-read-error-canary: a walker skips a sector it cannot read and
+#     follows the chain on, as before.
+#   fat-walk-cycle-canary: no cycle detection; only the step bound stops a
+#     cyclic chain.
+fat-medium-bound-canary = []
+fat-walk-read-error-canary = []
+fat-walk-cycle-canary = []
 # Wave 14 (FATCACHE) canaries, one per coherence path of the block cache
 # (crates/fs/fs/src/fat32.rs). Each must turn an fs-tests `fatcache` test
 # red. Never in a real build.

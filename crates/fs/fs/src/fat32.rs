@@ -805,19 +805,80 @@ fn chain_walk_limit(fat_sz32: u32, data_clusters: u32) -> u32 {
     //
     // `+ FAT32_FIRST_DATA_CLUSTER` because cluster numbering starts at 2, so
     // a volume with N data clusters has valid numbers 2..N+2.
-    // **Which half actually closes the reset, stated because the canary says
-    // so.** Reverting this `min` to `by_fat` alone leaves all 16 host tests
-    // green, and that is not a missing test — it is the shape of the fix.
-    // With `num_fats >= 1` enforced at the mount, a `fat_sz32` large enough
-    // to inflate `by_fat` also forces `data_start` large, and
-    // `cluster_first_sector` then returns `None` and every walker breaks. So
-    // the **`num_fats == 0` rejection is what makes the hang unreachable**;
-    // this bound is defence in depth for the geometries that check leaves
-    // legal. Both were added together on 2026-09-21; only the first has a
-    // discriminating test, and this comment is why.
+    //
+    // **This bound alone does not make a hang unreachable.** The comment here
+    // used to say the `num_fats == 0` rejection did, because a `fat_sz32`
+    // large enough to inflate the bound also pushes `data_start` large and
+    // `cluster_first_sector` then fails. That holds only for `data_start` past
+    // u32: with `num_fats = 1`, `fat_sz32 = 0xFFFFFF` and `tot_sec32 =
+    // 0xFFFF_FFFF` on a 128 KiB medium, `data_start` fits, every data read
+    // fails at the device, and a walker that skipped the unreadable sector and
+    // followed a self-linked root (`FAT[2] = 2`, served from the cache) spun
+    // ~2^31 steps (fuzz finding, wave 15; the input is
+    // `regressions/fat32_image/root-self-link-volume-past-medium`). Three
+    // guards close it, each on its own:
+    //   * the mount refuses a `tot_sec32` larger than the medium (or its
+    //     partition), so this bound counts clusters that exist on the device;
+    //   * a sector read error ends every walk (no walker skips a sector and
+    //     follows the chain on);
+    //   * every walk runs under a [`ChainWalk`], whose cycle check stops a
+    //     cyclic chain within about twice its length, whatever the bound.
     let by_fat = fat_sz32.saturating_mul(FAT32_ENTRIES_PER_SECTOR);
     let by_data = data_clusters.saturating_add(FAT32_FIRST_DATA_CLUSTER);
     by_fat.min(by_data)
+}
+
+/// One chain walk's guard: the [`chain_walk_limit`] step bound plus Brent's
+/// cycle detection (wave 15, GR4).
+///
+/// A FAT chain never visits a cluster twice, so a repeat proves a cycle.
+/// Brent's method finds one with one saved cluster and one compare per step:
+/// the saved cluster moves to the current one at each power-of-two step, and
+/// a cycle of length L entered after M steps is caught within about
+/// `2 * (M + L)` steps — a `FAT[n] = n` self-link on the second visit —
+/// instead of after `limit` steps, which on a large volume is millions of
+/// cache-served lookups with no yield. No sizes or thresholds of its own:
+/// the bound is the volume's, the detection is exact.
+#[derive(Clone, Copy)]
+struct ChainWalk {
+    /// Visits left before the walk is declared corrupt.
+    left: u32,
+    /// Brent's saved cluster (`u32::MAX`, never a valid cluster, until the
+    /// first visit).
+    saved: u32,
+    /// Steps between moves of `saved`, doubling.
+    power: u32,
+    /// Steps since `saved` last moved.
+    lam: u32,
+}
+
+impl ChainWalk {
+    #[inline]
+    fn new(limit: u32) -> Self {
+        ChainWalk { left: limit, saved: u32::MAX, power: 1, lam: 1 }
+    }
+
+    /// The walk for the mounted volume's geometry.
+    #[inline]
+    fn for_volume(fat_sz32: u32, data_clusters: u32) -> Self {
+        Self::new(chain_walk_limit(fat_sz32, data_clusters))
+    }
+
+    /// Admit `cluster` as the walk's next visit. `false`: the bound is spent
+    /// or `cluster` repeats an earlier visit (a cycle); the walk must stop.
+    #[inline]
+    fn visit(&mut self, cluster: u32) -> bool {
+        if self.left == 0 { return false; }
+        if cluster == self.saved && !cfg!(feature = "fat-walk-cycle-canary") { return false; }
+        self.left -= 1;
+        if self.power == self.lam {
+            self.saved = cluster;
+            self.power = self.power.saturating_mul(2);
+            self.lam = 0;
+        }
+        self.lam += 1;
+        true
+    }
 }
 
 // ── Sector cache: the shared block cache, Kconfig FS_BLOCK_CACHE_KB ──────────
@@ -1612,8 +1673,22 @@ pub fn fat32_mount() -> Result<(), ()> {
     let bpb = unsafe { &*(sector0.as_ptr() as *const Fat32Bpb) };
     validate_bpb(bpb, &sector0)?;
     // Re-checked on the bytes actually mounted: the volume may not claim more
-    // sectors than its partition holds.
-    if part_len != 0 && bpb.tot_sec32 as u64 > part_len { return Err(()); }
+    // sectors than its partition holds, and on a bare medium no more than the
+    // device holds (wave 15, GR4). `tot_sec32` is what bounds every chain walk
+    // (`chain_walk_limit`) and every allocation; a BPB claiming 2^32 sectors
+    // on a 128 KiB medium made that bound ~2^31 steps, and a self-linked root
+    // then spun a walker that long (fuzz input `regressions/fat32_image/
+    // root-self-link-volume-past-medium`). A capacity of 0 means the device
+    // has not said (virtio-blk before its probe, an MMC card whose CSD was
+    // not parsed): no bound from it, as before.
+    let medium = if part_len != 0 {
+        part_len
+    } else {
+        azos_drv_block::blkdev::capacity_sectors().saturating_sub(base)
+    };
+    if medium != 0 && bpb.tot_sec32 as u64 > medium && !cfg!(feature = "fat-medium-bound-canary") {
+        return Err(());
+    }
     VOL_SECTORS.store(bpb.tot_sec32 as u64, core::sync::atomic::Ordering::Relaxed);
 
     let spc = bpb.sec_per_clus as u32;
@@ -1946,18 +2021,16 @@ pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
         let v = FAT32.lock();
         (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
     };
-    // Cycle guard — see `chain_walk_limit`. A self-referential FAT entry would
+    // Cycle guard — see `ChainWalk`. A self-referential FAT entry would
     // otherwise spin here forever whenever `out_buf` is larger than one cluster.
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
 
     let mut cluster = start_cluster;
     let mut written = 0;
 
     while written < out_buf.len() {
         if cluster < FAT32_FIRST_DATA_CLUSTER || cluster >= FAT32_EOC { break; }
-        if steps >= limit { break; }
-        steps += 1;
+        if !walk.visit(cluster) { break; }
 
         // `None` means the cluster does not map to an addressable sector range
         // (crafted cluster number); stop rather than fabricate a sector.
@@ -1990,12 +2063,12 @@ pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
                 if n != cluster.wrapping_add(run / spc)
                     || n < FAT32_FIRST_DATA_CLUSTER || n >= FAT32_EOC
                     || run + spc > whole || run + spc > READ_RUN_MAX_SECTORS
-                    || steps >= limit
                     || cluster_first_sector(data_start, n, spc) != first_sector.checked_add(run)
+                    // Last: a visit is only taken by a cluster the run keeps.
+                    || !walk.visit(n)
                 {
                     break;
                 }
-                steps += 1;
                 run += spc;
                 next = fat32_next_cluster(n).ok();
             }
@@ -2015,8 +2088,14 @@ pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
             if remaining == 0 { break; }
             let mut sec_buf = [0u8; SECTOR_SIZE];
             // `s < spc` and `cluster_first_sector` proved `first_sector + spc`
-            // fits in u32, so this addition cannot overflow.
-            if read_sector(first_sector + s, &mut sec_buf).is_err() { break; }
+            // fits in u32, so this addition cannot overflow. A read error ends
+            // the read, not just this cluster: following the chain past a
+            // sector it could not read copied nothing and walked on, up to the
+            // whole step bound (wave 15, GR4).
+            if read_sector(first_sector + s, &mut sec_buf).is_err() {
+                if cfg!(feature = "fat-walk-read-error-canary") { break; }
+                return written;
+            }
             let to_copy = remaining.min(SECTOR_SIZE);
             out_buf[written..written + to_copy].copy_from_slice(&sec_buf[..to_copy]);
             written += to_copy;
@@ -2113,14 +2192,12 @@ fn fat32_lookup_root_entry_scan(name83: &[u8; 11]) -> Result<RootEntry, ()> {
         let v = FAT32.lock();
         (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
     };
-    // Cycle guard — see `chain_walk_limit`. Reachable from ring 3 via open().
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    // Cycle guard — see `ChainWalk`. Reachable from ring 3 via open().
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
 
     let mut cluster = root_cluster;
     while cluster >= FAT32_FIRST_DATA_CLUSTER && cluster < FAT32_EOC {
-        if steps >= limit { return Err(()); }
-        steps += 1;
+        if !walk.visit(cluster) { return Err(()); }
 
         // `None` = crafted cluster number that does not map into the sector
         // space; treat as "not found" rather than fabricating a sector.
@@ -2475,18 +2552,16 @@ fn free_chain_unlocked(start: u32) {
     // so a cluster an allocator takes the instant it is freed is never
     // followed.
     let (fat_sz32, data_clusters) = { let v = FAT32.lock(); (v.fat_sz32, v.data_clusters) };
-    // Cycle guard — see `chain_walk_limit`. This loop looks self-terminating on
+    // Cycle guard — see `ChainWalk`. This loop looks self-terminating on
     // a cycle (freeing FAT[2] makes the next lookup return 0), but that relies
     // on the write succeeding: the `let _ =` swallows a device error, and
     // `fat32_write_fat_entry` now legitimately rejects out-of-range clusters,
     // so on either path the loop would revisit the same cluster forever.
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
 
     let mut cluster = start;
     while cluster >= FAT32_FIRST_DATA_CLUSTER && cluster < FAT32_EOC {
-        if steps >= limit { break; }
-        steps += 1;
+        if !walk.visit(cluster) { break; }
         let next = fat32_next_cluster(cluster).unwrap_or(FAT32_EOC);
         let _ = fat32_write_fat_entry(cluster, 0); // Mark as free
         cluster = next;
@@ -2740,14 +2815,12 @@ pub fn fat32_unlink_root(name83: &[u8; 11]) -> Result<(), ()> {
         let v = FAT32.lock();
         (v.root_cluster, v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
     };
-    // Cycle guard — see `chain_walk_limit`.
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    // Cycle guard — see `ChainWalk`.
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
 
     let mut cluster = root_cluster;
     while cluster >= FAT32_FIRST_DATA_CLUSTER && cluster < FAT32_EOC {
-        if steps >= limit { return Err(()); }
-        steps += 1;
+        if !walk.visit(cluster) { return Err(()); }
         let first_sector = match cluster_first_sector(data_start, cluster, spc) {
             Some(v) => v,
             None => return Err(()),
@@ -2755,7 +2828,12 @@ pub fn fat32_unlink_root(name83: &[u8; 11]) -> Result<(), ()> {
         for s in 0..spc {
             let mut sec_buf = [0u8; SECTOR_SIZE];
             // s < spc, and cluster_first_sector proved first_sector + spc fits.
-            if read_sector(first_sector + s, &mut sec_buf).is_err() { continue; }
+            // A read error ends the walk (wave 15, GR4): the name may be in
+            // the sector it could not read, and skipping it walked on.
+            if read_sector(first_sector + s, &mut sec_buf).is_err() {
+                if cfg!(feature = "fat-walk-read-error-canary") { continue; }
+                return Err(());
+            }
             for e in 0..DIRENTS_PER_SECTOR {
                 let off = e * DIRENT_SIZE;
                 if sec_buf[off] == 0x00 { return Err(()); }  // End of directory
@@ -2926,21 +3004,24 @@ fn fat32_find_dirent_location(name83: &[u8; 11]) -> Result<(u32, u16), ()> {
         let v = FAT32.lock();
         (v.root_cluster, v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
     };
-    // Cycle guard — see `chain_walk_limit`.
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    // Cycle guard — see `ChainWalk`.
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
 
     let mut cluster = root_cluster;
     while cluster >= FAT32_FIRST_DATA_CLUSTER && cluster < FAT32_EOC {
-        if steps >= limit { return Err(()); }
-        steps += 1;
+        if !walk.visit(cluster) { return Err(()); }
         let first_sector = match cluster_first_sector(data_start, cluster, spc) {
             Some(v) => v,
             None => return Err(()),
         };
         for s in 0..spc {
             let mut sec_buf = [0u8; SECTOR_SIZE];
-            if read_sector(first_sector + s, &mut sec_buf).is_err() { continue; }
+            // A read error ends the walk (wave 15, GR4), as in
+            // `fat32_unlink_root`.
+            if read_sector(first_sector + s, &mut sec_buf).is_err() {
+                if cfg!(feature = "fat-walk-read-error-canary") { continue; }
+                return Err(());
+            }
             for e in 0..DIRENTS_PER_SECTOR {
                 let off = e * DIRENT_SIZE;
                 if sec_buf[off] == 0x00 { return Err(()); }  // End of directory
@@ -3571,14 +3652,12 @@ pub fn fat32_ls_root(mut cb: impl FnMut(&[u8], u32, bool)) {
         let v = FAT32.lock();
         (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
     };
-    // Cycle guard — see `chain_walk_limit`.
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    // Cycle guard — see `ChainWalk`.
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
 
     let mut cluster = root_cluster;
     while cluster >= FAT32_FIRST_DATA_CLUSTER && cluster < FAT32_EOC {
-        if steps >= limit { return; }
-        steps += 1;
+        if !walk.visit(cluster) { return; }
         let first_sector = match cluster_first_sector(data_start, cluster, spc) {
             Some(v) => v,
             None => return,
@@ -3587,7 +3666,12 @@ pub fn fat32_ls_root(mut cb: impl FnMut(&[u8], u32, bool)) {
         'outer: for s in 0..spc {
             let mut sec_buf = [0u8; SECTOR_SIZE];
             // s < spc, and cluster_first_sector proved first_sector + spc fits.
-            if read_sector(first_sector + s, &mut sec_buf).is_err() { break 'outer; }
+            // A read error ends the listing (wave 15, GR4): it used to leave
+            // only this cluster and follow the chain on.
+            if read_sector(first_sector + s, &mut sec_buf).is_err() {
+                if cfg!(feature = "fat-walk-read-error-canary") { break 'outer; }
+                return;
+            }
 
             for e in 0..DIRENTS_PER_SECTOR {
                 let off = e * DIRENT_SIZE;
@@ -3709,15 +3793,16 @@ pub struct Fat32DirIter {
     sector_in_cluster: u32,
     entry_in_sector: usize,
     done: bool,
-    /// Clusters visited so far by this iterator, checked against
-    /// `chain_walk_limit` on every advance.
+    /// This walk's guard ([`ChainWalk`]: the `chain_walk_limit` bound and the
+    /// cycle check), taken on every advance.
     ///
     /// This has to live in the struct, not as a local in `next()`: the loop is
     /// re-entered on each call, so a local would reset every time and a
     /// directory cycle whose sectors contain only deleted (0xE5) entries —
     /// which never produce a `return` — would still spin forever inside a
-    /// single `next()`.
-    clusters_walked: u32,
+    /// single `next()`. A cycle through live entries would yield them forever
+    /// to a caller that reads to the end.
+    walk: ChainWalk,
 }
 
 /// Internal per-open-file state.
@@ -3863,16 +3948,14 @@ fn dir_find_in(dir_cluster: u32, name83: &[u8; 11]) -> Result<DirentLocation, Fs
         let v = FAT32.lock();
         (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
     };
-    // Cycle guard — see `chain_walk_limit`. This is the walker a ring-3
+    // Cycle guard — see `ChainWalk`. This is the walker a ring-3
     // `open()` reaches first, so a `FAT[n] = n` cycle here hangs the hart that
     // serviced the syscall with no I/O and no yield.
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
 
     let mut cluster = dir_cluster;
     while cluster >= FAT32_FIRST_DATA_CLUSTER && cluster < FAT32_EOC {
-        if steps >= limit { return Err(FsError::Io); }
-        steps += 1;
+        if !walk.visit(cluster) { return Err(FsError::Io); }
         let first_sector = cluster_first_sector(data_start, cluster, spc)
             .ok_or(FsError::Io)?;
         for s in 0..spc {
@@ -3963,20 +4046,18 @@ fn dir_insert(
         let v = FAT32.lock();
         (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
     };
-    // Cycle guard — see `chain_walk_limit`. Here the cap MUST return an error
+    // Cycle guard — see `ChainWalk`. Here the cap MUST return an error
     // rather than fall out of the loop: the code below the loop extends the
     // directory by allocating a fresh cluster and splicing it in with
     // `fat32_write_fat_entry(last_cluster, new_clus)`. Exiting the loop on a
     // cycle would graft a real allocation onto an attacker-controlled ring.
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
 
     // Walk the chain looking for a free (end or deleted) slot.
     let mut cluster = dir_cluster;
     let mut last_cluster = cluster;
     while cluster >= FAT32_FIRST_DATA_CLUSTER && cluster < FAT32_EOC {
-        if steps >= limit { return Err(FsError::Io); }
-        steps += 1;
+        if !walk.visit(cluster) { return Err(FsError::Io); }
         let first_sector = cluster_first_sector(data_start, cluster, spc)
             .ok_or(FsError::Io)?;
         for s in 0..spc {
@@ -4135,12 +4216,16 @@ fn chain_nth(first_cluster: u32, n: u32) -> Result<u32, FsError> {
     // FAT lookups and then hand back data from a cluster the file never owned.
     let (fat_sz32, data_clusters) = { let v = FAT32.lock(); (v.fat_sz32, v.data_clusters) };
     if n >= chain_walk_limit(fat_sz32, data_clusters) { return Err(FsError::Io); }
+    // A cycle is caught at its first repeat, not after `n` lookups.
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
+    walk.visit(first_cluster);
     let mut cur = first_cluster;
     for _ in 0..n {
         let next = fat32_next_cluster(cur).map_err(|()| FsError::Io)?;
         if next < FAT32_FIRST_DATA_CLUSTER || next >= FAT32_EOC {
             return Err(FsError::NotFound);
         }
+        if !walk.visit(next) { return Err(FsError::Io); }
         cur = next;
     }
     Ok(cur)
@@ -4156,9 +4241,16 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
     // cycle from turning one write into millions of FAT lookups.
     let (fat_sz32, data_clusters) = { let v = FAT32.lock(); (v.fat_sz32, v.data_clusters) };
     if n >= chain_walk_limit(fat_sz32, data_clusters) { return Err(FsError::Io); }
+    // A cycle is caught at its first repeat, as in `chain_nth`; never
+    // extended (the link below would graft onto the ring).
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
+    walk.visit(first_cluster);
     let mut cur = first_cluster;
     for _ in 0..n {
         let next = fat32_next_cluster(cur).map_err(|()| FsError::Io)?;
+        if next >= FAT32_FIRST_DATA_CLUSTER && next < FAT32_EOC && !walk.visit(next) {
+            return Err(FsError::Io);
+        }
         if next < FAT32_FIRST_DATA_CLUSTER || next >= FAT32_EOC {
             // U09-2: once `fresh` reads end-of-chain no allocator can take
             // it, so allocation and the link below need no common hold —
@@ -4749,12 +4841,16 @@ pub fn fat32_opendir(_vol: Volume, path: &[u8]) -> Result<Fat32DirIter, FsError>
         if loc.first_cluster < FAT32_FIRST_DATA_CLUSTER { return Err(FsError::NotFound); }
         dir_cluster = loc.first_cluster;
     }
+    let mut walk = { let v = FAT32.lock(); ChainWalk::for_volume(v.fat_sz32, v.data_clusters) };
+    // The first cluster is the walk's first visit, so a self-link is seen
+    // at the first advance.
+    walk.visit(dir_cluster);
     Ok(Fat32DirIter {
         cluster: dir_cluster,
         sector_in_cluster: 0,
         entry_in_sector: 0,
         done: false,
-        clusters_walked: 0,
+        walk,
     })
 }
 
@@ -4762,20 +4858,12 @@ impl Fat32DirIter {
     /// Return the next valid directory entry, or `None` at end.
     pub fn next(&mut self) -> Option<DirEntryInfo> {
         if self.done { return None; }
-        let (spc, data_start, fat_sz32, data_clusters) = {
+        let (spc, data_start) = {
             let v = FAT32.lock();
-            (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+            (v.secs_per_clus, v.data_start)
         };
-        let limit = chain_walk_limit(fat_sz32, data_clusters);
         loop {
             if self.cluster < FAT32_FIRST_DATA_CLUSTER || self.cluster >= FAT32_EOC {
-                self.done = true;
-                return None;
-            }
-            // Cycle guard — see `chain_walk_limit` and `clusters_walked`.
-            // Counted at the advance below, so re-entering `next()` on the
-            // same cluster does not consume budget.
-            if self.clusters_walked >= limit {
                 self.done = true;
                 return None;
             }
@@ -4835,11 +4923,16 @@ impl Fat32DirIter {
                 self.sector_in_cluster += 1;
             }
             self.sector_in_cluster = 0;
-            self.clusters_walked = self.clusters_walked.saturating_add(1);
             self.cluster = match fat32_next_cluster(self.cluster) {
                 Ok(n) => n,
                 Err(()) => { self.done = true; return None; }
             };
+            // Cycle guard — see `walk`. Taken at the advance, so re-entering
+            // `next()` on the same cluster does not consume budget.
+            if !self.walk.visit(self.cluster) {
+                self.done = true;
+                return None;
+            }
         }
     }
 }
@@ -5368,12 +5461,10 @@ fn fat32_dir_is_empty(cluster: u32) -> Result<bool, ()> {
         let v = FAT32.lock();
         (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
     };
-    let limit = chain_walk_limit(fat_sz32, data_clusters);
-    let mut steps = 0u32;
+    let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
     let mut c = cluster;
     while c >= FAT32_FIRST_DATA_CLUSTER && c < FAT32_EOC {
-        if steps >= limit { return Err(()); }
-        steps += 1;
+        if !walk.visit(c) { return Err(()); }
         let first = cluster_first_sector(data_start, c, spc).ok_or(())?;
         for s in 0..spc {
             let mut buf = [0u8; SECTOR_SIZE];

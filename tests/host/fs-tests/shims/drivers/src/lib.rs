@@ -45,6 +45,8 @@ struct Disk {
     reads: u32,
     writes: u32,
     fail_after: Option<u32>,
+    /// Every read that covers this sector fails (a bad block).
+    bad_sector: Option<u64>,
     write_fail_after: Option<u32>,
     /// One-shot: fail only the write whose ordinal (`writes` before it) is
     /// this, and let every later write through.
@@ -75,7 +77,7 @@ static DISK: Mutex<Option<Disk>> = Mutex::new(None);
 /// reads past the end fail, which is what a short image does on real hardware.
 pub fn disk_load(image: Vec<u8>) {
     *DISK.lock().unwrap() = Some(Disk {
-        data: image, reads: 0, writes: 0, fail_after: None, write_fail_after: None, write_fail_nth: None,
+        data: image, reads: 0, writes: 0, fail_after: None, bad_sector: None, write_fail_after: None, write_fail_nth: None,
         durable: None, flush_mode: FlushMode::Ok, events: Vec::new(), log: Vec::new(),
     });
 }
@@ -120,6 +122,12 @@ pub fn disk_events() -> Vec<DiskEvent> {
 /// Fail every read from the `n`-th onwards (0 = fail immediately).
 pub fn disk_fail_after(n: u32) {
     if let Some(d) = DISK.lock().unwrap().as_mut() { d.fail_after = Some(n); }
+}
+
+/// Make `sector` a bad block: every read that covers it fails, every other
+/// read succeeds. Cleared by the next `disk_load`.
+pub fn disk_bad_sector(sector: u64) {
+    if let Some(d) = DISK.lock().unwrap().as_mut() { d.bad_sector = Some(sector); }
 }
 
 /// Fail every WRITE from the `n`-th onwards (0 = fail immediately), so a test
@@ -234,12 +242,20 @@ pub mod blkdev {
     }
 
     /// The kernel's `blkdev::read_quiet`: the device read alone.
+    /// The kernel's `blkdev::capacity_sectors`: the loaded image's size.
+    pub fn capacity_sectors() -> u64 {
+        DISK.lock().unwrap().as_ref().map_or(0, |d| (d.data.len() / SHIM_SECTOR) as u64)
+    }
+
     pub fn read_quiet(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
         {
             let mut g = DISK.lock().unwrap();
             let d = g.as_mut().ok_or(())?;
             if let Some(n) = d.fail_after {
                 if d.reads >= n { d.reads += 1; return Err(()); }
+            }
+            if let Some(b) = d.bad_sector {
+                if (sector..sector + count as u64).contains(&b) { d.reads += 1; return Err(()); }
             }
             let len = (count as usize) * SHIM_SECTOR;
             let off = (sector as usize).checked_mul(SHIM_SECTOR).ok_or(())?;

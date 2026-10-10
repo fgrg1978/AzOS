@@ -5904,11 +5904,13 @@ pub mod fuzz_entry {
     fn root_chain_allocated() -> bool { root_chain_len().is_some() }
 
     /// Harness-side precondition for the leak check: the volume the BPB
-    /// describes (`BPB_TotSec32` from its base) fits on the medium. A bare
-    /// medium gives the driver no size to check against, so a larger claim
-    /// mounts and every write past the end fails with an I/O error — and an
-    /// allocation whose FAT-mirror write fails keeps its first-FAT mark (a
-    /// leak, but one that needs an I/O error; reported, not chased here).
+    /// describes (`BPB_TotSec32` from its base) fits on the medium. Since
+    /// wave 15 (GR4) the mount refuses a larger claim on a bare medium too
+    /// (it reads the device's capacity), so every volume that mounts here
+    /// fits; the check stays as the statement of what the leak check needs.
+    /// Before, a larger claim mounted and every write past the end failed
+    /// with an I/O error — and an allocation whose FAT-mirror write fails
+    /// keeps its first-FAT mark (a leak that needs an I/O error).
     fn volume_fits(medium_sectors: u64) -> bool {
         let base = fat32::fat32_volume_base();
         let Some(s0) = fs_test_drivers::disk_peek(base) else { return false };
@@ -7790,3 +7792,148 @@ mod writeback {
 
 
 
+
+/// Wave 15 (GR4): every FAT32 chain walker ends — on a volume that claims
+/// more than its medium, on a sector it cannot read, and on a cyclic chain.
+/// One test per guard, each red under its own canary feature
+/// (`fat-medium-bound-canary`, `fat-walk-read-error-canary`,
+/// `fat-walk-cycle-canary`), plus the fuzzer's input under a time bound.
+#[cfg(test)]
+mod chain_walk_guards {
+    use super::{fat32, image::*, serial, swap_medium, vfs_backend::put_dirent};
+
+    fn mount(img: Vec<u8>) {
+        swap_medium(img);
+        assert_eq!(fat32::fat32_mount(), Ok(()), "the fixture must mount");
+    }
+
+    fn names() -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        fat32::fat32_ls_root(|n, _, _| out.push(n.to_vec()));
+        out
+    }
+
+    /// The bound every walk runs under comes from `tot_sec32`; on a bare
+    /// medium it may not claim a sector the device does not have.
+    #[test]
+    fn a_volume_claiming_more_sectors_than_its_medium_is_refused() {
+        let _g = serial();
+        let g = Geom::default();
+        let mut img = build(&g);
+        img[OFF_TOT_SEC32..OFF_TOT_SEC32 + 4]
+            .copy_from_slice(&(g.total_sectors as u32 + 1).to_le_bytes());
+        swap_medium(img);
+        assert_eq!(fat32::fat32_mount(), Err(()), "one sector past the medium must not mount");
+        // Control: exactly the medium mounts.
+        mount(build(&g));
+    }
+
+    /// A data sector that fails to read ends the listing, the lookup and the
+    /// read: none of them walks on to the next cluster. Root = 2 -> 3, the
+    /// only name lives in cluster 3, cluster 2's sector is a bad block.
+    #[test]
+    fn a_read_error_ends_the_walk() {
+        let _g = serial();
+        let g = Geom::default();
+        let mut img = build(&g);
+        set_fat(&mut img, &g, 2, 3);
+        set_fat(&mut img, &g, 3, 0x0FFF_FFFF);
+        // `put_dirent` writes into cluster 2; move that entry into cluster 3.
+        put_dirent(&mut img, &g, 0, b"LATE    BIN", 4, 100);
+        let (c2, c3) = (cluster_sector(&g, 2) * SECTOR, cluster_sector(&g, 3) * SECTOR);
+        let ent: Vec<u8> = img[c2..c2 + 32].to_vec();
+        img[c3..c3 + 32].copy_from_slice(&ent);
+        set_fat(&mut img, &g, 4, 0x0FFF_FFFF);
+        fill_cluster(&mut img, &g, 4, 0xCC);
+        mount(img);
+        fs_test_drivers::disk_bad_sector(cluster_sector(&g, 2) as u64);
+
+        assert!(names().is_empty(), "the listing walked past an unreadable sector");
+        assert!(fat32::fat32_unlink_root(b"LATE    BIN").is_err(),
+            "unlink walked past an unreadable sector and found the name");
+        // A chain read through the bad block (2 -> 3 is the root's chain;
+        // read it as a file) stops there: a 100-byte buffer takes the
+        // per-sector path.
+        let mut out = [0u8; 100];
+        assert_eq!(fat32::fat32_read_chain(2, &mut out), 0,
+            "the read walked past an unreadable sector");
+    }
+
+    /// A self-linked directory is walked once: Brent's check stops it at the
+    /// first repeat, not after `chain_walk_limit` steps (here ~200, on a real
+    /// volume millions). Its one sector is full of live names, so every
+    /// extra lap shows as 16 more.
+    #[test]
+    fn a_self_linked_directory_is_walked_once() {
+        let _g = serial();
+        let g = Geom::default();
+        let mut img = build(&g);
+        set_fat(&mut img, &g, 2, 2);
+        for slot in 0..16 {
+            let mut n = *b"F00     BIN";
+            n[1] = b'0' + (slot / 10) as u8;
+            n[2] = b'0' + (slot % 10) as u8;
+            put_dirent(&mut img, &g, slot, &n, 0, 0);
+        }
+        mount(img);
+
+        assert_eq!(names().len(), 16, "the listing went round the cycle");
+        let vol = fat32::Volume::assume_mounted();
+        let mut it = fat32::fat32_opendir(vol, b"/").expect("opendir");
+        let mut k = 0;
+        while it.next().is_some() && k < 100_000 { k += 1; }
+        assert_eq!(k, 16, "the directory iterator went round the cycle");
+        let mut out = vec![0u8; 64 * 1024];
+        assert_eq!(fat32::fat32_read_chain(2, &mut out), SECTOR,
+            "the chain read went round the cycle");
+        assert!(fat32::fat32_lookup_root(b"NOPE    BIN").is_err());
+    }
+
+    /// The fuzzer's input (`tests/fuzz/fs-fuzz/regressions/fat32_image/
+    /// root-self-link-volume-past-medium`): `FAT[2] = 2`, `tot_sec32 =
+    /// 0xFFFF_FFFF` on a 23 KiB medium. It spun `fat32_ls_root` ~2^31 steps.
+    /// The harness's read path (`fuzz_entry`, built only under cargo-fuzz)
+    /// replayed under a time bound; a hang aborts the test binary (the
+    /// spinning thread holds the driver's singleton locks, so nothing after
+    /// it could run anyway). With every guard in, the mount refuses it; the
+    /// walks below run if a canary lets it mount.
+    #[test]
+    fn the_fuzzers_self_linked_root_past_the_medium_finishes() {
+        let _g = serial();
+        let data: &'static [u8] = include_bytes!(
+            "../../../fuzz/fs-fuzz/regressions/fat32_image/root-self-link-volume-past-medium");
+        // The harness's medium: the input over at least 256 sectors.
+        let len = (data.len().max(256 * SECTOR) + SECTOR - 1) / SECTOR * SECTOR;
+        let mut img = vec![0u8; len];
+        img[..data.len()].copy_from_slice(data);
+        swap_medium(img);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mounted = fat32::fat32_mount().is_ok();
+            if mounted {
+                let n = names();
+                let mut out = vec![0u8; 64 * 1024];
+                let _ = fat32::fat32_read_chain(2, &mut out);
+                for name in &n {
+                    let mut n83 = [b' '; 11];
+                    let k = name.len().min(11);
+                    n83[..k].copy_from_slice(&name[..k]);
+                    let _ = fat32::fat32_lookup_root(&n83);
+                }
+                if let Ok(mut it) = fat32::fat32_opendir(fat32::Volume::assume_mounted(), b"/") {
+                    let mut k = 0;
+                    while it.next().is_some() && k < 64 { k += 1; }
+                }
+            }
+            let _ = tx.send(mounted);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(mounted) => assert!(!mounted || cfg!(feature = "fat-medium-bound-canary"),
+                "a volume claiming 2^32 sectors on a 128 KiB medium mounted"),
+            Err(_) => {
+                eprintln!("the self-linked root did not finish in 10 s: a walker spins");
+                std::process::abort();
+            }
+        }
+    }
+}

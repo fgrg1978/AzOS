@@ -73,9 +73,11 @@ pub(crate) static DTB_HWCAP: core::sync::atomic::AtomicU64 = core::sync::atomic:
 /// are cleared, so the gate can prove the fallback is taken.
 #[cfg(not(feature = "no-mmu"))]
 pub(crate) fn detect_hwcap() -> u64 {
-    use azos_abi::vdso::*;
+    // The hwcap bits are named inside each ISA's branch: an ISA without one
+    // (x86_64) imports nothing it would not use.
     #[cfg(target_arch = "aarch64")]
     let h = {
+        use azos_abi::vdso::*;
         // Kconfig `n` (azos_arch_api::isa::aarch64) hides an extension
         // from ring 3 and from the kernel's own SHA-256 selection below.
         use azos_arch_api::isa::aarch64 as p;
@@ -88,13 +90,14 @@ pub(crate) fn detect_hwcap() -> u64 {
     };
     #[cfg(target_arch = "riscv64")]
     let h = {
+        use azos_abi::vdso::HWCAP_RV_V;
         let h = DTB_HWCAP.load(core::sync::atomic::Ordering::Acquire);
         if cfg!(feature = "rvv") { h } else { h & !HWCAP_RV_V }
     };
     #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
     let h = 0u64;
     #[cfg(feature = "hwcap-clear-canary")]
-    let h = h & !(HWCAP_A64_CRC32 | HWCAP_RV_ZBC);
+    let h = h & !(azos_abi::vdso::HWCAP_A64_CRC32 | azos_abi::vdso::HWCAP_RV_ZBC);
     h
 }
 
@@ -118,15 +121,19 @@ pub(crate) fn note_dtb_isa(zbb: bool, zbc: bool, zknh: bool, v: bool) {
 /// once, at boot, before anything else hashes.
 #[cfg(not(feature = "no-mmu"))]
 fn select_sha256(h: u64) {
-    use azos_abi::vdso::*;
     #[cfg(target_arch = "aarch64")]
-    let name = if h & HWCAP_A64_SHA2 != 0 && azos_crypto::sha256::select_hook(sha256_ce) {
+    let name = if h & azos_abi::vdso::HWCAP_A64_SHA2 != 0
+        && azos_crypto::sha256::select_hook(sha256_ce)
+    {
         "armv8-ce"
     } else {
         "generic"
     };
     #[cfg(target_arch = "riscv64")]
-    let name = azos_crypto::sha256::select_riscv(h & HWCAP_RV_ZBB != 0, h & HWCAP_RV_ZKNH != 0);
+    let name = azos_crypto::sha256::select_riscv(
+        h & azos_abi::vdso::HWCAP_RV_ZBB != 0,
+        h & azos_abi::vdso::HWCAP_RV_ZKNH != 0,
+    );
     #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
     let name = { let _ = h; "generic" };
     kprintln!("[CRYPTO] sha256 blocks: {}", name);

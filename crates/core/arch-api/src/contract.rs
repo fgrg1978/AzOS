@@ -238,9 +238,11 @@ pub trait ArchEntry {
     /// text_end)`, on the boot CPU after the page tables and the trace
     /// patcher exist and BEFORE any secondary starts (a rewrite here may use
     /// an instruction the ISA does not allow to change under a running CPU).
-    /// aarch64: the `A64_PAN=probe` user-access sites become `msr PAN` or
-    /// `nop` from the boot probe. riscv64 (SUM is in every S-mode) and
-    /// x86_64 (no probed user-access instruction yet): nothing.
+    /// Every ISA: the `SpinWait` probe sites (`boot/spin_patch.rs`; x86_64
+    /// links none yet). aarch64 also: the `A64_PAN=probe` user-access sites
+    /// become `msr PAN` or `nop` from the boot probe; riscv64 (SUM is in
+    /// every S-mode) and x86_64 (no probed user-access instruction yet) have
+    /// no such sites.
     fn boot_patch(&self, text_start: usize, text_end: usize);
 
     /// Start every secondary CPU up to `num_cpus` (SBI HSM, PSCI, INIT-SIPI).
