@@ -592,25 +592,36 @@ fn bytes_delivered_per_round_trip() {
 /// 17,481 data frames (1.35 per frame) and 126,961 B/RTT before; 9,851 for
 /// 17,268 (0.57) and 125,406 B/RTT after. Canary: `CONFIG_TCP_DELACK_MS=0`
 /// (acknowledge every segment at once) fails the ACK bound.
+///
+/// Both bounds scale with the ring, so the fleet ring (16 KiB) row runs it
+/// too. ACKs: one per two data segments plus the window updates a draining
+/// reader sends, at most 8 per round trip (measured: 6.1 at 128 KiB, 4.4 at
+/// 16 KiB; per-segment ACKs exceed it at both: 23,648 for 17,481 frames,
+/// 2,976 for 2,192). B/RTT: 94.6% of the ring, the 124,000 this test held at
+/// 128 KiB (per-segment ACKs reach 96.9% at 128 KiB and 97.2% at 16 KiB; a
+/// window-update step too coarse for the ring, TCP_WINDOW_UPDATE_SHIFT=2 at
+/// 16 KiB, delivered 70.8%).
 #[test]
 fn a_bulk_transfer_is_acknowledged_every_second_segment() {
+    const RTTS: usize = 200;
     if azos_limits::TCP_DELACK_MS == 0 {
         println!("[tcp-throughput] delayed ACK configured off (the canary): the ACK bound below must fail");
     }
     let _g = begin();
     let r = run(&Scenario {
         receiver: Receiver::Stack, rtt_ms: 20, mbps: 0, queue: 0, loss: Loss::None,
-        rtts: 200, limit: u64::MAX,
+        rtts: RTTS as u64, limit: u64::MAX,
     });
     println!("[tcp-throughput] delayed ACK: {} pure ACKs for {} data frames, {} B/RTT",
-             r.pure_acks, r.data_frames, r.delivered / 200);
+             r.pure_acks, r.data_frames, r.delivered / RTTS as u64);
     assert!(!r.corrupt);
-    assert!(r.pure_acks * 10 <= r.data_frames * 6,
-        "{} pure ACKs for {} data frames: more than ~one per two segments",
+    assert!(r.pure_acks <= r.data_frames / 2 + 8 * RTTS,
+        "{} pure ACKs for {} data frames: more than one per two segments plus 8 updates per RTT",
         r.pure_acks, r.data_frames);
-    // The window must not close for want of an update: within 2% of what the
-    // ring allows per round trip (the per-segment-ACK figure, 126,961).
-    assert!(r.delivered / 200 >= 124_000, "{} B/RTT: window updates held too long", r.delivered / 200);
+    // The window must not close for want of an update.
+    let floor = (azos_limits::TCP_BUF_SIZE as u64 - 1) * 946 / 1000;
+    assert!(r.delivered / RTTS as u64 >= floor,
+        "{} B/RTT under {floor}: window updates held too long", r.delivered / RTTS as u64);
 }
 
 /// One data segment in the middle of a transfer is lost. The stream must

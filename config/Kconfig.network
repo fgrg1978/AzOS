@@ -143,6 +143,7 @@ config TCP_DELACK_PASS_FLUSH
 config TCP_WINDOW_UPDATE_SHIFT
     int "Window update sent at once when the edge moves by ring >> N"
     range 0 8
+    default 3 if TCP_BUF_SIZE < 32768
     default 2
     help
       crates/net/net/src/tcp.rs, TCP_WINDOW_UPDATE_BYTES = TCP_BUF_SIZE >> N.
@@ -155,7 +156,12 @@ config TCP_WINDOW_UPDATE_SHIFT
       Larger N: more, earlier updates; a sender limited by our ring
       (BDP > TCP_BUF_SIZE) keeps more of it in flight. Smaller N: fewer
       pure ACKs. Measured on the host stack-to-stack harness (20 ms RTT,
-      ring-limited): see tests/host/net-tests tcp_throughput.
+      ring-limited, tests/host/net-tests tcp_throughput), B/RTT against
+      acknowledging every segment (TCP_DELACK_MS=0): 128 KiB ring, N=2:
+      98.8%; 64 KiB: 97.7%; 32 KiB: 95.4% (N=3 the same); 16 KiB (fleet):
+      N=2 72.9% (a 4 KiB step is under three segments of an eleven-segment
+      window, and the held update stalls the sender), N=3 100% for 0.90
+      pure ACKs per data segment against 1.36. Hence 3 below a 32 KiB ring.
 
       Cost: none in RAM; one compare per recv() that returns data. The
       same on riscv64, aarch64 and x86_64.

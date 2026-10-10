@@ -1573,6 +1573,26 @@ mod tcp_window_sites {
         outbound().last().expect("a segment should have been sent").window
     }
 
+    /// The most a read may open the window by and still have its update held
+    /// (`TCP_WINDOW_UPDATE_BYTES` in `tcp.rs`, private there: the ring >>
+    /// `TCP_WINDOW_UPDATE_SHIFT`; a read reaching it sends at once). Over the
+    /// receiver SWS floor (one SMSS, 1460 here) at every ring the gate builds;
+    /// [`held_read_fits`] says so where it is not.
+    const HELD_READ_MAX: usize =
+        (azos_limits::TCP_BUF_SIZE >> azos_limits::TCP_WINDOW_UPDATE_SHIFT) - 1;
+
+    /// A held window update needs a read above the SWS floor and under
+    /// [`HELD_READ_MAX`]; a ring too small for both has no held update to
+    /// test: the test prints why it did not run and returns.
+    fn held_read_fits(test: &str) -> bool {
+        if HELD_READ_MAX > 1460 {
+            return true;
+        }
+        println!("[skip] tcp_window_sites::{test}: no read opens the window past one SMSS and \
+                  under ring >> TCP_WINDOW_UPDATE_SHIFT ({HELD_READ_MAX} B) at this ring");
+        false
+    }
+
     /// `send_data` — the ordinary transmit path. Data we send carries our own
     /// receive window, and it is the segment the peer sees most often.
     #[test]
@@ -1606,6 +1626,7 @@ mod tcp_window_sites {
     /// be below the ceiling.
     #[test]
     fn the_window_update_after_a_read_carries_the_new_free_space() {
+        if !held_read_fits("the_window_update_after_a_read_carries_the_new_free_space") { return; }
         let _g = begin();
         let (idx, _ours, _theirs) = established_with_full_buffer(7201, 42100);
         let t0 = azos_drv_irqchip::clint::get_time();
@@ -1613,8 +1634,13 @@ mod tcp_window_sites {
         let mut buf = [0u8; 1024];
         assert_eq!(tcp::recv(idx, &mut buf), 1024, "there should be buffered data to read");
         assert_eq!(wire::sent_count(), 0, "a read that opens less than one SMSS must not advertise");
+        // 3 KiB more, kept under the ring's update-at-once step (`ring >>
+        // TCP_WINDOW_UPDATE_SHIFT`, 32 KiB at 128 KiB, 4 KiB at the fleet
+        // ring's 16 KiB): 4 KiB in all would reach that step at 16 KiB and go
+        // at once, by design.
+        let second = 3072.min(HELD_READ_MAX - 1024);
         let mut buf = [0u8; 3072];
-        assert_eq!(tcp::recv(idx, &mut buf), 3072);
+        assert_eq!(tcp::recv(idx, &mut buf[..second]), second as i32);
         assert_eq!(wire::sent_count(), 0,
             "an update the peer does not need yet is held, not sent per read");
 
@@ -1631,8 +1657,15 @@ mod tcp_window_sites {
             last_window(), PAST_CLAMP_KIB - 4,
         );
 
-        // Draining the rest must reopen it all the way, without waiting.
+        // Draining the rest must reopen it all the way, without waiting. The
+        // reads are `TCP_RECV_MAX_PER_CALL` each, and a last one that opens
+        // less than one SMSS sends nothing (receiver SWS): where `second` was
+        // cut short of 3 KiB, the odd remainder is read first, so the read
+        // that empties the ring is a full one.
+        let rest = PAST_CLAMP_KIB * 1024 - 1024 - second;
+        let odd = rest % azos_limits::TCP_RECV_MAX_PER_CALL;
         let mut big = [0u8; 8192];
+        if odd != 0 { assert_eq!(tcp::recv(idx, &mut big[..odd]), odd as i32); }
         while tcp::recv(idx, &mut big) > 0 {}
         assert_eq!(
             last_window(), EMPTY_WINDOW,
@@ -1698,11 +1731,13 @@ mod tcp_window_sites {
     #[test]
     fn a_held_ack_is_due_within_the_delack_delay() {
         if azos_limits::TCP_DELACK_MS == 0 { return; }
+        if !held_read_fits("a_held_ack_is_due_within_the_delack_delay") { return; }
         let _g = begin();
         let (idx, _ours, _theirs) = established_with_full_buffer(7204, 42400);
         let t0 = azos_drv_irqchip::clint::get_time();
         let mut buf = [0u8; 4096];
-        assert_eq!(tcp::recv(idx, &mut buf), 4096);
+        let n = 4096.min(HELD_READ_MAX);
+        assert_eq!(tcp::recv(idx, &mut buf[..n]), n as i32);
         assert_eq!(wire::sent_count(), 0, "the update is held");
         let delack = azos_limits::TCP_DELACK_MS as u64 * (azos_drv_sys::timebase::TIMER_FREQ / 1000);
         let d = tcp::next_deadline().expect("a held ACK has a deadline");
