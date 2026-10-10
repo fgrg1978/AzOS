@@ -333,6 +333,13 @@ pub fn held_by(tid: u32) -> u32 {
     PI_HELD.held_by(tid)
 }
 
+/// Does the calling task hold any `PiMutex`? The console's question before
+/// it waits for its line lock (`azos_drv_sys::console_defer::may_wait`): a
+/// waiter that holds a sleeping lock could wait on a holder that needs it.
+pub fn caller_holds_any() -> bool {
+    held_by(current_task_tid()) != 0
+}
+
 /// Plain-load spins between yields while waiting.
 ///
 /// Purely a backoff knob now, not a correctness bound: the acquire loop no

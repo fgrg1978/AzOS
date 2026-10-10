@@ -2512,6 +2512,10 @@ mod console_ownership {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
+    /// No waiting for the line lock: the append-and-count path (an
+    /// interrupt handler, a spinlock holder, an RT caller, the idle drain).
+    fn no_wait<G>() -> Option<fn() -> G> { None }
+
     /// `.0` is the UART spinlock; `.1` the line lock every console owner
     /// holds (`CONSOLE_LINE_LOCK` in the kernel).
     struct HostLock<const N: usize>(Mutex<ConsoleDefer<N>>, Mutex<()>);
@@ -2526,11 +2530,11 @@ mod console_ownership {
         fn new() -> Self { HostLock(Mutex::new(ConsoleDefer::new()), Mutex::new(())) }
         /// What a `kprintln!` in task context (interrupts on) does.
         fn kernel_line(&self, wire: &Wire, line: &[u8]) {
-            kernel_print(self, true, || self.1.try_lock().ok(), &mut |b: &[u8]| wire.put_slow(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(line));
+            kernel_print(self, true, || self.1.try_lock().ok(), no_wait(), &mut |b: &[u8]| wire.put_slow(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(line));
         }
         /// What a `kprintln!` from an interrupt handler does: it may not own.
         fn isr_line(&self, wire: &Wire, line: &[u8]) {
-            kernel_print(self, false, || self.1.try_lock().ok(), &mut |b: &[u8]| wire.put_slow(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(line));
+            kernel_print(self, false, || self.1.try_lock().ok(), no_wait(), &mut |b: &[u8]| wire.put_slow(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(line));
         }
         /// A ring-3 `write`: the line lock, then the owner protocol.
         fn ring3_write(&self, wire: &Wire, bytes: &[u8]) -> bool {
@@ -2832,11 +2836,11 @@ mod console_ownership {
             self.wire.put_slow(b);
         }
         fn task_line(&self, line: &[u8]) {
-            kernel_print(self.lock, true, || self.lock.1.try_lock().ok(), &mut |b: &[u8]| self.put(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(line));
+            kernel_print(self.lock, true, || self.lock.1.try_lock().ok(), no_wait(), &mut |b: &[u8]| self.put(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(line));
             self.run.set(0);
         }
         fn isr_line(&self, line: &[u8]) {
-            kernel_print(self.lock, false, || self.lock.1.try_lock().ok(), &mut |b: &[u8]| self.put(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(line));
+            kernel_print(self.lock, false, || self.lock.1.try_lock().ok(), no_wait(), &mut |b: &[u8]| self.put(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(line));
             self.run.set(0);
         }
     }
@@ -2916,7 +2920,7 @@ mod console_ownership {
         let isr = kern_line(2, 0);
         let own = kern_line(1, 0);
         let mut fired = false;
-        kernel_print(&lock, true, || lock.1.try_lock().ok(), &mut |b: &[u8]| {
+        kernel_print(&lock, true, || lock.1.try_lock().ok(), no_wait(), &mut |b: &[u8]| {
             if !fired {
                 fired = true;
                 let mut st = lock.0.try_lock().expect("lock held across wire time");
@@ -2949,7 +2953,7 @@ mod console_ownership {
         let produced = std::cell::Cell::new(1usize);
         let sent = std::cell::Cell::new(0usize);
         let own = b"[K1] k=000000 kernel-line-payload-abcdefghij KEND\n".to_vec();
-        kernel_print(&lock, true, || lock.1.try_lock().ok(), &mut |b: &[u8]| {
+        kernel_print(&lock, true, || lock.1.try_lock().ok(), no_wait(), &mut |b: &[u8]| {
             for &c in b {
                 wire.put_slow(&[c]);
                 sent.set(sent.get() + 1);
@@ -3054,7 +3058,7 @@ mod console_ownership {
         let w = MaskedWire::new(&lock);
         let own = kern_line(1, 0);
         let depth = 1; // inside a SpinLock critical section
-        kernel_print(&lock, may_own(true, depth, false), || lock.1.try_lock().ok(), &mut |b: &[u8]| w.put(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(&own));
+        kernel_print(&lock, may_own(true, depth, false), || lock.1.try_lock().ok(), no_wait(), &mut |b: &[u8]| w.put(b), &mut |sink: &mut dyn FnMut(&[u8])| sink(&own));
         assert_eq!(w.wire.text().as_bytes(), &residual[..DRAIN_CHUNK], "a spinlock holder drained past one chunk");
         assert!(!lock.0.lock().unwrap().is_owned(), "a spinlock holder took the console");
     }
@@ -3196,6 +3200,7 @@ mod console_ownership {
                 &lock,
                 may_own(true, 0, rt),
                 || { tried.set(true); lock.1.try_lock().ok() },
+                no_wait(),
                 &mut w,
                 &mut |sink: &mut dyn FnMut(&[u8])| sink(&own),
             );
@@ -3240,7 +3245,7 @@ mod console_ownership {
         let mut sync_wire = |_: &[u8]| panic!("an RT caller wrote to a synchronous wire");
         {
             let mut w = BandWire { inner: &mut sync_wire, queued: false, on_wait: count_rt_wait };
-            kernel_print(&lock, may_own(true, 0, true), || -> Option<()> { panic!("tried the line lock") },
+            kernel_print(&lock, may_own(true, 0, true), || -> Option<()> { panic!("tried the line lock") }, no_wait(),
                          &mut w, &mut |sink: &mut dyn FnMut(&[u8])| sink(&line));
         }
         assert_eq!(rt_waits(), 0);
@@ -3261,7 +3266,7 @@ mod console_ownership {
         for n in 0..40 {
             let l = kern_line(5, n);
             let mut w = BandWire { inner: &mut ring, queued: true, on_wait: count_rt_wait };
-            kernel_print(&lock, may_own(true, 0, true), || -> Option<()> { panic!("tried the line lock") },
+            kernel_print(&lock, may_own(true, 0, true), || -> Option<()> { panic!("tried the line lock") }, no_wait(),
                          &mut w, &mut |sink: &mut dyn FnMut(&[u8])| sink(&l));
         }
         assert_eq!(rt_waits(), 0, "an RT writer waited on a full console");
@@ -3273,6 +3278,91 @@ mod console_ownership {
         for l in text.lines() {
             assert!(l.ends_with("KEND") || l.starts_with("[CONSOLE] dropped "), "a cut line: {l:?}");
         }
+    }
+
+    /// XC: the console is owned (a ring-3 writer between its lines) and the
+    /// buffer has less than `LINE_RESERVE` free. A task-context kernel line
+    /// that may wait (`wait`) blocks on the line lock and goes out after the
+    /// owner's release; one that may not appends and is dropped, counted.
+    /// Returns (lines dropped, wire text, whether the writer waited).
+    fn full_buffer_then_task_line(wait: bool) -> (u32, String, bool) {
+        let lock = Arc::new(HostLock::<512>::new());
+        let wire = Arc::new(Wire::default());
+        let waiting = Arc::new(AtomicBool::new(false));
+        let line_guard = lock.1.lock().unwrap();
+        assert!(!lock.0.lock().unwrap().take());
+        let mut fillers = Vec::new();
+        let mut n = 0;
+        while lock.0.lock().unwrap().free() >= LINE_RESERVE {
+            let l = kern_line(3, n);
+            lock.0.lock().unwrap().kernel_write(&l, &mut |_: &[u8]| panic!("owned: must defer"));
+            fillers.push(l);
+            n += 1;
+        }
+        assert_eq!(lock.0.lock().unwrap().total_dropped_lines(), 0, "the fill itself dropped");
+        let own: Vec<u8> = format!("[T] task-context line {} KEND\n", "x".repeat(200)).into_bytes();
+        let t = {
+            let (lock, wire, waiting, own) = (lock.clone(), wire.clone(), waiting.clone(), own.clone());
+            std::thread::spawn(move || {
+                let mut put = |b: &[u8]| wire.put_slow(b);
+                let mut emit = |sink: &mut dyn FnMut(&[u8])| sink(&own);
+                if wait {
+                    kernel_print(&*lock, may_own(true, 0, false), || lock.1.try_lock().ok(),
+                                 Some(|| { waiting.store(true, Ordering::SeqCst); lock.1.lock().unwrap() }),
+                                 &mut put, &mut emit);
+                } else {
+                    kernel_print(&*lock, may_own(true, 0, false), || lock.1.try_lock().ok(), no_wait(),
+                                 &mut put, &mut emit);
+                }
+            })
+        };
+        if wait {
+            while !waiting.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+        } else {
+            while !t.is_finished() {
+                std::thread::yield_now();
+            }
+        }
+        // The owner's release: drain what was deferred, give the console back.
+        owner_drain(&*lock, &mut |b: &[u8]| wire.put_slow(b), true);
+        drop(line_guard);
+        t.join().unwrap();
+        let dropped = lock.0.lock().unwrap().total_dropped_lines();
+        let text = wire.text();
+        let fill = String::from_utf8(fillers.concat()).unwrap();
+        assert!(text.starts_with(&fill), "the deferred lines lost their order");
+        (dropped, text, waiting.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn a_task_line_that_may_wait_is_never_dropped_behind_an_owner() {
+        let (dropped, text, waited) = full_buffer_then_task_line(true);
+        assert!(waited, "the writer did not wait for the owner");
+        assert_eq!(dropped, 0, "a task-context line was dropped");
+        assert_eq!(dropped_lines(&text), 0);
+        assert!(text.lines().any(|l| l.starts_with("[T] ") && l.ends_with("KEND")), "the line is missing: {text:?}");
+    }
+
+    /// The discriminating side: the same writer without the wait (gate
+    /// canary `console-drop`, and every caller that may not sleep) drops it.
+    #[test]
+    fn the_same_line_without_the_wait_is_dropped_and_counted() {
+        let (dropped, text, waited) = full_buffer_then_task_line(false);
+        assert!(!waited);
+        assert_eq!(dropped, 1, "the overflow was not counted");
+        assert!(!text.contains("[T] "), "a dropped line reached the wire");
+        assert_eq!(dropped_lines(&text), 1, "no drop report");
+    }
+
+    #[test]
+    fn only_a_writer_that_may_own_and_holds_no_mutex_may_wait() {
+        assert!(may_wait(true, false));
+        assert!(!may_wait(true, true));
+        assert!(!may_wait(false, false));
+        assert!(!may_wait(may_own(true, 0, true), false), "an RT caller never waits");
+        assert!(!may_wait(may_own(false, 0, false), false), "an interrupt handler never waits");
     }
 }
 

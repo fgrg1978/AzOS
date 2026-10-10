@@ -1232,18 +1232,62 @@ fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
             &KernelDeferLock::<false>,
             false,
             || CONSOLE_LINE_LOCK.try_lock(),
+            None::<fn() -> azos_sync::pi_mutex::PiMutexGuard<'static, ()>>,
             &mut wire,
             emit,
         );
         return;
     }
+    // A writer that may own and holds no sleeping lock waits for the
+    // console instead of dropping its line into a full buffer (XC). Gate
+    // canary `console-drop` takes that wait away: the old append-and-drop.
+    let may_wait = crate::console_defer::may_wait(may_own, azos_sync::pi_mutex::caller_holds_any())
+        && !console_drop_canary();
     crate::console_defer::kernel_print(
         &KernelDeferLock::<false>,
         may_own,
         || CONSOLE_LINE_LOCK.try_lock(),
+        if may_wait {
+            Some(|| {
+                CONSOLE_WAITS.fetch_add(1, Ordering::Relaxed);
+                CONSOLE_LINE_LOCK.lock()
+            })
+        } else {
+            None
+        },
         &mut KernelWire,
         emit,
     );
+}
+
+/// Times a kernel writer waited for the console's line lock instead of
+/// dropping its line into a full deferred buffer (XC).
+static CONSOLE_WAITS: AtomicU32 = AtomicU32::new(0);
+
+/// Kernel writers that waited for the console rather than drop a line.
+pub fn console_waits() -> u32 {
+    CONSOLE_WAITS.load(Ordering::Relaxed)
+}
+
+/// The gate canary `console-drop`'s veto, registered by the kernel when the
+/// canary is armed: `true` takes the wait away from the caller, which then
+/// appends into a full buffer and drops, as before XC. `0`: none.
+static WAIT_VETO_FN: AtomicUsize = AtomicUsize::new(0);
+
+/// Register the `console-drop` veto (see [`WAIT_VETO_FN`]).
+pub fn set_console_wait_veto(veto: fn() -> bool) {
+    WAIT_VETO_FN.store(veto as usize, Ordering::Release);
+}
+
+#[inline]
+fn console_drop_canary() -> bool {
+    let f = WAIT_VETO_FN.load(Ordering::Acquire);
+    if f == 0 {
+        return false;
+    }
+    // SAFETY: only `set_console_wait_veto` stores here, and it stores a `fn() -> bool`.
+    let f: fn() -> bool = unsafe { core::mem::transmute::<usize, fn() -> bool>(f) };
+    f()
 }
 
 /// [`rt_console_caller`]: the caller is not real-time (or nothing is
@@ -1467,6 +1511,7 @@ pub fn console_write_ring3(bytes: &[u8]) {
             &KernelDeferLock::<true>,
             false,
             || CONSOLE_LINE_LOCK.try_lock(),
+            None::<fn() -> azos_sync::pi_mutex::PiMutexGuard<'static, ()>>,
             &mut wire,
             &mut |sink: &mut dyn FnMut(&[u8])| sink(bytes),
         );

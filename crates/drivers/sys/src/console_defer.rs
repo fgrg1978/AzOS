@@ -200,6 +200,8 @@ impl<const N: usize> ConsoleDefer<N> {
 
     pub fn is_owned(&self) -> bool { self.owned }
     pub fn len(&self) -> usize { self.len }
+    /// Bytes an append can still take before it drops.
+    pub fn free(&self) -> usize { N - self.len }
     pub fn high_water(&self) -> usize { self.high_water }
     pub fn total_dropped_lines(&self) -> u32 { self.total_dropped_lines }
     pub fn total_deferred(&self) -> u64 { self.total_deferred }
@@ -578,34 +580,76 @@ pub fn owner_write<const N: usize, L: DeferLock<N>, R: FnMut(&[u8]), K: FnMut(&[
 ///   - otherwise (an interrupt handler, interrupts already masked, a
 ///     spinlock held, or the line lock busy): [`ConsoleDefer::help`] with one chunk and defer the
 ///     line behind the rest.
+/// * **A full buffer** (XC, wave 15): a writer handed `wait_line` (it may
+///   own and holds no sleeping lock: [`may_wait`]) never appends into less
+///   than [`LINE_RESERVE`] free while another context owns the console or
+///   holds the line lock: it waits for the line lock, then writes its line
+///   as that lock's holder, after everything deferred. Its line is queued
+///   or waited for, never dropped. Only callers that may not sleep drop,
+///   counted ([`drop_marker`]).
 ///
 /// `try_line` is called without `lock` held: in the kernel it takes a
 /// spinlock of its own, and nothing may be nested inside the UART lock.
-pub fn kernel_print<const N: usize, L, G, T, K, E>(
+pub fn kernel_print<const N: usize, L, G, T, W, K, E>(
     lock: &L,
     may_own: bool,
     try_line: T,
+    wait_line: Option<W>,
     wire: &mut K,
     emit: &mut E,
 ) where
     L: DeferLock<N>,
     T: FnOnce() -> Option<G>,
+    W: FnOnce() -> G,
     K: Wire + ?Sized,
     E: FnMut(&mut dyn FnMut(&[u8])) + ?Sized,
 {
-    let takeover = lock.with(|st| {
+    // `wait_line` (the line lock, WAITED for) is offered only to a writer
+    // that may sleep (see [`may_wait`]). Such a writer never drops its own
+    // line: when the buffer has less than [`LINE_RESERVE`] free while
+    // someone else owns the console, it waits for the owner's release
+    // instead of appending into an overflow (XC, wave 15). Everyone else
+    // (interrupt handlers, spinlock holders, RT callers, the idle drain)
+    // keeps the append-and-count path.
+    let may_wait = may_own && wait_line.is_some();
+    enum Next { Done, Take, Wait }
+    let next = lock.with(|st| {
         if may_own && !st.is_owned() && st.has_residual() {
-            return true;
+            return Next::Take;
+        }
+        if may_wait && st.is_owned() && st.free() < LINE_RESERVE {
+            return Next::Wait;
         }
         st.kernel_line(wire, emit);
-        false
+        Next::Done
     });
-    if !takeover {
-        return;
-    }
-    let Some(line) = try_line() else {
-        lock.with(|st| st.kernel_line(wire, emit));
-        return;
+    let line = match next {
+        Next::Done => return,
+        Next::Take => match try_line() {
+            Some(line) => line,
+            None => {
+                // The line lock is busy: append behind its holder if the
+                // line has room, else (a writer that may sleep) wait for it.
+                let done = lock.with(|st| {
+                    if may_wait && st.free() < LINE_RESERVE {
+                        return false;
+                    }
+                    st.kernel_line(wire, emit);
+                    true
+                });
+                if done {
+                    return;
+                }
+                match wait_line {
+                    Some(w) => w(),
+                    None => return, // unreachable: `may_wait` implies Some
+                }
+            }
+        },
+        Next::Wait => match wait_line {
+            Some(w) => w(),
+            None => return, // unreachable: `may_wait` implies Some
+        },
     };
     // Re-check: a helper may have emptied the residual meanwhile. Nobody
     // else can own the console: ring-3 owners hold `line`.
@@ -618,19 +662,40 @@ pub fn kernel_print<const N: usize, L, G, T, K, E>(
     });
     if took {
         let mut drained = 0usize;
-        if drain(lock, wire, false, &mut drained) {
+        loop {
+            if !drain(lock, wire, false, &mut drained) {
+                emit(&mut |b: &[u8]| wire.put_all(b));
+                drain(lock, wire, true, &mut drained);
+                break;
+            }
             // Budget spent with bytes still deferred: this line goes
-            // behind them, and the next writer carries on.
-            lock.with(|st| {
+            // behind them, and the next writer carries on — unless it
+            // would not fit and this writer may wait: then it drains on,
+            // one more budget, rather than drop its own line.
+            let appended = lock.with(|st| {
+                if may_wait && st.free() < LINE_RESERVE {
+                    return false;
+                }
                 emit(&mut |b: &[u8]| st.kernel_write(b, &mut |_: &[u8]| {}));
                 st.release();
+                true
             });
-        } else {
-            emit(&mut |b: &[u8]| wire.put_all(b));
-            drain(lock, wire, true, &mut drained);
+            if appended {
+                break;
+            }
+            drained = 0;
         }
     }
     drop(line);
+}
+
+/// May a kernel writer that [`may_own`] the console also WAIT for it (block
+/// on the line lock) rather than drop its line into a full buffer? Only if
+/// it holds no sleeping lock (`holds_mutex`): the console owner may need one
+/// to finish (and a ring-3 owner's own kernel line, printed while it holds
+/// the line lock, would wait on itself). The idle task never waits.
+pub fn may_wait(may_own: bool, holds_mutex: bool) -> bool {
+    may_own && !holds_mutex
 }
 
 /// May a kernel writer become the console's owner and drain with interrupts
@@ -700,5 +765,5 @@ where
     if !stranded {
         return;
     }
-    kernel_print(lock, true, try_line, wire, &mut |_: &mut dyn FnMut(&[u8])| {});
+    kernel_print(lock, true, try_line, None::<fn() -> G>, wire, &mut |_: &mut dyn FnMut(&[u8])| {});
 }
