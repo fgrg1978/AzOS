@@ -131,6 +131,18 @@ pub enum Errno {
     EQUOTA = 209,
     /// ABI version mismatch.
     EABIVERSION = 210,
+    /// A fast call completed without an answer because the task serving its
+    /// endpoint died while the call was queued or in service (wave 15 N5).
+    EPEERDIED = 211,
+    /// A fast call completed without an answer because its endpoint was
+    /// destroyed while the call was queued or in service (wave 15 N5).
+    EREVOKED = 212,
+    /// Reserved: an endpoint with no sender capability left (Mach's
+    /// no-senders notice). Not returned yet.
+    ENOSENDERS = 213,
+    /// Reserved: a remote endpoint's transport lost its peer, which may be
+    /// alive (Erlang's `noconnection`). Not returned by a local endpoint.
+    ENOCONNECTION = 214,
 }
 
 impl Errno {
@@ -188,6 +200,10 @@ impl Errno {
             208 => Some(Errno::EROLLBACK),
             209 => Some(Errno::EQUOTA),
             210 => Some(Errno::EABIVERSION),
+            211 => Some(Errno::EPEERDIED),
+            212 => Some(Errno::EREVOKED),
+            213 => Some(Errno::ENOSENDERS),
+            214 => Some(Errno::ENOCONNECTION),
             _ => None,
         }
     }
@@ -233,6 +249,10 @@ impl fmt::Display for Errno {
             Errno::EROLLBACK => "anti-rollback counter would regress",
             Errno::EQUOTA => "quota exceeded",
             Errno::EABIVERSION => "ABI version mismatch",
+            Errno::EPEERDIED => "the serving task died during the call",
+            Errno::EREVOKED => "the endpoint was destroyed during the call",
+            Errno::ENOSENDERS => "no sender left on the endpoint",
+            Errno::ENOCONNECTION => "no connection to the remote endpoint",
         };
         f.write_str(s)
     }
@@ -257,6 +277,10 @@ mod tests {
             Errno::ESAFETY,
             Errno::EAUTH,
             Errno::EABIVERSION,
+            Errno::EPEERDIED,
+            Errno::EREVOKED,
+            Errno::ENOSENDERS,
+            Errno::ENOCONNECTION,
         ];
         for e in cases {
             let ret = e.to_syscall_ret();

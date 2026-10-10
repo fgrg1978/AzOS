@@ -989,7 +989,7 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
         // prove nothing about the kind a denial lands under.
         ("ipc_fast_call_ep", CapKind::Endpoint, || {
             let t = azos_sched::current_task_tid();
-            crate::handlers::endpoint_dest_recording(t, 0).map_or(-1, |v| v as i64)
+            crate::handlers::endpoint_dest_recording(t, 0).map_or(-1, |v| v.owner as i64)
         }),
         // 591, U06-9 — lives in `crate::link_key`, a sibling of this
         // `mod handlers { .. }`, not inside it, same reason `motor_move`

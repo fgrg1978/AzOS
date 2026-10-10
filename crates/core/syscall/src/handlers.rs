@@ -1622,10 +1622,10 @@ const fn file_perms_for_flags(flags: u64) -> Option<azos_abi::cap::CapPerms> {
 /// capability and the service simply has not started, which is not a program
 /// reaching past its authority. Recording it would bury the real denials under
 /// every call made during a boot race.
-pub fn endpoint_dest_recording(caller_tid: u32, cap_raw: u32) -> Option<u32> {
+pub fn endpoint_dest_recording(caller_tid: u32, cap_raw: u32) -> Option<azos_ipc::endpoint::Dest> {
     use azos_ipc::endpoint::EndpointCapError;
-    match azos_ipc::endpoint::endpoint_dest_for(caller_tid, cap_raw) {
-        Ok(tid) => Some(tid),
+    match azos_ipc::endpoint::endpoint_resolve(caller_tid, cap_raw) {
+        Ok(d) => Some(d),
         Err(EndpointCapError::Cap(e)) => {
             note_typed_denial(azos_abi::cap::CapKind::Endpoint, e);
             None

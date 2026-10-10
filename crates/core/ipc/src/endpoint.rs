@@ -51,28 +51,26 @@
 use azos_sync::SpinLock;
 
 use crate::cap::objref;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use crate::cap::{CapError, CapKind, CapPerms};
 
 /// How a `Cap<Endpoint>` packs `(index, generation)`: 8 index bits, 24 of
 /// generation (`objref::ENDPOINT`).
 const LAYOUT: objref::Layout = objref::ENDPOINT;
 
-/// Endpoints the machine may have live at once.
-///
-/// Fixed rather than a Kconfig knob: an endpoint is one `u32` owner and three
-/// small fields, so the whole pool is under 400 bytes, and a board that wants
-/// more services wants more of them on the same number of tasks.
-pub const MAX_ENDPOINTS: usize = 32;
+/// Endpoints the machine may have live at once (Kconfig `IPC_ENDPOINTS`;
+/// the per-endpoint call queues, `ep_queue.rs`, have the same size).
+pub const MAX_ENDPOINTS: usize = azos_limits::IPC_ENDPOINTS;
 
-/// Endpoints ONE task may own at once.
+/// Endpoints ONE task may own at once (Kconfig `IPC_ENDPOINTS_PER_TASK`).
 ///
 /// A quota, and counted under the same lock that allocates — the same rule
 /// `port::create_core` follows, and for the same reason: checking a quota and
 /// *then* taking the lock lets two harts both pass the check and both
 /// allocate. Without it one task could take every slot and no other service
-/// could ever be created, which is the shape of the flaw `fast_ipc`'s own
-/// 64-slot table still has (`alloc_slot` has no per-caller accounting).
-pub const MAX_ENDPOINTS_PER_TASK: usize = MAX_ENDPOINTS / 4;
+/// could ever be created.
+pub const MAX_ENDPOINTS_PER_TASK: usize = azos_limits::IPC_ENDPOINTS_PER_TASK;
 
 const _: () = assert!(MAX_ENDPOINTS as u64 <= 1u64 << LAYOUT.idx_bits());
 const _: () = assert!(MAX_ENDPOINTS_PER_TASK >= 1);
@@ -156,6 +154,132 @@ static ENDPOINTS: SpinLock<EndpointTable> = SpinLock::new(EndpointTable {
     next_gen: [1u32; MAX_ENDPOINTS],
 });
 
+/// Per slot, the endpoint's identity in one word for a lookup that takes no
+/// lock (wave 15 N5): `generation << 32 | owner_tid` while the slot is
+/// active, 0 otherwise. Written under `ENDPOINTS` by [`publish`] wherever
+/// the slot's activity, generation or owner changes; read by
+/// [`endpoint_dest_for`] in a QSBR read section. A reader sees one store
+/// whole, and the generation it compares makes a reused slot answer
+/// `Stale`, never another endpoint's owner.
+static LOOKUP: [AtomicU64; MAX_ENDPOINTS] = [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
+
+/// Per slot: destroyed, and not yet reusable. A destroyed endpoint's slot
+/// goes back to the pool only after a grace period ([`glue::retire`]), so a
+/// lookup that read the old word before the destroy, and is still inside its
+/// read section, can never meet a new endpoint in the same slot.
+static HELD: [AtomicBool; MAX_ENDPOINTS] = [const { AtomicBool::new(false) }; MAX_ENDPOINTS];
+
+/// Publish slot `i`'s identity word (under `ENDPOINTS`).
+fn publish(eps: &[Endpoint; MAX_ENDPOINTS], i: usize) {
+    let e = &eps[i];
+    let w = if e.active { (u64::from(e.generation) << 32) | u64::from(e.owner_tid) } else { 0 };
+    LOOKUP[i].store(w, Ordering::Release);
+}
+
+/// Take slot `i`'s endpoint out of service (under `ENDPOINTS`): no lookup
+/// finds it, no call queues on it, and the slot is held out of the pool
+/// until [`glue::retire`]'s grace period has passed.
+fn unpublish(eps: &mut [Endpoint; MAX_ENDPOINTS], i: usize) {
+    eps[i] = Endpoint::empty();
+    LOOKUP[i].store(0, Ordering::Release);
+    HELD[i].store(true, Ordering::Relaxed);
+    glue::close(i);
+}
+
+/// The kernel side of the endpoint lifecycle: the per-endpoint call queues
+/// (Kconfig `IPC_ENDPOINT_QUEUES`, `ep_queue.rs`), the QSBR read section of
+/// the lookup and the grace period before a slot is reused. The host suites
+/// that `#[path]`-pull this file have none of it, and their stand-ins
+/// release a slot at once.
+#[cfg(target_os = "none")]
+mod glue {
+    use core::cell::UnsafeCell;
+    use core::sync::atomic::Ordering;
+
+    use azos_sync::qsbr::{self, RcuHead};
+
+    const QUEUES: bool = azos_limits::IPC_ENDPOINT_QUEUES;
+
+    /// Load slot `i`'s identity word in a QSBR read section. The section is
+    /// held by masking interrupts (no preemption, so this CPU passes no
+    /// quiescent state), which costs two CSR writes where `qsbr::read`'s
+    /// preemption count costs two atomic read-modify-write loops.
+    #[inline(always)]
+    pub fn load_word(i: usize) -> u64 {
+        let irq = azos_sync::scope::IrqOff::new();
+        let _rd = qsbr::read_in(&irq);
+        match super::LOOKUP.get(i) {
+            Some(w) => w.load(Ordering::Acquire),
+            None => 0,
+        }
+    }
+    pub fn open(i: usize, gen: u32, owner: u32) {
+        if QUEUES { crate::ep_queue::open(i, gen, owner) }
+    }
+    pub fn set_owner(i: usize, gen: u32, owner: u32) {
+        if QUEUES { crate::ep_queue::set_owner(i, gen, owner) }
+    }
+    pub fn close(i: usize) {
+        if QUEUES { crate::ep_queue::close(i) }
+    }
+    /// Complete the calls on slot `i` with `code`, `ENDPOINTS` released.
+    pub fn drain(i: usize, code: i32, server: u32) {
+        if QUEUES { crate::fastcall::drain_endpoint(i, code, server) }
+    }
+
+    #[repr(C)]
+    struct Head(UnsafeCell<RcuHead>);
+    // SAFETY: a head is touched only by `call_rcu` and its callback, one at a
+    // time: a slot is retired once and not again until the callback ran
+    // (`HELD` keeps it out of the pool until then).
+    unsafe impl Sync for Head {}
+    static HEADS: [Head; super::MAX_ENDPOINTS] =
+        [const { Head(UnsafeCell::new(RcuHead::new())) }; super::MAX_ENDPOINTS];
+
+    /// The callback: slot `i` may be reused.
+    unsafe fn release(head: *mut RcuHead) {
+        let base = HEADS.as_ptr() as usize;
+        let i = (head as usize - base) / core::mem::size_of::<Head>();
+        if let Some(h) = super::HELD.get(i) {
+            h.store(false, Ordering::Release);
+        }
+    }
+
+    /// Give slot `i` back to the pool after a grace period (the first
+    /// `call_rcu` user, wave 15 N5). With Kconfig `RCU_QSBR` off it is
+    /// given back at once.
+    pub fn retire(i: usize) {
+        if let Some(h) = HEADS.get(i) {
+            // SAFETY: see `Head`; `HEADS` is static.
+            unsafe { qsbr::call_rcu(h.0.get(), release) };
+        }
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+mod glue {
+    pub fn load_word(i: usize) -> u64 {
+        match super::LOOKUP.get(i) {
+            Some(w) => w.load(core::sync::atomic::Ordering::Acquire),
+            None => 0,
+        }
+    }
+    pub fn open(_i: usize, _gen: u32, _owner: u32) {}
+    pub fn set_owner(_i: usize, _gen: u32, _owner: u32) {}
+    pub fn close(_i: usize) {}
+    pub fn drain(_i: usize, _code: i32, _server: u32) {}
+    pub fn retire(i: usize) {
+        if let Some(h) = super::HELD.get(i) {
+            h.store(false, core::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+/// `-EPEERDIED` and `-EREVOKED` (`azos_abi::error::Errno`), the codes a call
+/// in flight is completed with when its server dies or its endpoint goes.
+const PEER_DIED: i32 = -(azos_abi::error::Errno::EPEERDIED as i32);
+const REVOKED: i32 = -(azos_abi::error::Errno::EREVOKED as i32);
+
 /// Why an endpoint operation was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EndpointCapError {
@@ -218,7 +342,8 @@ fn create_core(owner_tid: u32, name: Option<&[u8]>, quota: bool) -> Option<u32> 
             }
         }
         // `next_gen[i] != 0` excludes a slot this call has marked mid-sweep.
-        let slot = (0..MAX_ENDPOINTS).find(|&i| !eps[i].active && eps.next_gen[i] != 0)?;
+        let slot = (0..MAX_ENDPOINTS)
+            .find(|&i| !eps[i].active && eps.next_gen[i] != 0 && !HELD[i].load(Ordering::Acquire))?;
         // Taken once a free slot is known, so a full pool or a quota refusal
         // consumes no generation.
         let gen = match objref::take_slot_gen(eps.next_gen[slot], LAYOUT) {
@@ -242,6 +367,8 @@ fn create_core(owner_tid: u32, name: Option<&[u8]>, quota: bool) -> Option<u32> 
             e.name_len = n.len() as u8;
         }
         eps[slot] = e;
+        publish(&eps, slot);
+        glue::open(slot, gen, owner_tid);
         return Some(LAYOUT.pack(slot as u32, gen));
     }
     None
@@ -369,6 +496,8 @@ pub fn endpoint_named_cap(
             return None; // already served by someone else
         }
         eps[i].owner_tid = tid;
+        publish(&eps, i);
+        glue::set_owner(i, eps[i].generation, tid);
     }
 
     match objref::grant_packed::<crate::cap::targets::Endpoint>(tid, perms, r) {
@@ -384,6 +513,8 @@ pub fn endpoint_named_cap(
                 if let Ok(i) = live_index(&eps, r) {
                     if eps[i].owner_tid == tid {
                         eps[i].owner_tid = UNCLAIMED;
+                        publish(&eps, i);
+                        glue::set_owner(i, eps[i].generation, UNCLAIMED);
                     }
                 }
             }
@@ -415,15 +546,61 @@ pub fn endpoint_named_cap(
 /// The caller collapses all three into one refusal on purpose: which one it
 /// was would report on capabilities the caller does not hold.
 pub fn endpoint_dest_for(caller_tid: u32, cap_raw: u32) -> Result<u32, EndpointCapError> {
+    endpoint_resolve(caller_tid, cap_raw).map(|d| d.owner)
+}
+
+/// A call's destination: the endpoint (its packed reference) and the task
+/// serving it when it was looked up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Dest {
+    /// The packed `(index, generation)` reference.
+    pub r: u32,
+    /// The serving task.
+    pub owner: u32,
+}
+
+impl Dest {
+    /// The endpoint's pool index.
+    #[inline(always)]
+    pub fn index(&self) -> usize {
+        LAYOUT.idx(self.r) as usize
+    }
+    /// The endpoint's generation.
+    #[inline(always)]
+    pub fn generation(&self) -> u32 {
+        LAYOUT.gen(self.r)
+    }
+}
+
+/// [`endpoint_dest_for`], with the endpoint's reference: what the fast call
+/// queues on (Kconfig `IPC_ENDPOINT_QUEUES`). Takes no lock: the capability
+/// read is lock-free (N4) and the endpoint's identity word is read in a QSBR
+/// read section ([`lookup_ref`]).
+#[inline]
+pub fn endpoint_resolve(caller_tid: u32, cap_raw: u32) -> Result<Dest, EndpointCapError> {
     let cap: crate::cap::Cap<crate::cap::targets::Endpoint> =
         crate::cap::Cap::from_raw(azos_abi::cap::CapHandle::from_raw(cap_raw));
     let r = crate::cap_store::get(caller_tid, cap, CapPerms::WRITE)
         .map_err(EndpointCapError::Cap)?;
-    let owner = endpoint_owner_ref(r)?;
+    let owner = lookup_ref(r)?;
     if owner == UNCLAIMED {
         return Err(EndpointCapError::Unserved);
     }
-    Ok(owner)
+    Ok(Dest { r, owner })
+}
+
+/// The task serving the endpoint `r` names, without `ENDPOINTS`: one load of
+/// the slot's identity word in a QSBR read section. `Cap(Stale)` unless the
+/// slot is active with `r`'s generation.
+#[inline]
+fn lookup_ref(r: u32) -> Result<u32, EndpointCapError> {
+    let i = LAYOUT.idx(r) as usize;
+    let g = LAYOUT.gen(r);
+    let w = glue::load_word(i);
+    if g == 0 || (w >> 32) as u32 != g {
+        return Err(EndpointCapError::Cap(CapError::Stale));
+    }
+    Ok(w as u32)
 }
 
 /// The reference of the endpoint called `name`, or `None`. For the kernel-side
@@ -442,19 +619,30 @@ pub fn endpoint_ref_by_name(name: &[u8]) -> Option<u32> {
 /// reference the CALLER could only obtain by holding a capability into the
 /// destination `fast_ipc_call` needs, without the caller ever naming a TID.
 pub fn endpoint_owner_ref(r: u32) -> Result<u32, EndpointCapError> {
-    let eps = ENDPOINTS.lock_irqsave();
-    let i = live_index(&eps, r)?;
-    Ok(eps[i].owner_tid)
+    lookup_ref(r)
 }
 
 /// Free the endpoint `r` names. Idempotent only in the sense that a second
 /// call is `Cap(Stale)` — the generation makes the reference dead, not the
 /// index.
 pub fn destroy_ref(r: u32) -> Result<(), EndpointCapError> {
-    let mut eps = ENDPOINTS.lock_irqsave();
-    let i = live_index(&eps, r)?;
-    eps[i] = Endpoint::empty();
+    let (i, owner) = {
+        let mut eps = ENDPOINTS.lock_irqsave();
+        let i = live_index(&eps, r)?;
+        let owner = eps[i].owner_tid;
+        unpublish(&mut eps, i);
+        (i, owner)
+    };
+    retire_after_drain(i, REVOKED, owner);
     Ok(())
+}
+
+/// After [`unpublish`], with `ENDPOINTS` released: complete the calls queued
+/// on slot `i` or in service there with `code`, then give the slot back to
+/// the pool after a grace period.
+fn retire_after_drain(i: usize, code: i32, server: u32) {
+    glue::drain(i, code, server);
+    glue::retire(i);
 }
 
 /// Destroy `r`, but only for its owner.
@@ -470,7 +658,10 @@ pub fn destroy_ref_as(r: u32, tid: u32) -> Result<(), EndpointCapError> {
     if eps[i].owner_tid != tid {
         return Err(EndpointCapError::NotOwner);
     }
-    eps[i] = Endpoint::empty();
+    unpublish(&mut eps, i);
+    drop(eps);
+    // The owner destroyed its own endpoint: its callers' calls end REVOKED.
+    retire_after_drain(i, REVOKED, tid);
     Ok(())
 }
 
@@ -489,11 +680,21 @@ pub fn endpoint_release_all(tid: u32) {
     if tid == UNCLAIMED {
         return;
     }
-    let mut eps = ENDPOINTS.lock_irqsave();
-    for e in eps.iter_mut() {
-        if e.active && e.owner_tid == tid {
-            *e = Endpoint::empty();
+    let mut gone = [0u16; MAX_ENDPOINTS];
+    let mut n = 0usize;
+    {
+        let mut eps = ENDPOINTS.lock_irqsave();
+        for i in 0..MAX_ENDPOINTS {
+            if eps[i].active && eps[i].owner_tid == tid {
+                unpublish(&mut eps, i);
+                gone[n] = i as u16;
+                n += 1;
+            }
         }
+    }
+    // The server died: its callers' calls end PEER_DIED (wave 15 N5).
+    for &i in &gone[..n] {
+        retire_after_drain(i as usize, PEER_DIED, tid);
     }
 }
 
@@ -518,15 +719,33 @@ pub fn endpoint_orphan_all(tid: u32) -> usize {
         return 0;
     }
     let mut kept = 0usize;
-    let mut eps = ENDPOINTS.lock_irqsave();
-    for e in eps.iter_mut() {
-        if e.active && e.owner_tid == tid {
-            if e.name_len > 0 {
-                e.owner_tid = UNCLAIMED;
-                kept += 1;
-            } else {
-                *e = Endpoint::empty();
+    // (slot, freed): a kept endpoint's calls end PEER_DIED as a freed one's
+    // do, so its successor starts with an empty queue.
+    let mut hit = [(0u16, false); MAX_ENDPOINTS];
+    let mut n = 0usize;
+    {
+        let mut eps = ENDPOINTS.lock_irqsave();
+        for i in 0..MAX_ENDPOINTS {
+            if eps[i].active && eps[i].owner_tid == tid {
+                if eps[i].name_len > 0 {
+                    eps[i].owner_tid = UNCLAIMED;
+                    publish(&eps, i);
+                    glue::set_owner(i, eps[i].generation, UNCLAIMED);
+                    kept += 1;
+                    hit[n] = (i as u16, false);
+                } else {
+                    unpublish(&mut eps, i);
+                    hit[n] = (i as u16, true);
+                }
+                n += 1;
             }
+        }
+    }
+    for &(i, freed) in &hit[..n] {
+        if freed {
+            retire_after_drain(i as usize, PEER_DIED, tid);
+        } else {
+            glue::drain(i as usize, PEER_DIED, tid);
         }
     }
     kept
@@ -616,6 +835,12 @@ pub fn endpoint_inherit_at_fork(parent_tid: u32, child_tid: u32) -> usize {
     minted
 }
 
+/// Slot `i` was destroyed and is still waiting out its grace period before
+/// it may be reused (the ktest `ipc_endpoint_slot_reused_after_grace`).
+pub fn slot_held(i: usize) -> bool {
+    HELD.get(i).is_some_and(|h| h.load(Ordering::Acquire))
+}
+
 /// How many endpoints are live. For tests and for a boot-time report.
 pub fn endpoint_live_count() -> usize {
     ENDPOINTS.lock_irqsave().iter().filter(|e| e.active).count()
@@ -629,6 +854,8 @@ pub fn __endpoint_reset_for_tests() {
     for i in 0..MAX_ENDPOINTS {
         eps[i] = Endpoint::empty();
         eps.next_gen[i] = 1;
+        LOOKUP[i].store(0, Ordering::Relaxed);
+        HELD[i].store(false, Ordering::Relaxed);
     }
 }
 

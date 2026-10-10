@@ -27,7 +27,7 @@ const IPC_CENSUS_INTERVAL: u64 = 20_000_000; // 2 s at the 10 MHz CLINT
 pub(crate) fn ipc_census_task(_arg: usize) {
     let mut last = (0u32, 0u32, 0u32, 0u32);
     loop {
-        let now = azos_ipc::fast_ipc_census();
+        let now = azos_ipc::fastcall::census();
         // Only speak when something changed — a steady state prints nothing and
         // costs nothing, so a wedge shows up as the last line before silence.
         if now != last {
@@ -60,7 +60,7 @@ pub(crate) fn ipc_census_task(_arg: usize) {
             // every counter. If they do not match, the premise was false and
             // the wedge is something else.
             let mut slots = [(0u8, 0u8, 0u32, 0u32); 8];
-            let ns = azos_ipc::fast_ipc_slot_ids(&mut slots);
+            let ns = azos_ipc::fastcall::slot_ids(&mut slots);
             for e in slots.iter().take(ns) {
                 kprintln!("[IPC-CENSUS]   slot idx={} state={} caller={} server={}",
                     e.0, e.1, e.2, e.3);

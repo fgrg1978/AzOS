@@ -3214,15 +3214,15 @@ pub fn fast_ipc_call_ep(endpoint: u32, words: [u64; FAST_IPC_MAX_WORDS]) -> Opti
     fast_ipc_call_ep_full(endpoint, words).map(|r| r[0])
 }
 
-/// Number of fast-IPC slots in the kernel (`FAST_IPC_MAX_SLOTS`,
-/// `crates/core/ipc/src/fast_ipc.rs`). A slot index returned by
-/// [`fast_ipc_accept`] is always below this.
+/// The range of [`FastRequest::slot`]: a handle's low six bits, for logging.
+/// The handle is opaque. With Kconfig `IPC_ENDPOINT_QUEUES` (the default)
+/// its low bits name the CALLER's call record (its task slot, so exactly the
+/// record on a board of at most 64 tasks); with the old global table they
+/// are its slot (`IPC_FAST_SLOTS`, 64 by default).
 pub const FAST_IPC_MAX_SLOTS: usize = 64;
 
-/// Low bits of a fast-IPC handle that hold the slot index; the rest is the
-/// generation tag. Mirrors `FAST_IPC_SLOT_MASK` in `crates/core/ipc/src/fast_ipc.rs`
-/// — the two must agree, and the kernel side carries a compile-time assert
-/// tying it to `FAST_IPC_MAX_SLOTS`.
+/// The bits of a handle [`FastRequest::slot`] shows (see
+/// [`FAST_IPC_MAX_SLOTS`]).
 pub const FAST_IPC_SLOT_MASK: u64 = (FAST_IPC_MAX_SLOTS as u64) - 1;
 
 /// One accepted fast-IPC request, as the server sees it.
@@ -3237,8 +3237,9 @@ pub struct FastRequest {
     /// occupant. Pass it through untouched — masking it, sign-extending it, or
     /// reconstructing it from `slot` all reintroduce the bug the tag closes.
     pub handle: u64,
-    /// Slot index, decoded from `handle` purely for logging and for the
-    /// caller's own bookkeeping. **Never** hand this to [`fast_ipc_reply`].
+    /// The handle's low bits ([`FAST_IPC_SLOT_MASK`]), purely for logging and
+    /// for the caller's own bookkeeping. **Never** hand this to
+    /// [`fast_ipc_reply`].
     pub slot: usize,
     /// TID of the task that issued `SYS_IPC_FAST_CALL`.
     pub caller_tid: u32,

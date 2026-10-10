@@ -131,6 +131,10 @@ pub(crate) const NAMES: &[&str] = &[
     // (`panic::halt_begin`) is the one judged (rows `fatal: ...`). With
     // `panic-quiesce-skip` too, that report must splice.
     "panic-splice-fatal",
+    // crates/core/ipc/src/ep_queue.rs `drain`: a server's death leaves its
+    // accepted calls in service, so their callers are never completed
+    // (ktest `ipc_server_death_completes_call_peer_died`).
+    "ipc-no-peer-died",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

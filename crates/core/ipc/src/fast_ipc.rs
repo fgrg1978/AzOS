@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-/// Fast-path IPC — seL4-style register-passing (M02).
+/// Fast-path IPC — seL4-style register-passing (M02): the machine-wide slot
+/// table, compiled in only with Kconfig `IPC_ENDPOINT_QUEUES` off (the
+/// default queues each call on its endpoint, `ep_queue.rs`; both behind
+/// `fastcall.rs`).
 ///
 /// Transfers up to 32 bytes (4 × u64) between two tasks without touching
 /// user-space memory or allocating any kernel buffer.  Data lives in a
@@ -158,7 +161,12 @@ mod sched_seam {
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Maximum number of concurrent fast IPC slots (one per potential caller).
+/// Maximum number of concurrent fast IPC slots, machine-wide (Kconfig
+/// `IPC_FAST_SLOTS`; read only with `IPC_ENDPOINT_QUEUES` off). The host
+/// suite keeps 64.
+#[cfg(target_os = "none")]
+pub const FAST_IPC_MAX_SLOTS: usize = azos_limits::IPC_FAST_SLOTS;
+#[cfg(not(target_os = "none"))]
 pub const FAST_IPC_MAX_SLOTS: usize = 64;
 
 /// "No donation rides on this exchange" in a slot's `donee` field and in
@@ -212,8 +220,15 @@ const FAST_IPC_SLOT_FREE: u32 = u32::MAX;
 // tested (`generation_wrap_reopens_aba_the_documented_residual`) and accepted,
 // not overlooked.
 
-/// Bits of the handle that carry the slot index. 64 slots need exactly 6.
-pub const FAST_IPC_SLOT_BITS: u32 = 6;
+/// Bits of the handle that carry the slot index: enough for
+/// `FAST_IPC_MAX_SLOTS` (64 slots need exactly 6).
+pub const FAST_IPC_SLOT_BITS: u32 = {
+    let mut b = 1;
+    while (1usize << b) < FAST_IPC_MAX_SLOTS {
+        b += 1;
+    }
+    b
+};
 
 /// Mask for the slot-index field of a handle.
 pub const FAST_IPC_SLOT_MASK: u64 = (1u64 << FAST_IPC_SLOT_BITS) - 1;

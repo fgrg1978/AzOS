@@ -311,6 +311,10 @@ mod error_tests {
             Errno::EROLLBACK,
             Errno::EQUOTA,
             Errno::EABIVERSION,
+            Errno::EPEERDIED,
+            Errno::EREVOKED,
+            Errno::ENOSENDERS,
+            Errno::ENOCONNECTION,
             Errno::EINTR,
             Errno::EPIPE,
         ];

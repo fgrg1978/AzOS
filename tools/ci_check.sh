@@ -11325,8 +11325,13 @@ PY
     # rcu_stall_detector_names_the_cpu, lockdep_no_sleep_in_rcu_read,
     # cap_lookup_lock_free_never_stale (wave 15, N4: Kconfig RCU_QSBR; the
     # canaries are `ktest rcu canaries (rv|arm|x86)`).
-    KTEST_N_RV=43
-    KTEST_N_ARM=43
+    # +4 ipc_server_death_completes_call_peer_died,
+    # ipc_endpoint_destroy_completes_call_revoked,
+    # ipc_endpoint_many_callers_queue, ipc_endpoint_slot_reused_after_grace
+    # (wave 15, N5: Kconfig IPC_ENDPOINT_QUEUES; canaries `ktest ipc
+    # canary (rv|arm|x86)` and the rcu canaries' rcu-free-no-grace).
+    KTEST_N_RV=47
+    KTEST_N_ARM=47
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11677,9 +11682,20 @@ PY
     # rcu_idle_cpu_is_quiescent), `lockdep-rcu-sleep` (a wait's entry inside
     # a read section: lockdep_no_sleep_in_rcu_read).
     KTEST_RCU_CANARIES="canary=rcu-free-no-grace,rcu-idle-qs-skip,lockdep-rcu-sleep"
-    KTEST_RCU_CANARIED="rcu_free_waits_for_the_reader rcu_idle_cpu_is_quiescent lockdep_no_sleep_in_rcu_read"
+    # N5: the same rcu-free-no-grace hands a destroyed endpoint's slot back
+    # at once (ipc_endpoint_slot_reused_after_grace).
+    KTEST_RCU_CANARIED="rcu_free_waits_for_the_reader rcu_idle_cpu_is_quiescent lockdep_no_sleep_in_rcu_read ipc_endpoint_slot_reused_after_grace"
     par "ktest rcu canaries (rv)" ktest_row "ktest rcu canaries (rv)" rv "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
     par "ktest rcu canaries (arm)" ktest_row "ktest rcu canaries (arm)" arm "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    # N5 (Kconfig IPC_ENDPOINT_QUEUES, kernel/src/smokes/ipc_endpoint.rs), one
+    # boot of the pass row's kernel: `canary=ipc-no-peer-died` (a server's
+    # death leaves its accepted call in service, nobody completes it, the
+    # caller never returns: ipc_server_death_completes_call_peer_died times
+    # out).
+    KTEST_IPC_CANARIES="canary=ipc-no-peer-died"
+    KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died"
+    par "ktest ipc canary (rv)" ktest_row "ktest ipc canary (rv)" rv "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
+    par "ktest ipc canary (arm)" ktest_row "ktest ipc canary (arm)" arm "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
@@ -11729,7 +11745,8 @@ PY
     # +1 spin_lock_fifo_bounded (N3; -smp 4, as on rv and arm).
     # +1 link_key_hook_runs_unlocked (N3), as on rv and arm.
     # +5 the N4 RCU tests, as on rv and arm.
-    KTEST_N_X86=45
+    # +4 the N5 endpoint tests, as on rv and arm.
+    KTEST_N_X86=49
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -11879,6 +11896,9 @@ PY
     # N4: see `ktest rcu canaries (rv)`.
     par "ktest rcu canaries (x86)" x86_ktest_row "ktest rcu canaries (x86)" "" \
         "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    # N5: see `ktest ipc canary (rv)`.
+    par "ktest ipc canary (x86)" x86_ktest_row "ktest ipc canary (x86)" "" \
+        "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
 
     # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
     #

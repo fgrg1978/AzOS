@@ -341,6 +341,91 @@ config MAX_LEASES
       fleet (512) 106,504 B = 104 KiB including the waiter slots of 4096
       tasks.  One task may lend half of them (MAX_LEASES_PER_LESSOR).
 
+config IPC_ENDPOINT_QUEUES
+    bool "Fast calls queue on their endpoint (per-endpoint queues)"
+    default y
+    help
+      SYS_IPC_FAST_CALL_EP queues the call on the endpoint it names
+      (crates/core/ipc/src/ep_queue.rs): one call record per task slot, a
+      send queue and a busy list per endpoint under that endpoint's own
+      interrupt-safe SpinLock, and a ready mask per task slot from which an
+      argumentless accept finds work in O(1). A dead server or a destroyed
+      endpoint completes every call queued on it or in service with
+      -EPEERDIED / -EREVOKED. The endpoint lookup on the call path takes no
+      lock (an atomic word read in a QSBR read section), and an endpoint
+      slot is reused only after a grace period (call_rcu).
+
+      n compiles the old path instead (crates/core/ipc/src/fast_ipc.rs):
+      one machine-wide table of IPC_FAST_SLOTS slots under one SpinLock,
+      scanned by the server; a call that finds every slot taken fails, and
+      a call whose server died returns -1.
+
+      Cost: 72 B of RAM per task slot (MAX_TASKS: a 64-byte call record and
+      an 8-byte ready mask per 64 endpoints), 4,608 B at edge's 64 tasks,
+      plus 24 B per endpoint (IPC_ENDPOINTS: the queue head and its lock);
+      n costs IPC_FAST_SLOTS x 64 B instead (4,096 B at 64). Instructions,
+      riscv64, one CPU, vsbench ipc-roundtrip (one call and its reply):
+      2,425 with the queues against 2,463 for the old table (Linux pipe
+      pair: 11,998).
+
+config IPC_ENDPOINTS
+    int "Fast-call endpoints the machine may have live at once"
+    range 4 255
+    default 32  if PROFILE_EMBEDDED
+    default 32  if PROFILE_EDGE
+    default 128 if PROFILE_FLEET
+    default 32
+    help
+      Size of the endpoint pool (crates/core/ipc/src/endpoint.rs) and of
+      the per-endpoint queues. A Cap<Endpoint> packs the slot in 8 index
+      bits (objref ENDPOINT), hence the 255 ceiling. Was a constant (32).
+
+      Cost: about 120 B of RAM per endpoint (name, owner, generation, the
+      lock-free lookup word, the grace-period link and the queue head), the
+      same on every ISA: 3.8 KiB at 32, 15 KiB at 128. Above 64, each task
+      slot's ready mask grows by 8 B per 64 endpoints. Raise it when a board
+      runs more services; a destroyed endpoint's slot is reusable only one
+      grace period later.
+
+config IPC_ENDPOINTS_PER_TASK
+    int "Endpoints one task may own at once"
+    range 1 64
+    default 8  if PROFILE_EMBEDDED
+    default 8  if PROFILE_EDGE
+    default 16 if PROFILE_FLEET
+    default 8
+    help
+      Per-task quota on endpoint creation, counted under the lock that
+      allocates, so one task cannot take the whole pool (IPC_ENDPOINTS).
+      Was a constant (32 / 4). Must stay below IPC_ENDPOINTS (asserted at
+      build). Cost: none in RAM; the fork grant (endpoint_inherit_at_fork)
+      keeps this many handles on its stack (4 B each).
+
+config IPC_FAST_SLOTS
+    int "Fast-call slots of the old global table (IPC_ENDPOINT_QUEUES=n)"
+    range 8 256
+    default 64
+    help
+      Only read when IPC_ENDPOINT_QUEUES is n: the machine-wide slot table
+      of crates/core/ipc/src/fast_ipc.rs. Every call in flight on the
+      machine takes one slot; a call that finds none free fails with -1.
+      The server scans the table for its work when any call is pending.
+      Was a constant (64). Cost: 64 B of RAM per slot (4 KiB at 64), and
+      up to 6 instructions per slot on an accept that scans.
+
+config IPC_CALL_WAKE_RETRIES
+    int "Wake-ups a blocked fast call or accept tolerates before giving up"
+    range 1 64
+    default 8
+    help
+      A fast-call client (or an accepting server) can come back from its
+      block with nothing to collect: a stamped wake that closed a lost-wake
+      race, or a kill. It blocks again up to this many times, then answers
+      -1 (the call is withdrawn, so the server's reply gets -2/-3). A
+      correct system converges in one or two turns; the bound keeps a
+      syscall from pinning a CPU if that ever breaks. Was a constant (8).
+      Cost: none until a wake is spurious.
+
 # ---------------------------------------------------------------------------
 # Pub/Sub
 # ---------------------------------------------------------------------------

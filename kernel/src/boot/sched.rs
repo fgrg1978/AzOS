@@ -111,6 +111,11 @@ pub(crate) fn install_sched_hooks() {
     // capability it was made through and follows it when it moves
     // (`azos_ipc::port::port_cap_event`). Before the first user task.
     azos_ipc::cap_store::set_cap_event_hook(azos_ipc::port::port_cap_event);
+    // Wave 15 N5 runtime canary: a dead server's in-service calls are never
+    // completed with -EPEERDIED.
+    if canary!("ipc-no-peer-died") {
+        azos_ipc::ep_queue::canary_no_peer_died();
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();

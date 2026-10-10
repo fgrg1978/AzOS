@@ -15,6 +15,20 @@ SemVer convention the crate was written to, not a commitment:
 
 ## [Unreleased]
 
+N5 (wave 15): the endpoint object.
+
+- **Removed** `SYS_IPC_FAST_CALL` (108), the fast call addressed by a raw
+  TID; it joins `RETIRED_SYSCALLS`. `SYS_IPC_FAST_CALL_EP` (582) is the only
+  fast call.
+- **Added** `Errno::EPEERDIED` (211) and `Errno::EREVOKED` (212): a fast call
+  completed without an answer because the endpoint's serving task died, or
+  the endpoint was destroyed, while the call was queued or in service (582
+  returns `-211` / `-212` instead of `-1`). `Errno::ENOSENDERS` (213) and
+  `Errno::ENOCONNECTION` (214) are reserved.
+- **Changed** the fast-call handle layout (opaque to ring 3): with Kconfig
+  `IPC_ENDPOINT_QUEUES` the low bits name the CALLER's call record, not a
+  slot of a 64-entry table.
+
 TRACE (wave 15).
 
 - **Added** `SYS_TRACE_CTL_TYPED` (632): `a0` = `Cap<Trace>`, `a1` = op

@@ -222,7 +222,7 @@ fn dump_sched_counters() {
     // lock is deliberately NOT irqsave (that would mask interrupts across a
     // 64-slot scan on the hottest path); this is the detector that replaces it.
     kprintln!("[SCHED-DBG]   fast-ipc irq-ctx={}",
-        azos_ipc::fast_ipc_irq_ctx_violations());
+        azos_ipc::fastcall::irq_ctx_violations());
     // How many fast-IPC hand-offs switched straight to the woken
     // task (`scheduler::ipc_wake_then_block`) instead of through the run
     // queue. Evidence the path fires on a census kernel; not asserted.

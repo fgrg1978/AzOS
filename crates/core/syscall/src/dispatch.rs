@@ -217,7 +217,7 @@ macro_rules! ipc_trace {
 /// nothing exercising it. All this adds is the width guard: a handle is 32
 /// bits, and a wider `a0` must be refused rather than truncated onto a
 /// capability the caller does hold.
-fn resolve_endpoint_dest(caller_tid: u32, cap_raw: u64) -> Option<u32> {
+fn resolve_endpoint_dest(caller_tid: u32, cap_raw: u64) -> Option<azos_ipc::endpoint::Dest> {
     // A handle is 32 bits. A wider `a0` is refused rather than truncated onto
     // a capability the caller does hold.
     let raw = u32::try_from(cap_raw).ok()?;
@@ -238,15 +238,18 @@ fn fast_ipc_call_arm(
     out: &mut SyscallOut,
 ) -> i64 {
 
-            let caller_tid = azos_sched::current_task_tid();
-            let server_tid = match resolve_endpoint_dest(caller_tid, a0) {
-                Some(t) => t,
+            // The caller's task slot and TID in one read: the slot names its
+            // call record (Kconfig IPC_ENDPOINT_QUEUES).
+            let (caller_idx, caller_tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
+            let dest = match resolve_endpoint_dest(caller_tid, a0) {
+                Some(d) => d,
                 // One code for "no such capability", "no WRITE on it",
                 // "contained" and "nobody serves that endpoint": telling
                 // them apart would report on capabilities the caller does
                 // not hold.
                 None => return E_PERM,
             };
+            let server_tid = dest.owner;
             let words = [a1 as u64, a2 as u64, a3 as u64, a4 as u64];
 
             // RFC-0040 gap 2 stage 4 — the capability MOVE.
@@ -305,8 +308,8 @@ fn fast_ipc_call_arm(
             // pending), by this caller when it collects after a hand-off or
             // leaves without a reply, or by the exit sweep when it dies
             // blocked. A call refused for want of a slot returns it inside.
-            match azos_ipc::fast_ipc::fast_ipc_call_donating(
-                caller_tid, server_tid, words, moved_cap, FAST_CALL_DONATES,
+            match azos_ipc::fastcall::call(
+                caller_idx, caller_tid, dest, words, moved_cap, FAST_CALL_DONATES,
             ) {
                 // `handle`, not a slot index: the generation-tagged exchange
                 // id (same encoding as the server's FAST_ACCEPT handle). The
@@ -345,8 +348,11 @@ fn fast_ipc_call_arm(
                     // correct system converges in one or two turns. Looping
                     // unbounded inside a syscall would hand ring 3 a way to pin
                     // a hart if that assumption ever broke.
-                    const MAX_SPURIOUS_WAKES: u32 = 8;
+                    const MAX_SPURIOUS_WAKES: u32 = azos_limits::IPC_CALL_WAKE_RETRIES as u32;
                     let mut result = -1i64;
+                    // Completed with a code (`Collected::Done`): nothing is
+                    // left to withdraw.
+                    let mut completed = false;
                     // Per-call breakdown, printed only when this call fails.
                     // The global counters say what happens on average; they
                     // cannot say whether ONE failing call saw eight `Waiting`
@@ -384,7 +390,7 @@ fn fast_ipc_call_arm(
                         }
                         ipc_trace!("[IPC] CALL  tid={} handle={:#x} woke (turn {})",
                             caller_tid, handle, _turn);
-                        match azos_ipc::fast_ipc::fast_ipc_collect_donated(handle, caller_tid) {
+                        match azos_ipc::fastcall::collect(handle, caller_tid) {
                             // Full reply delivery: a0 = reply[0] (the return
                             // value, as always), a1..a3 = reply[1..3] via
                             // `SyscallOut` — same register-delivery contract
@@ -394,7 +400,7 @@ fn fast_ipc_call_arm(
                             // a previous exchange's payload. libsys's wrapper
                             // declares a1..a5 `lateout` — the shared syscallN
                             // helpers (in("aN")) must never carry this call.
-                            Some((reply, donee)) => {
+                            azos_ipc::fastcall::Collected::Reply(reply, donee) => {
                                 // A reply that handed off to us left the
                                 // donation for us to return (the server is
                                 // asleep by now): see
@@ -407,7 +413,19 @@ fn fast_ipc_call_arm(
                                 result = reply[0] as i64;
                                 break;
                             }
-                            None => match azos_ipc::fast_ipc_wait_state(handle, caller_tid) {
+                            // Completed without an answer (wave 15 N5): the
+                            // server died (-EPEERDIED) or the endpoint was
+                            // destroyed (-EREVOKED) with this call queued or
+                            // in service. The code is the call's answer.
+                            azos_ipc::fastcall::Collected::Done(code, donee) => {
+                                if donee != azos_ipc::fast_ipc::NO_DONEE {
+                                    azos_sched::return_donation(donee);
+                                }
+                                result = code;
+                                completed = true;
+                                break;
+                            }
+                            azos_ipc::fastcall::Collected::Nothing => match azos_ipc::fastcall::wait_state(handle, caller_tid) {
                                 azos_ipc::FastIpcWait::Waiting => {
                                     fc_stat!(WAITING_TURN);
                                     #[cfg(feature = "ipc-census")]
@@ -443,34 +461,29 @@ fn fast_ipc_call_arm(
                     // spurious -1 -- 0 to 6 times in 500 round trips -- so the
                     // UART cost it adds is charged to a path that already
                     // failed, never to a measured one.
-                    if result < 0 {
+                    if result < 0 && !completed {
                         // Leaving without a reply (exhausted, or the slot gone
-                        // with a dead server): take the donation back if the
-                        // exchange still carries it. A reply that landed first
-                        // already returned it, and the exit sweep of a dead
-                        // server leaves nothing to take.
-                        let d = azos_ipc::fast_ipc::fast_ipc_withdraw_donation(handle, caller_tid);
-                        if d != azos_ipc::fast_ipc::NO_DONEE {
-                            azos_sched::return_donation(d);
+                        // with a dead server): withdraw the call, and take the
+                        // donation back if it still carries it. A reply that
+                        // landed first already returned it, and the exit
+                        // sweep of a dead server leaves nothing to take.
+                        let a = azos_ipc::fastcall::abandon(handle, caller_tid);
+                        if a.donee != azos_ipc::fast_ipc::NO_DONEE {
+                            azos_sched::return_donation(a.donee);
                         }
                         fc_stat!(EXHAUSTED);
                         // U04-3: a capability moved to the server at the top
                         // of this call is stranded there if the retry loop
-                        // exhausts with the slot still `Waiting` — the server
-                        // never answered, so nobody is left to give it back
-                        // otherwise (contrast the `None` arm below, which
-                        // already does this for the "never happened" case).
-                        // `fast_ipc_wait_state` cannot tell a slot the server
-                        // has not looked at yet from one it has just accepted
-                        // and is about to act on — the residual this doesn't
-                        // close: a move-back racing the server's own use of
-                        // the capability in that narrower window. `Gone` means
-                        // the server already died and its own exit path
-                        // reclaimed the slot; nothing to move back.
-                        if moved_cap != 0
-                            && azos_ipc::fast_ipc_wait_state(handle, caller_tid)
-                                == azos_ipc::FastIpcWait::Waiting
-                        {
+                        // exhausts with the request unanswered — nobody is
+                        // left to give it back otherwise (contrast the `None`
+                        // arm below, which does this for the "never happened"
+                        // case). With the per-endpoint queues `was_queued` is
+                        // exact: the request was withdrawn before any server
+                        // took it. The old table can only say "not answered",
+                        // which includes a server that has just accepted and
+                        // is about to act on the capability: the residual it
+                        // leaves.
+                        if moved_cap != 0 && a.was_queued {
                             let back = azos_ipc::cap_store::move_cap(
                                 server_tid,
                                 caller_tid,
@@ -493,7 +506,7 @@ fn fast_ipc_call_arm(
                             // no longer waiting for it. More than one here
                             // means the failures are self-amplifying.
                             let mut slots = [(0u8, 0u8, 0u32, 0u32); 16];
-                            let ns_slots = azos_ipc::fast_ipc_slot_ids(&mut slots);
+                            let ns_slots = azos_ipc::fastcall::slot_ids(&mut slots);
                             let mut mine = 0u32;
                             let mut mine_replied = 0u32;
                             for e2 in slots.iter().take(ns_slots) {
@@ -716,8 +729,9 @@ pub(crate) fn dispatch_native_checked(
 /// `SYS_IPC_FAST_REPLY_ACCEPT`. The ABI, and why the request travels in
 /// registers, are at the arm.
 fn fast_ipc_accept_into(out: &mut SyscallOut) -> i64 {
+    let (server_idx, server_tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
     fast_ipc_accept_into_waking(
-        out, azos_sched::current_task_tid(), None, None, azos_ipc::fast_ipc::NO_DONEE,
+        out, server_idx, server_tid, None, None, azos_ipc::fast_ipc::NO_DONEE,
     )
 }
 
@@ -737,6 +751,7 @@ type AcceptedReq = (u64, u32, [u64; 4], u32);
 /// hold), `None` to make it here.
 fn fast_ipc_accept_into_waking(
     out: &mut SyscallOut,
+    server_idx: usize,
     server_tid: u32,
     polled: Option<Option<AcceptedReq>>,
     mut wake: Option<(u32, u64)>,
@@ -750,7 +765,7 @@ fn fast_ipc_accept_into_waking(
     // Check if a call is already waiting.
     let first = match polled {
         Some(first) => first,
-        None => azos_ipc::fast_ipc_accept(server_tid),
+        None => azos_ipc::fastcall::accept(server_idx, server_tid),
     };
     match first {
         // `handle` is the 63-bit generation-tagged handle (57 gen +
@@ -792,7 +807,7 @@ fn fast_ipc_accept_into_waking(
             // not a refinement of a better test — it is the only test
             // available, and running out of turns yields -1 exactly as
             // an empty queue would.
-            const MAX_SPURIOUS_WAKES: u32 = 8;
+            const MAX_SPURIOUS_WAKES: u32 = azos_limits::IPC_CALL_WAKE_RETRIES as u32;
             let mut result = -1i64;
             for _turn in 0..MAX_SPURIOUS_WAKES {
                 fc_stat!(TURNS);
@@ -808,7 +823,7 @@ fn fast_ipc_accept_into_waking(
                     ),
                 }
                 if let Some((handle, caller_tid, words, moved_cap)) =
-                    azos_ipc::fast_ipc_accept(server_tid)
+                    azos_ipc::fastcall::accept(server_idx, server_tid)
                 {
                     ipc_trace!("[IPC] ACCEPT srv={} handle={:#x} from tid={} w0={:#x} (after block)",
                         server_tid, handle, caller_tid, words[0]);
@@ -847,7 +862,7 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
     let replier_tid = azos_sched::current_task_tid();
     let privileged = azos_sched::current_user_pt() == 0;
     ipc_trace!("[IPC] REPLY srv={} handle={:#x} w0={:#x}", replier_tid, handle, words[0]);
-    match azos_ipc::fast_ipc_reply(handle, replier_tid, privileged, words) {
+    match azos_ipc::fastcall::reply(handle, replier_tid, privileged, words) {
         // `_slot_idx`: only the ipc-trace build reads it, and the
         // warning gate compiles without that feature.
         azos_ipc::FastIpcReply::Woke { caller_tid, slot_idx: _slot_idx, donee } => {
@@ -914,17 +929,17 @@ fn fast_ipc_reply_accept(handle: u64, words: [u64; 4], out: &mut SyscallOut) -> 
     // client wake rides on the accept: at once when a request is
     // already waiting, or folded into turn 0's block so this hart can
     // switch straight to the client (`fast_ipc_reply_handoff`).
-    let server_tid = azos_sched::current_task_tid();
+    let (server_idx, server_tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
     let privileged = azos_sched::current_user_pt() == 0;
-    let (reply, next) = azos_ipc::fast_ipc::fast_ipc_reply_then_accept(
-        handle, server_tid, privileged, words, server_tid,
+    let (reply, next) = azos_ipc::fastcall::reply_then_accept(
+        handle, server_tid, privileged, words, server_idx, server_tid,
     );
     match reply {
         azos_ipc::FastIpcReply::Woke { caller_tid, donee, .. } => {
             // `donee` is set only when a next request was already taken (no
             // hand-off; returned after the wake); otherwise the client returns
             // it. See `fast_ipc_reply_then_accept`.
-            fast_ipc_accept_into_waking(out, server_tid, Some(next), Some((caller_tid, handle)), donee)
+            fast_ipc_accept_into_waking(out, server_idx, server_tid, Some(next), Some((caller_tid, handle)), donee)
         }
         azos_ipc::FastIpcReply::Stale => -2,
         azos_ipc::FastIpcReply::Refused => -3,

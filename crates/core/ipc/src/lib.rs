@@ -23,6 +23,8 @@ pub mod stream_ring;
 // Wave 6 (front V): futex-shaped notify/wait on a word in a shm region.
 pub mod notify;
 pub mod fast_ipc;
+pub mod ep_queue;
+pub mod fastcall;
 pub mod endpoint;
 pub mod lease;
 // `zerocopy.rs` deleted (U04-7, owner-directed 2026-09-26): 628 lines, a
@@ -266,7 +268,7 @@ fn release_all(tid: u32, keep_named_endpoints: bool) {
     // to channel IPC". So the *optimized* path this kernel exists to provide
     // dies silently, with every caller quietly taking the slow road and not a
     // single test failing.
-    fast_ipc::fast_ipc_release_all(tid);
+    fastcall::release_all(tid);
     // Fast-IPC endpoints this task served (RFC-0040 gap 2). The pool is 32
     // machine-wide, so a service that exits without this keeps its slots until
     // reboot — the same slow exhaustion as the fast-IPC slot table above, and

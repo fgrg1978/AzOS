@@ -13,3 +13,8 @@
 
 #[path = "../../../../crates/core/ipc/src/fast_ipc.rs"]
 pub mod fast_ipc;
+
+// Wave 15 N5: the per-endpoint call queues (Kconfig IPC_ENDPOINT_QUEUES),
+// host-tested the same way: no dependencies, its own host substitutes.
+#[path = "../../../../crates/core/ipc/src/ep_queue.rs"]
+pub mod ep_queue;
