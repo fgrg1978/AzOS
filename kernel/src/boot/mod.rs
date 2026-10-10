@@ -6,6 +6,8 @@
 mod early;
 // The `[ISA]` boot line and the baseline/`require` refusals.
 pub(crate) mod isa;
+// SpinWait probe sites: the boot-once rewrite (wave 15, N2b).
+pub(crate) mod spin_patch;
 pub(crate) use early::early_main;
 mod entropy;
 pub(crate) use entropy::*;

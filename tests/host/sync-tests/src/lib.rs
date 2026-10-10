@@ -1193,6 +1193,7 @@ mod spin_tests {
         assert_eq!(ARCH.cas32(&w, 0xFFFF_FFFF, 1, CasOrder::AcqRel), Err(0x8000_0000));
         let d = AtomicU64::new(0xFFFF_FFFF_0000_0001);
         assert!(ARCH.cas64(&d, 1, 2, CasOrder::Release).is_err(), "cas64 compared the low half only");
+        assert_eq!(ARCH.swap32(&AtomicU32::new(3), 4, CasOrder::Acquire), 3);
         assert_eq!(ARCH.wait_while32(&w, 0), 0x8000_0000);
         // A second thread changes the word; the waiter returns the new value.
         let flag = Arc::new(AtomicU32::new(7));

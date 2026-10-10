@@ -254,6 +254,30 @@ choice
 endchoice
 
 choice
+    prompt "Zihintpause (pause: the spin-loop hint)"
+    default RV_ZIHINTPAUSE_NEVER if BOARD_VF2
+    default RV_ZIHINTPAUSE_REQUIRE if BOARD_K1
+    default RV_ZIHINTPAUSE_PROBE
+    help
+      `SpinWait::cpu_relax` (crates/core/arch-api spin.rs), once per poll of
+      every spin-wait: `pause` lets a hart that only waits give up issue
+      slots and power. A HINT encoding (`fence w,0`), so a hart without it
+      runs it as a fence with no successor. n: no instruction at all (the
+      VF2's U74 does not list Zihintpause). probe: a 4-byte site, a nop
+      until the boot rewrites it to `pause` when cpu@0's device tree
+      declares zihintpause (boot-once patch, no runtime test). require:
+      `pause` inlined; a hart whose device tree does not declare it is
+      refused (the K1's X60 lists it).
+
+    config RV_ZIHINTPAUSE_NEVER
+        bool "n: never use it"
+    config RV_ZIHINTPAUSE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZIHINTPAUSE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
     prompt "Zawrs (wait-on-reservation-set: wrs.nto)"
     default RV_ZAWRS_NEVER if BOARD_VF2 || BOARD_K1
     default RV_ZAWRS_PROBE
@@ -263,11 +287,11 @@ choice
       waiter takes a reservation on the lock word (`lr.w`/`lr.d`) and
       stalls in `wrs.nto` until another hart's store breaks it or an
       interrupt is pending (even a masked one), instead of re-reading the
-      word in a `pause` loop. Fallback: the `pause` loop (Zihintpause, a
-      HINT encoding that every RV64 executes as a no-op fence).
-      probe: used when cpu@0's device tree declares zawrs; one load of a
-      boot-set flag and a branch per wait step. n: the pause loop, no
-      branch (the VF2/K1 default: the U74 and the X60 do not list Zawrs in
+      word in a `cpu_relax` loop. Fallback: that loop (`pause` as
+      RV_ZIHINTPAUSE says).
+      probe: used when cpu@0's device tree declares zawrs and an execution
+      probe confirms it; a 4-byte site, a nop until the boot rewrites it to
+      `wrs.nto` (boot-once patch, no runtime test). n: the pause loop (the VF2/K1 default: the U74 and the X60 do not list Zawrs in
       their upstream Linux device trees, jh7110.dtsi and k1.dtsi). require:
       the instruction is inlined, no branch; a hart without it is refused.
 
@@ -285,11 +309,16 @@ choice
     default RV_ZACAS_PROBE
     help
       The CAS of `SpinWait::cas32/cas64` (crates/core/arch-api spin.rs:
-      every SpinLock acquire and every later spinner) as one `amocas`
+      the CAS of every spinner that needs one; the SpinLock's test-and-set
+      is `amoswap`, base A, on every hart) as one `amocas`
       instead of an `lr`/`sc` loop (five instructions and a retry branch).
       No global codegen flag: the kernel's other atomics keep LR/SC.
-      probe: used when cpu@0's device tree declares zacas; one load of a
-      boot-set flag and a branch per CAS. n: LR/SC, no branch (the VF2/K1
+      probe: used when cpu@0's device tree declares zacas and an execution
+      probe confirms it. Each CAS site is linked as a branch to an
+      out-of-line LR/SC loop (correct on every hart) and rewritten once at
+      boot, before the secondaries start, to the `amocas` itself: after
+      boot a probe CAS costs what a `require` one does (Linux's
+      ALTERNATIVE; the text write keeps W^X). n: LR/SC (the VF2/K1
       default: the U74 and the X60 do not list Zacas in their upstream
       Linux device trees, jh7110.dtsi and k1.dtsi). require: `amocas` inlined,
       no branch; a hart without it is refused.
@@ -385,11 +414,13 @@ choice
       The compiler can only emit them globally (no outlined atomics in this
       kernel), so require compiles the kernel and user images with +lse;
       Armv8.1 and above include it (a level >= 8.1 with LSE not `require`
-      is a build error). probe: the vDSO hwcap advertises it, and the CAS
-      of `SpinWait::cas32/cas64` (crates/core/arch-api spin.rs: every
-      SpinLock acquire and every later spinner) is CASA/CASL/CASAL when
-      ID_AA64ISAR0_EL1.Atomic says so, LDAXR/STLXR otherwise: one load of
-      a boot-set flag and a branch per CAS. n: LL/SC, no branch.
+      is a build error). probe: the vDSO hwcap advertises it, and each use
+      of `SpinWait::cas32/64` and `swap32/64` (crates/core/arch-api
+      spin.rs: every SpinLock acquire and every later spinner) is linked as
+      a branch to an out-of-line LDAXR/STXR loop and rewritten once at
+      boot, before the secondaries start, to the CAS*/SWP* when
+      ID_AA64ISAR0_EL1.Atomic says so: after boot it costs what `require`
+      does. n: LL/SC.
 
     config A64_LSE_NEVER
         bool "n: never use it"

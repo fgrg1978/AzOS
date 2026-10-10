@@ -3,11 +3,11 @@
 /// Spinlock (TTAS pattern) over the arch-api spin primitives.
 ///
 /// Wraps data in a `SpinLock<T>` to ensure exclusive access. The lock word
-/// is a `u32` (0 free, 1 held): acquired with `SpinWait::cas32` (Zacas
-/// `amocas.w`, LSE `CASA`, `LOCK CMPXCHG`, or the LR/SC / LL/SC fallback,
-/// per config/Kconfig.arch) and waited on with `SpinWait::wait_while32`
+/// is a `u32` (0 free, 1 held): acquired with `SpinWait::swap32` (riscv64
+/// `amoswap.w.aq`, LSE `SWPA` or LDAXR/STXR, `XCHG`, per
+/// config/Kconfig.arch) and waited on with `SpinWait::wait_while32`
 /// (Zawrs `wrs.nto`, `LDAXR`+`WFE`, WAITPKG `UMWAIT`, or `cpu_relax`). A
-/// 32-bit word, not a byte: riscv64 has no sub-word CAS without Zabha.
+/// 32-bit word, not a byte: riscv64 has no sub-word AMO or CAS without Zabha.
 ///
 /// Two acquisition modes:
 /// - `lock()`         — standard spinlock, interrupts unchanged.
@@ -24,20 +24,9 @@ use crate::preempt::{critical_section, PreemptGuard};
 /// The lock word's two values.
 const UNLOCKED: u32 = 0;
 const LOCKED: u32 = 1;
+// `SpinWait::tas_acquire32`'s contract: 0 free, 1 held.
+const _: () = assert!(UNLOCKED == 0 && LOCKED == 1);
 
-/// The contended half of `SpinLock::acquire_spin`: wait, reading only,
-/// until the word is no longer `LOCKED`, then CAS again. On the word, not
-/// the lock, so every `SpinLock<T>` shares one copy.
-#[cold]
-#[inline(never)]
-fn acquire_contended(locked: &AtomicU32) {
-    loop {
-        ARCH.wait_while32(locked, LOCKED);
-        if ARCH.cas32(locked, UNLOCKED, LOCKED, CasOrder::Acquire).is_ok() {
-            return;
-        }
-    }
-}
 
 /// A simple test-and-set spinlock protecting data of type `T`.
 pub struct SpinLock<T> {
@@ -83,23 +72,27 @@ impl<T> SpinLock<T> {
             crate::lockdep::Kind::Spin, irqsave, core::panic::Location::caller());
     }
 
-    /// Core spin loop — shared by both lock variants. TTAS: CAS 0→1
-    /// (Acquire); on failure wait, reading only, until the word is no
-    /// longer 1, then CAS again. The first CAS is inline; the waiting is
-    /// out of line (`acquire_contended`, one copy for every `T`), so the
-    /// uncontended acquire is the CAS and its branch, with no wait-loop
-    /// setup hoisted in front of it.
+    /// Core spin loop — shared by both lock variants. TTAS through
+    /// `SpinWait::tas_acquire32`: test-and-set (Acquire); on failure wait,
+    /// reading only (`wait_while32`), until the word is no longer 1, then
+    /// test-and-set again. The swap and its branch are inline; the waiting
+    /// is out of line behind a register-saving trampoline, one copy for
+    /// every `T` and no call clobbers at the lock site.
     #[inline(always)]
     fn acquire_spin(&self) {
-        if !self.try_acquire() {
-            acquire_contended(&self.locked);
-        }
+        ARCH.tas_acquire32(&self.locked);
     }
 
-    /// One CAS 0→1 (Acquire): the `try_lock` attempt.
+    /// One test-and-set (Acquire): the word holds only UNLOCKED/LOCKED, so
+    /// an exchange to LOCKED that returns UNLOCKED took the lock, and one
+    /// that returns LOCKED wrote what was there. `SpinWait::swap32`: one
+    /// `amoswap.w.aq` on every riscv64 hart (base A, no probe), `SWPA` or
+    /// LDAXR/STXR on aarch64, `XCHG` on x86_64. What ac04712b's
+    /// `compare_exchange(false, true)` compiled to (`amoor.w.aq`), without
+    /// the byte-in-word masking.
     #[inline(always)]
     fn try_acquire(&self) -> bool {
-        ARCH.cas32(&self.locked, UNLOCKED, LOCKED, CasOrder::Acquire).is_ok()
+        ARCH.swap32(&self.locked, LOCKED, CasOrder::Acquire) == UNLOCKED
     }
 
     /// Acquire the lock, spinning until it is available.

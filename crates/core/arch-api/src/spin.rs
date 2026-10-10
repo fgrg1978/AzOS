@@ -17,8 +17,14 @@
 //! | x86_64  | `LOCK CMPXCHG` (baseline)     | WAITPKG `UMONITOR`/`UMWAIT` (X86_WAITPKG) | `pause` |
 //!
 //! `n` compiles the fallback only; `require` inlines the extension with no
-//! branch; `probe` reads one flag the boot sets from the CPU's report and
-//! branches. Nothing in a caller names an ISA.
+//! branch. `probe` (riscv64, aarch64) is Linux's ALTERNATIVE: each use is a
+//! boot-once site in `.azos_keys`, linked as the safe form (a branch to the
+//! out-of-line fallback, or a nop) and rewritten once, on the boot CPU
+//! before the secondaries start, to the extension's instruction when the
+//! probe found it ([`SITE_KEY_CAS`]; the kernel's `boot/spin_patch.rs`).
+//! After boot a probe site costs what `require` costs. x86_64's WAITPKG
+//! (the contended wait only) still tests a boot-set flag. Nothing in a
+//! caller names an ISA.
 //!
 //! Orderings are explicit and never SeqCst (rfcs/survey/MUTEX.md §5.2):
 //! [`CasOrder`] says what the success path publishes or observes.
@@ -64,6 +70,18 @@ impl CasOrder {
 /// takes the wait hint (Kconfig `SPIN_WAIT_RELAX_SPINS`).
 pub const RELAX_SPINS: u32 = azos_limits::SPIN_WAIT_RELAX_SPINS as u32;
 
+/// The `.azos_keys` key of the atomic-instruction sites
+/// (`azos_trace::jump::KEY_SPIN_CAS`; the kernel asserts the mirrors
+/// agree): Zacas `amocas` on riscv64, LSE `CAS*`/`SWP*` on aarch64.
+pub const SITE_KEY_CAS: u32 = 65;
+/// The wait-hint sites (Zawrs `wrs.nto`).
+pub const SITE_KEY_WAIT: u32 = 66;
+/// The relax sites (Zihintpause `pause`).
+pub const SITE_KEY_RELAX: u32 = 67;
+/// The site kinds (`azos_trace::jump::KIND_RV_ALT` / `KIND_A64_ALT`).
+pub const SITE_KIND_RV_ALT: u32 = 5;
+pub const SITE_KIND_A64_ALT: u32 = 6;
+
 /// Spin-wait and CAS primitives. Every method is `#[inline(always)]` and
 /// takes `&self` on the ISA's zero-sized `ARCH`, so a call costs exactly
 /// the instructions it emits.
@@ -81,6 +99,37 @@ pub trait SpinWait {
     #[inline(always)]
     fn cas32(&self, a: &AtomicU32, current: u32, new: u32, order: CasOrder) -> Result<u32, u32> {
         a.compare_exchange(current, new, order.success(), order.failure())
+    }
+
+    /// Atomic exchange: `*a = new`, returning the old value. The
+    /// test-and-set of a lock whose word holds only free/held, and the
+    /// queue-tail swap of an MCS lock (rfcs/survey/MUTEX.md §5.2). Every ISA
+    /// has it in its base: `amoswap` (riscv64 A), `XCHG` (x86_64), an
+    /// LDAXR/STXR loop at Armv8.0, LSE `SWP*` on aarch64 when present.
+    #[inline(always)]
+    fn swap32(&self, a: &AtomicU32, new: u32, order: CasOrder) -> u32 {
+        a.swap(new, order.success())
+    }
+
+    /// [`swap32`](Self::swap32) on a 64-bit word.
+    #[inline(always)]
+    fn swap64(&self, a: &AtomicU64, new: u64, order: CasOrder) -> u64 {
+        a.swap(new, order.success())
+    }
+
+    /// Test-and-set acquire of a lock word that holds only 0 (free) and 1
+    /// (held): [`swap32`](Self::swap32) to 1 (Acquire) until it returns 0,
+    /// waiting with [`wait_while32`](Self::wait_while32) between attempts.
+    /// The `SpinLock` acquire. An ISA keeps the swap and its branch inline
+    /// and the waiting out of line WITHOUT a function call's clobbers: a
+    /// trampoline that saves every caller-saved register calls
+    /// [`tas_slow32`], so the inline site costs the caller only the swap,
+    /// the branch and one link register.
+    #[inline(always)]
+    fn tas_acquire32(&self, a: &AtomicU32) {
+        if self.swap32(a, 1, CasOrder::Acquire) != 0 {
+            tas_slow32(self, a);
+        }
     }
 
     /// [`cas32`](Self::cas32) on a 64-bit word.
@@ -130,6 +179,14 @@ pub trait SpinWait {
         }
     }
 
+    /// Boot: should the sites of `key` ([`SITE_KEY_CAS`], ...) be rewritten
+    /// to the extension's instruction? The probe's verdict, read once by the
+    /// boot patcher. Default: no site of this ISA is ever rewritten.
+    fn boot_site_wanted(&self, key: u32) -> bool {
+        let _ = key;
+        false
+    }
+
     /// [`wait_while32`](Self::wait_while32) on a 64-bit word.
     #[inline(always)]
     fn wait_while64(&self, a: &AtomicU64, expected: u64) -> u64 {
@@ -145,6 +202,20 @@ pub trait SpinWait {
             } else {
                 self.wait_hint64(a, expected);
             }
+        }
+    }
+}
+
+/// The contended half of [`SpinWait::tas_acquire32`], after a swap found
+/// the word held: wait (reading only) until it is no longer 1, swap again.
+/// Each ISA's `azos_spin_tas_slow32` (reached through its register-saving
+/// trampoline) is this, for its `ARCH`.
+#[inline(never)]
+pub fn tas_slow32<S: SpinWait + ?Sized>(s: &S, a: &AtomicU32) {
+    loop {
+        s.wait_while32(a, 1);
+        if s.swap32(a, 1, CasOrder::Acquire) == 0 {
+            return;
         }
     }
 }

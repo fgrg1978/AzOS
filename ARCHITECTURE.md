@@ -765,8 +765,9 @@ from a test. Off, every point is a constant `false`.
 
 **Spin-wait and CAS.** Every kernel spinner reaches the CPU's wait hints and
 compare-and-swap through one trait, `SpinWait` (`crates/core/arch-api/src/spin.rs`):
-`cpu_relax`, `wait_while32/64` (wait until a word changes) and `cas32/64`
-(strong CAS with an explicit ordering, never SeqCst). The trait's provided
+`cpu_relax`, `wait_while32/64` (wait until a word changes), `cas32/64`
+(strong CAS with an explicit ordering, never SeqCst), `swap32/64` and
+`tas_acquire32` (test-and-set acquire of a 0/1 word). The trait's provided
 bodies are the fallback every ISA has: the compiler's LR/SC loop on riscv64,
 LDAXR/STLXR at Armv8.0 and LOCK CMPXCHG on x86_64, and a relax loop. Each ISA
 overrides what an extension does better, behind its n / probe / require
@@ -774,14 +775,23 @@ choice: Zacas `amocas.w/.d` and Zawrs `lr` + `wrs.nto` on riscv64, LSE
 `CASA`/`CASAL` on aarch64 (and `SEVL`; `WFE`; `LDAXR`; `WFE` as the wait on
 every core), UMONITOR/UMWAIT on x86_64 (WAITPKG, with a TSC deadline per wait
 step). `wait_while` polls `SPIN_WAIT_RELAX_SPINS` times before it takes the
-hint. Under `probe` each CAS or wait step reads one flag the boot set and
-branches; `n` and `require` compile the choice in, with no branch. On riscv64
-the device tree's claim is executed once under a private trap vector before
-the flag is set, so a false claim costs the fast path, not a trap in a lock.
-The boot prints `[SPIN] cas: ...; wait: ...` with what it selected.
-`SpinLock` is a test-and-test-and-set lock over this trait on a 32-bit word
-(riscv64 has no sub-word CAS without Zabha): one inline CAS, and the waiting
-out of line.
+hint. `n` and `require` compile the choice in. `probe` on riscv64 and
+aarch64 works like Linux's ALTERNATIVE: each use is a 4-byte site recorded in
+`.azos_keys`, linked as its safe form (a branch to an LR/SC or LL/SC loop
+placed after the function, or a nop) and rewritten once by
+`kernel/src/boot/spin_patch.rs`, on the boot CPU before the secondaries start
+and through the W^X-preserving text write, to the instruction the assembler
+encoded for that site (`amocas`, `casa`, `swpa`, `wrs.nto`, `pause`). After
+boot a probe site costs what `require` costs. On riscv64 the device tree's
+claim is first executed once under a private trap vector, so a false claim
+leaves the sites linked rather than trapping in a lock. The boot prints
+`[SPIN] cas: ...; wait: ...` and `[SPIN] boot patch: ...`. x86_64's WAITPKG,
+used only while waiting, tests a boot-set flag.
+`SpinLock` is a test-and-test-and-set lock on a 32-bit word (riscv64 has no
+sub-word atomic without Zabha) through `tas_acquire32`: an inline exchange
+(`amoswap.w.aq`, `SWPA` or LDAXR/STXR, `XCHG`) and a branch; the waiting runs
+out of line behind a trampoline that saves every caller-saved register, so a
+lock site pays no call clobbers.
 
 **Lock dependency checking.** With Kconfig `LOCKDEP` set to `ktest` (the
 development default) or `y`, `crates/core/sync/src/lockdep.rs` checks every
@@ -922,7 +932,7 @@ command line; every aarch64 boot in the gate uses the `Image`.
   `probe` (used only when the boot probe finds it, with a fallback otherwise)
   or `require` (part of the baseline: target features where the ISA allows,
   and a CPU without it is refused). riscv64 has Zicboz, Sstc, Svpbmt, Zba,
-  Zbb, Zbs, V, AIA, Zawrs and Zacas. aarch64 has LSE, PAN, CRC32, PAuth, BTI, MTE, SVE, AES,
+  Zbb, Zbs, V, AIA, Zihintpause, Zawrs and Zacas. aarch64 has LSE, PAN, CRC32, PAuth, BTI, MTE, SVE, AES,
   PMULL and SHA2. x86_64 has the extensions of its levels (SSE4.2, POPCNT;
   XSAVE, AVX, AVX2, BMI1, BMI2, FMA, MOVBE; AVX-512 F/BW/CD/DQ/VL), AES-NI,
   PCLMULQDQ, SHA-NI, RDRAND, RDSEED, ADX, FSGSBASE, PCID, INVPCID, SMEP,

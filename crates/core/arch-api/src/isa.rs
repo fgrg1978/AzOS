@@ -171,6 +171,7 @@ pub mod riscv64 {
     pub const AIA: ExtPolicy = ext_policy!(RV_AIA_NEVER, RV_AIA_REQUIRE);
     pub const ZAWRS: ExtPolicy = ext_policy!(RV_ZAWRS_NEVER, RV_ZAWRS_REQUIRE);
     pub const ZACAS: ExtPolicy = ext_policy!(RV_ZACAS_NEVER, RV_ZACAS_REQUIRE);
+    pub const ZIHINTPAUSE: ExtPolicy = ext_policy!(RV_ZIHINTPAUSE_NEVER, RV_ZIHINTPAUSE_REQUIRE);
 }
 
 /// aarch64 (config/Kconfig.arch `AARCH64_LEVEL`, `A64_*`).

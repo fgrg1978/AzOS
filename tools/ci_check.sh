@@ -11115,8 +11115,10 @@ PY
     # (wave 15, N1b: scope types, IRQ-safety inference, hold times, F7).
     # +2 spin_wait_cas_semantics, spin_lock_contended_cross_cpu (wave 15,
     # N2: SpinWait on the path the boot selected, `[SPIN]` line).
-    KTEST_N_RV=35
-    KTEST_N_ARM=35
+    # +1 spin_sites_patched (wave 15, N2b: every SpinWait probe site holds
+    # the probe's word after the boot patch).
+    KTEST_N_RV=36
+    KTEST_N_ARM=36
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11386,6 +11388,17 @@ PY
         "ktest spin fallback (arm, cortex-a53)" arm "" "" "" "$KTEST_SPIN_A53_RE"
     par "ktest spin claim canary (rv)" ktest_cpu_row rv64,zawrs=false \
         "ktest spin claim canary (rv)" rv "" "" "canary=spin-ext-claim" "$KTEST_SPIN_CLAIM_RE"
+    # Wave 15 (N2b): the probe sites are rewritten once at boot
+    # (kernel/src/boot/spin_patch.rs); the plain ktest rows check every site
+    # holds the probe's word (`spin_sites_patched`, `[SPIN] boot patch`).
+    #   ktest spin-patch-skip canary (rv|arm)  canary=spin-patch-skip: no
+    #                               site is rewritten; QEMU's rv64 has Zawrs
+    #                               and Zihintpause, `-cpu max` has LSE, so
+    #                               spin_sites_patched alone goes not ok
+    par "ktest spin-patch-skip canary (rv)" ktest_row "ktest spin-patch-skip canary (rv)" rv "" \
+        "spin_sites_patched" "canary=spin-patch-skip"
+    par "ktest spin-patch-skip canary (arm)" ktest_row "ktest spin-patch-skip canary (arm)" arm "" \
+        "spin_sites_patched" "canary=spin-patch-skip"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
@@ -11431,7 +11444,8 @@ PY
     # +2 the lockdep tests (N1), as on rv and arm.
     # +4 the N1b lockdep tests, as on rv and arm.
     # +2 spin_wait_cas_semantics, spin_lock_contended_cross_cpu (N2).
-    KTEST_N_X86=37
+    # +1 spin_sites_patched (N2b; x86_64 links no site, so it holds).
+    KTEST_N_X86=38
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

@@ -26,7 +26,7 @@ static DT_ISA: AtomicU32 = AtomicU32::new(0);
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum Dt { Zicboz = 1, Sstc = 2, Svpbmt = 4, Zba = 8, Zbb = 16, Zbs = 32, V = 64, Aia = 128, F = 256, D = 512,
-         Zawrs = 1024, Zacas = 2048 }
+         Zawrs = 1024, Zacas = 2048, Zihintpause = 4096 }
 
 /// Kconfig RV_V, except that a build given `--features rvv` by hand (`make
 /// build-rvv`, `qemu-rvv`, the `k1` feature's edge) on a config whose RV_V
@@ -180,7 +180,8 @@ pub fn cpu_features(fw: &Firmware) {
                       (info.isa_zbb, Dt::Zbb), (info.isa_zbs, Dt::Zbs), (info.isa_v, Dt::V),
                       (info.aplic_base != 0 && info.imsic_base != 0, Dt::Aia),
                       (info.isa_f, Dt::F), (info.isa_d, Dt::D),
-                      (info.isa_zawrs, Dt::Zawrs), (info.isa_zacas, Dt::Zacas)] {
+                      (info.isa_zawrs, Dt::Zawrs), (info.isa_zacas, Dt::Zacas),
+                      (info.isa_zihintpause, Dt::Zihintpause)] {
         if on {
             dt |= bit as u32;
         }
@@ -194,22 +195,26 @@ pub fn cpu_features(fw: &Firmware) {
                               V_POLICY.gate(info.isa_v));
     #[cfg(feature = "rvv")]
     azos_arch::rvv::set_usable(V_POLICY.gate(info.isa_v));
-    spin_select(info.isa_zacas, info.isa_zawrs);
+    spin_select(info.isa_zacas, info.isa_zawrs, info.isa_zihintpause);
 }
 
 /// `SpinWait`'s extensions (wave 15, N2): cpu@0's claim, masked by Kconfig
-/// RV_ZACAS / RV_ZAWRS, then executed once under a private trap vector
-/// (`azos_arch::spin::select`). Canary `spin-ext-claim`: claim both
-/// whatever the device tree says; the execution probe must refute a false
-/// claim and the locks stay on LR/SC and `pause`.
-fn spin_select(dt_zacas: bool, dt_zawrs: bool) {
+/// RV_ZACAS / RV_ZAWRS / RV_ZIHINTPAUSE, then Zacas and Zawrs executed once
+/// under a private trap vector (`azos_arch::spin::select`). The `probe`
+/// sites take the verdict at `boot_patch` (`boot/spin_patch.rs`). Canary
+/// `spin-ext-claim`: claim Zacas and Zawrs whatever the device tree says;
+/// the execution probe must refute a false claim and the locks stay on
+/// LR/SC.
+fn spin_select(dt_zacas: bool, dt_zawrs: bool, dt_pause: bool) {
     let claim = canary!("spin-ext-claim");
     let v = azos_arch::spin::select(policy::ZACAS.gate(dt_zacas || claim),
-                                    policy::ZAWRS.gate(dt_zawrs || claim));
+                                    policy::ZAWRS.gate(dt_zawrs || claim),
+                                    policy::ZIHINTPAUSE.gate(dt_pause));
     kprintln!("[SPIN] cas: {}{}; wait: {}{}",
         if azos_arch::spin::zacas_on() { "amocas (Zacas)" } else { "lr/sc" },
         if v.zacas_refuted { " (zacas claimed, refuted by the execution probe)" } else { "" },
-        if azos_arch::spin::zawrs_on() { "lr+wrs.nto (Zawrs)" } else { "pause" },
+        if azos_arch::spin::zawrs_on() { "lr+wrs.nto (Zawrs)" }
+            else if azos_arch::spin::pause_on() { "pause" } else { "poll" },
         if v.zawrs_refuted { " (zawrs claimed, refuted by the execution probe)" } else { "" });
 }
 
@@ -303,6 +308,7 @@ fn isa_report(zicboz_on: bool, sstc_on: bool) {
         e("aia", "RV_AIA", policy::AIA, azos_drv_irqchip::irqchip::is_aia()),
         e("zawrs", "RV_ZAWRS", policy::ZAWRS, azos_arch::spin::verdict().1),
         e("zacas", "RV_ZACAS", policy::ZACAS, azos_arch::spin::verdict().0),
+        e("zihintpause", "RV_ZIHINTPAUSE", policy::ZIHINTPAUSE, azos_arch::spin::verdict().2),
     ]);
 }
 

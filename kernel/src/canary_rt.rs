@@ -105,6 +105,10 @@ pub(crate) const NAMES: &[&str] = &[
     // refute the claim (`[SPIN] ... refuted`); aarch64/x86_64: the first
     // CAS or wait on a CPU without it traps (Undefined Instruction / #UD).
     "spin-ext-claim",
+    // boot/spin_patch.rs: the SpinWait probe sites are not rewritten at
+    // boot; every site stays linked to the fallback (ktest
+    // `spin_sites_patched`).
+    "spin-patch-skip",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

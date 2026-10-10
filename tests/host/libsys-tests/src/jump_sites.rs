@@ -118,3 +118,30 @@ fn a_pan_site_is_patched_to_the_assembler_s_msr_or_nop() {
     assert_eq!(tr.pan_linked(), Err(SiteError::Kind));
     assert!(KEY_A64_PAN >= 32);
 }
+
+// `SpinWait` alternative sites (N2b): the table carries the replacement in
+// the low word and the linked word (0: a branch) in the high word. The
+// words are from a built kernel (llvm-objdump --mattr=+zacas,+zawrs,+lse).
+#[test]
+fn an_alternative_site_reads_its_two_words() {
+    // riscv64 `amocas.w.aq a1, s6, (a0)` linked as a `j`.
+    let cas = KeySite { site: 0x8020_0000, target: 0x2d65_25af, key: KEY_SPIN_CAS, kind: KIND_RV_ALT };
+    assert_eq!(cas.alt_word(), Ok(0x2d65_25af));
+    assert_eq!(cas.alt_is_linked(RV[0].2), Ok(true), "a `jal zero` is the linked form");
+    assert_eq!(cas.alt_is_linked(RV_NOP), Ok(false));
+    assert_eq!(cas.alt_is_linked(0x2d65_25af), Ok(false), "the patched word is not the linked one");
+    // riscv64 `wrs.nto` linked as the 4-byte nop.
+    let wait = KeySite { site: 0x8020_0004, target: (RV_NOP as u64) << 32 | 0x00d0_0073,
+                         key: KEY_SPIN_WAIT, kind: KIND_RV_ALT };
+    assert_eq!(wait.alt_is_linked(RV_NOP), Ok(true));
+    assert_eq!(wait.alt_is_linked(RV[0].2), Ok(false), "a branch is not this site's nop");
+    // aarch64 `casa w19, w21, [x8]` linked as a `b`.
+    let a = KeySite { site: 0xffff_ff80_4000_0000, target: 0x88f3_7d15, key: KEY_SPIN_CAS, kind: KIND_A64_ALT };
+    assert_eq!(a.alt_is_linked(A64[0].2), Ok(true));
+    assert_eq!(a.alt_is_linked(A64_NOP), Ok(false));
+    // Misaligned and foreign kinds are refused.
+    assert_eq!(KeySite { site: 0x8020_0002, ..cas }.alt_word(), Ok(0x2d65_25af), "rv: 2 mod 4 is a site");
+    assert_eq!(KeySite { site: 0x8020_0001, ..cas }.alt_word(), Err(SiteError::Misaligned));
+    assert_eq!(KeySite { site: 0xffff_ff80_4000_0002, ..a }.alt_word(), Err(SiteError::Misaligned));
+    assert_eq!(KeySite { kind: KIND_RV_JAL, ..cas }.alt_word(), Err(SiteError::Kind));
+}

@@ -94,7 +94,9 @@ impl ArchEntry for Entry {
     }
 
     #[inline(always)]
-    fn boot_patch(&self, _text_start: usize, _text_end: usize) {}
+    fn boot_patch(&self, text_start: usize, text_end: usize) {
+        crate::boot::spin_patch::patch(text_start, text_end)
+    }
     fn wake_secondaries(&self, num_cpus: usize) {
         crate::entry::riscv64::smp::wake_secondaries(num_cpus)
     }

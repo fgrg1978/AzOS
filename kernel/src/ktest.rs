@@ -717,6 +717,17 @@ azos_ktest::ktest! {
         {
             return Err("cas64 compared or swapped only the low half");
         }
+        // Exchange: the old value back, the new one stored, all 64 bits.
+        let x = AtomicU32::new(0x8000_0001);
+        if ARCH.swap32(&x, 7, CasOrder::Acquire) != 0x8000_0001 || ARCH.swap32(&x, 0, CasOrder::Release) != 7
+            || x.load(r) != 0
+        {
+            return Err("swap32 did not exchange");
+        }
+        let y = AtomicU64::new(0xFFFF_FFFF_0000_0005);
+        if ARCH.swap64(&y, 9, CasOrder::AcqRel) != 0xFFFF_FFFF_0000_0005 || y.load(r) != 9 {
+            return Err("swap64 did not exchange all 64 bits");
+        }
         // A word that already differs: no wait at all, the value back.
         if ARCH.wait_while32(&s, 0x8000_0001) != 1 || ARCH.wait_while64(&d, 0) != 3 {
             return Err("wait_while did not return the differing value");

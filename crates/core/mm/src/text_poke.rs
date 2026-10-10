@@ -70,6 +70,9 @@ pub enum PokeError {
     Map,
     /// The word read back through the alias is not the word written.
     Readback,
+    /// A 2-byte-aligned instruction ([`write_insns_boot`]) that straddles a
+    /// page: two alias mappings, with code running between the halves.
+    CrossesPage,
 }
 
 /// Candidate alias slots tried above the RAM map (2 MiB apart).
@@ -137,6 +140,22 @@ pub fn text_is_rx(va: usize) -> Result<(), PokeError> {
 /// were written. Rare and slow by design: a TLB shootdown and an icache
 /// synchronisation of every CPU per call.
 pub fn write_words(words: &[(usize, u32)]) -> Result<usize, PokeError> {
+    write_impl(words, false)
+}
+
+/// [`write_words`] for boot-once sites (wave 15, N2b: the `SpinWait` probe
+/// sites), which may also sit at 2 mod 4 on riscv64 (a 4-byte instruction
+/// in compressed code, where the alignment padding a 4-aligned site needs
+/// would cost a `c.nop` on every pass). Such a word is written as its two
+/// halves through one alias mapping, low then high, and refused when it
+/// straddles a page. Precondition: no other CPU runs the kernel text yet
+/// (the boot CPU before `wake_secondaries`), and the caller is not itself
+/// running the site; between the two halves only the store sequence runs.
+pub fn write_insns_boot(words: &[(usize, u32)]) -> Result<usize, PokeError> {
+    write_impl(words, true)
+}
+
+fn write_impl(words: &[(usize, u32)], halves: bool) -> Result<usize, PokeError> {
     let alias = alias().ok_or(PokeError::Unavailable)?;
     let (ts, te) = (TEXT_START.load(Ordering::Relaxed), TEXT_END.load(Ordering::Relaxed));
     let kpt = vmm::kernel_pagetable();
@@ -144,8 +163,12 @@ pub fn write_words(words: &[(usize, u32)]) -> Result<usize, PokeError> {
     let mut done = 0;
     let mut res = Ok(());
     for &(va, w) in words {
-        if va & 3 != 0 || va < ts || va + 4 > te {
+        if va & if halves { 1 } else { 3 } != 0 || va < ts || va + 4 > te {
             res = Err(PokeError::OutOfText);
+            break;
+        }
+        if va & 3 != 0 && (va & (PAGE_SIZE - 1)) > PAGE_SIZE - 4 {
+            res = Err(PokeError::CrossesPage);
             break;
         }
         if let Err(e) = text_is_rx(va) {
@@ -161,12 +184,25 @@ pub fn write_words(words: &[(usize, u32)]) -> Result<usize, PokeError> {
             break;
         }
         ARCH.flush_tlb_page(alias);
-        let p = (alias + (va & (PAGE_SIZE - 1))) as *mut u32;
-        // SAFETY: `p` is inside the alias page just mapped read-write.
-        let back = unsafe {
-            core::ptr::write_volatile(p, w);
-            core::ptr::read_volatile(p)
+        let off = alias + (va & (PAGE_SIZE - 1));
+        let back = if va & 3 == 0 {
+            let p = off as *mut u32;
+            // SAFETY: `p` is inside the alias page just mapped read-write.
+            unsafe {
+                core::ptr::write_volatile(p, w);
+                core::ptr::read_volatile(p)
+            }
+        } else {
+            let p = off as *mut u16;
+            // SAFETY: `p` and `p + 1` are inside the alias page (the
+            // straddling case is refused above), 2-aligned.
+            unsafe {
+                core::ptr::write_volatile(p, w as u16);
+                core::ptr::write_volatile(p.add(1), (w >> 16) as u16);
+                core::ptr::read_volatile(p) as u32 | (core::ptr::read_volatile(p.add(1)) as u32) << 16
+            }
         };
+        let p = off as *mut u32;
         // SAFETY: the alias line is mapped. A no-op where fetch is coherent
         // with data writes (riscv64).
         unsafe { ARCH.dcache_clean(p as usize, 4) };

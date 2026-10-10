@@ -59,6 +59,29 @@ pub const A64_MSR_PAN_0: u32 = 0xd500_409f;
 /// aarch64 `msr PAN, #1`.
 pub const A64_MSR_PAN_1: u32 = 0xd500_419f;
 
+/// `SpinWait` boot-once sites (wave 15, N2b; Kconfig RV_ZACAS / RV_ZAWRS /
+/// RV_ZIHINTPAUSE / A64_LSE at `probe`; not trace keys): Linux's
+/// ALTERNATIVE. The site is linked as the SAFE form, a branch to the
+/// fallback ([`KEY_SPIN_CAS`]: the LR/SC or LL/SC loop) or a nop
+/// ([`KEY_SPIN_WAIT`], [`KEY_SPIN_RELAX`]), so every CPU runs correct code
+/// before any patch. The entry's `target` carries the two words instead of
+/// an address: bits 0..32 the replacement instruction the assembler encoded
+/// with the site's own registers (`amocas.w.aq a1, a0, (s0)`, `casa`,
+/// `wrs.nto`, `pause`), bits 32..64 the linked word, or 0 when the linked
+/// word is a branch of the site's ISA. The boot rewrites a site ONCE, on the
+/// boot CPU before any secondary starts, to the replacement when the probe
+/// found the extension; otherwise it stays linked.
+pub const KIND_RV_ALT: u32 = 5;
+/// See [`KIND_RV_ALT`]: an aarch64 site (linked branch: `b`).
+pub const KIND_A64_ALT: u32 = 6;
+/// The atomic-instruction sites (Zacas `amocas` on riscv64, LSE `cas*` and
+/// `swp*` on aarch64).
+pub const KEY_SPIN_CAS: u32 = 65;
+/// The wait-hint sites (Zawrs `wrs.nto`).
+pub const KEY_SPIN_WAIT: u32 = 66;
+/// The relax sites (Zihintpause `pause`).
+pub const KEY_SPIN_RELAX: u32 = 67;
+
 /// riscv64 `nop` (`addi x0, x0, 0`), the 4-byte form (never `c.nop`).
 pub const RV_NOP: u32 = 0x0000_0013;
 /// aarch64 `nop`.
@@ -169,6 +192,35 @@ impl KeySite {
             KIND_A64_PAN_CLR | KIND_A64_PAN_SET => a64_b(self.site, self.target).ok_or(SiteError::Range),
             _ => Err(SiteError::Kind),
         }
+    }
+}
+
+impl KeySite {
+    /// An alternative site ([`KIND_RV_ALT`] / [`KIND_A64_ALT`]): the word the
+    /// boot writes when the extension is in use.
+    /// A riscv64 site may sit at 2 mod 4 (a 4-byte instruction in
+    /// compressed code; the boot writes it in halves before any other hart
+    /// runs); an aarch64 one is 4-aligned.
+    pub fn alt_word(&self) -> Result<u32, SiteError> {
+        match self.kind {
+            KIND_RV_ALT if self.site & 1 != 0 => Err(SiteError::Misaligned),
+            KIND_A64_ALT if self.site & 3 != 0 => Err(SiteError::Misaligned),
+            KIND_RV_ALT | KIND_A64_ALT => Ok(self.target as u32),
+            _ => Err(SiteError::Kind),
+        }
+    }
+
+    /// Does `word` (read from the site) hold this alternative site's linked
+    /// form: the recorded word, or, recorded as 0, a branch of its ISA (`jal
+    /// zero` / `b`)? The only word the boot patch overwrites.
+    pub fn alt_is_linked(&self, word: u32) -> Result<bool, SiteError> {
+        self.alt_word()?;
+        let linked = (self.target >> 32) as u32;
+        Ok(match (self.kind, linked) {
+            (KIND_RV_ALT, 0) => rv_jal_offset(word).is_some(),
+            (KIND_A64_ALT, 0) => a64_b_offset(word).is_some(),
+            (_, l) => word == l,
+        })
     }
 }
 
