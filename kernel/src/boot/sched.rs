@@ -145,6 +145,11 @@ pub(crate) fn install_sched_hooks() {
     if canary!("port-no-vanish") {
         azos_ipc::port::canary_no_vanish();
     }
+    // Wave 15 N11 runtime canary: a second reply on one reply warrant is
+    // delivered instead of refused.
+    if canary!("ipc-reply-twice") {
+        azos_ipc::ep_queue::canary_reply_twice();
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();

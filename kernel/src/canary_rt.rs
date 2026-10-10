@@ -155,6 +155,10 @@ pub(crate) const NAMES: &[&str] = &[
     // stays bound and silent, so its waiter times out (ktest
     // `port_source_gone_wakes_the_waiter`).
     "port-no-vanish",
+    // crates/core/ipc/src/ep_queue.rs `reply_warrant`: a reply on a warrant
+    // whose call was already answered is delivered again
+    // (ktest `ipc_reply_warrant_moves_to_worker_and_is_send_once`).
+    "ipc-reply-twice",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

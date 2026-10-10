@@ -17,6 +17,11 @@
 //! * `ipc_endpoint_slot_reused_after_grace`: a destroyed endpoint's slot is
 //!   held out of the pool until a grace period has passed (`call_rcu`).
 //!   Canary `canary=rcu-free-no-grace`: the slot is back at once, `not ok`.
+//! * `ipc_reply_warrant_moves_to_worker_and_is_send_once` (wave 15 N11): a
+//!   server accepts a call and moves its reply warrant to a worker task; the
+//!   server can no longer answer, the worker answers, the caller gets the
+//!   worker's words, and a second reply on the warrant is refused.
+//!   Canary `canary=ipc-reply-twice`: the second reply is delivered, `not ok`.
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
@@ -609,5 +614,114 @@ azos_ktest::ktest_late! {
         }
         crate::ktest::wait("the waiter never reported", || VERDICT[3].lock().is_some())?;
         VERDICT[3].lock().take().unwrap_or(Err("no verdict"))
+    }
+
+// ── Reply warrant (wave 15 N11) ─────────────────────────────────────────────
+
+const WAR_EP: &[u8] = b"n11.war";
+static WAR_READY: AtomicBool = AtomicBool::new(false);
+static WAR_WORKER: AtomicU32 = AtomicU32::new(0);
+/// The accepted call's handle, handed to the worker (0: not yet).
+static WAR_HANDLE: AtomicI64 = AtomicI64::new(0);
+/// 1 ok; negative: which step failed.
+static WAR_SERVER: AtomicI64 = AtomicI64::new(NOT_YET);
+static WAR_WORKER_RC: AtomicI64 = AtomicI64::new(NOT_YET);
+static WAR_RC: AtomicI64 = AtomicI64::new(NOT_YET);
+
+fn war_server(_: usize) {
+    if !serve(WAR_EP) {
+        WAR_SERVER.store(-1, Ordering::Release);
+        return;
+    }
+    WAR_READY.store(true, Ordering::Release);
+    let me = azos_sched::current_task_tid();
+    let mut out = SyscallOut::new();
+    let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+    if h < 0 {
+        WAR_SERVER.store(-2, Ordering::Release);
+        return;
+    }
+    let worker = WAR_WORKER.load(Ordering::Acquire);
+    if azos_ipc::fastcall::delegate(h as u64, me, worker) != azos_ipc::fastcall::Delegated::Moved {
+        WAR_SERVER.store(-3, Ordering::Release);
+        return;
+    }
+    // Given away: the server's own answer is refused.
+    if azos_ipc::fastcall::reply_warrant(h as u64, me, [1, 0, 0, 0]) != azos_ipc::FastIpcReply::Refused {
+        WAR_SERVER.store(-4, Ordering::Release);
+        return;
+    }
+    WAR_SERVER.store(1, Ordering::Release);
+    WAR_HANDLE.store(h, Ordering::Release);
+}
+
+fn war_worker(_: usize) {
+    WAR_WORKER.store(azos_sched::current_task_tid(), Ordering::Release);
+    let me = azos_sched::current_task_tid();
+    let mut waited = 0;
+    while WAR_HANDLE.load(Ordering::Acquire) == 0 && waited < 3000 {
+        sleep_ms(5);
+        waited += 5;
+    }
+    let h = WAR_HANDLE.load(Ordering::Acquire) as u64;
+    if h == 0 {
+        WAR_WORKER_RC.store(-1, Ordering::Release);
+        return;
+    }
+    // What the reply arm does on delivery: wake the caller, then give back
+    // the donation the caller lent to the server.
+    match azos_ipc::fastcall::reply_warrant(h, me, [0x0A11, 0, 0, 0]) {
+        azos_ipc::FastIpcReply::Woke { caller_tid, donee, .. } => {
+            azos_sched::wait::wake_fast_ipc_client_tid(caller_tid, h);
+            if donee != azos_ipc::fast_ipc::NO_DONEE {
+                azos_sched::return_donation(donee);
+            }
+        }
+        _ => {
+            WAR_WORKER_RC.store(-2, Ordering::Release);
+            return;
+        }
+    }
+    // Send-once: the second answer is refused (canary: delivered).
+    let again = azos_ipc::fastcall::reply_warrant(h, me, [0xBAD, 0, 0, 0]);
+    WAR_WORKER_RC.store(if again == azos_ipc::FastIpcReply::Refused { 1 } else { -3 }, Ordering::Release);
+}
+
+fn war_client(_: usize) {
+    let Some(cap) = client_cap(WAR_EP) else {
+        WAR_RC.store(-12345, Ordering::Release);
+        return;
+    };
+    let mut out = SyscallOut::new();
+    let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, 0x11, 0, 0, 0, 0], &mut out);
+    WAR_RC.store(rc, Ordering::Release);
+}
+
+azos_ktest::ktest_late! {
+    fn ipc_reply_warrant_moves_to_worker_and_is_send_once() {
+        if !azos_limits::IPC_ENDPOINT_QUEUES {
+            return Err("Kconfig IPC_ENDPOINT_QUEUES is off in this ktest kernel");
+        }
+        azos_sched::task_create_affinity("n11-war-wrk", war_worker, 0, PRIO, -1);
+        crate::ktest::wait("the worker never started", || WAR_WORKER.load(Ordering::Acquire) != 0)?;
+        azos_sched::task_create_affinity("n11-war-srv", war_server, 0, PRIO, -1);
+        crate::ktest::wait("the server never claimed its endpoint", || WAR_READY.load(Ordering::Acquire))?;
+        azos_sched::task_create_affinity("n11-war-cli", war_client, 0, PRIO, -1);
+        crate::ktest::wait("the caller was never answered", || WAR_RC.load(Ordering::Acquire) != NOT_YET)?;
+        crate::ktest::wait("the worker never finished", || WAR_WORKER_RC.load(Ordering::Acquire) != NOT_YET)?;
+        match WAR_SERVER.load(Ordering::Acquire) {
+            1 => {}
+            -3 => return Err("the server could not move its reply warrant"),
+            -4 => return Err("the server still answered after giving its warrant away"),
+            _ => return Err("the server never took the call"),
+        }
+        if WAR_RC.load(Ordering::Acquire) != 0x0A11 {
+            return Err("the caller did not get the worker's answer");
+        }
+        match WAR_WORKER_RC.load(Ordering::Acquire) {
+            1 => Ok(()),
+            -3 => Err("a second reply on one warrant was delivered"),
+            _ => Err("the worker could not answer on the warrant"),
+        }
     }
 }

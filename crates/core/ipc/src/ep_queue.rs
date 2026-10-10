@@ -155,6 +155,12 @@ struct Rec {
     status: AtomicI32,
     /// The next record in the endpoint's send queue (`NIL` at the tail).
     next: AtomicU32,
+    /// Wave 15 N11: the badge of the endpoint capability a v2 call went
+    /// through, valid only while `badge_gen` is the tag's generation (a v1
+    /// call never writes either, so it reads as unbadged, never as the
+    /// badge of an earlier call).
+    badge: AtomicU32,
+    badge_gen: AtomicU64,
 }
 
 impl Rec {
@@ -168,6 +174,8 @@ impl Rec {
             donee: AtomicU32::new(NO_DONEE),
             status: AtomicI32::new(0),
             next: AtomicU32::new(NIL),
+            badge: AtomicU32::new(0),
+            badge_gen: AtomicU64::new(NO_BADGE_GEN),
         }
     }
 }
@@ -205,6 +213,23 @@ static CANARY_NO_PEER_DIED: AtomicBool = AtomicBool::new(false);
 pub fn canary_no_peer_died() {
     CANARY_NO_PEER_DIED.store(true, Ordering::Relaxed);
 }
+
+/// Gate canary `ipc-reply-twice` (wave 15 N11): a reply on a warrant whose
+/// call was already answered is delivered again instead of refused.
+static CANARY_REPLY_TWICE: AtomicBool = AtomicBool::new(false);
+
+/// Arm the `ipc-reply-twice` canary (runtime `canary=` flag, boot only).
+pub fn canary_reply_twice() {
+    CANARY_REPLY_TWICE.store(true, Ordering::Relaxed);
+}
+
+/// `badge_gen` of a record no v2 call stamped (no generation reaches it).
+const NO_BADGE_GEN: u64 = u64::MAX;
+
+/// Records whose reply warrant was delegated to a task that is not the
+/// endpoint's server: the exit sweep looks for a dead holder only when
+/// this is not 0.
+static DELEGATED: AtomicU32 = AtomicU32::new(0);
 
 #[inline(always)]
 fn rec(i: usize) -> &'static Rec {
@@ -764,6 +789,140 @@ pub fn release_caller(idx: usize, tid: u32) -> Option<Completed> {
     Some(c)
 }
 
+// ── Wave 15 N11: the v2 call's badge and its reply warrant ─────────────────
+
+/// Before a v2 call by the task in slot `caller_idx`: the call [`call`] is
+/// about to queue goes through an endpoint capability badged `badge`.
+/// Written while the record is free (only its own task makes calls on it),
+/// published by `call`'s hold of the queue lock. When the call is refused,
+/// [`unstamp_badge`] takes it back before the next call can reuse the
+/// generation.
+pub fn stamp_badge(caller_idx: usize, badge: u32) {
+    let Some(r) = RECORDS.get(caller_idx) else { return };
+    let t = r.tag.load(Ordering::Relaxed);
+    r.badge.store(badge, Ordering::Relaxed);
+    r.badge_gen.store(tag_gen(t), Ordering::Relaxed);
+}
+
+/// A v2 call stamped with [`stamp_badge`] was refused: unstamp.
+pub fn unstamp_badge(caller_idx: usize) {
+    if let Some(r) = RECORDS.get(caller_idx) {
+        r.badge_gen.store(NO_BADGE_GEN, Ordering::Relaxed);
+    }
+}
+
+/// The badge of the call `handle` names, for the task holding its reply
+/// warrant (`holder`), right after it accepted it: `Some(badge)` for a v2
+/// call (0 = an unbadged capability), `None` for a v1 call or a handle that
+/// is not `holder`'s accepted call.
+pub fn accept_badge(handle: u64, holder: u32) -> Option<u32> {
+    let i = handle_rec(handle)?;
+    let r = rec(i);
+    let t = r.tag.load(Ordering::Acquire);
+    if tag_state(t) != S_ACCEPTED || tag_gen(t) != handle_gen(handle) || r.server.load(Ordering::Relaxed) != holder {
+        return None;
+    }
+    if r.badge_gen.load(Ordering::Relaxed) != tag_gen(t) {
+        return None;
+    }
+    Some(r.badge.load(Ordering::Relaxed))
+}
+
+/// Outcome of [`delegate`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Delegated {
+    /// `to` now holds the reply warrant; the holder does not.
+    Moved,
+    /// The call is over (answered, completed or withdrawn).
+    Stale,
+    /// Not a call `holder` accepted and still holds.
+    Refused,
+}
+
+/// Move the reply warrant of the call `handle` names from `holder` (the
+/// task that accepted it, or the one it was last moved to) to `to`: from
+/// now on only `to` may answer it, once. The send-once rule is the record's
+/// state: the first reply moves it from ACCEPTED to REPLIED, and every later
+/// reply, by anyone, is refused. A holder that dies with the warrant
+/// completes the call with `-EPEERDIED` ([`release_holder`]).
+///
+/// Who `to` may be (a thread of the server's own domain, or the transport
+/// proxy) is the syscall's rule, not this one's.
+pub fn delegate(handle: u64, holder: u32, to: u32) -> Delegated {
+    let Some(i) = handle_rec(handle) else { return Delegated::Refused };
+    let Some((_, t, q)) = lock_rec(i) else { return Delegated::Refused };
+    let r = rec(i);
+    if tag_state(t) != S_ACCEPTED || r.server.load(Ordering::Relaxed) != holder {
+        return Delegated::Refused;
+    }
+    if tag_gen(t) != handle_gen(handle) {
+        return Delegated::Stale;
+    }
+    let owner = q.owner;
+    r.server.store(to, Ordering::Relaxed);
+    // Counted while some record's holder is not its endpoint's server.
+    match (holder == owner, to == owner) {
+        (true, false) => {
+            DELEGATED.fetch_add(1, Ordering::Relaxed);
+        }
+        (false, true) => {
+            DELEGATED.fetch_sub(1, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+    drop(q);
+    Delegated::Moved
+}
+
+/// Answer the call `handle` names as the holder of its reply warrant
+/// (`holder`): [`reply`] with the holder's identity, and the delegation
+/// count kept. Canary `ipc-reply-twice`: an answered call takes a second
+/// reply.
+pub fn reply_warrant(handle: u64, holder: u32, words: [u64; WORDS]) -> Reply {
+    let Some(i) = handle_rec(handle) else { return Reply::Refused };
+    let Some((_, t, mut q)) = lock_rec(i) else { return Reply::Refused };
+    let r = rec(i);
+    if CANARY_REPLY_TWICE.load(Ordering::Relaxed) && tag_state(t) == S_REPLIED && tag_gen(t) == handle_gen(handle) {
+        for (d, s) in r.words.iter().zip(words) {
+            d.store(s, Ordering::Relaxed);
+        }
+        return Reply::Woke { caller: r.caller.load(Ordering::Relaxed), rec: i, donee: NO_DONEE };
+    }
+    let delegated = tag_state(t) == S_ACCEPTED && r.server.load(Ordering::Relaxed) != q.owner;
+    let out = reply_locked(&mut q, i, t, handle_gen(handle), holder, false, words, false);
+    if delegated && matches!(out, Reply::Woke { .. }) {
+        DELEGATED.fetch_sub(1, Ordering::Relaxed);
+    }
+    out
+}
+
+/// The exit sweep's warrant half: complete with `-EPEERDIED` every call
+/// whose reply warrant `tid` (exiting) holds on an endpoint it does not
+/// serve (the calls on its own endpoints are its endpoints' drain). One
+/// load when no warrant was ever delegated; else one pass over the records.
+pub fn release_holder(tid: u32, mut done: impl FnMut(Completed)) -> usize {
+    if DELEGATED.load(Ordering::Relaxed) == 0 {
+        return 0;
+    }
+    let mut n = 0;
+    for (i, r) in RECORDS.iter().enumerate() {
+        let t = r.tag.load(Ordering::Acquire);
+        if tag_state(t) != S_ACCEPTED || r.server.load(Ordering::Relaxed) != tid {
+            continue;
+        }
+        let Some((ep, t, q)) = lock_rec(i) else { continue };
+        if tag_state(t) != S_ACCEPTED || r.server.load(Ordering::Relaxed) != tid || q.owner == tid {
+            continue;
+        }
+        DELEGATED.fetch_sub(1, Ordering::Relaxed);
+        let c = complete_locked(i, ep, PEER_DIED, tid, false);
+        drop(q);
+        n += 1;
+        done(c);
+    }
+    n
+}
+
 /// `(queued, accepted, replied, done)` over every record (diagnostic).
 pub fn census() -> (u32, u32, u32, u32) {
     let mut c = (0u32, 0u32, 0u32, 0u32);
@@ -875,6 +1034,8 @@ mod tests {
             }
         }
         CANARY_NO_PEER_DIED.store(false, Ordering::Relaxed);
+        CANARY_REPLY_TWICE.store(false, Ordering::Relaxed);
+        DELEGATED.store(0, Ordering::Relaxed);
         open(EP, GEN, SERVER);
         g
     }
@@ -1083,5 +1244,79 @@ mod tests {
         }
         assert_eq!(handle_rec(make_handle(3, 5)), Some(3));
         assert_eq!(handle_gen(make_handle(3, 5)), 5);
+    }
+
+    // ── Wave 15 N11: reply warrant and badge ────────────────────────────────
+
+    const WORKER: u32 = 31;
+
+    #[test]
+    fn a_reply_warrant_moved_to_a_worker_answers_once() {
+        let _e = env();
+        let (idx, tid) = client(0);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, SERVER).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert_eq!(delegate(h, WORKER, WORKER), Delegated::Refused, "only the holder moves it");
+        assert_eq!(delegate(h, SERVER, WORKER), Delegated::Moved);
+        assert_eq!(reply_warrant(h, SERVER, RSP), Reply::Refused, "the server gave it away");
+        assert_eq!(reply_warrant(h, WORKER, RSP), Reply::Woke { caller: tid, rec: idx, donee: SERVER },
+            "the worker answers; the donation lent to the server is owed back");
+        assert_eq!(DELEGATED.load(Ordering::Relaxed), 0);
+        assert_eq!(reply_warrant(h, WORKER, [9; WORDS]), Reply::Refused, "a second reply is refused");
+        assert_eq!(reply(h, WORKER, false, [9; WORDS]), Reply::Refused, "and on the v1 path too");
+        assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE), "the first answer, intact");
+    }
+
+    #[test]
+    fn canary_reply_twice_delivers_a_second_reply() {
+        let _e = env();
+        CANARY_REPLY_TWICE.store(true, Ordering::Relaxed);
+        let (idx, tid) = client(0);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert!(matches!(reply_warrant(h, SERVER, RSP), Reply::Woke { .. }));
+        assert!(matches!(reply_warrant(h, SERVER, [9; WORDS]), Reply::Woke { .. }), "the canary bites");
+        assert_eq!(collect(h, tid), Collected::Reply([9; WORDS], NO_DONEE), "the answer was overwritten");
+    }
+
+    #[test]
+    fn a_dead_warrant_holder_completes_the_call_peer_died() {
+        let _e = env();
+        let (idx, tid) = client(0);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert_eq!(delegate(h, SERVER, WORKER), Delegated::Moved);
+        assert_eq!(release_holder(SERVER, |_| {}), 0, "the server holds nothing now");
+        let mut got = Vec::new();
+        assert_eq!(release_holder(WORKER, |c| got.push(c.handle)), 1);
+        assert_eq!(got, vec![h]);
+        assert_eq!(collect(h, tid), Collected::Done(PEER_DIED, NO_DONEE));
+        assert_eq!(release_holder(WORKER, |_| {}), 0, "one load once nothing is delegated");
+    }
+
+    #[test]
+    fn a_v2_call_delivers_its_badge_and_a_v1_call_none() {
+        let _e = env();
+        let (idx, tid) = client(0);
+        stamp_badge(idx, 0xB0B);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert_eq!(accept_badge(h, WORKER), None, "only the holder reads it");
+        assert_eq!(accept_badge(h, SERVER), Some(0xB0B));
+        let _ = reply(h, SERVER, false, RSP);
+        let _ = collect(h, tid);
+        // The same record's next call is v1: unbadged, never the old badge.
+        let h2 = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert_eq!(accept_badge(h2, SERVER), None);
+        let _ = reply(h2, SERVER, false, RSP);
+        let _ = collect(h2, tid);
+        // A refused v2 call unstamps: the next v1 call is not badged.
+        stamp_badge(idx, 7);
+        assert_eq!(call(idx, tid, EP, GEN + 1, SERVER, SERVER_IDX, REQ, 0, NO_DONEE), None);
+        unstamp_badge(idx);
+        let h3 = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert_eq!(accept_badge(h3, SERVER), None);
     }
 }

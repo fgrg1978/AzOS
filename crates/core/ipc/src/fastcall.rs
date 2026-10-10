@@ -202,6 +202,9 @@ pub fn release_all(tid: u32) {
         fast_ipc::fast_ipc_release_all(tid);
         return;
     }
+    // Reply warrants `tid` was handed (wave 15 N11): their callers would
+    // otherwise wait for an answer nobody holds the right to give.
+    ep_queue::release_holder(tid, complete_one);
     let Some(idx) = azos_sched::idx_for_tid(tid) else { return };
     let Some(c) = ep_queue::release_caller(idx, tid) else { return };
     // A dying client's donation goes back to its server; nobody else is
@@ -235,6 +238,71 @@ pub fn drain_endpoint(i: usize, code: i32, server: u32) {
         // between its call and its block.
         azos_sched::wait::wake_fast_ipc_client_tid(c.caller, c.handle);
     });
+}
+
+/// One call a dead warrant holder strands, completed `-EPEERDIED`: the
+/// caller is woken and the donation (lent to the endpoint's server, alive)
+/// goes back. Nothing was moved with an accepted request that is not
+/// already delivered.
+fn complete_one(c: ep_queue::Completed) {
+    if c.donee != NO_DONEE {
+        azos_sched::return_donation(c.donee);
+    }
+    azos_sched::wait::wake_fast_ipc_client_tid(c.caller, c.handle);
+}
+
+// ── ABI v2 of the call (wave 15 N11) ────────────────────────────────────────
+//
+// The v1 functions above are untouched: a v2 call is a v1 call with the
+// badge stamped on the caller's record first, a v2 accept is a v1 accept
+// that also reads the badge, and the reply warrant is the record's holder
+// field, which v1 already checks. With Kconfig IPC_ENDPOINT_QUEUES off
+// (the old table) there is no warrant to move: v2 refuses.
+
+pub use crate::ep_queue::Delegated;
+
+/// [`call`] through an endpoint capability badged `badge` (v2).
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn call_v2(
+    caller_idx: usize, caller_tid: u32, dest: Dest, words: [u64; WORDS], moved_cap: u32, donate: bool, badge: u32,
+) -> Option<u64> {
+    if !QUEUES {
+        return None;
+    }
+    ep_queue::stamp_badge(caller_idx, badge);
+    let h = call(caller_idx, caller_tid, dest, words, moved_cap, donate);
+    if h.is_none() {
+        ep_queue::unstamp_badge(caller_idx);
+    }
+    h
+}
+
+/// The badge of the call `handle` (just accepted by `holder`): `Some` for
+/// a v2 call, `None` for a v1 one.
+#[inline]
+pub fn accept_badge(handle: u64, holder: u32) -> Option<u32> {
+    if !QUEUES {
+        return None;
+    }
+    ep_queue::accept_badge(handle, holder)
+}
+
+/// Move the reply warrant of `handle` from `holder` to `to`.
+pub fn delegate(handle: u64, holder: u32, to: u32) -> Delegated {
+    if !QUEUES {
+        return Delegated::Refused;
+    }
+    ep_queue::delegate(handle, holder, to)
+}
+
+/// Answer `handle` as the holder of its reply warrant; a second answer is
+/// refused (canary `ipc-reply-twice` lets it through).
+pub fn reply_warrant(handle: u64, holder: u32, words: [u64; WORDS]) -> FastIpcReply {
+    if !QUEUES {
+        return FastIpcReply::Refused;
+    }
+    map_reply(ep_queue::reply_warrant(handle, holder, words), holder)
 }
 
 /// `(pending, accepted, replied, in use)` (diagnostic).
