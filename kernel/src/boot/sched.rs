@@ -780,8 +780,10 @@ mod sched_class_ktests {
 // `attr_changed` of a waiter re-boosts its owner; a chain one link past
 // PI_MAX_DEPTH is counted and not boosted at its root. Late, with
 // `WAIT_GRAPH`: the registered class hooks read the running task. Canary
-// `canary=pi-depth-1` (one owner per walk): `waitgraph_transitive_chain` is
-// `not ok`.
+// `canary=pi-depth-1` (one owner per walk): `waitgraph_transitive_chain`,
+// `waitgraph_dl_donor_and_attr_changed` (attr_changed never reaches the
+// owner) and `waitgraph_depth_cap` (only the last link is boosted) are
+// `not ok`; `waitgraph_cycle_edeadlk` stays `ok`.
 #[cfg(feature = "ktest")]
 mod waitgraph_ktests {
     use azos_sync::spinlock::SpinLock;

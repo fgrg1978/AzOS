@@ -356,8 +356,9 @@ pub trait SchedPi: Sync {
 static DEPTH_OVERRIDE: AtomicUsize = AtomicUsize::new(0);
 
 /// Arm the depth canary (boot, once): walks follow one owner only, so a
-/// transitive chain is not boosted past its first link (ktest
-/// `waitgraph_transitive_chain` goes red).
+/// transitive chain is not boosted past its first link (ktests
+/// `waitgraph_transitive_chain`, `waitgraph_dl_donor_and_attr_changed` and
+/// `waitgraph_depth_cap` go red).
 /// `0` disarms it (host tests).
 pub fn canary_cap_depth(depth: usize) {
     DEPTH_OVERRIDE.store(depth, Ordering::Relaxed);
