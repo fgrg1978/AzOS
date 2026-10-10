@@ -21,7 +21,7 @@
 //! (`tests/host/sched-policy-tests`) compiles it as is. The kernel's class
 //! implementations over the live ready queues are `classes.rs`.
 
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 /// A dispatch class. The discriminant is the precedence rank: lower runs
 /// first.
@@ -139,11 +139,14 @@ pub struct SchedContext {
     pub c_lo_us: AtomicU64,
     /// Mixed-criticality HI-mode budget (reserved: admission with criticality).
     pub c_hi_us: AtomicU64,
+    /// The wait-graph object this SC's task is blocked on: the address of
+    /// its `azos_sync::waitgraph::PiWaiters`, 0 = none (an
+    /// `Option<WaitObj>`; `WaitObj` is a non-null pointer). Written only by
+    /// the graph, through `classes::ClassPi` (N7). A plain address so this
+    /// file stays free of kernel crates (the host suite compiles it as is).
+    pub blocked_on: AtomicUsize,
     /// RT/DL: the priority level; fair: the weight (part b, EEVDF).
     pub prio_or_weight: AtomicU32,
-    /// The wait-graph object this SC's task is blocked on, 0 = none
-    /// (reserved: N7 wait graph).
-    pub blocked_on: AtomicU32,
     /// QoS identity the SC is accounted to (reserved: APS group weights, L10).
     pub qos_id: AtomicU32,
     /// The CPU the SC runs on, [`NO_CPU`] = none (reserved: N7; read today
@@ -160,11 +163,11 @@ pub struct SchedContext {
     pub cluster: AtomicU8,
     /// Flag bits (reserved).
     pub flags: AtomicU8,
-    /// Reserved, zero.
-    pub _reserved: [u8; 4],
 }
 
 /// The frozen size. Changing the layout is a deliberate edit of this line.
+/// N7 widened `blocked_on` to a pointer by spending the 4 reserved bytes:
+/// the size did not move.
 pub const SC_SIZE: usize = 64;
 const _: () = assert!(core::mem::size_of::<SchedContext>() == SC_SIZE);
 
@@ -177,8 +180,8 @@ impl SchedContext {
             deadline_us: AtomicU64::new(0),
             c_lo_us: AtomicU64::new(0),
             c_hi_us: AtomicU64::new(0),
+            blocked_on: AtomicUsize::new(0),
             prio_or_weight: AtomicU32::new(0),
-            blocked_on: AtomicU32::new(0),
             qos_id: AtomicU32::new(0),
             on_cpu: AtomicU16::new(NO_CPU),
             irq: AtomicU16::new(0),
@@ -186,7 +189,6 @@ impl SchedContext {
             criticality: AtomicU8::new(Criticality::Lo as u8),
             cluster: AtomicU8::new(0),
             flags: AtomicU8::new(0),
-            _reserved: [0; 4],
         }
     }
 
