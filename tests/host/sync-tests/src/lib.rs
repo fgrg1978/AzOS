@@ -83,6 +83,18 @@ pub mod waitgraph;
 pub mod kmutex;
 #[path = "../../../../crates/core/sync/src/pi_futex.rs"]
 pub mod pi_futex;
+// pi_futex.rs retires a pi_state through `crate::qsbr::call_rcu`; qsbr.rs
+// needs the per-CPU layer, so this stand-in runs the callback at once (the
+// kernel's own behaviour with RCU_QSBR n).
+pub mod qsbr {
+    pub struct RcuHead;
+    impl RcuHead {
+        pub const fn new() -> Self { RcuHead }
+    }
+    /// # Safety
+    /// As the kernel's `call_rcu`.
+    pub unsafe fn call_rcu(head: *mut RcuHead, f: unsafe fn(*mut RcuHead)) { f(head) }
+}
 #[path = "../../../../crates/core/sync/src/handoff.rs"]
 pub mod handoff;
 
