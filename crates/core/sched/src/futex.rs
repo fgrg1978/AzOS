@@ -141,3 +141,67 @@ pub fn requeue(
     ft::requeue_key(&KernelEnv, from, to, nr_wake, nr_requeue, cmp.map(|c| (read, c)), wake_all)
         .map_err(errno)
 }
+
+// ── The PI seam (interface §4): one key's slot, lent under the table lock ──
+
+use azos_sync::pi_futex::{PiBucket, UserFault};
+use azos_sync::waitgraph::TaskId;
+
+/// The user word of a PI key, as the PI code reads and swaps it.
+pub trait PiWord {
+    fn read(&self) -> Result<u32, UserFault>;
+    fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, UserFault>;
+}
+
+/// A word reached at a kernel address (a shm region's page, or a word the
+/// caller pinned and translated).
+pub struct KvaWord(pub &'static core::sync::atomic::AtomicU32);
+
+impl PiWord for KvaWord {
+    fn read(&self) -> Result<u32, UserFault> {
+        Ok(self.0.load(Ordering::Acquire))
+    }
+    fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, UserFault> {
+        Ok(match self.0.compare_exchange(expected, new, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(v) | Err(v) => v,
+        })
+    }
+}
+
+/// One futex key's PI view, valid only while the table lock is held:
+/// what `azos_sync::pi_futex::PiFutexOps` receives as its bucket.
+pub struct PiKeyGuard<'a> {
+    table: &'a mut ft::FutexTable,
+    entry: usize,
+    word: &'a dyn PiWord,
+}
+
+impl PiBucket for PiKeyGuard<'_> {
+    fn pi_slot(&mut self) -> &mut u32 {
+        self.table.pi_slot(self.entry)
+    }
+    fn read_word(&self) -> Result<u32, UserFault> {
+        self.word.read()
+    }
+    fn cmpxchg_word(&mut self, expected: u32, new: u32) -> Result<u32, UserFault> {
+        self.word.cmpxchg(expected, new)
+    }
+    fn task_of_tid(&self, tid: u32) -> Option<TaskId> {
+        crate::scheduler::idx_for_tid(tid).map(|i| i as TaskId)
+    }
+}
+
+/// Run `f` on `key`'s PI view under the table lock; the key's entry is
+/// given back afterwards if `f` left its slot empty. `None` when no entry
+/// is free (or Kconfig `FUTEX_PI` is n): the caller answers `ENOMEM` /
+/// `ENOSYS`. The PI code (N10) is the only caller.
+pub fn with_pi_key<R>(key: Key, word: &dyn PiWord, f: impl FnOnce(&mut dyn PiBucket) -> R) -> Option<R> {
+    let mut t = ft::TABLE.lock_irqsave();
+    let entry = t.pi_entry(key)?;
+    let r = {
+        let mut g = PiKeyGuard { table: &mut t, entry, word };
+        f(&mut g)
+    };
+    t.pi_put(key, entry);
+    Some(r)
+}

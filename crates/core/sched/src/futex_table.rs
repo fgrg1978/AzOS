@@ -26,8 +26,18 @@
 //! `FUTEX_PRIVATE_BUCKETS`), so one process's words never share a chain with
 //! another's unless their domain ids collide on a bank; shared keys have
 //! their own `FUTEX_SHARED_BUCKETS`. A wake or a requeue walks one chain,
-//! not the table. Every bucket carries a [`PiState`] slot, empty until the
-//! PI futex (N10) fills it.
+//! not the table.
+//!
+//! # PI slots, one per key
+//!
+//! Each bucket also chains the keys that have a priority-inheritance state:
+//! a `u32` slot per KEY (`azos_sync::pi_futex::PiStateId` raw value, 0 =
+//! none), never one for the whole bucket (interface §4,
+//! `azos_sync::pi_futex::PiBucket::pi_slot`). The entries come from a pool
+//! of `MAX_TASKS` (a PI word has a state only while someone waits on it or
+//! owns it through the kernel) when Kconfig `FUTEX_PI` is y, and from an
+//! empty pool otherwise. The kernel glue lends one entry to the PI code
+//! under the table lock (`futex::with_pi_key`); N10 writes the slot.
 //!
 //! One lock ([`TABLE`]) covers the table: requeue moves rows between two
 //! chains under it with no lock order to get wrong. Per-bucket locks are a
@@ -110,15 +120,61 @@ impl Key {
     }
 }
 
-/// The priority-inheritance state of a bucket's PI word. Empty until N10
-/// (PI futex) fills it; the slot exists now so the bucket shape does not
-/// change then.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct PiState {
-    /// TID of the owner the kernel knows of (0: none).
-    pub owner_tid: u32,
-    /// Waiters the owner is boosted for.
-    pub waiters: u16,
+/// PI key entries: one per task with Kconfig `FUTEX_PI`, none without.
+pub const PI_KEYS: usize = if azos_limits::FUTEX_PI { ROWS } else { 0 };
+
+/// One key's PI slot, chained from its bucket.
+#[derive(Clone, Copy)]
+pub struct PiEntry {
+    key: Key,
+    /// `PiStateId` raw value; 0 = none (the entry is free when it is 0 and
+    /// nobody holds it).
+    slot: u32,
+    next: u16,
+    used: bool,
+}
+
+pub const PI_FREE: PiEntry = PiEntry { key: Key::Shared { obj: 0, offset: 0 }, slot: 0, next: NIL, used: false };
+
+/// Find `key`'s entry in the chain at `head`, or take a free one from
+/// `pool` and chain it. `None` when the pool is exhausted.
+pub fn pi_find_or_insert(pool: &mut [PiEntry], head: &mut u16, key: Key) -> Option<usize> {
+    let mut cur = *head;
+    while cur != NIL {
+        if pool[cur as usize].key == key {
+            return Some(cur as usize);
+        }
+        cur = pool[cur as usize].next;
+    }
+    let i = pool.iter().position(|e| !e.used)?;
+    pool[i] = PiEntry { key, slot: 0, next: *head, used: true };
+    *head = i as u16;
+    Some(i)
+}
+
+/// Unchain entry `i` from the chain at `head` if its slot is empty (the PI
+/// code left no state for the key). Returns whether it was released.
+pub fn pi_release_if_empty(pool: &mut [PiEntry], head: &mut u16, i: usize) -> bool {
+    if !pool[i].used || pool[i].slot != 0 {
+        return false;
+    }
+    let mut prev = NIL;
+    let mut cur = *head;
+    while cur != NIL && cur as usize != i {
+        prev = cur;
+        cur = pool[cur as usize].next;
+    }
+    if cur == NIL {
+        return false;
+    }
+    let next = pool[i].next;
+    if prev == NIL {
+        *head = next;
+    } else {
+        pool[prev as usize].next = next;
+    }
+    pool[i] = PI_FREE;
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -136,10 +192,11 @@ const EMPTY: Row = Row { state: FREE, next: NIL, tid: 0, deadline: 0, key: Key::
 struct Bucket {
     head: u16,
     tail: u16,
-    pi: PiState,
+    /// The chain of this bucket's PI key entries ([`PiEntry`]).
+    pi_head: u16,
 }
 
-const NO_BUCKET: Bucket = Bucket { head: NIL, tail: NIL, pi: PiState { owner_tid: 0, waiters: 0 } };
+const NO_BUCKET: Bucket = Bucket { head: NIL, tail: NIL, pi_head: NIL };
 
 /// What [`FutexTable::settle`] found for a waiter back from a block.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -157,6 +214,7 @@ pub enum Settle {
 pub struct FutexTable {
     rows: [Row; ROWS],
     buckets: [Bucket; BUCKETS],
+    pi: [PiEntry; PI_KEYS],
     /// Rows in `WAITING`. A wake that finds none returns without hashing.
     waiting: usize,
 }
@@ -169,7 +227,7 @@ impl Default for FutexTable {
 
 impl FutexTable {
     pub const fn new() -> Self {
-        Self { rows: [EMPTY; ROWS], buckets: [NO_BUCKET; BUCKETS], waiting: 0 }
+        Self { rows: [EMPTY; ROWS], buckets: [NO_BUCKET; BUCKETS], pi: [PI_FREE; PI_KEYS], waiting: 0 }
     }
 
     fn push(&mut self, b: usize, i: usize) {
@@ -346,9 +404,23 @@ impl FutexTable {
         }
     }
 
-    /// The PI slot of `key`'s bucket (N10 fills it).
-    pub fn pi_state(&mut self, key: Key) -> &mut PiState {
-        &mut self.buckets[key.bucket()].pi
+    /// The PI entry of `key`, chained in its bucket (taken from the pool
+    /// if the key has none). `None`: the pool is exhausted, or empty with
+    /// Kconfig `FUTEX_PI` n.
+    pub fn pi_entry(&mut self, key: Key) -> Option<usize> {
+        let b = key.bucket();
+        pi_find_or_insert(&mut self.pi, &mut self.buckets[b].pi_head, key)
+    }
+
+    /// The `pi_state` slot of entry `i` (0 = none).
+    pub fn pi_slot(&mut self, i: usize) -> &mut u32 {
+        &mut self.pi[i].slot
+    }
+
+    /// Give entry `i` of `key` back if its slot is empty.
+    pub fn pi_put(&mut self, key: Key, i: usize) -> bool {
+        let b = key.bucket();
+        pi_release_if_empty(&mut self.pi, &mut self.buckets[b].pi_head, i)
     }
 }
 
@@ -406,42 +478,48 @@ pub fn wait_key<E: FutexEnv>(
             Some(v) if v != expected => return WaitResult::ValueChanged,
             Some(_) => {}
         }
+        // A stop raised before the wait, or a deadline already past, ends
+        // it before it files anything: nothing to cancel, no wake to race.
+        if env.stopped() {
+            return WaitResult::Stopped;
+        }
+        if deadline != u64::MAX && env.now() >= deadline {
+            return WaitResult::TimedOut;
+        }
         match t.register(tid, key, deadline) {
             Some(s) => s,
             None => return WaitResult::NoSpace,
         }
     };
-    let mut refused = false;
+    // Block first, settle after: the row is filed and the lock released in
+    // one step, so a wake in between stamps the task and this block
+    // consumes the stamp (no stale stamp is left for a later block).
     loop {
-        {
-            let mut t = TABLE.lock_irqsave();
-            match t.settle(slot, tid) {
-                Settle::Woken => return WaitResult::Woken,
-                Settle::OwnerDied => return WaitResult::OwnerDied,
-                Settle::Waiting => {}
-            }
-            // Blocking again after a refusal would be refused again:
-            // withdraw, never spin (an infinite timeout would hang this
-            // hart). A stop or a deadline is checked BEFORE every block, the
-            // first included: a stop raised before the wait is not missed.
-            let ended = if refused {
-                Some(WaitResult::Refused)
-            } else if env.stopped() {
-                Some(WaitResult::Stopped)
-            } else if deadline != u64::MAX && env.now() >= deadline {
-                Some(WaitResult::TimedOut)
-            } else {
-                None
-            };
-            if let Some(r) = ended {
-                return match t.cancel_settle(slot, tid) {
-                    Settle::Woken => WaitResult::Woken,
-                    Settle::OwnerDied => WaitResult::OwnerDied,
-                    Settle::Waiting => r,
-                };
-            }
+        let refused = env.block(deadline);
+        let mut t = TABLE.lock_irqsave();
+        match t.settle(slot, tid) {
+            Settle::Woken => return WaitResult::Woken,
+            Settle::OwnerDied => return WaitResult::OwnerDied,
+            Settle::Waiting => {}
         }
-        refused = env.block(deadline);
+        // Blocking again after a refusal would be refused again: withdraw,
+        // never spin (an infinite timeout would hang this hart).
+        let ended = if refused {
+            Some(WaitResult::Refused)
+        } else if env.stopped() {
+            Some(WaitResult::Stopped)
+        } else if deadline != u64::MAX && env.now() >= deadline {
+            Some(WaitResult::TimedOut)
+        } else {
+            None
+        };
+        if let Some(r) = ended {
+            return match t.cancel_settle(slot, tid) {
+                Settle::Woken => WaitResult::Woken,
+                Settle::OwnerDied => WaitResult::OwnerDied,
+                Settle::Waiting => r,
+            };
+        }
     }
 }
 
@@ -466,10 +544,15 @@ pub fn wake_key<E: FutexEnv>(env: &E, key: Key, n: u32, died: bool) -> u32 {
     }
 }
 
-/// Linux `FUTEX_CMP_REQUEUE` / `FUTEX_REQUEUE`: under one hold, check that
-/// `read()` holds `cmp` (when given), wake up to `nr_wake` waiters on `from`
-/// and move up to `nr_requeue` more to `to`. Returns `(woken, moved)`, or
+/// Linux `FUTEX_CMP_REQUEUE` / `FUTEX_REQUEUE`: check that `read()` holds
+/// `cmp` (when given), wake up to `nr_wake` waiters on `from` and move up
+/// to `nr_requeue` more to `to`. Returns `(woken, moved)`, or
 /// `Err(ValueChanged | Fault)` with nothing done.
+///
+/// The wakes go out in batches of [`WAKE_BATCH`], each taken under one hold
+/// and woken after it; the move happens in the hold that completes the wake
+/// quota (or finds the chain exhausted), so the split is Linux's for any
+/// `nr_wake`: the oldest `nr_wake` run, the next `nr_requeue` move.
 ///
 /// `wake_all` is the herd canary: every waiter is woken, nobody is moved
 /// (the thundering herd a requeue exists to avoid).
@@ -477,35 +560,41 @@ pub fn requeue_key<E: FutexEnv>(
     env: &E, from: Key, to: Key, nr_wake: u32, nr_requeue: u32,
     cmp: Option<(&dyn Fn() -> Option<u32>, u32)>, wake_all: bool,
 ) -> Result<(u32, u32), WaitResult> {
-    let mut out = [(0u32, 0u64); WAKE_BATCH];
-    let (k, moved) = {
-        let mut t = TABLE.lock_irqsave();
-        if let Some((read, want)) = cmp {
-            match read() {
-                None => return Err(WaitResult::Fault),
-                Some(v) if v != want => return Err(WaitResult::ValueChanged),
-                Some(_) => {}
+    let mut woken = 0u32;
+    let mut moved = 0u32;
+    let mut first = true;
+    loop {
+        let mut out = [(0u32, 0u64); WAKE_BATCH];
+        let (k, done) = {
+            let mut t = TABLE.lock_irqsave();
+            if first {
+                if let Some((read, want)) = cmp {
+                    match read() {
+                        None => return Err(WaitResult::Fault),
+                        Some(v) if v != want => return Err(WaitResult::ValueChanged),
+                        Some(_) => {}
+                    }
+                }
+                first = false;
             }
+            let want = if wake_all { WAKE_BATCH as u32 } else { (nr_wake - woken).min(WAKE_BATCH as u32) };
+            let k = t.wake(from, want, &mut out);
+            let exhausted = (k as u32) < want || want == 0;
+            let quota = !wake_all && woken + k as u32 >= nr_wake;
+            let done = exhausted || quota;
+            if done && !wake_all {
+                moved = t.requeue(from, to, nr_requeue);
+            }
+            (k, done)
+        };
+        for &(tid, deadline) in &out[..k] {
+            env.wake(tid, deadline);
         }
-        if wake_all {
-            (t.wake(from, WAKE_BATCH as u32, &mut out), 0)
-        } else {
-            let k = t.wake(from, nr_wake.min(WAKE_BATCH as u32), &mut out);
-            (k, t.requeue(from, to, nr_requeue))
+        woken += k as u32;
+        if done {
+            return Ok((woken, moved));
         }
-    };
-    for &(tid, deadline) in &out[..k] {
-        env.wake(tid, deadline);
     }
-    let mut woken = k as u32;
-    // The rest of a wake wider than one batch (or the whole herd) is taken
-    // after the move; a waiter that arrives on `from` in between is woken
-    // like any later waiter would be.
-    let more = if wake_all { u32::MAX } else { nr_wake };
-    if woken < more && k == WAKE_BATCH {
-        woken += wake_key(env, from, more - woken, false);
-    }
-    Ok((woken, moved))
 }
 
 #[cfg(test)]
@@ -616,11 +705,35 @@ mod tests {
         assert!(s(1, 0).bucket() >= DOMAIN_BANKS * PRIVATE_BUCKETS);
     }
 
+    /// The PI slot is per KEY: two keys in one bucket get two slots.
     #[test]
-    fn every_bucket_has_an_empty_pi_slot() {
+    fn a_pi_slot_is_per_key_not_per_bucket() {
+        let mut pool = [PI_FREE; 4];
+        let mut head = NIL;
+        let a = p(3, 0x100);
+        let mut b_addr = 0x104u64;
+        while p(3, b_addr).bucket() != a.bucket() {
+            b_addr += 4;
+        }
+        let b = p(3, b_addr);
+        let ia = pi_find_or_insert(&mut pool, &mut head, a).unwrap();
+        let ib = pi_find_or_insert(&mut pool, &mut head, b).unwrap();
+        assert_ne!(ia, ib);
+        pool[ia].slot = 7;
+        assert_eq!(pi_find_or_insert(&mut pool, &mut head, a), Some(ia), "the same key finds its entry");
+        assert_eq!(pool[ib].slot, 0, "the other key's slot is its own");
+        assert!(pi_release_if_empty(&mut pool, &mut head, ib));
+        assert!(!pi_release_if_empty(&mut pool, &mut head, ia), "a slot in use is kept");
+        assert_eq!(pi_find_or_insert(&mut pool, &mut head, a), Some(ia));
+        pool[ia].slot = 0;
+        assert!(pi_release_if_empty(&mut pool, &mut head, ia));
+        assert_eq!(head, NIL);
+    }
+
+    #[test]
+    fn the_pi_pool_follows_kconfig() {
         let mut t = FutexTable::new();
-        assert_eq!(*t.pi_state(s(3, 0)), PiState::default());
-        assert_eq!(*t.pi_state(p(3, 0)), PiState::default());
+        assert_eq!(t.pi_entry(s(3, 0)).is_some(), azos_limits::FUTEX_PI);
     }
 
     // ── The env loop, on the shared `TABLE` (each test its own keys) ────────
@@ -681,6 +794,20 @@ mod tests {
     #[test]
     fn canary_requeue_disabled_runs_the_herd() {
         assert_eq!(herd(0xF01, true), 8, "the canary must make the herd counter red");
+    }
+
+    /// More wakes than one batch: Linux's split, not one batch then a move.
+    #[test]
+    fn a_requeue_wider_than_a_batch_wakes_exactly_nr_wake() {
+        let cond = s(0xF06, 0);
+        let mutex = s(0xF06, 4);
+        let rows: Vec<usize> = (0..20).map(|k| TABLE.lock_irqsave().register(700 + k, cond, u64::MAX).unwrap()).collect();
+        assert_eq!(requeue_key(&Quiet, cond, mutex, 10, u32::MAX, None, false), Ok((10, 10)));
+        let mut t = TABLE.lock_irqsave();
+        assert_eq!(t.waiters_on(mutex), 10);
+        for (k, &r) in rows.iter().enumerate() {
+            t.cancel_settle(r, 700 + k as u32);
+        }
     }
 
     #[test]
