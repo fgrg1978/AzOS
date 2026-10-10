@@ -654,6 +654,16 @@ fn war_server(_: usize) {
     }
     WAR_SERVER.store(1, Ordering::Release);
     WAR_HANDLE.store(h, Ordering::Release);
+    // Stay alive until the worker has answered: a server's exit drains its
+    // endpoint, and the drain ends every call in service there PEER_DIED,
+    // a delegated one too (`ep_queue::release_holder` covers only the
+    // calls on endpoints the holder does not serve). The worker is meant
+    // to be a thread of the server's domain, which outlives neither.
+    let mut waited = 0;
+    while WAR_WORKER_RC.load(Ordering::Acquire) == NOT_YET && waited < 3000 {
+        sleep_ms(5);
+        waited += 5;
+    }
 }
 
 fn war_worker(_: usize) {
