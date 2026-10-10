@@ -424,8 +424,9 @@ address.
   shared-memory region is keyed by (region, offset), so a native notify and
   a Linux shared futex on the same word meet, whatever address each process
   maps it at. Requeue (`FUTEX_REQUEUE`, `FUTEX_CMP_REQUEUE`) moves waiters
-  between words without waking them. Each bucket has a slot for
-  priority-inheritance state. Kconfig `FUTEX_SHARED`, `FUTEX_REQUEUE` and
+  between words without waking them. Each key that has
+  priority-inheritance state keeps its own slot for it, chained from its
+  bucket. Kconfig `FUTEX_SHARED`, `FUTEX_REQUEUE` and
   the bucket counts select the parts.
 - **Leases.** A lease grants a shared-memory region from one task to another
   for a bounded time, for example for zero-copy camera frames or inference
