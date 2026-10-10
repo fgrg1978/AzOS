@@ -111,7 +111,8 @@ pub struct UserFault;
 /// What N9 lends the PI code for one futex key, **under its bucket lock**.
 /// N9 implements it on its bucket guard; N10 never sees the bucket layout.
 pub trait PiBucket {
-    /// The key's `pi_state` slot (0 = none). One per key in the bucket.
+    /// The `pi_state` slot of THIS futex key (0 = none): one per key/entry
+    /// in the bucket, never one shared by the whole bucket.
     fn pi_slot(&mut self) -> &mut u32;
     /// Atomic read of the user word, faults reported, no sleep (the bucket
     /// lock is a SpinLock: N9 pre-faults the page before taking it, as

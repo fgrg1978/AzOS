@@ -53,8 +53,13 @@
 //! order). Task references stay valid across the drops because the walk runs
 //! inside a QSBR read section (`qsbr::read`): a task slot is reused only
 //! after a grace period. Every entry point below is **task context only**
-//! (never an interrupt handler, never with interrupts off), and only the
-//! functions marked so may be called with a SpinLock held.
+//! (never an interrupt handler, never with interrupts off).
+//!
+//! **One rule for SpinLocks around a walk:** a walk may run with at most ONE
+//! client SpinLock held, the object's own (a futex bucket lock, an endpoint
+//! lock), never two, never another object's wait lock. A client that wants
+//! the walk outside its lock uses `block_prepare` under it and
+//! `block_commit` after dropping it.
 //!
 //! # Priority convention
 //!
@@ -306,7 +311,8 @@ pub fn register_sched(_hooks: &'static dyn SchedPi) {
 /// (it owns the sleep, the wake and the timeout) and calls [`unblock`] when
 /// it wakes for any reason.
 ///
-/// Task context, preemption on, **no SpinLock held** (`might_sleep`).
+/// Task context, preemption on; at most the object's own client SpinLock
+/// held (the module's one rule); the caller's sleep needs none (`might_sleep`).
 /// Cost: O(W) enqueue (W = waiters on `obj`) + one walk, O(PI_MAX_DEPTH).
 /// On `Err` nothing was changed: not enqueued, `blocked_on` still `None`.
 pub fn block_on(waiter: TaskId, obj: &PiWaiters) -> Result<(), WaitError> {
@@ -322,9 +328,10 @@ pub fn block_prepare(_waiter: TaskId, _obj: &PiWaiters) -> Result<PendingBlock, 
     todo!("N7")
 }
 
-/// Second half of [`block_on`]: the walk. Called after the client dropped
-/// its SpinLock and before it sleeps. On `Err(Deadlock)` the waiter has been
-/// dequeued again. No SpinLock held. O(PI_MAX_DEPTH).
+/// Second half of [`block_on`]: the walk. Called before the waiter sleeps,
+/// normally after the client dropped its SpinLock (at most the object's own
+/// client lock may still be held, the module's one rule). On
+/// `Err(Deadlock)` the waiter has been dequeued again. O(PI_MAX_DEPTH).
 pub fn block_commit(_p: PendingBlock) -> Result<(), WaitError> {
     todo!("N7")
 }
@@ -341,9 +348,8 @@ pub struct PendingBlock {
 /// `waiter` leaves `obj` (`why`): dequeue, clear `blocked_on`, and walk from
 /// the owner lowering the boost it no longer earns. Called by the waiter
 /// itself after it wakes, or by the waker on its behalf (timeout and signal
-/// paths). Task context; may be called with one client SpinLock held (the
-/// walk is deferred to the drop of that lock only when the client uses
-/// `block_prepare`/`block_commit`; otherwise no lock held). O(W + depth).
+/// paths). Task context; at most the object's own client SpinLock held (the
+/// module's one rule). O(W + PI_MAX_DEPTH).
 pub fn unblock(_waiter: TaskId, _obj: &PiWaiters, _why: UnblockReason) {
     todo!("N7")
 }
@@ -351,8 +357,9 @@ pub fn unblock(_waiter: TaskId, _obj: &PiWaiters, _why: UnblockReason) {
 /// The owner gives `obj` up: clears its PI contribution from `obj`, unboosts
 /// the owner, and returns the top waiter (the client wakes it; the client,
 /// not the graph, decides whether it hands ownership over or lets the
-/// woken waiter compete). Task context, no SpinLock held except the
-/// object's own client lock. O(owned objects with waiters) for the unboost.
+/// woken waiter compete). Task context; at most the object's own client
+/// SpinLock held (the module's one rule). O(owned objects with waiters) for
+/// the unboost plus one walk.
 pub fn release(_owner: TaskId, _obj: &PiWaiters) -> Option<TaskId> {
     todo!("N7")
 }
