@@ -168,11 +168,18 @@
 #
 # ## The Linux image is an environment decision
 #
-# This script neither downloads nor builds a `riscv64` Linux. Point
-# `VSBENCH_LINUX_IMAGE` at one; the default is the image this script
-# records below. Absent, this fails — unless `CI_SKIP_VSBENCH_LINUX=1`, the same
-# shape `CI_SKIP_QEMU=1` already has, so a machine without the reference
-# kernel can still run the rest of the gate without the skip being silent.
+# This script neither downloads nor builds a `riscv64` Linux. The image is
+# the Kconfig string `VSBENCH_LINUX_IMAGE_RISCV64` (`make config`, menu
+# "Benchmarks / Linux comparison"; read from $KCONFIG_CONFIG or ./.config,
+# else its default), overridden by the env var `VSBENCH_LINUX_IMAGE`. The
+# default is Linux 6.12 LTS (EEVDF; defconfig + virtio/vfat/devtmpfs/
+# initramfs/TCP built in, PREEMPT_NONE, HZ=250), built outside the repo at
+# ~/devel/vms/linux-6.12/Image-riscv64. The previous reference, 6.4.0-rc4
+# (CFS, same PREEMPT_NONE/HZ=250), stays selectable:
+# `VSBENCH_LINUX_IMAGE=~/devel/vms/riscv/Image`. Absent, this fails —
+# unless `CI_SKIP_VSBENCH_LINUX=1`, the same shape `CI_SKIP_QEMU=1` already
+# has, so a machine without the reference kernel can still run the rest of
+# the gate without the skip being silent.
 #
 # ## The Linux + seccomp column (`VSBENCH_SECCOMP=1`)
 #
@@ -344,7 +351,8 @@ TCP_LINUX_IP="ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off"
 # The AzOS TCP boot's CONFIG.INI override (see "ITS BRAIN LINK STAYS ON");
 # empty, the default, ships disk-vsbench.img's CONFIG.INI unchanged.
 VSBENCH_TCP_AZOS_CONFIG="${VSBENCH_TCP_AZOS_CONFIG:-}"
-LINUX_IMAGE="${VSBENCH_LINUX_IMAGE:-$HOME/devel/vms/riscv/Image}"
+# LINUX_IMAGE is resolved below, once the AzOS configuration is derived
+# (Kconfig VSBENCH_LINUX_IMAGE_RISCV64; see "The Linux image").
 WAIT_SECS="${WAIT_SECS:-60}"
 WORK="${VSBENCH_WORK:-$REPO_ROOT/build/vsbench-compare}"
 CARGO="${CARGO:-cargo}"
@@ -537,6 +545,24 @@ mkdir -p "$BENCH_TARGET"
     || die "could not derive the AzOS kernel configuration ($AZ_CONFIG.new)"
 # Replaced only when it changed: `azos_limits` rebuilds on the file's mtime.
 if cmp -s "$AZ_CONFIG.new" "$AZ_CONFIG"; then rm -f "$AZ_CONFIG.new"; else mv "$AZ_CONFIG.new" "$AZ_CONFIG"; fi
+# The riscv64 Linux image: VSBENCH_LINUX_IMAGE, else
+# CONFIG_VSBENCH_LINUX_IMAGE_RISCV64 from the active configuration
+# ($KCONFIG_CONFIG, else ./.config — what `make config` writes), else from
+# the derived AzOS configuration (the Kconfig default). A leading `~/` is $HOME.
+kconfig_str() { # kconfig_str <SYMBOL> <config>...: first config that sets it
+    local sym="$1" f v; shift
+    for f in "$@"; do
+        v="$(sed -n "s/^CONFIG_$sym=\"\(.*\)\"\$/\1/p" "$f" 2>/dev/null)"
+        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+    done
+    return 1
+}
+LINUX_IMAGE="${VSBENCH_LINUX_IMAGE:-$(kconfig_str VSBENCH_LINUX_IMAGE_RISCV64 \
+    "${KCONFIG_CONFIG:-$REPO_ROOT/.config}" "$AZ_CONFIG")}"
+case "$LINUX_IMAGE" in "~/"*) LINUX_IMAGE="$HOME/${LINUX_IMAGE#\~/}" ;; esac
+[ -n "$LINUX_IMAGE" ] || die "no riscv64 Linux image configured: set VSBENCH_LINUX_IMAGE \
+or CONFIG_VSBENCH_LINUX_IMAGE_RISCV64 (make config: Benchmarks / Linux comparison)"
+echo "vsbench: Linux column: $LINUX_IMAGE" >&2
 ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$AZ_CONFIG" CARGO_TARGET_DIR="$BENCH_TARGET/azos-bench-minimal" \
     $CARGO build --release --features "$KM_FEATURES" >/dev/null 2>&1 ) \
     || die "could not build the AzOS kernel (--features $KM_FEATURES)"

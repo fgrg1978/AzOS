@@ -71,22 +71,27 @@
 #
 # ## The Linux/aarch64 column (N0, wave 15)
 #
-# `VSBENCH_AARCH64_LINUX_IMAGE` (default `$HOME/devel/vms/arm64/Image`): an
-# arm64 Linux `Image`, raw or gzip. Present, the Linux side of vsbench is
+# The image is the Kconfig string `VSBENCH_LINUX_IMAGE_AARCH64` (`make
+# config`, menu "Benchmarks / Linux comparison"; read from $KCONFIG_CONFIG or
+# ./.config, else its default `~/devel/vms/linux-6.12/Image-aarch64`),
+# overridden by the env var `VSBENCH_AARCH64_LINUX_IMAGE`: an arm64 Linux
+# `Image`, raw or gzip. Present, the Linux side of vsbench is
 # built for aarch64 (`abi_linux.rs` has an `svc 0` twin of every `ecall`),
 # packed as `/init` of an uncompressed initramfs, and booted on the SAME
 # QEMU line as the aarch64 AzOS column (machine, `-smp`, `-icount`, the
-# same disk device with its own copy of the image; the CPU is the same `max`
-# with `lpa2=off`, see `LINUX_A_CPU`). Its lanes print in a
+# same disk device with its own copy of the image; the CPU is the same
+# `max,pauth=on`, see `LINUX_A_CPU`). Its lanes print in a
 # column of their own with the AzOS/Linux ratio. Absent, the column is
 # skipped and says so. This script neither downloads nor builds a kernel.
 #
 # The column REPORTS: a Linux lane failure is printed and does not change
 # the exit status (a distribution kernel may lack what a lane needs, e.g.
 # `vfat` built as a module fails the `disk` lanes), and an aarch64 AzOS lane
-# with no Linux number is listed by name. The only image on this machine
-# when this was written is Ubuntu 20.04.5's 5.4.0-125-generic (CFS, not
-# EEVDF), out of its installer ISO's `casper/vmlinuz`.
+# with no Linux number is listed by name. The default is Linux 6.12 LTS
+# (EEVDF; arm64 defconfig with virtio/vfat/devtmpfs/initramfs/TCP built in,
+# PREEMPT_NONE, HZ=250). The previous reference, Ubuntu 20.04.5's
+# 5.4.0-125-generic (CFS), out of its installer ISO's `casper/vmlinuz`, stays
+# selectable through the env var (it also needs `lpa2=off`, see `LINUX_A_CPU`).
 #
 # ## How to run this
 #
@@ -262,12 +267,30 @@ kill -9 "$A_PID" 2>/dev/null; wait "$A_PID" 2>/dev/null
 
 # ── Verdict ──────────────────────────────────────────────────────────────
 # ── Linux/aarch64 (see the header) ────────────────────────────────────────
-LINUX_A_IMAGE="${VSBENCH_AARCH64_LINUX_IMAGE:-$HOME/devel/vms/arm64/Image}"
-# The AzOS line's CPU with `lpa2=off`: 5.4 predates FEAT_LPA2 and, offered it
-# by this QEMU's `max`, prints nothing at all (measured: no `Linux version`
-# line in 90 s; with `lpa2=off` it boots and runs the suite; its io_uring
+# The image: VSBENCH_AARCH64_LINUX_IMAGE, else
+# CONFIG_VSBENCH_LINUX_IMAGE_AARCH64 from the active configuration
+# ($KCONFIG_CONFIG, else ./.config — what `make config` writes), else from
+# the expanded aarch64 configuration above (the Kconfig default). A leading
+# `~/` is $HOME.
+kconfig_str() { # kconfig_str <SYMBOL> <config>...: first config that sets it
+    local sym="$1" f v; shift
+    for f in "$@"; do
+        v="$(sed -n "s/^CONFIG_$sym=\"\(.*\)\"\$/\1/p" "$f" 2>/dev/null)"
+        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+    done
+    return 1
+}
+LINUX_A_IMAGE="${VSBENCH_AARCH64_LINUX_IMAGE:-$(kconfig_str VSBENCH_LINUX_IMAGE_AARCH64 \
+    "${KCONFIG_CONFIG:-$REPO_ROOT/.config}" "$A_CONFIG")}"
+case "$LINUX_A_IMAGE" in "~/"*) LINUX_A_IMAGE="$HOME/${LINUX_A_IMAGE#\~/}" ;; esac
+echo "vsbench_aarch64: Linux/aarch64 column: ${LINUX_A_IMAGE:-(none configured)}" >&2
+# The AzOS line's CPU, unchanged: 6.12 boots on this QEMU's `max` with
+# FEAT_LPA2 offered (it detects and uses 52-bit VA). The old reference,
+# Ubuntu 20.04's 5.4.0-125, predates FEAT_LPA2 and, offered it, prints
+# nothing at all (measured: no `Linux version` line in 90 s); run it with
+# VSBENCH_AARCH64_LINUX_CPU=max,pauth=on,lpa2=off (its io_uring
 # timeout/msg-ring and `disk` lanes fail on 5.4 and are listed).
-LINUX_A_CPU="${VSBENCH_AARCH64_LINUX_CPU:-max,pauth=on,lpa2=off}"
+LINUX_A_CPU="${VSBENCH_AARCH64_LINUX_CPU:-max,pauth=on}"
 L_LOG="$WORK/linux-aarch64.log"
 L_RAN=0
 linux_done() { # linux_done <log>

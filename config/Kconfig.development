@@ -1064,3 +1064,66 @@ config BOOT_BENCH_PRIORITY
       No cost in a build without the `qemu` feature.
 
 endmenu # Development & Debug
+
+menu "Benchmarks / Linux comparison"
+
+config VSBENCH_LINUX_IMAGE_RISCV64
+    string "vsbench: riscv64 Linux kernel image"
+    default "~/devel/vms/linux-6.12/Image-riscv64"
+    help
+      The riscv64 Linux kernel that tools/vsbench_compare.sh boots for
+      the Linux column (`-kernel` on `qemu-system-riscv64 -M virt`, with
+      the vsbench ELF as `/init` of an uncompressed initramfs). Read by
+      the script only; it builds nothing into AzOS and costs no RAM or
+      instructions.
+
+      The script reads this value from the active configuration
+      ($KCONFIG_CONFIG, else ./.config, else
+      config/defconfigs/qemu.config). The environment variable
+      VSBENCH_LINUX_IMAGE overrides it. A leading `~/` is expanded to
+      $HOME by the script (kconfiglib does not expand it).
+
+      The default is Linux 6.12 LTS (EEVDF), built from defconfig with
+      virtio-mmio/pci, virtio-blk/net/rng, the serial console, vfat,
+      devtmpfs, initramfs and TCP/IP built in, PREEMPT_NONE, HZ=250.
+      The previous reference, 6.4.0-rc4 (CFS), stays selectable: set
+      "~/devel/vms/riscv/Image". Change it to compare against another
+      Linux; any image must have those drivers built in, since vsbench
+      boots with no modules.
+
+config VSBENCH_LINUX_IMAGE_AARCH64
+    string "vsbench: aarch64 Linux kernel image"
+    default "~/devel/vms/linux-6.12/Image-aarch64"
+    help
+      The arm64 Linux `Image` (raw or gzip) that tools/vsbench_aarch64.sh
+      boots for its Linux/aarch64 column, on the same `-M
+      virt,gic-version=3` line as the aarch64 AzOS column. Read by the
+      script only; no RAM or instruction cost in AzOS.
+
+      Read from the active configuration ($KCONFIG_CONFIG, else
+      ./.config, else config/defconfigs/qemu-aarch64.config); the
+      environment variable VSBENCH_AARCH64_LINUX_IMAGE overrides it; a
+      leading `~/` is expanded to $HOME. Absent file, the column is
+      skipped and says so.
+
+      The default is Linux 6.12 LTS (EEVDF), same configuration
+      choices as the riscv64 image. It boots on the AzOS line's CPU
+      (`max,pauth=on`) as is. The previous reference, Ubuntu 20.04's
+      5.4.0-125-generic (CFS), stays selectable by setting its path; it
+      needs `VSBENCH_AARCH64_LINUX_CPU=max,pauth=on,lpa2=off` (it
+      predates FEAT_LPA2 and prints nothing when offered it).
+
+config VSBENCH_LINUX_IMAGE_X86_64
+    string "vsbench: x86_64 Linux kernel image"
+    default "~/devel/vms/linux-6.12/bzImage-x86_64"
+    help
+      The x86_64 Linux bzImage for an x86_64 vsbench Linux column
+      (`qemu-system-x86_64`, x86_64_defconfig + kvm_guest.config, same
+      built-in drivers and scheduler choices as the other two). No
+      script reads it yet: the x86_64 vsbench needs the Linux-side
+      port of vsbench (x86_64 syscall numbers, `syscall` with the 4th
+      argument in r10, clone's argument order) and an AzOS x86_64
+      bench build first. Same `~/` expansion and override rules once
+      it does. No RAM or instruction cost in AzOS.
+
+endmenu # Benchmarks / Linux comparison
