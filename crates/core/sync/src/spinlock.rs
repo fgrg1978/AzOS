@@ -25,6 +25,20 @@ use crate::preempt::{critical_section, PreemptGuard};
 const UNLOCKED: u32 = 0;
 const LOCKED: u32 = 1;
 
+/// The contended half of `SpinLock::acquire_spin`: wait, reading only,
+/// until the word is no longer `LOCKED`, then CAS again. On the word, not
+/// the lock, so every `SpinLock<T>` shares one copy.
+#[cold]
+#[inline(never)]
+fn acquire_contended(locked: &AtomicU32) {
+    loop {
+        ARCH.wait_while32(locked, LOCKED);
+        if ARCH.cas32(locked, UNLOCKED, LOCKED, CasOrder::Acquire).is_ok() {
+            return;
+        }
+    }
+}
+
 /// A simple test-and-set spinlock protecting data of type `T`.
 pub struct SpinLock<T> {
     locked: AtomicU32,
@@ -72,24 +86,13 @@ impl<T> SpinLock<T> {
     /// Core spin loop — shared by both lock variants. TTAS: CAS 0→1
     /// (Acquire); on failure wait, reading only, until the word is no
     /// longer 1, then CAS again. The first CAS is inline; the waiting is
-    /// out of line (`acquire_contended`), so the uncontended acquire is the
-    /// CAS and its branch, with no wait-loop setup hoisted in front of it.
+    /// out of line (`acquire_contended`, one copy for every `T`), so the
+    /// uncontended acquire is the CAS and its branch, with no wait-loop
+    /// setup hoisted in front of it.
     #[inline(always)]
     fn acquire_spin(&self) {
         if !self.try_acquire() {
-            self.acquire_contended();
-        }
-    }
-
-    /// The contended half of [`acquire_spin`](Self::acquire_spin).
-    #[cold]
-    #[inline(never)]
-    fn acquire_contended(&self) {
-        loop {
-            ARCH.wait_while32(&self.locked, LOCKED);
-            if self.try_acquire() {
-                return;
-            }
+            acquire_contended(&self.locked);
         }
     }
 
