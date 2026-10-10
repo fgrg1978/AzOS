@@ -11058,6 +11058,9 @@ PY
     #                                       one-CPU scenario or `not ok`
     #   sched_deferred_tick_counted_as_preemption  sched: deferred tick
     #                                       counted (rv|arm), pinned to CPU 1
+    #   spin_wait_cas_semantics,            (new, wave 15 N2) SpinWait on the
+    #   spin_lock_contended_cross_cpu       path the boot selected; two CPUs
+    #                                       contend one SpinLock
     #                                       (the rows booted -smp 2)
     #   sched_hooks_wired                   aarch64: sched hooks (now rv too)
     # Kept as rows: `PiMutex donation (SMP)` (a disk, the e-stop flush),
@@ -11312,7 +11315,7 @@ PY
     # static-key patching (ipc/trace.rs `keys_init`); every runtime path
     # under 12,000. One CPU means a hold that waits on another CPU (text_poke's
     # TLB shootdown / remote fence.i under its irqsave lock) is not measured
-    # here; those run in the -smp 4 rows, as notes. The three tests that
+    # here; those run in the -smp 4 rows, as notes. The four tests that
     # need 2-3 CPUs say so and are the expected `not ok` (they run in every
     # other ktest row). Pass row: no
     # violation, the bound printed as enforced. Canary row:
@@ -11320,7 +11323,7 @@ PY
     # with enforcement the test does not check its own histogram, so only
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
-    KTEST_HOLD_SMP1="lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu"
+    KTEST_HOLD_SMP1="lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
