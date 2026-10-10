@@ -6057,6 +6057,10 @@ pub mod fuzz_entry {
         // ── Write path: no cluster may leak, what was written reads back ──
         if fat32::fat32_lookup_root(&NEW).is_err() && fat32::fat32_lookup_root(&MOVED).is_err() {
             if let Some(free0) = free_clusters() {
+                // The medium is read directly below (`first_fat`, the root's
+                // chain): with the write-back cache (Kconfig FS_WRITEBACK) it
+                // holds the driver's state only after a sync.
+                let synced0 = fat32::fat32_sync().is_ok();
                 let root_ok = root_chain_allocated();
                 let fits = volume_fits((len / SECTOR) as u64);
                 // The first FAT before the create, for `root_took`.
@@ -6100,6 +6104,9 @@ pub mod fuzz_entry {
                     let r = fat32::fat32_unlink_path(b"FUZZNEW.BIN");
                     trace(format_args!("unlink {r:?} free={:?}", free_clusters()));
                 }
+                let synced = synced0 && fat32::fat32_sync().is_ok();
+                // On a volume inside the medium nothing makes a sync fail.
+                assert!(synced || !fits, "a sync failed on a volume that fits the medium");
                 if fat32::fat32_lookup_root(&NEW).is_err() && fat32::fat32_lookup_root(&MOVED).is_err() {
                     // A full root directory grows by a cluster for the new
                     // dirent and keeps it after the unlink (directories do
@@ -6257,6 +6264,42 @@ mod fuzz_regressions {
         // Wave 15: the rename rewrites the dirent in place, so the root no
         // longer grows for it: the three operations cost nothing.
         assert_eq!(free(), before, "create+rename+unlink must leave the free count as it was");
+    }
+
+    /// The fuzzer's volume (`regressions/fat32_image/root-chain-through-free-entry`,
+    /// full gate on 4d3f71e0: "create+unlink changed the free-cluster count",
+    /// 208 vs 204). The root's chain is 2 -> 5 and FAT[5] is 0, so the
+    /// create's chain (3..=8) takes cluster 5 and, while the file lives, the
+    /// root's chain runs through it. The driver's count was right all along:
+    /// the harness read the FAT from the medium while the write-back cache
+    /// (Kconfig `FS_WRITEBACK`, wave 15) still held the unlink's freed
+    /// entries, saw the root as 2 -> 5 -> 6 -> 7 -> 8, and counted four
+    /// clusters of growth. It now syncs before it reads the medium. Pinned
+    /// here: the driver's count, and the medium agreeing with it after a sync.
+    /// **Canary:** skip `fat32_free_chain` in `fat32_unlink_path`: the count
+    /// is six clusters short.
+    #[test]
+    fn a_root_chain_through_a_free_entry_leaks_none_and_the_medium_agrees_after_sync() {
+        let _g = serial();
+        let img = include_bytes!("../../../fuzz/fs-fuzz/regressions/fat32_image/root-chain-through-free-entry");
+        let mut v = img.to_vec();
+        v.resize(256 * SECTOR, 0);
+        super::swap_medium(v);
+        for s in 0..256 { fat32::fat32_cache_invalidate(s); }
+        assert_eq!(fat32::fat32_mount(), Ok(()), "the fuzzer's volume mounts");
+        let before = free();
+        let payload: Vec<u8> = (0..3000).map(|i| i as u8).collect();
+        assert_eq!(fat32::fat32_write_file(b"FUZZNEW BIN", &payload), Ok(()));
+        assert!(fat32::fat32_rename(b"FUZZNEW BIN", b"FUZZMOV BIN").is_ok());
+        assert_eq!(fat32::fat32_unlink_path(b"FUZZMOV.BIN"), Ok(()));
+        assert_eq!(free(), before, "create+rename+unlink must leave the free count as it was");
+        assert_eq!(fat32::fat32_sync(), Ok(()));
+        // The first FAT (sector 32 of this volume) on the medium: the root's
+        // link 2 -> 5 untouched, every cluster the file had (3..=8) free.
+        let fat = fs_test_drivers::disk_peek(32).expect("the first FAT sector");
+        let e = |c: usize| u32::from_le_bytes([fat[4 * c], fat[4 * c + 1], fat[4 * c + 2], fat[4 * c + 3]]);
+        assert_eq!(e(2), 5, "the root's link");
+        assert_eq!((3..=8).map(e).collect::<Vec<_>>(), [0; 6], "the medium after sync");
     }
 
     /// `BPB_RootClus` outside the data region is refused at mount. The
