@@ -2756,8 +2756,9 @@ mod tests {
     /// A capability without `READ` made no binding (every bind takes
     /// `READ`): a server that also holds a send capability (`WRITE` only)
     /// to its own endpoint keeps its binding when it revokes or moves that
-    /// one; revoking the receive capability the bind was made through still
-    /// frees it (wave 15 N5b: the no-senders notice must reach the port).
+    /// one; revoking the receive capability the bind was made through, or
+    /// moving it without `READ`, still frees it (wave 15 N5b: the no-senders
+    /// notice must reach the port).
     ///
     /// **Canary.** Drop the `READ` guard in `port_cap_event`: the revoke of
     /// the send capability frees the binding and the first assert fails.
@@ -2783,6 +2784,13 @@ mod tests {
         cap_store::revoke(B, Cap::<EpTarget>::from_raw(send2.raw()));
         cap_store::revoke(A, recv);
         assert!(!port_link_valid(l, EP), "the receive capability's revoke frees the binding");
+        assert_eq!(port_cap_bound_count(), 0);
+        // A move that drops READ is the binding capability's revoke.
+        const EP2: PortSourceKind = PortSourceKind::Endpoint(0x0E02);
+        let recv2: Cap<EpTarget> = cap_store::grant(A, CapPerms::RW_DUP, 0x0E02).expect("grant");
+        let (l2, _) = port_bind_object_as(r, EP2, recv2.raw().as_raw(), 0xF, Some(slot_a)).expect("bind");
+        cap_store::move_cap(A, B, recv2.raw(), Some(CapPerms::WRITE)).expect("move");
+        assert!(!port_link_valid(l2, EP2), "a move that dropped READ kept the binding alive");
         assert_eq!(port_cap_bound_count(), 0);
         cap_store::set_cap_event_hook(|_| {});
     }

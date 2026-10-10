@@ -128,7 +128,7 @@ pub enum CapEvent {
     /// [`revoke`] or a [`revoke_moved`].
     Revoked { slot: usize, kind: crate::cap::CapKind, perms: crate::cap::CapPerms, resource: u32 },
     /// The capability moved from `from`'s table into `to`'s ([`move_cap`]).
-    /// `perms` are the ones it had in `from`'s table.
+    /// `perms` are the ones it has in `to`'s table.
     Moved { from: usize, to: usize, kind: crate::cap::CapKind, perms: crate::cap::CapPerms, resource: u32 },
     /// Every capability in `slot`'s table went: the exit [`reset`], or the
     /// lazy wipe of a reused slot.
@@ -702,6 +702,19 @@ fn move_cap_once(
     Some(move_locked(sender, receiver, from_idx, to_idx, handle, rights))
 }
 
+/// Tell the hook a capability moved from `from`'s table into `to`'s, with
+/// `perms` there and `granted` here. A move that drops `READ` is, for a port
+/// binding, the revoke of the capability the binding was made through (every
+/// bind takes `READ`): the arriving capability could not have made it.
+#[inline]
+fn moved_event(from: usize, to: usize, kind: crate::cap::CapKind, perms: CapPerms, granted: CapPerms, resource: u32) {
+    if perms.contains(CapPerms::READ) && !granted.contains(CapPerms::READ) {
+        cap_event(CapEvent::Revoked { slot: from, kind, perms, resource });
+    } else {
+        cap_event(CapEvent::Moved { from, to, kind, perms: granted, resource });
+    }
+}
+
 /// The move itself, both tables locked and still their owners'.
 fn move_locked(
     sender: &CapTable,
@@ -741,7 +754,7 @@ fn move_locked(
         .ok_or(CapError::NoSpace)?;
     // Both locks still held: a revoke of the moved capability in the
     // receiver's table cannot run before its bindings follow it there.
-    cap_event(CapEvent::Moved { from: from_idx, to: to_idx, kind, perms, resource });
+    moved_event(from_idx, to_idx, kind, perms, granted, resource);
     Ok(moved)
 }
 
@@ -944,7 +957,7 @@ fn move_caps_locked(
             .grant_raw_ext(kind, x.rights.unwrap_or(perms), resource, ext)
             .ok_or(CapError::NoSpace)?;
         if !x.dup {
-            cap_event(CapEvent::Moved { from: from_idx, to: to_idx, kind, perms, resource });
+            moved_event(from_idx, to_idx, kind, perms, x.rights.unwrap_or(perms), resource);
         }
     }
     Ok(xs.len())
