@@ -50,6 +50,7 @@ Boards
 Test & gate
   check0                 Quick check after an edit: type-check riscv64, aarch64 and x86_64, run the host tests the diff reaches.
   check1                 Change check: check0, then smoke boots and the QEMU scenarios the diff maps to.
+  check-fast             Fronts' check: per ISA one ktest boot, one runtime-canary boot, one abitest boot.
   ci                     The full gate (long; run before pushing).
   ci-full                The full gate plus the AzOSRobotBrain tests and protocol sync.
   qemu-systest           Run the system-call test program in ring 3.

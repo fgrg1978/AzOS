@@ -337,7 +337,7 @@ QEMU_RVV_CPU := rv64,v=true,vlen=128,vext_spec=v1.0
 FLEET_LINKER   := kernel/linker-fleet.ld
 FLEET_RUSTFLAGS := -C link-arg=-T$(FLEET_LINKER)
 
-.PHONY: check0 check1 prune all build build-rvv build-fleet clean qemu qemu-smp qemu-full-smp qemu-net-pair \
+.PHONY: check0 check1 check-fast prune all build build-rvv build-fleet clean qemu qemu-smp qemu-full-smp qemu-net-pair \
         qemu-rvv qemu-full-smp-rvv qemu-systest qemu-dhcp-smoke qemu-pi-smoke userspace userspace-aarch64 syscall-test make-mlp make-gguf \
         vf2 flash-vf2 k1 flash-k1 k1-console ci
 
@@ -3004,6 +3004,12 @@ check0:
 
 check1:
 	@bash tools/gate_tier.sh n1
+
+# The fronts' check (tools/check_fast.sh): per ISA one ktest boot, one boot
+# of the same kernel with every composable runtime canary armed, one
+# userspace (abitest) boot, judged by tools/check_fast.py. CI_JOBS ISAs at once.
+check-fast:
+	@bash tools/check_fast.sh
 
 # Full CI: azos builds + AzOSRobotBrain tests + protocol sync.
 ci-full:
