@@ -230,3 +230,30 @@ pub fn env_lookup<'a>(blob: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
         kv.strip_prefix(key).and_then(|rest| rest.strip_prefix(b"="))
     })
 }
+
+/// A 16-byte port event, decoded (the layout `SYS_PORT_POLL_TYPED` and
+/// `SYS_PORT_WAIT_UNTIL_TYPED` write).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PortEventInfo {
+    /// The key the source was bound with.
+    pub key: u64,
+    /// `PORT_EVENT_*`.
+    pub source_type: u8,
+    /// A positive errno for a notice (`ENOSENDERS`, `EREVOKED`,
+    /// `EPEERDIED`), 0 for an ordinary event.
+    pub code: u16,
+    /// The capability handle the source was bound with (the line for an IRQ).
+    pub source_id: u32,
+}
+
+/// Decode a port event: key (bytes 0..8), source type (8), code (10..12),
+/// source id (12..16), little-endian.
+pub fn port_event_decode(b: &[u8; 16]) -> PortEventInfo {
+    let c = azos_abi::syscall_nr::PORT_EVENT_CODE_OFFSET;
+    PortEventInfo {
+        key: u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]),
+        source_type: b[8],
+        code: u16::from_le_bytes([b[c], b[c + 1]]),
+        source_id: u32::from_le_bytes([b[12], b[13], b[14], b[15]]),
+    }
+}

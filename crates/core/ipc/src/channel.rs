@@ -679,10 +679,28 @@ pub fn channel_recv_cap(
 ///
 /// `Stale` if the slot does not carry the reference's generation.
 pub fn channel_destroy_ref(r: u32) -> Result<(), ChannelCapError> {
-    let mut pool = POOL.lock();
-    let i = live_index(&pool, r)?;
-    pool.channels[i] = Channel::zeroed();
+    let link = {
+        let mut pool = POOL.lock();
+        let i = live_index(&pool, r)?;
+        let link = pool.channels[i].link;
+        pool.channels[i] = Channel::zeroed();
+        link
+    };
+    post_gone(link, r, CODE_REVOKED);
     Ok(())
+}
+
+/// `EREVOKED` / `EPEERDIED`, the codes of a gone channel's port event.
+const CODE_REVOKED: u16 = azos_abi::error::Errno::EREVOKED as u16;
+const CODE_PEER_DIED: u16 = azos_abi::error::Errno::EPEERDIED as u16;
+
+/// Channel `r` (its packed reference), bound to a port through `link`, is
+/// gone: the port's source reports `PORT_EVENT_SOURCE_GONE` with `code`
+/// (wave 15 N5b). After the `POOL` hold, as `signal_bound_port` runs.
+fn post_gone(link: PortLink, r: u32, code: u16) {
+    if !link.is_none() {
+        let _ = crate::port::port_source_gone(link, crate::port::PortSourceKind::Channel(r), code);
+    }
 }
 
 /// Free every channel `tid` owns, for the task-exit hook (`task_release_all`).
@@ -693,14 +711,33 @@ pub fn channel_destroy_ref(r: u32) -> Result<(), ChannelCapError> {
 /// [`MAX_CHANNELS_PER_TASK`] share. Every owner, kernel TIDs included, the
 /// filter `port_release_all` and `shm_release_all` apply.
 ///
-/// One `POOL` hold over the whole table: nothing is woken and no other lock is
-/// taken, so there is nothing to release the lock for between slots. Cost: one
-/// pass over `MAX_CHANNELS` slots on the exit path.
+/// A channel bound to a port tells that port it is gone (wave 15 N5b), after
+/// the `POOL` hold that freed it. Cost: one pass over `MAX_CHANNELS` slots on
+/// the exit path, in one hold per bound channel plus one.
 pub fn channel_release_all(tid: u32) {
-    let mut pool = POOL.lock();
-    for chan in pool.channels.iter_mut() {
-        if chan.state == ChannelState::Active && chan.owner == tid {
-            *chan = Channel::zeroed();
+    // Each freed channel's port link, told after the hold that the channel
+    // is gone (wave 15 N5b): a task waiting on a port for a channel whose
+    // owner died is woken with `PORT_EVENT_SOURCE_GONE`. A hold stops after
+    // the first bound channel it frees, posts, and the next resumes there:
+    // no buffer that grows with `MAX_CHANNELS` (4,096 at fleet).
+    let mut from = 0usize;
+    while from < MAX_CHANNELS {
+        let mut gone = None;
+        {
+            let mut pool = POOL.lock();
+            while from < MAX_CHANNELS && gone.is_none() {
+                let chan = &mut pool.channels[from];
+                if chan.state == ChannelState::Active && chan.owner == tid {
+                    if !chan.link.is_none() {
+                        gone = Some((chan.link, LAYOUT.pack(from as u32, chan.generation)));
+                    }
+                    *chan = Channel::zeroed();
+                }
+                from += 1;
+            }
+        }
+        if let Some((link, r)) = gone {
+            post_gone(link, r, CODE_PEER_DIED);
         }
     }
 }
@@ -807,7 +844,11 @@ pub fn channel_destroy(ch: usize) -> i32 {
     {
         return -1;
     }
+    let chan = &pool.channels[ch];
+    let (link, r) = (chan.link, LAYOUT.pack(ch as u32, chan.generation));
     pool.channels[ch] = Channel::zeroed();
+    drop(pool);
+    post_gone(link, r, CODE_REVOKED);
     0
 }
 

@@ -84,6 +84,28 @@ mod port {
     pub fn port_signal_channel(_link: crate::port_link::PortLink, _channel_ref: u32) -> bool {
         false
     }
+
+    /// The kinds the pulled-in modules name (wave 15 N5b).
+    #[allow(dead_code)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum PortSourceKind {
+        Channel(u32),
+        Ring(u32),
+        Irq(u32),
+        Endpoint(u32),
+    }
+
+    /// A gone source: nothing is bound in this harness.
+    #[allow(dead_code)]
+    pub fn port_source_gone(_link: crate::port_link::PortLink, _kind: PortSourceKind, _code: u16) -> bool {
+        false
+    }
+
+    /// An endpoint's notice: nothing is bound in this harness.
+    #[allow(dead_code)]
+    pub fn port_signal(_link: crate::port_link::PortLink, _kind: PortSourceKind) -> bool {
+        false
+    }
 }
 
 // `mmio_cap.rs` touches `cap_store` and the board's MMIO region table, which

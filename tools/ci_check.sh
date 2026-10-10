@@ -11332,8 +11332,13 @@ PY
     # canary (rv|arm|x86)` and the rcu canaries' rcu-free-no-grace).
     # +1 futex_requeue_wakes_one_not_the_herd (wave 15, N9: Kconfig
     # FUTEX_REQUEUE; canary `ktest futex canary (rv|arm|x86)`).
-    KTEST_N_RV=51
-    KTEST_N_ARM=51
+    # +4 ipc_no_senders_on_last_revoke,
+    # ipc_no_senders_once_after_staggered_exits,
+    # ipc_no_senders_grant_revoke_race, port_source_gone_wakes_the_waiter
+    # (wave 15, N5b: Kconfig IPC_PORT_NOTICES; canaries in `ktest ipc
+    # canary (rv|arm|x86)`).
+    KTEST_N_RV=55
+    KTEST_N_ARM=55
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11693,9 +11698,13 @@ PY
     # boot of the pass row's kernel: `canary=ipc-no-peer-died` (a server's
     # death leaves its accepted call in service, nobody completes it, the
     # caller never returns: ipc_server_death_completes_call_peer_died times
-    # out).
-    KTEST_IPC_CANARIES="canary=ipc-no-peer-died"
-    KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died"
+    # out). N5b, the same boot: `canary=ipc-no-senders-wipe` (a task's exit
+    # does not count its endpoint send capabilities out: the count never
+    # falls, ipc_no_senders_once_after_staggered_exits times out) and
+    # `port-no-vanish` (a destroyed port source stays bound and silent:
+    # port_source_gone_wakes_the_waiter times out).
+    KTEST_IPC_CANARIES="canary=ipc-no-peer-died,ipc-no-senders-wipe,port-no-vanish"
+    KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died ipc_no_senders_once_after_staggered_exits port_source_gone_wakes_the_waiter"
     par "ktest ipc canary (rv)" ktest_row "ktest ipc canary (rv)" rv "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
     par "ktest ipc canary (arm)" ktest_row "ktest ipc canary (arm)" arm "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
     # N9 (Kconfig FUTEX_REQUEUE, kernel/src/smokes/futex_requeue.rs), one boot
@@ -11757,7 +11766,8 @@ PY
     # +5 the N4 RCU tests, as on rv and arm.
     # +4 the N5 endpoint tests, as on rv and arm.
     # +1 the N9 futex requeue test, as on rv and arm.
-    KTEST_N_X86=53
+    # +4 the N5b notice tests, as on rv and arm.
+    KTEST_N_X86=57
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

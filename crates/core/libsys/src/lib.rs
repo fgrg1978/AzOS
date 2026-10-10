@@ -3027,25 +3027,15 @@ pub fn drv_srv_reply_wait(kind: u32, reply_ptr: *const u8, req_ptr: *mut u8, par
 //  Port API (AQ5) — multi-source event waiting (like kqueue / Zircon ports)
 // ===========================================================================
 
-/// Port source kind: IPC channel. See [`port_bind_typed`].
-pub const PORT_SRC_CHANNEL: u64 = 0;
-/// Port source kind: IO ring.
-pub const PORT_SRC_RING: u64 = 1;
-/// Port source kind: hardware IRQ.
-pub const PORT_SRC_IRQ: u64 = 2;
-/// Port source kind: timer (the bind's source is the deadline, absolute ns).
-pub const PORT_SRC_TIMER: u64 = 3;
+// The source and event types live in `azos_abi::syscall_nr` (one home).
+pub use azos_abi::syscall_nr::{
+    PORT_EVENT_CHANNEL, PORT_EVENT_CODE_OFFSET, PORT_EVENT_IRQ, PORT_EVENT_NO_SENDERS, PORT_EVENT_RING,
+    PORT_EVENT_SOURCE_GONE, PORT_EVENT_TIMER, PORT_SRC_CHANNEL, PORT_SRC_ENDPOINT, PORT_SRC_IRQ,
+    PORT_SRC_RING, PORT_SRC_TIMER,
+};
 /// [`port_bind_typed`] flag, or-ed into the source type: remove the sources
 /// of that type bound with the key instead of binding one.
 pub const PORT_BIND_F_REMOVE: u64 = azos_abi::syscall_nr::PORT_BIND_F_REMOVE;
-/// Event source type (byte 8 of an event): a channel.
-pub const PORT_EVENT_CHANNEL: u8 = 1;
-/// Event source type: an io_ring.
-pub const PORT_EVENT_RING: u8 = 2;
-/// Event source type: an IRQ.
-pub const PORT_EVENT_IRQ: u8 = 3;
-/// Event source type: a timer.
-pub const PORT_EVENT_TIMER: u8 = 4;
 
 // ===========================================================================
 //  Trace API (AQ8) — kernel event ring buffer dump
@@ -3630,17 +3620,19 @@ pub fn port_poll_typed(cap: u32, out: &mut [u8]) -> isize {
 /// ABI (`SYS_PORT_BIND_TYPED`, 575): a0 = port cap (needs `WRITE`), a1 =
 /// source type in the `PORT_SRC_*` encoding (or-ed with
 /// [`PORT_BIND_F_REMOVE`] to remove), a2 = the source's capability (a
-/// `Cap<Channel>`, `Cap<IoRing>` or `Cap<Irq>`, each with `READ`), a3 = key.
-/// A timer takes its deadline instead: [`port_bind_timer`].
+/// `Cap<Channel>`, `Cap<IoRing>`, `Cap<Irq>` or `Cap<Endpoint>`, each with
+/// `READ`), a3 = key. A timer takes its deadline instead:
+/// [`port_bind_timer`]; an endpoint: [`port_bind_endpoint`].
 ///
 /// Returns 0, or `-Errno`, in order: `-ECAPSTALE` / `-ECAPKIND` /
 /// `-ECAPPERMS` for the port capability, or `-EAGAIN` while containment is
-/// armed; `-EINVAL` for a source type above 3 or an unknown flag;
+/// armed; `-EINVAL` for a source type above 4 or an unknown flag;
 /// `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` for the source capability;
 /// `-ECAPSTALE` when the port was destroyed before the binding was stored;
 /// `-EMFILE` when the port's source table or the IRQ binding table is full;
-/// `-EBUSY` when the channel or ring reports to another port; `-ENODEV`
-/// (nothing bound) when the interrupt controller cannot deliver the line.
+/// `-EPERM` when the caller does not serve the endpoint; `-EBUSY` when the
+/// channel, ring or endpoint reports to another port; `-ENODEV` (nothing
+/// bound) when the interrupt controller cannot deliver the line.
 /// The full contract is `azos_abi::syscall_nr::SYS_PORT_BIND_TYPED`'s.
 pub fn port_bind_typed(port: u32, source_type: u64, source_cap: u32, key: u64) -> isize {
     unsafe { syscall4(SYS_PORT_BIND_TYPED, port as u64, source_type, source_cap as u64, key) }
@@ -3655,8 +3647,19 @@ pub fn port_bind_timer(port: u32, deadline_ns: u64, key: u64) -> isize {
     unsafe { syscall4(SYS_PORT_BIND_TYPED, port as u64, PORT_SRC_TIMER, deadline_ns, key) }
 }
 
+/// Bind the notices of the endpoint behind `ep_cap` (a `Cap<Endpoint>` with
+/// `READ`, which the caller serves) to the port behind `port`, with `key`
+/// (`SYS_PORT_BIND_TYPED` with [`PORT_SRC_ENDPOINT`]). The port then reports
+/// [`PORT_EVENT_NO_SENDERS`] (code `ENOSENDERS`) when no send capability to
+/// the endpoint is left, at once if there is none now, and
+/// [`PORT_EVENT_SOURCE_GONE`] when the endpoint is destroyed. 0, or `-Errno`
+/// ([`port_bind_typed`]'s, and `-EPERM` when the caller does not serve it).
+pub fn port_bind_endpoint(port: u32, ep_cap: u32, key: u64) -> isize {
+    port_bind_typed(port, PORT_SRC_ENDPOINT, ep_cap, key)
+}
+
 /// Remove the sources of type `source_type` (`PORT_SRC_CHANNEL`,
-/// `PORT_SRC_RING` or `PORT_SRC_TIMER`) bound with `key`: 0, or `-ENOENT`
+/// `PORT_SRC_RING`, `PORT_SRC_TIMER` or `PORT_SRC_ENDPOINT`) bound with `key`: 0, or `-ENOENT`
 /// when there was none.
 pub fn port_unbind_typed(port: u32, source_type: u64, key: u64) -> isize {
     unsafe { syscall4(SYS_PORT_BIND_TYPED, port as u64, source_type | PORT_BIND_F_REMOVE, 0, key) }

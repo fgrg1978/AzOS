@@ -574,6 +574,107 @@ const _: () = {
     }
 };
 
+/// Send capabilities to endpoints, counted where the slots change (wave 15
+/// N5b, Kconfig `IPC_PORT_NOTICES`): the count behind an endpoint's
+/// no-senders notice.
+///
+/// A **send capability** is a `Cap<Endpoint>` with `WRITE` and without
+/// `READ`. `READ` is the right to serve (accept), so the server's own `RW`
+/// capability is its receive right and is not counted: otherwise the
+/// creator of every endpoint (`endpoint_create_cap` mints `RW | DUP`) and a
+/// topology server (`RW`, "a server that may also call itself") would hold
+/// a sender for as long as it lives and the count could never reach zero.
+/// The property is the slot's own, so the count needs no holder lookup and
+/// survives a change of serving task.
+///
+/// Every write of a slot goes through [`CapTable`]'s few store and clear
+/// points (`grant_raw`, `install_at`, `clear_at`, `clear_all`), so the count
+/// is exact through every caller: `cap_store`'s grant, revoke, move and exit
+/// wipe, the fork copy (`natfork`'s `install_at` / `grant_raw` /
+/// `clear_slot`), and an exec's `revoke_where`. Each change calls the delta
+/// hook (`endpoint::sender_delta`) with the slot's resource, under the
+/// table's lock; the hook only adjusts an atomic count and, on a fall to
+/// zero, marks the endpoint for a notice. Posting the notice takes the port
+/// pool and wakes a waiter, so it runs later, from [`flush`], which
+/// `cap_store` calls after it releases the table lock.
+pub mod senders {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::{CapKind, CapPerms};
+
+    /// `fn(resource, delta) -> bool`: apply `delta` (+1 / -1) to the count
+    /// of the endpoint `resource` (its packed reference) names; `true` when
+    /// it fell to zero and a notice is now pending.
+    pub type DeltaHook = fn(u32, i32) -> bool;
+    /// Post the pending notices (no table lock held).
+    pub type FlushHook = fn();
+
+    static DELTA: AtomicUsize = AtomicUsize::new(0);
+    static FLUSH: AtomicUsize = AtomicUsize::new(0);
+    /// Some notice is pending: one load is the whole cost of [`flush`]
+    /// otherwise.
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    /// Runtime canary `ipc-no-senders-wipe`: a table wipe (a task's exit)
+    /// forgets to count its send capabilities out.
+    static CANARY_NO_WIPE: AtomicBool = AtomicBool::new(false);
+
+    /// Register the hooks. Boot, once, before the first user task (host
+    /// suites per test). Unregistered, nothing is counted outside the
+    /// tables' own tallies.
+    pub fn set_hooks(delta: DeltaHook, flush: FlushHook) {
+        DELTA.store(delta as usize, Ordering::Release);
+        FLUSH.store(flush as usize, Ordering::Release);
+    }
+
+    /// Arm the `ipc-no-senders-wipe` canary (runtime `canary=` flag, boot).
+    pub fn canary_no_wipe() {
+        CANARY_NO_WIPE.store(true, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub(super) fn canary_armed() -> bool {
+        CANARY_NO_WIPE.load(Ordering::Relaxed)
+    }
+
+    /// Is a slot of `kind` with `perms` a send capability?
+    #[inline(always)]
+    pub const fn counted(kind: CapKind, perms: CapPerms) -> bool {
+        kind as u8 == CapKind::Endpoint as u8
+            && perms.contains(CapPerms::WRITE)
+            && !perms.contains(CapPerms::READ)
+    }
+
+    /// Tell the hook a send capability to `resource` came (`+1`) or went
+    /// (`-1`). Table lock held.
+    #[inline]
+    pub(super) fn delta(resource: u32, d: i32) {
+        let raw = DELTA.load(Ordering::Acquire);
+        if raw != 0 {
+            // SAFETY: only `set_hooks` stores here, and it stores a `DeltaHook`.
+            let f: DeltaHook = unsafe { core::mem::transmute::<usize, DeltaHook>(raw) };
+            if f(resource, d) {
+                PENDING.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// Post the notices pending since the last flush. Called with no table
+    /// lock held (and no pool lock: it takes the endpoint and port pools).
+    /// One load when nothing is pending.
+    #[inline]
+    pub fn flush() {
+        if !PENDING.load(Ordering::Acquire) || !PENDING.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let raw = FLUSH.load(Ordering::Acquire);
+        if raw != 0 {
+            // SAFETY: only `set_hooks` stores here, and it stores a `FlushHook`.
+            let f: FlushHook = unsafe { core::mem::transmute::<usize, FlushHook>(raw) };
+            f();
+        }
+    }
+}
+
 /// Per-task cap table.
 ///
 /// Every method takes `&self`: the slots are atomic words, so a reader that
@@ -597,6 +698,9 @@ pub struct CapTable {
     /// free slot starts here, not at slot 0. Lowered by every slot freed,
     /// raised past the slot a grant takes. Writers only (under the lock).
     free_from: core::sync::atomic::AtomicU16,
+    /// Send capabilities this table holds ([`senders`]): a wipe walks the
+    /// table for them only when this is not 0. Writers only.
+    senders: core::sync::atomic::AtomicU16,
 }
 
 impl CapTable {
@@ -607,14 +711,35 @@ impl CapTable {
             cache: [const { core::sync::atomic::AtomicU32::new(0) }; LOOKUP_CACHE],
             used: core::sync::atomic::AtomicU16::new(0),
             free_from: core::sync::atomic::AtomicU16::new(0),
+            senders: core::sync::atomic::AtomicU16::new(0),
         }
+    }
+
+    /// A slot holding word `w` was just written (`d = 1`) or cleared
+    /// (`d = -1`): count a send capability in or out ([`senders`]).
+    #[inline(always)]
+    fn note_sender(&self, w: u64, d: i32) {
+        if CapSlotCell::w_kind_is(w, CapKind::Endpoint)
+            && senders::counted(CapKind::Endpoint, CapSlotCell::w_perms(w))
+        {
+            let n = self.senders.load(core::sync::atomic::Ordering::Relaxed);
+            self.senders.store(n.wrapping_add(d as u16), core::sync::atomic::Ordering::Relaxed);
+            senders::delta(CapSlotCell::w_resource(w), d);
+        }
+    }
+
+    /// Send capabilities this table holds ([`senders`]).
+    pub fn senders_held(&self) -> usize {
+        self.senders.load(core::sync::atomic::Ordering::Relaxed) as usize
     }
 
     /// Free slot `i` (keeping its generation) and let the next grant's
     /// search start at it if it is the lowest free one.
     #[inline(always)]
     fn clear_at(&self, i: usize, cell: &CapSlotCell) {
+        let w = cell.word();
         cell.clear();
+        self.note_sender(w, -1);
         let f = &self.free_from;
         if (i as u16) < f.load(core::sync::atomic::Ordering::Relaxed) {
             f.store(i as u16, core::sync::atomic::Ordering::Relaxed);
@@ -656,6 +781,15 @@ impl CapTable {
     /// Wipe every slot, generations included (a table handed to a new
     /// owner, `cap_store`'s claim and exit reset).
     pub fn clear_all(&self) {
+        // The send capabilities go too ([`senders`]): counted out before the
+        // wipe, which keeps nothing to count from. Canary
+        // `ipc-no-senders-wipe`: skipped.
+        if self.senders.load(core::sync::atomic::Ordering::Relaxed) != 0 && !senders::canary_armed() {
+            for cell in self.live() {
+                self.note_sender(cell.word(), -1);
+            }
+        }
+        self.senders.store(0, core::sync::atomic::Ordering::Relaxed);
         // Eight stores a turn: the plain `*table = empty()` this replaced was
         // a memset; one atomic store a turn cost three instructions a slot
         // (measured on riscv64: a fork and an exit each wipe a table).
@@ -687,6 +821,10 @@ impl CapTable {
         self.free_from.store(from.free_from.load(core::sync::atomic::Ordering::Relaxed),
                              core::sync::atomic::Ordering::Relaxed);
         from.free_from.store(0, core::sync::atomic::Ordering::Relaxed);
+        // The capabilities moved with the table: the endpoints' counts stay.
+        self.senders.store(from.senders.load(core::sync::atomic::Ordering::Relaxed),
+                           core::sync::atomic::Ordering::Relaxed);
+        from.senders.store(0, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// Grant a fresh cap, returning a typed handle.
@@ -736,6 +874,7 @@ impl CapTable {
             generation: next_gen,
             resource,
         });
+        self.note_sender(self.slots[slot_idx].word(), 1);
         self.note_used(slot_idx);
         // Every slot below this one was occupied or retired (the search
         // started at `free_from` and took the first free one).
@@ -1030,6 +1169,7 @@ impl CapTable {
             return false;
         }
         cell.store(CapSlot { kind, perms: handle.perms(), generation: gen, resource });
+        self.note_sender(cell.word(), 1);
         self.note_used(handle.slot() as usize);
         self.uncache(kind, resource);
         true

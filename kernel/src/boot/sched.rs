@@ -130,6 +130,21 @@ pub(crate) fn install_sched_hooks() {
     if canary!("asid-rollover-noflush") {
         azos_sched::asid::CANARY_NO_ROLLOVER_FLUSH.store(true, core::sync::atomic::Ordering::Relaxed);
     }
+    // Wave 15 N5b (Kconfig IPC_PORT_NOTICES): every send capability to an
+    // endpoint is counted where a table slot changes, and an endpoint left
+    // with none tells the port its server bound it to. Before the first
+    // user task (the topology seed grants the first ones).
+    if azos_limits::IPC_PORT_NOTICES {
+        azos_ipc::cap::senders::set_hooks(azos_ipc::endpoint::sender_delta, azos_ipc::endpoint::flush_notices);
+    }
+    // Runtime canaries: a task's exit forgets its send capabilities; a gone
+    // port source stays bound and silent.
+    if canary!("ipc-no-senders-wipe") {
+        azos_ipc::cap::senders::canary_no_wipe();
+    }
+    if canary!("port-no-vanish") {
+        azos_ipc::port::canary_no_vanish();
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();

@@ -81,14 +81,25 @@ pub const PORT_MAX_SOURCES: usize = azos_limits::MAX_PORT_SOURCES;
 // A source's slot travels in `PortLink::slot`, a `u8`.
 const _: () = assert!(PORT_MAX_SOURCES >= 2 && PORT_MAX_SOURCES <= 64);
 
-/// `PortEvent::source_type` of a channel source.
-pub const PORT_EVENT_CHANNEL: u8 = 1;
-/// `PortEvent::source_type` of an io_ring source.
-pub const PORT_EVENT_RING: u8 = 2;
-/// `PortEvent::source_type` of an IRQ (the value `irq_bind` writes).
-pub const PORT_EVENT_IRQ: u8 = 3;
-/// `PortEvent::source_type` of a timer source.
-pub const PORT_EVENT_TIMER: u8 = 4;
+// `PortEvent::source_type` values (`azos_abi::syscall_nr`, their one home):
+// a channel, an io_ring, an IRQ (the value `irq_bind` writes), a timer, an
+// endpoint's no-senders notice, a source that is gone (wave 15 N5b).
+pub use azos_abi::syscall_nr::{
+    PORT_EVENT_CHANNEL, PORT_EVENT_IRQ, PORT_EVENT_NO_SENDERS, PORT_EVENT_RING, PORT_EVENT_SOURCE_GONE,
+    PORT_EVENT_TIMER,
+};
+
+/// The code of a no-senders notice (`PortEvent::code`, a positive errno).
+const CODE_NO_SENDERS: u16 = azos_abi::error::Errno::ENOSENDERS as u16;
+
+/// Runtime canary `port-no-vanish`: a gone source is left bound and silent
+/// ([`port_source_gone`] and [`port_post_gone`] do nothing).
+static CANARY_NO_VANISH: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Arm the `port-no-vanish` canary (runtime `canary=` flag, boot only).
+pub fn canary_no_vanish() {
+    CANARY_NO_VANISH.store(true, Ordering::Relaxed);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,6 +118,9 @@ pub enum PortSourceKind {
     Irq(u32),
     /// An absolute deadline, in nanoseconds on the time counter.
     Timer(u64),
+    /// An endpoint's notices, by its packed `(index, generation)` reference
+    /// (wave 15 N5b): pending when no send capability to it is left.
+    Endpoint(u32),
 }
 
 impl PortSourceKind {
@@ -118,6 +132,7 @@ impl PortSourceKind {
             PortSourceKind::Ring(_) => PORT_EVENT_RING,
             PortSourceKind::Irq(_) => PORT_EVENT_IRQ,
             PortSourceKind::Timer(_) => PORT_EVENT_TIMER,
+            PortSourceKind::Endpoint(_) => PORT_EVENT_NO_SENDERS,
         }
     }
 }
@@ -138,14 +153,23 @@ pub struct PortSource {
     /// The binding dies when that capability is revoked or its table wiped,
     /// and follows it when it moves ([`port_cap_event`]).
     pub binder: u16,
+    /// Not 0: the source is gone (wave 15 N5b) — destroyed (`EREVOKED`) or
+    /// its owner died (`EPEERDIED`) — and this is the code its one
+    /// `PORT_EVENT_SOURCE_GONE` event carries. The slot is ready until that
+    /// event is taken, then freed; no producer reaches it meanwhile
+    /// ([`link_slot_locked`] skips it).
+    pub gone: u16,
 }
 
 /// An event delivered from a port.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct PortEvent {
     pub key: u64,         // user_key from the source
-    pub source_type: u8,  // PORT_EVENT_*: 1=channel, 2=ring, 3=irq, 4=timer
+    pub source_type: u8,  // PORT_EVENT_*: 1=channel, 2=ring, 3=irq, 4=timer, 5=no senders, 6=gone
     pub source_id: u32,
+    /// A positive errno for a notice (`ENOSENDERS`, `EREVOKED`,
+    /// `EPEERDIED`), 0 for an ordinary event. Wire bytes 10..12.
+    pub code: u16,
 }
 
 /// Kernel state for one port.
@@ -199,6 +223,7 @@ const EMPTY_SRC: PortSource = PortSource {
     pending: false,
     handle: 0,
     binder: 0,
+    gone: 0,
 };
 
 /// Sources whose `binder` is set, machine-wide; changed only with `PORTS`
@@ -225,7 +250,7 @@ fn clear_port_locked(t: &mut PortTable, i: usize) {
 
 impl Port {
     pub const fn empty() -> Self {
-        const EMPTY_EVT: PortEvent = PortEvent { key: 0, source_type: 0, source_id: 0 };
+        const EMPTY_EVT: PortEvent = PortEvent { key: 0, source_type: 0, source_id: 0, code: 0 };
         Self {
             sources: [EMPTY_SRC; PORT_MAX_SOURCES],
             source_count: 0,
@@ -641,7 +666,7 @@ pub fn port_bind_ref(r: u32, kind: PortSourceKind, user_key: u64) -> Result<(), 
 /// `None` when every slot is taken. `PORTS` held.
 fn insert_source_locked(port: &mut Port, kind: PortSourceKind, user_key: u64, handle: u32, binder: u16) -> Option<usize> {
     let s = port.sources.iter().position(|src| src.kind == PortSourceKind::None)?;
-    port.sources[s] = PortSource { kind, user_key, pending: false, handle, binder };
+    port.sources[s] = PortSource { kind, user_key, pending: false, handle, binder, gone: 0 };
     port.source_count += 1;
     if binder != 0 {
         CAP_BOUND.fetch_add(1, Ordering::Relaxed);
@@ -690,7 +715,7 @@ pub fn port_bind_object_as(
     let epoch = ports[i].epoch;
     let port = &mut ports[i];
     let link = |s: usize| PortLink { port: r, epoch, slot: s as u8 };
-    if let Some(s) = port.sources.iter().position(|src| src.kind == kind) {
+    if let Some(s) = port.sources.iter().position(|src| src.kind == kind && src.gone == 0) {
         let old = port.sources[s].binder;
         if old != 0 && binder == 0 {
             CAP_BOUND.fetch_sub(1, Ordering::Relaxed);
@@ -731,6 +756,7 @@ pub fn port_cap_event(e: crate::cap_store::CapEvent) {
     let object = |kind: CapKind, resource: u32| match kind {
         CapKind::Channel => Some(PortSourceKind::Channel(resource)),
         CapKind::IoRing => Some(PortSourceKind::Ring(resource)),
+        CapKind::Endpoint => Some(PortSourceKind::Endpoint(resource)),
         _ => None,
     };
     let tag = |slot: usize| (slot as u16).wrapping_add(1);
@@ -787,7 +813,9 @@ pub fn port_unbind_link(link: PortLink, kind: PortSourceKind) {
 fn link_slot_locked(ports: &PortTable, link: PortLink, kind: PortSourceKind) -> Option<(usize, usize)> {
     let i = live_index(ports, link.port).ok()?;
     let s = link.slot as usize;
-    if ports[i].epoch != link.epoch || s >= PORT_MAX_SOURCES || ports[i].sources[s].kind != kind {
+    if ports[i].epoch != link.epoch || s >= PORT_MAX_SOURCES || ports[i].sources[s].kind != kind
+        || ports[i].sources[s].gone != 0
+    {
         return None;
     }
     Some((i, s))
@@ -836,6 +864,61 @@ pub fn port_signal_channel(link: PortLink, channel_ref: u32) -> bool {
 /// at least one completion (`io_ring.rs`, after the claim is released).
 pub fn port_signal_ring(link: PortLink, ring_ref: u32) -> bool {
     port_signal(link, PortSourceKind::Ring(ring_ref))
+}
+
+/// The source `link` names (holding `kind`) is gone (wave 15 N5b): its
+/// object was destroyed (`code` = `EREVOKED`) or its owner died
+/// (`EPEERDIED`). The slot is marked gone, so the next poll or wait takes
+/// one `PORT_EVENT_SOURCE_GONE` event with the binding's key and handle and
+/// `code`, and frees the slot; the port's waiters are woken. Never dropped:
+/// the event rides in the source's own slot, not the bounded IRQ queue.
+///
+/// Called by the object's destroy paths after the object's own lock is
+/// released, never under it (`port_signal`'s rule). `false` when the link
+/// named no live source (unbound, or the port is gone). Canary
+/// `port-no-vanish`: nothing is marked.
+pub fn port_source_gone(link: PortLink, kind: PortSourceKind, code: u16) -> bool {
+    if !azos_limits::IPC_PORT_NOTICES || link.is_none() || CANARY_NO_VANISH.load(Ordering::Relaxed) {
+        return false;
+    }
+    let woken = {
+        let mut ports = PORTS.lock_irqsave();
+        let Some((i, s)) = link_slot_locked(&ports, link, kind) else { return false };
+        ports[i].sources[s].gone = code.max(1);
+        ports[i].sources[s].pending = false;
+        detach_waiters_locked(&mut ports, i, WaiterState::Woken)
+    };
+    woken.wake(link.port);
+    true
+}
+
+/// [`port_source_gone`] for a source that has no slot of its own: an IRQ
+/// binding (`irq_bind`) to the port `r` names, under `epoch`, removed because
+/// its owner exited. A gone slot is added for it (`key`, `handle` = the
+/// line), so the event is not lost; with the table full it is queued
+/// instead, as the line's own events are. `false` when the port is gone.
+pub fn port_post_gone(r: u32, epoch: u32, kind: PortSourceKind, key: u64, handle: u32, code: u16) -> bool {
+    if !azos_limits::IPC_PORT_NOTICES || CANARY_NO_VANISH.load(Ordering::Relaxed) {
+        return false;
+    }
+    let woken = {
+        let mut ports = PORTS.lock_irqsave();
+        let Ok(i) = live_index(&ports, r) else { return false };
+        if ports[i].epoch != epoch {
+            return false;
+        }
+        let port = &mut ports[i];
+        match insert_source_locked(port, kind, key, handle, 0) {
+            Some(s) => port.sources[s].gone = code.max(1),
+            None => queue_locked(
+                port,
+                PortEvent { key, source_type: PORT_EVENT_SOURCE_GONE, source_id: handle, code: code.max(1) },
+            ),
+        }
+        detach_waiters_locked(&mut ports, i, WaiterState::Woken)
+    };
+    woken.wake(r);
+    true
 }
 
 /// Arm (or re-arm) the timer source keyed `user_key` on the port `r` names, to
@@ -926,16 +1009,22 @@ fn take_source_locked(port: &mut Port, now_ns: u64) -> Option<PortEvent> {
     for k in 0..PORT_MAX_SOURCES {
         let s = (start + k) % PORT_MAX_SOURCES;
         let src = port.sources[s];
-        let ready = match src.kind {
-            PortSourceKind::Channel(_) | PortSourceKind::Ring(_) => src.pending,
+        let ready = src.kind != PortSourceKind::None && src.gone != 0 || match src.kind {
+            PortSourceKind::Channel(_) | PortSourceKind::Ring(_) | PortSourceKind::Endpoint(_) => src.pending,
             PortSourceKind::Timer(d) => d <= now_ns,
             PortSourceKind::Irq(_) | PortSourceKind::None => false,
         };
         if !ready {
             continue;
         }
-        let event = PortEvent { key: src.user_key, source_type: src.kind.event_type(), source_id: src.handle };
-        if let PortSourceKind::Timer(_) = src.kind {
+        let event = if src.gone != 0 {
+            // The source's last event: it is gone, and so is its slot.
+            PortEvent { key: src.user_key, source_type: PORT_EVENT_SOURCE_GONE, source_id: src.handle, code: src.gone }
+        } else {
+            let code = if let PortSourceKind::Endpoint(_) = src.kind { CODE_NO_SENDERS } else { 0 };
+            PortEvent { key: src.user_key, source_type: src.kind.event_type(), source_id: src.handle, code }
+        };
+        if src.gone != 0 || matches!(src.kind, PortSourceKind::Timer(_)) {
             free_source_locked(port, s);
         } else {
             port.sources[s].pending = false;
@@ -1606,7 +1695,7 @@ mod tests {
     fn released_slots_are_reusable_and_carry_no_stale_events() {
         let _g = setup();
         let p = port_create(1).unwrap();
-        port_queue_event(p, PortEvent { key: 0xDEAD, source_type: 3, source_id: 7 });
+        port_queue_event(p, PortEvent { key: 0xDEAD, source_type: 3, source_id: 7, code: 0 });
         assert!(port_has_events(p));
 
         port_release_all(1);
@@ -1731,7 +1820,7 @@ mod tests {
         let _g = setup();
         let p = port_create(1).unwrap();
         for i in 0..PORT_MAX_SOURCES + 4 {
-            port_queue_event(p, PortEvent { key: i as u64, source_type: 1, source_id: 0 });
+            port_queue_event(p, PortEvent { key: i as u64, source_type: 1, source_id: 0, code: 0 });
         }
         for i in 0..PORT_MAX_SOURCES {
             assert_eq!(port_poll(p).unwrap().key, i as u64);
@@ -1780,7 +1869,7 @@ mod tests {
     }
 
     fn evt(key: u64) -> PortEvent {
-        PortEvent { key, source_type: 3, source_id: 9 }
+        PortEvent { key, source_type: 3, source_id: 9, code: 0 }
     }
 
     /// (1) A port destroyed and recreated at the same index is another object:
@@ -2334,7 +2423,7 @@ mod tests {
         assert_eq!(port_poll_ref_at(r, 999), Err(PortCapError::Empty), "one ns early");
         assert_eq!(
             port_poll_ref_at(r, 1_000),
-            Ok(PortEvent { key: 0x71, source_type: PORT_EVENT_TIMER, source_id: 0 }),
+            Ok(PortEvent { key: 0x71, source_type: PORT_EVENT_TIMER, source_id: 0, code: 0 }),
         );
         assert_eq!(port_poll_ref_at(r, u64::MAX), Err(PortCapError::Empty), "one-shot");
         assert_eq!(sources(r), 0, "the slot is free again");
@@ -2400,14 +2489,14 @@ mod tests {
             assert!(port_signal_channel(link, 0x0C01));
         }
         assert!(port_has_events(LAYOUT.idx(r)), "a pending source counts as an event");
-        assert_eq!(port_poll_ref(r), Ok(PortEvent { key: 0xC0, source_type: PORT_EVENT_CHANNEL, source_id: 0x77 }));
+        assert_eq!(port_poll_ref(r), Ok(PortEvent { key: 0xC0, source_type: PORT_EVENT_CHANNEL, source_id: 0x77, code: 0 }));
         assert_eq!(port_poll_ref(r), Err(PortCapError::Empty), "three sends, one event");
         assert!(port_signal_channel(link, 0x0C01));
         assert_eq!(port_poll_ref(r).map(|e| e.key), Ok(0xC0), "a send after the event is another");
 
         let (rl, _) = port_bind_object(r, RING, 0x55, 0xA0).expect("bind ring");
         assert!(port_signal_ring(rl, 0x0A01));
-        assert_eq!(port_poll_ref(r), Ok(PortEvent { key: 0xA0, source_type: PORT_EVENT_RING, source_id: 0x55 }));
+        assert_eq!(port_poll_ref(r), Ok(PortEvent { key: 0xA0, source_type: PORT_EVENT_RING, source_id: 0x55, code: 0 }));
     }
 
     /// A signal through a link that no longer names a live source answers

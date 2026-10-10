@@ -243,13 +243,15 @@ pub fn sys_port_poll_typed(cap_raw: u64, out_ptr: u64) -> i64 {
 const PORT_EVENT_OUT_BYTES: usize = 16;
 
 /// Write `event` through `out_ptr` in the 16-byte ABI-stable encoding (key:u64,
-/// source_type:u8, _pad:[u8;3], source_id:u32, little-endian) and return 16, or
+/// source_type:u8, _pad:u8, code:u16, source_id:u32, little-endian) and return 16, or
 /// `-EFAULT`. Shared by 531 and 577.
 fn copy_port_event_out(out_ptr: u64, event: &azos_ipc::port::PortEvent) -> i64 {
     use azos_abi::error::Errno;
     let mut buf = [0u8; PORT_EVENT_OUT_BYTES];
     buf[..8].copy_from_slice(&event.key.to_le_bytes());
     buf[8] = event.source_type;
+    let c = azos_abi::syscall_nr::PORT_EVENT_CODE_OFFSET;
+    buf[c..c + 2].copy_from_slice(&event.code.to_le_bytes());
     buf[12..16].copy_from_slice(&event.source_id.to_le_bytes());
     if azos_sched::current_user_pt() != 0 {
         if !azos_sched::copy_to_user(out_ptr as usize, buf.as_ptr(), PORT_EVENT_OUT_BYTES) {
@@ -285,10 +287,7 @@ pub fn sys_port_destroy_typed(cap_raw: u64) -> i64 {
 }
 
 /// Port source types in `SYS_PORT_BIND`'s (512) encoding, which 575 keeps.
-const PORT_SRC_CHANNEL: u64 = 0;
-const PORT_SRC_RING: u64 = 1;
-const PORT_SRC_IRQ: u64 = 2;
-const PORT_SRC_TIMER: u64 = 3;
+use azos_abi::syscall_nr::{PORT_SRC_CHANNEL, PORT_SRC_ENDPOINT, PORT_SRC_IRQ, PORT_SRC_RING, PORT_SRC_TIMER};
 
 /// The time counter in nanoseconds: the clock a port's timer sources and
 /// 604's deadline are read against (`SYS_SLEEP_UNTIL`'s unit).
@@ -327,7 +326,7 @@ fn errno_for_source_cap(kind: azos_abi::cap::CapKind, e: azos_ipc::cap::CapError
     }
 }
 
-/// Bind a channel or io_ring (`kind`) to port `r`: the port's slot first
+/// Bind a channel, io_ring or endpoint (`kind`) to port `r`: the port's slot first
 /// (`port_bind_object`), then the object's link (`set_link`, the object's own
 /// lock). A link to another port is replaced only when that port no longer
 /// answers to it (`port_link_valid`); a live one answers `-EBUSY`. On any
@@ -395,7 +394,7 @@ fn bind_object(
 }
 
 /// `SYS_PORT_BIND_TYPED` (575): a0=port cap (`Cap<Port>`), a1=source type
-/// (0 channel, 1 ring, 2 IRQ, 3 timer) or-ed with `PORT_BIND_F_REMOVE`,
+/// (0 channel, 1 ring, 2 IRQ, 3 timer, 4 endpoint) or-ed with `PORT_BIND_F_REMOVE`,
 /// a2=source, a3=key. Binds (or removes) a source and returns 0, or `-Errno`.
 ///
 /// The typed form of `SYS_PORT_BIND` (512). The port capability needs `WRITE`
@@ -409,7 +408,10 @@ fn bind_object(
 ///   through `irq_bind::irq_bind_port`, which keeps the port's packed
 ///   reference and epoch and compares both at delivery;
 /// - 3: a timer, `a2` its absolute deadline in nanoseconds on the time
-///   counter; no capability (`port_arm_timer`; a known key re-arms).
+///   counter; no capability (`port_arm_timer`; a known key re-arms);
+/// - 4: an endpoint's notices: a `Cap<Endpoint>` with `READ`, and the caller
+///   must serve it (`bind_object`, `endpoint_set_link`, `-EPERM` otherwise);
+///   reports no-senders (wave 15 N5b).
 ///
 /// With `PORT_BIND_F_REMOVE`, the channel, ring or timer sources of that type
 /// bound with key `a3` are removed (`port_unbind_key`) and each channel's or
@@ -418,21 +420,23 @@ fn bind_object(
 /// In order:
 /// - `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` / `-EAGAIN` for the port
 ///   capability, recorded under `Port`;
-/// - `-EINVAL` for a source type above 3, an unknown flag bit, or a remove of
+/// - `-EINVAL` for a source type above 4, an unknown flag bit, or a remove of
 ///   IRQ bindings;
 /// - `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` for the source capability,
 ///   recorded under its own kind;
 /// - `-ECAPSTALE` when the port (or the channel, the ring) was destroyed
 ///   before the binding was stored;
 /// - `-EMFILE` when the port's source table or the IRQ binding table is full;
-/// - `-EBUSY` when the channel or ring already reports to another live port;
+/// - `-EPERM` when the caller does not serve the endpoint;
+/// - `-EBUSY` when the channel, ring or endpoint already reports to another
+///   live port;
 /// - `-ENODEV` when the interrupt controller cannot deliver the line (a
 ///   source it does not implement or was not delegated); nothing stays bound.
 pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u64) -> i64 {
     use azos_abi::cap::{CapHandle, CapKind, CapPerms};
     use azos_abi::error::Errno;
     use azos_abi::syscall_nr::PORT_BIND_F_REMOVE;
-    use azos_ipc::cap::{targets::{Channel, IoRing, Irq, Port}, Cap, CapError};
+    use azos_ipc::cap::{targets::{Channel, Endpoint, IoRing, Irq, Port}, Cap, CapError};
     use azos_ipc::port::{self, PortCapError, PortSourceKind};
 
     enum Refusal {
@@ -444,6 +448,7 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
         Irq(u32),
         Channel(u32),
         Ring(u32),
+        Endpoint(u32),
         Timer(u64),
         Remove(u8),
     }
@@ -454,7 +459,10 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
     let tid = azos_sched::current_task_tid();
     let resolved = azos_ipc::cap_store::with_table(tid, |table| {
         let r = table.get(port, CapPerms::WRITE).map_err(Refusal::Port)?;
-        if ty > PORT_SRC_TIMER || flags & !PORT_BIND_F_REMOVE != 0 {
+        // Kconfig IPC_PORT_NOTICES off: no count is kept, so an endpoint
+        // source would report "no senders" falsely; it is not a source then.
+        let top = if azos_limits::IPC_PORT_NOTICES { PORT_SRC_ENDPOINT } else { PORT_SRC_TIMER };
+        if ty > top || flags & !PORT_BIND_F_REMOVE != 0 {
             return Err(Refusal::Errno(Errno::EINVAL));
         }
         if flags != 0 {
@@ -462,6 +470,7 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
                 PORT_SRC_CHANNEL => port::PORT_EVENT_CHANNEL,
                 PORT_SRC_RING => port::PORT_EVENT_RING,
                 PORT_SRC_TIMER => port::PORT_EVENT_TIMER,
+                PORT_SRC_ENDPOINT => port::PORT_EVENT_NO_SENDERS,
                 _ => return Err(Refusal::Errno(Errno::EINVAL)),
             };
             return Ok((r, Source::Remove(ev)));
@@ -478,6 +487,10 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
             PORT_SRC_RING => {
                 let c: Cap<IoRing> = Cap::from_raw(handle);
                 Source::Ring(table.get(c, CapPerms::READ).map_err(|e| Refusal::Source(CapKind::IoRing, e))?)
+            }
+            PORT_SRC_ENDPOINT => {
+                let c: Cap<Endpoint> = Cap::from_raw(handle);
+                Source::Endpoint(table.get(c, CapPerms::READ).map_err(|e| Refusal::Source(CapKind::Endpoint, e))?)
             }
             _ => Source::Timer(source),
         };
@@ -533,6 +546,17 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
                 azos_ipc::io_ring::io_ring_set_link(g, link, replace).map_err(errno_for_ioring_err)
             })
         }
+        Source::Endpoint(e) => {
+            let held = || azos_ipc::cap_store::with_table(tid, |t| {
+                t.get(Cap::<Endpoint>::from_raw(handle), CapPerms::READ) == Ok(e)
+            }) == Some(true);
+            bind_object(r, PortSourceKind::Endpoint(e), source as u32, key, binder, held, |link, replace| {
+                azos_ipc::endpoint::endpoint_set_link(e, tid, link, replace).map_err(|err| match err {
+                    azos_ipc::endpoint::EndpointCapError::NotOwner => Errno::EPERM.to_syscall_ret(),
+                    _ => Errno::ECAPSTALE.to_syscall_ret(),
+                })
+            })
+        }
         Source::Remove(ev) => {
             let gone = match port::port_unbind_key(r, ev, key) {
                 Ok(g) => g,
@@ -542,6 +566,7 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
                 match kind {
                     PortSourceKind::Channel(c) => azos_ipc::channel::channel_clear_link(c, link),
                     PortSourceKind::Ring(g) => azos_ipc::io_ring::io_ring_clear_link(g, link),
+                    PortSourceKind::Endpoint(e) => azos_ipc::endpoint::endpoint_clear_link(e, link),
                     _ => {}
                 }
             }

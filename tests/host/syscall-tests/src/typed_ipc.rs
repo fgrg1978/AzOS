@@ -135,7 +135,7 @@ fn key_at_buf() -> u64 {
 }
 
 fn event(key: u64) -> PortEvent {
-    PortEvent { key, source_type: 3, source_id: 5 }
+    PortEvent { key, source_type: 3, source_id: 5, code: 0 }
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -677,11 +677,11 @@ fn a_typed_bind_refuses_in_its_documented_order() {
     assert_eq!(sys_port_bind_typed(0, 4, irq, 1), errno(Errno::ECAPSTALE), "a forged port handle first");
     assert_eq!(sys_port_bind_typed(ro_port, 2, irq, 1), errno(Errno::ECAPPERMS), "a READ-only port");
     assert_eq!(sys_port_bind_typed(irq, 2, irq, 1), errno(Errno::ECAPKIND), "an IRQ handle as the port");
-    assert_eq!(sys_port_bind_typed(port, 4, irq, 1), errno(Errno::EINVAL), "an unknown source type");
+    assert_eq!(sys_port_bind_typed(port, 5, irq, 1), errno(Errno::EINVAL), "an unknown source type");
     assert_eq!(sys_port_bind_typed(port, u64::MAX, irq, 1), errno(Errno::EINVAL));
     // Wave 11 (PORTWAIT): channel and ring take their own capability, a
     // timer none (its source is a deadline).
-    for typed in [0, 1] {
+    for typed in [0, 1, 4] {
         assert_eq!(sys_port_bind_typed(port, typed, 0, 1), errno(Errno::ECAPSTALE), "source type {typed}, forged");
         assert_eq!(sys_port_bind_typed(port, typed, irq, 1), errno(Errno::ECAPKIND), "source type {typed}, an IRQ handle");
     }
@@ -1216,4 +1216,84 @@ fn a_typed_wait_wakes_for_an_armed_timer() {
     assert_eq!(sys_port_wait_typed(port, BUF as u64), 16);
     assert_eq!(event_at_buf(), (0x42, 4, 0));
     assert_eq!(azos_sched::shim_take_blocks(), vec![WaitReason::Timer(ticks(2_000_000))]);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 575 source 4: endpoint notices, and gone sources (wave 15 N5b)
+// ═════════════════════════════════════════════════════════════════════════
+
+/// The event code at `BUF` (bytes 10..12).
+fn code_at_buf() -> u16 {
+    let e = take16(BUF);
+    let c = azos_abi::syscall_nr::PORT_EVENT_CODE_OFFSET;
+    u16::from_le_bytes([e[c], e[c + 1]])
+}
+
+/// **575 binds an endpoint's notices for its serving task only (`-EPERM` for
+/// a holder of `READ` that does not serve it); revoking the last send
+/// capability (`WRITE` without `READ`) anywhere posts one no-senders event
+/// (type 5, code `ENOSENDERS`, the server's handle); destroying the endpoint
+/// posts one source-gone event (type 6, code `EREVOKED`) and frees the
+/// slot; a destroyed channel does the same.**
+///
+/// **Canaries.** Count every `WRITE` capability (drop the `!READ` in
+/// `cap::senders::counted`): the server's own `RW` keeps the count at 1 and
+/// the no-senders poll reads `-EAGAIN`. Return before marking in
+/// `port_source_gone`: the gone polls read `-EAGAIN`.
+#[test]
+fn an_endpoint_bound_to_a_port_reports_no_senders_and_its_destruction() {
+    use azos_ipc::cap::targets::Endpoint;
+    let _g = serial();
+    azos_ipc::cap::senders::set_hooks(azos_ipc::endpoint::sender_delta, azos_ipc::endpoint::flush_notices);
+    let (a, b) = (fresh_tid(), fresh_tid());
+    let _s = Scene::new(&[a, b]);
+    let pt_b = ring3(b, SLOT_B);
+    let pt_a = ring3(a, SLOT_A);
+    let ep = handle(sys_endpoint_create_typed());
+    let r = resource_of::<Endpoint>(a, ep);
+    assert_eq!(azos_ipc::endpoint::senders_of(r), Some(0), "the server's RW is not a sender");
+    let send = azos_ipc::cap_store::grant::<Endpoint>(b, CapPerms::WRITE, r).expect("client cap");
+    let b_read = held::<Endpoint>(b, CapPerms::READ, r);
+    assert_eq!(azos_ipc::endpoint::senders_of(r), Some(1));
+
+    let port = handle(sys_port_create_typed());
+    assert_eq!(sys_port_bind_typed(port, 4, ep, 0xE1), 0);
+    assert_eq!(sys_port_poll_typed(port, BUF as u64), errno(Errno::EAGAIN), "one sender left: nothing");
+
+    // A holder of READ that does not serve the endpoint may not bind it.
+    become_task(b, pt_b);
+    let port_b = handle(sys_port_create_typed());
+    assert_eq!(sys_port_bind_typed(port_b, 4, b_read, 1), errno(Errno::EPERM));
+
+    azos_ipc::cap_store::revoke(b, send);
+    become_task(a, pt_a);
+    assert_eq!(sys_port_poll_typed(port, BUF as u64), 16, "the last sender went");
+    assert_eq!(event_at_buf(), (0xE1, 5, ep as u32));
+    assert_eq!(code_at_buf(), Errno::ENOSENDERS as u16);
+    assert_eq!(sys_port_poll_typed(port, BUF as u64), errno(Errno::EAGAIN), "once");
+
+    assert_eq!(azos_ipc::endpoint::destroy_ref_as(r, a), Ok(()));
+    assert_eq!(sys_port_poll_typed(port, BUF as u64), 16, "the endpoint went");
+    assert_eq!(event_at_buf(), (0xE1, 6, ep as u32));
+    assert_eq!(code_at_buf(), Errno::EREVOKED as u16);
+    assert_eq!(sys_port_poll_typed(port, BUF as u64), errno(Errno::EAGAIN), "a gone source reports once");
+
+    let chan = handle(sys_chan_create_typed());
+    assert_eq!(sys_port_bind_typed(port, 0, chan, 0xC7), 0);
+    assert_eq!(sys_close_typed_for_test(chan), 0);
+    assert_eq!(sys_port_poll_typed(port, BUF as u64), 16, "the channel went");
+    assert_eq!(event_at_buf(), (0xC7, 6, chan as u32));
+    assert_eq!(code_at_buf(), Errno::EREVOKED as u16);
+    assert_eq!(sys_port_poll_typed(port, BUF as u64), errno(Errno::EAGAIN));
+}
+
+/// Destroy channel `h` through its capability (the Channel arm of
+/// `SYS_CLOSE_TYPED`).
+fn sys_close_typed_for_test(h: u64) -> i64 {
+    let tid = azos_sched::current_task_tid();
+    let cap = Cap::<Channel>::from_raw(CapHandle::from_raw(h as u32));
+    match azos_ipc::cap_store::with_table(tid, |t| azos_ipc::channel::channel_destroy_cap(t, cap)) {
+        Some(Ok(())) => 0,
+        _ => -1,
+    }
 }

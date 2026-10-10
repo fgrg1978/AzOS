@@ -146,6 +146,15 @@ pub(crate) const NAMES: &[&str] = &[
     // its previous owner's entries (ktest
     // `asid_rollover_no_stale_translation`).
     "asid-rollover-noflush",
+    // crates/core/ipc/src/cap.rs `clear_all`: a table wipe (a task's exit)
+    // does not count its endpoint send capabilities out, so no no-senders
+    // notice follows a sender's exit (ktests
+    // `ipc_no_senders_on_sender_exit`, `ipc_no_senders_once_after_staggered_exits`).
+    "ipc-no-senders-wipe",
+    // crates/core/ipc/src/port.rs `port_source_gone`: a destroyed source
+    // stays bound and silent, so its waiter times out (ktest
+    // `port_source_gone_wakes_the_waiter`).
+    "port-no-vanish",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

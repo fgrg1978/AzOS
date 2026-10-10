@@ -316,7 +316,16 @@ fn wipe_claimed(idx: usize, prev: u32, tid: u32) -> bool {
     if prev != NO_OWNER {
         cap_event(CapEvent::Wiped { slot: idx });
     }
+    drop(table);
+    notices();
     true
+}
+
+/// Post the endpoint notices the last change left pending
+/// (`cap::senders`), with no table lock held. One load when none is.
+#[inline(always)]
+fn notices() {
+    crate::cap::senders::flush();
 }
 
 /// Returns `true` iff `tid` currently maps to a live task-pool slot.
@@ -463,7 +472,10 @@ pub fn grant<T: CapTarget>(
         let (idx, owner) = slot_owner(tid)?;
         let table = CAP_TABLES[idx].lock();
         if still_owned(idx, owner) {
-            return table.grant(perms, resource);
+            let cap = table.grant(perms, resource);
+            drop(table);
+            notices();
+            return cap;
         }
     }
 }
@@ -482,6 +494,8 @@ pub fn revoke<T: CapTarget>(tid: u32, cap: Cap<T>) {
     if let Some((kind, _, resource)) = held {
         cap_event(CapEvent::Revoked { slot: idx, kind, resource });
     }
+    drop(table);
+    notices();
 }
 
 /// Wipe the whole table for a task — called from task exit via
@@ -511,6 +525,10 @@ pub fn reset(tid: u32) {
     cap_event(CapEvent::Wiped { slot: idx });
     // Release the slot claim so the next occupant re-registers cleanly.
     OWNER[idx].store(NO_OWNER, Ordering::Release);
+    drop(table);
+    // The task's send capabilities went with the table: an endpoint left
+    // with none tells its server (wave 15 N5b).
+    notices();
 }
 
 /// Wave 15 (plan 4a): an exec'ing thread takes its process's identity from
@@ -549,10 +567,16 @@ pub fn hand_over(from: usize, to: usize, tid: u32) {
 ///
 /// Used by syscall handlers that need direct access (e.g. to compute
 /// multiple cap_table.get() calls atomically without re-locking).
+///
+/// A closure that writes the table (the fork copy, an exec's revoke) may
+/// leave an endpoint notice pending; it is posted after the lock is released.
 pub fn with_table<R>(tid: u32, f: impl FnOnce(&CapTable) -> R) -> Option<R> {
     let idx = slot_for(tid)?;
     let table = CAP_TABLES[idx].lock();
-    Some(f(&table))
+    let r = f(&table);
+    drop(table);
+    notices();
+    Some(r)
 }
 
 /// Move one capability from `from_tid`'s table into `to_tid`'s.
@@ -623,6 +647,9 @@ pub fn move_cap(
 ) -> Result<CapHandle, CapError> {
     loop {
         if let Some(r) = move_cap_once(from_tid, to_tid, handle, rights) {
+            // A move that lowered `RW` to `WRITE`, or took `WRITE` away, changed
+            // an endpoint's count of send capabilities.
+            notices();
             return r;
         }
     }
@@ -736,6 +763,8 @@ pub fn revoke_moved(tid: u32, handle: CapHandle) -> bool {
     if let (true, Some((kind, _, resource))) = (cleared, held) {
         cap_event(CapEvent::Revoked { slot: idx, kind, resource });
     }
+    drop(table);
+    notices();
     cleared
 }
 

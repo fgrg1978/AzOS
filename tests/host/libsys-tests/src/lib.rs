@@ -539,3 +539,24 @@ mod trace_ring;
 /// `crates/core/trace/src/jump.rs`: static-key sites and encoders (wave 15).
 #[cfg(test)]
 mod jump_sites;
+
+#[cfg(test)]
+mod port_event {
+    use super::libsys::{port_event_decode, PortEventInfo};
+
+    /// **The 16-byte port event decodes key, type, code and source id from
+    /// their wire offsets** (wave 15 N5b: the code is bytes 10..12, where the
+    /// padding was). Canary: read the code from byte 9: `code` reads 0x1500.
+    #[test]
+    fn a_no_senders_event_decodes_its_code_from_bytes_10_and_11() {
+        let mut b = [0u8; 16];
+        b[..8].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        b[8] = azos_abi::syscall_nr::PORT_EVENT_NO_SENDERS;
+        b[10..12].copy_from_slice(&(azos_abi::error::Errno::ENOSENDERS as u16).to_le_bytes());
+        b[12..16].copy_from_slice(&0xABCDu32.to_le_bytes());
+        assert_eq!(
+            port_event_decode(&b),
+            PortEventInfo { key: 0x1122_3344_5566_7788, source_type: 5, code: 213, source_id: 0xABCD }
+        );
+    }
+}

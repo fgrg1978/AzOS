@@ -74,6 +74,28 @@ pub mod port {
         *ANSWER_LIVE.lock().unwrap_or_else(|e| e.into_inner()) = true;
         std::mem::take(&mut *SIGNALS.lock().unwrap_or_else(|e| e.into_inner()))
     }
+
+    /// The kinds the pulled-in modules name (wave 15 N5b).
+    #[allow(dead_code)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum PortSourceKind {
+        Channel(u32),
+        Ring(u32),
+        Irq(u32),
+        Endpoint(u32),
+    }
+
+    /// A gone source: nothing is bound in this harness.
+    #[allow(dead_code)]
+    pub fn port_source_gone(_link: crate::port_link::PortLink, _kind: PortSourceKind, _code: u16) -> bool {
+        false
+    }
+
+    /// An endpoint's notice: nothing is bound in this harness.
+    #[allow(dead_code)]
+    pub fn port_signal(_link: crate::port_link::PortLink, _kind: PortSourceKind) -> bool {
+        false
+    }
 }
 
 #[path = "../../../../crates/core/ipc/src/pipe.rs"]

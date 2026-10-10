@@ -368,6 +368,30 @@ config IPC_ENDPOINT_QUEUES
       2,425 with the queues against 2,463 for the old table (Linux pipe
       pair: 11,998).
 
+config IPC_PORT_NOTICES
+    bool "Endpoint no-senders and source-gone notices on event ports"
+    default y
+    help
+      Counts, per endpoint, the send capabilities that exist anywhere (a
+      Cap<Endpoint> with WRITE and without READ), kept exact through every
+      grant, move, revoke, fork copy and the table wipe at a task's exit. A
+      server that binds its endpoint to a port (SYS_PORT_BIND_TYPED, source
+      4) gets PORT_EVENT_NO_SENDERS (code ENOSENDERS) when the count falls
+      to zero. A channel, io_ring, endpoint or IRQ bound to a port that is
+      destroyed, or whose owner dies, reports one PORT_EVENT_SOURCE_GONE
+      (code EREVOKED or EPEERDIED) instead of leaving its waiter waiting.
+
+      n: nothing is counted or reported; SYS_PORT_BIND_TYPED refuses
+      source 4 (an endpoint) with -EINVAL, and a gone source stays bound
+      and silent, as before.
+
+      Cost: 8 B of RAM per endpoint (IPC_ENDPOINTS) and 2 B per task slot
+      (MAX_TASKS); on a capability grant, revoke or move a compare of the
+      slot's kind (an atomic add when it is a send capability); a task
+      exit whose table holds a send capability walks its used slots once.
+      The fast call itself is untouched (a call that moves no capability
+      runs no capability operation).
+
 config IPC_ENDPOINTS
     int "Fast-call endpoints the machine may have live at once"
     range 4 255

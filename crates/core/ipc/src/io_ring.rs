@@ -780,9 +780,30 @@ fn live_index(rings: &[IoRingState; MAX_IO_RINGS], r: u32) -> Result<usize, IoRi
 pub fn io_ring_destroy(ring_id: u32) -> bool {
     if ring_id as usize >= MAX_IO_RINGS { return false; }
     let mut poller = 0;
-    let done = destroy_locked(&mut IO_RINGS.lock_irqsave()[ring_id as usize], &mut poller);
+    let (done, gone) = {
+        let mut rings = IO_RINGS.lock_irqsave();
+        let state = &mut rings[ring_id as usize];
+        let gone = (state.link, LAYOUT.pack(ring_id, state.generation));
+        (destroy_locked(state, &mut poller), gone)
+    };
     sqpoll_wake(poller);
+    if done {
+        post_gone(gone, CODE_REVOKED);
+    }
     done
+}
+
+/// `EREVOKED` / `EPEERDIED`, the codes of a gone ring's port event.
+const CODE_REVOKED: u16 = azos_abi::error::Errno::EREVOKED as u16;
+const CODE_PEER_DIED: u16 = azos_abi::error::Errno::EPEERDIED as u16;
+
+/// Ring `r` (its packed reference), bound to a port through `link`, is gone:
+/// the port's source reports `PORT_EVENT_SOURCE_GONE` with `code` (wave 15
+/// N5b). No lock of this module held.
+fn post_gone((link, r): (PortLink, u32), code: u16) {
+    if !link.is_none() {
+        let _ = crate::port::port_source_gone(link, crate::port::PortSourceKind::Ring(r), code);
+    }
 }
 
 /// [`io_ring_destroy`] through a packed reference: `Stale` if the ring at its
@@ -790,13 +811,19 @@ pub fn io_ring_destroy(ring_id: u32) -> bool {
 /// it (retry).
 pub fn io_ring_destroy_ref(r: u32) -> Result<(), IoRingCapError> {
     let mut poller = 0;
-    let done = {
+    let (done, link) = {
         let mut rings = IO_RINGS.lock_irqsave();
         let i = live_index(&rings, r)?;
-        destroy_locked(&mut rings[i], &mut poller)
+        let link = rings[i].link;
+        (destroy_locked(&mut rings[i], &mut poller), link)
     };
     sqpoll_wake(poller);
-    if done { Ok(()) } else { Err(IoRingCapError::Closed) }
+    if done {
+        post_gone((link, r), CODE_REVOKED);
+        Ok(())
+    } else {
+        Err(IoRingCapError::Closed)
+    }
 }
 
 /// Record that live ring `r`'s page is mapped at `va` in `tid`'s address space.
@@ -839,14 +866,14 @@ pub fn io_ring_destroy_mapped_ref(
     tid: u32,
     unmap: fn(va: usize),
 ) -> Result<(), IoRingCapError> {
-    let (phys, va, poller) = {
+    let (phys, va, poller, link) = {
         let mut rings = IO_RINGS.lock_irqsave();
         let i = live_index(&rings, r)?;
         let state = &mut rings[i];
         if state.in_flight || (state.user_va != 0 && state.owner_task != tid as usize) {
             return Err(IoRingCapError::Closed);
         }
-        let taken = (state.phys_addr, state.user_va, state.poller_tid);
+        let taken = (state.phys_addr, state.user_va, state.poller_tid, state.link);
         uncharge_owner(state);
         *state = IoRingState::empty();
         taken
@@ -856,6 +883,7 @@ pub fn io_ring_destroy_mapped_ref(
     }
     let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(phys));
     sqpoll_wake(poller);
+    post_gone((link, r), CODE_REVOKED);
     Ok(())
 }
 
@@ -1150,6 +1178,28 @@ pub fn io_ring_release_all(tid: u32) {
     // each sees its ring gone and exits (a parked one would otherwise sleep
     // forever on a ring that no longer exists).
     let mut pollers = [0u32; MAX_IO_RINGS];
+    // First, each bound ring's port hears that it is gone (wave 15 N5b), one
+    // ring a hold so nothing is buffered per ring (an orphaned ring too, at
+    // its owner's exit rather than when its last pass ends). A pass still in
+    // flight that completes later finds its port source gone and signals
+    // nothing.
+    let mut from = 0usize;
+    while from < MAX_IO_RINGS {
+        let mut gone = None;
+        {
+            let rings = IO_RINGS.lock_irqsave();
+            while from < MAX_IO_RINGS && gone.is_none() {
+                let st = &rings[from];
+                if st.active && st.owner_task == tid as usize && !st.link.is_none() {
+                    gone = Some((st.link, LAYOUT.pack(from as u32, st.generation)));
+                }
+                from += 1;
+            }
+        }
+        if let Some(g) = gone {
+            post_gone(g, CODE_PEER_DIED);
+        }
+    }
     {
         let mut rings = IO_RINGS.lock_irqsave();
         for i in 0..MAX_IO_RINGS {

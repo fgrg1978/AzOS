@@ -215,16 +215,33 @@ fn store(irq: u32, owner_task: u32, target: IrqTarget) -> i32 {
 /// the line (`arch_irq_bound`), so a release can never land after a newer
 /// binding's enable — either that binding was stored first (and this line is
 /// not released) or its enable follows this release.
+///
+/// A binding to a port tells it (wave 15 N5b): after the hold, the port gets
+/// one `PORT_EVENT_SOURCE_GONE` (code `EPEERDIED`, the binding's key, the
+/// line) through `port::port_post_gone`, so a task waiting there for the
+/// line is not left waiting for a source that no longer exists.
 pub fn irq_unbind_all(owner_task: u32) {
-    let mut bindings = IRQ_BINDINGS.lock_irqsave();
-    for i in 0..MAX_IRQ_BINDINGS {
-        if bindings[i].active && bindings[i].owner_task == owner_task {
-            let irq = bindings[i].irq;
-            bindings[i] = IrqBinding::empty();
-            if !bindings.iter().any(|b| b.active && b.irq == irq) {
-                line_released(irq);
+    let mut gone = [(0u32, 0u32, 0u64, 0u32); MAX_IRQ_BINDINGS];
+    let mut n = 0usize;
+    {
+        let mut bindings = IRQ_BINDINGS.lock_irqsave();
+        for i in 0..MAX_IRQ_BINDINGS {
+            if bindings[i].active && bindings[i].owner_task == owner_task {
+                let irq = bindings[i].irq;
+                if let IrqTarget::QueueToPortRef { port, epoch, key } = bindings[i].target {
+                    gone[n] = (port, epoch, key, irq);
+                    n += 1;
+                }
+                bindings[i] = IrqBinding::empty();
+                if !bindings.iter().any(|b| b.active && b.irq == irq) {
+                    line_released(irq);
+                }
             }
         }
+    }
+    let code = azos_abi::error::Errno::EPEERDIED as u16;
+    for &(port, epoch, key, irq) in &gone[..n] {
+        let _ = crate::port::port_post_gone(port, epoch, crate::port::PortSourceKind::Irq(irq), key, irq, code);
     }
 }
 
@@ -466,6 +483,7 @@ pub fn irq_dispatch(irq: u32) {
                     key,
                     source_type: PORT_SOURCE_TYPE_IRQ,
                     source_id: irq,
+                    code: 0,
                 };
                 // Queues and wakes the port's sleepers only when the
                 // reference and its epoch still name the live port.

@@ -886,7 +886,7 @@ pub const SYS_CHAN_CREATE_TYPED: u64 = 573;
 pub const SYS_SHM_MAP_TYPED: u64 = 574;
 
 /// `SYS_PORT_BIND_TYPED` — `a0 = cap` (`Cap<Port>`), `a1 = source type`
-/// (`SYS_PORT_BIND`'s encoding: 0 channel, 1 ring, 2 IRQ, 3 timer) `|`
+/// (`SYS_PORT_BIND`'s encoding: 0 channel, 1 ring, 2 IRQ, 3 timer, 4 endpoint) `|`
 /// [`PORT_BIND_F_REMOVE`], `a2 = source`, `a3 = key`.
 ///
 /// The typed form of `SYS_PORT_BIND` (512), whose source is a raw index. Binds
@@ -904,6 +904,19 @@ pub const SYS_SHM_MAP_TYPED: u64 = 574;
 ///   (`SYS_SLEEP_UNTIL`'s unit); no capability (the timer is the port's own).
 ///   Fires once (type 4) at the first poll or wait at or after the deadline;
 ///   a bind with a key already armed re-arms it.
+/// - 4, an endpoint: `a2` a `Cap<Endpoint>` with `READ`, and the caller must
+///   be the task serving it (`-EPERM` otherwise). Reports
+///   [`PORT_EVENT_NO_SENDERS`] (code `ENOSENDERS`) when the last send
+///   capability (`WRITE` without `READ`) anywhere is revoked, moved away or
+///   wiped at its holder's exit, and at once when there is none at bind
+///   time. Coalesced, like a channel's. Refused (`-EINVAL`) when the kernel
+///   is built without Kconfig `IPC_PORT_NOTICES`.
+///
+/// When a bound channel, io_ring, endpoint or IRQ goes (it is destroyed, or
+/// its owner dies), the source reports one [`PORT_EVENT_SOURCE_GONE`] event
+/// (code `EREVOKED` or `EPEERDIED`, the binding's key and `source_id`) and
+/// its slot is freed when that event is taken, so a waiter is never left
+/// waiting on a source that no longer exists.
 ///
 /// Channel and io_ring sources are edge-triggered and coalesced: one event
 /// stands for every message (completion) since the last one; drain after it.
@@ -918,19 +931,21 @@ pub const SYS_SHM_MAP_TYPED: u64 = 574;
 /// generation) and compares it at delivery (owner decision 2026-09-14), so a
 /// destroyed and reissued port does not receive the old binding's events.
 ///
-/// With [`PORT_BIND_F_REMOVE`] in `a1`, removes every channel (0), io_ring (1)
-/// or timer (3) source of that type bound with key `a3` (`a2` is ignored)
+/// With [`PORT_BIND_F_REMOVE`] in `a1`, removes every channel (0), io_ring (1),
+/// timer (3) or endpoint (4) source of that type bound with key `a3` (`a2` is ignored)
 /// and returns 0, or `-ENOENT` when none was; an IRQ binding (2) is not
 /// removable this way (`-EINVAL`).
 ///
 /// In order: the port capability's `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` /
-/// `-EAGAIN`; `-EINVAL` for a source type above 3 or an unknown flag; the
+/// `-EAGAIN`; `-EINVAL` for a source type above 4, an unknown flag, or a
+/// remove of IRQ bindings; the
 /// source capability's `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS`;
 /// `-ECAPSTALE` for a port (or source) destroyed before the binding was
 /// stored, or a source capability revoked or moved while it was being stored;
 /// `-EMFILE` when the port's source table (Kconfig
-/// `MAX_PORT_SOURCES`) or the IRQ binding table is full; `-EBUSY` when the
-/// channel or ring already reports to another live port; `-ENODEV` when the
+/// `MAX_PORT_SOURCES`) or the IRQ binding table is full; `-EPERM` when the
+/// caller does not serve the endpoint; `-EBUSY` when the
+/// channel, ring or endpoint already reports to another live port; `-ENODEV` when the
 /// interrupt controller cannot deliver the line (a source it does not
 /// implement or was not delegated), with nothing left bound.
 /// `SYS_IRQ_BIND` (510) answers `-ENODEV` for the same case.
@@ -939,6 +954,47 @@ pub const SYS_PORT_BIND_TYPED: u64 = 575;
 /// [`SYS_PORT_BIND_TYPED`] flag in `a1`: remove the sources of the type in
 /// the low byte bound with the key in `a3`, instead of binding one.
 pub const PORT_BIND_F_REMOVE: u64 = 0x100;
+
+// Port source types (`SYS_PORT_BIND_TYPED`'s `a1`) and event source types
+// (byte 8 of the 16-byte event `SYS_PORT_POLL_TYPED` / `SYS_PORT_WAIT_TYPED`
+// write). The one home of these numbers: the kernel, libsys and the tests
+// use these.
+
+/// Port source: a channel (`Cap<Channel>` with `READ`).
+pub const PORT_SRC_CHANNEL: u64 = 0;
+/// Port source: an io_ring (`Cap<IoRing>` with `READ`).
+pub const PORT_SRC_RING: u64 = 1;
+/// Port source: an IRQ line (`Cap<Irq>` with `READ`).
+pub const PORT_SRC_IRQ: u64 = 2;
+/// Port source: a timer (the source word is an absolute deadline in ns).
+pub const PORT_SRC_TIMER: u64 = 3;
+/// Port source: an endpoint's notices (`Cap<Endpoint>` with `READ`, held by
+/// the endpoint's serving task). Reports [`PORT_EVENT_NO_SENDERS`].
+pub const PORT_SRC_ENDPOINT: u64 = 4;
+
+/// Event source type: a channel has messages.
+pub const PORT_EVENT_CHANNEL: u8 = 1;
+/// Event source type: an io_ring has completions.
+pub const PORT_EVENT_RING: u8 = 2;
+/// Event source type: an IRQ was delivered.
+pub const PORT_EVENT_IRQ: u8 = 3;
+/// Event source type: a timer fired.
+pub const PORT_EVENT_TIMER: u8 = 4;
+/// Event source type: no send capability to the bound endpoint is left
+/// anywhere (a `Cap<Endpoint>` with `WRITE` and without `READ`); the event's
+/// code is `ENOSENDERS`. Level at bind: binding an endpoint that has no
+/// sender reports one at once.
+pub const PORT_EVENT_NO_SENDERS: u8 = 5;
+/// Event source type: the bound source is gone (destroyed, or its owner
+/// died) and its binding was removed; the event's key and `source_id` are
+/// the binding's, and its code is `EREVOKED` (destroyed) or `EPEERDIED` (its
+/// owner died). Delivered once; the source's slot is free after it.
+pub const PORT_EVENT_SOURCE_GONE: u8 = 6;
+
+/// Byte offset of the event's code (`u16`, little-endian; a positive errno,
+/// 0 for an ordinary event) in the 16-byte port event. Bytes 9 and 12..16
+/// are unchanged: byte 9 reserved (0), 12..16 `source_id`.
+pub const PORT_EVENT_CODE_OFFSET: usize = 10;
 
 /// `SYS_MOTOR_DIRECTION_TYPED` — `a0 = cap` (`Cap<Motor>`), `a1 = direction`
 /// (0 forward, 1 backward, 2 brake, 3 coast; 4 or more is `-EINVAL`, owner

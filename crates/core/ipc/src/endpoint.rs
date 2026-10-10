@@ -102,6 +102,10 @@ pub struct Endpoint {
     pub generation: u32,
     /// Whether the slot holds a live endpoint.
     pub active: bool,
+    /// The port source the serving task bound this endpoint's notices to
+    /// (`SYS_PORT_BIND_TYPED`, source 4; wave 15 N5b), `PortLink::NONE` for
+    /// none.
+    pub link: crate::port_link::PortLink,
 }
 
 impl Endpoint {
@@ -112,6 +116,7 @@ impl Endpoint {
             name_len: 0,
             generation: 0,
             active: false,
+            link: crate::port_link::PortLink::NONE,
         }
     }
 
@@ -169,6 +174,133 @@ static LOOKUP: [AtomicU64; MAX_ENDPOINTS] = [const { AtomicU64::new(0) }; MAX_EN
 /// read section, can never meet a new endpoint in the same slot.
 static HELD: [AtomicBool; MAX_ENDPOINTS] = [const { AtomicBool::new(false) }; MAX_ENDPOINTS];
 
+/// Per slot, the send capabilities to the live endpoint there (wave 15 N5b,
+/// Kconfig `IPC_PORT_NOTICES`; `cap::senders` says what one is):
+/// `generation << 32 | count`, written `(generation, 0)` at create and 0 at
+/// destroy. [`sender_delta`] changes the count only while the generation
+/// matches the capability's, so a stale capability of an earlier endpoint
+/// at this index, revoked or wiped later, counts for nothing.
+static SENDERS: [AtomicU64; MAX_ENDPOINTS] = [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
+
+/// Endpoints whose count fell to zero since the last [`flush_notices`], one
+/// bit per slot.
+const NOTICE_WORDS: usize = MAX_ENDPOINTS.div_ceil(64);
+static NOTICE: [AtomicU64; NOTICE_WORDS] = [const { AtomicU64::new(0) }; NOTICE_WORDS];
+
+/// `EREVOKED` / `EPEERDIED` as the positive codes a gone port
+/// event carries.
+const CODE_REVOKED: u16 = azos_abi::error::Errno::EREVOKED as u16;
+const CODE_PEER_DIED: u16 = azos_abi::error::Errno::EPEERDIED as u16;
+
+/// The [`crate::cap::senders::DeltaHook`] the kernel registers: a send
+/// capability to the endpoint `r` names came (`d = 1`) or went (`d = -1`).
+/// Runs under the cap table's lock and takes none: one CAS on the slot's
+/// count. `true` when the count fell to zero (the endpoint is marked for
+/// [`flush_notices`]). A capability whose generation is not the live
+/// endpoint's changes nothing.
+pub fn sender_delta(r: u32, d: i32) -> bool {
+    let i = LAYOUT.idx(r) as usize;
+    let g = u64::from(LAYOUT.gen(r));
+    let Some(cell) = SENDERS.get(i) else { return false };
+    let mut w = cell.load(Ordering::Acquire);
+    loop {
+        if g == 0 || w >> 32 != g {
+            return false;
+        }
+        let n = w & 0xFFFF_FFFF;
+        let m = if d > 0 { n + 1 } else if n == 0 { return false } else { n - 1 };
+        match cell.compare_exchange_weak(w, (g << 32) | m, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(cur) => w = cur,
+        }
+    }
+    if d < 0 && w & 0xFFFF_FFFF == 1 {
+        NOTICE[i / 64].fetch_or(1u64 << (i % 64), Ordering::AcqRel);
+        return true;
+    }
+    false
+}
+
+/// The send capabilities to the endpoint `r` names, `None` for a stale
+/// reference. Tests and diagnostics.
+pub fn senders_of(r: u32) -> Option<u32> {
+    let i = LAYOUT.idx(r) as usize;
+    let w = SENDERS.get(i)?.load(Ordering::Acquire);
+    (LAYOUT.gen(r) != 0 && w >> 32 == u64::from(LAYOUT.gen(r))).then_some(w as u32)
+}
+
+/// The [`crate::cap::senders::FlushHook`] the kernel registers: for each
+/// endpoint marked by [`sender_delta`], if it is still live, still has no
+/// sender and is bound to a port, mark its port source pending
+/// (`PORT_EVENT_NO_SENDERS`, code `ENOSENDERS`) and wake the port's
+/// waiters. Coalesced: a count that fell to zero twice between two flushes
+/// is one notice, and one that rose again before the flush is none.
+/// Called with no cap-table or pool lock held.
+pub fn flush_notices() {
+    for (wi, word) in NOTICE.iter().enumerate() {
+        let mut bits = word.swap(0, Ordering::AcqRel);
+        while bits != 0 {
+            let i = wi * 64 + bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let target = {
+                let eps = ENDPOINTS.lock_irqsave();
+                let e = &eps[i];
+                let none_left = SENDERS[i].load(Ordering::Acquire) == u64::from(e.generation) << 32;
+                (e.active && none_left && !e.link.is_none())
+                    .then(|| (e.link, LAYOUT.pack(i as u32, e.generation)))
+            };
+            if let Some((link, r)) = target {
+                let _ = crate::port::port_signal(link, crate::port::PortSourceKind::Endpoint(r));
+            }
+        }
+    }
+}
+
+/// Store `link` as the port source endpoint `r` reports its notices to
+/// (`SYS_PORT_BIND_TYPED`, source 4), for its serving task `tid` only
+/// (`NotOwner` otherwise). The rules of `channel::channel_set_link`: stored
+/// when there is no link, the link names the same port, or it equals
+/// `replace`; `Busy(current)` otherwise. `Stored { ready }` is whether the
+/// endpoint has no sender now, so a bind made after the last sender went
+/// still reports it once.
+pub fn endpoint_set_link(
+    r: u32,
+    tid: u32,
+    link: crate::port_link::PortLink,
+    replace: crate::port_link::PortLink,
+) -> Result<crate::port_link::LinkSet, EndpointCapError> {
+    let mut eps = ENDPOINTS.lock_irqsave();
+    let i = live_index(&eps, r)?;
+    if eps[i].owner_tid != tid {
+        return Err(EndpointCapError::NotOwner);
+    }
+    let cur = eps[i].link;
+    if cur.is_none() || cur.port == link.port || cur == replace {
+        eps[i].link = link;
+        let none_left = SENDERS[i].load(Ordering::Acquire) == u64::from(eps[i].generation) << 32;
+        return Ok(crate::port_link::LinkSet::Stored { ready: none_left });
+    }
+    Ok(crate::port_link::LinkSet::Busy(cur))
+}
+
+/// Clear endpoint `r`'s link if it is still `link`. Nothing for a stale `r`.
+pub fn endpoint_clear_link(r: u32, link: crate::port_link::PortLink) {
+    let mut eps = ENDPOINTS.lock_irqsave();
+    if let Ok(i) = live_index(&eps, r) {
+        if eps[i].link == link {
+            eps[i].link = crate::port_link::PortLink::NONE;
+        }
+    }
+}
+
+/// The endpoint at slot `i` (reference `r`) is gone: its port source, if it
+/// had one, reports `PORT_EVENT_SOURCE_GONE` with `code`. No lock held.
+fn post_gone(link: crate::port_link::PortLink, r: u32, code: u16) {
+    if !link.is_none() {
+        let _ = crate::port::port_source_gone(link, crate::port::PortSourceKind::Endpoint(r), code);
+    }
+}
+
 /// Publish slot `i`'s identity word (under `ENDPOINTS`).
 fn publish(eps: &[Endpoint; MAX_ENDPOINTS], i: usize) {
     let e = &eps[i];
@@ -182,6 +314,7 @@ fn publish(eps: &[Endpoint; MAX_ENDPOINTS], i: usize) {
 fn unpublish(eps: &mut [Endpoint; MAX_ENDPOINTS], i: usize) {
     eps[i] = Endpoint::empty();
     LOOKUP[i].store(0, Ordering::Release);
+    SENDERS[i].store(0, Ordering::Release);
     HELD[i].store(true, Ordering::Relaxed);
     glue::close(i);
 }
@@ -367,6 +500,7 @@ fn create_core(owner_tid: u32, name: Option<&[u8]>, quota: bool) -> Option<u32> 
             e.name_len = n.len() as u8;
         }
         eps[slot] = e;
+        SENDERS[slot].store(u64::from(gen) << 32, Ordering::Release);
         publish(&eps, slot);
         glue::open(slot, gen, owner_tid);
         return Some(LAYOUT.pack(slot as u32, gen));
@@ -626,14 +760,15 @@ pub fn endpoint_owner_ref(r: u32) -> Result<u32, EndpointCapError> {
 /// call is `Cap(Stale)` — the generation makes the reference dead, not the
 /// index.
 pub fn destroy_ref(r: u32) -> Result<(), EndpointCapError> {
-    let (i, owner) = {
+    let (i, owner, link) = {
         let mut eps = ENDPOINTS.lock_irqsave();
         let i = live_index(&eps, r)?;
-        let owner = eps[i].owner_tid;
+        let (owner, link) = (eps[i].owner_tid, eps[i].link);
         unpublish(&mut eps, i);
-        (i, owner)
+        (i, owner, link)
     };
     retire_after_drain(i, REVOKED, owner);
+    post_gone(link, r, CODE_REVOKED);
     Ok(())
 }
 
@@ -658,10 +793,12 @@ pub fn destroy_ref_as(r: u32, tid: u32) -> Result<(), EndpointCapError> {
     if eps[i].owner_tid != tid {
         return Err(EndpointCapError::NotOwner);
     }
+    let link = eps[i].link;
     unpublish(&mut eps, i);
     drop(eps);
     // The owner destroyed its own endpoint: its callers' calls end REVOKED.
     retire_after_drain(i, REVOKED, tid);
+    post_gone(link, r, CODE_REVOKED);
     Ok(())
 }
 
@@ -680,21 +817,28 @@ pub fn endpoint_release_all(tid: u32) {
     if tid == UNCLAIMED {
         return;
     }
-    let mut gone = [0u16; MAX_ENDPOINTS];
-    let mut n = 0usize;
-    {
-        let mut eps = ENDPOINTS.lock_irqsave();
-        for i in 0..MAX_ENDPOINTS {
-            if eps[i].active && eps[i].owner_tid == tid {
-                unpublish(&mut eps, i);
-                gone[n] = i as u16;
-                n += 1;
+    // One endpoint a hold (wave 15 N5b): each one's notice link is posted
+    // after its own hold, so nothing is buffered per endpoint.
+    let mut from = 0usize;
+    while from < MAX_ENDPOINTS {
+        let mut hit = None;
+        {
+            let mut eps = ENDPOINTS.lock_irqsave();
+            while from < MAX_ENDPOINTS && hit.is_none() {
+                let i = from;
+                from += 1;
+                if eps[i].active && eps[i].owner_tid == tid {
+                    hit = Some((i, LAYOUT.pack(i as u32, eps[i].generation), eps[i].link));
+                    unpublish(&mut eps, i);
+                }
             }
         }
-    }
-    // The server died: its callers' calls end PEER_DIED (wave 15 N5).
-    for &i in &gone[..n] {
-        retire_after_drain(i as usize, PEER_DIED, tid);
+        // The server died: its callers' calls end PEER_DIED (wave 15 N5), and
+        // a port its notices were bound to hears that the endpoint is gone.
+        if let Some((i, r, link)) = hit {
+            retire_after_drain(i, PEER_DIED, tid);
+            post_gone(link, r, CODE_PEER_DIED);
+        }
     }
 }
 
@@ -719,33 +863,43 @@ pub fn endpoint_orphan_all(tid: u32) -> usize {
         return 0;
     }
     let mut kept = 0usize;
-    // (slot, freed): a kept endpoint's calls end PEER_DIED as a freed one's
-    // do, so its successor starts with an empty queue.
-    let mut hit = [(0u16, false); MAX_ENDPOINTS];
-    let mut n = 0usize;
-    {
-        let mut eps = ENDPOINTS.lock_irqsave();
-        for i in 0..MAX_ENDPOINTS {
-            if eps[i].active && eps[i].owner_tid == tid {
+    // One endpoint a hold (wave 15 N5b), as `endpoint_release_all`.
+    let mut from = 0usize;
+    while from < MAX_ENDPOINTS {
+        let mut hit = None;
+        {
+            let mut eps = ENDPOINTS.lock_irqsave();
+            while from < MAX_ENDPOINTS && hit.is_none() {
+                let i = from;
+                from += 1;
+                if !(eps[i].active && eps[i].owner_tid == tid) {
+                    continue;
+                }
+                // The dead server's notice binding goes with it, kept or not:
+                // its successor binds its own.
+                let (r, link) = (LAYOUT.pack(i as u32, eps[i].generation), eps[i].link);
                 if eps[i].name_len > 0 {
                     eps[i].owner_tid = UNCLAIMED;
+                    eps[i].link = crate::port_link::PortLink::NONE;
                     publish(&eps, i);
                     glue::set_owner(i, eps[i].generation, UNCLAIMED);
                     kept += 1;
-                    hit[n] = (i as u16, false);
+                    hit = Some((i, false, r, link));
                 } else {
                     unpublish(&mut eps, i);
-                    hit[n] = (i as u16, true);
+                    hit = Some((i, true, r, link));
                 }
-                n += 1;
             }
         }
-    }
-    for &(i, freed) in &hit[..n] {
-        if freed {
-            retire_after_drain(i as usize, PEER_DIED, tid);
-        } else {
-            glue::drain(i as usize, PEER_DIED, tid);
+        // (slot, freed): a kept endpoint's calls end PEER_DIED as a freed
+        // one's do, so its successor starts with an empty queue.
+        if let Some((i, freed, r, link)) = hit {
+            if freed {
+                retire_after_drain(i, PEER_DIED, tid);
+            } else {
+                glue::drain(i, PEER_DIED, tid);
+            }
+            post_gone(link, r, CODE_PEER_DIED);
         }
     }
     kept
@@ -856,6 +1010,10 @@ pub fn __endpoint_reset_for_tests() {
         eps.next_gen[i] = 1;
         LOOKUP[i].store(0, Ordering::Relaxed);
         HELD[i].store(false, Ordering::Relaxed);
+        SENDERS[i].store(0, Ordering::Relaxed);
+    }
+    for w in NOTICE.iter() {
+        w.store(0, Ordering::Relaxed);
     }
 }
 
@@ -884,6 +1042,63 @@ mod tests {
         crate::cap_store::reset(CLIENT);
         crate::cap_store::reset(THIRD);
         g
+    }
+
+    /// **Send capabilities (`WRITE` without `READ`) are counted exactly
+    /// through every way a table changes** (wave 15 N5b): a grant, a move that
+    /// keeps or lowers the rights (`RW` lowered to `WRITE` becomes a sender),
+    /// a kind-erased grant and slot clear under `with_table` (the fork copy's
+    /// path), a revoke, and the exit wipe (`cap_store::reset`). The server's
+    /// own `RW` is not a sender. The fall to zero marks a notice; a stale
+    /// capability of a destroyed endpoint changes nothing.
+    ///
+    /// **Canaries.** Skip the walk in `CapTable::clear_all`: the count stays 2
+    /// after `reset(THIRD)`. Count `RW` as a sender: the first count reads 1.
+    #[test]
+    fn send_capabilities_are_counted_exactly_through_every_table_change() {
+        use crate::cap::targets::Endpoint as Ep;
+        let _g = setup();
+        crate::cap::senders::set_hooks(sender_delta, flush_notices);
+        let r = endpoint_create(SERVER).unwrap();
+        let srv = objref::grant_packed::<Ep>(SERVER, CapPerms::RW_DUP, r).unwrap();
+        assert_eq!(senders_of(r), Some(0), "the server's RW is its receive right, not a sender");
+        let c = objref::grant_packed::<Ep>(CLIENT, CapPerms::WRITE.union(CapPerms::DUP), r).unwrap();
+        assert_eq!(senders_of(r), Some(1));
+        // A move that keeps WRITE keeps the count.
+        let moved = crate::cap_store::move_cap(CLIENT, THIRD, c.raw(), None).unwrap();
+        assert_eq!(senders_of(r), Some(1), "a move is not a new sender");
+        // The server's RW moved with its rights lowered to WRITE: a sender now.
+        crate::cap_store::move_cap(SERVER, CLIENT, srv.raw(), Some(CapPerms::WRITE)).unwrap();
+        assert_eq!(senders_of(r), Some(2));
+        // The fork copy's path: a kind-erased grant and a slot clear.
+        let h = crate::cap_store::with_table(THIRD, |t| t.grant_raw(CapKind::Endpoint, CapPerms::WRITE, r))
+            .flatten()
+            .unwrap();
+        assert_eq!(senders_of(r), Some(3));
+        crate::cap_store::with_table(THIRD, |t| t.clear_slot(h.slot() as usize));
+        assert_eq!(senders_of(r), Some(2));
+        // The exit wipe counts THIRD's out.
+        let _ = moved;
+        crate::cap_store::reset(THIRD);
+        assert_eq!(senders_of(r), Some(1), "the table wipe did not count its send capability out");
+        assert_eq!(NOTICE[0].load(Ordering::Relaxed), 0, "no notice with a sender left");
+        // Fork inheritance: a child of the server (THIRD, its table wiped
+        // above) gets a WRITE capability, a sender; its exit wipe
+        // takes it back.
+        assert_eq!(endpoint_inherit_at_fork(SERVER, THIRD), 1);
+        assert_eq!(senders_of(r), Some(2), "the fork grant is a sender");
+        crate::cap_store::reset(THIRD);
+        assert_eq!(senders_of(r), Some(1));
+        // CLIENT's: the last one. Its fall to zero marked a notice, and the
+        // flush after the revoke took it (the endpoint is bound to no port).
+        crate::cap_store::reset(CLIENT);
+        assert_eq!(senders_of(r), Some(0));
+        // A stale capability (another endpoint once at this index) counts
+        // for nothing.
+        let stale = objref::grant_packed::<Ep>(CLIENT, CapPerms::WRITE, r).unwrap();
+        destroy_ref(r).unwrap();
+        crate::cap_store::revoke(CLIENT, stale);
+        assert_eq!(senders_of(r), None);
     }
 
     /// The reference a capability carries resolves to the task that created

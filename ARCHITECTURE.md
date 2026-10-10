@@ -399,6 +399,18 @@ address.
   table of `IPC_FAST_SLOTS` slots under one lock is used instead
   (`fast_ipc.rs`): a call that finds no free slot fails, the server scans the
   table for its work, and a call whose server died returns -1.
+  With Kconfig `IPC_PORT_NOTICES`, the kernel counts each endpoint's send
+  capabilities: `Cap<Endpoint>`s with `WRITE` and without `READ` (`READ` is
+  the right to serve, so the server's own `RW` is not one). The count changes
+  where a table slot is written or cleared (`cap.rs`, `cap::senders`), so it
+  stays exact through a grant, a move (one that lowers `RW` to `WRITE` adds a
+  sender), a revoke, the fork copy and the table wipe at a task's exit; the
+  fast call itself does no capability operation unless it moves one. The
+  serving task may bind its endpoint to an event port (`SYS_PORT_BIND_TYPED`
+  source 4, `READ` and serving required). When the count falls to zero the
+  port reports one no-senders event (code `ENOSENDERS`), posted after the
+  table lock is released; a bind made when there is no sender reports one at
+  once.
 - **Channels.** Asynchronous queues of small fixed-size messages.
 - **Shared memory and rings.**
   - Shared-memory regions can be mapped by several tasks.
@@ -416,8 +428,15 @@ address.
   - Single-producer single-consumer rings in a shared region carry data
     between tasks and from kernel sensor streams to ring 3.
 - **Notifications.** A futex-style wait and wake on a word in a
-  shared-memory region. Event ports multiplex channels, rings, timers and
-  interrupts.
+  shared-memory region. Event ports multiplex channels, rings, timers,
+  interrupts and endpoint notices. An event is 16 bytes: key, source type,
+  a code (a positive errno for a notice, 0 otherwise) and the source's
+  handle. With Kconfig `IPC_PORT_NOTICES`, a bound channel, ring, endpoint
+  or interrupt that is destroyed, or whose owner dies, reports one
+  source-gone event (code `EREVOKED` or `EPEERDIED`) held in its own source
+  slot, so it is never dropped, and the slot is freed when the event is
+  taken: a task waiting on the port is woken rather than left waiting for a
+  source that no longer exists.
 - **Futex table.** Every futex-style waiter, native or Linux, is filed in
   one table of hashed buckets. A process-private word is keyed by (process,
   address) and hashes into its process's bank of buckets; a word in a
