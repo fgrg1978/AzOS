@@ -17074,7 +17074,9 @@ PYEOF
             forbidden="$(grep -aE -m1 -- "$USH_FORBID" "$log" | tr -d '\r')"
         fi
         # `USH_FAULTS=N`: the scenario faults on purpose N times (LXHELLO's
-        # `mprot:` checks fork a child that stores to read-only memory).
+        # `mprot:` checks fork a child that stores to read-only memory: a
+        # PROT_READ mapping, an mprotect(PROT_READ) page and the vDSO page,
+        # three per LXHELLO run).
         # Exactly N kills and 2N `PAGE FAULT` lines, compared as strings
         # (`grep -c` into `-eq` skips the check on a grep error).
         if [ -n "${USH_FAULTS:-}" ]; then
@@ -17470,7 +17472,7 @@ echo after-bb \$?" 240 \
             # while LXHELLO (which starts with TPIDR_EL0 = 0) runs, then
             # BusyBox forks again. Its thread pointer must be its own when it
             # resumes (LXHELLO sets its own and checks it, too).
-            USH_SMP=1 USH_DISK=busybox USH_FAULTS=2 USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+            USH_SMP=1 USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                 "!busybox sh -c 'sleep 2; echo tls-\$(echo kept)' &
 lxhello
 #wait tls-kept" 240 \
@@ -17537,7 +17539,7 @@ echo after-bb-int \$?"
             # exec is refused and recorded, and LXHELLO never runs. Canary
             # `linux-exec-row-canary`: the launch check compiled out, the
             # exec goes through without the grant.
-            USH_DISK=busybox USH_FAULTS=2 USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
+            USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
                 "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
 echo after-x \$?" 180 \
                 "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" \
