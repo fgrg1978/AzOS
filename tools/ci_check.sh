@@ -6295,9 +6295,46 @@ panic_splice_verdict() {
         pass)   [ "$got" = "whole 1/2:2 live" ] || echo "want whole 1/2:2 live, got: $got" ;;
         stop)   [ "$got" = "whole 0/2:1 2 live" ] || echo "want whole 0/2:1 2 live (canary), got: $got" ;;
         splice) case "$got" in "spliced "*" live") ;; *) echo "want spliced live (canary), got: $got" ;; esac ;;
+        fatal)  [ "$got" = "whole 1/2:2 live" ] || echo "want whole 1/2:2 live, got: $got" ;;
+        fatalskip) case "$got" in "whole none live"|"spliced none live") ;; *) echo "want none live (canary), got: $got" ;; esac ;;
     esac
 }
-panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|splice> [kernel command line]
+# Wave 15 (GR6): the `[FATAL]` halt paths (a kernel page fault, an
+# unhandled trap) take the panic path's quiesce too (`panic::halt_begin`, on
+# every ISA): the same smoke in its `canary=panic-splice-fatal` mode, where
+# the culprit reads an unmapped stack guard page instead of panicking. Read
+# by `fatal_splice_judge`: the ISA's `[FATAL] ... kernel page fault` line
+# whole, the `[PANIC] other CPUs parked: 1/2 (not parked: cpu 2; ...)` line
+# only `halt_begin` prints, and the flood live up to the report.
+#   want fatal      whole 1/2:2 live
+#   want fatalskip  with canary panic-quiesce-skip: no parked line (`none`),
+#                   which is also what every halt path printed before GR6.
+fatal_splice_judge() { # fatal_splice_judge <log, \r stripped>: "<whole|spliced|nofatal> <parked n/m|none> <live|dead>"
+    local log="$1" rep=whole pk n=0 fl=dead b nb
+    grep -aqxE '\[FATAL\] (Kernel page fault on CPU 0 .* initiating shutdown|(aarch64|x86_64) kernel page fault: read/exec at 0x[0-9a-f]+ \((elr|rip)=0x[0-9a-f]+[ ,].*\))' "$log" || rep=spliced
+    local frag='\[FATAL\]\|\[PAGE FAULT\] CPU\|kernel page fault'
+    grep -aq "$frag" "$log" || rep=nofatal
+    pk="$(grep -a '^\[PANIC\] other CPUs parked: ' "$log" | sed -n \
+        -e '1s/^\[PANIC\] other CPUs parked: \([0-9]*\/[0-9]*\) (not parked: cpu \([0-9 ]*\);.*/\1:\2/p' \
+        -e '1s/^\[PANIC\] other CPUs parked: \([0-9]*\/[0-9]*\)$/\1/p' | sed -n 1p)"
+    [ -n "$pk" ] || pk=none
+    n="$(grep -ac '^\[FLOOD\] [0-9]\{6\} ' "$log")"
+    b="$(grep -an "$frag" "$log" | sed -n '1s/:.*//p')"
+    if [ -n "$b" ] && [ "$n" -ge 150 ]; then
+        nb="$(sed -n "1,$((b - 1))p" "$log" | grep -avc '^$')"
+        sed -n "1,$((b - 1))p" "$log" | grep -av '^$' | sed -n "$((nb > 6 ? nb - 6 : 1)),\$p" \
+            | qgrep -aq '\[FLOOD\]\|\[PANIC-SPLICE\] culprit faulting' && fl=live
+    fi
+    echo "$rep $pk $fl"
+}
+# splice_judge_for <want> <log>: the judge a want reads with.
+splice_judge_for() {
+    case "$1" in
+        fatal*) fatal_splice_judge "$2" ;;
+        *)      panic_splice_judge "$2" ;;
+    esac
+}
+panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|splice|fatal|fatalskip> [kernel command line]
     local label="$1" isa="$2" want="$3" app="${4:-}" why="" try=1 tries=1 pid i v
     printf "  %-26s" "${label}..."
     local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -6311,7 +6348,7 @@ panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|s
         kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
     fi
     par_ready
-    [ "$want" = pass ] || tries=$PANIC_SPLICE_TRIES
+    case "$want" in pass|fatal) ;; *) tries=$PANIC_SPLICE_TRIES ;; esac
     while [ "$try" -le "$tries" ]; do
         rm -f "$log"; : >"$log"
         if [ "$isa" = rv ]; then
@@ -6329,7 +6366,7 @@ panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|s
         done
         kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
-        v="$(panic_splice_judge "$log")"
+        v="$(splice_judge_for "$want" "$log")"
         why="$(panic_splice_verdict "$want" "$v")"
         [ -z "$why" ] && break
         try=$((try + 1))
@@ -6339,7 +6376,7 @@ panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|s
         ok; echo "      $v (boot $try)"; rm -f "$log"
     else
         bad; echo "      $why ($tries boot(s))"
-        grep -a -m1 -B2 -A7 'KERNEL PA\|!!! K' "$log" | sed 's/^/        /'
+        grep -a -m1 -B2 -A7 'KERNEL PA\|!!! K\|^\[FATAL\]' "$log" | sed 's/^/        /'
         echo "      log kept: $log"
     fi
 }
@@ -6349,6 +6386,10 @@ par_row panic_splice_row "panic: other CPUs parked, stop canary (rv)"         rv
 par_row panic_splice_row "panic: other CPUs parked, stop canary (arm)"        arm stop   "canary=panic-stop-skip"
 par_row panic_splice_row "panic: report spliced, quiesce canary (rv)"         rv  splice "canary=panic-quiesce-skip"
 par_row panic_splice_row "panic: report spliced, quiesce canary (arm)"        arm splice "canary=panic-quiesce-skip"
+par_row panic_splice_row "fatal: report not spliced by a console flood (rv)"  rv  fatal     "canary=panic-splice-fatal"
+par_row panic_splice_row "fatal: report not spliced by a console flood (arm)" arm fatal     "canary=panic-splice-fatal"
+par_row panic_splice_row "fatal: no quiesce, quiesce canary (rv)"             rv  fatalskip "canary=panic-splice-fatal,panic-quiesce-skip"
+par_row panic_splice_row "fatal: no quiesce, quiesce canary (arm)"            arm fatalskip "canary=panic-splice-fatal,panic-quiesce-skip"
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 
@@ -11988,7 +12029,7 @@ PY
     # ── Wave 15 (GR5): the panic report is not spliced (see the rv/arm rows,
     # `panic_splice_row`, for the property and the read). Same smoke and
     # canaries on x86_64, -smp 2; judged by `panic_splice_judge`.
-    x86_panic_splice_row() { # x86_panic_splice_row <label> <want: pass|stop|splice> [kernel command line]
+    x86_panic_splice_row() { # x86_panic_splice_row <label> <want: pass|stop|splice|fatal|fatalskip> [kernel command line]
         local label="$1" want="$2" app="${3:-}" why="" try=1 tries=1 v
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -11997,10 +12038,10 @@ PY
         x86_kbuild "panic-splice-smoke" "$kimg" || { bad; echo "      make x86_64 (panic-splice-smoke) did not build"; return; }
         par_ready
         local -a ap=(); [ -n "$app" ] && ap=(-append "$app")
-        [ "$want" = pass ] || tries=$PANIC_SPLICE_TRIES
+        case "$want" in pass|fatal) ;; *) tries=$PANIC_SPLICE_TRIES ;; esac
         while [ "$try" -le "$tries" ]; do
             x86_qemu "$kimg" "$log" 60 'Crash counter = |\[TRACE\] cpu0' -smp 3 ${ap[@]+"${ap[@]}"} || { rm -f "$kimg" "$kimg.features"; return; }
-            v="$(panic_splice_judge "$log")"
+            v="$(splice_judge_for "$want" "$log")"
             why="$(panic_splice_verdict "$want" "$v")"
             [ -z "$why" ] && break
             try=$((try + 1))
@@ -12010,7 +12051,7 @@ PY
             ok; echo "      $v (boot $try)"; rm -f "$log"
         else
             bad; echo "      $why ($tries boot(s))"
-            grep -a -m1 -B2 -A7 'KERNEL PA\|!!! K' "$log" | sed 's/^/        /'
+            grep -a -m1 -B2 -A7 'KERNEL PA\|!!! K\|^\[FATAL\]' "$log" | sed 's/^/        /'
             echo "      log kept: $log"
         fi
     }
@@ -12020,6 +12061,10 @@ PY
         "panic: other CPUs parked, stop canary (x86)" stop "canary=panic-stop-skip"
     par "panic: report spliced, quiesce canary (x86)" x86_panic_splice_row \
         "panic: report spliced, quiesce canary (x86)" splice "canary=panic-quiesce-skip"
+    par "fatal: report not spliced by a console flood (x86)" x86_panic_splice_row \
+        "fatal: report not spliced by a console flood (x86)" fatal "canary=panic-splice-fatal"
+    par "fatal: no quiesce, quiesce canary (x86)" x86_panic_splice_row \
+        "fatal: no quiesce, quiesce canary (x86)" fatalskip "canary=panic-splice-fatal,panic-quiesce-skip"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

@@ -106,8 +106,9 @@ pub extern "C" fn trap_resched(frame: &mut TrapFrame) {
     let _ld = azos_sync::lockdep::UserReturn::arm(|| (frame.sstatus as usize) & csr::SSTATUS_SPP == 0);
     let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize;
     if !irq_stack_intact(hart) {
-        azos_drv_sys::uart::console_bypass_for_halt();
+        crate::panic::halt_begin();
         azos_drv_sys::kerr!("[FATAL] Interrupt stack of hart {} overflowed its slot", hart);
+        crate::panic::halt_report();
         // Same ending as a kernel page fault: the motors stop before the
         // machine does. A corrupted stack is not a state to keep driving in.
         #[cfg(feature = "domain-robot")]

@@ -2160,6 +2160,88 @@ mod flight_recorder_rt {
             "{} pushed, {written} written, {dropped} dropped: a loss went uncounted", THREADS * PER);
         logger_shutdown();
     }
+
+    /// The interleaving behind `concurrent_producers_past_capacity_…`'s
+    /// rare "a loss went uncounted" (2 of 40 suite runs before the fix),
+    /// taken deterministically: producer A finds the ring full and evicts
+    /// the oldest record, and before A reloads the head another producer
+    /// (the hook's nested push) claims the slot A freed. A must evict again
+    /// for the next position: two records gone, and both must be counted.
+    /// Before the fix `ring_push` returned a `bool` and this counted 1.
+    ///
+    /// Other modules' tests (safety, payload, e-stop) log through the same
+    /// recorder under their own locks: a foreign flush can drain the ring
+    /// or a foreign push evict, inside this window. An attempt that saw the
+    /// ring not full is retried; the broken count is 1 on every attempt.
+    #[test]
+    fn an_eviction_whose_slot_is_stolen_is_counted_twice() {
+        let _g = begin(0x0A0B_0C10);
+        logger_init().expect("mount succeeds");
+        fn steal() { log_waypoint(-2, 1, 2, 0x22); }
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            for i in 0..LOG_RING_CAPACITY as i32 {
+                log_waypoint(i, !i, 1, 0x11);
+            }
+            if logger_ring_len() != LOG_RING_CAPACITY {
+                continue;
+            }
+            let d0 = logger_analytics().events_dropped;
+            set_ring_evict_hook_for_test(Some(steal));
+            log_waypoint(-3, 2, 3, 0x33);
+            // Disarmed whether it ran or not: never a later test's push.
+            set_ring_evict_hook_for_test(None);
+            let evicted = logger_analytics().events_dropped - d0;
+            seen.push(evicted);
+            if evicted == 2 && logger_ring_len() == LOG_RING_CAPACITY {
+                let _ = logger_flush();
+                let marks: Vec<u8> = decode_file(0).iter()
+                    .filter(|r| r.kind == LOG_EVT_WAYPOINT).map(|r| r.payload[10]).collect();
+                assert_eq!(&marks[marks.len() - 2..], &[0x22, 0x33], "the thief's record, then A's");
+                logger_shutdown();
+                return;
+            }
+        }
+        let _ = logger_flush();
+        logger_shutdown();
+        panic!("two pushes into a full ring evicted two records; counted per attempt: {seen:?}");
+    }
+
+    /// Stress, no consumer of its own: four producers into a saturated
+    /// ring, so nearly every push evicts and the stolen-slot window above
+    /// opens constantly (the bool count lost about half of them). Every
+    /// record pushed is on the medium or counted dropped. `>=`, as in the
+    /// test above it: a foreign test's push or flush in the same window
+    /// adds to the right side, never takes from it.
+    #[test]
+    fn a_saturated_ring_counts_every_eviction_under_contention() {
+        let _g = begin(0x0A0B_0C11);
+        logger_init().expect("mount succeeds");
+        const PER: u32 = 20_000;
+        const THREADS: u32 = 4;
+        const MARK: u8 = 0x44;
+        let d0 = logger_analytics().events_dropped as u64;
+        let go = std::sync::Arc::new(std::sync::Barrier::new(THREADS as usize));
+        let pushers: Vec<_> = (0..THREADS).map(|t| {
+            let go = go.clone();
+            std::thread::spawn(move || {
+                go.wait();
+                for i in 0..PER {
+                    log_waypoint(((t << 24) | i) as i32, 0, 0, MARK);
+                }
+            })
+        }).collect();
+        for p in pushers { p.join().unwrap(); }
+        let _ = logger_flush();
+        assert_eq!(logger_ring_len(), 0);
+        let dropped = logger_analytics().events_dropped as u64 - d0;
+        let written = decode_file(0).iter()
+            .filter(|r| r.kind == LOG_EVT_WAYPOINT && r.payload[10] == MARK).count() as u64;
+        let pushed = (THREADS * PER) as u64;
+        logger_shutdown();
+        assert!(written + dropped >= pushed,
+            "{pushed} pushed, {written} written, {dropped} dropped: a loss went uncounted");
+    }
 }
 
 #[cfg(test)]

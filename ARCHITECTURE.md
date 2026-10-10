@@ -655,8 +655,9 @@ Each boot opens a new file whose serial number continues from the highest one
 on disk.
 Records first go into a lock-free ring in RAM (`LOG_RING_ENTRIES`). A
 producer claims a slot with one compare-and-swap and never waits for a lock.
-When the ring is full, the new record evicts the oldest one, and the loss is
-counted. Records leave the ring only once the medium has taken them.
+When the ring is full, the new record evicts the oldest one, and every record
+evicted is counted (a producer can lose the slot it freed to another producer
+and evict again). Records leave the ring only once the medium has taken them.
 The `log-flush` task writes the ring to disk (`LOG_FLUSHER_PRIORITY`, outside
 the real-time band). The flush lock is a sleeping lock without priority
 inheritance, and no real-time task takes it.
@@ -676,7 +677,9 @@ parks the CPU once the panic flag is set, and waits up to
 out first and the report starts on a fresh line, so no other CPU's output
 can splice it; it names any CPU that did not park. A second CPU that panics
 meanwhile parks instead of printing. The console is released once the report's
-core lines are out, before the crash-log write.
+core lines are out, before the crash-log write. The `[FATAL]` halts (a kernel
+page fault, an unhandled trap) take the same steps before they print, on
+every ISA, and the console owner never waits for the UART lock.
 
 **Crash log.** The panic handler first writes a record to a reserved RAM
 area, then appends the report to `/fat/CRASH.LOG`. If the append fails, the

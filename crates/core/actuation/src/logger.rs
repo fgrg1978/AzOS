@@ -832,12 +832,18 @@ fn ring_len() -> usize {
     head.saturating_sub(tail).min(RING_CAP) as usize
 }
 
-/// Push one record; `false` when it had to evict the oldest record to fit
-/// (the caller counts the loss). Never blocks.
-fn ring_push(rec: &LogRecord) -> bool {
+/// Push one record; returns how many records it evicted to fit (the caller
+/// counts each one as a loss). Never blocks.
+///
+/// A count, not a flag: a producer that frees a slot by eviction can lose
+/// that slot to another producer, which claims it first, and then has to
+/// evict again for the next position. Each eviction is one record gone; a
+/// `bool` counted the two as one (behavior-tests
+/// `flight_recorder_rt::an_eviction_whose_slot_is_stolen_is_counted_twice`).
+fn ring_push(rec: &LogRecord) -> u32 {
     let mut buf = [0u8; LOG_RECORD_SIZE];
     rec.encode(&mut buf);
-    let mut evicted = false;
+    let mut evicted = 0u32;
     // Claim and publish without being preempted: a consumer or a lapping
     // producer that finds this slot claimed-but-unpublished waits for it
     // (`ring_peek`, the `seq == old` arm below), and that wait must stay a
@@ -860,7 +866,7 @@ fn ring_push(rec: &LogRecord) -> bool {
                         w.store(u64::from_le_bytes(b), Ordering::Relaxed);
                     }
                     slot.seq.store(pos + 1, Ordering::Release);
-                    return !evicted;
+                    return evicted;
                 }
                 Err(now) => pos = now,
             }
@@ -872,7 +878,9 @@ fn ring_push(rec: &LogRecord) -> bool {
             if seq == old + 1 {
                 if RING_TAIL.compare_exchange(old, old + 1, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
                     slot.seq.store(pos, Ordering::Release);
-                    evicted = true;
+                    evicted += 1;
+                    #[cfg(test)]
+                    ring_after_evict_hook();
                 }
             } else {
                 core::hint::spin_loop();
@@ -1643,9 +1651,9 @@ pub fn logger_analytics_reset() {
 fn push_event(kind: u8, flags: u8, payload: [u8; LOG_PAYLOAD_BYTES]) {
     if !LOG_ACTIVE.load(Ordering::Acquire) { return; }
     let rec = LogRecord { ts: now_ticks(), kind, flags, payload };
-    let accepted = ring_push(&rec);
-    if !accepted {
-        LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+    let evicted = ring_push(&rec);
+    if evicted != 0 {
+        LOG_DROPPED.fetch_add(evicted, Ordering::Relaxed);
     }
 }
 
@@ -2067,4 +2075,28 @@ pub fn logger_current_serial() -> u32 {
 #[cfg(test)]
 pub fn set_serial_for_test(n: u32) {
     LOG_SERIAL.store(n, Ordering::Relaxed);
+}
+
+/// Run once by the next producer that evicts, right after it freed the
+/// slot and before it reloads the head: the window in which another
+/// producer can claim that slot. Test-only, compiled out like
+/// [`set_serial_for_test`]; it lets a host test take that window
+/// deterministically (a nested push from the hook is the other producer).
+#[cfg(test)]
+static RING_EVICT_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub fn set_ring_evict_hook_for_test(f: Option<fn()>) {
+    RING_EVICT_HOOK.store(f.map_or(0, |f| f as usize), Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn ring_after_evict_hook() {
+    let f = RING_EVICT_HOOK.swap(0, Ordering::SeqCst);
+    if f != 0 {
+        // SAFETY: only `set_ring_evict_hook_for_test` stores a non-zero
+        // value, and it stores a `fn()`.
+        let f: fn() = unsafe { core::mem::transmute::<usize, fn()>(f) };
+        f();
+    }
 }

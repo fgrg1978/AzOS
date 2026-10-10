@@ -389,9 +389,10 @@ fn handle_page_fault(frame: &mut TrapFrame) {
         page_fault_note_lease(fault_va, show);
         azos_sched::scheduler::task_exit_by_signal(azos_abi::exit_status::KILLED_SEGV);
     }
-    azos_drv_sys::uart::console_bypass_for_halt();
+    crate::panic::halt_begin();
     azos_drv_sys::kerr!("[FATAL] x86_64 kernel page fault: {} at {:#x} (rip={:#x}, error={:#x})",
         if write { "write" } else { "read/exec" }, fault_va, frame.rip, frame.error_code);
+    crate::panic::halt_report();
     fatal_halt();
 }
 
@@ -461,8 +462,9 @@ fn handle_exception(frame: &mut TrapFrame) {
         };
         azos_sched::scheduler::task_exit_by_signal(code);
     }
-    azos_drv_sys::uart::console_bypass_for_halt();
+    crate::panic::halt_begin();
     print_trap(frame, "unhandled exception");
+    crate::panic::halt_report();
     fatal_halt();
 }
 

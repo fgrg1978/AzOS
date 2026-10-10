@@ -1787,7 +1787,7 @@ fn handle_page_fault(frame: &mut TrapFrame) {
     // EL1 (kernel) fault: not recoverable on this milestone. Report and
     // park, same as any other unhandled trap class. Bypass first, so none of
     // it is parked behind a ring-3 console owner.
-    azos_drv_sys::uart::console_bypass_for_halt();
+    crate::panic::halt_begin();
     azos_drv_sys::kerr!();
     // `lr` is printed on purpose: the faulting PC is almost always inside
     // `memcpy`/`memset`, and the caller is what identifies the bug. Five of
@@ -1795,6 +1795,7 @@ fn handle_page_fault(frame: &mut TrapFrame) {
     // migration were located this way in one boot each.
     azos_drv_sys::kerr!("[FATAL] aarch64 kernel page fault: {} at {:#x} (elr={:#x} lr={:#x})",
         if write { "write" } else { "read/exec" }, fault_va, frame.elr_el1, frame.regs[30]);
+    crate::panic::halt_report();
     fatal_halt();
 }
 
@@ -1896,9 +1897,10 @@ fn print_trap(frame: &TrapFrame, what: &str) {
 /// Report-and-park path — the ENTIRE trap policy before this task, and
 /// still what every trap class gets that is not a synchronous EL0 fault.
 fn unhandled_trap(frame: &mut TrapFrame) -> ! {
-    azos_drv_sys::uart::console_bypass_for_halt();
+    crate::panic::halt_begin();
     print_trap(frame, "unhandled trap");
     azos_drv_sys::kerr!("[AARCH64-TRAP] halting — unhandled trap class");
+    crate::panic::halt_report();
 
     // U01-3: same shutdown tail as the EL1 page-fault arm above, not a
     // one-hart `wfi` loop — see `fatal_halt`'s doc comment.

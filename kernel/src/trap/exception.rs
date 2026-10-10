@@ -419,8 +419,9 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame, cause: usize) -> usize {
             } else {
                 // S-mode (kernel) fault: this is a kernel bug. Nothing here is
                 // recoverable, so this branch prints everything unconditionally.
-                // First, so none of it is parked behind a ring-3 console owner.
-                azos_drv_sys::uart::console_bypass_for_halt();
+                // First, so none of it is parked behind a ring-3 console owner
+                // or spliced by another CPU's lines (`panic::halt_begin`).
+                crate::panic::halt_begin();
                 azos_drv_sys::kerr!();
                 azos_drv_sys::kerr!("[PAGE FAULT] CPU {} — {} at {:#x}",
                     hart, trap::cause_str(cause), frame.stval);
@@ -433,6 +434,7 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame, cause: usize) -> usize {
                 azos_drv_sys::kerr!("  regs[1] (ra):  {:#x}", frame.regs[1]);
                 azos_drv_sys::kerr!("  regs[2] (sp):  {:#x}", frame.regs[2]);
                 azos_drv_sys::kerr!("  regs[8] (s0):  {:#x}", frame.regs[8]);
+                crate::panic::halt_report();
                 // AQ8: Dump trace buffer before dying — last chance for debugging.
                 azos_ipc::trace_dump(20);
                 // Emergency motor stop to prevent runaway
@@ -527,8 +529,9 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame, cause: usize) -> usize {
                 // motors to prevent a runaway and go down.
                 #[cfg(feature = "domain-robot")]
                 azos_robot::motor_cmd_publish(0, 0);
-                azos_drv_sys::uart::console_bypass_for_halt();
+                crate::panic::halt_begin();
                 azos_drv_sys::kerr!("[FATAL] Unhandled exception on CPU {} — shutdown", hart);
+                crate::panic::halt_report();
                 azos_arch::Boot::shutdown(&azos_arch::ARCH);
             }
         }

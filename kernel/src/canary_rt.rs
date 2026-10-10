@@ -125,6 +125,12 @@ pub(crate) const NAMES: &[&str] = &[
     // out while the other CPUs keep printing, as before wave 15 GR5 (row
     // `panic: report not spliced by a console flood` must splice).
     "panic-quiesce-skip",
+    // Not a canary: a mode of the `panic-splice-smoke` kernel (the command
+    // line is read only here, before paging). Its culprit takes a kernel
+    // page fault instead of panicking, so the `[FATAL]` halt path
+    // (`panic::halt_begin`) is the one judged (rows `fatal: ...`). With
+    // `panic-quiesce-skip` too, that report must splice.
+    "panic-splice-fatal",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

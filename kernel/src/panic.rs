@@ -39,7 +39,7 @@
 /// the reset path described above, which first prints the verdict and why.
 use core::panic::PanicInfo;
 use azos_arch::Cpu as _;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use azos_common::panic_policy::{self, Culprit, PanicContext, Policy, Verdict};
 
@@ -294,6 +294,56 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {
         azos_arch::ARCH.wfi();
+    }
+}
+
+/// The first call of every `[FATAL]` and unhandled-trap halt, on every ISA
+/// (riscv64 `trap/exception.rs` and `trap/interrupt.rs`, aarch64 and x86_64
+/// `entry/*.rs`): the reset path's steps before it prints, in its order.
+/// Interrupts masked; the panic flag up, which is what parks a CPU that takes
+/// the stop IPI or its next tick (`watchdog::halt_if_panicked`); the
+/// actuators stopped; the other CPUs stopped and the console claimed
+/// ([`quiesce`], Kconfig `PANIC_QUIESCE`); kernel output bypassing a ring-3
+/// owner. Before wave 15 GR6 these paths only took the bypass, so another
+/// CPU's lines spliced their report. The caller prints its report, then
+/// [`halt_report`], then halts.
+///
+/// Out of line and not `#[cold]`, with no return value: some callers are
+/// inlined into a trap entry every syscall takes (a cold callee reshapes
+/// the hot caller). What it stopped waits in [`HALT_STOP`].
+#[inline(never)]
+pub(crate) fn halt_begin() {
+    let _ = {
+        use azos_arch::Interrupts;
+        azos_arch::ARCH.disable_all()
+    };
+    azos_common::set_panicked();
+    azos_actuation::gate::run_panic_stop_hooks();
+    if let Some(stop) = quiesce(azos_arch::ARCH.hart_id()) {
+        HALT_STOP[0].store(stop.want, Ordering::Relaxed);
+        HALT_STOP[1].store(stop.parked, Ordering::Relaxed);
+        HALT_STOP[2].store(1, Ordering::Release);
+    }
+    azos_drv_sys::uart::console_bypass_for_halt();
+    // A fresh line: a parked CPU may have left a partial one on the wire.
+    azos_drv_sys::uart::puts("\n");
+}
+
+/// [`halt_begin`]'s [`Stopped`]: `want`, `parked`, and 1 once set. Only the
+/// CPU that owns the console writes it; every other halting CPU parks.
+static HALT_STOP: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+/// `[PANIC] other CPUs parked: <n>/<m>` after a halt's report (the panic
+/// report's line, so one reader serves both); nothing when the quiesce was
+/// off.
+#[inline(never)]
+pub(crate) fn halt_report() {
+    if HALT_STOP[2].load(Ordering::Acquire) == 1 {
+        Stopped {
+            want: HALT_STOP[0].load(Ordering::Relaxed),
+            parked: HALT_STOP[1].load(Ordering::Relaxed),
+        }
+        .report();
     }
 }
 

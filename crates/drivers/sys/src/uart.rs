@@ -1188,6 +1188,23 @@ fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
         // inside it (at the device) would make the reporting CPU's lock
         // tries fail — its TX-ring flush and its trace dump.
         wait_panic_owner();
+        if panic_owner_is_me() {
+            // A halt path that claimed the console (`[FATAL]`, an unhandled
+            // trap: `panic::halt_begin`) prints its report with `kerr!`. A
+            // CPU that did not park may hold the UART lock while it waits
+            // at the device for this report ([`hw_write`]): never wait for
+            // the lock here. Every other CPU's write is held at the device,
+            // so the line goes out whole without it.
+            match try_acquire() {
+                Some(_guard) => {
+                    // SAFETY: `_guard` holds the UART lock.
+                    unsafe { tx_state() }.flush_sync();
+                    emit(&mut |b: &[u8]| write_str_translated(b));
+                }
+                None => emit(&mut |b: &[u8]| write_str_translated(b)),
+            }
+            return;
+        }
         let _guard = acquire();
         // SAFETY: `_guard` holds the UART lock.
         unsafe { tx_state() }.flush_sync();
@@ -2080,6 +2097,12 @@ static PANIC_OWNER: AtomicUsize = AtomicUsize::new(0);
 fn panic_foreign() -> bool {
     let o = PANIC_OWNER.load(Ordering::Relaxed);
     o != 0 && o != azos_arch::Cpu::hart_id(&azos_arch::ARCH) + 1
+}
+
+/// This CPU owns the console for its panic or halt report.
+#[inline(always)]
+fn panic_owner_is_me() -> bool {
+    PANIC_OWNER.load(Ordering::Relaxed) == azos_arch::Cpu::hart_id(&azos_arch::ARCH) + 1
 }
 
 /// Wait while another CPU owns the console for its panic report. The panic

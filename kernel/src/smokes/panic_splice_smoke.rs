@@ -24,6 +24,12 @@
 //! whole, the parked count, and that the flood was running right up to the
 //! banner. Runtime canaries `panic-stop-skip` and `panic-quiesce-skip`
 //! (kernel/src/panic.rs `quiesce`).
+//!
+//! `canary=panic-splice-fatal` (wave 15, GR6) is a mode, not a canary: the
+//! culprit reads its own slot's unmapped stack guard page instead, so the
+//! kernel page fault's `[FATAL]` halt is judged (rows `fatal: report not
+//! spliced by a console flood`). That path takes the same quiesce
+//! (`panic::halt_begin`) on every ISA.
 
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -143,6 +149,14 @@ fn culprit_task(_: usize) {
     kprintln!("[PANIC-SPLICE] culprit panicking, {} flood lines out",
         FLOODED.load(Ordering::Acquire));
     let g = HELD.lock();
+    if *g == 0 && canary!("panic-splice-fatal") {
+        kprintln!("[PANIC-SPLICE] culprit faulting in the kernel");
+        // An address no kernel mapping covers on any ISA: a task stack's
+        // guard page (ktest `sched_stack_guards_unmapped`).
+        let bad = azos_sched::scheduler::stack_guard_addr(0) as *const u64;
+        // SAFETY: none; the fault is the point. The read never returns.
+        let _ = unsafe { core::ptr::read_volatile(bad) };
+    }
     if *g == 0 {
         panic!("panic-splice-smoke: deliberate panic while another CPU floods the console");
     }
