@@ -528,6 +528,76 @@ impl CapSlotCell {
 
 const _: () = assert!(CapSlotCell::encode(CapSlot::EMPTY) == 0, "an empty slot must encode as 0");
 
+// ── The second word of a slot (wave 15 N11, owner Q9) ───────────────────────
+//
+// A slot is 128 bits, CHERI-representable: the hot word above (kind 8 |
+// permissions 8 | generation 16 | resource 32, unchanged) and this extension
+// word. The hot word is the only one a v1 path reads; the extension word is
+// read only by the paths that need what it holds (the badge on a v2 call),
+// so the v1 fast call loads exactly what it loaded before.
+//
+//   ext bits  0..32  badge: the per-client identity a server sees on a call
+//                     through this capability (0: unbadged)
+//   ext bits 32..48  parent link: 1 + the slot this one was minted from in
+//                     the same table (0: none); reserved for the revocation
+//                     tree (L4), which will make it table-independent
+//   ext bits 48..56  rights width: eight more permission bits, reserved (0)
+//   ext bits 56..64  expiry: a coarse epoch, reserved (0: never)
+//
+// The rights byte of the hot word has no spare bit: "rights width" is the
+// byte here, read together with it once a right needs it.
+//
+// Kconfig CAP_SLOT_EXT: off, the extension array has no element, every slot
+// reads as `CapExt::NONE` and minting a badged capability is refused.
+
+/// Kconfig `CAP_SLOT_EXT`: slots carry the extension word.
+pub const SLOT_EXT: bool = azos_limits::CAP_SLOT_EXT;
+const EXT_SLOTS: usize = if SLOT_EXT { MAX_CAPS_PER_TASK } else { 0 };
+
+/// The extension word of a slot, decoded (see the layout above).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CapExt {
+    /// Per-client identity a server sees on a call through the capability.
+    pub badge: u32,
+    /// 1 + the slot this one was minted from (same table), 0 for none.
+    pub parent: u16,
+    /// Reserved: eight more permission bits.
+    pub rights_hi: u8,
+    /// Reserved: coarse expiry epoch, 0 for never.
+    pub expiry: u8,
+}
+
+impl CapExt {
+    /// No badge, no parent, nothing reserved in use.
+    pub const NONE: Self = CapExt { badge: 0, parent: 0, rights_hi: 0, expiry: 0 };
+
+    /// The word as stored.
+    #[inline(always)]
+    pub const fn encode(self) -> u64 {
+        (self.badge as u64)
+            | ((self.parent as u64) << 32)
+            | ((self.rights_hi as u64) << 48)
+            | ((self.expiry as u64) << 56)
+    }
+
+    /// The word decoded.
+    #[inline(always)]
+    pub const fn decode(w: u64) -> Self {
+        CapExt { badge: w as u32, parent: (w >> 32) as u16, rights_hi: (w >> 48) as u8, expiry: (w >> 56) as u8 }
+    }
+}
+
+const _: () = assert!(CapExt::NONE.encode() == 0, "a fresh extension word must encode as 0");
+const _: () = assert!(
+    MAX_CAPS_PER_TASK < u16::MAX as usize,
+    "the parent link stores 1 + a slot index in 16 bits"
+);
+/// Two words: the slot fits the 128 bits of a CHERI capability (Q9).
+const _: () = assert!(
+    core::mem::size_of::<CapSlotCell>() + core::mem::size_of::<u64>() == 16,
+    "a capability slot is 128 bits"
+);
+
 /// Layout of [`CapSlot::resource`] for the kinds that carry an object
 /// generation (RFC-0040 gap 1). Declared here rather than at the crate root so
 /// every host crate that `#[path]`-mounts this file compiles it as well.
@@ -701,6 +771,10 @@ pub struct CapTable {
     /// Send capabilities this table holds ([`senders`]): a wipe walks the
     /// table for them only when this is not 0. Writers only.
     senders: core::sync::atomic::AtomicU16,
+    /// Kconfig CAP_SLOT_EXT: each slot's extension word ([`CapExt`]), the
+    /// second half of its 128 bits. Written under the lock before the hot
+    /// word that publishes the grant; read lock-free by [`Self::ext_of`].
+    ext: [core::sync::atomic::AtomicU64; EXT_SLOTS],
 }
 
 impl CapTable {
@@ -712,6 +786,7 @@ impl CapTable {
             used: core::sync::atomic::AtomicU16::new(0),
             free_from: core::sync::atomic::AtomicU16::new(0),
             senders: core::sync::atomic::AtomicU16::new(0),
+            ext: [const { core::sync::atomic::AtomicU64::new(0) }; EXT_SLOTS],
         }
     }
 
@@ -814,6 +889,9 @@ impl CapTable {
             d.0.store(s.word(), core::sync::atomic::Ordering::Relaxed);
             s.0.store(0, core::sync::atomic::Ordering::Relaxed);
         }
+        for (d, s) in self.ext.iter().zip(from.ext.iter()) {
+            d.store(s.load(core::sync::atomic::Ordering::Relaxed), core::sync::atomic::Ordering::Relaxed);
+        }
         self.uncache_all();
         from.uncache_all();
         self.used.store(from.used.load(core::sync::atomic::Ordering::Relaxed), core::sync::atomic::Ordering::Release);
@@ -862,18 +940,38 @@ impl CapTable {
         perms: CapPerms,
         resource: u32,
     ) -> Option<CapHandle> {
+        self.grant_raw_ext(kind, perms, resource, CapExt::NONE)
+    }
+
+    /// [`grant_raw`](Self::grant_raw) with the slot's extension word
+    /// (Kconfig CAP_SLOT_EXT; ignored when it is off).
+    ///
+    /// The extension word is stored before the hot word that publishes the
+    /// grant, behind a release fence, and the hot word with release: a
+    /// lock-free [`ext_of`](Self::ext_of) that sees the new generation sees
+    /// this extension word, and one that read an older extension word sees
+    /// the hot word change under it and retries nothing (it answers `None`).
+    pub fn grant_raw_ext(
+        &self,
+        kind: CapKind,
+        perms: CapPerms,
+        resource: u32,
+        ext: CapExt,
+    ) -> Option<CapHandle> {
         if matches!(kind, CapKind::Null) {
             return None;
         }
         let slot = self.allocate_slot()?;
         let slot_idx = slot as usize;
         let next_gen = self.bump_generation(slot_idx)?;
-        self.slots[slot_idx].store(CapSlot {
-            kind,
-            perms,
-            generation: next_gen,
-            resource,
-        });
+        let s = CapSlot { kind, perms, generation: next_gen, resource };
+        if let Some(e) = self.ext.get(slot_idx) {
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            e.store(ext.encode(), core::sync::atomic::Ordering::Relaxed);
+            self.slots[slot_idx].0.store(CapSlotCell::encode(s), core::sync::atomic::Ordering::Release);
+        } else {
+            self.slots[slot_idx].store(s);
+        }
         self.note_sender(self.slots[slot_idx].word(), 1);
         self.note_used(slot_idx);
         // Every slot below this one was occupied or retired (the search
@@ -1221,6 +1319,65 @@ impl CapTable {
     /// promise is to refuse before touching the sender.
     pub fn has_free_slot(&self) -> bool {
         self.allocate_slot().is_some()
+    }
+
+    /// Slots a grant could still take: free and not retired. A transfer of
+    /// several capabilities checks this before the sender loses any.
+    pub fn free_slots(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|s| {
+                let w = s.word();
+                !CapSlotCell::w_occupied(w) && CapSlotCell::w_generation(w) < CapHandle::MAX_GENERATION
+            })
+            .count()
+    }
+
+    /// The extension word of the capability `handle` names (wave 15 N11), or
+    /// `None` when the handle is stale. Lock-free: the hot word is read
+    /// before and after the extension word, and a slot's generation never
+    /// repeats, so equal hot words mean the extension word belongs to them.
+    /// [`CapExt::NONE`] for every live handle when Kconfig CAP_SLOT_EXT is
+    /// off.
+    pub fn ext_of(&self, handle: CapHandle) -> Option<CapExt> {
+        use core::sync::atomic::Ordering;
+        let i = handle.slot() as usize;
+        let cell = azos_limits::nospec::get(&self.slots, i)?;
+        let w1 = cell.0.load(Ordering::Acquire);
+        if !CapSlotCell::w_occupied(w1) || CapSlotCell::w_generation(w1) != handle.generation() {
+            return None;
+        }
+        let Some(e) = self.ext.get(i) else { return Some(CapExt::NONE) };
+        let x = e.load(Ordering::Relaxed);
+        core::sync::atomic::fence(Ordering::Acquire);
+        if cell.0.load(Ordering::Relaxed) != w1 {
+            return None;
+        }
+        Some(CapExt::decode(x))
+    }
+
+    /// Mint, in this table, a badged copy of the unbadged endpoint
+    /// capability `handle` (wave 15 N11): the copy carries `badge`, the
+    /// rights `rights` (a subset of the source's, never more), and a parent
+    /// link to the source's slot. A server mints one per client and moves it
+    /// to the client; every call through it shows the server `badge`.
+    ///
+    /// Refused: a stale handle (`Stale`); a source that is not an endpoint
+    /// (`WrongKind`); a source without `DUP`, a badge of 0, a source that is
+    /// already badged (a badge is set once, never changed), rights the
+    /// source lacks, or Kconfig CAP_SLOT_EXT off (`MissingPerms`); no free
+    /// slot (`NoSpace`). Caller holds the table's lock.
+    pub fn mint_badged(&self, handle: CapHandle, badge: u32, rights: CapPerms) -> Result<CapHandle, CapError> {
+        let (kind, perms, resource) = self.peek_raw(handle).ok_or(CapError::Stale)?;
+        if !matches!(kind, CapKind::Endpoint) {
+            return Err(CapError::WrongKind);
+        }
+        let src = self.ext_of(handle).ok_or(CapError::Stale)?;
+        if !SLOT_EXT || badge == 0 || src.badge != 0 || !perms.contains(CapPerms::DUP) || !perms.contains(rights) {
+            return Err(CapError::MissingPerms);
+        }
+        let ext = CapExt { badge, parent: handle.slot() as u16 + 1, ..CapExt::NONE };
+        self.grant_raw_ext(kind, rights, resource, ext).ok_or(CapError::NoSpace)
     }
 
     /// Count slots retired by generation exhaustion — for diagnostics. A table

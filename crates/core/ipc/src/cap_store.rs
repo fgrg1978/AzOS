@@ -711,6 +711,8 @@ fn move_locked(
     rights: Option<CapPerms>,
 ) -> Result<CapHandle, CapError> {
     let (kind, perms, resource) = sender.peek_raw(handle).ok_or(CapError::Stale)?;
+    // The badge travels with the capability; the parent link is table-local.
+    let ext = crate::cap::CapExt { parent: 0, ..sender.ext_of(handle).ok_or(CapError::Stale)? };
     // `DUP` gates transfer to a different task (O3.4): checked before
     // anything is touched, same as the free-slot check below.
     if !perms.contains(crate::cap::CapPerms::DUP) {
@@ -734,7 +736,7 @@ fn move_locked(
         return Err(CapError::Stale);
     }
     let moved = receiver
-        .grant_raw(kind, granted, resource)
+        .grant_raw_ext(kind, granted, resource, ext)
         .ok_or(CapError::NoSpace)?;
     // Both locks still held: a revoke of the moved capability in the
     // receiver's table cannot run before its bindings follow it there.
@@ -819,4 +821,130 @@ pub fn occupied(tid: u32) -> usize {
 /// independent of whether the TID that used to own it still resolves.
 pub fn occupied_at_slot(idx: usize) -> usize {
     CAP_TABLES[idx].lock().occupied()
+}
+
+// ── Wave 15 N11: the capabilities of one message, all or nothing ────────────
+
+/// Kconfig `IPC_MSG_MAX_CAPS`: capabilities one message may carry.
+pub const MSG_MAX_CAPS: usize = azos_limits::IPC_MSG_MAX_CAPS as usize;
+const _: () = assert!(
+    MSG_MAX_CAPS <= azos_abi::ipc_msg::MSG_CAPS_MAX
+        && azos_limits::IPC_MSG_INLINE_WORDS as usize <= azos_abi::ipc_msg::MSG_WORDS_MAX,
+    "Kconfig IPC_MSG_MAX_CAPS / IPC_MSG_INLINE_WORDS past the descriptor's ABI ceilings"
+);
+
+/// One capability of a message descriptor, as the kernel takes it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CapXfer {
+    /// The sender's handle.
+    pub handle: CapHandle,
+    /// `false`: MOVE (the sender's handle goes stale). `true`: DUP, a copy
+    /// the sender keeps holding too.
+    pub dup: bool,
+    /// What the receiver gets: `None` the sender's rights, `Some(r)` a
+    /// subset of them (never more).
+    pub rights: Option<CapPerms>,
+}
+
+/// Transfer every capability `xs` names from `from_tid`'s table to
+/// `to_tid`'s, or none of them (wave 15 N11, the message descriptor's rule).
+/// The receiver's handles go to `out[..xs.len()]`, in order.
+///
+/// Everything is checked, under both tables' locks, before the sender loses
+/// anything: each handle live, each carrying `DUP` (any transfer to another
+/// task needs it), the rights asked a subset of those held, no slot named
+/// twice, and as many free slots in the receiver as entries. Then every
+/// entry lands. The badge travels with each capability (its extension word);
+/// the parent link does not (it is table-local).
+///
+/// On a refusal nothing is installed in the receiver. Without `keep` the
+/// MOVE entries that were live are consumed (revoked from the sender), so a
+/// failed send cannot leave the sender holding authority it meant to give
+/// away; with `keep` the sender's table is untouched. A sender and receiver
+/// that are the same task, or more than [`MSG_MAX_CAPS`] entries, are refused
+/// (`MissingPerms`) with nothing consumed.
+pub fn move_caps(
+    from_tid: u32,
+    to_tid: u32,
+    xs: &[CapXfer],
+    keep: bool,
+    out: &mut [CapHandle],
+) -> Result<usize, CapError> {
+    if xs.len() > MSG_MAX_CAPS || out.len() < xs.len() {
+        return Err(CapError::MissingPerms);
+    }
+    if xs.is_empty() {
+        return Ok(0);
+    }
+    loop {
+        let Some((from_idx, from_owner)) = slot_owner(from_tid) else { return Err(CapError::Stale) };
+        let Some((to_idx, to_owner)) = slot_owner(to_tid) else { return Err(CapError::Stale) };
+        if from_idx == to_idx {
+            return Err(CapError::MissingPerms);
+        }
+        let (lo, hi) = if from_idx < to_idx { (from_idx, to_idx) } else { (to_idx, from_idx) };
+        let lo_tab = CAP_TABLES[lo].lock();
+        let hi_tab = CAP_TABLES[hi].lock();
+        if !still_owned(from_idx, from_owner) || !still_owned(to_idx, to_owner) {
+            continue;
+        }
+        let (sender, receiver) = if from_idx == lo { (&*lo_tab, &*hi_tab) } else { (&*hi_tab, &*lo_tab) };
+        let r = move_caps_locked(sender, receiver, from_idx, to_idx, xs, out);
+        if r.is_err() && !keep {
+            for x in xs.iter().filter(|x| !x.dup) {
+                if let Some((kind, _, resource)) = sender.peek_raw(x.handle) {
+                    if sender.revoke_raw(x.handle) {
+                        cap_event(CapEvent::Revoked { slot: from_idx, kind, resource });
+                    }
+                }
+            }
+        }
+        return r;
+    }
+}
+
+/// [`move_caps`] with both tables locked and still their owners'.
+fn move_caps_locked(
+    sender: &CapTable,
+    receiver: &CapTable,
+    from_idx: usize,
+    to_idx: usize,
+    xs: &[CapXfer],
+    out: &mut [CapHandle],
+) -> Result<usize, CapError> {
+    // Phase 1: check every entry; nothing changes.
+    for (i, x) in xs.iter().enumerate() {
+        let (_, perms, _) = sender.peek_raw(x.handle).ok_or(CapError::Stale)?;
+        if !perms.contains(CapPerms::DUP) {
+            return Err(CapError::MissingPerms);
+        }
+        if let Some(want) = x.rights {
+            if !perms.contains(want) {
+                return Err(CapError::MissingPerms);
+            }
+        }
+        if xs[..i].iter().any(|y| y.handle.slot() == x.handle.slot()) {
+            return Err(CapError::MissingPerms);
+        }
+    }
+    if receiver.free_slots() < xs.len() {
+        return Err(CapError::NoSpace);
+    }
+    // Phase 2: every entry lands. Each step below was checked above under
+    // the locks still held, so none can fail; a failure would mean the
+    // locking changed, and is reported rather than assumed away.
+    for (x, o) in xs.iter().zip(out.iter_mut()) {
+        let (kind, perms, resource) = sender.peek_raw(x.handle).ok_or(CapError::Stale)?;
+        let ext = crate::cap::CapExt { parent: 0, ..sender.ext_of(x.handle).ok_or(CapError::Stale)? };
+        if !x.dup && !sender.revoke_raw(x.handle) {
+            return Err(CapError::Stale);
+        }
+        *o = receiver
+            .grant_raw_ext(kind, x.rights.unwrap_or(perms), resource, ext)
+            .ok_or(CapError::NoSpace)?;
+        if !x.dup {
+            cap_event(CapEvent::Moved { from: from_idx, to: to_idx, kind, resource });
+        }
+    }
+    Ok(xs.len())
 }

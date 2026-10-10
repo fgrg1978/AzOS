@@ -277,6 +277,97 @@ mod cap_store_tests {
         assert!(cap_store::move_cap(a.tid, b.tid, src2.raw(), None).is_ok(), "DUP held: the move succeeds");
     }
 
+    // ── Wave 15 N11: 128-bit slot, badge, all-or-nothing transfer ──────────
+
+    use crate::cap::targets::Endpoint;
+    use crate::cap::CapExt;
+    use crate::cap_store::CapXfer;
+    use azos_abi::cap::CapHandle;
+
+    fn badge_of(tid: u32, h: CapHandle) -> Option<u32> {
+        cap_store::with_table(tid, |t| t.ext_of(h).map(|e| e.badge)).flatten()
+    }
+
+    #[test]
+    fn a_badged_endpoint_cap_keeps_its_badge_across_a_move() {
+        let _g = guard();
+        let srv = fresh_task();
+        let cli = fresh_task();
+        let ep: Cap<Endpoint> = cap_store::grant(srv.tid, CapPerms::RW_DUP, 3).unwrap();
+        assert_eq!(badge_of(srv.tid, ep.raw()), Some(0), "a granted capability is unbadged");
+        let b = cap_store::with_table(srv.tid, |t| t.mint_badged(ep.raw(), 0xC11E, CapPerms::RW_DUP)).unwrap().unwrap();
+        assert_eq!(badge_of(srv.tid, b), Some(0xC11E));
+        let ext = cap_store::with_table(srv.tid, |t| t.ext_of(b)).flatten().unwrap();
+        assert_eq!(ext.parent, ep.raw().slot() as u16 + 1, "the copy links to its parent slot");
+        // A badge is set once; a badge of 0 is no badge; rights never grow.
+        let again = cap_store::with_table(srv.tid, |t| t.mint_badged(b, 9, CapPerms::RW_DUP)).unwrap();
+        assert_eq!(again, Err(CapError::MissingPerms));
+        let zero = cap_store::with_table(srv.tid, |t| t.mint_badged(ep.raw(), 0, CapPerms::RW_DUP)).unwrap();
+        assert_eq!(zero, Err(CapError::MissingPerms));
+        let ch: Cap<Channel> = cap_store::grant(srv.tid, CapPerms::RW_DUP, 1).unwrap();
+        let wrong = cap_store::with_table(srv.tid, |t| t.mint_badged(ch.raw(), 5, CapPerms::RW_DUP)).unwrap();
+        assert_eq!(wrong, Err(CapError::WrongKind));
+        let moved = cap_store::move_cap(srv.tid, cli.tid, b, None).unwrap();
+        assert_eq!(badge_of(cli.tid, moved), Some(0xC11E), "the badge is the client's identity");
+        let ext = cap_store::with_table(cli.tid, |t| t.ext_of(moved)).flatten().unwrap();
+        assert_eq!(ext, CapExt { badge: 0xC11E, ..CapExt::NONE }, "the parent link stays home");
+        assert_eq!(badge_of(srv.tid, b), None, "stale in the sender");
+    }
+
+    #[test]
+    fn a_message_transfer_lands_every_capability_or_none() {
+        let _g = guard();
+        let a = fresh_task();
+        let b = fresh_task();
+        let c0: Cap<Channel> = cap_store::grant(a.tid, CapPerms::RW_DUP, 10).unwrap();
+        let c1: Cap<Channel> = cap_store::grant(a.tid, CapPerms::RW_DUP, 11).unwrap();
+        let c2: Cap<Channel> = cap_store::grant(a.tid, CapPerms::RW_DUP, 12).unwrap();
+        let mv = |h: CapHandle| CapXfer { handle: h, dup: false, rights: None };
+        let mut out = [CapHandle(0); 4];
+        // One bad entry (no DUP right on it) refuses the whole message; with
+        // KEEP the sender still holds every capability, the receiver none.
+        let nodup: Cap<Channel> = cap_store::grant(a.tid, CapPerms::RW, 13).unwrap();
+        let xs = [mv(c0.raw()), mv(c1.raw()), mv(nodup.raw())];
+        assert_eq!(cap_store::move_caps(a.tid, b.tid, &xs, true, &mut out), Err(CapError::MissingPerms));
+        assert_eq!((cap_store::occupied(a.tid), cap_store::occupied(b.tid)), (4, 0));
+        // The same slot twice is refused.
+        let xs = [mv(c0.raw()), mv(c0.raw())];
+        assert_eq!(cap_store::move_caps(a.tid, b.tid, &xs, true, &mut out), Err(CapError::MissingPerms));
+        // All good: every one lands, rights attenuated where asked, DUP keeps.
+        let xs = [mv(c0.raw()), CapXfer { handle: c1.raw(), dup: true, rights: Some(CapPerms::READ) }, mv(c2.raw())];
+        assert_eq!(cap_store::move_caps(a.tid, b.tid, &xs, false, &mut out), Ok(3));
+        assert_eq!(cap_store::occupied(b.tid), 3);
+        assert_eq!(cap_store::get(a.tid, c0, CapPerms::READ), Err(CapError::Stale), "moved");
+        assert_eq!(cap_store::get(a.tid, c1, CapPerms::READ), Ok(11), "duplicated: still held");
+        let r1: Cap<Channel> = Cap::from_raw(out[1]);
+        assert_eq!(cap_store::get(b.tid, r1, CapPerms::WRITE), Err(CapError::MissingPerms), "attenuated");
+        assert_eq!(cap_store::get(b.tid, r1, CapPerms::READ), Ok(11));
+        // Without KEEP a refused message consumes the sender's MOVE entries.
+        let xs = [mv(c1.raw()), mv(nodup.raw())];
+        assert_eq!(cap_store::move_caps(a.tid, b.tid, &xs, false, &mut out), Err(CapError::MissingPerms));
+        assert_eq!(cap_store::get(a.tid, c1, CapPerms::READ), Err(CapError::Stale), "consumed");
+        assert_eq!(cap_store::occupied(b.tid), 3, "and nothing landed");
+    }
+
+    #[test]
+    fn a_message_needs_room_for_every_capability_before_any_moves() {
+        let _g = guard();
+        let a = fresh_task();
+        let b = fresh_task();
+        let c0: Cap<Channel> = cap_store::grant(a.tid, CapPerms::RW_DUP, 20).unwrap();
+        let c1: Cap<Channel> = cap_store::grant(a.tid, CapPerms::RW_DUP, 21).unwrap();
+        // Fill the receiver to one free slot.
+        let free = cap_store::with_table(b.tid, |t| t.free_slots()).unwrap();
+        for i in 0..free - 1 {
+            let _: Cap<Channel> = cap_store::grant(b.tid, CapPerms::RW, 1000 + i as u32).unwrap();
+        }
+        let xs = [CapXfer { handle: c0.raw(), dup: false, rights: None }, CapXfer { handle: c1.raw(), dup: false, rights: None }];
+        let mut out = [CapHandle(0); 2];
+        assert_eq!(cap_store::move_caps(a.tid, b.tid, &xs, true, &mut out), Err(CapError::NoSpace));
+        assert_eq!(cap_store::get(a.tid, c0, CapPerms::READ), Ok(20), "N-1 free: nothing moved");
+        assert_eq!(cap_store::get(a.tid, c1, CapPerms::READ), Ok(21));
+    }
+
     #[test]
     fn a_reused_slot_wipes_the_previous_owners_table() {
         let _g = guard();
