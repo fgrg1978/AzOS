@@ -11330,8 +11330,10 @@ PY
     # ipc_endpoint_many_callers_queue, ipc_endpoint_slot_reused_after_grace
     # (wave 15, N5: Kconfig IPC_ENDPOINT_QUEUES; canaries `ktest ipc
     # canary (rv|arm|x86)` and the rcu canaries' rcu-free-no-grace).
-    KTEST_N_RV=47
-    KTEST_N_ARM=47
+    # +1 futex_requeue_wakes_one_not_the_herd (wave 15, N9: Kconfig
+    # FUTEX_REQUEUE; canary `ktest futex canary (rv|arm|x86)`).
+    KTEST_N_RV=48
+    KTEST_N_ARM=48
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11696,6 +11698,14 @@ PY
     KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died"
     par "ktest ipc canary (rv)" ktest_row "ktest ipc canary (rv)" rv "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
     par "ktest ipc canary (arm)" ktest_row "ktest ipc canary (arm)" arm "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
+    # N9 (Kconfig FUTEX_REQUEUE, kernel/src/smokes/futex_requeue.rs), one boot
+    # of the pass row's kernel: `canary=futex-requeue-wake-all` (a requeue
+    # wakes every waiter on the condition word and moves none: the herd
+    # counter reads 6, futex_requeue_wakes_one_not_the_herd not ok).
+    KTEST_FUTEX_CANARIES="canary=futex-requeue-wake-all"
+    KTEST_FUTEX_CANARIED="futex_requeue_wakes_one_not_the_herd"
+    par "ktest futex canary (rv)" ktest_row "ktest futex canary (rv)" rv "" "$KTEST_FUTEX_CANARIED" "$KTEST_FUTEX_CANARIES"
+    par "ktest futex canary (arm)" ktest_row "ktest futex canary (arm)" arm "" "$KTEST_FUTEX_CANARIED" "$KTEST_FUTEX_CANARIES"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
@@ -11746,7 +11756,8 @@ PY
     # +1 link_key_hook_runs_unlocked (N3), as on rv and arm.
     # +5 the N4 RCU tests, as on rv and arm.
     # +4 the N5 endpoint tests, as on rv and arm.
-    KTEST_N_X86=49
+    # +1 the N9 futex requeue test, as on rv and arm.
+    KTEST_N_X86=50
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -11899,6 +11910,9 @@ PY
     # N5: see `ktest ipc canary (rv)`.
     par "ktest ipc canary (x86)" x86_ktest_row "ktest ipc canary (x86)" "" \
         "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
+    # N9: see `ktest futex canary (rv)`.
+    par "ktest futex canary (x86)" x86_ktest_row "ktest futex canary (x86)" "" \
+        "$KTEST_FUTEX_CANARIED" "$KTEST_FUTEX_CANARIES"
 
     # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
     #
@@ -17981,6 +17995,10 @@ echo after-lxthr \$?" 150 \
                 "lxthr: execve from a thread: the new image creates and joins a thread ok" \
                 "ended 3 other thread(s) before replacing its image" \
                 "lxthr: writev is one transfer: no other writer between its segments ok" \
+                "lxthr: pthread_cond_broadcast wakes every waiter ok" \
+                "lxthr: FUTEX_CMP_REQUEUE wakes one and moves the rest (herd counter 1) ok" \
+                "lxthr: FUTEX_CMP_REQUEUE refuses a changed word with EAGAIN ok" \
+                "lxthr: every requeued waiter runs after the target's wake ok" \
                 "lxthr: done failures=0" "after-lxthr 0"
             # Wave 13 (SIGNALS) canaries over the same run: a process-directed
             # signal always to the leader (which blocks it); a tgkill posted

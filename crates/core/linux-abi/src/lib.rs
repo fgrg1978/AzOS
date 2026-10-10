@@ -144,6 +144,8 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     (nr::SET_TID_ADDRESS, "set_tid_address", &[]),
     // Wave 13: `FUTEX_WAIT`/`FUTEX_WAKE` (and their `_BITSET` forms with a
     // full mask), private to the process.
+    // Wave 15 N9: FUTEX_REQUEUE / CMP_REQUEUE reach SYS_FUTEX_WAKE (a wake
+    // that moves the rest), so a profile that allows the wake allows them.
     (nr::FUTEX, "futex", &[k::SYS_FUTEX_WAIT as u16, k::SYS_FUTEX_WAKE as u16]),
     // Wave 15: the robust futex list walked at the thread's exit.
     (nr::SET_ROBUST_LIST, "set_robust_list", &[]),
@@ -816,6 +818,8 @@ pub mod clone {
 pub mod futex {
     pub const FUTEX_WAIT: u64 = 0;
     pub const FUTEX_WAKE: u64 = 1;
+    pub const FUTEX_REQUEUE: u64 = 3;
+    pub const FUTEX_CMP_REQUEUE: u64 = 4;
     pub const FUTEX_WAIT_BITSET: u64 = 9;
     pub const FUTEX_WAKE_BITSET: u64 = 10;
     pub const FUTEX_PRIVATE_FLAG: u64 = 128;

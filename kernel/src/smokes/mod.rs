@@ -87,6 +87,9 @@ pub(crate) mod rcu;
 // callers on one endpoint, the grace period before a slot is reused.
 #[cfg(feature = "ktest")]
 pub(crate) mod ipc_endpoint;
+// Wave 15 N9: the futex requeue wakes one waiter, not the herd.
+#[cfg(feature = "ktest")]
+pub(crate) mod futex_requeue;
 #[cfg(feature = "pi-flush-smoke")]
 pub(crate) mod pi_flush_probe;
 #[cfg(any(feature = "i3-smoke", feature = "ktest"))]

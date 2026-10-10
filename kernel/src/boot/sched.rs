@@ -121,6 +121,11 @@ pub(crate) fn install_sched_hooks() {
     if canary!("sched-class-invert") {
         azos_sched::sc::canary_invert_precedence();
     }
+    // Wave 15 N9 runtime canary: a futex requeue wakes every waiter and
+    // moves none (ktest `futex_requeue_wakes_one_not_the_herd`).
+    if canary!("futex-requeue-wake-all") {
+        azos_sched::futex::canary_requeue_wake_all();
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();

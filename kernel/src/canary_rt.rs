@@ -138,6 +138,9 @@ pub(crate) const NAMES: &[&str] = &[
     // crates/core/sched/src/sc.rs `pick_in_precedence`: the class walk runs
     // the precedence backwards, idle first (ktest `sched_class_precedence`).
     "sched-class-invert",
+    // sched/futex.rs: a futex requeue wakes every waiter on the source word
+    // and moves none, the herd (ktest `futex_requeue_wakes_one_not_the_herd`).
+    "futex-requeue-wake-all",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

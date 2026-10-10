@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <linux/futex.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -392,6 +394,90 @@ static void writev_atomic(void)
           made && w == WV_M && have == want && (long)r == WV_A1 + WV_A2 && run == WV_A1 + WV_A2);
 }
 
+/* Wave 15 N9: pthread_cond_broadcast wakes every waiter (musl moves them
+ * onto the mutex with FUTEX_REQUEUE), and a raw FUTEX_CMP_REQUEUE wakes one
+ * waiter and moves the rest: the herd counter reads 1 until the target word
+ * is woken. Same binary on Linux. */
+static pthread_mutex_t cv_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+static int cv_waiting, cv_go, cv_woken;
+
+static void *cv_waiter(void *a)
+{
+    pthread_mutex_lock(&cv_mu);
+    cv_waiting++;
+    while (!cv_go)
+        pthread_cond_wait(&cv, &cv_mu);
+    cv_woken++;
+    pthread_mutex_unlock(&cv_mu);
+    return a;
+}
+
+static int rq_cond, rq_mutex;
+static volatile int rq_ran;
+
+static long futex(int *w, int op, int val, long val2, int *w2, int val3)
+{
+    return syscall(SYS_futex, w, op | FUTEX_PRIVATE_FLAG, val, val2, w2, val3);
+}
+
+static void *rq_waiter(void *a)
+{
+    /* One wait: a return of 0 is a wake (on rq_cond, or on rq_mutex after
+     * the requeue moved it); the herd counter counts them. */
+    if (futex(&rq_cond, FUTEX_WAIT, 0, 0, 0, 0) == 0)
+        __atomic_fetch_add(&rq_ran, 1, __ATOMIC_ACQ_REL);
+    return a;
+}
+
+static void cond_broadcast(void)
+{
+    pthread_t t[NT];
+    int created = 0, joined = 0;
+    for (long i = 0; i < NT; i++)
+        if (pthread_create(&t[created], 0, cv_waiter, 0) == 0)
+            created++;
+    for (int spins = 0; spins < 500; spins++) {
+        pthread_mutex_lock(&cv_mu);
+        int n = cv_waiting;
+        pthread_mutex_unlock(&cv_mu);
+        if (n == created)
+            break;
+        nap_ms(2);
+    }
+    nap_ms(20); /* every waiter is inside its futex wait */
+    pthread_mutex_lock(&cv_mu);
+    cv_go = 1;
+    pthread_cond_broadcast(&cv);
+    pthread_mutex_unlock(&cv_mu);
+    for (int i = 0; i < created; i++)
+        if (pthread_join(t[i], 0) == 0)
+            joined++;
+    check("pthread_cond_broadcast wakes every waiter", created == NT && joined == NT && cv_woken == NT);
+
+    /* The herd: NT-1 raw waiters on rq_cond. */
+    created = joined = 0;
+    for (long i = 0; i < NT - 1; i++)
+        if (pthread_create(&t[created], 0, rq_waiter, 0) == 0)
+            created++;
+    nap_ms(50);
+    /* The word is still 0, so the compare passes. */
+    long rq = futex(&rq_cond, FUTEX_CMP_REQUEUE, 1, INT_MAX, &rq_mutex, 0);
+    nap_ms(50);
+    int ran_after_requeue = __atomic_load_n(&rq_ran, __ATOMIC_ACQUIRE);
+    long bad = futex(&rq_cond, FUTEX_CMP_REQUEUE, 1, INT_MAX, &rq_mutex, 7);
+    int bad_errno = errno;
+    long woke = futex(&rq_mutex, FUTEX_WAKE, INT_MAX, 0, 0, 0);
+    for (int i = 0; i < created; i++)
+        if (pthread_join(t[i], 0) == 0)
+            joined++;
+    printf("lxthr: requeue herd: returned=%ld ran=%d woke_after=%ld\n", rq, ran_after_requeue, woke);
+    check("FUTEX_CMP_REQUEUE wakes one and moves the rest (herd counter 1)",
+          created == NT - 1 && rq == NT - 1 && ran_after_requeue == 1 && woke == NT - 2);
+    check("FUTEX_CMP_REQUEUE refuses a changed word with EAGAIN", bad == -1 && bad_errno == EAGAIN);
+    check("every requeued waiter runs after the target's wake", joined == NT - 1 && rq_ran == NT - 1);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "exec-image") == 0)
@@ -456,6 +542,7 @@ int main(int argc, char **argv)
     leader_exit();
     exec_from_thread();
     writev_atomic();
+    cond_broadcast();
 
     printf("lxthr: done failures=%d\n", fails);
     fflush(stdout);

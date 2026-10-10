@@ -422,7 +422,7 @@ pub fn dispatch(
             azos_sched::group::set_current_clear_tid(a0);
             azos_sched::current_task_tid() as i64
         }
-        nr::FUTEX => sys_futex(a0, a1, a2, a3, a5),
+        nr::FUTEX => sys_futex(a0, a1, a2, a3, a4, a5),
         // No users on this kernel (POSIX subset rule 3): everyone is 0.
         nr::GETUID | nr::GETEUID | nr::GETGID | nr::GETEGID => 0,
         nr::CLONE => sys_clone(a0, a1, a2, a3, a4, sepc, user_sp, regs),
@@ -1337,14 +1337,20 @@ fn sys_exit_thread(code: u64) -> i64 {
     sys_exit_group(code)
 }
 
-/// `futex(uaddr, op, val, timeout, uaddr2, val3)` (wave 13): `FUTEX_WAIT`,
-/// `FUTEX_WAKE` and their `_BITSET` forms with the full mask, private to the
-/// process (`FUTEX_PRIVATE_FLAG` accepted, and implied). `FUTEX_WAIT`'s
-/// timeout is relative, `FUTEX_WAIT_BITSET`'s absolute on the monotonic
-/// clock. Requeue, priority-inheritance and wake-op forms are not answered.
-fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, val3: u64) -> i64 {
+/// `futex(uaddr, op, val, timeout, uaddr2, val3)` (wave 13; wave 15 N9):
+/// `FUTEX_WAIT`, `FUTEX_WAKE` and their `_BITSET` forms with the full mask,
+/// `FUTEX_REQUEUE` and `FUTEX_CMP_REQUEUE` (Kconfig `FUTEX_REQUEUE`).
+/// With `FUTEX_PRIVATE_FLAG` the key is the process's; without it, a word of
+/// a shm region the caller maps is keyed by the region (Kconfig
+/// `FUTEX_SHARED`, the notify calls' key) and any other word is the
+/// process's, as Linux keys a shared futex on private memory by its mm.
+/// `FUTEX_WAIT`'s timeout is relative, `FUTEX_WAIT_BITSET`'s absolute on
+/// the monotonic clock. Priority-inheritance and wake-op forms are not
+/// answered.
+fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64) -> i64 {
     use lx::futex::*;
     let cmd = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+    let private = op & FUTEX_PRIVATE_FLAG != 0;
     let bitset = cmd == FUTEX_WAIT_BITSET || cmd == FUTEX_WAKE_BITSET;
     if bitset && val3 & 0xffff_ffff != FUTEX_BITSET_MATCH_ANY {
         return unanswered(nr::FUTEX);
@@ -1367,15 +1373,74 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, val3: u64) -> i64 {
                     ticks
                 })
             };
+            let (key, kva) = match futex_word(uaddr, private) {
+                Ok(w) => w,
+                Err(e) => return e,
+            };
             reach(k::SYS_FUTEX_WAIT);
-            azos_sched::futex::wait(uaddr, val as u32, deadline, &crate::threads::read_u32)
+            azos_sched::futex::wait_key(key, val as u32, deadline, &|| futex_read(uaddr, kva))
         }
         FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+            let (key, _) = match futex_word(uaddr, private) {
+                Ok(w) => w,
+                Err(e) => return e,
+            };
             reach(k::SYS_FUTEX_WAKE);
-            azos_sched::futex::wake(uaddr, val.min(u32::MAX as u64) as u32)
+            azos_sched::futex::wake_key(key, val.min(u32::MAX as u64) as u32)
+        }
+        FUTEX_REQUEUE | FUTEX_CMP_REQUEUE if azos_sched::futex_table::REQUEUE => {
+            // `timeout` carries `val2` (nr_requeue) for these ops.
+            let (nr_wake, nr_requeue) = (val as u32 as i32, timeout as u32 as i32);
+            if nr_wake < 0 || nr_requeue < 0 {
+                return neg(le::EINVAL);
+            }
+            let (from, kva) = match futex_word(uaddr, private) {
+                Ok(w) => w,
+                Err(e) => return e,
+            };
+            let (to, _) = match futex_word(uaddr2, private) {
+                Ok(w) => w,
+                Err(e) => return e,
+            };
+            // A requeue is a wake that moves the rest: the wake's authority.
+            reach(k::SYS_FUTEX_WAKE);
+            let cmp = (cmd == FUTEX_CMP_REQUEUE).then_some(val3 as u32);
+            match azos_sched::futex::requeue(from, to, nr_wake as u32, nr_requeue as u32, cmp, &|| futex_read(uaddr, kva)) {
+                // Linux answers woken + requeued for both ops.
+                Ok((woken, moved)) => (woken + moved) as i64,
+                Err(e) => e,
+            }
         }
         _ => unanswered(nr::FUTEX),
     }
+}
+
+/// The futex-table key of the word at `uaddr`, and the kernel address of a
+/// shared word (0 for a private one, read through `copy_from_user`).
+fn futex_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, usize), i64> {
+    if uaddr & 3 != 0 {
+        return Err(neg(le::EINVAL));
+    }
+    if !private && azos_sched::futex_table::SHARED {
+        // The mapping is the process's, whichever thread asks (as notify).
+        let tid = azos_sched::current_proc_tid();
+        if let Some((region, off, phys)) = azos_ipc::shm::shm_resolve_mapped(tid, uaddr as usize) {
+            let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
+            return Ok((key, azos_mm::addr::phys_to_virt(phys)));
+        }
+    }
+    azos_sched::futex::private_key(uaddr).map(|key| (key, 0)).ok_or(neg(le::EFAULT))
+}
+
+/// Read the futex word: through its region's page for a shared word (the
+/// caller's mapping holds the region for the call), else from user memory.
+fn futex_read(uaddr: u64, kva: usize) -> Option<u32> {
+    if kva == 0 {
+        return crate::threads::read_u32(uaddr);
+    }
+    // SAFETY: `kva` is a 4-byte-aligned word of a region the caller maps
+    // (`futex_word`), which holds the page for the call.
+    Some(unsafe { &*(kva as *const core::sync::atomic::AtomicU32) }.load(core::sync::atomic::Ordering::Acquire))
 }
 
 /// `wait4(pid, wstatus, options, rusage)`: pid > 0 or -1; `WNOHANG` (1);
