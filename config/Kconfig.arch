@@ -267,7 +267,8 @@ choice
       HINT encoding that every RV64 executes as a no-op fence).
       probe: used when cpu@0's device tree declares zawrs; one load of a
       boot-set flag and a branch per wait step. n: the pause loop, no
-      branch (the VF2's U74 and the K1's X60 declare no Zawrs). require:
+      branch (the VF2/K1 default: the U74 and the X60 do not list Zawrs in
+      their upstream Linux device trees, jh7110.dtsi and k1.dtsi). require:
       the instruction is inlined, no branch; a hart without it is refused.
 
     config RV_ZAWRS_NEVER
@@ -288,8 +289,9 @@ choice
       instead of an `lr`/`sc` loop (five instructions and a retry branch).
       No global codegen flag: the kernel's other atomics keep LR/SC.
       probe: used when cpu@0's device tree declares zacas; one load of a
-      boot-set flag and a branch per CAS. n: LR/SC, no branch (the VF2's
-      U74 and the K1's X60 declare no Zacas). require: `amocas` inlined,
+      boot-set flag and a branch per CAS. n: LR/SC, no branch (the VF2/K1
+      default: the U74 and the X60 do not list Zacas in their upstream
+      Linux device trees, jh7110.dtsi and k1.dtsi). require: `amocas` inlined,
       no branch; a hart without it is refused.
 
     config RV_ZACAS_NEVER

@@ -91,8 +91,10 @@ pub trait SpinWait {
 
     /// One wait step: return once `*a` may differ from `expected`. May
     /// return early (an interrupt, a timeout, a store of the same value);
-    /// never stalls past a store that changes the word or a pending
-    /// interrupt, masked or not. The fallback is one `cpu_relax`.
+    /// never stalls past another CPU's store to the word. What else ends
+    /// the stall is the ISA's: Zawrs any pending interrupt, enabled or
+    /// not; WFE an unmasked interrupt or an event; UMWAIT its TSC deadline
+    /// or an interrupt. The fallback is one `cpu_relax`.
     #[inline(always)]
     fn wait_hint32(&self, a: &AtomicU32, expected: u32) {
         let _ = (a, expected);

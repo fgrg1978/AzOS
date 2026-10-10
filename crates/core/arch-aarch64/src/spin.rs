@@ -108,9 +108,11 @@ impl SpinWait for crate::api_impl::Aarch64 {
     }
 
     /// `SEVL; WFE` empties the event register, `LDAXR` arms the exclusive
-    /// monitor on the word, and the second `WFE` sleeps until another
-    /// observer's store clears the monitor (an event) or an interrupt is
-    /// pending, masked or not. Linux arm64's `__cmpwait`.
+    /// monitor on the word, and the second `WFE` sleeps until a wake-up
+    /// event: another observer's store clearing the monitor, a SEV, the
+    /// generic timer's event stream if enabled, or an interrupt PSTATE does
+    /// not mask (under `lock_irqsave` only the store wakes it, which is the
+    /// release this waits for). Linux arm64's `__cmpwait`.
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
     fn wait_hint32(&self, a: &AtomicU32, expected: u32) {

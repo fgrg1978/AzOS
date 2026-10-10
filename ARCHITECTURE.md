@@ -934,7 +934,8 @@ command line; every aarch64 boot in the gate uses the `Image`.
 - **Per-board defaults** say what a board has. QEMU uses rv64imac,
   Armv8.0 and x86-64-v2 with everything on `probe` (V is `n`). The VisionFive 2 uses
   rv64gc. The K1 uses rv64gcv with Zba/Zbb/Zbs and V set to `require`; both
-  boards set Zawrs and Zacas to `n`, which their cores lack. The
+  boards set Zawrs and Zacas to `n` (their cores' upstream device trees do
+  not list them). The
   Raspberry Pi 5 uses Armv8.2 with LSE set to `require` and PAuth, BTI, MTE
   and SVE set to `n`. A level that contains an extension forces `require` on
   it: Armv8.1 implies LSE, PAN and CRC32, 8.3 PAuth, 8.5 BTI, x86-64-v2 SSE4.2
