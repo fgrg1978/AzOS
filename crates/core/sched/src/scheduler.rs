@@ -9587,6 +9587,17 @@ pub fn ipc_wake_then_block(
 /// sleep on the reply to `handle`. The two predicates are the ones
 /// `wait::wake_fast_ipc_server` and the caller's own `task_block` use.
 pub fn fast_ipc_call_handoff(server_tid: u32, handle: u64) {
+    // Kconfig IPC_DIRECT_HANDOFF (N13): the one direct-switch helper. n folds
+    // this away and the path below is the one N5 measured.
+    if azos_sync::handoff::ENABLED {
+        ipc_handoff(
+            server_tid,
+            WaitReason::FastIpcServer(server_tid),
+            WaitReason::FastIpcClient(handle),
+            azos_sync::handoff::HandoffReason::IpcCall,
+        );
+        return;
+    }
     ipc_wake_then_block(
         server_tid,
         &|r| matches!(r, WaitReason::FastIpcServer(tid) if *tid == server_tid),
@@ -9599,11 +9610,177 @@ pub fn fast_ipc_call_handoff(server_tid: u32, handle: u64) {
 /// call. The predicates are `wait::wake_fast_ipc_client_tid`'s and the
 /// accept's own `task_block`.
 pub fn fast_ipc_reply_handoff(caller_tid: u32, handle: u64, server_tid: u32) {
+    if azos_sync::handoff::ENABLED {
+        ipc_handoff(
+            caller_tid,
+            WaitReason::FastIpcClient(handle),
+            WaitReason::FastIpcServer(server_tid),
+            azos_sync::handoff::HandoffReason::IpcReplyRecv,
+        );
+        return;
+    }
     ipc_wake_then_block(
         caller_tid,
         &|r| matches!(r, WaitReason::FastIpcClient(h) if *h == handle),
         WaitReason::FastIpcServer(server_tid),
     );
+}
+
+/// Kconfig IPC_DIRECT_HANDOFF (wave 15 N13): wake `tid` (blocked on exactly
+/// `expect`) and block the current task on `reason`, through the one
+/// direct-switch helper, `azos_sync::handoff::switch_to_direct`.
+///
+/// The helper's fixed signature carries the target and the reason only, not
+/// the exchange key, so the two wait reasons are staged for this CPU in
+/// [`HANDOFF_INTENT`] with interrupts masked from the staging to the switch;
+/// [`SchedHandoff`] reads them back. The predicate stays exact (by TID, then
+/// the exchange), never `FastIpcClient(_)`: a looser one could wake a caller
+/// already blocked on its NEXT call.
+///
+/// No lock is held here: the endpoint queue lock was released before the
+/// syscall arm called this (`ep_queue::call` / `reply_then_accept`), and the
+/// helper refuses with preemption disabled (a held `SpinLock`).
+///
+/// Refusals, and what is left to do for each (the old outcomes 1 and 2):
+/// `Disabled` / `LowerPriority` are decided before the wake, so the ordinary
+/// wake + block runs; `PeerNotWaiting` (stamped or mismatched), `OtherCpu`
+/// and `Preempted` (enqueued) come after the wake, so only the block is left.
+#[inline(never)]
+fn ipc_handoff(tid: u32, expect: WaitReason, reason: WaitReason, why: azos_sync::handoff::HandoffReason) {
+    use azos_sync::handoff::HandoffRefused as R;
+    let cpu = current_cpu_id();
+    if cpu < MAX_CPUS {
+        let sstatus = azos_arch::ARCH.disable_all();
+        // SAFETY: this CPU's slot, interrupts masked until the helper returns.
+        unsafe { (*HANDOFF_INTENT.0.get())[cpu] = (expect, reason) };
+        let r = azos_sync::handoff::switch_to_direct(tid, why);
+        azos_arch::ARCH.restore(sstatus);
+        match r {
+            Ok(()) => return,
+            Err(R::PeerNotWaiting | R::OtherCpu | R::Preempted) => {
+                block_current(cpu, reason);
+                return;
+            }
+            Err(R::Disabled | R::LowerPriority) => {}
+        }
+    }
+    wake_task_by_tid_ipc(tid, &|r| *r == expect);
+    block_current(cpu, reason);
+}
+
+/// Per CPU: `(target's wait reason, caller's block reason)` staged by
+/// [`ipc_handoff`] for [`SchedHandoff`]. Written and read only by the owning
+/// CPU with interrupts masked.
+struct HandoffIntent(core::cell::UnsafeCell<[(WaitReason, WaitReason); MAX_CPUS]>);
+// SAFETY: each CPU touches only its own slot, with interrupts masked.
+unsafe impl Sync for HandoffIntent {}
+static HANDOFF_INTENT: HandoffIntent =
+    HandoffIntent(core::cell::UnsafeCell::new([(WaitReason::None, WaitReason::None); MAX_CPUS]));
+
+/// `canary=handoff-any-prio`: [`SchedHandoff`] skips its "not less urgent"
+/// check (ktest `ipc_handoff_refuses_less_urgent_peer`). Read only when the
+/// target is less urgent, never on the taken path.
+static HANDOFF_ANY_PRIO: AtomicBool = AtomicBool::new(false);
+
+/// Arm the `handoff-any-prio` canary (boot, once).
+pub fn canary_handoff_any_prio() {
+    HANDOFF_ANY_PRIO.store(true, Ordering::Relaxed);
+}
+
+/// [`ipc_handoff`]'s staging and [`SchedHandoff`]'s switch, without the
+/// Kconfig gate and the counters, so ktest `ipc_handoff_refuses_less_urgent_peer`
+/// judges the implementation in a kernel built with IPC_DIRECT_HANDOFF n.
+/// Same preconditions as the production path. Not for production callers.
+#[doc(hidden)]
+pub fn handoff_try_for_test(
+    tid: u32,
+    expect: WaitReason,
+    reason: WaitReason,
+    why: azos_sync::handoff::HandoffReason,
+) -> Result<(), azos_sync::handoff::HandoffRefused> {
+    use azos_sync::handoff::DirectSwitch;
+    let cpu = current_cpu_id();
+    if cpu >= MAX_CPUS {
+        return Err(azos_sync::handoff::HandoffRefused::Disabled);
+    }
+    let sstatus = azos_arch::ARCH.disable_all();
+    // SAFETY: this CPU's slot, interrupts masked until the switch returns.
+    unsafe { (*HANDOFF_INTENT.0.get())[cpu] = (expect, reason) };
+    let r = SCHED_HANDOFF.switch_to_direct(tid, why);
+    azos_arch::ARCH.restore(sstatus);
+    r
+}
+
+/// The scheduler's [`azos_sync::handoff::DirectSwitch`] (wave 15 N13),
+/// registered at boot (`kernel/src/boot/sched.rs`); with Kconfig
+/// IPC_DIRECT_HANDOFF n the registration stores nothing and this is dropped.
+///
+/// The switch is the fast-IPC claim and dispatch tail
+/// (`wake_by_slot` claim + `direct_switch_block`, the same steps
+/// `ipc_wake_then_block` takes with `sched-ipc-affinity`): the target is
+/// claimed by the dispatch CAS, kept out of every queue only when
+/// [`ipc_direct::allowed`] says `do_schedule` would have picked it here, and
+/// the caller commits to `Blocked` with the K-C24 rescue before switching.
+/// Without `sched-ipc-affinity` (and for `FutexWake`, N9's experiment, not
+/// wired yet) it refuses with `Disabled` before any wake.
+pub struct SchedHandoff;
+
+/// The registered instance.
+pub static SCHED_HANDOFF: SchedHandoff = SchedHandoff;
+
+impl azos_sync::handoff::DirectSwitch for SchedHandoff {
+    fn switch_to_direct(
+        &self,
+        target: u32,
+        why: azos_sync::handoff::HandoffReason,
+    ) -> Result<(), azos_sync::handoff::HandoffRefused> {
+        use azos_sync::handoff::HandoffRefused as R;
+        #[cfg(not(feature = "sched-ipc-affinity"))]
+        {
+            let _ = (target, why);
+            Err(R::Disabled)
+        }
+        #[cfg(feature = "sched-ipc-affinity")]
+        // SAFETY: `PER_CPU[cpu]` with `cpu < MAX_CPUS`; `task_ref` of
+        // `idx_for_tid`'s answer and of this CPU's current (`< MAX_TASKS`).
+        unsafe {
+            use azos_sync::handoff::HandoffReason as W;
+            let cpu = current_cpu_id();
+            // Preconditions: task context with preemption on (no SpinLock
+            // held), interrupts masked by the stager, IPC reasons only.
+            if why == W::FutexWake || cpu >= MAX_CPUS || azos_sync::preempt::disabled() {
+                return Err(R::Disabled);
+            }
+            // Staged by `ipc_handoff` on this CPU, interrupts masked.
+            let (expect, reason) = (*HANDOFF_INTENT.0.get())[cpu];
+            let Some(ti) = idx_for_tid(target) else { return Err(R::PeerNotWaiting) };
+            let cur = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+            if cur >= MAX_TASKS {
+                return Err(R::Disabled);
+            }
+            // Not less urgent than the caller (lower number = more urgent).
+            // Runtime canary `handoff-any-prio` skips this check.
+            if task_ref(ti).priority.load(Ordering::Relaxed)
+                > task_ref(cur).priority.load(Ordering::Relaxed)
+                && !HANDOFF_ANY_PRIO.load(Ordering::Relaxed)
+            {
+                return Err(R::LowerPriority);
+            }
+            match wake_by_slot(Some(ti), &|r| *r == expect, true, cpu) {
+                // SAFETY: `cpu < MAX_CPUS`; `ti` was just claimed by this
+                // CPU's dispatch CAS, so nothing else dispatches it.
+                WakeOut::Claimed(ti) => {
+                    direct_switch_block(cpu, ti, reason);
+                    Ok(())
+                }
+                WakeOut::Enqueued => {
+                    let a = task_ref(ti).cpu_affinity;
+                    Err(if a >= 0 && a as usize != cpu { R::OtherCpu } else { R::Preempted })
+                }
+                WakeOut::NotWoken => Err(R::PeerNotWaiting),
+            }
+        }
+    }
 }
 
 /// K-C24 rescues that rang this hart's own doorbell (`do_schedule`'s Blocked
