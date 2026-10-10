@@ -2514,7 +2514,7 @@ mod console_ownership {
 
     /// No waiting for the line lock: the append-and-count path (an
     /// interrupt handler, a spinlock holder, an RT caller, the idle drain).
-    fn no_wait<G>() -> Option<fn() -> G> { None }
+    fn no_wait<G>() -> Option<fn() -> Option<G>> { None }
 
     /// `.0` is the UART spinlock; `.1` the line lock every console owner
     /// holds (`CONSOLE_LINE_LOCK` in the kernel).
@@ -3308,7 +3308,7 @@ mod console_ownership {
                 let mut emit = |sink: &mut dyn FnMut(&[u8])| sink(&own);
                 if wait {
                     kernel_print(&*lock, may_own(true, 0, false), || lock.1.try_lock().ok(),
-                                 Some(|| { waiting.store(true, Ordering::SeqCst); lock.1.lock().unwrap() }),
+                                 Some(|| { waiting.store(true, Ordering::SeqCst); Some(lock.1.lock().unwrap()) }),
                                  &mut put, &mut emit);
                 } else {
                     kernel_print(&*lock, may_own(true, 0, false), || lock.1.try_lock().ok(), no_wait(),

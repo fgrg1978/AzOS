@@ -584,9 +584,9 @@ pub fn owner_write<const N: usize, L: DeferLock<N>, R: FnMut(&[u8]), K: FnMut(&[
 ///   own and holds no sleeping lock: [`may_wait`]) never appends into less
 ///   than [`LINE_RESERVE`] free while another context owns the console or
 ///   holds the line lock: it waits for the line lock, then writes its line
-///   as that lock's holder, after everything deferred. Its line is queued
-///   or waited for, never dropped. Only callers that may not sleep drop,
-///   counted ([`drop_marker`]).
+///   as that lock's holder, after everything deferred. A line up to
+///   [`LINE_RESERVE`] bytes is queued or waited for, never dropped. Only
+///   callers that may not sleep drop, counted ([`drop_marker`]).
 ///
 /// `try_line` is called without `lock` held: in the kernel it takes a
 /// spinlock of its own, and nothing may be nested inside the UART lock.
@@ -600,12 +600,14 @@ pub fn kernel_print<const N: usize, L, G, T, W, K, E>(
 ) where
     L: DeferLock<N>,
     T: FnOnce() -> Option<G>,
-    W: FnOnce() -> G,
+    W: FnOnce() -> Option<G>,
     K: Wire + ?Sized,
     E: FnMut(&mut dyn FnMut(&[u8])) + ?Sized,
 {
     // `wait_line` (the line lock, WAITED for) is offered only to a writer
-    // that may sleep (see [`may_wait`]). Such a writer never drops its own
+    // that may own; it is called only on the slow path (a nearly full
+    // buffer) and answers `None` when the writer may not sleep after all
+    // (see [`may_wait`]: it holds a sleeping lock). Such a writer never drops its own
     // line: when the buffer has less than [`LINE_RESERVE`] free while
     // someone else owns the console, it waits for the owner's release
     // instead of appending into an overflow (XC, wave 15). Everyone else
@@ -640,15 +642,23 @@ pub fn kernel_print<const N: usize, L, G, T, W, K, E>(
                 if done {
                     return;
                 }
-                match wait_line {
-                    Some(w) => w(),
-                    None => return, // unreachable: `may_wait` implies Some
+                match wait_line.and_then(|w| w()) {
+                    Some(line) => line,
+                    None => {
+                        lock.with(|st| st.kernel_line(wire, emit));
+                        return;
+                    }
                 }
             }
         },
-        Next::Wait => match wait_line {
-            Some(w) => w(),
-            None => return, // unreachable: `may_wait` implies Some
+        Next::Wait => match wait_line.and_then(|w| w()) {
+            Some(line) => line,
+            None => {
+                // The writer declined to wait after all (it holds a sleeping
+                // lock): the append-and-count path.
+                lock.with(|st| st.kernel_line(wire, emit));
+                return;
+            }
         },
     };
     // Re-check: a helper may have emptied the residual meanwhile. Nobody
@@ -765,5 +775,5 @@ where
     if !stranded {
         return;
     }
-    kernel_print(lock, true, try_line, None::<fn() -> G>, wire, &mut |_: &mut dyn FnMut(&[u8])| {});
+    kernel_print(lock, true, try_line, None::<fn() -> Option<G>>, wire, &mut |_: &mut dyn FnMut(&[u8])| {});
 }

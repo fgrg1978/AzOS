@@ -1232,29 +1232,33 @@ fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
             &KernelDeferLock::<false>,
             false,
             || CONSOLE_LINE_LOCK.try_lock(),
-            None::<fn() -> azos_sync::pi_mutex::PiMutexGuard<'static, ()>>,
+            None::<fn() -> Option<azos_sync::pi_mutex::PiMutexGuard<'static, ()>>>,
             &mut wire,
             emit,
         );
         return;
     }
     // A writer that may own and holds no sleeping lock waits for the
-    // console instead of dropping its line into a full buffer (XC). Gate
-    // canary `console-drop` takes that wait away: the old append-and-drop.
-    let may_wait = crate::console_defer::may_wait(may_own, azos_sync::pi_mutex::caller_holds_any())
-        && !console_drop_canary();
+    // console instead of dropping its line into a full buffer (XC). The
+    // sleeping-lock scan runs only on that slow path. Gate canary
+    // `console-drop` takes the wait away: the old append-and-drop.
     crate::console_defer::kernel_print(
         &KernelDeferLock::<false>,
         may_own,
         || CONSOLE_LINE_LOCK.try_lock(),
-        if may_wait {
+        if may_own {
             Some(|| {
+                if !crate::console_defer::may_wait(may_own, azos_sync::pi_mutex::caller_holds_any())
+                    || console_drop_canary()
+                {
+                    return None;
+                }
                 CONSOLE_WAITS.fetch_add(1, Ordering::Relaxed);
                 let w = WATCHED.load(Ordering::Relaxed);
                 if w != 0 && w == azos_sync::pi_mutex::caller_tid() {
                     WATCHED_WAITED.store(true, Ordering::Release);
                 }
-                CONSOLE_LINE_LOCK.lock()
+                Some(CONSOLE_LINE_LOCK.lock())
             })
         } else {
             None
@@ -1531,7 +1535,7 @@ pub fn console_write_ring3(bytes: &[u8]) {
             &KernelDeferLock::<true>,
             false,
             || CONSOLE_LINE_LOCK.try_lock(),
-            None::<fn() -> azos_sync::pi_mutex::PiMutexGuard<'static, ()>>,
+            None::<fn() -> Option<azos_sync::pi_mutex::PiMutexGuard<'static, ()>>>,
             &mut wire,
             &mut |sink: &mut dyn FnMut(&[u8])| sink(bytes),
         );

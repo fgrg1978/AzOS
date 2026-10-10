@@ -9,7 +9,7 @@
 //! was dropped (`[CONSOLE] dropped ...`): on x86_64 that took the ktest-late
 //! runner's own `ok N` lines behind the RT console probe, 1 boot in 3. Now
 //! the probe waits for the console's line lock and its line goes out after
-//! the hold. The verdict is the drop counter and the probe's own wait.
+//! the hold. The verdict is the probe's own wait (`uart::console_watch`).
 //!
 //! Runtime canary: `canary=console-drop` takes the wait away from the probe
 //! (only it): its line is dropped and the test says `not ok`.
@@ -63,10 +63,15 @@ azos_ktest::ktest_late! {
         crate::ktest::wait("the probe did not finish after the hold", || DONE.load(Ordering::Acquire))?;
         let waited = azos_drv_sys::uart::console_watched_waited();
         azos_drv_sys::uart::console_watch(0);
-        if azos_drv_sys::uart::console_defer_stats().1 != dropped0 {
-            Err("a kernel line was dropped behind the console owner")
-        } else if !waited {
-            Err("the probe's line did not wait for the console")
+        // Diagnostic only: lines of contexts that may not wait (interrupt
+        // handlers, RT tasks) can drop during the hold; the probe's cannot
+        // once it waited (it writes as the line lock's holder).
+        let others = azos_drv_sys::uart::console_defer_stats().1.wrapping_sub(dropped0);
+        if others != 0 {
+            azos_drv_sys::kprintln!("# console: {} lines of other contexts dropped during the hold", others);
+        }
+        if !waited {
+            Err("the probe's line did not wait for the console (it was appended into a full buffer)")
         } else {
             Ok(())
         }

@@ -690,8 +690,8 @@ fixed mount table. There are three implementations:
   counted (`CONSOLE_RT_APPEND_ONLY`). With `RT_CONSOLE_WIRE_CHECK` (on in the
   development configs), a real-time task that reaches the wait for the wire
   panics, naming the task.
-- **A task-context console line is never dropped.** A kernel line from a
-  non-real-time task that holds no spinlock and no sleeping lock waits for
+- **A task-context console line is never dropped.** A kernel line (up to
+  256 bytes, `LINE_RESERVE`) from a non-real-time task that holds no spinlock and no sleeping lock waits for
   the console's line lock when another context owns the console and the
   deferred buffer is nearly full, then goes out after what was deferred.
   Only callers that may not sleep (interrupt handlers, spinlock holders,
