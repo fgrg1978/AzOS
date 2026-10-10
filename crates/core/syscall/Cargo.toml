@@ -110,14 +110,6 @@ commander-exit-nostop-canary = []
 # and a UART `write` costs ~160 us per 64 bytes under QEMU, so turning it on
 # completely changes the timing under investigation.
 # Enabled from the kernel with --features ipc-trace.
-# `SYS_IPC_FAST_CALL` (108), the TID-addressed fast IPC. RFC-0040 gap 2
-# replaced it with `SYS_IPC_FAST_CALL_EP` (582), which resolves a
-# `Cap<Endpoint>` instead of trusting a raw TID; 108 checks nothing and can
-# reach any live task. The one remaining caller is `userspace/tests/ipctest`, whose
-# peers are `fork()`ed children with empty capability tables. Gated so a BOARD
-# kernel does not carry the arm at all — the tree's own precedent for
-# compiling test-only authority out (`cap-refusal-canary`).
-legacy-tid-ipc = []
 # Canary for the aarch64 ring-3 IRQ row: `SYS_DRV_IRQ_ACK` leaves the line
 # masked, so `userspace/tests/captest`'s second interrupt never arrives. Hand-run.
 irq-ack-canary = []

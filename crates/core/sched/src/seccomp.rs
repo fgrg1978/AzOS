@@ -726,21 +726,6 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         syscalls: sys_nrs![
             SYS_PUTCHAR, SYS_EXIT, SYS_GETPID, SYS_FORK, SYS_SLEEP, SYS_WRITE,
             SYS_UPTIME,
-            // **`SYS_IPC_FAST_CALL` (108) is granted HERE and nowhere else**,
-            // and only under `qemu` — the dispatcher does not compile the arm
-            // into a board build at all (`crates/core/syscall/src/dispatch.rs`).
-            //
-            // This image addresses its peers by raw TID because they are
-            // `fork()`ed children: a forked child holds nothing of its parent's
-            // runtime objects (only its descriptors and its row's
-            // capabilities), so there is no handle to call with. Reaching them by capability
-            // needs a bootstrap grant at fork, which is RFC-0040 gap 3. Until
-            // then the TID form stays, contained to a test image that no board
-            // runs.
-            //
-            // Phase A, the mailbox and the heartbeat still address the parent
-            // this way — 108 stays granted for them.
-            SYS_IPC_FAST_CALL,
             // RFC-0040 gap 3 lands: phases B and E now reach their peer
             // through the fork-inherited capability instead of a raw TID, so
             // both halves of the primitive that closes gap 3 are granted:

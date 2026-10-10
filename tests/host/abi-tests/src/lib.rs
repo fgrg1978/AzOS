@@ -413,7 +413,8 @@ mod syscall_nr_tests {
         // The freeze protects a live number from moving; retirement protects a
         // dead one from coming back, which is the property that matters now.
         assert_eq!(SYS_CLOSE, 21);
-        assert_eq!(SYS_IPC_FAST_CALL, 108);
+        // 108 (`SYS_IPC_FAST_CALL`, a raw-TID call) was pinned here until
+        // wave 15 N5 retired it for the endpoint call 582.
         // 111 (`SYS_IPC_LEASE_GRANT`) was pinned here until it was retired
         // for the typed 603 (owner decision 2026-09-28); `retired_syscalls`
         // now holds it.
@@ -580,7 +581,7 @@ mod syscall_nr_tests {
             SYS_EXIT,
             SYS_FORK,
             SYS_FILE_OPEN_TYPED,
-            SYS_IPC_FAST_CALL,
+            SYS_IPC_FAST_CALL_EP,
             SYS_I2C_SCAN,
             SYS_CHAN_WRITE_TYPED,
             SYS_CHAN_READ_TYPED,
@@ -710,7 +711,7 @@ mod retired_syscalls {
         let names = names();
         let arms = arms(&names);
         // The scan must see arms of every shape, or green means nothing.
-        for probe in ["SYS_EXIT", "SYS_IPC_FAST_CALL", "SYS_CLOSE_TYPED", "SYS_PORT_WAIT_TYPED", "SYS_SERVICE_START"] {
+        for probe in ["SYS_EXIT", "SYS_IPC_FAST_CALL_EP", "SYS_CLOSE_TYPED", "SYS_PORT_WAIT_TYPED", "SYS_SERVICE_START"] {
             let v = names[probe];
             assert!(
                 arms.iter().any(|a| a.lo <= v && v <= a.hi),

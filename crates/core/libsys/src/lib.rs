@@ -93,7 +93,7 @@ use azos_abi::syscall_nr::{
     SYS_ROBOT_FORWARD, SYS_ROBOT_ROTATE, SYS_ROBOT_INFO, SYS_SENSOR_INFO,
     SYS_SENSOR_ADD, SYS_DRV_REGISTER, SYS_DRV_MUNMAP,
     SYS_DRV_IRQ_WAIT, SYS_DRV_IRQ_ACK, SYS_IRQ_BIND, SYS_DRV_HEARTBEAT, SYS_DRIVER_FETCH_REQ,
-    SYS_DRIVER_REPLY, SYS_IPC_FAST_CALL, SYS_IPC_FAST_CALL_EP, SYS_ENDPOINT_CREATE_TYPED,
+    SYS_DRIVER_REPLY, SYS_IPC_FAST_CALL_EP, SYS_ENDPOINT_CREATE_TYPED,
     SYS_IPC_FAST_REPLY, SYS_IPC_FAST_ACCEPT,
     SYS_CHAN_WRITE_TYPED, SYS_CHAN_READ_TYPED, SYS_PORT_CREATE_TYPED, SYS_PORT_POLL_TYPED,
     SYS_PORT_DESTROY_TYPED, SYS_SHM_CREATE_TYPED, SYS_SHM_ACQUIRE_TYPED, SYS_SHM_RELEASE_TYPED,
@@ -3077,105 +3077,28 @@ pub const TRACE_DUMP_DEFAULT_COUNT: u64 = 50;
 /// Maximum number of 64-bit words in a fast IPC message.
 pub const FAST_IPC_MAX_WORDS: usize = 4;
 
-/// Send a fast IPC message to `server_tid` and block until the reply arrives,
-/// receiving the FULL four-word reply.
+/// Send a fast IPC request through a `Cap<Endpoint>` (`SYS_IPC_FAST_CALL_EP`,
+/// RFC-0040 gap 2) and block until the reply arrives, receiving the FULL
+/// four-word reply.
 ///
-/// ABI (`SYS_IPC_FAST_CALL`, `dispatch.rs`, fast-IPC arms): a0 = server TID,
-/// a1..a4 = up to 4 × u64 of request data (≤ 32 bytes). On success a0 =
+/// ABI: a0 = the endpoint capability, a1..a4 = up to 4 × u64 of request data
+/// (≤ 32 bytes), a5 = a capability to move (0 for none). On success a0 =
 /// reply\[0\] and a1..a3 = reply\[1..3\], delivered through `SyscallOut`
-/// exactly like FAST_ACCEPT's request delivery. On failure a0 = -1 and
-/// a1..a5 are untouched. The kernel touches no user memory — data travels in
-/// registers both ways.
+/// exactly like FAST_ACCEPT's request delivery. On failure a0 is negative
+/// and a1..a5 are untouched. The kernel touches no user memory — data
+/// travels in registers both ways.
 ///
-/// **WHY this cannot go through the shared `syscallN` helpers.** Same reason
-/// as [`fast_ipc_accept_req`]: results land in argument registers, so they
-/// must be declared `lateout` in a dedicated block. Routing this through
-/// `syscall5` (whose `in("a1")`… operands rustc may assume intact) would be
-/// undefined behaviour the moment the kernel writes the reply back.
+/// **WHY this cannot go through the shared `syscallN` helpers.** Results
+/// land in argument registers, so they must be declared `lateout` in a
+/// dedicated block. Routing this through `syscall5` (whose `in("a1")`…
+/// operands rustc may assume intact) would be undefined behaviour the moment
+/// the kernel writes the reply back.
 ///
 /// **The first reply word and the error code share `a0`.** Success is
-/// `reply[0]`, failure is `-1`, and nothing tags which is which — so a
+/// `reply[0]`, failure is negative, and nothing tags which is which — so a
 /// reply\[0\] with bit 63 set is reported here as a failed call. Keep the
 /// FIRST fast-IPC reply word in the non-negative `i64` range; the other
-/// three are unconstrained.
-///
-/// Returns `None` when the kernel refused the call: `server_tid` is not a
-/// live TID, equals the caller (self-deadlock), or all
-/// [`FAST_IPC_MAX_SLOTS`]-many slots are busy.
-pub fn fast_ipc_call_full(
-    server_tid: u32,
-    words: [u64; FAST_IPC_MAX_WORDS],
-) -> Option<[u64; FAST_IPC_MAX_WORDS]> {
-    let ret: isize;
-    let r1: u64;
-    let r2: u64;
-    let r3: u64;
-    unsafe {
-        #[cfg(target_arch = "riscv64")]
-        asm!(
-            "ecall",
-            in("a7") SYS_IPC_FAST_CALL,
-            inlateout("a0") server_tid as u64 => ret,
-            inlateout("a1") words[0] => r1,
-            inlateout("a2") words[1] => r2,
-            inlateout("a3") words[2] => r3,
-            // The kernel writes zeros into a4/a5 on success (SyscallOut
-            // always writes all five); declared clobbered, values discarded.
-            inlateout("a4") words[3] => _,
-            lateout("a5") _,
-            // The kernel writes `a6` on every arm that opts into `SyscallOut`
-            // (RFC-0040 gap 2 stage 4). Undeclared, rustc is entitled to keep a
-            // live value here and the kernel would silently destroy it.
-            lateout("a6") _,
-            options(nostack),
-        );
-        // aarch64 twin: x0..=x6 mirror a0..=a6 register-for-register (see
-        // `crates/core/abi/src/syscall_nr.rs`'s "Register convention"). No
-        // aarch64 kernel dispatch exists yet — this is phase 6 prep.
-        #[cfg(target_arch = "aarch64")]
-        asm!(
-            "svc #0",
-            in("x8") SYS_IPC_FAST_CALL,
-            inlateout("x0") server_tid as u64 => ret,
-            inlateout("x1") words[0] => r1,
-            inlateout("x2") words[1] => r2,
-            inlateout("x3") words[2] => r3,
-            inlateout("x4") words[3] => _,
-            lateout("x5") _,
-            lateout("x6") _,
-            options(nostack),
-        );
-        // x86_64: arguments in rdi rsi rdx r10 r8 r9 (a0..a5), the reply in
-        // the kernel's `SYSCALL_OUT` order: a1..a6 come back in rdx rsi rdi
-        // r8 r9 r10 (kernel/src/entry/x86_64.rs). Every one of them is declared
-        // written, as a1..a6 are on riscv64; rcx/r11 belong to `syscall`.
-        #[cfg(target_arch = "x86_64")]
-        asm!(
-            "syscall",
-            inlateout("rax") SYS_IPC_FAST_CALL as isize => ret,
-            inlateout("rdi") server_tid as u64 => r3,
-            inlateout("rsi") words[0] => r2,
-            inlateout("rdx") words[1] => r1,
-            inlateout("r10") words[2] => _,
-            inlateout("r8") words[3] => _,
-            lateout("r9") _,
-            lateout("rcx") _,
-            lateout("r11") _,
-            options(nostack),
-        );
-    }
-    if ret < 0 { return None; }
-    Some([ret as u64, r1, r2, r3])
-}
-
-/// [`fast_ipc_call_full`] addressed by a `Cap<Endpoint>` instead of a TID
-/// (`SYS_IPC_FAST_CALL_EP`, RFC-0040 gap 2).
-///
-/// Same registers, same reply shape, same `a0` overloading of the first reply
-/// word with the error code — only `a0` on the way IN differs: a capability
-/// handle the caller holds, not a task id it guessed. A caller with no
-/// endpoint capability can reach nothing, where the TID form can reach any
-/// live task in the system.
+/// three are unconstrained. [`fast_ipc_call_ep_status`] keeps the code.
 ///
 /// `None` for everything the TID form returns `None` for, plus a capability
 /// that does not resolve, carries no `WRITE`, is refused under degraded-mode
@@ -3215,6 +3138,19 @@ pub fn fast_ipc_call_ep_moving(
     words: [u64; FAST_IPC_MAX_WORDS],
     moving: u32,
 ) -> Option<[u64; FAST_IPC_MAX_WORDS]> {
+    fast_ipc_call_ep_status(endpoint, words, moving).ok()
+}
+
+/// [`fast_ipc_call_ep_moving`] that keeps the kernel's code on failure:
+/// `Err(-1)` for a refused or abandoned call, and the completion codes
+/// `-EPEERDIED` (the serving task died with this call queued or in service)
+/// and `-EREVOKED` (the endpoint was destroyed meanwhile) of
+/// `azos_abi::error::Errno` (wave 15 N5).
+pub fn fast_ipc_call_ep_status(
+    endpoint: u32,
+    words: [u64; FAST_IPC_MAX_WORDS],
+    moving: u32,
+) -> Result<[u64; FAST_IPC_MAX_WORDS], isize> {
     let ret: isize;
     let r1: u64;
     let r2: u64;
@@ -3236,7 +3172,7 @@ pub fn fast_ipc_call_ep_moving(
             lateout("a6") _,
             options(nostack),
         );
-        // aarch64 twin — see `fast_ipc_call_full`.
+        // aarch64 twin of the riscv64 block above.
         #[cfg(target_arch = "aarch64")]
         asm!(
             "svc #0",
@@ -3269,20 +3205,13 @@ pub fn fast_ipc_call_ep_moving(
             options(nostack),
         );
     }
-    if ret < 0 { return None; }
-    Some([ret as u64, r1, r2, r3])
+    if ret < 0 { return Err(ret); }
+    Ok([ret as u64, r1, r2, r3])
 }
 
 /// [`fast_ipc_call_ep_full`] for callers that need only the first reply word.
 pub fn fast_ipc_call_ep(endpoint: u32, words: [u64; FAST_IPC_MAX_WORDS]) -> Option<u64> {
     fast_ipc_call_ep_full(endpoint, words).map(|r| r[0])
-}
-
-/// [`fast_ipc_call_full`] for callers that only need the first reply word —
-/// the historical shape of this API, kept because most exchanges answer with
-/// a single word and the ergonomics matter at every call site.
-pub fn fast_ipc_call(server_tid: u32, words: [u64; FAST_IPC_MAX_WORDS]) -> Option<u64> {
-    fast_ipc_call_full(server_tid, words).map(|r| r[0])
 }
 
 /// Number of fast-IPC slots in the kernel (`FAST_IPC_MAX_SLOTS`,
@@ -3386,7 +3315,7 @@ pub fn fast_ipc_accept_req() -> Option<FastRequest> {
             lateout("a6") moved,
             options(nostack),
         );
-        // aarch64 twin — x0..=x6 mirror a0..=a6. See `fast_ipc_call_full`.
+        // aarch64 twin — x0..=x6 mirror a0..=a6. See `fast_ipc_call_ep_status`.
         #[cfg(target_arch = "aarch64")]
         asm!(
             "svc #0",
@@ -3544,7 +3473,7 @@ pub fn fast_ipc_reply_accept(
             lateout("a6") moved,
             options(nostack),
         );
-        // aarch64 twin — x0..=x6 mirror a0..=a6. See `fast_ipc_call_full`.
+        // aarch64 twin — x0..=x6 mirror a0..=a6. See `fast_ipc_call_ep_status`.
         #[cfg(target_arch = "aarch64")]
         asm!(
             "svc #0",

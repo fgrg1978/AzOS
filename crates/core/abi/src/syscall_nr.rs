@@ -197,7 +197,10 @@ pub const SYS_CLOSE: u64 = 21;
 pub const SYS_WRITE: u64 = 23;
 
 // ── IPC (100..=119) ─────────────────────────────────────────────────────
-pub const SYS_IPC_FAST_CALL: u64 = 108;
+// 108 was `SYS_IPC_FAST_CALL`, a fast call addressed by a raw TID and checked
+// only against the caller's own parent. Retired in wave 15 (N5): the endpoint
+// is the only address (`SYS_IPC_FAST_CALL_EP`, 582), and the per-endpoint
+// queues have nothing to queue a TID-addressed call on.
 pub const SYS_IPC_FAST_REPLY: u64 = 109;
 pub const SYS_IPC_FAST_ACCEPT: u64 = 110;
 // 111 was `SYS_IPC_LEASE_GRANT`, which took a raw region id in `a0`. Ring 3
@@ -1022,37 +1025,33 @@ pub const SYS_DRIVER_REPLY_FETCH: u64 = 581;
 /// `-4`. A request queued by an in-kernel client wakes the parked driver.
 pub const SYS_DRIVER_REPLY_WAIT: u64 = 610;
 
-/// `SYS_IPC_FAST_CALL_EP` — fast IPC addressed by a **capability** rather than
-/// by a TID (RFC-0040 gap 2, stage 2). `a0` = a `Cap<Endpoint>` handle,
-/// `a1..a4` = the four message words, exactly as `SYS_IPC_FAST_CALL`.
+/// `SYS_IPC_FAST_CALL_EP` — the fast call, addressed by a **capability**
+/// (RFC-0040 gap 2). `a0` = a `Cap<Endpoint>` handle, `a1..a4` = the four
+/// message words, `a5` = a capability to move with the request (0 for none).
 ///
-/// **What it changes.** `SYS_IPC_FAST_CALL` (108) takes a raw TID and checks
-/// only that the destination is alive and is not the caller — no authority at
-/// all, so any task granted 108 can call any task in the system. This one
-/// resolves `a0` through the caller's own capability table, demanding `WRITE`
-/// on a `Cap<Endpoint>`, and calls the task serving that endpoint. A caller
-/// holding no endpoint capability can reach nothing, which is the property
-/// 108 never had.
+/// `a0` is resolved through the caller's own capability table, demanding
+/// `WRITE` on a `Cap<Endpoint>`; the request is queued on that endpoint and
+/// the task serving it is woken. A caller holding no endpoint capability can
+/// reach nothing. The raw-TID form (108) is retired (wave 15 N5): the
+/// endpoint is the only address.
 ///
-/// The resolution is `cap_store::get`, so it is also refused with
-/// `-ECONTAINED` while RFC-0036 degraded mode is armed: a contained task may
-/// still report on the console, but it may not open new service requests.
+/// The resolution is `cap_store::get`, so it is also refused while RFC-0036
+/// degraded mode is armed: a contained task may still report on the console,
+/// but it may not open new service requests.
 ///
-/// Returns what 108 returns — the generation-tagged exchange handle, or `-1` —
-/// plus `-EPERM` when the capability does not resolve, carries no `WRITE`, or
-/// names an endpoint no task serves yet. Those are one code on purpose: which
-/// of them it was tells a caller about capabilities it does not hold.
+/// Returns reply word 0 in `a0` (words 1..3 in `a1..a3`), or a negative code:
+/// `-1` when the capability does not resolve, carries no `WRITE`, names an
+/// endpoint no task serves yet (one code on purpose: which of them it was
+/// tells a caller about capabilities it does not hold), or the call was given
+/// up without an answer; and the completion codes of `error::Errno`
+/// `EPEERDIED` (the serving task died with the call queued or in service),
+/// `EREVOKED` (the endpoint was destroyed while the call was queued or in
+/// service). `ENOCONNECTION` is reserved for a remote endpoint.
 ///
-/// 108 stood alongside this during the migration, as `SYS_OPEN` stood beside
-/// `SYS_FILE_OPEN_TYPED`. Nothing on a board issues it any more, so it is now
-/// behind `legacy-tid-ipc` and compiles out of every board build.
-///
-/// **`SYS_IPC_FAST_REPLY_ACCEPT` (580) does NOT retire with it**, and an
-/// earlier version of this comment claimed it did. 580 is reply-then-accept:
-/// it answers the exchange already in hand and then blocks for the next
-/// request. It addresses **nobody** by TID, so there is no authority for a
-/// capability to carry and nothing for 582 to replace. It is the server side
-/// of the loop `vsbench` runs on the hot path, and it stays.
+/// **`SYS_IPC_FAST_REPLY_ACCEPT` (580) is not a TID call**: it answers the
+/// exchange in hand and then blocks for the next request on the caller's own
+/// endpoints. It is the server side of the loop `vsbench` runs on the hot
+/// path.
 pub const SYS_IPC_FAST_CALL_EP: u64 = 582;
 
 /// `SYS_ENDPOINT_CREATE_TYPED` — create an endpoint **owned by the caller**
@@ -1870,6 +1869,8 @@ pub const CAP_TYPED_SYSCALLS: &[u64] = &[
 ///     suites (`tests/host/syscall-tests/src/file_ops_seam.rs`, `file_caps.rs`)
 ///     call `sys_open`/`sys_read`/`sys_lseek` directly, which is how the
 ///     descriptor seam under `Cap<File>` is still tested from below.
+///   * `SYS_IPC_FAST_CALL` (108 → 582), wave 15 N5 (owner answer Q3): the
+///     raw-TID fast call; the endpoint capability is the only address.
 ///   * `SYS_IPC_LEASE_GRANT` (111 → 603), owner decision 2026-09-28: the
 ///     raw region id ring 3 is never told, replaced by the `Cap<Shm>` that
 ///     names it. The handler function stays (603 reaches it with the id the
@@ -1908,6 +1909,7 @@ pub const RETIRED_SYSCALLS: &[u64] = &[
     105, // SYS_IPC_SHARE
     106, // SYS_IPC_UNSHARE
     107, // SYS_IPC_DESTROY
+    108, // SYS_IPC_FAST_CALL → SYS_IPC_FAST_CALL_EP (582)
     111, // SYS_IPC_LEASE_GRANT → SYS_IPC_LEASE_GRANT_TYPED (603)
     115, // SYS_IPC_MAP
     116, // SYS_CAP_GRANT

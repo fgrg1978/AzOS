@@ -240,13 +240,9 @@ const E_EPERM: isize = -1;
 
 // ── Child → parent mailbox, over fast IPC ────────────────────────────────────
 //
-// Every child reports its verdicts to the parent with `SYS_IPC_FAST_CALL`,
-// addressed by the parent's TID. Fast IPC needs no inherited object: a forked
-// child holds no runtime object of its parent's (wave 13: only its descriptors
-// and its row's capabilities), so the kernel channel this
-// mailbox used before — reached through a `Cap<Channel>` — would be
-// unreachable from a child. A TID is not a capability, so it survives the fork
-// as a plain integer in a static.
+// Every child reports its verdicts to the parent with a fast call on root's
+// endpoint, whose capability every direct child inherits at fork (see
+// `ROOT_EP_INDEX`).
 //
 // A post is one call carrying `[MBOX_MAGIC | tag, value, 0, 0]`. The parent is
 // the fast-IPC server: `pump()` accepts one post, files it into the
@@ -330,32 +326,13 @@ static mut MSEEN: [u8; MBOX_LEN] = [0; MBOX_LEN];
 /// to it.
 static mut PARENT_TID: u32 = 0;
 
-// **The mailbox addresses the parent by TID, not by capability**, and that is
-// not an oversight. RFC-0040 gap 2 stage 4 converted it to an endpoint and the
-// conversion was reverted on 2026-09-21 with the `fork()` capability
-// inheritance it depended on: a child's capability table held nothing of its
-// parent's, so there was no handle here to call with. Reaching the parent by capability needs a
-// bootstrap grant at fork — RFC-0040 gap 3.
-//
-// Gap 3 landed (`endpoint_inherit_at_fork`, `crates/core/ipc/src/endpoint.rs`) and
-// phases B and E now use it for their REAL exchange (see
-// `phase_b_server`/`phase_e_server`). The mailbox itself deliberately stays
-// on TID.
-//
-// **Most posters here are direct children of `PARENT_TID` (root)** —
-// `fork_reg_canary`, `heartbeat_main`, `phase_a_client`, `phase_c_guesser`,
-// `phase_d_probe`, and the phase B/E SERVERS all fork straight from root, so
-// `post()` (which targets `PARENT_TID`) is exactly their real kernel parent.
-// `phase_b_client` and `phase_e_client` are the exceptions: each is forked
-// from its own phase's server, making it root's GRANDCHILD. Since
-// `SYS_IPC_FAST_CALL` (108) now checks its raw-TID destination against the
-// caller's own parent (RFC-0040 gap 2, the CALL direction) — nothing wider —
-// a grandchild's post to `PARENT_TID` would be refused outright. Those two
-// post to their real, immediate parent instead (`post_to`, with the target
-// handed down through `spawn`'s `arg`), and that parent relays the message on
-// to root (`relay_one`). Converting the mailbox itself to a capability would
-// still need delegation past one hop, out of gap 3's scope; the relay is the
-// gap-2-compatible fix that does not touch gap 3 at all.
+// **The mailbox is addressed by capability** (wave 15 N5, which retired the
+// raw-TID call, syscall 108). Root creates an endpoint in `_start`, before
+// the first fork, and every direct child inherits a capability to it
+// (`endpoint_inherit_at_fork`, RFC-0040 gap 3) — found again by its pool
+// index, `ROOT_EP_INDEX`. A grandchild (`phase_b_client`, `phase_e_client`,
+// ...) holds only its own parent's endpoint, so it posts there and that
+// parent relays the post on to root (`relay_one`).
 
 
 // `addr_of!` rather than plain indexing: these statics are written by this
@@ -397,35 +374,32 @@ fn file_if_mailbox(word0: u64, word1: u64) -> bool {
     }
 }
 
-/// [`post`], addressed explicitly rather than at `PARENT_TID`.
+/// Post one verdict through the endpoint capability `ep` and block until it
+/// is filed. Retries a refused call (server not yet in a state to accept)
+/// rather than losing the verdict: a dropped verdict reads as a timeout,
+/// i.e. as a hang that did not happen.
 ///
-/// RFC-0040 gap 2, the CALL direction: `SYS_IPC_FAST_CALL` (108) now checks
-/// its raw-TID destination against the caller's own kernel parent
-/// (`fast_ipc_tid_dest_for`). `PARENT_TID` names the ROOT task — correct for
-/// every direct child, wrong for a grandchild or deeper, whose real parent is
-/// whatever spawned it. `phase_b_client`/`phase_e_client` are exactly that:
-/// forked from `phase_b_server`/`phase_e_server`, not from root. They call
-/// this with their real parent's TID (handed down through `spawn`'s `arg`,
-/// the same static-before-fork trick `PARENT_TID` itself uses), and that
-/// immediate parent relays the post on to root — see `relay_one`.
-fn post_to(srv: u32, tag: u8, v: u32) {
+/// The mailbox is addressed by capability (wave 15 N5: the raw-TID call,
+/// syscall 108, is retired). A direct child of root posts through root's
+/// endpoint, inherited at fork ([`post`]); a grandchild holds only its own
+/// parent's endpoint and posts there, and that parent relays the post on to
+/// root (`relay_one`).
+fn post_to_ep(ep: u32, tag: u8, v: u32) {
     let words = [MBOX_MAGIC | tag as u64, v as u64, 0, 0];
     let mut tries = 0u32;
-    while sys::fast_ipc_call(srv, words).is_none() && tries < 400 {
+    while sys::fast_ipc_call_ep(ep, words).is_none() && tries < 400 {
         sys::sleep(2);
         tries = tries.saturating_add(1);
     }
 }
 
-/// Child side: post one verdict to `PARENT_TID`, and block until it is filed.
-/// Retries a refused call (server not yet in a state to accept, or all slots
-/// busy) rather than losing the verdict — a dropped verdict reads as a
-/// timeout, i.e. as a hang that did not happen.
+/// Child side: post one verdict to root through root's endpoint.
 ///
-/// Only valid for a DIRECT child of `PARENT_TID` — see [`post_to`] for a
-/// grandchild or deeper.
+/// Only valid for a DIRECT child of root (it holds root's endpoint through
+/// `endpoint_inherit_at_fork`) — a grandchild posts to its own parent with
+/// [`post_to_ep`] and [`inherited_endpoint_handle`].
 fn post(tag: u8, v: u32) {
-    post_to(unsafe { PARENT_TID }, tag, v)
+    post_to_ep(root_endpoint_handle(), tag, v)
 }
 
 /// Parent side: accept ONE fast-IPC post on this TID and file it into the
@@ -449,7 +423,7 @@ fn pump() {
 }
 
 /// A server one hop below root: accept ONE fast-IPC call on this task, and if
-/// it is a mailbox post — as [`post_to`] shapes it — relay it on to root under
+/// it is a mailbox post — as [`post_to_ep`] shapes it — relay it on to root under
 /// the same tag and value. A non-mailbox call is answered `0` and dropped,
 /// same as `pump`'s own rule, and for the same reason (its sender must not
 /// wedge).
@@ -483,11 +457,11 @@ fn relay_one() {
 /// an exited parent is refused at once, so `HB_GIVE_UP` consecutive refusals
 /// end the child with the run.
 fn heartbeat_main() -> ! {
-    let srv = unsafe { PARENT_TID };
+    let srv = root_endpoint_handle();
     let words = [MBOX_MAGIC | TAG_HEARTBEAT as u64, 0, 0, 0];
     let mut refused = 0u32;
     loop {
-        match sys::fast_ipc_call(srv, words) {
+        match sys::fast_ipc_call_ep(srv, words) {
             Some(_) => {
                 refused = 0;
                 sys::sleep(HB_PERIOD_MS);
@@ -935,7 +909,7 @@ fn pack4(a: u32, b: u32, c: u32, d: u32) -> u32 {
 }
 
 fn phase_a_client(idx: u32) -> ! {
-    let srv = unsafe { PARENT_TID };
+    let srv = root_endpoint_handle();
     let mut ok = 0u32;
     let mut refused = 0u32;
     let mut refused_slow = 0u32;
@@ -951,7 +925,7 @@ fn phase_a_client(idx: u32) -> ! {
         }
         let seq = REQ_MAGIC + idx as u64 * RT_STRIDE + k as u64;
         let t0 = sys::uptime();
-        match sys::fast_ipc_call(srv, [seq, 0, 0, 0]) {
+        match sys::fast_ipc_call_ep(srv, [seq, 0, 0, 0]) {
             Some(w) => {
                 if w == seq {
                     // IPC-2: the slot still held the request when the client
@@ -1197,6 +1171,21 @@ fn inherited_endpoint_handle() -> u32 {
     if h > 0 { h as u32 } else { 0 }
 }
 
+/// The endpoint pool index of root's mailbox endpoint, set in `_start`
+/// before the first fork (the static-before-fork mechanism `PARENT_TID`
+/// uses), so every direct child can find the grant it inherits.
+static mut ROOT_EP_INDEX: u32 = u32::MAX;
+
+/// This task's capability on root's mailbox endpoint, 0 if it holds none
+/// (a grandchild: the fork grant gives a child its own parent's endpoints
+/// only).
+fn root_endpoint_handle() -> u32 {
+    let i = unsafe { ROOT_EP_INDEX };
+    if i == u32::MAX { return 0; }
+    let h = sys::cap_lookup(sys::CapKind::Endpoint as u8, i);
+    if h > 0 { h as u32 } else { 0 }
+}
+
 fn phase_b_server() -> ! {
     let me = sys::getpid();
     let mut l = Line::new();
@@ -1265,7 +1254,7 @@ fn phase_b_server() -> ! {
     sys::exit(0);
 }
 
-fn phase_b_client(immediate_parent: u32) -> ! {
+fn phase_b_client(_immediate_parent: u32) -> ! {
     let mut l = Line::new();
     l.s(b"[IPCTEST] B: client tid=").i(sys::getpid());
     l.flush();
@@ -1296,12 +1285,11 @@ fn phase_b_client(immediate_parent: u32) -> ! {
     let got = sys::fast_ipc_call_ep(inherited_endpoint_handle(), [REQ2, 0, 0, 0]);
 
     // The three verdicts, posted only now — after the real exchange above
-    // has been accepted, held, and answered. `post_to`, not `post`: this
-    // task is root's grandchild (forked from `phase_b_server`, not from
-    // root), so `SYS_IPC_FAST_CALL`'s parent-only rule (RFC-0040 gap 2) only
-    // lets it reach `immediate_parent` — the server relays each one on to
-    // root (`relay_one`, called three times, order-agnostic: it relays
-    // whatever it next accepts under that message's own tag).
+    // has been accepted, held, and answered. To `phase_b_server`, not root:
+    // this task is root's grandchild and holds only its own parent's
+    // endpoint, so the server relays each one on to root (`relay_one`,
+    // called three times, order-agnostic: it relays whatever it next accepts
+    // under that message's own tag).
     //
     // **Send order here does not matter — see `phase_b`'s wait order for the
     // interaction that does.** There is a pre-existing, documented,
@@ -1311,9 +1299,8 @@ fn phase_b_client(immediate_parent: u32) -> ! {
     // round trips where there used to be none, giving that gap more
     // surface. Reordering these three posts did NOT change which check it
     // lands on — root's WAIT order is what did; see `phase_b`.
-    post_to(immediate_parent, TAG_CLIENT_TIGHT, if leaked { 1 } else { 0 });
-    post_to(
-        immediate_parent,
+    post_to_ep(inherited_endpoint_handle(), TAG_CLIENT_TIGHT, if leaked { 1 } else { 0 });
+    post_to_ep(inherited_endpoint_handle(),
         TAG_CLIENT_GOT,
         match got {
             Some(w) => w as u32,
@@ -1322,30 +1309,19 @@ fn phase_b_client(immediate_parent: u32) -> ! {
     );
 
     // RFC-0040 gap 2, the CALL direction — the probe, not the plumbing
-    // above. `PARENT_TID` in this task's own memory names ROOT (inherited
-    // verbatim through two forks), but this task's real kernel parent is
-    // `immediate_parent` (`phase_b_server`). A raw-TID call straight to
-    // `PARENT_TID` therefore targets a GRANDPARENT, not a parent, and must
-    // be refused by `fast_ipc_tid_dest_for`.
-    //
-    // The word deliberately does not match the `MBOX_MAGIC` pattern: this
-    // is not a mailbox post, and must not be mistaken for one if it is ever
-    // (wrongly) delivered.
-    //
-    // **Why this discriminates and a call to a dead/unrelated TID would
-    // not.** Root is ALIVE and already running a generic accept loop
-    // (`pump`/`wait_tag`) that answers ANY delivered call with `0` — mailbox
-    // shaped or not. So with the check disabled this call would actually be
-    // ACCEPTED and answered, `Some(0)`; with it enabled, refused at the
-    // syscall boundary before root ever sees it, `None`. A target that
-    // cannot or would not answer collapses both outcomes into the same
-    // "never returns / refused" observation and proves nothing — see
-    // `fast_ipc_tid_dest_for`'s own doc for why parent, not any live TID, is
-    // the rule.
-    let ancestor_accepted =
-        sys::fast_ipc_call(unsafe { PARENT_TID }, [0xDEAD_BEEFu64, 0, 0, 0]).is_some();
-    post_to(
-        immediate_parent,
+    // above. Root serves an endpoint and is ALIVE, running a generic accept
+    // loop that answers any delivered call. A fast call is addressed by an
+    // endpoint capability only (wave 15 N5 retired the raw-TID call, 108),
+    // and the fork grant gives a child its own parent's endpoints and
+    // nothing wider: this grandchild must hold no capability on root's
+    // endpoint. With one (a fork grant by class, or one inherited past a
+    // hop) the lookup answers a handle, the call is accepted, and the
+    // verdict is 1.
+    let ancestor_accepted = {
+        let h = root_endpoint_handle();
+        h != 0 && sys::fast_ipc_call_ep(h, [0xDEAD_BEEFu64, 0, 0, 0]).is_some()
+    };
+    post_to_ep(inherited_endpoint_handle(),
         TAG_CLIENT_ANCESTOR_CALL,
         if ancestor_accepted { 1 } else { 0 },
     );
@@ -2065,19 +2041,17 @@ fn phase_e_server() -> ! {
     sys::exit(0);
 }
 
-fn phase_e_client(immediate_parent: u32) -> ! {
+fn phase_e_client(_immediate_parent: u32) -> ! {
     let me = sys::getpid() as u32;
-    // `post_to`, not `post`: this task is root's grandchild (forked from
-    // `phase_e_server`), so RFC-0040 gap 2's parent-only rule only lets it
-    // reach `immediate_parent` — the server relays this on to root.
-    post_to(immediate_parent, TAG_E_CLI_TID, me);
+    // To `phase_e_server`, not root: this task is root's grandchild and
+    // holds only its parent's endpoint; the server relays this on to root.
+    post_to_ep(inherited_endpoint_handle(), TAG_E_CLI_TID, me);
     let words = e_request(me);
     // RFC-0040 gap 3: this task is `phase_e_server`'s own child (see
     // `phase_b_client`'s `inherited_endpoint_handle` for why the handle is
     // deterministic).
     let got = sys::fast_ipc_call_ep(inherited_endpoint_handle(), words);
-    post_to(
-        immediate_parent,
+    post_to_ep(inherited_endpoint_handle(),
         TAG_E_CLI_GOT,
         match got {
             Some(w) => w as u32,
@@ -2227,7 +2201,7 @@ fn phase_h_server() -> ! {
     sys::exit(0);
 }
 
-fn phase_h_client(immediate_parent: u32) -> ! {
+fn phase_h_client(_immediate_parent: u32) -> ! {
     let mut mask = 0u32;
     let cap = sys::shm_create_typed(1, sys::SHM_RW);
     if cap > 0 {
@@ -2255,7 +2229,7 @@ fn phase_h_client(immediate_parent: u32) -> ! {
             }
         }
     }
-    post_to(immediate_parent, TAG_H_CLI, mask);
+    post_to_ep(inherited_endpoint_handle(), TAG_H_CLI, mask);
     sys::exit(0);
 }
 
@@ -2952,7 +2926,7 @@ fn phase_p_server() -> ! {
     sys::exit(0);
 }
 
-fn phase_p_client(immediate_parent: u32) -> ! {
+fn phase_p_client(_immediate_parent: u32) -> ! {
     let mut mask = 0u32;
     let mut ev = [0u8; sys::PORT_EVENT_BYTES];
     let port = sys::port_create_typed();
@@ -3053,7 +3027,7 @@ fn phase_p_client(immediate_parent: u32) -> ! {
         }
         let _ = sys::port_destroy_typed(port);
     }
-    post_to(immediate_parent, TAG_P_CLI, mask);
+    post_to_ep(inherited_endpoint_handle(), TAG_P_CLI, mask);
     sys::exit(0);
 }
 
@@ -3230,6 +3204,13 @@ pub extern "C" fn _start() -> ! {
     }
     unsafe { PARENT_TID = me as u32 };
     unsafe { ROW_EP_COUNT = count_endpoints() };
+    // Root's mailbox endpoint (wave 15 N5: the mailbox is addressed by
+    // capability; the raw-TID call is retired). Created before the first
+    // fork, so every direct child inherits a capability to it.
+    let root_ep = sys::endpoint_create_typed();
+    expect_pos(b"0/root endpoint created", root_ep);
+    note_own_endpoint(root_ep);
+    unsafe { ROOT_EP_INDEX = OWN_EP_INDEX };
 
 
     // First child: the heartbeat that bounds every blocking accept below.

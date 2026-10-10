@@ -224,58 +224,28 @@ fn resolve_endpoint_dest(caller_tid: u32, cap_raw: u64) -> Option<u32> {
     crate::handlers::endpoint_dest_recording(caller_tid, raw)
 }
 
-/// The destination of a `SYS_IPC_FAST_CALL` (108), or `None` if the caller
-/// may not send to it.
-///
-/// A thin shell over `azos_ipc::fast_ipc_tid_dest_for`, same reason as
-/// `resolve_endpoint_dest` above: `tests/host/syscall-tests` does not compile
-/// this file, so the rule lives in `crates/core/ipc` where `ipc-fast-tests`
-/// exercises it, and this adds only the width guard — a TID is 32 bits, and a
-/// wider `a0` is refused rather than truncated onto whatever the low bits
-/// happen to be.
-fn resolve_raw_tid_dest(a0: u64) -> Option<u32> {
-    let raw = u32::try_from(a0).ok()?;
-    azos_ipc::fast_ipc_tid_dest_for(raw)
-}
-
 /// Whether the fast-IPC call lends the caller's priority to the server
 /// (wave 11 PIFAST) — see the call arm. `pifast-donation-canary` never
 /// donates, so `pifast-smoke`'s loaded phase must fail its bound.
 const FAST_CALL_DONATES: bool = !cfg!(feature = "pifast-donation-canary");
 
-/// Body of the fast-IPC CALL arm, shared by `SYS_IPC_FAST_CALL_EP` (582) and,
-/// where it is compiled in, `SYS_IPC_FAST_CALL` (108).
-///
-/// **Extracted so 108 can be compiled out.** The two numbers differ only in
-/// how `a0` names the destination — a capability the caller holds, or a raw
-/// TID, now checked against the caller's own parent (RFC-0040 gap 2, the
-/// CALL direction) — and everything after that is the same exchange. A board
-/// kernel matches 582 alone (see the arms), so 108 falls through to the
-/// default arm and is refused like any unclaimed number.
+/// Body of the fast-IPC CALL arm, `SYS_IPC_FAST_CALL_EP` (582): `a0` names
+/// the destination by a capability the caller holds. The raw-TID form (108)
+/// is retired (wave 15 N5).
 #[allow(clippy::too_many_arguments)]
 fn fast_ipc_call_arm(
-    num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64,
+    a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64,
     out: &mut SyscallOut,
 ) -> i64 {
 
             let caller_tid = azos_sched::current_task_tid();
-            let server_tid = if num == SYS_IPC_FAST_CALL_EP {
-                match resolve_endpoint_dest(caller_tid, a0) {
-                    Some(t) => t,
-                    // One code for "no such capability", "no WRITE on it",
-                    // "contained" and "nobody serves that endpoint": telling
-                    // them apart would report on capabilities the caller does
-                    // not hold.
-                    None => return E_PERM,
-                }
-            } else {
-                match resolve_raw_tid_dest(a0) {
-                    Some(t) => t,
-                    // Same one-code convention as the EP arm above: "not my
-                    // parent" and "no parent recorded" collapse into the same
-                    // E_PERM — see `fast_ipc_tid_dest_for`.
-                    None => return E_PERM,
-                }
+            let server_tid = match resolve_endpoint_dest(caller_tid, a0) {
+                Some(t) => t,
+                // One code for "no such capability", "no WRITE on it",
+                // "contained" and "nobody serves that endpoint": telling
+                // them apart would report on capabilities the caller does
+                // not hold.
+                None => return E_PERM,
             };
             let words = [a1 as u64, a2 as u64, a3 as u64, a4 as u64];
 
@@ -286,12 +256,7 @@ fn fast_ipc_call_arm(
             // `drv_heartbeat` shape; it is safe here only because every ring-3
             // image is rebuilt in one pass and `build/image_hashes.rs` binds
             // each profile to its bytes, so a caller built before this cannot
-            // exec at all. `SYS_IPC_FAST_CALL` (108) is excluded on purpose:
-            // even now that its destination is checked (`resolve_raw_tid_dest`
-            // — the caller's own parent, nothing wider), the ABI never gave it
-            // an `a5` register for a move, and there is no reason to wire one
-            // for a primitive `legacy-tid-ipc` keeps alive only for
-            // `userspace/tests/ipctest`.
+            // exec at all.
             //
             // **Why the move runs BEFORE `fast_ipc_call` and not after.** The
             // slot becomes `Pending` inside that call, and a server woken on it
@@ -300,7 +265,7 @@ fn fast_ipc_call_arm(
             // that already reported `moved_cap = 0`. So the capability is moved
             // first and the resulting handle is handed to `alloc_slot`, which
             // publishes the two together.
-            let moving = num == SYS_IPC_FAST_CALL_EP && a5 != 0;
+            let moving = a5 != 0;
             let moved_cap = if moving {
                 let raw = match u32::try_from(a5) {
                     Ok(r) => r,
@@ -1123,22 +1088,12 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
 
         // M02: Fast-path IPC — register-passing, ≤32 bytes, zero-copy.
 
-        // SYS_IPC_FAST_CALL: client side.
-        // a0 = server_tid, a1..a4 = data words (up to 4 × u64 = 32 bytes).
-        // Blocks until server replies.  Returns: d0 in a0 on wake (words in caller context).
-        // Both call forms share this arm. Only the DESTINATION differs: 108
-        // takes `a0` as a raw TID, checked against the caller's own parent
-        // (RFC-0040 gap 2, `resolve_raw_tid_dest`); 582 resolves `a0` as a
-        // `Cap<Endpoint>` in the caller's own table (`resolve_endpoint_dest`).
-        // Everything after — the slot, the wake, the spurious-wake retry, the census —
-        // is one body on purpose: two copies of this logic would drift, and
-        // the retry loop below is exactly the kind of code that drifts
-        // silently.
-        #[cfg(feature = "legacy-tid-ipc")]
-        SYS_IPC_FAST_CALL =>
-            fast_ipc_call_arm(num, a0, a1, a2, a3, a4, a5, out),
+        // SYS_IPC_FAST_CALL_EP: client side. a0 = a `Cap<Endpoint>`, a1..a4 =
+        // data words (up to 4 × u64 = 32 bytes), a5 = a capability to move.
+        // Blocks until the server replies. The raw-TID form (108) is retired
+        // (wave 15 N5): the endpoint is the only address.
         SYS_IPC_FAST_CALL_EP =>
-            fast_ipc_call_arm(num, a0, a1, a2, a3, a4, a5, out),
+            fast_ipc_call_arm(a0, a1, a2, a3, a4, a5, out),
 
         // SYS_IPC_FAST_ACCEPT: server side.
         // Blocks until a client calls FAST_CALL targeting this TID.

@@ -2102,7 +2102,6 @@ mod image_profiles {
             set(&[
                 nr::SYS_PUTCHAR, nr::SYS_EXIT, nr::SYS_GETPID, nr::SYS_FORK, nr::SYS_SLEEP,
                 nr::SYS_WRITE, nr::SYS_UPTIME,
-                nr::SYS_IPC_FAST_CALL,
                 nr::SYS_ENDPOINT_CREATE_TYPED, nr::SYS_IPC_FAST_CALL_EP,
                 nr::SYS_IPC_FAST_REPLY, nr::SYS_IPC_FAST_ACCEPT,
                 nr::SYS_IPC_FAST_REPLY_ACCEPT,

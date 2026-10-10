@@ -122,7 +122,7 @@ pub use fast_ipc::{
     fast_ipc_call, fast_ipc_accept, fast_ipc_reply, fast_ipc_collect, fast_ipc_active,
     fast_ipc_release_all, fast_ipc_wait_state, FastIpcWait, fast_ipc_census, fast_ipc_slot_ids,
     FastIpcReply, fast_ipc_make_handle, fast_ipc_handle_slot,
-    fast_ipc_irq_ctx_violations, fast_ipc_tid_dest_for,
+    fast_ipc_irq_ctx_violations,
     FAST_IPC_SLOT_BITS, FAST_IPC_SLOT_MASK, FAST_IPC_GEN_MASK,
     FAST_IPC_MAX_SLOTS, FAST_IPC_MAX_WORDS,
 };

@@ -153,9 +153,6 @@ qemu = ["azos_drv_irqchip/qemu", "azos_drv_sys/qemu", "azos_net/qemu",
         # (`crates/core/topology/build.rs`).
         "azos_topology/dev-key",
         "azos_ipc/profile-actuation",
-        # `legacy-tid-ipc`: syscall 108 exists only for `ipctest`, whose peers
-        # are forked children. A board kernel does not compile the arm.
-        "azos_syscall/legacy-tid-ipc",
         "azos_actuation/qemu",
         "azos_gps?/simulated-fix"]
 # `deadline-refusal-canary`: the default topology declares two 60% `hard_rt`

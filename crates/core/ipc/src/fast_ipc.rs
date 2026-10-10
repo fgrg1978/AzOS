@@ -135,17 +135,6 @@ mod sched_seam {
     pub fn wake_client(handle: u64) {
         azos_sched::wake_fast_ipc_client(handle);
     }
-    /// Parent of the task on THIS hart right now — for
-    /// [`super::fast_ipc_tid_dest_for`], the CALL-direction authority check
-    /// `SYS_IPC_FAST_CALL` (108) never had (RFC-0040 gap 2). `fast_ipc_call`
-    /// only ever runs synchronously inside the caller's own syscall, so "the
-    /// task on this hart right now" IS the caller — same fact
-    /// `current_task_tid` relies on. O(1): `current_task_parent_tid` reads
-    /// the same per-CPU `current_idx` cache, no `idx_for_tid` scan.
-    #[inline(always)]
-    pub fn current_parent_tid() -> u32 {
-        azos_sched::current_task_parent_tid()
-    }
     /// Destroy a capability that was moved with a message which will now never
     /// be delivered. See [`super::fast_ipc_release_all`] for when, and why it
     /// is a revoke rather than a return.
@@ -651,43 +640,6 @@ fn lock_fast_ipc() -> impl core::ops::DerefMut<Target = FastIpcState> {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
-/// `raw_tid` back, if it names the CALLING task's own parent — the authority
-/// check `SYS_IPC_FAST_CALL` (108) never had (RFC-0040 gap 2, the CALL
-/// direction). `None` otherwise.
-///
-/// **Why parent, and not a capability.** `SYS_IPC_FAST_CALL_EP` (582) already
-/// has a full authority check: [`crate::endpoint::endpoint_dest_for`] resolves
-/// a `Cap<Endpoint>` the caller holds, with `WRITE`, naming a live served
-/// endpoint. 108 takes a raw TID in `a0` with nothing behind it — no
-/// capability exists to check, because the ABI never gave it one. The
-/// narrowest fix available without minting one is the relation `fork` already
-/// grants for free: every surviving 108 caller in `userspace/tests/ipctest`
-/// (`post`, `heartbeat_main`, `phase_a_client`, and now `phase_b_client` /
-/// `phase_e_client` relayed through their own parent — see those two for why)
-/// addresses its own parent. Widening this past parent (e.g. to any
-/// ancestor) is an authority-model decision this function does not make.
-///
-/// **O(1), no scan, no lock.** [`sched_seam::current_parent_tid`] reads the
-/// same per-CPU `current_idx` cache `current_task_tid` does — not
-/// `idx_for_tid`, which is what `fast_ipc_call` below still pays for
-/// `server_tid` (a check this function makes unnecessary for 108's caller,
-/// since a parent TID is always a real, live task by construction, but
-/// `fast_ipc_call` cannot tell which path called it and still needs that
-/// check for 582's capability-resolved TID).
-///
-/// **One refusal, same convention `endpoint_dest_for` established.** "Not my
-/// parent" and "no parent recorded" (root, or a child whose link `note_exit`
-/// already cleared) collapse into the same `None` — which of the two would
-/// report on a relationship the caller does not hold authority over.
-pub fn fast_ipc_tid_dest_for(raw_tid: u32) -> Option<u32> {
-    let parent = sched_seam::current_parent_tid();
-    if parent != 0 && raw_tid == parent {
-        Some(raw_tid)
-    } else {
-        None
-    }
-}
 
 /// Called when a client issues SYS_IPC_FAST_CALL.
 ///
@@ -1456,19 +1408,6 @@ mod host_seam {
             c.store(live, Ordering::SeqCst);
         }
     }
-    /// Parent of the "currently running" caller, for
-    /// [`super::fast_ipc_tid_dest_for`]'s tests. The kernel side reads this
-    /// from `PER_CPU[cpu].current_idx` — there is no such notion on the host,
-    /// so a test sets this directly to whatever it wants "the caller's
-    /// parent" to be before calling `fast_ipc_tid_dest_for`. Defaults to 0
-    /// (no parent), same as a task `set_parent` never touched.
-    static CURRENT_PARENT: AtomicU32 = AtomicU32::new(0);
-    pub fn set_current_parent(tid: u32) {
-        CURRENT_PARENT.store(tid, Ordering::SeqCst);
-    }
-    pub fn current_parent() -> u32 {
-        CURRENT_PARENT.load(Ordering::SeqCst)
-    }
     /// Backs `sched_seam::tid_exists` under `cfg(test)`.
     pub fn live(tid: u32) -> bool {
         LIVE_TIDS.get(tid as usize).map(|c| c.load(Ordering::SeqCst)).unwrap_or(false)
@@ -1596,10 +1535,6 @@ mod sched_seam {
     pub fn revoke_moved(server_tid: u32, handle: u32) {
         super::host_seam::revoke_moved(server_tid, handle);
     }
-    /// See `host_seam::current_parent`.
-    pub fn current_parent_tid() -> u32 {
-        super::host_seam::current_parent()
-    }
     /// Records rather than doing nothing — see `host_seam::record_undonate`.
     pub fn return_donation(target: u32) {
         super::host_seam::record_undonate(target);
@@ -1653,8 +1588,6 @@ mod tests {
         host_seam::clear_revoked();
         host_seam::clear_undonated();
         host_seam::set_donate(true);
-        // No parent by default — matches a task `set_parent` never touched.
-        host_seam::set_current_parent(0);
         // Default population for the common case.
         host_seam::set_tid_live(SERVER, true);
         host_seam::set_tid_live(OTHER_SERVER, true);
@@ -1768,33 +1701,6 @@ mod tests {
         let (r, next) = fast_ipc_reply_then_accept(stale, SERVER, false, RSP, SERVER);
         assert_eq!((r, next), (FastIpcReply::Stale, None));
         assert_eq!(slot_state(b), Some(SlotState::Pending));
-    }
-
-    // ── RFC-0040 gap 2, CALL direction: `fast_ipc_tid_dest_for` ────────────
-
-    #[test]
-    fn raw_tid_call_to_parent_is_allowed() {
-        let _e = env();
-        host_seam::set_current_parent(SERVER);
-        assert_eq!(fast_ipc_tid_dest_for(SERVER), Some(SERVER));
-    }
-
-    #[test]
-    fn raw_tid_call_to_non_parent_is_refused() {
-        let _e = env();
-        host_seam::set_current_parent(SERVER);
-        // OTHER_SERVER is a live task — the refusal is the parent check, not
-        // IPC-5's "TID does not exist" gate.
-        assert_eq!(fast_ipc_tid_dest_for(OTHER_SERVER), None);
-    }
-
-    #[test]
-    fn raw_tid_call_with_no_recorded_parent_is_refused() {
-        let _e = env();
-        // `set_current_parent` was never called — env() leaves it at 0, the
-        // same state as root or a reaped child. `raw_tid = 0` must not slip
-        // through by matching it.
-        assert_eq!(fast_ipc_tid_dest_for(0), None);
     }
 
     // ── IPC-5: target validation ───────────────────────────────────────────
