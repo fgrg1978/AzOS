@@ -42,8 +42,12 @@ static WB: AtomicUsize = AtomicUsize::new(0);
 static RA: AtomicU64 = AtomicU64::new(0);
 static RB: AtomicU64 = AtomicU64::new(0);
 /// 0 ok; 1 X never ran on A; 2 Y never ran on B; 3 the two ASIDs differ;
-/// 4 a read faulted.
+/// 4 a read faulted. The first failure wins (`fail`).
 static WHY: AtomicU32 = AtomicU32::new(0);
+
+fn fail(why: u32) {
+    let _ = WHY.compare_exchange(0, why, Ordering::SeqCst, Ordering::SeqCst);
+}
 
 #[repr(C)]
 struct Load { value: u64, cause: u64 }
@@ -54,14 +58,16 @@ unsafe extern "C" {
 }
 
 /// The root word this hart's translation register holds now, comparable with
-/// a word from `asid::new_root_word` (x86_64: CR3 without the no-flush bit).
+/// a word from `asid::new_root_word` as is. Only x86_64 normalises: CR3 bit 63
+/// is the write-only no-flush bit. riscv64's bit 63 is `satp.MODE` (Sv39 = 8)
+/// and is part of the word, so it is compared, never masked.
 fn live_word() -> usize {
     #[cfg(target_arch = "riscv64")]
     { azos_arch::csr::read_satp() }
     #[cfg(target_arch = "aarch64")]
     { azos_arch::sysregs::read_ttbr0_el1() as usize }
     #[cfg(target_arch = "x86_64")]
-    { azos_arch::mmu::cpu::read_cr3() as usize }
+    { (azos_arch::mmu::cpu::read_cr3() & !azos_arch::mmu::CR3_NOFLUSH) as usize }
     #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
     compile_error!("asid_rollover: no translation-root read for this ISA")
 }
@@ -86,7 +92,7 @@ fn fill(frame: usize, word: u64) {
 fn read(out: &AtomicU64) {
     let r = unsafe { azos_tlb_probe_load(VA) };
     if r.cause != 0 {
-        WHY.store(4, Ordering::SeqCst);
+        fail(4);
     }
     out.store(r.value, Ordering::SeqCst);
 }
@@ -104,8 +110,8 @@ fn task_x(_: usize) {
     let wa = WA.load(Ordering::SeqCst);
     azos_sched::set_current_user_info(wa as u64, 0, 0);
     azos_sched::task_yield(); // the switch back in installs A
-    if live_word() & !(1usize << 63) != wa {
-        WHY.store(1, Ordering::SeqCst);
+    if live_word() != wa {
+        fail(1);
     }
     read(&RA); // A's translation is now cached under A's ASID
     // The rollover: B gets A's ASID in the next generation.
@@ -114,7 +120,7 @@ fn task_x(_: usize) {
     let wb = azos_sched::asid::new_root_word(b);
     let arch = &azos_arch::ARCH;
     if arch.user_root_asid(wb) != arch.user_root_asid(wa) {
-        WHY.store(3, Ordering::SeqCst);
+        fail(3);
     }
     WB.store(wb, Ordering::SeqCst);
     azos_sched::set_task_user_info(Y_IDX.load(Ordering::SeqCst), wb as u64, 0, 0);
@@ -135,8 +141,8 @@ fn task_y(_: usize) {
         azos_sched::task_yield();
     }
     // Switched in on B (X set this task's word before yielding).
-    if live_word() & !(1usize << 63) != WB.load(Ordering::SeqCst) {
-        WHY.store(2, Ordering::SeqCst);
+    if live_word() != WB.load(Ordering::SeqCst) {
+        fail(2);
     }
     read(&RB);
     STAGE.store(2, Ordering::SeqCst);
