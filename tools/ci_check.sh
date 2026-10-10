@@ -11337,8 +11337,8 @@ PY
     # ipc_no_senders_grant_revoke_race, port_source_gone_wakes_the_waiter
     # (wave 15, N5b: Kconfig IPC_PORT_NOTICES; canaries in `ktest ipc
     # canary (rv|arm|x86)`).
-    KTEST_N_RV=61
-    KTEST_N_ARM=61
+    KTEST_N_RV=63
+    KTEST_N_ARM=63
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11715,6 +11715,13 @@ PY
     KTEST_FUTEX_CANARIED="futex_requeue_wakes_one_not_the_herd"
     par "ktest futex canary (rv)" ktest_row "ktest futex canary (rv)" rv "" "$KTEST_FUTEX_CANARIED" "$KTEST_FUTEX_CANARIES"
     par "ktest futex canary (arm)" ktest_row "ktest futex canary (arm)" arm "" "$KTEST_FUTEX_CANARIED" "$KTEST_FUTEX_CANARIES"
+    # N8 (kernel Mutex, crates/core/sync/src/kmutex.rs), one boot of the
+    # pass row's kernel: `canary=kmutex-io-held` (`unlocked_for_io` keeps the
+    # mutex across the device wait, rule F1: kmutex_unlocked_for_io).
+    KTEST_KMUTEX_CANARIES="canary=kmutex-io-held"
+    KTEST_KMUTEX_CANARIED="kmutex_unlocked_for_io"
+    par "ktest kmutex canary (rv)" ktest_row "ktest kmutex canary (rv)" rv "" "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
+    par "ktest kmutex canary (arm)" ktest_row "ktest kmutex canary (arm)" arm "" "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
@@ -11767,7 +11774,7 @@ PY
     # +4 the N5 endpoint tests, as on rv and arm.
     # +1 the N9 futex requeue test, as on rv and arm.
     # +4 the N5b notice tests, as on rv and arm.
-    KTEST_N_X86=63
+    KTEST_N_X86=65
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -11923,6 +11930,9 @@ PY
     # N9: see `ktest futex canary (rv)`.
     par "ktest futex canary (x86)" x86_ktest_row "ktest futex canary (x86)" "" \
         "$KTEST_FUTEX_CANARIED" "$KTEST_FUTEX_CANARIES"
+    # N8: see `ktest kmutex canary (rv)`.
+    par "ktest kmutex canary (x86)" x86_ktest_row "ktest kmutex canary (x86)" "" \
+        "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
 
     # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
     #
