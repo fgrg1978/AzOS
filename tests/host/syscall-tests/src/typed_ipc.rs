@@ -1185,7 +1185,7 @@ fn the_deadline_wait_refuses_like_577_and_returns_a_channel_event() {
     azos_sched::shim_arm_block_outcome(azos_sched::BlockOutcome::Returned);
     azos_sched::shim_set_block_hook(Some(Box::new(move |_| {
         // Another task's send, through its own capability.
-        let mut t = azos_ipc::cap::CapTable::empty();
+        let t = azos_ipc::cap::CapTable::empty();
         let c: Cap<Channel> = t.grant(CapPerms::WRITE, ch).unwrap();
         azos_ipc::channel::channel_send_cap(&t, c, b"req").unwrap();
     })));

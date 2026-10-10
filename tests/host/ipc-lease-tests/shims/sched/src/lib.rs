@@ -334,3 +334,9 @@ pub mod group {
     pub struct MmGuard;
     pub fn mm_lock() -> MmGuard { MmGuard }
 }
+
+/// N4 shim: the running task's pool slot and TID (`azos_sched::current_task_slot`).
+pub fn current_task_slot() -> Option<(usize, u32)> {
+    let tid = current_task_tid();
+    idx_for_tid(tid).map(|i| (i, tid))
+}

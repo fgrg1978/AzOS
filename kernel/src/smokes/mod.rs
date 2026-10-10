@@ -79,6 +79,10 @@ pub(crate) mod x86_64_ring3;
 pub(crate) mod irq_order_probe;
 #[cfg(any(feature = "pi-smoke", feature = "ktest"))]
 pub(crate) mod pi_probe;
+// N4 (Kconfig RCU_QSBR): grace periods, the idle hook and the lock-free
+// capability reads, every ISA.
+#[cfg(feature = "ktest")]
+pub(crate) mod rcu;
 #[cfg(feature = "pi-flush-smoke")]
 pub(crate) mod pi_flush_probe;
 #[cfg(any(feature = "i3-smoke", feature = "ktest"))]

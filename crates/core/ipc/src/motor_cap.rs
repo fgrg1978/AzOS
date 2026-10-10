@@ -280,8 +280,8 @@ mod tests {
 
     #[test]
     fn pair_write_requires_both_wheels() {
-        let mut t = CapTable::empty();
-        let left: Cap<Motor> = motor_grant_cap_into(&mut t, 0, CapPerms::RW);
+        let t = CapTable::empty();
+        let left: Cap<Motor> = motor_grant_cap_into(&t, 0, CapPerms::RW);
         // Only the left wheel is held — every pair-wide op must deny.
         assert_eq!(
             motor_set_target_cap(&t, left, 10, 10),
@@ -293,16 +293,16 @@ mod tests {
         );
 
         // Grant the right wheel too — now the pair is complete.
-        let _right: Cap<Motor> = motor_grant_cap_into(&mut t, 1, CapPerms::RW);
+        let _right: Cap<Motor> = motor_grant_cap_into(&t, 1, CapPerms::RW);
         assert_eq!(motor_set_target_cap(&t, left, 10, 10), Ok(()));
         assert_eq!(motor_enable_cap(&t, left, true), Ok(()));
     }
 
     #[test]
     fn pair_write_denies_read_only_grants() {
-        let mut t = CapTable::empty();
-        let left: Cap<Motor> = motor_grant_cap_into(&mut t, 0, CapPerms::READ);
-        let _right: Cap<Motor> = motor_grant_cap_into(&mut t, 1, CapPerms::READ);
+        let t = CapTable::empty();
+        let left: Cap<Motor> = motor_grant_cap_into(&t, 0, CapPerms::READ);
+        let _right: Cap<Motor> = motor_grant_cap_into(&t, 1, CapPerms::READ);
         // Both wheels present, but neither carries WRITE.
         assert_eq!(
             motor_set_target_cap(&t, left, 0, 0),
@@ -312,9 +312,9 @@ mod tests {
 
     #[test]
     fn out_of_range_motor_id_can_never_satisfy_the_pair() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         // A cap minted for a motor id the drivetrain does not have.
-        let odd: Cap<Motor> = motor_grant_cap_into(&mut t, 7, CapPerms::RW);
+        let odd: Cap<Motor> = motor_grant_cap_into(&t, 7, CapPerms::RW);
         assert_eq!(
             motor_set_target_cap(&t, odd, 0, 0),
             Err(MotorCapError::Cap(CapError::MissingPerms))
@@ -323,15 +323,15 @@ mod tests {
 
     #[test]
     fn enabled_query_is_single_cap_not_pair_wide() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         // Only the left wheel granted — READ query still succeeds.
-        let left: Cap<Motor> = motor_grant_cap_into(&mut t, 0, CapPerms::READ);
+        let left: Cap<Motor> = motor_grant_cap_into(&t, 0, CapPerms::READ);
         assert!(motor_enabled_cap(&t, left).is_ok());
     }
 
     #[test]
     fn wrong_kind_still_rejected_before_pairing_logic() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let gpio: Cap<Gpio> = t.grant(CapPerms::RW, 0).unwrap();
         let forged: Cap<Motor> = Cap::from_raw(gpio.raw());
         assert_eq!(
@@ -343,7 +343,7 @@ mod tests {
     /// Test-only helper: grant directly into a `CapTable` (these tests
     /// exercise the table-level functions, not `cap_store`/TIDs).
     fn motor_grant_cap_into(
-        table: &mut CapTable,
+        table: &CapTable,
         motor_id: u32,
         perms: CapPerms,
     ) -> Cap<Motor> {

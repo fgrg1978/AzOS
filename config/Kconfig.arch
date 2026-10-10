@@ -1642,6 +1642,79 @@ config SPINLOCK_MCS_PENDING
       cheaper hand-off with one contender, as in Linux. Off: every waiter
       queues (one node write and a tail CAS more per contended acquire).
 
+config RCU_QSBR
+    bool "Read-copy-update, quiescent-state based (QSBR)"
+    default n if NR_CPUS = 1
+    default y
+    help
+      Lock-free readers for kernel tables read far more often than they
+      change (crates/core/sync/src/qsbr.rs): a reader takes no lock, and a
+      writer frees what it replaced only after every CPU has passed a
+      quiescent state (a context switch, a return to user mode, idle).
+      The capability-table reads (`cap_store::get`, SYS_CAP_LOOKUP) run
+      this way. Owner decision Q2: QSBR only (no sleepable readers), and
+      callbacks never run on the RT CPUs (RCU_NOCBS_CPUS).
+      Costs: 64 bytes per CPU (NR_CPUS), one kernel task (the callback
+      task) and, on a kernel entry from user mode or from idle, one atomic
+      add and a fence; on a return to user mode, one atomic add with
+      interrupts masked around it (about 10 instructions per syscall); at
+      a context switch, one store.
+      Off: not compiled. The capability reads take the table's SpinLock as
+      before, and no entry, switch or idle path carries an instruction.
+      Default off with one CPU, where a lock is never contended and the
+      per-syscall instructions buy nothing.
+
+config RCU_NOCBS_CPUS
+    hex "RCU: CPUs that never run RCU callbacks (the RT CPUs, a mask)"
+    default 0x0
+    help
+      Bit n set: CPU n never runs an RCU callback; the callback task is
+      pinned to the lowest CPU whose bit is clear (CPU 0, with a boot
+      warning, if every possible CPU's bit is set). Set the real-time
+      cluster's CPUs here so a batch of frees never lands in their
+      latency. A CPU in user mode is quiescent with or without a tick
+      (rule F5), so an RT CPU running one user task never holds a grace
+      period. Default none: no board here designates RT CPUs yet. No
+      cost: a constant read at boot.
+
+config RCU_STALL_TIMEOUT_MS
+    int "RCU: a grace period older than this is a stall (ms)"
+    range 10 600000
+    default 500 if PROFILE_EMBEDDED
+    default 4000 if BOARD_QEMU
+    default 2000
+    help
+      A grace period that has not ended this long after it started is
+      reported once: the stall counter (`qsbr::stalls`, printed by the
+      callback task, failing the running ktest) names the first CPU that
+      has not passed a quiescent state. A CPU stuck in kernel code with
+      preemption off, or a hook that stopped reporting (the ktest canary
+      `rcu-idle-qs-skip`), shows here. Higher on QEMU, whose timer is host
+      wall time. No cost: a compare in the waiter's poll.
+
+config RCU_CALLBACK_PRIORITY
+    int "RCU: callback task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
+    default 20
+    help
+      The task that waits for grace periods and runs RCU callbacks (the
+      frees) on the lowest CPU outside RCU_NOCBS_CPUS. Never RT: a free is
+      never urgent, and it sleeps between checks. Lower numbers run
+      first; the default sits with the io_ring worker. No cost.
+
+config RCU_GP_POLL_MS
+    int "RCU: grace-period poll interval of a waiter (ms)"
+    range 1 1000
+    default 1 if PROFILE_EMBEDDED
+    default 2
+    help
+      A waiter (`synchronize_rcu`, the callback task) sleeps this long
+      between checks of the CPUs' counters while a grace period is open,
+      and not at all otherwise. Shorter frees sooner at one timer wake per
+      interval while a grace period is open; longer delays frees. One
+      check reads one word per online CPU.
+
 config X86_UMWAIT_TSC_TICKS
     int "x86_64: UMWAIT deadline (TSC ticks)"
     range 1000 100000000

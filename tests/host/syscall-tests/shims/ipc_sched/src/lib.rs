@@ -166,3 +166,11 @@ pub mod group {
     pub struct MmGuard;
     pub fn mm_lock() -> MmGuard { MmGuard }
 }
+
+/// N4: the calling task's pool slot and TID, as the kernel's scheduler
+/// answers it (`cap_store::read_own_table`); shadows `cap_test_sched`'s,
+/// which has no calling task.
+pub fn current_task_slot() -> Option<(usize, u32)> {
+    let tid = current_task_tid();
+    cap_test_sched::idx_for_tid(tid).map(|i| (i, tid))
+}

@@ -63,9 +63,42 @@ use azos_sync::spinlock::SpinLock;
 
 use crate::cap::{Cap, CapError, CapHandle, CapPerms, CapTable, CapTarget};
 
+/// A task-pool slot's capability table and the lock its writers take.
+///
+/// The lock sits beside the table rather than around it: the table's slots
+/// are atomic words (`CapTable`'s docs), so a reader holding no lock
+/// ([`read_table`], Kconfig RCU_QSBR) and a writer holding this one never
+/// alias a `&mut`. Writers still exclude each other, as before.
+struct TableCell {
+    lock: SpinLock<()>,
+    table: CapTable,
+}
+
+/// A locked table: writes through it are serialised with every other
+/// writer of that table.
+struct Locked {
+    _g: azos_sync::SpinLockGuard<'static, ()>,
+    t: &'static CapTable,
+}
+
+impl core::ops::Deref for Locked {
+    type Target = CapTable;
+    #[inline(always)]
+    fn deref(&self) -> &CapTable {
+        self.t
+    }
+}
+
+impl TableCell {
+    #[inline(always)]
+    fn lock(&'static self) -> Locked {
+        Locked { _g: self.lock.lock(), t: &self.table }
+    }
+}
+
 /// Static per-slot capability tables.
-const FRESH_TABLE: SpinLock<CapTable> = SpinLock::new(CapTable::empty());
-static CAP_TABLES: [SpinLock<CapTable>; MAX_TASKS] = [FRESH_TABLE; MAX_TASKS];
+const FRESH_TABLE: TableCell = TableCell { lock: SpinLock::new(()), table: CapTable::empty() };
+static CAP_TABLES: [TableCell; MAX_TASKS] = [FRESH_TABLE; MAX_TASKS];
 
 /// TID currently owning each slot's table. `NO_OWNER` = never used.
 ///
@@ -277,9 +310,9 @@ fn wipe_claimed(idx: usize, prev: u32, tid: u32) -> bool {
     if HANDING[idx].load(Ordering::Acquire) == tid {
         return false;
     }
-    let mut table = CAP_TABLES[idx].lock();
+    let table = CAP_TABLES[idx].lock();
     HANDING[idx].store(NO_OWNER, Ordering::Release);
-    *table = CapTable::empty();
+    table.clear_all();
     if prev != NO_OWNER {
         cap_event(CapEvent::Wiped { slot: idx });
     }
@@ -299,18 +332,123 @@ pub fn is_valid_tid(tid: u32) -> bool {
 /// Look up a capability for the named task.
 ///
 /// Wraps [`CapTable::get`]; returns `Err(CapError::Stale)` if `tid`
-/// does not name a live task.
+/// does not name a live task. Lock-free with Kconfig RCU_QSBR
+/// ([`read_table`]): one slot word, read once.
+#[inline]
 pub fn get<T: CapTarget>(
     tid: u32,
     cap: Cap<T>,
     need: CapPerms,
 ) -> Result<u32, CapError> {
-    let idx = match slot_for(tid) {
-        Some(i) => i,
-        None => return Err(CapError::Stale),
+    match read_table(tid, |t| t.get(cap, need)) {
+        Some(r) => r,
+        None => Err(CapError::Stale),
+    }
+}
+
+/// Run `f` on `tid`'s table **for reading**, without its lock when Kconfig
+/// RCU_QSBR is on (wave 15 N4).
+///
+/// What makes it safe without the lock: each slot is one atomic word
+/// (`CapTable`), so `f` sees every slot it reads whole, as of some instant
+/// between a writer's stores; the tables are static, never freed; and what
+/// a slot names is an id, or an index plus a generation the object's pool
+/// re-checks, so an answer read just before a concurrent revoke is the
+/// answer the lock would have given a moment earlier.
+///
+/// **No read section.** Nothing a table holds is reclaimed, so there is
+/// nothing for a grace period to protect, and the read costs no preemption
+/// guard (measured: about 30 instructions on riscv64, on every typed
+/// syscall). A closure that goes on to dereference memory freed through
+/// `call_rcu` opens its own `azos_sync::qsbr::read()` (the endpoint objects
+/// of N5 are the first such memory).
+///
+/// For a task's own table (`current_task_tid()`), or any table whose owner
+/// is not being handed over: a slot whose recorded owner is not `tid`'s
+/// (a reused slot not yet claimed, a hand-over in flight) takes the locked
+/// path ([`with_table`]), which claims or resolves again exactly as before.
+/// With RCU_QSBR off it is [`with_table`].
+#[inline]
+pub fn read_table<R>(tid: u32, f: impl FnOnce(&CapTable) -> R) -> Option<R> {
+    if azos_limits::RCU_QSBR {
+        if let Some(idx) = read_slot(tid) {
+            return Some(f(&CAP_TABLES[idx].table));
+        }
+    }
+    read_locked(tid, f)
+}
+
+/// [`read_table`] for the task running on this CPU (SYS_CAP_LOOKUP): its
+/// slot comes from the scheduler with its TID, so no search by TID.
+#[inline]
+pub fn read_own_table<R>(f: impl FnOnce(&CapTable) -> R) -> Option<R> {
+    let (idx, tid) = azos_sched::current_task_slot()?;
+    if azos_limits::RCU_QSBR {
+        if let Some(idx) = owned_now(idx, tid) {
+            return Some(f(&CAP_TABLES[idx].table));
+        }
+    }
+    read_locked(tid, f)
+}
+
+/// [`with_table`] as the read paths' fallback, out of line: the lock-free
+/// path keeps a small frame (measured: the inlined fallback's registers
+/// were saved on every SYS_CAP_LOOKUP).
+#[inline(never)]
+fn read_locked<R>(tid: u32, f: impl FnOnce(&CapTable) -> R) -> Option<R> {
+    with_table(tid, |t| f(t))
+}
+
+/// [`slot_for`] without the claim: the slot `tid` (or its thread group's
+/// leader) owns right now, or `None` when only the locked path can say
+/// (no live task, a slot not yet claimed by `tid`, a hand-over in flight).
+/// Two loads where `slot_for` swaps: a reader writes no shared line.
+#[inline(always)]
+fn read_slot(tid: u32) -> Option<usize> {
+    if tid == NO_OWNER {
+        return None;
+    }
+    // The caller's own TID (the common case: `current_task_tid()`) names
+    // the slot the scheduler already knows.
+    let idx = match azos_sched::current_task_slot() {
+        Some((i, t)) if t == tid => i,
+        _ => azos_sched::idx_for_tid(tid)?,
     };
-    let table = CAP_TABLES[idx].lock();
-    table.get(cap, need)
+    owned_now(idx, tid)
+}
+
+/// The slot whose table task `tid` (in pool slot `idx`) uses, if it is
+/// claimed for it and not being handed over: its own, or (thread groups)
+/// its leader's.
+#[inline(always)]
+fn owned_now(idx: usize, tid: u32) -> Option<usize> {
+    if tid == NO_OWNER {
+        return None;
+    }
+    if azos_sched::group::any_groups() {
+        return owned_now_member(idx, tid);
+    }
+    owned_by(idx, tid)
+}
+
+/// [`owned_now`] while thread groups exist (a member reads its leader's
+/// table). Out of line, as [`slot_for_member`] is.
+#[inline(never)]
+fn owned_now_member(idx: usize, tid: u32) -> Option<usize> {
+    let (idx, owner) = member_owner(idx, tid)?;
+    owned_by(idx, owner)
+}
+
+#[inline(always)]
+fn owned_by(idx: usize, owner: u32) -> Option<usize> {
+    if idx < MAX_TASKS
+        && OWNER[idx].load(Ordering::Acquire) == owner
+        && HANDING[idx].load(Ordering::Relaxed) != owner
+    {
+        Some(idx)
+    } else {
+        None
+    }
 }
 
 /// Mint a new typed capability into `tid`'s table.
@@ -323,7 +461,7 @@ pub fn grant<T: CapTarget>(
 ) -> Option<Cap<T>> {
     loop {
         let (idx, owner) = slot_owner(tid)?;
-        let mut table = CAP_TABLES[idx].lock();
+        let table = CAP_TABLES[idx].lock();
         if still_owned(idx, owner) {
             return table.grant(perms, resource);
         }
@@ -332,7 +470,7 @@ pub fn grant<T: CapTarget>(
 
 /// Revoke a single cap.
 pub fn revoke<T: CapTarget>(tid: u32, cap: Cap<T>) {
-    let (idx, mut table) = loop {
+    let (idx, table) = loop {
         let Some((idx, owner)) = slot_owner(tid) else { return };
         let table = CAP_TABLES[idx].lock();
         if still_owned(idx, owner) {
@@ -368,8 +506,8 @@ pub fn reset(tid: u32) {
         Some(i) => i,
         None => return,
     };
-    let mut table = CAP_TABLES[idx].lock();
-    *table = CapTable::empty();
+    let table = CAP_TABLES[idx].lock();
+    table.clear_all();
     cap_event(CapEvent::Wiped { slot: idx });
     // Release the slot claim so the next occupant re-registers cleanly.
     OWNER[idx].store(NO_OWNER, Ordering::Release);
@@ -393,12 +531,11 @@ pub fn hand_over(from: usize, to: usize, tid: u32) {
         return;
     }
     let (lo, hi) = if from < to { (from, to) } else { (to, from) };
-    let mut a = CAP_TABLES[lo].lock();
-    let mut b = CAP_TABLES[hi].lock();
-    let (src, dst) = if from < to { (&mut *a, &mut *b) } else { (&mut *b, &mut *a) };
-    // Swapped in place, then the source wiped, as `reset` wipes a table.
-    core::mem::swap(src, dst);
-    *src = CapTable::empty();
+    let a = CAP_TABLES[lo].lock();
+    let b = CAP_TABLES[hi].lock();
+    let (src, dst): (&CapTable, &CapTable) = if from < to { (&a, &b) } else { (&b, &a) };
+    // Moved, then the source wiped, as `reset` wipes a table.
+    dst.take_from(src);
     OWNER[to].store(tid, Ordering::Release);
     HANDING[to].store(NO_OWNER, Ordering::Release);
     // Before the TIDs are swapped: until then `tid` still resolves to
@@ -412,10 +549,10 @@ pub fn hand_over(from: usize, to: usize, tid: u32) {
 ///
 /// Used by syscall handlers that need direct access (e.g. to compute
 /// multiple cap_table.get() calls atomically without re-locking).
-pub fn with_table<R>(tid: u32, f: impl FnOnce(&mut CapTable) -> R) -> Option<R> {
+pub fn with_table<R>(tid: u32, f: impl FnOnce(&CapTable) -> R) -> Option<R> {
     let idx = slot_for(tid)?;
-    let mut table = CAP_TABLES[idx].lock();
-    Some(f(&mut *table))
+    let table = CAP_TABLES[idx].lock();
+    Some(f(&table))
 }
 
 /// Move one capability from `from_tid`'s table into `to_tid`'s.
@@ -524,23 +661,23 @@ fn move_cap_once(
     // (1) Ordered acquire: lowest slot index first, whichever way the
     // capability is travelling.
     let (lo, hi) = if from_idx < to_idx { (from_idx, to_idx) } else { (to_idx, from_idx) };
-    let mut lo_tab = CAP_TABLES[lo].lock();
-    let mut hi_tab = CAP_TABLES[hi].lock();
+    let lo_tab = CAP_TABLES[lo].lock();
+    let hi_tab = CAP_TABLES[hi].lock();
     if !still_owned(from_idx, from_owner) || !still_owned(to_idx, to_owner) {
         return None;
     }
     let (sender, receiver) = if from_idx == lo {
-        (&mut *lo_tab, &mut *hi_tab)
+        (&*lo_tab, &*hi_tab)
     } else {
-        (&mut *hi_tab, &mut *lo_tab)
+        (&*hi_tab, &*lo_tab)
     };
     Some(move_locked(sender, receiver, from_idx, to_idx, handle, rights))
 }
 
 /// The move itself, both tables locked and still their owners'.
 fn move_locked(
-    sender: &mut CapTable,
-    receiver: &mut CapTable,
+    sender: &CapTable,
+    receiver: &CapTable,
     from_idx: usize,
     to_idx: usize,
     handle: CapHandle,
@@ -593,7 +730,7 @@ pub fn revoke_moved(tid: u32, handle: CapHandle) -> bool {
         Some(i) => i,
         None => return false,
     };
-    let mut table = CAP_TABLES[idx].lock();
+    let table = CAP_TABLES[idx].lock();
     let held = table.peek_raw(handle);
     let cleared = table.revoke_raw(handle);
     if let (true, Some((kind, _, resource))) = (cleared, held) {

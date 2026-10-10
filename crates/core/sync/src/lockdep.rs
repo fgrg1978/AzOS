@@ -135,6 +135,10 @@ pub enum Kind {
     PiMutex = 2,
     /// `SleepLock` (sleeping, no inheritance).
     Sleep = 3,
+    /// A QSBR read section (`qsbr::read`, Kconfig RCU_QSBR): held like a
+    /// SpinLock for the sleep, user-return and hold-time checks, ordered
+    /// against no lock (a read section waits for nothing).
+    Rcu = 4,
 }
 
 impl Kind {
@@ -143,6 +147,7 @@ impl Kind {
             Kind::Spin => "SpinLock",
             Kind::PiMutex => "PiMutex",
             Kind::Sleep => "SleepLock",
+            Kind::Rcu => "RcuRead",
         }
     }
 }
@@ -578,7 +583,7 @@ impl<const E: usize, const C: usize> Graph<E, C> {
             return Some(Report::new(What::Recursive, *h, *new));
         }
         let mut ch: u64 = 0x6c6f_636b_6465_7031 ^ new.irq_ctx as u64;
-        for h in held.iter().filter(|h| h.irq_ctx == new.irq_ctx) {
+        for h in held.iter().filter(|h| h.irq_ctx == new.irq_ctx && h.kind != Kind::Rcu) {
             ch = mix64(ch ^ h.key as u64);
         }
         ch = mix64(ch ^ new.key as u64) & !(1 << 63);
@@ -589,7 +594,7 @@ impl<const E: usize, const C: usize> Graph<E, C> {
             return None;
         }
         let mut out = None;
-        for h in held.iter().filter(|h| h.irq_ctx == new.irq_ctx) {
+        for h in held.iter().filter(|h| h.irq_ctx == new.irq_ctx && h.kind != Kind::Rcu) {
             if h.key == new.key {
                 out.get_or_insert(Report::new(What::SameClass, *h, *new));
                 continue;
@@ -734,6 +739,7 @@ impl<const N: usize, const B: usize> Classes<N, B> {
         let kind = match self.kind[i].load(Ordering::Relaxed) {
             2 => Kind::PiMutex,
             3 => Kind::Sleep,
+            4 => Kind::Rcu,
             _ => Kind::Spin,
         };
         let l = |a: &AtomicUsize| loc_of(a.load(Ordering::Relaxed));
@@ -1052,7 +1058,7 @@ fn hold_done(h: &Held, t1: u64) {
     let us = ticks_to_us(ticks);
     CLASSES.hold(h.cls, ticks, us, site_word(h.site));
     let limit = LIMIT_TICKS.load(Ordering::Relaxed);
-    if h.kind == Kind::Spin && limit != 0 && ticks > limit {
+    if matches!(h.kind, Kind::Spin | Kind::Rcu) && limit != 0 && ticks > limit {
         let what = if HOLD_ENFORCE { What::HoldOverLimit } else { What::HoldOverLimitNote };
         let mut r = Report::new(what, *h, Held::EMPTY);
         r.value = us;
@@ -1214,7 +1220,9 @@ fn might_sleep_at(what: &'static str, site: &'static Location<'static>, device: 
         let here = Held { site: Some(site), ..Held::EMPTY };
         let r = if crate::isr_depth::in_isr(n) {
             Some(Report::new(What::SleepInIrq, Held::EMPTY, here))
-        } else if let Some(h) = cpu.held.held().iter().rev().find(|h| h.kind == Kind::Spin && !h.irq_ctx) {
+        } else if let Some(h) = cpu.held.held().iter().rev()
+            .find(|h| matches!(h.kind, Kind::Spin | Kind::Rcu) && !h.irq_ctx)
+        {
             Some(Report::new(What::SleepUnderSpin, *h, here))
         } else if !irqs_on {
             Some(Report::new(What::SleepIrqsOff, Held::EMPTY, here))

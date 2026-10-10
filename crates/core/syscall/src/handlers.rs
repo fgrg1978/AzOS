@@ -5972,16 +5972,28 @@ pub fn sys_cap_lookup(kind_raw: u64, resource: u64) -> i64 {
     if resource > u32::MAX as u64 {
         return Errno::EINVAL.to_syscall_ret();
     }
-    let tid = azos_sched::current_task_tid();
     // Wave 11 (SHMRING): a `Shm` lookup may name a kernel stream by its key
     // (`SHM_STREAM_*`), since the consumer cannot know the region's packed
     // reference; the table is then asked about that region.
-    let resource = if kind == CapKind::Shm {
-        azos_ipc::stream_ring::stream_lookup_resource(resource as u32) as u64
-    } else {
-        resource
-    };
-    match azos_ipc::cap_store::with_table(tid, |t| t.lookup(kind, resource as u32)) {
+    if kind == CapKind::Shm {
+        return cap_lookup_shm(resource as u32);
+    }
+    cap_lookup_in_own_table(kind, resource as u32)
+}
+
+/// SYS_CAP_LOOKUP of a `Shm`: the key may name a kernel stream. Out of line
+/// so the common lookup keeps a small frame.
+#[inline(never)]
+fn cap_lookup_shm(resource: u32) -> i64 {
+    let resource = azos_ipc::stream_ring::stream_lookup_resource(resource);
+    cap_lookup_in_own_table(azos_abi::cap::CapKind::Shm, resource)
+}
+
+#[inline(always)]
+fn cap_lookup_in_own_table(kind: azos_abi::cap::CapKind, resource: u32) -> i64 {
+    use azos_abi::error::Errno;
+    // N4: lock-free with Kconfig RCU_QSBR (`cap_store::read_own_table`).
+    match azos_ipc::cap_store::read_own_table(|t| t.lookup(kind, resource)) {
         Some(Some(h)) => h.as_raw() as i64,
         // Holds no such capability. NOT recorded as a capability denial: a
         // program asking what it has is not a program reaching for what it

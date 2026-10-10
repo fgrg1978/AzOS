@@ -298,7 +298,7 @@ mod channel_tests {
         let _g = begin();
         let ch = create_as(OWNER, 1)[0];
         let r = channel_ref(ch).expect("live");
-        let mut stranger = CapTable::empty();
+        let stranger = CapTable::empty();
         let ro: Cap<Channel> = stranger.grant(CapPerms::READ, r).unwrap();
         let rw: Cap<Channel> = stranger.grant(CapPerms::RW, r).unwrap();
         let empty = CapTable::empty();
@@ -341,7 +341,7 @@ mod channel_tests {
         let _g = begin();
         let ch = create_as(OWNER, 1)[0];
         let r = channel_ref(ch).expect("live");
-        let mut monitor = CapTable::empty();
+        let monitor = CapTable::empty();
         let report: Cap<Channel> = monitor.grant(CapPerms::RW, r).unwrap();
         // Any ordinary WRITE capability, standing in for a device write:
         // containment is generic in `cap.rs` over the kind, so this alone is
@@ -376,7 +376,7 @@ mod channel_tests {
 
         // The capability stores the packed (index, generation), RFC-0040 gap 1.
         let r = channel_ref(ch).expect("live");
-        let mut table = CapTable::empty();
+        let table = CapTable::empty();
         let cap: Cap<Channel> = table.grant(CapPerms::RW, r).unwrap();
 
         // Grantee is a completely different task.
@@ -410,9 +410,9 @@ mod channel_tests {
         let ch = create_as(OWNER, 1)[0];
         let old = channel_ref(ch).expect("precondition: active");
 
-        let mut table = CapTable::empty();
+        let table = CapTable::empty();
         let cap: Cap<Channel> = table.grant(CapPerms::RW, old).unwrap();
-        let mut second = CapTable::empty();
+        let second = CapTable::empty();
         let cap2: Cap<Channel> = second.grant(CapPerms::RW, old).unwrap();
 
         as_user(OWNER);
@@ -452,7 +452,7 @@ mod channel_tests {
         let _g = begin();
         let ch = create_as(OWNER, 1)[0];
         let r = channel_ref(ch).unwrap();
-        let mut table = CapTable::empty();
+        let table = CapTable::empty();
         let cap: Cap<Channel> = table.grant(CapPerms::RW, r).unwrap();
         as_kernel();
         assert_eq!(channel_destroy(ch), 0);
@@ -472,7 +472,7 @@ mod channel_tests {
         use crate::cap::{targets::Channel, Cap, CapPerms, CapTable};
         let _g = begin();
         let ch = create_as(OWNER, 1)[0];
-        let mut table = CapTable::empty();
+        let table = CapTable::empty();
         let bare: Cap<Channel> = table.grant(CapPerms::RW, ch as u32).unwrap();
         let bare_free: Cap<Channel> = table.grant(CapPerms::RW, MAX_CHANNELS as u32 - 1).unwrap();
         as_user(OWNER);
@@ -1488,7 +1488,7 @@ mod channel_port_link {
         assert_eq!(channel_send(ch, b"c"), 0);
         assert_eq!(take_signals(), vec![(P1, r), (P1, r)], "one signal per send");
 
-        let mut table = crate::cap::CapTable::empty();
+        let table = crate::cap::CapTable::empty();
         let cap: crate::cap::Cap<crate::cap::targets::Channel> =
             table.grant(crate::cap::CapPerms::RW, r).expect("grant");
         assert_eq!(channel_send_cap(&table, cap, b"d"), Ok(()));

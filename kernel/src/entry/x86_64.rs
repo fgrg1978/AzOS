@@ -198,6 +198,8 @@ pub extern "C" fn x86_64_trap_resched(frame: &mut TrapFrame) {
     }
     // Lockdep (N1): no lock held when this returns to ring 3 (also after a
     // switch away and back below).
+    // QSBR (Kconfig RCU_QSBR, N4): see `azos_sync::qsbr::TrapBoundary`.
+    let _rcu = azos_sync::qsbr::TrapBoundary::irq(|| frame.came_from_user());
     let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     if frame.came_from_user() && azos_sched::scheduler::forced_stop_pending() {
         azos_sched::scheduler::exit_if_forced();
@@ -215,17 +217,31 @@ pub extern "C" fn x86_64_trap_resched(frame: &mut TrapFrame) {
 /// What `trap_entry.S` calls with the saved frame (interrupts masked: every
 /// gate is an interrupt gate, and `syscall` clears IF through FMASK).
 /// Returns the CR3 word to install before the return, or 0.
+/// The interrupt arm of [`x86_64_trap_entry`], with its QSBR boundary
+/// (Kconfig RCU_QSBR, N4): it leaves idle's extended quiescent state, and its
+/// return to ring 3 reports a quiescent state. Out of line so the syscall
+/// path's frame does not grow with the guard's registers.
+#[inline(never)]
+fn irq_arm(frame: &mut TrapFrame) {
+    let _rcu = azos_sync::qsbr::TrapBoundary::irq(|| frame.came_from_user());
+    let cpu = azos_sched::smp::current_cpu_id();
+    azos_sync::isr_depth::enter(cpu);
+    handle_irq(frame.vector as usize);
+    azos_sync::isr_depth::exit(cpu);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn x86_64_trap_entry(frame: &mut TrapFrame) -> u64 {
     // Lockdep (N1): no lock held when this returns to ring 3.
+    // QSBR (Kconfig RCU_QSBR, N4): a syscall or exception does nothing
+    // unless this is an RT CPU (RCU_NOCBS_CPUS); the interrupt arm has its
+    // own boundary, out of line (`irq_arm`).
+    let _rcu = azos_sync::qsbr::TrapBoundary::exception(|| frame.came_from_user());
     let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     match frame.class() {
         TrapClass::Syscall => syscall(frame),
         TrapClass::Interrupt => {
-            let cpu = azos_sched::smp::current_cpu_id();
-            azos_sync::isr_depth::enter(cpu);
-            handle_irq(frame.vector as usize);
-            azos_sync::isr_depth::exit(cpu);
+            irq_arm(frame);
             0
         }
         TrapClass::PageFault => {

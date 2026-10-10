@@ -18,6 +18,10 @@ pub mod isr_depth;
 /// Lockdep-lite (Kconfig LOCKDEP, wave 15 N1) — see the module docs.
 pub mod lockdep;
 pub mod scope;
+/// QSBR read-copy-update (Kconfig RCU_QSBR, wave 15 N4) — see the module docs.
+pub mod qsbr;
+/// Pure logic behind `qsbr`. Host-tested in `tests/host/sync-tests`.
+pub mod qsbr_core;
 
 pub use spinlock::{SpinLock, SpinLockGuard, IrqSaveGuard};
 pub use preempt::{critical_section, PreemptGuard};

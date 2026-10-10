@@ -1238,6 +1238,8 @@ pub extern "C" fn aarch64_trap_resched(frame: &mut TrapFrame) {
     }
     // Lockdep (N1): no lock held when this returns to EL0 (also after a
     // switch away and back below).
+    // QSBR (Kconfig RCU_QSBR, N4): see `azos_sync::qsbr::TrapBoundary`.
+    let _rcu = azos_sync::qsbr::TrapBoundary::irq(|| frame.came_from_user());
     let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     // IRQ taken from EL0 (never a nested one): the two pieces of task work
     // that may switch away run here, on the task's own stack, not in the IRQ
@@ -1433,6 +1435,19 @@ fn trace_sys_exit(frame: &TrapFrame) {
 /// write before `sret` (`kernel/src/entry/riscv64.rs`) — the ONLY case that is ever
 /// nonzero is a `SYS_EXEC`/autorun hand-off consumed on this same syscall
 /// (`take_current_task_exec_ctx`), same as RISC-V's K-C21.
+/// The interrupt arm of [`aarch64_trap_entry`], with its QSBR boundary
+/// (Kconfig RCU_QSBR, N4): it leaves idle's extended quiescent state, and its
+/// return to EL0 reports a quiescent state. Out of line so the syscall path's
+/// frame does not grow with the guard's registers.
+#[inline(never)]
+fn irq_arm(frame: &mut TrapFrame) {
+    let _rcu = azos_sync::qsbr::TrapBoundary::irq(|| frame.came_from_user());
+    let hart_for_isr = azos_sched::smp::current_cpu_id();
+    azos_sync::isr_depth::enter(hart_for_isr);
+    handle_irq(frame);
+    azos_sync::isr_depth::exit(hart_for_isr);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn aarch64_trap_entry(frame: &mut TrapFrame) -> u64 {
     // Masked-window tracer (`lat-trace`): an exception from a context with
@@ -1451,6 +1466,10 @@ pub extern "C" fn aarch64_trap_entry(frame: &mut TrapFrame) -> u64 {
         }
     };
     // Lockdep (N1): no lock held when this returns to EL0.
+    // QSBR (Kconfig RCU_QSBR, N4): a syscall or exception does nothing
+    // unless this is an RT CPU (RCU_NOCBS_CPUS); the interrupt arm has its
+    // own boundary, out of line (`irq_arm`).
+    let _rcu = azos_sync::qsbr::TrapBoundary::exception(|| frame.came_from_user());
     let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     match frame.class() {
         TrapClass::Syscall => {
@@ -1584,10 +1603,7 @@ pub extern "C" fn aarch64_trap_entry(frame: &mut TrapFrame) -> u64 {
             // call there ran unmeasured against exactly the hazard the
             // decision asked to detect, not mask (for interrupt-latency
             // reasons that apply here just as much as on riscv64).
-            let hart_for_isr = azos_sched::smp::current_cpu_id();
-            azos_sync::isr_depth::enter(hart_for_isr);
-            handle_irq(frame);
-            azos_sync::isr_depth::exit(hart_for_isr);
+            irq_arm(frame);
             // The forced stop and the Linux signal taken at an interrupt
             // from EL0 are handled in `aarch64_trap_resched`, on the task's
             // own stack, not here on the IRQ stack: both can park the task.

@@ -101,6 +101,8 @@ pub extern "C" fn trap_resched(frame: &mut TrapFrame) {
     let _lat_exit = lat_trace::IrqExit(core::panic::Location::caller());
     // Lockdep (N1): no lock held when this returns to U-mode (also after a
     // switch away and back below).
+    // QSBR (Kconfig RCU_QSBR, N4): see `riscv64_trap_handler`.
+    let _rcu = azos_sync::qsbr::TrapBoundary::irq(|| (frame.sstatus as usize) & csr::SSTATUS_SPP == 0);
     let _ld = azos_sync::lockdep::UserReturn::arm(|| (frame.sstatus as usize) & csr::SSTATUS_SPP == 0);
     let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize;
     if !irq_stack_intact(hart) {

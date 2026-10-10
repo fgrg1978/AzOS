@@ -2643,7 +2643,7 @@ pub fn io_ring_create_cap_ref(
 /// decision 2026-09-13). Submitting — which executes the ring's queued writes —
 /// stays contained. There is no untyped destroy.
 pub fn io_ring_destroy_cap(
-    table: &mut crate::cap::CapTable,
+    table: &crate::cap::CapTable,
     cap: crate::cap::Cap<crate::cap::targets::IoRing>,
 ) -> Result<(), IoRingCapError> {
     let r = table.get_uncontained(cap, crate::cap::CapPerms::WRITE)?;

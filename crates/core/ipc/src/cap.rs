@@ -446,29 +446,253 @@ impl CapSlot {
     }
 }
 
+/// One slot as stored: a [`CapSlot`] packed into one 64-bit word, so a
+/// lock-free reader (`cap_store`'s QSBR reads, Kconfig RCU_QSBR) sees a
+/// slot whole or not at all, never the old kind with the new resource.
+/// Bits 0..8 kind, 8..16 permissions, 16..32 generation, 32..64 resource.
+/// Writers still serialise on the table's lock; every access is one atomic
+/// load or store, a plain one on every ISA.
+struct CapSlotCell(core::sync::atomic::AtomicU64);
+
+impl CapSlotCell {
+    /// The encoding of [`CapSlot::EMPTY`] is 0 (kind Null is 0): the tables
+    /// start in `.bss` and a wipe stores 0.
+    const EMPTY: Self = CapSlotCell(core::sync::atomic::AtomicU64::new(0));
+
+    #[inline(always)]
+    const fn encode(s: CapSlot) -> u64 {
+        (s.kind as u8 as u64)
+            | ((s.perms.bits() as u64) << 8)
+            | ((s.generation as u64) << 16)
+            | ((s.resource as u64) << 32)
+    }
+
+    #[inline(always)]
+    fn decode(w: u64) -> CapSlot {
+        CapSlot {
+            kind: CapKind::from_raw(w as u8).unwrap_or(CapKind::Null),
+            perms: CapPerms::from_bits_truncate((w >> 8) as u8),
+            generation: (w >> 16) as u16,
+            resource: (w >> 32) as u32,
+        }
+    }
+
+    #[inline(always)]
+    fn word(&self) -> u64 {
+        self.0.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    // The fields of a word, without decoding the kind (a scan's hot loop).
+    #[inline(always)]
+    const fn w_occupied(w: u64) -> bool {
+        w as u8 != CapKind::Null as u8
+    }
+    #[inline(always)]
+    const fn w_kind_is(w: u64, k: CapKind) -> bool {
+        w as u8 == k as u8
+    }
+    #[inline(always)]
+    const fn w_perms(w: u64) -> CapPerms {
+        CapPerms::from_bits_truncate((w >> 8) as u8)
+    }
+    #[inline(always)]
+    const fn w_generation(w: u64) -> u16 {
+        (w >> 16) as u16
+    }
+    #[inline(always)]
+    const fn w_resource(w: u64) -> u32 {
+        (w >> 32) as u32
+    }
+
+    #[inline(always)]
+    fn load(&self) -> CapSlot {
+        Self::decode(self.word())
+    }
+
+    /// Relaxed: a slot is read whole or not at all, and nothing else is
+    /// published with it (what it names is checked by the object's pool,
+    /// under that pool's own ordering). Writers are serialised by the
+    /// table's lock, whose release orders their stores for the next writer.
+    #[inline(always)]
+    fn store(&self, s: CapSlot) {
+        self.0.store(Self::encode(s), core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Free the slot, keeping its generation (bumped on the next grant).
+    #[inline(always)]
+    fn clear(&self) {
+        let w = self.word();
+        self.0.store(w & (0xffff << 16), core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+const _: () = assert!(CapSlotCell::encode(CapSlot::EMPTY) == 0, "an empty slot must encode as 0");
+
 /// Layout of [`CapSlot::resource`] for the kinds that carry an object
 /// generation (RFC-0040 gap 1). Declared here rather than at the crate root so
 /// every host crate that `#[path]`-mounts this file compiles it as well.
 #[path = "objref.rs"]
 pub mod objref;
 
+/// Kconfig CAP_LOOKUP_CACHE: direct-mapped lookup-cache entries per table.
+const LOOKUP_CACHE: usize = azos_limits::CAP_LOOKUP_CACHE as usize;
+const _: () = assert!(
+    LOOKUP_CACHE == 0 || LOOKUP_CACHE.is_power_of_two(),
+    "CAP_LOOKUP_CACHE must be 0 or a power of two"
+);
+
+/// The cache entry for a lookup of (`kind`, `resource`).
+#[inline(always)]
+const fn cache_index(kind: u8, resource: u32) -> usize {
+    ((resource ^ ((kind as u32) << 24)).wrapping_mul(0x9E37_79B1) >> 16) as usize & (LOOKUP_CACHE - 1)
+}
+
+/// For each raw kind byte (a handle's kind field is 6 bits), the mask of a
+/// resource's index half: the pool index for the packed kinds
+/// ([`objref::layout`]), every bit otherwise. One load where a `match` on
+/// the kind was a jump table, on the lookup path.
+const IDX_MASK: [u32; 64] = {
+    let mut t = [u32::MAX; 64];
+    let mut i = 0;
+    while i < 64 {
+        if let Some(k) = CapKind::from_raw(i as u8) {
+            if let Some(l) = objref::layout(k) {
+                t[i] = l.idx_mask();
+            }
+        }
+        i += 1;
+    }
+    t
+};
+
+const _: () = {
+    // Every kind fits the 6-bit index of `IDX_MASK` (and a handle's field).
+    let mut i = 64;
+    while i < 256 {
+        assert!(CapKind::from_raw(i as u8).is_none(), "a CapKind past 63 outgrew IDX_MASK");
+        i += 1;
+    }
+};
+
 /// Per-task cap table.
+///
+/// Every method takes `&self`: the slots are atomic words, so a reader that
+/// holds no lock sees each slot whole (wave 15 N4, `cap_store`'s QSBR
+/// reads). Writers serialise on the lock `cap_store` keeps beside each
+/// table; a `CapTable` on its own (a host test, a Kani proof) is a plain
+/// single-owner value.
 pub struct CapTable {
-    slots: [CapSlot; MAX_CAPS_PER_TASK],
+    slots: [CapSlotCell; MAX_CAPS_PER_TASK],
+    /// Kconfig CAP_LOOKUP_CACHE: for a (kind, resource) key's entry, the
+    /// handle the last [`lookup`](Self::lookup) of it returned (0: none;
+    /// no handle is 0, its kind is never Null). Only a hint: every hit is
+    /// checked against the slot it names, generation included.
+    cache: [core::sync::atomic::AtomicU32; LOOKUP_CACHE],
+    /// One past the highest slot ever granted since the table was last
+    /// wiped: every occupied slot is below it, so a search stops there
+    /// instead of at MAX_CAPS_PER_TASK. Raised (release) after the slot's
+    /// store; a reader loads it (acquire) before the slots.
+    used: core::sync::atomic::AtomicU16,
+    /// Every slot below it is occupied or retired: a grant's search for a
+    /// free slot starts here, not at slot 0. Lowered by every slot freed,
+    /// raised past the slot a grant takes. Writers only (under the lock).
+    free_from: core::sync::atomic::AtomicU16,
 }
 
 impl CapTable {
     /// Build a fresh empty cap table.
     pub const fn empty() -> Self {
         Self {
-            slots: [CapSlot::EMPTY; MAX_CAPS_PER_TASK],
+            slots: [CapSlotCell::EMPTY; MAX_CAPS_PER_TASK],
+            cache: [const { core::sync::atomic::AtomicU32::new(0) }; LOOKUP_CACHE],
+            used: core::sync::atomic::AtomicU16::new(0),
+            free_from: core::sync::atomic::AtomicU16::new(0),
         }
+    }
+
+    /// Free slot `i` (keeping its generation) and let the next grant's
+    /// search start at it if it is the lowest free one.
+    #[inline(always)]
+    fn clear_at(&self, i: usize, cell: &CapSlotCell) {
+        cell.clear();
+        let f = &self.free_from;
+        if (i as u16) < f.load(core::sync::atomic::Ordering::Relaxed) {
+            f.store(i as u16, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The slots a search must look at: those below [`Self::used`].
+    #[inline(always)]
+    fn live(&self) -> &[CapSlotCell] {
+        let n = self.used.load(core::sync::atomic::Ordering::Acquire) as usize;
+        &self.slots[..n.min(MAX_CAPS_PER_TASK)]
+    }
+
+    /// Slot `i` was just written occupied: raise the bound past it.
+    #[inline(always)]
+    fn note_used(&self, i: usize) {
+        let n = (i + 1) as u16;
+        if self.used.load(core::sync::atomic::Ordering::Relaxed) < n {
+            self.used.store(n, core::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Forget the lookup cache's entry for (`kind`, `resource`): a slot
+    /// lower than the one it names may now hold the key.
+    #[inline(always)]
+    fn uncache(&self, kind: CapKind, resource: u32) {
+        if LOOKUP_CACHE != 0 {
+            let r = resource & IDX_MASK[(kind as u8 & 63) as usize];
+            self.cache[cache_index(kind as u8, r)].store(0, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn uncache_all(&self) {
+        for e in self.cache.iter() {
+            e.store(0, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Wipe every slot, generations included (a table handed to a new
+    /// owner, `cap_store`'s claim and exit reset).
+    pub fn clear_all(&self) {
+        // Eight stores a turn: the plain `*table = empty()` this replaced was
+        // a memset; one atomic store a turn cost three instructions a slot
+        // (measured on riscv64: a fork and an exit each wipe a table).
+        let mut it = self.slots.chunks_exact(8);
+        for c in &mut it {
+            for s in c {
+                s.0.store(0, core::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        for s in it.remainder() {
+            s.0.store(0, core::sync::atomic::Ordering::Relaxed);
+        }
+        self.uncache_all();
+        self.used.store(0, core::sync::atomic::Ordering::Release);
+        self.free_from.store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Move `from`'s every slot into this table and wipe `from` (an exec's
+    /// table hand-over between pool slots).
+    pub fn take_from(&self, from: &CapTable) {
+        for (d, s) in self.slots.iter().zip(from.slots.iter()) {
+            d.0.store(s.word(), core::sync::atomic::Ordering::Relaxed);
+            s.0.store(0, core::sync::atomic::Ordering::Relaxed);
+        }
+        self.uncache_all();
+        from.uncache_all();
+        self.used.store(from.used.load(core::sync::atomic::Ordering::Relaxed), core::sync::atomic::Ordering::Release);
+        from.used.store(0, core::sync::atomic::Ordering::Release);
+        self.free_from.store(from.free_from.load(core::sync::atomic::Ordering::Relaxed),
+                             core::sync::atomic::Ordering::Relaxed);
+        from.free_from.store(0, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// Grant a fresh cap, returning a typed handle.
     ///
     /// Returns `None` if every slot is occupied (`EMFILE`).
-    pub fn grant<T: CapTarget>(&mut self, perms: CapPerms, resource: u32) -> Option<Cap<T>> {
+    pub fn grant<T: CapTarget>(&self, perms: CapPerms, resource: u32) -> Option<Cap<T>> {
         // Single allocation path shared with `grant_raw` on purpose: the
         // generation invariant (never 0, always bumped on reuse) is what makes
         // a stale handle detectable, and two copies of that arithmetic is how
@@ -495,7 +719,7 @@ impl CapTable {
     /// a caller passing runtime kind bits directly, which today is only the
     /// test in this module exercising the refusal itself.
     pub fn grant_raw(
-        &mut self,
+        &self,
         kind: CapKind,
         perms: CapPerms,
         resource: u32,
@@ -506,12 +730,17 @@ impl CapTable {
         let slot = self.allocate_slot()?;
         let slot_idx = slot as usize;
         let next_gen = self.bump_generation(slot_idx)?;
-        self.slots[slot_idx] = CapSlot {
+        self.slots[slot_idx].store(CapSlot {
             kind,
             perms,
             generation: next_gen,
             resource,
-        };
+        });
+        self.note_used(slot_idx);
+        // Every slot below this one was occupied or retired (the search
+        // started at `free_from` and took the first free one).
+        self.free_from.store(slot + 1, core::sync::atomic::Ordering::Relaxed);
+        self.uncache(kind, resource);
         Some(CapHandle::pack(kind, perms, next_gen, slot))
     }
 
@@ -571,17 +800,38 @@ impl CapTable {
             // refuses to write one.
             return None;
         }
-        for (i, slot) in self.slots.iter().enumerate() {
-            if slot.is_occupied()
-                && slot.kind == kind
-                && objref::resource_index(kind, slot.resource) == resource
-            {
-                return Some(CapHandle::pack(
-                    slot.kind,
-                    slot.perms,
-                    slot.generation,
-                    i as u16,
-                ));
+        // One word per slot: the kind byte and the resource's index half
+        // compared in place (the packed-kind mask decided once, not per slot).
+        let k = kind as u8;
+        let mask = IDX_MASK[(k & 63) as usize];
+        let hit = |w: u64| w as u8 == k && ((w >> 32) as u32) & mask == resource;
+        let pack = |w: u64, i: usize| {
+            let slot = CapSlotCell::decode(w);
+            CapHandle::pack(slot.kind, slot.perms, slot.generation, i as u16)
+        };
+        // Kconfig CAP_LOOKUP_CACHE: the slot the last lookup of this key
+        // found, checked against the slot itself.
+        let ci = if LOOKUP_CACHE != 0 { cache_index(k, resource) } else { 0 };
+        if LOOKUP_CACHE != 0 {
+            let e = self.cache[ci].load(core::sync::atomic::Ordering::Relaxed);
+            if e != 0 {
+                let h = CapHandle::from_raw(e);
+                if let Some(cell) = self.slots.get(h.slot() as usize) {
+                    let w = cell.word();
+                    if hit(w) && CapSlotCell::w_generation(w) == h.generation() {
+                        return Some(h);
+                    }
+                }
+            }
+        }
+        for (i, cell) in self.live().iter().enumerate() {
+            let w = cell.word();
+            if hit(w) {
+                let h = pack(w, i);
+                if LOOKUP_CACHE != 0 {
+                    self.cache[ci].store(h.as_raw(), core::sync::atomic::Ordering::Relaxed);
+                }
+                return Some(h);
             }
         }
         None
@@ -644,22 +894,24 @@ impl CapTable {
         // The slot field is 9 bits, wider than the table on edge/embedded:
         // the index is masked so a mispredicted check cannot read the next
         // task's table (Spectre v1, `azos_limits::nospec`).
-        let Some(slot) = azos_limits::nospec::get(&self.slots, slot_idx) else {
+        let Some(cell) = azos_limits::nospec::get(&self.slots, slot_idx) else {
             return Err(CapError::Stale);
         };
-        if !slot.is_occupied() {
+        // One load: the checks below see one version of the slot.
+        let w = cell.word();
+        if !CapSlotCell::w_occupied(w) {
             return Err(CapError::Stale);
         }
-        if slot.generation != raw.generation() {
+        if CapSlotCell::w_generation(w) != raw.generation() {
             return Err(CapError::Stale);
         }
-        if slot.kind != T::KIND {
+        if !CapSlotCell::w_kind_is(w, T::KIND) {
             return Err(CapError::WrongKind);
         }
-        if !slot.perms.contains(need) {
+        if !CapSlotCell::w_perms(w).contains(need) {
             return Err(CapError::MissingPerms);
         }
-        Ok(slot.resource)
+        Ok(CapSlotCell::w_resource(w))
     }
 
     /// Revoke a cap. Subsequent dereferences return `Stale`.
@@ -671,20 +923,19 @@ impl CapTable {
     /// cleared; the next `grant` bumps `generation` further.
     ///
     /// Idempotent: revoking an already-empty slot is a no-op.
-    pub fn revoke<T: CapTarget>(&mut self, cap: Cap<T>) {
+    pub fn revoke<T: CapTarget>(&self, cap: Cap<T>) {
         if cap.is_null() {
             return;
         }
         let raw = cap.raw();
         let slot_idx = raw.slot() as usize;
-        let Some(slot) = azos_limits::nospec::get_mut(&mut self.slots, slot_idx) else {
+        let Some(cell) = azos_limits::nospec::get(&self.slots, slot_idx) else {
             return;
         };
-        if slot.is_occupied() && slot.generation == raw.generation() {
-            slot.kind = CapKind::Null;
-            slot.perms = CapPerms::NONE;
-            slot.resource = 0;
+        let w = cell.word();
+        if CapSlotCell::w_occupied(w) && CapSlotCell::w_generation(w) == raw.generation() {
             // generation deliberately preserved; bumped on next grant.
+            self.clear_at(slot_idx, cell);
         }
     }
 
@@ -702,7 +953,7 @@ impl CapTable {
     /// capability **before** the sender loses it.
     pub fn peek_raw(&self, handle: CapHandle) -> Option<(CapKind, CapPerms, u32)> {
         let slot_idx = handle.slot() as usize;
-        let slot = azos_limits::nospec::get(&self.slots, slot_idx)?;
+        let slot = azos_limits::nospec::get(&self.slots, slot_idx)?.load();
         if !slot.is_occupied() || slot.generation != handle.generation() {
             return None;
         }
@@ -714,15 +965,14 @@ impl CapTable {
     ///
     /// Returns whether a slot was actually cleared, so a mover can assert that
     /// the entry it peeked is the entry it removed rather than assuming it.
-    pub fn revoke_raw(&mut self, handle: CapHandle) -> bool {
+    pub fn revoke_raw(&self, handle: CapHandle) -> bool {
         let slot_idx = handle.slot() as usize;
-        let Some(slot) = azos_limits::nospec::get_mut(&mut self.slots, slot_idx) else {
+        let Some(cell) = azos_limits::nospec::get(&self.slots, slot_idx) else {
             return false;
         };
-        if slot.is_occupied() && slot.generation == handle.generation() {
-            slot.kind = CapKind::Null;
-            slot.perms = CapPerms::NONE;
-            slot.resource = 0;
+        let w = cell.word();
+        if CapSlotCell::w_occupied(w) && CapSlotCell::w_generation(w) == handle.generation() {
+            self.clear_at(slot_idx, cell);
             // Generation preserved, bumped on the next grant — same rule as
             // the typed `revoke`, and what makes the sender's handle stale
             // the instant the move lands.
@@ -735,13 +985,15 @@ impl CapTable {
     /// how many. Wave 13: a Linux `execve` into another topology row drops
     /// the old row's authority (everything but the handles its inherited
     /// descriptors stand on) before the new row's is seeded.
-    pub fn revoke_where(&mut self, mut pred: impl FnMut(CapKind, u32) -> bool) -> usize {
+    pub fn revoke_where(&self, mut pred: impl FnMut(CapKind, u32) -> bool) -> usize {
         let mut n = 0;
-        for slot in self.slots.iter_mut() {
+        for (i, cell) in self.live().iter().enumerate() {
+            if !CapSlotCell::w_occupied(cell.word()) {
+                continue;
+            }
+            let slot = cell.load();
             if slot.is_occupied() && pred(slot.kind, slot.resource) {
-                slot.kind = CapKind::Null;
-                slot.perms = CapPerms::NONE;
-                slot.resource = 0;
+                self.clear_at(i, cell);
                 n += 1;
             }
         }
@@ -764,19 +1016,22 @@ impl CapTable {
     /// keeps), so a stale handle this table issued earlier never validates
     /// again. A fork's child table was wiped when its slot was claimed, so
     /// every counter in it starts at 0.
-    pub fn install_at(&mut self, handle: CapHandle, resource: u32) -> bool {
+    pub fn install_at(&self, handle: CapHandle, resource: u32) -> bool {
         let Some(kind) = CapKind::from_raw(handle.kind()) else { return false };
         let gen = handle.generation();
         if matches!(kind, CapKind::Null) || gen == 0 || gen > CapHandle::MAX_GENERATION {
             return false;
         }
-        let Some(slot) = azos_limits::nospec::get_mut(&mut self.slots, handle.slot() as usize) else {
+        let Some(cell) = azos_limits::nospec::get(&self.slots, handle.slot() as usize) else {
             return false;
         };
-        if slot.is_occupied() || slot.generation >= gen {
+        let w = cell.word();
+        if CapSlotCell::w_occupied(w) || CapSlotCell::w_generation(w) >= gen {
             return false;
         }
-        *slot = CapSlot { kind, perms: handle.perms(), generation: gen, resource };
+        cell.store(CapSlot { kind, perms: handle.perms(), generation: gen, resource });
+        self.note_used(handle.slot() as usize);
+        self.uncache(kind, resource);
         true
     }
 
@@ -793,24 +1048,28 @@ impl CapTable {
     ) -> (usize, usize) {
         let mut n = 0usize;
         let mut i = from;
-        while i < self.slots.len() && n < out.len() {
-            let s = &self.slots[i];
+        let end = self.live().len();
+        while i < end && n < out.len() {
+            let w = self.slots[i].word();
+            let s = if CapSlotCell::w_occupied(w) { CapSlotCell::decode(w) } else { CapSlot::EMPTY };
             if s.is_occupied() && want(s.kind) {
                 out[n] = (CapHandle::pack(s.kind, s.perms, s.generation, i as u16), s.resource);
                 n += 1;
             }
             i += 1;
         }
+        // Past the last slot ever granted: done, as at the table's end.
+        if i >= end {
+            i = self.slots.len();
+        }
         (n, i)
     }
 
     /// Free slot `idx` whatever it holds, keeping its generation (so every
     /// handle on it is stale from now on). Out of range is a no-op.
-    pub fn clear_slot(&mut self, idx: usize) {
-        if let Some(slot) = azos_limits::nospec::get_mut(&mut self.slots, idx) {
-            slot.kind = CapKind::Null;
-            slot.perms = CapPerms::NONE;
-            slot.resource = 0;
+    pub fn clear_slot(&self, idx: usize) {
+        if let Some(cell) = azos_limits::nospec::get(&self.slots, idx) {
+            self.clear_at(idx, cell);
         }
     }
 
@@ -828,12 +1087,12 @@ impl CapTable {
     /// whose count is climbing is a task churning capabilities; one whose count
     /// equals its size can grant nothing more.
     pub fn retired(&self) -> usize {
-        self.slots.iter().filter(|s| s.is_retired()).count()
+        self.slots.iter().filter(|s| CapSlotCell::w_generation(s.word()) >= CapHandle::MAX_GENERATION).count()
     }
 
     /// Count occupied slots — for diagnostics and quota enforcement.
     pub fn occupied(&self) -> usize {
-        self.slots.iter().filter(|s| s.is_occupied()).count()
+        self.live().iter().filter(|s| CapSlotCell::w_occupied(s.word())).count()
     }
 
     /// Does this table hold **any** occupied cap of `kind` whose permissions
@@ -857,9 +1116,11 @@ impl CapTable {
         if matches!(kind, CapKind::Null) {
             return false;
         }
-        self.slots
-            .iter()
-            .any(|s| s.is_occupied() && s.kind == kind && s.perms.contains(need))
+        // `kind` is not Null here, so a kind match is an occupied slot.
+        self.live().iter().any(|c| {
+            let w = c.word();
+            CapSlotCell::w_kind_is(w, kind) && CapSlotCell::w_perms(w).contains(need)
+        })
     }
 
     /// Does this table hold an occupied cap of `kind` **for this specific
@@ -916,8 +1177,11 @@ impl CapTable {
         if matches!(kind, CapKind::Null) || objref::is_packed_kind(kind) {
             return false;
         }
-        self.slots.iter().any(|s| {
-            s.is_occupied() && s.kind == kind && s.resource == resource && s.perms.contains(need)
+        self.live().iter().any(|c| {
+            let w = c.word();
+            CapSlotCell::w_kind_is(w, kind)
+                && CapSlotCell::w_resource(w) == resource
+                && CapSlotCell::w_perms(w).contains(need)
         })
     }
 
@@ -934,8 +1198,11 @@ impl CapTable {
         if matches!(kind, CapKind::Null) || objref::is_packed_kind(kind) {
             return false;
         }
-        self.slots.iter().any(|s| {
-            s.is_occupied() && s.kind == kind && s.perms.contains(need) && pred(s.resource)
+        self.live().iter().any(|c| {
+            let w = c.word();
+            CapSlotCell::w_kind_is(w, kind)
+                && CapSlotCell::w_perms(w).contains(need)
+                && pred(CapSlotCell::w_resource(w))
         })
     }
 
@@ -962,8 +1229,12 @@ impl CapTable {
         if !objref::is_packed_kind(kind) {
             return false;
         }
-        self.slots.iter().any(|s| {
-            s.is_occupied() && s.kind == kind && s.resource == r && s.perms.contains(need)
+        // A packed kind is never Null, so a kind match is an occupied slot.
+        self.live().iter().any(|c| {
+            let w = c.word();
+            CapSlotCell::w_kind_is(w, kind)
+                && CapSlotCell::w_resource(w) == r
+                && CapSlotCell::w_perms(w).contains(need)
         })
     }
 
@@ -977,16 +1248,15 @@ impl CapTable {
     /// kind is untouched. Same slot rule as [`revoke`](Self::revoke): kind,
     /// perms and resource are cleared and the cap-table slot's own generation
     /// is kept.
-    pub fn revoke_kind_at_index(&mut self, kind: CapKind, idx: u32) -> usize {
+    pub fn revoke_kind_at_index(&self, kind: CapKind, idx: u32) -> usize {
         if !objref::is_packed_kind(kind) {
             return 0;
         }
         let mut revoked = 0;
-        for slot in self.slots.iter_mut() {
-            if slot.is_occupied() && slot.kind == kind && objref::idx(kind, slot.resource) == idx {
-                slot.kind = CapKind::Null;
-                slot.perms = CapPerms::NONE;
-                slot.resource = 0;
+        for (i, cell) in self.live().iter().enumerate() {
+            let w = cell.word();
+            if CapSlotCell::w_kind_is(w, kind) && objref::idx(kind, CapSlotCell::w_resource(w)) == idx {
+                self.clear_at(i, cell);
                 revoked += 1;
             }
         }
@@ -997,14 +1267,13 @@ impl CapTable {
     /// each, in slot order. Returns how many. RFC-0055: a dying task's
     /// `Cap<Pipe>` ends are dropped one by one before its table is wiped, so
     /// the pipe they name learns that an end is gone.
-    pub fn drain_kind(&mut self, kind: CapKind, mut f: impl FnMut(CapPerms, u32)) -> usize {
+    pub fn drain_kind(&self, kind: CapKind, mut f: impl FnMut(CapPerms, u32)) -> usize {
         let mut n = 0;
-        for slot in self.slots.iter_mut() {
-            if slot.is_occupied() && slot.kind == kind {
-                let (perms, resource) = (slot.perms, slot.resource);
-                slot.kind = CapKind::Null;
-                slot.perms = CapPerms::NONE;
-                slot.resource = 0;
+        for (i, cell) in self.live().iter().enumerate() {
+            let w = cell.word();
+            if CapSlotCell::w_occupied(w) && CapSlotCell::w_kind_is(w, kind) {
+                let (perms, resource) = (CapSlotCell::w_perms(w), CapSlotCell::w_resource(w));
+                self.clear_at(i, cell);
                 f(perms, resource);
                 n += 1;
             }
@@ -1019,16 +1288,15 @@ impl CapTable {
     /// a freed lease id reissued to another lessor is never named by the old
     /// lessor's handle. A packed kind is refused (0): its resource is a
     /// packed reference and has its own sweep.
-    pub fn revoke_kind_resource(&mut self, kind: CapKind, resource: u32) -> usize {
+    pub fn revoke_kind_resource(&self, kind: CapKind, resource: u32) -> usize {
         if objref::is_packed_kind(kind) || kind == CapKind::Null {
             return 0;
         }
         let mut revoked = 0;
-        for slot in self.slots.iter_mut() {
-            if slot.is_occupied() && slot.kind == kind && slot.resource == resource {
-                slot.kind = CapKind::Null;
-                slot.perms = CapPerms::NONE;
-                slot.resource = 0;
+        for (i, cell) in self.live().iter().enumerate() {
+            let w = cell.word();
+            if CapSlotCell::w_kind_is(w, kind) && CapSlotCell::w_resource(w) == resource {
+                self.clear_at(i, cell);
                 revoked += 1;
             }
         }
@@ -1039,8 +1307,10 @@ impl CapTable {
     // can still be granted. A retired slot is skipped even when free: its
     // generation cannot advance, so re-granting it would reissue one.
     fn allocate_slot(&self) -> Option<u16> {
-        for (i, slot) in self.slots.iter().enumerate() {
-            if !slot.is_occupied() && !slot.is_retired() {
+        let from = (self.free_from.load(core::sync::atomic::Ordering::Relaxed) as usize).min(MAX_CAPS_PER_TASK);
+        for (i, cell) in self.slots.iter().enumerate().skip(from) {
+            let w = cell.word();
+            if !CapSlotCell::w_occupied(w) && CapSlotCell::w_generation(w) < CapHandle::MAX_GENERATION {
                 return Some(i as u16);
             }
         }
@@ -1051,7 +1321,7 @@ impl CapTable {
     // `CapSlot::generation`. `allocate_slot` already refuses a retired slot, so
     // `None` here is defence in depth against a second caller of this path.
     fn bump_generation(&self, slot_idx: usize) -> Option<u16> {
-        let next = self.slots[slot_idx].generation.checked_add(1)?;
+        let next = CapSlotCell::w_generation(self.slots[slot_idx].word()).checked_add(1)?;
         if next > CapHandle::MAX_GENERATION { None } else { Some(next) }
     }
 }
@@ -1150,7 +1420,7 @@ mod kani_proofs {
     /// After grant + revoke, the cap is never re-validated.
     #[kani::proof]
     fn cap_revoked_stale() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let resource: u32 = kani::any();
         let perms_bits: u8 = kani::any();
         kani::assume(perms_bits <= 0b1111);
@@ -1173,7 +1443,7 @@ mod kani_proofs {
     /// contained — never `Ok`. Read access is unaffected.
     #[kani::proof]
     fn cap_contained_when_degraded() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let resource: u32 = kani::any();
         // A cap that DOES carry WRITE, so the perms check passes and the
         // containment check is what rejects it.
@@ -1193,7 +1463,7 @@ mod kani_proofs {
     /// Granted cap with insufficient perms is rejected.
     #[kani::proof]
     fn cap_perms_required() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let cap: Cap<Channel> = match t.grant(CapPerms::READ, 0) {
             Some(c) => c,
             None => return,
@@ -1235,7 +1505,7 @@ mod tests {
 
     #[test]
     fn grant_and_get_roundtrip() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let c: Cap<Channel> = t.grant(CapPerms::RW, 42).unwrap();
         let resource = t.get(c, CapPerms::READ).unwrap();
         assert_eq!(resource, 42);
@@ -1243,7 +1513,7 @@ mod tests {
 
     #[test]
     fn wrong_kind_fails() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let c: Cap<Channel> = t.grant(CapPerms::RW, 7).unwrap();
         // Forge a Cap<Sensor> with the same raw handle bits — not a real
         // attack vector since Cap<T> is private to the kernel, but
@@ -1255,7 +1525,7 @@ mod tests {
 
     #[test]
     fn revoked_cap_is_stale() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let c: Cap<Channel> = t.grant(CapPerms::RW, 1).unwrap();
         t.revoke(c);
         assert_eq!(t.get(c, CapPerms::READ), Err(CapError::Stale));
@@ -1263,14 +1533,14 @@ mod tests {
 
     #[test]
     fn missing_perms_rejected() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let c: Cap<Channel> = t.grant(CapPerms::READ, 9).unwrap();
         assert_eq!(t.get(c, CapPerms::WRITE), Err(CapError::MissingPerms));
     }
 
     #[test]
     fn generation_bump_after_reuse() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let c1: Cap<Channel> = t.grant(CapPerms::RW, 1).unwrap();
         let g1 = c1.raw().generation();
         t.revoke(c1);
@@ -1294,7 +1564,7 @@ mod tests {
     /// and the slot is never handed out again.
     #[test]
     fn an_exhausted_slot_is_retired_and_never_reissues_a_generation() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         // A bitmap over the generation space, not a Vec: this crate is `no_std`
         // and its test scope has no `alloc`.
         let mut seen = [0u64; (CapHandle::MAX_GENERATION as usize + 64) / 64];
@@ -1347,15 +1617,15 @@ mod tests {
     /// regression in either one.
     #[test]
     fn bump_generation_refuses_a_spent_slot_instead_of_wrapping() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         assert_eq!(t.bump_generation(0), Some(1), "a fresh slot starts at 1");
-        t.slots[0].generation = CapHandle::MAX_GENERATION - 1;
+        t.slots[0].store(CapSlot { generation: CapHandle::MAX_GENERATION - 1, ..t.slots[0].load() });
         assert_eq!(
             t.bump_generation(0),
             Some(CapHandle::MAX_GENERATION),
             "the last usable generation must still be issued",
         );
-        t.slots[0].generation = CapHandle::MAX_GENERATION;
+        t.slots[0].store(CapSlot { generation: CapHandle::MAX_GENERATION, ..t.slots[0].load() });
         assert_eq!(
             t.bump_generation(0), None,
             "a spent slot must refuse, not wrap: wrapping reissues a generation a \
@@ -1367,11 +1637,11 @@ mod tests {
     /// churns capabilities breaks only its own table, and `retired()` says so.
     #[test]
     fn a_table_of_retired_slots_refuses_instead_of_wrapping() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         // Retire every slot by hand — driving 512 slots x 8191 grants through
         // the real path would be 4.2M operations for the same assertion.
-        for slot in t.slots.iter_mut() {
-            slot.generation = CapHandle::MAX_GENERATION;
+        for slot in t.slots.iter() {
+            slot.store(CapSlot { generation: CapHandle::MAX_GENERATION, ..slot.load() });
         }
         assert_eq!(t.retired(), MAX_CAPS_PER_TASK);
         assert!(t.grant::<Channel>(CapPerms::RW, 1).is_none(), "a spent table must refuse");
@@ -1387,7 +1657,7 @@ mod tests {
         // it is the only one asserting the get()-side containment behaviour.
         // The global flag itself is shared with the RFC-0037 level tests, so
         // every one of them takes `DEGRADE_LOCK` — see its doc.
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let rw: Cap<Channel> = t.grant(CapPerms::RW, 77).unwrap();
         let ro: Cap<Channel> = t.grant(CapPerms::READ, 5).unwrap();
 
@@ -1416,7 +1686,7 @@ mod tests {
     #[test]
     fn get_uncontained_is_get_without_containment() {
         let _serial = degrade_guard();
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let rw: Cap<Channel> = t.grant(CapPerms::RW, 77).unwrap();
         let ro: Cap<Channel> = t.grant(CapPerms::READ, 5).unwrap();
         let gone: Cap<Channel> = t.grant(CapPerms::RW, 9).unwrap();
@@ -1517,7 +1787,7 @@ mod tests {
     fn grant_raw_refuses_null_kind() {
         // Occupancy is `kind != Null`, so a Null-kind grant would burn a
         // generation on a slot that still reads as free.
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         assert!(t.grant_raw(CapKind::Null, CapPerms::RW, 1).is_none());
         assert_eq!(t.occupied(), 0);
 
@@ -1534,7 +1804,7 @@ mod tests {
     #[test]
     fn holds_kind_resource_with_is_resource_specific() {
         let _serial = degrade_guard();
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let _m0: Cap<crate::cap::targets::Motor> = t.grant(CapPerms::RW, 0).unwrap();
         // Only resource 0 is held — resource 1 must not be reported present,
         // even though the kind matches and READ/WRITE would pass on 0.
@@ -1547,7 +1817,7 @@ mod tests {
     #[test]
     fn holds_kind_resource_with_denies_write_when_degraded() {
         let _serial = degrade_guard();
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let _m1: Cap<crate::cap::targets::Motor> = t.grant(CapPerms::RW, 1).unwrap();
         assert!(t.holds_kind_resource_with(CapKind::Motor, 1, CapPerms::WRITE));
         degraded_set(true);
@@ -1565,7 +1835,7 @@ mod tests {
     #[test]
     fn power_and_ai_session_write_predicates() {
         use crate::cap::targets::{AiSession, Power};
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         assert!(!super::table_holds_power_write(&t));
         assert!(!super::table_holds_ai_session_write(&t));
 
@@ -1575,13 +1845,13 @@ mod tests {
         assert!(!super::table_holds_power_write(&t));
         assert!(!super::table_holds_ai_session_write(&t));
 
-        let mut t2 = CapTable::empty();
+        let t2 = CapTable::empty();
         let _p2: Cap<Power> = t2.grant(CapPerms::WRITE, 0).unwrap();
         let _a2: Cap<AiSession> = t2.grant(CapPerms::WRITE, 0).unwrap();
         assert!(super::table_holds_power_write(&t2));
         assert!(super::table_holds_ai_session_write(&t2));
         // The two kinds do not satisfy each other's predicate.
-        let mut t3 = CapTable::empty();
+        let t3 = CapTable::empty();
         let _p3: Cap<Power> = t3.grant(CapPerms::WRITE, 0).unwrap();
         assert!(!super::table_holds_ai_session_write(&t3));
     }
@@ -1594,7 +1864,7 @@ mod tests {
     #[test]
     fn forged_power_cap_from_another_kind_is_rejected() {
         use crate::cap::targets::{Gpio, Power};
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let gpio: Cap<Gpio> = t.grant(CapPerms::RW, 0).unwrap();
         let forged: Cap<Power> = Cap::from_raw(gpio.raw());
         assert_eq!(t.get(forged, CapPerms::WRITE), Err(CapError::WrongKind));
@@ -1603,7 +1873,7 @@ mod tests {
 
     #[test]
     fn full_table_returns_none() {
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         for i in 0..MAX_CAPS_PER_TASK {
             let _: Cap<Channel> = t.grant(CapPerms::RW, i as u32).unwrap();
         }
@@ -1622,7 +1892,7 @@ mod tests {
     #[test]
     fn lookup_matches_the_index_half_of_a_packed_resource_only() {
         use super::targets::{Motor, Shm};
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let packed = objref::SHM.pack(3, 0x00AB_CDEF);
         let shm: Cap<Shm> = t.grant(CapPerms::RW, packed).unwrap();
         let motor: Cap<Motor> = t.grant(CapPerms::RW, objref::SHM.pack(3, 1)).unwrap();
@@ -1654,7 +1924,7 @@ mod tests {
     fn presence_checks_refuse_packed_kinds_and_only_one_is_contained() {
         use super::targets::{Channel, IoRing, Motor, Port, Shm};
         let _serial = degrade_guard();
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let _s: Cap<Shm> = t.grant(CapPerms::RW, 5).unwrap();
         let _r: Cap<IoRing> = t.grant(CapPerms::RW, 5).unwrap();
         let _c: Cap<Channel> = t.grant(CapPerms::RW, 5).unwrap();
@@ -1687,7 +1957,7 @@ mod tests {
     #[test]
     fn holds_packed_ref_matches_the_whole_reference_of_one_packed_kind() {
         use super::targets::{Motor, Port, Shm};
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let _stale: Cap<Shm> = t.grant(CapPerms::RW, objref::SHM.pack(3, 1)).unwrap();
         let _live: Cap<Shm> = t.grant(CapPerms::READ, objref::SHM.pack(3, 2)).unwrap();
         let _port: Cap<Port> = t.grant(CapPerms::RW, objref::SHM.pack(4, 1)).unwrap();
@@ -1712,7 +1982,7 @@ mod tests {
     #[test]
     fn revoke_kind_at_index_takes_one_index_of_one_kind_and_keeps_slot_generations() {
         use super::targets::{IoRing, Motor, Shm};
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let a: Cap<Shm> = t.grant(CapPerms::RW, objref::SHM.pack(3, 7)).unwrap();
         let elsewhere: Cap<Shm> = t.grant(CapPerms::READ, objref::SHM.pack(4, 1)).unwrap();
         let r: Cap<IoRing> = t.grant(CapPerms::RW, objref::IO_RING.pack(3, 7)).unwrap();
@@ -1733,10 +2003,10 @@ mod tests {
     /// handles, and only through `install_at`'s rules.
     #[test]
     fn install_at_reproduces_a_handle_and_never_lowers_a_generation() {
-        let mut parent = CapTable::empty();
+        let parent = CapTable::empty();
         let _pad: Cap<Channel> = parent.grant(CapPerms::RW, 1).unwrap();
         let h: Cap<Sensor> = parent.grant(CapPerms::READ, 9).unwrap();
-        let mut child = CapTable::empty();
+        let child = CapTable::empty();
         assert!(child.install_at(h.raw(), 42));
         assert_eq!(child.get(h, CapPerms::READ), Ok(42), "same handle, the child's own resource");
         assert!(!child.install_at(h.raw(), 43), "an occupied slot is refused");
@@ -1765,4 +2035,30 @@ mod tests {
     // `cargo test` from that crate's directory. The cap-tests host runner
     // no longer needs to cover them. Since wave 11 this file no longer
     // re-exports the function (the robot domain calls the leaf directly).
+
+    /// N4: a grant takes the lowest free slot (the search starts at the
+    /// free-slot hint, lowered by a revoke), a search stops past the last
+    /// slot ever granted, and a wipe resets both.
+    #[test]
+    fn grants_take_the_lowest_free_slot_and_searches_stop_at_the_last_used() {
+        let t = CapTable::empty();
+        let _a: Cap<Channel> = t.grant(CapPerms::RW, 1).unwrap();
+        let b: Cap<Channel> = t.grant(CapPerms::RW, 2).unwrap();
+        let c: Cap<Channel> = t.grant(CapPerms::RW, 3).unwrap();
+        assert_eq!((b.raw().slot(), c.raw().slot()), (1, 2));
+        t.revoke(b);
+        let d: Cap<Channel> = t.grant(CapPerms::RW, 4).unwrap();
+        assert_eq!(d.raw().slot(), 1, "the freed slot, the lowest free one");
+        let e: Cap<Channel> = t.grant(CapPerms::RW, 5).unwrap();
+        assert_eq!(e.raw().slot(), 3);
+        assert_eq!(t.lookup(CapKind::Channel, 3).map(|h| h.slot()), Some(2));
+        assert_eq!(t.lookup(CapKind::Channel, 5).map(|h| h.slot()), Some(3));
+        assert_eq!(t.lookup(CapKind::Channel, 2), None, "revoked");
+        assert_eq!(t.occupied(), 4);
+        t.clear_all();
+        assert_eq!(t.occupied(), 0);
+        assert_eq!(t.lookup(CapKind::Channel, 3), None, "wiped, and not from the cache");
+        let f: Cap<Channel> = t.grant(CapPerms::RW, 6).unwrap();
+        assert_eq!(f.raw().slot(), 0);
+    }
 }

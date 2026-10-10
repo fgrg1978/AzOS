@@ -554,7 +554,7 @@ fn pop(chan: &mut Channel, buf: &mut [u8]) -> usize {
 //
 // // 2. Mint a typed cap. Into a per-task table the kernel mints through
 // //    `channel_grant_cap` or `channel_create_cap`.
-// let mut table = CapTable::empty();
+// let table = CapTable::empty();
 // let cap: Cap<Channel> = table.grant(CapPerms::RW, r).unwrap();
 //
 // // 3. Send via the typed entry — the kind, the cap-table slot's
@@ -711,7 +711,7 @@ pub fn channel_release_all(tid: u32) {
 /// revokes the capability, `Stale` included (a capability to a gone channel
 /// names nothing). For the Channel arm of `SYS_CLOSE_TYPED`.
 pub fn channel_destroy_cap(
-    table: &mut crate::cap::CapTable,
+    table: &crate::cap::CapTable,
     cap: crate::cap::Cap<crate::cap::targets::Channel>,
 ) -> Result<(), ChannelCapError> {
     let r = table.get_uncontained(cap, CapPerms::WRITE)?;

@@ -114,6 +114,9 @@ pub(crate) const NAMES: &[&str] = &[
     // aarch64 0, x86_64 1); the gate's ktest rows must fail on the status
     // (rows `ktest exit status canary (rv|arm|x86)`).
     "ktest-exit-pass",
+    "rcu-idle-qs-skip",
+    "rcu-free-no-grace",
+    "lockdep-rcu-sleep",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

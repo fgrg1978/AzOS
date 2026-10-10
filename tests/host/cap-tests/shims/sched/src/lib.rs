@@ -92,3 +92,9 @@ pub mod group {
     pub struct MmGuard;
     pub fn mm_lock() -> MmGuard { MmGuard }
 }
+
+/// N4 shim: no task runs here, so no current slot (`cap_store` then
+/// resolves by TID, as the kernel does for another task's TID).
+pub fn current_task_slot() -> Option<(usize, u32)> {
+    None
+}

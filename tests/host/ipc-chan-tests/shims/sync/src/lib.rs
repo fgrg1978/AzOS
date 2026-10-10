@@ -39,6 +39,9 @@ impl<T> SpinLock<T> {
     }
 }
 
+/// The kernel's guard type, as `cap_store` names it.
+pub type SpinLockGuard<'a, T> = MutexGuard<'a, T>;
+
 pub mod spinlock {
-    pub use super::SpinLock;
+    pub use super::{SpinLock, SpinLockGuard};
 }

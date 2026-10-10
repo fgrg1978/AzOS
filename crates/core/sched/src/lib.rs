@@ -67,7 +67,7 @@ pub use scheduler::{
     set_current_sched_params, current_sched_params, task_class_raw,
     task_user_pt, mm_charge_tid,
     current_user_pages, mm_quota_refusals, mm_peak_pages, mm_peak_global,
-    current_task_name, current_task_tid, current_task_parent_tid, current_task_stack_top,
+    current_task_name, current_task_tid, current_task_slot, current_task_parent_tid, current_task_stack_top,
     current_task_switches, current_task_hart,
     current_user_pt, kernel_task_satp, current_proc_tid, current_task_satp,
     stack_canary_check, MAX_CPUS, STACK_CANARY,

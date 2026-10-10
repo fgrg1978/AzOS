@@ -1526,7 +1526,7 @@ pub fn port_poll_cap_at(
 /// decision 2026-09-13). The untyped `SYS_PORT_UNBIND` it paired with was
 /// retired in RFC-0040 gap 1.
 pub fn port_destroy_cap(
-    table: &mut crate::cap::CapTable,
+    table: &crate::cap::CapTable,
     cap: crate::cap::Cap<crate::cap::targets::Port>,
 ) -> Result<(), PortCapError> {
     let r = table.get_uncontained(cap, CapPerms::WRITE)?;

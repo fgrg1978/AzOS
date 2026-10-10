@@ -16,7 +16,7 @@ use azos_ipc::cap::targets::Channel;
 /// Slot index range check + occupancy + generation + kind + perms.  The
 /// success path touches all five checks, so this is the worst-case verify.
 pub fn bench_cap_get_verify(iters: u64) -> BenchResult {
-    let mut t = CapTable::empty();
+    let t = CapTable::empty();
     let cap = match t.grant::<Channel>(CapPerms::RW, 42) {
         Some(c) => c,
         None    => return BenchResult::from_total(0, 0, 0),
@@ -34,7 +34,7 @@ pub fn bench_cap_get_verify(iters: u64) -> BenchResult {
 /// iter frees slot 0 again so `grant`'s free-slot scan stays O(1); measures
 /// the pack/unpack + generation-bump cost, not the table scan.
 pub fn bench_cap_grant_revoke(iters: u64) -> BenchResult {
-    let mut t = CapTable::empty();
+    let t = CapTable::empty();
 
     let start = read_cycles();
     for _ in 0..iters {
@@ -49,7 +49,7 @@ pub fn bench_cap_grant_revoke(iters: u64) -> BenchResult {
 /// `CapTable::occupied` — full O(MAX_CAPS_PER_TASK) occupancy scan.  Used by
 /// quota enforcement; cost scales with table size, not occupancy.
 pub fn bench_cap_occupied(iters: u64) -> BenchResult {
-    let mut t = CapTable::empty();
+    let t = CapTable::empty();
     let _ = t.grant::<Channel>(CapPerms::RW, 1);
 
     let start = read_cycles();

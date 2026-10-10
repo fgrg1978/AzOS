@@ -338,6 +338,17 @@ key, entropy, launch). Capabilities are minted from the topology at spawn.
 No call grants or duplicates a capability to another task; the only transfer
 is a move with a fast call. Revocation is done by the kernel.
 
+Each slot is one 64-bit word (kind, rights, generation, resource), so with
+Kconfig `RCU_QSBR` the checks above and the find-by-resource call
+(`SYS_CAP_LOOKUP`) read the table without its lock: a reader sees a slot
+whole, as of one writer's store, and the tables are never freed. Writers
+still take the table's lock. Each table keeps a small direct-mapped cache
+(Kconfig `CAP_LOOKUP_CACHE`) of the slot a lookup of a (kind, resource)
+found; a hit is checked against the slot, and a grant of the key clears its
+entry, so the lowest matching slot is still the answer. Searches stop past
+the highest slot granted since the table was last wiped, and a grant's
+search for a free slot starts at the lowest slot that may be free.
+
 Hardware is reached through capability-typed calls. Two untyped hardware calls
 remain because they have no typed form: ADC read and motor create. MMIO and
 IRQ capabilities name an entry in the board's resource table, never an
@@ -888,6 +899,30 @@ cannot: another CPU's `CpuOwned` locked in interrupt context, and a
 `PerCpu` reached with preemption on. `azos_percpu::PerCpuRemote` is the
 storage under them, any CPU's instance from any CPU; the per-CPU timer
 heaps are a `PerCpu`, the APS policy state a `CpuOwned`.
+
+**Read-copy-update.** With Kconfig `RCU_QSBR`,
+`crates/core/sync/src/qsbr.rs` gives readers a section that takes no lock
+(`qsbr::read`: preemption off on the CPU, and a held entry for lockdep, so a
+sleep inside it is reported) and writers `call_rcu` and `synchronize_rcu`,
+which free what a reader may hold only after a grace period: every online
+CPU has passed a quiescent state. Each CPU keeps two words. One is odd while
+it runs kernel code and even while it is idle (and, on a CPU listed in
+`RCU_NOCBS_CPUS`, while it is in user mode); the idle task, every interrupt
+from idle and those CPUs' kernel entries and exits move it, and so does
+every context switch. The other records the grace-period number current at
+the CPU's last return to user mode from an interrupt. A CPU that was even
+when a grace period started, has moved since, or has returned to user mode
+after it started, has passed. So a tickless idle CPU, or an RT CPU running
+one task in user mode without a tick, never holds a grace period and is
+never sent an interrupt for one; a CPU running user code passes at its next
+tick. A syscall's return reports nothing: with `RCU_NOCBS_CPUS` empty a
+syscall carries no instruction for this, and with a mask a CPU outside it
+pays one test. Callbacks go onto the calling CPU's
+lock-free list and run in one kernel task pinned to the lowest CPU outside
+`RCU_NOCBS_CPUS`, after the grace period that followed their queueing, so
+none runs on an RT CPU. A grace period older than `RCU_STALL_TIMEOUT_MS` is
+counted as a stall naming the CPU that holds it. Off, none of this is
+compiled and the capability reads take the table lock.
 
 **Decision records.** With Kconfig `DECISION_RECORDS`, boot deadline and
 memory admission, the real-time band cap, a woken task's move to another CPU

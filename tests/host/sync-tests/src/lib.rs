@@ -69,6 +69,119 @@ pub mod lockdep;
 #[path = "../../../../crates/core/sync/src/isr_depth.rs"]
 pub mod isr_depth;
 
+// QSBR (wave 15, N4): the counter transitions and the grace-period decision.
+#[path = "../../../../crates/core/sync/src/qsbr_core.rs"]
+pub mod qsbr_core;
+
+#[cfg(test)]
+mod qsbr_tests {
+    use super::qsbr_core::*;
+
+    /// A CPU's counter, driven the way the kernel hooks drive it.
+    struct Cpu(u64);
+    impl Cpu {
+        fn kernel() -> Self { Cpu(1) }
+        fn trap_in(&mut self) -> bool { enter(self.0).map(|v| self.0 = v).is_some() }
+        fn to_user(&mut self) { if let Some(v) = leave(self.0) { self.0 = v } }
+        fn idle(&mut self) { if let Some(v) = leave(self.0) { self.0 = v } }
+        fn wake(&mut self) { if let Some(v) = enter(self.0) { self.0 = v } }
+        fn switch(&mut self) { self.0 = switch(self.0) }
+    }
+
+    /// Every CPU of a grace period snapshotted at once, polled later.
+    fn done(snaps: &[u64], cpus: &[Cpu]) -> bool {
+        snaps.iter().zip(cpus).all(|(&s, c)| passed(s, c.0))
+    }
+
+    #[test]
+    fn parity_is_the_kernel_and_every_transition_moves_the_counter() {
+        let mut c = Cpu::kernel();
+        assert!(!quiescent(c.0));
+        c.to_user();
+        assert!(quiescent(c.0), "user mode is an extended quiescent state");
+        assert!(c.trap_in(), "a trap from user leaves it");
+        assert!(!quiescent(c.0));
+        assert!(!c.trap_in(), "a nested trap changes nothing");
+        let v = c.0;
+        c.switch();
+        assert!(!quiescent(c.0) && c.0 != v, "a switch stays in the kernel and moves");
+        c.idle();
+        assert!(quiescent(c.0));
+        c.wake();
+        assert!(!quiescent(c.0));
+        // A switch on a CPU wrongly left even puts it back in the kernel.
+        let mut w = Cpu(4);
+        w.switch();
+        assert!(!quiescent(w.0));
+    }
+
+    #[test]
+    fn a_grace_period_waits_for_the_cpu_inside_a_reader_and_no_other() {
+        // CPU 0 is in a read section (kernel, no transition); CPU 1 is in
+        // user mode; CPU 2 is idle.
+        let mut cpus = [Cpu::kernel(), Cpu::kernel(), Cpu::kernel()];
+        cpus[1].to_user();
+        cpus[2].idle();
+        let snaps: Vec<u64> = cpus.iter().map(|c| snapshot(c.0)).collect();
+        assert_eq!(snaps[1], DONE);
+        assert_eq!(snaps[2], DONE);
+        assert!(!done(&snaps, &cpus), "the reader's CPU holds the grace period");
+        // Others moving does not end it.
+        cpus[1].trap_in();
+        cpus[1].to_user();
+        cpus[2].wake();
+        assert!(!done(&snaps, &cpus));
+        // The reader ends; the CPU's next switch is the quiescent state.
+        cpus[0].switch();
+        assert!(done(&snaps, &cpus));
+    }
+
+    #[test]
+    fn a_return_to_user_or_idle_ends_it_too() {
+        for leave_by_idle in [false, true] {
+            let mut c = [Cpu::kernel()];
+            let snaps = [snapshot(c[0].0)];
+            assert!(!done(&snaps, &c));
+            if leave_by_idle { c[0].idle() } else { c[0].to_user() }
+            assert!(done(&snaps, &c));
+        }
+    }
+
+    #[test]
+    fn a_cpu_that_went_to_user_and_came_back_between_polls_has_passed() {
+        let mut c = [Cpu::kernel()];
+        let snaps = [snapshot(c[0].0)];
+        c[0].to_user();
+        c[0].trap_in();
+        assert!(!quiescent(c[0].0), "back in the kernel at the poll");
+        assert!(done(&snaps, &c), "but it was quiescent in between");
+    }
+
+    #[test]
+    fn an_idle_cpu_that_never_says_so_stalls_the_grace_period() {
+        // The `rcu-idle-qs-skip` canary's shape: the CPU switched to idle
+        // (odd, moved) and then sleeps without the idle hook.
+        let mut c = [Cpu::kernel()];
+        c[0].switch();
+        let snaps = [snapshot(c[0].0)];
+        for _ in 0..1000 {
+            assert!(!done(&snaps, &c), "no transition, no quiescent state");
+        }
+        assert!(!stalled(0, 4000, 4000));
+        assert!(stalled(0, 4001, 4000));
+        assert!(stalled(u64::MAX - 10, 4000, 100), "wrapping clock");
+    }
+
+    #[test]
+    fn callbacks_run_on_the_lowest_cpu_outside_the_mask() {
+        let all = |_c: usize| true;
+        assert_eq!(callback_cpu(4, 0, all), Some(0));
+        assert_eq!(callback_cpu(4, 0b0011, all), Some(2));
+        assert_eq!(callback_cpu(4, 0b1111, all), None);
+        assert_eq!(callback_cpu(4, 0b0001, |c| c != 1), Some(2));
+    }
+}
+
 #[cfg(test)]
 mod lockdep_tests {
     use super::lockdep::*;

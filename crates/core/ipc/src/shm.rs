@@ -1072,7 +1072,7 @@ pub fn shm_acquire_cap(
 /// `SYS_SHM_RELEASE_TYPED` removes the caller's mapping before it calls this.
 pub fn shm_release_cap(
     tid: u32,
-    table: &mut crate::cap::CapTable,
+    table: &crate::cap::CapTable,
     cap: crate::cap::Cap<crate::cap::targets::Shm>,
 ) -> Result<(), ShmCapError> {
     let r = table.get(cap, crate::cap::CapPerms::READ)?;

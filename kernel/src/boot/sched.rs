@@ -542,6 +542,44 @@ pub(crate) fn create_ioring_worker_task() {
     kprintln!("[SCHED] Created ioring-wk task (prio {})", azos_limits::IORING_WORKER_PRIORITY);
 }
 
+fn rcu_now_ms() -> u64 {
+    azos_drv_sys::timebase::now() / (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1)
+}
+
+/// A grace-period waiter's sleep (`qsbr::set_hooks`): a timer block.
+fn rcu_sleep_ms(ms: u64) {
+    let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
+    let due = azos_drv_sys::timebase::now().saturating_add(ms.saturating_mul(per_ms));
+    azos_sched::task_block(azos_sched::WaitReason::Timer(due));
+}
+
+fn rcu_callback_task(_: usize) {
+    azos_sync::qsbr::callback_task()
+}
+
+/// Kconfig RCU_QSBR (wave 15 N4): the clock and sleep of grace-period
+/// waiters, and the callback task, pinned to the lowest CPU outside
+/// RCU_NOCBS_CPUS (every ISA). Arms the `rcu-free-no-grace` runtime canary.
+pub(crate) fn create_rcu_callback_task() {
+    if !azos_sync::qsbr::ON { return; }
+    if canary!("rcu-free-no-grace") {
+        azos_sync::qsbr::canary_free_without_grace();
+    }
+    azos_sync::qsbr::set_hooks(rcu_now_ms, rcu_sleep_ms);
+    let cpu = match azos_sync::qsbr::callback_cpu() {
+        Some(c) => c,
+        None => {
+            azos_drv_sys::kwarn!("[RCU] RCU_NOCBS_CPUS {:#x} names every CPU: callbacks run on CPU 0",
+                azos_sync::qsbr::NOCBS_CPUS);
+            0
+        }
+    };
+    azos_sched::task_create_affinity("rcu-cb", rcu_callback_task, 0,
+        azos_limits::RCU_CALLBACK_PRIORITY as u32, cpu as i8);
+    kprintln!("[SCHED] Created rcu-cb task (prio {}, CPU {}, nocbs {:#x})",
+        azos_limits::RCU_CALLBACK_PRIORITY, cpu, azos_sync::qsbr::NOCBS_CPUS);
+}
+
 pub(crate) fn create_fs_writeback_task() {
     if !azos_limits::FS_WRITEBACK { return; }
     azos_fs::fat32_writeback_hooks(fs_wb_now_ms, fs_wb_wake);

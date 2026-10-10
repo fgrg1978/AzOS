@@ -2114,6 +2114,8 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     }
     // K1: the io_ring worker, which runs an RT submitter's file entries.
     create_ioring_worker_task();
+    // N4: the RCU callback task (Kconfig RCU_QSBR; nothing with it off).
+    create_rcu_callback_task();
     // Wave 15: disk completions by interrupt (every ISA), once the
     // scheduler exists to put waiters to sleep.
     wire_virtio_blk_irq();

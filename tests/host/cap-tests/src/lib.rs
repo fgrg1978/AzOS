@@ -421,7 +421,7 @@ mod nospec_tests {
     fn a_slot_index_past_the_table_is_stale() {
         use crate::cap::{targets::Gpio, Cap, CapError, CapTable, MAX_CAPS_PER_TASK};
         use azos_abi::cap::{CapHandle, CapKind, CapPerms};
-        let mut t = CapTable::empty();
+        let t = CapTable::empty();
         let h = t.grant_raw(CapKind::Gpio, CapPerms::READ, 7).unwrap();
         // The same handle with its slot moved past the table (the 9-bit
         // field reaches 511; the table holds `MAX_CAPS_PER_TASK`).

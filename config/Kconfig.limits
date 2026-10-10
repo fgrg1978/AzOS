@@ -462,6 +462,26 @@ config MAX_CAPS_PER_TASK
       assert in crates/core/ipc/src/cap.rs fails the build above 512 (tried:
       513), so the range stops there.
 
+config CAP_LOOKUP_CACHE
+    int "Capability lookup cache: entries per task table (0 = none, a power of two)"
+    range 0 64
+    default 4  if PROFILE_EMBEDDED
+    default 16 if PROFILE_FLEET
+    default 8
+    help
+      SYS_CAP_LOOKUP (and `CapTable::lookup`) finds a capability by kind and
+      resource, which without a cache is a scan of the table's slots: 7
+      instructions per slot on riscv64 before the one held. Each table keeps
+      this many direct-mapped entries, keyed by a hash of (kind, resource),
+      naming the slot the last lookup of that key found. A hit is checked
+      against the slot itself (one atomic word), so a stale entry costs a
+      scan, never a wrong answer; a grant or an exact install of the key
+      clears its entry, so the lowest matching slot is still the one
+      returned. A miss scans and fills the entry.
+      Cost: 2 bytes per entry per task table (MAX_TASKS): 1 KiB at edge's
+      64 tables of 8. 0 compiles the cache out (a scan every time). Must be
+      a power of two (a compile-time assert in crates/core/ipc/src/cap.rs).
+
 # ---------------------------------------------------------------------------
 # Memory budgets
 # ---------------------------------------------------------------------------

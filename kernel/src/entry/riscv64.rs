@@ -150,6 +150,17 @@ pub static SCHED_LIVE: AtomicBool = AtomicBool::new(false);
 // `exec_user` hand-off, none of which `TrapContext` has an accessor for
 // today. Migrating that arm needs new trait methods that aarch64.rs would
 // have to implement too.
+/// The interrupt arm of [`riscv64_trap_handler`], with its QSBR boundary
+/// (Kconfig RCU_QSBR, N4): it leaves idle's extended quiescent state, and
+/// its return to U-mode reports a quiescent state. Out of line so the
+/// syscall path's frame stays the size it was (inlined, the guard's
+/// registers grew the handler's prologue on every syscall).
+#[inline(never)]
+fn interrupt_arm(frame: &mut TrapFrame) {
+    let _rcu = azos_sync::qsbr::TrapBoundary::irq(|| frame.came_from_user());
+    crate::handle_interrupt(frame, frame.irq_number());
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn riscv64_trap_handler(frame: &mut TrapFrame) -> usize {
     // Masked-window tracer (`lat-trace`): a trap from a context with `SIE`
@@ -165,10 +176,13 @@ pub extern "C" fn riscv64_trap_handler(frame: &mut TrapFrame) -> usize {
         TrapClass::Interrupt => {
             #[cfg(feature = "lat-trace")]
             azos_arch::lat_hook::trap_enter(lat_sstatus, core::panic::Location::caller());
-            crate::handle_interrupt(frame, frame.irq_number());
+            interrupt_arm(frame);
             0
         }
         _ => {
+            // QSBR (Kconfig RCU_QSBR, N4): only an RT CPU's user mode is an
+            // extended quiescent state; nothing here with RCU_NOCBS_CPUS 0.
+            let _rcu = azos_sync::qsbr::TrapBoundary::exception(|| frame.came_from_user());
             #[cfg(feature = "lat-trace")]
             azos_arch::lat_hook::trap_enter(lat_sstatus, core::panic::Location::caller());
             // SYSFLOOR: a U-mode `ecall` goes straight to its own path; every

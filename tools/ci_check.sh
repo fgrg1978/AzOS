@@ -11156,8 +11156,12 @@ PY
     # FIFO under Kconfig SPINLOCK_IMPL=mcs, red under ttas).
     # +1 link_key_hook_runs_unlocked (N3: the link-key reader, a block read,
     # runs with its hook's SpinLock released; lockdep checks it).
-    KTEST_N_RV=38
-    KTEST_N_ARM=38
+    # +5 rcu_free_waits_for_the_reader, rcu_idle_cpu_is_quiescent,
+    # rcu_stall_detector_names_the_cpu, lockdep_no_sleep_in_rcu_read,
+    # cap_lookup_lock_free_never_stale (wave 15, N4: Kconfig RCU_QSBR; the
+    # canaries are `ktest rcu canaries (rv|arm|x86)`).
+    KTEST_N_RV=43
+    KTEST_N_ARM=43
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11500,6 +11504,17 @@ PY
         "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
     par "ktest exit status canary (arm)" ktest_status_canary_row ktest_row "ktest exit status canary (arm)" arm "" \
         "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
+    # N4 (Kconfig RCU_QSBR, kernel/src/smokes/rcu.rs), one boot of the pass
+    # row's kernel: `canary=rcu-free-no-grace` (`call_rcu` frees at once: the
+    # reader sees the poison, rcu_free_waits_for_the_reader),
+    # `rcu-idle-qs-skip` (the idle task never enters its extended quiescent
+    # state: no idle CPU is quiescent at a grace period's start,
+    # rcu_idle_cpu_is_quiescent), `lockdep-rcu-sleep` (a wait's entry inside
+    # a read section: lockdep_no_sleep_in_rcu_read).
+    KTEST_RCU_CANARIES="canary=rcu-free-no-grace,rcu-idle-qs-skip,lockdep-rcu-sleep"
+    KTEST_RCU_CANARIED="rcu_free_waits_for_the_reader rcu_idle_cpu_is_quiescent lockdep_no_sleep_in_rcu_read"
+    par "ktest rcu canaries (rv)" ktest_row "ktest rcu canaries (rv)" rv "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    par "ktest rcu canaries (arm)" ktest_row "ktest rcu canaries (arm)" arm "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
@@ -11548,7 +11563,8 @@ PY
     # +1 spin_sites_patched (N2b; x86_64 links no site, so it holds).
     # +1 spin_lock_fifo_bounded (N3; -smp 4, as on rv and arm).
     # +1 link_key_hook_runs_unlocked (N3), as on rv and arm.
-    KTEST_N_X86=40
+    # +5 the N4 RCU tests, as on rv and arm.
+    KTEST_N_X86=45
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -11695,6 +11711,9 @@ PY
     # GR3: see `ktest exit status canary (rv)`; x86_64's clean status is 1.
     par "ktest exit status canary (x86)" ktest_status_canary_row x86_ktest_row "ktest exit status canary (x86)" "" \
         "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
+    # N4: see `ktest rcu canaries (rv)`.
+    par "ktest rcu canaries (x86)" x86_ktest_row "ktest rcu canaries (x86)" "" \
+        "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
 
     # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
     #

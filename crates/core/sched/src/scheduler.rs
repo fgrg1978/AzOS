@@ -4255,6 +4255,8 @@ pub fn start() -> ! {
 
         // Lockdep: the boot context hands over holding nothing.
         azos_sync::lockdep::switch(None, next_idx);
+        // QSBR (Kconfig RCU_QSBR, N4): a context switch is a quiescent state.
+        azos_sync::qsbr::switch();
         // Switch to first task (no current task to save).
         context_switch(core::ptr::null_mut(), next as *mut Task);
     }
@@ -6514,6 +6516,9 @@ unsafe fn do_schedule(why: SwitchReason) {
         let keep = !old_ptr.is_null() && (*old_ptr).state() != TaskState::Zombie;
         azos_sync::lockdep::switch(if keep { Some(old_idx) } else { None }, next_idx);
     }
+    // QSBR (Kconfig RCU_QSBR, N4): a context switch is a quiescent state.
+    // One store; nothing with the option off.
+    azos_sync::qsbr::switch();
     context_switch(old_ptr, next as *mut Task);
     // Returns here when the old task is rescheduled: `old_t` is this task.
     finish_switch(old_t);
@@ -6621,6 +6626,19 @@ pub fn current_task_tid() -> u32 {
     unsafe {
         let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
         if idx == usize::MAX { 0 } else { TASKS[idx].tid }
+    }
+}
+
+/// The pool slot and TID of the task running on this CPU, or `None` when
+/// none is current: [`current_task_tid`] plus the slot it read, so a caller
+/// keyed by slot (the capability tables, N4) need not find it again with
+/// [`idx_for_tid`].
+#[inline]
+pub fn current_task_slot() -> Option<(usize, u32)> {
+    let cpu = current_cpu_id();
+    unsafe {
+        let idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+        if idx < MAX_TASKS { Some((idx, TASKS[idx].tid)) } else { None }
     }
 }
 
@@ -9806,6 +9824,7 @@ unsafe fn direct_switch_block(cpu: usize, ti: usize, reason: WaitReason) {
         ctx_probe::check_dispatch(ctx_probe::DIRECT, cpu, ti);
         // Lockdep: as in `do_schedule`'s tail (the blocked task runs again).
         azos_sync::lockdep::switch(Some(cur), ti);
+        azos_sync::qsbr::switch();
         context_switch(task as *mut Task, next as *mut Task);
         // Resumed: woken and dispatched like any other blocked task.
         finish_switch(task as *mut Task);
