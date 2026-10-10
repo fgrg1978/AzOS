@@ -622,7 +622,7 @@ def test_x86_64_level_and_require_reach_the_codegen() -> None:
     """x86_64: the level is `-C target-cpu`; a `require` integer extension
     reaches the kernel and the user images, a `require` SIMD one only the
     user images (the kernel is soft-float); the QEMU defconfig is v2 with
-    every other extension on `probe`; a level forces `require` on its
+    every other extension on `probe` but LA57 (`n`); a level forces `require` on its
     extensions and an `n` prerequisite forces `n` on its dependants."""
     import tempfile
 
@@ -631,8 +631,12 @@ def test_x86_64_level_and_require_reach_the_codegen() -> None:
         out = _expand((DEFCONFIGS_DIR / "qemu-x86_64.config").read_text().splitlines(), t, "q.config")
         assert "CONFIG_X86_64_LEVEL_V2=y" in out
         assert "CONFIG_X86_SSE4_2_REQUIRE=y" in out and "CONFIG_X86_POPCNT_REQUIRE=y" in out
-        for ext in ("AVX2", "AVX512F", "AES", "SHA_NI", "RDSEED", "CET_SHSTK", "LA57", "INVARIANT_TSC"):
+        for ext in ("AVX2", "AVX512F", "AES", "SHA_NI", "RDSEED", "CET_SHSTK", "INVARIANT_TSC"):
             assert f"CONFIG_X86_{ext}_PROBE=y" in out, ext
+        # LA57 is `n` by default since the 5-level walk is real (1732f943):
+        # a probe would put every TLB miss on a 5-level walk on any CPU
+        # that has it, for VA nobody here needs.
+        assert "CONFIG_X86_LA57_NEVER=y" in out
         assert _isa(t / "q.config", "--rustflags") == "-C target-cpu=x86-64-v2"
         assert _isa(t / "q.config", "--target-features").startswith("require=cmpxchg16b,lahfsahf,popcnt\n")
         _expand(["CONFIG_ARCH_X86_64=y", "CONFIG_X86_64_LEVEL_V4=y", "CONFIG_X86_ADX_REQUIRE=y",
