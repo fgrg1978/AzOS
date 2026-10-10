@@ -170,6 +170,10 @@ pub(crate) const NAMES: &[&str] = &[
     // does not refuse a target less urgent than the caller
     // (ktest `ipc_handoff_refuses_less_urgent_peer`).
     "handoff-any-prio",
+    // crates/core/sync/src/pi_futex.rs `block_commit`: a PI futex waiter is
+    // enqueued but the walk is dropped, so the word's owner is never boosted
+    // (the RT-vs-normal inversion program; same binary on Linux).
+    "futex-pi-no-edge",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

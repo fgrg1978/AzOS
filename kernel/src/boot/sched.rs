@@ -172,6 +172,16 @@ pub(crate) fn install_sched_hooks() {
     if canary!("handoff-any-prio") {
         azos_sched::scheduler::canary_handoff_any_prio();
     }
+    // Wave 15 N10, Kconfig FUTEX_PI: the PI futex operations and the slot ->
+    // TID map their words need; the futex table registers its PiTable (N9).
+    // Runtime canary: a PI waiter never boosts the word's owner.
+    if azos_sync::pi_futex::ENABLED {
+        azos_sync::pi_futex::register_tid_of(pi_futex_tid_of);
+        azos_sync::pi_futex::register(&azos_sync::pi_futex::PI_FUTEX);
+        if canary!("futex-pi-no-edge") {
+            azos_sync::pi_futex::canary_no_edge();
+        }
+    }
     // RFC-0049 M1: page tables charged to the task that owns them, and user
     // page faults counted per task. Before the first user address space.
     azos_sched::install_mm_hooks();
@@ -240,6 +250,11 @@ fn kmutex_graph_id(tid: u32) -> Option<u32> {
 /// user leaves in the range, then shoot the range down on every hart
 /// (`vmm::set_user_range_write`). Called with `LEASES` held, never from an
 /// interrupt, as `lease_unmap` is.
+/// The TID a PI futex word holds for scheduler slot `t` (Kconfig FUTEX_PI).
+fn pi_futex_tid_of(t: u32) -> Option<u32> {
+    azos_sched::scheduler::tid_for_idx(t as usize)
+}
+
 fn lease_seal(root: usize, va: usize, pages: usize, write: bool) -> usize {
     // The gate canary: the seal takes nothing away (the give-back still runs
     // and finds nothing to widen).
@@ -797,6 +812,56 @@ mod sched_class_ktests {
             }
             if azos_sched::classes::pick_here().is_none() {
                 return Err("no class has a runnable task on this CPU");
+            }
+            Ok(())
+        }
+    }
+
+    // N10, Kconfig FUTEX_PI: the PI word protocol in the kernel's own
+    // environment (the real slot -> TID map), on a word the test owns. The
+    // contended half (graph waiters, a LOCK_PI chain through a kernel Mutex,
+    // the robust handover to a sleeper) needs N7, N8 and N9's table.
+    azos_ktest::ktest_late! {
+        fn futex_pi_word_protocol() {
+            use azos_sync::pi_futex::*;
+            if !ENABLED {
+                return Ok(());
+            }
+            struct Word(u32, u32);
+            impl PiBucket for Word {
+                fn pi_slot(&mut self) -> &mut u32 { &mut self.1 }
+                fn read_word(&self) -> Result<u32, UserFault> { Ok(self.0) }
+                fn cmpxchg_word(&mut self, e: u32, n: u32) -> Result<u32, UserFault> {
+                    let seen = self.0;
+                    if seen == e { self.0 = n; }
+                    Ok(seen)
+                }
+                fn task_of_tid(&self, tid: u32) -> Option<u32> {
+                    azos_sched::scheduler::idx_for_tid(tid).map(|i| i as u32)
+                }
+            }
+            let tid = azos_sched::scheduler::current_task_tid();
+            let Some(me) = azos_sched::scheduler::idx_for_tid(tid).map(|i| i as u32) else {
+                return Err("the late runner has no scheduler slot");
+            };
+            let Some(ops) = ops() else { return Err("FUTEX_PI is y but nothing is registered") };
+            let used = states_in_use();
+            let mut w = Word(0, 0);
+            if !matches!(ops.lock_pi_prepare(&mut w, me, false), LockPiStep::Acquired) || w.0 != tid {
+                return Err("LOCK_PI on a free word did not write the caller's TID");
+            }
+            if !matches!(ops.lock_pi_prepare(&mut w, me, true), LockPiStep::Err(e) if e == -EDEADLK) {
+                return Err("a second LOCK_PI by the owner was not EDEADLK");
+            }
+            if ops.unlock_pi(&mut w, me) != Ok(None) || w.0 != 0 {
+                return Err("UNLOCK_PI with no waiter did not free the word");
+            }
+            w.0 = tid | FUTEX_WAITERS;
+            if ops.owner_died(&mut w, me) != Ok(None) || w.0 != FUTEX_OWNER_DIED | FUTEX_WAITERS {
+                return Err("the robust exit did not leave FUTEX_OWNER_DIED");
+            }
+            if states_in_use() != used || w.1 != 0 {
+                return Err("an uncontended word took a pi_state");
             }
             Ok(())
         }
