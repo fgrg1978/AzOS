@@ -2638,9 +2638,19 @@ mod ipc_direct_wiring {
 
     #[test]
     fn claimed_is_produced_in_exactly_one_place() {
-        assert_eq!(SCHED.matches("WakeOut::Claimed(").count(), 2,
-            "one construction (wake_by_slot) and one match arm (ipc_wake_then_block)");
+        // One construction (wake_by_slot) and two match arms: ipc_wake_then_block
+        // and N13's SchedHandoff::switch_to_direct (Kconfig IPC_DIRECT_HANDOFF).
+        // Every arm must hand the claimed task to direct_switch_block: a
+        // claimed task is in no queue, so any other use loses it.
+        assert_eq!(SCHED.matches("WakeOut::Claimed(").count(), 3,
+            "one construction (wake_by_slot), arms in ipc_wake_then_block and SchedHandoff");
         assert_eq!(SCHED.matches("return WakeOut::Claimed(").count(), 1);
+        for (at, _) in SCHED.match_indices("WakeOut::Claimed(ti) =>") {
+            let arm = &SCHED[at..(at + 240).min(SCHED.len())];
+            assert!(arm.contains("direct_switch_block(cpu, ti, reason)"),
+                "a Claimed arm does not switch to the claimed task");
+        }
+        assert_eq!(SCHED.matches("WakeOut::Claimed(ti) =>").count(), 2);
     }
 
     #[test]
