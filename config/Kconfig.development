@@ -1069,8 +1069,14 @@ menu "Benchmarks / Linux comparison"
 
 config VSBENCH_LINUX_IMAGE_RISCV64
     string "vsbench: riscv64 Linux kernel image"
-    default "~/devel/vms/linux-6.12/Image-riscv64"
+    default "~/devel/vms/linux-6.12/Image-riscv64-nodebug"
     help
+      Default: the riscv64 defconfig with its debug options off
+      (DEBUG_PAGEALLOC, DEBUG_VM*, spinlock/mutex/list/atomic-sleep
+      checks), so the Linux column is a production-like kernel as the
+      arm64 and x86_64 defconfigs already are. The plain-defconfig
+      Image-riscv64 sits beside it for comparison.
+
       The riscv64 Linux kernel that tools/vsbench_compare.sh boots for
       the Linux column (`-kernel` on `qemu-system-riscv64 -M virt`, with
       the vsbench ELF as `/init` of an uncompressed initramfs). Read by
