@@ -22,6 +22,10 @@ pub mod scope;
 pub mod qsbr;
 /// Pure logic behind `qsbr`. Host-tested in `tests/host/sync-tests`.
 pub mod qsbr_core;
+pub mod waitgraph;
+pub mod kmutex;
+pub mod pi_futex;
+pub mod handoff;
 
 pub use spinlock::{SpinLock, SpinLockGuard, IrqSaveGuard};
 pub use preempt::{critical_section, PreemptGuard};

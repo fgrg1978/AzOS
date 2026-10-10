@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! Direct handoff (wave 15 N13): the ONE helper that switches from the
+//! current task straight to a named peer without a pick. Nothing else in the
+//! kernel switches directly.
+//!
+//! **Interface only.** The scheduler side ([`DirectSwitch`]) is implemented
+//! by N13 in crates/core/sched; callers are IPC `call` / `reply_recv` (N5,
+//! N11) and, as a measured experiment, futex wake (N9).
+//!
+//! Kconfig `IPC_DIRECT_HANDOFF`, **default n until it wins**: n makes
+//! [`switch_to_direct`] a compile-time `Err(Disabled)` that inlines to
+//! nothing, so the fast-call lane does not move. It is turned on only if it
+//! beats N5's fast-call instruction count (precedent: a direct handoff cost
+//! +52 instructions and saved none, reverted).
+//!
+//! # Preconditions (checked by the implementation, refusal = normal path)
+//!
+//! * The caller is the current task, in task context, preemption on, **no
+//!   SpinLock held** (the endpoint or bucket lock is dropped first; the
+//!   target's wake state was settled under it).
+//! * `target` is blocked waiting for exactly this event (a server in
+//!   `recv` on the endpoint, a caller in `reply` wait, a futex waiter) and
+//!   was claimed by the caller under that lock, so no one else wakes it.
+//! * `target` may run on this CPU (affinity) and is **not less urgent**
+//!   than the caller (`waitgraph::PiAttr` of both, effective): a handoff
+//!   never runs a lower-priority task ahead of a runnable more urgent one.
+//! * The caller itself is about to block (call, reply_recv) or yield its
+//!   remaining slice to the target (futex wake experiment).
+//!
+//! On `Ok(())` the call returns when the caller runs again. On `Err` the
+//! caller wakes `target` the normal way and blocks/schedules as before;
+//! every refusal is counted per reason for vsbench.
+
+use crate::waitgraph::TaskId;
+
+/// Kconfig `IPC_DIRECT_HANDOFF`.
+pub const ENABLED: bool = azos_limits::IPC_DIRECT_HANDOFF;
+
+/// Who asks for the handoff (accounting and per-reason enable).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum HandoffReason {
+    /// A client's `call` to a server blocked in `recv`.
+    IpcCall = 1,
+    /// A server's `reply_recv` to the caller blocked in reply wait.
+    IpcReplyRecv = 2,
+    /// Futex wake of one waiter (experiment, N9 x N13).
+    FutexWake = 3,
+}
+
+/// Why a handoff did not happen; the caller takes the normal path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HandoffRefused {
+    /// Kconfig `IPC_DIRECT_HANDOFF` is n, or no implementation registered.
+    Disabled,
+    /// `target` is not blocked waiting for this event.
+    PeerNotWaiting,
+    /// `target` is less urgent than the caller.
+    LowerPriority,
+    /// `target` cannot run on this CPU (affinity, cluster).
+    OtherCpu,
+    /// Something more urgent than `target` is runnable here.
+    Preempted,
+}
+
+/// The scheduler's switch. **Implemented by N13 in crates/core/sched.**
+///
+/// Takes the run-queue lock of this CPU, re-checks the preconditions under
+/// it, marks the caller blocked (or runnable for `FutexWake`), makes
+/// `target` current without a pick, accounts the switch to both SCs, and
+/// switches. Cost goal: fewer instructions than wake + block + pick on the
+/// fast-call lane (N5's number).
+pub trait DirectSwitch: Sync {
+    fn switch_to_direct(&self, target: TaskId, reason: HandoffReason) -> Result<(), HandoffRefused>;
+}
+
+/// Install the scheduler's implementation once at boot. Task context.
+pub fn register(_imp: &'static dyn DirectSwitch) {
+    todo!("N13")
+}
+
+/// Switch from the current task straight to `target` (contract in the
+/// module doc). With `IPC_DIRECT_HANDOFF` n: `Err(Disabled)`, no code.
+#[inline(always)]
+pub fn switch_to_direct(target: TaskId, reason: HandoffReason) -> Result<(), HandoffRefused> {
+    if !ENABLED {
+        return Err(HandoffRefused::Disabled);
+    }
+    switch_slow(target, reason)
+}
+
+#[inline(never)]
+fn switch_slow(_target: TaskId, _reason: HandoffReason) -> Result<(), HandoffRefused> {
+    todo!("N13")
+}

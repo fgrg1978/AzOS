@@ -427,6 +427,86 @@ config IPC_CALL_WAKE_RETRIES
       Cost: none until a wake is spurious.
 
 # ---------------------------------------------------------------------------
+# Wait graph and its clients (wave 15 IF: N7 PI core, N8 kernel mutex,
+# N10 PI futex, N13 direct handoff). Interfaces in crates/core/sync.
+# ---------------------------------------------------------------------------
+
+config WAIT_GRAPH
+    bool "Wait graph: one priority-inheritance core for mutex, PI futex and IPC"
+    default n
+    help
+      crates/core/sync/src/waitgraph.rs (N7): every object a task blocks
+      on while another task owns it (kernel mutex, PI futex, IPC call,
+      lease, driver proxy) records its waiters by urgency, and a bounded
+      chain walk boosts the owner to its most urgent waiter (a deadline
+      donor passes its absolute deadline). A cycle is refused with EDEADLK.
+      Default n until N7 lands; n compiles every client's old path.
+      Cost: about 32 B per blockable object and a per-task PI record
+      (about 16 B x MAX_TASKS); nothing on an uncontended acquire; one
+      walk of at most PI_MAX_DEPTH steps per contended block or release.
+
+config PI_MAX_DEPTH
+    int "Longest ownership chain a priority-inheritance walk follows"
+    range 1 64
+    default 16
+    help
+      Owner answer Q4: 16, on every architecture and profile (no chain in
+      the tree is deeper than 3 today). A walk that reaches this depth
+      stops boosting there; the block still succeeds and the event is
+      counted. Raise it only if a real chain is longer (the counter says
+      so); lower it to cut the worst-case block/release cost, which is
+      about 40 instructions plus two lock round trips per step.
+      Cost: no RAM; worst-case instructions on a contended block.
+
+config KMUTEX
+    bool "Kernel sleeping mutex (Mutex) replaces PiMutex and the FAT32/blk SpinLocks"
+    depends on WAIT_GRAPH
+    default n
+    help
+      crates/core/sync/src/kmutex.rs (N8): a sleeping, priority-inheriting,
+      adaptive mutex on the wait graph. y moves the PiMutex users and the
+      FAT32 and virtio-blk paths onto it; the mutex is released around
+      every device wait (owner rule F1). n keeps today's locks.
+      Cost: one CAS per uncontended lock and unlock (as PiMutex).
+
+config KMUTEX_ADAPTIVE_SPIN
+    int "Kernel mutex: spin-hint iterations while the owner runs, before sleeping"
+    range 0 100000
+    default 0 if NR_CPUS = 1
+    default 40 if ARCH_X86_64
+    default 200
+    help
+      A contended Mutex spins at most this many spin-hint iterations
+      (pause / yield / Zihintpause) while its owner is executing on
+      another CPU, then blocks on the wait graph. 0 never spins (the only
+      sensible value on one CPU). x86_64's PAUSE costs about 140 cycles on
+      current cores, so fewer iterations cover the same time as the
+      cheaper riscv64 and aarch64 hints. Raise it when sections are short
+      and context switches dominate; lower it under RT load (a spinning
+      task holds its CPU). Cost: no RAM; at most this many iterations of
+      CPU time per contended acquire.
+
+config FUTEX_PI
+    bool "PI futexes: FUTEX_LOCK_PI/UNLOCK_PI/TRYLOCK_PI and requeue-PI"
+    depends on WAIT_GRAPH
+    default n
+    help
+      crates/core/sync/src/pi_futex.rs (N10): Linux's PI futex word
+      protocol (TID | FUTEX_WAITERS | FUTEX_OWNER_DIED) on the wait graph,
+      owner-died through the robust list, and CMP_REQUEUE_PI /
+      WAIT_REQUEUE_PI. n answers ENOSYS as today. Cost: one pi_state
+      (about 48 B) per contended PI word, from a pool of MAX_TASKS.
+
+config IPC_DIRECT_HANDOFF
+    bool "Direct handoff: call/reply_recv switch straight to the waiting peer"
+    default n
+    help
+      crates/core/sync/src/handoff.rs (N13): when the peer already waits
+      and is not less urgent, switch to it without a pick. Default n until
+      it beats the endpoint fast-call instruction count (a previous direct
+      handoff cost 52 instructions and saved none). n compiles the helper
+      to a constant refusal. Cost: no RAM.
+# ---------------------------------------------------------------------------
 # Pub/Sub
 # ---------------------------------------------------------------------------
 

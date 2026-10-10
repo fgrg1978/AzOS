@@ -73,6 +73,93 @@ pub mod isr_depth;
 #[path = "../../../../crates/core/sync/src/qsbr_core.rs"]
 pub mod qsbr_core;
 
+// Wave 15 IF: the interfaces of the wait graph (N7), the kernel mutex (N8),
+// the PI futex seam (N10) and the direct handoff (N13). Stubs: only their
+// fixed, already-implemented parts are tested here (the attribute order,
+// the futex word protocol, the Kconfig-off behaviour).
+#[path = "../../../../crates/core/sync/src/waitgraph.rs"]
+pub mod waitgraph;
+#[path = "../../../../crates/core/sync/src/kmutex.rs"]
+pub mod kmutex;
+#[path = "../../../../crates/core/sync/src/pi_futex.rs"]
+pub mod pi_futex;
+#[path = "../../../../crates/core/sync/src/handoff.rs"]
+pub mod handoff;
+
+#[cfg(test)]
+mod interface_tests {
+    use super::handoff::{self, HandoffReason, HandoffRefused};
+    use super::pi_futex::*;
+    use super::waitgraph::{EdgeKind, PiAttr, PiWaiters, WaitError, WaitObj, PI_MAX_DEPTH};
+
+    #[test]
+    fn pi_attr_order_is_the_class_precedence() {
+        let order = [
+            PiAttr::Idle,
+            PiAttr::Fair,
+            PiAttr::Rt { prio: 50 },
+            PiAttr::Rt { prio: 10 },
+            PiAttr::Dl { deadline_ns: 2_000 },
+            PiAttr::Dl { deadline_ns: 1_000 },
+            PiAttr::Stop,
+        ];
+        for w in order.windows(2) {
+            assert!(w[1] > w[0], "{:?} must be more urgent than {:?}", w[1], w[0]);
+        }
+        // Lower RT number and earlier deadline are more urgent.
+        assert!(PiAttr::Rt { prio: 0 } > PiAttr::Rt { prio: 1 });
+        assert!(PiAttr::Dl { deadline_ns: 0 } > PiAttr::Rt { prio: 0 });
+        // Stage 1: a DL donor's deadline is what the owner inherits.
+        let owner = PiAttr::Rt { prio: 20 };
+        let donor = PiAttr::Dl { deadline_ns: 5 };
+        assert_eq!(owner.max_urgent(donor), donor);
+        assert_eq!(donor.max_urgent(owner), donor);
+        assert_eq!(PiAttr::Fair.max_urgent(PiAttr::Fair), PiAttr::Fair);
+    }
+
+    #[test]
+    fn graph_contract_constants() {
+        assert_eq!(PI_MAX_DEPTH, azos_limits::PI_MAX_DEPTH);
+        assert!(PI_MAX_DEPTH >= 1);
+        assert_eq!(WaitError::Deadlock.errno(), 35); // EDEADLK
+        assert!(core::mem::size_of::<PiWaiters>() <= 32);
+        static A: PiWaiters = PiWaiters::new(EdgeKind::Mutex);
+        static B: PiWaiters = PiWaiters::new(EdgeKind::FutexPi);
+        assert_eq!(A.kind(), EdgeKind::Mutex);
+        assert_ne!(WaitObj::of(&A), WaitObj::of(&B));
+        assert_eq!(WaitObj::of(&A), WaitObj::of(&A));
+    }
+
+    #[test]
+    fn futex_word_protocol_is_linux_bit_exact() {
+        assert_eq!(FUTEX_TID_MASK, 0x3FFF_FFFF);
+        assert_eq!(FUTEX_OWNER_DIED, 0x4000_0000);
+        assert_eq!(FUTEX_WAITERS, 0x8000_0000);
+        assert_eq!(FUTEX_TID_MASK | FUTEX_OWNER_DIED | FUTEX_WAITERS, u32::MAX);
+        assert_eq!(word_owner(0), None);
+        assert_eq!(word_owner(FUTEX_WAITERS | FUTEX_OWNER_DIED), None);
+        assert_eq!(word_owner(FUTEX_WAITERS | 77), Some(77));
+        assert_eq!(handover_word(77, true, false), 77 | FUTEX_WAITERS);
+        assert_eq!(handover_word(77, false, false), 77);
+        assert_eq!(handover_word(77, false, true), 77 | FUTEX_OWNER_DIED);
+        assert_eq!(PiStateId::from_raw(0), None);
+        assert_eq!(PiStateId::from_raw(5).map(|p| p.raw()), Some(5));
+    }
+
+    #[test]
+    fn kconfig_off_paths_are_inert() {
+        if !handoff::ENABLED {
+            assert_eq!(
+                handoff::switch_to_direct(1, HandoffReason::IpcCall),
+                Err(HandoffRefused::Disabled)
+            );
+        }
+        if !super::pi_futex::ENABLED {
+            assert!(super::pi_futex::ops().is_none());
+        }
+    }
+}
+
 #[cfg(test)]
 mod qsbr_tests {
     use super::qsbr_core::*;
