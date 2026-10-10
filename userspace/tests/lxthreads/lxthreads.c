@@ -29,7 +29,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
-#include <linux/futex.h>
+/* Linux futex op numbers (UAPI values; no linux/ header outside lx/glue/). */
+#define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
+#define FUTEX_CMP_REQUEUE 4
+#define FUTEX_PRIVATE_FLAG 128
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>

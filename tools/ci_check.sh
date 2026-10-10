@@ -11332,8 +11332,8 @@ PY
     # canary (rv|arm|x86)` and the rcu canaries' rcu-free-no-grace).
     # +1 futex_requeue_wakes_one_not_the_herd (wave 15, N9: Kconfig
     # FUTEX_REQUEUE; canary `ktest futex canary (rv|arm|x86)`).
-    KTEST_N_RV=48
-    KTEST_N_ARM=48
+    KTEST_N_RV=50
+    KTEST_N_ARM=50
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11757,7 +11757,7 @@ PY
     # +5 the N4 RCU tests, as on rv and arm.
     # +4 the N5 endpoint tests, as on rv and arm.
     # +1 the N9 futex requeue test, as on rv and arm.
-    KTEST_N_X86=50
+    KTEST_N_X86=52
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
