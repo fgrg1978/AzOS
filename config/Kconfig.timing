@@ -141,6 +141,83 @@ choice
 endchoice
 
 # ---------------------------------------------------------------------------
+# Dispatch classes and the scheduling context (N6, owner answers Q6-Q8)
+# ---------------------------------------------------------------------------
+config SCHED_CLASS_STOP
+    bool "Dispatch class: stop (per-CPU stop work above every other class)"
+    default n
+    help
+      The highest class: one per-CPU stop task (stop-machine, migration)
+      that preempts DL, RT and fair work. Nothing uses it yet, so it is off
+      in every profile. Off: the class and its per-CPU slot compile out.
+      On: MAX_CPUS words of .bss and one load in the class walk. Turn it on
+      when a stop-machine user (live patching, CPU hot-unplug) lands.
+
+config SCHED_CLASS_DL
+    bool "Dispatch class: deadline (EDF + CBS reservations)"
+    default y
+    help
+      Tasks holding an admitted EDF + CBS reservation (topology `deadline`
+      rows, the reservation syscall). Off: admission refuses every
+      reservation with EOPNOTSUPP (reason `class-off`), no hart ever has
+      reservation state, and the reservation paths are never entered (they
+      fold to the band-only code). Costs nothing per switch when no
+      reservation is admitted. Turn off only for a build with no deadline
+      task at all.
+
+config SCHED_CLASS_RT
+    bool "Dispatch class: real-time band (fixed priority)"
+    default y
+    help
+      The fixed-priority band: tasks below RT_PRIORITY_THRESHOLD, not
+      time-sliced, with the per-hart band budget (RT_BAND_CAP_PCT of each
+      RT_BAND_WINDOW_MS). Off: no task is in the band; band-level priorities
+      are scheduled as fair levels and the band budget is never charged.
+      Every robot profile needs it (the motor, IMU and watchdog loops).
+
+config SCHED_CLASS_FAIR
+    def_bool y
+    help
+      The fair class: every task outside the band and idle (Legacy round
+      robin today; EEVDF later). Not optional: a build-time assert in
+      crates/core/sched/src/classes.rs refuses a kernel without it.
+
+config SCHED_CLASS_IDLE
+    def_bool y
+    help
+      The idle class: the per-CPU idle task. Not optional (every CPU needs
+      something to run); asserted at build time like SCHED_CLASS_FAIR.
+
+choice
+    prompt "Default dispatch class of a new task (SCHED_DEFAULT)"
+    default SCHED_DEFAULT_LEGACY
+    help
+      The class a task created without a class request starts in. Not DL:
+      a deadline task needs an admitted reservation. Costs nothing at
+      run time (written once at task creation).
+
+    config SCHED_DEFAULT_LEGACY
+        bool "By priority (Legacy: band -> RT, idle -> idle, else fair)"
+        help
+          Today's behaviour: the creation priority decides the class.
+
+    config SCHED_DEFAULT_FAIR
+        bool "Fair, unless the priority is the band or idle"
+        help
+          Same as Legacy except that the SC records fair explicitly. The
+          class model's default once `sched=` lands.
+
+    config SCHED_DEFAULT_RT
+        bool "RT for every non-idle task (static RT appliances only)"
+        depends on SCHED_CLASS_RT
+        help
+          Every task starts in the RT class. For a static profile whose
+          every task is a periodic control loop; the band budget still
+          applies.
+
+endchoice
+
+# ---------------------------------------------------------------------------
 # Energy-aware scheduling (RFC-0051, stages E0-E4)
 # ---------------------------------------------------------------------------
 config ENERGY

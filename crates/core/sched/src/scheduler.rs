@@ -110,6 +110,11 @@ pub mod ipc_direct;
 #[path = "rt.rs"]
 pub mod rt;
 
+/// N6: the five dispatch classes (stop > DL > RT > fair > idle) and the
+/// per-task scheduling context, over the queues above (`sc.rs` is the model).
+#[path = "classes.rs"]
+pub mod classes;
+
 /// RFC-0051 E1/E2 (kernel feature `energy`): utilisation signals updated on
 /// this dispatch path, and the energy model installed at boot.
 #[cfg(feature = "energy")]
@@ -2760,6 +2765,8 @@ pub fn try_task_create_init(
                     // occupant still held (one that died without passing the
                     // dispatch tail's reap) leaves its hart's set and ledger.
                     rt::release(idx);
+                    // N6: the slot's SC starts over in its priority's class.
+                    classes::on_slot_reset(idx, priority);
                     // Wave 13: a reused slot is in no thread group.
                     crate::group::slot_reset(idx);
                     // The slot reset installs `disabled()` — which means
@@ -7209,6 +7216,7 @@ pub fn set_current_sched_params(priority: u32, class_raw: u8) -> u32 {
             }
             task.sched_class_raw = class_raw;
             task.base_priority.store(priority, Ordering::Relaxed);
+            classes::on_base_priority(idx, priority);
             if task.donation_count.load(Ordering::Relaxed) == 0 {
                 task.priority.store(priority, Ordering::Relaxed);
                 hist_reaccount(idx);

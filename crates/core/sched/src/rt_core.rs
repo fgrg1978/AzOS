@@ -314,6 +314,8 @@ pub enum Refusal {
     /// orders reservations inside one level only, the levels above run first
     /// whatever their deadlines ([`levels_fit`]).
     Levels,
+    /// The deadline class is compiled out (`SCHED_CLASS_DL=n`).
+    ClassOff,
 }
 
 impl Refusal {
@@ -324,6 +326,8 @@ impl Refusal {
         match self {
             Refusal::Malformed => 22,
             Refusal::NoRoom | Refusal::BandCap | Refusal::Busy | Refusal::Levels => 16,
+            // EOPNOTSUPP: this build has no deadline class.
+            Refusal::ClassOff => 95,
         }
     }
     /// For the refusal line.
@@ -334,6 +338,7 @@ impl Refusal {
             Refusal::BandCap => "band-cap",
             Refusal::Busy => "busy",
             Refusal::Levels => "levels",
+            Refusal::ClassOff => "class-off",
         }
     }
 }

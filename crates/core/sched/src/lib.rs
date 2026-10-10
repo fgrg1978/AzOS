@@ -149,6 +149,8 @@ pub fn wakelat_worst() -> (u32, u32, u32, u32, u32, u32, u32) {
     scheduler::wakelat::worst()
 }
 
+/// N6: the dispatch classes over the Legacy queues, and each task's SC.
+pub use scheduler::classes;
 #[cfg(not(feature = "no-mmu"))]
 pub use scheduler::{setup_stack_guard_pages, stack_guard_readback, stack_guard_addr};
 

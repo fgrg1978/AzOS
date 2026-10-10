@@ -242,9 +242,11 @@ pub fn is_exempt_from_band_cap(idx: usize) -> bool {
     exempt(idx)
 }
 
+/// `SCHED_CLASS_RT=n`: no task is in the band, so the band budget is never
+/// charged and its paths fold out.
 #[inline(always)]
 fn is_band(prio: u32) -> bool {
-    prio < RT_PRIORITY_THRESHOLD
+    azos_limits::SCHED_CLASS_RT && prio < RT_PRIORITY_THRESHOLD
 }
 
 #[inline(always)]
@@ -470,6 +472,75 @@ unsafe fn ring_first_eligible(cpu: usize, level: usize, resv: bool) -> Option<us
 unsafe fn ring_first_exempt(cpu: usize, level: usize, resv: bool) -> Option<usize> {
     let q = &super::cpu_queues(cpu)[level];
     q.iter(&super::RQ_NEXT).find(|&idx| exempt(idx) && !(resv && unsafe { throttled(cpu, idx) }))
+}
+
+// ───────────────────── N6 class peeks (`classes.rs`) ──────────────────────
+
+/// Ready-bitmap levels of the band, outside it (idle excluded), and idle.
+pub(super) const LEVELS_BAND: u32 = BAND_LEVELS;
+pub(super) const LEVELS_NONBAND: u32 = NONBAND_LEVELS;
+pub(super) const LEVELS_IDLE: u32 = 1u32 << IDLE_PRIORITY;
+
+/// The absolute deadline of `idx`'s reservation on `cpu`. Owner state.
+pub(super) unsafe fn dl_deadline(cpu: usize, idx: usize) -> Option<u64> {
+    slot_of(cpu, idx).map(|k| unsafe { res(cpu, k) }.deadline)
+}
+
+/// Is `cpu`'s band skipped by the pick (exhausted, a non-band task ready)?
+/// Owner state: call on `cpu` itself.
+pub(super) unsafe fn band_skipped(cpu: usize) -> bool {
+    if !active(cpu) {
+        return false;
+    }
+    let o = unsafe { &*owner_of(cpu) };
+    let bm = PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed);
+    o.band.exhausted && bm & NONBAND_LEVELS != 0
+}
+
+/// The DL class's peek: the queued, eligible reservation on `cpu` that EDF
+/// runs first (level, then absolute deadline), throttled ones skipped. Not
+/// removed from its queue. Owner state: call on `cpu` itself.
+pub(super) unsafe fn peek_dl(cpu: usize) -> Option<usize> {
+    let skip_band = unsafe { band_skipped(cpu) };
+    let mut best = None;
+    let (mut bp, mut bd) = (u32::MAX, u64::MAX);
+    for (k, idx) in set_iter(cpu) {
+        let t = unsafe { task_ref(idx) };
+        let r = unsafe { res(cpu, k) };
+        if !t.queued.load(Ordering::Relaxed) || t.state() != TaskState::Ready || r.throttled {
+            continue;
+        }
+        let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
+        if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), skip_band) {
+            continue;
+        }
+        if best.is_none() || rt_core::edf_before(p, r.deadline, bp, bd) {
+            best = Some(idx);
+            bp = p;
+            bd = r.deadline;
+        }
+    }
+    best
+}
+
+/// The first eligible queued task in the most urgent of `cpu`'s ready levels
+/// inside `mask` (reservations skipped: they are the DL class's). Not
+/// removed from its queue.
+pub(super) unsafe fn peek_levels(cpu: usize, mask: u32) -> Option<usize> {
+    let resv = FLAGS[cpu].load(Ordering::Relaxed) & F_RESV != 0;
+    let _g = CpuLockGuard::acquire(cpu);
+    let mut levels = PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed) & mask;
+    while levels != 0 {
+        let l = levels.trailing_zeros() as usize;
+        let q = &super::cpu_queues(cpu)[l];
+        let first = q.iter(&super::RQ_NEXT)
+            .find(|&idx| idx < MAX_TASKS && !(resv && slot_of(cpu, idx).is_some()));
+        if first.is_some() {
+            return first;
+        }
+        levels &= levels - 1;
+    }
+    None
 }
 
 /// What the RT pick decided.
@@ -730,6 +801,11 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
     let me = crate::smp::current_cpu_id();
     let online = crate::smp::NUM_ONLINE_CPUS.load(Ordering::Acquire).clamp(1, MAX_CPUS);
     let res_ = (|| {
+        // `SCHED_CLASS_DL=n`: nothing is admitted, so no hart ever sets
+        // `F_RESV` and the reservation paths are never entered.
+        if !azos_limits::SCHED_CLASS_DL {
+            return Err(Refusal::ClassOff);
+        }
         if idx >= MAX_TASKS {
             return Err(Refusal::Malformed);
         }
@@ -797,6 +873,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
                 }
             }
             ADMITTED.fetch_add(1, Ordering::Relaxed);
+            super::classes::on_reserved(idx, &r);
             azos_drv_sys::kprintln!(
                 "[SCHED-RT] admitted tid={} hart={} runtime_us={} period_us={} deadline_us={} \
                  {} band={} level={} density_ppm={} hart_load_ppm={} band_load_ppm={}",
@@ -836,6 +913,7 @@ pub(super) fn release(idx: usize) {
     for cpu in 0..ncpu() {
         let Some(k) = slot_of(cpu, idx) else { continue };
         set_of(cpu)[k].store(usize::MAX, Ordering::Release);
+        super::classes::on_released(idx);
         let r = unsafe { res(cpu, k) };
         load[cpu].total_ppm = load[cpu].total_ppm.saturating_sub(r.density_ppm);
         if r.band {
@@ -907,6 +985,7 @@ pub fn set_base_priority(idx: usize, prio: u32) {
     if idx >= MAX_TASKS {
         return;
     }
+    super::classes::on_base_priority(idx, prio);
     let c = super::TaskDonation::new(idx);
     c.lock();
     unsafe { task_ref(idx) }.base_priority.store(prio, Ordering::Relaxed);
