@@ -11221,7 +11221,10 @@ PY
     KTEST_CANARIED="mm_wx_image mm_nx_outside_image percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels"
     par "ktest canaries (rv)" ktest_row "ktest canaries (rv)" rv "$KTEST_CANARIES,zicboz-skip-canary" \
         "$KTEST_CANARIED mm_zicboz_zero_fill"
-    par "ktest canaries (arm)" ktest_row "ktest canaries (arm)" arm "$KTEST_CANARIES" "$KTEST_CANARIED"
+    # aarch64 also: `wx-skip-canary` leaves the kernel text writable, so the
+    # one text-write path (`text_poke`, W^X kept) refuses NotRx and the
+    # A64_PAN=probe sites stay the slow-path branch (`a64_pan_sites_patched`).
+    par "ktest canaries (arm)" ktest_row "ktest canaries (arm)" arm "$KTEST_CANARIES" "$KTEST_CANARIED a64_pan_sites_patched"
     par "ktest slab canary (rv)" ktest_row "ktest slab canary (rv)" rv ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest slab canary (arm)" ktest_row "ktest slab canary (arm)" arm ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest tlb local-only canary (rv)" ktest_row "ktest tlb local-only canary (rv)" rv ",tlb-local-only" "tlb_shootdown_cross_cpu"
