@@ -11,6 +11,12 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 
+# `elf_bounds.rs` (pulled by path) reads this kernel canary through `cfg!`;
+# declared so the build knows it, never enabled here: the fuzzer drives the
+# real check.
+[features]
+elf-mixed-page-canary = []
+
 [[bin]]
 name = "elf_load"
 path = "fuzz_targets/elf_load.rs"
