@@ -620,6 +620,26 @@ mod kmutex_tests {
 /// ```
 pub fn preempt_guard_is_not_send() {}
 
+/// `kmutex::MutexGuard` must be `!Send` (N8): the owner word names the task
+/// that took the mutex, and only that task releases it.
+///
+/// ```compile_fail
+/// use azos_sync_tests::kmutex::Mutex;
+/// static M: Mutex<u32> = Mutex::new(0);
+/// fn assert_send<T: Send>(_t: T) {}
+/// assert_send(M.lock());
+/// ```
+///
+/// Control (the path and the import are right):
+///
+/// ```
+/// use azos_sync_tests::kmutex::Mutex;
+/// static M: Mutex<u32> = Mutex::new(0);
+/// fn assert_not_send<T>(_t: T) {}
+/// assert_not_send(M.lock());
+/// ```
+pub fn kmutex_guard_is_not_send() {}
+
 #[cfg(test)]
 mod tests {
     use super::preempt;
