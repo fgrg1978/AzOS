@@ -1739,14 +1739,15 @@ config KERNEL_CMDLINE_INIT
 config KERNEL_CMDLINE_MAX
     int "Kernel command line: bytes read from /chosen/bootargs"
     range 64 4096
-    default 512 if CANARY_RUNTIME
+    default 1024 if CANARY_RUNTIME
     default 256
     help
       The command line is copied onto the boot stack once, at this length;
       longer is cut (and an init= past the cut is not seen). Costs this
-      many bytes of the boot CPU's stack while it is read. 512 with
+      many bytes of the boot CPU's stack while it is read. 1024 with
       CANARY_RUNTIME: `make check-fast` arms every composable runtime
-      canary in one boot, a `canary=` list of about 330 bytes, and a cut
-      list silently disarms the canaries past the cut.
+      canary in one boot, a `canary=` list of about 460 bytes after wave 15
+      (`tools/check_fast.py cmdline <isa>`), and a cut list disarms the
+      canaries past the cut.
 
 endmenu # Resource Limits

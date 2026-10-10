@@ -11727,6 +11727,15 @@ PY
     KTEST_KMUTEX_CANARIED="kmutex_unlocked_for_io"
     par "ktest kmutex canary (rv)" ktest_row "ktest kmutex canary (rv)" rv "" "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
     par "ktest kmutex canary (arm)" ktest_row "ktest kmutex canary (arm)" arm "" "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
+    # N6a + N7, one boot of the pass row's kernel: `canary=sched-class-invert`
+    # (the class walk runs its precedence backwards: sched_class_precedence)
+    # and `pi-depth-1` (the wait graph walks one owner: waitgraph_transitive_chain,
+    # waitgraph_dl_donor_and_attr_changed, waitgraph_depth_cap; the cycle test
+    # stays ok).
+    KTEST_SCHED_CANARIES="canary=sched-class-invert,pi-depth-1"
+    KTEST_SCHED_CANARIED="sched_class_precedence waitgraph_transitive_chain waitgraph_dl_donor_and_attr_changed waitgraph_depth_cap"
+    par "ktest sched canary (rv)" ktest_row "ktest sched canary (rv)" rv "" "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
+    par "ktest sched canary (arm)" ktest_row "ktest sched canary (arm)" arm "" "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
@@ -11938,6 +11947,9 @@ PY
     # N8: see `ktest kmutex canary (rv)`.
     par "ktest kmutex canary (x86)" x86_ktest_row "ktest kmutex canary (x86)" "" \
         "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
+    # N6a + N7: see `ktest sched canary (rv)`.
+    par "ktest sched canary (x86)" x86_ktest_row "ktest sched canary (x86)" "" \
+        "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
 
     # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
     #
