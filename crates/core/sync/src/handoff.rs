@@ -4,9 +4,10 @@
 //! current task straight to a named peer without a pick. Nothing else in the
 //! kernel switches directly.
 //!
-//! **Interface only.** The scheduler side ([`DirectSwitch`]) is implemented
-//! by N13 in crates/core/sched; callers are IPC `call` / `reply_recv` (N5,
-//! N11) and, as a measured experiment, futex wake (N9).
+//! The scheduler side ([`DirectSwitch`]) lives in crates/core/sched
+//! (`scheduler::SchedHandoff`, registered at boot); callers are IPC `call` /
+//! `reply_recv` (N5, N11, through `scheduler::ipc_wake_then_block`) and, as a
+//! measured experiment, futex wake (N9).
 //!
 //! Kconfig `IPC_DIRECT_HANDOFF`, **default n until it wins**: n makes
 //! [`switch_to_direct`] a compile-time `Err(Disabled)` that inlines to
@@ -31,6 +32,8 @@
 //! On `Ok(())` the call returns when the caller runs again. On `Err` the
 //! caller wakes `target` the normal way and blocks/schedules as before;
 //! every refusal is counted per reason for vsbench.
+
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::waitgraph::TaskId;
 
@@ -75,9 +78,69 @@ pub trait DirectSwitch: Sync {
     fn switch_to_direct(&self, target: TaskId, reason: HandoffReason) -> Result<(), HandoffRefused>;
 }
 
+/// Number of [`HandoffReason`] values (index = `reason as usize - 1`).
+pub const REASONS: usize = 3;
+/// Number of [`HandoffRefused`] values (index = [`HandoffRefused::index`]).
+pub const REFUSALS: usize = 5;
+
+impl HandoffRefused {
+    /// Dense index for the per-reason counters.
+    #[inline(always)]
+    pub const fn index(self) -> usize {
+        match self {
+            HandoffRefused::Disabled => 0,
+            HandoffRefused::PeerNotWaiting => 1,
+            HandoffRefused::LowerPriority => 2,
+            HandoffRefused::OtherCpu => 3,
+            HandoffRefused::Preempted => 4,
+        }
+    }
+}
+
+/// The registered implementation. Written once, before [`READY`] is
+/// published with `Release`; read only after an `Acquire` load saw it.
+struct Slot(core::cell::UnsafeCell<Option<&'static dyn DirectSwitch>>);
+// SAFETY: one write (in `register`, before `READY` is set), then reads only.
+unsafe impl Sync for Slot {}
+static IMP: Slot = Slot(core::cell::UnsafeCell::new(None));
+static READY: AtomicBool = AtomicBool::new(false);
+
+const Z: AtomicU32 = AtomicU32::new(0);
+const ZROW: [AtomicU32; REFUSALS] = [Z; REFUSALS];
+/// Handoffs taken, per reason.
+static TAKEN: [AtomicU32; REASONS] = [Z; REASONS];
+/// Refusals, per reason and per refusal (vsbench reads them through [`stats`]).
+static REFUSED: [[AtomicU32; REFUSALS]; REASONS] = [ZROW; REASONS];
+
+/// `(taken, refused[refusal])` for `reason`. Monotonic, Relaxed.
+pub fn stats(reason: HandoffReason) -> (u32, [u32; REFUSALS]) {
+    let r = reason as usize - 1;
+    let mut out = [0u32; REFUSALS];
+    for (o, c) in out.iter_mut().zip(REFUSED[r].iter()) {
+        *o = c.load(Ordering::Relaxed);
+    }
+    (TAKEN[r].load(Ordering::Relaxed), out)
+}
+
 /// Install the scheduler's implementation once at boot. Task context.
-pub fn register(_imp: &'static dyn DirectSwitch) {
-    todo!("N13")
+/// With `IPC_DIRECT_HANDOFF` n this stores nothing (the implementation and
+/// its vtable are then unreferenced and the linker drops them). A second
+/// registration panics.
+pub fn register(imp: &'static dyn DirectSwitch) {
+    if !ENABLED {
+        return;
+    }
+    install(imp);
+}
+
+/// The body of [`register`], without the Kconfig gate (host tests reach the
+/// counting path through it with the symbol n).
+#[doc(hidden)]
+pub fn install(imp: &'static dyn DirectSwitch) {
+    assert!(!READY.load(Ordering::Acquire), "handoff: second DirectSwitch registration");
+    // SAFETY: the only write; no reader looks before `READY` is published.
+    unsafe { *IMP.0.get() = Some(imp) };
+    READY.store(true, Ordering::Release);
 }
 
 /// Switch from the current task straight to `target` (contract in the
@@ -90,7 +153,28 @@ pub fn switch_to_direct(target: TaskId, reason: HandoffReason) -> Result<(), Han
     switch_slow(target, reason)
 }
 
+/// The registered implementation's switch, counted. `#[doc(hidden)] pub` so
+/// the host tests can drive it with the symbol n.
+#[doc(hidden)]
 #[inline(never)]
-fn switch_slow(_target: TaskId, _reason: HandoffReason) -> Result<(), HandoffRefused> {
-    todo!("N13")
+pub fn switch_slow(target: TaskId, reason: HandoffReason) -> Result<(), HandoffRefused> {
+    let r = reason as usize - 1;
+    let res = if READY.load(Ordering::Acquire) {
+        // SAFETY: `READY` (Acquire) orders this read after the one write.
+        match unsafe { *IMP.0.get() } {
+            Some(imp) => imp.switch_to_direct(target, reason),
+            None => Err(HandoffRefused::Disabled),
+        }
+    } else {
+        Err(HandoffRefused::Disabled)
+    };
+    match res {
+        Ok(()) => {
+            TAKEN[r].fetch_add(1, Ordering::Relaxed);
+        }
+        Err(e) => {
+            REFUSED[r][e.index()].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    res
 }

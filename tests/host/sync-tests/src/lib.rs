@@ -160,6 +160,60 @@ mod interface_tests {
     }
 }
 
+// N13: the handoff helper's registration and per-reason accounting, driven
+// through `install` / `switch_slow` (the Kconfig gate is n on the host).
+#[cfg(test)]
+mod handoff_tests {
+    use super::handoff::{self, DirectSwitch, HandoffReason, HandoffRefused};
+
+    /// Takes the handoff for even targets, refuses odd ones as less urgent.
+    struct Fake;
+    impl DirectSwitch for Fake {
+        fn switch_to_direct(&self, target: u32, _r: HandoffReason) -> Result<(), HandoffRefused> {
+            if target % 2 == 0 { Ok(()) } else { Err(HandoffRefused::LowerPriority) }
+        }
+    }
+    static FAKE: Fake = Fake;
+
+    #[test]
+    fn registered_switch_is_called_and_every_outcome_is_counted() {
+        // Before registration: a refusal, counted as Disabled.
+        assert_eq!(handoff::switch_slow(2, HandoffReason::FutexWake), Err(HandoffRefused::Disabled));
+        let (t0, r0) = handoff::stats(HandoffReason::FutexWake);
+        assert_eq!((t0, r0[HandoffRefused::Disabled.index()]), (0, 1));
+
+        handoff::install(&FAKE);
+        assert_eq!(handoff::switch_slow(4, HandoffReason::IpcCall), Ok(()));
+        assert_eq!(handoff::switch_slow(5, HandoffReason::IpcCall), Err(HandoffRefused::LowerPriority));
+        assert_eq!(handoff::switch_slow(6, HandoffReason::IpcReplyRecv), Ok(()));
+        let (t, r) = handoff::stats(HandoffReason::IpcCall);
+        assert_eq!(t, 1);
+        assert_eq!(r[HandoffRefused::LowerPriority.index()], 1);
+        assert_eq!(r.iter().sum::<u32>(), 1);
+        assert_eq!(handoff::stats(HandoffReason::IpcReplyRecv).0, 1);
+        // A second registration is a boot bug.
+        assert!(std::panic::catch_unwind(|| handoff::install(&FAKE)).is_err());
+        // With the symbol n the gated entry still refuses without calling it.
+        if !handoff::ENABLED {
+            assert_eq!(handoff::switch_to_direct(4, HandoffReason::IpcCall), Err(HandoffRefused::Disabled));
+        }
+    }
+
+    #[test]
+    fn refusal_indices_are_dense_and_distinct() {
+        let all = [
+            HandoffRefused::Disabled, HandoffRefused::PeerNotWaiting, HandoffRefused::LowerPriority,
+            HandoffRefused::OtherCpu, HandoffRefused::Preempted,
+        ];
+        let mut seen = [false; handoff::REFUSALS];
+        for e in all {
+            assert!(!seen[e.index()]);
+            seen[e.index()] = true;
+        }
+        assert!(seen.iter().all(|s| *s));
+    }
+}
+
 #[cfg(test)]
 mod qsbr_tests {
     use super::qsbr_core::*;
