@@ -821,13 +821,13 @@ register, so a lock site pays no call clobbers.
 **Lock classes.** Every kernel lock is either a bounded spin lock (a
 `SpinLock`, whose critical section is short and bounded: fixed-size data,
 no I/O, no sleep) or a sleeping lock (`PiMutex`, `SleepLock`, or a
-WaitQueue-based claim). Most of the 170 locks are bounded spin locks (139).
+WaitQueue-based claim). Most of the 170 locks are bounded spin locks (140).
 These are the sleeping locks and the spin locks that do long or unbounded
 work under the lock and are to become sleeping locks:
 
 | Subsystem | Sleeping locks | SpinLocks to convert (work under the lock) |
 |---|---|---|
-| syscall | `EXEC_BOUNCE`, `DISK_RD_BUF`, `DISK_WR_BUF` (SleepLock); `CAM_BUF` (PiMutex) | `FRAME_BUF` (user copies that can fault); `LINK_KEY_READ_HOOK` (the hook, a block read, runs under the guard) |
+| syscall | `EXEC_BOUNCE`, `DISK_RD_BUF`, `DISK_WR_BUF` (SleepLock); `CAM_BUF` (PiMutex) | `FRAME_BUF` (user copies that can fault) |
 | shell, actuation | `SPAWN_PATH` (PiMutex); `SPAWN_ELF_LOCK`, `LOG_FILE` (SleepLock) | |
 | fs | `DESC_POS` (SleepLock); FAT32 sector and write-back claims (WaitQueue) | `TMPFS` (allocation and copies up to TMPFS_MAX_KB) |
 | block, virtio | `BLK_LOCK`, `MMC_LOCKS` (PiMutex); virtio-blk slot claims (WaitQueue) | virtio-rng `RNG` (polls the device) |

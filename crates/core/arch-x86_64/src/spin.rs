@@ -140,6 +140,21 @@ impl SpinWait for crate::X86_64 {
         }
     }
 
+    /// `MOV byte`: a release store on x86_64 (TSO); the asm is a compiler
+    /// barrier.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[inline(always)]
+    fn unlock_low_byte32(&self, a: &AtomicU32) {
+        // SAFETY: `a` is a valid, aligned word; byte 0 is its low byte.
+        unsafe {
+            core::arch::asm!(
+                "mov byte ptr [{p}], 0",
+                p = in(reg) a.as_ptr(),
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+
     #[inline(always)]
     fn wait_hint32(&self, a: &AtomicU32, expected: u32) {
         #[cfg(target_arch = "x86_64")]

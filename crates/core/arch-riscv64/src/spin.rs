@@ -384,6 +384,22 @@ impl SpinWait for crate::api_impl::Riscv64 {
         }
     }
 
+    /// `fence rw,w; sb zero`: a release store of the low byte, no sub-word
+    /// AMO (no Zabha).
+    #[inline(always)]
+    fn unlock_low_byte32(&self, a: &AtomicU32) {
+        // SAFETY: `a` is a valid, aligned word; byte 0 is its low byte
+        // (little-endian). Not `nomem`: a compiler barrier as well.
+        unsafe {
+            core::arch::asm!(
+                "fence rw, w",
+                "sb zero, 0({p})",
+                p = in(reg) a.as_ptr(),
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+
     fn boot_site_wanted(&self, key: u32) -> bool {
         let (zacas, zawrs, pause) = verdict();
         match key {

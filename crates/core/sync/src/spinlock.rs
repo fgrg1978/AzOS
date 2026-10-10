@@ -35,7 +35,12 @@ const LOCKED: u32 = 1;
 const _: () = assert!(UNLOCKED == 0 && LOCKED == 1);
 
 
-/// A simple test-and-set spinlock protecting data of type `T`.
+/// A spinlock protecting data of type `T`.
+///
+/// `repr(C)` with the word first: the lock word's address is the lock's,
+/// so the unlock's byte store (an `asm!`, which cannot fold a field offset
+/// into its address) needs no `addi` for the field at any unlock site.
+#[repr(C)]
 pub struct SpinLock<T> {
     locked: AtomicU32,
     /// Lockdep class: the constructor's call site (`lockdep` feature only).

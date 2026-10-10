@@ -497,6 +497,38 @@ azos_ktest::ktest_late! {
     }
 }
 
+// The ring-3 link-key read (`SYS_LINK_KEY_READ_TYPED`) runs its reader, a
+// block-layer read of the reserved sector, with no SpinLock held: the hook
+// is copied out of its lock first. The boot's reader returns before the
+// block layer on a kernel without a disk, and no ktest reached the syscall,
+// so lockdep never saw the guard that used to live through the call. This
+// probe reader enters the block layer unconditionally (an error without a
+// disk; the lockdep check is at the layer's entry). A late test: lockdep's
+// sleep and device-wait checks start at a CPU's first context switch.
+fn link_key_probe_reader(out: &mut [u8; azos_syscall::link_key::LINK_KEY_BYTES]) -> bool {
+    let mut sector = [0u8; 512];
+    let _ = azos_drv_block::blkdev::read(0, 1, &mut sector);
+    out[0] = 1;
+    true
+}
+
+azos_ktest::ktest_late! {
+    fn link_key_hook_runs_unlocked() {
+        use azos_syscall::link_key::{read_key_via_hook, replace_link_key_read_hook, LINK_KEY_BYTES};
+        if !azos_sync::lockdep::ON {
+            return Err("LOCKDEP is not on in this ktest kernel (Kconfig LOCKDEP_KTEST or LOCKDEP_Y)");
+        }
+        let prev = replace_link_key_read_hook(Some(link_key_probe_reader));
+        let mut key = [0u8; LINK_KEY_BYTES];
+        let got = read_key_via_hook(&mut key);
+        replace_link_key_read_hook(prev);
+        if !got || key[0] != 1 {
+            return Err("the installed link-key reader did not run");
+        }
+        Ok(())
+    }
+}
+
 // ── Lockdep, part b (N1b): scopes, IRQ safety, hold times, rule F7 ──────────
 //
 // Each test does the legal half; its runtime canary plants the violation the
@@ -818,36 +850,47 @@ azos_ktest::ktest_late! {
 // `-icount shift=0` one ns is one guest instruction) is printed, not judged.
 // A waiter descheduled (by the host, or at a vCPU slice end under
 // -icount) between its arrival read and its enqueue is passed by
-// acquisitions it was not yet queued for; those count as `late` and are
-// allowed up to 0.25% of the acquisitions. Measured, rv64 (late of 8000):
-// mcs 1 (MTTCG) and 0 (-icount -smp 4); ttas 1151 (MTTCG) and 37 (-icount,
-// where a vCPU reacquires within its own slice and the others see the
-// lock free only across a slice switch).
+// acquisitions it was not yet queued for. The test sums every bypass past
+// the bound (`excess`) and fails above an eighth of the acquisitions.
+// Measured on rv64, 8000 acquisitions, gate MTTCG: mcs excess 0-49 (late
+// 0-6; 21 late at host load 22), ttas 8140-11820 (passed-by max
+// 2176-4125). Under -icount -smp 4: mcs passed-by max 3, ttas 1486.
 
 const FIFO_CONTENDERS: usize = 4;
 const FIFO_ROUNDS: u64 = 2_000;
-/// Late acquisitions (passed by more than the other contenders) the test
-/// tolerates: 0.25% of them; a test parameter.
-const FIFO_LATE_MAX: u64 = FIFO_CONTENDERS as u64 * FIFO_ROUNDS / 400;
+/// The bypasses past the FIFO bound the test tolerates, summed over every
+/// late acquisition: an eighth of the acquisitions; a test parameter.
+const FIFO_EXCESS_MAX: u64 = FIFO_CONTENDERS as u64 * FIFO_ROUNDS / 8;
 
 static FIFO_L: azos_sync::SpinLock<u64> = azos_sync::SpinLock::new(0);
 static FIFO_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIFO_READY: AtomicUsize = AtomicUsize::new(0);
 static FIFO_DONE: AtomicUsize = AtomicUsize::new(0);
+static FIFO_ABORT: AtomicBool = AtomicBool::new(false);
 static FIFO_MAX_OVER: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
 static FIFO_LATE: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
+static FIFO_EXCESS: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
 static FIFO_MAX_WAIT: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
 static FIFO_SUM_WAIT: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
 
 fn fifo_contender(c: usize) {
-    use azos_arch::{Cpu as _, Interrupts as _, SpinWait as _, ARCH};
+    use azos_arch::{Cpu as _, Interrupts as _, ARCH};
     let r = Ordering::Relaxed;
     // Start together: a contender that ran alone would measure nothing.
+    // Bounded, and yielding: a contender whose sibling never starts gives
+    // up (the test fails) instead of holding its CPU.
     FIFO_READY.fetch_add(1, Ordering::AcqRel);
+    let start = ARCH.now_ticks();
     while FIFO_READY.load(Ordering::Acquire) < FIFO_CONTENDERS {
-        ARCH.cpu_relax();
+        let waited_us = azos_sync::lockdep::ticks_to_us(ARCH.now_ticks().wrapping_sub(start));
+        if waited_us > azos_limits::KTEST_LATE_TIMEOUT_MS as u64 * 1000 / 2 {
+            FIFO_ABORT.store(true, Ordering::Release);
+            FIFO_DONE.fetch_add(1, Ordering::Release);
+            return;
+        }
+        azos_sched::task_yield();
     }
-    let (mut max_over, mut late, mut max_wait, mut sum_wait) = (0u64, 0u64, 0u64, 0u64);
+    let (mut max_over, mut late, mut excess, mut max_wait, mut sum_wait) = (0u64, 0u64, 0u64, 0u64, 0u64);
     for _ in 0..FIFO_ROUNDS {
         let s = ARCH.disable_all();
         let (mut c0, mut t0) = (0, 0);
@@ -868,6 +911,7 @@ fn fifo_contender(c: usize) {
         max_over = max_over.max(over);
         if over > (FIFO_CONTENDERS - 1) as u64 {
             late += 1;
+            excess += over - (FIFO_CONTENDERS - 1) as u64;
         }
         let w = t1.wrapping_sub(t0);
         max_wait = max_wait.max(w);
@@ -875,6 +919,7 @@ fn fifo_contender(c: usize) {
     }
     FIFO_MAX_OVER[c].store(max_over, r);
     FIFO_LATE[c].store(late, r);
+    FIFO_EXCESS[c].store(excess, r);
     FIFO_MAX_WAIT[c].store(max_wait, r);
     FIFO_SUM_WAIT[c].store(sum_wait, r);
     FIFO_DONE.fetch_add(1, Ordering::Release);
@@ -890,26 +935,35 @@ azos_ktest::ktest_late! {
         FIFO_COUNT.store(0, r);
         FIFO_READY.store(0, r);
         FIFO_DONE.store(0, Ordering::Release);
+        FIFO_ABORT.store(false, Ordering::Release);
+        // DEFAULT_PRIORITY, above the runner's: the contenders must not be
+        // preempted by ordinary kernel tasks, or they stop contending. The
+        // one on CPU 0 holds the runner off only until it finishes or its
+        // bounded start barrier gives up.
         let p = azos_sched::DEFAULT_PRIORITY;
         for c in 0..FIFO_CONTENDERS {
             azos_sched::task_create_affinity("spin-fifo", fifo_contender, c, p, c as i8);
         }
         wait("the four SpinLock contenders did not finish", || FIFO_DONE.load(Ordering::Acquire) == FIFO_CONTENDERS)?;
+        if FIFO_ABORT.load(Ordering::Acquire) {
+            return Err("a contender did not start (the four never ran together)");
+        }
         let n = FIFO_CONTENDERS as u64 * FIFO_ROUNDS;
         if *FIFO_L.lock() != n {
             return Err("four CPUs lost an increment under the SpinLock");
         }
-        let (mut over, mut late, mut wmax, mut wsum) = (0u64, 0u64, 0u64, 0u64);
+        let (mut over, mut late, mut excess, mut wmax, mut wsum) = (0u64, 0u64, 0u64, 0u64, 0u64);
         for c in 0..FIFO_CONTENDERS {
             over = over.max(FIFO_MAX_OVER[c].load(r));
             late += FIFO_LATE[c].load(r);
+            excess += FIFO_EXCESS[c].load(r);
             wmax = wmax.max(FIFO_MAX_WAIT[c].load(r));
             wsum += FIFO_SUM_WAIT[c].load(r);
         }
         let ns = |t: u64| azos_sync::lockdep::ticks_to_us(t.saturating_mul(1000));
-        kprintln!("# spin_lock_fifo_bounded: impl={} contenders={} acquisitions={} passed-by max={} late={} wait ns max={} avg={}",
-            if azos_sync::qspinlock::ON { "mcs" } else { "ttas" }, FIFO_CONTENDERS, n, over, late, ns(wmax), ns(wsum) / n);
-        if late > FIFO_LATE_MAX {
+        kprintln!("# spin_lock_fifo_bounded: impl={} contenders={} acquisitions={} passed-by max={} late={} excess={} wait ns max={} avg={}",
+            if azos_sync::qspinlock::ON { "mcs" } else { "ttas" }, FIFO_CONTENDERS, n, over, late, excess, ns(wmax), ns(wsum) / n);
+        if excess > FIFO_EXCESS_MAX {
             return Err("waiters were passed over by more acquisitions than the CPUs ahead of them (not FIFO)");
         }
         Ok(())

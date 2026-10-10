@@ -11154,8 +11154,10 @@ PY
     # the probe's word after the boot patch).
     # +1 spin_lock_fifo_bounded (wave 15, N3: four CPUs on one SpinLock;
     # FIFO under Kconfig SPINLOCK_IMPL=mcs, red under ttas).
-    KTEST_N_RV=37
-    KTEST_N_ARM=37
+    # +1 link_key_hook_runs_unlocked (N3: the link-key reader, a block read,
+    # runs with its hook's SpinLock released; lockdep checks it).
+    KTEST_N_RV=38
+    KTEST_N_ARM=38
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11545,7 +11547,8 @@ PY
     # +2 spin_wait_cas_semantics, spin_lock_contended_cross_cpu (N2).
     # +1 spin_sites_patched (N2b; x86_64 links no site, so it holds).
     # +1 spin_lock_fifo_bounded (N3; -smp 4, as on rv and arm).
-    KTEST_N_X86=39
+    # +1 link_key_hook_runs_unlocked (N3), as on rv and arm.
+    KTEST_N_X86=40
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

@@ -86,6 +86,29 @@ pub fn set_link_key_read_hook(f: fn(&mut [u8; LINK_KEY_BYTES]) -> bool) {
     *LINK_KEY_READ_HOOK.lock() = Some(f);
 }
 
+/// Swap the installed reader for `f`, returning the previous one (ktest
+/// installs a probe reader and puts the boot's back).
+pub fn replace_link_key_read_hook(
+    f: Option<fn(&mut [u8; LINK_KEY_BYTES]) -> bool>,
+) -> Option<fn(&mut [u8; LINK_KEY_BYTES]) -> bool> {
+    core::mem::replace(&mut *LINK_KEY_READ_HOOK.lock(), f)
+}
+
+/// Run the installed reader on `key`; `false` when none is installed.
+///
+/// The hook is copied out and the SpinLock released BEFORE it runs: the
+/// reader is a block-layer read of the reserved sector, which waits for the
+/// device. `match *LINK_KEY_READ_HOOK.lock() { Some(f) => f(..) }` kept the
+/// guard (a temporary of the scrutinee) alive through the arm, so the read
+/// ran under the SpinLock (ktest `link_key_hook_runs_unlocked`).
+pub fn read_key_via_hook(key: &mut [u8; LINK_KEY_BYTES]) -> bool {
+    let hook = *LINK_KEY_READ_HOOK.lock();
+    match hook {
+        Some(f) => f(key),
+        None => false,
+    }
+}
+
 /// Put the seam back to "nothing installed". Test-only, same reason
 /// `file_ops.rs::__file_ops_clear_for_tests` exists: a host test that
 /// installs a stand-in hook must not leave it behind for a test that asserts
@@ -141,10 +164,7 @@ pub fn sys_link_key_read_typed(cap_raw: u64, out_ptr: u64, out_len: u64) -> i64 
     }
 
     let mut key = [0u8; LINK_KEY_BYTES];
-    let got = match *LINK_KEY_READ_HOOK.lock() {
-        Some(f) => f(&mut key),
-        None => false,
-    };
+    let got = read_key_via_hook(&mut key);
     if !got {
         return Errno::EAUTH.to_syscall_ret();
     }

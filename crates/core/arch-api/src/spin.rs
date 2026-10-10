@@ -154,20 +154,17 @@ pub trait SpinWait {
 
     /// Release store of 0 to the low byte of a lock word (the queued lock's
     /// unlock: the other three bytes hold the pending bit and the queue
-    /// tail, which other CPUs change concurrently). A plain byte store, not
-    /// a sub-word AMO: `fence rw,w; sb` on riscv64 (no Zabha needed),
-    /// `STLRB` on aarch64, `MOV` on x86_64, with the word's offset folded
-    /// into the store (an `asm!` would need the address in a register: one
-    /// instruction more at every unlock). A byte view of the word: Rust's
-    /// memory model leaves concurrent mixed-size atomics undefined, every
-    /// ISA here defines them (RVWMO mixed-size, Armv8 byte single-copy
-    /// atomicity, x86 TSO), and Linux's qspinlock unlocks the same way.
+    /// tail, which other CPUs change concurrently). Each ISA overrides it
+    /// with a plain byte store in `asm!`, not a sub-word AMO: `fence rw,w;
+    /// sb` on riscv64 (no Zabha needed), `STLRB` on aarch64, `MOV` on
+    /// x86_64, so Rust's memory model never sees a mixed-size atomic access
+    /// (the ISAs define it: RVWMO mixed-size, Armv8 byte single-copy
+    /// atomicity, x86 TSO; Linux's qspinlock unlocks the same way). The
+    /// provided body, for a build with no override (host tests), is a
+    /// full-word `fetch_and` (Release).
     #[inline(always)]
     fn unlock_low_byte32(&self, a: &AtomicU32) {
-        const _: () = assert!(cfg!(target_endian = "little"));
-        // SAFETY: byte 0 of an aligned, live word (little-endian: its low
-        // byte); see above for the mixed-size access.
-        unsafe { core::sync::atomic::AtomicU8::from_ptr(a.as_ptr().cast()) }.store(0, Ordering::Release);
+        a.fetch_and(!0xff, Ordering::Release);
     }
 
     /// [`cas32`](Self::cas32) on a 64-bit word.
