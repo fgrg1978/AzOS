@@ -12,8 +12,8 @@
 /// comes back (a host that ignores it), park with interrupts masked.
 #[cfg(target_arch = "aarch64")]
 pub fn exit(code: u32) -> ! {
-    /// `SYS_EXIT` (semihosting operation 0x18).
-    const SYS_EXIT: u32 = 0x18;
+    /// Semihosting operation `SYS_EXIT` (0x18; the Angel name, not a kernel syscall).
+    const ANGEL_SYS_EXIT: u32 = 0x18;
     /// `ADP_Stopped_ApplicationExit`: the reason under which the subcode is
     /// the exit status (AArch64 takes a two-word parameter block).
     const ADP_STOPPED_APPLICATION_EXIT: u64 = 0x2_0026;
@@ -22,7 +22,7 @@ pub fn exit(code: u32) -> ! {
     // stack array) and, with semihosting on, ends the emulator.
     unsafe {
         core::arch::asm!("msr daifset, #0xf", "hlt #0xf000",
-            in("w0") SYS_EXIT, in("x1") block.as_ptr(), options(nostack));
+            in("w0") ANGEL_SYS_EXIT, in("x1") block.as_ptr(), options(nostack));
     }
     loop {
         // SAFETY: parks this CPU; interrupts are masked above.
