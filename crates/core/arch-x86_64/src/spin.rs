@@ -112,6 +112,34 @@ impl SpinWait for crate::X86_64 {
         }
     }
 
+    /// The queued lock's fast path as a CAS 0 -> 1 (`LOCK CMPXCHG`, eax
+    /// the observed word): x86_64 has no fetch-or that returns the old
+    /// value. On failure nothing was written, so the cold path sets bit 0
+    /// in eax before the same `call azos_spin_tas_tramp32` as
+    /// `tas_acquire32` (the slow half then never gives back a lock it did
+    /// not take).
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[inline(always)]
+    fn qlock_acquire32(&self, a: &AtomicU32) {
+        // SAFETY: as `tas_acquire32`; the trampoline passes eax on.
+        unsafe {
+            core::arch::asm!(
+                "lock cmpxchg dword ptr [{addr}], {one:e}",
+                "jnz 3f",
+                "2:",
+                ".subsection 1",
+                "3: or eax, 1",
+                "push {addr}",
+                "call azos_spin_tas_tramp32",
+                "jmp 2b",
+                ".subsection 0",
+                addr = in(reg) a.as_ptr(),
+                one = in(reg) 1u32,
+                inout("eax") 0u32 => _,
+            );
+        }
+    }
+
     #[inline(always)]
     fn wait_hint32(&self, a: &AtomicU32, expected: u32) {
         #[cfg(target_arch = "x86_64")]
@@ -136,16 +164,19 @@ impl SpinWait for crate::X86_64 {
 }
 
 /// [`SpinWait::tas_acquire32`]'s contended half for this ISA, called by the
-/// trampoline below with the word in rdi.
+/// trampoline below with the word in rdi and, for
+/// [`SpinWait::qlock_acquire32`] (Kconfig `SPINLOCK_IMPL` = mcs), the
+/// observed word with bit 0 set in esi.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 #[no_mangle]
-extern "C" fn azos_spin_tas_slow32(a: &AtomicU32) {
-    azos_arch_api::spin::tas_slow32(&crate::X86_64_ARCH, a)
+extern "C" fn azos_spin_tas_slow32(a: &AtomicU32, old: u32) {
+    azos_arch_api::spin::lock_slow32(&crate::X86_64_ARCH, a, old)
 }
 
 // `azos_spin_tas_tramp32`: entered by `push <word>; call`; saves rax, rcx,
 // rdx, rsi, rdi, r8-r11 (every caller-saved integer register; kernel code
-// uses no SSE), calls `azos_spin_tas_slow32(word)`, restores them and
+// uses no SSE), calls `azos_spin_tas_slow32(word, eax)` (eax: the queued
+// lock's observed word), restores them and
 // returns popping the word (`ret 8`). The site's rsp is 16-aligned: the
 // push, the return address and nine saves leave it 16-aligned again, minus
 // the 8 the `sub` adds.
@@ -165,6 +196,7 @@ core::arch::global_asm!(
     "    push r10",
     "    push r11",
     "    mov rdi, [rsp + 80]",
+    "    mov esi, eax",
     "    sub rsp, 8",
     "    call azos_spin_tas_slow32",
     "    add rsp, 8",

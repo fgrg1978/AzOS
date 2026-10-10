@@ -11152,8 +11152,10 @@ PY
     # N2: SpinWait on the path the boot selected, `[SPIN]` line).
     # +1 spin_sites_patched (wave 15, N2b: every SpinWait probe site holds
     # the probe's word after the boot patch).
-    KTEST_N_RV=36
-    KTEST_N_ARM=36
+    # +1 spin_lock_fifo_bounded (wave 15, N3: four CPUs on one SpinLock;
+    # FIFO under Kconfig SPINLOCK_IMPL=mcs, red under ttas).
+    KTEST_N_RV=37
+    KTEST_N_ARM=37
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11384,7 +11386,7 @@ PY
     # with enforcement the test does not check its own histogram, so only
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
-    KTEST_HOLD_SMP1="lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu"
+    KTEST_HOLD_SMP1="lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
@@ -11455,6 +11457,30 @@ PY
         "spin_sites_patched" "canary=spin-patch-skip"
     par "ktest spin-patch-skip canary (arm)" ktest_row "ktest spin-patch-skip canary (arm)" arm "" \
         "spin_sites_patched" "canary=spin-patch-skip"
+    # Wave 15 (N3): the QEMU defconfigs build the queued SpinLock (Kconfig
+    # SPINLOCK_IMPL=mcs), which every plain ktest row runs; the test-and-set
+    # build is its canary. Same kernel otherwise, every other test ok,
+    # `spin_lock_fifo_bounded` alone not ok: four CPUs on one lock, waiters
+    # passed over by more acquisitions than the CPUs ahead of them.
+    KTEST_TTAS_RE='^# spin_lock_fifo_bounded: impl=ttas '
+    ktest_ttas_row() { # ktest_ttas_row <label> <isa: rv|arm>
+        local label="$1" isa="$2" defc=qemu cfg tag
+        [ "$isa" = arm ] && defc=qemu-aarch64
+        mkdir -p "$CI_LOG_DIR"
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/${tag}.config"
+        cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg"
+        printf 'CONFIG_SPINLOCK_IMPL_TTAS=y\n' >>"$cfg"
+        if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+            || ! grep -q '^CONFIG_SPINLOCK_IMPL_TTAS=y$' "$cfg"; then
+            printf "  %-26s" "${label}..."; bad
+            echo "      $cfg: olddefconfig failed or lost SPINLOCK_IMPL_TTAS=y"
+            return
+        fi
+        KCONFIG_CONFIG="$cfg" AARCH64_CONFIG="$cfg" ktest_row "$label" "$isa" "" "spin_lock_fifo_bounded" "" "$KTEST_TTAS_RE"
+    }
+    par "ktest spinlock ttas canary (rv)" ktest_ttas_row "ktest spinlock ttas canary (rv)" rv
+    par "ktest spinlock ttas canary (arm)" ktest_ttas_row "ktest spinlock ttas canary (arm)" arm
     # GR3: the verdict rides on QEMU's exit status as well as on the TAP
     # lines, and a row needs both. `canary=ktest-exit-pass` drops the
     # verdict in `power_off` (a failed run exits as a clean one: riscv64 0,
@@ -11518,7 +11544,8 @@ PY
     # +4 the N1b lockdep tests, as on rv and arm.
     # +2 spin_wait_cas_semantics, spin_lock_contended_cross_cpu (N2).
     # +1 spin_sites_patched (N2b; x86_64 links no site, so it holds).
-    KTEST_N_X86=38
+    # +1 spin_lock_fifo_bounded (N3; -smp 4, as on rv and arm).
+    KTEST_N_X86=39
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

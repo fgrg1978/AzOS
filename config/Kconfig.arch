@@ -1588,6 +1588,60 @@ config SPIN_WAIT_RELAX_SPINS
       bus reads and power while waiting. Costs no RAM; about 4
       instructions per poll.
 
+choice
+    prompt "SpinLock implementation"
+    default SPINLOCK_IMPL_MCS if (PROFILE_EDGE || PROFILE_FLEET) && NR_CPUS >= 4
+    default SPINLOCK_IMPL_MCS if PROFILE_EMBEDDED && NR_CPUS >= 2
+    default SPINLOCK_IMPL_TTAS
+    help
+      What `SpinLock<T>` (crates/core/sync) is under the same API; no call
+      site changes. Both use one 32-bit word, no sub-word atomic.
+
+      mcs: Linux's qspinlock (crates/core/sync/src/qspinlock.rs). Waiters
+      queue in arrival order, each spinning on its own CPU's node, so a
+      waiter's wait is bounded by the holds of the CPUs ahead of it (at
+      most NR_CPUS - 1) and no CPU is starved. Uncontended acquire: one
+      fetch-or and a branch (amoor.w.aq on riscv64, LSE LDSETA or LL/SC on
+      aarch64; LOCK CMPXCHG on x86_64), as many instructions as ttas;
+      release: a byte store. RAM: NR_CPUS * 64 bytes of queue nodes; about
+      1 KiB of out-of-line text.
+
+      ttas: test-and-test-and-set (an exchange, then wait reading the word).
+      Cheapest under no contention, but a CPU that releases and retakes the
+      lock can keep it while others spin: no bound on a waiter's wait.
+
+      Defaults: mcs on edge and fleet with NR_CPUS >= 4; on embedded with
+      NR_CPUS >= 2 (the real-time profile, where a bounded wait is the
+      contract and the nodes cost 256 bytes at 4 CPUs); ttas otherwise (one
+      CPU never queues, and with 2-3 CPUs edge/fleet favour code size).
+
+    config SPINLOCK_IMPL_TTAS
+        bool "ttas: test-and-test-and-set"
+    config SPINLOCK_IMPL_MCS
+        bool "mcs: queued (qspinlock), FIFO"
+endchoice
+
+config SPINLOCK_MCS_NODES
+    int "Queued SpinLock: nesting levels per CPU"
+    range 1 4
+    default 4
+    help
+      Queue nodes per CPU (SPINLOCK_IMPL = mcs), one per level of nested
+      contended acquisition on one CPU: task, deferred work, interrupt,
+      NMI-like. A CPU deeper than this waits on a trylock loop instead of
+      queueing (no FIFO for that acquisition). 16 bytes per node per CPU;
+      4 fill one cache line. Lower only to save RAM on a kernel that never
+      takes a SpinLock from interrupt context while one is contended.
+
+config SPINLOCK_MCS_PENDING
+    bool "Queued SpinLock: pending bit"
+    default y
+    help
+      With SPINLOCK_IMPL = mcs, the first waiter behind a holder spins on
+      the lock word itself (one fetch-or) instead of taking a queue node:
+      cheaper hand-off with one contender, as in Linux. Off: every waiter
+      queues (one node write and a tail CAS more per contended acquire).
+
 config X86_UMWAIT_TSC_TICKS
     int "x86_64: UMWAIT deadline (TSC ticks)"
     range 1000 100000000

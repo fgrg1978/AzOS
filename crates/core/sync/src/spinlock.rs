@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-/// Spinlock (TTAS pattern) over the arch-api spin primitives.
+/// Spinlock over the arch-api spin primitives: a queued (MCS) lock or a
+/// test-and-test-and-set lock, by Kconfig `SPINLOCK_IMPL`, behind one API.
 ///
-/// Wraps data in a `SpinLock<T>` to ensure exclusive access. The lock word
+/// `mcs` (crate::qspinlock): Linux's qspinlock on the same 32-bit word
+/// (locked byte, pending bit, queue tail); the uncontended acquire is one
+/// `fetch_or` and a branch (`SpinWait::qlock_acquire32`), the release a
+/// byte store (`SpinWait::unlock_low_byte32`). Waiters are served in
+/// arrival order, each spinning on its own CPU's node.
+///
+/// `ttas`: wraps data in a `SpinLock<T>` to ensure exclusive access. The lock word
 /// is a `u32` (0 free, 1 held): acquired with `SpinWait::swap32` (riscv64
 /// `amoswap.w.aq`, LSE `SWPA` or LDAXR/STXR, `XCHG`, per
 /// config/Kconfig.arch) and waited on with `SpinWait::wait_while32`
@@ -80,7 +87,13 @@ impl<T> SpinLock<T> {
     /// every `T` and no call clobbers at the lock site.
     #[inline(always)]
     fn acquire_spin(&self) {
-        ARCH.tas_acquire32(&self.locked);
+        if crate::qspinlock::ON {
+            ARCH.qlock_acquire32(&self.locked);
+        } else {
+            ARCH.tas_acquire32(&self.locked);
+        }
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::taken(self as *const Self as usize, crate::lockdep::Kind::Spin);
     }
 
     /// One test-and-set (Acquire): the word holds only UNLOCKED/LOCKED, so
@@ -90,9 +103,16 @@ impl<T> SpinLock<T> {
     /// LDAXR/STXR on aarch64, `XCHG` on x86_64. What ac04712b's
     /// `compare_exchange(false, true)` compiled to (`amoor.w.aq`), without
     /// the byte-in-word masking.
+    /// Under the queued lock a CAS 0 -> LOCKED instead: the word may hold a
+    /// pending bit or a queue tail, which a swap would overwrite, and a
+    /// trylock must not pass a queued waiter.
     #[inline(always)]
     fn try_acquire(&self) -> bool {
-        ARCH.swap32(&self.locked, LOCKED, CasOrder::Acquire) == UNLOCKED
+        if crate::qspinlock::ON {
+            crate::qspinlock::try_acquire(&self.locked)
+        } else {
+            ARCH.swap32(&self.locked, LOCKED, CasOrder::Acquire) == UNLOCKED
+        }
     }
 
     /// Acquire the lock, spinning until it is available.
@@ -111,6 +131,21 @@ impl<T> SpinLock<T> {
         let _preempt = critical_section();
         #[cfg(feature = "lockdep")]
         self.ld_acquire(false);
+        self.acquire_spin();
+        SpinLockGuard { lock: self, _preempt }
+    }
+
+    /// ktest only (N3 fairness test): [`lock`](Self::lock) with `arrive`
+    /// run just before the spin, after the preemption count and lockdep, so
+    /// a caller can mark its arrival as close to the lock word as the API
+    /// allows.
+    #[cfg(feature = "ktest")]
+    #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
+    pub fn lock_marked(&self, arrive: impl FnOnce()) -> SpinLockGuard<'_, T> {
+        let _preempt = critical_section();
+        #[cfg(feature = "lockdep")]
+        self.ld_acquire(false);
+        arrive();
         self.acquire_spin();
         SpinLockGuard { lock: self, _preempt }
     }
@@ -233,7 +268,18 @@ impl<T> SpinLock<T> {
     fn release(&self) {
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self as *const Self as usize, crate::lockdep::Kind::Spin);
-        self.locked.store(UNLOCKED, Ordering::Release);
+        self.unlock_word();
+    }
+
+    /// The word's release: the queued lock clears only its locked byte (the
+    /// pending bit and the tail belong to the waiters).
+    #[inline(always)]
+    fn unlock_word(&self) {
+        if crate::qspinlock::ON {
+            ARCH.unlock_low_byte32(&self.locked);
+        } else {
+            self.locked.store(UNLOCKED, Ordering::Release);
+        }
     }
 }
 
@@ -317,13 +363,17 @@ impl<T> Drop for IrqSaveGuard<'_, T> {
 
 /// N2 evidence (ktest builds only): one uncontended acquire and release of
 /// a `SpinLock`'s word, the path this file owns (no preemption count, no
-/// lockdep). Not inlined, under a fixed name, so its disassembly is the
+/// lockdep), for the Kconfig `SPINLOCK_IMPL` built. Not inlined, under a fixed name, so its disassembly is the
 /// per-ISA instruction count of the acquire; ktest
 /// `spin_uncontended_acquire` calls it.
 #[cfg(feature = "ktest")]
 #[inline(never)]
 #[no_mangle]
 pub fn azos_spin_acquire_release(l: &SpinLock<u64>) {
-    l.acquire_spin();
-    l.locked.store(UNLOCKED, Ordering::Release);
+    if crate::qspinlock::ON {
+        ARCH.qlock_acquire32(&l.locked);
+    } else {
+        ARCH.tas_acquire32(&l.locked);
+    }
+    l.unlock_word();
 }

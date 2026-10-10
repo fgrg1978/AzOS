@@ -296,6 +296,23 @@ impl<const D: usize> HeldStack<D> {
         }
     }
 
+    /// Restamp the innermost entry for the `kind` lock at `addr` with `t0`
+    /// (its hold starts when it was taken, not when it was asked for).
+    /// `false` when there is none.
+    pub fn stamp(&mut self, addr: usize, kind: Kind, t0: u64) -> bool {
+        let mut i = self.n;
+        while i > 0 {
+            i -= 1;
+            if self.e[i].addr == addr && self.e[i].kind == kind {
+                if self.e[i].t0 != 0 {
+                    self.e[i].t0 = t0;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn clear(&mut self) { self.n = 0; self.lost = 0; }
 
     /// Copy `o`'s entries (only the used ones).
@@ -983,6 +1000,25 @@ fn acquire_full(c: &LockClass, addr: usize, kind: Kind, irqsave: bool, site: &'s
             let top = cpu.held.held().last().copied().unwrap_or(Held::EMPTY);
             record(Report::new(What::DepthOverflow, top, new));
         }
+    });
+}
+
+/// The `kind` lock at `addr`, recorded by [`acquire`] before its spin, is
+/// now held: its hold time starts here. A spin's wait (a queued waiter's
+/// turn behind others' holds, Kconfig `SPINLOCK_IMPL` = mcs) is not a hold,
+/// so neither the histogram nor LOCK_MAX_HOLD_US counts it.
+#[inline]
+pub fn taken(addr: usize, kind: Kind) {
+    if ON {
+        taken_slow(addr, kind);
+    }
+}
+
+#[inline(never)]
+fn taken_slow(addr: usize, kind: Kind) {
+    let t = now();
+    with_cpu(|cpu, _| {
+        cpu.held.stamp(addr, kind, t);
     });
 }
 

@@ -775,8 +775,10 @@ from a test. Off, every point is a constant `false`.
 **Spin-wait and CAS.** Every kernel spinner reaches the CPU's wait hints and
 compare-and-swap through one trait, `SpinWait` (`crates/core/arch-api/src/spin.rs`):
 `cpu_relax`, `wait_while32/64` (wait until a word changes), `cas32/64`
-(strong CAS with an explicit ordering, never SeqCst), `swap32/64` and
-`tas_acquire32` (test-and-set acquire of a 0/1 word). The trait's provided
+(strong CAS with an explicit ordering, never SeqCst), `swap32/64`,
+`tas_acquire32` (test-and-set acquire of a 0/1 word), `qlock_acquire32` (the
+queued lock's fetch-or fast path) and `unlock_low_byte32` (a release store
+of a word's low byte). The trait's provided
 bodies are the fallback every ISA has: the compiler's LR/SC loop on riscv64,
 LDAXR/STLXR at Armv8.0 and LOCK CMPXCHG on x86_64, and a relax loop. Each ISA
 overrides what an extension does better, behind its n / probe / require
@@ -790,17 +792,54 @@ aarch64 works like Linux's ALTERNATIVE: each use is a 4-byte site recorded in
 placed after the function, or a nop) and rewritten once by
 `kernel/src/boot/spin_patch.rs`, on the boot CPU before the secondaries start
 and through the W^X-preserving text write, to the instruction the assembler
-encoded for that site (`amocas`, `casa`, `swpa`, `wrs.nto`, `pause`). After
+encoded for that site (`amocas`, `casa`, `swpa`, `ldseta`, `wrs.nto`, `pause`). After
 boot a probe site costs what `require` costs. On riscv64 the device tree's
 claim is first executed once under a private trap vector, so a false claim
 leaves the sites linked rather than trapping in a lock. The boot prints
 `[SPIN] cas: ...; wait: ...` and `[SPIN] boot patch: ...`. x86_64's WAITPKG,
 used only while waiting, tests a boot-set flag.
-`SpinLock` is a test-and-test-and-set lock on a 32-bit word (riscv64 has no
-sub-word atomic without Zabha) through `tas_acquire32`: an inline exchange
-(`amoswap.w.aq`, `SWPA` or LDAXR/STXR, `XCHG`) and a branch; the waiting runs
-out of line behind a trampoline that saves every caller-saved register, so a
-lock site pays no call clobbers.
+`SpinLock` has two implementations behind one API, chosen by Kconfig
+`SPINLOCK_IMPL`, both on one 32-bit word with no sub-word atomic (riscv64 has
+none without Zabha). `mcs` (the default on edge and fleet with at least 4
+CPUs and on embedded with at least 2) is Linux's qspinlock
+(`crates/core/sync/src/qspinlock.rs`): the word holds a locked byte, a
+pending bit and the queue tail (CPU and node index). The uncontended acquire
+is one fetch-or of the locked bit and a branch (`qlock_acquire32`:
+`amoor.w.aq`, LSE `LDSETA` or LL/SC; a CMPXCHG on x86_64), the release a
+release store of the low byte (`unlock_low_byte32`). One contender waits on
+the pending bit; the others queue, each spinning on its own CPU's node (four
+per CPU, one per nesting level: task, deferred work, interrupt, NMI-like),
+and are served in arrival order; the tail changes only by full-word CAS
+loops. A waiter frees its node when it takes the lock, so a held lock owns
+no node. A fetch-or that lands on a free word with a waiter on it gives the
+lock back at once and queues, so arrival order holds. `ttas` is a
+test-and-test-and-set lock through `tas_acquire32`: an inline exchange
+(`amoswap.w.aq`, `SWPA` or LDAXR/STXR, `XCHG`) and a branch. In both, the
+waiting runs out of line behind a trampoline that saves every caller-saved
+register, so a lock site pays no call clobbers.
+
+**Lock classes.** Every kernel lock is either a bounded spin lock (a
+`SpinLock`, whose critical section is short and bounded: fixed-size data,
+no I/O, no sleep) or a sleeping lock (`PiMutex`, `SleepLock`, or a
+WaitQueue-based claim). Most of the 170 locks are bounded spin locks (139).
+These are the sleeping locks and the spin locks that do long or unbounded
+work under the lock and are to become sleeping locks:
+
+| Subsystem | Sleeping locks | SpinLocks to convert (work under the lock) |
+|---|---|---|
+| syscall | `EXEC_BOUNCE`, `DISK_RD_BUF`, `DISK_WR_BUF` (SleepLock); `CAM_BUF` (PiMutex) | `FRAME_BUF` (user copies that can fault); `LINK_KEY_READ_HOOK` (the hook, a block read, runs under the guard) |
+| shell, actuation | `SPAWN_PATH` (PiMutex); `SPAWN_ELF_LOCK`, `LOG_FILE` (SleepLock) | |
+| fs | `DESC_POS` (SleepLock); FAT32 sector and write-back claims (WaitQueue) | `TMPFS` (allocation and copies up to TMPFS_MAX_KB) |
+| block, virtio | `BLK_LOCK`, `MMC_LOCKS` (PiMutex); virtio-blk slot claims (WaitQueue) | virtio-rng `RNG` (polls the device) |
+| drivers | `JPEG_RAW`, `CONSOLE_LINE_LOCK` (PiMutex); ADS1115 queue (WaitQueue) | DMA `DMA` (sim memcpy of a caller-chosen length) |
+| ipc, mm | | trace `KEYS` and `text_poke::LOCK` (text rewrites, remote fence and TLB shootdown with interrupts off) |
+| net, ota | | `TCP` (copy loops up to TCP_RECV_MAX_PER_CALL, one lock for every connection); `META_RMW` (boot-metadata storage I/O) |
+| kernel | `KERNEL_FD_TABLE` (PiMutex); loader claim | `LOG_SLOT` (FAT32 close, an fsync); `BRAIN_TXQ` (TCP send) |
+| robot | `PATH3D` (PiMutex) | `SLAM` (ray traces over up to 360 beams) |
+
+Every other lock is a bounded spin lock: the scheduler's per-CPU queues,
+wait-queue and PiMutex internals, IPC endpoints, the page allocator and
+heap, the capability store, driver register state and the protocol tables.
 
 **Lock dependency checking.** With Kconfig `LOCKDEP` set to `ktest` (the
 development default) or `y`, `crates/core/sync/src/lockdep.rs` checks every

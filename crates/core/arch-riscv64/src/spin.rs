@@ -360,6 +360,30 @@ impl SpinWait for crate::api_impl::Riscv64 {
         }
     }
 
+    /// `li`; `amoor.w.aq t2` (base A: every hart, no probe); `bnez` to the
+    /// same `call t0, azos_spin_tas_tramp32` as `tas_acquire32`, which hands
+    /// the old word (t2) to the queued lock's slow half. The cost of the
+    /// test-and-set site, instruction for instruction.
+    #[inline(always)]
+    fn qlock_acquire32(&self, a: &AtomicU32) {
+        // SAFETY: as `tas_acquire32`; the trampoline reads t1 and t2.
+        unsafe {
+            core::arch::asm!(
+                "amoor.w.aq t2, {one}, (t1)",
+                "bnez t2, 3f",
+                "2:",
+                ".subsection 1",
+                "3: call t0, azos_spin_tas_tramp32",
+                "j 2b",
+                ".subsection 0",
+                in("t1") a.as_ptr(),
+                one = in(reg) 1u32,
+                out("t2") _,
+                out("t0") _,
+            );
+        }
+    }
+
     fn boot_site_wanted(&self, key: u32) -> bool {
         let (zacas, zawrs, pause) = verdict();
         match key {
@@ -371,16 +395,18 @@ impl SpinWait for crate::api_impl::Riscv64 {
     }
 }
 
-/// [`SpinWait::tas_acquire32`]'s contended half for this ISA, called by the
-/// trampoline below with the word in a0.
+/// [`SpinWait::tas_acquire32`]'s (or, under Kconfig `SPINLOCK_IMPL` = mcs,
+/// [`SpinWait::qlock_acquire32`]'s) contended half for this ISA, called by
+/// the trampoline below with the word in a0 and the RMW's old value in a1.
 #[no_mangle]
-extern "C" fn azos_spin_tas_slow32(a: &AtomicU32) {
-    azos_arch_api::spin::tas_slow32(&crate::api_impl::RISCV64, a)
+extern "C" fn azos_spin_tas_slow32(a: &AtomicU32, old: u32) {
+    azos_arch_api::spin::lock_slow32(&crate::api_impl::RISCV64, a, old)
 }
 
 // `azos_spin_tas_tramp32`: entered by `call t0, ...` with the word in t1;
 // saves ra, t0-t6 and a0-a7 (every caller-saved integer register; the
-// kernel is soft-float), calls `azos_spin_tas_slow32(t1)`, restores them
+// kernel is soft-float), calls `azos_spin_tas_slow32(t1, t2)` (t2: the
+// queued lock's old word; unused by the test-and-set), restores them
 // and returns through t0. 128 bytes of stack, 16-aligned.
 core::arch::global_asm!(
     ".pushsection .text.azos_spin_tas_tramp32, \"ax\"",
@@ -405,6 +431,7 @@ core::arch::global_asm!(
     "    sd   a6, 112(sp)",
     "    sd   a7, 120(sp)",
     "    mv   a0, t1",
+    "    mv   a1, t2",
     "    call azos_spin_tas_slow32",
     "    ld   ra, 0(sp)",
     "    ld   t0, 8(sp)",

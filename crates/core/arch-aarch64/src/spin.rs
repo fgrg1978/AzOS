@@ -350,6 +350,85 @@ impl SpinWait for crate::api_impl::Aarch64 {
         }
     }
 
+    /// The queued lock's fast path: `fetch_or(1)` (Acquire), w10 the old
+    /// word. LSE `LDSETA` inline under `require`; an LSE probe site under
+    /// `probe`, linked `bl` to the one shared LL/SC form
+    /// (`azos_spin_ldseta_llsc32`) and rewritten to `ldseta` at boot; an
+    /// inline LDAXR/ORR/STXR loop under `n`. Then `cbnz` to the same `bl
+    /// azos_spin_tas_tramp32` as `tas_acquire32`, which hands x9 and w10 to
+    /// the slow half.
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    #[inline(always)]
+    fn qlock_acquire32(&self, a: &AtomicU32) {
+        // SAFETY (all three): as `tas_acquire32`; the trampoline reads x9
+        // and x10.
+        match policy::LSE {
+            ExtPolicy::Require => unsafe {
+                core::arch::asm!(
+                    ".arch_extension lse",
+                    "ldseta {one:w}, w10, [x9]",
+                    "cbnz w10, 3f",
+                    "2:",
+                    ".subsection 1",
+                    "3: bl azos_spin_tas_tramp32",
+                    "b 2b",
+                    ".subsection 0",
+                    in("x9") a.as_ptr(),
+                    one = in(reg) 1u32,
+                    out("x10") _,
+                    out("x30") _,
+                );
+            },
+            ExtPolicy::Probe => unsafe {
+                core::arch::asm!(
+                    "2: bl azos_spin_ldseta_llsc32",
+                    "cbnz w10, 3f",
+                    "6:",
+                    ".subsection 1",
+                    "3: bl azos_spin_tas_tramp32",
+                    "b 6b",
+                    ".subsection 0",
+                    ".pushsection .azos_keys, \"a\"",
+                    ".balign 8",
+                    ".8byte 2b",
+                    ".arch_extension lse",
+                    "ldseta {one:w}, w10, [x9]",
+                    ".4byte 0",
+                    ".4byte {key}",
+                    ".4byte {kind}",
+                    ".popsection",
+                    in("x9") a.as_ptr(),
+                    one = in(reg) 1u32,
+                    out("x10") _,
+                    out("x16") _,
+                    out("x17") _,
+                    out("x30") _,
+                    key = const SITE_KEY_CAS,
+                    kind = const SITE_KIND_A64_ALT,
+                );
+            },
+            ExtPolicy::Never => unsafe {
+                core::arch::asm!(
+                    "4: ldaxr w10, [x9]",
+                    "orr {t:w}, w10, #1",
+                    "stxr {t2:w}, {t:w}, [x9]",
+                    "cbnz {t2:w}, 4b",
+                    "cbnz w10, 3f",
+                    "2:",
+                    ".subsection 1",
+                    "3: bl azos_spin_tas_tramp32",
+                    "b 2b",
+                    ".subsection 0",
+                    in("x9") a.as_ptr(),
+                    t = out(reg) _,
+                    t2 = out(reg) _,
+                    out("x10") _,
+                    out("x30") _,
+                );
+            },
+        }
+    }
+
     fn boot_site_wanted(&self, key: u32) -> bool {
         key == SITE_KEY_CAS && matches!(policy::LSE, ExtPolicy::Probe) && LSE_ON.load(Ordering::Relaxed)
     }
@@ -405,11 +484,13 @@ impl SpinWait for crate::api_impl::Aarch64 {
 }
 
 /// [`SpinWait::tas_acquire32`]'s contended half for this ISA, called by the
-/// trampoline below with the word in x0.
+/// trampoline below with the word in x0 and, for
+/// [`SpinWait::qlock_acquire32`] (Kconfig `SPINLOCK_IMPL` = mcs), the old
+/// word in w1.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 #[no_mangle]
-extern "C" fn azos_spin_tas_slow32(a: &AtomicU32) {
-    azos_arch_api::spin::tas_slow32(&crate::api_impl::AARCH64, a)
+extern "C" fn azos_spin_tas_slow32(a: &AtomicU32, old: u32) {
+    azos_arch_api::spin::lock_slow32(&crate::api_impl::AARCH64, a, old)
 }
 
 // `azos_spin_swpa_llsc32`: the linked form of every `tas_acquire32` probe
@@ -429,9 +510,27 @@ core::arch::global_asm!(
     ".popsection",
 );
 
+// `azos_spin_ldseta_llsc32`: the linked form of every `qlock_acquire32`
+// probe site, `ldseta 1, w10, [x9]` on any core: an LDAXR/ORR/STXR loop.
+// Clobbers only w10 (the old value), x16, x17.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+core::arch::global_asm!(
+    ".pushsection .text.azos_spin_ldseta_llsc32, \"ax\"",
+    ".globl azos_spin_ldseta_llsc32",
+    ".p2align 2",
+    "azos_spin_ldseta_llsc32:",
+    "1:  ldaxr w10, [x9]",
+    "    orr  w17, w10, #1",
+    "    stxr w16, w17, [x9]",
+    "    cbnz w16, 1b",
+    "    ret",
+    ".popsection",
+);
+
 // `azos_spin_tas_tramp32`: entered by `bl` with the word in x9; saves x0-x18
 // and x30 (every caller-saved integer register; the kernel is soft-float),
-// calls `azos_spin_tas_slow32(x9)`, restores them and returns. 160 bytes of
+// calls `azos_spin_tas_slow32(x9, w10)` (w10: the queued lock's old
+// word), restores them and returns. 160 bytes of
 // stack, 16-aligned.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 core::arch::global_asm!(
@@ -450,6 +549,7 @@ core::arch::global_asm!(
     "    stp x16, x17, [sp, #128]",
     "    stp x18, x30, [sp, #144]",
     "    mov x0, x9",
+    "    mov w1, w10",
     "    bl  azos_spin_tas_slow32",
     "    ldp x2, x3, [sp, #16]",
     "    ldp x4, x5, [sp, #32]",

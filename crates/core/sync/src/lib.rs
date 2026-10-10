@@ -3,6 +3,7 @@
 #![no_std]
 
 pub mod spinlock;
+pub mod qspinlock;
 pub mod pi_mutex;
 /// Sleeping lock without priority inheritance (owner rule F1).
 pub mod sleep_lock;

@@ -132,6 +132,44 @@ pub trait SpinWait {
         }
     }
 
+    /// Queued-lock fast path (rfcs/survey/MUTEX.md §5.2; Kconfig
+    /// `SPINLOCK_IMPL` = mcs): `fetch_or(1)` (Acquire) on the lock word,
+    /// which took the lock when it returns 0; otherwise the contended half
+    /// [`azos_spin_mcs_slow32`] runs (word, old value) out of line. An ISA
+    /// keeps the RMW and its branch inline and reaches the slow half through
+    /// the same register-saving trampoline as
+    /// [`tas_acquire32`](Self::tas_acquire32), whose
+    /// `azos_spin_tas_slow32` dispatches on the Kconfig choice. An ISA whose
+    /// fast path is a CAS 0 -> 1 instead (it wrote nothing on failure) passes
+    /// the observed word with bit 0 set, which the slow half reads the same.
+    #[inline(always)]
+    fn qlock_acquire32(&self, a: &AtomicU32) {
+        let old = a.fetch_or(1, Ordering::Acquire);
+        if old != 0 {
+            // SAFETY: the symbol is the lock's slow half (azos_sync), with
+            // this signature; `a` is a valid word.
+            unsafe { azos_spin_mcs_slow32(a, old) }
+        }
+    }
+
+    /// Release store of 0 to the low byte of a lock word (the queued lock's
+    /// unlock: the other three bytes hold the pending bit and the queue
+    /// tail, which other CPUs change concurrently). A plain byte store, not
+    /// a sub-word AMO: `fence rw,w; sb` on riscv64 (no Zabha needed),
+    /// `STLRB` on aarch64, `MOV` on x86_64, with the word's offset folded
+    /// into the store (an `asm!` would need the address in a register: one
+    /// instruction more at every unlock). A byte view of the word: Rust's
+    /// memory model leaves concurrent mixed-size atomics undefined, every
+    /// ISA here defines them (RVWMO mixed-size, Armv8 byte single-copy
+    /// atomicity, x86 TSO), and Linux's qspinlock unlocks the same way.
+    #[inline(always)]
+    fn unlock_low_byte32(&self, a: &AtomicU32) {
+        const _: () = assert!(cfg!(target_endian = "little"));
+        // SAFETY: byte 0 of an aligned, live word (little-endian: its low
+        // byte); see above for the mixed-size access.
+        unsafe { core::sync::atomic::AtomicU8::from_ptr(a.as_ptr().cast()) }.store(0, Ordering::Release);
+    }
+
     /// [`cas32`](Self::cas32) on a 64-bit word.
     #[inline(always)]
     fn cas64(&self, a: &AtomicU64, current: u64, new: u64, order: CasOrder) -> Result<u64, u64> {
@@ -203,6 +241,27 @@ pub trait SpinWait {
                 self.wait_hint64(a, expected);
             }
         }
+    }
+}
+
+extern "C" {
+    /// The queued lock's contended half, defined by the lock
+    /// (`azos_sync::qspinlock`) in every build: `(word, old)`, where `old`
+    /// is what the fast path's `fetch_or(1)` returned (not 0).
+    pub fn azos_spin_mcs_slow32(a: &AtomicU32, old: u32);
+}
+
+/// What an ISA's `azos_spin_tas_slow32` (its trampoline's target) runs:
+/// the queued lock's slow half under Kconfig `SPINLOCK_IMPL` = mcs, where
+/// every trampoline call comes from [`SpinWait::qlock_acquire32`], else the
+/// test-and-set's [`tas_slow32`].
+#[inline(always)]
+pub fn lock_slow32<S: SpinWait + ?Sized>(s: &S, a: &AtomicU32, old: u32) {
+    if azos_limits::SPINLOCK_IMPL_MCS {
+        // SAFETY: as in `qlock_acquire32`.
+        unsafe { azos_spin_mcs_slow32(a, old) }
+    } else {
+        tas_slow32(s, a)
     }
 }
 

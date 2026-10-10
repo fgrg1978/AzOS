@@ -45,6 +45,12 @@ pub mod preempt;
 #[path = "../../../../crates/core/sync/src/spinlock.rs"]
 pub mod spinlock;
 
+// The queued SpinLock's slow half (wave 15, N3), which `spinlock.rs` calls
+// and which defines `azos_spin_mcs_slow32` for the trait's portable fast
+// path.
+#[path = "../../../../crates/core/sync/src/qspinlock.rs"]
+pub mod qspinlock;
+
 #[path = "../../../../crates/core/sync/src/pi_mutex.rs"]
 pub mod pi_mutex;
 
@@ -1231,5 +1237,67 @@ mod spin_tests {
         }
         assert_eq!(*L.lock(), 4 * ROUNDS, "an increment was lost under the SpinLock");
         assert!(L.try_lock().is_some(), "the lock stayed held");
+    }
+
+    /// N3: after contention under the queued lock no CPU still holds a node
+    /// (the waiter frees its own on acquire).
+    #[test]
+    fn qspinlock_nodes_freed_after_contention() {
+        let _g = crate::tests::guard();
+        if !crate::qspinlock::ON {
+            return;
+        }
+        static L: SpinLock<u64> = SpinLock::new(0);
+        let ts: Vec<_> = (1..=4)
+            .map(|h| std::thread::spawn(move || {
+                azos_arch::set_hart(h);
+                for _ in 0..20_000 {
+                    *L.lock() += 1;
+                }
+            }))
+            .collect();
+        for t in ts {
+            t.join().unwrap();
+        }
+        assert_eq!(*L.lock(), 80_000);
+        for h in 1..=4 {
+            assert_eq!(crate::qspinlock::depth(h), 0, "CPU {h} still holds a queue node");
+        }
+    }
+
+    /// N3: a fast path that lands on a free word with a pending waiter gives
+    /// the lock back and waits its turn: the pending waiter goes first. A
+    /// trylock never takes a word with a waiter on it.
+    #[test]
+    fn qspinlock_give_back_keeps_fifo() {
+        use crate::qspinlock::{try_acquire, LOCKED, PENDING};
+        let _g = crate::tests::guard();
+        let w = Arc::new(AtomicU32::new(PENDING));
+        assert!(!try_acquire(&w), "a trylock passed a pending waiter");
+        let order = Arc::new(AtomicU32::new(0));
+        let (w2, o2) = (w.clone(), order.clone());
+        // The pending waiter: takes the lock once `locked` is clear.
+        let p = std::thread::spawn(move || {
+            azos_arch::set_hart(2);
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            loop {
+                let v = w2.load(Ordering::Relaxed);
+                if v & 0xff == 0 && w2.compare_exchange(v, (v & !PENDING) | LOCKED, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+            o2.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Relaxed).ok();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            ARCH.unlock_low_byte32(&w2);
+        });
+        azos_arch::set_hart(1);
+        ARCH.qlock_acquire32(&w);
+        order.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed).ok();
+        ARCH.unlock_low_byte32(&w);
+        p.join().unwrap();
+        assert_eq!(order.load(Ordering::Acquire), 2, "the fast path kept a lock a pending waiter was owed");
+        assert_eq!(w.load(Ordering::Relaxed), 0, "the queue tail or pending bit was left set");
+        assert_eq!(crate::qspinlock::depth(1), 0);
     }
 }
