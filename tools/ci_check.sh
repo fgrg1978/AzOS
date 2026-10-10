@@ -11337,8 +11337,10 @@ PY
     # ipc_no_senders_grant_revoke_race, port_source_gone_wakes_the_waiter
     # (wave 15, N5b: Kconfig IPC_PORT_NOTICES; canaries in `ktest ipc
     # canary (rv|arm|x86)`).
-    KTEST_N_RV=65
-    KTEST_N_ARM=65
+    # +1 console_task_line_waits_never_drops (wave 15, XC; canary
+    # `console-drop` in tools/check_fast.py SETS).
+    KTEST_N_RV=66
+    KTEST_N_ARM=66
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11788,7 +11790,8 @@ PY
     # +4 the N5 endpoint tests, as on rv and arm.
     # +1 the N9 futex requeue test, as on rv and arm.
     # +4 the N5b notice tests, as on rv and arm.
-    KTEST_N_X86=67
+    # +1 console_task_line_waits_never_drops (XC).
+    KTEST_N_X86=68
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

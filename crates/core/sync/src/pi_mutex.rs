@@ -340,6 +340,11 @@ pub fn caller_holds_any() -> bool {
     held_by(current_task_tid()) != 0
 }
 
+/// The calling task's TID as the PI protocol sees it (`NO_OWNER`: none).
+pub fn caller_tid() -> u32 {
+    current_task_tid()
+}
+
 /// Plain-load spins between yields while waiting.
 ///
 /// Purely a backoff knob now, not a correctness bound: the acquire loop no

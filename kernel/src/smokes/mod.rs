@@ -123,6 +123,9 @@ pub(crate) mod tail_smoke;
 pub(crate) mod energy_smoke;
 #[cfg(feature = "ktest")]
 pub(crate) mod rt_console;
+// XC: a task-context kernel line waits for a held, full console; never dropped.
+#[cfg(feature = "ktest")]
+pub(crate) mod console_wait;
 // K1: an io_ring fsync completes after the flush, posted by the flush path.
 #[cfg(feature = "ktest")]
 pub(crate) mod ioring_k1;

@@ -1250,6 +1250,10 @@ fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
         if may_wait {
             Some(|| {
                 CONSOLE_WAITS.fetch_add(1, Ordering::Relaxed);
+                let w = WATCHED.load(Ordering::Relaxed);
+                if w != 0 && w == azos_sync::pi_mutex::caller_tid() {
+                    WATCHED_WAITED.store(true, Ordering::Release);
+                }
                 CONSOLE_LINE_LOCK.lock()
             })
         } else {
@@ -1264,9 +1268,25 @@ fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
 /// dropping its line into a full deferred buffer (XC).
 static CONSOLE_WAITS: AtomicU32 = AtomicU32::new(0);
 
+/// A task the ktest watches (0: none), and whether it waited.
+static WATCHED: AtomicU32 = AtomicU32::new(0);
+static WATCHED_WAITED: AtomicBool = AtomicBool::new(false);
+
 /// Kernel writers that waited for the console rather than drop a line.
 pub fn console_waits() -> u32 {
     CONSOLE_WAITS.load(Ordering::Relaxed)
+}
+
+/// Watch task `tid` (0: stop): [`console_watched_waited`] says whether it
+/// waited for the console since. For the ktest `console_task_line_waits_never_drops`.
+pub fn console_watch(tid: u32) {
+    WATCHED_WAITED.store(false, Ordering::Release);
+    WATCHED.store(tid, Ordering::Release);
+}
+
+/// Did the task [`console_watch`] names wait for the console?
+pub fn console_watched_waited() -> bool {
+    WATCHED_WAITED.load(Ordering::Acquire)
 }
 
 /// The gate canary `console-drop`'s veto, registered by the kernel when the
@@ -1548,6 +1568,27 @@ pub fn console_write_ring3(bytes: &[u8]) {
     );
     #[cfg(feature = "console-splice-smoke")]
     ring3_probe::end_call(t_call);
+}
+
+/// Hold the console the way a ring-3 writer does between two of its lines
+/// (the line lock, then ownership) while `f` runs; then drain what was
+/// deferred meanwhile and give it back, exactly as [`console_write_ring3`]
+/// ends. The ktest `console_task_line_waits_never_drops` builds its full
+/// buffer under it. Task context only: it waits for the line lock.
+pub fn console_hold<R>(f: impl FnOnce() -> R) -> R {
+    let _line = CONSOLE_LINE_LOCK.lock();
+    if crate::console_defer::DeferLock::with(&KernelDeferLock::<true>, |st| st.take()) {
+        crate::console_defer::owner_drain(&KernelDeferLock::<true>, &mut |d: &[u8]| tx_write_wait(d, true), false);
+    }
+    let r = f();
+    crate::console_defer::owner_drain(&KernelDeferLock::<true>, &mut |d: &[u8]| tx_write_wait(d, true), true);
+    r
+}
+
+/// Bytes the deferred buffer can still take before a line is dropped, and
+/// whether the console is owned; read under the UART lock.
+pub fn console_defer_room() -> (usize, bool) {
+    crate::console_defer::DeferLock::with(&KernelDeferLock::<false>, |st| (st.free(), st.is_owned()))
 }
 
 /// Kernel lines deferred while ring 3 owns the console.

@@ -38,13 +38,16 @@ GATE = os.path.join(ROOT, "tools", "ci_check.sh")
 # point), stop the run (`ioring-rt-inline` bails, and needs a disk) or invert
 # the verdict (`ktest-exit-pass`).
 SETS = {
-    "rv": ["RT", "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", ("spin-patch-skip", "spin_sites_patched")],
+    "rv": ["RT", "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", ("spin-patch-skip", "spin_sites_patched"),
+           ("console-drop", "console_task_line_waits_never_drops")],
     "arm": ["RT", "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", ("spin-patch-skip", "spin_sites_patched"),
-            ("pan-patch-skip", "a64_pan_sites_patched")],
+            ("pan-patch-skip", "a64_pan_sites_patched"),
+            ("console-drop", "console_task_line_waits_never_drops")],
     "x86": [("x86-fork-fp-skip,ioring-fsync-inline",
              "x86_ring3_syscall_fork_fp ioring_fsync_completes_after_flush"),
             ("x86-low-alias", "x86_low_half_maps_no_ram"),
             ("camera-encode-per-consumer", "camera_one_encode_per_frame"),
+            ("console-drop", "console_task_line_waits_never_drops"),
             "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED"],
 }
 CLEAN_STATUS = {"rv": "0", "arm": "0", "x86": "1"}

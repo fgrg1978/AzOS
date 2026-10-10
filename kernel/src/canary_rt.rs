@@ -174,6 +174,10 @@ pub(crate) const NAMES: &[&str] = &[
     // enqueued but the walk is dropped, so the word's owner is never boosted
     // (the RT-vs-normal inversion program; same binary on Linux).
     "futex-pi-no-edge",
+    // boot/sched.rs `console_drop_veto`: the ktest's probe task may not wait
+    // for the console, so its line is dropped into the full deferred buffer
+    // as before XC (ktest `console_task_line_waits_never_drops`).
+    "console-drop",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 
@@ -182,6 +186,11 @@ const _: () = assert!(NAMES.len() <= 64);
 /// Only that task, so every other RT line of the boot (rt-motor's) keeps
 /// the fixed path and the canary fails one test, not the run.
 pub(crate) static RT_CONSOLE_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// The one task `console-drop` applies to (the ktest
+/// `console_task_line_waits_never_drops`'s probe stores its own tid); `0`:
+/// none. Every other line of the boot keeps the wait.
+pub(crate) static CONSOLE_DROP_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Built in, and not refused by a signed image or a release build (Kconfig
 /// already makes CANARY_RUNTIME depend on BUILD_TYPE_DEV).

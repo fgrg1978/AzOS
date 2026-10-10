@@ -214,6 +214,11 @@ pub(crate) fn install_sched_hooks() {
     // to the console (Kconfig CONSOLE_RT_APPEND_ONLY); dev builds (Kconfig
     // RT_CONSOLE_WIRE_CHECK) panic if one waits for the wire.
     azos_drv_sys::uart::set_rt_console_hooks(rt_console_caller, rt_console_wire_check);
+    // Gate canary `console-drop` (XC): the ktest probe's kernel line may not
+    // wait for the console, and is dropped into the full deferred buffer.
+    if canary!("console-drop") {
+        azos_drv_sys::uart::set_console_wait_veto(console_drop_veto);
+    }
     // Wave 15 (S1): a synchronous I2C transfer sleeps between the
     // controller steps of its own transaction (VisionFive 2 DesignWare).
     #[cfg(feature = "vf2")]
@@ -705,6 +710,12 @@ fn rt_console_caller() -> u8 {
         return azos_drv_sys::uart::RT_CALLER_CANARY;
     }
     azos_drv_sys::uart::RT_CALLER_RT
+}
+
+/// Gate canary `console-drop`: is the caller the ktest probe it applies to?
+fn console_drop_veto() -> bool {
+    let tid = crate::canary_rt::CONSOLE_DROP_TID.load(core::sync::atomic::Ordering::Relaxed);
+    tid != 0 && tid == azos_sched::current_task_tid()
 }
 
 /// Kconfig `RT_CONSOLE_WIRE_CHECK`: an RT task is about to wait for room on
