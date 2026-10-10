@@ -253,6 +253,53 @@ choice
         bool "require: baseline; refuse to boot without it"
 endchoice
 
+choice
+    prompt "Zawrs (wait-on-reservation-set: wrs.nto)"
+    default RV_ZAWRS_NEVER if BOARD_VF2 || BOARD_K1
+    default RV_ZAWRS_PROBE
+    help
+      The spin-wait hint of `SpinWait::wait_while` (crates/core/arch-api
+      spin.rs, every kernel spinner): after SPIN_WAIT_RELAX_SPINS polls the
+      waiter takes a reservation on the lock word (`lr.w`/`lr.d`) and
+      stalls in `wrs.nto` until another hart's store breaks it or an
+      interrupt is pending (even a masked one), instead of re-reading the
+      word in a `pause` loop. Fallback: the `pause` loop (Zihintpause, a
+      HINT encoding that every RV64 executes as a no-op fence).
+      probe: used when cpu@0's device tree declares zawrs; one load of a
+      boot-set flag and a branch per wait step. n: the pause loop, no
+      branch (the VF2's U74 and the K1's X60 declare no Zawrs). require:
+      the instruction is inlined, no branch; a hart without it is refused.
+
+    config RV_ZAWRS_NEVER
+        bool "n: never use it"
+    config RV_ZAWRS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZAWRS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zacas (atomic compare-and-swap: amocas.w/.d)"
+    default RV_ZACAS_NEVER if BOARD_VF2 || BOARD_K1
+    default RV_ZACAS_PROBE
+    help
+      The CAS of `SpinWait::cas32/cas64` (crates/core/arch-api spin.rs:
+      every SpinLock acquire and every later spinner) as one `amocas`
+      instead of an `lr`/`sc` loop (five instructions and a retry branch).
+      No global codegen flag: the kernel's other atomics keep LR/SC.
+      probe: used when cpu@0's device tree declares zacas; one load of a
+      boot-set flag and a branch per CAS. n: LR/SC, no branch (the VF2's
+      U74 and the K1's X60 declare no Zacas). require: `amocas` inlined,
+      no branch; a hart without it is refused.
+
+    config RV_ZACAS_NEVER
+        bool "n: never use it"
+    config RV_ZACAS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZACAS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
 config HAS_RVV
     bool
     default y if RV_V_PROBE || RV_V_REQUIRE
@@ -334,9 +381,13 @@ choice
     help
       LDADD/CAS/SWP: a single-instruction atomic instead of an LL/SC loop.
       The compiler can only emit them globally (no outlined atomics in this
-      kernel), so probe detects and advertises them (vDSO hwcap) and require
-      compiles the kernel and user images with +lse; Armv8.1 and above
-      include it (a level >= 8.1 with LSE not `require` is a build error).
+      kernel), so require compiles the kernel and user images with +lse;
+      Armv8.1 and above include it (a level >= 8.1 with LSE not `require`
+      is a build error). probe: the vDSO hwcap advertises it, and the CAS
+      of `SpinWait::cas32/cas64` (crates/core/arch-api spin.rs: every
+      SpinLock acquire and every later spinner) is CASA/CASL/CASAL when
+      ID_AA64ISAR0_EL1.Atomic says so, LDAXR/STLXR otherwise: one load of
+      a boot-set flag and a branch per CAS. n: LL/SC, no branch.
 
     config A64_LSE_NEVER
         bool "n: never use it"
@@ -1388,6 +1439,30 @@ choice
         bool "require: baseline; refuse to boot without it"
 endchoice
 
+choice
+    prompt "WAITPKG (UMONITOR/UMWAIT/TPAUSE)"
+    default X86_WAITPKG_PROBE
+    help
+      The spin-wait hint of `SpinWait::wait_while` (crates/core/arch-api
+      spin.rs): after SPIN_WAIT_RELAX_SPINS PAUSE polls the waiter arms
+      UMONITOR on the lock word and sleeps in UMWAIT (C0.1 or C0.2,
+      X86_UMWAIT_C02) until a store to the line, an interrupt, or the
+      X86_UMWAIT_TSC_TICKS deadline. UMWAIT executes at any CPL (the U is
+      "also user"; CR4.TSD only restricts CPL > 0), so ring 0 may use it;
+      IA32_UMWAIT_CONTROL may cap the wait further. CPUID.(7,0):ECX[5].
+      Fallback: the PAUSE loop. probe: one load of a boot-set flag and a
+      branch per wait step (QEMU TCG does not implement WAITPKG, so the
+      QEMU board always takes the fallback). n: PAUSE, no branch.
+      require: inlined, no branch; a CPU without it is refused.
+
+    config X86_WAITPKG_NEVER
+        bool "n: never use it"
+    config X86_WAITPKG_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_WAITPKG_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
 config X86_KERNEL_GLOBAL_PAGES
     bool "Global (G) kernel leaves"
     default y
@@ -1456,6 +1531,51 @@ config X86_SYSRET
       bring-up or bisecting.
 
 endif # ARCH_X86_64
+
+# ---------------------------------------------------------------------------
+# Spin-wait (crates/core/arch-api spin.rs, every ISA)
+# ---------------------------------------------------------------------------
+
+config SPIN_WAIT_RELAX_SPINS
+    int "Spin-wait: relax polls before the wait hint"
+    range 0 65536
+    default 0 if ARCH_AARCH64
+    default 8 if ARCH_RISCV64 && PROFILE_EMBEDDED
+    default 16 if ARCH_RISCV64
+    default 64 if ARCH_X86_64
+    default 16
+    help
+      `SpinWait::wait_while` re-reads the word this many times with
+      `cpu_relax` (pause / yield / PAUSE) between reads before it takes
+      the ISA's wait hint (Zawrs wrs.nto, LDAXR+WFE, UMWAIT) when the
+      hint is in use; without a hint it is the poll count per round and
+      changes nothing. 0 goes straight to the hint (Linux arm64's
+      `__cmpwait`; aarch64's default, where WFE wakes on the store with
+      no polling). Higher: a lower wake latency for short holds, more
+      bus reads and power while waiting. Costs no RAM; about 4
+      instructions per poll.
+
+config X86_UMWAIT_TSC_TICKS
+    int "x86_64: UMWAIT deadline (TSC ticks)"
+    range 1000 100000000
+    default 100000
+    help
+      The TSC deadline each UMWAIT step is given (X86_WAITPKG): the
+      longest one wait step sleeps when no store to the line and no
+      interrupt arrives, after which the word is re-read. 100000 is
+      Linux's IA32_UMWAIT_CONTROL default cap (about 30-50 us). Lower:
+      more re-reads of a word nobody writes; higher: bounded only by the
+      MSR cap. Unused without WAITPKG. Visible on every ISA so the
+      constant always exists.
+
+config X86_UMWAIT_C02
+    bool "x86_64: UMWAIT may enter C0.2 (deeper, slower wake)"
+    default y if PROFILE_EMBEDDED
+    default n
+    help
+      n: C0.1 (ECX[0]=1), the faster wake a lock waiter wants. y: C0.2,
+      lower power and a slower wake (the sibling thread gains more), for
+      a power-bound board. Unused without WAITPKG.
 
 # ---------------------------------------------------------------------------
 # Floating-point context

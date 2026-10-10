@@ -102,6 +102,7 @@ mod bit {
     // CPUID.(7,0):ECX
     pub const UMIP: u32 = 2;
     pub const PKU: u32 = 3;
+    pub const WAITPKG: u32 = 5;
     pub const CET_SS: u32 = 7;
     pub const LA57: u32 = 16;
     // CPUID.(7,0):EDX
@@ -185,6 +186,8 @@ pub struct X86Features {
     pub pku: bool,
     /// CPUID.(7,0):ECX[16]. Clear: 4-level paging (48-bit VA).
     pub la57: bool,
+    /// CPUID.(7,0):ECX[5]. Clear: PAUSE loops in `SpinWait` (`spin`).
+    pub waitpkg: bool,
     /// CPUID.0x80000001:EDX[26]. Clear: no 1 GiB leaves (2 MiB ones only).
     pub gbpages: bool,
     /// CPUID.(7,0):EDX[20]. Clear: no ENDBR64 enforcement.
@@ -254,6 +257,7 @@ pub const fn decode(r: &CpuidLeaves) -> X86Features {
         umip: has(c7, bit::UMIP),
         pku: has(c7, bit::PKU),
         la57: has(c7, bit::LA57),
+        waitpkg: has(c7, bit::WAITPKG),
         gbpages: has(r.e1_edx, bit::PDPE1GB),
         cet_ibt: has(d7, bit::CET_IBT),
         cet_shstk: has(c7, bit::CET_SS),
@@ -428,7 +432,7 @@ mod tests {
         [f.sse4_2, f.popcnt, f.avx, f.avx2, f.bmi1, f.bmi2, f.fma, f.movbe, f.avx512f,
          f.avx512bw, f.avx512cd, f.avx512dq, f.avx512vl, f.aes, f.pclmulqdq, f.sha_ni,
          f.rdrand, f.rdseed, f.adx, f.fsgsbase, f.pcid, f.invpcid, f.smep, f.smap, f.umip,
-         f.pku, f.la57, f.gbpages, f.cet_ibt, f.cet_shstk, f.xsave, f.xsaveopt, f.xsaves, f.x2apic,
+         f.pku, f.la57, f.waitpkg, f.gbpages, f.cet_ibt, f.cet_shstk, f.xsave, f.xsaveopt, f.xsaves, f.x2apic,
          f.tsc_deadline, f.invariant_tsc].iter().filter(|&&b| b).count()
     }
 
@@ -463,6 +467,7 @@ mod tests {
         one(|r| r.l7_ecx = 1 << 2, |f| f.umip, "umip");
         one(|r| r.l7_ecx = 1 << 3, |f| f.pku, "pku");
         one(|r| r.l7_ecx = 1 << 16, |f| f.la57, "la57");
+        one(|r| r.l7_ecx = 1 << 5, |f| f.waitpkg, "waitpkg");
         one(|r| r.e1_edx = 1 << 26, |f| f.gbpages, "pdpe1gb");
         one(|r| r.l7_edx = 1 << 20, |f| f.cet_ibt, "cet-ibt");
         one(|r| r.l7_ecx = 1 << 7, |f| f.cet_shstk, "cet-shstk");

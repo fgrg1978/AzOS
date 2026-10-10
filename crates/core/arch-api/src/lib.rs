@@ -30,7 +30,7 @@
 //! `crates/core/arch/src/lib.rs` for the measured count of facade-bypass sites,
 //! which this trait surface does not close by existing.
 //!
-//! # The five trait families
+//! # The six trait families
 //!
 //! Worked through by grepping every `azos_arch::*` reference
 //! across `crates/` and `kernel/`:
@@ -42,6 +42,7 @@
 //! | [`Mmu`]      | PAGE_SIZE, map/unmap, switch_pt, TLB shootdown     |
 //! | [`Boot`]     | platform shutdown / reboot / hart start            |
 //! | [`Vector`]   | optional SIMD kernels (RVV / SVE / AVX2 / fallback)|
+//! | [`SpinWait`] | cpu_relax, wait_while, CAS (Zawrs/Zacas, LSE+WFE, WAITPKG) |
 //!
 //! ISA-specific surfaces (CSR bit layout, PMP regions, SBI HSM
 //! call numbers) stay private to each impl crate; they don't
@@ -639,6 +640,11 @@ pub mod lat;
 /// Baseline level and per-extension n / probe / require policy, every ISA
 /// (config/Kconfig.arch), and the `[ISA]` boot line.
 pub mod isa;
+
+/// Spin-wait and compare-and-swap ([`SpinWait`]): the only path from a
+/// kernel spinner to the CPU's wait hints and CAS instruction.
+pub mod spin;
+pub use spin::{CasOrder, SpinWait};
 
 // ──────────────────────────────────────────────────────────────────────────
 // Arch contract: ArchPlatform (ISA crates) and ArchEntry (kernel boot hooks)

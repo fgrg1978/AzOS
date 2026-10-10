@@ -219,7 +219,13 @@ pub fn cpu_features(_fw: &()) {
         e("x2apic", "X86_X2APIC", p::X2APIC, f.x2apic),
         e("tsc-deadline", "X86_TSC_DEADLINE", p::TSC_DEADLINE, f.tsc_deadline),
         e("invariant-tsc", "X86_INVARIANT_TSC", p::INVARIANT_TSC, f.invariant_tsc),
+        e("waitpkg", "X86_WAITPKG", p::WAITPKG, f.waitpkg),
     ]);
+    // `SpinWait`'s wait hint (wave 15, N2): UMONITOR/UMWAIT when
+    // X86_WAITPKG allows and CPUID says so. Canary `spin-ext-claim`: claimed
+    // whatever CPUID says, so without WAITPKG the first contended wait #UDs.
+    let wp = azos_arch::spin::select(f.waitpkg || canary!("spin-ext-claim"));
+    kprintln!("[SPIN] cas: lock cmpxchg; wait: {}", if wp { "umonitor+umwait (WAITPKG)" } else { "pause" });
 }
 
 /// RAM above this is left out: the direct map

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-/// Spinlock using RISC-V atomic operations (TTAS pattern).
+/// Spinlock (TTAS pattern) over the arch-api spin primitives.
 ///
-/// Wraps data in a `SpinLock<T>` to ensure exclusive access.
-/// Uses `compare_exchange` (compiles to `amoor.w.aq`) for the lock.
+/// Wraps data in a `SpinLock<T>` to ensure exclusive access. The lock word
+/// is a `u32` (0 free, 1 held): acquired with `SpinWait::cas32` (Zacas
+/// `amocas.w`, LSE `CASA`, `LOCK CMPXCHG`, or the LR/SC / LL/SC fallback,
+/// per config/Kconfig.arch) and waited on with `SpinWait::wait_while32`
+/// (Zawrs `wrs.nto`, `LDAXR`+`WFE`, WAITPKG `UMWAIT`, or `cpu_relax`). A
+/// 32-bit word, not a byte: riscv64 has no sub-word CAS without Zabha.
 ///
 /// Two acquisition modes:
 /// - `lock()`         — standard spinlock, interrupts unchanged.
@@ -13,13 +17,17 @@
 ///                       that restores the previous interrupt state on drop.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
-use azos_arch::{Interrupts, InterruptState, ARCH};
+use core::sync::atomic::{AtomicU32, Ordering};
+use azos_arch::{CasOrder, Interrupts, InterruptState, SpinWait, ARCH};
 use crate::preempt::{critical_section, PreemptGuard};
+
+/// The lock word's two values.
+const UNLOCKED: u32 = 0;
+const LOCKED: u32 = 1;
 
 /// A simple test-and-set spinlock protecting data of type `T`.
 pub struct SpinLock<T> {
-    locked: AtomicBool,
+    locked: AtomicU32,
     /// Lockdep class: the constructor's call site (`lockdep` feature only).
     #[cfg(feature = "lockdep")]
     class: crate::lockdep::LockClass,
@@ -36,7 +44,7 @@ impl<T> SpinLock<T> {
     #[cfg_attr(feature = "lockdep", track_caller)]
     pub const fn new(data: T) -> Self {
         Self {
-            locked: AtomicBool::new(false),
+            locked: AtomicU32::new(UNLOCKED),
             #[cfg(feature = "lockdep")]
             class: crate::lockdep::LockClass::here(crate::lockdep::Kind::Spin),
             data: UnsafeCell::new(data),
@@ -61,19 +69,34 @@ impl<T> SpinLock<T> {
             crate::lockdep::Kind::Spin, irqsave, core::panic::Location::caller());
     }
 
-    /// Core spin loop — shared by both lock variants.
+    /// Core spin loop — shared by both lock variants. TTAS: CAS 0→1
+    /// (Acquire); on failure wait, reading only, until the word is no
+    /// longer 1, then CAS again. The first CAS is inline; the waiting is
+    /// out of line (`acquire_contended`), so the uncontended acquire is the
+    /// CAS and its branch, with no wait-loop setup hoisted in front of it.
     #[inline(always)]
     fn acquire_spin(&self) {
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            // TTAS: spin on a plain load to avoid bus contention.
-            while self.locked.load(Ordering::Relaxed) {
-                core::hint::spin_loop();
+        if !self.try_acquire() {
+            self.acquire_contended();
+        }
+    }
+
+    /// The contended half of [`acquire_spin`](Self::acquire_spin).
+    #[cold]
+    #[inline(never)]
+    fn acquire_contended(&self) {
+        loop {
+            ARCH.wait_while32(&self.locked, LOCKED);
+            if self.try_acquire() {
+                return;
             }
         }
+    }
+
+    /// One CAS 0→1 (Acquire): the `try_lock` attempt.
+    #[inline(always)]
+    fn try_acquire(&self) -> bool {
+        ARCH.cas32(&self.locked, UNLOCKED, LOCKED, CasOrder::Acquire).is_ok()
     }
 
     /// Acquire the lock, spinning until it is available.
@@ -153,11 +176,7 @@ impl<T> SpinLock<T> {
         // fire a deferred reschedule, which is legal: this is task context and
         // no lock is held.
         let _preempt = critical_section();
-        if self
-            .locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
+        if self.try_acquire() {
             #[cfg(feature = "lockdep")]
             self.ld_acquired(false);
             Some(SpinLockGuard { lock: self, _preempt })
@@ -173,11 +192,7 @@ impl<T> SpinLock<T> {
         let prev_sstatus = ARCH.disable_all();
 
         let _preempt = critical_section();
-        if self
-            .locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
+        if self.try_acquire() {
             #[cfg(feature = "lockdep")]
             self.ld_acquired(true);
             Some(IrqSaveGuard {
@@ -222,7 +237,7 @@ impl<T> SpinLock<T> {
     fn release(&self) {
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self as *const Self as usize, crate::lockdep::Kind::Spin);
-        self.locked.store(false, Ordering::Release);
+        self.locked.store(UNLOCKED, Ordering::Release);
     }
 }
 
@@ -302,4 +317,17 @@ impl<T> Drop for IrqSaveGuard<'_, T> {
         // used to open-code.
         ARCH.restore(self.prev_sstatus);
     }
+}
+
+/// N2 evidence (ktest builds only): one uncontended acquire and release of
+/// a `SpinLock`'s word, the path this file owns (no preemption count, no
+/// lockdep). Not inlined, under a fixed name, so its disassembly is the
+/// per-ISA instruction count of the acquire; ktest
+/// `spin_uncontended_acquire` calls it.
+#[cfg(feature = "ktest")]
+#[inline(never)]
+#[no_mangle]
+pub fn azos_spin_acquire_release(l: &SpinLock<u64>) {
+    l.acquire_spin();
+    l.locked.store(UNLOCKED, Ordering::Release);
 }

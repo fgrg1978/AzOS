@@ -763,6 +763,26 @@ frame or heap byte behind, and is counted; `/proc/chaos` shows the counts.
 The kernel's heap allocations are infallible, so the heap point is armed only
 from a test. Off, every point is a constant `false`.
 
+**Spin-wait and CAS.** Every kernel spinner reaches the CPU's wait hints and
+compare-and-swap through one trait, `SpinWait` (`crates/core/arch-api/src/spin.rs`):
+`cpu_relax`, `wait_while32/64` (wait until a word changes) and `cas32/64`
+(strong CAS with an explicit ordering, never SeqCst). The trait's provided
+bodies are the fallback every ISA has: the compiler's LR/SC loop on riscv64,
+LDAXR/STLXR at Armv8.0 and LOCK CMPXCHG on x86_64, and a relax loop. Each ISA
+overrides what an extension does better, behind its n / probe / require
+choice: Zacas `amocas.w/.d` and Zawrs `lr` + `wrs.nto` on riscv64, LSE
+`CASA`/`CASAL` on aarch64 (and `SEVL`; `WFE`; `LDAXR`; `WFE` as the wait on
+every core), UMONITOR/UMWAIT on x86_64 (WAITPKG, with a TSC deadline per wait
+step). `wait_while` polls `SPIN_WAIT_RELAX_SPINS` times before it takes the
+hint. Under `probe` each CAS or wait step reads one flag the boot set and
+branches; `n` and `require` compile the choice in, with no branch. On riscv64
+the device tree's claim is executed once under a private trap vector before
+the flag is set, so a false claim costs the fast path, not a trap in a lock.
+The boot prints `[SPIN] cas: ...; wait: ...` with what it selected.
+`SpinLock` is a test-and-test-and-set lock over this trait on a 32-bit word
+(riscv64 has no sub-word CAS without Zabha): one inline CAS, and the waiting
+out of line.
+
 **Lock dependency checking.** With Kconfig `LOCKDEP` set to `ktest` (the
 development default) or `y`, `crates/core/sync/src/lockdep.rs` checks every
 lock acquisition in the kernel. A lock's class is where its constructor was
@@ -902,18 +922,19 @@ command line; every aarch64 boot in the gate uses the `Image`.
   `probe` (used only when the boot probe finds it, with a fallback otherwise)
   or `require` (part of the baseline: target features where the ISA allows,
   and a CPU without it is refused). riscv64 has Zicboz, Sstc, Svpbmt, Zba,
-  Zbb, Zbs, V and AIA. aarch64 has LSE, PAN, CRC32, PAuth, BTI, MTE, SVE, AES,
+  Zbb, Zbs, V, AIA, Zawrs and Zacas. aarch64 has LSE, PAN, CRC32, PAuth, BTI, MTE, SVE, AES,
   PMULL and SHA2. x86_64 has the extensions of its levels (SSE4.2, POPCNT;
   XSAVE, AVX, AVX2, BMI1, BMI2, FMA, MOVBE; AVX-512 F/BW/CD/DQ/VL), AES-NI,
   PCLMULQDQ, SHA-NI, RDRAND, RDSEED, ADX, FSGSBASE, PCID, INVPCID, SMEP,
   SMAP, UMIP, PKU, LA57 (5-level paging), 1 GiB pages, CET-IBT, CET shadow stack, XSAVEOPT, XSAVES,
-  x2APIC, TSC-deadline and invariant TSC, read from CPUID leaves 1, 7, 0xD,
+  x2APIC, TSC-deadline, invariant TSC and WAITPKG, read from CPUID leaves 1, 7, 0xD,
   0x80000001 and 0x80000007. Some of these are detected and reported
   only, because no kernel path uses them yet; each symbol's help says which.
   For those, `n` and `probe` differ only in the boot line.
 - **Per-board defaults** say what a board has. QEMU uses rv64imac,
   Armv8.0 and x86-64-v2 with everything on `probe` (V is `n`). The VisionFive 2 uses
-  rv64gc. The K1 uses rv64gcv with Zba/Zbb/Zbs and V set to `require`. The
+  rv64gc. The K1 uses rv64gcv with Zba/Zbb/Zbs and V set to `require`; both
+  boards set Zawrs and Zacas to `n`, which their cores lack. The
   Raspberry Pi 5 uses Armv8.2 with LSE set to `require` and PAuth, BTI, MTE
   and SVE set to `n`. A level that contains an extension forces `require` on
   it: Armv8.1 implies LSE, PAN and CRC32, 8.3 PAuth, 8.5 BTI, x86-64-v2 SSE4.2

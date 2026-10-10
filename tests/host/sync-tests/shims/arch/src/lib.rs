@@ -226,3 +226,10 @@ impl azos_arch_api::Cpu for HostArch {
     fn set_percpu_base(&self, _base: usize) { unimplemented!("sync-tests has no per-CPU base") }
 }
 pub use azos_arch_api::Cpu;
+
+/// `SpinWait` for the host: the trait's provided bodies, i.e. the portable
+/// fallback every ISA has (`compare_exchange`, `spin_loop`). The same
+/// bodies a kernel built with RV_ZACAS / RV_ZAWRS / A64_LSE / X86_WAITPKG
+/// all `n` runs, so this suite is the forced-fallback build's host half.
+impl azos_arch_api::SpinWait for HostArch {}
+pub use azos_arch_api::{CasOrder, SpinWait};

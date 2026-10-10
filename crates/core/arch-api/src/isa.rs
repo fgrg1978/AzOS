@@ -169,6 +169,8 @@ pub mod riscv64 {
     pub const ZBS: ExtPolicy = ext_policy!(RV_ZBS_NEVER, RV_ZBS_REQUIRE);
     pub const V: ExtPolicy = ext_policy!(RV_V_NEVER, RV_V_REQUIRE);
     pub const AIA: ExtPolicy = ext_policy!(RV_AIA_NEVER, RV_AIA_REQUIRE);
+    pub const ZAWRS: ExtPolicy = ext_policy!(RV_ZAWRS_NEVER, RV_ZAWRS_REQUIRE);
+    pub const ZACAS: ExtPolicy = ext_policy!(RV_ZACAS_NEVER, RV_ZACAS_REQUIRE);
 }
 
 /// aarch64 (config/Kconfig.arch `AARCH64_LEVEL`, `A64_*`).
@@ -258,4 +260,5 @@ pub mod x86_64 {
     pub const TSC_DEADLINE: ExtPolicy = ext_policy!(X86_TSC_DEADLINE_NEVER, X86_TSC_DEADLINE_REQUIRE);
     pub const INVARIANT_TSC: ExtPolicy = ext_policy!(X86_INVARIANT_TSC_NEVER, X86_INVARIANT_TSC_REQUIRE);
     pub const GBPAGES: ExtPolicy = ext_policy!(X86_GBPAGES_NEVER, X86_GBPAGES_REQUIRE);
+    pub const WAITPKG: ExtPolicy = ext_policy!(X86_WAITPKG_NEVER, X86_WAITPKG_REQUIRE);
 }

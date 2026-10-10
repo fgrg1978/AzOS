@@ -11110,8 +11110,10 @@ PY
     # +4 lockdep_scope_rules, lockdep_irq_safe_class_taken_irqsave,
     # lockdep_spinlock_hold_bounded, lockdep_rt_tasks_share_only_spinlocks
     # (wave 15, N1b: scope types, IRQ-safety inference, hold times, F7).
-    KTEST_N_RV=33
-    KTEST_N_ARM=33
+    # +2 spin_wait_cas_semantics, spin_lock_contended_cross_cpu (wave 15,
+    # N2: SpinWait on the path the boot selected, `[SPIN]` line).
+    KTEST_N_RV=35
+    KTEST_N_ARM=35
     KTEST_FEATS="qemu,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
@@ -11351,6 +11353,34 @@ PY
     par "ktest hold bound canary, -icount (arm)" ktest_hold_row "ktest hold bound canary, -icount (arm)" arm \
         "$KTEST_HOLD_SMP1 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
 
+    # Wave 15 (N2): `SpinWait` (crates/core/arch-api spin.rs) off the
+    # extension, on CPUs QEMU builds without it. The plain `ktest (rv)` row
+    # already boots QEMU's rv64, which has Zawrs and no Zacas (`[SPIN] cas:
+    # lr/sc; wait: lr+wrs.nto`); `ktest (arm)` boots `-cpu max` (LSE).
+    #   ktest spin fallback (arm, cortex-a53)  the A64_LSE=probe kernel on an
+    #                               Armv8.0 core without LSE: `[SPIN] cas:
+    #                               ldaxr/stlxr`, every test ok
+    #   ktest spin claim canary (rv)  canary=spin-ext-claim on `-cpu
+    #                               rv64,zawrs=false`: Zacas and Zawrs both
+    #                               claimed, both refuted by the execution
+    #                               probe (`[SPIN] ... refuted`), every test
+    #                               ok. Skip the probe and the first lock
+    #                               traps (Illegal instruction, shutdown).
+    #                               On aarch64 (cortex-a53) and x86_64 (TCG)
+    #                               the same canary traps: there the probe
+    #                               is the ID register / CPUID, not an
+    #                               execution probe.
+    KTEST_SPIN_A53_RE='^\[SPIN\] cas: ldaxr/stlxr; wait: ldaxr\+wfe$'
+    KTEST_SPIN_CLAIM_RE='\[SPIN\] cas: lr/sc \(zacas claimed, refuted by the execution probe\); wait: pause \(zawrs claimed, refuted by the execution probe\)$'
+    ktest_cpu_row() { # ktest_cpu_row <QEMU -cpu> <ktest_row args...>
+        local cpu="$1"; shift
+        KTEST_QEMU_EXTRA="-cpu $cpu" ktest_row "$@"
+    }
+    par "ktest spin fallback (arm, cortex-a53)" ktest_cpu_row cortex-a53 \
+        "ktest spin fallback (arm, cortex-a53)" arm "" "" "" "$KTEST_SPIN_A53_RE"
+    par "ktest spin claim canary (rv)" ktest_cpu_row rv64,zawrs=false \
+        "ktest spin claim canary (rv)" rv "" "" "canary=spin-ext-claim" "$KTEST_SPIN_CLAIM_RE"
+
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
     # `make x86_64` (X86_64_FEATURES adds cargo features), booted by hand-made
@@ -11394,7 +11424,8 @@ PY
     #                               alone not ok
     # +2 the lockdep tests (N1), as on rv and arm.
     # +4 the N1b lockdep tests, as on rv and arm.
-    KTEST_N_X86=35
+    # +2 spin_wait_cas_semantics, spin_lock_contended_cross_cpu (N2).
+    KTEST_N_X86=37
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

@@ -118,6 +118,10 @@ pub struct DtbInfo {
     pub isa_zba: bool,
     pub isa_zbs: bool,
     pub isa_svpbmt: bool,
+    /// Zawrs, Zacas (exact tokens): the spin-wait hint and the CAS of
+    /// `SpinWait` (config/Kconfig.arch RV_ZAWRS, RV_ZACAS).
+    pub isa_zawrs: bool,
+    pub isa_zacas: bool,
     pub isa_f: bool,
     pub isa_d: bool,
     /// Base address of the S-domain APLIC (RFC-0046 stage 1a), or 0 if
@@ -162,6 +166,8 @@ impl DtbInfo {
             isa_v: false,
             isa_zba: false,
             isa_zbs: false,
+            isa_zawrs: false,
+            isa_zacas: false,
             isa_svpbmt: false,
             isa_f: false,
             isa_d: false,
@@ -908,6 +914,8 @@ impl Walker {
                 self.info.isa_zba |= isa_prop_has_token(prop, list, b"zba");
                 self.info.isa_zbs |= isa_prop_has_token(prop, list, b"zbs");
                 self.info.isa_svpbmt |= isa_prop_has_token(prop, list, b"svpbmt");
+                self.info.isa_zawrs |= isa_prop_has_token(prop, list, b"zawrs");
+                self.info.isa_zacas |= isa_prop_has_token(prop, list, b"zacas");
                 self.info.isa_f |= isa_prop_has_letter(prop, list, b'f');
                 self.info.isa_d |= isa_prop_has_letter(prop, list, b'd');
                 return true;

@@ -61,6 +61,8 @@ pub mod ioapic;
 pub mod timer;
 #[cfg(target_arch = "x86_64")]
 pub mod smp;
+// SpinWait: PAUSE, LOCK CMPXCHG, WAITPKG UMONITOR/UMWAIT (wave 15, N2).
+pub mod spin;
 
 /// The x86 body on x86_64; on the host (this crate is also the facade's fake
 /// ISA) the `todo!()` naming it.
@@ -81,6 +83,8 @@ pub use azos_arch_api::{
     ArchEntry, ArchPlatform, FirmwareMemory, Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu,
     MmuError, PagePerms, Vector, PAGE_SHIFT, PAGE_SIZE,
 };
+// Spin-wait and CAS (wave 15, N2): the trait and its ordering type.
+pub use azos_arch_api::{CasOrder, SpinWait};
 
 /// The x86_64 zero-sized singleton type (`azos_arch::ArchImpl`).
 pub struct X86_64;

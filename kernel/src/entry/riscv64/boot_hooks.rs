@@ -25,7 +25,8 @@ static DT_ISA: AtomicU32 = AtomicU32::new(0);
 /// The `DT_ISA` bits.
 #[derive(Clone, Copy)]
 #[repr(u32)]
-enum Dt { Zicboz = 1, Sstc = 2, Svpbmt = 4, Zba = 8, Zbb = 16, Zbs = 32, V = 64, Aia = 128, F = 256, D = 512 }
+enum Dt { Zicboz = 1, Sstc = 2, Svpbmt = 4, Zba = 8, Zbb = 16, Zbs = 32, V = 64, Aia = 128, F = 256, D = 512,
+         Zawrs = 1024, Zacas = 2048 }
 
 /// Kconfig RV_V, except that a build given `--features rvv` by hand (`make
 /// build-rvv`, `qemu-rvv`, the `k1` feature's edge) on a config whose RV_V
@@ -178,7 +179,8 @@ pub fn cpu_features(fw: &Firmware) {
                       (info.isa_svpbmt, Dt::Svpbmt), (info.isa_zba, Dt::Zba),
                       (info.isa_zbb, Dt::Zbb), (info.isa_zbs, Dt::Zbs), (info.isa_v, Dt::V),
                       (info.aplic_base != 0 && info.imsic_base != 0, Dt::Aia),
-                      (info.isa_f, Dt::F), (info.isa_d, Dt::D)] {
+                      (info.isa_f, Dt::F), (info.isa_d, Dt::D),
+                      (info.isa_zawrs, Dt::Zawrs), (info.isa_zacas, Dt::Zacas)] {
         if on {
             dt |= bit as u32;
         }
@@ -192,6 +194,23 @@ pub fn cpu_features(fw: &Firmware) {
                               V_POLICY.gate(info.isa_v));
     #[cfg(feature = "rvv")]
     azos_arch::rvv::set_usable(V_POLICY.gate(info.isa_v));
+    spin_select(info.isa_zacas, info.isa_zawrs);
+}
+
+/// `SpinWait`'s extensions (wave 15, N2): cpu@0's claim, masked by Kconfig
+/// RV_ZACAS / RV_ZAWRS, then executed once under a private trap vector
+/// (`azos_arch::spin::select`). Canary `spin-ext-claim`: claim both
+/// whatever the device tree says; the execution probe must refute a false
+/// claim and the locks stay on LR/SC and `pause`.
+fn spin_select(dt_zacas: bool, dt_zawrs: bool) {
+    let claim = canary!("spin-ext-claim");
+    let v = azos_arch::spin::select(policy::ZACAS.gate(dt_zacas || claim),
+                                    policy::ZAWRS.gate(dt_zawrs || claim));
+    kprintln!("[SPIN] cas: {}{}; wait: {}{}",
+        if azos_arch::spin::zacas_on() { "amocas (Zacas)" } else { "lr/sc" },
+        if v.zacas_refuted { " (zacas claimed, refuted by the execution probe)" } else { "" },
+        if azos_arch::spin::zawrs_on() { "lr+wrs.nto (Zawrs)" } else { "pause" },
+        if v.zawrs_refuted { " (zawrs claimed, refuted by the execution probe)" } else { "" });
 }
 
 /// RAM from the DTB's `/memory` node, or the platform fallback. The boot
@@ -282,6 +301,8 @@ fn isa_report(zicboz_on: bool, sstc_on: bool) {
         e("zbs", "RV_ZBS", policy::ZBS, dt_has(Dt::Zbs)),
         e("v", "RV_V", V_POLICY, dt_has(Dt::V)),
         e("aia", "RV_AIA", policy::AIA, azos_drv_irqchip::irqchip::is_aia()),
+        e("zawrs", "RV_ZAWRS", policy::ZAWRS, azos_arch::spin::verdict().1),
+        e("zacas", "RV_ZACAS", policy::ZACAS, azos_arch::spin::verdict().0),
     ]);
 }
 

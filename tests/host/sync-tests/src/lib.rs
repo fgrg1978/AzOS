@@ -334,7 +334,7 @@ mod tests {
     }
 
     /// Serialise, and start from a known slot state on hart 0 with SIE set.
-    fn guard() -> MutexGuard<'static, ()> {
+    pub(crate) fn guard() -> MutexGuard<'static, ()> {
         // Ignore poisoning: a failing test leaves the lock poisoned, and the
         // remaining tests should still run (and reset state themselves)
         // rather than all reporting the first failure.
@@ -1171,5 +1171,64 @@ mod tests {
         drop(held);
         assert_eq!(held_by(1000), 0);
         assert_eq!(held_by(1063), 0);
+    }
+}
+
+// ── SpinWait + SpinLock over it (wave 15, N2) ───────────────────────────────
+//
+// The shim's `SpinWait` is the trait's provided bodies: the fallback every
+// ISA keeps (`compare_exchange`, `spin_loop`). These run the SpinLock's
+// real source over it, threads standing in for harts.
+#[cfg(test)]
+mod spin_tests {
+    use crate::spinlock::SpinLock;
+    use azos_arch::{CasOrder, SpinWait as _, ARCH};
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn cas_and_wait_while_contract() {
+        let w = AtomicU32::new(0xFFFF_FFFF);
+        assert_eq!(ARCH.cas32(&w, 0xFFFF_FFFF, 0x8000_0000, CasOrder::Acquire), Ok(0xFFFF_FFFF));
+        assert_eq!(ARCH.cas32(&w, 0xFFFF_FFFF, 1, CasOrder::AcqRel), Err(0x8000_0000));
+        let d = AtomicU64::new(0xFFFF_FFFF_0000_0001);
+        assert!(ARCH.cas64(&d, 1, 2, CasOrder::Release).is_err(), "cas64 compared the low half only");
+        assert_eq!(ARCH.wait_while32(&w, 0), 0x8000_0000);
+        // A second thread changes the word; the waiter returns the new value.
+        let flag = Arc::new(AtomicU32::new(7));
+        let f2 = flag.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            f2.store(8, Ordering::Release);
+        });
+        assert_eq!(ARCH.wait_while32(&flag, 7), 8);
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn spinlock_excludes_across_threads() {
+        // The preemption slots are process-global: serialise with the
+        // `tests` module, which resets and asserts on them.
+        let _g = crate::tests::guard();
+        static L: SpinLock<u64> = SpinLock::new(0);
+        const ROUNDS: u64 = 50_000;
+        let ts: Vec<_> = (1..=4)
+            .map(|h| {
+                std::thread::spawn(move || {
+                    azos_arch::set_hart(h);
+                    for _ in 0..ROUNDS {
+                        let mut g = L.lock();
+                        let v = *g;
+                        std::hint::black_box(());
+                        *g = v + 1;
+                    }
+                })
+            })
+            .collect();
+        for t in ts {
+            t.join().unwrap();
+        }
+        assert_eq!(*L.lock(), 4 * ROUNDS, "an increment was lost under the SpinLock");
+        assert!(L.try_lock().is_some(), "the lock stayed held");
     }
 }

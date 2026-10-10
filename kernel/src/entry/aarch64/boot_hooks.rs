@@ -202,6 +202,11 @@ pub fn cpu_features(_fw: &Firmware) {
         e("pmull", "A64_PMULL", policy::PMULL, f.pmull),
         e("sha2", "A64_SHA2", policy::SHA2, f.sha2),
     ]);
+    // `SpinWait`'s CAS (wave 15, N2): CASA/CASAL when A64_LSE allows and
+    // the ID register says so. Canary `spin-ext-claim`: claimed whatever
+    // the CPU says, so on a core without LSE the first lock traps.
+    let lse = azos_arch::spin::select(f.lse || canary!("spin-ext-claim"));
+    kprintln!("[SPIN] cas: {}; wait: ldaxr+wfe", if lse { "cas (LSE)" } else { "ldaxr/stlxr" });
 }
 
 /// RAM from the DTB's `/memory` node, or the platform fallback. The boot

@@ -14,6 +14,8 @@ pub use azos_arch_api::{
 // The rest of the arch contract (`ArchPlatform`, `ArchEntry`) and the page
 // geometry, under the same ISA-neutral names on every ISA.
 pub use azos_arch_api::{ArchEntry, ArchPlatform, FirmwareMemory, PAGE_SHIFT, PAGE_SIZE};
+// Spin-wait and CAS (wave 15, N2): the trait and its ordering type.
+pub use azos_arch_api::{CasOrder, SpinWait};
 // Sv39 has one base page size: the contract's must agree with `mmu`'s.
 const _: () = assert!(mmu::PAGE_SIZE == PAGE_SIZE && mmu::PAGE_SHIFT == PAGE_SHIFT);
 
@@ -27,6 +29,8 @@ pub mod rvv;
 // and arch-x86_64::vector.
 pub mod vector;
 pub mod sbi;
+// SpinWait: Zacas / Zawrs / Zihintpause, LR/SC fallback (wave 15, N2).
+pub mod spin;
 pub mod trap;
 pub mod tlb;
 

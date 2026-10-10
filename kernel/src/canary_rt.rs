@@ -99,6 +99,12 @@ pub(crate) const NAMES: &[&str] = &[
     "lockdep-irq-inversion",
     "lockdep-hold",
     "lockdep-rt-pi",
+    // entry/<isa>/boot_hooks.rs `cpu_features`: the spin extensions are
+    // claimed present whatever the CPU reports (RV_ZACAS/RV_ZAWRS,
+    // A64_LSE, X86_WAITPKG at probe). riscv64: the execution probe must
+    // refute the claim (`[SPIN] ... refuted`); aarch64/x86_64: the first
+    // CAS or wait on a CPU without it traps (Undefined Instruction / #UD).
+    "spin-ext-claim",
 ];
 const _: () = assert!(NAMES.len() <= 64);
 

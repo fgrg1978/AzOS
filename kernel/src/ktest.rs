@@ -681,3 +681,89 @@ azos_ktest::ktest_late! {
     }
 }
 
+
+// ── Spin-wait and CAS (wave 15, N2) ─────────────────────────────────────────
+//
+// `SpinWait` (crates/core/arch-api spin.rs) on the path this boot selected:
+// the extension (Zacas/Zawrs, LSE, WAITPKG) or the fallback, whichever the
+// `[SPIN]` boot line names. The same tests pass on both.
+
+static SPIN_L: azos_sync::SpinLock<u64> = azos_sync::SpinLock::new(0);
+
+azos_ktest::ktest! {
+    fn spin_wait_cas_semantics() {
+        use azos_arch::{CasOrder, SpinWait as _, ARCH};
+        use core::sync::atomic::{AtomicU32, AtomicU64};
+        let r = Ordering::Relaxed;
+        let w = AtomicU32::new(5);
+        if ARCH.cas32(&w, 5, 9, CasOrder::Acquire) != Ok(5) || w.load(r) != 9 {
+            return Err("cas32 on a matching word did not swap");
+        }
+        if ARCH.cas32(&w, 5, 7, CasOrder::AcqRel) != Err(9) || w.load(r) != 9 {
+            return Err("cas32 on a different word swapped or misreported");
+        }
+        // Bit 31 set: `amocas.w`/`lr.w` sign-extend; the compare must not.
+        let s = AtomicU32::new(0xFFFF_FFFF);
+        if ARCH.cas32(&s, 0xFFFF_FFFF, 0x8000_0000, CasOrder::Release) != Ok(0xFFFF_FFFF)
+            || s.load(r) != 0x8000_0000
+            || ARCH.cas32(&s, 0x8000_0000, 1, CasOrder::Relaxed) != Ok(0x8000_0000)
+        {
+            return Err("cas32 mishandled a word with bit 31 set");
+        }
+        let d = AtomicU64::new(0xFFFF_FFFF_0000_0001);
+        if ARCH.cas64(&d, 0x0000_0000_0000_0001, 2, CasOrder::Acquire).is_ok()
+            || ARCH.cas64(&d, 0xFFFF_FFFF_0000_0001, 3, CasOrder::AcqRel) != Ok(0xFFFF_FFFF_0000_0001)
+            || d.load(r) != 3
+        {
+            return Err("cas64 compared or swapped only the low half");
+        }
+        // A word that already differs: no wait at all, the value back.
+        if ARCH.wait_while32(&s, 0x8000_0001) != 1 || ARCH.wait_while64(&d, 0) != 3 {
+            return Err("wait_while did not return the differing value");
+        }
+        // One hint step on a word that differs must return (no stall).
+        ARCH.wait_hint32(&s, 0xFFFF_FFFF);
+        ARCH.wait_hint64(&d, 4);
+        ARCH.cpu_relax();
+        // The lock's own word: acquire, release, then it is free.
+        azos_sync::spinlock::azos_spin_acquire_release(&SPIN_L);
+        if SPIN_L.try_lock().is_none() {
+            return Err("SpinLock still held after acquire and release");
+        }
+        Ok(())
+    }
+}
+
+static SPIN_DONE: AtomicUsize = AtomicUsize::new(0);
+
+/// Rounds per contender: a test parameter (enough to interleave under TCG).
+const SPIN_ROUNDS: u64 = 20_000;
+
+fn spin_contender(_: usize) {
+    for _ in 0..SPIN_ROUNDS {
+        let mut g = SPIN_L.lock();
+        // A read-modify-write the lock alone protects, with a window.
+        let v = *g;
+        core::hint::black_box(());
+        *g = v + 1;
+    }
+    SPIN_DONE.fetch_add(1, Ordering::Release);
+}
+
+azos_ktest::ktest_late! {
+    fn spin_lock_contended_cross_cpu() {
+        if azos_percpu::nr_cpu_ids() < 3 {
+            return Err("needs 3 CPUs (the runner on 0, contenders on 1 and 2)");
+        }
+        *SPIN_L.lock() = 0;
+        SPIN_DONE.store(0, Ordering::Release);
+        let p = azos_sched::DEFAULT_PRIORITY;
+        azos_sched::task_create_affinity("spin-c1", spin_contender, 0, p, 1);
+        azos_sched::task_create_affinity("spin-c2", spin_contender, 0, p, 2);
+        wait("the two SpinLock contenders did not finish", || SPIN_DONE.load(Ordering::Acquire) == 2)?;
+        if *SPIN_L.lock() != 2 * SPIN_ROUNDS {
+            return Err("two CPUs lost an increment under the SpinLock");
+        }
+        Ok(())
+    }
+}
