@@ -388,11 +388,12 @@ pub fn irq_enable_early() {
     azos_arch::ARCH.enable_all();
 }
 
-/// The interrupt line of virtio-mmio transport `slot` (Kconfig
+/// The interrupt line of virtio-mmio transport `slot`, any device class
+/// (Kconfig `NET_RX_IRQ`, virtio-blk completions; Kconfig
 /// `NET_RX_IRQ`): QEMU `virt` wires slot `n` to PLIC source
 /// `VIRTIO_IRQ_BASE + n`. VF2/K1 have no virtio-mmio window.
 #[inline(always)]
-pub fn net_mmio_line(slot: usize, _base: usize) -> Option<u32> {
+pub fn virtio_mmio_line(slot: usize, _base: usize) -> Option<u32> {
     #[cfg(not(any(feature = "vf2", feature = "k1")))]
     { Some(azos_drv_base::platform::hw::VIRTIO_IRQ_BASE + slot as u32) }
     #[cfg(any(feature = "vf2", feature = "k1"))]

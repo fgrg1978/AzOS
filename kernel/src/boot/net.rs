@@ -138,7 +138,7 @@ fn net_tx_batch_selfcheck() {
 
 /// Kconfig `NET_RX_IRQ`: wire the virtio-mmio NIC's interrupt line, so the
 /// net poll task is woken by traffic instead of a 1 ms timer. The line is
-/// per ISA (`boot_hooks::net_mmio_line`: PLIC/APLIC source, GIC SPI,
+/// per ISA (`boot_hooks::virtio_mmio_line`: PLIC/APLIC source, GIC SPI,
 /// IOAPIC GSI); the driver is switched to IRQ mode BEFORE the line is
 /// unmasked, so the first interrupt finds its handler armed. A virtio-pci
 /// NIC (MSI) has no MMIO slot and is left as it is.
@@ -151,7 +151,7 @@ fn install_net_irq() {
         return;
     };
     let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
-    match crate::boot_hooks::net_mmio_line(slot, base) {
+    match crate::boot_hooks::virtio_mmio_line(slot, base) {
         Some(line) if azos_drv_virtio::virtio::net::enable_mmio_irq(line) => {
             crate::boot_hooks::net_mmio_unmask(hart, line);
             kprintln!("[NET] virtio-net-mmio slot {} RX interrupt: line {} -> hart {}",

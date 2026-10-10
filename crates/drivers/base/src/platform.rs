@@ -54,7 +54,7 @@ pub mod hw {
     pub const KERNEL_LOAD: usize = 0x8020_0000;
     /// PLIC source of virtio-mmio slot 0 (`hw/riscv/virt.c` `VIRTIO_IRQ`);
     /// slot `n` is source `VIRTIO_IRQ_BASE + n`. Read by the kernel's
-    /// `boot_hooks::net_mmio_line` (Kconfig `NET_RX_IRQ`) and
+    /// `boot_hooks::virtio_mmio_line` (Kconfig `NET_RX_IRQ`) and
     /// `boot::blk_irq` (the virtio-blk line).
     pub const VIRTIO_IRQ_BASE: u32 = 1;
 
@@ -740,7 +740,7 @@ pub mod hw {
     /// `VIRTIO_IRQ_BASE + n` — same "SPI = 32 + n" convention `uart.rs`'s
     /// `UART_IRQ` already uses for this board (SPI 1 → INTID 33), edge
     /// triggered (`hw/arm/virt.c` `create_virtio_devices`). Read by the
-    /// kernel's `boot_hooks::net_mmio_line` (Kconfig `NET_RX_IRQ`).
+    /// kernel's `boot_hooks::virtio_mmio_line` (Kconfig `NET_RX_IRQ`).
     pub const VIRTIO_IRQ_BASE: u32 = 48;
 
     // ── RTC (PL031) ───────────────────────────────────────────────────────────

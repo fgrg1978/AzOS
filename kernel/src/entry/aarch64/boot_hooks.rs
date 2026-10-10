@@ -453,10 +453,10 @@ pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
 #[inline(always)]
 pub fn irq_enable_early() {}
 
-/// The GIC INTID of virtio-mmio transport `slot` (Kconfig `NET_RX_IRQ`):
+/// The GIC INTID of virtio-mmio transport `slot`, whatever the device:
 /// QEMU `virt` wires slot `n` to SPI 16 + n, INTID `VIRTIO_IRQ_BASE + n`.
 #[inline(always)]
-pub fn net_mmio_line(slot: usize, _base: usize) -> Option<u32> {
+pub fn virtio_mmio_line(slot: usize, _base: usize) -> Option<u32> {
     Some(hw::VIRTIO_IRQ_BASE + slot as u32)
 }
 

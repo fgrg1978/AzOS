@@ -70,9 +70,12 @@ pub(crate) fn wire_virtio_blk_irq() {
         if azos_drv_virtio::virtio::blk::irq_mode() { "" } else { " — NOT taken (polled)" });
 }
 
-#[cfg(target_arch = "riscv64")]
-fn line_of(slot: usize, _base: usize) -> Option<u32> {
-    Some(azos_drv_base::platform::hw::VIRTIO_IRQ_BASE + slot as u32)
+/// The line of the device's virtio-mmio slot: the same per-ISA mapping the
+/// NIC uses (`boot_hooks::virtio_mmio_line`), including its `None` on a
+/// board without a virtio-mmio window (VF2, K1), where the device stays polled.
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
+fn line_of(slot: usize, base: usize) -> Option<u32> {
+    crate::boot_hooks::virtio_mmio_line(slot, base)
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -84,20 +87,10 @@ fn enable_line(irq: u32) -> bool {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn line_of(slot: usize, _base: usize) -> Option<u32> {
-    Some(azos_drv_base::platform::hw::VIRTIO_IRQ_BASE + slot as u32)
-}
-
-#[cfg(target_arch = "aarch64")]
 fn enable_line(intid: u32) -> bool {
     let mpidr = azos_arch::mpidr::read_mpidr().raw;
     azos_arch::gic::route_spi(intid, mpidr, false);
     true
-}
-
-#[cfg(target_arch = "x86_64")]
-fn line_of(_slot: usize, base: usize) -> Option<u32> {
-    azos_arch::platform_impl::platform().virtio_gsi(base as u64)
 }
 
 #[cfg(target_arch = "x86_64")]

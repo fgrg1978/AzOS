@@ -636,11 +636,11 @@ pub fn timebase_hz() -> u64 {
     azos_arch::timer::TICK_HZ
 }
 
-/// The IOAPIC GSI of the virtio-mmio transport at `base` (Kconfig
-/// `NET_RX_IRQ`): the boot's discovery, already redirected to the boot CPU
+/// The IOAPIC GSI of the virtio-mmio transport at `base`, whatever the device
+/// (NIC, block device): the boot's discovery, already redirected to the boot CPU
 /// and masked by [`irqchip_init`].
 #[inline(always)]
-pub fn net_mmio_line(_slot: usize, base: usize) -> Option<u32> {
+pub fn virtio_mmio_line(_slot: usize, base: usize) -> Option<u32> {
     platform().virtio_gsi(base as u64)
 }
 
