@@ -289,12 +289,12 @@ pub fn pipe_read(idx: usize, buf: *mut u8, count: usize) -> i32 {
 
     let avail = pipe.available();
     let to_read = count.min(avail);
-    for i in 0..to_read {
-        unsafe {
-            *buf.add(i) = pipe.buffer[pipe.read_pos as usize % PIPE_BUF_SIZE];
-        }
-        pipe.read_pos = (pipe.read_pos + 1) % PIPE_BUF_SIZE as u32;
-    }
+    // SAFETY: the caller's contract above (`buf` valid for `count` bytes,
+    // and `to_read <= count`).
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, to_read) };
+    // Block copies (`ring_take`, as the typed pipes), not a byte loop:
+    // PIPES is one SpinLock for every pipe.
+    pipe.read_pos = ring_take(&pipe.buffer, pipe.read_pos as usize, out) as u32;
     to_read as i32
 }
 
@@ -320,10 +320,11 @@ pub fn pipe_write(idx: usize, buf: *const u8, count: usize) -> i32 {
 
     let space = pipe.space();
     let to_write = count.min(space);
-    for i in 0..to_write {
-        pipe.buffer[pipe.write_pos as usize % PIPE_BUF_SIZE] = unsafe { *buf.add(i) };
-        pipe.write_pos = (pipe.write_pos + 1) % PIPE_BUF_SIZE as u32;
-    }
+    // SAFETY: the caller's contract above (`buf` valid for `count` bytes,
+    // and `to_write <= count`).
+    let src = unsafe { core::slice::from_raw_parts(buf, to_write) };
+    // Block copies, as in `pipe_read`.
+    pipe.write_pos = ring_put(&mut pipe.buffer, pipe.write_pos as usize, src) as u32;
     to_write as i32
 }
 

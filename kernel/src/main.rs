@@ -2322,8 +2322,15 @@ pub extern "C" fn kernel_main(hart_id: usize, dtb_ptr: usize) -> ! {
     // top of that queue when its timer fires. Both changes are kept so that
     // neither is the single thing standing between this task and silence.
     install_ota_boot_good_hook();
-    #[cfg(target_arch = "riscv64")]
-    create_sys_wdt_task(2);
+    //
+    // aarch64 created it above (in its own block, before its probes). Every
+    // other ISA here: riscv64 on hart 2; x86_64 (and any later port) the same
+    // watchdog, and with it the `log-flush` task it owns (the periodic flush
+    // request, the deferred block I/O, LOCKDEP=y's printer), pinned as
+    // aarch64 pins it: CPU 2, or the last online CPU. Before
+    // `wake_secondaries` below, after `NUM_ONLINE_CPUS` (aarch64's reasons).
+    #[cfg(not(target_arch = "aarch64"))]
+    create_sys_wdt_task(if cfg!(target_arch = "riscv64") { 2 } else { 2.min(num_cpus.saturating_sub(1)) as i8 });
 
     // Create stress-test workers. find_least_loaded_cpu() distributes them
     // evenly across num_cpus CPUs (4 tasks per CPU for 16 total = 15+idle).

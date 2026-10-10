@@ -404,10 +404,14 @@ pub fn motor_pid_enable(en: bool) {
 
 /// Update PID gains at runtime (e.g., from shell or config).
 pub fn motor_pid_set_gains(kp: i32, ki: i32, kd: i32) {
-    let mut pids = PID_CONTROLLERS.lock();
-    for pid in pids.iter_mut() {
-        *pid = PidController::new(kp, ki, kd);
+    {
+        let mut pids = PID_CONTROLLERS.lock();
+        for pid in pids.iter_mut() {
+            *pid = PidController::new(kp, ki, kd);
+        }
     }
+    // Printed after the hold: `motor_pid_tick` (the RT motor task) takes
+    // PID_CONTROLLERS every period, and a console line is not bounded.
     azos_drv_sys::kprintln!("[MOTOR-PID] Gains updated: Kp={} Ki={} Kd={}", kp, ki, kd);
 }
 

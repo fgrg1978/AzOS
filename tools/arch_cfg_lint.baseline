@@ -5,7 +5,7 @@
 5	domains/robot/safety-core/src/txn.rs
 4	kernel/src/boot/seams.rs
 2	kernel/src/boot/stacks.rs
-36	kernel/src/main.rs
+35	kernel/src/main.rs
 4	kernel/src/mlsf_bench.rs
 2	kernel/src/smokes/mod.rs
 4	kernel/src/smokes/selftest.rs

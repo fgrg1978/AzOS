@@ -796,6 +796,9 @@ config LOCKDEP_HOLD_ENFORCE
       gate's ktest rows) they are host wall time, tens of times a
       hardware board's and inflated whenever the host deschedules a vCPU,
       so there the default is off and the notes are the list to triage.
+      The gate's `ktest hold bound, -icount` rows turn it on for QEMU and
+      boot one vCPU under `-icount shift=0`, where the timer is virtual
+      time and 1 us = 1,000 guest instructions: the bound in instructions.
       On by default on every hardware board. No cost: a constant.
 
 config LOCKDEP_CLASSES

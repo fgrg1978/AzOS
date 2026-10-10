@@ -930,6 +930,29 @@ mod pipe_tests {
         assert_eq!(pipe_close_read(idx), 0);
     }
 
+    /// The block copies wrap at the ring's end: bytes come back in order
+    /// across the wrap, and a write takes only what fits (PIPE_BUF_SIZE - 1).
+    #[test]
+    fn bytes_survive_the_ring_wrap_in_order() {
+        let _g = begin();
+        let idx = create_as(OWNER, 1)[0];
+        as_user(OWNER);
+        let data: Vec<u8> = (0..5000u32).map(|i| (i * 7 + 3) as u8).collect();
+        let mut buf = vec![0u8; 5000];
+        assert_eq!(pipe_write_buf(idx, &data[..3000]), 3000);
+        assert_eq!(pipe_read_buf(idx, &mut buf[..3000]), 3000);
+        assert_eq!(&buf[..3000], &data[..3000]);
+        // Starts at 3000 of 4096: 1096 to the end, the rest from the start.
+        assert_eq!(pipe_write_buf(idx, &data[..2000]), 2000);
+        assert_eq!(pipe_read_buf(idx, &mut buf[..2000]), 2000);
+        assert_eq!(&buf[..2000], &data[..2000]);
+        assert_eq!(pipe_write_buf(idx, &data), (crate::pipe::PIPE_BUF_SIZE - 1) as i32);
+        assert_eq!(pipe_read_buf(idx, &mut buf), (crate::pipe::PIPE_BUF_SIZE - 1) as i32);
+        assert_eq!(&buf[..crate::pipe::PIPE_BUF_SIZE - 1], &data[..crate::pipe::PIPE_BUF_SIZE - 1]);
+        assert_eq!(pipe_close_write(idx), 0);
+        assert_eq!(pipe_close_read(idx), 0);
+    }
+
     #[test]
     fn owner_can_close_each_end_once() {
         let _g = begin();

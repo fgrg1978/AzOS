@@ -609,11 +609,14 @@ azos_ktest::ktest_late! {
             *g += 1;
             drop(g);
             // With LOCKDEP_HOLD_ENFORCE the runner fails this test on
-            // lockdep's report; without it (the QEMU board's default:
-            // emulated wall time is host load) the report is a note, and
-            // this check fails it. Not asserted unarmed: one increment under
-            // an emulator is not guaranteed to stay under the bound.
-            if azos_sync::lockdep::class_info(key).map_or(0, |c| c.max_ticks) > limit {
+            // lockdep's report alone (the `ktest hold bound, -icount` rows:
+            // this check stays out of it, so the row's canary proves the
+            // enforcement, not this test); without it (the QEMU board's
+            // default: emulated wall time is host load) the report is a note,
+            // and this check fails it. Not asserted unarmed: one increment
+            // under an emulator is not guaranteed to stay under the bound.
+            if !azos_sync::lockdep::HOLD_ENFORCE
+                && azos_sync::lockdep::class_info(key).map_or(0, |c| c.max_ticks) > limit {
                 return Err("LD_HOLD was held past LOCK_MAX_HOLD_US (lockdep's hold histogram)");
             }
         }

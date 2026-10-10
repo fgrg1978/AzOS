@@ -31,7 +31,6 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use azos_sync::SpinLock;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -184,16 +183,26 @@ pub fn parse_tid_name(name: &[u8]) -> Option<u32> {
 }
 
 /// List all registered paths by calling `cb(full_path_str)` for each entry.
+///
+/// Each entry is copied out under its own PROCFS hold and `cb` runs with the
+/// lock released: `cb` prints (the shell's `ls`), and a SpinLock is never
+/// held across a caller's code. An entry registered or removed meanwhile may
+/// or may not be listed, as with any directory read.
 pub fn procfs_ls(mut cb: impl FnMut(&str)) {
-    let state = PROCFS.lock();
-    for e in state.entries.iter() {
-        if !e.active { continue; }
-        let plen = e.path_len as usize;
-        let prefix = match e.ns { ProcNs::Proc => "/proc/", ProcNs::Sys => "/sys/" };
-        let mut s = String::from(prefix);
-        if let Ok(r) = core::str::from_utf8(&e.path[..plen]) {
-            s.push_str(r);
-            cb(&s);
+    const PREFIX_MAX: usize = 6; // "/proc/"
+    for i in 0..PROCFS_MAX_ENTRIES {
+        let (path, plen, ns) = {
+            let state = PROCFS.lock();
+            let e = &state.entries[i];
+            if !e.active { continue; }
+            (e.path, (e.path_len as usize).min(PROCFS_PATH_LEN), e.ns)
+        };
+        let prefix: &[u8] = match ns { ProcNs::Proc => b"/proc/", ProcNs::Sys => b"/sys/" };
+        let mut full = [0u8; PREFIX_MAX + PROCFS_PATH_LEN];
+        full[..prefix.len()].copy_from_slice(prefix);
+        full[prefix.len()..prefix.len() + plen].copy_from_slice(&path[..plen]);
+        if let Ok(s) = core::str::from_utf8(&full[..prefix.len() + plen]) {
+            cb(s);
         }
     }
 }

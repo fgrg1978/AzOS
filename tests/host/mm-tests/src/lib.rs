@@ -225,6 +225,24 @@ mod alloc {
                    "a range spilling into a second page must reserve both");
     }
 
+    /// `reserve_range` works a bitmap word at a time (the PMM SpinLock's
+    /// hold): a page already in use inside the range is not counted again,
+    /// and a range running past the arena stops at its last page.
+    #[test]
+    fn reserve_range_counts_only_newly_reserved_pages() {
+        let _g = serial();
+        init(4);
+        let base = arena_base();
+        let before = pmm::free_pages();
+        pmm::reserve_range(base + 40 * PAGE_SIZE, PAGE_SIZE);
+        pmm::reserve_range(base + 30 * PAGE_SIZE, 31 * PAGE_SIZE);
+        assert_eq!(pmm::free_pages(), before - 31, "pages 30..=60, page 40 once");
+        pmm::reserve_range(base + 60 * PAGE_SIZE, 10 * PAGE_SIZE);
+        assert_eq!(pmm::free_pages(), before - 34, "61..=63 only: the arena ends at 64");
+        assert!(!pmm::range_is_free(base + 63 * PAGE_SIZE, PAGE_SIZE), "the last page");
+        assert!(pmm::range_is_free(base + 4 * PAGE_SIZE, 26 * PAGE_SIZE), "4..30 untouched");
+    }
+
     /// **The zeroing guarantee must survive old content.** `alloc_page`
     /// zeroes the page it returns; this only proves something if the page
     /// has actually carried non-zero bytes before. A fresh arena starts at

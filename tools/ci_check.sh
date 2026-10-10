@@ -11113,6 +11113,10 @@ PY
     KTEST_N_RV=33
     KTEST_N_ARM=33
     KTEST_FEATS="qemu,ktest,chaos,decisions"
+    # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
+    # boot for a row that needs it (`ktest hold bound, -icount`); the
+    # environment's KCONFIG_CONFIG / AARCH64_CONFIG choose the kernel's
+    # configuration, as for any `kbuild`.
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match] [disk image target]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
         local -a app=(); [ -n "${5:-}" ] && app=(-append "$5")
@@ -11141,10 +11145,10 @@ PY
         par_ready
         while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
         if [ "$isa" = rv ]; then
-            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 ${app[@]+"${app[@]}"} \
-                ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
+            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} \
+                ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} -nographic \
                 -kernel "$kimg" ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
         fi
         local pid=$! i=0
@@ -11285,6 +11289,67 @@ PY
     KTEST_SOAK_RE="^# chaos: timer-wake rate=8 checked=[0-9]+ fired=[1-9][0-9]*\$"
     par "ktest chaos soak (rv)" ktest_row "ktest chaos soak (rv)" rv "" "" "$KTEST_SOAK" "$KTEST_SOAK_RE"
     par "ktest chaos soak (arm)" ktest_row "ktest chaos soak (arm)" arm "" "" "$KTEST_SOAK" "$KTEST_SOAK_RE"
+    # Wave 15 (N1c): the SpinLock hold bound enforced in instruction time.
+    # The other ktest rows boot on TCG wall time, where a hold is whatever
+    # the host made of it, so LOCKDEP_HOLD_ENFORCE is off on BOARD_QEMU and
+    # the holds over LOCK_MAX_HOLD_US are notes. These rows build the ktest
+    # kernel with LOCKDEP_HOLD_ENFORCE=y and boot it under
+    # `-icount shift=0,sleep=off -smp 1`: the guest timer is QEMU's virtual
+    # clock, which advances one nanosecond per guest instruction (shift=0),
+    # so a hold of N us is N x 1,000 instructions of the holder (with the
+    # interrupt handlers it took meanwhile), the same on every host and
+    # every run. LOCK_MAX_HOLD_US stays at its default, 100 us = 100,000
+    # instructions: a ~1 GHz single-issue core, slower than any board AzOS
+    # targets, so a hold under it here is under it there. -smp 1 because
+    # QEMU runs -icount vCPUs round-robin on one clock: a vCPU's slice is
+    # the time to the next timer deadline over the vCPU count, and a hold
+    # that straddles a slice boundary absorbs every other vCPU's slice
+    # (measured at -smp 4: holds of a few hundred instructions read 0.2-2.4
+    # ms, from any lock). Measured at -smp 1 on N1c's tree: longest
+    # SpinLock holds 70,000 (rv) / 54,000 (arm) instructions, the boot's
+    # static-key patching (ipc/trace.rs `keys_init`); every runtime path
+    # under 12,000. One CPU means a hold that waits on another CPU (text_poke's
+    # TLB shootdown / remote fence.i under its irqsave lock) is not measured
+    # here; those run in the -smp 4 rows, as notes. The three tests that
+    # need 2-3 CPUs say so and are the expected `not ok` (they run in every
+    # other ktest row). Pass row: no
+    # violation, the bound printed as enforced. Canary row:
+    # `canary=lockdep-hold` holds the test's SpinLock twice the bound, and
+    # with enforcement the test does not check its own histogram, so only
+    # lockdep's report fails `lockdep_spinlock_hold_bounded`.
+    KTEST_HOLD_US=100
+    KTEST_HOLD_SMP1="lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu"
+    KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
+    KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
+    ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
+        cp "${REPO_ROOT}/config/defconfigs/$2.config" "$1"
+        printf 'CONFIG_LOCKDEP_HOLD_ENFORCE=y\nCONFIG_LOCK_MAX_HOLD_US=%s\n' "$KTEST_HOLD_US" >>"$1"
+        (cd "$REPO_ROOT" && KCONFIG_CONFIG="$1" python3 -m olddefconfig >/dev/null 2>&1) \
+            && grep -q '^CONFIG_LOCKDEP_KTEST=y$' "$1" && grep -q '^CONFIG_LOCKDEP_HOLD_ENFORCE=y$' "$1" \
+            && grep -q "^CONFIG_LOCK_MAX_HOLD_US=${KTEST_HOLD_US}\$" "$1"
+    }
+    ktest_hold_row() { # ktest_hold_row <label> <isa: rv|arm> <expected not-ok names> [kernel command line] [ERE]
+        local label="$1" isa="$2" defc=qemu cfg tag
+        [ "$isa" = arm ] && defc=qemu-aarch64
+        mkdir -p "$CI_LOG_DIR"
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        # Absolute: `azos_limits`' build script resolves KCONFIG_CONFIG from
+        # its own crate directory.
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/${tag}.config"
+        if ! ktest_hold_cfg "$cfg" "$defc"; then
+            printf "  %-26s" "${label}..."; bad
+            echo "      $cfg: olddefconfig failed or lost LOCKDEP_KTEST, LOCKDEP_HOLD_ENFORCE=y or LOCK_MAX_HOLD_US=$KTEST_HOLD_US"
+            return
+        fi
+        KCONFIG_CONFIG="$cfg" AARCH64_CONFIG="$cfg" KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" \
+            ktest_row "$label" "$isa" "" "$3" "${4:-}" "${5:-}"
+    }
+    par "ktest hold bound, -icount (rv)" ktest_hold_row "ktest hold bound, -icount (rv)" rv "$KTEST_HOLD_SMP1" "" "$KTEST_HOLD_RE"
+    par "ktest hold bound, -icount (arm)" ktest_hold_row "ktest hold bound, -icount (arm)" arm "$KTEST_HOLD_SMP1" "" "$KTEST_HOLD_RE"
+    par "ktest hold bound canary, -icount (rv)" ktest_hold_row "ktest hold bound canary, -icount (rv)" rv \
+        "$KTEST_HOLD_SMP1 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
+    par "ktest hold bound canary, -icount (arm)" ktest_hold_row "ktest hold bound canary, -icount (arm)" arm \
+        "$KTEST_HOLD_SMP1 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #

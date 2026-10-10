@@ -5392,6 +5392,27 @@ mod inode_key_64 {
                 "a name procfs_register refuses got a key");
     }
 
+    /// `procfs_ls` calls back with PROCFS released (wave 15, N1c: a SpinLock
+    /// is never held across a caller's code; the shell's callback prints).
+    /// Another thread takes the table inside the callback.
+    ///
+    /// **Canary.** Hold `PROCFS.lock()` across the loop (the old shape): the
+    /// other thread's `procfs_count` blocks and the timeout assertion fails.
+    #[test]
+    fn procfs_ls_calls_back_with_the_table_unlocked() {
+        let _g = serial();
+        assert!(procfs::procfs_register(procfs::ProcNs::Sys, b"lsprobe", gen_x));
+        let mut seen = 0;
+        procfs::procfs_ls(|p| {
+            if p == "/sys/lsprobe" { seen += 1; }
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || { let _ = tx.send(procfs::procfs_count()); });
+            assert!(rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok(),
+                    "PROCFS was held across the callback for {p}");
+        });
+        assert_eq!(seen, 1, "the registered entry is listed once, with its prefix");
+    }
+
     /// Wave 12 (owner round 48): `/proc/<tid>` names a task only in strict
     /// decimal, so one task has one path (`007` is not `7`, `+7` and `7a`
     /// are nothing), and 0 or a value past `u32` is never a TID.

@@ -646,7 +646,8 @@ A real-time task that asks for a flush, or for a durable record such as an
 e-stop, does not wait for it. It wakes `log-flush` and returns. Its record is
 on disk once `log-flush` has run one flush after the request. A durable record
 from any other task is flushed and synced before the call returns.
-The real-time system watchdog also hands its OTA boot-good mark to `log-flush`. At boot the recorder is replayed to restore the e-stop latch and the
+The real-time system watchdog (`sys-wdt`, on every ISA) requests a flush every
+500 ms and hands its OTA boot-good mark to `log-flush`. At boot the recorder is replayed to restore the e-stop latch and the
 release nonce floor.
 
 **Crash log.** The panic handler first writes a record to a reserved RAM
@@ -783,7 +784,9 @@ context is reported without the interrupt having to arrive at the wrong
 moment. Every hold is timed with the platform timer into a per-class
 histogram; a SpinLock held past `LOCK_MAX_HOLD_US` is a violation with
 `LOCKDEP_HOLD_ENFORCE`, the default on hardware boards, and a note on the
-QEMU board, where emulated time follows host load. A PiMutex or SleepLock
+QEMU board, where emulated time follows host load. The gate also enforces it
+on QEMU in instruction time: one virtual CPU under `-icount shift=0`, where a
+microsecond is 1,000 guest instructions. A PiMutex or SleepLock
 contended by real-time tasks on two CPUs is reported: until proxy
 execution, such tasks share only SpinLocks. Reports are queued, never
 printed from the lock path; the ktest runner prints them and fails the test
