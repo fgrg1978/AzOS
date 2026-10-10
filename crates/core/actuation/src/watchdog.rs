@@ -74,14 +74,20 @@ const WDT_CONTROL_STALL_GRACE_MS: u64 = 400;
 #[inline]
 pub fn halt_if_panicked() {
     // If any hart has panicked, halt this one: bring our actuators to a
-    // safe state and wfi-loop without kicking the WDT or scheduling, so
+    // safe state and halt without kicking the WDT or scheduling, so
     // the board resets cleanly instead of limping on in a bad state.
     if azos_common::is_panicked() {
         // The actuators belong to a domain (the robot's wheels and ESC):
         // it registered their lock-free stop with `gate::
         // register_panic_stop_hook` at boot. Run here, in the same order.
         crate::gate::run_panic_stop_hooks();
-        loop { azos_arch::ARCH.wfi(); }
+        // `Cpu::halt`, not a `wfi` loop: x86_64's `wfi` with interrupts
+        // masked is the panic path's final stop and ends a QEMU run through
+        // isa-debug-exit (status 1). A CPU parked here must not end the
+        // machine before the panicking CPU has reported (a ktest's `not ok`
+        // and its status 3, a reset policy's record). Same instructions on
+        // riscv64 and aarch64 (a `wfi` loop).
+        azos_arch::ARCH.halt()
     }
 }
 
