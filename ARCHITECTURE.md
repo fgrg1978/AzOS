@@ -369,19 +369,21 @@ address.
   endpoint's own `SpinLock`, always taken with interrupts off; a call a
   server has taken is on no list, its record naming the endpoint. Each task slot has a ready
   mask with one bit per endpoint it serves that has calls queued, so an
-  accept (which names no endpoint) finds work with one load. The call path
-  takes no lock to find the endpoint: the endpoint's generation and serving
-  task are one atomic word, read in a QSBR read section, and checked again
-  under the queue lock. A record's identity is one atomic word (generation,
+  accept (which names no endpoint) finds work with one load. The call is
+  checked again under the queue lock against the endpoint it looked up. A
+  record's identity is one atomic word (generation,
   endpoint, state), and the handle both sides hold is the record and its
   generation, so a reply or a collect for a call that is over finds nothing;
   an answered call is collected without the lock.
   When the serving task dies, every call queued on its endpoints or in
   service there completes with `-EPEERDIED` (a named endpoint is then kept,
   unserved and empty, for a successor); when the owner destroys an
-  endpoint, its calls complete with `-EREVOKED`. A destroyed endpoint's slot
-  goes back to the pool only after a grace period (`call_rcu`). A caller that
-  gives up withdraws its call and frees its record. Off, one machine-wide
+  endpoint, its calls complete with `-EREVOKED`. A caller that
+  gives up withdraws its call and frees its record. In either mode the call
+  path takes no lock to find the endpoint: its generation and serving task
+  are one atomic word, read in a QSBR read section (`endpoint.rs`), and a
+  destroyed endpoint's slot goes back to the pool only after a grace period
+  (`call_rcu`). Off, one machine-wide
   table of `IPC_FAST_SLOTS` slots under one lock is used instead
   (`fast_ipc.rs`): a call that finds no free slot fails, the server scans the
   table for its work, and a call whose server died returns -1.

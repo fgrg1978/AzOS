@@ -351,9 +351,9 @@ config IPC_ENDPOINT_QUEUES
       interrupt-safe SpinLock, and a ready mask per task slot from which an
       argumentless accept finds work in O(1). A dead server or a destroyed
       endpoint completes every call queued on it or in service with
-      -EPEERDIED / -EREVOKED. The endpoint lookup on the call path takes no
-      lock (an atomic word read in a QSBR read section), and an endpoint
-      slot is reused only after a grace period (call_rcu).
+      -EPEERDIED / -EREVOKED. (In either mode the endpoint lookup on the
+      call path takes no lock, an atomic word read in a QSBR read section,
+      and an endpoint slot is reused only after a grace period, call_rcu.)
 
       n compiles the old path instead (crates/core/ipc/src/fast_ipc.rs):
       one machine-wide table of IPC_FAST_SLOTS slots under one SpinLock,
