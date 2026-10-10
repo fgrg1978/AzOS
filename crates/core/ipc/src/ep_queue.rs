@@ -92,6 +92,7 @@ const fn bits_for(n: usize) -> u32 {
 
 const _: () = assert!(EPS >= 1 && EPS <= 255, "an endpoint index is 8 bits of a tag");
 const _: () = assert!(RECS >= 1 && RECS < NIL as usize);
+const _: () = assert!(core::mem::size_of::<Rec>() == 64, "a call record is 64 B: the v1 path indexes it by a shift");
 const _: () = assert!(REC_BITS + GEN_BITS <= 63, "a handle is a non-negative i64");
 
 // ── Record tag ──────────────────────────────────────────────────────────────
@@ -155,13 +156,19 @@ struct Rec {
     status: AtomicI32,
     /// The next record in the endpoint's send queue (`NIL` at the tail).
     next: AtomicU32,
-    /// Wave 15 N11: the badge of the endpoint capability a v2 call went
-    /// through, valid only while `badge_gen` is the tag's generation (a v1
-    /// call never writes either, so it reads as unbadged, never as the
-    /// badge of an earlier call).
-    badge: AtomicU32,
-    badge_gen: AtomicU64,
 }
+
+/// Wave 15 N11, per record: the badge of the endpoint capability a v2 call
+/// went through, valid only while `gen` is the record tag's generation (a
+/// v1 call never writes either, so it reads as unbadged, never as the badge
+/// of an earlier call). Beside the records, not in them: a `Rec` stays 64 B,
+/// so the v1 path's record address is still a shift.
+struct Badge {
+    badge: AtomicU32,
+    gen: AtomicU64,
+}
+
+static BADGES: [Badge; RECS] = [const { Badge { badge: AtomicU32::new(0), gen: AtomicU64::new(NO_BADGE_GEN) } }; RECS];
 
 impl Rec {
     const fn new() -> Self {
@@ -174,8 +181,6 @@ impl Rec {
             donee: AtomicU32::new(NO_DONEE),
             status: AtomicI32::new(0),
             next: AtomicU32::new(NIL),
-            badge: AtomicU32::new(0),
-            badge_gen: AtomicU64::new(NO_BADGE_GEN),
         }
     }
 }
@@ -798,16 +803,16 @@ pub fn release_caller(idx: usize, tid: u32) -> Option<Completed> {
 /// [`unstamp_badge`] takes it back before the next call can reuse the
 /// generation.
 pub fn stamp_badge(caller_idx: usize, badge: u32) {
-    let Some(r) = RECORDS.get(caller_idx) else { return };
+    let (Some(r), Some(b)) = (RECORDS.get(caller_idx), BADGES.get(caller_idx)) else { return };
     let t = r.tag.load(Ordering::Relaxed);
-    r.badge.store(badge, Ordering::Relaxed);
-    r.badge_gen.store(tag_gen(t), Ordering::Relaxed);
+    b.badge.store(badge, Ordering::Relaxed);
+    b.gen.store(tag_gen(t), Ordering::Relaxed);
 }
 
 /// A v2 call stamped with [`stamp_badge`] was refused: unstamp.
 pub fn unstamp_badge(caller_idx: usize) {
-    if let Some(r) = RECORDS.get(caller_idx) {
-        r.badge_gen.store(NO_BADGE_GEN, Ordering::Relaxed);
+    if let Some(b) = BADGES.get(caller_idx) {
+        b.gen.store(NO_BADGE_GEN, Ordering::Relaxed);
     }
 }
 
@@ -822,10 +827,11 @@ pub fn accept_badge(handle: u64, holder: u32) -> Option<u32> {
     if tag_state(t) != S_ACCEPTED || tag_gen(t) != handle_gen(handle) || r.server.load(Ordering::Relaxed) != holder {
         return None;
     }
-    if r.badge_gen.load(Ordering::Relaxed) != tag_gen(t) {
+    let b = &BADGES[i];
+    if b.gen.load(Ordering::Relaxed) != tag_gen(t) {
         return None;
     }
-    Some(r.badge.load(Ordering::Relaxed))
+    Some(b.badge.load(Ordering::Relaxed))
 }
 
 /// Outcome of [`delegate`].
