@@ -668,12 +668,12 @@ fn rt_block_io_check() {
     }
 }
 
-// N6: the dispatch-class model. The precedence walk takes stop > DL > RT >
-// fair > idle, a compiled-out class is skipped, preemption across classes
-// follows precedence, the running task's SC holds the class its priority
-// puts it in (the hooks fired), and this CPU's live walk finds a runnable
-// task (its idle task is always queued). Canary `canary=sched-class-invert`
-// (the walk runs backwards): `not ok`.
+// N6: the dispatch-class model. Early: the precedence walk takes stop > DL >
+// RT > fair > idle, a compiled-out class is skipped, preemption across
+// classes follows precedence. Late: the running task's SC holds the class its
+// priority puts it in (the hooks fired) and this CPU's live walk finds a
+// runnable task. Canary `canary=sched-class-invert` (the walk runs
+// backwards): `sched_class_precedence` is `not ok`.
 #[cfg(feature = "ktest")]
 mod sched_class_ktests {
     use azos_sched::sc::{pick_in_precedence, should_preempt, Class, ClassTable, SchedClassOps};
@@ -709,15 +709,23 @@ mod sched_class_ktests {
             {
                 return Err("preemption across classes does not follow precedence");
             }
-            if let Some(cur) = azos_sched::classes::current() {
-                let sc = azos_sched::classes::class_of(cur);
-                let base = azos_sched::scheduler::current_task_base_priority();
-                if sc != Some(azos_sched::classes::class_for(cur, base)) {
-                    return Err("the running task's SC is not in its priority's class");
-                }
+            Ok(())
+        }
+    }
+
+    // Late: the scheduler runs, so the runner is a task created through
+    // `try_task_create_init` (its SC written there) and this CPU's idle task
+    // is queued.
+    azos_ktest::ktest_late! {
+        fn sched_class_live() {
+            let Some(cur) = azos_sched::classes::current() else {
+                return Err("the late runner is not a task");
+            };
+            let base = azos_sched::scheduler::current_task_base_priority();
+            if azos_sched::classes::class_of(cur) != Some(azos_sched::classes::class_for(cur, base)) {
+                return Err("the running task's SC is not in its priority's class");
             }
-            let cpu = azos_sched::smp::current_cpu_id();
-            if azos_sched::classes::pick(cpu).is_none() {
+            if azos_sched::classes::pick_here().is_none() {
                 return Err("no class has a runnable task on this CPU");
             }
             Ok(())

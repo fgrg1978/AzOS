@@ -40,6 +40,8 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use azos_arch::Interrupts;
+
 use crate::sc::{classify, Class, ClassTable, SchedClassOps, SchedContext, NO_CPU};
 use crate::task::{TaskState, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
 
@@ -294,11 +296,14 @@ pub static TABLE: ClassTable<'static> = [
     Some(&IdleClass),
 ];
 
-/// The class walk on `cpu`: the first class in precedence with a runnable
-/// task, and that task (a peek: nothing leaves its queue). Call on `cpu`.
-pub fn pick(cpu: usize) -> Option<(Class, usize)> {
-    if cpu >= ncpu() {
-        return None;
-    }
-    crate::sc::pick_in_precedence(&TABLE, cpu)
+/// The class walk on this CPU: the first class in precedence with a
+/// runnable task, and that task (a peek: nothing leaves its queue).
+/// Interrupts are off for the walk, so the caller cannot migrate between
+/// reading its CPU and reading that CPU's owner-hart RT state.
+pub fn pick_here() -> Option<(Class, usize)> {
+    let s = azos_arch::ARCH.disable_all();
+    let cpu = crate::smp::current_cpu_id();
+    let r = if cpu < ncpu() { crate::sc::pick_in_precedence(&TABLE, cpu) } else { None };
+    azos_arch::ARCH.restore(s);
+    r
 }
