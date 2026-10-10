@@ -13,6 +13,8 @@
 #[cfg(feature = "sched-aps")]
 pub mod aps_state;
 pub mod class;
+/// N6: the scheduling context and the dispatch-class model (pure).
+pub mod sc;
 #[cfg(feature = "sched-aps")]
 pub mod partitions;
 #[cfg(feature = "sched-aps")]

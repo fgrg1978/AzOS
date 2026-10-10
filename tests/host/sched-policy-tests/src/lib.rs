@@ -20,6 +20,9 @@ pub mod partitions;
 #[path = "../../../../crates/core/sched/src/rt_core.rs"]
 pub mod rt_core;
 
+#[path = "../../../../crates/core/sched/src/sc.rs"]
+pub mod sc;
+
 #[path = "../../../../crates/core/sched/src/slot_bitmap.rs"]
 pub mod slot_bitmap;
 
@@ -1603,5 +1606,77 @@ mod percpu_area_sizes {
         // Fixed-size: none of these types is generic over MAX_TASKS.
         assert!(rt_cpu < 4096, "the RT band's per-CPU state grew past a page");
         assert!(aps < 64 * 1024, "the APS per-CPU tables grew past 64 KiB");
+    }
+}
+
+// N6: the dispatch-class model (`sc.rs`).
+#[cfg(test)]
+mod sc_tests {
+    use crate::sc::*;
+
+    const THR: u32 = 12;
+    const IDLE: u32 = 31;
+
+    #[test]
+    fn precedence_is_stop_dl_rt_fair_idle() {
+        assert_eq!(Class::PRECEDENCE, [Class::Stop, Class::Dl, Class::Rt, Class::Fair, Class::Idle]);
+        for (i, c) in Class::PRECEDENCE.iter().enumerate() {
+            assert_eq!(c.rank() as usize, i);
+            assert_eq!(Class::from_raw(i as u8), Some(*c));
+            assert_eq!(Class::from_name(c.name().as_bytes()), Some(*c));
+        }
+        assert!(Class::Dl.preempts(Class::Rt) && Class::Rt.preempts(Class::Fair));
+        assert!(!Class::Fair.preempts(Class::Fair) && !Class::Idle.preempts(Class::Fair));
+        assert_eq!(Class::from_raw(5), None);
+    }
+
+    #[test]
+    fn classify_maps_legacy_state() {
+        assert_eq!(classify(8, false, false, THR, IDLE), Class::Rt);
+        assert_eq!(classify(11, false, false, THR, IDLE), Class::Rt);
+        assert_eq!(classify(12, false, false, THR, IDLE), Class::Fair);
+        assert_eq!(classify(16, false, false, THR, IDLE), Class::Fair);
+        assert_eq!(classify(31, false, false, THR, IDLE), Class::Idle);
+        // A reservation is DL whatever its level; a stop task beats it.
+        assert_eq!(classify(16, true, false, THR, IDLE), Class::Dl);
+        assert_eq!(classify(8, true, true, THR, IDLE), Class::Stop);
+        // No RT class: the band levels are fair.
+        assert_eq!(classify(8, false, false, 0, IDLE), Class::Fair);
+    }
+
+    #[test]
+    fn sc_layout_is_frozen() {
+        assert_eq!(core::mem::size_of::<SchedContext>(), SC_SIZE);
+        let sc = SchedContext::new(Class::Fair);
+        assert_eq!(sc.class(), Class::Fair);
+        assert_eq!(sc.on_cpu.load(core::sync::atomic::Ordering::Relaxed), NO_CPU);
+        sc.set_class(Class::Dl, 9);
+        assert_eq!(sc.class(), Class::Dl);
+    }
+
+    struct Stub(Class, Option<usize>);
+    impl SchedClassOps for Stub {
+        fn class(&self) -> Class { self.0 }
+        fn enqueue(&self, _: usize, _: usize) -> bool { false }
+        fn dequeue(&self, _: usize, _: usize) -> bool { false }
+        fn pick(&self, _: usize) -> Option<usize> { self.1 }
+        fn tick(&self, _: usize, _: usize) -> bool { false }
+        fn preempt_check(&self, _: usize, cur: usize, cand: usize) -> bool { cand < cur }
+    }
+
+    #[test]
+    fn walk_takes_the_first_class_with_work() {
+        let (s, d, r, f, i) = (Stub(Class::Stop, None), Stub(Class::Dl, None),
+            Stub(Class::Rt, Some(2)), Stub(Class::Fair, Some(3)), Stub(Class::Idle, Some(4)));
+        let t: ClassTable<'_> = [Some(&s), Some(&d), Some(&r), Some(&f), Some(&i)];
+        assert_eq!(pick_in_precedence(&t, 0), Some((Class::Rt, 2)));
+        let t2: ClassTable<'_> = [None, None, None, Some(&f), Some(&i)];
+        assert_eq!(pick_in_precedence(&t2, 0), Some((Class::Fair, 3)));
+        let empty: ClassTable<'_> = [None, None, None, None, None];
+        assert_eq!(pick_in_precedence(&empty, 0), None);
+        assert!(should_preempt(&t, 0, (Class::Fair, 3), (Class::Rt, 2)));
+        assert!(!should_preempt(&t, 0, (Class::Rt, 2), (Class::Fair, 3)));
+        // Inside a class, the class decides.
+        assert!(should_preempt(&t, 0, (Class::Fair, 7), (Class::Fair, 3)));
     }
 }
