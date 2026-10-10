@@ -291,6 +291,7 @@ mod pi_futex_tests {
         register_tid_of(tid);
         let mut k = b(101 | FUTEX_WAITERS);
         assert_eq!(PI_FUTEX.owner_died(&mut k, 2), Ok(None), "not 2's word");
+        assert_eq!(PI_FUTEX.owner_died(&mut k, 60), Err(-ESRCH), "no TID: left to the walk");
         assert_eq!(k.word, Some(101 | FUTEX_WAITERS));
         assert_eq!(PI_FUTEX.owner_died(&mut k, 1), Ok(None));
         assert_eq!(k.word, Some(FUTEX_OWNER_DIED | FUTEX_WAITERS));

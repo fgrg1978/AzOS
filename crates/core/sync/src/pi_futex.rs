@@ -346,6 +346,8 @@ fn retire(slot: &mut u32) {
     let Some(id) = PiStateId::from_raw(*slot) else { return };
     *slot = 0;
     let i = id.raw() as usize - 1;
+    // No waiters: drop the owner too, so the graph keeps no stale edge.
+    POOL[i].waiters.set_owner(None);
     // SAFETY: the entry left its slot just now and is retired once; it
     // returns to the free stack only from `rcu_free`.
     unsafe { crate::qsbr::call_rcu(POOL[i].rcu.get(), rcu_free) };
@@ -617,7 +619,8 @@ impl PiFutexOps for PiFutex {
     }
 
     fn owner_died(&self, b: &mut dyn PiBucket, dead: TaskId) -> Result<Option<TaskId>, i32> {
-        let Some(dead_tid) = tid_of(dead) else { return Ok(None) };
+        // An unknown TID: the word is left to the robust walk's own update.
+        let Some(dead_tid) = tid_of(dead) else { return Err(-ESRCH) };
         loop {
             let w = b.read_word().map_err(|_| -EFAULT)?;
             if !may_unlock(w, dead_tid) {
@@ -672,8 +675,10 @@ pub trait PiTable: Sync {
     fn call(&self, uaddr: u64, cmd: PiCmd) -> i64;
     /// The robust-list walk of the exiting task `dead` (process `proc_id`)
     /// found the PI word at `uaddr`: [`PiFutexOps::owner_died`] under the
-    /// bucket lock, then wake the new owner. Returns whether one woke.
-    fn owner_died(&self, proc_id: u32, uaddr: u64, dead: TaskId) -> bool;
+    /// bucket lock, then wake the new owner. `Some(woke)` once the word was
+    /// decided there; `None` when it was left untouched (no such key, an
+    /// `Err` from `owner_died`), so the walk writes `FUTEX_OWNER_DIED` itself.
+    fn owner_died(&self, proc_id: u32, uaddr: u64, dead: TaskId) -> Option<bool>;
 }
 
 /// Install N9's table. Boot, once.
@@ -693,11 +698,11 @@ pub fn sys_futex_pi(uaddr: u64, cmd: PiCmd) -> i64 {
 }
 
 /// The robust exit's PI word: `None` when PI futexes are off or not
-/// registered (the walk keeps its own word update), else whether a waiter
-/// was handed the word.
+/// registered or the word was left untouched (the walk keeps its own word
+/// update), else whether a waiter was handed the word.
 pub fn robust_owner_died(proc_id: u32, uaddr: u64, dead: TaskId) -> Option<bool> {
     match (ops(), TABLE.get()) {
-        (Some(_), Some(t)) if ENABLED => Some(t.owner_died(proc_id, uaddr, dead)),
+        (Some(_), Some(t)) if ENABLED => t.owner_died(proc_id, uaddr, dead),
         _ => None,
     }
 }
