@@ -17260,7 +17260,9 @@ power suspend" 150 \
         # set then read back, the status and a rollback that a fresh volume
         # answers "already on the last good slot". `ps` holds the full task
         # view (`Cap<Task>` READ on "tasks", owner round 48), so it lists a
-        # task that is not its own descendant: hart 0's idle task (TID 1).
+        # task that is not its own descendant: an idle task (PPID 0, PRI 31,
+        # running), whatever its TID: since the camera's capture task (B2)
+        # is created first, the idle tasks no longer start at TID 1.
         # Without the grant it would list only itself (`proc: hidepid view`).
         # `flight-tool-drivetrain`
         # gives the drivetrain to FLIGHT.ELF (the default topology gives it to
@@ -17280,7 +17282,7 @@ ps" 240 \
             "behavior: L2 disabled" "behavior: enabled layers L0 L1 L3" "behavior: L2 enabled" \
             "[CFG] set by tid" "log_level=2" "ota: active A last-good A" \
             "ota: already on the last good slot" "  TID  PPID PRI S NAME" " R TOOLBOX.ELF" \
-            "    1     0  31 R idle"
+            "     0  31 R idle"
         # Canary half (`family-cap-canary` empties the four rows): every
         # operation refused by the capability, recorded (the `[AUTHORITY]`
         # line prints only when the record reached the recorder), not run.
