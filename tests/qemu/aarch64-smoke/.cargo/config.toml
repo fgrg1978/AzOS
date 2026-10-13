@@ -1,0 +1,24 @@
+# Standalone aarch64-bare-metal build.
+# The workspace default is riscv64gc-unknown-none-elf; this dir
+# overrides that for everything built under `tests/qemu/aarch64-smoke`.
+
+[build]
+# `aarch64-unknown-none` (NOT `-softfloat`) so NEON intrinsics
+# in `azos_arch_aarch64::vector` are sound (rustc 1.88+
+# warns then errors on `target_feature = "neon"` against the
+# softfloat ABI; see rust-lang/rust#134375).
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+# Use Rust's bundled LLVM linker — the macOS system `cc` is not
+# always present in PATH and isn't a cross-linker anyway. The
+# custom linker script provides _start; rust-lld doesn't accept
+# `-nostartfiles` (a gcc-ism) so we just pass `-T`.
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-T./aarch64-virt.ld",
+]
+
+[unstable]
+build-std = ["core", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]

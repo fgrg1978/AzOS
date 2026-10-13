@@ -1,0 +1,9 @@
+[package]
+name = "azos_x86_platform_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the pure parts of the x86_64 platform (crates/core/arch-x86_64: acpi.rs, bootinfo.rs, encode.rs): ACPI table walking on synthetic tables, the PVH memory map and command line, APIC/IOAPIC register words, clock scaling. Excluded from workspace."
+
+[dependencies]

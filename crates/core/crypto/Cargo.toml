@@ -1,0 +1,29 @@
+[package]
+name = "azos_crypto"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "AZOS crypto primitives. Hand-rolled SHA-256 + AES-128 + X25519 (task #212) + secure_channel. Ed25519 verify is via the vetted ed25519-dalek crate (no_std) to avoid the HMAC-SHA256 stub trap (task #213)."
+
+[features]
+# `x25519_legacy` (the hand-rolled Montgomery ladder, kept for A/B
+# regression against the dalek reference) was `pub`, unconditional, and
+# non-constant-time despite this comment claiming it was feature-gated —
+# found 2026-09-26 during the OTA/crypto audit (unit 09 §4). This feature
+# now actually gates it; default off, so a normal build never links or
+# exposes it.
+legacy-x25519 = []
+# Boards whose kernel must contain no bit-manipulation instruction at all, not
+# even behind runtime detection (VF2: the gate's `vf2: no B extension` row):
+# the riscv64 Zbb/Zknh SHA-256 paths are not compiled, the generic one runs.
+no-bitmanip = []
+
+[dependencies]
+# Vetted X25519 + Ed25519 (tasks #212/#213). `default-features = false`
+# strips std + rand_core; we only need the verifier + scalar-mult paths
+# which are pure no_std. The hand-written in-tree impls are kept around
+# for now (gated behind the `legacy-x25519` cargo feature above) so a
+# regression tester can A/B against the dalek reference.
+curve25519-dalek = { version = "4", default-features = false, features = ["zeroize"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }

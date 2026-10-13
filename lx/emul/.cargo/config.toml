@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+
+# The repository-root .cargo/config.toml forces a riscv64 bare-metal target
+# and build-std. Cargo merges configs from parent directories, so override
+# both here to build and test on the host (same as tests/host/pci-tests).
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []

@@ -1,0 +1,12 @@
+[package]
+name = "azos_flight_math"
+version = "0.1.0"
+edition = "2021"
+description = "Pure no_std drone math — integer trigonometry (D04 trig) and wind/disturbance estimation (D04 wind). Zero kernel deps so the kernel `flight` crate can use it on riscv while `flight-math-tests` exercises it on the host. Host-testable: cd tests/host/flight-math-tests && cargo test."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[lib]
+name = "azos_flight_math"
+
+[dependencies]

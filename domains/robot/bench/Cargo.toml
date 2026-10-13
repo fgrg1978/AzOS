@@ -1,0 +1,37 @@
+[package]
+name = "azos_bench"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Synthetic microbenchmarks for kernel subsystems (ipc, mm, sched, net, fs, crypto, auth). Runs in-kernel via shell `bench` command; emits parseable [BENCH-RES] lines for the brain bench collector to ingest."
+
+[dependencies]
+# Subsystems we bench.  Add deps as we add per-subsystem modules.
+azos_drv_sys = { workspace = true }
+azos_ipc     = { path = "../../../crates/core/ipc" }
+azos_sched   = { path = "../../../crates/core/sched" }
+azos_sync    = { path = "../../../crates/core/sync" }
+azos_behavior = { path = "../behavior" }
+azos_net     = { path = "../../../crates/net/net" }
+azos_crypto  = { path = "../../../crates/core/crypto" }
+azos_fs      = { path = "../../../crates/fs/fs" }
+azos_mm      = { path = "../../../crates/core/mm" }
+azos_ota     = { path = "../../../crates/core/ota" }
+
+[features]
+default = []
+# Each subsystem gateable independently so build-time exclusion is trivial.
+ipc      = []
+mm       = []
+sched    = []
+net      = []
+fs       = []
+crypto   = []
+auth     = []
+cap      = []
+protocol = []
+ota      = []
+asyncrt  = []
+# Convenience: enable everything.
+all      = ["ipc", "mm", "sched", "net", "fs", "crypto", "auth", "cap", "protocol", "ota", "asyncrt"]

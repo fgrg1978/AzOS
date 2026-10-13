@@ -1,0 +1,11 @@
+[package]
+name = "azos_flight_sim"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side simulation and unit tests for drone flight algorithms (D07)."
+
+# No workspace deps — pure std Rust so `cargo test -p azos_flight_sim`
+# runs on the development machine without the RISC-V toolchain.
+[dependencies]

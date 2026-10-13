@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.ota — Over-The-Air firmware update configuration
+#
+# RFC-0026 Phase C1.  OTA slot layout, image size limits, signature
+# enforcement, and rollback protection.
+
+menu "OTA Firmware Updates"
+config OTA_MAX_IMAGE_SIZE_MB
+    int "Maximum OTA image size (MiB)"
+    range 1 64
+    default 8
+    help
+      Hard limit on firmware image size accepted by the OTA receiver.
+      Images larger than this are rejected before writing to FAT.
+      This is the ONLY size ceiling in the OTA path (crates/core/ota's
+      `OTA_MAX_IMAGE_SIZE` reads this symbol via azos_limits, and
+      `tools/ota_send.py` reads the same `.config` this expands to, so
+      neither can drift from it). Secure boot verification used to carry
+      a second, smaller, disconnected ceiling (a 2 MiB `.bss` buffer to
+      hold a whole image); that buffer is gone as of 2026-09-26 (U09-14)
+      now that verification streams the hash instead of buffering the
+      image, so raising this value costs no extra `.bss`.
+
+      Cost: none (+0 B of RAM measured for 8 -> 9 and -> 16 MiB, both ISAs).
+
+choice
+    prompt "OTA signature scheme"
+    default OTA_SIG_ED25519
+    help
+      Cryptographic scheme used to sign and verify OTA firmware images.
+      The brain server and the kernel must use the same scheme.
+
+    config OTA_SIG_ED25519
+        bool "Ed25519 (recommended)"
+        help
+          Ed25519 using the Ed25519-Donna or TweetNaCl backend.
+          Small signatures (64 bytes), fast verification, high security.
+          Current codebase default and the only fully implemented scheme.
+
+    config OTA_SIG_NONE
+        bool "No signature (development / debug only)"
+        help
+          Disables signature verification entirely.  DANGEROUS — allows
+          any image to be flashed.  Use only in an isolated lab environment
+          with no network access to the OTA endpoint.
+
+endchoice
+endmenu # OTA Firmware Updates

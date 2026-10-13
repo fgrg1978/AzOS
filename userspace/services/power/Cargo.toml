@@ -1,0 +1,34 @@
+[package]
+name = "power"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS power policy server and tool (RFC-0055 S5): applies a power profile through the kernel's Power interface (the power endpoint its topology row grants; the kernel keeps the limits), plus suspend, reboot, shutdown and the scheduler rate. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_power = { path = "../../lib/power" }
+
+[features]
+# Host canaries (tests/host/power-tests), never in a real build: each removes
+# one decision. pw-fallback: a refusal is never answered. pw-stop: a call that
+# failed outright does not stop the run. pw-nomodel: a machine with no energy
+# model is asked anyway.
+pw-fallback-canary = []
+pw-stop-canary = []
+pw-nomodel-canary = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+topology = true

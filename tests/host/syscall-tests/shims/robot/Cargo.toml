@@ -1,0 +1,23 @@
+[package]
+name = "syscall_test_robot"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_robot, used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+# `motor.rs` and `pid.rs` are the real files (see src/lib.rs). The driver
+# stand-in is the same crate the outer package uses -- Cargo unifies identical
+# paths into one compiled crate -- so the GPIO and PWM probes a test installs
+# see the motor layer's writes.
+syscall_test_drivers = { path = "../drivers" }
+# `motor_stop_panic` needs `SpinLock::get_mut_unchecked`, which
+# `cap_test_sync` deliberately omits. See shims/robot_sync.
+azos_sync = { path = "../robot_sync", package = "syscall_test_robot_sync" }
+# Real, no_std, no dependencies, host-buildable: `is_panicked`.
+azos_common = { path = "../../../../../crates/core/common" }
+
+[features]
+# motor.rs (pulled via #[path]) has #[cfg(feature = "test-util")] reset helpers.
+test-util = []

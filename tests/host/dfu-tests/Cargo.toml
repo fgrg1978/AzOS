@@ -1,0 +1,15 @@
+[package]
+name = "azos_dfu_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side unit tests for azos_dfu (DEV02 DFU 1.1 protocol). Excluded from workspace."
+
+# Mirror of ota-tests / tftp-tests pattern. Run with:
+#   cd tests/host/dfu-tests && cargo test
+# Pinned to stable via rust-toolchain.toml — see crates/arch-x86_64-tests
+# Cargo.toml for the broken-nightly build-std backstory.
+
+[dependencies]
+azos_dfu = { path = "../../../crates/drivers/dfu" }

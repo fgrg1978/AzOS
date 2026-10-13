@@ -1,0 +1,24 @@
+[package]
+name = "azos-config"
+version = "0.1.0"
+edition = "2021"
+description = "Build-time Kconfig reader and Rust const emitter for AZOS (RFC-0026)"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# This crate is host-built (std) — it runs as part of the workspace build.rs
+# pipeline.  It is EXCLUDED from the workspace members so it does not
+# participate in cross-compilation to riscv64-none-elf.
+# Add to workspace Cargo.toml exclude list if not already present.
+
+[lib]
+name = "azos_config"
+
+[dependencies]
+# Zero external deps, Phase C1 through today. Phase C2 (RFC-0026, this
+# crate's own module doc) shipped `parse_config`/`emit_rust` as a hand-rolled
+# `.config` reader instead of adding `toml`/`serde` — audit unit 10 flagged
+# the line this replaces as a stale claim the code contradicts (2026-09-25).
+
+[dev-dependencies]
+# None — Phase C2's tests live in `#[cfg(test)]` inside `src/lib.rs`.

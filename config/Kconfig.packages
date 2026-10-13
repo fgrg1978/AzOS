@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.packages — signed application packages (plan D14, Phase 6)
+#
+# crates/core/pkg is the format, the verification and the admission; the
+# installer service that runs them is userspace/services/pkgd (USERSPACE_PKGD,
+# generated into config/Kconfig.userspace). The device policy that says which
+# author keys are admitted is not here: it is the `[signer.NAME]` sections of
+# the signed topology (TOPOLOGY_MAX_SIGNERS in config/Kconfig.security).
+
+menu "Application packages"
+
+config PKG_MAX_KB
+    int "Largest package the installer accepts (KiB)"
+    range 16 65536
+    default 4096 if HWCLASS_SERVER
+    default 256 if HWCLASS_EMBEDDED
+    default 1024
+    help
+      The installer (PKGD.ELF) reads a package whole into one buffer before it
+      verifies a byte of it: the signature covers the metadata, the images are
+      checked against the hashes that metadata carries, and the rows are
+      parsed only after both. A package larger than this is refused unread.
+      The ceiling is also the installer's biggest static buffer.
+
+      Cost: PKG_MAX_KB of RAM in PKGD.ELF (.bss), either ISA; nothing in the
+      kernel.
+
+config PKG_META_MAX_KB
+    int "Largest manifest or warrant section of a package (KiB)"
+    range 1 64
+    default 16
+    help
+      A package carries two small texts besides its images: the metadata
+      (name, hardware classes, ABI and interface levels, one hash per image)
+      and the rows (the `[task.NAME]` sections that become part of the
+      topology). Each is at most this. A larger one is refused before the
+      signature is checked.
+
+      Cost: none by itself.
+
+config PKG_MAX_IMAGES
+    int "Programs one package may carry"
+    range 1 64
+    default 8
+    help
+      Every image of a package is a program with exactly one row, so this is
+      also the most rows one package adds to the topology. The metadata parser
+      keeps a table of this many images on its stack.
+
+      Cost: 56 B of stack per entry while a package is read, either ISA.
+
+config PKG_MAX_STAGED
+    int "Packages staged at once"
+    range 1 256
+    default 4 if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
+    default 16
+    help
+      The installer stages a package as one file in /fat/PKG and judges a new
+      one against the topology AND the packages already staged (their rows are
+      merged first), so it keeps the rows text of each staged package in an
+      arena of this many slots of PKG_META_MAX_KB. A package staged beyond
+      this is refused (`no room`); remove one first.
+
+      Cost: PKG_MAX_STAGED x PKG_META_MAX_KB of RAM in PKGD.ELF (.bss), either
+      ISA; nothing in the kernel.
+
+config PKG_MAX_API
+    int "Interface levels one package may require"
+    range 1 32
+    default 8
+    help
+      A package states the lowest level it needs of each IDL interface it
+      calls (`[api]`). The device refuses it when an interface is missing or
+      older. More entries than this are refused by the metadata parser.
+
+      Cost: 24 B of stack per entry while a package is read, either ISA.
+
+endmenu

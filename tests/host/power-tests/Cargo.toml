@@ -1,0 +1,27 @@
+[package]
+name = "azos_power_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the power policy: the PowerPolicy interface and its codec (userspace/lib/power), the policy server's decision table (userspace/services/power/src/policy.rs, pulled in by path), run against the kernel's real limits (azos_energy::policy). Excluded from workspace."
+
+# Run with:  cd tests/host/power-tests && cargo test --release
+
+[features]
+# Canaries: each removes one decision of the server, and exactly its tests
+# must fail (tools/ci_check.sh, row power-tests).
+pw-fallback-canary = []
+pw-stop-canary = []
+pw-nomodel-canary = []
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_power = { path = "../../../userspace/lib/power" }
+azos_energy = { path = "../../../crates/core/energy" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

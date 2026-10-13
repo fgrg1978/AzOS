@@ -1,0 +1,18 @@
+[package]
+name = "azos_lx_loader"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+The relocatable-module loader of RFC-0053 (stage L0b): parses an ELF64 ET_REL
+object (a Linux-style `.ko`), lays its allocated sections out into a text
+region and a data region, resolves undefined symbols through a caller-supplied
+table, and applies the riscv64 and aarch64 relocation subset section 6.2
+names. Pure logic, no_std, no allocation and no syscalls: the ring-3 server
+(`userspace/services/lxsrv`) owns the memory and asks the kernel to verify the
+bytes and to make the text executable. Contains no Linux code. Host-tested by
+tests/host/lx-loader-tests.
+"""
+
+[dependencies]

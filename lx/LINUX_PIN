@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The Linux tree every module of the lx/ layer is built against (RFC-0053 4.5).
+# A tag of the kernel.org STABLE tree (stable point releases are not tags of
+# torvalds/linux), never a branch. Fixed at stage L0 on 2026-10-03: the latest
+# non-rc tag of that tree (`git ls-remote --tags` showed v7.2.9; v7.3 was at
+# -rc5). Changing it is an "Lbump": every validated module row re-runs.
+#
+# Read by tools/lx_fetch_linux.sh (what to fetch) and tools/lx_license_lint.py
+# (the gitlink, the checkout and config/Kconfig.linux LX_LINUX_PIN must agree).
+url=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+tag=v7.2.9
+tag_object=bd50482a9c7a6eb91468f1064a346a75e677e692
+commit=5fce161649b4d779d1b76d9fcd52dc77779774b8

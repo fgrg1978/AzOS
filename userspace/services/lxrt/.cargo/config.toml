@@ -1,0 +1,26 @@
+[build]
+target = "riscv64imac-unknown-none-elf"
+
+[target.riscv64imac-unknown-none-elf]
+rustflags = [
+    "-C", "link-arg=-Tuser.ld",
+    "-C", "code-model=medium",
+    "-C", "target-feature=+zaamo,+zalrsc",
+]
+
+[unstable]
+build-std = ["core"]
+build-std-features = ["compiler-builtins-mem"]
+
+# aarch64 builds with the soft-float target: the runtime runs on the Linux
+# program's thread between its instructions and shares its FP/SIMD state,
+# so no instruction of it may name a vector register (the hard-float
+# `aarch64-unknown-none` the other images use would).
+[target.aarch64-unknown-none-softfloat]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tuser_aarch64.ld",
+    "-C", "link-arg=-zmax-page-size=4096",
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "code-model=small",
+]

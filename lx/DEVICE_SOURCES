@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The Linux leaf drivers whose ids the hardware bus matches (one per line):
+#
+#   <lxsrv class> <path under third_party/linux>
+#
+# tools/lx_device_table.py reads each file's MODULE_DEVICE_TABLE and
+# crates/drivers/hwbus/build.rs turns the ids into the Linux match table. A
+# class server (lxsrv-<class>) is launched only when one of its ids matched a
+# device the bus admitted. No leaf driver is listed yet; the first (a camera
+# sensor or an I2C touch controller, RFC-0053 re-scoped) adds its line here
+# in the change that adds the driver.

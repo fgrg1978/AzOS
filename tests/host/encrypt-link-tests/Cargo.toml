@@ -1,0 +1,33 @@
+[package]
+name = "azos_encrypt_link_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side cross-side compat tests for the RFC-0019 handshake state machine in `crates/net/encrypt-link`. Pins byte-for-byte agreement with AzOSRobotBrain/secure_channel.py using deterministic ephemeral keys. Excluded from workspace."
+
+# Run with:
+#   cd tests/host/encrypt-link-tests && cargo +stable test --release
+#
+# Pinned to stable via rust-toolchain.toml.
+
+[features]
+# K-C5. Rebuild the suite with the enforced link policy compiled in, so both
+# halves of the gate get exercised:
+#
+#   cargo test --release                      # policy OFF
+#   cargo test --release --features enforced   # policy ON
+#
+# `tests/link_policy.rs` asserts the value of
+# `azos_encrypt_link::link_encrypt_enforced()` in BOTH states. That is
+# the guard against this tree's known failure mode — the secure-boot CI
+# scenario that passed green while running no Ed25519 at all, because the
+# thing it depended on was silently absent. A renamed or mis-forwarded
+# feature here fails the suite instead of quietly disarming the gate.
+enforced = ["azos_encrypt_link/link-encrypt-enforced"]
+
+[dependencies]
+# `key-introspection` exposes `EncryptLink::key_material` so the record-layer
+# tests can check what a rekey leaves behind. Test builds only.
+azos_encrypt_link = { path = "../../../crates/net/encrypt-link", features = ["key-introspection"] }
+azos_crypto       = { path = "../../../crates/core/crypto" }

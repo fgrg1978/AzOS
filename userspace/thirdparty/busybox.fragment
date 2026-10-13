@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# The BusyBox configuration `make busybox` builds (RFC-0047 stage 3): an
+# allnoconfig plus these lines. `sh` (ash) runs its applets in a forked child
+# (FEATURE_SH_STANDALONE + PREFER_APPLETS), so a volume needs one BUSYBOX.ELF.
+CONFIG_STATIC=y
+CONFIG_BUSYBOX=y
+CONFIG_SHOW_USAGE=y
+CONFIG_FEATURE_PREFER_APPLETS=y
+CONFIG_LONG_OPTS=y
+CONFIG_ASH=y
+CONFIG_SH_IS_ASH=y
+CONFIG_BASH_IS_NONE=y
+CONFIG_ASH_ECHO=y
+CONFIG_ASH_PRINTF=y
+CONFIG_ASH_TEST=y
+CONFIG_FEATURE_SH_STANDALONE=y
+CONFIG_FEATURE_SH_NOFORK=y
+CONFIG_ECHO=y
+CONFIG_LS=y
+CONFIG_CAT=y
+CONFIG_TRUE=y
+CONFIG_FALSE=y
+CONFIG_UNAME=y
+CONFIG_WC=y
+CONFIG_SLEEP=y

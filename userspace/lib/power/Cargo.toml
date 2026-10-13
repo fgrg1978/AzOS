@@ -1,0 +1,14 @@
+[package]
+name = "azos_power"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The power policy library: the verdict vocabulary and the PowerPolicy view through which the policy logic sets the energy seams (governor, OPP range, headroom, rate limit, idle depth) within the kernel's limits. no_std; tested on the host (tests/host/power-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_devif = { path = "../../../crates/core/devif" }
+azos_abi = { path = "../../../crates/core/abi" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

@@ -1,0 +1,10 @@
+[package]
+name = "fs_test_limits"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for the generated `azos_limits` constants that crates/fs/fs/src/vfs.rs reads."
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

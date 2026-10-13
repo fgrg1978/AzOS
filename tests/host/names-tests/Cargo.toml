@@ -1,0 +1,19 @@
+[package]
+name = "azos_names_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Names object: the interface and the codec of the name server's view (userspace/lib/names) and the name server's decision and refusal record (userspace/services/namesd). Excluded from workspace."
+
+# Run with:  cd tests/host/names-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_names = { path = "../../../userspace/lib/names" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

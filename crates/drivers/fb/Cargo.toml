@@ -1,0 +1,18 @@
+[package]
+name = "azos_fb"
+version = "0.1.0"
+edition = "2021"
+description = "Generic framebuffer: one object (geometry, stride, pixel format), an 8x16 text console with scrolling and a dirty-rect flush, and a lock-free panic screen."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# The kernel framebuffer console (config/Kconfig.drivers FB_CONSOLE): a text
+# grid mirroring the UART console, flushed to the framebuffer.
+console = []
+# The lock-free panic screen (FB_PANIC_SCREEN): the panic report drawn
+# straight onto the mapping.
+panic-screen = []
+
+[dependencies]
+azos_limits = { workspace = true }

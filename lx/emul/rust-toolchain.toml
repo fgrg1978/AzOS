@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+
+# Host-tested crate: the root pins a nightly for the kernel's build-std;
+# nothing here needs it, so follow tests/host/pci-tests and use stable.
+[toolchain]
+channel = "stable"

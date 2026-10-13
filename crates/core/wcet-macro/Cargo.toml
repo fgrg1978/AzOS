@@ -1,0 +1,22 @@
+[package]
+name = "wcet-macro"
+version = "0.1.0"
+edition = "2021"
+description = "RFC-0027 — #[wcet(N_us)] proc-macro for per-function WCET budget annotations"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# This crate is host-built (proc-macro) — it runs at compile time only.
+# It is EXCLUDED from the workspace members so it does not
+# participate in cross-compilation to riscv64-none-elf.
+# The empty [workspace] table below keeps Cargo from inheriting the
+# parent workspace, allowing independent `cargo test` invocations.
+[workspace]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn   = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

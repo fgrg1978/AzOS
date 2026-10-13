@@ -1,0 +1,31 @@
+[package]
+name = "azos_nvme"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+NVMe 1.x wire protocol: register layout, queue and doorbell arithmetic,
+64-byte submission-entry and completion-entry encoding, PRP list building,
+Identify decoding. Pure (no_std, no MMIO, no allocation): the driver in
+crates/drivers/block/src/nvme.rs owns the device, this crate owns the
+numbers, and tests/host/nvme-tests exercises it on the host.
+"""
+
+[dependencies]
+
+[features]
+# Gate/host canaries only. Each one puts a specific protocol bug back; the
+# host test that guards the property must go red with it on. Never enabled in
+# a shipping build.
+#
+# Doorbell stride ignored: every doorbell is computed as if CAP.DSTRD were 0.
+canary-doorbell = []
+# Completion phase tag not flipped when the head wraps.
+canary-phase = []
+# PRP2 of a 3+ page transfer points at the second DATA page, not at the list.
+canary-prp = []
+# NLB (CDW12) carries the sector count instead of count-1.
+canary-nlb = []
+# Full and empty confused: `sq_full` is `tail == head`.
+canary-full = []

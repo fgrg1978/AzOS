@@ -1,0 +1,17 @@
+[package]
+name = "azos_lx_loader_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/core/lx-loader (RFC-0053 L0b): instruction-field encoders against llvm-mc encodings, and whole-module loads of build/lx/lxtest-*.ko checked relocation by relocation against an independent decoder. Excluded from the workspace like the other *-tests crates."
+
+# Run with:  make lx-modules && cd tests/host/lx-loader-tests && cargo test --release
+
+[dependencies]
+azos_lx_loader = { path = "../../../crates/core/lx-loader" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

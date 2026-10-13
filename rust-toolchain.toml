@@ -1,0 +1,6 @@
+[toolchain]
+# Dated so every build uses one compiler: nightly-2026-02-21 is rustc
+# 1.95.0-nightly 0376d43d4 (commit date 2026-02-20), the compiler gate-182 ran on.
+channel = "nightly-2026-02-21"
+components = ["rust-src", "llvm-tools-preview"]
+targets = ["riscv64gc-unknown-none-elf"]

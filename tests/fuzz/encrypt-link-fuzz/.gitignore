@@ -1,0 +1,4 @@
+# cargo-fuzz output: crash artifacts and coverage reports stay local. The
+# checked-in inputs are corpus/ (seeds) and regressions/ (fixed crashes).
+artifacts/
+coverage/

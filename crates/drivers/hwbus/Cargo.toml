@@ -1,0 +1,22 @@
+[package]
+name = "azos_hwbus"
+version = "0.1.0"
+edition = "2021"
+description = "The runtime hardware bus: device objects from PCI, the device tree and virtio-mmio, the driver match tables, the bind policy, unbind and rebind. Pure no_std, host-tested."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+build = "build.rs"
+
+[dependencies]
+azos_limits = { workspace = true }
+
+[build-dependencies]
+# Host-only, used by build.rs to read `.config` (the native table keeps the
+# entries of the drivers the image compiles).
+azos-config = { path = "../../core/azos-config" }
+
+[features]
+# Gate canary only: the bind policy ignores the topology-only setting and
+# admits everything the tables match. The host rows that pin the policy must
+# fail with this on. Never enabled in a shipping build.
+policy-canary = []

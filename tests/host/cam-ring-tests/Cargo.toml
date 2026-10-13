@@ -1,0 +1,16 @@
+[package]
+name = "azos_cam_ring_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_cam_ring (S1/S6 SPSC frame ring). Excluded from workspace."
+
+# Same pattern as dfu-tests / ota-tests / tftp-tests.
+# Run with:  cd tests/host/cam-ring-tests && cargo +stable test
+
+[dependencies]
+azos_cam_ring = { path = "../../../crates/drivers/cam-ring", features = ["test-util"] }
+
+# Prevents Cargo from merging this crate into the workspace above.
+[workspace]

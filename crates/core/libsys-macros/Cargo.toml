@@ -1,0 +1,20 @@
+[package]
+name = "azos_libsys_macros"
+version = "0.1.0"
+edition = "2021"
+description = "AzOS libsys proc-macros: #[main] (a ring-3 program's entry and panic handler) and #[test] (a test the user-code harness runs). Host-side; use them through azos_libsys."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# Host-built (proc-macro), excluded from the riscv64 workspace like idl-macros.
+# The empty [workspace] keeps Cargo from inheriting the parent workspace.
+# Run with:  cd crates/core/libsys-macros && cargo test --offline
+[workspace]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

@@ -1,0 +1,9 @@
+# Host tests. The repository root's .cargo/config.toml forces
+# riscv64imac-unknown-none-elf with build-std; these run on the host.
+# Same override as tests/host/seccomp-tests and tests/host/ota-tests.
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []

@@ -1,0 +1,18 @@
+[package]
+name = "azos_linux_abi_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Linux personality's pure half (crates/core/linux-abi, RFC-0047). Excluded from workspace."
+
+# Run with:  cd tests/host/linux-abi-tests && cargo test --release
+
+[dependencies]
+azos_linux_abi = { path = "../../../crates/core/linux-abi" }
+azos_abi = { path = "../../../crates/core/abi" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

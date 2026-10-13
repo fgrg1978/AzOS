@@ -1,0 +1,12 @@
+[package]
+name = "azos_gguf_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the ML library (userspace/lib/ml): the GGUF parser, the dequantisers, the GGUF MLP, and the RMLP parity sweep that the ring-3 service's kernel smoke used to run under QEMU."
+
+# Run with:  cd tests/host/gguf-tests && cargo test
+
+[dependencies]
+azos_ml = { path = "../../../userspace/lib/ml" }

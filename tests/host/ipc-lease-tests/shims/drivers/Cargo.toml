@@ -1,0 +1,9 @@
+[package]
+name = "ipc_lease_test_drivers"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for the driver class crates (azos_drv_*), used only by tests/host/ipc-lease-tests. NOT part of the kernel. Covers only what irq_bind.rs's irq_grant_cap (U03-2) needs: the PLIC line-count bound."
+
+[dependencies]

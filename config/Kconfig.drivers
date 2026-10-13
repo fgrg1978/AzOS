@@ -1,0 +1,849 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.drivers — Hardware driver enables
+#
+# RFC-0026 Phase C1.  Each option maps to the corresponding driver being
+# compiled in.  Board dependencies are encoded via `depends on BOARD_*`.
+
+menu "Drivers"
+
+# ---------------------------------------------------------------------------
+# Ring-3 driver proxy
+# ---------------------------------------------------------------------------
+
+config PROXY_SPIN_US
+    int "Ring-3 driver proxy: spin before blocking on a reply (us)"
+    range 0 1000
+    default 20
+    help
+      How long an in-kernel client of a ring-3 driver polls for the reply
+      before it blocks, and only while the driver is running on another
+      hart (crates/drivers/sys/src/user_driver_proxy.rs, PROXY_SPIN_US;
+      crates/drivers/driver_server/src/reply_wait.rs, wait_for_reply). 0 disables
+      the spin: every wait blocks at once.
+
+      The right value is board-specific: it should sit just above the time
+      a running driver takes to answer, and below what a block + cross-hart
+      wake + switch back costs on that board. Measure it on the board, not
+      under QEMU (-icount serialises the vCPUs, so the spin cannot help there
+      at all):
+        1. Boot the qemu-style image whose autorun is gpio_drv (the image the
+           "userspace: ring-3 GPIO driver" gate row builds) with -smp >= 2
+           and read the kernel line
+             [AQ3] proxy round trip over 32 pings: min=.. median=..us max=.. failed=0 spin=N
+           `spin=N` counts the replies the spin found before any block.
+        2. Rebuild with PROXY_SPIN_US=0 and repeat: that median is the cost
+           of the block path on this board.
+        3. Raise the value until `spin=` stops growing; keep the smallest
+           value that finds most replies while its median stays below the
+           step-2 median. Several boots per value: the numbers are wall
+           clock.
+      20 us is the value measured on QEMU TCG (MTTCG, 4 harts): round trip
+      medians 11-12 us with the spin vs 47-69 us without, 24-31 of 32
+      replies found by the spin (wave 9).
+
+config PROXY_REPLY_TIMEOUT_MS
+    int "Ring-3 driver proxy: reply timeout (ms)"
+    range 1 10000
+    default 100
+    help
+      How long an in-kernel client of a ring-3 driver waits, blocked, for
+      the reply before the request fails with DriverError::Busy
+      (crates/drivers/sys/src/user_driver_proxy.rs,
+      PROXY_REPLY_TIMEOUT_MS).
+
+# ---------------------------------------------------------------------------
+# Hardware bus
+# ---------------------------------------------------------------------------
+
+choice HWBUS_AUTOBIND
+    prompt "Hardware bus: which detected devices get a driver (HWBUS_AUTOBIND)"
+    default HWBUS_AUTOBIND_TOPOLOGY if PRESET_ROBOT || PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
+    default HWBUS_AUTOBIND_TOPOLOGY if PRESET_FIRMWARE || PRESET_WEARABLE
+    default HWBUS_AUTOBIND_AUTO
+    help
+      The hardware bus (crates/drivers/hwbus, azos_drv_bus::hwbus)
+      enumerates PCI/PCIe functions, device-tree nodes that carry a
+      `compatible` and populated virtio-mmio windows into device objects,
+      each named by a `Device` capability. This says which of them get a
+      driver. Either way every device is detected and listed in
+      /proc/devices; the choice is only about binding.
+
+      Presets: desktop, server, IoT/HMI, gateway and generic bind
+      automatically; robot, industrial, automotive, firmware and wearable
+      bind only what the signed topology declares.
+
+    config HWBUS_AUTOBIND_AUTO
+        bool "Auto: bind every device a driver table matches"
+        help
+          The native table is consulted first, then the Linux table (large
+          boards only: HWBUS binds a Linux class only when the image has
+          LINUX_DRIVERS); the first match is bound. A `[device.*]` row of
+          the topology may still name another native driver or refuse a
+          device.
+
+    config HWBUS_AUTOBIND_TOPOLOGY
+        bool "Topology only: bind what the signed topology admits"
+        help
+          Everything is detected and nothing is bound unless a
+          `[device.<name>]` row of the topology admits it (`match =
+          "<selector>"`). A device a driver table matches but no row
+          admits is not touched; the bus records the decision "detected,
+          not admitted" (/proc/decisions). The hardware an image needs to
+          boot (the console, the interrupt controller, the timer) is
+          brought up before the bus and is not subject to this; the
+          built-in topology of each image admits the devices that image's
+          own drivers need (its disk and network interface).
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Console
+# ---------------------------------------------------------------------------
+
+config CONSOLE_TX_RING_BYTES
+    int "Console UART transmit ring (bytes)"
+    range 1024 65536
+    default 4096
+    help
+      Bytes of console output queued for the UART transmit interrupt
+      (crates/drivers/sys/src/uart.rs, TX_RING_BYTES). A ring-3
+      writer that outruns the wire waits for room; a kernel line that
+      does not fit is deferred. 4096 is about 0.36 s of wire at 115200
+      baud. Must stay well above the 256-byte line reserve of
+      console_defer.rs, or every kernel line is deferred.
+
+      Cost: 1 B of RAM per byte (TX, .bss), the same on riscv64 and aarch64:
+      4,136 B at the default.
+
+config CONSOLE_DEFER_BYTES
+    int "Console deferred-line buffer (bytes)"
+    range 1024 65536
+    default 8192
+    help
+      Kernel console lines written while another context owns the UART
+      wait here (crates/drivers/sys/src/uart.rs, DEFER_BYTES). A full
+      buffer drops lines and prints "[CONSOLE] dropped", which fails every
+      gate row. 8192 is 1.9x the largest high-water mark measured
+      (4257 B, aarch64 -smp 2 splice stress, 2026-09-28).
+
+      Cost: 1 B of RAM per byte (DEFER, .bss), the same on riscv64 and aarch64:
+      8,240 B at the default.
+
+config CONSOLE_TX_IRQ_BUDGET
+    int "Console: most bytes one TX interrupt moves to the UART"
+    range 16 4096
+    default 256
+    help
+      crates/drivers/sys/src/uart.rs, TX_IRQ_BUDGET. On a real UART
+      the 16-byte FIFO fills first, so this never binds; under QEMU,
+      which transmits instantly, it is the bound.
+
+config UART_16550_TX_FIFO_DEPTH
+    int "Console: 16550 transmit FIFO depth (bytes per THR-empty)"
+    range 1 256
+    default 16
+    help
+      crates/drivers/sys/src/uart.rs, TX_FIFO_DEPTH of the MMIO 16550
+      (riscv64 QEMU virt, VF2/K1) and of the x86_64 port-I/O COM1. With
+      the FIFOs on, THR-empty means the whole FIFO is free, so this many
+      bytes go out per line-status read on the synchronous path and per
+      TX interrupt on the ring path. 16 is the 16550A (and QEMU's model);
+      a 16750 or a DesignWare APB UART built with a deeper FIFO can take
+      64 or more. Too large overruns the FIFO and drops console bytes; too
+      small costs one more status read (an MMIO access or, on x86_64, a
+      VM exit under a hypervisor) and one more interrupt per that many
+      bytes. Costs no RAM. Unused by the PL011 (aarch64).
+
+# ---------------------------------------------------------------------------
+# Optional drivers and buses (each maps to a kernel cargo feature)
+# ---------------------------------------------------------------------------
+
+config DRV_PCI
+    # cargo-feature: pci
+    bool "PCI bus: ECAM enumeration, MSI-X, virtio-pci transport (QEMU)"
+    default n
+    depends on BOARD_QEMU
+    help
+      Kernel feature `pci` (crates/drivers/pci; virtio-pci modern transport
+      for virtio-net). QEMU only. riscv64 and aarch64 `virt`: ECAM from
+      the DTB. x86_64: ECAM from the ACPI MCFG (q35), else
+      X86_PCI_ECAM_BASE (QEMU microvm `pcie=on`: no MCFG and no ports),
+      else the legacy 0xCF8/0xCFC port pair; MSI
+      and MSI-X go straight to the local APIC on a vector from the
+      MSI block above the IOAPIC lines (X86_MSI_VECTORS). Built and
+      booted by the gate's PCI rows. n: the PCI code is not compiled.
+
+config DRV_NVME
+    # cargo-feature: nvme
+    bool "NVMe SSD over PCIe (native driver, admin + one I/O queue pair)"
+    default n
+    depends on DRV_PCI
+    help
+      Kernel feature `nvme` (crates/drivers/block/src/nvme.rs over the
+      wire-protocol crate crates/drivers/nvme). Finds an NVMe controller
+      (PCI class 01:08:02) on ECAM bus 0 before the block device is
+      brought up, resets and enables it, identifies the controller and
+      namespace 1, creates one I/O submission/completion queue pair and
+      becomes the boot block device in place of virtio-blk, so the FAT32
+      volume mounts from it. Reads and writes carry PRP lists (a transfer
+      of up to NVME_SLOT_KB per command), Flush is sent where the
+      controller reports a volatile write cache. Completions come by MSI-X
+      where the machine routes it (riscv64 AIA IMSIC, aarch64 GICv3 ITS,
+      x86_64 local APIC) and are polled otherwise. One queue pair serves every CPU, under one
+      lock held only for bookkeeping, never across the device wait;
+      NVME_INFLIGHT commands are in the device at once. 512-byte-block
+      namespaces only. QEMU: `-drive file=disk.img,if=none,id=nv -device
+      nvme,serial=x,drive=nv`. n: the driver is not compiled and
+      virtio-blk is the block device.
+
+config DRV_DISPLAY_HDMI
+    # cargo-feature: hdmi
+    bool "HDMI framebuffer (VF2 DC8200 + HDMI TX)"
+    default n
+    depends on BOARD_VF2
+    help
+      Kernel feature `hdmi` (crates/drivers/display). Fixed resolution
+      (HDMI_WIDTH/HDMI_HEIGHT, "Platform / Board"), no EDID, solid-colour
+      output only. Never validated on hardware: QEMU has no model of this
+      peripheral, and the PHY calibration is placeholder data, so expect
+      no signal on a real monitor. The gate builds it ("hdmi" row); no
+      row boots it.
+
+config DRV_DISPLAY_RAMFB
+    # cargo-feature: ramfb
+    bool "QEMU ramfb framebuffer"
+    default n
+    depends on BOARD_QEMU && ARCH_RISCV64
+    imply FB_GENERIC
+    help
+      Kernel feature `ramfb` (crates/drivers/display/src/ramfb.rs): a
+      framebuffer source for FB_GENERIC. Allocates the pixel buffer,
+      configures QEMU's ramfb device through fw_cfg and hands the geometry
+      to the generic framebuffer. Needs `-device ramfb` on the QEMU command
+      line (and a display backend to see it). Not the VF2 display driver.
+      riscv64 only: the fw_cfg address it uses is defined for the riscv64
+      QEMU virt map alone (an aarch64 build does not compile).
+
+config FB_GENERIC
+    # cargo-feature: fb-generic
+    bool "Generic framebuffer (ramfb, Limine, device-tree simple-framebuffer)"
+    default n
+    help
+      Kernel feature `fb-generic` (crates/drivers/fb, kernel/src/boot/
+      fb.rs): one framebuffer object (geometry, stride, pixel format) fed
+      by whichever source the machine has: QEMU ramfb (DRV_DISPLAY_RAMFB),
+      the framebuffer the Limine loader set up (x86_64), or a device-tree
+      `simple-framebuffer` node (riscv64, aarch64). It is mapped
+      write-combining (MemType::WC: x86 PAT index 1, aarch64 Normal
+      non-cacheable, riscv64 Svpbmt NC when RV_SVPBMT finds the extension,
+      else the plain PTE) and the boot prints one [FB] line. n: no
+      framebuffer code is compiled.
+
+config FB_CONSOLE
+    # cargo-feature: fb-console
+    bool "Framebuffer text console (mirrors the UART console)"
+    default n
+    depends on FB_GENERIC
+    help
+      Kernel feature `fb-console` (crates/drivers/fb/src/console.rs): an
+      8x16 text console that mirrors every byte the UART console writes,
+      with scrolling and a dirty-rect flush. The grid is
+      FB_CONSOLE_COLS_MAX x FB_CONSOLE_ROWS_MAX bytes of kernel memory. A
+      line that finds the grid busy is not drawn (the UART still has it).
+      Output only: no keyboard focus, no cursor.
+
+config FB_PANIC_SCREEN
+    # cargo-feature: fb-panic-screen
+    bool "Framebuffer panic screen"
+    default n
+    depends on FB_GENERIC
+    help
+      Kernel feature `fb-panic-screen` (crates/drivers/fb/src/panic.rs):
+      the panic report (banner, [PANIC] policy and reason, location,
+      message, hart and task) drawn straight onto the write-combining
+      mapping, lock-free, so a panic inside the console or with the heap
+      gone still reaches the screen. The text is the same the UART gets.
+
+config DRV_VIRTIO_INPUT
+    # cargo-feature: virtio-input base
+    bool "virtio-input keyboards and mice (QEMU)"
+    default n if PROFILE_EMBEDDED
+    default y
+    help
+      Kernel feature `virtio-input` (crates/drivers/virtio/src/virtio/
+      input.rs, wired by kernel/src/boot/input_irq.rs): finds virtio-input
+      devices in the virtio-mmio window (QEMU `-device virtio-keyboard-device`
+      / `virtio-mouse-device` / `virtio-tablet-device`, `-device
+      virtio-keyboard-pci` is not driven) and takes their events by
+      interrupt on riscv64, aarch64 and x86_64 (microvm). A keyboard's key
+      presses become bytes in the console's RX ring (US keymap, shift, ctrl,
+      caps lock, Enter, Backspace), read by the same single owner of console
+      input as the UART: the shell works with no UART input. Mouse and
+      tablet events are counted and published into a ring, the hook for the
+      Phase 7 input server; nothing drains it yet. With no such device on
+      the machine nothing prints and nothing changes; a board with no
+      virtio-mmio window (VF2, K1) compiles the driver as a stub that
+      touches no address. n: the boot wiring and the interrupt arms are not
+      compiled. Off by default on a small board (HWCLASS_EMBEDDED), which
+      starts only the drivers its topology names; its defconfig sets it
+      to ask for one.
+
+config DRV_PS2
+    # cargo-feature: ps2 base
+    bool "PS/2 keyboard and mouse (i8042 controller, PC)"
+    depends on ARCH_X86_64
+    default n if PROFILE_EMBEDDED
+    default n if USE_ROBOT || USE_INDUSTRIAL
+    default y
+    help
+      Kernel feature `ps2` (crates/drivers/input/src/ps2.rs over the pure
+      controller, scancode and packet code beside it, wired by
+      kernel/src/boot/ps2_irq.rs): a PC with no virtio keyboard gets
+      console input. The boot looks for the controller only where the ACPI
+      FADT says there is one (IAPC_BOOT_ARCH bit 1, the 8042 flag; an ACPI
+      1.0 table has no such flag and is taken as a PC AT) and then runs
+      the controller's own self-test; a machine with neither (QEMU
+      microvm, a hardware-reduced platform) skips it with one boot line
+      and nothing else changes. The keyboard is put on scancode set 2 and
+      decoded (US keymap, shift, ctrl, caps lock, Enter, Backspace) into
+      bytes in the console's RX ring, the same ring as the UART and
+      virtio-input; the mouse's three-byte packets become relative-axis and
+      button events. Keys with no byte and every mouse event are published
+      into the ring shared with virtio-input, the hook for the Phase 7
+      input server; nothing drains it yet. IRQ1 and IRQ12 arrive through
+      the IOAPIC (the MADT overrides honoured) on the boot CPU. Default y
+      except for the Robot and Industrial domains, which are not machines
+      with a keyboard, and for a small board (HWCLASS_EMBEDDED). A USB keyboard reaches this driver only through
+      the firmware's legacy PS/2 emulation, which the same FADT flag
+      announces. n: the boot wiring and the interrupt arm are not
+      compiled.
+
+config PS2_WAIT_SPINS
+    int "PS/2: status reads a controller wait gives up after"
+    range 1000 10000000
+    default 100000
+    help
+      crates/drivers/input/src/i8042.rs. Every step of the controller
+      bring-up (it takes a command, answers a self-test, a device
+      acknowledges) polls the status port at most this many times; the
+      result of a device reset (its self-test runs first) waits 8 times as
+      many. A status read is one port I/O
+      (about a microsecond on a real ISA-compatible bus, a VM exit under a
+      hypervisor), so the default is 100 ms per step on hardware. A machine
+      with no controller answers 0xFF and fails at once without waiting.
+      Too small fails a slow controller or keyboard and leaves the PC with
+      no keyboard; too large only lengthens a boot that had no controller
+      to find. Costs no RAM. The wait is bounded in reads, not in time, so
+      it moves with the bus.
+
+config DRV_CAMERA
+    # cargo-feature: camera
+    bool "CSI camera brought up at boot (non-robot images)"
+    default n
+    help
+      Kernel feature `camera`: kernel_main brings up the CSI camera
+      (crates/drivers/sensor/src/csi.rs; simulated under QEMU) at boot,
+      and ring 3 reads JPEG frames through the stream.camera ring
+      (STREAM_CAMERA_RING; the `sensor` interface answers UNSUPPORTED for a
+      frame, which does not fit a reply). Implied by USE_IOT_HMI. A USE_ROBOT
+      image brings the camera up with its sensors whatever this says.
+      n: the CSI driver is still compiled (it is part of the drivers
+      crate) but never initialised, and a camera read answers not ready.
+
+# ---------------------------------------------------------------------------
+# Driver placement (RFC-0052 section 6.1, wave 11 DRVPLACE)
+# ---------------------------------------------------------------------------
+#
+# One chip-logic source per driver, two hosts: in the kernel (a direct call
+# in the caller's context) or in ring 3 (a driver process behind the
+# kernel's proxy). Chosen per driver here, for the board this .config is
+# for; later also by the signed topology. Only drivers whose chip logic has
+# been separated from its host have a choice (INA219, buzzer).
+#
+# Closed rule (RFC-0040's table): a driver a safety decision reads never
+# goes to ring 3, so it has no choice here and always runs in the kernel:
+# clint/plic, wdt, pwm/gpio/motor/motor_pid/esc (actuation gate, rt_motor,
+# flight control, e-stop pin), rc (flight failsafe), i2c with the IMU
+# (attitude, imu_valid), rangefinder (obstacle check), ads1115 (battery
+# check), uart (console, panic path), virtio-blk/mmc (e-stop latch replay,
+# crash log). tools/kconfig_to_cargo.py refuses a .config that places any
+# of them in ring 3. Drivers of Linux origin always run in ring 3 (none is
+# in the tree yet).
+
+config DRV_RING3_DEFAULT
+    bool "Place drivers that support it in ring 3 by default"
+    default n
+    help
+      The starting value of every DRV_<NAME>_PLACEMENT below becomes
+      `ring3`. Implied by STRUCTURE_RING3_DRIVERS; each driver's choice can
+      still be changed by hand. n: each driver keeps its own default
+      (written in its help). Drivers with no placement choice are not
+      affected (see the closed rule above).
+
+choice DRV_INA219_PLACEMENT
+    prompt "INA219 power monitor: placement"
+    # Every placement choice carries this line first: DRV_RING3_DEFAULT
+    # (STRUCTURE_RING3_DRIVERS) starts it in ring 3.
+    default DRV_INA219_PLACEMENT_RING3 if DRV_RING3_DEFAULT
+    # This driver's own default: ring 3 (RFC-0040 rule 3, no safety
+    # decision reads it), the same as a build with no cargo feature.
+    default DRV_INA219_PLACEMENT_RING3
+    help
+      Where the INA219 chip logic (crates/drivers/ina219) runs. Both
+      answer a read of the `sensor.9` endpoint (the power monitor) with the same
+      record.
+      Not read by any safety decision (the battery check reads the
+      ADS1115), so both are allowed.
+
+    config DRV_INA219_PLACEMENT_KERNEL
+        # cargo-feature: ina219-kernel base
+        bool "kernel"
+        help
+          Kernel feature `ina219-kernel`: a kernel task samples the chip
+          at 10 Hz and the kernel API reads its last sample directly (no
+          request to a driver process, no wake-up). The topology declares
+          no INADRV.ELF row. A chip fault is a kernel fault.
+
+    config DRV_INA219_PLACEMENT_RING3
+        bool "ring3"
+        help
+          The ring-3 driver INADRV.ELF (userspace/drivers/ina_drv), started
+          from its topology row, supervised and restarted as the row's
+          `restart` key says (on failure by default); the kernel reaches
+          it through the driver proxy (PROXY_SPIN_US, PROXY_REPLY_TIMEOUT_MS). Only images that carry INADRV.ELF and
+          start its row have the driver (today: the QEMU drivers disks).
+
+endchoice
+
+choice DRV_BUZZER_PLACEMENT
+    prompt "Piezo buzzer: starting placement"
+    default DRV_BUZZER_PLACEMENT_RING3 if DRV_RING3_DEFAULT
+    # This driver's own default: ring 3 (RFC-0040 rule 3, no safety
+    # decision reads it), the same as a build with no cargo feature.
+    default DRV_BUZZER_PLACEMENT_RING3
+    help
+      The host the buzzer chip logic (crates/drivers/buzzer) starts in. It is
+      the `place` of the built-in topology's BUZZDRV.ELF row; a signed
+      topology says its own. The row is `stateless`, so the driver can change
+      host while the system runs (azos_topology::placement): from the kernel
+      to ring 3 when the kernel host faults, from ring 3 to the kernel when
+      its measured call cost breaks DRV_BUZZER_CALL_BUDGET_US. Both hosts play
+      the same PWM channel state (channel 5, 50% duty) and return once the
+      first step of the sound has started. Not read by any safety decision, so
+      both are allowed.
+
+    config DRV_BUZZER_PLACEMENT_KERNEL
+        # cargo-feature: buzzer-kernel base
+        bool "kernel"
+        help
+          Kernel feature `buzzer-kernel`: the driver starts in the kernel. A
+          call plays through the kernel's PWM driver in the caller's context
+          (no message), and a kernel task advances the timed steps. A fault
+          in the chip logic is contained, and the driver restarts in ring 3.
+
+    config DRV_BUZZER_PLACEMENT_RING3
+        bool "ring3"
+        help
+          The driver starts as the ring-3 program BUZZDRV.ELF
+          (userspace/drivers/buzz_drv), started from its topology row and
+          supervised; the kernel calls it on the endpoint it serves. Only
+          images that carry BUZZDRV.ELF and start its row have the driver
+          (today: the QEMU drivers disks).
+
+endchoice
+
+config DRV_BUZZER_CALL_BUDGET_US
+    int "Piezo buzzer: call budget (microseconds, 0: none)"
+    range 0 1000000
+    default 0
+    help
+      The `call_budget_us` of the built-in topology's BUZZDRV.ELF row: how
+      long one call to the buzzer may take, from the caller. In ring 3, when
+      PLACEMENT_PROMOTE_MISSES of the last 16 calls take longer, the driver
+      is moved into the kernel if the kernel host's measured cost fits the
+      budget (the move or its refusal is a placement decision record). 0, the
+      default, declares no budget: the driver is never moved for cost. A
+      signed topology declares its own.
+
+config ADS1115_PIPELINE
+    bool "ADS1115 ADC: pipelined battery reading (no conversion polling)"
+    default y
+    help
+      crates/drivers/sensor/src/ads1115.rs, ads1115_read_battery_mv (the
+      10 Hz sensor_slow_task and SYS_SENSOR's battery). y: each read takes
+      the conversion the previous one started (its ready bit, its result)
+      and starts the next one: at most 3 I2C transactions, never a poll,
+      the value one period (100 ms) older; the first read after boot has no
+      value (battery 0 = "no reading", which every safety check skips).
+      n: start a conversion and poll its ready bit, up to
+      ADS1115_CONVERSION_POLL_ITERS locked I2C reads in the sensor task
+      (about 8 ms of bus at 128 SPS, 125 ms at 8 SPS). Costs no RAM either
+      way; the same on every ISA. Say n only to debug a board whose ADS1115
+      loses the started conversion between periods.
+
+config ADS1115_CONVERSION_POLL_ITERS
+    int "ADS1115 ADC: most config-register polls of one blocking read"
+    range 1000 10000000
+    default 150000
+    help
+      crates/drivers/sensor/src/ads1115.rs, CONVERSION_POLL_ITERS: the
+      blocking read (ads1115_read_mv, and the battery when
+      ADS1115_PIPELINE=n) polls the conversion-ready bit at most this many
+      times, each a locked I2C read, before it gives up with no value. A
+      conversion takes 125 ms at 8 SPS; raise it only for an I2C bus fast
+      enough that 150000 reads take less than that. Costs no RAM; bounds
+      the read's worst case at this many bus transactions.
+
+config STREAM_LIDAR_RING
+    bool "LiDAR scans to ring 3 through a shared-memory ring (stream.lidar)"
+    default n
+    help
+      Wave 11 (SHMRING). Every full LiDAR revolution the LD19 parser
+      completes is published by the kernel into a kernel-owned Cap<Shm>
+      region (crates/core/ipc/src/stream_ring.rs): an SPSC byte ring that
+      never blocks the producer (a full ring drops the NEWEST scan and
+      counts it) and rings the consumer's notify doorbell only when it said
+      it may be asleep. A topology row declaring `Shm stream.lidar` is
+      seeded the capability; holding it is the authority to read the
+      stream, with no per-scan capability check (owner decision
+      2026-10-03). n: no region, the seed is refused, and the io_ring
+      READ_SENSOR op (sensor type 6) is the only path to a scan; that path
+      is unchanged either way. The `sensor` interface answers UNSUPPORTED
+      for a scan.
+
+config STREAM_CAMERA_RING
+    bool "Camera frames to ring 3 through a shared-memory ring (stream.camera)"
+    default n
+    depends on USE_ROBOT || DRV_CAMERA
+    help
+      Wave 11 (SHMRING). A kernel task captures a JPEG frame
+      (csi_capture_jpeg, simulated on QEMU) every
+      STREAM_CAMERA_PERIOD_MS while a task has `stream.camera` mapped, and
+      publishes it into a kernel-owned Cap<Shm> ring, as STREAM_LIDAR_RING
+      does for scans. n: there is no ring-3 path to a frame (it does not fit a
+      reply or the io_ring's 2 KiB data buffer): the camera then serves only
+      kernel consumers.
+
+config STREAM_CAMERA_PERIOD_MS
+    int "Camera stream: milliseconds between frames"
+    default 100
+    range 10 1000
+    help
+      Used only with STREAM_CAMERA_RING: the capture period while a task
+      has `stream.camera` mapped (the camera frame ring's producer captures
+      at the shortest period any attached consumer asks for).
+
+config CAMERA_RING_SLOTS
+    int "Camera frame ring: slots"
+    default 4 if PROFILE_EMBEDDED
+    default 4 if PROFILE_EDGE
+    default 8 if PROFILE_FLEET
+    default 4
+    range 4 16
+    help
+      Wave 15 (B2). One capture task captures and JPEG-encodes each camera
+      frame once into this ring (crates/drivers/cam-ring, FanoutRing); the
+      brain link's sender (camera-tx, or the behavior task's inline path)
+      and the shared-memory stream (stream.camera) each read it with a
+      cursor of their own. The JPEG is encoded once per frame whatever the
+      number of consumers.
+
+      Cost: SLOTS x 19,200 B of .bss (the JPEG bound, csi::JPEG_MAX_SIZE)
+      on images with the robot domain or the camera; 4 slots = 76,800 B.
+      Per frame the producer scans the slots twice (a few loads each).
+
+      The minimum, 4, is what the ring needs for its two consumers never
+      to tear a frame and the producer never to wait: one slot pinned per
+      consumer, the newest frame, the one being written. More slots only
+      matter under CAMERA_RING_BACKPRESSURE, where they are frames a slow
+      consumer may fall behind before capture stops; with the default
+      overwrite policy both consumers read the newest frame. The same on
+      every ISA.
+
+choice CAMERA_RING_POLICY
+    prompt "Camera frame ring: when a consumer lags"
+    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_EMBEDDED
+    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_EDGE
+    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_FLEET
+    default CAMERA_RING_OVERWRITE_OLDEST
+    help
+      What the capture task does when every free slot of the camera frame
+      ring holds a frame some attached consumer has not taken yet.
+
+config CAMERA_RING_OVERWRITE_OLDEST
+    bool "Overwrite the oldest frame (the latest frame wins)"
+    help
+      Capture never waits on a consumer: a slow TCP sender loses the frames
+      overwritten meanwhile (counted) and takes the newest one next, with
+      its own acquisition stamp. The stream keeps its cadence.
+
+config CAMERA_RING_BACKPRESSURE
+    bool "Back-pressure (capture waits for the slowest consumer)"
+    help
+      The producer refuses a frame (counted, no capture) rather than
+      overwrite one an attached consumer is owed. A sender stuck behind a
+      closed TCP window then holds back capture, and the stream with it.
+      Only for a consumer that must see every frame.
+
+endchoice
+
+config CAMERA_TX_CAPTURE_PERIOD_MS
+    int "Camera frame ring: capture period for the brain link's sender"
+    default 250 if PROFILE_EMBEDDED
+    default 250 if PROFILE_EDGE
+    default 250 if PROFILE_FLEET
+    default 250
+    range 10 1000
+    help
+      The capture period the brain link's camera sender asks for while it
+      is attached (the ring captures at the shortest period any attached
+      consumer asks for; with no consumer attached nothing is captured).
+      The sender takes the newest frame at most every 500 ms
+      (azos_behavior::camera_tx::FRAME_PERIOD_MS, or the behavior task's
+      ~2 Hz inline path); capturing at half that period means each send
+      finds a frame no older than this. Cost: one capture + JPEG encode
+      per period. Raise it to save CPU when only the brain link takes
+      frames; the frame it sends gets older by as much. The same on every
+      profile and ISA today: the sender's 500 ms period is not per profile.
+      With no consumer attached and no camera stream in the image the
+      capture task does not wake at all.
+
+config LIDAR_SIM
+    bool "Synthetic LD19 LiDAR on QEMU (feeds the real parser)"
+    default n
+    depends on BOARD_QEMU
+    help
+      A kernel task feeds generated LD19 packets (12 points each, a full
+      revolution every 100 ms) to the LD19 parser
+      (crates/drivers/sensor/src/lidar.rs), which nothing feeds otherwise:
+      no board wires the LiDAR's UART to it yet. For the gate's stream
+      rows; each point's distance encodes (revolution, index) so a
+      consumer can check a scan arrived intact and in order.
+
+menu "I2C bus transactions"
+
+config I2C_TXN_QUEUE_DEPTH
+    int "I2C: queued transactions per bus"
+    range 2 64
+    default 2 if PROFILE_EMBEDDED
+    default 8 if PROFILE_FLEET
+    default 4
+    help
+      Wave 15 (IO-QUEUES-AUDIT S1). A caller that may not wait for the
+      wire (the real-time `imu` task) queues an I2C transaction and
+      collects it later (crates/drivers/bus/src/i2c_txn.rs); this many wait
+      per bus, and this many finished results stay readable. A submission
+      to a full queue is refused and counted, never waited for. Costs about
+      (16 + 48) bytes per entry per bus (4 buses). Raise it when several
+      tasks queue on one bus.
+
+config I2C_DW_RX_FIFO_DEPTH
+    int "I2C: DesignWare controller RX FIFO depth (entries)"
+    range 2 256
+    default 8
+    help
+      Read commands in flight never exceed this, so the controller's
+      receive FIFO cannot overflow; it also sets the RX interrupt
+      threshold. Must not exceed the hardware's depth (IC_COMP_PARAM_1
+      bits 15:8, plus one): a larger value lets reads overrun the FIFO.
+      Board validation pending (VisionFive 2): QEMU has no DesignWare I2C.
+
+config I2C_XFER_TIMEOUT_US
+    int "I2C: queued transaction timeout (us)"
+    range 500 1000000
+    default 5000
+    help
+      A queued transaction not finished this long after it started is
+      ended as failed (counted); a stuck bus then feeds the sensor's
+      staleness check, never a wait. The IMU's 14-byte read is ~1.35 ms of
+      wire at 100 kHz. No RAM or instruction cost.
+
+config I2C_SERVICE_POLL_US
+    int "I2C: service step period while a transaction is on the wire (us)"
+    range 50 10000
+    default 200
+    help
+      The `i2c-svc` task (VisionFive 2) runs one bounded controller step
+      this often while its bus has work, sleeping in between, until the
+      controller's interrupt line is wired (then the interrupt runs the
+      same step). A synchronous caller sleeps this long between the steps
+      of its own transfer; preemption is off only inside a step. With an 8-entry FIFO a 14-byte read needs about two
+      refills; shorter: lower latency, more timer wakes. Idle buses cost
+      nothing (the submit wakes the task).
+
+config I2C_SERVICE_PRIORITY
+    int "I2C: priority of the i2c-svc task"
+    range 12 30
+    default 12
+    help
+      Highest non-real-time priority by default: it serves the real-time
+      IMU's queued reads, and it waits (sleeps) between steps, so it may
+      not be in the RT band (below 12). A synchronous transfer (sensor
+      init, the typed I2C syscalls, the AHRS) steps its own transaction
+      and sleeps I2C_SERVICE_POLL_US between steps, so it does not depend
+      on this task.
+
+choice
+    prompt "IMU sample source"
+    default IMU_SAMPLE_QUEUED
+    help
+      How the real-time `imu` task gets its 100 Hz sample.
+
+config IMU_SAMPLE_QUEUED
+    bool "Queued read, re-armed from the task's tick (no wait)"
+    help
+      The task queues the 14-byte burst (I2C_TXN_QUEUE_DEPTH) and
+      publishes the finished one on a later tick, stamped at acquisition;
+      it never waits for the wire (owner rule: RT tasks only enqueue). On
+      the QEMU simulation the read completes at submit.
+
+config IMU_SAMPLE_POLLED
+    bool "Synchronous read in the task (before wave 15)"
+    help
+      The task does a synchronous transfer and sleeps until it is done
+      (~1.35 ms per read at 100 kHz on the real bus): the RT task waits
+      for I/O. Only for comparison.
+
+endchoice
+
+endmenu # I2C bus transactions
+
+menu "DMA and IOMMU"
+
+# Every device that does DMA reaches memory through a DMA domain
+# (crates/drivers/dma): the domain turns a buffer into the bus address the
+# device is told, may refuse the buffer, and, with an IOMMU behind it, makes
+# the hardware refuse every page that was not mapped. The users today are the
+# virtio drivers (block, net, rng, input); the boot installs the domains
+# (kernel/src/boot/dma.rs).
+
+choice
+    prompt "DMA domain of a device with no IOMMU in front of it"
+    default DMA_DOMAIN_SOFT
+    help
+      Every virtio-mmio device, and every PCI function when no IOMMU is
+      driven (the IOMMU_* switches below), maps its buffers through this.
+
+    config DMA_DOMAIN_SOFT
+        bool "software-checked: each mapping must lie in RAM and in the device's reach"
+        help
+          A mapping outside the RAM the kernel manages, or beyond what the
+          device can address, is refused, and every live mapping is recorded
+          so an unmap of something never mapped is caught. It stops a driver
+          bug that would hand a device the wrong page. It cannot stop a
+          device that ignores its descriptors: only an IOMMU does.
+
+    config DMA_DOMAIN_IDENTITY
+        bool "identity: the device is handed physical addresses, unchecked"
+        help
+          What every driver did before domains existed. No bookkeeping and
+          no checks; the mapping calls cost one addition each.
+endchoice
+
+config DMA_MAP_ENTRIES
+    int "Live DMA mappings per domain"
+    range 8 1024
+    default 128
+    help
+      Each static buffer a driver hands to a device is one mapping for the
+      life of the kernel: virtio-blk takes 3 (headers, status bytes, staging
+      buffers) plus its ring, virtio-net 3 plus 2 rings, rng and input about
+      2 each. The software-checked domain and every IOMMU domain keep this
+      many records. Cost: 24 bytes of .bss per record per domain.
+
+config DMA_NONCOHERENT
+    bool "Devices are NOT cache-coherent with the CPU (cache maintenance around every DMA transfer)"
+    default n
+    depends on ARCH_RISCV64 || ARCH_AARCH64
+    help
+      Set for a machine whose DMA masters read and write RAM behind the
+      CPU's caches. Every driver then cleans the cache lines of a buffer
+      before the device reads it, and flushes them around a transfer the
+      device writes (crates/drivers/dma/src/cache.rs): riscv64 Zicbom
+      `cbo.clean` / `cbo.flush` (needs RV_ZICBOM probe or require, else the
+      boot refuses), aarch64 `dc cvac` / `dc civac`. The virtqueue rings and
+      the buffers are laid out so a cache line never holds bytes of two
+      owners. With an IOMMU (IOMMU_*) the unit is taken not to snoop either:
+      the tables it reads are cleaned after every store, and the queues it
+      writes (fault and event queues, the AMD-Vi completion semaphore) are
+      cleaned once before the unit is enabled and invalidated before every
+      read. x86_64 DMA is coherent and has no switch. n: the devices are
+      coherent (QEMU; no cache maintenance, no cost).
+
+config IOMMU_RISCV
+    # cargo-feature: iommu-riscv
+    bool "RISC-V IOMMU (riscv-iommu-pci): translate virtio-pci DMA"
+    default n
+    depends on DRV_PCI && ARCH_RISCV64
+    help
+      Kernel feature `iommu-riscv` (crates/drivers/iommu/src/riscv.rs).
+      Finds a PCI function of class 0x0806 on bus 0 (QEMU
+      `-device riscv-iommu-pci`), assigns its BAR, brings it up with a
+      two-level device directory and polled command and fault queues, puts
+      every function in pass-through and every function whose driver maps
+      its DMA (virtio-net-pci) in a domain of its own: from then on a DMA to
+      a page the driver did not map is refused and the fault is logged
+      (`[IOMMU]`). The NVMe controller and the other functions stay in
+      pass-through. n: no IOMMU is driven.
+
+config IOMMU_SMMUV3
+    # cargo-feature: iommu-smmuv3
+    bool "Arm SMMUv3 (QEMU virt iommu=smmuv3): translate virtio-pci DMA"
+    default n
+    depends on DRV_PCI && ARCH_AARCH64
+    help
+      Kernel feature `iommu-smmuv3` (crates/drivers/iommu/src/smmuv3.rs).
+      Brings up the SMMU at IOMMU_SMMUV3_BASE with a linear stream table and
+      polled command and event queues, the same way as IOMMU_RISCV. The
+      stream id is the PCI requester id (QEMU `virt` maps them one to one).
+      n: no IOMMU is driven.
+
+config IOMMU_SMMUV3_BASE
+    hex "SMMUv3 register base (IOMMU_SMMUV3)"
+    default 0x09050000
+    help
+      Used with IOMMU_SMMUV3. QEMU `virt` (iommu=smmuv3) puts the SMMU at
+      0x09050000, 128 KiB. A board with an SMMU elsewhere sets its address
+      here.
+
+config IOMMU_VTD
+    # cargo-feature: iommu-vtd
+    bool "Intel VT-d (QEMU q35 intel-iommu): translate virtio-pci DMA"
+    default n
+    depends on DRV_PCI && ARCH_X86_64
+    help
+      Kernel feature `iommu-vtd` (crates/drivers/iommu/src/vtd.rs). The
+      remapping unit's registers are found in the ACPI DMAR table (the first
+      DRHD that covers PCI segment 0), brought up in legacy mode with
+      register-based invalidation and polled fault recording, the same way
+      as IOMMU_RISCV. n: no VT-d unit is driven.
+
+config IOMMU_AMDVI
+    # cargo-feature: iommu-amdvi
+    bool "AMD-Vi: translate virtio-pci DMA"
+    default n
+    depends on DRV_PCI && ARCH_X86_64
+    help
+      Kernel feature `iommu-amdvi` (crates/drivers/iommu/src/amdvi.rs). The
+      unit's registers are found in the ACPI IVRS table (the first IVHD
+      block), brought up with a flat device table and polled command buffer
+      and event log, the same way as IOMMU_RISCV. There is no QEMU row for
+      it: QEMU's amd-iommu model is built for interrupt remapping and its
+      DMA page walk is unexercised here, so this unit is tested on the host
+      and waits for real AMD hardware. n: no AMD-Vi unit is driven.
+
+config IOMMU_FAULT_POLL_MS
+    int "IOMMU fault log poll interval (ms; with an IOMMU_* unit)"
+    range 10 10000
+    default 100
+    help
+      With an IOMMU_* unit, a kernel task wakes this often, drains the unit's fault queue (the
+      units' interrupts stay off) and prints one `[IOMMU] fault` line per
+      refused DMA, up to 16 per wake. One MMIO read per wake when nothing
+      faulted.
+
+endmenu # DMA and IOMMU
+comment "Always compiled, no switch: FAT32/tmpfs/procfs, the network stack, the CSI driver, native drivers"
+
+endmenu # Drivers

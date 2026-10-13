@@ -1,0 +1,52 @@
+[package]
+name = "azos_drv_virtio"
+version = "0.1.0"
+edition = "2021"
+description = "VirtIO transport (MMIO, PCI) and its block, network, entropy and input devices."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Wave 15 canary: a multi-request write waits for each chunk before the
+# next (one request in the device at a time), as before the pipelined write.
+blk-serial-write-canary = []
+# Wave 15 canary: the block device stays polled (its waiters spin) even
+# where the kernel wires its interrupt line.
+blk-poll-canary = []
+# Gate canary only: a keyboard's key bytes are dropped instead of queued in the
+# console ring (`input::irq`); the `sh: virtio keyboard` row must then fail.
+input-rx-canary = []
+# Gate canary only: the NIC's TX staging buffers are not mapped through its DMA
+# domain; behind an IOMMU the first frame's read is refused and the fault task
+# must say so (`[IOMMU] fault:`).
+iommu-tx-canary = []
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+# RFC-0046 stage 1: native PCI/ECAM enumeration + virtio-pci modern
+# transport (crates/drivers/virtio/src/virtio/pci.rs). Off by default — VF2/K1
+# have no PCIe backend today (native drivers own those boards per the
+# owner's native-first rule) and pulling azos_pci into
+# every build would be dead weight there. Enabled by `kernel`'s own `pci`
+# feature.
+pci = ["dep:azos_pci"]
+# Wave 15, owner rule F1: virtio-blk counts its completion waits and those
+# made with a driver Mutex held (`blk::wait_probe_counts`); the `lat-fat`
+# smoke prints them. Costs two atomic adds per request.
+blk-wait-probe = []
+# Gate canary only: hold `BLK_LOCK` across the whole completion wait again
+# (the pre-F1 shape); `blk-wait-probe` must count every wait as locked.
+blk-lock-wait-canary = ["blk-wait-probe"]
+
+[dependencies]
+azos_arch        = { workspace = true }
+azos_mm          = { workspace = true }
+azos_sync        = { workspace = true }
+azos_drv_api     = { workspace = true }
+azos_drv_base    = { workspace = true }
+azos_drv_irqchip = { workspace = true }
+azos_drv_input   = { workspace = true }
+azos_drv_sys     = { workspace = true }
+azos_dma         = { workspace = true }
+azos_limits      = { workspace = true }
+azos_pci         = { workspace = true, optional = true }

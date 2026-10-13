@@ -1,0 +1,16 @@
+[package]
+name = "azos_drv_dmac"
+version = "0.1.0"
+edition = "2021"
+description = "DMA controller (memcpy simulation on QEMU; JH7110 PDMA on VF2)."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+
+[dependencies]
+azos_sync    = { workspace = true }
+azos_drv_sys = { workspace = true }

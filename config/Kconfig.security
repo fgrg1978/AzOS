@@ -1,0 +1,697 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.security — Secure boot, link encryption, PMP, stack hardening
+#
+# RFC-0026 Phase C1.  Maps to cargo features `secure-boot-enforced` and
+# the RFC-0019 link-encrypt opt-in flag.
+
+menu "Security"
+
+# ---------------------------------------------------------------------------
+# Secure boot
+# ---------------------------------------------------------------------------
+
+config SECURE_BOOT_ENFORCED
+    # cargo-feature: secure-boot-enforced
+    bool "Enforce Ed25519 signature verification at boot" if !BUILD_TYPE_CERTIFIABLE
+    default y if BUILD_TYPE_CERTIFIABLE
+    default n
+    help
+      When enabled, the bootloader verifies the kernel image signature
+      using the Ed25519 public key embedded at build time (crates/core/ota, was SECURE_BOOT_KEY_FP -- removed 2026-09-26, V2.6, never consumed)
+      before jumping to _start.  If the signature is absent or invalid,
+      boot halts unconditionally.
+      Disable only for development.  MUST be y for any production
+      deployment — enforced by cargo feature `secure-boot-enforced`.
+      A BUILD_TYPE_CERTIFIABLE build has it on and cannot turn it off.
+
+config LINK_AUTH_ENFORCED
+    # cargo-feature: link-auth-enforced
+    bool "Refuse to boot without a valid brain-link key (/fat/LINK.KEY)"
+    default n
+    depends on USE_ROBOT
+    help
+      Robot domain only (wave 11): the brain link exists only there.
+      The brain<->kernel HMAC envelope keys off a 32-byte pre-shared key
+      read from /fat/LINK.KEY at boot.  With this option n, a missing or
+      malformed key file silently downgrades the link to plaintext: no
+      authentication and no replay protection.  That file lives on the
+      FAT volume which the USB mass-storage gadget also exposes, so its
+      absence is a state an attacker can cause.
+      When y, boot halts instead of downgrading -- enforced by cargo
+      feature `link-auth-enforced`, with no runtime override, mirroring
+      SECURE_BOOT_ENFORCED.
+      Note the trade-off: a unit that loses its key file will not boot.
+
+config LINK_ENCRYPT_ENFORCED
+    # cargo-feature: link-encrypt-enforced
+    bool "Refuse any brain-link frame outside an RFC-0019 AEAD session"
+    default n
+    depends on USE_ROBOT
+    help
+      Robot domain only (wave 11): the brain link exists only there.
+      K-C5.  The per-packet gate in auth_envelope refuses to produce or
+      accept a brain-protocol frame unless it travels inside an
+      established RFC-0019 AEAD session: no plaintext mode and no
+      HMAC-only fallback exist in the build.  Boot also halts when
+      /fat/LINK.KEY is missing or invalid (superset of
+      LINK_AUTH_ENFORCED): a keyless encrypted-only robot can never
+      talk, so the failure surfaces at provisioning, not in the field.
+      Enforced by cargo feature `link-encrypt-enforced`, compile-time
+      only, no runtime override, mirroring SECURE_BOOT_ENFORCED.
+      The handshake runs regardless of the runtime `link_encrypt` key in
+      CONFIG.INI — a file on the USB-exposed FAT volume must not be able
+      to disarm a compiled-in policy.
+config OTA_SIG_MANDATORY
+    bool "OTA images must be signed (refuse unsigned updates)" if !BUILD_TYPE_CERTIFIABLE
+    default y if BUILD_TYPE_CERTIFIABLE
+    default y if !SECURITY_GENERAL
+    default n
+    help
+      When y, the OTA subsystem rejects any firmware image that does
+      not carry a valid Ed25519 signature file (KERN_*.SIG on FAT).
+      Recommended: set to y whenever SECURE_BOOT_ENFORCED = y so
+      the signing chain is unbroken end-to-end.  Starts on for every
+      SECURITY posture but general; a BUILD_TYPE_CERTIFIABLE build has it
+      on and cannot turn it off.
+
+# ---------------------------------------------------------------------------
+# Link layer encryption (RFC-0019)
+# ---------------------------------------------------------------------------
+
+config LINK_AEAD_DEFAULT_ON
+    bool "RFC-0019 AEAD link encryption enabled by default"
+    default y
+    help
+      When y, behavior_task runs the RFC-0019 responder handshake
+      immediately after TCP Established and wraps all subsequent
+      frames in the X25519 + AES-CTR + HMAC envelope.  Both the
+      kernel and the brain server MUST agree on this flag.
+      Default y since 2026-08-23 (decision del usuario): with a key
+      provisioned the link always runs AEAD, which also closes the
+      HMAC-only reboot-replay wedge (the brain resets its envelope
+      Receiver per AEAD connection).  Without a key the brain link is
+      closed, never downgraded to plaintext.  `link_encrypt=0` in
+      CONFIG.INI still disables it at runtime; the non-overridable
+      variant is LINK_ENCRYPT_ENFORCED.
+      Set the runtime key via LINK_PSK_PATH.
+
+config LINK_PSK_PATH
+    string "Path to link pre-shared key file on FAT filesystem"
+    default "/fat/LINK.KEY"
+    help
+      FAT-path to the 32-byte PSK used for the Noise_XXpsk0 handshake.
+      The file must exist before first boot if LINK_AEAD_DEFAULT_ON=y.
+      Rotate annually; overlap period is 24 h (mount new key, reboot,
+      confirm both sides are on new key, then remove old).
+
+# ---------------------------------------------------------------------------
+# PMP / memory protection
+# ---------------------------------------------------------------------------
+
+config PMP_REGIONS_RESERVED
+    int "PMP regions reserved for M-mode kernel use"
+    range 0 12
+    default 4
+    help
+      Number of RISC-V PMP entries the kernel allocates for its own
+      regions (ROM, MMIO, kernel text/data).  The remaining
+      (16 - PMP_REGIONS_RESERVED) entries are available for user-process
+      isolation.  Must leave headroom; current hardware cap is 16.
+      Current codebase: 6 total in use, but 4 is the design budget
+      (crates/core/arch-riscv64/src/pmp.rs N_PMP_REGIONS = 6 current impl).
+
+# ---------------------------------------------------------------------------
+# Signed capability topology (RFC-0005, wave 15 TOPOSIGN)
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Capability topology source"
+    default TOPOLOGY_SOURCE_SIGNED_REQUIRED if !BOARD_QEMU
+    default TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+    help
+      Where the boot takes the capability topology from: the rows every
+      ring-3 task's capabilities, scheduler class, priority and memory
+      budget come from. The signed form is /fat/CAPS.TOM + /fat/CAPS.SIG
+      (a bare Ed25519 signature under the embedded topology key, the key
+      CONFIG.SIG uses) and /fat/SCHED.TOM, which CAPS.TOM binds by its
+      SHA-256 (`sched_sha256`), together with this device's id and a
+      counter (TOPOLOGY_BIND_DEVICE, TOPOLOGY_COUNTER_FLOOR). The built-in
+      form is crates/core/topology/src/builder.rs, compiled into the image.
+      `make topo-volume TOPO_IMAGE=<img>` writes the built-in topology of a
+      given .config and feature set onto an image, bound to that image's
+      device (tests/host/topology-tests topo_emit).
+
+      CAPS.SIG is verified before any byte is parsed, and SCHED.TOM's hash
+      before SCHED.TOM is parsed; the parsed topology then passes the same
+      admission as the built-in one (admission_check, deadline_admission on
+      the real CPU count, the RT_BAND_CAP_PCT band, memory) BEFORE it is
+      published, so a refused file never becomes the topology.
+
+      Defaults (owner decision, 2026-10-05): "signed required" on every
+      product board (BOARD_VF2, BOARD_K1, BOARD_GENERIC: the vf2, k1,
+      embedded and fleet profiles), because under signed-or-built-in
+      deleting the files from the (USB-exposed) volume boots the built-in
+      topology, which may grant more than the deployment's signed one.
+      Every product make target builds the volume that carries them,
+      signed with the board key: `make vf2` -> build/disk-board.img,
+      `make k1` -> build/disk-board-k1.img, `make build-fleet` ->
+      build/disk-board-fleet.img; without TOPOLOGY_PRIVKEY_PATH they
+      refuse. "Signed if present" on BOARD_QEMU (development and the gate),
+      where one disk is booted by kernels with different built-in
+      topologies.
+
+      Cost, instructions at the topology install (QEMU virt, -icount
+      shift=0, -smp 1, the gate's 19-row topology, 2026-10-05),
+      riscv64 / aarch64:
+        built-in only (BUILTIN)                        17,800 / 16,376
+        no files on the volume (fallback + record)    126,400 / 116,141
+        signed set installed (one signature)        1,797,300 / 1,271,881
+      The one Ed25519 verification is about 1.35 M of it on riscv64
+      (measured with the verification skipped: 443,400); reads, the
+      SCHED.TOM hash, the binding, the floor sector, the parse and the
+      admission of the candidate are the rest. A first boot of a new
+      counter adds the floor write. RAM: the two buffers (see
+      TOPOLOGY_CAPS_MAX_KB), under every choice. The cost is printed on the
+      "[TOPO] Topology installed: ... in N ticks" line of every boot.
+
+    config TOPOLOGY_SOURCE_BUILTIN
+        bool "Built-in only (never read the volume)"
+        help
+          The topology compiled into the image, as before wave 15. The
+          files are not opened: no boot cost, no RAM for the buffers
+          (they are still reserved), and no record.
+
+    config TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+        bool "Signed if present and valid, else built-in"
+        help
+          The signed topology when all four files are on the volume and
+          it verifies, parses and is admitted. With none of the four
+          files, the built-in topology, a "[TOPO] WARNING" line and a
+          SAFETY_TOPO_SOURCE flight-recorder record (action 1, fallback
+          missing). A set that is present but refused (partial, too
+          large, bad signature, does not parse, not admitted) is a
+          security event: see TOPOLOGY_INVALID.
+
+    config TOPOLOGY_SOURCE_SIGNED_REQUIRED
+        bool "Signed required (halt without it)"
+        help
+          The signed topology or no boot. Missing or refused files write
+          a durable SAFETY_TOPO_SOURCE record (action 3 missing, 4
+          invalid) and halt the boot hart before any ring-3 task or
+          kernel task the topology admits is created. Choose it only
+          when every volume this image boots from carries the signed
+          files.
+
+endchoice
+
+choice
+    prompt "A signed topology that is present but invalid"
+    depends on TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+    default TOPOLOGY_INVALID_FALLBACK
+    help
+      Under "signed if present and valid": what a set that IS on the
+      volume but is refused does. Either way the boot prints a "[TOPO]
+      REFUSED" line with the reason and writes a durable
+      SAFETY_TOPO_SOURCE record whose detail says which file and step.
+
+      Default fallback: whoever can tamper with the files can also delete
+      them, and deletion already boots the built-in topology under this
+      source policy, so halting on a tampered file would add a denial of
+      service without closing anything. Halt is for a deployment that
+      wants a corrupted or tampered volume to stop the machine where it
+      can be inspected (with deletion still falling back; for "never
+      boot without the signed topology" choose "signed required").
+
+    config TOPOLOGY_INVALID_FALLBACK
+        bool "Fall back to the built-in topology"
+        help
+          Install the built-in topology after the REFUSED line and the
+          record (action 2, fallback invalid).
+
+    config TOPOLOGY_INVALID_HALT
+        bool "Halt"
+        help
+          Record (action 4, halt invalid) and halt the boot hart.
+
+endchoice
+
+config TOPOLOGY_BIND_DEVICE
+    bool "The signed topology must name this device"
+    depends on !TOPOLOGY_SOURCE_BUILTIN
+    default y
+    help
+      CAPS.TOM (format 4) must carry `device = "<32 hex>"` equal to this
+      device's id: the device record in reserved tail sector 2
+      (tools/device_provision.py), the id CONFIG.SIG v2 is bound to. A file
+      signed for another device is refused (SAFETY_TOPO_SOURCE detail step
+      8), a file with no `device` key too (step 10), and so is any file on a
+      device with no record (step 11). With n, `device` is optional, and
+      still checked when present.
+
+      Default y for every profile: `make` writes the image's own id into the
+      files it signs (QEMU images and board volumes alike). Cost: a 16-byte
+      compare and one sector read at boot (the record is already read for
+      CONFIG.INI; it is read again here), either ISA.
+
+config TOPOLOGY_COUNTER_FLOOR
+    bool "Refuse a signed topology older than the last one accepted"
+    depends on !TOPOLOGY_SOURCE_BUILTIN
+    default y
+    help
+      CAPS.TOM (format 4) must carry `counter = N` (N >= 1), and N must be at
+      least the floor this device keeps in reserved tail sector
+      TOPOLOGY_FLOOR_SECTOR. Accepting a file with a higher counter raises
+      the floor (one sector write and a flush, once per new counter). An
+      older, validly signed CAPS.TOM put back on the volume is refused as a
+      replay (SAFETY_TOPO_SOURCE detail step 9, low bits the counter). The
+      CONFIG.SIG v2 semantics: the floor only moves up, and a missing or
+      invalid floor record reads as 0.
+
+      What it does not stop: whoever can rewrite the reserved tail (a card
+      reader, not the USB export) can reset the floor (RFC-0054 §6.3).
+
+      Default y for every profile. Cost: one sector read per boot, either
+      ISA.
+
+config TOPOLOGY_FLOOR_SECTOR
+    int "Reserved tail sector of the topology counter floor"
+    range 3 7
+    default 3
+    help
+      Index in the reserved tail past the FAT32 volume
+      (kernel/src/msc_gadget.rs, 8 sectors) of the "KTPF" floor record
+      (crates/core/topology/src/device_record.rs). 0 is the link key, 1 the
+      entropy seed, 2 the device record; 3..7 are free. Change it only to
+      move it off a sector another feature of your build claims, and give
+      tools/device_provision.py --topo-sector the same value.
+
+config TOPOLOGY_CAPS_MAX_KB
+    int "Largest CAPS.TOM the boot reads (KiB)"
+    range 1 4096
+    default 8   if PROFILE_EMBEDDED
+    default 16  if PROFILE_EDGE
+    default 256 if PROFILE_FLEET
+    help
+      The buffer CAPS.TOM is read into (kernel/src/boot/topology.rs). It
+      stays allocated for the life of the kernel: every task name, class
+      name and grant target of the installed topology borrows from it. A
+      larger file is refused unread (SignedRefusal::TooLarge).
+
+      Cost: this many KiB of .bss on riscv64 and aarch64 alike, whether or
+      not the volume carries the file (also under TOPOLOGY_SOURCE_BUILTIN).
+      Size it from your file: the QEMU gate's topology (19 rows, 53
+      grants, its test rows included) is 4.6 KB; a row is about 100 bytes
+      plus 50 per grant. Fleet's 256 KiB leaves room for about 2,000 rows.
+
+config TOPOLOGY_SCHED_MAX_KB
+    int "Largest SCHED.TOM the boot reads (KiB)"
+    range 1 1024
+    default 2  if PROFILE_EMBEDDED
+    default 4  if PROFILE_EDGE
+    default 16 if PROFILE_FLEET
+    help
+      The buffer SCHED.TOM is read into; kept for the kernel's life (the
+      class names borrow from it). A larger file is refused unread.
+
+      Cost: this many KiB of .bss, either ISA. The QEMU gate's SCHED.TOM
+      (5 classes) is under 1 KB; a class is about 190 bytes.
+
+config TOPOLOGY_NEVERALLOW
+    bool "Refuse a topology that breaks a neverallow rule"
+    default y
+    help
+      The rules of crates/core/topology/src/neverallow.rs state grants no
+      topology may make, whatever its file says: no ring-3 row holds an
+      actuator unless the table lists the row as one, no desktop image
+      grants a motor, no row both asks the name server for names and serves
+      an endpoint or a driver. A topology that breaks one is refused by
+      `admission_check` (the signed candidate falls back or halts as
+      TOPOLOGY_SOURCE says; the built-in topology halts) and a decision
+      record (`neverallow`, /proc/decisions) names the rule and the row.
+      `make check-neverallow` runs the same rules over every preset's
+      topology, with this option ignored.
+
+      With n the rules are not applied at boot or by `admission_check`.
+      Cost: one pass over the rows' grants at install, either ISA, and a
+      few hundred bytes of rule table.
+
+config TOPOLOGY_DRIVETRAIN
+    bool "The built-in topology may declare the drivetrain"
+    depends on !USE_DESKTOP
+    default y
+    help
+      With the `profile-actuation` fixture (the QEMU board's), the
+      built-in topology grants `motor.0` and `motor.1` to the row that
+      drives the robot. A desktop image never does: the neverallow rule
+      `desktop-grants-no-motor` refuses a topology that grants a motor
+      there, so this option is hidden (and n) under USE_DESKTOP rather
+      than leaving the combination to be refused at boot.
+
+      Cost: none; two grants of the autorun row, either ISA.
+
+config TOPOLOGY_MAX_CLASSES
+    int "Scheduler classes a topology may declare"
+    range 1 255
+    default 8
+    help
+      Size of the class table of the topology
+      (crates/core/topology/src/types.rs, MAX_CLASSES). A SCHED.TOM with
+      more classes is refused by the parser. The class count is kept in a
+      u8, hence the range.
+
+      Cost: 32 B of RAM per class (the topology slot, .data) and 132 B of
+      stack per class in deadline admission (a u32 per class for each of
+      its 32 admission CPUs, plus the budget), either ISA. The built-in
+      topology declares 5.
+
+config TOPOLOGY_MAX_PIPELINES
+    int "[pipeline.NAME] sections a topology may declare"
+    range 1 255
+    default 8
+    help
+      Size of the pipeline table (MAX_PIPELINES): each declared pipeline
+      adds its dma_kb to the boot DMA pool (DMA_POOL_FLOOR_KB). More are
+      refused. Kept in a u8.
+
+      Cost: 24 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_DEVICE_ROWS
+    int "[device.NAME] rows a topology may declare"
+    range 1 255
+    default 16 if PROFILE_EMBEDDED
+    default 32
+    help
+      Size of the device row table (MAX_DEVICE_ROWS, CAPS.TOML format 6):
+      each `[device.NAME]` row selects hardware the bus detects (`match =
+      "pci:1af4:1041"`, `"dt:ns16550a"`, `"virtio:2"`, `"pciclass:010802:
+      ffffff"`) and says what to do with it: admit it, admit it with another
+      native driver (`driver = "..."`), or refuse it (`admit = false`). With
+      HWBUS_AUTOBIND_TOPOLOGY a device no row admits is detected and not
+      bound. More rows are refused. Kept in a u8.
+
+      Cost: 56 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_IMPORTS
+    int "Names one task row may import from the name server"
+    range 1 64
+    default 8
+    help
+      The `imports = [...]` list of a [task.NAME] row (CAPS.TOML format 5):
+      the endpoint names the name server (NAMESD.ELF) may hand that row. A
+      row with more is refused by the parser. The list is the row's whole
+      claim on the name space: a name it does not list is not answered.
+
+      Cost: none by itself; the pool is TOPOLOGY_IMPORTS_TOTAL.
+
+config TOPOLOGY_IMPORTS_TOTAL
+    int "Imports declared across all rows of a topology"
+    range 1 4096
+    default 32
+    help
+      Size of the imports pool (types.rs, IMPORTS_TOTAL): every name any row
+      imports takes one entry. More are refused. The built-in topology
+      declares 1 (the shell imports the terminal).
+
+      Cost: 16 B of RAM per entry (a name slice, .data), either ISA.
+
+config TOPOLOGY_MAX_SIGNERS
+    int "Package signers one topology may admit"
+    range 1 64
+    default 4
+    help
+      The `[signer.NAME]` sections of a format-6 CAPS.TOM: the device policy
+      of signed application packages (crates/core/pkg). A package installs
+      only when its author's key is one of these; a topology with more is
+      refused by the parser. The policy is signed with the rest of the
+      topology, so the device owner's key is the only root of trust and a
+      package cannot add a signer for itself.
+
+      Cost: 80 B of RAM per entry (.bss in the installer, .data in the
+      kernel), either ISA.
+
+config TOPOLOGY_SIGNER_WARRANTS_TOTAL
+    int "Warrant ceilings declared across all signers"
+    range 1 1024
+    default 32
+    help
+      Size of the pool behind the signers' `warrants = ["kind:prefix", ...]`
+      lists (types.rs, SIGNER_WARRANTS_TOTAL): the ceiling of what each
+      signer's packages may ask for. A package row holding a grant no entry
+      of its signer covers is refused. More entries than the pool holds are
+      refused by the parser.
+
+      Cost: 16 B of RAM per entry, either ISA.
+config TOPOLOGY_MAX_PEERS
+    int "[peer.NAME] sections (classes of remote nodes) a topology may declare"
+    range 1 16
+    default 4
+    help
+      Size of the peer table (types.rs, MAX_PEERS), CAPS.TOML format 6: a
+      class is a set of node ids an `export` of the RPC server's row may name
+      (`export = ["decisions@fleet"]`). More are refused.
+
+      Cost: 48 B of RAM per class, either ISA.
+
+config TOPOLOGY_PEER_NODES
+    int "Nodes one peer class may list"
+    range 1 16
+    default 4
+    help
+      The `nodes = [...]` list of a [peer.NAME] section. A node belongs to one
+      class only. More are refused. Cost: 4 B per node per class, either ISA.
+
+config TOPOLOGY_EXPORTS_TOTAL
+    int "Export entries across the RPC server's row"
+    range 1 256
+    default 16
+    help
+      Size of the exports pool (types.rs, EXPORTS_TOTAL): every NAME@CLASS of
+      the `export` key takes one entry. More are refused. Nothing leaves a
+      node except through one of these entries.
+
+      Cost: 32 B of RAM per entry (two name slices), either ISA.
+
+config NAMES_LEND_TTL_MS
+    int "Lifetime of a capability the name server lends (ms, 0 = the server's own)"
+    range 0 86400000
+    default 0 if PROFILE_EMBEDDED
+    default 600000 if PROFILE_FLEET
+    default 3600000
+    help
+      The name server (NAMESD.ELF) stamps every endpoint it lends with
+      `now + this`: the transfer descriptor's `expiry_ns`, which the kernel
+      turns into the deadline of the borrower's copy in the warrant tree (the
+      earlier of it and the server's own, so a lease never outlives its
+      parent). When it passes, a call through the copy fails as stale and the
+      borrower asks the name server again (azos_names::Renewing). 0 lends
+      with no deadline of its own: the copy lives as long as the server's
+      capability, which a static wiring (EMBEDDED) has no use to shorten.
+
+      A shorter lease bounds how long a revoked or re-routed service stays
+      reachable through an old copy; each renewal is one more name-server
+      call per lease, so a very short one costs a lookup every few calls.
+      Cost: no RAM; one clock read per lookup. The same on every ISA: it is a
+      wall-clock lifetime, not a cycle count.
+
+config TOPOLOGY_NAME_MAX
+    int "Longest task, class or pipeline name in a topology (bytes)"
+    range 8 255
+    default 32
+    help
+      MAX_TASK_NAME_LEN: the longest section name ([task.NAME],
+      [class.NAME], [pipeline.NAME]), class reference and enum word the
+      parser accepts; longer is refused (NameTooLong). Names borrow from
+      the file buffer, so this costs no RAM; it bounds the parser's scans.
+
+config TOPOLOGY_TARGET_MAX
+    int "Longest grant target in a topology (bytes)"
+    range 16 255
+    default 64
+    help
+      MAX_TARGET_LEN: the longest `target = "..."` of a grant (a channel
+      path, an image name, "disk.part.1"); longer is refused. No RAM cost
+      (targets borrow from the file buffer).
+
+config TOPOLOGY_INLINE_FIELDS_MAX
+    int "Fields in one grant's inline table"
+    range 4 32
+    default 8
+    help
+      MAX_INLINE_FIELDS: how many `key = value` pairs one `{ ... }` grant
+      may hold (kind, target, perm, transfer are the four in use). More
+      are refused. Cost: 32 B of parser stack per field, either ISA.
+
+choice
+    prompt "CPU entropy instruction as a pool seed source"
+    default ENTROPY_CPU_SOURCE_CREDIT
+    help
+      The CPU's own entropy instruction seeds the kernel entropy pool
+      (kernel/src/boot/entropy.rs `install_entropy`, after virtio-rng and
+      independent of it): riscv64 Zkr `seed` CSR (RV_ZKR), aarch64 FEAT_RNG
+      RNDRRS (A64_RNG), x86_64 RDSEED, else RDRAND (X86_RDSEED,
+      X86_RDRAND). Each instruction is used only where its own extension
+      choice allows it and the boot probe finds it; without one the boot
+      is exactly as before. The pool seeds the TCP ISN secret, the
+      DHCP/DNS/NTP ids, the link keys, ring 3's `entropy` endpoint and
+      the stack canary; without any credited source they stay on their
+      runtime-counter paths.
+
+      credit: mixed and credited, so the CPU alone seeds the pool on a
+      board with no entropy device (Linux RANDOM_TRUST_CPU=y). mix-only:
+      mixed, never credited; the pool still needs virtio-rng or the
+      persisted seed (Linux RANDOM_TRUST_CPU=n). off: never read.
+
+      Cost: one draw of 48 bytes at boot (RDSEED/RNDRRS: a few hundred
+      cycles per 8 bytes; Zkr: 16 bits per CSR read); nothing after.
+
+    config ENTROPY_CPU_SOURCE_CREDIT
+        bool "credit: mix and credit (trust the CPU)"
+    config ENTROPY_CPU_SOURCE_MIX
+        bool "mix-only: mix, never credit"
+    config ENTROPY_CPU_SOURCE_OFF
+        bool "off: never read the CPU's entropy instruction"
+endchoice
+
+config ENTROPY_CPU_RETRIES
+    int "CPU entropy instruction: retries per word"
+    range 1 100000
+    default 1000
+    help
+      How many times the boot retries one word of the CPU entropy
+      instruction when it reports no data (x86 CF=0, aarch64 NZCV.Z=1,
+      riscv64 BIST/WAIT) before it gives the source up for this boot, with
+      the ISA's pause hint between tries. RDSEED and RNDRRS wait for a
+      fresh conditioner output and can fail many times in a row under
+      load; Intel's 10-retry guidance is for RDRAND only. Bounded either
+      way: a dead source costs this many tries once, never a hang.
+
+# ---------------------------------------------------------------------------
+# Ring-3 allocator (userspace/lib/ualloc)
+# ---------------------------------------------------------------------------
+#
+# The knobs of the hardened allocator native ring-3 programs link
+# (`azos_ualloc`, Scudo's shape: size-class blocks, randomized chunk
+# placement, checksummed chunk headers, a quarantine of freed chunks, guard
+# pages). They are plain integers and bools read through `azos_limits`, not
+# cargo features: the allocator is a userspace library, not a kernel feature.
+# Defaults follow the SECURITY posture: every posture but `general` starts
+# with the quarantine, the free-chunk poison and the randomized placement on.
+
+config USER_ALLOC_QUARANTINE_KB
+    int "Ring-3 allocator: quarantine of freed small chunks, KiB (0 = off)"
+    range 0 4096
+    default 64 if !SECURITY_GENERAL
+    default 0
+    help
+      Total slot bytes the allocator holds back after a free before a chunk
+      can be handed out again. A chunk in quarantine keeps its header in the
+      "quarantined" state, so a second free of it is a detected double free,
+      and (USER_ALLOC_POISON_FREED) a write through a stale pointer is
+      detected when the chunk leaves quarantine. Chunks leave in random
+      order when USER_ALLOC_RANDOMIZE is on, oldest first otherwise. 0
+      turns the quarantine off: a freed chunk is reusable at once, and a
+      double free is detected only until its chunk is allocated again.
+      Cost: the bytes are resident while held (Scudo's default is 256 KiB
+      per thread cache, this is per process). Large allocations are never
+      quarantined: they are unmapped on free and their address range is
+      never reused (the kernel's mmap only moves the break up and brk does
+      not shrink it; a kernel that lowered the break would void this), so a
+      stale pointer into one faults.
+
+config USER_ALLOC_QUARANTINE_SLOTS
+    int "Ring-3 allocator: quarantine entries"
+    range 8 4096
+    default 128
+    help
+      How many freed chunks the quarantine can hold (the table is static,
+      8 bytes each). A free that finds the table full evicts one chunk
+      first, whatever the byte budget says.
+
+config USER_ALLOC_BLOCK_KB
+    int "Ring-3 allocator: size-class block, KiB"
+    range 8 1024
+    default 16
+    help
+      How much anonymous memory a size class takes from the kernel each
+      time it runs out of chunks. The kernel charges a mapping against the
+      program's frame budget whole, when it is made, so a small block keeps
+      a program with a tight `mem_pages` row inside it; a big one makes
+      fewer mmap calls. Rounded up to the page size.
+
+config USER_ALLOC_MAX_MAPS
+    int "Ring-3 allocator: live mappings (blocks + large allocations)"
+    range 16 4096
+    default 256
+    help
+      Capacity of the table the allocator checks every freed pointer
+      against (16 bytes each). A block or large allocation that does not
+      fit fails the allocation (null), it is never untracked.
+
+config USER_ALLOC_RANDOMIZE
+    bool "Ring-3 allocator: randomize chunk placement"
+    default y if !SECURITY_GENERAL
+    default n
+    help
+      Which free chunk an allocation takes, the order a fresh block is
+      handed out in, the position of a large allocation inside its pages
+      and the quarantine eviction order come from the kernel entropy pool
+      (SYS_ENTROPY_READ_TYPED, so the program's row needs the `entropy`
+      capability). Without it the allocator is deterministic: LIFO reuse,
+      fresh chunks in address order, large allocations ending exactly at
+      their guard page (the tightest overflow detection). A program
+      without the capability, or on a boot whose pool is unseeded, runs
+      deterministic and prints one line saying so, unless
+      USER_ALLOC_SEED_REQUIRED.
+
+config USER_ALLOC_SEED_REQUIRED
+    bool "Ring-3 allocator: fault when no kernel entropy is available"
+    default y if SECURITY_SEPARATION_STATIC || SECURITY_CONFIDENTIAL
+    default n
+    help
+      The header checksum is keyed and the placement randomized from one
+      read of the entropy pool at the first allocation. With this on, a
+      program that cannot get it (no `entropy` capability, unseeded pool)
+      takes a recorded fault there instead of running with a key and a
+      placement an attacker can predict.
+
+config USER_ALLOC_POISON_FREED
+    bool "Ring-3 allocator: poison freed chunks and check the poison"
+    default y if !SECURITY_GENERAL
+    default n
+    help
+      A freed chunk's first 512 bytes are filled with a fixed byte and
+      checked when it leaves quarantine (or, without quarantine, when it is
+      handed out again): a write through a stale pointer is a recorded
+      fault, not silent corruption. Cost: a fill and a compare of up to 512
+      bytes per free.
+
+config USER_ALLOC_GUARD_PAGES
+    bool "Ring-3 allocator: guard pages around blocks and large allocations"
+    default y
+    help
+      Every block and every large allocation is mapped between two
+      PROT_NONE reservations (mmap with prot 0: the range is reserved, no
+      page is mapped, a touch kills the task). Costs address space and two
+      extra mmap calls per mapping, no frames. Off: blocks and large
+      allocations are mapped back to back.
+
+# ── Native SDK runtime (sdk/, crates/core/stdrt) ─────────────────────────────
+# A plain integer read by `make sdk` (tools/kconfig_to_cargo.py --sdk-env), like
+# the allocator knobs above, whose engine `std::alloc::System` shares.
+
+config SDK_THREAD_STACK_KB
+    int "Native SDK: default stack of a std thread, KiB"
+    range 16 4096
+    default 128
+    help
+      The stack `std::thread::spawn` gives a thread when the caller names no
+      size. The kernel charges a mapping against the program's frame budget
+      whole, when it is made, so a program with a tight `mem_pages` row wants
+      this small; a deep recursion wants it large. Rounded up to the page
+      size, with a guard page below and above.
+
+# MITIGATION_SPECTRE_V1_INDEX, ML_DATA_SIG_REQUIRED and CONSOLE_LOCKDOWN moved
+# to the Mitigations menu (config/Kconfig.mitigations), wave 11.
+
+endmenu # Security

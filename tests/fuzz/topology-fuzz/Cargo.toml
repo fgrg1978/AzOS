@@ -1,0 +1,26 @@
+[package]
+name = "azos_topology_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "cargo-fuzz (libFuzzer) targets for the SCHED.TOML/CAPS.TOML parser, admission checks and signature check (azos_topology). Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+azos_topology = { path = "../../../crates/core/topology", features = ["profile-actuation", "dev-key"] }
+
+[[bin]]
+name = "topology_toml"
+path = "fuzz_targets/topology_toml.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]
+

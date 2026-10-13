@@ -1,0 +1,15 @@
+[package]
+name = "azos_linux_rt"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The Linux personality as a ring-3 runtime (plan D6, 'Linux ABI without a kernel map'): the descriptor table, working directory, umask and signal state of a Linux process, and the Linux system calls answered over the native ABI. no_std, generic over the native calls so the host tests (tests/host/linux-rt-tests) run it; the image that maps it into a Linux process is userspace/services/lxrt. Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_linux_abi = { path = "../../../crates/core/linux-abi" }
+azos_limits = { path = "../../../crates/core/limits" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

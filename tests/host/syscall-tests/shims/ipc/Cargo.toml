@@ -1,0 +1,54 @@
+[package]
+name = "syscall_test_ipc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_ipc, used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[features]
+# The pulled `io_ring.rs`'s K1 canary (OP_FSYNC answers in the submit).
+ioring-sync-fsync-canary = []
+# The pulled `lease.rs`'s wave-15 canary: matches a seal by thread again.
+lease-forget-tid-canary = []
+lease-sealed-by-thread-canary = []
+# The pulled `lease.rs`'s plan-item-7 canary (a killed lessor blocks again).
+kill-reblock-canary = []
+# Declared for the pulled `port.rs`'s `cfg(feature = "port-recheck-canary")`.
+port-recheck-canary = []
+# And for its `cfg(feature = "port-revoke-canary")` (wave 11, LEASE3).
+port-revoke-canary = []
+# The pulled `memobj.rs`'s canaries (host suites; never enabled in a build).
+memobj-move-keeps-map-canary = []
+memobj-share-no-narrow-canary = []
+memobj-charge-stays-canary = []
+memobj-protect-max-canary = []
+memobj-cow-no-break-canary = []
+memobj-no-kernel-map-canary = []
+memobj-anon-uncharged-canary = []
+
+[dependencies]
+# Kconfig CHAOS sites in the #[path]-pulled sources (off on the host).
+azos_chaos = { path = "../../../../../crates/core/chaos" }
+azos_trace = { path = "../../../../../crates/core/trace" }
+# Real, pure, host-buildable.
+azos_abi = { path = "../../../../../crates/core/abi" }
+azos_devif = { path = "../../../../../crates/core/devif" }
+azos_limits = { path = "../../../../../crates/core/limits" }
+azos_decision = { path = "../../../../../crates/core/decision" }
+wcet-macro = { path = "../../../../../crates/core/wcet-macro" }
+# Reused host stand-ins, same reasons as everywhere else in this crate.
+azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
+azos_sched = { path = "../ipc_sched", package = "syscall_test_ipc_sched" }
+# Scoped to this crate: motor_cap needs
+# azos_drv_actuator::motor_pid. See shims/ipc_drivers.
+syscall_test_ipc_drivers = { path = "../ipc_drivers" }
+# `memobj.rs` allocates/frees the region's backing pages directly. Same crates
+# the outer package's own `azos_mm`/`azos_arch` dependencies point
+# at -- Cargo unifies identical paths into one compiled crate, so these are
+# the same `PhysAddr` / `PteFlags` types `handlers.rs` itself sees.
+azos_mm = { path = "../mm", package = "syscall_test_mm" }
+azos_arch = { path = "../arch", package = "syscall_test_arch" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }

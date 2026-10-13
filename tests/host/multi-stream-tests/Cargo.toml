@@ -1,0 +1,16 @@
+[package]
+name = "azos_multi_stream_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_multi_stream (RFC-0021 wire format). Excluded from workspace."
+
+# Same pattern as dfu-tests / ota-tests / tftp-tests.
+# Run with:  cd tests/host/multi-stream-tests && cargo +stable test
+
+[dependencies]
+azos_multi_stream = { path = "../../../crates/net/multi-stream" }
+
+# Prevents Cargo from merging this crate into the workspace above.
+[workspace]

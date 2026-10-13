@@ -1,0 +1,22 @@
+[package]
+name = "azos_hwbus_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/hwbus (patterns, match tables, bind policy, the bus lifecycle). Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/hwbus-tests && cargo test
+#            cargo test --features policy-canary   (the policy rows must FAIL)
+
+[dependencies]
+azos_hwbus = { path = "../../../crates/drivers/hwbus" }
+
+[features]
+# Mirrors azos_hwbus's gate canary so the host rows can show they bite.
+policy-canary = ["azos_hwbus/policy-canary"]
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

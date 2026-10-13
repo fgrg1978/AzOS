@@ -1,0 +1,9 @@
+# The micro kernel's build: riscv32imac, core + alloc built from source (the
+# target is not installed). `make micro` runs cargo from this directory so
+# this file, not the repository root's, selects the target.
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

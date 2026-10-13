@@ -1,0 +1,75 @@
+[package]
+name = "azos_ipc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[features]
+# Plan item 7 gate canary, never in a real build (the kernel's
+# `kill-reblock-canary` turns it on with the scheduler's): a killed lessor in
+# `MEMOBJ_LEASE_WAIT` blocks again, so ipctest's phase K reads lease=-1.
+kill-reblock-canary = []
+# Wave 15 gate canary: a static-key write goes through the EXECUTABLE text
+# mapping instead of the alias; W^X must stop it with a store fault.
+text-poke-wx-canary = []
+# Wave 15 gate canary (security): `lease_forget_seal` matches the seal by the
+# releasing THREAD again, so a sibling thread's release leaves it behind.
+lease-forget-tid-canary = []
+# Wave 15 gate canary (security): `lease_sealed_by` matches the lessor thread
+# only, so a sibling thread maps a sealed region writable.
+lease-sealed-by-thread-canary = []
+# Plan item 7 gate canary, never in a real build: `PIPE_NONBLOCK` is never
+# recorded, so the `dead client` abitest line reads nonblock=137.
+pipe-nonblock-canary = []
+default = []
+# M40 (audit U10-6): gates `seed_one_cap_outcome`'s actuation arms the
+# same way `crates/core/topology`'s parser and builder already gate the word
+# "motor" / the `CapSpec` rows — a non-actuating build must have ZERO live
+# paths to mint a drivetrain capability, not just zero declared ones.
+profile-actuation = []
+# `port.rs`'s lost-wakeup canary. Only its host suite (`tests/host/ipc-lease-tests`)
+# acts on it (`cfg(all(test, ...))`); declared here so the cfg is known.
+port-recheck-canary = []
+# io_ring K1 canary: OP_FSYNC completes in the submit (the synchronous answer),
+# so `a_write_is_queued_and_its_fsync_completes_only_after_the_flush` goes red.
+ioring-sync-fsync-canary = []
+# `port.rs`'s capability-binding canary (wave 11, LEASE3): `port_cap_event`
+# ignores every event, so a binding outlives a revoke. Host suite only.
+port-revoke-canary = []
+
+# MemObj host canaries (tests/host/ipc-lease-tests, syscall-tests): each puts one
+# hole back so the test that guards it goes red. Never in a real build.
+memobj-move-keeps-map-canary = []
+memobj-share-no-narrow-canary = []
+memobj-charge-stays-canary = []
+memobj-protect-max-canary = []
+memobj-cow-no-break-canary = []
+memobj-no-kernel-map-canary = []
+memobj-anon-uncharged-canary = []
+
+[dependencies]
+azos_abi = { workspace = true }
+azos_sched = { workspace = true }
+azos_decision = { workspace = true }
+azos_devif = { workspace = true }
+azos_sync = { workspace = true }
+azos_common = { workspace = true }
+azos_mm = { workspace = true }
+azos_drv_base     = { workspace = true }
+azos_drv_irqchip  = { workspace = true }
+azos_drv_sys      = { workspace = true }
+azos_drv_gpio     = { workspace = true }
+azos_drv_bus      = { workspace = true }
+azos_drv_block    = { workspace = true }
+azos_drv_sensor   = { workspace = true }
+azos_drv_actuator = { workspace = true }
+azos_arch = { workspace = true }
+azos_limits = { workspace = true }
+azos_chaos = { workspace = true }
+azos_spsc = { workspace = true }
+azos_trace = { workspace = true }
+wcet-macro = { path = "../wcet-macro" }

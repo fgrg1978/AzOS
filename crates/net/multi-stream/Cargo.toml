@@ -1,0 +1,13 @@
+[package]
+name = "azos_multi_stream"
+version = "0.1.0"
+edition = "2021"
+description = "Stream-ID-prefixed wire multiplexer for the brain↔kernel TCP link (RFC-0021). Pure no_std; host-buildable. Cross-tested in tests/host/multi-stream-tests."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[lib]
+name = "azos_multi_stream"
+
+[dependencies]
+# No external dependencies.

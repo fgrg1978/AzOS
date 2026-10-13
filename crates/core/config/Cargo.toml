@@ -1,0 +1,11 @@
+[package]
+name = "azos_config"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# Pure no_std — zero external dependencies.
+# cfg_load is called once during single-threaded boot; all other
+# functions run from the shell task (no concurrent writers).
+[dependencies]

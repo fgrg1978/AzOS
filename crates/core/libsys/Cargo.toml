@@ -1,0 +1,14 @@
+[package]
+name = "azos_libsys"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_abi = { workspace = true }
+azos_spsc = { workspace = true }
+azos_idl = { workspace = true }
+azos_devif = { workspace = true }
+azos_ktest = { workspace = true }
+azos_libsys_macros = { path = "../libsys-macros" }

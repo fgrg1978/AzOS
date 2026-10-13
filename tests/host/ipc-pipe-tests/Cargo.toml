@@ -1,0 +1,34 @@
+[package]
+name = "azos_ipc_pipe_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the ownership/bounds logic in crates/core/ipc/src/pipe.rs. Excluded from workspace."
+
+# Same pattern as cap-tests: `azos_ipc` as a whole cannot be built for
+# the host (RV64-only deps), so the module is pulled in with
+# `#[path]` over a small shim for `azos_sync`.
+#
+# Run with:  cd tests/host/ipc-pipe-tests && cargo test
+
+[dependencies]
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
+# Host stand-ins. Their `[lib] name` is the kernel crate's name, so the
+# `#[path]`-included sources resolve `use azos_sync::SpinLock;` and
+# `azos_sched::current_task_tid()` without being edited.
+azos-sync-hostshim = { path = "shims/sync" }
+azos-sched-hostshim = { path = "shims/sched" }
+# MAX_PIPES comes from the generated .config constants; this
+# leaf has no runtime dependencies of its own, so it builds for the host.
+azos_limits = { path = "../../../crates/core/limits" }
+azos_decision = { path = "../../../crates/core/decision" }
+# pipe.rs and cap.rs both use `#[wcet(N_us)]`; the proc-macro must be
+# available for host compilation.
+wcet-macro = { path = "../../../crates/core/wcet-macro" }
+# cap.rs (pulled in because pipe.rs references `crate::cap`) needs these.
+azos_abi = { path = "../../../crates/core/abi" }
+
+[dev-dependencies]

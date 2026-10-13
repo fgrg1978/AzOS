@@ -1,0 +1,13 @@
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []
+
+# The micro kernel's Kconfig (`make micro-config` writes it): azos_limits
+# reads the MICRO_* symbols from it. Forced: the gate exports the main
+# kernel's KCONFIG_CONFIG for every suite, and a variable already in the
+# environment would otherwise win over this entry.
+[env]
+KCONFIG_CONFIG = { value = "../../../build/micro.config", relative = true, force = true }

@@ -1,0 +1,20 @@
+[package]
+name = "azos_decisions_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Decisions object: the interface and its codec (userspace/lib/decisions), the decision server's decoder (userspace/services/decisd) and the why tool's command line and output (userspace/services/why), driven through the generated client stub over a loopback, with the kernel's own decision query behind it. Excluded from workspace."
+
+# Run with:  cd tests/host/decisions-tests && cargo test --release
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+azos_decisions = { path = "../../../userspace/lib/decisions" }
+# `durable`: the refusals under test go down the durable path, as in every preset.
+azos_decision = { path = "../../../crates/core/decision", features = ["durable"] }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

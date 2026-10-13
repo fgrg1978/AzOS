@@ -1,0 +1,16 @@
+[package]
+name = "azos_rpc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Transparent RPC (Phase 9, step 1): the transport format (the IDL wire format in frames), the session and its dedupe window, the per-peer warrants a node mints for the endpoints it exports, the provenance both nodes keep, and the engine of the RPC server (userspace/services/rpcsrv). No allocation; no clock, link or kernel of its own (the Host, Link and Handshake traits); tested on the host over an in-memory link (tests/host/rpc-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+# The record both nodes append: the kernel's own definition of provenance.
+azos_decision = { path = "../../../crates/core/decision" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

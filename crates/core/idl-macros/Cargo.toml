@@ -1,0 +1,20 @@
+[package]
+name = "azos_idl_macros"
+version = "0.1.0"
+edition = "2021"
+description = "AzOS IDL (L13): the #[azos_interface] proc-macro. Host-side; use it through azos_idl."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# Host-built (proc-macro), excluded from the riscv64 workspace like wcet-macro.
+# The empty [workspace] keeps Cargo from inheriting the parent workspace.
+# Run with:  cd crates/core/idl-macros && cargo test --offline
+[workspace]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

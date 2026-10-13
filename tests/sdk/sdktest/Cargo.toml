@@ -1,0 +1,22 @@
+[package]
+name = "sdktest"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The SDK's own test: a std program for *-unknown-azos that runs the user-code harness (#[azos::test], TAP on the console) over what the std port provides: the allocator, threads, thread-locals, locks, channels, the clock, the environment, stdio. Built by `make sdk` on the three ISAs; run it from an image whose topology row grants the entropy capability. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+# `std` brings thousands of symbols; the loader reads at most 128 KiB of file
+# (EXEC_MAX_BYTES), and the symbol table is not part of the image.
+strip = "symbols"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]

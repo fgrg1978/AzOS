@@ -1,0 +1,57 @@
+# CAPS.TOML of the micro kernel's QEMU image, without its header:
+# tools/micro_topology.py adds `format` and the hash of SCHED.TOM and signs it.
+#
+# Rows are the tasks of the image (micro/src/tasks). A row whose name is an
+# image and which says `start = true` runs at boot; the others are started by
+# SYS_SPAWN_EX under a `node` capability naming the image. `mem_pages` is the whole of the
+# task's region (its stack, its start block and its kernel grants).
+
+[task.IDLE.ELF]
+class = "idle"
+priority = 31
+mem_pages = 1
+start = true
+caps = []
+
+# The echo server: READ on an endpoint is the role of serving it.
+[task.ECHO.ELF]
+class = "rt"
+priority = 8
+mem_pages = 2
+start = true
+caps = [
+    { kind = "endpoint", target = "endpoint.echo", perm = "r" },
+]
+
+[task.CAPTEST.ELF]
+class = "rt"
+priority = 12
+mem_pages = 2
+start = true
+caps = [
+    { kind = "endpoint", target = "endpoint.echo", perm = "w" },
+    { kind = "device", target = "mmio.0", perm = "w" },
+    { kind = "memobj", target = "pipeline.cam", perm = "rw" },
+    { kind = "node", target = "SPAWNEE.ELF", perm = "x" },
+    { kind = "node", target = "FAULTER.ELF", perm = "x" },
+]
+
+[task.SPAWNEE.ELF]
+class = "rt"
+priority = 14
+mem_pages = 1
+start = false
+caps = [
+    { kind = "endpoint", target = "endpoint.echo", perm = "w" },
+]
+
+[task.FAULTER.ELF]
+class = "rt"
+priority = 14
+mem_pages = 1
+start = false
+caps = []
+
+# The contiguous block CAPTEST.ELF maps: 4 KiB, one PMP entry.
+[pipeline.cam]
+dma_kb = 4

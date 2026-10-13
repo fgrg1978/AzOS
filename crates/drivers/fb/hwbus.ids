@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; build.rs turns every crates/drivers/*/hwbus.ids into
+# the native match table). One line per id:
+#
+#   <driver> <selector> [boot] [if=<KCONFIG_SYMBOL>]
+#
+# <selector>: pci:VVVV:DDDD (hex, * for any) | pciclass:CCCCCC:MMMMMM |
+# dt:<compatible> | virtio:<device id>. A line whose symbol is not y in
+# .config is left out: a driver the image does not compile claims nothing.
+# `boot`: hardware the kernel drives outside the bus (brought up before it, or
+# by a boot step that does not ask it); it is bound whatever the policy or the
+# topology says, so ring 3 is never handed a window the kernel is using.
+# The driver name is what the kernel's driver registry binds
+# (kernel/src/boot/hwbus.rs).
+
+# A firmware-provided framebuffer the generic framebuffer takes over.
+fb-simple        dt:simple-framebuffer   boot   if=FB_GENERIC
