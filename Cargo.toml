@@ -336,6 +336,9 @@ exclude = [
     # ptpd: the PTP slave, a ring-3 image with its own [workspace]; ptpd-tests is its host suite.
     "userspace/services/ptpd",
     "tests/host/ptpd-tests",
+    # audiod: the audio server, a ring-3 image with its own [workspace]; audiod-tests is its host suite.
+    "userspace/services/audiod",
+    "tests/host/audiod-tests",
     # quic / rpcquic: QUIC in ring 3 for the RPC link (std crates, built through
     # tools/sdk_cargo.py); quic-tests is the host suite.
     "userspace/lib/quic",

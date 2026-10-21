@@ -80,6 +80,7 @@ userspace/lib/packages	1	0	0	0
 userspace/lib/relibc-azos/overlay	41	51	0	1
 userspace/lib/tls-probe	0	1	0	0
 userspace/lib/ualloc	10	5	2	0
+userspace/services/audiod	4	0	1	0
 userspace/services/brain_client	25	0	0	0
 userspace/services/compmgr	3	0	2	0
 userspace/services/compositor	4	0	2	0

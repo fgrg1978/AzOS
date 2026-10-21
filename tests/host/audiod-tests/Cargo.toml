@@ -1,0 +1,23 @@
+[package]
+name = "azos_audiod_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the audio server (userspace/services/audiod): the mixer (saturation, two streams, the underrun of one) and the server's stream life over a fake device and heap memory, pulled in with #[path] so the code under test is the code AUDIOD.ELF is built from; the refusal of capture without the microphone effect and the topology row that starts the server. Excluded from workspace."
+
+# Run with:  cd tests/host/audiod-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_rings = { path = "../../../crates/core/rings" }
+azos_limits = { path = "../../../crates/core/limits" }
+# `dev-key`: a test build embeds tools/keys/test_pub.bin (topology-tests does the same).
+azos_topology = { path = "../../../crates/core/topology", features = ["dev-key"] }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]
