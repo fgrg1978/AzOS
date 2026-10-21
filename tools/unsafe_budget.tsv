@@ -81,7 +81,7 @@ userspace/lib/relibc-azos/overlay	41	51	0	1
 userspace/lib/tls-probe	0	1	0	0
 userspace/lib/ualloc	10	5	2	0
 userspace/services/brain_client	25	0	0	0
-userspace/services/compmgr	2	0	1	0
+userspace/services/compmgr	3	0	2	0
 userspace/services/compositor	4	0	2	0
 userspace/services/decisd	2	0	1	0
 userspace/services/infsrv	11	2	0	0
@@ -99,7 +99,7 @@ userspace/services/reflex	6	0	0	0
 userspace/services/rpcquic	0	1	0	0
 userspace/services/rpcsrv	5	0	3	0
 userspace/services/sh	1	0	1	0
-userspace/services/sshd	1	0	0	0
+userspace/services/sshd	2	0	1	0
 userspace/services/termd	5	0	1	0
 userspace/services/toolbox	3	0	0	0
 userspace/services/tracectl	2	0	2	0

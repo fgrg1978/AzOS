@@ -235,11 +235,20 @@ static TREE: TreeCell = TreeCell(core::cell::UnsafeCell::new(Tree::new(Intensity
     cooldown_ns: COOLDOWN_NS,
 })));
 
+struct PlanCell(core::cell::UnsafeCell<Plan>);
+// SAFETY: one thread.
+unsafe impl Sync for PlanCell {}
+
+/// The plan as read: a static, as the tree is (its rows are 24 copies of five
+/// strings, more than a ring-3 stack holds).
+static PLAN: PlanCell = PlanCell(core::cell::UnsafeCell::new(Plan { rows: [None; MAX_COMPONENTS], n: 0, whole: false }));
+
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
     let mut host = Kernel;
-    let mut plan = Plan { rows: [None; MAX_COMPONENTS], n: 0, whole: false };
-    read_plan(&mut plan);
+    // SAFETY: the one reference, for the life of the program.
+    let plan = unsafe { &mut *PLAN.0.get() };
+    read_plan(plan);
     let _ = sys::console_write(sys::STDOUT, b"[compmgr] AzOS component manager\n");
     let mut rows = [Row { image: b"", restart: b"", serves: b"", needs: b"", dir: b"" }; MAX_COMPONENTS];
     for (r, p) in rows.iter_mut().zip(plan.rows.iter().flatten()) {

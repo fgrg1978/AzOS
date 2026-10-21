@@ -12796,8 +12796,9 @@ PY
     # `percpu-hazard-canary`) -> 120.
     # +1 mm_fdt_reserved (riscv64 and aarch64: the device tree blob is out of
     # the page allocator; runtime canary `fdt-reserve-skip`) -> 121.
-    KTEST_N_RV=121
-    KTEST_N_ARM=121
+    # -1 procfs_entries_registered (the kernel keeps no procfs) -> 120.
+    KTEST_N_RV=120
+    KTEST_N_ARM=120
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -13446,7 +13447,8 @@ PY
     # +1 copyout_refused_in_kernel_context, as on rv and arm -> 122.
     # +1 percpu_accessors_read_masked, as on rv and arm -> 123.
     # +1 percpu_hazard_reads_are_masked, as on rv and arm -> 124.
-    KTEST_N_X86=124
+    # -1 procfs_entries_registered, as on rv and arm -> 123.
+    KTEST_N_X86=123
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

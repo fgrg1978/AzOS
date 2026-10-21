@@ -48,6 +48,8 @@ const ECHILD: isize = -10;
 
 struct Sys {
     keys: u32,
+    /// The logins view, mapped at the first look (a region maps once per task).
+    logins: Option<Inspector<'static>>,
 }
 
 /// Print a line on the console.
@@ -60,12 +62,14 @@ impl Kernel for Sys {
         // The signed topology's logins (`MemObj inspect.logins`): none listed
         // is nobody enrolled. A view that cannot be read is taken as users
         // enrolled: the gate stays shut.
-        let tree = sys::inspect_map(azos_abi::cap::SHM_INSPECT_LOGINS)
-            .ok()
-            // SAFETY: the mapping lives as long as the task, read-only, and
-            // the kernel writes it only with aligned 64-bit stores.
-            .and_then(|m| unsafe { Inspector::from_mapped(m, None) }.ok());
-        let Some(mut tree) = tree else {
+        if self.logins.is_none() {
+            self.logins = sys::inspect_map(azos_abi::cap::SHM_INSPECT_LOGINS)
+                .ok()
+                // SAFETY: the mapping lives as long as the task, read-only,
+                // and the kernel writes it only with aligned 64-bit stores.
+                .and_then(|m| unsafe { Inspector::from_mapped(m, None) }.ok());
+        }
+        let Some(tree) = self.logins.as_mut() else {
             say("[logind] the logins view cannot be read: taking it that users are enrolled\n");
             return true;
         };
@@ -153,7 +157,7 @@ fn main() -> ! {
     };
     // SAFETY: the one reference, for the life of the program.
     let slot = unsafe { &mut *DAEMON.0.get() };
-    let svc = slot.insert(Daemon::new(Sys { keys }));
+    let svc = slot.insert(Daemon::new(Sys { keys, logins: None }));
     say("[logind] AzOS login service (Login on endpoint.login)\n");
 
     loop {

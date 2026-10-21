@@ -69,7 +69,8 @@ struct TreeCell(core::cell::UnsafeCell<Option<Option<Inspector<'static>>>>);
 // SAFETY: these programs read the tree from their main thread only.
 unsafe impl Sync for TreeCell {}
 
-fn tree() -> Option<&'static mut Inspector<'static>> {
+/// The tree, mapped at the first call (a region maps once per task).
+pub fn tree() -> Option<&'static mut Inspector<'static>> {
     // SAFETY: the main thread's alone (see `TreeCell`).
     let t = unsafe { &mut *TREE.0.get() };
     if t.is_none() {

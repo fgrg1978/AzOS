@@ -764,6 +764,7 @@ struct TreeIds {
     #[cfg(all(feature = "soc-k1", feature = "k1"))]
     rail_lagged: azos_inspect::NodeId,
     /// x86: RAPL's package energy and power, when the meter reads.
+    // arch-only: RAPL is the PC board's meter; no other board has it.
     #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
     package: (azos_inspect::NodeId, azos_inspect::NodeId),
 }
@@ -794,6 +795,7 @@ pub(crate) fn inspect_build(
         domains: [None; MAX_DOMAINS],
         #[cfg(all(feature = "soc-k1", feature = "k1"))]
         rail_lagged: b.u64(t, "rail_lagged", 0)?,
+        // arch-only: RAPL is the PC board's meter; no other board has it.
         #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
         package: (b.u64(t, "package_energy_uj", 0)?, b.u64(t, "package_power_mw", 0)?),
     };
@@ -861,6 +863,7 @@ pub(crate) fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
         ok(w.set_u64(ids.rail_lagged, *lagged as u64));
     }
     // Irrefutable where the PC is the only board object.
+    // arch-only: RAPL is the PC board's meter; no other board has it.
     #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
     #[allow(irrefutable_let_patterns)]
     if let Board::X86 { pc, .. } = &st.board {

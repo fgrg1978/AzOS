@@ -400,21 +400,33 @@ fn open_host_key(ep: u32) -> Option<(u32, [u8; 32])> {
     Some((key, pk))
 }
 
+/// The logins view, mapped at the first connection: a region maps once per
+/// task, and the view is read again at every connection.
+struct ViewCell(core::cell::UnsafeCell<Option<Inspector<'static>>>);
+// SAFETY: only the main thread reads the logins.
+unsafe impl Sync for ViewCell {}
+static LOGINS_VIEW: ViewCell = ViewCell(core::cell::UnsafeCell::new(None));
+
 /// The logins of the signed topology, from the kernel's view of them (`MemObj
 /// inspect.logins`, `logins/<n>/{user, key}`), read at every connection.
 fn load_keys() -> auth::Parsed {
     let mut out = auth::Parsed::default();
-    let tree = sys::inspect_map(azos_abi::cap::SHM_INSPECT_LOGINS)
-        // SAFETY: the mapping lives as long as the task, read-only, and the
-        // kernel writes it only with aligned 64-bit stores.
-        .and_then(|m| unsafe { Inspector::from_mapped(m, None) }.map_err(|_| -1));
-    let mut tree = match tree {
-        Ok(t) => t,
-        Err(rc) => {
-            put(&format!("[sshd] cannot read the logins view (rc {rc}): no key can log in\n"));
-            return out;
+    // SAFETY: the main thread's alone (see `ViewCell`).
+    let cell = unsafe { &mut *LOGINS_VIEW.0.get() };
+    if cell.is_none() {
+        let tree = sys::inspect_map(azos_abi::cap::SHM_INSPECT_LOGINS)
+            // SAFETY: the mapping lives as long as the task, read-only, and
+            // the kernel writes it only with aligned 64-bit stores.
+            .and_then(|m| unsafe { Inspector::from_mapped(m, None) }.map_err(|_| -1));
+        match tree {
+            Ok(t) => *cell = Some(t),
+            Err(rc) => {
+                put(&format!("[sshd] cannot read the logins view (rc {rc}): no key can log in\n"));
+                return out;
+            }
         }
-    };
+    }
+    let Some(tree) = cell.as_mut() else { return out };
     let _ = tree.with(Source::Public, |r| {
         out = auth::Parsed::default();
         let Some(dir) = r.lookup("logins")? else { return Ok(()) };

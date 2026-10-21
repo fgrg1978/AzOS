@@ -1245,10 +1245,20 @@ fn poll_event(port: u32, ms: u64) -> Option<(u8, u32, u64)> {
 /// this program's row grants) whose identity and state satisfy `want`: its
 /// handle, the directory's name.
 fn find_device(want: &dyn Fn(&[u8], &[u8]) -> bool) -> Option<u64> {
-    let m = sys::inspect_map(azos_abi::cap::SHM_INSPECT_PUBLIC).ok()?;
-    // SAFETY: the mapping lives as long as the task, read-only, and the kernel
-    // writes it only with aligned 64-bit stores.
-    let mut tree = unsafe { Inspector::from_mapped(m, None) }.ok()?;
+    struct Cell(core::cell::UnsafeCell<Option<Inspector<'static>>>);
+    // SAFETY: the test's main thread alone reads the tree.
+    unsafe impl Sync for Cell {}
+    // A region maps once per task: the mapping is kept for every look.
+    static TREE: Cell = Cell(core::cell::UnsafeCell::new(None));
+    // SAFETY: as above.
+    let cell = unsafe { &mut *TREE.0.get() };
+    if cell.is_none() {
+        let m = sys::inspect_map(azos_abi::cap::SHM_INSPECT_PUBLIC).ok()?;
+        // SAFETY: the mapping lives as long as the task, read-only, and the
+        // kernel writes it only with aligned 64-bit stores.
+        *cell = Some(unsafe { Inspector::from_mapped(m, None) }.ok()?);
+    }
+    let tree = cell.as_mut()?;
     tree.with(Source::Public, |r| {
         let mut found = None;
         let Some(dir) = r.lookup("devices")? else { return Ok(None) };

@@ -2006,12 +2006,8 @@ fn check_views() {
     ]) {
         expect_true(name, sys::cap_lookup(sys::ty::SHM.raw(), *k) < 0);
     }
-    let tasks = sys::inspect_map(SHM_INSPECT_PUBLIC)
-        .ok()
-        // SAFETY: the mapping lives as long as the task, read-only, and the
-        // kernel writes it only with aligned 64-bit stores.
-        .and_then(|m| unsafe { azos_inspect_lib::Inspector::from_mapped(m, None) }.ok())
-        .map(|mut v| v.with(azos_inspect_lib::Source::Public, |r| r.lookup("sched/tasks")).ok().flatten().is_some());
+    let tasks = shared::tree()
+        .map(|v| v.with(azos_inspect_lib::Source::Public, |r| r.lookup("sched/tasks")).ok().flatten().is_some());
     expect_true(b"views: the public region names no task", tasks == Some(false));
     // The task list (admin) shows this task and a child it starts.
     let child = spawn_child(&[b"nap", b"2000"]);
