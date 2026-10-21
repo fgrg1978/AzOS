@@ -20,11 +20,12 @@ Inputs (any mix; every one optional, at least one needed):
                     its violation code; a durable decision receipt (codes 0x1B
                     base, 0x1C extension) is decoded to its rule, verdict,
                     subject and numbers.
-  --decisions FILE  the decisions the kernel holds, either `cat /proc/decisions`
-                    saved as text (DECISION_RECORDS_DEV) or `/proc/decisions.bin`
-                    saved raw (104-byte `ProvenanceRecord` records, the ring or
-                    the journal of durable decisions; the file name ends in
-                    `.bin`). Placed by the record's `clock` (nanoseconds); a
+  --decisions FILE  the decisions the kernel holds, either `why list` saved as
+                    text or the records raw (104-byte `ProvenanceRecord`
+                    records back to back: the ring or the journal of durable
+                    decisions, as the admin introspection region's
+                    `decisions/records/<n>` holds them and `inspect decisions`
+                    prints them in hex; the file name ends in `.bin`). Placed by the record's `clock` (nanoseconds); a
                     text line without one (an older kernel) is spaced one
                     microsecond per id and marked `clock: none`.
   --trace FILE      `tracectl stream` text output (`[cpuN] SEC.NANOS event
@@ -212,7 +213,7 @@ def numbers(rule, verdict, n):
 
 
 def decode_provenance(buf):
-    """The `ProvenanceRecord`s in a `/proc/decisions.bin` dump."""
+    """The `ProvenanceRecord`s of a raw dump (104-byte records back to back)."""
     out = []
     for off in range(0, len(buf) - PROV_SIZE + 1, PROV_SIZE):
         (rule, verdict, subject, seq, c0, c1, p0, p1, row, node, image, session,
@@ -231,7 +232,7 @@ KV = re.compile(r'(\w+)=(\S+)')
 
 
 def decode_text(text):
-    """The decisions in `cat /proc/decisions` (lines `SEQ RULE VERDICT SUBJECT=V k=v ...`)."""
+    """The decisions in `why list` text (lines `SEQ RULE VERDICT SUBJECT=V k=v ...`)."""
     out = []
     for line in text.splitlines():
         m = TEXT_LINE.match(line.strip())

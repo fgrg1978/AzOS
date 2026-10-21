@@ -169,10 +169,10 @@ Source: `crates/net/net/src/ntp.rs`, `kernel/src/boot/net.rs` (`install_net_conf
 
 ## PTP
 
-`PTPD.ELF` (`userspace/services/ptpd`) is a ring-3 PTP slave. Its topology row is its whole authority: `WRITE` on the `clock` endpoint, the read-only root directory (it reads `/proc/clock`) and the sockets its transport needs.
+`PTPD.ELF` (`userspace/services/ptpd`) is a ring-3 PTP slave. Its topology row is its whole authority: `WRITE` on the `clock` endpoint, the kernel's view of the `[clock]` row (`MemObj inspect.clock`) and the sockets its transport needs.
 
 * **Transport.** IEEE 1588 over UDP, the multicast group 224.0.1.129, port 319 (event) and 320 (general). Raw-Ethernet (802.1AS) is not part of the daemon's transport: it needs a packet socket, which the kernel keeps to itself.
-* **Domain.** `ptp_domain` of the node's `[clock]` row, exported by the kernel as one line `ptp_domain N` in `/proc/clock` (Kconfig `PTPD`). A node whose row declares none takes no part: the daemon says so and ends.
+* **Domain.** `ptp_domain` of the node's `[clock]` row, published by the kernel as `clock/ptp_domain` in the `inspect.clock` view region (Kconfig `PTPD`). A node whose row declares none takes no part: the daemon says so and ends.
 * **Protocol.** The best master clock algorithm for a slave-only ordinary clock (`bmc.rs`), then end-to-end delay measurement from Sync, Follow_Up, Delay_Req and Delay_Resp (`port.rs`, wire format in `wire.rs`). The master's PTP-scale (TAI) timestamps are moved by the `currentUtcOffset` its Announce states before they meet the wall clock; a master that does not state a valid offset gives no sample.
 * **Timestamps.** Software timestamps, taken after a datagram is taken off the socket.
 * **Feeding the kernel.** Each exchange ends in one `(offset_ns, delay_ns)` pair, offered with `Clock::sample` and source `SOURCE_PTP`. The daemon disciplines nothing itself; the kernel's loops filter, slew or step.

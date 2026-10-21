@@ -5,7 +5,7 @@ mechanisms, from "why was this refused" to "what was every CPU doing":
 
 | Mechanism | Answers | Read with |
 |-----------|---------|-----------|
-| Decision records | Why did the kernel refuse, deny, admit or place this? | `/proc/decisions`, `why`, `tools/perfetto_export.py` |
+| Decision records | Why did the kernel refuse, deny, admit or place this? | `why`, `tools/perfetto_export.py` |
 | Inspect tree and metrics | What are the kernel's current numbers? Why did that task wake? | `toolbox inspect`, `why woke` |
 | Crash dumps | What state was a task in when a fault killed it? | `why crash` |
 | Panic record | What happened when the kernel itself stopped? | `/fat/CRASH.LOG` |
@@ -23,7 +23,7 @@ who may read them is in [security.md](security.md); update-time records are in
 
 Source: `crates/core/decision/src/lib.rs`, `crates/core/decision/src/prov.rs`,
 `crates/core/decision/src/query.rs`, `crates/core/decision/src/journal.rs`,
-`crates/core/decision/src/deny.rs`, `kernel/src/boot/procfs.rs`,
+`crates/core/decision/src/deny.rs`, `kernel/src/boot/inspect_views.rs`,
 `userspace/lib/decisions`, `userspace/services/decisd`,
 `userspace/services/why`.
 
@@ -154,18 +154,20 @@ what `RuleInfo::fields` names.
 
 **Reading them.**
 
-- `/proc/decisions` (procfs, read-only, mounted at `/proc`) is the text form of
-  the ring: a header line with the count, the ring depth and the dropped-denial
-  total, then one line per record, newest first.
-- `/proc/decisions.bin` is the same records whole and binary (the ring, or the
-  durable journal), for programs.
+- The introspection tree's admin region holds the newest 24 records whole and
+  binary (`decisions/records/<n>`, `ProvenanceRecord::to_bytes`, oldest first:
+  the ring, or the durable journal), rebuilt at every refresh; the public
+  region has the counts (`decisions/{recorded, deny_dropped}`). The admin
+  region is the one that may name a task, and a record's subject may be one.
 - `DECISD.ELF` serves the `Decisions` object (`userspace/lib/decisions`) over the
   `endpoint.decisions` endpoint to any row holding a call capability (`WRITE`) on
   it. `query` lists ids matching a `Filter` (rule, verdict, subject, an
   exclusive `after` id) a page at a time; `get` returns one record in two parts
   (a reply holds seven words and a record is thirteen), re-asked if the slot was
-  rewritten in between. The server rereads `/proc/decisions.bin` on each
-  request. No text is parsed on either side.
+  rewritten in between. On each request the server waits for the refresh that
+  began after it (at most two periods) and reads the records again, so a
+  request sees every decision made before it. No text is parsed on either
+  side.
 - `WHY.ELF` is the client:
 
 ```text
@@ -184,8 +186,7 @@ the server failed. With `--remote` it asks the peer node's decision server
 through the proxy endpoint `endpoint.rpc-decisions`; a lost link is
 `NoConnection`, not a dead server.
 
-The recovery console reads the same data with `why [id]` and `cat
-/proc/decisions`.
+The recovery console reads the same data with `why [id]`.
 
 ## Inspect tree and metrics
 
@@ -196,21 +197,27 @@ Source: `crates/core/inspect/src/lib.rs`, `crates/core/inspect/src/format.rs`,
 The introspection tree is what the kernel knows about itself, as data a program
 reads without a system call. A **region** is a block of memory (a `MemObj` the
 kernel created and alone writes) holding one tree of typed nodes (`Kind`:
-directory, `u64`, `i64`, string, histogram). A reader maps it read-only and walks
+directory, `u64`, `i64`, string, bytes, histogram). A reader maps it read-only and walks
 it with loads: no syscall, no copy, no lock.
 
-**Two regions** with the same layout and no shared byte:
+**The regions** have the same layout and no shared byte:
 
 | Region | Handed to | Holds |
 |--------|-----------|-------|
-| Public (`Class::Public`) | Any task whose topology row has `MemObj inspect.public` (`READ|MAP`) | Counters and gauges |
-| Admin (`Class::Admin`) | A task that also holds the full task view | Subtrees that name other tasks |
+| Public (`Class::Public`) | Any task whose topology row has `MemObj inspect.public` (`READ|MAP`) | Counters, gauges, the devices, the drivers, the system's identity |
+| Admin (`Class::Admin`) | A task that also holds the full task view | Subtrees that name other tasks: the task list, the wake log, the decision records |
+| A view (`inspect.names`, `.rpc`, `.mcp`, `.components`, `.logins`, `.clock`) | Only the rows that declare it | The signed topology's wiring one service needs (`kernel/src/boot/inspect_views.rs`) |
+
+There is no `/proc` and no `/sys`: these regions are the kernel's only
+read-out. A Linux binary's `/proc` is the Linux runtime's
+(`userspace/lib/linux_rt`, ring 3), and today it answers `/proc/self/exe`.
 
 The admin region is not a flag on public nodes, so a reader of the public one has
 nothing to be refused. A task finds the capability with the capability lookup
 (`SYS_CAP_INFO`, query `CAP_INFO_LOOKUP`; `azos_libsys::cap_lookup`) for type
-`Shm` and the key `SHM_INSPECT_PUBLIC`, or `SHM_INSPECT_ADMIN` for the admin
-region, then acquires and maps it read-only. Before a
+`Shm` and the key `SHM_INSPECT_PUBLIC`, `SHM_INSPECT_ADMIN` for the admin
+region or `SHM_INSPECT_<VIEW>` for a view, then acquires and maps it read-only
+(`azos_libsys::inspect_map`). Before a
 region is published, the kernel opens it the way a ring-3 reader does and
 publishes nothing for a region that fails.
 
@@ -235,10 +242,37 @@ sched/{tasks_ready, tasks_blocked, tasks_running,
 memory/{page_size, pages_total, pages_free, pages_used, peak_user_pages,
         quota_refusals, domains}
 decisions/{recorded, deny_dropped}
+system/{version, platform}
+fs/tmpfs/{files, used_bytes, max_bytes}
+drivers/<slot>/{kind, name, isolation, perms}
+devices/<handle>/{name, identity, state, driver, base, size, irq}
+chaos/{seed, <point>/{rate, checked, fired}}                (CHAOS)
+soc/{up, clocks, resets, ...}                               (SOC_FRAMEWORKS)
+thermal/{status, board, ticks, level, shutdown, records, zones/<z>/active, domains/<d>/{cap, opp}}   (THERMAL)
+latency/{irqsoff, preemptoff}/{max_ns, hart, windows, unpaired, start, end, top/<n>/{max_ns, count, site}}   (LAT_TRACE)
 metrics/...                               (below)
 admin: sched/{tasks_seen, tasks/<tid>/{name, state, priority, parent}}
 admin: wake/{now_us, rN}                                    (WAKE_RING_ENTRIES: the wake log with task IDs)
+admin: decisions/records/<n>                                (the newest 24 records, bytes)
 ```
+
+The views, each its own region:
+
+```text
+inspect.names       endpoints/<name>/{index, server}, imports/<badge> = "name,..."
+inspect.rpc         endpoints/<name>/{index, server}, peers/<n>/{class, node, noise_pk}, exports/<n>/{endpoint, class}
+inspect.mcp         endpoints/<name>/{index, server}
+inspect.components  components/<n>/{image, restart, serves, needs, dir, start}, components/rows
+inspect.logins      logins/<n>/{user, key}
+inspect.clock       clock/ptp_domain
+```
+
+A view lists the named endpoints the rows declaring it hold; the reader
+checks its own table for the handle and its rights. A value is at most
+`INSPECT_REFRESH_MS` old; a reader that needs what its own spawn created
+(an endpoint's pool index) waits for two refreshes (`Inspector::wait_refreshes`),
+and the boot launcher refreshes before it starts the component manager, which
+reads its plan once.
 
 The per-CPU number is the length of the CPU's run queue; the scheduler keeps no
 per-CPU dispatch counter.
@@ -481,7 +515,7 @@ key=value ...`) until `N` records or `MS` milliseconds, and puts the mask back a
 found. A change of the mask while it streams opens a segment, and the summary
 counts each segment's records per class, those of a masked class near a boundary
 ("late") and past it ("outside", which must be 0). The latency tracer (`LAT_TRACE`)
-also registers `/proc/irqsoff` and `/proc/preemptoff`.
+also publishes the introspection tree's `latency/`.
 
 **Perfetto.** `tools/perfetto_export.py` merges the flight recorder, the decision
 records and a kernel trace into one Chrome trace-event JSON that Perfetto loads, so
@@ -497,7 +531,7 @@ perfetto_export.py --self-test
 | Input | Format |
 |-------|--------|
 | `--recorder` | A flight-recorder file; the timestamps are raw timebase ticks, so `--hz` places them. Safety records are named by violation code; durable decision receipts (codes `0x1B` base, `0x1C` extension) are decoded to rule, verdict, subject and numbers. |
-| `--decisions` | `cat /proc/decisions` saved as text, or `/proc/decisions.bin` saved raw (file name ends `.bin`); placed by the record's clock |
+| `--decisions` | `why list` saved as text, or the records raw (104-byte records back to back, as `decisions/records/<n>` of the admin region holds them; file name ends `.bin`); placed by the record's clock |
 | `--trace` | `tracectl stream` text output, placed by its own clock |
 
 Tracks: process 1 "kernel trace" (one thread per CPU), process 2 "decisions" (one
@@ -587,9 +621,8 @@ entry points queue and wake the flusher instead of flushing in the caller. The
 recorder is where durable decision receipts, the per-fault crash record, safety
 violations and the e-stop log land.
 
-**procfs.** Besides the files named above, `kernel/src/boot/procfs.rs` and
-`crates/fs/fs/src/procfs.rs` register `uptime`, `meminfo`, `fs`, `tasks`,
-`<tid>`, `names`, `devices` and `rpc` under `/proc`, and a few more behind their
-Kconfig symbols (`clock`, `mcp`, `components`, `chaos`, `soc`). Only `/proc` is
-mounted into the VFS, read-only; the `/sys` providers (`version`, `platform`,
-`scheduler`, `drivers`) are registered but not mounted.
+**No procfs.** The kernel publishes no text files: what `/proc` and `/sys` once
+carried is in the introspection tree (`system/`, `memory/`, `fs/`, `drivers/`,
+`devices/`, the admin task list, the views), the vDSO clock and
+`DOMAIN_UPTIME` (the uptime). A Linux binary's `/proc` is the Linux runtime's
+(`userspace/lib/linux_rt`, ring 3).

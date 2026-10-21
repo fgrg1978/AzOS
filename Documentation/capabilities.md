@@ -441,8 +441,14 @@ because the task holds a specific capability for it, granted by its row in the
 signed topology, and the grant is as narrow as the action.
 
 - **The task view.** `ty::TASK` is a `Domain`-kind capability with `READ` on the
-  single target `"tasks"`. Without it, `/proc/tasks` and `/proc/<tid>` show a
-  task only itself and its descendants. The built-in topology grants it as `TASK_VIEW_CAP`.
+  single target `"tasks"`: the warrant the admin introspection region (the
+  task list, the wake log, the decision records) is granted against. The
+  built-in topology grants it as `TASK_VIEW_CAP`.
+- **The view regions.** `inspect.names`, `inspect.rpc`, `inspect.mcp`,
+  `inspect.components`, `inspect.logins` and `inspect.clock` carry the signed
+  topology's wiring one service needs; `inspect_region::seed_mint` grants a view
+  only to a row that declares it (`READ|MAP`), and the kernel builds it for
+  exactly those rows.
 - **The admin introspection region.** `inspect.admin` names other tasks, so
   `inspect_region::seed_mint` grants it only to a task whose table already
   holds the task view; the task view is the admin warrant. The grant is exactly

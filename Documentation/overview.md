@@ -155,7 +155,8 @@ capability, applies a limit and writes a record.
 - **Decision records.** `crates/core/decision` writes one `Record` per
   admission, placement or refusal: the rule that decided, the verdict, the
   subject, up to three numbers compared and the alternative the rule rejected.
-  The kernel renders the ring at `/proc/decisions`. With the `durable` feature
+  The kernel publishes the newest in its introspection tree's admin region;
+  `why` prints them. With the `durable` feature
   every refusal is also handed to the flight recorder, which survives a reset.
 - **Domain code plugs in, it does not own the gate.** Robot-specific parts
   (the motor gate and its envelope, the control loop, flight) live in

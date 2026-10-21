@@ -616,11 +616,11 @@ Which of these rows other code reads today:
 | `policy` | `crates/core/syscall/src/families.rs` (limits on what a domain may create). |
 | `livepatch` | `kernel/src/boot/livepatch.rs` (a patch blob is applied only if a row names its SHA-256). |
 | `degrade` | `kernel/src/boot/energy.rs`. |
-| `clock` | `crates/core/syscall/src/clock.rs` (the TAI-UTC table), `kernel/src/boot/procfs.rs` (the PTP domain). |
+| `clock` | `crates/core/syscall/src/clock.rs` (the TAI-UTC table), `kernel/src/boot/inspect_views.rs` (the PTP domain, in the `inspect.clock` view). |
 | `volume` | `kernel/src/boot/azvol.rs`. |
 | `guest` | `kernel/src/boot/hv.rs`, `crates/core/hv/src/admit.rs`. |
 | `route`, `firewall` | `kernel/src/boot/net.rs`. |
-| `login` | `kernel/src/boot/procfs.rs` shows the rows as `/proc/ssh` (one line per key, `<user> <64 hex digits>`); the SSH server (`userspace/services/sshd`) reads it at every connection and the login service (`userspace/services/logind`) reads whether it is empty. The `login` op of `keys` (`crates/core/syscall/src/keys.rs`) compares a console credential's verifier (`login_enroll`, `tests/host/logind-tests`) with the keys of the row. The row's place in the file plus one is the user's `owner_root`. A key's hex is the 32 bytes of an OpenSSH `ssh-ed25519` public key: `awk '{print $2}' id_ed25519.pub | base64 -d | tail -c 32 | xxd -p -c 64`. |
+| `login` | `kernel/src/boot/inspect_views.rs` publishes the rows in the `inspect.logins` view (one entry per key, `logins/<n>/{user, key}`); the SSH server (`userspace/services/sshd`) reads it at every connection and the login service (`userspace/services/logind`) whether it is empty. The `login` op of `keys` (`crates/core/syscall/src/keys.rs`) compares a console credential's verifier (`login_enroll`, `tests/host/logind-tests`) with the keys of the row. The row's place in the file plus one is the user's `owner_root`. A key's hex is the 32 bytes of an OpenSSH `ssh-ed25519` public key: `awk '{print $2}' id_ed25519.pub | base64 -d | tail -c 32 | xxd -p -c 64`. |
 | `swap` | Nothing outside the topology crate reads `Topology::swaps` today. The swap partition is claimed through the block layer's partition table (`azos_drv_block::partition::claim_swap`). |
 
 Source: `crates/core/topology/src/parser.rs` (`PolicyStage`, `LivepatchStage`,

@@ -25,7 +25,7 @@ section names the paths to read.
           capabilities + IPC (ipc)    scheduler (sched)    memory (mm)
           topology (signed)           actuation authority  decision records
           fs (VFS, FAT32, tmpfs,      net (TCP/IP)         drivers
-              procfs, azvol)
+              azvol)
           [optional] robot domain, hypervisor core, Linux personality
  ---------------------------------------------------------------------------
  arch     arch-api traits  ->  arch-riscv64 | arch-aarch64 | arch-x86_64
@@ -170,7 +170,7 @@ them. A per-task frame budget is charged to the task's domain.
 
 ### Storage
 
-A VFS with FAT32, tmpfs and procfs; a block cache and a page cache; a crash
+A VFS with FAT32 and tmpfs; a block cache and a page cache; a crash
 log and a pstore; `azvol`, a native volume format with snapshots and per-block
 encryption. Block devices come from VirtIO, SD/eMMC or NVMe drivers and a
 partition table parser.
@@ -263,12 +263,13 @@ QSBR.
 ### Observability
 
 A per-CPU lock-free event tracer; the introspection tree read from ring 3 with
-loads only; decision records at `/proc/decisions`; procfs; a panic record in
+loads only (the kernel's only read-out: no `/proc`, no `/sys`); decision
+records; a panic record in
 reserved RAM (pstore) and a crash log on the volume; minidumps of faulted ring-3
 tasks; in-kernel tests (`ktest`) and boot smokes.
 
 - Source: `crates/core/{trace,inspect,decision,ktest,chaos}`,
-  `crates/fs/fs/src/{procfs,crash_log,pstore}.rs`, `kernel/src/{pstore,ktest}.rs`,
+  `crates/fs/fs/src/{crash_log,pstore}.rs`, `kernel/src/{pstore,ktest}.rs`,
   `kernel/src/smokes/`, `userspace/services/{tracectl,why,decisd}`.
 - Doc: [observability.md](Documentation/observability.md).
 

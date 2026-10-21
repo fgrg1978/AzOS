@@ -455,8 +455,8 @@ Source: `crates/fs/fs/src/fat32.rs`, `crates/fs/fs/src/bcache.rs`,
 ## The page-cache path
 
 File data of a filesystem whose `FileSystem::page_cached()` is true goes
-through the unified page cache. FAT32 and tmpfs return true; azvol and procfs
-do not. A backend must also be `streaming()`.
+through the unified page cache. FAT32 and tmpfs return true; azvol does
+not. A backend must also be `streaming()`.
 
 The cache is the one `mmap` maps (see [memory.md](memory.md#page-cache-as-a-paged-memobj)):
 one `MemKind::Paged` MemObj per aligned 64-page window of a file, filled and

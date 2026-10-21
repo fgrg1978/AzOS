@@ -301,7 +301,7 @@ first number names the device, the receipt kind and the cause, laid out in
 | `CONTRADICTED`  | 3     | a later receipt of the contrary kind contradicts it       |
 
 The second number is the age in milliseconds of the newest receipt of the kind
-(0 when there is none) and the third the limit. `why` and `/proc/decisions`
+(0 when there is none) and the third the limit. `why` and the recovery console
 decode the first number and print the device, the receipt kind and the cause.
 
 The kernel registers the index as the caveat's probe at boot
@@ -336,7 +336,7 @@ The row's `level` is a ceiling (`azos_common::envelope`):
 * **Deletes** are an unlink, a rename onto a name that already holds a file,
   a cut below a file's size (`truncate`, or an open with `O_TRUNC` of a file
   that holds data) and the drop of an azvol snapshot, each on a device-backed
-  volume (tmpfs and procfs hold no stored data). The VFS asks before anything
+  volume (tmpfs holds no stored data). The VFS asks before anything
   changes; a refusal answers `EACCES`, and a delete that finds nothing to delete
   asks nothing.
 * **Egress** is a socket's first packet to a destination that is not this node
@@ -578,8 +578,9 @@ depend on each other (the sink with the ring off still leaves every refusal's
 receipt on the medium); the journal is written where the sink is called:
 
 - **The ring** (Kconfig `DECISION_RECORDS_DEV`, `DECISION_RECORDS_ENTRIES`): every
-  verdict, lock-free so the wake path can write to it, rendered at
-  `/proc/decisions` one line per record, oldest first. The oldest record is
+  verdict, lock-free so the wake path can write to it; the newest 24 are
+  published in the introspection tree's admin region
+  (`decisions/records/<n>`), oldest first. The oldest record is
   overwritten.
 - **The durable sink** (Kconfig `DECISION_REFUSALS_DURABLE`): a `Refuse` record is
   always handed to a sink the kernel installs (`set_durable_sink`), which writes it
@@ -642,7 +643,6 @@ overwritten or never held. Nothing parses text. They are served three ways:
 
 | Surface                  | Use                                                                            |
 |--------------------------|--------------------------------------------------------------------------------|
-| `/proc/decisions`        | one line per record from the ring (`ProvenanceRecord::write_line`)             |
 | recovery console `why`   | `why` lists the latest records; `why <id>` prints the chain (`cmd_why`)        |
 | `WHY.ELF` and the `Decisions` interface | a ring-3 client asks `DECISD.ELF` over `endpoint.decisions`; `why`, `why ID`, `why list [-r RULE] [-v VERDICT] [-s SUBJECT] [-a AFTER_ID]`, and `--remote` to ask a peer node's decision server through the RPC proxy endpoint |
 

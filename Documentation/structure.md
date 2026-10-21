@@ -134,7 +134,7 @@ Source: `crates/drivers/*/Cargo.toml` and each `lib.rs` header.
 
 | Crate | What it holds |
 |---|---|
-| `crates/fs/fs` (`azos_fs`) | The VFS, FAT32, tmpfs, procfs, block cache, page cache, crash log, pstore, and `azvol` (the native volume format with snapshots and per-block authenticated encryption). |
+| `crates/fs/fs` (`azos_fs`) | The VFS, FAT32, tmpfs, block cache, page cache, crash log, pstore, and `azvol` (the native volume format with snapshots and per-block authenticated encryption). |
 | `crates/net/net` (`azos_net`) | Ethernet, ARP, IPv4/IPv6, ICMP, UDP, TCP, DHCP, DNS, NTP, IGMP, NAT, packet filter, BSD-style sockets. Polling-based. |
 | `crates/net/multi-stream` | A stream-ID-prefixed multiplexed wire format for a point-to-point link. |
 | `crates/net/tftp` | A TFTP client: the protocol state machine and a fetch loop over a caller-supplied UDP socket. Used by the package installer in development builds (`PKG_FETCH_TFTP`). |

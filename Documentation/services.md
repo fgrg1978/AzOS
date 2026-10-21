@@ -49,27 +49,27 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 
 | Image | Directory | Starts | Serves | Calls | Row capabilities |
 |---|---|---|---|---|---|
-| `COMPMGR.ELF` | `userspace/services/compmgr` | always, by the kernel | nothing | `/proc/components` | `ROOT_RO`, X on every row it starts |
-| `NAMESD.ELF` | `userspace/services/namesd` | with the native shell session | `endpoint.names` (`Names`) | | R `endpoint.names`, W+transfer `endpoint.term`, `ROOT_RO` |
+| `COMPMGR.ELF` | `userspace/services/compmgr` | always, by the kernel | nothing | | R+M `MemObj inspect.components`, X on every row it starts |
+| `NAMESD.ELF` | `userspace/services/namesd` | with the native shell session | `endpoint.names` (`Names`) | | R `endpoint.names`, W+transfer `endpoint.term`, R+M `MemObj inspect.names` |
 | `TERMD.ELF` | `userspace/services/termd` | console program | `endpoint.term` (`Terminal`) | | R `endpoint.term`, RWM `MemObj input.events` (with a keyboard/mouse driver), RWM `MemObj console.screen` (with `FB_CONSOLE`) |
 | `SH.ELF` | `userspace/services/sh` | with `TERMD.ELF` | nothing | `Terminal`, `Names` | X on the tool images, RW `/fat`, RW `/tmp`, `tasks` view, `ROOT_RO` |
 | `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `endpoint.input` (`input`), `endpoint.compositor` (`window`) | `tasks` view, R `net`, R `clock`, W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO` |
 | `POWER.ELF` | `userspace/services/power` | by the shell | nothing | `power` | RW `power`, R `sensor.9`, X `endpoint.pm-gpio` and `endpoint.pm-ina` (the drivers' `DevicePower`) |
 | `TRACECTL.ELF` | `userspace/services/tracectl` | by the shell | nothing | `trace` | RW `trace` log, RW `/fat`, `ROOT_RO` |
 | `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | `userspace/services/famtools` | by the shell | nothing | `flight`, `behavior`, `config`, `ota` | see [famtools](#famtools) |
-| `DECISD.ELF` | `userspace/services/decisd` | with Kconfig `DECISION_REFUSALS_DURABLE` or `DECISION_RECORDS_DEV` | `endpoint.decisions` (`Decisions`) | `/proc/decisions.bin` | R `endpoint.decisions`, `ROOT_RO` |
+| `DECISD.ELF` | `userspace/services/decisd` | with Kconfig `DECISION_REFUSALS_DURABLE` or `DECISION_RECORDS_DEV` | `endpoint.decisions` (`Decisions`) | | R `endpoint.decisions`, `tasks` view, R+M `MemObj inspect.public`, R+M `MemObj inspect.admin` |
 | `LOGD.ELF` | `userspace/services/logd` | with Kconfig `KLOG` | nothing | | R+M `MemObj klog.ring`, RW `/fat`, `ROOT_RO` |
 | `INPUTD.ELF` | `userspace/services/inputd` | with Kconfig `INPUTD` | `endpoint.input` (`Input`) | | RW+transfer `endpoint.input` (R serves it; W+transfer is the source of its warrants), RWM `MemObj input.events` |
 | `COMPSRV.ELF` | `userspace/services/compositor` | with Kconfig `COMPOSITOR` | `endpoint.compositor` (`Compositor`) | `display.0`, `endpoint.input` (trusted), `endpoint.decisions` | R+W+transfer `endpoint.compositor` (R serves it; W+transfer is the source of its windows' rights), RWX `display.0`, WX `endpoint.input` (the kernel badges it as the trusted surface's), W `endpoint.decisions` (where `DECISD.ELF` runs) |
 | `WHY.ELF` | `userspace/services/why` | by the shell | nothing | `endpoint.decisions`, `endpoint.rpc-decisions` | W both, R `entropy`, `ROOT_RO` |
 | `PKGD.ELF` | `userspace/services/pkgd` | every hardware class but embedded | `endpoint.packages` (`Packages`) | `ota`, a pinned HTTPS source (a TCP socket, by its seccomp profile) | R `endpoint.packages`, RW `/fat/PKG`, R `ota`, R `entropy`, `ROOT_RO` |
 | `PKG.ELF` | `userspace/services/pkg` | by the shell | nothing | `endpoint.packages` | W `endpoint.packages`, `ROOT_RO` |
-| `RPCSRV.ELF` | `userspace/services/rpcsrv` | with Kconfig `RPC_PEER_NODE` set | `endpoint.rpc-*` proxies | the real endpoints it exports | R `endpoint.rpc-decisions`, W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), `ROOT_RO` |
+| `RPCSRV.ELF` | `userspace/services/rpcsrv` | with Kconfig `RPC_PEER_NODE` set | `endpoint.rpc-*` proxies | the real endpoints it exports | R `endpoint.rpc-decisions`, W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), R+M `MemObj inspect.rpc` |
 | `RPCQUIC.ELF` | `userspace/services/rpcquic` | with Kconfig `RPC_QUIC` | nothing | UDP to `rpcsrv`, QUIC to the peer | R `entropy` |
 | `ZENOHD.ELF` | `userspace/services/zenohd` | Kconfig `ZENOH_GW` | Zenoh queryables | `endpoint.decisions` | W+transfer `endpoint.decisions`, R `entropy` |
-| `MCPD.ELF` | `userspace/services/mcpd` | Kconfig `MCP_BRIDGE` | MCP tools | `endpoint.decisions` and the endpoints it fronts | W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), `ROOT_RO` |
-| `PTPD.ELF` | `userspace/services/ptpd` | Kconfig `PTPD` | nothing | `clock` | W `clock`, `ROOT_RO` |
-| `LOGIND.ELF` | `userspace/services/logind` | Kconfig `CONSOLE_LOGIN` (default n) | `Login` on `endpoint.login` | `TERMD.ELF` calls it | `READ` `endpoint.login`, `EXEC` `keys` masked to `login`, launch `SH.ELF`, `ROOT_RO` |
+| `MCPD.ELF` | `userspace/services/mcpd` | Kconfig `MCP_BRIDGE` | MCP tools | `endpoint.decisions` and the endpoints it fronts | W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), R+M `MemObj inspect.mcp` |
+| `PTPD.ELF` | `userspace/services/ptpd` | Kconfig `PTPD` | nothing | `clock` | W `clock`, R+M `MemObj inspect.clock` |
+| `LOGIND.ELF` | `userspace/services/logind` | Kconfig `CONSOLE_LOGIN` (default n) | `Login` on `endpoint.login` | `TERMD.ELF` calls it | `READ` `endpoint.login`, `EXEC` `keys` masked to `login`, launch `SH.ELF`, R+M `MemObj inspect.logins` |
 | `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | nothing | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, RW `/fat/VM`, `ROOT_RO` |
 | `LXSRV.ELF` | `userspace/services/lxsrv` | `lx-server` builds | nothing | | R `entropy`, `ROOT_RO` |
 | `MLSRV.ELF` | `userspace/services/infsrv` | by the kernel's behavior task | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
@@ -94,9 +94,9 @@ Source: `userspace/services/compmgr/src/main.rs`, `userspace/services/compmgr/sr
 `userspace/services/compmgr/src/contracts.rs`.
 
 The component manager is the one row the kernel starts (and restarts, on failure) on every
-build. It reads the signed topology's startable rows through `/proc/components` (readable
-only by its own row; a row whose image is not on the volume, or that moves between hosts,
-is not in it), starts each with `SYS_SPAWN_EX` in dependency order, supervises them, and
+build. It reads the signed topology's startable rows from its view region
+(`MemObj inspect.components`, granted only to its row; a row whose image is not on the
+volume is listed with `start` 0, a row that moves between hosts is not listed), starts each with `SYS_SPAWN_EX` in dependency order, supervises them, and
 writes one console line for every start, restart, clean end, give-up and refusal. Its row
 holds `EXEC` on each image it starts, because `SYS_SPAWN_EX` checks a launch grant on the
 image whoever the caller is (for a row an applied package brought, the boot adds that grant
@@ -127,7 +127,8 @@ capability with the call right only (not `DUP`, so the borrower cannot pass it o
 expiring after `NAMES_LEND_TTL_MS` (a lapsed handle is refused and the borrower asks
 again). For any other name nothing is lent and the server records the refusal.
 `Names::who_serves` returns the name of the task serving an endpoint, or zero. The caller
-is identified by the badge the kernel stamped from its row. It reads `/proc/names`.
+is identified by the badge the kernel stamped from its row. It reads the rows' imports and
+the pool index of each endpoint it holds from its view region (`MemObj inspect.names`).
 
 `termd` is the terminal server and the console program of the native shell session. It
 owns the console's input (claimed with `LOG_CONSOLE_WAIT`), runs the line discipline
@@ -199,7 +200,7 @@ rights on `TOOLBOX.ELF`, `/tmp` read-write and `ROOT_RO`.
 | `ntp` | the SNTP client's server and last exchange (`Net::ntp_status`) and, from `Clock::status`, the clock discipline's state |
 
 It reads and writes the descriptors the shell moved to it and opens files beneath
-`ROOT_RO`. Its row grants the full `/proc` task view, `READ` on the `net` and `clock`
+`ROOT_RO`. Its row grants the full task view (for `ps`), `READ` on the `net` and `clock`
 endpoints (`host`, `ntp`) and, with Kconfig `INSPECT`, the `inspect.public` and
 `inspect.admin` regions; a stop request ends its waits and it exits 130.
 
@@ -407,10 +408,12 @@ Source: `userspace/services/decisd/src/main.rs`, `userspace/services/decisd/src/
 `userspace/services/pkgd/src/stage.rs`, `userspace/services/pkg/src/main.rs`.
 
 **decisd** answers the `Decisions` object for whoever holds a call capability on
-`endpoint.decisions`, from the binary records the kernel exports in
-`/proc/decisions.bin` (the ring when Kconfig `DECISION_RECORDS_DEV` is on, the journal of
-durable decisions with `DECISION_REFUSALS_DURABLE`). It rereads the file for each request,
-so a request sees the decisions of the moment it is made. `query` returns the ids that pass
+`endpoint.decisions`, from the binary records the kernel publishes in the admin
+introspection region (`decisions/records/<n>`: the ring when Kconfig
+`DECISION_RECORDS_DEV` is on, the journal of durable decisions with
+`DECISION_REFUSALS_DURABLE`); its row holds the task view the admin region is granted
+against. For each request it waits for the refresh that began after it and reads the
+records again, so a request sees the decisions of the moment it is made. `query` returns the ids that pass
 a filter, `get` returns one part of one record.
 
 **why** is the client: a std program. It holds the call right
@@ -496,7 +499,7 @@ and the link thread reads datagrams and keeps time. The link is UDP to the one p
 `RPC_PEER_ADDR`:`RPC_UDP_PORT`; datagrams from any other source are dropped.
 
 Every session is authenticated: a Noise IK handshake with the static keys the topology pins
-in its `peer` rows (`/proc/rpc`), and every later frame is sealed. The node's static key is
+in its `peer` rows (its view region, `MemObj inspect.rpc`), and every later frame is sealed. The node's static key is
 derived from the board seed and the measurement of this image, issued by the kernel on its
 `linkkey` endpoint; the ephemeral keys come from `entropy`. A row without both grants runs
 nothing, and an image other than the one a key was pinned for gets another key and no
@@ -551,7 +554,8 @@ bridge refuses to run.
 | `azos.commit` | the agent, to run a confirmed proposal |
 | `azos.grant_agent`, `azos.grant_confirm` | the operator, whose warrant is printed on the console at boot |
 
-`/proc/mcp` lists the endpoints on which the reader holds both the call and the lend rights.
+Its view region (`MemObj inspect.mcp`) lists the endpoints its row holds with the call
+and the lend right; the bridge keeps those its own table holds so.
 
 ## ptpd
 
@@ -562,7 +566,7 @@ An IEEE 1588 slave over UDP (multicast group 224.0.1.129, ports 319 and 320) wit
 timestamps. It follows the best master it hears, measures the wall clock against it, and
 offers each measurement to the kernel's `Clock` interface (`Clock::sample`, source PTP);
 the kernel's discipline decides whether to filter, slew or step. The row grants `W` on
-`clock` and `ROOT_RO` (it reads `/proc/clock`). The domain is the `ptp_domain` of the
+`clock` and its view of the `[clock]` row (`MemObj inspect.clock`). The domain is the `ptp_domain` of the
 topology's `[clock]` row; a node whose row declares none takes no part and the program
 says so and ends. 802.1AS over raw Ethernet is not served, because a packet socket belongs
 to the kernel.

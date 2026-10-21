@@ -440,9 +440,9 @@ Options and choices: 845. Defconfigs: 23.
 | `CHAOS` | Fault injection (chaos=&lt;point&gt;:&lt;rate&gt; on the kernel command line) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `CONSOLE_RT_APPEND_ONLY` | Real-time callers of the kernel log only append to the console | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `CRASHDUMP` | Crash dump: a minidump of every ring-3 task a fault kills | y | n | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y |
-| `DECISION_RECORDS_DEV` | Explainable decision records: the ring (/proc/decisions), every rule | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `DECISION_RECORDS_DEV` | Explainable decision records: the ring, every rule | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `DECISION_REFUSALS_DURABLE` | Explainable decision records: durable receipt of every refusal | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
-| `INSPECT` | Introspection tree: kernel state as read-only memory (no /proc, no system call) | y | n | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y |
+| `INSPECT` | Introspection tree: kernel state as read-only memory (no /proc, no system call) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `KLOG` | Structured kernel log: every log line as a record in a ring ring 3 reads | y | n | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y |
 | `KTEST` | In-kernel tests (ktest): run every registered test at boot, then power off | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `KTEST_SEMIHOSTING_EXIT` | ktest runner leaves QEMU through semihosting SYS_EXIT (aarch64) | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n | n | n | n | n | n | n | n |
