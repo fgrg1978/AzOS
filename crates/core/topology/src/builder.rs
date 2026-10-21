@@ -1795,7 +1795,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 TASK_VIEW_CAP,
                 INSPECT_PUBLIC_CAP,
                 INSPECT_ADMIN_CAP,
-            ],
+            ][..if azos_limits::INSPECT && azos_limits::INSPECT_ADMIN_PAGES != 0 { 5 } else { 2 }],
         )
         .expect("default_minimal_topology: ABICHILD.ELF push failed");
         topo.set_last_task_mem_pages(ABICHILD_MEM_PAGES);
@@ -3007,7 +3007,13 @@ const DECISD_MEM_PAGES: u32 = 48;
 /// records it serves: the introspection tree's admin region (a record's
 /// subject may be a task), granted against the task view, which the row lists
 /// first; the public region for the refresh period.
-const DECISD_CAPS: &[CapSpec] = &[DECISIONS_SERVE, TASK_VIEW_CAP, INSPECT_PUBLIC_CAP, INSPECT_ADMIN_CAP];
+/// Without an admin region (Kconfig INSPECT off, or INSPECT_ADMIN_PAGES 0)
+/// there are no records to read, and the row asks for none.
+const DECISD_CAPS: &[CapSpec] = if azos_limits::INSPECT && azos_limits::INSPECT_ADMIN_PAGES != 0 {
+    &[DECISIONS_SERVE, TASK_VIEW_CAP, INSPECT_PUBLIC_CAP, INSPECT_ADMIN_CAP]
+} else {
+    &[DECISIONS_SERVE]
+};
 
 /// Does the built-in topology carry the input server's row? It does when the
 /// drivers write its stream (Kconfig `INPUTD`) into a region that exists

@@ -4351,7 +4351,9 @@ mod launch_cap_tests {
                     assert_eq!((c.perms, c.target), (CapPerms::READ, MaybeStr::from_bytes(b"tasks")));
                     assert!(!c.transfer);
                 }
-            } else if named(b"DECISD.ELF") || (named(b"autorun") && azos_limits::INSPECT) || named(b"ABICHILD.ELF") {
+            } else if ((named(b"DECISD.ELF") || named(b"ABICHILD.ELF")) && azos_limits::INSPECT && azos_limits::INSPECT_ADMIN_PAGES != 0)
+                || (named(b"autorun") && azos_limits::INSPECT)
+            {
                 assert_eq!(views.len(), 1, "row {i} lacks the task view");
             } else {
                 assert!(views.is_empty(), "row {i} holds the task view");
@@ -4406,9 +4408,10 @@ mod launch_cap_tests {
                     assert_eq!((c.perms, c.transfer), (CapPerms::READ.union(CapPerms::MAP), false));
                 }
                 assert!(!caps.iter().any(|c| c.kind == CapKind::Domain), "WHY.ELF holds the task view");
-            } else if t.name == MaybeStr::from_bytes(b"DECISD.ELF")
-                || t.name == MaybeStr::from_bytes(b"ABICHILD.ELF")
-                || (t.name == MaybeStr::from_bytes(b"autorun") && azos_limits::INSPECT)
+            } else if want_admin
+                && (t.name == MaybeStr::from_bytes(b"DECISD.ELF")
+                    || t.name == MaybeStr::from_bytes(b"ABICHILD.ELF")
+                    || t.name == MaybeStr::from_bytes(b"autorun"))
             {
                 // The admin region (decision records, the task list) after the
                 // task view, and the public one beside it.
