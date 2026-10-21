@@ -8,6 +8,7 @@ description = "The AzOS login service: serves the Login object (endpoint.login) 
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
+azos_inspect_lib = { path = "../../lib/inspect" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_abi = { path = "../../../crates/core/abi" }
 azos_login = { path = "../../lib/login" }

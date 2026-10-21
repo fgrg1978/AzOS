@@ -7,7 +7,8 @@
 //! decision (`azos_decision`): the rule that decided, the verdict, the
 //! subject, the numbers it compared, and the provenance known for it. The
 //! ones that went down the durable path are kept whole in the kernel's
-//! journal and appear in `/proc/decisions.bin` as fixed-size binary records.
+//! journal and appear in the kernel's admin introspection region as
+//! fixed-size binary records (`decisions/records/<n>`).
 //! `userspace/services/decisd` serves this interface over the
 //! `endpoint.decisions` endpoint its topology row declares; `why` (and any
 //! other client holding a call capability on that endpoint) asks it.
@@ -153,7 +154,7 @@ pub fn list<C: DecisionsCall>(c: &C, f: &Filter, out: &mut [u64]) -> Result<(usi
 
 /// What a server answers from: the stored decisions, however it holds them.
 /// The kernel's own implementation is `azos_decision`'s free functions;
-/// `decisd` reads `/proc/decisions.bin`; a test uses a vector.
+/// `decisd` reads the admin introspection region; a test uses a vector.
 pub trait Source {
     /// Decisions made since boot.
     fn total(&self) -> u64;

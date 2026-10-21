@@ -3,8 +3,8 @@
 //! `PTPD.ELF`: the AzOS PTP daemon.
 //!
 //! A ring-3 program whose topology row is its whole authority: `WRITE` on the
-//! kernel's `clock` endpoint (the right to move time), the read-only root
-//! directory (it reads `/proc/clock`, the node's `[clock]` row) and the sockets
+//! kernel's `clock` endpoint (the right to move time), the kernel's view of
+//! the node's `[clock]` row (`MemObj inspect.clock`) and the sockets
 //! its transport needs. It is a PTP *slave*: it follows the best master it
 //! hears, measures its wall clock against it and offers each measurement to
 //! the kernel's `Clock` interface (`Clock::sample`, source PTP). The kernel's
@@ -36,13 +36,12 @@ mod wire;
 use azos_abi::invoke::{pledge_case, pledge_class, CLASS_NET, CLASS_READ, CLASS_WRITE};
 use azos_abi::syscall_nr::CASE_BLOCK_WAKE;
 use azos_abi::time::ClockId;
+use azos_inspect_lib::Inspector;
 use azos_libsys as sys;
 use core::fmt::Write;
 use port::{Config, Event, Host, Port, Sampled};
 use sys::dev::{ClockCall, ClockClient, Ep};
 
-/// Where the kernel exports the `[clock]` row.
-const VIEW: &[u8] = b"/proc/clock\0";
 /// Idle wait of the loop, ms.
 const IDLE_MS: u64 = 1;
 /// Datagrams taken from one socket before the others get a turn.
@@ -82,23 +81,15 @@ fn say(args: core::fmt::Arguments<'_>) {
     let _ = sys::console_write(sys::STDOUT, &l.b[..l.n]);
 }
 
-/// `/proc/clock` whole.
-fn read_view(buf: &mut [u8]) -> usize {
-    let h = sys::open_root(VIEW, 0);
-    if h < 0 {
-        return 0;
-    }
-    let h = h as u32;
-    let mut got = 0;
-    while got < buf.len() {
-        let n = sys::file_read_typed(h, &mut buf[got..]);
-        if n <= 0 {
-            break;
-        }
-        got += n as usize;
-    }
-    let _ = sys::close_typed(h);
-    got
+/// The `[clock]` row's `ptp_domain`, from the kernel's view of it (`MemObj
+/// inspect.clock`); `None` when the row declares none or the view cannot be
+/// read.
+fn read_domain() -> Option<u64> {
+    let m = sys::inspect_map(azos_abi::cap::SHM_INSPECT_CLOCK).ok()?;
+    // SAFETY: the mapping lives as long as the task, read-only, and the kernel
+    // writes it only with aligned 64-bit stores.
+    let mut tree = unsafe { Inspector::from_mapped(m, None) }.ok()?;
+    tree.read_u64("clock/ptp_domain").ok()?
 }
 
 /// The kernel as the engine sees it.
@@ -204,9 +195,7 @@ fn drain(env: &mut Env, port: &mut Port) -> bool {
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
     say(format_args!("[ptpd] AzOS PTP daemon"));
-    let mut view = [0u8; 64];
-    let n = read_view(&mut view);
-    let Some(domain) = link::parse_domain(&view[..n]) else {
+    let Some(domain) = link::domain_of(read_domain()) else {
         say(format_args!("[ptpd] the [clock] row declares no ptp_domain: this node takes no part in PTP"));
         sys::exit(0);
     };

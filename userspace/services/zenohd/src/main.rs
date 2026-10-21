@@ -7,7 +7,7 @@
 //! the gateway derives an attenuated, badged, expiring copy for every query;
 //! also the receipts and the topics) and `READ` on `entropy` (its ZenohID and
 //! the heap's randomness), and the stream socket its profile lists. It opens no
-//! file and reads no procfs view: its configuration is Kconfig
+//! file and maps no view of the topology: its configuration is Kconfig
 //! (`ZENOH_ROUTER_*`, `ZENOH_DECISIONS_KEY`, the limits), compiled in. The
 //! engine, the key rule and the answer format are `gw.rs` and `route.rs`,
 //! tested on the host over a scripted router (`tests/host/zenohd-tests`); this

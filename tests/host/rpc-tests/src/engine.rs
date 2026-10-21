@@ -614,7 +614,7 @@ fn a_restarted_peer_breaks_the_sessions_it_had() {
             &CATALOG,
         ));
         rpc.configure(cfg(A, 2));
-        rpc.set_policy(azos_rpc::Policy::parse(policy_a().as_bytes()));
+        rpc.set_policy(policy_of(&policy_a()));
         a.rpc = rpc;
     }
     w.borrow_mut().run_for(300 * MS);
@@ -1026,7 +1026,7 @@ fn an_old_hello_replayed_cannot_replace_a_live_session() {
         let World { a, net, .. } = &mut *wb;
         let mut rpc = Box::new(Node::new(FakeHost { st: a.st.clone(), svc: a.svc.clone() }, MemLink { me: A, net: net.clone() }, &CATALOG));
         rpc.configure(cfg(A, 2));
-        rpc.set_policy(azos_rpc::Policy::parse(policy_a().as_bytes()));
+        rpc.set_policy(policy_of(&policy_a()));
         a.rpc = rpc;
     }
     w.borrow_mut().run_for(300 * MS);

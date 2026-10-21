@@ -12,6 +12,7 @@ azos_abi = { path = "../../../crates/core/abi" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_limits = { path = "../../../crates/core/limits" }
 azos_rpc = { path = "../../lib/rpc" }
+azos_inspect_lib = { path = "../../lib/inspect" }
 # The interface it carries today: Decisions (every op is idempotent).
 azos_decisions = { path = "../../lib/decisions" }
 

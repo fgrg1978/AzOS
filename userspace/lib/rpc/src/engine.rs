@@ -237,7 +237,7 @@ impl<H: Host, L: Link> Rpc<H, L> {
         self.cfg = cfg;
     }
 
-    /// Replace the policy (the parsed `/proc/rpc`).
+    /// Replace the policy (the server's view of the topology).
     pub fn set_policy(&mut self, p: Policy) {
         self.policy = p;
     }

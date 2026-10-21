@@ -803,7 +803,7 @@ mod compmgr_contracts {
 /// started again ahead of it (`[namesd] REFUSED lookup ... (not-held)`).
 #[cfg(test)]
 mod compmgr_view {
-    use crate::tree::{Event, Host, Intensity, State, Tree};
+    use crate::tree::{Event, Host, Intensity, Row, State, Tree};
     use azos_idl::OnFailure;
     use azos_topology::builder::{manager_starts, manager_view_endpoints};
 
@@ -832,9 +832,10 @@ mod compmgr_view {
         }
     }
 
-    /// The manager's view as `/proc/components` renders it for the rows the
-    /// session starts: the kernel lists the console program and then its
-    /// follower, the shell, last (`for_each_launch_row`).
+    /// The manager's plan for the rows the session starts, one line a row as
+    /// `image restart serves needs` (the fields of the `inspect.components`
+    /// view): the kernel lists the console program and then its follower, the
+    /// shell, last (`for_each_launch_row`).
     fn view(topo: &azos_topology::Topology<'_>) -> String {
         use core::fmt::Write;
         let mut rows: Vec<_> = topo.tasks().iter().filter(|r| manager_starts(r)).collect();
@@ -850,8 +851,23 @@ mod compmgr_view {
             manager_view_endpoints(topo, r, &mut out).unwrap();
             out.push('\n');
         }
-        out.push_str("end\n");
         out
+    }
+
+    /// The plan's rows, as the manager reads them from the view.
+    fn plan_rows(view: &str) -> Vec<Row<'_>> {
+        view.lines()
+            .map(|l| {
+                let f: Vec<&str> = l.split(' ').filter(|x| !x.is_empty()).collect();
+                Row {
+                    image: f[0].as_bytes(),
+                    restart: f[1].as_bytes(),
+                    serves: f[2].as_bytes(),
+                    needs: f[3].as_bytes(),
+                    dir: f.get(4).copied().unwrap_or("").as_bytes(),
+                }
+            })
+            .collect()
     }
 
     fn row_of<'a>(view: &'a str, image: &str) -> Vec<&'a str> {
@@ -888,7 +904,7 @@ mod compmgr_view {
         // the terminal server's failure stops the shell behind it.
         let mut w = World::default();
         let mut t = Tree::new(Intensity { burst: 3, interval_ns: 300_000_000_000, cooldown_ns: 1_000_000_000 });
-        t.load(v.as_bytes(), &mut w);
+        t.load(&plan_rows(&v), true, &mut w);
         t.start_all(&mut w);
         let at = |n: &str| w.spawned.iter().position(|(i, _)| i == n).unwrap_or_else(|| panic!("{n} was not started"));
         assert!(at("SH.ELF") > at("TERMD.ELF") && at("SH.ELF") > at("NAMESD.ELF"));
@@ -925,7 +941,7 @@ mod compmgr_view {
 
     fn tree_over(view: &str, w: &mut impl Host) -> Tree {
         let mut t = Tree::new(Intensity { burst: 3, interval_ns: 300_000_000_000, cooldown_ns: 1_000_000_000 });
-        t.load(view.as_bytes(), w);
+        t.load(&plan_rows(view), true, w);
         t.start_all(w);
         t
     }
@@ -959,7 +975,7 @@ mod compmgr_view {
         let started: Vec<&str> = w.spawned.iter().map(|(n, _)| n.as_str()).collect();
         let last = started.len() - 2;
         assert_eq!(&started[last..], ["TERMD.ELF", "SH.ELF"], "the console program last: {started:?}");
-        assert_eq!(started.len(), v.lines().count() - 1, "every row of the view was started: {started:?}");
+        assert_eq!(started.len(), v.lines().count(), "every row of the view was started: {started:?}");
     }
 
     /// **A login service that cannot start holds back the console only when the
@@ -976,13 +992,11 @@ mod compmgr_view {
         let with = "NAMESD.ELF on-failure endpoint.names -\n\
                     LOGIND.ELF on-failure endpoint.login -\n\
                     TERMD.ELF on-failure endpoint.term endpoint.login\n\
-                    SH.ELF on-failure - endpoint.names,endpoint.term\n\
-                    end\n";
+                    SH.ELF on-failure - endpoint.names,endpoint.term\n";
         let without = "NAMESD.ELF on-failure endpoint.names -\n\
                        LOGD.ELF on-failure - -\n\
                        TERMD.ELF on-failure endpoint.term -\n\
-                       SH.ELF on-failure - endpoint.names,endpoint.term\n\
-                       end\n";
+                       SH.ELF on-failure - endpoint.names,endpoint.term\n";
         let names = |w: &Refusing<'_>| w.0.spawned.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
         let mut a = Refusing(World::default(), "LOGIND.ELF");
         let _ta = tree_over(with, &mut a);
@@ -2043,7 +2057,10 @@ mod builder_tests {
                     // vsbench's `spawn+wait` lane.
                     (true, true) => 25, (true, false) => 22,
                     (false, true) => 20, (false, false) => 17,
-                },
+                }
+                // Kconfig INSPECT: the task view, the public region and (with an
+                // admin region) the admin one, last.
+                + if azos_limits::INSPECT { 2 + (azos_limits::INSPECT_ADMIN_PAGES != 0) as usize } else { 0 },
             "drv.1 RW + sensor.0-9 READ + pwm.4 RW + gpio.20 RW + i2c.0.0x68 READ + linkkey READ \
              + entropy READ, \
              plus pwm.0/gpio.0/mmio.dt:sifive,test1 and the /fat and /tmp trees under the canary, plus \
@@ -2633,7 +2650,10 @@ mod cap_seed_bridge_tests {
                     // vsbench's `spawn+wait` lane.
                     (true, true) => 25, (true, false) => 22,
                     (false, true) => 20, (false, false) => 17,
-                },
+                }
+                // Kconfig INSPECT: the task view mints; the regions have no
+                // minter on the host.
+                + azos_limits::INSPECT as usize,
             "driver-registry + 10 sensor types + 1 pwm + 1 gpio + 1 i2c + linkkey + entropy, \
              plus pwm.0/gpio.0/mmio.dt:sifive,test1 and the /fat and /tmp trees under the canary, plus the \
              2 motors only under the actuation profile"
@@ -4307,10 +4327,12 @@ mod launch_cap_tests {
         assert_eq!(topo.admission_check(), Ok(()));
     }
 
-    /// Wave 12 (owner round 48, Linux `hidepid=2`): the shell and the tool
-    /// image (`ps`) hold the full `/proc` task view — `Cap<Task>` `READ` on
-    /// `"tasks"`, exactly — off the console lockdown and not under it; no
-    /// other default row holds it; and the grant mints.
+    /// Wave 12 (owner round 48): the shell and the tool image (`ps`) hold the
+    /// full task view — `Cap<Task>` `READ` on `"tasks"`, exactly — off the
+    /// console lockdown and not under it; the decision server holds it (the
+    /// warrant of the admin region its records are in), and with Kconfig
+    /// INSPECT the autorun row (its conformance images watch the task list);
+    /// no other default row holds it; and the grant mints.
     ///
     /// **Canary.** Drop `TASK_VIEW_CAP` from `TOOLBOX_CAPS`: red on
     /// "TOOLBOX.ELF lacks the task view".
@@ -4329,6 +4351,8 @@ mod launch_cap_tests {
                     assert_eq!((c.perms, c.target), (CapPerms::READ, MaybeStr::from_bytes(b"tasks")));
                     assert!(!c.transfer);
                 }
+            } else if named(b"DECISD.ELF") || (named(b"autorun") && azos_limits::INSPECT) || named(b"ABICHILD.ELF") {
+                assert_eq!(views.len(), 1, "row {i} lacks the task view");
             } else {
                 assert!(views.is_empty(), "row {i} holds the task view");
             }
@@ -4382,6 +4406,15 @@ mod launch_cap_tests {
                     assert_eq!((c.perms, c.transfer), (CapPerms::READ.union(CapPerms::MAP), false));
                 }
                 assert!(!caps.iter().any(|c| c.kind == CapKind::Domain), "WHY.ELF holds the task view");
+            } else if t.name == MaybeStr::from_bytes(b"DECISD.ELF")
+                || t.name == MaybeStr::from_bytes(b"ABICHILD.ELF")
+                || (t.name == MaybeStr::from_bytes(b"autorun") && azos_limits::INSPECT)
+            {
+                // The admin region (decision records, the task list) after the
+                // task view, and the public one beside it.
+                assert_eq!((held(public), held(admin)), (1, 1), "row {i} regions");
+                let at = |f: &dyn Fn(&azos_topology::CapSpec) -> bool| caps.iter().position(|c| f(c)).unwrap();
+                assert!(at(&|c| c.kind == CapKind::Domain) < at(&|c| c.kind == CapKind::MemObj && c.target == admin));
             } else {
                 assert_eq!(held(public) + held(admin), 0, "row {i} holds an introspection region");
             }
@@ -6069,7 +6102,11 @@ mod rpc_row_tests {
         assert_eq!((caps[2].kind, caps[2].perms, caps[2].target.as_bytes(), caps[2].transfer), (CapKind::Endpoint, CapPerms::READ, &b"entropy"[..], false));
         assert_eq!(caps[2].ops, 0);
         super::mcp_row_tests::assert_identity_grant(&caps[3]);
-        assert_eq!((caps[4].kind, caps[4].perms, caps[4].target.as_bytes()), (CapKind::Node, CapPerms::READ, &b"/"[..]));
+        // Its view of the topology: the peers, the exports of what it holds.
+        assert_eq!(
+            (caps[4].kind, caps[4].perms, caps[4].target.as_bytes()),
+            (CapKind::MemObj, CapPerms::READ.union(CapPerms::MAP), &b"inspect.rpc"[..])
+        );
         assert_eq!(row.start, azos_limits::RPC_PEER_NODE != 0);
         match azos_limits::RPC_PEER_NODE {
             0 => {
@@ -6256,7 +6293,7 @@ mod mcp_row_tests {
         assert_eq!(row.is_some(), azos_topology::builder::SSHD_ROW, "a row exactly when Kconfig SSHD");
         let Some(row) = row else { return };
         let caps = t.caps_of(row);
-        assert_eq!(caps.len(), 5, "entropy, the keystore, the volume, the tool launch, the root directory");
+        assert_eq!(caps.len(), 6, "entropy, the keystore, the volume, the tool launch, the root directory, the logins view");
         assert_eq!((caps[0].kind, caps[0].perms, caps[0].target.as_bytes()), (CapKind::Endpoint, CapPerms::READ, &b"entropy"[..]));
         assert_eq!(
             (caps[1].kind, caps[1].perms, caps[1].target.as_bytes(), caps[1].transfer, caps[1].ops),
@@ -6270,6 +6307,10 @@ mod mcp_row_tests {
         assert_eq!((caps[2].kind, caps[2].perms, caps[2].target.as_bytes()), (CapKind::Node, CapPerms::RW, &b"/fat"[..]));
         assert_eq!((caps[3].kind, caps[3].perms, caps[3].target.as_bytes()), (CapKind::Node, CapPerms::EXEC, &b"TOOLBOX.ELF"[..]));
         assert_eq!((caps[4].kind, caps[4].perms, caps[4].target.as_bytes()), (CapKind::Node, CapPerms::READ, &b"/"[..]));
+        assert_eq!(
+            (caps[5].kind, caps[5].perms, caps[5].target.as_bytes()),
+            (CapKind::MemObj, CapPerms::READ.union(CapPerms::MAP), &b"inspect.logins"[..])
+        );
         let launches: Vec<_> = caps.iter().filter(|c| c.kind == CapKind::Node && c.perms == CapPerms::EXEC).collect();
         assert_eq!(launches.len(), 1, "a login starts the tool image and no privileged one");
         assert!(caps.iter().all(|c| !c.transfer), "nothing it holds can be passed on");

@@ -6,12 +6,15 @@
 //! `endpoint.decisions` (it serves it). It answers the `Decisions` object
 //! (`userspace/lib/decisions`) to whoever holds a call capability on that
 //! endpoint (`WHY.ELF`, and any row the topology gives `WRITE`), from the
-//! decisions the kernel keeps and exports as binary records in
-//! `/proc/decisions.bin` (the ring when `DECISION_RECORDS_DEV` is on, the
-//! journal of durable decisions with `DECISION_REFUSALS_DURABLE`).
+//! decisions the kernel keeps and publishes as binary records in its
+//! introspection tree's admin region (`decisions/records/<n>`: the ring when
+//! `DECISION_RECORDS_DEV` is on, the journal of durable decisions with
+//! `DECISION_REFUSALS_DURABLE`). A record's subject may be a task, hence the
+//! admin region, and the task view its row holds to be granted it.
 //!
-//! Request-driven, like `termd`: accept, read the file again (a request sees
-//! the decisions of the moment it is made), dispatch, reply. The records,
+//! Request-driven, like `termd`: accept, wait for the refresh that began
+//! after the request (a request sees the decisions of the moment it is
+//! made), read the records again, dispatch, reply. The records,
 //! their filter and the reply words are the library's; `bin.rs` is the
 //! decoder and is tested on the host (`tests/host/decisions-tests`).
 
@@ -21,15 +24,12 @@
 mod bin;
 
 use azos_decisions::{DecisionsIdl, MsgDesc, Service};
+use azos_inspect_lib::{Inspector, Source, Value};
 use azos_libsys as sys;
 use bin::BinSource;
 
-/// Where the kernel exports the records. NUL-terminated, as `open_root` takes
-/// a name: without the NUL the open is refused and the server answers as if
-/// the kernel held no decision.
-const PATH: &[u8] = b"/proc/decisions.bin\0";
-/// A procfs file is at most this (`azos_fs::procfs::PROCFS_MAX_FILE`).
-const FILE_MAX: usize = 2048;
+/// The records read at once: the table's worth.
+const FILE_MAX: usize = bin::MAX * azos_decisions::PROVENANCE_SIZE;
 
 struct Cell(core::cell::UnsafeCell<Service<BinSource>>);
 // SAFETY: one thread.
@@ -37,23 +37,25 @@ unsafe impl Sync for Cell {}
 
 static SERVICE: Cell = Cell(core::cell::UnsafeCell::new(Service(BinSource::new())));
 
-/// Read the file whole into `buf`; the bytes read (0 when it cannot be opened:
-/// the kernel was built without decision records).
-fn read_file(buf: &mut [u8]) -> usize {
-    let fd = sys::open_root(PATH, 0);
-    if fd < 0 {
-        return 0;
-    }
-    let mut got = 0;
-    while got < buf.len() {
-        let n = sys::read(fd as u64, &mut buf[got..]);
-        if n <= 0 {
-            break;
-        }
-        got += n as usize;
-    }
-    let _ = sys::close(fd as u64);
-    got
+/// The admin region's records, oldest first, back to back into `buf`; the
+/// bytes written (0 when the tree is not there: the kernel was built without
+/// decision records, or the row holds no admin region).
+fn read_records(tree: &mut Inspector<'static>, buf: &mut [u8]) -> usize {
+    const SIZE: usize = azos_decisions::PROVENANCE_SIZE;
+    tree.with(Source::Admin, |r| {
+        let mut at = 0;
+        let Some(dir) = r.lookup("decisions/records")? else { return Ok(0) };
+        r.children(dir, &mut |_, v| {
+            if let Value::Bytes(b) = v {
+                if b.as_bytes().len() == SIZE && at + SIZE <= buf.len() {
+                    buf[at..at + SIZE].copy_from_slice(b.as_bytes());
+                    at += SIZE;
+                }
+            }
+        })?;
+        Ok(at)
+    })
+    .unwrap_or(0)
 }
 
 #[sys::main(panic_exit = 70)]
@@ -62,6 +64,14 @@ fn main() -> ! {
     let svc = unsafe { &mut *SERVICE.0.get() };
     let _ = sys::console_write(sys::STDOUT, b"[decisd] AzOS decision server (Decisions on endpoint.decisions)\n");
     let mut file = [0u8; FILE_MAX];
+    let public = sys::inspect_map(azos_abi::cap::SHM_INSPECT_PUBLIC).ok();
+    let admin = sys::inspect_map(azos_abi::cap::SHM_INSPECT_ADMIN).ok();
+    // SAFETY: the mappings live as long as the task, read-only, and the kernel
+    // writes them only with aligned 64-bit stores.
+    let mut tree = public.and_then(|p| unsafe { Inspector::from_mapped(p, admin) }.ok()).filter(|t| t.has_admin());
+    if tree.is_none() {
+        let _ = sys::console_write(sys::STDOUT, b"[decisd] no admin introspection region: it answers as if the kernel held no decision\n");
+    }
 
     loop {
         let mut req = MsgDesc::default();
@@ -71,7 +81,13 @@ fn main() -> ! {
             sys::yield_now();
             continue;
         }
-        let n = read_file(&mut file);
+        let n = match tree.as_mut() {
+            Some(t) => {
+                t.wait_refreshes(Source::Admin, 2, &mut |ms| sys::sleep(ms));
+                read_records(t, &mut file)
+            }
+            None => 0,
+        };
         svc.0.load(&file[..n]);
         let mut rep = MsgDesc::default();
         let _ = DecisionsIdl::dispatch(svc, &req, &mut rep);

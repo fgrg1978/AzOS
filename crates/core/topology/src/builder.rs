@@ -1012,6 +1012,21 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         };
         n += 1;
     }
+    // With Kconfig INSPECT, the introspection regions, last: the conformance
+    // images read the kernel's devices there (`captest` finds a device's
+    // handle in `devices/`) and watch the process trees they start in the
+    // admin task list (`abitest`), granted against the task view listed
+    // first; and `abitest` checks that a row which declares no view region is
+    // granted none.
+    if azos_limits::INSPECT {
+        autorun_caps[n] = TASK_VIEW_CAP;
+        autorun_caps[n + 1] = INSPECT_PUBLIC_CAP;
+        n += 2;
+        if azos_limits::INSPECT_ADMIN_PAGES != 0 {
+            autorun_caps[n] = INSPECT_ADMIN_CAP;
+            n += 1;
+        }
+    }
     topo.push_task(
         MaybeStr::from_bytes(TASK_AUTORUN),
         MaybeStr::from_bytes(NAME_SOFT_RT),
@@ -1538,7 +1553,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     .expect("default_minimal_topology: SH.ELF policy push failed");
     // The tool image. It reads and writes the descriptors and pipe ends the
     // shell MOVES to it, and opens files beneath the read-only root directory. Its
-    // capabilities are the full `/proc` task view, for `ps` (wave 12), and with
+    // capabilities are the full task view, for `ps` (wave 12), and with
     // Kconfig INSPECT the introspection regions, for `inspect`: none of them
     // under `CONSOLE_LOCKDOWN`.
     topo.push_task(
@@ -1619,8 +1634,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
     // The decision server (`userspace/services/decisd`, the Decisions
     // object) and its client tool (`WHY.ELF`). The server's row is its whole
-    // authority, `READ` on `endpoint.decisions`; the records it serves it
-    // reads from `/proc/decisions.bin`, which needs no grant. `start` follows
+    // authority, `READ` on `endpoint.decisions`, and the admin introspection
+    // region it reads the records from (`DECISD_CAPS`). `start` follows
     // Kconfig `DECISION_REFUSALS_DURABLE` / `DECISION_RECORDS_DEV`: without
     // either the kernel keeps no decisions and there is nothing to serve.
     // `why` holds `WRITE` on the same name and nothing else; the shell holds
@@ -1776,6 +1791,10 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                     target: MaybeStr::from_bytes(TASK_ABICHILD_IMAGE), transfer: false, ops: 0,
                 },
                 ROOT_RO,
+                // The task list an orphan watches its adoption in.
+                TASK_VIEW_CAP,
+                INSPECT_PUBLIC_CAP,
+                INSPECT_ADMIN_CAP,
             ],
         )
         .expect("default_minimal_topology: ABICHILD.ELF push failed");
@@ -1825,8 +1844,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // measures the wall clock against the best master it hears and offers each
     // measurement to the kernel's `Clock` interface. Its row is its whole
     // authority: `WRITE` on the kernel's `clock` endpoint (the right to move
-    // time) and the read-only root directory, for `/proc/clock` (the node's
-    // `[clock]` row, which names the domain). A node whose `[clock]` row
+    // time) and the kernel's view of the node's `[clock]` row, which names
+    // the domain. A node whose `[clock]` row
     // declares no `ptp_domain` has the daemon end at once, so the built-in
     // topology declares one (Kconfig `PTPD_DOMAIN`) with the row. Pushed after
     // the Zenoh gateway, so no index another test pins moves.
@@ -1878,8 +1897,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // task), `/fat` read-write (it keeps `/fat/SSHAUTH.LOG`; see `SSHD_CAPS` for
     // why not narrower), the right to
     // start `TOOLBOX.ELF` and nothing else (a login is not the console: the
-    // privileged tools are not on this list), and the read-only root directory
-    // it opens those beneath and `/proc/ssh`, the signed topology's logins.
+    // privileged tools are not on this list), the read-only root directory it
+    // opens those beneath, and the kernel's view of the signed topology's logins.
     // The network is its seccomp profile's. Pushed after the MCP bridge, so no
     // index another test pins moves.
     if SSHD_ROW {
@@ -1952,20 +1971,20 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     }
     // The component manager (`userspace/services/compmgr`): the one row the
     // kernel starts at boot; it starts the others from this signed topology
-    // (`/proc/components`) and supervises them. Only a build whose volume
+    // (its `inspect.components` view) and supervises them. Only a build whose volume
     // carries its image (Kconfig USERSPACE_COMPMGR) has the row: a row for an
     // image that is not there would be started and refused at every boot.
     // Pushed after every row that
     // starts (a `start = true` row declared later would be missing from its
     // launch grants below) and before the gate-only rows. Its authority is the
-    // read-only root directory ([`ROOT_RO`], for `/proc/components`) and the
+    // view of the plan ([`INSPECT_COMPONENTS_CAP`]) and the
     // right to start each image the topology starts: `SYS_SPAWN_EX` checks a
     // `Cap<Launch>` on the image whoever the caller is, so the row grants
     // `EXEC` on every other `start = true` row, one by one. The child holds
     // what its own row grants, never the manager's.
     if COMPMGR_ROW {
         let mut caps = [CapSpec::empty(); MANAGER_CAPS_MAX];
-        caps[0] = ROOT_RO;
+        caps[0] = INSPECT_COMPONENTS_CAP;
         let mut n = 1;
         // Rows past the manager's table are not started either (it records
         // and skips them), so they get no grant.
@@ -2738,9 +2757,9 @@ const SH_LAUNCH: CapSpec = CapSpec {
 /// `LOGIND.ELF`'s authority: `READ` on `endpoint.login` (it serves it), `EXEC`
 /// on `keys` masked to the `login` op ([`KEYS_LOGIN`]: it verifies a credential
 /// and makes or uses no key), the right to start the shell ([`SH_LAUNCH`]), and
-/// the read-only root directory ([`ROOT_RO`]) it opens `/proc/ssh` beneath, the
-/// signed topology's logins. No file tree, no device, no socket, no entropy.
-const LOGIND_CAPS: &[CapSpec] = &[LOGIN_SERVE, KEYS_LOGIN, SH_LAUNCH, ROOT_RO];
+/// the kernel's view of the signed topology's logins ([`INSPECT_LOGINS_CAP`]:
+/// whether anybody is enrolled). No file tree, no device, no socket, no entropy.
+const LOGIND_CAPS: &[CapSpec] = &[LOGIN_SERVE, KEYS_LOGIN, SH_LAUNCH, INSPECT_LOGINS_CAP];
 
 /// The component manager's image (`userspace/services/compmgr`).
 pub const TASK_COMPMGR_IMAGE: &[u8] = b"COMPMGR.ELF";
@@ -2761,7 +2780,7 @@ pub fn manager_starts(r: &crate::types::TaskSpec<'_>) -> bool {
 }
 
 /// The two endpoint columns of a row's line in the manager's view
-/// (`/proc/components`, `kernel/src/boot/procfs.rs`): the endpoints the row
+/// (`inspect.components`, `kernel/src/boot/inspect_views.rs`): the endpoints the row
 /// *serves*, then the ones it *needs*, each a comma list or `-`, in the form
 /// `userspace/services/compmgr/src/tree.rs` matches them in: **every item is
 /// the full endpoint name** (`endpoint.term`), so a need is a dependency on
@@ -2859,11 +2878,11 @@ const RESOURCE_CLOCK: &[u8] = b"clock";
 const RESOURCE_NET: &[u8] = b"net";
 const RESOURCE_SOUND: &[u8] = b"sound.0";
 /// `PTPD.ELF`'s authority: `WRITE` on `clock` (`Clock::sample` moves the wall
-/// clock) and the read-only root directory ([`ROOT_RO`]) it opens `/proc/clock`
-/// beneath. The sockets of its transport are not capabilities of the row.
+/// clock) and the kernel's view of the `[clock]` row ([`INSPECT_CLOCK_CAP`]:
+/// the domain). The sockets of its transport are not capabilities of the row.
 const PTPD_CAPS: &[CapSpec] = &[
     CapSpec { kind: CapKind::Endpoint, perms: CapPerms::WRITE, target: MaybeStr::from_bytes(RESOURCE_CLOCK), transfer: false, ops: 0 },
-    ROOT_RO,
+    INSPECT_CLOCK_CAP,
 ];
 
 /// The MCP bridge's image (`userspace/services/mcpd`).
@@ -2881,12 +2900,12 @@ const MCPD_MEM_PAGES: u32 = 160;
 /// allocator's seed) and `READ` on `linkkey`, masked to `node_key` (the image's DICE identity, the
 /// root of the warrants it signs: [`LINK_KEY_IDENTITY`], the same grant
 /// `RPCSRV.ELF` has, used the same way),
-/// and the read-only root directory ([`ROOT_RO`]) it opens `/proc/mcp` beneath.
+/// and its view of the topology ([`INSPECT_MCP_CAP`]: the endpoints it fronts).
 const MCPD_CAPS: &[CapSpec] = &[
     DECISIONS_LEND,
     CapSpec { kind: CapKind::Endpoint, perms: CapPerms::READ, target: MaybeStr::from_bytes(RESOURCE_ENTROPY), transfer: false, ops: 0 },
     LINK_KEY_IDENTITY,
-    ROOT_RO,
+    INSPECT_MCP_CAP,
 ];
 
 /// The SSH server's image (`userspace/services/sshd`).
@@ -2905,9 +2924,9 @@ const SSHD_MEM_PAGES: u32 = 192;
 /// on this board, which the task never holds; it has no `linkkey` grant, so
 /// neither the raw board seed nor the node key reaches the one task that faces
 /// the network), the `/fat` tree read-write ([`FAT_RW`]),
-/// the right to start the tool image a command runs as, and the read-only
-/// root directory ([`ROOT_RO`]), which holds `/proc/ssh`, the logins of the
-/// signed topology.
+/// the right to start the tool image a command runs as, the read-only root
+/// directory ([`ROOT_RO`]) and the kernel's view of the signed topology's
+/// logins ([`INSPECT_LOGINS_CAP`]).
 ///
 /// **The write tree is wider than the server needs, and that is the file
 /// layer's limit, not a choice.** The server writes one file, the log of its
@@ -2926,12 +2945,13 @@ const SSHD_CAPS: &[CapSpec] = &[
     FAT_RW,
     CapSpec { kind: CapKind::Node, perms: CapPerms::EXEC, target: MaybeStr::from_bytes(TASK_TOOLBOX_IMAGE), transfer: false, ops: 0 },
     ROOT_RO,
+    INSPECT_LOGINS_CAP,
 ];
 
 /// The name server's image (`userspace/services/namesd`): the Names object.
 pub const TASK_NAMESD_IMAGE: &[u8] = b"NAMESD.ELF";
 /// Frame budget of `NAMESD.ELF`: image, stack, page tables and its static
-/// view buffer; it has no heap.
+/// state; it has no heap.
 const NAMESD_MEM_PAGES: u32 = 32;
 /// The server half of `endpoint.names`: `READ` claims it for `NAMESD.ELF`.
 const NAMES_SERVE: CapSpec = CapSpec {
@@ -2956,12 +2976,13 @@ const VMCTL_LEND: CapSpec = CapSpec {
 };
 /// `NAMESD.ELF`'s authority: to serve `endpoint.names`, and to lend the
 /// endpoints listed here (`vmctl` only where the monitor's row exists). Its
-/// row is the whole name space: there is no other. Plus the read-only root
-/// directory ([`ROOT_RO`]) for `/proc/names`.
+/// row is the whole name space: there is no other. Plus its view of the
+/// topology ([`INSPECT_NAMES_CAP`]: the rows' imports, the pool index of each
+/// endpoint it holds).
 const NAMESD_CAPS: &[CapSpec] = if VMMD_ROW {
-    &[NAMES_SERVE, TERM_LEND, VMCTL_LEND, ROOT_RO]
+    &[NAMES_SERVE, TERM_LEND, VMCTL_LEND, INSPECT_NAMES_CAP]
 } else {
-    &[NAMES_SERVE, TERM_LEND, ROOT_RO]
+    &[NAMES_SERVE, TERM_LEND, INSPECT_NAMES_CAP]
 };
 /// The caller half of `endpoint.decisions`: the right to ask the decision
 /// server, and nothing more (`WRITE` claims no service).
@@ -2980,12 +3001,13 @@ const DECISIONS_SERVE: CapSpec = CapSpec {
 /// The decision server's image (`userspace/services/decisd`).
 pub const TASK_DECISD_IMAGE: &[u8] = b"DECISD.ELF";
 /// Frame budget of `DECISD.ELF`: image, stack, page tables and its static
-/// table of decoded records (24 x 104 bytes) and file buffer (2 KiB); no heap.
+/// table of decoded records (24 x 104 bytes) and their copy; no heap.
 const DECISD_MEM_PAGES: u32 = 48;
-/// `DECISD.ELF`'s authority: the right to serve `endpoint.decisions`. It
-/// reads `/proc/decisions.bin` beneath the read-only root directory
-/// ([`ROOT_RO`]).
-const DECISD_CAPS: &[CapSpec] = &[DECISIONS_SERVE, ROOT_RO];
+/// `DECISD.ELF`'s authority: the right to serve `endpoint.decisions`, and the
+/// records it serves: the introspection tree's admin region (a record's
+/// subject may be a task), granted against the task view, which the row lists
+/// first; the public region for the refresh period.
+const DECISD_CAPS: &[CapSpec] = &[DECISIONS_SERVE, TASK_VIEW_CAP, INSPECT_PUBLIC_CAP, INSPECT_ADMIN_CAP];
 
 /// Does the built-in topology carry the input server's row? It does when the
 /// drivers write its stream (Kconfig `INPUTD`) into a region that exists
@@ -3290,8 +3312,8 @@ const RPCSRV_CAPS: &[CapSpec] = &[
     DECISIONS_LEND,
     CapSpec { kind: CapKind::Endpoint, perms: CapPerms::READ, target: MaybeStr::from_bytes(RESOURCE_ENTROPY), transfer: false, ops: 0 },
     LINK_KEY_IDENTITY,
-    // `/proc/rpc`, beneath the read-only root directory.
-    ROOT_RO,
+    // Its view of the topology: the peers, the exports of what it holds.
+    INSPECT_RPC_CAP,
 ];
 
 /// The relay's image (`userspace/services/rpcquic`): the QUIC leg of the RPC link.
@@ -3333,9 +3355,10 @@ fn rpc_peer_noise_pk() -> Option<[u8; 32]> {
     Some(k)
 }
 
-/// The full `/proc` task view (wave 12, owner round 48): `Cap<Task>` `READ`
-/// on `"tasks"`. Without it `/proc/tasks` and `/proc/<tid>` show an image
-/// only itself and its descendants (Linux `hidepid=2`). `SH.ELF` and
+/// The full task view (wave 12, owner round 48): `Cap<Task>` `READ` on
+/// `"tasks"`, the warrant the admin introspection region is granted against
+/// (its task list, the wake log, the decisions): without it a row that asks
+/// for `inspect.admin` is refused it. `SH.ELF`, `DECISD.ELF` and
 /// `TOOLBOX.ELF` (`ps`) hold it, and neither under `CONSOLE_LOCKDOWN`, which
 /// withholds every grant beyond the shell's own work from the console path
 /// (the recovery console's seed is empty there too).
@@ -3431,6 +3454,25 @@ const INSPECT_ADMIN_CAP: CapSpec = CapSpec {
     perms: CapPerms::READ.union(CapPerms::MAP),
     target: MaybeStr::from_bytes(b"inspect.admin"), transfer: false, ops: 0,
 };
+/// A view region of the introspection tree (`azos_ipc::inspect_region`):
+/// `READ|MAP` on `inspect.<view>`, the signed topology's wiring one service
+/// needs, granted only to the rows that declare it.
+const fn inspect_view(target: &'static [u8]) -> CapSpec<'static> {
+    CapSpec { kind: CapKind::MemObj, perms: CapPerms::READ.union(CapPerms::MAP), target: MaybeStr::from_bytes(target), transfer: false, ops: 0 }
+}
+/// The name server's view: the rows' imports, the endpoints it holds.
+const INSPECT_NAMES_CAP: CapSpec = inspect_view(b"inspect.names");
+/// The RPC server's view: the peers, the exports of the endpoints it holds.
+const INSPECT_RPC_CAP: CapSpec = inspect_view(b"inspect.rpc");
+/// The MCP bridge's view: the endpoints it holds with the call and lend right.
+const INSPECT_MCP_CAP: CapSpec = inspect_view(b"inspect.mcp");
+/// The component manager's view: the plan it starts.
+const INSPECT_COMPONENTS_CAP: CapSpec = inspect_view(b"inspect.components");
+/// The logins of the signed topology (`[login.NAME]` rows).
+const INSPECT_LOGINS_CAP: CapSpec = inspect_view(b"inspect.logins");
+/// The topology's `[clock]` row.
+const INSPECT_CLOCK_CAP: CapSpec = inspect_view(b"inspect.clock");
+
 /// Under `CONSOLE_LOCKDOWN`: no task view and no introspection region, as
 /// before wave 12; the tools still read files, beneath the read-only root.
 const TOOLBOX_CAPS_LOCKDOWN: &[CapSpec] = &[ROOT_RO];

@@ -19,11 +19,9 @@ pub fn ip_identity(ip: [u8; 4]) -> [u8; 8] {
     [b'A', b'z', b'P', b'T', ip[0], ip[1], ip[2], ip[3]]
 }
 
-/// The domain the node's `[clock]` row declares, from `/proc/clock` (one line,
-/// `ptp_domain N`; the file is empty when the row declares none).
-pub fn parse_domain(view: &[u8]) -> Option<u8> {
-    let rest = view.strip_prefix(b"ptp_domain ")?;
-    let end = rest.iter().position(|b| !b.is_ascii_digit()).unwrap_or(rest.len());
-    let digits = core::str::from_utf8(&rest[..end]).ok()?;
-    digits.parse().ok()
+/// The domain the node's `[clock]` row declares, from the kernel's view of
+/// it (`MemObj inspect.clock`, `clock/ptp_domain`; absent when the row
+/// declares none). A value past `u8` is no domain, not one cut to fit.
+pub fn domain_of(v: Option<u64>) -> Option<u8> {
+    u8::try_from(v?).ok()
 }

@@ -8,6 +8,7 @@ description = "The AzOS MCP bridge (ring 3): the Model Context Protocol over a T
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
+azos_inspect_lib = { path = "../../lib/inspect" }
 azos_abi = { path = "../../../crates/core/abi" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_limits = { path = "../../../crates/core/limits" }

@@ -128,15 +128,34 @@ mod tests {
         Intensity { burst, interval_ns: 300 * SEC, cooldown_ns: SEC }
     }
 
-    /// A whole view, as the kernel renders it: the rows and the closing line.
+    /// A whole plan, one component a line as `image restart serves needs
+    /// [dir]` (the fields of `topology/components/<n>`); a line with the
+    /// wrong number of fields is a row with no `restart`, which is no
+    /// component. Blank lines are not rows.
     fn load(view: &str, burst: u8, w: &mut World) -> Tree {
-        load_raw(&format!("{view}end\n"), burst, w)
+        load_plan(view, true, burst, w)
     }
 
-    /// A view exactly as given.
-    fn load_raw(view: &str, burst: u8, w: &mut World) -> Tree {
+    fn load_plan(view: &str, whole: bool, burst: u8, w: &mut World) -> Tree {
+        let rows: Vec<Row<'_>> = view
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let f: Vec<&str> = l.split(' ').filter(|x| !x.is_empty()).collect();
+                if f.len() < 4 || f.len() > 5 {
+                    return Row { image: f.first().copied().unwrap_or("").as_bytes(), restart: b"", serves: b"", needs: b"", dir: b"" };
+                }
+                Row {
+                    image: f[0].as_bytes(),
+                    restart: f[1].as_bytes(),
+                    serves: f[2].as_bytes(),
+                    needs: f[3].as_bytes(),
+                    dir: f.get(4).copied().unwrap_or("").as_bytes(),
+                }
+            })
+            .collect();
         let mut t = Tree::new(intensity(burst));
-        t.load(view.as_bytes(), w);
+        t.load(&rows, whole, w);
         t
     }
 
@@ -277,69 +296,28 @@ mod tests {
         assert_eq!(w.spawned_names(), ["B.ELF"]);
     }
 
-    /// A view without its closing line was cut (the procfs buffer ended, or
-    /// the read did): it is recorded, and a row cut mid-line is NOT a row. The
-    /// cut row below would parse as `CLI.ELF` with the need `ea` only, a lost
-    /// dependency on `eb`.
+    /// A plan that is not whole (a component did not fit the tree, so the
+    /// kernel wrote no `rows`) is recorded once; the rows that were read are
+    /// used, none with a list cut short (the kernel writes a row whole or not
+    /// at all). A whole plan with no rows is not an error.
     ///
-    /// Canary: take a view with no `end` line as whole (`rows_of` returns
-    /// `true` for it) and the cut `CLI.ELF` row is started without `eb`'s server.
+    /// Canary: ignore `whole` in `Tree::load` and the record is missing.
     #[test]
-    fn a_view_cut_mid_row_is_recorded_and_its_partial_row_dropped() {
+    fn a_plan_that_is_not_whole_is_recorded() {
         let mut w = World::new();
-        let mut t = load_raw("SRVB.ELF on-failure eb -\nCLI.ELF on-failure - ea", 3, &mut w);
-        assert_eq!(t.len(), 1, "the cut CLI.ELF row is not a component");
-        assert_eq!(w.kinds(EventKind::ViewRejected).len(), 1);
-        t.start_all(&mut w);
-        assert_eq!(w.spawned_names(), ["SRVB.ELF"]);
-    }
-
-    /// The rows before the cut are kept (a cut after a whole line loses no
-    /// row but is still recorded); an empty read is recorded too.
-    #[test]
-    fn a_view_without_its_end_line_is_recorded() {
-        let mut w = World::new();
-        let mut t = load_raw("A.ELF on-failure - -\nB.ELF on-failure - -\n", 3, &mut w);
+        let mut t = load_plan("A.ELF on-failure - -\nB.ELF on-failure - -\n", false, 3, &mut w);
         assert_eq!(t.len(), 2);
         assert_eq!(w.kinds(EventKind::ViewRejected).len(), 1);
         t.start_all(&mut w);
         assert_eq!(w.spawned_names(), ["A.ELF", "B.ELF"]);
         let mut w = World::new();
-        let t = load_raw("", 3, &mut w);
+        let t = load_plan("", false, 3, &mut w);
         assert_eq!(t.len(), 0);
         assert_eq!(w.kinds(EventKind::ViewRejected).len(), 1);
-        // A whole view with no rows is not an error.
         let mut w = World::new();
-        let t = load_raw("end\n", 3, &mut w);
+        let t = load_plan("", true, 3, &mut w);
         assert_eq!(t.len(), 0);
         assert!(w.kinds(EventKind::ViewRejected).is_empty());
-    }
-
-    /// `end` closes a view only as a line of its own: the tail of a row's
-    /// name is not the closing line.
-    #[test]
-    fn end_is_a_line_of_its_own() {
-        let mut w = World::new();
-        let t = load_raw("A.ELF on-failure - -\nrow-without-newline-end\n", 3, &mut w);
-        assert_eq!(t.len(), 1);
-        assert_eq!(w.kinds(EventKind::ViewRejected).len(), 2);
-    }
-
-    /// `VIEW_MAX` is the procfs file bound the kernel renders `/proc/components`
-    /// into: one number in two places, and this is where they are held equal.
-    #[test]
-    fn the_view_buffer_is_the_procfs_file_bound() {
-        let src = include_str!("../../../../crates/fs/fs/src/procfs.rs");
-        let line = src
-            .lines()
-            .find(|l| l.starts_with("pub const PROCFS_MAX_FILE: usize = "))
-            .expect("PROCFS_MAX_FILE is declared");
-        let n: usize = line
-            .trim_start_matches("pub const PROCFS_MAX_FILE: usize = ")
-            .trim_end_matches(';')
-            .parse()
-            .unwrap();
-        assert_eq!(VIEW_MAX, n);
     }
 
     #[test]

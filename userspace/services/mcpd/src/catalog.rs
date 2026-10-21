@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! What the bridge serves: the interfaces it knows (the catalog), the
-//! endpoints its row lets it call (`/proc/mcp`), and the MCP tools that follow
-//! from the two.
+//! endpoints its row lets it call, and the MCP tools that follow from the two.
 //!
-//! ```text
-//! endpoint <name> <endpoint pool index>
-//! ```
-//!
-//! `/proc/mcp` lists every endpoint the reader holds the call right **and** the
-//! lend right on (`WRITE` + `DUP` + `TRANSFER`, the topology's `transfer = true`): the
-//! authority the bridge's row grants is what opens the view, not the name of the
-//! image. A name the catalog does not know is skipped, so the result only ever
-//! has less in it than the text said.
+//! The endpoints are those of the bridge's view of the topology (`MemObj
+//! inspect.mcp`, `endpoints/<name>/index`) that this task holds the call right
+//! **and** the lend right on (`WRITE` + `DUP` + `TRANSFER`, the topology's
+//! `transfer = true`), checked against its own table: the authority the
+//! bridge's row grants is what opens them, not the name of the image. A name
+//! the catalog does not know is skipped, so the result only ever has less in
+//! it than the row holds.
 //!
 //! # From an interface to tools
 //!
@@ -64,15 +61,15 @@ pub struct Export {
     pub endpoint: u32,
 }
 
-/// `/proc/mcp`, parsed.
+/// The endpoints the bridge may call, matched to the catalog.
 #[derive(Debug, Default)]
 pub struct View {
     /// The pool index of the call and lend capability on `endpoint.decisions`
     /// (the receipts come from it), whether or not the catalog fronts it.
     pub decisions: Option<u32>,
     pub exports: Vec<Export>,
-    /// Lines skipped: an interface the catalog does not know, or a number that
-    /// is not one.
+    /// Endpoints skipped: an interface the catalog does not know, or past
+    /// [`EXPORTS_MAX`].
     pub skipped: u32,
 }
 
@@ -83,26 +80,10 @@ pub const EXPORTS_MAX: usize = 16;
 /// op number `n` (the ops of an interface count from 1).
 pub const OP_MASK_BITS: u16 = 63;
 
-fn num(t: &str) -> Option<u32> {
-    if t.is_empty() || t.len() > 10 || !t.bytes().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    t.parse().ok()
-}
-
-/// Parse the view against `catalog`.
-pub fn parse_view(view: &[u8], catalog: &'static [Iface]) -> View {
+/// Match the endpoints the bridge holds (name, pool index) to `catalog`.
+pub fn view_of<'n>(held: impl IntoIterator<Item = (&'n str, u32)>, catalog: &'static [Iface]) -> View {
     let mut v = View::default();
-    let Ok(text) = core::str::from_utf8(view) else { return v };
-    for line in text.split('\n') {
-        let mut t = line.split(' ').filter(|s| !s.is_empty());
-        if t.next() != Some("endpoint") {
-            continue;
-        }
-        let (Some(name), Some(index), None) = (t.next(), t.next().and_then(num), t.next()) else {
-            v.skipped += 1;
-            continue;
-        };
+    for (name, index) in held {
         if name == "decisions" {
             v.decisions = Some(index);
         }

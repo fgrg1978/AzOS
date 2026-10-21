@@ -7,8 +7,8 @@
 //! fronts (the bridge derives an attenuated, badged, expiring, one-use copy for
 //! every call), on `endpoint.decisions` (the receipts), `READ` on `entropy`
 //! (this boot's epoch and the heap's randomness) and the stream socket its
-//! profile lists. What it serves is `/proc/mcp`: the endpoints the row can
-//! call. The engine, the tool catalog, the warrant rules and the answer format
+//! profile lists, and its view of the topology (`MemObj inspect.mcp`). What it
+//! serves are the endpoints of that view the row can call and lend. The engine, the tool catalog, the warrant rules and the answer format
 //! are `bridge.rs`, `catalog.rs`, `warrant.rs` and `receipt.rs`, tested on the
 //! host over a scripted MCP client (`tests/host/mcpd-tests`); this file is the
 //! host they run on and the loop around them.
@@ -37,11 +37,13 @@ mod receipt;
 mod warrant;
 
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use azos_abi::cap::CapPerms;
 use azos_abi::invoke::ENDPOINT_DERIVE;
 use azos_decisions::{DecisionsIdl, DECISIONS_ID};
 use azos_idl::MsgDesc;
+use azos_inspect_lib::{u64_in, Inspector, Source};
 use azos_libsys as sys;
 use azos_rpc::wire::cav;
 use azos_ualloc::UserAlloc;
@@ -58,10 +60,6 @@ static CATALOG: [Iface; 1] =
 #[global_allocator]
 static ALLOC: UserAlloc = UserAlloc::new();
 
-/// Where the kernel exports the view.
-const VIEW: &[u8] = b"/proc/mcp\0";
-/// A procfs file is at most this (`azos_fs::procfs::PROCFS_MAX_FILE`).
-const VIEW_MAX: usize = 2048;
 /// The principal id the operator's warrant is issued to: the console.
 const OPERATOR: u32 = 1;
 /// The call right a warrant carries: `WRITE`, nothing else.
@@ -165,24 +163,38 @@ impl Link for Tcp {
     }
 }
 
-/// A file or procfs view, whole, up to `buf.len()` bytes.
-fn read_file(path: &[u8], buf: &mut [u8]) -> usize {
-    let h = sys::open_root(path, 0);
-    if h < 0 {
-        return 0;
-    }
-    let h = h as u32;
-    let mut got = 0;
-    while got < buf.len() {
-        let n = sys::file_read_typed(h, &mut buf[got..]);
-        if n <= 0 {
-            break;
-        }
-        got += n as usize;
-    }
-    let _ = sys::close_typed(h);
-    got
+/// The endpoints of the bridge's view of the topology (`MemObj inspect.mcp`,
+/// `endpoints/<name>/index`) this task holds with the call and the lend right
+/// (`WRITE` + `DUP` + `TRANSFER`), matched to the catalog. Nothing when the
+/// view cannot be read.
+fn read_view() -> catalog::View {
+    let Ok(m) = sys::inspect_map(azos_abi::cap::SHM_INSPECT_MCP) else { return catalog::View::default() };
+    // SAFETY: the mapping lives as long as the task, read-only, and the kernel
+    // writes it only with aligned 64-bit stores.
+    let Ok(mut tree) = (unsafe { Inspector::from_mapped(m, None) }) else { return catalog::View::default() };
+    // The pool index of an endpoint this task's spawn created is published by
+    // the refresh after it.
+    tree.wait_refreshes(Source::Public, 2, &mut |ms| sys::sleep(ms));
+    let lends = CapPerms::WRITE.union(CapPerms::DELEGATE);
+    let held = tree
+        .with(Source::Public, |r| {
+            let mut held: Vec<(String, u32)> = Vec::new();
+            let Some(dir) = r.lookup("endpoints")? else { return Ok(held) };
+            r.children(dir, &mut |info, _| {
+                let Ok(Some(index)) = u64_in(r, info.id, "index") else { return };
+                let Ok(index) = u32::try_from(index) else { return };
+                let h = sys::cap_lookup(sys::ty::ENDPOINT.raw(), index);
+                let ok = h > 0 && sys::cap_info(h as u32).is_ok_and(|c| CapPerms::from_bits_truncate(c.rights).contains(lends));
+                if ok {
+                    held.push((String::from(info.name.as_str()), index));
+                }
+            })?;
+            Ok(held)
+        })
+        .unwrap_or_default();
+    catalog::view_of(held.iter().map(|(n, i)| (n.as_str(), *i)), &CATALOG)
 }
+
 
 /// `a.b.c.d` as its four bytes.
 fn ipv4(s: &str) -> Option<[u8; 4]> {
@@ -210,11 +222,9 @@ fn dial(ip: [u8; 4], port: u16) -> Option<u32> {
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
     put("[mcpd] AzOS MCP bridge\n");
-    let mut text = [0u8; VIEW_MAX];
-    let n = read_file(VIEW, &mut text);
-    let view = catalog::parse_view(&text[..n], &CATALOG);
+    let view = read_view();
     if view.skipped != 0 {
-        put(&format!("[mcpd] {} endpoint line(s) skipped (no op table here, or not a line)\n", view.skipped));
+        put(&format!("[mcpd] {} endpoint(s) skipped (no op table here)\n", view.skipped));
     }
     let Some(dec_index) = view.decisions else {
         put("[mcpd] the row holds no call capability on endpoint.decisions: no receipts, refusing to run\n");

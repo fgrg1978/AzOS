@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The server's [`Source`]: the records of `/proc/decisions.bin` decoded.
+//! The server's [`Source`]: the kernel's decision records decoded.
 //!
-//! The kernel writes the decisions it still holds as back-to-back
+//! The kernel publishes the decisions it still holds as
 //! [`PROVENANCE_SIZE`]-byte `ProvenanceRecord::to_bytes` records, oldest
-//! first, the newest that fit a procfs file. [`BinSource::load`] decodes them
-//! into a fixed table; nothing here reads a file or parses text, so the host
+//! first, the newest 24 (`decisions/records/<n>` of the admin introspection
+//! region); `main.rs` copies them back to back and [`BinSource::load`] decodes
+//! them into a fixed table; nothing here reads the tree, so the host
 //! suite (`tests/host/decisions-tests`) pulls this file in with `#[path]` and
 //! drives it through the generated stubs.
 use azos_decisions::{Filter, ProvenanceRecord, Source, PROVENANCE_SIZE};
 
-/// Records the table holds: a procfs file is 2048 bytes
-/// (`azos_fs::procfs::PROCFS_MAX_FILE`), so 19 fit; 24 leaves room should
-/// that file grow.
+/// Records the table holds: the kernel publishes as many
+/// (`DECISION_ROWS`, `kernel/src/boot/inspect_views.rs`).
 pub const MAX: usize = 24;
 
 /// The decoded snapshot, oldest first.
@@ -48,14 +48,14 @@ impl BinSource {
 }
 
 impl Source for BinSource {
-    /// The newest id held: the file carries no count of its own.
+    /// The newest id held: the records carry no count of their own.
     fn total(&self) -> u64 {
         self.recs[..self.n].iter().map(|p| p.seq).max().unwrap_or(0)
     }
 
     fn query(&self, f: &Filter, out: &mut [u64]) -> usize {
         let mut k = 0;
-        // Ids ascend in the file; sorted anyway, so a reordered file still
+        // Ids ascend in the records; sorted anyway, so a reordered set still
         // answers oldest first.
         let mut last = f.after;
         while k < out.len() {

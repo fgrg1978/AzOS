@@ -7,9 +7,10 @@
 //! **Every answer is decided from the signed topology, once per call.** The
 //! caller is identified by the badge the kernel stamped on its capability to
 //! `endpoint.names` (the row's identity, `azos_syscall::spawn::names_badge`);
-//! the server reads `/proc/names` for that call and lends only what an
-//! `allow <badge> <name>` line names AND an `export <name> ...` line says
-//! this task holds. Nothing is cached: the view is the topology, and a stale
+//! the server asks its [`Host`] for that call, and lends only what the row of
+//! that badge imports AND what this task holds a capability on (its view of
+//! the topology, `imports/<badge>` and `endpoints/<name>`, and this task's own
+//! table). Nothing is cached: the view is the topology, and a stale
 //! copy of it is a stale policy.
 //!
 //! A lent capability is a DUP entry with the call right only: a child of this
@@ -23,17 +24,16 @@
 //! `#[path]` and drives it through the generated client stub.
 
 use azos_abi::cap::CapPerms;
-use azos_names::{
-    allowed, export, unpack_name, Endpoint, Lent, Names, PackedName, NAME_MAX,
-};
-
-/// Bytes of the view this server reads per call (the procfs file bound).
-pub const VIEW_MAX: usize = 2048;
+use azos_names::{unpack_name, Endpoint, Lent, Names, PackedName, NAME_MAX};
 
 /// What the server needs from its surroundings.
 pub trait Host {
-    /// Read the view (`/proc/names`) into `buf`; the bytes read.
-    fn view(&mut self, buf: &mut [u8]) -> usize;
+    /// Does the signed row identified by `badge` import `name`?
+    fn imports(&mut self, badge: u32, name: &[u8]) -> bool;
+    /// The named endpoint `name`, if this task holds a capability on it: its
+    /// pool index (what [`Host::handle`] takes) and the image serving it,
+    /// written to `server` (its length; 0 when nobody serves it).
+    fn export(&mut self, name: &[u8], server: &mut [u8; NAME_MAX]) -> Option<(u32, usize)>;
     /// The handle in this task's table of the endpoint at pool index `index`
     /// (`SYS_CAP_INFO`), if it holds one.
     fn handle(&mut self, index: u32) -> Option<u32>;
@@ -99,12 +99,11 @@ pub struct Service<H: Host> {
     /// 0 lends with no deadline of its own.
     lend_ttl_ns: u64,
     ring: [Refusal; REFUSALS_KEPT],
-    view: [u8; VIEW_MAX],
 }
 
 impl<H: Host> Service<H> {
     pub const fn new(host: H, lend_ttl_ns: u64) -> Self {
-        Self { host, caller: 0, refused: 0, lend_ttl_ns, ring: [NO_REFUSAL; REFUSALS_KEPT], view: [0; VIEW_MAX] }
+        Self { host, caller: 0, refused: 0, lend_ttl_ns, ring: [NO_REFUSAL; REFUSALS_KEPT] }
     }
 
     /// The deadline of a capability lent now: `now + ttl`, or none.
@@ -154,8 +153,8 @@ impl<H: Host> Service<H> {
         self.host.log(&line[..w]);
     }
 
-    /// Read the view, then decide: the caller's row imports `name` and the
-    /// view exports it. The pool index and serving task on success.
+    /// Decide from the topology: the caller's row imports `name` and this
+    /// task holds it. The pool index and serving task on success.
     fn decide(&mut self, op: u8, name: &PackedName) -> Result<(u32, [u8; NAME_MAX], usize), ()> {
         let mut nb = [0u8; NAME_MAX];
         let n = unpack_name(name, &mut nb);
@@ -167,20 +166,16 @@ impl<H: Host> Service<H> {
             self.refuse(op, &nb[..n], Why::Unidentified);
             return Err(());
         }
-        let got = self.host.view(&mut self.view).min(VIEW_MAX);
-        let view = &self.view[..got];
-        if !allowed(view, self.caller, &nb[..n]) {
+        if !self.host.imports(self.caller, &nb[..n]) {
             self.refuse(op, &nb[..n], Why::NotImported);
             return Err(());
         }
-        let Some((index, server)) = export(view, &nb[..n]) else {
+        let mut sv = [0u8; NAME_MAX];
+        let Some((index, m)) = self.host.export(&nb[..n], &mut sv) else {
             self.refuse(op, &nb[..n], Why::NotHeld);
             return Err(());
         };
-        let mut sv = [0u8; NAME_MAX];
-        let m = if server == b"-" { 0 } else { server.len().min(NAME_MAX) };
-        sv[..m].copy_from_slice(&server[..m]);
-        Ok((index, sv, m))
+        Ok((index, sv, m.min(NAME_MAX)))
     }
 }
 

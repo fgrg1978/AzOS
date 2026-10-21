@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side tests for the Names object: the interface and the codec of the
-//! name server's view of the signed topology (`userspace/lib/names`), and the
-//! name server's decision and refusal record (`userspace/services/namesd/src/
+//! Host-side tests for the Names object: the interface and the name codec
+//! (`userspace/lib/names`), and the name server's decision and refusal record (`userspace/services/namesd/src/
 //! service.rs`, pulled in with `#[path]` so the code under test is the code
 //! `NAMESD.ELF` is built from).
 //!
@@ -41,13 +40,35 @@ mod namesd {
     #[derive(Clone, Default)]
     struct Fake(Rc<RefCell<World>>);
 
+    /// One line of the world's view: `export <name> <index> <server or ->`
+    /// (a named endpoint the server holds) or `allow <badge> <name>` (row
+    /// `badge` imports `name`), the two facts the kernel's tree gives it.
+    fn lines(view: &[u8]) -> impl Iterator<Item = Vec<&[u8]>> {
+        view.split(|&c| c == b'\n').map(|l| l.split(|&c| c == b' ').filter(|w| !w.is_empty()).collect())
+    }
+
+    fn num(w: &[u8]) -> Option<u32> {
+        std::str::from_utf8(w).ok()?.parse().ok()
+    }
+
     impl Host for Fake {
-        fn view(&mut self, buf: &mut [u8]) -> usize {
+        fn imports(&mut self, badge: u32, name: &[u8]) -> bool {
             let mut w = self.0.borrow_mut();
             w.view_reads += 1;
-            let n = w.view.len().min(buf.len());
-            buf[..n].copy_from_slice(&w.view[..n]);
-            n
+            let found = lines(&w.view).any(|l| l.len() == 3 && l[0] == b"allow" && num(l[1]) == Some(badge) && l[2] == name);
+            found
+        }
+        fn export(&mut self, name: &[u8], server: &mut [u8; NAME_MAX]) -> Option<(u32, usize)> {
+            let w = self.0.borrow();
+            let found = lines(&w.view).find_map(|l| {
+                if l.len() != 4 || l[0] != b"export" || l[1] != name {
+                    return None;
+                }
+                let s: &[u8] = if l[3] == b"-" { b"" } else { l[3] };
+                server[..s.len()].copy_from_slice(s);
+                Some((num(l[2])?, s.len()))
+            });
+            found
         }
         fn handle(&mut self, index: u32) -> Option<u32> {
             self.0.borrow().handles.iter().find(|(i, _)| *i == index).map(|(_, h)| *h)
@@ -414,26 +435,5 @@ mod codec {
         assert!(pack_name(&[b'a'; NAME_MAX + 1]).is_none());
         // Distinct names are distinct keys, including a prefix of another.
         assert_ne!(pack_name(b"term").unwrap(), pack_name(b"termx").unwrap());
-    }
-
-    #[test]
-    fn the_view_parses_line_by_line_and_skips_what_it_does_not_know() {
-        assert_eq!(
-            parse_line(b"export term 1 TERMD.ELF"),
-            Some(Line::Export { name: b"term", index: 1, server: b"TERMD.ELF" })
-        );
-        assert_eq!(parse_line(b"allow 7 term"), Some(Line::Allow { badge: 7, name: b"term" }));
-        for bad in [&b""[..], b"# header", b"export term x TERMD.ELF", b"allow x term", b"allow 7", b"allow 7 term extra",
-                    b"export term 1", b"allow 99999999999 term", b"grant 7 term"] {
-            assert_eq!(parse_line(bad), None, "{:?}", core::str::from_utf8(bad));
-        }
-        let v = b"export term 1 TERMD.ELF\nallow 7 term\nallow 70 log\n";
-        assert!(allowed(v, 7, b"term"));
-        // The badge and the name match whole, not as prefixes.
-        assert!(!allowed(v, 70, b"term"));
-        assert!(!allowed(v, 7, b"ter"));
-        assert!(!allowed(v, 7, b"termx"));
-        assert_eq!(export(v, b"term"), Some((1, &b"TERMD.ELF"[..])));
-        assert_eq!(export(v, b"ter"), None);
     }
 }

@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The AzOS decision server: serves the Decisions object (the kernel's stored refusals, denials and admissions, with their provenance) over the endpoint.decisions endpoint, from the binary records of /proc/decisions.bin. Ring 3, no authority beyond serving that endpoint. Excluded from workspace; built standalone."
+description = "The AzOS decision server: serves the Decisions object (the kernel's stored refusals, denials and admissions, with their provenance) over the endpoint.decisions endpoint, from the binary records of the kernel's introspection tree (the admin region, granted against the task view). Ring 3, no authority beyond serving that endpoint and reading that region. Excluded from workspace; built standalone."
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
+azos_inspect_lib = { path = "../../lib/inspect" }
+azos_abi = { path = "../../../crates/core/abi" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_decisions = { path = "../../lib/decisions" }
 

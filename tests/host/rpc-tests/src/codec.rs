@@ -294,43 +294,42 @@ fn the_dedupe_window_keeps_answers_and_remembers_what_it_forgot() {
     assert_eq!(d.lookup(2), Seen::Cached(b"x"));
 }
 
-/// The view of `/proc/rpc`: classes and exports, malformed lines skipped, and
-/// a policy only ever has less in it than the text said.
+/// The server's view of the topology: classes and exports, and a policy only
+/// ever has less in it than the topology said: a class that is no name, node
+/// 0, an all-zero key or a full table adds nothing.
 #[test]
-fn the_policy_reads_the_view_and_skips_what_is_not_a_line() {
-    let k = |b: u8| format!("{:02x}", b).repeat(32);
-    let text = format!(
-        "peer fleet 2 {}\npeer fleet 3 {}\npeer lab 9 {}\npeer zero 0 {}\nexport probe 7 fleet\nexport names 3 lab\n\
-         export short 1\nexport probe x fleet\nbogus line here\npeer toolongxxxxxxxxxxxxxxxxxxxxxxxxx 4 {}\n\
-         peer nokey 5\npeer shortkey 6 abcd\npeer nothex 7 {}\npeer nullkey 8 {}\n",
-        k(0x12),
-        k(0x34),
-        k(0x56),
-        k(0x78),
-        k(0x9a),
-        "zz".repeat(32),
-        k(0),
-    );
-    let p = Policy::parse(text.as_bytes());
+fn the_policy_keeps_only_what_is_a_peer_or_an_export() {
+    let mut p = Policy::NONE;
+    assert!(p.add_peer(b"fleet", 2, &[0x12; 32]));
+    assert!(p.add_peer(b"fleet", 3, &[0x34; 32]));
+    assert!(p.add_peer(b"lab", 9, &[0x56; 32]));
+    assert!(!p.add_peer(b"zero", 0, &[0x78; 32]), "node 0 is this node");
+    assert!(!p.add_peer(b"toolongxxxxxxxxxxxxxxxxxxxxxxxxx", 4, &[0x9a; 32]), "a name past the limit is no class");
+    assert!(!p.add_peer(b"nullkey", 8, &[0; 32]), "an all-zero key pins nothing");
     assert_eq!(p.class_of(2), Name::new(b"fleet"));
     assert_eq!(p.class_of(3), Name::new(b"fleet"));
     assert_eq!(p.class_of(9), Name::new(b"lab"));
-    assert_eq!(p.class_of(0), None, "node 0 is this node");
-    assert_eq!(p.class_of(4), None, "a name past the limit is no class");
+    assert_eq!(p.class_of(0), None);
     assert_eq!(p.nodes().collect::<Vec<_>>(), [2, 3, 9]);
-    // The key the topology pins is the node's, and a peer line without a usable one is no peer.
     assert_eq!(p.noise_pk(2), Some(&[0x12; 32]));
-    assert_eq!(p.noise_pk(3), Some(&[0x34; 32]));
     assert_eq!(p.noise_pk(9), Some(&[0x56; 32]));
-    for n in [4, 5, 6, 7, 8] {
+    for n in [4, 8] {
         assert_eq!((p.class_of(n), p.noise_pk(n)), (None, None), "node {n}");
     }
+    assert!(p.add_export(b"probe", 7, b"fleet"));
+    assert!(p.add_export(b"names", 3, b"lab"));
+    assert!(!p.add_export(b"", 1, b"fleet"));
     let fleet = Name::new(b"fleet").unwrap();
     let lab = Name::new(b"lab").unwrap();
     assert_eq!(p.export(b"probe", &fleet).map(|e| e.index), Some(7));
     assert_eq!(p.export(b"probe", &lab), None, "exported to fleet, not to lab");
     assert_eq!(p.export(b"names", &lab).map(|e| e.index), Some(3));
-    assert_eq!(p.export(b"short", &fleet), None);
+    // Full tables add nothing more.
+    let mut q = Policy::NONE;
+    for n in 1..=azos_rpc::policy::PEERS_MAX as u32 {
+        assert!(q.add_peer(b"fleet", n, &[1; 32]));
+    }
+    assert!(!q.add_peer(b"fleet", 99, &[1; 32]));
     // Nothing is allowed by default.
     assert_eq!(Policy::NONE.class_of(2), None);
     assert_eq!(Policy::NONE.nodes().count(), 0);

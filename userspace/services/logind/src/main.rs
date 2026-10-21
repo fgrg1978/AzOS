@@ -5,8 +5,8 @@
 //! A ring-3 program whose topology row is its whole authority: `READ` on
 //! `endpoint.login` (it serves it), `EXEC` on the kernel's `keys` interface
 //! limited to its `login` op (it can verify a credential and make or use no
-//! key), the right to start `SH.ELF`, and the read-only root directory for
-//! `/proc/ssh`. It answers the `Login` object (`userspace/lib/login`) to the
+//! key), the right to start `SH.ELF`, and the kernel's view of the signed
+//! topology's logins (`MemObj inspect.logins`). It answers the `Login` object (`userspace/lib/login`) to the
 //! terminal server, which owns the console, holds the secure-attention prompt
 //! and is the only caller.
 //!
@@ -27,16 +27,13 @@
 mod daemon;
 
 use azos_abi::ushell::{Move, SpawnReq, KILL_FORCE, KILL_SUBTREE, MOVE_CONSOLE, SPAWN_F_DIE_WITH_PARENT, SPAWN_F_USER, SPAWN_REQ_VERSION};
+use azos_inspect_lib::{Inspector, Source};
 use azos_libsys as sys;
 use azos_login::{LoginIdl, MsgDesc, CREDENTIAL_WORDS, NAME_WORDS};
 use daemon::{Daemon, Kernel};
 
 /// The shell a session runs.
 const SHELL: &[u8] = b"/fat/SH.ELF\0";
-/// The signed topology's logins, one line per key: empty when nobody is enrolled.
-/// NUL-terminated, as `open_root` takes a name: without the NUL the open is
-/// refused and the service would have to take it that users are enrolled.
-const LOGINS: &[u8] = b"/proc/ssh\0";
 /// SIGKILL: the signal a forced stop reports.
 const SIGKILL: u64 = 9;
 /// How long a stopped shell is waited for before the service gives up reaping
@@ -60,15 +57,25 @@ fn say(line: &str) {
 
 impl Kernel for Sys {
     fn enrolled(&mut self) -> bool {
-        let h = sys::open_root(LOGINS, 0);
-        if h < 0 {
-            say("[logind] /proc/ssh cannot be read: taking it that users are enrolled\n");
+        // The signed topology's logins (`MemObj inspect.logins`): none listed
+        // is nobody enrolled. A view that cannot be read is taken as users
+        // enrolled: the gate stays shut.
+        let tree = sys::inspect_map(azos_abi::cap::SHM_INSPECT_LOGINS)
+            .ok()
+            // SAFETY: the mapping lives as long as the task, read-only, and
+            // the kernel writes it only with aligned 64-bit stores.
+            .and_then(|m| unsafe { Inspector::from_mapped(m, None) }.ok());
+        let Some(mut tree) = tree else {
+            say("[logind] the logins view cannot be read: taking it that users are enrolled\n");
             return true;
-        }
-        let mut buf = [0u8; 64];
-        let n = sys::file_read_typed(h as u32, &mut buf);
-        let _ = sys::close_typed(h as u32);
-        buf[..n.max(0) as usize].iter().any(|b| b.is_ascii_graphic())
+        };
+        let mut any = true;
+        let r = tree.with(Source::Public, |r| {
+            any = false;
+            let Some(dir) = r.lookup("logins")? else { return Ok(()) };
+            r.children(dir, &mut |_, _| any = true)
+        });
+        any || r.is_err()
     }
 
     fn verify(&mut self, user: [u64; NAME_WORDS], credential: [u64; CREDENTIAL_WORDS]) -> Result<u32, u32> {

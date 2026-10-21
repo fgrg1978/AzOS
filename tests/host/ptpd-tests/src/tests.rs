@@ -754,16 +754,12 @@ fn clock_moved_tolerates_jitter_and_slew_and_nothing_more() {
 
 #[test]
 fn the_domain_comes_from_the_clock_row_view() {
-    assert_eq!(link::parse_domain(b"ptp_domain 0\n"), Some(0));
-    assert_eq!(link::parse_domain(b"ptp_domain 127\n"), Some(127));
-    assert_eq!(link::parse_domain(b"ptp_domain 24"), Some(24));
-    // A row without a domain exports an empty file; garbage is no domain.
-    assert_eq!(link::parse_domain(b""), None);
-    assert_eq!(link::parse_domain(b"ptp_domain \n"), None);
-    assert_eq!(link::parse_domain(b"ptp_domain x\n"), None);
-    assert_eq!(link::parse_domain(b"leap 1\n"), None);
+    assert_eq!(link::domain_of(Some(0)), Some(0));
+    assert_eq!(link::domain_of(Some(127)), Some(127));
+    // A row without a domain has no node.
+    assert_eq!(link::domain_of(None), None);
     // Out of u8 range is not truncated into a domain.
-    assert_eq!(link::parse_domain(b"ptp_domain 300\n"), None);
+    assert_eq!(link::domain_of(Some(300)), None);
 }
 
 #[test]

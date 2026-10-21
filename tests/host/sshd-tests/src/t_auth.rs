@@ -8,22 +8,14 @@ use crate::harness::*;
 use crate::server::{Rule, Verdict};
 use crate::wire::*;
 
-fn login_line(user: &str, seed: &[u8; 32]) -> String {
-    let hex: String = pubkey(seed).iter().map(|b| format!("{b:02x}")).collect();
-    format!("{user} {hex}\n")
-}
-
-/// `/proc/ssh` is what the kernel writes from the signed topology: one line
-/// per key, `<user name> <64 hex digits>`.
+/// The view's entries are the signed topology's: a user name and its key,
+/// one entry per key.
 #[test]
 fn the_logins_are_read_from_the_topology_view() {
-    let file = format!(
-        "{}{}{}",
-        login_line("alice", &user_seed()),
-        login_line("alice", &[9u8; 32]),
-        login_line("bob", &other_seed()),
-    );
-    let p = parse_logins(file.as_bytes());
+    let mut p = Parsed::default();
+    p.add(b"alice", &pubkey(&user_seed()));
+    p.add(b"alice", &pubkey(&[9u8; 32]));
+    p.add(b"bob", &pubkey(&other_seed()));
     assert_eq!(p.skipped, 0);
     let got: Vec<(&[u8], [u8; 32])> = p.keys.iter().map(|k| (&k.user[..], k.key)).collect();
     assert_eq!(
@@ -31,27 +23,23 @@ fn the_logins_are_read_from_the_topology_view() {
         vec![(&b"alice"[..], pubkey(&user_seed())), (&b"alice"[..], pubkey(&[9u8; 32])), (&b"bob"[..], pubkey(&other_seed()))]
     );
     // Nothing declared: nobody can log in.
-    assert_eq!(parse_logins(b""), Parsed::default());
+    assert_eq!(Parsed::default().keys.len(), 0);
 }
 
-/// **Canary.** Accept a line the view cannot have written and a key the
+/// **Canary.** Accept an entry the view cannot have written and a key the
 /// topology never listed would be read in.
 #[test]
-fn a_line_that_is_not_a_login_is_skipped() {
-    let good = login_line("alice", &user_seed());
-    let hex: String = pubkey(&user_seed()).iter().map(|b| format!("{b:02x}")).collect();
-    let file = format!(
-        "{good}alice {}\nalice {}0\nalice {}\nalice\n alice {hex}\nalice {} x\n{hex}\nalice {}\n",
-        &hex[..62],
-        hex,
-        hex.to_uppercase(),
-        hex,
-        "zz".repeat(32),
-    );
-    let p = parse_logins(file.as_bytes());
+fn an_entry_that_is_not_a_login_is_skipped() {
+    let mut p = Parsed::default();
+    let k = pubkey(&user_seed());
+    p.add(b"alice", &k);
+    p.add(b"alice", &k[..31]);
+    p.add(b"alice", &[k.as_slice(), &[0]].concat());
+    p.add(b"", &k);
+    p.add(b"alice", &[0; 32]);
     assert_eq!(p.keys.len(), 1, "{:?}", p.keys);
     assert_eq!(p.keys[0].user, b"alice");
-    assert_eq!(p.skipped, 8);
+    assert_eq!(p.skipped, 4);
 }
 
 /// A key logs in as the user it is listed under and as no other: with the

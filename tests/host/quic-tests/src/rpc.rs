@@ -69,6 +69,32 @@ fn hex(k: &[u8; 32]) -> String {
     k.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A policy from the tests' short form: `peer <class> <node> <64 hex digits>`
+/// and `export <name> <index> <class>` lines, the facts the kernel's tree
+/// gives the server (`topology/peers`, `topology/exports`), added as the
+/// server adds them.
+fn policy_of(text: &str) -> Policy {
+    let mut p = Policy::NONE;
+    for l in text.lines() {
+        let f: Vec<&str> = l.split(' ').filter(|w| !w.is_empty()).collect();
+        match f.as_slice() {
+            ["peer", class, node, key] => {
+                let k: Vec<u8> = (0..key.len() / 2).filter_map(|i| u8::from_str_radix(&key[2 * i..2 * i + 2], 16).ok()).collect();
+                if let (Ok(node), Ok(k)) = (node.parse(), <[u8; 32]>::try_from(k.as_slice())) {
+                    p.add_peer(class.as_bytes(), node, &k);
+                }
+            }
+            ["export", name, index, class] => {
+                if let Ok(i) = index.parse() {
+                    p.add_export(name.as_bytes(), i, class.as_bytes());
+                }
+            }
+            _ => {}
+        }
+    }
+    p
+}
+
 /// A's view: B is in `fleet`, pinned to the public half of node `b_key`'s key.
 fn policy_a(b_key: NodeId) -> String {
     format!("peer fleet {B} {}\n", hex(&chan::static_public_key(&sk(b_key))))
@@ -215,7 +241,7 @@ impl Node {
         let kern = Kern { node: s.node, t0: Instant::now(), key: sk(s.key), serves: s.node == B, next: 100 * s.node, warrants: HashMap::new(), svc: Counter { n: 0, ran: 0 } };
         let mut rpc = Box::new(Rpc::new(kern, PumpLink { sender, peer }, &CATALOG));
         rpc.configure(config(s.node, s.epoch, s.timing));
-        rpc.set_policy(Policy::parse(s.policy.as_bytes()));
+        rpc.set_policy(policy_of(&s.policy));
         Node { rpc, asm: Box::new(Asm::new()), pump: Some(pump), last_tick: Instant::now(), ups: 0, downs: 0 }
     }
 

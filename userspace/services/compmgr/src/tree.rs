@@ -9,26 +9,23 @@
 //! file in with `#[path]`, so the code under test is the code `COMPMGR.ELF`
 //! is built from.
 //!
-//! # Input: the view
+//! # Input: the plan
 //!
-//! The kernel renders the signed topology rows the manager starts as
-//! `/proc/components` (readable only by the component manager's own row), one
-//! line per component, in the order to start them (the console program last):
+//! The kernel publishes the signed topology rows the manager starts in an
+//! introspection tree only its row is granted (`MemObj inspect.components`,
+//! `components/`, `kernel/src/boot/inspect_views.rs`),
+//! one directory per component, in the order to start them (the console
+//! program last): its image, its `restart` key (`always`, `on-failure`, `no`),
+//! the endpoints it serves and needs (comma lists, `-` for none), the
+//! directory of the image when it is not `/fat` (an image an applied package
+//! brought is in `/pkg/APPS`; the manager spawns `dir/image`), and whether
+//! its image is on the volume. `main.rs` reads them into [`Row`]s.
 //!
-//! ```text
-//! <image> <always|on-failure|no> <serves,...|-> <needs,...|-> [dir]
-//! ...
-//! end
-//! ```
-//!
-//! `dir` is the directory of the image when it is not `/fat` (an image an
-//! applied package brought is in `/pkg/APPS`); the manager spawns `dir/image`.
-//!
-//! The closing `end` line is what says the view is whole: a procfs file is
-//! cut where its buffer ends ([`VIEW_MAX`]), and a row cut mid-line could
-//! parse as a row with a shorter `needs` list, which is a lost dependency. A
-//! view without it is [`EventKind::ViewRejected`] as a whole, its last (cut)
-//! line is dropped, and the rows before it are used.
+//! The plan is whole only when every component fit the tree: the kernel
+//! writes `components/rows` last, and only then. A plan that is not
+//! whole is [`EventKind::ViewRejected`] as a whole, and the rows read are
+//! used: a component that is missing is not started, none is started with
+//! a shorter `needs` list than its row's.
 //!
 //! `serves` are the endpoints the row holds the serving half of, `needs` the
 //! endpoints it holds the calling half of or may import. There is no
@@ -83,12 +80,6 @@ pub const MAX_COMPONENTS: usize = 24;
 pub const NAME_MAX: usize = 16;
 /// Longest image directory kept (`/pkg/APPS` is 9).
 pub const DIR_MAX: usize = 16;
-/// Bytes of the view read: the procfs file bound
-/// (`azos_fs::procfs::PROCFS_MAX_FILE`; `tests/host/compmgr-tests` fails when
-/// the two differ).
-pub const VIEW_MAX: usize = 2048;
-/// The closing line of a whole view.
-pub const VIEW_END: &[u8] = b"end\n";
 /// Largest `burst` an [`Intensity`] may name.
 pub const BURST_MAX: usize = 16;
 
@@ -182,8 +173,8 @@ pub enum EventKind {
     Blocked,
     /// The spawn of its image failed with `code`; counted as a failure.
     SpawnRefused,
-    /// A line of the view was not a component and was skipped; or the view had
-    /// no closing line (it was cut) and its last line was dropped.
+    /// A row of the plan was not a component and was skipped; or the plan
+    /// was not whole.
     ViewRejected,
 }
 
@@ -191,7 +182,7 @@ pub enum EventKind {
 #[derive(Clone, Copy, Debug)]
 pub struct Event<'a> {
     pub kind: EventKind,
-    /// The component's image name (the view line's, for `ViewRejected`).
+    /// The component's image name (the row's, for `ViewRejected`).
     pub name: &'a [u8],
     pub tid: u32,
     pub code: i32,
@@ -284,44 +275,25 @@ fn split_list(w: &[u8]) -> impl Iterator<Item = &[u8]> {
     w.split(|&c| c == b',').filter(|e| !e.is_empty() && *e != b"-")
 }
 
-/// One parsed line of the view.
-struct Line<'a> {
-    name: &'a [u8],
-    restart: Restart,
-    serves: &'a [u8],
-    needs: &'a [u8],
-    /// Empty for `/fat`.
-    dir: &'a [u8],
+/// One row of the plan, as the kernel publishes it.
+#[derive(Clone, Copy, Debug)]
+pub struct Row<'a> {
+    pub image: &'a [u8],
+    /// The `restart` key.
+    pub restart: &'a [u8],
+    /// The endpoints it serves, a comma list (`-`: none).
+    pub serves: &'a [u8],
+    /// The endpoints it needs, a comma list (`-`: none).
+    pub needs: &'a [u8],
+    /// The directory of the image; empty for `/fat`.
+    pub dir: &'a [u8],
 }
 
-fn parse_line(l: &[u8]) -> Option<Line<'_>> {
-    let mut w = l.split(|&c| c == b' ').filter(|w| !w.is_empty());
-    let name = w.next()?;
-    let restart = Restart::parse(w.next()?)?;
-    let serves = w.next()?;
-    let needs = w.next()?;
-    let dir = w.next().unwrap_or(b"");
-    if w.next().is_some() || name.len() > NAME_MAX || dir.len() > DIR_MAX || (!dir.is_empty() && dir[0] != b'/') {
-        return None;
-    }
-    Some(Line { name, restart, serves, needs, dir })
-}
-
-fn lines(view: &[u8]) -> impl Iterator<Item = &[u8]> {
-    view.split(|&c| c == b'\n').filter(|l| !l.iter().all(|&c| c == b' '))
-}
-
-/// The rows of `view`, and whether it was whole. A whole view ends in
-/// [`VIEW_END`]; any other is cut, and what follows its last newline is a
-/// partial line, which is not a row.
-fn rows_of(view: &[u8]) -> (&[u8], bool) {
-    if let Some(body) = view.strip_suffix(VIEW_END) {
-        if body.is_empty() || body.ends_with(b"\n") {
-            return (body, true);
-        }
-    }
-    let whole = view.iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1);
-    (&view[..whole], false)
+/// A row that is a component: its restart key, or `None`.
+fn valid(r: &Row<'_>) -> Option<Restart> {
+    let restart = Restart::parse(r.restart)?;
+    let dir_ok = r.dir.len() <= DIR_MAX && (r.dir.is_empty() || r.dir[0] == b'/');
+    (!r.image.is_empty() && r.image.len() <= NAME_MAX && dir_ok).then_some(restart)
 }
 
 /// Read the view into `buf` with `read`, which fills a prefix of the slice it
@@ -375,32 +347,31 @@ impl Tree {
         }
     }
 
-    /// Fill the tree from the kernel's view. Lines that are not components,
-    /// or past [`MAX_COMPONENTS`], are recorded and skipped; components on a
-    /// dependency cycle are recorded and [`State::Blocked`]. Call once, on a
-    /// tree from [`Self::new`].
-    pub fn load(&mut self, view: &[u8], host: &mut impl Host) {
-        let (view, whole) = rows_of(view);
+    /// Fill the tree from the kernel's plan (`whole`: every component fit
+    /// it). Rows that are not components, or past [`MAX_COMPONENTS`], are
+    /// recorded and skipped; components on a dependency cycle are recorded and
+    /// [`State::Blocked`]. Call once, on a tree from [`Self::new`].
+    pub fn load(&mut self, rows: &[Row<'_>], whole: bool, host: &mut impl Host) {
         if !whole {
             host.record(&Event {
-                kind: EventKind::ViewRejected, name: b"(view cut: no end line)", tid: 0, code: 0, attempt: 0,
+                kind: EventKind::ViewRejected, name: b"(plan cut: rows missing)", tid: 0, code: 0, attempt: 0,
             });
         }
-        // Components, with their contracts.
-        for l in lines(view) {
-            let parsed = parse_line(l).filter(|_| self.n < MAX_COMPONENTS);
-            let Some(p) = parsed else {
-                let shown = &l[..l.len().min(NAME_MAX)];
+        // Components, with their contracts; `kept[i]` the row of component i.
+        let mut kept = [0usize; MAX_COMPONENTS];
+        for (k, r) in rows.iter().enumerate() {
+            let Some(restart) = valid(r).filter(|_| self.n < MAX_COMPONENTS) else {
+                let shown = &r.image[..r.image.len().min(NAME_MAX)];
                 host.record(&Event { kind: EventKind::ViewRejected, name: shown, tid: 0, code: 0, attempt: 0 });
                 continue;
             };
             let mut c = Comp::empty();
-            c.name[..p.name.len()].copy_from_slice(p.name);
-            c.name_len = p.name.len() as u8;
-            c.dir[..p.dir.len()].copy_from_slice(p.dir);
-            c.dir_len = p.dir.len() as u8;
-            c.restart = p.restart;
-            for ep in split_list(p.serves) {
+            c.name[..r.image.len()].copy_from_slice(r.image);
+            c.name_len = r.image.len() as u8;
+            c.dir[..r.dir.len()].copy_from_slice(r.dir);
+            c.dir_len = r.dir.len() as u8;
+            c.restart = restart;
+            for ep in split_list(r.serves) {
                 if let Some(f) = host.contract(ep) {
                     if c.contract.map_or(true, |g| severity(f) > severity(g)) {
                         c.contract = Some(f);
@@ -408,25 +379,20 @@ impl Tree {
                 }
             }
             c.strategy = if c.contract.is_some() { Strategy::OneForOne } else { Strategy::RestForOne };
+            kept[self.n] = k;
             self.comps[self.n] = c;
             self.n += 1;
         }
         // Dependencies: a component waits for the listed servers of what it
         // needs.
-        let mut i = 0;
-        for l in lines(view) {
-            let Some(p) = parse_line(l).filter(|_| i < self.n) else { continue };
-            for need in split_list(p.needs) {
-                let mut k = 0;
-                for l2 in lines(view) {
-                    let Some(q) = parse_line(l2).filter(|_| k < self.n) else { continue };
-                    if k != i && split_list(q.serves).any(|s| s == need) {
+        for i in 0..self.n {
+            for need in split_list(rows[kept[i]].needs) {
+                for k in 0..self.n {
+                    if k != i && split_list(rows[kept[k]].serves).any(|s| s == need) {
                         self.comps[i].deps |= 1 << k;
                     }
-                    k += 1;
                 }
             }
-            i += 1;
         }
         // Stable topological order: the first component, in view order,
         // whose dependencies are all placed.

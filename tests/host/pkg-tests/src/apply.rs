@@ -708,25 +708,27 @@ impl tree::Host for Manager<'_> {
     }
 }
 
-/// What `/proc/components` renders for the manager: the rows it starts, in
-/// row order, the ones a package brought with their directory.
-fn view(t: &Topology<'static>, first_package_row: usize) -> String {
-    let mut out = String::new();
-    for (i, r) in t.tasks().iter().enumerate().filter(|(_, r)| manager_starts(r)) {
-        out.push_str(&format!("{} on-failure - -", r.name.as_str()));
-        if i >= first_package_row {
-            out.push_str(" /pkg/APPS");
-        }
-        out.push('\n');
-    }
-    out.push_str("end\n");
-    out
+/// The plan the `inspect.components` view gives the manager: the rows it
+/// starts, in row order, the ones a package brought with their directory.
+fn plan(t: &Topology<'static>, first_package_row: usize) -> Vec<tree::Row<'static>> {
+    t.tasks()
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| manager_starts(r))
+        .map(|(i, r)| tree::Row {
+            image: r.name.as_bytes(),
+            restart: b"on-failure",
+            serves: b"-",
+            needs: b"-",
+            dir: if i >= first_package_row { b"/pkg/APPS" } else { b"" },
+        })
+        .collect()
 }
 
 fn start_all<'a>(t: &'a Topology<'static>, first_package_row: usize) -> Manager<'a> {
     let mut m = Manager { topo: t, spawned: Vec::new(), refused: Vec::new() };
     let mut tree = tree::Tree::new(tree::Intensity { burst: 3, interval_ns: 300_000_000_000, cooldown_ns: 1_000_000_000 });
-    tree.load(view(t, first_package_row).as_bytes(), &mut m);
+    tree.load(&plan(t, first_package_row), true, &mut m);
     tree.start_all(&mut m);
     m
 }

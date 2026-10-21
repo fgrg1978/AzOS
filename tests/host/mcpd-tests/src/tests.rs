@@ -3,7 +3,7 @@
 //! Each test says what turns it red.
 
 use crate::bridge::{LINE_MAX, PROPOSALS_MAX};
-use crate::catalog::{self, parse_view, CONFIRM_OP, CONTROL_ID};
+use crate::catalog::{self, view_of, CONFIRM_OP, CONTROL_ID};
 use crate::warrant::{self, Ledger, Refusal, Scope};
 use crate::world::*;
 use azos_mcp::json::Value;
@@ -148,21 +148,23 @@ fn the_control_tools_exist_only_with_an_irreversible_op() {
     }
 }
 
-/// `/proc/mcp` is parsed against the catalog: a name the catalog does not know,
-/// or a line that is not one, adds nothing. **Red when** an unknown name is
-/// turned into an export.
+/// The endpoints the bridge holds are matched to the catalog: a name the
+/// catalog does not know, or one past the table, adds nothing. **Red when** an
+/// unknown name is turned into an export.
 #[test]
 fn the_view_lists_only_what_the_catalog_knows() {
     static CAT: [catalog::Iface; 2] = [
         catalog::Iface { name: "lamp", id: 1, level: 1, ops: &[] },
         catalog::Iface { name: "decisions", id: 2, level: 1, ops: &[] },
     ];
-    let v = parse_view(b"endpoint lamp 3\nendpoint toaster 4\nendpoint decisions 1\nendpoint lamp x\nnoise\nendpoint lamp 5 extra\n", &CAT);
+    let v = view_of([("lamp", 3), ("toaster", 4), ("decisions", 1)], &CAT);
     assert_eq!(v.decisions, Some(1));
     let got: Vec<(&str, u32)> = v.exports.iter().map(|e| (e.iface.name, e.endpoint)).collect();
     assert_eq!(got, vec![("lamp", 3), ("decisions", 1)]);
-    assert_eq!(v.skipped, 3, "toaster, lamp x, lamp 5 extra");
-    assert!(parse_view(&[0xff, 0xfe], &CAT).exports.is_empty());
+    assert_eq!(v.skipped, 1, "toaster");
+    let full = view_of((0..catalog::EXPORTS_MAX as u32 + 1).map(|i| ("lamp", i)), &CAT);
+    assert_eq!((full.exports.len(), full.skipped), (catalog::EXPORTS_MAX, 1));
+    assert!(view_of([], &CAT).exports.is_empty());
 }
 
 // ── a call needs a warrant ───────────────────────────────────────────────────

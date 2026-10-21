@@ -43,11 +43,12 @@ fn the_clock_endpoint_the_row_names_is_a_kernel_interface() {
     assert_eq!((iface.id, badge), (azos_devif::CLOCK_ID, 0));
 }
 
-/// The kernel writes `/proc/clock` as `ptp_domain N` (`gen_proc_clock`,
-/// `kernel/src/boot/procfs.rs`); every domain the row may declare reads back.
+/// The kernel's view carries the row's domain as a number
+/// (`kernel/src/boot/inspect_views.rs`); every domain the row may declare
+/// reads back.
 #[test]
 fn every_declarable_domain_reads_back_from_the_view() {
     for d in 0..=azos_topology::PTP_DOMAIN_MAX {
-        assert_eq!(link::parse_domain(format!("ptp_domain {}\n", d).as_bytes()), Some(d));
+        assert_eq!(link::domain_of(Some(d as u64)), Some(d));
     }
 }

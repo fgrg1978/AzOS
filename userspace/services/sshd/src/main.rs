@@ -7,8 +7,8 @@
 //! masked to open a key, read its public part and sign (the host key), the
 //! `/fat` tree read-write (it writes `/fat/SSHAUTH.LOG`, the log of its
 //! decisions), the right to start the
-//! images a session may run, the read-only root directory (it reads
-//! `/proc/ssh`, the logins of the signed topology) and the network (its
+//! images a session may run, the read-only root directory, the kernel's view
+//! of the signed topology's logins (`MemObj inspect.logins`) and the network (its
 //! seccomp profile). The files are root names of the volume, and the tree is
 //! the whole volume, because the file layer opens no file inside a directory
 //! yet (`SSHD_CAPS` in the topology builder says why). Present when Kconfig
@@ -22,9 +22,8 @@
 //! sockets, pipes, the volume.
 //!
 //! * **Login** is a signature by a key the signed topology lists, under the
-//!   user name it lists it for (`[login.NAME]` rows, shown by the kernel as
-//!   `/proc/ssh` and read at every connection: a new signed topology enrols a
-//!   key without a restart). There is nothing on the volume to edit, no
+//!   user name it lists it for (`[login.NAME]` rows, shown by the kernel in
+//!   the `inspect.logins` view and read at every connection). There is nothing on the volume to edit, no
 //!   password and no keyboard-interactive method. With no `[login.NAME]` row
 //!   nobody can log in; the listening port is open all the same, so the
 //!   refusal is a record and not a timeout.
@@ -88,6 +87,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use auth::AuthKey;
 use core::sync::atomic::{AtomicU32, Ordering};
+use azos_inspect_lib::{str_in, Inspector, Source};
 use azos_libsys as sys;
 use azos_ualloc::UserAlloc;
 use req::{Fd, ReqBuilder};
@@ -143,8 +143,6 @@ fn watch_memory() {
 }
 
 /// The tree this program may change, and the files in it.
-/// The logins of the signed topology, as the kernel shows them.
-const LOGINS: &[u8] = b"/proc/ssh\0";
 /// The host key's name in the keystore (at most 16 bytes).
 const HOST_KEY_NAME: &[u8] = b"sshd.host";
 const _: () = assert!(HOST_KEY_NAME.len() <= 16);
@@ -153,8 +151,6 @@ const AUTH_LOG: &[u8] = b"/fat/SSHAUTH.LOG\0";
 const AUTH_LOG_OLD: &[u8] = b"/fat/SSHAUTH.OLD\0";
 /// The log is rotated when it reaches this size.
 const LOG_MAX: usize = 32 * 1024;
-/// `/proc/ssh` read: the view is one procfs file, 2 KiB at most.
-const LOGINS_MAX: usize = 2048;
 /// A connection that has not logged in by then is closed, ms. It is the time
 /// an idle client holds the only slot, so it is short: a login takes far less.
 const LOGIN_GRACE_MS: u64 = 10_000;
@@ -404,16 +400,30 @@ fn open_host_key(ep: u32) -> Option<(u32, [u8; 32])> {
     Some((key, pk))
 }
 
+/// The logins of the signed topology, from the kernel's view of them (`MemObj
+/// inspect.logins`, `logins/<n>/{user, key}`), read at every connection.
 fn load_keys() -> auth::Parsed {
-    // On the heap: a ring-3 stack is 16 KiB.
-    let mut text = alloc::vec![0u8; LOGINS_MAX];
-    match read_file(LOGINS, &mut text) {
-        Ok(n) => auth::parse_logins(&text[..n]),
+    let mut out = auth::Parsed::default();
+    let tree = sys::inspect_map(azos_abi::cap::SHM_INSPECT_LOGINS)
+        // SAFETY: the mapping lives as long as the task, read-only, and the
+        // kernel writes it only with aligned 64-bit stores.
+        .and_then(|m| unsafe { Inspector::from_mapped(m, None) }.map_err(|_| -1));
+    let mut tree = match tree {
+        Ok(t) => t,
         Err(rc) => {
-            put(&format!("[sshd] cannot read /proc/ssh (rc {rc}): no key can log in\n"));
-            auth::Parsed::default()
+            put(&format!("[sshd] cannot read the logins view (rc {rc}): no key can log in\n"));
+            return out;
         }
-    }
+    };
+    let _ = tree.with(Source::Public, |r| {
+        out = auth::Parsed::default();
+        let Some(dir) = r.lookup("logins")? else { return Ok(()) };
+        r.children(dir, &mut |info, _| match (str_in(r, info.id, "user"), str_in(r, info.id, "key")) {
+            (Ok(Some(u)), Ok(Some(k))) => out.add(u.as_bytes(), k.as_bytes()),
+            _ => out.skipped += 1,
+        })
+    });
+    out
 }
 
 // ── Commands: the Runner over SYS_SPAWN_EX and two pipes ────────────────────
@@ -827,7 +837,7 @@ fn main() -> ! {
     host.log_len = file_len(AUTH_LOG, LOG_MAX);
     let keys = load_keys();
     if keys.skipped != 0 {
-        put(&format!("[sshd] {} line(s) of /proc/ssh skipped (not `<user> <64 hex digits>`)\n", keys.skipped));
+        put(&format!("[sshd] {} login(s) of the view skipped (not a user and a 32-byte key)\n", keys.skipped));
     }
     let mut cfg = Config::new(host_public, keys.keys);
     put(&format!(

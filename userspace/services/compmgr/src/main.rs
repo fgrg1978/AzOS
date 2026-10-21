@@ -15,8 +15,9 @@
 //! its row (the read-only root directory and `EXEC` on each image it starts),
 //! and restarts it if it fails (`kernel/src/drv_supervisor.rs`).
 //!
-//! The manager reads the signed topology's startable rows through
-//! `/proc/components`, starts each with `SYS_SPAWN_EX` (the child's
+//! The manager reads the signed topology's startable rows from the kernel's
+//! introspection tree (`components/` of the view region its row grants,
+//! `MemObj inspect.components`: one map, then loads), starts each with `SYS_SPAWN_EX` (the child's
 //! capabilities are those of its own row; the manager lends it no handle and
 //! no environment, only the console on stdout and stderr, `request.rs`; it
 //! dies with the manager), supervises
@@ -43,7 +44,8 @@ mod tree;
 
 use azos_idl::OnFailure;
 use azos_libsys as sys;
-use tree::{Event, EventKind, Host, Intensity, Tree, VIEW_MAX};
+use azos_inspect_lib::{str_in, u64_in, Inspector, Source, Str, Value};
+use tree::{Event, EventKind, Host, Intensity, Row, Tree, DIR_MAX, MAX_COMPONENTS, NAME_MAX};
 
 /// How long the loop sleeps when no restart is due: the latency of noticing
 /// a child's end.
@@ -52,28 +54,74 @@ const POLL_NS: u64 = 20_000_000;
 const COOLDOWN_NS: u64 = 1_000_000_000;
 /// The signal number a forced stop carries (`SYS_ALERT` takes 1..=31).
 const SIGKILL: u64 = 9;
-/// The exit code when `/proc/components` cannot be read (sysexits
-/// `EX_NOINPUT`); a panic exits with 70.
-const NO_VIEW_EXIT: i32 = 66;
 /// A directory, "/", an 8.3 name and the NUL.
 const PATH_MAX: usize = tree::DIR_MAX + 1 + 12 + 1;
 
 struct Kernel;
 
-impl Kernel {
-    /// `/proc/components` into `buf`: its length, or the negative errno of the
-    /// open or of the read that failed.
-    fn view(&mut self, buf: &mut [u8]) -> Result<usize, isize> {
-        let h = sys::open_root(b"/proc/components\0", 0);
-        if h < 0 {
-            return Err(h);
-        }
-        let h = h as u32;
-        let got = tree::read_view(buf, |b| sys::file_read_typed(h, b));
-        let _ = sys::close_typed(h);
-        got
-    }
+/// One row of the plan, copied out of the tree.
+#[derive(Clone, Copy)]
+struct PlanRow {
+    image: Str,
+    restart: Str,
+    serves: Str,
+    needs: Str,
+    dir: Str,
 }
+
+/// The plan as read: its rows, and whether it was whole.
+struct Plan {
+    rows: [Option<PlanRow>; MAX_COMPONENTS],
+    n: usize,
+    whole: bool,
+}
+
+/// The startable components of the plan (`components/` of the view its row
+/// grants, `MemObj inspect.components`), in order; `whole`
+/// when `rows` says every component is there. An unreadable tree is an empty
+/// plan that is not whole.
+fn read_plan(plan: &mut Plan) {
+    let Ok(public) = sys::inspect_map(azos_abi::cap::SHM_INSPECT_COMPONENTS) else { return };
+    // SAFETY: the mapping lives as long as the task, read-only, and the kernel
+    // writes the region only with aligned 64-bit stores.
+    let Ok(mut view) = (unsafe { Inspector::from_mapped(public, None) }) else { return };
+    let _ = view.with(Source::Public, |r| {
+        plan.n = 0;
+        plan.whole = false;
+        let Some(dir) = r.lookup("components")? else { return Ok(()) };
+        let (mut listed, mut over, mut err) = (0u64, false, None);
+        r.children(dir, &mut |info, v| {
+            if !matches!(v, Value::Dir) || err.is_some() {
+                return;
+            }
+            listed += 1;
+            let row = (|| {
+                if u64_in(r, info.id, "start")? != Some(1) {
+                    return Ok(None);
+                }
+                let s = |p| str_in(r, info.id, p).map(|v| v.unwrap_or(Str::EMPTY));
+                Ok(Some(PlanRow { image: s("image")?, restart: s("restart")?, serves: s("serves")?, needs: s("needs")?, dir: s("dir")? }))
+            })();
+            match row {
+                Ok(Some(row)) if plan.n < MAX_COMPONENTS => {
+                    plan.rows[plan.n] = Some(row);
+                    plan.n += 1;
+                }
+                // Past the table: the tree records it as a row it skipped.
+                Ok(Some(_)) => over = true,
+                Ok(None) => {}
+                Err(e) => err = Some(e),
+            }
+        })?;
+        if let Some(e) = err {
+            return Err(e);
+        }
+        plan.whole = !over && u64_in(r, dir, "rows")? == Some(listed);
+        Ok(())
+    });
+}
+
+const _: () = assert!(NAME_MAX <= 128 && DIR_MAX <= 128);
 
 impl Host for Kernel {
     fn spawn(&mut self, dir: &[u8], image: &[u8]) -> Result<u32, i32> {
@@ -190,26 +238,22 @@ static TREE: TreeCell = TreeCell(core::cell::UnsafeCell::new(Tree::new(Intensity
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
     let mut host = Kernel;
-    let mut view = [0u8; VIEW_MAX];
-    let got = host.view(&mut view);
+    let mut plan = Plan { rows: [None; MAX_COMPONENTS], n: 0, whole: false };
+    read_plan(&mut plan);
     let _ = sys::console_write(sys::STDOUT, b"[compmgr] AzOS component manager\n");
-    // No view, nothing to supervise: end, so the kernel's supervision of the
-    // manager sees the failure and restarts it, instead of an idle manager
-    // that looks healthy and started nothing.
-    let got = match got {
-        Ok(n) => n,
-        Err(rc) => {
-            let mut line = Line::new();
-            line.put(b"[compmgr] cannot read /proc/components rc=");
-            line.num(rc as i64);
-            line.put(b"\n");
-            let _ = sys::console_write(sys::STDOUT, line.bytes());
-            sys::exit(NO_VIEW_EXIT);
-        }
-    };
+    let mut rows = [Row { image: b"", restart: b"", serves: b"", needs: b"", dir: b"" }; MAX_COMPONENTS];
+    for (r, p) in rows.iter_mut().zip(plan.rows.iter().flatten()) {
+        *r = Row {
+            image: p.image.as_bytes(),
+            restart: p.restart.as_bytes(),
+            serves: p.serves.as_bytes(),
+            needs: p.needs.as_bytes(),
+            dir: p.dir.as_bytes(),
+        };
+    }
     // SAFETY: the one reference, for the life of the program.
     let tree = unsafe { &mut *TREE.0.get() };
-    tree.load(&view[..got], &mut host);
+    tree.load(&rows[..plan.n], plan.whole, &mut host);
     tree.start_all(&mut host);
     loop {
         // Every child that finished.

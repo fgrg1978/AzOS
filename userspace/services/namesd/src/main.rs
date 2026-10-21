@@ -5,8 +5,11 @@
 //! A ring-3 program whose whole authority is its row: `READ` on
 //! `endpoint.names` (it serves it) and, for each name it may lend, a
 //! `WRITE` + `transfer` grant on that endpoint (it can call it, and DUP a
-//! derived copy of it to a borrower). It reads `/proc/names`, which only the
-//! holder of `READ` on `endpoint.names` gets anything from. The decision and
+//! derived copy of it to a borrower), and `MemObj inspect.names`: the
+//! kernel's view of the signed topology for the name server, where it reads
+//! the rows' imports and the named endpoints its row holds (`imports/`,
+//! `endpoints/`); which of those it may lend is what its own table holds. The
+//! decision and
 //! the refusal record are `service.rs`, pure and tested on the host
 //! (`tests/host/names-tests`); this file is the loop around them.
 //!
@@ -20,30 +23,68 @@
 mod service;
 
 use azos_libsys as sys;
-use azos_names::{MsgDesc, NamesIdl};
-use service::{Host, Service, VIEW_MAX};
+use azos_inspect_lib::{Inspector, Source, Value};
+use azos_names::{MsgDesc, NamesIdl, NAME_MAX};
+use service::{Host, Service};
 
-/// The kernel's view of the topology and this task's own table.
-struct Kernel;
+/// The kernel's view of the topology (the view region its row grants,
+/// `MemObj inspect.names`, mapped once) and this task's own table.
+struct Kernel {
+    view: Option<Inspector<'static>>,
+}
+
+impl Kernel {
+    /// The string at `path`, `None` when there is none (or no tree).
+    fn str_at(&mut self, path: &str) -> Option<azos_inspect_lib::Str> {
+        match self.view.as_mut()?.read(path).ok()?? {
+            (_, Value::Str(s)) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// `<dir>/<name>[/<leaf>]`, or `None` when it does not fit.
+fn path<'b>(buf: &'b mut [u8; 96], dir: &str, name: &[u8], leaf: &str) -> Option<&'b str> {
+    let parts: [&[u8]; 3] = [dir.as_bytes(), b"/", name];
+    let mut n = 0;
+    for p in parts.into_iter().chain([if leaf.is_empty() { &b""[..] } else { b"/" }, leaf.as_bytes()]) {
+        buf.get_mut(n..n + p.len())?.copy_from_slice(p);
+        n += p.len();
+    }
+    core::str::from_utf8(&buf[..n]).ok()
+}
 
 impl Host for Kernel {
-    fn view(&mut self, buf: &mut [u8]) -> usize {
-        let h = sys::open_root(b"/proc/names\0", 0);
-        if h < 0 {
-            return 0;
-        }
-        let h = h as u32;
-        let mut got = 0;
-        // The VFS hands a file out in pieces of at most one page.
-        while got < buf.len().min(VIEW_MAX) {
-            let n = sys::file_read_typed(h, &mut buf[got..]);
-            if n <= 0 {
+    fn imports(&mut self, badge: u32, name: &[u8]) -> bool {
+        let mut d = [0u8; 10];
+        let mut i = d.len();
+        let mut v = badge;
+        loop {
+            i -= 1;
+            d[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
                 break;
             }
-            got += n as usize;
         }
-        let _ = sys::close_typed(h);
-        got
+        let mut buf = [0u8; 96];
+        let Some(p) = path(&mut buf, "imports", &d[i..], "") else { return false };
+        self.str_at(p).is_some_and(|l| l.as_bytes().split(|&c| c == b',').any(|n| n == name))
+    }
+
+    fn export(&mut self, name: &[u8], server: &mut [u8; NAME_MAX]) -> Option<(u32, usize)> {
+        let mut buf = [0u8; 96];
+        let index = {
+            let p = path(&mut buf, "endpoints", name, "index")?;
+            self.view.as_mut()?.read_u64(p).ok()??
+        };
+        let index = u32::try_from(index).ok()?;
+        self.handle(index)?;
+        let p = path(&mut buf, "endpoints", name, "server")?;
+        let s = self.str_at(p)?;
+        let n = s.as_bytes().len().min(NAME_MAX);
+        server[..n].copy_from_slice(&s.as_bytes()[..n]);
+        Some((index, n))
     }
 
     fn handle(&mut self, index: u32) -> Option<u32> {
@@ -64,13 +105,29 @@ struct ServiceCell(core::cell::UnsafeCell<Service<Kernel>>);
 // SAFETY: one thread.
 unsafe impl Sync for ServiceCell {}
 
-static SERVICE: ServiceCell = ServiceCell(core::cell::UnsafeCell::new(Service::new(Kernel, azos_limits::NAMES_LEND_TTL_MS as u64 * 1_000_000)));
+static SERVICE: ServiceCell =
+    ServiceCell(core::cell::UnsafeCell::new(Service::new(Kernel { view: None }, azos_limits::NAMES_LEND_TTL_MS as u64 * 1_000_000)));
 
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
     // SAFETY: the one reference, for the life of the program.
     let svc = unsafe { &mut *SERVICE.0.get() };
     let _ = sys::console_write(sys::STDOUT, b"[namesd] AzOS name server (Names on endpoint.names)\n");
+    // The tree, mapped once; then the refresh that published the endpoints
+    // this task's spawn created (their pool index) is waited for.
+    // SAFETY: the mapping lives as long as the task, read-only, and the
+    // kernel writes it only with aligned 64-bit stores.
+    svc.host.view = sys::inspect_map(azos_abi::cap::SHM_INSPECT_NAMES)
+        .ok()
+        .and_then(|m| unsafe { Inspector::from_mapped(m, None) }.ok());
+    match svc.host.view.as_mut() {
+        Some(v) => {
+            v.wait_refreshes(Source::Public, 2, &mut |ms| sys::sleep(ms));
+        }
+        None => {
+            let _ = sys::console_write(sys::STDOUT, b"[namesd] no introspection tree: every lookup is refused\n");
+        }
+    }
     loop {
         let mut req = MsgDesc::default();
         let call = sys::ipc_accept_v2(&mut req);

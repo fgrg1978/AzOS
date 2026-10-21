@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The AzOS component manager: the first ring-3 component. Reads the signed topology's rows through /proc/components, starts them with SYS_SPAWN_EX in dependency order, supervises them (one_for_one / rest_for_one, restart intensity, the IDL failure contracts) and records every start, restart and give-up. Ring 3. Excluded from workspace; built standalone."
+description = "The AzOS component manager: the first ring-3 component. Reads the signed topology's rows from the kernel's introspection tree (topology/components), starts them with SYS_SPAWN_EX in dependency order, supervises them (one_for_one / rest_for_one, restart intensity, the IDL failure contracts) and records every start, restart and give-up. Ring 3. Excluded from workspace; built standalone."
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
@@ -18,6 +18,7 @@ azos_login = { path = "../../lib/login" }
 azos_decisions = { path = "../../lib/decisions" }
 azos_compositor = { path = "../../lib/compositor" }
 azos_packages = { path = "../../lib/packages" }
+azos_inspect_lib = { path = "../../lib/inspect" }
 
 [profile.release]
 opt-level = "s"

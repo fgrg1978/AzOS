@@ -50,8 +50,8 @@
 //! With a topic prefix configured, every decision record the `Decisions` object
 //! holds is published, as it appears, under `<prefix>/<rule>/<verdict>`
 //! (`azos/decisions/cap-denial/deny`), the payload the record's fixed-size
-//! binary form (`ProvenanceRecord::to_bytes`, the one `/proc/decisions.bin`
-//! uses). At most [`PUBLISH_BURST`] per [`PUBLISH_PERIOD_NS`]; records that were
+//! binary form (`ProvenanceRecord::to_bytes`, the one the admin
+//! introspection region publishes). At most [`PUBLISH_BURST`] per [`PUBLISH_PERIOD_NS`]; records that were
 //! overwritten before they could be read are counted, not hidden.
 //!
 //! # What is not done

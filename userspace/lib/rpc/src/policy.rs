@@ -1,21 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! What the signed topology lets this node do over a link: the server's view of
-//! `/proc/rpc` (kernel/src/boot/procfs.rs), and the catalog of interfaces the
-//! server knows how to carry.
+//! it (the view region `inspect.rpc`, `peers/` and `exports/`,
+//! `kernel/src/boot/inspect_views.rs`), and the catalog of
+//! interfaces the server knows how to carry.
 //!
-//! ```text
-//! peer <class> <node> <noise_pk: 64 hex digits>
-//! export <name> <endpoint pool index> <class>
-//! ```
+//! A peer is a node of a `[peer.NAME]` class with the static Noise key the
+//! topology pins for it (`noise_pk`): it is how the node is told from anyone
+//! else. A node whose class pins no key is no peer, and has no session.
 //!
-//! A `peer` line carries the static Noise key the topology pins for the node
-//! (`noise_pk` of its `[peer.NAME]` row): it is how the node is told from
-//! anyone else. A node whose class pins no key has no line, and no session.
-//!
-//! **Nothing leaves the node except through an `export` line**, and only to the
+//! **Nothing leaves the node except through an export**, and only to the
 //! nodes of its class: the engine answers a request for an interface with no
-//! line for the requester's class with `Refused`, whatever the peer asked.
+//! export for the requester's class with `Refused`, whatever the peer asked.
 
 use azos_idl::OpInfo;
 
@@ -55,7 +51,7 @@ impl Name {
     }
 }
 
-/// One `export` line.
+/// One export: an endpoint this task holds, lent to a class.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Export {
     /// The endpoint's name.
@@ -67,7 +63,7 @@ pub struct Export {
     pub class: Name,
 }
 
-/// The view, parsed.
+/// The view, as read.
 #[derive(Clone, Copy)]
 pub struct Policy {
     peers: [(Name, NodeId, [u8; 32]); PEERS_MAX],
@@ -78,33 +74,6 @@ pub struct Policy {
 
 const NO_EXPORT: Export = Export { name: Name::EMPTY, index: 0, class: Name::EMPTY };
 
-fn num(t: &[u8]) -> Option<u32> {
-    if t.is_empty() || t.len() > 10 {
-        return None;
-    }
-    t.iter().try_fold(0u32, |a, &c| {
-        if c.is_ascii_digit() { a.checked_mul(10)?.checked_add((c - b'0') as u32) } else { None }
-    })
-}
-
-/// 64 hex digits as 32 bytes.
-fn hex32(t: &[u8]) -> Option<[u8; 32]> {
-    if t.len() != 64 {
-        return None;
-    }
-    let nib = |c: u8| match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    };
-    let mut out = [0u8; 32];
-    for (o, p) in out.iter_mut().zip(t.chunks_exact(2)) {
-        *o = nib(p[0])? << 4 | nib(p[1])?;
-    }
-    Some(out)
-}
-
 impl Policy {
     /// Nothing is allowed: no peer, no export.
     pub const NONE: Policy = Policy {
@@ -114,34 +83,30 @@ impl Policy {
         n_exports: 0,
     };
 
-    /// Parse the view. A line that is not one (a blank line, a malformed line,
-    /// one past the tables) is skipped: a policy only ever has less in it than
-    /// the text said, never more.
-    pub fn parse(view: &[u8]) -> Policy {
-        let mut p = Policy::NONE;
-        for line in view.split(|&c| c == b'\n') {
-            let mut t = line.split(|&c| c == b' ').filter(|s| !s.is_empty());
-            match t.next() {
-                Some(b"peer") => {
-                    let (Some(c), Some(n), Some(k), None) = (t.next(), t.next(), t.next(), t.next()) else { continue };
-                    let (Some(c), Some(n), Some(k)) = (Name::new(c), num(n), hex32(k)) else { continue };
-                    if n != 0 && k != [0; 32] && p.n_peers < PEERS_MAX {
-                        p.peers[p.n_peers] = (c, n, k);
-                        p.n_peers += 1;
-                    }
-                }
-                Some(b"export") => {
-                    let (Some(name), Some(i), Some(c), None) = (t.next(), t.next(), t.next(), t.next()) else { continue };
-                    let (Some(name), Some(index), Some(class)) = (Name::new(name), num(i), Name::new(c)) else { continue };
-                    if p.n_exports < EXPORTS_MAX {
-                        p.exports[p.n_exports] = Export { name, index, class };
-                        p.n_exports += 1;
-                    }
-                }
-                _ => {}
-            }
+    /// Add `node`, of class `class`, pinned to `pk`. Refused (`false`, nothing
+    /// added) for a class that is no name, node 0 (this node), an all-zero
+    /// key, or a full table: a policy only ever has less in it than the
+    /// topology said, never more.
+    pub fn add_peer(&mut self, class: &[u8], node: NodeId, pk: &[u8; 32]) -> bool {
+        let Some(c) = Name::new(class) else { return false };
+        if node == 0 || *pk == [0; 32] || self.n_peers == PEERS_MAX {
+            return false;
         }
-        p
+        self.peers[self.n_peers] = (c, node, *pk);
+        self.n_peers += 1;
+        true
+    }
+
+    /// Add the export of the endpoint `name`, at pool index `index`, to
+    /// `class`. Refused as [`Policy::add_peer`] is.
+    pub fn add_export(&mut self, name: &[u8], index: u32, class: &[u8]) -> bool {
+        let (Some(name), Some(class)) = (Name::new(name), Name::new(class)) else { return false };
+        if self.n_exports == EXPORTS_MAX {
+            return false;
+        }
+        self.exports[self.n_exports] = Export { name, index, class };
+        self.n_exports += 1;
+        true
     }
 
     /// The class `node` belongs to; `None` for a node the topology does not

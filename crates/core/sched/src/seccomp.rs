@@ -452,7 +452,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "ABICHILD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_YIELD, SYS_GETPID, SYS_CAP_CLOSE,
+            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_YIELD, SYS_GETPID, 
             SYS_CAP_INFO, SYS_SPAWN_EX, SYS_MO_MAP,
             // The orphan tests: an adopted orphan sleeps on a futex word until
             // its adopter, having listed it, asks it to stop (`SYS_ALERT`,
@@ -462,7 +462,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_FOREIGN_ENTRY, SYS_FOREIGN_RESUME,
         ],
         audit: false,
-        ops: inv_ops![NODE_OPENAT, NODE_READ, DOMAIN_SUBREAPER, DOMAIN_SOCKET, NODE_RECVFROM, NODE_SENDTO, DOMAIN_WAIT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, NODE_OPENAT, NODE_READ, DOMAIN_SUBREAPER, DOMAIN_SOCKET, NODE_RECVFROM, NODE_SENDTO, DOMAIN_WAIT],
         ifaces: NO_IFACES,
     },
     // The benchmark's server, `endpoint.bench`.
@@ -557,7 +557,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_FAST_REPLY,
         ],
         audit: true,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_CREATE_ENDPOINT, PORT_POLL, DOMAIN_STAT, NODE_OPENAT, DOMAIN_MKDIR, NODE_READ, NODE_WRITE, DOMAIN_MMIO_MAP, DEVICE_IRQ_BIND],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_CREATE_ENDPOINT, PORT_POLL, DOMAIN_STAT, NODE_OPENAT, DOMAIN_MKDIR, NODE_READ, NODE_WRITE, DOMAIN_MMIO_MAP, DEVICE_IRQ_BIND],
         ifaces: &[
             azos_devif::key::GPIO, azos_devif::key::I2C, azos_devif::key::PWM,
             azos_devif::key::MOTOR, azos_devif::key::SENSOR,
@@ -605,7 +605,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_MAP,
         ],
         audit: true,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_EXIT_STATS, DOMAIN_SUBREAPER, PORT_POLL, PORT_BIND, NODE_OPENAT, DOMAIN_MKDIR, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, DEVICE_IRQ_BIND, DOMAIN_CREATE_PORT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_EXIT_STATS, DOMAIN_SUBREAPER, PORT_POLL, PORT_BIND, NODE_OPENAT, DOMAIN_MKDIR, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, DEVICE_IRQ_BIND, DOMAIN_CREATE_PORT],
         ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::MOTOR],
     },
     // `SYS_FOREIGN_FORK` is issued as raw asm (`spawn`, the register canary),
@@ -723,9 +723,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_DRIVER_REGISTER],
         ifaces: &[azos_devif::key::I2C],
     },
-    // The component manager. Reads the signed topology's
-    // view through `/proc/components` (open, read, close of a typed file,
-    // read-only; `SYS_CAP_INFO` finds the console and domain handles), starts the rows with `SYS_SPAWN_EX` (no request block, so no
+    // The component manager. Reads its plan from its view region of the
+    // introspection tree (`SYS_CAP_INFO` finds it and the console and domain
+    // handles, `MEMOBJ_ACQUIRE` reads its size, `SYS_MO_MAP` maps it), starts the rows with `SYS_SPAWN_EX` (no request block, so no
     // descriptor is moved), reaps them with `DOMAIN_WAIT`, stops a dependent
     // of a restarted component with `SYS_ALERT`, sleeps until the next restart
     // is due, and writes one console line per start, restart or give-up. No
@@ -734,11 +734,11 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "COMPMGR.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_SLEEP_UNTIL, SYS_CAP_CLOSE,
+            SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_CAP_INFO, SYS_SLEEP_UNTIL, 
             SYS_SPAWN_EX, SYS_ALERT,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_STAT, DOMAIN_WAIT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_WAIT],
         ifaces: NO_IFACES,
     },
     // Wave 11: the user shell. The profile that lists
@@ -799,8 +799,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     },
     // The Names object's server. Serves `endpoint.names` (accept, reply) and
     // looks up the handles of the endpoints its row lends (`SYS_CAP_INFO`);
-    // it reads the signed topology's view through `/proc/names` (open, read,
-    // close of a `Cap<File>`, read-only, no grant) and writes the console for
+    // it reads the signed topology's view from its view region (found by
+    // `SYS_CAP_INFO`, sized by `MEMOBJ_ACQUIRE`, mapped by `SYS_MO_MAP`; the
+    // wait for the first refresh is `SYS_SLEEP_UNTIL`) and writes the console for
     // its refusal record. No spawn, kill, device, network or console-input
     // call: it lends what its row holds and nothing it is not asked for. The
     // lent capability itself travels in the reply of `SYS_IPC_REPLY_V2`;
@@ -808,12 +809,11 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "NAMESD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_YIELD,
+            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_MO_MAP, SYS_YIELD,
             SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_CAP_INFO,
-            SYS_CAP_CLOSE,
-        ],
+                    ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_STAT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_STAT],
         ifaces: NO_IFACES,
     },
     // Wave 11: the shell's multicall tool image. Reads and writes
@@ -945,18 +945,19 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ifaces: NO_IFACES,
     },
     // The Decisions object's server. Serves `endpoint.decisions` (the v2
-    // accept/reply), reads `/proc/decisions.bin` read-only (open, read, close
-    // a typed file), writes its one start-up line to the console. No spawn,
+    // accept/reply), reads the decision records from the admin introspection
+    // region (mapped once: `SYS_CAP_INFO`, `MEMOBJ_ACQUIRE`, `SYS_MO_MAP`; a
+    // request waits for a refresh with `SYS_SLEEP_UNTIL`), writes its one
+    // start-up line to the console. No spawn,
     // no kill, no device, no console input.
     ImageProfile {
         image: "DECISD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_YIELD,
+            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_MO_MAP, SYS_CAP_INFO, SYS_YIELD,
             SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
-            SYS_CAP_CLOSE,
-        ],
+                    ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE],
         ifaces: NO_IFACES,
     },
     // The Input object's server (Kconfig INPUTD). Serves `endpoint.input` (the
@@ -1118,7 +1119,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // `SYS_IPC_CALL_V2` on the endpoints its row grants).
     // Two threads (`SYS_THREAD_CREATE`: the local calls and the link). The link
     // is one UDP socket (create, bind, sendto, recvfrom) at the stack's
-    // address; `/proc/rpc` is read (open, read) and the console written for
+    // address; its view region is mapped (`MEMOBJ_ACQUIRE`, `SYS_MO_MAP`) and
+    // read, and the console written for
     // its refusals. No spawn, kill, device or file-write call, and no
     // authority a topology row does not give it: what it may lend is its row's
     // `export`, and the call right on the endpoint behind each.
@@ -1133,7 +1135,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         audit: false,
         ops: inv_ops![
-            LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ,
+            LOG_CONSOLE_WRITE, 
             DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_SENDTO, NODE_RECVFROM,
             MEMOBJ_ACQUIRE, ENDPOINT_DERIVE,
         ],
@@ -1169,8 +1171,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         ifaces: &[azos_devif::key::ENTROPY],
     },
-    // The PTP daemon (Kconfig PTPD). One thread. `/proc/clock` is read (open,
-    // read, close) for its domain, the console written. Two UDP sockets (create,
+    // The PTP daemon (Kconfig PTPD). One thread. Its view region is mapped
+    // (`MEMOBJ_ACQUIRE`, `SYS_MO_MAP`) for its domain, the console written. Two UDP sockets (create,
     // bind, join the PTP group, send, receive; `DOMAIN_NET_GETIP` for the
     // address its clock identity is made of). Each measurement is one call on the kernel's
     // `clock` interface (`SYS_IPC_CALL_V2` through the endpoint `SYS_CAP_INFO`
@@ -1180,12 +1182,12 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "PTPD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL,
+            SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_SLEEP_UNTIL,
             SYS_IPC_CALL_V2, SYS_CAP_INFO, SYS_CAP_CLOSE,
         ],
         audit: false,
-        ops: inv_ops![
-            LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_UPTIME, DOMAIN_PLEDGE,
+        ops: inv_ops![MEMOBJ_ACQUIRE, 
+            LOG_CONSOLE_WRITE, DOMAIN_UPTIME, DOMAIN_PLEDGE,
             DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_MCAST_JOIN, NODE_SENDTO, NODE_RECVFROM,
         ],
         ifaces: &[azos_devif::key::CLOCK],
@@ -1220,7 +1222,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ifaces: &[azos_devif::key::ENTROPY],
     },
     // The MCP bridge (Kconfig MCP_BRIDGE). One thread, one TCP socket it dials
-    // out (create, connect, send, receive); `/proc/mcp` is read (open, read) and
+    // out (create, connect, send, receive); its view region is mapped
+    // (`MEMOBJ_ACQUIRE`, `SYS_MO_MAP`) and read, and
     // the console written, with the operator's warrant and its refusals. Each
     // tool call is one warrant it asks the kernel for (`ENDPOINT_DERIVE`: a
     // one-use copy of the endpoint with the caveats the bridge sets) and one
@@ -1241,8 +1244,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID,
         ],
         audit: false,
-        ops: inv_ops![
-            LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_UPTIME,
+        ops: inv_ops![MEMOBJ_ACQUIRE, 
+            LOG_CONSOLE_WRITE, DOMAIN_UPTIME,
             DOMAIN_SOCKET, NODE_CONNECT, NODE_SEND, NODE_RECV,
             ENDPOINT_DERIVE,
         ],
@@ -1253,7 +1256,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // `NODE_ACCEPT`) and moves the connection's bytes with `NODE_SEND` and
     // `NODE_RECV`; reads and writes its files beneath its tree (`NODE_OPENAT`,
     // `NODE_READ`, `NODE_WRITE`: the sealed host key, the log of its
-    // decisions, and `/proc/ssh`, the logins of the signed topology) and the console (`LOG_CONSOLE_WRITE`). A command is
+    // decisions) and the console (`LOG_CONSOLE_WRITE`), and maps the logins of
+    // the signed topology (its view region: `MEMOBJ_ACQUIRE`). A command is
     // `SYS_SPAWN_EX` with the ends of two pipes in the move list (a pipe is a
     // byte ring in a shared region: `SYS_MO_CREATE`, `SYS_MO_MAP`,
     // `SYS_MO_UNMAP`, its ends given up with `MEMOBJ_END_DROP`, the doorbell
@@ -1281,7 +1285,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
         audit: false,
-        ops: inv_ops![
+        ops: inv_ops![MEMOBJ_ACQUIRE, 
             LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE,
             DOMAIN_SOCKET, NODE_BIND, NODE_LISTEN, NODE_ACCEPT, NODE_SEND, NODE_RECV,
             DOMAIN_WAIT, MEMOBJ_END_DROP,
@@ -1297,18 +1301,18 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // (`DOMAIN_WAIT`) between sleeps (`SYS_SLEEP_UNTIL`, and `DOMAIN_UPTIME` for the
     // deadline where the time register is not readable: a forced stop takes
     // effect when the shell next runs, which on a busy machine is not within
-    // a count of yields); reads `/proc/ssh` to see whether anybody is
-    // enrolled (`NODE_OPENAT`, `NODE_READ`, `SYS_CAP_CLOSE`). No file write, no device,
+    // a count of yields); maps its logins view to see whether anybody is
+    // enrolled (`MEMOBJ_ACQUIRE`, `SYS_MO_MAP`). No file write, no device,
     // no socket, no memory object: what the shell may do is its own row.
     ImageProfile {
         image: "LOGIND.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_YIELD, SYS_SLEEP_UNTIL,
+            SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_CAP_INFO, SYS_YIELD, SYS_SLEEP_UNTIL,
             SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
             SYS_SPAWN_EX, SYS_ALERT,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_WAIT, DOMAIN_UPTIME],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_WAIT, DOMAIN_UPTIME],
         ifaces: &[azos_devif::key::KEYS],
     },
     // Hypervisor H1: the virtual-machine monitor. It calls the kernel's `vm`

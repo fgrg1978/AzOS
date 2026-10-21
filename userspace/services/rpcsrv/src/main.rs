@@ -33,7 +33,7 @@
 //! datagrams, carried between the two nodes on QUIC streams by a process that
 //! holds the QUIC stack so this one does not. **Every session is authenticated**: the
 //! handshake is Noise IK with the static keys the topology pins in its `peer`
-//! rows (`/proc/rpc`), so the source address and the node id a frame states
+//! rows (its view of the topology, `MemObj inspect.rpc`), so the source address and the node id a frame states
 //! decide nothing, and every frame after it is sealed. The node's own static
 //! key is its DICE identity, `HKDF(device seed, measurement of this image)`,
 //! which the kernel derives and issues on its `linkkey` endpoint
@@ -46,6 +46,7 @@
 #![no_main]
 
 use azos_decisions::{DecisionsIdl, DECISIONS_ID};
+use azos_inspect_lib::{str_in, u64_in, Inspector, Source};
 use azos_libsys as sys;
 use azos_rpc::wire::{Asm, Caveat, CAVEATS_MAX, FRAME_MAX};
 use azos_rpc::{Config, Host, Link, MsgDesc, NodeId, Policy, Rpc, Service, Started};
@@ -232,24 +233,52 @@ struct Stack(UnsafeCell<[u8; 16 * 1024]>);
 unsafe impl Sync for Stack {}
 static LINK_STACK: Stack = Stack(UnsafeCell::new([0; 16 * 1024]));
 
-/// Read `/proc/rpc` (the signed topology's peer classes and exports, for a
-/// reader that serves a proxy endpoint).
-fn view(buf: &mut [u8]) -> usize {
-    let h = sys::open_root(b"/proc/rpc\0", 0);
-    if h < 0 {
-        return 0;
-    }
-    let h = h as u32;
-    let mut got = 0;
-    while got < buf.len() {
-        let n = sys::file_read_typed(h, &mut buf[got..]);
-        if n <= 0 {
-            break;
+/// The signed topology's peer classes and the exports of the endpoints this
+/// task holds, from the view region its row grants (`MemObj inspect.rpc`:
+/// `peers/`, `exports/`, `endpoints/`).
+/// Nothing when the tree cannot be read: no peer, no export.
+fn read_policy() -> Policy {
+    let mut p = Policy::NONE;
+    let Ok(m) = sys::inspect_map(azos_abi::cap::SHM_INSPECT_RPC) else { return p };
+    // SAFETY: the mapping lives as long as the task, read-only, and the kernel
+    // writes it only with aligned 64-bit stores.
+    let Ok(mut view) = (unsafe { Inspector::from_mapped(m, None) }) else { return p };
+    // The pool index of an endpoint this task's spawn created is published by
+    // the refresh after it.
+    view.wait_refreshes(Source::Public, 2, &mut |ms| sys::sleep(ms));
+    let _ = view.with(Source::Public, |r| {
+        p = Policy::NONE;
+        if let Some(d) = r.lookup("peers")? {
+            r.children(d, &mut |info, _| {
+                let (Ok(Some(class)), Ok(Some(node)), Ok(Some(pk))) =
+                    (str_in(r, info.id, "class"), u64_in(r, info.id, "node"), str_in(r, info.id, "noise_pk"))
+                else {
+                    return;
+                };
+                if let (Ok(node), Ok(pk)) = (NodeId::try_from(node), <[u8; 32]>::try_from(pk.as_bytes())) {
+                    p.add_peer(class.as_bytes(), node, &pk);
+                }
+            })?;
         }
-        got += n as usize;
-    }
-    let _ = sys::close_typed(h);
-    got
+        let eps = r.lookup("endpoints")?;
+        if let (Some(d), Some(eps)) = (r.lookup("exports")?, eps) {
+            r.children(d, &mut |info, _| {
+                let (Ok(Some(ep)), Ok(Some(class))) = (str_in(r, info.id, "endpoint"), str_in(r, info.id, "class"))
+                else {
+                    return;
+                };
+                let Ok(Some(dir)) = r.lookup_in(eps, ep.as_str()) else { return };
+                let Ok(Some(index)) = u64_in(r, dir, "index") else { return };
+                let Ok(index) = u32::try_from(index) else { return };
+                // Only what this task holds is exported.
+                if sys::cap_lookup(sys::ty::ENDPOINT.raw(), index) > 0 {
+                    p.add_export(ep.as_bytes(), index, class.as_bytes());
+                }
+            })?;
+        }
+        Ok(())
+    });
+    p
 }
 
 /// `a.b.c.d` as its four bytes.
@@ -296,8 +325,6 @@ pub extern "C" fn _start(_a0: usize, a1: usize) -> ! {
     sys::startup_init(a1);
     put(b"[rpcsrv] AzOS RPC server\n");
     let epoch = (sys::vdso_now_ns() as u32 ^ (sys::getpid() as u32).rotate_left(16)) | 1;
-    let mut text = [0u8; 2048];
-    let n = view(&mut text);
     // The identity: the DICE static key of this image, and the entropy for the
     // ephemeral keys. Without either no session can be authenticated,
     // and the server does not run unauthenticated.
@@ -322,7 +349,7 @@ pub extern "C" fn _start(_a0: usize, a1: usize) -> ! {
     put_hex(&key.public());
     put(b"\n");
     drop(key);
-    let policy = Policy::parse(&text[..n]);
+    let policy = read_policy();
     if azos_limits::RPC_PEER_NODE != 0 && policy.noise_pk(azos_limits::RPC_PEER_NODE as NodeId).is_none() {
         put(b"[rpcsrv] the topology pins no Noise key for the peer node: no session can be authenticated, refusing to run\n");
         sys::exit(2);

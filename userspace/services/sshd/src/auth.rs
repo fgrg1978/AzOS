@@ -6,8 +6,9 @@
 //! this server can be guessed. A login is a signature, by a key the signed
 //! topology lists for the user name, over the session id and the request.
 //!
-//! The accounts are the kernel's `/proc/ssh`, which shows the topology's
-//! `[login.NAME]` rows: one line per public key, `<user name> <64 hex digits>`.
+//! The accounts are the topology's `[login.NAME]` rows, as the kernel's view
+//! of them shows them (`MemObj inspect.logins`, `logins/<n>/{user, key}`):
+//! one entry per public key.
 //! There is no file on the volume to edit, so nothing an attacker who can write
 //! the volume does adds a key.
 
@@ -23,49 +24,24 @@ pub struct AuthKey {
     pub key: [u8; 32],
 }
 
-/// What reading `/proc/ssh` came to.
+/// What reading the logins came to.
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Parsed {
     pub keys: Vec<AuthKey>,
-    /// Lines that were not `<name> <64 hex digits>`.
+    /// Entries that were not a user name and a 32-byte key.
     pub skipped: usize,
 }
 
-/// Read `/proc/ssh`.
-pub fn parse_logins(text: &[u8]) -> Parsed {
-    let mut out = Parsed::default();
-    for line in text.split(|&c| c == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let mut f = line.split(|&c| c == b' ');
-        let (Some(user), Some(hex), None) = (f.next(), f.next(), f.next()) else {
-            out.skipped += 1;
-            continue;
-        };
-        match (user.is_empty(), hex_key(hex)) {
-            (false, Some(key)) => out.keys.push(AuthKey { user: user.to_vec(), key }),
-            _ => out.skipped += 1,
+impl Parsed {
+    /// Add one entry of the view: `user` logs in with `key`. An entry with no
+    /// user name, or a key that is not 32 bytes, or one of all zeros, is
+    /// skipped and counted.
+    pub fn add(&mut self, user: &[u8], key: &[u8]) {
+        match <[u8; 32]>::try_from(key) {
+            Ok(key) if !user.is_empty() && key != [0; 32] => self.keys.push(AuthKey { user: user.to_vec(), key }),
+            _ => self.skipped += 1,
         }
     }
-    out
-}
-
-/// 64 hex digits as 32 bytes.
-fn hex_key(hex: &[u8]) -> Option<[u8; 32]> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let digit = |c: u8| match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    };
-    let mut key = [0u8; 32];
-    for (b, pair) in key.iter_mut().zip(hex.chunks_exact(2)) {
-        *b = digit(pair[0])? << 4 | digit(pair[1])?;
-    }
-    Some(key)
 }
 
 /// The 32 key bytes of an `ssh-ed25519` public key blob, if it is one.

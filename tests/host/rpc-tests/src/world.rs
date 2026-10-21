@@ -32,11 +32,37 @@ pub fn pk_hex(n: NodeId) -> String {
     pk(n).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A policy from the tests' short form: `peer <class> <node> <64 hex digits>`
+/// and `export <name> <index> <class>` lines, the facts the kernel's tree
+/// gives the server (`topology/peers`, `topology/exports`), added as the
+/// server adds them.
+pub fn policy_of(text: &str) -> Policy {
+    let mut p = Policy::NONE;
+    for l in text.lines() {
+        let f: Vec<&str> = l.split(' ').filter(|w| !w.is_empty()).collect();
+        match f.as_slice() {
+            ["peer", class, node, key] => {
+                let k: Vec<u8> = (0..key.len() / 2).filter_map(|i| u8::from_str_radix(&key[2 * i..2 * i + 2], 16).ok()).collect();
+                if let (Ok(node), Ok(k)) = (node.parse(), <[u8; 32]>::try_from(k.as_slice())) {
+                    p.add_peer(class.as_bytes(), node, &k);
+                }
+            }
+            ["export", name, index, class] => {
+                if let Ok(i) = index.parse() {
+                    p.add_export(name.as_bytes(), i, class.as_bytes());
+                }
+            }
+            _ => {}
+        }
+    }
+    p
+}
+
 /// A `peer` line of a policy: `class` lists `node`, pinned to the key of `key_of`.
 pub fn peer(class: &str, node: NodeId, key_of: NodeId) -> String {
     format!("peer {class} {node} {}\n", pk_hex(key_of))
 }
-/// The pool index B's `probe` endpoint is at, in B's `/proc/rpc`.
+/// The pool index B's `probe` endpoint is at, in B's view.
 pub const PROBE_INDEX: u32 = 7;
 /// B's clock is A's plus this: a deadline in A's time means nothing on B.
 pub const SKEW_NS: u64 = 1_000_000_000_000;
@@ -567,7 +593,7 @@ fn side(node: NodeId, cfg: Config, off: u64, clock: &Rc<Cell<u64>>, net: &Rc<Ref
     let host = FakeHost { st: st.clone(), svc: svc.clone() };
     let mut rpc = Box::new(Rpc::new(host, MemLink { me: node, net: net.clone() }, &CATALOG));
     rpc.configure(cfg);
-    rpc.set_policy(Policy::parse(policy.as_bytes()));
+    rpc.set_policy(policy_of(&policy));
     Side { rpc, asm: Box::new(Asm::new()), st, svc }
 }
 
