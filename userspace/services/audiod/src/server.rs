@@ -337,7 +337,10 @@ struct Dev {
     phase: Phase,
     /// Device periods the device holds now.
     held: Posted,
-    xruns: u32,
+    /// Periods mixed and posted since the stream opened, and the most streams
+    /// any of them held: the line the server prints when the stream ends.
+    posted: u32,
+    peak: u32,
 }
 
 /// The audio server.
@@ -354,6 +357,23 @@ pub struct Server<E: Env> {
     info: Option<Info>,
     retry_at: u64,
     acc: [i32; ACC_MAX],
+}
+
+/// `v` in decimal: the digits and how many.
+fn digits(mut v: u32) -> ([u8; 10], usize) {
+    let mut buf = [0u8; 10];
+    let mut n = 0;
+    loop {
+        buf[9 - n] = b'0' + (v % 10) as u8;
+        n += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    let mut out = [0u8; 10];
+    out[..n].copy_from_slice(&buf[10 - n..]);
+    (out, n)
 }
 
 fn out_err<T: Default>(code: u32) -> Out<T> {
@@ -497,7 +517,7 @@ impl<E: Env> Server<E> {
             Ok(m) => m,
             Err(_) => return fail(self, b"[audiod] the device refused the playback stream\n"),
         };
-        self.dev = Some(Dev { mem, phase: Phase::Running, held: Posted::new(), xruns: 0 });
+        self.dev = Some(Dev { mem, phase: Phase::Running, held: Posted::new(), posted: 0, peak: 0 });
         let live = self.live_streams();
         for _ in 0..DEV_AHEAD {
             self.fill_device(live);
@@ -509,8 +529,16 @@ impl<E: Env> Server<E> {
     }
 
     fn close_device(&mut self) {
-        if self.dev.take().is_some() {
+        if let Some(d) = self.dev.take() {
             self.env.dev_close();
+            // One line for the console: what the stream carried.
+            let (mut line, mut n) = ([0u8; 96], 0);
+            let ((pd, pn), (kd, kn)) = (digits(d.posted), digits(d.peak));
+            for part in [&b"[audiod] playback ended: periods "[..], &pd[..pn], &b", most streams at once "[..], &kd[..kn], &b"\n"[..]] {
+                line[n..n + part.len()].copy_from_slice(part);
+                n += part.len();
+            }
+            self.env.log(&line[..n]);
         }
     }
 
@@ -541,7 +569,6 @@ impl<E: Env> Server<E> {
                 ended = true;
                 continue;
             }
-            d.xruns += u32::from(p.flags & PERIOD_XRUN != 0);
             d.held.give_back(p.index);
         }
         ended
@@ -588,6 +615,8 @@ impl<E: Env> Server<E> {
                 }
             }
             let d = self.dev.as_mut().expect("checked above");
+            d.posted += 1;
+            d.peak = d.peak.max(live as u32);
             // SAFETY: `idx` is below `periods`; the device arena is mapped for
             // `arena_bytes`, and this period is not held by the device (`held`
             // says so), so nothing reads it now.

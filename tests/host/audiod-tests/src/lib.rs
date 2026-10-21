@@ -259,7 +259,8 @@ mod streams {
     /// summed at the headroom gain, each client gets its periods back, and the
     /// device was opened once.
     ///
-    /// **Canary.** Mix each stream at unity: the 9998 is 15000.
+    /// **Canary.** Mix each stream at unity: the 9998 is 15000. Leave `peak`
+    /// at 0: the summary line says one stream at most.
     #[test]
     fn two_streams_are_mixed_into_the_one_device_stream() {
         let (mut srv, w) = server();
@@ -280,6 +281,14 @@ mod streams {
         assert_eq!(b.returned().len(), 1);
         // The second pass had neither stream's data: silence, not a repeat.
         assert!(played[2048..].iter().all(|&s| s == 0));
+        // When they have ended the device is closed and the console says what
+        // it carried: the line the gate's two-beeps row looks for.
+        ok(call(&mut srv, 7, |s| s.drain()));
+        ok(call(&mut srv, 8, |s| s.drain()));
+        pump(&mut srv, &w, 8, 5);
+        assert_eq!(w.borrow().dev_closes, 1);
+        let line = w.borrow().logs.iter().find(|l| l.contains("playback ended")).cloned().expect("the stream's summary");
+        assert!(line.ends_with(", most streams at once 2\n") && line.starts_with("[audiod] playback ended: periods "), "{line:?}");
     }
 
     /// A stream that runs dry underruns alone: its next returned period is
