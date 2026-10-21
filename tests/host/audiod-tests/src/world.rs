@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The world the audio server runs in on the host: memory on the heap, a
 //! clock the test moves, a fake `sound.0` that plays the periods it is given
-//! and returns them, and a fake microphone gate.
+//! and returns them, and a fake microphone gate that decides as the kernel's
+//! does: on the task that made the call the server names, never on the server.
 
 use crate::server::{DevMem, Env, Limits, Mapped, Server};
 use azos_devif::outcome;
@@ -49,6 +50,15 @@ pub fn device_info() -> Info {
     }
 }
 
+/// The task id of the audio server in the fake kernel: the one caller the
+/// kernel hears from.
+pub const SERVER_TID: u32 = 1;
+
+/// The task id of the client that holds badge `badge`: one task per badge.
+pub const fn client_tid(badge: u32) -> u32 {
+    1000 + badge
+}
+
 #[derive(Default)]
 pub struct World {
     pub now: u64,
@@ -69,8 +79,16 @@ pub struct World {
     pub played: Vec<i16>,
     /// Periods the device played, with the flags it returned.
     pub dev_periods: u32,
-    // The microphone gate.
-    pub mic: bool,
+    // The microphone gate. `served` is the calls the server has accepted and
+    // not answered, by warrant, with the task that made each (what the kernel
+    // knows and ring 3 does not); `withheld` the tasks whose class has no `mic`
+    // effect. The server's own task, `SERVER_TID`, is never withheld: its class
+    // holds the effect, as it did when the server was the authority, so a
+    // client refused here is refused on its own account. `gate` is the decision
+    // record of every attempt that reached it: `(subject, admitted, reason)`.
+    pub served: HashMap<u64, u32>,
+    pub withheld: Vec<u32>,
+    pub gate: Vec<(u32, bool, u32)>,
     pub lease_calls: Vec<&'static str>,
     pub lease_open_calls: u32,
     pub lease_status: Status,
@@ -189,15 +207,20 @@ impl Env for Fake {
         let _ = &d.mem;
         w.dev_closes += 1;
     }
-    fn lease_open(&mut self, params: Params, _ready: u32, _done: u32, _arena: u32) -> Result<Opened, u32> {
+    fn lease_open(&mut self, params: Params, _ready: u32, _done: u32, _arena: u32, on_behalf: u64) -> Result<Opened, u32> {
         let mut w = self.0.borrow_mut();
         w.lease_open_calls += 1;
-        // The kernel's order: the effect first, then the device.
-        if !w.mic {
+        // The kernel's gate, with its own rules (`azos_devif::sound`): whose
+        // effect, then why not, then the record; a refusal is `REFUSED`.
+        let subject = snd::capture_subject(SERVER_TID, on_behalf, |call| w.served.get(&call).copied());
+        let reason = match subject {
+            Some(t) => snd::capture_reason(!w.withheld.contains(&t), true, w.lease_active),
+            None => snd::MIC_NO_REQUEST,
+        };
+        let admitted = reason == snd::MIC_ADMITTED;
+        w.gate.push((subject.unwrap_or(SERVER_TID), admitted, reason));
+        if !admitted {
             return Err(outcome::REFUSED);
-        }
-        if w.lease_active {
-            return Err(outcome::BUSY);
         }
         let geo = params.check()?;
         w.lease_active = true;
@@ -236,7 +259,7 @@ pub fn server() -> (Server<Fake>, Rc<RefCell<World>>) {
 }
 
 pub fn server_with(l: Limits) -> (Server<Fake>, Rc<RefCell<World>>) {
-    let w = Rc::new(RefCell::new(World { mic: true, ..World::default() }));
+    let w = Rc::new(RefCell::new(World::default()));
     (Server::new(Fake(w.clone()), l), w)
 }
 
@@ -308,12 +331,32 @@ impl Client {
     }
 
     pub fn open(&self, srv: &mut Server<Fake>, p: Params) -> azos_devif::Out<Opened> {
+        self.open_naming(srv, p, 0)
+    }
+
+    /// `open` with the client's own `on_behalf` word, which an honest client
+    /// leaves 0. While the call is served the kernel knows its maker.
+    pub fn open_naming(&self, srv: &mut Server<Fake>, p: Params, on_behalf: u64) -> azos_devif::Out<Opened> {
         use azos_devif::Sound;
         srv.caller = self.badge;
+        srv.call = self.call();
+        srv.env.0.borrow_mut().served.insert(srv.call, client_tid(self.badge));
         srv.prepare();
-        let r = srv.open(p, Cap::from_raw(self.caps[0]), Cap::from_raw(self.caps[1]), Cap::from_raw(self.caps[2]));
+        let r = srv.open(p, Cap::from_raw(self.caps[0]), Cap::from_raw(self.caps[1]), Cap::from_raw(self.caps[2]), on_behalf);
+        srv.env.0.borrow_mut().served.remove(&srv.call);
         srv.caller = 0;
+        srv.call = 0;
         r
+    }
+
+    /// The warrant of this client's call to the server.
+    pub fn call(&self) -> u64 {
+        Self::call_of(self.badge)
+    }
+
+    /// The warrant of the call of the client that holds badge `badge`.
+    pub const fn call_of(badge: u32) -> u64 {
+        0xCA11_0000 + badge as u64
     }
 }
 

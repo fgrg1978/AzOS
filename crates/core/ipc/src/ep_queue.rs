@@ -2272,6 +2272,7 @@ mod tests {
         assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE));
         assert_eq!(take_reply(idx, h), Some(rsp));
         assert_eq!(take_reply(idx, h), None, "taken once");
+        assert_eq!(warrant_peer(h, SERVER), None, "answered: the warrant names nobody (the sound host lends the call's caller only while it is served)");
         // The record's next call is v1: no message, no staged answer.
         let h2 = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
         let _ = accept(SERVER_IDX, SERVER).unwrap();

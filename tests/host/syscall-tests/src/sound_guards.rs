@@ -64,6 +64,8 @@ impl Drop for Client {
         // The holder's exit: its stream is ended by the pump, as in the kernel.
         host::release_all(self.tid);
         host::pump(0, 1_000);
+        host::clear_withheld_mic();
+        azos_ipc::fastcall::shim_answer_all();
         azos_ipc::cap::degraded_set(false);
         azos_ipc::memobj::memobj_release_all(self.tid);
         ipc_task_pool::shim_kill(self.tid);
@@ -114,8 +116,13 @@ impl Client {
     }
 
     fn open(&self, p: Params) -> Out<snd::Opened> {
+        self.open_for(p, 0)
+    }
+
+    /// `open` naming the call `on_behalf` this task is serving.
+    fn open_for(&self, p: Params, on_behalf: u64) -> Out<snd::Opened> {
         let (r, d, a) = self.handles();
-        server(self, CapPerms::ALL).open(p, r, d, a)
+        server(self, CapPerms::ALL).open(p, r, d, a, on_behalf)
     }
 
     fn sv(&self) -> Server {
@@ -186,7 +193,7 @@ fn every_op_demands_its_class_and_a_contained_system_still_stops() {
     type Call<'a> = &'a dyn Fn(&mut Server) -> u32;
     let rows: [(&str, CapPerms, Call); 7] = [
         ("info", CapPerms::READ, &|s| code(s.info())),
-        ("open", CapPerms::WRITE, &|s| code(s.open(params(DIR_PLAYBACK), r, d, a))),
+        ("open", CapPerms::WRITE, &|s| code(s.open(params(DIR_PLAYBACK), r, d, a, 0))),
         ("start", CapPerms::WRITE, &|s| code(s.start())),
         ("stop", CapPerms::WRITE, &|s| code(s.stop())),
         ("drain", CapPerms::WRITE, &|s| code(s.drain())),
@@ -235,7 +242,7 @@ fn only_device_zero_is_served_and_only_when_it_is_up() {
         let mut s = Server(Caller { tid: c.tid, badge, rights: CapPerms::ALL });
         let codes = [
             code(s.info()),
-            code(s.open(params(DIR_PLAYBACK), r, d, a)),
+            code(s.open(params(DIR_PLAYBACK), r, d, a, 0)),
             code(s.start()),
             code(s.stop()),
             code(s.drain()),
@@ -295,17 +302,17 @@ fn open_refuses_before_it_touches_the_device() {
     let no_write = WireCap::from_raw(attenuated(c.done, CapPerms::READ));
     let arena_w = WireCap::from_raw(attenuated(c.arena, CapPerms::WRITE));
     let mut s = c.sv();
-    assert_eq!(s.open(p, no_read, d, a).code, outcome::DENIED, "the server reads `ready`");
-    assert_eq!(s.open(p, r, no_write, a).code, outcome::DENIED, "the server writes `done`");
-    assert_eq!(s.open(p, r, d, arena_w).code, outcome::DENIED, "a playback arena is read");
-    assert_eq!(s.open(p, r, r_as_done(r), a).code, outcome::BAD_ARGUMENT, "one region is not both queues");
-    assert_eq!(s.open(p, r, d, r_as_arena(r)).code, outcome::BAD_ARGUMENT, "a queue is not the arena");
-    assert_eq!(s.open(p, WireCap::from_raw(0xdead), d, a).code, outcome::BAD_ARGUMENT, "not a handle");
+    assert_eq!(s.open(p, no_read, d, a, 0).code, outcome::DENIED, "the server reads `ready`");
+    assert_eq!(s.open(p, r, no_write, a, 0).code, outcome::DENIED, "the server writes `done`");
+    assert_eq!(s.open(p, r, d, arena_w, 0).code, outcome::DENIED, "a playback arena is read");
+    assert_eq!(s.open(p, r, r_as_done(r), a, 0).code, outcome::BAD_ARGUMENT, "one region is not both queues");
+    assert_eq!(s.open(p, r, d, r_as_arena(r), 0).code, outcome::BAD_ARGUMENT, "a queue is not the arena");
+    assert_eq!(s.open(p, WireCap::from_raw(0xdead), d, a, 0).code, outcome::BAD_ARGUMENT, "not a handle");
     // An arena that is not one physical run, or is too small for the geometry.
     let anon = region(c.tid, &MemSpec::anon(MemPerms::ReadWrite));
-    assert_eq!(s.open(p, r, d, WireCap::from_raw(anon.0)).code, outcome::BAD_ARGUMENT, "not Contig");
+    assert_eq!(s.open(p, r, d, WireCap::from_raw(anon.0), 0).code, outcome::BAD_ARGUMENT, "not Contig");
     let big = Params { period_frames: 512, ..p };
-    assert_eq!(s.open(big, r, d, a).code, outcome::BAD_ARGUMENT, "16 KiB in a page");
+    assert_eq!(s.open(big, r, d, a, 0).code, outcome::BAD_ARGUMENT, "16 KiB in a page");
     assert!(!calls().iter().any(|c| c.starts_with("open")), "still not asked");
     assert!(!fake().s[0].open);
 }
@@ -576,6 +583,87 @@ fn the_mic_effect_is_withheld_by_a_contained_envelope_of_the_class() {
     assert!(host::mic_admitted(&rows, &class("limited")), "only `contained` withholds it");
     assert!(host::mic_admitted(&rows, &class("anything else")), "a class with no row has the effect");
     assert!(host::mic_admitted(&[], &class("sandboxed")));
+}
+
+/// A server in front of the device (the audio server) opens a capture stream for
+/// a client by naming the call it is serving: the client's class decides the
+/// effect and the client is the subject of the record, whatever the server's
+/// class is. Two clients, one with the effect and one without, through one
+/// server whose own class has it.
+///
+/// **Canary.** Decide on the caller (`mic_effect(who.tid)`) instead of the
+/// requester: the client without the effect is admitted.
+#[test]
+fn a_server_opens_capture_for_its_client_and_the_clients_effect_decides() {
+    let _g = serial();
+    let srv = client();
+    let (with, without) = (0x7e65_0001u32, 0x7e65_0002u32);
+    azos_ipc::fastcall::shim_serve(0x11, srv.tid, with);
+    azos_ipc::fastcall::shim_serve(0x22, srv.tid, without);
+    host::withhold_mic(without);
+    let before = capture_records().len();
+
+    assert_eq!(srv.open_for(params(DIR_CAPTURE), 0x22).code, outcome::REFUSED, "the client without the effect");
+    let recs = capture_records();
+    assert_eq!(recs.len(), before + 1, "the refusal leaves a record");
+    let r = *recs.last().unwrap();
+    assert_eq!(
+        (r.verdict, r.subject, r.n[2]),
+        (azos_decision::Verdict::Refuse as u8, without, snd::MIC_NO_GRANT as u64),
+        "it names the client, not the server"
+    );
+    assert!(!calls().iter().any(|c| c.starts_with("open")), "the device was never asked");
+
+    assert_eq!(srv.open_for(params(DIR_CAPTURE), 0x11).code, outcome::OK, "the client with the effect");
+    let r = *capture_records().last().unwrap();
+    assert_eq!((r.verdict, r.subject, r.n[2]), (azos_decision::Verdict::Admit as u8, with, snd::MIC_ADMITTED as u64));
+    assert_ne!(r.subject, srv.tid, "the server is never the subject");
+    // The stream is the server's thread's to run and end; the client is who it is for.
+    assert_eq!(srv.sv().status().code, outcome::OK);
+    assert_eq!(srv.sv().close().code, outcome::OK);
+}
+
+/// The warrant a server names must be one it holds: a call another task is
+/// serving, a call already answered and a made-up handle name nobody, and the
+/// attempt is recorded against the caller.
+///
+/// **Canary.** Fall back to the caller when the call does not resolve
+/// (`None => capture_reason(mic_effect(who.tid), ..)`): every row admits.
+#[test]
+fn a_call_the_caller_is_not_serving_names_no_requester() {
+    let _g = serial();
+    let srv = client();
+    azos_ipc::fastcall::shim_serve(0x33, srv.tid + 1000, 0x7e65_0003);
+    let before = capture_records().len();
+    for (what, call) in [("another server's call", 0x33u64), ("a made-up handle", 0xdead_beef)] {
+        assert_eq!(srv.open_for(params(DIR_CAPTURE), call).code, outcome::REFUSED, "{what}");
+        let r = *capture_records().last().unwrap();
+        assert_eq!(
+            (r.verdict, r.subject, r.n[2]),
+            (azos_decision::Verdict::Refuse as u8, srv.tid, snd::MIC_NO_REQUEST as u64),
+            "{what}: recorded against the caller"
+        );
+    }
+    assert_eq!(capture_records().len(), before + 2);
+    // Answered: nothing is left to lend.
+    azos_ipc::fastcall::shim_serve(0x44, srv.tid, 0x7e65_0004);
+    azos_ipc::fastcall::shim_answer_all();
+    assert_eq!(srv.open_for(params(DIR_CAPTURE), 0x44).code, outcome::REFUSED, "an answered call");
+    // And the device was not touched by any of them.
+    assert!(!calls().iter().any(|c| c.starts_with("open")));
+}
+
+/// A playback stream is nobody's authority to lend: naming a call is a bad
+/// argument, and a capture open naming none asks for the caller itself.
+///
+/// **Canary.** Drop the `d == PLAY` check: the playback open succeeds.
+#[test]
+fn playback_names_no_call() {
+    let _g = serial();
+    let c = client();
+    azos_ipc::fastcall::shim_serve(0x55, c.tid, 0x7e65_0005);
+    assert_eq!(c.open_for(params(DIR_PLAYBACK), 0x55).code, outcome::BAD_ARGUMENT);
+    assert_eq!(c.open_for(params(DIR_PLAYBACK), 0).code, outcome::OK);
 }
 
 // ── exit ─────────────────────────────────────────────────────────────────

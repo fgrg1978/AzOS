@@ -226,7 +226,7 @@ fn play(client: SoundClient<Ep>, ms: u32) -> i32 {
     s.ready.init();
     s.done.init();
 
-    let opened = sys::dev::value(s.snd.open(params, Cap::from_raw(ready.cap), Cap::from_raw(done.cap), Cap::from_raw(arena.cap)));
+    let opened = sys::dev::value(s.snd.open(params, Cap::from_raw(ready.cap), Cap::from_raw(done.cap), Cap::from_raw(arena.cap), 0));
     match opened {
         Ok(o) if o.period_bytes == geo.period_bytes => {}
         Ok(_) => {

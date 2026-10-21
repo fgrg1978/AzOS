@@ -530,9 +530,9 @@ mod streams {
 #[cfg(test)]
 mod capture {
     use crate::server::{Limits, LEASE_POLL_NS};
-    use crate::world::{call, limits, params, server, server_with, Client};
+    use crate::world::{call, client_tid, limits, params, server, server_with, Client, SERVER_TID};
     use azos_devif::outcome;
-    use azos_devif::sound::{Params, Sound, Status, DIR_CAPTURE, STATE_RUNNING};
+    use azos_devif::sound::{self as snd, Params, Sound, Status, DIR_CAPTURE, STATE_RUNNING};
 
     fn rec() -> Params {
         Params { dir: DIR_CAPTURE, ..params() }
@@ -543,15 +543,15 @@ mod capture {
     /// the `audio-capture` decision record; ring 3 cannot), passes `REFUSED`
     /// through, takes no lease, and gives the client's three objects back.
     ///
-    /// **Canary.** Flip the fake gate to admit (`mic = true`): the same open
-    /// is admitted, a lease is taken and the objects are kept (the second half
-    /// of this test says so). Make the server answer `REFUSED` itself without
-    /// asking: `lease_open_calls` stays 0 and the first assert fails. Drop the
-    /// `log_capture_attempt` call: the badge lines are missing.
+    /// **Canary.** Give the client the effect (`withheld` empty): the same
+    /// open is admitted, a lease is taken and the objects are kept (the second
+    /// half of this test says so). Make the server answer `REFUSED` itself
+    /// without asking: `lease_open_calls` stays 0 and the first assert fails.
+    /// Drop the `log_capture_attempt` call: the badge lines are missing.
     #[test]
     fn capture_without_the_effect_is_refused_by_the_kernel_gate_and_leaves_no_lease() {
         let (mut srv, w) = server();
-        w.borrow_mut().mic = false;
+        w.borrow_mut().withheld.push(client_tid(7));
         for n in 1..=2u32 {
             let c = Client::new(&w, 7, [1, 2, 3], &rec());
             assert_eq!(c.open(&mut srv, rec()).code, outcome::REFUSED);
@@ -563,15 +563,81 @@ mod capture {
         assert_eq!(
             w.borrow().logs.iter().filter(|l| l.contains("capture open by badge 7: refused by the gate")).count(),
             2,
-            "each attempt names the badge: the kernel's record names the server"
+            "each attempt names the badge, and the kernel's record the client behind it"
         );
         // The gate admits: the same call is a lease, and nothing is released.
-        w.borrow_mut().mic = true;
+        w.borrow_mut().withheld.clear();
         let c = Client::new(&w, 7, [1, 2, 3], &rec());
         assert_eq!(c.open(&mut srv, rec()).code, outcome::OK);
         assert_eq!((srv.open_streams(), w.borrow().lease_active), (1, true));
         assert!(w.borrow().released.is_empty());
         assert!(w.borrow().logs.iter().any(|l| l.contains("capture open by badge 7: admitted")));
+    }
+
+    /// **The microphone is the client's, not the server's.** Two clients of one
+    /// server whose own class holds the effect: the one whose class has it
+    /// listens, the one whose class does not is refused, and in both the
+    /// decision record names the client, never the server.
+    ///
+    /// **Canaries.** Have the server open on its own account (`on_behalf` 0,
+    /// or the fake gate deciding on `SERVER_TID`, which holds the effect): the
+    /// client without the effect is admitted and the first assert is red.
+    #[test]
+    fn two_clients_one_with_the_mic_right_and_one_without_through_one_server() {
+        let (mut srv, w) = server();
+        let (with, without) = (client_tid(7), client_tid(8));
+        w.borrow_mut().withheld.push(without);
+
+        let b = Client::new(&w, 8, [11, 12, 13], &rec());
+        assert_eq!(b.open(&mut srv, rec()).code, outcome::REFUSED, "its class has no mic effect; the server's has");
+        assert_eq!((srv.open_streams(), w.borrow().lease_active), (0, false));
+        assert_eq!(std::mem::take(&mut w.borrow_mut().released), [11, 12, 13]);
+        assert_eq!(w.borrow().gate, [(without, false, snd::MIC_NO_GRANT)], "the record names the client that asked");
+
+        let a = Client::new(&w, 7, [1, 2, 3], &rec());
+        assert_eq!(a.open(&mut srv, rec()).code, outcome::OK, "its class has the effect");
+        assert_eq!((srv.open_streams(), w.borrow().lease_active), (1, true));
+        assert_eq!(w.borrow().gate, [(without, false, snd::MIC_NO_GRANT), (with, true, snd::MIC_ADMITTED)]);
+
+        // While the one listens the other is still refused for its own reason
+        // first: a task without the effect learns nothing of the device.
+        let b = Client::new(&w, 8, [21, 22, 23], &rec());
+        assert_eq!(b.open(&mut srv, rec()).code, outcome::REFUSED);
+        assert_eq!(w.borrow().gate.last(), Some(&(without, false, snd::MIC_NO_GRANT)));
+        // A client with the effect is held off by the open stream, and named.
+        let c = Client::new(&w, 9, [31, 32, 33], &rec());
+        assert_eq!(c.open(&mut srv, rec()).code, outcome::REFUSED);
+        assert_eq!(w.borrow().gate.last(), Some(&(client_tid(9), false, snd::MIC_HELD)));
+        assert!(w.borrow().gate.iter().all(|&(subject, ..)| subject != SERVER_TID), "the server is never the subject");
+        assert_eq!(w.borrow().lease_open_calls, 4);
+    }
+
+    /// A client has no call of its own to name: a nonzero `on_behalf` from a
+    /// client is a bad argument, refused before the kernel is asked, and its
+    /// objects go back. Without a call being served the server asks for nobody.
+    ///
+    /// **Canaries.** Forward the client's word: the kernel is asked
+    /// (`lease_open_calls` 1) and a made-up warrant names nobody (`REFUSED`).
+    /// Drop the `call == 0` test in `open_capture`: the second half reaches the
+    /// gate.
+    #[test]
+    fn a_client_names_no_call_and_a_server_without_one_asks_for_nobody() {
+        let (mut srv, w) = server();
+        let c = Client::new(&w, 7, [1, 2, 3], &rec());
+        assert_eq!(c.open_naming(&mut srv, rec(), 0xCA11_0000 + 8).code, outcome::BAD_ARGUMENT);
+        assert_eq!((w.borrow().lease_open_calls, srv.open_streams()), (0, 0));
+        assert_eq!(std::mem::take(&mut w.borrow_mut().released), [1, 2, 3]);
+        // Playback too: the word is for the capture open alone, but a client
+        // never has one to give.
+        assert_eq!(c.open_naming(&mut srv, params(), 5).code, outcome::BAD_ARGUMENT);
+        // The server serving no call (the loop sets `call` before each dispatch).
+        use azos_devif::Sound;
+        srv.caller = 7;
+        srv.call = 0;
+        let r = srv.open(rec(), azos_idl::Cap::from_raw(1), azos_idl::Cap::from_raw(2), azos_idl::Cap::from_raw(3), 0);
+        srv.caller = 0;
+        assert_eq!(r.code, outcome::DENIED);
+        assert_eq!(w.borrow().lease_open_calls, 0, "nothing to ask the kernel on");
     }
 
     /// An unidentified caller is refused before the kernel is asked, and a
@@ -611,7 +677,7 @@ mod capture {
         let st = call(&mut srv, 7, |s| s.status());
         assert_eq!((st.value.state, st.value.xruns, st.value.frames), (STATE_RUNNING, 2, 99));
         let other = Client::new(&w, 8, [11, 12, 13], &rec());
-        assert_eq!(other.open(&mut srv, rec()).code, outcome::BUSY, "one capture stream");
+        assert_eq!(other.open(&mut srv, rec()).code, outcome::REFUSED, "one capture stream: the gate says held");
         assert_eq!(std::mem::take(&mut w.borrow_mut().released), [11, 12, 13]);
         call(&mut srv, 7, |s| s.close());
         assert_eq!(w.borrow().lease_calls, ["open", "start", "stop", "drain", "close"]);
@@ -719,16 +785,23 @@ mod wire {
             *self.last.borrow_mut() = req;
             let mut s = self.srv.borrow_mut();
             s.caller = self.badge;
+            // The kernel hands the server the call's warrant at accept and
+            // knows who made the call.
+            s.call = crate::world::Client::call_of(self.badge);
+            s.env.0.borrow_mut().served.insert(s.call, crate::world::client_tid(self.badge));
             s.prepare();
             let _ = SoundIdl::dispatch(&mut *s, &req, msg);
+            s.env.0.borrow_mut().served.remove(&s.call);
             s.caller = 0;
+            s.call = 0;
             Ok(())
         }
     }
 
     /// The generated stub and the generated dispatcher agree with the server
     /// on every op: info, open with three capabilities (the server receives
-    /// the handles the client wrote), start, status, close.
+    /// the handles the client wrote), start, status, close, and a capture open
+    /// the kernel's gate decides on the client.
     ///
     /// **Canary.** Answer `info` before `prepare`: the first op reads
     /// `NOT_READY`.
@@ -742,7 +815,7 @@ mod wire {
         let info = client.info().unwrap();
         assert_eq!((info.code, info.value.rate_hz, info.value.channels), (outcome::OK, 48_000, 2));
         let opened = client
-            .open(params(), Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23))
+            .open(params(), Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23), 0)
             .unwrap();
         assert_eq!((opened.code, opened.value.period_bytes), (outcome::OK, 1024));
         assert_eq!(lp.last.borrow().n_caps, 3);
@@ -750,9 +823,21 @@ mod wire {
         assert_eq!(client.status().unwrap().value.state, azos_devif::sound::STATE_RUNNING);
         assert_eq!(client.close().unwrap().code, outcome::OK);
         assert_eq!(std::mem::take(&mut w.borrow_mut().released), [21, 22, 23]);
+        // A capture open through the generated stub: the gate decides on the
+        // task that made the call, which only the kernel can tell the server.
+        let rec = azos_devif::sound::Params { dir: azos_devif::sound::DIR_CAPTURE, ..params() };
+        w.borrow_mut().withheld.push(crate::world::client_tid(5));
+        let r = client.open(rec, Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23), 0).unwrap();
+        assert_eq!(r.code, outcome::REFUSED);
+        assert_eq!(w.borrow().gate, [(crate::world::client_tid(5), false, azos_devif::sound::MIC_NO_GRANT)]);
+        w.borrow_mut().withheld.clear();
+        let r = client.open(rec, Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23), 0).unwrap();
+        assert_eq!(r.code, outcome::OK);
+        assert_eq!(client.close().unwrap().code, outcome::OK);
+        std::mem::take(&mut w.borrow_mut().released);
         drop(c);
         // The same badge on a closed stream opens again.
-        let again = client.open(params(), Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23)).unwrap();
+        let again = client.open(params(), Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23), 0).unwrap();
         assert_eq!(again.code, outcome::OK);
     }
 }

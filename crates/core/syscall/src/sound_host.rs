@@ -44,22 +44,31 @@
 //! # Capture
 //!
 //! A capture stream is an irreversible effect on the person in the room
-//! (`azos_devif::sound`, "Capture needs the microphone effect"). `open` with
-//! `DIR_CAPTURE` decides [`azos_devif::sound::capture_reason`] and writes an
-//! `audio-capture` decision record for every attempt, admitted or refused; a
-//! refusal answers `REFUSED`.
+//! (`azos_devif::sound`, "Capture needs the microphone effect, the requester's").
+//! `open` with `DIR_CAPTURE` decides [`azos_devif::sound::capture_reason`] for the
+//! **requester** and writes an `audio-capture` decision record naming it for
+//! every attempt, admitted or refused; a refusal answers `REFUSED`.
 //!
+//! * **The requester** is the caller, or, when `on_behalf` names the call the
+//!   caller is serving (`azos_ipc::fastcall::warrant_peer`: the warrant the
+//!   kernel gave it at accept, unanswered, held by it), the task that made that
+//!   call. The audio server serves many clients through one thread, so what it
+//!   lends the device is each client's own request; its class is not consulted.
+//!   A warrant the caller does not hold is refused with the reason
+//!   `MIC_NO_REQUEST`, recorded against the caller.
 //! * **The `mic` effect** is withheld from a task whose scheduler class has an
 //!   `[envelope.NAME]` row with `kind = "mic"` and ceiling `contained`; a class
 //!   with no such row has it. The class is the one of the topology row the task
 //!   was seeded from (`natfork::row_of`); with a topology installed, a task with
 //!   no row has no class, so no grant.
 //! * **The indicator** that tells the person a microphone is live is a line on
-//!   the kernel console (`[AUDIO] microphone LIVE`) written before the device is
-//!   asked and again when the stream ends. The console is the only channel
-//!   every build has; a screen or LED indicator replaces [`indicator_on`] and
-//!   [`indicator_off`] when one exists.
-//! * **Held by another task**: one capture stream at a time.
+//!   the kernel console (`[AUDIO] microphone LIVE`, naming the requester) written
+//!   before the device is asked and again when the stream ends. The console is
+//!   the only channel every build has; a screen or LED indicator replaces
+//!   [`indicator_on`] and [`indicator_off`] when one exists.
+//! * **Held by another task**: one capture stream at a time. The stream belongs
+//!   to the thread that opened it (the server's, which also ends it); the
+//!   requester is who it is for.
 //!
 //! Kconfig `AUDIO_CAPTURE` n compiles the path out: a capture `open` answers
 //! `UNSUPPORTED` and nothing is recorded (there is nothing to decide).
@@ -67,7 +76,7 @@
 use azos_abi::cap::CapPerms;
 use azos_decision::{Rule, Verdict};
 use azos_devif::sound::{
-    self as snd, capture_reason, Info, Opened, Params, Period, Status, DIR_CAPTURE, DIR_PLAYBACK, MIC_ADMITTED,
+    self as snd, capture_reason, Info, Opened, Params, Period, Status, DIR_CAPTURE, DIR_PLAYBACK, MIC_ADMITTED, MIC_NO_REQUEST,
     NO_PERIOD, PERIOD_CANCELLED, PERIOD_END, SLOT_WORDS,
 };
 use azos_devif::{outcome, Cap as WireCap, Out};
@@ -96,7 +105,10 @@ const FEED_MAX: usize = snd::PERIODS_MAX as usize;
 
 /// A stream a task opened.
 struct Hosted {
-    owner: u32,
+    /// The task the stream is for: the task that opened it, or, for a capture
+    /// stream a server opened on a client's call, the client (the indicator
+    /// names it). The task that opened it is `OWNER[d]`.
+    subject: u32,
     geo: snd::Geometry,
     ready: QueueEnd,
     done: QueueEnd,
@@ -146,13 +158,48 @@ pub fn mic_admitted(envelopes: &[azos_topology::EnvelopeSpec<'_>], class: &azos_
         .any(|e| e.kind == azos_topology::EffectKind::Mic && e.class == *class && e.level == azos_topology::Envelope::Contained)
 }
 
+/// Tasks whose `mic` effect the host suites withhold (0: free slot): they
+/// install no topology (it is installed once per process), so the class lookup
+/// has nothing to ask.
+#[cfg(test)]
+static MIC_WITHHELD: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+
+/// Withhold the `mic` effect from `tid` (host suites only).
+#[cfg(test)]
+pub fn withhold_mic(tid: u32) {
+    for s in &MIC_WITHHELD {
+        if s.compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            return;
+        }
+    }
+}
+
+/// Give every task the `mic` effect again (host suites only).
+#[cfg(test)]
+pub fn clear_withheld_mic() {
+    for s in &MIC_WITHHELD {
+        s.store(0, Ordering::Release);
+    }
+}
+
 /// Is the `mic` effect admitted for task `tid`'s scheduler class? No topology
 /// installed: there are no classes to cap. With one, a task seeded from no row
 /// has no class and so no grant.
 fn mic_effect(tid: u32) -> bool {
+    #[cfg(test)]
+    if MIC_WITHHELD.iter().any(|s| s.load(Ordering::Acquire) == tid) {
+        return false;
+    }
     let Some(topo) = azos_topology::get() else { return true };
     let Some(task) = crate::natfork::row_of(tid).and_then(|row| topo.tasks().get(row)) else { return false };
     mic_admitted(topo.envelopes(), &task.class_name)
+}
+
+/// The task that made the call `call` names, when `server` is serving it (it
+/// accepted it and has not answered it): the requester a server opens a capture
+/// stream for. `None` for any other warrant, including one a task made up.
+fn call_requester(server: u32, call: u64) -> Option<u32> {
+    azos_ipc::fastcall::warrant_peer(call, server).map(|(caller, _)| caller)
 }
 
 /// Tell the person a microphone is live. The console is the indicator every
@@ -273,7 +320,7 @@ fn close_locked(h: &mut Host, d: usize) {
     unpin(s.arena);
     OWNER[d].store(0, Ordering::Release);
     if d == REC {
-        indicator_off(s.owner);
+        indicator_off(s.subject);
     }
 }
 
@@ -399,6 +446,7 @@ impl snd::Sound for Server {
         ready: WireCap<snd::ReadyQueue>,
         done: WireCap<snd::DoneQueue>,
         arena: WireCap<snd::Arena>,
+        on_behalf: u64,
     ) -> Out<Opened> {
         if let Err(o) = self.0.gate::<Opened>(CapPerms::WRITE) {
             return o;
@@ -417,16 +465,30 @@ impl snd::Sound for Server {
             return Out::err(outcome::BAD_ARGUMENT);
         }
         let d = if params.dir == DIR_PLAYBACK { PLAY } else { REC };
+        // Whom the stream is for. Playback is nobody's authority to lend: it
+        // names no call.
+        let mut subject = who.tid;
+        if d == PLAY && on_behalf != 0 {
+            return Out::err(outcome::BAD_ARGUMENT);
+        }
         if d == REC {
             if !azos_limits::AUDIO_CAPTURE {
                 return Out::err(outcome::UNSUPPORTED);
             }
-            // The effect first: a task without it learns nothing of the device.
-            let held = OWNER[REC].load(Ordering::Acquire) != 0;
-            let reason = capture_reason(mic_effect(who.tid), indicator_available(), held);
+            // The requester's effect, never the messenger's: a task without it
+            // learns nothing of the device.
+            let reason = match snd::capture_subject(who.tid, on_behalf, |call| call_requester(who.tid, call)) {
+                Some(requester) => {
+                    subject = requester;
+                    let held = OWNER[REC].load(Ordering::Acquire) != 0;
+                    capture_reason(mic_effect(requester), indicator_available(), held)
+                }
+                None => MIC_NO_REQUEST,
+            };
             let verdict = if reason == MIC_ADMITTED { Verdict::Admit } else { Verdict::Refuse };
-            // Device 0 is the one the kernel drives.
-            azos_decision::record(Rule::AudioCapture, verdict, who.tid, [0, params.rate_hz as u64, reason as u64]);
+            // Device 0 is the one the kernel drives. The record names the
+            // requester, or the caller when there is none.
+            azos_decision::record(Rule::AudioCapture, verdict, subject, [0, params.rate_hz as u64, reason as u64]);
             if reason != MIC_ADMITTED {
                 return Out::err(outcome::REFUSED);
             }
@@ -474,16 +536,16 @@ impl snd::Sound for Server {
             return Out::err(c);
         }
         if d == REC {
-            indicator_on(who.tid);
+            indicator_on(subject);
         }
         if let Err(e) = dev::open(params.dir, &params, &geo, phys as u64) {
             unpin(obj);
             if d == REC {
-                indicator_off(who.tid);
+                indicator_off(subject);
             }
             return Out::err(code_of(e));
         }
-        h.s[d] = Some(Hosted { owner: who.tid, geo, ready: ready_end, done: done_end, arena: obj, draining: false, end_owed: false, lost: 0 });
+        h.s[d] = Some(Hosted { subject, geo, ready: ready_end, done: done_end, arena: obj, draining: false, end_owed: false, lost: 0 });
         OWNER[d].store(who.tid, Ordering::Release);
         drop(h);
         if !kick_pump() {

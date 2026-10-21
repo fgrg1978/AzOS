@@ -9,7 +9,7 @@ use azos_devif::outcome;
 use azos_devif::sound::{
     self, capture_reason, format_bit, sample_bytes, Arena, DoneQueue, Geometry, Info, Opened, Params, Period, Posted,
     ReadyQueue, Status, ARENA_BYTES_MAX, CHANNELS_MAX, DIR_CAPTURE, DIR_PLAYBACK, ENDPOINT, ENDPOINT_NAME, FMT_F32,
-    FMT_S16, FMT_S24, FMT_S32, FORMATS_ALL, MIC_ADMITTED, MIC_HELD, MIC_NO_GRANT, MIC_NO_INDICATOR, NO_PERIOD,
+    FMT_S16, FMT_S24, FMT_S32, FORMATS_ALL, MIC_ADMITTED, MIC_HELD, MIC_NO_GRANT, MIC_NO_INDICATOR, MIC_NO_REQUEST, NO_PERIOD,
     PERIODS_MAX, PERIODS_MIN, PERIOD_CANCELLED, PERIOD_END, PERIOD_FRAMES_MAX, PERIOD_FRAMES_MIN, PERIOD_XRUN,
     RATE_HZ_MAX, RATE_HZ_MIN, SLOT_WORDS, STATE_OPEN, STATE_RUNNING,
 };
@@ -37,7 +37,7 @@ impl Sound for Dev {
             period_frames_max: 4_096,
         })
     }
-    fn open(&mut self, params: Params, ready: Cap<ReadyQueue>, done: Cap<DoneQueue>, arena: Cap<Arena>) -> Out<Opened> {
+    fn open(&mut self, params: Params, ready: Cap<ReadyQueue>, done: Cap<DoneQueue>, arena: Cap<Arena>, _on_behalf: u64) -> Out<Opened> {
         self.log.push("open");
         if self.open.is_some() {
             return Out::err(outcome::BUSY);
@@ -130,7 +130,7 @@ fn the_op_table_is_the_trait_and_only_open_is_once_only() {
         }
     }
     let open = SoundIdl::OPS[1];
-    assert_eq!((open.req_words, open.req_caps, open.rep_words, open.rep_caps), (7, 3, 4, 0));
+    assert_eq!((open.req_words, open.req_caps, open.rep_words, open.rep_caps), (8, 3, 4, 0));
     assert_eq!(SoundIdl::OPS[0].rep_words, 8, "info is the widest reply the message holds");
     assert!(SoundIdl::OPS[3].deadline_ns > 0, "a stop declares how fast it must be");
 }
@@ -148,22 +148,22 @@ fn open_moves_three_objects_and_answers_the_geometry() {
     let l = lp(&dev);
     let mut c = SoundClient::new(&l);
     let (q, d, a) = (Cap::<ReadyQueue>::from_raw(10), Cap::<DoneQueue>::from_raw(11), Cap::<Arena>::from_raw(12));
-    let got = c.open(stereo(), q, d, a).unwrap();
+    let got = c.open(stereo(), q, d, a, 0).unwrap();
     assert_eq!(got, Out::ok(Opened { period_bytes: 480 * 4, latency_frames: 96 }));
     let r = *l.last.borrow();
-    assert_eq!((r.n_words, r.n_caps), (7, 3));
+    assert_eq!((r.n_words, r.n_caps), (8, 3));
     assert_eq!(r.words[0], header(SOUND_ID, 1, SoundIdl::OP_OPEN));
-    assert_eq!(&r.words[1..7], &[DIR_PLAYBACK as u64, FMT_S16 as u64, 48_000, 2, 480, 4]);
+    assert_eq!(&r.words[1..8], &[DIR_PLAYBACK as u64, FMT_S16 as u64, 48_000, 2, 480, 4, 0]);
     assert_eq!((r.caps[0].handle, r.caps[1].handle, r.caps[2].handle), (10, 11, 12), "ready, done, arena");
     assert_eq!(dev.borrow().open.as_ref().map(|o| (o.2, o.3, o.4)), Some((q, d, a)));
 
-    let again = c.open(stereo(), Cap::from_raw(20), Cap::from_raw(21), Cap::from_raw(22)).unwrap();
+    let again = c.open(stereo(), Cap::from_raw(20), Cap::from_raw(21), Cap::from_raw(22), 0).unwrap();
     assert_eq!(again.code, outcome::BUSY);
     assert_eq!(dev.borrow().open.as_ref().map(|o| o.2), Some(q), "the refused open did not replace the stream");
 
     assert_eq!(c.close(), Ok(Out::ok(())));
     let bad = Params { periods: 1, ..stereo() };
-    assert_eq!(c.open(bad, q, d, a).unwrap().code, outcome::BAD_ARGUMENT);
+    assert_eq!(c.open(bad, q, d, a, 0).unwrap().code, outcome::BAD_ARGUMENT);
     assert!(dev.borrow().open.is_none(), "nothing attached for a refused geometry");
 }
 
@@ -179,7 +179,7 @@ fn the_transport_ops_are_bare_and_the_answers_carry_whole() {
     assert_eq!(c.start().unwrap().code, outcome::NOT_READY, "no stream, nothing to start");
     assert_eq!(c.drain().unwrap().code, outcome::NOT_READY);
     assert_eq!(c.stop(), Ok(Out::ok(())));
-    c.open(stereo(), Cap::from_raw(1), Cap::from_raw(2), Cap::from_raw(3)).unwrap();
+    c.open(stereo(), Cap::from_raw(1), Cap::from_raw(2), Cap::from_raw(3), 0).unwrap();
     for (call, op) in [(0, SoundIdl::OP_START), (1, SoundIdl::OP_STOP), (2, SoundIdl::OP_DRAIN)] {
         let out = match call {
             0 => c.start(),
@@ -391,7 +391,25 @@ fn the_capture_reasons_are_decided_in_order() {
     assert_eq!(capture_reason(true, false, true), MIC_NO_INDICATOR, "no indicator is told before a held device");
     assert_eq!(capture_reason(true, true, true), MIC_HELD);
     // The numbers are the `audio-capture` decision rule's `reason` field.
-    assert_eq!([MIC_ADMITTED, MIC_NO_GRANT, MIC_NO_INDICATOR, MIC_HELD], [0, 1, 2, 3]);
+    assert_eq!([MIC_ADMITTED, MIC_NO_GRANT, MIC_NO_INDICATOR, MIC_HELD, MIC_NO_REQUEST], [0, 1, 2, 3, 4]);
+}
+
+/// Whose effect a capture open is decided on: the caller's own when it names no
+/// call, the maker of the call it names when it serves that call, and nobody's
+/// when it names a call it does not serve. The messenger's identity never
+/// stands in for the requester's.
+///
+/// **Canary.** Return `Some(caller)` whatever `on_behalf` says: the second row
+/// is red (the server decides on its own class again).
+#[test]
+fn a_capture_is_decided_for_the_requester_not_the_messenger() {
+    const SERVER: u32 = 7;
+    const CLIENT: u32 = 9;
+    let served = |call: u64| (call == 0x55).then_some(CLIENT);
+    assert_eq!(sound::capture_subject(SERVER, 0, served), Some(SERVER), "a task asks for itself");
+    assert_eq!(sound::capture_subject(SERVER, 0x55, served), Some(CLIENT), "the server asks for its client");
+    assert_eq!(sound::capture_subject(SERVER, 0x56, served), None, "a call the server does not serve names nobody");
+    assert_eq!(sound::capture_subject(SERVER, 0, |_| panic!("no call named, nothing to resolve")), Some(SERVER));
 }
 
 /// The wire structs have the words they declare.

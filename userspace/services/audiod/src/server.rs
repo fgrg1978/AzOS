@@ -58,35 +58,47 @@
 //! objects are handed to the kernel's `sound.0` **as they are** (the kernel
 //! resolves the client's queues and arena in place; nothing is copied through
 //! this task), and the kernel's gate answers. The gate is the `mic` effect of
-//! **this server's** scheduler class (the kernel sees one caller, the server's
-//! capture thread, never the client behind it), plus Kconfig `AUDIO_CAPTURE`
-//! and the microphone indicator, and it writes the `audio-capture` decision
-//! record for every attempt that reaches it, admitted or refused: ring 3 has
-//! no way to write one. That record's task is therefore the server's, not the
-//! client's; the server adds a console line naming the badge for each such
-//! attempt. `REFUSED` is passed to the client unchanged, and nothing about the
-//! server changes: the three objects are released, no lease is taken. At most
-//! one capture stream exists (the kernel's rule: one stream per direction).
-//! A badge that already has a playback stream is refused (`BUSY`) before the
-//! kernel is asked, so that refusal is not a gate record: nothing was
-//! attempted at the device.
+//! **the client's** scheduler class, plus Kconfig `AUDIO_CAPTURE` and the
+//! microphone indicator, and it writes the `audio-capture` decision record for
+//! every attempt that reaches it, admitted or refused: ring 3 has no way to
+//! write one.
+//!
+//! The kernel hears from one caller, this server's capture thread, and the
+//! server holds no microphone authority: it is the messenger of whoever asks.
+//! So the client's authority is lent with the open, as the **warrant of the
+//! call being served**: the handle `SYS_IPC_ACCEPT_V2` returned for the
+//! client's `open`, which the kernel gave this thread alone, which exists only
+//! until the reply and which names the task that made the call. The server
+//! passes it as `Sound::open`'s `on_behalf`; the kernel resolves it to that
+//! task, decides the effect on its class, records it as the subject and names
+//! it in the indicator. A client without the effect is refused (`REFUSED`) and
+//! the record names it, not this server, whatever class the server is in. The
+//! server never forwards a client's own `on_behalf` (a client has no call to
+//! name): a nonzero one is `BAD_ARGUMENT`. `REFUSED` is passed to the client
+//! unchanged, and nothing about the server changes: the three objects are
+//! released, no lease is taken. The server prints one console line per
+//! attempt that reached the gate, naming the badge. At most one capture stream
+//! exists (the kernel's rule: one stream per direction). A badge that already
+//! has a playback stream is refused (`BUSY`) before the kernel is asked, so
+//! that refusal is not a gate record: nothing was attempted at the device.
 //!
 //! The kernel binds a stream to the **thread** that opened it, and gives the
-//! `mic` effect only to a thread seeded from a topology row, which the pump
-//! thread is not: so every capture call is made by the main thread (the one
-//! that serves the endpoint), and the playback mix by the pump thread. The two
-//! therefore coexist.
+//! `mic` effect only to a thread seeded from a topology row: every capture
+//! call is made by the main thread (the one that serves the endpoint, which
+//! holds the call's warrant and is the capture stream's owner), and the
+//! playback mix by the pump thread. The two therefore coexist.
 //!
-//! Known limits, both of the same cause (ring 3 has no way to ask who called
-//! or to write a decision):
+//! Known limits:
 //!
-//! * **Every holder of `endpoint.audio` inherits the microphone** once the
-//!   server's class holds a `mic` envelope: the effect that is checked is the
-//!   server's, never the client's class's, and the server does not tell its
-//!   clients apart beyond their badge, which they choose. The capture
-//!   authority is the server's. A deployment that must keep the microphone
-//!   from some clients grants `endpoint.audio` only to the ones that may use
-//!   it, or gives the server's class no `mic` effect at all;
+//! * The server is trusted to pair a call's warrant with that call's objects.
+//!   The kernel checks that the warrant is one the server holds and decides on
+//!   its maker, not that the three objects came from the same client, so a
+//!   server that went wrong could capture into memory of its own while a
+//!   client with the effect waits in a call. It cannot do so for a client that
+//!   is not in a call to it, and it cannot do so with its own class;
+//! * the client's class is the one of the topology row its calling thread was
+//!   seeded from: a thread of the client that is not the image's main thread
+//!   has no row, so no grant;
 //! * a lease whose client stopped posting room (the device's xruns grow by
 //!   [`LEASE_STALL_XRUNS`] between two looks, [`LEASE_POLL_NS`] apart) is
 //!   closed, but only when a call next reaches the server: the main thread
@@ -168,9 +180,11 @@ pub trait Env {
     fn dev_drain(&mut self) -> Result<(), u32>;
     /// Close it and give its three objects back.
     fn dev_close(&mut self);
-    /// Hand the client's three objects to the device as a capture stream.
-    /// They are resolved in this task's table; `Ok` leaves them there.
-    fn lease_open(&mut self, params: Params, ready: u32, done: u32, arena: u32) -> Result<Opened, u32>;
+    /// Hand the client's three objects to the device as a capture stream, for
+    /// the client whose call `on_behalf` is the warrant of (`Sound::open`'s
+    /// argument of that name). The objects are resolved in this task's table;
+    /// `Ok` leaves them there.
+    fn lease_open(&mut self, params: Params, ready: u32, done: u32, arena: u32, on_behalf: u64) -> Result<Opened, u32>;
     fn lease_start(&mut self) -> Result<(), u32>;
     fn lease_stop(&mut self) -> Result<(), u32>;
     fn lease_drain(&mut self) -> Result<(), u32>;
@@ -362,6 +376,10 @@ pub struct Server<E: Env> {
     /// The badge of the call being served (0: unidentified). Set by the loop
     /// before each dispatch.
     pub caller: u32,
+    /// The warrant of the call being served (0: none), the handle
+    /// `SYS_IPC_ACCEPT_V2` returned. Set by the loop with `caller`; it is the
+    /// client's authority for a capture open.
+    pub call: u64,
     streams: [Option<Stream>; STREAMS_MAX],
     lease: Option<Lease>,
     lease_cache: Option<Status>,
@@ -398,6 +416,7 @@ impl<E: Env> Server<E> {
             env,
             limits,
             caller: 0,
+            call: 0,
             streams: [const { None }; STREAMS_MAX],
             lease: None,
             lease_cache: None,
@@ -717,9 +736,13 @@ impl<E: Env> snd::Sound for Server<E> {
         ready: WireCap<snd::ReadyQueue>,
         done: WireCap<snd::DoneQueue>,
         arena: WireCap<snd::Arena>,
+        on_behalf: u64,
     ) -> Out<Opened> {
         let caps = [ready.raw(), done.raw(), arena.raw()];
-        let r = self.open_inner(params, caps);
+        // A client has no call of its own to name: the warrant the kernel
+        // gets is the one of the client's call to this server, never a value
+        // the client chose.
+        let r = if on_behalf != 0 { out_err(outcome::BAD_ARGUMENT) } else { self.open_inner(params, caps) };
         // A refused open leaves the three objects with this task, which has no
         // use for them.
         if r.code != outcome::OK {
@@ -926,10 +949,15 @@ impl<E: Env> Server<E> {
         if self.slot_of(self.caller).is_some() {
             return out_err(outcome::BUSY);
         }
+        // Without a call being served there is no client to ask for, and this
+        // server asks for nobody but its clients.
+        if self.call == 0 {
+            return out_err(outcome::DENIED);
+        }
         // Asked even when a lease is held: the kernel orders its answers so a
         // task without the effect is refused before it learns the device is
-        // busy, and it records every attempt.
-        let r = self.env.lease_open(params, caps[0], caps[1], caps[2]);
+        // busy, and it records every attempt, naming the client.
+        let r = self.env.lease_open(params, caps[0], caps[1], caps[2], self.call);
         self.log_capture_attempt(r.is_ok());
         match r {
             Ok(o) => {
@@ -942,9 +970,8 @@ impl<E: Env> Server<E> {
     }
 
     /// One console line per capture attempt that reached the kernel's gate,
-    /// naming the badge. The gate's `audio-capture` record names the server's
-    /// thread (the only caller the kernel sees), so this line is what ties an
-    /// attempt to the badge it came through.
+    /// naming the badge. The gate's `audio-capture` record names the client's
+    /// task; this line ties it to the badge the client's calls come through.
     fn log_capture_attempt(&mut self, admitted: bool) {
         let (mut line, mut n) = ([0u8; 96], 0);
         let (bd, bn) = digits(self.caller);

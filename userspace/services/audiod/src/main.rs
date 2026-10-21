@@ -7,9 +7,11 @@
 //! device stream it holds. Clients open streams on `endpoint.audio` with the
 //! same `Sound` interface the kernel serves on `sound.0` and hand it periods
 //! of memory; the server mixes them into the device's one playback stream.
-//! Capture is lent, never mixed. The decisions are `server.rs` (pure, tested
-//! on the host in `tests/host/audiod-tests`) and `mixer.rs`; this file is the
-//! world they run in: the kernel calls behind [`Env`], and the two threads.
+//! Capture is lent, never mixed, and decided on the client's microphone effect,
+//! never the server's: the server holds none. The decisions are `server.rs`
+//! (pure, tested on the host in `tests/host/audiod-tests`) and `mixer.rs`; this
+//! file is the world they run in: the kernel calls behind [`Env`], and the two
+//! threads.
 //!
 //! Two threads, because a call can arrive while a period is due: the main
 //! thread accepts calls (the endpoint's `READ` grant is stamped with the main
@@ -123,7 +125,7 @@ impl Env for Kernel {
         let (rq, dq) = (SpscSlots::<{ snd::SLOT_WORDS }> { base: ready.va, cap: slots }, SpscSlots::<{ snd::SLOT_WORDS }> { base: done.va, cap: slots });
         rq.init();
         dq.init();
-        let opened = Self::code(self.snd.open(params, Cap::from_raw(ready.cap), Cap::from_raw(done.cap), Cap::from_raw(arena.cap)));
+        let opened = Self::code(self.snd.open(params, Cap::from_raw(ready.cap), Cap::from_raw(done.cap), Cap::from_raw(arena.cap), 0));
         match opened {
             Ok(o) if o.period_bytes == geo.period_bytes => {
                 self.dev = Some([ready, done, arena]);
@@ -158,8 +160,8 @@ impl Env for Kernel {
         }
     }
 
-    fn lease_open(&mut self, params: Params, ready: u32, done: u32, arena: u32) -> Result<Opened, u32> {
-        Self::code(self.snd.open(params, Cap::from_raw(ready), Cap::from_raw(done), Cap::from_raw(arena)))
+    fn lease_open(&mut self, params: Params, ready: u32, done: u32, arena: u32, on_behalf: u64) -> Result<Opened, u32> {
+        Self::code(self.snd.open(params, Cap::from_raw(ready), Cap::from_raw(done), Cap::from_raw(arena), on_behalf))
     }
 
     fn lease_start(&mut self) -> Result<(), u32> {
@@ -274,9 +276,12 @@ pub extern "C" fn _start() -> ! {
         let mut rep = MsgDesc::default();
         with(|s| {
             s.caller = badge;
+            // The call's warrant is the client's authority for a capture open.
+            s.call = call as u64;
             s.prepare();
             let _ = SoundIdl::dispatch(s, &req, &mut rep);
             s.caller = 0;
+            s.call = 0;
         });
         // The pump re-reads its streams: a stream may have started.
         CHANGED.fetch_add(1, Ordering::Release);

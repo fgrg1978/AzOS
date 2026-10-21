@@ -55,18 +55,35 @@
 //! ([`Status::xruns`]) and the next period returned is flagged
 //! [`PERIOD_XRUN`], so the client sees where the gap is.
 //!
-//! # Capture needs the microphone effect
+//! # Capture needs the microphone effect, the requester's
 //!
 //! A capture stream is an irreversible effect on the person in the room, so
 //! it is never granted by the capability alone. [`Sound::open`] with
 //! [`DIR_CAPTURE`] needs the **`mic` effect** (`azos_topology::EffectKind::Mic`)
-//! to be admitted for the caller's scheduler class: an `[envelope.NAME]` row
-//! with `kind = "mic"` whose ceiling is `contained` withholds it (a class with
-//! no such row has the full effect), exactly as the effect gate treats any
+//! to be admitted for the **requester's** scheduler class: an `[envelope.NAME]`
+//! row with `kind = "mic"` whose ceiling is `contained` withholds it (a class
+//! with no such row has the full effect), exactly as the effect gate treats any
 //! other kind. Every attempt, admitted or refused, writes a decision record
-//! (`azos_decision::Rule::AudioCapture`: device, rate, reason). [`capture_reason`]
-//! is the order the reasons are decided in, so the server and its tests agree
-//! on which one a refusal reports. A refused capture answers `REFUSED`.
+//! (`azos_decision::Rule::AudioCapture`: device, rate, reason) whose subject is
+//! the requester. [`capture_reason`] is the order the reasons are decided in,
+//! so the server and its tests agree on which one a refusal reports. A refused
+//! capture answers `REFUSED`.
+//!
+//! **The requester is whoever asked, not whoever the kernel hears from.** A
+//! task that calls the device itself asks for itself (`on_behalf` is 0). A
+//! server in front of the device (the audio server) is only the messenger of
+//! its clients: it names the call it is serving in `on_behalf`, the warrant
+//! the kernel gave it when it accepted that call. The kernel resolves the
+//! warrant to the task that made the call and decides the effect on **that**
+//! task's class, records **that** task as the subject, and names it in the
+//! microphone indicator; the server's own class is never consulted. The
+//! warrant is the client's authority lent for the length of its call: it
+//! exists only while the call is unanswered, only its holder can name it, and
+//! it ends with the reply, so it cannot be kept, replayed or passed to another
+//! client's capture. A warrant that is not one the caller is serving is
+//! refused ([`MIC_NO_REQUEST`]) and recorded against the caller. Every client
+//! passes 0: a server never forwards its client's value, it refuses one
+//! (`BAD_ARGUMENT`), because a client has no call of its own to name.
 //!
 //! # Outcomes
 //!
@@ -78,7 +95,7 @@
 //! valid request the device cannot do (a direction, format, rate or channel
 //! count outside [`Info`]). `BUSY`: a stream is already open on this
 //! capability, another task holds the device exclusively, or `start` while
-//! `DRAINING`. `REFUSED`: capture without the microphone effect. `FAULT`: the
+//! `DRAINING`. `REFUSED`: capture without the microphone effect of the requester. `FAULT`: the
 //! device failed the op.
 //!
 //! # Failure contract
@@ -438,7 +455,7 @@ impl Posted {
 
 /// [`capture_reason`]: admitted.
 pub const MIC_ADMITTED: u32 = 0;
-/// [`capture_reason`]: the caller's class has no microphone effect (its
+/// [`capture_reason`]: the requester's class has no microphone effect (its
 /// `mic` envelope ceiling is `contained`).
 pub const MIC_NO_GRANT: u32 = 1;
 /// [`capture_reason`]: the indicator that tells the person a microphone is
@@ -446,6 +463,23 @@ pub const MIC_NO_GRANT: u32 = 1;
 pub const MIC_NO_INDICATOR: u32 = 2;
 /// [`capture_reason`]: another task holds the device exclusively.
 pub const MIC_HELD: u32 = 3;
+/// A refusal that comes before [`capture_reason`] has a subject to ask about:
+/// the call `on_behalf` names is not one the caller is serving, so there is no
+/// requester (see [`capture_subject`]).
+pub const MIC_NO_REQUEST: u32 = 4;
+
+/// Whose `mic` effect decides a capture open, and whom the record and the
+/// indicator name. `caller` is the task that called the device; `on_behalf` is
+/// the open's argument of that name, and `served` maps it to the task that made
+/// the call it names, when the caller is the one serving that call. `None` is a
+/// request with no requester ([`MIC_NO_REQUEST`]).
+pub fn capture_subject(caller: u32, on_behalf: u64, served: impl FnOnce(u64) -> Option<u32>) -> Option<u32> {
+    if on_behalf == 0 {
+        Some(caller)
+    } else {
+        served(on_behalf)
+    }
+}
 
 /// Why a capture stream is admitted or refused: the `reason` word of the
 /// `audio-capture` decision record. The order is the contract: no grant is
@@ -525,13 +559,24 @@ pub trait Sound {
     /// produces) and the `arena`, each at least the size `Params::check`
     /// computes (`BAD_ARGUMENT` otherwise) and held with the rights named at
     /// the types. The stream is `OPEN`, not running. `BUSY` while a stream is
-    /// open on the capability. Capture needs the microphone effect (`REFUSED`
-    /// without it). Needs `WRITE`.
+    /// open on the capability. Capture needs the microphone effect of the
+    /// requester's class (`REFUSED` without it). `on_behalf` is 0 for every
+    /// client; a server that opens the stream for a client passes the warrant
+    /// of the call it is serving (the module doc, "Capture needs the
+    /// microphone effect, the requester's"), and a playback open names none
+    /// (`BAD_ARGUMENT`). Needs `WRITE`.
     #[once_only]
     #[on_failure(degrade)]
     #[deadline_ns = 20_000_000]
     #[budget_us = 500]
-    fn open(&mut self, params: Params, ready: Cap<ReadyQueue>, done: Cap<DoneQueue>, arena: Cap<Arena>) -> Out<Opened>;
+    fn open(
+        &mut self,
+        params: Params,
+        ready: Cap<ReadyQueue>,
+        done: Cap<DoneQueue>,
+        arena: Cap<Arena>,
+        on_behalf: u64,
+    ) -> Out<Opened>;
     /// Start moving periods: `OPEN` becomes `RUNNING`. Served when already
     /// running; `NOT_READY` with no stream open; `BUSY` while draining. Needs
     /// `WRITE`.

@@ -136,6 +136,34 @@ pub fn shim_take_trace_events() -> Vec<(u8, u32, u32, u32, u32)> {
     std::mem::take(&mut *TRACE_EVENTS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// Stand-in for `azos_ipc::fastcall`'s `warrant_peer` (the sound host asks it
+/// who made the call a server says it is serving). The real one is
+/// `ep_queue::warrant_peer`, tested with its queues in `tests/host/ipc-fast-tests`
+/// (the holder alone, the call unanswered); here a test says which calls are
+/// being served.
+pub mod fastcall {
+    /// `(handle, holder, caller)` of every call a test set up as accepted and
+    /// unanswered.
+    static SERVING: std::sync::Mutex<Vec<(u64, u32, u32)>> = std::sync::Mutex::new(Vec::new());
+
+    /// `(caller, is v2)` of the unanswered call `handle` names, when `holder`
+    /// holds its warrant.
+    pub fn warrant_peer(handle: u64, holder: u32) -> Option<(u32, bool)> {
+        let v = SERVING.lock().unwrap_or_else(|e| e.into_inner());
+        v.iter().find(|&&(h, s, _)| h == handle && s == holder).map(|&(_, _, caller)| (caller, true))
+    }
+
+    /// Test-only: `holder` has accepted the call `handle` of task `caller`.
+    pub fn shim_serve(handle: u64, holder: u32, caller: u32) {
+        SERVING.lock().unwrap_or_else(|e| e.into_inner()).push((handle, holder, caller));
+    }
+
+    /// Test-only: every call is answered.
+    pub fn shim_answer_all() {
+        SERVING.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
 /// Stand-in for `azos_ipc::trace`'s region (wave 15): no tracer region on
 /// the host, so the tracer's ops answer `-ENOSYS` once its capability
 /// check has passed. The check itself is the real one.
