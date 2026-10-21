@@ -27,6 +27,7 @@
 #![no_main]
 
 use azos_abi::cap::CapPerms;
+use azos_inspect_lib::{str_in, Inspector, Source};
 use azos_libsys as sys;
 use sys::dev::{Bytes, BlockCall, BlockClient, Ep, GpioCall, GpioClient, I2cCall, I2cClient, MotorCall, MotorClient, PwmCall, PwmClient, Regs};
 
@@ -1030,7 +1031,8 @@ pub extern "C" fn _start() -> ! {
     // topology grants this program READ on a device nothing drives (riscv64
     // the `sifive,test1` finisher, aarch64 the PL061 GPIO) and READ|WRITE on
     // the board's RTC (the IRQ section below needs it writable). Each
-    // device's handle is in `/proc/devices`, which says what the device is.
+    // device's handle is its directory in the introspection tree's
+    // `devices/`, whose `identity` says what the device is.
     //
     // Last on purpose: the refusals are capability denials, and denial
     // records are bounded per task.
@@ -1044,8 +1046,8 @@ pub extern "C" fn _start() -> ! {
 
         let ro = device_handle(rtc::RO_DEVICE);
         let rw = device_handle(rtc::DEVICE);
-        report(b"/proc/devices lists the granted read-only device", ro.is_some(), ro.unwrap_or(0) as isize);
-        report(b"/proc/devices lists the RTC", rw.is_some(), rw.unwrap_or(0) as isize);
+        report(b"devices/ lists the granted read-only device", ro.is_some(), ro.unwrap_or(0) as isize);
+        report(b"devices/ lists the RTC", rw.is_some(), rw.unwrap_or(0) as isize);
         if let (Some(ro), Some(rw)) = (ro, rw) {
             let va = sys::mmio_map(ro, ACCESS_READ);
             report(b"mmio_map(device, READ) [granted, read-only]", va > 0, va);
@@ -1112,7 +1114,7 @@ mod rtc {
     /// `hw::RTC_IRQ`: `pl031@9010000`'s `interrupts = <0 2 4>`, SPI 2.
     pub const LINE: u32 = 34;
     pub const NAME: &[u8] = b"PL031";
-    /// What `/proc/devices` calls it, and the read-only device the topology
+    /// What `devices/<handle>/identity` calls it, and the read-only device the topology
     /// grants beside it (a PL061 GPIO nothing drives).
     pub const DEVICE: &[u8] = b"dt:arm,pl031";
     pub const RO_DEVICE: &[u8] = b"dt:arm,pl061";
@@ -1173,7 +1175,7 @@ mod rtc {
     /// `rtc@101000`'s `interrupts = <0x0b>` (PLIC) / `<0x0b 0x04>` (APLIC).
     pub const LINE: u32 = 11;
     pub const NAME: &[u8] = b"goldfish RTC";
-    /// What `/proc/devices` calls it, and the read-only device the topology
+    /// What `devices/<handle>/identity` calls it, and the read-only device the topology
     /// grants beside it (the `sifive,test1` finisher, which nothing drives).
     pub const DEVICE: &[u8] = b"dt:google,goldfish-rtc";
     pub const RO_DEVICE: &[u8] = b"dt:sifive,test1";
@@ -1239,60 +1241,41 @@ fn poll_event(port: u32, ms: u64) -> Option<(u8, u32, u64)> {
     }
 }
 
-/// `/proc/devices` into `buf`; the bytes read.
-fn read_devices(buf: &mut [u8]) -> usize {
-    let f = sys::open_root(sys::cstr!(b"/proc/devices"), 0);
-    if f < 0 {
-        return 0;
-    }
-    let mut n = 0;
-    while n < buf.len() {
-        let r = sys::file_read_typed(f as u32, &mut buf[n..]);
-        if r <= 0 {
-            break;
-        }
-        n += r as usize;
-    }
-    let _ = sys::close_typed(f as u32);
-    n
-}
-
-/// The lines of `/proc/devices`: `<handle> <name> <identity> <state> ...`.
-fn device_lines(text: &[u8]) -> impl Iterator<Item = (u64, &[u8])> {
-    text.split(|&b| b == b'\n').filter_map(|line| {
-        let end = line.iter().position(|&b| b == b' ')?;
-        let mut h = 0u64;
-        for &d in &line[..end] {
-            if !d.is_ascii_digit() {
-                return None;
+/// The first device of the introspection tree's `devices/` (the public region
+/// this program's row grants) whose identity and state satisfy `want`: its
+/// handle, the directory's name.
+fn find_device(want: &dyn Fn(&[u8], &[u8]) -> bool) -> Option<u64> {
+    let m = sys::inspect_map(azos_abi::cap::SHM_INSPECT_PUBLIC).ok()?;
+    // SAFETY: the mapping lives as long as the task, read-only, and the kernel
+    // writes it only with aligned 64-bit stores.
+    let mut tree = unsafe { Inspector::from_mapped(m, None) }.ok()?;
+    tree.with(Source::Public, |r| {
+        let mut found = None;
+        let Some(dir) = r.lookup("devices")? else { return Ok(None) };
+        r.children(dir, &mut |info, _| {
+            if found.is_some() {
+                return;
             }
-            h = h * 10 + (d - b'0') as u64;
-        }
-        Some((h, &line[end..]))
+            let (Ok(Some(id)), Ok(Some(st))) = (str_in(r, info.id, "identity"), str_in(r, info.id, "state")) else { return };
+            if want(id.as_bytes(), st.as_bytes()) {
+                found = info.name.as_str().parse().ok();
+            }
+        })?;
+        Ok(found)
     })
-}
-
-fn has(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+    .ok()
+    .flatten()
 }
 
 /// The handle of the first device whose identity is `identity`
 /// (`dt:google,goldfish-rtc`).
 fn device_handle(identity: &[u8]) -> Option<u64> {
-    let mut buf = [0u8; 4096];
-    let n = read_devices(&mut buf);
-    let found = device_lines(&buf[..n]).find(|(_, rest)| has(rest, identity)).map(|(h, _)| h);
-    found
+    find_device(&|id, _| id == identity)
 }
 
 /// A device nothing owns (unmatched) that is none of `except`.
 fn device_handle_not(except: &[&[u8]]) -> Option<u64> {
-    let mut buf = [0u8; 4096];
-    let n = read_devices(&mut buf);
-    let found = device_lines(&buf[..n])
-        .find(|(_, rest)| has(rest, b" unmatched ") && !except.iter().any(|e| has(rest, e)))
-        .map(|(h, _)| h);
-    found
+    find_device(&|id, st| st == b"unmatched" && !except.contains(&id))
 }
 
 fn print_line_msg(msg: &[u8]) {

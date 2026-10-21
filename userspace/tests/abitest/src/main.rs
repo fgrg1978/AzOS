@@ -55,15 +55,13 @@ compile_error!("abitest: no syscall instruction for this ISA (riscv64, aarch64, 
 use azos_libsys as sys;
 use sys::dev::{MotorCall, MotorClient, Regs};
 
-// The wait bounded by the guest's clock, the `/proc/tasks` view and the child
+// The wait bounded by the guest's clock, the kernel's task list and the child
 // spawner, shared with the image the children run (`abichild`).
 // Each program uses the half of it the other does not.
 #[allow(dead_code)]
 #[path = "../../abichild/src/shared.rs"]
 mod shared;
-use shared::{
-    children_of, dec, proc_task_rows, reap_by_tid, spawn_child, Deadline,
-};
+use shared::{children_of, dec, reap_by_tid, spawn_child, task_rows, Deadline};
 
 static mut FAILURES: u32 = 0;
 static mut CHECKS: u32 = 0;
@@ -192,7 +190,7 @@ fn abitest_main() -> ! {
     check_exit_gives_memory_back();
     check_exit_storm();
     check_unreaped_children_are_kept();
-    check_proc_view();
+    check_views();
     // The memory permissions a process starts with; each starts a child that
     // breaks one and reaps it by TID.
     check_code_is_read_only();
@@ -1918,9 +1916,9 @@ fn check_unreaped_children_are_kept() {
         kids[n] = pid as u32;
         n += 1;
         // Let it exit before the next spawn: the table must fill with
-        // notices, not with live children (`/proc/tasks` shows it as `Z`).
+        // notices, not with live children (the task list shows it as `Z`).
         let mut deadline = Deadline::in_ms(5_000);
-        while !shared::proc_exited(pid as u32) && !deadline.expired() {
+        while !shared::task_exited(pid as u32) && !deadline.expired() {
             sys::sleep(1);
         }
     }
@@ -1971,96 +1969,61 @@ fn check_unreaped_children_are_kept() {
     expect_true(b"zombies: a spawn works again once they are reaped", again_reaped);
 }
 
-/// `/proc/<tid>\0` into `buf`; the path's length with its NUL.
-fn proc_tid_path(tid: u32, buf: &mut [u8; 20]) -> usize {
-    buf[..6].copy_from_slice(b"/proc/");
-    let mut digits = [0u8; 10];
-    let mut n = 0;
-    let mut v = tid;
-    loop {
-        digits[n] = b'0' + (v % 10) as u8;
-        n += 1;
-        v /= 10;
-        if v == 0 { break; }
-    }
-    for i in 0..n {
-        buf[6 + i] = digits[n - 1 - i];
-    }
-    buf[6 + n] = 0;
-    7 + n
-}
-
-/// Wave 12 (owner round 48, Linux `hidepid=2`): an image without the full
-/// task view (`Cap<Task>` READ on `"tasks"`; ABITEST.ELF's row holds none)
-/// sees in `/proc/tasks` only itself and its descendants — here itself, a
-/// child and the child's own child, and nothing else: not its parent, not
-/// the idle tasks, not any other row. By path, `/proc/<tid>` opens for
-/// itself and a descendant, and a foreign live TID (1, hart 0's idle task)
-/// is refused exactly as a TID nobody holds is: it is not even visible.
+/// The introspection regions a row is granted are the ones it declares:
+/// `ABITEST.ELF`'s row (the autorun row) declares the public region, and the
+/// admin one against the task view it holds, and no view region. Each view
+/// key (`SHM_INSPECT_NAMES` .. `SHM_INSPECT_CLOCK`) finds no capability, and
+/// the public region names no task (`sched/tasks` is the admin region's).
+/// The task list itself is checked by its users below: a child, its child,
+/// an orphan's adopter.
 ///
-/// Canary: the kernel feature `proc-hidepid-canary` compiles the filter out;
-/// every line here goes red but the descendant ones.
-fn check_proc_view() {
-    let me = sys::getpid() as u32;
-    let child = spawn_child(&[b"tree"]);
-    expect_true(b"proc view: spawn a child", child > 0);
-    if child <= 0 { return; }
-    let child = child as u32;
-
-    // Until the grandchild exists: three rows.
-    let mut rows = [(0u32, 0u32); 64];
-    let mut n = None;
-    let mut deadline = Deadline::in_ms(5_000);
-    while !deadline.expired() {
-        n = proc_task_rows(&mut rows);
-        if n.is_none() || n.unwrap_or(0) >= 3 { break; }
-        sys::sleep(5);
-    }
-    let n = n.unwrap_or(0);
-    let shown = &rows[..n.min(rows.len())];
-    let grandchild = shown.iter().find(|r| r.1 == child).map(|r| r.0).unwrap_or(0);
-    out(b"[ABITEST] proc view: rows=");
-    print_i(n as isize);
-    out(b" self=");
-    print_i(me as isize);
-    out(b" child=");
-    print_i(child as isize);
-    out(b" grandchild=");
-    print_i(grandchild as isize);
+/// Canary: the kernel feature `inspect-view-canary` grants every view region
+/// with the public one: the `views: ... not granted` lines go red.
+fn check_views() {
+    use azos_abi::cap::*;
+    let public = sys::cap_lookup(sys::ty::SHM.raw(), SHM_INSPECT_PUBLIC);
+    let admin = sys::cap_lookup(sys::ty::SHM.raw(), SHM_INSPECT_ADMIN);
+    let keys = [
+        SHM_INSPECT_NAMES, SHM_INSPECT_RPC, SHM_INSPECT_MCP, SHM_INSPECT_COMPONENTS, SHM_INSPECT_LOGINS, SHM_INSPECT_CLOCK,
+    ];
+    let granted = keys.iter().filter(|&&k| sys::cap_lookup(sys::ty::SHM.raw(), k) > 0).count();
+    out(b"[ABITEST] views: public=");
+    print_i((public > 0) as isize);
+    out(b" admin=");
+    print_i((admin > 0) as isize);
+    out(b" views=");
+    print_i(granted as isize);
     outln(b"");
-    expect_true(b"proc view: /proc/tasks lists itself", shown.iter().any(|r| r.0 == me));
-    expect_true(b"proc view: /proc/tasks lists its child", shown.iter().any(|r| r.0 == child && r.1 == me));
-    expect_true(b"proc view: /proc/tasks lists its grandchild", grandchild != 0);
-    expect_eq(b"proc view: /proc/tasks lists nothing else (hidepid)", n as isize, 3);
-    expect_true(b"proc view: no idle task listed", !shown.iter().any(|r| r.0 == 1));
-
-    let mut path = [0u8; 20];
-    let l = proc_tid_path(me, &mut path);
-    let fd = sys::open_root(&path[..l], 0);
-    expect_pos(b"proc view: /proc/<self> opens", fd);
-    if fd >= 0 { sys::close(fd as u64); }
-    let l = proc_tid_path(child, &mut path);
-    let fd = sys::open_root(&path[..l], 0);
-    expect_pos(b"proc view: /proc/<child> opens", fd);
-    if fd >= 0 { sys::close(fd as u64); }
-    let l = proc_tid_path(1, &mut path);
-    let foreign = sys::open_root(&path[..l], 0);
-    if foreign >= 0 { sys::close(foreign as u64); }
-    let l = proc_tid_path(4_000_000_000, &mut path);
-    let absent = sys::open_root(&path[..l], 0);
-    if absent >= 0 { sys::close(absent as u64); }
-    expect_err(b"proc view: /proc/1 (a foreign live TID) does not open", foreign);
-    expect_eq(b"proc view: a foreign TID fails as an absent one does", foreign, absent);
-
-    let mut st = 0i32;
-    let mut deadline = Deadline::in_ms(20_000);
-    let mut got = -1;
-    while !deadline.expired() {
-        got = sys::waitpid(child, &mut st as *mut i32);
-        if got > 0 { break; }
-        sys::sleep(5);
+    expect_true(b"views: the public region is granted", public > 0);
+    expect_true(b"views: the admin region is granted against the task view", admin > 0);
+    for (k, name) in keys.iter().zip([
+        &b"views: inspect.names is not granted"[..],
+        b"views: inspect.rpc is not granted",
+        b"views: inspect.mcp is not granted",
+        b"views: inspect.components is not granted",
+        b"views: inspect.logins is not granted",
+        b"views: inspect.clock is not granted",
+    ]) {
+        expect_true(name, sys::cap_lookup(sys::ty::SHM.raw(), *k) < 0);
     }
-    expect_eq(b"proc view: the child is reaped", got, child as isize);
+    let tasks = sys::inspect_map(SHM_INSPECT_PUBLIC)
+        .ok()
+        // SAFETY: the mapping lives as long as the task, read-only, and the
+        // kernel writes it only with aligned 64-bit stores.
+        .and_then(|m| unsafe { azos_inspect_lib::Inspector::from_mapped(m, None) }.ok())
+        .map(|mut v| v.with(azos_inspect_lib::Source::Public, |r| r.lookup("sched/tasks")).ok().flatten().is_some());
+    expect_true(b"views: the public region names no task", tasks == Some(false));
+    // The task list (admin) shows this task and a child it starts.
+    let child = spawn_child(&[b"nap", b"2000"]);
+    expect_true(b"views: spawn a child", child > 0);
+    if child <= 0 { return; }
+    let mut rows = [(0u32, 0u32, 0u8); 64];
+    let n = task_rows(&mut rows).unwrap_or(0).min(rows.len());
+    let me = sys::getpid() as u32;
+    expect_true(b"views: the task list shows this task", rows[..n].iter().any(|r| r.0 == me));
+    expect_true(b"views: the task list shows the child under it", rows[..n].iter().any(|r| r.0 == child as u32 && r.1 == me));
+    let (got, _) = reap_by_tid(child);
+    expect_eq(b"views: the child is reaped", got, child);
 }
 
 // ── Wave 13: native threads ─────────────────────────────────────────────────
@@ -2121,8 +2084,8 @@ extern "C" fn t_contend(_z: u64, _stack: u64, _arg: u64) -> ! {
 }
 
 /// Use the creator's file handle, open a file of its own for the creator,
-/// then wait at the gate until released (so it is alive for the /proc
-/// checks).
+/// then wait at the gate until released (so it is alive for the task-list
+/// check).
 extern "C" fn t_tables(_z: u64, _stack: u64, _arg: u64) -> ! {
     let mut b = [0u8; 1];
     let h = T_HANDLE.load(AO::Acquire);
@@ -2245,8 +2208,8 @@ fn t_join(i: usize) -> bool {
 /// Native threads (wave 13): two threads and the main thread contend on a
 /// futex lock over shared memory; a thread uses the creator's file handle
 /// and opens one the creator then uses (one capability table, one
-/// descriptor table); `/proc` shows a thread to its own process and hides it
-/// from a child process; `exit` from any thread ends the whole process.
+/// descriptor table); the task list shows the thread; `exit` from any thread
+/// ends the whole process.
 ///
 /// Canaries (gate rows): `threads-private-table-canary` gives a thread its
 /// own table, so the handle checks fail; `futex-wake-noop-canary` makes a
@@ -2334,17 +2297,10 @@ fn check_threads() {
     let mut b = [0u8; 1];
     expect_true(b"threads: the creator reads through the thread's handle",
                 opened != 0 && opened != u32::MAX && sys::read(opened as u64, &mut b) == 1);
-    // 4. /proc: the thread is the process's, hidden from a child process.
-    let mut path = [0u8; 20];
-    let l = proc_tid_path(t.max(0) as u32, &mut path);
-    let fd = sys::open_root(&path[..l], 0);
-    expect_pos(b"threads: /proc/<thread> opens for its own process", fd);
-    if fd >= 0 { sys::close(fd as u64); }
-    let pid = spawn_child(&[b"hidden", &path[..l - 1]]);
-    if pid > 0 {
-        let (got, st) = reap_by_tid(pid);
-        expect_true(b"threads: /proc/<thread> is hidden from a child process", got == pid && st == 0);
-    }
+    // 4. The task list shows the thread under its process.
+    let mut rows = [(0u32, 0u32, 0u8); 64];
+    let n = task_rows(&mut rows).unwrap_or(0).min(rows.len());
+    expect_true(b"threads: the task list shows the thread", rows[..n].iter().any(|r| r.0 == t.max(0) as u32));
     T_GATE.store(1, AO::Release);
     let _ = sys::futex_wake(&T_GATE, 1);
     expect_true(b"threads: the table thread joined", t_join(2));
@@ -2417,8 +2373,8 @@ const ORPHAN_ADOPTED: i32 = 0x5A;
 
 /// Wave 13 (orphans, Linux's model): when a task exits, its children go to
 /// the nearest live ancestor marked a child subreaper, else to init — this
-/// image, the autorun row's task — and they are visible to the adopter in
-/// `/proc/tasks` (hidepid view) and reaped by its `waitpid`.
+/// image, the autorun row's task — and they are listed under the adopter in
+/// the task list and reaped by its `waitpid`.
 ///
 /// 1. Init: a child starts a grandchild and exits. The grandchild sees itself
 ///    adopted by this task; this task lists it as its child, asks it to
@@ -2454,7 +2410,7 @@ fn check_orphans() {
     out(b" orphan=");
     print_i(orphan as isize);
     outln(b"");
-    expect_true(b"orphans: /proc/tasks shows the orphan as init's child", orphan != 0);
+    expect_true(b"orphans: the task list shows the orphan as init's child", orphan != 0);
     if orphan != 0 {
         expect_true(b"orphans: init asks the listed orphan to stop",
                     sys::task_kill(orphan, sys::KILL_REQUEST, 1, 0) >= 1);

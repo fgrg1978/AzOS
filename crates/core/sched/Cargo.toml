@@ -139,10 +139,6 @@ linux-sigchld-canary = []
 # Wave 13 canary: a process-directed signal goes to the process's leader
 # even when the leader blocks it (no member that does not is chosen).
 linux-sig-thread-canary = []
-# Wave 12 canary (owner round 48): the `/proc` task filter is compiled out,
-# so every reader sees every task. The `/proc` hidepid rows must fail with it.
-# Never in a real build.
-proc-hidepid-canary = []
 # Wave 13 canary: an exiting task's children are not re-parented and its
 # unreaped children's notices are dropped (wave 12's behaviour). The orphan
 # rows must fail with it. Never in a real build.

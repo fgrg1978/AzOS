@@ -6,6 +6,8 @@ version = 4
 name = "abichild"
 version = "0.1.0"
 dependencies = [
+ "azos_abi",
+ "azos_inspect_lib",
  "azos_libsys",
 ]
 
@@ -43,6 +45,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "azos_inspect"
+version = "0.1.0"
+
+[[package]]
+name = "azos_inspect_lib"
+version = "0.1.0"
+dependencies = [
+ "azos_inspect",
 ]
 
 [[package]]

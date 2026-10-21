@@ -1897,8 +1897,8 @@ fork refusal names its site
 aarch64 fork refusal site
 exit: notice after teardown
 aarch64 exit notice order
-proc: hidepid view
-aarch64 proc: hidepid view
+inspect: views need their grant
+aarch64 inspect: views need their grant
 console: no splice smp4
 aarch64 console: no splice
 ml data signed
@@ -4940,7 +4940,7 @@ par "aarch64 preemption (qemu)" aarch64_phase3_qemu_row
 # device-name and device-handle fixes from this task (ISA-neutral
 # munmap-refused check: GICD/GICR/UART, not CLINT/PLIC/UART; the MMIO section
 # maps the hardware-bus devices the topology grants by selector, the PL031 RTC
-# and the PL061 GPIO, found by their identity in `/proc/devices`), plus
+# and the PL061 GPIO, found by their identity in the introspection tree's `devices/`), plus
 # `install_robot_hw`'s GPIO/PWM/I2C + motor-binding boot step. Full parity:
 # ALL PASSED, same as riscv64 — no known gap on this one.
 aarch64_captest_row() {
@@ -5876,25 +5876,23 @@ dead_client_row() { # <label> <isa: rv|arm>
 par "kill: dead client released" dead_client_row "kill: dead client released" rv
 par "aarch64 dead client"        dead_client_row "aarch64 dead client"        arm
 
-# ── proc: hidepid=2 task view, BOTH ISAs (wave 12, owner round 48) ─────────
+# ── inspect: a view region needs its grant, BOTH ISAs ───────────────────────
 #
-# `/proc/tasks` shows a reader only itself and its descendants unless it holds
-# `Cap<Task>` READ on "tasks"; `/proc/<tid>` names nothing for a TID it may not
-# see, answering exactly as for a TID nobody holds. abitest's
-# `check_proc_view` (ABITEST.ELF holds no such grant) starts a child that
-# starts a grandchild, then reads both files:
+# The kernel keeps no /proc: the topology wiring a service reads is in a view
+# region of the introspection tree (`inspect.names`, `.rpc`, `.mcp`,
+# `.components`, `.logins`, `.clock`), granted only to the rows that declare
+# it. abitest's `check_views` (the autorun row: the task view, the public and
+# the admin regions, no view) prints
 #
-#   proc view: rows=3 self=S child=C grandchild=G
+#   views: public=1 admin=1 views=0
 #
-# followed by its eleven `proc view:` checks (itself, child and grandchild
-# listed, nothing else, no idle task, `/proc/<self>` and `/proc/<child>` open,
-# `/proc/1` refused as an absent TID is, the child reaped). Read back: rows=3,
-# G > 0, eleven `ok` lines and no `FAIL` line among them. The canary row boots
-# `proc-hidepid-canary` (the filter compiled out) and must see the filter's
-# checks fail: `lists nothing else` and `/proc/1 ... does not open`. The
-# granted half (`ps` lists every task, idle included) is the `sh: family
-# tools` row's idle-line marker.
-proc_view_row() { # <label> <isa: rv|arm> <features> <hidden|canary>
+# and its thirteen `views:` checks: the public and the admin region granted,
+# each of the six view keys finding no capability, the public region naming
+# no task, and a child it starts listed under it in the admin task list and
+# reaped. Read back: views=0, thirteen `ok` lines, no `FAIL`. The canary row
+# boots `inspect-view-canary` (every published view granted with the public
+# region) and must see views>0 and a `... is not granted` check fail.
+views_row() { # <label> <isa: rv|arm> <features> <held|canary>
     local label="$1" isa="$2" feats="$3" want="$4"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
@@ -5926,7 +5924,7 @@ proc_view_row() { # <label> <isa: rv|arm> <features> <hidden|canary>
     fi
     local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled'
     while [ "$i" -lt 180 ]; do
-        grep -aqF "proc view: the child is reaped" "$log" 2>/dev/null && break
+        grep -aqF "views: the child is reaped" "$log" 2>/dev/null && break
         grep -aqiE "$fault" "$log" 2>/dev/null && break
         kill -0 "$pid" 2>/dev/null || break
         i=$((i + 1)); sleep 1
@@ -5938,36 +5936,34 @@ proc_view_row() { # <label> <isa: rv|arm> <features> <hidden|canary>
         grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
         echo "      log kept: $log"; return
     fi
-    local line rows gc oks fails
-    line="$(grep -a "\[ABITEST\] proc view: rows=" "$log" | tr -d '\r' | sed -n '1p')"
-    if [ -z "$line" ] || ! grep -aqF "proc view: the child is reaped" "$log"; then
-        bad; echo "      abitest never finished its proc-view check"
+    local line views oks fails
+    line="$(grep -a "\[ABITEST\] views: public=" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ -z "$line" ] || ! grep -aqF "views: the child is reaped" "$log"; then
+        bad; echo "      abitest never finished its view check"
         echo "      log kept: $log"; return
     fi
-    rows="$(printf '%s\n' "$line" | sed -n 's/.* rows=\([0-9][0-9]*\).*/\1/p')"
-    gc="$(printf '%s\n' "$line" | sed -n 's/.* grandchild=\([0-9][0-9]*\).*/\1/p')"
-    oks="$(grep -a "\[ABITEST\]   ok   proc view: " "$log" | wc -l | tr -d ' ')"
-    fails="$(grep -a "\[ABITEST\]  FAIL  proc view: " "$log" | tr -d '\r')"
-    if [ "$want" = hidden ]; then
-        if [ "${rows:-x}" = 3 ] && [ "${gc:-0}" -gt 0 ] 2>/dev/null && [ "$oks" = 11 ] && [ -z "$fails" ]; then
+    views="$(printf '%s\n' "$line" | sed -n 's/.* views=\([0-9][0-9]*\).*/\1/p')"
+    oks="$(grep -a "\[ABITEST\]   ok   views: " "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -a "\[ABITEST\]  FAIL  views: " "$log" | tr -d '\r')"
+    if [ "$want" = held ]; then
+        if [ "${views:-x}" = 0 ] && [ "$oks" = 13 ] && [ -z "$fails" ]; then
             ok; rm -f "$log"; return
         fi
-        bad; echo "      want rows=3, grandchild>0, 11 ok and no FAIL proc-view lines; read ($oks ok):"
+        bad; echo "      want views=0, 13 ok and no FAIL views lines; read ($oks ok):"
     else
-        if printf '%s\n' "$fails" | qgrep -qF "lists nothing else (hidepid)" \
-            && printf '%s\n' "$fails" | qgrep -qF "a foreign live TID) does not open"; then
+        if [ "${views:-0}" -gt 0 ] 2>/dev/null && printf '%s\n' "$fails" | qgrep -qF "is not granted"; then
             ok; rm -f "$log"; return
         fi
-        bad; echo "      the canary (filter compiled out) still hid every foreign task; read ($oks ok):"
+        bad; echo "      the canary (views granted with the public region) granted none; read ($oks ok):"
     fi
     echo "        $line"
     [ -n "$fails" ] && printf '%s\n' "$fails" | sed -n '1,6s|^|        |p'
     echo "      log kept: $log"
 }
-par_row proc_view_row "proc: hidepid view"              rv  qemu hidden
-par_row proc_view_row "aarch64 proc: hidepid view"      arm qemu hidden
-par_row proc_view_row "proc: hidepid canary"            rv  qemu,proc-hidepid-canary canary
-par_row proc_view_row "aarch64 proc: hidepid canary"    arm qemu,proc-hidepid-canary canary
+par_row views_row "inspect: views need their grant"          rv  qemu held
+par_row views_row "aarch64 inspect: views need their grant"  arm qemu held
+par_row views_row "inspect: views canary"                    rv  qemu,inspect-view-canary canary
+par_row views_row "aarch64 inspect: views canary"            arm qemu,inspect-view-canary canary
 
 # ── sysabi: the native syscall register contract (Chain E commit 8) ─────────
 #
@@ -6137,8 +6133,8 @@ par_row sysabi_canary_row "sysabi: canary, callee-saved bit lost (arm)" arm
 # count exact), joins through the cleared clear-tid word, the futex answers
 # (EAGAIN, ETIMEDOUT, a wake that wakes a parked waiter), a thread uses the
 # creator's file handle and the creator the thread's (one capability table,
-# one descriptor table), getpid is the process's, /proc shows the thread to
-# its process and hides it from a child process, and `exit` from one thread
+# one descriptor table), getpid is the process's, the kernel's task list
+# shows the thread, and `exit` from one thread
 # ends every thread. Canaries: `threads-private-table-canary` (a thread gets
 # its own table: the handle checks fail), `futex-wake-noop-canary` (a wake
 # wakes nobody: the wake check fails), `threads-no-cleartid-canary` (the word
@@ -6224,8 +6220,8 @@ threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|nocle
     fails="$(grep -a "\[ABITEST\]  FAIL  thread" "$log" | tr -d '\r')"
     case "$want" in
     ok)
-        if [ "$oks" = 17 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
-        bad; echo "      want 17 ok and no FAIL threads lines; read $oks ok:" ;;
+        if [ "$oks" = 16 ] && [ -z "$fails" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      want 16 ok and no FAIL threads lines; read $oks ok:" ;;
     privtable|futexnoop|noclear)
         case "$want" in
         privtable) need="the thread read through the creator's handle" ;;
@@ -6608,8 +6604,9 @@ par_row mprot_row "aarch64 mmap: prot canary"             arm qemu,mmap-prot-can
 # a child subreaper (`DOMAIN_SUBREAPER`, Linux `PR_SET_CHILD_SUBREAPER`),
 # else to init (the autorun image's task), with the notices of its children
 # that exited unreaped. abitest's `check_orphans` (abitest is this image's
-# init): a child starts a grandchild and exits; the grandchild sees `/proc`
-# name init as its parent, init lists and reaps it with its code. Then a
+# init): a child starts a grandchild and exits; the grandchild sees the
+# kernel's task list name init as its parent, init lists and reaps it with
+# its code. Then a
 # marked child does the same one level down and must be the adopter, init
 # none. Read back: the `init=` line with children=1 and an orphan TID, eleven
 # `ok   orphans:` lines and no `FAIL   orphans:` line. The canary row boots
@@ -7787,9 +7784,6 @@ aarch64_entropy_row() {
     fi
     ok; rm -f "$log_seeded" "$log_absent" "$img_copy"
 }
-
-# The `aarch64: procfs registered` row is now the `procfs_entries_registered`
-# ktest, on both ISAs (`ktest (rv|arm)`), with its canary `canary=procfs-skip`.
 
 # ── aarch64: the safety watchdog is actually wired to the timer ISR ─────────
 #
@@ -12627,7 +12621,6 @@ PY
     #   mm_ro_after_init_sealed       ro-seal-skip-canary (boot never seals the hooks)
     #   percpu_areas_and_oor_refusal  percpu-oor-canary (area past nr_cpu_ids)
     #   sched_stack_guards_unmapped   canary=stack-guard-skip (no guard pages)
-    #   procfs_entries_registered     canary=procfs-skip (no install_procfs)
     #   mm_zicboz_zero_fill (rv)      zicboz-skip-canary (DTB Zicboz ignored)
     #   kheap_slab_selftest           slab-freelist-canary (panics in slab.rs)
     #   mm_zone_no_cross_type_reuse   zone-share-canary (a freed table frame keeps no zone)
@@ -12643,8 +12636,8 @@ PY
     # These replace the rows `kheap slab: self-test|canary refused (rv|arm)`,
     # `percpu: canary, area past nr_cpu_ids (rv|arm)`, `mm: W^X verified`,
     # `mm: NX outside the image` (riscv64 only before; both ISAs now),
-    # `mm: Zicboz zeroes pages` and `aarch64: procfs registered` (both ISAs
-    # now), and the late tests' rows above.
+    # `mm: Zicboz zeroes pages` (both ISAs now), and the late tests' rows
+    # above.
     # Kconfig CHAOS and DECISION_RECORDS_DEV ride in every ktest kernel
     # (`chaos`, `decisions`): the `chaos_*` tests arm each injection point
     # (crates/core/chaos) and check the fault is refused cleanly, leaks
@@ -13069,8 +13062,8 @@ PY
     # `fdt-reserve-skip`: the device tree blob stays in the page allocator
     # (`mm_fdt_reserved`; QEMU leaves it in free RAM on both ISAs: riscv64
     # near the top, aarch64 mid-RAM).
-    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip,chaos-leak,decision-skip,ioring-fsync-inline,camera-encode-per-consumer,preempt-isr-leak,irq-storm,commander-exit-late,fdt-reserve-skip"
-    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained motor_commander_exit_stops_its_wheels mm_fdt_reserved"
+    KTEST_RT_CANARIES="canary=stack-guard-skip,chaos-leak,decision-skip,ioring-fsync-inline,camera-encode-per-consumer,preempt-isr-leak,irq-storm,commander-exit-late,fdt-reserve-skip"
+    KTEST_RT_CANARIED="sched_stack_guards_unmapped chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained motor_commander_exit_stops_its_wheels mm_fdt_reserved"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     # Wave 15 (N1, lockdep-lite): `canary=lockdep-abba` takes the test's two
@@ -18444,7 +18437,8 @@ PYEOF
     # `lat-trace`): a task on the same hart masks interrupts for 20 ms three
     # times and prints its site. It must FAIL, and the tracer must name that
     # site as the worst interrupts-masked window both on the console
-    # (`[LATTRACE] run irq top1`) and through `/proc/irqsoff`. Measured by
+    # (`[LATTRACE] run irq top1`) and through the introspection tree's
+    # `latency/irqsoff` (`[LATTRACE] inspect ...`). Measured by
     # hand when this landed (wave 11): plain riscv64 max 7.5-8.0 ms, aarch64
     # 9.85 ms; canary 19.8 ms / 19.7 ms with the tracer at the canary line.
     # After ONESHOT (three runs each): riscv64 max 17.9-18.4 us (Sstc),
@@ -18644,7 +18638,8 @@ PYEOF
             return
         fi
         # CANARY: the verdict is FAIL, and the tracer names the canary's own
-        # site as the worst masked window, on the console and in procfs.
+        # site as the worst masked window, on the console and in the
+        # introspection tree.
         local site
         site="$(grep -a '^\[LATCANARY\] masked ' "$clean" | sed -n 's/.* site=\([^ ]*\)$/\1/p' | sed -n 1p)"
         if [ -z "$site" ]; then
@@ -18659,9 +18654,9 @@ PYEOF
             grep -a '^\[LATTRACE\] run irq top1 ' "$clean" | sed 's/^/      /'
             echo "      log kept: $log"; return
         fi
-        if ! grep -a '^\[LATTRACE\] proc irqsoff | start ' "$clean" | qgrep -qxF "[LATTRACE] proc irqsoff | start ${site}"; then
-            bad; echo "      /proc/irqsoff does not name the canary site (${site}):"
-            grep -a '^\[LATTRACE\] proc irqsoff' "$clean" | sed 's/^/      /'
+        if ! grep -a '^\[LATTRACE\] inspect latency/irqsoff/start = ' "$clean" | qgrep -qxF "[LATTRACE] inspect latency/irqsoff/start = ${site}"; then
+            bad; echo "      the introspection tree's latency/irqsoff does not name the canary site (${site}):"
+            grep -a '^\[LATTRACE\] inspect latency/irqsoff' "$clean" | sed 's/^/      /'
             echo "      log kept: $log"; return
         fi
         ok; rm -f "$log" "$clean"
@@ -20079,7 +20074,8 @@ power suspend" 150 \
         # Wave 12: the other privileged families' tools (`FLIGHT.ELF`,
         # `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`), each through the
         # endpoint its row grants, running the console's
-        # own command bodies; and `ps` (TOOLBOX.ELF) over `/proc/tasks`. Only
+        # own command bodies; and `ps` (TOOLBOX.ELF) over the introspection
+        # tree's admin task list. Only
         # reversible operations: arm then disarm, a layer off then on, a key
         # set then read back, the status and a rollback that a fresh volume
         # answers "already on the last good slot". `ps` holds the full task
@@ -20087,7 +20083,8 @@ power suspend" 150 \
         # task that is not its own descendant: an idle task (PPID 0, PRI 31,
         # running), whatever its TID: since the camera's capture task (B2)
         # is created first, the idle tasks no longer start at TID 1.
-        # Without the grant it would list only itself (`proc: hidepid view`).
+        # Without the grant its row is refused the admin region and `ps`
+        # lists nothing.
         # `flight-tool-drivetrain`
         # gives the drivetrain to FLIGHT.ELF (the default topology gives it to
         # the autorun row: one writer per motor).
@@ -21093,7 +21090,8 @@ x=con; echo bb\$x-ok
     # key again; a wrong passphrase prints `Login incorrect` and starts nothing;
     # `why list -r login` shows an `admit` of session 1 (the second login: one wrong
     # secret came before it) and a `refuse` (reason 1). The server reads the newest
-    # records that fit one procfs file, so the row's kernel has no decision ring.
+    # records the admin introspection region holds, so the row's kernel has no
+    # decision ring.
     # FAIL mode (canary): the "right" passphrase is a wrong one; the row passes only
     # because the shell never came.
     #

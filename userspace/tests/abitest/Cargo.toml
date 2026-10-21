@@ -8,6 +8,8 @@ description = "Userspace syscall ABI conformance test: exercises the libsys wrap
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_inspect_lib = { path = "../../lib/inspect" }
 
 [profile.release]
 opt-level = "s"

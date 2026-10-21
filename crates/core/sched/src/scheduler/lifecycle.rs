@@ -1263,7 +1263,7 @@ pub enum ExecDethreadError {
 /// leader, stopped like the others, hands it over on its way out
 /// ([`exec_take_over`]) and ends as a thread under the caller's old TID.
 /// The caller then IS the process (its TID is the process id the parent
-/// waits for and `/proc` and signals name), as Linux's PID swap makes it.
+/// waits for, the task list shows and signals name), as Linux's PID swap makes it.
 ///
 /// Returns how many threads were ended (0 for a process with none: one
 /// load, `group::lead_of_idx`). It waits as the leader's own exit does
@@ -2941,7 +2941,7 @@ pub fn seal_forced_stop(idx: usize, tid: u32) {
     }
 }
 
-/// Forced stops counted and not consumed, machine-wide (ktest, procfs).
+/// Forced stops counted and not consumed, machine-wide (ktest).
 pub fn forced_stops_pending() -> u32 {
     FORCED_PENDING.load(Ordering::Relaxed)
 }

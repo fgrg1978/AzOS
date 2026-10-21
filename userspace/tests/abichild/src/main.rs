@@ -4,15 +4,16 @@
 //!
 //! A native process is created by `SYS_SPAWN_EX` and by nothing else, so a
 //! test that needs a child (to be waited on, killed by a fault, orphaned,
-//! reaped, counted in `/proc/tasks`) needs an image to start. This is that
+//! reaped, listed in the kernel's task list) needs an image to start. This is that
 //! image: `argv[1]` names what the process does and the rest of `argv` are its
 //! parameters (decimal text, a name). Each mode is one behaviour the parent
 //! checks from outside: how it ended (its exit code, `128 + signal` for a
 //! fault), what it left behind, who adopted what it started.
 //!
 //! The image has a row of its own (`ABICHILD.ELF`, QEMU test topologies only):
-//! no capability but the right to start itself, which the process-tree modes
-//! (`tree`, `orphan-mid`, `subreaper`) use.
+//! the right to start itself, which the process-tree modes (`orphan-mid`,
+//! `subreaper`) use, and the task list they watch it by (the
+//! task view and the introspection regions).
 //!
 //! Modes, with the parent's check in `userspace/tests/abitest`:
 //!
@@ -22,12 +23,9 @@
 //!   NULL: killed alone, the parent told `128 + SIGILL` / `128 + SIGSEGV`.
 //! * `touch PAGES CODE` - grows its break, writes every page, exits with CODE
 //!   (the memory it held comes back at its exit).
-//! * `nap MS`, `tree` - a process that lives MS milliseconds; one that starts
-//!   such a child of its own and reaps it (`/proc/tasks` shows a process its
-//!   descendants and nothing else).
+//! * `nap MS` - a process that lives MS milliseconds.
 //! * `storm-spin`, `storm-fault`, `threads-exit` - a process whose threads
 //!   spin or fault while its exit stops them all.
-//! * `hidden PATH` - opens PATH; exits 0 if that failed.
 //! * `store-code`, `store-rodata`, `read-into-code`, `call-rodata`,
 //!   `mmap-ro`, `mmap-none` - the memory permissions the loader and `mmap`
 //!   promise (W^X, read-only data not executable, `prot` honoured).
@@ -79,7 +77,6 @@ pub extern "C" fn _start(_a0: usize, a1: usize) -> ! {
             sys::sleep(num(2));
             sys::exit(0)
         }
-        b"tree" => tree(),
         b"storm-spin" => {
             spawn_thread(t_spin, 0);
             spawn_thread(t_spin, 1);
@@ -95,16 +92,6 @@ pub extern "C" fn _start(_a0: usize, a1: usize) -> ! {
             spawn_thread(t_spin, 0);
             sys::sleep(5);
             sys::exit(7)
-        }
-        b"hidden" => {
-            let mut path = [0u8; 32];
-            let p = arg(2);
-            if p.len() >= path.len() {
-                sys::exit(2);
-            }
-            path[..p.len()].copy_from_slice(p);
-            let fd = sys::open_root(&path[..p.len() + 1], 0);
-            sys::exit(if fd < 0 { 0 } else { 1 })
         }
         b"store-code" => {
             unsafe { core::ptr::write_volatile(store_code as fn() as usize as *mut u8, 0x00) };
@@ -161,16 +148,6 @@ fn touch(pages: usize, code: i32) -> ! {
         unsafe { core::ptr::write_volatile(a as *mut u8, 1) };
     }
     sys::exit(code)
-}
-
-/// Start a `nap` child and reap it: the process `/proc/tasks` shows one
-/// child of.
-fn tree() -> ! {
-    let gc = spawn_child(&[b"nap", b"1500"]);
-    if gc > 0 {
-        let _ = reap_by_tid(gc);
-    }
-    sys::exit(if gc > 0 { 0 } else { 1 })
 }
 
 // ── Threads ─────────────────────────────────────────────────────────────────
@@ -287,15 +264,15 @@ const ORPHAN_CEILING_NS: u64 = 30_000_000_000;
 /// adopter's stop request ends the wait.
 static ORPHAN_GATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
-/// The grandchild of an orphan test. It waits (clock deadline) until
-/// `/proc/tasks` shows its parent as `want`, then stays alive until the
+/// The grandchild of an orphan test. It waits (clock deadline) until the
+/// task list shows its parent as `want`, then stays alive until the
 /// adopter has listed it and asked it to stop (see the header), and exits
 /// [`ORPHAN_ADOPTED`]; [`ORPHAN_NOT_ADOPTED`] at the deadline.
 fn orphan_leaf(want: u32) -> ! {
     let me = sys::getpid() as u32;
     let mut deadline = Deadline::in_ms(5_000);
     while !deadline.expired() {
-        if proc_parent_of(me) == want {
+        if parent_of(me) == want {
             // `-EINTR` once the adopter asked this task to stop (sticky, so a
             // request that came before the wait is seen too).
             let _ = sys::futex_wait(&ORPHAN_GATE, 0, ORPHAN_CEILING_NS);

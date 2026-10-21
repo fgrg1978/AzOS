@@ -69,7 +69,7 @@ FN_RE = re.compile(r'^(\s*)([a-zA-Z_][a-zA-Z_0-9]*)\(\)\s*\{')
 SUBSYS = [
     ("net", r"network|dhcp|tcp|udp|\barp\b|link|nic\b|\bnet\b|net-|slirp|brain|tftp",
      "crates/net/** crates/drivers/net/** crates/drivers/virtio/**"),
-    ("fs", r"\bfs\b|fat|crash log|pstore|boot count|storage|mmc|disk|volume|journal|procfs|seed",
+    ("fs", r"\bfs\b|fat|crash log|pstore|boot count|storage|mmc|disk|volume|journal|seed",
      "crates/fs/** crates/drivers/block/** crates/drivers/msc/** kernel/src/pstore.rs"),
     ("sched", r"sched|rt7|edf|cbs|pifast|portwait|preempt|timer|tick|idle|smp|deadline|\bpi\b|pi-|nr_cpus|nrcpus|percpu|cpuid",
      "crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs"),
@@ -91,6 +91,9 @@ SUBSYS = [
     ("trace", r"trace|flight recorder", "crates/core/trace/** crates/core/rings/** kernel/src/lat_trace.rs"),
     ("energy", r"energy|power", "crates/core/energy/** crates/drivers/power/**"),
     ("ml", r"\bml\b|ml |ml-|gguf|mlsrv|infsrv|npu", "userspace/lib/ml/** userspace/services/infsrv/** crates/drivers/npu/**"),
+    ("inspect", r"inspect|views",
+     "crates/core/inspect/** userspace/lib/inspect/** kernel/src/boot/inspect*.rs crates/core/ipc/src/inspect_region.rs "
+     "userspace/** crates/core/abi/** crates/core/libsys/** crates/core/topology/**"),
 ]
 ARCH_DEPS = {
     "rv": "crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**",

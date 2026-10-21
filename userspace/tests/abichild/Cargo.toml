@@ -8,6 +8,8 @@ description = "The processes abitest starts to be waited on, killed, orphaned an
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_inspect_lib = { path = "../../lib/inspect" }
 
 [profile.release]
 opt-level = "s"

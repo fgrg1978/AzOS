@@ -35,24 +35,6 @@ pub fn is_ancestor(caller: u32, target: u32, parent_of: impl Fn(u32) -> u32, max
     false
 }
 
-/// May `viewer` see `target` in `/proc` (wave 12, owner round 48: Linux
-/// `hidepid=2`)? With `full` (the viewer holds `Cap<Task>` `READ` on
-/// `"tasks"`) every task; otherwise only itself and its descendants — the
-/// relation [`is_ancestor`] already decides for `SYS_ALERT`, with the same
-/// step bound, so a task listed is a task its viewer may also stop. A task
-/// with no viewer (0, no task) sees nothing, and TID 0 is never a task.
-///
-/// The parent link is cleared when a task exits, so a descendant of an
-/// intermediate task that has exited is no longer reachable from the
-/// viewer: there is no re-parenting, and that subtree drops out of a
-/// filtered view.
-pub fn may_see(viewer: u32, target: u32, full: bool, parent_of: impl Fn(u32) -> u32, max: usize) -> bool {
-    if target == 0 {
-        return false;
-    }
-    full || (viewer != 0 && (viewer == target || is_ancestor(viewer, target, parent_of, max)))
-}
-
 /// A stop request, as one word: bit 9 force, bit 8 requested, low byte signo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stop {

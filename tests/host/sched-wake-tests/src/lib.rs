@@ -3005,31 +3005,6 @@ mod stop_policy_tests {
         assert!(!is_ancestor(0, 13, parent, MAX_ANCESTRY));
     }
 
-    /// Wave 12 (owner round 48, Linux `hidepid=2`): without the full view a
-    /// task sees itself and its descendants in `/proc`, nothing else — not
-    /// its parent, not a sibling subtree, not a supervised driver, not an
-    /// absent TID. With it, every task. Nobody (viewer 0) sees anything
-    /// filtered, and TID 0 is never a task.
-    ///
-    /// **Canary.** Make `may_see` return `true` for `!full` (the filter
-    /// compiled out, as `proc-hidepid-canary` does in the kernel): red on
-    /// "a child sees its parent".
-    #[test]
-    fn proc_shows_self_and_descendants_unless_the_full_view_is_held() {
-        assert!(may_see(10, 10, false, parent, MAX_ANCESTRY), "itself");
-        assert!(may_see(10, 11, false, parent, MAX_ANCESTRY), "a child");
-        assert!(may_see(10, 13, false, parent, MAX_ANCESTRY), "a great-grandchild");
-        assert!(!may_see(13, 12, false, parent, MAX_ANCESTRY), "a child sees its parent");
-        assert!(!may_see(11, 21, false, parent, MAX_ANCESTRY), "a foreign subtree");
-        assert!(!may_see(10, 20, false, parent, MAX_ANCESTRY), "a kernel task");
-        assert!(!may_see(10, 99, false, parent, MAX_ANCESTRY), "an absent TID");
-        assert!(!may_see(0, 13, false, parent, MAX_ANCESTRY), "no viewer");
-        for t in [10, 11, 12, 13, 20, 21, 99] {
-            assert!(may_see(13, t, true, parent, MAX_ANCESTRY), "the full view hides {t}");
-        }
-        assert!(!may_see(10, 0, true, parent, MAX_ANCESTRY), "TID 0 is never a task");
-    }
-
     /// **Canary.** Drop the step bound: a parent cycle (corrupt links) never
     /// ends.
     #[test]

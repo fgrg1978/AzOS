@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Task-state queries and the accounting kept beside them: the `current_task_*`
 //! readers, the Domain accessors, the per-task frame budget and the
-//! per-process row counters, the task census / `/proc` rows, and the syscall
+//! per-process row counters, the task census / task-list rows, and the syscall
 //! filter accessors (AQ11). Child of `scheduler` (moved out of
 //! `scheduler/mod.rs` unchanged). The accounting statics live here, with the
 //! budget they count.
@@ -905,27 +905,8 @@ pub fn blocked_fastipc_ids(out: &mut [(u32, bool, u32, u32, bool)]) -> usize {
     n
 }
 
-/// May `viewer` see `tid` in `/proc/tasks` and by `/proc/<tid>` (wave 12,
-/// owner round 48)? `full`: the viewer holds the full-view grant (the caller
-/// looks it up; this crate does not see capability tables). The relation is
-/// [`stop_policy::may_see`] over the live parent links.
-///
-/// Under `proc-hidepid-canary` the filter is compiled out: every viewer sees
-/// every task, and the gate rows that expect a foreign task to be hidden go
-/// red.
-pub fn task_visible_to(viewer: u32, tid: u32, full: bool) -> bool {
-    if cfg!(feature = "proc-hidepid-canary") {
-        return tid != 0;
-    }
-    // Wave 13: visibility is a process's. A thread sees what its process
-    // sees (its group and the group's descendants), and is seen by whoever
-    // sees its process.
-    let v = crate::group::proc_tid(viewer);
-    let t = crate::group::proc_tid(tid);
-    stop_policy::may_see(v, t, full, parent_of_tid, stop_policy::MAX_ANCESTRY)
-}
-
-/// One task, as [`task_rows`] reports it (wave 12, `/proc/tasks`).
+/// One task, as [`task_rows`] reports it (the introspection tree's admin
+/// task list).
 #[derive(Clone, Copy)]
 pub struct TaskRow {
     /// The task's TID.
@@ -940,7 +921,7 @@ pub struct TaskRow {
     pub name: [u8; 16],
 }
 
-/// Wave 12 (`/proc/tasks`, the user shell's `ps`): the live task slots, in
+/// Wave 12 (the introspection tree's admin task list, the user shell's `ps`): the live task slots, in
 /// slot order, into `out`; how many were written. A racy snapshot read the
 /// way [`task_census`] reads (no pool lock, atomics per field): a task that
 /// is created or exits meanwhile may be missed or seen twice. Slots past
@@ -958,8 +939,7 @@ pub fn task_rows(out: &mut [TaskRow]) -> usize {
 }
 
 /// One live task's row, as [`task_rows`] reports it; `None` when `tid` is
-/// not live. Wave 13 (DEBTS): `/proc/<tid>` used to snapshot all 96 rows
-/// (3 KiB of stack) to print one.
+/// not live, without a snapshot of every row.
 pub fn task_row(tid: u32) -> Option<TaskRow> {
     let r = task_row_at(idx_for_tid(tid)?)?;
     if r.tid == tid { Some(r) } else { None }

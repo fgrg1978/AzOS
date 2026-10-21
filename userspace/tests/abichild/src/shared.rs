@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! What `abitest` and `abichild` both need to watch a process tree: a wait
-//! bounded by the guest's clock, the `/proc/tasks` view, and reaping a child by
-//! its TID. `abitest` includes this file with `#[path]`.
+//! bounded by the guest's clock, the task list of the kernel's introspection
+//! tree (the admin region, which their row is granted against the task view),
+//! and reaping a child by its TID. `abitest` includes this file with `#[path]`.
 
+use azos_inspect_lib::{str_in, u64_in, Inspector, Source, Value};
 use azos_libsys as sys;
 
 /// A poll bounded by the guest's clock, not by a number of passes.
@@ -60,81 +62,79 @@ impl Deadline {
     }
 }
 
-/// `/proc/tasks` into `buf`: the bytes read, 0 if it cannot be opened.
-fn read_proc_tasks(buf: &mut [u8]) -> usize {
-    let fd = sys::open_root(b"/proc/tasks\0", 0);
-    if fd < 0 { return 0; }
-    let mut len = 0;
-    while len < buf.len() {
-        let n = sys::read(fd as u64, &mut buf[len..]);
-        if n <= 0 { break; }
-        len += n as usize;
+/// The introspection tree, mapped once: the public region and the admin one.
+static TREE: TreeCell = TreeCell(core::cell::UnsafeCell::new(None));
+
+struct TreeCell(core::cell::UnsafeCell<Option<Option<Inspector<'static>>>>);
+// SAFETY: these programs read the tree from their main thread only.
+unsafe impl Sync for TreeCell {}
+
+fn tree() -> Option<&'static mut Inspector<'static>> {
+    // SAFETY: the main thread's alone (see `TreeCell`).
+    let t = unsafe { &mut *TREE.0.get() };
+    if t.is_none() {
+        let public = sys::inspect_map(azos_abi::cap::SHM_INSPECT_PUBLIC).ok();
+        let admin = sys::inspect_map(azos_abi::cap::SHM_INSPECT_ADMIN).ok();
+        // SAFETY: the mappings live as long as the task, read-only, and the
+        // kernel writes them only with aligned 64-bit stores.
+        *t = Some(public.and_then(|p| unsafe { Inspector::from_mapped(p, admin) }.ok()).filter(|v| v.has_admin()));
     }
-    sys::close(fd as u64);
-    len
+    t.as_mut().and_then(|v| v.as_mut())
 }
 
-/// The decimal field `w`, if it is one.
-fn field_num(w: Option<&[u8]>) -> Option<u32> {
-    let w = w?;
-    let mut v: u32 = 0;
-    for &c in w {
-        if !c.is_ascii_digit() { return None; }
-        v = v.checked_mul(10)?.checked_add((c - b'0') as u32)?;
-    }
-    Some(v)
+/// The admin task list (`sched/tasks/<tid>/{parent, state}`) as (TID, parent
+/// TID, state) rows, read after the refresh that began after the call (a row
+/// shows what was so before it); how many. `None` if it cannot be read.
+pub fn task_rows(rows: &mut [(u32, u32, u8); 64]) -> Option<usize> {
+    let t = tree()?;
+    t.wait_refreshes(Source::Admin, 2, &mut |ms| sys::sleep(ms));
+    t.with(Source::Admin, |r| {
+        let mut count = 0;
+        let Some(dir) = r.lookup("sched/tasks")? else { return Ok(0) };
+        r.children(dir, &mut |info, v| {
+            if !matches!(v, Value::Dir) {
+                return;
+            }
+            let Ok(tid) = info.name.as_str().parse::<u32>() else { return };
+            let parent = u64_in(r, info.id, "parent").ok().flatten().unwrap_or(0) as u32;
+            let state = str_in(r, info.id, "state").ok().flatten().and_then(|s| s.as_bytes().first().copied()).unwrap_or(b'?');
+            if count < rows.len() {
+                rows[count] = (tid, parent, state);
+            }
+            count += 1;
+        })?;
+        Ok(count)
+    })
+    .ok()
 }
 
-/// `/proc/tasks` as (TID, PPID) rows; how many. `None` if it cannot be read.
-pub fn proc_task_rows(rows: &mut [(u32, u32); 64]) -> Option<usize> {
-    let mut buf = [0u8; 2048];
-    let len = read_proc_tasks(&mut buf);
-    if len == 0 { return None; }
-    let mut count = 0;
-    for line in buf[..len].split(|&c| c == b'\n').skip(1) {
-        let mut f = line.split(|&c| c == b' ').filter(|w| !w.is_empty());
-        let (Some(tid), Some(ppid)) = (field_num(f.next()), field_num(f.next())) else { continue };
-        if count < rows.len() { rows[count] = (tid, ppid); }
-        count += 1;
-    }
-    Some(count)
+/// Has `tid` exited? A task that has exited is no longer a row of the task
+/// list (its slot is reaped at once; what the parent has not yet collected is
+/// the exit NOTICE, which holds a place in the notice table, not a task
+/// slot), or is there for an instant in state `Z` while the scheduler tears
+/// it down. The list is the full view, so "no row" is "gone".
+pub fn task_exited(tid: u32) -> bool {
+    let mut rows = [(0u32, 0u32, 0u8); 64];
+    let Some(n) = task_rows(&mut rows) else { return false }; // unreadable: not an answer
+    rows[..n.min(rows.len())].iter().find(|r| r.0 == tid).is_none_or(|r| r.2 == b'Z')
 }
 
-/// Has `tid` exited? A task that has exited is no longer a row of
-/// `/proc/tasks` (its slot is reaped at once; what the parent has not yet
-/// collected is the exit NOTICE, which holds a place in the notice table, not
-/// a task slot), or is there for an instant in state `Z` while the scheduler
-/// tears it down. A child of the caller is always visible while it lives
-/// (the hidepid view shows a task its descendants), so "no row" is "gone".
-pub fn proc_exited(tid: u32) -> bool {
-    let mut buf = [0u8; 4096];
-    let len = read_proc_tasks(&mut buf);
-    if len == 0 { return false; } // unreadable: not an answer
-    for line in buf[..len].split(|&c| c == b'\n').skip(1) {
-        let mut f = line.split(|&c| c == b' ').filter(|w| !w.is_empty());
-        if field_num(f.next()) != Some(tid) { continue; }
-        // ... PPID PRI S NAME
-        return f.nth(2) == Some(b"Z");
-    }
-    true
-}
-
-/// The parent `/proc/tasks` shows for `tid` (0 when the row is not visible).
-pub fn proc_parent_of(tid: u32) -> u32 {
-    let mut rows = [(0u32, 0u32); 64];
-    let n = proc_task_rows(&mut rows).unwrap_or(0).min(rows.len());
+/// The parent the task list shows for `tid` (0 when it has no row).
+pub fn parent_of(tid: u32) -> u32 {
+    let mut rows = [(0u32, 0u32, 0u8); 64];
+    let n = task_rows(&mut rows).unwrap_or(0).min(rows.len());
     rows[..n].iter().find(|r| r.0 == tid).map(|r| r.1).unwrap_or(0)
 }
 
-/// The live tasks `/proc/tasks` shows with parent `parent`: how many, and
+/// The live tasks the task list shows with parent `parent`: how many, and
 /// the last one listed. Polls (clock deadline) until there is exactly one,
 /// so an adoption still in flight is waited for.
 pub fn children_of(parent: u32) -> (usize, u32) {
-    let mut rows = [(0u32, 0u32); 64];
+    let mut rows = [(0u32, 0u32, 0u8); 64];
     let mut deadline = Deadline::in_ms(5_000);
     let mut last = (0, 0);
     while !deadline.expired() {
-        let n = proc_task_rows(&mut rows).unwrap_or(0).min(rows.len());
+        let n = task_rows(&mut rows).unwrap_or(0).min(rows.len());
         last = (0, 0);
         for r in &rows[..n] {
             if r.1 == parent && r.0 != parent {
@@ -149,7 +149,7 @@ pub fn children_of(parent: u32) -> (usize, u32) {
     last
 }
 
-/// The only child `/proc/tasks` shows for `parent`; 0 for none or several.
+/// The only child the task list shows for `parent`; 0 for none or several.
 pub fn only_child_of(parent: u32) -> u32 {
     match children_of(parent) {
         (1, t) => t,
