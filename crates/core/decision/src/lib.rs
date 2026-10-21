@@ -857,9 +857,11 @@ pub const RULES: [RuleInfo; 66] = [
         rejected_if_no: "drop the frame: a node or id the row does not name could command or spoof a device",
     },
     RuleInfo {
-        // The subject is the task. `device` is the capture device's id, `rate_hz` the sample rate, `reason` 0
-        // admitted, 1 no grant for the device, 2 the indicator that tells the person a microphone is live is
-        // not available, 3 another task holds the device exclusively.
+        // The subject is the requester: the task whose microphone effect decided the open, which is the caller
+        // unless it served another task's call (reason 4: the caller is named, there is no requester). `device`
+        // is the capture device's id, `rate_hz` the sample rate, `reason` 0 admitted, 1 no grant for the device,
+        // 2 the indicator that tells the person a microphone is live is not available, 3 another task holds the
+        // device exclusively, 4 a warrant the caller is not serving.
         name: "audio-capture",
         subject: "tid",
         fields: ["device", "rate_hz", "reason"],
