@@ -29,8 +29,16 @@ pub struct Str {
 }
 
 impl Str {
+    /// The empty value.
+    pub const EMPTY: Str = Str { len: 0, buf: [0; STR_MAX] };
+
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.buf[..self.len as usize]).unwrap_or("")
+    }
+
+    /// The value's bytes (a [`Value::Bytes`] is not text).
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len as usize]
     }
 }
 
@@ -55,6 +63,7 @@ pub enum Value {
     I64(i64),
     Str(Str),
     Hist(Hist),
+    Bytes(Str),
 }
 
 /// What a node is, apart from its value.
@@ -247,12 +256,12 @@ impl<'a> Reader<'a> {
             let mut val = match kind {
                 Kind::U64 => Value::U64(vw(0)),
                 Kind::I64 => Value::I64(vw(0) as i64),
-                Kind::Str => {
+                Kind::Str | Kind::Bytes => {
                     let mut st = Str { len: vw(0).min(((words - 1) * 8).min(STR_MAX) as u64) as u8, buf: [0; STR_MAX] };
                     for i in 0..(st.len as usize).div_ceil(8) {
                         st.buf[i * 8..i * 8 + 8].copy_from_slice(&vw(1 + i).to_le_bytes());
                     }
-                    Value::Str(st)
+                    if kind == Kind::Str { Value::Str(st) } else { Value::Bytes(st) }
                 }
                 Kind::Hist => {
                     let mut h = Hist { n: words.min(HIST_MAX) as u8, b: [0; HIST_MAX] };
@@ -274,6 +283,35 @@ impl<'a> Reader<'a> {
             }
         }
         Err(Error::Contended)
+    }
+
+    /// The node at `path` below `dir`, as [`Reader::lookup`] from the root.
+    pub fn lookup_in(&self, dir: NodeId, path: &str) -> Result<Option<NodeId>, Error> {
+        self.op(|s| {
+            let mut cur = dir;
+            for seg in path.split('/').filter(|p| !p.is_empty()) {
+                match s.find_raw(cur, seg)? {
+                    Some(n) => cur = n,
+                    None => return Ok(None),
+                }
+            }
+            Ok(Some(cur))
+        })
+    }
+
+    /// Visit the children of `dir`, in the order they were added, with their
+    /// values. As with [`Reader::walk`], [`Error::Restructured`] leaves the
+    /// callback having seen part of the old tree.
+    pub fn children(&self, dir: NodeId, f: &mut dyn FnMut(&NodeInfo, &Value)) -> Result<(), Error> {
+        self.op(|s| {
+            let mut cur = s.link(dir, false)?;
+            for _ in 0..s.count()? {
+                let Some(id) = cur else { return Ok(()) };
+                f(&s.info_raw(id)?, &s.read_raw(id)?);
+                cur = s.link(id, true)?;
+            }
+            Err(Error::Corrupt)
+        })
     }
 
     /// A node's value, read whole: a histogram or a string is one instant's.

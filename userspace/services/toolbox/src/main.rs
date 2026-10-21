@@ -7,7 +7,7 @@
 //! regions, the admin one behind the full task view (`inspect`, `ps`), and the
 //! read-only root directory; it reads and writes the fds the shell moved to it
 //! (`SYS_SPAWN_EX`), the console, and files it opens beneath that directory
-//! (`NODE_OPENAT`; it reads no procfs file; `ls` still names its directory by
+//! (`NODE_OPENAT`; `ls` still names its directory by
 //! path, `readdir` has no directory-relative form). A stop request ends its
 //! waits with `-EINTR`; it then exits 130.
 //!
@@ -193,27 +193,6 @@ impl core::fmt::Write for Out {
     }
 }
 
-/// Map the introspection region the task holds under `key`, read-only (the
-/// capability carries `READ|MAP` only): its base and size in bytes. `Err(rc)`:
-/// the lookup, the geometry or the map failed (no capability: the row grants
-/// none, or the kernel has INSPECT off).
-fn map_inspect(key: u32) -> Result<(*const u8, usize), isize> {
-    let cap = sys::cap_lookup(sys::ty::SHM.raw(), key);
-    if cap < 0 {
-        return Err(cap);
-    }
-    let mut info = [0u8; sys::SHM_INFO_BYTES];
-    let rc = sys::shm_acquire_typed(cap as u32, &mut info);
-    if rc < 0 {
-        return Err(rc);
-    }
-    let pages = u32::from_le_bytes([info[0], info[1], info[2], info[3]]) as usize;
-    let va = sys::shm_map_typed(cap as u32);
-    if va <= 0 {
-        return Err(va);
-    }
-    Ok((va as *const u8, pages * sys::PAGE_SIZE))
-}
 
 /// Why the introspection tree could not be opened.
 enum ViewErr {
@@ -226,9 +205,9 @@ enum ViewErr {
 /// The tree the row's regions hold: the public region, and the admin one when
 /// the row also holds the task view. After the two maps every read is a load.
 fn open_view() -> Result<azos_inspect_lib::Inspector<'static>, ViewErr> {
-    let public = map_inspect(azos_abi::cap::SHM_INSPECT_PUBLIC).map_err(|_| ViewErr::Off)?;
+    let public = sys::inspect_map(azos_abi::cap::SHM_INSPECT_PUBLIC).map_err(|_| ViewErr::Off)?;
     // The admin region is optional: a row without the task view has none.
-    let admin = map_inspect(azos_abi::cap::SHM_INSPECT_ADMIN).ok();
+    let admin = sys::inspect_map(azos_abi::cap::SHM_INSPECT_ADMIN).ok();
     // SAFETY: both spans are read-only mappings of the kernel's regions that
     // this task holds for its whole life; the library only loads from them.
     unsafe { azos_inspect_lib::Inspector::from_mapped(public, admin) }.map_err(|_| ViewErr::Format)
@@ -343,6 +322,7 @@ fn inspect_prefix(view: &mut azos_inspect_lib::Inspector<'_>, prefix: &str, out:
             Value::I64(x) => metrics_view::flat(out, p, metrics_view::Val::I(*x)),
             Value::Str(s) => metrics_view::flat(out, p, metrics_view::Val::S(s.as_str())),
             Value::Hist(h) => metrics_view::flat(out, p, metrics_view::Val::H(h.buckets())),
+            Value::Bytes(b) => metrics_view::flat(out, p, metrics_view::Val::B(b.as_bytes())),
         };
         ok = r.is_ok();
     });

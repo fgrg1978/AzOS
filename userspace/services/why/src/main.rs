@@ -136,22 +136,6 @@ fn find_endpoint(n: usize) -> Option<u32> {
         .nth(n)
 }
 
-/// Map the introspection region the task holds under `key`, read-only (the
-/// capability carries `READ|MAP` only): its base and size in bytes. `None`: the
-/// row grants none, or the kernel has INSPECT off, or the map failed.
-fn map_inspect(key: u32) -> Option<(*const u8, usize)> {
-    let cap = sys::cap_lookup(sys::ty::SHM.raw(), key);
-    if cap < 0 {
-        return None;
-    }
-    let mut info = [0u8; sys::SHM_INFO_BYTES];
-    if sys::shm_acquire_typed(cap as u32, &mut info) < 0 {
-        return None;
-    }
-    let pages = u32::from_le_bytes([info[0], info[1], info[2], info[3]]) as usize;
-    let va = sys::shm_map_typed(cap as u32);
-    (va > 0).then_some((va as *const u8, pages * sys::PAGE_SIZE))
-}
 
 /// `why woke [N]`: the wake log of the introspection tree (`woke.rs`).
 fn woke_main(args: &[&[u8]], remote: bool) -> ExitCode {
@@ -166,13 +150,13 @@ fn woke_main(args: &[&[u8]], remote: bool) -> ExitCode {
         let _ = write!(err, "why: {}\n{}", woke::USAGE, cli::USAGE);
         return ExitCode::from(2);
     };
-    let Some(public) = map_inspect(azos_abi::cap::SHM_INSPECT_PUBLIC) else {
+    let Some(public) = sys::inspect_map(azos_abi::cap::SHM_INSPECT_PUBLIC).ok() else {
         let _ = write!(err, "why: no wake log (the row holds no introspection region, or the kernel has INSPECT off)\n");
         return ExitCode::from(1);
     };
     // The admin region is the row's if it holds the task view; without it the
     // log has no task IDs and `woke::render` says so.
-    let admin = map_inspect(azos_abi::cap::SHM_INSPECT_ADMIN);
+    let admin = sys::inspect_map(azos_abi::cap::SHM_INSPECT_ADMIN).ok();
     // SAFETY: read-only mappings of the kernel's regions, held for the life of
     // the task; the reader only loads from them.
     let Ok(mut view) = (unsafe { azos_inspect_lib::Inspector::from_mapped(public, admin) }) else {

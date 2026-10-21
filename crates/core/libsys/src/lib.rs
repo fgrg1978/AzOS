@@ -1444,7 +1444,7 @@ pub fn exit_stats(which: u64) -> isize {
 /// The caller's child-subreaper mark (the subreaper op): `op` is
 /// `azos_abi::syscall_nr::SUBREAPER_{GET,SET,CLEAR}`. Returns the mark
 /// afterwards (0 or 1), or `-EINVAL` (-22) for another `op`. A marked task
-/// adopts its orphaned descendants (their `waitpid` and `/proc` parent).
+/// adopts its orphaned descendants (their `waitpid` and task-list parent).
 pub fn task_subreaper(op: u64) -> isize {
     invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_SUBREAPER, [op, 0, 0, 0]).0
 }
@@ -2077,8 +2077,8 @@ pub const MAP_ANON_FD: u64 = u64::MAX;
 /// Map the device registers of the hardware-bus device `handle` (`access`:
 /// `CapPerms` bits, READ or READ|WRITE). The virtual address, or `-Errno`;
 /// `-1` without the device's capability. A program finds a device's handle in
-/// `/proc/devices` (the first field of its line; the line says what the
-/// device is).
+/// the introspection tree's `devices/` (the directory's name; its `identity`
+/// says what the device is).
 pub fn mmio_map(handle: u64, access: u64) -> isize {
     domain_op(invoke_abi::DOMAIN_MMIO_MAP, [handle, access, 0, 0])
 }
@@ -3145,6 +3145,31 @@ pub fn shm_map_typed(cap: u32) -> isize {
     // `a1 = 0` selects the map; the kernel reads it, so it is passed, never left
     // to whatever the register held.
     unsafe { syscall2(SYS_MO_MAP, cap as u64, 0) }
+}
+
+/// Map the kernel's introspection region `key` (`SHM_INSPECT_PUBLIC` or
+/// `SHM_INSPECT_ADMIN`, `azos_abi::cap`) read-only: its address and size in
+/// bytes. `Err` is the first refusal: no such capability in the caller's
+/// table (its row grants none, the kernel has Kconfig INSPECT off, or the
+/// admin region was refused for want of the task view), or the acquire or the
+/// map failed. One lookup, one acquire and one map; every read after is a load
+/// (`userspace/lib/inspect`).
+pub fn inspect_map(key: u32) -> Result<(*const u8, usize), isize> {
+    let cap = cap_lookup(ty::SHM.raw(), key);
+    if cap < 0 {
+        return Err(cap);
+    }
+    let mut info = [0u8; SHM_INFO_BYTES];
+    let rc = shm_acquire_typed(cap as u32, &mut info);
+    if rc < 0 {
+        return Err(rc);
+    }
+    let pages = u32::from_le_bytes([info[0], info[1], info[2], info[3]]) as usize;
+    let va = shm_map_typed(cap as u32);
+    if va <= 0 {
+        return Err(va);
+    }
+    Ok((va as *const u8, pages * PAGE_SIZE))
 }
 
 /// Change the access of this task's mapping of the region behind a `Cap<Shm>`

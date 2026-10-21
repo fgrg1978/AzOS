@@ -7,7 +7,9 @@ use crate::region::Region;
 use core::sync::atomic::{fence, Ordering};
 
 /// Writes one region. Every method takes `&self`: the claims below make the
-/// calls safe to race, so the kernel can keep the writer in a static.
+/// calls safe to race, so the kernel can keep the writer in a static (and
+/// copy it: a copy writes the same words).
+#[derive(Clone, Copy)]
 pub struct Writer<'a> {
     w: &'a [core::sync::atomic::AtomicU64],
     lay: Layout,
@@ -62,6 +64,13 @@ impl<'a> Writer<'a> {
         r
     }
 
+    /// The nodes in use and the table's capacity, the value words in use and
+    /// theirs: what a region of this size holds of the tree built in it.
+    pub fn usage(&self) -> (u32, u32, u32, u32) {
+        let cw = self.w[H_COUNT_WORDCAP].load(Ordering::Relaxed);
+        (lo(cw), self.lay.node_cap, lo(self.w[H_WORDS_USED].load(Ordering::Relaxed)), self.lay.word_cap)
+    }
+
     /// Set the stamp: an opaque number readers see next to the tree (the
     /// kernel puts the refresh counter here).
     pub fn stamp(&self, v: u64) {
@@ -93,7 +102,17 @@ impl<'a> Writer<'a> {
             return Err(Error::WrongKind);
         }
         let s = cut(s, (words - 1) * 8);
-        self.with_seq(id, || self.put_str(off, words, s))
+        self.with_seq(id, || self.put_str(off, words, s.as_bytes()))
+    }
+
+    /// Set a bytes node; bytes past its capacity are cut.
+    pub fn set_bytes(&self, id: NodeId, b: &[u8]) -> Result<(), Error> {
+        let (kind, words, off) = self.meta(id)?;
+        if kind != Kind::Bytes {
+            return Err(Error::WrongKind);
+        }
+        let b = &b[..b.len().min((words - 1) * 8)];
+        self.with_seq(id, || self.put_str(off, words, b))
     }
 
     /// Set a histogram node: `b` is the first buckets, the rest are zeroed.
@@ -146,9 +165,8 @@ impl<'a> Writer<'a> {
         }
     }
 
-    fn put_str(&self, off: u32, words: usize, s: &str) {
-        self.w[self.lay.value_word(off)].store(s.len() as u64, Ordering::Relaxed);
-        let b = s.as_bytes();
+    fn put_str(&self, off: u32, words: usize, b: &[u8]) {
+        self.w[self.lay.value_word(off)].store(b.len() as u64, Ordering::Relaxed);
         for i in 0..words - 1 {
             let mut chunk = [0u8; 8];
             let from = i * 8;
@@ -223,7 +241,17 @@ impl Builder<'_, '_> {
             return Err(Error::BadSize);
         }
         let (id, off) = self.add(parent, name, Kind::Str, cap)?;
-        self.wr.put_str(off, 1 + cap.div_ceil(8), cut(init, cap));
+        self.wr.put_str(off, 1 + cap.div_ceil(8), cut(init, cap).as_bytes());
+        Ok(id)
+    }
+
+    /// Bytes, up to `cap` of them, under `parent`, starting at `init`.
+    pub fn bytes(&mut self, parent: NodeId, name: &str, cap: usize, init: &[u8]) -> Result<NodeId, Error> {
+        if cap == 0 || cap > STR_MAX {
+            return Err(Error::BadSize);
+        }
+        let (id, off) = self.add(parent, name, Kind::Bytes, cap)?;
+        self.wr.put_str(off, 1 + cap.div_ceil(8), &init[..init.len().min(cap)]);
         Ok(id)
     }
 

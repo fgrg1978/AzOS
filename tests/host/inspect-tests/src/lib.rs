@@ -209,6 +209,63 @@ mod tests {
         }
     }
 
+    /// A bytes node keeps bytes that are not text (a decision record in its
+    /// wire form), cut to its capacity, and is a kind of its own: the string
+    /// setter refuses it, and a reader gets `Value::Bytes`.
+    ///
+    /// **Canary.** Read `Kind::Bytes` back as `Value::Str` in `read_raw`: the
+    /// first `match` fails.
+    #[test]
+    fn a_bytes_node_holds_bytes_that_are_not_text() {
+        let v = words(1024);
+        let w = Writer::init(Region::from_atomics(&v), Class::Public).unwrap();
+        let mut id = None;
+        w.rebuild(|b| {
+            id = Some(b.bytes(NodeId::ROOT, "rec", 8, &[0xff, 0x00, 0xfe])?);
+            assert_eq!(b.bytes(NodeId::ROOT, "big", STR_MAX + 1, &[]).err(), Some(Error::BadSize));
+            Ok(())
+        })
+        .unwrap();
+        let id = id.unwrap();
+        let r = Reader::open(Region::from_atomics(&v), Class::Public).unwrap();
+        match r.read(id).unwrap() {
+            Value::Bytes(b) => assert_eq!(b.as_bytes(), &[0xff, 0x00, 0xfe]),
+            _ => panic!("kind"),
+        }
+        assert_eq!(w.set_str(id, "x").err(), Some(Error::WrongKind));
+        w.set_bytes(id, &[1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
+        match r.read(id).unwrap() {
+            Value::Bytes(b) => assert_eq!(b.as_bytes(), &[1, 2, 3, 4, 5, 6, 7, 8], "cut at its capacity"),
+            _ => panic!("kind"),
+        }
+    }
+
+    /// A directory's children are visited in the order they were added, each
+    /// once, and a path below a node is looked up from it.
+    #[test]
+    fn children_and_lookup_below_a_node() {
+        let v = words(1024);
+        let w = Writer::init(Region::from_atomics(&v), Class::Public).unwrap();
+        w.rebuild(|b| {
+            let d = b.dir(NodeId::ROOT, "eps")?;
+            for name in ["names", "term", "log"] {
+                let e = b.dir(d, name)?;
+                b.u64(e, "index", name.len() as u64)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let r = Reader::open(Region::from_atomics(&v), Class::Public).unwrap();
+        let d = r.lookup("eps").unwrap().unwrap();
+        let mut seen = Vec::new();
+        r.children(d, &mut |info, _| seen.push(String::from(info.name.as_str()))).unwrap();
+        assert_eq!(seen, ["names", "term", "log"]);
+        let t = r.lookup_in(d, "term/index").unwrap().unwrap();
+        assert!(matches!(r.read(t).unwrap(), Value::U64(4)));
+        assert_eq!(r.lookup_in(d, "nope/index").unwrap(), None);
+        assert_eq!(azos_inspect_lib::u64_in(&r, d, "log/index").unwrap(), Some(3));
+    }
+
     // ── versions and classes ────────────────────────────────────────────────
 
     #[test]

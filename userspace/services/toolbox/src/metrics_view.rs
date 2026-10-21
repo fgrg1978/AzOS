@@ -78,6 +78,8 @@ pub enum Val<'a> {
     I(i64),
     S(&'a str),
     H(&'a [u64]),
+    /// Bytes that are not text, printed as hex.
+    B(&'a [u8]),
 }
 
 /// `path = value`, one line.
@@ -87,6 +89,12 @@ pub fn flat(out: &mut dyn Write, path: &str, v: Val<'_>) -> fmt::Result {
         Val::U(x) => write!(out, "{x}")?,
         Val::I(x) => write!(out, "{x}")?,
         Val::S(s) => write!(out, "{s}")?,
+        Val::B(b) => {
+            out.write_str("0x")?;
+            for x in b {
+                write!(out, "{x:02x}")?;
+            }
+        }
         Val::H(b) => {
             for (i, x) in b.iter().enumerate() {
                 if i > 0 {

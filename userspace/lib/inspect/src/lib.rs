@@ -17,7 +17,7 @@
 use core::fmt::{self, Write};
 
 pub use azos_inspect::{Class, Error, Hist, Kind, Name, NodeId, NodeInfo, Region, Str, Value, FORMAT_VERSION};
-use azos_inspect::Reader;
+pub use azos_inspect::Reader;
 
 /// How many times a read that met a rebuild or a writer is repeated.
 pub const RETRIES: usize = 8;
@@ -77,6 +77,40 @@ impl<'a> Inspector<'a> {
             Source::Public => Some(&mut self.public),
             Source::Admin => self.admin.as_mut(),
         }
+    }
+
+    /// Run `f` on the reader of `src`, refreshing it and running `f` again
+    /// while the tree moves under it ([`RETRIES`] times). `f` may run more
+    /// than once, so it starts what it collects afresh each time.
+    pub fn with<T>(&mut self, src: Source, f: impl FnMut(&Reader<'a>) -> Result<T, Error>) -> Result<T, Error> {
+        match self.reader(src) {
+            Some(r) => retry(r, f),
+            None => Err(Error::BadRegion),
+        }
+    }
+
+    /// The stamp of `src`: the kernel's refresh count, which grows by one at
+    /// every refresh. 0 for a region that is not open.
+    pub fn stamp(&mut self, src: Source) -> u64 {
+        self.reader(src).map_or(0, |r| r.stamp())
+    }
+
+    /// Wait until region `src` has been refreshed `n` more times, sleeping a
+    /// quarter of the period (`inspect/refresh_ms`) at a time (`sleep_ms`);
+    /// `false` when that took more than `n + 2` periods. A reader that needs
+    /// what the kernel made before a moment (the pool index of an endpoint
+    /// its spawn created, a decision made before a request) waits for two:
+    /// the refresh that began after that moment has then ended.
+    pub fn wait_refreshes(&mut self, src: Source, n: u64, sleep_ms: &mut dyn FnMut(u64)) -> bool {
+        let period = self.read_u64("inspect/refresh_ms").ok().flatten().unwrap_or(250).max(1);
+        let s0 = self.stamp(src);
+        for _ in 0..(n + 2) * 4 {
+            if self.stamp(src) >= s0 + n {
+                return true;
+            }
+            sleep_ms(period / 4 + 1);
+        }
+        self.stamp(src) >= s0 + n
     }
 
     /// The value at `path`, from the public region, else from the admin one.
@@ -139,8 +173,31 @@ impl<'a> Inspector<'a> {
     }
 }
 
+/// The `u64` at `path` below `dir`; `None` when there is none, or it is of
+/// another kind.
+pub fn u64_in(r: &Reader<'_>, dir: NodeId, path: &str) -> Result<Option<u64>, Error> {
+    Ok(match r.lookup_in(dir, path)? {
+        Some(id) => match r.read(id)? {
+            Value::U64(v) => Some(v),
+            _ => None,
+        },
+        None => None,
+    })
+}
+
+/// The string (or bytes) at `path` below `dir`, as [`u64_in`].
+pub fn str_in(r: &Reader<'_>, dir: NodeId, path: &str) -> Result<Option<Str>, Error> {
+    Ok(match r.lookup_in(dir, path)? {
+        Some(id) => match r.read(id)? {
+            Value::Str(s) | Value::Bytes(s) => Some(s),
+            _ => None,
+        },
+        None => None,
+    })
+}
+
 /// Run `f` on `r`, refreshing it and repeating while the tree moves.
-fn retry<T>(r: &mut Reader<'_>, mut f: impl FnMut(&Reader<'_>) -> Result<T, Error>) -> Result<T, Error> {
+fn retry<'a, T>(r: &mut Reader<'a>, mut f: impl FnMut(&Reader<'a>) -> Result<T, Error>) -> Result<T, Error> {
     let mut last = Error::Contended;
     for _ in 0..RETRIES {
         match f(r) {
@@ -168,6 +225,13 @@ fn line(out: &mut dyn Write, info: &NodeInfo, v: &Value) -> fmt::Result {
         Value::U64(x) => writeln!(out, "{name} = {x}"),
         Value::I64(x) => writeln!(out, "{name} = {x}"),
         Value::Str(s) => writeln!(out, "{name} = \"{}\"", s.as_str()),
+        Value::Bytes(b) => {
+            write!(out, "{name} = 0x")?;
+            for x in b.as_bytes() {
+                write!(out, "{x:02x}")?;
+            }
+            writeln!(out)
+        }
         Value::Hist(h) => {
             write!(out, "{name} = [")?;
             for (i, b) in h.buckets().iter().enumerate() {

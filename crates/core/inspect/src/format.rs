@@ -18,15 +18,15 @@
 //!          word 2  first child (32) | next sibling (32); 0 = none
 //!          word 3  parent (32) | depth (32)
 //!          word 4-7 name, 32 bytes, NUL padded
-//! values   u64, i64: one word. String: a length word, then the bytes.
-//!          Histogram: one word per bucket.
+//! values   u64, i64: one word. String and bytes: a length word, then the
+//!          bytes. Histogram: one word per bucket.
 //! ```
 //! Node 0 is the root. It is never a child, so 0 doubles as "none".
 
 /// Magic of every region.
 pub const MAGIC: u64 = u64::from_le_bytes(*b"AZINSPCT");
 /// The layout's version; a reader refuses any other.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 pub(crate) const HEADER_WORDS: usize = 8;
 pub(crate) const NODE_WORDS: usize = 8;
@@ -50,7 +50,7 @@ pub(crate) const N_NAME: usize = 4;
 
 /// Longest node name, in bytes.
 pub const NAME_MAX: usize = 32;
-/// Largest string capacity of a node, in bytes.
+/// Largest string (or bytes) capacity of a node, in bytes.
 pub const STR_MAX: usize = 128;
 /// Most buckets of a histogram.
 pub const HIST_MAX: usize = 32;
@@ -89,6 +89,8 @@ pub enum Kind {
     I64 = 2,
     Str = 3,
     Hist = 4,
+    /// Bytes that are not text: a record in its wire form.
+    Bytes = 5,
 }
 
 impl Kind {
@@ -99,6 +101,7 @@ impl Kind {
             2 => Some(Kind::I64),
             3 => Some(Kind::Str),
             4 => Some(Kind::Hist),
+            5 => Some(Kind::Bytes),
             _ => None,
         }
     }
@@ -143,7 +146,7 @@ pub enum Error {
     Duplicate,
     /// Deeper than [`DEPTH_MAX`].
     TooDeep,
-    /// A string capacity over [`STR_MAX`], or a histogram of 0 or over
+    /// A string or bytes capacity over [`STR_MAX`], or a histogram of 0 or over
     /// [`HIST_MAX`] buckets.
     BadSize,
     /// The id names no node of this epoch.
@@ -197,7 +200,7 @@ pub(crate) fn value_words(kind: Kind, size: usize) -> usize {
     match kind {
         Kind::Dir => 0,
         Kind::U64 | Kind::I64 => 1,
-        Kind::Str => 1 + size.div_ceil(8),
+        Kind::Str | Kind::Bytes => 1 + size.div_ceil(8),
         Kind::Hist => size,
     }
 }
