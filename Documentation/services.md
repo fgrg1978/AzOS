@@ -601,9 +601,12 @@ stream it holds on the device and returns each period on `done`.
 * **Capture is lent, never mixed.** The client's three objects are handed to the kernel's
   `sound.0` as they are; the kernel's gate (the `mic` effect of the server's class, Kconfig
   `AUDIO_CAPTURE`, the microphone indicator) decides, and writes the `audio-capture`
-  decision record for every attempt, which ring 3 cannot. `REFUSED` reaches the client
-  unchanged and takes nothing from the server. The effect checked is the server's, not the
-  client's class's.
+  decision record for every attempt that reaches it, which ring 3 cannot. `REFUSED` reaches
+  the client unchanged and takes nothing from the server. The effect checked is the
+  server's, never the client's class's: every holder of `endpoint.audio` inherits the
+  microphone once the server's class holds a `mic` envelope, and the record's task is the
+  server's thread. The server prints one console line per attempt, naming the badge. A
+  badge has one stream of either kind: a second `open` of the other kind is `BUSY`.
 * **Two threads.** The main thread accepts calls (the endpoint's `READ` grant is stamped
   with it) and makes every capture call, because the kernel binds a stream to the thread
   that opened it and gives the `mic` effect only to a thread seeded from a row; the pump

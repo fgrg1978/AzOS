@@ -111,14 +111,24 @@ impl Stream {
     }
 }
 
-/// The audio server's endpoint, if this row holds it: the first endpoint of the
-/// pool (the pool index is the resource of a plain lookup), the only one the
-/// row grants.
+/// The audio server's endpoint, if this row holds it: the one endpoint
+/// capability in this task's table that has the shape of the row's grant
+/// ([`beep::audio_endpoint_of`]: `WRITE|DUP`, unbadged, never expiring).
+///
+/// Ring 3 has no lookup of a pool endpoint by name (the name server is a
+/// service this row does not hold), so the shape of the grant is what names
+/// it, not its pool index, which moves with the topology's row order. The
+/// scan covers the pool and asks each capability what it is (`cap_info`); two
+/// of that shape are ambiguous and name nothing, rather than a guess.
 fn audio_endpoint() -> Option<u32> {
-    (0..16u32).find_map(|i| {
+    beep::audio_endpoint_of((0..azos_limits::IPC_ENDPOINTS as u32).filter_map(|i| {
         let h = sys::cap_lookup(sys::ty::ENDPOINT.raw(), i);
-        (h > 0).then_some(h as u32)
-    })
+        if h <= 0 {
+            return None;
+        }
+        let info = sys::cap_info(h as u32).ok()?;
+        Some(beep::Held { handle: h as u32, ty: info.ty, rights: info.rights, badge: info.badge, expiry_ns: info.expiry_ns })
+    }))
 }
 
 /// Where `beep` plays: a call-only copy of the audio server's endpoint badged

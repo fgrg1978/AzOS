@@ -10,6 +10,7 @@
 //! `sound.rs` is the flow over `Sound`: it makes the three objects, opens a
 //! playback stream, posts the periods, drains it and counts what came back.
 
+use azos_abi::cap::{ty, CapPerms};
 use azos_devif::outcome;
 use core::fmt::{self, Write};
 
@@ -152,4 +153,37 @@ pub fn why(code: u32) -> &'static str {
 /// The one line `beep` prints when the tone has played.
 pub fn write_report(w: &mut dyn Write, played: u32, wanted: u32, frames: u64, rate_hz: u32, channels: u32, xruns: u32) -> fmt::Result {
     writeln!(w, "beep: {} of {} periods played ({} frames, {} Hz, {} ch, {} xruns)", played, wanted, frames, rate_hz, channels, xruns)
+}
+
+/// An endpoint capability this task holds, as `cap_info` describes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub handle: u32,
+    pub ty: u8,
+    pub rights: u8,
+    pub badge: u32,
+    pub expiry_ns: u64,
+}
+
+/// The rights of the topology row's grant of `endpoint.audio` to the toolbox:
+/// the call right and `DUP`, so the tool can derive the badged copy the
+/// server tells its streams apart by (`TOOLBOX_AUDIO_CAP`).
+const AUDIO_GRANT_RIGHTS: u8 = CapPerms::WRITE.union(CapPerms::DUP).bits();
+
+/// The handle of the audio server's endpoint among `held`: the one capability
+/// that is an endpoint with exactly the rights of the row's grant, unbadged
+/// and never expiring. `None` when there is none, and also when there are two
+/// (the shape no longer names one endpoint, and a guess would send a stream to
+/// the wrong server).
+pub fn audio_endpoint_of(held: impl Iterator<Item = Held>) -> Option<u32> {
+    let mut found = None;
+    for h in held {
+        if h.ty == ty::ENDPOINT.raw() && h.rights == AUDIO_GRANT_RIGHTS && h.badge == 0 && h.expiry_ns == 0 {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(h.handle);
+        }
+    }
+    found
 }

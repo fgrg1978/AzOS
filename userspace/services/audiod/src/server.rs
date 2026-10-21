@@ -58,12 +58,18 @@
 //! objects are handed to the kernel's `sound.0` **as they are** (the kernel
 //! resolves the client's queues and arena in place; nothing is copied through
 //! this task), and the kernel's gate answers. The gate is the `mic` effect of
-//! this server's scheduler class, plus Kconfig `AUDIO_CAPTURE` and the
-//! microphone indicator, and it writes the `audio-capture` decision record
-//! for **every attempt**, admitted or refused: ring 3 has no way to write one.
-//! `REFUSED` is passed to the client unchanged, and nothing about the server
-//! changes: the three objects are released, no lease is taken. At most one
-//! capture stream exists (the kernel's rule: one stream per direction).
+//! **this server's** scheduler class (the kernel sees one caller, the server's
+//! capture thread, never the client behind it), plus Kconfig `AUDIO_CAPTURE`
+//! and the microphone indicator, and it writes the `audio-capture` decision
+//! record for every attempt that reaches it, admitted or refused: ring 3 has
+//! no way to write one. That record's task is therefore the server's, not the
+//! client's; the server adds a console line naming the badge for each such
+//! attempt. `REFUSED` is passed to the client unchanged, and nothing about the
+//! server changes: the three objects are released, no lease is taken. At most
+//! one capture stream exists (the kernel's rule: one stream per direction).
+//! A badge that already has a playback stream is refused (`BUSY`) before the
+//! kernel is asked, so that refusal is not a gate record: nothing was
+//! attempted at the device.
 //!
 //! The kernel binds a stream to the **thread** that opened it, and gives the
 //! `mic` effect only to a thread seeded from a topology row, which the pump
@@ -74,9 +80,13 @@
 //! Known limits, both of the same cause (ring 3 has no way to ask who called
 //! or to write a decision):
 //!
-//! * the `mic` effect that is checked is the **server's**, not the client's
-//!   class's; a deployment that must tell clients apart on the microphone
-//!   gives only those clients the endpoint;
+//! * **Every holder of `endpoint.audio` inherits the microphone** once the
+//!   server's class holds a `mic` envelope: the effect that is checked is the
+//!   server's, never the client's class's, and the server does not tell its
+//!   clients apart beyond their badge, which they choose. The capture
+//!   authority is the server's. A deployment that must keep the microphone
+//!   from some clients grants `endpoint.audio` only to the ones that may use
+//!   it, or gives the server's class no `mic` effect at all;
 //! * a lease whose client stopped posting room (the device's xruns grow by
 //!   [`LEASE_STALL_XRUNS`] between two looks, [`LEASE_POLL_NS`] apart) is
 //!   closed, but only when a call next reaches the server: the main thread
@@ -854,7 +864,11 @@ impl<E: Env> Server<E> {
         {
             return out_err(outcome::UNSUPPORTED);
         }
-        if self.slot_of(self.caller).is_some() {
+        // One badge is one stream of either kind: calls are routed by badge
+        // and the lease is looked at first, so a playback stream opened under
+        // the badge of the capture lease could never be started, stopped or
+        // closed.
+        if self.slot_of(self.caller).is_some() || self.lease_of_caller() {
             return out_err(outcome::BUSY);
         }
         let Some(slot) = self.streams.iter().take(self.limits.max_streams.min(STREAMS_MAX)).position(Option::is_none) else {
@@ -904,10 +918,20 @@ impl<E: Env> Server<E> {
         if !self.limits.capture || info.dirs & DIR_CAPTURE == 0 {
             return out_err(outcome::UNSUPPORTED);
         }
+        // The same rule as `open_inner`'s, the other way: a badge that has a
+        // playback stream would have every call routed to the lease instead.
+        // The server refuses it before the kernel is asked, so this refusal is
+        // not an `audio-capture` decision: no capture was attempted at the
+        // device.
+        if self.slot_of(self.caller).is_some() {
+            return out_err(outcome::BUSY);
+        }
         // Asked even when a lease is held: the kernel orders its answers so a
         // task without the effect is refused before it learns the device is
         // busy, and it records every attempt.
-        match self.env.lease_open(params, caps[0], caps[1], caps[2]) {
+        let r = self.env.lease_open(params, caps[0], caps[1], caps[2]);
+        self.log_capture_attempt(r.is_ok());
+        match r {
             Ok(o) => {
                 let now = self.env.now_ns();
                 self.lease = Some(Lease { badge: self.caller, caps, xruns_seen: 0, polled_ns: now });
@@ -915,5 +939,20 @@ impl<E: Env> Server<E> {
             }
             Err(c) => out_err(c),
         }
+    }
+
+    /// One console line per capture attempt that reached the kernel's gate,
+    /// naming the badge. The gate's `audio-capture` record names the server's
+    /// thread (the only caller the kernel sees), so this line is what ties an
+    /// attempt to the badge it came through.
+    fn log_capture_attempt(&mut self, admitted: bool) {
+        let (mut line, mut n) = ([0u8; 96], 0);
+        let (bd, bn) = digits(self.caller);
+        let verdict: &[u8] = if admitted { b": admitted\n" } else { b": refused by the gate\n" };
+        for part in [&b"[audiod] capture open by badge "[..], &bd[..bn], verdict] {
+            line[n..n + part.len()].copy_from_slice(part);
+            n += part.len();
+        }
+        self.env.log(&line[..n]);
     }
 }

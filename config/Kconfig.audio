@@ -26,8 +26,8 @@ config AUDIOD
       per-stream gain, the device's rate and format, one stream's underrun its
       own) into the one playback stream it holds on the kernel's `sound.0`.
       Capture is not mixed: the client's own objects are handed to the kernel's
-      microphone gate, which needs the `mic` effect and records every attempt
-      (AUDIO_CAPTURE). `toolbox beep` goes through the server when its row
+      microphone gate, which needs the `mic` effect of the server's class and
+      records every attempt that reaches it (AUDIO_CAPTURE). `toolbox beep` goes through the server when its row
       holds `endpoint.audio` and straight to `sound.0` otherwise; with the
       server, the toolbox row holds no `sound.0` (the device has one holder).
 
@@ -46,9 +46,14 @@ config AUDIO_CAPTURE
     default y if !HWCLASS_EMBEDDED
     default n
     help
-      y: the audio server opens `DIR_CAPTURE` streams, each one admitted by
-      the `mic` effect of the caller's scheduler class (an `[envelope.NAME]`
-      row with `kind = "mic"`) and recorded as an `audio-capture` decision.
+      y: the audio server opens `DIR_CAPTURE` streams. The kernel's gate
+      admits each one on the `mic` effect of the AUDIO SERVER's scheduler class
+      (an `[envelope.NAME]` row with `kind = "mic"`), because the server is the
+      only caller the kernel sees: every holder of `endpoint.audio` inherits
+      the microphone as soon as the server's class holds that effect, and the
+      `audio-capture` decision record names the server's thread, not the
+      client (the server prints one console line per attempt, naming the
+      client's badge). Grant `endpoint.audio` only to rows that may listen.
       n: the capture path is not compiled; a capture `open` answers
       UNSUPPORTED and no envelope row can enable it. An image that must never
       listen is built with n, which no topology can undo.

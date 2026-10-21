@@ -546,7 +546,8 @@ mod capture {
     /// **Canary.** Flip the fake gate to admit (`mic = true`): the same open
     /// is admitted, a lease is taken and the objects are kept (the second half
     /// of this test says so). Make the server answer `REFUSED` itself without
-    /// asking: `lease_open_calls` stays 0 and the first assert fails.
+    /// asking: `lease_open_calls` stays 0 and the first assert fails. Drop the
+    /// `log_capture_attempt` call: the badge lines are missing.
     #[test]
     fn capture_without_the_effect_is_refused_by_the_kernel_gate_and_leaves_no_lease() {
         let (mut srv, w) = server();
@@ -559,12 +560,18 @@ mod capture {
         }
         assert_eq!((srv.open_streams(), w.borrow().lease_active), (0, false));
         assert!(!srv.busy());
+        assert_eq!(
+            w.borrow().logs.iter().filter(|l| l.contains("capture open by badge 7: refused by the gate")).count(),
+            2,
+            "each attempt names the badge: the kernel's record names the server"
+        );
         // The gate admits: the same call is a lease, and nothing is released.
         w.borrow_mut().mic = true;
         let c = Client::new(&w, 7, [1, 2, 3], &rec());
         assert_eq!(c.open(&mut srv, rec()).code, outcome::OK);
         assert_eq!((srv.open_streams(), w.borrow().lease_active), (1, true));
         assert!(w.borrow().released.is_empty());
+        assert!(w.borrow().logs.iter().any(|l| l.contains("capture open by badge 7: admitted")));
     }
 
     /// An unidentified caller is refused before the kernel is asked, and a
@@ -613,6 +620,50 @@ mod capture {
         // Only the holder's calls are forwarded.
         assert_eq!(call(&mut srv, 9, |s| s.start()).code, outcome::NOT_READY);
         assert_eq!(w.borrow().lease_calls.len(), 5);
+    }
+
+    /// One badge is one stream of either kind. A badge that has a playback
+    /// stream is refused a capture one (BUSY, before the kernel is asked), and
+    /// a badge that holds the capture lease is refused a playback one; in both
+    /// the stream it had stays controllable and closes cleanly, and only the
+    /// refused open's objects go back.
+    ///
+    /// **Canaries.** Drop the `slot_of` test in `open_capture`: the capture open
+    /// reaches the gate (`lease_open_calls` 1) and the badge's calls go to the
+    /// lease. Drop the `lease_of_caller` test in `open_inner`: the playback open
+    /// is admitted under the lease's badge, `open_streams` is 2, and the
+    /// playback stream can never be closed (the lease takes the call).
+    #[test]
+    fn a_badge_cannot_hold_a_playback_and_a_capture_stream_at_once() {
+        // Playback first, then capture.
+        let (mut srv, w) = server();
+        let p = Client::new(&w, 7, [1, 2, 3], &params());
+        assert_eq!(p.open(&mut srv, params()).code, outcome::OK);
+        let c = Client::new(&w, 7, [11, 12, 13], &rec());
+        assert_eq!(c.open(&mut srv, rec()).code, outcome::BUSY);
+        assert_eq!(w.borrow().lease_open_calls, 0, "refused before the gate: nothing was attempted at the device");
+        assert_eq!(std::mem::take(&mut w.borrow_mut().released), [11, 12, 13], "only the refused objects go back");
+        assert_eq!((srv.open_streams(), w.borrow().lease_active), (1, false));
+        call(&mut srv, 7, |s| s.close());
+        assert_eq!(std::mem::take(&mut w.borrow_mut().released), [1, 2, 3], "the playback stream closes under its own badge");
+        assert_eq!(srv.open_streams(), 0);
+        assert!(w.borrow().lease_calls.is_empty(), "no call went to the lease");
+
+        // Capture first, then playback.
+        let (mut srv, w) = server();
+        let c = Client::new(&w, 7, [1, 2, 3], &rec());
+        assert_eq!(c.open(&mut srv, rec()).code, outcome::OK);
+        let p = Client::new(&w, 7, [11, 12, 13], &params());
+        assert_eq!(p.open(&mut srv, params()).code, outcome::BUSY);
+        assert_eq!(std::mem::take(&mut w.borrow_mut().released), [11, 12, 13]);
+        assert_eq!((srv.open_streams(), w.borrow().lease_active), (1, true));
+        call(&mut srv, 7, |s| s.close());
+        assert_eq!(w.borrow().lease_calls, ["open", "close"], "the lease closes under its own badge");
+        assert_eq!(std::mem::take(&mut w.borrow_mut().released), [1, 2, 3]);
+        assert_eq!(srv.open_streams(), 0);
+        // Another badge is unaffected by either.
+        let p = Client::new(&w, 8, [21, 22, 23], &params());
+        assert_eq!(p.open(&mut srv, params()).code, outcome::OK);
     }
 
     /// A lease whose client stopped posting room (the device's xruns climb) is

@@ -180,3 +180,34 @@ fn the_outcomes_and_the_report_have_their_words() {
     write_report(&mut s, 12, 12, 11_900, 48_000, 2, 0).unwrap();
     assert_eq!(s, "beep: 12 of 12 periods played (11900 frames, 48000 Hz, 2 ch, 0 xruns)\n");
 }
+
+/// The audio server's endpoint is found by the shape of the row's grant, not by
+/// where it sits in the pool, and an ambiguous table names nothing.
+///
+/// **Canaries.** Drop the `rights ==` test and the other-endpoint case goes red;
+/// drop the `badge == 0` test and the derived-copy case does; return the first
+/// match instead of `None` on a second and the ambiguity case does; return the
+/// first held handle (the old pool-index guess) and the order cases do.
+#[test]
+fn the_audio_endpoint_is_found_by_the_shape_of_its_grant() {
+    use azos_abi::cap::{ty, CapPerms};
+    let grant = CapPerms::WRITE.union(CapPerms::DUP).bits();
+    let ep = |handle, rights, badge, expiry_ns| Held { handle, ty: ty::ENDPOINT.raw(), rights, badge, expiry_ns };
+    // The row's grant alone.
+    assert_eq!(audio_endpoint_of([ep(7, grant, 0, 0)].into_iter()), Some(7));
+    // Another service's endpoint granted to the row before it, with other rights.
+    let other = [ep(3, CapPerms::WRITE.bits(), 0, 0), ep(7, grant, 0, 0)];
+    assert_eq!(audio_endpoint_of(other.into_iter()), Some(7), "not the first endpoint, the one with the grant's shape");
+    let other = [ep(7, grant, 0, 0), ep(3, CapPerms::READ.bits(), 0, 0)];
+    assert_eq!(audio_endpoint_of(other.into_iter()), Some(7));
+    // A badged or expiring copy is not the row's grant.
+    assert_eq!(audio_endpoint_of([ep(9, grant, 5, 0)].into_iter()), None, "a derived copy");
+    assert_eq!(audio_endpoint_of([ep(9, grant, 0, 1_000)].into_iter()), None, "a lapsing copy");
+    // Not an endpoint at all.
+    let file = Held { handle: 4, ty: ty::FILE.raw(), rights: grant, badge: 0, expiry_ns: 0 };
+    assert_eq!(audio_endpoint_of([file].into_iter()), None);
+    // Two of the shape: ambiguous, so none.
+    assert_eq!(audio_endpoint_of([ep(7, grant, 0, 0), ep(8, grant, 0, 0)].into_iter()), None);
+    // Nothing held.
+    assert_eq!(audio_endpoint_of(core::iter::empty()), None);
+}
