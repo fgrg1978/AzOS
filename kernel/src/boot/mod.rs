@@ -43,7 +43,17 @@ mod inspect;
 #[cfg(feature = "inspect")]
 mod inspect_metrics;
 #[cfg(feature = "inspect")]
-pub(crate) use inspect::install_inspect;
+mod inspect_views;
+#[cfg(feature = "inspect")]
+pub(crate) use inspect::{install_inspect, refresh_now as inspect_refresh_now};
+#[cfg(all(feature = "inspect", feature = "lat-trace"))]
+pub(crate) use inspect::public_str as inspect_public_str;
+/// The decimal name of an introspection-tree node numbered `n` (for the
+/// latency subtree, outside this module).
+#[cfg(all(feature = "inspect", feature = "lat-trace"))]
+pub(crate) fn inspect_num(n: u64) -> inspect_metrics::Num {
+    inspect_metrics::Num::name("", n)
+}
 mod sched;
 pub(crate) use sched::*;
 // The boot launcher: the component manager and the rows that move between hosts.
@@ -129,8 +139,6 @@ mod dma;
 pub(crate) use dma::*;
 mod seams;
 pub(crate) use seams::*;
-mod procfs;
-pub(crate) use procfs::*;
 // Kconfig CHAOS / DECISION_RECORDS_DEV: command line, canaries, ktests.
 pub(crate) mod chaos;
 mod robot;

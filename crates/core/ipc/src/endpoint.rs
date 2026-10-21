@@ -1384,7 +1384,8 @@ pub mod resolve_cache {
 }
 
 /// The name and the serving task of the endpoint at pool index `i`, for a
-/// named, live endpoint: what the name server's view (`/proc/names`) prints
+/// named, live endpoint: what the view regions (`inspect.names` and the
+/// others) publish
 /// for a capability it holds. `UNCLAIMED` when no server has taken it.
 pub fn endpoint_name_owner(i: usize) -> Option<([u8; ENDPOINT_NAME_MAX], usize, u32)> {
     let eps = ENDPOINTS.lock_irqsave();

@@ -51,7 +51,7 @@ const I2C_DETECT_OUTPUT_BYTES: usize = 1;
 // ──────────────────────────────────────────────────────────────────────────
 
 /// No MMIO range: each controller's window is the bound device's (the
-/// hardware bus records it, `/proc/devices`), not a constant of the manifest.
+/// hardware bus records it, the introspection tree's `devices/`), not a constant of the manifest.
 const fn build_manifest() -> DriverManifest {
     DriverManifest::new(
         DRV_KIND_I2C,

@@ -287,7 +287,7 @@ mod decision_ktests {
                 }
             }
             let mut line = Line { b: [0; 256], n: 0 };
-            let _ = crate::boot::decision_line(&mut line, &d);
+            let _ = azos_decision::ProvenanceRecord::from_record(&d).write_line(&mut line);
             let s = &line.b[..line.n];
             let has = |pat: &[u8]| s.windows(pat.len()).any(|w| w == pat);
             if !has(b" deadline-admission admit cpus=") || !has(b" rejected=\"refuse the topology") {

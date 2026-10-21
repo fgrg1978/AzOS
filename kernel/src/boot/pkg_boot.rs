@@ -222,7 +222,7 @@ fn is_package_row(name: &[u8]) -> bool {
 
 /// The directory of the program of row `name` when it is not on `/fat`: the
 /// applied packages' (`/pkg/APPS`), for a row a package brought. The component
-/// manager spawns `<dir>/<name>` (`/proc/components`' fifth field), the kernel's
+/// manager spawns `<dir>/<name>` (`components/<n>/dir` of the `inspect.components` view), the kernel's
 /// own launcher the same through [`image_path`].
 pub(crate) fn image_dir<'b>(name: &[u8], out: &'b mut [u8; 16]) -> Option<&'b [u8]> {
     if !is_package_row(name) {

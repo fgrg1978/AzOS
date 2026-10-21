@@ -83,7 +83,7 @@ pub const FS_TYPE_RAMFS: u32 = 0;
 pub const FS_TYPE_FAT32: u32 = 1;
 /// The native volume (`azvol`): mounted from a topology `[volume.NAME]` row by
 /// `kernel/src/boot/azvol.rs`, served by `azvol::mount::AzvolFs`. 2 is tmpfs
-/// and 3 procfs (their own files name them).
+/// (its own file names it); 3 is unassigned.
 pub const FS_TYPE_AZVOL: u32 = 4;
 
 /// Null sentinel for inode indices (equivalent to C's NULL pointer).
@@ -92,7 +92,7 @@ pub const NO_IDX: u32 = u32::MAX;
 // ─── The filesystem abstraction ───────────────────────────────────────────────
 //
 // `crates/core/sched` puts five policy backends behind one `Policy`. This crate had
-// three filesystems — FAT32, tmpfs, procfs — behind nothing at all, and the
+// three filesystems behind nothing at all, and the
 // generic inode carried three fields named after one of them
 // (`fat32_backed`, `fat32_dirty`, `fat32_name`). The VFS therefore could not
 // be told about a filesystem; it could only be told about FAT32.
@@ -117,8 +117,7 @@ pub const NO_IDX: u32 = u32::MAX;
 /// crate stores (owner decision, wave 10; was 11, FAT32's 8.3 name, which
 /// made every tmpfs name longer than 11 bytes unreachable through a mount).
 /// FAT32's key is the canonical path of the file (`PKG/SYS_B/KERN.BIN`) and
-/// refuses a path that does not fit (`key_of_path` in `fat32.rs`); procfs caps
-/// its keys at what its own path buffer holds (`ProcFs::key_for`).
+/// refuses a path that does not fit (`key_of_path` in `fat32.rs`).
 pub const INODE_KEY_LEN: usize = 64;
 
 /// A backend's private name for a file, carried by the generic inode.
@@ -327,8 +326,8 @@ pub trait FileSystem: Sync {
 
     /// Write `src` at `offset` bytes into the file named by `key`, growing
     /// it if `offset + src.len()` exceeds the current size. Returns bytes
-    /// written. `Err(())` for a backend that cannot write at all (procfs)
-    /// or on an underlying I/O failure — never for "unsupported", since
+    /// written. `Err(())` for a backend that cannot write at all, or on an
+    /// underlying I/O failure — never for "unsupported", since
     /// every mounted backend implements this.
     fn write_at(&self, key: &InodeKey, offset: u64, src: &[u8]) -> Result<usize, ()>;
 
@@ -348,7 +347,7 @@ pub trait FileSystem: Sync {
     fn streaming(&self) -> bool { false }
 
     /// `true` when this backend's reads and writes wait on a device (the
-    /// default); `false` for a RAM-resident one (tmpfs, procfs). A streaming
+    /// default); `false` for a RAM-resident one (tmpfs). A streaming
     /// file of a device-backed backend transfers with the descriptor table
     /// released and under its description's position lock (owner rule F1,
     /// `fd_stream_transfer`); a RAM-resident one keeps the table's lock.
@@ -374,7 +373,7 @@ pub trait FileSystem: Sync {
     /// and dirty cache pages, and `read_at`/`write_at` become the cache's
     /// BACKING (they stay raw, never cache-aware: the cache's fill and
     /// write-back call them). `false` (the default) for a file whose bytes are
-    /// generated (procfs) or not addressed by a key (azvol).
+    /// not addressed by a key (azvol).
     fn page_cached(&self) -> bool { false }
 
     /// What a read-only stream keeps from its open's `stat`, handed back to
@@ -478,7 +477,7 @@ pub trait FileSystem: Sync {
     // implementations in with it — `fat32`'s cost 2,356 of the 2,516 `.text`
     // bytes this abstraction added, for a second monomorphisation of
     // `fat32_ls_root` that nothing ever entered. The free functions
-    // (`fat32_ls_root`, `tmpfs_ls`, `procfs_ls`) are still there for whoever
+    // (`fat32_ls_root`, `tmpfs_ls`) are still there for whoever
     // needs enumeration; put it back on the trait when something calls it,
     // and pay the bytes then.
 }
@@ -784,8 +783,8 @@ fn mount_index(b: &'static dyn FileSystem) -> u64 {
     u64::MAX
 }
 
-/// The gate for a delete on backend `b`. A RAM-resident backend (tmpfs,
-/// procfs) holds no stored data and is not gated. Called after the checks
+/// The gate for a delete on backend `b`. A RAM-resident backend (tmpfs)
+/// holds no stored data and is not gated. Called after the checks
 /// that decide whether there is anything to delete and before any side effect,
 /// so a refusal changes nothing and a missing file leaves no receipt.
 fn delete_ok(b: &'static dyn FileSystem, op: DeleteOp) -> Result<(), FsErr> {
@@ -1335,9 +1334,7 @@ pub fn vfs_mount(path: &[u8], fs_type: u32) -> Result<(), ()> {
 /// block driver would be mounted through this call and nothing else in this
 /// file would change.
 ///
-/// Wave 12: the kernel mounts `procfs` at `/proc` with it (read-only by
-/// construction: its backend refuses every write), so ring 3 reads
-/// `/proc/tasks` and the rest through the ordinary file calls. `tmpfs`
+/// The azvol mount (`azvol::mount`) and the tests mount with it; `tmpfs`
 /// implements [`FileSystem`] too and stays unmounted here.
 pub fn vfs_mount_fs(path: &[u8], fs: &'static dyn FileSystem) -> Result<(), ()> {
     let fs_type = fs.fs_type();
@@ -1613,15 +1610,8 @@ fn try_backend_open(path: &[u8]) -> u32 {
         let buf = unsafe { core::slice::from_raw_parts_mut(data_ptr, file_size as usize) };
         let t_fill = crate::census::now();
         crate::census::add(crate::census::ALLOC, t_alloc, t_fill);
-        let got = backend.read_all(&key, &st, buf);
+        let _ = backend.read_all(&key, &st, buf);
         crate::census::add(crate::census::FILL, t_fill, crate::census::now());
-        // A synthetic file (procfs) is generated again here, after `stat`
-        // sized it, and can come out shorter (wave 12: `/proc/tasks` with a
-        // task gone meanwhile): the proxy is cut to what was generated,
-        // not padded with NULs. A disk file keeps its stat size.
-        if backend.fs_type() == crate::procfs::FS_TYPE_PROCFS && got < file_size as usize {
-            let _ = inode_resize(inode_idx, got as u32);
-        }
     }
 
     // link_count = 0: freed when last FD releases it (rc==0 && lc==0).

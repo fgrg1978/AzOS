@@ -49,7 +49,7 @@
 //! `1 / 2^ESU` joules, `ESU` in bits 12:8 of the power-unit register) and
 //! accumulates microjoules across its wrap. The thermal task calls it once per
 //! tick and shows the total and the mean power of the last interval in
-//! `/proc/thermal`.
+//! the introspection tree's `thermal/`.
 
 use azos_energy::model::{EnergyModel, Opp, MAX_DOMAINS, MAX_MODEL_CPUS};
 use azos_energy::opp::{ActuateError, OppActuator};

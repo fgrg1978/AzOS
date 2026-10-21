@@ -22,7 +22,7 @@
 
 use crate::{needs_bounce, AddrRange, Direction, DmaAddr, DmaError};
 
-/// What kind of domain this is, for the boot report and `/proc`.
+/// What kind of domain this is, for the boot report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DomainKind {
     Identity,

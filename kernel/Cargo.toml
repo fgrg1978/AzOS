@@ -230,9 +230,11 @@ syscall-abi-canary = []
 # lxhello's `execve` go red; a Linux execve also keeps the old thread pointer
 # (`azos_sched`). Never in a real build.
 exec-regs-canary = ["azos_sched/exec-regs-canary"]
-# Wave 12 canary (owner round 48): `/proc/tasks` and `/proc/<tid>` unfiltered,
-# every reader sees every task (the hidepid rows go red). Never in a real build.
-proc-hidepid-canary = ["azos_sched/proc-hidepid-canary"]
+# Gate canary of the introspection regions (crates/core/ipc
+# `inspect_region.rs`): every view region granted with the public one, to a
+# row that declares none of them. The `inspect: views need their grant` rows
+# go red with it. Never in a real build.
+inspect-view-canary = ["azos_ipc/inspect-view-canary"]
 # Wave 13 canary: orphans are not re-parented (the orphan rows go red).
 # Never in a real build.
 orphan-reparent-canary = ["azos_sched/orphan-reparent-canary"]
@@ -594,7 +596,7 @@ supall-smoke = ["qemu"]
 # says `restart = no`: the buzzer killed must stay down.
 restart-smoke = ["qemu", "azos_topology/restart-smoke"]
 # Its canary: the manager is shown every row as `on-failure`
-# (`boot::procfs::view_restart`), so the row must fail on `[RESTART] FAIL buzzer restarted under
+# (`boot::inspect_views::view_restart`), so the row must fail on `[RESTART] FAIL buzzer restarted under
 # restart = no`.
 restart-canary = ["restart-smoke"]
 # Gate canary: `init=` on the kernel command line is honoured even with
@@ -606,7 +608,7 @@ cmdline-init-canary = []
 # descriptors and console input: the BusyBox-console rows must fail.
 console-spawn-canary = []
 # Gate canary only: the component manager is shown every row as `restart =
-# no` (`boot::procfs::view_restart`), so it restarts nothing. The supall row
+# no` (`boot::inspect_views::view_restart`), so it restarts nothing. The supall row
 # must fail on `[SUPALL] FAIL buzzer not restarted` with it.
 supall-canary = []
 # Wave 10 (owner decisions 2026-09-28), gate rows `safe mode: attempts
@@ -910,7 +912,7 @@ fb-panic-screen = ["fb-generic", "azos_fb/panic-screen"]
 # Wave 11 (LAT): masked-window tracer, Kconfig `LAT_TRACE` (config/Kconfig.development,
 # mapped by tools/kconfig_to_cargo.py). Records per hart the longest
 # interrupts-masked and preemption-disabled windows and their call sites,
-# read out at `/proc/latency`. Off: no hook, no table, no procfs entry.
+# read out in the introspection tree's `latency/`. Off: no hook, no table, no node.
 lat-trace = ["azos_arch/lat-trace", "azos_sync/lat-trace", "azos_mm/lat-trace"]
 # Wave 15 (TRACE) gate canaries. `trace-producer-canary`: the tracer's
 # producer never advances its index, so a reader sees one record per ring
@@ -946,8 +948,8 @@ lockdep = ["azos_sync/lockdep"]
 # and its sites (crates/core/chaos). Cargo unifies the crate's `on` feature,
 # so every crate that asks a point sees it on. Never with secure-boot-enforced.
 chaos = ["azos_chaos/on"]
-# Kconfig DECISION_RECORDS_DEV: explainable decision records and /proc/decisions
-# (crates/core/decision).
+# Kconfig DECISION_RECORDS_DEV: explainable decision records, in the
+# introspection tree's admin region (crates/core/decision).
 decisions = ["azos_decision/on"]
 # Kconfig HV (derived from VIRT): the hypervisor core. The boot admits the
 # topology's `[guest.NAME]` rows (`kernel/src/boot/hv.rs`) and the syscall
@@ -998,9 +1000,8 @@ nx-skip-canary = []
 # Gate canary for `mm_ro_after_init_sealed`: the boot never seals the hooks and
 # leaves `.data.ro_after_init` writable.
 ro-seal-skip-canary = []
-# (`stack-guard-skip-canary` and `procfs-skip-canary` are runtime canaries
-# now: `canary=stack-guard-skip,procfs-skip` on the command line, Kconfig
-# CANARY_RUNTIME, kernel/src/canary_rt.rs.)
+# (`stack-guard-skip-canary` is a runtime canary now: `canary=stack-guard-skip`
+# on the command line, Kconfig CANARY_RUNTIME, kernel/src/canary_rt.rs.)
 # riscv64: the boot ignores the DTB's Zicboz (scalar fallback):
 # `mm_zicboz_zero_fill` must report `not ok`.
 zicboz-skip-canary = []

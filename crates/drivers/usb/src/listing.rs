@@ -8,8 +8,8 @@
 //! [`UsbClass::attach`] and tells it when the device goes through
 //! [`UsbClass::detach`]; it keeps one [`Row`] per device slot. It claims no
 //! interface and opens no pipe, so it holds exactly what a device-scope claim
-//! grants: the identity the core passed. The rows are not a file and not a
-//! `procfs` text: the kernel publishes them through the introspection tree
+//! grants: the identity the core passed. The rows are not a file: the kernel
+//! publishes them through the introspection tree
 //! (`usb/dev0 .. devN`, behind the crate feature `inspect`), and a reader
 //! walks the tree with loads.
 //!

@@ -43,12 +43,26 @@
 //! memory/{page_size, pages_total, pages_free, pages_used, peak_user_pages,
 //!         quota_refusals, domains}
 //! decisions/{recorded, deny_dropped}
+//! system/, fs/, drivers/, chaos/                                            (inspect_views.rs)
+//! devices/<handle>/{name, identity, state, driver, base, size, irq}          (hwbus.rs)
 //! metrics/{trace, sched, energy, net, memory, decisions, syscalls, storage}   (inspect_metrics.rs)
+//! soc/, thermal/, latency/                                                   (soc.rs, thermal.rs, lat_trace.rs)
 //! ```
-//! Admin tree: `sched/{tasks_seen, tasks/<tid>/{name, state, priority, parent}}`
-//! and `wake/{now_us, rN}` (WAKE_RING_ENTRIES: the wake log with the task IDs
-//! the public region does not carry, `inspect_metrics::build_admin_wake`),
-//! rebuilt at each refresh (the set of tasks and the wakes change).
+//! Admin tree: `sched/{tasks_seen, tasks/<tid>/{name, state, priority, parent}}`,
+//! `wake/{now_us, rN}` (WAKE_RING_ENTRIES: the wake log with the task IDs
+//! the public region does not carry, `inspect_metrics::build_admin_wake`) and
+//! `decisions/records/<n>` (`inspect_views::build_admin`), rebuilt at each
+//! refresh (the set of tasks, the wakes and the decisions change).
+//!
+//! # When a value is current
+//!
+//! A value is at most INSPECT_REFRESH_MS old, in the view regions too (they
+//! are refreshed with the public one). Where a reader cannot wait for the
+//! next refresh, the kernel refreshes first ([`refresh_now`]): the boot
+//! launcher does before it starts the component manager, which reads its plan
+//! once. A ring-3 reader that needs state made at its own spawn (the pool
+//! index of an endpoint its row created) waits until the stamp has moved by
+//! two: the refresh that began after it started has then ended.
 //!
 //! There is no per-CPU dispatch counter in the scheduler yet, so the per-CPU
 //! number is the length of the CPU's run queue, under that name. `moved_in` and
@@ -99,8 +113,29 @@ struct State {
     refreshes: u64,
 }
 
-/// Handed from `install_inspect` to the task, which owns it from then on.
+/// Handed from `install_inspect` (boot, no task yet) to the first refresh,
+/// which moves it under [`STATE`].
 static HANDOFF: SpinLock<Option<State>> = SpinLock::new(None);
+/// The writers and the ids, for the `inspect` task and for [`refresh_now`]:
+/// task context only (a refresh walks every task slot).
+static STATE: azos_sync::kmutex::Mutex<Option<State>> = azos_sync::kmutex::Mutex::new(None);
+
+/// Run `f` on the published state, if there is one.
+fn with_state(f: impl FnOnce(&mut State)) {
+    let mut g = STATE.lock();
+    if g.is_none() {
+        *g = HANDOFF.lock_irqsave().take();
+    }
+    if let Some(st) = g.as_mut() {
+        f(st);
+    }
+}
+
+/// Refresh every value now rather than at the next period. Task context.
+/// Nothing when the tree is off.
+pub(crate) fn refresh_now() {
+    with_state(|st| st.refresh());
+}
 
 /// A published region: its packed MemObj reference, its size, and the same
 /// words the writer holds, for the reader check.
@@ -109,6 +144,24 @@ struct Span {
     obj: u32,
     bytes: usize,
     words: Region<'static>,
+}
+
+/// The public region, once published: what [`public_str`] reads.
+#[cfg(feature = "lat-trace")]
+static PUBLIC_SPAN: SpinLock<Option<Span>> = SpinLock::new(None);
+
+/// The string at `path` of the public tree, read as a ring-3 reader reads it
+/// (`Reader::open`, a lookup, a read): for the latency smoke, which checks
+/// what the tracer published. `None` when the tree is off or has no such
+/// string.
+#[cfg(feature = "lat-trace")]
+pub(crate) fn public_str(path: &str) -> Option<azos_inspect::Str> {
+    let at = (*PUBLIC_SPAN.lock_irqsave())?;
+    let r = Reader::open(at.words, Class::Public).ok()?;
+    match r.read(r.lookup(path).ok()??).ok()? {
+        azos_inspect::Value::Str(s) => Some(s),
+        _ => None,
+    }
 }
 
 /// One kernel-owned region of `pages` pages, formatted as `class`.
@@ -179,9 +232,17 @@ pub(crate) fn install_inspect(num_cpus: usize) {
         ok
     });
     azos_ipc::inspect_region::publish(pub_at.obj, admin_at.map(|at| at.obj));
+    #[cfg(feature = "lat-trace")]
+    {
+        *PUBLIC_SPAN.lock_irqsave() = Some(pub_at);
+    }
+    // The view regions of the rows that declare one (`inspect_views`).
+    super::inspect_views::install_views();
     azos_ipc::cap_seed::set_shm_inspect_minter(azos_ipc::kregion::seed_mint_any);
+    let (nodes, node_cap, words, word_cap) = st.public.usage();
     azos_drv_sys::kprintln!(
-        "[INSPECT] tree published: public region {} KiB, reader check ok", pub_at.bytes / 1024);
+        "[INSPECT] tree published: public region {} KiB ({}/{} nodes, {}/{} value words), reader check ok",
+        pub_at.bytes / 1024, nodes, node_cap, words, word_cap);
     if let Some(at) = admin_at {
         azos_drv_sys::kprintln!(
             "[INSPECT] admin region {} KiB, granted against the task view, reader check ok", at.bytes / 1024);
@@ -191,10 +252,9 @@ pub(crate) fn install_inspect(num_cpus: usize) {
 }
 
 fn inspect_task(_arg: usize) {
-    let Some(mut st) = HANDOFF.lock_irqsave().take() else { return };
     loop {
         azos_syscall::sleep::sleep_ms(azos_limits::INSPECT_REFRESH_MS as u64);
-        st.refresh();
+        with_state(|st| st.refresh());
     }
 }
 
@@ -247,6 +307,19 @@ fn build_public(b: &mut Builder<'_, 'static>, cpus: usize) -> Result<Ids, Error>
     let recorded = b.u64(dec, "recorded", 0)?;
     let deny_dropped = b.u64(dec, "deny_dropped", 0)?;
 
+    // The system's identity and counters; the topology's wiring is in the
+    // view regions (`inspect_views::install_views`).
+    if let Err(e) = super::inspect_views::build(b, root) {
+        azos_drv_sys::kwarn!(
+            "[INSPECT] the system subtrees do not fit {} pages ({:?}): raise INSPECT_PUBLIC_PAGES",
+            azos_limits::INSPECT_PUBLIC_PAGES, e);
+    }
+    if let Err(e) = super::hwbus::inspect_build(b, root) {
+        azos_drv_sys::kwarn!(
+            "[INSPECT] the devices subtree does not fit {} pages ({:?}): raise INSPECT_PUBLIC_PAGES",
+            azos_limits::INSPECT_PUBLIC_PAGES, e);
+    }
+
     // The metrics subtree is last: if the region is short, it is what is cut,
     // not the tree above. A cut subtree is not published (its nodes stay
     // zero), and the boot says so.
@@ -262,6 +335,18 @@ fn build_public(b: &mut Builder<'_, 'static>, cpus: usize) -> Result<Ids, Error>
         azos_drv_sys::kwarn!(
             "[INSPECT] the usb subtree does not fit {} pages ({:?}): raise INSPECT_PUBLIC_PAGES",
             azos_limits::INSPECT_PUBLIC_PAGES, e);
+    }
+    #[cfg(feature = "soc")]
+    if let Err(e) = super::soc::inspect_build(b, root) {
+        azos_drv_sys::kwarn!("[INSPECT] the soc subtree does not fit ({:?})", e);
+    }
+    #[cfg(feature = "thermal")]
+    if let Err(e) = super::thermal::inspect_build(b, root) {
+        azos_drv_sys::kwarn!("[INSPECT] the thermal subtree does not fit ({:?})", e);
+    }
+    #[cfg(feature = "lat-trace")]
+    if let Err(e) = crate::lat_trace::inspect_build(b, root) {
+        azos_drv_sys::kwarn!("[INSPECT] the latency subtree does not fit ({:?})", e);
     }
 
     Ok(Ids {
@@ -319,9 +404,23 @@ impl State {
         put(ids.recorded, azos_decision::total());
         put(ids.deny_dropped, azos_decision::deny_dropped_total());
         bad += inspect_metrics::refresh(w);
+        bad += super::inspect_views::refresh(w, self.refreshes);
+        bad += super::hwbus::inspect_refresh(w);
         #[cfg(feature = "usb-host")]
         {
             bad += super::usb::inspect_refresh(w);
+        }
+        #[cfg(feature = "soc")]
+        {
+            bad += super::soc::inspect_refresh(w);
+        }
+        #[cfg(feature = "thermal")]
+        {
+            bad += super::thermal::inspect_refresh(w);
+        }
+        #[cfg(feature = "lat-trace")]
+        {
+            bad += crate::lat_trace::inspect_refresh(w);
         }
         w.stamp(self.refreshes);
         if bad != 0 {
@@ -349,13 +448,17 @@ fn publish_tasks(admin: &Writer<'static>, refreshes: u64) {
             b.u64(t, "priority", row.priority as u64)?;
             b.u64(t, "parent", row.parent as u64)?;
         }
-        inspect_metrics::build_admin(b)
+        inspect_metrics::build_admin(b)?;
+        #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
+        super::inspect_views::build_admin(b)?;
+        Ok(())
     });
     admin.stamp(refreshes);
     // Only the first refresh says so: a full region is the same every time.
     if let Err(e) = r {
         if refreshes == 1 {
-            azos_drv_sys::kwarn!("[INSPECT] the admin tree does not hold {} tasks and the wake log: {:?}", n, e);
+            azos_drv_sys::kwarn!(
+                "[INSPECT] the admin tree does not hold {} tasks, the wake log and the decisions: {:?}", n, e);
         }
     }
 }

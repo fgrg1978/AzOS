@@ -102,7 +102,7 @@ pub fn stance(ev: Event, level_rose: bool) -> Stance {
     }
 }
 
-/// The name of `ev` for the console and `/proc/thermal`.
+/// The name of `ev` for the console.
 pub const fn event_name(ev: Event) -> &'static str {
     match ev {
         Event::TripUp => "trip-up",

@@ -495,7 +495,6 @@ dependencies = [
  "azos_common",
  "azos_crypto",
  "azos_drv_api",
- "azos_drv_base",
  "azos_drv_block",
  "azos_drv_sys",
  "azos_limits",

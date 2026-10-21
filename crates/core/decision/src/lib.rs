@@ -7,8 +7,10 @@
 //! An admission, placement or refusal path writes one [`Record`]: the rule
 //! that decided ([`Rule`]), the verdict, the subject (a task id, a topology
 //! row, a CPU count), up to three numbers the rule compared, and, from the
-//! rule's table entry, the alternative it rejected. The kernel renders the
-//! ring at `/proc/decisions`, one line per record, oldest first.
+//! rule's table entry, the alternative it rejected. The kernel publishes the
+//! newest records in its introspection tree's admin region
+//! (`decisions/records/<n>`, `kernel/src/boot/inspect_views.rs`), and `why`
+//! prints them, one line per record.
 //!
 //! The ring holds `DECISION_RECORDS_ENTRIES` records; the oldest is
 //! overwritten. It is lock-free so the wake path, which runs with the
@@ -44,7 +46,8 @@
 //! the `deny` module). A denial the bucket drops is counted, and the count
 //! rides in the third number of the next denial record that is written
 //! (`dropped`, printed when not zero), durable and ring alike; the total
-//! since boot is [`deny_dropped_total`], which `/proc/decisions` shows.
+//! since boot is [`deny_dropped_total`], which the introspection tree's
+//! `decisions/deny_dropped` shows.
 //!
 //! # Ids, the clock, the journal and the query
 //!

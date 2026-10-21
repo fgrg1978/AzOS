@@ -27,9 +27,6 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/early.rs: no task stack gets its guard page
     // (ktest `sched_stack_guards_unmapped`).
     "stack-guard-skip",
-    // kernel_main: `install_procfs` is skipped
-    // (ktest `procfs_entries_registered`).
-    "procfs-skip",
     // entry/x86_64/fp.rs: a fork's child gets the initial FP state, not the
     // parent's (ktest `x86_ring3_syscall_fork_fp`, x86_64 only).
     "x86-fork-fp-skip",

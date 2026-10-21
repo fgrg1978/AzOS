@@ -62,8 +62,7 @@ pub fn enforced(row: &AuthorityRow, lockdown: bool) -> bool {
 
 /// The capability kinds the console is seeded with at boot
 /// (`authority::seed_console_authority`): (wave 12, owner round 48)
-/// `Cap<Task>` READ on `"tasks"`, the full `/proc` task view a console `cat
-/// /proc/tasks` reads through (without it, the console's own subtree only). The endpoints it is
+/// `Cap<Task>` READ on `"tasks"`, the full task view. The endpoints it is
 /// seeded with are [`console_seed_ifaces`].
 ///
 /// **None under the console lockdown** (owner round 36, wave 11). The lockdown

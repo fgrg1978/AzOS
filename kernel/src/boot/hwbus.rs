@@ -14,7 +14,8 @@
 //!   table gave a device ("virtio-blk", "nvme") into the call that brings the
 //!   driver up on it. The drivers no longer scan for their hardware: they are
 //!   asked about the one device the bus found.
-//! - **Report**: one `[HWBUS]` line per outcome, `/proc/devices`, and the
+//! - **Report**: one `[HWBUS]` line per outcome, the introspection tree's
+//!   `devices/` (Kconfig INSPECT), and the
 //!   decision "detected, not admitted".
 //!
 //! # Board controllers (VisionFive 2, SpacemiT K1)
@@ -770,42 +771,139 @@ pub(crate) fn reconcile() {
     with_rules(|rules| hwbus::Locked.reconcile(rules, &mut kd, &mut Console));
 }
 
-// ── /proc/devices ───────────────────────────────────────────────────────
+// ── The introspection tree: devices/ ────────────────────────────────────
 
-/// `/proc/devices`: one line per device, `<handle> <name> <identity> <state>
-/// <driver> base=<hex> size=<hex> irq=<n>`.
-pub(crate) fn gen_proc_devices(buf: &mut [u8]) -> usize {
-    struct W<'a> { b: &'a mut [u8], n: usize }
-    impl core::fmt::Write for W<'_> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            let s = s.as_bytes();
-            if self.n + s.len() > self.b.len() { return Err(core::fmt::Error); }
-            self.b[self.n..self.n + s.len()].copy_from_slice(s);
-            self.n += s.len();
-            Ok(())
-        }
+/// A device's `state` word.
+#[cfg(feature = "inspect")]
+fn state_name(s: State) -> &'static str {
+    match s {
+        State::Free => "free",
+        State::Detected => "detected",
+        State::Probing => "probing",
+        State::Bound => "bound",
+        State::ProbeFailed => "probe-failed",
+        State::Unbound => "unbound",
+        State::NotAdmitted => "not-admitted",
+        State::Unmatched => "unmatched",
     }
-    let mut w = W { b: buf, n: 0 };
-    hwbus::with(|b| {
-        for (h, s) in b.iter() {
-            let state = match s.state {
-                State::Free => "free",
-                State::Detected => "detected",
-                State::Probing => "probing",
-                State::Bound => "bound",
-                State::ProbeFailed => "probe-failed",
-                State::Unbound => "unbound",
-                State::NotAdmitted => "not-admitted",
-                State::Unmatched => "unmatched",
-            };
-            let r = write!(
-                w, "{} {} {} {} {} base={:#x} size={:#x} irq={}\n",
-                h.0, s.dev.name.as_str(), Ident(&s.dev), state, binding_name(&s.binding),
-                s.dev.base, s.dev.size, s.dev.irq);
-            if r.is_err() {
+}
+
+/// The `state` and `driver` nodes of each device the tree lists, by handle.
+#[cfg(feature = "inspect")]
+static TREE: azos_sync::SpinLock<[Option<(u32, azos_inspect::NodeId, azos_inspect::NodeId)>; hwbus::MAX_DEVICES]> =
+    azos_sync::SpinLock::new([None; hwbus::MAX_DEVICES]);
+
+/// Text of up to 48 bytes, made in place.
+#[cfg(feature = "inspect")]
+#[derive(Clone, Copy)]
+struct Short {
+    b: [u8; 48],
+    n: usize,
+}
+
+#[cfg(feature = "inspect")]
+impl core::fmt::Write for Short {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let s = s.as_bytes();
+        if self.n + s.len() > self.b.len() {
+            return Err(core::fmt::Error);
+        }
+        self.b[self.n..self.n + s.len()].copy_from_slice(s);
+        self.n += s.len();
+        Ok(())
+    }
+}
+
+#[cfg(feature = "inspect")]
+impl Short {
+    fn of(v: impl core::fmt::Display) -> Short {
+        let mut s = Short { b: [0; 48], n: 0 };
+        let _ = write!(s, "{}", v);
+        s
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.b[..self.n]).unwrap_or("?")
+    }
+}
+
+/// `devices/<handle>/{name, identity, state, driver, base, size, irq}`, one
+/// directory per device the bus holds when the tree is built: the handle is
+/// what `DOMAIN_MMIO_MAP` takes, the identity says what the device is
+/// (`pci:1af4:1041`, `dt:ns16550a`, `virtio:2`). `state` and `driver` are
+/// rewritten at each refresh.
+#[cfg(feature = "inspect")]
+pub(crate) fn inspect_build(
+    b: &mut azos_inspect::Builder<'_, '_>,
+    root: azos_inspect::NodeId,
+) -> Result<(), azos_inspect::Error> {
+    struct Dev {
+        h: u32,
+        name: Short,
+        ident: Short,
+        base: u64,
+        size: u64,
+        irq: u32,
+    }
+    // Copied out under the bus lock (a short hold), built after.
+    let mut devs: [Option<Dev>; hwbus::MAX_DEVICES] = [const { None }; hwbus::MAX_DEVICES];
+    hwbus::with(|bus| {
+        for ((h, s), slot) in bus.iter().zip(devs.iter_mut()) {
+            *slot = Some(Dev {
+                h: h.0,
+                name: Short::of(s.dev.name.as_str()),
+                ident: Short::of(Ident(&s.dev)),
+                base: s.dev.base,
+                size: s.dev.size,
+                irq: s.dev.irq,
+            });
+        }
+    });
+    let dir = b.dir(root, "devices")?;
+    let mut ids = [None; hwbus::MAX_DEVICES];
+    let mut r = Ok(());
+    for (d, slot) in devs.iter().flatten().zip(ids.iter_mut()) {
+        let one = |b: &mut azos_inspect::Builder<'_, '_>| {
+            let n = b.dir(dir, Short::of(d.h).as_str())?;
+            b.string(n, "name", d.name.n.max(1), d.name.as_str())?;
+            b.string(n, "identity", d.ident.n.max(1), d.ident.as_str())?;
+            let state = b.string(n, "state", 12, "")?;
+            let driver = b.string(n, "driver", 24, "")?;
+            b.u64(n, "base", d.base)?;
+            b.u64(n, "size", d.size)?;
+            b.u64(n, "irq", d.irq as u64)?;
+            Ok((d.h, state, driver))
+        };
+        match one(b) {
+            Ok(v) => *slot = Some(v),
+            Err(e) => {
+                r = Err(e);
                 break;
             }
         }
+    }
+    *TREE.lock_irqsave() = ids;
+    r
+}
+
+/// Rewrite each listed device's `state` and `driver`; the values that were
+/// not published.
+#[cfg(feature = "inspect")]
+pub(crate) fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
+    let ids = *TREE.lock_irqsave();
+    let mut now = [None; hwbus::MAX_DEVICES];
+    hwbus::with(|bus| {
+        for (h, s) in bus.iter() {
+            if let Some(i) = ids.iter().position(|x| x.is_some_and(|(k, ..)| k == h.0)) {
+                now[i] = Some((state_name(s.state), Short::of(binding_name(&s.binding))));
+            }
+        }
     });
-    w.n
+    let mut bad = 0;
+    for (id, cur) in ids.iter().zip(now.iter()) {
+        let (Some((_, state, driver)), Some((st, drv))) = (id, cur) else { continue };
+        bad += w.set_str(*state, st).is_err() as u32;
+        bad += w.set_str(*driver, drv.as_str()).is_err() as u32;
+    }
+    bad
 }

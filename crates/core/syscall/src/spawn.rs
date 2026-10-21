@@ -762,7 +762,7 @@ pub(crate) fn seed_row(tid: u32, row: usize) -> Seeded {
 
 /// The identity a row carries on its capability to the name service: its
 /// index in the topology, plus one so that no row is 0 (an unbadged call).
-/// `/proc/names` prints the same number beside the names that row may import.
+/// The `inspect.names` view lists that row's imports under the same number.
 pub fn names_badge(row: usize) -> u32 {
     row as u32 + 1
 }

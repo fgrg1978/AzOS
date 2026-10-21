@@ -292,6 +292,21 @@ pub const SHM_CONSOLE_SCREEN: u32 = 0x5354_0005;
 /// into its files. `logd` is the only task granted it.
 pub const SHM_KLOG_RING: u32 = 0x5354_0006;
 
+/// `SYS_CAP_INFO(ty::SHM, SHM_INSPECT_NAMES)`: the handle of this task's
+/// `Cap<Shm>` to the name server's view of the topology (`MemObj
+/// inspect.names`), an introspection tree only a row that declares it holds.
+pub const SHM_INSPECT_NAMES: u32 = 0x5354_0007;
+/// [`SHM_INSPECT_NAMES`] for the RPC server's view (`inspect.rpc`).
+pub const SHM_INSPECT_RPC: u32 = 0x5354_0008;
+/// [`SHM_INSPECT_NAMES`] for the MCP bridge's view (`inspect.mcp`).
+pub const SHM_INSPECT_MCP: u32 = 0x5354_0009;
+/// [`SHM_INSPECT_NAMES`] for the component manager's plan (`inspect.components`).
+pub const SHM_INSPECT_COMPONENTS: u32 = 0x5354_000A;
+/// [`SHM_INSPECT_NAMES`] for the logins of the topology (`inspect.logins`).
+pub const SHM_INSPECT_LOGINS: u32 = 0x5354_000B;
+/// [`SHM_INSPECT_NAMES`] for the topology's clock row (`inspect.clock`).
+pub const SHM_INSPECT_CLOCK: u32 = 0x5354_000C;
+
 /// Capability kinds: the generic objects a task can hold a right to. A
 /// device, a file or a socket is not a kind of its own: it is a *class* of
 /// one of these (`CapType`) or an interface served over an `Endpoint`
@@ -457,9 +472,10 @@ pub mod ty {
     /// An io_ring.
     pub const IORING: CapType = CapType::new(CapKind::Queue, 0);
     /// The right to see every task: minted for one target only, `"tasks"`,
-    /// `READ`, resource `0` (wave 12; `/proc/tasks` and `/proc/<tid>`).
+    /// `READ`, resource `0` (wave 12): the warrant of the admin introspection
+    /// region.
     pub const TASK: CapType = CapType::new(CapKind::Domain, 0);
-    /// A file descriptor (FAT32 / tmpfs / procfs) or a directory tree.
+    /// A file descriptor (FAT32 / tmpfs / azvol) or a directory tree.
     pub const FILE: CapType = CapType::new(CapKind::Node, 0);
     /// The right to start one image with `SYS_SPAWN_EX`:
     /// the resource is an interned image name, `EXEC` the permission. Class 1

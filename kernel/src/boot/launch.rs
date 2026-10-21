@@ -7,7 +7,8 @@
 //! image may touch (`start = true`). The ring-3 component manager
 //! (`userspace/services/compmgr`) is the only supervisor of those rows, the
 //! ring-3 host of a driver that moves between hosts (the buzzer) included: it
-//! reads the plan through `/proc/components`, starts each row with
+//! reads the plan from its view region (`inspect.components`)
+//! (`boot::inspect_views`), starts each row with
 //! `SYS_SPAWN_EX` and restarts it by the row's `restart` key and the failure
 //! contract of what it serves. The placement controller (`crate::buzzer`)
 //! neither starts nor ends that host: it only routes the kernel's calls
@@ -98,7 +99,7 @@ fn launch_row_wanted(r: &azos_topology::TaskSpec) -> bool {
 }
 
 /// The rows to start at boot, in the order to start them, handed to `f` with
-/// their row number, one by one. `/proc/components` renders the same plan
+/// their row number, one by one. the `inspect.components` view publishes the same plan
 /// for the component manager (the rows it starts: `manager_starts`, in
 /// this order).
 ///
@@ -215,7 +216,7 @@ pub(crate) fn boot_launch_task(_: usize) {
         }
         // A row a package brought runs the program that package carried, from
         // the staging volume (`boot::pkg_boot`), not one of its name on /fat;
-        // the manager is told the directory by `/proc/components`.
+        // the manager is told the directory by `components/<n>/dir` of its view.
         let mut applied = [0u8; 48];
         if let Some(path) = crate::boot::pkg_boot::image_path(row.name.as_bytes(), &mut applied) {
             if !on_volume(path) {
@@ -244,6 +245,11 @@ pub(crate) fn boot_launch_task(_: usize) {
         azos_drv_sys::kwarn!("[DRVLAUNCH] the topology has no {} row: no ring-3 row is started",
             core::str::from_utf8(azos_topology::builder::TASK_COMPMGR_IMAGE).unwrap_or("?"));
     }
+    // The manager reads its plan (the introspection tree's
+    // `inspect.components` view) once, at its start: the rows just found missing
+    // are in it before it runs.
+    #[cfg(feature = "inspect")]
+    crate::boot::inspect_refresh_now();
     for_each_launch_row(topo, &mut |_, row| {
         if is_component_manager(row) {
             start_manager(row);

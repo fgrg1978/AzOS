@@ -519,12 +519,3 @@ pub mod uart {
     }
 }
 
-/// The two platform constants `crates/fs/fs/src/procfs.rs`'s generators read
-/// (`/proc/uptime`, `/proc/version`, `/sys/platform`). procfs is pulled into
-/// this suite for its key rules; these values are never asserted.
-pub mod platform {
-    pub mod hw {
-        pub const TIMER_FREQ: u64 = 10_000_000;
-        pub const PLATFORM_NAME: &str = "host-test";
-    }
-}

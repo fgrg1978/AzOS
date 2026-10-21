@@ -9,7 +9,7 @@
 //! what diagnosing and repairing a machine without ring 3 needs:
 //!
 //! * `help`, `mem`, `uptime`, `drvls`, `security`, `estop`: status;
-//! * `ls`, `cat` (`cat /proc/decisions` is the decision dump), `crash [log|clear]`,
+//! * `ls`, `cat`, `crash [log|clear]`,
 //!   `why [<id>]` (the chain behind a refusal or denial, from the decision
 //!   query: rule, verdict, subject, numbers, provenance, clock): diagnosis;
 //! * `ota [status|verify|rollback|recv <port>]`, `config [list|get|set|save|defaults]`,
@@ -158,7 +158,7 @@ fn cmd_help() {
     azos_drv_sys::kconsoleln!("  security          - security overview");
     azos_drv_sys::kconsoleln!("  estop             - e-stop latch / safe mode");
     azos_drv_sys::kconsoleln!("  ls [path]         - list directory");
-    azos_drv_sys::kconsoleln!("  cat <path>        - print file (cat /proc/decisions: decision dump)");
+    azos_drv_sys::kconsoleln!("  cat <path>        - print file");
     azos_drv_sys::kconsoleln!("  crash [log|clear] - crash log");
     azos_drv_sys::kconsoleln!("  why [id]          - explain a decision: its rule, numbers and provenance (no id: the latest)");
     azos_drv_sys::kconsoleln!("  ota [status|verify|rollback|recv <port>] - firmware slots");
@@ -209,8 +209,8 @@ fn cmd_uptime() {
         ticks / (azos_drv_sys::timebase::TIMER_FREQ / 1000));
 }
 
-/// List registered drivers from the runtime registry: the view
-/// `cat /sys/drivers` gives, without the FS (for an unhealthy volume).
+/// List registered drivers from the runtime registry (the introspection
+/// tree's `drivers/` holds the same rows for ring 3).
 fn cmd_drvls() {
     use azos_drv_api::DriverIsolation;
     use azos_drv_base::runtime::registry::REGISTRY;

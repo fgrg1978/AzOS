@@ -943,7 +943,7 @@ pub enum HvKind {
 }
 
 impl HvKind {
-    /// The word the boot line and `/proc` print.
+    /// The word the boot line prints.
     pub const fn name(self) -> &'static str {
         match self {
             HvKind::RiscvH => "riscv-h",
@@ -1375,7 +1375,7 @@ pub trait HypercallHost {
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Compile-time identifier of the active ISA impl, surfaced for
-/// `procfs` and diagnostic prints.
+/// diagnostic prints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArchId {
     Riscv64,
@@ -1386,8 +1386,8 @@ pub enum ArchId {
     Stub,
 }
 
-/// Returns a stable short name for the [`ArchId`] (for logging,
-/// procfs, manifest fields).
+/// Returns a stable short name for the [`ArchId`] (for logging and
+/// manifest fields).
 pub const fn arch_name(id: ArchId) -> &'static str {
     match id {
         ArchId::Riscv64 => "riscv64",

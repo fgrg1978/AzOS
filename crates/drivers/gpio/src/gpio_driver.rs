@@ -54,7 +54,7 @@ pub const GPIO_OP_TOGGLE: u32 = 3;
 // ──────────────────────────────────────────────────────────────────────────
 
 /// No MMIO range: the controller's window is the bound device's (the hardware
-/// bus records it, `/proc/devices`), not a constant of the manifest.
+/// bus records it, the introspection tree's `devices/`), not a constant of the manifest.
 const fn build_manifest() -> DriverManifest {
     DriverManifest::new(
         DRV_KIND_GPIO,

@@ -46,7 +46,8 @@
 //! Verdict: `[LAT] PASS` when the maximum is at most [`BOUND_NS`] for this
 //! ISA, `[LAT] FAIL` otherwise (a line only that path prints). With
 //! `lat-trace` the run also ends with the tracer's per-hart maxima and the
-//! five worst sites (`[LATTRACE] run ...`) and the `/proc/irqsoff` read-back;
+//! five worst sites (`[LATTRACE] run ...`) and the introspection tree's
+//! `latency/irqsoff` read-back (`[LATTRACE] inspect ...`);
 //! the plain row builds without it, so its number is the kernel's alone.
 //!
 //! `lat-canary` (implies `lat-trace`): one more task on the hart masks
@@ -394,12 +395,17 @@ fn rt_task(num_cpus: usize) {
         kprintln!("[LAT] blk waits={} waits_locked={}", waits, locked);
     }
     #[cfg(feature = "lat-trace")]
+    crate::lat_trace::print_summary("run", 5);
+    // The introspection tree's read-out, refreshed now and read back as a
+    // ring-3 reader reads it.
+    #[cfg(all(feature = "lat-trace", feature = "inspect"))]
     {
-        crate::lat_trace::print_summary("run", 5);
-        let mut buf = [0u8; 512];
-        let n = azos_fs::procfs_read(b"/proc/irqsoff", &mut buf);
-        for line in core::str::from_utf8(&buf[..n]).unwrap_or("?").lines() {
-            kprintln!("[LATTRACE] proc irqsoff | {}", line);
+        crate::boot::inspect_refresh_now();
+        for path in ["latency/irqsoff/start", "latency/irqsoff/end"] {
+            match crate::boot::inspect_public_str(path) {
+                Some(s) => kprintln!("[LATTRACE] inspect {} = {}", path, s.as_str()),
+                None => kprintln!("[LATTRACE] inspect {} absent", path),
+            }
         }
     }
     if max_ns <= BOUND_NS {

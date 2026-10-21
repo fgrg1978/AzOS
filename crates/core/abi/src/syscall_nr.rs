@@ -985,7 +985,7 @@ pub const READDIR_NAME_BYTES: usize = 64;
 ///
 /// | off | type | field |
 /// |---|---|---|
-/// | 0 | u32 | filesystem type (`1` FAT32, `2` tmpfs, `3` procfs, `0` the ramfs) |
+/// | 0 | u32 | filesystem type (`1` FAT32, `2` tmpfs, `4` azvol, `0` the ramfs) |
 /// | 4 | u32 | block size in bytes (FAT32: the cluster) |
 /// | 8 | u64 | blocks |
 /// | 16 | u64 | free blocks |

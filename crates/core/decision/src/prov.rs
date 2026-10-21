@@ -330,7 +330,7 @@ impl ProvenanceRecord {
         }
     }
 
-    /// One line, as `/proc/decisions` prints it. The provenance fields are
+    /// One line, as `why list` and the recovery console print it. The provenance fields are
     /// printed only when set, so a record without any reads as a plain line.
     pub fn write_line(&self, w: &mut impl fmt::Write) -> fmt::Result {
         let Some(info) = crate::RULES.get(self.rule as usize) else {

@@ -23,11 +23,10 @@
 //! documents at length.
 
 // The pulled `crates/fs/fs` sources name the driver class crates directly
-// (`azos_drv_block::blkdev`, `azos_drv_sys::kprintln!`,
-// `azos_drv_base::platform`); all three are the one host shim.
+// (`azos_drv_block::blkdev`, `azos_drv_sys::kprintln!`); both are the one
+// host shim.
 extern crate fs_test_drivers as azos_drv_block;
 extern crate fs_test_drivers as azos_drv_sys;
-extern crate fs_test_drivers as azos_drv_base;
 
 // `dead_code` only, and only on the pulled module: this suite exercises the
 // mount and read paths, so the write/journal/iterator halves of `fat32.rs` are
@@ -139,15 +138,6 @@ mod swap_file;
 #[allow(dead_code)]
 #[path = "../../../../crates/fs/fs/src/tmpfs.rs"]
 mod tmpfs;
-
-// procfs, pulled the same way (wave 10) for its `FileSystem::key_for` rule:
-// with the generic key widened to 64 bytes, procfs bounds its own keys, and
-// `full_path` must not be driven past its buffer. Its generators read two
-// platform constants and three page counters, which the drivers shim and the
-// `shims/mm` stand-in provide.
-#[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/procfs.rs"]
-mod procfs;
 
 // The on-disk names of the signed topology pair (`crates/core/topology/src/
 // paths.rs`), pulled the same way so `topology_paths_on_a_real_volume` below
@@ -6269,11 +6259,10 @@ mod fat32_round23 {
 }
 
 /// Wave 10: `INODE_KEY_LEN` 11 -> 64 (owner decision). The generic key now
-/// holds every tmpfs name, FAT32 still uses its first 11 bytes, and procfs
-/// bounds its own keys by what `procfs_register` accepts.
+/// holds every tmpfs name and FAT32 still uses its first 11 bytes.
 #[cfg(test)]
 mod inode_key_64 {
-    use super::{fat32, procfs, serial, tmpfs, vfs};
+    use super::{fat32, serial, tmpfs, vfs};
     use vfs::FileSystem as _;
 
     /// **A tmpfs name longer than 11 bytes is reachable through the key.**
@@ -6314,154 +6303,6 @@ mod inode_key_64 {
         assert_eq!(&k.bytes[..9], b"CRASH.LOG");
         assert!(k.bytes[9..].iter().all(|&b| b == 0));
         assert!(fat32::Fat32Fs.key_for(b"a-long-name-that-is-not-8.3.txt").is_none());
-    }
-
-    fn gen_x(buf: &mut [u8]) -> usize {
-        let s = b"x\n";
-        buf[..s.len()].copy_from_slice(s);
-        s.len()
-    }
-
-    /// **procfs bounds its own keys.** The longest name `procfs_register`
-    /// accepts (47 bytes) gets a key and its file is readable through it; a
-    /// 48-byte name gets none, since nothing can be registered under it.
-    ///
-    /// **Canary.** Replace the bound in `ProcFs::key_for` with
-    /// `name.len() > INODE_KEY_LEN` (the pre-wave-10 shape): the 48-byte
-    /// name gets a key and the `is_none` assertion fails.
-    #[test]
-    fn procfs_keys_stop_at_what_can_be_registered() {
-        let _g = serial();
-        let name47 = [b'p'; procfs::PROCFS_PATH_LEN - 1];
-        assert!(procfs::procfs_register(procfs::ProcNs::Proc, &name47, gen_x));
-        let k = procfs::PROCFS_FS.key_for(&name47).expect("a registrable name has a key");
-        let st = procfs::PROCFS_FS.stat(&k).expect("the registered file is found");
-        assert_eq!(st.size, 2);
-        assert!(procfs::PROCFS_FS.key_for(&[b'p'; procfs::PROCFS_PATH_LEN]).is_none(),
-                "a name procfs_register refuses got a key");
-    }
-
-    /// `procfs_ls` calls back with PROCFS released (wave 15, N1c: a SpinLock
-    /// is never held across a caller's code; the shell's callback prints).
-    /// Another thread takes the table inside the callback.
-    ///
-    /// **Canary.** Hold `PROCFS.lock()` across the loop (the old shape): the
-    /// other thread's `procfs_count` blocks and the timeout assertion fails.
-    #[test]
-    fn procfs_ls_calls_back_with_the_table_unlocked() {
-        let _g = serial();
-        assert!(procfs::procfs_register(procfs::ProcNs::Sys, b"lsprobe", gen_x));
-        let mut seen = 0;
-        procfs::procfs_ls(|p| {
-            if p == "/sys/lsprobe" { seen += 1; }
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || { let _ = tx.send(procfs::procfs_count()); });
-            assert!(rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok(),
-                    "PROCFS was held across the callback for {p}");
-        });
-        assert_eq!(seen, 1, "the registered entry is listed once, with its prefix");
-    }
-
-    /// Wave 12 (owner round 48): `/proc/<tid>` names a task only in strict
-    /// decimal, so one task has one path (`007` is not `7`, `+7` and `7a`
-    /// are nothing), and 0 or a value past `u32` is never a TID.
-    #[test]
-    fn a_proc_tid_name_is_strict_decimal() {
-        assert_eq!(procfs::parse_tid_name(b"7"), Some(7));
-        assert_eq!(procfs::parse_tid_name(b"4294967295"), Some(u32::MAX));
-        for bad in [&b""[..], b"0", b"007", b"+7", b"-7", b"7a", b" 7", b"4294967296", b"99999999999", b"tasks"] {
-            assert_eq!(procfs::parse_tid_name(bad), None, "{:?}", core::str::from_utf8(bad));
-        }
-    }
-
-    /// The task-file hook the kernel registers: 7 is visible, 9 exists but is
-    /// hidden from this reader. Both a hidden and an absent TID give 0 bytes,
-    /// the same answer.
-    fn gen_tid(tid: u32, buf: &mut [u8]) -> usize {
-        if tid == 7 { buf[..3].copy_from_slice(b"t7\n"); 3 } else { 0 }
-    }
-
-    /// Wave 12 (owner round 48, Linux `hidepid=2`): `/proc/<tid>` goes to the
-    /// TID provider; a TID the provider will not show has no file at all —
-    /// `stat` finds nothing, exactly as for a TID that does not exist, so a
-    /// hidden task is not even visible by path. A registered name wins over
-    /// the provider, and `/sys/<digits>` never reaches it.
-    ///
-    /// **Canary.** Make `procfs_read` call the provider for `/sys` too: red
-    /// on "`/sys/7` reached the task provider".
-    #[test]
-    fn a_hidden_tid_has_no_proc_path() {
-        let _g = serial();
-        procfs::procfs_register_tid(gen_tid);
-        let k7 = procfs::PROCFS_FS.key_for(b"7").expect("a TID name has a key");
-        let st = procfs::PROCFS_FS.stat(&k7).expect("/proc/7 is visible");
-        assert_eq!(st.size, 3);
-        let mut out = [0u8; 8];
-        assert_eq!(procfs::PROCFS_FS.read_all(&k7, &st, &mut out), 3);
-        assert_eq!(&out[..3], b"t7\n");
-        let k9 = procfs::PROCFS_FS.key_for(b"9").expect("a TID name has a key");
-        assert!(procfs::PROCFS_FS.stat(&k9).is_none(), "a hidden TID has a file");
-        let k5 = procfs::PROCFS_FS.key_for(b"5").expect("a TID name has a key");
-        assert!(procfs::PROCFS_FS.stat(&k5).is_none(), "an absent TID has a file");
-        let k007 = procfs::PROCFS_FS.key_for(b"007").expect("a name has a key");
-        assert!(procfs::PROCFS_FS.stat(&k007).is_none(), "007 aliases 7");
-        assert_eq!(procfs::procfs_read(b"/sys/7", &mut out), 0, "/sys/7 reached the task provider");
-        assert!(procfs::procfs_register(procfs::ProcNs::Proc, b"77", gen_x));
-        assert_eq!(procfs::procfs_read(b"/proc/77", &mut out), 2, "a registered name lost to the provider");
-    }
-
-    /// **A key longer than `full_path`'s buffer names nothing** rather than
-    /// being written past it or cut into a shorter, registered name.
-    ///
-    /// **Canary.** Delete the `prefix.len() + name.len() > out.len()` guard
-    /// in `full_path`: `stat` panics on the slice past the 64-byte buffer.
-    #[test]
-    fn a_hand_built_key_past_the_path_buffer_names_nothing() {
-        let _g = serial();
-        let k = vfs::InodeKey { bytes: [b'q'; vfs::INODE_KEY_LEN] };
-        assert!(procfs::PROCFS_FS.stat(&k).is_none());
-        let mut out = [0u8; 8];
-        assert_eq!(procfs::PROCFS_FS.read_at(&k, 0, &mut out), 0);
-    }
-
-    static FLIP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-    /// Long on even calls, short on odd ones: what `/proc/tasks` does when a
-    /// task exits between the VFS's `stat` and its `read_all`.
-    fn gen_shrinks(buf: &mut [u8]) -> usize {
-        let s: &[u8] = if FLIP.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 2 == 0 {
-            b"0123456789\n"
-        } else {
-            b"012\n"
-        };
-        buf[..s.len()].copy_from_slice(s);
-        s.len()
-    }
-
-    /// **Wave 12: `/proc` through the VFS.** The open path generates a
-    /// synthetic file twice (`stat` sizes the proxy, `read_all` fills it);
-    /// when the second generation is shorter, the file reads as that
-    /// generation, not padded with NULs to the first one's length.
-    ///
-    /// **Canary.** Drop the procfs `inode_resize` after `read_all` in
-    /// `vfs.rs`: the read returns 11 bytes, seven of them NUL.
-    #[test]
-    fn a_procfs_file_that_shrinks_between_stat_and_read_reads_without_padding() {
-        let _g = serial();
-        super::vfs_open_close::vfs_once();
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            vfs::vfs_mount_fs(b"/proc", &procfs::PROCFS_FS).expect("room for /proc");
-        });
-        assert!(procfs::procfs_register(procfs::ProcNs::Proc, b"shrinks", gen_shrinks));
-        FLIP.store(0, std::sync::atomic::Ordering::SeqCst);
-        let mut t = vfs::ScratchFds::new();
-        let fd = vfs::vfs_open(&mut t, b"/proc/shrinks", vfs::O_RDONLY);
-        assert!(fd >= 0, "/proc/shrinks does not open through the VFS");
-        let mut b = [0u8; 32];
-        let n = vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), b.len());
-        vfs::vfs_close(&mut t, fd);
-        assert_eq!(&b[..n as usize], b"012\n");
     }
 }
 

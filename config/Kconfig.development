@@ -1207,7 +1207,7 @@ config CHAOS_TIMER_DELAY_US
 
 config DECISION_RECORDS_DEV
     # cargo-feature: decisions
-    bool "Explainable decision records: the ring (/proc/decisions), every rule"
+    bool "Explainable decision records: the ring, every rule"
     default y if KTEST
     default n
     help
@@ -1215,8 +1215,9 @@ config DECISION_RECORDS_DEV
       admission, the placement of a woken task on a CPU other than its last
       one, and typed capability denials each write one record naming the
       rule, the verdict, the subject, the numbers the rule compared and the
-      alternative it rejected (crates/core/decision). /proc/decisions shows
-      the ring, oldest first.
+      alternative it rejected (crates/core/decision). The introspection
+      tree's admin region holds the newest 24 (`decisions/records/<n>`);
+      `why list` prints them.
 
       Off by default outside a KTEST kernel, because the wake-placement
       record sits on the wake path. Off: every record site compiles out.
@@ -1319,12 +1320,13 @@ config DECISION_JOURNAL_ENTRIES
 config INSPECT
     # cargo-feature: inspect base
     bool "Introspection tree: kernel state as read-only memory (no /proc, no system call)"
-    default n if PROFILE_EMBEDDED
     default y
     help
       The kernel publishes what it knows about itself (the scheduler's
-      run queues, memory, the decision counters) as a tree of typed nodes in a
-      MemObj it alone writes (crates/core/inspect). A task that holds the
+      run queues, memory, the decision counters, the devices, the drivers)
+      as a tree of typed nodes in a MemObj it alone writes
+      (crates/core/inspect). It is the kernel's only read-out: there is no
+      /proc and no /sys. A task that holds the
       MemObj maps it read-only and walks the tree with loads: a read costs
       no system call, no copy and no lock, and a value is consistent under a
       per-node seqlock. The subtrees that name other tasks are in a second
@@ -1338,26 +1340,39 @@ config INSPECT
       full task view (`Cap<Task>` READ on "tasks"), the admin warrant. The
       default tool image holds them; `inspect` prints the tree.
 
+      The signed topology's wiring a service needs (the name server's imports
+      and endpoints, the RPC server's peers and exports, the MCP bridge's
+      endpoints, the component manager's plan, the logins, the clock row) is
+      in one more region per service, `MemObj inspect.<view>`, granted only to
+      the rows that declare it and sized to what it holds. Without INSPECT
+      those services have no view: the component manager starts nothing, the
+      name server lends nothing, nobody can log in.
+
       The kernel's refresh task republishes the values every
-      INSPECT_REFRESH_MS. Cost: two MemObj slots (MAX_MEMOBJS), the pages of
-      INSPECT_PUBLIC_PAGES and INSPECT_ADMIN_PAGES from the page allocator for
-      good, and the refresh task's few microseconds per period. Maps to the
-      kernel cargo feature `inspect`.
+      INSPECT_REFRESH_MS. Cost: two MemObj slots (MAX_MEMOBJS) and one per
+      view a row declares, the pages of INSPECT_PUBLIC_PAGES and
+      INSPECT_ADMIN_PAGES and of the views (one to 16 each) from the page
+      allocator for good, and the refresh task's few microseconds per period.
+      Maps to the kernel cargo feature `inspect`.
 
 config INSPECT_PUBLIC_PAGES
     int "Introspection tree: pages of the public region"
     depends on INSPECT
     range 1 64
-    default 15 if USB_HOST
-    default 12
+    default 28 if USB_HOST
+    default 24
     help
       The public region's size, in pages (at most the 64 of a MemObj). Each
       node takes 64 bytes and about as many again of value words; the
       published tree is about 150 nodes plus 7 per CPU (a directory and three
       counters, and 3 more in the `metrics/` subtree, which is about 155
       nodes, 28 of them the bounded sleeps' `sync/`, plus one node a slot of
-      the wake ring, WAKE_RING_ENTRIES, and 22 more of the wake counters), and
-      fits 12 pages of 4 KiB up to 16 CPUs. A tree that does not
+      the wake ring, WAKE_RING_ENTRIES, and 22 more of the wake counters),
+      plus `system/`, `fs/`, `drivers/` (5 nodes a registry slot, 32 slots),
+      `devices/` (8 nodes a device of the hardware bus) and, with their
+      Kconfig, `soc/`, `thermal/`, `latency/` and `chaos/`; it fits 24 pages
+      of 4 KiB up to 16 CPUs and 40 devices. The boot line `[INSPECT] tree
+      published` says how many nodes and words it took. A tree that does not
       fit loses its last nodes (the `metrics/` ones first) and the boot says
       so. With USB_HOST the `usb/` subtree adds 7 nodes per USB_MAX_DEVICES
       slot (about 32 nodes fit a page), which the default of 15 pages covers
@@ -1367,14 +1382,17 @@ config INSPECT_ADMIN_PAGES
     int "Introspection tree: pages of the admin region (0 = none)"
     range 0 64
     default 0 if !INSPECT
-    default 12
+    default 16
     help
       The admin region's size, in pages. It holds the per-task rows (the
-      name, state, priority and parent of every task) and the wake log with
-      its task IDs (WAKE_RING_ENTRIES), which the kernel renders into it at
-      each refresh; one task is 5 nodes and one logged wake 1, and a page of
-      4 KiB holds 32 nodes, so 12 pages list the 64 tasks the tree shows and
-      a ring of 32 wakes; a longer list is cut (the boot says so). 0
+      name, state, priority and parent of every task), the wake log with
+      its task IDs (WAKE_RING_ENTRIES) and the newest 24 decision records
+      (DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE: a record's subject
+      may be a task), which the kernel renders into it at each refresh; one
+      task is 5 nodes, one logged wake 1 and one record 1 (of 14 value
+      words), and a page of 4 KiB holds 32 nodes, so 16 pages list the 64
+      tasks the tree shows, a ring of 32 wakes and the records; a longer list
+      is cut (the boot says so). 0
       publishes no admin region at all, and then `why woke` shows no task IDs.
 
       Defined with INSPECT off too (as 0): the topology builder's const

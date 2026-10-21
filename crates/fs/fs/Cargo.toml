@@ -185,7 +185,6 @@ envelope-delete-canary = []
 [dependencies]
 azos_mm = { workspace = true }
 azos_sync = { workspace = true }
-azos_drv_base  = { workspace = true }
 azos_drv_sys   = { workspace = true }
 azos_drv_block = { workspace = true }
 azos_drv_api   = { workspace = true }

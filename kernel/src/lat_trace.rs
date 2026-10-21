@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Masked-window tracer, kernel side (Kconfig `LAT_TRACE`, feature
-//! `lat-trace`): the trap-exit guard, the `/proc/irqsoff` and
-//! `/proc/preemptoff` read-out, and the console summary the latency rows
+//! `lat-trace`): the trap-exit guard, the introspection tree's `latency/`
+//! read-out, and the console summary the latency rows
 //! print.
 //!
 //! The bookkeeping is `azos_arch_api::lat` (reached through
@@ -76,11 +76,13 @@ fn kind_name(kind: Kind) -> &'static str {
 }
 
 /// Truncating writer over a byte slice.
+#[cfg(feature = "inspect")]
 struct BufWriter<'a> {
     buf: &'a mut [u8],
     n: usize,
 }
 
+#[cfg(feature = "inspect")]
 impl Write for BufWriter<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let room = self.buf.len() - self.n;
@@ -91,42 +93,100 @@ impl Write for BufWriter<'_> {
     }
 }
 
-/// One procfs file: the worst window of `kind` over all harts, and the five
-/// worst opening sites. Fits the 512-byte procfs read buffer.
-fn render(kind: Kind, buf: &mut [u8]) -> usize {
-    let mut w = BufWriter { buf, n: 0 };
-    let (hart, s) = worst(kind);
-    let mut windows = 0u64;
-    let mut unpaired = 0u32;
-    for h in 0..lat::HARTS {
-        let x = lat::summary(kind, h);
-        windows += x.windows;
-        unpaired += x.unpaired;
+/// The worst opening sites the tree lists per kind.
+#[cfg(feature = "inspect")]
+const TOP: usize = 5;
+
+#[cfg(feature = "inspect")]
+#[derive(Clone, Copy)]
+struct KindIds {
+    max_ns: azos_inspect::NodeId,
+    hart: azos_inspect::NodeId,
+    windows: azos_inspect::NodeId,
+    unpaired: azos_inspect::NodeId,
+    start: azos_inspect::NodeId,
+    end: azos_inspect::NodeId,
+    top: [(azos_inspect::NodeId, azos_inspect::NodeId, azos_inspect::NodeId); TOP],
+}
+
+#[cfg(feature = "inspect")]
+static TREE: azos_sync::SpinLock<Option<[KindIds; 2]>> = azos_sync::SpinLock::new(None);
+
+/// Longest site the tree keeps (`file:line`).
+#[cfg(feature = "inspect")]
+const SITE_MAX: usize = 96;
+
+/// `latency/{irqsoff, preemptoff}/{max_ns, hart, windows, unpaired, start,
+/// end, top/<n>/{max_ns, count, site}}`: per kind, the worst window over all
+/// harts (its hart, length and the sites that opened and closed it), the
+/// windows and unpaired opens counted, and the five worst opening sites.
+#[cfg(feature = "inspect")]
+pub fn inspect_build(b: &mut azos_inspect::Builder<'_, '_>, root: azos_inspect::NodeId) -> Result<(), azos_inspect::Error> {
+    let l = b.dir(root, "latency")?;
+    let mut ids = [None, None];
+    for (slot, name) in ids.iter_mut().zip(["irqsoff", "preemptoff"]) {
+        let d = b.dir(l, name)?;
+        let max_ns = b.u64(d, "max_ns", 0)?;
+        let hart = b.u64(d, "hart", 0)?;
+        let windows = b.u64(d, "windows", 0)?;
+        let unpaired = b.u64(d, "unpaired", 0)?;
+        let start = b.string(d, "start", SITE_MAX, "-")?;
+        let end = b.string(d, "end", SITE_MAX, "-")?;
+        let t = b.dir(d, "top")?;
+        let mut top = [(azos_inspect::NodeId::ROOT, azos_inspect::NodeId::ROOT, azos_inspect::NodeId::ROOT); TOP];
+        for (k, s) in top.iter_mut().enumerate() {
+            let n = b.dir(t, &crate::boot::inspect_num(k as u64))?;
+            *s = (b.u64(n, "max_ns", 0)?, b.u64(n, "count", 0)?, b.string(n, "site", SITE_MAX, "-")?);
+        }
+        *slot = Some(KindIds { max_ns, hart, windows, unpaired, start, end, top });
     }
-    let _ = writeln!(w, "{} max_ns {} hart {} windows {} unpaired {}",
-                     kind_name(kind), ticks_to_ns(s.max), hart, windows, unpaired);
-    let _ = writeln!(w, "start {}", Site(s.max_start));
-    let _ = writeln!(w, "end {}", Site(s.max_end));
-    let mut top = [SiteRecord::default(); 5];
-    let n = lat::top_sites(kind, &mut top);
-    for r in top.iter().take(n) {
-        let _ = writeln!(w, "{} {} {}", ticks_to_ns(r.max), r.count, Site(r.site));
+    if let [Some(a), Some(p)] = ids {
+        *TREE.lock_irqsave() = Some([a, p]);
     }
-    w.n
+    Ok(())
 }
 
-fn gen_irqsoff(buf: &mut [u8]) -> usize {
-    render(Kind::Irq, buf)
+/// Rewrite the latency values; the ones that were not published.
+#[cfg(feature = "inspect")]
+pub fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
+    let Some(ids) = *TREE.lock_irqsave() else { return 0 };
+    let mut bad = 0u32;
+    let mut ok = |r: Result<(), azos_inspect::Error>| bad += r.is_err() as u32;
+    for (kind, id) in [Kind::Irq, Kind::Preempt].into_iter().zip(ids) {
+        let (hart, s) = worst(kind);
+        let mut windows = 0u64;
+        let mut unpaired = 0u64;
+        for h in 0..lat::HARTS {
+            let x = lat::summary(kind, h);
+            windows += x.windows;
+            unpaired += x.unpaired as u64;
+        }
+        ok(w.set_u64(id.max_ns, ticks_to_ns(s.max)));
+        ok(w.set_u64(id.hart, hart as u64));
+        ok(w.set_u64(id.windows, windows));
+        ok(w.set_u64(id.unpaired, unpaired));
+        let mut site = [0u8; SITE_MAX];
+        ok(w.set_str(id.start, site_text(s.max_start, &mut site)));
+        ok(w.set_str(id.end, site_text(s.max_end, &mut site)));
+        let mut top = [SiteRecord::default(); TOP];
+        let n = lat::top_sites(kind, &mut top);
+        for (k, (m, c, st)) in id.top.iter().enumerate() {
+            let r = top.get(k).filter(|_| k < n).copied().unwrap_or_default();
+            ok(w.set_u64(*m, if k < n { ticks_to_ns(r.max) } else { 0 }));
+            ok(w.set_u64(*c, if k < n { r.count as u64 } else { 0 }));
+            ok(w.set_str(*st, if k < n { site_text(r.site, &mut site) } else { "-" }));
+        }
+    }
+    bad
 }
 
-fn gen_preemptoff(buf: &mut [u8]) -> usize {
-    render(Kind::Preempt, buf)
-}
-
-/// Register `/proc/irqsoff` and `/proc/preemptoff`.
-pub fn install_procfs() {
-    azos_fs::procfs_register(azos_fs::ProcNs::Proc, b"irqsoff", gen_irqsoff);
-    azos_fs::procfs_register(azos_fs::ProcNs::Proc, b"preemptoff", gen_preemptoff);
+/// A site as `file:line` in `buf` (cut to it).
+#[cfg(feature = "inspect")]
+fn site_text(site: usize, buf: &mut [u8; SITE_MAX]) -> &str {
+    let mut w = BufWriter { buf: &mut buf[..], n: 0 };
+    let _ = write!(w, "{}", Site(site));
+    let n = w.n;
+    core::str::from_utf8(&buf[..n]).unwrap_or("?")
 }
 
 /// Console summary: per kind, every hart that closed a window, then the

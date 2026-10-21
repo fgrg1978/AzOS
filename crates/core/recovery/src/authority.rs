@@ -52,7 +52,7 @@ pub fn seed_console_authority() {
     }
     for &kind in kinds {
         match kind {
-            // Wave 12 (owner round 48): the full `/proc` task view, through
+            // Wave 12 (owner round 48): the full task view, through
             // the topology's own minter so the target spelling is one.
             azos_ipc::cap::ty::TASK => {
                 let _ = azos_ipc::cap_seed::seed_one_cap(tid, CapKind::Domain, CapPerms::READ, "tasks");

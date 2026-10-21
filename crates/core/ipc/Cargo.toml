@@ -19,6 +19,11 @@ revoke-chain-canary = []
 # Wave 15 gate canary: a static-key write goes through the EXECUTABLE text
 # mapping instead of the alias; W^X must stop it with a store fault.
 text-poke-wx-canary = []
+# Gate canary of the introspection regions (`inspect_region.rs`): every view
+# region is granted with the public one, to a row that declares none of them.
+# The `inspect: views need their grant` rows must fail with it. Never in a
+# real build.
+inspect-view-canary = []
 default = []
 # M40 (audit U10-6): gates `seed_one_cap_outcome`'s actuation arms the
 # same way `crates/core/topology`'s parser and builder already gate the word

@@ -18,11 +18,18 @@
 //!   tree and cannot hand the region on. `MAP` is there because the holder
 //!   maps it; `READ` alone would map nothing.
 //! * `inspect.admin` names other tasks, so it needs the **admin warrant**:
-//!   the full task view (`Cap<Task>` `READ` on `"tasks"`, the same right that
-//!   lifts the `/proc/tasks` filter) must already be in the task's table when
-//!   the grant is made. A row lists the task view before the admin region.
-//!   The warrant is checked when the capability is granted; a mapping made
-//!   then outlives it.
+//!   the full task view (`Cap<Task>` `READ` on `"tasks"`) must already be in
+//!   the task's table when the grant is made. A row lists the task view before
+//!   the admin region. The warrant is checked when the capability is granted;
+//!   a mapping made then outlives it.
+//! * A **view** region (`inspect.names`, `inspect.rpc`, `inspect.mcp`,
+//!   `inspect.components`, `inspect.logins`, `inspect.clock`: [`ViewKind`])
+//!   carries what one service needs of the signed topology's wiring. Only the
+//!   rows that declare it are granted it; the kernel builds it for exactly
+//!   those rows (`kernel/src/boot/inspect_views.rs`).
+//!
+//! Gate canary: `inspect-view-canary` grants every published view along with
+//! the public region, to a row that declares none of them.
 
 use crate::cap::{ty, CapHandle, CapPerms};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -31,6 +38,62 @@ use core::sync::atomic::{AtomicU32, Ordering};
 const NONE: u32 = u32::MAX;
 static PUBLIC: AtomicU32 = AtomicU32::new(NONE);
 static ADMIN: AtomicU32 = AtomicU32::new(NONE);
+static VIEWS: [AtomicU32; ViewKind::ALL.len()] = [const { AtomicU32::new(NONE) }; ViewKind::ALL.len()];
+
+/// The view regions: what one service reads of the topology's wiring.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewKind {
+    Names = 0,
+    Rpc = 1,
+    Mcp = 2,
+    Components = 3,
+    Logins = 4,
+    Clock = 5,
+}
+
+impl ViewKind {
+    pub const ALL: [ViewKind; 6] =
+        [ViewKind::Names, ViewKind::Rpc, ViewKind::Mcp, ViewKind::Components, ViewKind::Logins, ViewKind::Clock];
+
+    /// The target a row names it by.
+    pub const fn target(self) -> &'static str {
+        match self {
+            ViewKind::Names => "inspect.names",
+            ViewKind::Rpc => "inspect.rpc",
+            ViewKind::Mcp => "inspect.mcp",
+            ViewKind::Components => "inspect.components",
+            ViewKind::Logins => "inspect.logins",
+            ViewKind::Clock => "inspect.clock",
+        }
+    }
+
+    /// The `SYS_CAP_INFO(Shm, ..)` key a task finds it by.
+    pub const fn key(self) -> u32 {
+        use azos_abi::cap::*;
+        match self {
+            ViewKind::Names => SHM_INSPECT_NAMES,
+            ViewKind::Rpc => SHM_INSPECT_RPC,
+            ViewKind::Mcp => SHM_INSPECT_MCP,
+            ViewKind::Components => SHM_INSPECT_COMPONENTS,
+            ViewKind::Logins => SHM_INSPECT_LOGINS,
+            ViewKind::Clock => SHM_INSPECT_CLOCK,
+        }
+    }
+
+    fn of_target(t: &str) -> Option<ViewKind> {
+        ViewKind::ALL.into_iter().find(|v| v.target() == t)
+    }
+
+    fn of_key(k: u32) -> Option<ViewKind> {
+        ViewKind::ALL.into_iter().find(|v| v.key() == k)
+    }
+}
+
+/// Publish the view region `v`'s packed `Cap<Shm>` reference. Boot, once per
+/// view, before any task is seeded.
+pub fn publish_view(v: ViewKind, region: u32) {
+    VIEWS[v as usize].store(region, Ordering::Release);
+}
 
 /// What a row asks for and the capability carries: read the tree through a
 /// mapping of the region.
@@ -54,15 +117,26 @@ fn published(a: &AtomicU32) -> Option<u32> {
     (r != NONE).then_some(r)
 }
 
-/// The topology minter for `inspect.public` and `inspect.admin`. `None` for
-/// any other target, a region that is not published, any rights but exactly
-/// `READ|MAP`, the admin region without the task view, or a full table.
+/// The topology minter for `inspect.public`, `inspect.admin` and the views.
+/// `None` for any other target, a region that is not published, any rights
+/// but exactly `READ|MAP`, the admin region without the task view, or a full
+/// table.
 pub fn seed_mint(tid: u32, target: &str, perms: CapPerms) -> Option<CapHandle> {
     if perms != VIEW {
         return None;
     }
     let region = match target {
-        TARGET_PUBLIC => published(&PUBLIC)?,
+        TARGET_PUBLIC => {
+            // Gate canary: every view goes with the public region.
+            if cfg!(feature = "inspect-view-canary") {
+                for v in &VIEWS {
+                    if let Some(r) = published(v) {
+                        let _ = crate::cap::objref::grant_packed::<crate::cap::targets::Shm>(tid, perms, r);
+                    }
+                }
+            }
+            published(&PUBLIC)?
+        }
         TARGET_ADMIN => {
             let region = published(&ADMIN)?;
             let warrant = crate::cap_store::with_table(tid, |t| t.holds_kind_resource_with(ty::TASK, 0, CapPerms::READ))
@@ -72,7 +146,7 @@ pub fn seed_mint(tid: u32, target: &str, perms: CapPerms) -> Option<CapHandle> {
             }
             region
         }
-        _ => return None,
+        t => published(&VIEWS[ViewKind::of_target(t)? as usize])?,
     };
     crate::cap::objref::grant_packed::<crate::cap::targets::Shm>(tid, perms, region).map(|c| c.raw())
 }
@@ -87,7 +161,10 @@ pub fn lookup_resource(resource: u32) -> u32 {
     let slot = match resource {
         SHM_INSPECT_PUBLIC => &PUBLIC,
         SHM_INSPECT_ADMIN => &ADMIN,
-        _ => return resource,
+        k => match ViewKind::of_key(k) {
+            Some(v) => &VIEWS[v as usize],
+            None => return resource,
+        },
     };
     match published(slot) {
         Some(r) => crate::cap::objref::resource_index(ty::SHM, r),
@@ -150,6 +227,21 @@ mod tests {
         assert!(seed_mint(tid, TARGET_ADMIN, VIEW).is_none());
         crate::cap_store::grant::<crate::cap::targets::Task>(tid, CapPerms::READ, 0).expect("the task view");
         assert!(seed_mint(tid, TARGET_ADMIN, VIEW).is_some(), "the warrant opens it");
+        publish(NONE, None);
+    }
+
+    #[test]
+    fn a_view_is_granted_by_its_own_target_only() {
+        let _g = serial();
+        publish(0, Some(1));
+        publish_view(ViewKind::Names, 2);
+        let tid = bound(27);
+        assert!(seed_mint(tid, "inspect.rpc", VIEW).is_none(), "an unpublished view is not granted");
+        assert!(seed_mint(tid, "inspect.names", CapPerms::READ).is_none(), "READ|MAP only");
+        assert!(seed_mint(tid, "inspect.names", VIEW).is_some());
+        assert_eq!(lookup_resource(azos_abi::cap::SHM_INSPECT_NAMES), crate::cap::objref::resource_index(ty::SHM, 2));
+        assert_eq!(lookup_resource(azos_abi::cap::SHM_INSPECT_RPC), azos_abi::cap::SHM_INSPECT_RPC);
+        publish_view(ViewKind::Names, NONE);
         publish(NONE, None);
     }
 

@@ -173,7 +173,7 @@ fs_test_drivers = { path = "shims/drivers" }
 azos_drv_api = { path = "../../../crates/drivers/api" }
 # Host stand-in for the generated limits crate — see the shim's crate doc.
 azos_limits = { path = "shims/limits", package = "fs_test_limits" }
-# Host stand-in for the three page counters procfs's meminfo generator reads.
+# Host stand-in for `azos_mm`: the page cache's backing callback.
 azos_mm = { path = "shims/mm", package = "fs_test_mm" }
 # The real one: `vfs.rs` joins a name beneath a directory with its
 # `path::join_beneath`, the join the syscall layer checks authority against.

@@ -22,7 +22,8 @@
 //! console, the interrupt controllers, these controllers) is up before the
 //! frameworks are, and a node whose driver is a ring-3 server or the Linux
 //! slice asks through its device interface. There is no boot-time pass over
-//! the tree. [`with`] remains the door for the one other reader, `/proc/soc`.
+//! the tree. [`with`] remains the door for the one other reader, the
+//! introspection tree's `soc/`.
 //!
 //! **Every change is a write-ahead effect.** [`GateSink`] is the managers'
 //! effect sink: it hands each change to the effect gate
@@ -205,33 +206,57 @@ pub(crate) fn unbind(node: u32) -> Result<(), azos_soc::Error> {
     with(|fdt, soc, bus, fx| azos_soc::bind::unbind(soc, fdt, bus, fx, azos_soc::NodeId(node))).unwrap_or(Ok(()))
 }
 
-/// Register `/proc/soc`. After the VFS is up (`install_procfs`).
-pub(crate) fn install_procfs() {
-    azos_fs::procfs_register(azos_fs::ProcNs::Proc, b"soc", gen_proc_soc);
+/// The report's words, in the order of [`report_words`].
+#[cfg(feature = "inspect")]
+const REPORT: [&str; 9] = [
+    "clocks", "resets", "regulators", "domains", "pin_controllers", "dropped", "no_transport", "always_on",
+    "always_on_pending",
+];
+
+#[cfg(feature = "inspect")]
+static TREE: azos_sync::SpinLock<Option<(azos_inspect::NodeId, [azos_inspect::NodeId; REPORT.len()])>> =
+    azos_sync::SpinLock::new(None);
+
+/// What the boot step registered, as the tree's words; `None` before it ran.
+#[cfg(feature = "inspect")]
+fn report_words() -> Option<[u64; REPORT.len()]> {
+    with(|_fdt, soc, _bus, _fx| {
+        let r = soc.report;
+        [
+            r.clocks, r.resets, r.regulators, r.domains, r.pin_controllers, r.dropped, r.no_transport,
+            r.always_on.unwrap_or(0), r.always_on_pending,
+        ]
+        .map(|v| v as u64)
+    })
 }
 
-/// `/proc/soc`: what the boot step registered. A read-out for the board
-/// bring-up; it reads the report kept at boot and touches no register.
-fn gen_proc_soc(buf: &mut [u8]) -> usize {
-    struct W<'a> { b: &'a mut [u8], n: usize }
-    impl core::fmt::Write for W<'_> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            let s = s.as_bytes();
-            if self.n + s.len() > self.b.len() { return Err(core::fmt::Error); }
-            self.b[self.n..self.n + s.len()].copy_from_slice(s);
-            self.n += s.len();
-            Ok(())
-        }
+/// `soc/{up, clocks, resets, regulators, domains, pin_controllers, dropped,
+/// no_transport, always_on, always_on_pending}`: what the boot step
+/// registered, for the board bring-up (`up` is 0 before it ran). It reads the
+/// report kept at boot and touches no register.
+#[cfg(feature = "inspect")]
+pub(crate) fn inspect_build(
+    b: &mut azos_inspect::Builder<'_, '_>,
+    root: azos_inspect::NodeId,
+) -> Result<(), azos_inspect::Error> {
+    let d = b.dir(root, "soc")?;
+    let up = b.u64(d, "up", 0)?;
+    let mut ids = [azos_inspect::NodeId::ROOT; REPORT.len()];
+    for (id, name) in ids.iter_mut().zip(REPORT) {
+        *id = b.u64(d, name, 0)?;
     }
-    use core::fmt::Write;
-    let mut w = W { b: buf, n: 0 };
-    let up = with(|_fdt, soc, _bus, _fx| {
-        let r = soc.report;
-        let _ = write!(w, "clocks {}\nresets {}\nregulators {}\ndomains {}\npin-controllers {}\ndropped {}\nno-transport {}\nalways-on {}\nalways-on-pending {}\n",
-            r.clocks, r.resets, r.regulators, r.domains, r.pin_controllers, r.dropped, r.no_transport, r.always_on.unwrap_or(0), r.always_on_pending);
-    });
-    if up.is_none() {
-        let _ = write!(w, "none\n");
+    *TREE.lock_irqsave() = Some((up, ids));
+    Ok(())
+}
+
+/// Rewrite the report; the values that were not published.
+#[cfg(feature = "inspect")]
+pub(crate) fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
+    let Some((up, ids)) = *TREE.lock_irqsave() else { return 0 };
+    let words = report_words();
+    let mut bad = w.set_u64(up, words.is_some() as u64).is_err() as u32;
+    for (id, v) in ids.iter().zip(words.unwrap_or_default()) {
+        bad += w.set_u64(*id, v).is_err() as u32;
     }
-    w.n
+    bad
 }

@@ -3,8 +3,8 @@
 //! The first number of a `Rule::ReceiptCaveat` record: which receipt a use of
 //! a receipt-conditioned warrant lacked. The capability resolve writes it
 //! (`azos_ipc::cap::caveat::receipt::record_word`) and the printers read it
-//! ([`crate::ProvenanceRecord::write_chain`], `write_line`: `why` and
-//! `/proc/decisions`), so the layout lives here, below both.
+//! ([`crate::ProvenanceRecord::write_chain`], `write_line`: `why` and the
+//! recovery console), so the layout lives here, below both.
 //!
 //! Layout: the caveat kind ([`CAVEAT`]) in bits 0..8, the device 8..24 (the
 //! recorder's `effect kind << 8 | subject`), the receipt kind 24..32 (the

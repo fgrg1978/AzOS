@@ -90,7 +90,7 @@ pub fn timer_freq_hw() -> u64 {
 // MIDR_EL1 — Main ID Register — implementer / part-number /
 // revision decoder. Mirror of `arch-x86_64::cpuid`.
 //
-// Used by boot log + procfs to identify the CPU model and gate
+// Used by the boot log to identify the CPU model and gate
 // per-core errata workarounds.
 
 /// Decoded MIDR_EL1.

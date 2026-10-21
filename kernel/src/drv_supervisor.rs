@@ -205,7 +205,7 @@ pub(crate) fn spawn_supervised(path: &[u8]) -> i64 {
 /// Wave 11 (DRVPLACE): the `restart` key of the topology row named after
 /// the image at `path` (`/fat/<NAME>` -> row `<NAME>`), `on-failure` when no
 /// row names it or no topology is installed. (The `restart` gate row's canary
-/// is the component manager's view, `boot::procfs::view_restart`.)
+/// is the component manager's view, `boot::inspect_views::view_restart`.)
 pub(crate) fn row_restart(path: &[u8]) -> SupRestart {
     let name = path.rsplit(|&b| b == b'/').next().unwrap_or(path);
     match azos_topology::get().map(|t| t.restart_of(name)) {
@@ -1286,7 +1286,7 @@ pub(crate) fn start_restart_smoke() {
 }
 
 /// The topology row key `restart`, honoured by the component manager (which
-/// reads it through `/proc/components`). The drv disk's ring-3 buzzer driver,
+/// reads it from its `inspect.components` view). The drv disk's ring-3 buzzer driver,
 /// the one driver whose row moves between hosts, under the `restart-smoke`
 /// topology: BUZZDRV.ELF says `restart = no`.
 ///

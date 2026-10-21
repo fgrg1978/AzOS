@@ -359,7 +359,7 @@ pub(crate) fn install_ring3_seams() {
     // one closed the last of the TCB violations.
     //
     // Installed HERE, above the FAT32 block and not inside it: `/fat` is one
-    // filesystem among several, and ramfs, tmpfs and procfs all answer file
+    // filesystem among several, and ramfs and tmpfs both answer file
     // syscalls on a board with no disk at all. Installing on mount success
     // would have made `open` return -1 in every scenario that boots without a
     // drive.

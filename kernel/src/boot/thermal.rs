@@ -37,7 +37,7 @@
 //!   level request (Intel HWP, AMD CPPC, probed by `azos_arch::cpu::pstate`; a
 //!   register of another CPU goes through the function-call IPI in
 //!   `thermal_hw`) as the actuator, and RAPL's package energy as a meter shown
-//!   in `/proc/thermal`. A CPU with a sensor and no level request refuses every
+//!   in the introspection tree's `thermal/`. A CPU with a sensor and no level request refuses every
 //!   cap, so heat raises the degrade level and, at the critical trip, requests
 //!   the shutdown. x86 has no device tree (its second boot argument is the
 //!   firmware start-info) and the signed topology declares no thermal zones, so
@@ -68,7 +68,7 @@
 //! The K1 moves a supply over I2C, which no spin lock may be held across
 //! (Kconfig `LOCK_MAX_HOLD_US`; a voltage step is several transfers), so its
 //! tick holds none: the runtime is taken out of [`STATE`] for the tick
-//! (`/proc/thermal` says `ticking`), each clock operation takes the
+//! (`thermal/status` says `ticking`), each clock operation takes the
 //! frameworks' lock for itself, and the rail is driven by the P1 buck's own
 //! read and write with the effect recorded first.
 //!
@@ -76,7 +76,7 @@
 //! as the reclaim task is placed, below the real-time band. It never touches
 //! a timer a real-time task owns.
 //!
-//! The degrade level the framework settles on shows in `/proc/thermal` and on
+//! The degrade level the framework settles on shows in `thermal/level` and on
 //! the console; no channel carries a kernel-originated level to the power
 //! service yet (see the Kconfig help of `THERMAL`).
 //!
@@ -86,8 +86,6 @@
 //! smoke's scripted temperature and one fixture zone, so the row can show
 //! throttle, degrade record and recovery on a machine with no sensor
 //! (`kernel/src/smokes/thermal_smoke.rs`).
-
-use core::fmt::Write as _;
 
 #[cfg(all(feature = "vf2", not(feature = "soc")))]
 compile_error!("THERMAL on the VisionFive 2 needs SOC_FRAMEWORKS: the CPU clock it moves is the frameworks'");
@@ -116,7 +114,7 @@ enum Board {
         plan: azos_thermal::k1_soc::K1Plan,
         /// Moves that left a rail above what its clock needs (see
         /// `azos_thermal::k1`): the throttle took effect, the supply did not
-        /// follow. Shown in `/proc/thermal`.
+        /// follow. Shown in `thermal/board`.
         lagged: u32,
     },
     /// Raspberry Pi: the VideoCore mailbox.
@@ -640,7 +638,7 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
 /// whether a critical trip asked for the shutdown. `None` without a runtime.
 ///
 /// The state is taken out of its lock for the tick and put back
-/// (`/proc/thermal` says `ticking` meanwhile; only this task writes it): no
+/// (`thermal/status` says `ticking` meanwhile; only this task writes it): no
 /// board's tick is short enough for a spin lock (audit K2-M9). The K1 steps a
 /// rail over I2C, the Raspberry Pi asks the VideoCore by mailbox (replies in
 /// milliseconds), x86 reads another CPU's MSRs by a function-call IPI, the
@@ -747,75 +745,132 @@ pub(crate) fn create_task() {
     kprintln!("[SCHED] Created thermal task (prio {}, CPU {})", azos_limits::THERMAL_TASK_PRIORITY, cpu);
 }
 
-// ── /proc/thermal ───────────────────────────────────────────────────────────
+// ── The introspection tree: thermal/ ────────────────────────────────────────
 
-/// Register `/proc/thermal`. After the VFS is up (`install_procfs`).
-pub(crate) fn install_procfs() {
-    azos_fs::procfs_register(azos_fs::ProcNs::Proc, b"thermal", gen_proc_thermal);
+/// Zones and domains the tree lists, at most.
+#[cfg(feature = "inspect")]
+const TREE_ZONES: usize = 8;
+
+#[cfg(feature = "inspect")]
+struct TreeIds {
+    status: azos_inspect::NodeId,
+    ticks: azos_inspect::NodeId,
+    level: azos_inspect::NodeId,
+    shutdown: azos_inspect::NodeId,
+    records: azos_inspect::NodeId,
+    zones: [Option<azos_inspect::NodeId>; TREE_ZONES],
+    domains: [Option<(azos_inspect::NodeId, azos_inspect::NodeId)>; MAX_DOMAINS],
+    /// K1: the rail moves that lagged their clock.
+    #[cfg(all(feature = "soc-k1", feature = "k1"))]
+    rail_lagged: azos_inspect::NodeId,
+    /// x86: RAPL's package energy and power, when the meter reads.
+    #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
+    package: (azos_inspect::NodeId, azos_inspect::NodeId),
 }
 
-/// `/proc/thermal`: the board, the evaluations made, the level, the zones and
-/// the caps, and the framework's ring (oldest first).
-fn gen_proc_thermal(buf: &mut [u8]) -> usize {
-    struct W<'a> { b: &'a mut [u8], n: usize }
-    impl core::fmt::Write for W<'_> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            let s = s.as_bytes();
-            if self.n + s.len() > self.b.len() { return Err(core::fmt::Error); }
-            self.b[self.n..self.n + s.len()].copy_from_slice(s);
-            self.n += s.len();
-            Ok(())
+#[cfg(feature = "inspect")]
+static TREE: SpinLock<Option<TreeIds>> = SpinLock::new(None);
+
+/// `thermal/{status, board, ticks, level, shutdown, records,
+/// zones/<z>/active, domains/<d>/{cap, opp}}`, with `rail_lagged` on a K1 and
+/// `package_energy_uj`, `package_power_mw` on a PC: `status` is `none` (no
+/// thermal framework), `ticking` (a tick holds
+/// the state) or `running`; `opp` is `u64::MAX` when the domain's operating
+/// point is not known. The board, its zones and its domains are those
+/// [`install`] found; the values are rewritten at each refresh.
+#[cfg(feature = "inspect")]
+pub(crate) fn inspect_build(
+    b: &mut azos_inspect::Builder<'_, '_>,
+    root: azos_inspect::NodeId,
+) -> Result<(), azos_inspect::Error> {
+    let t = b.dir(root, "thermal")?;
+    let mut ids = TreeIds {
+        status: b.string(t, "status", 8, "none")?,
+        ticks: azos_inspect::NodeId::ROOT,
+        level: azos_inspect::NodeId::ROOT,
+        shutdown: azos_inspect::NodeId::ROOT,
+        records: azos_inspect::NodeId::ROOT,
+        zones: [None; TREE_ZONES],
+        domains: [None; MAX_DOMAINS],
+        #[cfg(all(feature = "soc-k1", feature = "k1"))]
+        rail_lagged: b.u64(t, "rail_lagged", 0)?,
+        #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
+        package: (b.u64(t, "package_energy_uj", 0)?, b.u64(t, "package_power_mw", 0)?),
+    };
+    let (board, zones) = {
+        let g = STATE.lock();
+        match g.as_ref() {
+            Some(st) => (st.board.name(), st.rt.thermal.zones().len().min(TREE_ZONES)),
+            None => ("-", 0),
         }
+    };
+    b.string(t, "board", board.len().max(1), board)?;
+    ids.ticks = b.u64(t, "ticks", 0)?;
+    ids.level = b.u64(t, "level", 0)?;
+    ids.shutdown = b.u64(t, "shutdown", 0)?;
+    ids.records = b.u64(t, "records", 0)?;
+    let zd = b.dir(t, "zones")?;
+    for (z, slot) in ids.zones.iter_mut().enumerate().take(zones) {
+        let d = b.dir(zd, &super::inspect_metrics::Num::name("", z as u64))?;
+        *slot = Some(b.u64(d, "active", 0)?);
     }
-    let mut w = W { b: buf, n: 0 };
+    let dd = b.dir(t, "domains")?;
+    let domains = azos_sched::energy::model().domains().len().min(MAX_DOMAINS);
+    for (k, slot) in ids.domains.iter_mut().enumerate().take(domains) {
+        let d = b.dir(dd, &super::inspect_metrics::Num::name("", k as u64))?;
+        *slot = Some((b.u64(d, "cap", 0)?, b.u64(d, "opp", u64::MAX)?));
+    }
+    *TREE.lock_irqsave() = Some(ids);
+    Ok(())
+}
+
+/// Rewrite the thermal values; the ones that were not published.
+#[cfg(feature = "inspect")]
+pub(crate) fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
+    let tg = TREE.lock_irqsave();
+    let Some(ids) = tg.as_ref() else { return 0 };
+    let mut bad = 0u32;
+    let mut ok = |r: Result<(), azos_inspect::Error>| bad += r.is_err() as u32;
     let g = STATE.lock();
     let Some(st) = g.as_ref() else {
         let busy = TICKING.load(core::sync::atomic::Ordering::Acquire);
-        let _ = write!(w, "{}\n", if busy { "ticking" } else { "none" });
-        return w.n;
+        ok(w.set_str(ids.status, if busy { "ticking" } else { "none" }));
+        return bad;
     };
     let rt = &st.rt;
-    let _ = write!(w, "board {}\nticks {}\nlevel {}\n", st.board.name(), rt.ticks, rt.last().level);
-    let _ = write!(w, "shutdown {}\n", rt.last().shutdown as u8);
-    // Irrefutable where the K1 is the only board object (riscv64 without the
-    // QEMU row).
+    ok(w.set_str(ids.status, "running"));
+    ok(w.set_u64(ids.ticks, rt.ticks as u64));
+    ok(w.set_u64(ids.level, rt.last().level as u64));
+    ok(w.set_u64(ids.shutdown, rt.last().shutdown as u64));
+    ok(w.set_u64(ids.records, rt.thermal.logged() as u64));
+    for (z, id) in ids.zones.iter().enumerate() {
+        if let Some(id) = id {
+            ok(w.set_u64(*id, rt.thermal.active(z) as u64));
+        }
+    }
+    for (d, id) in ids.domains.iter().enumerate() {
+        if let Some((cap, opp)) = id {
+            ok(w.set_u64(*cap, rt.thermal.cap_state(d) as u64));
+            ok(w.set_u64(*opp, rt.dvfs.current(d).map_or(u64::MAX, |o| o as u64)));
+        }
+    }
+    // Irrefutable where the K1 is the only board object.
     #[cfg(all(feature = "soc-k1", feature = "k1"))]
     #[allow(irrefutable_let_patterns)]
-    if let Board::K1 { plan, lagged } = &st.board {
-        let wired = plan.wires.iter().flatten().count();
-        let _ = write!(w, "k1 clusters {} left-out {} rail-lagged {}\n", wired, plan.left_out, lagged);
+    if let Board::K1 { lagged, .. } = &st.board {
+        ok(w.set_u64(ids.rail_lagged, *lagged as u64));
     }
-    // arch-only: as the variant.
-    #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
     // Irrefutable where the PC is the only board object.
+    #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
     #[allow(irrefutable_let_patterns)]
     if let Board::X86 { pc, .. } = &st.board {
-        use azos_thermal::x86::Meter;
-        let hw = pc.hw();
-        let _ = write!(w, "x86 perf {:?} meter {:?}\n", hw.perf, hw.meter);
-        let _ = write!(w, "level-requests {} refused {}\n", pc.applied, pc.refused);
-        if hw.meter != Meter::None {
+        if pc.hw().meter != azos_thermal::x86::Meter::None {
             let e = pc.last_energy();
-            let _ = write!(w, "package-energy {} uj\npackage-power {} mw\n", e.total_uj, e.power_mw);
+            ok(w.set_u64(ids.package.0, e.total_uj as u64));
+            ok(w.set_u64(ids.package.1, e.power_mw as u64));
         }
     }
-    for (z, zone) in rt.thermal.zones().iter().enumerate() {
-        let _ = write!(w, "zone {} {} active {:#04x}\n", z, core::str::from_utf8(zone.name()).unwrap_or("?"), rt.thermal.active(z));
-    }
-    for d in 0..azos_sched::energy::model().domains().len().min(MAX_DOMAINS) {
-        match rt.dvfs.current(d) {
-            Some(o) => { let _ = write!(w, "domain {} cap {} opp {}\n", d, rt.thermal.cap_state(d), o); }
-            None => { let _ = write!(w, "domain {} cap {} opp ?\n", d, rt.thermal.cap_state(d)); }
-        }
-    }
-    let n = (rt.thermal.logged() as usize).min(LOG_LEN);
-    let _ = write!(w, "records {}\n", rt.thermal.logged());
-    for i in (0..n).rev() {
-        if let Some(r) = rt.thermal.record(i) {
-            let _ = write!(w, "{} ms zone {} {} {} temp {}\n", r.now_ms, r.zone, event_name(r.event), r.arg, r.temp_mdeg);
-        }
-    }
-    w.n
+    bad
 }
 
 // ── What the QEMU row looks at ──────────────────────────────────────────────

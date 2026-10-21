@@ -1261,21 +1261,6 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         azos_fs::TMPFS_MAX_FILES,
         azos_fs::TMPFS_MAX_BYTES / 1024);
 
-    // F21: Procfs + sysfs. Shared with aarch64's kernel_main — see
-    // `install_procfs`'s own doc for the full reasoning and the ordering
-    // constraint. Runtime gate canary `canary=procfs-skip` (KTEST): not
-    // installed.
-    if !canary!("procfs-skip") {
-        install_procfs();
-    }
-    // Wave 12: `/proc` through the VFS, so ring 3 reads it with the file
-    // calls (the user shell's `ps` reads `/proc/tasks`). Read-only: the
-    // procfs backend refuses every write. Independent of the disk.
-    match azos_fs::vfs_mount_fs(b"/proc", &azos_fs::PROCFS_FS) {
-        Ok(()) => kprintln!("[FS] procfs mounted at /proc"),
-        Err(()) => azos_drv_sys::kerr!("[FS] procfs vfs_mount failed"),
-    }
-
     // Storage L11 part B: the file data of FAT32 and tmpfs goes through the
     // page cache from the first mount on (the object table and the allocator
     // are up; the `fs-wb` task it wakes comes later and is a no-op until then).

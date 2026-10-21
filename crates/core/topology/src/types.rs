@@ -862,12 +862,7 @@ const _: () = assert!(MAX_SWAPS <= u8::MAX as usize && MAX_VOLUMES <= u8::MAX as
 pub const MAX_LOGINS: usize = azos_limits::TOPOLOGY_MAX_LOGINS;
 /// `ssh_key` entries one login row may list (Kconfig `TOPOLOGY_LOGIN_KEYS`).
 pub const LOGIN_KEYS: usize = azos_limits::TOPOLOGY_LOGIN_KEYS;
-/// The longest line of `/proc/ssh`: the name, a space, 64 hex digits, a newline.
-const LOGIN_LINE_MAX: usize = 24 + 1 + 64 + 1;
-// `/proc/ssh` is one procfs file (2 KiB: `PROCFS_MAX_FILE`): the product of the
-// two limits has to fit it, or the last logins would be cut off silently.
 const _: () = assert!(MAX_LOGINS <= u8::MAX as usize && LOGIN_KEYS <= u8::MAX as usize, "kept in a u8");
-const _: () = assert!(MAX_LOGINS * LOGIN_KEYS * LOGIN_LINE_MAX <= 2048, "/proc/ssh must fit one procfs file");
 
 /// `[guest.NAME]` rows in one topology (Kconfig `TOPOLOGY_MAX_GUESTS`).
 pub const MAX_GUESTS: usize = azos_limits::TOPOLOGY_MAX_GUESTS;
@@ -1395,7 +1390,7 @@ impl<'a> SwapSpec<'a> {
 /// `CONSOLE_LOGIN`, the verifiers of the console credential
 /// (`azos_crypto::keystore::login_public`, `tests/host/logind-tests`' `login_enroll`). The row's
 /// place in the file plus one is the user's `owner_root`.
-/// Consumed by `/proc/ssh` (`kernel/src/boot/procfs.rs`), which the SSH server
+/// Consumed by the `inspect.logins` view (`kernel/src/boot/inspect_views.rs`), which the SSH server
 /// (`userspace/services/sshd`) reads at every connection and the login service
 /// (`userspace/services/logind`) reads for whether anybody is enrolled, and by
 /// the `login` op of `keys` (`crates/core/syscall/src/keys.rs`).

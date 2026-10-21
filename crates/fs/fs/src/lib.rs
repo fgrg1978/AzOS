@@ -9,7 +9,6 @@ pub mod census;
 pub mod vfs;
 pub mod fat32;
 pub mod tmpfs;
-pub mod procfs;
 pub mod crash_log;
 pub mod pstore;
 pub mod pagecache;
@@ -60,14 +59,6 @@ pub use tmpfs::{
     TmpfsError, TMPFS_MAX_FILES, TMPFS_MAX_BYTES, TMPFS_NAME_LEN,
     // The `vfs::FileSystem` backend. Not mounted by `init()`.
     TmpFs, TMPFS_FS, FS_TYPE_TMPFS,
-};
-
-pub use procfs::{
-    procfs_init, procfs_register, procfs_register_tid, procfs_read, procfs_ls, procfs_count,
-    ProcTidGen,
-    ProcNs, PROCFS_MAX_ENTRIES,
-    // The `vfs::FileSystem` backends. Not mounted by `init()`.
-    ProcFs, PROCFS_FS, SYSFS_FS, FS_TYPE_PROCFS,
 };
 
 pub use vfs::{

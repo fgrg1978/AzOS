@@ -113,7 +113,7 @@ use crate::cap::{CapHandle, CapKind, CapPerms};
 ///     that landed; caught reading the code, not trusting this comment.)
 ///   - `IoRing`, `Port` — no minter and no typed syscall. (`Task` was here
 ///     until wave 12; it now mints the one target `"tasks"`, the full
-///     `/proc` task view — see the `CapKind::Domain` arm.) (`Shm` was here
+///     task view — see the `CapKind::Domain` arm.) (`Shm` was here
 ///     until the introspection regions: `inspect.<public|admin>` now mints
 ///     through the hook below — see the `CapKind::MemObj` arm. Any other
 ///     `Shm` target is refused.)
@@ -257,9 +257,8 @@ pub fn seed_one_cap_ops(
                     .map(|c| c.raw()),
             },
         },
-        // Wave 12 (owner round 48): the full task list. `/proc/tasks` and
-        // `/proc/<tid>` show a reader only itself and its descendants unless
-        // its table holds this (`kernel/src/boot/procfs.rs`). One target,
+        // The full task view: the admin introspection region is granted only
+        // to a table that holds it (`inspect_region`). One target,
         // `"tasks"`, resource 0, and `READ` only: there is nothing to write,
         // and a broader permission is refused rather than trimmed, as
         // `Launch` refuses anything but `EXEC`. Any other target is refused:
@@ -672,7 +671,7 @@ mod tests {
         assert!(seed_one_cap(tid, CapKind::Domain, CapPerms::READ, "task").is_none());
     }
 
-    /// Wave 12 (owner round 48): `Cap<Task>` mints the full `/proc` task view
+    /// Wave 12 (owner round 48): `Cap<Task>` mints the full task view
     /// for the one target `"tasks"` with `READ`, as resource 0, and refuses
     /// (not skips) every other shape: a per-task target, and any permission
     /// beyond `READ`.
