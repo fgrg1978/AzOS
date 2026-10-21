@@ -1,0 +1,47 @@
+[package]
+name = "azos_ota_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side unit tests for OTA pure logic (OT01). Excluded from workspace."
+
+# This crate is EXCLUDED from the workspace (see top-level Cargo.toml).
+# It runs on the development host (aarch64-apple-darwin), not RISC-V.
+#
+# Source layout:
+#   src/lib.rs  uses #[path] to include crates/core/ota/src/pure.rs directly.
+#   No deps on azos_drv_* or azos_fs — those would fail to
+#   build on host (they have MMIO + bare-metal asm).
+#
+# Run with:
+#   cd tests/host/ota-tests && cargo test
+#
+# The local .cargo/config.toml overrides the workspace target so this
+# builds for the host instead of riscv64imac-unknown-none-elf.
+
+# The whole-system update (`crates/core/ota/src/update.rs`) hashes and verifies
+# with the kernel's own crypto crate.
+[dependencies]
+azos_common = { path = "../../../crates/core/common" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+# The canaries of the update: each skips one check of `update.rs`/`pure.rs`, and
+# exactly the tests that expect that refusal go red:
+#   cargo test --features update-canary-sig
+#   cargo test --features update-canary-epoch
+#   cargo test --features update-canary-hash
+#   cargo test --features update-canary-stale-epoch
+#   cargo test --features update-canary-root-files
+#   cargo test --features update-canary-apply-gate
+[features]
+update-canary-sig = []
+update-canary-epoch = []
+update-canary-hash = []
+update-canary-stale-epoch = []
+update-canary-root-files = []
+update-canary-apply-gate = []
+
+[dev-dependencies]
+# Signs the manifests the tests build (the crate the device verifies with).
+ed25519-dalek = { version = "2", default-features = false }

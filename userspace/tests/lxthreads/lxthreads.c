@@ -1,0 +1,708 @@
+/* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
+/* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
+/*
+ * LXTHR.ELF: threads under the Linux personality (wave 13, THREADS), a
+ * static musl program (`make lxthreads`, zig cc; musl is MIT). It uses
+ * pthreads exactly as an unmodified Linux program does: pthread_create (musl
+ * maps the stack, clones with CLONE_VM|...|CLONE_SETTLS|CLONE_PARENT_SETTID|
+ * CLONE_CHILD_CLEARTID), mutex contention (futex wait/wake), thread-local
+ * storage, pthread_join (futex wait on the joined thread's state word; the
+ * thread-list lock released by the kernel's clear-tid wake), and one open
+ * file description written by two threads. Wave 13: signals across threads
+ * (a process-directed signal, a tgkill to a blocked thread, a fatal default
+ * action in a threaded child). Wave 15: a leader's pthread_exit while a
+ * thread runs (its clear-tid word, which holds musl's thread-list lock), an
+ * execve from a thread that is not the leader, and a writev that is one
+ * transfer (no other writer of the pipe between its segments).
+ *
+ * Every check prints `lxthr: <name> ok` or `lxthr: <name> FAIL`, and the
+ * last line is `lxthr: done failures=<n>`.
+ */
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+/* Linux futex op numbers (UAPI values; no linux/ header outside lx/glue/). */
+#define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
+#define FUTEX_CMP_REQUEUE 4
+#define FUTEX_UNLOCK_PI 7
+#define FUTEX_WAIT_REQUEUE_PI 11
+#define FUTEX_CMP_REQUEUE_PI 12
+#define FUTEX_PRIVATE_FLAG 128
+#define FUTEX_TID_MASK 0x3fffffff
+#include <sys/syscall.h>
+#include <sys/uio.h>
+#include <unistd.h>
+
+#define NT 4
+#define ITERS 2000
+
+static __thread int tls_var = 0;
+static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+static long counter;
+static int fails;
+static int shared_fd = -1;
+static pid_t thread_tid[NT];
+
+static void check(const char *name, int ok)
+{
+    printf("lxthr: %s %s\n", name, ok ? "ok" : "FAIL");
+    fflush(stdout);
+    if (!ok)
+        fails++;
+}
+
+static void *worker(void *arg)
+{
+    long id = (long)arg;
+    tls_var = (int)id * 100 + 7;
+    thread_tid[id - 1] = (pid_t)syscall(SYS_gettid);
+    for (int i = 0; i < ITERS; i++) {
+        pthread_mutex_lock(&mu);
+        long c = counter;
+        /* Give the hart away now and then while holding the lock, so the
+         * others find it held and sleep on its futex. */
+        if ((i & 63) == 0)
+            sched_yield();
+        counter = c + 1;
+        pthread_mutex_unlock(&mu);
+    }
+    if (id == 1 && shared_fd >= 0)
+        (void)write(shared_fd, "a", 1);
+    /* Still this thread's own value after all that switching. */
+    return (void *)(long)(tls_var == (int)id * 100 + 7);
+}
+
+/* ── Wave 13 (SIGNALS): signals and threads ─────────────────────────────── */
+
+static volatile pid_t usr1_tid;
+static volatile int usr2_hits, t_ready, t_go, t_stop, blocked_pending, unblocked_hits;
+static volatile pid_t catcher_tid, blocker_tid;
+
+static void on_usr1(int s) { (void)s; usr1_tid = (pid_t)syscall(SYS_gettid); }
+static void on_usr2(int s) { (void)s; usr2_hits++; }
+
+static void nap_ms(long ms)
+{
+    struct timespec d = { 0, ms * 1000000L };
+    nanosleep(&d, 0);
+}
+
+/* Takes SIGUSR1: the only thread that does not block it. */
+static void *catcher(void *a)
+{
+    (void)a;
+    sigset_t s;
+    sigemptyset(&s);
+    sigaddset(&s, SIGUSR1);
+    pthread_sigmask(SIG_UNBLOCK, &s, 0);
+    catcher_tid = (pid_t)syscall(SYS_gettid);
+    __sync_fetch_and_add(&t_ready, 1);
+    while (!t_stop)
+        nap_ms(2);
+    return 0;
+}
+
+/* Blocks SIGUSR2: a tgkill aimed at it stays pending on it, and runs its
+ * handler here once it unblocks. */
+static void *blocker(void *a)
+{
+    (void)a;
+    sigset_t s, p;
+    sigemptyset(&s);
+    sigaddset(&s, SIGUSR2);
+    pthread_sigmask(SIG_BLOCK, &s, 0);
+    blocker_tid = (pid_t)syscall(SYS_gettid);
+    __sync_fetch_and_add(&t_ready, 1);
+    while (!t_go)
+        nap_ms(2);
+    sigemptyset(&p);
+    sigpending(&p);
+    blocked_pending = sigismember(&p, SIGUSR2) && usr2_hits == 0;
+    pthread_sigmask(SIG_UNBLOCK, &s, 0);
+    unblocked_hits = usr2_hits;
+    return 0;
+}
+
+static void *sleeper(void *a)
+{
+    (void)a;
+    for (;;)
+        nap_ms(50);
+    return 0;
+}
+
+static void signals(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_usr1;
+    sigaction(SIGUSR1, &sa, 0);
+    sa.sa_handler = on_usr2;
+    sigaction(SIGUSR2, &sa, 0);
+    /* Main blocks SIGUSR1; the threads start with its mask. */
+    sigset_t s1;
+    sigemptyset(&s1);
+    sigaddset(&s1, SIGUSR1);
+    pthread_sigmask(SIG_BLOCK, &s1, 0);
+    pthread_t c, b;
+    int ok = pthread_create(&c, 0, catcher, 0) == 0 && pthread_create(&b, 0, blocker, 0) == 0;
+    for (int i = 0; i < 1000 && t_ready < 2; i++)
+        nap_ms(2);
+
+    /* A process-directed signal goes to a thread that does not block it. */
+    kill(getpid(), SIGUSR1);
+    for (int i = 0; i < 500 && usr1_tid == 0; i++)
+        nap_ms(2);
+    printf("lxthr: SIGUSR1 handled by tid %d (catcher %d, main %d)\n", (int)usr1_tid, (int)catcher_tid, (int)getpid());
+    check("a process signal lands on an unblocked thread", ok && usr1_tid != 0 && usr1_tid == catcher_tid);
+
+    /* A thread-directed one stays pending on its blocked thread. */
+    syscall(SYS_tgkill, getpid(), blocker_tid, SIGUSR2);
+    nap_ms(50);
+    int before = usr2_hits;
+    t_go = 1;
+    pthread_join(b, 0);
+    printf("lxthr: blocked thread saw pending=%d, hits before %d after %d\n", blocked_pending, before, unblocked_hits);
+    check("tgkill to a blocked thread stays pending on it", before == 0 && blocked_pending && unblocked_hits == 1);
+    t_stop = 1;
+    pthread_join(c, 0);
+    pthread_sigmask(SIG_UNBLOCK, &s1, 0);
+
+    /* A fatal default action ends every thread of the process, and the
+     * parent's wait sees the child killed by the signal. */
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) {
+        pthread_t z;
+        pthread_create(&z, 0, sleeper, 0);
+        nap_ms(20);
+        kill(getpid(), SIGTERM);
+        nap_ms(2000);
+        _exit(3);
+    }
+    int st = 0;
+    pid_t w = waitpid(pid, &st, 0);
+    printf("lxthr: threaded child status 0x%x\n", st);
+    check("a fatal signal ends every thread; wait sees WIFSIGNALED",
+          w == pid && WIFSIGNALED(st) && WTERMSIG(st) == SIGTERM);
+}
+
+/* Wave 15: the leader's clear-tid word. musl's start code hands the kernel
+ * its thread-list lock with set_tid_address, and pthread_exit holds that lock
+ * across SYS_exit, relying on the kernel's clear-tid write and wake to
+ * release it once the thread is gone. A leader that ends with pthread_exit
+ * while another thread runs must therefore have its word cleared like any
+ * thread's (Linux mm_release), or the next pthread_create in the process
+ * waits on the lock forever. The thread joins the leader first (musl marks
+ * it exited only after taking the lock), so its pthread_create can only
+ * proceed through the kernel's clear: no timing is assumed. */
+static pthread_t leader_self;
+
+static void *noop(void *a) { return a; }
+
+static void *after_leader(void *a)
+{
+    (void)a;
+    pthread_join(leader_self, 0);
+    pthread_t u;
+    if (pthread_create(&u, 0, noop, 0) != 0)
+        _exit(5);
+    pthread_join(u, 0);
+    _exit(7);
+}
+
+/* The child's own backstop: a wedged child ends itself (exit_group from a
+ * thread takes no lock), since signalling another process is outside this
+ * program's row profile. */
+static void *backstop(void *a)
+{
+    (void)a;
+    for (int i = 0; i < 300; i++)
+        nap_ms(10);
+    _exit(9);
+}
+
+static void leader_exit(void)
+{
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) {
+        leader_self = pthread_self();
+        pthread_t t, b;
+        if (pthread_create(&b, 0, backstop, 0) != 0 || pthread_create(&t, 0, after_leader, 0) != 0)
+            _exit(4);
+        pthread_exit(0);
+    }
+    int st = 0;
+    pid_t w = waitpid(pid, &st, 0);
+    if (w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 9)
+        printf("lxthr: leader-exit child wedged (ended itself after 3 s)\n");
+    printf("lxthr: leader-exit child status 0x%x\n", st);
+    check("a leader's pthread_exit releases its clear-tid word",
+          w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 7);
+}
+
+/* Wave 15: execve from a thread that is not the leader (POSIX: "all other
+ * threads ... shall be destroyed"; Linux de_thread). A forked child with
+ * three other threads -- the leader in a timed sleep loop, one parked in a
+ * condition wait with no deadline, one in a timed sleep loop -- has a fourth
+ * thread exec this image (`lxthr exec-image <pid>`). The new image checks it
+ * runs under the PID the parent forked, as the process's only thread
+ * (gettid() == getpid(): the exec'ing thread took the PID), and that it can
+ * still create and join a thread; it exits EXEC_OK | a bit per failed
+ * property, and the parent reaps it under the forked PID. The kernel prints
+ * that it ended 3 other threads. Canary `exec-no-dethread-canary`: the other
+ * threads run on across the exec and the exec'ing thread keeps its own TID. */
+#define EXEC_OK 0x40
+extern char **environ;
+static pthread_mutex_t ex_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ex_cv = PTHREAD_COND_INITIALIZER;
+static pid_t ex_pid;
+
+static void *ex_parked(void *a)
+{
+    pthread_mutex_lock(&ex_mu);
+    for (;;)
+        pthread_cond_wait(&ex_cv, &ex_mu);
+    return a;
+}
+
+static void *ex_napper(void *a)
+{
+    for (;;)
+        nap_ms(5);
+    return a;
+}
+
+static void *ex_execer(void *a)
+{
+    (void)a;
+    char pid[16];
+    snprintf(pid, sizeof pid, "%d", (int)ex_pid);
+    char *argv[] = { "lxthr", "exec-image", pid, 0 };
+    nap_ms(20); /* the others reach their waits first */
+    execve("/proc/self/exe", argv, environ);
+    _exit(3);
+}
+
+static int exec_image(const char *forked)
+{
+    int bits = 0;
+    pid_t me = getpid(), tid = (pid_t)syscall(SYS_gettid);
+    printf("lxthr: exec-image pid=%d tid=%d (forked pid %s)\n", (int)me, (int)tid, forked);
+    if (me != (pid_t)atoi(forked))
+        bits |= 1;
+    if (tid != me)
+        bits |= 2;
+    pthread_t t;
+    /* An image that is not the process's only thread (the canary) is not
+     * asked to create one: the other threads of the old image are still
+     * running in it and the join wedges, which hides the two checks above. */
+    if (bits || pthread_create(&t, 0, noop, 0) != 0 || pthread_join(t, 0) != 0)
+        bits |= 4;
+    fflush(stdout);
+    return EXEC_OK | bits;
+}
+
+static void exec_from_thread(void)
+{
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) {
+        ex_pid = getpid();
+        pthread_t p, n, e;
+        if (pthread_create(&p, 0, ex_parked, 0) != 0 || pthread_create(&n, 0, ex_napper, 0) != 0
+            || pthread_create(&e, 0, ex_execer, 0) != 0)
+            _exit(4);
+        /* The exec ends this thread; the backstop if it never comes. */
+        for (int i = 0; i < 300; i++)
+            nap_ms(10);
+        _exit(9);
+    }
+    int st = 0;
+    pid_t w = waitpid(pid, &st, 0);
+    int code = w == pid && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    int image = code >= 0 && (code & ~7) == EXEC_OK;
+    printf("lxthr: exec-from-thread child status 0x%x\n", st);
+    check("execve from a thread: the parent reaps the new image under the forked PID", image);
+    check("execve from a thread: the new image runs under the forked PID", image && !(code & 1));
+    check("execve from a thread: the exec'ing thread is the only one left (gettid == getpid)", image && !(code & 2));
+    check("execve from a thread: the new image creates and joins a thread", image && !(code & 4));
+}
+
+/* Wave 15 (K2): a writev is ONE transfer. The pipe is filled to 100 bytes of
+ * room; a thread writevs 50 + 3000 bytes of 'A', which as one write waits
+ * whole for 3050 bytes of room. Main then writes 40 bytes of 'M' and drains
+ * the pipe. One transfer: the A bytes are one run after the M bytes. The
+ * per-segment loop this replaced (canary `writev-per-segment-canary`) puts
+ * the 50 in at once, waits on the 3000, and the M bytes land between the two
+ * segments. The pipe's size is the kernel's to choose (16 KiB of data at the
+ * time of writing, no longer the 4096 bytes the check was written for, where
+ * the 3050 found room at once and the canary changed nothing): it is
+ * measured on a throwaway non-blocking pipe, so the fill follows it. */
+#define WV_MAXCAP 65536
+#define WV_A1 50
+#define WV_A2 3000
+#define WV_M 40
+static int wv_fd[2] = {-1, -1};
+
+static void *wv_writer(void *arg)
+{
+    (void)arg;
+    static char a1[WV_A1], a2[WV_A2];
+    memset(a1, 'A', sizeof a1);
+    memset(a2, 'A', sizeof a2);
+    struct iovec v[2] = {{a1, sizeof a1}, {a2, sizeof a2}};
+    return (void *)(long)writev(wv_fd[1], v, 2);
+}
+
+/* Bytes a pipe holds before a non-blocking write answers EAGAIN, or -1. */
+static long pipe_capacity(void)
+{
+    int p[2];
+    static char junk[1024];
+    long n = 0;
+    if (pipe2(p, O_NONBLOCK) != 0)
+        return -1;
+    for (long w; (w = write(p[1], junk, sizeof junk)) > 0;)
+        n += w;
+    for (long w; (w = write(p[1], junk, 1)) > 0;)
+        n += w;
+    close(p[0]);
+    close(p[1]);
+    return n;
+}
+
+static void writev_atomic(void)
+{
+    static char fill[WV_MAXCAP], got[WV_MAXCAP + WV_M + WV_A1 + WV_A2];
+    char m[WV_M];
+    pthread_t t;
+    void *r = 0;
+    long cap = pipe_capacity();
+    long wv_fill = cap - 100;
+    long have = 0, want = wv_fill + WV_M + WV_A1 + WV_A2;
+    if (cap < 100 + WV_A1 + WV_A2 || cap > WV_MAXCAP || pipe(wv_fd) != 0) {
+        printf("lxthr: writev: pipe capacity %ld\n", cap);
+        check("writev is one transfer: no other writer between its segments", 0);
+        return;
+    }
+    memset(fill, 'F', wv_fill);
+    memset(m, 'M', sizeof m);
+    long f = 0;
+    for (long w; f < wv_fill && (w = write(wv_fd[1], fill + f, (size_t)(wv_fill - f < 4096 ? wv_fill - f : 4096))) > 0;)
+        f += w; /* a write moves at most 4096 bytes */
+    int made = f == wv_fill && pthread_create(&t, 0, wv_writer, 0) == 0;
+    nap_ms(200); /* the writer is waiting for room by now */
+    long w = made ? write(wv_fd[1], m, sizeof m) : -1;
+    while (made && have < want) {
+        long n = read(wv_fd[0], got + have, (size_t)(want - have));
+        if (n <= 0)
+            break;
+        have += n;
+    }
+    if (made)
+        pthread_join(t, &r);
+    close(wv_fd[0]);
+    close(wv_fd[1]);
+    long first = -1, run = 0;
+    for (long i = 0; i < have; i++) {
+        if (got[i] == 'A') {
+            if (first < 0)
+                first = i;
+            run++;
+        } else if (first >= 0 && run < WV_A1 + WV_A2) {
+            break; /* the A bytes were split */
+        }
+    }
+    printf("lxthr: writev wrote %ld, pipe gave %ld bytes (capacity %ld, fill %ld, main wrote %ld), first A run %ld at %ld\n",
+           (long)r, have, cap, f, w, run, first);
+    check("writev is one transfer: no other writer between its segments",
+          made && w == WV_M && have == want && (long)r == WV_A1 + WV_A2 && run == WV_A1 + WV_A2);
+}
+
+/* Wave 15 N9: pthread_cond_broadcast wakes every waiter (musl moves them
+ * onto the mutex with FUTEX_REQUEUE), and a raw FUTEX_CMP_REQUEUE wakes one
+ * waiter and moves the rest: the herd counter reads 1 until the target word
+ * is woken. Same binary on Linux. */
+static pthread_mutex_t cv_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+static int cv_waiting, cv_go, cv_woken;
+
+static void *cv_waiter(void *a)
+{
+    pthread_mutex_lock(&cv_mu);
+    cv_waiting++;
+    while (!cv_go)
+        pthread_cond_wait(&cv, &cv_mu);
+    cv_woken++;
+    pthread_mutex_unlock(&cv_mu);
+    return a;
+}
+
+static int rq_cond, rq_mutex;
+static volatile int rq_ran;
+
+static long futex(int *w, int op, int val, long val2, int *w2, int val3)
+{
+    return syscall(SYS_futex, w, op | FUTEX_PRIVATE_FLAG, val, val2, w2, val3);
+}
+
+static void *rq_waiter(void *a)
+{
+    /* One wait: a return of 0 is a wake (on rq_cond, or on rq_mutex after
+     * the requeue moved it); the herd counter counts them. */
+    if (futex(&rq_cond, FUTEX_WAIT, 0, 0, 0, 0) == 0)
+        __atomic_fetch_add(&rq_ran, 1, __ATOMIC_ACQ_REL);
+    return a;
+}
+
+static void cond_broadcast(void)
+{
+    pthread_t t[NT];
+    int created = 0, joined = 0;
+    for (long i = 0; i < NT; i++)
+        if (pthread_create(&t[created], 0, cv_waiter, 0) == 0)
+            created++;
+    for (int spins = 0; spins < 500; spins++) {
+        pthread_mutex_lock(&cv_mu);
+        int n = cv_waiting;
+        pthread_mutex_unlock(&cv_mu);
+        if (n == created)
+            break;
+        nap_ms(2);
+    }
+    nap_ms(20); /* every waiter is inside its futex wait */
+    pthread_mutex_lock(&cv_mu);
+    cv_go = 1;
+    pthread_cond_broadcast(&cv);
+    pthread_mutex_unlock(&cv_mu);
+    for (int i = 0; i < created; i++)
+        if (pthread_join(t[i], 0) == 0)
+            joined++;
+    check("pthread_cond_broadcast wakes every waiter", created == NT && joined == NT && cv_woken == NT);
+
+    /* The herd: NT-1 raw waiters on rq_cond. */
+    created = joined = 0;
+    for (long i = 0; i < NT - 1; i++)
+        if (pthread_create(&t[created], 0, rq_waiter, 0) == 0)
+            created++;
+    nap_ms(50);
+    /* The word is still 0, so the compare passes. */
+    long rq = futex(&rq_cond, FUTEX_CMP_REQUEUE, 1, INT_MAX, &rq_mutex, 0);
+    nap_ms(50);
+    int ran_after_requeue = __atomic_load_n(&rq_ran, __ATOMIC_ACQUIRE);
+    long bad = futex(&rq_cond, FUTEX_CMP_REQUEUE, 1, INT_MAX, &rq_mutex, 7);
+    int bad_errno = errno;
+    long woke = futex(&rq_mutex, FUTEX_WAKE, INT_MAX, 0, 0, 0);
+    for (int i = 0; i < created; i++)
+        if (pthread_join(t[i], 0) == 0)
+            joined++;
+    printf("lxthr: requeue herd: returned=%ld ran=%d woke_after=%ld\n", rq, ran_after_requeue, woke);
+    check("FUTEX_CMP_REQUEUE wakes one and moves the rest (herd counter 1)",
+          created == NT - 1 && rq == NT - 1 && ran_after_requeue == 1 && woke == NT - 2);
+    check("FUTEX_CMP_REQUEUE refuses a changed word with EAGAIN", bad == -1 && bad_errno == EAGAIN);
+    check("every requeued waiter runs after the target's wake", joined == NT - 1 && rq_ran == NT - 1);
+}
+
+/* Wave 15 N10d: the condition variable of a PI mutex. musl (this binary's
+ * libc) does not requeue onto a PI mutex: its pthread_cond_* wakes the
+ * waiters, which then lock the mutex with FUTEX_LOCK_PI, so the first check
+ * is LOCK_PI/UNLOCK_PI under a condition variable. The requeue-PI pair
+ * (FUTEX_WAIT_REQUEUE_PI / FUTEX_CMP_REQUEUE_PI, what glibc before 2.25
+ * used there) is driven raw: the top waiter wakes owning the PI word, the
+ * rest are requeued onto it, each returns 0 holding it alone. Kconfig
+ * FUTEX_PI n (ENOSYS / ENOTSUP): skipped. Same binary on Linux. */
+static pthread_mutex_t pi_mu;
+static pthread_cond_t pi_cv = PTHREAD_COND_INITIALIZER;
+static int pi_waiting, pi_go, pi_woken;
+static int rqpi_cond, rqpi_mutex;
+static int rqpi_inside, rqpi_overlap, rqpi_owned;
+static int rqpi_err[NT];
+
+static void *pi_cv_waiter(void *a)
+{
+    pthread_mutex_lock(&pi_mu);
+    pi_waiting++;
+    while (!pi_go)
+        pthread_cond_wait(&pi_cv, &pi_mu);
+    pi_woken++;
+    pthread_mutex_unlock(&pi_mu);
+    return a;
+}
+
+static void *rqpi_waiter(void *a)
+{
+    long i = (long)a;
+    /* Absolute CLOCK_MONOTONIC deadline: a broken requeue ends the wait. */
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    ts.tv_sec += 5;
+    long r = futex(&rqpi_cond, FUTEX_WAIT_REQUEUE_PI, 0, (long)&ts, &rqpi_mutex, 0);
+    rqpi_err[i] = r == 0 ? 0 : errno;
+    if (r == 0) {
+        int me = (int)syscall(SYS_gettid);
+        if ((__atomic_load_n(&rqpi_mutex, __ATOMIC_ACQUIRE) & FUTEX_TID_MASK) == me)
+            __atomic_fetch_add(&rqpi_owned, 1, __ATOMIC_ACQ_REL);
+        if (__atomic_fetch_add(&rqpi_inside, 1, __ATOMIC_ACQ_REL) != 0)
+            __atomic_store_n(&rqpi_overlap, 1, __ATOMIC_RELEASE);
+        nap_ms(2);
+        __atomic_fetch_sub(&rqpi_inside, 1, __ATOMIC_ACQ_REL);
+        /* PI unlock: TID -> 0 in user space, else the kernel hands it over. */
+        int seen = me;
+        if (!__atomic_compare_exchange_n(&rqpi_mutex, &seen, 0, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED))
+            futex(&rqpi_mutex, FUTEX_UNLOCK_PI, 0, 0, 0, 0);
+    }
+    return a;
+}
+
+static void cond_pi_mutex(void)
+{
+    pthread_mutexattr_t at;
+    pthread_mutexattr_init(&at);
+    int e = pthread_mutexattr_setprotocol(&at, PTHREAD_PRIO_INHERIT);
+    if (e == 0)
+        e = pthread_mutex_init(&pi_mu, &at);
+    if (e != 0) {
+        printf("lxthr: PI mutex unavailable (%s): PI condition checks skipped\n", strerror(e));
+        return;
+    }
+    pthread_t t[NT];
+    int created = 0, joined = 0;
+    for (long i = 0; i < NT; i++)
+        if (pthread_create(&t[created], 0, pi_cv_waiter, 0) == 0)
+            created++;
+    for (int spins = 0; spins < 500; spins++) {
+        pthread_mutex_lock(&pi_mu);
+        int n = pi_waiting;
+        pthread_mutex_unlock(&pi_mu);
+        if (n == created)
+            break;
+        nap_ms(2);
+    }
+    nap_ms(20);
+    pthread_mutex_lock(&pi_mu);
+    pi_go = 1;
+    pthread_cond_broadcast(&pi_cv);
+    pthread_mutex_unlock(&pi_mu);
+    for (int i = 0; i < created; i++)
+        if (pthread_join(t[i], 0) == 0)
+            joined++;
+    check("pthread_cond_broadcast under a PI mutex wakes every waiter",
+          created == NT && joined == NT && pi_woken == NT);
+
+    /* Raw requeue-PI: NT-1 waiters on rqpi_cond bound for rqpi_mutex. */
+    created = joined = 0;
+    for (long i = 0; i < NT - 1; i++)
+        if (pthread_create(&t[created], 0, rqpi_waiter, (void *)i) == 0)
+            created++;
+    nap_ms(50);
+    long bad = futex(&rqpi_cond, FUTEX_CMP_REQUEUE_PI, 1, INT_MAX, &rqpi_mutex, 7);
+    int bad_errno = errno;
+    /* A plain wake or requeue that reaches a requeue-PI waiter answers
+     * EINVAL and takes nobody (Linux; AzOS also wakes no plain waiter
+     * ahead of it, and there is none here). */
+    long plain = futex(&rqpi_cond, FUTEX_WAKE, INT_MAX, 0, 0, 0);
+    int plain_errno = errno;
+    static int rqpi_other;
+    long moved = futex(&rqpi_cond, FUTEX_CMP_REQUEUE, 0, INT_MAX, &rqpi_other, 0);
+    int moved_errno = errno;
+    __atomic_store_n(&rqpi_cond, 1, __ATOMIC_RELEASE);
+    long n = futex(&rqpi_cond, FUTEX_CMP_REQUEUE_PI, 1, INT_MAX, &rqpi_mutex, 1);
+    int n_errno = errno;
+    for (int i = 0; i < created; i++)
+        if (pthread_join(t[i], 0) == 0)
+            joined++;
+    int all_ok = 1;
+    for (int i = 0; i < created; i++)
+        all_ok &= rqpi_err[i] == 0;
+    printf("lxthr: requeue-pi: returned=%ld (errno %d) owned=%d word=%#x\n", n, n < 0 ? n_errno : 0, rqpi_owned,
+           (unsigned)rqpi_mutex);
+    check("FUTEX_CMP_REQUEUE_PI refuses a changed word with EAGAIN", bad == -1 && bad_errno == EAGAIN);
+    check("a plain FUTEX_WAKE of a requeue-PI waiter answers EINVAL", plain == -1 && plain_errno == EINVAL);
+    check("a plain FUTEX_CMP_REQUEUE of a requeue-PI waiter answers EINVAL", moved == -1 && moved_errno == EINVAL);
+    check("FUTEX_CMP_REQUEUE_PI takes every waiter (woken + requeued)", created == NT - 1 && n == NT - 1);
+    check("each requeue-PI waiter returns owning the PI mutex, one at a time",
+          joined == NT - 1 && all_ok && rqpi_owned == NT - 1 && !rqpi_overlap && rqpi_mutex == 0);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "exec-image") == 0)
+        return exec_image(argv[2]);
+    pthread_t t[NT];
+    int created = 0, joined = 0, tls_ok = 1;
+    tls_var = 1;
+    shared_fd = open("/tmp/LXT", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check("open /tmp/LXT", shared_fd >= 0);
+
+    int err = 0;
+    for (long i = 0; i < NT; i++) {
+        int e = pthread_create(&t[i], 0, worker, (void *)(i + 1));
+        if (e == 0)
+            created++;
+        else if (!err)
+            err = e;
+    }
+    if (err)
+        printf("lxthr: pthread_create answered %d (%s)\n", err, strerror(err));
+    check("pthread_create x4", created == NT);
+    for (int i = 0; i < created; i++) {
+        void *r = 0;
+        if (pthread_join(t[i], &r) == 0) {
+            joined++;
+            tls_ok &= (long)r == 1;
+        }
+    }
+    check("pthread_join x4", joined == NT);
+    check("mutex contention keeps the count exact", counter == (long)NT * ITERS);
+    check("tls distinct per thread", tls_ok && tls_var == 1);
+
+    pid_t me = getpid();
+    int distinct = 1;
+    for (int i = 0; i < NT; i++)
+        distinct &= thread_tid[i] > 0 && thread_tid[i] != me;
+    check("gettid differs from getpid in a thread", distinct && syscall(SYS_gettid) == me);
+
+    if (shared_fd >= 0) {
+        (void)write(shared_fd, "b", 1);
+        char buf[4] = {0};
+        (void)lseek(shared_fd, 0, SEEK_SET);
+        long n = read(shared_fd, buf, sizeof buf);
+        printf("lxthr: shared file reads [%.*s]\n", n > 0 ? (int)n : 0, buf);
+        check("a thread and main write one open file description", n == 2 && memcmp(buf, "ab", 2) == 0);
+        close(shared_fd);
+    }
+
+    /* A second round after the first joined: threads are created and torn
+     * down again in the same address space. */
+    counter = 0;
+    created = joined = 0;
+    for (long i = 0; i < 2; i++)
+        if (pthread_create(&t[i], 0, worker, (void *)(i + 2)) == 0)
+            created++;
+    for (int i = 0; i < created; i++)
+        if (pthread_join(t[i], 0) == 0)
+            joined++;
+    check("a second round of threads", created == 2 && joined == 2 && counter == 2L * ITERS);
+
+    signals();
+    leader_exit();
+    exec_from_thread();
+    writev_atomic();
+    cond_broadcast();
+    cond_pi_mutex();
+
+    printf("lxthr: done failures=%d\n", fails);
+    fflush(stdout);
+    return fails != 0;
+}

@@ -1,0 +1,19 @@
+[package]
+name = "azos_bytepipe"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The POSIX byte pipe over the azos_rings byte ring in a Cap<Shm> region: EOF when the last writer closes, EPIPE when no reader is left, O_NONBLOCK and PIPE_BUF atomic writes, with the futex doorbell behind a trait and the end counts and lock recovery the kernel runs on the region header. Pure no_std."
+
+[dependencies]
+azos_rings = { workspace = true }
+
+[features]
+# Canaries for tests/host/bytepipe-tests: each breaks one emulation point on
+# purpose so the test that guards it must go red. Never enabled in a build.
+canary-no-eof = []
+canary-no-epipe = []
+canary-split-atomic = []
+canary-block-nonblock = []
+canary-no-lock-recovery = []

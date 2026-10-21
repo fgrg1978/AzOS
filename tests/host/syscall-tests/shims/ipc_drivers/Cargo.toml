@@ -1,0 +1,15 @@
+[package]
+name = "syscall_test_ipc_drivers"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for the driver class crates (azos_drv_*) as seen from crates/core/ipc's mmio_cap and disk_cap modules. Used only by tests/host/syscall-tests. NOT part of the kernel."
+
+[dependencies]
+# `mmio_cap.rs` (pulled by `shims/ipc`) resolves devices through the hardware
+# bus, the real `crates/drivers/bus/src/hwbus.rs`, which `shims/drivers`
+# already pulls; re-exported from there rather than pulled a second time, so
+# the handler's side and the capability's side cannot see two buses.
+syscall_test_drivers = { path = "../drivers" }
+

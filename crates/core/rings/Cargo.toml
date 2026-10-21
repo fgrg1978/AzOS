@@ -1,0 +1,20 @@
+[package]
+name = "azos_rings"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The ring shapes: Queue (SPSC, backpressured, every item consumed once) and Log (one writer, overwrite-oldest, any number of readers), as typed in-process values and as views over a shared-memory region (region). Pure no_std; the doorbell is a trait."
+
+[dependencies]
+
+[features]
+# Canaries for tests/host/rings-tests: each breaks one check on purpose so the
+# test that guards it must go red. Never enabled in a kernel build.
+canary-no-recheck = []
+canary-no-fence = []
+canary-queue-overwrites = []
+canary-no-overrun = []
+# Unlike the four above, a gate build enables this one: the kernel tracer's
+# `azos_trace/producer-canary` row. The trace producer never advances its head.
+trace-producer-canary = []

@@ -1,0 +1,21 @@
+[package]
+name = "azos_ptpd_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the PTP daemon (userspace/services/ptpd): the message codec, the best master clock algorithm and the slave engine, pulled in with #[path] so the code under test is the code PTPD.ELF is built from, driven by a scripted master over a model of two clocks (a slave offset from the master, a TAI-to-UTC offset, asymmetric path delay): the end-to-end exchange, the 802.1AS peer delay and Sync/Follow_Up, the sign and timescale of what the kernel's Clock interface is offered, master selection and loss, and the topology row that starts the daemon. Excluded from workspace."
+
+# Run with:  cd tests/host/ptpd-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_devif = { path = "../../../crates/core/devif" }
+# `dev-key`: a test build embeds tools/keys/test_pub.bin (topology-tests does the same).
+azos_topology = { path = "../../../crates/core/topology", features = ["dev-key"] }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

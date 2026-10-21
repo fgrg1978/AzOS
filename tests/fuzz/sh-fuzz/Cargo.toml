@@ -1,0 +1,25 @@
+[package]
+name = "azos_sh_fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0 OR GPL-2.0-only"
+description = "cargo-fuzz (libFuzzer) target for the user shell's command-line parser (userspace/services/sh/src/parse.rs, pulled in with #[path]). Its own workspace; run with tools/fuzz.sh."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "sh_line"
+path = "fuzz_targets/sh_line.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: cargo-fuzz builds it with nightly + -Zbuild-std, which
+# the kernel workspace and the stable-pinned *-tests crates never see.
+[workspace]
+members = ["."]

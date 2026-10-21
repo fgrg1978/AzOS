@@ -1,0 +1,17 @@
+[package]
+name = "azos_mcp_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the MCP codec (userspace/lib/mcp): JSON, JSON-RPC 2.0 (the examples of the specification, batches, malformed input) and the MCP initialize, tools/list and tools/call shapes. Excluded from workspace."
+
+# Run with:  cd tests/host/mcp-tests && cargo test --release
+
+[dependencies]
+azos_mcp = { path = "../../../userspace/lib/mcp" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

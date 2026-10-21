@@ -1,0 +1,310 @@
+[package]
+name = "azos_sched"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Wave 13: print per-phase means of fork, exit and wait (`prof.rs`); for
+# QEMU `-icount` profiling only. Never in a real build.
+fork-profile = []
+# Wave 14: debug output, every exec's `[VDSO] mapped` line (kernel `spawn-log`).
+spawn-log = []
+# Gate only: every `current_cpu_id()` is checked against the hardware id
+# (`cpuid_probe.rs`). The canary makes the id register lie on the boot hart
+# and forks there, which the probe must report. Never in a real build.
+cpuid-probe = []
+cpuid-probe-canary = ["cpuid-probe"]
+# Wave 13 (THREADS) canaries, never in a real build: a futex wake that wakes
+# nobody; a thread exit that never clears its clear-tid word; a new thread
+# that keeps its creator's thread pointer.
+futex-wake-noop-canary = []
+threads-no-cleartid-canary = []
+threads-tls-canary = []
+# Gate canary, never in a real build: a Linux execve keeps the old image's
+# thread pointer (aarch64 TPIDR_EL0, x86_64 FS base); with the kernel's
+# `exec-regs-canary`, which also keeps its general-purpose registers.
+exec-regs-canary = []
+# Wave 15 canary, never in a real build: a Linux thread's robust futex list
+# is never walked at its exit. (The signal retarget canary is the runtime
+# `canary=sig-exit-drop`.)
+robust-list-canary = []
+# `eevdf_core.rs` host canaries (`tests/host/sched-policy-tests`), declared so
+# the file compiles here without `unexpected_cfgs`; never enabled in a build.
+eevdf-weight-canary = []
+eevdf-eligible-canary = []
+eevdf-fifo-canary = []
+eevdf-noclamp-canary = []
+eevdf-nowake-canary = []
+# Gate canary, never in a real build: `sc::timer_slack_us` gives the stop,
+# deadline and real-time classes the fair class's timer slack. Host test
+# `qos_timer_slack_is_fair_class_only` (tests/host/sched-policy-tests) and
+# ktest `qos_timer_slack_never_real_time` must go red.
+qos-rt-slack-canary = []
+# Gate canary, never in a real build: `rt_receipt::held_by_row` never asks the
+# Domain's `rt_time` envelope row, so `rt::reserve` admits what the row holds.
+# Host test `a_reservation_the_row_holds_is_refused_and_leaves_one_record`
+# (tests/host/sched-policy-tests) must go red.
+rt-envelope-canary = []
+# Gate canaries of the QoS timer coalescing path (`timer_sleepers.rs`), never
+# in a build; ktest `qos_timer_coalescing_path` must go red on each.
+# `qos-fire-canary`: `fire_of` forgets the slot's slack, so `peek_live` pulls a
+# coalesced entry back to the bare deadline. `qos-armed-at-canary`: `arm`
+# answers the bare deadline, not the instant the entry was armed at.
+qos-fire-canary = []
+qos-armed-at-canary = []
+# Kconfig KTEST: the hooks the kernel's in-kernel tests use (`group::ktest_*`,
+# `signal::pending_of`, the timer tick's `preempt::ktest_probe`). Off:
+# compiled out.
+ktest = ["azos_sync/ktest"]
+# Wave 15 (VI): the ELF loader's page permissions. `elf-mixed-page-canary`
+# accepts a page shared by segments mapped differently (their union, as
+# before); `rodata-exec-canary` maps read-only segments read-execute (the old
+# two-way split). Gate rows: host `elf_bounds` tests, abitest `elfperm:`.
+elf-mixed-page-canary = []
+# The IPC fast path's claim trusts its `context_saving` read from before its
+# CAS (`task::sched_word::fast_claim`): host row "sched: fast claim stale
+# save canary (host)" must fail.
+fast-claim-stale-canary = []
+rodata-exec-canary = []
+# Wave 15 (VI): an exec from a thread that is not the leader drops the
+# leader's pending signals instead of handing them to the exec'ing thread
+# (signal_state::hand_over). Gate rows: LXHELLO's `exec-sig:` checks.
+exec-sig-handover-canary = []
+# A new thread first runs user code at least 100 ms after its creation (the
+# late start a loaded host gives it): a thread check that sleeps to "let the
+# thread park" fails every boot with it.
+threads-late-start-canary = []
+# Plan item 7 canaries, never in a real build: a forced kill wakes only a
+# `Timer` wait (the target parked on a port or a fast-IPC exchange stays
+# parked); a killed task woken from a wait blocks again
+# (`wait::task_block_killable` without its stop check). Either leaves the
+# `dead client` abitest line with -1 for the waits it no longer ends.
+kill-wake-timer-only-canary = []
+# Wave 15 canary, never in a real build: the exit hook consumes a task's
+# forced stop without sealing its slot, so a stop recorded after it leaks
+# the machine-wide count (`tests/host/sched-wake-tests`, `forced_count`).
+forced-seal-skip-canary = []
+# Wave 15 gate canary: a thread-group leader's clear-tid word is never
+# cleared (lxthreads' leader pthread_exit check must fail).
+leader-cleartid-canary = []
+kill-reblock-canary = []
+# Gate canary (ktest build): `classes::current` reads the hart id and its slot
+# with interrupts on, as before the masked read (ktest
+# `percpu_hazard_reads_are_masked` is `not ok`).
+percpu-hazard-canary = []
+# Wave 15 (plan 4a) gate canary, never in a real build: an exec from a
+# process with threads leaves the other threads running across it.
+exec-no-dethread-canary = []
+# ... and one where a thread that is not the leader is refused its exec, as
+# before the PID hand-over (`scheduler::exec_take_over`).
+exec-no-pid-swap-canary = []
+# Wave 15 gate canary: a native thread's argument is not written into its
+# third argument register (aarch64 then reads 0).
+thread-regs-canary = []
+# Gate canary (CTXHUNT): a Zombie's slot is freed before the switch away from
+# it, as before, and the hart stays 2 ms on the freed stack.
+reap-window-canary = []
+# CTXHUNT probe, never in a real build: every switch checks the slot it
+# dispatches, every resume the stack it runs on, every reap the slot it frees.
+ctx-probe = []
+# Gate canary: the exit path hands `do_schedule` the hart it entered on,
+# after a forced move to the next hart (the pre-CTXHUNT stale id).
+exit-stale-hart-canary = []
+# Gate canary (ktest build): the accessors of the running task read the hart id
+# and then its slot with interrupts on, as before the masked window
+# (ktest `percpu_accessors_read_masked` is `not ok`).
+percpu-accessor-race-canary = []
+# Gate canary: the reap of a task whose exit re-parented a child returns
+# 1.5 s late (abitest's orphan checks must not rely on a sleep).
+orphan-late-adopter-canary = []
+# Gate canary (D6): a resume restores only the stack pointer, the program
+# counter and the result register; the rest of the frame comes back zero.
+# abitest's `foreign: three traps ...` check must fail.
+foreign-regs-canary = []
+# ... and a thread that gets a capability table of its own instead of its
+# group leader's (`group::table_lead_of_idx`).
+threads-private-table-canary = []
+# Canary: a Linux task's filter word never carries the Linux bit, so
+# its Linux numbers are read against the native table. The gate's `linux:` rows
+# must fail with it. Never in a real build.
+linux-abi-tag-canary = []
+# Canary: a Linux task's riscv64 FP file and aarch64
+# TPIDR_EL0 are not switched with it. The FP and BusyBox fork rows must fail.
+linux-abi-fp-canary = []
+# Wave 13 canary: a child's exit posts no SIGCHLD to its Linux parent. Never
+# in a real build.
+linux-sigchld-canary = []
+# Wave 13 canary: a process-directed signal goes to the process's leader
+# even when the leader blocks it (no member that does not is chosen).
+linux-sig-thread-canary = []
+# Wave 12 canary (owner round 48): the `/proc` task filter is compiled out,
+# so every reader sees every task. The `/proc` hidepid rows must fail with it.
+# Never in a real build.
+proc-hidepid-canary = []
+# Wave 13 canary: an exiting task's children are not re-parented and its
+# unreaped children's notices are dropped (wave 12's behaviour). The orphan
+# rows must fail with it. Never in a real build.
+orphan-reparent-canary = []
+# Wave 13 canary: `DOMAIN_SUBREAPER` / `PR_SET_CHILD_SUBREAPER` never set
+# the mark. The shell's orphan rows must fail with it. Never in a real build.
+subreaper-mark-canary = []
+# Translation granule (kernel features `page-16k` / `page-64k`). Selects the
+# matching aarch64 image-hash table (`$AZOS_OUT/build/image_hashes_aarch64_16k.rs`, ...):
+# a user image linked for one granule does not load under another.
+page-16k = ["azos_arch_api/page-16k"]
+page-64k = ["azos_arch_api/page-64k"]
+# Kconfig LOCKED_HUGE_LEAVES canary: map a locked row's region with page
+# leaves instead of 2 MiB leaves, so the exec-time walk must say so. Never in a
+# real build.
+huge-leaves-canary = []
+# Canary: map every user stack lazily (demand markers) instead
+# of eagerly, so a `mem = "locked"` task takes page faults and the gate row that
+# requires `faults=0` must fail. Never in a real build.
+mem-locked-canary = []
+# Canary: the loader ignores the stack an image asks for (`PT_GNU_STACK`) and
+# maps the default, so `MLSRV.ELF` and `ps` die on a write fault below their
+# stack and the gate rows that run them must fail. Never in a real build.
+user-stack-request-canary = []
+# Wave 9 canary: `donate_priority` applies no ring-3 floor, so the proxy smoke's
+# client at 8 lends its ring-3 driver 8 and the floor check must fail.
+donation-floor-canary = []
+# Board images (`make vf2`/`k1`/`build-fleet`): bind `$AZOS_OUT/build/board/image_hashes.rs`,
+# the table of the board volume's own ML service, instead of the QEMU disks'
+# `$AZOS_OUT/build/image_hashes.rs`. Wave 11 BOARDIMG; see the Makefile's IMAGE_ELFS_BOARD.
+board-image = []
+# Minimal boot for vsbench: `idle` and `autorun` only. See task_create_affinity.
+bench-minimal = []
+# Wave 11 ONESHOT gate canary: `block_current` does not move the timer
+# comparator for a timer sleeper (the arming before the change), so the `lat:`
+# rows' worst wake-up returns to about one scheduler period and must fail.
+# Never in a real build.
+oneshot-canary = []
+# Cross-class wake-up preemption gate canary: a preempting wake does not ask
+# the waking CPU to reschedule, so the host row
+# `a_preempting_wake_on_the_same_cpu_sets_need_resched` and the ktest
+# `sched_wake_preempts_a_worse_class_on_the_same_cpu` must fail. Never in a
+# real build.
+wake-preempt-canary = []
+# Wake attribution gate canary (host row `an_irq_wake_names_its_line`): a
+# bound line's delivery and an interrupt handler's wake are attributed as a
+# task's port event. Never in a real build.
+wake-attrib-canary = []
+# Wake ring gate canary (host row `a_late_writer_does_not_clobber_a_newer_entry`):
+# a wake takes its slot without the exclusion, so a writer that arrives a lap
+# late overwrites words of a newer entry. Never in a real build.
+wake-ring-canary = []
+# Wave 11 SCHED-RT gate canaries. Never in a real build.
+# The RT band budget is off (cap 100 %): a runaway band task owns its hart.
+rt-band-canary = []
+# Reservation tasks of one level are taken FIFO, not by deadline.
+rt-edf-canary = []
+# Reservations are never charged: an overrun is neither throttled nor postponed.
+rt-cbs-canary = []
+# Run-time admission accepts every well-formed reservation.
+rt-admit-canary = []
+# The CBS wake rule tests the budget against the bandwidth q/t, not the
+# density q/d: a self-suspending server with d < t runs above its density.
+rt-wake-rate-canary = []
+# The kernel safety loops lose their band-budget exemption: rt-motor is
+# throttled with the rest of the band and misses periods.
+rt-exempt-canary = []
+# Enables the do_schedule/block_current diagnostic counters.
+# MUST be forwarded from kernel/Cargo.toml, or they compile out and read()
+# returns zeros from code that does not exist -- which already invalidated
+# two measurements.
+ipc-census = []
+# Wave 15: per-phase instruction census of a yield that switches
+# (`swcensus.rs`). Measurement only; nothing without it.
+switch-census = []
+# Gate canary: the exit path tears its address space down WITHOUT first
+# leaving it (step 2 of `release_address_space_at_exit`), so the free-time
+# check must find this hart on the root and refuse every exit's teardown.
+# Never in a real build.
+exit-satp-canary = []
+# Energy (kernel feature `energy`, Kconfig ENERGY): per-task and per-CPU
+# utilisation signals (`energy.rs`), updated at dispatch, switch-out, wake-up
+# and tick, and the installed energy model. Off: none of it is compiled, and
+# the placement seam folds to `wake_target_cpu` as it was.
+energy = []
+# Gate canary: dispatch records a task as not running, so no busy
+# time is ever accounted and the `energy-smoke` `util` check must fail.
+# Never in a real build.
+energy-util-canary = ["energy"]
+# Gate canary (E4): `rt::rt_slack` answers "no deadline", so the idle
+# governor never sees the RT slack and the `energy-gov-smoke` `idle` check must fail.
+energy-slack-canary = ["energy"]
+# The same row's other half: switch-out leaves a task recorded as running, so
+# a task that sleeps keeps reading busy. Never in a real build.
+energy-switchout-canary = ["energy"]
+# U02-3 measurement: at boot, fill the task pool to MAX_TASKS - 1 with
+# synthetic Blocked-but-irrelevant tasks (never enqueued, never
+# dispatched — see `run_tick_sweep_probe`'s doc), run one
+# `wake_expired_timers` + `reap_stamped_sleepers` pass, and print
+# `[SCHED] tick instr=N` from a `timebase::now()` delta. Meant for a
+# `-icount shift=0,sleep=off` boot only — under real wall-clock time the
+# tick delta is not an instruction count. OFF by default: it costs one
+# feature-gated boot-time function, no runtime cost when compiled out.
+sched-tick-probe = []
+# U02-3 task 3a: `find_best_cpu` consults `resident_histogram` (O(NUM_
+# PRIORITIES) per query) instead of scanning MAX_TASKS, maintained by
+# `hist_reaccount` after every write to a field the score depends on.
+# Host-tested against the scan (`sched-wake-tests`); with `ipc-census` a
+# live boot cross-checks every query against the scan (`hist_check`).
+# OFF by default: the maintenance is paid on every block and wake, the
+# saving only on machines with more than one hart online.
+sched-o1-placement = []
+# U02-3: timer sleepers live in an indexed min-heap (`timer_heap`,
+# `scheduler::timer_sleepers`); `wake_expired_timers` and
+# `nearest_timer_deadline` stop sweeping MAX_TASKS every tick.
+# `reap_stamped_sleepers` still sweeps (it is not timer-specific). With
+# `ipc-census` a live boot cross-checks both against the sweep.
+# Off in this crate; the kernel's `default` turns it on.
+sched-timer-heap = []
+# U02-3 / audit Q3: fast-IPC hand-off wakes (call -> server, reply ->
+# client) place the woken task on the waker's hart when nothing there
+# outranks it (`scheduler::ipc_wake_target_cpu`). OFF by default.
+sched-ipc-affinity = []
+# U02-3: the K-C25 reaper (`reap_stamped_sleepers`)
+# visits only slots a waker stamped while they were still switching away
+# (`scheduler::reap_pending`), not every slot on every tick. With
+# `ipc-census` the sweep still runs behind it and counts what it had to reap
+# that no mark named. OFF by default.
+sched-reap-event = []
+# (The `rvv` feature was REMOVED on 2026-09-24.) It existed to compile the
+# `context_saving`-dependent code out of `scheduler.rs`, because
+# `context_switch_rvv.S` never cleared the flag. That file now clears it with
+# the same `fence rw, w` + `sb` release tail as `context_switch.S` (K-C23), so
+# an rvv build takes the identical scheduler path and there is nothing left to
+# gate. Do not reintroduce it: the twelve `cfg` sites it fed were a
+# double-dispatch hole (K-C24 disabled) in a build `k1` transitively selected.
+
+[dependencies]
+azos_percpu = { workspace = true }
+# `seccomp.rs` derives its syscall numbers from here instead of restating
+# them; `abi` has zero dependencies so this closes no cycle.
+azos_abi          = { workspace = true }
+azos_devif        = { workspace = true }
+azos_mm = { workspace = true }
+azos_arch = { workspace = true }
+azos_arch_api = { workspace = true }
+azos_sync = { workspace = true }
+azos_common = { workspace = true }
+azos_limits = { workspace = true }
+azos_chaos = { workspace = true }
+azos_decision = { workspace = true }
+# Wave 15: the tracer's sched and proc tracepoints (depends on abi, rings and
+# limits only, so this closes no cycle).
+azos_trace = { workspace = true }
+# The Linux personality's numbers and layouts (pure, no state).
+azos_linux_abi = { workspace = true }
+azos_drv_base = { workspace = true }
+azos_drv_sys  = { workspace = true }
+# `seccomp.rs` hashes each image at exec with the one SHA-256 the kernel links.
+# Core to core: `crypto` depends on no azos_* crate, so this closes no cycle.
+azos_crypto = { workspace = true }
+# Seams (`Placement`) and, with `energy`, the utilisation tracker.
+# Pure no_std; depends only on `azos_dtb`, which depends on nothing.
+azos_energy = { workspace = true }
+wcet-macro = { path = "../wcet-macro" }

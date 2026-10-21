@@ -1,0 +1,9 @@
+GBWRGnnnnnnnnnnn
+BWRGBnnnnnnnnnnn
+WRGBWnnnnnnnnnnn
+nnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnn
+nnnnnnnnnnnnRGBW
+nnnnnnnnnnnnGBWR
+nnnnnnnnnnnnBWRG
+nnnnnnnnnnnnWRGB

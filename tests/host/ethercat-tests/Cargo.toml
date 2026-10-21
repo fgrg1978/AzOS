@@ -1,0 +1,13 @@
+[package]
+name = "azos_ethercat_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_ethercat: frame codec, FMMU/SM records, AL bring-up and DC arithmetic against a scripted EtherCAT slave chain. Excluded from workspace."
+
+# Run with:
+#   cd tests/host/ethercat-tests && cargo test
+
+[dependencies]
+azos_ethercat = { path = "../../../crates/net/ethercat" }

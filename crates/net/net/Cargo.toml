@@ -1,0 +1,49 @@
+[package]
+name = "azos_net"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+arp-timing = []
+# Gate row: `ip::loopback_deliver` asks for a reschedule inside its window on
+# every delivery, as a timer tick landing there would.
+loopback-preempt-probe = []
+# Gate canary: the loopback recursion guard back to one global flag held with
+# preemption on (the vsbench product-column udp-roundtrip loss).
+loopback-guard-canary = []
+# Canary (host tests `tcp_handle_aba`): a TCP slot keeps its generation when
+# it is re-issued, so a stale `TcpHandle` acts on the new owner's connection
+# again (the ABA the generation closes).
+tcp-handle-gen-canary = []
+# Canary (host tests `tcp_handle_aba`): the ephemeral port allocator hands out
+# one fixed port and skips nothing, as `0xC000 + fd` did for a reused fd.
+tcp-ephemeral-port-canary = []
+# Gate canary (host suite `net-tests`): the egress gate is never asked, so a
+# connect or a first `sendto` to a destination off the node goes out whatever
+# the Domain's `egress` envelope row says. Never in a real build.
+envelope-egress-canary = []
+# Enables `[TCP-RX]` / `[TCP-TX]` per-segment trace probes in `tcp.rs`.
+# Propagated from the kernel's `qemu` feature.  Free in production builds.
+qemu = []
+
+[dependencies]
+azos_drv_sys = { workspace = true }
+# `ntp.rs`: the wall-clock reading it publishes is in `azos_abi::time`'s units.
+azos_abi = { workspace = true }
+azos_drv_bus = { workspace = true }
+azos_drv_net = { workspace = true }
+azos_sync = { workspace = true }
+azos_rings = { workspace = true }
+# `ip::loopback_deliver`: the per-hart recursion flag.
+azos_arch = { workspace = true }
+azos_common = { workspace = true }
+azos_limits = { workspace = true }
+# U06-6: HMAC-SHA256 for the TCP ISN generator (`tcp.rs::generate_isn`),
+# replacing an invertible FNV-1a hash. No new edge for the kernel binary --
+# `azos_crypto` is already linked in via `ota`/`behavior`.
+azos_crypto = { workspace = true }
+# `filter.rs`: a packet refusal is a `Rule::PacketRefused` decision record.
+azos_decision = { workspace = true }
+wcet-macro = { path = "../../core/wcet-macro" }

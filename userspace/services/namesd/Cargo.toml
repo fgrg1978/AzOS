@@ -1,0 +1,28 @@
+[package]
+name = "namesd"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS name server: holds, from its own signed topology row, the endpoint capabilities it may lend, and answers the Names object. A row's imports list is what it may ask for; the answer is a derived, attenuated capability or a recorded refusal. Ring 3. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_names = { path = "../../lib/names" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+topology = true

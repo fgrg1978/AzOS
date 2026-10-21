@@ -1,0 +1,35 @@
+[package]
+name = "azos_tpm"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+TPM 2.0 driver core (S4): the TIS/FIFO register protocol over MMIO and over
+SPI, locality handling and timeouts, the ACPI TPM2 table, and the commands
+AzOS uses (Startup, GetRandom, PCR_Extend, PCR_Read, NV_DefineSpace, NV_Read,
+NV_Write, NV_ReadPublic) with bounds-checked response parsing. Pure (no_std, no allocation,
+no unsafe): the kernel (or a ring-3 driver) supplies the register window, the
+SPI bus and the clock; tests/host/tpm-tests drives it against a scripted TPM.
+"""
+
+[dependencies]
+
+[features]
+# Gate/host canaries only. Each one puts a specific protocol bug back; the
+# host test that guards the property must go red with it on. Never enabled in
+# a shipping build.
+#
+# The response size is not bounded by the caller's buffer.
+canary-rspsize = []
+# STS.expect is not checked before the last command byte goes out.
+canary-expect = []
+# STS.burstCount is ignored on the command path: the whole command is pushed.
+canary-burst = []
+# The SPI wait state after the header is not waited out.
+canary-spi-wait = []
+# The locality is not released after a command.
+canary-release = []
+# An NV index that already exists is adopted as the rollback floor without
+# looking at what it is.
+canary-nvsquat = []

@@ -1,0 +1,20 @@
+[package]
+name = "azos_rings_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_rings (Queue and Log). Excluded from the kernel workspace. Run with: cd tests/host/rings-tests && cargo test --release"
+
+# Its own workspace root, like the other host-test crates.
+[workspace]
+
+[dependencies]
+azos_rings = { path = "../../../crates/core/rings" }
+
+[features]
+# Each forwards a canary of azos_rings; the guarded test must go red.
+canary-no-recheck = ["azos_rings/canary-no-recheck"]
+canary-no-fence = ["azos_rings/canary-no-fence"]
+canary-queue-overwrites = ["azos_rings/canary-queue-overwrites"]
+canary-no-overrun = ["azos_rings/canary-no-overrun"]

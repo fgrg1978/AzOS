@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+// Deep-idle host fixture: PSCI idle states with arm,psci-suspend-param (one
+// standby, one with local-timer-stop, one power-down with a 2-cell property
+// that must not be read as a parameter, one without a parameter).
+// Rebuild: dtc -I dts -O dtb -o energy-suspend.dtb energy-suspend.dts
+/dts-v1/;
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "azos,energy-fixture";
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		idle-states {
+			entry-method = "psci";
+			ret: retention { compatible = "arm,idle-state"; idle-state-name = "retention";
+				arm,psci-suspend-param = <0x00000000>;
+				entry-latency-us = <5>; exit-latency-us = <10>; min-residency-us = <50>; };
+			stop: timer-stop { compatible = "arm,idle-state"; idle-state-name = "timer-stop";
+				arm,psci-suspend-param = <0x00010001>; local-timer-stop;
+				entry-latency-us = <50>; exit-latency-us = <100>; min-residency-us = <500>; };
+			off: power-down { compatible = "arm,idle-state"; idle-state-name = "power-down";
+				arm,psci-suspend-param = <0x4000 0x1033>;
+				entry-latency-us = <500>; exit-latency-us = <1000>; min-residency-us = <5000>; };
+			bare: bare { compatible = "arm,idle-state"; idle-state-name = "bare";
+				entry-latency-us = <900>; exit-latency-us = <1500>; min-residency-us = <9000>; };
+		};
+		cpu@0 { device_type = "cpu"; reg = <0>; capacity-dmips-mhz = <1024>;
+			operating-points-v2 = <&t>; cpu-idle-states = <&ret &stop &off &bare>; };
+	};
+	t: opp-table-0 {
+		compatible = "operating-points-v2";
+		opp-1000000000 { opp-hz = /bits/ 64 <1000000000>; opp-microwatt = <600000>; };
+	};
+};

@@ -1,0 +1,76 @@
+[package]
+name = "azos_pkg_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for signed application packages (crates/core/pkg): the container, the metadata, verification against the signers of a signed topology, admission as a topology delta (neverallow included) and the install receipt, plus a package built and signed by tools/azpkg.py. Excluded from workspace."
+
+# Run with:  cd tests/host/pkg-tests && cargo test --offline
+#
+# The canaries each skip one check of the crate; exactly the tests that
+# expect that refusal go red:
+#   cargo test --offline --features pkg-verify-skip-canary
+#   cargo test --offline --features pkg-signer-canary
+#   cargo test --offline --features pkg-image-canary
+#   cargo test --offline --features pkg-import-canary
+#   cargo test --offline --features pkg-epoch-canary
+#   cargo test --offline --features pkg-trial-canary
+#   cargo test --offline --features neverallow-canary
+#   cargo test --offline --features pkg-launch-grant-canary
+#   cargo test --offline --features update-canary-sig
+#   cargo test --offline --features update-canary-hash
+
+[features]
+default = ["dev-key"]
+dev-key = ["azos_topology/dev-key"]
+pkg-verify-skip-canary = ["azos_pkg/pkg-verify-skip-canary"]
+pkg-signer-canary = ["azos_pkg/pkg-signer-canary"]
+pkg-image-canary = ["azos_pkg/pkg-image-canary"]
+pkg-import-canary = ["azos_pkg/pkg-import-canary"]
+pkg-epoch-canary = ["azos_pkg/pkg-epoch-canary"]
+pkg-trial-canary = ["azos_pkg/pkg-trial-canary"]
+neverallow-canary = ["azos_topology/neverallow-canary"]
+# The whole-system update's own canaries (included from the OTA crate by
+# `azos_packages`): the signature / a part's hash is not checked, and the
+# `tftp_source` bundle tests that expect that refusal go red.
+update-canary-sig = ["azos_packages/update-canary-sig"]
+update-canary-hash = ["azos_packages/update-canary-hash"]
+# Named by the azvol snapshot code this crate includes (its gate canary lives
+# in fs-tests); never turned on here.
+envelope-delete-canary = []
+# The apply (`kernel/src/boot/pkg_apply.rs`, included unchanged) leaves out the
+# launch grants of the package rows that start.
+pkg-launch-grant-canary = []
+# The drivetrain exists: a motor grant parses and the rules refuse it.
+profile-actuation = ["azos_topology/profile-actuation"]
+
+[dependencies]
+azos_pkg = { path = "../../../crates/core/pkg" }
+azos_topology = { path = "../../../crates/core/topology" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+azos_abi = { path = "../../../crates/core/abi" }
+# The envelope ladders `azvol/snap.rs` (included from the fs crate) names.
+azos_common = { path = "../../../crates/core/common" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_decision = { path = "../../../crates/core/decision", features = ["durable"] }
+azos_packages = { path = "../../../userspace/lib/packages", features = ["service"] }
+azos_idl = { path = "../../../crates/core/idl" }
+# The development package source (`userspace/services/pkgd/src/tftp.rs`, included unchanged) runs this protocol.
+azos_tftp = { path = "../../../crates/net/tftp" }
+# The libraries whose interface levels the device table restates.
+azos_names = { path = "../../../userspace/lib/names" }
+azos_decisions = { path = "../../../userspace/lib/decisions" }
+azos_term = { path = "../../../userspace/lib/term" }
+
+[dev-dependencies]
+# Signs the packages the tests build (the crate the device verifies with).
+ed25519-dalek = { version = "2", default-features = false }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

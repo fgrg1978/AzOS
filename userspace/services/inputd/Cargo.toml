@@ -1,0 +1,33 @@
+[package]
+name = "inputd"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS input server: reads the input drivers' event stream and delivers it only to the task that holds the focus. Focus is a warrant: an attenuated capability on the server's endpoint, lent with a ring of the holder's own events and revoked when the focus moves. Ctrl+Alt+Delete is never delivered; it takes the focus away and is counted on a read-only trusted-path page. Ring 3. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_rings = { path = "../../../crates/core/rings" }
+azos_input_wire = { path = "../../../crates/drivers/input/wire" }
+azos_limits = { path = "../../../crates/core/limits" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+# On wherever the input drivers write the server's stream (Kconfig `INPUTD`,
+# the `INPUTD_ROW` of crates/core/topology/src/builder.rs), and started there.
+default = "INPUTD"
+start = "INPUTD"

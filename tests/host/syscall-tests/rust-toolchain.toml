@@ -1,0 +1,6 @@
+# Pin stable for the host-test crates. See tests/host/seccomp-tests/rust-toolchain.toml
+# for why: the workspace nightly toolchain's build-std re-merges over a child
+# `build-std = []` and double-links `core` -> E0152. Stable skips build-std
+# entirely and sidesteps the bug.
+[toolchain]
+channel = "stable"

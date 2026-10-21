@@ -1,0 +1,40 @@
+[package]
+name = "azos_power_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the power policy: the PowerPolicy interface and its codec (userspace/lib/power), the policy server's decision table (userspace/services/power/src/policy.rs, pulled in by path), run against the kernel's real limits (azos_energy::policy). Excluded from workspace."
+
+# Run with:  cd tests/host/power-tests && cargo test --release
+
+[features]
+# Canaries: each removes one decision of the server, and exactly its tests
+# must fail (tools/ci_check.sh, row power-tests).
+pw-fallback-canary = []
+pw-stop-canary = []
+pw-nomodel-canary = []
+# The budget and battery canaries (power_ring3): pw-budget, a refused power cap
+# or parking is not answered; pw-degrade, the rows' hysteresis is not applied;
+# pw-monitor, the battery monitor is suspended at a degrade level too.
+pw-budget-canary = []
+pw-degrade-canary = []
+pw-monitor-canary = []
+# The levels: pw-levels, every level asks the same 50 % whatever the rows and
+# the reserve say (the `levels_` tests of power_ring3).
+pw-levels-canary = []
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_power = { path = "../../../userspace/lib/power" }
+azos_energy = { path = "../../../crates/core/energy" }
+# `devices.rs` scans the endpoint pool (`IPC_ENDPOINTS`).
+azos_limits = { path = "../../../crates/core/limits" }
+# `suspend.rs`: the Rule::Suspend records, read back from the real ring.
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

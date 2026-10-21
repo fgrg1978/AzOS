@@ -1,0 +1,32 @@
+[package]
+name = "azos_quic_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for QUIC in ring 3 (userspace/lib/quic): the crypto adaptor between quinn-proto and rustls-rustcrypto (a handshake and stream data between two endpoints in memory, a pinned key and a wrong one), the driver over real loopback UDP sockets (connect, frames both ways, a source address that is not the peer's, a closed peer, a silent peer, a restarted peer), and two RPC engines (userspace/lib/rpc) over it: a Noise session over QUIC, a call answered, a lost peer answered NoConnection by the engine's own retries. Excluded from workspace."
+
+[features]
+canary-rsa-keys = ["azos_quic/canary-rsa-keys"]
+
+# Run with:  cd tests/host/quic-tests && cargo test --release
+# Resolves crates.io through ../../../third_party/vendor (.cargo/config.toml): offline, locked.
+
+[dependencies]
+azos_quic = { path = "../../../userspace/lib/quic" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_rpc = { path = "../../../userspace/lib/rpc" }
+quinn-proto = { version = "0.11", default-features = false }
+bytes = "1"
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+
+# rustls-rustcrypto 0.0.2-alpha pulls rustls-webpki 0.102 (RustSec); the local copy takes the
+# algorithm identifiers from rustls-pki-types instead (third_party/patches/rustls-rustcrypto).
+[patch.crates-io]
+rustls-rustcrypto = { path = "../../../third_party/patches/rustls-rustcrypto" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

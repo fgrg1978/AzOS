@@ -1,0 +1,32 @@
+[package]
+name = "brain_client"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+# brain_client runs the same Noise handshake and transport as the kernel's own
+# brain link (`azos_crypto::secure_channel`). `azos_crypto` is
+# already `#[no_std]`, `default-features = false` on its two dalek deps, and
+# already builds for this exact bare-metal target as a kernel dependency —
+# adding it here pulls in no new target requirement.
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above. The root
+# manifest already excludes it, but that exclusion is relative to the root, so
+# it does not hold when the checkout is nested inside another workspace (a git
+# worktree under .claude/worktrees). Same belt-and-braces shape as
+# tests/host/cam-ring-tests.
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+topology = true

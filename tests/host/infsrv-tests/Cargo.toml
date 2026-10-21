@@ -1,0 +1,26 @@
+[package]
+name = "azos_infsrv_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the inference service (userspace/services/infsrv): the bundle loader, the broker's admission against the signed cost table, the per-context energy quota and the charge-back of an overrun, the receipts, the verdict log, and the Infer interface through its generated dispatcher. Bundles are made by the real writer (tools/make_mbl.py) and opened with the real Ed25519 verifier. Excluded from workspace."
+
+# Run with:  cd tests/host/infsrv-tests && cargo test --release
+
+[dependencies]
+# The crate under test: the library half of the service (the program, main.rs,
+# is the glue and runs only on the target). The tests bring their own key.
+infsrv = { path = "../../../userspace/services/infsrv", default-features = false }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_decision = { path = "../../../crates/core/decision" }
+azos_decisions = { path = "../../../userspace/lib/decisions" }
+azos_ml = { path = "../../../userspace/lib/ml" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

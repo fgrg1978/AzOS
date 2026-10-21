@@ -1,0 +1,28 @@
+[package]
+name = "azos_term_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Terminal object: the interface and its codec (userspace/lib/term), and the terminal server's pure modules (userspace/services/termd: line editor, discipline, service). Excluded from workspace."
+
+# Run with:  cd tests/host/term-tests && cargo test --release
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+azos_term = { path = "../../../userspace/lib/term" }
+azos_rings = { path = "../../../crates/core/rings" }
+azos_input_wire = { path = "../../../crates/drivers/input/wire" }
+azos_login = { path = "../../../userspace/lib/login" }
+
+[features]
+# The canary of tests/host/term-tests/src/input_tests.rs: the server stops
+# draining the input event ring. Every test that needs the consumer must go
+# red with it (`cargo test --release --features canary-drop-input`). Never on
+# in a build of TERMD.ELF.
+canary-drop-input = []
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

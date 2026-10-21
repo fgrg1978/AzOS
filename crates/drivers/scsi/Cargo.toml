@@ -1,0 +1,10 @@
+[package]
+name = "azos_scsi"
+version = "0.1.0"
+edition = "2021"
+description = "SCSI over USB Bulk-Only Transport, both ends: the BBB wrappers (CBW/CSW), the target side (decode and execute the commands a host issues; the MSC gadget), and the initiator side (build CDBs, parse INQUIRY / READ CAPACITY / sense; the USB mass-storage host driver). Pure no_std, no dependencies."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[lib]
+name = "azos_scsi"

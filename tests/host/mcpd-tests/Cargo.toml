@@ -1,0 +1,24 @@
+[package]
+name = "azos_mcpd_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the MCP bridge (userspace/services/mcpd): its engine, catalog, warrant rules and receipt search, pulled in with #[path] so the code under test is the code MCPD.ELF is built from, driven by a scripted MCP client (initialize, tools/list from the op tables, a call without a warrant refused, an op mask that does not name the op, an irreversible op that is proposed, confirmed by a one-shot human warrant and committed once, the receipt in every answer) over a model of the kernel's decision journal behind the real Decisions interface. Excluded from workspace."
+
+# Run with:  cd tests/host/mcpd-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+azos_mcp = { path = "../../../userspace/lib/mcp" }
+azos_rpc = { path = "../../../userspace/lib/rpc" }
+azos_decisions = { path = "../../../userspace/lib/decisions" }
+# `durable`: the records under test go down the durable path, as in every preset.
+azos_decision = { path = "../../../crates/core/decision", features = ["durable"] }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

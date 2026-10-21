@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; build.rs turns every crates/drivers/*/hwbus.ids into
+# the native match table). One line per id:
+#
+#   <driver> <selector> [boot] [if=<KCONFIG_SYMBOL>]
+#
+# <selector>: pci:VVVV:DDDD (hex, * for any) | pciclass:CCCCCC:MMMMMM |
+# dt:<compatible> | virtio:<device id>. A line whose symbol is not y in
+# .config is left out: a driver the image does not compile claims nothing.
+# `boot`: hardware the kernel drives outside the bus (brought up before it, or
+# by a boot step that does not ask it); it is bound whatever the policy or the
+# topology says, so ring 3 is never handed a window the kernel is using.
+# The driver name is what the kernel's driver registry binds
+# (kernel/src/boot/hwbus.rs).
+
+# The console UART. It is brought up before the bus (the boot log needs it),
+# so its binding records the device as the kernel's, not probes it.
+uart             dt:ns16550a   boot
+uart             dt:arm,pl011   boot
+uart             dt:starfive,jh7110-uart   boot
+uart             dt:spacemit,k1-uart   boot
+
+# JH7110 watchdog (`watchdog@13070000`, StarFive WDT-L). `boot`: the safety
+# net. It binds in the first stage after the SoC frameworks (clock and reset
+# on), long before sys-wdt arms it, and no topology can refuse it.
+wdt              dt:starfive,jh7110-wdt   boot   if=BOARD_VF2

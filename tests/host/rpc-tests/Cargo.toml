@@ -1,0 +1,22 @@
+[package]
+name = "azos_rpc_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for transparent RPC: two RPC servers (userspace/lib/rpc, the engine of userspace/services/rpcsrv) over an in-memory link, with a fake host that keeps the warrant tree and the memory objects: export policy, session break and revocation, NoConnection against PeerDied, once-only, at-most-once dedupe, idempotent resends, deadline rebasing, MemObj re-minting, provenance on both sides. Excluded from workspace."
+
+# Run with:  cd tests/host/rpc-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_decision = { path = "../../../crates/core/decision" }
+azos_rpc = { path = "../../../userspace/lib/rpc" }
+# DICE-ID: the kernel-side derivation the node-key tests issue keys with.
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

@@ -1,0 +1,13 @@
+[package]
+name = "azos_inspect_lib"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The introspection tree's reader for ring 3: opens the public region and, for a holder of the admin warrant, the admin region, looks nodes up by path across both, reads values and renders the tree. Loads only, so the regions can be read-only mappings; no system call. no_std; tested on the host (tests/host/inspect-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_inspect = { path = "../../../crates/core/inspect" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

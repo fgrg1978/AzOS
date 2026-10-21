@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate answers to, for the hardware bus (crates/drivers/hwbus;
+# see crates/drivers/sys/hwbus.ids for the format).
+# The SiFive composable cache controller is the cache-maintenance backend of a
+# core without Zicbom (kernel/src/boot/dma.rs, azos_dma::ccache): the kernel
+# drives it from the DMA boot step, outside the bus, so `boot` binds it to a
+# driver that only records the fact and ring 3 is never handed its window.
+
+ccache           dt:starfive,jh7110-ccache   boot
+ccache           dt:sifive,ccache0           boot

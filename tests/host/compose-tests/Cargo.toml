@@ -1,0 +1,28 @@
+[package]
+name = "azos_compose_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the compositor's pixel engine (userspace/lib/compose): golden images of layers in z-order, partial and off-screen placement, HiDPI scaling and RGB565, the cursor plane, a banded sink, the damage union and its fit to a Display present, and a reference model that an incremental frame must equal a full repaint of. Excluded from workspace."
+
+# Run with:  cd tests/host/compose-tests && cargo test --release
+# Golden images are text (golden/*.txt, one character per pixel through the
+# palette in src/lib.rs); COMPOSE_BLESS=1 rewrites them from the engine's
+# output, to be read before it is committed.
+
+[dependencies]
+azos_compose = { path = "../../../userspace/lib/compose" }
+azos_devif = { path = "../../../crates/core/devif" }
+
+[features]
+# Canaries: each plants one bug in the engine and the test named beside it
+# must go red (`cargo test --release --features canary-...`).
+canary-damage-drop = ["azos_compose/canary-damage-drop"]
+canary-z-inverted = ["azos_compose/canary-z-inverted"]
+canary-scale-origin = ["azos_compose/canary-scale-origin"]
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

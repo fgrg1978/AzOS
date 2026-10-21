@@ -1,0 +1,17 @@
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []
+
+# quinn-proto, rustls and the RustCrypto crates are not in the kernel workspace's
+# lockfile: they come from the vendored crates.io tree (third_party/VENDOR_PIN), offline.
+[net]
+offline = true
+
+[source.crates-io]
+replace-with = "azos-vendor"
+
+[source.azos-vendor]
+directory = "../../../third_party/vendor"

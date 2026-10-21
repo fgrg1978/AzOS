@@ -1,0 +1,13 @@
+[package]
+name = "azos_msc"
+version = "0.1.0"
+edition = "2021"
+description = "DEV03 — USB Mass Storage Class (MSC) gadget side of Bulk-Only Transport: descriptors, the CBW dispatcher and the transport state machine over the SCSI target in azos_scsi. Pure no_std protocol layer; there is no USB device controller driver yet."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_scsi = { workspace = true }
+
+[lib]
+name = "azos_msc"

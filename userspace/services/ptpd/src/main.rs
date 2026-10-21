@@ -1,0 +1,233 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! `PTPD.ELF`: the AzOS PTP daemon.
+//!
+//! A ring-3 program whose topology row is its whole authority: `WRITE` on the
+//! kernel's `clock` endpoint (the right to move time), the read-only root
+//! directory (it reads `/proc/clock`, the node's `[clock]` row) and the sockets
+//! its transport needs. It is a PTP *slave*: it follows the best master it
+//! hears, measures its wall clock against it and offers each measurement to
+//! the kernel's `Clock` interface (`Clock::sample`, source PTP). The kernel's
+//! discipline (`azos_drv_sys::clockdisc`) decides what to do with it: slew,
+//! step or filter. The protocol engine is `port.rs` over `wire.rs` and
+//! `bmc.rs`, tested on the host (`tests/host/ptpd-tests`); this file is the
+//! host it runs on and the loop around it.
+//!
+//! **Transport**: IEEE 1588 over UDP, the multicast group 224.0.1.129 on ports
+//! 319 (event) and 320 (general). 802.1AS (gPTP) over raw Ethernet is not
+//! here: it needs a packet socket, which the kernel keeps to itself.
+//!
+//! **Domain**: the `ptp_domain` of the `[clock]` row of the topology. A node
+//! whose row declares none takes no part in PTP: the program says so and ends.
+//!
+//! One thread: it drains the sockets, runs the timers and sleeps a millisecond
+//! when nothing arrived. Software timestamps are taken after the datagram is
+//! taken off the socket, so the poll period bounds their accuracy (see
+//! `port.rs`).
+
+#![no_std]
+#![no_main]
+
+mod bmc;
+mod link;
+mod port;
+mod wire;
+
+use azos_abi::invoke::{pledge_case, pledge_class, CLASS_NET, CLASS_READ, CLASS_WRITE};
+use azos_abi::syscall_nr::CASE_BLOCK_WAKE;
+use azos_abi::time::ClockId;
+use azos_libsys as sys;
+use core::fmt::Write;
+use port::{Config, Event, Host, Port, Sampled};
+use sys::dev::{ClockCall, ClockClient, Ep};
+
+/// Where the kernel exports the `[clock]` row.
+const VIEW: &[u8] = b"/proc/clock\0";
+/// Idle wait of the loop, ms.
+const IDLE_MS: u64 = 1;
+/// Datagrams taken from one socket before the others get a turn.
+const BURST: usize = 8;
+/// Longest datagram or frame read.
+const RX_MAX: usize = 512;
+/// Wait between attempts to get an address or the two ports, ms.
+const RETRY_MS: u64 = 1_000;
+
+/// What the loop asks of the kernel once the sockets are open: the block/wake
+/// calls (the idle sleep, the clock sample's call), and the ops of the data
+/// path (the console line, the uptime fallback, the datagrams). Neither a
+/// lookup, a close, a derive, an `openat` nor any other change of authority
+/// is in it: `DOMAIN_PLEDGE` takes them away for good.
+const STEADY: u32 = pledge_case(CASE_BLOCK_WAKE) | pledge_class(CLASS_READ) | pledge_class(CLASS_WRITE) | pledge_class(CLASS_NET);
+
+/// A line of console output.
+struct Line {
+    b: [u8; 160],
+    n: usize,
+}
+
+impl Write for Line {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let room = self.b.len() - self.n;
+        let k = s.len().min(room);
+        self.b[self.n..self.n + k].copy_from_slice(&s.as_bytes()[..k]);
+        self.n += k;
+        Ok(())
+    }
+}
+
+fn say(args: core::fmt::Arguments<'_>) {
+    let mut l = Line { b: [0; 160], n: 0 };
+    let _ = l.write_fmt(args);
+    let _ = l.write_str("\n");
+    let _ = sys::console_write(sys::STDOUT, &l.b[..l.n]);
+}
+
+/// `/proc/clock` whole.
+fn read_view(buf: &mut [u8]) -> usize {
+    let h = sys::open_root(VIEW, 0);
+    if h < 0 {
+        return 0;
+    }
+    let h = h as u32;
+    let mut got = 0;
+    while got < buf.len() {
+        let n = sys::file_read_typed(h, &mut buf[got..]);
+        if n <= 0 {
+            break;
+        }
+        got += n as usize;
+    }
+    let _ = sys::close_typed(h);
+    got
+}
+
+/// The kernel as the engine sees it.
+struct Env {
+    clock: ClockClient<Ep>,
+    /// UDP socket bound to the event port, in the group.
+    event: u32,
+    /// ... and to the general port.
+    general: u32,
+}
+
+fn wall() -> i128 {
+    sys::clock_now(ClockId::REAL).map_or(0, |t| t as i128)
+}
+
+impl Host for Env {
+    fn send(&mut self, msg: &[u8]) -> Option<i128> {
+        // The software transmit timestamp: as late as the call allows. Only
+        // Delay_Req is sent, and it is an event message.
+        let t = wall();
+        (sys::sendto_typed(self.event, msg, Some(&sys::sockaddr_in(link::GROUP, link::PORT_EVENT))) > 0).then_some(t)
+    }
+
+    fn sample(&mut self, offset_ns: i64, delay_ns: u64) -> Sampled {
+        match sys::dev::value(self.clock.sample(offset_ns, delay_ns, sys::dev::clock::SOURCE_PTP)) {
+            Ok(sys::dev::clock::SLEWED) => Sampled::Slewed,
+            Ok(sys::dev::clock::STEPPED) => Sampled::Stepped,
+            Ok(sys::dev::clock::FILTERED) => Sampled::Filtered,
+            Err(sys::dev::outcome::REFUSED) => Sampled::Refused,
+            _ => Sampled::Failed,
+        }
+    }
+
+    fn event(&mut self, e: Event) {
+        match e {
+            Event::Master(id) => say(format_args!("[ptpd] following grandmaster {:02x?}", id)),
+            Event::MasterLost => say(format_args!("[ptpd] master lost")),
+            Event::NoUtc => say(format_args!("[ptpd] master states no valid UTC offset on the PTP timescale: no sample")),
+            Event::Sample { offset_ns, delay_ns, how } => {
+                say(format_args!("[ptpd] offset {} ns, round trip {} ns: {:?}", offset_ns, delay_ns, how))
+            }
+        }
+    }
+}
+
+/// A UDP socket bound to `port` in the PTP group.
+fn udp(port: u16) -> Option<u32> {
+    let cap = sys::socket_typed(2, 2, 0);
+    if cap < 0 {
+        return None;
+    }
+    let cap = cap as u32;
+    if sys::bind_typed(cap, &sys::sockaddr_in([0, 0, 0, 0], port)) < 0 || sys::mcast_join_typed(cap, link::GROUP) < 0 {
+        let _ = sys::close_typed(cap);
+        return None;
+    }
+    Some(cap)
+}
+
+/// The two sockets and the clock identity the node's address makes. Waits for
+/// the address and retries the ports: the daemon's row has `OnFailure`, so
+/// ending would only restart it into the same wait.
+fn open() -> (u32, u32, [u8; 8]) {
+    let mut told = false;
+    loop {
+        let ip = sys::net_getip();
+        if ip > 0 {
+            if let Some(event) = udp(link::PORT_EVENT) {
+                if let Some(general) = udp(link::PORT_GENERAL) {
+                    return (event, general, link::ip_identity((ip as u32).to_be_bytes()));
+                }
+                let _ = sys::close_typed(event);
+            }
+            if !told {
+                told = true;
+                say(format_args!("[ptpd] cannot open ports 319 and 320 (taken?): retrying"));
+            }
+        }
+        sys::sleep(RETRY_MS);
+    }
+}
+
+/// Take what is queued on the medium: each message goes to the engine with its
+/// arrival time. Whether anything came.
+fn drain(env: &mut Env, port: &mut Port) -> bool {
+    let mut buf = [0u8; RX_MAX];
+    let mut any = false;
+    for sock in [env.event, env.general] {
+        for _ in 0..BURST {
+            let n = sys::recvfrom_typed(sock, &mut buf, None);
+            if n <= 0 {
+                break;
+            }
+            // The arrival time, taken first.
+            let (now, t_rx) = (sys::vdso_now_ns(), wall());
+            any = true;
+            port.rx(env, now, t_rx, &buf[..n as usize]);
+        }
+    }
+    any
+}
+
+#[sys::main(panic_exit = 70)]
+fn main() -> ! {
+    say(format_args!("[ptpd] AzOS PTP daemon"));
+    let mut view = [0u8; 64];
+    let n = read_view(&mut view);
+    let Some(domain) = link::parse_domain(&view[..n]) else {
+        say(format_args!("[ptpd] the [clock] row declares no ptp_domain: this node takes no part in PTP"));
+        sys::exit(0);
+    };
+    let Some(ep) = sys::dev::lookup(sys::dev::key::CLOCK, 0) else {
+        say(format_args!("[ptpd] the row holds no clock endpoint: nothing to steer, not running (a topology to fix, not a failure to restart)"));
+        sys::exit(0);
+    };
+    let (event, general, identity) = open();
+    say(format_args!("[ptpd] domain {}, IEEE 1588 over UDP", domain));
+    let mut env = Env { clock: ClockClient::new(Ep(ep)), event, general };
+    let mut port = Port::new(Config { domain, identity });
+    // Setup is over: the program holds its sockets, its endpoint and its
+    // console. Narrow to the steady state; a failure leaves it as wide as it was.
+    if sys::pledge(STEADY) < 0 {
+        say(format_args!("[ptpd] cannot narrow to the steady state: running with the full call set"));
+    }
+    loop {
+        let got = drain(&mut env, &mut port);
+        port.tick(&mut env, sys::vdso_now_ns());
+        if !got {
+            sys::sleep(IDLE_MS);
+        }
+    }
+}

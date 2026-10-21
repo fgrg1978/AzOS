@@ -1,0 +1,29 @@
+[package]
+name = "azos_hv"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The hypervisor core (Kconfig VIRT): Vm and Vcpu objects, generic stage-2 mapping over MemObj frames and admission of the topology's guest rows. Pure no_std: the ISA primitives come through azos_arch_api::Hypervisor, the kernel objects (MemObjs) through the callers."
+
+[lib]
+name = "azos_hv"
+
+[dependencies]
+azos_arch_api = { workspace = true }
+azos_decision = { workspace = true }
+azos_limits   = { workspace = true }
+azos_topology = { workspace = true }
+
+[features]
+# Canaries for tests/host/hv-tests: each breaks one rule on purpose so the
+# test that guards it must go red. Never enabled in a build.
+# `vcpu::allowed` ignores the real-time harts.
+canary-rt-hart = []
+# `stage2::map_frames` keeps what it mapped when a later page fails.
+canary-no-rollback = []
+# `backend::allows` lets every reach through.
+canary-egress-open = []
+# `VmTable::start` gives the VM's clock back to zero: a vCPU that starts after a
+# hold reads a clock of its own.
+canary-clock-per-vcpu = []

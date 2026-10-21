@@ -1,0 +1,33 @@
+[package]
+name = "azos_usb_uvc_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the USB video class driver (crates/drivers/usb/src/class/uvc.rs) and the isochronous pipes of the USB core it streams over: the class-specific descriptor walker, PROBE/COMMIT, the payload header and frame assembly into a camera frame ring, and a camera streaming MJPEG and YUYV frames over isochronous and bulk endpoints behind the xHCI mock of tests/host/usb-tests. Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/usb-uvc-tests && CARGO_TARGET_DIR=~/azos-out/usb-uvc-tests cargo test --release --target aarch64-apple-darwin
+# Canaries: `cargo test --release --target aarch64-apple-darwin --features canary-<name>` must FAIL.
+
+[dependencies]
+azos_usb = { path = "../../../crates/drivers/usb", features = ["inspect"] }
+azos_usb_tests = { path = "../usb-tests" }
+azos_cam_ring = { path = "../../../crates/drivers/cam-ring" }
+azos_rings = { path = "../../../crates/core/rings" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_limits = { path = "../../../crates/core/limits" }
+
+[features]
+canary-isoch-halt = ["azos_usb/canary-isoch-halt"]
+canary-isoch-burst = ["azos_usb/canary-isoch-burst"]
+canary-uvc-err = ["azos_usb/canary-uvc-err"]
+canary-uvc-sync = ["azos_usb/canary-uvc-sync"]
+canary-uvc-fid = ["azos_usb/canary-uvc-fid"]
+canary-uvc-probe-len = ["azos_usb/canary-uvc-probe-len"]
+canary-uvc-alt = ["azos_usb/canary-uvc-alt"]
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

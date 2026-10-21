@@ -1,0 +1,13 @@
+[package]
+name = "azos_msc_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side unit tests for azos_msc (DEV03 USB MSC). Excluded from workspace."
+
+# Mirror of dfu-tests / ota-tests pattern.
+# Run with: cd tests/host/msc-tests && cargo test
+
+[dependencies]
+azos_msc = { path = "../../../crates/drivers/msc" }

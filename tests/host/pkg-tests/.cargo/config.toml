@@ -1,0 +1,12 @@
+# Override the workspace target so the parser tests run on the host.
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []
+
+# The installer's `Work` (a megabyte of buffers and a topology) is built on the
+# test thread's stack before it is boxed.
+[env]
+RUST_MIN_STACK = "67108864"

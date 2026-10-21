@@ -1,0 +1,25 @@
+[package]
+name = "azos_ble"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Bluetooth LE host stack, the part under GATT (ble-hci): H4 framing and the HCI command/event codec, the host that initialises a controller and runs advertising, scanning and connections, L2CAP LE (ACL reassembly and fragmentation, the signalling channel), the ATT PDUs and the MTU exchange, and SMP pairing with LE Secure Connections (just works and numeric comparison, P-256 on the host, AES-CMAC f4/f5/f6/g2). The transport is a Uart port (the companion-radio bridge or USB CDC-ACM): the host consumes and produces the `Chunk`s of the port's two rings and owns no clock, no entropy and no key store (the Upper and Platform traits). No allocation, no unsafe; tested on the host over a scripted controller (tests/host/ble-tests). Standalone, not a member of the root workspace."
+
+[features]
+# Canaries of the host suite (tests/host/ble-tests): each puts one pairing check back out of the code, and
+# the test named in tools/ci_check.sh must then fail. Never in a shipped build.
+canary-no-confirm-check = []
+canary-no-dhkey-check = []
+canary-allow-reflected-key = []
+
+[dependencies]
+# The Uart port's chunk and the traits of its two ring ends.
+azos_devif = { path = "../../../crates/core/devif" }
+# AES-128 (the block under AES-CMAC) and the constant-time compare.
+azos_crypto = { path = "../../../crates/core/crypto" }
+# LE Secure Connections key agreement on the host: the controller is not asked for ECDH.
+p256 = { version = "0.13", default-features = false, features = ["ecdh"] }
+
+# Standalone, like the other userspace libraries (see Cargo.toml's exclude list).
+[workspace]

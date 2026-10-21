@@ -1,0 +1,998 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.timing — Scheduler, WCET, networking timers, watchdog
+#
+# All timing/WCET constants with per-arch and per-profile
+# defaults matching the current codebase values.
+
+menu "Scheduling, IPC & timing"
+
+# ---------------------------------------------------------------------------
+# Scheduler
+# ---------------------------------------------------------------------------
+
+config SCHED_HZ
+    int "Scheduler tick frequency (Hz)"
+    range 10 1000
+    default 100  if PROFILE_EMBEDDED
+    default 100  if PROFILE_EDGE && BOARD_QEMU
+    default 250  if PROFILE_EDGE && BOARD_VF2
+    default 250  if PROFILE_EDGE && BOARD_K1
+    default 500  if PROFILE_FLEET
+    default 100
+    help
+      Periodic timer interrupt rate.  Drives RR scheduler preemption,
+      WDT kick, and tickless-idle `set_next_tick_smart`.
+      Higher SCHED_HZ reduces task-switch latency but increases ISR
+      overhead.  QEMU TCG amplifies ISR cost ~5× — keep it lower there.
+      Current codebase: 100 Hz (crates/drivers/sys/src/timebase.rs AtomicU32).
+
+config SCHED_HZ_FLOOR
+    int
+    default 10
+    help
+      Minimum scheduler tick rate CONFIG.INI is allowed to request at boot
+      (Q4.2, owner decision 2026-09-25: CONFIG.INI on the removable FAT
+      volume may only LOWER `SCHED_HZ` below the compile-time default it
+      was built with, never raise it, and never below this floor). Must be
+      kept equal to SCHED_HZ's own `range 10 1000` lower bound — below it
+      the WDT kick and RR preemption granularity are unreliable, so a
+      CONFIG.INI value under this is treated as garbage and the
+      compile-time SCHED_HZ default is used instead (see
+      `resolve_sched_hz` in `crates/core/config/src/lib.rs`). Kconfig cannot
+      reference another symbol's `range` directly, so this is a second
+      literal that has to be kept in sync by hand;
+      `crates/core/limits/build.rs` validates `SCHED_HZ_FLOOR <= SCHED_HZ` at
+      every build so a drift is a hard build error, not a silent one.
+
+config SCHED_TIMER_HEAP_PER_CPU
+    bool "One timer-sleeper heap per CPU (sched-timer-heap)"
+    default y
+    help
+      With the `sched-timer-heap` cargo feature, each CPU keeps its own
+      heap of timer sleepers, like Linux's per-CPU hrtimer bases. A task
+      that sleeps on a timer is armed on the heap of the CPU it blocks
+      on; that CPU's tick ISR pops it and that CPU's tickless comparator
+      is programmed from it. Every heap lock is taken only by its own CPU,
+      with interrupts masked, so it is never contended across CPUs.
+
+      Off: one heap and one lock for the whole machine (the old shape).
+      Every CPU's tick ISR and every timer sleep then spins on the same
+      lock with interrupts masked; when the holder's hart is not running
+      (QEMU -icount runs harts one at a time; a preempted vCPU), the
+      spinning ISR waits until the next virtual deadline (measured: 50 ms
+      timer ISRs on riscv64 -smp 2).
+
+      Cost: 12 B x MAX_TASKS per CPU the board has (in each CPU's
+      per-CPU area, from the frame allocator at boot; NR_CPUS does not
+      scale it), plus 1 B per task slot: 768 B per CPU at the edge
+      profile's 64 tasks, 48 KiB per CPU at fleet's 4096. Off, one heap
+      (CPU 0's area). Instructions per sleep and per tick: one byte store
+      and the hart id read, none of them on another CPU's lines.
+
+config SCHED_TIMER_WAKE_BATCH
+    int "Timer sleepers popped per heap lock hold (sched-timer-heap)"
+    range 1 64
+    default 8
+    help
+      With the `sched-timer-heap` cargo feature (a kernel default), a
+      tick's pass over due timer sleepers (`timer_heap::wake_due`) pops at
+      most this many entries per hold of the sleeper-heap lock, then drops
+      the lock to wake them (wakes take the run-queue locks, which never
+      nest inside the heap lock). Cost: 16 B of tick-ISR stack per unit
+      (the popped and retry arrays), either ISA, and one lock round trip
+      (interrupts masked) per BATCH due sleepers. A larger batch holds the
+      lock, with interrupts masked on this hart, for one more heap pop
+      (O(log MAX_TASKS)) per unit. Raise it only when many sleepers share
+      a deadline (periodic tasks on one grid) and the round trips show in
+      the tick; lower it when the masked window bounds an interrupt
+      latency budget.
+      Ignored without the heap (the per-tick sweep has no batch).
+# ---------------------------------------------------------------------------
+# QoS timer tolerance (timer coalescing by QoS tier, after Apple's timer
+# leeway). The hint is SYS_SCHEDCTL's form 4 (`libsys::qos_hint`); the reader
+# is the timer-sleeper heap (`timer_sleepers::arm`).
+# ---------------------------------------------------------------------------
+config QOS_TIMER_TOLERANCE
+    bool "QoS timer tolerance: a task's QoS tier lets its timers fire late and share wake-ups"
+    depends on SCHED_TIMER_HEAP
+    default y if PRESET_DESKTOP || PRESET_IOT_HMI || PRESET_WEARABLE || \
+                 PRESET_ROBOT || PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
+    default n
+    help
+      A timer a task arms (a sleep, a timed wait) may fire up to the slack
+      of the task's QoS tier AFTER its deadline, never before. The heap
+      arms such a timer at a wake-up that is already scheduled inside that
+      window, if there is one, so two sleepers share one interrupt, one
+      switch out of idle and one stretch of a deep idle state instead of
+      two. The idle governor reads the same heap
+      (`nearest_timer_deadline`), so it sees the coalesced schedule and
+      picks its state from it.
+
+      Only the fair class has slack. A stop, deadline or real-time task
+      gets none, whatever its hint and whatever the tiers below say: its
+      timers are its contract (`sc::timer_slack_us` tests the class before
+      anything else; ktest `qos_timer_slack_never_real_time`).
+
+      A task that has said nothing (QOS_DEFAULT) or asked for latency has
+      the tier values below, 0 unless you raise them: only a task that
+      declared itself throughput or background work moves. The wake is
+      late by at most the tier's slack; a timed wait that ends by timeout
+      ends that much later.
+
+      Cost: one atomic load of the task's SC and one compare per timer arm
+      (const-folded away when off), a pass over the armed entries of the
+      CPU's heap when the task's slack is non-zero (O(entries), each tested
+      against the window first), and 4 B per task slot (the slack the slot's
+      entry carries). Off: every timer fires at its deadline.
+
+      Default on for the desktop, IoT/HMI and wearable presets (every
+      eligible task) and, with the option below, for the robot, industrial
+      and automotive presets (only the rows that opt in).
+
+config QOS_TIMER_TOLERANCE_ROWS_ONLY
+    bool "Only tasks whose topology row says timer_slack = true get slack"
+    depends on QOS_TIMER_TOLERANCE
+    default y if PRESET_ROBOT || PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
+    default n
+    help
+      A topology row (CAPS.TOML, format 5) opts its task in with
+      `timer_slack = true`; the task's QoS hint then picks the tier. Every
+      other task, kernel tasks included, keeps exact deadlines. This is the
+      shape for a product whose timing is audited per task (a robot, an
+      industrial controller): the signed topology says who may be late.
+
+      Off (with QOS_TIMER_TOLERANCE on): every fair task has its tier's
+      slack, the row's key is read and ignored.
+
+config QOS_SLACK_DEFAULT_US
+    int "Timer slack of QOS_DEFAULT, the hint every task starts with (us)"
+    range 0 1000000
+    default 0
+    help
+      How late a timer of a task that never set a QoS hint may fire (see
+      QOS_TIMER_TOLERANCE). 0: exact, which is what every kernel loop and
+      every task of an existing image keeps. Raise it to coalesce
+      everything that has not asked for latency; a value near the scheduler
+      tick (1 / SCHED_HZ) is where coalescing starts to pay. Ignored
+      without QOS_TIMER_TOLERANCE.
+      Surfaces as `azos_limits::QOS_SLACK_DEFAULT_US`.
+
+config QOS_SLACK_LATENCY_US
+    int "Timer slack of QOS_LATENCY (us)"
+    range 0 1000000
+    default 0
+    help
+      The tier of a task that said latency matters more than throughput
+      (interactive, a control loop that is not real-time). 0 keeps its
+      deadlines exact; it is a knob, not a recommendation to raise it.
+      Ignored without QOS_TIMER_TOLERANCE.
+      Surfaces as `azos_limits::QOS_SLACK_LATENCY_US`.
+
+config QOS_SLACK_THROUGHPUT_US
+    int "Timer slack of QOS_THROUGHPUT (us)"
+    range 0 1000000
+    default 2000
+    help
+      The tier of a batch job: its timers may be late by this much to
+      share a wake-up with another sleeper. Ignored without
+      QOS_TIMER_TOLERANCE.
+      Surfaces as `azos_limits::QOS_SLACK_THROUGHPUT_US`.
+
+config QOS_SLACK_BACKGROUND_US
+    int "Timer slack of QOS_BACKGROUND (us)"
+    range 0 1000000
+    default 20000
+    help
+      The tier of housekeeping (a sync, a policy re-check, a poll nobody
+      waits for): its timers may be late by this much, so they ride on
+      whatever else wakes the CPU instead of waking it. Ignored without
+      QOS_TIMER_TOLERANCE.
+      Surfaces as `azos_limits::QOS_SLACK_BACKGROUND_US`.
+
+# ---------------------------------------------------------------------------
+# Wave-4 scheduler placement and sleeper options (U02-3). Each is a kernel
+# cargo feature that forwards to azos_sched; all three are on in every
+# configuration, the way the kernel's old `default` list had them.
+# ---------------------------------------------------------------------------
+config SCHED_O1_PLACEMENT
+    # cargo-feature: sched-o1-placement base
+    bool "O(priorities) wake placement (a per-priority load histogram)"
+    default y
+    help
+      Wake placement (`find_best_cpu`) queries a histogram of runnable tasks
+      per priority and hart, kept by `hist_reaccount` after every write to a
+      field the score depends on, instead of scanning MAX_TASKS. Off: the
+      scan, and no histogram to maintain. The maintenance is paid on every
+      block and wake, the saving on machines with more than one hart online.
+
+config SCHED_TIMER_HEAP
+    # cargo-feature: sched-timer-heap base
+    bool "Timer sleepers in an indexed min-heap"
+    default y
+    help
+      Timer sleepers live in a min-heap: `wake_expired_timers` and
+      `nearest_timer_deadline` visit only the due sleepers instead of
+      sweeping MAX_TASKS every tick. Off: the per-tick sweep.
+
+config SCHED_IPC_AFFINITY
+    # cargo-feature: sched-ipc-affinity base
+    bool "Fast-IPC hand-off wakes co-locate on the waker's hart"
+    default y
+    help
+      A fast-IPC call or reply wakes its peer on the waker's hart when
+      nothing there outranks it (`ipc_wake_target_cpu`), and the fast path
+      is enabled (`IPC_FAST`). Off: the plain wake target.
+
+# ---------------------------------------------------------------------------
+# Dispatch classes and the scheduling context (N6, owner answers Q6-Q8)
+# ---------------------------------------------------------------------------
+config SCHED_CLASS_STOP
+    def_bool y
+    help
+      The highest class: the per-CPU stop slot, and the exempt safety loops
+      (actuation, e-stop, watchdog), which run above DL, RT and fair work.
+      Not optional: a build-time assert in crates/core/sched/src/classes.rs
+      refuses a kernel without it.
+
+config SCHED_CLASS_DL
+    bool "Dispatch class: deadline (EDF + CBS reservations)"
+    default y
+    help
+      Tasks holding an admitted EDF + CBS reservation (topology `deadline`
+      rows, the reservation syscall). Off: admission refuses every
+      reservation with EOPNOTSUPP (reason `class-off`), no hart ever has
+      reservation state, and the reservation paths are never entered (they
+      fold to the band-only code). Costs nothing per switch when no
+      reservation is admitted. Turn off only for a build with no deadline
+      task at all.
+
+config SCHED_CLASS_RT
+    bool "Dispatch class: real-time band (fixed priority)"
+    default y
+    help
+      The fixed-priority band: tasks below RT_PRIORITY_THRESHOLD, not
+      time-sliced, with the per-hart band budget (RT_BAND_CAP_PCT of each
+      RT_BAND_WINDOW_MS). Off: no task is in the band; band-level priorities
+      are scheduled as fair levels and the band budget is never charged.
+      Every robot profile needs it (the motor, IMU and watchdog loops).
+
+config NOHZ_FULL
+    bool "Tickless busy CPUs: an isolated CPU running one real-time task stops its tick"
+    depends on SCHED_CLASS_RT
+    depends on NR_CPUS > 1
+    default y if RT_HARD || RT_MIXED
+    help
+      A CPU of `[sched] isolcpus` (CAPS.TOML) that runs exactly one
+      real-time task, with nothing else ready on it, stops its periodic
+      timer interrupt: the comparator is programmed at the nearest timer
+      deadline, or NOHZ_FULL_RESIDUAL_MS out, whichever is first, and an
+      enqueue on the CPU or a context switch off the task restores the
+      tick. The task then runs without the tick's interrupt.
+      A tickless CPU is quiescent for RCU while it runs user code (rule
+      F5): the user mode of an isolated CPU is an extended quiescent state
+      (crates/core/sync/src/qsbr.rs), so no grace period waits for a tick
+      it does not take.
+      The stop is taken at the second consecutive tick that sees the same
+      lone task; never on a CPU outside `isolcpus`, never with another
+      task ready on the CPU, and never beyond hart 0's watchdog keepalive.
+      Cost: one hook call per tick on every CPU, and with RCU_QSBR on one
+      load and a bit test per syscall; on an isolated CPU also one atomic
+      move and a fence at each kernel entry and return of its user task.
+      Off: not compiled; isolated CPUs keep their tick.
+
+config NOHZ_FULL_RESIDUAL_MS
+    int "NOHZ_FULL: longest a stopped tick sleeps (ms)"
+    range 10 60000
+    default 1000
+    help
+      A stopped tick still fires this often (the residual tick Linux's
+      nohz_full keeps once a second): the self-heal bound against a lost
+      doorbell, and the interval at which kernel work that only the tick
+      observes (a per-task vDSO page's sampled counters) runs on a
+      tickless CPU. A timer sleeper's deadline or an RT enforcement instant
+      (a budget, a window end) comes first and is not rounded to this.
+      Read only with NOHZ_FULL; no cost without it.
+
+config IRQ_THREADED
+    bool "Interrupts as scheduled objects: the handler runs on a hard reservation"
+    depends on SCHED_CLASS_DL
+    default y if RT_HARD || RT_MIXED
+    help
+      An interrupt line is bound to an event port by an op of its Device
+      capability (DEVICE_IRQ_BIND), and its handler is the task that binds
+      it. With this on, that task must hold a hard reservation (EDF + CBS):
+      the bind is refused (-EPERM) without one, because its time would not
+      be budgeted, and the line is routed to the CPU the reservation was
+      admitted on. A handler that runs out of budget has its lines masked
+      until the reservation is replenished, and the overrun leaves a
+      decision record (irq-budget). So an interrupt storm costs at most one
+      top half per handler run and cannot take time from the tasks admitted
+      beside it: the line's cost is inside the CPU's booked load.
+
+      The kernel's own lines (the console UART, the virtio devices) keep a
+      minimal top half (mask, complete, notify) and run their bottom halves
+      in one kernel thread on the boot CPU, on a reservation of its own
+      (IRQ_THREAD_PRIORITY, IRQ_THREAD_BUDGET_PCT, IRQ_THREAD_PERIOD_US). The
+      timer keeps its top half. The thread's lines are riscv64's and aarch64's: x86_64's IOAPIC
+      loses an edge that arrives while an entry is masked, so its kernel
+      lines stay in the interrupt handler.
+
+      A message-signalled interrupt (an `msi.<k>` slot of a topology row) is
+      delivered to ring 3 where the platform has it (x86_64, riscv64 with
+      AIA). It cannot be masked, so while its handler is out of budget its
+      deliveries are dropped instead of held.
+
+      Off: the bind takes any task, nothing is budgeted, the kernel's lines
+      run whole in the interrupt handler, and none of this code runs.
+      Default on for the hard and mixed real-time classes.
+
+config IRQ_THREAD_PRIORITY
+    int "IRQ thread: priority"
+    range 1 11
+    default 9
+    help
+      The priority (real-time band, 0 most urgent) the per-boot-CPU kernel
+      thread that runs the bottom halves of the kernel's own lines is
+      admitted at, with IRQ_THREADED. Below the actuation loops (8), above
+      the watchdog (11) by default. The thread is a hard reservation, so it
+      runs in the deadline class, ahead of the band; this number orders it
+      against the other reservations of its CPU. A ring-3 handler runs at the
+      priority its own reservation was admitted at, and a task that waits on
+      a handler across IPC lends it its priority through the usual donation.
+      Only read with IRQ_THREADED.
+
+config IRQ_THREAD_BUDGET_PCT
+    int "IRQ thread: budget (% of a CPU)"
+    range 1 50
+    default 10
+    help
+      The share of its CPU the kernel IRQ thread may use, with IRQ_THREADED:
+      its hard reservation's runtime over IRQ_THREAD_PERIOD_US. When it runs
+      out, the kernel lines it serves stay masked until the next period, so a
+      device that storms the console UART or a virtio queue cannot take
+      more than this share (admission books it like any reservation). The
+      console's own output is driven through the UART line, so a share that
+      is too small slows it down. Only read with IRQ_THREADED.
+
+config IRQ_THREAD_PERIOD_US
+    int "IRQ thread: period (us)"
+    range 200 100000
+    default 1000
+    help
+      The replenishment period of the kernel IRQ thread's reservation, with
+      IRQ_THREADED. A line held masked by an overrun waits at most this long.
+      Only read with IRQ_THREADED.
+
+config SCHED_CLASS_FAIR
+    def_bool y
+    help
+      The fair class: every task outside the band and idle, scheduled
+      EEVDF (earliest eligible virtual deadline first, crates/core/sched/
+      src/eevdf_core.rs): each task has a weight from its priority (Linux's
+      nice table, DEFAULT_PRIORITY = nice 0, 1.25 x per level) and the CPU
+      is shared by weight; the pick is the eligible task with the earliest
+      virtual deadline, so a short slice is a low wake-up latency, not a
+      bigger share. Not optional: a build-time assert in
+      crates/core/sched/src/classes.rs refuses a kernel without it. There is
+      no round-robin alternative: no preset needs one (a certifiable
+      profile gets its bounded latency from the RT band and the DL class).
+
+config FAIR_SLICE_US
+    int "Fair class: slice (us)"
+    range 100 100000
+    default 3000
+    help
+      The run a fair task asks for before its virtual deadline (Linux's
+      base_slice is 0.75 ms x (1 + log2 ncpus)). Longer: fewer switches among
+      CPU-bound tasks; shorter: a woken task is served sooner. The timer tick
+      (1 / SCHED_HZ) is the preemption point, so a slice below it only moves
+      deadlines. Per task it will come from the QoS class (the `qos_id` hook
+      in `fairq::params`, not wired).
+      Surfaces as `azos_limits::FAIR_SLICE_US`.
+
+config WAIT_SLICE_US
+    int "Bounded sleeps: longest sleep without a wake (us)"
+    range 100 100000
+    default 1000
+    help
+      crates/core/sync/src/waitqueue.rs (`wait_if_for`) and the block request
+      layer (crates/drivers/block/src/queue.rs): a task that waits for
+      another task or for a device sleeps on a timer for at most this long
+      and looks at its condition again, so a wake that never arrives costs
+      the sleeper one slice, not the task. Every sleep that ends by this
+      expiry with no wake is counted per site (`metrics/sync/<site>/expired`
+      in the introspection tree) and, when the condition had already become
+      true, as lost (`lost`): a nonzero `lost` on a board names the site
+      whose wake was dropped. Shorter: a dropped wake is repaired sooner, at
+      the price of more timer wakes while the awaited event is merely slow;
+      longer: the reverse. Sleeps of a lock, an idle worker and the like do
+      not use it: their wake is proven in place (see the comment at each
+      site), and a periodic wake would keep an idle machine from sleeping.
+      Surfaces as `azos_limits::WAIT_SLICE_US`.
+
+config SCHED_BALANCE
+    bool "Fair class: balance load between CPUs"
+    default n if NR_CPUS = 1
+    default n if PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
+    default y
+    help
+      Moves queued fair tasks between CPUs so that none idles while another
+      has fair work waiting (crates/core/sched/src/scheduler/balance.rs is the
+      policy, fairq.rs the queue side). A CPU about to idle pulls from the
+      busiest CPU of its last-level cache, then of its node, then of the
+      package, stopping at the nearest level that gave one; every
+      SCHED_BALANCE_INTERVAL_MS a CPU with fair work queued pushes to the
+      least loaded CPU of the same levels. A move needs a gap that survives
+      it (the receiver ends below the sender's old load, a level further out
+      costs one more task), so tasks do not bounce.
+
+      Never moved: a pinned task (cpu_affinity >= 0), a reservation, a band
+      task, the running task. Never a participant, as sender or receiver: a
+      CPU of the topology's `[sched] isolcpus`, and a CPU with real-time state
+      (a band task running or queued, an exhausted band window, an admitted
+      reservation). That is the whole of the robot
+      preset's behaviour: it balances the general CPUs and leaves the real-time
+      ones alone. The industrial and automotive presets turn it off: a task
+      stays on the CPU its row put it on. Off, wake placement
+      (find_best_cpu) is the only placement, as before. A single-CPU kernel
+      has nothing to balance.
+
+      Cost: a few loads per online CPU on the way into idle and on each tick
+      that reaches the interval; one load and a branch on a context switch
+      that has work to run.
+      Counters: sched/balance in the inspect tree.
+
+config SCHED_BALANCE_INTERVAL_MS
+    int "Load balancing: push interval (ms)"
+    range 1 1000
+    default 8
+    help
+      How often a CPU with fair tasks queued looks for a less loaded CPU to
+      push one to, and the shortest time between two failed pulls of an idle
+      CPU (a pull that gave a task is not rate limited). The check runs on the
+      scheduler tick (1 / SCHED_HZ), so an interval below it means every tick.
+      Shorter: imbalance lasts less, more cross-CPU traffic. Ignored without
+      SCHED_BALANCE.
+
+config SCHED_BALANCE_MOVES
+    int "Load balancing: moves per pass"
+    range 1 16
+    default 2
+    help
+      The most tasks one balancing pass (one idle pull, or one push on a tick)
+      moves. Bounds the time spent in the tick and in the way to idle: every
+      move is two queue operations and, to another CPU, an interrupt.
+      Ignored without SCHED_BALANCE.
+
+config SCHED_BALANCE_SCAN
+    int "Load balancing: queue entries examined per pass"
+    range 1 256
+    default 16
+    help
+      The most queued tasks one balancing pass looks at, over all the queues it
+      visits. A queue longer than this is not searched to its end: the pass
+      moves one of the first entries or none. Bounds the pass whatever
+      MAX_TASKS is. Ignored without SCHED_BALANCE.
+
+config SCHED_CORE
+    bool "Core scheduling: SMT siblings run one Domain at a time"
+    default y if (PRESET_SERVER || PRESET_DESKTOP) && NR_CPUS != 1
+    default n
+    help
+      The hardware threads of one core (the topology's `smt` level, from the
+      device tree, the ACPI PPTT or CPUID) share its caches and buffers, so a
+      task that runs beside a task of another Domain can read what that one
+      leaves behind. With this on, the siblings of a core run tasks of one
+      Domain at a time (the cookie is the task's Domain key): each hart
+      publishes the Domain it is committed to, and its pick admits a task only
+      if every sibling's Domain is the same or idle. A task that does not fit
+      goes back to its queue and the hart takes the next one that does, else
+      it idles (forced idle) until the siblings change Domain, when they ring
+      its doorbell.
+
+      Real-time keeps priority. A band task or a reservation that does not
+      fit displaces the siblings' fair tasks at once (they are rung to
+      reschedule, and idle while the core is reserved for it); it is never
+      displaced by a fair task. A fair task that has been refused for
+      SCHED_CORE_PATIENCE_US displaces its siblings the same way, so a Domain
+      does not starve behind a busy sibling Domain. The IPC hand-off that
+      switches straight to the peer is taken only between tasks of one Domain
+      on a core-scheduled hart; across Domains it goes through the queue.
+
+      A hart without SMT siblings, or a kernel whose topology names none (a
+      device tree without `cpu-map`, QEMU), is not affected. Off by default
+      everywhere but the server and desktop presets: a robot, an industrial
+      or a small board has no hostile Domain to keep off the sibling thread,
+      and the cost is a short lock per switch and, when Domains share a core,
+      idle siblings.
+
+config SCHED_CORE_PATIENCE_US
+    int "Core scheduling: wait before a fair task displaces its siblings (us)"
+    range 100 1000000
+    default 10000
+    help
+      How long a fair task refused by SCHED_CORE waits before it reserves the
+      core: the siblings running another Domain are rung and yield, and the
+      core runs only the waiter's Domain (and idle) until it runs or this long
+      has passed again. Shorter: fairer between Domains, more switches.
+      Longer: a busy Domain keeps its core longer. Ignored without SCHED_CORE.
+
+config SCHED_CORE_SCAN
+    int "Core scheduling: queued tasks looked at per pick"
+    range 2 16
+    default 4
+    help
+      The most candidates one pick takes off the queue and refuses before it
+      gives up and idles (or keeps the running task). Bounds the pick on a
+      core with many Domains queued. Ignored without SCHED_CORE.
+
+config SCHED_CLASS_IDLE
+    def_bool y
+    help
+      The idle class: the per-CPU idle task. Not optional (every CPU needs
+      something to run); asserted at build time like SCHED_CLASS_FAIR.
+
+choice
+    prompt "Default dispatch class of a new task (SCHED_DEFAULT)"
+    default SCHED_DEFAULT_LEGACY
+    help
+      The class a task created without a class request starts in. Not DL:
+      a deadline task needs an admitted reservation. Costs nothing at
+      run time (written once at task creation).
+
+    config SCHED_DEFAULT_LEGACY
+        bool "By priority (band -> RT, idle -> idle, else fair)"
+        help
+          Today's behaviour: the creation priority decides the class.
+
+    config SCHED_DEFAULT_FAIR
+        bool "Fair, unless the priority is the band or idle"
+        help
+          Same as by-priority except that the SC records fair explicitly.
+
+    config SCHED_DEFAULT_RT
+        bool "RT for every non-idle task (static RT appliances only)"
+        depends on SCHED_CLASS_RT
+        help
+          Every task starts in the RT class. For a static profile whose
+          every task is a periodic control loop; the band budget still
+          applies.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Energy-aware scheduling (stages E0-E4)
+# ---------------------------------------------------------------------------
+config ENERGY
+    # cargo-feature: energy
+    bool "Energy-aware scheduling: utilisation tracking and the energy model"
+    default n
+    help
+      Energy-aware scheduling. Emits the kernel cargo feature `energy`
+      (tools/kconfig_to_cargo.py).
+
+      The seams themselves (Placement, Governor, IdleGovernor in
+      crates/core/energy) are in every build with today's behaviour only:
+      Legacy wake-up placement, no frequency request (the boot clock), `wfi`
+      in both idle tasks. With this option off they fold to the code they
+      replaced: the kernel's .text is unchanged (invariant I4).
+
+      y = also track per-task and per-CPU utilisation (ENERGY_UTIL, updated at
+        every dispatch, switch-out, wake-up and tick), and read the energy
+        model at boot: the signed topology's `[energy.domain.*]` sections,
+        else the DTB's operating-points-v2 / idle-states, else (x86_64
+        hybrid parts) one capacity class per core type the CPUs report
+        through CPUID (Intel P/E, AMD Zen 5/5c), else (Raspberry Pi with
+        THERMAL: the mailbox is the board object) one domain from the
+        firmware's ARM clock range with placeholder, unmeasured power, else
+        none. The
+        model is validated and reported (`[ENERGY]` lines); an invalid one is
+        refused and the machine runs with none. The E3 frequency governor
+        (Schedutil, DeadlineFloor) and the E4 idle governor run only when the
+        topology carries a model and mode `balanced` or `endurance`; they
+        count their decisions and apply none (no clock driver; every idle
+        state is entered as `wfi`). User space can change the governor, the
+        OPP range of each domain, the headroom, the rate limit and an
+        idle-depth limit at run time (the `power` endpoint;
+        `POWER.ELF serve` applies a profile); the kernel refuses a value
+        below the real-time deadline floor or the WCET reference OPP and
+        records the refusal. Cost, measured
+        under QEMU -icount by the gate's energy row (one run per ISA and
+        tracker, 2026-10-03): switch hook 73-76 instructions per call on
+        riscv64 and 128-271 on aarch64; tick hook 61-71 and 187-382.
+      n (default) = none of the above is compiled.
+
+      The energy MODE (performance / balanced / endurance) is not a Kconfig
+      symbol: the signed topology chooses it (`[energy] mode`, invariant
+      I5), and every built-in profile topology says `performance`.
+
+# ---------------------------------------------------------------------------
+# Thermal framework (zones, trips, cooling by OPP capping)
+# ---------------------------------------------------------------------------
+config THERMAL
+    # cargo-feature: thermal
+    bool "Thermal framework: zones, trips and cooling by OPP capping"
+    depends on ENERGY
+    depends on SOC_FRAMEWORKS || !BOARD_VF2
+    default y if ENERGY && !HWCLASS_EMBEDDED && (PRESET_ROBOT || PRESET_IOT_HMI || PRESET_GATEWAY || PRESET_DESKTOP || PRESET_SERVER)
+    help
+      Emits the kernel cargo feature `thermal` (tools/kconfig_to_cargo.py).
+      crates/core/energy (thermal, opp) decides, crates/drivers/thermal
+      reads the sensors and moves the clocks: the DTB's `thermal-zones`
+      become zones with trips; a hot trip caps the performance domain by OPP
+      steps, never below the real-time deadline floor or the WCET safety
+      floor; what the clock cannot do (a floor holds it up, the clock will
+      not move, the sensor is lost) raises the degrade level, and a critical
+      trip requests an orderly shutdown. A lost sensor caps its domains at
+      the deepest state of the zone's cooling maps.
+
+      Board support: Raspberry Pi (temperature and ARM clock through the
+      VideoCore mailbox, `brcm,bcm2835-mbox`), StarFive JH7110 (sfctemp,
+      with the CPU clock of the SoC frameworks, hence the dependency on
+      SOC_FRAMEWORKS there) and SpacemiT K1 (the five-channel TSEN sensor,
+      started at probe and refused when its window does not hold the start
+      sequence; with SOC_K1, each cluster's clock and its supply move
+      together: the P1 PMIC buck over the I2C master, the voltage of each
+      OPP from the device tree's `opp-microvolt`, the rail before the clock
+      going up and the clock before the rail going down, a buck two clusters
+      share held at the higher one's need). A K1 voltage step is several I2C
+      transfers (hundreds of microseconds at 400 kHz), more than a spin lock
+      may be held, so the K1's tick holds no lock across it: the runtime is
+      taken out of the thermal state for the tick, the SoC frameworks' lock is
+      taken for each clock operation alone, and the transfers sleep between
+      controller steps. It needs an energy model with the K1's OPP
+      frequencies (the Linux trees carry no opp-microwatt: a signed topology
+      or a tree that gives it). x86_64 has the package sensor (Intel
+      coretemp MSRs, AMD Zen over SMN), probed from CPUID before any register
+      is read and refused under a hypervisor (QEMU has none); its zone has no
+      device tree, so its trips are THERMAL_X86_PASSIVE_C, THERMAL_X86_HOT_C
+      and THERMAL_X86_CRITICAL_C. Its clock is the CPU's own level request,
+      Intel HWP or AMD CPPC (crates/drivers/thermal/src/x86.rs), behind the
+      CPUID bit that says the CPU has it (there is no fixup for a rdmsr that
+      faults): the energy model's OPP is laid on the CPU's own range of
+      levels, and a CPU that takes no request, or whose firmware keeps the
+      control, refuses every cap, so heat there raises the degrade level and
+      requests the shutdown at the critical trip instead of capping a clock.
+      RAPL's package energy (Intel since Sandy Bridge, AMD Zen) is sampled
+      each tick and shown in /proc/thermal. The level request is made for an
+      OPP of the energy model, so it reaches a CPU only when the model has a
+      domain with two OPPs (the topology's [energy.domain.*]); the sensor,
+      the degrade level, the critical shutdown and the energy counter work
+      either way.
+
+      Wired: at boot the kernel builds the board's runtime from the DTB's
+      thermal zones over the energy model (kernel/src/boot/thermal.rs) and
+      creates a `thermal` task on a CPU outside RCU_NOCBS_CPUS and the
+      topology's isolcpus. It wakes at the zones' polling delay (the passive
+      one while a trip is active), asks the energy governor seam what each
+      domain wants (the OPP the governor recorded; none while the governor is
+      Fixed) and the real-time density admitted on the domain's most loaded
+      hart, ticks the runtime, and leaves every trip, floor-bound domain,
+      level change, lost sensor and shutdown request as a console line and a
+      `thermal` decision record (/proc/decisions). /proc/thermal shows the
+      state. The task is the one place the governor's decision reaches a
+      clock. A board with no sensor and clock pair (QEMU, an x86_64 machine
+      whose probe finds no sensor) builds no zone and creates no task:
+      nothing reads a sensor and no clock is touched (invariant I4). Not wired yet: the level reaches no consumer (the power
+      service has no channel for a level the kernel raised); /proc/thermal
+      and the console are where it shows. Not for a small board
+      (HWCLASS_EMBEDDED), which keeps its own native handling.
+      n = not linked.
+
+config THERMAL_TASK_PRIORITY
+    int "Thermal task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20
+    help
+      Read only with THERMAL. kernel/src/boot/thermal.rs, `thermal`: the task that reads the zones and
+      caps the clocks. Never real-time, and pinned to a CPU outside
+      RCU_NOCBS_CPUS and the topology's isolcpus, so a real-time task never
+      waits for it and it never touches a timer a real-time task owns. A
+      smaller number runs it sooner under CPU load; it should run before the
+      reclaim task (MM_RECLAIM_PRIORITY, 24 by default): a machine that is too
+      hot has no use for freed pages.
+
+      Cost: one stack, and per wake-up one sensor read (a register read on the
+      JH7110, a mailbox round trip on a Pi) per zone that is due.
+
+config THERMAL_X86_PASSIVE_C
+    int "x86_64 package: passive trip (degrees Celsius)"
+    range 40 119
+    default 75
+    depends on THERMAL && ARCH_X86_64
+    help
+      Read only with THERMAL on x86_64. kernel/src/boot/thermal.rs builds the
+      machine's one zone, the package, from the sensor the CPUID probe found
+      (Intel coretemp, AMD Zen over SMN): an x86_64 machine has no device tree
+      and the signed topology declares no thermal zones, so its trips are
+      this and the two below. At the `passive` trip every performance domain
+      of the energy model that has two OPPs is capped one OPP per read, down
+      to its deepest and never below the real-time deadline floor or the WCET
+      safety floor; the cap is lifted a step per read once the package is
+      under it. Must be below THERMAL_X86_HOT_C (the kernel refuses to build
+      the zone otherwise).
+
+config THERMAL_X86_HOT_C
+    int "x86_64 package: hot trip (degrees Celsius)"
+    range 50 120
+    default 85
+    depends on THERMAL && ARCH_X86_64
+    help
+      Read only with THERMAL on x86_64, as THERMAL_X86_PASSIVE_C. A `hot`
+      trip raises the degrade level to 2, slow. Must be below
+      THERMAL_X86_CRITICAL_C (the kernel refuses to build the zone otherwise).
+      Intel reports against TjMax (usually 100), AMD as Tctl (Zen 1 parts are
+      offset from the die by up to 27 C, which the sensor subtracts).
+
+config THERMAL_X86_CRITICAL_C
+    int "x86_64 package: critical trip (degrees Celsius)"
+    range 60 130
+    default 100
+    depends on THERMAL && ARCH_X86_64
+    help
+      Read only with THERMAL on x86_64, as THERMAL_X86_HOT_C. A `critical`
+      trip sets the degrade level to 3, contained, and requests an orderly
+      shutdown. Keep it under the part's own THERMTRIP, which cuts power
+      without one.
+
+config THERMAL_X86_POLL_MS
+    int "x86_64 package: polling delay (ms)"
+    range 100 60000
+    default 1000
+    depends on THERMAL && ARCH_X86_64
+    help
+      Read only with THERMAL on x86_64: the thermal task reads the package
+      sensor this often (an MSR read on Intel; on AMD two config-space port
+      accesses under the port lock, which every PCI config access shares).
+
+choice
+    prompt "Utilisation tracker (with ENERGY)"
+    default ENERGY_UTIL_WINDOW
+    help
+      How ENERGY ages the utilisation signals. Both are integer and do O(1)
+      work per update whatever the gap since the last one. Surfaces as the
+      bool consts azos_limits::ENERGY_UTIL_WINDOW / ENERGY_UTIL_PELT.
+      No effect without ENERGY.
+
+    config ENERGY_UTIL_WINDOW
+        bool "Window (WALT-like): max(last window, mean of the last four)"
+        help
+          Busy time per ENERGY_UTIL_WINDOW_US window; the signal is the
+          larger of the last closed window and the mean of the last four.
+          A step to fully busy shows after one window; a task that stops
+          reads zero four windows later.
+
+    config ENERGY_UTIL_PELT
+        bool "PELT-like geometric decay, half-life 32 periods"
+        help
+          avg = avg*y + input*(1-y) per ENERGY_PELT_PERIOD_US period, with
+          y^32 = 1/2, in Q32 fixed point.
+
+endchoice
+
+config ENERGY_UTIL_WINDOW_US
+    int "Utilisation window (us, window tracker)"
+    range 1000 100000
+    default 10000
+    help
+      Length of one window of the window tracker. No effect without ENERGY
+      or with ENERGY_UTIL_PELT.
+
+config ENERGY_PELT_PERIOD_US
+    int "Utilisation period (us, PELT-like tracker)"
+    range 256 10000
+    default 1024
+    help
+      Length of one decay step of the PELT-like tracker; the half-life is 32
+      of them (32.8 ms at the default). No effect without ENERGY or with
+      ENERGY_UTIL_WINDOW.
+
+config ENERGY_BATTERY_RESERVE_PCT
+    int "Battery reserve (percent of charge)"
+    range 1 50
+    default 10
+    help
+      The charge at and below which the kernel holds every performance
+      domain at its lowest legal OPP, whatever the power service's policy
+      asks (the deadline and safety floors still win): what is left is for the
+      safe stop (landing, parking the actuators). Neither the signed topology
+      nor the power service can lower it. Only a machine whose topology
+      declares `[degrade.NAME]` rows has a battery for it to apply to. No
+      effect without ENERGY. A product sets it per image (its defconfig).
+
+      The default is a placeholder, not a derived number: 10 is where the
+      INA219 driver's failsafe already lands (`FAILSAFE_LAND_PCT`); no
+      discharge model of a pack and no measured safe stop supports it. A
+      product that needs another has to measure the energy of its safe stop.
+
+config ENERGY_BATTERY_REPORT_TIMEOUT_MS
+    int "Battery report timeout (ms)"
+    range 3000 3600000
+    default 10000
+    help
+      The oldest the power service's last accepted battery report may be. A
+      service that died or stalled leaves its last charge in force, and the
+      kernel cannot tell a full pack from an empty one by it: past this age the
+      kernel holds the battery reserve (lowest legal OPP, floors still win)
+      until the next accepted report. Counted from boot, so a service that
+      never starts is held the same way. The service reports every 2 s
+      (SERVE_PERIOD_MS in userspace/services/power) and the kernel may fire
+      its sleep late, so the least is 3 s. Only a machine whose topology
+      declares `[degrade.NAME]` rows has a report to age. No effect without
+      ENERGY.
+
+config SCHED_EAS
+    bool "Energy-aware wake placement on asymmetric CPUs"
+    depends on ENERGY
+    default y if PRESET_DESKTOP || PRESET_WEARABLE
+    help
+      When CPUs differ in capacity (big.LITTLE from the
+      DTB's capacity-dmips-mhz and operating points, a hybrid x86 part from
+      its topology) and the signed topology carries an energy model and a mode
+      other than `performance`, a woken fair task is placed where the model
+      says it adds the least energy among the CPUs it fits, instead of where
+      find_best_cpu ranks the load best. Per performance domain the
+      candidates are the CPU with the most spare capacity and the CPU the
+      task last ran on; a domain's cost is its fastest-needed OPP's power
+      times the work it holds. The task leaves its last CPU only for a
+      saving of more than 1/16 of what it costs there.
+
+      Used only while no CPU is full (utilisation below 80% of the capacity
+      of its domain's fastest OPP); otherwise, and for a task that fits no
+      CPU, the load-based placement decides, as it does for every real-time
+      and deadline task, a pinned task, and a CPU that is isolated or holds
+      real-time state (none of them is chosen or judged). A machine with CPUs
+      of one capacity, a model-less machine and mode `performance` run today's
+      placement (invariant I4).
+
+      Cost: on each wake of a fair task, one pass over the CPUs and the
+      domains (a few multiplications each). n = not compiled in.
+
+# ---------------------------------------------------------------------------
+# IPC
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Control loop
+# ---------------------------------------------------------------------------
+config CONTROL_TXN_TICKS
+    bool "Control plane: transactional ticks (rollback recoverable faults)"
+    default y
+    help
+      Experiment I-13 — ACCEPTED, default ON. A per-hart checkpoint
+      is armed once at the motor control task's entry; a recoverable fault
+      (illegal instruction / misaligned load-store) inside the control loop is
+      rolled back — motors safe-stop and the task restarts at its entry —
+      instead of `panic=abort` halting the kernel mid-motion.
+
+      y (default) = a recoverable fault in the control loop is survivable
+        (safe-stop + restart; abort counted in TXN_ABORTS). Verified:
+        survived=1, aborts=1, 0 FATAL.
+      n = the fault is FATAL (legacy: kernel logs + shuts down). The rollback
+        branch is const-eliminated → trap handler byte-identical to legacy.
+
+      Surfaces as `azos_limits::CONTROL_TXN_TICKS`. No-fault hot path is
+      unchanged (the arm runs once per task entry, not per tick; the trap-hook
+      check only runs on the rare exception path). Recoverable-cause whitelist
+      is conservative (excludes page faults + ecall). Remaining hardening:
+      cert review of the trap-handler hook.
+
+# ---------------------------------------------------------------------------
+# Real-time band budget (wave 11 SCHED-RT)
+# ---------------------------------------------------------------------------
+config RT_BAND_WINDOW_MS
+    int "RT band budget: window (ms)"
+    range 10 10000
+    default 1000
+    help
+      Length of the per-hart window in which the real-time band (priorities
+      below 12, never preempted by the tick) may use at most
+      RT_BAND_CAP_PCT of the hart while a non-band task is ready on it. The
+      rest of the window is guaranteed to the non-band tasks of that hart
+      (net-poll, ring-3 services, best effort). Work-conserving: if nothing
+      outside the band is ready, the band keeps the hart.
+
+      A shorter window bounds how long a runaway band task holds the hart
+      in one stretch (cap x window) at the price of more throttling events.
+      Accounting is by the monotonic counter at the switch and tick points;
+      enforcement is a one-shot comparator write, armed only while a band
+      task runs AND a non-band task is ready on its hart.
+
+      Surfaces as `azos_limits::RT_BAND_WINDOW_MS`. Cost: see
+      RT_BAND_CAP_PCT.
+
+config RT_BAND_CAP_PCT
+    int "RT band budget: share of each window the band may use (%)"
+    range 50 100
+    default 95
+    help
+      Share of each RT_BAND_WINDOW_MS window the real-time band may run on a
+      hart while a non-band task is ready there. 95 (default) guarantees 5 %
+      to the non-band tasks, the share Linux's RT throttle and its 6.12
+      fair_server default to. 100 disables the budget: a band task that
+      never blocks owns its hart (the behaviour before wave 11).
+
+      Admission uses the same cap: the EDF+CBS reservations of band tasks
+      admitted on one hart may sum to at most this share of it.
+
+      Cost, measured (wave 11 SCHED-RT rows, -smp 1 -icount, instructions):
+      one comparator write through the arming path 39 (riscv64, Sstc) /
+      30 (aarch64, CNTV_CVAL); a call that finds the comparator already
+      earlier, 11 / 12. Over the rows' 12 s run (rt-motor at 1 kHz on the
+      same hart, a runaway band task, EDF and CBS load) the RT paths armed
+      ~40,000 times and wrote the comparator ~850 times. With no band task
+      involved and no reservation on the hart: one per-hart word test per
+      switch, pick and tick; vsbench (bench-minimal, -icount) moved
+      sched-yield +4 instructions on both ISAs, switch-loaded +18/+19,
+      ipc-roundtrip +20 (aarch64) / -2 (riscv64), syscall-floor 0 / -2.
+      Surfaces as `azos_limits::RT_BAND_CAP_PCT`.
+
+# The safety comms timeouts (now in seconds) and PID_DT_MS are in the Robot
+# menu (config/Kconfig.robot, "Safety layer and motor control"), wave 11.
+config SCHED_SWITCH_COUNTERS
+    bool "Count each task's context switches (voluntary / preempted)"
+    default n if PROFILE_EMBEDDED
+    default y
+    help
+      Per-task counts of the switches a task took voluntarily (yield,
+      block, exit) and by preemption, as DOMAIN_TASKINFO, the task's vDSO page
+      and Linux getrusage report them. vsbench's switch lanes read them to
+      prove that each yield switched.
+
+      Cost: one atomic add on every context switch (about five
+      instructions) and 16 bytes per task slot. Nothing safety-related
+      reads them (the watchdog and RT budgets keep their own accounting),
+      so the embedded product profile leaves them out; off, the counts
+      read 0. Turn on wherever switch statistics or vsbench's switch
+      lanes are wanted.
+
+config SCHED_REMOTE_WAKE_DEFER
+    bool "Defer a contended wake onto another CPU to that CPU"
+    default y
+    help
+      A wake whose task goes to ANOTHER CPU's ready queue tries that
+      queue's lock once. If it is free the task is queued at once, as
+      before; if it is held (or earlier wakes for that CPU are still
+      pending) the task is pushed onto the target CPU's lock-free deferred
+      wake list and the reschedule IPI is sent. The target queues it with
+      its own lock when it takes that IPI. A wake for the waker's own CPU
+      is unchanged.
+
+      Why: a remote wake from any context, the timer ISR included,
+      must not spin with interrupts masked on a lock another hart holds;
+      the holder may not run until this hart stops (QEMU -icount runs
+      harts one at a time; a preempted vCPU does the same).
+
+      Cost: 4 bytes per task slot and per CPU. An uncontended remote wake
+      runs the same lock instruction it always did; a contended one costs
+      a CAS push, an IPI and a drain on the target instead of the spin.
+      Turn off only to measure the old spinning remote enqueue.
+
+config SCHED_SAVING_GATE_US
+    int "Longest wait for a picked task's context save (us)"
+    range 10 100000
+    default 1000
+    help
+      A hart that picks a task still being switched out on another hart
+      waits for that save to finish (the context-saving gate in
+      do_schedule) at most this long, then puts the task back on the queue
+      instead of hanging. A legitimate wait is a handful of instructions;
+      the bound only matters when something is broken.
+
+      Cost: none on a switch whose task is already saved (the common
+      case); the clock is read only while waiting. Keep it well below one
+      scheduler tick (1/SCHED_HZ) so a wedge cannot hide for a tick, and
+      well above any real save time on the slowest board.
+
+config SCHED_SAVING_GATE_CLOCK_EVERY
+    int "Spins between clock reads in the context-saving gate"
+    range 1 65536
+    default 256
+    help
+      How many spins of the context-saving gate's wait pass between two
+      reads of the clock that bounds it (SCHED_SAVING_GATE_US). A clock
+      read is a device access on some boards, so it is kept out of the
+      tight loop. A power of two compiles to a mask. Only the waiting
+      path pays it; lower it if the gate's bound must be precise.
+
+endmenu # Scheduling, IPC & timing

@@ -1,0 +1,24 @@
+[package]
+name = "azos_sshd_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the SSH server (userspace/services/sshd): its wire types, the packet protocol and chacha20-poly1305@openssh.com (against ring's implementation), key exchange (RFC 8731, over the RFC 7748 vectors), public-key authentication, the connection layer and the session behind the channel, pulled in with #[path] so the code under test is the code SSHD.ELF is built from. A client written here drives the server through a full handshake, a re-exchange, strict key exchange and every refusal; when the host has an OpenSSH client it also logs in with the real one over TCP. Excluded from workspace."
+
+# Run with:  cd tests/host/sshd-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+[dev-dependencies]
+# Independent implementations to compare the in-tree ones with.
+ring = "0.17"
+ed25519-dalek = "2"
+sha2 = "0.10"
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

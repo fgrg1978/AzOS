@@ -1,0 +1,10 @@
+[package]
+name = "drv_test_bus"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host stand-in for azos_drv_bus, reduced to i2c_read/i2c_write over a scripted ADS1115. Excluded from workspace."
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids the SoC frameworks (this crate) answer to, for the hardware bus
+# (crates/drivers/hwbus; see crates/drivers/sys/hwbus.ids for the format).
+# The clock, reset, power and pad controllers of the JH7110 are driven by the kernel
+# from boot (kernel/src/boot/soc.rs), outside the bus: `boot` binds them to a
+# driver that only records the fact, so ring 3 is never handed their windows.
+# (The sys pad controller's window is also the board's GPIO: crates/drivers/gpio
+# binds that node, see its hwbus.ids.)
+
+soc              dt:starfive,jh7110-syscrg   boot   if=SOC_JH7110
+soc              dt:starfive,jh7110-aoncrg   boot   if=SOC_JH7110
+soc              dt:starfive,jh7110-stgcrg   boot   if=SOC_JH7110
+soc              dt:starfive,jh7110-pmu      boot   if=SOC_JH7110
+soc              dt:starfive,jh7110-aon-pinctrl   boot   if=SOC_JH7110
+
+# SpacemiT K1: the CPU cluster clocks live in the APMU; the PLLs in the PLL
+# block, whose lock bits are in the MPMU (crates/drivers/soc/src/k1/clk.rs).
+# The kernel drives all three from boot, outside the bus.
+soc              dt:spacemit,k1-syscon-apmu   boot   if=SOC_K1
+soc              dt:spacemit,k1-pll           boot   if=SOC_K1
+soc              dt:spacemit,k1-syscon-mpmu   boot   if=SOC_K1

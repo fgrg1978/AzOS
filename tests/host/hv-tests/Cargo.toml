@@ -1,0 +1,47 @@
+[package]
+name = "azos_hv_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_hv and the three ISA glues of azos_arch_api::Hypervisor: stage-2 mapping from MemObj frames, the exit decode, admission of the guest rows, the VM and vCPU objects. Excluded from the kernel workspace. Run with: cd tests/host/hv-tests && cargo test --release"
+
+# Its own workspace root, like the other host-test crates.
+[workspace]
+
+[dependencies]
+azos_hv = { path = "../../../crates/core/hv" }
+azos_arch_api = { path = "../../../crates/core/arch-api" }
+# `dev-key`: the topology crate embeds a test key in a build without a production one.
+azos_topology = { path = "../../../crates/core/topology", features = ["dev-key"] }
+azos_devif = { path = "../../../crates/core/devif" }
+# `on`: the ring is read back to see the refusals the monitor wrote.
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_limits = { path = "../../../crates/core/limits" }
+# The x86_64 glue is the crate's own module (it builds on the PTE builder of
+# `crate::mmu`); the other two glues are pulled in by path (src/glue.rs).
+azos_arch_x86_64 = { path = "../../../crates/core/arch-x86_64" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[features]
+# Each breaks one rule of azos_hv on purpose; the guarded test must go red.
+# Never enabled in a build.
+canary-rt-hart = ["azos_hv/canary-rt-hart"]
+canary-no-rollback = ["azos_hv/canary-no-rollback"]
+canary-egress-open = ["azos_hv/canary-egress-open"]
+canary-clock-per-vcpu = ["azos_hv/canary-clock-per-vcpu"]
+# The same for the aarch64 guest PSCI and virtual timer (`ext/hv/psci.rs`,
+# `inject.rs`), compiled into this crate by path: the features are this crate's own.
+canary-psci-forwarded = []
+canary-ppi-listed-twice = []
+canary-cntvoff-per-vcpu = []
+canary-ppi-not-silenced = []
+# `crates/core/arch-aarch64/src/ext/hv` (pulled in by path) gates the resident EL2 stub
+# and the guest entry on it, and both are bare-metal aarch64 only: never set here.
+hv = []
+
+[profile.release]
+overflow-checks = true

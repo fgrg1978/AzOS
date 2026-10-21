@@ -1,0 +1,13 @@
+[package]
+name = "azos_tftp"
+version = "0.1.0"
+edition = "2021"
+description = "RFC 1350 TFTP client: pure no_std state machine and fetch loop over a caller-supplied UDP socket. Used by the package installer (userspace/services/pkgd) to fetch a signed package from the development host in a development build."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+repository = "https://github.com/azos-project/azos"
+
+[lib]
+name = "azos_tftp"
+
+[dependencies]

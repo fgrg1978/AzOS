@@ -1,0 +1,23 @@
+[package]
+name = "hello_aarch64"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "aarch64 counterpart of hello.S (phase 6 prep, aarch64 parity). Same two syscalls (write, exit), issued raw — no libsys, matching hello.S's own \"hand-written, no library\" character — because no aarch64 GNU cross-assembler is available on this host to build hello.S's twin the way hello.S itself is built. rust-lld (bundled with rustc) links it instead; see tests/qemu/aarch64-smoke for the same toolchain pattern already proven in this repo. RISC-V's hello.elf (built from hello.S via $(RISCV_AS)/$(RISCV_LD)) is untouched by this crate's existence."
+
+[[bin]]
+name = "hello_aarch64"
+path = "src/main.rs"
+
+[dependencies]
+# The numbers come from the one definition (tools/ci_check.sh lints for
+# restated ones); azos_abi has no dependencies of its own.
+azos_abi = { path = "../../../crates/core/abi" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+[workspace]

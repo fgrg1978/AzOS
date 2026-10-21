@@ -1,0 +1,42 @@
+[package]
+name = "rpcquic"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS relay of the QUIC link (ring 3, a std program): carries the sealed frames of the RPC server (rpcsrv) between the two nodes on QUIC streams, so the QUIC stack and its TLS, the largest parser of network input in the system, are in a process whose only authority is the network and the entropy pool, not in the one that holds the lend rights. Takes its configuration from Kconfig (RPC_QUIC, RPC_PEER_ADDR, RPC_QUIC_PORT, ...). Excluded from workspace; built standalone through tools/sdk_cargo.py --vendored."
+
+[dependencies]
+azos_quic = { path = "../../lib/quic" }
+azos_limits = { path = "../../../crates/core/limits" }
+# rand_core 0.6 (the TLS provider's keys) draws through getrandom 0.2, which has no backend for target_os = "azos": the `custom` hook is how the std port's random source (the kernel pool) reaches it (src/main.rs). getrandom 0.4 (rand 0.10, quinn-proto) takes the `custom` backend tools/sdk_cargo.py --vendored selects.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+getrandom04 = { package = "getrandom", version = "0.4", default-features = false }
+
+# rustls-rustcrypto 0.0.2-alpha pulls rustls-webpki 0.102 (RustSec); the local copy takes the
+# algorithm identifiers from rustls-pki-types instead (third_party/patches/rustls-rustcrypto).
+[patch.crates-io]
+rustls-rustcrypto = { path = "../../../third_party/patches/rustls-rustcrypto" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+# `std` brings thousands of symbols; the symbol table is not part of the image.
+strip = "symbols"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# `azos` is not a target_os rustc knows; the program's entropy hooks are built only for it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs"). The
+# built-in topology has a row for it, and the kernel starts it at boot, only
+# when Kconfig RPC_QUIC is on.
+[package.metadata.azos]
+default = "RPC_QUIC"
+start = "RPC_QUIC"

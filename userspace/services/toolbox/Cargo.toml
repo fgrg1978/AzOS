@@ -1,0 +1,34 @@
+[package]
+name = "toolbox"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS multicall tool image: echo, cat, ls, ps, inspect, log, wc, args, spin, yes, sleep, true, false, host, ntp, vm, beep, input, window, dispatched on argv[0]. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_inspect_lib = { path = "../../lib/inspect" }
+azos_names = { path = "../../lib/names" }
+azos_rings = { path = "../../../crates/core/rings" }
+azos_compositor = { path = "../../lib/compositor" }
+azos_input_wire = { path = "../../../crates/drivers/input/wire" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+# The loader reads and hashes at most 128 KiB of file (EXEC_MAX_BYTES); the symbol
+# table is not part of the image and the unstripped file had outgrown the limit.
+strip = "symbols"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+topology = true

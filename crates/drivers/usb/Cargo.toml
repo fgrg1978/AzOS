@@ -1,0 +1,89 @@
+[package]
+name = "azos_usb"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+The native USB host: the xHCI controller driver (registers, command, event and
+transfer rings, scratchpads, contexts), the USB core (enumeration, descriptor
+parsing, control/bulk/interrupt pipes as Queue rings over driver-owned DMA
+buffers, isochronous IN pipes, hubs, hot-plug events) and the class-driver interface (IDL). Pure
+no_std with no allocation: the hardware is reached through three traits
+(`Regs`, `Memory`, `Clock`), so tests/host/usb-tests drives the whole flow
+against a register-level xHCI mock. The kernel half is kernel/src/boot/usb.rs.
+"""
+
+[dependencies]
+azos_limits = { workspace = true }
+azos_dma    = { workspace = true }
+azos_rings  = { workspace = true }
+azos_idl    = { workspace = true }
+azos_devif  = { workspace = true }
+azos_scsi   = { workspace = true }
+azos_cam_ring = { workspace = true }
+azos_inspect = { workspace = true, optional = true }
+
+[features]
+# The introspection listing (`usb/devN` nodes): needs azos_inspect.
+inspect = ["dep:azos_inspect"]
+
+# Gate/host canaries only. Each one puts a specific xHCI bug back; the host
+# test that guards the property must go red with it on. Never enabled in a
+# shipping build.
+#
+# HCCPARAMS1.AC64 ignored: memory above 4 GiB is handed to a 32-bit controller.
+canary-ac64 = []
+# HCCPARAMS1.CSZ ignored: contexts are laid out as 32 bytes on a 64-byte controller.
+canary-csz = []
+# Max Scratchpad Buffers read from the low field only (the high field dropped).
+canary-scratchpad = []
+# The producer cycle bit is not toggled when a ring wraps over its Link TRB.
+canary-cycle = []
+# ERDP is written without the Event Handler Busy bit set, so EHB never clears.
+canary-erdp-ehb = []
+# A TRB may cross a 64 KiB boundary (the transfer is not split there).
+canary-64k = []
+# The route string of a device behind a hub is left zero.
+canary-route = []
+# A device stays in the table after the port reports it gone.
+canary-unplug = []
+# A DWC3 whose dr_mode is not `host` is taken for a host anyway.
+canary-dr-mode = []
+# A received NTB's datagram is not checked against the end of the block.
+canary-ntb-bounds = []
+# No byte pads a transmission that ends on a packet boundary (the core queues
+# no zero-length packet, so the device never sees the frame end).
+canary-zlp-pad = []
+# The NDP and the datagrams of a block sent are not placed by the device's
+# alignment, divisor and remainder.
+canary-ntb-align = []
+# A halted bulk pipe is never cleared on the device side.
+canary-no-clear-halt = []
+# A data interface the union descriptor does not name is driven anyway.
+canary-mismatch = []
+# SET_NTB_INPUT_SIZE is not sent, so a device whose blocks are larger than
+# the host's buffers sends them.
+canary-ntb-input-size = []
+# A bus error on an isochronous endpoint halts it, as on a bulk endpoint, and
+# the stream stops with it.
+canary-isoch-halt = []
+# The packets of the last burst of an isochronous interval are not counted in
+# its TRB (TLBPC stays 0).
+canary-isoch-burst = []
+
+# The USB video class driver (tests/host/usb-uvc-tests).
+#
+# A payload the camera flags with the error bit is appended to its frame anyway.
+canary-uvc-err = []
+# The first frame is taken as it comes, though the stream started in the middle
+# of it.
+canary-uvc-sync = []
+# FID toggles do not end a frame (only EOF does), so a camera that never sets
+# EOF delivers nothing.
+canary-uvc-fid = []
+# The probe/commit block is the 26 bytes of UVC 1.0 whatever the camera is.
+canary-uvc-probe-len = []
+# The first isochronous setting is selected whatever bandwidth the camera asked
+# for.
+canary-uvc-alt = []

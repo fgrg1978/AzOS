@@ -1,0 +1,45 @@
+[build]
+target = "riscv64imac-unknown-none-elf"
+
+[target.riscv64imac-unknown-none-elf]
+rustflags = [
+    "-C", "link-arg=-Tuser.ld",
+    "-C", "code-model=medium",
+    "-C", "target-feature=+zaamo,+zalrsc",
+]
+
+[unstable]
+build-std = ["core"]
+build-std-features = ["compiler-builtins-mem"]
+
+# aarch64 builds with the soft-float target: the runtime runs on the Linux
+# program's thread between its instructions and shares its FP/SIMD state,
+# so no instruction of it may name a vector register (the hard-float
+# `aarch64-unknown-none` the other images use would).
+[target.aarch64-unknown-none-softfloat]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tuser_aarch64.ld",
+    "-C", "link-arg=-zmax-page-size=4096",
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "code-model=small",
+]
+
+# x86_64 builds with rustc's own soft-float target (`x86_64-unknown-none`: no
+# MMX/SSE/AVX feature, the soft-float ABI): like the other two, the runtime
+# runs between two of the program's instructions and shares its vector
+# registers, so no instruction of it may name one (the hard-float
+# `x86_64-azos-user` the other images use would). The target's defaults are
+# the kernel's (kernel code model, PIE); the flags below make it a static
+# executable in the low 2 GiB, as `user_x86_64.ld` links it. Nothing here
+# takes the Kconfig baseline flags (X86_64_LEVEL): they would enable SSE.
+[target.x86_64-unknown-none]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tuser_x86_64.ld",
+    "-C", "link-arg=-zmax-page-size=4096",
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "link-arg=-znorelro",
+    "-C", "code-model=small",
+    "-C", "relocation-model=static",
+]

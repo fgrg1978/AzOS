@@ -1,0 +1,7 @@
+# Override the workspace target so the parser tests run on the host.
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []

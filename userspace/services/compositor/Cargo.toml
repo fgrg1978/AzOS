@@ -1,0 +1,39 @@
+[package]
+name = "compositor"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS compositor: the sole holder of the kernel's Display interface. Clients attach windows (memory objects with a damage ring in their first page); it composes them with azos_compose into one full-screen surface made of bands and presents only the damage. It is also the trusted surface of the Secure Attention Key: its row alone holds the badged call right the input server hands the focus to after the chord, and it alone draws the trusted-path banner and the why-was-this-refused panel (a client of the decision server). Ring 3. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_rings = { path = "../../../crates/core/rings" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_compose = { path = "../../lib/compose" }
+azos_compositor = { path = "../../lib/compositor" }
+azos_decisions = { path = "../../lib/decisions" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+# The loader reads at most 128 KiB of file (EXEC_MAX_BYTES) and the symbol table
+# is not part of the image.
+strip = "symbols"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+# On wherever the topology has the compositor's row (Kconfig `COMPOSITOR`, the
+# `COMPOSITOR_ROW` of crates/core/topology/src/builder.rs), and started there.
+images = ["COMPSRV.ELF"]
+default = "COMPOSITOR"
+start = "COMPOSITOR"

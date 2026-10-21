@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+// Host tests for the `errno_for_*_err` functions in
+// `crates/core/syscall/src/handlers.rs` (target 1). Each is a pure match from a
+// capability/driver error enum to a AZOS errno via `Errno::to_syscall_ret`.
+// Zero host coverage before this crate; a wrong arm silently hands ring 3
+// the wrong errno (e.g. "retry me" instead of "this cap is dead"), which a
+// caller cannot distinguish from a correct answer without reading kernel
+// source.
+//
+// `errno_for_ioring_err` is covered here too, since 2026-09-03: the real
+// `crates/core/ipc/src/io_ring.rs` is now `#[path]`-pulled into the ipc shim.
+// The previously-reported blocker (its embedded test module wanting
+// `azos_mm::shim_*` / `azos_sched::shim_set_current`) does not
+// apply -- that module is `#[cfg(test)]`, and Cargo sets `--cfg test` only
+// for the crate under test, never for its dependencies. `syscall_test_ipc`
+// is a dependency here, so the module is not compiled at all.
+
+// **Every test here takes `serial()`.** The mappings are pure, but the ones that
+// fold a capability error record the denial against the current task (tid 0
+// outside a scene) in the denial recorder and limiter every test in the crate
+// shares, and read the shim's "current task" to do it. Run beside a serialised
+// test they wrote into the state it was asserting on. The sched shim now
+// refuses the read outright without the lock.
+
+use azos_abi::error::Errno;
+use azos_ipc::cap::CapError;
+use crate::ipc_handlers::*;
+use super::harness::serial;
+
+/// Every `errno_for_*_err` function maps `CapError::{Stale, WrongKind,
+/// MissingPerms, Contained}` through its own `CapError` variant identically
+/// — this is the shared prefix every one of the seven matches starts with.
+/// Table-driven so the property reads as one statement instead of seven
+/// copy-pasted match arms.
+#[test]
+fn every_cap_error_prefix_maps_to_the_same_four_errnos() {
+    let _g = serial();
+    assert_eq!(
+        errno_for_port_err(azos_ipc::port::PortCapError::Cap(CapError::Stale)),
+        Errno::ECAPSTALE.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_port_err(azos_ipc::port::PortCapError::Cap(CapError::WrongKind)),
+        Errno::ECAPKIND.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_port_err(azos_ipc::port::PortCapError::Cap(CapError::MissingPerms)),
+        Errno::ECAPPERMS.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_port_err(azos_ipc::port::PortCapError::Cap(CapError::Contained)),
+        Errno::EAGAIN.to_syscall_ret()
+    );
+
+    assert_eq!(
+        errno_for_memobj_err(azos_ipc::memobj::MemObjError::Cap(CapError::Stale)),
+        Errno::ECAPSTALE.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_memobj_err(azos_ipc::memobj::MemObjError::Cap(CapError::WrongKind)),
+        Errno::ECAPKIND.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_memobj_err(azos_ipc::memobj::MemObjError::Cap(CapError::MissingPerms)),
+        Errno::ECAPPERMS.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_memobj_err(azos_ipc::memobj::MemObjError::Cap(CapError::Contained)),
+        Errno::EAGAIN.to_syscall_ret()
+    );
+
+}
+
+/// `PortCapError`'s kind-specific arms: `Full`/`Empty`/`Closed`.
+///
+/// **WHY this one matters.** `Full` maps to `EMFILE` here (port table
+/// exhausted -- "too many open"), while `Empty` is `EAGAIN` ("try again").
+#[test]
+fn port_error_kind_specific_arms_map_correctly() {
+    let _g = serial();
+    use azos_ipc::port::PortCapError;
+    assert_eq!(errno_for_port_err(PortCapError::Full), Errno::EMFILE.to_syscall_ret());
+    assert_eq!(errno_for_port_err(PortCapError::Empty), Errno::EAGAIN.to_syscall_ret());
+    assert_eq!(errno_for_port_err(PortCapError::Closed), Errno::EBADF.to_syscall_ret());
+}
+
+/// `MemObjError`'s kind-specific arms: `NoMem`/`BadArg`/`Closed`/`Full`.
+#[test]
+fn shm_error_kind_specific_arms_map_correctly() {
+    let _g = serial();
+    use azos_ipc::memobj::MemObjError;
+    assert_eq!(errno_for_memobj_err(MemObjError::NoMem), Errno::ENOMEM.to_syscall_ret());
+    assert_eq!(errno_for_memobj_err(MemObjError::BadArg), Errno::EINVAL.to_syscall_ret());
+    assert_eq!(errno_for_memobj_err(MemObjError::Closed), Errno::EBADF.to_syscall_ret());
+    assert_eq!(errno_for_memobj_err(MemObjError::Full), Errno::EMFILE.to_syscall_ret());
+}
+
+/// `errno_for_ioring_err` (`azos_ipc::io_ring::IoRingCapError`) -- the
+/// eighth `Cap`-wrapping enum, and the last syscall errno mapper to get a
+/// test (it lives in `crates/core/syscall/src/ipc_handlers.rs`). Its four `Cap`
+/// arms are the shared prefix; asserted here
+/// rather than folded into `every_cap_error_prefix_maps_to_the_same_four_
+/// errnos` because a mutation confined to *this* function's arms would not
+/// change any of the other seven, so the assertion has to name this one.
+#[test]
+fn ioring_cap_error_prefix_maps_to_the_same_four_errnos() {
+    let _g = serial();
+    use azos_ipc::io_ring::IoRingCapError;
+    assert_eq!(
+        errno_for_ioring_err(IoRingCapError::Cap(CapError::Stale)),
+        Errno::ECAPSTALE.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_ioring_err(IoRingCapError::Cap(CapError::WrongKind)),
+        Errno::ECAPKIND.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_ioring_err(IoRingCapError::Cap(CapError::MissingPerms)),
+        Errno::ECAPPERMS.to_syscall_ret()
+    );
+    assert_eq!(
+        errno_for_ioring_err(IoRingCapError::Cap(CapError::Contained)),
+        Errno::EAGAIN.to_syscall_ret()
+    );
+}
+
+/// `IoRingCapError`'s kind-specific arms: `NoMem`/`Closed`/`Full`/
+/// `SubmitError(_)`.
+///
+/// **`Full` is the arm worth naming.** It means "the caller's cap-table has
+/// no free slot -- the ring was rolled back" (`io_ring.rs`'s own doc), and
+/// maps to `EMFILE`. `EAGAIN` would tell ring 3 to retry a
+/// condition that will never clear on its own, which is the same
+/// same-name/different-answer trap `port_error_kind_specific_arms_map_
+/// correctly` documents.
+#[test]
+fn ioring_error_kind_specific_arms_map_correctly() {
+    let _g = serial();
+    use azos_ipc::io_ring::IoRingCapError;
+    assert_eq!(errno_for_ioring_err(IoRingCapError::NoMem), Errno::ENOMEM.to_syscall_ret());
+    assert_eq!(errno_for_ioring_err(IoRingCapError::Closed), Errno::EBADF.to_syscall_ret());
+    assert_eq!(errno_for_ioring_err(IoRingCapError::Full), Errno::EMFILE.to_syscall_ret());
+    // The payload must be ignored, not keyed on: both land on EIO. The
+    // per-op status is surfaced through the CQ, not through errno.
+    assert_eq!(errno_for_ioring_err(IoRingCapError::SubmitError(0)), Errno::EIO.to_syscall_ret());
+    assert_eq!(
+        errno_for_ioring_err(IoRingCapError::SubmitError(i32::MIN)),
+        Errno::EIO.to_syscall_ret()
+    );
+    // A submit that ran nothing because the CQ was full: retry after a drain.
+    assert_eq!(errno_for_ioring_err(IoRingCapError::CqFull), Errno::EBUSY.to_syscall_ret());
+}

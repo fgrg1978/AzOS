@@ -1,0 +1,20 @@
+[package]
+name = "azos_libsys"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_abi = { workspace = true }
+
+# riscv32 (AzOS-micro) compiles only `src/rv32.rs`, which reads `azos_abi` and
+# nothing else: the rings need 64-bit atomics and the rest is written in
+# 64-bit words (see the header of `src/rv32.rs`).
+[target.'cfg(not(target_arch = "riscv32"))'.dependencies]
+azos_rings = { workspace = true }
+azos_bytepipe = { workspace = true }
+azos_idl = { workspace = true }
+azos_devif = { workspace = true }
+azos_ktest = { workspace = true }
+azos_libsys_macros = { path = "../libsys-macros" }

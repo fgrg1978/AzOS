@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; see crates/drivers/sys/hwbus.ids for the format).
+#
+# JH7110 general-purpose DMA controller (`dma-controller@16050000`, DesignWare
+# AXI DMAC). The ARM PL080 beside it (`arm,pl080`, the crypto engine's DMA) is
+# claimed by nothing. `boot`: the controller is the kernel's copy engine.
+
+dmac             dt:starfive,jh7110-axi-dma   boot   if=BOARD_VF2

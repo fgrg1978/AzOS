@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids the native xHCI driver answers to, for the hardware bus
+# (crates/drivers/hwbus; build.rs turns every crates/drivers/*/hwbus.ids into
+# the native match table). Format: see crates/drivers/block/hwbus.ids.
+
+# xHCI host controller: class 0C (serial bus), sub class 03 (USB), programming
+# interface 30 (xHCI).
+xhci             pciclass:0c0330:ffffff   if=USB_XHCI
+# Device-tree xHCI: the generic binding and the Synopsys DesignWare USB3
+# controller. The id cannot see `dr_mode`, so the probe (kernel/src/boot/usb.rs,
+# azos_usb::dwc3) refuses a DWC3 that is not `dr_mode = "host"`: a board's
+# gadget port stays the gadget stack's. The glue that powers the PHY and the
+# clocks is the board's, SOC_FRAMEWORKS.
+xhci             dt:generic-xhci          if=USB_XHCI
+xhci             dt:snps,dwc3             if=USB_XHCI

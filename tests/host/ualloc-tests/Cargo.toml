@@ -1,0 +1,19 @@
+[package]
+name = "azos_ualloc_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the hardened ring-3 allocator (userspace/lib/ualloc, plan phase 5 item 6): the engine run over a model of mmap/munmap/entropy whose fault is a catchable panic, and the micro-benchmark. Excluded from workspace."
+
+# Run with:  cd tests/host/ualloc-tests && cargo test --release
+# Micro-benchmark (not a test):
+#   cd tests/host/ualloc-tests && cargo test --release bench -- --ignored --nocapture
+
+[dependencies]
+azos_ualloc = { path = "../../../userspace/lib/ualloc" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

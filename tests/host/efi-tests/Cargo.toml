@@ -1,0 +1,12 @@
+[package]
+name = "azos_efi_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_efi — BootInfo magic/version, EfiMemoryIter stride iteration, boot_info_from_ptr alignment + magic guards, PE/COFF + EFI spec constants."
+
+# Run with:  cd tests/host/efi-tests && cargo test
+
+[dependencies]
+azos_efi = { path = "../../../crates/core/efi" }

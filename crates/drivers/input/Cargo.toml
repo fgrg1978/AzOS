@@ -1,0 +1,14 @@
+[package]
+name = "azos_drv_input"
+version = "0.1.0"
+edition = "2021"
+description = "Input devices: the shared evdev keymap and event ring, and the PS/2 (i8042) keyboard and mouse driver."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_sync    = { workspace = true }
+azos_rings    = { workspace = true }
+azos_drv_sys = { workspace = true }
+azos_limits  = { workspace = true }
+azos_input_wire = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "azos_firmware"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Firmware interfaces: the Raspberry Pi VideoCore mailbox property protocol (temperature, clock rates). Pure no_std; the register access is a trait, so the host suite (tests/host/thermal-tests) runs the real encoder against a fake VideoCore."
+
+[lib]
+name = "azos_firmware"
+path = "rpi_mailbox.rs"

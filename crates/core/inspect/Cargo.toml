@@ -1,0 +1,9 @@
+[package]
+name = "azos_inspect"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The introspection tree (Kconfig INSPECT): a versioned tree of typed nodes (directory, u64, i64, string, histogram) that the kernel publishes into a MemObj it alone writes, and that readers map read-only and walk without a system call. Values are consistent per node under a seqlock; the tree's shape is consistent under an epoch seqlock. Sensitive subtrees live in a second region of the same format that is handed out only against an admin warrant. no_std, no dependencies; the writer and the reader are tested on the host (tests/host/inspect-tests)."
+
+[dependencies]

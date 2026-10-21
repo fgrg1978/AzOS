@@ -1,0 +1,19 @@
+[package]
+name = "azos_idl"
+version = "0.1.0"
+edition = "2021"
+description = "AzOS IDL (L13) runtime: Transport, Wire, Cap<T>, IdlError and the generated-stub support for #[azos_interface]."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+# no_std; excluded from the riscv64 workspace (its proc-macro half is host
+# built). Userspace images depend on it by path.
+# Run with:  cd crates/core/idl && cargo test --offline
+[workspace]
+
+[lib]
+name = "azos_idl"
+
+[dependencies]
+azos_abi = { path = "../abi" }
+azos_idl_macros = { path = "../idl-macros" }

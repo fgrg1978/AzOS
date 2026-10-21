@@ -1,0 +1,19 @@
+[package]
+name = "azos_trace"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The kernel event tracer (Kconfig KTRACE): per-CPU lock-free record rings in one shared region, a runtime class mask and the tracepoints. Below sched, ipc and syscall: depends only on the ring layout, the ABI and the Kconfig constants."
+
+[dependencies]
+azos_abi    = { workspace = true }
+azos_rings  = { workspace = true }
+azos_limits = { workspace = true }
+azos_percpu = { workspace = true }
+
+[features]
+# Gate canary: the producer never advances its head, so every record lands
+# on one slot and a reader sees one record per ring; `trace: tracectl reads
+# live` must fail.
+producer-canary = ["azos_rings/trace-producer-canary"]

@@ -1,0 +1,27 @@
+[package]
+name = "azos_thermal"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Thermal framework runtime: sensors (JH7110 sfctemp, Raspberry Pi firmware), the SpacemiT K1 sensor and voltage-and-clock actuator, the x86_64 package sensor (Intel coretemp, AMD SMN) with its HWP/CPPC level-request actuator and RAPL energy meter, the device-tree zones builder and the tick that reads, decides (azos_energy::thermal) and actuates (azos_energy::opp). The CPU clock over the SoC frameworks (azos_soc). Pure no_std, host-tested in tests/host/thermal-tests and tests/host/soc-tests."
+
+[lib]
+name = "azos_thermal"
+
+[dependencies]
+azos_energy = { path = "../../core/energy" }
+azos_dtb = { path = "../dtb" }
+azos_firmware = { path = "../firmware" }
+azos_soc = { path = "../soc" }
+
+[features]
+# A board object with no hardware: a temperature that follows a function the
+# caller supplies, and a clock that remembers what it was asked. The QEMU
+# `thermal-smoke` gate row drives a temperature ramp through it (QEMU has no
+# thermal sensor); never in a shipping image.
+fake = []
+# The gate's canary run (tests/host/thermal-tests): the Raspberry Pi actuator
+# trusts the firmware's range and the rate it settled on; the tests that pin
+# those guards must fail.
+rpi-opp-canary = []

@@ -1,0 +1,295 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2018 Redox OS
+#
+# relibc for the compiler this repository pins.
+#
+# relibc is written for nightly-2026-05-24; this repository builds everything with the
+# compiler of rust-toolchain.toml (nightly-2026-02-21), where the C-variadic argument
+# reader is VaList::arg, not VaList::next_arg. This rename is the whole difference.
+#
+diff --git a/src/header/fcntl/mod.rs b/src/header/fcntl/mod.rs
+index 4abdb6b..0e220a3 100644
+--- a/src/header/fcntl/mod.rs
++++ b/src/header/fcntl/mod.rs
+@@ -116,7 +116,7 @@ pub unsafe extern "C" fn fcntl(fildes: c_int, cmd: c_int, mut __valist: ...) ->
+     // c_ulonglong
+     let arg = match cmd {
+         F_DUPFD | F_SETFD | F_SETFL | F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK
+-        | F_OFD_SETLKW | F_DUPFD_CLOEXEC => unsafe { __valist.next_arg::<c_ulonglong>() },
++        | F_OFD_SETLKW | F_DUPFD_CLOEXEC => unsafe { __valist.arg::<c_ulonglong>() },
+         _ => 0,
+     };
+ 
+@@ -136,7 +136,7 @@ pub unsafe extern "C" fn open(path: *const c_char, oflag: c_int, mut __valist: .
+     let mode = if oflag & O_CREAT == O_CREAT
+     /* || oflag & O_TMPFILE == O_TMPFILE */
+     {
+-        unsafe { __valist.next_arg::<mode_t>() }
++        unsafe { __valist.arg::<mode_t>() }
+     } else {
+         0
+     };
+@@ -166,7 +166,7 @@ pub unsafe extern "C" fn openat(
+     let mode = if oflag & O_CREAT == O_CREAT
+     /* || oflag & O_TMPFILE == O_TMPFILE */
+     {
+-        unsafe { __valist.next_arg::<mode_t>() }
++        unsafe { __valist.arg::<mode_t>() }
+     } else {
+         0
+     };
+diff --git a/src/header/monetary/strfmon.rs b/src/header/monetary/strfmon.rs
+index c339272..33128e3 100644
+--- a/src/header/monetary/strfmon.rs
++++ b/src/header/monetary/strfmon.rs
+@@ -121,7 +121,7 @@ pub unsafe extern "C" fn strfmon(
+             Some('i') => {
+                 // International formatting
+                 flags.international = true;
+-                let value = unsafe { args.next_arg::<f64>() }; // Get the argument as f64
++                let value = unsafe { args.arg::<f64>() }; // Get the argument as f64
+                 if let Some(written) =
+                     format_monetary(&mut buffer[pos..], value, &DEFAULT_MONETARY, &flags)
+                 {
+@@ -132,7 +132,7 @@ pub unsafe extern "C" fn strfmon(
+             }
+             Some('n') => {
+                 // Locale-specific formatting
+-                let value = unsafe { args.next_arg::<f64>() }; // Get the argument as f64
++                let value = unsafe { args.arg::<f64>() }; // Get the argument as f64
+                 if let Some(written) =
+                     format_monetary(&mut buffer[pos..], value, &DEFAULT_MONETARY, &flags)
+                 {
+diff --git a/src/header/stdio/printf.rs b/src/header/stdio/printf.rs
+index 344d86c..8a40e53 100644
+--- a/src/header/stdio/printf.rs
++++ b/src/header/stdio/printf.rs
+@@ -123,45 +123,45 @@ impl VaArg {
+             (FmtKind::Percent, _) => panic!("Can't call arg_from on %"),
+ 
+             (FmtKind::Char, IntKind::Long | IntKind::LongLong) => {
+-                VaArg::wint_t(unsafe { ap.next_arg::<wint_t>() })
++                VaArg::wint_t(unsafe { ap.arg::<wint_t>() })
+             }
+ 
+             (FmtKind::Char, _) | (FmtKind::Unsigned | FmtKind::Signed, IntKind::Byte) => {
+                 // c_int is passed but truncated to c_char
+-                VaArg::c_char(unsafe { ap.next_arg::<c_int>() } as c_char)
++                VaArg::c_char(unsafe { ap.arg::<c_int>() } as c_char)
+             }
+             (FmtKind::Unsigned | FmtKind::Signed, IntKind::Short) => {
+                 // c_int is passed but truncated to c_short
+-                VaArg::c_short(unsafe { ap.next_arg::<c_int>() } as c_short)
++                VaArg::c_short(unsafe { ap.arg::<c_int>() } as c_short)
+             }
+             (FmtKind::Unsigned | FmtKind::Signed, IntKind::Int) => {
+-                VaArg::c_int(unsafe { ap.next_arg::<c_int>() })
++                VaArg::c_int(unsafe { ap.arg::<c_int>() })
+             }
+             (FmtKind::Unsigned | FmtKind::Signed, IntKind::Long) => {
+-                VaArg::c_long(unsafe { ap.next_arg::<c_long>() })
++                VaArg::c_long(unsafe { ap.arg::<c_long>() })
+             }
+             (FmtKind::Unsigned | FmtKind::Signed, IntKind::LongLong) => {
+-                VaArg::c_longlong(unsafe { ap.next_arg::<c_longlong>() })
++                VaArg::c_longlong(unsafe { ap.arg::<c_longlong>() })
+             }
+             (FmtKind::Unsigned | FmtKind::Signed, IntKind::IntMax) => {
+-                VaArg::intmax_t(unsafe { ap.next_arg::<intmax_t>() })
++                VaArg::intmax_t(unsafe { ap.arg::<intmax_t>() })
+             }
+             (FmtKind::Unsigned | FmtKind::Signed, IntKind::PtrDiff) => {
+-                VaArg::ptrdiff_t(unsafe { ap.next_arg::<ptrdiff_t>() })
++                VaArg::ptrdiff_t(unsafe { ap.arg::<ptrdiff_t>() })
+             }
+             (FmtKind::Unsigned | FmtKind::Signed, IntKind::Size) => {
+-                VaArg::ssize_t(unsafe { ap.next_arg::<ssize_t>() })
++                VaArg::ssize_t(unsafe { ap.arg::<ssize_t>() })
+             }
+ 
+             (FmtKind::AnyNotation | FmtKind::Decimal | FmtKind::Scientific, IntKind::LongLong) => {
+                 VaArg::c_longdouble(unsafe { VaArg::extract_longdouble(ap) })
+             }
+             (FmtKind::AnyNotation | FmtKind::Decimal | FmtKind::Scientific, _) => {
+-                VaArg::c_double(unsafe { ap.next_arg::<c_double>() })
++                VaArg::c_double(unsafe { ap.arg::<c_double>() })
+             }
+ 
+             (FmtKind::GetWritten | FmtKind::Pointer | FmtKind::String, _) => {
+-                VaArg::pointer(unsafe { ap.next_arg::<*const c_void>() })
++                VaArg::pointer(unsafe { ap.arg::<*const c_void>() })
+             }
+         }
+     }
+@@ -360,13 +360,13 @@ impl VaListCache {
+             // arguments. Ultimately we'll have to settle down with
+             // defaulting to c_int.
+             self.args
+-                .push(VaArg::c_int(unsafe { ap.next_arg::<c_int>() }))
++                .push(VaArg::c_int(unsafe { ap.arg::<c_int>() }))
+         }
+ 
+         // Add the value to the cache
+         self.args.push(match default {
+             Some((fmtkind, intkind)) => unsafe { VaArg::arg_from(fmtkind, intkind, ap) },
+-            None => VaArg::c_int(unsafe { ap.next_arg::<c_int>() }),
++            None => VaArg::c_int(unsafe { ap.arg::<c_int>() }),
+         });
+ 
+         // Return the value
+@@ -790,7 +790,7 @@ pub(crate) unsafe fn inner_printf<T: c_str::Kind>(
+             match num {
+                 Number::Next => varargs
+                     .args
+-                    .push(VaArg::c_int(unsafe { ap.next_arg::<c_int>() })),
++                    .push(VaArg::c_int(unsafe { ap.arg::<c_int>() })),
+                 Number::Index(i) => {
+                     positional.insert(i - 1, (FmtKind::Signed, IntKind::Int));
+                 }
+diff --git a/src/header/stdio/scanf.rs b/src/header/stdio/scanf.rs
+index 7b6c3aa..77d0c71 100644
+--- a/src/header/stdio/scanf.rs
++++ b/src/header/stdio/scanf.rs
+@@ -252,7 +252,7 @@ pub unsafe fn inner_scanf<T: Kind>(
+                                 n.parse::<$type>().map_err(|_| 0)?
+                             };
+                             if !ignore {
+-                                unsafe { *ap.next_arg::<*mut $type>() = n };
++                                unsafe { *ap.arg::<*mut $type>() = n };
+                                 matched += 1;
+                             }
+                         }};
+@@ -273,7 +273,7 @@ pub unsafe fn inner_scanf<T: Kind>(
+                                 $type::from_str_radix(&n, radix).map_err(|_| 0)?
+                             };
+                             if !ignore {
+-                                unsafe { *ap.next_arg::<*mut $final>() = n as $final };
++                                unsafe { *ap.arg::<*mut $final>() = n as $final };
+                                 matched += 1;
+                             }
+                         }};
+@@ -355,7 +355,7 @@ pub unsafe fn inner_scanf<T: Kind>(
+                             }
+ 
+                             let mut ptr: Option<*mut $type> =
+-                                if ignore { None } else { Some(ap.next_arg()) };
++                                if ignore { None } else { Some(ap.arg()) };
+ 
+                             while width.map(|w| w > 0).unwrap_or(true) && !character.is_whitespace()
+                             {
+@@ -400,7 +400,7 @@ pub unsafe fn inner_scanf<T: Kind>(
+                             let ptr: Option<*mut $type> = if ignore {
+                                 None
+                             } else {
+-                                Some(unsafe { ap.next_arg() })
++                                Some(unsafe { ap.arg() })
+                             };
+ 
+                             for i in 0..width.unwrap_or(1) {
+@@ -465,7 +465,7 @@ pub unsafe fn inner_scanf<T: Kind>(
+                     let mut ptr: Option<*mut c_char> = if ignore {
+                         None
+                     } else {
+-                        Some(unsafe { ap.next_arg() })
++                        Some(unsafe { ap.arg() })
+                     };
+ 
+                     // While we haven't used up all the width, and it matches
+@@ -495,7 +495,7 @@ pub unsafe fn inner_scanf<T: Kind>(
+                 }
+                 'n' => {
+                     if !ignore {
+-                        unsafe { *ap.next_arg::<*mut c_int>() = count as c_int };
++                        unsafe { *ap.arg::<*mut c_int>() = count as c_int };
+                     }
+                 }
+                 _ => return Err(-1),
+diff --git a/src/header/sys_mman/mod.rs b/src/header/sys_mman/mod.rs
+index ea10c71..3ea155f 100644
+--- a/src/header/sys_mman/mod.rs
++++ b/src/header/sys_mman/mod.rs
+@@ -133,7 +133,7 @@ pub unsafe extern "C" fn mremap(
+     flags: c_int,
+     mut __valist: ...
+ ) -> *mut c_void {
+-    let new_address = unsafe { __valist.next_arg::<*mut c_void>() };
++    let new_address = unsafe { __valist.arg::<*mut c_void>() };
+     match unsafe { Sys::mremap(old_address, old_size, new_size, flags, new_address) } {
+         Ok(ptr) => ptr,
+         Err(Errno(errno)) => {
+diff --git a/src/header/sys_ptrace/mod.rs b/src/header/sys_ptrace/mod.rs
+index 3f20089..9d5ac14 100644
+--- a/src/header/sys_ptrace/mod.rs
++++ b/src/header/sys_ptrace/mod.rs
+@@ -71,9 +71,9 @@ pub unsafe extern "C" fn ptrace(request: c_int, mut __valist: ...) -> c_int {
+     unsafe {
+         Sys::ptrace(
+             request,
+-            __valist.next_arg(),
+-            __valist.next_arg(),
+-            __valist.next_arg(),
++            __valist.arg(),
++            __valist.arg(),
++            __valist.arg(),
+         )
+     }
+     .or_minus_one_errno()
+diff --git a/src/header/unistd/mod.rs b/src/header/unistd/mod.rs
+index 3e2c66e..4366814 100644
+--- a/src/header/unistd/mod.rs
++++ b/src/header/unistd/mod.rs
+@@ -330,7 +330,7 @@ pub unsafe extern "C" fn execle(
+ ) -> c_int {
+     unsafe {
+         with_argv(__valist, arg0, |args, mut remaining_va| {
+-            let envp = remaining_va.next_arg::<*const *mut c_char>();
++            let envp = remaining_va.arg::<*const *mut c_char>();
+             execve(path, args.as_ptr().cast(), envp)
+         })
+     }
+@@ -1429,7 +1429,7 @@ unsafe fn with_argv(
+ ) -> c_int {
+     let argc = 1 + unsafe {
+         let mut copy = va.clone();
+-        core::iter::from_fn(|| Some(copy.next_arg::<*const c_char>()))
++        core::iter::from_fn(|| Some(copy.arg::<*const c_char>()))
+             .position(<*const c_char>::is_null)
+             .unwrap()
+     };
+@@ -1454,11 +1454,11 @@ unsafe fn with_argv(
+     out[0].write(arg0);
+ 
+     for inner in out.iter_mut().take(argc).skip(1) {
+-        (*inner).write(unsafe { va.next_arg::<*const c_char>() });
++        (*inner).write(unsafe { va.arg::<*const c_char>() });
+     }
+     out[argc].write(core::ptr::null());
+     // NULL
+-    unsafe { va.next_arg::<*const c_char>() };
++    unsafe { va.arg::<*const c_char>() };
+ 
+     f(unsafe { out.assume_init_ref() }, va);
+ 
+diff --git a/src/header/unistd/syscall.rs b/src/header/unistd/syscall.rs
+index f97e649..d9d0021 100644
+--- a/src/header/unistd/syscall.rs
++++ b/src/header/unistd/syscall.rs
+@@ -3,12 +3,12 @@ use crate::platform::types::c_long;
+ /// Non-POSIX, see <https://www.man7.org/linux/man-pages/man3/getopt.3.html>.
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn syscall(sysno: c_long, mut args: ...) -> c_long {
+-    let a1 = unsafe { args.next_arg::<usize>() };
+-    let a2 = unsafe { args.next_arg::<usize>() };
+-    let a3 = unsafe { args.next_arg::<usize>() };
+-    let a4 = unsafe { args.next_arg::<usize>() };
+-    let a5 = unsafe { args.next_arg::<usize>() };
+-    let a6 = unsafe { args.next_arg::<usize>() };
++    let a1 = unsafe { args.arg::<usize>() };
++    let a2 = unsafe { args.arg::<usize>() };
++    let a3 = unsafe { args.arg::<usize>() };
++    let a4 = unsafe { args.arg::<usize>() };
++    let a5 = unsafe { args.arg::<usize>() };
++    let a6 = unsafe { args.arg::<usize>() };
+ 
+     (unsafe { sc::syscall6(sysno as usize, a1, a2, a3, a4, a5, a6) }) as c_long
+ }

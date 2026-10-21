@@ -1,0 +1,17 @@
+[package]
+name = "azos_zenoh_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Zenoh wire codec (userspace/lib/zenoh) from byte strings built by hand from the published Zenoh 1.0 protocol specification: VLE, transport and network messages, extensions, batches, key expressions. Excluded from workspace."
+
+# Run with:  cd tests/host/zenoh-tests && cargo test --release
+
+[dependencies]
+azos_zenoh = { path = "../../../userspace/lib/zenoh" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

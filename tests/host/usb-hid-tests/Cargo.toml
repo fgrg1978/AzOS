@@ -1,0 +1,35 @@
+[package]
+name = "azos_usb_hid_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/usb-hid: the report descriptor parser on transcribed descriptors (HID spec boot keyboard and mouse, Logitech receiver, Apple-style, QEMU tablet, a gamepad, vendor collections), the report decoder, the authorization rule and its decision record, and the class driver over the xHCI mock of tests/host/usb-tests. Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/usb-hid-tests && CARGO_TARGET_DIR=~/azos-out/usb-hid-tests cargo test --release --target aarch64-apple-darwin
+# Canaries: `cargo test --release --target aarch64-apple-darwin --features canary-<name>` must FAIL.
+
+[dependencies]
+azos_usb_hid = { path = "../../../crates/drivers/usb-hid" }
+azos_usb = { path = "../../../crates/drivers/usb", features = ["inspect"] }
+azos_usb_tests = { path = "../usb-tests" }
+azos_rings = { path = "../../../crates/core/rings" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_input_wire = { path = "../../../crates/drivers/input/wire" }
+# `on`: the ring that holds the records the authorization tests read back.
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+
+[features]
+canary-rollover = ["azos_usb_hid/canary-rollover"]
+canary-report-id = ["azos_usb_hid/canary-report-id"]
+canary-sign = ["azos_usb_hid/canary-sign"]
+canary-modifier-order = ["azos_usb_hid/canary-modifier-order"]
+canary-tier = ["azos_usb_hid/canary-tier"]
+canary-composite = ["azos_usb_hid/canary-composite"]
+canary-no-record = ["azos_usb_hid/canary-no-record"]
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

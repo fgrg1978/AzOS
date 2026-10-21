@@ -1,0 +1,4 @@
+# Vendored crates are committed whole: .cargo-checksum.json lists every file, so no repository-wide ignore rule
+# (AGENTS.md, docs/, ...) may drop one.
+!*
+!*/

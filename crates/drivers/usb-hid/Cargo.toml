@@ -1,0 +1,47 @@
+[package]
+name = "azos_usb_hid"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+The USB HID class driver (Kconfig `USB_HID`): keyboards and mice. A HID report
+descriptor parser (usages to evdev codes), the report decoder, boot-protocol
+fallback, software autorepeat, the authorization of a device before a driver
+binds to it (decision rule `usb-authorize`) and the class driver that moves
+reports from an interrupt pipe to a sink of evdev events. Pure no_std with no
+allocation and no unsafe code: the USB core is reached through `azos_usb`'s
+`Usb` and its `UsbDevice` interface, and tests/host/usb-hid-tests drives the
+whole flow against the xHCI mock of tests/host/usb-tests. The kernel half is
+kernel/src/boot/usb_hid.rs.
+"""
+
+[dependencies]
+azos_usb         = { workspace = true }
+azos_input_wire  = { workspace = true }
+azos_limits      = { workspace = true }
+azos_devif       = { workspace = true }
+azos_rings       = { workspace = true }
+azos_decision    = { workspace = true }
+
+[features]
+# Gate/host canaries only. Each one puts a specific bug back; the host test that
+# guards the property must go red with it on. Never enabled in a shipping build.
+#
+# A key array holding the rollover error code (a phantom state) is taken for
+# keys: the keys of the previous report are reported released.
+canary-rollover = []
+# A report ID is not skipped: the fields of a report with IDs are read one byte early.
+canary-report-id = []
+# A relative axis is not sign-extended: -1 arrives as 255.
+canary-sign = []
+# Modifier changes are emitted after the key changes of the same report: Shift
+# and a letter pressed together give the letter unshifted.
+canary-modifier-order = []
+# The hub tier is not compared: a device behind any number of hubs is trusted.
+canary-tier = []
+# A composite device whose other interfaces are storage or a serial/network
+# class is admitted all the same.
+canary-composite = []
+# The authorization is decided and not recorded.
+canary-no-record = []

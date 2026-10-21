@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; see crates/drivers/sys/hwbus.ids for the format).
+#
+# JH7110 temperature sensor (`sfctemp@120e0000`). `boot`: the thermal
+# framework reads it from the kernel; ring 3 is never handed the window.
+
+sfctemp          dt:starfive,jh7110-temp   boot   if=BOARD_VF2   if=THERMAL
+
+# SpacemiT K1 temperature sensor block (`thermal@d4018000`, five channels).
+# `boot`: the thermal framework reads it from the kernel; ring 3 is never
+# handed the window. `if=SOC_K1 if=THERMAL`: the probe arm exists under those
+# features (kernel/src/boot/hwbus.rs); SOC_K1 is BOARD_K1's frameworks.
+k1-tsensor       dt:spacemit,k1-tsensor    boot   if=SOC_K1   if=THERMAL
+
+# Raspberry Pi VideoCore mailbox (`mailbox@7e00b880`, `mailbox@7c013880` on the
+# Pi 5): the SoC temperature and the ARM clock both go through it, so the
+# kernel's thermal task owns the window. Large boards only, like the rest of
+# the thermal framework (THERMAL is off on HWCLASS_EMBEDDED).
+rpi-mbox         dt:brcm,bcm2835-mbox   boot   if=ARCH_AARCH64   if=THERMAL

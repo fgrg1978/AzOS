@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; see crates/drivers/sys/hwbus.ids for the format).
+#
+# JH7110 PWM (`pwm@120d0000`, compatible "starfive,jh7110-pwm",
+# "opencores,pwm-v1"). `boot`: the motors and the buzzer are driven by the
+# kernel's own PWM layer; a topology cannot refuse it and ring 3 is never
+# handed the window.
+
+pwm              dt:starfive,jh7110-pwm   boot   if=BOARD_VF2
+
+# SpacemiT K1 PWM (`pwm@d401a000` + n * 0x400, compatible "spacemit,k1-pwm",
+# "marvell,pxa910-pwm"): one node per channel, the PXA PWM (crates/drivers/
+# actuator/src/pwm_k1.rs). One row, bound once per node the tree enables; the
+# driver takes the channel number from the node's address. `boot` for the same
+# reason as the JH7110's.
+
+pwm              dt:spacemit,k1-pwm   boot   if=BOARD_K1

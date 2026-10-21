@@ -1,0 +1,18 @@
+[package]
+name = "azos_iommu_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/iommu: encoders against hand-computed spec vectors (RISC-V IOMMU, SMMUv3, VT-d, AMD-Vi, their page tables), the units' bring-up against register models, and the IO domain. Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/iommu-tests && cargo test --release
+
+[dependencies]
+azos_iommu = { path = "../../../crates/drivers/iommu" }
+azos_dma = { path = "../../../crates/drivers/dma" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

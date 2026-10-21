@@ -1,0 +1,16 @@
+[package]
+name = "azos_dma"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+DMA domains: the `DmaDomain` a driver maps its buffers through,
+the identity and software-checked domains for boards with no IOMMU, the
+registry of which domain a device sits in, cache maintenance for
+non-coherent masters and the bounce-buffer decision.
+no_std, no allocator, no locks, host-tested via tests/host/dma-tests.
+"""
+
+[dependencies]
+azos_common = { path = "../../core/common" }

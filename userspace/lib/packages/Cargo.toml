@@ -1,0 +1,36 @@
+[package]
+name = "azos_packages"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The Packages object: the typed interface (L13 IDL) of the installer (userspace/services/pkgd) that verifies, admits and stages signed application packages (crates/core/pkg), the codec of its replies, and the installer's pure half over a volume it does not own. no_std; tested on the host (tests/host/pkg-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+azos_pkg = { path = "../../../crates/core/pkg", optional = true }
+azos_topology = { path = "../../../crates/core/topology", optional = true }
+azos_decision = { path = "../../../crates/core/decision", optional = true }
+azos_limits = { path = "../../../crates/core/limits", optional = true }
+# The whole-system update (`crates/core/ota/src/update.rs`, included by path) hashes
+# and verifies with the kernel's own crypto crate.
+azos_crypto = { path = "../../../crates/core/crypto", optional = true }
+
+[features]
+# The installer's pure half (`service`): the verification, the admission and
+# the volume it runs over. The client (`pkg`) needs only the interface and the
+# command line, and so links none of the topology, whose build wants a key.
+service = ["dep:azos_pkg", "dep:azos_topology", "dep:azos_decision", "dep:azos_limits", "dep:azos_crypto"]
+
+# Canaries of the whole-system update, which this crate includes from the OTA
+# crate's sources (see `update`): the same names, the same effect. The host suite
+# of the update is `tests/host/ota-tests`; never in a shipped build.
+update-canary-sig = []
+update-canary-epoch = []
+update-canary-hash = []
+update-canary-stale-epoch = []
+update-canary-root-files = []
+update-canary-apply-gate = []
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

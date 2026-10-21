@@ -1,0 +1,59 @@
+[package]
+name = "azos_drv_block"
+version = "0.1.0"
+edition = "2021"
+description = "Block devices: backend selection, SD/eMMC, partition tables."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+# VF2 drives `dwmshc.rs` (DesignWare MSHC, IDMAC chain), K1 drives `mmc.rs`
+# (SDHCI, ADMA2 tables); both take their bounce pages from the DMA allocator
+# below 4 GiB.
+vf2 = ["dep:azos_dma", "dep:azos_mm"]
+k1  = ["dep:azos_dma", "dep:azos_mm"]
+# QEMU only: compile `mmc.rs` without a board and drive QEMU's `sdhci-pci`
+# through a BAR the kernel assigns (`mmc::mmc_bind_pci_bar`). The block
+# device stays virtio; this exists so `mmc_flush` runs somewhere.
+mmc-pci = ["azos_drv_virtio/pci", "dep:azos_dma", "dep:azos_mm"]
+# Gate canary only: `mmc_flush` returns Ok at entry, skipping the fault
+# latch and every CMD13. The MMC flush row must go red on it.
+mmc-flush-canary = ["mmc-pci"]
+# Gate canary only: `set_irq_mode` refuses, so the slot stays polled. The MMC
+# interrupt row (taken > 0 and slept > 0) must go red on it.
+mmc-poll-canary = ["mmc-pci"]
+
+# Kconfig DRV_NVME: the native NVMe driver (nvme.rs) over PCI + MSI-X, which
+# reuse the virtio crate's BAR mapping and MSI route (its `pci` feature).
+nvme = ["azos_drv_virtio/pci", "dep:azos_pci", "dep:azos_nvme", "dep:azos_mm", "dep:azos_dma", "dep:azos_arch", "dep:azos_percpu"]
+
+# Gate canary only: PRP2 of a transfer over two pages points at a data page
+# instead of the PRP list; the boot's PRP self-test line must say FAIL.
+nvme-prp-canary = ["nvme", "azos_nvme/canary-prp"]
+
+# Kconfig DRV_AHCI: the native AHCI SATA host (ahci.rs). The PCI half (BAR 5,
+# the MSI message) is the kernel's; this crate gets the mapped ABAR.
+ahci = ["dep:azos_dma", "dep:azos_mm", "dep:azos_arch"]
+
+# Kconfig USB_STORAGE: a USB mass-storage disk behind the request layer
+# (usb_msc.rs), over the USB host's mass-storage class driver.
+usb-msc = ["dep:azos_usb", "dep:azos_arch"]
+
+[dependencies]
+azos_common = { workspace = true }
+azos_sync       = { workspace = true }
+azos_drv_api    = { workspace = true }
+azos_drv_base   = { workspace = true }
+azos_drv_sys    = { workspace = true }
+azos_drv_virtio = { workspace = true }
+azos_chaos      = { workspace = true }
+azos_limits     = { workspace = true }
+azos_devif      = { workspace = true }
+azos_pci        = { workspace = true, optional = true }
+azos_nvme       = { workspace = true, optional = true }
+azos_mm         = { workspace = true, optional = true }
+azos_dma        = { workspace = true, optional = true }
+azos_arch       = { workspace = true, optional = true }
+azos_percpu     = { workspace = true, optional = true }
+azos_usb        = { workspace = true, optional = true }

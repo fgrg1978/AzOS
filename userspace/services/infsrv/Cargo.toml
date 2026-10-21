@@ -1,0 +1,76 @@
+[package]
+name = "infsrv"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Ring-3 inference service: the broker behind the Infer interface (azos_devif::infer). It loads signed .MBL model bundles, verifies the signature and the cost table, and for each call picks the first variant of the bundle's fallback list whose signed worst case fits the time left to the caller's deadline and whose energy fits the caller's quota (Rule accel-admission, a receipt for every refusal), runs it on the CPU (cpu-ggml, and RVV when the hart has it), charges an overrun back, and publishes the latest verdict of each context in a Log<T,1> real-time readers poll. The kernel's behavior loop is one of its clients. Hard-float on aarch64. Excluded from workspace; built standalone like gpio_drv."
+
+[dependencies]
+# The library half (the broker, the loader, the backends, the verdict log):
+# no system call, so the host suite (tests/host/infsrv-tests) builds it with
+# `default-features = false`.
+azos_abi = { path = "../../../crates/core/abi" }
+# The GGUF engine and the .MBL bundle reader
+# (userspace/lib/ml): no dependencies; the dot product is a plain sequential
+# loop, and the RVV kernel of this service is passed to it.
+azos_ml = { path = "../../lib/ml" }
+# The Infer interface and the outcome vocabulary, the IDL runtime, the
+# decision records the receipts are made of, the latest-value cell of the
+# verdict log, and the Decisions object a receipt is read back through.
+azos_devif = { path = "../../../crates/core/devif" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_decision = { path = "../../../crates/core/decision" }
+azos_decisions = { path = "../../lib/decisions" }
+azos_rings = { path = "../../../crates/core/rings" }
+azos_limits = { path = "../../../crates/core/limits" }
+
+# The program (main.rs): system calls, the SHA-256 of the manifest and of each
+# blob, and the key a bundle is verified with. POLICY.GGF is verified before the
+# self-test parses it, against the key and `.SIG` format CAPS.SIG/CONFIG.SIG
+# use (`verify_signature`, `TRUSTED_PUBKEY`), and
+# `azos_limits::INFER_MODEL_SIG_REQUIRED` is the Kconfig switch. A model bundle is
+# verified with the same key, always: it carries the cost table the admission
+# trusts, so there is no switch to turn its signature off. Both crates are
+# no_std; LTO keeps only the verifier.
+azos_libsys = { path = "../../../crates/core/libsys", optional = true }
+azos_crypto = { path = "../../../crates/core/crypto", optional = true }
+azos_topology = { path = "../../../crates/core/topology", optional = true }
+
+# 2, the kernel's level, and not the "s" every other ring-3 image uses: the
+# MLP is this image's whole job, and on riscv64imac it is soft-float, whose
+# helpers (compiler-builtins, built with this profile) are the cost. "s"
+# measured 17.4k instructions per inference round trip there, against 5.7k for
+# an empty one (-icount, -smp 1).
+[features]
+default = ["service"]
+# The program. Off, only the library builds (the host tests).
+service = ["dep:azos_libsys", "dep:azos_crypto", "dep:azos_topology"]
+# Verify POLICY.SIG and the model bundles against the TEST key
+# (`tools/keys/test_pub.bin`) when `TOPOLOGY_PUBKEY_PATH` is not set: the
+# Makefile passes it only then. Without either the build fails
+# (`crates/core/topology/build.rs`).
+dev-key = ["service", "azos_topology/dev-key"]
+
+[[bin]]
+name = "infsrv"
+path = "src/main.rs"
+required-features = ["service"]
+
+[profile.release]
+opt-level = 2
+lto = true
+panic = "abort"
+
+# Standalone crate, not a member of the root workspace (see gpio_drv's
+# Cargo.toml for why the marker is here as well as in the root exclude).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+# The image keeps the name MLSRV.ELF: the topology row, the seccomp profile and
+# the disk-image recipes still name it, and are renamed together by whoever
+# owns them (this crate replaced `mlsrv`, it did not change who starts it).
+[package.metadata.azos]
+topology = true
+images = ["MLSRV.ELF"]

@@ -1,0 +1,88 @@
+[package]
+name = "azos_ipc_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/core/ipc/src/{port,io_ring,memobj,cap}.rs — IPC-3 task-exit reclamation, io_ring, the handle table and the capability table. Excluded from workspace."
+
+# `cap.rs` carries `#[cfg(kani)]` proof harnesses; the kernel's own
+# `crates/core/ipc/Cargo.toml` declares the same check-cfg. Without it the host
+# build emits a warning, and warnings count as failures in this project.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[dependencies]
+azos_common = { path = "../../../crates/core/common" }
+# Real generated constants — MAX_PORTS / MAX_TASKS must be the
+# ones the kernel is built with, not a hand-copied guess.
+azos_limits = { path = "../../../crates/core/limits" }
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+
+# `port.rs` drags in `crate::cap` + `crate::cap_store`; those need these two,
+# exactly as `tests/host/cap-tests` does.
+azos_abi = { path = "../../../crates/core/abi" }
+azos_devif = { path = "../../../crates/core/devif" }
+# `memobj.rs`'s pipe section runs the byte pipe's header calls on a region's first page.
+azos_bytepipe = { path = "../../../crates/core/bytepipe" }
+wcet-macro = { path = "../../../crates/core/wcet-macro" }
+
+# Host stand-ins for the two RV64-only kernel crates the ipc modules call
+# into. Renamed so the module sources compile unmodified — see each shim's
+# crate doc for why the real crate cannot be used on the host.
+azos_sync = { path = "shims/sync", package = "ipc_test_sync" }
+azos_sched = { path = "shims/sched", package = "ipc_test_sched" }
+azos_mm = { path = "shims/mm", package = "ipc_test_mm" }
+# `irq_bind.rs`'s `irq_grant_cap` (U03-2) needs `plic::MAX_IRQS`.
+ipc_test_drivers = { path = "shims/drivers" }
+# `memobj.rs` zeroes its pages
+# with `azos_arch::mmu::PAGE_SIZE`.
+azos_arch = { path = "shims/arch", package = "ipc_test_arch" }
+
+[features]
+# Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
+# capability derived from a revoked one is not refused before the sweep frees
+# it. Never in a real build.
+revoke-chain-canary = []
+# io_ring K1 canary: OP_FSYNC completes in the submit (the synchronous answer),
+# so `a_write_is_queued_and_its_fsync_completes_only_after_the_flush` goes red.
+ioring-sync-fsync-canary = []
+# io_ring registered buffers: a vacated ring forgets the pins its buffers hold,
+# so `a_vacated_ring_gives_every_pin_back` goes red. Host suite only.
+ioring-regbuf-leak-canary = []
+# `crates/core/ipc/src/port.rs`'s canary: `port_wait_begin_at` checks for an
+# event and registers the waiter in two `PORTS` holds instead of one; the
+# lost-wakeup test in that file's suite fails (the event in the gap wakes
+# nobody).
+port-recheck-canary = []
+# `crates/core/ipc/src/port.rs`'s capability-binding canary (wave 11):
+# `port_cap_event` ignores every event; the revoke test in that file's suite
+# fails (the revoked capability's binding still delivers).
+port-revoke-canary = []
+# MemObj host canaries (tests/host/ipc-tests, syscall-tests): each puts one
+# hole back so the test that guards it goes red. Never in a real build.
+memobj-move-keeps-map-canary = []
+memobj-share-no-narrow-canary = []
+memobj-charge-stays-canary = []
+memobj-protect-max-canary = []
+memobj-cow-no-break-canary = []
+memobj-no-kernel-map-canary = []
+memobj-anon-uncharged-canary = []
+memobj-refcount-wrap-canary = []
+memobj-sweep-no-hook-canary = []
+memobj-sweep-no-retain-canary = []
+memobj-sweep-every-domain-canary = []
+# `memobj_purge_volatile` (volatile objects): an object in use is taken; the kernel's own
+# reference does not stop a purge; a `mem = "locked"` Domain's object is taken.
+memobj-purge-held-canary = []
+memobj-purge-kernel-held-canary = []
+memobj-purge-locked-canary = []
+delete-revokes-canary = []
+move-lifts-depth-canary = []
+
+# Run the suite at a 16 KiB page (the mm shim's pool page, which the arch shim's
+# `mmu::PAGE_SIZE` follows), as an aarch64 16 KiB-granule kernel splits shm
+# offsets. `cargo test --release --features page-16k shm::`.
+page-16k = ["azos_mm/page-16k"]
+
+[dev-dependencies]

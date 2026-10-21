@@ -1,0 +1,22 @@
+[package]
+name = "azos_compositor_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the compositor: the Compositor object and its protocol (userspace/lib/compositor), the server's windows, trusted-path timing, surface cut and trusted panels (userspace/services/compositor/src, pulled in with #[path] so the code under test is the code COMPSRV.ELF is built from). Excluded from workspace."
+
+# Run with:  cd tests/host/compositor-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_compose = { path = "../../../userspace/lib/compose" }
+azos_compositor = { path = "../../../userspace/lib/compositor" }
+azos_decisions = { path = "../../../userspace/lib/decisions" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

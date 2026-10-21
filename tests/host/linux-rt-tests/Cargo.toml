@@ -1,0 +1,19 @@
+[package]
+name = "azos_linux_rt_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Linux personality's ring-3 runtime (userspace/lib/linux_rt, plan D6): the runtime run over a model of the native calls. Excluded from workspace."
+
+# Run with:  cd tests/host/linux-rt-tests && cargo test --release
+
+[dependencies]
+azos_linux_rt = { path = "../../../userspace/lib/linux_rt" }
+azos_linux_abi = { path = "../../../crates/core/linux-abi" }
+azos_abi = { path = "../../../crates/core/abi" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

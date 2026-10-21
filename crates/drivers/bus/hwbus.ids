@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; see crates/drivers/sys/hwbus.ids for the format).
+#
+# JH7110 DesignWare APB I2C controllers and the SpacemiT K1's (TWSI,
+# `spacemit,k1-i2c`): every node the tree enables binds, in tree order, and
+# becomes bus 0, 1, ... (crates/drivers/bus/src/i2c.rs).
+# `boot`: the kernel's own sensor tasks and the INA219 monitor drive the
+# buses, so a topology cannot refuse them and ring 3 is never handed a
+# window; the bring-up they had before the bus was unconditional too.
+
+i2c              dt:snps,designware-i2c   boot   if=BOARD_VF2
+i2c              dt:spacemit,k1-i2c       boot   if=BOARD_K1

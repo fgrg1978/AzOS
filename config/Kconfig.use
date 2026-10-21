@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.use — The USE axis (what the image is for), derived from PRESET
+#
+# The USE axis is derived from PRESET, never chosen: one USE_* symbol per
+# PRESET_* member (def_bool, no prompt), so `make config` shows the Preset
+# menu only; HWCLASS, STRUCTURE, RT, SECURITY and VIRT stay visible as
+# overrides. AZOS is a general-purpose hybrid kernel; a robot is one worked
+# example. USE decides which crates are linked (USE_ROBOT -> kernel feature
+# `use-robot`, emitted by tools/kconfig_to_cargo.py), which menus `make
+# config` shows, and, through `imply` and conditional defaults, the starting
+# value of other options. It never forces one: every implied option can be
+# changed by hand (wave 11).
+#
+# What each domain does:
+#   Only Robot links the robot crates under domains/robot/ (behavior and the
+#   brain link, safety-core, flight, the ESC and RC receiver drivers) plus the
+#   IMU / barometer / GPS drivers. Every domain links the shared actuation
+#   authority (crates/core/actuation: e-stop latch, signed release, flight
+#   recorder, system watchdog). The other domains change defaults only, with
+#   `imply` or a conditional default, never `select`.
+
+config USE_GENERIC
+    def_bool PRESET_GENERIC
+    help
+      A general-purpose kernel: scheduler, IPC, file
+      systems, network, drivers, ring-3 services, and the shared
+      actuation authority (e-stop latch, flight recorder, sys-wdt).
+      No robot crate is linked and no robot task is started: built
+      with `--no-default-features` plus the rest of the kernel's
+      default features (tools/kconfig_to_cargo.py).
+
+config USE_ROBOT
+    # cargo-feature: use-robot base
+    def_bool PRESET_ROBOT
+    help
+      Links the robot crates (kernel feature `use-robot`):
+      behavior and the brain link, the motor control loop and the
+      per-robot-type safety envelope (safety-core), IMU / barometer /
+      GPS / AHRS, flight, navigation, telemetry, the in-kernel benches, and starts their tasks.
+      Shows the "Robot" menu: robot type, brain link, the
+      safety-layer timers and the motor control loop.
+
+config USE_IOT_HMI
+    def_bool PRESET_IOT_HMI
+    imply DRV_DISPLAY_HDMI if !PROFILE_EMBEDDED
+    imply DRV_DISPLAY_RAMFB if !PROFILE_EMBEDDED
+    help
+      Devices with a display, touch input and a battery. Implies
+      (default on, can be turned off under "Drivers"): the display
+      driver of the board (DRV_DISPLAY_HDMI on the VF2,
+      DRV_DISPLAY_RAMFB on QEMU riscv64; neither exists elsewhere).
+      Not implied on a small board (HWCLASS_EMBEDDED): its defconfig names the drivers its
+      topology starts. The INA219 /
+      ADS1115 drivers that read a supply voltage and current are in
+      every image. There is no touch-controller driver in the tree.
+      The battery's state of charge is estimated by the power service
+      (POWER.ELF) from the INA219's samples, and the topology's
+      [degrade.NAME] rows choose the degrade level for it.
+
+config USE_GATEWAY
+    def_bool PRESET_GATEWAY
+    help
+      A node that aggregates many downstream devices. On the Edge
+      deployment profile it changes the network defaults (each can be
+      set by hand under "Resource Limits" / "Network"):
+        TCP_MAX_CONNS 8 -> 64, TCP_BUF_SIZE 131072 -> 16384:
+          64 x 38,904 B = 2,489,856 B of TCP tables, against
+          8 x 268,280 B = 2,146,240 B on Edge (+343,616 B);
+        MAX_SOCKETS 16 -> 128 (+112 UDP-sized slots);
+        ARP_CACHE_SIZE 16 -> 64, ARP_PENDING_SIZE 8 -> 16,
+        DNS_CACHE_SIZE 4 -> 16, UDP_RX_SLOTS 4 -> 16.
+      Smaller per-connection buffers for many more connections: a
+      gateway holds many mostly idle links, not a few bulk ones.
+      The Fleet profile (PROFILE_FLEET) keeps its own, larger tables.
+
+config USE_INDUSTRIAL
+    def_bool PRESET_INDUSTRIAL
+    help
+      Control equipment with timing and fault-containment needs.
+      Mmap commits at map time (MM_DEMAND_PAGING starts off). The
+      threat model comes from SECURITY (PRESET_INDUSTRIAL sets
+      separation-static, which starts it at "Physical access to the
+      device"). Existing pieces: the CAN
+      driver (crates/drivers/bus/src/can.rs), the control-loop
+      rollback (CONTROL_TXN_TICKS) under "Scheduling, IPC & timing".
+      The fair class is EEVDF; bounded latency comes from the RT band
+      and the DL class (no deadline scheduler runs in a default image).
+
+config USE_AUTOMOTIVE
+    def_bool PRESET_AUTOMOTIVE
+    help
+      Vehicle electronics with timing and fault-containment needs.
+      As Industrial it commits mmap at map time (MM_DEMAND_PAGING
+      starts off); the CAN driver and the control-loop rollback listed
+      under "Industrial" are its existing pieces.
+
+config USE_DESKTOP
+    def_bool PRESET_DESKTOP
+    help
+      An interactive machine with a display and input. Today it
+      changes no default beyond what PRESET_DESKTOP sets on the other
+      axes.
+
+config USE_SERVER
+    def_bool PRESET_SERVER
+    help
+      A machine serving many clients. Today it changes no default
+      beyond what PRESET_SERVER sets on the other axes (the Fleet
+      tables come from HWCLASS_SERVER).
+
+config USE_FIRMWARE
+    def_bool PRESET_FIRMWARE
+    help
+      A single-purpose appliance image. Today it changes no default
+      beyond what PRESET_FIRMWARE sets on the other axes.
+
+config USE_WEARABLE
+    def_bool PRESET_WEARABLE
+    help
+      An energy-first device (watch, band). Today it changes no
+      default beyond what PRESET_WEARABLE sets on the other axes.

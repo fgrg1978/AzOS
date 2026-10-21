@@ -1,0 +1,31 @@
+[package]
+name = "azos_tpm_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/tpm: the TIS/FIFO protocol, locality, timeouts, the SPI framing, the commands and the ACPI TPM2 table, against a scripted TPM model reached three ways (directly, through an MMIO window, through a SPI bus). Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/tpm-tests && cargo test --release
+# Canaries: `cargo test --release --features canary-<name>` must FAIL.
+
+[dependencies]
+azos_common = { path = "../../../crates/core/common" }
+azos_tpm = { path = "../../../crates/drivers/tpm" }
+# wire.rs: the kernel's session against the real entropy pool, the OTA floor
+# backend module (it hashes the NV password) and the device-tree walk.
+azos_crypto = { path = "../../../crates/core/crypto" }
+azos_dtb = { path = "../../../crates/drivers/dtb" }
+
+[features]
+canary-rspsize = ["azos_tpm/canary-rspsize"]
+canary-expect = ["azos_tpm/canary-expect"]
+canary-burst = ["azos_tpm/canary-burst"]
+canary-spi-wait = ["azos_tpm/canary-spi-wait"]
+canary-release = ["azos_tpm/canary-release"]
+canary-nvsquat = ["azos_tpm/canary-nvsquat"]
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

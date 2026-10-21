@@ -1,0 +1,19 @@
+[package]
+name = "azos_logind_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the console login: the Login object and the credential (userspace/lib/login), the login service's logic (userspace/services/logind) driven through the generated client stub over a loopback, and the enrolment tool that writes a [login.NAME] verifier. Excluded from workspace."
+
+# Run with:  cd tests/host/logind-tests && cargo test --release
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+azos_login = { path = "../../../userspace/lib/login" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

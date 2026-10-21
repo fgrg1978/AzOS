@@ -1,0 +1,234 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! The device half e1000e and igc share (`crates/drivers/net/src/pci_nic.rs`),
+//! driven through BOTH drivers' wire maps over a register file in host memory
+//! and descriptors the test plays the controller for.
+//!
+//! One scenario, run once per driver, each with its own `static` NIC: the
+//! doorbells must land at that driver's `RDT`/`TDT`/`ICR` and nowhere else,
+//! and the descriptors must be that driver's format. A driver whose paths
+//! were its own copy of the ring code would not go through `Nic` at all;
+//! `Nic` is generic over `Wire`, so these tests are the proof that the two
+//! drivers' register maps and encoders plug into the same ring code.
+//!
+//! Wired by `mod pci_nic_tests;` in `lib.rs`.
+
+use super::e1000e::{
+    E1000eWire, EXT, ICR_LSC, ICR_RXT0, REG_RDT as E_RDT, REG_STATUS, REG_TDT as E_TDT, RXD_STAT_DD, RXD_STAT_EOP,
+    STATUS_LU,
+};
+use super::igc::IgcWire;
+use super::pci_nic::{Mem, Nic, Wire};
+use azos_dma::Direction;
+use azos_drv_api::net::NetError;
+use azos_drv_virtio::virtio::Dma;
+
+const N: usize = 8;
+const BUF: usize = 2048;
+const MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+const TOKEN: u32 = 7;
+
+/// A register file big enough for both maps (the highest offset is igc's
+/// `TXDCTL` at 0xe028).
+struct Regs(&'static [core::sync::atomic::AtomicU32]);
+
+impl Regs {
+    fn new() -> Regs {
+        let v: Vec<core::sync::atomic::AtomicU32> = (0..0x4000).map(|_| core::sync::atomic::AtomicU32::new(0)).collect();
+        Regs(Box::leak(v.into_boxed_slice()))
+    }
+    fn addr(&self) -> usize {
+        self.0.as_ptr() as usize
+    }
+    fn get(&self, off: usize) -> u32 {
+        self.0[off / 4].load(core::sync::atomic::Ordering::SeqCst)
+    }
+    fn set(&self, off: usize, v: u32) {
+        self.0[off / 4].store(v, core::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// What the controller writes back for a good single-descriptor frame of
+/// `len` bytes, in the format `W` decodes.
+fn writeback_for<W: Wire>(len: u16) -> u64 {
+    let st = (RXD_STAT_DD | RXD_STAT_EOP) as u64;
+    let wire_is_legacy_e1000e = W::NAME == "e1000e" && !EXT;
+    if wire_is_legacy_e1000e {
+        // Legacy: length 15:0, status 39:32.
+        len as u64 | st << 32
+    } else {
+        // Extended / advanced: status 7:0, length 47:32.
+        st | (len as u64) << 32
+    }
+}
+
+struct Rig<W: Wire> {
+    nic: &'static Nic<W, N, N>,
+    mem: &'static Mem<N, N>,
+    regs: Regs,
+    tx_buf_bus: u64,
+    rx_buf_bus: u64,
+}
+
+fn bring_up<W: Wire>(
+    nic: &'static Nic<W, N, N>,
+    mem: &'static Mem<N, N>,
+    msi_token: Option<u32>,
+) -> Rig<W> {
+    let regs = Regs::new();
+    // The link is up, so the link wait ends at once.
+    regs.set(REG_STATUS, STATUS_LU);
+    nic.set_bar(regs.addr());
+    let dma = Dma::fallback();
+    let rx_buf_bus = dma.map(mem.rx_buf(0) as *const u8, N * BUF, Direction::FromDevice).unwrap();
+    let tx_buf_bus = dma.map(mem.tx_buf(0) as *const u8, N * BUF, Direction::ToDevice).unwrap();
+    nic.prime(&dma, rx_buf_bus);
+    nic.go_live(dma, rx_buf_bus, tx_buf_bus, MAC, 0, msi_token);
+    Rig { nic, mem, regs, tx_buf_bus, rx_buf_bus }
+}
+
+/// The controller delivers one frame in receive descriptor `i`.
+fn deliver<W: Wire>(rig: &Rig<W>, i: usize, payload: &[u8]) {
+    // SAFETY: the test is the controller; slot `i` is posted and idle.
+    unsafe {
+        core::ptr::copy_nonoverlapping(payload.as_ptr(), rig.mem.rx_buf(i), payload.len());
+        (*rig.mem.rx_desc(i)).hi = writeback_for::<W>(payload.len() as u16);
+    }
+}
+
+fn scenario<W: Wire>(rig: &Rig<W>) {
+    // go_live: ready, the station address published, and the first tail
+    // write handed the controller every receive descriptor but one -- at
+    // THIS driver's RDT.
+    assert!(rig.nic.is_ready());
+    assert_eq!(rig.nic.mac(), MAC);
+    assert_eq!(rig.regs.get(W::RX.tail), (N - 1) as u32);
+    // The posted descriptors carry their own buffers.
+    for i in 0..N {
+        // SAFETY: reading the test's own ring.
+        let d = unsafe { *rig.mem.rx_desc(i) };
+        assert_eq!(d.lo, rig.rx_buf_bus + (i * BUF) as u64);
+    }
+
+    // Transmit: the frame is copied, the descriptor is this driver's format,
+    // and the doorbell is this driver's TDT.
+    let frame: Vec<u8> = (0..60u8).collect();
+    assert_eq!(rig.nic.send(&frame), Ok(60));
+    // SAFETY: reading the test's own ring and buffer.
+    unsafe {
+        assert_eq!(*rig.mem.tx_desc(0), W::tx_frame(rig.tx_buf_bus, 60));
+        assert_eq!(core::slice::from_raw_parts(rig.mem.tx_buf(0), 60), &frame[..]);
+    }
+    assert_eq!(rig.regs.get(W::TX.tail), 1);
+    // Not completed by the controller yet: a second frame takes slot 1.
+    assert_eq!(rig.nic.send(&frame[..14]), Ok(14));
+    assert_eq!(rig.regs.get(W::TX.tail), 2);
+
+    // A batch shares one doorbell.
+    rig.nic.tx_batch_begin();
+    assert_eq!(rig.nic.send(&frame), Ok(60));
+    assert_eq!(rig.nic.send(&frame), Ok(60));
+    assert_eq!(rig.regs.get(W::TX.tail), 2, "inside a batch the doorbell waits");
+    rig.nic.tx_batch_end();
+    assert_eq!(rig.regs.get(W::TX.tail), 4);
+
+    // Refusals.
+    assert_eq!(rig.nic.send(&[]), Err(NetError::BadLength));
+    assert_eq!(rig.nic.send(&[0u8; 1515]), Err(NetError::BadLength));
+
+    // Receive: nothing posted back yet reads as empty ...
+    let mut buf = [0u8; 2048];
+    assert_eq!(rig.nic.recv(&mut buf), Ok(0));
+    // ... a frame the controller wrote is copied out and its descriptor
+    // re-posted whole ...
+    let payload: Vec<u8> = (0..100u8).map(|b| b ^ 0x5a).collect();
+    deliver(rig, 0, &payload);
+    assert_eq!(rig.nic.recv(&mut buf), Ok(100));
+    assert_eq!(&buf[..100], &payload[..]);
+    // SAFETY: reading the test's own ring.
+    let d = unsafe { *rig.mem.rx_desc(0) };
+    assert_eq!(d.lo, rig.rx_buf_bus);
+    assert_eq!(d.hi, 0, "re-posted whole: the write-back is gone");
+    // ... and the tail follows the consumed descriptor (batch of one on a
+    // ring this small): `clean` is 1, so the tail is 0.
+    assert_eq!(rig.regs.get(W::RX.tail), 0);
+
+    // A frame with an error bit is dropped here and the next one delivered.
+    // SAFETY: the test is the controller.
+    unsafe {
+        (*rig.mem.rx_desc(1)).hi = writeback_for::<W>(60) | if W::NAME == "e1000e" && !EXT { 1u64 << 40 } else { 1u64 << 24 };
+    }
+    deliver(rig, 2, &payload[..64]);
+    assert_eq!(rig.nic.recv(&mut buf), Ok(64), "the errored frame is skipped");
+}
+
+/// **Discriminates.** e1000e's wire map through the shared paths: its
+/// doorbells, its descriptor format. Point the shared code at igc's `RDT`
+/// and the tail assertions of the first block fail.
+#[test]
+fn e1000e_wire_runs_through_the_shared_rings() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<E1000eWire, N, N> = Nic::new(&MEM);
+    let rig = bring_up(&NIC, &MEM, None);
+    scenario(&rig);
+    // Only e1000e's registers were written: igc's queue block is untouched.
+    assert_eq!(rig.regs.get(IgcWire::RX.tail), 0);
+    assert_eq!(rig.regs.get(IgcWire::TX.tail), 0);
+    assert_eq!(E_RDT, E1000eWire::RX.tail);
+    assert_eq!(E_TDT, E1000eWire::TX.tail);
+}
+
+/// **Discriminates.** igc's wire map through the same code: advanced
+/// descriptors, the queue block at 0xc000/0xe000.
+#[test]
+fn igc_wire_runs_through_the_shared_rings() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<IgcWire, N, N> = Nic::new(&MEM);
+    let rig = bring_up(&NIC, &MEM, None);
+    scenario(&rig);
+    assert_eq!(rig.regs.get(E1000eWire::RX.tail), 0);
+    assert_eq!(rig.regs.get(E1000eWire::TX.tail), 0);
+}
+
+/// **Discriminates.** The interrupt hook reads the driver's own `ICR`, only
+/// answers its own vector, counts receive causes and refreshes the cached
+/// link on a link-change cause; before `go_live` armed it, it answers
+/// nothing.
+fn irq_scenario<W: Wire>(nic: &'static Nic<W, N, N>, mem: &'static Mem<N, N>) {
+    assert!(!nic.irq_driven());
+    let rig = bring_up(nic, mem, Some(TOKEN));
+    assert!(nic.irq_driven());
+    assert!(!nic.msi_irq(TOKEN + 1), "another vector's interrupt is not ours");
+    assert_eq!(nic.rx_irq_count(), 0);
+    rig.regs.set(W::ICR, ICR_RXT0);
+    assert!(nic.msi_irq(TOKEN));
+    assert_eq!(nic.rx_irq_count(), 1);
+    // Link goes down: the cause refreshes the cache and sends are refused
+    // (with the interrupt armed the cache is the only source).
+    rig.regs.set(REG_STATUS, 0);
+    rig.regs.set(W::ICR, ICR_LSC);
+    assert!(nic.msi_irq(TOKEN));
+    assert_eq!(nic.rx_irq_count(), 1, "a link change is not a receive cause");
+    assert_eq!(nic.send(&[0u8; 60]), Err(NetError::NotReady));
+    // Back up.
+    rig.regs.set(REG_STATUS, STATUS_LU);
+    rig.regs.set(W::ICR, ICR_LSC);
+    assert!(nic.msi_irq(TOKEN));
+    assert_eq!(nic.send(&[0u8; 60]), Ok(60));
+    // The mask was set at this driver's IMS.
+    assert_ne!(rig.regs.get(W::IMS), 0);
+}
+
+#[test]
+fn e1000e_interrupt_hook_uses_its_own_icr() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<E1000eWire, N, N> = Nic::new(&MEM);
+    irq_scenario(&NIC, &MEM);
+}
+
+#[test]
+fn igc_interrupt_hook_uses_its_own_icr() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<IgcWire, N, N> = Nic::new(&MEM);
+    irq_scenario(&NIC, &MEM);
+}

@@ -1,0 +1,31 @@
+[package]
+name = "sshd"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS SSH server (ring 3): SSH-2 over a listening TCP socket on the native stack, with no download and no library beyond the in-tree crypto. Key exchange curve25519-sha256, host key ssh-ed25519, cipher chacha20-poly1305@openssh.com, public-key authentication only (ssh-ed25519; there are no passwords). One session channel (pty-req, env, shell, exec, window-change) whose commands run as the images the row may launch, with the channel as their stdout. The protocol engine (wire.rs, packet.rs, kex.rs, auth.rs, server.rs) is sans-IO and tested on the host (tests/host/sshd-tests) against a client written there; main.rs is the loop around it. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+azos_ualloc = { path = "../../lib/ualloc" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs"). The
+# built-in topology has a row for it, and the kernel starts it at boot, only
+# when Kconfig SSHD is on (default y; n on the MCU kernel and a certifiable build).
+[package.metadata.azos]
+default = "SSHD"
+start = "SSHD"

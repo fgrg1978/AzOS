@@ -1,0 +1,32 @@
+[package]
+name = "why"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS why tool: asks the decision server (Decisions on endpoint.decisions) which rule decided a refusal, a denial or an admission, and prints the chain: rule, verdict, subject, the numbers compared, the provenance and the clock. Its topology row's call capability is its whole authority. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_decisions = { path = "../../lib/decisions" }
+# `why woke`: the abi's region keys, and the reader of the introspection tree.
+azos_abi = { path = "../../../crates/core/abi" }
+azos_inspect_lib = { path = "../../lib/inspect" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+# `std` brings thousands of symbols; the loader reads at most 128 KiB of file
+# (EXEC_MAX_BYTES), and the symbol table is not part of the image.
+strip = "symbols"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+topology = true

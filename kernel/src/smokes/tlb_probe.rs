@@ -1,0 +1,616 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! Wave 8 — cross-hart TLB shootdown, observed (`tlb-smoke`, -smp >= 3).
+//!
+//! A "toucher" task pinned to one hart is given a private page table P whose
+//! only non-kernel mapping is one page at `VA`, and is switched onto it by the
+//! ordinary scheduler path (it sets its own `task_satp` and sleeps, so the
+//! re-dispatch goes through `context_switch.S`: on riscv64 that is also where
+//! the hart publishes P for the shootdown's mask). With interrupts off — a
+//! tick would switch address spaces and flush, which would make the test pass
+//! for the wrong reason — it reads `VA` (the translation is now in its TLB)
+//! and spins. The runner, on another hart, removes the mapping with the real
+//! `vmm::unmap`, then overwrites the frame the PTE used to name, which is what
+//! reuse of a freed frame looks like. The toucher reads `VA` again through a
+//! fault-catching load:
+//!
+//!   * shootdown working: the load FAULTS → `[TLB-SMOKE] PASS`
+//!   * shootdown missing (`tlb-local-only`, the canary): the stale entry
+//!     still translates and the load returns the NEW bytes of a frame the
+//!     address space no longer owns → `[TLB-SMOKE] STALE READ`, a line only
+//!     that path prints.
+
+// Every site below has a riscv64, an aarch64 and an x86_64 arm: a fourth
+// ISA must port the probe (its fault-catching load, roots and masks).
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("tlb_probe: no arm for this ISA (port live_root, the probe load, remote_mask, ...)");
+
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use azos_arch::{PagePerms, Cpu};
+use azos_drv_sys::kprintln;
+use azos_mm::{addr, pmm, vmm};
+
+pub const PROBE_PRIO: u32 = 4;
+
+/// Far from every mapping on both ISAs (riscv64 vpn2 = 128; inside
+/// aarch64's 39-bit TTBR0 range); P is private. Checked at run time anyway.
+#[cfg(not(target_arch = "x86_64"))]
+const VA: usize = 0x20_0000_0000;
+/// x86_64: PML4 slot 1 (512 GiB). Slot 0 is the kernel's, copied into P
+/// whole, and a mapping there would land in the kernel's own PDPT.
+#[cfg(target_arch = "x86_64")]
+const VA: usize = 0x80_0000_0000;
+/// Second page: removed through `unmap_user_range_and_free`, the batched
+/// path `munmap` takes, where `VA` goes through `vmm::unmap` (shm, io_ring,
+/// mmap unwind, MMIO rollback).
+const VA2: usize = VA + azos_arch::PAGE_SIZE;
+/// The batched path removes this many pages from `VA2` (at least
+/// `A64_TLBIRANGE_MIN_PAGES`, so aarch64 shoots it down with a range
+/// TLBI); the toucher reads the first and the LAST, the one a range with
+/// too small a count would leave behind.
+const RANGE_PAGES: usize = 8;
+const VA_LAST: usize = VA2 + (RANGE_PAGES - 1) * azos_arch::PAGE_SIZE;
+const OLD: u64 = 0xA5A5_A5A5_A5A5_A5A5;
+const NEW: u64 = 0x5A5A_5A5A_5A5A_5A5A;
+
+static STAGE: AtomicU32 = AtomicU32::new(0);
+static P_ROOT: AtomicUsize = AtomicUsize::new(0);
+static FIRST: AtomicU64 = AtomicU64::new(0);
+static FIRST_CAUSE: AtomicU64 = AtomicU64::new(u64::MAX);
+static SECOND: AtomicU64 = AtomicU64::new(0);
+static SECOND_CAUSE: AtomicU64 = AtomicU64::new(u64::MAX);
+static SECOND2: AtomicU64 = AtomicU64::new(0);
+static SECOND2_CAUSE: AtomicU64 = AtomicU64::new(u64::MAX);
+static SECOND3: AtomicU64 = AtomicU64::new(0);
+static SECOND3_CAUSE: AtomicU64 = AtomicU64::new(u64::MAX);
+static TOUCH_HART: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// The runner's CPU and the remote mask it computed before the revokes, for
+/// the ktest verdict ([`tlb_shootdown_cross_cpu`]).
+static RUNNER_HART: AtomicUsize = AtomicUsize::new(usize::MAX);
+static MASK: AtomicUsize = AtomicUsize::new(usize::MAX);
+static KERNEL_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Wave 9: the translation root `ktask` found itself on (`u64::MAX`: it
+/// never ran), and the one the toucher was on when it created it.
+static KTASK_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
+static KTASK_CREATOR_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// This hart's live translation root, as the context switch writes it.
+fn live_root() -> u64 {
+    #[cfg(target_arch = "riscv64")]
+    { azos_arch::cpu::read_satp() as u64 }
+    #[cfg(target_arch = "aarch64")]
+    { azos_arch::sysregs::read_ttbr0_el1() & ((1 << 48) - 1) }
+    #[cfg(target_arch = "x86_64")]
+    { azos_arch::mmu::cr3_root(azos_arch::mmu::cpu::read_cr3()) as u64 }
+}
+
+/// Wave 9: a kernel task created by a task that runs on a user root (the
+/// toucher, on P) must run on the KERNEL's root. It used to inherit the
+/// creator's live `satp` (riscv64), so it ran on a table its creator's
+/// exit frees. Pinned to the toucher's hart, so on a kernel with the bug
+/// no OTHER hart publishes P and the shootdown verdict above is unchanged.
+fn ktask(_: usize) {
+    KTASK_ROOT.store(live_root(), Ordering::SeqCst);
+    azos_sched::task_exit();
+}
+
+#[repr(C)]
+struct Load { value: u64, cause: u64 }
+
+unsafe extern "C" {
+    /// One 8-byte load from `va` with the trap vector pointed at a handler
+    /// of its own; `cause` 0 = no fault, else `scause` / `ESR_EL1` / on
+    /// x86_64 `vector << 32 | error code` (the #PF handler's fixup).
+    /// Interrupts are masked for the window and restored. Two-word
+    /// aggregate: returned in a0/a1 (LP64) or x0/x1 (AAPCS64).
+    fn azos_tlb_probe_load(va: usize) -> Load;
+}
+
+// riscv64: the shape of `azos_stimecmp_probe` (drivers/src/clint.rs).
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    ".pushsection .text.azos_tlb_probe_load, \"ax\"",
+    ".globl azos_tlb_probe_load",
+    ".p2align 2",
+    "azos_tlb_probe_load:",
+    "    csrrci t3, sstatus, 2",
+    "    csrr   t1, stvec",
+    "    la     t0, 1f",
+    "    csrw   stvec, t0",
+    "    li     a1, 0",
+    "    ld     a0, 0(a0)",
+    "2:",
+    "    csrw   stvec, t1",
+    "    andi   t3, t3, 2",
+    "    csrs   sstatus, t3",
+    "    ret",
+    ".p2align 2",
+    "1:",
+    "    csrr   a1, scause",
+    "    li     a0, 0",
+    "    la     t0, 2b",
+    "    csrw   sepc, t0",
+    "    sret",
+    ".popsection",
+);
+
+// aarch64: a private vector table (2 KiB aligned) whose current-EL
+// synchronous slots (SP0 at 0x000, SPx at 0x200) resume after the load.
+// Everything else is masked for the window.
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".pushsection .text.azos_tlb_probe_load, \"ax\"",
+    ".globl azos_tlb_probe_load",
+    ".p2align 2",
+    "azos_tlb_probe_load:",
+    "    mrs  x9, daif",
+    "    msr  daifset, #0xf",
+    "    mrs  x10, vbar_el1",
+    "    adrp x11, azos_tlb_probe_vectors",
+    "    add  x11, x11, :lo12:azos_tlb_probe_vectors",
+    "    msr  vbar_el1, x11",
+    "    isb",
+    "    mov  x1, #0",
+    "    ldr  x0, [x0]",
+    "azos_tlb_probe_resume:",
+    "    msr  vbar_el1, x10",
+    "    isb",
+    "    msr  daif, x9",
+    "    ret",
+    ".p2align 11",
+    "azos_tlb_probe_vectors:",
+    "    mrs  x1, esr_el1",
+    "    mov  x0, #0",
+    "    adr  x12, azos_tlb_probe_resume",
+    "    msr  elr_el1, x12",
+    "    eret",
+    ".p2align 9",
+    "    mrs  x1, esr_el1",
+    "    mov  x0, #0",
+    "    adr  x12, azos_tlb_probe_resume",
+    "    msr  elr_el1, x12",
+    "    eret",
+    ".p2align 11",
+    ".popsection",
+);
+
+// x86_64: no private IDT. The #PF handler recognises the load's address
+// (`azos_tlb_probe_load_insn`) in a kernel fault and resumes at
+// `azos_tlb_probe_resume` with RAX = 0 and RDX = the cause
+// (`entry::x86_64::trap::tlb_probe_fixup`). Returned in RAX:RDX (SysV).
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".pushsection .text.azos_tlb_probe_load, \"ax\"",
+    ".globl azos_tlb_probe_load",
+    ".globl azos_tlb_probe_load_insn",
+    ".globl azos_tlb_probe_resume",
+    "azos_tlb_probe_load:",
+    "    pushfq",
+    "    cli",
+    "    xorl %edx, %edx",
+    "azos_tlb_probe_load_insn:",
+    "    movq (%rdi), %rax",
+    "azos_tlb_probe_resume:",
+    "    popfq",
+    "    ret",
+    ".popsection",
+    options(att_syntax),
+);
+
+/// The value this ISA's context switch installs for "address space rooted
+/// at `root`" (riscv64 `satp`, aarch64 raw `TTBR0_EL1`).
+fn as_value(root: usize) -> usize {
+    #[cfg(target_arch = "riscv64")]
+    { azos_arch::mmu::make_satp(root, 0) }
+    #[cfg(target_arch = "aarch64")]
+    { root }
+    #[cfg(target_arch = "x86_64")]
+    { azos_arch::ArchPlatform::user_root_word(&azos_arch::ARCH, root, 0) }
+}
+
+/// Does the hart's translation register name `root` right now?
+fn running_on(root: usize) -> bool {
+    #[cfg(target_arch = "riscv64")]
+    { azos_arch::cpu::read_satp() == azos_arch::mmu::make_satp(root, 0) }
+    #[cfg(target_arch = "aarch64")]
+    { (azos_arch::sysregs::read_ttbr0_el1() as usize) & ((1 << 48) - 1) == root }
+    #[cfg(target_arch = "x86_64")]
+    { azos_arch::mmu::cr3_root(azos_arch::mmu::cpu::read_cr3()) == root }
+}
+
+/// The remote harts the shootdown must reach, read the way it reads them.
+/// aarch64 needs none: `TLBI ...IS` is a hardware broadcast.
+fn remote_mask(root: usize) -> usize {
+    #[cfg(target_arch = "riscv64")]
+    {
+        azos_arch::tlb::remote_mask(
+            |h| azos_arch::tlb::AZOS_HART_SATP[h].load(Ordering::SeqCst),
+            azos_arch::tlb::TLB_MAX_HARTS, azos_arch::ARCH.hart_id(), root)
+    }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = root; 0 }
+    #[cfg(target_arch = "x86_64")]
+    {
+        azos_arch::tlb::remote_mask(
+            |h| azos_arch::tlb::AZOS_HART_CR3[h].load(Ordering::SeqCst),
+            azos_arch::tlb::TLB_MAX_HARTS, azos_arch::ARCH.hart_id(), root)
+    }
+}
+
+/// Is `cause` the translation fault an unmapped page must raise?
+fn is_translation_fault(cause: u64) -> bool {
+    #[cfg(target_arch = "riscv64")]
+    { cause == 13 } // load page fault
+    #[cfg(target_arch = "aarch64")]
+    { (cause >> 26) & 0x3f == 0x25 && cause & 0x3c == 0x04 } // DABT same EL, translation L0-3
+    #[cfg(target_arch = "x86_64")]
+    { cause >> 32 == 14 && cause & 1 == 0 } // #PF, not present
+}
+
+fn irq_off() -> usize {
+    let saved: usize;
+    #[cfg(target_arch = "riscv64")]
+    unsafe { core::arch::asm!("csrrci {0}, sstatus, 2", out(reg) saved) };
+    #[cfg(target_arch = "aarch64")]
+    unsafe { core::arch::asm!("mrs {0}, daif", "msr daifset, #2", out(reg) saved) };
+    // x86_64: the shootdown is a maskable IPI (no firmware does it, as
+    // riscv64's SBI does), so the toucher cannot sit with IF clear: the
+    // runner would wait for its ack forever. Instead the LAPIC's task
+    // priority holds back every class below 15 (the tick, devices) and IF
+    // stays set, so only the system vectors (TLB, call, resched) arrive.
+    // A reschedule IPI in the window is caught by the toucher (`IPI_RECEIVED`).
+    #[cfg(target_arch = "x86_64")]
+    {
+        let f: usize;
+        unsafe { core::arch::asm!("pushfq", "pop {0}", "cli", out(reg) f) };
+        let tpr = azos_arch::irq::apic::read(azos_arch::irq::encode::LAPIC_TPR) as usize;
+        azos_arch::irq::apic::write(azos_arch::irq::encode::LAPIC_TPR, X86_TPR_SYSTEM_ONLY);
+        unsafe { core::arch::asm!("sti") };
+        saved = (f & (1 << 9)) | (tpr << 32);
+    }
+    saved
+}
+
+fn irq_restore(saved: usize) {
+    #[cfg(target_arch = "riscv64")]
+    if saved & 2 != 0 { unsafe { core::arch::asm!("csrsi sstatus, 2") } }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { core::arch::asm!("msr daif, {0}", in(reg) saved) };
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe { core::arch::asm!("cli") };
+        azos_arch::irq::apic::write(azos_arch::irq::encode::LAPIC_TPR, (saved >> 32) as u32);
+        if saved & (1 << 9) != 0 { unsafe { core::arch::asm!("sti") } }
+    }
+}
+
+/// `SECOND_CAUSE` of a run whose window a reschedule IPI interrupted.
+const VOIDED: u64 = u64::MAX - 2;
+/// Runs the ktest makes before it calls the scenario unmeasurable.
+#[cfg(feature = "ktest")]
+const VOIDED_RETRIES: u32 = 4;
+
+/// The task priority that blocks LAPIC classes 0..14 (vectors below 0xF0).
+#[cfg(target_arch = "x86_64")]
+const X86_TPR_SYSTEM_ONLY: u32 = 0xE0;
+/// Reschedule IPIs taken on this CPU (x86_64): one inside the toucher's
+/// window would switch it off P and flush, which reads as a pass.
+fn resched_ipis() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::entry::x86_64::irq::IPI_RECEIVED[azos_arch::ARCH.hart_id()].load(Ordering::SeqCst)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { 0 }
+}
+
+fn fill(frame: usize, word: u64) {
+    let p = addr::phys_to_virt(frame) as *mut u64;
+    for i in 0..(azos_arch::PAGE_SIZE / 8) {
+        unsafe { core::ptr::write_volatile(p.add(i), word) };
+    }
+    core::sync::atomic::fence(Ordering::SeqCst);
+}
+
+/// Counter ticks per second, in `ARCH.now_ticks()` units.
+fn hz() -> u64 {
+    #[cfg(target_arch = "riscv64")]
+    { azos_drv_sys::timebase::TIMER_FREQ }
+    #[cfg(target_arch = "aarch64")]
+    { azos_arch::timer::freq_hz() }
+    #[cfg(target_arch = "x86_64")]
+    { azos_arch::timer::TICK_HZ }
+}
+
+fn sleep_ms(ms: u64) {
+    let hz = hz();
+    let ticks = core::cmp::max(1, hz / 1000 * ms);
+    let dl = azos_arch::ARCH.now_ticks().wrapping_add(ticks);
+    azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
+}
+
+/// Wait (sleeping) for `STAGE >= s`, up to `ms`. False on timeout.
+fn wait_stage(s: u32, ms: u64) -> bool {
+    let mut waited = 0;
+    while STAGE.load(Ordering::SeqCst) < s {
+        if waited >= ms { return false; }
+        sleep_ms(5);
+        waited += 5;
+    }
+    true
+}
+
+fn toucher(_: usize) {
+    let root = P_ROOT.load(Ordering::SeqCst);
+    // A kernel task's own value: the kernel satp on riscv64, 0 ("the
+    // kernel's TTBR0") on aarch64 — see `try_task_create_affinity`.
+    #[cfg(target_arch = "riscv64")]
+    let own = azos_arch::cpu::read_satp() as u64;
+    #[cfg(target_arch = "aarch64")]
+    let own = 0u64;
+    // x86_64: the kernel PML4's CR3 word (`kernel_task_satp`).
+    #[cfg(target_arch = "x86_64")]
+    let own = azos_arch::mmu::cpu::read_cr3();
+    // Become a task whose address space is P, then leave the hart so the
+    // scheduler's own switch path installs it.
+    azos_sched::set_current_user_info(as_value(root) as u64, 0, 0);
+    sleep_ms(20);
+    if running_on(root) {
+        KTASK_CREATOR_ROOT.store(live_root(), Ordering::SeqCst);
+        azos_sched::task_create_affinity("ktask-root", ktask, 0, PROBE_PRIO,
+                                             azos_arch::ARCH.hart_id() as i8);
+    }
+
+    // From here to the second load: no interrupt, so no switch, so no flush.
+    let saved = irq_off();
+    let ipis = resched_ipis();
+    TOUCH_HART.store(azos_arch::ARCH.hart_id(), Ordering::SeqCst);
+    if running_on(root) {
+        let r = unsafe { azos_tlb_probe_load(VA) };
+        let r2 = unsafe { azos_tlb_probe_load(VA2) };
+        let r3 = unsafe { azos_tlb_probe_load(VA_LAST) };
+        FIRST.store(r.value | r2.value | r3.value, Ordering::SeqCst);
+        FIRST_CAUSE.store(r.cause | r2.cause | r3.cause, Ordering::SeqCst);
+        STAGE.store(2, Ordering::SeqCst);
+        // Bounded spin (~2 s of counter time) for the unmap + overwrite.
+        let t0 = azos_arch::ARCH.now_ticks();
+        let limit = hz() * 2;
+        while STAGE.load(Ordering::SeqCst) < 3
+            && azos_arch::ARCH.now_ticks().wrapping_sub(t0) < limit {
+            core::hint::spin_loop();
+        }
+        if STAGE.load(Ordering::SeqCst) >= 3 {
+            let r = unsafe { azos_tlb_probe_load(VA) };
+            SECOND.store(r.value, Ordering::SeqCst);
+            SECOND_CAUSE.store(r.cause, Ordering::SeqCst);
+            let r = unsafe { azos_tlb_probe_load(VA2) };
+            SECOND2.store(r.value, Ordering::SeqCst);
+            SECOND2_CAUSE.store(r.cause, Ordering::SeqCst);
+            let r = unsafe { azos_tlb_probe_load(VA_LAST) };
+            SECOND3.store(r.value, Ordering::SeqCst);
+            SECOND3_CAUSE.store(r.cause, Ordering::SeqCst);
+            if resched_ipis() != ipis {
+                // Switched away and back: the reads prove nothing.
+                SECOND_CAUSE.store(VOIDED, Ordering::SeqCst);
+            }
+        }
+    } else {
+        FIRST_CAUSE.store(u64::MAX - 1, Ordering::SeqCst); // P was never installed
+        STAGE.store(2, Ordering::SeqCst);
+    }
+    // Back to the kernel's own table through the same switch path before
+    // anyone frees P: the sleep's switch to idle installs the kernel root
+    // (and, on riscv64, publishes it), and nothing brings P back.
+    azos_sched::set_current_user_info(own, 0, 0);
+    irq_restore(saved);
+    sleep_ms(5);
+    STAGE.store(4, Ordering::SeqCst);
+    azos_sched::task_exit();
+}
+
+pub fn runner(touch_hart: usize) {
+    // A fresh scenario (the x86_64 ktest runs it again when a reschedule
+    // IPI voided the toucher's window).
+    STAGE.store(0, Ordering::SeqCst);
+    for v in [&FIRST, &SECOND, &SECOND2, &SECOND3] { v.store(0, Ordering::SeqCst); }
+    for v in [&FIRST_CAUSE, &SECOND_CAUSE, &SECOND2_CAUSE, &SECOND3_CAUSE, &KTASK_ROOT, &KTASK_CREATOR_ROOT] {
+        v.store(u64::MAX, Ordering::SeqCst);
+    }
+    let me = azos_arch::ARCH.hart_id();
+    // A boot-created kernel task: this is the kernel's root.
+    let kernel_root = live_root();
+    KERNEL_ROOT.store(kernel_root, Ordering::SeqCst);
+    let (frame, frame2) = match (pmm::alloc_page(), pmm::alloc_page()) {
+        (Ok(p), Ok(q)) => (p.as_usize(), q.as_usize()),
+        _ => { kprintln!("[TLB-SMOKE] FAILED: no frame"); return; }
+    };
+    // The rest of the batched range (`VA2` itself is `frame2`).
+    let mut range_frames = [0usize; RANGE_PAGES];
+    range_frames[0] = frame2;
+    for f in range_frames.iter_mut().skip(1) {
+        match pmm::alloc_page() {
+            Ok(p) => *f = p.as_usize(),
+            Err(_) => { kprintln!("[TLB-SMOKE] FAILED: no frame"); return; }
+        }
+    }
+    let pt = match vmm::create_pagetable() { Ok(p) => p, Err(_) => {
+        kprintln!("[TLB-SMOKE] FAILED: no page table"); return; } };
+    // The probe pages first, then the kernel's entries (the loader's order):
+    // under x86_64's LA57 the kernel's whole PML4 would otherwise be copied
+    // into P's root, and `VA` would fall inside a table the kernel owns.
+    if vmm::va_is_kernel_mapped(VA) || vmm::va_is_kernel_mapped(VA2)
+        || vmm::map(pt, VA, frame, PagePerms::KERNEL_RW).is_err()
+        || range_frames.iter().enumerate().any(|(i, &f)| {
+            vmm::map(pt, VA2 + i * azos_arch::PAGE_SIZE, f, PagePerms::KERNEL_RW).is_err()
+        }) {
+        kprintln!("[TLB-SMOKE] FAILED: could not map the probe page");
+        return;
+    }
+    vmm::copy_kernel_entries_to_user(pt);
+    fill(frame, OLD);
+    for &f in &range_frames { fill(f, OLD); }
+    P_ROOT.store(pt, Ordering::SeqCst);
+    azos_sched::task_create_affinity("tlb-touch", toucher, 0, PROBE_PRIO, touch_hart as i8);
+
+    if !wait_stage(2, 3000) {
+        kprintln!("[TLB-SMOKE] FAILED: toucher never ran on hart {}", touch_hart);
+        return;
+    }
+    let th = TOUCH_HART.load(Ordering::SeqCst);
+    let first = FIRST.load(Ordering::SeqCst);
+    let first_cause = FIRST_CAUSE.load(Ordering::SeqCst);
+    if first_cause != 0 || first != OLD {
+        kprintln!("[TLB-SMOKE] FAILED: setup read on hart {}: value={:#x} cause={:#x}",
+            th, first, first_cause);
+        let _ = wait_stage(4, 3000);
+        return;
+    }
+    // Who the shootdown will have to reach (recomputed inside it; the
+    // toucher is spinning on P, so this is what it sees).
+    let mask = remote_mask(pt);
+    MASK.store(mask, Ordering::SeqCst);
+    RUNNER_HART.store(me, Ordering::SeqCst);
+
+    // The revokes under test: the production unmap paths. The range call
+    // frees nothing here (a kernel-permission leaf is not a task's own
+    // frame) but clears, batches and shoots down exactly as `munmap` does.
+    vmm::unmap(pt, VA);
+    let _ = vmm::unmap_user_range_and_free(pt, VA2, VA2 + RANGE_PAGES * azos_arch::PAGE_SIZE, 0, 0);
+    // Reuse of the frames the PTEs named.
+    fill(frame, NEW);
+    for &f in &range_frames { fill(f, NEW); }
+    STAGE.store(3, Ordering::SeqCst);
+
+    if !wait_stage(4, 3000) {
+        kprintln!("[TLB-SMOKE] FAILED: toucher did not finish");
+        return;
+    }
+    // The kernel task the toucher created on P (it runs once the toucher
+    // sleeps). Printed BEFORE the shootdown verdict: the aarch64 row stops
+    // reading at the first `TLB-SMOKE]` line.
+    let mut waited = 0;
+    while KTASK_ROOT.load(Ordering::SeqCst) == u64::MAX && waited < 3000 {
+        sleep_ms(5);
+        waited += 5;
+    }
+    let kroot = KTASK_ROOT.load(Ordering::SeqCst);
+    let croot = KTASK_CREATOR_ROOT.load(Ordering::SeqCst);
+    if kroot == kernel_root && croot != kernel_root {
+        kprintln!("[KTASK-ROOT] PASS: a kernel task created on a user root ({:#x}) runs on the kernel root ({:#x})",
+            croot, kroot);
+    } else {
+        kprintln!("[KTASK-ROOT] FAILED: a kernel task created on root {:#x} runs on {:#x}, the kernel root is {:#x}",
+            croot, kroot, kernel_root);
+    }
+
+    let v = SECOND.load(Ordering::SeqCst);
+    let c = SECOND_CAUSE.load(Ordering::SeqCst);
+    let v2 = SECOND2.load(Ordering::SeqCst);
+    let c2 = SECOND2_CAUSE.load(Ordering::SeqCst);
+    let v3 = SECOND3.load(Ordering::SeqCst);
+    let c3 = SECOND3_CAUSE.load(Ordering::SeqCst);
+    let after = remote_mask(pt);
+    if c != 0 && is_translation_fault(c) && c2 != 0 && is_translation_fault(c2)
+        && c3 != 0 && is_translation_fault(c3) {
+        kprintln!("[TLB-SMOKE] PASS: hart {} faulted (cause={:#x}) on the page hart {} unmapped after the touch; remote mask={:#x} harts signalled={}; munmap path faulted too (cause={:#x}), and on the last of its {} pages (cause={:#x}); mask after switch-away={:#x}",
+            th, c, me, mask, mask.count_ones(), c2, RANGE_PAGES, c3, after);
+    } else if c == 0 || c2 == 0 || c3 == 0 {
+        kprintln!("[TLB-SMOKE] STALE READ on hart {}: value={:#x} (unmap) value={:#x} (munmap path) value={:#x} (its last page) after hart {} unmapped them (remote mask={:#x})",
+            th, if c == 0 { v } else { 0 }, if c2 == 0 { v2 } else { 0 }, if c3 == 0 { v3 } else { 0 }, me, mask);
+    } else {
+        kprintln!("[TLB-SMOKE] FAILED: second read cause={:#x}/{:#x}/{:#x} value={:#x}/{:#x}/{:#x}", c, c2, c3, v, v2, v3);
+    }
+    // P is no longer anyone's translation root (the toucher switched away
+    // and exited) — free it.
+    if after == 0 {
+        vmm::destroy_user_pagetable(pt);
+        let _ = pmm::free_page(addr::PhysAddr::new(frame));
+        for &f in &range_frames { let _ = pmm::free_page(addr::PhysAddr::new(f)); }
+    }
+}
+
+/// The cause the revoked pages must fault with (the row's pinned value): a
+/// load page fault on riscv64; on aarch64 a same-EL data abort, translation
+/// fault at level 3 (the probe pages are 4 KiB leaves).
+#[cfg(feature = "ktest")]
+fn expected_cause() -> u64 {
+    // arch-only: the fault encodings are the ISAs' own (scause, ESR_EL1).
+    #[cfg(target_arch = "riscv64")]
+    { 13 }
+    #[cfg(target_arch = "aarch64")]
+    { 0x9600_0007 }
+    // x86_64: #PF, error code 0 (supervisor read of a not-present page).
+    #[cfg(target_arch = "x86_64")]
+    { 14 << 32 }
+}
+
+/// Who the shootdown must signal: on riscv64 exactly the toucher's CPU (an
+/// IPI per CPU that runs on the root); aarch64 broadcasts TLBI in the inner
+/// shareable domain, so no CPU is signalled.
+#[cfg(feature = "ktest")]
+fn expected_mask(touch: usize) -> usize {
+    // arch-only: riscv64 shoots down by IPI, aarch64 by broadcast TLBI.
+    #[cfg(target_arch = "riscv64")]
+    { 1usize << touch }
+    #[cfg(target_arch = "aarch64")]
+    { let _ = touch; 0 }
+    // x86_64: an IPI per CPU that runs on the root, as riscv64.
+    #[cfg(target_arch = "x86_64")]
+    { 1usize << touch }
+}
+
+// Cross-CPU TLB shootdown, observed: CPU 1 unmaps two pages of a private
+// root (through `vmm::unmap` and through `munmap`'s batched path) while CPU 2
+// runs on it with both translations cached; CPU 2's next reads must fault
+// with a translation fault, and the shootdown must have signalled exactly
+// the CPUs that run on the root. Also: a kernel task created on a user root
+// runs on the kernel root. The same verdict as the rows `tlb: stale access
+// after cross-hart unmap faults` and `aarch64 tlb: stale access faults`
+// pinned in their marker: on riscv64 the remote mask is exactly CPU 2's
+// (`harts signalled=1`), so a toucher that never shared the root cannot
+// pass. Canaries `tlb-local-only` (the remote half of the shootdown compiled
+// out) and, riscv64, `tlb-bound-canary` (the shootdown's scan of published
+// roots notes no started CPU, so CPU 2 is outside it): CPU 2 reads the
+// overwritten frame through the stale entry, `not ok`.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn tlb_shootdown_cross_cpu() {
+        const TOUCH: usize = 2;
+        if azos_percpu::nr_cpu_ids() < 3 {
+            return Err("needs 3 CPUs (runner on CPU 1, toucher on CPU 2)");
+        }
+        crate::ktest::probe("tlb-probe", runner, TOUCH, PROBE_PRIO, 1)?;
+        // x86_64: a reschedule IPI inside the toucher's window voids the run
+        // (`resched_ipis`); run it again, a bounded number of times.
+        let mut tries = 1;
+        while SECOND_CAUSE.load(Ordering::SeqCst) == VOIDED && tries < VOIDED_RETRIES {
+            crate::ktest::probe("tlb-probe", runner, TOUCH, PROBE_PRIO, 1)?;
+            tries += 1;
+        }
+        if SECOND_CAUSE.load(Ordering::SeqCst) == VOIDED {
+            return Err("every run was voided by a reschedule IPI in the toucher's window");
+        }
+        if STAGE.load(Ordering::SeqCst) < 4 {
+            return Err("the scenario stopped before the second reads (see the [TLB-SMOKE] line)");
+        }
+        let (c, c2, c3) = (SECOND_CAUSE.load(Ordering::SeqCst), SECOND2_CAUSE.load(Ordering::SeqCst),
+                           SECOND3_CAUSE.load(Ordering::SeqCst));
+        if c == 0 || c2 == 0 || c3 == 0 {
+            return Err("STALE READ: the toucher read a revoked page");
+        }
+        if c != expected_cause() || c2 != expected_cause() || c3 != expected_cause() {
+            return Err("the second reads faulted with another cause than a translation fault");
+        }
+        if TOUCH_HART.load(Ordering::SeqCst) != TOUCH || RUNNER_HART.load(Ordering::SeqCst) != 1 {
+            return Err("the runner or the toucher ran on another CPU than pinned");
+        }
+        if MASK.load(Ordering::SeqCst) != expected_mask(TOUCH) {
+            return Err("the shootdown would signal another CPU set than the toucher's");
+        }
+        let kroot = KTASK_ROOT.load(Ordering::SeqCst);
+        if kroot != KERNEL_ROOT.load(Ordering::SeqCst) || kroot == KTASK_CREATOR_ROOT.load(Ordering::SeqCst) {
+            return Err("KTASK-ROOT: a kernel task created on a user root does not run on the kernel root");
+        }
+        Ok(())
+    }
+}

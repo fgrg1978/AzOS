@@ -1,0 +1,68 @@
+[package]
+name = "azos_sched_wake_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the K-C10 TID-directed wake logic in crates/core/sched/src/wait.rs. Excluded from workspace."
+
+[dependencies]
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources.
+# The ring is on (`on`) so `domain_tests` can read the `kmem-charge` refusal
+# records back; the durable sink is not.
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
+# task.rs re-exports MAX_TASKS from this leaf; it has no runtime dependencies
+# of its own, so it compiles for the host unchanged.
+azos_limits = { path = "../../../crates/core/limits" }
+
+# Host stand-in for the K-C29 preemption mechanism. `wait.rs`'s
+# `task_block_outcome` names `azos_sync::preempt::depth()` and
+# `azos_sync::preempt_core::voluntary_admission()`; the first is inline
+# asm on the kernel target, the second is pulled real. See the shim's crate
+# doc for which half is which.
+azos_sync = { path = "shims/sync", package = "sched_wake_test_sync" }
+
+# Owner decision 102 — `task.rs` (pulled below) now holds `budget:
+# azos_mm::budget::PageBudget`. The real `azos_mm` cannot compile for
+# the host (transitively pulls in `azos_arch`'s asm), so this shim pulls
+# the real `crates/core/mm/src/budget.rs` unmodified — see its own doc.
+azos_mm = { path = "shims/mm", package = "sched_wake_test_mm" }
+
+# `sc.rs` and `rt_core.rs` (pulled by path for the wake-preempt rule) re-export
+# from the ABI crate.
+azos_abi = { path = "../../../crates/core/abi" }
+
+[dev-dependencies]
+
+[features]
+# `wait.rs` (pulled by path) branches on this sched feature. Declared here,
+# never enabled, so the host build compiles the sweep branch without an
+# `unexpected_cfgs` warning; the heap itself is tested through `timer_heap`.
+sched-timer-heap = []
+# Plan item 7 canary of `wait.rs`, declared for the same reason, never enabled.
+kill-reblock-canary = []
+# Wave 15 canary of the pulled-in `stop_policy.rs` (forced-stop accounting).
+forced-seal-skip-canary = []
+# `elf_bounds.rs` (pulled by path): the gate's canary build accepts a page
+# shared by segments mapped differently, and `elf_bounds_tests` must fail.
+elf-mixed-page-canary = []
+# `task.rs`'s `sched_word::fast_claim`: the canary build trusts the read
+# before the CAS, and `fast_claim_sees_a_save_begun_after_its_check` must fail.
+fast-claim-stale-canary = []
+# `wait.rs`'s timer-tick hook for the kernel's `preempt::ktest_probe`;
+# declared for the lint, never enabled here.
+ktest = []
+# `scheduler/wake/preempt.rs`: the canary build never asks the waking CPU to
+# reschedule, and `a_preempting_wake_on_the_same_cpu_sets_need_resched` must fail.
+wake-preempt-canary = []
+# `scheduler/wake/attrib.rs`: the canary build never recognises a bound line's
+# delivery nor an interrupt handler's wake, and `an_irq_wake_names_its_line` must fail.
+wake-attrib-canary = []
+# `scheduler/wake/attrib.rs`: the canary build takes a ring slot without the
+# writers' exclusion, and `a_late_writer_does_not_clobber_a_newer_entry` must fail.
+wake-ring-canary = []
+# `sc.rs` (pulled by path), declared for the lint, never enabled here.
+qos-rt-slack-canary = []

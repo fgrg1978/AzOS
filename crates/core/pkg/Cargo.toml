@@ -1,0 +1,41 @@
+[package]
+name = "azos_pkg"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Signed application packages (plan D14): the container (images, a manifest of requested warrants, an author signature with an algorithm id and a variable-length signature), its verification against the signers the signed topology admits, and its admission as a topology delta the neverallow rules and the other admission checks judge. no_std, no allocation. Excluded from workspace; the installer (userspace/services/pkgd) and the host suite (tests/host/pkg-tests) link it by path."
+
+[dependencies]
+azos_abi = { path = "../abi" }
+azos_crypto = { path = "../crypto" }
+azos_limits = { path = "../limits" }
+azos_topology = { path = "../topology" }
+azos_decision = { path = "../decision" }
+azos_devif = { path = "../devif" }
+
+[features]
+# Canaries of the host suite and the gate; never in a shipped build.
+# Skips the signature check: a package with a forged signature is installed.
+pkg-verify-skip-canary = []
+# Skips the signer lookup: a package signed by a key the device does not admit
+# is installed (under no ceiling at all).
+pkg-signer-canary = []
+# Skips the image hash check: an image that is not the one the signed manifest
+# names is installed.
+pkg-image-canary = []
+# Skips the check of a row's imports against the signer's warrants: a package
+# whose signer holds no `endpoint:` warrant for a name still imports it.
+pkg-import-canary = []
+# Skips the epoch floor: a package signed against a security epoch below the
+# device's confirmed floor is still admitted.
+pkg-epoch-canary = []
+# The trial rule never rolls back: a package whose boots all failed stays applied.
+pkg-trial-canary = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+# Out of the kernel workspace, like the userspace libraries: the host builds it
+# (tests/host/pkg-tests) and the ring-3 installer links it by path.
+[workspace]

@@ -1,0 +1,711 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2018 Redox OS
+#
+# The hooks for the `azos` platform (userspace/lib/relibc-azos/overlay).
+#
+# target_os = "azos" takes the Linux flavour of every constant and layout that the
+# Linux platform shares with the header modules (errno, open flags, mman, termios,
+# signal numbers): the native ABI keeps Linux values for them (azos_abi::error), and
+# the Linux personality runs the same programs. Syscall use stays Linux-only. The rest
+# selects the azos platform module, its startup and TLS activation, the libsys
+# dependency, and a 128 KiB default thread stack (the kernel charges mapped pages).
+#
+diff --git a/Cargo.lock b/Cargo.lock
+index 7fed717..d56aaeb 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -26,6 +26,49 @@ version = "1.5.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+ 
++[[package]]
++name = "azos_abi"
++version = "1.0.0"
++
++[[package]]
++name = "azos_devif"
++version = "0.1.0"
++dependencies = [
++ "azos_abi",
++ "azos_idl",
++]
++
++[[package]]
++name = "azos_idl"
++version = "0.1.0"
++dependencies = [
++ "azos_abi",
++ "azos_idl_macros",
++]
++
++[[package]]
++name = "azos_idl_macros"
++version = "0.1.0"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
++[[package]]
++name = "azos_libsys"
++version = "0.1.0"
++dependencies = [
++ "azos_abi",
++ "azos_devif",
++ "azos_idl",
++ "azos_rings",
++]
++
++[[package]]
++name = "azos_rings"
++version = "0.1.0"
++
+ [[package]]
+ name = "base64ct"
+ version = "1.8.3"
+@@ -528,6 +571,8 @@ version = "0.2.5"
+ dependencies = [
+  "argon2",
+  "arrayvec",
++ "azos_abi",
++ "azos_libsys",
+  "base64ct",
+  "bcrypt-pbkdf",
+  "bitflags",
+diff --git a/Cargo.toml b/Cargo.toml
+index e82c390..ac9f407 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -127,6 +127,10 @@ features = ["elf", "read_core"]
+ [target.'cfg(target_os = "linux")'.dependencies]
+ sc = "0.2.7"
+ 
++[target.'cfg(target_os = "azos")'.dependencies]
++azos_abi = { path = "@AZOS_ROOT@/crates/core/abi" }
++azos_libsys = { path = "@AZOS_ROOT@/crates/core/libsys" }
++
+ [target.'cfg(target_os = "redox")'.dependencies]
+ redox_syscall.workspace = true
+ redox-rt = { path = "redox-rt" }
+diff --git a/cbindgen.globdefs.toml b/cbindgen.globdefs.toml
+index 3f8cd4d..6f87966 100644
+--- a/cbindgen.globdefs.toml
++++ b/cbindgen.globdefs.toml
+@@ -3,6 +3,7 @@
+ [defines]
+ "target_os=redox" = "__redox__"
+ "target_os=linux" = "__linux__"
++"target_os=azos" = "__azos__"
+ "target_pointer_width=64" = "__LP64__"
+ "target_pointer_width=32" = "__ILP32__"
+ "target_arch=x86" = "__i386__"
+diff --git a/src/header/_paths/mod.rs b/src/header/_paths/mod.rs
+index 7c391b4..cefdf6a 100644
+--- a/src/header/_paths/mod.rs
++++ b/src/header/_paths/mod.rs
+@@ -1,6 +1,6 @@
+ //! Implementation specific, non-standard path aliases
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ mod sys;
+ 
+diff --git a/src/header/bits_mode-t/mod.rs b/src/header/bits_mode-t/mod.rs
+index f2d48ba..f9ab715 100644
+--- a/src/header/bits_mode-t/mod.rs
++++ b/src/header/bits_mode-t/mod.rs
+@@ -1,14 +1,14 @@
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ use crate::platform::types::c_uint;
+ 
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "azos")))]
+ use crate::platform::types::c_int;
+ 
+ /// Used for some file attributes.
+ #[allow(non_camel_case_types)]
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub type mode_t = c_uint;
+ /// Used for some file attributes.
+ #[allow(non_camel_case_types)]
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "azos")))]
+ pub type mode_t = c_int;
+diff --git a/src/header/bits_open-flags/mod.rs b/src/header/bits_open-flags/mod.rs
+index a1459bc..8dd2ea1 100644
+--- a/src/header/bits_open-flags/mod.rs
++++ b/src/header/bits_open-flags/mod.rs
+@@ -1,6 +1,6 @@
+ pub use self::sys::*;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ pub mod sys;
+ 
+diff --git a/src/header/bits_suseconds-t/mod.rs b/src/header/bits_suseconds-t/mod.rs
+index 3896498..e418558 100644
+--- a/src/header/bits_suseconds-t/mod.rs
++++ b/src/header/bits_suseconds-t/mod.rs
+@@ -1,14 +1,14 @@
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ use crate::platform::types::c_long;
+ 
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "azos")))]
+ use crate::platform::types::c_int;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[allow(non_camel_case_types)]
+ /// Used for time in microseconds.
+ pub type suseconds_t = c_long;
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "azos")))]
+ #[allow(non_camel_case_types)]
+ /// Used for time in microseconds.
+ pub type suseconds_t = c_int;
+diff --git a/src/header/fcntl/mod.rs b/src/header/fcntl/mod.rs
+index 0e220a3..f9ecb94 100644
+--- a/src/header/fcntl/mod.rs
++++ b/src/header/fcntl/mod.rs
+@@ -18,7 +18,7 @@ pub use crate::header::bits_open_flags::*;
+ 
+ use super::errno::EINVAL;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ pub mod sys;
+ 
+diff --git a/src/header/grp/mod.rs b/src/header/grp/mod.rs
+index edfd609..00eb8c4 100644
+--- a/src/header/grp/mod.rs
++++ b/src/header/grp/mod.rs
+@@ -31,7 +31,7 @@ use super::{
+ };
+ 
+ /// cbindgen:ignore
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ const SEPARATOR: char = ':';
+ 
+ /// cbindgen:ignore
+diff --git a/src/header/limits/mod.rs b/src/header/limits/mod.rs
+index cfc5a32..28549a9 100644
+--- a/src/header/limits/mod.rs
++++ b/src/header/limits/mod.rs
+@@ -77,7 +77,7 @@ pub const LLONG_MIN: c_longlong = -LLONG_MAX - 1;
+ 
+ // TODO: 4096 for most architectures as determined by a quick grep of musl's source; need a better
+ // way to determine it for other archs or to hard code a value.
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub const PAGE_SIZE: usize = 4096;
+ 
+ // These POSIX symbols must have these values regardless of OS
+diff --git a/src/header/netdb/mod.rs b/src/header/netdb/mod.rs
+index 315a063..3f482ae 100644
+--- a/src/header/netdb/mod.rs
++++ b/src/header/netdb/mod.rs
+@@ -31,7 +31,7 @@ use crate::{
+     raw_cell::RawCell,
+ };
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ pub mod sys;
+ 
+diff --git a/src/header/pthread/attr.rs b/src/header/pthread/attr.rs
+index c3d64f0..35f9ea0 100644
+--- a/src/header/pthread/attr.rs
++++ b/src/header/pthread/attr.rs
+@@ -35,7 +35,13 @@ impl Default for RlctAttr {
+             // TODO
+             stack: 0,
+             // TODO
+-            stacksize: 1024 * 1024,
++            stacksize: if cfg!(target_os = "azos") {
++                // The kernel commits and charges every page of a mapping up
++                // front (SYS_MO_MAP), so a thread asks for what musl does.
++                128 * 1024
++            } else {
++                1024 * 1024
++            },
+             param: sched_param {
+                 // TODO
+                 sched_priority: 0,
+diff --git a/src/header/pwd/mod.rs b/src/header/pwd/mod.rs
+index 07b4cc2..1f4229a 100644
+--- a/src/header/pwd/mod.rs
++++ b/src/header/pwd/mod.rs
+@@ -20,18 +20,18 @@ use crate::{
+     raw_cell::RawCell,
+ };
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ mod linux;
+ #[cfg(target_os = "redox")]
+ mod redox;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ use self::linux as sys;
+ #[cfg(target_os = "redox")]
+ use self::redox as sys;
+ 
+ /// cbindgen:ignore
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ const SEPARATOR: u8 = b':';
+ 
+ /// cbindgen:ignore
+diff --git a/src/header/shadow/mod.rs b/src/header/shadow/mod.rs
+index 227770b..ad3c10d 100644
+--- a/src/header/shadow/mod.rs
++++ b/src/header/shadow/mod.rs
+@@ -24,7 +24,7 @@ use crate::{
+ use super::errno::{ENOENT, ERANGE};
+ 
+ /// cbindgen:ignore
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ const SEPARATOR: char = ':';
+ 
+ /// cbindgen:ignore
+diff --git a/src/header/signal/mod.rs b/src/header/signal/mod.rs
+index aa3e639..653838b 100644
+--- a/src/header/signal/mod.rs
++++ b/src/header/signal/mod.rs
+@@ -6,7 +6,7 @@ use core::{mem, ptr};
+ 
+ use cbitset::BitSet;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ use crate::platform::types::c_short;
+ #[cfg(target_os = "redox")]
+ use crate::platform::types::pthread_attr_t;
+@@ -28,7 +28,7 @@ use super::{
+     stdio::{fprintf, stderr},
+ };
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ pub mod sys;
+ 
+@@ -110,7 +110,7 @@ pub struct sigaltstack {
+ /// See <https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/signal.h.html>.
+ #[repr(C)]
+ #[derive(Clone)]
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "azos")))]
+ pub struct sigevent {
+     /// Signal value.
+     pub sigev_value: sigval,
+@@ -131,7 +131,7 @@ pub struct sigevent {
+ /// See <https://docs.rs/libc/0.2.186/src/libc/unix/linux_like/mod.rs.html#300-322>.
+ #[repr(C)]
+ #[derive(Clone)]
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub struct sigevent {
+     /// Signal value.
+     pub sigev_value: sigval,
+@@ -150,7 +150,7 @@ pub struct sigevent {
+ 
+ #[repr(C)]
+ #[derive(Clone, Copy)]
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "azos")))]
+ pub struct siginfo {
+     /// Signal number.
+     pub si_signo: c_int,
+@@ -170,7 +170,7 @@ pub struct siginfo {
+     pub si_value: sigval,
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[repr(C)]
+ #[derive(Clone, Copy)]
+ pub struct siginfo {
+@@ -188,7 +188,7 @@ pub struct siginfo {
+     pub _sifields: siginfo_sifields,
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[repr(C)]
+ #[derive(Clone, Copy)]
+ pub union siginfo_sifields {
+@@ -198,7 +198,7 @@ pub union siginfo_sifields {
+     pub _pad: [c_char; 112],
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[repr(C)]
+ #[derive(Clone, Copy)]
+ pub struct siginfo_common {
+@@ -207,7 +207,7 @@ pub struct siginfo_common {
+     pub si_value: sigval,
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[repr(C)]
+ #[derive(Clone, Copy)]
+ pub struct siginfo_sigfault {
+diff --git a/src/header/stdio/constants.rs b/src/header/stdio/constants.rs
+index 834c18c..ed5beeb 100644
+--- a/src/header/stdio/constants.rs
++++ b/src/header/stdio/constants.rs
+@@ -27,9 +27,9 @@ pub const _IONBF: c_int = 2;
+ /// Rename but don't replace the target if it exists.
+ pub const RENAME_NOREPLACE: c_uint = 0x01;
+ /// Atomically swap two files.
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub const RENAME_EXCHANGE: c_uint = 0x02;
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub const RENAME_WHITEOUT: c_uint = 0x04;
+ 
+ // /dev/tty + nul
+diff --git a/src/header/stdlib/mod.rs b/src/header/stdlib/mod.rs
+index 4d8db9a..d7f293f 100644
+--- a/src/header/stdlib/mod.rs
++++ b/src/header/stdlib/mod.rs
+@@ -944,7 +944,7 @@ pub unsafe extern "C" fn posix_memalign(
+ pub unsafe extern "C" fn posix_openpt(flags: c_int) -> c_int {
+     #[cfg(target_os = "redox")]
+     let r = unsafe { open(c"/scheme/pty/ptmx".as_ptr(), flags) };
+-    #[cfg(target_os = "linux")]
++    #[cfg(any(target_os = "linux", target_os = "azos"))]
+     let r = unsafe { open(c"/dev/ptmx".as_ptr(), flags) };
+ 
+     if r < 0 && platform::ERRNO.get() == ENOSPC {
+@@ -1000,7 +1000,7 @@ pub unsafe extern "C" fn ptsname_r(fildes: c_int, name: *mut c_char, namesize: s
+ 
+         if unsafe { ioctl(fildes, TIOCGPTN, ptr::from_mut(&mut pty).cast::<c_void>()) } == 0 {
+             // Linux and Redox use different resource names for PTS's.
+-            #[cfg(target_os = "linux")]
++            #[cfg(any(target_os = "linux", target_os = "azos"))]
+             let inner_name = format!("/dev/pts/{}", pty);
+             #[cfg(target_os = "redox")]
+             let inner_name = format!("/scheme/pty/{}", pty);
+diff --git a/src/header/sys_epoll/mod.rs b/src/header/sys_epoll/mod.rs
+index ba24d24..3c9e895 100644
+--- a/src/header/sys_epoll/mod.rs
++++ b/src/header/sys_epoll/mod.rs
+@@ -14,7 +14,7 @@ use crate::{
+ };
+ 
+ /// Set the close-on-exec (`FD_CLOEXEC`) flag on the new file descriptor.
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub const EPOLL_CLOEXEC: c_int = 0x8_0000;
+ 
+ /// Set the close-on-exec (`FD_CLOEXEC`) flag on the new file descriptor.
+diff --git a/src/header/sys_ioctl/mod.rs b/src/header/sys_ioctl/mod.rs
+index 7f53d5f..5f07b5a 100644
+--- a/src/header/sys_ioctl/mod.rs
++++ b/src/header/sys_ioctl/mod.rs
+@@ -31,7 +31,7 @@ pub struct sgttyb {
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, out: *mut c_void) -> c_int {
+     // TODO: Somehow support varargs to syscall??
+-    #[cfg(target_os = "linux")]
++    #[cfg(any(target_os = "linux", target_os = "azos"))]
+     unsafe {
+         crate::platform::Sys::ioctl(fd, request, out).or_minus_one_errno()
+     }
+@@ -39,10 +39,10 @@ pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, out: *mut c_void) ->
+     unsafe { self::redox::ioctl_inner(fd, request, out) }.or_minus_one_errno()
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub use self::linux::*;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub mod linux;
+ 
+ #[cfg(target_os = "redox")]
+diff --git a/src/header/sys_mman/mod.rs b/src/header/sys_mman/mod.rs
+index 3ea155f..4aeffa7 100644
+--- a/src/header/sys_mman/mod.rs
++++ b/src/header/sys_mman/mod.rs
+@@ -14,7 +14,7 @@ use crate::{
+ 
+ pub use self::sys::*;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ pub mod sys;
+ 
+@@ -175,7 +175,7 @@ pub unsafe extern "C" fn munmap(addr: *mut c_void, len: size_t) -> c_int {
+         .or_minus_one_errno()
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ static SHM_PATH: &[u8] = b"/dev/shm/";
+ 
+ #[cfg(target_os = "redox")]
+diff --git a/src/header/sys_syslog/mod.rs b/src/header/sys_syslog/mod.rs
+index daed58f..c16af4b 100644
+--- a/src/header/sys_syslog/mod.rs
++++ b/src/header/sys_syslog/mod.rs
+@@ -8,7 +8,7 @@
+ #[path = "redox.rs"]
+ pub mod sys;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ pub mod sys;
+ 
+diff --git a/src/header/termios/mod.rs b/src/header/termios/mod.rs
+index 5b2b324..c489884 100644
+--- a/src/header/termios/mod.rs
++++ b/src/header/termios/mod.rs
+@@ -17,7 +17,7 @@ pub use self::sys::*;
+ pub mod constants;
+ pub use constants::*;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ pub mod sys;
+ 
+@@ -56,7 +56,7 @@ pub const TCSADRAIN: c_int = 1;
+ pub const TCSAFLUSH: c_int = 2;
+ 
+ /// See <https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/termios.h.html>.
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[repr(C)]
+ #[derive(Default, Clone)]
+ pub struct termios {
+@@ -165,7 +165,7 @@ pub unsafe extern "C" fn tcgetsid(fildes: c_int) -> pid_t {
+ /// Infallible. Always returns a value.
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn cfgetispeed(termios_p: *const termios) -> speed_t {
+-    #[cfg(target_os = "linux")]
++    #[cfg(any(target_os = "linux", target_os = "azos"))]
+     {
+         unsafe { (*termios_p).__c_ispeed }
+     }
+@@ -189,7 +189,7 @@ pub unsafe extern "C" fn cfgetispeed(termios_p: *const termios) -> speed_t {
+ /// Infallible. Always returns a value.
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn cfgetospeed(termios_p: *const termios) -> speed_t {
+-    #[cfg(target_os = "linux")]
++    #[cfg(any(target_os = "linux", target_os = "azos"))]
+     {
+         unsafe { (*termios_p).__c_ospeed }
+     }
+@@ -213,7 +213,7 @@ pub unsafe extern "C" fn cfgetospeed(termios_p: *const termios) -> speed_t {
+ pub unsafe extern "C" fn cfsetispeed(termios_p: *mut termios, speed: speed_t) -> c_int {
+     match speed as usize {
+         // TODO redox impl
+-        #[cfg(target_os = "linux")]
++        #[cfg(any(target_os = "linux", target_os = "azos"))]
+         B0..=B38400 | B57600..=B4000000 => {
+             unsafe { (*termios_p).__c_ispeed = speed };
+             0
+@@ -238,7 +238,7 @@ pub unsafe extern "C" fn cfsetispeed(termios_p: *mut termios, speed: speed_t) ->
+ pub unsafe extern "C" fn cfsetospeed(termios_p: *mut termios, speed: speed_t) -> c_int {
+     match speed as usize {
+         // TODO redox impl
+-        #[cfg(target_os = "linux")]
++        #[cfg(any(target_os = "linux", target_os = "azos"))]
+         B0..=B38400 | B57600..=B4000000 => {
+             unsafe { (*termios_p).__c_ospeed = speed };
+             0
+diff --git a/src/header/time/constants.rs b/src/header/time/constants.rs
+index b44b411..dcfdb13 100644
+--- a/src/header/time/constants.rs
++++ b/src/header/time/constants.rs
+@@ -1,6 +1,6 @@
+ use crate::platform::types::{c_char, c_int, c_long, clockid_t};
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "linux.rs"]
+ pub mod sys;
+ 
+diff --git a/src/header/unistd/sysconf.rs b/src/header/unistd/sysconf.rs
+index 50a40fe..8532405 100644
+--- a/src/header/unistd/sysconf.rs
++++ b/src/header/unistd/sysconf.rs
+@@ -6,7 +6,7 @@
+ #[path = "sysconf/redox.rs"]
+ mod sys;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ #[path = "sysconf/linux.rs"]
+ mod sys;
+ 
+diff --git a/src/ld_so/mod.rs b/src/ld_so/mod.rs
+index 0bf42bf..d199c4c 100644
+--- a/src/ld_so/mod.rs
++++ b/src/ld_so/mod.rs
+@@ -128,7 +128,7 @@ fn static_init(
+     }
+ }
+ 
+-#[cfg(any(target_os = "linux", target_os = "redox"))]
++#[cfg(any(target_os = "linux", target_os = "azos", target_os = "redox"))]
+ pub unsafe fn init(
+     sp: &'static Stack,
+     #[cfg(target_os = "redox")] thr_fd: redox_rt::proc::FdGuardUpper,
+@@ -142,7 +142,11 @@ pub unsafe fn init(
+         syscall!(ARCH_PRCTL, ARCH_GET_FS, &raw mut val);
+         tp = val;
+     }
+-    #[cfg(target_arch = "aarch64")]
++    #[cfg(target_os = "azos")]
++    {
++        tp = crate::platform::sys::thread_pointer();
++    }
++    #[cfg(all(target_arch = "aarch64", not(target_os = "azos")))]
+     unsafe {
+         core::arch::asm!(
+             "mrs {}, tpidr_el0",
+diff --git a/src/ld_so/tcb.rs b/src/ld_so/tcb.rs
+index c64a803..2436105 100644
+--- a/src/ld_so/tcb.rs
++++ b/src/ld_so/tcb.rs
+@@ -37,7 +37,7 @@ impl Master {
+     }
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub type OsSpecific = ();
+ 
+ #[cfg(target_os = "redox")]
+@@ -330,7 +330,7 @@ impl Tcb {
+     ///
+     /// For x86_64, the ABI page is not used.
+     #[allow(clippy::type_complexity)]
+-    #[cfg(any(target_os = "linux", target_os = "redox"))]
++    #[cfg(any(target_os = "linux", target_os = "azos", target_os = "redox"))]
+     unsafe fn os_new(
+         size: usize,
+     ) -> Result<(&'static mut [u8], &'static mut [u8], &'static mut [u8]), DlError> {
+@@ -363,6 +363,11 @@ impl Tcb {
+         }
+     }
+ 
++    #[cfg(target_os = "azos")]
++    unsafe fn os_arch_activate(_os: &(), tls_end: usize, tls_len: usize) {
++        unsafe { crate::platform::sys::start::activate_tls(tls_end, tls_len) }
++    }
++
+     #[cfg(target_os = "redox")]
+     unsafe fn os_arch_activate(
+         os: &OsSpecific,
+diff --git a/src/platform/mod.rs b/src/platform/mod.rs
+index 386b971..f10ecc3 100644
+--- a/src/platform/mod.rs
++++ b/src/platform/mod.rs
+@@ -24,6 +24,10 @@ pub use self::sys::Sys;
+ #[path = "linux/mod.rs"]
+ pub(crate) mod sys;
+ 
++#[cfg(target_os = "azos")]
++#[path = "azos/mod.rs"]
++pub(crate) mod sys;
++
+ #[cfg(target_os = "redox")]
+ #[path = "redox/mod.rs"]
+ pub(crate) mod sys;
+@@ -31,7 +35,7 @@ pub(crate) mod sys;
+ pub use self::rlb::{Line, RawLineBuffer};
+ pub mod rlb;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub mod auxv_defs;
+ 
+ #[cfg(target_os = "redox")]
+@@ -414,4 +418,9 @@ pub unsafe fn init_inner(auxvs: Box<[[usize; 2]]>) {
+ }
+ #[expect(clippy::boxed_local)]
+ #[cfg(not(target_os = "redox"))]
+-pub unsafe fn init(_auxvs: Box<[[usize; 2]]>) {}
++pub unsafe fn init(_auxvs: Box<[[usize; 2]]>) {
++    #[cfg(target_os = "azos")]
++    unsafe {
++        self::sys::start::init()
++    }
++}
+diff --git a/src/platform/types.rs b/src/platform/types.rs
+index 649b3aa..3c11ca2 100644
+--- a/src/platform/types.rs
++++ b/src/platform/types.rs
+@@ -81,10 +81,10 @@ pub type regoff_t = size_t;
+ /// The `off_t` type provided in [`sys/types.h`](crate::header::sys_types).
+ pub type off_t = c_longlong;
+ /// The `mode_t` type provided in [`sys/types.h`](crate::header::sys_types).
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub type mode_t = c_uint;
+ /// The `mode_t` type provided in [`sys/types.h`](crate::header::sys_types).
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "azos")))]
+ pub type mode_t = c_int;
+ /// The `time_t` type provided in [`sys/types.h`](crate::header::sys_types).
+ pub type time_t = c_longlong;
+@@ -120,12 +120,12 @@ pub type fsfilcnt_t = c_ulong;
+ #[deprecated]
+ pub type useconds_t = c_uint;
+ /// The `suseconds_t` type provided in [`sys/types.h`](crate::header::sys_types).
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "azos"))]
+ pub type suseconds_t = c_long;
+ // TODO: Should we break this to c_long as well? This also breaks timeval as well
+ //       but it will be consistent with timespec.tv_nsec (note that syscall already uses c_int)
+ /// The `suseconds_t` type provided in [`sys/types.h`](crate::header::sys_types).
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "azos")))]
+ pub type suseconds_t = c_int;
+ 
+ /// The `clock_t` type provided in [`sys/types.h`](crate::header::sys_types).
+diff --git a/src/pthread/mod.rs b/src/pthread/mod.rs
+index 0064911..c487409 100644
+--- a/src/pthread/mod.rs
++++ b/src/pthread/mod.rs
+@@ -30,7 +30,7 @@ pub unsafe fn init() {
+     //TODO: what is the best way to get these values?
+     #[cfg(target_os = "redox")]
+     let (stack_base, stack_size) = ((STACK_TOP - STACK_SIZE) as *mut c_void, STACK_SIZE);
+-    #[cfg(target_os = "linux")]
++    #[cfg(any(target_os = "linux", target_os = "azos"))]
+     let (stack_base, stack_size) = (ptr::null_mut(), 0);
+ 
+     let thread = Pthread {
+@@ -91,7 +91,7 @@ pub struct Pthread {
+ pub struct OsTid {
+     #[cfg(target_os = "redox")]
+     pub thread_fd: usize,
+-    #[cfg(target_os = "linux")]
++    #[cfg(any(target_os = "linux", target_os = "azos"))]
+     pub thread_id: usize,
+ }
+ 

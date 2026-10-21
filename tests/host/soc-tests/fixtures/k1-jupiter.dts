@@ -1,0 +1,271 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+// SpacemiT K1, Milk-V Jupiter: the nodes the K1 clock providers and the
+// temperature block read, with the
+// values of the Linux v7.3 trees (read for facts, nothing copied verbatim):
+//   arch/riscv/boot/dts/spacemit/k1.dtsi            cpus, clocks, thermal
+//     zones, syscon_apbc / thermal / i2c8 / syscon_mpmu / pll / syscon_apmu
+//     (the register windows), cpu clocks <&syscon_apmu CLK_CPU_Cn_CORE>
+//   arch/riscv/boot/dts/spacemit/k1-opp.dtsi        the two OPP tables
+//   arch/riscv/boot/dts/spacemit/k1-milkv-jupiter.dts  cpu-supply = <&buck1_0v9>
+//     for all eight CPUs, the P1 PMIC at 0x41 on i2c8 and its buck constraints
+// Left out: everything no K1 provider reads (caches, interrupt controllers,
+// peripherals other than the ones above), the LDO limits other than aldo1
+// (one LDO stays to show LDOs are not providers), and `status = "okay"` is
+// the default here. Numbers the Linux tree writes as K1_* or CLK_* macros are
+// resolved by hand: CLK_CPU_C0_CORE 2, CLK_CPU_C1_CORE 6, CLK_TSEN 48,
+// CLK_TSEN_BUS 98, RESET_TSEN 48, CLK_TWSI8 39, CLK_TWSI8_BUS 91, RESET_TWSI8 39
+// (include/dt-bindings/clock/spacemit,k1-syscon.h).
+// Rebuild: dtc -I dts -O dtb -o k1-jupiter.dtb k1-jupiter.dts
+/dts-v1/;
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	model = "Milk-V Jupiter (K1)";
+	compatible = "milkv,jupiter", "spacemit,k1";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <24000000>;
+		cpu_0: cpu@0 { device_type = "cpu"; compatible = "spacemit,x60", "riscv"; reg = <0>; clocks = <&syscon_apmu 2>; cpu-supply = <&buck1_0v9>; operating-points-v2 = <&cluster0_opp_table>; };
+		cpu_1: cpu@1 { device_type = "cpu"; compatible = "spacemit,x60", "riscv"; reg = <1>; clocks = <&syscon_apmu 2>; cpu-supply = <&buck1_0v9>; operating-points-v2 = <&cluster0_opp_table>; };
+		cpu_2: cpu@2 { device_type = "cpu"; compatible = "spacemit,x60", "riscv"; reg = <2>; clocks = <&syscon_apmu 2>; cpu-supply = <&buck1_0v9>; operating-points-v2 = <&cluster0_opp_table>; };
+		cpu_3: cpu@3 { device_type = "cpu"; compatible = "spacemit,x60", "riscv"; reg = <3>; clocks = <&syscon_apmu 2>; cpu-supply = <&buck1_0v9>; operating-points-v2 = <&cluster0_opp_table>; };
+		cpu_4: cpu@4 { device_type = "cpu"; compatible = "spacemit,x60", "riscv"; reg = <4>; clocks = <&syscon_apmu 6>; cpu-supply = <&buck1_0v9>; operating-points-v2 = <&cluster1_opp_table>; };
+		cpu_5: cpu@5 { device_type = "cpu"; compatible = "spacemit,x60", "riscv"; reg = <5>; clocks = <&syscon_apmu 6>; cpu-supply = <&buck1_0v9>; operating-points-v2 = <&cluster1_opp_table>; };
+		cpu_6: cpu@6 { device_type = "cpu"; compatible = "spacemit,x60", "riscv"; reg = <6>; clocks = <&syscon_apmu 6>; cpu-supply = <&buck1_0v9>; operating-points-v2 = <&cluster1_opp_table>; };
+		cpu_7: cpu@7 { device_type = "cpu"; compatible = "spacemit,x60", "riscv"; reg = <7>; clocks = <&syscon_apmu 6>; cpu-supply = <&buck1_0v9>; operating-points-v2 = <&cluster1_opp_table>; };
+	};
+
+	clocks {
+		vctcxo_1m: clock-1m { compatible = "fixed-clock"; clock-frequency = <1000000>; clock-output-names = "vctcxo_1m"; #clock-cells = <0>; };
+		vctcxo_24m: clock-24m { compatible = "fixed-clock"; clock-frequency = <24000000>; clock-output-names = "vctcxo_24m"; #clock-cells = <0>; };
+		vctcxo_3m: clock-3m { compatible = "fixed-clock"; clock-frequency = <3000000>; clock-output-names = "vctcxo_3m"; #clock-cells = <0>; };
+		osc_32k: clock-32k { compatible = "fixed-clock"; clock-frequency = <32768>; clock-output-names = "osc_32k"; #clock-cells = <0>; };
+	};
+
+	cluster0_opp_table: opp-table-cluster0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		opp-614400000 { opp-hz = /bits/ 64 <614400000>; opp-microvolt = <950000 950000 1050000>; clock-latency-ns = <200000>; };
+		opp-819000000 { opp-hz = /bits/ 64 <819000000>; opp-microvolt = <950000 950000 1050000>; clock-latency-ns = <200000>; };
+		opp-1000000000 { opp-hz = /bits/ 64 <1000000000>; opp-microvolt = <950000 950000 1050000>; clock-latency-ns = <200000>; };
+		opp-1228800000 { opp-hz = /bits/ 64 <1228800000>; opp-microvolt = <950000 950000 1050000>; clock-latency-ns = <200000>; };
+		opp-1600000000 { opp-hz = /bits/ 64 <1600000000>; opp-microvolt = <1050000 1050000 1050000>; clock-latency-ns = <200000>; };
+	};
+
+	cluster1_opp_table: opp-table-cluster1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		opp-614400000 { opp-hz = /bits/ 64 <614400000>; opp-microvolt = <950000 950000 1050000>; clock-latency-ns = <200000>; };
+		opp-819000000 { opp-hz = /bits/ 64 <819000000>; opp-microvolt = <950000 950000 1050000>; clock-latency-ns = <200000>; };
+		opp-1000000000 { opp-hz = /bits/ 64 <1000000000>; opp-microvolt = <950000 950000 1050000>; clock-latency-ns = <200000>; };
+		opp-1228800000 { opp-hz = /bits/ 64 <1228800000>; opp-microvolt = <950000 950000 1050000>; clock-latency-ns = <200000>; };
+		opp-1600000000 { opp-hz = /bits/ 64 <1600000000>; opp-microvolt = <1050000 1050000 1050000>; clock-latency-ns = <200000>; };
+	};
+
+	thermal-zones {
+		soc-thermal {
+			polling-delay-passive = <0>; polling-delay = <0>;
+			thermal-sensors = <&thermal 0>;
+			trips { soc-crit { temperature = <115000>; hysteresis = <0>; type = "critical"; }; };
+		};
+		package-thermal {
+			polling-delay-passive = <0>; polling-delay = <0>;
+			thermal-sensors = <&thermal 1>;
+			trips { package-crit { temperature = <115000>; hysteresis = <0>; type = "critical"; }; };
+		};
+		gpu-thermal {
+			polling-delay-passive = <100>; polling-delay = <0>;
+			thermal-sensors = <&thermal 2>;
+			trips {
+				gpu-alert { temperature = <85000>; hysteresis = <2000>; type = "passive"; };
+				gpu-crit { temperature = <115000>; hysteresis = <0>; type = "critical"; };
+			};
+		};
+		cluster0-thermal {
+			polling-delay-passive = <100>; polling-delay = <0>;
+			thermal-sensors = <&thermal 3>;
+			trips {
+				cluster0-alert { temperature = <85000>; hysteresis = <2000>; type = "passive"; };
+				cluster0-crit { temperature = <115000>; hysteresis = <0>; type = "critical"; };
+			};
+		};
+		cluster1-thermal {
+			polling-delay-passive = <100>; polling-delay = <0>;
+			thermal-sensors = <&thermal 4>;
+			trips {
+				cluster1-alert { temperature = <85000>; hysteresis = <2000>; type = "passive"; };
+				cluster1-crit { temperature = <115000>; hysteresis = <0>; type = "critical"; };
+			};
+		};
+	};
+
+	reg_dc_in: regulator-dc-in-12v {
+		compatible = "regulator-fixed";
+		regulator-name = "dc_in_12v";
+		regulator-min-microvolt = <12000000>;
+		regulator-max-microvolt = <12000000>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	reg_vcc_4v: regulator-vcc-4v {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_4v";
+		regulator-min-microvolt = <4000000>;
+		regulator-max-microvolt = <4000000>;
+		regulator-boot-on;
+		regulator-always-on;
+		vin-supply = <&reg_dc_in>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		syscon_apbc: system-controller@d4015000 {
+			compatible = "spacemit,k1-syscon-apbc";
+			reg = <0x0 0xd4015000 0x0 0x1000>;
+			clocks = <&osc_32k>, <&vctcxo_1m>, <&vctcxo_3m>, <&vctcxo_24m>;
+			clock-names = "osc", "vctcxo_1m", "vctcxo_3m", "vctcxo_24m";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+		};
+
+		thermal: thermal@d4018000 {
+			compatible = "spacemit,k1-tsensor";
+			reg = <0x0 0xd4018000 0x0 0x100>;
+			clocks = <&syscon_apbc 48>, <&syscon_apbc 98>;
+			clock-names = "core", "bus";
+			resets = <&syscon_apbc 48>;
+			#thermal-sensor-cells = <1>;
+		};
+
+		/* gpio and pwm0 as k1.dtsi (Linux v7.2.9) has them, minus the
+		 * interrupt and gpio-ranges properties the bind never reads; every
+		 * clock and reset of both is the (unmodelled) APBC controller's. */
+		gpio: gpio@d4019000 {
+			compatible = "spacemit,k1-gpio";
+			reg = <0x0 0xd4019000 0x0 0x100>;
+			clocks = <&syscon_apbc 9>, <&syscon_apbc 61>;
+			clock-names = "core", "bus";
+			gpio-controller;
+			#gpio-cells = <3>;
+		};
+
+		pwm0: pwm@d401a000 {
+			compatible = "spacemit,k1-pwm", "marvell,pxa910-pwm";
+			reg = <0x0 0xd401a000 0x0 0x10>;
+			#pwm-cells = <3>;
+			clocks = <&syscon_apbc 10>;
+			resets = <&syscon_apbc 10>;
+		};
+
+		i2c8: i2c@d401d800 {
+			compatible = "spacemit,k1-i2c";
+			reg = <0x0 0xd401d800 0x0 0x38>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&syscon_apbc 39>, <&syscon_apbc 91>;
+			clock-names = "func", "bus";
+			clock-frequency = <400000>;
+			resets = <&syscon_apbc 39>;
+
+			pmic@41 {
+				compatible = "spacemit,p1";
+				reg = <0x41>;
+				vin1-supply = <&reg_vcc_4v>;
+				vin2-supply = <&reg_vcc_4v>;
+				vin3-supply = <&reg_vcc_4v>;
+				vin4-supply = <&reg_vcc_4v>;
+				vin5-supply = <&reg_vcc_4v>;
+				vin6-supply = <&reg_vcc_4v>;
+				aldoin-supply = <&reg_vcc_4v>;
+
+				regulators {
+					buck1_0v9: buck1 {
+						regulator-min-microvolt = <500000>;
+						regulator-max-microvolt = <1050000>;
+						regulator-ramp-delay = <5000>;
+						regulator-always-on;
+					};
+					buck2 {
+						regulator-min-microvolt = <500000>;
+						regulator-max-microvolt = <1050000>;
+						regulator-ramp-delay = <5000>;
+						regulator-always-on;
+					};
+					buck3_1v8: buck3 {
+						regulator-min-microvolt = <500000>;
+						regulator-max-microvolt = <1800000>;
+						regulator-ramp-delay = <5000>;
+						regulator-always-on;
+					};
+					buck4_3v3: buck4 {
+						regulator-min-microvolt = <500000>;
+						regulator-max-microvolt = <3300000>;
+						regulator-ramp-delay = <5000>;
+						regulator-always-on;
+					};
+					buck5: buck5 {
+						regulator-min-microvolt = <500000>;
+						regulator-max-microvolt = <3450000>;
+						regulator-ramp-delay = <5000>;
+						regulator-always-on;
+					};
+					buck6 {
+						regulator-min-microvolt = <500000>;
+						regulator-max-microvolt = <3450000>;
+						regulator-ramp-delay = <5000>;
+						regulator-always-on;
+					};
+					aldo1: aldo1 {
+						regulator-min-microvolt = <500000>;
+						regulator-max-microvolt = <3400000>;
+						regulator-boot-on;
+					};
+				};
+			};
+		};
+
+		// A consumer of an APMU clock the provider does not model
+		// (CLK_USB30 is 16): it must come out "not modelled", not as an error.
+		usb@c0a00000 {
+			compatible = "spacemit,k1-dwc3";
+			reg = <0x0 0xc0a00000 0x0 0x10000>;
+			clocks = <&syscon_apmu 16>;
+		};
+
+		syscon_mpmu: system-controller@d4050000 {
+			compatible = "spacemit,k1-syscon-mpmu";
+			reg = <0x0 0xd4050000 0x0 0x209c>;
+			clocks = <&osc_32k>, <&vctcxo_1m>, <&vctcxo_3m>, <&vctcxo_24m>;
+			clock-names = "osc", "vctcxo_1m", "vctcxo_3m", "vctcxo_24m";
+			#clock-cells = <1>;
+			#power-domain-cells = <1>;
+			#reset-cells = <1>;
+		};
+
+		pll: clock-controller@d4090000 {
+			compatible = "spacemit,k1-pll";
+			reg = <0x0 0xd4090000 0x0 0x1000>;
+			clocks = <&vctcxo_24m>;
+			spacemit,mpmu = <&syscon_mpmu>;
+			#clock-cells = <1>;
+		};
+
+		syscon_apmu: system-controller@d4282800 {
+			compatible = "spacemit,k1-syscon-apmu";
+			reg = <0x0 0xd4282800 0x0 0x400>;
+			clocks = <&osc_32k>, <&vctcxo_1m>, <&vctcxo_3m>, <&vctcxo_24m>;
+			clock-names = "osc", "vctcxo_1m", "vctcxo_3m", "vctcxo_24m";
+			#clock-cells = <1>;
+			#power-domain-cells = <1>;
+			#reset-cells = <1>;
+		};
+	};
+};

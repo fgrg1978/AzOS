@@ -1,0 +1,45 @@
+[package]
+name = "azos_arch_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the pure parts of crates/core/arch-riscv64 and crates/core/arch-aarch64: Sv39/VMSAv8-64 address decomposition, PMP region encoding, PTE attribute encode/decode. Excluded from workspace."
+
+# Run with:  cd tests/host/arch-tests && cargo test --release
+
+[features]
+# `crates/core/arch-riscv64/src/tlb.rs` (pulled in below) reads it: the scan-bound
+# canary, under which `tlb_bound` must fail.
+tlb-bound-canary = []
+# x86_64 CPUID decode (crates/core/arch-x86_64/src/cpu/features.rs) ignores the
+# XCR0 YMM state: `the_vector_extensions_need_their_xsave_state` fails.
+x86-cpuid-canary = []
+# `crates/core/arch-aarch64/src/cpu/features.rs`: WFxT, TLBIRANGE and PMUVer
+# read with `>= 1`; `wfxt_tlbirange_and_pmuv3_come_from_their_own_fields`
+# must fail.
+a64-id-canary = []
+# `crates/core/arch-aarch64/src/ext/tlbi_range.rs`: NUM one too large;
+# `a_plan_covers_every_count_exactly` must fail.
+a64-tlbi-canary = []
+# `crates/core/arch-aarch64/src/ext/hv` (pulled in by path) gates the resident EL2 stub
+# and the guest entry on it, and both are bare-metal aarch64 only: never set here.
+hv = []
+# `tests/host/arch-tests/src/pac_keys.rs`: the exec model keeps the old keys and
+# the fork model draws fresh ones; `an_exec_changes_every_key` and
+# `a_fork_child_and_a_thread_have_their_creators_keys` must fail.
+pac-canary = []
+
+[dependencies]
+azos_common = { path = "../../../crates/core/common" }
+azos_limits = { path = "../../../crates/core/limits" }
+# `crates/core/arch-riscv64/src/{firmware,tlb}.rs` (pulled in by path) translate
+# logical CPU ids to hart ids through it.
+azos_percpu = { path = "../../../crates/core/percpu" }
+bitflags = "2"
+# M38/U10-3: crates/core/arch-aarch64/src/mmu/mod.rs (pulled in via #[path] below)
+# uses PagePerms/MmuError from this crate directly, unlike arch-riscv64's own
+# mmu.rs (bitflags only) — azos_arch_api is itself pure no_std and
+# host-compatible (see its own Cargo.toml description), so pulling it in adds
+# no asm/target concerns.
+azos_arch_api = { path = "../../../crates/core/arch-api" }

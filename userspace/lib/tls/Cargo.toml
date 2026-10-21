@@ -1,0 +1,48 @@
+[package]
+name = "azos_tls"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "TLS in ring 3 over the std port's sockets: a pinned client (the server's SPKI hash must be one of the configured pins, no system CA store), a server, a minimal HTTPS GET, and the package source of the installer (userspace/lib/packages). rustls with the rustls-rustcrypto provider from third_party/vendor (no aws-lc-rs, no ring). Excluded from workspace; built standalone through tools/sdk_cargo.py --vendored, tested on the host by tests/host/tls-tests."
+
+[lib]
+name = "azos_tls"
+path = "src/lib.rs"
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["std", "tls12"] }
+sha2 = { version = "0.10", default-features = false }
+# rand_core 0.6 (the provider's OsRng) draws through getrandom 0.2, which has no backend for target_os = "azos":
+# `custom` is the hook the program registers the std port's random source on (see the crate docs).
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+# The installer's pure half, whose `Remote` the HTTPS source implements. Off for a program that only wants TLS.
+azos_packages = { path = "../packages", features = ["service"], optional = true }
+
+[features]
+# `HttpsRemote`: the package source of the installer.
+packages = ["dep:azos_packages"]
+
+# Canaries of the host suite (tests/host/tls-tests): the same names, the same
+# effect. Each turns one check of the pinned verifier off and requires the test
+# that guards it to fail; never in a shipped build.
+canary-no-pin = []
+canary-no-validity = []
+# Loads server keys through the provider's own loader, which tries RSA first.
+canary-rsa-keys = []
+
+# rustls-rustcrypto 0.0.2-alpha pulls rustls-webpki 0.102 (RustSec); the local copy takes the
+# algorithm identifiers from rustls-pki-types instead (third_party/patches/rustls-rustcrypto).
+[patch.crates-io]
+rustls-rustcrypto = { path = "../../../third_party/patches/rustls-rustcrypto" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = "symbols"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]

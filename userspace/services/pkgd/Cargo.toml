@@ -1,0 +1,58 @@
+[package]
+name = "pkgd"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS package installer (ring 3, a std program): serves the Packages object (admit, install, remove, installed) on endpoint.packages. It verifies a signed application package against the signers of the device's signed topology, admits its rows as a topology delta (neverallow rules included), stages the signed package and journals the decision on the native volume the topology mounts for it (/pkg, an azvol `[volume.NAME]` row; /fat/PKG on the boot volume when there is none), the two together durable or not at all; it also stages a signed whole-system update (kernel, userspace images, topology, configuration) into the inactive boot slot's directory under /fat/PKG, on the boot volume, for the kernel-side switch; and it fetches a package from a pinned HTTPS source (azos_tls), or in a development build from a TFTP server on the development host (azos_tftp), when the operator asks (`pkg fetch`). A std program because TLS is (rustls from third_party/vendor); its row is its whole authority. Excluded from workspace; built standalone through tools/sdk_cargo.py --vendored."
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_pkg = { path = "../../../crates/core/pkg" }
+azos_topology = { path = "../../../crates/core/topology" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_packages = { path = "../../lib/packages", features = ["service"] }
+azos_names = { path = "../../lib/names" }
+azos_decisions = { path = "../../lib/decisions" }
+azos_term = { path = "../../lib/term" }
+# The package source of `pkg fetch`: HTTPS to a pinned server (rustls, the rustls-rustcrypto provider).
+azos_tls = { path = "../../lib/tls", features = ["packages"] }
+# The development package source of `pkg fetch` (Kconfig PKG_FETCH_TFTP): the TFTP protocol and its fetch loop; the UDP socket is this program's.
+azos_tftp = { path = "../../../crates/net/tftp" }
+# rand_core 0.6 (the TLS provider's keys) draws through getrandom 0.2, which has no backend for target_os = "azos": the `custom` hook is how the std port's random source (the kernel pool) reaches it (src/main.rs).
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+
+[features]
+# The topology key CAPS.SIG is verified with: `crates/core/topology/build.rs`
+# takes it from `TOPOLOGY_PUBKEY_PATH`, or from `tools/keys/test_pub.bin` with
+# this feature (the QEMU images). Without either the build fails, as for the
+# kernel and the ML service.
+dev-key = ["azos_topology/dev-key"]
+
+# rustls-rustcrypto 0.0.2-alpha pulls rustls-webpki 0.102 (RustSec); the local copy takes the
+# algorithm identifiers from rustls-pki-types instead (third_party/patches/rustls-rustcrypto).
+[patch.crates-io]
+rustls-rustcrypto = { path = "../../../third_party/patches/rustls-rustcrypto" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+# `std` brings thousands of symbols; the symbol table is not part of the image.
+strip = "symbols"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# `azos` is not a target_os rustc knows; the program's entropy hook is built only for it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+# On every class but a small board (`PKGD_ROW`, crates/core/topology/src/builder.rs).
+default = "!HWCLASS_EMBEDDED"

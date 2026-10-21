@@ -1,0 +1,15 @@
+[package]
+name = "azos_ml"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The GGUF engine and the signed model bundle reader: a no_std library with no dependencies, linked by the ring-3 ML service (userspace/services/infsrv) and tested on the host (tests/host/gguf-tests). Standalone, not a member of the root workspace."
+
+# The dot products are the plain sequential loop in `lib.rs`. No kernel code
+# is linked: the kernel runs no ML.
+
+[dependencies]
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

@@ -1,0 +1,11 @@
+[package]
+name = "azos_drv_irqchip"
+version = "0.1.0"
+edition = "2021"
+description = "Interrupt controller selection (PLIC or AIA) and ring-3 ownership of external lines. The controllers are in the arch crates (azos_arch::irq)."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_arch     = { workspace = true }
+azos_limits   = { workspace = true }

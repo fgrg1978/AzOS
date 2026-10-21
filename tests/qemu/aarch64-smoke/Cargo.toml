@@ -1,0 +1,33 @@
+[package]
+name = "aarch64_smoke"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "aarch64 boot smoke: drops EL2 to EL1, enables the MMU, installs vectors, brings up a second PE and reports the ARMv8.5 features the CPU declares. Gated by tools/ci_check.sh. prints 'hello' through the PL011 UART. Proves the arch-aarch64 trait surface reaches actual silicon-class behaviour."
+
+# Excluded from the workspace: the workspace target is riscv64, and this binary
+# only makes sense for `aarch64-unknown-none`. `tools/ci_check.sh` builds it and
+# BOOTS it under QEMU on every run — the row is the whole point. Its predecessor
+# sat parked outside the workspace for a month with a dependency path that no longer
+# resolved, and nothing noticed, which is the outcome the row exists to prevent.
+#
+# Hard float, not `-softfloat`: the baseline is ARMv8.5 (owner decision 97).
+#   make qemu-aarch64-smoke
+
+[[bin]]
+name = "aarch64_smoke"
+path = "src/main.rs"
+
+[dependencies]
+azos_arch_api     = { path = "../../../crates/core/arch-api" }
+# NOTE: both paths are relative to THIS file. They broke when the crates moved.
+azos_arch_aarch64 = { path = "../../../crates/core/arch-aarch64" }
+
+[profile.release]
+opt-level = 2
+debug     = true
+lto       = false
+panic     = "abort"
+
+[workspace]

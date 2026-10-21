@@ -1,0 +1,20 @@
+[package]
+name = "azos_trace_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/core/trace: the sampling profiler's stack walker, sample records, aggregation, symbolization and output (prof.rs, pulled in by path). Excluded from workspace."
+
+# Run with:  cd tests/host/trace-tests && cargo test --release
+
+[dependencies]
+# prof.rs names the sample events by their ABI ids.
+azos_abi = { path = "../../../crates/core/abi" }
+
+[dev-dependencies]
+# The reference demangler the v0 names are checked against.
+rustc-demangle = "=0.1.27"
+
+[profile.release]
+overflow-checks = true

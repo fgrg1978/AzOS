@@ -1,0 +1,17 @@
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = []
+build-std-features = []
+
+# rustls and its provider come from the one crates.io tree the repository
+# builds from (third_party/vendor), offline.
+[source.crates-io]
+replace-with = "azos-vendor"
+
+[source.azos-vendor]
+directory = "../../../third_party/vendor"
+
+[net]
+offline = true

@@ -1,0 +1,110 @@
+# cargo-deny configuration — supply-chain policy gates.
+#
+# Run (what the gate's n0 tier does, tools/gate_tier.sh; no network):
+#   cargo metadata --offline --locked --format-version 1 > md.json
+#   cargo deny check --metadata-path md.json --disable-fetch licenses bans sources
+# The metadata comes from cargo directly because cargo-deny's own `cargo fetch`
+# wants every optional crate (rustc-std-workspace-core, pulled by two crates
+# only for -Zbuild-std) in the local registry, which an offline machine lacks.
+#
+# Advisories are NOT part of the offline run: the RustSec database is a git
+# download and the gate never fetches. With a network, once and by hand:
+#   cargo deny fetch && cargo deny check advisories
+# Only the workspace lockfile (the kernel's) is checked; the excluded crates
+# carry their own lockfiles with the same registry crates, and tests/ adds
+# host-only ones (no kernel image links them).
+#
+# The one exception is the userspace std programs' registry tree,
+# third_party/vendor (rustls, the rustls-rustcrypto provider, quinn-proto and
+# their dependencies; userspace/lib/tls-probe/Cargo.lock). Its licences, bans and
+# sources are checked against this file, offline, from the vendor tree, by
+# `python3 userspace/lib/tls-probe/vendor.py check` (a gate row). `ring` stays
+# banned: its wasm-only edge from quinn-proto puts the sources in the lockfile,
+# and the multi-target graph below does not include a wasm target.
+# The same run adds `advisories` whenever the RustSec database is on disk at
+# the db-path below (it is fetched once, by hand, as above), and the gate row
+# prints a note when it is not; a missing cargo-deny fails the row.
+
+[graph]
+# Multi-target check so a dep that's only-Linux can't sneak in.
+targets = [
+    { triple = "riscv64imac-unknown-none-elf" },
+    { triple = "aarch64-unknown-none-softfloat" },
+    { triple = "x86_64-unknown-none" },
+    { triple = "aarch64-apple-darwin" },
+]
+
+# ── Advisories: block known CVEs + unmaintained crates ────────────
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked  = "deny"
+# Two advisories are ignored, both in the vendored TLS provider (rustls-rustcrypto, third_party/vendor, also the
+# probe's tree, userspace/lib/tls-probe). The webpki advisories that tree once tripped (RUSTSEC-2026-0049/0098/0099/0104)
+# are gone: the provider is on rustls-webpki 0.103 everywhere (vendor: cd9ae18e).
+#  * RUSTSEC-2023-0071, `rsa` 0.9.10, the Marvin timing attack. No fixed version exists. Marvin recovers a private
+#    key from the timing of RSA private-key operations (decryption, signing); the project only ever checks RSA
+#    signatures against a server's *public* key, which involves no secret, and the probe's only private key
+#    (pki/leaf_key.der) is ECDSA P-256. Two things keep that true, for both crates that link the provider:
+#    `userspace/lib/tls` and `userspace/lib/quic` load their keys through a key provider that accepts only ECDSA
+#    and Ed25519 (`azos_tls::NoRsaKeys`, one implementation both use, so the provider's RSA signer is
+#    unreachable from them), and `tests/host/tls-tests/tests/rsa.rs` and `tests/host/quic-tests/src/rsa.rs` fail
+#    if a configuration takes an RSA key or the crate's sources name an RSA key path (each has a canary row in
+#    tools/ci_check.sh). If this ignore ever has to cover an RSA private-key operation, remove it and fix the
+#    code instead.
+#  * RUSTSEC-2024-0436, `paste` 1.0.15, unmaintained. It is a proc-macro crate: it runs at build time on the
+#    provider's macros and puts nothing of its own into any binary.
+# They have no expiry (cargo-deny has none): drop the matching entry in the change that removes `rsa` / `paste`
+# from the tree, or when the probe or the TLS library gains an RSA private key.
+ignore  = [
+    { id = "RUSTSEC-2023-0071", reason = "rsa is used only to verify signatures with public keys; no RSA private-key operation is reachable from our TLS and QUIC code (tests/host/tls-tests/tests/rsa.rs, tests/host/quic-tests/src/rsa.rs). No fixed version exists." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is a build-time proc-macro of the vendored TLS provider; it is unmaintained, not vulnerable, and no code of it is linked." },
+]
+
+# ── Licenses: AzOS is "Apache-2.0 OR GPL-2.0-only", so every dependency
+# must be usable under BOTH. A dependency licensed "Apache-2.0" alone is
+# not (Apache-2.0 cannot be combined with GPL-2.0-only) and is refused;
+# "MIT OR Apache-2.0" passes through its MIT option. Workspace crates are
+# `publish = false` and skipped below.
+[licenses]
+allow = [
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+]
+# Pre-approved licences nothing uses yet are not an error.
+unused-allowed-license = "allow"
+# Confidence threshold for license detection — 0.8 = high.
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+# ── Bans: enforce no duplicate versions + dep size discipline ─────
+[bans]
+multiple-versions = "warn"
+wildcards         = "deny"
+# Workspace crates name each other by `path` with no version (publish = false).
+allow-wildcard-paths = true
+highlight         = "all"
+
+# Explicit allow list for deps justified by audit comments.
+deny = [
+    # OpenSSL — we ship pure-Rust crypto only.
+    { crate = "openssl",      reason = "Use ed25519-dalek + curve25519-dalek." },
+    { crate = "openssl-sys",  reason = "Same — no C deps in the kernel." },
+    # ring — fine elsewhere, but pulls in asm we'd have to vet per ISA.
+    { crate = "ring",         reason = "ed25519-dalek / curve25519-dalek already cover our needs." },
+]
+
+# ── Sources: only crates.io + this repo's path deps ───────────────
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"
+allow-registry   = ["https://github.com/rust-lang/crates.io-index"]
+allow-git        = []

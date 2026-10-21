@@ -1,0 +1,25 @@
+[package]
+name = "azos_trap_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the generic trap layer (kernel/src/trap) and the per-Domain entry counters (crates/core/sched/src/domain.rs). Excluded from the kernel workspace. Run with: cd tests/host/trap-tests && cargo test --release"
+
+# Its own workspace root, like the other host-test crates.
+[workspace]
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_limits = { path = "../../../crates/core/limits" }
+# `domain.rs` (pulled by path) writes its refusal receipts through the ring.
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+azos_chaos = { path = "../../../crates/core/chaos" }
+# `domain.rs` names `azos_mm::budget` and `azos_sync::spinlock`; the real crates
+# cannot compile for the host (see the shims' docs).
+azos_mm = { path = "shims/mm", package = "trap_test_mm" }
+azos_sync = { path = "shims/sync", package = "trap_test_sync" }
+
+[features]
+# `budget.rs` (pulled by the mm shim) reads this; never enabled here.
+budget-racy-charge-canary = []

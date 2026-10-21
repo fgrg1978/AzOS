@@ -1,0 +1,27 @@
+[package]
+name = "lxrt"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The ring-3 half of the Linux personality (Kconfig LINUX_RUNTIME): userspace/lib/linux_rt over the native ABI, linked at the runtime window (azos_abi::foreign) and embedded in the kernel image. The kernel maps it into every Linux process at spawn; it registers its trap entry and resumes the program, then answers each Linux system call the kernel reflects to it. Excluded from workspace; built standalone, riscv64, aarch64 and x86_64 (soft-float on all three: it shares the program's FP/vector state and must never touch it)."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_linux_abi = { path = "../../../crates/core/linux-abi" }
+azos_linux_rt = { path = "../../lib/linux_rt" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# No FAT32 image: the kernel embeds this ELF (Kconfig LINUX_RUNTIME), so the
+# board volume neither carries nor lists it (tools/gen_userspace_kconfig.py).
+[package.metadata.azos]
+images = []

@@ -1,0 +1,27 @@
+[package]
+name = "azos_stdrt"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The Rust std port layer of the native SDK (*-unknown-azos): what library/std/src/sys/*/azos.rs calls. Traps, handles, the vDSO clock, threads over thread_create, futexes, the hardened allocator, the console and the startup block, with no errno and no POSIX. no_std, zero dependencies beyond azos_abi and azos_ualloc's engine; linked into std through the rustc-dep-of-std feature (tools/sdk_std.py), never used by a program directly."
+
+[dependencies]
+azos_abi = { path = "../abi" }
+azos_ualloc = { path = "../../../userspace/lib/ualloc" }
+
+# What a crate inside the std build graph names core by (the layout of every
+# library/ dependency); unused outside it.
+core = { version = "1.0.0", optional = true, package = "rustc-std-workspace-core" }
+
+[features]
+rustc-dep-of-std = ["core", "azos_abi/rustc-dep-of-std", "azos_ualloc/rustc-dep-of-std"]
+
+# Standalone like the other ring-3 crates: its host tests live in
+# tests/host/stdrt-tests, which includes the pure modules by path.
+[workspace]
+
+# `azos` is not a target_os rustc knows; the modules that issue a trap are
+# built only for it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }

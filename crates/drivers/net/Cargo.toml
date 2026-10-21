@@ -1,0 +1,38 @@
+[package]
+name = "azos_drv_net"
+version = "0.1.0"
+edition = "2021"
+description = "Network devices: NIC backend selection, Ethernet MAC, WiFi API."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[features]
+# Board selection, forwarded by the kernel's own `vf2` / `k1`.
+vf2 = []
+k1  = []
+
+# Kconfig DRV_E1000E: the Intel e1000e driver (e1000e.rs) over PCI + MSI, which
+# reuses the virtio crate's BAR mapping, MSI route and DMA domain (its `pci`
+# feature).
+e1000e = ["azos_drv_virtio/pci", "dep:azos_pci", "dep:azos_mm"]
+
+# Kconfig DRV_IGC: the Intel I225/I226 driver (igc.rs). Its descriptor cursors
+# and wire helpers are e1000e.rs's wire half, which therefore compiles for it
+# too (without e1000e's device half).
+igc = ["azos_drv_virtio/pci", "dep:azos_pci", "dep:azos_mm"]
+# Kconfig USB_CDC: the USB CDC-ECM/NCM function as a NIC (usb_cdc.rs) over the
+# USB host's communications class driver.
+usb-cdc = ["dep:azos_usb", "dep:azos_devif"]
+
+[dependencies]
+azos_sync       = { workspace = true }
+azos_drv_api    = { workspace = true }
+azos_drv_base   = { workspace = true }
+azos_drv_sys    = { workspace = true }
+azos_drv_virtio = { workspace = true }
+azos_dma        = { workspace = true }
+azos_limits     = { workspace = true }
+azos_pci        = { workspace = true, optional = true }
+azos_mm         = { workspace = true, optional = true }
+azos_usb        = { workspace = true, optional = true }
+azos_devif      = { workspace = true, optional = true }

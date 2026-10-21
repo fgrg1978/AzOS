@@ -1,0 +1,49 @@
+[build]
+target = "riscv64imac-unknown-none-elf"
+
+[target.riscv64imac-unknown-none-elf]
+rustflags = [
+    "-C", "link-arg=-Tuser.ld",
+    "-C", "code-model=medium",
+    "-C", "target-feature=+zaamo,+zalrsc",
+]
+
+[unstable]
+build-std = ["core"]
+build-std-features = ["compiler-builtins-mem"]
+
+# aarch64 parity (phase 6 prep) — built with an explicit `--target`, so
+# `[build] target` above (still riscv64) stays the default for every
+# existing invocation. `-zmax-page-size=4096`: see `user_aarch64.ld`'s
+# header comment for why the RISC-V script's `ALIGN(4096)` alone is not
+# enough on this ISA.
+[target.aarch64-unknown-none]
+# Rust's bundled LLD, as `tests/qemu/aarch64-smoke` already relies on: the macOS
+# system `cc` is not always present in PATH and is not a cross-linker anyway.
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tuser_aarch64.ld",
+    "-C", "link-arg=-zmax-page-size=4096",
+    # rust-lld synthesizes `.eh_frame_hdr` by default on this target even
+    # with `.eh_frame` discarded (the RISC-V linker does not). Suppressed so
+    # the two ISAs' ELFs have the same section shape — no unwind machinery
+    # in either, `panic = "abort"`.
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "code-model=small",
+]
+
+# x86_64 — built with an explicit `--target`, like aarch64 above: the
+# Makefile passes `userspace/x86_64-azos-user.json` (hard-float, static,
+# small code model, bare metal). See `user_x86_64.ld`'s header for the flags.
+[target.x86_64-azos-user]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tuser_x86_64.ld",
+    "-C", "link-arg=-zmax-page-size=4096",
+    # The stack this image asks for (20 KiB; the other two ISAs say it in the
+    # linker script, which has PHDRS there): lld sets the p_memsz of the
+    # PT_GNU_STACK it makes from this. tools/user_stacks.py checks it.
+    "-C", "link-arg=-zstack-size=20480",
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "link-arg=-znorelro",
+]

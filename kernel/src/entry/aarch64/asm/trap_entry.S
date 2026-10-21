@@ -1,0 +1,706 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+// AArch64 exception-vector table — Item 2 Stage 5, then Phase 2 (this
+// task: trap save/restore + `eret`, GICv3, timer ticks).
+//
+// Installed into VBAR_EL1 by boot.S before any faultable code runs. Every
+// one of the 16 vectors funnels into `_trap_common` (but a native task's
+// `svc`, which `_slot_sync_lower64` sends to `_svc_native`: Chain E commit
+// 8, Kconfig SYSCALL_LEAN_ENTRY), which builds the
+// `entry::aarch64::TrapFrame` (kernel/src/entry/aarch64/mod.rs) — GPRs +
+// ELR_EL1/SPSR_EL1/SP_EL0/FAR_EL1/ESR_EL1, no FP state (see the note in
+// `_trap_common`) — on the stack and calls `aarch64_trap_entry(&mut TrapFrame)`.
+// That function either mutates the frame and RETURNS (an `svc #0`
+// self-test, or any IRQ dispatched through the GIC — see its own doc
+// comment), in which case `trap_return` below restores everything and
+// `eret`s back to `ELR_EL1`; or it never returns at all (an unhandled
+// trap class prints over `kprintln!` and parks on `wfi`), in which case
+// nothing after the `bl`/switched-stack call below ever executes. Do NOT
+// migrate the riscv64 trap path onto this — that stays a separate,
+// measured step.
+//
+// TrapFrame layout constants (mirrors trap_entry.S's B2-01 pattern on
+// riscv64): every named operand below is substituted by the `global_asm!(...)`
+// block in kernel/src/main.rs via `size_of::<TrapFrame>()` /
+// `offset_of!(TrapFrame, ..)` on the real struct in
+// kernel/src/entry/aarch64/mod.rs, or (MAX_HARTS / the IRQ stack size) the
+// same kernel-wide constants `boot.S` already takes — never hand-
+// duplicated `.equ` literals that can silently disagree with the struct.
+.equ TRAP_FRAME_SIZE,  {trap_frame_size}
+.equ TF_OFF_ELR,       {tf_off_elr}
+.equ TF_OFF_SPSR,      {tf_off_spsr}
+.equ TF_OFF_SP_EL0,    {tf_off_sp_el0}
+.equ TF_OFF_FAR,       {tf_off_far}
+.equ TF_OFF_ESR,       {tf_off_esr}
+.equ TF_OFF_VECTOR,    {tf_off_vector}
+.equ TF_OFF_FPSTATE,   {tf_off_fpstate}
+.equ MAX_HARTS,        {max_harts}
+.equ IRQ_STACK_SIZE,   {irq_stack_size}
+
+// Chain E commit 8 (Kconfig SYSCALL_LEAN_ENTRY): the native `svc` path.
+// TF_OFF_TAG is the frame's `syscall_tag` word, written once when the frame
+// a task first enters EL0 through is built (`aarch64_enter_user*`,
+// kernel/src/entry/aarch64/mod.rs) and by no trap: EC_SVC64 (0x15) for a
+// native task, 0 for a Linux one. Every later trap from EL0 builds its frame
+// at the same address (SP_EL1 is that frame's top whenever the task is in
+// EL0), so a lower-EL synchronous trap whose ESR_EL1.EC equals the tag is a
+// native task's syscall.
+.equ SYSCALL_LEAN,     {syscall_lean}
+.equ TF_OFF_TAG,       {tf_off_tag}
+.equ SYSCALL_ABI_CANARY, {syscall_abi_canary}
+.equ CANARY_A1_LO,     {syscall_abi_canary_a1_lo}
+.equ CANARY_A1_HI,     {syscall_abi_canary_a1_hi}
+.equ TASK_REAP_OFFSET, {task_reap_off}  // Task::reap_on_resume (Chain E commit 9)
+.equ RESUME_EXIT_CALL, {resume_exit_call}  // azos_sched::scheduler::IPC_FAST_EXIT_CALL
+// Chain E cut 7 (Kconfig IPC_FASTPATH): the native path's branch for the two
+// IPC fast calls, SYS_IPC_FAST_REPLY_ACCEPT (IPC_FAST_LO) and
+// SYS_IPC_FAST_CALL_EP (IPC_FAST_LO + 2, asserted where these are bound).
+.equ IPC_FAST_ENTRY,   {ipc_fast_entry}
+.equ IPC_FAST_LO,      {ipc_fast_lo}
+// Kconfig A64_PAUTH_PROC_KEYS: per-process pointer-authentication keys, swapped
+// at the EL0 boundary (PAC_ENTER / PAC_EXIT below; crates/core/arch-aarch64/
+// src/cpu/cfi.rs, "Per-process keys").
+.equ PAC_USER,         {pac_user}
+
+// The two vector-number PAIRS `entry::aarch64::TrapFrame::class()` actually
+// checks — VEC_SYNC_CURRENT_EL_SP0 / VEC_IRQ_CURRENT_EL_SP0 and
+// VEC_SYNC_LOWER_EL / VEC_IRQ_LOWER_EL (kernel/src/entry/aarch64/mod.rs) —
+// injected rather than re-typed as literals, same reason as the offsets
+// above. Despite the "_SP0" half of the first pair's name, this table
+// wires it for the group ARM ARM §D1.10 calls "Current EL using SPx" —
+// the ONLY group a self-fault (or the `svc #0` self-test) can land in,
+// since boot.S drops into EL1h (SP_EL1) and this milestone never switches
+// to SP_EL0. VEC_IRQ_CUR is also the ONLY interrupt group reachable this
+// milestone (no EL0 task exists yet to take VEC_IRQ_LO) — the IRQ-stack
+// switch below still checks both, so this table does not change the day
+// a user task does exist.
+.equ VEC_SYNC_CUR, {vec_sync_cur}
+.equ VEC_IRQ_CUR,  {vec_irq_cur}
+.equ VEC_SYNC_LO,  {vec_sync_lo}
+.equ VEC_IRQ_LO,   {vec_irq_lo}
+
+
+// ── Per-process PAC keys at the EL0 boundary (Kconfig A64_PAUTH_PROC_KEYS) ───
+//
+// The kernel signs return addresses with key A, so APIAKey_EL1 must hold the
+// KERNEL's key whenever Rust runs in EL1 (frames signed while a task slept in
+// a syscall must still verify after any other process ran), and the
+// process's own key whenever EL0 runs. The other four keys are not the
+// kernel's: `cfi::load_user_keys` writes them on switch-in.
+//
+// Both are guarded by AZOS_PAC_ON, which is 0 on a core without FEAT_PAuth
+// (the key registers are UNDEFINED there) and when A64_PAUTH is n.
+//
+// PAC_ENTER: first thing in every lower-EL slot, after the slot has saved x0
+// and x1 (both scratch here). The `isb` is required before the first
+// `paciasp` of the Rust handler this slot leads to.
+.macro PAC_ENTER
+.if PAC_USER
+    adrp    x0, AZOS_PAC_ON
+    ldr     x0, [x0, :lo12:AZOS_PAC_ON]
+    cbz     x0, 8f
+    adrp    x0, AZOS_PAC_KERNEL_KEY
+    add     x0, x0, :lo12:AZOS_PAC_KERNEL_KEY
+    ldp     x0, x1, [x0]
+    msr     S3_0_C2_C1_0, x0                // APIAKeyLo_EL1
+    msr     S3_0_C2_C1_1, x1                // APIAKeyHi_EL1
+    isb
+8:
+.endif
+.endm
+
+// PAC_EXIT: the process's APIA key, from this hart's slot (published by
+// `cfi::load_user_keys` on switch-in), right before the `eret` to EL0. No
+// `isb`: `eret` is a context synchronization event. \s0 and \s1 are scratch,
+// overwritten later by the frame restore or the zero pair, so the key reaches
+// ring 3 only through the key registers.
+.macro PAC_EXIT s0, s1
+.if PAC_USER
+    adrp    \s0, AZOS_PAC_ON
+    ldr     \s0, [\s0, :lo12:AZOS_PAC_ON]
+    cbz     \s0, 8f
+    mrs     \s0, TPIDR_EL1
+    adrp    \s1, AZOS_PAC_USER_APIA
+    add     \s1, \s1, :lo12:AZOS_PAC_USER_APIA
+    add     \s1, \s1, \s0, lsl #4
+    ldp     \s0, \s1, [\s1]
+    msr     S3_0_C2_C1_0, \s0                // APIAKeyLo_EL1
+    msr     S3_0_C2_C1_1, \s1                // APIAKeyHi_EL1
+8:
+.endif
+.endm
+
+.section .text.vectors
+.balign 2048
+.globl _vectors
+_vectors:
+    // ── Group 0 — Current EL, SP0. Unreachable: EL1h never switches to
+    // SP_EL0. Vector numbers offset by 0x10 so a hit here is visibly
+    // "this group should be impossible", not a false match on group 1's
+    // or group 2's own 0/1/4/5.
+    b       _slot_sync_cur_sp0
+    .balign 0x80
+    b       _slot_irq_cur_sp0
+    .balign 0x80
+    b       _slot_fiq_cur_sp0
+    .balign 0x80
+    b       _slot_serr_cur_sp0
+    .balign 0x80
+
+    // ── Group 1 — Current EL, SPx. What boot.S actually drops into, so
+    // this is the only group a kernel-mode fault OR the `svc #0`
+    // self-test can ever take at this milestone.
+    b       _slot_sync_cur_spx
+    .balign 0x80
+    b       _slot_irq_cur_spx
+    .balign 0x80
+    b       _slot_fiq_cur_spx
+    .balign 0x80
+    b       _slot_serr_cur_spx
+    .balign 0x80
+
+    // ── Group 2 — Lower EL, AArch64. Unreachable this milestone (no EL0
+    // task exists yet), wired with the vector numbers
+    // entry/aarch64/mod.rs already names for it so this table does not
+    // change the day a user task exists.
+    b       _slot_sync_lower64
+    .balign 0x80
+    b       _slot_irq_lower64
+    .balign 0x80
+    b       _slot_fiq_lower64
+    .balign 0x80
+    b       _slot_serr_lower64
+    .balign 0x80
+
+    // ── Group 3 — Lower EL, AArch32. Never used — no 32-bit userspace.
+    b       _slot_sync_lower32
+    .balign 0x80
+    b       _slot_irq_lower32
+    .balign 0x80
+    b       _slot_fiq_lower32
+    .balign 0x80
+    b       _slot_serr_lower32
+
+// Sixteen tiny trampolines, one per vector slot: reserve the frame,
+// stash the two registers _trap_common needs as scratch (x0 carries the
+// vector number in by the time _trap_common runs; x1 is spare), and
+// jump in. Kept out of the 0x80-per-slot table above so a slot is
+// exactly one `b` — the table stays legible as 16 entries instead of 16
+// half-visible code blobs.
+.macro TRAP_SLOT name, vecnum
+_slot_\name:
+    sub     sp, sp, #TRAP_FRAME_SIZE
+    stp     x0, x1, [sp]
+    mov     x0, #\vecnum
+    b       _trap_common
+.endm
+
+// The same slot for an exception taken from EL0: the kernel's key goes in
+// before anything signs.
+.macro TRAP_SLOT_EL0 name, vecnum
+_slot_\name:
+    sub     sp, sp, #TRAP_FRAME_SIZE
+    stp     x0, x1, [sp]
+    PAC_ENTER
+    mov     x0, #\vecnum
+    b       _trap_common
+.endm
+
+TRAP_SLOT sync_cur_sp0,  0x10
+TRAP_SLOT irq_cur_sp0,   0x11
+TRAP_SLOT fiq_cur_sp0,   0x12
+TRAP_SLOT serr_cur_sp0,  0x13
+TRAP_SLOT sync_cur_spx,  VEC_SYNC_CUR
+TRAP_SLOT irq_cur_spx,   VEC_IRQ_CUR
+TRAP_SLOT fiq_cur_spx,   0x16
+TRAP_SLOT serr_cur_spx,  0x17
+.if SYSCALL_LEAN
+// The one slot a syscall arrives through: a native task's `svc` (ESR_EL1.EC
+// equal to its frame's tag, see TF_OFF_TAG above) goes to `_svc_native`;
+// everything else (a fault, an undefined instruction, a Linux task's `svc`)
+// takes the full save, as every other slot.
+_slot_sync_lower64:
+    sub     sp, sp, #TRAP_FRAME_SIZE
+    stp     x0, x1, [sp]
+    PAC_ENTER
+    mrs     x0, ESR_EL1
+    ldr     x1, [sp, #TF_OFF_TAG]
+    cmp     x1, x0, lsr #26
+    b.eq    _svc_native
+    mov     x0, #VEC_SYNC_LO
+    b       _trap_common
+.else
+TRAP_SLOT_EL0 sync_lower64,  VEC_SYNC_LO
+.endif
+TRAP_SLOT_EL0 irq_lower64,   VEC_IRQ_LO
+TRAP_SLOT_EL0 fiq_lower64,   0x1a
+TRAP_SLOT_EL0 serr_lower64,  0x1b
+TRAP_SLOT sync_lower32,  0x1c
+TRAP_SLOT irq_lower32,   0x1d
+TRAP_SLOT fiq_lower32,   0x1e
+TRAP_SLOT serr_lower32,  0x1f
+
+// Common tail. On entry: sp points at a TRAP_FRAME_SIZE-byte frame with
+// x0 and x1's ORIGINAL values already saved at offsets 0/8 (by the
+// TRAP_SLOT macro, before it clobbered x0 with the vector number); x0
+// itself currently holds the vector number, not the trapped x0.
+_trap_common:
+    str     x0, [sp, #TF_OFF_VECTOR]
+
+    stp     x2,  x3,  [sp, #16]
+    stp     x4,  x5,  [sp, #32]
+    stp     x6,  x7,  [sp, #48]
+    stp     x8,  x9,  [sp, #64]
+    stp     x10, x11, [sp, #80]
+    stp     x12, x13, [sp, #96]
+    stp     x14, x15, [sp, #112]
+    stp     x16, x17, [sp, #128]
+    stp     x18, x19, [sp, #144]
+    stp     x20, x21, [sp, #160]
+    stp     x22, x23, [sp, #176]
+    stp     x24, x25, [sp, #192]
+    stp     x26, x27, [sp, #208]
+    stp     x28, x29, [sp, #224]
+    str     x30,      [sp, #240]
+
+    // ── No FP/SIMD save ──────────────────────────────────────────────
+    //
+    // The kernel is soft-float (`aarch64-unknown-none-softfloat`) and
+    // `tools/aarch64_fp_free_check.sh` proves no code reached from here
+    // names a V register, so the interrupted code's V0-V31/FPSR/FPCR are
+    // still in the hardware when this trap returns. User FP state is saved
+    // lazily, by `context_switch` and only for a task that used FP since it
+    // was switched in (`kernel/src/entry/aarch64/fp.rs`). This used to
+    // save and restore all 512+8 bytes on every trap.
+
+    // x9 as scratch, not x0: x0 still holds the vector number, which the
+    // dispatch below tests without reloading it from the frame.
+    mrs     x9, ELR_EL1
+    str     x9, [sp, #TF_OFF_ELR]
+    mrs     x9, SPSR_EL1
+    str     x9, [sp, #TF_OFF_SPSR]
+    mrs     x9, SP_EL0
+    str     x9, [sp, #TF_OFF_SP_EL0]
+    mrs     x9, FAR_EL1
+    str     x9, [sp, #TF_OFF_FAR]
+    mrs     x9, ESR_EL1
+    str     x9, [sp, #TF_OFF_ESR]
+
+    // IRQ or not, decided from the vector number still in x0: the two IRQ
+    // vectors are 1 and 5 (`VEC_IRQ_CURRENT_EL_SP0`/`VEC_IRQ_LOWER_EL`),
+    // the only numbers in this table with `(v & ~4) == 1` — checked at
+    // assembly time below, so a renumbering fails to build instead of
+    // misrouting. The sync/syscall path falls straight through to `91:`
+    // (three instructions of dispatch); the IRQ path is out of line, after
+    // `trap_return`. This replaced a reload of the vector from the frame
+    // and two compare-and-branch pairs.
+    .if ((VEC_IRQ_CUR & ~4) != 1) || ((VEC_IRQ_LO & ~4) != 1) || ((VEC_SYNC_CUR & ~4) == 1) || ((VEC_SYNC_LO & ~4) == 1)
+    .error "trap_entry.S: IRQ vector test assumes IRQ vectors 1 and 5, sync vectors neither"
+    .endif
+    bic     x1, x0, #4
+
+    // aarch64_trap_entry(&mut TrapFrame) — AAPCS first argument is the
+    // frame's own address, which is exactly `sp` right now (the struct's
+    // `#[repr(C, align(16))]` layout starts at offset 0, and `sp` is
+    // 16-byte aligned coming out of an EL1h exception). x0 carries this
+    // across the IRQ-stack switch (label 90) untouched — only `sp` itself
+    // moves, never the frame pointer argument.
+    mov     x0, sp
+    cmp     x1, #1
+    b.eq    90f
+
+91: // sync/syscall, or a nested IRQ: call on the current stack
+    bl      aarch64_trap_entry
+    // Stash the TTBR0_EL1 switch request the same way the IRQ path (label
+    // 90) does — see that comment. On THIS path it is the real one: a
+    // exec/autorun hand-off consumed inside `aarch64_trap_entry`'s
+    // syscall arm returns the new table's PA here (0 otherwise).
+    mov     x19, x0
+    // Fall through to trap_return.
+
+//
+// trap_return — restore GPRs + the saved system registers and
+// `eret`. Only reached when `aarch64_trap_entry` actually returns
+// (`svc #0` self-test or a dispatched IRQ) — an unhandled trap parks
+// inside `aarch64_trap_entry` itself and never gets here.
+//
+trap_return:
+    // O3.1 (owner decision 2026-09-26): closes the aarch64 analogue of the
+    // riscv64 O3.1-nest bug (see that file's trap_return comment) BEFORE
+    // touching any of ELR_EL1/SPSR_EL1/SP_EL0/TTBR0_EL1 below. AArch64 has
+    // no `sscratch`-style software SP tag — SP_EL0/SP_EL1 are banked in
+    // hardware, so that half of the riscv64 bug class does not exist here
+    // (verified by reading this whole file: no software SP swap anywhere
+    // in it). The OTHER half does: once a syscall runs with IRQs enabled
+    // (`ARCH.enable_all()`, `crates/core/arch-aarch64/src/sysregs.rs`'s
+    // `msr DAIFClr,#2`), DAIF.I stays clear across this entire routine
+    // unless masked again — `SPSR_EL1` is only "the PSTATE `eret` will
+    // restore"; writing it does NOT affect this hart's OWN live DAIF
+    // (RISC-V's single-register `sstatus` trick has no aarch64
+    // equivalent; the exec/fork first entries, which used to carry their
+    // own copy of this guard in `crates/core/sched/src/process.rs`, now come
+    // through here too — see `aarch64_ret_to_user` below). Without this
+    // line, a real IRQ landing after `msr ELR_EL1`/`msr SPSR_EL1` below and
+    // before `eret` takes a nested EL1 exception that overwrites BOTH CSRs
+    // with the interrupted PC/PSTATE; the nested trap's OWN `eret` resumes
+    // exactly here but never restores THIS frame's `TF_OFF_ELR`/
+    // `TF_OFF_SPSR` a second time (this code never re-reads them), so this
+    // routine's own `eret` below would jump to kernel text with whatever
+    // the nested trap last left in the CSRs — the riscv64 sepc-clobber
+    // instance, ELR_EL1/SPSR_EL1 instead of sepc, ported to this ISA by a
+    // different mechanism. `#0xf` masks all four DAIF classes (matching
+    // `process.rs`'s own convention) rather than just `I`: `eret` restores
+    // the full mask from the frame's `SPSR_EL1` the same instruction it
+    // restores PC, so nothing is left masked past this trap.
+    msr     DAIFSet, #0xf
+trap_return_masked:
+
+    ldr     x9, [sp, #TF_OFF_ELR]
+    msr     ELR_EL1, x9
+    ldr     x9, [sp, #TF_OFF_SPSR]
+    msr     SPSR_EL1, x9
+.if PAC_USER
+    // Only a return to EL0 (SPSR_EL1.M[3:0] == 0, EL0t) takes the process's
+    // key; a nested return to EL1 keeps the kernel's. x10, x11 are free here.
+    tst     x9, #0xf
+    b.ne    9f
+    PAC_EXIT x10, x11
+9:
+.endif
+    ldr     x9, [sp, #TF_OFF_SP_EL0]
+    msr     SP_EL0, x9
+
+    // ── Phase 6 (userspace): install the new TTBR0_EL1, if requested ────
+    //
+    // `x19` (stashed right after `aarch64_trap_entry` returned, above) is
+    // the exec-handoff's new page-table PA, or 0. Must run AFTER the
+    // ELR_EL1/SPSR_EL1/SP_EL0 restores above (those are per-trap, unrelated
+    // to the address space) and BEFORE the GPR restore below, which
+    // overwrites x19 with the frame's own saved value via `ldp x18, x19`.
+    // Same sequence `context_switch.S`'s per-task switch and
+    // `process::sret_to_user` use: `isb` before the flush is
+    // context-synchronizing the TTBR0_EL1 write itself, `tlbi vmalle1` +
+    // `dsb nsh` + `isb` discard stale translations under the old table and
+    // order that completion before any instruction can use the new one —
+    // flush-on-switch (no ASID tagging), same choice made there.
+    cbz     x19, 92f
+    msr     TTBR0_EL1, x19
+    isb
+    tlbi    vmalle1
+    dsb     nsh
+    isb
+92:
+
+    ldp     x2,  x3,  [sp, #16]
+    ldp     x4,  x5,  [sp, #32]
+    ldp     x6,  x7,  [sp, #48]
+    ldp     x8,  x9,  [sp, #64]
+    ldp     x10, x11, [sp, #80]
+    ldp     x12, x13, [sp, #96]
+    ldp     x14, x15, [sp, #112]
+    ldp     x16, x17, [sp, #128]
+    ldp     x18, x19, [sp, #144]
+    ldp     x20, x21, [sp, #160]
+    ldp     x22, x23, [sp, #176]
+    ldp     x24, x25, [sp, #192]
+    ldp     x26, x27, [sp, #208]
+    ldp     x28, x29, [sp, #224]
+    ldr     x30,      [sp, #240]
+    ldp     x0,  x1,  [sp]
+
+    add     sp, sp, #TRAP_FRAME_SIZE
+    // ISB not required before `eret` per the Arm ARM (`eret` is already
+    // a context-synchronizing event); none of the writes above need one
+    // to be observed by the `eret` itself.
+    eret
+
+    // ── Interrupts run on this hart's own stack ─────────────────────
+    //
+    // Mirrors riscv64's `trap_entry.S` (see its long comment on why):
+    // an interrupt is taken on whatever stack was running, so its cost
+    // should not land on top of the deepest call chain in the tree.
+    // Only the HANDLER's own stack frame moves — the TrapFrame built
+    // above stays on the interrupted stack, `trap_return` pops it from
+    // there, and `x0` (the frame pointer) is unaffected either way.
+    //
+    // `x9-x14` are free: every GPR is already in the frame.
+90: // maybe switch to the IRQ stack
+    // This CPU's interrupt stack, from its per-CPU area: one word per CPU
+    // in AZOS_IRQ_STACK_BASE (kernel/src/main.rs), 0 when it has none. The
+    // index is the CPU id in TPIDR_EL1 — what `current_cpu_id()` reads and
+    // boot.S range-checked — not an MPIDR decode, which is only the CPU id
+    // on a flat topology.
+    mrs     x9, TPIDR_EL1
+    adrp    x11, AZOS_IRQ_STACK_BASE
+    add     x11, x11, :lo12:AZOS_IRQ_STACK_BASE
+    ldr     x11, [x11, x9, lsl #3]     // x11 = this CPU's stack base
+    cbz     x11, 91b                   // none (cannot happen once armed): call in place
+    mov     x13, #IRQ_STACK_SIZE
+    add     x12, x11, x13              // x12 = stack top (stacks grow down)
+
+    // Nesting check (unsigned): `sp - base < size` means we are ALREADY
+    // on this hart's IRQ stack — a trap taken inside a handler. Do not
+    // reset sp in that case; that would drop the outer handler's frame.
+    sub     x14, sp, x11
+    cmp     x14, x13
+    b.lo    91b                        // already on it: call in place
+
+    mov     x2, sp                     // remember the interrupted sp
+    mov     sp, x12
+    sub     sp, sp, #16
+    str     x2, [sp]
+    bl      aarch64_trap_entry
+    // Stash the TTBR0_EL1 switch request (0 = none) in x19 — a callee-saved
+    // register `aarch64_trap_resched` below is obliged to preserve across
+    // its own call (AAPCS64), so it survives to `trap_return`'s own use of
+    // it below. Always 0 on this path today (`handle_irq` never requests a
+    // switch), kept generic so this does not need revisiting if that
+    // changes.
+    mov     x19, x0
+    ldr     x2, [sp]
+    mov     sp, x2
+
+    // Phase 3 (context switch + scheduler) — mirrors riscv64's own
+    // `call trap_resched` at the equivalent point in its trap_entry.S,
+    // including the comment there on why this is the ONLY place it is
+    // safe: `sp` is back on the INTERRUPTED task's own stack (never the
+    // shared per-hart IRQ stack `_trap_common` switched to), which is
+    // the only stack a task can safely be PARKED on if `schedule()` decides
+    // to `context_switch()` away. `aarch64_trap_resched` may not return
+    // here for a long time — the interrupted task might not be rescheduled
+    // for many ticks — but when it does, `sp` (and every register
+    // `trap_return` below reads) is exactly as this line left it, because
+    // `context_switch` restores this exact call frame like any other
+    // AAPCS64 return. Only on THIS path (non-nested IRQ that took its own
+    // stack): the `91:` label (nested IRQ, or sync/svc) falls
+    // straight to `trap_return` and pays nothing for a reschedule check it
+    // can never need — same "ONLY ON THIS PATH" restriction riscv64
+    // documents at its own call site.
+    mov     x0, sp                     // aarch64_trap_resched(frame): the frame is at sp
+    bl      aarch64_trap_resched
+    b       trap_return
+
+
+//
+// ── The other two ways into EL0 use the same tail ───────────────────────
+//
+// Every return to EL0 in this kernel goes through `trap_return` above:
+// returns from a trap, and — through the two entries below — a task's
+// first entry into a fresh image (`aarch64_enter_user`, reached from
+// `crates/core/sched/src/process.rs`'s `sret_to_user`) and a forked child's
+// first entry (`aarch64_enter_user_forked`, from `sret_to_user_forked`).
+// Those used to carry their own copies of the DAIF mask, the
+// ELR_EL1/SPSR_EL1/SP_EL0/TTBR0_EL1 writes and the GPR zeroing or restore;
+// now the caller builds an ordinary `TrapFrame` on its kernel stack and
+// the one tail restores it. What the tail does, once, for all of them:
+//   * O3.1: IRQs masked before ELR_EL1/SPSR_EL1/SP_EL0/TTBR0_EL1 (masked
+//     here, first, so the `sp` move below is covered too);
+//   * TTBR0_EL1 switch when x19 != 0 (x19 = the `ttbr0` argument);
+//   * every GPR from the frame (zeroes for a fresh image, so no kernel
+//     value — x18 included — reaches EL0);
+//   * lazy FP: nothing to do here by design. The FP invariant (FPEN=0b11
+//     iff this hart holds the running task's live state) is kept by
+//     `context_switch` and `fp::first_use`; the callers of these
+//     entries drop (exec) or adopt (fork) the task's saved state first.
+//   * reschedule: only the IRQ path (label 90) sets and consumes
+//     NEED_RESCHED; neither a syscall return nor these first entries can
+//     find it pending (see `aarch64_trap_resched`), so they do not pay
+//     for the check.
+// `sp` becomes the frame: the frame is at the bottom of the caller's live
+// stack, everything below it is dead (these entries never return), and the
+// next trap from EL0 builds its frame just under where this one ends.
+//
+// aarch64_ret_to_user(frame: *const TrapFrame, ttbr0: u64) -> !
+.globl aarch64_ret_to_user
+aarch64_ret_to_user:
+    hint    #38                             // bti jc: CFI landing pad (Kconfig A64_BTI)
+    msr     DAIFSet, #0xf
+    mov     sp, x0
+    mov     x19, x1
+    b       trap_return_masked
+
+// aarch64_ret_to_user_tls(frame: *const TrapFrame, ttbr0: u64, tpidr_el0: u64) -> !
+// Same, plus TPIDR_EL0 (a forked child's TLS pointer), written with IRQs
+// masked on the hart that is about to `eret`.
+.globl aarch64_ret_to_user_tls
+aarch64_ret_to_user_tls:
+    hint    #38                             // bti jc: CFI landing pad (Kconfig A64_BTI)
+    msr     DAIFSet, #0xf
+    msr     TPIDR_EL0, x2
+    mov     sp, x0
+    mov     x19, x1
+    b       trap_return_masked
+
+.if SYSCALL_LEAN
+//
+// ── Chain E commit 8: a native task's `svc` saves only what it must ───────
+//
+// THE CONTRACT (crates/core/abi/src/syscall_nr.rs, "Register contract"): on
+// return from a native syscall EL0 may rely on x18-x29 (x18: rustc reserves
+// it on this target, so no stub can declare it clobbered), x30 (the link
+// register, kept as riscv64 keeps ra: one store against a save and restore
+// in every leaf around a syscall), SP_EL0, TPIDR_EL0 and the call's outputs
+// (x0, and x1-x6 when the call writes them) only; x7-x17 are clobbered.
+// This path keeps x7-x9 anyway (each shares an `stp`/`ldp` with a register
+// it must keep), does not store x10-x17, and returns them ZEROED, so
+// nothing the kernel left in
+// them reaches EL0. Reached from `_slot_sync_lower64` only for an `svc`
+// whose frame tag says native; a Linux task (the Linux ABI preserves every
+// register) and every other trap take `_trap_common`'s full save.
+//
+// The frame's x10-x17 slots keep what an earlier full save of this task
+// left (zero after the first entry). Nothing on a native syscall reads them:
+// the fork snapshot clears them (`SYSCALL_CLOBBERED`,
+// crates/core/arch-aarch64/src/fork_regs.rs), the exec hand-off zeroes
+// them with every other register (`exec_entry_frame`,
+// kernel/src/entry/aarch64/mod.rs), the IPC fast path writes x0-x6; signals and
+// syscall restart are the Linux personality's.
+//
+// COST against the full path: 4 `stp` fewer, no FAR read, no IRQ test; the
+// tag test is 3 instructions in the slot, and the ESR read it needs is the
+// one the frame stores. On the way out, x10-x17 come from a zero pair
+// (`ldp`, as they would have from the frame).
+_svc_native:
+    // x0 = ESR_EL1, x1 = the tag; the user's x0/x1 are at [sp].
+    stp     x2,  x3,  [sp, #16]
+    stp     x4,  x5,  [sp, #32]
+    stp     x6,  x7,  [sp, #48]
+    stp     x8,  x9,  [sp, #64]
+    stp     x18, x19, [sp, #144]
+    stp     x20, x21, [sp, #160]
+    stp     x22, x23, [sp, #176]
+    stp     x24, x25, [sp, #192]
+    stp     x26, x27, [sp, #208]
+    stp     x28, x29, [sp, #224]
+    str     x30,      [sp, #240]
+    // x10-x17: not stored, see above. x10 is scratch from here.
+    str     x0,  [sp, #TF_OFF_ESR]
+    mov     x10, #VEC_SYNC_LO
+    str     x10, [sp, #TF_OFF_VECTOR]
+    mrs     x10, ELR_EL1
+    str     x10, [sp, #TF_OFF_ELR]
+    mrs     x10, SPSR_EL1
+    str     x10, [sp, #TF_OFF_SPSR]
+    mrs     x10, SP_EL0
+    str     x10, [sp, #TF_OFF_SP_EL0]
+    str     xzr, [sp, #TF_OFF_FAR]          // UNKNOWN for an SVC; defined here
+    // A syscall runs on this stack (no IRQ-stack switch, no reschedule
+    // check: see the `91:` path above). The class and the EL are known
+    // here, so no `aarch64_trap_entry` decode: the syscall's own entry, with
+    // the trap entry's guards.
+    mov     x0, sp
+.if IPC_FAST_ENTRY
+    // Chain E cut 7: x8 = IPC_FAST_LO or IPC_FAST_LO + 2 exactly when
+    // (x8 - IPC_FAST_LO) & ~2 is 0. Those two go straight to the frame that
+    // runs the fast path (`aarch64_fast_ipc_svc`); three instructions on
+    // every other native syscall.
+    sub     x10, x8, #IPC_FAST_LO
+    tst     x10, #0xfffffffffffffffd
+    b.eq    .Lsvc_fast_ipc
+.endif
+    bl      aarch64_native_svc              // x0 = the TTBR0_EL1 to install, or 0
+
+    // The native exit: sp = the frame, x0 = the TTBR0_EL1 or 0. Also entered
+    // from `aarch64_ipc_resume_stub` below (Chain E commit 9).
+_svc_native_return:
+    // O3.1, as `trap_return`: mask first, then ELR/SPSR/SP_EL0/TTBR0.
+    msr     DAIFSet, #0xf
+    ldr     x10, [sp, #TF_OFF_ELR]
+    msr     ELR_EL1, x10
+    ldr     x10, [sp, #TF_OFF_SPSR]
+    msr     SPSR_EL1, x10
+    ldr     x10, [sp, #TF_OFF_SP_EL0]
+    msr     SP_EL0, x10
+    PAC_EXIT x10, x11                       // always EL0; x0 (the TTBR0) stays live
+    cbz     x0, 93f
+    msr     TTBR0_EL1, x0
+    isb
+    tlbi    vmalle1
+    dsb     nsh
+    isb
+93:
+    ldp     x0,  x1,  [sp]
+    ldp     x2,  x3,  [sp, #16]
+    ldp     x4,  x5,  [sp, #32]
+    ldp     x6,  x7,  [sp, #48]
+    ldp     x8,  x9,  [sp, #64]
+    ldp     x18, x19, [sp, #144]
+    ldp     x20, x21, [sp, #160]
+    ldp     x22, x23, [sp, #176]
+    ldp     x24, x25, [sp, #192]
+    ldp     x26, x27, [sp, #208]
+    ldp     x28, x29, [sp, #224]
+    ldr     x30,      [sp, #240]
+.if SYSCALL_ABI_CANARY
+    movz    x10, #CANARY_A1_LO
+    movk    x10, #CANARY_A1_HI, lsl #16
+    cmp     x1, x10
+    b.ne    94f
+    eor     x20, x20, #1                    // the canary: one callee-saved bit lost
+94:
+.endif
+    // The clobbered registers, zeroed: x10 holds SP_EL0's value right now.
+    // x10 is the pair's base and its last destination (no writeback).
+    adr     x10, _svc_zero_pair
+    ldp     x16, x17, [x10]
+    ldp     x14, x15, [x10]
+    ldp     x12, x13, [x10]
+    ldp     x10, x11, [x10]
+    add     sp, sp, #TRAP_FRAME_SIZE
+    eret
+
+.if IPC_FAST_ENTRY
+.Lsvc_fast_ipc:
+    bl      aarch64_fast_ipc_svc            // x0 = the TTBR0_EL1 to install, or 0
+    b       _svc_native_return
+.endif
+
+    .balign 16
+_svc_zero_pair:
+    .quad   0, 0
+.endif
+
+// ── Chain E commit 9: the IPC fast path's resume point ──────────────────────
+//
+// Kconfig IPC_FASTPATH_RESUME (crates/core/syscall/src/fastpath.rs, "Resume
+// points"). A task that blocked in the fast path's hand-off from an EL0 `svc`
+// left this stub and its trap frame as its resume point. The fast path that
+// claimed it finished its syscall for it (x0 and the extra return registers
+// in the frame) and pointed its saved context here, so `context_switch`
+// arrives (`br` to CTX_PC) with sp = that frame (CTX_SP), x1 = this task (its
+// `new`), IRQs masked and the task's address space installed. The frames it
+// blocked in are abandoned. First `azos_ipc_fast_exit` when the switch left a
+// Zombie to reap (`finish_switch`), or always when this build has checks on
+// the return to EL0 (RESUME_EXIT_CALL: lockdep, ctx-probe);
+// then the exit the entry took: the native one for a frame `_svc_native` saved (its tag equals the
+// frame's ESR_EL1.EC, the test `_slot_sync_lower64` made), `trap_return` for a
+// fully saved one; no TTBR0_EL1 write (0).
+.globl aarch64_ipc_resume_stub
+.balign 4
+aarch64_ipc_resume_stub:
+    hint    #38                             // bti jc: reached by `br x9` from context_switch
+.if RESUME_EXIT_CALL
+    bl      azos_ipc_fast_exit
+.else
+    ldr     x9, [x1, #TASK_REAP_OFFSET]
+    cbz     x9, 1f
+    bl      azos_ipc_fast_exit
+1:
+.endif
+.if SYSCALL_LEAN
+    ldr     x1, [sp, #TF_OFF_TAG]
+    ldr     x2, [sp, #TF_OFF_ESR]
+    mov     x0, #0
+    cmp     x1, x2, lsr #26
+    b.eq    _svc_native_return
+.endif
+    mov     x19, #0
+    b       trap_return
+.size aarch64_ipc_resume_stub, . - aarch64_ipc_resume_stub
+
+.extern aarch64_trap_entry
+.extern AZOS_IRQ_STACK_BASE
+.extern AZOS_PAC_ON
+.extern AZOS_PAC_KERNEL_KEY
+.extern AZOS_PAC_USER_APIA
+.extern aarch64_trap_resched

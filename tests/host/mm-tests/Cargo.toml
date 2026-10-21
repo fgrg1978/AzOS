@@ -1,0 +1,67 @@
+[package]
+name = "azos_mm_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the physical page allocator in crates/core/mm/src/pmm.rs. Excluded from workspace."
+
+# Run with:  cd tests/host/mm-tests && cargo test --release
+
+[dependencies]
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
+azos_arch = { path = "shims/arch", package = "mm_test_arch" }
+# Real crate, not a shim: `azos_arch_api` is pure `no_std`, no asm, no
+# target-specific code (see its own Cargo.toml description) — exactly the
+# property that makes it safe to link on the host, unlike the facade above.
+# `wx.rs` (pulled in with `#[path]` below) types against it directly since
+# the page-table abstraction (B2) made `wx` ISA-neutral.
+azos_arch_api = { path = "../../../crates/core/arch-api" }
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
+azos_common = { path = "../../../crates/core/common" }
+# Real crate, not a shim: it is generated from .config by a build script and
+# has no target-specific code, and pmm's MAX_PAGES is derived from it. A stub
+# would let the arena size drift from the kernel's.
+azos_limits = { path = "../../../crates/core/limits" }
+# Real crate: zpool.rs (pulled with `#[path]`) compresses with its WKdm coder and
+# encrypts with its AES-128-CTR; neither has target-specific code.
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+# Reproduce the kernel's release profile. A suite that does not is testing a
+# different program: overflow-checks is what turns a wrapping computation into
+# a panic, and panic = "abort" is what makes that a board reset.
+# The pulled modules carry canary `cfg!(feature = ...)` sites the mm crate
+# declares; without echoing them here they emit unexpected_cfgs, and warnings
+# are failures in this project. Declared rather than silenced so the condition
+# stays visible.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("slab-freelist-canary", "slab-align-canary", "slab-geometry-canary", "buddy-merge-canary", "buddy-split-canary", "pcp-refill-canary", "pcp-drain-canary", "frame-index-canary", "refcount-canary", "budget-racy-charge-canary", "zone-share-canary", "swap-pinned-canary", "swap-verify-canary", "ktest"))'] }
+
+# Wave 15 (SLAB) canaries for the pulled `slab.rs` (see src/slab_tests.rs):
+# a free list that hands an object out twice, objects off their alignment,
+# and a geometry that must not compile.
+[features]
+slab-freelist-canary = []
+slab-align-canary = []
+# L2 (physical memory) canaries for the pulled frame.rs / buddy.rs /
+# cow_table.rs (see src/buddy_tests.rs and src/pmm_tests.rs).
+buddy-merge-canary = []
+buddy-split-canary = []
+pcp-refill-canary = []
+pcp-drain-canary = []
+frame-index-canary = []
+refcount-canary = []
+# The pulled budget.rs: the charge tests the limit and stores in two steps (see budget_tests).
+budget-racy-charge-canary = []
+slab-geometry-canary = []
+# The pulled pmm.rs: a freed zoned frame loses its tag and goes to the buddy lists (see zone_tests).
+zone-share-canary = []
+# The pulled swap.rs / zpool.rs (see src/swap.rs): a pinned Domain's segment is
+# offered to the swap-out storm; a segment read back is attached without its tag checked.
+swap-pinned-canary = []
+swap-verify-canary = []
+
+[profile.release]
+overflow-checks = true

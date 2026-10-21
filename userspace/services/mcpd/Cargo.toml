@@ -1,0 +1,36 @@
+[package]
+name = "mcpd"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS MCP bridge (ring 3): the Model Context Protocol over a TCP stream on the native stack, serving the IDL interfaces its row can call as MCP tools. The op tables are the schema. Every tools/call needs a warrant (an in-tree macaroon, azos_rpc::wire::Token) whose op mask names the op and which expires; the call is one warrant the kernel is asked for and one IDL call through it, and the answer carries the decision record that is the receipt. An op that cannot be undone (#[once_only]) is only proposed by its tool: a human confirms it with a one-shot warrant and the agent commits it once. The MCP client is a principal (a Domain id), never a capability holder. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+azos_mcp = { path = "../../lib/mcp" }
+azos_rpc = { path = "../../lib/rpc" }
+azos_decision = { path = "../../../crates/core/decision" }
+azos_decisions = { path = "../../lib/decisions" }
+azos_ualloc = { path = "../../lib/ualloc" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs"). The
+# built-in topology has a row for it, and the kernel starts it at boot, only
+# when Kconfig MCP_BRIDGE is on.
+[package.metadata.azos]
+default = "MCP_BRIDGE"
+start = "MCP_BRIDGE"

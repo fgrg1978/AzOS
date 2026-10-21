@@ -1,0 +1,886 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# Variables: output roots, toolchains, every ELF/image name and path, the board and
+# BUILD_TYPE settings, the per-ISA image tables. Nothing here is a rule, so it is
+# read first; a variable that a rule lists as a prerequisite is defined here or in
+# an earlier include (see the order in the Makefile).
+# Included by the top-level Makefile; the order of the includes there is part of the contract.
+
+
+# Output root. Every build output and every image QEMU loads lives under it,
+# never in the checkout (tools/out_dir.py computes the default, once, for the
+# Makefile and the shell/Python tools alike): one root per checkout, so two
+# worktrees never share outputs. Rust sources `include!` their tables from
+# `$AZOS_OUT/build` (env!("AZOS_OUT")), so it is exported to every command.
+#   OUT_BUILD   generated configs, hash tables, ELFs, disk images, kernel images
+#   OUT_TARGET  the root cargo workspace's target dir (also CARGO_TARGET_DIR)
+#   OUT_TGT     one target dir per standalone crate: $(OUT_TGT)/<repo-relative dir>
+# In comments below, `build/` and `target/` mean $(OUT_BUILD)/ and $(OUT_TARGET)/.
+AZOS_OUT ?= $(shell python3 "$(CURDIR)/tools/out_dir.py")
+AZOS_OUT := $(AZOS_OUT)
+export AZOS_OUT
+OUT_BUILD  := $(AZOS_OUT)/build
+OUT_TARGET := $(AZOS_OUT)/target
+OUT_TGT    := $(AZOS_OUT)/tgt
+export CARGO_TARGET_DIR := $(OUT_TARGET)
+
+QEMU  := qemu-system-riscv64
+QEMU_FLAGS := -machine virt -nographic -bios default
+CARGO := $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
+
+# Cargo output paths
+TARGET := riscv64imac-unknown-none-elf
+PROFILE ?= release
+ifeq ($(PROFILE),release)
+    CARGO_FLAGS := --release
+    TARGET_DIR := $(OUT_TARGET)/$(TARGET)/release
+else
+    CARGO_FLAGS :=
+    TARGET_DIR := $(OUT_TARGET)/$(TARGET)/debug
+endif
+
+KERNEL_ELF := $(TARGET_DIR)/kernel
+
+# User-space toolchain
+RISCV_AS  := riscv64-unknown-elf-as
+RISCV_LD  := riscv64-unknown-elf-ld
+HELLO_DIR     := userspace/tests/hello
+HELLO_ELF     := $(OUT_BUILD)/hello.elf
+# A static Linux binary built from our own C (no C library), run
+# under the Linux personality. Built with any Linux-targeting clang and
+# rustc's own rust-lld; see the `$(LXHELLO_ELF)` rule.
+LXHELLO_DIR   := userspace/tests/lxhello
+LXHELLO_ELF   := $(OUT_BUILD)/lxhello.elf
+SYSTEST_DIR   := userspace/tests/syscall_test
+SYSTEST_ELF   := $(OUT_BUILD)/syscall_test.elf
+# E11.AQ3 — ring-3 GPIO driver (Rust no_std ELF, built standalone).
+GPIO_DRV_DIR  := userspace/drivers/gpio_drv
+GPIO_DRV_BUILT:= $(OUT_TGT)/$(GPIO_DRV_DIR)/riscv64imac-unknown-none-elf/release/gpio_drv
+GPIO_DRV_ELF  := $(OUT_BUILD)/gpio_drv.elf
+# Wave 9 — the ring-3 ML inference service the behavior task spawns
+# (`kernel/src/behavior_ml.rs`). Same standalone shape as gpio_drv.
+MLSRV_DIR     := userspace/services/infsrv
+MLSRV_BUILT   := $(OUT_TGT)/$(MLSRV_DIR)/riscv64imac-unknown-none-elf/release/infsrv
+MLSRV_ELF     := $(OUT_BUILD)/mlsrv.elf
+
+# Wave 9 (DRV1) — the ring-3 buzzer and INA219 drivers.
+# Started by the kernel from their `start = true` topology rows, not by
+# autorun. Shipped only on the drivers disks below (and the board volume).
+BUZZ_DRV_DIR  := userspace/drivers/buzz_drv
+BUZZ_DRV_BUILT:= $(OUT_TGT)/$(BUZZ_DRV_DIR)/riscv64imac-unknown-none-elf/release/buzz_drv
+BUZZ_DRV_ELF  := $(OUT_BUILD)/buzz_drv.elf
+INA_DRV_DIR   := userspace/drivers/ina_drv
+INA_DRV_BUILT := $(OUT_TGT)/$(INA_DRV_DIR)/riscv64imac-unknown-none-elf/release/ina_drv
+INA_DRV_ELF   := $(OUT_BUILD)/ina_drv.elf
+# The user shell and its multicall tool image.
+SH_DIR        := userspace/services/sh
+SH_BUILT      := $(OUT_TGT)/$(SH_DIR)/riscv64imac-unknown-none-elf/release/sh
+SH_ELF        := $(OUT_BUILD)/sh.elf
+# The Terminal object (interface + codec) the shell and its server share, and
+# the terminal server (the console program of the native shell session).
+TERM_LIB_SRC  := userspace/lib/term/src/lib.rs userspace/lib/term/Cargo.toml
+# The Names object (interface + view codec): the name server and its clients.
+NAMES_LIB_SRC := userspace/lib/names/src/lib.rs userspace/lib/names/Cargo.toml
+# The Login object (interface and credential): the terminal server, the login
+# service and the component manager's table of contracts.
+LOGIN_LIB_SRC := userspace/lib/login/src/lib.rs userspace/lib/login/Cargo.toml
+SH_SRC        := $(SH_DIR)/src/main.rs $(SH_DIR)/src/parse.rs $(SH_DIR)/src/ident.rs \
+                 $(SH_DIR)/src/path.rs $(SH_DIR)/src/req.rs $(SH_DIR)/Cargo.toml $(TERM_LIB_SRC) $(NAMES_LIB_SRC)
+TERMD_DIR     := userspace/services/termd
+TERMD_BUILT   := $(OUT_TGT)/$(TERMD_DIR)/riscv64imac-unknown-none-elf/release/termd
+TERMD_ELF     := $(OUT_BUILD)/termd.elf
+TERMD_SRC     := $(wildcard $(TERMD_DIR)/src/*.rs) $(TERMD_DIR)/Cargo.toml $(TERM_LIB_SRC) $(LOGIN_LIB_SRC)
+NAMESD_DIR     := userspace/services/namesd
+NAMESD_BUILT   := $(OUT_TGT)/$(NAMESD_DIR)/riscv64imac-unknown-none-elf/release/namesd
+NAMESD_ELF     := $(OUT_BUILD)/namesd.elf
+NAMESD_SRC     := $(NAMESD_DIR)/src/main.rs $(NAMESD_DIR)/src/service.rs $(NAMESD_DIR)/Cargo.toml $(NAMES_LIB_SRC)
+COMPMGR_DIR   := userspace/services/compmgr
+COMPMGR_BUILT := $(OUT_TGT)/$(COMPMGR_DIR)/riscv64imac-unknown-none-elf/release/compmgr
+COMPMGR_ELF   := $(OUT_BUILD)/compmgr.elf
+COMPMGR_SRC   := $(COMPMGR_DIR)/src/main.rs $(COMPMGR_DIR)/src/tree.rs $(COMPMGR_DIR)/src/contracts.rs $(COMPMGR_DIR)/Cargo.toml \
+                 $(NAMES_LIB_SRC) $(TERM_LIB_SRC) $(LOGIN_LIB_SRC) $(DECISIONS_LIB_SRC) $(PACKAGES_LIB_SRC)
+TOOLBOX_DIR   := userspace/services/toolbox
+TOOLBOX_BUILT := $(OUT_TGT)/$(TOOLBOX_DIR)/riscv64imac-unknown-none-elf/release/toolbox
+TOOLBOX_ELF   := $(OUT_BUILD)/toolbox.elf
+TOOLBOX_SRC   := $(wildcard $(TOOLBOX_DIR)/src/*.rs) $(TOOLBOX_DIR)/Cargo.toml crates/drivers/sys/src/klog/wire.rs
+# The power tool (the kernel-hosted `power` endpoint).
+POWER_DIR     := userspace/services/power
+POWER_BUILT   := $(OUT_TGT)/$(POWER_DIR)/riscv64imac-unknown-none-elf/release/power
+POWER_ELF     := $(OUT_BUILD)/power.elf
+POWER_LIB_SRC := userspace/lib/power/src/lib.rs userspace/lib/power/Cargo.toml
+POWER_SRC     := $(POWER_DIR)/src/main.rs $(POWER_DIR)/src/policy.rs $(POWER_DIR)/Cargo.toml $(POWER_LIB_SRC)
+# Wave 15 (TRACE): the kernel tracer's reader (`Cap<Trace>`, the tracer's ops).
+TRACECTL_DIR  := userspace/services/tracectl
+TRACECTL_BUILT:= $(OUT_TGT)/$(TRACECTL_DIR)/riscv64imac-unknown-none-elf/release/tracectl
+TRACECTL_ELF  := $(OUT_BUILD)/tracectl.elf
+TRACECTL_SRC  := $(TRACECTL_DIR)/src/main.rs $(TRACECTL_DIR)/src/profile.rs $(TRACECTL_DIR)/Cargo.toml crates/core/trace/src/prof.rs
+# The decision query: the server (`Decisions` on `endpoint.decisions`, from
+# /proc/decisions.bin) and `why`, its client tool; both over `userspace/lib/decisions`.
+DECISIONS_LIB_SRC := userspace/lib/decisions/src/lib.rs userspace/lib/decisions/Cargo.toml
+DECISD_DIR := userspace/services/decisd
+DECISD_BUILT:= $(OUT_TGT)/$(DECISD_DIR)/riscv64imac-unknown-none-elf/release/decisd
+DECISD_ELF := $(OUT_BUILD)/decisd.elf
+DECISD_SRC := $(DECISD_DIR)/src/main.rs $(DECISD_DIR)/src/bin.rs $(DECISD_DIR)/Cargo.toml $(DECISIONS_LIB_SRC)
+INPUTD_DIR := userspace/services/inputd
+INPUTD_BUILT:= $(OUT_TGT)/$(INPUTD_DIR)/riscv64imac-unknown-none-elf/release/inputd
+INPUTD_ELF := $(OUT_BUILD)/inputd.elf
+INPUTD_SRC := $(INPUTD_DIR)/src/main.rs $(INPUTD_DIR)/src/focus.rs $(INPUTD_DIR)/Cargo.toml crates/core/devif/src/input.rs crates/drivers/input/wire/src/event.rs
+# The compositor (Kconfig COMPOSITOR): the sole holder of the Display interface and
+# the Secure Attention Key's trusted surface. It links the pixel engine and the
+# protocol library, and includes the framebuffer console's font.
+COMPSRV_DIR := userspace/services/compositor
+COMPSRV_BUILT:= $(OUT_TGT)/$(COMPSRV_DIR)/riscv64imac-unknown-none-elf/release/compositor
+COMPSRV_ELF := $(OUT_BUILD)/compsrv.elf
+COMPSRV_SRC := $(wildcard $(COMPSRV_DIR)/src/*.rs) $(COMPSRV_DIR)/Cargo.toml $(wildcard userspace/lib/compositor/src/*.rs userspace/lib/compose/src/*.rs) crates/core/devif/src/input.rs crates/core/devif/src/display.rs crates/drivers/fb/src/font.rs
+# The kernel log's sink (Kconfig KLOG): drains `MemObj klog.ring` into KLOGn.TXT;
+# it shares the ring's wire with the kernel and the toolbox's `log`.
+LOGD_DIR   := userspace/services/logd
+LOGD_BUILT := $(OUT_TGT)/$(LOGD_DIR)/riscv64imac-unknown-none-elf/release/logd
+LOGD_ELF   := $(OUT_BUILD)/logd.elf
+LOGD_SRC   := $(LOGD_DIR)/src/main.rs $(LOGD_DIR)/src/store.rs $(LOGD_DIR)/Cargo.toml $(LOGD_DIR)/.cargo/config.toml $(LOGD_DIR)/user.ld $(LOGD_DIR)/user_aarch64.ld $(LOGD_DIR)/user_x86_64.ld crates/drivers/sys/src/klog/wire.rs
+WHY_DIR       := userspace/services/why
+WHY_ELF       := $(OUT_BUILD)/why.elf
+WHY_SRC       := $(WHY_DIR)/src/main.rs $(WHY_DIR)/src/cli.rs $(WHY_DIR)/Cargo.toml $(DECISIONS_LIB_SRC)
+# Signed application packages: the installer (`Packages` on
+# `endpoint.packages`) and `pkg`, its client tool, over `userspace/lib/packages`
+# and the format/verification/admission in `crates/core/pkg`. The installer
+# verifies the signed topology with the topology key, so it is built twice like
+# the ML service (see MLSRV_KEY_FEATURES below): `build/pkgd.elf` with the test
+# key for the QEMU disks, `build/board/pkgd.elf` with the named key for a board.
+PACKAGES_LIB_SRC := $(shell find userspace/lib/packages/src crates/core/pkg/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') \
+               userspace/lib/packages/Cargo.toml crates/core/pkg/Cargo.toml
+PKGD_DIR      := userspace/services/pkgd
+TLS_LIB_SRC   := $(shell find userspace/lib/tls/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') userspace/lib/tls/Cargo.toml
+PKGD_ELF      := $(OUT_BUILD)/pkgd.elf
+PKG_DIR       := userspace/services/pkg
+PKG_BUILT     := $(OUT_TGT)/$(PKG_DIR)/riscv64imac-unknown-none-elf/release/pkg
+PKG_ELF       := $(OUT_BUILD)/pkg.elf
+PKG_SRC       := $(PKG_DIR)/src/main.rs $(PKG_DIR)/Cargo.toml $(PACKAGES_LIB_SRC)
+RPC_LIB_SRC   := $(wildcard userspace/lib/rpc/src/*.rs) userspace/lib/rpc/Cargo.toml
+RPCSRV_DIR    := userspace/services/rpcsrv
+RPCSRV_BUILT  := $(OUT_TGT)/$(RPCSRV_DIR)/riscv64imac-unknown-none-elf/release/rpcsrv
+RPCSRV_ELF    := $(OUT_BUILD)/rpcsrv.elf
+RPCSRV_SRC    := $(RPCSRV_DIR)/src/main.rs $(RPCSRV_DIR)/Cargo.toml $(RPC_LIB_SRC) $(DECISIONS_LIB_SRC)
+# The Zenoh gateway (Kconfig ZENOH_GW) over the in-tree Zenoh codec.
+ZENOH_LIB_SRC := $(wildcard userspace/lib/zenoh/src/*.rs) userspace/lib/zenoh/Cargo.toml
+ZENOHD_DIR    := userspace/services/zenohd
+ZENOHD_BUILT  := $(OUT_TGT)/$(ZENOHD_DIR)/riscv64imac-unknown-none-elf/release/zenohd
+ZENOHD_ELF    := $(OUT_BUILD)/zenohd.elf
+# The relay of the QUIC link (Kconfig RPC_QUIC): a std program (userspace/lib/quic), its recipes with the SDK's.
+RPCQUIC_ELF   := $(OUT_BUILD)/rpcquic.elf
+ZENOHD_SRC    := $(wildcard $(ZENOHD_DIR)/src/*.rs) $(ZENOHD_DIR)/Cargo.toml $(ZENOH_LIB_SRC) $(DECISIONS_LIB_SRC) $(UALLOC_SRC)
+# The PTP daemon (Kconfig PTPD).
+PTPD_DIR    := userspace/services/ptpd
+PTPD_BUILT  := $(OUT_TGT)/$(PTPD_DIR)/riscv64imac-unknown-none-elf/release/ptpd
+PTPD_ELF    := $(OUT_BUILD)/ptpd.elf
+PTPD_SRC     := $(wildcard $(PTPD_DIR)/src/*.rs) $(PTPD_DIR)/Cargo.toml
+# The MCP bridge (Kconfig MCP_BRIDGE) over the in-tree MCP codec and the RPC
+# transport's warrant token.
+MCP_LIB_SRC   := $(wildcard userspace/lib/mcp/src/*.rs) userspace/lib/mcp/Cargo.toml
+MCPD_DIR      := userspace/services/mcpd
+MCPD_BUILT    := $(OUT_TGT)/$(MCPD_DIR)/riscv64imac-unknown-none-elf/release/mcpd
+MCPD_ELF      := $(OUT_BUILD)/mcpd.elf
+MCPD_SRC      := $(wildcard $(MCPD_DIR)/src/*.rs) $(MCPD_DIR)/Cargo.toml $(MCP_LIB_SRC) $(RPC_LIB_SRC) $(DECISIONS_LIB_SRC) $(UALLOC_SRC)
+# The SSH server (Kconfig SSHD, default y; n on MICRO and a certifiable build). It pulls in the terminal
+# server's line discipline and the shell's path and spawn-request modules with
+# #[path], so their files are among its sources.
+SSHD_DIR      := userspace/services/sshd
+SSHD_BUILT    := $(OUT_TGT)/$(SSHD_DIR)/riscv64imac-unknown-none-elf/release/sshd
+SSHD_ELF      := $(OUT_BUILD)/sshd.elf
+SSHD_SRC      := $(wildcard $(SSHD_DIR)/src/*.rs) $(SSHD_DIR)/Cargo.toml userspace/services/termd/src/disc.rs userspace/services/termd/src/edit.rs \
+                 userspace/services/sh/src/path.rs userspace/services/sh/src/req.rs $(UALLOC_SRC)
+# The login service (Kconfig CONSOLE_LOGIN, default n): the Login object's
+# server. The interface (`LOGIN_LIB_SRC`, above) is a library of its own.
+LOGIND_DIR    := userspace/services/logind
+LOGIND_BUILT  := $(OUT_TGT)/$(LOGIND_DIR)/riscv64imac-unknown-none-elf/release/logind
+LOGIND_ELF    := $(OUT_BUILD)/logind.elf
+LOGIND_SRC    := $(wildcard $(LOGIND_DIR)/src/*.rs) $(LOGIND_DIR)/Cargo.toml $(LOGIN_LIB_SRC)
+# Hypervisor H1: the ring-3 virtual-machine monitor (the device models of a guest).
+VMMD_DIR      := userspace/services/vmmd
+VMMD_BUILT    := $(OUT_TGT)/$(VMMD_DIR)/riscv64imac-unknown-none-elf/release/vmmd
+VMMD_ELF      := $(OUT_BUILD)/vmmd.elf
+VMMD_SRC      := $(wildcard $(VMMD_DIR)/src/*.rs) $(VMMD_DIR)/Cargo.toml
+# Kconfig LINUX_RUNTIME: the ring-3 half of the Linux personality
+# (userspace/lib/linux_rt behind userspace/services/lxrt). Not a disk image:
+# the kernel embeds it (`include_bytes!` in kernel/src/boot/seams.rs) and maps
+# it into every Linux process at spawn. Built only when the .config asks.
+LXRT_DIR      := userspace/services/lxrt
+LXRT_BUILT    := $(OUT_TGT)/$(LXRT_DIR)/riscv64imac-unknown-none-elf/release/lxrt
+LXRT_ELF      := $(OUT_BUILD)/linux_rt.elf
+LXRT_SRC      := $(LXRT_DIR)/src/main.rs $(LXRT_DIR)/Cargo.toml $(LXRT_DIR)/user.ld \
+                 userspace/lib/linux_rt/src/lib.rs userspace/lib/linux_rt/Cargo.toml \
+                 $(wildcard crates/core/linux-abi/src/*.rs) $(wildcard crates/core/abi/src/*.rs)
+LXRT_TARGET_AARCH64 := aarch64-unknown-none-softfloat
+# rustc's own soft-float x86_64 target (no SSE: see lxrt's .cargo/config.toml).
+LXRT_TARGET_X86_64 := x86_64-unknown-none
+# `yes` when the .config asks for LINUX_RUNTIME: the runtime ELF then joins the
+# prerequisites of the image-hash tables every kernel build depends on, as the
+# embedded runtime's `include_bytes!` needs it to exist.
+LXRT_NEED     = $(shell grep -qs '^CONFIG_LINUX_RUNTIME=y' $(or $(KCONFIG_CONFIG),.config) </dev/null && echo yes)
+# Wave 12: the other privileged families' tools, one crate with one binary
+# each (`FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`).
+FAMTOOLS_DIR  := userspace/services/famtools
+FAMTOOLS_SRC  := $(wildcard $(FAMTOOLS_DIR)/src/*.rs $(FAMTOOLS_DIR)/src/bin/*.rs) $(FAMTOOLS_DIR)/Cargo.toml
+FAMTOOLS_OUT  := $(OUT_TGT)/$(FAMTOOLS_DIR)/riscv64imac-unknown-none-elf/release
+FLIGHT_ELF    := $(OUT_BUILD)/flight.elf
+BEHAVIOR_ELF  := $(OUT_BUILD)/behavior.elf
+CONFIG_ELF    := $(OUT_BUILD)/config.elf
+OTA_ELF       := $(OUT_BUILD)/ota.elf
+FAM_ELFS      := $(FLIGHT_ELF) $(BEHAVIOR_ELF) $(CONFIG_ELF) $(OTA_ELF)
+# The hardened ring-3 allocator (userspace/lib/ualloc, Kconfig USER_ALLOC_*):
+# its knobs reach the program through azos_limits, so the configuration is an
+# input of the programs that link it (KCONFIG_CONFIG is defined further down).
+UALLOC_SRC    := $(wildcard userspace/lib/ualloc/src/*.rs) userspace/lib/ualloc/Cargo.toml \
+                 $(or $(KCONFIG_CONFIG),.config)
+# The Linux driver server skeleton. Links the module loader
+# (crates/core/lx-loader, no Linux code) and nothing from lx/.
+LXSRV_DIR     := userspace/services/lxsrv
+LXSRV_BUILT   := $(OUT_TGT)/$(LXSRV_DIR)/riscv64imac-unknown-none-elf/release/lxsrv
+LXSRV_ELF     := $(OUT_BUILD)/lxsrv.elf
+LXSRV_SRC     := $(LXSRV_DIR)/src/main.rs $(LXSRV_DIR)/Cargo.toml \
+                 $(wildcard crates/core/lx-loader/src/*.rs) crates/core/lx-loader/Cargo.toml \
+                 $(UALLOC_SRC)
+# Three more standalone Rust ring-3 ELFs. They compiled and were never once
+# executed: nothing built them (they are absent from the `userspace:` target
+# below), so nothing copied them to a disk image and nothing could exec them.
+# Same shape of hole SYSTEST.ELF sat in for months.
+UHELLO_DIR    := userspace/tests/uhello
+UHELLO_BUILT  := $(OUT_TGT)/$(UHELLO_DIR)/riscv64imac-unknown-none-elf/release/uhello
+UHELLO_ELF    := $(OUT_BUILD)/uhello.elf
+# The server half of `endpoint.demo`. A separate
+# image from uhello because a ring-3 program's role on an endpoint is its
+# capability permission, and permissions come from the topology row looked up
+# by IMAGE NAME: one image, one row, one role. See userspace/tests/epsrv/src/main.rs.
+VSSRV_DIR     := userspace/bench/vssrv
+VSSRV_BUILT   := $(OUT_TGT)/$(VSSRV_DIR)/riscv64imac-unknown-none-elf/release/vssrv
+VSSRV_ELF     := $(OUT_BUILD)/vssrv.elf
+EPSRV_DIR     := userspace/tests/epsrv
+EPSRV_BUILT   := $(OUT_TGT)/$(EPSRV_DIR)/riscv64imac-unknown-none-elf/release/epsrv
+EPSRV_ELF     := $(OUT_BUILD)/epsrv.elf
+ABICHILD_DIR   := userspace/tests/abichild
+ABICHILD_BUILT := $(OUT_TGT)/$(ABICHILD_DIR)/riscv64imac-unknown-none-elf/release/abichild
+ABICHILD_ELF   := $(OUT_BUILD)/abichild.elf
+REFLEX_DIR    := userspace/services/reflex
+REFLEX_BUILT  := $(OUT_TGT)/$(REFLEX_DIR)/riscv64imac-unknown-none-elf/release/reflex
+REFLEX_ELF    := $(OUT_BUILD)/reflex.elf
+BRAINCLI_DIR  := userspace/services/brain_client
+BRAINCLI_BUILT:= $(OUT_TGT)/$(BRAINCLI_DIR)/riscv64imac-unknown-none-elf/release/brain_client
+BRAINCLI_ELF  := $(OUT_BUILD)/brain_client.elf
+# captest — ring-3 capability test (positive AND negative halves).
+CAPTEST_DIR   := userspace/tests/captest
+CAPTEST_BUILT := $(OUT_TGT)/$(CAPTEST_DIR)/riscv64imac-unknown-none-elf/release/captest
+CAPTEST_ELF   := $(OUT_BUILD)/captest.elf
+# latbench — ring-3 syscall latency microbenchmark.
+# vsbench - the same ring-3 work, measured on Azos and on Linux/riscv64.
+# The Linux side is NOT built here: it needs a different target and its own
+# toolchain.
+VSBENCH_DIR   := userspace/bench/vsbench
+VSBENCH_BUILT := $(OUT_TGT)/$(VSBENCH_DIR)/riscv64imac-unknown-none-elf/release/vsbench
+VSBENCH_ELF   := $(OUT_BUILD)/vsbench.elf
+
+LATBENCH_DIR  := userspace/bench/latbench
+LATBENCH_BUILT:= $(OUT_TGT)/$(LATBENCH_DIR)/riscv64imac-unknown-none-elf/release/latbench
+LATBENCH_ELF  := $(OUT_BUILD)/latbench.elf
+# abitest - syscall ABI conformance from ring 3.
+ABITEST_DIR   := userspace/tests/abitest
+ABITEST_BUILT := $(OUT_TGT)/$(ABITEST_DIR)/riscv64imac-unknown-none-elf/release/abitest
+ABITEST_ELF   := $(OUT_BUILD)/abitest.elf
+# ipctest - ring-3 IPC probe: fast-path round trip, server impersonation, and
+# the shm/port/io_ring ownership gates.
+IPCTEST_DIR   := userspace/tests/ipctest
+IPCTEST_BUILT := $(OUT_TGT)/$(IPCTEST_DIR)/riscv64imac-unknown-none-elf/release/ipctest
+IPCTEST_ELF   := $(OUT_BUILD)/ipctest.elf
+
+# ── aarch64 userspace parity (phase 6 prep) ──────────────────────────────────
+#
+# Same 13 programs, built for `aarch64-unknown-none` (hard-float; the level is
+# Kconfig AARCH64_LEVEL, AARCH64_USER_ISA below) into `build/aarch64/` instead of `build/`, so
+# they never collide with the RISC-V names `IMAGE_ELFS`/`image_hashes.py`
+# bind seccomp profiles to. **No aarch64 kernel exec path exists yet** — these
+# targets exist to prove the toolchain (rust-lld, page-aligned segments,
+# `x8`/`svc #0` — see `crates/core/abi/src/syscall_nr.rs`'s "Register convention")
+# out ahead of it, not to ship on a board.
+#
+# `hello`/`syscall_test`'s RISC-V originals are hand-assembled (`hello.S`,
+# `test.S`); no aarch64 GNU cross-assembler is available on this host, so
+# their aarch64 counterparts are small Rust crates instead (see
+# `userspace/tests/hello/Cargo.toml`) — each directory's own `.cargo/config.toml`
+# already defaults `[build] target` to `aarch64-unknown-none`, so no
+# `--target` flag is needed for those two.
+TARGET_AARCH64 := aarch64-unknown-none
+comma := ,
+# ── aarch64 translation granule of the user images ──────────────────────────
+# config/Kconfig.arch AARCH64_PAGE_* picks the kernel's granule; a user image
+# must be linked for the same page (`-z max-page-size`, which every
+# user_aarch64.ld aligns its first writable section to) and libsys must agree
+# (`libsys::PAGE_SIZE`, from AZOS_PAGE_SIZE). The default, 4096, builds
+# exactly what this Makefile always built, into the same places. Any other
+# value builds into its own directories and its own digest table, which the
+# kernel of that granule binds (crates/core/sched/src/seccomp.rs):
+#   make AARCH64_PAGE_SIZE=16384 build/image_hashes_aarch64_16k.rs  -> build/aarch64-16k/*.elf
+#   make AARCH64_PAGE_SIZE=16384 aarch64                            -> build/kernel-aarch64-16k.img
+AARCH64_PAGE_SIZE ?= 4096
+# ── aarch64 baseline of the user images ─────────────────────────────────────
+# The Kconfig level and `require`d extensions (config/Kconfig.arch
+# AARCH64_LEVEL, A64_*) as user codegen flags, from the expanded config the
+# kernel is built from (tools/kconfig_to_cargo.py --user-rustflags). Armv8.0
+# with nothing required (QEMU's default) emits nothing, so the default images
+# and their digests are what this Makefile always built. A board's images:
+#   make AARCH64_USER_KCONFIG=build/rpi5.config userspace-aarch64
+AARCH64_USER_KCONFIG ?= $(OUT_BUILD)/aarch64$(if $(filter 16384,$(AARCH64_PAGE_SIZE)),-16k,$(if $(filter 65536,$(AARCH64_PAGE_SIZE)),-64k)).config
+AARCH64_USER_ISA := $(if $(wildcard $(AARCH64_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml $(AARCH64_USER_KCONFIG)))
+ifeq ($(AARCH64_PAGE_SIZE),4096)
+AARCH64_PG_SUFFIX :=
+AARCH64_PG_FLAGS  := $(if $(AARCH64_USER_ISA),--config 'target.$(TARGET_AARCH64).rustflags=[$(AARCH64_USER_ISA)]')
+else
+ifeq ($(AARCH64_PAGE_SIZE),16384)
+AARCH64_PG_SUFFIX := -16k
+else ifeq ($(AARCH64_PAGE_SIZE),65536)
+AARCH64_PG_SUFFIX := -64k
+else
+$(error AARCH64_PAGE_SIZE must be 4096, 16384 or 65536 (an aarch64 translation granule))
+endif
+# Above 4 KiB the ELF/program headers share `.text`'s first page in the file
+# (see user_aarch64.ld), and the loader maps an executable segment only onto a
+# page it owns outright (W^X, crates/core/sched/src/process.rs). The script's
+# PHDRS block keeps the headers in no segment and `.rodata` in an R segment of
+# its own; `--no-rosegment`, used here before, made `.rodata` executable.
+AARCH64_PG_FLAGS  := --config 'target.$(TARGET_AARCH64).rustflags=["-C","link-arg=-zmax-page-size=$(AARCH64_PAGE_SIZE)"$(if $(AARCH64_USER_ISA),$(comma)$(AARCH64_USER_ISA))]'
+endif
+AARCH64_PG_TABLE  := $(subst -,_,$(AARCH64_PG_SUFFIX))
+AARCH64_DIR    := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX)
+HELLO_ELF_AARCH64     := $(AARCH64_DIR)/hello.elf
+LXHELLO_ELF_AARCH64   := $(AARCH64_DIR)/lxhello.elf
+SYSTEST_ELF_AARCH64   := $(AARCH64_DIR)/syscall_test.elf
+GPIO_DRV_ELF_AARCH64  := $(AARCH64_DIR)/gpio_drv.elf
+MLSRV_ELF_AARCH64     := $(AARCH64_DIR)/mlsrv.elf
+BUZZ_DRV_ELF_AARCH64  := $(AARCH64_DIR)/buzz_drv.elf
+INA_DRV_ELF_AARCH64   := $(AARCH64_DIR)/ina_drv.elf
+SH_ELF_AARCH64        := $(AARCH64_DIR)/sh.elf
+TERMD_ELF_AARCH64     := $(AARCH64_DIR)/termd.elf
+NAMESD_ELF_AARCH64    := $(AARCH64_DIR)/namesd.elf
+COMPMGR_ELF_AARCH64   := $(AARCH64_DIR)/compmgr.elf
+TOOLBOX_ELF_AARCH64   := $(AARCH64_DIR)/toolbox.elf
+POWER_ELF_AARCH64     := $(AARCH64_DIR)/power.elf
+TRACECTL_ELF_AARCH64  := $(AARCH64_DIR)/tracectl.elf
+DECISD_ELF_AARCH64 := $(AARCH64_DIR)/decisd.elf
+INPUTD_ELF_AARCH64 := $(AARCH64_DIR)/inputd.elf
+COMPSRV_ELF_AARCH64 := $(AARCH64_DIR)/compsrv.elf
+LOGD_ELF_AARCH64      := $(AARCH64_DIR)/logd.elf
+WHY_ELF_AARCH64       := $(AARCH64_DIR)/why.elf
+PKGD_ELF_AARCH64      := $(AARCH64_DIR)/pkgd.elf
+PKG_ELF_AARCH64       := $(AARCH64_DIR)/pkg.elf
+RPCSRV_ELF_AARCH64    := $(AARCH64_DIR)/rpcsrv.elf
+ZENOHD_ELF_AARCH64    := $(AARCH64_DIR)/zenohd.elf
+PTPD_ELF_AARCH64    := $(AARCH64_DIR)/ptpd.elf
+RPCQUIC_ELF_AARCH64   := $(AARCH64_DIR)/rpcquic.elf
+MCPD_ELF_AARCH64      := $(AARCH64_DIR)/mcpd.elf
+SSHD_ELF_AARCH64      := $(AARCH64_DIR)/sshd.elf
+LOGIND_ELF_AARCH64    := $(AARCH64_DIR)/logind.elf
+VMMD_ELF_AARCH64      := $(AARCH64_DIR)/vmmd.elf
+LXRT_ELF_AARCH64      := $(AARCH64_DIR)/linux_rt.elf
+FLIGHT_ELF_AARCH64    := $(AARCH64_DIR)/flight.elf
+BEHAVIOR_ELF_AARCH64  := $(AARCH64_DIR)/behavior.elf
+CONFIG_ELF_AARCH64    := $(AARCH64_DIR)/config.elf
+OTA_ELF_AARCH64       := $(AARCH64_DIR)/ota.elf
+FAM_ELFS_AARCH64      := $(FLIGHT_ELF_AARCH64) $(BEHAVIOR_ELF_AARCH64) $(CONFIG_ELF_AARCH64) $(OTA_ELF_AARCH64)
+LXSRV_ELF_AARCH64     := $(AARCH64_DIR)/lxsrv.elf
+UHELLO_ELF_AARCH64    := $(AARCH64_DIR)/uhello.elf
+EPSRV_ELF_AARCH64     := $(AARCH64_DIR)/epsrv.elf
+ABICHILD_ELF_AARCH64  := $(AARCH64_DIR)/abichild.elf
+VSSRV_ELF_AARCH64     := $(AARCH64_DIR)/vssrv.elf
+REFLEX_ELF_AARCH64    := $(AARCH64_DIR)/reflex.elf
+BRAINCLI_ELF_AARCH64  := $(AARCH64_DIR)/brain_client.elf
+CAPTEST_ELF_AARCH64   := $(AARCH64_DIR)/captest.elf
+LATBENCH_ELF_AARCH64  := $(AARCH64_DIR)/latbench.elf
+ABITEST_ELF_AARCH64   := $(AARCH64_DIR)/abitest.elf
+IPCTEST_ELF_AARCH64   := $(AARCH64_DIR)/ipctest.elf
+VSBENCH_ELF_AARCH64   := $(AARCH64_DIR)/vsbench.elf
+
+# Every Rust ring-3 program links crates/core/libsys. Cargo tracks that path
+# dependency, but only if make invokes cargo at all: without libsys listed as a
+# prerequisite make declares the ELF up to date and the disk images ship a
+# binary built against an older libsys. Observed 2026-09-03 — build/reflex.elf
+# dated Aug 24 against a libsys dated Aug 31.
+# lib.rs is named explicitly as well as wildcarded: a wildcard that expands to
+# nothing (wrong path, moved crate) is silent, and would reopen this same hole
+# somewhere new. hello and syscall_test are pure assembly and link no libsys,
+# so they are deliberately not covered here.
+# U12-8: iCloud sync leaves a conflicting file as "name N.ext" or "name N"
+# (seen at the repo root: `.config 2` .. `.config 5`). A bare $(wildcard) or
+# `find` returns that duplicate as its own whitespace-separated word, and
+# `make` then treats it as a SEPARATE prerequisite — "No rule to make target
+# ....../lib 2.rs" aborts every ELF rule that shares this list, not just the
+# one that would have matched the duplicate. `-not -name '* [0-9]*'` drops
+# any name with a space then a digit, the shape every one of these
+# duplicates takes; it does nothing when no duplicate exists.
+LIBSYS_DIR := crates/core/libsys
+LIBSYS_SRC := $(LIBSYS_DIR)/Cargo.toml $(LIBSYS_DIR)/src/lib.rs \
+              $(shell find $(LIBSYS_DIR)/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') \
+              crates/core/abi/Cargo.toml $(shell find crates/core/abi/src -name '*.rs' -not -name '* [0-9]*') \
+              crates/core/rings/Cargo.toml $(shell find crates/core/rings/src -name '*.rs' -not -name '* [0-9]*') \
+              crates/core/ktest/Cargo.toml $(shell find crates/core/ktest/src -name '*.rs' -not -name '* [0-9]*') \
+              crates/core/libsys-macros/Cargo.toml $(shell find crates/core/libsys-macros/src -name '*.rs' -not -name '* [0-9]*') \
+              Cargo.toml userspace/rustc_stable_metadata.py
+# (libsys takes `azos_abi` from the root workspace manifest, so the abi
+# sources and that manifest are prerequisites of every ring-3 ELF as well, and
+# so is the rustc wrapper below, which decides their bytes.)
+
+# How every ring-3 Rust ELF is built: through `userspace/rustc_stable_metadata.py`,
+# so its bytes depend on source and toolchain only, never on WHERE the tree is.
+# Each userspace crate is its own workspace, and `crates/core/libsys` is a path
+# dependency outside it; for such a package cargo hashes the absolute source path
+# into `-C metadata`, rustc turns that into the crate disambiguator, and items
+# are ordered by names that carry it. The same brain_client sources built in two
+# directories differed in `.strtab`, and with symbols stripped in 2975 bytes of
+# `.text` (measured 2026-09-14, after gate 40 refused a brain_client rebuilt in
+# its snapshot directory). The kernel binds each image profile to these bytes.
+# With the wrapper the two directories give identical ELFs, symbols included.
+# `tests/host/seccomp-tests` checks every recipe goes through here.
+#
+# The `--cfg` carries a digest of the wrapper because cargo does not rebuild when
+# only `RUSTC_WRAPPER` changes: switching to the wrapper recompiled nothing and
+# left artifacts with the old path-derived metadata in place (measured). The
+# rustflags array is part of cargo's fingerprint, so a changed wrapper rebuilds
+# every userspace crate, build-std's included.
+USPACE_METADATA_TAG := $(shell python3 -c 'import hashlib; print(hashlib.sha256(open("userspace/rustc_stable_metadata.py", "rb").read()).hexdigest()[:12])')
+# The riscv64 user images' codegen beyond the target triple: the Kconfig
+# extensions set to `require` (config/Kconfig.arch RV_ZBA/ZBB/ZBS; nothing on
+# QEMU's default, so the default images and digests do not move). A board's
+# images: `make RV_USER_KCONFIG=build/k1.config userspace`.
+RV_USER_KCONFIG ?= $(OUT_BUILD)/qemu-dev.config
+RV_USER_ISA := $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
+# AZOS_LINK_INPUTS: a digest of the crate's link scripts, cargo config and
+# build script (the recipe runs in the crate's directory). Cargo does not track
+# a linker script, so a change to one alone came back "Fresh" and make copied
+# the old ELF (ustack-fault's .azos_stack never reached tracectl.elf or
+# vmmd.elf); libsys reads the variable (`option_env!`), rustc records it, and
+# cargo relinks the image when it changes.
+USPACE_BUILD := AZOS_LINK_INPUTS="$$(cat user*.ld .cargo/config.toml build.rs 2>/dev/null | shasum | cut -c1-16)" RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(CARGO) +nightly build --release --config 'target.$(TARGET).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"$(if $(RV_USER_ISA),$(comma)$(RV_USER_ISA))]'
+
+# ── The native SDK (plan phase 6, item 2) ───────────────────────────────────
+# A Rust `std` program for `<isa>-unknown-azos` (sdk/targets): `std` is built
+# from the pinned toolchain's library source plus the port in sdk/std, which
+# calls crates/core/stdrt (tools/sdk_std.py assembles that tree). The program
+# is built by tools/sdk_cargo.py, which takes the ISA baseline and the runtime's
+# knobs (the ring-3 allocator, the default thread stack) from the expanded
+# Kconfig named here and nothing else, and goes through the metadata wrapper
+# above like every ring-3 ELF. One target directory per ISA (and granule) holds
+# the std build every SDK program shares.
+#   make sdk                    every SDK program, on the three ISAs
+#   make sdk-check              stdrt type-checks on the three ISAs; its host tests
+SDK_TARGET_DIR := $(OUT_BUILD)/sdk/target
+SDK_SRC := $(shell find sdk -type f -not -name '* [0-9]*') tools/sdk_std.py tools/sdk_cargo.py \
+           crates/core/stdrt/Cargo.toml $(shell find crates/core/stdrt/src -name '*.rs' -not -name '* [0-9]*') \
+           crates/core/libsys/src/pure.rs crates/core/abi/Cargo.toml \
+           $(shell find crates/core/abi/src -name '*.rs' -not -name '* [0-9]*') \
+           userspace/lib/ualloc/Cargo.toml $(shell find userspace/lib/ualloc/src -name '*.rs' -not -name '* [0-9]*') \
+           userspace/rustc_stable_metadata.py
+SDK_BUILD_riscv64 = $(PYTHON) tools/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(SDK_TARGET_DIR) -- build --release
+SDK_BUILD_aarch64 = $(PYTHON) tools/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX) -- build --release
+SDK_BUILD_x86_64  = $(PYTHON) tools/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(SDK_TARGET_DIR) -- build --release
+SDK_OUT_riscv64   = $(SDK_TARGET_DIR)/riscv64imac-unknown-azos/release
+SDK_OUT_aarch64   = $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release
+SDK_OUT_x86_64    = $(SDK_TARGET_DIR)/x86_64-unknown-azos/release
+
+# VisionFive 2 configuration (Phase 10)
+# Override these from the command line as needed:
+#   make vf2 VF2_SERIAL=/dev/tty.usbserial-XXXX
+#   make flash-vf2 VF2_SD=/dev/disk4
+VF2_SERIAL  ?= /dev/ttyUSB0
+VF2_SD      ?= /dev/sdb       # SD card device on Linux; use diskN on macOS
+VF2_BAUD    ?= 115200
+
+# VF2 kernel ELF (built with vf2 feature + vf2 linker script)
+VF2_LINKER   := kernel/linker-vf2.ld
+VF2_RUSTFLAGS := -C link-arg=-T$(VF2_LINKER)
+VF2_ELF      := $(OUT_TARGET)/$(TARGET)/release/kernel-vf2
+VF2_BIN      = $(OUT_BUILD)/kernel-vf2$(VF2_SUFFIX).bin
+# Where cargo builds the board kernel. The farm's targets use target/farm: a
+# board kernel built with other features must not replace the `release/kernel`
+# the gate's QEMU rows boot.
+VF2_TARGET_DIR ?= $(OUT_TARGET)
+
+# SpacemiT K1 (BananaPi BPI-F3) configuration (Phase B)
+# Override from command line as needed:
+#   make k1 K1_SERIAL=/dev/tty.usbserial-XXXX
+#   make flash-k1 K1_SD=/dev/disk5
+K1_SERIAL  ?= /dev/ttyUSB0
+K1_SD      ?= /dev/sdb       # SD card device on Linux; use diskN on macOS
+K1_BAUD    ?= 115200
+
+# K1 kernel ELF (built with k1 feature + k1 linker script)
+# K1 has native RVV 1.0 (VLEN=256) — k1 feature enables RVV code paths.
+K1_LINKER   := kernel/linker-k1.ld
+# ISA extensions the K1 has and the VF2 does not.
+#
+# The SpacemiT X60 is an RVA22 part (`config/defconfigs/k1.config`: rv64gcv), and RVA22
+# mandates Zba, Zbb and Zbs. So the compiler may use them everywhere in a K1
+# build — address arithmetic, bit counting, the scheduler's ready-bitmap pick —
+# not only in hand-written `asm!`.
+#
+# **Only the K1.** The VF2's JH7110 is rv64gc (SiFive U74, `config/defconfigs/vf2.config`):
+# it has none of these, and a binary carrying them dies with an illegal
+# instruction on its first one. Both binaries are called `kernel`, so nothing but
+# a check stops one reaching the wrong board — `tools/ci_check.sh` disassembles
+# the VF2 and QEMU kernels and fails if any of these instructions is present.
+#
+# NOT the way to reach an extension that only SOME target has: that is a runtime
+# probe with a scalar fallback (`crates/core/arch-riscv64/src/cache.rs` for Zicboz). This
+# is for extensions the board is known to have at build time.
+#
+# The flags come from the Kconfig (config/Kconfig.arch: the K1's RV_ZBA/ZBB/ZBS
+# default to `require`) through tools/kconfig_to_cargo.py --rustflags, the one
+# emitter every kernel rule uses; crates/core/limits/build.rs refuses a kernel
+# build whose target features disagree with its Kconfig.
+K1_RUSTFLAGS := -C link-arg=-T$(K1_LINKER)
+K1_BIN      := $(OUT_BUILD)/kernel-k1.bin
+
+# RVV: QEMU CPU model with Vector 1.0 extension (VLEN=128).
+# Used by qemu-rvv and qemu-full-smp-rvv targets.
+# K1 uses VLEN=256 natively (not QEMU emulated).
+QEMU_RVV_CPU := rv64,v=true,vlen=128,vext_spec=v1.0
+
+# Fleet profile: gateway boards with ≥ 1 GiB RAM.
+# Static tables + 256 MiB heap don't fit the default 8 MiB linker.
+# linker-fleet.ld carves a 1022 MiB RAM region above OpenSBI.
+FLEET_LINKER   := kernel/linker-fleet.ld
+FLEET_RUSTFLAGS := -C link-arg=-T$(FLEET_LINKER)
+
+# The SHA-256 of every ELF the disk image ships, keyed by the name it is copied
+# under. `crates/core/sched/src/seccomp.rs` `include!`s it: each seccomp image
+# profile is bound to the digest of those exact bytes, and the kernel refuses to
+# exec an image that matches none. Every kernel build target depends on it, so
+# the table follows the ELFs; `tests/host/seccomp-tests` re-hashes build/*.elf and
+# fails on a stale one, and a missing one fails the kernel build.
+# IMAGE_ELFS must list exactly the `mcopy -i $@ $(..) ::NAME` lines of the
+# disk-image recipe below, in the same order (checked by tests/host/seccomp-tests).
+IMAGE_ELFS := HELLO.ELF=$(HELLO_ELF) SYSTEST.ELF=$(SYSTEST_ELF) \
+              GPIODRV.ELF=$(GPIO_DRV_ELF) MLSRV.ELF=$(MLSRV_ELF) UHELLO.ELF=$(UHELLO_ELF) \
+              EPSRV.ELF=$(EPSRV_ELF) ABICHILD.ELF=$(ABICHILD_ELF) VSSRV.ELF=$(VSSRV_ELF) \
+              REFLEX.ELF=$(REFLEX_ELF) BRAINCLI.ELF=$(BRAINCLI_ELF) \
+              CAPTEST.ELF=$(CAPTEST_ELF) LATBENCH.ELF=$(LATBENCH_ELF) \
+              ABITEST.ELF=$(ABITEST_ELF) IPCTEST.ELF=$(IPCTEST_ELF) \
+              VSBENCH.ELF=$(VSBENCH_ELF) \
+              BUZZDRV.ELF=$(BUZZ_DRV_ELF) INADRV.ELF=$(INA_DRV_ELF) \
+              COMPMGR.ELF=$(COMPMGR_ELF) SH.ELF=$(SH_ELF) TERMD.ELF=$(TERMD_ELF) NAMESD.ELF=$(NAMESD_ELF) TOOLBOX.ELF=$(TOOLBOX_ELF) POWER.ELF=$(POWER_ELF) \
+              FLIGHT.ELF=$(FLIGHT_ELF) BEHAVIOR.ELF=$(BEHAVIOR_ELF) \
+              CONFIG.ELF=$(CONFIG_ELF) OTA.ELF=$(OTA_ELF) \
+              TRACECTL.ELF=$(TRACECTL_ELF) DECISD.ELF=$(DECISD_ELF) INPUTD.ELF=$(INPUTD_ELF) COMPSRV.ELF=$(COMPSRV_ELF) LOGD.ELF=$(LOGD_ELF) WHY.ELF=$(WHY_ELF) \
+              PKGD.ELF=$(PKGD_ELF) PKG.ELF=$(PKG_ELF) RPCSRV.ELF=$(RPCSRV_ELF) ZENOHD.ELF=$(ZENOHD_ELF) PTPD.ELF=$(PTPD_ELF) RPCQUIC.ELF=$(RPCQUIC_ELF) MCPD.ELF=$(MCPD_ELF) SSHD.ELF=$(SSHD_ELF) LOGIND.ELF=$(LOGIND_ELF) VMMD.ELF=$(VMMD_ELF) \
+              LXSRV.ELF=$(LXSRV_ELF) \
+              LXHELLO.ELF=$(LXHELLO_ELF)
+IMAGE_HASHES := $(OUT_BUILD)/image_hashes.rs
+
+# The BOARD volume's ML service, and the image-hash table its kernel binds
+# (wave 11 BOARDIMG; the key rules are with TOPOLOGY_KEY_STAMP below). Only the
+# MLSRV.ELF row differs from IMAGE_ELFS: the board table lists the digest of
+# the named-key service, never of the QEMU test-key one, so a board kernel
+# refuses to run a QEMU-built `mlsrv`. `build/disk-board.img`'s manifest
+# resolves its names through IMAGE_ELFS_BOARD, and `vf2`/`k1`/`build-fleet`
+# build their kernel with `--features board-image` (azos_sched), which
+# `include!`s IMAGE_HASHES_BOARD instead of IMAGE_HASHES.
+BOARD_DIR := $(OUT_BUILD)/board
+# What the signed-topology emitter reads (wave 15 TOPOSIGN; its targets are
+# near the end of this file, with the rest of the topology rules).
+TOPO_EMIT_DEPS := tests/host/topology-tests/src/bin/topo_emit.rs tests/host/topology-tests/Cargo.toml \
+	crates/core/topology/build.rs crates/core/topology/Cargo.toml kernel/Cargo.toml \
+	$(shell find crates/core/topology/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*')
+MLSRV_ELF_BOARD := $(BOARD_DIR)/mlsrv.elf
+PKGD_ELF_BOARD := $(BOARD_DIR)/pkgd.elf
+IMAGE_ELFS_BOARD := $(patsubst PKGD.ELF=%,PKGD.ELF=$(PKGD_ELF_BOARD),$(patsubst MLSRV.ELF=%,MLSRV.ELF=$(MLSRV_ELF_BOARD),$(IMAGE_ELFS)))
+IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
+
+# The application domain of the .config decides the crates (wave 11):
+# The kernel has no cargo `default` features: Kconfig is the only source.
+# A recipe that names its board and test features by hand (`--features qemu`)
+# adds `$(QEMU_DEV_BASE)`, the `base` features the .config sets (the
+# application domain, the scheduler options, driver placement), so `make
+# config` (Generic) + `make` builds the Generic kernel and a Robot .config
+# the robot one. `-p azos_kernel`, here and in every kernel recipe
+# below: without it cargo builds every workspace member, and a Generic build
+# then compiled the robot crates anyway (domains/robot/*, as members), with
+# none of the features the kernel would have given them.
+#
+# The development QEMU kernels (`build`, `build-rvv`, `build-pci` and the
+# `qemu-*` smoke targets) build from `$(QEMU_DEV_KCONFIG)`: the `.config`
+# with the kernel log level set to QEMU_LOG_LEVEL, debug by default, so a
+# dev boot prints every line (its rule is next to the Kconfig targets). A
+# product build (`vf2`, `k1`, `build-fleet`, the profiles' defconfigs) keeps
+# its profile's level, warn. `make qemu QEMU_LOG_LEVEL=warn` boots what ships.
+QEMU_DEV_KCONFIG := $(OUT_BUILD)/qemu-dev.config
+QEMU_DEV_ENV      = KCONFIG_CONFIG="$(QEMU_DEV_KCONFIG)"
+QEMU_DEV_BASE     = $$(python3 tools/kconfig_to_cargo.py --base $(QEMU_DEV_KCONFIG))
+#
+# `QEMU_DEV_ISA`: the Kconfig's riscv64 codegen beyond .cargo/config.toml's
+# baseline (RV_ZBA/ZBB/ZBS set to `require`), merged into the target's
+# rustflags; empty on the default config.
+QEMU_DEV_ISA = rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base $(QEMU_DEV_KCONFIG))"; \
+	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]";
+# BUILD_TYPE for the vf2 targets (the farm's board image): `make vf2
+# BUILD_TYPE=DEV` is a development image. Unset or RELEASE is the product
+# build, byte for byte what it was: no test key, the fleet key required.
+# DEV builds from a vf2 config with CONFIG_BUILD_TYPE_DEV=y (Kconfig BUILD_TYPE:
+# crates/core/topology/build.rs then accepts the TEST key, and KTEST may be
+# on), signs the board volume with the TEST pair unless TOPOLOGY_PUBKEY_PATH /
+# TOPOLOGY_PRIVKEY_PATH name another, and tools/check_board_keys.py runs with
+# --allow-test. Nothing else changes: the TEST key is a build-type decision,
+# never a fallback. DEV is refused for every goal but the vf2 ones.
+#   VF2_TEST=ktest   (`make vf2-ktest`)   DEV + CONFIG_KTEST: the farm's test kernel
+#   VF2_TEST=pstore  (`make vf2-pstore`)  DEV + a pstore region + the pstore smoke
+# Each variant has its own expanded config, kernel and volume
+# (build/vf2-<variant>.config, kernel-vf2-<variant>.bin, disk-board-<variant>.img).
+BUILD_TYPE ?=
+ifneq ($(filter-out DEV RELEASE,$(BUILD_TYPE)),)
+$(error BUILD_TYPE is DEV or RELEASE (unset is RELEASE), got "$(BUILD_TYPE)")
+endif
+BOARD_DEV := $(filter DEV,$(BUILD_TYPE))
+VF2_GOALS := vf2 vf2-ktest vf2-pstore flash-vf2
+VF2_TEST ?=
+ifneq ($(filter-out ktest pstore,$(VF2_TEST)),)
+$(error VF2_TEST is ktest or pstore (make vf2-ktest / vf2-pstore), got "$(VF2_TEST)")
+endif
+ifneq ($(VF2_TEST),)
+ifeq ($(BOARD_DEV),)
+$(error VF2_TEST=$(VF2_TEST) needs BUILD_TYPE=DEV)
+endif
+endif
+ifneq ($(BOARD_DEV),)
+ifneq ($(filter-out $(VF2_GOALS),$(or $(MAKECMDGOALS),all)),)
+$(error BUILD_TYPE=DEV is for the vf2 targets only ($(VF2_GOALS)), not: $(filter-out $(VF2_GOALS),$(or $(MAKECMDGOALS),all)))
+endif
+TOPOLOGY_PUBKEY_PATH ?= tools/keys/test_pub.bin
+TOPOLOGY_PRIVKEY_PATH ?= tools/keys/test_priv.bin
+endif
+VF2_VARIANT := $(if $(BOARD_DEV),$(or $(VF2_TEST),dev))
+VF2_SUFFIX := $(if $(VF2_VARIANT),-$(VF2_VARIANT))
+VF2_KCONFIG := $(OUT_BUILD)/vf2$(VF2_SUFFIX).config
+VF2_DISK := $(OUT_BUILD)/disk-board$(VF2_SUFFIX).img
+BOARD_KEYCHECK := python3 tools/check_board_keys.py$(if $(BOARD_DEV), --allow-test)
+
+# A board image names its topology/config key: `vf2`/`k1`/`build-fleet` and
+# `build/disk-board.img` refuse without TOPOLOGY_PUBKEY_PATH (the fleet's
+# 32-byte Ed25519 public key). There is no test-key escape hatch any more:
+# `DEV_KEYS=1` is refused for a board, and so is a TOPOLOGY_PUBKEY_PATH whose
+# bytes equal tools/keys/test_pub.bin.
+# abspath through python: make's $(abspath) splits a path at its spaces.
+BOARD_TOPOLOGY_KEY := $(if $(TOPOLOGY_PUBKEY_PATH),$(shell python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' '$(TOPOLOGY_PUBKEY_PATH)'))
+define require_board_key
+	@[ -n "$(BOARD_TOPOLOGY_KEY)" ] || { echo "[$(1)] refusing: no topology/config key. Set TOPOLOGY_PUBKEY_PATH to the fleet's 32-byte Ed25519 public key. A board image never carries the test key (DEV_KEYS=1 is for QEMU disks only)."; exit 1; }
+	@[ -f "$(BOARD_TOPOLOGY_KEY)" ] || { echo "[$(1)] refusing: TOPOLOGY_PUBKEY_PATH=$(BOARD_TOPOLOGY_KEY) does not exist."; exit 1; }
+	@$(BOARD_KEYCHECK) key "$(BOARD_TOPOLOGY_KEY)" tools/keys/test_pub.bin || { echo "[$(1)] refusing: a board image is a BUILD_TYPE_RELEASE build and BUILD_TYPE_RELEASE refuses the TEST signing key; TOPOLOGY_PUBKEY_PATH names the TEST key (tools/keys/test_pub.bin or a copy of it). Name the fleet's own public key, or build the vf2 development image with BUILD_TYPE=DEV."; exit 1; }
+endef
+
+# The board volume is SIGNED, so it also needs the private half:
+# TOPOLOGY_PRIVKEY_PATH (a 32-byte Ed25519 seed). It signs CONFIG.SIG and the
+# ML data files' .SIG sidecars. Refused when it is missing, is not the private
+# half of TOPOLOGY_PUBKEY_PATH, or is tools/keys/test_priv.bin. The kernel
+# targets (`vf2`/`k1`/`build-fleet`) embed only the public key; they check the
+# pair only when a private key is given, so a build host need not hold it.
+BOARD_SIGN_PRIV := $(if $(TOPOLOGY_PRIVKEY_PATH),$(shell python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' '$(TOPOLOGY_PRIVKEY_PATH)'))
+define require_board_priv
+	@[ -n "$(BOARD_SIGN_PRIV)" ] || { echo "[$(1)] refusing: no signing key. Set TOPOLOGY_PRIVKEY_PATH to the private half (32-byte seed) of TOPOLOGY_PUBKEY_PATH; the board volume is never signed with the test key."; exit 1; }
+	@[ -f "$(BOARD_SIGN_PRIV)" ] || { echo "[$(1)] refusing: TOPOLOGY_PRIVKEY_PATH=$(BOARD_SIGN_PRIV) does not exist."; exit 1; }
+	@$(BOARD_KEYCHECK) pair "$(BOARD_SIGN_PRIV)" "$(BOARD_TOPOLOGY_KEY)" tools/keys/test_priv.bin tools/keys/test_pub.bin || { echo "[$(1)] refusing: TOPOLOGY_PRIVKEY_PATH does not match TOPOLOGY_PUBKEY_PATH, or is the test key."; exit 1; }
+endef
+define check_board_priv_if_given
+	@[ -z "$(BOARD_SIGN_PRIV)" ] || $(BOARD_KEYCHECK) pair "$(BOARD_SIGN_PRIV)" "$(BOARD_TOPOLOGY_KEY)" tools/keys/test_priv.bin tools/keys/test_pub.bin || { echo "[$(1)] refusing: TOPOLOGY_PRIVKEY_PATH does not match TOPOLOGY_PUBKEY_PATH, or is the test key."; exit 1; }
+endef
+
+# ── aarch64 userspace parity (phase 6 prep) ──────────────────────────────────
+#
+# Same recipe shape as the RISC-V rules above, through the same
+# $(USPACE_BUILD) (path-independent `-C metadata`, `tests/host/seccomp-tests`
+# checks every recipe uses it) with an explicit `--target $(TARGET_AARCH64)`
+# added — each crate's `.cargo/config.toml` keeps `[build] target` at the
+# RISC-V triple, so every OTHER invocation is unaffected. hello/syscall_test
+# need no `--target` flag: their own `.cargo/config.toml` (a Rust crate, not
+# hello.S/test.S — see the note above `TARGET_AARCH64`) already defaults to
+# aarch64-unknown-none.
+#
+# Phase 6 (userspace on aarch64): the exec path now exists, so these ELFs
+# need the same digest binding riscv64's `IMAGE_ELFS`/`IMAGE_HASHES` give
+# theirs — a separate table (`build/image_hashes_aarch64.rs`,
+# `crates/core/sched/src/seccomp.rs` cfg-selects it), not a merged one; see that
+# `include!` site's own comment for why. Order does not matter here the way
+# it does for `IMAGE_ELFS` (nothing checks it against a disk-image recipe
+# order for this table yet), but is kept matching `userspace-aarch64` below
+# for readability.
+IMAGE_ELFS_AARCH64 := HELLO.ELF=$(HELLO_ELF_AARCH64) SYSTEST.ELF=$(SYSTEST_ELF_AARCH64) \
+              GPIODRV.ELF=$(GPIO_DRV_ELF_AARCH64) MLSRV.ELF=$(MLSRV_ELF_AARCH64) UHELLO.ELF=$(UHELLO_ELF_AARCH64) \
+              EPSRV.ELF=$(EPSRV_ELF_AARCH64) ABICHILD.ELF=$(ABICHILD_ELF_AARCH64) VSSRV.ELF=$(VSSRV_ELF_AARCH64) \
+              REFLEX.ELF=$(REFLEX_ELF_AARCH64) BRAINCLI.ELF=$(BRAINCLI_ELF_AARCH64) \
+              CAPTEST.ELF=$(CAPTEST_ELF_AARCH64) LATBENCH.ELF=$(LATBENCH_ELF_AARCH64) \
+              ABITEST.ELF=$(ABITEST_ELF_AARCH64) IPCTEST.ELF=$(IPCTEST_ELF_AARCH64) \
+              VSBENCH.ELF=$(VSBENCH_ELF_AARCH64) \
+              BUZZDRV.ELF=$(BUZZ_DRV_ELF_AARCH64) INADRV.ELF=$(INA_DRV_ELF_AARCH64) \
+              COMPMGR.ELF=$(COMPMGR_ELF_AARCH64) SH.ELF=$(SH_ELF_AARCH64) TERMD.ELF=$(TERMD_ELF_AARCH64) NAMESD.ELF=$(NAMESD_ELF_AARCH64) TOOLBOX.ELF=$(TOOLBOX_ELF_AARCH64) POWER.ELF=$(POWER_ELF_AARCH64) \
+              FLIGHT.ELF=$(FLIGHT_ELF_AARCH64) BEHAVIOR.ELF=$(BEHAVIOR_ELF_AARCH64) \
+              CONFIG.ELF=$(CONFIG_ELF_AARCH64) OTA.ELF=$(OTA_ELF_AARCH64) \
+              TRACECTL.ELF=$(TRACECTL_ELF_AARCH64) DECISD.ELF=$(DECISD_ELF_AARCH64) INPUTD.ELF=$(INPUTD_ELF_AARCH64) COMPSRV.ELF=$(COMPSRV_ELF_AARCH64) LOGD.ELF=$(LOGD_ELF_AARCH64) WHY.ELF=$(WHY_ELF_AARCH64) \
+              PKGD.ELF=$(PKGD_ELF_AARCH64) PKG.ELF=$(PKG_ELF_AARCH64) RPCSRV.ELF=$(RPCSRV_ELF_AARCH64) ZENOHD.ELF=$(ZENOHD_ELF_AARCH64) PTPD.ELF=$(PTPD_ELF_AARCH64) RPCQUIC.ELF=$(RPCQUIC_ELF_AARCH64) MCPD.ELF=$(MCPD_ELF_AARCH64) SSHD.ELF=$(SSHD_ELF_AARCH64) LOGIND.ELF=$(LOGIND_ELF_AARCH64) VMMD.ELF=$(VMMD_ELF_AARCH64) \
+              LXSRV.ELF=$(LXSRV_ELF_AARCH64) \
+              LXHELLO.ELF=$(LXHELLO_ELF_AARCH64)
+IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
+
+# ── aarch64 kernel (QEMU virt) ───────────────────────────────────────────────
+# The aarch64 counterpart of `make build` / `make qemu`. Three things differ
+# from RISC-V, and each is here on purpose:
+#
+#  * Its own Kconfig profile. config/defconfigs/qemu-aarch64.config is minimal, so it
+#    is expanded by olddefconfig into build/aarch64.config — the same expansion
+#    tools/ci_check.sh does for the fleet profile — and handed to the build via
+#    KCONFIG_CONFIG. The workspace .config (the RISC-V edge profile) is not
+#    touched, so `make build` is unaffected.
+#  * The linker script goes on the command line, as `make vf2` / `make k1` do,
+#    NOT in .cargo/config.toml like RISC-V's: cargo merges that file into every
+#    config below it, and tests/qemu/aarch64-smoke and the thirteen aarch64
+#    userspace builds carry their own `-T` for the same triple — they would
+#    receive a second script and stop linking.
+#  * The output is an arm64 `Image` (header in kernel/src/entry/aarch64/asm/
+#    boot.S), not the ELF: for an ELF, QEMU passes x0 = 0 and puts no DTB in
+#    RAM (measured 2026-09-21); for an Image it passes the DTB in x0, which is
+#    also the protocol U-Boot `booti` uses on real boards.
+#  * Soft-float target: the kernel names no FP/SIMD register outside the
+#    lazy user-FP save/restore (kernel/src/entry/aarch64/fp_lazy.rs,
+#    tools/aarch64_fp_free_check.sh). Userspace stays `aarch64-unknown-none`
+#    (TARGET_AARCH64 above).
+AARCH64_TARGET   := aarch64-unknown-none-softfloat
+AARCH64_LINKER   := kernel/linker-aarch64.ld
+AARCH64_KCONFIG  := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX).config
+# `make aarch64 AARCH64_DEFCONFIG=<file> AARCH64_KCONFIG=<expanded> AARCH64_IMG=<image> ...` builds another
+# configuration beside the default one (`make azos-guest`, the x86_64 `X86_64_DEFCONFIG` shape).
+AARCH64_DEFCONFIG ?= config/defconfigs/qemu-aarch64.config
+# A non-default granule builds in its own target directory: switching granule
+# rebuilds every crate (azos_arch_api's PAGE_SIZE is a feature), and the
+# 4 KiB kernel's artifacts should survive it.
+ifeq ($(AARCH64_PAGE_SIZE),4096)
+AARCH64_KTARGET_ENV :=
+AARCH64_ELF      := $(OUT_TARGET)/$(AARCH64_TARGET)/release/kernel
+else
+AARCH64_KTARGET_ENV := CARGO_TARGET_DIR="$(OUT_TARGET)/aarch64$(AARCH64_PG_SUFFIX)"
+AARCH64_ELF      := $(OUT_TARGET)/aarch64$(AARCH64_PG_SUFFIX)/$(AARCH64_TARGET)/release/kernel
+endif
+AARCH64_IMG      := $(OUT_BUILD)/kernel-aarch64$(AARCH64_PG_SUFFIX).img
+# rustc's own llvm-objcopy (rustup component llvm-tools), the one the gate uses.
+AARCH64_OBJCOPY   = $(shell rustc --print sysroot)/lib/rustlib/$(shell rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy
+QEMU_AARCH64_KERNEL_FLAGS := -cpu max,pauth=on -smp 2 -nographic
+
+# ── x86_64: build and boot (QEMU microvm, PVH) ─────────────────────────────
+# `make ARCH=x86_64 x86_64` builds the kernel ELF; `make qemu-x86_64` boots it
+# on `-M microvm` (PVH entry via -kernel, COM1 on stdio, isa-debug-exit so a
+# stop ends QEMU with a status). With `QEMU_X86_64_DISK=<FAT image>` (e.g.
+# build/disk-x86_64.img) the volume is a virtio-blk-device on the microvm
+# virtio-mmio window and the console program runs in ring 3; without one it
+# stops at the kernel shell. Same Kconfig expansion as `check`.
+# X86_64_FEATURES adds cargo features (`make x86_64 X86_64_FEATURES=ktest`).
+# X86_64_DEFCONFIG / X86_64_KCONFIG (a path relative to the tree) build from
+# another configuration into its own expanded file, so the default one never
+# goes stale under it (a build from a configuration of its own).
+X86_64_FEATURES ?=
+X86_64_DEFCONFIG ?= config/defconfigs/qemu-x86_64.config
+X86_64_KCONFIG ?= $(OUT_BUILD)/x86_64.config
+# Where cargo builds this kernel: the Limine variant has its own directory so
+# the two never rebuild each other (RUSTFLAGS differ in the linker script).
+X86_64_TARGET_DIR ?= $(OUT_TARGET)
+X86_64_ELF     := $(X86_64_TARGET_DIR)/x86_64-unknown-none/release/kernel
+X86_64_IMG     := $(OUT_BUILD)/kernel-x86_64.elf
+X86_64_LINKER  := kernel/linker-x86_64.ld
+# curve25519-dalek picks its AVX2 "simd" backend on x86_64; the kernel is
+# soft-float (no SSE/AVX state at CPL0), so it takes the portable one.
+X86_64_DALEK   := --cfg curve25519_dalek_backend=\"serial\"
+# -cpu max: the default model (qemu64) is below the x86-64-v2 baseline, and the
+# kernel refuses it (the canary: `make qemu-x86_64 QEMU_X86_64_CPU=qemu64`).
+QEMU_X86_64_CPU ?= max
+QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-reboot \
+	-device isa-debug-exit,iobase=0xf4,iosize=0x04
+
+# ── x86_64 userspace ────────────────────────────────────────────────────────
+#
+# The ring-3 programs for `userspace/x86_64-azos-user.json`, into
+# `build/x86_64/`, bound by their own digest table
+# (`build/image_hashes_x86_64.rs`, which crates/core/sched/src/seccomp.rs
+# `include!`s on x86_64), exactly as the aarch64 set is. The target is
+# bare-metal x86_64 with the hard-float System V ABI (SSE/SSE2, as every
+# x86-64 CPU has; the kernel alone is soft-float), static and in the small
+# code model: a JSON spec, because rustc's `x86_64-unknown-none` is
+# soft-float. Each crate's `.cargo/config.toml` carries the link flags
+# (`user_x86_64.ld`); the baseline (Kconfig X86_64_LEVEL and every
+# `require`d extension, the SIMD ones included) comes from the kernel's own
+# expanded config through `kconfig_to_cargo.py --user-rustflags`, at recipe
+# time, so an image is always built for the level the kernel refuses CPUs
+# below.
+#
+# HELLO.ELF is `userspace/tests/hello`, the Rust stand-in aarch64 also uses
+# for riscv64's hand-assembled `hello.S` (its binary keeps the crate's
+# `hello_aarch64` name). Not in the set yet: syscall_test (aarch64-only),
+# latbench (it reads the raw counter and converts it at the vDSO's
+# TIMER_FREQ; on x86_64 that counter is the TSC, at its own rate),
+# captest (board RTC/IRQ fixtures) and lxsrv (the Linux personality's
+# register layout is aarch64/riscv64 only).
+TARGET_X86_64 := x86_64-azos-user
+X86_64_DIR    := $(OUT_BUILD)/x86_64
+X86_64_UFLAGS  = -Zjson-target-spec --target $(CURDIR)/userspace/$(TARGET_X86_64).json \
+	--config 'target.$(TARGET_X86_64).rustflags=['"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG))"']'
+X86_64_UBUILT := $(TARGET_X86_64)/release
+HELLO_ELF_X86_64     := $(X86_64_DIR)/hello.elf
+UHELLO_ELF_X86_64    := $(X86_64_DIR)/uhello.elf
+EPSRV_ELF_X86_64     := $(X86_64_DIR)/epsrv.elf
+ABICHILD_ELF_X86_64  := $(X86_64_DIR)/abichild.elf
+REFLEX_ELF_X86_64    := $(X86_64_DIR)/reflex.elf
+BRAINCLI_ELF_X86_64  := $(X86_64_DIR)/brain_client.elf
+ABITEST_ELF_X86_64   := $(X86_64_DIR)/abitest.elf
+IPCTEST_ELF_X86_64   := $(X86_64_DIR)/ipctest.elf
+GPIO_DRV_ELF_X86_64  := $(X86_64_DIR)/gpio_drv.elf
+BUZZ_DRV_ELF_X86_64  := $(X86_64_DIR)/buzz_drv.elf
+INA_DRV_ELF_X86_64   := $(X86_64_DIR)/ina_drv.elf
+MLSRV_ELF_X86_64     := $(X86_64_DIR)/mlsrv.elf
+SH_ELF_X86_64        := $(X86_64_DIR)/sh.elf
+TERMD_ELF_X86_64     := $(X86_64_DIR)/termd.elf
+NAMESD_ELF_X86_64    := $(X86_64_DIR)/namesd.elf
+COMPMGR_ELF_X86_64   := $(X86_64_DIR)/compmgr.elf
+TOOLBOX_ELF_X86_64   := $(X86_64_DIR)/toolbox.elf
+POWER_ELF_X86_64     := $(X86_64_DIR)/power.elf
+TRACECTL_ELF_X86_64  := $(X86_64_DIR)/tracectl.elf
+DECISD_ELF_X86_64 := $(X86_64_DIR)/decisd.elf
+INPUTD_ELF_X86_64 := $(X86_64_DIR)/inputd.elf
+COMPSRV_ELF_X86_64 := $(X86_64_DIR)/compsrv.elf
+LOGD_ELF_X86_64      := $(X86_64_DIR)/logd.elf
+WHY_ELF_X86_64       := $(X86_64_DIR)/why.elf
+PKGD_ELF_X86_64      := $(X86_64_DIR)/pkgd.elf
+PKG_ELF_X86_64       := $(X86_64_DIR)/pkg.elf
+RPCSRV_ELF_X86_64    := $(X86_64_DIR)/rpcsrv.elf
+ZENOHD_ELF_X86_64    := $(X86_64_DIR)/zenohd.elf
+PTPD_ELF_X86_64    := $(X86_64_DIR)/ptpd.elf
+RPCQUIC_ELF_X86_64   := $(X86_64_DIR)/rpcquic.elf
+MCPD_ELF_X86_64      := $(X86_64_DIR)/mcpd.elf
+SSHD_ELF_X86_64      := $(X86_64_DIR)/sshd.elf
+LOGIND_ELF_X86_64    := $(X86_64_DIR)/logind.elf
+VMMD_ELF_X86_64      := $(X86_64_DIR)/vmmd.elf
+FLIGHT_ELF_X86_64    := $(X86_64_DIR)/flight.elf
+BEHAVIOR_ELF_X86_64  := $(X86_64_DIR)/behavior.elf
+CONFIG_ELF_X86_64    := $(X86_64_DIR)/config.elf
+OTA_ELF_X86_64       := $(X86_64_DIR)/ota.elf
+VSBENCH_ELF_X86_64   := $(X86_64_DIR)/vsbench.elf
+VSSRV_ELF_X86_64     := $(X86_64_DIR)/vssrv.elf
+LXHELLO_ELF_X86_64   := $(X86_64_DIR)/lxhello.elf
+# The Linux runtime the x86_64 kernel embeds (Kconfig LINUX_RUNTIME), as
+# LXRT_ELF is for riscv64: a prerequisite of the image-hash table, not a disk
+# image. `yes` when the x86_64 configuration asks for it (the generated
+# configuration may not exist yet when this is read: its defconfig counts too).
+LXRT_ELF_X86_64      := $(X86_64_DIR)/linux_rt.elf
+LXRT_NEED_X86_64      = $(shell grep -qs '^CONFIG_LINUX_RUNTIME=y' $(X86_64_KCONFIG) $(X86_64_DEFCONFIG) </dev/null && echo yes)
+IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) UHELLO.ELF=$(UHELLO_ELF_X86_64) EPSRV.ELF=$(EPSRV_ELF_X86_64) ABICHILD.ELF=$(ABICHILD_ELF_X86_64) \
+              REFLEX.ELF=$(REFLEX_ELF_X86_64) BRAINCLI.ELF=$(BRAINCLI_ELF_X86_64) \
+              ABITEST.ELF=$(ABITEST_ELF_X86_64) IPCTEST.ELF=$(IPCTEST_ELF_X86_64) \
+              GPIODRV.ELF=$(GPIO_DRV_ELF_X86_64) BUZZDRV.ELF=$(BUZZ_DRV_ELF_X86_64) INADRV.ELF=$(INA_DRV_ELF_X86_64) \
+              MLSRV.ELF=$(MLSRV_ELF_X86_64) \
+              SH.ELF=$(SH_ELF_X86_64) TERMD.ELF=$(TERMD_ELF_X86_64) NAMESD.ELF=$(NAMESD_ELF_X86_64) COMPMGR.ELF=$(COMPMGR_ELF_X86_64) TOOLBOX.ELF=$(TOOLBOX_ELF_X86_64) POWER.ELF=$(POWER_ELF_X86_64) \
+              TRACECTL.ELF=$(TRACECTL_ELF_X86_64) DECISD.ELF=$(DECISD_ELF_X86_64) INPUTD.ELF=$(INPUTD_ELF_X86_64) COMPSRV.ELF=$(COMPSRV_ELF_X86_64) LOGD.ELF=$(LOGD_ELF_X86_64) WHY.ELF=$(WHY_ELF_X86_64) \
+              PKGD.ELF=$(PKGD_ELF_X86_64) PKG.ELF=$(PKG_ELF_X86_64) RPCSRV.ELF=$(RPCSRV_ELF_X86_64) ZENOHD.ELF=$(ZENOHD_ELF_X86_64) PTPD.ELF=$(PTPD_ELF_X86_64) RPCQUIC.ELF=$(RPCQUIC_ELF_X86_64) MCPD.ELF=$(MCPD_ELF_X86_64) SSHD.ELF=$(SSHD_ELF_X86_64) LOGIND.ELF=$(LOGIND_ELF_X86_64) VMMD.ELF=$(VMMD_ELF_X86_64) \
+              FLIGHT.ELF=$(FLIGHT_ELF_X86_64) BEHAVIOR.ELF=$(BEHAVIOR_ELF_X86_64) \
+              CONFIG.ELF=$(CONFIG_ELF_X86_64) OTA.ELF=$(OTA_ELF_X86_64) \
+              VSBENCH.ELF=$(VSBENCH_ELF_X86_64) VSSRV.ELF=$(VSSRV_ELF_X86_64) \
+              LXHELLO.ELF=$(LXHELLO_ELF_X86_64)
+IMAGE_ELF_PATHS_X86_64 := $(foreach e,$(IMAGE_ELFS_X86_64),$(lastword $(subst =, ,$(e))))
+IMAGE_HASHES_X86_64 := $(OUT_BUILD)/image_hashes_x86_64.rs

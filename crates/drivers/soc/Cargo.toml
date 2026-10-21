@@ -1,0 +1,29 @@
+[package]
+name = "azos_soc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+SoC resource frameworks (HAL H2): clock tree, reset lines, regulators, pin
+control and power domains as traits, each with a manager that does the
+refcounting and the device-tree consumer lookup by phandle (clocks, resets,
+*-supply, pinctrl-N, power-domains). Providers: fixed-clock, fixed-regulator and
+the StarFive JH7110 (VisionFive 2) system clock and reset controller and power
+management unit, and the SpacemiT K1 CPU cluster clocks (PLL tree included) and P1
+PMIC bucks (regulators over an I2C transport, not MMIO). Every clock, reset, rail, pin-mux and power-domain change is
+committed to an effect sink before the register write. no_std, no allocator,
+register access through one `Bus` trait, host-tested via tests/host/soc-tests.
+"""
+
+[dependencies]
+
+[features]
+# Gate canary only: every manager does the register write first and commits
+# the effect after. The ordering rows of tests/host/soc-tests must fail with
+# this on. Never enabled in a shipping build.
+effect-after-write-canary = []
+
+# Bind canary only: `bind::bind` leaves out the pin state. The row that says
+# the `default` state is applied after the resets must fail with this on.
+bind-skip-pinctrl-canary = []

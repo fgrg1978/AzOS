@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# tools/gen_userspace_kconfig.py: the FAT32 image this directory builds.
+[azos]
+images = ["LXTHR.ELF"]
+description = "Static Linux test program (zig cc): pthreads under the Linux personality."

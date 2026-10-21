@@ -1,0 +1,192 @@
+[package]
+name = "azos_fs_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/fs/fs/src/fat32.rs and crates/fs/fs/src/vfs.rs, driven against hand-built volume images. Excluded from workspace."
+
+# Run with:  cd tests/host/fs-tests && cargo test --release
+
+# The modules under test are pulled with `#[path]`, so their doc examples are
+# compiled as doctests of THIS crate, where the names they use are not in
+# scope (procfs's module example calls `procfs_init`/`procfs_read` bare).
+# They are examples for the kernel crate, not tests of this one.
+[lib]
+doctest = false
+
+[features]
+# Round 48 canary: per-descriptor offsets (see crates/fs/fs).
+fd-private-offset-canary = []
+# Gate canary (crates/fs/fs): the delete gate is never asked.
+envelope-delete-canary = []
+# Wave 15 (PI) canary: no per-description position lock (see crates/fs/fs).
+fd-pos-lock-canary = []
+# Wave 14 canary: per-sector `fat32_read_chain` (see crates/fs/fs).
+read-chain-sector-canary = []
+# Wave 15 (GR4) canaries for the FAT32 chain walkers; the fs-tests chain-walk
+# tests must turn red with each. Never in a real build.
+#   fat-medium-bound-canary: the mount takes a BPB claiming more sectors than
+#     the bare medium holds (the walk bound then comes from the claim).
+#   fat-walk-read-error-canary: a walker skips a sector it cannot read and
+#     follows the chain on, as before.
+#   fat-walk-cycle-canary: no cycle detection; only the step bound stops a
+#     cyclic chain.
+fat-medium-bound-canary = []
+fat-walk-read-error-canary = []
+fat-walk-cycle-canary = []
+# Wave 14 (FATCACHE) canaries, one per coherence path of the block cache
+# (crates/fs/fs/src/fat32.rs). Each must turn an fs-tests `fatcache` test
+# red. Never in a real build.
+#   observer:     external medium writes no longer drop cached sectors
+#   writethrough: FAT32's own writes no longer update a cached line
+#   token:        a run read installs what it read even if a write raced it
+#   run-bypass:   run reads neither hit nor fill the cache (pre-wave-14 path)
+fatcache-observer-canary = []
+fatcache-writethrough-canary = []
+fatcache-token-canary = []
+fatcache-run-bypass-canary = []
+# Wave 15 (WRITEBACK) canaries, one per write-back property of the block
+# cache (crates/fs/fs/src/bcache.rs, fat32.rs). Each must turn an fs-tests
+# `writeback` test red. Never in a real build.
+#   epoch-merge:       an older epoch's dirty line is overwritten in place
+#   no-ordering-flush: a run of a later epoch goes out with no flush first
+#   no-coalesce:       every run is one block (no multi-sector requests)
+#   observer-drop:     a long external write drops EVERY dirty line
+#   run-overlay:       a run read keeps the device's bytes over dirty lines
+#   read-observer:     a reader that is not FAT32 reads a sector still dirty
+#   flush-no-writeback: a journal barrier/fsync flushes without writing back
+#   no-shadow:         re-dirtying an older epoch writes back instead of shadowing
+#   barrier-flushes:   a journal barrier is a device flush (the write-through cost)
+#   close-flushes:     a queued whole-file write (create, truncate) waits for the device again
+wb-epoch-merge-canary = []
+wb-no-ordering-flush-canary = []
+wb-no-coalesce-canary = []
+wb-observer-drop-canary = []
+wb-run-overlay-canary = []
+wb-read-observer-canary = []
+wb-flush-no-writeback-canary = []
+wb-no-shadow-canary = []
+wb-barrier-flushes-canary = []
+wb-close-flushes-canary = []
+# Wave 15 (FW) canary: every in-place write closes an epoch for its own
+# directory-entry update again (N writes, N+1 epochs).
+fw-entry-per-write-canary = []
+# Wave 15 (FW) canary: a hold that finds every slot taken frees only its own
+# chain after a barrier (one barrier per truncate past the slots).
+fw-free-one-held-canary = []
+# Wave 15 (FW) canary: an in-place write walks its chain from the first
+# cluster for every sector again, and rewrites each new cluster's EOC.
+fw-chain-walk-canary = []
+# Wave 15 (FW2) canary: an in-place extension links a new cluster in a
+# later FAT sector without ordering its end-of-chain mark first (a cut can
+# leave a chain through a FREE cluster).
+fw-tail-link-unordered-canary = []
+# Wave 15 (FW2) canary: `fat32_check_root_chain` refuses a sound tail past
+# the size again (the state a cut between an extension and its entry leaves).
+fat-check-exact-chain-canary = []
+# Wave 15 canary: a rename over a file is journaled as a plain OVERWRITE
+# record (the source dirent is not part of it): a cut can leave both names.
+rename-two-records-canary = []
+# Wave 15 canary: FAT32 writable opens take the whole-file proxy again
+# (load on open, journaled rewrite on close) instead of writing in place.
+fat-proxy-writes-canary = []
+# Wave 15 canary: every allocation scans the FAT from sector 0 again.
+alloc-hint-canary = []
+# Wave 15 (FD) canary: a truncated or replaced chain is freed at once, in
+# the epoch of the write that unlinks it, instead of held until that write
+# is durable (`defer_free`): a cut can leave the old name over reused clusters.
+deferred-free-canary = []
+#   ro-stream-off: read-only opens take the whole-file proxy again
+#   write-gen:     writes no longer move FAT32's write generation
+ro-stream-off-canary = []
+write-gen-canary = []
+#   dcache-stale:  the root-entry cache answers whatever the generation
+dcache-stale-canary = []
+# FAT32 files below the root (fs-tests `subdirs`): each turns a test red.
+#   dir-blind-dcache:         the entry cache ignores the directory
+#   rename-across-unjournaled: a rename to a free name in another directory is
+#                             two plain writes, not the one rename record
+dir-blind-dcache-canary = []
+rename-across-unjournaled-canary = []
+# Wave 14 (SPAWNCACHE) canaries:
+#   write-epoch:       writes no longer move the 64-bit write epoch
+#   write-gen-early:   FAT32 bumps the generation before its bytes land
+#   content-stamp-off: no path has a content stamp (nothing is cached)
+write-epoch-canary = []
+write-gen-early-canary = []
+content-stamp-off-canary = []
+# The kernel's `file-census` diagnostic (census.rs). Declared so the cfg is
+# known; never enabled here (it prints through the kernel timebase).
+file-census = []
+# Wave 15 (VF): the kernel gate's FAT spinlock canary. Declared so the cfg
+# is known; the host shim's two lock types behave the same.
+fat-mutate-spin-canary = []
+# Wave 15 (FM): declared so the cfgs are known. `fat-sector-claim-canary` is
+# the concurrent-mutator test's canary; the other two are kernel-only.
+fat-sector-claim-canary = []
+# FX12: declared so the cfg is known; the kernel's `ktest` feature turns it
+# on (`fat32_ktest_with_wb_claim`), never this suite.
+ktest = []
+fat-mutate-pi-canary = []
+fat-pi-io-probe = []
+
+# Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
+#   fat-dirty-bit-canary:       the mount never sets the volume dirty flag
+#   fat-dirty-unordered-canary: the flag is written but not flushed ahead of
+#                               the mount's first write
+#   fat-clean-early-canary:     the unmount writes the clean flag before the
+#                               flush that makes the mount's writes durable
+#   fat-no-repair-canary:       the mount check reports but repairs nothing
+#   fat-check-no-mark-canary:   the check does not claim file chains (live
+#                               data looks lost and is reclaimed)
+#   mkdir-unordered-canary:     no barrier between a new directory's cluster
+#                               and the parent entry naming it
+#   replace-in-place-canary:    the atomic replace truncates and rewrites the
+#                               live name in place
+#   replace-no-fsync-canary:    the atomic replace renames without making the
+#                               temp file durable first
+fat-dirty-bit-canary = []
+fat-dirty-unordered-canary = []
+fat-clean-early-canary = []
+fat-no-repair-canary = []
+fat-check-no-mark-canary = []
+mkdir-unordered-canary = []
+replace-in-place-canary = []
+replace-no-fsync-canary = []
+
+[dependencies]
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_decision = { path = "../../../crates/core/decision" }
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
+# The real azos_sync SpinLock reads/writes RV64 sstatus in inline asm, so
+# it neither compiles nor runs on the host. cap-tests already carries a
+# Mutex-backed stand-in with the same surface; reusing it beats a second copy
+# that can drift.
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
+# Host stand-in for the RV64-only driver crate. Renamed so the module source
+# compiles unmodified — see the shim's crate doc.
+fs_test_drivers = { path = "shims/drivers" }
+azos_drv_api = { path = "../../../crates/drivers/api" }
+# Host stand-in for the generated limits crate — see the shim's crate doc.
+azos_limits = { path = "shims/limits", package = "fs_test_limits" }
+# Host stand-in for the three page counters procfs's meminfo generator reads.
+azos_mm = { path = "shims/mm", package = "fs_test_mm" }
+# The real one: `vfs.rs` joins a name beneath a directory with its
+# `path::join_beneath`, the join the syscall layer checks authority against.
+azos_common = { path = "../../../crates/core/common" }
+# azvol (pulled by #[path]) seals its blocks with chachapoly.
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)', 'cfg(fuzzing)'] }
+
+# Reproduce the kernel's release profile: `overflow-checks` is what turns a
+# wrapping sum of on-disk fields into a board reset there, so the parsers
+# pulled here (FAT32, the partition table) must be tested with it on — a
+# fuzz case that only wraps silently on the host proves nothing.
+[profile.release]
+overflow-checks = true

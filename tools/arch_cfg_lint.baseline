@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# tools/arch_cfg_lint.py ratchet: uncovered cfg(target_arch) sites per file.
+# Counts may only go down. Regenerate with --update-baseline.
+5	domains/robot/safety-core/src/txn.rs
+4	kernel/src/boot/seams.rs
+2	kernel/src/boot/stacks.rs
+15	kernel/src/main.rs
+2	kernel/src/smokes/mod.rs
+4	kernel/src/smokes/selftest.rs
+1	kernel/src/smokes/tlb_probe.rs
+2	kernel/src/tasks/system.rs
+2	userspace/bench/latbench/src/main.rs
+8	userspace/services/lxsrv/src/main.rs
+8	userspace/tests/captest/src/main.rs
+[facade]
+# Facade bypass: azos_arch::<ISA-specific module> references per file.
+# Counts may only go down. Rewrite with --update (a rename raises them).
+2	crates/core/ipc/src/irq_bind.rs
+1	crates/core/mm/src/kheap.rs
+6	crates/core/sched/src/process.rs
+3	crates/core/sched/src/scheduler/lifecycle.rs
+2	crates/core/sched/src/scheduler/mod.rs
+15	crates/core/sched/src/smp.rs
+1	crates/core/sched/src/spawn.rs
+2	crates/core/sched/src/task.rs
+3	crates/core/sync/src/preempt.rs
+1	crates/core/sync/src/spinlock.rs
+4	crates/core/syscall/src/handlers.rs
+4	crates/drivers/base/src/platform.rs
+17	crates/drivers/irqchip/src/irqchip.rs
+17	crates/drivers/irqchip/src/user_irq.rs
+4	crates/drivers/virtio/src/virtio/pci.rs
+4	domains/robot/safety-core/src/txn.rs
+2	kernel/src/boot/blk_irq.rs
+5	kernel/src/boot/dma.rs
+2	kernel/src/boot/input_irq.rs
+3	kernel/src/boot/ps2_irq.rs
+4	kernel/src/boot/seams.rs
+1	kernel/src/boot/tpm.rs
+3	kernel/src/ktest.rs
+1	kernel/src/lat_smoke.rs
+4	kernel/src/lat_trace.rs
+28	kernel/src/main.rs
+1	kernel/src/pstore.rs
+1	kernel/src/smokes/aarch64_sched.rs
+1	kernel/src/smokes/asid_rollover.rs
+1	kernel/src/smokes/irq_budget.rs
+1	kernel/src/smokes/rt_panic_smoke.rs
+1	kernel/src/smokes/tail_smoke.rs
+16	kernel/src/smokes/tlb_probe.rs

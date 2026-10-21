@@ -1,0 +1,49 @@
+[package]
+name = "azos_cap_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Cap<T> + CapTable logic in crates/core/ipc/src/cap.rs and the slot-reuse/OWNER-wipe behaviour of crates/core/ipc/src/cap_store.rs. Excluded from workspace."
+
+# `cap.rs` carries `#[cfg(kani)]` proof harnesses; the kernel's own
+# `crates/core/ipc/Cargo.toml` declares the same check-cfg. Without it the host
+# build emits an `unexpected_cfg` warning, and warnings count as failures in
+# this project.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[dependencies]
+azos_common = { path = "../../../crates/core/common" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_devif = { path = "../../../crates/core/devif" }
+# cap.rs uses wcet_macro::wcet; proc-macro must be available for host compilation.
+wcet-macro = { path = "../../../crates/core/wcet-macro" }
+# cap.rs's `objref` sizes the Port layout from
+# MAX_PORTS, generated from `.config`.
+azos_limits = { path = "../../../crates/core/limits" }
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+
+# Host stand-ins for the two RV64-only kernel crates `cap_store.rs` calls
+# into. Renamed so the module source compiles unmodified — see each shim's
+# crate doc for why the real crate cannot be used on the host, and what the
+# `sched` shim deliberately exposes that the real scheduler does not.
+azos_sync = { path = "shims/sync", package = "cap_test_sync" }
+azos_sched = { path = "shims/sched", package = "cap_test_sched" }
+
+[dev-dependencies]
+
+[features]
+# Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
+# capability derived from a revoked one is not refused before the sweep frees
+# it. Never in a real build.
+revoke-chain-canary = []
+# `cap_store.rs` `SweptSet`'s canaries (MemObj revoke, tests/host/ipc-tests): the
+# pulled sweep carries the sites, only the ipc suite enables them.
+memobj-sweep-no-hook-canary = []
+memobj-sweep-no-retain-canary = []
+# `cap.rs` `hand_on`'s canary (delete is not revoke): the pulled table
+# code carries the site; both this suite and the ipc suite enable it.
+delete-revokes-canary = []
+# `cap.rs` `sweep_dead`'s canary: a move of a slot with copies lifts their depth.
+move-lifts-depth-canary = []

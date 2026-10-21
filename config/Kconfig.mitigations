@@ -1,0 +1,509 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.mitigations — Threat model and mitigations
+#
+# Owner decision (wave 11): every mitigation is a switch in `make config`;
+# none is forced on. A threat-model profile sets the DEFAULTS of the
+# mitigation switches with `imply`, never `select`: each switch can still be
+# turned off by hand under any profile. Only mitigations that exist in code
+# have a symbol; the ones that do not are listed as comments.
+
+menu "Mitigations"
+
+choice
+    prompt "Threat model"
+    default THREAT_PHYSICAL_ACCESS if SECURITY_SEPARATION_STATIC || SECURITY_CONFIDENTIAL
+    default THREAT_THIRD_PARTY_CODE if SECURITY_HARDENED
+    default THREAT_RING3_IMAGE
+    help
+      Who the image defends against. The choice sets the default of the
+      mitigation switches below; it never forces one, and a switch set by
+      hand wins. Each profile includes the ones above it. The default is
+      the base profile for SECURITY general, "Third-party code" for hardened,
+      and "Physical access" for separation-static and confidential.
+
+    config THREAT_RING3_IMAGE
+        bool "Compromised ring-3 image (base)"
+        imply MITIGATION_SPECTRE_V1_INDEX
+        imply INFER_MODEL_SIG_REQUIRED
+        help
+          Default. An image on the allow-list is compromised and attacks
+          the kernel and the other images through syscalls and shared
+          hardware. Implies the Spectre v1 index masking and the model data
+          signature check; both are on by default anyway, so this profile
+          changes no default.
+
+    config THREAT_THIRD_PARTY_CODE
+        bool "Third-party code"
+        imply MITIGATION_SPECTRE_V1_INDEX
+        imply INFER_MODEL_SIG_REQUIRED
+        help
+          Code the owner did not write runs in ring 3 (applications,
+          drivers, models). Implies the same switches as the base profile:
+          no mitigation specific to this threat exists in the tree yet
+          (see the "not implemented" lines below), so today it sets the
+          same defaults as the base profile.
+
+    config THREAT_PHYSICAL_ACCESS
+        bool "Physical access to the device"
+        imply MITIGATION_SPECTRE_V1_INDEX
+        imply INFER_MODEL_SIG_REQUIRED
+        imply CONSOLE_LOCKDOWN
+        imply SECURE_BOOT_ENFORCED
+        imply OTA_SIG_MANDATORY
+        imply LINK_PROVISIONING_ENFORCED
+        help
+          The attacker can reach the console, the removable FAT volume
+          (also exposed over USB mass storage) and the boot media. On top
+          of the base profile, implies:
+            CONSOLE_LOCKDOWN      no kernel console; the ring-3 user
+                                  shell is unprivileged unless a signed
+                                  topology row grants it more;
+            SECURE_BOOT_ENFORCED  boot halts on an unsigned or badly
+                                  signed kernel image ("Security");
+            OTA_SIG_MANDATORY     unsigned OTA images are refused;
+            LINK_PROVISIONING_ENFORCED
+                                  boot halts without a link key, the
+                                  handshake is refused on an unseeded
+                                  entropy pool, and the UART bridge
+                                  (brain-protocol frames outside any
+                                  Noise session) is down.
+          Each implied switch carries its own cost and deployment
+          requirement; read its help before building with this profile.
+
+endchoice
+
+config MITIGATION_SPECTRE_V1_INDEX
+    bool "Spectre v1: mask table indices that come from ring 3"
+    default y
+    help
+      Bounds-check-bypass mitigation, the analogue of Linux's
+      array_index_nospec (crates/core/limits/src/nospec.rs). After the bounds
+      check, the index used for the load is ANDed with a mask computed
+      without a branch (riscv64: sltu+neg; aarch64: cmp+sbc+csdb), so a
+      load issued under a mispredicted check reads entry 0, not memory
+      past the table. Applied to the syscall table and to the per-task
+      tables a syscall indexes with a user value (see the call sites of
+      azos_limits::nospec).
+
+      Cost, instructions per operation under -icount
+      (tools/vsbench_aarch64.sh, this option y against n, same tree,
+      2026-10-02), aarch64/riscv64:
+        syscall-floor (getpid, answered before the table)    +0 / +0
+        clock [call] (the syscall-table mask alone)          +5 / +4
+        chan-call, notify, sensor-read-call (+ cap slot)  +9..10 / +7..8
+        ipc-roundtrip                                         +9 / +12
+        ring-pingpong                                        +36 / +19
+        udp-roundtrip (socket fd masks on every call)        +62 / +140
+      aarch64 adds one csdb per masked site (118 in a qemu kernel).
+
+      n: every masked site compiles to the unmasked index.
+
+config INFER_MODEL_SIG_REQUIRED
+    bool "Require an Ed25519 signature on the inference service's model data files"
+    default y
+    help
+      The ring-3 inference service (userspace/services/infsrv) verifies the
+      GGUF policy /fat/POLICY.GGF against /fat/POLICY.SIG before its start-up
+      self-test parses it: a bare 64-byte Ed25519 signature over the file's
+      bytes, the same key and sidecar format as CAPS.SIG and CONFIG.SIG
+      (azos_topology::TRUSTED_PUBKEY; `make` signs it with
+      tools/gen_config_sig.py). The file lives on the USB-exposed FAT volume.
+
+      A policy file without a valid signature is refused with an
+      "[GGUF] /fat/POLICY.GGF REFUSED" line and the self-test is skipped.
+
+      The model bundles (*.MBL) the service serves through the Infer
+      interface carry their own signature and are always verified: a bundle
+      holds the cost table the admission believes, so there is no switch for
+      them. The bundle of the behavior loop's MLP (BEHAVIOR.MBL) is one.
+
+      Cost: one Ed25519 verification per file when the service starts,
+      nothing per inference. The service image carries the verifier either
+      way, for the bundles.
+
+      n: the policy file is used unverified.
+
+config CONSOLE_LOCKDOWN
+    bool "Production console lockdown: no kernel console, unprivileged user shell"
+    default n
+    help
+      Under this option the in-kernel recovery console (RECOVERY_CONSOLE) is
+      not created at all, in safe mode included: boot prints
+      "[CONSOLE] lockdown: no kernel console task". The console belongs
+      to the ring-3 user shell (SH.ELF, USER_SHELL; with USER_SHELL=n
+      the image has no console).
+
+      The user shell's built-in row is reduced: it may start the
+      unprivileged tool image (TOOLBOX.ELF) and write /tmp, nothing
+      else. It holds no launch right on POWER.ELF (power suspend,
+      reboot, shutdown, sched_hz) nor on FLIGHT.ELF, BEHAVIOR.ELF,
+      CONFIG.ELF and OTA.ELF: they are refused at SYS_SPAWN_EX and
+      recorded. It cannot change /fat. A privileged service shell
+      exists only if the signed topology gives an image's row those
+      capabilities; nothing on the console can grant them.
+
+      The authority table (crates/core/ipc/src/authority_policy.rs) is
+      unchanged by this option for ring 3: a typed syscall checks the
+      calling image's own capability on every build. For the recovery
+      console it names `reboot` and `shutdown` (WRITE on the `power` endpoint, checked
+      on every build) and `config set watchdog_ms` and `ota rollback`
+      (WRITE on the `config` and `ota` endpoints, only under this option,
+      and the console would be seeded with no capability); the other
+      commands of those families are ring-3 forms. Both matter only to a build that still has the
+      recovery console, i.e. with this option off.
+
+      Default n: the recovery console exists (it takes the console in
+      safe mode, without SH.ELF, or when the user shell is given up
+      on), it is seeded with Cap<Motor> and WRITE on the `power`, `config` and `ota` endpoints, and the
+      two lockdown-only rows proceed unchecked. The check's predicate
+      also answers "no" during a brain-loss containment episode, so
+      enforcing those rows on every build would refuse `ota rollback`
+      in the middle of one.
+
+      Cost: none on any syscall path; a production image loses the
+      in-kernel console as a recovery path.
+
+config ELF_REFUSE_EXEC_HEADERS
+    bool "ELF loader: refuse an executable segment that maps the ELF headers"
+    default y
+    help
+      The loader maps every PT_LOAD with its own permissions (read-only,
+      read-execute, read-write; W^X both ways), so `.rodata` in a segment
+      of its own is never executable. A linker can still fold `.rodata`
+      into the text segment: lld `--no-rosegment`, or GNU ld without
+      `-z separate-code` (its default on riscv64 and aarch64), puts the ELF
+      header, the program headers and every read-only section in one RX
+      segment starting at file offset 0. The program headers are all the
+      loader sees, and that is the signature they carry, so with this on
+      an image whose executable segment covers the headers is refused at
+      exec (`elf_bounds::check_exec_headers`): its read-only data would run
+      as code. tools/elf_page_perms.py checks the built images, section
+      headers included, at the page size the kernel maps.
+
+      Every image the build makes, BusyBox (lld) included, keeps the
+      headers out of its text segment. Off: such an image loads, its
+      `.rodata` executable (what Linux does). Turn it off only to run an
+      unmodified Linux binary linked that way; relinking it with
+      `-z separate-code` or lld's default layout is the better fix.
+      Cost: one comparison per PT_LOAD at exec; no RAM.
+
+if ARCH_X86_64
+
+comment "x86_64 speculative-execution mitigations (n / probe / require)"
+comment "Chosen by probe: ARCH_CAPABILITIES and CPUID first, the family/model table only for what has no bit."
+
+choice
+    prompt "Meltdown (rogue data cache load): kernel page-table isolation"
+    default X86_MIT_MELTDOWN_PROBE
+    help
+      Intel cores that speculate a user load past the privilege check read
+      kernel memory (CVE-2017-5754). Affected unless
+      IA32_ARCH_CAPABILITIES.RDCL_NO says otherwise; AMD and Hygon cores never
+      are. The mitigation is KPTI (a user page table without the kernel), which
+      is NOT in the tree yet: on an affected CPU probe prints
+      `meltdown=vulnerable` and require refuses to boot.
+      n: not looked at. Cost when KPTI lands: a CR3 write per kernel entry and
+      exit (PCID makes it a few tens of cycles).
+
+    config X86_MIT_MELTDOWN_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_MELTDOWN_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_MELTDOWN_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "L1 terminal fault: PTE inversion"
+    default X86_MIT_L1TF_PROBE
+    help
+      An Intel core without RDCL_NO that is not on the unaffected list reads
+      L1D data through a not-present PTE's frame address (CVE-2018-3615/3620).
+      PTE inversion is satisfied by construction: a not-present entry this
+      kernel writes holds no frame (`mmu::empty`, `mmu::make_demand`), and
+      frame 0, the one such an entry names, is never allocated (`boot_hooks`
+      checks it after the PMM is up). Cost: none.
+      n: not looked at.
+
+    config X86_MIT_L1TF_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_L1TF_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_L1TF_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "MDS and TAA: clear the CPU buffers on return to ring 3"
+    default X86_MIT_MDS_TAA_PROBE
+    help
+      Microarchitectural data sampling (CVE-2018-12126/12127/12130/11091) and
+      TSX asynchronous abort (CVE-2019-11135) on Intel cores without
+      MDS_NO / TAA_NO. The mitigation is `verw` on every return to ring 3
+      (trap_entry.S, guarded by one byte), which the microcode makes clear the
+      fill and store buffers (CPUID.(7,0):EDX[10] MD_CLEAR). Without MD_CLEAR
+      the CPU is vulnerable. Cost: one `verw` (about 400 cycles) per return to
+      ring 3 on an affected CPU, a compare of one byte elsewhere.
+      n: not looked at, no `verw`.
+
+    config X86_MIT_MDS_TAA_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_MDS_TAA_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_MDS_TAA_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Register file data sampling"
+    default X86_MIT_RFDS_PROBE
+    help
+      Intel Atom cores (Alder/Raptor Lake E-cores, Gracemont, Tremont,
+      Goldmont) without RFDS_NO leak register-file data (CVE-2023-28746). The
+      mitigation is the same `verw` as MDS, effective when the microcode sets
+      ARCH_CAPABILITIES.RFDS_CLEAR. Cost: shared with MDS_TAA.
+      n: not looked at.
+
+    config X86_MIT_RFDS_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_RFDS_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_RFDS_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Gather data sampling (Downfall)"
+    default X86_MIT_GDS_PROBE
+    help
+      Intel Skylake through Rocket Lake cores without GDS_NO leak vector
+      register data through gather (CVE-2022-40982). The mitigation is a
+      microcode update; the tree keeps it enabled (IA32_MCU_OPT_CTRL bit 4
+      clear) when ARCH_CAPABILITIES.GDS_CTRL says it can be controlled, and
+      reports `vulnerable` when the microcode is missing or the firmware
+      disabled and locked it. Cost: the microcode's own (gather is slower).
+      n: not looked at, the mitigation is left as the firmware set it.
+
+    config X86_MIT_GDS_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_GDS_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_GDS_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Spectre v2 (branch target injection): eIBRS, AutoIBRS, else retpoline"
+    default X86_MIT_SPECTRE_V2_PROBE
+    help
+      Indirect branches predicted from another context (CVE-2017-5715). In
+      order of preference, chosen by probe:
+        eIBRS      Intel, ARCH_CAPABILITIES.IBRS_ALL: IA32_SPEC_CTRL.IBRS set
+                   once on every CPU;
+        AutoIBRS   AMD, CPUID.80000021H:EAX[8]: EFER.AIBRS set on every CPU;
+        retpoline  the kernel is built with the external indirect-branch thunk
+                   (-Zretpoline-external-thunk) and the thunk
+                   (crates/core/arch-x86_64/src/retpoline.rs) takes the
+                   retpoline sequence.
+      With hardware protection the boot patches the thunk once, on the
+      boot CPU before the text is made read-only, to a plain `jmp *%r11`
+      (a run-time test in front of the jump would let a mispredicted
+      branch speculate it, which a retpoline exists to stop).
+      probe: the thunk is built in; eIBRS/AutoIBRS when present, else retpoline.
+        Cost: a compare and a direct branch per indirect call with eIBRS, the
+        retpoline sequence (an unpredicted return, about 20-30 cycles) without.
+      require: the kernel is built WITHOUT the thunk (no cost at all) and the
+        boot refuses a CPU with neither eIBRS nor AutoIBRS.
+      n: no thunk, nothing written: indirect branches are unprotected.
+
+    config X86_MIT_SPECTRE_V2_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_SPECTRE_V2_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_SPECTRE_V2_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Branch history injection"
+    default X86_MIT_BHI_PROBE
+    help
+      Intel cores with eIBRS but no BHI_NO let history from another context
+      steer an indirect branch (CVE-2022-0001/0002). The mitigation is
+      IA32_SPEC_CTRL.BHI_DIS_S (CPUID.(7,2):EDX[4]); a CPU without eIBRS is
+      covered by the retpoline. The software BHB-clearing loop is not in the
+      tree: an eIBRS CPU with neither BHI_NO nor BHI_DIS_S is `vulnerable`.
+      Depends on the Spectre v2 choice (n there leaves indirect branches open).
+      Cost: the CPU's own, a few percent on indirect-branch-heavy code.
+      n: not looked at.
+
+    config X86_MIT_BHI_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_BHI_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_BHI_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Retbleed (return instruction prediction)"
+    default X86_MIT_RETBLEED_PROBE
+    help
+      Returns predicted from the indirect predictor (CVE-2022-29900/29901):
+      Intel Skylake-era cores (and any core reporting ARCH_CAPABILITIES.RSBA),
+      AMD Zen 1 and Zen 2 and Hygon family 18h without CPUID BTC_NO. An Intel
+      core with eIBRS is covered by it. The Skylake-era mitigation (IBRS on
+      every kernel entry) and AMD's untrained return thunk are NOT in the tree:
+      such a CPU is `vulnerable`.
+      n: not looked at.
+
+    config X86_MIT_RETBLEED_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_RETBLEED_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_RETBLEED_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Speculative return stack overflow (AMD)"
+    default X86_MIT_SRSO_PROBE
+    help
+      AMD Zen 1 through Zen 5 mispredict a return from a poisoned return
+      address (CVE-2023-20569). Not affected: CPUID SRSO_NO; or, with no guest
+      hosted by this kernel, SRSO_USER_KERNEL_NO (Zen 4). The safe-RET and
+      IBPB-on-entry mitigations are NOT in the tree: any other Zen CPU is
+      `vulnerable`.
+      n: not looked at.
+
+    config X86_MIT_SRSO_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_SRSO_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_SRSO_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Zenbleed (AMD Zen 2)"
+    default X86_MIT_ZENBLEED_PROBE
+    help
+      Zen 2 parts (family 17h models 30h-4Fh, 60h-7Fh, 90h-91h, A0h-AFh) with
+      AVX leak vector-register data after a mispredicted vzeroupper
+      (CVE-2023-20593). The mitigation is the DE_CFG bit 9 chicken bit, set on
+      every CPU unless the microcode revision is the fixed one for the model.
+      Cost: a small FP-backup slowdown on an unfixed microcode.
+      n: not looked at, the bit is left as the firmware set it.
+
+    config X86_MIT_ZENBLEED_NEVER
+        bool "n: do not look at it, do nothing"
+    config X86_MIT_ZENBLEED_PROBE
+        bool "probe: mitigate when the CPU is affected, say so when the tree cannot"
+    config X86_MIT_ZENBLEED_REQUIRE
+        bool "require: refuse to boot on an affected CPU the tree cannot mitigate"
+endchoice
+
+endif # ARCH_X86_64
+
+if ARCH_AARCH64
+
+comment "aarch64 speculative-execution mitigations (n / probe / require)"
+comment "Chosen by probe: the ID registers first, the MIDR lists (Linux's) only for what has no bit."
+comment "Each core is decided from its own MIDR and ID registers, on every CPU (boot and secondaries)."
+comment "OPEN (probe prints `vulnerable`, require refuses): the per-EL0-entry ones, none is in the vector slots yet."
+
+choice
+    prompt "Spectre v2 (branch target injection): CSV2"
+    default A64_MIT_SPECTRE_V2_PROBE
+    help
+      A core whose branch predictor lets one context steer another's
+      indirect branches (CVE-2017-5715). ID_AA64PFR0_EL1.CSV2 >= 1 says it
+      cannot; an in-order Cortex-A35/A53/A55/A510 is not exposed, and
+      neither is a core whose firmware answers SMCCC_ARCH_WORKAROUND_1 with
+      "not affected". Any other core needs the firmware call
+      SMCCC_ARCH_WORKAROUND_1 on every entry from EL0 (Cortex-A57/A72/A73/
+      A75): that call is NOT in the tree yet, so on such a core probe prints
+      `spectre_v2=vulnerable` (the line says whether the firmware offers the
+      call) and require refuses to boot, on a secondary by powering off.
+      The Raspberry Pi 3's Cortex-A53 is not exposed.
+      Cost when the call lands: one firmware call (SMC/HVC, some hundred
+      cycles) per entry from EL0. Now: nothing, and one firmware query per
+      CPU at boot on a core that needs the answer.
+      n: not looked at.
+
+    config A64_MIT_SPECTRE_V2_NEVER
+        bool "n: do not look at it, do nothing"
+    config A64_MIT_SPECTRE_V2_PROBE
+        bool "probe: mitigate when the core is affected, say so when the tree cannot"
+    config A64_MIT_SPECTRE_V2_REQUIRE
+        bool "require: refuse to boot on an affected core the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Spectre v4 (speculative store bypass): SSBS"
+    default A64_MIT_SSB_PROBE
+    help
+      A load may run ahead of an older store to the same address
+      (CVE-2018-3639). The in-order Cortex-A35/A53/A55/A510 are not exposed;
+      a core with FEAT_SSBS (ID_AA64PFR1_EL1.SSBS >= 1) is closed by clearing
+      PSTATE.SSBS on every CPU and SCTLR_EL1.DSSBS for every exception entry,
+      kernel and ring 3 alike (done at boot, crates/core/arch-aarch64/src/ext/
+      mitigations.rs, no cost to speak of on the cores that have it). A core
+      without it whose firmware implements SMCCC_ARCH_WORKAROUND_2 gets
+      the call WORKAROUND_2(1) once per CPU at boot, through the PSCI
+      conduit (the Cortex-A76 of the Raspberry Pi 5 has no FEAT_SSBS):
+      store bypass stays off for kernel and ring 3 until power-off, at the
+      cost the firmware's mitigation has on that core (a few percent on
+      store-to-load-heavy code). A core with neither is `vulnerable`: probe
+      says so, require refuses to boot.
+      n: not looked at; PSTATE.SSBS is left as the firmware set it and
+      the firmware is not called.
+
+    config A64_MIT_SSB_NEVER
+        bool "n: do not look at it, do nothing"
+    config A64_MIT_SSB_PROBE
+        bool "probe: mitigate when the core is affected, say so when the tree cannot"
+    config A64_MIT_SSB_REQUIRE
+        bool "require: refuse to boot on an affected core the tree cannot mitigate"
+endchoice
+
+choice
+    prompt "Spectre-BHB (branch history injection)"
+    default A64_MIT_BHB_PROBE
+    help
+      Branch history from EL0 steers predictions after a return to EL1
+      (CVE-2022-23960). FEAT_ECBHB (ID_AA64MMFR1_EL1.ECBHB) clears it in
+      hardware; a core with FEAT_CLRBHB needs one `clrbhb` on entry from EL0,
+      and the cores in Linux's loop table (Cortex-A57/A72: 8 branches;
+      A76/A76AE/A77/N1: 24; A78 family, X1/X1C, A710, X2, N2, V1: 32) need
+      that many taken branches, or the firmware's SMCCC_ARCH_WORKAROUND_3.
+      None of these entry-time mitigations is in the vector slots yet, so on
+      such a core probe prints `bhb=vulnerable` and require refuses to boot
+      (the Raspberry Pi 5's Cortex-A76 needs k=24). A core on no list and
+      without the bits reads as not affected: the Cortex-A53 of the
+      Raspberry Pi 3. The table is Linux's as remembered, not checked
+      against Arm's update; a core it has never seen reads as not affected
+      unless its firmware answers SMCCC_ARCH_WORKAROUND_3 with "needed"
+      (asked of every unlisted core without CLRBHB/ECBHB: one firmware
+      query per CPU; a listed core is affected whatever the firmware says).
+      Cost when the loop lands: k taken branches (k <= 32) per entry from
+      EL0, some tens of cycles.
+      n: not looked at.
+
+    config A64_MIT_BHB_NEVER
+        bool "n: do not look at it, do nothing"
+    config A64_MIT_BHB_PROBE
+        bool "probe: mitigate when the core is affected, say so when the tree cannot"
+    config A64_MIT_BHB_REQUIRE
+        bool "require: refuse to boot on an affected core the tree cannot mitigate"
+endchoice
+
+endif # ARCH_AARCH64
+
+comment "Not implemented (no symbol until the code exists):"
+comment "  branch-predictor / buffer flush on a switch between address spaces"
+comment "  kernel page-table isolation (KPTI-equivalent; X86_MIT_MELTDOWN only reports it)"
+comment "  speculation barrier on syscall entry"
+
+endmenu # Mitigations

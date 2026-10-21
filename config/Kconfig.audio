@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.audio — The audio server's policy
+#
+# The interface (crates/core/devif/src/sound.rs, `Sound`) fixes what a stream
+# may name: its bounds are constants of that file. The options here are what a
+# build lets the audio server (AUDIOD) accept inside them, so every range
+# stops at the interface's bound (tests/host/devif-tests/tests/sound.rs keeps
+# the two equal). The devices themselves are `[audio.NAME]` rows of the signed
+# topology (TOPOLOGY_MAX_AUDIO in config/Kconfig.security); which hardware
+# serves a row is the driver tables' business, not this menu's.
+
+menu "Audio"
+
+config AUDIO_CAPTURE
+    bool "Audio server: capture streams (the microphone)"
+    default y if !HWCLASS_EMBEDDED
+    default n
+    help
+      y: the audio server opens `DIR_CAPTURE` streams, each one admitted by
+      the `mic` effect of the caller's scheduler class (an `[envelope.NAME]`
+      row with `kind = "mic"`) and recorded as an `audio-capture` decision.
+      n: the capture path is not compiled; a capture `open` answers
+      UNSUPPORTED and no envelope row can enable it. An image that must never
+      listen is built with n, which no topology can undo.
+
+      Small boards name it: a HWCLASS_EMBEDDED build is n unless the config
+      says y.
+
+      Cost: no static RAM. The code of the capture path, not measured: the
+      audio server is not built yet (it lands with AUDIOD and virtio-snd).
+
+config AUDIO_MAX_STREAMS
+    int "Audio server: streams open at once"
+    range 1 32
+    default 2 if PROFILE_EMBEDDED
+    default 8
+    help
+      Streams (open `Sound` capabilities, playback and capture together) the
+      audio server holds. The next `open` answers BUSY. Each stream is one
+      slot of the server's static table; a device that mixes several
+      clients' streams into one hardware stream uses one slot per client.
+
+      Cost: one table slot per stream (AUDIOD's stream record plus its
+      `Posted` bitmap), not measured yet: the audio server is not built.
+
+config AUDIO_MAX_PERIODS
+    int "Audio server: most periods in one stream's arena"
+    range 2 64
+    default 8 if PROFILE_EMBEDDED
+    default 32
+    help
+      The most periods a client may name in `Params::periods`; more is
+      BAD_ARGUMENT. The interface's own bound is 64 (`PERIODS_MAX`, one bit a
+      period in `Posted`). Latency is `periods * period_frames / rate`: a
+      stream that wants a small delay uses few short periods, and the bound
+      keeps one client from holding the server's queues for seconds.
+
+      Cost: none by itself; each period is client memory (the arena), and the
+      two queues of a stream are `SpscSlots<4>` of the next power of two above
+      the periods (one slot is the drain end marker; 256 B header + 32 B a slot, in the client's memory
+      objects).
+
+config AUDIO_ARENA_KB_MAX
+    int "Audio server: largest arena of one stream (KiB)"
+    range 4 16384
+    default 64 if PROFILE_EMBEDDED
+    default 4096
+    help
+      The most memory a client may hand the server as one stream's arena
+      (`periods * period_frames * channels * sample bytes`); a bigger geometry
+      is BAD_ARGUMENT. The interface's own bound is 16 MiB
+      (`ARENA_BYTES_MAX`). The arena is the client's memory, mapped by the
+      server for the stream's life, so the bound caps what a client can pin
+      in the server's address space, not what the kernel allocates.
+
+      Cost: no static RAM.
+
+endmenu

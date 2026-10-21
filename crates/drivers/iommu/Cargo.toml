@@ -1,0 +1,20 @@
+[package]
+name = "azos_iommu"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+IOMMU support behind one domain interface: the RISC-V
+IOMMU, Arm SMMUv3, Intel VT-d and AMD-Vi units (register bring-up, device
+table entries, command and fault/event records), the I/O page-table formats
+they walk, and the domain that owns one device's page table. One stage,
+per-device bypass / block / single-stage translation; no ATS, no PASID, no
+nested translation, no interrupt remapping. Field layouts were checked
+against the public specifications and the Linux and QEMU headers, and are
+tested against hand-computed vectors. no_std, no allocator, host-tested via
+tests/host/iommu-tests.
+"""
+
+[dependencies]
+azos_dma = { path = "../dma" }

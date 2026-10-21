@@ -1,0 +1,52 @@
+[package]
+name = "azos_quic"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "QUIC in ring 3 for the transparent RPC link: quinn-proto (the state machine, no crypto feature) driven over std::net::UdpSocket, the crypto adaptor it needs over rustls' quic module and the rustls-rustcrypto provider (RFC 7250 raw public keys, no certificates, no clock), and the relay loop (`relay`) that carries each sealed RPC frame of rpcsrv on its own unidirectional QUIC stream; the program around it is userspace/services/rpcquic. A std crate: built for *-unknown-azos through tools/sdk_cargo.py --vendored, tested on the host (tests/host/quic-tests). Excluded from workspace."
+
+[lib]
+name = "azos_quic"
+path = "src/lib.rs"
+
+[dependencies]
+azos_rpc = { path = "../rpc" }
+# `NoRsaKeys`, the key provider without RSA (deny.toml: RUSTSEC-2023-0071).
+azos_tls = { path = "../tls" }
+quinn-proto = { version = "0.11", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["std"] }
+# The packet protection of the QUIC suites (the provider's own quic module is a stub): the RustCrypto AEADs and AES/ChaCha20 the provider is built on.
+aes = "0.8"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+chacha20 = "0.9"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", default-features = false }
+# The program supplies the entropy hooks on *-unknown-azos (userspace/services/rpcquic): 0.2 draws for rand_core 0.6 (the provider), 0.4 for rand 0.10 (quinn-proto).
+getrandom04 = { package = "getrandom", version = "0.4", default-features = false }
+bytes = "1"
+
+[features]
+# Canary of the host suite (tests/host/quic-tests): the provider's own key loader, which tries RSA first;
+# the test that refuses an RSA key must fail. Never in a shipped build.
+canary-rsa-keys = []
+
+# rustls-rustcrypto 0.0.2-alpha pulls rustls-webpki 0.102 (RustSec); the local copy takes the
+# algorithm identifiers from rustls-pki-types instead (third_party/patches/rustls-rustcrypto).
+[patch.crates-io]
+rustls-rustcrypto = { path = "../../../third_party/patches/rustls-rustcrypto" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = "symbols"
+
+[workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }

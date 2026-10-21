@@ -1,0 +1,14 @@
+[package]
+name = "azos_names"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The Names object: the typed interface (L13 IDL) of the name server (userspace/services/namesd), lookup and who_serves over names packed into words, and the codec of the name server's view of the signed topology. no_std; tested on the host (tests/host/names-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

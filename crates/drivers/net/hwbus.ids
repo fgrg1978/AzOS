@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; build.rs turns every crates/drivers/*/hwbus.ids into
+# the native match table). One line per id:
+#
+#   <driver> <selector> [boot] [if=<KCONFIG_SYMBOL>]
+#
+# <selector>: pci:VVVV:DDDD (hex, * for any) | pciclass:CCCCCC:MMMMMM |
+# dt:<compatible> | virtio:<device id>. A line whose symbol is not y in
+# .config is left out: a driver the image does not compile claims nothing.
+# The driver name is what the kernel's driver registry binds
+# (kernel/src/boot/hwbus.rs).
+
+# Intel e1000e (crates/drivers/net/src/e1000e.rs). Vendor 8086.
+#
+# 82574L: the controller QEMU's `-device e1000e` models (QEMU hw/net/e1000e.c,
+# E1000E_DEV_ID).
+e1000e           pci:8086:10d3   if=DRV_E1000E
+# The PCH LAN generations (I217, I218, I219) from the Linux e1000e PCI table.
+# NOT checked against the pinned Linux tree: its sparse checkout
+# (tools/lx_fetch_linux.sh) does not carry drivers/net/ethernet/intel/e1000e.
+# Verify each id against e1000_pci_tbl before a board relies on it.
+e1000e           pci:8086:153a   if=DRV_E1000E
+e1000e           pci:8086:153b   if=DRV_E1000E
+e1000e           pci:8086:1559   if=DRV_E1000E
+e1000e           pci:8086:155a   if=DRV_E1000E
+e1000e           pci:8086:156f   if=DRV_E1000E
+e1000e           pci:8086:1570   if=DRV_E1000E
+e1000e           pci:8086:15a0   if=DRV_E1000E
+e1000e           pci:8086:15a1   if=DRV_E1000E
+e1000e           pci:8086:15a2   if=DRV_E1000E
+e1000e           pci:8086:15a3   if=DRV_E1000E
+e1000e           pci:8086:15b7   if=DRV_E1000E
+e1000e           pci:8086:15b8   if=DRV_E1000E
+e1000e           pci:8086:15b9   if=DRV_E1000E
+e1000e           pci:8086:15bb   if=DRV_E1000E
+e1000e           pci:8086:15bc   if=DRV_E1000E
+e1000e           pci:8086:15bd   if=DRV_E1000E
+e1000e           pci:8086:15be   if=DRV_E1000E
+e1000e           pci:8086:15d6   if=DRV_E1000E
+e1000e           pci:8086:15d7   if=DRV_E1000E
+e1000e           pci:8086:15d8   if=DRV_E1000E
+e1000e           pci:8086:15e3   if=DRV_E1000E
+
+# Intel igc (crates/drivers/net/src/igc.rs). Vendor 8086. The I220/I221/I225/
+# I226 ids are the IGC_DEV_ID_* of the Linux igc_hw.h; the pinned checkout
+# (tools/lx_fetch_linux.sh) carries drivers/net/ethernet/intel/igc and igb, and
+# the igc.rs host test device_ids_are_igc_hw_h pins each one by its Linux name.
+# The blank-NVM ids (125f, 15fd) are left out: a part with no station address
+# would only be refused.
+igc              pci:8086:15f2   if=DRV_IGC
+igc              pci:8086:15f3   if=DRV_IGC
+igc              pci:8086:15f8   if=DRV_IGC
+igc              pci:8086:15f7   if=DRV_IGC
+igc              pci:8086:3100   if=DRV_IGC
+igc              pci:8086:3101   if=DRV_IGC
+igc              pci:8086:3102   if=DRV_IGC
+igc              pci:8086:5502   if=DRV_IGC
+igc              pci:8086:5503   if=DRV_IGC
+igc              pci:8086:0d9f   if=DRV_IGC
+igc              pci:8086:125b   if=DRV_IGC
+igc              pci:8086:125c   if=DRV_IGC
+igc              pci:8086:125d   if=DRV_IGC
+igc              pci:8086:125e   if=DRV_IGC
+# 82576 (E1000_DEV_ID_82576, Linux igb/e1000_hw.h): the controller QEMU's
+# `-device igb` models (QEMU hw/net/igb.c); the same advanced descriptors and
+# the same CTRL.RST reset (igc.rs `Model::Igb`).
+igc              pci:8086:10c9   if=DRV_IGC

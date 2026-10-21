@@ -1,0 +1,22 @@
+[package]
+name = "azos_bytepipe_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_bytepipe. Excluded from the kernel workspace. Run with: cd tests/host/bytepipe-tests && cargo test --release"
+
+# Its own workspace root, like the other host-test crates.
+[workspace]
+
+[dependencies]
+azos_bytepipe = { path = "../../../crates/core/bytepipe" }
+azos_rings = { path = "../../../crates/core/rings" }
+
+[features]
+# Each forwards a canary of azos_bytepipe; the guarded test must go red.
+canary-no-eof = ["azos_bytepipe/canary-no-eof"]
+canary-no-epipe = ["azos_bytepipe/canary-no-epipe"]
+canary-split-atomic = ["azos_bytepipe/canary-split-atomic"]
+canary-block-nonblock = ["azos_bytepipe/canary-block-nonblock"]
+canary-no-lock-recovery = ["azos_bytepipe/canary-no-lock-recovery"]

@@ -1,0 +1,88 @@
+[package]
+name = "azos_drv_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the computation inside the driver class crates, pulled in with #[path] against root-level stand-ins for the MMIO modules. Excluded from workspace."
+
+# Run with:  cd tests/host/drivers-tests && cargo test --release
+
+[dependencies]
+azos_common = { path = "../../../crates/core/common" }
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
+azos_mm = { path = "shims/mm", package = "drv_test_mm" }
+# S2 (wave 15): ads1115.rs, pulled via #[path], over a scripted ADS1115.
+azos_drv_bus = { path = "shims/bus", package = "drv_test_bus" }
+azos_arch = { path = "shims/arch", package = "drv_test_arch" }
+# `motor_pid.rs` reads Kconfig `PID_DT_MS` (wave 11); the real crate, as
+# cap-tests uses it.
+azos_limits = { path = "../../../crates/core/limits" }
+azos_rings = { path = "../../../crates/core/rings" }
+# The input event word and the screen region contract (keymap.rs re-exports it).
+azos_input_wire = { path = "../../../crates/drivers/input/wire" }
+# The INA219 chip logic both placements compile (wave 11 DRVPLACE).
+azos_ina219 = { path = "../../../crates/drivers/ina219" }
+# The real-time clock drivers (Kconfig DRV_RTC), against a model of each chip.
+azos_rtc = { path = "../../../crates/drivers/rtc" }
+azos_buzzer = { path = "../../../crates/drivers/buzzer" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_drv_api = { path = "../../../crates/drivers/api" }
+# virtio/mod.rs maps every buffer through a DMA domain (the registry's fallback
+# identity domain on the host).
+azos_dma = { path = "../../../crates/drivers/dma" }
+
+# **Reproduce the kernel's release profile, specifically `overflow-checks`.**
+# Without this the suite compiles arithmetic that silently wraps, so a test
+# written to catch an overflow passes whether or not the overflow exists --
+# verified: restoring the i32 subtraction that once trapped left the test
+# green. The kernel builds with overflow-checks = true and panic = "abort",
+# which is what turns a wrapped subtraction into a board reset, so a suite
+# that does not match it is testing a different program.
+# eth.rs is split by a `vf2` cfg the drivers crate declares, and can.rs by
+# both `vf2` and `k1`. Echoed here so the pulled modules do not emit
+# unexpected_cfgs -- declared rather than silenced, so the condition stays
+# visible in the source.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1", "rpi5"))'] }
+
+[profile.release]
+overflow-checks = true
+
+[features]
+# virtio/mod.rs (pulled via #[path]) gates its PCI transport on `pci`; declared
+# here so the cfg is a known value on the host build (never enabled).
+pci = []
+# virtio/blk.rs's wave-15 canaries (never enabled here; declared so the cfg
+# is a known value).
+blk-poll-canary = []
+blk-stall-canary = []
+# virtio/blk.rs's F1 probe and its canary (wave 15): known values, never enabled.
+blk-wait-probe = []
+blk-lock-wait-canary = []
+# blkdev.rs routes to the NVMe driver behind `nvme`; virtio/input.rs has a
+# canary of its own: known values, never enabled on the host.
+nvme = []
+# ahci.rs's kernel half (the one controller, its MSI entry) is behind `ahci`; the
+# host builds the driver without it: a known value, never enabled on the host.
+ahci = []
+# net_device.rs routes to the Intel NIC behind `e1000e` (e1000e.rs is pulled in
+# without its device half): a known value, never enabled on the host.
+e1000e = []
+# net_device.rs routes to the Intel igc NIC behind `igc` (igc.rs is pulled in
+# without its device half): a known value, never enabled on the host.
+igc = []
+input-rx-canary = []
+# virtio/net.rs canary (the NIC's TX buffers left out of its DMA domain): never enabled on the host.
+iommu-tx-canary = []
+# mmc.rs's gate canaries (never enabled on the host; known values).
+mmc-flush-canary = []
+mmc-poll-canary = []
+# S2 canary: the pipelined ADS1115 read is the blocking one again.
+ads1115-pipeline-canary = []
+# S2 canary: an ADS1115 unit runs outside the device queue.
+ads1115-queue-canary = []

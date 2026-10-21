@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+// SpacemiT K1 OPP host fixture: two clusters of four X60 CPUs, each with an
+// operating-points-v2 table carrying opp-microvolt. INVENTED numbers: the
+// shape (one table per cluster, a regulator on the rail, 1.05 V on the rail)
+// is the K1 board tree's, the frequencies and voltages are not the silicon's.
+//   cluster0: listed out of order, one-cell opp-microvolt, one OPP above the
+//             rail's 1.05 V (dropped), one disabled.
+//   cluster1: three-cell opp-microvolt <target min max>, one OPP whose target
+//             is above its own maximum (dropped).
+// Rebuild: dtc -I dts -O dtb -o k1-opp.dtb k1-opp.dts
+/dts-v1/;
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "azos,k1-opp-fixture";
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		cpu@0 { device_type = "cpu"; reg = <0>; capacity-dmips-mhz = <1024>; operating-points-v2 = <&c0_opp>; };
+		cpu@1 { device_type = "cpu"; reg = <1>; capacity-dmips-mhz = <1024>; operating-points-v2 = <&c0_opp>; };
+		cpu@2 { device_type = "cpu"; reg = <2>; capacity-dmips-mhz = <1024>; operating-points-v2 = <&c0_opp>; };
+		cpu@3 { device_type = "cpu"; reg = <3>; capacity-dmips-mhz = <1024>; operating-points-v2 = <&c0_opp>; };
+		cpu@4 { device_type = "cpu"; reg = <4>; capacity-dmips-mhz = <1024>; operating-points-v2 = <&c1_opp>; };
+		cpu@5 { device_type = "cpu"; reg = <5>; capacity-dmips-mhz = <1024>; operating-points-v2 = <&c1_opp>; };
+		cpu@6 { device_type = "cpu"; reg = <6>; capacity-dmips-mhz = <1024>; operating-points-v2 = <&c1_opp>; };
+		cpu@7 { device_type = "cpu"; reg = <7>; capacity-dmips-mhz = <1024>; operating-points-v2 = <&c1_opp>; };
+	};
+	c0_opp: opp-table-0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		opp-1200000000 { opp-hz = /bits/ 64 <1200000000>; opp-microvolt = <1000000>; opp-microwatt = <600000>; };
+		opp-600000000 { opp-hz = /bits/ 64 <600000000>; opp-microvolt = <900000>; opp-microwatt = <300000>; };
+		opp-1600000000 { opp-hz = /bits/ 64 <1600000000>; opp-microvolt = <1100000>; opp-microwatt = <800000>; };
+		opp-800000000 { opp-hz = /bits/ 64 <800000000>; opp-microvolt = <950000>; opp-microwatt = <400000>; };
+		opp-1000000000 { opp-hz = /bits/ 64 <1000000000>; opp-microvolt = <975000>; opp-microwatt = <500000>; status = "disabled"; };
+	};
+	c1_opp: opp-table-1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		opp-600000000 { opp-hz = /bits/ 64 <600000000>; opp-microvolt = <900000 880000 950000>; opp-microwatt = <300000>; };
+		opp-1200000000 { opp-hz = /bits/ 64 <1200000000>; opp-microvolt = <1000000 980000 1050000>; opp-microwatt = <600000>; };
+		opp-1400000000 { opp-hz = /bits/ 64 <1400000000>; opp-microvolt = <1040000 1020000 1030000>; opp-microwatt = <700000>; };
+	};
+};

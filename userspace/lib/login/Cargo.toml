@@ -1,0 +1,14 @@
+[package]
+name = "azos_login"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The Login object: the typed interface (L13 IDL) between the terminal server (userspace/services/termd), which owns the console and its secure-attention prompt, and the login service (userspace/services/logind), which asks the kernel to verify a credential and starts the user's session; and the credential function both ends and the enrolment tool share. no_std; tested on the host (tests/host/logind-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+azos_crypto = { path = "../../../crates/core/crypto" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

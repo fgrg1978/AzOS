@@ -1,0 +1,29 @@
+[package]
+name = "azos_soc_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/soc (device-tree reader, consumer lookup, the five SoC frameworks, the JH7110 clock/reset/PMU register models against hand-written traces). Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/soc-tests && cargo test
+#            cargo test --features effect-after-write-canary   (the ordering rows must FAIL)
+#            cargo test --features bind-skip-pinctrl-canary   (the default-pin-state row must FAIL)
+
+[dependencies]
+azos_soc = { path = "../../../crates/drivers/soc" }
+azos_hwbus = { path = "../../../crates/drivers/hwbus" }
+azos_dtb = { path = "../../../crates/drivers/dtb" }
+azos_thermal = { path = "../../../crates/drivers/thermal" }
+azos_energy = { path = "../../../crates/core/energy" }
+
+[features]
+# Mirrors azos_soc's gate canary so the host rows can show they bite.
+effect-after-write-canary = ["azos_soc/effect-after-write-canary"]
+# Mirrors azos_soc's bind canary: `bind` leaves out the pin state.
+bind-skip-pinctrl-canary = ["azos_soc/bind-skip-pinctrl-canary"]
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

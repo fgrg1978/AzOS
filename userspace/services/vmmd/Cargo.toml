@@ -1,0 +1,55 @@
+[package]
+name = "vmmd"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS virtual-machine monitor, ring 3 (hypervisor plan H1): the device models of a guest (virtio-mmio transport with console, block and net backends) served over the Vm and Vcpu interfaces. The guest holds no warrant; the backends' handles are vmmd's row, so a guest's effects pass the same envelope and record as a native task's. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_rings = { path = "../../../crates/core/rings" }
+
+[features]
+# Host canaries (tests/host/vmmd-tests), never in a real build: each removes
+# one check and exactly its tests must fail. vq-no-bounds: a descriptor is not
+# checked against guest RAM. blk-no-capacity-check: a request past the end of
+# the disk reaches the store. blk-ro-ignored: a write to a read-only disk
+# reaches the store. driver-ok-unchecked: DRIVER_OK takes effect without
+# FEATURES_OK. store-unbounded: the disk file works without a budget.
+# term-unfiltered: the guest's console bytes pass as written. term-unlimited:
+# the guest's console has no volume limit. elf-no-bounds: a kernel segment
+# outside guest RAM is not refused before the first byte is written.
+# ctl-no-ceiling: a guest may be built with more CPUs or memory than its row
+# declares. ctl-image-unchecked: an image name that climbs out of the guest
+# directory (or is absolute) reaches the host's open.
+canary-vq-no-bounds = []
+canary-blk-no-capacity-check = []
+canary-blk-ro-ignored = []
+canary-driver-ok-unchecked = []
+canary-store-unbounded = []
+canary-term-unfiltered = []
+canary-term-unlimited = []
+canary-elf-no-bounds = []
+canary-ctl-no-ceiling = []
+canary-ctl-image-unchecked = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+# On wherever the hypervisor core is built (`VMMD_ROW`,
+# crates/core/topology/src/builder.rs), and started there: with no
+# `[guest.NAME]` row it finds no `vm.0` and exits at once.
+default = "HV"
+start = "HV"

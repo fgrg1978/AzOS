@@ -1,0 +1,25 @@
+[package]
+name = "azos_inspect_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the introspection tree: the region format, the writer and the reader of crates/core/inspect (publish and read back, consistency under a concurrent writer, a refused version, the admin region unreadable as a public one) and the walking library of userspace/lib/inspect. Excluded from workspace."
+
+# Run with:  cd tests/host/inspect-tests && CARGO_TARGET_DIR=~/azos-out/inspect-tests cargo test --release
+
+[dependencies]
+azos_inspect = { path = "../../../crates/core/inspect" }
+azos_inspect_lib = { path = "../../../userspace/lib/inspect" }
+azos_decision = { path = "../../../crates/core/decision" }
+
+[features]
+# `kernel/src/boot/inspect_metrics.rs` (included by path): the canary build puts the
+# TID of the task woken in a public wake row, and `a_public_reader_never_sees_a_task_id`
+# must fail.
+wake-public-tid-canary = []
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

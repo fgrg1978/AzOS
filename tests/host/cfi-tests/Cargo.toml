@@ -1,0 +1,30 @@
+[package]
+name = "azos_cfi_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the hardware control-flow-integrity layer (plan item I4): the Kconfig to compiler-flag mapping of tools/kconfig_to_cargo.py for the three ISAs, a landing pad at every global assembly entry, and the pure parts of the aarch64 pointer-authentication key and the x86_64 CET setup. Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/cfi-tests && cargo test
+#            cargo test --features pad-canary   (the pad rows must FAIL)
+#            cargo test --features key-canary   (the key rows must FAIL)
+
+[features]
+# The scanner is fed the real x86_64 and aarch64 entry sources with their
+# first landing pad removed: `entry_asm_has_a_pad_at_every_global_entry` must fail.
+pad-canary = []
+# `derive_key` ignores the counter: `every_key_source_moves_both_words` must fail.
+key-canary = []
+# `crates/core/arch-aarch64/src/sysregs.rs` is file-included and names this
+# gate canary; it stays off here.
+irq-nomem-canary = []
+
+[dependencies]
+# `crates/core/arch-aarch64/src/sysregs.rs` (file-included) names it.
+azos_arch_api = { path = "../../../crates/core/arch-api" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

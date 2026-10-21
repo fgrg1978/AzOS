@@ -1,0 +1,20 @@
+[package]
+name = "azos_compose"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The compositor's pixel engine: a z-ordered list of client layers, the damage they cause as at most DAMAGE_MAX rectangles, nearest-neighbour blit and scale (XRGB8888 and RGB565, integer HiDPI factors) and a software cursor plane, pure over byte rows. The compositor server (userspace/services/compositor) links it and presents its damage through the Display interface (crates/core/devif). no_std, no alloc, no unsafe; tested on the host (tests/host/compose-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_devif = { path = "../../../crates/core/devif" }
+
+[features]
+# Canaries of tests/host/compose-tests: each plants one bug and the test named in
+# tests/host/compose-tests/src/lib.rs must go red. Never on in a server image.
+canary-damage-drop = []
+canary-z-inverted = []
+canary-scale-origin = []
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

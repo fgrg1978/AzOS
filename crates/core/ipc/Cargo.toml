@@ -1,0 +1,80 @@
+[package]
+name = "azos_ipc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
+
+[features]
+# Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
+# capability derived from a revoked one is not refused before the sweep frees
+# it. Never in a real build.
+revoke-chain-canary = []
+# Wave 15 gate canary: a static-key write goes through the EXECUTABLE text
+# mapping instead of the alias; W^X must stop it with a store fault.
+text-poke-wx-canary = []
+default = []
+# M40 (audit U10-6): gates `seed_one_cap_outcome`'s actuation arms the
+# same way `crates/core/topology`'s parser and builder already gate the word
+# "motor" / the `CapSpec` rows — a non-actuating build must have ZERO live
+# paths to mint a drivetrain capability, not just zero declared ones.
+profile-actuation = []
+# `port.rs`'s lost-wakeup canary. Only its host suite (`tests/host/ipc-tests`)
+# acts on it (`cfg(all(test, ...))`); declared here so the cfg is known.
+port-recheck-canary = []
+# io_ring K1 canary: OP_FSYNC completes in the submit (the synchronous answer),
+# so `a_write_is_queued_and_its_fsync_completes_only_after_the_flush` goes red.
+ioring-sync-fsync-canary = []
+# io_ring registered buffers: a vacated ring forgets the pins its buffers hold,
+# so `a_vacated_ring_gives_every_pin_back` goes red. Host suite only.
+ioring-regbuf-leak-canary = []
+# `port.rs`'s capability-binding canary (wave 11): `port_cap_event`
+# ignores every event, so a binding outlives a revoke. Host suite only.
+port-revoke-canary = []
+
+# MemObj host canaries (tests/host/ipc-tests, syscall-tests): each puts one
+# hole back so the test that guards it goes red. Never in a real build.
+memobj-move-keeps-map-canary = []
+memobj-share-no-narrow-canary = []
+memobj-charge-stays-canary = []
+memobj-protect-max-canary = []
+memobj-cow-no-break-canary = []
+memobj-no-kernel-map-canary = []
+memobj-anon-uncharged-canary = []
+memobj-refcount-wrap-canary = []
+memobj-sweep-no-hook-canary = []
+memobj-sweep-no-retain-canary = []
+memobj-sweep-every-domain-canary = []
+memobj-purge-held-canary = []
+memobj-purge-kernel-held-canary = []
+memobj-purge-locked-canary = []
+# Delete is not revoke (20-10): a delete revokes the copies of the slot again.
+delete-revokes-canary = []
+# A move of a slot with copies lifts them a level (as a delete does) again.
+move-lifts-depth-canary = []
+
+[dependencies]
+azos_abi = { workspace = true }
+azos_sched = { workspace = true }
+azos_decision = { workspace = true }
+azos_devif = { workspace = true }
+azos_sync = { workspace = true }
+azos_common = { workspace = true }
+azos_mm = { workspace = true }
+azos_drv_base     = { workspace = true }
+azos_drv_sys      = { workspace = true }
+azos_drv_gpio     = { workspace = true }
+azos_drv_bus      = { workspace = true }
+azos_drv_block    = { workspace = true }
+azos_drv_sensor   = { workspace = true }
+azos_drv_actuator = { workspace = true }
+azos_arch = { workspace = true }
+azos_limits = { workspace = true }
+azos_chaos = { workspace = true }
+azos_rings = { workspace = true }
+azos_bytepipe = { workspace = true }
+azos_trace = { workspace = true }
+wcet-macro = { path = "../wcet-macro" }

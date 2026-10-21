@@ -1,0 +1,54 @@
+[package]
+name = "azos_micro"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "AzOS-micro: the MCU kernel. riscv32imac, M-mode, PMP region domains, static tasks from the signed topology, grants, priority ceiling, spawn only. Shares the pure crates of the main kernel; built by `make micro`."
+
+[lib]
+name = "azos_micro"
+path = "src/lib.rs"
+
+[[bin]]
+name = "azos_micro"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+# The topology verifies against the test key (tools/keys/test_pub.bin).
+# Without it, TOPOLOGY_PUBKEY_PATH names the fleet's key.
+dev-key = ["azos_topology/dev-key"]
+# The shared sc.rs (crates/core/sched) names the main kernel's QoS canary in a
+# `cfg!`; micro compiles that file by path, so the feature exists here to keep
+# the name declared. It is never enabled (micro has no timer slack).
+qos-rt-slack-canary = []
+
+[dependencies]
+azos_abi = { path = "../crates/core/abi" }
+azos_topology = { path = "../crates/core/topology" }
+azos_limits = { path = "../crates/core/limits" }
+
+# The riscv32 side of libsys (`crates/core/libsys/src/rv32.rs`): the syscalls
+# the tasks of the image make. Only the bin (the tasks) uses it, so the host
+# build of the lib (tests/host/micro-tests) does not pull it.
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+azos_libsys = { path = "../crates/core/libsys" }
+
+[build-dependencies]
+azos-config = { path = "../crates/core/azos-config" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+debug = true
+
+[profile.dev]
+panic = "abort"
+
+# Own workspace: the root workspace builds for the main kernel's three ISAs,
+# and an M-mode riscv32 image is not a member of it (same arrangement as the
+# userspace images).
+[workspace]

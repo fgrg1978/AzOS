@@ -1,0 +1,17 @@
+[package]
+name = "azos_config_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_config (INI parser + getters/setters). The config crate uses static-mut backing storage, so tests serialise via a Mutex to avoid cross-test contamination."
+
+# Run with:  cd tests/host/config-tests && cargo test
+
+[dependencies]
+azos_config = { path = "../../../crates/core/config" }
+# W2-B5: signed_tests.rs proves `tools/gen_config_sig.py`'s output verifies
+# against the same `TRUSTED_PUBKEY` CAPS.TOML/SCHED.TOML use.
+# `azos_config` itself takes no dependency on this crate — see
+# `crates/core/config/src/signed.rs`'s module doc for why.
+azos_topology = { path = "../../../crates/core/topology", features = ["dev-key"] }

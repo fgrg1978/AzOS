@@ -1,0 +1,34 @@
+[package]
+name = "azos_tls_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for userspace/lib/tls: the pinned client and the server over loopback TCP, the refusals (a key that is not pinned, an expired certificate, a certificate for another name, no pin at all), the source rows, the HTTP GET, the installer's HTTPS package source and the installer's `fetch` over it. Excluded from workspace."
+
+# Run with:  cd tests/host/tls-tests && cargo test --release
+# (the vendored crates.io tree is wired in .cargo/config.toml; offline)
+
+[features]
+canary-no-pin = ["azos_tls/canary-no-pin"]
+canary-no-validity = ["azos_tls/canary-no-validity"]
+canary-rsa-keys = ["azos_tls/canary-rsa-keys"]
+
+[dependencies]
+azos_tls = { path = "../../../userspace/lib/tls", features = ["packages"] }
+azos_packages = { path = "../../../userspace/lib/packages", features = ["service"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+azos_pkg = { path = "../../../crates/core/pkg" }
+azos_abi = { path = "../../../crates/core/abi" }
+# The installer's pure half pulls the topology in, whose build wants the topology key.
+azos_topology = { path = "../../../crates/core/topology", features = ["dev-key"] }
+
+# rustls-rustcrypto 0.0.2-alpha pulls rustls-webpki 0.102 (RustSec); the local copy takes the
+# algorithm identifiers from rustls-pki-types instead (third_party/patches/rustls-rustcrypto).
+[patch.crates-io]
+rustls-rustcrypto = { path = "../../../third_party/patches/rustls-rustcrypto" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

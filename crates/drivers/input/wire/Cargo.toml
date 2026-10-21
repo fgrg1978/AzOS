@@ -1,0 +1,9 @@
+[package]
+name = "azos_input_wire"
+version = "0.1.0"
+edition = "2021"
+description = "The contract between the kernel's input and console producers and the ring-3 terminal server: the input event word, and the layout of the shared screen region (cells, scrollback, overlay, mouse mode)."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]

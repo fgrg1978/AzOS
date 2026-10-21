@@ -1,0 +1,16 @@
+[package]
+name = "azos_rtc"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+Real-time clock drivers: the `Rtc` trait and four chips behind it, the QEMU
+goldfish RTC (riscv64), the PL031 (aarch64 `virt`), the MC146818 CMOS clock
+(x86_64) and the PCF8563 over I2C (boards). Pure (no_std, no allocation, no
+unsafe, no statics): the host supplies the register window, the I/O ports or
+the I2C bus; tests/host/drivers-tests drives each chip against a register file
+that behaves like it.
+"""
+
+[dependencies]

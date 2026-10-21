@@ -1,0 +1,617 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.platform — Board / SoC / platform selection
+#
+# Each BOARD_* choice locks in platform-specific
+# hardware addresses, clock frequencies, and RAM layout.
+# BOARD_VF2/K1 imply ARCH_RISCV64.
+# BOARD_QEMU is ARCH-agnostic (one entry per ISA, but defaults to riscv64).
+
+menu "Platform / Board"
+
+# ---------------------------------------------------------------------------
+# Board choice
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Target board"
+    default BOARD_QEMU
+    help
+      Selects the hardware target.  Each board sets default addresses
+      for UART, interrupt controller, timer, and RAM.  Hardware-specific
+      driver enables are also implied by the board choice.
+
+    config BOARD_QEMU
+        # cargo-feature: qemu
+        bool "QEMU virt (riscv64/aarch64/x86_64 simulation)"
+        help
+          QEMU virtio machine.  Used for development and CI.
+          Hardware addresses match the QEMU virt device-tree defaults.
+          VirtIO block/net devices replace real hardware drivers.
+
+    config BOARD_VF2
+        # cargo-feature: vf2
+        bool "StarFive VisionFive 2 (JH7110, RISC-V)"
+        depends on ARCH_RISCV64
+        help
+          StarFive VisionFive 2 SBC with JH7110 SoC.
+          4-core rv64gc @ 1.5 GHz, 8 GiB LPDDR4.
+          MACB Ethernet, StarFive GPIO/PWM/I2C controllers.
+
+    config BOARD_K1
+        # cargo-feature: k1
+        bool "SpacemiT K1 / BananaPi BPI-F3 (RISC-V + RVV 1.0)"
+        depends on ARCH_RISCV64
+        help
+          SpacemiT K1 SoC with 8-core rv64gcv @ 1.6 GHz + RVV V1.0 (VLEN=256).
+          Used for ML/CNN inference acceleration paths.
+
+    config BOARD_RPI5
+        # cargo-feature: rpi5
+        bool "Raspberry Pi 5 (BCM2712, aarch64) - not ported yet"
+        depends on ARCH_AARCH64
+        help
+          Raspberry Pi 5 Model B: BCM2712, 4x Cortex-A76 (ARMv8.2-A: LSE;
+          no PAuth, BTI, MTE or SVE). Port notes, to be verified against
+          the BCM2712 device tree before bring-up:
+          - interrupt controller GIC-400 (GICv2): the backend exists
+            (irq/gicv2.rs, selected from the device tree's arm,gic-400
+            node) and is proven on QEMU virt,gic-version=2 only; the EL2
+            entry (mmu/boot.rs) still writes ICC_SRE_EL2, which a GICv2
+            machine does not have, so the firmware's EL2 handoff is the
+            open part;
+          - most peripherals sit behind the RP1 southbridge on PCIe; the
+            3-pin debug UART is a PL011 on the SoC, the first console;
+          - booted by the Pi firmware (config.txt, kernel8.img, DTB);
+          - generic timer at 54 MHz.
+          Selecting it stops the build with a compile_error! that names
+          what is missing.
+
+    config BOARD_GENERIC
+        bool "Generic / custom (manually specify all addresses)"
+        help
+          For board bring-up or platforms not yet in this list.
+          Fill in TIMER_FREQ and RAM_SIZE (UART_BASE/PLIC_BASE/RAM_BASE removed 2026-09-26, V2.6 -- crates/drivers/base/src/platform.rs is the source of truth for those)
+          manually in the options below.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Timer frequency
+# ---------------------------------------------------------------------------
+
+config TIMER_FREQ
+    int "Timer frequency (Hz)"
+    # ARMv8 generic timer on QEMU virt (>= 9.0): CNTFRQ_EL0 = 1 GHz. Every
+    # TIMER_FREQ-derived timeout is compile-time; a wrong value here is a
+    # 100x-short DHCP/ARP/safety timeout on that ISA (gate 182c).
+    default 54000000 if BOARD_RPI5
+    default 1000000000 if ARCH_AARCH64
+    # x86_64 skeleton: the TSC rate is per-CPU and calibrated at boot; a port
+    # makes the TIMER_FREQ-derived timeouts runtime. Placeholder until then.
+    default 1000000000 if ARCH_X86_64
+    default 10000000 if BOARD_QEMU
+    default 4000000  if BOARD_VF2
+    default 24000000 if BOARD_K1
+    default 10000000
+    range 1000000 2000000000
+    help
+      Frequency of the hardware timer counter used by the scheduler
+      (CLINT mtime on RISC-V, generic timer on Aarch64).  This is NOT
+      the CPU clock — it is the timer increment rate.
+      QEMU virt: 10 MHz.  JH7110 (VF2): 4 MHz.  K1: 24 MHz.
+      Must match hardware to get correct tick math.
+
+# ---------------------------------------------------------------------------
+# RAM base and size
+# ---------------------------------------------------------------------------
+config RAM_SIZE
+    int "RAM size (MiB)"
+    default 1024 if ARCH_X86_64
+    default 256  if BOARD_QEMU
+    default 8192 if BOARD_VF2
+    default 4096 if BOARD_K1
+    default 256
+    range 1 65536
+    help
+      RAM in MiB the board is expected to have. It is NOT a ceiling on what
+      the kernel uses: at boot the physical memory manager describes and
+      manages all the RAM the firmware reports (device tree, E820 map), one
+      32-byte frame descriptor per 4 KiB frame, however much that is.  The
+      build uses this value to refuse an impossible configuration (a kernel
+      heap that is not smaller than the RAM), and the dma-contig gate canary
+      fragments that much RAM.  The embedded defconfig sets 64 for its 16 and
+      64 MiB boards.
+
+      Cost: none at run time.  The memory manager's own cost is 32 B of RAM per
+      4 KiB frame (0.78 %: 2 MiB at 256 MiB, 8 MiB at 1 GiB, taken from RAM just
+      above the kernel image at boot, on riscv64, aarch64 and x86_64 alike), and
+      it scales with the RAM present, not with this value.
+
+config PSTORE_SIZE_KB
+    int "Panic record region in RAM (KiB, 0 = off)"
+    default 4 if BOARD_QEMU
+    default 0
+    range 0 1024
+    help
+      Size of the RAM region at the top of the reported RAM range that
+      holds the last kernel panic's crash-log entry across a warm reboot
+      (kernel/src/pstore.rs; the analogue of Linux pstore/ramoops). The
+      panic handler writes it without taking a lock, so a panic inside the
+      filesystem, which skips the /fat/CRASH.LOG write, is still recorded;
+      the next boot checks the record's CRC-32, appends it to
+      /fat/CRASH.LOG and clears it. One entry needs under 1 KiB.
+
+      The region is taken out of the page allocator. It needs a reset
+      that keeps DRAM contents and firmware that leaves the top of RAM
+      alone; QEMU virt keeps both on riscv64 and aarch64. Default 4 on
+      QEMU, 0 elsewhere.
+
+      Cost: no static RAM (+0 B measured for 4 -> 5 and -> 16 KiB, both
+      ISAs: the image does not grow).  The region is PSTORE_SIZE_KB KiB of
+      page-allocator memory taken at boot, so 4 KiB frames removed from the
+      allocator: 1 frame at the QEMU default of 4, 256 at the maximum 1024
+      (1 MiB).  The crash-record code adds a few words of .bss for the
+      region's address and state, and nothing sized by this option.
+
+# ---------------------------------------------------------------------------
+# HDMI framebuffer (VF2 only — DC8200 + Innosilicon HDMI TX)
+# ---------------------------------------------------------------------------
+# Compiled in only with `--features hdmi` (crates/drivers/display) — these values
+# are read by that code but exist regardless of whether the feature is
+# active, same relationship as the WCET threshold configs vs
+# the `wcet` Cargo feature.
+
+config HDMI_WIDTH
+    int "HDMI framebuffer width (pixels)"
+    default 640
+    range 64 3840
+    help
+      Fixed output resolution — no EDID negotiation with the monitor
+      (see crates/drivers/display). 640x480 is the safe VESA default: the most
+      universally-supported fallback timing, most likely to work
+      blind on an unknown display. Changing this requires the display
+      timing constants in crates/drivers/display/src/dc8200.rs to match a
+      real, valid mode (arbitrary width/height pairs are not
+      necessarily valid CRTC timings).
+
+config HDMI_HEIGHT
+    int "HDMI framebuffer height (pixels)"
+    default 480
+    range 64 2160
+    help
+      See HDMI_WIDTH — must be changed together with it to match a
+      real display mode, not independently.
+
+# ---------------------------------------------------------------------------
+# SoC resource frameworks (clock, reset, regulator, power domain)
+# ---------------------------------------------------------------------------
+# crates/drivers/soc: the kernel builds them from the device tree at boot
+# (kernel/src/boot/soc.rs). Large boards only: a small board (HWCLASS_EMBEDDED)
+# is native-only and its drivers do not ask the device tree for a clock.
+
+config SOC_FRAMEWORKS
+    # cargo-feature: soc
+    bool "SoC resource frameworks: clocks, resets, regulators, power domains from the device tree"
+    depends on EFFECT_WRITE_AHEAD && !HWCLASS_EMBEDDED && !ARCH_X86_64
+    default y if BOARD_VF2 || BOARD_K1
+    default n
+    help
+      Emits the kernel cargo feature `soc`. At boot the kernel reads the
+      device tree's clock, reset, regulator and power-domain providers into
+      the four managers of crates/drivers/soc: reference-counted gating,
+      rates, the `clocks`, `resets`, `*-supply` and `power-domains` lookup of
+      a driver's node (the node offset the hardware bus records in each
+      Device), and the rails marked `regulator-always-on` switched on.
+      Providers: `fixed-clock` and `regulator-fixed` everywhere, the StarFive
+      JH7110 ones with SOC_JH7110, the SpacemiT K1 ones with SOC_K1. A
+      provider whose register window the kernel's device mapping refuses is
+      dropped and never used.
+
+      Every clock, reset, rail and power-domain change is a write-ahead
+      effect (innovation B1, kinds 2..6 of the effect gate): its record is on
+      the flight recorder's ring before the register is written, and a change
+      the ring cannot hold is refused with a receipt, except one toward
+      quiescence (gate a clock, assert a reset, cut a rail, power a domain
+      off). That is why this needs EFFECT_WRITE_AHEAD: with the gate off a
+      change would go unrecorded, and the frameworks are not built instead.
+
+      Needs a device tree. On by default for BOARD_VF2 (riscv64, with
+      SOC_JH7110) and BOARD_K1 (with SOC_K1); every other board opts in.
+      Without a family symbol only the generic providers exist
+      (`fixed-clock`, `regulator-fixed`: no register,
+      so no window to map), which is all an aarch64 image has today: no
+      aarch64 board enables this, the generic path is covered by the host
+      suite (tests/host/soc-tests) and compiles for aarch64, and its boot
+      has not been run on QEMU virt (testing week).
+
+      Nothing is written to hardware at boot: the registers are touched by the
+      first consumer. The consumers are the drivers a bound node asks a
+      clock of and the thermal task (THERMAL), which moves the CPU clock of
+      a board that has the frameworks. /proc/soc shows what the boot step
+      registered, from the report kept at boot; it reads no register.
+
+      Cost: the providers and managers are one heap allocation of about 4 KiB
+      at boot, plus 3 to 5 device windows mapped, and no cost per operation
+      beyond the effect record (one clock read, a 32-byte encode, one
+      compare-and-swap). n = not linked.
+
+config SOC_JH7110
+    # cargo-feature: soc-jh7110
+    bool "StarFive JH7110 providers: clock and reset controllers, power management unit, pad controllers"
+    depends on SOC_FRAMEWORKS && BOARD_VF2
+    default y
+    help
+      Emits the kernel cargo feature `soc-jh7110`. Reads the
+      `starfive,jh7110-syscrg` (clocks and resets), `-aoncrg` and `-stgcrg`
+      (resets), `-pmu` (power domains) and `-sys-pinctrl` / `-aon-pinctrl`
+      (pad controllers) nodes of the VisionFive 2 tree, and claims their
+      register windows for the kernel so ring 3 is never handed one
+      (crates/drivers/soc/hwbus.ids).
+
+      Register layouts and clock numbers are checked against the JH7110
+      Technical Reference Manual; what the manual does not settle (the reset
+      status polarity per line, the PMU acknowledge write, the APB divider's
+      parent, the clock-input names) carries a `[verify]` tag until the
+      testing week compares it with a board. The PLL block is not modelled,
+      so the CPU clock's parent chain does not resolve on a real tree yet.
+
+config SOC_K1
+    # cargo-feature: soc-k1
+    bool "SpacemiT K1 providers: CPU cluster clocks with their PLL tree"
+    depends on SOC_FRAMEWORKS && BOARD_K1
+    default y
+    help
+      Emits the kernel cargo feature `soc-k1`. Reads the
+      `spacemit,k1-syscon-apmu` node (the CPU cluster clocks `CLK_CPU_Cn_CORE`
+      and `CLK_CPU_Cn_HI`), the PLL block `spacemit,k1-pll` and the MPMU node
+      its `spacemit,mpmu` names (PLL lock bits and gates), and claims the three
+      register windows for the kernel so ring 3 is never handed one
+      (crates/drivers/soc/hwbus.ids). No PLL is ever reprogrammed: a cluster
+      clock is switched among the inputs the firmware left running.
+
+config SYSTEM_SUSPEND
+    # cargo-feature: system-suspend
+    bool "System suspend to RAM"
+    depends on ENERGY
+    depends on !USE_ROBOT && !USE_INDUSTRIAL && !USE_AUTOMOTIVE
+    default y if USE_DESKTOP || USE_IOT_HMI || USE_WEARABLE
+    help
+      The `suspend` op of the `power` endpoint puts the machine to RAM and
+      brings it back: freeze the user tasks, take the devices down through
+      runtime PM, save, call the firmware (PSCI SYSTEM_SUSPEND on aarch64,
+      SBI SUSP on riscv64; x86_64 S3 only where ACPI allows it, which today
+      is nowhere: the kernel has no AML), and undo it in reverse on resume.
+      The time slept is added to CLOCK_BOOTTIME. Every refusal and both
+      transitions are decision records (rule `suspend`).
+
+      Not on a robot, industrial or automotive image, whatever else is set:
+      their safety loop must keep running, so the option depends on the
+      preset, and without it `suspend` is refused and the refusal recorded.
+      Wake sources are capabilities: the caller must hold an interrupt
+      capability, or the machine would have nothing to wake it.
+
+      The call needs every other CPU off and a resume entry for the CPU
+      state the firmware drops; a build or a board that lacks either (or
+      whose firmware lacks the call) refuses with a record saying which.
+      Emits the kernel cargo feature `system-suspend`.
+
+config CPU_HOTPLUG
+    bool "CPU hotplug: take a CPU offline and bring it back at run time"
+    default y if USE_GENERIC || USE_DESKTOP || USE_SERVER || USE_GATEWAY || USE_IOT_HMI || USE_WEARABLE
+    default n
+    help
+      The `cpu_online` op of the `power` endpoint stops a CPU and starts it
+      again. Offline: the CPU's ready tasks, pins and timer sleepers move to
+      the others, then it stops through the firmware (PSCI CPU_OFF on
+      aarch64, SBI HSM hart_stop on riscv64, a halt loop and INIT on x86_64).
+      Online: PSCI CPU_ON, HSM hart_start or INIT-SIPI-SIPI, through the
+      secondary entry; a CPU that went offline resumes where it stopped
+      (the saved-context path of CPU_IDLE_POWERDOWN), one that never ran
+      starts as at boot. Every change and every refusal is a decision record
+      (rule `cpu-hotplug`).
+
+      Refused, with the reason recorded and returned: the boot CPU, the last
+      online CPU, a CPU with real-time state or in `isolcpus`, a CPU that is
+      not the highest of the online prefix (the scheduler walks the online
+      CPUs as a prefix `0..n`, so the CPU taken off must be the last of it
+      and the one brought back the next), a CPU whose firmware has no stop
+      call, and a change while another is running.
+
+      Not the default on a robot, industrial or automotive image: their
+      timing is planned for the whole machine, and the real-time refusal
+      covers only the CPUs that hold real-time state at the moment.
+
+      Cost: one saved-context slot per possible CPU (about 200 bytes of
+      .bss each, with CPU_IDLE_POWERDOWN too) and one test of a per-CPU flag
+      in each idle iteration. n = the op answers `UNSUPPORTED` and nothing
+      is linked.
+
+config CPU_IDLE_POWERDOWN
+    bool "Non-retentive CPU idle states (power-down) with a resume entry"
+    depends on ENERGY && !ARCH_X86_64
+    default y if USE_GENERIC || USE_DESKTOP || USE_SERVER || USE_GATEWAY || USE_IOT_HMI || USE_WEARABLE
+    default n
+    help
+      Lets the idle governor enter the `cpu-idle-states` of the device tree
+      that lose the CPU's context: PSCI CPU_SUSPEND with a power-down
+      power_state (aarch64) and SBI HSM hart_suspend with a non-retentive
+      suspend_type (riscv64). The CPU saves its callee-saved registers,
+      stack pointer and translation state in its slot, calls the firmware
+      with the secondary entry as the resume address, and comes back there:
+      the entry sees the slot is pending, restores it and returns from the
+      idle call as if it had slept. Per-CPU controller and timer state is
+      redone as at secondary start.
+
+      A state the device tree marks `local-timer-stop` stays unentered: the
+      CPU's timer stops in it and no other source wakes the CPU for its own
+      timer. A CPU with real-time state (a band task running, queued or
+      pinned to it, asleep or not; an admitted reservation; `isolcpus`) is
+      never put in a state that loses its context, whatever its slack: its
+      exit latency also holds the firmware's re-entry and the restore, which
+      no real-time bound on that CPU has budgeted. A band task that is not
+      pinned and is asleep does not count: it may wake on any CPU. The exit
+      latency and target residency the idle
+      governor uses are the device tree's (`entry-latency-us` +
+      `exit-latency-us`, `min-residency-us`). x86_64 needs none of this: its C-states (HLT, MWAIT, C6
+      included) keep the architectural state in hardware, so there is no
+      resume entry; only S3 loses it (SYSTEM_SUSPEND).
+
+      Cost: the saved-context slots (shared with CPU_HOTPLUG) and one more
+      branch on the idle-state choice. n = only standby and retention
+      states are entered, as before.
+
+endmenu # Platform / Board
+
+# ---------------------------------------------------------------------------
+# x86_64 platform: boot information, ACPI, LAPIC/IOAPIC, clock, AP start.
+# crates/core/arch-x86_64/src/{platform_impl,acpi,apic,ioapic,timer,smp}.rs
+# ---------------------------------------------------------------------------
+if ARCH_X86_64
+menu "x86_64 platform (ACPI, APIC, timer, SMP)"
+
+choice
+    prompt "x86_64 boot protocol"
+    default X86_BOOT_PVH
+    help
+      How the first instruction of the kernel is reached, and so which
+      entry code, linker script and boot-information reader are built.
+      The two are separate images (`make ARCH=x86_64 x86_64` and
+      `make x86_64-limine`); pick the one that matches the machine.
+
+    config X86_BOOT_PVH
+        bool "PVH (QEMU microvm -kernel, Xen PVH)"
+        help
+          A 32-bit entry named by an ELF note, loaded at 1 MiB by QEMU's
+          `-kernel` (kernel/linker-x86_64.ld). The boot information is
+          the PVH hvm_start_info (memory map, command line, RSDP).
+
+    config X86_BOOT_LIMINE
+        # cargo-feature: x86-limine
+        bool "Limine boot protocol (a PC: UEFI or BIOS through Limine)"
+        help
+          A 64-bit entry reached from the Limine bootloader
+          (kernel/linker-x86_64-limine.ld, a higher-half ELF with the
+          request structs in `.limine_requests`). Limine hands over the
+          memory map, the ACPI RSDP, SMBIOS, the SMP list and a
+          framebuffer (the future framebuffer console); they are copied
+          into the same PVH-shaped boot information the platform code
+          already reads. The kernel image is relocatable in physical
+          memory: Limine places it wherever it finds room and the kernel
+          runs there (it records the slide from its link address and
+          builds its boot map from it; the loader's KASLR stays off for
+          this non-PIE ELF, so the virtual base is the link address).
+          The page allocator manages the RAM below and above the image.
+          The largest image is X86_IMAGE_MAX_MIB. No command line is
+          requested. Needs a Limine installation to boot (`make
+          run-x86-pc`).
+
+endchoice
+
+config X86_CMDLINE_MAX
+    int "Kernel command-line bytes kept from the PVH start_info"
+    range 64 8192
+    default 2048 if CANARY_RUNTIME
+    default 512 if PROFILE_EMBEDDED
+    default 1024
+    help
+      The PVH start_info's command line is copied into a static buffer
+      of this size (RAM: exactly this many bytes of .bss; no per-boot
+      instruction cost beyond the copy). A longer line is cut and the
+      boot log says so; only `virtio_mmio.device=` entries are read
+      from it today. Raise it if a launcher passes long lines.
+
+config X86_IRQ_VECTOR_BASE
+    int "IDT vector of GSI 0 (IOAPIC device lines)"
+    range 48 200
+    default 48
+    help
+      Device line GSI n is delivered on vector BASE + n. Below it sit
+      the exceptions (0-31) and the remapped, masked 8259s (32-47);
+      from 0xE0 up the timer, IPI, error and spurious vectors, so
+      0xE0 - BASE GSIs are routable (176 at the default; QEMU microvm
+      uses 48, a PC usually 24 per IOAPIC). The LAPIC's priority class
+      is vector >> 4: raise BASE to put every device line in a higher
+      class. No RAM or instruction cost.
+
+config X86_MSI_VECTORS
+    int "IDT vectors reserved for PCI MSI and MSI-X"
+    range 1 128
+    default 16
+    help
+      MSI and MSI-X vectors are handed out from just above the IOAPIC
+      lines (BASE + the GSIs the IOAPICs carry) up to 0xE0, at most this
+      many, boot CPU only (used with DRV_PCI): one per queue of each PCI function that uses
+      them (virtio-net 3, NVMe 2). Costs 4 B of .bss per vector.
+
+config X86_PCI_ECAM_BASE
+    hex "PCI ECAM base when the firmware has no MCFG (0: use ports 0xCF8/0xCFC)"
+    default 0
+    depends on DRV_PCI
+    help
+      The ACPI MCFG names the ECAM window; with none, config space is
+      reached through the legacy 0xCF8/0xCFC port pair (bytes 0-255 only),
+      unless this is set. QEMU microvm with `pcie=on` has neither an MCFG
+      (its ACPI has no such table) nor the ports: its ECAM is at
+      0xE0000000. Bus 0's 1 MiB is mapped. No cost.
+
+config X86_PCI_MEM32_BASE
+    hex "PCI 32-bit memory window: first address (BAR assignment)"
+    default 0xC0000000
+    depends on DRV_PCI
+    help
+      Nothing assigns PCI BARs ahead of this kernel on QEMU microvm, so
+      the kernel hands them out from [BASE, BASE + SIZE), which must be
+      PCI host-bridge memory that RAM and the other devices do not use.
+      The default is QEMU's: microvm pcie=on decodes 0xC0000000..0xDFFFFFFF
+      (ECAM at 0xE0000000); on q35 everything from 0xC0000000 to the IOAPIC
+      is the hole. No cost.
+
+config X86_PCI_MEM32_SIZE
+    hex "PCI 32-bit memory window: size"
+    default 0x20000000
+    depends on DRV_PCI
+    help
+      See X86_PCI_MEM32_BASE.
+
+config X86_IOAPIC_FALLBACK_BASE
+    hex "IOAPIC MMIO base when there is no MADT"
+    default 0xFEC00000
+    help
+      Without ACPI (QEMU microvm acpi=off) the one IOAPIC is assumed at
+      this address with GSI base 0; with a MADT its entries are used.
+      The PC address is 0xFEC00000. No cost.
+
+config X86_VIRTIO_MMIO_BASE
+    hex "First virtio-mmio transport (QEMU microvm)"
+    default 0xFEB00000
+    help
+      The virtio-mmio window the drivers scan when the kernel command
+      line carries no `virtio_mmio.device=` entries (microvm passes them
+      only without ACPI). 0xFEB00000 is QEMU microvm's VIRTIO_MMIO_BASE.
+      No cost.
+
+config X86_VIRTIO_MMIO_STRIDE
+    hex "virtio-mmio transport stride"
+    default 0x200
+    help
+      Bytes between transports in the window (microvm: 512). No cost.
+
+config X86_VIRTIO_MMIO_MAX
+    int "virtio-mmio transports kept and scanned"
+    range 0 32
+    default 8 if PROFILE_EMBEDDED
+    default 24
+    help
+      The transports the platform records (from the command line, or
+      microvm's layout: 24 with its second IOAPIC, else 8) and the
+      drivers probe at boot: one MMIO read pair per slot, 16 bytes of
+      RAM each. 0 compiles virtio-mmio discovery down to nothing.
+
+config X86_HPET
+    bool "Calibrate the TSC against the HPET"
+    default y
+    help
+      With an ACPI HPET table, measure the TSC against the HPET main
+      counter (exact femtosecond period) rather than the PIT. Costs
+      X86_TSC_CALIBRATE_MS of boot time either way; n leaves the PIT,
+      which QEMU microvm always has.
+
+config X86_IMAGE_MAX_MIB
+    int "Largest kernel image the boot maps (MiB)"
+    range 4 512
+    default 32
+    help
+      The boot map of the kernel image (the Limine entry's, and every
+      secondary CPU's) names the image's frames one 4 KiB page at a time,
+      because the loader puts the image at a physical address of its own
+      choosing; it costs one page table per 2 MiB of image, in .bss
+      (X86_IMAGE_MAX_MIB / 2 + 1 pages, 68 KiB at the default). An image
+      larger than this is refused at boot with a message. The kernel's own
+      tables map the image with large pages where its virtual and physical
+      addresses agree modulo 2 MiB.
+
+config X86_PMTIMER
+    bool "Calibrate the TSC against the ACPI PM timer when there is no HPET"
+    default y
+    help
+      With an ACPI FADT that names a PM timer (PM_TMR_BLK, or an I/O
+      X_PM_TMR_BLK), measure the TSC against that 3.579545 MHz counter
+      when the HPET is absent, hidden by the firmware or X86_HPET is n,
+      and before falling back to the PIT, which many recent PCs no longer
+      emulate. The counter runs in every C-state and needs no mapping (port
+      I/O). Costs X86_TSC_CALIBRATE_MS of boot time, like the other
+      references. n goes from the HPET straight to the PIT.
+
+config X86_TSC_FREQ_CPUID
+    bool "Trust the TSC rate CPUID reports (leaf 15H, hypervisor leaf)"
+    default y
+    help
+      When CPUID 15H (crystal x ratio) or the hypervisor timing leaf
+      0x40000010 reports the TSC rate, take it and skip the measurement
+      (saves X86_TSC_CALIBRATE_MS of boot). n always measures, for a
+      CPU or hypervisor that reports a wrong rate.
+
+config X86_TSC_CALIBRATE_MS
+    int "TSC (and LAPIC timer) calibration window (ms)"
+    range 1 54
+    default 10 if PROFILE_EMBEDDED
+    default 20
+    help
+      Boot time spent measuring the TSC against the HPET or PIT (and,
+      without TSC-deadline, the LAPIC timer against the TSC). The error
+      is about one reference tick over the window: at 20 ms with the
+      PIT, ~40 ppm. 54 is the PIT counter's limit. No runtime cost.
+
+config X86_LAPIC_TIMER_DIVIDE
+    int "LAPIC timer divide (one-shot fallback)"
+    range 1 128
+    default 16
+    help
+      Used only without TSC-deadline. The LAPIC counter runs at the
+      APIC clock / this (1, 2, 4, ..., 128): a smaller divide gives a
+      finer one-shot (resolution = divide / APIC clock) but a shorter
+      longest timeout (2^32 counts). Must be a power of two (a compile
+      error otherwise). No RAM cost.
+
+config X86_AP_TRAMPOLINE_PA
+    hex "AP real-mode trampoline page (0 = choose)"
+    default 0x0
+    help
+      INIT-SIPI-SIPI starts each secondary CPU in real mode at a 4 KiB
+      page below 1 MiB. 0 takes the highest RAM page under 640 KiB that
+      no boot information (start_info, memory map, command line, ACPI
+      tables) occupies; a fixed address is used only if it passes the
+      same checks. One page of low memory, never freed.
+
+config X86_AP_INIT_DELAY_US
+    int "Wait after INIT before the first STARTUP IPI (us)"
+    range 0 100000
+    default 10000
+    help
+      Intel's MP protocol waits 10 ms after INIT; CPUs since the Pentium
+      4 and every hypervisor need none (Linux's init_udelay=0 on modern
+      parts). Boot time per secondary CPU; 0 is fine on QEMU and recent
+      hardware.
+
+config X86_AP_SIPI_DELAY_US
+    int "Wait after each STARTUP IPI (us)"
+    range 0 10000
+    default 200
+    help
+      The MP protocol's 200 us between the two STARTUP IPIs. Boot time
+      per secondary CPU only when the first STARTUP was not acknowledged.
+
+config X86_AP_START_TIMEOUT_MS
+    int "Wait for a secondary CPU to acknowledge its start (ms)"
+    range 1 10000
+    default 1000 if BOARD_QEMU
+    default 100
+    help
+      After the second STARTUP IPI, how long the boot CPU waits for the
+      AP's trampoline to reach 64-bit mode before reporting it as not
+      started. Only spent on a CPU that does not come up; QEMU's TCG
+      is slower to reach it than hardware.
+
+endmenu
+endif # ARCH_X86_64

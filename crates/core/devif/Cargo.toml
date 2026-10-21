@@ -1,0 +1,11 @@
+[package]
+name = "azos_devif"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The interfaces of the services the kernel hosts and of the devices a driver endpoint serves (D6 part A): entropy, link key, power, block, time, GPIO, I2C, PWM, ADC, buzzer, motor, sensor, behavior, configuration, OTA, flight and sound (a PCM stream over a queue of memory-object periods). Each is an #[azos_interface] trait (crates/core/idl): the kernel serves it from the endpoint a topology row grants, a ring-3 driver serves the same trait from its own endpoint, and the client stub does not know which. no_std; shared by the kernel, libsys and the userspace images."
+
+[dependencies]
+azos_abi = { path = "../abi" }
+azos_idl = { path = "../idl" }

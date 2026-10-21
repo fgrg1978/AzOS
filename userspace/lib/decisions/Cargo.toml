@@ -1,0 +1,15 @@
+[package]
+name = "azos_decisions"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The Decisions object: the typed interface (L13 IDL) to the kernel's stored decisions (refusals, denials, admissions: rule, verdict, subject, numbers, provenance, clock), the codec that carries a ProvenanceRecord in seven-word replies, and the server's pure half (userspace/services/decisd). no_std; tested on the host (tests/host/decisions-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+# The record, the filter and the chain printer: the kernel's own definitions.
+azos_decision = { path = "../../../crates/core/decision" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

@@ -1,0 +1,15 @@
+[package]
+name = "azos_compositor"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The Compositor object: how a client puts a window on the screen. A window is a memory object the client made, drew in and attached; its damage travels in a ring in the object's first page, not in a call, and the call right the compositor lends with the attach (a warrant bound to the window) is the client's authority to take it down. The interface (userspace/lib/compositor), served by userspace/services/compositor on endpoint.compositor; no_std; tested on the host (tests/host/compositor-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_rings = { path = "../../../crates/core/rings" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

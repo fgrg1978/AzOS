@@ -1,0 +1,23 @@
+[package]
+name = "azos_arch_x86_64"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "x86_64 port: the arch-api contract and the x86 platform. Off x86_64 it is also the fake ISA behind azos_arch's `stub` feature (host checks)."
+
+[lib]
+name = "azos_arch_x86_64"
+
+[features]
+# Host-test canary (tests/host/arch-tests): cpu/features.rs forgets the XCR0
+# YMM state check, so `the_vector_extensions_need_their_xsave_state` fails.
+x86-cpuid-canary = []
+# Gate canary (ktest `tlb_shootdown_cross_cpu`): the shootdown computes its
+# remote mask and sends no IPI, so a CPU keeps a stale translation.
+tlb-local-only = []
+
+[dependencies]
+azos_common = { path = "../common" }
+azos_arch_api = { path = "../arch-api" }
+azos_limits = { path = "../limits" }

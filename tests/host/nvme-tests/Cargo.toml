@@ -1,0 +1,25 @@
+[package]
+name = "azos_nvme_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for crates/drivers/nvme: doorbell and queue arithmetic, completion phase tracking against a fake controller, submission entry encoding, PRP list building, Identify decoding. Excluded from the workspace like the other *-tests crates."
+
+# Run with:  cd tests/host/nvme-tests && cargo test --release
+# Canaries: `cargo test --release --features canary-<name>` must FAIL.
+
+[dependencies]
+azos_nvme = { path = "../../../crates/drivers/nvme" }
+
+[features]
+canary-doorbell = ["azos_nvme/canary-doorbell"]
+canary-phase = ["azos_nvme/canary-phase"]
+canary-prp = ["azos_nvme/canary-prp"]
+canary-nlb = ["azos_nvme/canary-nlb"]
+canary-full = ["azos_nvme/canary-full"]
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

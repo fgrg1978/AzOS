@@ -1,0 +1,15 @@
+# Override the workspace target. The top-level .cargo/config.toml forces
+# riscv64imac-unknown-none-elf for the kernel build; these tests run on
+# the developer host (Apple Silicon).
+
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+# Disable build-std — host has precompiled std/core/alloc. Setting to
+# empty array tries to override the parent's ["core", "alloc"]. On
+# nightly the override is a no-op (see ../arch-x86_64-tests/Cargo.toml
+# for the long story), which is why `rust-toolchain.toml` here pins
+# stable so cargo skips -Z build-std entirely.
+build-std = []
+build-std-features = []

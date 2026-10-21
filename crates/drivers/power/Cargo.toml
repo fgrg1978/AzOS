@@ -1,0 +1,10 @@
+[package]
+name = "azos_drv_power"
+version = "0.1.0"
+edition = "2021"
+description = "Power management: system suspend (the sequence, and the platform the kernel installs for it)."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_decision = { workspace = true }

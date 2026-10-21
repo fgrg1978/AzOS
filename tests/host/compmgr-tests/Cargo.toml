@@ -1,0 +1,25 @@
+[package]
+name = "azos_compmgr_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the component manager (userspace/services/compmgr): the supervision tree (start order by the dependencies the rows' endpoints imply, one_for_one and rest_for_one restarts, the restart intensity, escalation) and the failure contracts the IDL declares. Excluded from workspace."
+
+# Run with:  cd tests/host/compmgr-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_names = { path = "../../../userspace/lib/names" }
+azos_term = { path = "../../../userspace/lib/term" }
+azos_login = { path = "../../../userspace/lib/login" }
+azos_decisions = { path = "../../../userspace/lib/decisions" }
+azos_packages = { path = "../../../userspace/lib/packages" }
+azos_compositor = { path = "../../../userspace/lib/compositor" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

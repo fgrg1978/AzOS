@@ -1,0 +1,48 @@
+[package]
+name = "azos_sched_policy_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the scheduler classes and RT arithmetic. Excluded from workspace."
+
+# Pulls crates/core/sched/src/{class,eevdf_core,rt_core,sc,slot_bitmap}.rs in via #[path]
+# so the embedded #[cfg(test)] suites + integration tests run on the
+# developer host.
+#
+# Run with:  cd tests/host/sched-policy-tests && cargo +stable test
+
+[features]
+# DECISION_RECORDS_DEV on as well: the receipts must not depend on the ring
+# either way. Run both: `cargo +stable test` and `... --features decision-dev`.
+decision-dev = ["azos_decision/on"]
+# Canaries of `eevdf_core.rs`, never in a build: each breaks one rule of the
+# fair class and the named host test must go red (see `eevdf_tests.rs`).
+# weight ignored in the virtual clock; eligibility always true; the first
+# eligible entity instead of the earliest deadline; lag never clamped; a
+# waker keeps the virtual runtime it slept with.
+eevdf-weight-canary = []
+eevdf-eligible-canary = []
+eevdf-fifo-canary = []
+eevdf-noclamp-canary = []
+eevdf-nowake-canary = []
+# Canary of `sc.rs`: the real-time classes get the fair class's timer slack;
+# `qos_timer_slack_is_fair_class_only` must go red.
+qos-rt-slack-canary = []
+# Canary of `rt_receipt.rs`: the Domain's `rt_time` row is never asked;
+# `a_reservation_the_row_holds_is_refused_and_leaves_one_record` must go red.
+rt-envelope-canary = []
+
+[dependencies]
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
+# (the ring is off on the host unless `decision-dev`). `durable` is on, as in
+# every preset: the refusal receipts under test (`refusal_receipts`).
+azos_decision = { path = "../../../crates/core/decision", features = ["durable"] }
+# Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
+# (off on the host: the `on` feature is not enabled).
+azos_chaos = { path = "../../../crates/core/chaos" }
+azos_abi = { path = "../../../crates/core/abi" }
+# The ask gate `rt_receipt::held_by_row` asks (the real hook, a model gate behind it).
+azos_common = { path = "../../../crates/core/common" }
+
+[dev-dependencies]

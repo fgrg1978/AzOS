@@ -1,0 +1,20 @@
+[package]
+name = "azos_inputd_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the Input object: the interface (crates/core/devif/src/input.rs) and the input server's focus, warrant and Secure Attention Key decisions (userspace/services/inputd/src/focus.rs). Excluded from workspace."
+
+# Run with:  cd tests/host/inputd-tests && cargo test --release
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_idl = { path = "../../../crates/core/idl" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_input_wire = { path = "../../../crates/drivers/input/wire" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

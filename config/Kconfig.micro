@@ -1,0 +1,177 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig.micro — AzOS-micro, the MCU kernel (strategic plan, phase 8)
+#
+# A separate kernel (top-level micro/), built by `make micro` for
+# riscv32imac: M-mode, no MMU, memory protection by PMP region domains.
+# It reads the same signed topology and speaks the same IPC and capability
+# ABI as the main kernel, recompiled for 32-bit words. Nothing here changes
+# what the main kernel builds: the symbols exist only under MICRO, and
+# `config/defconfigs/micro.config` is the one configuration that sets it.
+
+menu "AzOS-micro (MCU kernel)"
+
+config MICRO
+    bool "Describe an AzOS-micro build (riscv32, M-mode, PMP)"
+    default n
+    help
+      Selects the micro kernel's configuration (`make micro` reads
+      config/defconfigs/micro.config, which sets this). The main kernel
+      ignores every MICRO_* symbol. Its topology limits come from the
+      HWCLASS table like any other build: micro.config picks embedded.
+
+if MICRO
+
+choice
+    prompt "Micro target chip"
+    default MICRO_CHIP_QEMU_VIRT
+    help
+      The chip the image is linked for: its RAM base, UART, timer and
+      memory-mapped regions (micro/src/chip.rs). QEMU virt is the gate's
+      chip; a physical chip is a new member here and a new table there.
+
+    config MICRO_CHIP_QEMU_VIRT
+        bool "QEMU virt (rv32imac, PMP, 16550 UART, CLINT)"
+endchoice
+
+config MICRO_RAM_BASE
+    hex "RAM base address"
+    default 0x80000000 if MICRO_CHIP_QEMU_VIRT
+    help
+      Where the image is linked and loaded. Kernel text, data and stack,
+      the task pool and the contiguous pool all sit in this window.
+
+config MICRO_RAM_KIB
+    int "RAM the image may use (KiB)"
+    range 64 16384
+    default 512
+    help
+      Length of the window above. The linker refuses an image whose kernel
+      sections plus the two pools below do not fit.
+
+config MICRO_POOL_KIB
+    int "Anonymous region pool (KiB)"
+    range 8 8192
+    default 128
+    help
+      The pool every task's Anon region is carved from, eagerly at boot.
+      A row's `mem_pages` (4 KiB each) is its share; the topology is
+      refused at boot when the rows' shares do not fit.
+
+config MICRO_CONTIG_KIB
+    int "Contiguous pool (KiB)"
+    range 4 4096
+    default 16
+    help
+      The pool the `[pipeline.NAME]` DMA regions are carved from: physically
+      contiguous, power-of-two sized and aligned, so each is one PMP entry
+      and a device can be pointed at it. A pipeline's `dma_kb` is its size,
+      rounded up to a power of two.
+
+config MICRO_KSTACK_BYTES
+    int "Kernel stack (bytes)"
+    range 1024 65536
+    default 16384
+    help
+      The one stack every trap runs on. A syscall never blocks inside the
+      kernel (a blocked task is a saved frame), so one stack serves all
+      tasks. Boot runs on it too, and the Ed25519 check of the topology is
+      the deepest thing it does.
+
+config MICRO_MAX_TASKS
+    int "Tasks (static table)"
+    range 2 32
+    default 8
+    help
+      Rows of the topology that start, plus the instances `SYS_SPAWN_EX` may
+      add, all allocated at boot. The topology is refused when it needs
+      more.
+
+config MICRO_MAX_ENDPOINTS
+    int "Named endpoints"
+    range 1 64
+    default 8
+    help
+      Distinct `endpoint.NAME` targets in the topology. One server each.
+
+config MICRO_CAPS_PER_TASK
+    int "Capability slots per task"
+    range 4 64
+    default 16
+    help
+      A task's capability table lives in its grant (the kernel's share of
+      its own region, which its PMP entries do not cover): 16 bytes a
+      slot. The topology is refused when a row holds more caps than this.
+
+config MICRO_PMP_ENTRIES
+    int "PMP entries the hart implements"
+    range 8 64
+    default 16
+    help
+      A hart has 16 or 64. The domain of one task, the shared code window
+      and the unused entries (switched off) fill this table at every
+      switch.
+
+config MICRO_TASK_PMP_ENTRIES
+    int "PMP entries one task's domain may use"
+    range 2 16
+    default 8
+    help
+      Entries left for a task after the shared code window (two). A
+      region costs one entry when it is a power-of-two NAPOT block and
+      two otherwise (a TOR pair). A row whose domain needs more is
+      refused at boot.
+
+config MICRO_PMP_GRAIN_LOG2
+    int "PMP granularity (log2 of bytes)"
+    range 2 12
+    default 2
+    help
+      The smallest region the hart's PMP can express (pmpcfg.A == NA4 at 2,
+      the QEMU value). Every region base and size is rounded up to it, the
+      end of the kernel's code window included (the linker aligns it; the
+      RAM base must be a multiple of it).
+
+config MICRO_TICK_HZ
+    int "Scheduler tick (Hz)"
+    range 50 10000
+    default 1000
+    help
+      The M-mode timer interrupt rate: sleeps, round robin and the
+      deadline class's budgets are counted in these ticks.
+
+config MICRO_TIMESLICE_TICKS
+    int "Round-robin slice (ticks)"
+    range 1 1000
+    default 10
+    help
+      How long one task of a priority level runs before the next task of
+      the same level does.
+
+config MICRO_IDLE_PRIO
+    int "Idle priority"
+    range 1 255
+    default 31
+    help
+      A row at this priority or above is the idle class; the levels below
+      are real time (fixed priority, lower number first). There is no fair
+      class.
+
+config MICRO_TIMEBASE_HZ
+    int "mtime frequency (Hz)"
+    range 32768 1000000000
+    default 10000000 if MICRO_CHIP_QEMU_VIRT
+    help
+      The rate `mtime` counts at.
+
+config MICRO_UART_BASE
+    hex "Console UART (16550) base"
+    default 0x10000000 if MICRO_CHIP_QEMU_VIRT
+
+config MICRO_CLINT_BASE
+    hex "CLINT base (mtime, mtimecmp)"
+    default 0x02000000 if MICRO_CHIP_QEMU_VIRT
+
+endif # MICRO
+
+endmenu

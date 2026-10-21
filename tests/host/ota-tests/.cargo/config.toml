@@ -1,0 +1,12 @@
+# Override the workspace target. The top-level .cargo/config.toml forces
+# riscv64imac-unknown-none-elf with build-std for the kernel build; the
+# tests need to run on the host (Apple Silicon).
+
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+# Disable build-std — host has precompiled std/core/alloc.
+# Setting to empty array overrides the parent's ["core", "alloc"].
+build-std = []
+build-std-features = []

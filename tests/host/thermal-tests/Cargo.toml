@@ -1,0 +1,30 @@
+[package]
+name = "azos_thermal_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the thermal framework and DVFS actuation: azos_energy::{thermal,opp} (trips, cooling steps, the real-time and safety floors, degrade levels), the DTB thermal-zones reader and builder, the Pi mailbox encoding, the JH7110 sfctemp arithmetic and the runtime tick against fake hardware. Excluded from workspace."
+
+# Run with:  cd tests/host/thermal-tests && cargo test --release
+
+[dependencies]
+azos_energy = { path = "../../../crates/core/energy" }
+azos_dtb = { path = "../../../crates/drivers/dtb" }
+azos_firmware = { path = "../../../crates/drivers/firmware" }
+azos_thermal = { path = "../../../crates/drivers/thermal" }
+
+[features]
+# The gate's canary run: `Thermal::limit` lowers the OPP below the deadline
+# and safety floors, and the floor invariant tests must fail.
+thermal-floor-canary = ["azos_energy/thermal-floor-canary"]
+# The fake board the QEMU gate row drives (`kernel` feature `thermal-smoke`):
+# the same ramp, on the host.
+fake = ["azos_thermal/fake"]
+# The gate's canary run: the Raspberry Pi actuator drops its range and
+# settled-rate guards, and exactly the tests that pin them must fail.
+rpi-opp-canary = ["azos_thermal/rpi-opp-canary"]
+# The gate's canary run: the firmware-derived table accepts a degenerate range
+# and ends off the firmware's maximum (`azos_energy::EnergyModel::from_clock_range`);
+# the Raspberry Pi test that pins the top of the table must fail.
+firmware-model-canary = ["azos_energy/firmware-model-canary"]

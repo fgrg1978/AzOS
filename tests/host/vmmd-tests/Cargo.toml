@@ -1,0 +1,47 @@
+[package]
+name = "azos_vmmd_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the virtual-machine monitor's device models (userspace/services/vmmd, pulled in by path): the virtqueue, the virtio-mmio transport, the block, net and console backends, the trap protocol and the per-VM loop, run against a RAM that records every access. Excluded from workspace."
+
+# Run with:  cd tests/host/vmmd-tests && cargo test --release
+
+[features]
+# Canaries: each removes one check of the monitor, and exactly its tests must
+# fail (tools/ci_check.sh, row vmmd-tests).
+canary-vq-no-bounds = []
+canary-blk-no-capacity-check = []
+canary-blk-ro-ignored = []
+canary-driver-ok-unchecked = []
+canary-store-unbounded = []
+canary-term-unfiltered = []
+canary-term-unlimited = []
+canary-elf-no-bounds = []
+canary-ctl-no-ceiling = []
+canary-ctl-image-unchecked = []
+# monitor: the envelope's ceiling on a guest's reach lets every store through
+# (azos_hv::backend::allows).
+canary-egress-open = ["azos_hv/canary-egress-open"]
+
+[dependencies]
+azos_common = { path = "../../../crates/core/common" }
+# The kernel's end of the trap ring and of the guest's RAM, run against this
+# program's device models (src/monitor_tests.rs).
+azos_hv = { path = "../../../crates/core/hv" }
+azos_arch_api = { path = "../../../crates/core/arch-api" }
+# The state words and the grants `life` and the built-in row agree on.
+azos_devif = { path = "../../../crates/core/devif" }
+# `dev-key`: the topology crate embeds a test key in a build without a production one.
+azos_topology = { path = "../../../crates/core/topology", features = ["dev-key"] }
+# The parser the guest's device tree is read back with.
+azos_dtb = { path = "../../../crates/drivers/dtb" }
+# The ring the guest's console output goes through while a tool drains it.
+azos_rings = { path = "../../../crates/core/rings" }
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

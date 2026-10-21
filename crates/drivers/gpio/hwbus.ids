@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; see crates/drivers/sys/hwbus.ids for the format).
+#
+# JH7110 sys pin controller (`sysgpio: pinctrl@13040000`): its DOEN / DOUT /
+# GPIOIN arrays are the board's GPIO (crates/drivers/gpio, the e-stop pin
+# among them). `boot`: the kernel drives it from the first stage after the SoC
+# frameworks, whatever the policy or the topology says, so a signed topology
+# cannot take the e-stop line away and ring 3 is never handed the window. The
+# SoC pinctrl framework reads the same window (boot/soc.rs) as the pad
+# controller; the node's resources are that framework's own, so the bus does
+# not ask for them again (`NO_RESOURCES` in kernel/src/boot/hwbus.rs).
+
+gpio             dt:starfive,jh7110-sys-pinctrl   boot   if=BOARD_VF2
+
+# SpacemiT K1 GPIO (`gpio: gpio@d4019000`, compatible "spacemit,k1-gpio"): four
+# banks of 32 pins behind set/clear registers (crates/drivers/gpio/src/
+# gpio_k1.rs). `boot` for the reason above: the e-stop line is the kernel's.
+# Unlike the JH7110 it is a node of its own (the pad controller is
+# `pinctrl@d401e000`), so the bus gives it its clock and reset itself.
+
+gpio             dt:spacemit,k1-gpio   boot   if=BOARD_K1

@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+// Idle-seam host fixture: one CPU listing four idle states, one more than the
+// model's table holds beside the implicit `wfi`.
+// Rebuild: dtc -I dts -O dtb -o energy-fullidle.dtb energy-fullidle.dts
+/dts-v1/;
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "azos,energy-fixture";
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		idle-states {
+			s1: s1 { compatible = "arm,idle-state"; idle-state-name = "s1";
+				entry-latency-us = <1>; exit-latency-us = <2>; min-residency-us = <10>; };
+			s2: s2 { compatible = "arm,idle-state"; idle-state-name = "s2";
+				entry-latency-us = <5>; exit-latency-us = <10>; min-residency-us = <100>; };
+			s3: s3 { compatible = "arm,idle-state"; idle-state-name = "s3";
+				entry-latency-us = <50>; exit-latency-us = <100>; min-residency-us = <1000>; };
+			s4: s4 { compatible = "arm,idle-state"; idle-state-name = "s4";
+				entry-latency-us = <500>; exit-latency-us = <1000>; min-residency-us = <10000>; };
+		};
+		cpu@0 { device_type = "cpu"; reg = <0>; capacity-dmips-mhz = <1024>;
+			operating-points-v2 = <&t>; cpu-idle-states = <&s1 &s2 &s3 &s4>; };
+	};
+	t: opp-table-0 {
+		compatible = "operating-points-v2";
+		opp-1000000000 { opp-hz = /bits/ 64 <1000000000>; opp-microwatt = <600000>; };
+	};
+};

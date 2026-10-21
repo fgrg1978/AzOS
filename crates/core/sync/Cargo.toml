@@ -1,0 +1,27 @@
+[package]
+name = "azos_sync"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]
+azos_limits = { workspace = true }
+azos_arch = { workspace = true }
+azos_common = { workspace = true }
+azos_decision = { workspace = true }
+azos_percpu = { workspace = true }
+
+[features]
+# Masked-window tracer hooks on the preemption counter and the spinlock
+# guards (Kconfig `LAT_TRACE`). Off: no hook, no extra guard field.
+lat-trace = ["azos_arch/lat-trace"]
+# Diagnostics: record the address of each held `Mutex` per task
+# (`held::held_addrs`), for the `lat-fat` smoke's F1 report.
+pi-held-trace = []
+# Lockdep-lite (Kconfig LOCKDEP, wave 15 N1): the class field in every lock,
+# the held-lock stacks and the edge table. Compiled in by this feature; it
+# checks only when Kconfig says so (`lockdep::ON`). Off: no field, no code.
+lockdep = []
+# The kernel's `ktest` feature: Kconfig LOCKDEP_KTEST turns lockdep on.
+ktest = ["lockdep"]

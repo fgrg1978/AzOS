@@ -1,0 +1,50 @@
+[package]
+name = "azos_actuation"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The actuation authority every domain shares: e-stop latch, release authority, safe mode, the latch-and-stop sequence, the flight recorder, the system watchdog."
+
+[features]
+# `qemu`: sys_wdt's frozen-timer threshold for a TCG guest (see sys_wdt.rs).
+qemu = []
+# Gate canary only (kernel `rt-io-canary`): the RT-caller probe is ignored,
+# so an RT task's `logger_flush` does the block I/O itself.
+rt-flush-canary = []
+# Kconfig EFFECT_WRITE_AHEAD (kernel feature `effect-gate`): a ring-3 motor op
+# is issued by the effect gate (`effect_gate.rs`), after its record is on the
+# flight recorder's ring. Off: the gate is not linked or installed.
+effect-gate = []
+# Gate canary only (host suite `actuation-tests`): the effect gate issues the
+# device op BEFORE committing its record, so the write-ahead tests must go red.
+effect-issue-before-commit-canary = []
+# Gate canary only (host suite `actuation-tests`): the effect gate ignores the
+# Domain's envelope rows for storage deletes and network egress, so the refusal
+# tests must go red.
+envelope-row-canary = []
+# Gate canary only (host suite `actuation-tests`): effect and ordinary records
+# may use the ring's safety reserve, so a full ring has no slot for the
+# e-stop record and the reserve tests must go red.
+ring-reserve-canary = []
+# Gate canary only (host suites `behavior-tests`, `actuation-tests`): a release
+# proof is accepted with no durable recorder in every build, so the fail-closed
+# release tests must go red.
+estop-unrecorded-canary = []
+
+[dependencies]
+azos_arch     = { workspace = true }
+azos_common   = { workspace = true }
+azos_sync     = { workspace = true }
+azos_drv_sys  = { workspace = true }
+azos_drv_gpio = { workspace = true }
+azos_sched    = { workspace = true }
+azos_ipc      = { workspace = true }
+azos_syscall  = { workspace = true }
+azos_config   = { workspace = true }
+azos_limits   = { workspace = true }
+azos_decision = { workspace = true }
+azos_crypto   = { workspace = true }
+azos_fs       = { workspace = true }
+azos_net      = { workspace = true }
+azos_topology = { workspace = true }
