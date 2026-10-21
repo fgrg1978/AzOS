@@ -26,8 +26,9 @@ config AUDIOD
       per-stream gain, the device's rate and format, one stream's underrun its
       own) into the one playback stream it holds on the kernel's `sound.0`.
       Capture is not mixed: the client's own objects are handed to the kernel's
-      microphone gate, which needs the `mic` effect of the server's class and
-      records every attempt that reaches it (AUDIO_CAPTURE). `toolbox beep` goes through the server when its row
+      microphone gate, which needs the `mic` effect of the CLIENT's class (the
+      server holds none) and records every attempt that reaches it, naming the
+      client (AUDIO_CAPTURE). `toolbox beep` goes through the server when its row
       holds `endpoint.audio` and straight to `sound.0` otherwise; with the
       server, the toolbox row holds no `sound.0` (the device has one holder).
 
@@ -47,13 +48,15 @@ config AUDIO_CAPTURE
     default n
     help
       y: the audio server opens `DIR_CAPTURE` streams. The kernel's gate
-      admits each one on the `mic` effect of the AUDIO SERVER's scheduler class
-      (an `[envelope.NAME]` row with `kind = "mic"`), because the server is the
-      only caller the kernel sees: every holder of `endpoint.audio` inherits
-      the microphone as soon as the server's class holds that effect, and the
-      `audio-capture` decision record names the server's thread, not the
-      client (the server prints one console line per attempt, naming the
-      client's badge). Grant `endpoint.audio` only to rows that may listen.
+      admits each one on the `mic` effect of the REQUESTER's scheduler class
+      (an `[envelope.NAME]` row with `kind = "mic"`): the client that made the
+      call the server is serving, which the server names to the kernel by the
+      call's warrant (`Sound::open`'s `on_behalf`). The server's own class is
+      never consulted and the `audio-capture` decision record names the
+      client, so holding `endpoint.audio` is not holding the microphone: only
+      a client whose class has the effect listens, and one without it is
+      refused with a durable record naming it. A task that calls `sound.0`
+      itself is its own requester.
       n: the capture path is not compiled; a capture `open` answers
       UNSUPPORTED and no envelope row can enable it. An image that must never
       listen is built with n, which no topology can undo.

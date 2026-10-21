@@ -598,18 +598,27 @@ stream it holds on the device and returns each period on `done`.
   The badge is the holder's choice, which is enough to tell cooperating clients apart and
   not hostile ones. A running stream that gives the mixer nothing for 3 s is closed, and
   one nobody called for 60 s.
-* **Capture is lent, never mixed.** The client's three objects are handed to the kernel's
-  `sound.0` as they are; the kernel's gate (the `mic` effect of the server's class, Kconfig
-  `AUDIO_CAPTURE`, the microphone indicator) decides, and writes the `audio-capture`
-  decision record for every attempt that reaches it, which ring 3 cannot. `REFUSED` reaches
-  the client unchanged and takes nothing from the server. The effect checked is the
-  server's, never the client's class's: every holder of `endpoint.audio` inherits the
-  microphone once the server's class holds a `mic` envelope, and the record's task is the
-  server's thread. The server prints one console line per attempt, naming the badge. A
-  badge has one stream of either kind: a second `open` of the other kind is `BUSY`.
+* **Capture is lent, never mixed, and the client's to ask.** The client's three objects are
+  handed to the kernel's `sound.0` as they are; the kernel's gate (the `mic` effect of **the
+  client's** scheduler class, Kconfig `AUDIO_CAPTURE`, the microphone indicator) decides, and
+  writes the `audio-capture` decision record for every attempt that reaches it, which ring 3
+  cannot. The server holds no microphone authority of its own. The client's authority travels
+  with the open as the **warrant of the call the server is serving** (the handle
+  `SYS_IPC_ACCEPT_V2` returned), which `Sound::open` carries as `on_behalf`: the kernel gave it to
+  the server's main thread alone, it names the task that made the call, and it ends with the
+  reply, so it cannot be kept or replayed. The kernel resolves it to that task, decides the
+  effect on its class, records it as the subject and names it in the indicator
+  (`[AUDIO] microphone LIVE: ... tid N`); the server's class is never consulted. A client without
+  the effect is refused (`REFUSED`, reaching it unchanged; the record names it, with reason
+  `no grant`) and takes nothing from the server. Every client passes `on_behalf` 0; the server
+  refuses a nonzero one (`BAD_ARGUMENT`) and never forwards it. The server prints one console
+  line per attempt, naming the badge. A badge has one stream of either kind: a second `open` of
+  the other kind is `BUSY`. Limits: the server pairs a warrant with that call's objects, which
+  the kernel does not check; and the client's class is that of the topology row its calling
+  thread was seeded from, so only the image's main thread has one.
 * **Two threads.** The main thread accepts calls (the endpoint's `READ` grant is stamped
   with it) and makes every capture call, because the kernel binds a stream to the thread
-  that opened it and gives the `mic` effect only to a thread seeded from a row; the pump
+  that opened it, and the warrant of the call is held by the thread that accepted it; the pump
   thread mixes. The row is a `hard_rt` reservation at priority 12 (1 ms every 10 ms).
 
 `toolbox beep` goes through the server when its row holds `endpoint.audio` and straight to
