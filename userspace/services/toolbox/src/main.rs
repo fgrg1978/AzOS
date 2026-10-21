@@ -12,8 +12,9 @@
 //! waits with `-EINTR`; it then exits 130.
 //!
 //! Applets: `args` (prints argv, the environment and the working directory),
-//! `beep` (a short tone on the kernel's `sound.0` endpoint: a playback stream
-//! of memory-object periods, `sound.rs`; Kconfig DRV_VIRTIO_SND),
+//! `beep` (a short tone: a playback stream of memory-object periods, `sound.rs`,
+//! through the audio server `AUDIOD.ELF` when the row holds its endpoint
+//! (Kconfig AUDIOD), else on the kernel's `sound.0`; Kconfig DRV_VIRTIO_SND),
 //! `cat`, `echo`, `false`, `host` (the addresses of a name, from the stack's
 //! resolver), `input` (take the focus from the input server and watch the
 //! events it delivers; Kconfig `INPUTD`), `inspect` (the kernel's introspection tree: all of it, a

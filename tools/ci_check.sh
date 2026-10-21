@@ -10704,7 +10704,7 @@ else
     # canary asks for 16 KiB of everything: the two images that need more must
     # be named, or the row only ever said ok.
     user_stack_images() { # user_stack_images <rv|arm>: the images, built; prints their paths
-        local dir n names="mlsrv toolbox logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd" t=""
+        local dir n names="mlsrv toolbox logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd audiod" t=""
         if [ "$1" = rv ]; then dir="$AZOS_OUT/build"; else dir="$AZOS_OUT/build/aarch64"; fi
         for n in $names; do t="$t $dir/$n.elf"; done
         make -s $t >/dev/null 2>&1 || return 1
@@ -19950,6 +19950,10 @@ args vk1 'vk 2'" 40 \
         # the virtio-mmio transport and once on the PCI one (one MSI-X vector).
         # The canary is the same command with no sound device: the tool says
         # so and the count never appears.
+        # With Kconfig AUDIOD (this gate's QEMU configs set it) the tool plays
+        # through the audio server (`AUDIOD.ELF`, `endpoint.audio`), which holds
+        # `sound.0`: the same line comes back, the periods having been mixed by
+        # the server and played by the device.
         USH_QEMU_EXTRA="-audiodev none,id=a -device virtio-sound-device,audiodev=a" \
         USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: beep on virtio-sound mmio ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "beep
@@ -20007,6 +20011,24 @@ input sak
 input status" 240 \
             "[inputd] AzOS input server" "holder 0 grants 0" "key 63 down" "key 30 down" "key 14 down" "key 64 up" \
             "[inputd] focus 0 -> 2 (moved)" "[inputd] focus 2 -> 0 (trusted path)" "input: focus lost" "sak 1 last at" "$ush_in_end"
+        # The audio server mixes (Kconfig AUDIOD): two `beep`s of different
+        # lengths started together are two streams on the server's endpoint, one
+        # stream on the device. Each prints its own count (29 and 19 periods at
+        # 48 kHz: 600 ms and 400 ms), so both completed; the server says, when
+        # the device stream ends, that it carried two streams at once. The
+        # canary is the same script with no sound device.
+        USH_QEMU_EXTRA="-audiodev none,id=a -device virtio-sound-device,audiodev=a" \
+        USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: two beeps mixed by audiod ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "beep 600 &
+beep 400 &
+#sleep 4" 150 \
+            "[audiod] AzOS audio server" "beep: 29 of 29 periods played" "beep: 19 of 19 periods played" \
+            "[audiod] playback ended: periods " ", most streams at once 2"
+        USH_FORBID='robot> ' par_row ushell_row "sh: two beeps without a device canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
+            "beep 600 &
+beep 400 &
+#sleep 2" 60 \
+            "beep: 29 of 29 periods played" "beep: 19 of 19 periods played" ", most streams at once 2"
         USH_FORBID='robot> ' par_row ushell_row "sh: spawn argv/env/cwd ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "export FOO=bar
 cd /fat

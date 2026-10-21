@@ -1,9 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `beep [MS]`: play a short tone on the kernel's sound device (`sound.0`).
+//! `beep [MS]`: play a short tone, through the audio server when the row holds
+//! its endpoint (`endpoint.audio`, Kconfig AUDIOD), else straight on the
+//! kernel's sound device (`sound.0`).
+//!
+//! The server and the kernel serve the same `Sound` interface, so the flow is
+//! one: only the endpoint differs, and with it who gets the objects. Through
+//! the server a task tells its stream from another's by the badge of the
+//! capability it calls through, so it derives a copy of its endpoint capability
+//! badged with its process id (two `beep`s at once are two streams the server
+//! mixes); `open` then moves the three objects to the server, which maps them,
+//! and this task goes on with the mappings it made.
 //!
 //! The flow `beep.rs` has the arithmetic of. A playback stream is three
-//! memory objects this task makes and the kernel is handed with `Sound::open`:
+//! memory objects this task makes and the server (or the kernel) is handed with `Sound::open`:
 //! the `ready` queue (this task posts periods), the `done` queue (the kernel
 //! returns them) and the arena, a `Contig` object the device reads its
 //! samples from. Three of the system's memory-object slots while the tool
@@ -18,6 +28,7 @@
 
 use crate::beep::{self, Plan, Tone};
 use crate::{fail, put};
+use azos_abi::cap::CapPerms;
 use azos_abi::syscall_nr::{SHM_CREATE_KIND_SHIFT, SHM_KIND_ANON, SHM_KIND_CONTIG};
 use azos_devif::sound::{
     self as snd, Params, Period, DIR_PLAYBACK, FMT_S16, NO_PERIOD, PERIOD_CANCELLED, PERIOD_END, PERIOD_XRUN, SLOT_WORDS,
@@ -100,6 +111,35 @@ impl Stream {
     }
 }
 
+/// The audio server's endpoint, if this row holds it: the first endpoint of the
+/// pool (the pool index is the resource of a plain lookup), the only one the
+/// row grants.
+fn audio_endpoint() -> Option<u32> {
+    (0..16u32).find_map(|i| {
+        let h = sys::cap_lookup(sys::ty::ENDPOINT.raw(), i);
+        (h > 0).then_some(h as u32)
+    })
+}
+
+/// Where `beep` plays: a call-only copy of the audio server's endpoint badged
+/// with this process's id, else the kernel's `sound.0`.
+///
+/// The client and the handle it calls through, which `run` closes after play.
+fn connect() -> Result<(SoundClient<Ep>, u32), &'static [u8]> {
+    if let Some(ep) = audio_endpoint() {
+        let badge = sys::getpid().max(1) as u32;
+        let h = sys::cap_derive(ep, u16::from(CapPerms::WRITE.bits()), badge, 0);
+        if h <= 0 {
+            return Err(b"cannot derive this task's stream capability on the audio server");
+        }
+        return Ok((SoundClient::new(Ep(h as u32)), h as u32));
+    }
+    let Some(ep) = sys::dev::lookup(sys::dev::key::SOUND, snd::device_badge(0)) else {
+        return Err(b"no sound endpoint: this image's row does not grant it");
+    };
+    Ok((SoundClient::new(Ep(ep)), ep))
+}
+
 /// `beep [MS]`.
 pub fn run() -> i32 {
     let ms = match beep::parse_ms(if sys::argc() > 1 { sys::arg(1) } else { None }) {
@@ -109,22 +149,24 @@ pub fn run() -> i32 {
             return 2;
         }
     };
-    let Some(ep) = sys::dev::lookup(sys::dev::key::SOUND, snd::device_badge(0)) else {
-        fail(b"beep", b"no sound endpoint: this image's row does not grant it");
-        return 1;
+    let (client, handle) = match connect() {
+        Ok(c) => c,
+        Err(why) => {
+            fail(b"beep", why);
+            return 1;
+        }
     };
-    let code = play(ep, ms);
+    let code = play(client, ms);
     // The tool is done with its call right whatever became of the tone: it
-    // closes the handle `sys::dev::lookup` returned (a capability to the
-    // kernel-hosted sound endpoint; `SYS_CAP_CLOSE` deletes that slot) instead
-    // of leaving it to the task's exit. `beep` derives no copy of its own.
-    let _ = sys::close_typed(ep);
+    // lets go of the handle (`SYS_CAP_CLOSE` deletes an endpoint slot) instead
+    // of leaving it to the task's exit, the badged copy it derived on the audio
+    // server's endpoint and the `sound.0` handle alike.
+    let _ = sys::close_typed(handle);
     code
 }
 
-/// The tone of `ms` milliseconds on the endpoint `ep`; the exit code.
-fn play(ep: u32, ms: u32) -> i32 {
-    let client = SoundClient::new(Ep(ep));
+/// The tone of `ms` milliseconds through `client`; the exit code.
+fn play(client: SoundClient<Ep>, ms: u32) -> i32 {
     let info = match sys::dev::value(client.info()) {
         Ok(i) => i,
         Err(code) => {

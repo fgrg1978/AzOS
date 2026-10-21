@@ -53,7 +53,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `NAMESD.ELF` | `userspace/services/namesd` | with the native shell session | `endpoint.names` (`Names`) | | R `endpoint.names`, W+transfer `endpoint.term`, R+M `MemObj inspect.names` |
 | `TERMD.ELF` | `userspace/services/termd` | console program | `endpoint.term` (`Terminal`) | | R `endpoint.term`, RWM `MemObj input.events` (with a keyboard/mouse driver), RWM `MemObj console.screen` (with `FB_CONSOLE`) |
 | `SH.ELF` | `userspace/services/sh` | with `TERMD.ELF` | nothing | `Terminal`, `Names` | X on the tool images, RW `/fat`, RW `/tmp`, `tasks` view, `ROOT_RO` |
-| `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `endpoint.input` (`input`), `endpoint.compositor` (`window`) | `tasks` view, R `net`, R `clock`, W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO` |
+| `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `sound.0` or `endpoint.audio` (`beep`), `endpoint.input` (`input`), `endpoint.compositor` (`window`) | `tasks` view, R `net`, R `clock`, RW `sound.0` (or W+DUP `endpoint.audio` with Kconfig `AUDIOD`), W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO` |
 | `POWER.ELF` | `userspace/services/power` | by the shell | nothing | `power` | RW `power`, R `sensor.9`, X `endpoint.pm-gpio` and `endpoint.pm-ina` (the drivers' `DevicePower`) |
 | `TRACECTL.ELF` | `userspace/services/tracectl` | by the shell | nothing | `trace` | RW `trace` log, RW `/fat`, `ROOT_RO` |
 | `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | `userspace/services/famtools` | by the shell | nothing | `flight`, `behavior`, `config`, `ota` | see [famtools](#famtools) |
@@ -70,6 +70,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `MCPD.ELF` | `userspace/services/mcpd` | Kconfig `MCP_BRIDGE` | MCP tools | `endpoint.decisions` and the endpoints it fronts | W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), R+M `MemObj inspect.mcp` |
 | `PTPD.ELF` | `userspace/services/ptpd` | Kconfig `PTPD` | nothing | `clock` | W `clock`, R+M `MemObj inspect.clock` |
 | `LOGIND.ELF` | `userspace/services/logind` | Kconfig `CONSOLE_LOGIN` (default n) | `Login` on `endpoint.login` | `TERMD.ELF` calls it | `READ` `endpoint.login`, `EXEC` `keys` masked to `login`, launch `SH.ELF`, R+M `MemObj inspect.logins` |
+| `AUDIOD.ELF` | `userspace/services/audiod` | Kconfig `AUDIOD` | `endpoint.audio` (`Sound`) | `sound.0` | R `endpoint.audio`, RW `sound.0`; a `hard_rt` reservation of 1 ms every 10 ms |
 | `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | nothing | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, RW `/fat/VM`, `ROOT_RO` |
 | `LXSRV.ELF` | `userspace/services/lxsrv` | `lx-server` builds | nothing | | R `entropy`, `ROOT_RO` |
 | `MLSRV.ELF` | `userspace/services/infsrv` | by the kernel's behavior task | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
@@ -570,6 +571,47 @@ the kernel's discipline decides whether to filter, slew or step. The row grants 
 topology's `[clock]` row; a node whose row declares none takes no part and the program
 says so and ends. 802.1AS over raw Ethernet is not served, because a packet socket belongs
 to the kernel.
+
+## audiod
+
+Source: `userspace/services/audiod/src/main.rs`, `userspace/services/audiod/src/server.rs`,
+`userspace/services/audiod/src/mixer.rs`; host tests `tests/host/audiod-tests`.
+
+The audio server serves the `Sound` interface (`azos_devif::sound`) on `endpoint.audio`, in
+front of the kernel's `sound.0`. A client opens a stream with the memory objects it made
+(a `ready` queue, a `done` queue and an arena of periods, moved to the server) and the
+periods never cross a call; the server mixes the running streams into the **one** playback
+stream it holds on the device and returns each period on `done`.
+
+* **The device's format.** A stream names the device's rate and channel count and signed
+  16-bit samples, or `open` answers `UNSUPPORTED`; nothing is resampled. A client period
+  is cut to the device period (1024 frames), whatever length the client chose.
+* **The mix.** A saturating 32-bit sum, each live stream at the gain `2 / (n + 1)` for `n`
+  live streams (1.0 alone). A stream that runs dry underruns alone: silence from it for
+  the rest of the pass, `PERIOD_XRUN` on the next period it gets back, the device and the
+  other streams untouched.
+* **The device stream** is opened when a stream first runs, kept two periods ahead, and
+  drained and closed when none does.
+* **Who a stream belongs to.** The server sees only the badge of the capability a call went
+  through, so a client derives a badged copy of its endpoint capability (the row grants
+  `W+DUP`) and calls through it: one badge, one stream. A call with badge 0 is refused.
+  The badge is the holder's choice, which is enough to tell cooperating clients apart and
+  not hostile ones. A running stream that gives the mixer nothing for 3 s is closed, and
+  one nobody called for 60 s.
+* **Capture is lent, never mixed.** The client's three objects are handed to the kernel's
+  `sound.0` as they are; the kernel's gate (the `mic` effect of the server's class, Kconfig
+  `AUDIO_CAPTURE`, the microphone indicator) decides, and writes the `audio-capture`
+  decision record for every attempt, which ring 3 cannot. `REFUSED` reaches the client
+  unchanged and takes nothing from the server. The effect checked is the server's, not the
+  client's class's.
+* **Two threads.** The main thread accepts calls (the endpoint's `READ` grant is stamped
+  with it) and makes every capture call, because the kernel binds a stream to the thread
+  that opened it and gives the `mic` effect only to a thread seeded from a row; the pump
+  thread mixes. The row is a `hard_rt` reservation at priority 12 (1 ms every 10 ms).
+
+`toolbox beep` goes through the server when its row holds `endpoint.audio` and straight to
+`sound.0` otherwise; with the server the toolbox row holds no `sound.0`, since the device
+has one holder.
 
 ## vmmd
 
