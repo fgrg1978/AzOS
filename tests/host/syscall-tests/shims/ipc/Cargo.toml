@@ -14,6 +14,9 @@ ktest = []
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.
 revoke-chain-canary = []
+# `inspect_region.rs`'s gate canary: every view region granted with the public
+# one. Declared so the cfg is known; the kernel's gate rows act on it.
+inspect-view-canary = []
 # The pulled `io_ring.rs`'s K1 canary (OP_FSYNC answers in the submit).
 ioring-sync-fsync-canary = []
 # io_ring registered buffers: a vacated ring forgets the pins its buffers hold,

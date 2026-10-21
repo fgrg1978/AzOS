@@ -177,7 +177,7 @@ Source: `crates/net/net/src/ntp.rs`, `kernel/src/boot/net.rs` (`install_net_conf
 * **Timestamps.** Software timestamps, taken after a datagram is taken off the socket.
 * **Feeding the kernel.** Each exchange ends in one `(offset_ns, delay_ns)` pair, offered with `Clock::sample` and source `SOURCE_PTP`. The daemon disciplines nothing itself; the kernel's loops filter, slew or step.
 
-Source: `userspace/services/ptpd/src/main.rs`, `userspace/services/ptpd/src/port.rs`, `userspace/services/ptpd/src/bmc.rs`, `userspace/services/ptpd/src/wire.rs`, `userspace/services/ptpd/src/link.rs`, `kernel/src/boot/procfs.rs` (`gen_proc_clock`).
+Source: `userspace/services/ptpd/src/main.rs`, `userspace/services/ptpd/src/port.rs`, `userspace/services/ptpd/src/bmc.rs`, `userspace/services/ptpd/src/wire.rs`, `userspace/services/ptpd/src/link.rs`, `kernel/src/boot/inspect_views.rs` (`gen_proc_clock`).
 
 ## Sleeping and deadlines
 
