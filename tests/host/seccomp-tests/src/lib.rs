@@ -1379,6 +1379,11 @@ mod image_profiles {
         ]),
         // The PTP daemon: its loop, and the engine, codec and helpers beside
         // it (which issue no call of their own).
+        ("AUDIOD.ELF", Lang::Rust, &[
+            src!("userspace/services/audiod/src/main.rs"),
+            src!("userspace/services/audiod/src/mixer.rs"),
+            src!("userspace/services/audiod/src/server.rs"),
+        ]),
         ("PTPD.ELF", Lang::Rust, &[
             src!("userspace/services/ptpd/src/main.rs"),
             src!("userspace/services/ptpd/src/bmc.rs"),
@@ -3348,6 +3353,7 @@ mod image_profiles {
         // +1 on each of riscv64, aarch64 and x86_64 with the RPC server (RPCSRV.ELF).
         // +1 on each of riscv64, aarch64 and x86_64 with the Zenoh gateway (ZENOHD.ELF).
         // +1 on each of riscv64, aarch64 and x86_64 with the PTP daemon (PTPD.ELF).
+        // +1 on each of riscv64, aarch64 and x86_64 with the audio server (AUDIOD.ELF).
         // +0: the relay of the QUIC link (RPCQUIC.ELF) is a std program on the vendored
         // tree, built by tools/sdk_cargo.py like the TLS probe, not by `$(USPACE_BUILD)`.
         // +1 on each of riscv64, aarch64 and x86_64 with the MCP bridge (MCPD.ELF).
@@ -3371,8 +3377,8 @@ mod image_profiles {
         // disk, so it is in no `SOURCES`/`IMAGE_ELFS`.
         assert_eq!(
             recipes,
-            rust_images + 41 + 1 + 37 + 3,
-            "expected {rust_images} riscv64 + 41 aarch64 + 1 board + 37 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
+            rust_images + 42 + 1 + 38 + 3,
+            "expected {rust_images} riscv64 + 42 aarch64 + 1 board + 38 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
         );
         // The SDK's recipes: WHY.ELF on three ISAs and the SDK's own test, sdktest,
         // on three.

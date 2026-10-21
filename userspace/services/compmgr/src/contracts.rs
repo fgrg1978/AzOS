@@ -48,6 +48,9 @@ pub const SERVED: &[(&[u8], &[OpInfo])] = &[
     // The inference broker (`MLSRV.ELF`) also answers `Decisions` and `InferLog`
     // on it; `Infer` is the interface the endpoint is for.
     (b"endpoint.infer", &azos_devif::infer::InferIdl::OPS),
+    // The audio server (`AUDIOD.ELF`, Kconfig AUDIOD): `Sound`, whose `open` declares
+    // `degrade`: a client whose stream was lost to a restart carries on without sound.
+    (b"endpoint.audio", &azos_devif::SoundIdl::OPS),
 ];
 
 /// The strongest failure contract among `ops`, `None` when none declares one.

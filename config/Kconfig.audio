@@ -4,13 +4,42 @@
 #
 # The interface (crates/core/devif/src/sound.rs, `Sound`) fixes what a stream
 # may name: its bounds are constants of that file. The options here are what a
-# build lets the audio server (AUDIOD) accept inside them, so every range
+# build lets the audio server (AUDIOD.ELF, userspace/services/audiod) accept
+# inside them, so every range
 # stops at the interface's bound (tests/host/devif-tests/tests/sound.rs keeps
 # the two equal). The devices themselves are `[audio.NAME]` rows of the signed
 # topology (TOPOLOGY_MAX_AUDIO in config/Kconfig.security); which hardware
 # serves a row is the driver tables' business, not this menu's.
 
 menu "Audio"
+
+config AUDIOD
+    bool "Audio server (AUDIOD.ELF): mixes the clients' streams into the one device stream"
+    depends on DRV_VIRTIO_SND
+    default y if !HWCLASS_EMBEDDED && !USE_ROBOT && !USE_INDUSTRIAL
+    default n
+    help
+      The built-in topology carries a row for AUDIOD.ELF and the kernel starts
+      it at boot. The server serves the `Sound` interface on `endpoint.audio`
+      (userspace/services/audiod): a client opens a stream, hands it periods of
+      memory it made, and the server mixes the streams (a saturating sum, a
+      per-stream gain, the device's rate and format, one stream's underrun its
+      own) into the one playback stream it holds on the kernel's `sound.0`.
+      Capture is not mixed: the client's own objects are handed to the kernel's
+      microphone gate, which needs the `mic` effect and records every attempt
+      (AUDIO_CAPTURE). `toolbox beep` goes through the server when its row
+      holds `endpoint.audio` and straight to `sound.0` otherwise; with the
+      server, the toolbox row holds no `sound.0` (the device has one holder).
+
+      The row is a deadline reservation of 1 ms every 10 ms (10 % of a CPU,
+      `hard_rt`, priority 12) that keeps the device fed under load. A robot or
+      industrial image has no speaker to share and is n; a small board is n
+      (native drivers only: it has no virtio-sound).
+
+      Cost when set: one task of AUDIOD_MEM_PAGES pages (the topology
+      builder), two threads (16 KiB stack for the pump), 48 KiB of static
+      state, and 3 + 3 memory objects open at a time per stream.
+
 
 config AUDIO_CAPTURE
     bool "Audio server: capture streams (the microphone)"
@@ -27,8 +56,7 @@ config AUDIO_CAPTURE
       Small boards name it: a HWCLASS_EMBEDDED build is n unless the config
       says y.
 
-      Cost: no static RAM. The code of the capture path, not measured: the
-      audio server is not built yet (it lands with AUDIOD and virtio-snd).
+      Cost: no static RAM. The code of the capture path, not measured.
 
 config AUDIO_MAX_STREAMS
     int "Audio server: streams open at once"
@@ -41,8 +69,8 @@ config AUDIO_MAX_STREAMS
       slot of the server's static table; a device that mixes several
       clients' streams into one hardware stream uses one slot per client.
 
-      Cost: one table slot per stream (AUDIOD's stream record plus its
-      `Posted` bitmap), not measured yet: the audio server is not built.
+      Cost: one table slot per stream (AUDIOD's stream record, 160 bytes),
+      not measured on a board.
 
 config AUDIO_MAX_PERIODS
     int "Audio server: most periods in one stream's arena"

@@ -843,6 +843,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_SLEEP_UNTIL,
             SYS_CAP_CLOSE, SYS_MO_CREATE, SYS_MO_MAP, SYS_IPC_CALL_V2,
+            // `beep` derives the badged copy of the audio server's endpoint
+            // that tells its stream from another's (the row holds `DUP`).
+            SYS_CAP_DERIVE,
             // The pipe on its stdin or stdout is a shared byte ring: mapped
             // (above; `MEMOBJ_ACQUIRE` reads its size), slept on and woken,
             // its lock named by the process id, its end given up with the op.
@@ -1191,6 +1194,29 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_MCAST_JOIN, NODE_SENDTO, NODE_RECVFROM,
         ],
         ifaces: &[azos_devif::key::CLOCK],
+    },
+    // The audio server (Kconfig AUDIOD): the v2 accept and reply of the `Sound`
+    // interface it serves on `endpoint.audio`, the v2 call on the kernel's
+    // `sound.0` (the one device stream it holds: the `sound` interface), the
+    // clients' memory objects it maps and lets go of (`SYS_MO_MAP`,
+    // `SYS_MO_UNMAP`; `MEMOBJ_ACQUIRE` reads a size) and the three it makes for
+    // the device stream (`SYS_MO_CREATE`), a second thread for the pump
+    // (`SYS_THREAD_CREATE`, parked on a futex word the main thread bumps; the
+    // ring doorbells are woken with `SYS_FUTEX_WAKE`) and the clock it paces
+    // the pump with (`SYS_SLEEP_UNTIL`). The two threads share one lock they take
+    // by yielding. No file, no network, no spawn, no console input.
+    ImageProfile {
+        image: "AUDIOD.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_INVOKE, SYS_YIELD, SYS_SLEEP_UNTIL,
+            SYS_CAP_INFO,
+            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
+            SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
+            SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
+        ],
+        audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, MEMOBJ_ACQUIRE],
+        ifaces: &[azos_devif::key::SOUND],
     },
     // The relay of the QUIC link (Kconfig RPC_QUIC): a std program (the SDK) that
     // holds the QUIC state machine and its TLS so `RPCSRV.ELF` does not. Two UDP

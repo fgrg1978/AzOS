@@ -1267,6 +1267,8 @@ mod start_flag_tests {
         let zenoh: &[&str] = if azos_topology::builder::ZENOH_GW_ROW { &["ZENOHD.ELF"] } else { &[] };
         // The PTP daemon has a row, and starts, only with Kconfig `PTPD`.
         let ptpd: &[&str] = if azos_topology::builder::PTPD_ROW { &["PTPD.ELF"] } else { &[] };
+        // The audio server has a row, and starts, only with Kconfig `AUDIOD`.
+        let audiod: &[&str] = if azos_topology::builder::AUDIOD_ROW { &["AUDIOD.ELF"] } else { &[] };
         // The relay of the QUIC link has a row, and starts, only with Kconfig `RPC_QUIC`.
         let rpcquic: &[&str] = if azos_topology::builder::RPCQUIC_ROW { &["RPCQUIC.ELF"] } else { &[] };
         // The MCP bridge has a row, and starts, only with Kconfig `MCP_BRIDGE`.
@@ -1287,6 +1289,7 @@ mod start_flag_tests {
             if azos_topology::builder::VMMD_ROW { want.push("VMMD.ELF"); }
             want.extend_from_slice(zenoh);
             want.extend_from_slice(ptpd);
+            want.extend_from_slice(audiod);
             want.extend_from_slice(rpcquic);
             want.extend_from_slice(mcp);
             want.extend_from_slice(sshd);
@@ -1317,6 +1320,7 @@ mod start_flag_tests {
             if azos_topology::builder::VMMD_ROW { want.push("VMMD.ELF"); }
             want.extend_from_slice(zenoh);
             want.extend_from_slice(ptpd);
+            want.extend_from_slice(audiod);
             want.extend_from_slice(rpcquic);
             want.extend_from_slice(mcp);
             want.extend_from_slice(sshd);
@@ -1854,12 +1858,13 @@ mod builder_tests {
             + azos_topology::builder::COMPOSITOR_ROW as usize
             + azos_topology::builder::ZENOH_GW_ROW as usize
             + azos_topology::builder::PTPD_ROW as usize
+            + azos_topology::builder::AUDIOD_ROW as usize
             + azos_topology::builder::RPCQUIC_ROW as usize
             + azos_topology::builder::MCP_BRIDGE_ROW as usize
             + azos_topology::builder::SSHD_ROW as usize
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
-            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
         let supervisor = t
             .find_task(&MaybeStr::from_bytes(b"supervisor"))
             .expect("supervisor present");
@@ -2298,12 +2303,13 @@ mod state_tests {
             + azos_topology::builder::COMPOSITOR_ROW as usize
             + azos_topology::builder::ZENOH_GW_ROW as usize
             + azos_topology::builder::PTPD_ROW as usize
+            + azos_topology::builder::AUDIOD_ROW as usize
             + azos_topology::builder::RPCQUIC_ROW as usize
             + azos_topology::builder::MCP_BRIDGE_ROW as usize
             + azos_topology::builder::SSHD_ROW as usize
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
-            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
 
         // A second init must fail with AlreadyInit, by either path, and
         // `init_with` must not run its fill on a slot it does not hold.
@@ -2344,12 +2350,13 @@ mod state_tests {
             + azos_topology::builder::COMPOSITOR_ROW as usize
             + azos_topology::builder::ZENOH_GW_ROW as usize
             + azos_topology::builder::PTPD_ROW as usize
+            + azos_topology::builder::AUDIOD_ROW as usize
             + azos_topology::builder::RPCQUIC_ROW as usize
             + azos_topology::builder::MCP_BRIDGE_ROW as usize
             + azos_topology::builder::SSHD_ROW as usize
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
-            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
     }
 
     /// The kernel installs `fill_default_minimal` in place
@@ -4153,6 +4160,13 @@ mod launch_cap_tests {
                     // call right, not transferable, not the serving half.
                     assert_eq!((c.perms, c.transfer), (CapPerms::WRITE, false), "TOOLBOX.ELF only calls the input server");
                 }
+                // The audio server's endpoint (`beep` plays through it): the call
+                // right and the right to derive its stream badge, never `READ`
+                // (which would serve it), and no `sound.0` beside it.
+                CapKind::Endpoint if c.target == MaybeStr::from_bytes(b"endpoint.audio") => {
+                    assert!(azos_topology::builder::AUDIOD_ROW, "the grant is only there with the server");
+                    assert_eq!((c.perms, c.transfer), (CapPerms::WRITE.union(CapPerms::DUP), false), "a caller, not the server");
+                }
                 // The resolver and the clock's state: observation only.
                 CapKind::Endpoint => {
                     assert!(c.target == MaybeStr::from_bytes(b"net") || c.target == MaybeStr::from_bytes(b"clock"),
@@ -4168,7 +4182,12 @@ mod launch_cap_tests {
             }
         }
         let sound = topo.caps_of(tb).iter().filter(|c| c.target == MaybeStr::from_bytes(b"sound.0")).count();
-        assert_eq!(sound, usize::from(azos_limits::DRV_VIRTIO_SND), "the sound grant follows Kconfig DRV_VIRTIO_SND");
+        // With the audio server the tool plays through it and holds no device of its own.
+        assert_eq!(
+            sound,
+            usize::from(azos_limits::DRV_VIRTIO_SND && !azos_topology::builder::AUDIOD_ROW),
+            "the sound grant follows Kconfig DRV_VIRTIO_SND, and is the server's with Kconfig AUDIOD",
+        );
         assert!(!tb.start);
     }
 
