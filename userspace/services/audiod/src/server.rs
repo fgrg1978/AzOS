@@ -120,6 +120,8 @@ pub const LEASE_STALL_XRUNS: u32 = 256;
 pub struct Mapped {
     pub va: usize,
     pub bytes: usize,
+    /// The mapping is writable (the object is read-write).
+    pub rw: bool,
 }
 
 /// The device's playback stream as the server made it: the two queues and the
@@ -864,7 +866,11 @@ impl<E: Env> Server<E> {
         let (Some(rs), Some(ds)) = (slots_for(r.bytes), slots_for(d.bytes)) else { return out_err(outcome::BAD_ARGUMENT) };
         // Each queue holds at least the periods and the end marker, the three
         // objects are three, and the arena holds every period.
-        if rs < geo.queue_slots
+        // A queue is written by both ends (the consumer moves the tail): a
+        // read-only one would fault the server on its first pop or push.
+        if !r.rw
+            || !d.rw
+            || rs < geo.queue_slots
             || ds < geo.queue_slots
             || r.va == d.va
             || r.va == a.va

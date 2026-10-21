@@ -87,8 +87,10 @@ impl Env for Kernel {
             return None;
         }
         let pages = u32::from_le_bytes([info[0], info[1], info[2], info[3]]) as usize;
+        // `info[4]` is the object's access: 0 read-only, 1 read-write.
+        let rw = info[4] == 1;
         let va = sys::shm_map_typed(cap);
-        (va > 0).then_some(Mapped { va: va as usize, bytes: pages * sys::PAGE_SIZE })
+        (va > 0).then_some(Mapped { va: va as usize, bytes: pages * sys::PAGE_SIZE, rw })
     }
 
     fn release(&mut self, cap: u32) {

@@ -53,6 +53,8 @@ pub fn device_info() -> Info {
 pub struct World {
     pub now: u64,
     mems: HashMap<u32, Mem>,
+    /// Capabilities whose object is read-only.
+    pub read_only: Vec<u32>,
     /// Capabilities the server let go of, in order.
     pub released: Vec<u32>,
     pub woken: usize,
@@ -139,7 +141,7 @@ impl Env for Fake {
     fn map(&mut self, cap: u32) -> Option<Mapped> {
         let w = self.0.borrow();
         let m = w.mems.get(&cap)?;
-        Some(Mapped { va: m.va(), bytes: m.bytes() })
+        Some(Mapped { va: m.va(), bytes: m.bytes(), rw: !w.read_only.contains(&cap) })
     }
     fn release(&mut self, cap: u32) {
         self.0.borrow_mut().released.push(cap);

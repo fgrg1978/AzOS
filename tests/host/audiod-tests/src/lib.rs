@@ -154,6 +154,26 @@ mod streams {
         o.value
     }
 
+    /// A queue the client made read-only is refused, not mapped and used: the
+    /// server writes both queues (the consumer moves the tail), so it would
+    /// fault on the first period. A read-only arena is fine: it is only read.
+    ///
+    /// **Canary.** Drop the `!r.rw || !d.rw` check in `open_inner`: the open is
+    /// accepted.
+    #[test]
+    fn a_read_only_queue_is_refused_and_a_read_only_arena_is_not() {
+        let (mut srv, w) = server();
+        for ro in [1u32, 2] {
+            let c = Client::new(&w, 7, [1, 2, 3], &params());
+            w.borrow_mut().read_only = vec![ro];
+            assert_eq!(c.open(&mut srv, params()).code, outcome::BAD_ARGUMENT, "cap {ro} read-only");
+            assert_eq!(std::mem::take(&mut w.borrow_mut().released), [1, 2, 3]);
+        }
+        let c = Client::new(&w, 7, [1, 2, 3], &params());
+        w.borrow_mut().read_only = vec![3];
+        assert_eq!(c.open(&mut srv, params()).code, outcome::OK);
+    }
+
     /// What `open` takes and refuses. A refused open gives back the three
     /// objects it was moved (the server has no use for them), and an open that
     /// is accepted keeps them.
