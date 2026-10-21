@@ -2443,8 +2443,9 @@ impl<'a> NumaSpec<'a> {
 /// envelope; every refusal leaves a record.
 ///
 /// Consumed by the effect gate (config write, OTA apply, egress, delete and
-/// real-time reservation effects) and by the audio server (opening a capture
-/// stream, kind `mic`).
+/// real-time reservation effects) and by the kernel's sound host (opening a
+/// capture stream, kind `mic`, on the requester's class: the client's when the
+/// audio server opens it for one).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EnvelopeSpec<'a> {
     /// Row name, unique in the topology.

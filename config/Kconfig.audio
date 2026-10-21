@@ -27,7 +27,7 @@ config AUDIOD
       own) into the one playback stream it holds on the kernel's `sound.0`.
       Capture is not mixed: the client's own objects are handed to the kernel's
       microphone gate, which needs the `mic` effect of the CLIENT's class (the
-      server holds none) and records every attempt that reaches it, naming the
+      server's own is never used for a client) and records every attempt that reaches it, naming the
       client (AUDIO_CAPTURE). `toolbox beep` goes through the server when its row
       holds `endpoint.audio` and straight to `sound.0` otherwise; with the
       server, the toolbox row holds no `sound.0` (the device has one holder).

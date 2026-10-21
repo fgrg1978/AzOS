@@ -602,7 +602,7 @@ stream it holds on the device and returns each period on `done`.
   handed to the kernel's `sound.0` as they are; the kernel's gate (the `mic` effect of **the
   client's** scheduler class, Kconfig `AUDIO_CAPTURE`, the microphone indicator) decides, and
   writes the `audio-capture` decision record for every attempt that reaches it, which ring 3
-  cannot. The server holds no microphone authority of its own. The client's authority travels
+  cannot. The server asks for nobody but its clients, and uses none of its own for them. The client's authority travels
   with the open as the **warrant of the call the server is serving** (the handle
   `SYS_IPC_ACCEPT_V2` returned), which `Sound::open` carries as `on_behalf`: the kernel gave it to
   the server's main thread alone, it names the task that made the call, and it ends with the
@@ -615,7 +615,10 @@ stream it holds on the device and returns each period on `done`.
   line per attempt, naming the badge. A badge has one stream of either kind: a second `open` of
   the other kind is `BUSY`. Limits: the server pairs a warrant with that call's objects, which
   the kernel does not check; and the client's class is that of the topology row its calling
-  thread was seeded from, so only the image's main thread has one.
+  thread was seeded from, so only the image's main thread has one; and the kernel does not stop a
+  server that went wrong from calling `sound.0` with `on_behalf` 0, which is decided on the
+  server's own class (the effect unless an `[envelope]` `mic` row contains it): a deployment that
+  must rule that out gives the audio server's row a class with a contained `mic` row.
 * **Two threads.** The main thread accepts calls (the endpoint's `READ` grant is stamped
   with it) and makes every capture call, because the kernel binds a stream to the thread
   that opened it, and the warrant of the call is held by the thread that accepted it; the pump

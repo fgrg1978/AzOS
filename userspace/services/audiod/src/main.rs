@@ -8,7 +8,7 @@
 //! same `Sound` interface the kernel serves on `sound.0` and hand it periods
 //! of memory; the server mixes them into the device's one playback stream.
 //! Capture is lent, never mixed, and decided on the client's microphone effect,
-//! never the server's: the server holds none. The decisions are `server.rs`
+//! never the server's. The decisions are `server.rs`
 //! (pure, tested on the host in `tests/host/audiod-tests`) and `mixer.rs`; this
 //! file is the world they run in: the kernel calls behind [`Env`], and the two
 //! threads.

@@ -64,7 +64,7 @@
 //! write one.
 //!
 //! The kernel hears from one caller, this server's capture thread, and the
-//! server holds no microphone authority: it is the messenger of whoever asks.
+//! server is the messenger of whoever asks: it never asks on its own account.
 //! So the client's authority is lent with the open, as the **warrant of the
 //! call being served**: the handle `SYS_IPC_ACCEPT_V2` returned for the
 //! client's `open`, which the kernel gave this thread alone, which exists only
@@ -94,8 +94,11 @@
 //!   The kernel checks that the warrant is one the server holds and decides on
 //!   its maker, not that the three objects came from the same client, so a
 //!   server that went wrong could capture into memory of its own while a
-//!   client with the effect waits in a call. It cannot do so for a client that
-//!   is not in a call to it, and it cannot do so with its own class;
+//!   client with the effect waits in a call. It could not for a client that is
+//!   not in a call to it. Nor does the kernel stop it asking for itself
+//!   (`on_behalf` 0): that is decided on its own class, which has the effect
+//!   unless an `[envelope]` `mic` row contains it, so a deployment that must
+//!   rule that out gives this server's row a class with a contained `mic` row;
 //! * the client's class is the one of the topology row its calling thread was
 //!   seeded from: a thread of the client that is not the image's main thread
 //!   has no row, so no grant;
