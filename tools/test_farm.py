@@ -361,7 +361,7 @@ class ElfTests(unittest.TestCase):
         self.path = str(Path(self.tmp.name) / "kernel.elf")
 
     def test_registry_count_is_the_span_over_the_entry_size(self):
-        make_elf(self.path, {"__azos_ktest_start": 0x4000_0000, "__azos_ktest_end": 0x4000_0000 + 95 * 32, "main": 1})
+        make_elf(self.path, {"__start_azos_ktest": 0x4000_0000, "__stop_azos_ktest": 0x4000_0000 + 95 * 32, "main": 1})
         self.assertEqual(farm_elf.registry_count(self.path), 95)
 
     def test_an_image_without_the_registry_is_named(self):
@@ -371,7 +371,7 @@ class ElfTests(unittest.TestCase):
         self.assertIn("ktest feature", str(cm.exception))
 
     def test_a_span_that_is_not_whole_entries_is_refused(self):
-        make_elf(self.path, {"__azos_ktest_start": 0x1000, "__azos_ktest_end": 0x1000 + 33})
+        make_elf(self.path, {"__start_azos_ktest": 0x1000, "__stop_azos_ktest": 0x1000 + 33})
         with self.assertRaises(farm_elf.ElfError):
             farm_elf.registry_count(self.path)
 

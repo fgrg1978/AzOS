@@ -17,8 +17,8 @@
 # The bzImage is VSBENCH_X86_64_LINUX_IMAGE, else the `x86_64=` line of
 # tools/vsbench_linux.conf. A leading `~/` is $HOME. Absent file, the column is SKIPPED and says so; this script never
 # downloads anything. The Linux vsbench ELF is built for the same
-# `userspace/x86_64-azos-user.json` target as the AzOS one (same codegen,
-# linked by `linux_x86_64.ld` at 0x200000) and runs as `/init` of an
+# `sdk/targets/x86_64-unknown-azos.json` target as the AzOS one (same codegen,
+# the same image base, a static ET_EXEC) and runs as `/init` of an
 # initramfs, console ttyS0. The disk lanes need virtio-mmio discovered by
 # Linux on microvm (ACPI, or `virtio_mmio.device=` from QEMU's automatic
 # command line, which needs VIRTIO_MMIO_CMDLINE_DEVICES).
@@ -146,11 +146,13 @@ L_LOG="$WORK/linux-x86_64.log"
 L_RAN=0
 linux_done() { tr -d '\r' <"$1" 2>/dev/null | grep -qE '\[VSBENCH\] side=linux done|Attempted to kill init'; }
 if [ -n "$LINUX_X_IMAGE" ] && [ -f "$LINUX_X_IMAGE" ]; then
-    L_X_ELF="$BENCH_TARGET/vsbench-linux/x86_64-azos-user/release/vsbench"
+    # The x86_64 native target spec (the AzOS side's codegen and image base, no
+    # linker script), as a static ET_EXEC entered at its own `_start`.
+    L_X_ELF="$BENCH_TARGET/vsbench-linux/x86_64-unknown-azos/release/vsbench"
     ( cd "$REPO_ROOT/userspace/bench/vsbench" \
       && CARGO_TARGET_DIR="$BENCH_TARGET/vsbench-linux" \
-         RUSTFLAGS="-C link-arg=-Tlinux_x86_64.ld -C link-arg=-zmax-page-size=4096 -C link-arg=--no-eh-frame-hdr -C link-arg=-znorelro $(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --user-rustflags "$X_CONFIG")" \
-         $CARGO +nightly build --release -Zjson-target-spec --target "$REPO_ROOT/userspace/x86_64-azos-user.json" \
+         RUSTFLAGS="-C relocation-model=static -C link-arg=-e_start $(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --user-rustflags "$X_CONFIG")" \
+         $CARGO +nightly build --release -Zjson-target-spec --target "$REPO_ROOT/sdk/targets/x86_64-unknown-azos.json" \
              --no-default-features --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
     ) >"$WORK/build-linux-x86_64.log" 2>&1 \
         || die "could not build the Linux/x86_64 vsbench ELF — see $WORK/build-linux-x86_64.log"

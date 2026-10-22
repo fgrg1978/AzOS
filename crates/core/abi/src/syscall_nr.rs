@@ -163,8 +163,8 @@
 //!   * `SP_EL0` must be 16-byte aligned at every `_start` entry. Unlike
 //!     RISC-V (no stack-alignment trap), `SCTLR_EL1.SA0` — if the kernel
 //!     enables it — faults a misaligned `sp` on the very first stack access
-//!     in EL0, before any user code runs. The userspace linker scripts in
-//!     `userspace/**` page-align every writable segment already (W^X); stack
+//!     in EL0, before any user code runs. The linker starts every segment
+//!     of a native image on a page of its own already (W^X); stack
 //!     alignment is the loader's job (where it sets the initial `sp`), not
 //!     the linker's.
 //!   * This target is hard-float (owner decision 97: ARMv8.5 baseline,

@@ -253,11 +253,11 @@ fn mmu_error_to_kernel_error(e: MmuError) -> KernelError {
 /// is ever resolvable, so the faulting task dies instead of continuing.
 ///
 /// Why 64 KiB, and why this is not an invented number:
-///   - Every ring-3 `user.ld` in `userspace/*/` starts its first section at
-///     `. = 0x10000`, and the ten ELFs currently in `$AZOS_OUT/build/` all report
-///     `min PT_LOAD p_vaddr = 0x10000` (entry points at `0x10000..0x10bb2`).
-///     So `0x10000` is exactly the lowest VA any legitimate binary uses —
-///     the guard is as wide as it can be without touching a real image.
+///   - A native ring-3 image starts at its target spec's image base
+///     (`--image-base`, sdk/targets: 0x200000), and a static Linux image
+///     (the personality) at its toolchain's, `0x10000` at the lowest (lld's
+///     riscv64 default). So `0x10000` is the lowest VA a legitimate binary
+///     uses — the guard is as wide as it can be without refusing one.
 ///   - Everything else a user address space contains sits far above it:
 ///     the `brk` heap grows up from the image and is capped at
 ///     `USER_LOW_MAX = 0x0200_0000`, the vDSO is at `VDSO_USER_BASE =
@@ -279,8 +279,8 @@ fn mmu_error_to_kernel_error(e: MmuError) -> KernelError {
 /// task. On a robot that is a control task that never stops and never
 /// reports; a dead task at least trips the supervisor.
 ///
-/// If this is ever widened, check `userspace/*/user.ld` first: a binary
-/// linked below the new limit stops loading (it will fault on its own entry
+/// If this is ever widened, check the image bases first (sdk/targets and
+/// the Linux toolchains'): a binary linked below the new limit stops loading (it will fault on its own entry
 /// point and be killed, which is the correct-but-confusing symptom).
 pub const USER_GUARD_LIMIT: usize = 0x1_0000; // 64 KiB — lowest legit user VA
 
@@ -2020,7 +2020,7 @@ const KERNEL_HALF_IN_ROOT: bool = cfg!(all(target_arch = "riscv64", target_os = 
 /// board's layout): the slots at and above the one holding `ceiling`'s
 /// round-up are kernel-only. Called once by the boot hart before [`init`],
 /// so the kernel map is built with G already in place. Slot 0 is never
-/// kernel-only (user code links at `0x1_0000`).
+/// kernel-only (user code links at `0x20_0000`).
 pub fn set_user_ceiling(ceiling: usize) {
     if !KERNEL_HALF_IN_ROOT {
         return;
@@ -2137,13 +2137,13 @@ pub fn map_recorded_mmio_into(pt: usize) -> usize {
         // took `fork+exit` on aarch64 from 139,955 to 283,454 instructions,
         // measured. One entry per 2 MiB brings it back. A block is safe here
         // because every recorded window is device space that no task maps:
-        // the lowest is at 0x0800_0000, far above the 0x1_0000 a ring-3 ELF
+        // the lowest is at 0x0800_0000, far above the 0x20_0000 a ring-3 ELF
         // links at, and nothing rounds down into VA 0 (the null guard).
         //
         // **Pages, not blocks, above a 4 KiB granule.** A level-1 block is
         // 32 MiB at an aarch64 16 KiB granule and 512 MiB at 64 KiB: rounded
         // out to that, the window at 0x0800_0000 would claim the slot the
-        // ring-3 image links into (0x1_0000) under 64 KiB, and a 32 MiB slot
+        // ring-3 image links into (0x20_0000) under 64 KiB, and a 32 MiB slot
         // around every window under 16 KiB. A page there is 16 or 64 KiB, so
         // the page-by-page cost that motivated the blocks is 4x / 16x
         // smaller to begin with.
@@ -2811,9 +2811,9 @@ pub fn handle_accessed_fault(pt: usize, fault_addr: usize) -> bool {
 /// This must run **after** every user mapping is installed, never before.
 /// On an empty user PT the wholesale branch below fires for *every* kernel
 /// L2 slot, so `user_pt.L2[vpn2]` ends up holding a pointer to the kernel's
-/// own L1 table — shared, not copied. Userspace links at `0x10000` and the
+/// own L1 table — shared, not copied. Userspace links at `0x20_0000` and the
 /// kernel maps the CLINT at `0x0200_0000`; both are VPN[2]=0, so a
-/// subsequent `map(user_pt, 0x10000, ..)` allocates an L0 table *inside the
+/// subsequent `map(user_pt, 0x20_0000, ..)` allocates an L0 table *inside the
 /// kernel's L1* and installs USER leaves in the kernel page table. Every
 /// address space then inherits the previous process's mappings, user pages
 /// become visible to (and clobberable by) the kernel, and the next
@@ -3232,7 +3232,7 @@ pub fn kernel_half_links_mismatch(root: usize) -> Option<&'static str> {
             let w = pt_read(u_l1, j);
             if w == e { continue; }
             // The root owns its own L0 table where the kernel has one (the
-            // root mapped its pages in that 2 MiB block first: user code at
+            // root mapped its pages in that 2 MiB block first: a Linux image at
             // 0x1_0000 beside the low MMIO): `merge_kernel_l2` adopts it and
             // copies the kernel's leaves in, so each must be there, equal.
             if ARCH.pte_is_table(e, 1) && ARCH.pte_is_table(w, 1) {
@@ -3331,7 +3331,7 @@ pub(crate) fn kernel_l1_in(kpt: usize, vpn2: usize) -> Option<usize> {
 ///
 /// Note for platforms whose RAM base is 0 (K1: `RAM_BASE = 0x0000_0000`): the
 /// kernel identity-maps a megapage over the very VA range userspace links at
-/// (`0x10000`), so this predicate fires and exec fails. That is intentional and
+/// (`0x20_0000`), so this predicate fires and exec fails. That is intentional and
 /// strictly better than today's behaviour there — see the report on the K1 VA
 /// layout; fixing it needs a user-image relocation, not a change here.
 /// Is `vaddr` mapped in the KERNEL's own page table?
@@ -3378,7 +3378,9 @@ pub fn va_is_kernel_mapped(vaddr: usize) -> bool {
 /// `mmap` grow upward from the break and the first page that is the kernel's
 /// stops them, a megabyte-sized heap fell 43 pages short. The break starts
 /// past the last such page of the block instead; the pages in between stay
-/// unmapped address space.
+/// unmapped address space. A native image links above that block (its target
+/// spec's image base, 0x20_0000: sdk/targets); a static Linux image linked at
+/// 0x1_0000 (lld's riscv64 default) ends below them.
 ///
 /// Only the block `brk` is in is scanned (a page per step, at most 512 at a
 /// 4 KiB base): the device windows of a board sit in blocks of their own,
@@ -3406,7 +3408,7 @@ pub fn kernel_entry_collision(user_pt: usize) -> Option<(usize, usize)> {
     // task's table receives no kernel entries, only the device windows, page
     // by page (`map_recorded_mmio_into`). The slot comparison below would
     // then report the device windows' level-1 slot — 512 MiB at 64 KiB,
-    // which also holds the ring-3 image at 0x1_0000 — although nothing is
+    // which also holds the ring-3 image at 0x20_0000 — although nothing is
     // shared. What must not collide is a user page with a device page.
     // arch-only: aarch64 granules above 4 KiB (see above).
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
@@ -3488,7 +3490,7 @@ fn kernel_collision_l2(kpt: usize, user_pt: usize) -> Option<(usize, usize)> {
                 core::ptr::read_volatile((crate::addr::phys_to_virt(u_l1 + vpn1 * 8)) as *const u64)
             };
             if !ARCH.pte_is_valid(ul1) { continue; }
-            // Both hold an L0 table in this 2 MiB block (user code at
+            // Both hold an L0 table in this 2 MiB block (a Linux image at
             // 0x1_0000 beside a low MMIO page the kernel mapped, e.g. the
             // goldfish RTC at 0x101000): `merge_kernel_l2` adopts the
             // user's table and copies the kernel's leaves into its empty

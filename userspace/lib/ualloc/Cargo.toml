@@ -14,9 +14,14 @@ core = { version = "1.0.0", optional = true, package = "rustc-std-workspace-core
 [features]
 rustc-dep-of-std = ["core"]
 
-[target.'cfg(target_os = "none")'.dependencies]
+# Not inside a `std` build (`--cfg azos_std`, tools/sdk_cargo.py): there
+# `azos_stdrt` drives the engine itself.
+[target.'cfg(all(target_os = "azos", not(azos_std)))'.dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
 azos_limits = { path = "../../../crates/core/limits" }
 
 # Standalone, like the userspace images (see Cargo.toml's exclude list).
 [workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))', 'cfg(azos_std)'] }

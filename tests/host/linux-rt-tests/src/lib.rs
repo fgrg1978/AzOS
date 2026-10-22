@@ -746,24 +746,19 @@ mod tests {
         }
     }
 
-    /// The runtime image is linked where the kernel maps it: the linker
-    /// scripts' load address is `azos_abi::foreign::RUNTIME_BASE`, on every ISA
-    /// that hosts the personality. A drift would load the image nowhere and
-    /// fail every Linux spawn.
+    /// The runtime image is linked where the kernel maps it: lxrt's build
+    /// script hands the linker `azos_abi::foreign::RUNTIME_BASE` itself as the
+    /// image base, on every ISA that hosts the personality (no linker script
+    /// carries a copy of it). A drift would load the image nowhere and fail
+    /// every Linux spawn.
     #[test]
-    fn the_linker_scripts_load_the_runtime_where_the_kernel_maps_it() {
+    fn the_runtime_is_linked_where_the_kernel_maps_it() {
         use azos_abi::foreign::{RUNTIME_BASE, RUNTIME_LIMIT};
-        for (name, src) in [
-            ("user.ld", include_str!("../../../../userspace/services/lxrt/user.ld")),
-            ("user_aarch64.ld", include_str!("../../../../userspace/services/lxrt/user_aarch64.ld")),
-            ("user_x86_64.ld", include_str!("../../../../userspace/services/lxrt/user_x86_64.ld")),
-        ] {
-            let at = src
-                .lines()
-                .find_map(|l| l.trim().strip_prefix(". = 0x").and_then(|r| r.split(';').next()))
-                .unwrap_or_else(|| panic!("{name}: no `. = 0x...;` load address"));
-            assert_eq!(usize::from_str_radix(at, 16).unwrap(), RUNTIME_BASE, "{name}");
-        }
+        let build = include_str!("../../../../userspace/services/lxrt/build.rs");
+        assert!(
+            build.contains(r#"--image-base={:#x}", azos_abi::foreign::RUNTIME_BASE"#),
+            "lxrt/build.rs does not link the runtime at azos_abi::foreign::RUNTIME_BASE"
+        );
         assert!(RUNTIME_LIMIT > RUNTIME_BASE);
         assert_eq!(RUNTIME_BASE % 4096, 0);
     }

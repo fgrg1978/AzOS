@@ -14,7 +14,7 @@ Nothing of relibc is stored in this repository except what AzOS adds to it:
 | `third_party/RELIBC_PIN` | the upstream commit |
 | `tools/relibc_fetch.sh` | shallow-fetches that commit into `~/azos-dl/relibc` (`$RELIBC_SRC`), outside the repo |
 | `userspace/lib/relibc-azos/patches/` | the changes to upstream files (MIT, like the tree they patch) |
-| `userspace/lib/relibc-azos/overlay/` | our own files: the `azos` platform module, three target specs, three linker scripts (Apache-2.0 OR GPL-2.0-only) |
+| `userspace/lib/relibc-azos/overlay/` | our own files: the `azos` platform module (Apache-2.0 OR GPL-2.0-only); the Rust targets are the native specs (`sdk/targets`) and a C program is linked with their flags (`tools/user_link_args.py`), no linker script |
 | `tools/relibc_build.sh` | copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs |
 | `config/Kconfig.relibc` | `CONFIG_RELIBC`: the switch, read from each ISA's own configuration |
 | `make relibc` | all of it, for every ISA whose configuration sets `CONFIG_RELIBC=y` (the QEMU defconfigs do) |
@@ -70,8 +70,8 @@ tools/relibc_fetch.sh && make relibc          # needs zig; CONFIG_RELIBC=y: $AZO
 ```
 
 Link with `tools/relibc_build.sh cc <isa> OUT.elf SRC.c..`: `-D__azos__`, the relibc
-headers (`$AZOS_OUT/build/relibc/include`), `-nostdlib -static`, the linker script
-`$AZOS_OUT/build/relibc/<isa>/lib/azos.ld` and `libc.a`.
+headers (`$AZOS_OUT/build/relibc/include`), `-nostdlib -static -fPIE`, the link flags
+of the ISA's target spec (`tools/user_link_args.py`) and `libc.a`.
 
 The programs: `userspace/tests/relibc/hello.c` (the startup), `tinybox.c` (cat, wc,
 ls, mkdir, rm, run, threads, sleep, ...).

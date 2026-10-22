@@ -3,6 +3,8 @@
   "code-model": "medium",
   "cpu": "generic-rv64",
   "crt-objects-fallback": "false",
+  "crt-static-default": true,
+  "crt-static-respected": true,
   "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
   "eh-frame-header": false,
   "emit-debug-gdb-scripts": false,
@@ -21,6 +23,19 @@
   },
   "os": "azos",
   "panic-strategy": "abort",
-  "relocation-model": "static",
-  "target-pointer-width": 64
+  "position-independent-executables": true,
+  "pre-link-args": {
+    "gnu-lld": [
+      "--image-base=0x200000",
+      "-zmax-page-size=4096",
+      "--apply-dynamic-relocs",
+      "-e",
+      "_azos_entry"
+    ]
+  },
+  "relocation-model": "pic",
+  "relro-level": "off",
+  "static-position-independent-executables": true,
+  "target-pointer-width": 64,
+  "tls-model": "local-exec"
 }

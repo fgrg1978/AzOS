@@ -18,3 +18,6 @@ azos_idl = { workspace = true }
 azos_devif = { workspace = true }
 azos_ktest = { workspace = true }
 azos_libsys_macros = { path = "../libsys-macros" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))', 'cfg(azos_std)'] }

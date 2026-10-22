@@ -129,7 +129,7 @@ const _: () = assert!(FOREIGN_FRAME_SIZE == 34 * 8);
 
 /// Where a hosted process's runtime is linked and mapped: the page after the
 /// vDSO's two, in the vDSO's 2 MiB slot (which every ISA keeps for ring-3
-/// fixtures). The linker scripts of `userspace/services/lxrt` agree
+/// fixtures). `userspace/services/lxrt/build.rs` links the runtime here
 /// (`tests/host/linux-rt-tests`). The window is clear of the shm/MMIO window
 /// on every board (`azos_sched::process`'s `USER_MMIO_BASE` starts at or above
 /// [`RUNTIME_LIMIT`]), so a fork copies it.

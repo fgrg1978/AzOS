@@ -11,8 +11,7 @@ ISAs and runs its host tests.
 
 | Path | What |
 |---|---|
-| `sdk/targets/*.json` | The target specs (`os = "azos"`). The ISA baseline beyond them comes from Kconfig. |
-| `sdk/ld/user_<isa>.ld` | The one linker script per ISA: image layout, the ABI note, the test registry brackets. |
+| `sdk/targets/*.json` | The one target spec per ISA (`os = "azos"`), of every native image, `std` or not: it carries the layout too (image base, page size, entry `_azos_entry`, a static PIE), so no image has a linker script. The ISA baseline beyond them comes from Kconfig. |
 | `sdk/std/sys/**` | The files of the port, copied into `library/std/src/sys/` of the library source. Each is thin: a call into `azos_stdrt`. |
 | `crates/core/stdrt` | The port layer: traps, startup block, vDSO clock, threads, futexes, the hardened allocator, console, entropy. |
 | `tools/sdk_std.py` | Assembles `$AZOS_OUT/build/sdk/rust-src/library` from the toolchain's `rust-src` plus `std/sys` and the dispatch edits. |
@@ -105,10 +104,10 @@ Source: `crates/core/libsys`, `crates/core/libsys-macros`.
 ## Tests of user code
 
 `#[azos::test] fn name()` (or `-> Result<(), &'static str>`) registers a test in
-the `.azos_ktest` section, the registry the kernel's `ktest!` uses, bracketed by
-the same two symbols in `ld/user_<isa>.ld`. `azos_libsys::utest::run()` runs
+the `azos_ktest` section, the registry the kernel's `ktest!` uses, bracketed by
+`__start_azos_ktest` and `__stop_azos_ktest`, which the linker defines. `azos_libsys::utest::run()` runs
 them in name order and prints TAP on the console; the number of failures is the
 exit status. A panic is an abort: the `# running NAME` line printed before each
 test names the culprit.
 
-Source: `crates/core/libsys/src/lib.rs` (`utest`), `sdk/ld/`.
+Source: `crates/core/libsys/src/utest.rs`, `crates/core/ktest/src/lib.rs`.

@@ -745,7 +745,7 @@ config KTEST
       handler and ends the run (the kernel does not unwind).
 
       Off (default in every mode, development included): no test, no entry
-      in `.azos_ktest`, no runner; zero bytes and zero instructions. It is
+      in `azos_ktest`, no runner; zero bytes and zero instructions. It is
       not on in the QEMU development configs because the runner ends the
       boot: it is a test kernel, built for the gate's `ktest` rows. On: the
       tests' code and 32 bytes of `.rodata` per test, one more kernel task

@@ -10,3 +10,6 @@ publish = false
 # memory, UART, PLIC, timer-freq, CPU count, and compatible string.
 [dependencies]
 azos_limits = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }

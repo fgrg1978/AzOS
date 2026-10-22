@@ -6,3 +6,6 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [dependencies]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }

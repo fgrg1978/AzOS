@@ -125,7 +125,7 @@ X86_64_REQUIRE_FEATURES: dict[str, tuple[list[str], list[str]]] = {
 # riscv64: the level's codegen features. Zaamo/Zalrsc are the A extension
 # (implied by the triple; spelled out as .cargo/config.toml always has).
 # F, D and V never reach global codegen: the kernel and the user images are
-# soft-float (`riscv64imac-unknown-none-elf`).
+# soft-float (`riscv64imac-unknown-none-elf`, `riscv64imac-unknown-azos`).
 RISCV64_BASE_FEATURES: list[str] = ["zaamo", "zalrsc"]
 # `require` on these compiles them in everywhere (the K1's old K1_ISA).
 RISCV64_REQUIRE_FEATURES: dict[str, str] = {
@@ -214,8 +214,8 @@ def baseline_rustflags(cfg: dict[str, str], user: bool = False, skip_base: bool 
     `-C target-feature=+a,+b` for the others (empty for an Armv8.0 kernel
     with no `require`, which is what the target triple already means).
     `skip_base`: leave out riscv64's level features, which
-    .cargo/config.toml and every riscv64 user crate's target already carry
-    (for a `--config` that merges with them)."""
+    .cargo/config.toml and the riscv64 user target spec (sdk/targets)
+    already carry (for a `--config` that merges with them)."""
     base = _baseline_isa_flags(cfg, user, skip_base)
     extra = cfi_rustflags(cfg) + ([] if user else livepatch_rustflags(cfg) + x86_mitigation_rustflags(cfg)
                                   + kaslr_rustflags(cfg))

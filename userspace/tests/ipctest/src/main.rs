@@ -683,8 +683,9 @@ fn spawn(role: u32, arg: u32) -> isize {
             // the other phases the chance to run at all — a probe whose every
             // child is killed before its first instruction measures nothing.
             // `sp`, `gp` and `tp` cannot be listed (rustc reserves them);
-            // `gp` is safe here only because `user.ld` defines no
-            // `__global_pointer$`, so nothing is gp-relative.
+            // `gp` is safe here only because the image defines no
+            // `__global_pointer$` (no linker script, no `--relax-gp`), so
+            // nothing is gp-relative.
             out("ra") _,
             out("t0") _, out("t1") _, out("t2") _, out("t3") _,
             out("t4") _, out("t5") _, out("t6") _,

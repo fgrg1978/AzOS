@@ -8,8 +8,10 @@
 //! start code (`relibc_start_v1`) wants a System V stack: `argc`, `argv`,
 //! `envp` and an auxiliary vector. `relibc_azos_start` reads the block through
 //! `azos_libsys` and lays that stack out, with one auxiliary entry set that
-//! matters: a program header for the `PT_TLS` segment, which the linker script
-//! (`link/*.ld`) describes with symbols because the loader maps no headers.
+//! matters: a program header for the `PT_TLS` segment, copied from the image's
+//! own program headers (no linker script: lld maps the ELF and program headers
+//! at the start of the read-only segment and names the ELF header
+//! `__ehdr_start`).
 //!
 //! **x86_64 and the first thread.** Ring 3 cannot set its own FS base (CR4.FSGSBASE
 //! is off and no call sets it), and relibc's TLS is addressed through it. The
@@ -38,12 +40,9 @@ unsafe extern "C" {
     /// The C program's entry.
     fn main(argc: isize, argv: *mut *mut c_char, envp: *mut *mut c_char) -> c_int;
 
-    // Described by the linker script of the target (`link/*.ld`): where the TLS
-    // template is and how large, as symbol *values*.
-    static __azos_tls_start: u8;
-    static __azos_tls_filesz: u8;
-    static __azos_tls_memsz: u8;
-    static __azos_tls_align: u8;
+    // The image's ELF header, which the linker defines in the read-only
+    // segment it maps the headers in.
+    static __ehdr_start: u8;
 }
 
 // The image's entry. One per ISA: pass the startup block (the second argument
@@ -106,6 +105,24 @@ static mut STACK: [usize; STACK_WORDS] = [0; STACK_WORDS];
 static mut TLS_PHDR: Phdr =
     Phdr { p_type: PT_TLS, p_flags: 4, p_offset: 0, p_vaddr: 0, p_paddr: 0, p_filesz: 0, p_memsz: 0, p_align: 0 };
 
+/// The image's `PT_TLS` program header, read through `__ehdr_start`.
+///
+/// # Safety
+/// The ELF and program headers are mapped (the first read-only segment).
+unsafe fn image_tls() -> Option<Phdr> {
+    let ehdr = ptr::addr_of!(__ehdr_start);
+    // ELF64: `e_phoff` at 32, `e_phentsize` at 54, `e_phnum` at 56.
+    let phoff = unsafe { ptr::read_unaligned(ehdr.add(32).cast::<u64>()) } as usize;
+    let phentsize = unsafe { ptr::read_unaligned(ehdr.add(54).cast::<u16>()) } as usize;
+    let phnum = unsafe { ptr::read_unaligned(ehdr.add(56).cast::<u16>()) } as usize;
+    if phentsize != core::mem::size_of::<Phdr>() {
+        return None;
+    }
+    (0..phnum)
+        .map(|i| unsafe { ptr::read_unaligned(ehdr.add(phoff + i * phentsize).cast::<Phdr>()) })
+        .find(|p| p.p_type == PT_TLS)
+}
+
 /// The System V process stack `relibc_start_v1` expects, built from the
 /// startup block.
 ///
@@ -136,13 +153,12 @@ unsafe fn build_stack() -> &'static crate::start::Stack<'static> {
         }
     }
     put(0);
-    // The template of the first thread's TLS, as a one-entry program header table.
+    // The template of the first thread's TLS, as a one-entry program header
+    // table: the image's own `PT_TLS` (none: an empty template).
     let phdr = unsafe { &mut *ptr::addr_of_mut!(TLS_PHDR) };
-    phdr.p_vaddr = ptr::addr_of!(__azos_tls_start) as u64;
-    phdr.p_paddr = phdr.p_vaddr;
-    phdr.p_filesz = ptr::addr_of!(__azos_tls_filesz) as u64;
-    phdr.p_memsz = ptr::addr_of!(__azos_tls_memsz) as u64;
-    phdr.p_align = ptr::addr_of!(__azos_tls_align) as u64;
+    if let Some(tls) = unsafe { image_tls() } {
+        *phdr = tls;
+    }
     for (k, v) in [
         (AT_PHDR, ptr::from_mut(phdr) as usize),
         (AT_PHENT, core::mem::size_of::<Phdr>()),

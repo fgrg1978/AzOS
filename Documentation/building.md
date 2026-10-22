@@ -22,9 +22,12 @@ Source: `rust-toolchain.toml`, `.cargo/config.toml`, `Makefile`, `mk/vars.mk`,
 | `cargo-deny` | The supply-chain check of the N0 tier, offline. |
 
 The ISA targets are `riscv64imac-unknown-none-elf`, `aarch64-unknown-none-softfloat` (the
-kernel) and `x86_64-unknown-none`; ring-3 images use the hard-float `aarch64-unknown-none`
-and, for x86_64, the spec `userspace/x86_64-azos-user.json`. The std SDK targets are
-`<isa>-unknown-azos` (see [sdk.md](sdk.md)). The target and the codegen flags of every
+kernel) and `x86_64-unknown-none`. Every ring-3 image, `std` or not, is built for the one
+target spec of its ISA, `sdk/targets/<isa>-unknown-azos.json` (see [sdk.md](sdk.md)), which
+carries the image layout as well: no image has a linker script or a cargo configuration of
+its own (`userspace/.cargo/config.toml` is the one; `tools/user_entry_lint.py`). The one
+exception is the Linux runtime (`userspace/services/lxrt`) on aarch64 and x86_64, built for
+rustc's soft-float targets because it shares the Linux program's FP registers. The target and the codegen flags of every
 build come from the expanded Kconfig through `tools/kconfig_to_cargo.py`.
 
 ## Where outputs go
@@ -170,8 +173,8 @@ when a changed path is in it or in a crate it depends on through `path =` depend
 Source: `crates/core/ktest/src/lib.rs`, `kernel/src/ktest.rs`, `config/Kconfig.development`.
 
 `ktest!` defines an in-kernel test, `fn() -> Result<(), &'static str>`, and places its entry
-in the `.azos_ktest` link section, which every kernel linker script brackets with
-`__azos_ktest_start` and `__azos_ktest_end`. The tests are compiled only with Kconfig
+in the `azos_ktest` link section, which every kernel linker script brackets with
+`__start_azos_ktest` and `__stop_azos_ktest`. The tests are compiled only with Kconfig
 `KTEST` (the kernel feature `ktest`, development builds only); with the feature off the crate
 is not in the dependency graph and the section is empty. A ktest kernel runs the registry
 at boot, prints TAP on the console, and powers off.

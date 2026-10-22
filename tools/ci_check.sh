@@ -6527,12 +6527,13 @@ fi
 
 # A native x86_64 image enters through libsys's `_azos_entry`, which realigns
 # the stack the kernel hands over (rsp 16-aligned; a Rust `_start` expects the
-# one-word-off alignment of a called function). A crate built without its link
-# scripts (no `.cargo/config.toml`: `logd` and `mcpd` once) enters at `_start`
-# itself and dies with #GP on its first aligned SSE store, `x86_64: first user
-# task` red with a trap report. tools/user_entry_lint.py reads the sources and
-# the built images; its self-test is the canary (each check finds its crafted
-# failure).
+# one-word-off alignment of a called function). An image linked without the
+# target spec's `-e _azos_entry` (once: `logd` and `mcpd`, which had no link
+# configuration of their own) enters at `_start` itself and dies with #GP on its
+# first aligned SSE store, `x86_64: first user task` red with a trap report.
+# tools/user_entry_lint.py reads the sources (no per-crate linker script or cargo
+# config, one target spec per ISA naming `_azos_entry`) and the built images;
+# its self-test is the canary (each check finds its crafted failure).
 if ci_row_begin "x86_64: user images enter at _azos_entry"; then
     printf "  %-26s" "x86_64: user images enter at _azos_entry..."
     if uel_out="$(python3 "${REPO_ROOT}/tools/user_entry_lint.py" --self-test 2>&1)" \
@@ -12844,7 +12845,7 @@ PY
     # +1 qos_timer_coalescing_path (the integrated arm -> coalesce -> peek_live
     # path; cargo-feature canaries `qos-fire-canary`, `qos-armed-at-canary`).
     # Recounted from the registry after the EEVDF, Domain, warrant and QoS fronts:
-    # (__azos_ktest_end - __azos_ktest_start) / sizeof(KTest) = 3488 / 32 = 109
+    # (__stop_azos_ktest - __start_azos_ktest) / sizeof(KTest) = 3488 / 32 = 109
     # on riscv64 and aarch64 (`qemu,ktest,chaos,decisions`, the qemu defconfigs).
     # +1 mm_zone_no_cross_type_reuse (a freed page-table frame stays in its
     # frame zone; cargo-feature canary `zone-share-canary`, `not ok`) -> 110

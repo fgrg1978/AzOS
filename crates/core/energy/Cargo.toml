@@ -59,3 +59,6 @@ azos_abi = { workspace = true }
 # `azos_dtb::dtb_energy` extracts into an `EnergyModel`. The DTB crate has
 # no dependencies of its own, so this closes no cycle.
 azos_dtb = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }

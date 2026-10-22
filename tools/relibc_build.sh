@@ -6,7 +6,7 @@
 #
 #   tools/relibc_build.sh prepare              the patched tree (from the pinned checkout)
 #   tools/relibc_build.sh headers              C headers -> build/relibc/include
-#   tools/relibc_build.sh libs  <isa>          libc.a and the linker script -> build/relibc/<isa>/lib
+#   tools/relibc_build.sh libs  <isa>          libc.a -> build/relibc/<isa>/lib
 #   tools/relibc_build.sh cc    <isa> OUT SRC..   compile and link C sources into the ELF OUT
 #   tools/relibc_build.sh diff                 print the patch the work tree's edits amount to
 #
@@ -14,7 +14,9 @@
 # third_party/RELIBC_PIN that tools/relibc_fetch.sh makes (outside the repo);
 # it is copied to a work tree, patched with userspace/lib/relibc-azos/patches
 # and overlaid with userspace/lib/relibc-azos/overlay (our `azos` platform
-# module, target specs and linker scripts). Nothing in the checkout is run
+# module). The Rust target is the ISA's native spec (sdk/targets), and a C
+# program is linked with that spec's flags (tools/user_link_args.py): no
+# linker script. Nothing in the checkout is run
 # except through cargo, as relibc's own build would.
 #
 # Environment:
@@ -52,13 +54,22 @@ isa_ok() {
 }
 
 # zig's freestanding target and CPU for an ISA, the C side of the Rust targets in
-# overlay/targets (same baseline: rv64imac, Armv8 with NEON and strict alignment,
+# sdk/targets (same baseline: rv64imac, Armv8 with NEON and strict alignment,
 # x86-64 with SSE2).
 zig_target() {
     case "$1" in
         riscv64) echo "riscv64-freestanding -mcpu=generic_rv64+m+a+c" ;;
         aarch64) echo "aarch64-freestanding -mstrict-align" ;;
         x86_64)  echo "x86_64-freestanding" ;;
+    esac
+}
+
+# The native target spec of an ISA (sdk/targets/<name>.json).
+spec_name() {
+    case "$1" in
+        riscv64) echo riscv64imac-unknown-azos ;;
+        aarch64) echo aarch64-unknown-azos ;;
+        x86_64)  echo x86_64-unknown-azos ;;
     esac
 }
 
@@ -84,8 +95,6 @@ prepare() {
     done
     sed -i.bak "s|@AZOS_ROOT@|$root|g" "$work/Cargo.toml" && rm -f "$work/Cargo.toml.bak"
     cp -R "$lib/overlay/src/." "$work/src/"
-    mkdir -p "$work/azos"
-    cp -R "$lib/overlay/targets" "$lib/overlay/link" "$work/azos/"
     echo "$key" > "$work/.azos-prepared"
 }
 
@@ -117,7 +126,8 @@ headers() {
 libs() {
     local isa="$1"; isa_ok "$isa"
     prepare
-    local t="$isa-unknown-azos" tdir="$work/target-$isa" dst="$out/$isa/lib"
+    local t tdir="$work/target-$isa" dst="$out/$isa/lib"
+    t="$(spec_name "$isa")"
     local flags=()
     if [ -n "${RELIBC_RUSTFLAGS_TOML:-}" ]; then
         flags+=(--config "target.$t.rustflags=[$RELIBC_RUSTFLAGS_TOML]")
@@ -127,12 +137,12 @@ libs() {
         cd "$work"
         export CARGO_TARGET_DIR="$tdir"
         export AZOS_ISA="$isa"
-        export "CC_${isa}_unknown_azos=$root/tools/relibc_cc.sh"
-        export "AR_${isa}_unknown_azos=$llvm/llvm-ar"
+        export "CC_${t//-/_}=$root/tools/relibc_cc.sh"
+        export "AR_${t//-/_}=$llvm/llvm-ar"
         export RELIBC_ZIG="$zig"
         [ "$isa" != aarch64 ] || export AZOS_PAGE_SIZE="${AZOS_PAGE_SIZE:-4096}"
         cargo rustc --release -Zjson-target-spec -Zbuild-std=core,alloc,compiler_builtins \
-            --target "azos/targets/$t.json" --features math_libm --no-default-features \
+            --target "$root/sdk/targets/$t.json" --features math_libm --no-default-features \
             ${flags[@]+"${flags[@]}"} -- --emit "link=$dst/librelibc.a"
     )
     # relibc's own post-processing: the Rust runtime's global symbols become
@@ -147,7 +157,6 @@ libs() {
         rm -f "$dst/lib$l.a"
         "$llvm/llvm-ar" rcs "$dst/lib$l.a"
     done
-    cp "$work/azos/link/$isa.ld" "$dst/azos.ld"
     echo "[RELIBC] $isa: $dst/libc.a ($(wc -c < "$dst/libc.a" | tr -d ' ') bytes)"
 }
 
@@ -160,9 +169,9 @@ cc_link() {
     [ "$isa" != aarch64 ] || page="${AZOS_PAGE_SIZE:-4096}"
     # shellcheck disable=SC2046
     "$zig" cc -target $(zig_target "$isa") -std=c11 -O2 -Wall -Wextra -Werror \
-        -D__azos__=1 -nostdinc -isystem "$out/include" -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
+        -D__azos__=1 -nostdinc -isystem "$out/include" -ffreestanding -fno-stack-protector -fPIE -fno-builtin \
         -nostdlib -static \
-        -Wl,-T,"$out/$isa/lib/azos.ld" -Wl,-z,max-page-size="$page" -Wl,-z,norelro -Wl,-s \
+        $(python3 "$root/tools/user_link_args.py" --wl "$isa") -Wl,-z,max-page-size="$page" -Wl,-s \
         -o "$elf" "$@" "$out/$isa/lib/libc.a"
 }
 

@@ -18,7 +18,7 @@ filter bound to its image (see [services.md](services.md)). Build commands are i
 
 ## The std target
 
-Source: `sdk/README.md`, `sdk/targets/`, `sdk/ld/`, `sdk/std/sys/`,
+Source: `sdk/README.md`, `sdk/targets/`, `sdk/std/sys/`,
 `crates/core/stdrt/src/lib.rs`, `tools/sdk_std.py`, `tools/sdk_cargo.py`.
 
 A Rust `std` target for each ISA: `riscv64imac-unknown-azos`,
@@ -32,8 +32,7 @@ tests.
 
 | Path | What |
 |---|---|
-| `sdk/targets/*.json` | The target specs. The ISA baseline beyond them comes from Kconfig. |
-| `sdk/ld/user_<isa>.ld` | The linker script of each ISA: image layout, the ABI note, the test-registry brackets. |
+| `sdk/targets/*.json` | The one target spec per ISA, of every native image (`std` or not): codegen baseline and the image layout (image base, page size, entry `_azos_entry`, a static PIE). No image has a linker script. The ISA baseline beyond them comes from Kconfig. |
 | `sdk/std/sys/**` | The files of the port, copied into `library/std/src/sys/` of the library source. Each is thin: a call into `azos_stdrt`. |
 | `crates/core/stdrt` | The port layer (`azos_stdrt`): traps, startup block, vDSO clock, threads, futexes, the hardened allocator, console, entropy, sockets. |
 | `tools/sdk_std.py` | Assembles `$AZOS_OUT/build/sdk/rust-src/library` from the toolchain's `rust-src`, `sdk/std/sys` and the dispatch edits to `std`. |
@@ -124,9 +123,10 @@ from `stdrt`.
 ### Tests of user code
 
 `#[azos::test] fn name()` (or `-> Result<(), &'static str>`) registers a test in the
-`.azos_ktest` section, the registry the kernel's `ktest!` uses
-(`crates/core/ktest/src/lib.rs`), bracketed by the same two symbols in
-`sdk/ld/user_<isa>.ld`. `azos_libsys::utest::run()` runs the tests in name order,
+`azos_ktest` section, the registry the kernel's `ktest!` uses
+(`crates/core/ktest/src/lib.rs`), bracketed by `__start_azos_ktest` and
+`__stop_azos_ktest`, which the linker defines for a section named like a C
+identifier. `azos_libsys::utest::run()` runs the tests in name order,
 prints TAP on the console, and returns the number of failures, clamped to 255, which
 is the program's exit status. A panic ends the process; the `# running NAME` line
 printed before each test names the culprit.
@@ -218,7 +218,8 @@ tools/relibc_build.sh cc <isa> OUT.elf SRC.c...
 `make relibc` builds `hello.elf` and `tinybox.elf` from
 `userspace/tests/relibc/hello.c` and `userspace/tests/relibc/tinybox.c` under
 `$AZOS_OUT/build/relibc/<isa>/`. `cc` compiles with `-D__azos__`, the relibc headers,
-`-nostdlib -static`, the linker script `azos.ld` and `libc.a`. It needs `zig` and
+`-nostdlib -static`, `-fPIE`, the link flags of the ISA's target spec
+(`tools/user_link_args.py`: no linker script) and `libc.a`. It needs `zig` and
 `cbindgen` (see [building.md](building.md)). To move the pin, change
 `third_party/RELIBC_PIN`, run `tools/relibc_fetch.sh`, then `tools/relibc_build.sh
 prepare`, which fails on a patch hunk that no longer applies.
@@ -226,7 +227,7 @@ prepare`, which fails on a patch hunk that no longer applies.
 ## A minimal native program
 
 Source: `crates/core/libsys-macros/src/lib.rs`, `userspace/tests/uhello/`,
-`userspace/tests/uhello/Cargo.toml`, `userspace/tests/uhello/.cargo/config.toml`, `userspace/tests/uhello/user.ld`.
+`userspace/tests/uhello/Cargo.toml`, `userspace/.cargo/config.toml`, `sdk/targets/`.
 
 A `no_std` program imports `azos_libsys` and writes an entry. With the macro:
 
@@ -243,7 +244,8 @@ fn main() -> i32 {
 }
 ```
 
-`#[azos::main]` generates `_start`, which reads the startup block
+`#[azos::main]` generates `_start` (the image enters at `_azos_entry`, which
+`azos_libsys` defines and which calls `_start`), which reads the startup block
 (`azos_libsys::startup_init`), calls `main` and ends the process with its value
 (`()` is 0; `-> !` never returns). With `panic_exit = N` it also generates a
 `#[panic_handler]` that ends the process with `N`; without it the program supplies
@@ -256,8 +258,15 @@ its own. The macro names `::azos_libsys`, so the dependency must be declared in
 | File | What |
 |---|---|
 | `Cargo.toml` | Depends on `azos_libsys`; release profile with `panic = "abort"`; an empty `[workspace]` table so the crate is standalone. |
-| `.cargo/config.toml` | Target, linker script (`user.ld`, `user_aarch64.ld` or `user_x86_64.ld`), and `build-std = ["core"]`. |
-| `user.ld`, `user_aarch64.ld`, `user_x86_64.ld` | Image layout for each ISA. |
+| `src/main.rs` | The program. |
+
+Nothing else: the target spec of each ISA (`sdk/targets`) carries the layout, and
+`userspace/.cargo/config.toml` (the one cargo configuration of every image) the
+default target and `build-std`. A crate with a linker script or a cargo
+configuration of its own is refused by `tools/user_entry_lint.py` (gate tier n0).
+An image that asks for a stack other than Kconfig `USER_STACK_SIZE_KB` says so in
+a `build.rs` (`cargo:rustc-link-arg-bins=-zstack-size=N`, e.g.
+`userspace/services/toolbox/build.rs`).
 
 An image gets its authority from a topology row named after the image (an upper-case
 8.3 name such as `UHELLO.ELF`) and its system-call filter from the profile bound to

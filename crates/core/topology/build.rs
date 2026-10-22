@@ -70,7 +70,7 @@ fn main() {
     // (the `make` board targets refuse an explicit TEST key path with
     // tools/check_board_keys.py). Host builds (the test crates) are not
     // images and keep the fallback.
-    let bare = env::var("CARGO_CFG_TARGET_OS").map(|o| o == "none").unwrap_or(false);
+    let bare = env::var("CARGO_CFG_TARGET_OS").map(|o| o == "none" || o == "azos").unwrap_or(false);
     let release = bare && release_config();
     let explicit_given = explicit.is_some();
     if dev_key && explicit.is_none() && release {
@@ -162,7 +162,7 @@ fn emit_target_cfgs() {
     if want_rv && want_arm {
         fail("emit-target-riscv64 and emit-target-aarch64 are exclusive: one ISA's topology at a time");
     }
-    let bare = os == "none";
+    let bare = os == "none" || os == "azos";
     let (rv, arm) = if want_rv || want_arm {
         (want_rv, want_arm)
     } else {

@@ -433,7 +433,12 @@ VSBENCH_SECCOMP_CANARY="${VSBENCH_SECCOMP_CANARY:-0}"
 # where `make` builds the AzOS VSBENCH.ELF. Not under `$WORK` either, which is
 # wiped on every run.
 BENCH_TARGET="${VSBENCH_TARGET:-$AZOS_OUT/target/vsbench-compare}"
-LINUX_RUSTFLAGS="-C code-model=medium -C target-feature=+zaamo,+zalrsc"
+# The Linux-side ELFs: the riscv64 native target spec (the same codegen and the
+# same image base as the AzOS side, no linker script), as a static ET_EXEC
+# (Linux maps an ET_DYN wherever it likes and nothing here relocates it) that
+# enters at its own `_start` (it reads the Linux stack).
+LINUX_SPEC="$REPO_ROOT/sdk/targets/riscv64imac-unknown-azos.json"
+LINUX_RUSTFLAGS="-C relocation-model=static -C link-arg=-e_start"
 
 rm -rf "$WORK"; mkdir -p "$WORK"
 KM_LOG="$WORK/azos-bench-minimal.log"
@@ -692,17 +697,16 @@ pack_initramfs() { # pack_initramfs <dir> <out.cpio>
     ( cd "$1" && find . | cpio -o -H newc ) >"$2" 2>/dev/null
 }
 
-L_ELF="$BENCH_TARGET/vsbench-linux/riscv64imac-unknown-none-elf/release/vsbench"
+L_ELF="$BENCH_TARGET/vsbench-linux/riscv64imac-unknown-azos/release/vsbench"
 S_RAN=0
 S_BUILD_FAILED=0
 
 if [ -n "$L_LOG" ]; then
-    # The linker script and target features are the Linux side's; `--no-default-features` is what selects the
-    # `linux` ABI, and `main.rs` refuses to build with both or neither.
+    # `--no-default-features` is what selects the `linux` ABI, and `main.rs` refuses to build with both or neither.
     ( cd "$REPO_ROOT/userspace/bench/vsbench" \
       && CARGO_TARGET_DIR="$BENCH_TARGET/vsbench-linux" \
-         RUSTFLAGS="-C link-arg=-Tlinux.ld $LINUX_RUSTFLAGS" \
-         $CARGO +nightly build --release --no-default-features --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
+         RUSTFLAGS="$LINUX_RUSTFLAGS" \
+         $CARGO +nightly build --release -Zjson-target-spec --target "$LINUX_SPEC" --no-default-features --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
       ) >/dev/null 2>&1 || die "could not build the Linux-side vsbench ELF"
 
     # The ELF alone, as /init: PID 1, and when it returns Linux panics by design.
@@ -718,14 +722,13 @@ fi
 # Same ELF, same kernel, same QEMU line. `/init` is the launcher and the ELF is
 # `/vsbench`; see the header.
 if [ -n "$L_LOG" ] && [ "$VSBENCH_SECCOMP" = "1" ]; then
-    S_ELF="$BENCH_TARGET/seccomp-launch/riscv64imac-unknown-none-elf/release/linux_seccomp_launch"
-    # `-T` is relative to the launcher crate: RUSTFLAGS is split on spaces and
-    # the checkout path may contain some. Target and build-std are given here,
-    # not in a config file; tools/linux_seccomp_launch/Cargo.toml says why.
+    S_ELF="$BENCH_TARGET/seccomp-launch/riscv64imac-unknown-azos/release/linux_seccomp_launch"
+    # Target and build-std are given here, not in a config file;
+    # tools/linux_seccomp_launch/Cargo.toml says why.
     if ( cd "$REPO_ROOT/tools/linux_seccomp_launch" \
          && CARGO_TARGET_DIR="$BENCH_TARGET/seccomp-launch" \
-            RUSTFLAGS="-C link-arg=-T../../userspace/bench/vsbench/linux.ld $LINUX_RUSTFLAGS" \
-            $CARGO +nightly build --release --target riscv64imac-unknown-none-elf \
+            RUSTFLAGS="$LINUX_RUSTFLAGS" \
+            $CARGO +nightly build --release -Zjson-target-spec --target "$LINUX_SPEC" \
                 -Z build-std=core -Z build-std-features=compiler-builtins-mem \
        ) >"$WORK/seccomp-launch-build.log" 2>&1; then
         mkdir -p "$WORK/root-seccomp"

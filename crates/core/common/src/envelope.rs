@@ -314,7 +314,7 @@ pub fn set_ask_gate(f: AskGate) {
 }
 
 /// Host tests: forget the installed gate (hooks are process-wide there).
-#[cfg(not(target_os = "none"))]
+#[cfg(not(any(target_os = "none", target_os = "azos")))]
 pub fn clear_ask_gate_for_test() {
     ASK_GATE.clear_for_tests();
 }

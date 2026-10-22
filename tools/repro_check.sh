@@ -37,13 +37,13 @@
 #     differ in their debug info for those three files alone, regardless
 #     of any real non-determinism.
 #   - Userspace crates are built as the Makefile's USPACE_BUILD builds them:
-#     under that source root's userspace/rustc_stable_metadata.py as
-#     RUSTC_WRAPPER, with the wrapper's digest as a `--cfg`. The wrapper
+#     for that source root's riscv64 target spec (sdk/targets, which carries
+#     the codegen and the layout), under its userspace/rustc_stable_metadata.py
+#     as RUSTC_WRAPPER, with the wrapper's digest as a `--cfg`. The wrapper
 #     replaces the `-C metadata` cargo derives from the absolute path of
 #     crates/core/libsys; without it the two runs' userspace ELFs differ.
 #
-# The existing target rustflags in .cargo/config.toml (and in each
-# userspace crate's own .cargo/config.toml) are read and preserved: this
+# The kernel's target rustflags in .cargo/config.toml are read and preserved: this
 # script does NOT set a plain RUSTFLAGS, because RUSTFLAGS/
 # CARGO_ENCODED_RUSTFLAGS take precedence over — rather than merge with —
 # a config file's target.<triple>.rustflags. Instead it reads the existing
@@ -74,8 +74,10 @@ AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/out_dir.py")}"; export AZOS_OUT
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CARGO="${CARGO:-cargo}"
 RISCV_AS="${RISCV_AS:-riscv64-unknown-elf-as}"
-RISCV_LD="${RISCV_LD:-riscv64-unknown-elf-ld}"
 TARGET_TRIPLE="riscv64imac-unknown-none-elf"
+# The ring-3 images' target: the spec in sdk/targets (no per-crate config).
+USER_TRIPLE="riscv64imac-unknown-azos"
+LLD="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"
 
 # Fixed, not derived from the clock or from git — the point is that the
 # SAME value is used for both runs. Override with an env var if a
@@ -176,25 +178,25 @@ short_digest() {
 
 # ---------------------------------------------------------------------
 # Artefact table. Each row:
-#   name  kind(cargo|asm)  build_dir(relative to the source root)  config_toml(relative to build_dir)  rel_bin(under CARGO_TARGET_DIR)  extra_cargo_args  nightly(0|1)
+#   name  kind(cargo|asm)  build_dir(relative to the source root)  config_toml(relative to build_dir; - for a ring-3 image: its target spec)  rel_bin(under CARGO_TARGET_DIR)  extra_cargo_args  nightly(0|1)
 # Matches Makefile's `userspace:` target and its $(KERNEL_ELF) build.
 # ---------------------------------------------------------------------
 # The kernel has no cargo `default`: its base features come from the .config.
 KERNEL_BASE="$(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --base "$REPO_ROOT/.config" | sed 's/^--features //')"
 ARTIFACTS=(
     "kernel|cargo|.|.cargo/config.toml|${TARGET_TRIPLE}/release/kernel|--features qemu${KERNEL_BASE:+,$KERNEL_BASE}|0"
-    "uhello|cargo|userspace/tests/uhello|.cargo/config.toml|${TARGET_TRIPLE}/release/uhello||1"
-    "reflex|cargo|userspace/services/reflex|.cargo/config.toml|${TARGET_TRIPLE}/release/reflex||1"
-    "brain_client|cargo|userspace/services/brain_client|.cargo/config.toml|${TARGET_TRIPLE}/release/brain_client||1"
-    "captest|cargo|userspace/tests/captest|.cargo/config.toml|${TARGET_TRIPLE}/release/captest||1"
-    "latbench|cargo|userspace/bench/latbench|.cargo/config.toml|${TARGET_TRIPLE}/release/latbench||1"
-    "abitest|cargo|userspace/tests/abitest|.cargo/config.toml|${TARGET_TRIPLE}/release/abitest||1"
-    "ipctest|cargo|userspace/tests/ipctest|.cargo/config.toml|${TARGET_TRIPLE}/release/ipctest||1"
-    "vsbench|cargo|userspace/bench/vsbench|.cargo/config.toml|${TARGET_TRIPLE}/release/vsbench|--features azos|1"
-    "gpio_drv|cargo|userspace/drivers/gpio_drv|.cargo/config.toml|${TARGET_TRIPLE}/release/gpio_drv||1"
-    "mlsrv|cargo|userspace/services/infsrv|.cargo/config.toml|${TARGET_TRIPLE}/release/infsrv||1"
-    "buzz_drv|cargo|userspace/drivers/buzz_drv|.cargo/config.toml|${TARGET_TRIPLE}/release/buzz_drv||1"
-    "ina_drv|cargo|userspace/drivers/ina_drv|.cargo/config.toml|${TARGET_TRIPLE}/release/ina_drv||1"
+    "uhello|cargo|userspace/tests/uhello|-|${USER_TRIPLE}/release/uhello||1"
+    "reflex|cargo|userspace/services/reflex|-|${USER_TRIPLE}/release/reflex||1"
+    "brain_client|cargo|userspace/services/brain_client|-|${USER_TRIPLE}/release/brain_client||1"
+    "captest|cargo|userspace/tests/captest|-|${USER_TRIPLE}/release/captest||1"
+    "latbench|cargo|userspace/bench/latbench|-|${USER_TRIPLE}/release/latbench||1"
+    "abitest|cargo|userspace/tests/abitest|-|${USER_TRIPLE}/release/abitest||1"
+    "ipctest|cargo|userspace/tests/ipctest|-|${USER_TRIPLE}/release/ipctest||1"
+    "vsbench|cargo|userspace/bench/vsbench|-|${USER_TRIPLE}/release/vsbench|--features azos|1"
+    "gpio_drv|cargo|userspace/drivers/gpio_drv|-|${USER_TRIPLE}/release/gpio_drv||1"
+    "mlsrv|cargo|userspace/services/infsrv|-|${USER_TRIPLE}/release/infsrv||1"
+    "buzz_drv|cargo|userspace/drivers/buzz_drv|-|${USER_TRIPLE}/release/buzz_drv||1"
+    "ina_drv|cargo|userspace/drivers/ina_drv|-|${USER_TRIPLE}/release/ina_drv||1"
     "hello|asm|userspace/tests/hello|-|-|-|-"
     "syscall_test|asm|userspace/tests/syscall_test|-|-|-|-"
 )
@@ -216,13 +218,19 @@ build_cargo_artifact() {
         read_root="$REPO_ROOT"
     fi
 
+    # The kernel's flags are its config's; a ring-3 image's are its target spec's.
     local -a base_flags=()
-    while IFS= read -r line; do
-        base_flags+=("$line")
-    done < <(read_target_rustflags "$read_root/$build_dir/$config_toml" "$TARGET_TRIPLE")
+    local -a target=(--target "$TARGET_TRIPLE")
+    if [[ "$config_toml" == "-" ]]; then
+        target=(-Zjson-target-spec --target "$src_root/sdk/targets/$USER_TRIPLE.json")
+    else
+        while IFS= read -r line; do
+            base_flags+=("$line")
+        done < <(read_target_rustflags "$read_root/$build_dir/$config_toml" "$TARGET_TRIPLE")
+    fi
 
     local -a flags=(
-        "${base_flags[@]}"
+        ${base_flags[@]+"${base_flags[@]}"}
         "--remap-path-prefix=$src_root=/azos-src"
         "--remap-path-prefix=$HOME/.cargo=/cargo-home"
         "--remap-path-prefix=$run_target_dir=/azos-build"
@@ -238,7 +246,7 @@ build_cargo_artifact() {
 
     local -a cmd=("$CARGO")
     [[ "$nightly" == "1" ]] && cmd+=("+nightly")
-    cmd+=(build --release --target "$TARGET_TRIPLE")
+    cmd+=(build --release "${target[@]}")
     # shellcheck disable=SC2206 # extra_args is a small, fixed, space-safe set
     [[ -n "$extra_args" ]] && cmd+=($extra_args)
 
@@ -265,10 +273,11 @@ build_cargo_artifact() {
 }
 
 build_asm_artifact() {
-    local dir="$1" src="$2" ld_script="$3" obj_out="$4" elf_out="$5"
+    local dir="$1" src="$2" src_root="$3" obj_out="$4" elf_out="$5"
 
     local -a as_cmd=("$RISCV_AS" -march=rv64imac -mabi=lp64 -o "$obj_out" "$dir/$src")
-    local -a ld_cmd=("$RISCV_LD" -T "$ld_script" -o "$elf_out" "$obj_out")
+    # shellcheck disable=SC2207 # the spec's link flags, one word each
+    local -a ld_cmd=("$LLD" -flavor gnu $(python3 "$src_root/tools/user_link_args.py" riscv64) -o "$elf_out" "$obj_out")
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
         printf '  %s\n' "${as_cmd[*]}"
@@ -376,9 +385,9 @@ for row in "${ARTIFACTS[@]}"; do
 
         log "=== $name (asm) — build A ==="
         mkdir -p "$ROOT_A/asm-out" "$ROOT_B/asm-out"
-        build_asm_artifact "$SRC_A/$build_dir" "$src" "$SRC_A/userspace/tests/hello/user.ld" "$obj_a" "$elf_a"
+        build_asm_artifact "$SRC_A/$build_dir" "$src" "$SRC_A" "$obj_a" "$elf_a"
         log "=== $name (asm) — build B ==="
-        build_asm_artifact "$SRC_B/$build_dir" "$src" "$SRC_B/userspace/tests/hello/user.ld" "$obj_b" "$elf_b"
+        build_asm_artifact "$SRC_B/$build_dir" "$src" "$SRC_B" "$obj_b" "$elf_b"
 
         ELF_A+=("$elf_a")
         ELF_B+=("$elf_b")

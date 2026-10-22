@@ -1694,7 +1694,7 @@ config USER_STACK_SIZE_KB
       allocated, zeroed and mapped read-write before the task runs, so
       each task costs USER_STACK_SIZE_KB / 4 physical frames whether it
       touches them or not.  An image that needs more says so in its
-      PT_GNU_STACK header (p_memsz; the user.ld of MLSRV.ELF and
+      PT_GNU_STACK header (p_memsz; the build.rs of MLSRV.ELF and
       TOOLBOX.ELF), up to USER_STACK_MAX_KB, and gets exactly that, rounded
       up to a page.  Nothing the kernel saves goes
       on this stack: integer registers go to the kernel trap frame, and

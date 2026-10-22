@@ -1487,8 +1487,8 @@ include!(concat!(env!("AZOS_OUT"), "/build/image_hashes.rs")); // host builds: t
 // unconditional before this task).
 //
 // **One aarch64 table per translation granule.** A user image is linked for
-// one page size (`-z max-page-size`, `ALIGN(CONSTANT(MAXPAGESIZE))` in its
-// `user_aarch64.ld`) and the 16/64 KiB builds come from
+// one page size (`-z max-page-size`: lld starts each segment on a page of
+// it) and the 16/64 KiB builds come from
 // `make AARCH64_PAGE_SIZE=16384|65536`, into their own directory and table.
 // The kernel binds the table of the granule it was built for, so an image
 // linked for another page size is refused by digest rather than loaded with

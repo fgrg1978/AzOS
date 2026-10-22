@@ -177,9 +177,9 @@ SECTIONS
          * 24-byte {name, fn} entry per `ktest!`. Right after the key table,
          * whose 24-byte entries leave `.` 8-aligned, so with KTEST off the
          * section is empty and costs no byte. KEEP: nothing references an entry. */
-        __azos_ktest_start = .;
-        KEEP(*(.azos_ktest))
-        __azos_ktest_end = .;
+        __start_azos_ktest = .;
+        KEEP(*(azos_ktest))
+        __stop_azos_ktest = .;
 
         /*
          * The trusted secure-boot public key (`SECURE_BOOT_PUBKEY`,

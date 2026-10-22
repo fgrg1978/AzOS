@@ -988,7 +988,7 @@ fn load_elf_into(
         // union of their permissions, so `.rodata` on the last `.text` page
         // stayed executable; such an image is refused now unless both are
         // mapped alike (`check_page_sharing` above), and every
-        // `userspace/*/user*.ld` starts `.rodata` on a page of its own.
+        // native image (lld, sdk/targets) starts `.rodata` on a page of its own.
         //
         // Canary `rodata-exec-canary`: the old two-way split (read-only maps
         // read-execute); abitest's `elfperm:` check then runs its `.rodata`.
@@ -1046,10 +1046,10 @@ fn load_elf_into(
                     // refuses EXEC onto a WRITE leaf. An executable segment
                     // therefore never gets to reuse a page some earlier
                     // segment already mapped — it must own its first page
-                    // outright. Real images satisfy this trivially (the RX
-                    // segment is the first one and starts page-aligned at
-                    // 0x10000 in all 12 binaries under `$AZOS_OUT/build/`); a crafted
-                    // one that puts a writable segment first fails closed.
+                    // outright. Real images satisfy this trivially (lld starts
+                    // the RX segment on the page after the read-only one, and
+                    // a writable one only after it); a crafted one that puts a
+                    // writable segment first fails closed.
                     if flags.exec {
                         return None;
                     }

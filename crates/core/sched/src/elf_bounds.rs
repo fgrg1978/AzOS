@@ -109,8 +109,8 @@ pub fn seg_perms(p_flags: u32) -> SegPerms {
 /// `.rodata` sharing the last `.text` page executable. So a shared page is
 /// accepted only when both segments are mapped alike; otherwise the image is
 /// refused, whatever its header says. Linkers place a segment with other
-/// permissions on a page of its own (lld, GNU ld, and every
-/// `userspace/*/user*.ld`), so no well-formed image is lost. Segments arrive
+/// permissions on a page of its own (lld, which links every native image
+/// with no script, and GNU ld), so no well-formed image is lost. Segments arrive
 /// in ascending order ([`check_pt_load`]), so the previous segment is the
 /// only one that can share this one's first page.
 ///
@@ -146,9 +146,9 @@ pub fn check_page_sharing(
 /// (a streamed exec never sees the section headers), and this is the
 /// signature they carry; a `.rodata` placed inside the text segment by a
 /// script that keeps the headers out is named at build time instead
-/// (tools/elf_page_perms.py). lld's default layout, every `user*.ld` and
-/// GNU ld with `-z separate-code` keep the headers in a read-only segment
-/// or in none. Kconfig ELF_REFUSE_EXEC_HEADERS decides whether the loader
+/// (tools/elf_page_perms.py). lld's default layout (every native image's)
+/// and GNU ld with `-z separate-code` keep the headers in a read-only
+/// segment or in none. Kconfig ELF_REFUSE_EXEC_HEADERS decides whether the loader
 /// asks.
 pub fn check_exec_headers(
     p_flags: u32,
@@ -166,8 +166,8 @@ pub fn check_exec_headers(
 pub const PT_NOTE: u32 = 4;
 
 /// `p_type` of the stack header (`PT_GNU_STACK`). Its `p_memsz` is the stack
-/// the image asks for: a native image's linker script emits one (a `NOLOAD`
-/// section assigned to the header, `userspace/*/user*.ld`); an image with no
+/// the image asks for: lld writes `-z stack-size` there (a native image's
+/// `build.rs`, e.g. `userspace/services/toolbox/build.rs`); an image with no
 /// such header, or with `p_memsz == 0`, takes the default. A Linux image may
 /// carry a toolchain's request (zig links 16 MiB into every binary): see
 /// [`foreign_stack_bytes`].
@@ -294,10 +294,11 @@ pub fn check_pt_load(
     // `PT_LOAD` at `p_vaddr = 0` is a legal ELF, and without this line the
     // loader honoured it, handing the process a live, pre-populated page zero
     // and turning every null dereference in it back into silent success.
-    // Nothing legitimate is lost: all 12 images in `$AZOS_OUT/build/` report
-    // `min PT_LOAD p_vaddr = 0x10000`, and all nine `userspace/*/user.ld`
-    // start at exactly `0x10000` — the comparison must stay `<`, since
-    // `0x10000` is both the guard limit and the lowest real segment.
+    // Nothing legitimate is lost: a native image starts at its target spec's
+    // image base (`--image-base`, sdk/targets: 0x200000) and a static Linux
+    // image at lld's or the toolchain's, 0x10000 at the lowest — the
+    // comparison must stay `<`, since `0x10000` is both the guard limit and
+    // the lowest such segment.
     if p_vaddr < lim.guard_limit {
         return SegCheck::Reject(SegReject::NullGuard);
     }

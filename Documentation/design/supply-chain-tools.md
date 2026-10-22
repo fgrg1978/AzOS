@@ -107,8 +107,9 @@ not `MATCH`.
 
 Options: `--dry-run` prints every command, with the full rustflags, for both
 builds and builds nothing; `--keep` keeps the two temporary roots so a `DIFFER`
-can be inspected. The environment can set `CARGO`, `RISCV_AS`, `RISCV_LD` and
-`SOURCE_DATE_EPOCH`.
+can be inspected. The environment can set `CARGO`, `RISCV_AS` and
+`SOURCE_DATE_EPOCH`; `hello.S` and `test.S` are linked by rust-lld with the
+riscv64 target spec's flags (`tools/user_link_args.py`).
 
 Requirements and cost: the `rsync` command, the nightly toolchain the userspace
 builds use, the RISC-V assembler and linker for the two assembler programs,

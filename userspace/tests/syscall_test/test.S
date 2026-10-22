@@ -24,7 +24,7 @@
 
 .section .text
 .align 2
-.global _start
+.global _azos_entry
 
 # console_write MSG, LEN: the console handle, then the WRITE op on it. Leaves
 # the bytes taken in a0; clobbers a1..a3 and a7.
@@ -42,7 +42,7 @@
     ecall
 .endm
 
-_start:
+_azos_entry:
     # ── Test 1: SYS_GETPID ───────────────────────────────────────────
     li   a7, SYS_GETPID
     ecall

@@ -12,6 +12,10 @@ azos_abi = { path = "../../../crates/core/abi" }
 azos_linux_abi = { path = "../../../crates/core/linux-abi" }
 azos_linux_rt = { path = "../../lib/linux_rt" }
 
+# build.rs links the runtime at `azos_abi::foreign::RUNTIME_BASE`.
+[build-dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+
 [profile.release]
 opt-level = "s"
 lto = true

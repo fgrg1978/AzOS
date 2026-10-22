@@ -1,9 +1,12 @@
 {
   "arch": "aarch64",
   "crt-objects-fallback": "false",
+  "crt-static-default": true,
+  "crt-static-respected": true,
   "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
-  "default-uwtable": true,
+  "default-uwtable": false,
   "disable-redzone": true,
+  "eh-frame-header": false,
   "executables": true,
   "features": "+v8a,+strict-align,+neon",
   "linker": "rust-lld",
@@ -18,13 +21,23 @@
   },
   "os": "azos",
   "panic-strategy": "abort",
+  "position-independent-executables": true,
   "pre-link-args": {
-    "gnu": ["--fix-cortex-a53-843419"],
-    "gnu-lld": ["--fix-cortex-a53-843419"]
+    "gnu-lld": [
+      "--fix-cortex-a53-843419",
+      "--image-base=0x200000",
+      "-zmax-page-size=4096",
+      "--apply-dynamic-relocs",
+      "-e",
+      "_azos_entry"
+    ]
   },
-  "relocation-model": "static",
+  "relocation-model": "pic",
+  "relro-level": "off",
   "stack-probes": {
     "kind": "inline"
   },
-  "target-pointer-width": 64
+  "static-position-independent-executables": true,
+  "target-pointer-width": 64,
+  "tls-model": "local-exec"
 }

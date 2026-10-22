@@ -13,7 +13,7 @@
 
 pub mod engine;
 
-#[cfg(target_os = "none")]
+#[cfg(all(target_os = "azos", not(azos_std)))]
 mod native;
-#[cfg(target_os = "none")]
+#[cfg(all(target_os = "azos", not(azos_std)))]
 pub use native::{NativeSys, UserAlloc};

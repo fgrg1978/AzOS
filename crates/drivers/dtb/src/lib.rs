@@ -16,9 +16,9 @@
 // gated, so it warned for as long as it has existed.
 //
 // The guarantee is not weakened: this crate is only ever built for
-// `target_os = "none"`, where the attribute applies, and there it would fail to
+// `target_os = "none"` or `"azos"`, where the attribute applies, and there it would fail to
 // compile at all if anything reached for `std`.
-#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(any(target_os = "none", target_os = "azos"), no_std)]
 
 // ---------------------------------------------------------------
 // FDT structure-block token constants

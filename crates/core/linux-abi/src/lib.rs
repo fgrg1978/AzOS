@@ -40,7 +40,7 @@ impl Arch {
     /// The ISA this crate is compiled for (riscv64 on the host, where the
     /// host tests pass the ISA explicitly anyway).
     pub const fn native() -> Self {
-        if cfg!(target_arch = "aarch64") && cfg!(target_os = "none") {
+        if cfg!(target_arch = "aarch64") && cfg!(any(target_os = "none", target_os = "azos")) {
             Arch::Aarch64
         } else {
             Arch::Riscv64

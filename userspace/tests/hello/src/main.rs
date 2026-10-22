@@ -28,11 +28,20 @@
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 compile_error!("hello: no syscall instruction for this ISA (aarch64, x86_64; riscv64 has hello.S)");
 
-// x86_64 process entry (System V): the kernel starts an image with rsp
-// 16-byte aligned, and a function expects rsp + 8 aligned (a `call` pushed
-// its return address). The programs' `_start` is a Rust function, so the image enters here instead (`ENTRY(_azos_entry)` in each
-// `user_x86_64.ld`): realign, call `_start` with the kernel's rdi/rsi
-// untouched (the spawn startup block arrives in rsi), never return.
+// The process entry, `_azos_entry`: the entry the target spec names for every
+// native image (sdk/targets, `-e`); this crate links no libsys, so it defines
+// its own, as libsys does. aarch64: a jump to `_start`. x86_64 (System V): the
+// kernel starts an image with rsp 16-byte aligned, and a function expects
+// rsp + 8 aligned (a `call` pushed its return address): realign, call `_start`
+// with the kernel's rdi/rsi untouched, never return.
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".globl _azos_entry",
+    ".type _azos_entry, %function",
+    "_azos_entry:",
+    "    b _start",
+    ".size _azos_entry, . - _azos_entry",
+);
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     ".globl _azos_entry",

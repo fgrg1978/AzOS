@@ -40,7 +40,7 @@ fn report_user_fault<S: FaultServices<F>, F: Frame>(frame: &F, va: u64, write: b
     }
     if S::in_stack_area(va) {
         S::warn(format_args!("  stack: below the stack this image asked for (it has no room to grow; \
-                              PT_GNU_STACK in its linker script sizes it)"));
+                              its PT_GNU_STACK header sizes it, -z stack-size)"));
     }
     let (cow, demand) = S::resolved();
     S::warn(format_args!("  resolved so far: {} COW, {} demand", cow, demand));

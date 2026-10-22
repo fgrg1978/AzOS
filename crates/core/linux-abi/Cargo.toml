@@ -14,3 +14,6 @@ azos_abi = { path = "../abi" }
 # writer can land between two segments; the writev atomicity host test and
 # the Linux personality row fail.
 writev-per-segment-canary = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }

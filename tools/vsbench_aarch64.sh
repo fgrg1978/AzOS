@@ -287,11 +287,13 @@ linux_done() { # linux_done <log>
     tr -d '\r' <"$1" 2>/dev/null | grep -qE '\[VSBENCH\] side=linux done|Attempted to kill init'
 }
 if [ -f "$LINUX_A_IMAGE" ]; then
-    L_A_ELF="$BENCH_TARGET/vsbench-linux/aarch64-unknown-none/release/vsbench"
+    # The aarch64 native target spec (the AzOS side's codegen and image base,
+    # no linker script), as a static ET_EXEC entered at its own `_start`.
+    L_A_ELF="$BENCH_TARGET/vsbench-linux/aarch64-unknown-azos/release/vsbench"
     ( cd "$REPO_ROOT/userspace/bench/vsbench" \
       && CARGO_TARGET_DIR="$BENCH_TARGET/vsbench-linux" \
-         RUSTFLAGS="-C link-arg=-Tlinux_aarch64.ld" \
-         $CARGO +nightly build --release --target aarch64-unknown-none --no-default-features \
+         RUSTFLAGS="-C relocation-model=static -C link-arg=-e_start" \
+         $CARGO +nightly build --release -Zjson-target-spec --target "$REPO_ROOT/sdk/targets/aarch64-unknown-azos.json" --no-default-features \
              --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
     ) >"$WORK/build-linux-aarch64.log" 2>&1 \
         || die "could not build the Linux/aarch64 vsbench ELF — see $WORK/build-linux-aarch64.log"

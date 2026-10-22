@@ -27,8 +27,8 @@
 //! canary) is NOT a `Hook`: it belongs in a plain atomic, and nothing here
 //! pretends otherwise.
 //!
-//! **Hosted builds** (anything that is not `target_os = "none"`: the host test
-//! suites) have no section to protect and reinstall hooks per test, so there
+//! **Hosted builds** (anything that is neither `target_os = "none"` nor `"azos"`: the
+//! host test suites) have no section to protect and reinstall hooks per test, so there
 //! [`Hook::set`] replaces the value. [`Hook::try_set`] is strict everywhere.
 
 use core::marker::PhantomData;
@@ -110,7 +110,7 @@ impl<F: Copy> Hook<F> {
     ///
     /// Hosted builds replace the value instead (see the module docs).
     pub fn set(&self, f: F) {
-        #[cfg(not(target_os = "none"))]
+        #[cfg(not(any(target_os = "none", target_os = "azos")))]
         if !is_sealed() {
             self.raw.store(Self::addr(f), Ordering::Release);
             return;
@@ -158,7 +158,7 @@ impl<F: Copy> Hook<F> {
 
     /// Forget the installed function: host-test hygiene (hooks are
     /// process-wide there). Hosted builds only; a bare-metal hook is set once.
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", target_os = "azos")))]
     pub fn clear_for_tests(&self) {
         self.raw.store(0, Ordering::Release);
     }

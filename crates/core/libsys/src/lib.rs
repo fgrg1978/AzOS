@@ -57,13 +57,33 @@ macro_rules! word64 {
     ($($item:item)*) => { $( #[cfg(not(target_arch = "riscv32"))] $item )* };
 }
 
-// x86_64 process entry (System V): the kernel starts an image with rsp
-// 16-byte aligned, and a function expects rsp + 8 aligned (a `call` pushed
-// its return address). The programs' `_start` is a Rust function, so every
-// x86_64 image enters here instead (`ENTRY(_azos_entry)` in each
-// `user_x86_64.ld`): realign, call `_start` with the kernel's rdi/rsi
-// untouched (the spawn startup block arrives in rsi), never return.
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+// The process entry: the target spec names `_azos_entry` for every native
+// image (`-e`, sdk/targets/*.json). A `std` program gets it from
+// `azos_stdrt` (`tools/sdk_cargo.py` builds with `--cfg azos_std`); any other
+// program's `_start` is a Rust function, entered from here with the kernel's
+// argument registers untouched (the spawn startup block arrives in the second).
+//
+// riscv64 and aarch64: a tail jump.
+#[cfg(all(target_arch = "riscv64", target_os = "azos", not(azos_std)))]
+core::arch::global_asm!(
+    ".globl _azos_entry",
+    ".type _azos_entry, @function",
+    "_azos_entry:",
+    "    j _start",
+    ".size _azos_entry, . - _azos_entry",
+);
+#[cfg(all(target_arch = "aarch64", target_os = "azos", not(azos_std)))]
+core::arch::global_asm!(
+    ".globl _azos_entry",
+    ".type _azos_entry, %function",
+    "_azos_entry:",
+    "    b _start",
+    ".size _azos_entry, . - _azos_entry",
+);
+// x86_64 (System V): the kernel starts an image with rsp 16-byte aligned, and
+// a function expects rsp + 8 aligned (a `call` pushed its return address):
+// realign, call `_start`, never return.
+#[cfg(all(target_arch = "x86_64", target_os = "azos", not(azos_std)))]
 core::arch::global_asm!(
     ".globl _azos_entry",
     ".type _azos_entry, @function",
@@ -86,10 +106,6 @@ pub mod ioring;
 #[cfg(not(target_arch = "riscv32"))]
 pub mod pipe;
 
-// The image's link inputs (mk/vars.mk `USPACE_BUILD` sets the digest): read
-// here so rustc records the variable and cargo relinks an image whose linker
-// script or cargo config changed alone. No bytes reach the image.
-const _: Option<&str> = option_env!("AZOS_LINK_INPUTS");
 #[cfg(not(target_arch = "riscv32"))]
 pub mod dev;
 

@@ -3,7 +3,8 @@
 //! Minimal Rust user-space program (E11.AQ3 phase-1 de-risk).
 //!
 //! Proves that a `no_std` / `no_main` Rust binary built against `libsys` and
-//! linked at VA 0x10000 loads and runs via the kernel's ELF exec path — the
+//! linked by its target spec alone (sdk/targets: no linker script) loads and
+//! runs via the kernel's ELF exec path — the
 //! prerequisite for a real userspace driver process. Prints a line, makes one
 //! call its seccomp profile does not allow, and is killed by it.
 //!

@@ -3290,11 +3290,25 @@ mod image_profiles {
         );
         // Cargo does not rebuild when only RUSTC_WRAPPER changes, so the flags
         // carry a digest of the wrapper: a changed wrapper changes the fingerprint.
-        // (Followed by the Kconfig's `require`d codegen, RV_USER_ISA, when any.)
-        assert!(
-            def.contains(r#"--config 'target.$(TARGET).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)""#),
-            "{def}",
-        );
+        // A recipe names its ISA's target and rustflags after $(USPACE_BUILD)
+        // (one of these), and each starts its rustflags with the digest
+        // (followed by the Kconfig's codegen flags, when any).
+        const ISA_FLAGS: [&str; 5] = ["RV_UFLAGS", "AARCH64_UFLAGS", "X86_64_UFLAGS", "LXRT_UFLAGS_AARCH64", "LXRT_UFLAGS_X86_64"];
+        let lines: Vec<&str> = MAKEFILE.lines().collect();
+        for var in ISA_FLAGS {
+            let at = lines
+                .iter()
+                .position(|l| l.starts_with(&format!("{var} ")) && l.contains('='))
+                .unwrap_or_else(|| panic!("the Makefile defines no {var}"));
+            let mut def = String::new();
+            for l in &lines[at..] {
+                def.push_str(l.trim_end_matches('\\'));
+                if !l.ends_with('\\') {
+                    break;
+                }
+            }
+            assert!(def.contains(r#".rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)""#), "{def}");
+        }
         let tag = MAKEFILE
             .lines()
             .find(|l| l.starts_with("USPACE_METADATA_TAG :="))
@@ -3315,6 +3329,8 @@ mod image_profiles {
                 line.contains("&& $(USPACE_BUILD)") || WRAPPED.iter().any(|w| line.contains(w)),
                 "a userspace recipe bypasses $(USPACE_BUILD): {line}",
             );
+            let n = ISA_FLAGS.iter().filter(|v| line.contains(&format!("$({v})"))).count();
+            assert_eq!(n, 1, "a userspace recipe names {n} ISA flag sets (one of {ISA_FLAGS:?}): {line}");
         }
         let recipes = MAKEFILE
             .lines()

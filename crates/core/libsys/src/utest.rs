@@ -3,8 +3,9 @@
 //! The test harness of user code: `azos_ktest`'s registry in ring 3.
 //!
 //! A test is `#[azos::test] fn name()` (or `-> Result<(), &'static str>`); it is
-//! registered in the `.azos_ktest` link section, which the SDK's linker scripts
-//! (`sdk/ld/user_*.ld`) bracket with `__azos_ktest_start` and `__azos_ktest_end`.
+//! registered in the `azos_ktest` link section, which the linker brackets with
+//! `__start_azos_ktest` and `__stop_azos_ktest` (no linker script: the name is
+//! a C identifier).
 //! A program's `main` calls [`run`], which runs them in name order and prints
 //! TAP on the console (`azos_ktest::tap`); its result is the exit status:
 //!

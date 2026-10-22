@@ -3,9 +3,9 @@
 //! The in-kernel test registry (Kconfig `KTEST`, kernel cargo feature `ktest`).
 //!
 //! [`ktest!`] defines a test, `fn() -> Result<(), &'static str>`, and places
-//! one [`KTest`] entry for it in the `.azos_ktest` link section. Every kernel
-//! linker script brackets that section with `__azos_ktest_start` /
-//! `__azos_ktest_end`, right after the static-key table in `.rodata`, so the
+//! one [`KTest`] entry for it in the `azos_ktest` link section. Every kernel
+//! linker script brackets that section with `__start_azos_ktest` /
+//! `__stop_azos_ktest`, right after the static-key table in `.rodata`, so the
 //! entries are read-only data and [`all`] is a slice over them: no
 //! constructor, no allocation, no fixed-size table to configure.
 //!
@@ -13,7 +13,7 @@
 //! (`dep:azos_ktest`), and every `ktest!` site sits in a
 //! `#[cfg(feature = "ktest")]` module: with the feature off the crate is not
 //! in the kernel's dependency graph at all, so the image is the same bytes as
-//! a kernel that never heard of it (the `.azos_ktest` section is empty). The
+//! a kernel that never heard of it (the `azos_ktest` section is empty). The
 //! macro's own `#[cfg(feature = "ktest")]`, evaluated in the invoking crate,
 //! is a second guard.
 //!
@@ -29,9 +29,11 @@
 //! report that test as failed, because the kernel does not unwind: a panic
 //! still ends the run.
 //!
-//! The same registry serves ring 3 (`azos_libsys::utest`, `#[azos::test]`): the
-//! SDK's linker scripts (`sdk/ld`) bracket `.azos_ktest` with the same two
-//! symbols, and [`tap::run`] is the runner that prints TAP.
+//! The same registry serves ring 3 (`azos_libsys::utest`, `#[azos::test]`): a
+//! user image has no linker script, and the two symbols are the ones the
+//! linker defines for a section whose name is a C identifier (`#[used]` marks
+//! each entry's section retained, so the linker's GC keeps it), and
+//! [`tap::run`] is the runner that prints TAP.
 #![no_std]
 
 pub mod tap;
@@ -49,7 +51,7 @@ pub const EARLY: usize = 0;
 /// the scheduler started.
 pub const LATE: usize = 1;
 
-/// One `.azos_ktest` entry (32 bytes on a 64-bit target).
+/// One `azos_ktest` entry (32 bytes on a 64-bit target).
 #[repr(C)]
 pub struct KTest {
     pub name: &'static str,
@@ -100,7 +102,7 @@ macro_rules! __ktest_entry {
         #[cfg(all(feature = "ktest" $(, $c)*))]
         const _: () = {
             #[used]
-            #[link_section = ".azos_ktest"]
+            #[link_section = "azos_ktest"]
             static ENTRY: $crate::KTest = $crate::KTest {
                 name: ::core::stringify!($name),
                 run: $name,
@@ -115,13 +117,13 @@ pub fn all() -> &'static [KTest] {
     #[cfg(any(target_os = "none", target_os = "azos"))]
     {
         unsafe extern "C" {
-            static __azos_ktest_start: u8;
-            static __azos_ktest_end: u8;
+            static __start_azos_ktest: u8;
+            static __stop_azos_ktest: u8;
         }
         let align = core::mem::align_of::<KTest>();
         let size = core::mem::size_of::<KTest>();
-        // Linker-script symbols; only their addresses are taken.
-        let (s, e) = (&raw const __azos_ktest_start as usize, &raw const __azos_ktest_end as usize);
+        // Linker-defined symbols; only their addresses are taken.
+        let (s, e) = (&raw const __start_azos_ktest as usize, &raw const __stop_azos_ktest as usize);
         // The input sections are placed at their own alignment, so the first
         // entry is at `s` rounded up even if the symbol were not aligned.
         let first = (s + align - 1) & !(align - 1);

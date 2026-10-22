@@ -29,7 +29,7 @@
 //!
 //! A test of the user-code harness (`azos_libsys::utest`, the ring-3 form of
 //! the kernel's `ktest!`): `fn name()` or `fn name() -> Result<(), &'static
-//! str>`, registered in the `.azos_ktest` link section, run in name order by
+//! str>`, registered in the `azos_ktest` link section, run in name order by
 //! `azos_libsys::utest::run`, which prints TAP. A program that links one needs
 //! the section bracketed in its linker script (the SDK's scripts do).
 #![forbid(unsafe_code)]
@@ -182,7 +182,7 @@ pub(crate) fn expand_test(attr: TokenStream, item: TokenStream) -> syn::Result<T
 
         const _: () = {
             #[used]
-            #[link_section = ".azos_ktest"]
+            #[link_section = "azos_ktest"]
             static ENTRY: ::azos_libsys::utest::KTest = ::azos_libsys::utest::KTest {
                 name: #label,
                 run: #run,

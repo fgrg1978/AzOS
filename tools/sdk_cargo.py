@@ -7,8 +7,8 @@
 
 builds a std program for `riscv64imac-unknown-azos` (aarch64, x86_64 likewise):
 `-Zbuild-std` builds `std` from the tree tools/sdk_std.py assembles (the port
-in sdk/std plus crates/core/stdrt), for the target in sdk/targets, linked with
-sdk/ld/user_<isa>.ld. Everything configurable comes from the expanded Kconfig
+in sdk/std plus crates/core/stdrt), for the target in sdk/targets, which carries
+the image layout too (no linker script). Everything configurable comes from the expanded Kconfig
 named by `--kconfig` and nothing else: the ISA baseline flags
 (tools/kconfig_to_cargo.py --user-rustflags) and the std port layer's knobs
 (--sdk-env: the ring-3 allocator and the default thread stack).
@@ -98,12 +98,11 @@ def main():
                         src.update(f.read())
     with open(os.path.join(ROOT, "crates", "core", "libsys", "src", "pure.rs"), "rb") as f:
         src.update(f.read())
-    flags = ["--cfg=azos_stable_metadata_" + tag, "--cfg=azos_std_src_" + src.hexdigest()[:12],
-             "-C", "link-arg=-T" + os.path.join(ROOT, "sdk", "ld", f"user_{a.isa}.ld")]
-    if a.isa != "riscv64":
-        flags += ["-C", f"link-arg=-zmax-page-size={a.page_size}", "-C", "link-arg=--no-eh-frame-hdr"]
-    if a.isa == "x86_64":
-        flags += ["-C", "link-arg=-znorelro"]
+    # `azos_std`: the program's entry is stdrt's `_azos_entry`, not libsys's
+    # (crates/core/libsys/src/lib.rs), and ualloc leaves the engine to stdrt.
+    flags = ["--cfg=azos_stable_metadata_" + tag, "--cfg=azos_std_src_" + src.hexdigest()[:12], "--cfg=azos_std"]
+    if a.page_size != 4096:
+        flags += ["-C", f"link-arg=-zmax-page-size={a.page_size}"]
     if a.vendored:
         # getrandom 0.4 (rand 0.10, quinn-proto) has no backend for target_os = "azos": the program provides one.
         flags += ["--cfg=getrandom_backend=\"custom\""]

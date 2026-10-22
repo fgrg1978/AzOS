@@ -2494,9 +2494,10 @@ mod elf_bounds_tests {
     }
 
     /// What it leaves alone: lld's default layout (headers and `.rodata` in
-    /// the R segment at offset 0, text from 0xd88); the 16/64 KiB native
-    /// `user_aarch64.ld` (text from exactly the end of the headers, which
-    /// sit in no segment); a read-only or writable segment over the headers;
+    /// the R segment at offset 0, text from 0xd88, every native image's); a
+    /// layout with text from exactly the end of the headers, which sit in no
+    /// segment (the 16/64 KiB images' old linker script); a read-only or
+    /// writable segment over the headers;
     /// an executable segment with no file bytes.
     #[test]
     fn segments_clear_of_the_headers_or_not_executable_load() {

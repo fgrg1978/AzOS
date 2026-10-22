@@ -54,7 +54,7 @@ fn main_refusals() {
 #[test]
 fn a_test_returning_result_registers_itself() {
     let out = text(expand_test(quote! {}, quote! { fn adds() -> Result<(), &'static str> { Ok(()) } }));
-    assert!(out.contains("link_section = \".azos_ktest\""), "{out}");
+    assert!(out.contains("link_section = \"azos_ktest\""), "{out}");
     assert!(out.contains("name : \"adds\""), "{out}");
     assert!(out.contains("run : adds"), "{out}");
     assert!(out.contains("phase : :: azos_libsys :: utest :: EARLY"), "{out}");

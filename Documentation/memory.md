@@ -370,10 +370,9 @@ this image asked for`). There is no demand growth on purpose: a `mem = "locked"`
 row must take no fault at run time, and a stack sized from the program is
 deterministic where a grown one is not.
 
-How an image asks: riscv64 and aarch64 link scripts give the `PT_GNU_STACK`
-header a `NOLOAD` section (`.azos_stack`, e.g. `userspace/services/toolbox/user.ld`);
-x86_64 images, and the images linked with the linker's own layout, pass
-`-z stack-size` (`.cargo/config.toml`, or a `build.rs` for `LOGD.ELF`). The
+How an image asks: its crate's `build.rs` passes the linker `-z stack-size`
+(e.g. `userspace/services/toolbox/build.rs`), which lld writes as the
+`PT_GNU_STACK` header's `p_memsz`, on every ISA. The
 size is read off the program, not guessed: `tools/user_stacks.py` takes the
 deepest static call chain of each image (`tools/stack_chain.py`), adds 25% for
 what a static chain does not see (indirect calls), and the gate row

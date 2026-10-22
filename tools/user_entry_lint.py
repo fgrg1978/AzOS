@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""Every native x86_64 user image enters through `_azos_entry`.
+"""A native user image has no linker script, and enters through `_azos_entry`.
 
-The kernel starts a native image with rsp 16-byte aligned. A System V function
-expects rsp + 8 aligned (a `call` pushed its return address), and a program's
-`_start` is a Rust function, so the linker script names `_azos_entry`
-(`ENTRY(_azos_entry)` in `user_x86_64.ld`, defined by libsys), which realigns
-and calls `_start`. A crate whose build does not pick the script up links with
-lld's defaults instead: the entry is `_start` itself, entered one word off, and
-the first aligned SSE store in it (`movaps`, a startup block zeroed in
-`startup_init`) is a #GP with error code 0, killing the task before `main`.
-That is how `logd` and `mcpd` lost the script: no `.cargo/config.toml`.
+The layout of every ring-3 image (image base, page size, entry, a static
+position-independent executable) is its ISA's target spec, `sdk/targets/
+<isa>-unknown-azos.json`, the one Rust target spec per ISA; a crate carries no
+`.ld` and no `.cargo/config.toml` of its own (`userspace/.cargo/config.toml` is
+the one configuration of them all). A per-crate script or config was how an
+image drifted: `logd` and `mcpd` once had no config, linked with lld's defaults,
+entered at `_start` one word off the stack alignment a Rust function expects,
+and died with #GP on their first aligned SSE store, before `main`.
 
-Two checks:
-
-  source   every userspace crate that ships a `user_x86_64.ld` has a
-           `.cargo/config.toml` that links `user_x86_64.ld`, `user_aarch64.ld`
-           and, where it builds for RISC-V, `user.ld` (the file `cargo` reads
-           the script flags from)
+Checks:
+  source   no `*.ld` and no `.cargo/config.toml` under userspace/ but
+           `userspace/.cargo/config.toml`; no JSON target spec in the tree but
+           the three in sdk/targets; each of them names `_azos_entry` as the
+           entry (`-e`, libsys and stdrt define it)
   image    the first instruction of each x86_64 ELF named is `_azos_entry`'s
            (`[endbr64] xor ebp, ebp; and rsp, -16`), read from the bytes at
            `e_entry`, so it needs no symbol table
@@ -28,39 +26,60 @@ Two checks:
                                      `lxhello`, which has its own `_start`)
   user_entry_lint.py --self-test     each check finds its crafted failure
 """
+import json
 import os
 import struct
 import sys
 import tempfile
 
-SCRIPTS = ("user.ld", "user_aarch64.ld", "user_x86_64.ld")
+ONE_CONFIG = os.path.join("userspace", ".cargo", "config.toml")
+SPEC_DIR = os.path.join("sdk", "targets")
+SPECS = ("riscv64imac-unknown-azos.json", "aarch64-unknown-azos.json", "x86_64-unknown-azos.json")
+# Not walked: build output, the vendored crates (their own `.cargo-checksum.json`
+# and configs), version control, agent worktrees.
+SKIP_DIRS = {"target", ".git", "third_party", "node_modules", ".claude", ".codex"}
 ENDBR64 = b"\xf3\x0f\x1e\xfa"
 # xor ebp, ebp; and rsp, -16
 REALIGN = b"\x31\xed\x48\x83\xe4\xf0"
 
 
+def is_target_spec(path):
+    """Is the JSON file at `path` a rustc target spec?"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(d, dict) and "llvm-target" in d and "arch" in d
+
+
 def source_findings(root):
-    """[(crate dir, what is missing)] under `root`/userspace."""
+    """[(path, what is wrong)] in the tree at `root`."""
     out = []
-    base = os.path.join(root, "userspace")
-    for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = [d for d in dirnames if d not in ("target", "src", ".cargo")]
-        if "user_x86_64.ld" not in filenames:
-            continue
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith("target-")]
         rel = os.path.relpath(dirpath, root)
-        cfg = os.path.join(dirpath, ".cargo", "config.toml")
-        if not os.path.isfile(cfg):
-            out.append((rel, "no .cargo/config.toml: the link scripts are never passed"))
+        in_user = rel == "userspace" or rel.startswith("userspace" + os.sep)
+        for n in filenames:
+            p = os.path.normpath(os.path.join(rel, n))
+            if in_user and n.endswith(".ld"):
+                out.append((p, "a linker script: the target spec carries the layout (sdk/targets)"))
+            if in_user and os.path.basename(dirpath) == ".cargo" and n in ("config.toml", "config") \
+                    and p != ONE_CONFIG:
+                out.append((p, f"a cargo config of its own: {ONE_CONFIG} is the one for every image"))
+            if n.endswith(".json") and os.path.dirname(p) != SPEC_DIR and is_target_spec(os.path.join(dirpath, n)):
+                out.append((p, f"a target spec outside {SPEC_DIR}: one spec per ISA"))
+    for n in SPECS:
+        p = os.path.join(SPEC_DIR, n)
+        try:
+            with open(os.path.join(root, p), encoding="utf-8") as f:
+                spec = json.load(f)
+        except (OSError, ValueError) as e:
+            out.append((p, f"unreadable ({e})"))
             continue
-        with open(cfg, encoding="utf-8") as f:
-            text = f.read()
-        # A crate that builds no RISC-V image (`hello`: assembly there) has no
-        # riscv64 target section, so no `-Tuser.ld` to look for.
-        for s in SCRIPTS:
-            if s == "user.ld" and "riscv64imac-unknown-none-elf" not in text:
-                continue
-            if "-T" + s not in text:
-                out.append((rel, f".cargo/config.toml does not link {s} (-T{s})"))
+        args = spec.get("pre-link-args", {}).get(spec.get("linker-flavor", ""), [])
+        if not any(a == "-e" and b == "_azos_entry" for a, b in zip(args, args[1:])):
+            out.append((p, "the link arguments do not name `-e _azos_entry`"))
     return sorted(out)
 
 
@@ -88,7 +107,7 @@ def image_finding(data):
     if head.startswith(ENDBR64):
         head = head[len(ENDBR64):]
     if not head.startswith(REALIGN):
-        return "e_entry is not `_azos_entry` (xor ebp, ebp; and rsp, -16): linked without user_x86_64.ld?"
+        return "e_entry is not `_azos_entry` (xor ebp, ebp; and rsp, -16): linked without the target spec's `-e`?"
     return None
 
 
@@ -118,18 +137,30 @@ def self_test():
     expect(image_finding(crafted(ENDBR64 + b"\x50\x48\x89\xf7")) is not None, "a bare `_start` (push rax) is accepted")
     expect(image_finding(b"MZ") is not None, "a non-ELF is accepted")
     with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, SPEC_DIR))
+        for n in SPECS:
+            with open(os.path.join(root, SPEC_DIR, n), "w", encoding="utf-8") as f:
+                json.dump({"arch": "x", "llvm-target": "x", "linker-flavor": "gnu-lld",
+                           "pre-link-args": {"gnu-lld": ["-e", "_azos_entry"]}}, f)
         crate = os.path.join(root, "userspace", "services", "x")
         os.makedirs(os.path.join(crate, ".cargo"))
-        for s in SCRIPTS:
-            open(os.path.join(crate, s), "w").close()
-        expect(any("no .cargo" in w for _d, w in source_findings(root)), "a crate with no cargo config is accepted")
-        cfg = os.path.join(crate, ".cargo", "config.toml")
-        with open(cfg, "w", encoding="utf-8") as f:
-            f.write('riscv64imac-unknown-none-elf "-Tuser.ld" "-Tuser_aarch64.ld"\n')
-        expect(any("user_x86_64.ld" in w for _d, w in source_findings(root)), "a config missing the x86_64 script is accepted")
-        with open(cfg, "w", encoding="utf-8") as f:
-            f.write('riscv64imac-unknown-none-elf "-Tuser.ld" "-Tuser_aarch64.ld" "-Tuser_x86_64.ld"\n')
-        expect(not source_findings(root), "a complete crate is refused")
+        os.makedirs(os.path.join(root, "userspace", ".cargo"))
+        open(os.path.join(root, ONE_CONFIG), "w").close()
+        expect(not source_findings(root), "a clean tree is refused")
+        open(os.path.join(crate, "user.ld"), "w").close()
+        expect(any("linker script" in w for _d, w in source_findings(root)), "a crate's linker script is accepted")
+        os.remove(os.path.join(crate, "user.ld"))
+        open(os.path.join(crate, ".cargo", "config.toml"), "w").close()
+        expect(any("cargo config" in w for _d, w in source_findings(root)), "a crate's cargo config is accepted")
+        os.remove(os.path.join(crate, ".cargo", "config.toml"))
+        with open(os.path.join(crate, "x86_64-user.json"), "w", encoding="utf-8") as f:
+            json.dump({"arch": "x86_64", "llvm-target": "x86_64-unknown-none-elf"}, f)
+        expect(any("target spec outside" in w for _d, w in source_findings(root)), "a second target spec is accepted")
+        os.remove(os.path.join(crate, "x86_64-user.json"))
+        with open(os.path.join(root, SPEC_DIR, SPECS[2]), "w", encoding="utf-8") as f:
+            json.dump({"arch": "x", "llvm-target": "x", "linker-flavor": "gnu-lld",
+                       "pre-link-args": {"gnu-lld": ["-e", "_start"]}}, f)
+        expect(any("_azos_entry" in w for _d, w in source_findings(root)), "a spec entering at `_start` is accepted")
     print("self-test " + ("ok" if ok else "FAILED"))
     return 0 if ok else 1
 

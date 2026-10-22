@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""How many tests a kernel image holds: its `.azos_ktest` registry.
+"""How many tests a kernel image holds: its `azos_ktest` registry.
 
-The linker script brackets the section with `__azos_ktest_start` /
-`__azos_ktest_end` (crates/core/ktest) and an entry is 32 bytes on a 64-bit
+The linker script brackets the section with `__start_azos_ktest` /
+`__stop_azos_ktest` (crates/core/ktest) and an entry is 32 bytes on a 64-bit
 target, so the count is `(end - start) / 32`: the plan a clean boot must print.
 The gate keeps that number by hand (KTEST_N_RV); a board image has its own
 feature set (no `qemu`, `chaos` and `decisions` only if its config says so), so
@@ -49,9 +49,9 @@ def symbols(path: str) -> dict:
 def registry_count(path: str) -> int:
     syms = symbols(path)
     try:
-        span = syms["__azos_ktest_end"] - syms["__azos_ktest_start"]
+        span = syms["__stop_azos_ktest"] - syms["__start_azos_ktest"]
     except KeyError:
-        raise ElfError(f"{path}: no __azos_ktest_start/end: built without the ktest feature") from None
+        raise ElfError(f"{path}: no __start_azos_ktest/end: built without the ktest feature") from None
     if span < 0 or span % KTEST_ENTRY_BYTES:
         raise ElfError(f"{path}: the ktest registry spans {span} bytes, not a multiple of {KTEST_ENTRY_BYTES}")
     return span // KTEST_ENTRY_BYTES

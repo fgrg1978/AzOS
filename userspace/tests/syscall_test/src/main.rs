@@ -104,8 +104,9 @@ fn fail() -> ! {
     loop {}
 }
 
+/// The process entry the target spec names (`-e _azos_entry`, sdk/targets).
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _azos_entry() -> ! {
     unsafe {
         // Test 1: SYS_GETPID.
         let _tid = syscall0(SYS_GETPID);

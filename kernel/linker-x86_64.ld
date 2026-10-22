@@ -26,7 +26,7 @@
  *   _text_start _text_end _rodata_start _rodata_end _data_start _data_end
  *   _bss_start _bss_end _stack_start _stack_end _kernel_end
  *   __azos_keys_start __azos_keys_end   (the signed-boot key section)
- *   __azos_ktest_start __azos_ktest_end (the in-kernel test registry)
+ *   __start_azos_ktest __stop_azos_ktest (the in-kernel test registry)
  *   __azos_patch_start __azos_patch_end (the live-update site table)
  *   __patch_pool_start __patch_pool_end (the live-update patch pool, inside text)
  */
@@ -93,7 +93,7 @@ SECTIONS
     /* The in-kernel test registry (Kconfig KTEST, crates/core/ktest); empty
      * with KTEST off. */
     .azos_ktest : AT(ADDR(.azos_ktest) - KERNEL_VA_OFFSET_LITERAL) {
-        __azos_ktest_start = .; KEEP(*(.azos_ktest)) __azos_ktest_end = .;
+        __start_azos_ktest = .; KEEP(*(azos_ktest)) __stop_azos_ktest = .;
     }
     /* Live-update site table (.azos_patch): 8-byte entries, the address of a
      * patchable function entry (the compiler's __patchable_function_entries,

@@ -29,7 +29,7 @@
 //! * [`policy`] — the run-time policy: limit-checked setters for the governor,
 //!   OPP range, headroom, rate limit and idle depth, with a refusal record.
 
-#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(any(target_os = "none", target_os = "azos"), no_std)]
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 

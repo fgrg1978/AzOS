@@ -20,9 +20,9 @@
 
 .section .text
 .align 2
-.global _start
+.global _azos_entry
 
-_start:
+_azos_entry:
     # --- the console handle ---
     li   a7, SYS_CAP_INFO
     li   a0, 0

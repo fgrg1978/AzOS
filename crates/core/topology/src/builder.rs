@@ -223,7 +223,7 @@ const RING3_SMALL_ROW_PAGES: u32 = {
 const RING3_DRIVER_MEM_PAGES: u32 = RING3_SMALL_ROW_PAGES;
 /// Budget of the `MLSRV.ELF` row, in topology pages: a small row's, plus what
 /// its stack holds beyond the 16 KiB a small row counts: the 64 KiB main stack
-/// the image asks for (`PT_GNU_STACK`, userspace/services/infsrv/user.ld: 12
+/// the image asks for (`PT_GNU_STACK`, userspace/services/infsrv/build.rs: 12
 /// pages more), which serves the endpoint now that the second, 44 KiB thread
 /// (11 pages of `.bss`) is gone, and 4 pages kept until the row is measured on
 /// a booted machine. The 64 pages of a small row were full already: image, the

@@ -41,9 +41,15 @@ endif
 
 KERNEL_ELF := $(TARGET_DIR)/kernel
 
+# The ring-3 images' target on each ISA: the one spec per ISA in sdk/targets,
+# no_std and std alike. It carries the whole layout (image base, page size,
+# entry, a static position-independent executable): no image has a linker
+# script (tools/user_entry_lint.py). Cargo names the output directory after it.
+USER_SPECS          := $(CURDIR)/sdk/targets
+TARGET_RISCV64_USER := riscv64imac-unknown-azos
+
 # User-space toolchain
 RISCV_AS  := riscv64-unknown-elf-as
-RISCV_LD  := riscv64-unknown-elf-ld
 HELLO_DIR     := userspace/tests/hello
 HELLO_ELF     := $(OUT_BUILD)/hello.elf
 # A static Linux binary built from our own C (no C library), run
@@ -55,26 +61,26 @@ SYSTEST_DIR   := userspace/tests/syscall_test
 SYSTEST_ELF   := $(OUT_BUILD)/syscall_test.elf
 # E11.AQ3 — ring-3 GPIO driver (Rust no_std ELF, built standalone).
 GPIO_DRV_DIR  := userspace/drivers/gpio_drv
-GPIO_DRV_BUILT:= $(OUT_TGT)/$(GPIO_DRV_DIR)/riscv64imac-unknown-none-elf/release/gpio_drv
+GPIO_DRV_BUILT:= $(OUT_TGT)/$(GPIO_DRV_DIR)/$(TARGET_RISCV64_USER)/release/gpio_drv
 GPIO_DRV_ELF  := $(OUT_BUILD)/gpio_drv.elf
 # Wave 9 — the ring-3 ML inference service the behavior task spawns
 # (`kernel/src/behavior_ml.rs`). Same standalone shape as gpio_drv.
 MLSRV_DIR     := userspace/services/infsrv
-MLSRV_BUILT   := $(OUT_TGT)/$(MLSRV_DIR)/riscv64imac-unknown-none-elf/release/infsrv
+MLSRV_BUILT   := $(OUT_TGT)/$(MLSRV_DIR)/$(TARGET_RISCV64_USER)/release/infsrv
 MLSRV_ELF     := $(OUT_BUILD)/mlsrv.elf
 
 # Wave 9 (DRV1) — the ring-3 buzzer and INA219 drivers.
 # Started by the kernel from their `start = true` topology rows, not by
 # autorun. Shipped only on the drivers disks below (and the board volume).
 BUZZ_DRV_DIR  := userspace/drivers/buzz_drv
-BUZZ_DRV_BUILT:= $(OUT_TGT)/$(BUZZ_DRV_DIR)/riscv64imac-unknown-none-elf/release/buzz_drv
+BUZZ_DRV_BUILT:= $(OUT_TGT)/$(BUZZ_DRV_DIR)/$(TARGET_RISCV64_USER)/release/buzz_drv
 BUZZ_DRV_ELF  := $(OUT_BUILD)/buzz_drv.elf
 INA_DRV_DIR   := userspace/drivers/ina_drv
-INA_DRV_BUILT := $(OUT_TGT)/$(INA_DRV_DIR)/riscv64imac-unknown-none-elf/release/ina_drv
+INA_DRV_BUILT := $(OUT_TGT)/$(INA_DRV_DIR)/$(TARGET_RISCV64_USER)/release/ina_drv
 INA_DRV_ELF   := $(OUT_BUILD)/ina_drv.elf
 # The user shell and its multicall tool image.
 SH_DIR        := userspace/services/sh
-SH_BUILT      := $(OUT_TGT)/$(SH_DIR)/riscv64imac-unknown-none-elf/release/sh
+SH_BUILT      := $(OUT_TGT)/$(SH_DIR)/$(TARGET_RISCV64_USER)/release/sh
 SH_ELF        := $(OUT_BUILD)/sh.elf
 # The Terminal object (interface + codec) the shell and its server share, and
 # the terminal server (the console program of the native shell session).
@@ -87,58 +93,58 @@ LOGIN_LIB_SRC := userspace/lib/login/src/lib.rs userspace/lib/login/Cargo.toml
 SH_SRC        := $(SH_DIR)/src/main.rs $(SH_DIR)/src/parse.rs $(SH_DIR)/src/ident.rs \
                  $(SH_DIR)/src/path.rs $(SH_DIR)/src/req.rs $(SH_DIR)/Cargo.toml $(TERM_LIB_SRC) $(NAMES_LIB_SRC)
 TERMD_DIR     := userspace/services/termd
-TERMD_BUILT   := $(OUT_TGT)/$(TERMD_DIR)/riscv64imac-unknown-none-elf/release/termd
+TERMD_BUILT   := $(OUT_TGT)/$(TERMD_DIR)/$(TARGET_RISCV64_USER)/release/termd
 TERMD_ELF     := $(OUT_BUILD)/termd.elf
 TERMD_SRC     := $(wildcard $(TERMD_DIR)/src/*.rs) $(TERMD_DIR)/Cargo.toml $(TERM_LIB_SRC) $(LOGIN_LIB_SRC)
 NAMESD_DIR     := userspace/services/namesd
-NAMESD_BUILT   := $(OUT_TGT)/$(NAMESD_DIR)/riscv64imac-unknown-none-elf/release/namesd
+NAMESD_BUILT   := $(OUT_TGT)/$(NAMESD_DIR)/$(TARGET_RISCV64_USER)/release/namesd
 NAMESD_ELF     := $(OUT_BUILD)/namesd.elf
 NAMESD_SRC     := $(NAMESD_DIR)/src/main.rs $(NAMESD_DIR)/src/service.rs $(NAMESD_DIR)/Cargo.toml $(NAMES_LIB_SRC)
 COMPMGR_DIR   := userspace/services/compmgr
-COMPMGR_BUILT := $(OUT_TGT)/$(COMPMGR_DIR)/riscv64imac-unknown-none-elf/release/compmgr
+COMPMGR_BUILT := $(OUT_TGT)/$(COMPMGR_DIR)/$(TARGET_RISCV64_USER)/release/compmgr
 COMPMGR_ELF   := $(OUT_BUILD)/compmgr.elf
 COMPMGR_SRC   := $(COMPMGR_DIR)/src/main.rs $(COMPMGR_DIR)/src/tree.rs $(COMPMGR_DIR)/src/contracts.rs $(COMPMGR_DIR)/Cargo.toml \
                  $(NAMES_LIB_SRC) $(TERM_LIB_SRC) $(LOGIN_LIB_SRC) $(DECISIONS_LIB_SRC) $(PACKAGES_LIB_SRC)
 TOOLBOX_DIR   := userspace/services/toolbox
-TOOLBOX_BUILT := $(OUT_TGT)/$(TOOLBOX_DIR)/riscv64imac-unknown-none-elf/release/toolbox
+TOOLBOX_BUILT := $(OUT_TGT)/$(TOOLBOX_DIR)/$(TARGET_RISCV64_USER)/release/toolbox
 TOOLBOX_ELF   := $(OUT_BUILD)/toolbox.elf
-TOOLBOX_SRC   := $(wildcard $(TOOLBOX_DIR)/src/*.rs) $(TOOLBOX_DIR)/Cargo.toml crates/drivers/sys/src/klog/wire.rs
+TOOLBOX_SRC   := $(wildcard $(TOOLBOX_DIR)/src/*.rs) $(TOOLBOX_DIR)/Cargo.toml $(TOOLBOX_DIR)/build.rs crates/drivers/sys/src/klog/wire.rs
 # The power tool (the kernel-hosted `power` endpoint).
 POWER_DIR     := userspace/services/power
-POWER_BUILT   := $(OUT_TGT)/$(POWER_DIR)/riscv64imac-unknown-none-elf/release/power
+POWER_BUILT   := $(OUT_TGT)/$(POWER_DIR)/$(TARGET_RISCV64_USER)/release/power
 POWER_ELF     := $(OUT_BUILD)/power.elf
 POWER_LIB_SRC := userspace/lib/power/src/lib.rs userspace/lib/power/Cargo.toml
 POWER_SRC     := $(POWER_DIR)/src/main.rs $(POWER_DIR)/src/policy.rs $(POWER_DIR)/Cargo.toml $(POWER_LIB_SRC)
 # Wave 15 (TRACE): the kernel tracer's reader (`Cap<Trace>`, the tracer's ops).
 TRACECTL_DIR  := userspace/services/tracectl
-TRACECTL_BUILT:= $(OUT_TGT)/$(TRACECTL_DIR)/riscv64imac-unknown-none-elf/release/tracectl
+TRACECTL_BUILT:= $(OUT_TGT)/$(TRACECTL_DIR)/$(TARGET_RISCV64_USER)/release/tracectl
 TRACECTL_ELF  := $(OUT_BUILD)/tracectl.elf
-TRACECTL_SRC  := $(TRACECTL_DIR)/src/main.rs $(TRACECTL_DIR)/src/profile.rs $(TRACECTL_DIR)/Cargo.toml crates/core/trace/src/prof.rs
+TRACECTL_SRC  := $(TRACECTL_DIR)/src/main.rs $(TRACECTL_DIR)/src/profile.rs $(TRACECTL_DIR)/Cargo.toml $(TRACECTL_DIR)/build.rs crates/core/trace/src/prof.rs
 # The decision query: the server (`Decisions` on `endpoint.decisions`, from
 # the introspection tree's admin records) and `why`, its client tool; both over
 # `userspace/lib/decisions`.
 DECISIONS_LIB_SRC := userspace/lib/decisions/src/lib.rs userspace/lib/decisions/Cargo.toml
 DECISD_DIR := userspace/services/decisd
-DECISD_BUILT:= $(OUT_TGT)/$(DECISD_DIR)/riscv64imac-unknown-none-elf/release/decisd
+DECISD_BUILT:= $(OUT_TGT)/$(DECISD_DIR)/$(TARGET_RISCV64_USER)/release/decisd
 DECISD_ELF := $(OUT_BUILD)/decisd.elf
 DECISD_SRC := $(DECISD_DIR)/src/main.rs $(DECISD_DIR)/src/bin.rs $(DECISD_DIR)/Cargo.toml $(DECISIONS_LIB_SRC)
 INPUTD_DIR := userspace/services/inputd
-INPUTD_BUILT:= $(OUT_TGT)/$(INPUTD_DIR)/riscv64imac-unknown-none-elf/release/inputd
+INPUTD_BUILT:= $(OUT_TGT)/$(INPUTD_DIR)/$(TARGET_RISCV64_USER)/release/inputd
 INPUTD_ELF := $(OUT_BUILD)/inputd.elf
 INPUTD_SRC := $(INPUTD_DIR)/src/main.rs $(INPUTD_DIR)/src/focus.rs $(INPUTD_DIR)/Cargo.toml crates/core/devif/src/input.rs crates/drivers/input/wire/src/event.rs
 # The compositor (Kconfig COMPOSITOR): the sole holder of the Display interface and
 # the Secure Attention Key's trusted surface. It links the pixel engine and the
 # protocol library, and includes the framebuffer console's font.
 COMPSRV_DIR := userspace/services/compositor
-COMPSRV_BUILT:= $(OUT_TGT)/$(COMPSRV_DIR)/riscv64imac-unknown-none-elf/release/compositor
+COMPSRV_BUILT:= $(OUT_TGT)/$(COMPSRV_DIR)/$(TARGET_RISCV64_USER)/release/compositor
 COMPSRV_ELF := $(OUT_BUILD)/compsrv.elf
 COMPSRV_SRC := $(wildcard $(COMPSRV_DIR)/src/*.rs) $(COMPSRV_DIR)/Cargo.toml $(wildcard userspace/lib/compositor/src/*.rs userspace/lib/compose/src/*.rs) crates/core/devif/src/input.rs crates/core/devif/src/display.rs crates/drivers/fb/src/font.rs
 # The kernel log's sink (Kconfig KLOG): drains `MemObj klog.ring` into KLOGn.TXT;
 # it shares the ring's wire with the kernel and the toolbox's `log`.
 LOGD_DIR   := userspace/services/logd
-LOGD_BUILT := $(OUT_TGT)/$(LOGD_DIR)/riscv64imac-unknown-none-elf/release/logd
+LOGD_BUILT := $(OUT_TGT)/$(LOGD_DIR)/$(TARGET_RISCV64_USER)/release/logd
 LOGD_ELF   := $(OUT_BUILD)/logd.elf
-LOGD_SRC   := $(LOGD_DIR)/src/main.rs $(LOGD_DIR)/src/store.rs $(LOGD_DIR)/Cargo.toml $(LOGD_DIR)/.cargo/config.toml $(LOGD_DIR)/user.ld $(LOGD_DIR)/user_aarch64.ld $(LOGD_DIR)/user_x86_64.ld crates/drivers/sys/src/klog/wire.rs
+LOGD_SRC   := $(LOGD_DIR)/src/main.rs $(LOGD_DIR)/src/store.rs $(LOGD_DIR)/Cargo.toml $(LOGD_DIR)/build.rs crates/drivers/sys/src/klog/wire.rs
 WHY_DIR       := userspace/services/why
 WHY_ELF       := $(OUT_BUILD)/why.elf
 WHY_SRC       := $(WHY_DIR)/src/main.rs $(WHY_DIR)/src/cli.rs $(WHY_DIR)/Cargo.toml $(DECISIONS_LIB_SRC)
@@ -154,72 +160,79 @@ PKGD_DIR      := userspace/services/pkgd
 TLS_LIB_SRC   := $(shell find userspace/lib/tls/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') userspace/lib/tls/Cargo.toml
 PKGD_ELF      := $(OUT_BUILD)/pkgd.elf
 PKG_DIR       := userspace/services/pkg
-PKG_BUILT     := $(OUT_TGT)/$(PKG_DIR)/riscv64imac-unknown-none-elf/release/pkg
+PKG_BUILT     := $(OUT_TGT)/$(PKG_DIR)/$(TARGET_RISCV64_USER)/release/pkg
 PKG_ELF       := $(OUT_BUILD)/pkg.elf
 PKG_SRC       := $(PKG_DIR)/src/main.rs $(PKG_DIR)/Cargo.toml $(PACKAGES_LIB_SRC)
 RPC_LIB_SRC   := $(wildcard userspace/lib/rpc/src/*.rs) userspace/lib/rpc/Cargo.toml
 RPCSRV_DIR    := userspace/services/rpcsrv
-RPCSRV_BUILT  := $(OUT_TGT)/$(RPCSRV_DIR)/riscv64imac-unknown-none-elf/release/rpcsrv
+RPCSRV_BUILT  := $(OUT_TGT)/$(RPCSRV_DIR)/$(TARGET_RISCV64_USER)/release/rpcsrv
 RPCSRV_ELF    := $(OUT_BUILD)/rpcsrv.elf
 RPCSRV_SRC    := $(RPCSRV_DIR)/src/main.rs $(RPCSRV_DIR)/Cargo.toml $(RPC_LIB_SRC) $(DECISIONS_LIB_SRC)
 # The Zenoh gateway (Kconfig ZENOH_GW) over the in-tree Zenoh codec.
 ZENOH_LIB_SRC := $(wildcard userspace/lib/zenoh/src/*.rs) userspace/lib/zenoh/Cargo.toml
 ZENOHD_DIR    := userspace/services/zenohd
-ZENOHD_BUILT  := $(OUT_TGT)/$(ZENOHD_DIR)/riscv64imac-unknown-none-elf/release/zenohd
+ZENOHD_BUILT  := $(OUT_TGT)/$(ZENOHD_DIR)/$(TARGET_RISCV64_USER)/release/zenohd
 ZENOHD_ELF    := $(OUT_BUILD)/zenohd.elf
 # The relay of the QUIC link (Kconfig RPC_QUIC): a std program (userspace/lib/quic), its recipes with the SDK's.
 RPCQUIC_ELF   := $(OUT_BUILD)/rpcquic.elf
 ZENOHD_SRC    := $(wildcard $(ZENOHD_DIR)/src/*.rs) $(ZENOHD_DIR)/Cargo.toml $(ZENOH_LIB_SRC) $(DECISIONS_LIB_SRC) $(UALLOC_SRC)
 # The PTP daemon (Kconfig PTPD).
 PTPD_DIR    := userspace/services/ptpd
-PTPD_BUILT  := $(OUT_TGT)/$(PTPD_DIR)/riscv64imac-unknown-none-elf/release/ptpd
+PTPD_BUILT  := $(OUT_TGT)/$(PTPD_DIR)/$(TARGET_RISCV64_USER)/release/ptpd
 PTPD_ELF    := $(OUT_BUILD)/ptpd.elf
 PTPD_SRC     := $(wildcard $(PTPD_DIR)/src/*.rs) $(PTPD_DIR)/Cargo.toml
 
 # The audio server (Kconfig AUDIOD).
 AUDIOD_DIR   := userspace/services/audiod
-AUDIOD_BUILT := $(OUT_TGT)/$(AUDIOD_DIR)/riscv64imac-unknown-none-elf/release/audiod
+AUDIOD_BUILT := $(OUT_TGT)/$(AUDIOD_DIR)/$(TARGET_RISCV64_USER)/release/audiod
 AUDIOD_ELF   := $(OUT_BUILD)/audiod.elf
 AUDIOD_SRC   := $(wildcard $(AUDIOD_DIR)/src/*.rs) $(AUDIOD_DIR)/Cargo.toml
 # The MCP bridge (Kconfig MCP_BRIDGE) over the in-tree MCP codec and the RPC
 # transport's warrant token.
 MCP_LIB_SRC   := $(wildcard userspace/lib/mcp/src/*.rs) userspace/lib/mcp/Cargo.toml
 MCPD_DIR      := userspace/services/mcpd
-MCPD_BUILT    := $(OUT_TGT)/$(MCPD_DIR)/riscv64imac-unknown-none-elf/release/mcpd
+MCPD_BUILT    := $(OUT_TGT)/$(MCPD_DIR)/$(TARGET_RISCV64_USER)/release/mcpd
 MCPD_ELF      := $(OUT_BUILD)/mcpd.elf
 MCPD_SRC      := $(wildcard $(MCPD_DIR)/src/*.rs) $(MCPD_DIR)/Cargo.toml $(MCP_LIB_SRC) $(RPC_LIB_SRC) $(DECISIONS_LIB_SRC) $(UALLOC_SRC)
 # The SSH server (Kconfig SSHD, default y; n on MICRO and a certifiable build). It pulls in the terminal
 # server's line discipline and the shell's path and spawn-request modules with
 # #[path], so their files are among its sources.
 SSHD_DIR      := userspace/services/sshd
-SSHD_BUILT    := $(OUT_TGT)/$(SSHD_DIR)/riscv64imac-unknown-none-elf/release/sshd
+SSHD_BUILT    := $(OUT_TGT)/$(SSHD_DIR)/$(TARGET_RISCV64_USER)/release/sshd
 SSHD_ELF      := $(OUT_BUILD)/sshd.elf
 SSHD_SRC      := $(wildcard $(SSHD_DIR)/src/*.rs) $(SSHD_DIR)/Cargo.toml userspace/services/termd/src/disc.rs userspace/services/termd/src/edit.rs \
                  userspace/services/sh/src/path.rs userspace/services/sh/src/req.rs $(UALLOC_SRC)
 # The login service (Kconfig CONSOLE_LOGIN, default n): the Login object's
 # server. The interface (`LOGIN_LIB_SRC`, above) is a library of its own.
 LOGIND_DIR    := userspace/services/logind
-LOGIND_BUILT  := $(OUT_TGT)/$(LOGIND_DIR)/riscv64imac-unknown-none-elf/release/logind
+LOGIND_BUILT  := $(OUT_TGT)/$(LOGIND_DIR)/$(TARGET_RISCV64_USER)/release/logind
 LOGIND_ELF    := $(OUT_BUILD)/logind.elf
 LOGIND_SRC    := $(wildcard $(LOGIND_DIR)/src/*.rs) $(LOGIND_DIR)/Cargo.toml $(LOGIN_LIB_SRC)
 # Hypervisor H1: the ring-3 virtual-machine monitor (the device models of a guest).
 VMMD_DIR      := userspace/services/vmmd
-VMMD_BUILT    := $(OUT_TGT)/$(VMMD_DIR)/riscv64imac-unknown-none-elf/release/vmmd
+VMMD_BUILT    := $(OUT_TGT)/$(VMMD_DIR)/$(TARGET_RISCV64_USER)/release/vmmd
 VMMD_ELF      := $(OUT_BUILD)/vmmd.elf
-VMMD_SRC      := $(wildcard $(VMMD_DIR)/src/*.rs) $(VMMD_DIR)/Cargo.toml
+VMMD_SRC      := $(wildcard $(VMMD_DIR)/src/*.rs) $(VMMD_DIR)/Cargo.toml $(VMMD_DIR)/build.rs
 # Kconfig LINUX_RUNTIME: the ring-3 half of the Linux personality
 # (userspace/lib/linux_rt behind userspace/services/lxrt). Not a disk image:
 # the kernel embeds it (`include_bytes!` in kernel/src/boot/seams.rs) and maps
 # it into every Linux process at spawn. Built only when the .config asks.
 LXRT_DIR      := userspace/services/lxrt
-LXRT_BUILT    := $(OUT_TGT)/$(LXRT_DIR)/riscv64imac-unknown-none-elf/release/lxrt
+LXRT_BUILT    := $(OUT_TGT)/$(LXRT_DIR)/$(TARGET_RISCV64_USER)/release/lxrt
 LXRT_ELF      := $(OUT_BUILD)/linux_rt.elf
-LXRT_SRC      := $(LXRT_DIR)/src/main.rs $(LXRT_DIR)/Cargo.toml $(LXRT_DIR)/user.ld \
+LXRT_SRC      := $(LXRT_DIR)/src/main.rs $(LXRT_DIR)/Cargo.toml $(LXRT_DIR)/build.rs \
                  userspace/lib/linux_rt/src/lib.rs userspace/lib/linux_rt/Cargo.toml \
                  $(wildcard crates/core/linux-abi/src/*.rs) $(wildcard crates/core/abi/src/*.rs)
 LXRT_TARGET_AARCH64 := aarch64-unknown-none-softfloat
-# rustc's own soft-float x86_64 target (no SSE: see lxrt's .cargo/config.toml).
+# rustc's own soft-float x86_64 target (no SSE: see lxrt/build.rs).
 LXRT_TARGET_X86_64 := x86_64-unknown-none
+# The runtime on those two: the layout from lxrt/build.rs, the small code model,
+# and on x86_64 a static executable (the target's default is a PIE in the
+# kernel code model) the kernel maps unrelocated.
+LXRT_UFLAGS_AARCH64 = --target $(LXRT_TARGET_AARCH64) \
+	--config 'target.$(LXRT_TARGET_AARCH64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)","-C","code-model=small"]'
+LXRT_UFLAGS_X86_64 = --target $(LXRT_TARGET_X86_64) \
+	--config 'target.$(LXRT_TARGET_X86_64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)","-C","code-model=small","-C","relocation-model=static"]'
 # `yes` when the .config asks for LINUX_RUNTIME: the runtime ELF then joins the
 # prerequisites of the image-hash tables every kernel build depends on, as the
 # embedded runtime's `include_bytes!` needs it to exist.
@@ -228,7 +241,7 @@ LXRT_NEED     = $(shell grep -qs '^CONFIG_LINUX_RUNTIME=y' $(or $(KCONFIG_CONFIG
 # each (`FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`).
 FAMTOOLS_DIR  := userspace/services/famtools
 FAMTOOLS_SRC  := $(wildcard $(FAMTOOLS_DIR)/src/*.rs $(FAMTOOLS_DIR)/src/bin/*.rs) $(FAMTOOLS_DIR)/Cargo.toml
-FAMTOOLS_OUT  := $(OUT_TGT)/$(FAMTOOLS_DIR)/riscv64imac-unknown-none-elf/release
+FAMTOOLS_OUT  := $(OUT_TGT)/$(FAMTOOLS_DIR)/$(TARGET_RISCV64_USER)/release
 FLIGHT_ELF    := $(OUT_BUILD)/flight.elf
 BEHAVIOR_ELF  := $(OUT_BUILD)/behavior.elf
 CONFIG_ELF    := $(OUT_BUILD)/config.elf
@@ -242,7 +255,7 @@ UALLOC_SRC    := $(wildcard userspace/lib/ualloc/src/*.rs) userspace/lib/ualloc/
 # The Linux driver server skeleton. Links the module loader
 # (crates/core/lx-loader, no Linux code) and nothing from lx/.
 LXSRV_DIR     := userspace/services/lxsrv
-LXSRV_BUILT   := $(OUT_TGT)/$(LXSRV_DIR)/riscv64imac-unknown-none-elf/release/lxsrv
+LXSRV_BUILT   := $(OUT_TGT)/$(LXSRV_DIR)/$(TARGET_RISCV64_USER)/release/lxsrv
 LXSRV_ELF     := $(OUT_BUILD)/lxsrv.elf
 LXSRV_SRC     := $(LXSRV_DIR)/src/main.rs $(LXSRV_DIR)/Cargo.toml \
                  $(wildcard crates/core/lx-loader/src/*.rs) crates/core/lx-loader/Cargo.toml \
@@ -252,55 +265,55 @@ LXSRV_SRC     := $(LXSRV_DIR)/src/main.rs $(LXSRV_DIR)/Cargo.toml \
 # below), so nothing copied them to a disk image and nothing could exec them.
 # Same shape of hole SYSTEST.ELF sat in for months.
 UHELLO_DIR    := userspace/tests/uhello
-UHELLO_BUILT  := $(OUT_TGT)/$(UHELLO_DIR)/riscv64imac-unknown-none-elf/release/uhello
+UHELLO_BUILT  := $(OUT_TGT)/$(UHELLO_DIR)/$(TARGET_RISCV64_USER)/release/uhello
 UHELLO_ELF    := $(OUT_BUILD)/uhello.elf
 # The server half of `endpoint.demo`. A separate
 # image from uhello because a ring-3 program's role on an endpoint is its
 # capability permission, and permissions come from the topology row looked up
 # by IMAGE NAME: one image, one row, one role. See userspace/tests/epsrv/src/main.rs.
 VSSRV_DIR     := userspace/bench/vssrv
-VSSRV_BUILT   := $(OUT_TGT)/$(VSSRV_DIR)/riscv64imac-unknown-none-elf/release/vssrv
+VSSRV_BUILT   := $(OUT_TGT)/$(VSSRV_DIR)/$(TARGET_RISCV64_USER)/release/vssrv
 VSSRV_ELF     := $(OUT_BUILD)/vssrv.elf
 EPSRV_DIR     := userspace/tests/epsrv
-EPSRV_BUILT   := $(OUT_TGT)/$(EPSRV_DIR)/riscv64imac-unknown-none-elf/release/epsrv
+EPSRV_BUILT   := $(OUT_TGT)/$(EPSRV_DIR)/$(TARGET_RISCV64_USER)/release/epsrv
 EPSRV_ELF     := $(OUT_BUILD)/epsrv.elf
 ABICHILD_DIR   := userspace/tests/abichild
-ABICHILD_BUILT := $(OUT_TGT)/$(ABICHILD_DIR)/riscv64imac-unknown-none-elf/release/abichild
+ABICHILD_BUILT := $(OUT_TGT)/$(ABICHILD_DIR)/$(TARGET_RISCV64_USER)/release/abichild
 ABICHILD_ELF   := $(OUT_BUILD)/abichild.elf
 REFLEX_DIR    := userspace/services/reflex
-REFLEX_BUILT  := $(OUT_TGT)/$(REFLEX_DIR)/riscv64imac-unknown-none-elf/release/reflex
+REFLEX_BUILT  := $(OUT_TGT)/$(REFLEX_DIR)/$(TARGET_RISCV64_USER)/release/reflex
 REFLEX_ELF    := $(OUT_BUILD)/reflex.elf
 BRAINCLI_DIR  := userspace/services/brain_client
-BRAINCLI_BUILT:= $(OUT_TGT)/$(BRAINCLI_DIR)/riscv64imac-unknown-none-elf/release/brain_client
+BRAINCLI_BUILT:= $(OUT_TGT)/$(BRAINCLI_DIR)/$(TARGET_RISCV64_USER)/release/brain_client
 BRAINCLI_ELF  := $(OUT_BUILD)/brain_client.elf
 # captest — ring-3 capability test (positive AND negative halves).
 CAPTEST_DIR   := userspace/tests/captest
-CAPTEST_BUILT := $(OUT_TGT)/$(CAPTEST_DIR)/riscv64imac-unknown-none-elf/release/captest
+CAPTEST_BUILT := $(OUT_TGT)/$(CAPTEST_DIR)/$(TARGET_RISCV64_USER)/release/captest
 CAPTEST_ELF   := $(OUT_BUILD)/captest.elf
 # latbench — ring-3 syscall latency microbenchmark.
 # vsbench - the same ring-3 work, measured on Azos and on Linux/riscv64.
 # The Linux side is NOT built here: it needs a different target and its own
 # toolchain.
 VSBENCH_DIR   := userspace/bench/vsbench
-VSBENCH_BUILT := $(OUT_TGT)/$(VSBENCH_DIR)/riscv64imac-unknown-none-elf/release/vsbench
+VSBENCH_BUILT := $(OUT_TGT)/$(VSBENCH_DIR)/$(TARGET_RISCV64_USER)/release/vsbench
 VSBENCH_ELF   := $(OUT_BUILD)/vsbench.elf
 
 LATBENCH_DIR  := userspace/bench/latbench
-LATBENCH_BUILT:= $(OUT_TGT)/$(LATBENCH_DIR)/riscv64imac-unknown-none-elf/release/latbench
+LATBENCH_BUILT:= $(OUT_TGT)/$(LATBENCH_DIR)/$(TARGET_RISCV64_USER)/release/latbench
 LATBENCH_ELF  := $(OUT_BUILD)/latbench.elf
 # abitest - syscall ABI conformance from ring 3.
 ABITEST_DIR   := userspace/tests/abitest
-ABITEST_BUILT := $(OUT_TGT)/$(ABITEST_DIR)/riscv64imac-unknown-none-elf/release/abitest
+ABITEST_BUILT := $(OUT_TGT)/$(ABITEST_DIR)/$(TARGET_RISCV64_USER)/release/abitest
 ABITEST_ELF   := $(OUT_BUILD)/abitest.elf
 # ipctest - ring-3 IPC probe: fast-path round trip, server impersonation, and
 # the shm/port/io_ring ownership gates.
 IPCTEST_DIR   := userspace/tests/ipctest
-IPCTEST_BUILT := $(OUT_TGT)/$(IPCTEST_DIR)/riscv64imac-unknown-none-elf/release/ipctest
+IPCTEST_BUILT := $(OUT_TGT)/$(IPCTEST_DIR)/$(TARGET_RISCV64_USER)/release/ipctest
 IPCTEST_ELF   := $(OUT_BUILD)/ipctest.elf
 
 # ── aarch64 userspace parity (phase 6 prep) ──────────────────────────────────
 #
-# Same 13 programs, built for `aarch64-unknown-none` (hard-float; the level is
+# Same 13 programs, built for `aarch64-unknown-azos` (sdk/targets, hard-float; the level is
 # Kconfig AARCH64_LEVEL, AARCH64_USER_ISA below) into `build/aarch64/` instead of `build/`, so
 # they never collide with the RISC-V names `IMAGE_ELFS`/`image_hashes.py`
 # bind seccomp profiles to. **No aarch64 kernel exec path exists yet** — these
@@ -311,15 +324,14 @@ IPCTEST_ELF   := $(OUT_BUILD)/ipctest.elf
 # `hello`/`syscall_test`'s RISC-V originals are hand-assembled (`hello.S`,
 # `test.S`); no aarch64 GNU cross-assembler is available on this host, so
 # their aarch64 counterparts are small Rust crates instead (see
-# `userspace/tests/hello/Cargo.toml`) — each directory's own `.cargo/config.toml`
-# already defaults `[build] target` to `aarch64-unknown-none`, so no
-# `--target` flag is needed for those two.
-TARGET_AARCH64 := aarch64-unknown-none
+# `userspace/tests/hello/Cargo.toml`).
+TARGET_AARCH64 := aarch64-unknown-azos
 comma := ,
 # ── aarch64 translation granule of the user images ──────────────────────────
 # config/Kconfig.arch AARCH64_PAGE_* picks the kernel's granule; a user image
-# must be linked for the same page (`-z max-page-size`, which every
-# user_aarch64.ld aligns its first writable section to) and libsys must agree
+# must be linked for the same page (`-z max-page-size`: lld starts each segment
+# on a page of its own at that size; the target spec's 4096 is the default
+# granule's) and libsys must agree
 # (`libsys::PAGE_SIZE`, from AZOS_PAGE_SIZE). The default, 4096, builds
 # exactly what this Makefile always built, into the same places. Any other
 # value builds into its own directories and its own digest table, which the
@@ -338,7 +350,7 @@ AARCH64_USER_KCONFIG ?= $(OUT_BUILD)/aarch64$(if $(filter 16384,$(AARCH64_PAGE_S
 AARCH64_USER_ISA := $(if $(wildcard $(AARCH64_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml $(AARCH64_USER_KCONFIG)))
 ifeq ($(AARCH64_PAGE_SIZE),4096)
 AARCH64_PG_SUFFIX :=
-AARCH64_PG_FLAGS  := $(if $(AARCH64_USER_ISA),--config 'target.$(TARGET_AARCH64).rustflags=[$(AARCH64_USER_ISA)]')
+AARCH64_PG_LINK   :=
 else
 ifeq ($(AARCH64_PAGE_SIZE),16384)
 AARCH64_PG_SUFFIX := -16k
@@ -347,14 +359,15 @@ AARCH64_PG_SUFFIX := -64k
 else
 $(error AARCH64_PAGE_SIZE must be 4096, 16384 or 65536 (an aarch64 translation granule))
 endif
-# Above 4 KiB the ELF/program headers share `.text`'s first page in the file
-# (see user_aarch64.ld), and the loader maps an executable segment only onto a
-# page it owns outright (W^X, crates/core/sched/src/process.rs). The script's
-# PHDRS block keeps the headers in no segment and `.rodata` in an R segment of
-# its own; `--no-rosegment`, used here before, made `.rodata` executable.
-AARCH64_PG_FLAGS  := --config 'target.$(TARGET_AARCH64).rustflags=["-C","link-arg=-zmax-page-size=$(AARCH64_PAGE_SIZE)"$(if $(AARCH64_USER_ISA),$(comma)$(AARCH64_USER_ISA))]'
+# Above 4 KiB lld starts each segment on a page of the granule (the loader maps
+# an executable segment only onto a page it owns outright, W^X,
+# crates/core/sched/src/process.rs); the headers and `.rodata` stay in the
+# read-only segment.
+AARCH64_PG_LINK   := $(comma)"-C","link-arg=-zmax-page-size=$(AARCH64_PAGE_SIZE)"
 endif
 AARCH64_PG_TABLE  := $(subst -,_,$(AARCH64_PG_SUFFIX))
+AARCH64_UFLAGS     = --target $(USER_SPECS)/$(TARGET_AARCH64).json \
+	--config 'target.$(TARGET_AARCH64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"$(AARCH64_PG_LINK)$(if $(AARCH64_USER_ISA),$(comma)$(AARCH64_USER_ISA))]'
 AARCH64_DIR    := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX)
 HELLO_ELF_AARCH64     := $(AARCH64_DIR)/hello.elf
 LXHELLO_ELF_AARCH64   := $(AARCH64_DIR)/lxhello.elf
@@ -458,13 +471,15 @@ USPACE_METADATA_TAG := $(shell python3 -c 'import hashlib; print(hashlib.sha256(
 # images: `make RV_USER_KCONFIG=build/k1.config userspace`.
 RV_USER_KCONFIG ?= $(OUT_BUILD)/qemu-dev.config
 RV_USER_ISA := $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
-# AZOS_LINK_INPUTS: a digest of the crate's link scripts, cargo config and
-# build script (the recipe runs in the crate's directory). Cargo does not track
-# a linker script, so a change to one alone came back "Fresh" and make copied
-# the old ELF (ustack-fault's .azos_stack never reached tracectl.elf or
-# vmmd.elf); libsys reads the variable (`option_env!`), rustc records it, and
-# cargo relinks the image when it changes.
-USPACE_BUILD := AZOS_LINK_INPUTS="$$(cat user*.ld .cargo/config.toml build.rs 2>/dev/null | shasum | cut -c1-16)" RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(CARGO) +nightly build --release --config 'target.$(TARGET).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"$(if $(RV_USER_ISA),$(comma)$(RV_USER_ISA))]'
+# Cargo hashes the target spec's contents into every artifact's fingerprint,
+# so an edit of sdk/targets/*.json relinks every image; a crate's build.rs (the
+# stack an image asks for, `-z stack-size`) is tracked by cargo itself.
+USPACE_BUILD := RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(CARGO) +nightly build --release -Zjson-target-spec
+# Each ISA's target and rustflags: the wrapper's digest (above) and the Kconfig
+# codegen flags. A recipe adds exactly one of RV_UFLAGS, AARCH64_UFLAGS and
+# X86_64_UFLAGS after $(USPACE_BUILD).
+RV_UFLAGS := --target $(USER_SPECS)/$(TARGET_RISCV64_USER).json \
+	--config 'target.$(TARGET_RISCV64_USER).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"$(if $(RV_USER_ISA),$(comma)$(RV_USER_ISA))]'
 
 # ── The native SDK (plan phase 6, item 2) ───────────────────────────────────
 # A Rust `std` program for `<isa>-unknown-azos` (sdk/targets): `std` is built
@@ -805,19 +820,18 @@ QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-r
 
 # ── x86_64 userspace ────────────────────────────────────────────────────────
 #
-# The ring-3 programs for `userspace/x86_64-azos-user.json`, into
+# The ring-3 programs for `sdk/targets/x86_64-unknown-azos.json`, into
 # `build/x86_64/`, bound by their own digest table
 # (`build/image_hashes_x86_64.rs`, which crates/core/sched/src/seccomp.rs
 # `include!`s on x86_64), exactly as the aarch64 set is. The target is
-# bare-metal x86_64 with the hard-float System V ABI (SSE/SSE2, as every
-# x86-64 CPU has; the kernel alone is soft-float), static and in the small
-# code model: a JSON spec, because rustc's `x86_64-unknown-none` is
-# soft-float. Each crate's `.cargo/config.toml` carries the link flags
-# (`user_x86_64.ld`); the baseline (Kconfig X86_64_LEVEL and every
-# `require`d extension, the SIMD ones included) comes from the kernel's own
-# expanded config through `kconfig_to_cargo.py --user-rustflags`, at recipe
-# time, so an image is always built for the level the kernel refuses CPUs
-# below.
+# the hard-float System V ABI (SSE/SSE2, as every x86-64 CPU has; the kernel
+# alone is soft-float) in the small code model: a JSON spec, because rustc's
+# `x86_64-unknown-none` is soft-float. The spec carries the layout and the
+# entry (`_azos_entry`, libsys: it realigns the stack and calls `_start`); the
+# baseline (Kconfig X86_64_LEVEL and every `require`d extension, the SIMD ones
+# included) comes from the kernel's own expanded config through
+# `kconfig_to_cargo.py --user-rustflags`, at recipe time, so an image is
+# always built for the level the kernel refuses CPUs below.
 #
 # HELLO.ELF is `userspace/tests/hello`, the Rust stand-in aarch64 also uses
 # for riscv64's hand-assembled `hello.S` (its binary keeps the crate's
@@ -826,10 +840,10 @@ QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-r
 # TIMER_FREQ; on x86_64 that counter is the TSC, at its own rate),
 # captest (board RTC/IRQ fixtures) and lxsrv (the Linux personality's
 # register layout is aarch64/riscv64 only).
-TARGET_X86_64 := x86_64-azos-user
+TARGET_X86_64 := x86_64-unknown-azos
 X86_64_DIR    := $(OUT_BUILD)/x86_64
-X86_64_UFLAGS  = -Zjson-target-spec --target $(CURDIR)/userspace/$(TARGET_X86_64).json \
-	--config 'target.$(TARGET_X86_64).rustflags=['"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG))"']'
+X86_64_UFLAGS  = --target $(USER_SPECS)/$(TARGET_X86_64).json \
+	--config 'target.$(TARGET_X86_64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)",'"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG))"']'
 X86_64_UBUILT := $(TARGET_X86_64)/release
 HELLO_ELF_X86_64     := $(X86_64_DIR)/hello.elf
 UHELLO_ELF_X86_64    := $(X86_64_DIR)/uhello.elf

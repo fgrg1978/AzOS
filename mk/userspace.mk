@@ -93,14 +93,13 @@ userspace: $(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF) \
            $(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) \
            $(SH_ELF) $(TERMD_ELF) $(NAMESD_ELF) $(COMPMGR_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(TRACECTL_ELF) $(DECISD_ELF) $(INPUTD_ELF) $(COMPSRV_ELF) $(LOGD_ELF) $(WHY_ELF) $(PKGD_ELF) $(PKG_ELF) $(RPCSRV_ELF) $(ZENOHD_ELF) $(VMMD_ELF) $(PTPD_ELF) $(AUDIOD_ELF) $(RPCQUIC_ELF) $(MCPD_ELF) $(SSHD_ELF) $(LOGIND_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
 
-# E11.AQ3 ring-3 driver — Rust no_std ELF.  Builds via the crate's own
-# .cargo/config.toml which pins target=riscv64imac-unknown-none-elf and
-# the user.ld linker script.  The output is copied (not stripped) into
-# build/gpio_drv.elf for the disk image to pick up.
-$(GPIO_DRV_ELF): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml $(GPIO_DRV_DIR)/user.ld \
+# E11.AQ3 ring-3 driver — Rust no_std ELF, for the riscv64 target spec
+# ($(RV_UFLAGS), sdk/targets: the layout too, no linker script).  The output
+# is copied (not stripped) into build/gpio_drv.elf for the disk image to pick up.
+$(GPIO_DRV_ELF): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(GPIO_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(GPIO_DRV_DIR)" && $(USPACE_BUILD)
+	cd $(GPIO_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(GPIO_DRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(GPIO_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -162,7 +161,7 @@ $(BOARD_KEY_STAMP): FORCE
 # interface crates of the Infer endpoint and the decision records, as well as
 # libsys; cargo does not see through to make, so those sources are
 # prerequisites here.
-MLSRV_DEPS := $(wildcard $(MLSRV_DIR)/src/*.rs) $(MLSRV_DIR)/Cargo.toml \
+MLSRV_DEPS := $(wildcard $(MLSRV_DIR)/src/*.rs) $(MLSRV_DIR)/Cargo.toml $(MLSRV_DIR)/build.rs \
               $(shell find userspace/lib/ml/src userspace/lib/decisions/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') \
               userspace/lib/ml/Cargo.toml userspace/lib/decisions/Cargo.toml $(LIBSYS_SRC) \
               $(shell find crates/core/topology/src crates/core/limits/src crates/core/devif/src crates/core/idl/src crates/core/decision/src crates/core/rings/src crates/core/crypto/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') \
@@ -170,9 +169,9 @@ MLSRV_DEPS := $(wildcard $(MLSRV_DIR)/src/*.rs) $(MLSRV_DIR)/Cargo.toml \
               crates/core/devif/Cargo.toml crates/core/idl/Cargo.toml crates/core/decision/Cargo.toml \
               crates/core/rings/Cargo.toml crates/core/crypto/Cargo.toml \
               crates/core/limits/build.rs Kconfig $(shell find config -maxdepth 1 -name 'Kconfig.*' -not -name '* [0-9]*') $(wildcard .config) $(wildcard tools/keys/test_pub.bin)
-$(MLSRV_ELF): $(MLSRV_DEPS) $(MLSRV_DIR)/user.ld $(TOPOLOGY_KEY_STAMP)
+$(MLSRV_ELF): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP)
 	@mkdir -p $(OUT_BUILD)
-	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MLSRV_DIR)" && $(MLSRV_QEMU_BUILD) $(MLSRV_KEY_FEATURES)
+	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MLSRV_DIR)" && $(MLSRV_QEMU_BUILD) $(RV_UFLAGS) $(MLSRV_KEY_FEATURES)
 	cp $(MLSRV_BUILT) $@
 
 # The package installer reads the signed topology with the same key, so the same
@@ -204,10 +203,10 @@ $(PKGD_ELF_BOARD): $(PKGD_DEPS) $(BOARD_KEY_STAMP) $(RV_USER_KCONFIG)
 # The board volume's ML service: the same crate, the named key, no `dev-key`.
 # Built and copied in one recipe because the crate's target dir is shared with
 # the QEMU build above (cargo's fingerprint rebuilds on the env/feature change).
-$(MLSRV_ELF_BOARD): $(MLSRV_DEPS) $(MLSRV_DIR)/user.ld $(BOARD_KEY_STAMP)
+$(MLSRV_ELF_BOARD): $(MLSRV_DEPS) $(BOARD_KEY_STAMP)
 	$(call require_board_key,BOARD-MLSRV)
 	@mkdir -p $(BOARD_DIR)
-	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MLSRV_DIR)" && $(MLSRV_BOARD_BUILD)
+	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MLSRV_DIR)" && $(MLSRV_BOARD_BUILD) $(RV_UFLAGS)
 	cp $(MLSRV_BUILT) $@
 	$(BOARD_KEYCHECK) elf "$(BOARD_TOPOLOGY_KEY)" tools/keys/test_pub.bin $@
 
@@ -223,85 +222,85 @@ INA219_CHIP_SRC := $(wildcard crates/drivers/ina219/src/*.rs) crates/drivers/ina
 BUZZER_CHIP_SRC := $(wildcard crates/drivers/buzzer/src/*.rs) crates/drivers/buzzer/Cargo.toml \
                    crates/drivers/buzzer/build.rs $(CHIP_SRC_COMMON)
 $(BUZZ_DRV_ELF): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/Cargo.toml \
-               $(BUZZ_DRV_DIR)/user.ld $(LIBSYS_SRC)
+               $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(BUZZ_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BUZZ_DRV_DIR)" && $(USPACE_BUILD)
+	cd $(BUZZ_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BUZZ_DRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	python3 tools/chip_source_check.py buzzer $(BUZZ_DRV_BUILT)
 	cp $(BUZZ_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(INA_DRV_ELF): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
-               $(INA_DRV_DIR)/user.ld $(LIBSYS_SRC)
+               $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INA_DRV_DIR)" && $(USPACE_BUILD)
+	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INA_DRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	python3 tools/chip_source_check.py ina219 $(INA_DRV_BUILT)
 	cp $(INA_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # The user shell and its tool image.
-$(SH_ELF): $(SH_SRC) $(SH_DIR)/user.ld $(LIBSYS_SRC)
+$(SH_ELF): $(SH_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(SH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SH_DIR)" && $(USPACE_BUILD)
+	cd $(SH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SH_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(SH_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TERMD_ELF): $(TERMD_SRC) $(TERMD_DIR)/user.ld $(LIBSYS_SRC)
+$(TERMD_ELF): $(TERMD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TERMD_DIR)" && $(USPACE_BUILD)
+	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TERMD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(TERMD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(NAMESD_ELF): $(NAMESD_SRC) $(NAMESD_DIR)/user.ld $(LIBSYS_SRC)
+$(NAMESD_ELF): $(NAMESD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(NAMESD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(NAMESD_DIR)" && $(USPACE_BUILD)
+	cd $(NAMESD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(NAMESD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(NAMESD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(COMPMGR_ELF): $(COMPMGR_SRC) $(COMPMGR_DIR)/user.ld $(LIBSYS_SRC)
+$(COMPMGR_ELF): $(COMPMGR_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(COMPMGR_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPMGR_DIR)" && $(USPACE_BUILD)
+	cd $(COMPMGR_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPMGR_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(COMPMGR_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TOOLBOX_ELF): $(TOOLBOX_SRC) $(TOOLBOX_DIR)/user.ld $(LIBSYS_SRC)
+$(TOOLBOX_ELF): $(TOOLBOX_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TOOLBOX_DIR)" && $(USPACE_BUILD)
+	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TOOLBOX_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	$(AARCH64_OBJCOPY) --strip-all $(TOOLBOX_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(POWER_ELF): $(POWER_SRC) $(POWER_DIR)/user.ld $(LIBSYS_SRC)
+$(POWER_ELF): $(POWER_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(POWER_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(POWER_DIR)" && $(USPACE_BUILD)
+	cd $(POWER_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(POWER_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(POWER_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TRACECTL_ELF): $(TRACECTL_SRC) $(TRACECTL_DIR)/user.ld $(LIBSYS_SRC)
+$(TRACECTL_ELF): $(TRACECTL_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(TRACECTL_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TRACECTL_DIR)" && $(USPACE_BUILD)
+	cd $(TRACECTL_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TRACECTL_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(TRACECTL_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(DECISD_ELF): $(DECISD_SRC) $(DECISD_DIR)/user.ld $(LIBSYS_SRC)
+$(DECISD_ELF): $(DECISD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(DECISD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(DECISD_DIR)" && $(USPACE_BUILD)
+	cd $(DECISD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(DECISD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(DECISD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(INPUTD_ELF): $(INPUTD_SRC) $(INPUTD_DIR)/user.ld $(LIBSYS_SRC)
+$(INPUTD_ELF): $(INPUTD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(INPUTD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INPUTD_DIR)" && $(USPACE_BUILD)
+	cd $(INPUTD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INPUTD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(INPUTD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(COMPSRV_ELF): $(COMPSRV_SRC) $(COMPSRV_DIR)/user.ld $(LIBSYS_SRC)
+$(COMPSRV_ELF): $(COMPSRV_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(COMPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPSRV_DIR)" && $(USPACE_BUILD)
+	cd $(COMPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPSRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(COMPSRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LOGD_ELF): $(LOGD_SRC) $(LOGD_DIR)/user.ld $(LIBSYS_SRC)
+$(LOGD_ELF): $(LOGD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(LOGD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGD_DIR)" && $(USPACE_BUILD)
+	cd $(LOGD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(LOGD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -311,148 +310,148 @@ $(WHY_ELF): $(WHY_SRC) $(SDK_SRC) $(LIBSYS_SRC) $(RV_USER_KCONFIG)
 	cp $(SDK_OUT_riscv64)/why $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(PKG_ELF): $(PKG_SRC) $(PKG_DIR)/user.ld $(LIBSYS_SRC)
+$(PKG_ELF): $(PKG_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(PKG_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PKG_DIR)" && $(USPACE_BUILD)
+	cd $(PKG_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PKG_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(PKG_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(RPCSRV_ELF): $(RPCSRV_SRC) $(RPCSRV_DIR)/user.ld $(LIBSYS_SRC)
+$(RPCSRV_ELF): $(RPCSRV_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(RPCSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(RPCSRV_DIR)" && $(USPACE_BUILD)
+	cd $(RPCSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(RPCSRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(RPCSRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(ZENOHD_ELF): $(ZENOHD_SRC) $(ZENOHD_DIR)/user.ld $(LIBSYS_SRC)
+$(ZENOHD_ELF): $(ZENOHD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(ZENOHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ZENOHD_DIR)" && $(USPACE_BUILD)
+	cd $(ZENOHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ZENOHD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(ZENOHD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(PTPD_ELF): $(PTPD_SRC) $(PTPD_DIR)/user.ld $(LIBSYS_SRC)
+$(PTPD_ELF): $(PTPD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(PTPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PTPD_DIR)" && $(USPACE_BUILD)
+	cd $(PTPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PTPD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(PTPD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(AUDIOD_ELF): $(AUDIOD_SRC) $(AUDIOD_DIR)/user.ld $(LIBSYS_SRC)
+$(AUDIOD_ELF): $(AUDIOD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(AUDIOD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(AUDIOD_DIR)" && $(USPACE_BUILD)
+	cd $(AUDIOD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(AUDIOD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(AUDIOD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(MCPD_ELF): $(MCPD_SRC) $(MCPD_DIR)/user.ld $(LIBSYS_SRC)
+$(MCPD_ELF): $(MCPD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(MCPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MCPD_DIR)" && $(USPACE_BUILD)
+	cd $(MCPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MCPD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(MCPD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(SSHD_ELF): $(SSHD_SRC) $(SSHD_DIR)/user.ld $(LIBSYS_SRC)
+$(SSHD_ELF): $(SSHD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(SSHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SSHD_DIR)" && $(USPACE_BUILD)
+	cd $(SSHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SSHD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(SSHD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LOGIND_ELF): $(LOGIND_SRC) $(LOGIND_DIR)/user.ld $(LIBSYS_SRC)
+$(LOGIND_ELF): $(LOGIND_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(LOGIND_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGIND_DIR)" && $(USPACE_BUILD)
+	cd $(LOGIND_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGIND_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(LOGIND_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(VMMD_ELF): $(VMMD_SRC) $(VMMD_DIR)/user.ld $(LIBSYS_SRC)
+$(VMMD_ELF): $(VMMD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(VMMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VMMD_DIR)" && $(USPACE_BUILD)
+	cd $(VMMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VMMD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(VMMD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(LXRT_ELF): $(LXRT_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD)
+	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(LXRT_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # Wave 12: one binary of the family-tools crate per image.
-$(FLIGHT_ELF): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user.ld $(LIBSYS_SRC)
+$(FLIGHT_ELF): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) --bin flight
+	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS) --bin flight
 	cp $(FAMTOOLS_OUT)/flight $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(BEHAVIOR_ELF): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user.ld $(LIBSYS_SRC)
+$(BEHAVIOR_ELF): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) --bin behavior
+	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS) --bin behavior
 	cp $(FAMTOOLS_OUT)/behavior $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(CONFIG_ELF): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user.ld $(LIBSYS_SRC)
+$(CONFIG_ELF): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) --bin config
+	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS) --bin config
 	cp $(FAMTOOLS_OUT)/config $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(OTA_ELF): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user.ld $(LIBSYS_SRC)
+$(OTA_ELF): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) --bin ota
+	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS) --bin ota
 	cp $(FAMTOOLS_OUT)/ota $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LXSRV_ELF): $(LXSRV_SRC) $(LXSRV_DIR)/user.ld $(LIBSYS_SRC) lx/LINUX_PIN
+$(LXSRV_ELF): $(LXSRV_SRC) $(LIBSYS_SRC) lx/LINUX_PIN
 	@mkdir -p $(OUT_BUILD)
-	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXSRV_DIR)" && $(USPACE_BUILD)
+	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXSRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(LXSRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-# Same standalone pattern as gpio_drv: each crate carries its own
-# .cargo/config.toml pinning the target, user.ld and build-std.
-$(UHELLO_ELF): $(UHELLO_DIR)/src/main.rs $(UHELLO_DIR)/Cargo.toml $(UHELLO_DIR)/user.ld \
+# Same standalone pattern as gpio_drv: one crate, one image, the target spec
+# and userspace/.cargo/config.toml (build-std) for every one.
+$(UHELLO_ELF): $(UHELLO_DIR)/src/main.rs $(UHELLO_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(UHELLO_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(UHELLO_DIR)" && $(USPACE_BUILD)
+	cd $(UHELLO_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(UHELLO_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(UHELLO_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(EPSRV_ELF): $(EPSRV_DIR)/src/main.rs $(EPSRV_DIR)/Cargo.toml $(EPSRV_DIR)/user.ld \
+$(EPSRV_ELF): $(EPSRV_DIR)/src/main.rs $(EPSRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(EPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(EPSRV_DIR)" && $(USPACE_BUILD)
+	cd $(EPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(EPSRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(EPSRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(ABICHILD_ELF): $(ABICHILD_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABICHILD_DIR)/Cargo.toml $(ABICHILD_DIR)/user.ld \
+$(ABICHILD_ELF): $(ABICHILD_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABICHILD_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(ABICHILD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABICHILD_DIR)" && $(USPACE_BUILD)
+	cd $(ABICHILD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABICHILD_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(ABICHILD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # Depends on vsbench's `serve.rs` as well as its own source: the loop is
 # pulled in with `#[path]` and cargo does not track that as a dependency.
-$(VSSRV_ELF): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml $(VSSRV_DIR)/user.ld \
+$(VSSRV_ELF): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml \
                userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(VSSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSSRV_DIR)" && $(USPACE_BUILD)
+	cd $(VSSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSSRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(VSSRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(REFLEX_ELF): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml $(REFLEX_DIR)/user.ld \
+$(REFLEX_ELF): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(REFLEX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(REFLEX_DIR)" && $(USPACE_BUILD)
+	cd $(REFLEX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(REFLEX_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(REFLEX_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(BRAINCLI_ELF): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml $(BRAINCLI_DIR)/user.ld \
+$(BRAINCLI_ELF): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(BRAINCLI_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BRAINCLI_DIR)" && $(USPACE_BUILD)
+	cd $(BRAINCLI_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BRAINCLI_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(BRAINCLI_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(CAPTEST_ELF): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/Cargo.toml $(CAPTEST_DIR)/user.ld \
+$(CAPTEST_ELF): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(CAPTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(CAPTEST_DIR)" && $(USPACE_BUILD)
+	cd $(CAPTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(CAPTEST_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(CAPTEST_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -473,37 +472,31 @@ $(OUT_BUILD)/vsbench.features: FORCE
 	    || printf '%s\n' '$(strip $(VSBENCH_FEATURES))' >$@
 
 $(VSBENCH_ELF): $(VSBENCH_DIR)/src/main.rs $(VSBENCH_DIR)/src/bench_core.rs $(VSBENCH_DIR)/src/ipc_proto.rs \
-               $(VSBENCH_DIR)/src/abi_azos.rs $(VSBENCH_DIR)/Cargo.toml $(VSBENCH_DIR)/user.ld \
+               $(VSBENCH_DIR)/src/abi_azos.rs $(VSBENCH_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(OUT_BUILD)/vsbench.features
 	@mkdir -p $(OUT_BUILD)
-	cd $(VSBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSBENCH_DIR)" && $(USPACE_BUILD) --features azos$(VSBENCH_FEATURES_ARG)
+	cd $(VSBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSBENCH_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS) --features azos$(VSBENCH_FEATURES_ARG)
 	$(AARCH64_OBJCOPY) --strip-all $(VSBENCH_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LATBENCH_ELF): $(LATBENCH_DIR)/src/main.rs $(LATBENCH_DIR)/Cargo.toml $(LATBENCH_DIR)/user.ld \
+$(LATBENCH_ELF): $(LATBENCH_DIR)/src/main.rs $(LATBENCH_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(LATBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LATBENCH_DIR)" && $(USPACE_BUILD)
+	cd $(LATBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LATBENCH_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(LATBENCH_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(ABITEST_ELF): $(ABITEST_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABITEST_DIR)/Cargo.toml $(ABITEST_DIR)/user.ld \
+$(ABITEST_ELF): $(ABITEST_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABITEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(ABITEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABITEST_DIR)" && $(USPACE_BUILD)
+	cd $(ABITEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABITEST_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(ABITEST_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-# NOTE: cargo does NOT track .ld files. `user.ld` is listed as a prerequisite
-# so make re-runs cargo, but cargo answers "Fresh" and does NOT relink. After
-# touching the linker script the rebuild must be forced (touch main.rs, or
-# `cargo clean -p ipctest`) and the resulting ELF's PT_LOAD headers checked
-# with `riscv64-unknown-elf-readelf -l build/ipctest.elf`: no PT_LOAD may carry
-# both W and X.
-$(IPCTEST_ELF): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml $(IPCTEST_DIR)/user.ld \
+$(IPCTEST_ELF): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(IPCTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(IPCTEST_DIR)" && $(USPACE_BUILD)
+	cd $(IPCTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(IPCTEST_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(IPCTEST_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -754,19 +747,23 @@ busybox-source-offer:
 	   echo "transfer. BusyBox is not part of the AzOS kernel or base image."; } > $(BUSYBOX_OFFER)
 	@echo "[BUSYBOX] wrote $(BUSYBOX_OFFER)"
 
-$(HELLO_ELF): $(HELLO_DIR)/hello.S $(HELLO_DIR)/user.ld tools/syscall_defs.py crates/core/abi/src/syscall_nr.rs crates/core/abi/src/invoke.rs
+# The two hand-assembled riscv64 tests are linked by rust-lld with the flags
+# the target spec gives every native image (tools/user_link_args.py): no
+# linker script, the same layout and entry (`_azos_entry`).
+USER_LD_RISCV64 = $(LX_LLD) -flavor gnu $(shell python3 tools/user_link_args.py riscv64)
+$(HELLO_ELF): $(HELLO_DIR)/hello.S $(USER_SPECS)/$(TARGET_RISCV64_USER).json tools/user_link_args.py tools/syscall_defs.py crates/core/abi/src/syscall_nr.rs crates/core/abi/src/invoke.rs
 	@mkdir -p $(OUT_BUILD)
 	$(RISCV_AS) -march=rv64imac -mabi=lp64 $(shell python3 tools/syscall_defs.py SYS_EXIT SYS_INVOKE SYS_CAP_INFO INVOKE_CONSOLE_WRITE CONSOLE_TYPE) -o $(OUT_BUILD)/hello.o $(HELLO_DIR)/hello.S
-	$(RISCV_LD) -T $(HELLO_DIR)/user.ld -o $@ $(OUT_BUILD)/hello.o
+	$(USER_LD_RISCV64) -o $@ $(OUT_BUILD)/hello.o
 	@echo "[USPACE] Built $@"
 
 # Build the syscall test user-space binary (Phase G3).
 syscall-test: $(SYSTEST_ELF)
 
-$(SYSTEST_ELF): $(SYSTEST_DIR)/test.S $(HELLO_DIR)/user.ld tools/syscall_defs.py crates/core/abi/src/syscall_nr.rs crates/core/abi/src/invoke.rs
+$(SYSTEST_ELF): $(SYSTEST_DIR)/test.S $(USER_SPECS)/$(TARGET_RISCV64_USER).json tools/user_link_args.py tools/syscall_defs.py crates/core/abi/src/syscall_nr.rs crates/core/abi/src/invoke.rs
 	@mkdir -p $(OUT_BUILD)
 	$(RISCV_AS) -march=rv64imac -mabi=lp64 $(shell python3 tools/syscall_defs.py SYS_EXIT SYS_GETPID SYS_INVOKE SYS_CAP_INFO SYS_MO_MAP INVOKE_CONSOLE_WRITE CONSOLE_TYPE) -o $(OUT_BUILD)/syscall_test.o $(SYSTEST_DIR)/test.S
-	$(RISCV_LD) -T $(HELLO_DIR)/user.ld -o $@ $(OUT_BUILD)/syscall_test.o
+	$(USER_LD_RISCV64) -o $@ $(OUT_BUILD)/syscall_test.o
 	@echo "[USPACE] Built $@"
 
 # libsys reads the granule at compile time (`option_env!("AZOS_PAGE_SIZE")`);
@@ -776,6 +773,11 @@ $(SYSTEST_ELF): $(SYSTEST_DIR)/test.S $(HELLO_DIR)/user.ld tools/syscall_defs.py
 # SH, TOOLBOX and POWER, which then linked for the granule but ran libsys at
 # 4 KiB.
 IMAGE_ELF_PATHS_AARCH64 := $(foreach e,$(IMAGE_ELFS_AARCH64),$(lastword $(subst =, ,$(e))))
+# The target spec is every image's layout: an edit of it rebuilds them (cargo
+# hashes its contents into the fingerprint, so the link reruns too).
+$(IMAGE_ELF_PATHS_AARCH64): $(USER_SPECS)/$(TARGET_AARCH64).json
+IMAGE_ELF_PATHS_RISCV64 := $(foreach e,$(IMAGE_ELFS),$(lastword $(subst =, ,$(e))))
+$(IMAGE_ELF_PATHS_RISCV64): $(USER_SPECS)/$(TARGET_RISCV64_USER).json
 ifneq ($(AARCH64_PAGE_SIZE),4096)
 $(IMAGE_ELF_PATHS_AARCH64): export AZOS_PAGE_SIZE := $(AARCH64_PAGE_SIZE)
 endif
@@ -786,110 +788,110 @@ userspace-aarch64: $(HELLO_ELF_AARCH64) $(SYSTEST_ELF_AARCH64) $(GPIO_DRV_ELF_AA
            $(EPSRV_ELF_AARCH64) $(ABICHILD_ELF_AARCH64) $(VSSRV_ELF_AARCH64) $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64) \
            $(SH_ELF_AARCH64) $(TERMD_ELF_AARCH64) $(NAMESD_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(TRACECTL_ELF_AARCH64) $(DECISD_ELF_AARCH64) $(INPUTD_ELF_AARCH64) $(COMPSRV_ELF_AARCH64) $(LOGD_ELF_AARCH64) $(WHY_ELF_AARCH64) $(PKGD_ELF_AARCH64) $(PKG_ELF_AARCH64) $(RPCSRV_ELF_AARCH64) $(ZENOHD_ELF_AARCH64) $(VMMD_ELF_AARCH64) $(PTPD_ELF_AARCH64) $(AUDIOD_ELF_AARCH64) $(RPCQUIC_ELF_AARCH64) $(MCPD_ELF_AARCH64) $(SSHD_ELF_AARCH64) $(LOGIND_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(LXSRV_ELF_AARCH64) $(LXHELLO_ELF_AARCH64)
 
-$(HELLO_ELF_AARCH64): $(HELLO_DIR)/src/main.rs $(HELLO_DIR)/Cargo.toml $(HELLO_DIR)/user_aarch64.ld
+$(HELLO_ELF_AARCH64): $(HELLO_DIR)/src/main.rs $(HELLO_DIR)/Cargo.toml
 	@mkdir -p $(AARCH64_DIR)
-	cd $(HELLO_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(HELLO_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS)
+	cd $(HELLO_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(HELLO_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(HELLO_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/hello_aarch64 $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(SYSTEST_ELF_AARCH64): $(SYSTEST_DIR)/src/main.rs $(SYSTEST_DIR)/Cargo.toml $(SYSTEST_DIR)/user_aarch64.ld
+$(SYSTEST_ELF_AARCH64): $(SYSTEST_DIR)/src/main.rs $(SYSTEST_DIR)/Cargo.toml
 	@mkdir -p $(AARCH64_DIR)
-	cd $(SYSTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SYSTEST_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS)
+	cd $(SYSTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SYSTEST_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(SYSTEST_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/syscall_test_aarch64 $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(GPIO_DRV_ELF_AARCH64): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml $(GPIO_DRV_DIR)/user_aarch64.ld \
+$(GPIO_DRV_ELF_AARCH64): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(GPIO_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(GPIO_DRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(GPIO_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(GPIO_DRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(GPIO_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/gpio_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # Hard-float: `aarch64-unknown-none` (the kernel alone is soft-float).
-$(MLSRV_ELF_AARCH64): $(MLSRV_DEPS) $(MLSRV_DIR)/user_aarch64.ld $(TOPOLOGY_KEY_STAMP)
+$(MLSRV_ELF_AARCH64): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MLSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(MLSRV_QEMU_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) $(MLSRV_KEY_FEATURES)
+	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MLSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(MLSRV_QEMU_BUILD) $(AARCH64_UFLAGS) $(MLSRV_KEY_FEATURES)
 	cp $(OUT_TGT)/$(MLSRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/infsrv $@
 
-$(BUZZ_DRV_ELF_AARCH64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/Cargo.toml $(BUZZ_DRV_DIR)/user_aarch64.ld \
+$(BUZZ_DRV_ELF_AARCH64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(BUZZ_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BUZZ_DRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(BUZZ_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BUZZ_DRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	python3 tools/chip_source_check.py buzzer $(OUT_TGT)/$(BUZZ_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/buzz_drv
 	cp $(OUT_TGT)/$(BUZZ_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/buzz_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(INA_DRV_ELF_AARCH64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
-               $(INA_DRV_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+               $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INA_DRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INA_DRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	python3 tools/chip_source_check.py ina219 $(OUT_TGT)/$(INA_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ina_drv
 	cp $(OUT_TGT)/$(INA_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ina_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TERMD_ELF_AARCH64): $(TERMD_SRC) $(TERMD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(TERMD_ELF_AARCH64): $(TERMD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TERMD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TERMD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(TERMD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/termd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(NAMESD_ELF_AARCH64): $(NAMESD_SRC) $(NAMESD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(NAMESD_ELF_AARCH64): $(NAMESD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(NAMESD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(NAMESD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(NAMESD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(NAMESD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(NAMESD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/namesd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(COMPMGR_ELF_AARCH64): $(COMPMGR_SRC) $(COMPMGR_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(COMPMGR_ELF_AARCH64): $(COMPMGR_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(COMPMGR_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPMGR_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(COMPMGR_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPMGR_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(COMPMGR_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/compmgr $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(SH_ELF_AARCH64): $(SH_SRC) $(SH_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(SH_ELF_AARCH64): $(SH_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(SH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SH_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(SH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SH_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(SH_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/sh $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TOOLBOX_ELF_AARCH64): $(TOOLBOX_SRC) $(TOOLBOX_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(TOOLBOX_ELF_AARCH64): $(TOOLBOX_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TOOLBOX_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TOOLBOX_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	$(AARCH64_OBJCOPY) --strip-all $(OUT_TGT)/$(TOOLBOX_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/toolbox $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(POWER_ELF_AARCH64): $(POWER_SRC) $(POWER_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(POWER_ELF_AARCH64): $(POWER_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(POWER_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(POWER_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(POWER_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(POWER_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(POWER_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/power $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TRACECTL_ELF_AARCH64): $(TRACECTL_SRC) $(TRACECTL_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(TRACECTL_ELF_AARCH64): $(TRACECTL_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(TRACECTL_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TRACECTL_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(TRACECTL_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TRACECTL_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(TRACECTL_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/tracectl $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(DECISD_ELF_AARCH64): $(DECISD_SRC) $(DECISD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(DECISD_ELF_AARCH64): $(DECISD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(DECISD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(DECISD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(DECISD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(DECISD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(DECISD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/decisd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(INPUTD_ELF_AARCH64): $(INPUTD_SRC) $(INPUTD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(INPUTD_ELF_AARCH64): $(INPUTD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(INPUTD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INPUTD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(INPUTD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INPUTD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(INPUTD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/inputd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(COMPSRV_ELF_AARCH64): $(COMPSRV_SRC) $(COMPSRV_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(COMPSRV_ELF_AARCH64): $(COMPSRV_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(COMPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(COMPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(COMPSRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/compositor $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LOGD_ELF_AARCH64): $(LOGD_SRC) $(LOGD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(LOGD_ELF_AARCH64): $(LOGD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(LOGD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(LOGD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(LOGD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/logd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -905,246 +907,246 @@ $(PKGD_ELF_AARCH64): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(AARCH64_USER_KCONFIG)
 	cp $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release/pkgd $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(PKG_ELF_AARCH64): $(PKG_SRC) $(PKG_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(PKG_ELF_AARCH64): $(PKG_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(PKG_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PKG_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(PKG_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PKG_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(PKG_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/pkg $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(RPCSRV_ELF_AARCH64): $(RPCSRV_SRC) $(RPCSRV_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(RPCSRV_ELF_AARCH64): $(RPCSRV_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(RPCSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(RPCSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(RPCSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(RPCSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(RPCSRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/rpcsrv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(ZENOHD_ELF_AARCH64): $(ZENOHD_SRC) $(ZENOHD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(ZENOHD_ELF_AARCH64): $(ZENOHD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(ZENOHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ZENOHD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(ZENOHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ZENOHD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(ZENOHD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/zenohd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(PTPD_ELF_AARCH64): $(PTPD_SRC) $(PTPD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(PTPD_ELF_AARCH64): $(PTPD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(PTPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PTPD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(PTPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PTPD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(PTPD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ptpd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(AUDIOD_ELF_AARCH64): $(AUDIOD_SRC) $(AUDIOD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(AUDIOD_ELF_AARCH64): $(AUDIOD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(AUDIOD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(AUDIOD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(AUDIOD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(AUDIOD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(AUDIOD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/audiod $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(MCPD_ELF_AARCH64): $(MCPD_SRC) $(MCPD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(MCPD_ELF_AARCH64): $(MCPD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(MCPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MCPD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(MCPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MCPD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(MCPD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/mcpd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(SSHD_ELF_AARCH64): $(SSHD_SRC) $(SSHD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(SSHD_ELF_AARCH64): $(SSHD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(SSHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SSHD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(SSHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SSHD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(SSHD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/sshd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LOGIND_ELF_AARCH64): $(LOGIND_SRC) $(LOGIND_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(LOGIND_ELF_AARCH64): $(LOGIND_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(LOGIND_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGIND_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(LOGIND_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGIND_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(LOGIND_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/logind $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(VMMD_ELF_AARCH64): $(VMMD_SRC) $(VMMD_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(VMMD_ELF_AARCH64): $(VMMD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(VMMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VMMD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(VMMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VMMD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(VMMD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/vmmd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # The Linux runtime shares the program's FP/SIMD state, so it is built with the
 # soft-float target (no vector register is named anywhere in it), where every
 # other image is hard-float. 4 KiB granule only.
-$(LXRT_ELF_AARCH64): $(LXRT_SRC) $(LXRT_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(LXRT_ELF_AARCH64): $(LXRT_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) --target $(LXRT_TARGET_AARCH64)
+	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(LXRT_UFLAGS_AARCH64)
 	cp $(OUT_TGT)/$(LXRT_DIR)/$(LXRT_TARGET_AARCH64)/release/lxrt $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # x86_64: the same, on rustc's soft-float `x86_64-unknown-none` (not the
-# hard-float `x86_64-azos-user` the other images use, and none of the Kconfig
-# baseline flags, which would enable SSE: lxrt/.cargo/config.toml).
-$(LXRT_ELF_X86_64): $(LXRT_SRC) $(LXRT_DIR)/user_x86_64.ld $(LIBSYS_SRC)
+# hard-float `x86_64-unknown-azos` the other images use, and none of the
+# Kconfig baseline flags, which would enable SSE: lxrt/build.rs).
+$(LXRT_ELF_X86_64): $(LXRT_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(X86_64_DIR)
-	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) --target $(LXRT_TARGET_X86_64)
+	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(LXRT_UFLAGS_X86_64)
 	cp $(OUT_TGT)/$(LXRT_DIR)/$(LXRT_TARGET_X86_64)/release/lxrt $@
 	@echo "[USPACE-X86_64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(FLIGHT_ELF_AARCH64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(FLIGHT_ELF_AARCH64): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) --bin flight
+	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) --bin flight
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/flight $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(BEHAVIOR_ELF_AARCH64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(BEHAVIOR_ELF_AARCH64): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) --bin behavior
+	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) --bin behavior
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/behavior $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(CONFIG_ELF_AARCH64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(CONFIG_ELF_AARCH64): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) --bin config
+	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) --bin config
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/config $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(OTA_ELF_AARCH64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_aarch64.ld $(LIBSYS_SRC)
+$(OTA_ELF_AARCH64): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) --bin ota
+	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) --bin ota
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ota $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LXSRV_ELF_AARCH64): $(LXSRV_SRC) $(LXSRV_DIR)/user_aarch64.ld $(LIBSYS_SRC) lx/LINUX_PIN
+$(LXSRV_ELF_AARCH64): $(LXSRV_SRC) $(LIBSYS_SRC) lx/LINUX_PIN
 	@mkdir -p $(AARCH64_DIR)
-	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(LXSRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/lxsrv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(UHELLO_ELF_AARCH64): $(UHELLO_DIR)/src/main.rs $(UHELLO_DIR)/Cargo.toml $(UHELLO_DIR)/user_aarch64.ld \
+$(UHELLO_ELF_AARCH64): $(UHELLO_DIR)/src/main.rs $(UHELLO_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(UHELLO_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(UHELLO_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(UHELLO_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(UHELLO_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(UHELLO_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/uhello $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(EPSRV_ELF_AARCH64): $(EPSRV_DIR)/src/main.rs $(EPSRV_DIR)/Cargo.toml $(EPSRV_DIR)/user_aarch64.ld \
+$(EPSRV_ELF_AARCH64): $(EPSRV_DIR)/src/main.rs $(EPSRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(EPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(EPSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(EPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(EPSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(EPSRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/epsrv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(ABICHILD_ELF_AARCH64): $(ABICHILD_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABICHILD_DIR)/Cargo.toml $(ABICHILD_DIR)/user_aarch64.ld \
+$(ABICHILD_ELF_AARCH64): $(ABICHILD_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABICHILD_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(ABICHILD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABICHILD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(ABICHILD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABICHILD_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(ABICHILD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/abichild $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(VSSRV_ELF_AARCH64): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml $(VSSRV_DIR)/user_aarch64.ld \
+$(VSSRV_ELF_AARCH64): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml \
                userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(VSSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(VSSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(VSSRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/vssrv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(REFLEX_ELF_AARCH64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml $(REFLEX_DIR)/user_aarch64.ld \
+$(REFLEX_ELF_AARCH64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(REFLEX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(REFLEX_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(REFLEX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(REFLEX_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(REFLEX_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/reflex $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(BRAINCLI_ELF_AARCH64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml $(BRAINCLI_DIR)/user_aarch64.ld \
+$(BRAINCLI_ELF_AARCH64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(BRAINCLI_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BRAINCLI_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(BRAINCLI_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BRAINCLI_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(BRAINCLI_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/brain_client $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(CAPTEST_ELF_AARCH64): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/Cargo.toml $(CAPTEST_DIR)/user_aarch64.ld \
+$(CAPTEST_ELF_AARCH64): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(CAPTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(CAPTEST_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(CAPTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(CAPTEST_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(CAPTEST_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/captest $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(VSBENCH_ELF_AARCH64): $(VSBENCH_DIR)/src/main.rs $(VSBENCH_DIR)/src/bench_core.rs $(VSBENCH_DIR)/src/ipc_proto.rs \
-               $(VSBENCH_DIR)/src/abi_azos.rs $(VSBENCH_DIR)/Cargo.toml $(VSBENCH_DIR)/user_aarch64.ld \
+               $(VSBENCH_DIR)/src/abi_azos.rs $(VSBENCH_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(OUT_BUILD)/vsbench.features
 	@mkdir -p $(AARCH64_DIR)
-	cd $(VSBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSBENCH_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64) --features azos$(VSBENCH_FEATURES_ARG)
+	cd $(VSBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSBENCH_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) --features azos$(VSBENCH_FEATURES_ARG)
 	$(AARCH64_OBJCOPY) --strip-all $(OUT_TGT)/$(VSBENCH_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/vsbench $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LATBENCH_ELF_AARCH64): $(LATBENCH_DIR)/src/main.rs $(LATBENCH_DIR)/Cargo.toml $(LATBENCH_DIR)/user_aarch64.ld \
+$(LATBENCH_ELF_AARCH64): $(LATBENCH_DIR)/src/main.rs $(LATBENCH_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(LATBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LATBENCH_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(LATBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LATBENCH_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(LATBENCH_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/latbench $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(ABITEST_ELF_AARCH64): $(ABITEST_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABITEST_DIR)/Cargo.toml $(ABITEST_DIR)/user_aarch64.ld \
+$(ABITEST_ELF_AARCH64): $(ABITEST_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABITEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(ABITEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABITEST_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(ABITEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABITEST_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(ABITEST_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/abitest $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(IPCTEST_ELF_AARCH64): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml $(IPCTEST_DIR)/user_aarch64.ld \
+$(IPCTEST_ELF_AARCH64): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(IPCTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(IPCTEST_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
+	cd $(IPCTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(IPCTEST_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(IPCTEST_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ipctest $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(IMAGE_ELF_PATHS_X86_64): userspace/$(TARGET_X86_64).json
+$(IMAGE_ELF_PATHS_X86_64): $(USER_SPECS)/$(TARGET_X86_64).json
 .PHONY: userspace-x86_64
 userspace-x86_64: $(IMAGE_ELF_PATHS_X86_64)
 
-$(HELLO_ELF_X86_64): $(HELLO_DIR)/src/main.rs $(HELLO_DIR)/Cargo.toml $(HELLO_DIR)/user_x86_64.ld $(X86_64_KCONFIG)
+$(HELLO_ELF_X86_64): $(HELLO_DIR)/src/main.rs $(HELLO_DIR)/Cargo.toml $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(HELLO_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(HELLO_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(HELLO_DIR)/$(X86_64_UBUILT)/hello_aarch64 $@
 
-$(UHELLO_ELF_X86_64): $(UHELLO_DIR)/src/main.rs $(UHELLO_DIR)/Cargo.toml $(UHELLO_DIR)/user_x86_64.ld \
+$(UHELLO_ELF_X86_64): $(UHELLO_DIR)/src/main.rs $(UHELLO_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(UHELLO_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(UHELLO_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(UHELLO_DIR)/$(X86_64_UBUILT)/uhello $@
 
-$(EPSRV_ELF_X86_64): $(EPSRV_DIR)/src/main.rs $(EPSRV_DIR)/Cargo.toml $(EPSRV_DIR)/user_x86_64.ld \
+$(EPSRV_ELF_X86_64): $(EPSRV_DIR)/src/main.rs $(EPSRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(EPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(EPSRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(EPSRV_DIR)/$(X86_64_UBUILT)/epsrv $@
 
-$(ABICHILD_ELF_X86_64): $(ABICHILD_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABICHILD_DIR)/Cargo.toml $(ABICHILD_DIR)/user_x86_64.ld \
+$(ABICHILD_ELF_X86_64): $(ABICHILD_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABICHILD_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(ABICHILD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABICHILD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(ABICHILD_DIR)/$(X86_64_UBUILT)/abichild $@
 
-$(REFLEX_ELF_X86_64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml $(REFLEX_DIR)/user_x86_64.ld \
+$(REFLEX_ELF_X86_64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(REFLEX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(REFLEX_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(REFLEX_DIR)/$(X86_64_UBUILT)/reflex $@
 
-$(BRAINCLI_ELF_X86_64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml $(BRAINCLI_DIR)/user_x86_64.ld \
+$(BRAINCLI_ELF_X86_64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(BRAINCLI_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BRAINCLI_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(BRAINCLI_DIR)/$(X86_64_UBUILT)/brain_client $@
 
-$(ABITEST_ELF_X86_64): $(ABITEST_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABITEST_DIR)/Cargo.toml $(ABITEST_DIR)/user_x86_64.ld \
+$(ABITEST_ELF_X86_64): $(ABITEST_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABITEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(ABITEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ABITEST_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(ABITEST_DIR)/$(X86_64_UBUILT)/abitest $@
 
-$(IPCTEST_ELF_X86_64): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml $(IPCTEST_DIR)/user_x86_64.ld \
+$(IPCTEST_ELF_X86_64): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(IPCTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(IPCTEST_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(IPCTEST_DIR)/$(X86_64_UBUILT)/ipctest $@
 
-$(GPIO_DRV_ELF_X86_64): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml $(GPIO_DRV_DIR)/user_x86_64.ld \
+$(GPIO_DRV_ELF_X86_64): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(GPIO_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(GPIO_DRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(GPIO_DRV_DIR)/$(X86_64_UBUILT)/gpio_drv $@
 
-$(BUZZ_DRV_ELF_X86_64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/Cargo.toml $(BUZZ_DRV_DIR)/user_x86_64.ld \
+$(BUZZ_DRV_ELF_X86_64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(BUZZ_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BUZZ_DRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
@@ -1152,68 +1154,68 @@ $(BUZZ_DRV_ELF_X86_64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DR
 	cp $(OUT_TGT)/$(BUZZ_DRV_DIR)/$(X86_64_UBUILT)/buzz_drv $@
 
 $(INA_DRV_ELF_X86_64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
-               $(INA_DRV_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INA_DRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	python3 tools/chip_source_check.py ina219 $(OUT_TGT)/$(INA_DRV_DIR)/$(X86_64_UBUILT)/ina_drv
 	cp $(OUT_TGT)/$(INA_DRV_DIR)/$(X86_64_UBUILT)/ina_drv $@
 
-$(MLSRV_ELF_X86_64): $(MLSRV_DEPS) $(MLSRV_DIR)/user_x86_64.ld $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
+$(MLSRV_ELF_X86_64): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MLSRV_DIR)" && $(MLSRV_QEMU_BUILD) $(X86_64_UFLAGS) $(MLSRV_KEY_FEATURES)
 	cp $(OUT_TGT)/$(MLSRV_DIR)/$(X86_64_UBUILT)/infsrv $@
 
-$(TERMD_ELF_X86_64): $(TERMD_SRC) $(TERMD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(TERMD_ELF_X86_64): $(TERMD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TERMD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(TERMD_DIR)/$(X86_64_UBUILT)/termd $@
 
-$(NAMESD_ELF_X86_64): $(NAMESD_SRC) $(NAMESD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(NAMESD_ELF_X86_64): $(NAMESD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(NAMESD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(NAMESD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(NAMESD_DIR)/$(X86_64_UBUILT)/namesd $@
 
-$(COMPMGR_ELF_X86_64): $(COMPMGR_SRC) $(COMPMGR_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(COMPMGR_ELF_X86_64): $(COMPMGR_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(COMPMGR_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPMGR_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(COMPMGR_DIR)/$(X86_64_UBUILT)/compmgr $@
 
-$(SH_ELF_X86_64): $(SH_SRC) $(SH_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(SH_ELF_X86_64): $(SH_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(SH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SH_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(SH_DIR)/$(X86_64_UBUILT)/sh $@
 
-$(TOOLBOX_ELF_X86_64): $(TOOLBOX_SRC) $(TOOLBOX_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(TOOLBOX_ELF_X86_64): $(TOOLBOX_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TOOLBOX_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	$(AARCH64_OBJCOPY) --strip-all $(OUT_TGT)/$(TOOLBOX_DIR)/$(X86_64_UBUILT)/toolbox $@
 
-$(POWER_ELF_X86_64): $(POWER_SRC) $(POWER_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(POWER_ELF_X86_64): $(POWER_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(POWER_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(POWER_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(POWER_DIR)/$(X86_64_UBUILT)/power $@
 
-$(TRACECTL_ELF_X86_64): $(TRACECTL_SRC) $(TRACECTL_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(TRACECTL_ELF_X86_64): $(TRACECTL_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(TRACECTL_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TRACECTL_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(TRACECTL_DIR)/$(X86_64_UBUILT)/tracectl $@
 
-$(DECISD_ELF_X86_64): $(DECISD_SRC) $(DECISD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(DECISD_ELF_X86_64): $(DECISD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(DECISD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(DECISD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(DECISD_DIR)/$(X86_64_UBUILT)/decisd $@
 
-$(INPUTD_ELF_X86_64): $(INPUTD_SRC) $(INPUTD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(INPUTD_ELF_X86_64): $(INPUTD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(INPUTD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INPUTD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(INPUTD_DIR)/$(X86_64_UBUILT)/inputd $@
 
-$(COMPSRV_ELF_X86_64): $(COMPSRV_SRC) $(COMPSRV_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(COMPSRV_ELF_X86_64): $(COMPSRV_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(COMPSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(COMPSRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(COMPSRV_DIR)/$(X86_64_UBUILT)/compositor $@
 
-$(LOGD_ELF_X86_64): $(LOGD_SRC) $(LOGD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(LOGD_ELF_X86_64): $(LOGD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(LOGD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(LOGD_DIR)/$(X86_64_UBUILT)/logd $@
@@ -1333,74 +1335,74 @@ $(PKGD_ELF_X86_64): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/pkgd $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(PKG_ELF_X86_64): $(PKG_SRC) $(PKG_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(PKG_ELF_X86_64): $(PKG_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(PKG_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PKG_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(PKG_DIR)/$(X86_64_UBUILT)/pkg $@
 
-$(RPCSRV_ELF_X86_64): $(RPCSRV_SRC) $(RPCSRV_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(RPCSRV_ELF_X86_64): $(RPCSRV_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(RPCSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(RPCSRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(RPCSRV_DIR)/$(X86_64_UBUILT)/rpcsrv $@
 
-$(ZENOHD_ELF_X86_64): $(ZENOHD_SRC) $(ZENOHD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(ZENOHD_ELF_X86_64): $(ZENOHD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(ZENOHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(ZENOHD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(ZENOHD_DIR)/$(X86_64_UBUILT)/zenohd $@
 
-$(PTPD_ELF_X86_64): $(PTPD_SRC) $(PTPD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(PTPD_ELF_X86_64): $(PTPD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(PTPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(PTPD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(PTPD_DIR)/$(X86_64_UBUILT)/ptpd $@
 
-$(AUDIOD_ELF_X86_64): $(AUDIOD_SRC) $(AUDIOD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(AUDIOD_ELF_X86_64): $(AUDIOD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(AUDIOD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(AUDIOD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(AUDIOD_DIR)/$(X86_64_UBUILT)/audiod $@
 
-$(MCPD_ELF_X86_64): $(MCPD_SRC) $(MCPD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(MCPD_ELF_X86_64): $(MCPD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(MCPD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MCPD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(MCPD_DIR)/$(X86_64_UBUILT)/mcpd $@
 
-$(SSHD_ELF_X86_64): $(SSHD_SRC) $(SSHD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(SSHD_ELF_X86_64): $(SSHD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(SSHD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SSHD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(SSHD_DIR)/$(X86_64_UBUILT)/sshd $@
 
-$(LOGIND_ELF_X86_64): $(LOGIND_SRC) $(LOGIND_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(LOGIND_ELF_X86_64): $(LOGIND_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(LOGIND_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGIND_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(LOGIND_DIR)/$(X86_64_UBUILT)/logind $@
 
-$(VMMD_ELF_X86_64): $(VMMD_SRC) $(VMMD_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(VMMD_ELF_X86_64): $(VMMD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(VMMD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VMMD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(VMMD_DIR)/$(X86_64_UBUILT)/vmmd $@
 
-$(FLIGHT_ELF_X86_64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(FLIGHT_ELF_X86_64): $(FAMTOOLS_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin flight
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)/$(X86_64_UBUILT)/flight $@
 
-$(BEHAVIOR_ELF_X86_64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(BEHAVIOR_ELF_X86_64): $(FAMTOOLS_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin behavior
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)/$(X86_64_UBUILT)/behavior $@
 
-$(CONFIG_ELF_X86_64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(CONFIG_ELF_X86_64): $(FAMTOOLS_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin config
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)/$(X86_64_UBUILT)/config $@
 
-$(OTA_ELF_X86_64): $(FAMTOOLS_SRC) $(FAMTOOLS_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(OTA_ELF_X86_64): $(FAMTOOLS_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(FAMTOOLS_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin ota
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)/$(X86_64_UBUILT)/ota $@
 
 # vsbench (wave 15): stripped, as on the other two ISAs (the autorun cap).
 # vsbench's ipc-roundtrip peer (spawned as /fat/VSSRV.ELF, endpoint.bench).
-$(VSSRV_ELF_X86_64): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml $(VSSRV_DIR)/user_x86_64.ld \
+$(VSSRV_ELF_X86_64): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml \
                userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(VSSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSSRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
@@ -1408,7 +1410,7 @@ $(VSSRV_ELF_X86_64): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml $(VSSRV_DI
 	@echo "[USPACE-X86_64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(VSBENCH_ELF_X86_64): $(VSBENCH_DIR)/src/main.rs $(VSBENCH_DIR)/src/bench_core.rs $(VSBENCH_DIR)/src/ipc_proto.rs \
-               $(VSBENCH_DIR)/src/abi_azos.rs $(VSBENCH_DIR)/Cargo.toml $(VSBENCH_DIR)/user_x86_64.ld \
+               $(VSBENCH_DIR)/src/abi_azos.rs $(VSBENCH_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(OUT_BUILD)/vsbench.features $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(VSBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(VSBENCH_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS) --features azos$(VSBENCH_FEATURES_ARG)
