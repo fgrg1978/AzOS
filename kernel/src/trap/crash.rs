@@ -54,6 +54,26 @@ const SLOT_BYTES: usize = cd::max_bytes(STACK, MAPS, DECISIONS);
 const _: () = assert!(STACK <= cd::MAX_STACK && MAPS <= cd::MAX_MAPS && DECISIONS <= cd::MAX_DECISIONS);
 const _: () = assert!(FILES >= 1 && FILES <= cd::MAX_SLOTS && RING >= 1);
 
+/// What [`capture`] puts on the faulting task's kernel stack: the register
+/// snapshot (`with_user_regs`, FP state included: an XSAVE area on x86_64),
+/// the stack window, the map runs and their dump form, the decisions, the
+/// tree path. A user fault enters at the top of that stack, so the capture
+/// may take half of what is usable (the size less its guard page); the rest
+/// is for the trap frame and the paths below (K1 L6: with the stack bounds
+/// at their limits the capture alone could overflow it). A configuration
+/// that breaks it is refused here, not on the first fault.
+const CAPTURE_STACK_BYTES: usize = core::mem::size_of::<azos_sched::UserRegs>()
+    + cd::MAX_REGS * 8
+    + STACK
+    + MAPS * (core::mem::size_of::<azos_mm::vmm::UserRun>() + core::mem::size_of::<cd::Map>())
+    + DECISIONS * core::mem::size_of::<cd::Decision>()
+    + TREE_PATH_MAX;
+const _: () = assert!(
+    CAPTURE_STACK_BYTES <= (azos_limits::KERNEL_STACK_SIZE_BYTES - (1 << azos_limits::PAGE_SHIFT)) / 2,
+    "crash dump capture takes over half the kernel stack: lower CRASHDUMP_STACK_BYTES / CRASHDUMP_MAPS / \
+     CRASHDUMP_DECISIONS (or X86_XSAVE_AREA_BYTES), or raise KERNEL_STACK_SIZE_KB"
+);
+
 /// The `subsystem` byte of the flight-recorder record a fault leaves
 /// (`logger::log_error`): `C`.
 const LOG_SUBSYSTEM: u8 = b'C';
@@ -210,6 +230,33 @@ fn write_tree(tid: u32, out: &mut [u8; TREE_PATH_MAX]) -> Option<usize> {
     file_cap::tree_path(found, out)
 }
 
+/// The latest decisions about the dying task, oldest first, into `out`; how
+/// many. Only a record whose subject is a TID (`RuleInfo::subject` "tid")
+/// naming this thread or its process: the dump is written into the task's own
+/// tree, and the kernel-wide last N it used to carry disclosed other Domains'
+/// refusals (subject, rule, verdict) to it (K1 L5). Scans back through every
+/// record still held, as `azos_decision::query` does, not only the last N.
+fn own_decisions(tid: u32, out: &mut [cd::Decision; DECISIONS]) -> usize {
+    use azos_decision as d;
+    let span = (if d::ON { d::ENTRIES } else { 0 }).max(if d::DURABLE { d::JOURNAL_ENTRIES } else { 0 }) as u64;
+    let proc = azos_sched::current_proc_tid();
+    let last = d::total();
+    let mut n = 0;
+    let mut id = last;
+    while n < DECISIONS && id > 0 && last - id < span {
+        if let Some(p) = d::lookup(id) {
+            let by_tid = d::RULES.get(p.rule as usize).is_some_and(|r| r.subject == "tid");
+            if by_tid && (p.subject == tid || p.subject == proc) {
+                out[n] = cd::Decision { seq: id, rule: p.rule, verdict: p.verdict, subject: p.subject, n: p.n, ts: p.clock_ns };
+                n += 1;
+            }
+        }
+        id -= 1;
+    }
+    out[..n].reverse();
+    n
+}
+
 /// Leave the dump of the running task, which a fault is about to kill with
 /// `status`. Called on the fault path, before the kill.
 pub(super) fn capture<F: ArchFrame>(frame: &F, status: i32) {
@@ -245,16 +292,7 @@ pub(super) fn capture<F: ArchFrame>(frame: &F, status: i32) {
     }
 
     let mut decisions = [cd::Decision::default(); DECISIONS];
-    let mut nd = 0;
-    if DECISIONS > 0 {
-        let last = azos_decision::total();
-        for id in last.saturating_sub(DECISIONS as u64 - 1).max(1)..=last {
-            if let Some(p) = azos_decision::lookup(id) {
-                decisions[nd] = cd::Decision { seq: id, rule: p.rule, verdict: p.verdict, subject: p.subject, n: p.n, ts: p.clock_ns };
-                nd += 1;
-            }
-        }
-    }
+    let nd = own_decisions(tid, &mut decisions);
 
     let mut stack = [0u8; STACK];
     let nstack = read_stack(pt, sp, &mut stack);

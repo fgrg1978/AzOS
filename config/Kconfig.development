@@ -334,9 +334,11 @@ config CRASHDUMP_DECISIONS
     range 0 32
     default 16
     help
-      The last decision records of the kernel (crates/core/decision) a dump
-      carries: why the kernel refused or denied what it did just before the
-      fault. Empty unless DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE
+      The last decision records (crates/core/decision) about the dying task
+      a dump carries: why the kernel refused or denied what that thread or
+      its process asked for before the fault. Only records whose subject is
+      a TID naming one of them: the dump is written into the task's own
+      tree. Empty unless DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE
       is on. 0 leaves them out.
 
 config CRASHDUMP_RING
