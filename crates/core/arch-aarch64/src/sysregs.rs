@@ -82,23 +82,6 @@ pub fn enable_irq() {
     }
 }
 
-/// Install `addr` as the EL1 exception vector base.
-///
-/// The address MUST be 2 KiB-aligned (Arm ARM §D7); the symbol
-/// itself should use `.align 11` in its asm declaration.
-#[cfg(target_arch = "aarch64")]
-#[inline]
-pub fn set_vbar_el1(addr: u64) {
-    unsafe {
-        core::arch::asm!(
-            "msr VBAR_EL1, {0}",
-            "isb",
-            in(reg) addr,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-}
-
 // ── Generic timer (used by `Interrupts::set_timer_deadline`) ──
 
 /// Read `CNTFRQ_EL0` — generic-timer frequency in Hz. Set by

@@ -11,9 +11,6 @@ stack frames: embedded	embedded (+linker); embedded config applied
 stack chain: embedded	embedded (+linker); embedded config applied
 embedded: boots in 64 MiB	embedded (+linker); embedded config applied
 embedded: boots in 16 MiB	embedded (+linker); embedded config applied
-aarch64 boots (ARMv8.5)	aarch64 smoke (build)
-aarch64 boots (ARMv8.0)	aarch64 smoke (build)
-aarch64 boots at EL2 (ARMv8.5)	aarch64 smoke (build)
 generic: riscv64 boots, abitest	generic: riscv64 builds, no robot crate
 generic: aarch64 boots, abitest	generic: aarch64 builds, no robot crate
 vf2: no B extension	vf2 (+linker)

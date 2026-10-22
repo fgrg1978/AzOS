@@ -22,7 +22,7 @@ build-std-features = ["compiler-builtins-mem"]
 # header comment for why the RISC-V script's `ALIGN(4096)` alone is not
 # enough on this ISA.
 [target.aarch64-unknown-none]
-# Rust's bundled LLD, as `tests/qemu/aarch64-smoke` already relies on: the macOS
+# Rust's bundled LLD: the macOS
 # system `cc` is not always present in PATH and is not a cross-linker anyway.
 linker = "rust-lld"
 rustflags = [

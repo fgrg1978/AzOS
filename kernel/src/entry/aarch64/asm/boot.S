@@ -11,8 +11,7 @@
 // unchanged from the plain-ELF milestone this supersedes) — no firmware
 // in front of us either way.
 //
-// Boot-time register state, per tests/qemu/aarch64-smoke/src/main.rs
-// (measured on this machine, not assumed) and this task's own QEMU runs:
+// Boot-time register state (measured under QEMU, not assumed):
 //   x0        = FDT pointer when loaded as an Image (the case this file
 //               now targets) — QEMU synthesizes and places an FDT only
 //               for a recognised Image load, never for a bare ELF
@@ -271,8 +270,8 @@ clear_bss_done:
     // it. `aarch64_early_mmu_init` (kernel/src/entry/aarch64/mod.rs) owns
     // three static page tables and calls straight into
     // `arch_aarch64::mmu::setup::enable_identity_map` — the SAME identity-
-    // map code `tests/qemu/aarch64-smoke` already boots through, not a second
-    // copy of the MAIR/TCR encoding. It touches only its own static
+    // map code as every other user of the arch crate, not a second copy of
+    // the MAIR/TCR encoding. It touches only its own static
     // tables and CPU system registers: no lock, no atomic, so it is safe
     // to run before any lock exists. x19 (dtb ptr) / x20 (hart id) are
     // callee-saved across the `bl` per AAPCS64, same guarantee this file

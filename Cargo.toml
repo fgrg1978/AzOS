@@ -200,11 +200,6 @@ exclude = [
     # Run with:  cd tests/host/drv-api-tests && cargo +stable test \
     #              --target aarch64-apple-darwin
     "tests/host/drv-api-tests",
-    # B1.boot — standalone aarch64 boot binary. Excluded because
-    # its own .cargo/config.toml pins it to
-    # aarch64-unknown-none-softfloat which the workspace target
-    # (riscv64gc-unknown-none-elf) cannot build for.
-    # Run with:  make qemu-aarch64-hello
     # tftp-tests exercises the host-compatible `azos_tftp` crate.
     # Run with:  cd tests/host/tftp-tests && cargo +stable test \
     #              --target aarch64-apple-darwin

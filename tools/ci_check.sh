@@ -2632,9 +2632,8 @@ isa_guard() { # isa_guard <label> <expect: none|some>
 # that rotted parked for months. So: it builds for its real target, and its pure
 # halves are tested on the host, on every run.
 #
-# This crate row stays `aarch64-unknown-none` (hard-float): the crate is also
-# used by `tests/qemu/aarch64-smoke` on that target, and its NEON `dot_f32` is
-# compiled only where NEON is part of the target (`vector.rs`). The KERNEL is
+# This crate row stays `aarch64-unknown-none` (hard-float): its NEON `dot_f32`
+# is compiled only where NEON is part of the target (`vector.rs`). The KERNEL is
 # built for `aarch64-unknown-none-softfloat` (see "The KERNEL on aarch64"
 # below), which compiles this crate a second time without NEON.
 if ci_row_begin "aarch64 crate (ARMv8.5)"; then
@@ -2648,104 +2647,7 @@ else
 fi
 fi; ci_row_end
 
-# aarch64, actually BOOTED. The build row above proves it compiles; these prove
-# the port runs: EL2→EL1, GICv3, an IRQ, an SVC, a second PE via PSCI, a
-# cross-core SGI, the timer, the MMU, and a drop to EL0 with the trap back.
-#
-# Two CPUs, and the second row is the one that matters most.
-#   * `max,pauth=on` + `mte=on` is an ARMv8.5 machine: every feature must be
-#     detected and the baseline MET. If QEMU stopped providing one, or a field
-#     decoder read the wrong four bits, this row says so.
-#   * `cortex-a72` is ARMv8.0 — none of the four. The SAME binary must still
-#     reach the same last marker, reporting NOT MET. That is the project's
-#     standing rule made testable: **no extension is ever a hard requirement**,
-#     the thing that would otherwise be discovered on a board that will not boot.
-aarch64_smoke_row() { # aarch64_smoke_row <label> <cpu-args> <expect: met|unmet>
-    local label="$1" cpuargs="$2" expect="$3"
-    printf "  %-26s" "${label}..."
-    local bin="$AZOS_OUT/tgt/tests/qemu/aarch64-smoke/aarch64-unknown-none/release/aarch64_smoke"
-    local log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"
-    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
-    if [ ! -x "$bin" ]; then bad; echo "      not built: $bin"; return; fi
-    par_ready   # $bin is built once, by the row above, and never again
-    # shellcheck disable=SC2086
-    qemu-system-aarch64 -M virt,gic-version=3$QEMU_AARCH64_MACH -cpu $cpuargs \
-        -smp 2 -nographic -kernel "$bin" >"$log" 2>&1 &
-    local pid=$! i=0
-    # Anchor on the LAST marker the boot ever prints (the EL0 SVC
-    # round-trip), not an earlier one like the FEAT line used to. Killing
-    # right after an early marker races every stage still to come (MMU,
-    # the EL0 drop, hart 1's SGI receipt) against a fixed 0.5 s poll —
-    # it passed only because TCG is slow enough that those stages
-    # finished anyway. Waiting for the true last line makes the row
-    # actually observe the whole boot instead of trusting emulator speed.
-    while [ "$i" -lt 60 ]; do
-        grep -aqF "SVC from AArch64 — imm=0x00be (from EL0 user_main)" "$log" 2>/dev/null && break
-        kill -0 "$pid" 2>/dev/null || break
-        i=$((i + 1)); sleep 0.5
-    done
-    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    local want; [ "$expect" = "met" ] && want="MET" || want="NOT MET"
-    # Every stage, not just the last line: a binary that skipped the MMU or the
-    # second PE and still printed the feature line would otherwise pass.
-    # `IRQ-1] fired` is hart 1's own handler receiving hart 0's cross-core
-    # SGI — the walk-based `gic::find_redistributor` + `gic::send_sgi` path
-    # (Phase 4 PREP) proven for real, not just on the host. Before this
-    # wave the marker list checked hart 0's `IRQ-0` and hart 1's "ready"
-    # flag, but never that the SGI actually arrived — a `send_sgi` that
-    # silently addressed the wrong PE would still have passed every row.
-    local missing=""
-    for m in "arch-api ARCH_ID: aarch64" "GIC] init OK" "IRQ-0] fired" \
-             "SVC from AArch64 — imm=0x0000 (from EL1)" "hart 1 ready" \
-             "IRQ-1] fired! INTID=0x000" \
-             "MMU]  M+I+C enabled" "SVC from AArch64 — imm=0x00be (from EL0 user_main)"; do
-        grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m"
-    done
-    if [ -n "$missing" ]; then
-        bad; echo "      the aarch64 boot did not reach:"; printf "%b\n" "$missing"
-        echo "      log kept: $log"; return
-    fi
-    if grep -aqF "armv8.5 baseline: $want" "$log" 2>/dev/null; then ok
-    else
-        bad; echo "      expected 'armv8.5 baseline: $want', got:"
-        grep -a "FEAT]" "$log" | sed "s|^|        |"
-        echo "      log kept: $log"; return
-    fi
-}
-if ci_row_begin "aarch64 smoke (build)"; then
-printf "  %-26s" "aarch64 smoke (build)..."
-# NO `RUSTFLAGS=""` here. The crate's own `.cargo/config.toml` passes
-# `-C link-arg=-T./aarch64-virt.ld`, and an empty RUSTFLAGS in the environment
-# OVERRIDES `build.rustflags` from config rather than adding to it — the link
-# then fails with `undefined symbol: __bss_end`, which reads like a code defect
-# and is a harness defect. `env -u` removes the variable instead, so the
-# config's flags apply and nothing the caller exported leaks in.
-if as_out="$(cd tests/qemu/aarch64-smoke && env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
-        "$CARGO" +nightly build --release \
-        --target aarch64-unknown-none -Z build-std=core,compiler_builtins \
-        -Z build-std-features=compiler-builtins-mem 2>&1)" \
-   && ! printf '%s\n' "$as_out" | qgrep -qE "^(error|warning)"; then ok
-else bad; printf '%s\n' "$as_out" | grep -E "^(error|warning)" | head -5; fi
-else
-    # Skipped: the boot rows below (which name this row in gate_needs.tsv)
-    # never find a previous run's binary.
-    rm -f "$AZOS_OUT/tgt/tests/qemu/aarch64-smoke/aarch64-unknown-none/release/aarch64_smoke"
-fi; ci_row_end
-QEMU_AARCH64_MACH=",mte=on" par "aarch64 boots (ARMv8.5)" aarch64_smoke_row "aarch64 boots (ARMv8.5)" "max,pauth=on" met
-QEMU_AARCH64_MACH=""        par "aarch64 boots (ARMv8.0)" aarch64_smoke_row "aarch64 boots (ARMv8.0)" "cortex-a72"   unmet
-
-# B2-06/B2-07 coverage: `virtualization=on` gives the guest a real EL2, so
-# `_start` takes the `_azos_drop_to_el1` branch instead of skipping it —
-# the ONLY one of these three rows that exercises the trampoline at all.
-# Before this wave, that path hung inside `psci::cpu_on` (HVC from EL1 trapped
-# to our own, handler-less EL2 — see `psci.rs`'s `select_conduit_from_entry_el`
-# doc comment) and CPTR_EL2 was never written (see `boot.rs`'s CPTR_EL2
-# comment for the FP/SIMD trap it could otherwise leave armed). Same binary,
-# same 7 markers, same ARMv8.5 baseline as the first row above — MET is
-# expected here too.
-QEMU_AARCH64_MACH=",mte=on,virtualization=on" par "aarch64 boots at EL2 (ARMv8.5)" aarch64_smoke_row "aarch64 boots at EL2 (ARMv8.5)" "max,pauth=on" met
-
-# ── The KERNEL on aarch64, not the demo above ────────────────────────────────
+# ── The KERNEL on aarch64 ────────────────────────────────────────────────────
 # `azos_kernel` built for `aarch64-unknown-none` with its own linker script
 # and booted to `kernel_main`, which now (Item 2 Stage 5, memory-parity task)
 # does a real FDT handoff, PMM, kernel page tables (W^X) and a heap, on top of
@@ -2997,15 +2899,14 @@ aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected en
         -nographic -kernel "$A64_IMG" >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 40 ]; do
-        # Phase 4 (SMP): the LAST thing this boot ever prints is the
-        # migration probe's own verdict (`kernel_main`'s SMP bring-up tail,
-        # `aarch64_migrate_probe_task` in kernel/src/smokes/aarch64_sched.rs) — it runs
-        # after `azos_sched::start()` hands off, same as Phase 3's
-        # "d8 survived every context switch" used to be the last line
-        # before Phase 4 added more boot after it. Waiting on that older
-        # line here would `break` (and the harness would `kill -9`) before
-        # the SMP markers below ever print.
-        grep -aq "smp-migrate-probe ran on" "$log" 2>/dev/null && break
+        # Two verdicts close the boot, in either order: the migration
+        # probe's (`aarch64_migrate_probe_task` in
+        # kernel/src/smokes/aarch64_sched.rs) and task A/B's (`phase3_task_done`,
+        # its pass line or its `[SCHED] FAILED:`). On `-cpu max` the probe
+        # usually prints first, so waiting on it alone killed the boot before
+        # the A/B lines below were written (measured 2026-10-22: 3 of 3 runs).
+        grep -aq "smp-migrate-probe ran on" "$log" 2>/dev/null \
+            && grep -aqE "x20 survived every context switch|\[SCHED\] FAILED:" "$log" 2>/dev/null && break
         grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
         kill -0 "$pid" 2>/dev/null || break
         i=$((i + 1)); sleep 0.5
@@ -3268,8 +3169,7 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 
 # ── VE (wave 15): the kernel on an Armv8.0 core ─────────────────────────────
 #
-# Every row above boots `-cpu max`. "aarch64 boots (ARMv8.0)" boots the SMOKE
-# binary on cortex-a72, not this kernel, which is how the kernel stopped
+# Every row above boots `-cpu max`, which is how the kernel once stopped
 # booting on every Armv8.0 core without a red row: boot.S set PSTATE.PAN with
 # `MSR PAN, #1` (FEAT_PAN is Armv8.1), UNDEFINED on an A53/A72 before
 # VBAR_EL1 was set, so the console stayed empty. Now boot.S, the EL2 drop and
@@ -3288,6 +3188,21 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # (and ktest `a64_pan_sites_patched` goes not ok).
 par "aarch64 kernel boots on cortex-a53 (8.0)" aarch64_kernel_row "aarch64 kernel boots on cortex-a53 (8.0)" "" 1 2 cortex-a53 "[PAN] boot patch (pan=probed-absent): every site nop"
 par "aarch64 kernel boots on cortex-a53 (8.0, EL2)" aarch64_kernel_row "aarch64 kernel boots on cortex-a53 (8.0, EL2)" ",virtualization=on" 2 2 cortex-a53 "[PAN] boot patch (pan=probed-absent): every site nop"
+
+# The same kernel image on the two ends of the extension range, read from the
+# `[ISA]` line (kernel/src/boot/isa.rs; every A64_* extension at `probe` in
+# qemu-aarch64.config). `cortex-a72` is Armv8.0: the boot must reach the same
+# last marker with the Armv8.1 features LSE and PAN reported absent, so no
+# extension is a hard requirement. `max,pauth=on` with `mte=on` on the machine
+# (tag storage; QEMU 11 reports the MTE ID field without it too, so the marker
+# does not prove it) is past Armv8.5: PAuth (8.3), BTI and MTE (8.5) must be
+# probed present, so a field decoder reading the wrong four bits, or QEMU
+# dropping one, turns the row red. QEMU 11 names no plain 8.5 model
+# (cortex-a710 and neoverse-n2 are Armv9.0). Canary (hand-run 2026-10-22):
+# each row's marker on the other row's CPU (8.0 marker on `max`, 8.5 marker on
+# cortex-a72) goes red, the marker missing.
+par "aarch64 boots (ARMv8.0)" aarch64_kernel_row "aarch64 boots (ARMv8.0)" "" 1 2 cortex-a72 "[ISA] baseline=armv8.0 lse=probed-absent pan=probed-absent"
+par "aarch64 boots (ARMv8.5)" aarch64_kernel_row "aarch64 boots (ARMv8.5)" ",mte=on" 1 2 "max,pauth=on" "pauth=probed-present bti=probed-present mte=probed-present"
 par "aarch64 shell answers help" shell_help_row "aarch64 shell answers help" arm
 
 # ── aarch64: PL011 console RX on interrupts (wave 7) ─────────────────────────

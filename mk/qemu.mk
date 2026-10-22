@@ -134,33 +134,6 @@ qemu-net-pair: $(QEMU_DEV_KCONFIG)
 	$(QEMU_DEV_ENV) $(CARGO) build --release --features qemu,net-smoke $(QEMU_DEV_BASE)
 	QEMU=$(QEMU) bash tools/net_pair_smoke.sh
 
-# ── aarch64 boot smoke ───────────────────────────────────────────────────────
-
-# aarch64 boot smoke. In `crates/` and gated by `tools/ci_check.sh` since
-# 2026-09-19 — it is no longer a parked demo. Requires:
-#   rustup target add aarch64-unknown-none
-#   (+ qemu-system-aarch64 in PATH)
-AARCH64_SMOKE_BIN := $(OUT_TGT)/tests/qemu/aarch64-smoke/aarch64-unknown-none/release/aarch64_smoke
-
-$(AARCH64_SMOKE_BIN):
-	cd tests/qemu/aarch64-smoke && CARGO_TARGET_DIR="$(OUT_TGT)/tests/qemu/aarch64-smoke" $(CARGO) +nightly build --release \
-	    -Z build-std=core,compiler_builtins \
-	    -Z build-std-features=compiler-builtins-mem
-
-# ARMv8.5: `-cpu max,pauth=on` plus `mte=on` on the MACHINE (MTE is a machine
-# property in QEMU, not a CPU one). Boots at EL2 so HVC #0 reaches QEMU's
-# emulated PSCI; we drop to EL1 via _drop_to_el1 before any GIC programming.
-# `-smp 2` is required for the cross-core SGI stage.
-qemu-aarch64-smoke: $(AARCH64_SMOKE_BIN)
-	qemu-system-aarch64 -M virt,gic-version=3,mte=on \
-	    -cpu max,pauth=on -smp 2 -nographic -kernel $(AARCH64_SMOKE_BIN)
-
-# The same image on an ARMv8.0 part: it must still boot and report the baseline
-# as NOT MET. No extension is a hard requirement.
-qemu-aarch64-smoke-v80: $(AARCH64_SMOKE_BIN)
-	qemu-system-aarch64 -M virt,gic-version=3 \
-	    -cpu cortex-a72 -smp 2 -nographic -kernel $(AARCH64_SMOKE_BIN)
-
 QEMU_X86_64_DISK ?=
 qemu-x86_64: x86_64 $(QEMU_X86_64_DISK)
 	qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -kernel $(X86_64_IMG) \

@@ -805,8 +805,8 @@ pub fn decode_cpu_on(raw_x0: i64) -> CpuOnOutcome {
 
 /// [`cpu_on`] + [`decode_cpu_on`] in one call — the form SMP bring-up
 /// code actually wants (match on outcome, not compare a raw code against
-/// constants at every call site). `cpu_on` itself is untouched — existing
-/// callers (`aarch64-smoke`) that want the raw code keep using it.
+/// constants at every call site). `cpu_on` itself returns the raw code
+/// (`api_impl`'s `hart_start` reads it).
 #[cfg(target_arch = "aarch64")]
 pub fn cpu_on_checked(target_cpu: u64, entry_point_phys: u64, context_id: u64) -> CpuOnOutcome {
     decode_cpu_on(cpu_on(target_cpu, entry_point_phys, context_id) as i64)

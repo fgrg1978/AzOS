@@ -72,7 +72,6 @@ Test & gate
   qemu-systest           Run the system-call test program in ring 3.
   qemu-dhcp-smoke        Check that DHCP reaches Bound against QEMU's server.
   qemu-net-pair          Boot two kernels and exchange a TCP payload.
-  qemu-aarch64-smoke     Run the aarch64 bring-up smoke test.
   lx-compare             Compare instruction counts against Linux on the same QEMU.
 
 Release & OTA

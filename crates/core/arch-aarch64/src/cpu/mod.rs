@@ -242,8 +242,7 @@ pub fn read_revidr() -> u64 { 0 }
 // bit  [31]     RES1 — always 1
 // bits [39:32]  Aff3 — outermost (socket / package)
 //
-// Already used implicitly by `aarch64-hello`: the PSCI CPU_ON
-// target argument is "Aff0..3 packed", and the ICC_SGI1R_EL1
+// The PSCI CPU_ON target argument is "Aff0..3 packed", and the ICC_SGI1R_EL1
 // `TargetList` field lives within `Aff0` of a specific Aff1/2/3
 // cluster. Until this module landed callers were poking the
 // sysreg directly + bit-twiddling on the result.

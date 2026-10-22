@@ -218,7 +218,7 @@ impl Interrupts for Aarch64 {
         // `ICC_SGI1R_EL1` encoding — Aff0/Aff1 only, no Aff2/Aff3/RS, and
         // no `dsb ishst` before the write. `gic::send_sgi`/`sgi1r_encode`
         // (`crates/core/arch-aarch64::gic`) is the tested, complete encoder
-        // (`tests/qemu/aarch64-smoke` exercises it) and carries the barrier
+        // and carries the barrier
         // `send_sgi`'s own doc says is required whenever the SGI's
         // receiver depends on a store the sender made just before sending
         // it — true here: `scheduler.rs`'s cross-CPU wake writes the

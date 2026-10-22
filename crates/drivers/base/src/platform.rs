@@ -453,9 +453,7 @@ pub mod hw {
     pub const PLATFORM_NAME: &str = "QEMU virt (aarch64)";
 
     /// PL011 UART0 base — QEMU `virt` machine (`hw/arm/virt.c`'s
-    /// `VIRT_UART0` MemMapEntry, and `tests/qemu/aarch64-smoke/aarch64-virt.ld`'s
-    /// own header comment, same address, independently confirmed by that
-    /// crate's boot log). See `crates/drivers/sys/src/uart.rs`'s `pl011` module
+    /// `VIRT_UART0` MemMapEntry). See `crates/drivers/sys/src/uart.rs`'s `pl011` module
     /// for the register layout.
     pub const UART_BASE:   usize = 0x0900_0000;
     pub const UART_COMPATIBLE: &str = "arm,pl011";
@@ -472,22 +470,19 @@ pub mod hw {
     /// `target/arm/cpu.c` (`master`, 2026-09-21). Still a **compile-time
     /// constant standing in for a runtime register** — see `WDT_CLK_HZ` on
     /// the K1 block above for the same honesty caveat: this is the value
-    /// for the specific `-M virt -cpu cortex-a72` config
-    /// `tests/qemu/aarch64-smoke`'s Makefile targets use, not a promise CNTFRQ_EL0
+    /// for the specific `-M virt -cpu cortex-a72` config, not a promise CNTFRQ_EL0
     /// cannot differ under a different CPU/machine-version combination.
     /// [`timer_freq_hw`] reads the live register so a boot path can assert
     /// the two agree, the same shape `kernel/src/main.rs` already uses to
     /// cross-check the RISC-V `TIMER_FREQ` constant against the DTB.
     pub const TIMER_FREQ:  u64   = azos_limits::TIMER_FREQ as u64;
-    /// Maximum usable CPU cores. `aarch64-smoke`'s two-PE boot path is the
-    /// only aarch64 SMP exercised so far; matches the RISC-V QEMU value
-    /// pending a real per-board discovery path on this ISA.
+    /// Maximum usable CPU cores. Matches the RISC-V QEMU value pending a
+    /// real per-board discovery path on this ISA.
     pub const NUM_CPUS:    usize = 4;
-    /// Physical RAM base — `hw/arm/virt.c`'s `VIRT_MEM` MemMapEntry, and
-    /// `aarch64-virt.ld`'s `MEMORY` block, same address.
+    /// Physical RAM base — `hw/arm/virt.c`'s `VIRT_MEM` MemMapEntry.
     pub const RAM_BASE:    usize = 0x4000_0000;
-    /// Kernel load address: `aarch64-virt.ld` starts `.text` at
-    /// `ORIGIN(ram)` = this address, matching QEMU's `-kernel` mini-loader
+    /// Kernel load address: `kernel/linker-aarch64.ld` loads the image at
+    /// this address, matching QEMU's `-kernel` mini-loader
     /// convention for `virt` (32 KiB reserved below it for the FDT/boot
     /// data QEMU places there before jumping in).
     pub const KERNEL_LOAD: usize = 0x4008_0000;
@@ -506,8 +501,7 @@ pub mod hw {
     // Confirmed 2026-09-21 by decoding the device tree QEMU itself generates
     // (`qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -smp 2
     // -dumpdtb=... ` then `dtc -I dtb -O dts`, the exact `-M`/`-cpu`/`-smp`
-    // this project's own `tools/ci_check.sh` `aarch64_smoke_row` boots with —
-    // not a default `-M virt` invocation, which picks GICv2 and would be the
+    // the aarch64 gate rows boot with — not a default `-M virt` invocation, which picks GICv2 and would be the
     // wrong config to read this from). The DTB lists 32
     // `virtio_mmio@a000000`..`virtio_mmio@a003e00` nodes, `reg` stepping by
     // `0x200`, each with its own `interrupts = <0 N 1>` (SPI N, N = 16..47,

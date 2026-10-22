@@ -5,8 +5,7 @@
 //!
 //! The vector table and the HVC handler are in the arch crate, next to the
 //! `_azos_drop_to_el1` trampoline that installs them, so that every user of
-//! the trampoline (this kernel, `tests/qemu/aarch64-smoke`) gets a working
-//! EL2. Here is only what the kernel does with them at boot.
+//! the trampoline gets a working EL2. Here is only what the kernel does with them at boot.
 
 use azos_arch::ext::hv::{self, Availability};
 use azos_drv_sys::kprintln;

@@ -2,12 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Identity-map MMU enable for early aarch64 boot.
 //!
-//! Lifted out of `crates/aarch64-hello/src/main.rs` so the kernel
-//! and any future bare-metal binary linking against `arch-aarch64`
-//! can share the same VMSAv8-64 setup instead of reimplementing it.
+//! In the arch crate so the kernel and any other bare-metal binary
+//! linking against `arch-aarch64` share the same VMSAv8-64 setup
+//! instead of reimplementing it.
 //!
-//! The layout is the L1 → L2 → L3 split that B1.user.split shipped
-//! in `aarch64-hello` (4 KiB granule shown):
+//! The layout is an L1 → L2 → L3 split (4 KiB granule shown):
 //!
 //! ```text
 //!   L1[0] = 1 GiB block @ 0x00000000, Device-nGnRE

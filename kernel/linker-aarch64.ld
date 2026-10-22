@@ -5,11 +5,8 @@
  * Target: aarch64-unknown-none, QEMU `-M virt`.
  *
  * QEMU `-kernel <elf>` on `virt` loads program headers verbatim and jumps
- * to the ELF entry point — no firmware in front of us. 0x4008_0000 is the
- * address tests/qemu/aarch64-smoke's linker script already boots at (512 KiB
- * into the 0x4000_0000 DRAM base, leaving room below for QEMU's own
- * setup); reused here so the two boot paths agree on where "the start of
- * usable RAM for a `-kernel` load" is instead of picking a second answer.
+ * to the ELF entry point — no firmware in front of us. 0x4008_0000 is 512 KiB
+ * into the 0x4000_0000 DRAM base, leaving room below for QEMU's own setup.
  *
  * ── Build command (Item 2 Stage 5, kernel crate — task item 5) ──────────
  *
@@ -18,10 +15,8 @@
  *     -p azos_kernel \
  *     --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]'
  *
- * `-Z build-std` is NOT passed on the command line, unlike
- * tests/qemu/aarch64-smoke's `+nightly -Z build-std=core,compiler_builtins
- * -Z build-std-features=compiler-builtins-mem` (see tools/ci_check.sh's
- * "aarch64 smoke (build)" row). The repo's own root `.cargo/config.toml`
+ * `-Z build-std` is NOT passed on the command line: the repo's own root
+ * `.cargo/config.toml`
  * already sets, workspace-wide and target-independent:
  *
  *   [unstable]
@@ -35,12 +30,10 @@
  * --config "build.rustflags=[]"`) inherits the same `[unstable]` block for
  * the same reason; it looks unrelated only because it doesn't override
  * `build.rustflags` for a linker script, being a library with nothing to
- * link. The smoke crate's own `-Z build-std=...` is redundant with the
- * workspace root's, minus `alloc` (the smoke never allocates) — not a
- * sign that the kernel needs its own copy of the flag.
+ * link.
  *
  * `env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS` matters for the same reason
- * documented next to the smoke row in tools/ci_check.sh: an exported
+ * documented next to the "aarch64 kernel (build)" row in tools/ci_check.sh: an exported
  * `RUSTFLAGS=""` from the caller's shell OVERRIDES `build.rustflags` from
  * `--config` instead of adding to it, and the link then fails with
  * `undefined symbol: _stack_end` — a harness defect that reads like a
@@ -100,13 +93,10 @@ MEMORY
 {
     /*
      * QEMU's `virt` machine defaults to 128 MiB of guest RAM when `-m` is
-     * not passed. tests/qemu/aarch64-smoke's linker script declares a full
-     * 128M region on top of a 512 KiB offset into that same window
-     * (ORIGIN 0x4008_0000 + LENGTH 128M = 0x4808_0000), which overruns
-     * the actual end of RAM (0x4800_0000) by exactly that 512 KiB —
-     * harmless there only because the smoke binary is far smaller than
-     * even the truncated region. Not repeated here: LENGTH is capped to
-     * fit inside the same default 128 MiB window this address assumes.
+     * not passed. A full 128M region on top of the 512 KiB offset
+     * (ORIGIN 0x4008_0000 + LENGTH 128M = 0x4808_0000) would overrun the
+     * actual end of RAM (0x4800_0000) by that 512 KiB, so LENGTH is capped
+     * to fit inside the default 128 MiB window this address assumes.
      *
      * RAM_LMA: where the loader (QEMU `-kernel`/U-Boot `booti`) actually
      * places the bytes — unchanged from the pre-migration single-region

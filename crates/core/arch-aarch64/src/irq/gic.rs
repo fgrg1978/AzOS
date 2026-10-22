@@ -263,8 +263,8 @@ pub fn init_distributor() {
 /// **Assumes index == frame slot**, which QEMU virt's flat, single-cluster
 /// `-smp N` topology happens to satisfy (frame `i` is always the PE with
 /// `Aff0=i, Aff1=Aff2=Aff3=0`) but real silicon is not required to. Kept
-/// exactly as-is — existing callers (`kernel/src/main.rs`,
-/// `aarch64-smoke`) pass hart index and rely on this. New SMP bring-up
+/// exactly as-is — the boot CPU's caller (`boot_hooks.rs`) passes its hart
+/// index and relies on this. New SMP bring-up
 /// code that cannot assume the topology should call [`find_redistributor`]
 /// (matches `GICR_TYPER`'s own affinity against an MPIDR) and
 /// [`init_redistributor_at`] instead — this function is now a thin

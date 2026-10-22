@@ -8,11 +8,9 @@
 //! similar bare-metal entry environments where firmware (or QEMU
 //! itself) drops the kernel at EL2 by default.
 //!
-//! Lifted out of `tests/qemu/aarch64-smoke/src/main.rs` so the kernel
-//! and any future bare-metal binary that links against
-//! `arch-aarch64` can share the same one-shot trampoline instead of
-//! reimplementing it. The asm body is the same as the one that the
-//! aarch64-smoke demo has been booting through since B1.gic.smp.real.
+//! It lives in the arch crate so the kernel and any other bare-metal
+//! binary that links against `arch-aarch64` share the same one-shot
+//! trampoline instead of reimplementing it.
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::global_asm;
@@ -235,55 +233,4 @@ pub unsafe fn drop_to_el1() {
 #[cfg(not(target_arch = "aarch64"))]
 pub unsafe fn drop_to_el1() {
     unreachable!("drop_to_el1() is aarch64-only")
-}
-
-/// SPSR_EL1 value used by [`eret_to_el0`]: mode bits = `EL0t`
-/// (0b0000), DAIF = 1111 (all four exception classes masked).
-/// EL0 may unmask them later if it wants; the kernel side doesn't
-/// want to take an unexpected IRQ during the transition itself.
-pub const SPSR_EL0T_DAIF_MASKED: u64 = 0x3C0;
-
-/// ERET from EL1 to EL0 with the given user PC + SP. Never
-/// returns — execution resumes at `user_pc` in EL0 with
-/// `SP_EL0 = user_sp`, `SPSR_EL1 = `[`SPSR_EL0T_DAIF_MASKED`].
-///
-/// Pure shim around the four-instruction `msr…msr…isb;eret`
-/// sequence so any future kernel transitioning to user mode for
-/// the first time can call one function instead of re-coding the
-/// asm. The caller is responsible for having a valid EL0 mapping
-/// at `user_pc` (AP[2:1]=01 for the code page, AP[2:1]=01 for the
-/// stack page) — see the L1→L2→L3 split landed by B1.user.split
-/// for the canonical setup.
-///
-/// # Safety
-///
-/// - Caller must be at EL1.
-/// - `user_pc` must be a virtual address mapped EL0-readable +
-///   EL0-executable.
-/// - `user_sp` must be a 16-byte-aligned virtual address mapped
-///   EL0-readable + EL0-writable; AAPCS requires alignment.
-/// - There is no way back — any return from `user_pc` to EL1 must
-///   go through a trap (SVC, abort, IRQ).
-#[cfg(target_arch = "aarch64")]
-#[inline(never)]
-pub unsafe fn eret_to_el0(user_pc: u64, user_sp: u64) -> ! {
-    unsafe {
-        core::arch::asm!(
-            "msr SP_EL0, {sp}",
-            "msr ELR_EL1, {pc}",
-            "msr SPSR_EL1, {spsr}",
-            "isb",
-            "eret",
-            sp = in(reg) user_sp,
-            pc = in(reg) user_pc,
-            spsr = in(reg) SPSR_EL0T_DAIF_MASKED,
-            options(noreturn, nomem, nostack),
-        )
-    }
-}
-
-/// Host-build stub mirroring [`eret_to_el0`].
-#[cfg(not(target_arch = "aarch64"))]
-pub unsafe fn eret_to_el0(_user_pc: u64, _user_sp: u64) -> ! {
-    unreachable!("eret_to_el0() is aarch64-only")
 }

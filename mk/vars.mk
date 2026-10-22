@@ -734,8 +734,8 @@ IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
 #    touched, so `make build` is unaffected.
 #  * The linker script goes on the command line, as `make vf2` / `make k1` do,
 #    NOT in .cargo/config.toml like RISC-V's: cargo merges that file into every
-#    config below it, and tests/qemu/aarch64-smoke and the thirteen aarch64
-#    userspace builds carry their own `-T` for the same triple — they would
+#    config below it, and the aarch64 userspace builds carry their own `-T`
+#    for the same triple — they would
 #    receive a second script and stop linking.
 #  * The output is an arm64 `Image` (header in kernel/src/entry/aarch64/asm/
 #    boot.S), not the ELF: for an ELF, QEMU passes x0 = 0 and puts no DTB in

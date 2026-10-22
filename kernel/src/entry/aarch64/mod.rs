@@ -43,10 +43,8 @@ pub(crate) mod trap;
 ///
 /// Builds a temporary identity map (RAM Normal cacheable, low-GiB MMIO
 /// Device) and turns the MMU on via
-/// `azos_arch_aarch64::mmu::setup::enable_identity_map` — the same
-/// function `tests/qemu/aarch64-smoke` already boots through (single source
-/// for the MAIR/TCR encoding, per this task's brief; nothing here
-/// re-derives it). This is deliberately a BOOTSTRAP mapping, not the
+/// `azos_arch_aarch64::mmu::setup::enable_identity_map` (single source
+/// for the MAIR/TCR encoding; nothing here re-derives it). This is deliberately a BOOTSTRAP mapping, not the
 /// kernel's real page tables: `kernel_main` later builds those properly
 /// through `crates/core/mm::vmm` (PMM-backed, W^X-enforced, portable across
 /// ISAs via `arch-api::Mmu`) and switches `TTBR0_EL1` to them once the

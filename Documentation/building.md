@@ -87,7 +87,6 @@ Other targets:
 | `make make-gguf` | The policy file |
 | `make qemu-systest` | The system-call test program in ring 3 |
 | `make qemu-dhcp-smoke`, `qemu-net-pair` | Network smoke runs |
-| `make qemu-aarch64-smoke` | The aarch64 smoke program |
 
 The hypervisor kernels use the `*-hv` defconfigs and QEMU CPU options that expose the
 extension (`-cpu rv64,h=true` on riscv64, `virtualization=on` on aarch64, `-cpu max,svm=on`

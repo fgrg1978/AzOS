@@ -268,7 +268,7 @@ Source: `userspace/*/`, the header of each program's `main.rs`.
 |---|---|
 | `tests/host/` (one `<name>-tests` crate per area) | One host-side (`std`) crate per area, built with the host toolchain. Most build the real pure modules of a kernel crate with `#[path]` or link the crate itself, against small shims for the target-specific parts. |
 | `tests/fuzz/` | Fuzz targets for parsers and decoders: config, dtb, elf, brain-link, fs, gguf, net, sh, topology. |
-| `tests/qemu/` | Emulator scenarios (`aarch64-smoke`); `tests/qemu_boot.sh` and `tests/run_all.sh` are the runners. |
+| `tests/qemu_boot.sh`, `tests/run_all.sh` | The emulator scenario runners. |
 | `tests/sdk/` | `sdktest`, the SDK's own test program. |
 | `tools/` | See `tools/make_help.txt` for the Make targets; `ci_check.sh` runs the checks by hand, `kconfig_*.py` handle configuration, `sign_ota.py` and `gen_*_key.py` handle signing, `*_lint.py` are structural linters. |
 | `tools/farm/` | Host-side scripts that run a test kernel on an attached device and read the result from its console; `boot.cmd`, the board's U-Boot script that boots it over TFTP. |

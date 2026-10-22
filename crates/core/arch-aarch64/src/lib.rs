@@ -16,8 +16,8 @@
 //!   [`firmware`].
 //! - GIC v3 programming ([`gic`]) and early-boot `.S`
 //!   (`kernel::entry::aarch64::asm::boot`) both landed. This crate builds
-//!   for both `aarch64-unknown-none` (hard-float: `tests/qemu/aarch64-smoke`,
-//!   the gate's crate row, NEON `dot_f32`) and
+//!   for both `aarch64-unknown-none` (hard-float: the gate's crate row,
+//!   NEON `dot_f32`) and
 //!   `aarch64-unknown-none-softfloat` (the kernel, which is FP-free; the
 //!   FP asm in `fp` enables the FP extension explicitly, and
 //!   `fp::dot_f32_best` falls back to scalar without NEON).

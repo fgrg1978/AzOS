@@ -17,7 +17,7 @@ name = "azos_arch_aarch64"
 #
 # Built for two targets. `aarch64-unknown-none` (hard-float, where NEON is
 # part of the target; the level is Kconfig AARCH64_LEVEL) for this crate's own
-# gate row and `tests/qemu/aarch64-smoke`; `aarch64-unknown-none-softfloat` as part
+# gate row; `aarch64-unknown-none-softfloat` as part
 # of the kernel, which is FP-free so that user FP state can be saved lazily
 # (kernel/src/entry/aarch64/fp.rs). No `#[target_feature(enable =
 # "neon")]` anywhere: rustc calls it unsound on a soft-float ABI; the NEON
