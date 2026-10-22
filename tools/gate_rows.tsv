@@ -211,9 +211,6 @@ fat32: directory-blind entry cache canary	n1	crates/fs/** tests/host/fs-tests/**
 fat32: unjournaled cross-directory rename canary	n1	crates/fs/** tests/host/fs-tests/**
 network: TFTP forged package canary	n1	crates/net/tftp/** userspace/services/pkgd/** userspace/lib/packages/** crates/core/pkg/** tests/host/pkg-tests/** config/Kconfig.packages
 quic: rsa key canary	n1	
-ble: confirm check canary	n1	userspace/lib/ble/** tests/host/ble-tests/** crates/core/crypto/** crates/core/devif/**
-ble: dhkey check canary	n1	userspace/lib/ble/** tests/host/ble-tests/** crates/core/crypto/** crates/core/devif/**
-ble: reflected key canary	n1	userspace/lib/ble/** tests/host/ble-tests/** crates/core/crypto/** crates/core/devif/**
 soc: effect-after-write canary	n1	
 soc: bind skips the pin state canary	n1	
 cfi: missing landing pad canary	n1	

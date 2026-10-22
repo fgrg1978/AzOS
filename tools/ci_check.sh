@@ -9760,7 +9760,7 @@ HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests msc-tests 
          percpu-tests trace-tests iommu-tests pci-tests dma-tests
          nvme-tests x86-platform-tests fb-tests rings-tests bytepipe-tests idl-tests decisions-tests micro-tests hwbus-tests
          logind-tests stdrt-tests pkg-tests zenoh-tests mcp-tests inspect-tests actuation-tests
-         usb-tests usb-hid-tests relibc-azos-tests rpc-tests tpm-tests soc-tests compmgr-tests compose-tests compositor-tests cfi-tests zenohd-tests tls-tests ptpd-tests quic-tests mcpd-tests sshd-tests ethercat-tests infsrv-tests usb-cdc-tests usb-uvc-tests ble-tests"
+         usb-tests usb-hid-tests relibc-azos-tests rpc-tests tpm-tests soc-tests compmgr-tests compose-tests compositor-tests cfi-tests zenohd-tests tls-tests ptpd-tests quic-tests mcpd-tests sshd-tests ethercat-tests infsrv-tests usb-cdc-tests usb-uvc-tests"
 # The same hole, one suite at a time: percpu-tests (wave 15) and four suites
 # from b6d74c00 were never in the list above. Every tracked suite is now either
 # in it or run by a row of its own (lx-loader-tests, below, needs its modules).
@@ -9901,12 +9901,6 @@ host_job host_canary_row "fat32: unjournaled cross-directory rename canary" fs-t
 host_job host_canary_row "network: TFTP forged package canary" pkg-tests pkg-verify-skip-canary \
     tftp_source::a_forged_package_fetched_over_tftp_is_refused
 host_job host_canary_row "quic: rsa key canary" quic-tests canary-rsa-keys the_quic_providers_refuse_an_rsa_private_key
-host_job host_canary_row "ble: confirm check canary" ble-tests canary-no-confirm-check \
-    a_changed_confirm_value_is_caught_by_the_central
-host_job host_canary_row "ble: dhkey check canary" ble-tests canary-no-dhkey-check \
-    a_changed_dhkey_check_fails_on_the_side_that_verifies_it
-host_job host_canary_row "ble: reflected key canary" ble-tests canary-allow-reflected-key \
-    a_peers_public_key_equal_to_ours_is_refused
 host_job host_canary_row "soc: effect-after-write canary" soc-tests effect-after-write-canary \
     effects_are_committed_before_the_register_write
 host_job host_canary_row "soc: bind skips the pin state canary" soc-tests bind-skip-pinctrl-canary \

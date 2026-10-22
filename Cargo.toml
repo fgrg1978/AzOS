@@ -341,9 +341,6 @@ exclude = [
     # ptpd: the PTP slave, a ring-3 image with its own [workspace]; ptpd-tests is its host suite.
     "userspace/services/ptpd",
     "tests/host/ptpd-tests",
-    # ble: the Bluetooth LE host stack (HCI over a Uart port, L2CAP, ATT, SMP) and its host suite.
-    "userspace/lib/ble",
-    "tests/host/ble-tests",
     # quic / rpcquic: QUIC in ring 3 for the RPC link (std crates, built through
     # tools/sdk_cargo.py); quic-tests is the host suite.
     "userspace/lib/quic",
