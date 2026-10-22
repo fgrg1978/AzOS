@@ -202,7 +202,6 @@ report() {
     local pat what
     for pair in \
         "secure_boot_verify_image_detailed::IMG_BUF|secure boot image buffer (IMG_BUF)" \
-        "dfu_recovery::DFU_STAGING|DFU staging (DFU_STAGING)" \
         "azos_net::tcp::TCP|TCP connection table (TCP)" \
         "scheduler::TASK_STACKS|task kernel stacks (TASK_STACKS)" \
         "scheduler::TASKS|task slots (TASKS)" \

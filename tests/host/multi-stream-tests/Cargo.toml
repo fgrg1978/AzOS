@@ -6,7 +6,7 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 description = "Host-side tests for azos_multi_stream (multi-stream wire format). Excluded from workspace."
 
-# Same pattern as dfu-tests / ota-tests / tftp-tests.
+# Same pattern as ota-tests / tftp-tests.
 # Run with:  cd tests/host/multi-stream-tests && cargo +stable test
 
 [dependencies]

@@ -23,13 +23,6 @@ mod lockdep_log;
 // boot (Kconfig `PSTORE_SIZE_KB`).
 mod pstore;
 
-// DEV02 — USB DFU 1.1 recovery mode glue. The init function is
-// called from a recovery-trigger path that is not yet wired (no
-// USB-OTG controller driver on hand pre-Julio 2026), so the
-// module is dead from main's POV.
-#[allow(dead_code)]
-mod dfu_recovery;
-
 // Item 2 Stage 3 batch 7 — per-arch trap entry modules + TrapContext
 // trait. Defines the cross-arch surface for trap handling; the
 // existing riscv trap_handler in this file still uses the native

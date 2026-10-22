@@ -6,7 +6,7 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 description = "Host-side tests for azos_cam_ring (S1/S6 SPSC frame ring). Excluded from workspace."
 
-# Same pattern as dfu-tests / ota-tests / tftp-tests.
+# Same pattern as ota-tests / tftp-tests.
 # Run with:  cd tests/host/cam-ring-tests && cargo +stable test
 
 [dependencies]

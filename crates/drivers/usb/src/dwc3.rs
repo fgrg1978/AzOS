@@ -6,7 +6,7 @@
 //! A DWC3 is a dual-role core: the xHCI register file sits at the start of the
 //! window and the core's own global registers at 0xc100, and which of the host
 //! or the device (gadget) controller answers on the port is `GCTL.PRTCAPDIR`.
-//! A board's gadget port (mass-storage gadget, DFU) is the same core in
+//! A board's gadget port (the mass-storage gadget) is the same core in
 //! `peripheral` mode, so the device tree's `dr_mode` decides whether the xHCI
 //! driver may touch it at all. Not here, and not the xHCI driver's business:
 //! the PHY and the clocks and resets of the glue wrapper (the board's, through

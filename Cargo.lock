@@ -216,10 +216,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "azos_dfu"
-version = "0.1.0"
-
-[[package]]
 name = "azos_display"
 version = "0.1.0"
 dependencies = [
@@ -631,7 +627,6 @@ dependencies = [
  "azos_crypto",
  "azos_decision",
  "azos_devif",
- "azos_dfu",
  "azos_display",
  "azos_dma",
  "azos_driver_server",

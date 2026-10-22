@@ -1725,7 +1725,7 @@ mod vfs_open_close {
     /// **A truncating open must keep truncating.**
     ///
     /// `O_WRONLY|O_CREAT|O_TRUNC` is what every other caller in the tree uses
-    /// (the shell's redirect, `cp`, OTA's image writer, DFU recovery). If the
+    /// (the shell's redirect, `cp`, OTA's image writer). If the
     /// append fix leaked into this path, a rewritten file would keep the tail
     /// of the longer file it replaced.
     #[test]

@@ -1,9 +1,0 @@
-# Override the workspace target. Tests run on developer host
-# (Apple Silicon), not the riscv64-none-elf the kernel uses.
-
-[build]
-target = "aarch64-apple-darwin"
-
-[unstable]
-build-std = []
-build-std-features = []

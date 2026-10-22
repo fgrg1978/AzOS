@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! DEV02 — recovery-mode entry decision.
 //!
-//! Decides whether the kernel should boot into USB DFU recovery
-//! mode (see `crates/drivers/dfu/`) instead of normal operation. Three
-//! independent triggers, any of which arms recovery:
+//! Decides whether the kernel should boot into recovery (safe mode)
+//! instead of normal operation. Three independent triggers, any of
+//! which arms recovery:
 //!
 //!   1. **Crash-counter boot-loop** — the running slot's unconfirmed
 //!      boots before this one (BOOTMETA's `boot_count` AFTER
@@ -24,8 +24,8 @@
 //!      board-specific so we take it as a parameter.
 //!   3. **Magic flag in BOOTMETA** — set by user-space (`ota
 //!      recovery`) before a controlled reboot. Useful when the
-//!      operator wants to update via DFU without waiting for the
-//!      next maintenance window.
+//!      operator wants to install an image in safe mode without
+//!      waiting for the next maintenance window.
 //!
 //! All three inputs are pure functions; this module wires them
 //! into a single [`recovery_mode_should_enter`] decision.
@@ -36,8 +36,7 @@
 //! inputs `None`. An armed decision boots **safe mode** (owner
 //! decision 2026-09-28): every actuator held, no ring-3 program
 //! started, console and OTA alive, the boot never confirmed — the
-//! device waits for a good image. There is no USB device
-//! controller driver, so DFU itself is not entered.
+//! device waits for a good image.
 //! `#![allow(dead_code)]` stays for the parts only the host tests
 //! in `tests/host/ota-tests` reach (`RECOVERY_FORCE_FLAG`, the
 //! button and flag triggers).
@@ -51,7 +50,7 @@ pub const RECOVERY_BOOT_LOOP_THRESHOLD: u32 = crate::pure::OTA_DEFAULT_MAX_BOOT_
 
 /// Magic value written to `BootMeta.user_flag` to force recovery
 /// on the next reboot. Chosen as a hex word that's recognisable
-/// in a hex dump (`DEV0 DFU`).
+/// in a hex dump.
 pub const RECOVERY_FORCE_FLAG: u32 = 0xDEF0_DF02;
 
 /// Inputs the kernel reads before calling [`recovery_mode_should_enter`].
@@ -69,7 +68,7 @@ pub struct RecoveryInputs {
     /// Value of `BootMeta.user_flag` from FAT32. `None` means
     /// BOOTMETA couldn't be read (e.g. corrupt FS); the trigger
     /// stays disarmed in that case so we don't accidentally
-    /// loop into DFU forever on flash damage.
+    /// loop into recovery forever on flash damage.
     pub bootmeta_user_flag:    Option<u32>,
 }
 

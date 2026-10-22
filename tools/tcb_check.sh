@@ -37,7 +37,7 @@
 # The rule for which side a crate is on (owner's, 2026-09-05): core is
 # everything that can move or stop a motor, PLUS all of `crates/net/net` — the
 # e-stop arrives over TCP, so the network stack that carries it is core too.
-# Scaffolding is everything else: FAT32, camera, DFU, OTA, TFTP, USB MSC,
+# Scaffolding is everything else: FAT32, camera, OTA, TFTP, USB MSC,
 # UEFI boot, the HDMI framebuffer, the synthetic benchmarks and the
 # in-kernel test registry. (The shell and ML/GGUF run in ring 3 under
 # userspace/ and are outside this partition.) The lists below carry the
@@ -201,7 +201,7 @@ lx-loader
 # links `fs` and `ota`, so it can never be CORE. A CORE crate that starts to
 # call one of them is a CORE -> SCAFFOLD edge this check will name.
 SCAFFOLD_CRATES="
-fs camera dfu ota msc efi display bench cam-ring telemetry tftp
+fs camera ota msc efi display bench cam-ring telemetry tftp
 ktest
 fb inspect tpm thermal firmware soc recovery
 usb rtc usb-hid scsi pkg

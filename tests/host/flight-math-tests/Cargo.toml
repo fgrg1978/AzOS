@@ -6,7 +6,7 @@ description = "Host-side unit tests for azos_flight_math (D04 trig + wind estima
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
-# Mirror of dfu-tests / ota-tests pattern. Run with:
+# Mirror of the ota-tests pattern. Run with:
 #   cd tests/host/flight-math-tests && cargo test
 # Pinned to stable via rust-toolchain.toml.
 

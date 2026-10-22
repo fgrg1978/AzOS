@@ -1243,7 +1243,6 @@ azos_flight    = { workspace = true, optional = true }
 azos_telemetry = { workspace = true, optional = true }
 azos_nav       = { workspace = true, optional = true }
 azos_ota       = { workspace = true }
-azos_dfu       = { workspace = true }
 # Synthetic per-subsystem microbenches.  `cfg(feature = "qemu")`
 # triggers a one-shot `run_all` from behavior_task post-boot so the
 # bench harness scrapes [BENCH-RES] lines without needing shell input

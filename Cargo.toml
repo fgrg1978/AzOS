@@ -42,7 +42,6 @@ exclude = [
     # ota-tests is a host-side test crate for the pure OTA logic (OT01).
     # Run with:  cd tests/host/ota-tests && cargo test
     "tests/host/ota-tests",
-    "tests/host/dfu-tests",
     # msc-tests — host-side tests for USB MSC (DEV03). Same pattern.
     # Run with:  cd tests/host/msc-tests && cargo test
     "tests/host/msc-tests",
@@ -478,8 +477,6 @@ members = [
     "crates/net/tftp",
     # EtherCAT master codec, AL sequencer and DC arithmetic (pure no_std; user: ECAT-CYCLIC).
     "crates/net/ethercat",
-    # DFU 1.1 protocol state machine + USB descriptors (DEV02 recovery mode).
-    "crates/drivers/dfu",
     # USB MSC gadget — Bulk-Only Transport + minimal SCSI (DEV03 debug mount).
     "crates/drivers/msc",
     # SCSI over USB Bulk-Only Transport, target and initiator (MSC gadget, USB mass-storage host).
@@ -603,7 +600,6 @@ azos_telemetry = { path = "domains/robot/telemetry" }
 azos_nav       = { path = "domains/robot/nav" }
 azos_libsys    = { path = "crates/core/libsys" }
 azos_ota       = { path = "crates/core/ota" }
-azos_dfu       = { path = "crates/drivers/dfu" }
 azos_msc       = { path = "crates/drivers/msc" }
 azos_scsi      = { path = "crates/drivers/scsi" }
 azos_trace     = { path = "crates/core/trace" }

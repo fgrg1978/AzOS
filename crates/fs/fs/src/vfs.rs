@@ -2312,8 +2312,8 @@ fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u
             //
             // `O_TRUNC` still wins: a caller asking for a truncation gets
             // one. Only a non-truncating append reuses the existing file,
-            // which is why the shell's redirect, `cp`, the OTA writer and
-            // DFU recovery (all `O_WRONLY|O_CREAT|O_TRUNC`) are untouched.
+            // which is why the shell's redirect, `cp` and the OTA writer (all
+            // `O_WRONLY|O_CREAT|O_TRUNC`) are untouched.
             // The proxy `try_backend_open` returns carries the file's bytes
             // and its real size, and `vfs_write`'s own `O_APPEND` case seeks
             // to that size — so the write lands at the end rather than at 0.
