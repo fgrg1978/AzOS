@@ -132,7 +132,7 @@ userspace/lib/names	0	0	0	0	1	-
 userspace/lib/packages	1	0	0	0	0	-
 userspace/lib/power	0	0	0	0	1	-
 userspace/lib/quic	0	0	0	0	1	-
-userspace/lib/relibc-azos/overlay	41	51	0	1	0	-
+userspace/lib/relibc-azos/overlay	43	51	0	1	0	-
 userspace/lib/rpc	0	0	0	0	1	-
 userspace/lib/term	0	0	0	0	1	-
 userspace/lib/tls	0	0	0	0	1	-

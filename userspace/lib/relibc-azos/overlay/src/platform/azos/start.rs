@@ -108,21 +108,30 @@ static mut TLS_PHDR: Phdr =
     Phdr { p_type: PT_TLS, p_flags: 4, p_offset: 0, p_vaddr: 0, p_paddr: 0, p_filesz: 0, p_memsz: 0, p_align: 0 };
 
 /// The image's `PT_TLS` program header, read through `__ehdr_start`.
-///
-/// # Safety
-/// The ELF and program headers are mapped (the first read-only segment).
-unsafe fn image_tls() -> Option<Phdr> {
+fn image_tls() -> Option<Phdr> {
     let ehdr = ptr::addr_of!(__ehdr_start);
+    // SAFETY: the ELF header is mapped and never written: lld puts it at the
+    // start of the read-only segment of a static executable.
+    let head = unsafe { core::slice::from_raw_parts(ehdr, 64) };
+    let word = |b: &[u8], at: usize, n: usize| b[at..at + n].iter().rev().fold(0u64, |v, &x| v << 8 | x as u64);
     // ELF64: `e_phoff` at 32, `e_phentsize` at 54, `e_phnum` at 56.
-    let phoff = unsafe { ptr::read_unaligned(ehdr.add(32).cast::<u64>()) } as usize;
-    let phentsize = unsafe { ptr::read_unaligned(ehdr.add(54).cast::<u16>()) } as usize;
-    let phnum = unsafe { ptr::read_unaligned(ehdr.add(56).cast::<u16>()) } as usize;
+    let (phoff, phentsize, phnum) = (word(head, 32, 8) as usize, word(head, 54, 2) as usize, word(head, 56, 2) as usize);
     if phentsize != core::mem::size_of::<Phdr>() {
         return None;
     }
-    (0..phnum)
-        .map(|i| unsafe { ptr::read_unaligned(ehdr.add(phoff + i * phentsize).cast::<Phdr>()) })
-        .find(|p| p.p_type == PT_TLS)
+    // SAFETY: the program header table follows the ELF header in the same
+    // mapped segment (lld's layout), `phnum` entries of `phentsize` bytes.
+    let table = unsafe { core::slice::from_raw_parts(ehdr.wrapping_add(phoff), phnum * phentsize) };
+    table.chunks_exact(phentsize).find(|p| word(p, 0, 4) as u32 == PT_TLS).map(|p| Phdr {
+        p_type: PT_TLS,
+        p_flags: word(p, 4, 4) as u32,
+        p_offset: word(p, 8, 8),
+        p_vaddr: word(p, 16, 8),
+        p_paddr: word(p, 24, 8),
+        p_filesz: word(p, 32, 8),
+        p_memsz: word(p, 40, 8),
+        p_align: word(p, 48, 8),
+    })
 }
 
 /// The System V process stack `relibc_start_v1` expects, built from the
@@ -158,7 +167,7 @@ unsafe fn build_stack() -> &'static crate::start::Stack<'static> {
     // The template of the first thread's TLS, as a one-entry program header
     // table: the image's own `PT_TLS` (none: an empty template).
     let phdr = unsafe { &mut *ptr::addr_of_mut!(TLS_PHDR) };
-    if let Some(tls) = unsafe { image_tls() } {
+    if let Some(tls) = image_tls() {
         *phdr = tls;
     }
     for (k, v) in [
