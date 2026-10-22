@@ -295,6 +295,9 @@ pub fn install_exec_root(word: usize) -> usize {
         }
         w
     } else {
+        // The install publishes before its root write, with its fence
+        // (riscv64 `cpu::write_satp`, x86_64 `tlb::install_word`); aarch64
+        // shoots down by broadcast and publishes nothing.
         ARCH.install_user_root_local(word);
         word
     };
