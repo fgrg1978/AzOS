@@ -456,7 +456,7 @@ mod tests {
     fn getdents64_lists_a_directory_in_one_or_more_calls() {
         let r = rt();
         let dir = c("/fat");
-        let fd = call(&r, nr::OPENAT, [lx::AT_FDCWD, p(&dir), lx::oflag::o_directory(lx::Arch::native()), 0, 0, 0]);
+        let fd = call(&r, nr::OPENAT, [lx::AT_FDCWD, p(&dir), lx::oflag::o_directory(lx::Arch::native().unwrap()), 0, 0, 0]);
         assert!(fd >= 3);
         let mut buf = [0u8; 512];
         let n = call(&r, nr::GETDENTS64, [fd as u64, buf.as_mut_ptr() as u64, 512, 0, 0, 0]);
@@ -581,7 +581,7 @@ mod tests {
         let r = rt();
         let act = [1u64, 0, 0, 0];
         let mut old = [0u64; 4];
-        let size = lx::KSigaction::size(lx::Arch::native());
+        let size = lx::KSigaction::size(lx::Arch::native().unwrap());
         assert_eq!(call(&r, nr::RT_SIGACTION, [2, act.as_ptr() as u64, 0, 8, 0, 0]), 0);
         assert_eq!(call(&r, nr::RT_SIGACTION, [2, 0, old.as_mut_ptr() as u64, 8, 0, 0]), 0);
         assert_eq!(old[0], 1);

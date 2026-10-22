@@ -319,8 +319,12 @@ const STATE_INIT: State = State {
     brk_end: 0,
 };
 
+/// The layouts of the asm-generic calls the runtime answers. x86_64 has none
+/// of its own (`None`): its face (`lx::x86_64`) hands the runtime asm-generic
+/// calls, whose flag values are riscv64's, and writes the layouts that differ
+/// itself.
 fn arch() -> lx::Arch {
-    lx::Arch::native()
+    lx::Arch::native().unwrap_or(lx::Arch::Riscv64)
 }
 
 fn neg(e: i64) -> i64 {

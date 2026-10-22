@@ -303,8 +303,16 @@ pub fn spawn_prepare(
     mem: crate::process::MemSpec,
     linux: bool,
 ) -> Result<SpawnPrepared, SpawnError> {
-    // Without the personality a Linux child cannot be made.
-    if linux && !azos_limits::LINUX_ABI {
+    // Without the personality a Linux child cannot be made, nor on an ISA
+    // whose Linux ABI the in-kernel table cannot translate (x86_64) unless
+    // the ring-3 runtime hosts it: refused, never run under another ISA's
+    // numbers.
+    let lx_native = azos_linux_abi::Arch::native();
+    if linux && !azos_linux_abi::linux_task_runs(azos_limits::LINUX_ABI, azos_limits::LINUX_RUNTIME, lx_native) {
+        azos_drv_sys::kwarn!(
+            "[SPAWN] REFUSED: {} -- a Linux row this kernel cannot run (LINUX_ABI={}, LINUX_RUNTIME={}, in-kernel table: {})",
+            name, azos_limits::LINUX_ABI as u8, azos_limits::LINUX_RUNTIME as u8, lx_native.is_some() as u8,
+        );
         return Err(SpawnError::BadImage);
     }
     // Kconfig LOCKED_HUGE_LEAVES: a row's 2 MiB-leaf region is installed by

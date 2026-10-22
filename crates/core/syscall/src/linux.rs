@@ -180,8 +180,15 @@ const PROC_FREE: Proc = Proc {
 
 static TABLE: SpinLock<[Proc; PROCS]> = SpinLock::new([PROC_FREE; PROCS]);
 
+/// The ISA's layouts. A Linux task reaches this file only on an ISA that has
+/// them: on x86_64 (`None`) spawn refuses a Linux row the ring-3 runtime does
+/// not host (`azos_linux_abi::linux_task_runs`), and this file answers no
+/// hosted task.
 fn arch() -> lx::Arch {
-    lx::Arch::native()
+    match lx::Arch::native() {
+        Some(a) => a,
+        None => unreachable!("no in-kernel Linux table on this ISA"),
+    }
 }
 
 /// Run `f` on the current task's entry. `None` when it has none (a Linux

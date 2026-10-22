@@ -14,6 +14,10 @@ azos_abi = { path = "../abi" }
 # writer can land between two segments; the writev atomicity host test and
 # the Linux personality row fail.
 writev-per-segment-canary = []
+# Gate canary (ns-asid): the in-kernel table takes riscv64's layouts on
+# x86_64 again, so a Linux row the ring-3 runtime does not host is admitted
+# and mistranslated; `x86_64_has_no_in_kernel_table` fails.
+x86-in-kernel-table-canary = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }

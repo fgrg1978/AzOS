@@ -37,15 +37,42 @@ pub enum Arch {
 }
 
 impl Arch {
-    /// The ISA this crate is compiled for (riscv64 on the host, where the
-    /// host tests pass the ISA explicitly anyway).
-    pub const fn native() -> Self {
-        if cfg!(target_arch = "aarch64") && cfg!(any(target_os = "none", target_os = "azos")) {
-            Arch::Aarch64
+    /// The asm-generic layouts of the ISA this crate is compiled for: `None`
+    /// on x86_64, whose Linux ABI is not the asm-generic one (only the ring-3
+    /// runtime's [`x86_64`] face speaks it), so the in-kernel table cannot
+    /// translate for it. riscv64 on the host, where the host tests pass the
+    /// ISA explicitly anyway.
+    pub const fn native() -> Option<Self> {
+        Self::of_target(
+            cfg!(any(target_os = "none", target_os = "azos")),
+            cfg!(target_arch = "riscv64"),
+            cfg!(target_arch = "aarch64"),
+        )
+    }
+
+    /// [`Self::native`] for a target described by its cfgs: `bare_metal`
+    /// (`target_os = "none"` for the kernel, `"azos"` for a ring-3 image), and
+    /// whether it is riscv64 or aarch64.
+    pub const fn of_target(bare_metal: bool, riscv64: bool, aarch64: bool) -> Option<Self> {
+        if !bare_metal {
+            Some(Arch::Riscv64)
+        } else if aarch64 {
+            Some(Arch::Aarch64)
+        } else if riscv64 || cfg!(feature = "x86-in-kernel-table-canary") {
+            Some(Arch::Riscv64)
         } else {
-            Arch::Riscv64
+            None
         }
     }
+}
+
+/// Whether this kernel can run a Linux task: it has the personality (Kconfig
+/// `LINUX_ABI`), and the task is hosted by the ring-3 runtime (`runtime`,
+/// Kconfig `LINUX_RUNTIME`) or translated by the in-kernel table, which needs
+/// the ISA's asm-generic layouts (`native`, [`Arch::native`]). A spawn of a
+/// Linux row is refused otherwise, never translated with another ISA's.
+pub const fn linux_task_runs(abi: bool, runtime: bool, native: Option<Arch>) -> bool {
+    abi && (runtime || native.is_some())
 }
 
 /// Linux syscall numbers (asm-generic; riscv64 and aarch64 alike).

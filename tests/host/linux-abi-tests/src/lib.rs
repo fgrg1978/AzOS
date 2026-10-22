@@ -1193,3 +1193,40 @@ mod x86_64_face {
         }
     }
 }
+
+#[cfg(test)]
+mod native_table {
+    use azos_linux_abi::{linux_task_runs, Arch};
+
+    /// x86_64's Linux ABI is not the asm-generic one, so the in-kernel table
+    /// has no layouts for it (`Arch::native` is `None` there) and a Linux row
+    /// the ring-3 runtime does not host is refused at spawn
+    /// (`azos_sched::spawn::spawn_prepare`), never translated with riscv64's
+    /// numbers. With the runtime it runs on every ISA. Canary
+    /// `x86-in-kernel-table-canary` (x86_64 takes riscv64's layouts again):
+    /// fails.
+    #[test]
+    fn x86_64_has_no_in_kernel_table() {
+        let x86 = Arch::of_target(true, false, false);
+        assert_eq!(x86, None, "bare-metal x86_64 has no asm-generic layouts");
+        assert!(!linux_task_runs(true, false, x86), "a Linux row on x86_64 needs the ring-3 runtime");
+        assert!(linux_task_runs(true, true, x86), "the ring-3 runtime hosts it on x86_64");
+    }
+
+    /// The ISAs that have the table keep their own layouts, the host keeps
+    /// riscv64's, and without the personality nothing runs.
+    #[test]
+    fn riscv64_and_aarch64_keep_their_table() {
+        let rv = Arch::of_target(true, true, false);
+        let a64 = Arch::of_target(true, false, true);
+        assert_eq!(rv, Some(Arch::Riscv64));
+        assert_eq!(a64, Some(Arch::Aarch64));
+        assert_eq!(Arch::of_target(false, false, false), Some(Arch::Riscv64));
+        assert_eq!(Arch::native(), Some(Arch::Riscv64), "the host");
+        for n in [rv, a64] {
+            assert!(linux_task_runs(true, false, n));
+            assert!(!linux_task_runs(false, false, n));
+            assert!(!linux_task_runs(false, true, n));
+        }
+    }
+}
