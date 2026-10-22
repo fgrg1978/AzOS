@@ -159,7 +159,7 @@ pub type CtxReg = u64;
 /// written again; `tp` here is pure scheduler bookkeeping ("which CPU this
 /// task is logically enqueued on" — `find_best_cpu`/`wake_target_cpu`'s
 /// placement heuristic), read and written as plain memory by
-/// `crates/core/sched/src/scheduler.rs`. The two used to be conflated —
+/// `crates/core/sched/src/scheduler/`. The two used to be conflated —
 /// `context_switch.S` treated `TPIDR_EL1` as this ISA's `tp`-equivalent GPR
 /// and `mrs`/`msr`'d it on every switch — which let an unpinned task's
 /// stale placement record overwrite a physical hart's own identity the
@@ -261,7 +261,7 @@ pub struct TaskContext {
     pub r15: CtxReg,
 
     pub pc:  CtxReg,
-    pub tp:  CtxReg,  // preserved across context switches so current_cpu_id() stays correct
+    pub tp:  CtxReg,  // placement record: the CPU the task last ran on or is queued for; saved, never loaded into the hart's tp
 
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     pub d8:  CtxReg,   // low 64 bits of v8  — the callee-saved half (AAPCS64 §5.1.2)

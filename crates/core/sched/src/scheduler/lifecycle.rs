@@ -2020,14 +2020,14 @@ pub fn start() -> ! {
 /// `0..online` because the caller has already corrected `NUM_ONLINE_CPUS`
 /// before calling this function.
 ///
-/// Both the task's saved `tp` (`context.tp`, restored into the hardware
-/// `tp` register by `context_switch` on dispatch — see its field doc) and,
-/// if the task was pinned (`cpu_affinity >= 0`), its affinity are rewritten
-/// to the new CPU. Skipping this would leave a moved task either running
-/// with a stale `current_cpu_id()` (every `PER_CPU[current_cpu_id()]`
-/// access inside it would then hit the wrong slot) or, once it blocks and
-/// is later woken (`try_wake_task` / `wq_wake_by_tid` route pinned tasks
-/// straight back to `cpu_affinity`), silently re-stranded on the dead hart.
+/// Both the task's saved `tp` (`context.tp`, the CPU it is queued for: the
+/// wake and balance paths read it as the task's home; `context_switch` saves
+/// it and never loads it into the hart's `tp`, see its field doc) and, if the
+/// task was pinned (`cpu_affinity >= 0`), its affinity are rewritten to the
+/// new CPU. Skipping this would leave a moved task, once it blocks and is
+/// later woken, placed by a dead hart's id (`try_wake_task` / `wq_wake_by_tid`
+/// route pinned tasks straight back to `cpu_affinity`): silently re-stranded
+/// on the dead hart.
 /// Breaking an explicit pin is a decision the operator must see, so it is
 /// logged per task.
 ///
@@ -2087,10 +2087,8 @@ pub fn rebalance_from_offline_cpus(online: usize, _total: usize) -> usize {
                 }
 
                 // Keep the saved tp consistent with the queue the task now
-                // lives on: context_switch loads this straight into the
-                // hardware tp register on dispatch, and current_cpu_id()
-                // (hence every PER_CPU[current_cpu_id()] access inside the
-                // task) trusts it completely.
+                // lives on: the wake and balance paths read it as the task's
+                // home (context_switch never loads it into the hart's tp).
                 task.context.tp = target_cpu as CtxReg;
                 hist_reaccount(idx);
 
@@ -2177,8 +2175,8 @@ pub(crate) fn isolated_cpu_mask() -> u64 {
 /// of the queue goes through the locked wrappers either way, as
 /// [`rebalance_from_offline_cpus`] does for the harts that never came up.
 /// Each task goes where [`find_best_cpu`] puts a new one, which looks only at
-/// the online prefix, so none lands on `cpu`; its saved `tp` follows
-/// (`context_switch` loads it on dispatch, and `current_cpu_id()` trusts it).
+/// the online prefix, so none lands on `cpu`; its saved `tp` follows (the
+/// task's home for its next wake; `context_switch` never loads it).
 ///
 /// The decision for each entry is `hart_set::disposition`. The CPU's own idle
 /// task (pinned, lowest priority) is put back: it is the task `cpu` runs when it

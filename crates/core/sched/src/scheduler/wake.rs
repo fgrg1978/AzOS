@@ -611,10 +611,11 @@ pub fn try_wake_task(idx: usize, pred: &dyn Fn(&WaitReason) -> bool) {
         let reason = attrib::Reason::of(&task.wait_reason);
         task.wait_reason = WaitReason::None;
         let target_cpu = wake_target_cpu(idx, task);
-        // K-A11: keep the saved tp consistent with the CPU this task is enqueued
-        // on (mirrors rebalance_from_offline_cpus): context_switch restores it
-        // into the hardware tp and current_cpu_id() trusts it — a stale tp would
-        // make the woken task corrupt another CPU's PER_CPU state.
+        // K-A11: the saved tp records the CPU this task is enqueued on (mirrors
+        // rebalance_from_offline_cpus): the wake and balance paths read it as
+        // the task's home. Bookkeeping only: context_switch saves it and never
+        // loads it into the hart's tp (K1 M2), so a stale word misplaces a task,
+        // it cannot make a hart run as another CPU.
         task.context.tp = target_cpu as CtxReg;
         note_wake_cold(task, reason, attrib::Via::Sweep, target_cpu);
         hist_reaccount(idx);
@@ -1339,10 +1340,9 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
         if ipc {
             ipc_placement::record(target_cpu);
         }
-        // K-A11: keep the saved tp consistent with the enqueue CPU
-        // — context_switch restores it into hw tp and
-        // current_cpu_id() trusts it; a stale tp would corrupt
-        // another CPU's PER_CPU state.
+        // K-A11: the saved tp records the enqueue CPU, the task's
+        // home for the next wake and balance (bookkeeping only:
+        // context_switch never loads it into the hart's tp).
         task.context.tp = target_cpu as CtxReg;
         note_wake(task, reason, via, target_cpu);
         hist_reaccount(i);

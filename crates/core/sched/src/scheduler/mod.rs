@@ -2015,8 +2015,8 @@ unsafe fn task_mut(idx: usize) -> &'static mut Task {
 /// balanced-and-starved one.
 ///
 /// A task's home is its pin (`cpu_affinity`) when it has one, otherwise the
-/// saved `tp` that `context_switch` will restore — the same value every wake
-/// path keeps in sync with the queue the task sits in.
+/// saved `tp` (`context.tp`, the CPU it last ran on or is queued for) — the
+/// same value every wake path keeps in sync with the queue the task sits in.
 ///
 /// `exclude` is the pool index of the task being placed, so it does not score
 /// against its own placement. Pass `usize::MAX` for none.
@@ -2687,14 +2687,15 @@ unsafe fn do_schedule(why: SwitchReason) {
     wakelat::measure(next_idx);
     next.set_state(TaskState::Running);
     set_current_task(cpu, next_idx);
-    // The hart that restores a task writes its own id into the `tp` the
-    // restore loads (wave 13, RT7). Every enqueue path is meant to have set
+    // The hart that dispatches a task records itself in the task's saved
+    // `tp` (wave 13, RT7), the CPU the task last ran on, which the wake and
+    // balance paths read as its home. Every enqueue path is meant to have set
     // it already (`context.tp = target_cpu`), but a store made while the
     // task's previous hart was still saving it is overwritten by that save
-    // (`sd tp, CTX_TP`), and a task that runs with another hart's id in `tp`
-    // makes its next `do_schedule` rewrite that hart's `current_idx`. Here
-    // the dispatch gate above has seen the save finish, so this store is the
-    // last word.
+    // (`sd tp, CTX_TP`). Here the dispatch gate above has seen the save
+    // finish, so this store is the last word. Bookkeeping only since K1 M2:
+    // no switch loads the word into the hart's `tp` (riscv64's used to, and a
+    // stale one made the hart run as another CPU).
     next.context.tp = cpu as CtxReg;
     if old_zombie {
         next.reap_on_resume = old_idx + 1;
