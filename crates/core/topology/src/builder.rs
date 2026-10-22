@@ -174,6 +174,16 @@ pub const TASK_INADRV_IMAGE: &[u8] = b"INADRV.ELF";
 /// the kernel skips its assertion): the gate row must then fail.
 pub const INADRV_ROW: bool =
     cfg!(any(not(feature = "ina219-kernel"), feature = "ina219-placement-canary"));
+/// `INADRV.ELF`'s priority: `hard_rt`'s least urgent number, outside the band.
+pub const INADRV_PRIORITY: u8 = 15;
+/// `INADRV.ELF`'s EDF + CBS reservation. The period is the chip's sample
+/// period, `1 / azos_ina219::INA219_POLL_HZ` (this crate does not depend on
+/// the chip crate; `tests/host/topology-tests` asserts the two agree). The
+/// budget, 5 ms of every 100 ms (5 % of one CPU), is far above one sample (a
+/// few register-form `i2c` calls) and leaves room for the proxied reads a
+/// period serves; the deadline is the period.
+pub const INADRV_RT: crate::deadline::SchedProfile =
+    crate::deadline::SchedProfile { period_us: 100_000, runtime_us: 5_000, deadline_us: 0, cpu_mask: 0 };
 /// `DRV_KIND_POWER_MON` (0x0011) in decimal.
 const RESOURCE_DRV_POWER_MON: &[u8] = b"drv.17";
 /// Frame budget of one `ABICHILD.ELF` process, in topology pages (4 KiB,
@@ -1383,8 +1393,9 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // Wave 9 (DRV1) — the ring-3 drivers; see `TASK_BUZZDRV_IMAGE`. After the
     // board rows, so no index-pinned row above moves.
     //
-    // **`best_effort` at [`SERVICE_PRIORITY`] (24), like GPIODRV.ELF** (owner
-    // decision 2026-09-28; wave 9 had them at `soft_rt` 16): above the
+    // **The buzzer: `best_effort` at [`SERVICE_PRIORITY`] (24), like
+    // GPIODRV.ELF** (owner decision 2026-09-28; wave 9 had the drivers at
+    // `soft_rt` 16; the INA219's row below has a reservation instead): above the
     // interactive session ([`SH_PRIORITY`], 25), never equal to it. A client
     // more urgent than the driver donates its priority for the span of each
     // request (`UserDriverProxy`), so a request is served at the client's
@@ -1393,9 +1404,9 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // gives up is the driver's own timing outside a request: a CPU-bound task
     // above 24 on its hart delays the end of a buzzer tone (measured once on
     // aarch64 QEMU at boot: a 50 ms tone switched off after 1578 ms), and
-    // delays INA219 samples. The mAh sum no longer depends on that cadence:
-    // each sample is weighted by the time the driver measured since the
-    // previous one (wave 10).
+    // delayed INA219 samples when that driver was here too. The mAh sum does
+    // not depend on that cadence: each sample is weighted by the time the
+    // driver measured since the previous one (wave 10).
     // The buzzer's ring-3 host. Its row exists whichever host the driver
     // starts in (`BUZZER_START_HOST`): the row is what the ring-3 host runs
     // with when the driver is, or is moved, there. `stateless`: the driver
@@ -1441,11 +1452,23 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // driver is placed in ring 3 ([`INADRV_ROW`]). Placed in the kernel, the
     // row would be a dormant grant of the `i2c` endpoint on its chip to an image the
     // kernel does not run.
+    //
+    // **The one ring-3 row with a real-time reservation** ([`INADRV_RT`]): the
+    // driver's main thread is a periodic sampler (one sample of the chip per
+    // `1 / INA219_POLL_HZ`, parked between samples), the workload EDF + CBS is
+    // for, and `best_effort` let any CPU-bound task above it delay its samples
+    // (see the drivers' comment above). `hard_rt` at 15, its least urgent
+    // number: outside the band (`RT_BAND_THRESHOLD`), so the reservation
+    // needs no `mem = "locked"`, and its unreserved `DevicePower` thread is the
+    // least urgent a `hard_rt` task can be. Boot admission places the
+    // reservation on a CPU (`cpu_mask` 0: any) and the task is pinned there
+    // (`topo_sched::row_reservation`); the hard CBS caps what a runaway or a
+    // flood of proxied reads can take to the reservation's share.
     if INADRV_ROW && azos_limits::USERSPACE_INADRV {
-        topo.push_task(
+        topo.push_task_profiled(
             MaybeStr::from_bytes(TASK_INADRV_IMAGE),
-            MaybeStr::from_bytes(NAME_BEST_EFFORT),
-            SERVICE_PRIORITY,
+            MaybeStr::from_bytes(NAME_HARD_RT),
+            INADRV_PRIORITY,
             &[
                 CapSpec {
                     kind: CapKind::Device,
@@ -1464,6 +1487,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                     target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_PM_INA), transfer: false, ops: 0,
                 },
             ],
+            INADRV_RT,
         )
         .expect("default_minimal_topology: INADRV.ELF push failed");
         topo.set_last_task_mem_pages(RING3_DRIVER_MEM_PAGES);

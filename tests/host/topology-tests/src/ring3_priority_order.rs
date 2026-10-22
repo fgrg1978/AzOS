@@ -14,13 +14,19 @@
 //! * The interactive session (`SH.ELF`) runs below every server it depends on
 //!   (the terminal, name and input servers) and is not equal to any ring-3
 //!   driver.
+//! * `INADRV.ELF`, the one ring-3 row with a real-time reservation, is one
+//!   `topo_sched::row_reservation` admits: a profile in a class with admission
+//!   control, outside the band, placed by boot admission on any CPU count,
+//!   with the chip's own sample period.
 //!
 //! **Canaries.** Put `INPUTD.ELF` back at `TOOL_PRIORITY` in `builder.rs`:
 //! `the_session_s_servers_outrank_it` is red, and with the compositor at 25
 //! `no_server_runs_below_a_client_it_serves` is red too. Put `GPIODRV.ELF`
 //! back at `0`: `no_row_relies_on_the_clamp` is red. Put `SH.ELF` back at 24:
 //! `only_the_documented_pairs_are_equal` (TERMD.ELF equals it) and
-//! `the_session_s_servers_outrank_it` are red.
+//! `the_session_s_servers_outrank_it` are red. Push `INADRV.ELF` with
+//! `push_task` (no profile): `the_ina219_driver_holds_an_admitted_reservation`
+//! is red.
 
 use azos_topology::builder::{default_minimal, SH_PRIORITY, TASK_SH_IMAGE};
 use azos_topology::{ring3_priority, MaybeStr, RowSched, ServiceEdge, Topology};
@@ -158,4 +164,37 @@ fn the_ceiling_rule_reads_grants_and_imports() {
     t.push_task(MaybeStr::from_bytes(b"cli"), MaybeStr::from_bytes(b"best_effort"), 24, &[]).unwrap();
     t.set_last_task_imports(&[MaybeStr::from_bytes(b"demo")]).unwrap();
     assert_eq!(t.server_below_client().map(|e| (e.server, e.client)), Some((0, 1)));
+}
+
+/// What `topo_sched::row_reservation` reads for `INADRV.ELF`, row by row: a
+/// declared profile, a class with `admission_control`, no band entry (so no
+/// locked memory is needed), a CPU from boot admission whatever the hart
+/// count, and the priority `resolve` applies to a reserved row (floor 0).
+#[test]
+fn the_ina219_driver_holds_an_admitted_reservation() {
+    use azos_topology::builder::{INADRV_PRIORITY, INADRV_ROW, INADRV_RT, TASK_INADRV_IMAGE};
+    use azos_topology::BandEntry;
+    if !INADRV_ROW {
+        return; // placed in the kernel (DRVPLACE): no ring-3 row
+    }
+    let t = default_minimal();
+    let ti = t.tasks().iter().position(|r| r.name.as_bytes() == TASK_INADRV_IMAGE).expect("INADRV.ELF row");
+    let row = &t.tasks()[ti];
+    assert!(row.profile.is_declared(), "INADRV.ELF declares no reservation");
+    assert_eq!(row.profile, INADRV_RT);
+    let class = t.find_class(&row.class_name).expect("class");
+    assert_eq!(class.name.as_bytes(), b"hard_rt");
+    assert!(class.admission_control, "a profile outside admission control is never reserved");
+    assert_ne!(t.row_band_entry(ti), BandEntry::NotLocked);
+    assert!((INADRV_PRIORITY as u32) >= FLOOR, "a band row would need mem = \"locked\"");
+    assert_eq!(prio(&t, TASK_INADRV_IMAGE), INADRV_PRIORITY);
+    assert_eq!(ring3_priority(INADRV_PRIORITY as u32, 0, CEIL), (INADRV_PRIORITY as u32, false));
+    for cpus in [1, 2, 4] {
+        let r = t.deadline_admission(cpus).unwrap_or_else(|e| panic!("{cpus} CPU(s): {e:?}"));
+        assert!(r.cpu_of(ti as u16).is_some(), "{cpus} CPU(s): INADRV.ELF not placed");
+    }
+    // The period is the chip's sample period, and the deadline is the period.
+    assert_eq!(INADRV_RT.period_us as u64, 1_000_000 / azos_ina219::INA219_POLL_HZ as u64);
+    assert_eq!(INADRV_RT.deadline_us, 0);
+    assert!(INADRV_RT.runtime_us < INADRV_RT.period_us);
 }

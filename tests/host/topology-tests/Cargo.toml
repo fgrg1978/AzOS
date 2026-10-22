@@ -124,3 +124,6 @@ topology_seed_test_drivers = { path = "shims/drivers" }
 # Signs the emitted topology in `signed_topology_tests` (the same crate the
 # kernel verifies with, already in the lock through azos_crypto).
 ed25519-dalek = { version = "2", default-features = false }
+# The INA219's sample rate, which `INADRV.ELF`'s reservation period must match
+# (`ring3_priority_order`).
+azos_ina219 = { path = "../../../crates/drivers/ina219" }

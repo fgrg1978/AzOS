@@ -3489,13 +3489,13 @@ mod row_sched_tests {
         // The ML service: soft_rt at the default 16; it runs at the behavior
         // task's 14 only by donation, while the loop waits on it.
         assert_eq!(applied(&t, b"MLSRV.ELF"), ("soft_rt".into(), 16, 16));
-        // The ring-3 drivers (wave 9): best_effort 24, like GPIODRV.ELF
-        // (owner decision 2026-09-28; they were soft_rt 16), above the shell.
-        for n in [&b"BUZZDRV.ELF"[..], b"INADRV.ELF"] {
-            if n == b"INADRV.ELF" && !azos_topology::builder::INADRV_ROW {
-                continue; // placed in the kernel (DRVPLACE): no row
-            }
-            assert_eq!(applied(&t, n), ("best_effort".into(), 24, 24));
+        // The buzzer's ring-3 host (wave 9): best_effort 24, like GPIODRV.ELF
+        // (owner decision 2026-09-28; it was soft_rt 16), above the shell.
+        assert_eq!(applied(&t, b"BUZZDRV.ELF"), ("best_effort".into(), 24, 24));
+        // The INA219's: hard_rt 15 with its reservation
+        // (`ring3_priority_order`). Placed in the kernel (DRVPLACE): no row.
+        if azos_topology::builder::INADRV_ROW {
+            assert_eq!(applied(&t, b"INADRV.ELF"), ("hard_rt".into(), 15, 15));
         }
         // The user shell below the servers it calls and above every tool it
         // starts, all scheduled as best_effort (the shell's class is

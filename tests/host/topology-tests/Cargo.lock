@@ -89,6 +89,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_ina219"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+]
+
+[[package]]
 name = "azos_limits"
 version = "0.1.0"
 dependencies = [
@@ -155,6 +162,7 @@ dependencies = [
  "azos_devif",
  "azos_hwbus",
  "azos_idl",
+ "azos_ina219",
  "azos_limits",
  "azos_login",
  "azos_names",
