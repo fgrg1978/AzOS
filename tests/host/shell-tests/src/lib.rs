@@ -99,14 +99,13 @@ mod tests {
     /// Owner round 36: under the lockdown the console is seeded with nothing,
     /// so every row of the table meets a console that holds none of the
     /// endpoints it names and is refused. Off the lockdown it gets every
-    /// endpoint a row names, and (wave 12) the full `/proc` task view,
-    /// `Cap<Task>`, which no row names.
+    /// endpoint a row names, and nothing else (no task view: owner
+    /// 2026-10-21).
     ///
     /// **Canary (by hand, 2026-10-02).** Make `console_seed_ifaces` ignore
     /// `lockdown`: red on "the lockdown seeded the console".
     #[test]
     fn under_the_lockdown_the_console_is_seeded_with_nothing() {
-        assert!(console_seed_kinds(true).is_empty(), "the lockdown seeded the console");
         assert!(console_seed_ifaces(true).is_empty(), "the lockdown seeded the console");
         let open = console_seed_ifaces(false);
         for r in AUTHORITY_TABLE {
@@ -114,7 +113,10 @@ mod tests {
             let holds = console_seed_ifaces(true).contains(&r.iface);
             assert!(!may_proceed(r.cmd, true, holds), "{} proceeds under the lockdown", r.cmd);
         }
-        assert!(console_seed_kinds(false).contains(&azos_abi::cap::ty::TASK), "the default console lacks the full task view");
+        let mut named: Vec<u16> = AUTHORITY_TABLE.iter().map(|r| r.iface).collect();
+        named.sort_unstable();
+        named.dedup();
+        assert_eq!(open.len(), named.len(), "the console is seeded with an endpoint no row names");
     }
 
     #[test]

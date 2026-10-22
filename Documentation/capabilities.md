@@ -468,7 +468,7 @@ signed topology, and the grant is as narrow as the action.
 Source: `crates/core/topology/src/builder.rs` (`TASK_VIEW_CAP`,
 `INSPECT_ADMIN_CAP`), `crates/core/ipc/src/inspect_region.rs` (`seed_mint`),
 `crates/core/ipc/src/authority_policy.rs` (`AUTHORITY_TABLE`,
-`console_seed_kinds`, `console_seed_ifaces`, `may_proceed`),
+`console_seed_ifaces`, `may_proceed`),
 `crates/core/ipc/src/cap_seed.rs`.
 
 ## Warrants across nodes

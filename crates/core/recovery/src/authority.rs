@@ -17,9 +17,8 @@
 //! forms of these (`power`, `ota`, `config` endpoints) are checked by the
 //! kernel-hosted interfaces, over the calling image's capability.
 //!
-//! [`seed_console_authority`] mints what `authority_policy::console_seed_kinds`
-//! and `console_seed_ifaces` name, through the same minters the topology uses
-//! for a ring-3 row.
+//! [`seed_console_authority`] mints what `authority_policy::console_seed_ifaces`
+//! names, through the same minter the topology uses for a ring-3 row.
 
 use azos_abi::cap::{CapKind, CapPerms};
 use azos_ipc::cap::CapError;
@@ -38,32 +37,22 @@ pub fn row_enforced(row: &policy::AuthorityRow) -> bool {
 /// Seed the console's own capability table. Call once, from the recovery task,
 /// before the command loop starts.
 ///
-/// What it mints is `authority_policy::console_seed_kinds(LOCKDOWN)` and
-/// `console_seed_ifaces(LOCKDOWN)`: nothing under the console lockdown (owner
-/// round 36), so every checked command is refused there, `reboot` and
-/// `shutdown` included.
+/// What it mints is `authority_policy::console_seed_ifaces(LOCKDOWN)`:
+/// nothing under the console lockdown (owner round 36), so every checked
+/// command is refused there, `reboot` and `shutdown` included. No task view:
+/// no command of the console lists tasks.
 pub fn seed_console_authority() {
     let tid = azos_sched::current_task_tid();
-    let kinds = policy::console_seed_kinds(LOCKDOWN);
-    if kinds.is_empty() {
+    let ifaces = policy::console_seed_ifaces(LOCKDOWN);
+    if ifaces.is_empty() {
         azos_drv_sys::kwarn!(
-            "[AUTHORITY] console lockdown: the task view and the power, config and ota endpoints \
+            "[AUTHORITY] console lockdown: the power, config and ota endpoints \
              withheld — reboot, shutdown and the lockdown rows are refused");
-    }
-    for &kind in kinds {
-        match kind {
-            // Wave 12 (owner round 48): the full task view, through
-            // the topology's own minter so the target spelling is one.
-            azos_ipc::cap::ty::TASK => {
-                let _ = azos_ipc::cap_seed::seed_one_cap(tid, CapKind::Domain, CapPerms::READ, "tasks");
-            }
-            _ => {}
-        }
     }
     // The console's OWN authority over the irreversible effects it still
     // offers: `WRITE` on the endpoints of `reboot`/`shutdown`, `config set` and
     // `ota rollback`, the rights the ring-3 tools hold from their rows.
-    for &iface in policy::console_seed_ifaces(LOCKDOWN) {
+    for &iface in ifaces {
         let _ = endpoint::kernel_endpoint_cap(tid, CapPerms::WRITE, iface, 0);
     }
 }

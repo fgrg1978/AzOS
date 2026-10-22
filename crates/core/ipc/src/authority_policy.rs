@@ -15,8 +15,6 @@
 //! decided HERE; the callers only supply the facts this file cannot see (the
 //! Kconfig switch, whether a table holds the endpoint right).
 
-use azos_abi::cap::ty;
-use azos_abi::cap::CapType;
 use azos_devif::key;
 
 /// One row of the authority table U11-5 asked for: which kernel-hosted
@@ -60,29 +58,18 @@ pub fn enforced(row: &AuthorityRow, lockdown: bool) -> bool {
     row.always || lockdown
 }
 
-/// The capability kinds the console is seeded with at boot
-/// (`authority::seed_console_authority`): (wave 12, owner round 48)
-/// `Cap<Task>` READ on `"tasks"`, the full task view. The endpoints it is
-/// seeded with are [`console_seed_ifaces`].
+/// The kernel-hosted endpoints (host keys) the console is seeded with at boot
+/// (`authority::seed_console_authority`), `WRITE` on each: the interfaces of
+/// its consequential commands. It holds no task view: no command of it lists
+/// tasks (owner 2026-10-21; the kernel keeps no `/proc` to list them from).
 ///
 /// **None under the console lockdown** (owner round 36, wave 11). The lockdown
-/// used to add four checked rows while still handing the console both
+/// used to add four checked rows while still handing the console its
 /// capabilities, so every checked command — `flight arm` and `pm suspend`
 /// included — still passed its check. Withheld, the console holds no
 /// authority over an irreversible effect: every row is refused, recorded,
 /// and a console session can no longer arm the drivetrain, suspend, reboot
 /// or power off the board. Default n, so a development build is unchanged.
-pub const fn console_seed_kinds(lockdown: bool) -> &'static [CapType] {
-    if lockdown {
-        &[]
-    } else {
-        &[ty::TASK]
-    }
-}
-
-/// The kernel-hosted endpoints (host keys) the console is seeded with at boot,
-/// `WRITE` on each: the interfaces of its consequential commands. None under
-/// the lockdown, for the reason [`console_seed_kinds`] gives.
 pub const fn console_seed_ifaces(lockdown: bool) -> &'static [u16] {
     if lockdown {
         &[]
