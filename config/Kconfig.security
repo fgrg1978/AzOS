@@ -685,7 +685,6 @@ config TOPOLOGY_MAX_KEYS
 config TOPOLOGY_MAX_BOOT_STAGES
     int "[boot_chain.NAME] rows (boot stages) a topology may declare"
     range 1 16
-    default 8 if PROFILE_EMBEDDED
     default 8
     help
       Size of the boot-chain table (types.rs, MAX_BOOT_STAGES), CAPS.TOML

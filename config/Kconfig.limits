@@ -1973,7 +1973,6 @@ config MEMOBJ_MOVED_WINDOWS
 config IORING_MAX_PARKED
     int "io_ring: entries one ring holds parked (timers, waits, fsyncs)"
     range 1 32
-    default 8 if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
     default 8
     help
       crates/core/ipc/src/io_ring.rs, RING_MAX_PARKED (was the literal 8).
@@ -2015,7 +2014,6 @@ config IORING_MAX_REGBUFS
 
 config IORING_WORKER
     bool "io_ring worker: runs a real-time submitter's file entries outside the RT band"
-    default y if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
     default y
     help
       kernel/src/boot/sched.rs `ioring-wk`, crates/core/ipc/src/io_ring.rs
@@ -2036,7 +2034,6 @@ config IORING_WORKER
 config IORING_WORKER_PRIORITY
     int "io_ring worker task priority (outside the RT band: 12..30)"
     range 12 30
-    default 20 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 20
     help
       The `ioring-wk` task's priority. It must stay outside the RT band
@@ -2099,7 +2096,6 @@ config FS_BLOCK_CACHE_KB
 
 config FS_WRITEBACK
     bool "FAT32 write-back block cache (writes queue in RAM; fsync/sync make them durable)"
-    default y if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
     default y
     help
       crates/fs/fs/src/fat32.rs, crates/fs/fs/src/bcache.rs: FAT32 writes
@@ -2167,7 +2163,6 @@ config FS_WRITEBACK_RUN_KB
 config FS_DEFERRED_FREE
     bool "FAT32 write-back: free a truncated or replaced chain once its unlinking entry is durable"
     depends on FS_WRITEBACK
-    default y if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
     default y
     help
       crates/fs/fs/src/fat32.rs, `defer_free`: the chain that an O_TRUNC to
@@ -2205,7 +2200,6 @@ config FS_DEFERRED_FREE_SLOTS
 config FS_WRITEBACK_PRIORITY
     int "FAT32 write-back task priority (outside the RT band: 12..30)"
     range 12 30
-    default 20 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 20
     help
       kernel/src/boot/sched.rs, `fs-wb`: the task that writes the FAT32
@@ -2219,8 +2213,6 @@ config FS_WRITEBACK_PRIORITY
 config FAT32_SECTOR_CLAIM_SLOTS
     int "FAT32 FAT-sector claim slots (1-64; concurrent FAT updates)"
     range 1 64
-    default 64 if PROFILE_FLEET || PROFILE_EDGE
-    default 64 if PROFILE_EMBEDDED
     default 64
     help
       crates/fs/fs/src/fat32.rs, FAT_SECTOR_BUSY: a FAT entry update (cluster
@@ -2241,7 +2233,6 @@ config FAT32_SECTOR_CLAIM_SLOTS
 config PI_TRACE_DEPTH
     int "Mutex trace: nesting levels recorded per task (diagnostics)"
     range 1 16
-    default 4 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 4
     help
       crates/core/sync/src/held.rs, PI_HELD_ADDR: with the
@@ -2257,7 +2248,6 @@ config PI_TRACE_DEPTH
 config FAT_PI_IO_SITES
     int "FAT32 F1 probe: distinct (task, lock) sites recorded (diagnostics)"
     range 1 64
-    default 8 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 8
     help
       crates/fs/fs/src/fat32.rs, PI_IO_SITE: with the `fat-pi-io-probe`
@@ -2291,8 +2281,6 @@ config LOG_RING_ENTRIES
 config LOG_RING_SAFETY_RESERVE
     int "Flight-recorder ring slots kept for safety records"
     range 4 32
-    default 16 if PROFILE_EMBEDDED
-    default 16 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 16
     help
       crates/core/actuation/src/logger.rs: of LOG_RING_ENTRIES, this many
@@ -2321,7 +2309,6 @@ config LOG_RING_SAFETY_RESERVE
 config LOG_FLUSHER_PRIORITY
     int "Log flusher task priority (outside the RT band: 12..30)"
     range 12 30
-    default 12 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 12
     help
       kernel/src/boot/sched.rs, `log-flush`: the kernel task that writes
@@ -2339,7 +2326,6 @@ config LOG_FLUSHER_PRIORITY
 config LOG_FLUSHER_JOBS
     int "Deferred block-I/O job slots on the log flusher"
     range 1 16
-    default 4 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 4
     help
       One-shot jobs a real-time task hands the log flusher instead of
@@ -2369,7 +2355,6 @@ config VIRTIO_BLK_SLOT_KB
 config VIRTIO_BLK_IRQ_SLICE_US
     int "virtio-blk: longest sleep of a waiter between completion checks (us)"
     range 100 100000
-    default 1000 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 1000
     help
       crates/drivers/virtio/src/virtio/blk.rs: a task waiting for a disk

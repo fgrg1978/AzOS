@@ -2449,7 +2449,6 @@ config RCU_STALL_TIMEOUT_MS
 config RCU_CALLBACK_PRIORITY
     int "RCU: callback task priority (outside the RT band: 12..30)"
     range 12 30
-    default 20 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 20
     help
       The task that waits for grace periods and runs RCU callbacks (the

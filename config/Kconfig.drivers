@@ -1157,9 +1157,6 @@ endchoice
 
 config CAMERA_TX_CAPTURE_PERIOD_MS
     int "Camera frame ring: capture period for the brain link's sender"
-    default 250 if PROFILE_EMBEDDED
-    default 250 if PROFILE_EDGE
-    default 250 if PROFILE_FLEET
     default 250
     range 10 1000
     help

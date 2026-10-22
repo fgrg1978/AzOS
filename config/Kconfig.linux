@@ -218,9 +218,6 @@ endif # LINUX_DRIVERS
 config LX_MODULE_TOKENS
     int "Module verification tokens live at once"
     range 1 64
-    default 4 if PROFILE_EMBEDDED
-    default 4 if PROFILE_EDGE
-    default 4 if PROFILE_FLEET
     default 4
     help
       Slots in the table of one-shot tokens DOMAIN_MODULE_VERIFY grants and
