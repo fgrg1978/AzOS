@@ -138,16 +138,6 @@ enum Board {
 }
 
 impl Board {
-    /// Does a tick of this board move a supply over a bus (see `tick_once`)?
-    #[cfg(all(feature = "soc-k1", feature = "k1"))]
-    const fn moves_a_rail(&self) -> bool {
-        matches!(self, Board::K1 { .. })
-    }
-    #[cfg(not(all(feature = "soc-k1", feature = "k1")))]
-    const fn moves_a_rail(&self) -> bool {
-        false
-    }
-
     const fn name(&self) -> &'static str {
         match self {
             #[cfg(feature = "vf2")]
@@ -181,7 +171,7 @@ struct State {
 
 static STATE: SpinLock<Option<State>> = SpinLock::new(None);
 
-/// The state is out of [`STATE`] for a tick of a board that moves a rail.
+/// The state is out of [`STATE`] for a tick (`tick_once`).
 static TICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 // ── JH7110: the sensor ───────────────────────────────────────────────────────
@@ -564,8 +554,8 @@ type Note = Option<azos_thermal::k1::RailLag>;
 #[cfg(not(all(feature = "soc-k1", feature = "k1")))]
 type Note = ();
 
-/// Tick the runtime over its board. For every board but the K1 the caller
-/// holds the state lock; the K1's is handed out of it ([`tick_once`]).
+/// Tick the runtime over its board, with the state out of its lock
+/// ([`tick_once`]).
 fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &Inputs) -> (azos_energy::thermal::Settled, Note) {
     let State { rt, board, .. } = st;
     #[allow(unused_mut)]
@@ -647,27 +637,26 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
 /// ring gained. Returns the sleep until the next one, milliseconds, and
 /// whether a critical trip asked for the shutdown. `None` without a runtime.
 ///
-/// The state lock is held across the tick, except for a board that moves a
-/// rail: its voltage step is I2C transfers, longer than a spin lock may be
-/// held, so the state is taken out of the lock for the tick and put back
-/// (`/proc/thermal` says `ticking` meanwhile). Only this task writes it.
+/// The state is taken out of its lock for the tick and put back
+/// (`/proc/thermal` says `ticking` meanwhile; only this task writes it): no
+/// board's tick is short enough for a spin lock (audit K2-M9). The K1 steps a
+/// rail over I2C, the Raspberry Pi asks the VideoCore by mailbox (replies in
+/// milliseconds), x86 reads another CPU's MSRs by a function-call IPI, the
+/// JH7110 moves a clock through the SoC frameworks.
 fn tick_once() -> Option<(u32, bool)> {
     let model = azos_sched::energy::model();
     let inp = inputs(model);
     let now = now_ms();
-    let mut g = STATE.lock();
-    let (settled, note) = if g.as_ref()?.board.moves_a_rail() {
-        let mut owned = g.take()?;
-        drop(g);
-        TICKING.store(true, core::sync::atomic::Ordering::Release);
-        let r = tick_board(&mut owned, model, now, &inp);
-        g = STATE.lock();
-        *g = Some(owned);
+    // Raised before the take, so a reader that finds no state knows why.
+    TICKING.store(true, core::sync::atomic::Ordering::Release);
+    let Some(mut owned) = STATE.lock().take() else {
         TICKING.store(false, core::sync::atomic::Ordering::Release);
-        r
-    } else {
-        tick_board(g.as_mut()?, model, now, &inp)
+        return None;
     };
+    let (settled, note) = tick_board(&mut owned, model, now, &inp);
+    let mut g = STATE.lock();
+    *g = Some(owned);
+    TICKING.store(false, core::sync::atomic::Ordering::Release);
     let st = g.as_mut()?;
     let rt = &mut st.rt;
     let wait = rt.poll_interval_ms().unwrap_or(1000);
@@ -830,7 +819,8 @@ fn gen_proc_thermal(buf: &mut [u8]) -> usize {
 // ── What the QEMU row looks at ──────────────────────────────────────────────
 
 /// The fake board's clocks (kHz per domain, 0 = never set), the evaluations
-/// made, and a way to read the ring.
+/// made, and a way to read the ring. `None` without a runtime, and while a
+/// tick has the state out of its lock (the smoke's waits poll again).
 #[cfg(feature = "thermal-smoke")]
 pub(crate) fn smoke_view<R>(f: impl FnOnce(&Runtime, &[u32; MAX_DOMAINS]) -> R) -> Option<R> {
     let g = STATE.lock();
