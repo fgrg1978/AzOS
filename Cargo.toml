@@ -80,7 +80,7 @@ exclude = [
     # Run with:  cd tests/host/kaslr-tests && cargo test
     "tests/host/kaslr-tests",
     # regression-tests pins specific bug fixes so future refactors can't
-    # silently reintroduce them. Run with:  /bin/zsh tools/test_regression.sh
+    # silently reintroduce them. Run with:  cd tests/host/regression-tests && cargo test
     "tests/host/regression-tests",
     # topology-tests is a host-side test crate for the W2 topology parser.
     # Run with:  cd tests/host/topology-tests && cargo test
