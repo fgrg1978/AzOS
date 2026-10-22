@@ -741,8 +741,8 @@ pub fn port_bind_object_as(
     Ok((link(s), true))
 }
 
-/// The [`crate::cap_store::CapEventHook`] the kernel registers (wave 11,
-/// wave 11; PORTWAIT's owner question 1): an io_ring binding dies
+/// The [`crate::cap_store::CapEventHook`] the kernel registers (owner
+/// decision): an io_ring binding dies
 /// with the capability it was made through and survives a move of it.
 ///
 ///  * `Revoked` of a `Cap<IoRing>`: every source that names

@@ -264,7 +264,7 @@ fn a_timeout_disarms_and_a_late_reply_wakes_nobody() {
     assert!(driver_unregister(kind));
 }
 
-/// Wave 15 (COHERENCE-AUDIT, dead client): a client that gives up cancels
+/// Dead client: a client that gives up cancels
 /// the request it queued, if the driver has not fetched it. Two requests
 /// queued, the FIRST one's client times out: the driver's next fetch is the
 /// second one, and then the queue is empty — the abandoned operation never
@@ -442,7 +442,7 @@ fn a_released_driver_wakes_its_armed_clients() {
 // waiting at once, a reply to the second published before the first took its
 // own overwrote it, and the first client slept to its deadline.
 //
-// Canary (run by hand, wave-9 PROXY2 report): `ReplyWaiters::deliver` writing
+// Canary (run by hand): `ReplyWaiters::deliver` writing
 // every reply into row 0 (one slot per kind again) fails the two tests below —
 // client A's withdraw returns B's reply or nothing.
 
@@ -583,7 +583,7 @@ impl ArmedOnly for Withdrawn {
 // as long as `running` says, and a clock that advances one tick per `now()`.
 // `polls` counts the reply tests.
 //
-// Canaries (run by hand, wave-9 PROXY2 report):
+// Canaries (run by hand):
 //   * drop both `env.peer_running()` checks (spin always) → the not-running
 //     test fails: it polls before blocking;
 //   * drop the `end` bound → the bounded test runs the clock to the deadline;
@@ -700,7 +700,7 @@ fn one_spin_per_block_and_a_timeout_still_times_out() {
 // park in the hold that queues the request and wakes it after. Same model as
 // above: a wake is recorded (and stamps the driver) or it is lost.
 //
-// Canaries (run by hand, wave 9 MLR3 report):
+// Canaries (run by hand):
 //   * `driver_submit_request_armed` no longer takes/wakes the park → the
 //     armed-submit test fails (no wake recorded).
 //   * `driver_fetch_or_park` does not record the park → same.
@@ -892,7 +892,7 @@ fn a_zeroed_slot_still_issues_token_one_first_and_files_the_first_reply() {
 // after its park ended (that park was already counted), and never a fetch
 // that took a request.
 //
-// Canary (by hand, DRV2 report): count in `driver_fetch_after_park` too → the
+// Canary (by hand): count in `driver_fetch_after_park` too → the
 // per-park count reads 2.
 
 #[test]

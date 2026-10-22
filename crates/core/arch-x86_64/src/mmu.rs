@@ -29,10 +29,10 @@
 //! write then invalidates every non-global entry of the incoming PCID, so a
 //! CPU never uses a translation cached before its latest switch into that
 //! address space. That is today's "full flush on switch" on the other ISAs
-//! (VM-DESIGN §0), restated per PCID, and it is what keeps the shootdown
+//! restated per PCID, and it is what keeps the shootdown
 //! rule in `tlb.rs` ("signal the CPUs whose CR3 names the root") sound:
 //! entries left under another PCID are unreachable until a switch-in that
-//! drops them. Keeping them (P2 of VM-DESIGN §2.4) is [`CR3_NOFLUSH`] plus an
+//! drops them. Keeping them across switches is [`CR3_NOFLUSH`] plus an
 //! ASID allocator with generations; nothing here has to change shape for it.
 //!
 //! **Global kernel leaves.** With Kconfig `X86_KERNEL_GLOBAL_PAGES`

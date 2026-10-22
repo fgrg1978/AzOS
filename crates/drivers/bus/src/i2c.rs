@@ -115,7 +115,7 @@ pub fn i2c_bus_lock_slot(bus: u8) -> Option<usize> {
 pub static I2C_BUS_LOCKS: [azos_sync::SpinLock<()>; I2C_BUS_COUNT] =
     [const { azos_sync::SpinLock::new(()) }; I2C_BUS_COUNT];
 
-// ── Queued transactions (wave 15, IO-QUEUES-AUDIT S1) ─────────────────────────
+// ── Queued transactions ─────────────────────────────────────────────────────────
 //
 // A caller that may not wait for the wire (the real-time `imu` task) queues a
 // transaction with `i2c_submit_read` and collects it later with `i2c_take`;

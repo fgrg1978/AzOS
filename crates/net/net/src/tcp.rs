@@ -1852,7 +1852,7 @@ fn connect_h<A: Into<IpAddr>>(dst_ip: A, dst_port: u16, src_port: u16) -> Option
 /// Like `connect`, but yields until the ARP cache has the destination MAC
 /// before issuing the SYN.
 ///
-/// U06 §4 comment audit (2026-09-26): this doc used to say the first
+/// Corrected 2026-09-26: this doc used to say the first
 /// `ip::send` inside `crate::send_syn_segment` "would normally trigger an
 /// ARP request and return -1" on a cold cache — stale. `ip::send` queues an
 /// unresolved frame instead of dropping it (see its own doc), so a plain
@@ -2714,7 +2714,7 @@ fn process_inbound_payload(
 ///
 /// Private by design: `handle_checked` is the only way in, so this cannot be
 /// reached without the mandatory checksum validation having run first.
-/// Re-verified 2026-09-26 (U06 §4 comment audit: the previous line numbers
+/// Re-verified 2026-09-26 (the previous line numbers
 /// here — 1256/1265/1267 — had already drifted false): `handle_checked` is
 /// `fn handle`'s sole call site, and that call is unconditionally preceded
 /// by the checksum-mismatch `return` in the same function, a few lines

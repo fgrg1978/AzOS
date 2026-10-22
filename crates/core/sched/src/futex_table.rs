@@ -11,7 +11,7 @@
 //!   `FUTEX_PRIVATE_FLAG`, and what a "shared" Linux futex on memory that is
 //!   not a shm region falls back to (that memory is the process's alone).
 //! * [`Key::Shared`]: `(object id, offset)`, the packed reference of a shm
-//!   region and the byte offset of the word in it (owner answer Q5). Two
+//!   region and the byte offset of the word in it (owner decision). Two
 //!   tasks that map the region at different addresses meet on it; no
 //!   physical address is ever a key. The native futex calls
 //!   (`SYS_FUTEX_WAIT`/`WAKE`) on a word of a shm region and a Linux futex

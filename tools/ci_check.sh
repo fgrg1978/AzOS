@@ -5644,7 +5644,7 @@ par "aarch64 fork refusal site" fork_refusal_probe_row "aarch64 fork refusal sit
 # its task still held its address space), `short` 0 (free pages back when
 # `waitpid` returned).
 #
-# Canaries, run by hand on both ISAs (EXIT2 report): `note_exit` moved back
+# Canaries, run by hand on both ISAs: `note_exit` moved back
 # above the exit hook -> `early=64` (and `short` > 0 in some runs, both ISAs); an early
 # `return` in `release_address_space_at_exit` -> `exit_teardowns=+0 reuse=64`.
 exit_storm_row() { # <label> <isa: rv|arm>
@@ -12122,7 +12122,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     # kernel that took the sector as absolute would have written the MBR and
     # LBA 63, and one that skipped the range check would print no scope line.
     #
-    # Canaries, run by hand (wave 9 FS2 report): `partition::resolve`
+    # Canaries, run by hand: `partition::resolve`
     # returning the relative sector unchanged turns captest's first write into
     # a refusal-free write of LBA 0 and the host check red; `block_io`
     # admitting every partition request removes the scope line and the record.
@@ -20567,7 +20567,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr
 echo after-lxthr \$?" 120 \
                 "lxthr: tls distinct per thread ok" "lxthr: done failures=0"
-            # Wave 15 (COHERENCE-AUDIT): `leader-cleartid-canary` never clears
+            # `leader-cleartid-canary` never clears
             # a thread-group leader's clear-tid word, so the thread left after
             # the leader's pthread_exit waits on musl's thread-list lock and
             # the child's backstop thread ends it after 3 s. A PASS row on the lines only that

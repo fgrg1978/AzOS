@@ -685,7 +685,7 @@ fn task_release_all_resources(tid: u32) {
             kprintln!("[FS] reclaimed {} fd(s) from task {}", freed, tid);
         }
     }
-    // Wave 15 (COHERENCE-AUDIT, dead client): a Linux module server's
+    // Dead client: a Linux module server's
     // unused verification tokens go with it instead of holding a slot until
     // some later grant evicts them.
     #[cfg(feature = "lx-server")]

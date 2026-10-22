@@ -1813,7 +1813,7 @@ fn storm_child(code: i32) -> (isize, isize, i32) {
 /// One line carries all of it, in one write, for the gate row; the same
 /// numbers are also checks, so `ALL PASSED` covers them.
 ///
-/// **Canaries** (run by hand, EXIT2 report): move `note_exit` back above the
+/// **Canaries** (run by hand): move `note_exit` back above the
 /// exit hook in `task_exit_with_code` and `early` counts every child; skip
 /// the destroy in `release_address_space_at_exit` and `reuse` (and `short`)
 /// are non-zero.

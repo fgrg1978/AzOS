@@ -177,7 +177,7 @@ pub mod block_host;
 // Wave 15: the kernel tracer's control call (632), the real file.
 #[path = "../../../../crates/core/syscall/src/trace_ctl.rs"]
 pub mod trace_ctl;
-// Wave 15 (COHERENCE-AUDIT, dead client): the module-token table, the real
+// Dead client: the module-token table, the real
 // file, and its exit release.
 #[path = "../../../../crates/core/syscall/src/module_tokens.rs"]
 pub mod module_tokens;

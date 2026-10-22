@@ -2173,7 +2173,7 @@ mod ina219_no_fabricated_battery {
     // for a nominal 1/`INA219_POLL_HZ` s, so a driver woken late (host load,
     // a lower-priority hart) under-counted the pack by exactly the lateness.
     //
-    // **Canary** (by hand, DRV2 report): make `poll` add `current_ma x
+    // **Canary** (by hand): make `poll` add `current_ma x
     // 100_000` per sample, ignoring `now_us` — the fixed cadence it replaced.
     // The irregular-interval, slow-cadence, gap and backwards-clock tests go
     // red (4); the first-sample test stays green (no interval to weigh).

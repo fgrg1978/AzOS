@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Which ring-3 task last left each wheel turning, so its death can stop the
-//! wheel (wave 15, COHERENCE-AUDIT; owner decision: a dead commander's
+//! wheel (owner decision: a dead commander's
 //! motors go to a SAFE STOP, recorded with its reason).
 //!
 //! The motor ops (`speed`, `direction`, `drive`) write a duty

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Queued I2C bus transactions and the DesignWare controller state machine
-//! that runs them (wave 15, IO-QUEUES-AUDIT row S1).
+//! that runs them.
 //!
 //! # Why
 //!

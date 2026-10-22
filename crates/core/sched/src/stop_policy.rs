@@ -94,7 +94,7 @@ impl Stop {
     }
 }
 
-// ── Forced-stop accounting (wave 15, COHERENCE-AUDIT) ─────────────────────
+// ── Forced-stop accounting ────────────────────────────────────────────────
 //
 // The machine-wide count of forced stops not yet consumed is what the timer
 // tick from user mode tests before looking at its own slot. It used to be

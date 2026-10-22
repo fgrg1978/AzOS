@@ -9,7 +9,7 @@
 //! graph then has zero slots. `WAIT_GRAPH` is y on every preset, and the
 //! cycle check below is not tied to a debug or lockdep build.
 //!
-//! # Model (SCHED-SYNC §2.4, owner answer Q4)
+//! # Model
 //!
 //! * A task is blocked on at most one object: the scheduler's frozen field
 //!   `blocked_on` (N6a) holds an `Option<`[`WaitObj`]`>`.
@@ -43,10 +43,9 @@
 //!   decision record (`azos_decision::Rule::WaitCycle`, a refusal: durable
 //!   with `DECISION_REFUSALS_DURABLE`, y on every preset) is written after
 //!   the undo, with the graph lock dropped.
-//! * **Depth cap** reached: boosting stops there (decision log, Q4: "at max
-//!   depth stop boosting"); the block itself succeeds and the cap is
-//!   counted ([`stats`]). Owner question recorded in INTERFACES.md: the Q4
-//!   table row says `EDEADLK` at the cap, the decision log says stop.
+//! * **Depth cap** reached: boosting stops there (owner decision: at max
+//!   depth stop boosting, no `EDEADLK`); the block itself succeeds and the
+//!   cap is counted ([`stats`]).
 //!
 //! # Lock order and context
 //!
@@ -1180,7 +1179,7 @@ impl<const N: usize> State<N> {
     /// Would `waiter`, now enqueued on `obj`, close a cycle? Follows owner
     /// -> blocked_on for at most [`PI_MAX_DEPTH`] links: a cycle is the walk
     /// reaching `waiter` or an object already visited. Beyond the cap no
-    /// cycle is reported (the block succeeds; owner question Q4). The
+    /// cycle is reported (the block succeeds; owner decision). The
     /// answer names the task that closes the cycle and the links followed.
     fn closes_cycle(&self, h: &dyn SchedPi, waiter: TaskId, obj: WaitObj) -> Option<Cycle> {
         if CANARY_NO_CYCLE_CHECK.load(Ordering::Relaxed) {

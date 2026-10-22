@@ -296,8 +296,8 @@ impl<T> Global<T> {
 
 // ── Object<T, LEVEL> ─────────────────────────────────────────────────────
 
-/// A lock per object, in a fixed level order (MODERN-OS-PLAN §2 #3:
-/// AS -> MemObj -> frame; object wait_lock -> owner pi_lock -> run queue):
+/// A lock per object, in a fixed level order (AS -> MemObj -> frame;
+/// object wait_lock -> owner pi_lock -> run queue):
 /// an Object of level L is taken only while every held Object is of a
 /// lower level. [`Object::lock_under`] proves the order at compile time;
 /// [`Object::lock`] has lockdep check it; two of one level go through

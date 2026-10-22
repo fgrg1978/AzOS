@@ -16,7 +16,7 @@
 //! so a CPU that ran the space earlier keeps its entries under that PCID:
 //! [`shootdown`] marks every CPU stale (`azos_arch_api::tlb_gen`), and each
 //! flushes every PCID at its next user switch. A per-address-space mask
-//! "ran it since its last flush" (VM-DESIGN §2.4) would narrow that.
+//! "ran it since its last flush" would narrow that.
 //!
 //! **Ordering (store-buffering, fenced on both sides).**
 //!   shooter:  store PTE;  mfence;  load AZOS_HART_CR3[c]

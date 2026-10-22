@@ -134,7 +134,7 @@ mod swap_file;
 // tmpfs.rs, same pattern as fat32/vfs/crash_log above. Its only dependency
 // beyond `alloc`/`core` is `azos_sync::SpinLock`, already satisfied by
 // the same `cap_test_sync` shim `vfs.rs` uses — no new shim needed. Pulled
-// so `TmpFs::read_at`/`write_at` (U09 §5 Q3) run against the REAL
+// so `TmpFs::read_at`/`write_at` run against the REAL
 // `tmpfs_read_at`/`tmpfs_write_at`, not a hand-copy of them.
 #[allow(dead_code)]
 #[path = "../../../../crates/fs/fs/src/tmpfs.rs"]
@@ -2257,7 +2257,7 @@ mod vfs_open_close {
         name
     }
 
-    // ── U09 §5 Q3 — `FileSystem::read_at`/`write_at` on the REAL Fat32Fs ──
+    // ── `FileSystem::read_at`/`write_at` on the REAL Fat32Fs ──
     //
     // The property that matters is not "the bytes round-trip" (`read_all`/
     // `write_all` already prove that) — it is that `read_at`/`write_at` do
@@ -2393,7 +2393,7 @@ mod fsync_tickets {
     }
 }
 
-/// U09 §5 Q3 — `FileSystem::read_at`/`write_at` for `TmpFs`.
+/// `FileSystem::read_at`/`write_at` for `TmpFs`.
 ///
 /// tmpfs is already RAM-resident, so "streaming" buys it nothing in cost —
 /// what these tests pin is that the SAME trait signature FAT32 streams

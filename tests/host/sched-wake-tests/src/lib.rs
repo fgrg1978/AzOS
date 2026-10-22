@@ -1647,7 +1647,7 @@ pub mod donation;
 /// the window and the restore then writes the base over it — the target ends
 /// at base with a donation outstanding, which is the bug.
 ///
-/// **Canary (run by hand, wave-9 PROXY2 report):** delete `c.lock()` /
+/// **Canary (run by hand):** delete `c.lock()` /
 /// `c.unlock()` from `restore_locked` and `the_last_restore_cannot_swallow_a_racing_boost`
 /// goes red with `(24, 1)`.
 #[cfg(test)]

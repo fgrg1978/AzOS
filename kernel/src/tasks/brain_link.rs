@@ -44,8 +44,8 @@ fn send_sleeping(fd: azos_net::tcp::TcpHandle, bytes: &[u8]) -> usize {
     fd.send_all_until(bytes, BRAIN_SEND_BUDGET_US, net_wait_sleep)
 }
 
-/// `send_all_with_yield`, for the camera task: still a yield count (see the
-/// wave 10 INV2 report's list of the waits left counted in yields).
+/// `send_all_with_yield`, for the camera task: one of the waits still
+/// bounded by a yield count rather than by time.
 pub(crate) fn send_yielding(fd: azos_net::tcp::TcpHandle, bytes: &[u8]) -> usize {
     fd.send_all_with_yield(bytes, azos_sched::task_yield)
 }

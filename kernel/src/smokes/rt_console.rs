@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! A real-time task's kernel log lines only append to the console (wave 15,
-//! IO-QUEUES-AUDIT row C2; Kconfig `CONSOLE_RT_APPEND_ONLY`).
+//! A real-time task's kernel log lines only append to the console (Kconfig
+//! `CONSOLE_RT_APPEND_ONLY`).
 //!
 //! A probe task in the RT band prints a burst of kernel lines (more bytes
 //! than the UART TX ring and the deferred buffer hold together). Before wave

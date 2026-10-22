@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! K1 (IO-QUEUES-AUDIT): an io_ring submitter never waits on the disk.
+//! An io_ring submitter never waits on the disk.
 //!
 //! A REAL-TIME task submits `N_WRITES` `OP_FILE_WRITE` entries, the last one
 //! linked (`SQE_F_LINK`) to an `OP_FSYNC`, in ONE submit, and returns. Owner

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Quiescent-state-based read-copy-update (Kconfig RCU_QSBR, wave 15 N4;
-//! owner answer Q2: QSBR only, callbacks off the RT CPUs).
+//! Quiescent-state-based read-copy-update (Kconfig RCU_QSBR; owner
+//! decision: QSBR only, callbacks off the RT CPUs).
 //!
 //! **Readers** take no lock: [`read`] (or [`read_in`] with a
 //! [`PreemptOff`] token already in hand) holds preemption off on this CPU

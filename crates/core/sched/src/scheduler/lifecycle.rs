@@ -1436,7 +1436,7 @@ unsafe fn group_exit(idx: usize, tid: u32, code: i32) -> i32 {
     if lead != tid {
         member_exit(idx, tid, lead, code);
     }
-    // Wave 15 (COHERENCE-AUDIT): the leader's own clear-tid word (Linux
+    // The leader's own clear-tid word (Linux
     // `set_tid_address`; musl's start code passes its thread-list lock) is
     // cleared and woken as a member's is, while the address space is still
     // installed, and, as Linux `mm_release` does, only while another thread

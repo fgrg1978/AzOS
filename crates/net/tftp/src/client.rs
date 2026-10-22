@@ -96,7 +96,7 @@ const MSG_GAVE_UP: &str = "Timed out";
 
 /// Polls to spend re-trying a send that returned nonzero.
 ///
-/// U06 §4 comment audit (2026-09-26): this used to say the IP layer returns
+/// Corrected 2026-09-26: this used to say the IP layer returns
 /// -1 on an ARP cache miss and "expects the caller to retry once a reply
 /// lands". `ip::send` no longer does that — an unresolved destination is
 /// QUEUED (rc 0), not refused, and the frame is released once
@@ -246,7 +246,7 @@ fn fetch_inner(
     // ── Build + send the RRQ. ───────────────────────────────────────
     let mut rrq_buf = [0u8; TFTP_RRQ_MAX_BYTES];
     let rrq_len = build_rrq(filename, &mut rrq_buf)?;
-    // U06 §4 comment audit (2026-09-26): the first send to a new destination
+    // Corrected 2026-09-26: the first send to a new destination
     // used to almost always return -1 on a cold ARP cache; `ip::send` now
     // queues that frame instead (rc 0) and releases it once
     // `arp::arp_resolved` runs, so this call typically succeeds on its
