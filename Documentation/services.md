@@ -321,8 +321,9 @@ console, else the holder's generation) and the drivers read it for every event
 (`azos_drv_input::keymap::route`). The stream carries every event and marks the ones the console
 was given, which the server delivers to nobody, so no key reaches two parties: a passphrase
 typed into a window never reaches the shell. The chord sets the word back to the console in the
-driver itself, so the console's login prompt gets the keyboard whatever the server does. A
-serial line is not arbitrated: its bytes are the console's.
+driver itself, so the console's login prompt gets the keyboard whatever the server does; the
+compositor's grant that opens the gate afterwards leaves the keyboard with the console (it is
+given straight back). A serial line is not arbitrated: its bytes are the console's.
 
 Two threads: the main thread accepts and dispatches (the row's `READ` grant stamps the endpoint
 with the TID the program started as, and the kernel hands a call only to the thread with that

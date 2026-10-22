@@ -28,7 +28,9 @@
 //! (`STREAM_CONSOLE`): the server keeps its state from them and delivers them
 //! to nobody, so an event goes to one party only. The word moves after the new
 //! holder is in place and before the old one is let go, and a grant first
-//! hands the old holder what the stream already had for it.
+//! hands the old holder what the stream already had for it. The one grant that
+//! leaves the keyboard with the console is the trusted surface's opening of the
+//! gate below: it is given straight back.
 //!
 //! **The Secure Attention Key** is Ctrl+Alt+Delete (either Ctrl, either Alt):
 //! the Delete press that completes the chord, its repeats and its release are
@@ -430,14 +432,21 @@ impl<H: Host> Input for Service<H> {
         };
         self.grants = generation;
         // The grant is whole: the trusted surface has taken the focus the chord
-        // took, and the plain callers may ask for it again.
+        // took, and the plain callers may ask for it again. That grant only
+        // opens the gate (the compositor gives it straight back): the keyboard
+        // stays the console's, whose prompt is the trusted path the chord
+        // opened, so nothing typed there in that instant is lost to a ring
+        // nobody reads.
+        let opens_gate = trusted && self.pending;
         if trusted {
             self.pending = false;
         }
         // The new holder first, then the drivers' word, then the old holder
         // goes: no event is routed to the console in between.
         let old = self.holder.replace(Holder { generation, warrant, ring });
-        self.host.set_focus(generation);
+        if !opens_gate {
+            self.host.set_focus(generation);
+        }
         let from = old.map_or(0, |h| {
             self.retire(h);
             h.generation

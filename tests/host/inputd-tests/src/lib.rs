@@ -831,4 +831,37 @@ mod inputd {
         assert_eq!(w.ring(0), [A, (EV_KEY, KEY_A, 0)], "the first holder's keys");
         assert!(w.ring(1).is_empty(), "and none of them in the second ring");
     }
+
+    /// The trusted surface's grant that opens the gate after the chord leaves
+    /// the keyboard with the console: the compositor takes the focus only to
+    /// hand it on and gives it straight back, and what the user types at the
+    /// console's prompt in that instant must not land in a ring nobody reads.
+    /// A trusted grant with the gate open takes the keyboard like any other.
+    ///
+    /// **Canary.** Write the word for every grant: the word is the trusted
+    /// grant's generation and the assertion goes red (the QEMU row "login:
+    /// console (keyboard chord, rv)" lost the `e` of `alice` that way).
+    #[test]
+    fn the_trusted_hand_on_leaves_the_keyboard_with_the_console() {
+        let w = Fake::default();
+        let l = lp(&w);
+        let g = InputClient::new(&l).take_focus().unwrap().value.generation;
+        assert_eq!(w.word(), g);
+        w.send(&[CTRL, ALT, DEL]);
+        pump(&l);
+        assert!(l.svc.borrow().pending());
+        assert_eq!(w.word(), 0);
+        *l.badge.borrow_mut() = TRUSTED_BADGE;
+        let t = InputClient::new(&l).take_focus().unwrap().value.generation;
+        assert_eq!(l.svc.borrow().holder(), t, "the trusted surface holds the grant");
+        assert_eq!(w.word(), 0, "and the keyboard is still the console's");
+        // Given back: nothing changes for the keyboard.
+        *l.badge.borrow_mut() = warrant_badge(t);
+        assert!(InputClient::new(&l).release().unwrap().is_ok());
+        assert_eq!(w.word(), 0);
+        // With the gate open the trusted surface is a holder like any other.
+        *l.badge.borrow_mut() = TRUSTED_BADGE;
+        let t2 = InputClient::new(&l).take_focus().unwrap().value.generation;
+        assert_eq!(w.word(), t2);
+    }
 }
