@@ -596,19 +596,58 @@ const BRAIN_RX_CARRY_MAX: usize = azos_behavior::encrypt_link::FRAME_HEAD + BRAI
 /// place in this buffer, so there is no second copy of a message. With the
 /// transport's strict message counter a frame dropped at a read boundary would
 /// end the session, so the tail is kept.
+///
+/// With Kconfig multi-stream the records travel inside `[stream][len]` frames
+/// that TCP cuts and coalesces the same way; `demux` walks them across reads
+/// and only the control stream's bytes reach the carry ([`feed_wire`]).
+///
+/// [`feed_wire`]: BrainRxStream::feed_wire
 pub(crate) struct BrainRxStream {
     carry: [u8; BRAIN_RX_CARRY_MAX],
     carry_len: usize,
+    demux: azos_multi_stream::StreamDemux,
 }
 
 impl BrainRxStream {
     const fn new() -> Self {
-        BrainRxStream { carry: [0u8; BRAIN_RX_CARRY_MAX], carry_len: 0 }
+        BrainRxStream {
+            carry: [0u8; BRAIN_RX_CARRY_MAX],
+            carry_len: 0,
+            demux: azos_multi_stream::StreamDemux::new(),
+        }
     }
 
     /// Forget any tail from a previous session.
     pub(crate) fn reset(&mut self) {
         self.carry_len = 0;
+        self.demux.reset();
+    }
+
+    /// [`feed`](Self::feed) one `recv()`'s bytes as they come off the socket:
+    /// with `multi_stream`, through the stream demultiplexer first, every
+    /// control-stream piece of the read in order (other streams are skipped).
+    /// Returns the brain-protocol bytes appended to `out`.
+    pub(crate) fn feed_wire(
+        &mut self,
+        link: &mut azos_behavior::encrypt_link::Link,
+        input: &[u8],
+        multi_stream: bool,
+        out: &mut [u8],
+    ) -> Result<usize, azos_behavior::encrypt_link::RecordError> {
+        if !multi_stream {
+            return self.feed(link, input, out);
+        }
+        let mut demux = self.demux;
+        let mut filled = 0usize;
+        let walked = demux.feed(input, |sid, piece| {
+            if sid != azos_multi_stream::STREAM_CONTROL {
+                return Ok(());
+            }
+            filled += self.feed(link, piece, out.get_mut(filled..).unwrap_or(&mut []))?;
+            Ok(())
+        });
+        self.demux = demux;
+        walked.map(|()| filled)
     }
 
     /// Append `input`, open every whole frame, and append each message (a

@@ -387,20 +387,15 @@ pub(crate) fn behavior_task(_: usize) {
                 // message the buffer has no room for, or a terminal transport
                 // event.
                 let n = if n_raw > 0 {
-                    // Demux first (outermost): strip [stream_id][len]
-                    // and keep only STREAM_CONTROL payloads for the brain path.
-                    // Non-control streams (camera/lidar) are ignored here.
-                    let ctrl: &[u8] = if azos_config::CFG_MULTI_STREAM.load(Ordering::Relaxed) {
-                        match azos_multi_stream::unwrap(&raw_buf[..n_raw as usize]) {
-                            Some((sid, _, payload))
-                                if sid == azos_multi_stream::STREAM_CONTROL => payload,
-                            _ => &[],
-                        }
-                    } else {
-                        &raw_buf[..n_raw as usize]
-                    };
+                    // Demux first (outermost): with multi-stream the read is
+                    // walked as `[stream_id][len]` frames, which TCP cuts and
+                    // coalesces like the records inside them; only
+                    // STREAM_CONTROL bytes reach the brain path, and camera
+                    // or lidar frames are skipped whole.
+                    let raw = &raw_buf[..n_raw as usize];
+                    let multi_stream = azos_config::CFG_MULTI_STREAM.load(Ordering::Relaxed);
                     match link.as_mut() {
-                        Some(l) if !ctrl.is_empty() => {
+                        Some(l) => {
                             // Drain EVERY coalesced message, not just the first.
                             //
                             // TCP gives no reason for the brain's send()
@@ -415,7 +410,7 @@ pub(crate) fn behavior_task(_: usize) {
                             // concatenated into `recv_buf`; the K-C3/C4 parser
                             // below then walks them all, since the brain
                             // protocol is self-delimiting (MAGIC + len + CRC).
-                            match brain_rx_stream().feed(l, ctrl, &mut recv_buf) {
+                            match brain_rx_stream().feed_wire(l, raw, multi_stream, &mut recv_buf) {
                                 Ok(filled) => filled as i32,
                                 Err(e) => {
                                     link_terminal = Some(e);
@@ -423,7 +418,7 @@ pub(crate) fn behavior_task(_: usize) {
                                 }
                             }
                         }
-                        _ => 0,
+                        None => 0,
                     }
                 } else {
                     n_raw

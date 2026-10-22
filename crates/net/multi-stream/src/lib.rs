@@ -139,6 +139,75 @@ pub fn unwrap(frame: &[u8]) -> Option<(u8, usize, &[u8])> {
     Some((stream_id, payload_len, payload))
 }
 
+// ── StreamDemux: the receive side over a byte stream ─────────────────────────
+
+/// Splits a TCP byte stream back into its streams, across reads.
+///
+/// TCP keeps no `send()` boundary: one `recv()` can hold several frames, or
+/// end inside a header or a payload. [`unwrap`] parses one whole frame from
+/// one buffer; applied to each read it dropped every frame after the first and
+/// every frame torn across two reads. This walks the stream instead and hands
+/// each payload on in the pieces the reads cut it into, tagged with its
+/// stream: a consumer that reassembles its own records (the brain link's
+/// record layer does) needs no frame-sized buffer here, and a frame of a
+/// stream the consumer ignores costs no copy. State is a header in progress
+/// and the bytes left of the current payload, so a frame of any length, up to
+/// [`MAX_PAYLOAD_LEN`], passes.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamDemux {
+    head: [u8; HEADER_LEN],
+    /// Header bytes collected so far (`HEADER_LEN`: the header is whole and
+    /// `left` counts down the payload).
+    head_len: usize,
+    /// Payload bytes of the current frame not yet handed on.
+    left: usize,
+}
+
+impl StreamDemux {
+    pub const fn new() -> Self {
+        StreamDemux { head: [0; HEADER_LEN], head_len: 0, left: 0 }
+    }
+
+    /// Forget a frame in progress (a new connection starts at a header).
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Walk `input`, calling `f(stream_id, piece)` for every payload piece it
+    /// holds, in stream order. A payload torn across reads comes as two or
+    /// more pieces; an empty payload calls nothing. Stops at the first `Err`
+    /// of `f` and returns it (the caller ends the connection: the walk's
+    /// position is then meaningless).
+    pub fn feed<E>(
+        &mut self,
+        mut input: &[u8],
+        mut f: impl FnMut(u8, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        while !input.is_empty() {
+            if self.head_len < HEADER_LEN {
+                let take = (HEADER_LEN - self.head_len).min(input.len());
+                self.head[self.head_len..self.head_len + take].copy_from_slice(&input[..take]);
+                self.head_len += take;
+                input = &input[take..];
+                if self.head_len < HEADER_LEN {
+                    break;
+                }
+                self.left = u16::from_le_bytes([self.head[1], self.head[2]]) as usize;
+            }
+            let take = self.left.min(input.len());
+            if take != 0 {
+                f(self.head[0], &input[..take])?;
+                input = &input[take..];
+                self.left -= take;
+            }
+            if self.left == 0 {
+                self.head_len = 0;
+            }
+        }
+        Ok(())
+    }
+}
+
 // ── Helper: camera stream ID ──────────────────────────────────────────────────
 
 /// Return the stream ID for camera index `n` (0-based).

@@ -433,3 +433,100 @@ mod i2_holdoff {
         assert!(fifo[0] < fifo[1] && fifo[1] < fifo[2], "FIFO hold-off must grow: {fifo:?}");
     }
 }
+
+/// `StreamDemux`: the receive side across `recv()` boundaries (the brain
+/// link's control path, kernel/src/tasks/behavior.rs).
+#[cfg(test)]
+mod demux_tests {
+    use azos_multi_stream::{wrap, StreamDemux, STREAM_CAMERA_BASE, STREAM_CONTROL};
+
+    fn frame(sid: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8; 3 + payload.len()];
+        let n = wrap(sid, payload, &mut out).unwrap();
+        out.truncate(n);
+        out
+    }
+
+    /// The control stream's bytes, the input cut into `reads`.
+    fn control_of(reads: &[&[u8]]) -> Vec<u8> {
+        let mut d = StreamDemux::new();
+        let mut got = Vec::new();
+        for r in reads {
+            d.feed(r, |sid, piece| -> Result<(), ()> {
+                if sid == STREAM_CONTROL {
+                    got.extend_from_slice(piece);
+                }
+                Ok(())
+            })
+            .unwrap();
+        }
+        got
+    }
+
+    /// Two frames in one read: both reach the consumer. Canary: one frame
+    /// per read (the old per-read `unwrap`) loses the second.
+    #[test]
+    fn every_frame_of_one_read_is_handed_on() {
+        let wire = [frame(STREAM_CONTROL, b"first"), frame(STREAM_CONTROL, b"second")].concat();
+        assert_eq!(control_of(&[&wire]), b"firstsecond");
+    }
+
+    /// Every cut of the stream into two reads, inside a header or a payload,
+    /// gives the same bytes as one read. Canary: a torn frame dropped.
+    #[test]
+    fn a_frame_torn_across_reads_is_carried() {
+        let wire = [frame(STREAM_CONTROL, b"abcdefgh"), frame(STREAM_CONTROL, b"ij")].concat();
+        for cut in 0..=wire.len() {
+            assert_eq!(control_of(&[&wire[..cut], &wire[cut..]]), b"abcdefghij", "cut at {cut}");
+        }
+        let bytes: Vec<&[u8]> = wire.chunks(1).collect();
+        assert_eq!(control_of(&bytes), b"abcdefghij");
+    }
+
+    /// A frame of another stream is skipped whole, however it is cut, and
+    /// the control frames around it pass; an empty frame passes nothing.
+    #[test]
+    fn other_streams_and_empty_frames_are_skipped() {
+        let camera = vec![0xEEu8; 300];
+        let wire = [
+            frame(STREAM_CONTROL, b"one"),
+            frame(STREAM_CAMERA_BASE, &camera),
+            frame(STREAM_CONTROL, b""),
+            frame(STREAM_CONTROL, b"two"),
+        ]
+        .concat();
+        assert_eq!(control_of(&[&wire]), b"onetwo");
+        let reads: Vec<&[u8]> = wire.chunks(7).collect();
+        assert_eq!(control_of(&reads), b"onetwo");
+    }
+
+    /// The consumer's refusal stops the walk and comes back.
+    #[test]
+    fn the_consumers_error_is_returned() {
+        let wire = [frame(STREAM_CONTROL, b"x"), frame(STREAM_CONTROL, b"y")].concat();
+        let mut d = StreamDemux::new();
+        let mut calls = 0;
+        let r = d.feed(&wire, |_, _| {
+            calls += 1;
+            Err("refused")
+        });
+        assert_eq!(r, Err("refused"));
+        assert_eq!(calls, 1);
+    }
+
+    /// `reset` drops a frame in progress: the next byte is a header.
+    #[test]
+    fn reset_starts_at_a_header() {
+        let mut d = StreamDemux::new();
+        let torn = frame(STREAM_CONTROL, b"lost");
+        d.feed(&torn[..4], |_, _| -> Result<(), ()> { Ok(()) }).unwrap();
+        d.reset();
+        let mut got = Vec::new();
+        d.feed(&frame(STREAM_CONTROL, b"next"), |_, p| -> Result<(), ()> {
+            got.extend_from_slice(p);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(got, b"next");
+    }
+}
