@@ -7,6 +7,9 @@ publish = false
 description = "Host stand-in for azos_ipc, used only by tests/host/syscall-tests. NOT part of the kernel."
 
 [features]
+# `crates/core/ipc/src/irq_bind.rs` gates its in-kernel-test hooks on
+# `any(test, feature = "ktest")`; declared so that cfg is a known one here.
+ktest = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.
