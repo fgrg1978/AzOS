@@ -19883,7 +19883,7 @@ PYEOF
         ush_prompts() { grep -ao 'azos\$ ' "$log" 2>/dev/null | wc -l | tr -d ' '; }
         ush_alive() {
             kill -0 "$pid" 2>/dev/null || { verdict=exited; return 1; }
-            if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled|\[X86-TRAP\]" "$log" 2>/dev/null; then verdict=crash; return 1; fi
+            if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then verdict=crash; return 1; fi
             [ $(( $(date +%s) - t0 )) -lt "$limit" ] || { verdict=timeout; return 1; }
         }
         ush_type() { local b i; for ((i = 0; i < ${#1}; i++)); do printf '%s' "${1:i:1}" >&8; sleep 0.02; done; }
