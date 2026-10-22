@@ -417,6 +417,23 @@ trap_return:
     # hart run as the one the trap was taken on.  The tp the hart is
     # currently running with is the correct one, so leave it alone:
     # `restore_to_smode` never loads it.
+    #
+    # K1 L14: before the user's tp replaces this hart's id, publish the root
+    # the `csrw satp` below installs (`AZOS_HART_SATP[tp]`, tlb.rs), fenced,
+    # as context_switch.S and x86_64's trap_return publish before theirs: a
+    # remote `tlb::shootdown` either sees it or this hart's walk after the
+    # sfence sees the shooter's PTE store. Only the U-mode path: s2 is a satp
+    # only for an exec consumed on a syscall, which returns to U. t3/t4 come
+    # back from the frame in `restore_regs`.
+    beqz s2, 1f
+    li   t3, MAX_HARTS          # AZOS_HART_SATP is NR_CPUS long
+    bgeu tp, t3, 1f
+    la   t3, AZOS_HART_SATP
+    slli t4, tp, 3
+    add  t3, t3, t4
+    sd   s2, 0(t3)
+    fence rw, rw
+1:
     ld x4, 32(sp)               # SPP=0 -> returning to U-mode: user's own tp
 
 restore_regs:
@@ -581,6 +598,16 @@ trap_native_return:
     csrw sscratch, t2                # kernel SP for the next trap
     csrw sepc, t1
     beqz a0, .Lnative_no_pt_switch
+    # Published first, as `trap_return` does (K1 L14); tp is still this
+    # hart's id, and t3/t4 are zeroed below.
+    li   t3, MAX_HARTS
+    bgeu tp, t3, 1f
+    la   t3, AZOS_HART_SATP
+    slli t4, tp, 3
+    add  t3, t3, t4
+    sd   a0, 0(t3)
+    fence rw, rw
+1:
     csrw satp, a0
     sfence.vma zero, zero
 .Lnative_no_pt_switch:
