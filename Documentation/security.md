@@ -199,10 +199,10 @@ Source: `config/Kconfig.mitigations`,
 `crates/core/arch-x86_64/src/ext/retpoline.rs`,
 `crates/core/limits/src/nospec.rs`.
 
-Every mitigation is a switch in `make config`; none is forced. A threat-model
-choice (`THREAT_RING3_IMAGE`, `THREAT_THIRD_PARTY_CODE`,
-`THREAT_PHYSICAL_ACCESS`) sets defaults with `imply`, never `select`, so a
-switch set by hand wins.
+Every mitigation is a switch in `make config`; none is forced. The threat model
+is the security posture (`SECURITY_*`, `config/Kconfig.preset`): the
+physical-access postures (`SECURITY_SEPARATION_STATIC`, `SECURITY_CONFIDENTIAL`)
+set defaults with `imply`, never `select`, so a switch set by hand wins.
 
 **Probe, not vendor name.** A verdict is a pure function of what the CPU
 reports (host-testable): architectural capability bits first (x86:

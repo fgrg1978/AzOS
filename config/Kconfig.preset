@@ -236,36 +236,68 @@ choice
                                  PRESET_SERVER || PRESET_FIRMWARE || PRESET_WEARABLE
     default SECURITY_GENERAL
     help
-      How much the image trusts what runs on it. It sets the default of
-      OTA_SIG_MANDATORY, of the threat model ("Mitigations") and, for
-      Hardened, of KASLR (require); every switch it sets can be changed by
-      hand.
+      How much the image trusts what runs on it, and so who it defends
+      against (the threat model, which was a separate THREAT choice until
+      2026-10-22). It sets the default of OTA_SIG_MANDATORY, of the
+      mitigation switches it implies below ("Mitigations", "Security") and,
+      for Hardened, of KASLR (require); it never forces one (`imply`, not
+      `select`), and a switch set by hand wins. Each posture includes the
+      ones above it. Every mitigation that exists in code is on by default
+      in every posture (MITIGATION_SPECTRE_V1_INDEX, INFER_MODEL_SIG_REQUIRED),
+      so only the physical-access postures change a mitigation default.
 
     config SECURITY_GENERAL
         bool "General"
         help
-          The base threat model (a compromised ring-3 image). No default
-          beyond the switches' own.
+          The base threat model: an image on the allow-list is compromised
+          and attacks the kernel and the other images through syscalls and
+          shared hardware. No default beyond the switches' own.
 
     config SECURITY_HARDENED
         bool "Hardened"
         help
-          Third-party code runs in ring 3. Unsigned OTA images are refused
+          Third-party code runs in ring 3 (applications, drivers, models; no
+          mitigation specific to it exists in the tree yet, see the "not
+          implemented" lines in config/Kconfig.mitigations). Unsigned OTA images are refused
           (OTA_SIG_MANDATORY starts on) and the kernel image must be slid at
           boot (KASLR starts at require: an image without a seed does not
           boot).
 
     config SECURITY_SEPARATION_STATIC
         bool "Separation, static"
+        imply CONSOLE_LOCKDOWN
+        imply SECURE_BOOT_ENFORCED
+        imply OTA_SIG_MANDATORY
+        imply LINK_PROVISIONING_ENFORCED
         help
           The device can be touched and its partitions are fixed at build
-          time. Unsigned OTA images are refused, and the threat model is
-          "Physical access to the device".
+          time: the attacker can reach the console, the removable FAT
+          volume (also exposed over USB mass storage) and the boot media.
+          Unsigned OTA images are refused, and on top of the base posture it
+          implies:
+            CONSOLE_LOCKDOWN      no kernel console; the ring-3 user
+                                  shell is unprivileged unless a signed
+                                  topology row grants it more;
+            SECURE_BOOT_ENFORCED  boot halts on an unsigned or badly
+                                  signed kernel image ("Security");
+            OTA_SIG_MANDATORY     unsigned OTA images are refused;
+            LINK_PROVISIONING_ENFORCED
+                                  boot halts without a link key, the
+                                  handshake is refused on an unseeded
+                                  entropy pool, and the UART bridge
+                                  (brain-protocol frames outside any
+                                  Noise session) is down.
+          Each implied switch carries its own cost and deployment
+          requirement; read its help before building with this posture.
 
     config SECURITY_CONFIDENTIAL
         bool "Confidential"
+        imply CONSOLE_LOCKDOWN
+        imply SECURE_BOOT_ENFORCED
+        imply OTA_SIG_MANDATORY
+        imply LINK_PROVISIONING_ENFORCED
         help
-          As separation-static, for workloads kept apart from the host:
+          As separation-static (the same implied switches), for workloads kept apart from the host:
           VIRT starts at `split`.
 
 endchoice

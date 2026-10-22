@@ -482,29 +482,34 @@ def test_domain_defaults_to_generic_and_robot_type_is_wired() -> None:
 
 
 def test_threat_profile_implies_never_forces() -> None:
-    """The physical-access profile turns CONSOLE_LOCKDOWN on by default, a
-    hand-set n still wins, and the base profile changes no default."""
+    """The physical-access security postures (separation-static and
+    confidential: the threat model is the SECURITY axis) turn CONSOLE_LOCKDOWN
+    on by default, a hand-set n still wins, and the base posture changes no
+    default."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         base = _expand([], t, "a.config")
-        assert "CONFIG_THREAT_RING3_IMAGE=y" in base
+        assert "CONFIG_SECURITY_GENERAL=y" in base
         assert "# CONFIG_CONSOLE_LOCKDOWN is not set" in base
         assert "CONFIG_MITIGATION_SPECTRE_V1_INDEX=y" in base
-        phys = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_THREAT_PHYSICAL_ACCESS=y"], t, "b.config")
-        for sym in ("CONSOLE_LOCKDOWN", "SECURE_BOOT_ENFORCED", "OTA_SIG_MANDATORY",
-                    "LINK_PROVISIONING_ENFORCED", "MITIGATION_SPECTRE_V1_INDEX"):
-            assert f"CONFIG_{sym}=y" in phys, f"physical-access profile did not imply {sym}"
+        for posture in ("SEPARATION_STATIC", "CONFIDENTIAL"):
+            phys = _expand(["CONFIG_PRESET_ROBOT=y", f"CONFIG_SECURITY_{posture}=y"], t, "b.config")
+            for sym in ("CONSOLE_LOCKDOWN", "SECURE_BOOT_ENFORCED", "OTA_SIG_MANDATORY",
+                        "LINK_PROVISIONING_ENFORCED", "MITIGATION_SPECTRE_V1_INDEX"):
+                assert f"CONFIG_{sym}=y" in phys, f"SECURITY_{posture} did not imply {sym}"
+        hard = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_SECURITY_HARDENED=y"], t, "h.config")
+        assert "# CONFIG_CONSOLE_LOCKDOWN is not set" in hard, "hardened implied the physical-access set"
         # The brain-link switch exists only in the Robot domain (wave 11).
-        gen = _expand(["CONFIG_THREAT_PHYSICAL_ACCESS=y"], t, "g.config")
+        gen = _expand(["CONFIG_SECURITY_SEPARATION_STATIC=y"], t, "g.config")
         assert not any(l.startswith("CONFIG_LINK_PROVISIONING_ENFORCED") for l in gen), (
             "LINK_PROVISIONING_ENFORCED reached a Generic image, which has no brain link"
         )
-        off = _expand(["CONFIG_THREAT_PHYSICAL_ACCESS=y",
+        off = _expand(["CONFIG_SECURITY_SEPARATION_STATIC=y",
                        "# CONFIG_CONSOLE_LOCKDOWN is not set"], t, "c.config")
         assert "# CONFIG_CONSOLE_LOCKDOWN is not set" in off, (
-            "a threat profile forced a mitigation the user turned off"
+            "a security posture forced a mitigation the user turned off"
         )
 
 
@@ -1104,24 +1109,24 @@ def test_gateway_raises_network_defaults_on_edge() -> None:
 
 
 def test_industrial_preset_starts_with_the_physical_access_threat_model() -> None:
-    """The industrial preset sets SECURITY separation-static, which defaults the
-    threat model to physical access (and so its implied mitigations); the user
-    can still pick another profile."""
+    """The industrial preset sets SECURITY separation-static, the physical-access
+    threat model (and so its implied mitigations); the user can still pick
+    another posture."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         i = _expand(["CONFIG_PRESET_INDUSTRIAL=y"], t, "i.config")
         assert "CONFIG_USE_INDUSTRIAL=y" in i and "CONFIG_SECURITY_SEPARATION_STATIC=y" in i
-        assert "CONFIG_THREAT_PHYSICAL_ACCESS=y" in i
         for sym in ("CONSOLE_LOCKDOWN", "SECURE_BOOT_ENFORCED", "OTA_SIG_MANDATORY"):
             assert f"CONFIG_{sym}=y" in i, f"Industrial did not get {sym}"
         feats = _bridge_args(t / "i.config")
         assert "secure-boot-enforced" in feats, f"Industrial: {feats}"
-        back = _expand(["CONFIG_PRESET_INDUSTRIAL=y", "CONFIG_THREAT_RING3_IMAGE=y"], t, "b.config")
-        assert "CONFIG_THREAT_RING3_IMAGE=y" in back, "the domain forced the threat model"
+        back = _expand(["CONFIG_PRESET_INDUSTRIAL=y", "CONFIG_SECURITY_GENERAL=y"], t, "b.config")
+        assert "CONFIG_SECURITY_GENERAL=y" in back, "the domain forced the security posture"
+        assert "# CONFIG_CONSOLE_LOCKDOWN is not set" in back, "the general posture kept the lockdown"
         g = _expand([], t, "g.config")
-        assert "CONFIG_THREAT_RING3_IMAGE=y" in g
+        assert "CONFIG_SECURITY_GENERAL=y" in g
 
 
 def test_microkernel_implies_ring3_placement() -> None:

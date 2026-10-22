@@ -83,8 +83,8 @@ config USE_INDUSTRIAL
     help
       Control equipment with timing and fault-containment needs.
       Mmap commits at map time (MM_DEMAND_PAGING starts off). The
-      threat model comes from SECURITY (PRESET_INDUSTRIAL sets
-      separation-static, which starts it at "Physical access to the
+      threat model is the SECURITY posture (PRESET_INDUSTRIAL sets
+      separation-static, the physical-access one: "Physical access to the
       device"). Existing pieces: the CAN
       driver (crates/drivers/bus/src/can.rs), the control-loop
       rollback (CONTROL_TXN_TICKS) under "Scheduling, IPC & timing".

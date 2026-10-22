@@ -1,77 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# config/Kconfig.mitigations — Threat model and mitigations
+# config/Kconfig.mitigations — Mitigations
 #
 # Owner decision (wave 11): every mitigation is a switch in `make config`;
-# none is forced on. A threat-model profile sets the DEFAULTS of the
-# mitigation switches with `imply`, never `select`: each switch can still be
-# turned off by hand under any profile. Only mitigations that exist in code
+# none is forced on. The threat model is the SECURITY posture
+# (config/Kconfig.preset), which sets the DEFAULTS of the mitigation
+# switches with `imply`, never `select`: each switch can still be turned off
+# by hand under any posture. Only mitigations that exist in code
 # have a symbol; the ones that do not are listed as comments.
 
 menu "Mitigations"
-
-choice
-    prompt "Threat model"
-    default THREAT_PHYSICAL_ACCESS if SECURITY_SEPARATION_STATIC || SECURITY_CONFIDENTIAL
-    default THREAT_THIRD_PARTY_CODE if SECURITY_HARDENED
-    default THREAT_RING3_IMAGE
-    help
-      Who the image defends against. The choice sets the default of the
-      mitigation switches below; it never forces one, and a switch set by
-      hand wins. Each profile includes the ones above it. The default is
-      the base profile for SECURITY general, "Third-party code" for hardened,
-      and "Physical access" for separation-static and confidential.
-
-    config THREAT_RING3_IMAGE
-        bool "Compromised ring-3 image (base)"
-        imply MITIGATION_SPECTRE_V1_INDEX
-        imply INFER_MODEL_SIG_REQUIRED
-        help
-          Default. An image on the allow-list is compromised and attacks
-          the kernel and the other images through syscalls and shared
-          hardware. Implies the Spectre v1 index masking and the model data
-          signature check; both are on by default anyway, so this profile
-          changes no default.
-
-    config THREAT_THIRD_PARTY_CODE
-        bool "Third-party code"
-        imply MITIGATION_SPECTRE_V1_INDEX
-        imply INFER_MODEL_SIG_REQUIRED
-        help
-          Code the owner did not write runs in ring 3 (applications,
-          drivers, models). Implies the same switches as the base profile:
-          no mitigation specific to this threat exists in the tree yet
-          (see the "not implemented" lines below), so today it sets the
-          same defaults as the base profile.
-
-    config THREAT_PHYSICAL_ACCESS
-        bool "Physical access to the device"
-        imply MITIGATION_SPECTRE_V1_INDEX
-        imply INFER_MODEL_SIG_REQUIRED
-        imply CONSOLE_LOCKDOWN
-        imply SECURE_BOOT_ENFORCED
-        imply OTA_SIG_MANDATORY
-        imply LINK_PROVISIONING_ENFORCED
-        help
-          The attacker can reach the console, the removable FAT volume
-          (also exposed over USB mass storage) and the boot media. On top
-          of the base profile, implies:
-            CONSOLE_LOCKDOWN      no kernel console; the ring-3 user
-                                  shell is unprivileged unless a signed
-                                  topology row grants it more;
-            SECURE_BOOT_ENFORCED  boot halts on an unsigned or badly
-                                  signed kernel image ("Security");
-            OTA_SIG_MANDATORY     unsigned OTA images are refused;
-            LINK_PROVISIONING_ENFORCED
-                                  boot halts without a link key, the
-                                  handshake is refused on an unseeded
-                                  entropy pool, and the UART bridge
-                                  (brain-protocol frames outside any
-                                  Noise session) is down.
-          Each implied switch carries its own cost and deployment
-          requirement; read its help before building with this profile.
-
-endchoice
 
 config MITIGATION_SPECTRE_V1_INDEX
     bool "Spectre v1: mask table indices that come from ring 3"
