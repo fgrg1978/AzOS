@@ -20,7 +20,7 @@ use azos_topology::{
 use ed25519_dalek::{Signer, SigningKey};
 
 /// A class a row can name, and nothing else.
-pub(crate) const SCHED: &str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+pub(crate) const SCHED: &str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
 
 /// A string that lives as long as the topologies parsed from it.
 pub(crate) fn leak(s: String) -> &'static str {
@@ -157,7 +157,7 @@ fn a_device_failure_contract_round_trips() {
 // ── class: envelope, principal ─────────────────────────────────────────────
 
 fn sched_class(extra: &str) -> String {
-    format!("[class.agents]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n{extra}")
+    format!("[class.agents]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n{extra}")
 }
 
 #[test]
@@ -284,7 +284,7 @@ fn a_malformed_task_shadow_isolated_or_kmem_kib_is_refused() {
 /// class with admission control so a row can declare a profile in it.
 const ISO_SCHED: &str = "[sched]\nisolcpus = 12\n\
 [class.hard]\ncpu_budget_min_pct = 20\ncpu_budget_max_pct = 100\npolicy = \"edf\"\npriority_range = [0, 7]\nadmission_control = true\n\
-[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
 
 fn iso_row(name: &str, extra: &str) -> String {
     format!(
@@ -1379,8 +1379,8 @@ fn kitchen_sink() -> (String, String) {
     let sched = format!(
         "[sched]\nisolcpus = 12\n\
 [class.hard]\ncpu_budget_min_pct = 20\ncpu_budget_max_pct = 100\npolicy = \"edf\"\npriority_range = [0, 7]\nadmission_control = true\n\
-[class.agents]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\nenvelope = \"slow\"\nprincipal = \"agent\"\n\
-[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n"
+[class.agents]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\nenvelope = \"slow\"\nprincipal = \"agent\"\n\
+[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n"
     );
     let caps = format!(
         "{DEVICE}{}{}{}{}{}{}{}{}{}{}{}",

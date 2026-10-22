@@ -37,7 +37,7 @@ fn eacces() -> i64 {
     Errno::EACCES.to_syscall_ret()
 }
 
-const SCHED: &str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+const SCHED: &str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
 
 /// Also the motor tests' topology (`motor_guards`): wheel 0 has a device row
 /// with a ring-3 driver whose call budget is 900 us, a commit time, a

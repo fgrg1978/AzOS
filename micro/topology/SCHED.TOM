@@ -5,7 +5,7 @@ partition_window_us = 10000
 [class.rt]
 cpu_budget_min_pct = 20
 cpu_budget_max_pct = 100
-policy = "rr"
+policy = "fifo"
 priority_range = [0, 30]
 preemption = "timer-only"
 time_slice_ms = 10
@@ -14,7 +14,7 @@ admission_control = false
 [class.idle]
 cpu_budget_min_pct = 0
 cpu_budget_max_pct = 100
-policy = "rr"
+policy = "idle"
 priority_range = [31, 31]
 preemption = "timer-only"
 time_slice_ms = 10

@@ -507,7 +507,7 @@ fn view() -> RunView {
     use azos_hv::VmTable;
     use azos_topology::{parse_caps, parse_sched, Topology};
     let mut t = Box::new(Topology::empty());
-    parse_sched(b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n", &mut t).unwrap();
+    parse_sched(b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n", &mut t).unwrap();
     let caps: &'static str = "format = 7\n[guest.g]\ncpus = 1\nmem_mib = 16\nenvelope = \"full\"\ndevices = [\"virtio-console\"]\n";
     parse_caps(caps.as_bytes(), &mut t).unwrap();
     let facts = HostFacts {

@@ -321,7 +321,7 @@ fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
 fn the_perm_letters_of_transfer_and_map_survive_parse_and_emit() {
     use azos_topology::emit::{emit_caps, emit_sched};
     use azos_topology::{parse_caps, parse_sched, Binding, Topology};
-    let sched = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+    let sched = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
     let caps = "format = 7\n[task.T.ELF]\ncaps = [\n\
         { kind = \"memobj\", target = \"inspect.public\", perm = \"rm\" },\n\
         { kind = \"endpoint\", target = \"endpoint.x\", perm = \"wdt\" },\n\

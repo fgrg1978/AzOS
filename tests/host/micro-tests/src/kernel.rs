@@ -637,8 +637,8 @@ fn a_server_runs_at_the_endpoints_ceiling_while_it_works_and_not_before_or_after
 fn a_row_with_a_profile_is_a_reservation_and_runs_ahead_of_real_time_until_its_budget_is_spent() {
     let sched = "[sched]\npartition_window_us = 10000\n\
 [class.hard]\ncpu_budget_min_pct = 20\ncpu_budget_max_pct = 60\npolicy = \"edf\"\npriority_range = [0, 7]\npreemption = \"always\"\ntime_slice_ms = 0\nadmission_control = true\n\
-[class.rt]\ncpu_budget_min_pct = 20\ncpu_budget_max_pct = 100\npolicy = \"rr\"\npriority_range = [8, 30]\npreemption = \"timer-only\"\ntime_slice_ms = 10\nadmission_control = false\n\
-[class.idle]\ncpu_budget_min_pct = 0\ncpu_budget_max_pct = 100\npolicy = \"rr\"\npriority_range = [31, 31]\npreemption = \"timer-only\"\ntime_slice_ms = 10\nadmission_control = false\n";
+[class.rt]\ncpu_budget_min_pct = 20\ncpu_budget_max_pct = 100\npolicy = \"fifo\"\npriority_range = [8, 30]\npreemption = \"timer-only\"\ntime_slice_ms = 10\nadmission_control = false\n\
+[class.idle]\ncpu_budget_min_pct = 0\ncpu_budget_max_pct = 100\npolicy = \"idle\"\npriority_range = [31, 31]\npreemption = \"timer-only\"\ntime_slice_ms = 10\nadmission_control = false\n";
     let caps = "[task.IDLE.ELF]\nclass = \"idle\"\npriority = 31\nmem_pages = 1\nstart = true\ncaps = []\n\
 [task.ECHO.ELF]\nclass = \"rt\"\npriority = 9\nmem_pages = 1\nstart = true\ncaps = []\n\
 [task.CAPTEST.ELF]\nclass = \"hard\"\npriority = 2\nmem_pages = 1\nmem = \"locked\"\nstart = true\nperiod_us = 10000\nruntime_us = 2000\ncaps = []\n";
@@ -662,7 +662,7 @@ fn a_profile_the_cbs_cannot_take_is_refused() {
     // refuses it before the kernel sees it.
     let sched = "[sched]\npartition_window_us = 10000\n\
 [class.hard]\ncpu_budget_min_pct = 20\ncpu_budget_max_pct = 60\npolicy = \"edf\"\npriority_range = [0, 7]\npreemption = \"always\"\ntime_slice_ms = 0\nadmission_control = true\n\
-[class.idle]\ncpu_budget_min_pct = 0\ncpu_budget_max_pct = 100\npolicy = \"rr\"\npriority_range = [31, 31]\npreemption = \"timer-only\"\ntime_slice_ms = 10\nadmission_control = false\n";
+[class.idle]\ncpu_budget_min_pct = 0\ncpu_budget_max_pct = 100\npolicy = \"idle\"\npriority_range = [31, 31]\npreemption = \"timer-only\"\ntime_slice_ms = 10\nadmission_control = false\n";
     let caps = "[task.IDLE.ELF]\nclass = \"idle\"\npriority = 31\nmem_pages = 1\nstart = true\ncaps = []\n\
 [task.CAPTEST.ELF]\nclass = \"hard\"\npriority = 2\nmem_pages = 1\nstart = true\nperiod_us = 1000\nruntime_us = 2000\ncaps = []\n";
     let t: &'static mut Topology<'static> = Box::leak(Box::new(Topology::empty()));

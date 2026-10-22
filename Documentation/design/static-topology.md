@@ -142,7 +142,7 @@ principal = "system"
 [class.soft_rt]
 cpu_budget_min_pct = 25
 cpu_budget_max_pct = 60
-policy = "rr"
+policy = "fair"
 priority_range = [16, 23]
 preemption = "timer-only"
 time_slice_ms = 10
@@ -150,14 +150,14 @@ time_slice_ms = 10
 [class.best_effort]
 cpu_budget_min_pct = 20
 cpu_budget_max_pct = 100
-policy = "cfs"
+policy = "fair"
 priority_range = [24, 30]
 preemption = "timer-only"
 
 [class.idle]
 cpu_budget_min_pct = 5
 cpu_budget_max_pct = 5
-policy = "sporadic"
+policy = "idle"
 priority_range = [31, 31]
 preemption = "never"
 ```
@@ -179,10 +179,10 @@ fair-share queue so that it leaves them alone).
 |-----|------|--------------------|
 | `cpu_budget_min_pct` | integer | 0 to 100. |
 | `cpu_budget_max_pct` | integer | 0 to 100. |
-| `policy` | string | `fifo`, `edf`, `rr`, `cfs`, `sporadic`. Default `fifo`. |
+| `policy` | string | `fifo` (the real-time band), `edf` (admitted reservations), `fair` (EEVDF), `idle`: the scheduler's dispatch classes. Default `fifo`. |
 | `priority_range` | range | `[lo, hi]`, `lo <= hi`. |
 | `preemption` | string | `always`, `timer-only`, `never`. Default `always`. |
-| `time_slice_ms` | integer | Up to 65535. For `rr`. |
+| `time_slice_ms` | integer | Up to 65535. Read by no dispatch class (the fair slice is Kconfig `FAIR_SLICE_US`). |
 | `admission_control` | boolean | Whether the real-time profiles of the class's rows are checked for feasibility. Default `false`. |
 | `envelope` | string | `full`, `cautious`, `slow`, `contained`: the ceiling on the physical effects the class's tasks may cause. Default `full`. |
 | `principal` | string | `system`, `service`, `user`, `agent`: who the class's tasks act as. Default `system`. |

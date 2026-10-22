@@ -29,7 +29,7 @@ const NET: u64 = 0x1000_2000;
 const CON: u64 = 0x1000_3000;
 
 fn topology(body: &str) -> Box<Topology<'static>> {
-    let sched: &'static str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+    let sched: &'static str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
     let caps: &'static str = Box::leak(format!("format = 7\n{body}").into_boxed_str());
     let mut t = Box::new(Topology::empty());
     parse_sched(sched.as_bytes(), &mut t).unwrap();

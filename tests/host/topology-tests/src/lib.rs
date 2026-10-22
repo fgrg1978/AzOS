@@ -195,7 +195,7 @@ admission_control   = true
 [class.best_effort]
 cpu_budget_min_pct  = 5
 cpu_budget_max_pct  = 100
-policy              = \"cfs\"
+policy              = \"fair\"
 priority_range      = [16, 30]
 
 [sched]
@@ -245,7 +245,7 @@ idle = [ { name = \"wfi\", exit_latency_us = 1, target_residency_us = 1 } ]
         assert_eq!(hard.policy, PolicyKind::Edf);
         assert!(hard.admission_control);
         let be = topo.classes()[2];
-        assert_eq!(be.policy, PolicyKind::Cfs);
+        assert_eq!(be.policy, PolicyKind::Fair);
         assert_eq!(be.priority_range, (16, 30));
         assert_eq!(topo.sched_config().partition_window_us, 5000);
     }
@@ -315,7 +315,7 @@ made_up_field = 1
         let toml = b"\
 [class.x]
 cpu_budget_min_pct = 5
-policy = \"rr\"
+policy = \"fifo\"
 priority_range = [3, 9]
 time_slice_ms = 12
 ";
@@ -352,7 +352,7 @@ policy = \"fifo\"
 
 [class.x]
 cpu_budget_min_pct = 2
-policy = \"rr\"
+policy = \"fair\"
 ";
         let mut topo = Topology::empty();
         let r = parse_sched(toml, &mut topo);
@@ -380,7 +380,7 @@ policy             = \"edf\"
 
 [class.best_effort]
 cpu_budget_min_pct = 5
-policy             = \"cfs\"
+policy             = \"fair\"
 ";
 
     /// A row declares a message-signalled interrupt slot with the `msi.<k>`
@@ -3173,7 +3173,7 @@ admission_control   = true
 [class.best_effort]
 cpu_budget_min_pct  = 5
 cpu_budget_max_pct  = 100
-policy              = \"cfs\"
+policy              = \"fair\"
 priority_range      = [16, 30]
 
 [class.rt_wide]
@@ -3547,13 +3547,13 @@ mod row_sched_tests {
 [class.soft_rt]
 cpu_budget_min_pct  = 50
 cpu_budget_max_pct  = 100
-policy              = \"rr\"
+policy              = \"fair\"
 priority_range      = [16, 23]
 
 [class.gpu_batch]
 cpu_budget_min_pct  = 50
 cpu_budget_max_pct  = 100
-policy              = \"cfs\"
+policy              = \"fair\"
 priority_range      = [24, 30]
 
 ";
@@ -3639,7 +3639,7 @@ mod memory_admission_tests {
         ParseError, TaskSpec, Topology,
     };
 
-    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 10\ncpu_budget_max_pct = 100\npolicy = \"cfs\"\npriority_range = [24, 30]\n";
+    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 10\ncpu_budget_max_pct = 100\npolicy = \"fair\"\npriority_range = [24, 30]\n";
 
     /// Every row may fork: the pre-wave-9 arithmetic, which the tests below
     /// written before the fork predicate existed still pin.
@@ -4743,7 +4743,7 @@ mod signed_topology_tests {
     /// Every kind the emitter names is the kind the parser reads for it.
     #[test]
     fn every_cap_kind_word_parses_back_to_its_kind() {
-        let sched = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+        let sched = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
         let mut named = 0;
         for raw in 0u8..64 {
             let Some(kind) = CapKind::from_raw(raw) else { continue };
@@ -4922,7 +4922,7 @@ mod signed_topology_tests {
 mod imports_tests {
     use azos_topology::{parse_caps, parse_sched, AdmissionError, ParseError, Topology};
 
-    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
 
     /// A name server row (serves `names`, holds `term` and `log` lendable
     /// to others) and a client that imports from it.
@@ -5416,7 +5416,7 @@ mod device_rows_tests {
     use azos_topology::emit::{emit_caps, first_difference};
     use azos_topology::{parse_caps, parse_sched, AdmissionError, Binding, ParseError, Topology};
 
-    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
 
     fn parse(text: &str) -> (Topology<'_>, Result<(), ParseError>) {
         let mut t = Topology::empty();
@@ -5708,7 +5708,7 @@ mod exports_tests {
     use azos_topology::neverallow::{self, Env, RULES};
     use azos_topology::{parse_caps, parse_sched, AdmissionError, CapSpec, MaybeStr, ParseError, SchedProfile, Topology};
 
-    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"cfs\"\n";
+    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
 
     /// The RPC server's row (serves a proxy endpoint, may lend `decisions`)
     /// with `extra` lines in it, then the peer sections `peers`.

@@ -93,20 +93,24 @@ impl<'a> PartialEq<&str> for MaybeStr<'a> {
 // Scheduler class
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Scheduler-policy kind.
+/// How the scheduler dispatches a class's tasks: one name per dispatch class
+/// the scheduler has (`crates/core/sched/src/classes.rs`, "The mapping").
+/// Which one a task actually gets follows from its priority and reservation
+/// (a reserved task is DL, a band priority RT, any other fair), so a class's
+/// policy says what its range and `admission_control` lead to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum PolicyKind {
-    /// Fixed-priority FIFO.
+    /// The real-time band: fixed priority, FIFO inside a level, below
+    /// `RT_BAND_THRESHOLD`.
     Fifo = 0,
-    /// Earliest-Deadline-First with Constant Bandwidth Server.
+    /// Earliest-Deadline-First with a Constant Bandwidth Server: the rows'
+    /// admitted reservations (`admission_control`).
     Edf = 1,
-    /// Round-robin with quantum.
-    Rr = 2,
-    /// Completely-Fair Scheduler-style fair share.
-    Cfs = 3,
-    /// Sporadic server.
-    Sporadic = 4,
+    /// Fair share (EEVDF), the priority a weight.
+    Fair = 2,
+    /// The per-CPU idle level.
+    Idle = 3,
 }
 
 impl PolicyKind {
@@ -115,9 +119,8 @@ impl PolicyKind {
         match s {
             "fifo" => Some(Self::Fifo),
             "edf" => Some(Self::Edf),
-            "rr" => Some(Self::Rr),
-            "cfs" => Some(Self::Cfs),
-            "sporadic" => Some(Self::Sporadic),
+            "fair" => Some(Self::Fair),
+            "idle" => Some(Self::Idle),
             _ => None,
         }
     }
@@ -127,9 +130,8 @@ impl PolicyKind {
         match self {
             Self::Fifo => "fifo",
             Self::Edf => "edf",
-            Self::Rr => "rr",
-            Self::Cfs => "cfs",
-            Self::Sporadic => "sporadic",
+            Self::Fair => "fair",
+            Self::Idle => "idle",
         }
     }
 }
@@ -276,7 +278,8 @@ pub struct ClassSpec<'a> {
     pub priority_range: (u8, u8),
     /// Preemption rule.
     pub preemption: Preemption,
-    /// Round-robin time slice in milliseconds (only if `policy == Rr`).
+    /// Declared time slice in milliseconds. No dispatch class reads it: the
+    /// fair class's slice is Kconfig `FAIR_SLICE_US`.
     pub time_slice_ms: u16,
     /// Whether to reject task admissions that violate Liu-Layland.
     pub admission_control: bool,
@@ -4639,7 +4642,10 @@ mod tests {
     #[test]
     fn policy_parse_round_trip() {
         assert_eq!(PolicyKind::from_str("edf"), Some(PolicyKind::Edf));
-        assert_eq!(PolicyKind::from_str("cfs"), Some(PolicyKind::Cfs));
-        assert_eq!(PolicyKind::from_str("nope"), None);
+        assert_eq!(PolicyKind::from_str("fair"), Some(PolicyKind::Fair));
+        // Names the scheduler has no dispatch class for.
+        for gone in ["rr", "cfs", "sporadic", "nope"] {
+            assert_eq!(PolicyKind::from_str(gone), None, "{gone}");
+        }
     }
 }

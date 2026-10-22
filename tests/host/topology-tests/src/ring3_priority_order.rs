@@ -198,3 +198,29 @@ fn the_ina219_driver_holds_an_admitted_reservation() {
     assert_eq!(INADRV_RT.deadline_us, 0);
     assert!(INADRV_RT.runtime_us < INADRV_RT.period_us);
 }
+
+/// Each built-in class's `policy` is the dispatch class its range and
+/// admission control lead to (`crates/core/sched/src/classes.rs`, "The
+/// mapping"): a range inside the band is `fifo`, a range of fair levels is
+/// `fair`, a class whose rows hold admitted reservations is `edf` (its
+/// unreserved rows fall to the band or fair by number), the idle level is
+/// `idle`. **Canary**: declare `best_effort` as `PolicyKind::Fifo`.
+#[test]
+fn the_class_table_names_the_dispatch_each_class_gets() {
+    use azos_topology::PolicyKind;
+    let t = default_minimal();
+    for c in t.classes() {
+        let (lo, hi) = c.priority_range;
+        let want = if c.admission_control {
+            PolicyKind::Edf
+        } else if lo == 31 && hi == 31 {
+            PolicyKind::Idle
+        } else if (hi as u32) < FLOOR {
+            PolicyKind::Fifo
+        } else {
+            assert!((lo as u32) >= FLOOR && (hi as u32) <= CEIL, "{}: a range across dispatch classes", c.name.as_str());
+            PolicyKind::Fair
+        };
+        assert_eq!(c.policy, want, "{}", c.name.as_str());
+    }
+}
