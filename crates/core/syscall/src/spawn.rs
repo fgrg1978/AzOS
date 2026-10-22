@@ -449,7 +449,9 @@ pub fn spawn_path_ex(
             if floored {
                 crate::topo_sched::record_refusal(crate::topo_sched::SITE_SPAWN_FLOOR, tid);
             }
-            if SPAWN_LOG || floored {
+            // A row whose number is not the one applied (its class range or the
+            // ring-3 floor moved it) is never applied silently.
+            if SPAWN_LOG || floored || declared as u32 != priority {
                 let t_p = census::now();
                 azos_drv_sys::kprintln!(
                     "[SPAWN][PRIO] tid={} row={} class={} declared={} applied={}{}",

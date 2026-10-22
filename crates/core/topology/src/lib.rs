@@ -70,7 +70,7 @@ pub mod state;
 pub mod types;
 pub mod verify;
 
-pub use apply::{ring3_priority, RowSched};
+pub use apply::{ring3_priority, RowSched, ServiceEdge};
 pub use memory::{frames_for, units_for, MemReport, MemoryRefusal, RowMem, AUTORUN_ROW, RING3_DEFAULT_PAGES, TOPOLOGY_PAGE};
 pub use builder::{default_minimal, fill_default_minimal};
 pub use parser::{parse_binding, parse_caps, parse_sched, Binding, ParseError};

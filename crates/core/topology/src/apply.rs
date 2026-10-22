@@ -77,3 +77,81 @@ pub const fn ring3_priority(priority: u32, floor: u32, ceil: u32) -> (u32, bool)
         (priority, false)
     }
 }
+
+/// One service relation of a topology: row `server` serves the endpoint
+/// `endpoint` and row `client` calls it (indices into [`Topology::tasks`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceEdge<'a> {
+    /// The row holding `READ` on `endpoint.<endpoint>`: it accepts the calls.
+    pub server: usize,
+    /// A row that calls it: a call right (`WRITE` or `EXEC`, the badged form
+    /// the power service holds) without `READ` on the same endpoint, or an
+    /// `imports` entry naming it.
+    pub client: usize,
+    /// The endpoint name, without the `endpoint.` prefix.
+    pub endpoint: &'a [u8],
+}
+
+impl<'a> Topology<'a> {
+    /// Every server/client pair the rows declare, in row order. An endpoint
+    /// the kernel serves has no server row and yields nothing; the name
+    /// server's lendable grants (`WRITE` + `transfer` on what it lends) are
+    /// not calls, so it is not a client of what it lends.
+    pub fn for_each_service_edge(&self, mut f: impl FnMut(ServiceEdge<'a>)) {
+        use azos_abi::cap::{CapKind, CapPerms};
+        let tasks = self.tasks();
+        let names = self.names_server_row();
+        for (si, s) in tasks.iter().enumerate() {
+            for sc in self.caps_of(s) {
+                let Some(ep) = crate::types::endpoint_target(sc) else { continue };
+                if sc.kind != CapKind::Endpoint || !sc.perms.contains(CapPerms::READ) {
+                    continue;
+                }
+                for (ci, c) in tasks.iter().enumerate() {
+                    if ci == si {
+                        continue;
+                    }
+                    let calls = self.caps_of(c).iter().any(|cc| {
+                        cc.kind == CapKind::Endpoint
+                            && (cc.perms.contains(CapPerms::WRITE) || cc.perms.contains(CapPerms::EXEC))
+                            && !cc.perms.contains(CapPerms::READ)
+                            && !(Some(ci) == names && cc.transfer)
+                            && crate::types::endpoint_target(cc) == Some(ep)
+                    });
+                    let imports = self.imports_of(c).iter().any(|n| n.as_bytes() == ep);
+                    if calls || imports {
+                        f(ServiceEdge { server: si, client: ci, endpoint: ep });
+                    }
+                }
+            }
+        }
+    }
+
+    /// The first pair whose server runs LESS urgently than its client (a
+    /// larger priority number, as [`row_sched`](Self::row_sched) applies it),
+    /// or `None`.
+    ///
+    /// The rule is the priority ceiling's: a server runs at least as urgently
+    /// as every client it serves, so a client never preempts the request it
+    /// is waiting on and a request is never served below its caller. Equal is
+    /// allowed (a server in its client's bucket, `VSSRV.ELF`). A row whose
+    /// class the topology does not declare is skipped: `admission_check`
+    /// refuses it first.
+    pub fn server_below_client(&self) -> Option<ServiceEdge<'a>> {
+        let prio = |i: usize| match self.row_sched(self.tasks()[i].name.as_bytes()) {
+            RowSched::Apply { priority, .. } => Some(priority),
+            _ => None,
+        };
+        let mut found = None;
+        self.for_each_service_edge(|e| {
+            if found.is_none() {
+                if let (Some(s), Some(c)) = (prio(e.server), prio(e.client)) {
+                    if s > c {
+                        found = Some(e);
+                    }
+                }
+            }
+        });
+        found
+    }
+}

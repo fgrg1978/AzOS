@@ -3476,44 +3476,49 @@ mod row_sched_tests {
     }
 
     #[test]
-    fn default_rows_resolve_to_the_documented_class_and_clamped_priority() {
+    fn default_rows_resolve_to_the_documented_class_and_priority() {
         let t = default_minimal();
         // The generic loader row: what every image without a row of its own
         // runs at. 16 = the scheduler's default, so nothing unnamed moves.
         assert_eq!(applied(&t, b"autorun"), ("soft_rt".into(), 16, 16));
-        // The three board programs: best_effort, 0 clamped to the bottom of
-        // [24, 30].
+        // The three board programs: best_effort at the service number, 24,
+        // declared as such (no row relies on the clamp).
         for n in [&b"GPIODRV.ELF"[..], b"REFLEX.ELF", b"BRAINCLI.ELF"] {
-            assert_eq!(applied(&t, n), ("best_effort".into(), 0, 24));
+            assert_eq!(applied(&t, n), ("best_effort".into(), 24, 24));
         }
         // The ML service: soft_rt at the default 16; it runs at the behavior
         // task's 14 only by donation, while the loop waits on it.
         assert_eq!(applied(&t, b"MLSRV.ELF"), ("soft_rt".into(), 16, 16));
-        // The ring-3 drivers (wave 9): best_effort, 0 clamped to 24, like
-        // GPIODRV.ELF (owner decision 2026-09-28; they were soft_rt 16).
+        // The ring-3 drivers (wave 9): best_effort 24, like GPIODRV.ELF
+        // (owner decision 2026-09-28; they were soft_rt 16), above the shell.
         for n in [&b"BUZZDRV.ELF"[..], b"INADRV.ELF"] {
             if n == b"INADRV.ELF" && !azos_topology::builder::INADRV_ROW {
                 continue; // placed in the kernel (DRVPLACE): no row
             }
-            assert_eq!(applied(&t, n), ("best_effort".into(), 0, 24));
+            assert_eq!(applied(&t, n), ("best_effort".into(), 24, 24));
         }
-        // The user shell above every tool it starts, both scheduled
-        // as best_effort (the shell's class is `session`, which has the same
-        // range), so ^C does not depend on equal-priority slicing.
-        let (sh, tool) = (24, 26);
+        // The user shell below the servers it calls and above every tool it
+        // starts, all scheduled as best_effort (the shell's class is
+        // `session`, which has the same range), so ^C does not depend on
+        // equal-priority slicing.
+        let (sh, tool) = (25, 26);
+        for n in [&b"TERMD.ELF"[..], b"NAMESD.ELF"] {
+            assert_eq!(applied(&t, n), ("best_effort".into(), 24, 24));
+        }
         assert_eq!(applied(&t, b"SH.ELF"), ("session".into(), sh, sh));
         for n in [&b"TOOLBOX.ELF"[..], b"POWER.ELF", b"FLIGHT.ELF", b"BEHAVIOR.ELF", b"CONFIG.ELF", b"OTA.ELF"] {
             assert_eq!(applied(&t, n), ("best_effort".into(), tool, tool));
         }
         // Rows that name no task the kernel creates; resolved all the same.
         assert_eq!(applied(&t, b"supervisor"), ("safety_critical".into(), 0, 0));
-        assert_eq!(applied(&t, b"brain_link"), ("best_effort".into(), 0, 24));
+        assert_eq!(applied(&t, b"brain_link"), ("best_effort".into(), 24, 24));
         // Gate-only rows. The benchmark server shares its client's bucket so
         // `ipc-roundtrip` measures IPC, not a cross-priority hand-off.
         #[cfg(feature = "ipc-endpoint-canary")]
         {
             assert_eq!(applied(&t, b"VSSRV.ELF"), ("soft_rt".into(), 16, 16));
-            assert_eq!(applied(&t, b"EPSRV.ELF"), ("best_effort".into(), 0, 24));
+            // A server in its client's (`autorun`) bucket, never below it.
+            assert_eq!(applied(&t, b"EPSRV.ELF"), ("soft_rt".into(), 16, 16));
         }
     }
 
@@ -5971,6 +5976,10 @@ mod subtree_policy;
 // The shell row's `session` class, the one shipped class with `principal = "user"`.
 #[cfg(test)]
 mod principal_session;
+
+// The built-in rows' priorities: stated, unclamped, in service-graph order.
+#[cfg(test)]
+mod ring3_priority_order;
 
 /// A grant's `ops` becomes the op mask of the capability the task holds.
 #[cfg(test)]

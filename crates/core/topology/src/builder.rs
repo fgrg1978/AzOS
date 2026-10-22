@@ -116,8 +116,8 @@ const TASK_UHELLO_IMAGE: &[u8] = b"UHELLO.ELF";
 // **Their class and priority ARE applied (wave 7).** The autorun loader and
 // `SYS_SPAWN_EX` look a program's scheduling row up by its IMAGE name first and
 // fall back to `autorun` only when the image has no row, so each of these
-// three runs as `best_effort`, priority 0 clamped to 24. Capabilities still
-// come from `autorun` alone, as above.
+// three runs as `best_effort` at [`SERVICE_PRIORITY`], the number its row
+// declares. Capabilities still come from `autorun` alone, as above.
 const TASK_GPIODRV_IMAGE: &[u8] = b"GPIODRV.ELF";
 const TASK_REFLEX_IMAGE: &[u8] = b"REFLEX.ELF";
 const TASK_BRAINCLI_IMAGE: &[u8] = b"BRAINCLI.ELF";
@@ -746,10 +746,12 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     )
     .expect("default_minimal_topology: supervisor push failed");
 
+    // A kernel task's row (read for admission, never applied); its number is
+    // still one its class has, so no row of this topology relies on the clamp.
     topo.push_task(
         MaybeStr::from_bytes(TASK_BRAIN_LINK),
         MaybeStr::from_bytes(NAME_BEST_EFFORT),
-        0,
+        SERVICE_PRIORITY,
         &[],
     )
     .expect("default_minimal_topology: brain_link push failed");
@@ -1241,11 +1243,14 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // `uhello` a serve loop and let it decide at runtime hung as autorun,
     // where it held `WRITE` and accepted anyway. `SYS_IPC_FAST_ACCEPT` blocks
     // and nothing wakes a server nobody calls.
+    //
+    // `soft_rt` at 16, its client's (`autorun`) class and priority: a server
+    // never runs below a client it serves (`Topology::server_below_client`).
     #[cfg(feature = "ipc-endpoint-canary")]
     topo.push_task(
         MaybeStr::from_bytes(TASK_EPSRV_IMAGE),
-        MaybeStr::from_bytes(NAME_BEST_EFFORT),
-        0,
+        MaybeStr::from_bytes(NAME_SOFT_RT),
+        16,
         &[CapSpec {
             kind: CapKind::Endpoint,
             perms: CapPerms::READ,
@@ -1313,7 +1318,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.push_task(
             MaybeStr::from_bytes(TASK_GPIODRV_IMAGE),
             MaybeStr::from_bytes(NAME_BEST_EFFORT),
-            0,
+            SERVICE_PRIORITY,
             // It serves `DevicePower` for the power service (runtime PM).
             &[CapSpec {
                 kind: CapKind::Endpoint,
@@ -1324,11 +1329,11 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             .expect("default_minimal_topology: GPIODRV.ELF push failed");
     }
     if azos_limits::USERSPACE_REFLEX {
-        topo.push_task(MaybeStr::from_bytes(TASK_REFLEX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), 0, &[])
+        topo.push_task(MaybeStr::from_bytes(TASK_REFLEX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &[])
             .expect("default_minimal_topology: REFLEX.ELF push failed");
     }
     if azos_limits::USERSPACE_BRAINCLI {
-        topo.push_task(MaybeStr::from_bytes(TASK_BRAINCLI_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), 0, &[ROOT_RO])
+        topo.push_task(MaybeStr::from_bytes(TASK_BRAINCLI_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &[ROOT_RO])
             .expect("default_minimal_topology: BRAINCLI.ELF push failed");
     }
 
@@ -1378,16 +1383,19 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // Wave 9 (DRV1) — the ring-3 drivers; see `TASK_BUZZDRV_IMAGE`. After the
     // board rows, so no index-pinned row above moves.
     //
-    // **`best_effort` (0, clamped to 24), like GPIODRV.ELF** (owner decision
-    // 2026-09-28; wave 9 had them at `soft_rt` 16). A client more urgent
-    // than the driver donates its priority for the span of each request
-    // (`UserDriverProxy`), so a request is served at the client's priority
-    // (down to the ring-3 floor, 12). What 24 gives up is the driver's own
-    // timing outside a request: a CPU-bound task above 24 on its hart delays
-    // the end of a buzzer tone (measured once on aarch64 QEMU at boot: a
-    // 50 ms tone switched off after 1578 ms), and delays INA219 samples. The
-    // mAh sum no longer depends on that cadence: each sample is weighted by
-    // the time the driver measured since the previous one (wave 10).
+    // **`best_effort` at [`SERVICE_PRIORITY`] (24), like GPIODRV.ELF** (owner
+    // decision 2026-09-28; wave 9 had them at `soft_rt` 16): above the
+    // interactive session ([`SH_PRIORITY`], 25), never equal to it. A client
+    // more urgent than the driver donates its priority for the span of each
+    // request (`UserDriverProxy`), so a request is served at the client's
+    // priority (down to the ring-3 floor, 12): that donation, not the row, is
+    // what keeps `autorun` (16) from waiting on a driver below it. What 24
+    // gives up is the driver's own timing outside a request: a CPU-bound task
+    // above 24 on its hart delays the end of a buzzer tone (measured once on
+    // aarch64 QEMU at boot: a 50 ms tone switched off after 1578 ms), and
+    // delays INA219 samples. The mAh sum no longer depends on that cadence:
+    // each sample is weighted by the time the driver measured since the
+    // previous one (wave 10).
     // The buzzer's ring-3 host. Its row exists whichever host the driver
     // starts in (`BUZZER_START_HOST`): the row is what the ring-3 host runs
     // with when the driver is, or is moved, there. `stateless`: the driver
@@ -1398,7 +1406,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.push_task(
             MaybeStr::from_bytes(TASK_BUZZDRV_IMAGE),
             MaybeStr::from_bytes(NAME_BEST_EFFORT),
-            0,
+            SERVICE_PRIORITY,
             &[
                 CapSpec {
                     kind: CapKind::Endpoint,
@@ -1437,7 +1445,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.push_task(
             MaybeStr::from_bytes(TASK_INADRV_IMAGE),
             MaybeStr::from_bytes(NAME_BEST_EFFORT),
-            0,
+            SERVICE_PRIORITY,
             &[
                 CapSpec {
                     kind: CapKind::Device,
@@ -1496,7 +1504,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // topology and the kernel must halt before the first ring-3 task.
     #[cfg(feature = "mem-admission-canary")]
     {
-        topo.push_task(MaybeStr::from_bytes(b"HOG.ELF"), MaybeStr::from_bytes(NAME_BEST_EFFORT), 0, &[])
+        topo.push_task(MaybeStr::from_bytes(b"HOG.ELF"), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, &[])
             .expect("default_minimal_topology: HOG.ELF push failed");
         topo.set_last_task_mem_pages(1 << 20);
     }
@@ -1529,8 +1537,9 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // kernel gives the task the user principal (`apply_principal`), the only
     // way a task acts as one. A tool it starts runs under its own row.
     //
-    // Priorities (lower = more urgent): the shell at the top of `best_effort`
-    // (24), every tool it starts below it (26). ^C does not depend on them:
+    // Priorities (lower = more urgent): the shell (25) below every server of
+    // the session ([`SERVICE_PRIORITY`], 24: the terminal and name servers it
+    // calls) and above every tool it starts (26). ^C does not depend on them:
     // the console's RX interrupt delivers it to the foreground job itself
     // (`console_signal`). The order keeps a tool from out-ranking its
     // spawner (`fork_child_entry` also yields until the spawner publishes its
@@ -1644,12 +1653,13 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // the console program of the native shell session. Its row is its whole
     // authority, `READ` on `endpoint.term` (it serves it); console input it
     // claims by `LOG_CONSOLE_WAIT`, as the shell did. The shell's row holds
-    // `WRITE` on the same name. Same priority as the shell, so the interrupt
-    // key is read as promptly as it was. `start` follows the console program
+    // `WRITE` on the same name. Above the shell it serves
+    // ([`SERVICE_PRIORITY`]), so the interrupt key is read at least as
+    // promptly as the shell runs. `start` follows the console program
     // (below); `on-failure` like the shell: `hangup` ends it with code 0 and
     // gives the console back to the kernel shell.
     if azos_limits::USERSPACE_TERMD {
-        topo.push_task(MaybeStr::from_bytes(TASK_TERMD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, TERMD_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_TERMD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, TERMD_CAPS)
             .expect("default_minimal_topology: TERMD.ELF push failed");
         topo.set_last_task_mem_pages(TERMD_MEM_PAGES);
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
@@ -1658,7 +1668,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // is its whole authority (serve `names`, lend `term`); it starts with the
     // native shell session, before the terminal server and the shell.
     if azos_limits::USERSPACE_NAMESD {
-        topo.push_task(MaybeStr::from_bytes(TASK_NAMESD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, NAMESD_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_NAMESD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, NAMESD_CAPS)
             .expect("default_minimal_topology: NAMESD.ELF push failed");
         topo.set_last_task_mem_pages(NAMESD_MEM_PAGES);
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
@@ -1672,7 +1682,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // `why` holds `WRITE` on the same name and nothing else; the shell holds
     // the right to start it (`SH_CAPS`, not under `CONSOLE_LOCKDOWN`).
     if azos_limits::USERSPACE_DECISD {
-        topo.push_task(MaybeStr::from_bytes(TASK_DECISD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, DECISD_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_DECISD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, DECISD_CAPS)
             .expect("default_minimal_topology: DECISD.ELF push failed");
         topo.set_last_task_mem_pages(DECISD_MEM_PAGES);
         topo.set_last_task_start(azos_limits::DECISION_REFUSALS_DURABLE || azos_limits::DECISION_RECORDS_DEV);
@@ -1694,7 +1704,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // nothing else; the shell holds the right to start it (not under
     // `CONSOLE_LOCKDOWN`).
     if PKGD_ROW {
-        topo.push_task(MaybeStr::from_bytes(TASK_PKGD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, PKGD_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_PKGD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, PKGD_CAPS)
             .expect("default_minimal_topology: PKGD.ELF push failed");
         topo.set_last_task_mem_pages(PKGD_MEM_PAGES);
         topo.set_last_task_start(true);
@@ -1709,7 +1719,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // server; without one the row exists and exports nothing, so the proxy has
     // no one behind it. `why --remote` is the caller.
     if azos_limits::USERSPACE_RPCSRV {
-        topo.push_task(MaybeStr::from_bytes(TASK_RPCSRV_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, RPCSRV_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_RPCSRV_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), CLIENT_SERVICE_PRIORITY, RPCSRV_CAPS)
             .expect("default_minimal_topology: RPCSRV.ELF push failed");
         topo.set_last_task_mem_pages(RPCSRV_MEM_PAGES);
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
@@ -1734,11 +1744,12 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // (`Motor`, `Pwm`, `Gpio`, `Estop`): a Linux server holds none, and the
     // skeleton needs nothing else (it opens its module read-only, which
     // needs no grant). `best_effort`: no real-time task may depend on
-    // a Linux server. `start = true`, so a volume that carries
+    // a Linux server; at [`SERVICE_PRIORITY`], the native drivers' number,
+    // above the interactive session. `start = true`, so a volume that carries
     // LXSRV.ELF starts it; only the gate's `$AZOS_OUT/build/disk-lx.img` does.
     #[cfg(feature = "lx-server")]
     {
-        topo.push_task(MaybeStr::from_bytes(TASK_LXSRV_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), 0, LXSRV_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_LXSRV_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, LXSRV_CAPS)
             .expect("default_minimal_topology: LXSRV.ELF push failed");
         topo.set_last_task_mem_pages(LXSRV_MEM_PAGES);
         topo.set_last_task_start(true);
@@ -1760,7 +1771,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         if EXAMPLE_GUEST_ROW {
             topo.push_guest(example_guest()).expect("default_minimal_topology: example guest push failed");
         }
-        topo.push_task(MaybeStr::from_bytes(TASK_VMMD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, &VMMD_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_VMMD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &VMMD_CAPS)
             .expect("default_minimal_topology: VMMD.ELF push failed");
         topo.set_last_task_mem_pages(vmmd_pages(topo.guests()) as u32);
         topo.set_last_task_start(true);
@@ -1972,7 +1983,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // after the rows that serve the endpoints it calls). Pushed after the SSH
     // server, so no index another test pins moves.
     if LOGIND_ROW {
-        topo.push_task(MaybeStr::from_bytes(TASK_LOGIND_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, LOGIND_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_LOGIND_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, LOGIND_CAPS)
             .expect("default_minimal_topology: LOGIND.ELF push failed");
         topo.set_last_task_mem_pages(LOGIND_MEM_PAGES);
         topo.set_last_task_start(true);
@@ -1997,10 +2008,11 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // call right and `transfer` in the same grant (the source its warrants are
     // derived from) and the drivers' region `MemObj input.events`, which it
     // shares with the terminal server (each uses its own ring of it). It reads
-    // no console byte. Pushed before the component manager's row, as every row
-    // that starts is.
+    // no console byte. At [`SERVICE_PRIORITY`]: above the session whose input
+    // it delivers and above every caller (the compositor, the tools). Pushed
+    // before the component manager's row, as every row that starts is.
     if INPUTD_ROW {
-        topo.push_task(MaybeStr::from_bytes(TASK_INPUTD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, INPUTD_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_INPUTD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, INPUTD_CAPS)
             .expect("default_minimal_topology: INPUTD.ELF push failed");
         topo.set_last_task_mem_pages(INPUTD_MEM_PAGES);
         topo.set_last_task_start(true);
@@ -2015,10 +2027,12 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // trusted surface's (`azos_devif::input::TRUSTED_BADGE`; the input server
     // grants the focus after a chord to this caller alone), and, where the
     // decision server runs, the call right on `endpoint.decisions` for the
-    // "why was this refused" panel. Pushed after the input server's row, whose
-    // endpoint it needs, and before the component manager's.
+    // "why was this refused" panel. At [`CLIENT_SERVICE_PRIORITY`]: below the
+    // input and decision servers it calls, above the tools it serves. Pushed
+    // after the input server's row, whose endpoint it needs, and before the
+    // component manager's.
     if COMPOSITOR_ROW {
-        topo.push_task(MaybeStr::from_bytes(TASK_COMPOSITOR_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, COMPOSITOR_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_COMPOSITOR_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), CLIENT_SERVICE_PRIORITY, COMPOSITOR_CAPS)
             .expect("default_minimal_topology: COMPSRV.ELF push failed");
         topo.set_last_task_mem_pages(COMPOSITOR_MEM_PAGES);
         topo.set_last_task_start(true);
@@ -2047,7 +2061,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             caps[n] = CapSpec { kind: CapKind::Node, perms: CapPerms::EXEC, target: r.name, transfer: false, ops: 0 };
             n += 1;
         }
-        topo.push_task(MaybeStr::from_bytes(TASK_COMPMGR_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, &caps[..n])
+        topo.push_task(MaybeStr::from_bytes(TASK_COMPMGR_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &caps[..n])
             .expect("default_minimal_topology: COMPMGR.ELF push failed");
         topo.set_last_task_mem_pages(COMPMGR_MEM_PAGES);
         topo.set_last_task_start(true);
@@ -2062,7 +2076,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     topo.push_task(
         MaybeStr::from_bytes(b"NEVERALLOW.ELF"),
         MaybeStr::from_bytes(NAME_BEST_EFFORT),
-        0,
+        TOOL_PRIORITY,
         &[CapSpec {
             kind: CapKind::Endpoint,
             perms: CapPerms::RW,
@@ -2606,8 +2620,24 @@ const FAT_RW: CapSpec = CapSpec {
     target: MaybeStr::from_bytes(b"/fat"), transfer: false, ops: 0,
 };
 
-/// `SH.ELF`'s priority: the most urgent `best_effort` number.
-pub const SH_PRIORITY: u8 = 24;
+// The `best_effort`/`session` priorities (lower = more urgent; the fair class
+// weighs a task by its number, `azos_sched::eevdf_core::weight_of_prio`). A
+// server never runs below a client it serves (`Topology::server_below_client`,
+// the priority-ceiling rule), and every server of the interactive session
+// runs above it: the order is the rows' service graph, from the leaves up.
+
+/// The most urgent `best_effort` number: a service that calls no service
+/// below it — the session's servers (`TERMD.ELF`, `NAMESD.ELF`,
+/// `LOGIND.ELF`, `INPUTD.ELF`), the decision and package servers, the ring-3
+/// device drivers and the board programs. Above the shell, never equal to it.
+pub const SERVICE_PRIORITY: u8 = 24;
+/// A service that is itself a client of a [`SERVICE_PRIORITY`] row
+/// (`COMPSRV.ELF` calls the input and decision servers, `RPCSRV.ELF` the
+/// decision server): below the services it calls, above its own clients.
+pub const CLIENT_SERVICE_PRIORITY: u8 = 25;
+/// `SH.ELF`'s priority: below every server of the session, above every tool
+/// it starts.
+pub const SH_PRIORITY: u8 = 25;
 /// The priority of every tool image the shell starts (`TOOLBOX.ELF`,
 /// `POWER.ELF`): below the shell, inside `best_effort`.
 pub const TOOL_PRIORITY: u8 = 26;
