@@ -48,7 +48,7 @@ pub(crate) fn install_energy(num_cpus: usize, dtb_ptr: usize) {
         ),
         None => kprintln!("[ENERGY] dtb: none readable"),
     }
-    let from_dtb = dt.as_ref().and_then(azos_energy::dt::from_dt);
+    let from_dtb = dt.as_ref().and_then(|d| azos_energy::dt::from_dt(d, &super::smp::cpu_of_dt_reg));
     // arch-only: x86 hybrid cores (CPUID core types and the TSC rate).
     #[cfg(target_arch = "x86_64")]
     if from_dtb.is_none() && !spec.model.is_present() && num_cpus > 1 {
@@ -397,8 +397,10 @@ fn install_battery() {
 /// Give the arch idle seam (`Cpu::cpu_idle(depth)`) what enters each depth of a
 /// DTB-built model: the `arm,psci-suspend-param` / `riscv,sbi-suspend-param` of
 /// the state that depth is. The model took the idle states of each domain's
-/// first CPU (`azos_energy::dt`), so every CPU of the domain gets that CPU's
-/// list: the depth the governor picks means the same state on all of them. A
+/// first CPU node (`azos_energy::dt`), so every CPU of the domain gets that
+/// node's list: the depth the governor picks means the same state on all of
+/// them. The domain's mask names logical CPUs, so the node is found by its
+/// `reg` (`domain_first_cpu`), not by the mask's lowest bit. A
 /// state the arch cannot enter (no parameter, `local-timer-stop`, context
 /// lost) is entered as the deepest one below it, or `wfi`; the line says which
 /// depths are entered as themselves. The depths that lose the CPU's context (a
@@ -412,7 +414,7 @@ fn install_idle_states(model: &mut azos_energy::EnergyModel, dt: &azos_dtb::DtEn
     const _: () = assert!(azos_arch::firmware::IDLE_DEPTHS == azos_dtb::DT_ENERGY_CPU_IDLE);
     for i in 0..model.domains().len() {
         let d = model.domains()[i];
-        let Some(first) = dt.cpus().get(d.cpus.trailing_zeros() as usize) else { continue };
+        let Some(first) = azos_energy::dt::domain_first_cpu(dt, d.cpus, &super::smp::cpu_of_dt_reg) else { continue };
         let mut states = [SuspendState { param: None, local_timer_stop: false }; azos_dtb::DT_ENERGY_CPU_IDLE];
         let listed = &first.idle_states[..first.n_idle as usize];
         for (slot, ph) in states.iter_mut().zip(listed) {

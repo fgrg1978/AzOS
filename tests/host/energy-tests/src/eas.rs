@@ -304,7 +304,7 @@ fn a_device_tree_model_places_small_tasks_little_and_big_tasks_big() {
     let mut blob = std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
     blob.extend_from_slice(&[0; 8]);
     let dt = unsafe { azos_dtb::dtb_energy(blob.as_ptr()) }.expect("readable blob");
-    let m = azos_energy::dt::from_dt(&dt).unwrap().unwrap();
+    let m = azos_energy::dt::from_dt(&dt, &crate::by_reg).unwrap().unwrap();
     assert!(m.is_asymmetric());
     let idle = [0u32; 4];
     // 30 is a fraction of what a little CPU can do at its top OPP (256 * 80% = 204).

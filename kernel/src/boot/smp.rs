@@ -87,6 +87,18 @@ pub(crate) fn secondary_hw_init(hart_id: usize) {
     ARCH_ENTRY.secondary_publish_online(hart_id);
 }
 
+/// The logical CPU of this boot that a device-tree `cpu` node's `reg` names,
+/// `None` for a node that is none (disabled, past `NR_CPUS`): `reg` is the
+/// hart id on riscv64 and the MPIDR on aarch64, keyed as `azos_percpu` maps
+/// it. x86_64 has no device tree; there the value is taken as the APIC id.
+pub(crate) fn cpu_of_dt_reg(reg: u64) -> Option<usize> {
+    #[cfg(not(target_arch = "aarch64"))]
+    let hw = reg as usize;
+    #[cfg(target_arch = "aarch64")]
+    let hw = azos_arch::cpu::mpidr_affinity_key(reg) as usize;
+    azos_percpu::cpu_of_hw(hw)
+}
+
 /// What the device tree says about CPUs `0..n`: each `cpu` node's `reg` is the
 /// hardware id (riscv64: the hart id; aarch64: the MPIDR affinity) of the
 /// logical CPU `azos_percpu` maps it to; a node that is no CPU of this boot
@@ -103,11 +115,7 @@ fn firmware_labels(n: usize, dtb_ptr: usize, raw: &mut [CpuRaw]) -> topo::Source
     };
     let mut stated = dt.has_cpu_map;
     for c in dt.cpus() {
-        #[cfg(target_arch = "riscv64")]
-        let hw = c.reg as usize;
-        #[cfg(not(target_arch = "riscv64"))]
-        let hw = azos_arch::cpu::mpidr_affinity_key(c.reg) as usize;
-        let Some(cpu) = azos_percpu::cpu_of_hw(hw) else { continue };
+        let Some(cpu) = cpu_of_dt_reg(c.reg) else { continue };
         if cpu < n {
             raw[cpu] = CpuRaw {
                 core: c.core,

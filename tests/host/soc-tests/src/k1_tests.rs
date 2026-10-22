@@ -614,7 +614,7 @@ fn energy(blob: &[u8]) -> azos_dtb::DtEnergy {
 
 /// The energy model the tree describes: one domain per cluster, in CPU order.
 fn model(dt: &azos_dtb::DtEnergy) -> azos_energy::model::EnergyModel {
-    azos_energy::dt::from_dt(dt).expect("CPUs name OPP tables").expect("a model")
+    azos_energy::dt::from_dt(dt, &|reg| Some(reg as usize)).expect("CPUs name OPP tables").expect("a model")
 }
 
 thread_local! {

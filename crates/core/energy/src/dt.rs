@@ -6,8 +6,11 @@
 //! * **Domains.** CPUs whose `operating-points-v2` names one table marked
 //!   `opp-shared` are one domain; a table without `opp-shared` gives each CPU
 //!   naming it a domain of its own (it shares the table, not the clock).
-//!   Domains are numbered in order of their first CPU; CPU `n` is the `n`-th
-//!   CPU node in document order.
+//!   Domains are numbered in order of their first CPU node. A domain's mask
+//!   names LOGICAL CPUs: the caller maps each node's `reg` (hart id, MPIDR)
+//!   to the logical CPU of this boot, which is not the node's place in the
+//!   document (the boot CPU is logical 0, the order after it skips it). A
+//!   node the map has no CPU for is in no domain.
 //! * **Capacity.** A CPU's top capacity is `capacity-dmips-mhz` times its
 //!   table's top frequency, scaled so the largest is 1024; each OPP's
 //!   capacity is that times `f / f_max` (at least 1). If any CPU lacks
@@ -31,24 +34,41 @@
 //!
 //! The result is still to be validated: [`crate::model::resolve`] does that.
 
-use azos_dtb::{DtEnergy, DtIdleState, DtOpp, DtOppTable, DT_ENERGY_NAME, DT_ENERGY_OPPS};
+use azos_dtb::{DtCpuEnergy, DtEnergy, DtIdleState, DtOpp, DtOppTable, DT_ENERGY_NAME, DT_ENERGY_OPPS};
 
 use crate::model::{
     EnergyModel, IdleState, ModelFault, ModelSource, Opp, PerfDomain, CAPACITY_SCALE,
 };
 
+/// The logical CPU a `cpu` node's `reg` names on this boot, `None` for a node
+/// that is no CPU of it. The kernel's is `boot::smp::cpu_of_dt_reg`.
+pub type LogicalOf<'a> = &'a dyn Fn(u64) -> Option<usize>;
+
+/// The logical-CPU bit of node `c`, 0 when it has none (no CPU of this boot,
+/// or past the 32 a domain mask holds).
+fn bit_of(c: &DtCpuEnergy, logical: LogicalOf) -> u32 {
+    logical(c.reg).filter(|&l| l < 32).map_or(0, |l| 1 << l)
+}
+
 /// The model the DTB describes: `None` when no CPU names an OPP table,
-/// `Some(Err)` when the tables cannot be turned into a model.
-pub fn from_dt(dt: &DtEnergy) -> Option<Result<EnergyModel, ModelFault>> {
+/// `Some(Err)` when the tables cannot be turned into a model. `logical` maps
+/// a node's `reg` to its logical CPU (see the module doc).
+pub fn from_dt(dt: &DtEnergy, logical: LogicalOf) -> Option<Result<EnergyModel, ModelFault>> {
     let cpus = dt.cpus();
     let with = cpus.iter().filter(|c| c.opp_table != 0).count();
     if with == 0 {
         return None;
     }
-    Some(build(dt, with == cpus.len()))
+    Some(build(dt, with == cpus.len(), logical))
 }
 
-fn build(dt: &DtEnergy, all: bool) -> Result<EnergyModel, ModelFault> {
+/// The CPU node whose idle states the domain of logical CPUs `mask` took:
+/// its first node in document order, as [`from_dt`] chose it.
+pub fn domain_first_cpu<'a>(dt: &'a DtEnergy, mask: u32, logical: LogicalOf) -> Option<&'a DtCpuEnergy> {
+    dt.cpus().iter().find(|c| bit_of(c, logical) & mask != 0)
+}
+
+fn build(dt: &DtEnergy, all: bool, logical: LogicalOf) -> Result<EnergyModel, ModelFault> {
     if !all {
         return Err(ModelFault::DtPartialTables);
     }
@@ -73,21 +93,27 @@ fn build(dt: &DtEnergy, all: bool) -> Result<EnergyModel, ModelFault> {
     let raw_max = raw[..cpus.len()].iter().copied().max().unwrap_or(0).max(1);
 
     let mut m = EnergyModel::from_source(ModelSource::Dtb);
-    let mut placed = 0u32;
+    // Nodes already in a domain, by place in the document; the domain's mask
+    // itself is logical.
+    let mut placed = [false; azos_dtb::DT_ENERGY_CPUS];
     for (i, c) in cpus.iter().enumerate() {
-        if placed & (1 << i) != 0 {
+        // A node no CPU of this boot answers to joins no domain and leads
+        // none (its idle states would be no CPU's).
+        let lead = bit_of(c, logical);
+        if placed[i] || lead == 0 {
             continue;
         }
         let t = table_of(c.opp_table).ok_or(ModelFault::DtUnknownPhandle)?;
-        let mut mask = 1u32 << i;
+        let mut mask = lead;
+        placed[i] = true;
         if t.shared {
             for (j, o) in cpus.iter().enumerate().skip(i + 1) {
                 if o.opp_table == c.opp_table {
-                    mask |= 1 << j;
+                    mask |= bit_of(o, logical);
+                    placed[j] = true;
                 }
             }
         }
-        placed |= mask;
         let mut d = PerfDomain::new(mask);
         let cap_top = (raw[i] * CAPACITY_SCALE as u64 / raw_max) as u16;
         let ops = &sorted[i][..n_opps[i]];

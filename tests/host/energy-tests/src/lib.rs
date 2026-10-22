@@ -22,6 +22,13 @@
 //!
 //! Time in these tests is in "ticks"; the trackers never see microseconds.
 
+/// The CPU map of a boot that started on the first CPU node: logical CPU n is
+/// the node whose `reg` is n (the fixtures number their CPUs from 0).
+#[cfg(test)]
+fn by_reg(reg: u64) -> Option<usize> {
+    Some(reg as usize)
+}
+
 #[cfg(test)]
 mod util {
     use azos_energy::util::{y_pow, UtilState, UtilTracker, HALF_LIFE, HISTORY, SCALE, Y_INV};
@@ -589,7 +596,7 @@ mod dt {
     fn model_of(name: &str) -> Option<Result<EnergyModel, ModelFault>> {
         let blob = fixture(name);
         let dt = unsafe { dtb_energy(blob.as_ptr()) }.expect("readable blob");
-        from_dt(&dt)
+        from_dt(&dt, &crate::by_reg)
     }
 
     #[test]
@@ -631,6 +638,48 @@ mod dt {
         assert_eq!(d[1].idle_states().len(), 2);
     }
 
+    /// The masks name LOGICAL CPUs (audit K2-M4). A boot that started on the
+    /// third CPU node (reg 2, a big core) makes it logical 0 and numbers the
+    /// rest in document order after it (`azos_percpu::CpuMap`): reg 0 -> 1,
+    /// reg 1 -> 2, reg 3 -> 3. The little domain is then CPUs 1-2, the big
+    /// one 0 and 3, and each domain's idle states are found by `reg`.
+    ///
+    /// **Canary.** Build the masks from the node's place in the document
+    /// (`1 << i`, the old `dt::build`): red on the masks.
+    #[test]
+    fn domain_masks_follow_the_logical_cpu_map_not_the_document_order() {
+        let blob = fixture("energy-2cluster.dtb");
+        let dt = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
+        let booted_on_2 = |reg: u64| match reg { 2 => Some(0), 0 => Some(1), 1 => Some(2), 3 => Some(3), _ => None };
+        let m = from_dt(&dt, &booted_on_2).unwrap().unwrap();
+        let d = m.domains();
+        assert_eq!((d[0].cpus, d[1].cpus), (0b0110, 0b1001));
+        assert_eq!(m.validate(4), Ok(()));
+        let first = |mask| azos_energy::dt::domain_first_cpu(&dt, mask, &booted_on_2).map(|c| c.reg);
+        assert_eq!((first(d[0].cpus), first(d[1].cpus)), (Some(0), Some(2)));
+        // A node no CPU of this boot answers to is in no domain.
+        let three = |reg: u64| (reg < 3).then_some(reg as usize);
+        let m = from_dt(&dt, &three).unwrap().unwrap();
+        assert_eq!((m.domains()[0].cpus, m.domains()[1].cpus), (0b0011, 0b0100));
+    }
+
+    /// A disabled CPU node (the JH7110's S7 monitor core, hart 0) is no CPU
+    /// of the boot: `dtb_energy` drops it, as `dtb_cpu_regs` does, so it
+    /// neither shifts the others nor makes the tables partial.
+    ///
+    /// **Canary.** Keep disabled CPU nodes in `dtb_energy`: three CPUs become
+    /// four and the model is refused as `DtPartialTables`.
+    #[test]
+    fn a_disabled_cpu_node_is_not_a_cpu_of_the_model() {
+        let blob = fixture("energy-disabled.dtb");
+        let dt = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
+        let regs: Vec<u64> = dt.cpus().iter().map(|c| c.reg).collect();
+        assert_eq!(regs, [1, 2, 3, 4]);
+        // Harts 1..4 are logical 0..3 (booted on hart 1).
+        let m = from_dt(&dt, &|reg: u64| reg.checked_sub(1).map(|l| l as usize)).unwrap().unwrap();
+        assert_eq!((m.domains()[0].cpus, m.domains()[1].cpus), (0b0011, 0b1100));
+    }
+
     /// The deep-idle inputs the arch idle seam is fed from: each state's
     /// `arm,psci-suspend-param` (one cell; a word that is not one cell is not a
     /// parameter) and `local-timer-stop`.
@@ -644,7 +693,7 @@ mod dt {
         // Four listed states plus the implicit wfi are one more than a domain
         // holds (MAX_IDLE_STATES): such a DTB gets no model, so the arch seam is
         // never given its states.
-        assert_eq!(from_dt(&dt).unwrap().unwrap_err(), ModelFault::TooManyIdleStates { domain: 0 });
+        assert_eq!(from_dt(&dt, &crate::by_reg).unwrap().unwrap_err(), ModelFault::TooManyIdleStates { domain: 0 });
         // The other fixtures have none.
         let blob = fixture("energy-2cluster.dtb");
         let dt = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
@@ -725,7 +774,7 @@ mod dt {
             let blob = std::fs::read(format!("{}/../dtb-tests/fixtures/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
             let dt = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
             assert_eq!((dt.cpus().len(), dt.tables().len(), dt.idle_states().len()), (cpus, 0, 0), "{f}");
-            assert!(from_dt(&dt).is_none(), "{f}");
+            assert!(from_dt(&dt, &crate::by_reg).is_none(), "{f}");
         }
     }
 
@@ -735,9 +784,9 @@ mod dt {
         let mut dt = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
         let mut partial = dt;
         partial.cpus[3].opp_table = 0;
-        assert_eq!(from_dt(&partial), Some(Err(ModelFault::DtPartialTables)));
+        assert_eq!(from_dt(&partial, &crate::by_reg), Some(Err(ModelFault::DtPartialTables)));
         dt.cpus[1].opp_table = 0xdead;
-        assert_eq!(from_dt(&dt), Some(Err(ModelFault::DtUnknownPhandle)));
+        assert_eq!(from_dt(&dt, &crate::by_reg), Some(Err(ModelFault::DtUnknownPhandle)));
     }
 
     #[test]

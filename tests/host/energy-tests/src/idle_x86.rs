@@ -21,7 +21,7 @@ fn fixture() -> DtEnergy {
 /// The two listed states of the fixture: `retention` (exit 20+40, residency
 /// 100 in the model) and a nameless one (250+500, 3000; the model calls it `state2`).
 fn model_idle(dt: &DtEnergy) -> Vec<(u32, u32)> {
-    let m = from_dt(dt).unwrap().unwrap();
+    let m = from_dt(dt, &crate::by_reg).unwrap().unwrap();
     m.domains()[0].idle_states().iter().skip(1).map(|s| (s.exit_latency_us, s.target_residency_us)).collect()
 }
 

@@ -2983,9 +2983,14 @@ pub const DT_ENERGY_CPU_IDLE: usize = 4;
 /// Bytes of an `idle-state-name` it keeps.
 pub const DT_ENERGY_NAME: usize = 16;
 
-/// One `device_type = "cpu"` node, as far as the energy model cares.
+/// One enabled `device_type = "cpu"` node, as far as the energy model cares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DtCpuEnergy {
+    /// Its `reg`: the hart id on riscv64, the MPIDR affinity on aarch64 (one
+    /// or two cells). The kernel turns it into the logical CPU the energy
+    /// model's masks name: a node's place in the document is not its logical
+    /// number (the boot CPU is logical 0).
+    pub reg: u64,
     /// Phandle its `operating-points-v2` names, 0 if it has none.
     pub opp_table: u32,
     /// `capacity-dmips-mhz`, 0 if absent.
@@ -3078,7 +3083,7 @@ pub struct DtEnergy {
 
 impl DtEnergy {
     const EMPTY_CPU: DtCpuEnergy =
-        DtCpuEnergy { opp_table: 0, capacity_dmips_mhz: 0, idle_states: [0; DT_ENERGY_CPU_IDLE], n_idle: 0 };
+        DtCpuEnergy { reg: 0, opp_table: 0, capacity_dmips_mhz: 0, idle_states: [0; DT_ENERGY_CPU_IDLE], n_idle: 0 };
     const EMPTY_TABLE: DtOppTable = DtOppTable {
         phandle: 0,
         shared: false,
@@ -3137,6 +3142,7 @@ struct EnergyNode {
     disabled: bool,
     shared: bool,
     phandle: u32,
+    reg: u64,
     opp_table: u32,
     cap: u32,
     idle: [u32; DT_ENERGY_CPU_IDLE],
@@ -3162,6 +3168,7 @@ impl EnergyNode {
         disabled: false,
         shared: false,
         phandle: 0,
+        reg: 0,
         opp_table: 0,
         cap: 0,
         idle: [0; DT_ENERGY_CPU_IDLE],
@@ -3179,8 +3186,8 @@ impl EnergyNode {
     };
 }
 
-/// Read the tables an energy model is built from: every CPU node's
-/// `operating-points-v2`, `capacity-dmips-mhz` and `cpu-idle-states`; every
+/// Read the tables an energy model is built from: every enabled CPU node's
+/// `reg`, `operating-points-v2`, `capacity-dmips-mhz` and `cpu-idle-states`; every
 /// `operating-points-v2` table (its `phandle`, `opp-shared`, and per enabled
 /// OPP child `opp-hz`, `opp-microwatt` and `opp-microvolt`); every `arm,idle-state` /
 /// `riscv,idle-state` node (`phandle`, `idle-state-name`,
@@ -3245,9 +3252,12 @@ pub unsafe fn dtb_energy(ptr: *const u8) -> Option<DtEnergy> {
                         out.truncated = true;
                     }
                     pending_depth = usize::MAX;
-                } else if n.is_cpu {
+                } else if n.is_cpu && !n.disabled {
+                    // A disabled CPU (the JH7110's S7 monitor core) is no CPU
+                    // of this boot, as `dtb_cpu_regs` drops it too.
                     if (out.n_cpus as usize) < DT_ENERGY_CPUS {
                         out.cpus[out.n_cpus as usize] = DtCpuEnergy {
+                            reg: n.reg,
                             opp_table: n.opp_table,
                             capacity_dmips_mhz: n.cap,
                             idle_states: n.idle,
@@ -3292,6 +3302,12 @@ pub unsafe fn dtb_energy(ptr: *const u8) -> Option<DtEnergy> {
                         n.disabled = c.bytes(off, len).split(|&b| b == 0).next() == Some(&b"disabled"[..]);
                     } else if len == 4 && (c.name_is(name, b"phandle") || c.name_is(name, b"linux,phandle")) {
                         n.phandle = c.be32(off, 0);
+                    } else if c.name_is(name, b"reg") && (len == 4 || len == 8) {
+                        n.reg = if len == 8 {
+                            ((c.be32(off, 0) as u64) << 32) | c.be32(off, 1) as u64
+                        } else {
+                            c.be32(off, 0) as u64
+                        };
                     } else if c.name_is(name, b"opp-shared") {
                         n.shared = true;
                     } else if len == 4 && c.name_is(name, b"operating-points-v2") {
