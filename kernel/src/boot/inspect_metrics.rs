@@ -855,7 +855,7 @@ impl WakeRate {
 #[cfg(target_os = "none")]
 mod kernel {
     use super::*;
-    use azos_sync::SpinLock;
+    use azos_sync::kmutex::Mutex;
 
     struct State {
         m: Metrics,
@@ -889,8 +889,12 @@ mod kernel {
     const W_ARP: usize = W_RX + RX_DROPS.len();
     const WIDE: usize = W_ARP + ARP_TXQ.len();
 
-    /// Set by `build` at boot; `refresh` runs from the `inspect` task.
-    static STATE: SpinLock<Option<State>> = SpinLock::new(None);
+    /// Set by `build` at boot; `refresh` runs from the `inspect` task. A
+    /// sleeping mutex, not a spin lock: `gather` walks every task slot (four
+    /// passes over `MAX_TASKS`), the decision ring and the wake ring, which
+    /// must not run with interrupts masked. Nothing in interrupt context
+    /// takes it.
+    static STATE: Mutex<Option<State>> = Mutex::new(None);
     /// [`State::switches`]' storage; handed out by `build` (under `STATE`'s
     /// lock) and used only through the state.
     static mut SWITCHES: SwitchTally<{ azos_sched::MAX_TASKS }> = SwitchTally::new();
@@ -961,7 +965,7 @@ mod kernel {
             wake_source_name,
         };
         let m = Metrics::build(b, shape)?;
-        let mut g = STATE.lock_irqsave();
+        let mut g = STATE.lock();
         // The previous state (if any) goes first: it holds the `&mut` to the tally.
         *g = None;
         // SAFETY: under `STATE`'s lock, with no state alive, and nothing else
@@ -987,7 +991,7 @@ mod kernel {
 
     /// Read every source once and publish. Returns the writes that failed.
     pub(crate) fn refresh(w: &Writer<'_>) -> u32 {
-        let mut g = STATE.lock_irqsave();
+        let mut g = STATE.lock();
         let Some(st) = g.as_mut() else { return 0 };
         gather(st);
         st.m.publish(w, &st.snap)

@@ -248,7 +248,18 @@ pub(crate) fn install_inspect(num_cpus: usize) {
             "[INSPECT] admin region {} KiB, granted against the task view, reader check ok", at.bytes / 1024);
     }
     *HANDOFF.lock_irqsave() = Some(st);
-    azos_sched::task_create("inspect", inspect_task, 0, azos_sched::DEFAULT_PRIORITY + 4);
+    // Off the real-time CPUs, as the thermal and reclaim tasks are: a refresh
+    // walks every task slot.
+    let isolated = azos_topology::get().map_or(0, |t| t.sched_config().isolcpus as usize);
+    let rt = azos_sync::qsbr::NOCBS_CPUS | isolated;
+    let cpu = azos_sync::qsbr_core::callback_cpu(azos_percpu::nr_cpu_ids(), rt, azos_percpu::cpu_possible);
+    if cpu.is_none() {
+        azos_drv_sys::kwarn!(
+            "[INSPECT] every CPU is real-time (RCU_NOCBS_CPUS {:#x}, isolcpus {:#x}): the refresh task is not pinned",
+            azos_sync::qsbr::NOCBS_CPUS, isolated);
+    }
+    azos_sched::task_create_affinity(
+        "inspect", inspect_task, 0, azos_sched::DEFAULT_PRIORITY + 4, cpu.map_or(-1, |c| c as i8));
 }
 
 fn inspect_task(_arg: usize) {

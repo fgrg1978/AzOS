@@ -276,6 +276,11 @@ impl Registry {
         Ok(())
     }
 
+    /// The registered drivers, in slot order: one pass over the table.
+    pub fn iter(&self) -> impl Iterator<Item = &'static dyn Driver> + '_ {
+        self.drivers.iter().flatten().copied()
+    }
+
     /// Look up the driver registered for `kind`, if any.
     pub fn find_by_kind(&self, kind: u32) -> Option<&'static dyn Driver> {
         self.find_by_kind_impl(kind)

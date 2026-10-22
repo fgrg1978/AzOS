@@ -199,9 +199,9 @@ fn refresh_drivers(w: &Writer<'_>) -> u32 {
     let mut rows = [(0u32, [0u8; 24], 0usize, "", 0u64); azos_drv_api::REGISTRY_MAX_DRIVERS];
     let mut n = 0;
     {
+        // One pass over the table under its lock; the order is made after.
         let reg = azos_drv_base::runtime::registry::REGISTRY.lock();
-        for kind in 0u32..0x100 {
-            let Some(d) = reg.find_by_kind(kind) else { continue };
+        for d in reg.iter() {
             if n == rows.len() {
                 break;
             }
@@ -221,6 +221,8 @@ fn refresh_drivers(w: &Writer<'_>) -> u32 {
             n += 1;
         }
     }
+    // By kind, as the registry is looked up.
+    rows[..n].sort_unstable_by_key(|r| r.0);
     let g = IDS.lock_irqsave();
     let Some(ids) = g.as_ref() else { return 0 };
     let mut bad = 0;
