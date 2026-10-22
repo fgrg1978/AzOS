@@ -329,10 +329,12 @@ pub(crate) fn install(dtb_ptr: usize) {
         }
         // SAFETY: the firmware's blob, parsed before by `early_main`.
         let dt = unsafe { azos_dtb::dtb_thermal(azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8) };
-        let Some(dt) = dt else {
+        let Some(mut dt) = dt else {
             kprintln!("[THERMAL] the device tree is not readable: no thermal zone");
             return;
         };
+        // A cooler names a CPU node; the model's masks name logical CPUs.
+        azos_thermal::dt::cpus_by_logical(&mut dt, &super::smp::cpu_of_dt_reg);
         if dt.zones().is_empty() {
             kprintln!("[THERMAL] the device tree declares no thermal zone: the framework stays idle");
             return;

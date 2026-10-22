@@ -3469,8 +3469,12 @@ pub struct DtThermal {
     /// Entries used in `zones`.
     pub n_zones: u8,
     /// Phandle of every `device_type = "cpu"` node, document order (0 for a
-    /// CPU without one): the index is the CPU number the energy model uses.
+    /// CPU without one). The index is the node's place, not the logical CPU
+    /// the energy model's masks name: `azos_thermal::dt::cpus_by_logical`
+    /// reorders it by `cpu_regs` before the zones are built.
     pub cpus: [u32; MAX_CPU_REG],
+    /// The `reg` of each node in `cpus` (hart id, MPIDR).
+    pub cpu_regs: [u64; MAX_CPU_REG],
     /// Entries used in `cpus`.
     pub n_cpus: u8,
     /// A zone or a CPU did not fit and was dropped.
@@ -3502,6 +3506,7 @@ impl DtThermal {
         zones: [Self::EMPTY_ZONE; DT_THERMAL_ZONES],
         n_zones: 0,
         cpus: [0; MAX_CPU_REG],
+        cpu_regs: [0; MAX_CPU_REG],
         n_cpus: 0,
         truncated: false,
     };
@@ -3557,6 +3562,7 @@ struct ThermalNode {
     is_cpu: bool,
     disabled: bool,
     phandle: u32,
+    reg: u64,
     name: [u8; DT_THERMAL_NAME],
     name_len: u8,
     zone: DtZone,
@@ -3570,6 +3576,7 @@ impl ThermalNode {
         is_cpu: false,
         disabled: false,
         phandle: 0,
+        reg: 0,
         name: [0; DT_THERMAL_NAME],
         name_len: 0,
         zone: DtThermal::EMPTY_ZONE,
@@ -3582,8 +3589,9 @@ impl ThermalNode {
 /// `polling-delay-passive`, `polling-delay`, the first `thermal-sensors`
 /// entry, every node of its `trips` (`temperature`, `hysteresis`, `type`,
 /// `phandle`) and of its `cooling-maps` (`trip`, `cooling-device`); plus the
-/// phandle of every CPU node, in document order, so a cooling device can be
-/// resolved to the CPU number the energy model's performance domains use.
+/// phandle and `reg` of every CPU node, in document order, so a cooling device
+/// can be resolved to the logical CPU the energy model's performance domains
+/// use (`azos_thermal::dt::cpus_by_logical`).
 /// Phandles are left unresolved; `azos_thermal::dt` resolves them.
 ///
 /// The binding gives these nodes no `compatible`, so they are recognised by
@@ -3667,6 +3675,7 @@ pub unsafe fn dtb_thermal(ptr: *const u8) -> Option<DtThermal> {
                 if n.is_cpu {
                     if (out.n_cpus as usize) < MAX_CPU_REG {
                         out.cpus[out.n_cpus as usize] = n.phandle;
+                        out.cpu_regs[out.n_cpus as usize] = n.reg;
                         out.n_cpus += 1;
                     } else {
                         out.truncated = true;
@@ -3686,6 +3695,14 @@ pub unsafe fn dtb_thermal(ptr: *const u8) -> Option<DtThermal> {
                         n.disabled = c.bytes(off, len).split(|&b| b == 0).next() == Some(&b"disabled"[..]);
                     } else if len == 4 && (c.name_is(name, b"phandle") || c.name_is(name, b"linux,phandle")) {
                         n.phandle = c.be32(off, 0);
+                    } else if c.name_is(name, b"reg") && (len == 4 || len == 8) {
+                        // Kept for every node, read only for a CPU's: `reg` may
+                        // come before `device_type` (the JH7110's CPU nodes).
+                        n.reg = if len == 8 {
+                            ((c.be32(off, 0) as u64) << 32) | c.be32(off, 1) as u64
+                        } else {
+                            c.be32(off, 0) as u64
+                        };
                     } else if len == 4 && c.name_is(name, b"polling-delay-passive") {
                         n.zone.poll_passive_ms = c.be32(off, 0);
                     } else if len == 4 && c.name_is(name, b"polling-delay") {

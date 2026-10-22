@@ -44,6 +44,13 @@ pub fn model(wcet_ref_khz: u32) -> EnergyModel {
     m
 }
 
+/// The CPU map of a boot that started on the first CPU node: logical CPU n is
+/// the node whose `reg` is n (the fixtures number their CPUs from 0).
+#[cfg(test)]
+fn by_reg(reg: u64) -> Option<usize> {
+    Some(reg as usize)
+}
+
 #[cfg(test)]
 mod x86_pc;
 
@@ -508,6 +515,7 @@ mod opp {
 mod dt {
     use azos_dtb::*;
     use azos_energy::dt::from_dt;
+    use crate::by_reg;
     use azos_energy::thermal::{CoolingMap, TripKind};
     use azos_thermal::dt::build;
 
@@ -575,7 +583,7 @@ mod dt {
     fn zones_are_built_over_the_energy_model_and_what_cannot_be_is_counted() {
         let blob = fixture("thermal-2zone.dtb");
         let e = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
-        let model = from_dt(&e).expect("tables").expect("model");
+        let model = from_dt(&e, &by_reg).expect("tables").expect("model");
         assert_eq!(model.domains().iter().map(|d| d.cpus).collect::<Vec<_>>(), [0b0011, 0b1100]);
         let dt = raw();
         // Sensor cell 0 is sensor 7; cell 9 is a channel the board does not have.
@@ -599,11 +607,38 @@ mod dt {
         );
     }
 
+    /// A cooler names a CPU NODE; the model's masks name LOGICAL CPUs (audit
+    /// K2-M4). Booted on reg 2 (a big core): logical 0 = reg 2, 1 = reg 0,
+    /// 2 = reg 1, 3 = reg 3, so the little domain is CPUs 1-2 and the big one
+    /// 0 and 3. After `cpus_by_logical` the maps land on the same domains as
+    /// on a boot from reg 0.
+    ///
+    /// **Canary.** Skip `cpus_by_logical`: map 1 (cpu2, a big core) lands on
+    /// the little domain.
+    #[test]
+    fn coolers_resolve_to_the_domain_of_their_logical_cpu() {
+        let blob = fixture("thermal-2zone.dtb");
+        let e = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
+        let booted_on_2 = |reg: u64| match reg { 2 => Some(0), 0 => Some(1), 1 => Some(2), 3 => Some(3), _ => None };
+        let model = from_dt(&e, &booted_on_2).unwrap().unwrap();
+        assert_eq!(model.domains().iter().map(|d| d.cpus).collect::<Vec<_>>(), [0b0110, 0b1001]);
+        let mut dt = raw();
+        azos_thermal::dt::cpus_by_logical(&mut dt, &booted_on_2);
+        let b = build(&dt, &model, |ph, cell| (ph != 0 && cell == 0).then_some(7));
+        assert_eq!(
+            b.thermal.zones()[0].maps(),
+            [
+                CoolingMap { trip: 0, domain: 0, min_state: 0, max_state: 2 },
+                CoolingMap { trip: 1, domain: 1, min_state: 1, max_state: 2 },
+            ]
+        );
+    }
+
     #[test]
     fn a_cooler_on_a_cpu_past_the_domain_masks_is_dropped_not_a_shift_overflow() {
         let blob = fixture("thermal-2zone.dtb");
         let e = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
-        let model = from_dt(&e).unwrap().unwrap();
+        let model = from_dt(&e, &by_reg).unwrap().unwrap();
         let mut dt = raw();
         // A slice, not the array: with a table of 8 the constant index is a
         // compile-time error (`unconditional_panic`) before the guard runs.
@@ -632,7 +667,7 @@ mod dt {
         let dt = raw();
         let blob = fixture("thermal-2zone.dtb");
         let e = unsafe { dtb_energy(blob.as_ptr()) }.unwrap();
-        let model = from_dt(&e).unwrap().unwrap();
+        let model = from_dt(&e, &by_reg).unwrap().unwrap();
         let b = build(&dt, &model, |_, _| None);
         assert_eq!((b.thermal.zones().len(), b.zones_dropped), (0, 2));
         // No energy model: nothing to cool, but the critical trip still protects.
@@ -651,6 +686,7 @@ mod construction {
     //! step does, minus the registers.
     use azos_dtb::{dtb_energy, dtb_thermal};
     use azos_energy::dt::from_dt;
+    use crate::by_reg;
     use azos_energy::model::{EnergyModel, Opp};
     use azos_energy::opp::{ActuateError, OppActuator};
     use azos_thermal::runtime::{nearest_opp, single_sensor, Inputs, Runtime, MIN_TICK_MS};
@@ -666,7 +702,7 @@ mod construction {
     fn model_and_dt() -> (EnergyModel, azos_dtb::DtThermal, Vec<u8>) {
         let b = blob();
         let e = unsafe { dtb_energy(b.as_ptr()) }.unwrap();
-        let m = from_dt(&e).unwrap().unwrap();
+        let m = from_dt(&e, &by_reg).unwrap().unwrap();
         // The slowest OPP is the one the real-time work was measured at (the
         // safety floor), so heat may cap all the way down.
         let mut declared = EnergyModel::from_source(m.source);
@@ -1951,6 +1987,7 @@ mod rpi {
 mod k1_opp {
     use azos_dtb::{dtb_energy, DtEnergy, DtOpp, DtOppTable};
     use azos_energy::dt::from_dt;
+    use crate::by_reg;
     use azos_energy::model::Opp;
     use azos_energy::opp::{ActuateError, Applied, Dvfs, OppActuator};
     use azos_thermal::k1::*;
@@ -2340,7 +2377,7 @@ mod k1_opp {
 
     #[test]
     fn dvfs_believes_the_clock_after_every_failure_the_rail_can_have() {
-        let model = from_dt(&energy()).unwrap().unwrap();
+        let model = from_dt(&energy(), &by_reg).unwrap().unwrap();
         // The model's OPPs: 0 600 MHz, 1 800 MHz, 2 1.2 GHz, 3 1.6 GHz (dropped).
         let down_fail = |e: ActuateError| {
             let t = table(0);
@@ -2449,7 +2486,7 @@ mod k1_opp {
         // The model lists every enabled OPP of the DT, including the one the
         // actuator dropped for being over the rail: asking for it is a
         // counted refusal, and the others move the cluster.
-        let model = from_dt(&energy()).unwrap().unwrap();
+        let model = from_dt(&energy(), &by_reg).unwrap().unwrap();
         let d0 = &model.domains()[0];
         let khz: Vec<u32> = d0.opps().iter().map(|o| o.freq_khz).collect();
         assert_eq!(khz, [600_000, 800_000, 1_200_000, 1_600_000]);
@@ -2863,7 +2900,7 @@ mod k1_tsensor {
         blob.extend_from_slice(&[0; 8]);
         let dt: DtThermal = unsafe { dtb_thermal(blob.as_ptr()) }.expect("readable blob");
         let energy = unsafe { dtb_energy(blob.as_ptr()) }.expect("readable blob");
-        let model = azos_energy::dt::from_dt(&energy).unwrap().unwrap();
+        let model = azos_energy::dt::from_dt(&energy, &crate::by_reg).unwrap().unwrap();
         assert_eq!(model.domains().len(), 2);
         // Cluster 0 booted at 1.6 GHz, cluster 1 at 819 MHz (the OPP table has 819.0 MHz).
         let (rt, report) = runtime_from_dt(&dt, &model, |d| Some(if d == 0 { 1_600_000 } else { 819_000 }));

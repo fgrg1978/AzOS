@@ -11,9 +11,10 @@
 //!   type is dropped, and so is every map that names it. A zone left with no
 //!   trip is dropped.
 //! * **Cooling.** `cooling-device = <&cpuN min max>` names a CPU; the CPU's
-//!   number is its position among the `device_type = "cpu"` nodes, and its
-//!   domain is the energy model's performance domain whose mask holds that
-//!   number. The cooling state is "OPP steps below the fastest" (cpufreq
+//!   number is its position in `DtThermal::cpus`, which [`cpus_by_logical`]
+//!   first reorders so that the position is the logical CPU (the numbering
+//!   the energy model's masks use, the boot CPU first), and its domain is
+//!   the energy model's performance domain whose mask holds that number. The cooling state is "OPP steps below the fastest" (cpufreq
 //!   cooling's state 0 is the full table); `THERMAL_NO_LIMIT` is 0 as a
 //!   minimum and the deepest step as a maximum, and a bound past the table
 //!   is clamped to it. Several CPUs of one domain in one map are one map.
@@ -54,6 +55,27 @@ fn kind(k: u8) -> Option<TripKind> {
         DT_TRIP_CRITICAL => Some(TripKind::Critical),
         _ => None,
     }
+}
+
+/// Reorder `dt.cpus` so that entry `n` is the phandle of logical CPU `n`
+/// (0 where no node is that CPU), using each node's `reg` and the boot's map
+/// `logical` (the kernel's `boot::smp::cpu_of_dt_reg`). Read in document
+/// order, a node's place is not its logical number: the boot CPU is logical
+/// 0, and a disabled node (no CPU of the boot) takes a place too (audit
+/// K2-M4, the same fix as `azos_energy::dt::from_dt`). Call it once, on a
+/// table read from a DTB, before [`build`].
+pub fn cpus_by_logical(dt: &mut DtThermal, logical: &dyn Fn(u64) -> Option<usize>) {
+    let mut by = [0u32; azos_dtb::MAX_CPU_REG];
+    let mut n = 0usize;
+    for (&phandle, &reg) in dt.cpus().iter().zip(&dt.cpu_regs) {
+        if let Some(l) = logical(reg).filter(|&l| l < by.len()) {
+            by[l] = phandle;
+            n = n.max(l + 1);
+        }
+    }
+    dt.cpus = by;
+    dt.cpu_regs = [0; azos_dtb::MAX_CPU_REG];
+    dt.n_cpus = n as u8;
 }
 
 /// The number of the CPU whose node has `phandle`.
