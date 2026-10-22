@@ -27,7 +27,7 @@
 //! DWC Ethernet QoS databook's, as Linux names them in
 //! `drivers/net/ethernet/stmicro/stmmac/{dwmac4.h,dwmac4_dma.h,
 //! dwmac4_descs.h}` (and `dwmac-starfive.c`, plus `drivers/net/phy/motorcomm.c`
-//! for the YT8531). **[verify]** The pinned Linux tree (`~/azos-dl/linux`)
+//! for the YT8531). **[verify]** The pinned Linux tree's
 //! sparse set did not carry those files when this was written, so the
 //! constants are recalled, not read: once the tree has them, diff every
 //! constant in [`reg`], [`mac`], [`dma`] and [`desc`] against them. The core's

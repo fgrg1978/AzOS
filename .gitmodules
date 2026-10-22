@@ -1,5 +1,58 @@
+# Every third-party source tree the build uses, one model: a gitlink pinned to
+# an upstream commit (the index entry IS the pin), shallow, `update = none` so
+# that no clone or `git submodule update` pulls it by accident.
+# tools/third_party_fetch.sh is the one way in: it checks the tree out at its
+# path (never inside iCloud Drive), at the gitlink, and verifies it; the gate
+# row `third_party: submodule == pin` (tools/lx_license_lint.py --pin) holds
+# every entry here to its gitlink and checkout. `tag` is the upstream tag the
+# commit carries (fetched by name, verified to peel to the gitlink); a tree
+# pinned to a commit of a branch has none.
+# Changing a pin: `git update-index --cacheinfo 160000,<commit>,<path>`, the
+# `tag` below, then the fetch script and the rows the tree feeds.
+
+# BusyBox (GPL-2.0-only): BUSYBOX.ELF, `make busybox`, all three ISAs.
+[submodule "third_party/busybox"]
+	path = third_party/busybox
+	url = https://git.busybox.net/busybox
+	shallow = true
+	update = none
+	tag = 1_37_0
+
+# Limine (BSD-2-Clause), a release's binary branch: BOOTX64.EFI and limine.c
+# for the x86 PC and PXE rows (mk/qemu.mk, tools/netboot/).
+[submodule "third_party/limine"]
+	path = third_party/limine
+	url = https://github.com/limine-bootloader/limine.git
+	shallow = true
+	update = none
+	tag = v10.8.5-binary
+
+# Linux (GPL-2.0-only), the kernel.org stable tree: the lx/ layer's modules
+# are built against it (fetched sparse). Its tag is also the module
+# `vermagic` release (this tag is its one record); changing it is an
+# "Lbump" (every validated module row re-runs).
 [submodule "third_party/linux"]
 	path = third_party/linux
 	url = https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 	shallow = true
 	update = none
+	tag = v7.2.9
+
+# relibc (Redox's libc, MIT), a commit of `master` (its last tag, 0.6.0, is a
+# 2020 tree unrelated to the current library): `make relibc`, patched by
+# userspace/lib/relibc-azos. Its own submodule dlmalloc-rs is fetched at the
+# commit relibc's tree records; openlibm is not (relibc's `math_libm`).
+[submodule "third_party/relibc"]
+	path = third_party/relibc
+	url = https://gitlab.redox-os.org/redox-os/relibc.git
+	shallow = true
+	update = none
+
+# U-Boot (GPL-2.0+): the S-mode U-Boot of the riscv64 netboot row
+# (tools/netboot/uboot_build.sh). The GitHub mirror of source.denx.de.
+[submodule "third_party/u-boot"]
+	path = third_party/u-boot
+	url = https://github.com/u-boot/u-boot.git
+	shallow = true
+	update = none
+	tag = v2025.07

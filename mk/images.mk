@@ -52,6 +52,12 @@ $(OUT_BUILD)/disk-aarch64-busybox.img: $(OUT_BUILD)/disk-aarch64-lxabi.img $(wil
 	mcopy -i $@ "$(BUSYBOX_ELF_AARCH64)" ::BUSYBOX.ELF
 	@echo "[DISK] aarch64 FAT32 image: $@ (user shell, LXHELLO.ELF, third-party BUSYBOX.ELF)"
 
+$(OUT_BUILD)/disk-x86_64-busybox.img: $(OUT_BUILD)/disk-x86_64.img $(wildcard $(BUSYBOX_ELF_X86_64))
+	@[ -f "$(BUSYBOX_ELF_X86_64)" ] || { echo "no $(BUSYBOX_ELF_X86_64): run make busybox"; exit 1; }
+	cp $(OUT_BUILD)/disk-x86_64.img $@
+	mcopy -i $@ "$(BUSYBOX_ELF_X86_64)" ::BUSYBOX.ELF
+	@echo "[DISK] x86_64 FAT32 image: $@ (user shell, LXHELLO.ELF, third-party BUSYBOX.ELF)"
+
 $(IMAGE_HASHES_AARCH64): userspace/image_hashes.py \
                $(HELLO_ELF_AARCH64) $(SYSTEST_ELF_AARCH64) $(GPIO_DRV_ELF_AARCH64) $(MLSRV_ELF_AARCH64) \
                $(UHELLO_ELF_AARCH64) $(REFLEX_ELF_AARCH64) $(BRAINCLI_ELF_AARCH64) \
@@ -890,11 +896,18 @@ $(OUT_BUILD)/disk-recovery.img: $(OUT_BUILD)/disk.img $(OUT_BUILD)/KERN_R.BIN $(
 	@echo "[DISK] FAT32 image with unsigned slot A and a SIGNED recovery slot: $@"
 
 
+# The third-party table (BUSYBOX.ELF when `make busybox` built it, empty
+# otherwise) is a target of its own, so an output tree whose image table is
+# already current still gets it.
 $(IMAGE_HASHES_X86_64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_X86_64) \
-               $(if $(LXRT_NEED_X86_64),$(LXRT_ELF_X86_64))
+               $(if $(LXRT_NEED_X86_64),$(LXRT_ELF_X86_64)) $(THIRDPARTY_HASHES_X86_64)
 	@mkdir -p $(OUT_BUILD)
 	python3 tools/user_entry_lint.py --image $(filter-out $(LXHELLO_ELF_X86_64),$(IMAGE_ELF_PATHS_X86_64))
 	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_X86_64)
+
+$(THIRDPARTY_HASHES_X86_64): userspace/image_hashes.py $(wildcard $(BUSYBOX_ELF_X86_64))
+	@mkdir -p $(OUT_BUILD)
+	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing $@ BUSYBOX.ELF=$(BUSYBOX_ELF_X86_64)
 
 # ── x86_64 disk images ──────────────────────────────────────────────────────
 #

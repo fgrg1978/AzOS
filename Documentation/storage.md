@@ -823,7 +823,7 @@ The tree contains:
 
 | Item | Where |
 |------|-------|
-| The build of the unmodified `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c` of the pinned Linux tag, for both ISAs, into `<isa>/fs/{crc16,mbcache,jbd2,ext4}.ko`, in load order | `make lx-kbuild`, `tools/lx_kbuild/run.sh` (`fs_modules`), pinned by `lx/LINUX_PIN` |
+| The build of the unmodified `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c` of the pinned Linux tag, for both ISAs, into `<isa>/fs/{crc16,mbcache,jbd2,ext4}.ko`, in load order | `make lx-kbuild`, `tools/lx_kbuild/run.sh` (`fs_modules`), pinned by the `third_party/linux` gitlink |
 | The relocatable-module loader: parses an `ET_REL` object, lays out text and data regions, resolves symbols through a caller-supplied table and applies relocations | `crates/core/lx-loader/src/lib.rs` |
 | The kernel half of loading: a module's file bytes are checked against a digest table built into the kernel image before they run, and text is flipped to read-execute after loading | invoke ops `DOMAIN_MODULE_VERIFY` and `DOMAIN_MODULE_MAP_X` (`crates/core/abi/src/invoke.rs`) |
 | The base of the compatibility layer a ring-3 server would run modules on (memory, locks, timers, workqueues, RCU, printk, device model, reference counts, exported-symbol table) | `lx/emul` |
@@ -839,5 +839,5 @@ directory cannot be addressed by position. An image that contains a Linux
 module is GPL-2.0-only as a whole (`config/Kconfig.linux`).
 
 Source: `config/Kconfig.linux`, `tools/lx_kbuild/run.sh`, `crates/core/lx-loader/src/lib.rs`,
-`lx/FS_EXT4_UNRESOLVED`, `lx/LINUX_PIN`, `lx/emul/src/lib.rs`,
+`lx/FS_EXT4_UNRESOLVED`, `.gitmodules`, `lx/emul/src/lib.rs`,
 `crates/fs/fs/src/bcache.rs`, `crates/fs/fs/src/vfs.rs`.

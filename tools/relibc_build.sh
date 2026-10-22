@@ -10,9 +10,9 @@
 #   tools/relibc_build.sh cc    <isa> OUT SRC..   compile and link C sources into the ELF OUT
 #   tools/relibc_build.sh diff                 print the patch the work tree's edits amount to
 #
-# <isa> is riscv64, aarch64 or x86_64. The source is the checkout of
-# third_party/RELIBC_PIN that tools/relibc_fetch.sh makes (outside the repo);
-# it is copied to a work tree, patched with userspace/lib/relibc-azos/patches
+# <isa> is riscv64, aarch64 or x86_64. The source is the checkout of the
+# gitlink third_party/relibc (tools/third_party_fetch.sh relibc); it is never
+# written: it is copied to a work tree, patched with userspace/lib/relibc-azos/patches
 # and overlaid with userspace/lib/relibc-azos/overlay (our `azos` platform
 # module). The Rust target is the ISA's native spec (sdk/targets), and a C
 # program is linked with that spec's layout (tools/user_link_args.py --driver:
@@ -20,7 +20,7 @@
 # except through cargo, as relibc's own build would.
 #
 # Environment:
-#   RELIBC_SRC    the checkout                    (default ~/azos-dl/relibc)
+#   RELIBC_SRC    the checkout                    (default <repo>/third_party/relibc)
 #   RELIBC_WORK   the patched work tree           (default <AZOS_OUT>/build/relibc-work: a tree of
 #                 its own per output directory, since the patch bakes in this repository's path)
 #   RELIBC_OUT    outputs                         (default <repo>/build/relibc)
@@ -34,8 +34,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 AZOS_OUT="${AZOS_OUT:-$(python3 "$root/tools/out_dir.py")}"
-pin="$root/third_party/RELIBC_PIN"
-src="${RELIBC_SRC:-$HOME/azos-dl/relibc}"
+src="${RELIBC_SRC:-$root/third_party/relibc}"
 work="${RELIBC_WORK:-$AZOS_OUT/build/relibc-work}"
 out="${RELIBC_OUT:-$AZOS_OUT/build/relibc}"
 zig="${RELIBC_ZIG:-zig}"
@@ -74,9 +73,10 @@ spec_name() {
 }
 
 prepare() {
-    [ -e "$src/.git" ] || die "no checkout at $src: run tools/relibc_fetch.sh"
-    local commit; commit="$(sed -n 's/^commit=//p' "$pin")"
-    [ "$(git -C "$src" rev-parse HEAD)" = "$commit" ] || die "$src is not at the pin ($commit): run tools/relibc_fetch.sh"
+    [ -e "$src/.git" ] || die "no checkout at $src: run tools/third_party_fetch.sh relibc"
+    local commit; commit="$(git -C "$root" ls-files -s third_party/relibc | awk '$1 == "160000" { print $2 }')"
+    [ -n "$commit" ] || die "third_party/relibc is not a gitlink"
+    [ "$(git -C "$src" rev-parse HEAD)" = "$commit" ] || die "$src is not at the pin ($commit): run tools/third_party_fetch.sh relibc"
     # What the work tree is made of: the pin, the patches and the overlay.
     local key
     key="$( (echo "$commit"; echo "$root"; cd "$lib" && find patches overlay -type f | LC_ALL=C sort | xargs shasum -a 256) | shasum -a 256 | cut -d' ' -f1)"

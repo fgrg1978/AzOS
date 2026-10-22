@@ -576,10 +576,24 @@ fn kbuild_exports_come_from_the_ksymtab_only() {
     }
 }
 
+/// The pinned Linux release: the `tag` of the Linux tree's entry in the
+/// repository's .gitmodules, without its `v` (the Makefile's LX_LINUX_RELEASE).
+fn linux_release() -> String {
+    let gm = std::fs::read_to_string(format!("{}/../../../.gitmodules", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let mut in_linux = false;
+    for l in gm.lines().map(str::trim) {
+        if l.starts_with("[submodule ") {
+            in_linux = l.ends_with("/linux\"]");
+        } else if let Some(tag) = l.strip_prefix("tag = v").filter(|_| in_linux) {
+            return tag.to_string();
+        }
+    }
+    panic!(".gitmodules has no tag for the Linux tree");
+}
+
 #[test]
 fn kbuild_modinfo_and_notes() {
-    let pin = std::fs::read_to_string(format!("{}/../../../lx/LINUX_PIN", env!("CARGO_MANIFEST_DIR"))).unwrap();
-    let tag = pin.lines().find_map(|l| l.strip_prefix("tag=v")).unwrap().to_string();
+    let tag = linux_release();
     for isa in [Isa::Riscv64, Isa::Aarch64] {
         let arch = if isa == Isa::Riscv64 { "riscv" } else { "aarch64" };
         let vermagic = format!("{tag} SMP preempt {arch}");
@@ -727,11 +741,7 @@ fn fnv(name: &[u8]) -> u64 {
 /// to `fallback` (a stand-in address near the importing module's text, so
 /// that a branch can reach it) when it returns true, and recorded.
 fn fs_chain(isa: Isa, fallback: &dyn Fn(&str) -> bool) -> Option<FsLoaded> {
-    let vermagic = {
-        let pin = std::fs::read_to_string(format!("{}/../../../lx/LINUX_PIN", env!("CARGO_MANIFEST_DIR"))).unwrap();
-        let tag = pin.lines().find_map(|l| l.strip_prefix("tag=v")).unwrap().to_string();
-        format!("{tag} SMP preempt {}", if isa == Isa::Riscv64 { "riscv" } else { "aarch64" })
-    };
+    let vermagic = format!("{} SMP preempt {}", linux_release(), if isa == Isa::Riscv64 { "riscv" } else { "aarch64" });
     let mut objs = Vec::new();
     for n in FS_ORDER {
         let (dir, file) = n.rsplit_once('/').map_or(("", n), |(d, f)| (d, f));

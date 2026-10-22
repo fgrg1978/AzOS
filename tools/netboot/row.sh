@@ -35,7 +35,7 @@
 # carries the line that names why (the loader's refusal): a sabotaged boot that
 # fails for another reason, or that simply never starts, is not a pass.
 #
-# Environment: LIMINE_DIR (default ~/azos-dl/limine), OVMF_CODE / OVMF_VARS
+# Environment: LIMINE_DIR (default third_party/limine), OVMF_CODE / OVMF_VARS
 # (default QEMU's own edk2 build), U_BOOT_BIN (default: built on demand by
 # uboot_build.sh),
 # QEMU_X86_64_CPU (default max), NETBOOT_TIMEOUT (seconds per boot, default 150),
@@ -117,7 +117,7 @@ x86_setup() {
     [ -f "${OVMF_CODE:-}" ] || skip "no OVMF (OVMF_CODE: QEMU's edk2-x86_64-code.fd)"
     OVMF_VARS="${OVMF_VARS:-$(ls "$(dirname "$OVMF_CODE")"/edk2-i386-vars.fd "$(dirname "$OVMF_CODE")"/OVMF_VARS.fd 2>/dev/null | sed -n 1p)}"
     [ -f "${OVMF_VARS:-}" ] || skip "no OVMF variable store (OVMF_VARS)"
-    [ -f "${LIMINE_DIR:-$HOME/azos-dl/limine}/BOOTX64.EFI" ] || skip "no Limine (LIMINE_DIR)"
+    [ -f "${LIMINE_DIR:-$here/third_party/limine}/BOOTX64.EFI" ] || skip "no Limine (tools/third_party_fetch.sh limine, or LIMINE_DIR)"
     command -v mkfs.fat >/dev/null && command -v mcopy >/dev/null || skip "no mkfs.fat / mtools (the HTTP Boot image)"
     cp "$OVMF_VARS" "$work/vars.fd"
     # No disk: only the firmware's two flash banks, the NIC, and the debug-exit port.

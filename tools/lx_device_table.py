@@ -16,7 +16,7 @@ native driver also declares.
 
 lx/DEVICE_SOURCES: one `<class> <path under third_party/linux>` per line, `#`
 comments. No file or an empty list prints nothing; so does a tree that is not
-checked out (tools/lx_fetch_linux.sh fetches it): the table is then empty and
+checked out (tools/third_party_fetch.sh linux fetches it): the table is then empty and
 no Linux class server is ever wanted. A listed file that is missing from a
 checked-out tree, or an id this reader cannot resolve, is an error: a dropped
 id would let the native/Linux collision check pass on an incomplete table.

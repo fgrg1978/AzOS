@@ -11,8 +11,8 @@ Nothing of relibc is stored in this repository except what AzOS adds to it:
 
 | Path | What |
 |---|---|
-| `third_party/RELIBC_PIN` | the upstream commit |
-| `tools/relibc_fetch.sh` | shallow-fetches that commit into `~/azos-dl/relibc` (`$RELIBC_SRC`), outside the repo |
+| `third_party/relibc` | a gitlink (`.gitmodules`, `update = none`): the upstream commit |
+| `tools/third_party_fetch.sh relibc` | shallow-fetches that commit into `third_party/relibc` (`$RELIBC_SRC` overrides the tree the build reads), in a checkout outside iCloud Drive |
 | `userspace/lib/relibc-azos/patches/` | the changes to upstream files (MIT, like the tree they patch) |
 | `userspace/lib/relibc-azos/overlay/` | our own files: the `azos` platform module (Apache-2.0 OR GPL-2.0-only); the Rust targets are the native specs (`sdk/targets`) and a C program is linked with their layout (`tools/user_link_args.py --driver`), no linker script |
 | `tools/relibc_build.sh` | copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs |
@@ -20,10 +20,10 @@ Nothing of relibc is stored in this repository except what AzOS adds to it:
 | `make relibc` | all of it, for every ISA whose configuration sets `CONFIG_RELIBC=y` (the QEMU defconfigs do) |
 
 `tools/lx_license_lint.py` accepts MIT only in `patches/` (rule T6) and checks the
-pin (`--relibc-pin`).
+pin with every other third-party tree (`--pin`).
 
-Source: `tools/relibc_fetch.sh`, `tools/relibc_build.sh`, `config/Kconfig.relibc`,
-`third_party/RELIBC_PIN`.
+Source: `tools/third_party_fetch.sh`, `tools/relibc_build.sh`, `config/Kconfig.relibc`,
+`.gitmodules`.
 
 ## The platform layer (`overlay/src/platform/azos`)
 
@@ -66,7 +66,7 @@ Source: `userspace/lib/relibc-azos/overlay/src/platform/azos/` (`mod.rs`,
 ## Building a C program
 
 ```
-tools/relibc_fetch.sh && make relibc          # needs zig; CONFIG_RELIBC=y: $AZOS_OUT/build/relibc/<isa>/{hello,tinybox}.elf
+tools/third_party_fetch.sh relibc && make relibc   # needs zig; CONFIG_RELIBC=y: $AZOS_OUT/build/relibc/<isa>/{hello,tinybox}.elf
 ```
 
 Link with `tools/relibc_build.sh cc <isa> OUT.elf SRC.c..`: `-D__azos__`, the relibc
@@ -81,6 +81,7 @@ Source: `tools/relibc_build.sh`, `userspace/tests/relibc/`.
 
 ## Moving the pin
 
-Change `third_party/RELIBC_PIN`, run `tools/relibc_fetch.sh`, then re-apply the
+Change the gitlink (`git update-index --cacheinfo 160000,<commit>,third_party/relibc`),
+run `tools/third_party_fetch.sh relibc`, then re-apply the
 patches (`tools/relibc_build.sh prepare` fails on a hunk that does not apply;
 `tools/relibc_build.sh diff` prints the patch a repaired work tree amounts to).

@@ -23,8 +23,8 @@ Build
   x86_64                 Build the x86_64 port skeleton; it stops at the first piece not ported.
   userspace              Build the RISC-V user-space programs.
   userspace-aarch64      Build the aarch64 user-space programs.
-  busybox                Build BusyBox for both ISAs (needs zig).
-  relibc                 Build relibc and the C programs against it, for each ISA whose configuration sets CONFIG_RELIBC (needs zig, cbindgen, tools/relibc_fetch.sh).
+  busybox                Build BusyBox for riscv64, aarch64 and x86_64 (needs zig, tools/third_party_fetch.sh busybox).
+  relibc                 Build relibc and the C programs against it, for each ISA whose configuration sets CONFIG_RELIBC (needs zig, cbindgen, tools/third_party_fetch.sh relibc).
   check                  Type-check the kernel without linking: make check ARCH=riscv64|aarch64|x86_64.
   micro-config           Expand config/defconfigs/micro.config into $AZOS_OUT/build/micro.config (AzOS-micro, the MCU kernel).
   micro-topology         Write and sign the micro kernel's topology ($AZOS_OUT/build/micro/topology).

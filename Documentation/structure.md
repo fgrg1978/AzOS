@@ -27,7 +27,8 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | `tools/` | Build, check, signing, image-making and analysis scripts (Python and shell); `boot.cmd`, the U-Boot script that boots slots A/B/R from the SD card. |
 | `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), `qemu/` (emulator scenarios), `sdk/` (SDK test program), plus the runner scripts. |
 | `formal/tla/` | TLA+ models: `cap_table` and `topology_load`. |
-| `third_party/` | `vendor/` (vendored crates), `linux/` (the pinned Linux tree is fetched here by `tools/lx_fetch_linux.sh`), and the pin files `VENDOR_PIN`, `RELIBC_PIN`. |
+| `boot/` | `boot.scr.cmd`, a U-Boot boot script. |
+| `third_party/` | `vendor/` (vendored crates) and its pin `VENDOR_PIN`; the third-party source trees `busybox/`, `limine/`, `linux/`, `relibc/`, `u-boot/` (gitlinks in `.gitmodules`, `update = none`, fetched here by `tools/third_party_fetch.sh`); `patches/`. |
 | `LICENSES/` | Licence texts: Apache-2.0, GPL-2.0-only, MIT. |
 
 Top-level files: `Cargo.toml` (workspace), `Kconfig`, `Makefile`,

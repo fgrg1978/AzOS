@@ -8,12 +8,13 @@
 #
 #   tools/netboot/uboot_build.sh [outdir]
 #
-# U-Boot is not in the tree and is not downloaded: the owner-approved release
-# tarball is read from U_BOOT_TARBALL (default ~/azos-dl/u-boot/u-boot-2025.07.tar.bz2)
-# and checked against the digest below. Everything is built under <outdir>
-# (default $AZOS_OUT/netboot), never in the checkout; the source and build
-# trees are removed once u-boot.bin is installed, so a repeat call with the same
-# tarball and fragment returns at once.
+# The source is the gitlink third_party/u-boot (.gitmodules: its release
+# tag), checked out by `tools/third_party_fetch.sh u-boot`; this script never
+# downloads. U_BOOT_SRC points at a checkout elsewhere (it must be at the
+# gitlink). It is built out of tree (`O=`) under <outdir> (default
+# $AZOS_OUT/netboot) and never written; the build tree is removed once
+# u-boot.bin is installed, so a repeat call with the same pin and fragment
+# returns at once.
 #
 # Needs a riscv64 GCC (riscv64-unknown-elf-gcc), GNU make, and an LLD
 # (`ld.lld`): the bare-metal GNU linker cannot make the -pie image U-Boot's
@@ -24,17 +25,17 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 export AZOS_OUT="${AZOS_OUT:-$(python3 "$here/tools/out_dir.py")}"
 out="${1:-$AZOS_OUT/netboot}"
-tarball="${U_BOOT_TARBALL:-$HOME/azos-dl/u-boot/u-boot-2025.07.tar.bz2}"
-sha256_want=0f933f6c5a426895bf306e93e6ac53c60870e4b54cda56d95211bec99e63bec7
+src="${U_BOOT_SRC:-$here/third_party/u-boot}"
+commit="$(git -C "$here" ls-files -s third_party/u-boot | awk '$1 == "160000" { print $2 }')"
 frag="$here/tools/netboot/uboot-qemu-riscv64.fragment"
 bin="$out/u-boot-qemu-riscv64.bin"
 stamp="$out/u-boot-qemu-riscv64.stamp"
 
-[ -f "$tarball" ] || { echo "uboot_build: no U-Boot tarball at $tarball (set U_BOOT_TARBALL)" >&2; exit 1; }
-have="$(shasum -a 256 "$tarball" | awk '{print $1}')"
-[ "$have" = "$sha256_want" ] || { echo "uboot_build: $tarball is $have, expected $sha256_want" >&2; exit 1; }
+[ -n "$commit" ] || { echo "uboot_build: third_party/u-boot is not a gitlink" >&2; exit 1; }
+[ -e "$src/.git" ] && [ "$(git -C "$src" rev-parse HEAD)" = "$commit" ] && [ -z "$(git -C "$src" status --porcelain --untracked-files=no)" ] \
+    || { echo "uboot_build: no clean U-Boot checkout at $commit in $src (tools/third_party_fetch.sh u-boot)" >&2; exit 1; }
 # The stamp names this script too: a U-Boot an older recipe built is rebuilt.
-want_stamp="$sha256_want $(shasum -a 256 "$frag" "$0" | awk '{print $1}' | tr '\n' ' ')"
+want_stamp="$commit $(shasum -a 256 "$frag" "$0" | awk '{print $1}' | tr '\n' ' ')"
 mkdir -p "$out"
 if [ -f "$bin" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$want_stamp" ]; then echo "$bin"; exit 0; fi
 
@@ -51,9 +52,8 @@ done
 hostcflags=""; hostldflags=""
 if [ -n "$ssl" ] && [ "$ssl" != /usr ]; then hostcflags="-I$ssl/include"; hostldflags="-L$ssl/lib"; fi
 
-src="$out/u-boot-src" bld="$out/u-boot-build"
-rm -rf "$src" "$bld"; mkdir -p "$src"
-tar -xjf "$tarball" -C "$src" --strip-components=1
+bld="$out/u-boot-build"
+rm -rf "$bld"
 export CROSS_COMPILE=riscv64-unknown-elf-
 # U-Boot's Kconfig honours KCONFIG_CONFIG as this tree's does. Inherited from
 # the gate (tools/ci_check.sh exports the primary column's), it made U-Boot
@@ -80,5 +80,5 @@ grep -aqF 'bootcmd=source ${scriptaddr}' "$bld/u-boot.bin" \
     || { echo "uboot_build: u-boot.bin does not run the netboot script (bootcmd)" >&2; exit 1; }
 cp "$bld/u-boot.bin" "$bin"
 printf '%s\n' "$want_stamp" >"$stamp"
-rm -rf "$src" "$bld"
+rm -rf "$bld"
 echo "$bin"

@@ -215,8 +215,8 @@ fn read_module(buf: &mut [u8]) -> Option<usize> {
 
 // ── Linux modules built by Kbuild ──────────────────────────────
 
-/// The Linux release the modules must be built from: `lx/LINUX_PIN`'s tag,
-/// passed by the Makefile. The rest of `vermagic` is fixed by
+/// The Linux release the modules must be built from: the Linux tree's pinned
+/// tag (.gitmodules), passed by the Makefile. The rest of `vermagic` is fixed by
 /// `tools/lx_kbuild/common.config` (`SMP`, the default preemption model) and
 /// the ISA, so a module built from another tree or config is refused.
 const LX_RELEASE: &[u8] = match option_env!("LX_LINUX_RELEASE") {

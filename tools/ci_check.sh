@@ -790,7 +790,7 @@ make_disk() {
     done
     # Not the status of the loop's last test: outside a job `[ -n "$PAR_JOB" ]`
     # is false, and `lx_busybox_ready` read that as a failed build and skipped
-    # the BusyBox rows as "no zig or no pinned tarball".
+    # the BusyBox rows as "no zig or no fetched BusyBox tree".
     return 0
 }
 MADE_DISKS=" "
@@ -10424,10 +10424,12 @@ test_host_features "topology(lx-server)" \
 #   module with Linux's licence tag before stage L1. Its canary is
 #   `--self-test`, which breaks each rule once in a throwaway tree and fails
 #   unless every rule reports it.
-# * `submodule == pin`: the gitlink and the checkout's HEAD equal
-#   lx/LINUX_PIN, and the checkout carries zero patches
-#   (a fresh clone needs `tools/lx_fetch_linux.sh`; the submodule is
-#   `update = none`, so nothing fetches the Linux tree by accident).
+# * `third_party: submodule == pin`: every third-party tree of .gitmodules
+#   (BusyBox, Limine, Linux, relibc, U-Boot) is a shallow `update = none`
+#   gitlink, and a checked-out tree is at it, carries its tag and zero
+#   patches; relibc's MIT notice
+#   travels (LICENSES/MIT.txt, NOTICE). A fresh clone fetches a tree with
+#   `tools/third_party_fetch.sh <name>`: nothing fetches one by accident.
 # * `Kconfig gates`: azos_limits refuses a module option (LX_FS_EXT2) and
 #   LINUX_DRIVERS without LX_SERVER_SKELETON, and builds with the pair. Its
 #   own target dir: a different KCONFIG_CONFIG must not leave a stale
@@ -10463,14 +10465,9 @@ lx_lint_row() { # <label> <args>
 }
 ci_row "lx: licence lint" lx_lint_row "lx: licence lint" ""
 ci_row "lx: licence lint canary" lx_lint_row "lx: licence lint canary" "--self-test"
-ci_row "lx: submodule == pin" lx_lint_row "lx: submodule == pin" "--pin"
+ci_row "third_party: submodule == pin" lx_lint_row "third_party: submodule == pin" "--pin"
 vendor_row() { local o; printf "  %-26s" "vendor: tree == pin..."; if o="$(python3 "${REPO_ROOT}/userspace/lib/tls-probe/vendor.py" check 2>&1)"; then ok; else bad; printf '%s\n' "$o" | sed -n 1,6p | sed 's/^/      /'; fi; }; ci_row "vendor: tree == pin" vendor_row
 vendor_canary_row() { local o; printf "  %-26s" "vendor: canary..."; if o="$(python3 "${REPO_ROOT}/userspace/lib/tls-probe/vendor.py" --self-test 2>&1)"; then ok; else bad; printf '%s\n' "$o" | sed -n 1,8p | sed 's/^/      /'; fi; }; ci_row "vendor: canary" vendor_canary_row
-# relibc (MIT; `make relibc`): the pin names a commit and licence the checkout
-# (outside the repo, tools/relibc_fetch.sh) must match when it is there, and
-# LICENSES/MIT.txt and NOTICE carry the notice (rules R0-R4; MIT itself is
-# accepted only in the patch directory, T6).
-ci_row "relibc: pin == checkout" lx_lint_row "relibc: pin == checkout" "--relibc-pin"
 # The platform layer (userspace/lib/relibc-azos/overlay) is part of no crate of
 # this tree: it compiles only inside the relibc work tree, so this row is its
 # only compile check. Every ISA whose configuration sets CONFIG_RELIBC is built
@@ -13859,13 +13856,14 @@ PY
     # written from the architecture and QEMU's model tables, not from a boot
     # (first boot: check each against its log). Image: the same
     # `make x86_64-limine` kernel for every model, booted from a per-row ESP.
-    # SKIPPED, not failed, without Limine or the UEFI firmware (LIMINE_DIR,
-    # `make x86-pc-prereq` says what is missing): neither is in the tree.
+    # SKIPPED, not failed, without Limine or the UEFI firmware (Limine is the
+    # gitlink third_party/limine, `tools/third_party_fetch.sh limine`, or
+    # LIMINE_DIR; `make x86-pc-prereq` says what is missing).
     x86_pc_row() { # x86_pc_row <label> <qemu -cpu> <want, |-separated fixed strings> <deny, |-separated or "">
         local label="$1" cpu="$2" want="$3" deny="$4" why="" w i=0
         printf "  %-26s" "${label}..."
         if ! make -s x86-pc-prereq >/dev/null 2>&1; then
-            SKIP=$((SKIP + 1)); echo "skipped (no Limine or OVMF: LIMINE_DIR, see make x86-pc-prereq)"; return
+            SKIP=$((SKIP + 1)); echo "skipped (no Limine or OVMF: tools/third_party_fetch.sh limine, see make x86-pc-prereq)"; return
         fi
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -19767,10 +19765,11 @@ PYEOF
     # script line is typed through the monitor's `sendkey`
     # (tools/qemu_sendkeys.py) instead of the serial fifo, which stays open and
     # silent. Whatever the shell reads then came from the virtio keyboard.
-    # Build the third-party BusyBox once per gate run (both
+    # Build the third-party BusyBox once per gate run (the three
     # ISAs), in a config of its own with USERSPACE_GPL + BUSYBOX: the gate's
     # own configs keep both off. 0 when build/disk-busybox.img and its
-    # aarch64 twin exist afterwards.
+    # aarch64 twin exist afterwards; LX_BUSYBOX_X86=yes when the x86_64
+    # volume does too.
     lx_busybox_ready() {
         if [ -z "${LX_BUSYBOX_STATE:-}" ]; then
             LX_BUSYBOX_STATE=no
@@ -19784,6 +19783,13 @@ PYEOF
                && make -s busybox KCONFIG_CONFIG="$cfg" >"$CI_LOG_DIR/busybox-build.log" 2>&1 \
                && make_disk $AZOS_OUT/build/disk-busybox.img $AZOS_OUT/build/disk-aarch64-busybox.img; then
                 LX_BUSYBOX_STATE=yes
+                # x86_64's volume needs the x86_64 userspace: without it only
+                # the x86 rows are skipped (make_disk would end the gate).
+                rm -f $AZOS_OUT/build/disk-x86_64-busybox.img*
+                if make $AZOS_OUT/build/disk-x86_64-busybox.img >"$CI_LOG_DIR/busybox-x86-disk.log" 2>&1; then
+                    cp -p $AZOS_OUT/build/disk-x86_64-busybox.img $AZOS_OUT/build/disk-x86_64-busybox.img.pristine
+                    LX_BUSYBOX_X86=yes
+                fi
             fi
         fi
         [ "$LX_BUSYBOX_STATE" = yes ]
@@ -19800,7 +19806,13 @@ PYEOF
         fi
         [ "$LX_THREADS_STATE" = yes ]
     }
-    ushell_row() { # ushell_row <label> <rv|arm> <features> <PASS|FAIL> <script> <limit-s> <marker>...
+    # x86 (`ushell_row ... x86 ...`): x86_64 hosts a Linux task only in the
+    # ring-3 runtime, so its kernel is built from `USH_X86_DEFCONFIG` (default:
+    # the QEMU defconfig plus LINUX_RUNTIME) into an image of its own, and
+    # boots on microvm with one CPU (`USH_SMP` does not apply); `USH_DISK=sh`
+    # and `lxabi` are build/disk-x86_64.img (it carries LXHELLO.ELF), any
+    # other volume build/disk-x86_64-<name>.img.
+    ushell_row() { # ushell_row <label> <rv|arm|x86> <features> <PASS|FAIL> <script> <limit-s> <marker>...
         local label="$1" isa="$2" feats="$3" expect="$4" script="$5" limit="$6"; shift 6
         printf "  %-26s" "${label}..."
         local slug log fifo img kimg
@@ -19819,6 +19831,22 @@ PYEOF
                 rm -f $AZOS_OUT/build/disk-drvbase.img $AZOS_OUT/build/disk-sh.img "$AZOS_OUT/build/disk-$dsk.img"; make_disk "$AZOS_OUT/build/disk-$dsk.img"
             fi
             cp "$AZOS_OUT/build/disk-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$KERNEL}" "$kimg"
+        elif [ "$isa" = x86 ]; then
+            local xdef="${USH_X86_DEFCONFIG:-$CI_LOG_DIR/ush-x86-lxrt.defconfig}" xt xvol
+            [ -n "${USH_X86_DEFCONFIG:-}" ] || { cat config/defconfigs/qemu-x86_64.config; echo "CONFIG_LINUX_RUNTIME=y"; } >"$xdef"
+            xt="$(basename "$xdef" .defconfig)"
+            if [ -n "${USH_KERNEL:-}" ]; then cp "$USH_KERNEL" "$kimg"
+            elif ! X86_KBUILD_OUT="$AZOS_OUT/build/kernel-x86_64-$xt.elf" \
+                 X86_KBUILD_ARGS="X86_64_DEFCONFIG=$xdef X86_64_KCONFIG=$AZOS_OUT/build/x86_64-$xt.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-$xt X86_64_IMG=$AZOS_OUT/build/kernel-x86_64-$xt.elf" \
+                 x86_kbuild "$feats" "$kimg"; then
+                bad; echo "      x86_64 kernel ($feats, $xt) did not build"; return
+            fi
+            x86_kernel_check "$kimg" || { rm -f "$kimg" "$kimg.features"; return; }
+            case "$dsk" in sh|lxabi) xvol=x86_64 ;; *) xvol="x86_64-$dsk" ;; esac
+            if [ ! -f "$AZOS_OUT/build/disk-$xvol.img.pristine" ]; then
+                rm -f "$AZOS_OUT/build/disk-$xvol.img"; make_disk "$AZOS_OUT/build/disk-$xvol.img"
+            fi
+            cp "$AZOS_OUT/build/disk-$xvol.img.pristine" "$img"
         else
             if [ -z "${USH_KERNEL:-}" ] && ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
             if [ ! -f "$AZOS_OUT/build/disk-aarch64-$dsk.img.pristine" ]; then
@@ -19830,7 +19858,13 @@ PYEOF
         if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; return; fi
         par_ready   # the wait below happens in the job, not in the gate
         while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
-        if [ "$isa" = rv ]; then
+        if [ "$isa" = x86 ]; then
+            par_ready
+            qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot ${USH_QEMU_EXTRA:-} \
+                -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 -kernel "$kimg" <"$fifo" >"$log" 2>&1 &
+        elif [ "$isa" = rv ]; then
             par_ready
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${USH_SMP:-4}" ${USH_QEMU_EXTRA:-} \
                 -global virtio-mmio.force-legacy=false \
@@ -19849,7 +19883,7 @@ PYEOF
         ush_prompts() { grep -ao 'azos\$ ' "$log" 2>/dev/null | wc -l | tr -d ' '; }
         ush_alive() {
             kill -0 "$pid" 2>/dev/null || { verdict=exited; return 1; }
-            if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then verdict=crash; return 1; fi
+            if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled|\[X86-TRAP\]" "$log" 2>/dev/null; then verdict=crash; return 1; fi
             [ $(( $(date +%s) - t0 )) -lt "$limit" ] || { verdict=timeout; return 1; }
         }
         ush_type() { local b i; for ((i = 0; i < ${#1}; i++)); do printf '%s' "${1:i:1}" >&8; sleep 0.02; done; }
@@ -19882,7 +19916,7 @@ PYEOF
         kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
         exec 8>&-
-        rm -f "$fifo" "$img" "$kimg" "$vsock"
+        rm -f "$fifo" "$img" "$kimg" "$kimg.features" "$vsock"
         local missing="" m
         for m in "$@"; do grep -aqF -- "$m" "$log" || missing="$missing [$m]"; done
         local forbidden=""
@@ -20515,146 +20549,6 @@ echo after-orphan" 120 \
 #sleep 2
 echo after-orphan" 120 \
             "lx: orphan forked, parent exits" "lx: orphan ppid=0 not adopted" "after-orphan"
-        # BusyBox (third-party, GPL-2.0-only; `make busybox` with
-        # USERSPACE_GPL + BUSYBOX in a config of its own, never the gate's).
-        # `sh` runs a builtin, a NOEXEC applet over a FAT32 directory, a
-        # pipeline in command substitution (fork, pipe2, execve of
-        # /proc/self/exe for `wc`), and a subshell whose create under /fat its
-        # row does not allow (the forked child, reseeded from the row, is
-        # refused and the refusal recorded). Canary: the fork canary (the
-        # child may create). Skipped, and said so, when the toolchain (zig) or the
-        # pinned tarball is not on this host.
-        if lx_busybox_ready; then
-            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
-                "busybox sh -c 'echo bb-sh-ok; ls /fat'
-busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
-busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
-busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'
-echo after-bb \$?" 240 \
-                "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "wc-out=8" \
-                "openat refused by the capability check: -EACCES (recorded)" "Permission denied" "sub-rc=1" \
-                "bbfork-2" "after-bb 0"
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
-                "busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'" 150 \
-                "Permission denied" "sub-rc=1"
-            # Two subshells write one inherited descriptor in turn (the main
-            # row's `bbfork-2`: two lines). Canary
-            # `fd-private-offset-busybox-canary` (private offsets): the second
-            # subshell overwrites the first's line, one line is left.
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
-                "busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'" 150 \
-                "bbfork-2"
-            # Two Linux tasks on one hart: BusyBox sleeping in the background
-            # while LXHELLO (which starts with TPIDR_EL0 = 0) runs, then
-            # BusyBox forks again. Its thread pointer must be its own when it
-            # resumes (LXHELLO sets its own and checks it, too).
-            USH_SMP=1 USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
-                "!busybox sh -c 'sleep 2; echo tls-\$(echo kept)' &
-lxhello
-#wait tls-kept" 240 \
-                "lx: done failures=0" "tls-kept"
-            # A streamed image (BUSYBOX.ELF is larger than the exec bounce
-            # buffer) must run only if the bytes copied in hash to the digest
-            # it was planned by. `linux-stream-tamper-test` flips one byte of
-            # the copy (the file changed between the two reads): the spawn is
-            # refused, the refusal recorded, and nothing of BusyBox runs.
-            # Canary `linux-stream-tamper-canary`: the same flip with the
-            # check compiled out; the image runs and the refusal is missing.
-            # (`bb-tamper-ran` is only ever printed by BusyBox: the typed line
-            # spells it `bb-tamper-$(echo ran)`.)
-            USH_DISK=busybox USH_FORBID='robot> |bb-tamper-ran' par_row ushell_row "linux: streamed image changed, refused ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-test" PASS \
-                "busybox sh -c 'echo bb-tamper-\$(echo ran)'
-echo after-tamper \$?" 150 \
-                "BUSYBOX.ELF changed between its hash and its load (digest mismatch) (recorded)" "after-tamper "
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: tamper canary, check compiled out ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-canary" FAIL \
-                "busybox sh -c 'echo bb-tamper-\$(echo ran)'
-echo after-tamper \$?" 150 \
-                "changed between its hash and its load (digest mismatch)"
-            # Wave 13 (SIGNALS): an interactive BusyBox `sh`. The shell lends
-            # the console to its foreground Linux job (SPAWN_F_CONSOLE_IN):
-            # ash reads typed lines through the kernel's line discipline
-            # (they were end of file before), and `^C` while `sleep` runs is
-            # SIGINT to ash and its child (sleep ends 128 + 2; ash goes on).
-            # Canaries: a console read is end of file again (ash exits at
-            # once); `^C` is queued as a byte instead of a signal at the RX
-            # interrupt (sleep runs its 20 s and the rest of its line runs:
-            # `bb-slept`, which the main row forbids; the byte is turned into
-            # SIGINT only when ash reads again).
-            bb_int_script="!busybox sh
-#sleep 3
-!x=int; echo bb-\$x-ok
-#wait bb-int-ok
-!sleep 20; x=slept; echo bb-\$x
-#sleep 3
-#intr
-#sleep 1
-!echo bb-after-intr-\$?
-#wait bb-after-intr-[0-9]
-!exit
-#sleep 2
-echo after-bb-int \$?"
-            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
-                "$bb_int_script" 120 \
-                "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
-            # The same on one hart: the echo is written after the line
-            # discipline's lock is dropped, so a full TX ring cannot hold it.
-            USH_SMP=1 USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh, one hart ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
-                "$bb_int_script" 150 \
-                "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: console EOF canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-console-eof-canary" FAIL \
-                "$bb_int_script" 90 \
-                "bb-int-ok" "bb-after-intr-130"
-            USH_DISK=busybox USH_FORBID='robot> |bb-slept' par_row ushell_row "linux: console ^C canary ($ush_isa)" "$ush_isa" "$ush_feat,console-isig-canary" FAIL \
-                "$bb_int_script" 90 \
-                "bb-after-intr-130"
-            # Wave 13: `execve` into ANOTHER row. With `linux-exec-row-test`
-            # BUSYBOX.ELF's row holds `/fat` and the grant to exec
-            # LXHELLO.ELF, whose row holds only `/tmp`: BusyBox writes /fat,
-            # then execs LXHELLO, which runs under LXHELLO's row (its /fat
-            # create refused). Without the grant (the plain BusyBox row) the
-            # exec is refused and recorded, and LXHELLO never runs. Canary
-            # `linux-exec-row-canary`: the launch check compiled out, the
-            # exec goes through without the grant.
-            USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
-                "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
-echo after-x \$?" 180 \
-                "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" \
-                "lx: create outside caps refused ok" "lx: done failures=0" "after-x 0"
-            exec_refused_script="busybox sh -c 'exec /fat/LXHELLO.ELF from-bb'
-echo after-x \$?"
-            USH_DISK=busybox USH_FORBID='robot> |lx: hello' par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
-                "$exec_refused_script" 150 \
-                "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)" "LXHELLO.ELF: Permission denied"
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-canary" FAIL \
-                "$exec_refused_script" 150 \
-                "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)"
-            # Wave 13: the BusyBox row is a deployment's, not only the gate's.
-            # A kernel built from a `.config` with USERSPACE_GPL + BUSYBOX
-            # (the one `make busybox` used) and NO test feature carries the
-            # row and the shell's grant: BusyBox runs from the shell.
-            # Canary: the same kernel from the gate's own `.config` (BUSYBOX
-            # off) has neither, and the shell is not permitted to start it.
-            bb_cfg_rv="$AZOS_OUT/target/linux-busybox.config"
-            bb_cfg_arm="$AZOS_OUT/target/linux-busybox-aarch64.config"
-            # Regenerated every run, as lx_busybox_ready does for riscv64: a
-            # copy cached in target/ outlives new Kconfig symbols (wave 14:
-            # MM_REGIONS_PER_SPACE missing broke this row's build).
-            sed -e 's/^# CONFIG_USERSPACE_GPL is not set$/CONFIG_USERSPACE_GPL=y/' "$AARCH64_CONFIG" >"$bb_cfg_arm"
-            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg_arm" python3 -m olddefconfig >/dev/null 2>&1)
-            sed -i '' -e 's/^# CONFIG_BUSYBOX is not set$/CONFIG_BUSYBOX=y/' "$bb_cfg_arm"
-            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg_arm" python3 -m olddefconfig >/dev/null 2>&1)
-            if [ "$ush_isa" = rv ]; then bb_cfg="$bb_cfg_rv"; else bb_cfg="$bb_cfg_arm"; fi
-            KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT' par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
-                "busybox sh -c 'x=prod; echo bb-\$x-ok'
-echo after-prod \$?" 150 \
-                "row=BUSYBOX.ELF" "bb-prod-ok" "after-prod 0"
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox Kconfig row canary ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" FAIL \
-                "busybox sh -c 'x=prod; echo bb-\$x-ok'
-echo after-prod \$?" 150 \
-                "row=BUSYBOX.ELF" "bb-prod-ok"
-        else
-            printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (no zig or no pinned tarball on this host; see make busybox)"
-        fi
         # Wave 13 (THREADS): `LXTHR.ELF` (`make lxthreads`: our C, static
         # musl by zig cc) uses pthreads as any Linux program does: four
         # threads contend on a mutex (futex wait/wake), each keeps its own
@@ -20829,6 +20723,159 @@ tracectl start sched
             "tracectl: segment 0 mask=0x1 " "tracectl: segment 1 mask=0x5 " "tracectl: segment 2 mask=0x1 " "drops=0 lost=0"
         par_row trace_wx_row "trace: static-key W^X canary ($ush_isa)" "$ush_isa"
     done
+    # BusyBox on the three ISAs. x86_64 runs it in the ring-3 runtime
+    # (ushell_row's x86 branch), its volume made by lx_busybox_ready when the
+    # x86_64 userspace builds.
+    for ush_isa in rv arm x86; do
+        ush_feat=qemu; [ "$ush_isa" = x86 ] && ush_feat=spawn-log
+        # BusyBox (third-party, GPL-2.0-only; `make busybox` with
+        # USERSPACE_GPL + BUSYBOX in a config of its own, never the gate's).
+        # `sh` runs a builtin, a NOEXEC applet over a FAT32 directory, a
+        # pipeline in command substitution (fork, pipe2, execve of
+        # /proc/self/exe for `wc`), and a subshell whose create under /fat its
+        # row does not allow (the forked child, reseeded from the row, is
+        # refused and the refusal recorded). Canary: the fork canary (the
+        # child may create). Skipped, and said so, when the toolchain (zig) or the
+        # BusyBox tree (tools/third_party_fetch.sh busybox) is not on this host.
+        if lx_busybox_ready && { [ "$ush_isa" != x86 ] || [ "${LX_BUSYBOX_X86:-}" = yes ]; }; then
+            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
+                "busybox sh -c 'echo bb-sh-ok; ls /fat'
+busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
+busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
+busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'
+echo after-bb \$?" 240 \
+                "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "wc-out=8" \
+                "openat refused by the capability check: -EACCES (recorded)" "Permission denied" "sub-rc=1" \
+                "bbfork-2" "after-bb 0"
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
+                "busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'" 150 \
+                "Permission denied" "sub-rc=1"
+            # Two subshells write one inherited descriptor in turn (the main
+            # row's `bbfork-2`: two lines). Canary
+            # `fd-private-offset-busybox-canary` (private offsets): the second
+            # subshell overwrites the first's line, one line is left.
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
+                "busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'" 150 \
+                "bbfork-2"
+            # Two Linux tasks on one hart: BusyBox sleeping in the background
+            # while LXHELLO (which starts with TPIDR_EL0 = 0) runs, then
+            # BusyBox forks again. Its thread pointer must be its own when it
+            # resumes (LXHELLO sets its own and checks it, too).
+            USH_SMP=1 USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                "!busybox sh -c 'sleep 2; echo tls-\$(echo kept)' &
+lxhello
+#wait tls-kept" 240 \
+                "lx: done failures=0" "tls-kept"
+            # A streamed image (BUSYBOX.ELF is larger than the exec bounce
+            # buffer) must run only if the bytes copied in hash to the digest
+            # it was planned by. `linux-stream-tamper-test` flips one byte of
+            # the copy (the file changed between the two reads): the spawn is
+            # refused, the refusal recorded, and nothing of BusyBox runs.
+            # Canary `linux-stream-tamper-canary`: the same flip with the
+            # check compiled out; the image runs and the refusal is missing.
+            # (`bb-tamper-ran` is only ever printed by BusyBox: the typed line
+            # spells it `bb-tamper-$(echo ran)`.)
+            USH_DISK=busybox USH_FORBID='robot> |bb-tamper-ran' par_row ushell_row "linux: streamed image changed, refused ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-test" PASS \
+                "busybox sh -c 'echo bb-tamper-\$(echo ran)'
+echo after-tamper \$?" 150 \
+                "BUSYBOX.ELF changed between its hash and its load (digest mismatch) (recorded)" "after-tamper "
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: tamper canary, check compiled out ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-canary" FAIL \
+                "busybox sh -c 'echo bb-tamper-\$(echo ran)'
+echo after-tamper \$?" 150 \
+                "changed between its hash and its load (digest mismatch)"
+            # Wave 13 (SIGNALS): an interactive BusyBox `sh`. The shell lends
+            # the console to its foreground Linux job (SPAWN_F_CONSOLE_IN):
+            # ash reads typed lines through the kernel's line discipline
+            # (they were end of file before), and `^C` while `sleep` runs is
+            # SIGINT to ash and its child (sleep ends 128 + 2; ash goes on).
+            # Canaries: a console read is end of file again (ash exits at
+            # once); `^C` is queued as a byte instead of a signal at the RX
+            # interrupt (sleep runs its 20 s and the rest of its line runs:
+            # `bb-slept`, which the main row forbids; the byte is turned into
+            # SIGINT only when ash reads again).
+            bb_int_script="!busybox sh
+#sleep 3
+!x=int; echo bb-\$x-ok
+#wait bb-int-ok
+!sleep 20; x=slept; echo bb-\$x
+#sleep 3
+#intr
+#sleep 1
+!echo bb-after-intr-\$?
+#wait bb-after-intr-[0-9]
+!exit
+#sleep 2
+echo after-bb-int \$?"
+            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                "$bb_int_script" 120 \
+                "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
+            # The same on one hart: the echo is written after the line
+            # discipline's lock is dropped, so a full TX ring cannot hold it.
+            # x86_64 boots one CPU: its plain row is already the one-hart case.
+            if [ "$ush_isa" != x86 ]; then
+                USH_SMP=1 USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh, one hart ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                    "$bb_int_script" 150 \
+                    "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
+            fi
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: console EOF canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-console-eof-canary" FAIL \
+                "$bb_int_script" 90 \
+                "bb-int-ok" "bb-after-intr-130"
+            USH_DISK=busybox USH_FORBID='robot> |bb-slept' par_row ushell_row "linux: console ^C canary ($ush_isa)" "$ush_isa" "$ush_feat,console-isig-canary" FAIL \
+                "$bb_int_script" 90 \
+                "bb-after-intr-130"
+            # Wave 13: `execve` into ANOTHER row. With `linux-exec-row-test`
+            # BUSYBOX.ELF's row holds `/fat` and the grant to exec
+            # LXHELLO.ELF, whose row holds only `/tmp`: BusyBox writes /fat,
+            # then execs LXHELLO, which runs under LXHELLO's row (its /fat
+            # create refused). Without the grant (the plain BusyBox row) the
+            # exec is refused and recorded, and LXHELLO never runs. Canary
+            # `linux-exec-row-canary`: the launch check compiled out, the
+            # exec goes through without the grant.
+            USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
+                "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
+echo after-x \$?" 180 \
+                "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" \
+                "lx: create outside caps refused ok" "lx: done failures=0" "after-x 0"
+            exec_refused_script="busybox sh -c 'exec /fat/LXHELLO.ELF from-bb'
+echo after-x \$?"
+            USH_DISK=busybox USH_FORBID='robot> |lx: hello' par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                "$exec_refused_script" 150 \
+                "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)" "LXHELLO.ELF: Permission denied"
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-canary" FAIL \
+                "$exec_refused_script" 150 \
+                "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)"
+            # Wave 13: the BusyBox row is a deployment's, not only the gate's.
+            # A kernel built from a `.config` with USERSPACE_GPL + BUSYBOX
+            # (the one `make busybox` used) and NO test feature carries the
+            # row and the shell's grant: BusyBox runs from the shell.
+            # Canary: the same kernel from the gate's own `.config` (BUSYBOX
+            # off) has neither, and the shell is not permitted to start it.
+            bb_cfg_rv="$AZOS_OUT/target/linux-busybox.config"
+            bb_cfg_arm="$AZOS_OUT/target/linux-busybox-aarch64.config"
+            # Regenerated every run, as lx_busybox_ready does for riscv64: a
+            # copy cached in target/ outlives new Kconfig symbols (wave 14:
+            # MM_REGIONS_PER_SPACE missing broke this row's build).
+            sed -e 's/^# CONFIG_USERSPACE_GPL is not set$/CONFIG_USERSPACE_GPL=y/' "$AARCH64_CONFIG" >"$bb_cfg_arm"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg_arm" python3 -m olddefconfig >/dev/null 2>&1)
+            sed -i '' -e 's/^# CONFIG_BUSYBOX is not set$/CONFIG_BUSYBOX=y/' "$bb_cfg_arm"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg_arm" python3 -m olddefconfig >/dev/null 2>&1)
+            # x86_64: its kernel's configuration is a defconfig of its own
+            # (ushell_row's USH_X86_DEFCONFIG), the gate's .config stays.
+            case "$ush_isa" in rv) bb_cfg="$bb_cfg_rv" ;; arm) bb_cfg="$bb_cfg_arm" ;; *) bb_cfg="$PRIMARY_CONFIG" ;; esac
+            bb_x86_def="$CI_LOG_DIR/ush-x86-busybox.defconfig"
+            { cat config/defconfigs/qemu-x86_64.config; printf 'CONFIG_LINUX_RUNTIME=y\nCONFIG_USERSPACE_GPL=y\nCONFIG_BUSYBOX=y\n'; } >"$bb_x86_def"
+            USH_X86_DEFCONFIG="$bb_x86_def" KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT' par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
+                "busybox sh -c 'x=prod; echo bb-\$x-ok'
+echo after-prod \$?" 150 \
+                "row=BUSYBOX.ELF" "bb-prod-ok" "after-prod 0"
+            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox Kconfig row canary ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" FAIL \
+                "busybox sh -c 'x=prod; echo bb-\$x-ok'
+echo after-prod \$?" 150 \
+                "row=BUSYBOX.ELF" "bb-prod-ok"
+        else
+            printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (no zig, no fetched BusyBox tree (tools/third_party_fetch.sh busybox) or, x86, no x86_64 volume; see make busybox)"
+        fi
+    done
 
     # ── sh: lockdown (both ISAs) ───────────────────────────────────────────
     #
@@ -20980,12 +21027,15 @@ input watch -n 100 &
     # refusal line is missing). Each kernel is built from the primary
     # column's config plus the lines given, in a target dir of its own (as
     # `sh: lockdown` does).
-    con_kernel() { # con_kernel <rv|arm> <tag> <features> [CONFIG_X=v...] -> prints the image path
+    # x86: from the x86_64 QEMU defconfig plus LINUX_RUNTIME (x86_64 hosts a
+    # Linux task only in the ring-3 runtime), built by `make x86_64`.
+    con_kernel() { # con_kernel <rv|arm|x86> <tag> <features> [CONFIG_X=v...] -> prints the image path
         local isa="$1" tag="$2" feats="$3"; shift 3
         local dir="$AZOS_OUT/target/con-$tag-$isa" base tmp cfg elf img l k
-        if [ "$isa" = rv ]; then base="$PRIMARY_CONFIG"; else base="$AARCH64_CONFIG"; fi
+        case "$isa" in rv) base="$PRIMARY_CONFIG" ;; arm) base="$AARCH64_CONFIG" ;; *) base="$REPO_ROOT/config/defconfigs/qemu-x86_64.config" ;; esac
         mkdir -p "$dir"; cfg="$dir/con.config"; tmp="$(mktemp -d)"
         cp "$base" "$tmp/c.config"
+        [ "$isa" = x86 ] && set -- CONFIG_LINUX_RUNTIME=y "$@"
         for l in "$@"; do
             k="${l%%=*}"
             grep -v -e "^$k=" -e "^# $k is not set" "$tmp/c.config" >"$tmp/d"; mv "$tmp/d" "$tmp/c.config"
@@ -20999,7 +21049,11 @@ input watch -n 100 &
         for l in "$@"; do grep -qxF -- "$l" "$tmp/c.config" || { rm -rf "$tmp"; return; }; done
         cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"
         rm -rf "$tmp"
-        if [ "$isa" = rv ]; then
+        if [ "$isa" = x86 ]; then
+            img="$dir/kernel-x86_64.elf"; rm -f "$img"
+            make x86_64 X86_64_DEFCONFIG="$cfg" X86_64_KCONFIG="$dir/x86_64.config" X86_64_TARGET_DIR="$dir" \
+                X86_64_IMG="$img" X86_64_FEATURES="$feats" >/dev/null 2>&1
+        elif [ "$isa" = rv ]; then
             elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
             KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --features "$feats" >/dev/null 2>&1
             img="$elf"
@@ -21013,7 +21067,7 @@ input watch -n 100 &
         fi
         [ -f "$img" ] && printf '%s\n' "$img"
     }
-    con_row() { # con_row <label> <rv|arm> <kernel> <disk> <append> <PASS|FAIL> <script> <limit-s> <marker>...
+    con_row() { # con_row <label> <rv|arm|x86> <kernel> <disk> <append> <PASS|FAIL> <script> <limit-s> <marker>...
         local label="$1" isa="$2" kern="$3" disk="$4" app="$5" expect="$6" script="$7" limit="$8"; shift 8
         printf "  %-26s" "${label}..."
         local slug log fifo img kimg
@@ -21028,7 +21082,12 @@ input watch -n 100 &
         par_ready
         while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
         local qa=(); [ -n "$app" ] && qa=(-append "$app")
-        if [ "$isa" = rv ]; then
+        if [ "$isa" = x86 ]; then
+            qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot \
+                -device isa-debug-exit,iobase=0xf4,iosize=0x04 -kernel "$kimg" ${qa[@]+"${qa[@]}"} \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
+        elif [ "$isa" = rv ]; then
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 ${qa[@]+"${qa[@]}"} \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
@@ -21093,18 +21152,22 @@ input watch -n 100 &
 #sleep 2
 x=con; echo bb\$x-ok
 #wait bbcon-ok"
-    for con_isa in rv arm; do
+    for con_isa in rv arm x86; do
         # CI_TIER=rows keeping neither row of this ISA: no BusyBox build.
         con_keys=("console: busybox sh ($con_isa)")
         [ "$con_isa" = rv ] && con_keys+=("console: busybox sh canary, plain spawn (rv)")
         if ! ci_wants "${con_keys[@]}"; then ci_skip_rows "${con_keys[@]}"; continue; fi
-        if ! lx_busybox_ready; then
-            printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (no zig or no pinned tarball on this host; see make busybox)"
+        if ! lx_busybox_ready || { [ "$con_isa" = x86 ] && [ "${LX_BUSYBOX_X86:-}" != yes ]; }; then
+            printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (no zig, no fetched BusyBox tree (tools/third_party_fetch.sh busybox) or, x86, no x86_64 volume; see make busybox)"
             continue
         fi
-        if [ "$con_isa" = rv ]; then con_disk=$AZOS_OUT/build/disk-busybox.img; else con_disk=$AZOS_OUT/build/disk-aarch64-busybox.img; fi
+        case "$con_isa" in
+            rv) con_disk=$AZOS_OUT/build/disk-busybox.img; con_feat=qemu ;;
+            arm) con_disk=$AZOS_OUT/build/disk-aarch64-busybox.img; con_feat=qemu ;;
+            *) con_disk=$AZOS_OUT/build/disk-x86_64-busybox.img; con_feat="" ;;
+        esac
         con_k=""; con_wanted "console: busybox sh ($con_isa)" \
-            && con_k="$(con_kernel "$con_isa" bbsh qemu CONFIG_USERSPACE_GPL=y CONFIG_LINUX_ABI=y CONFIG_BUSYBOX=y CONFIG_CONSOLE_PROGRAM_BUSYBOX_SH=y 'CONFIG_CONSOLE_PATH="/fat/BUSYBOX.ELF"')"
+            && con_k="$(con_kernel "$con_isa" bbsh "$con_feat" CONFIG_USERSPACE_GPL=y CONFIG_LINUX_ABI=y CONFIG_BUSYBOX=y CONFIG_CONSOLE_PROGRAM_BUSYBOX_SH=y 'CONFIG_CONSOLE_PATH="/fat/BUSYBOX.ELF"')"
         CON_FORBID='robot> |PAGE FAULT|SECCOMP|\[compmgr\] start SH.ELF' \
             par_row con_row "console: busybox sh ($con_isa)" "$con_isa" "$con_k" "$con_disk" "" PASS "$con_bb_script" 150 \
             "[compmgr] start BUSYBOX.ELF" "[CONSOLE] user shell tid=" "bbcon-ok"
@@ -22112,7 +22175,7 @@ PY
             else why="the boot did not reach the launcher, or a Linux server ran"; fi ;;
         linux|linux-other)
             local arch=riscv; [ "$isa" = arm ] && arch=aarch64
-            local vm; vm="$(sed -n 's/^tag=v//p' "${REPO_ROOT}/lx/LINUX_PIN") SMP preempt $arch"
+            local vm; vm="$(git -C "$REPO_ROOT" config -f .gitmodules --get-regexp '^submodule\..*/linux\.tag$' | awk '{ sub(/^v/, "", $2); print $2 }') SMP preempt $arch"
             # The first unmet condition is the reason, so a canary row shows
             # WHICH property caught it. (`[LX] module map_x REFUSED` is the
             # L0b oversized-range probe on LXTEST.KO: expected, not a fault.)

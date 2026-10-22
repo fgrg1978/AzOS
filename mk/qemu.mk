@@ -165,8 +165,9 @@ qemu-pci-x86_64: x86_64-pci $(QEMU_X86_64_PCI_DISK)
 # its own Kconfig expansion, cargo target directory and image, the PVH build
 # untouched. `make run-x86-pc` stages an EFI system partition (Limine's
 # BOOTX64.EFI, limine.conf, the kernel) and boots it on QEMU q35 under OVMF.
-# Limine is NOT in the tree and is not downloaded: point LIMINE_DIR at a
-# Limine release (the `vX.Y-binary` branch/tarball) you have installed.
+# Limine is the gitlink third_party/limine (a release's `vX.Y-binary` tag,
+# .gitmodules), fetched by `tools/third_party_fetch.sh limine`; make never
+# downloads it. LIMINE_DIR points at another Limine binary release.
 # Boot-tested with v10.x-binary (base revision 3); the userspace images of
 # the x86_64 build read the workspace `.config`, so a fresh tree needs one
 # first (`cp build/x86_64-limine.config .config` after a failed first
@@ -181,7 +182,7 @@ x86_64-limine:
 	    X86_64_TARGET_DIR=$(OUT_TARGET)/x86_64-limine \
 	    X86_64_IMG=$(X86_64_LIMINE_IMG)
 
-LIMINE_DIR ?=
+LIMINE_DIR ?= $(CURDIR)/third_party/limine
 # UEFI firmware: QEMU's own (homebrew / distro) edk2 build; the vars file is
 # the matching template (copied, so the run never writes the original).
 OVMF_CODE ?= $(firstword $(wildcard /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
@@ -204,10 +205,10 @@ X86_PC_QEMU_ARGS = $(QEMU_X86_PC_FLAGS) \
 	-device ide-hd,drive=esp
 
 .PHONY: x86-pc-prereq x86-pc-esp x86-pc-qemu-args run-x86-pc
-# Limine and the UEFI firmware are not in the tree: say which is missing.
+# Limine (when not fetched) and the UEFI firmware: say which is missing.
 x86-pc-prereq:
 	@missing=""; \
-	test -n "$(LIMINE_DIR)" -a -f "$(LIMINE_DIR)/BOOTX64.EFI" || missing="$$missing\n  \$$(LIMINE_DIR)/BOOTX64.EFI   (set LIMINE_DIR to a Limine release; BIOS boot is not used here)"; \
+	test -n "$(LIMINE_DIR)" -a -f "$(LIMINE_DIR)/BOOTX64.EFI" || missing="$$missing\n  \$$(LIMINE_DIR)/BOOTX64.EFI   (tools/third_party_fetch.sh limine, or set LIMINE_DIR to a Limine release; BIOS boot is not used here)"; \
 	test -n "$(OVMF_CODE)" -a -f "$(OVMF_CODE)" || missing="$$missing\n  OVMF_CODE (edk2-x86_64-code.fd from QEMU's share directory, or OVMF_CODE.fd)"; \
 	test -n "$(OVMF_VARS)" -a -f "$(OVMF_VARS)" || missing="$$missing\n  OVMF_VARS (edk2-i386-vars.fd, or OVMF_VARS.fd, next to the code file)"; \
 	if [ -n "$$missing" ]; then printf "[X86-PC] cannot boot, missing:$$missing\n"; exit 1; fi

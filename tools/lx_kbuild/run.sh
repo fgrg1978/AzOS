@@ -64,8 +64,8 @@ image)
 check|build|linux)
     usable
     "$podman" image exists "$tag" || skip "image $tag not built (make lx-kbuild-image; needs the network once)"
-    [ -f "$src/Makefile" ] || skip "no Linux tree at $src (tools/lx_fetch_linux.sh in a checkout outside iCloud, or set LX_LINUX_SRC)"
-    pin="$(sed -n 's/^commit=//p' "$root/lx/LINUX_PIN")"
+    [ -f "$src/Makefile" ] || skip "no Linux tree at $src (tools/third_party_fetch.sh linux in a checkout outside iCloud, or set LX_LINUX_SRC)"
+    pin="$(git -C "$root" ls-files -s third_party/linux | awk '$1 == "160000" { print $2 }')"
     head="$(git -C "$src" rev-parse HEAD 2>/dev/null || true)"
     [ "$head" = "$pin" ] || skip "Linux tree at $src is $head, the pin is $pin"
     [ "$1" = check ] && exit 0

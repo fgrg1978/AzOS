@@ -84,7 +84,7 @@ Other targets:
 | Target | What |
 |---|---|
 | `make sdk`, `make sdk-check` | The std programs for the three ISAs; the port layer's checks ([sdk.md](sdk.md)) |
-| `make relibc`, `make busybox` | C programs against relibc; BusyBox (needs `zig`) |
+| `make relibc`, `make busybox` | C programs against relibc; BusyBox for the three ISAs (needs `zig` and the fetched tree, `tools/third_party_fetch.sh busybox`) |
 | `make micro-config`, `micro-check`, `micro`, `micro-test`, `micro-qemu` | The MCU kernel (`micro/`) |
 | `make topology-files` | The signed capability topology files for both ISAs |
 | `make make-gguf` | The policy file |
@@ -141,11 +141,11 @@ embedded (dev build))`, which the rows do not judge). So:
 The keys are throwaway test keys made per run; no release key is read.
 
 Needs: QEMU's edk2 images (`OVMF_CODE`), Limine 10.x binaries (`LIMINE_DIR`, default
-`~/azos-dl/limine`), `mkfs.fat` and mtools, `mkimage` and `dtc`, `openssl`, and for U-Boot a riscv64 GCC
+`third_party/limine`, fetched by `tools/third_party_fetch.sh limine`), `mkfs.fat` and mtools, `mkimage` and `dtc`, `openssl`, and for U-Boot a riscv64 GCC
 (`riscv64-unknown-elf-gcc`), GNU make and an `ld.lld` (rustc's own is used): the bare-metal GNU linker
-cannot make U-Boot's `-pie` image. U-Boot is built from the approved tarball (`U_BOOT_TARBALL`,
-digest-checked) in `$AZOS_OUT/netboot`, never in the checkout. A row exits "skipped" when one of
-these is absent.
+cannot make U-Boot's `-pie` image. U-Boot is built from the pinned tree (`third_party/u-boot`,
+`tools/third_party_fetch.sh u-boot`) out of tree in `$AZOS_OUT/netboot`; the checkout is never
+written. A row exits "skipped" when one of these is absent.
 
 The riscv64 row boots a FIT with `bootm` rather than `booti` on the flat `kernel.bin`: a signature cannot
 ride on a flat binary. (`booti` would take it: `_start` opens with the Linux RISC-V Image header,

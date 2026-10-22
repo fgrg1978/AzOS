@@ -11,8 +11,7 @@ source, symbol or object outside `lx/glue/` and `third_party/`**, so nothing
 GPL-only reaches the kernel or any image by accident.
 
     python3 tools/lx_license_lint.py              # tree + build artefacts
-    python3 tools/lx_license_lint.py --pin        # submodule == lx/LINUX_PIN
-    python3 tools/lx_license_lint.py --relibc-pin # third_party/RELIBC_PIN (MIT)
+    python3 tools/lx_license_lint.py --pin        # every third_party/ gitlink == its checkout
     python3 tools/lx_license_lint.py --self-test  # canary: every rule bites
     python3 tools/lx_license_lint.py --ko DIR     # the Kbuild .ko set (L1)
     python3 tools/lx_license_lint.py --ko DIR --self-test  # its canary
@@ -31,13 +30,13 @@ judged):
   T4  no Cargo.toml outside lx/glue/ depends on a path inside lx/glue/ (a dual-licensed
       crate linking a GPL one);
   T5  `third_party/linux` is named only by the files allowed to: the
-      submodule record, the fetch script, this lint, the Kconfig help and the
+      submodule record, this lint, the Kconfig help, the Kbuild runner and the
       device-id table that reads the tree as data (`tools/lx_device_table.py`
       and its list, `lx/DEVICE_SOURCES`).
 
   T6  MIT is accepted in exactly one place: userspace/lib/relibc-azos/patches/,
       the patch against relibc (Redox's libc, MIT, pinned in
-      third_party/RELIBC_PIN). A patch file carries lines of the MIT tree it
+      as third_party/relibc). A patch file carries lines of the MIT tree it
       patches, so it is MIT (every SPDX line there says exactly `MIT`, and
       every file has one); an MIT line anywhere else fails T2. The overlay
       beside it (our own platform code) stays Apache-2.0 OR GPL-2.0-only.
@@ -56,7 +55,7 @@ riscv64 and aarch64). The load order is lxbase.ko (the base,
 lx/glue) and then every other module:
 
   K1  every .ko carries a GPL-compatible `license` (the Linux loader's list)
-      and `vermagic` = "<lx/LINUX_PIN release> SMP preempt <riscv|aarch64>";
+      and `vermagic` = "<the Linux tree's tag, no v> SMP preempt <riscv|aarch64>";
   K2  lxbase.ko imports only the host ABI (lx/HOST_ABI): no Linux symbol is
       expected from the server;
   K3  every other module imports only the host ABI and symbols EXPORTED
@@ -71,14 +70,18 @@ provides most of them does not exist yet: lx/FS_EXT4_UNRESOLVED records what
 is missing and tests/host/lx-loader-tests fails when the built set differs.
   K0  an empty .ko set, or an empty image set, is a failure.
 
-Relibc pin rules (`--relibc-pin`): third_party/RELIBC_PIN names a commit and
-`license=MIT`; when the checkout (tools/relibc_fetch.sh, outside the repo) is
-there, its HEAD is that commit and its LICENSE is the MIT text; LICENSES/MIT.txt
-exists and NOTICE names relibc (R0..R4).
-
-Pin rules (`--pin`): lx/LINUX_PIN's commit equals the gitlink recorded for
-third_party/linux, the checkout's HEAD, and the checkout has no local change.
-lx/LINUX_PIN is the one record of the tag (no Kconfig copy).
+Pin rules (`--pin`), over every third-party tree (.gitmodules; the gitlink in
+the index is the pin, tools/third_party_fetch.sh checks it out):
+  P0  each entry lives under third_party/ at its own name, has a url, and is
+      `shallow = true` and `update = none`; the Linux tree has a `tag`;
+  P1  each entry has a gitlink in the index, and each gitlink an entry;
+  P2  a checked-out tree's HEAD is its gitlink (an absent checkout is a note,
+      or a failure with `--require-checkout`);
+  P3  a checked-out tree has no local change (zero patches);
+  P5  a checked-out tree with a `tag` has that tag, and it peels to the gitlink.
+(No P4: the Linux tag is recorded in .gitmodules alone, with no Kconfig copy.)
+relibc (MIT, the one MIT tree): its checkout's LICENSE is the MIT text (R2),
+LICENSES/MIT.txt exists (R3) and NOTICE names relibc (R4).
 """
 
 import os
@@ -109,10 +112,8 @@ LINUX_INC_RE = re.compile(r'^\s*#\s*include\s*[<"](linux|asm|asm-generic|uapi)/'
 LX_DEP_RE = re.compile(r'path\s*=\s*"[^"]*(?:^|/)lx/glue(?:/|")')
 T5_ALLOWED = {
     ".gitmodules",
-    "tools/lx_fetch_linux.sh",
     "tools/lx_license_lint.py",
     "config/Kconfig.linux",
-    "lx/LINUX_PIN",
     "tools/lx_kbuild/run.sh",
     "tools/lx_device_table.py",
     "lx/DEVICE_SOURCES",
@@ -400,84 +401,84 @@ def elf_append_strtab(data, name):
     return data
 
 
-def pin_values(root):
-    vals = {}
-    for line in read(root, "lx/LINUX_PIN").decode().splitlines():
-        if "=" in line and not line.startswith("#"):
-            k, v = line.split("=", 1)
-            vals[k.strip()] = v.strip()
-    return vals
+def submodules(root):
+    """The .gitmodules entries, {name: {key: value}} (keys as git reads them)."""
+    out = subprocess.run(["git", "config", "-f", os.path.join(root, ".gitmodules"), "--get-regexp", r"^submodule\."],
+                         capture_output=True, text=True).stdout
+    mods = {}
+    for line in out.splitlines():
+        k, _, v = line.partition(" ")
+        name, _, key = k[len("submodule."):].rpartition(".")
+        mods.setdefault(name, {})[key] = v
+    return mods
 
 
-def check_pin(root):
-    errs = []
-    pin = pin_values(root)
-    commit, tag = pin.get("commit"), pin.get("tag")
-    if not commit or not tag:
-        return ["P0 lx/LINUX_PIN has no commit= or tag="]
-    ls = subprocess.run(["git", "-C", root, "ls-files", "-s", "third_party/linux"],
-                        capture_output=True, text=True).stdout.split()
-    if len(ls) < 2 or ls[0] != "160000":
-        errs.append("P1 third_party/linux is not a submodule gitlink in the index")
-    elif ls[1] != commit:
-        errs.append(f"P1 gitlink {ls[1]} != pin {commit}")
-    sub = os.path.join(root, "third_party/linux")
-    head = subprocess.run(["git", "-C", sub, "rev-parse", "HEAD"], capture_output=True, text=True)
-    if head.returncode != 0 or not os.path.exists(os.path.join(sub, ".git")):
-        # `update = none` and a fetch script that refuses iCloud checkouts:
-        # absence is the normal state until a build consumes Linux sources.
-        # P1 still binds the pin; `--require-checkout` makes it P2.
-        if "--require-checkout" in sys.argv:
-            errs.append("P2 third_party/linux is not checked out: run tools/lx_fetch_linux.sh")
-        else:
-            print("lx_license_lint: note: third_party/linux not checked out; gitlink checked only")
-    else:
-        if head.stdout.strip() != commit:
-            errs.append(f"P2 checkout HEAD {head.stdout.strip()} != pin {commit}")
-        st = subprocess.run(["git", "-C", sub, "status", "--porcelain", "--untracked-files=no"],
-                            capture_output=True, text=True).stdout
-        if st.strip():
-            errs.append("P3 third_party/linux has local changes (the submodule carries zero patches): "
-                        + st.strip().splitlines()[0])
-    return errs
+def gitlinks(root):
+    """The gitlinks of the index, {path: commit}."""
+    out = subprocess.run(["git", "-C", root, "ls-files", "-s"], capture_output=True, text=True).stdout
+    return {f[3]: f[1] for f in (line.split(None, 3) for line in out.splitlines()) if len(f) == 4 and f[0] == "160000"}
 
 
-def relibc_pin_values(root):
-    vals = {}
-    for line in read(root, "third_party/RELIBC_PIN").decode().splitlines():
-        if "=" in line and not line.startswith("#"):
-            k, v = line.split("=", 1)
-            vals[k.strip()] = v.strip()
-    return vals
+def linux_release(root):
+    """The pinned Linux tag without its `v` (the module vermagic release)."""
+    return submodules(root).get("third_party/linux", {}).get("tag", "").lstrip("v")
 
 
-def check_relibc_pin(root, src=None):
-    """R rules over third_party/RELIBC_PIN and the checkout `src` (default
-    $RELIBC_SRC or ~/azos-dl/relibc, where tools/relibc_fetch.sh puts it)."""
-    errs = []
-    pin = relibc_pin_values(root)
-    commit = pin.get("commit", "")
-    if not re.fullmatch(r"[0-9a-f]{40}", commit) or pin.get("license") != "MIT":
-        errs.append("R0 third_party/RELIBC_PIN needs a 40-hex commit= and license=MIT")
-    if not os.path.isfile(os.path.join(root, "LICENSES", "MIT.txt")):
-        errs.append("R3 LICENSES/MIT.txt is missing (the REUSE licence text for relibc)")
-    if b"relibc" not in read(root, "NOTICE"):
-        errs.append("R4 NOTICE does not name relibc (MIT asks for the notice to travel with the library)")
-    src = src or os.environ.get("RELIBC_SRC") or os.path.expanduser("~/azos-dl/relibc")
-    head = subprocess.run(["git", "-C", src, "rev-parse", "HEAD"], capture_output=True, text=True)
-    if head.returncode != 0 or not os.path.exists(os.path.join(src, ".git")):
-        # Like third_party/linux: the checkout is outside the repo and a build
-        # that does not consume relibc never makes it. R0, R3 and R4 still bind.
-        if "--require-checkout" in sys.argv:
-            errs.append(f"R1 {src} is not a checkout: run tools/relibc_fetch.sh")
-        else:
-            print("lx_license_lint: note: relibc not checked out; pin, licence text and NOTICE checked only")
-    else:
-        if head.stdout.strip() != commit:
-            errs.append(f"R1 checkout HEAD {head.stdout.strip()} != pin {commit}")
-        if not read(src, "LICENSE").lstrip().startswith(b"MIT License"):
-            errs.append("R2 the checkout's LICENSE is not the MIT text: the pin's licence claim is wrong")
-    return errs
+def git_out(path, *args):
+    r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def check_pin(root, require_checkout=False):
+    """P and R rules (module docstring) over every third-party tree."""
+    errs, notes = [], []
+    mods, links = submodules(root), gitlinks(root)
+    if not mods:
+        return ["P0 .gitmodules lists no third-party tree"], notes
+    for name, m in sorted(mods.items()):
+        if m.get("path") != name or not name.startswith("third_party/") or not m.get("url"):
+            errs.append(f"P0 {name}: path {m.get('path')!r} (must be its name, under third_party/) or no url")
+        if m.get("shallow") != "true" or m.get("update") != "none":
+            errs.append(f"P0 {name}: needs shallow = true and update = none")
+        link = links.get(name)
+        if not link:
+            errs.append(f"P1 {name} has no gitlink in the index")
+            continue
+        sub = os.path.join(root, name)
+        head = git_out(sub, "rev-parse", "HEAD") if os.path.exists(os.path.join(sub, ".git")) else None
+        if head is None:
+            # `update = none`, and the fetch script refuses iCloud checkouts:
+            # absence is the normal state until a build consumes the tree.
+            if require_checkout:
+                errs.append(f"P2 {name} is not checked out: run tools/third_party_fetch.sh {name[len('third_party/'):]}")
+            else:
+                notes.append(name)
+            continue
+        if head != link:
+            errs.append(f"P2 {name}: checkout HEAD {head} != gitlink {link}")
+        st = git_out(sub, "status", "--porcelain", "--untracked-files=no")
+        if st:
+            errs.append(f"P3 {name} has local changes (a tree carries zero patches): {st.splitlines()[0]}")
+        tag = m.get("tag")
+        if tag:
+            peeled = git_out(sub, "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}")
+            if peeled != link:
+                errs.append(f"P5 {name}: tag {tag} is {peeled or 'absent'} in the checkout, gitlink {link}"
+                            f" (run tools/third_party_fetch.sh {name[len('third_party/'):]})")
+        if name == "third_party/relibc" and not read(sub, "LICENSE").lstrip().startswith(b"MIT License"):
+            errs.append("R2 the relibc checkout's LICENSE is not the MIT text")
+    for path in sorted(set(links) - set(mods)):
+        errs.append(f"P1 gitlink {path} has no .gitmodules entry")
+    if "third_party/linux" in mods:
+        tag = mods["third_party/linux"].get("tag")
+        if not tag:
+            errs.append("P0 third_party/linux has no tag (the module vermagic release)")
+    if "third_party/relibc" in mods:
+        if not os.path.isfile(os.path.join(root, "LICENSES", "MIT.txt")):
+            errs.append("R3 LICENSES/MIT.txt is missing (the REUSE licence text for relibc)")
+        if b"relibc" not in read(root, "NOTICE"):
+            errs.append("R4 NOTICE does not name relibc (MIT asks for the notice to travel with the library)")
+    return errs, notes
 
 
 def self_test():
@@ -551,43 +552,87 @@ def self_test():
                 failures.append(f"rule {rule} did not bite: {errs}")
         if not check_artefacts(td, []):
             failures.append("an empty artefact set passed")
-        # R rules: a clean pin passes; a short commit, a non-MIT licence claim,
-        # a missing licence text, a NOTICE without relibc, a checkout at
-        # another commit and a non-MIT checkout each fail.
-        w("LICENSES/MIT.txt", "MIT License\n")
-        w("NOTICE", "relibc is MIT\n")
-        src = os.path.join(td, "src")
-        os.makedirs(src)
-        w("src/LICENSE", "MIT License\n")
-        git = lambda *a: subprocess.run(["git", "-C", src, *a], capture_output=True, text=True, check=True)
-        git("init", "-q")
-        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
-        head = git("rev-parse", "HEAD").stdout.strip()
+        failures += pin_self_test()
+    return failures
+
+
+def pin_self_test():
+    """Canary for the P and R rules: a throwaway superproject with a Linux and
+    a relibc gitlink, both checked out, passes; each mutation (one per rule)
+    must be reported, and the clean tree must pass again after it."""
+    failures = []
+    with tempfile.TemporaryDirectory() as td:
+        def w(rel, text):
+            p = os.path.join(td, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as f:
+                f.write(text)
+        def git(path, *a):
+            return subprocess.run(["git", "-C", path, "-c", "user.name=t", "-c", "user.email=t@t", *a],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        heads = {}
+        for name, lic in (("linux", "GPL-2.0\n"), ("relibc", "MIT License\n")):
+            sub = os.path.join(td, "third_party", name)
+            os.makedirs(sub)
+            git(sub, "init", "-q")
+            w(f"third_party/{name}/LICENSE", lic)
+            git(sub, "add", "LICENSE")
+            git(sub, "commit", "-q", "-m", "x")
+            heads[name] = git(sub, "rev-parse", "HEAD")
+        git(os.path.join(td, "third_party", "linux"), "tag", "v1.0")
+        git(td, "init", "-q")
+        def gitmodules(linux_extra="\ttag = v1.0\n", relibc_update="none"):
+            w(".gitmodules",
+              '[submodule "third_party/linux"]\n\tpath = third_party/linux\n\turl = https://x/linux\n'
+              f'\tshallow = true\n\tupdate = none\n{linux_extra}'
+              '[submodule "third_party/relibc"]\n\tpath = third_party/relibc\n\turl = https://x/relibc\n'
+              f'\tshallow = true\n\tupdate = {relibc_update}\n')
+        def links(linux=None):
+            for name in ("linux", "relibc"):
+                git(td, "update-index", "--add", "--cacheinfo",
+                    f"160000,{(linux if name == 'linux' and linux else heads[name])},third_party/{name}")
         def reset():
-            w("third_party/RELIBC_PIN", f"commit={head}\nlicense=MIT\n")
-            w("LICENSES/MIT.txt", "MIT License\n"); w("NOTICE", "relibc is MIT\n"); w("src/LICENSE", "MIT License\n")
+            gitmodules(); links()
+            w("LICENSES/MIT.txt", "MIT License\n"); w("NOTICE", "relibc is MIT\n")
+            w("third_party/relibc/LICENSE", "MIT License\n"); w("third_party/linux/LICENSE", "GPL-2.0\n")
+            git(td, "update-index", "--force-remove", "third_party/extra")
         reset()
-        if check_relibc_pin(td, src):
-            failures.append(f"clean relibc pin flagged: {check_relibc_pin(td, src)}")
+        errs, notes = check_pin(td)
+        if errs or notes:
+            failures.append(f"clean pin tree flagged: {errs} {notes}")
+        other = "b" * 40
         for rule, mutate in (
-            ("R0", lambda: w("third_party/RELIBC_PIN", f"commit={head[:20]}\nlicense=MIT\n")),
-            ("R0", lambda: w("third_party/RELIBC_PIN", f"commit={head}\nlicense=GPL-2.0-only\n")),
-            ("R1", lambda: w("third_party/RELIBC_PIN", "commit=" + "b" * 40 + "\nlicense=MIT\n")),
-            ("R2", lambda: w("src/LICENSE", "GNU GENERAL PUBLIC LICENSE\n")),
+            ("P0", lambda: gitmodules(relibc_update="checkout")),
+            ("P0", lambda: gitmodules(linux_extra="")),
+            ("P1", lambda: git(td, "update-index", "--force-remove", "third_party/relibc")),
+            ("P1", lambda: git(td, "update-index", "--add", "--cacheinfo", f"160000,{other},third_party/extra")),
+            ("P2", lambda: links(linux=other)),
+            ("P3", lambda: w("third_party/linux/LICENSE", "patched\n")),
+            ("P5", lambda: gitmodules(linux_extra="\ttag = v9.9\n")),
+            ("R2", lambda: w("third_party/relibc/LICENSE", "GNU GENERAL PUBLIC LICENSE\n")),
             ("R3", lambda: os.remove(os.path.join(td, "LICENSES/MIT.txt"))),
             ("R4", lambda: w("NOTICE", "nothing here\n")),
         ):
             reset()
             mutate()
-            if not any(e.startswith(rule + " ") for e in check_relibc_pin(td, src)):
-                failures.append(f"rule {rule} did not bite")
+            if not any(e.startswith(rule + " ") for e in check_pin(td)[0]):
+                failures.append(f"rule {rule} did not bite: {check_pin(td)[0]}")
+        # An absent checkout is a note, and a failure when one is required.
+        reset()
+        git(os.path.join(td, "third_party", "linux"), "tag", "-d", "v1.0")
+        import shutil
+        shutil.rmtree(os.path.join(td, "third_party", "linux", ".git"))
+        if check_pin(td)[0] or check_pin(td)[1] != ["third_party/linux"]:
+            failures.append(f"an absent checkout is not a note: {check_pin(td)}")
+        if not any(e.startswith("P2 ") for e in check_pin(td, require_checkout=True)[0]):
+            failures.append("rule P2 (--require-checkout) did not bite")
     return failures
 
 
 def main(argv):
     if "--ko" in argv:
         kodir = os.path.abspath(argv[argv.index("--ko") + 1])
-        release = pin_values(ROOT).get("tag", "").lstrip("v")
+        release = linux_release(ROOT)
         if "--self-test" in argv:
             f = ko_self_test(ROOT, kodir, release)
             for x in f:
@@ -608,22 +653,18 @@ def main(argv):
         f = self_test()
         for x in f:
             print("lx_license_lint self-test:", x)
-        print("lx_license_lint self-test:", "FAIL" if f else "every rule bites (T1-T6, A1, A2, R0-R4)")
+        print("lx_license_lint self-test:", "FAIL" if f else "every rule bites (T1-T6, A1, A2, P0-P3, P5, R2-R4)")
         return 1 if f else 0
-    if "--relibc-pin" in argv:
-        errs = check_relibc_pin(ROOT)
-        for e in errs:
-            print("lx_license_lint:", e)
-        if not errs:
-            print(f"lx_license_lint: relibc pin {relibc_pin_values(ROOT).get('commit')} (MIT), clean")
-        return 1 if errs else 0
     if "--pin" in argv:
-        errs = check_pin(ROOT)
-        pin = pin_values(ROOT)
+        errs, notes = check_pin(ROOT, "--require-checkout" in argv)
         for e in errs:
             print("lx_license_lint:", e)
+        if notes:
+            print("lx_license_lint: note: not checked out (gitlink and .gitmodules checked only):", " ".join(notes))
         if not errs:
-            print(f"lx_license_lint: third_party/linux == {pin.get('tag')} ({pin.get('commit')}), clean")
+            links = gitlinks(ROOT)
+            print("lx_license_lint: third_party clean:", ", ".join(
+                f"{n[len('third_party/'):]} {m.get('tag') or links.get(n, '?')[:12]}" for n, m in sorted(submodules(ROOT).items())))
         return 1 if errs else 0
     errs = check_tree(ROOT, tracked(ROOT))
     arts = artefacts(OUT)

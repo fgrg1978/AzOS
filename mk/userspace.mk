@@ -49,7 +49,10 @@ $(LXTEST_KO_AARCH64): $(LXMOD_SRC)
 # checkout cannot hold one). `make lx-kbuild-repro` rebuilds from scratch
 # into a second directory and requires identical .ko hashes.
 LX_KBUILD_DIR := $(OUT_BUILD)/lx/kbuild
-LX_LINUX_RELEASE := $(patsubst v%,%,$(shell sed -n 's/^tag=//p' lx/LINUX_PIN))
+# A third-party tree's pinned upstream tag (.gitmodules), by name; the Linux
+# release is the Linux tree's, without its `v`.
+tp_tag = $(shell git config -f .gitmodules submodule.third_party/$(1).tag)
+LX_LINUX_RELEASE := $(patsubst v%,%,$(call tp_tag,linux))
 # lxsrv reads it at compile time (`option_env!`) to build the vermagic it
 # admits; exported so its recipe keeps the plain `$(USPACE_BUILD)` form.
 export LX_LINUX_RELEASE
@@ -395,7 +398,7 @@ $(OTA_ELF): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	cp $(FAMTOOLS_OUT)/ota $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LXSRV_ELF): $(LXSRV_SRC) $(LIBSYS_SRC) lx/LINUX_PIN
+$(LXSRV_ELF): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules
 	@mkdir -p $(OUT_BUILD)
 	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXSRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(LXSRV_BUILT) $@
@@ -552,47 +555,58 @@ $(LXHELLO_ELF_X86_64): $(LXHELLO_DIR)/lxhello_x86_64.c
 # ── Third-party GPL userspace: BusyBox ──────────────
 # Built only when the .config sets CONFIG_BUSYBOX=y (which needs
 # CONFIG_USERSPACE_GPL and CONFIG_LINUX_ABI); never part of the base image,
-# never committed, never fetched by make. The pinned release tarball is
-# provided at BUSYBOX_TARBALL (outside the repository), checked against
-# BUSYBOX_SHA256 (busybox.net's published .sha256), extracted and built under
-# BUSYBOX_WORK (outside the repository) with `zig cc` (musl and the Linux uapi
-# headers bundled; tools/busybox_cc.sh), host tools with the system clang, from
-# allnoconfig plus userspace/thirdparty/busybox.fragment, static. Both ISAs;
-# riscv64 is rv64gc/lp64d (the kernel keeps a Linux task's F/D state). The
-# digests go to build/thirdparty_hashes{,_aarch64}.rs (empty without a build),
+# never committed, never fetched by make. The source is the gitlink
+# third_party/busybox (.gitmodules: its upstream tag), checked out by
+# `tools/third_party_fetch.sh busybox`; each ISA builds from a copy of it
+# (the checkout stays pristine) under BUSYBOX_WORK (outside the repository),
+# with `zig cc` (musl and the Linux uapi headers bundled; tools/busybox_cc.sh),
+# host tools with the system clang, from allnoconfig plus
+# userspace/thirdparty/busybox.fragment, static. All three ISAs; riscv64 is
+# rv64gc/lp64d (the kernel keeps a Linux task's F/D state). The digests go to
+# build/thirdparty_hashes{,_aarch64,_x86_64}.rs (empty without a build),
 # which bind BUSYBOX.ELF to its row in crates/core/sched/src/seccomp.rs.
 # GPL-2.0-only: `make busybox-source-offer` writes the written offer.
-BUSYBOX_VERSION  := 1.36.1
-BUSYBOX_URL      := https://busybox.net/downloads/busybox-$(BUSYBOX_VERSION).tar.bz2
-BUSYBOX_SHA256   := b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
-BUSYBOX_TARBALL  ?= $(HOME)/azos-tools/src/busybox-$(BUSYBOX_VERSION).tar.bz2
+BUSYBOX_SRC      := third_party/busybox
+BUSYBOX_URL      := $(shell git config -f .gitmodules submodule.$(BUSYBOX_SRC).url)
+BUSYBOX_TAG      := $(call tp_tag,busybox)
+BUSYBOX_COMMIT   := $(shell git ls-files -s $(BUSYBOX_SRC) | awk '$$1 == "160000" { print $$2 }')
+BUSYBOX_VERSION  := $(subst _,.,$(BUSYBOX_TAG))
 BUSYBOX_WORK     ?= $(HOME)/azos-tools/build/busybox-$(BUSYBOX_VERSION)
 BUSYBOX_ZIG      ?= $(or $(LX_ZIG),$(firstword $(wildcard /opt/homebrew/bin/zig /usr/local/bin/zig) zig))
 BUSYBOX_HOSTCC   ?= /usr/bin/clang
 BUSYBOX_FRAGMENT := userspace/thirdparty/busybox.fragment
+BUSYBOX_ISAS     := riscv64 aarch64 x86_64
 BUSYBOX_ELF_RISCV64 := $(BUSYBOX_WORK)/busybox-riscv64.elf
 BUSYBOX_ELF_AARCH64 := $(BUSYBOX_WORK)/busybox-aarch64.elf
+BUSYBOX_ELF_X86_64  := $(BUSYBOX_WORK)/busybox-x86_64.elf
 BUSYBOX_OFFER    := $(BUSYBOX_WORK)/BUSYBOX-SOURCE-OFFER.txt
+# The pinned commit, rewritten only when it changes: the ELFs' rebuild input.
+BUSYBOX_PIN_STAMP := $(BUSYBOX_WORK)/source.commit
 BUSYBOX_CONFIG_FILE := $(or $(KCONFIG_CONFIG),.config)
 THIRDPARTY_HASHES := $(OUT_BUILD)/thirdparty_hashes.rs
 THIRDPARTY_HASHES_AARCH64 := $(OUT_BUILD)/thirdparty_hashes_aarch64.rs
+THIRDPARTY_HASHES_X86_64 := $(OUT_BUILD)/thirdparty_hashes_x86_64.rs
 
-.PHONY: busybox busybox-check busybox-source-offer thirdparty-hashes
+.PHONY: busybox busybox-check busybox-one busybox-source-offer thirdparty-hashes
 busybox-check:
 	@grep -q '^CONFIG_BUSYBOX=y' $(BUSYBOX_CONFIG_FILE) || { \
 	  echo "busybox: CONFIG_BUSYBOX is not set in $(BUSYBOX_CONFIG_FILE) (needs USERSPACE_GPL and LINUX_ABI; default off)"; exit 1; }
 	@command -v $(BUSYBOX_ZIG) >/dev/null 2>&1 || { \
 	  echo "busybox: no zig ($(BUSYBOX_ZIG)): install zig (Homebrew: zig) or set LX_ZIG=<path>"; exit 1; }
-	@[ -f $(BUSYBOX_TARBALL) ] || { \
-	  echo "busybox: $(BUSYBOX_TARBALL) is missing; fetch $(BUSYBOX_URL) there (make never downloads)"; exit 1; }
-	@got=$$(shasum -a 256 $(BUSYBOX_TARBALL) | cut -d' ' -f1); [ "$$got" = "$(BUSYBOX_SHA256)" ] || { \
-	  echo "busybox: SHA-256 mismatch for $(BUSYBOX_TARBALL): got $$got, pinned $(BUSYBOX_SHA256) -- refused"; exit 1; }
+	@[ -n "$(BUSYBOX_COMMIT)" ] || { echo "busybox: $(BUSYBOX_SRC) is not a gitlink"; exit 1; }
+	@[ -e $(BUSYBOX_SRC)/.git ] && [ "$$(git -C $(BUSYBOX_SRC) rev-parse HEAD)" = "$(BUSYBOX_COMMIT)" ] \
+	  && [ -z "$$(git -C $(BUSYBOX_SRC) status --porcelain --untracked-files=no)" ] || { \
+	  echo "busybox: $(BUSYBOX_SRC) is not a clean checkout of $(BUSYBOX_COMMIT): run tools/third_party_fetch.sh busybox (make never downloads)"; exit 1; }
 
-# One ISA: busybox-one ISA=<riscv64|aarch64>.
+$(BUSYBOX_PIN_STAMP): FORCE
+	@mkdir -p $(BUSYBOX_WORK)
+	@echo '$(BUSYBOX_COMMIT)' | cmp -s - $@ || echo '$(BUSYBOX_COMMIT)' >$@
+
+# One ISA: busybox-one ISA=<riscv64|aarch64|x86_64>.
 busybox-one:
-	@mkdir -p $(BUSYBOX_WORK)/$(ISA)
+	@case " $(BUSYBOX_ISAS) " in *" $(ISA) "*) ;; *) echo "busybox-one: ISA must be one of $(BUSYBOX_ISAS)"; exit 1;; esac
 	rm -rf $(BUSYBOX_WORK)/$(ISA)/src && mkdir -p $(BUSYBOX_WORK)/$(ISA)/src
-	tar -xjf $(BUSYBOX_TARBALL) -C $(BUSYBOX_WORK)/$(ISA)/src --strip-components=1
+	rsync -a --exclude .git $(BUSYBOX_SRC)/ $(BUSYBOX_WORK)/$(ISA)/src/
 	$(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) allnoconfig >/dev/null
 	@set -e; cd "$(BUSYBOX_WORK)/$(ISA)/src" && grep -v '^#' "$(CURDIR)/$(BUSYBOX_FRAGMENT)" | while IFS= read -r l; do \
 	  [ -n "$$l" ] || continue; k=$${l%%=*}; \
@@ -605,18 +619,14 @@ busybox-one:
 	cp $(BUSYBOX_WORK)/$(ISA)/src/busybox $(BUSYBOX_WORK)/busybox-$(ISA).elf
 	@echo "[BUSYBOX] $(BUSYBOX_WORK)/busybox-$(ISA).elf ($$(wc -c < $(BUSYBOX_WORK)/busybox-$(ISA).elf | tr -d ' ') bytes)"
 
-# Rebuilt only when the tarball, the fragment or the compiler wrapper changes:
+# Rebuilt only when the pin, the fragment or the compiler wrapper changes:
 # BusyBox stamps its build date into the binary, so a rebuild is a new digest
 # (and every kernel built against the old table would refuse it).
-$(BUSYBOX_ELF_RISCV64): $(BUSYBOX_TARBALL) $(BUSYBOX_FRAGMENT) tools/busybox_cc.sh
+$(BUSYBOX_WORK)/busybox-%.elf: $(BUSYBOX_PIN_STAMP) $(BUSYBOX_FRAGMENT) tools/busybox_cc.sh
 	$(MAKE) busybox-check
-	$(MAKE) busybox-one ISA=riscv64
+	$(MAKE) busybox-one ISA=$*
 
-$(BUSYBOX_ELF_AARCH64): $(BUSYBOX_TARBALL) $(BUSYBOX_FRAGMENT) tools/busybox_cc.sh
-	$(MAKE) busybox-check
-	$(MAKE) busybox-one ISA=aarch64
-
-busybox: busybox-check $(BUSYBOX_ELF_RISCV64) $(BUSYBOX_ELF_AARCH64)
+busybox: busybox-check $(BUSYBOX_ELF_RISCV64) $(BUSYBOX_ELF_AARCH64) $(BUSYBOX_ELF_X86_64)
 	$(MAKE) busybox-source-offer thirdparty-hashes
 
 # The third-party digest tables: BUSYBOX.ELF when it was built, empty otherwise.
@@ -626,6 +636,7 @@ thirdparty-hashes:
 		BUSYBOX.ELF=$(BUSYBOX_ELF_RISCV64) LXTHR.ELF=$(LXTHR_ELF_RISCV64)
 	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing $(THIRDPARTY_HASHES_AARCH64) \
 		BUSYBOX.ELF=$(BUSYBOX_ELF_AARCH64) LXTHR.ELF=$(LXTHR_ELF_AARCH64)
+	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing $(THIRDPARTY_HASHES_X86_64) BUSYBOX.ELF=$(BUSYBOX_ELF_X86_64)
 
 # ── Wave 13 (THREADS): LXTHR.ELF, pthreads under the Linux personality ──────
 # Our own C (userspace/tests/lxthreads/lxthreads.c, Apache-2.0 OR
@@ -666,8 +677,8 @@ lxthreads: $(LXTHR_ELF_RISCV64) $(LXTHR_ELF_AARCH64)
 # ── C on the native ABI: relibc (Redox's libc, MIT; plan decision D12) ───────
 # relibc is the porting layer for C code, not the native model: POSIX is a
 # personality here (userspace/lib/relibc-azos). `make relibc` builds the pinned
-# relibc (third_party/RELIBC_PIN, fetched by tools/relibc_fetch.sh into
-# RELIBC_SRC, outside the repository; make never downloads) with the patch and
+# relibc (the gitlink third_party/relibc, checked out by
+# `tools/third_party_fetch.sh relibc`; make never downloads) with the patch and
 # the `azos` platform module of userspace/lib/relibc-azos, then the C programs
 # of userspace/tests/relibc (every .c there) against it with `zig cc`, into
 # build/relibc/<isa>/. Kconfig RELIBC (config/Kconfig.relibc) decides it per ISA:
@@ -679,7 +690,7 @@ lxthreads: $(LXTHR_ELF_RISCV64) $(LXTHR_ELF_AARCH64)
 # kernel runs an image only when a seccomp row binds its digest. The build is the
 # only compile check of the platform layer. Needs zig and cbindgen
 # (tools/relibc_build.sh).
-RELIBC_SRC   ?= $(HOME)/azos-dl/relibc
+RELIBC_SRC   ?= $(CURDIR)/third_party/relibc
 RELIBC_ZIG   ?= $(BUSYBOX_ZIG)
 RELIBC_ISAS  := riscv64 aarch64 x86_64
 RELIBC_PROGS := $(basename $(notdir $(wildcard userspace/tests/relibc/*.c)))
@@ -700,7 +711,7 @@ relibc-check:
 	@command -v $(RELIBC_ZIG) >/dev/null 2>&1 || { \
 	  echo "relibc: no zig ($(RELIBC_ZIG)): install zig (Homebrew: zig) or set LX_ZIG=<path>"; exit 1; }
 	@[ -e '$(RELIBC_SRC)/.git' ] || { \
-	  echo "relibc: no checkout at $(RELIBC_SRC): run tools/relibc_fetch.sh (make never downloads)"; exit 1; }
+	  echo "relibc: no checkout at $(RELIBC_SRC): run tools/third_party_fetch.sh relibc (make never downloads)"; exit 1; }
 
 # One ISA: relibc-one ISA=<riscv64|aarch64|x86_64>, when its configuration asks.
 relibc-one:
@@ -737,12 +748,12 @@ busybox-source-offer:
 	@{ echo "BusyBox $(BUSYBOX_VERSION) -- GPL-2.0-only. Written offer of source (GPL-2.0 section 3(b))."; \
 	   echo ""; \
 	   echo "A AzOS volume carrying BUSYBOX.ELF contains BusyBox $(BUSYBOX_VERSION), built unmodified"; \
-	   echo "from $(BUSYBOX_URL)"; \
-	   echo "(SHA-256 $(BUSYBOX_SHA256)) from allnoconfig plus the lines of"; \
+	   echo "from $(BUSYBOX_URL), tag $(BUSYBOX_TAG)"; \
+	   echo "(git commit $(BUSYBOX_COMMIT)) from allnoconfig plus the lines of"; \
 	   echo "$(BUSYBOX_FRAGMENT) (shipped with this offer), static, with zig cc"; \
 	   echo "(target <isa>-linux-musl; musl is MIT)."; \
 	   echo "For at least three years from distribution, the complete corresponding source code"; \
-	   echo "(the tarball above and the build configuration) is available on request from the"; \
+	   echo "(the tree at that commit and the build configuration) is available on request from the"; \
 	   echo "distributor of the volume, for no more than the cost of physically performing the"; \
 	   echo "transfer. BusyBox is not part of the AzOS kernel or base image."; } > $(BUSYBOX_OFFER)
 	@echo "[BUSYBOX] wrote $(BUSYBOX_OFFER)"
@@ -1003,7 +1014,7 @@ $(OTA_ELF_AARCH64): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	cp $(OUT_TGT)/$(FAMTOOLS_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ota $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LXSRV_ELF_AARCH64): $(LXSRV_SRC) $(LIBSYS_SRC) lx/LINUX_PIN
+$(LXSRV_ELF_AARCH64): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules
 	@mkdir -p $(AARCH64_DIR)
 	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXSRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(OUT_TGT)/$(LXSRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/lxsrv $@

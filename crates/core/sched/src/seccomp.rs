@@ -1525,7 +1525,7 @@ use x86_64_image_table::IMAGE_SHA256;
 //
 // Built only by `make busybox`, from a pinned upstream release, never part of
 // the base image and never in `IMAGE_ELFS`: their digests are in a table of
-// their own, `$AZOS_OUT/build/thirdparty_hashes{,_aarch64}.rs`, which is EMPTY unless
+// their own, `$AZOS_OUT/build/thirdparty_hashes{,_aarch64,_x86_64}.rs`, which is EMPTY unless
 // the program was built (the Makefile writes it with every image-hash table).
 // An image is still bound by its digest to its row below; a binary that is
 // not the one the build hashed is refused like any other.
@@ -1545,8 +1545,13 @@ mod aarch64_thirdparty_table {
 }
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 use aarch64_thirdparty_table::THIRDPARTY_SHA256;
-// x86_64 builds no third-party image yet: the fallback below, empty.
-#[cfg(not(all(any(target_arch = "riscv64", target_arch = "aarch64"), target_os = "none")))]
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+mod x86_64_thirdparty_table {
+    include!(concat!(env!("AZOS_OUT"), "/build/thirdparty_hashes_x86_64.rs")); // missing? run `make $AZOS_OUT/build/image_hashes_x86_64.rs`
+}
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+use x86_64_thirdparty_table::THIRDPARTY_SHA256;
+#[cfg(not(all(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
 const THIRDPARTY_SHA256: &[(&str, [u8; 32])] = &[];
 
 /// The rows of the third-party images. Each lists the NATIVE

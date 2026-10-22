@@ -18,7 +18,7 @@ with either license above; see each crate's own metadata (Cargo.lock lists
 them).
 
 relibc, the C library of Redox OS, is built into the C programs of
-`make relibc` (see third_party/RELIBC_PIN and userspace/lib/relibc-azos). It
+`make relibc` (see third_party/relibc in .gitmodules and userspace/lib/relibc-azos). It
 is MIT licensed, Copyright (c) 2018 Redox OS; the text is LICENSES/MIT.txt and
 travels with every C program image. It is fetched at build time, not stored
 in this repository, except for the patch that ports it

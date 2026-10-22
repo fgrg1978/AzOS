@@ -6,9 +6,9 @@
 // socket of the VisionFive 2).
 //
 // SOURCES. Nothing here has run on silicon, and there is no QEMU model of this
-// IP. The local Linux tree (`~/azos-dl/linux`, v7.2.9, sparse) does not carry
+// IP. The pinned Linux tree (v7.2.9, sparse) does not carry
 // `drivers/mmc/host/dw_mmc*`; the register file was checked against U-Boot
-// 2025.07 (`~/azos-dl/u-boot/src/u-boot-2025.07/include/dwmmc.h` and
+// 2025.07 (the pinned tree, `third_party/u-boot`: `include/dwmmc.h` and
 // `drivers/mmc/dw_mmc.c`, which lists `starfive,jh7110-mmc` among its
 // matches in `drivers/mmc/snps_dw_mmc.c`), and the board facts (clocks
 // `biu`/`ciu`, interrupts 74/75, `cd-gpios` on mmc1, `non-removable` on mmc0)

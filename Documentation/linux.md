@@ -72,7 +72,7 @@ Bounds that Kconfig sets: `LINUX_ROBUST_LIST_LIMIT` (robust futex list entries w
 
 ### Third-party Linux programs
 
-`USERSPACE_GPL` is the switch without which no third-party GPL program is built or placed in an image. `BUSYBOX` (requires `USERSPACE_GPL` and `LINUX_ABI`) builds a pinned BusyBox release from a tarball already on disk, checks its SHA-256, and builds it static with `zig cc`; it runs as `BUSYBOX.ELF` under its own row with `abi = "linux"`. The `make busybox` target refuses, naming what is missing, without `zig` or the tarball or on a digest mismatch. `make busybox-source-offer` writes the source offer.
+`USERSPACE_GPL` is the switch without which no third-party GPL program is built or placed in an image. `BUSYBOX` (requires `USERSPACE_GPL` and `LINUX_ABI`) builds the pinned BusyBox release (the gitlink `third_party/busybox`, fetched by `tools/third_party_fetch.sh busybox`) static with `zig cc` for riscv64, aarch64 and x86_64; it runs as `BUSYBOX.ELF` under its own row with `abi = "linux"`. The `make busybox` target refuses, naming what is missing, without `zig` or without a clean checkout at the gitlink. `make busybox-source-offer` writes the source offer.
 
 ## Path 2: the Linux kernel driver slice (`lx/`)
 
@@ -84,7 +84,7 @@ Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`,
 
 | Piece | Path | Role |
 |---|---|---|
-| Pinned tree | `third_party/linux` (a shallow submodule, `update = none`), `lx/LINUX_PIN` | A tag of the kernel.org stable tree, with its tag object and commit. `tools/lx_fetch_linux.sh` is the one way to fetch it (shallow and sparse). Kconfig `LX_LINUX_PIN` must equal the pinned tag. |
+| Pinned tree | `third_party/linux` (a shallow submodule, `update = none`; its `tag` in `.gitmodules`) | A tag of the kernel.org stable tree; the gitlink is its commit. `tools/third_party_fetch.sh linux` is the one way to fetch it (shallow and sparse). |
 | Glue | `lx/glue/lxbase.c`, `lx/glue/Kbuild` | `lxbase.ko`: the base of the layer, compiled by Linux's own Kbuild against the pinned tree. It exports the Linux symbols the validated modules import and forwards them to the host ABI. GPL-2.0-only. |
 | Host ABI | `lx/HOST_ABI` | Every symbol `lxsrv` exports to modules: `lxh_alloc`, `lxh_free`, `lxh_hwcap`, and the C string and memory functions. Plain scalars and pointers, no Linux type. |
 | Compatibility base | `lx/emul` (`lx_emul`) | A `no_std` Rust crate that re-implements the behaviour of Linux core APIs drivers call (allocation, locks, timers, workqueues, RCU, `printk`, the device model, reference counts, the exported-symbol table) with fixed-capacity containers and generation-checked handles. No Linux source is copied. |
@@ -130,7 +130,7 @@ The digest covers the input bytes, not the relocated text. A server that is alre
 
 The filesystem set (`<isa>/fs/*.ko`: `crc16`, `mbcache`, `jbd2`, `ext4`, built by `make lx-kbuild` from `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c`) is held to K1 and K4. Its imports are not K3-gated. `lx/FS_EXT4_UNRESOLVED` lists, per ISA, the imports of that set that neither `lx/HOST_ABI` nor an earlier module exports, and `tests/host/lx-loader-tests` fails when the list differs from the set the built modules compute. A symbol leaves the list in the change that provides it.
 
-The Kconfig menu "Linux compatibility" (`config/Kconfig.linux`) defines `LINUX_DRIVERS` and one option per class: filesystems (`LX_FS_EXT2`, `LX_FS_EXT4_RO`, `LX_FS_EXT4_RW`; Linux filesystems use the native `BlockDevice`, and the ext4 options are read-only without journal replay or read-write with `jbd2`), USB (`LX_USB_XHCI`, `LX_USB_DWC3`, `LX_USB_HID`, `LX_USB_STORAGE`, `LX_USB_CDC`, `LX_USB_UVC`), and further classes (`LX_SND_ASOC`, `LX_DRM_PANEL`, `LX_IIO`, `LX_WIFI`, `LX_BLUETOOTH`). `LX_ACCEPT_UNCONFINED_DMA` is the build-time acceptance a DMA-capable class needs on a board without an IOMMU. The configuration validator in `crates/core/limits/build.rs` refuses a `.config` that sets any class option or `LX_ACCEPT_UNCONFINED_DMA`, and `LINUX_DRIVERS` builds only together with `LX_SERVER_SKELETON`. The boolean enable and class options (`LINUX_DRIVERS`, `LX_SERVER_SKELETON`, the `LX_FS_*`, `LX_USB_*` and later-class options, `LX_ACCEPT_UNCONFINED_DMA`) default to `n`. The non-boolean symbols have their own defaults: `LX_MODULE_TOKENS` is a count (the pinned tag is `lx/LINUX_PIN`, not a Kconfig option). A small board (`HWCLASS_EMBEDDED`) cannot enable `LINUX_DRIVERS` at all.
+The Kconfig menu "Linux compatibility" (`config/Kconfig.linux`) defines `LINUX_DRIVERS` and one option per class: filesystems (`LX_FS_EXT2`, `LX_FS_EXT4_RO`, `LX_FS_EXT4_RW`; Linux filesystems use the native `BlockDevice`, and the ext4 options are read-only without journal replay or read-write with `jbd2`), USB (`LX_USB_XHCI`, `LX_USB_DWC3`, `LX_USB_HID`, `LX_USB_STORAGE`, `LX_USB_CDC`, `LX_USB_UVC`), and further classes (`LX_SND_ASOC`, `LX_DRM_PANEL`, `LX_IIO`, `LX_WIFI`, `LX_BLUETOOTH`). `LX_ACCEPT_UNCONFINED_DMA` is the build-time acceptance a DMA-capable class needs on a board without an IOMMU. The configuration validator in `crates/core/limits/build.rs` refuses a `.config` that sets any class option or `LX_ACCEPT_UNCONFINED_DMA`, and `LINUX_DRIVERS` builds only together with `LX_SERVER_SKELETON`. The boolean enable and class options (`LINUX_DRIVERS`, `LX_SERVER_SKELETON`, the `LX_FS_*`, `LX_USB_*` and later-class options, `LX_ACCEPT_UNCONFINED_DMA`) default to `n`. The non-boolean symbols have their own defaults: `LX_MODULE_TOKENS` is a count (the pinned tag is the `tag` of `third_party/linux` in `.gitmodules`, not a Kconfig option). A small board (`HWCLASS_EMBEDDED`) cannot enable `LINUX_DRIVERS` at all.
 
 ### Leaf drivers and the hardware bus
 
@@ -152,7 +152,7 @@ The project is `Apache-2.0 OR GPL-2.0-only`. The Rust in the Linux layer (`lx/em
 | A1 | No symbol of the GPL glue appears in a kernel ELF, a userspace ELF or a module. |
 | A2 | Every `build/lx/*.ko` of the output root carries the project's own licence tag (`Dual Apache/GPL`). |
 | K0 to K4 | The module rules above. |
-| `--pin` | `lx/LINUX_PIN`'s commit equals the submodule gitlink and the checkout's HEAD, and the checkout has no local change. |
+| `--pin` | Every third-party tree of `.gitmodules` (BusyBox, Limine, Linux, relibc, U-Boot) is a shallow `update = none` gitlink; a checked-out tree is at its gitlink, carries its tag (peeled to the gitlink) and no local change; relibc's MIT text and notice are present. Gate row `third_party: submodule == pin`. |
 
 An image that contains a Linux module is distributed as GPL-2.0-only as a whole; shipping it requires offering the corresponding source. The default image contains no Linux-derived object.
 

@@ -26,8 +26,8 @@
 # --image also writes a FAT16 image of the root (the RAM disk UEFI HTTP Boot
 # loads when its URL names a .img).
 #
-# Limine comes from LIMINE_DIR (a release's binary branch; default
-# ~/azos-dl/limine); its host tool is built from the limine.c that ships with
+# Limine comes from LIMINE_DIR (a release's binary branch; default the
+# gitlink third_party/limine, tools/third_party_fetch.sh limine); its host tool is built from the limine.c that ships with
 # it into $AZOS_OUT/netboot/limine/.
 set -euo pipefail
 
@@ -46,7 +46,7 @@ case "$tamper" in ""|kernel|config) ;; *) echo "stage_x86: --tamper kernel|confi
 
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 export AZOS_OUT="${AZOS_OUT:-$(python3 "$here/tools/out_dir.py")}"
-limine_dir="${LIMINE_DIR:-$HOME/azos-dl/limine}"
+limine_dir="${LIMINE_DIR:-$here/third_party/limine}"
 [ -f "$limine_dir/BOOTX64.EFI" ] && [ -f "$limine_dir/limine.c" ] \
     || { echo "stage_x86: $limine_dir has no BOOTX64.EFI and limine.c (set LIMINE_DIR to a Limine binary release)" >&2; exit 1; }
 [ -f "$kernel" ] || { echo "stage_x86: no kernel at $kernel" >&2; exit 1; }

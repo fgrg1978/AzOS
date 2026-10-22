@@ -177,7 +177,7 @@ can derive the exact system-call profile of an image from its sources.
 ## relibc
 
 Source: `userspace/lib/relibc-azos/README.md`, `config/Kconfig.relibc`,
-`tools/relibc_fetch.sh`, `tools/relibc_build.sh`, `third_party/RELIBC_PIN`.
+`tools/third_party_fetch.sh`, `tools/relibc_build.sh`, `.gitmodules`.
 
 relibc is Redox's C library, written in Rust (MIT). It is the porting layer for C
 code. POSIX is a personality here, not the native model: native programs use the
@@ -188,8 +188,8 @@ Nothing of relibc is stored in the repository except what AzOS adds to it:
 
 | Path | What |
 |---|---|
-| `third_party/RELIBC_PIN` | The upstream commit. |
-| `tools/relibc_fetch.sh` | Shallow-fetches that commit into `~/azos-dl/relibc`, outside the repository. |
+| `third_party/relibc` | A gitlink (`.gitmodules`, `update = none`): the upstream commit. |
+| `tools/third_party_fetch.sh relibc` | Shallow-fetches that commit (and its `dlmalloc-rs` submodule) into `third_party/relibc`, in a checkout outside iCloud Drive. |
 | `userspace/lib/relibc-azos/patches/` | The changes to upstream files. |
 | `userspace/lib/relibc-azos/overlay/` | AzOS's own files: the `azos` platform module, three target specs, three linker scripts. |
 | `tools/relibc_build.sh` | Copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs. |
@@ -211,7 +211,7 @@ The platform layer (`userspace/lib/relibc-azos/overlay/src/platform/azos/`) impl
 Build a C program:
 
 ```sh
-tools/relibc_fetch.sh && make relibc     # for each ISA whose configuration sets CONFIG_RELIBC=y
+tools/third_party_fetch.sh relibc && make relibc     # for each ISA whose configuration sets CONFIG_RELIBC=y
 tools/relibc_build.sh cc <isa> OUT.elf SRC.c...
 ```
 
@@ -222,8 +222,9 @@ tools/relibc_build.sh cc <isa> OUT.elf SRC.c...
 --driver`: a static executable at the same image base and entry, no linker script) and
 `libc.a`. It needs `zig` and
 `cbindgen` (see [building.md](building.md)). To move the pin, change
-`third_party/RELIBC_PIN`, run `tools/relibc_fetch.sh`, then `tools/relibc_build.sh
-prepare`, which fails on a patch hunk that no longer applies.
+the gitlink (`git update-index --cacheinfo 160000,<commit>,third_party/relibc`), run
+`tools/third_party_fetch.sh relibc`, then `tools/relibc_build.sh prepare`, which fails
+on a patch hunk that no longer applies.
 
 ## A minimal native program
 

@@ -22,7 +22,7 @@ CHECK_KCONFIG := $(OUT_BUILD)/check-$(ARCH).config
 # Without it a fresh worktree's `make check0` failed in azos_sched.
 CHECK_TABLE_riscv64 := $(IMAGE_HASHES)
 CHECK_TABLE_aarch64 := $(IMAGE_HASHES_AARCH64)
-CHECK_TABLE_x86_64  := $(OUT_BUILD)/image_hashes_x86_64.rs
+CHECK_TABLE_x86_64  := $(OUT_BUILD)/image_hashes_x86_64.rs $(THIRDPARTY_HASHES_X86_64)
 
 .PHONY: check
 # CHECK_FEATURES adds cargo features (`make check CHECK_FEATURES=qemu,ktest`):
