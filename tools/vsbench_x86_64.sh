@@ -14,11 +14,8 @@
 # shift=0 one tick is one guest instruction, as on the other two ISAs.
 #
 # ## The Linux/x86_64 column
-# The bzImage is VSBENCH_X86_64_LINUX_IMAGE, else Kconfig
-# VSBENCH_LINUX_IMAGE_X86_64 from the active configuration ($KCONFIG_CONFIG,
-# else ./.config), else from the expanded x86_64 configuration below (the
-# Kconfig default `~/devel/vms/linux-6.12/bzImage-x86_64`). A leading `~/` is
-# $HOME. Absent file, the column is SKIPPED and says so; this script never
+# The bzImage is VSBENCH_X86_64_LINUX_IMAGE, else the `x86_64=` line of
+# tools/vsbench_linux.conf. A leading `~/` is $HOME. Absent file, the column is SKIPPED and says so; this script never
 # downloads anything. The Linux vsbench ELF is built for the same
 # `userspace/x86_64-azos-user.json` target as the AzOS one (same codegen,
 # linked by `linux_x86_64.ld` at 0x200000) and runs as `/init` of an
@@ -142,16 +139,7 @@ done
 stop_qemu "$X_PID"
 
 # ── Linux/x86_64 ────────────────────────────────────────────────────────────
-kconfig_str() { # kconfig_str <SYMBOL> <config>...: first config that sets it
-    local sym="$1" f v; shift
-    for f in "$@"; do
-        v="$(sed -n "s/^CONFIG_$sym=\"\(.*\)\"\$/\1/p" "$f" 2>/dev/null)"
-        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
-    done
-    return 1
-}
-LINUX_X_IMAGE="${VSBENCH_X86_64_LINUX_IMAGE:-$(kconfig_str VSBENCH_LINUX_IMAGE_X86_64 \
-    "${KCONFIG_CONFIG:-$REPO_ROOT/.config}" "$X_CONFIG")}"
+LINUX_X_IMAGE="${VSBENCH_X86_64_LINUX_IMAGE:-$(sed -n 's/^x86_64=//p' "$REPO_ROOT/tools/vsbench_linux.conf")}"
 case "$LINUX_X_IMAGE" in "~/"*) LINUX_X_IMAGE="$HOME/${LINUX_X_IMAGE#\~/}" ;; esac
 echo "vsbench_x86_64: Linux/x86_64 column: ${LINUX_X_IMAGE:-(none configured)}" >&2
 L_LOG="$WORK/linux-x86_64.log"
@@ -187,7 +175,7 @@ if [ -n "$LINUX_X_IMAGE" ] && [ -f "$LINUX_X_IMAGE" ]; then
     L_RAN=1
 else
     echo "vsbench_x86_64: no x86_64 Linux at '${LINUX_X_IMAGE}': the Linux/x86_64 column is SKIPPED \
-(set VSBENCH_X86_64_LINUX_IMAGE or Kconfig VSBENCH_LINUX_IMAGE_X86_64)" >&2
+(set VSBENCH_X86_64_LINUX_IMAGE or the x86_64= line of tools/vsbench_linux.conf)" >&2
 fi
 
 # ── Verdict ────────────────────────────────────────────────────────────────

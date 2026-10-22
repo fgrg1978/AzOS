@@ -58,17 +58,6 @@ config LX_SERVER_SKELETON
       Linux object is built or linked: the image stays
       "Apache-2.0 OR GPL-2.0-only". Kernel feature `lx-server`.
 
-config LX_LINUX_PIN
-    string "Pinned Linux tag (stable tree)"
-    default "v7.2.9"
-    help
-      The tag of third_party/linux/ (a shallow submodule of the
-      kernel.org stable tree, fetched by tools/lx_fetch_linux.sh), fixed
-      at stage L0 and recorded with its commit in lx/LINUX_PIN.
-      Every module is built against this exact tag; changing it is a
-      "Lbump" (re-run every validated row). tools/lx_license_lint.py
-      fails if this default, lx/LINUX_PIN and the submodule disagree.
-
 menu "Filesystems (lxsrv-fs)"
 
 config LX_FS_EXT2

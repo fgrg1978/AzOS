@@ -77,8 +77,8 @@ there, its HEAD is that commit and its LICENSE is the MIT text; LICENSES/MIT.txt
 exists and NOTICE names relibc (R0..R4).
 
 Pin rules (`--pin`): lx/LINUX_PIN's commit equals the gitlink recorded for
-third_party/linux, the checkout's HEAD, and the checkout has no local change;
-config/Kconfig.linux's LX_LINUX_PIN default equals the pin's tag.
+third_party/linux, the checkout's HEAD, and the checkout has no local change.
+lx/LINUX_PIN is the one record of the tag (no Kconfig copy).
 """
 
 import os
@@ -426,11 +426,11 @@ def check_pin(root):
     if head.returncode != 0 or not os.path.exists(os.path.join(sub, ".git")):
         # `update = none` and a fetch script that refuses iCloud checkouts:
         # absence is the normal state until a build consumes Linux sources.
-        # P1 and P4 still bind the pin; `--require-checkout` makes it P2.
+        # P1 still binds the pin; `--require-checkout` makes it P2.
         if "--require-checkout" in sys.argv:
             errs.append("P2 third_party/linux is not checked out: run tools/lx_fetch_linux.sh")
         else:
-            print("lx_license_lint: note: third_party/linux not checked out; gitlink and Kconfig checked only")
+            print("lx_license_lint: note: third_party/linux not checked out; gitlink checked only")
     else:
         if head.stdout.strip() != commit:
             errs.append(f"P2 checkout HEAD {head.stdout.strip()} != pin {commit}")
@@ -439,10 +439,6 @@ def check_pin(root):
         if st.strip():
             errs.append("P3 third_party/linux has local changes (the submodule carries zero patches): "
                         + st.strip().splitlines()[0])
-    kc = read(root, "config/Kconfig.linux").decode()
-    m = re.search(r'config LX_LINUX_PIN\n(?:.*\n){0,3}?\s*default "([^"]+)"', kc)
-    if not m or m.group(1) != tag:
-        errs.append(f"P4 Kconfig LX_LINUX_PIN default {m.group(1) if m else None!r} != pin {tag!r}")
     return errs
 
 

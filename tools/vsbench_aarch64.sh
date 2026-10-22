@@ -71,10 +71,9 @@
 #
 # ## The Linux/aarch64 column (N0, wave 15)
 #
-# The image is the Kconfig string `VSBENCH_LINUX_IMAGE_AARCH64` (`make
-# config`, menu "Benchmarks / Linux comparison"; read from $KCONFIG_CONFIG or
-# ./.config, else its default `~/devel/vms/linux-6.12/Image-aarch64`),
-# overridden by the env var `VSBENCH_AARCH64_LINUX_IMAGE`: an arm64 Linux
+# The image is the `aarch64=` line of tools/vsbench_linux.conf (default
+# `~/devel/vms/linux-6.12/Image-aarch64`), overridden by the env var
+# `VSBENCH_AARCH64_LINUX_IMAGE`: an arm64 Linux
 # `Image`, raw or gzip. Present, the Linux side of vsbench is
 # built for aarch64 (`abi_linux.rs` has an `svc 0` twin of every `ecall`),
 # packed as `/init` of an uncompressed initramfs, and booted on the SAME
@@ -270,21 +269,9 @@ kill -9 "$A_PID" 2>/dev/null; wait "$A_PID" 2>/dev/null
 
 # ── Verdict ──────────────────────────────────────────────────────────────
 # ── Linux/aarch64 (see the header) ────────────────────────────────────────
-# The image: VSBENCH_AARCH64_LINUX_IMAGE, else
-# CONFIG_VSBENCH_LINUX_IMAGE_AARCH64 from the active configuration
-# ($KCONFIG_CONFIG, else ./.config — what `make config` writes), else from
-# the expanded aarch64 configuration above (the Kconfig default). A leading
-# `~/` is $HOME.
-kconfig_str() { # kconfig_str <SYMBOL> <config>...: first config that sets it
-    local sym="$1" f v; shift
-    for f in "$@"; do
-        v="$(sed -n "s/^CONFIG_$sym=\"\(.*\)\"\$/\1/p" "$f" 2>/dev/null)"
-        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
-    done
-    return 1
-}
-LINUX_A_IMAGE="${VSBENCH_AARCH64_LINUX_IMAGE:-$(kconfig_str VSBENCH_LINUX_IMAGE_AARCH64 \
-    "${KCONFIG_CONFIG:-$REPO_ROOT/.config}" "$A_CONFIG")}"
+# The image: VSBENCH_AARCH64_LINUX_IMAGE, else the `aarch64=` line of
+# tools/vsbench_linux.conf. A leading `~/` is $HOME.
+LINUX_A_IMAGE="${VSBENCH_AARCH64_LINUX_IMAGE:-$(sed -n 's/^aarch64=//p' "$REPO_ROOT/tools/vsbench_linux.conf")}"
 case "$LINUX_A_IMAGE" in "~/"*) LINUX_A_IMAGE="$HOME/${LINUX_A_IMAGE#\~/}" ;; esac
 echo "vsbench_aarch64: Linux/aarch64 column: ${LINUX_A_IMAGE:-(none configured)}" >&2
 # The AzOS line's CPU, unchanged: 6.12 boots on this QEMU's `max` with

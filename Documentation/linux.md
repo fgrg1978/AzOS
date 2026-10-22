@@ -152,7 +152,7 @@ The project is `Apache-2.0 OR GPL-2.0-only`. The Rust in the Linux layer (`lx/em
 | A1 | No symbol of the GPL glue appears in a kernel ELF, a userspace ELF or a module. |
 | A2 | Every `build/lx/*.ko` of the output root carries the project's own licence tag (`Dual Apache/GPL`). |
 | K0 to K4 | The module rules above. |
-| `--pin` | `lx/LINUX_PIN`'s commit equals the submodule gitlink and the checkout's HEAD, the checkout has no local change, and the `LX_LINUX_PIN` Kconfig default equals the pinned tag. |
+| `--pin` | `lx/LINUX_PIN`'s commit equals the submodule gitlink and the checkout's HEAD, and the checkout has no local change. |
 
 An image that contains a Linux module is distributed as GPL-2.0-only as a whole; shipping it requires offering the corresponding source. The default image contains no Linux-derived object.
 

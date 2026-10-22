@@ -10423,8 +10423,8 @@ test_host_features "topology(lx-server)" \
 #   module with Linux's licence tag before stage L1. Its canary is
 #   `--self-test`, which breaks each rule once in a throwaway tree and fails
 #   unless every rule reports it.
-# * `submodule == pin`: the gitlink, the checkout's HEAD and Kconfig's
-#   LX_LINUX_PIN all equal lx/LINUX_PIN, and the checkout carries zero patches
+# * `submodule == pin`: the gitlink and the checkout's HEAD equal
+#   lx/LINUX_PIN, and the checkout carries zero patches
 #   (a fresh clone needs `tools/lx_fetch_linux.sh`; the submodule is
 #   `update = none`, so nothing fetches the Linux tree by accident).
 # * `Kconfig gates`: azos_limits refuses a module option (LX_FS_EXT2) and
