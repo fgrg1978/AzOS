@@ -9676,7 +9676,7 @@ HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests msc-tests 
          ipc-fast-tests ipc-tests sched-wake-tests
          fs-tests arch-tests drivers-tests mm-tests libsys-tests behavior-tests
          net-tests seccomp-tests syscall-tests trap-tests sync-tests flight-tests
-         shell-tests sh-tests term-tests input-tests inputd-tests names-tests devif-tests panic-policy-tests energy-tests thermal-tests power-tests linux-abi-tests linux-rt-tests ualloc-tests
+         shell-tests sh-tests term-tests input-tests inputd-tests audiod-tests names-tests devif-tests panic-policy-tests energy-tests thermal-tests power-tests linux-abi-tests linux-rt-tests ualloc-tests
          percpu-tests trace-tests iommu-tests pci-tests dma-tests
          nvme-tests x86-platform-tests fb-tests rings-tests bytepipe-tests idl-tests decisions-tests micro-tests hwbus-tests
          logind-tests stdrt-tests pkg-tests zenoh-tests mcp-tests inspect-tests actuation-tests
