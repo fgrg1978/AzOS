@@ -13,7 +13,8 @@
 //!
 //! A client opens a stream on the server's endpoint exactly as it would on the
 //! kernel's (`Sound::open` with a `ready` queue, a `done` queue and an arena it
-//! made); the three objects are **moved** to the server, which maps them. The
+//! made); the three objects are **lent** to the server (`Lent`: the client
+//! keeps its own capabilities and mappings), which maps them. The
 //! client's periods never cross a call: the server pops them from `ready`,
 //! mixes them ([`mixer`]) into the periods of the **one** playback stream it
 //! holds on the device, and returns each, played, on `done`.
@@ -114,7 +115,7 @@ use azos_devif::sound::{
     self as snd, Info, Opened, Params, Period, Posted, Status, DIR_CAPTURE, DIR_PLAYBACK, FMT_S16, NO_PERIOD,
     PERIOD_CANCELLED, PERIOD_END, PERIOD_XRUN, SLOT_WORDS, STATE_DRAINING, STATE_OPEN, STATE_RUNNING,
 };
-use azos_devif::{Cap as WireCap, Out};
+use azos_devif::{Lent, Out};
 use azos_rings::region::{RingStep, SpscSlots, RING_SLOTS};
 
 /// Streams the table can hold, whatever Kconfig `AUDIO_MAX_STREAMS` allows.
@@ -145,7 +146,8 @@ pub const LEASE_STALL_XRUNS: u32 = 256;
 pub struct Mapped {
     pub va: usize,
     pub bytes: usize,
-    /// The mapping is writable (the object is read-write).
+    /// The mapping is writable: the object is read-write and the capability
+    /// was lent with `WRITE`.
     pub rw: bool,
 }
 
@@ -736,20 +738,26 @@ impl<E: Env> snd::Sound for Server<E> {
     fn open(
         &mut self,
         params: Params,
-        ready: WireCap<snd::ReadyQueue>,
-        done: WireCap<snd::DoneQueue>,
-        arena: WireCap<snd::Arena>,
+        ready: Lent<snd::ReadyQueue>,
+        done: Lent<snd::DoneQueue>,
+        arena: Lent<snd::Arena>,
         on_behalf: u64,
     ) -> Out<Opened> {
-        let caps = [ready.raw(), done.raw(), arena.raw()];
-        // A client has no call of its own to name: the warrant the kernel
-        // gets is the one of the client's call to this server, never a value
-        // the client chose.
-        let r = if on_behalf != 0 { out_err(outcome::BAD_ARGUMENT) } else { self.open_inner(params, caps) };
-        // A refused open leaves the three objects with this task, which has no
-        // use for them.
+        let lent = [ready.get().map(|c| c.raw()), done.get().map(|c| c.raw()), arena.get().map(|c| c.raw())];
+        let r = match lent {
+            // A client has no call of its own to name: the warrant the kernel
+            // gets is the one of the client's call to this server, never a
+            // value the client chose.
+            _ if on_behalf != 0 => out_err(outcome::BAD_ARGUMENT),
+            [Some(r), Some(d), Some(a)] => self.open_inner(params, [r, d, a]),
+            _ => out_err(outcome::BAD_ARGUMENT),
+        };
+        // A refused open leaves the copies it was lent with this task, which
+        // has no use for them.
         if r.code != outcome::OK {
-            self.release_all(caps);
+            for c in lent.into_iter().flatten() {
+                self.env.release(c);
+            }
         }
         r
     }

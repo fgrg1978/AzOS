@@ -35,12 +35,13 @@ mod server;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use azos_abi::cap::CapPerms;
 use azos_devif::sound::{self as snd, Info, Opened, Params, Status};
-use azos_devif::{MsgDesc, SoundIdl};
+use azos_devif::{Lent, MsgDesc, SoundIdl};
 use azos_libsys as sys;
 use azos_rings::region::SpscSlots;
 use server::{DevMem, Env, Limits, Mapped, Server};
-use sys::dev::{Cap, Ep, SoundCall, SoundClient};
+use sys::dev::{Ep, SoundCall, SoundClient};
 
 /// A memory object this task made, and where it is mapped.
 #[derive(Clone, Copy)]
@@ -89,8 +90,11 @@ impl Env for Kernel {
             return None;
         }
         let pages = u32::from_le_bytes([info[0], info[1], info[2], info[3]]) as usize;
-        // `info[4]` is the object's access: 0 read-only, 1 read-write.
-        let rw = info[4] == 1;
+        // `info[4]` is the object's access: 0 read-only, 1 read-write. The
+        // mapping is bounded by the rights the client lent too, which `cap_info`
+        // reads: a queue lent without `WRITE` maps read-only, and is refused.
+        let lent_write = sys::cap_info(cap).is_ok_and(|i| i.rights & CapPerms::WRITE.bits() != 0);
+        let rw = info[4] == 1 && lent_write;
         let va = sys::shm_map_typed(cap);
         (va > 0).then_some(Mapped { va: va as usize, bytes: pages * sys::PAGE_SIZE, rw })
     }
@@ -125,7 +129,13 @@ impl Env for Kernel {
         let (rq, dq) = (SpscSlots::<{ snd::SLOT_WORDS }> { base: ready.va, cap: slots }, SpscSlots::<{ snd::SLOT_WORDS }> { base: done.va, cap: slots });
         rq.init();
         dq.init();
-        let opened = Self::code(self.snd.open(params, Cap::from_raw(ready.cap), Cap::from_raw(done.cap), Cap::from_raw(arena.cap), 0));
+        let opened = Self::code(self.snd.open(
+            params,
+            Lent::dup(ready.cap, snd::QUEUE_RIGHTS),
+            Lent::dup(done.cap, snd::QUEUE_RIGHTS),
+            Lent::dup(arena.cap, snd::arena_rights(params.dir)),
+            0,
+        ));
         match opened {
             Ok(o) if o.period_bytes == geo.period_bytes => {
                 self.dev = Some([ready, done, arena]);
@@ -161,7 +171,15 @@ impl Env for Kernel {
     }
 
     fn lease_open(&mut self, params: Params, ready: u32, done: u32, arena: u32, on_behalf: u64) -> Result<Opened, u32> {
-        Self::code(self.snd.open(params, Cap::from_raw(ready), Cap::from_raw(done), Cap::from_raw(arena), on_behalf))
+        // The client's own copies, lent on as the client lent them: the kernel
+        // resolves them in this task's table.
+        Self::code(self.snd.open(
+            params,
+            Lent::dup(ready, snd::QUEUE_RIGHTS),
+            Lent::dup(done, snd::QUEUE_RIGHTS),
+            Lent::dup(arena, snd::arena_rights(params.dir)),
+            on_behalf,
+        ))
     }
 
     fn lease_start(&mut self) -> Result<(), u32> {

@@ -10,7 +10,7 @@ use azos_devif::outcome;
 use azos_devif::sound::{
     self as snd, Info, Opened, Params, Period, Status, DIR_CAPTURE, DIR_PLAYBACK, FMT_S16, NO_PERIOD, PERIOD_END, SLOT_WORDS,
 };
-use azos_idl::Cap;
+use azos_idl::Lent;
 use azos_rings::region::{RingStep, SpscSlots};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -269,7 +269,13 @@ pub fn params() -> Params {
     Params { dir: DIR_PLAYBACK, format: FMT_S16, rate_hz: 48_000, channels: 2, period_frames: 256, periods: 4 }
 }
 
-/// A client's side of one stream: the objects it made and moved.
+/// The handle `h` as a client lends it to the server (`beep`'s rights); 0 is
+/// an object the client did not lend.
+pub fn lend<T>(h: u32) -> Lent<T> {
+    if h == 0 { Lent::none() } else { Lent::dup(h, azos_devif::sound::QUEUE_RIGHTS) }
+}
+
+/// A client's side of one stream: the objects it made and lent.
 pub struct Client {
     pub caps: [u32; 3],
     pub ready: SpscSlots<{ SLOT_WORDS }>,
@@ -342,7 +348,7 @@ impl Client {
         srv.call = self.call();
         srv.env.0.borrow_mut().served.insert(srv.call, client_tid(self.badge));
         srv.prepare();
-        let r = srv.open(p, Cap::from_raw(self.caps[0]), Cap::from_raw(self.caps[1]), Cap::from_raw(self.caps[2]), on_behalf);
+        let r = srv.open(p, lend(self.caps[0]), lend(self.caps[1]), lend(self.caps[2]), on_behalf);
         srv.env.0.borrow_mut().served.remove(&srv.call);
         srv.caller = 0;
         srv.call = 0;

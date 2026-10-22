@@ -79,7 +79,7 @@ use azos_devif::sound::{
     self as snd, capture_reason, Info, Opened, Params, Period, Status, DIR_CAPTURE, DIR_PLAYBACK, MIC_ADMITTED, MIC_NO_REQUEST,
     NO_PERIOD, PERIOD_CANCELLED, PERIOD_END, SLOT_WORDS,
 };
-use azos_devif::{outcome, Cap as WireCap, Out};
+use azos_devif::{outcome, Lent, Out};
 use azos_drv_virtio::virtio::snd as dev;
 use azos_ipc::cap::targets;
 use azos_ipc::memobj::{
@@ -443,9 +443,9 @@ impl snd::Sound for Server {
     fn open(
         &mut self,
         params: Params,
-        ready: WireCap<snd::ReadyQueue>,
-        done: WireCap<snd::DoneQueue>,
-        arena: WireCap<snd::Arena>,
+        ready: Lent<snd::ReadyQueue>,
+        done: Lent<snd::DoneQueue>,
+        arena: Lent<snd::Arena>,
         on_behalf: u64,
     ) -> Out<Opened> {
         if let Err(o) = self.0.gate::<Opened>(CapPerms::WRITE) {
@@ -458,6 +458,11 @@ impl snd::Sound for Server {
         let geo = match params.check() {
             Ok(g) => g,
             Err(c) => return Out::err(c),
+        };
+        // The three objects are lent: the entries name the caller's own
+        // capabilities, which stay in its table (`khost::takes_caps`).
+        let (Some(ready), Some(done), Some(arena)) = (ready.get(), done.get(), arena.get()) else {
+            return Out::err(outcome::BAD_ARGUMENT);
         };
         if params.periods > azos_limits::AUDIO_MAX_PERIODS as u32
             || geo.arena_bytes > azos_limits::AUDIO_ARENA_KB_MAX as u64 * 1024

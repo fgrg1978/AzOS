@@ -16,9 +16,13 @@
 //! **The samples travel in a queue of memory-object periods, never in calls.**
 //! The client makes an **arena** (a memory object of [`Geometry::arena_bytes`]:
 //! `periods` consecutive periods of `period_frames` frames) and two queues of
-//! [`Period`] slots, `ready` and `done`, and moves the three with
-//! [`Sound::open`]; it keeps the other ends. The protocol is the same in both
-//! directions:
+//! [`Period`] slots, `ready` and `done`, and **lends** the three with
+//! [`Sound::open`] (each a `Lent`: a copy of its capability with the rights
+//! [`QUEUE_RIGHTS`] and [`arena_rights`] name), keeping its own capabilities
+//! and its mappings: it goes on writing the arena and both queues. A move
+//! would not do: a memory object that moves takes the sender's mapping with
+//! it. The client's Domain stays charged for the frames. The protocol is the
+//! same in both directions:
 //!
 //! * The client **posts** a period on `ready`. Playback: the period holds
 //!   `frames` frames to play. Capture: it is empty room for up to
@@ -106,7 +110,8 @@
 //! asked again.
 
 use crate::outcome::{Out, BAD_ARGUMENT};
-use azos_idl::{azos_interface, Cap, Reader, Wire, Writer};
+use azos_abi::cap::CapPerms;
+use azos_idl::{azos_interface, Lent, Reader, Wire, Writer};
 
 /// The interface id (ASCII "SOUN").
 pub const SOUND_ID: u32 = 0x534F_554E;
@@ -126,16 +131,30 @@ pub const ENDPOINT: &str = "endpoint.audio";
 /// The name that endpoint has in the kernel's pool.
 pub const ENDPOINT_NAME: &str = "audio";
 
-/// What a `Cap<ReadyQueue>` names: a queue of [`Period`] slots, the client its
-/// producer. The server holds it with `READ`.
+/// What a `Lent<ReadyQueue>` names: a queue of [`Period`] slots, the client its
+/// producer. The server needs `READ` on it, and maps it.
 pub struct ReadyQueue;
-/// What a `Cap<DoneQueue>` names: a queue of [`Period`] slots, the server its
-/// producer. The server holds it with `WRITE`.
+/// What a `Lent<DoneQueue>` names: a queue of [`Period`] slots, the server its
+/// producer. The server needs `WRITE` on it, and maps it.
 pub struct DoneQueue;
-/// What a `Cap<Arena>` names: the memory object the periods live in. The
-/// server holds it with `READ` for a playback stream and `WRITE` for a
-/// capture stream, never both.
+/// What a `Lent<Arena>` names: the memory object the periods live in. The
+/// server needs `READ` on it for a playback stream and `WRITE` for a capture
+/// stream.
 pub struct Arena;
+
+/// The rights a client lends each queue with: `READ|WRITE|MAP`. Both ends of
+/// a ring write its memory (the producer its head, the consumer its tail), so
+/// a server that maps a queue maps it read-write; one lent without `WRITE`
+/// is refused (`BAD_ARGUMENT`) rather than faulted on.
+pub const QUEUE_RIGHTS: u16 = CapPerms::RW.union(CapPerms::MAP).bits() as u16;
+
+/// The rights a client lends the arena with for a stream of direction `dir`:
+/// `READ|MAP` for playback (the server only reads the samples), and
+/// `READ|WRITE|MAP` for capture (the server writes them).
+pub const fn arena_rights(dir: u32) -> u16 {
+    let rights = if dir == DIR_CAPTURE { CapPerms::RW } else { CapPerms::READ };
+    rights.union(CapPerms::MAP).bits() as u16
+}
 
 /// [`Params::dir`] and [`Info::dirs`]: audio goes out.
 pub const DIR_PLAYBACK: u32 = 1;
@@ -275,24 +294,31 @@ pub struct Params {
     pub periods: u32,
 }
 
+/// Two `u32` fields in one word, the first in the low half.
+fn pair(lo: u32, hi: u32) -> u64 {
+    u64::from(lo) | u64::from(hi) << 32
+}
+
+/// [`pair`] taken apart.
+fn unpair(w: u64) -> (u32, u32) {
+    (w as u32, (w >> 32) as u32)
+}
+
+/// Three words, two fields in each: with the three lent objects' presence
+/// words and `on_behalf`, `open` fills the message's inline words exactly.
 impl Wire for Params {
-    const WORDS: usize = 6;
+    const WORDS: usize = 3;
     const CAPS: usize = 0;
     fn put(&self, w: &mut Writer<'_>) {
-        self.dir.put(w);
-        self.format.put(w);
-        self.rate_hz.put(w);
-        self.channels.put(w);
-        self.period_frames.put(w);
-        self.periods.put(w);
+        w.word(pair(self.dir, self.format));
+        w.word(pair(self.rate_hz, self.channels));
+        w.word(pair(self.period_frames, self.periods));
     }
     fn get(r: &mut Reader<'_>) -> Self {
-        let dir = u32::get(r);
-        let format = u32::get(r);
-        let rate_hz = u32::get(r);
-        let channels = u32::get(r);
-        let period_frames = u32::get(r);
-        Params { dir, format, rate_hz, channels, period_frames, periods: u32::get(r) }
+        let (dir, format) = unpair(r.word());
+        let (rate_hz, channels) = unpair(r.word());
+        let (period_frames, periods) = unpair(r.word());
+        Params { dir, format, rate_hz, channels, period_frames, periods }
     }
 }
 
@@ -554,11 +580,12 @@ pub trait Sound {
     /// What the device behind the capability can do. Needs `READ`.
     #[idempotent]
     fn info(&self) -> Out<Info>;
-    /// Open the stream `params` on the three objects the client moves: the
+    /// Open the stream `params` on the three objects the client lends: the
     /// `ready` queue (the server consumes), the `done` queue (the server
     /// produces) and the `arena`, each at least the size `Params::check`
-    /// computes (`BAD_ARGUMENT` otherwise) and held with the rights named at
-    /// the types. The stream is `OPEN`, not running. `BUSY` while a stream is
+    /// computes and lent with the rights named at the types (`BAD_ARGUMENT`
+    /// otherwise, and for one not lent at all). The stream is `OPEN`, not
+    /// running. `BUSY` while a stream is
     /// open on the capability. Capture needs the microphone effect of the
     /// requester's class (`REFUSED` without it). `on_behalf` is 0 for every
     /// client; a server that opens the stream for a client passes the warrant
@@ -572,9 +599,9 @@ pub trait Sound {
     fn open(
         &mut self,
         params: Params,
-        ready: Cap<ReadyQueue>,
-        done: Cap<DoneQueue>,
-        arena: Cap<Arena>,
+        ready: Lent<ReadyQueue>,
+        done: Lent<DoneQueue>,
+        arena: Lent<Arena>,
         on_behalf: u64,
     ) -> Out<Opened>;
     /// Start moving periods: `OPEN` becomes `RUNNING`. Served when already

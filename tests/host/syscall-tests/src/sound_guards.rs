@@ -17,7 +17,7 @@ use azos_abi::cap::CapPerms;
 use azos_devif::sound::{
     self as snd, Params, Period, DIR_CAPTURE, DIR_PLAYBACK, FMT_S16, FMT_S32, NO_PERIOD, PERIOD_CANCELLED, PERIOD_END,
 };
-use azos_devif::{key, outcome, Cap as WireCap, Out, Sound, SoundIdl};
+use azos_devif::{key, outcome, Lent, Out, Sound, SoundIdl};
 use azos_drv_virtio::virtio::snd::fake;
 use azos_idl::{header, MsgDesc, Writer, MSG_VERSION};
 use azos_ipc::memobj::{memobj_create_cap, memobj_describe_ref, memobj_page_phys_ref, memobj_release_cap, MemPerms, MemSpec};
@@ -108,11 +108,17 @@ fn params(dir: u32) -> Params {
 const PERIOD_FRAMES: u32 = 64;
 const PERIOD_BYTES: u32 = 256;
 
-type Handles = (WireCap<snd::ReadyQueue>, WireCap<snd::DoneQueue>, WireCap<snd::Arena>);
+type Handles = (Lent<snd::ReadyQueue>, Lent<snd::DoneQueue>, Lent<snd::Arena>);
+
+/// The task's handle `h`, lent as a client lends it (the kernel host reads the
+/// entry's handle in the caller's table and asks that capability's rights).
+fn lent<T>(h: u32) -> Lent<T> {
+    Lent::dup(h, CapPerms::ALL.bits() as u16)
+}
 
 impl Client {
     fn handles(&self) -> Handles {
-        (WireCap::from_raw(self.ready.0), WireCap::from_raw(self.done.0), WireCap::from_raw(self.arena.0))
+        (lent(self.ready.0), lent(self.done.0), lent(self.arena.0))
     }
 
     fn open(&self, p: Params) -> Out<snd::Opened> {
@@ -298,31 +304,33 @@ fn open_refuses_before_it_touches_the_device() {
     let p = params(DIR_PLAYBACK);
     let (r, d, a) = c.handles();
     let attenuated = |reg: (u32, u32), perms| azos_ipc::cap::objref::grant_packed::<azos_ipc::cap::targets::Shm>(c.tid, perms, reg.1).expect("a handle").raw().0;
-    let no_read = WireCap::from_raw(attenuated(c.ready, CapPerms::WRITE));
-    let no_write = WireCap::from_raw(attenuated(c.done, CapPerms::READ));
-    let arena_w = WireCap::from_raw(attenuated(c.arena, CapPerms::WRITE));
+    let no_read = lent(attenuated(c.ready, CapPerms::WRITE));
+    let no_write = lent(attenuated(c.done, CapPerms::READ));
+    let arena_w = lent(attenuated(c.arena, CapPerms::WRITE));
     let mut s = c.sv();
     assert_eq!(s.open(p, no_read, d, a, 0).code, outcome::DENIED, "the server reads `ready`");
     assert_eq!(s.open(p, r, no_write, a, 0).code, outcome::DENIED, "the server writes `done`");
     assert_eq!(s.open(p, r, d, arena_w, 0).code, outcome::DENIED, "a playback arena is read");
     assert_eq!(s.open(p, r, r_as_done(r), a, 0).code, outcome::BAD_ARGUMENT, "one region is not both queues");
     assert_eq!(s.open(p, r, d, r_as_arena(r), 0).code, outcome::BAD_ARGUMENT, "a queue is not the arena");
-    assert_eq!(s.open(p, WireCap::from_raw(0xdead), d, a, 0).code, outcome::BAD_ARGUMENT, "not a handle");
+    assert_eq!(s.open(p, lent(0xdead), d, a, 0).code, outcome::BAD_ARGUMENT, "not a handle");
+    assert_eq!(s.open(p, r, Lent::none(), a, 0).code, outcome::BAD_ARGUMENT, "a queue not lent");
+    assert_eq!(s.open(p, r, d, Lent::none(), 0).code, outcome::BAD_ARGUMENT, "an arena not lent");
     // An arena that is not one physical run, or is too small for the geometry.
     let anon = region(c.tid, &MemSpec::anon(MemPerms::ReadWrite));
-    assert_eq!(s.open(p, r, d, WireCap::from_raw(anon.0), 0).code, outcome::BAD_ARGUMENT, "not Contig");
+    assert_eq!(s.open(p, r, d, lent(anon.0), 0).code, outcome::BAD_ARGUMENT, "not Contig");
     let big = Params { period_frames: 512, ..p };
     assert_eq!(s.open(big, r, d, a, 0).code, outcome::BAD_ARGUMENT, "16 KiB in a page");
     assert!(!calls().iter().any(|c| c.starts_with("open")), "still not asked");
     assert!(!fake().s[0].open);
 }
 
-fn r_as_done(r: WireCap<snd::ReadyQueue>) -> WireCap<snd::DoneQueue> {
-    WireCap::from_raw(r.raw())
+fn r_as_done(r: Lent<snd::ReadyQueue>) -> Lent<snd::DoneQueue> {
+    lent(r.get().expect("lent").raw())
 }
 
-fn r_as_arena(r: WireCap<snd::ReadyQueue>) -> WireCap<snd::Arena> {
-    WireCap::from_raw(r.raw())
+fn r_as_arena(r: Lent<snd::ReadyQueue>) -> Lent<snd::Arena> {
+    lent(r.get().expect("lent").raw())
 }
 
 /// A task holds one stream; a direction holds one. The arena is pinned for the

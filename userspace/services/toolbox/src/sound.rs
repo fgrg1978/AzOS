@@ -9,11 +9,12 @@
 //! the server a task tells its stream from another's by the badge of the
 //! capability it calls through, so it derives a copy of its endpoint capability
 //! badged with its process id (two `beep`s at once are two streams the server
-//! mixes); `open` then moves the three objects to the server, which maps them,
-//! and this task goes on with the mappings it made.
+//! mixes); `open` then lends the three objects to the server (`Lent`: a copy
+//! of each capability, so this task keeps its own and the mappings it made;
+//! a move would take the mapping with it), which maps them.
 //!
 //! The flow `beep.rs` has the arithmetic of. A playback stream is three
-//! memory objects this task makes and the server (or the kernel) is handed with `Sound::open`:
+//! memory objects this task makes and lends the server (or the kernel) with `Sound::open`:
 //! the `ready` queue (this task posts periods), the `done` queue (the kernel
 //! returns them) and the arena, a `Contig` object the device reads its
 //! samples from. Three of the system's memory-object slots while the tool
@@ -35,7 +36,7 @@ use azos_devif::sound::{
 };
 use azos_libsys as sys;
 use azos_libsys::{RingSleep, RingStep, SpscSlots};
-use sys::dev::{Cap, Ep, SoundCall, SoundClient};
+use sys::dev::{Ep, Lent, SoundCall, SoundClient};
 
 /// Longest the tool waits for the stream to give a period back, ns: the device
 /// plays a period in 21 ms, so a wait this long is a device that stopped.
@@ -226,7 +227,14 @@ fn play(client: SoundClient<Ep>, ms: u32) -> i32 {
     s.ready.init();
     s.done.init();
 
-    let opened = sys::dev::value(s.snd.open(params, Cap::from_raw(ready.cap), Cap::from_raw(done.cap), Cap::from_raw(arena.cap), 0));
+    // Lent, not moved: this task goes on writing the arena and both queues.
+    let opened = sys::dev::value(s.snd.open(
+        params,
+        Lent::dup(ready.cap, snd::QUEUE_RIGHTS),
+        Lent::dup(done.cap, snd::QUEUE_RIGHTS),
+        Lent::dup(arena.cap, snd::arena_rights(DIR_PLAYBACK)),
+        0,
+    ));
     match opened {
         Ok(o) if o.period_bytes == geo.period_bytes => {}
         Ok(_) => {

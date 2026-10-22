@@ -7,21 +7,22 @@
 
 use azos_devif::outcome;
 use azos_devif::sound::{
-    self, capture_reason, format_bit, sample_bytes, Arena, DoneQueue, Geometry, Info, Opened, Params, Period, Posted,
+    self, arena_rights, capture_reason, format_bit, sample_bytes, Arena, DoneQueue, Geometry, Info, Opened, Params, Period, Posted,
     ReadyQueue, Status, ARENA_BYTES_MAX, CHANNELS_MAX, DIR_CAPTURE, DIR_PLAYBACK, ENDPOINT, ENDPOINT_NAME, FMT_F32,
     FMT_S16, FMT_S24, FMT_S32, FORMATS_ALL, MIC_ADMITTED, MIC_HELD, MIC_NO_GRANT, MIC_NO_INDICATOR, MIC_NO_REQUEST, NO_PERIOD,
     PERIODS_MAX, PERIODS_MIN, PERIOD_CANCELLED, PERIOD_END, PERIOD_FRAMES_MAX, PERIOD_FRAMES_MIN, PERIOD_XRUN,
-    RATE_HZ_MAX, RATE_HZ_MIN, SLOT_WORDS, STATE_OPEN, STATE_RUNNING,
+    QUEUE_RIGHTS, RATE_HZ_MAX, RATE_HZ_MIN, SLOT_WORDS, STATE_OPEN, STATE_RUNNING,
 };
 use azos_devif::{Out, Sound, SoundCall, SoundClient, SoundIdl, SOUND_ID};
-use azos_idl::{header, Cap, MsgDesc, Result as IdlResult, Transport};
+use azos_abi::cap::CapPerms;
+use azos_idl::{header, IdlError, Lent, MsgDesc, Result as IdlResult, Transport, CAP_MODE_DUP};
 use std::cell::{Cell, RefCell};
 
 /// A device that records what it was asked and enforces the interface's own
 /// checks, as the audio server does.
 #[derive(Default)]
 struct Dev {
-    open: Option<(Params, Geometry, Cap<ReadyQueue>, Cap<DoneQueue>, Cap<Arena>)>,
+    open: Option<(Params, Geometry, u32, u32, u32)>,
     state: u32,
     log: Vec<&'static str>,
 }
@@ -37,7 +38,7 @@ impl Sound for Dev {
             period_frames_max: 4_096,
         })
     }
-    fn open(&mut self, params: Params, ready: Cap<ReadyQueue>, done: Cap<DoneQueue>, arena: Cap<Arena>, _on_behalf: u64) -> Out<Opened> {
+    fn open(&mut self, params: Params, ready: Lent<ReadyQueue>, done: Lent<DoneQueue>, arena: Lent<Arena>, _on_behalf: u64) -> Out<Opened> {
         self.log.push("open");
         if self.open.is_some() {
             return Out::err(outcome::BUSY);
@@ -46,7 +47,10 @@ impl Sound for Dev {
             Ok(g) => g,
             Err(c) => return Out::err(c),
         };
-        self.open = Some((params, geo, ready, done, arena));
+        let (Some(ready), Some(done), Some(arena)) = (ready.get(), done.get(), arena.get()) else {
+            return Out::err(outcome::BAD_ARGUMENT);
+        };
+        self.open = Some((params, geo, ready.raw(), done.raw(), arena.raw()));
         self.state = STATE_OPEN;
         Out::ok(Opened { period_bytes: geo.period_bytes, latency_frames: 96 })
     }
@@ -135,36 +139,55 @@ fn the_op_table_is_the_trait_and_only_open_is_once_only() {
     assert!(SoundIdl::OPS[3].deadline_ns > 0, "a stop declares how fast it must be");
 }
 
-/// `open` is the header, the six parameters in order and the three objects as
-/// the capability entries in order (ready, done, arena); the reply is the
-/// geometry the server computed. A second open is `BUSY` and changes nothing;
-/// a bad parameter is refused before anything is attached.
+/// `open` is the header, the six parameters two to a word, the three objects
+/// as presence words and capability entries in order (ready, done, arena) and
+/// `on_behalf`; the reply is the geometry the server computed. The entries are
+/// lent (`DUP`, with [`QUEUE_RIGHTS`] and [`arena_rights`]), never moved: a
+/// memory object that moves takes the client's mapping with it, and the client
+/// goes on writing all three. A second open is `BUSY` and changes nothing; a
+/// bad parameter, or an object not lent, is refused before anything is attached.
 ///
 /// **Canary.** Swap `ready` and `done` in the stub: the order row is red.
-/// Let a second `open` replace the first: the `BUSY` row is red.
+/// Let a second `open` replace the first: the `BUSY` row is red. Make the
+/// argument types `Cap` again (MOVE): the mode row is red.
 #[test]
-fn open_moves_three_objects_and_answers_the_geometry() {
+fn open_lends_three_objects_and_answers_the_geometry() {
     let dev = RefCell::new(Dev::default());
     let l = lp(&dev);
     let mut c = SoundClient::new(&l);
-    let (q, d, a) = (Cap::<ReadyQueue>::from_raw(10), Cap::<DoneQueue>::from_raw(11), Cap::<Arena>::from_raw(12));
+    let (q, d, a) = (
+        Lent::<ReadyQueue>::dup(10, QUEUE_RIGHTS),
+        Lent::<DoneQueue>::dup(11, QUEUE_RIGHTS),
+        Lent::<Arena>::dup(12, arena_rights(DIR_PLAYBACK)),
+    );
     let got = c.open(stereo(), q, d, a, 0).unwrap();
     assert_eq!(got, Out::ok(Opened { period_bytes: 480 * 4, latency_frames: 96 }));
     let r = *l.last.borrow();
     assert_eq!((r.n_words, r.n_caps), (8, 3));
     assert_eq!(r.words[0], header(SOUND_ID, 1, SoundIdl::OP_OPEN));
-    assert_eq!(&r.words[1..8], &[DIR_PLAYBACK as u64, FMT_S16 as u64, 48_000, 2, 480, 4, 0]);
+    let pair = |lo: u32, hi: u32| u64::from(lo) | u64::from(hi) << 32;
+    assert_eq!(&r.words[1..8], &[pair(DIR_PLAYBACK, FMT_S16), pair(48_000, 2), pair(480, 4), 1, 1, 1, 0]);
     assert_eq!((r.caps[0].handle, r.caps[1].handle, r.caps[2].handle), (10, 11, 12), "ready, done, arena");
-    assert_eq!(dev.borrow().open.as_ref().map(|o| (o.2, o.3, o.4)), Some((q, d, a)));
+    assert!(r.caps[..3].iter().all(|e| e.mode == CAP_MODE_DUP), "lent, not moved");
+    let rw_map = CapPerms::RW.union(CapPerms::MAP).bits() as u16;
+    let r_map = CapPerms::READ.union(CapPerms::MAP).bits() as u16;
+    assert_eq!((r.caps[0].rights, r.caps[1].rights, r.caps[2].rights), (rw_map, rw_map, r_map), "both ends write a queue; playback reads the arena");
+    assert_eq!(arena_rights(DIR_CAPTURE), rw_map, "capture writes the arena");
+    assert_eq!(dev.borrow().open.as_ref().map(|o| (o.2, o.3, o.4)), Some((10, 11, 12)));
 
-    let again = c.open(stereo(), Cap::from_raw(20), Cap::from_raw(21), Cap::from_raw(22), 0).unwrap();
+    let again = c.open(stereo(), Lent::dup(20, QUEUE_RIGHTS), Lent::dup(21, QUEUE_RIGHTS), Lent::dup(22, r_map), 0).unwrap();
     assert_eq!(again.code, outcome::BUSY);
-    assert_eq!(dev.borrow().open.as_ref().map(|o| o.2), Some(q), "the refused open did not replace the stream");
+    assert_eq!(dev.borrow().open.as_ref().map(|o| o.2), Some(10), "the refused open did not replace the stream");
 
     assert_eq!(c.close(), Ok(Out::ok(())));
     let bad = Params { periods: 1, ..stereo() };
     assert_eq!(c.open(bad, q, d, a, 0).unwrap().code, outcome::BAD_ARGUMENT);
     assert!(dev.borrow().open.is_none(), "nothing attached for a refused geometry");
+    // A request names all three: fewer entries than the op declares is not a
+    // request the dispatcher hands the server.
+    assert_eq!(c.open(stereo(), q, Lent::none(), a, 0), Err(IdlError::Malformed), "a queue not lent");
+    assert_eq!(l.last.borrow().n_caps, 2, "no entry for what is not lent");
+    assert!(dev.borrow().open.is_none(), "nothing attached for a missing object");
 }
 
 /// The transport ops carry no argument; `start` needs a stream; `stop`, `drain`
@@ -179,7 +202,7 @@ fn the_transport_ops_are_bare_and_the_answers_carry_whole() {
     assert_eq!(c.start().unwrap().code, outcome::NOT_READY, "no stream, nothing to start");
     assert_eq!(c.drain().unwrap().code, outcome::NOT_READY);
     assert_eq!(c.stop(), Ok(Out::ok(())));
-    c.open(stereo(), Cap::from_raw(1), Cap::from_raw(2), Cap::from_raw(3), 0).unwrap();
+    c.open(stereo(), Lent::dup(1, QUEUE_RIGHTS), Lent::dup(2, QUEUE_RIGHTS), Lent::dup(3, arena_rights(DIR_PLAYBACK)), 0).unwrap();
     for (call, op) in [(0, SoundIdl::OP_START), (1, SoundIdl::OP_STOP), (2, SoundIdl::OP_DRAIN)] {
         let out = match call {
             0 => c.start(),

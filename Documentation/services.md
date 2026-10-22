@@ -579,9 +579,10 @@ Source: `userspace/services/audiod/src/main.rs`, `userspace/services/audiod/src/
 
 The audio server serves the `Sound` interface (`azos_devif::sound`) on `endpoint.audio`, in
 front of the kernel's `sound.0`. A client opens a stream with the memory objects it made
-(a `ready` queue, a `done` queue and an arena of periods, moved to the server) and the
-periods never cross a call; the server mixes the running streams into the **one** playback
-stream it holds on the device and returns each period on `done`.
+(a `ready` queue, a `done` queue and an arena of periods, lent to the server: a copy of
+each capability, so the client keeps its own and its mappings, which a move would take
+with it) and the periods never cross a call; the server mixes the running streams into
+the **one** playback stream it holds on the device and returns each period on `done`.
 
 * **The device's format.** A stream names the device's rate and channel count and signed
   16-bit samples, or `open` answers `UNSUPPORTED`; nothing is resampled. A client period

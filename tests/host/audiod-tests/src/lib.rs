@@ -634,7 +634,8 @@ mod capture {
         use azos_devif::Sound;
         srv.caller = 7;
         srv.call = 0;
-        let r = srv.open(rec(), azos_idl::Cap::from_raw(1), azos_idl::Cap::from_raw(2), azos_idl::Cap::from_raw(3), 0);
+        use crate::world::lend;
+        let r = srv.open(rec(), lend(1), lend(2), lend(3), 0);
         srv.caller = 0;
         assert_eq!(r.code, outcome::DENIED);
         assert_eq!(w.borrow().lease_open_calls, 0, "nothing to ask the kernel on");
@@ -765,9 +766,10 @@ mod capture {
 mod wire {
     use crate::server::Server;
     use crate::world::{params, server, Fake};
-    use azos_devif::sound::{ReadyQueue, SoundCall, SoundClient, SoundIdl};
+    use azos_devif::sound::{SoundCall, SoundClient, SoundIdl};
     use azos_devif::outcome;
-    use azos_idl::{Cap, MsgDesc, Result as IdlResult, Transport};
+    use crate::world::lend;
+    use azos_idl::{MsgDesc, Result as IdlResult, Transport, CAP_MODE_DUP};
     use std::cell::RefCell;
 
     /// The client stub over the server, as a call arrives: the badge of the
@@ -815,10 +817,11 @@ mod wire {
         let info = client.info().unwrap();
         assert_eq!((info.code, info.value.rate_hz, info.value.channels), (outcome::OK, 48_000, 2));
         let opened = client
-            .open(params(), Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23), 0)
+            .open(params(), lend(21), lend(22), lend(23), 0)
             .unwrap();
         assert_eq!((opened.code, opened.value.period_bytes), (outcome::OK, 1024));
         assert_eq!(lp.last.borrow().n_caps, 3);
+        assert!(lp.last.borrow().caps[..3].iter().all(|e| e.mode == CAP_MODE_DUP), "lent, never moved");
         assert_eq!(client.start().unwrap().code, outcome::OK);
         assert_eq!(client.status().unwrap().value.state, azos_devif::sound::STATE_RUNNING);
         assert_eq!(client.close().unwrap().code, outcome::OK);
@@ -827,18 +830,38 @@ mod wire {
         // task that made the call, which only the kernel can tell the server.
         let rec = azos_devif::sound::Params { dir: azos_devif::sound::DIR_CAPTURE, ..params() };
         w.borrow_mut().withheld.push(crate::world::client_tid(5));
-        let r = client.open(rec, Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23), 0).unwrap();
+        let r = client.open(rec, lend(21), lend(22), lend(23), 0).unwrap();
         assert_eq!(r.code, outcome::REFUSED);
         assert_eq!(w.borrow().gate, [(crate::world::client_tid(5), false, azos_devif::sound::MIC_NO_GRANT)]);
         w.borrow_mut().withheld.clear();
-        let r = client.open(rec, Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23), 0).unwrap();
+        let r = client.open(rec, lend(21), lend(22), lend(23), 0).unwrap();
         assert_eq!(r.code, outcome::OK);
         assert_eq!(client.close().unwrap().code, outcome::OK);
         std::mem::take(&mut w.borrow_mut().released);
         drop(c);
         // The same badge on a closed stream opens again.
-        let again = client.open(params(), Cap::<ReadyQueue>::from_raw(21), Cap::from_raw(22), Cap::from_raw(23), 0).unwrap();
+        let again = client.open(params(), lend(21), lend(22), lend(23), 0).unwrap();
         assert_eq!(again.code, outcome::OK);
+    }
+
+    /// An open with an object the client did not lend is refused, and the
+    /// copies it did lend are let go of at once: the server has no stream to
+    /// keep them for. (The dispatcher refuses a request with fewer entries
+    /// than `open` declares; a crafted one can still mark an entry absent.)
+    ///
+    /// **Canary.** Release only on a full set of three in `Sound::open`:
+    /// `released` is empty.
+    #[test]
+    fn an_object_not_lent_is_refused_and_the_rest_given_back() {
+        use azos_devif::Sound;
+        let (mut srv, w) = server();
+        let _c = crate::world::Client::new(&w, 5, [21, 22, 23], &params());
+        srv.caller = 5;
+        let r = srv.open(params(), lend(21), lend(0), lend(23), 0);
+        srv.caller = 0;
+        assert_eq!(r.code, outcome::BAD_ARGUMENT);
+        assert_eq!(std::mem::take(&mut w.borrow_mut().released), [21, 23]);
+        assert_eq!(srv.live_streams(), 0);
     }
 }
 
