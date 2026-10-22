@@ -372,6 +372,13 @@ VSBENCH_SECCOMP="${VSBENCH_SECCOMP:-0}"
 # suite, and the seccomp column (whose check is "every lane the unfiltered
 # column measured") is refused with it.
 VSBENCH_LANES="${VSBENCH_LANES:-}"
+# ── VSBENCH_GATE_ONLY=1: the gate column alone (2026-10-22) ─────────────────
+# Builds and boots only the gate (bench-minimal) kernel: no product column, no
+# Linux half, no TCP pass. For an A/B of the gate kernel against itself, two
+# runs from two configurations (tools/vsbench_cost.sh), where the other
+# columns would only double the boots. Its lanes are in
+# $VSBENCH_WORK/azos-bench-minimal.log; the comparison with Linux is not made.
+VSBENCH_GATE_ONLY="${VSBENCH_GATE_ONLY:-0}"
 # Wave 15: both sides' disk, the SAME drive line: modern virtio-mmio and this
 # QEMU cache mode (writeback: a guest FLUSH is a host fdatasync; the `disk`
 # lanes compare fsync at the same durability only with the same mode).
@@ -397,6 +404,11 @@ blk_trace_summary() { # blk_trace_summary <label> <log>
     r=$(grep -c '^virtio_blk_handle_read' "$2.blktrace")
     echo "vsbench: blk trace $1: requests=$all reads=$r writes=$w flushes=$((all - r - w))"
 }
+if [ "$VSBENCH_GATE_ONLY" = "1" ]; then
+    [ "$VSBENCH_SECCOMP" = "1" ] && { echo "vsbench: VSBENCH_GATE_ONLY and VSBENCH_SECCOMP=1 do not mix" >&2; exit 1; }
+    printf ',%s,' "$VSBENCH_LANES" | grep -q ',tcp,' && { echo "vsbench: VSBENCH_GATE_ONLY has no TCP pass (the product kernel runs it)" >&2; exit 1; }
+    VSBENCH_TCP=0
+fi
 if [ -n "$VSBENCH_LANES" ]; then
     printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk))*$' \
         || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,tcp,switch,disk" >&2; exit 1; }
@@ -556,12 +568,14 @@ echo "vsbench: Linux column: $LINUX_IMAGE" >&2
     $CARGO build --release --features "$KM_FEATURES" \
     $(python3 tools/kconfig_to_cargo.py --base "$AZ_CONFIG") >/dev/null 2>&1 ) \
     || die "could not build the AzOS kernel (--features $KM_FEATURES)"
-( cd "$REPO_ROOT" && KCONFIG_CONFIG="$AZ_CONFIG" CARGO_TARGET_DIR="$BENCH_TARGET/azos-product" \
-    $CARGO build --release --features "$KP_FEATURES" \
-    $(python3 tools/kconfig_to_cargo.py --base "$AZ_CONFIG") >/dev/null 2>&1 ) \
-    || die "could not build the AzOS kernel (--features $KP_FEATURES)"
+if [ "$VSBENCH_GATE_ONLY" != "1" ]; then
+    ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$AZ_CONFIG" CARGO_TARGET_DIR="$BENCH_TARGET/azos-product" \
+        $CARGO build --release --features "$KP_FEATURES" \
+        $(python3 tools/kconfig_to_cargo.py --base "$AZ_CONFIG") >/dev/null 2>&1 ) \
+        || die "could not build the AzOS kernel (--features $KP_FEATURES)"
+    [ -f "$KP_KERNEL" ] || die "no kernel at $KP_KERNEL"
+fi
 [ -f "$KM_KERNEL" ] || die "no kernel at $KM_KERNEL"
-[ -f "$KP_KERNEL" ] || die "no kernel at $KP_KERNEL"
 
 # `disk-vsbench.img` autoruns VSBENCH.ELF; the Makefile rule owns that.
 ( cd "$REPO_ROOT" && make $AZOS_OUT/build/disk-vsbench.img >/dev/null 2>&1 ) \
@@ -624,12 +638,15 @@ boot_azos() { # boot_azos <kernel> <log> <disk copy>
     stop_qemu "$pid"
 }
 boot_azos "$KM_KERNEL" "$KM_LOG" "$WORK/k-bench-minimal.img"
-boot_azos "$KP_KERNEL" "$KP_LOG" "$WORK/k-product.img"
+[ "$VSBENCH_GATE_ONLY" = "1" ] || boot_azos "$KP_KERNEL" "$KP_LOG" "$WORK/k-product.img"
 blk_trace_summary azos-min "$KM_LOG"
-blk_trace_summary azos-product "$KP_LOG"
+[ "$VSBENCH_GATE_ONLY" = "1" ] || blk_trace_summary azos-product "$KP_LOG"
 
 # ── Linux side ────────────────────────────────────────────────────────────
-if [ ! -f "$LINUX_IMAGE" ]; then
+if [ "$VSBENCH_GATE_ONLY" = "1" ]; then
+    echo "vsbench: VSBENCH_GATE_ONLY=1: the gate column alone, no Linux half" >&2
+    L_LOG=""
+elif [ ! -f "$LINUX_IMAGE" ]; then
     if [ "${CI_SKIP_VSBENCH_LINUX:-0}" = "1" ]; then
         echo "vsbench: SKIPPED the Linux half (CI_SKIP_VSBENCH_LINUX=1); \
 AzOS half only" >&2
@@ -833,17 +850,19 @@ if ! tr -d '\r' <"$KM_LOG" 2>/dev/null | grep -qF "$BENCH_MINIMAL_BANNER"; then
     KM_OK=0
     rc=1
 fi
-if tr -d '\r' <"$KP_LOG" 2>/dev/null | grep -qF "$BENCH_MINIMAL_BANNER"; then
-    echo "vsbench: the azos-product column booted a bench-minimal kernel ($KP_LOG)" >&2
-    rc=1
-fi
+if [ "$VSBENCH_GATE_ONLY" != "1" ]; then
+    if tr -d '\r' <"$KP_LOG" 2>/dev/null | grep -qF "$BENCH_MINIMAL_BANNER"; then
+        echo "vsbench: the azos-product column booted a bench-minimal kernel ($KP_LOG)" >&2
+        rc=1
+    fi
 
-# The product column: printed, not counted.
-completion_lane "$KP_LOG" azos \
-    || echo "vsbench: (not counted) the azos-product side did not reach its last lane ($KP_LOG)" >&2
-if grep -q "FAIL rc=" "$KP_LOG"; then
-    echo "vsbench: (not counted) a azos-product lane failed:" >&2
-    grep "FAIL rc=" "$KP_LOG" >&2
+    # The product column: printed, not counted.
+    completion_lane "$KP_LOG" azos \
+        || echo "vsbench: (not counted) the azos-product side did not reach its last lane ($KP_LOG)" >&2
+    if grep -q "FAIL rc=" "$KP_LOG"; then
+        echo "vsbench: (not counted) a azos-product lane failed:" >&2
+        grep "FAIL rc=" "$KP_LOG" >&2
+    fi
 fi
 
 # Lane names: only the `<lane> = <n> ns/op` lines. The other `[VSBENCH]` lines

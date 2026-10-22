@@ -19605,6 +19605,39 @@ PYEOF
     }
     par -s "bench: vsbench vs Linux" vsbench_row   # wall-clock lanes, two kernels
 
+    # Receipts default (owner 2026-10-22): DECISION_RECORDS_DEV, the decision
+    # ring and every record site, is on in every preset but HWCLASS_EMBEDDED on
+    # the condition that it costs at most 1% (10 per mille). The gate kernel is
+    # built with it off and on from the same qemu.config and both boot the ipc
+    # and shell lanes (ipc-roundtrip, the rings, chan-call, file-ord 64B,
+    # pipe, file-dup) under -icount at one hart, bit-exact
+    # (tools/vsbench_cost.sh, which prints the per-lane table). At one hart a
+    # wake never lands on another CPU, so the migrating-wake record does not
+    # fire here: the row bounds the record sites the lanes pass on one CPU.
+    # The canary builds the on column with `lockdep` too and must be over.
+    receipts_cost_row() {
+        printf "  %-26s" "bench: receipts cost <= 1%..."
+        local out
+        if out="$(QEMU="$QEMU" bash "${REPO_ROOT}/tools/vsbench_cost.sh" DECISION_RECORDS_DEV 10 ipc,shell 2>&1)"; then
+            ok; printf '%s\n' "$out" | sed -n '/^lane /,$p' | sed 's/^/      /'
+        else
+            bad; printf '%s\n' "$out" | sed -n '/^lane /,$p;/^vsbench-cost: .*\(fail\|did not\|no lane\|different\|changes nothing\)/p' | sed 's/^/      /'
+        fi
+    }
+    par -s "bench: receipts cost <= 1%" receipts_cost_row
+    receipts_cost_canary_row() {
+        printf "  %-26s" "bench: receipts cost canary..."
+        local out rc=0
+        out="$(QEMU="$QEMU" VSBENCH_COST_ON_FEATURES=lockdep bash "${REPO_ROOT}/tools/vsbench_cost.sh" DECISION_RECORDS_DEV 10 ipc,shell 2>&1)" || rc=$?
+        if [ "$rc" -eq 1 ] && printf '%s\n' "$out" | qgrep -q '^vsbench-cost: DECISION_RECORDS_DEV is over 10 per mille'; then
+            ok
+        else
+            bad; echo "      CANARY: lockdep in the on column was not over 1% (rc=$rc); the row cannot fail:"
+            printf '%s\n' "$out" | sed -n '/^lane /,$p' | sed 's/^/      /'
+        fi
+    }
+    par -s "bench: receipts cost canary" receipts_cost_canary_row
+
     # Besides the round trip, the script requires both ends to report
     # `opts wscale=1/1 sack=1`: this is the only boot where both SYNs come
     # from this stack, since slirp parses nothing but the MSS.
