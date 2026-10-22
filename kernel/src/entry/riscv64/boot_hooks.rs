@@ -574,10 +574,11 @@ pub fn arch_enter_scheduler(hart_id: usize) -> ! {
     azos_drv_sys::timebase::set_next_tick(hart_id as u32);
     cpu::write_sie(cpu::read_sie() | cpu::SIE_STIE);
 
-    // Re-establish tp = hart_id immediately before entering the scheduler.
-    // Rust functions called during kernel_main (including kprintln) may have used
-    // tp as a caller-saved scratch register, corrupting current_cpu_id().
-    // After this point no Rust functions are called before context_switch.S saves/restores tp.
+    // tp = this hart's logical id, restated before the scheduler takes over.
+    // Rust never allocates tp (the riscv64 ABI reserves it as the thread
+    // pointer) and boot.S already set it, so this only makes the invariant
+    // explicit: from here context_switch.S keeps the hart's tp across every
+    // switch (it saves `context.tp` as bookkeeping and never loads it).
     unsafe { core::arch::asm!("mv tp, {}", in(reg) hart_id, options(nostack, nomem)); }
 
     // Start the scheduler on the boot CPU (never returns).

@@ -411,12 +411,12 @@ trap_return:
     # Returning to U-mode, the frame holds the user's own tp — give it back.
     # Returning to S-mode the frame holds the tp of the hart this trap was
     # TAKEN on, which is not necessarily the hart we are returning on: a task
-    # preempted by a timer IRQ can be migrated, and context_switch.S then
-    # restores the correct tp for the new hart from task.context.tp (the K-A11
-    # invariant).  Reloading the stale frame value here would undo exactly
-    # that and drop the kernel back into the K-A11 corruption by another
-    # route.  The tp the hart is currently running with is the correct one, so
-    # leave it alone: `restore_to_smode` never loads it.
+    # preempted by a timer IRQ can be migrated, and the hart that switched it
+    # back in kept its own id in tp (context_switch.S never loads a task's
+    # saved tp, K-A11).  Reloading the stale frame value here would make this
+    # hart run as the one the trap was taken on.  The tp the hart is
+    # currently running with is the correct one, so leave it alone:
+    # `restore_to_smode` never loads it.
     ld x4, 32(sp)               # SPP=0 -> returning to U-mode: user's own tp
 
 restore_regs:

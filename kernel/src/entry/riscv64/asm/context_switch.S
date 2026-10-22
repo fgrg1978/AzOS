@@ -125,20 +125,20 @@ restore_new_task:
     ld s10, CTX_S10(a1)
     ld s11, CTX_S11(a1)
 ctx_callee_saved_skipped:
-    # K-A11: task.context.tp carries the hart id of the CPU this task is
-    # enqueued on; the scheduler keeps it in step (see try_wake_task /
-    # rebalance_from_offline_cpus) and current_cpu_id() reads the hardware tp.
+    # K-A11 / K1 M2: `tp` is this hart's id, and a context switch never
+    # changes hart, so the incoming task runs with the `tp` already here; it
+    # is not loaded from `new->context.tp`. That word is placement
+    # bookkeeping only (the CPU a task last ran on or is queued for: the
+    # scheduler's wake and rebalance paths read it, the save above writes
+    # it). Loading it could only match the hardware id or be wrong: a stale
+    # word (an enqueue racing the previous hart's save) made this hart run as
+    # another CPU, every later `PER_CPU[current_cpu_id()]` then naming the
+    # wrong ready queue and `current_idx`. context_switch_rvv.S and the
+    # aarch64 and x86_64 switches keep the hardware id the same way.
     #
-    # K-C16 interaction (trap_entry.S): the invariant is unchanged, and it is
-    # now actually satisfiable.  Before, a trap from U-mode left the kernel
-    # running on the tp ring 3 supplied, and `sd tp, CTX_TP(a0)` above then
-    # wrote that user-chosen value straight into the outgoing task's context —
-    # so the poison survived the switch.  The trap entry now re-establishes
-    # the real hart id before any Rust runs, so what gets saved here is always
-    # a genuine hart id.  trap_entry.S's exit path deliberately no longer
-    # reloads tp from the trap frame when returning to S-mode, precisely so it
-    # cannot overwrite the value this line just installed after a migration.
-    # (`ld tp, CTX_TP(a1)` moved below the satp switch: see there.)
+    # K-C16 (trap_entry.S): a trap from U-mode re-establishes the kernel `tp`
+    # from the per-hart trap vector before any Rust runs, so the `tp` saved
+    # above is always a genuine hart id, never one ring 3 supplied.
 
     # Load PC
     # (t0 = CTX_PC: loaded above)
@@ -169,10 +169,9 @@ ctx_do_pt_switch:
     # TLB shootdown bookkeeping (crates/core/arch-riscv64/src/tlb.rs): publish the
     # root this hart is about to translate through, BEFORE the csrw, fenced,
     # so a remote `tlb::shootdown` either sees it or this hart's walk after
-    # the sfence below sees the shooter's PTE store. Indexed by the OUTGOING
-    # tp, which is still this hart's real id here — that is why the load of
-    # the incoming task's tp was moved below this block. Only this path pays
-    # (a real address-space change, which already pays a full flush).
+    # the sfence below sees the shooter's PTE store. Indexed by `tp`, this
+    # hart's id (the switch never changes it). Only this path pays (a real
+    # address-space change, which already pays a full flush).
     li   t3, TLB_MAX_HARTS
     bgeu tp, t3, 1f
     la   t3, AZOS_HART_SATP
@@ -186,7 +185,6 @@ ctx_do_pt_switch:
     sfence.vma zero, zero
 
 ctx_skip_pt_switch:
-    ld tp,  CTX_TP(a1)
     jr t0              # Jump to new task's PC
 
 .size context_switch, . - context_switch
