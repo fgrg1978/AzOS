@@ -16,7 +16,7 @@ use crate::*;
 pub(crate) fn imu_task(_: usize) {
     kprintln!("[IMU-TASK] Started (100 Hz, RT priority, {})",
               if azos_limits::IMU_SAMPLE_QUEUED { "queued reads" } else { "polled reads" });
-    const IMU_INTERVAL: u64 = azos_drv_sys::timebase::TIMER_FREQ / 100;
+    let imu_interval: u64 = azos_drv_sys::timebase::freq() / 100;
     let mut pending: Option<u32> = None;
     loop {
         if azos_limits::IMU_SAMPLE_QUEUED {
@@ -26,7 +26,7 @@ pub(crate) fn imu_task(_: usize) {
             // from its acquisition, not from this publication.
             imu_publish(&d, acq);
         }
-        let dl = azos_drv_sys::timebase::now() + IMU_INTERVAL;
+        let dl = azos_drv_sys::timebase::now() + imu_interval;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
     }
 }
@@ -65,7 +65,7 @@ fn imu_queued_tick(pending: &mut Option<u32>) {
 /// otherwise until a submit wakes it. Not in the RT band: it sleeps.
 #[cfg(any(feature = "vf2", feature = "k1"))]
 pub(crate) fn i2c_service_task(_: usize) {
-    use azos_drv_sys::timebase::{now, TIMER_FREQ};
+    use azos_drv_sys::timebase::{freq, now};
     I2C_SVC_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     kprintln!("[I2C] service task started (board validation pending)");
     loop {
@@ -75,9 +75,9 @@ pub(crate) fn i2c_service_task(_: usize) {
             busy |= azos_drv_bus::i2c::i2c_service(bus, t);
         }
         let wait = if busy {
-            TIMER_FREQ * azos_limits::I2C_SERVICE_POLL_US as u64 / 1_000_000
+            freq() * azos_limits::I2C_SERVICE_POLL_US as u64 / 1_000_000
         } else {
-            TIMER_FREQ // a lost wake costs at most this
+            freq() // a lost wake costs at most this
         };
         azos_sched::task_block(azos_sched::WaitReason::Timer(now() + wait.max(1)));
     }
@@ -105,13 +105,13 @@ fn i2c_service_kick() {
 /// Odometry + encoder task at 50 Hz.
 pub(crate) fn odom_task(_: usize) {
     kprintln!("[ODOM-TASK] Started (50 Hz)");
-    const ODOM_INTERVAL: u64 = azos_drv_sys::timebase::TIMER_FREQ / 50;
+    let odom_interval: u64 = azos_drv_sys::timebase::freq() / 50;
     loop {
         let ((el, er), acq) = azos_robot::encoder_read_stamped();
         azos_robot::odom_update_at(el, er, acq);
         let (d, h) = azos_robot::odom_get();
         azos_behavior::sensor_bus::SENSOR_BUS.update_odom(d, h, el, er);
-        let dl = azos_drv_sys::timebase::now() + ODOM_INTERVAL;
+        let dl = azos_drv_sys::timebase::now() + odom_interval;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
     }
 }
@@ -119,7 +119,7 @@ pub(crate) fn odom_task(_: usize) {
 /// Slow sensor task: rangefinder + battery + GPIO flags at 10 Hz.
 pub(crate) fn sensor_slow_task(_: usize) {
     kprintln!("[SENSOR-SLOW] Started (10 Hz)");
-    const SLOW_INTERVAL: u64 = azos_drv_sys::timebase::TIMER_FREQ / 10;
+    let slow_interval: u64 = azos_drv_sys::timebase::freq() / 10;
     use azos_behavior::sensor_bus::SENSOR_BUS;
     loop {
         let f = azos_drv_sensor::rangefinder::us_read_mm(0).unwrap_or(0) as u16;
@@ -157,7 +157,7 @@ pub(crate) fn sensor_slow_task(_: usize) {
         if azos_behavior::offline::offline_is_active() && flags != 0 {
             let _ = crate::buzzer::buzzer_beep();
         }
-        let dl = azos_drv_sys::timebase::now() + SLOW_INTERVAL;
+        let dl = azos_drv_sys::timebase::now() + slow_interval;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
     }
 }
@@ -190,8 +190,8 @@ pub(crate) fn sensor_ahrs_task(_: usize) {
     let mut gps_tx = CH_GPS.publisher().expect("CH_GPS: second publisher");
     let mut prox_tx = CH_PROXIMITY.publisher().expect("CH_PROXIMITY: second publisher");
 
-    /// Fusion period: 100 Hz, the documented design rate.
-    const AHRS_INTERVAL: u64 = azos_drv_sys::timebase::TIMER_FREQ / 100;
+    // Fusion period: 100 Hz, the documented design rate.
+    let ahrs_interval: u64 = azos_drv_sys::timebase::freq() / 100;
 
     let mut ahrs = AhrsState::new();
 
@@ -210,12 +210,12 @@ pub(crate) fn sensor_ahrs_task(_: usize) {
 
         // Compute dt in microseconds.
         let dt_ticks = now.wrapping_sub(last_time);
-        let dt_us = (dt_ticks * 1_000_000 / azos_drv_sys::timebase::TIMER_FREQ) as u32;
+        let dt_us = (dt_ticks * 1_000_000 / azos_drv_sys::timebase::freq()) as u32;
         last_time = now;
 
         // Skip if dt is unreasonable (first iteration or timer wrap).
         if dt_us == 0 || dt_us > 1_000_000 {
-            let dl = azos_drv_sys::timebase::now() + AHRS_INTERVAL;
+            let dl = azos_drv_sys::timebase::now() + ahrs_interval;
             azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
             continue;
         }
@@ -227,13 +227,12 @@ pub(crate) fn sensor_ahrs_task(_: usize) {
         if let Some((imu, imu_acq)) = azos_imu::imu_read_scaled_stamped() {
             imu_tx.publish(imu, imu_acq);
 
-            // Read barometer.
-            let baro_pa = if let Some((baro, baro_acq)) = azos_baro::baro_read_stamped() {
+            // Read barometer. A failed read feeds the fusion no pressure: the
+            // altitude holds and `CH_BARO` ages (no invented 101 325 Pa).
+            let baro_pa = azos_baro::baro_read_stamped().map(|(baro, baro_acq)| {
                 baro_tx.publish(baro, baro_acq);
                 baro.pressure_pa
-            } else {
-                101325 // fallback to standard pressure
-            };
+            });
 
             // Run AHRS fusion.
             let att = ahrs.update(&imu, baro_pa, dt_us);
@@ -304,15 +303,15 @@ pub(crate) fn telemetry_task(_: usize) {
     let mut tick_count: u32 = 0;
     let mut udp_fd: i32 = -1;
 
-    /// Telemetry period: 10 Hz, the documented design rate.
-    const TELEM_INTERVAL: u64 = azos_drv_sys::timebase::TIMER_FREQ / 10;
+    // Telemetry period: 10 Hz, the documented design rate.
+    let telem_interval: u64 = azos_drv_sys::timebase::freq() / 10;
 
     loop {
         // K-C27: sleep to the 10 Hz design rate. The old "yield 10 times
         // (~100 ms)" assumed each yield waited a scheduler tick; a yield
         // with nothing outranking us returns immediately, so this loop was
         // a best-effort-band spinner.
-        let dl = azos_drv_sys::timebase::now() + TELEM_INTERVAL;
+        let dl = azos_drv_sys::timebase::now() + telem_interval;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
 
         if !azos_telemetry::telem_is_active() {

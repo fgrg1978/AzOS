@@ -8,7 +8,7 @@
 //!   the verdict is in hand (whatever produces it).
 //! * **work** — the whole step, from the top of the loop body to the sleep.
 //!
-//! A step whose work exceeds the loop's period (`TIMER_FREQ / 10`) is an
+//! A step whose work exceeds the loop's period (`timebase::freq() / 10`) is an
 //! overrun: the loop missed its deadline. Printed with the loop's periodic
 //! WCET report (`qemu` builds), as one `[BSTEP]` line.
 //!
@@ -80,25 +80,7 @@ impl StepStats {
             self.work.n,
             self.ml.min_or_zero(), self.ml.avg(), self.ml.max,
             self.work.min_or_zero(), self.work.avg(), self.work.max,
-            self.overruns, freq(),
+            self.overruns, azos_drv_sys::timebase::freq(),
         );
-    }
-}
-
-/// Ticks per second of the counter the spans are read from.
-///
-/// aarch64 reads `CNTFRQ_EL0` itself: `TIMER_FREQ` there is a board constant
-/// and the generic timer QEMU models under `-cpu max` runs at whatever the
-/// register says.
-pub fn freq() -> u64 {
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    {
-        let f: u64;
-        unsafe { core::arch::asm!("mrs {0}, cntfrq_el0", out(reg) f, options(nomem, nostack)); }
-        f
-    }
-    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
-    {
-        azos_drv_sys::timebase::TIMER_FREQ
     }
 }

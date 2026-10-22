@@ -287,7 +287,7 @@ fn panic(info: &PanicInfo) -> ! {
 
         // Busy-wait delay (no scheduler available during panic)
         let start = azos_drv_sys::timebase::now();
-        let ticks_per_ms = azos_drv_sys::timebase::TIMER_FREQ / 1000;
+        let ticks_per_ms = azos_drv_sys::timebase::freq() / 1000;
         let wait_ticks = delay_ms as u64 * ticks_per_ms;
         while azos_drv_sys::timebase::now().wrapping_sub(start) < wait_ticks {
             core::hint::spin_loop();
@@ -435,7 +435,7 @@ fn quiesce(hart: usize) -> Option<Stopped> {
             azos_arch::ARCH.send_ipi(cpu);
         }
     }
-    let per_us = (azos_drv_sys::timebase::TIMER_FREQ / 1_000_000).max(1);
+    let per_us = (azos_drv_sys::timebase::freq() / 1_000_000).max(1);
     let budget = azos_limits::PANIC_STOP_WAIT_US as u64 * per_us;
     let t0 = azos_drv_sys::timebase::now();
     loop {

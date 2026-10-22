@@ -182,7 +182,7 @@ pub fn panic_record(entry: &[u8]) -> bool {
     }
     // A contained panic on another hart may be inside the region right now.
     let start = azos_drv_sys::timebase::now();
-    let limit = BUSY_WAIT_MS * (azos_drv_sys::timebase::TIMER_FREQ / 1000);
+    let limit = BUSY_WAIT_MS * (azos_drv_sys::timebase::freq() / 1000);
     while CONTAINED_BUSY.load(Ordering::SeqCst)
         && azos_drv_sys::timebase::now().wrapping_sub(start) < limit
     {

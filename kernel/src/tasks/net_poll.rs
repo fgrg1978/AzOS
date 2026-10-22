@@ -22,13 +22,9 @@ use crate::*;
 /// Shared between both ISAs (aarch64 parity, this task): the body has no
 /// RISC-V content — `azos_net::net_poll`/`tcp_tick` and
 /// `azos_sched::task_block` are already ISA-neutral (`crates/net/net` has
-/// no `target_arch` cfg anywhere in it). What kept this riscv64-only was
-/// `NET_POLL_INTERVAL` reading `timebase::TIMER_FREQ`, which re-exports
-/// `clint::TIMER_FREQ` — a RISC-V-only module by name, even though its own
-/// value is just `= platform::hw::TIMER_FREQ` (see `clint.rs`). Reading
-/// `platform::hw::TIMER_FREQ` directly below is the identical constant on
-/// riscv64 (byte-identical codegen — same value, one alias fewer) and the
-/// aarch64 arm's own `CNTFRQ_EL0`-matching value (1 GHz) on that ISA.
+/// no `target_arch` cfg anywhere in it). The periods below are converted at
+/// the counter's own rate (`timebase::freq()`: `CNTFRQ_EL0` on aarch64, not
+/// the board's Kconfig word for it).
 ///
 /// Three modes, chosen once at task start from `net_device::irq_driven()`
 /// and `net_device::is_ready()` (the NIC backend is selected once, by
@@ -39,7 +35,7 @@ use crate::*;
 /// elsewhere that falls earlier wakes it through [`net_timer_kick`]
 /// (`tcp::poll_sleep_until`). On top of that:
 /// - Poll mode (a NIC with no interrupt reaching this task): never longer
-///   than `NET_POLL_INTERVAL`.
+///   than `net_poll_interval`.
 /// - IRQ mode (virtio-pci with MSI/MSI-X, the virtio-mmio line, Kconfig
 ///   `NET_RX_IRQ`, or the Intel e1000e with MSI): an RX interrupt wakes this task through [`net_msi_wake`];
 ///   with no TCP deadline it sleeps up to the self-heal ceiling.
@@ -51,42 +47,41 @@ use crate::*;
 pub(crate) fn net_poll_task(_: usize) {
     kprintln!("[NET-POLL] Phase U1: dedicated network polling task started");
 
-    /// Requested poll period: 1 ms — **a floor, not a rate.**
-    ///
-    /// This used to say "Nominal poll period: 1 kHz", and the boot line above
-    /// says `100Hz`. Both cannot be true, and neither was: `wake_expired_timers`
-    /// runs ONLY from the scheduler timer ISR, which fires at `sched_hz`
-    /// (default 100, i.e. every 10 ms). A 1 ms deadline can therefore never be
-    /// honoured as such — it means "wake me at the first tick after 1 ms".
-    ///
-    /// **Measured 2026-09-10**, `-smp 4` with a NIC, 12 000 iterations:
-    /// the work (`net_poll` + `tcp_tick`) costs **8 µs on average, 526 µs
-    /// worst, never above 5 ms**; the wait averages **3.2 ms** (~310 Hz — better
-    /// than the tick alone, because IRQ-driven wakes also fire) with a worst
-    /// case of **13 ms** (one tick period plus dispatch).
-    ///
-    /// Poll mode only (see above). The tickless timer now arms the nearest
-    /// sleep deadline, so the 1 ms floor is honoured more closely than the
-    /// paragraph above says: measured 2026-09-28, riscv64 default features,
-    /// -smp 1, no NIC, 30 s: 20 040 iterations (~670/s). That boot had no
-    /// NIC, which no longer runs this timer at all (see the modes above).
-    ///
-    /// So the poller is NOT starved and this is NOT a missed deadline: the
-    /// number to compare against is `sched_hz`, not this constant. Raising the
-    /// real rate means raising `sched_hz` (config, 10..10_000) or waking this
-    /// task from the NIC IRQ instead of a timer — both design changes, neither
-    /// made here.
-    /// Kconfig `NET_POLL_PERIOD_US` (default 1000: the 1 ms above).
-    const NET_POLL_INTERVAL: u64 =
-        azos_drv_base::platform::hw::TIMER_FREQ * azos_limits::NET_POLL_PERIOD_US / 1_000_000;
-    /// IRQ mode or no NIC, with no TCP deadline pending: nothing but an RX
-    /// MSI or a [`net_timer_kick`] can give this task work, so it sleeps
-    /// this long.
-    /// A self-heal bound, not a poll: 60 s, the same ceiling an idle
-    /// non-boot hart gets (`timebase::IDLE_HART_CEILING_US`).
-    /// Kconfig `NET_IRQ_IDLE_CEILING_MS` (default 60 000).
-    const NET_IDLE_CEILING_IRQ_MODE: u64 =
-        azos_drv_base::platform::hw::TIMER_FREQ * azos_limits::NET_IRQ_IDLE_CEILING_MS / 1000;
+    // Requested poll period: 1 ms — **a floor, not a rate.**
+    //
+    // This used to say "Nominal poll period: 1 kHz", and the boot line above
+    // says `100Hz`. Both cannot be true, and neither was: `wake_expired_timers`
+    // runs ONLY from the scheduler timer ISR, which fires at `sched_hz`
+    // (default 100, i.e. every 10 ms). A 1 ms deadline can therefore never be
+    // honoured as such — it means "wake me at the first tick after 1 ms".
+    //
+    // **Measured 2026-09-10**, `-smp 4` with a NIC, 12 000 iterations:
+    // the work (`net_poll` + `tcp_tick`) costs **8 µs on average, 526 µs
+    // worst, never above 5 ms**; the wait averages **3.2 ms** (~310 Hz — better
+    // than the tick alone, because IRQ-driven wakes also fire) with a worst
+    // case of **13 ms** (one tick period plus dispatch).
+    //
+    // Poll mode only (see above). The tickless timer now arms the nearest
+    // sleep deadline, so the 1 ms floor is honoured more closely than the
+    // paragraph above says: measured 2026-09-28, riscv64 default features,
+    // -smp 1, no NIC, 30 s: 20 040 iterations (~670/s). That boot had no
+    // NIC, which no longer runs this timer at all (see the modes above).
+    //
+    // So the poller is NOT starved and this is NOT a missed deadline: the
+    // number to compare against is `sched_hz`, not this constant. Raising the
+    // real rate means raising `sched_hz` (config, 10..10_000) or waking this
+    // task from the NIC IRQ instead of a timer — both design changes, neither
+    // made here.
+    // Kconfig `NET_POLL_PERIOD_US` (default 1000: the 1 ms above).
+    let hz = azos_drv_sys::timebase::freq();
+    let net_poll_interval: u64 = hz * azos_limits::NET_POLL_PERIOD_US / 1_000_000;
+    // IRQ mode or no NIC, with no TCP deadline pending: nothing but an RX
+    // MSI or a [`net_timer_kick`] can give this task work, so it sleeps
+    // this long.
+    // A self-heal bound, not a poll: 60 s, the same ceiling an idle
+    // non-boot hart gets (`timebase::IDLE_HART_CEILING_US`).
+    // Kconfig `NET_IRQ_IDLE_CEILING_MS` (default 60 000).
+    let net_idle_ceiling_irq_mode: u64 = hz * azos_limits::NET_IRQ_IDLE_CEILING_MS / 1000;
 
     NET_POLL_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     // The wait hooks and the TCP timer kick are installed at boot
@@ -136,7 +131,7 @@ pub(crate) fn net_poll_task(_: usize) {
         // longer depends on this task's cadence: a 40 ms delayed ACK leaves
         // at 40 ms, not at the next 100 ms tick.
         let now = azos_drv_sys::timebase::now();
-        let ceiling = now + if !tick_on_demand { NET_POLL_INTERVAL } else { NET_IDLE_CEILING_IRQ_MODE };
+        let ceiling = now + if !tick_on_demand { net_poll_interval } else { net_idle_ceiling_irq_mode };
         let dl = match azos_net::tcp::next_deadline() {
             Some(d) => d.max(now + 1).min(ceiling),
             None => ceiling,

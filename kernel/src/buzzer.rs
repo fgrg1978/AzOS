@@ -55,7 +55,7 @@ use azos_devif::buzzer::ENDPOINT_NAME;
 use azos_devif::{BuzzerCall, BuzzerClient, BuzzerDirect, BuzzerPlaced, IdlResult, Out};
 use azos_drv_actuator::buzzer::KernelBuzzer;
 use azos_drv_sys::kprintln;
-use azos_drv_sys::timebase::{now, TIMER_FREQ};
+use azos_drv_sys::timebase::{freq, now};
 use azos_sync::SpinLock;
 use azos_syscall::kcall::{self, KernelEndpoint};
 use azos_topology::placement::{Decision, Elastic, Host, Policy, Receipt};
@@ -91,11 +91,11 @@ const QUIESCE_MS: u64 = 2_000;
 const START_WAIT_MS: u64 = 3_000;
 
 fn ticks_per_ms() -> u64 {
-    (TIMER_FREQ / 1000).max(1)
+    (freq() / 1000).max(1)
 }
 
 fn now_ns() -> u64 {
-    azos_abi::time::ticks_to_ns(now(), TIMER_FREQ)
+    azos_abi::time::ticks_to_ns(now(), freq())
 }
 
 fn sleep_ms(ms: u64) {
@@ -202,7 +202,7 @@ fn call(f: impl FnOnce(&mut Stub) -> IdlResult<Out<()>>) -> bool {
     };
     let t0 = now();
     let r = f(&mut stub);
-    let cost_ns = azos_abi::time::ticks_to_ns(now().saturating_sub(t0), TIMER_FREQ);
+    let cost_ns = azos_abi::time::ticks_to_ns(now().saturating_sub(t0), freq());
     leave();
     if r.is_ok() {
         observe(host, cost_ns);

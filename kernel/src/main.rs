@@ -2958,10 +2958,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // created before any secondary can record; the timestamps' rate is the
     // clock vDSO's (the live CNTFRQ_EL0 on aarch64). Nothing with KTRACE off.
     {
-        #[cfg(target_arch = "aarch64")]
-        let ts_hz = azos_arch::cpu::timer_freq_hw();
-        #[cfg(not(target_arch = "aarch64"))]
-        let ts_hz = azos_drv_sys::timebase::TIMER_FREQ;
+        let ts_hz = azos_drv_sys::timebase::freq();
         // SAFETY: linker-script symbols; only their addresses are taken.
         let text = unsafe { (&_text_start as *const u8 as usize, &_text_end as *const u8 as usize) };
         azos_ipc::trace::init(num_cpus, ts_hz, text);

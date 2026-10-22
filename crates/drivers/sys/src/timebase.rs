@@ -60,7 +60,28 @@ pub fn now() -> u64 {
 ///
 /// Kconfig `TIMER_FREQ`, the one place the tree reads it (the board
 /// descriptions in `azos_drv_base::platform::hw` carry the same value).
+///
+/// On aarch64 this is the board's word, not the counter's: [`now`] reads
+/// `CNTVCT_EL0`, which runs at whatever `CNTFRQ_EL0` says (QEMU and every
+/// Raspberry Pi disagree with each other). Convert through [`freq`].
 pub const TIMER_FREQ: u64 = azos_limits::TIMER_FREQ as u64;
+
+/// Ticks per second of the counter [`now`] reads, as the hardware reports it:
+/// `CNTFRQ_EL0` on aarch64 (one `mrs`, read live: firmware sets it before the
+/// kernel runs and nothing changes it after), [`TIMER_FREQ`] on riscv64 (the
+/// rate `rdtime` is configured for) and on x86_64 (`now_ticks` scales the TSC
+/// to it). The rate the vDSO page publishes (`ArchEntry::timebase_hz`).
+#[inline(always)]
+pub fn freq() -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    {
+        azos_arch::cpu::timer_freq_hw()
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+    {
+        TIMER_FREQ
+    }
+}
 
 // ── Scheduler tick rate ────────────────────────────────────────────────────
 //

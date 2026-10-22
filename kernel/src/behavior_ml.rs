@@ -334,11 +334,11 @@ fn call(front_mm: u16, right_mm: u16) -> Attempt {
     }
     let seq = seq.wrapping_add(1);
     let now = azos_drv_sys::timebase::now();
-    let timeout = azos_drv_sys::timebase::TIMER_FREQ.saturating_mul(ML_REPLY_TIMEOUT_US) / 1_000_000;
+    let timeout = azos_drv_sys::timebase::freq().saturating_mul(ML_REPLY_TIMEOUT_US) / 1_000_000;
     let deadline = now.saturating_add(timeout);
     REQ_READINGS.store(front_mm as u32 | (right_mm as u32) << 16, Ordering::Relaxed);
     REQ_DEADLINE_NS.store(
-        azos_abi::time::ticks_to_ns(now, azos_drv_sys::timebase::TIMER_FREQ).saturating_add(ML_REPLY_TIMEOUT_US * 1000),
+        azos_abi::time::ticks_to_ns(now, azos_drv_sys::timebase::freq()).saturating_add(ML_REPLY_TIMEOUT_US * 1000),
         Ordering::Relaxed,
     );
     WAITER_DEADLINE.store(deadline, Ordering::Relaxed);

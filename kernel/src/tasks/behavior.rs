@@ -142,7 +142,7 @@ pub(crate) fn behavior_task(_: usize) {
 
     // Per-step timing (`[BSTEP]`, printed with the WCET auto-report).
     let mut step_stats = behavior_step::StepStats::new();
-    let step_period = azos_drv_sys::timebase::TIMER_FREQ / 10;
+    let step_period = azos_drv_sys::timebase::freq() / 10;
 
     // The MLP runs in the ring-3 ML service, which this task starts and then
     // asks once per cycle (`behavior_ml`, `azos_behavior::ml_link`).
@@ -216,7 +216,7 @@ pub(crate) fn behavior_task(_: usize) {
                         brain_rx_stream().reset();
                         link_rekey_deadline = now
                             + BRAIN_LINK_REKEY_SECS
-                                * azos_drv_sys::timebase::TIMER_FREQ;
+                                * azos_drv_sys::timebase::freq();
                     }
                     Some(DialOutcome::Failed) => {}
                     None => {
@@ -234,7 +234,7 @@ pub(crate) fn behavior_task(_: usize) {
                     if let Some(fd) = tcp_fd {
                         brain_tx_begin(fd);
                     }
-                            let uptime_s = (now / azos_drv_sys::timebase::TIMER_FREQ) as u32;
+                            let uptime_s = (now / azos_drv_sys::timebase::freq()) as u32;
                             let mut st_payload = [0u8; STATUS_PAYLOAD_SIZE];
                             encode_status_packet(
                                 &mut st_payload,
@@ -270,12 +270,12 @@ pub(crate) fn behavior_task(_: usize) {
                         l.request_rekey();
                         link_rekey_deadline = now
                             + BRAIN_LINK_REKEY_SECS
-                                * azos_drv_sys::timebase::TIMER_FREQ;
+                                * azos_drv_sys::timebase::freq();
                     }
                 }
 
                 // Build SensorPacket payload
-                let ts_ms = now / (azos_drv_sys::timebase::TIMER_FREQ / 1000);
+                let ts_ms = now / (azos_drv_sys::timebase::freq() / 1000);
                 let range_front = state.cam_dist_front;
                 let range_right = state.cam_dist_right;
                 let mut sp_payload = [0u8; SENSOR_PAYLOAD_SIZE];
@@ -783,7 +783,7 @@ pub(crate) fn behavior_task(_: usize) {
             && bridge_policy_permits()
         {
             // Build and send SensorPacket via UART1
-            let ts_ms = now / (azos_drv_sys::timebase::TIMER_FREQ / 1000);
+            let ts_ms = now / (azos_drv_sys::timebase::freq() / 1000);
             let range_front = state.cam_dist_front;
             let range_right = state.cam_dist_right;
             let mut sp_payload = [0u8; SENSOR_PAYLOAD_SIZE];
@@ -1166,7 +1166,7 @@ pub(crate) fn behavior_task(_: usize) {
             azos_robot::motor_cmd_publish(sl, sr);
 
             // Trajectory recording
-            let ts_ms = now / 10_000;
+            let ts_ms = now / (azos_drv_sys::timebase::freq() / 1000);
             let class_byte = if mlp_result.valid { mlp_result.class } else { 0xFF };
             // The model that decided this command: the latest call's, and only
             // when this cycle asked at all (a cycle with no verdict carries
@@ -1189,7 +1189,7 @@ pub(crate) fn behavior_task(_: usize) {
             let now_t = azos_drv_sys::timebase::now();
             if now_t >= wcet_autoreport_deadline {
                 wcet_autoreport_deadline = now_t
-                    + WCET_AUTOREPORT_INTERVAL_SEC * azos_drv_sys::timebase::TIMER_FREQ;
+                    + WCET_AUTOREPORT_INTERVAL_SEC * azos_drv_sys::timebase::freq();
                 azos_drv_sys::wcet::wcet_report();
                 azos_drv_sys::wcet::jitter_report();
                 step_stats.report();
@@ -1210,7 +1210,7 @@ pub(crate) fn behavior_task(_: usize) {
         let step_end = azos_drv_sys::timebase::now();
         step_stats.step(step_end.wrapping_sub(step_t0), step_period);
         let sleep_deadline = step_end
-            + azos_drv_sys::timebase::TIMER_FREQ / 10;
+            + azos_drv_sys::timebase::freq() / 10;
         azos_sched::task_block(azos_sched::WaitReason::Timer(sleep_deadline));
     }
 }

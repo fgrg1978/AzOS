@@ -74,7 +74,7 @@ use azos_actuation::logger::{
     SUP_ACTION_GAVE_UP, SUP_ACTION_NO_RESTART, SUP_ACTION_RESPAWN_FAILED, SUP_ACTION_RESTART,
 };
 use azos_drv_sys::kprintln;
-use azos_drv_sys::timebase::{now, TIMER_FREQ};
+use azos_drv_sys::timebase::{freq, now};
 use azos_sched::supervisor::{
     sup_entry, sup_find_image, sup_held, sup_mark_recorded, sup_next_due, sup_next_swap,
     sup_next_unrecorded, sup_note_started, sup_on_exit, sup_respawn_failed,
@@ -114,7 +114,7 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Timebase ticks per millisecond, never 0.
 fn ticks_per_ms() -> u64 {
-    (TIMER_FREQ / 1000).max(1)
+    (freq() / 1000).max(1)
 }
 
 /// Restarts allowed within [`RESTART_INTERVAL_S`] (Kconfig
@@ -128,7 +128,7 @@ pub(crate) const RESTART_INTERVAL_S: u64 = azos_limits::SUP_RESTART_INTERVAL_S a
 fn policy() -> SupPolicy {
     SupPolicy {
         burst: RESTART_BURST,
-        interval: RESTART_INTERVAL_S.saturating_mul(TIMER_FREQ),
+        interval: RESTART_INTERVAL_S.saturating_mul(freq()),
         cooldown: DRIVER_RESTART_COOLDOWN_MS.saturating_mul(ticks_per_ms()),
     }
 }
@@ -1084,7 +1084,7 @@ mod smoke {
             kprintln!("[SUP] window kill 1: tid={} died (exit 137) -> tid={} serving, restart 1/{} \
                        of the window", v1, e1.tid, RESTART_BURST);
             // 1b. Let the interval pass after that restart was granted.
-            let wait_until = e1.died_at + (RESTART_INTERVAL_S + 2) * TIMER_FREQ;
+            let wait_until = e1.died_at + (RESTART_INTERVAL_S + 2) * freq();
             while now() < wait_until {
                 sleep_ms(100);
             }

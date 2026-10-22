@@ -161,7 +161,7 @@ pub(crate) fn start(cpu: usize) {
 /// The nanoseconds the port wait reads its clock in.
 #[cfg(not(target_arch = "x86_64"))]
 fn now_ns() -> u64 {
-    azos_abi::time::ticks_to_ns(azos_drv_sys::timebase::now(), azos_drv_sys::timebase::TIMER_FREQ)
+    azos_abi::time::ticks_to_ns(azos_drv_sys::timebase::now(), azos_drv_sys::timebase::freq())
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -213,7 +213,7 @@ fn thread_main(cpu: usize) {
                 None => azos_sched::WaitReason::Port(port),
                 Some(ns) => azos_sched::WaitReason::Timer(azos_abi::time::ns_to_ticks_ceil(
                     ns,
-                    azos_drv_sys::timebase::TIMER_FREQ,
+                    azos_drv_sys::timebase::freq(),
                 )),
             };
             azos_sched::task_block_killable(reason) == azos_sched::BlockOutcome::Refused
