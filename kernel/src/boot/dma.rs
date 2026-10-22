@@ -488,19 +488,35 @@ mod hw {
 
         // The NIC: a domain of its own. Its driver maps its buffers and calls
         // `enable`, which attaches the domain's table.
+        let mut translated = None;
         if let Some(nic) = crate::boot::hwbus::function_for("virtio-net-pci", funcs) {
             let rid = nic.bdf.requester_id();
             match IoDomain::<ENTRIES>::new(rid, f.flavour, f.fmt, f.unit, &MEM, f.coherent) {
                 Ok(d) => {
                     NIC.set(d);
                     match azos_dma::registry::install_for(rid, &NIC) {
-                        Ok(()) => kprintln!("[IOMMU] virtio-net {}: translating domain installed", nic.bdf),
+                        Ok(()) => {
+                            translated = Some(rid);
+                            kprintln!("[IOMMU] virtio-net {}: translating domain installed", nic.bdf)
+                        }
                         Err(e) => azos_drv_sys::kerr!("[IOMMU] virtio-net {}: domain not installed: {:?}", nic.bdf, e),
                     }
                 }
                 Err(e) => azos_drv_sys::kerr!("[IOMMU] virtio-net {}: no domain: {:?}", nic.bdf, e),
             }
         }
+        // Every other function stays in pass-through (audit K2-M8): the unit
+        // confines none of their DMA, a storage, USB or Ethernet controller's
+        // included. Said per function, so the line above is not read as
+        // protection. A domain per kernel-driven function, and unknown
+        // functions blocked rather than passed through, are still to come.
+        for info in funcs.iter().flatten() {
+            if Some(info.bdf.requester_id()) != translated {
+                azos_drv_sys::kwarn!("[IOMMU] {}: DMA NOT translated (pass-through): the IOMMU does not \
+                                      confine this function", info.bdf);
+            }
+        }
+
         *FAULTS.lock() = Some(f.unit);
         UP.store(true, Ordering::Release);
     }
