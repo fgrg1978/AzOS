@@ -23,8 +23,9 @@ Checks (exit 1 on any ERROR; REPORT lines never fail):
             is (the others are the choice's implicit else). The symbols of
             the generated config/Kconfig.userspace are exempt (read through
             images.mk by pattern).
-  tautology no symbol has two or more defaults that all give the same value
-            with one of them unconditional: the conditions decide nothing.
+  tautology no symbol or choice has two or more defaults that all give the
+            same value with one of them unconditional: the conditions decide
+            nothing.
   once      no symbol is defined in two places (kconfiglib merges them
             silently).
   report    (never fails) features a board feature enables that are not the board itself
@@ -156,12 +157,13 @@ def kconfig_checks(root, tags):
 
     # tautology (the defaults as written: `orig_defaults` leave out the
     # propagated `depends on`)
-    for sym in kconf.unique_defined_syms:
-        defs = [d for n in sym.nodes for d in n.orig_defaults]
+    for item in list(kconf.unique_defined_syms) + list(kconf.unique_choices):
+        defs = [d for n in item.nodes for d in n.orig_defaults]
         if len(defs) >= 2 and len({expr_str(v) for v, _ in defs}) == 1 \
                 and any(c is kconf.y for _, c in defs):
-            n = sym.nodes[0]
-            errors.append(f"tautology: {n.filename}:{n.linenr}: {sym.name} has {len(defs)} defaults, "
+            n = item.nodes[0]
+            name = item.name or f'choice "{n.prompt[0] if n.prompt else "?"}"'
+            errors.append(f"tautology: {n.filename}:{n.linenr}: {name} has {len(defs)} defaults, "
                           f"all {expr_str(defs[0][0])}: keep the unconditional one")
 
     # reader
@@ -294,7 +296,7 @@ def self_test():
             'config NOT_TAUT\n\tint "two values"\n\tdefault 1 if BY_KCONFIG\n\tdefault 2\n'
             'choice\n\tprompt "a choice"\n\tdefault CH_A\n'
             'config CH_A\n\tbool "read"\nconfig CH_B\n\tbool "implicit else"\nendchoice\n'
-            'choice\n\tprompt "a dead choice"\n\tdefault DC_A\n'
+            'choice\n\tprompt "a dead choice"\n\tdefault DC_A if BY_KCONFIG\n\tdefault DC_A\n'
             'config DC_A\n\tbool "a"\nconfig DC_B\n\tbool "b"\nendchoice\n')
         open(os.path.join(d, "kernel", "src", "lib.rs"), "w").write(
             "// IN_COMMENT TWICE NOT_TAUT\n"
@@ -304,7 +306,8 @@ def self_test():
         open(ct, "w").write('[features]\nfeat-x = []\n[dependencies]\n')
         errors, _ = lint(d, ct, generate=False)
         bad = ["reader: config/Kconfig.a:1: DEAD ", "IN_COMMENT has no reader", "DC_A has no reader",
-               "DC_B has no reader", "tautology: config/Kconfig.a:5: BY_CODE ", "once: TWICE "]
+               "DC_B has no reader", "tautology: config/Kconfig.a:5: BY_CODE ", "once: TWICE ",
+               'choice "a dead choice" has 2 defaults']
         good = ["BY_KCONFIG ", "BY_FEATURE ", "CH_A ", "CH_B ", "NOT_TAUT "]
         miss = [b for b in bad if not any(b in e for e in errors)]
         wrong = [g for g in good if any(g in e for e in errors)]

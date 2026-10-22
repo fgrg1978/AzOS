@@ -966,11 +966,11 @@ config DRV_RING3_DEFAULT
 
 choice DRV_INA219_PLACEMENT
     prompt "INA219 power monitor: placement"
-    # Every placement choice carries this line first: DRV_RING3_DEFAULT
-    # (STRUCTURE_RING3_DRIVERS) starts it in ring 3.
-    default DRV_INA219_PLACEMENT_RING3 if DRV_RING3_DEFAULT
-    # This driver's own default: ring 3 (no safety
-    # decision reads it), the same as a build with no cargo feature.
+    # A placement choice whose own default is not ring 3 carries
+    # `default <ring3 member> if DRV_RING3_DEFAULT` first
+    # (STRUCTURE_RING3_DRIVERS starts it in ring 3). This one needs none:
+    # its own default is ring 3 (no safety decision reads it), the same as
+    # a build with no cargo feature.
     default DRV_INA219_PLACEMENT_RING3
     help
       Where the INA219 chip logic (crates/drivers/ina219) runs. Both
@@ -1001,9 +1001,8 @@ endchoice
 
 choice DRV_BUZZER_PLACEMENT
     prompt "Piezo buzzer: starting placement"
-    default DRV_BUZZER_PLACEMENT_RING3 if DRV_RING3_DEFAULT
-    # This driver's own default: ring 3 (no safety
-    # decision reads it), the same as a build with no cargo feature.
+    # Its own default is ring 3 (no safety decision reads it), the same as
+    # a build with no cargo feature, so no DRV_RING3_DEFAULT line.
     default DRV_BUZZER_PLACEMENT_RING3
     help
       The host the buzzer chip logic (crates/drivers/buzzer) starts in. It is
@@ -1130,9 +1129,6 @@ config CAMERA_RING_SLOTS
 
 choice CAMERA_RING_POLICY
     prompt "Camera frame ring: when a consumer lags"
-    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_EMBEDDED
-    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_EDGE
-    default CAMERA_RING_OVERWRITE_OLDEST if PROFILE_FLEET
     default CAMERA_RING_OVERWRITE_OLDEST
     help
       What the capture task does when every free slot of the camera frame
