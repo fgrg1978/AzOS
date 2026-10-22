@@ -19769,7 +19769,7 @@ PYEOF
     # ISAs), in a config of its own with USERSPACE_GPL + BUSYBOX: the gate's
     # own configs keep both off. 0 when build/disk-busybox.img and its
     # aarch64 twin exist afterwards; LX_BUSYBOX_X86=yes when the x86_64
-    # volume does too.
+    # rows can run too (LX_BUSYBOX_X86_WHY says why not).
     lx_busybox_ready() {
         if [ -z "${LX_BUSYBOX_STATE:-}" ]; then
             LX_BUSYBOX_STATE=no
@@ -19785,8 +19785,18 @@ PYEOF
                 LX_BUSYBOX_STATE=yes
                 # x86_64's volume needs the x86_64 userspace: without it only
                 # the x86 rows are skipped (make_disk would end the gate).
+                # They are also skipped while the x86_64 runtime leaves
+                # `arch_prctl` (158) unanswered: musl's static TLS setup
+                # (ARCH_SET_FS) then fails and BusyBox stops at its first
+                # instruction past it (`hlt`, #GP), so every row would fail
+                # on that one cause. Answered = ARCH_PRCTL named anywhere but
+                # its number's definition, in the translation or the runtime.
                 rm -f $AZOS_OUT/build/disk-x86_64-busybox.img*
-                if make $AZOS_OUT/build/disk-x86_64-busybox.img >"$CI_LOG_DIR/busybox-x86-disk.log" 2>&1; then
+                LX_BUSYBOX_X86_WHY="no x86_64 volume (see $CI_LOG_DIR/busybox-x86-disk.log)"
+                if ! grep -n 'ARCH_PRCTL' "$REPO_ROOT/crates/core/linux-abi/src/x86_64.rs" "$REPO_ROOT/userspace/lib/linux_rt/src/lib.rs" \
+                     | grep -qv 'pub const ARCH_PRCTL'; then
+                    LX_BUSYBOX_X86_WHY="the x86_64 runtime does not answer arch_prctl (158): musl cannot set its TLS (crates/core/linux-abi/src/x86_64.rs)"
+                elif make $AZOS_OUT/build/disk-x86_64-busybox.img >"$CI_LOG_DIR/busybox-x86-disk.log" 2>&1; then
                     cp -p $AZOS_OUT/build/disk-x86_64-busybox.img $AZOS_OUT/build/disk-x86_64-busybox.img.pristine
                     LX_BUSYBOX_X86=yes
                 fi
@@ -20873,7 +20883,11 @@ echo after-prod \$?" 150 \
 echo after-prod \$?" 150 \
                 "row=BUSYBOX.ELF" "bb-prod-ok"
         else
-            printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (no zig, no fetched BusyBox tree (tools/third_party_fetch.sh busybox) or, x86, no x86_64 volume; see make busybox)"
+            if [ "$ush_isa" = x86 ] && [ "$LX_BUSYBOX_STATE" = yes ]; then
+                printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (${LX_BUSYBOX_X86_WHY:-})"
+            else
+                printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (no zig or no fetched BusyBox tree: tools/third_party_fetch.sh busybox; see make busybox)"
+            fi
         fi
     done
 
@@ -21158,7 +21172,11 @@ x=con; echo bb\$x-ok
         [ "$con_isa" = rv ] && con_keys+=("console: busybox sh canary, plain spawn (rv)")
         if ! ci_wants "${con_keys[@]}"; then ci_skip_rows "${con_keys[@]}"; continue; fi
         if ! lx_busybox_ready || { [ "$con_isa" = x86 ] && [ "${LX_BUSYBOX_X86:-}" != yes ]; }; then
-            printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (no zig, no fetched BusyBox tree (tools/third_party_fetch.sh busybox) or, x86, no x86_64 volume; see make busybox)"
+            if [ "$con_isa" = x86 ] && [ "$LX_BUSYBOX_STATE" = yes ]; then
+                printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (${LX_BUSYBOX_X86_WHY:-})"
+            else
+                printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (no zig or no fetched BusyBox tree: tools/third_party_fetch.sh busybox; see make busybox)"
+            fi
             continue
         fi
         case "$con_isa" in
