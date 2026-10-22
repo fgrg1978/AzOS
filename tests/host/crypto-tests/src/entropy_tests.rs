@@ -336,23 +336,70 @@ fn fat32_sector0(tot32: u32) -> [u8; 512] {
 #[test]
 fn the_tail_is_written_only_when_no_filesystem_reaches_it() {
     // The Makefile image: 65536-sector FAT32 volume + 8-sector tail.
-    assert_eq!(seed_tail_check(65544, 8, &[], &fat32_sector0(65536)), SeedTail::Clear);
+    assert_eq!(seed_tail_check(65544, 8, &[], &fat32_sector0(65536), &[]), SeedTail::Clear);
     // An image built without the headroom: the volume IS the whole medium.
-    assert_eq!(seed_tail_check(65536, 8, &[], &fat32_sector0(65536)),
+    assert_eq!(seed_tail_check(65536, 8, &[], &fat32_sector0(65536), &[]),
                SeedTail::FilesystemReaches);
     // One sector of overlap is still overlap.
-    assert_eq!(seed_tail_check(65544, 8, &[], &fat32_sector0(65537)),
+    assert_eq!(seed_tail_check(65544, 8, &[], &fat32_sector0(65537), &[]),
                SeedTail::FilesystemReaches);
     // Not a FAT32 boot sector and no table: no extent known.
-    assert_eq!(seed_tail_check(65544, 8, &[], &[0u8; 512]), SeedTail::UnknownLayout);
+    assert_eq!(seed_tail_check(65544, 8, &[], &[0u8; 512], &[]), SeedTail::UnknownLayout);
     let mut fat16ish = fat32_sector0(65536);
     fat16ish[19..21].copy_from_slice(&100u16.to_le_bytes());
-    assert_eq!(seed_tail_check(65544, 8, &[], &fat16ish), SeedTail::UnknownLayout);
+    assert_eq!(seed_tail_check(65544, 8, &[], &fat16ish, &[]), SeedTail::UnknownLayout);
     // Partitioned medium: every partition must end before the tail.
-    assert_eq!(seed_tail_check(100_000, 8, &[(2048, 90_000)], &[]), SeedTail::Clear);
-    assert_eq!(seed_tail_check(100_000, 8, &[(2048, 97_952)], &[]),
+    assert_eq!(seed_tail_check(100_000, 8, &[(2048, 90_000)], &[], &[]), SeedTail::Clear);
+    assert_eq!(seed_tail_check(100_000, 8, &[(2048, 97_952)], &[], &[]),
                SeedTail::FilesystemReaches);
-    assert_eq!(seed_tail_check(100_000, 8, &[(2048, 1000), (50_000, 49_999)], &[]),
+    assert_eq!(seed_tail_check(100_000, 8, &[(2048, 1000), (50_000, 49_999)], &[], &[]),
                SeedTail::FilesystemReaches);
-    assert_eq!(seed_tail_check(8, 8, &[], &fat32_sector0(1)), SeedTail::TooSmall);
+    assert_eq!(seed_tail_check(8, 8, &[], &fat32_sector0(1), &[]), SeedTail::TooSmall);
+}
+
+/// A protective MBR: one `0xEE` entry covering the medium.
+fn protective_mbr() -> [u8; 512] {
+    let mut s = [0u8; 512];
+    s[446 + 4] = 0xEE;
+    s[510] = 0x55;
+    s[511] = 0xAA;
+    s
+}
+
+/// A primary GPT header naming `alternate` as its backup header's LBA.
+fn gpt_header(alternate: u64) -> [u8; 512] {
+    let mut s = [0u8; 512];
+    s[0..8].copy_from_slice(b"EFI PART");
+    s[24..32].copy_from_slice(&1u64.to_le_bytes());
+    s[32..40].copy_from_slice(&alternate.to_le_bytes());
+    s
+}
+
+/// **GPT** (audit K2-M1). A GPT laid out to the medium's end keeps its backup
+/// entry array and header in the last 33 sectors, past `LastUsableLBA`, so
+/// every partition ends before the tail and the extents alone say `Clear`.
+/// The tail is usable only when the backup header sits below it.
+///
+/// **Canary.** Drop the protective-MBR arm of `seed_tail_check`: the first
+/// assertion reads `Clear`.
+#[test]
+fn a_gpt_backup_table_in_the_tail_keeps_it_unwritten() {
+    let cap = 100_000u64;
+    // gdisk / Linux default: LastUsableLBA = cap - 34, backup header cap - 1.
+    let parts = [(2048, cap - 34 - 2048 + 1)];
+    assert_eq!(seed_tail_check(cap, 8, &parts, &protective_mbr(), &gpt_header(cap - 1)),
+               SeedTail::GptBackupReaches);
+    // A GPT whose backup sits below the tail (a layout that leaves headroom).
+    let parts = [(2048, 90_000)];
+    assert_eq!(seed_tail_check(cap, 8, &parts, &protective_mbr(), &gpt_header(cap - 9)),
+               SeedTail::Clear);
+    assert_eq!(seed_tail_check(cap, 8, &parts, &protective_mbr(), &gpt_header(cap - 8)),
+               SeedTail::GptBackupReaches);
+    // A protective MBR without a readable header: no layout to trust.
+    assert_eq!(seed_tail_check(cap, 8, &parts, &protective_mbr(), &[]), SeedTail::UnknownLayout);
+    assert_eq!(seed_tail_check(cap, 8, &parts, &protective_mbr(), &[0u8; 512]), SeedTail::UnknownLayout);
+    // An MBR medium is not looked at for a GPT header.
+    let mut mbr = protective_mbr();
+    mbr[446 + 4] = 0x0C;
+    assert_eq!(seed_tail_check(cap, 8, &parts, &mbr, &gpt_header(cap - 1)), SeedTail::Clear);
 }

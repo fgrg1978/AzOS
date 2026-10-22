@@ -17,7 +17,7 @@
 //! filesystem data where the tail would be: anyone who can write a file
 //! there would choose the "key", and a rewrite of the seed would corrupt the
 //! volume. [`read`] and [`write`] therefore refuse unless
-//! `azos_crypto::entropy::seed_tail_check` finds no partition and no FAT32
+//! `azos_crypto::entropy::seed_tail_check` finds no partition, no GPT backup and no FAT32
 //! volume reaching the tail ([`verdict`]). A missing key or seed is safe; a
 //! sector of filesystem data taken for one is not.
 //!
@@ -76,8 +76,8 @@ pub const DEVICE: u32 = 2;
 /// before the block device or its partition table was up.
 static CLEAR: AtomicBool = AtomicBool::new(false);
 
-/// Whether the tail of this boot's medium is ours: `Clear` when no partition
-/// and no FAT32 volume reaches it.
+/// Whether the tail of this boot's medium is ours: `Clear` when no partition,
+/// no GPT backup table and no FAT32 volume reaches it.
 pub fn verdict() -> SeedTail {
     if CLEAR.load(Ordering::Acquire) {
         return SeedTail::Clear;
@@ -90,6 +90,10 @@ pub fn verdict() -> SeedTail {
     if azos_drv_block::blkdev::read(0, 1, &mut s0).is_err() {
         return SeedTail::UnknownLayout;
     }
+    // The primary GPT header; read on every medium (one sector), looked at
+    // only when sector 0 is a protective MBR. Unreadable: empty.
+    let mut s1 = [0u8; 512];
+    let s1: &[u8] = if azos_drv_block::blkdev::read(1, 1, &mut s1).is_ok() { &s1 } else { &[] };
     let mut parts = [(0u64, 0u64); 16];
     let mut np = 0usize;
     for i in 0..azos_drv_block::partition::count().min(parts.len() as u32) {
@@ -98,7 +102,7 @@ pub fn verdict() -> SeedTail {
             np += 1;
         }
     }
-    let v = seed_tail_check(cap, u64::from(TAIL_SECTORS), &parts[..np], &s0);
+    let v = seed_tail_check(cap, u64::from(TAIL_SECTORS), &parts[..np], &s0, s1);
     if v == SeedTail::Clear {
         CLEAR.store(true, Ordering::Release);
     }

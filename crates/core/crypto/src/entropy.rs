@@ -204,8 +204,8 @@ pub fn fill(out: &mut [u8]) -> bool {
 // load-and-rotate rule, and the check that the storage is not filesystem
 // data. The kernel-side storage location (deliberately NOT the MSC-exported
 // FAT volume — the same USB-readable-PSK reasoning as U06-9/#30) is
-// `kernel/src/reserved_tail.rs`'s reserved tail sectors,
-// `ENTROPY_SEED`; the boot call site is
+// `kernel/src/msc_gadget.rs`'s reserved tail sectors,
+// `RESERVED_SECTOR_ENTROPY_SEED`; the boot call site is
 // `install_entropy_seed` in `kernel/src/boot/entropy.rs`.
 //
 // Format, one 512-byte sector, `SEED_FILE_BYTES` (73) meaningful:
@@ -363,29 +363,45 @@ pub enum SeedTail {
     Clear,
     /// A partition, or the bare FAT32 volume, extends into the tail: a write
     /// there would overwrite filesystem data. (An image built without the
-    /// headroom `reserved_tail::TAIL_SECTORS` asks for, or an SD card whose FAT
+    /// headroom `MSC_RESERVED_TAIL_SECTORS` asks for, or an SD card whose FAT
     /// partition runs to the last sector.)
     FilesystemReaches,
     /// No partition table and sector 0 is not a FAT32 boot sector, so there
-    /// is no extent to compare the tail against. Treated as unusable.
+    /// is no extent to compare the tail against (or a GPT medium whose
+    /// primary header cannot be read). Treated as unusable.
     UnknownLayout,
+    /// A GPT medium whose backup header (its `AlternateLBA`), and the backup
+    /// entry array just below it, lie in the tail: the place a GPT puts them
+    /// on any medium laid out to its end. A write there corrupts the backup
+    /// table, which a host tool (`gdisk`, Linux) then "repairs" over the
+    /// tail.
+    GptBackupReaches,
     /// The medium is no larger than the tail.
     TooSmall,
 }
 
 /// Decide whether the last `tail_sectors` sectors of a medium of
 /// `capacity_sectors` may be written. `partitions` are the published
-/// `(start, sectors)` pairs; `sector0` is the medium's first sector.
+/// `(start, sectors)` pairs; `sector0` and `sector1` are the medium's first
+/// two sectors (`sector1`, the primary GPT header, is read only when
+/// `sector0` is a protective MBR).
 ///
-/// The kernel's reserved-tail reads and writes (`kernel/src/reserved_tail.rs`)
-/// all require `Clear`: a rewrite of the seed must not land in FAT data, and
-/// filesystem data must never be read as a key or a record.
+/// A GPT keeps a second copy of its table at the END of the medium: the
+/// backup entry array right after `LastUsableLBA`, the backup header at
+/// `AlternateLBA`. Those are not partitions, so the partition extents alone
+/// answer `Clear` while the tail overlaps them (audit K2-M1).
+///
+/// `reserved_region_write` alone only checks that the device is larger than
+/// the tail — it cannot know where the filesystem ends — and the key it
+/// guarded was only ever read. A seed is rewritten on every boot, so this is
+/// the guard against a rewrite landing in FAT data.
 #[must_use]
 pub fn seed_tail_check(
     capacity_sectors: u64,
     tail_sectors: u64,
     partitions: &[(u64, u64)],
     sector0: &[u8],
+    sector1: &[u8],
 ) -> SeedTail {
     if capacity_sectors <= tail_sectors {
         return SeedTail::TooSmall;
@@ -396,6 +412,15 @@ pub fn seed_tail_check(
             if start.saturating_add(len) > tail_start {
                 return SeedTail::FilesystemReaches;
             }
+        }
+        if is_protective_mbr(sector0) {
+            // The backup array sits below its header, so a header below the
+            // tail keeps both out of it.
+            return match gpt_alternate_lba(sector1) {
+                None => SeedTail::UnknownLayout,
+                Some(alt) if alt >= tail_start => SeedTail::GptBackupReaches,
+                Some(_) => SeedTail::Clear,
+            };
         }
         return SeedTail::Clear;
     }
@@ -414,4 +439,25 @@ pub fn seed_tail_check(
         return SeedTail::FilesystemReaches;
     }
     SeedTail::Clear
+}
+
+/// Sector 0 is an MBR with a protective (`0xEE`) entry: the medium is GPT.
+fn is_protective_mbr(sector0: &[u8]) -> bool {
+    sector0.len() >= 512
+        && sector0[510] == 0x55
+        && sector0[511] == 0xAA
+        && (0..4).any(|i| sector0[446 + 16 * i + 4] == 0xEE)
+}
+
+/// `AlternateLBA` of the primary GPT header in `sector1` (offset 32), or
+/// `None` when the sector does not carry the `EFI PART` signature. The
+/// header's CRC was checked when the partition table was parsed and
+/// published; a medium whose table did not parse has no partitions here.
+fn gpt_alternate_lba(sector1: &[u8]) -> Option<u64> {
+    if sector1.len() < 40 || &sector1[0..8] != b"EFI PART" {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&sector1[32..40]);
+    Some(u64::from_le_bytes(b))
 }
