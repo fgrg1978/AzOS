@@ -2864,24 +2864,13 @@ if a64k_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH6
        && [ -f "$A64_IMG" ]; then
         # No --features: an empty `.features`, as `kbuild ""` writes.
         builtin printf '\n' >"${A64_IMG}.features"
-        # Header sanity, independent of a QEMU boot: magic at 0x38, and
-        # image_size (0x10) must equal `_kernel_end - _start` — a `nm`
-        # cross-check, not a second guess at the linker's arithmetic.
-        a64_magic="$(od -A n -t x1 -j 0x38 -N 4 "$A64_IMG" | tr -d ' \n')"
-        a64_img_size_le="$(od -A n -t x1 -j 0x10 -N 8 "$A64_IMG" | tr -d ' \n')"
-        # od prints big-to-little in byte order already (one hex pair per
-        # file byte, in file order); reverse the 8 pairs to get the LE u64.
-        a64_img_size_hex="$(printf '%s\n' "$a64_img_size_le" | \
-            sed -E 's/(..)(..)(..)(..)(..)(..)(..)(..)/\8\7\6\5\4\3\2\1/')"
-        a64_img_size=$((16#$a64_img_size_hex))
-        a64_nm_start="$(nm "$A64_KERNEL" 2>/dev/null | awk '$3=="_start"{print $1}')"
-        a64_nm_end="$(nm "$A64_KERNEL" 2>/dev/null | awk '$3=="_kernel_end"{print $1}')"
-        a64_nm_delta=$((16#$a64_nm_end - 16#$a64_nm_start))
-        if [ "$a64_magic" = "41524d64" ] && [ "$a64_img_size" -eq "$a64_nm_delta" ]; then
+        # Header sanity, independent of a QEMU boot: magic, code0, image_size
+        # and text_offset against the ELF (tools/image_header.py; riscv64's
+        # twin is `image_header_row`).
+        if a64_hdr="$(python3 tools/image_header.py arm "$A64_KERNEL" "$A64_IMG" 2>&1)"; then
             ok
         else
-            bad; printf '      magic=%s (want 41524d64) image_size=%#x (nm says %#x)\n' \
-                "$a64_magic" "$a64_img_size" "$a64_nm_delta"
+            bad; printf '%s\n' "$a64_hdr" | sed 's|^|      |'
         fi
     else
         bad; echo "      llvm-objcopy not found or ELF -> .img failed: $A64_OBJCOPY"
@@ -7481,6 +7470,34 @@ spectre_v1_disasm_row() { # <label> <isa: rv|arm>
 }
 ci_row "spectre v1 mask (disasm)" spectre_v1_disasm_row "spectre v1 mask (disasm)"         rv
 ci_row "aarch64 spectre v1 mask (disasm)" spectre_v1_disasm_row "aarch64 spectre v1 mask (disasm)" arm
+
+# ── riscv64: the flat kernel is a Linux RISC-V Image ─────────────────────────
+#
+# U-Boot `booti` takes a flat (`objcopy -O binary`) kernel only with the Linux
+# RISC-V Image header `_start` opens with (kernel/src/entry/riscv64/asm/boot.S);
+# tools/boot.cmd and tools/farm/boot.cmd boot a board's kernel that way. The
+# header of the `qemu` kernel just built is checked against its ELF
+# (tools/image_header.py); the aarch64 kernel's is checked where it is built
+# ("aarch64 kernel (build)").
+#
+# Canary (by hand, 2026-10-22): the same kernel built from the boot.S without
+# the header fails all four checks (magic 93835310, code0 not a jump,
+# image_size and text_offset are instruction bytes).
+image_header_row() { # <label>
+    local label="$1" img="$CI_LOG_DIR/kernel-rv-image.bin" objcopy out
+    printf "  %-26s" "${label}..."
+    objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+    if [ ! -x "$objcopy" ] || [ ! -f "$KERNEL" ] || ! "$objcopy" -O binary "$KERNEL" "$img" 2>/dev/null; then
+        bad; echo "      missing $objcopy or $KERNEL, or ELF -> .bin failed"; return
+    fi
+    if out="$(python3 tools/image_header.py rv "$KERNEL" "$img" 2>&1)"; then
+        ok
+    else
+        bad; printf '%s\n' "$out" | sed 's|^|      |'
+    fi
+    rm -f "$img"
+}
+ci_row "riscv64 kernel: Image header" image_header_row "riscv64 kernel: Image header"
 
 # ── io_ring: each SQ entry is copied out of the ring page exactly once ──────
 #

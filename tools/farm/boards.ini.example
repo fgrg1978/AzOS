@@ -25,7 +25,7 @@ netmask = 255.255.255.0
 interface = en7
 tftp_root = /private/tftpboot
 tftp_port = 69
-# The name boot/boot.scr.cmd asks for (`kernel_name`).
+# The name tools/farm/boot.cmd asks for (`kernel_name`).
 kernel_name = kernel.bin
 # Fetch the staged kernel back over TFTP before the power cycle.
 verify_tftp = yes

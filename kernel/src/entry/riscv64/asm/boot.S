@@ -29,6 +29,34 @@
 .global _start
 
 _start:
+    # ── Linux RISC-V Image header (Documentation/arch/riscv/boot-image-
+    # header.rst) ──────────────────────────────────────────────────────
+    #
+    # U-Boot `booti` refuses a flat (`objcopy -O binary`) image without
+    # magic2 at offset 0x38 ("Bad Linux RISCV Image magic!") or with an
+    # image_size of 0, and places the image at the start of RAM plus
+    # text_offset. `code0` is the one instruction executed first: it jumps
+    # past the other 60 bytes (norvc, so it is 4 bytes whatever +c says). A
+    # loader that enters `_start` directly (OpenSBI's jump address, an ELF
+    # load) runs the same jump. `_text_offset`/`_image_size` are ABSOLUTE
+    # symbols of kernel/image-header-riscv64.ld, as linker-aarch64.ld makes
+    # arm64's.
+    .option push
+    .option norvc
+    j       _entry_after_header    # 0x00 code0: skip the header
+    .option pop
+    .word   0                      # 0x04 code1
+    .dword  _text_offset           # 0x08 load offset from the start of RAM
+    .dword  _image_size            # 0x10 effective image size (bss/stack included)
+    .dword  0                      # 0x18 flags: little-endian
+    .word   2                      # 0x20 header version 0.2
+    .word   0                      # 0x24 res1
+    .dword  0                      # 0x28 res2
+    .ascii  "RISCV\0\0\0"          # 0x30 magic (deprecated, still written)
+    .ascii  "RSC\x05"              # 0x38 magic2: what booti checks
+    .word   0                      # 0x3c res3 (PE/COFF offset: none)
+
+_entry_after_header:
     mv s0, a0                      # Save hart_id
     mv s1, a1                      # Save dtb_ptr
 

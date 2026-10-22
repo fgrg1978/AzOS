@@ -24,10 +24,9 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | `lx/` | The Linux driver compatibility layer: `emul/` (Rust base), `glue/` (C module built against a pinned Linux tree), pin and ABI files. |
 | `config/` | The Kconfig fragments (`Kconfig.*`) and `defconfigs/`. The root `Kconfig` sources them. |
 | `mk/` | Makefile fragments included by the top-level `Makefile`: `vars.mk`, `kernel.mk`, `userspace.mk`, `images.mk`, `host.mk`, `qemu.mk`, `lints.mk`. |
-| `tools/` | Build, check, signing, image-making and analysis scripts (Python and shell). |
+| `tools/` | Build, check, signing, image-making and analysis scripts (Python and shell); `boot.cmd`, the U-Boot script that boots slots A/B/R from the SD card. |
 | `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), `qemu/` (emulator scenarios), `sdk/` (SDK test program), plus the runner scripts. |
 | `formal/tla/` | TLA+ models: `cap_table` and `topology_load`. |
-| `boot/` | `boot.scr.cmd`, a U-Boot boot script. |
 | `third_party/` | `vendor/` (vendored crates), `linux/` (the pinned Linux tree is fetched here by `tools/lx_fetch_linux.sh`), and the pin files `VENDOR_PIN`, `RELIBC_PIN`. |
 | `LICENSES/` | Licence texts: Apache-2.0, GPL-2.0-only, MIT. |
 
@@ -273,6 +272,6 @@ Source: `userspace/*/`, the header of each program's `main.rs`.
 | `tests/qemu/` | Emulator scenarios (`aarch64-smoke`); `tests/qemu_boot.sh` and `tests/run_all.sh` are the runners. |
 | `tests/sdk/` | `sdktest`, the SDK's own test program. |
 | `tools/` | See `tools/make_help.txt` for the Make targets; `ci_check.sh` runs the checks by hand, `kconfig_*.py` handle configuration, `sign_ota.py` and `gen_*_key.py` handle signing, `*_lint.py` are structural linters. |
-| `tools/farm/` | Host-side scripts that run a test kernel on an attached device and read the result from its console. |
+| `tools/farm/` | Host-side scripts that run a test kernel on an attached device and read the result from its console; `boot.cmd`, the board's U-Boot script that boots it over TFTP. |
 
 Source: `tests/`, `tools/`.

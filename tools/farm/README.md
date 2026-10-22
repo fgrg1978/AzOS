@@ -13,7 +13,7 @@ every farm command exits 3 and the gate row is skipped.
 
 Source: `tools/farm/farm.py` and the `farm_*.py` modules beside it,
 `mk/kernel.mk` (the `vf2-ktest` and `vf2-pstore` targets),
-`boot/boot.scr.cmd`.
+`tools/farm/boot.cmd`.
 
 ## Wiring
 
@@ -23,9 +23,10 @@ Source: `tools/farm/farm.py` and the `farm_*.py` modules beside it,
   switch it (`relay_on`, `relay_off`); `relay = dry-run` rehearses a run
   without one.
 - **Boot medium:** U-Boot reads `boot.scr` from the FAT root of the SD card.
-  The script (`boot/boot.scr.cmd`) runs `dhcp ${kernel_addr_r} kernel.bin`;
+  The script (`tools/farm/boot.cmd`, development boards only: it boots an
+  unsigned kernel) runs `dhcp ${kernel_addr_r} kernel.bin`, then `booti`;
   build it with
-  `mkimage -A riscv -T script -C none -n "azos boot" -d boot/boot.scr.cmd boot.scr`.
+  `mkimage -A riscv -T script -C none -n "azos farm" -d tools/farm/boot.cmd $AZOS_OUT/build/boot.scr`.
 - **Network:** a cable between the host and the board, the host's interface on
   `server_ip`. No other DHCP server on that segment.
 

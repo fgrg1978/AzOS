@@ -455,10 +455,10 @@ netboot x86_64: PXE config hash canary	n2	tools/netboot/** mk/qemu.mk crates/cor
 netboot x86_64: UEFI HTTP Boot	n2	tools/netboot/** mk/qemu.mk crates/core/arch-x86_64/** kernel/linker-x86_64-limine.ld kernel/src/entry/x86_64/** config/Kconfig.platform
 netboot x86_64: HTTP missing file canary	n2	tools/netboot/** mk/qemu.mk crates/core/arch-x86_64/** kernel/linker-x86_64-limine.ld kernel/src/entry/x86_64/** config/Kconfig.platform
 netboot x86_64: HTTP kernel hash canary	n2	tools/netboot/** mk/qemu.mk crates/core/arch-x86_64/** kernel/linker-x86_64-limine.ld kernel/src/entry/x86_64/** config/Kconfig.platform
-netboot riscv64: U-Boot tftpboot	n2	tools/netboot/** mk/qemu.mk crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/riscv64/** boot/boot.scr.cmd tools/farm/**
-netboot riscv64: missing file canary	n2	tools/netboot/** mk/qemu.mk crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/riscv64/** boot/boot.scr.cmd tools/farm/**
-netboot riscv64: kernel hash canary	n2	tools/netboot/** mk/qemu.mk crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/riscv64/** boot/boot.scr.cmd tools/farm/**
-netboot riscv64: foreign key canary	n2	tools/netboot/** mk/qemu.mk crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/riscv64/** boot/boot.scr.cmd tools/farm/**
+netboot riscv64: U-Boot tftpboot	n2	tools/netboot/** mk/qemu.mk crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/riscv64/** tools/farm/**
+netboot riscv64: missing file canary	n2	tools/netboot/** mk/qemu.mk crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/riscv64/** tools/farm/**
+netboot riscv64: kernel hash canary	n2	tools/netboot/** mk/qemu.mk crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/riscv64/** tools/farm/**
+netboot riscv64: foreign key canary	n2	tools/netboot/** mk/qemu.mk crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/riscv64/** tools/farm/**
 ktest (x86)	n1	crates/core/arch-x86_64/** crates/core/arch/** crates/core/mm/** crates/core/sched/** crates/core/percpu/** crates/core/sync/** crates/drivers/irqchip/** crates/drivers/sys/** kernel/linker-x86_64.ld kernel/src/entry/** kernel/src/boot/** kernel/src/main.rs config/Kconfig* Makefile kernel/src/ktest.rs kernel/src/smokes/** crates/core/ktest/** crates/core/chaos/** crates/core/decision/** kernel/src/boot/chaos.rs crates/drivers/block/** crates/core/syscall/src/handlers.rs kernel/src/boot/topology.rs crates/core/ipc/** crates/core/syscall/**
 ktest hv enter (x86 svm)	n1	crates/core/arch-x86_64/** crates/core/arch-api/src/lib.rs crates/core/hv/** crates/core/syscall/src/vm.rs kernel/src/entry/x86_64/ext/hv.rs kernel/src/ktest.rs crates/core/ktest/** tools/ci_check.sh
 ktest disk (x86)	n1	crates/fs/** crates/drivers/block/** crates/drivers/msc/** kernel/src/pstore.rs crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**

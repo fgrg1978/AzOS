@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """What the host serves the board: a DHCP lease and the kernel over TFTP.
 
-The board's U-Boot runs boot/boot.scr.cmd (compiled to boot.scr on its SD
+The board's U-Boot runs tools/farm/boot.cmd (compiled to boot.scr on its SD
 card): `dhcp ${kernel_addr_r} kernel.bin`. So the host needs a DHCP server
 that hands the board its address with a boot file and a next server, and a
 TFTP server with that file in its root. dnsmasq does both; `dnsmasq_conf`

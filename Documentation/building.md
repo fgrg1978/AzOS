@@ -145,8 +145,9 @@ cannot make U-Boot's `-pie` image. U-Boot is built from the approved tarball (`U
 digest-checked) in `$AZOS_OUT/netboot`, never in the checkout. A row exits "skipped" when one of
 these is absent.
 
-The riscv64 row boots a FIT with `bootm` rather than `booti` on the flat `kernel.bin`: the riscv64 kernel has
-no Linux RISC-V Image header, and a signature cannot ride on a flat binary.
+The riscv64 row boots a FIT with `bootm` rather than `booti` on the flat `kernel.bin`: a signature cannot
+ride on a flat binary. (`booti` would take it: `_start` opens with the Linux RISC-V Image header,
+checked by `tools/image_header.py`, and `tools/boot.cmd` and `tools/farm/boot.cmd` boot it that way.)
 
 ## Host tests
 

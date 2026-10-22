@@ -8,6 +8,8 @@
 # by OTA; the only way to update it is to physically reflash the FAT32
 # boot partition. If both A and B fail to load, U-Boot falls back to R.
 # U-Boot will execute boot.scr automatically if configured.
+# `booti` takes the flat KERN_*.BIN because its `_start` opens with the
+# Linux RISC-V Image header (kernel/src/entry/riscv64/asm/boot.S).
 
 echo "[ROTA] Reading boot metadata..."
 if fatload mmc 0:1 ${loadaddr} BOOTMETA 2>/dev/null; then
