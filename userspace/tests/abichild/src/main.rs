@@ -339,9 +339,12 @@ fn subreaper() -> ! {
 // trap must be reflected to the entry, with the program's registers in the
 // frame; the entry answers and resumes. The program keeps a value in one
 // register the whole time and uses the first answer in the second trap, so a
-// register lost by the reflect or by the resume shows. The process exits 0
-// when the whole conversation held, else with the number of the step that did
-// not.
+// register lost by the reflect or by the resume shows. On x86_64 the first
+// answer also sets rcx and r11, the two registers `syscall` itself clobbers,
+// and the program copies them for the second trap to report: a resume must
+// hand the thread the runtime's values, not the RIP and RFLAGS the lean
+// `sysret` path leaves there (K1 M1). The process exits 0 when the whole
+// conversation held, else with the number of the step that did not.
 
 type Frame = sys::foreign_abi::ForeignFrame;
 const REG_NUMBER: usize = sys::foreign_abi::REG_NUMBER;
@@ -370,6 +373,20 @@ const FOREIGN_COPY_REG: usize = 20;
 const FOREIGN_KEEP_REG: usize = 3; // rbx
 #[cfg(target_arch = "x86_64")]
 const FOREIGN_COPY_REG: usize = 12; // r12
+/// x86_64: the frame indices of rcx and r11 (the first answer sets them),
+/// and of r13 and r14 (the program's copies, reported by the second trap).
+#[cfg(target_arch = "x86_64")]
+const FOREIGN_RCX_REG: usize = 1;
+#[cfg(target_arch = "x86_64")]
+const FOREIGN_R11_REG: usize = 11;
+#[cfg(target_arch = "x86_64")]
+const FOREIGN_RCX_COPY_REG: usize = 13;
+#[cfg(target_arch = "x86_64")]
+const FOREIGN_R11_COPY_REG: usize = 14;
+#[cfg(target_arch = "x86_64")]
+const FOREIGN_RCX: u64 = 0x5a5a_0001;
+#[cfg(target_arch = "x86_64")]
+const FOREIGN_R11: u64 = 0x5a5a_0002;
 
 static FOREIGN_STEP: AtomicU32 = AtomicU32::new(0);
 
@@ -420,6 +437,8 @@ core::arch::global_asm!(
     "    mov eax, 0x7001",
     "    syscall",
     "    mov r12, rax",
+    "    mov r13, rcx",
+    "    mov r14, r11",
     "    mov eax, 0x7002",
     "    syscall",
     "    mov eax, 0x7003",
@@ -450,11 +469,21 @@ unsafe extern "C" fn foreign_probe_handler(frame: *mut Frame) -> ! {
                 sys::exit(11);
             }
             f.gpr[REG_RESULT] = arg * 2 + 1;
+            #[cfg(target_arch = "x86_64")]
+            {
+                f.gpr[FOREIGN_RCX_REG] = FOREIGN_RCX;
+                f.gpr[FOREIGN_R11_REG] = FOREIGN_R11;
+            }
         }
         (1, FOREIGN_CALL_B) => {
             // The answer to the first trap, and the kept register, came back.
             if f.gpr[FOREIGN_COPY_REG] != FOREIGN_ARG * 2 + 1 || f.gpr[FOREIGN_KEEP_REG] != FOREIGN_KEEP {
                 sys::exit(12);
+            }
+            // x86_64: the resume gave the program the rcx and r11 asked for.
+            #[cfg(target_arch = "x86_64")]
+            if f.gpr[FOREIGN_RCX_COPY_REG] != FOREIGN_RCX || f.gpr[FOREIGN_R11_COPY_REG] != FOREIGN_R11 {
+                sys::exit(17);
             }
             f.gpr[REG_RESULT] = 0;
         }

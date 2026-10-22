@@ -165,8 +165,9 @@ impl ArchFrame for TrapFrame {
 
     /// A fresh image: zero registers, initial FP state, the new entry. Every GPR
     /// but rsp, as Linux's `elf_common_init`: none of the old image's reaches the
-    /// new one. `sysretq` then makes rcx the entry RIP and r11 RFLAGS. Gate
-    /// canary `exec-regs-canary`: the old image's registers are put back.
+    /// new one, rcx and r11 included (the frame is `REBUILT_VECTOR`'s, so it
+    /// returns by `iretq`, not `sysretq`). Gate canary `exec-regs-canary`: the
+    /// old image's registers are put back.
     fn exec_enter(&mut self, ctx: &azos_sched::ExecHandoff) -> u64 {
         fp::discard_current();
         #[cfg(feature = "exec-regs-canary")]
@@ -320,6 +321,11 @@ fn foreign_return(frame: &mut TrapFrame) {
             // `rax` holds the call's result by now; `rdi` is as the program left it.
             f.gpr[0] = num;
             f.gpr[7] = arg0;
+            // `syscall` overwrote rcx and r11 with the return RIP and RFLAGS,
+            // and the lean entry does not save them (its frame slots are an
+            // earlier trap's): report what the hardware left, as a full save.
+            f.gpr[1] = frame.rip;
+            f.gpr[11] = frame.rflags;
             // `syscall` left RIP past itself.
             f.pc = frame.rip;
             f.flags = frame.rflags & FLAGS_USER_MASK;
@@ -342,6 +348,8 @@ fn foreign_return(frame: &mut TrapFrame) {
                     frame.rsp = f.gpr[FOREIGN_RSP];
                     frame.rip = f.pc;
                     frame.rflags = (frame.rflags & !FLAGS_USER_MASK) | f.flags;
+                    // rcx and r11 are the runtime's: the full return.
+                    frame.vector = super::REBUILT_VECTOR;
                 }
                 None => crate::trap::kernel::kill(azos_abi::exit_status::KILLED_SEGV),
             }

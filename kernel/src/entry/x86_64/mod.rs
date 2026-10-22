@@ -88,6 +88,15 @@ const SYSCALL_ARGS: [usize; 6] = [gpr::RDI, gpr::RSI, gpr::RDX, gpr::R10, gpr::R
 /// order rdx (the SysV second return register), rsi, rdi, r8, r9, r10.
 const SYSCALL_OUT: [usize; 6] = [gpr::RDX, gpr::RSI, gpr::RDI, gpr::R8, gpr::R9, gpr::R10];
 
+/// [`TrapFrame::vector`] of a frame the kernel built or rewrote rather than
+/// saved: a fresh image's ([`TrapFrame::user`]) and a foreign-ABI resume's
+/// (`trap::foreign_return`). Not `idt::SYSCALL_VECTOR`, so the lean
+/// `syscall_return` sends the frame through `trap_return`'s `iretq`, which
+/// restores every register from it, rcx and r11 included (K1 M1). Nothing
+/// decodes it: the next entry stores its own vector.
+pub(crate) const REBUILT_VECTOR: u64 = 0;
+const _: () = assert!(REBUILT_VECTOR != idt::SYSCALL_VECTOR);
+
 impl TrapFrame {
     /// The frame of a fresh ring-3 entry: `rip`/`rsp`, user selectors,
     /// IF set, every general register zero (K-C18: no kernel value reaches
@@ -97,7 +106,7 @@ impl TrapFrame {
             cr2: 0,
             gs_saved: 0,
             regs: [0; gpr::COUNT],
-            vector: 0,
+            vector: REBUILT_VECTOR,
             error_code: 0,
             rip,
             cs: gdt::USER_CS as u64,

@@ -44,9 +44,10 @@
 // the frame is still what `syscall` saved (RIP = RCX, RFLAGS = R11, RIP
 // canonical, no TF/RF; Kconfig X86_SYSRET), `iretq` otherwise. A
 // `syscall` returns through `syscall_return` instead (Chain E commit 8,
-// Kconfig SYSCALL_LEAN_ENTRY): rcx/r11 neither saved nor compared. Spectre/MDS
-// hygiene on the boundary (verw, IBRS) is the mitigation Kconfig's, not
-// wired here yet.
+// Kconfig SYSCALL_LEAN_ENTRY): rcx/r11 neither saved nor compared, unless the
+// kernel rebuilt the frame (vector no longer SYSCALL_VEC), which takes
+// `trap_return`. MDS hygiene on the boundary is `VERW_ON_EXIT` below; IBRS is
+// not wired here.
 
 .equ TF_SIZE,       {tf_size}
 .equ TF_CR2,        {tf_cr2}
@@ -421,19 +422,28 @@ syscall_entry:
 // clobbered, which is what `syscall`/`sysret` do to them anyway, and the
 // x86_64 Linux ABI says the same: no task needs them back, so this path
 // neither stores them nor compares them, and `sysretq` returns them as the
-// RIP and RFLAGS it resumes with (`trap_return` compares the saved rcx/r11
-// with RIP/RFLAGS and takes `iretq` when the kernel moved either; here a
-// moved RIP, an exec's entry point, still `sysret`s, with rcx = that RIP).
-// Every other trap returns through `trap_return`.
+// RIP and RFLAGS it resumes with. Every other trap returns through
+// `trap_return`.
 //
-// The frame's rcx/r11 slots keep what an earlier full save left; nothing on
-// a syscall reads them: the fork snapshot clears them (`SYSCALL_CLOBBERED`,
-// crates/core/arch-x86_64/src/fork_regs.rs).
+// A frame the kernel rebuilt rather than saved is not this path's: a
+// foreign-ABI resume (`foreign_return`, Resume arm) hands the runtime's
+// rcx/r11 to the thread, and an exec's fresh image starts with every
+// register zero. Both leave `TrapFrame::vector` = REBUILT_VECTOR
+// (entry/x86_64/mod.rs), not SYSCALL_VEC, and go to `trap_return`, whose
+// `iretq` restores every register from the frame (K1 M1: rcx/r11 came back
+// as RIP/RFLAGS, not as the runtime asked).
+//
+// Otherwise the frame's rcx/r11 slots keep what an earlier full save left;
+// nothing on a syscall reads them: the fork snapshot clears them
+// (`SYSCALL_CLOBBERED`, crates/core/arch-x86_64/src/fork_regs.rs) and a
+// reflected foreign trap reports RIP/RFLAGS there.
 //
 // rsp = frame, rbx = CR3 word or 0. The frame is ring 3's (only `syscall`
 // from ring 3 reaches `syscall_entry`), so there is no CS test.
 syscall_return:
     cli
+    cmpq $SYSCALL_VEC, TF_VECTOR(%rsp)
+    jne trap_return                  // rebuilt: every register from the frame
     testq %rbx, %rbx
     jz 1f
     movq %gs:0, %rcx
