@@ -566,7 +566,11 @@ fn an_irq_event_carries_its_cpu_on_the_wire() {
     ring3(a, SLOT_A);
     let port = handle(sys_port_create_typed());
     let irq = held::<Irq>(a, CapPerms::READ, IRQ);
-    assert_eq!(irq_bind_op(irq, port, 0xAB, 1), 1, "the line is routed to CPU 1");
+    // With `IRQ_THREADED` the explicit CPU is the one the reservation runs on.
+    ipc_sched_shim::rt::set_reservation_cpu(1);
+    let cpu = irq_bind_op(irq, port, 0xAB, 1);
+    ipc_sched_shim::rt::set_reservation_cpu(0);
+    assert_eq!(cpu, 1, "the line is routed to CPU 1");
     azos_ipc::irq_bind::irq_dispatch(IRQ);
     assert_eq!(sys_port_poll_typed(port, BUF as u64), 16);
     let e = take16(BUF);
