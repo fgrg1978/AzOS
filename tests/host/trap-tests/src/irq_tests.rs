@@ -128,6 +128,79 @@ fn user_return_work_runs_only_for_an_interrupt_taken_from_user_mode() {
     assert!(!saw("user_return_work"), "a nested kernel interrupt does no task work: {:?}", logged());
 }
 
+/// **Work that arrives while the task is switched out (a forced stop, a
+/// signal) is done before it returns to user mode, not at its next trap**
+/// (K1 M4): the task work runs again after the switch back.
+#[test]
+fn user_return_work_runs_again_after_the_switch_back() {
+    reset();
+    let r = Resched::<4>::new();
+    r.set_live();
+    r.request(3);
+    let mut f = user_frame();
+    resched_exit::<Fake, _, 4>(&r, &mut f);
+    assert_eq!(
+        logged(),
+        ["exit_guard user=true", "user_return_work", "schedule", "user_return_work", "drop exit_guard"],
+        "the work is checked last, after the switch, inside the guard"
+    );
+}
+
+static REARM: Resched<4> = Resched::new();
+
+/// Each switch-out raises one more reschedule on the CPU the task comes back
+/// on, twice.
+fn rearm_twice() {
+    if with(|s| s.schedules) <= 2 {
+        REARM.request(with(|s| s.cpu));
+    }
+}
+
+/// **The exit loops while a reschedule is pending, the task work before each
+/// return, and ends once none is.**
+#[test]
+fn the_exit_loops_until_no_reschedule_is_pending() {
+    reset();
+    with(|s| s.on_schedule = Some(rearm_twice));
+    REARM.set_live();
+    REARM.request(3);
+    let mut f = user_frame();
+    resched_exit::<Fake, _, 4>(&REARM, &mut f);
+    assert_eq!(with(|s| s.schedules), 3, "{:?}", logged());
+    assert_eq!(logged().iter().filter(|l| *l == "user_return_work").count(), 4, "{:?}", logged());
+    assert_eq!(logged().last().map(String::as_str), Some("drop exit_guard"));
+}
+
+static MOVED: Resched<4> = Resched::new();
+
+/// The task comes back on CPU 1; meanwhile CPU 3 raised a reschedule for the
+/// task it runs now (once: a stale-CPU loop then ends instead of spinning).
+fn migrate_to_cpu_1() {
+    with(|s| s.cpu = 1);
+    if with(|s| s.schedules) == 1 {
+        MOVED.request(3);
+    }
+}
+
+/// **After a switch the exit spends the flag of the CPU the task came back on,
+/// not the one it left:** CPU 3's request stays CPU 3's.
+#[test]
+fn the_exit_reads_the_cpu_again_after_a_switch() {
+    reset();
+    with(|s| s.on_schedule = Some(migrate_to_cpu_1));
+    MOVED.set_live();
+    MOVED.request(3);
+    let mut f = user_frame();
+    resched_exit::<Fake, _, 4>(&MOVED, &mut f);
+    assert_eq!(with(|s| s.schedules), 1, "CPU 1's exit took CPU 3's flag: {:?}", logged());
+    with(|s| {
+        s.cpu = 3;
+        s.on_schedule = None;
+    });
+    resched_exit::<Fake, _, 4>(&MOVED, &mut f);
+    assert_eq!(with(|s| s.schedules), 2, "CPU 3's flag is still there for CPU 3");
+}
+
 /// **A hart whose interrupt stack lost its magic word is fatal before anything
 /// else: a corrupted stack is not a state to keep driving in.**
 #[test]

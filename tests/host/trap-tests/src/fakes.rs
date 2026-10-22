@@ -40,6 +40,10 @@ pub struct St {
     // interrupts
     pub stack_ok: bool,
     pub schedules: u32,
+    /// The CPU the interrupt exit runs on (3); `schedule()` may move it.
+    pub cpu: usize,
+    /// What happens while the task is switched out, once per `schedule()`.
+    pub on_schedule: Option<fn()>,
 }
 
 impl St {
@@ -65,6 +69,8 @@ impl St {
             arch_exc: Disposition::Default,
             stack_ok: true,
             schedules: 0,
+            cpu: 3,
+            on_schedule: None,
         }
     }
 }
@@ -304,7 +310,7 @@ impl<F: Frame> IrqServices<F> for Fake {
         Guard("exit_guard")
     }
     fn cpu() -> usize {
-        3
+        with(|s| s.cpu)
     }
     fn irq_stack_intact(_cpu: usize) -> bool {
         with(|s| s.stack_ok)
@@ -333,7 +339,13 @@ impl<F: Frame> IrqServices<F> for Fake {
     }
     fn schedule() {
         log("schedule");
-        with(|s| s.schedules += 1);
+        let hook = with(|s| {
+            s.schedules += 1;
+            s.on_schedule
+        });
+        if let Some(f) = hook {
+            f();
+        }
     }
 }
 

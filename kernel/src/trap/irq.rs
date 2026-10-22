@@ -119,8 +119,15 @@ pub fn tick_work<S: IrqServices<F>, F: Frame>(now: u64, ticks: Option<u64>, upti
 /// The reschedule point the interrupt entry asm calls after the arm, with
 /// `sp` back on the interrupted task's own stack. Never from the syscall path
 /// or a nested interrupt.
+///
+/// A loop, as Linux's `exit_to_user_mode_loop`: the task work runs again
+/// after every `schedule()`, so a forced stop or a signal that arrived while
+/// the task was switched out is honoured before it returns to user mode, not
+/// at its next trap (a tick later, or never on a tickless CPU). The CPU is
+/// read again after each switch: the task may come back on another one, and
+/// spending the old CPU's flag would take that CPU's reschedule.
 pub fn resched_exit<S: IrqServices<F> + FaultServices<F>, F: Frame, const N: usize>(r: &Resched<N>, frame: &mut F) {
-    let cpu = <S as IrqServices<F>>::cpu();
+    let mut cpu = <S as IrqServices<F>>::cpu();
     if !S::irq_stack_intact(cpu) {
         // Same ending as a kernel page fault: the motors stop before the
         // machine does. A corrupted stack is not a state to keep driving in.
@@ -133,10 +140,14 @@ pub fn resched_exit<S: IrqServices<F> + FaultServices<F>, F: Frame, const N: usi
     // Lockdep: no lock held when this returns to user mode, also after a
     // switch away and back below.
     let _guard = S::exit_guard(user);
-    if user {
-        S::user_return_work(frame);
-    }
-    if r.take(cpu) {
+    loop {
+        if user {
+            S::user_return_work(frame);
+        }
+        if !r.take(cpu) {
+            break;
+        }
         S::schedule();
+        cpu = <S as IrqServices<F>>::cpu();
     }
 }
