@@ -32,7 +32,6 @@
 .equ TF_OFF_FAR,       {tf_off_far}
 .equ TF_OFF_ESR,       {tf_off_esr}
 .equ TF_OFF_VECTOR,    {tf_off_vector}
-.equ TF_OFF_FPSTATE,   {tf_off_fpstate}
 .equ MAX_HARTS,        {max_harts}
 .equ IRQ_STACK_SIZE,   {irq_stack_size}
 

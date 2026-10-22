@@ -27,8 +27,7 @@
 // thing this file does is the lazy-FP block at the top of `context_switch`:
 // the outgoing task's USER FP state, saved into its per-task area
 // (`kernel/src/entry/aarch64/fp.rs`) only if it is live on this hart.
-// The `CTX_D*` offsets below are still injected (kernel/src/main.rs) but
-// no longer used by any instruction.
+// `TaskContext`'s d8..d15 words are not touched here.
 //
 // `tp` is not a literal GPR on this ISA, and — closed hazard, found during
 // the aarch64 ipctest SMP-stall investigation — `CTX_TP` (`TaskContext::tp`)
@@ -89,10 +88,6 @@
 .equ CTX_TP,   {ctx_tp}
 // Length of `AZOS_TLB_SWITCH_FLUSH` (`azos_arch_api::tlb_gen::HARTS`, NR_CPUS).
 .equ TLB_MAX_HARTS, {tlb_max_harts}
-.equ CTX_D8,   {ctx_d8}    // pair: d8/d9
-.equ CTX_D10,  {ctx_d10}   // pair: d10/d11
-.equ CTX_D12,  {ctx_d12}   // pair: d12/d13
-.equ CTX_D14,  {ctx_d14}   // pair: d14/d15
 
 // Task struct offsets — same two constants riscv64's context_switch.S
 // takes, same injection site (kernel/src/main.rs), same meaning.

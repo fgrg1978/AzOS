@@ -261,13 +261,17 @@ pub fn ttbr1_alias_verify() -> (u64, u64, bool) {
 /// `aarch64_early_ttbr1_alias` builds — a flat RWX mapping with none of
 /// those protections, and never replaced on THIS register because the
 /// primary's own `TTBR1_EL1` switch (`ARCH.switch_kernel_pt`, banked per PE)
-/// cannot reach a PE that has not started yet. Falls back to the alias only
-/// if [`SECONDARY_TTBR1_PA`] has not been published (`0` — should not
-/// happen once `boot_hooks::arch_hardware_init` has run, which it always
-/// has by the time any secondary reaches this call), so a secondary still
-/// gets SOME upper-half mapping rather than none.
+/// cannot reach a PE that has not started yet.
+///
+/// Returns 1 once attached, 0 when there is nothing to attach: no published
+/// [`SECONDARY_TTBR1_PA`] (`boot_hooks::arch_hardware_init` publishes it
+/// before any secondary starts) or no published `TCR_EL1`. `boot.S` parks the
+/// PE on 0 (K1 L9): it used to fall back, silently, to the boot alias, so a
+/// secondary ran without W^X, NX or guards until the boot CPU's readback,
+/// or jumped to the high half with no TTBR1 at all. A parked PE never
+/// publishes online, and the boot CPU's wait reports it.
 #[unsafe(no_mangle)]
-pub extern "C" fn aarch64_secondary_ttbr1_attach() {
+pub extern "C" fn aarch64_secondary_ttbr1_attach() -> u64 {
     // TTBR1_EL1 and TCR_EL1 are BANKED PER PE: the primary's write reaches
     // only the primary. A secondary that jumps to a high VA without this has
     // no upper-half translation at all, and the fault it takes cannot be
@@ -281,13 +285,10 @@ pub extern "C" fn aarch64_secondary_ttbr1_attach() {
     // `TCR_BOOT_VALUE` before any secondary starts, so it still describes
     // the live register; only the TTBR1 base address needs the
     // post-`enable_paging` value.
-    let ttbr1 = match SECONDARY_TTBR1_PA.load(Ordering::Acquire) {
-        0 => azos_arch::mmu::setup::TTBR1_BOOT_VALUE.load(Ordering::Acquire),
-        pa => pa as u64,
-    };
+    let ttbr1 = SECONDARY_TTBR1_PA.load(Ordering::Acquire) as u64;
     let tcr = azos_arch::mmu::setup::TCR_BOOT_VALUE.load(Ordering::Acquire);
     if ttbr1 == 0 || tcr == 0 {
-        return;
+        return 0;
     }
     unsafe {
         azos_arch::sysregs::write_tcr_el1(tcr);
@@ -304,6 +305,7 @@ pub extern "C" fn aarch64_secondary_ttbr1_attach() {
     if let Some(slot) = CORE_TTBR1.get(hart) {
         slot.store(azos_arch::sysregs::read_ttbr1_el1(), Ordering::Release);
     }
+    1
 }
 
 #[unsafe(no_mangle)]
@@ -366,11 +368,6 @@ pub struct TrapFrame {
     /// `_slot_sync_lower64` takes an `svc` whose EC equals it on the native
     /// path. Also keeps the frame a multiple of 16 bytes.
     pub syscall_tag: u64,
-    /// Zero-sized and never read. Kept only because `kernel/src/main.rs`
-    /// injects `offset_of!(TrapFrame, fpstate)` into `trap_entry.S`
-    /// (`TF_OFF_FPSTATE`, no longer used by any instruction); remove it
-    /// together with that line.
-    pub fpstate: [u64; 0],
 }
 
 // The frame is what the trap asm reserves on the stack, so its size is an ABI
@@ -514,7 +511,8 @@ pub static SECONDARY_TTBR0_PA: AtomicUsize = AtomicUsize::new(0);
 /// the "at boot" value would make it compare a value against itself.
 ///
 /// Before this static is published (`0`), [`aarch64_secondary_ttbr1_attach`]
-/// falls back to `TTBR1_BOOT_VALUE` — the alias — which is what every
+/// refuses and `boot.S` parks the PE (K1 L9). It used to fall back to
+/// `TTBR1_BOOT_VALUE` — the alias — which is what every
 /// secondary attached to before this fix (U01-1): the alias table is a flat
 /// RWX identity mapping, so the W^X split, the NX-outside-image sweep and
 /// the stack guards `boot_hooks::arch_hardware_init` applies to the REAL

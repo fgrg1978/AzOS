@@ -300,7 +300,9 @@ fn handle_irq(_frame: &mut TrapFrame) {
         // consuming them (K-C25: a one-shot wake has no second chance, and
         // recovering it needs no clock reading).
         let vdso_hz = VDSO_TIMEBASE_HZ.load(Ordering::Relaxed);
-        let uptime_ms = (now != 0 && vdso_hz != 0).then(|| now / (vdso_hz / 1000));
+        // `>= 1000`, as `vdso_clock` and x86_64: a bad CNTFRQ below 1 kHz would
+        // make the divisor 0 (K1 L11).
+        let uptime_ms = (now != 0 && vdso_hz >= 1000).then(|| now / (vdso_hz / 1000));
         crate::trap::irq::tick_work::<Kernel, TrapFrame>(now, Some(ticks), uptime_ms);
 
         // Wave 11 ONESHOT: the nearest remaining timer
@@ -328,6 +330,11 @@ fn handle_irq(_frame: &mut TrapFrame) {
         // riscv64's `request_resched`/`trap_resched` split
         // (`kernel/src/entry/riscv64/irq.rs`) exactly, for the exact same reason.
         request_resched();
+        // Done: the tick does not walk the device ladder below (K1 L10: it
+        // ran the LPI, virtio, input, sound and user-SPI tests on every tick,
+        // and a driver that claimed INTID 27 would have acted on the timer).
+        azos_arch::irq::gic::eoir1(intid);
+        return;
     }
 
     if intid >= azos_arch::irq::gic::LPI_INTID_BASE {
@@ -404,8 +411,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
     // (`kernel/src/entry/riscv64/irq.rs`'s `INT_EXTERNAL_S` arm), plus the mask
     // that a level line needs while ring 3 has not quietened its device yet:
     // without it the EOI below re-pends the line at once and this hart takes
-    // it forever. The range test comes first so the timer tick, which
-    // falls through to here, pays a compare and no load.
+    // it forever.
     //
     // Order is load-bearing: MASK (ICENABLER + RWP wait), then EOI, then
     // dispatch. Dispatch is what lets the driver run (on any PE) and ACK;

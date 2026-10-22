@@ -20,15 +20,16 @@ impl azos_drv_virtio::virtio::pci::msix_selftest::MsiRoute for ItsRoute {
         if !crate::boot_hooks::its_ready() {
             return false;
         }
-        let its = crate::boot_hooks::its();
-        let Ok(slot) = its.map_device(self.dev) else { return false };
         let off = self.lpi_offset;
-        (0..n as u32).all(|ev| its
-            .map_vector(slot, ev, azos_arch::irq::gic::LPI_INTID_BASE + off + ev)
-            .is_ok())
+        crate::boot_hooks::with_its(|its| {
+            let Ok(slot) = its.map_device(self.dev) else { return false };
+            (0..n as u32).all(|ev| its
+                .map_vector(slot, ev, azos_arch::irq::gic::LPI_INTID_BASE + off + ev)
+                .is_ok())
+        })
     }
     fn target(&self, vec: u16) -> (u64, u32) {
-        crate::boot_hooks::its().msi_target(vec as u32)
+        crate::boot_hooks::with_its(|its| its.msi_target(vec as u32))
     }
     fn delivered(&self, vec: u16) -> u64 {
         crate::entry::aarch64::LPI_VECTOR_COUNT

@@ -333,7 +333,6 @@ global_asm!(
     tf_off_far      = const core::mem::offset_of!(entry::aarch64::TrapFrame, far_el1),
     tf_off_esr      = const core::mem::offset_of!(entry::aarch64::TrapFrame, esr_el1),
     tf_off_vector   = const core::mem::offset_of!(entry::aarch64::TrapFrame, vector),
-    tf_off_fpstate  = const core::mem::offset_of!(entry::aarch64::TrapFrame, fpstate),
     vec_sync_cur    = const entry::aarch64::VEC_SYNC_CURRENT_EL_SP0,
     vec_irq_cur     = const entry::aarch64::VEC_IRQ_CURRENT_EL_SP0,
     vec_sync_lo     = const entry::aarch64::VEC_SYNC_LOWER_EL,
@@ -383,10 +382,6 @@ global_asm!(
     ctx_x29 = const core::mem::offset_of!(azos_sched::task::TaskContext, x29),
     ctx_pc  = const core::mem::offset_of!(azos_sched::task::TaskContext, pc),
     ctx_tp  = const core::mem::offset_of!(azos_sched::task::TaskContext, tp),
-    ctx_d8  = const core::mem::offset_of!(azos_sched::task::TaskContext, d8),
-    ctx_d10 = const core::mem::offset_of!(azos_sched::task::TaskContext, d10),
-    ctx_d12 = const core::mem::offset_of!(azos_sched::task::TaskContext, d12),
-    ctx_d14 = const core::mem::offset_of!(azos_sched::task::TaskContext, d14),
     task_satp_off = const core::mem::offset_of!(azos_sched::task::Task, task_satp),
     context_saving_off = const core::mem::offset_of!(azos_sched::task::Task, context_saving),
 );

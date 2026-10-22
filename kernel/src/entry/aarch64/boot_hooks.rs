@@ -404,9 +404,9 @@ pub fn mmu_enabled() {
     // — safe to read `vmm::kernel_pagetable()` (it takes a `Mutex`) HERE
     // because this PE's own MMU has been on since `aarch64_early_mmu_init`
     // ran in `boot.S`, before `kernel_main` was even called. Before this
-    // store, `SECONDARY_TTBR1_PA` reads `0` and that function falls back to
-    // the early-boot alias — see `SECONDARY_TTBR1_PA`'s own doc for why a
-    // secondary attaching that alias instead is exactly U01-1.
+    // store, `SECONDARY_TTBR1_PA` reads `0` and that function refuses, so the
+    // secondary parks — see `SECONDARY_TTBR1_PA`'s own doc for why a
+    // secondary attaching the boot alias instead is exactly U01-1.
     crate::entry::aarch64::SECONDARY_TTBR1_PA.store(
         azos_mm::vmm::kernel_pagetable(), Ordering::Release);
 
@@ -456,8 +456,8 @@ pub fn restrict_low_half() {
             // Fall back to publishing the FULL kernel table rather than
             // leaving SECONDARY_TTBR0_PA/AARCH64_KERNEL_TTBR0 at their
             // zero-init value. `0` is not "keep whatever was there" the
-            // way it is for TTBR1's fallback (SECONDARY_TTBR1_PA's `0`
-            // means "attach the boot alias instead" — a real table);
+            // way it is for TTBR1 (SECONDARY_TTBR1_PA's `0` parks the
+            // secondary);
             // TTBR0_EL1 = 0 on a secondary that then attaches it
             // (`aarch64_secondary_mmu_init`) makes EVERY translation
             // through the low half fault, including the UART/GIC MMIO
@@ -766,7 +766,7 @@ pub fn irq_routing_init(hart_id: usize) {
     // (PCI enumeration, PSCI, timer) — only the ITS-dependent PCI IRQ
     // path (A2-main.diff) is unavailable if this errors.
     let its_rd_base = gic::GICR_BASE; // cpu_id 0 * GICR_STRIDE
-    match its().init(its_rd_base) {
+    match with_its(|its| its.init(its_rd_base)) {
         Ok(()) => {
             ITS_READY.store(true, core::sync::atomic::Ordering::Release);
             kprintln!("[ITS] enabled: base={:#x} rd_base(cpu0)={:#x}",
@@ -853,8 +853,12 @@ pub fn timer_init() {
 /// `entry::riscv64::boot_hooks::arch_map_late_mmio`.
 pub fn arch_map_late_mmio() {
     use azos_drv_base::platform::hw;
-    let _ = crate::boot::map_mmio_region(
-        hw::VIRTIO_MMIO_BASE, hw::VIRTIO_MMIO_STRIDE * hw::VIRTIO_MMIO_COUNT);
+    let len = hw::VIRTIO_MMIO_STRIDE * hw::VIRTIO_MMIO_COUNT;
+    // Unmapped, the first virtio probe takes a kernel data abort (the fatal
+    // path) with nothing to say why: name it here (K1 L8).
+    if !crate::boot::map_mmio_region(hw::VIRTIO_MMIO_BASE, len) {
+        azos_drv_sys::kwarn!("[MM] virtio-mmio {:#x} (+{:#x}) not mapped", hw::VIRTIO_MMIO_BASE, len);
+    }
     // This runs after `install_device_only_ttbr0`, writing new PTEs into the
     // table already live in `TTBR0_EL1`: without the barrier and TLB
     // invalidate, the next access may still see a translation fault.
@@ -888,18 +892,20 @@ pub fn arch_enter_scheduler(_hart_id: usize) -> ! {
 
 // ── The ITS instance ────────────────────────────────
 //
-// One per system, initialised once in the boot hook above, then used only
-// by `kernel_main`'s single-threaded PCI bring-up (`map_device` /
-// `map_vector` / `msi_target`) before the scheduler starts — no locking.
-static mut ITS: azos_arch::irq::its::ItsDriver =
-    azos_arch::irq::its::ItsDriver::new(azos_arch::irq::its::ITS_BASE);
+// One per system, initialised once in the boot hook above, then used by
+// `kernel_main`'s PCI bring-up (`map_device` / `map_vector` / `msi_target`,
+// `ext::its_route`). Behind a lock rather than a `static mut` handed out as
+// `&'static mut`: two such references (a target lookup while a prepare holds
+// one, or two CPUs) were undefined behaviour that only the boot being
+// single-threaded kept from happening (K1 L7).
+static ITS: azos_sync::SpinLock<azos_arch::irq::its::ItsDriver> =
+    azos_sync::SpinLock::new(azos_arch::irq::its::ItsDriver::new(azos_arch::irq::its::ITS_BASE));
 static ITS_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// The boot ITS. Callers: this file's boot hook and `kernel_main`'s PCI
-/// section, both on the boot hart before any task runs.
-pub fn its() -> &'static mut azos_arch::irq::its::ItsDriver {
-    // SAFETY: single-threaded boot-time use only (see the note above).
-    unsafe { &mut *core::ptr::addr_of_mut!(ITS) }
+/// Run `f` on the boot ITS, its lock held. Callers: this file's boot hook
+/// and the PCI functions' MSI routes (`ext::its_route`).
+pub fn with_its<R>(f: impl FnOnce(&mut azos_arch::irq::its::ItsDriver) -> R) -> R {
+    f(&mut ITS.lock())
 }
 
 /// Did `ItsDriver::init` succeed? `false` on a machine without an ITS.

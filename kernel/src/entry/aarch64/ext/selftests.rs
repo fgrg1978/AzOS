@@ -204,19 +204,20 @@ pub(crate) fn boot_selftests() {
     let ips = azos_arch::mmu::tcr_ips(tcr_live);
     let as_bit = azos_arch::mmu::tcr_as(tcr_live);
     kprintln!("[AARCH64-TCR] IPS={} AS={}", ips, as_bit);
-    // Both FAILED branches are QEMU-target claims (`-cpu max`/cortex-a72
-    // report PARange >= 4 and 16-bit ASID support), not an architectural
-    // guarantee for every CPU this crate might run on: a real
-    // implementation that only supports 8-bit ASIDs makes `AS` RES0 —
-    // reading back 0 there would be correct hardware behavior, not this
-    // code failing to ask. This gate boots QEMU only, so it is a fair
-    // canary here; it is not a portable assertion if reused elsewhere.
-    if ips == 0 {
-        azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: IPS=0 — TCR_EL1 still describes \
-                   32-bit physical addresses only");
+    // Each field against what THIS CPU reports it implements
+    // (`ID_AA64MMFR0_EL1`), not against what QEMU's `-cpu max`/cortex-a72
+    // happen to report: a CPU with 32-bit physical addresses (PARange 0)
+    // keeps IPS=0, and one with 8-bit ASIDs (ASIDBits 0) makes `AS` RES0,
+    // so it reads back 0. Both are correct hardware, not a FAILED line.
+    let mmfr0 = azos_arch::sysregs::read_id_aa64mmfr0_el1();
+    let pa_range = mmfr0 & 0xF;
+    let asid16 = (mmfr0 >> 4) & 0xF == 0b0010;
+    if ips == 0 && pa_range != 0 {
+        azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: IPS=0 but PARange={} — TCR_EL1 still describes \
+                   32-bit physical addresses only", pa_range);
     }
-    if as_bit == 0 {
-        azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: AS=0 on QEMU — TCR_EL1 still \
+    if as_bit == 0 && asid16 {
+        azos_drv_sys::kerr!("[AARCH64-TCR] FAILED: AS=0 on a CPU with 16-bit ASIDs — TCR_EL1 still \
                    selects an 8-bit ASID");
     }
 }

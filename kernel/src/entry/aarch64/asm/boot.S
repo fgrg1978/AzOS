@@ -517,6 +517,7 @@ _aarch64_secondary_entry:
     // only after the jump may TTBR0 move to the real kernel table.
     bl      aarch64_early_mmu_init
     bl      aarch64_secondary_ttbr1_attach
+    cbz     x0, _secondary_park           // no TTBR1 to attach: never run on the boot alias (K1 L9)
 
     movz    x10, #(({kernel_va_offset} >> 48) & 0xffff), lsl #48
     movk    x10, #(({kernel_va_offset} >> 32) & 0xffff), lsl #32
