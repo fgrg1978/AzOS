@@ -21678,13 +21678,14 @@ x=con; echo bb\$x-ok
                  'login refuse session=0 method=4 attempt=1 reason=1'; do
             grep -aqF -- "$m" "$log" || missing="$missing [$m]"
         done
-        # The name is echoed after the prompt. A kernel log line can land in the
-        # middle of the echo (`login: ali[VIRTIO-BLK] ...`, then `ce`), so the
-        # carriage returns and the log lines are taken out before the name is
-        # looked for.
+        # The name is echoed after the prompt. A kernel or service log line can
+        # land in the middle of the echo (`login: ali[VIRTIO-BLK] ...`, then
+        # `ce`; `login: [inputd] focus 0 -> 0 (trusted path)`, the input
+        # server's line for the same chord), so the carriage returns and the
+        # log lines are taken out before the name is looked for.
         python3 -c 'import re, sys
 t = open(sys.argv[1], "rb").read().decode("latin1")
-t = re.sub(r"\[[A-Z][A-Za-z0-9-]*\][^\n]*\n", "", t.replace("\r", ""))
+t = re.sub(r"\[[A-Za-z][A-Za-z0-9-]*\][^\n]*\n", "", t.replace("\r", ""))
 sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: alice]"
         # The passphrase is never echoed, never logged.
         grep -aqF -- "$pass" "$log" && missing="$missing [forbidden: the passphrase is in the console log]"
