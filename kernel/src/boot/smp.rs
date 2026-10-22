@@ -91,6 +91,8 @@ pub(crate) fn secondary_hw_init(hart_id: usize) {
 /// `None` for a node that is none (disabled, past `NR_CPUS`): `reg` is the
 /// hart id on riscv64 and the MPIDR on aarch64, keyed as `azos_percpu` maps
 /// it. x86_64 has no device tree; there the value is taken as the APIC id.
+/// Readers: `firmware_labels` (riscv64, aarch64) and the energy model.
+#[cfg(any(feature = "energy", not(target_arch = "x86_64")))]
 pub(crate) fn cpu_of_dt_reg(reg: u64) -> Option<usize> {
     #[cfg(not(target_arch = "aarch64"))]
     let hw = reg as usize;
