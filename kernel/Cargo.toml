@@ -937,7 +937,7 @@ switch-census = ["azos_sched/switch-census"]
 x86-limine = []
 # Kconfig KTEST (wave 15): the in-kernel test registry's runner
 # (kernel/src/ktest.rs) and every `ktest!` test. Off: none of it is compiled.
-ktest = ["dep:azos_ktest", "azos_sync/ktest", "azos_sched/ktest", "azos_fs/ktest", "azos_syscall/ktest", "azos_mm/ktest"]
+ktest = ["dep:azos_ktest", "azos_sync/ktest", "azos_sched/ktest", "azos_ipc/ktest", "azos_fs/ktest", "azos_syscall/ktest", "azos_mm/ktest"]
 # Kconfig LOCKDEP_Y (wave 15, N1): lockdep-lite in every kernel of the
 # configuration (crates/core/sync/src/lockdep.rs). `ktest` pulls it in too,
 # and Kconfig LOCKDEP_N / LOCKDEP_KTEST then decide whether it checks.

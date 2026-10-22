@@ -40,6 +40,9 @@ ipc_test_drivers = { path = "shims/drivers" }
 azos_arch = { path = "shims/arch", package = "ipc_test_arch" }
 
 [features]
+# `crates/core/ipc/src/irq_bind.rs` gates its in-kernel-test hooks on
+# `any(test, feature = "ktest")`; declared so that cfg is a known one here.
+ktest = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.

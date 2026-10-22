@@ -211,7 +211,9 @@ pub fn asid_max() -> u16 {
 }
 
 /// Test hook (ktest `asid_rollover_no_stale_translation`): the next
-/// allocation rolls the generation over, whatever `ASID_BITS` is.
+/// allocation rolls the generation over, whatever `ASID_BITS` is. Kconfig
+/// KTEST only: no other image can force a TLB-flush generation.
+#[cfg(feature = "ktest")]
 pub fn force_rollover_next() {
     let irq = lock();
     NEXT_ASID.store(0, Ordering::Relaxed);

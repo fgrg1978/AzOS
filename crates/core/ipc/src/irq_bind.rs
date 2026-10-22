@@ -246,12 +246,29 @@ static IRQ_MSI_DROPS: AtomicU32 = AtomicU32::new(0);
 /// Runtime canary `irq-storm` (ktest `irq_storm_is_contained`, the gate's
 /// canary row): the budget rule is off. A throttle leaves an idle line live
 /// and an ACK unmasks a line whose owner's budget is spent, as a binding
-/// without the rule would.
+/// without the rule would. Test builds only (Kconfig KTEST, the host suite):
+/// no other image can switch storm containment off.
+#[cfg(any(test, feature = "ktest"))]
 static CANARY_STORM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Arm or disarm runtime canary `irq-storm`.
+#[cfg(any(test, feature = "ktest"))]
 pub fn canary_storm(on: bool) {
     CANARY_STORM.store(on, Ordering::Relaxed);
+}
+
+/// Is the budget rule off (canary `irq-storm`)? The constant `false` outside
+/// test builds, so the throttle and the ACK load nothing for it.
+#[inline(always)]
+fn storm_canary() -> bool {
+    #[cfg(any(test, feature = "ktest"))]
+    {
+        CANARY_STORM.load(Ordering::Relaxed)
+    }
+    #[cfg(not(any(test, feature = "ktest")))]
+    {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +438,7 @@ fn ack(irq: u32, tid: u32, unmask: bool) -> Ack {
         return Ack::NotBound;
     };
     b.in_service = false;
-    if b.throttled && !b.msi && !CANARY_STORM.load(Ordering::Relaxed) {
+    if b.throttled && !b.msi && !storm_canary() {
         b.held = true;
         Ack::Held
     } else {
@@ -464,7 +481,7 @@ fn sc_throttle(tid: u32, throttled: bool, overrun: bool) {
                 }
                 // An MSI cannot be masked: its deliveries are dropped while
                 // `throttled` ([`irq_msi_dispatch`]).
-                if !b.msi && !b.in_service && !b.held && !CANARY_STORM.load(Ordering::Relaxed) {
+                if !b.msi && !b.in_service && !b.held && !storm_canary() {
                     b.held = true;
                     line_masked(b.irq);
                     masked += 1;
