@@ -58,7 +58,7 @@ board, RAM, hardware class).
 | Real-time class | `RT_*` | `NONE`, `SOFT`, `HARD`, `MIXED` | What the image promises about time. Hard and mixed need memory committed at map time. |
 | Security posture | `SECURITY_*` | `GENERAL`, `HARDENED`, `SEPARATION_STATIC`, `CONFIDENTIAL` | The threat model and the default of mandatory OTA signatures. |
 | Virtualization role | `VIRT_*` | `NONE`, `HOSTED`, `SPLIT`, `STATIC` | The hypervisor role (see [virtualization.md](virtualization.md)). |
-| Build type | `BUILD_TYPE_*` | `DEV`, `RELEASE`, `CERTIFIABLE` | Set by the board, not the preset: a QEMU image is a development build. A release build forces off the test-only machinery (`KTEST`, `CHAOS`, `CANARY_RUNTIME`) and refuses the test signing key. |
+| Build type | `BUILD_TYPE_*` | `DEV`, `RELEASE`, `CERTIFIABLE` | Named by the defconfig, not keyed on the board or the preset: release is the default and every QEMU defconfig says `BUILD_TYPE_DEV`. A release build forces off the test-only machinery (`KTEST`, `CHAOS`, `CANARY_RUNTIME`) and refuses the test signing key. |
 
 The limits in `config/Kconfig.limits` default by `HWCLASS` directly: `HWCLASS_EMBEDDED`,
 `HWCLASS_SBC || HWCLASS_DESKTOP` (the edge tables) and `HWCLASS_SERVER` (the fleet tables).
@@ -190,8 +190,9 @@ Source: `tools/kconfig_to_cargo.py`, `tools/kconfig_lint.py`, `crates/core/limit
    Presets and axes set defaults through `default ... if` and `imply`. Do not `select` a
    symbol that has a prompt (`tools/kconfig_lint.py` refuses it); use `depends on`.
 2. **Use it.** For a size or a switch, import it: `azos_limits::MY_TABLE_ENTRIES`. A new
-   symbol needs a real consumer; a symbol nothing imports changes nothing when it is
-   edited (`python3 tools/gen_config_index.py --list` lists every declared symbol).
+   symbol needs a real consumer (`tools/kconfig_lint.py` refuses a symbol nothing reads,
+   a symbol defined twice, and a symbol whose defaults all give one value); a symbol nothing
+   imports changes nothing when it is edited (`python3 tools/gen_config_index.py --list` lists every declared symbol).
 3. **If it selects code**, give the symbol a cargo feature: add `# cargo-feature: my-feature`
    as the first line of its block (`# cargo-feature: my-feature base` also puts it in the
    output of `--base`), and declare `my-feature` in `kernel/Cargo.toml`. One symbol owns
