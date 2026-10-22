@@ -235,6 +235,11 @@ exec-regs-canary = ["azos_sched/exec-regs-canary"]
 # row that declares none of them. The `inspect: views need their grant` rows
 # go red with it. Never in a real build.
 inspect-view-canary = ["azos_ipc/inspect-view-canary"]
+# Gate canary of the admin task list (`kernel/src/boot/inspect_tasks.rs`): a
+# change in a task slot is written by the next refresh instead of where it
+# happens, as before the list was written on change. The `inspect: views`
+# rows' task-list checks go red with it. Never in a real build.
+task-view-stale-canary = []
 # Wave 13 canary: orphans are not re-parented (the orphan rows go red).
 # Never in a real build.
 orphan-reparent-canary = ["azos_sched/orphan-reparent-canary"]

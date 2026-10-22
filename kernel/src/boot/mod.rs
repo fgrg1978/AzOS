@@ -43,9 +43,13 @@ mod inspect;
 #[cfg(feature = "inspect")]
 mod inspect_metrics;
 #[cfg(feature = "inspect")]
+mod inspect_tasks;
+#[cfg(feature = "inspect")]
 mod inspect_views;
 #[cfg(feature = "inspect")]
-pub(crate) use inspect::{install_inspect, refresh_now as inspect_refresh_now};
+pub(crate) use inspect::install_inspect;
+#[cfg(all(feature = "inspect", feature = "lat-trace", feature = "lat-smoke"))]
+pub(crate) use inspect::refresh_now as inspect_refresh_now;
 #[cfg(all(feature = "inspect", feature = "lat-trace"))]
 pub(crate) use inspect::public_str as inspect_public_str;
 /// The decimal name of an introspection-tree node numbered `n` (for the

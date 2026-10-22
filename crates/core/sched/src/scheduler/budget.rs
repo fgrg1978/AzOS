@@ -905,7 +905,7 @@ pub fn blocked_fastipc_ids(out: &mut [(u32, bool, u32, u32, bool)]) -> usize {
     n
 }
 
-/// One task, as [`task_rows`] reports it (the introspection tree's admin
+/// One task, as [`task_row_at`] reports it (the introspection tree's admin
 /// task list).
 #[derive(Clone, Copy)]
 pub struct TaskRow {
@@ -921,32 +921,15 @@ pub struct TaskRow {
     pub name: [u8; 16],
 }
 
-/// Wave 12 (the introspection tree's admin task list, the user shell's `ps`): the live task slots, in
-/// slot order, into `out`; how many were written. A racy snapshot read the
-/// way [`task_census`] reads (no pool lock, atomics per field): a task that
-/// is created or exits meanwhile may be missed or seen twice. Slots past
-/// `out.len()` are not reported.
-pub fn task_rows(out: &mut [TaskRow]) -> usize {
-    let mut n = 0;
-    for i in 0..MAX_TASKS {
-        if n >= out.len() { break; }
-        if let Some(r) = task_row_at(i) {
-            out[n] = r;
-            n += 1;
-        }
-    }
-    n
-}
-
-/// One live task's row, as [`task_rows`] reports it; `None` when `tid` is
-/// not live, without a snapshot of every row.
+/// One live task's row, as [`task_row_at`] reports it; `None` when `tid` is
+/// not live.
 pub fn task_row(tid: u32) -> Option<TaskRow> {
     let r = task_row_at(idx_for_tid(tid)?)?;
     if r.tid == tid { Some(r) } else { None }
 }
 
 /// `(tid, voluntary, preempted)` context switches of the live task in slot
-/// `i`; `None` for a free slot. Read without a lock, like [`task_rows`]; the
+/// `i`; `None` for a free slot. Read without a lock, like [`task_row_at`]; the
 /// introspection tree's switch counters (`metrics/sched`) sum the growth of
 /// each slot, so a task's counts need not outlive it.
 pub fn task_switches_at(i: usize) -> Option<(u32, u64, u64)> {
@@ -966,7 +949,14 @@ pub fn task_switches_at(i: usize) -> Option<(u32, u64, u64)> {
     }
 }
 
-fn task_row_at(i: usize) -> Option<TaskRow> {
+/// The row of the task in slot `i`, `None` for a free slot (or one past
+/// `MAX_TASKS`): the introspection tree's admin task list, written each time
+/// the slot changes ([`super::set_task_view_hook`]). Read without a lock, an atomic
+/// per field, the way [`task_census`] reads: any context.
+pub fn task_row_at(i: usize) -> Option<TaskRow> {
+    if i >= MAX_TASKS {
+        return None;
+    }
     unsafe {
         if !TASK_VALID[i].load(Ordering::Acquire) {
             return None;

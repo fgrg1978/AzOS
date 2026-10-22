@@ -64,7 +64,7 @@ domains/robot/bench	2	0	0	0
 domains/robot/flight	1	0	0	0
 domains/robot/robot	1	0	0	0
 domains/robot/telemetry	1	0	0	0
-kernel	321	14	12	50
+kernel	324	14	12	50
 lx/emul	8	0	0	0
 micro	20	4	0	0
 tools/linux_seccomp_launch	11	2	0	2

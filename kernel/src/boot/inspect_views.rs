@@ -22,8 +22,7 @@
 //! chaos/{seed, <point>/{rate, checked, fired}}         Kconfig CHAOS
 //! ```
 //!
-//! View regions (the same layout, class public; each also carries
-//! `inspect/refresh_ms` and the refresh count as its stamp):
+//! View regions (the same layout, class public):
 //!
 //! ```text
 //! inspect.names       NAMESD.ELF  endpoints/<name>/{index, server}, imports/<badge> = "name,..."
@@ -43,20 +42,29 @@
 //! image serving it, empty while none does. A view no row declares is not
 //! created.
 //!
-//! Admin tree: `decisions/records/<n>`, the newest stored decisions as
-//! `ProvenanceRecord::to_bytes` records, oldest first (Kconfig
-//! DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE): a record's subject may
+//! Admin tree: `decisions/records/<n>`, the newest [`DECISION_ROWS`] stored
+//! decisions as `ProvenanceRecord::to_bytes` records, record `id` in slot
+//! `id % DECISION_ROWS` (empty until one is stored there), Kconfig
+//! DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE: a record's subject may
 //! be a task.
 //!
 //! Shapes are built once, at `install_inspect`, from the topology installed by
-//! then; the values (an endpoint's index and server, a component's `start`,
-//! the registry, the counters) are rewritten at every refresh.
-//! `components/rows` is written last and only when every component fit.
+//! then, and never rebuilt. What a reader acts on is written where it changes,
+//! before the change's caller goes on: an endpoint's index and server from
+//! the endpoint pool, under its lock (`azos_ipc::endpoint::set_view_hook`), a
+//! component's `start` when the boot launcher finds its image missing
+//! ([`component_unstartable`]), a decision record where it is recorded
+//! (`azos_decision::set_view_sink`). A reader never waits for a refresh. The
+//! counters (the file system's, the registry's, chaos's) are rewritten at
+//! every refresh. `components/rows` is written last and only when every
+//! component fit.
+
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use azos_inspect::{Builder, Class, Error, NodeId, Region, Writer};
 use azos_ipc::inspect_region::ViewKind;
 use azos_ipc::memobj::{self, MemPerms, MemSpec};
-use azos_sync::SpinLock;
+use azos_sync::kmutex::Mutex;
 
 use super::inspect_metrics::Num;
 
@@ -70,7 +78,7 @@ const COMPONENTS: usize = 24;
 const VIEW_PAGES_MAX: usize = 16;
 /// Decision records the admin view holds (`decisd`'s table).
 #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
-const DECISION_ROWS: usize = 24;
+pub(crate) const DECISION_ROWS: usize = 24;
 
 type EpName = [u8; azos_ipc::endpoint::ENDPOINT_NAME_MAX];
 
@@ -97,9 +105,10 @@ struct Ids {
     chaos: [(NodeId, NodeId, NodeId); azos_chaos::POINTS.len()],
 }
 
-static IDS: SpinLock<Option<Ids>> = SpinLock::new(None);
+/// Set by `build` at boot; read by the refresh (task context).
+static IDS: Mutex<Option<Ids>> = Mutex::new(None);
 
-/// A view's nodes the refresh writes.
+/// A view's nodes its writers write.
 #[derive(Clone, Copy)]
 struct ViewIds {
     endpoints: [Option<Endpoint>; ENDPOINTS],
@@ -109,8 +118,17 @@ struct ViewIds {
 
 const NO_VIEW_IDS: ViewIds = ViewIds { endpoints: [None; ENDPOINTS], starts: [None; COMPONENTS] };
 
-static VIEWS: SpinLock<[Option<(Writer<'static>, ViewIds)>; ViewKind::ALL.len()]> =
-    SpinLock::new([const { None }; ViewKind::ALL.len()]);
+/// Every view built, by [`ViewKind`].
+struct Views([Option<(Writer<'static>, ViewIds)>; ViewKind::ALL.len()]);
+
+/// The views, published once at boot by [`install_views`] and never changed:
+/// the endpoint hook reads them under the pool's lock, with no lock of its own.
+static VIEWS: AtomicPtr<Views> = AtomicPtr::new(core::ptr::null_mut());
+
+fn views() -> Option<&'static Views> {
+    // SAFETY: set once, to a leaked allocation that lives for good.
+    unsafe { VIEWS.load(Ordering::Acquire).as_ref() }
+}
 
 /// A string node sized to `s` (at least one byte).
 fn text(b: &mut Builder<'_, '_>, parent: NodeId, name: &str, s: &str) -> Result<NodeId, Error> {
@@ -142,7 +160,7 @@ pub(crate) fn build(b: &mut Builder<'_, '_>, root: NodeId) -> Result<(), Error> 
     };
     let r = build_rest(b, root, &mut ids);
     // What was built is refreshed even when a later subtree did not fit.
-    *IDS.lock_irqsave() = Some(ids);
+    *IDS.lock() = Some(ids);
     r
 }
 
@@ -169,12 +187,11 @@ fn build_rest(b: &mut Builder<'_, '_>, root: NodeId, ids: &mut Ids) -> Result<()
     Ok(())
 }
 
-/// Rewrite the public values and every view's, and stamp the views with
-/// `stamp` (the refresh count); the number not published.
-pub(crate) fn refresh(w: &Writer<'_>, stamp: u64) -> u32 {
+/// Rewrite the public counters; the number not published.
+pub(crate) fn refresh(w: &Writer<'_>) -> u32 {
     let mut bad = 0u32;
     {
-        let g = IDS.lock_irqsave();
+        let g = IDS.lock();
         if let Some(ids) = g.as_ref() {
             let mut ok = |r: Result<(), Error>| bad += r.is_err() as u32;
             let (files, used, max) = azos_fs::tmpfs_stats();
@@ -190,8 +207,7 @@ pub(crate) fn refresh(w: &Writer<'_>, stamp: u64) -> u32 {
             }
         }
     }
-    bad += refresh_drivers(w);
-    bad + refresh_views(stamp)
+    bad + refresh_drivers(w)
 }
 
 fn refresh_drivers(w: &Writer<'_>) -> u32 {
@@ -223,7 +239,7 @@ fn refresh_drivers(w: &Writer<'_>) -> u32 {
     }
     // By kind, as the registry is looked up.
     rows[..n].sort_unstable_by_key(|r| r.0);
-    let g = IDS.lock_irqsave();
+    let g = IDS.lock();
     let Some(ids) = g.as_ref() else { return 0 };
     let mut bad = 0;
     for (i, d) in ids.drivers.iter().enumerate() {
@@ -298,10 +314,6 @@ fn build_view(
 ) -> Result<(), Error> {
     *ids = NO_VIEW_IDS;
     let root = NodeId::ROOT;
-    // How often the values move, as in the public region: what a reader that
-    // waits for a refresh paces itself by.
-    let meta = b.dir(root, "inspect")?;
-    b.u64(meta, "refresh_ms", azos_limits::INSPECT_REFRESH_MS as u64)?;
     if matches!(v, ViewKind::Names | ViewKind::Rpc | ViewKind::Mcp) {
         let mut eps = [([0u8; azos_ipc::endpoint::ENDPOINT_NAME_MAX], 0usize); ENDPOINTS];
         let n = view_endpoints(topo, v, &mut eps);
@@ -475,10 +487,13 @@ fn fits(topo: &azos_topology::Topology<'_>, v: ViewKind, pages: usize) -> bool {
     w.rebuild(|b| build_view(b, topo, v, &mut ids)).is_ok()
 }
 
-/// Create, build and publish every view a row declares. Boot, before any task
-/// is seeded; after the public region (the reader check is the same).
+/// Create, build and publish every view a row declares, then fill the
+/// endpoints in them from the pool and keep them so ([`endpoint_changed`]).
+/// Boot, before any task is seeded; after the public region (the reader check
+/// is the same).
 pub(crate) fn install_views() {
     let Some(topo) = azos_topology::get() else { return };
+    let mut all = alloc::boxed::Box::new(Views([const { None }; ViewKind::ALL.len()]));
     for v in ViewKind::ALL {
         if !declared(topo, v) {
             continue;
@@ -504,78 +519,118 @@ pub(crate) fn install_views() {
             azos_drv_sys::kwarn!("[INSPECT] the {} view does not build: not published", v.target());
             continue;
         }
-        VIEWS.lock_irqsave()[v as usize] = Some((w, ids));
+        all.0[v as usize] = Some((w, ids));
         azos_ipc::inspect_region::publish_view(v, obj);
         let (nodes, _, words, _) = w.usage();
         azos_drv_sys::kprintln!("[INSPECT] view {} published: {} KiB, {} nodes, {} value words",
             v.target(), pages * azos_arch::PAGE_SIZE / 1024, nodes, words);
     }
-}
-
-/// The named, live endpoints of the pool: name, pool index, serving image.
-struct Live {
-    name: EpName,
-    len: usize,
-    index: u32,
-    server: [u8; 16],
-}
-
-/// Rewrite every view's endpoints and components; the values not published.
-fn refresh_views(stamp: u64) -> u32 {
-    // The pool first, with no view lock held (each read takes the pool's).
-    let mut live = [const { None::<Live> }; ENDPOINTS];
-    let mut n = 0;
+    if all.0.iter().all(Option::is_none) {
+        return;
+    }
+    VIEWS.store(alloc::boxed::Box::leak(all), Ordering::Release);
+    // The hook first, then the pool as it stands: an endpoint made between
+    // the two is written twice, never missed.
+    azos_ipc::endpoint::set_view_hook(endpoint_changed);
     for i in 0..azos_ipc::endpoint::MAX_ENDPOINTS {
-        let Some((name, len, owner)) = azos_ipc::endpoint::endpoint_name_owner(i) else { continue };
-        if n == ENDPOINTS {
-            break;
+        if let Some((name, len, owner)) = azos_ipc::endpoint::endpoint_name_owner(i) {
+            endpoint_changed(&name[..len], Some(i as u32), owner);
         }
-        let served = owner != 0 && owner != azos_ipc::endpoint::UNCLAIMED;
-        let mut server = [0u8; 16];
-        if let Some(r) = served.then(|| azos_sched::task_row(owner)).flatten() {
-            server = r.name;
-        }
-        live[n] = Some(Live { name, len, index: i as u32, server });
-        n += 1;
     }
-    // Atomic stores only under the lock: no other lock is taken in it.
-    let views = VIEWS.lock_irqsave();
-    let mut bad = 0u32;
-    for (w, ids) in views.iter().flatten() {
-        for e in ids.endpoints.iter().flatten() {
-            let found = live[..n].iter().flatten().find(|l| l.name[..l.len] == e.name[..e.len]);
-            bad += w.set_u64(e.index, found.map_or(NO_INDEX, |l| l.index as u64)).is_err() as u32;
-            bad += w.set_str(e.server, found.map_or("", |l| padded(&l.server))).is_err() as u32;
+}
+
+/// The named endpoint `name` was made, claimed, left unserved, handed over or
+/// freed (`index` `None`): write its index and server into every view that
+/// lists it. Under the endpoint pool's lock, interrupts off: atomic stores
+/// only, a fixed walk (the views by their listed endpoints, at most
+/// `ENDPOINTS` each), and every node it writes has this one writer.
+fn endpoint_changed(name: &[u8], index: Option<u32>, owner: u32) {
+    let Some(all) = views() else { return };
+    let served = index.is_some() && owner != 0 && owner != azos_ipc::endpoint::UNCLAIMED;
+    let row = served.then(|| azos_sched::task_row(owner)).flatten();
+    let server = row.as_ref().map_or("", |r| padded(&r.name));
+    for (w, ids) in all.0.iter().flatten() {
+        for e in ids.endpoints.iter().flatten().filter(|e| &e.name[..e.len] == name) {
+            let _ = w.set_u64(e.index, index.map_or(NO_INDEX, u64::from));
+            let _ = w.set_str(e.server, server);
         }
-        for (id, row) in ids.starts.iter().flatten() {
-            bad += w.set_u64(*id, super::row_startable(*row) as u64).is_err() as u32;
-        }
-        w.stamp(stamp);
     }
-    bad
+}
+
+/// The boot launcher found the image of topology row `row` missing: the
+/// component manager's plan says `start` 0 for it from now on.
+pub(crate) fn component_unstartable(row: usize) {
+    let Some(all) = views() else { return };
+    let Some((w, ids)) = &all.0[ViewKind::Components as usize] else { return };
+    for (id, _) in ids.starts.iter().flatten().filter(|(_, r)| *r == row) {
+        let _ = w.set_u64(*id, 0);
+    }
 }
 
 // ── The admin region ─────────────────────────────────────────────────────────
 
-/// The admin region's decision records, newest that fit [`DECISION_ROWS`],
-/// oldest first, as `azos_decision::query` lists them. Rebuilt with the admin
-/// tree at every refresh.
+/// The admin region's decision records: [`DECISION_ROWS`] slots, empty, under
+/// `decisions/records/`, into `out`. Built with the admin tree, once.
 #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
-pub(crate) fn build_admin(b: &mut Builder<'_, '_>) -> Result<(), Error> {
-    const SIZE: usize = azos_decision::PROVENANCE_SIZE;
+pub(crate) fn build_admin(b: &mut Builder<'_, '_>, out: &mut [NodeId; DECISION_ROWS]) -> Result<(), Error> {
     let dec = b.dir(NodeId::ROOT, "decisions")?;
     let dir = b.dir(dec, "records")?;
+    for (k, id) in out.iter_mut().enumerate() {
+        *id = b.bytes(dir, &Num::name("", k as u64), azos_decision::PROVENANCE_SIZE, &[])?;
+    }
+    Ok(())
+}
+
+/// The admin region's record slots and their writers' state.
+#[cfg(any(feature = "decisions", feature = "decisions-durable"))]
+struct Records {
+    w: Writer<'static>,
+    rows: [NodeId; DECISION_ROWS],
+    /// Per slot: the newest id stored for it.
+    seq: [core::sync::atomic::AtomicU64; DECISION_ROWS],
+    /// Per slot: `inspect_tasks::coalesce`'s flag.
+    busy: [core::sync::atomic::AtomicU8; DECISION_ROWS],
+}
+
+#[cfg(any(feature = "decisions", feature = "decisions-durable"))]
+static RECORDS: AtomicPtr<Records> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Keep the admin region's records (`rows`, built by [`build_admin`] in `w`)
+/// written where each decision is recorded; write those stored already. Boot,
+/// once the admin region is published.
+#[cfg(any(feature = "decisions", feature = "decisions-durable"))]
+pub(crate) fn install_records(w: Writer<'static>, rows: [NodeId; DECISION_ROWS]) {
+    let r = alloc::boxed::Box::new(Records {
+        w,
+        rows,
+        seq: [const { core::sync::atomic::AtomicU64::new(0) }; DECISION_ROWS],
+        busy: [const { core::sync::atomic::AtomicU8::new(0) }; DECISION_ROWS],
+    });
+    RECORDS.store(alloc::boxed::Box::leak(r), Ordering::Release);
+    azos_decision::set_view_sink(decision_stored);
     let mut ids = [0u64; DECISION_ROWS];
     let after = azos_decision::total().saturating_sub(DECISION_ROWS as u64);
     let n = azos_decision::query(&azos_decision::Filter { after, ..azos_decision::Filter::ANY }, &mut ids);
-    let mut k = 0u64;
     for &id in &ids[..n] {
-        if let Some(p) = azos_decision::lookup(id) {
-            b.bytes(dir, &Num::name("", k), SIZE, &p.to_bytes())?;
-            k += 1;
-        }
+        decision_stored(id);
     }
-    Ok(())
+}
+
+/// Decision `seq` is stored: write it into its slot. Where it was recorded,
+/// any context (the wake path among them): no lock; a slot being written by
+/// another caller is written once more by it ([`super::inspect_tasks::coalesce`]),
+/// with the newest id for the slot.
+#[cfg(any(feature = "decisions", feature = "decisions-durable"))]
+fn decision_stored(seq: u64) {
+    // SAFETY: set once, to a leaked allocation that lives for good.
+    let Some(r) = (unsafe { RECORDS.load(Ordering::Acquire).as_ref() }) else { return };
+    let k = (seq % DECISION_ROWS as u64) as usize;
+    r.seq[k].fetch_max(seq, Ordering::AcqRel);
+    super::inspect_tasks::coalesce(&r.busy[k], || {
+        if let Some(p) = azos_decision::lookup(r.seq[k].load(Ordering::Acquire)) {
+            let _ = r.w.set_bytes(r.rows[k], &p.to_bytes());
+        }
+    });
 }
 
 /// A short line built in place: a list of names, the two endpoint columns.

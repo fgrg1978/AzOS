@@ -23,7 +23,7 @@
 mod service;
 
 use azos_libsys as sys;
-use azos_inspect_lib::{Inspector, Source, Value};
+use azos_inspect_lib::{Inspector, Value};
 use azos_names::{MsgDesc, NamesIdl, NAME_MAX};
 use service::{Host, Service};
 
@@ -113,20 +113,16 @@ fn main() -> ! {
     // SAFETY: the one reference, for the life of the program.
     let svc = unsafe { &mut *SERVICE.0.get() };
     let _ = sys::console_write(sys::STDOUT, b"[namesd] AzOS name server (Names on endpoint.names)\n");
-    // The tree, mapped once; then the refresh that published the endpoints
-    // this task's spawn created (their pool index) is waited for.
+    // The view, mapped once. The kernel writes an endpoint's pool index and
+    // server where they change, so those this task's spawn created are in it
+    // already.
     // SAFETY: the mapping lives as long as the task, read-only, and the
     // kernel writes it only with aligned 64-bit stores.
     svc.host.view = sys::inspect_map(azos_abi::cap::SHM_INSPECT_NAMES)
         .ok()
         .and_then(|m| unsafe { Inspector::from_mapped(m, None) }.ok());
-    match svc.host.view.as_mut() {
-        Some(v) => {
-            v.wait_refreshes(Source::Public, 2, &mut |ms| sys::sleep(ms));
-        }
-        None => {
-            let _ = sys::console_write(sys::STDOUT, b"[namesd] no introspection tree: every lookup is refused\n");
-        }
+    if svc.host.view.is_none() {
+        let _ = sys::console_write(sys::STDOUT, b"[namesd] no introspection tree: every lookup is refused\n");
     }
     loop {
         let mut req = MsgDesc::default();

@@ -242,10 +242,9 @@ fn read_policy() -> Policy {
     let Ok(m) = sys::inspect_map(azos_abi::cap::SHM_INSPECT_RPC) else { return p };
     // SAFETY: the mapping lives as long as the task, read-only, and the kernel
     // writes it only with aligned 64-bit stores.
+    // The pool index of an endpoint this task's spawn created is in the view
+    // already: the kernel writes it where the endpoint is made.
     let Ok(mut view) = (unsafe { Inspector::from_mapped(m, None) }) else { return p };
-    // The pool index of an endpoint this task's spawn created is published by
-    // the refresh after it.
-    view.wait_refreshes(Source::Public, 2, &mut |ms| sys::sleep(ms));
     let _ = view.with(Source::Public, |r| {
         p = Policy::NONE;
         if let Some(d) = r.lookup("peers")? {

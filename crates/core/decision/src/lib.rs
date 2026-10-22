@@ -1104,6 +1104,26 @@ fn deny_admit(subject: u32) -> Option<u64> {
     }
 }
 
+azos_common::ro_hook! {
+    /// Called with a record's id once it is stored (in the ring or the
+    /// journal), where it was recorded: the kernel's introspection tree
+    /// writes it into the admin region's records. Any context (some records
+    /// are made on the wake path): the hook takes no lock. Unset: none.
+    static VIEW: fn(u64);
+}
+
+/// Install the [`VIEW`] hook (the kernel, at boot).
+pub fn set_view_sink(f: fn(u64)) {
+    VIEW.set(f);
+}
+
+#[inline(never)]
+fn view(seq: u64) {
+    if let Some(f) = VIEW.get() {
+        f(seq);
+    }
+}
+
 /// Install the durable refusal sink (the kernel, at boot, once the flight
 /// recorder can take a record). A refusal raised before that is in the ring
 /// (when it is on) and in the journal, and not on the medium.
@@ -1173,6 +1193,9 @@ pub fn record_keyed(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: 
     }
     if to_sink {
         durable(rule, verdict, subject, n, seq);
+    }
+    if seq != 0 {
+        view(seq);
     }
     seq
 }

@@ -89,30 +89,6 @@ impl<'a> Inspector<'a> {
         }
     }
 
-    /// The stamp of `src`: the kernel's refresh count, which grows by one at
-    /// every refresh. 0 for a region that is not open.
-    pub fn stamp(&mut self, src: Source) -> u64 {
-        self.reader(src).map_or(0, |r| r.stamp())
-    }
-
-    /// Wait until region `src` has been refreshed `n` more times, sleeping a
-    /// quarter of the period (`inspect/refresh_ms`) at a time (`sleep_ms`);
-    /// `false` when that took more than `n + 2` periods. A reader that needs
-    /// what the kernel made before a moment (the pool index of an endpoint
-    /// its spawn created, a decision made before a request) waits for two:
-    /// the refresh that began after that moment has then ended.
-    pub fn wait_refreshes(&mut self, src: Source, n: u64, sleep_ms: &mut dyn FnMut(u64)) -> bool {
-        let period = self.read_u64("inspect/refresh_ms").ok().flatten().unwrap_or(250).max(1);
-        let s0 = self.stamp(src);
-        for _ in 0..(n + 2) * 4 {
-            if self.stamp(src) >= s0 + n {
-                return true;
-            }
-            sleep_ms(period / 4 + 1);
-        }
-        self.stamp(src) >= s0 + n
-    }
-
     /// The value at `path`, from the public region, else from the admin one.
     pub fn read(&mut self, path: &str) -> Result<Option<(Source, Value)>, Error> {
         for src in [Source::Public, Source::Admin] {

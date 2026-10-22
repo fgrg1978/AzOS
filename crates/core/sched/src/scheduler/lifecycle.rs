@@ -794,6 +794,10 @@ pub fn try_task_create_init(
 
     // Restore interrupts.
     azos_arch::ARCH.restore(sstatus);
+    // The task list shows the task before its creator learns its TID.
+    if let Some(idx) = result {
+        view_note(idx);
+    }
     // Wave 15 (TRACE): the proc class's spawn record (every task, kernel or
     // user, fork or spawn, is created here).
     if azos_trace::proc_on() {
@@ -1024,6 +1028,31 @@ azos_common::ro_hook! {
 /// Register the [`TASK_IDENTITY_HOOK`]. Call once, during boot.
 pub fn set_task_identity_hook(f: fn(usize, usize, u32)) {
     TASK_IDENTITY_HOOK.set(f);
+}
+
+azos_common::ro_hook! {
+    /// Called with a pool slot whose row of the task list changed
+    /// ([`super::task_row_at`]): a task made in it, the task in it a zombie,
+    /// the slot freed, its parent re-linked, its identity swapped at an exec.
+    /// The introspection tree's admin task list is written here, before the
+    /// change's caller goes on (`kernel/src/boot/inspect_tasks.rs`). Called
+    /// with interrupts off and under the pool lock at some sites: the hook
+    /// takes no lock and does not wait. Registered by the kernel at boot, as
+    /// [`TASK_EXIT_HOOK`].
+    static TASK_VIEW_HOOK: fn(usize);
+}
+
+/// Register the [`TASK_VIEW_HOOK`]. Call once, during boot.
+pub fn set_task_view_hook(f: fn(usize)) {
+    TASK_VIEW_HOOK.set(f);
+}
+
+/// Slot `idx`'s row of the task list changed ([`TASK_VIEW_HOOK`]).
+#[inline]
+pub(crate) fn view_note(idx: usize) {
+    if let Some(f) = TASK_VIEW_HOOK.get() {
+        f(idx);
+    }
 }
 
 azos_common::ro_hook! {
@@ -1396,6 +1425,8 @@ unsafe fn exec_take_over(idx: usize, lead: u32) -> Option<u32> {
         }
     }
     azos_arch::ARCH.restore(irqs);
+    view_note(idx);
+    view_note(to);
     signal::hand_over(idx, to);
     Some(by)
 }
@@ -1580,6 +1611,7 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
         let _pool = PoolGuard::acquire();
         task_mut(idx).set_state(TaskState::Zombie);
         hist_reaccount(idx);
+        view_note(idx);
     }
     let _ = azos_arch::ARCH.disable_all();
     do_schedule(SwitchReason::Voluntary);
@@ -1741,6 +1773,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
                 let _pool = PoolGuard::acquire();
                 task_mut(idx).set_state(TaskState::Zombie);
                 hist_reaccount(idx);
+                view_note(idx);
             } // pool lock released
         }
 
@@ -2508,6 +2541,7 @@ pub fn note_exit(idx: usize, code: i32) {
         for i in 0..MAX_TASKS {
             if i != idx && tid_for_idx(i).is_some() && PARENT_TID[i].load(Ordering::Relaxed) == child {
                 PARENT_TID[i].store(reaper, Ordering::Relaxed);
+                view_note(i);
                 #[cfg(feature = "orphan-late-adopter-canary")]
                 LATE_ADOPTER_TID.store(child, Ordering::Relaxed);
             }
@@ -3388,6 +3422,7 @@ pub(super) unsafe fn reap_zombie_on_switch(old_idx: usize) {
     rt::release(old_idx);
     TASK_VALID[old_idx].store(false, Ordering::Relaxed);
     hist_reaccount(old_idx);
+    view_note(old_idx);
     // D2: the task's place in its domain ends with its slot (a thread left
     // it already, in `member_exit`); the last one out frees the domain.
     crate::domain::leave(old.take_domain());

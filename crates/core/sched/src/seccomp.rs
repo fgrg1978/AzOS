@@ -801,15 +801,15 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // looks up the handles of the endpoints its row lends (`SYS_CAP_INFO`);
     // it reads the signed topology's view from its view region (found by
     // `SYS_CAP_INFO`, sized by `MEMOBJ_ACQUIRE`, mapped by `SYS_MO_MAP`; the
-    // wait for the first refresh is `SYS_SLEEP_UNTIL`) and writes the console for
-    // its refusal record. No spawn, kill, device, network or console-input
+    // kernel writes it where it changes, so there is no wait) and writes the
+    // console for its refusal record. No spawn, kill, device, network or console-input
     // call: it lends what its row holds and nothing it is not asked for. The
     // lent capability itself travels in the reply of `SYS_IPC_REPLY_V2`;
     // there is no call that creates authority.
     ImageProfile {
         image: "NAMESD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_MO_MAP, SYS_YIELD,
+            SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_YIELD,
             SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_CAP_INFO,
                     ],
         audit: false,
@@ -946,14 +946,14 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     },
     // The Decisions object's server. Serves `endpoint.decisions` (the v2
     // accept/reply), reads the decision records from the admin introspection
-    // region (mapped once: `SYS_CAP_INFO`, `MEMOBJ_ACQUIRE`, `SYS_MO_MAP`; a
-    // request waits for a refresh with `SYS_SLEEP_UNTIL`), writes its one
+    // region (mapped once: `SYS_CAP_INFO`, `MEMOBJ_ACQUIRE`, `SYS_MO_MAP`; the
+    // kernel writes a record there where it is made, so no request waits), writes its one
     // start-up line to the console. No spawn,
     // no kill, no device, no console input.
     ImageProfile {
         image: "DECISD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_MO_MAP, SYS_CAP_INFO, SYS_YIELD,
+            SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_CAP_INFO, SYS_YIELD,
             SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
                     ],
         audit: false,

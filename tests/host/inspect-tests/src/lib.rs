@@ -12,6 +12,9 @@
 mod metrics;
 
 #[cfg(test)]
+mod tasks;
+
+#[cfg(test)]
 mod tests {
     use azos_inspect::*;
     use azos_inspect_lib::{Inspector, RenderError, Source};

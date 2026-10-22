@@ -397,17 +397,46 @@ fn post_gone(link: crate::port_link::PortLink, r: u32, code: u16) {
     }
 }
 
-/// Publish slot `i`'s identity word (under `ENDPOINTS`).
+/// Publish slot `i`'s identity word (under `ENDPOINTS`), and a named
+/// endpoint's index and server to the view regions ([`VIEW_HOOK`]).
 fn publish(eps: &[Endpoint; MAX_ENDPOINTS], i: usize) {
     let e = &eps[i];
     let w = if e.active { (u64::from(e.generation) << 32) | u64::from(e.owner_tid) } else { 0 };
     LOOKUP[i].store(w, Ordering::Release);
+    if e.name_len != 0 {
+        view_note(e.name_bytes(), e.active.then_some(i as u32), e.owner_tid);
+    }
+}
+
+azos_common::ro_hook! {
+    /// Called under `ENDPOINTS` each time a named endpoint is made, claimed,
+    /// left unserved, handed over or freed, with its name, its pool index
+    /// (`None` once it is gone) and the TID serving it ([`UNCLAIMED`] for
+    /// none): the kernel's introspection tree writes the view regions that
+    /// list the name (`kernel/src/boot/inspect_views.rs`), so a reader never
+    /// sees an endpoint older than its last change. Under a spin lock with
+    /// interrupts off: the hook takes no lock. Registered at boot.
+    static VIEW_HOOK: fn(&[u8], Option<u32>, u32);
+}
+
+/// Register the [`VIEW_HOOK`]. Call once, during boot.
+pub fn set_view_hook(f: fn(&[u8], Option<u32>, u32)) {
+    VIEW_HOOK.set(f);
+}
+
+fn view_note(name: &[u8], index: Option<u32>, owner: u32) {
+    if let Some(f) = VIEW_HOOK.get() {
+        f(name, index, owner);
+    }
 }
 
 /// Take slot `i`'s endpoint out of service (under `ENDPOINTS`): no lookup
 /// finds it, no call queues on it, and the slot is held out of the pool
 /// until [`glue::retire`]'s grace period has passed.
 fn unpublish(eps: &mut [Endpoint; MAX_ENDPOINTS], i: usize) {
+    if eps[i].name_len != 0 {
+        view_note(eps[i].name_bytes(), None, UNCLAIMED);
+    }
     eps[i].release_kmem();
     eps[i] = Endpoint::empty();
     LOOKUP[i].store(0, Ordering::Release);
@@ -1385,8 +1414,8 @@ pub mod resolve_cache {
 
 /// The name and the serving task of the endpoint at pool index `i`, for a
 /// named, live endpoint: what the view regions (`inspect.names` and the
-/// others) publish
-/// for a capability it holds. `UNCLAIMED` when no server has taken it.
+/// others) publish for a capability it holds, read once at boot (then
+/// [`VIEW_HOOK`] keeps them). `UNCLAIMED` when no server has taken it.
 pub fn endpoint_name_owner(i: usize) -> Option<([u8; ENDPOINT_NAME_MAX], usize, u32)> {
     let eps = ENDPOINTS.lock_irqsave();
     let e = eps.get(i)?;

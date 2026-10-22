@@ -6,7 +6,7 @@
 //! `install_inspect` creates the two regions (the public MemObj and, with
 //! INSPECT_ADMIN_PAGES, the admin one), formats them (`crates/core/inspect`),
 //! builds the tree, fills it once, and starts the `inspect` task, which
-//! refreshes the values every INSPECT_REFRESH_MS. A refresh is a task and not
+//! samples the counters every INSPECT_REFRESH_MS. A refresh is a task and not
 //! a timer hook on purpose: the census walks every task slot, which is more
 //! than a timer ISR may spend on each hart's tick.
 //!
@@ -48,35 +48,43 @@
 //! metrics/{trace, sched, energy, net, memory, decisions, syscalls, storage}   (inspect_metrics.rs)
 //! soc/, thermal/, latency/                                                   (soc.rs, thermal.rs, lat_trace.rs)
 //! ```
-//! Admin tree: `sched/{tasks_seen, tasks/<tid>/{name, state, priority, parent}}`,
-//! `wake/{now_us, rN}` (WAKE_RING_ENTRIES: the wake log with the task IDs
-//! the public region does not carry, `inspect_metrics::build_admin_wake`) and
-//! `decisions/records/<n>` (`inspect_views::build_admin`), rebuilt at each
-//! refresh (the set of tasks, the wakes and the decisions change).
+//! Admin tree: `sched/tasks/<row>/{tid, name, state, priority, parent}`
+//! (`inspect_tasks`), `wake/{now_us, rN}` (WAKE_RING_ENTRIES: the wake log
+//! with the task IDs the public region does not carry,
+//! `inspect_metrics::build_admin_wake`) and `decisions/records/<n>`
+//! (`inspect_views::build_admin`). Its shape is built once, as the public
+//! one's is; it is never rebuilt.
 //!
 //! # When a value is current
 //!
-//! A value is at most INSPECT_REFRESH_MS old, in the view regions too (they
-//! are refreshed with the public one). Where a reader cannot wait for the
-//! next refresh, the kernel refreshes first ([`refresh_now`]): the boot
-//! launcher does before it starts the component manager, which reads its plan
-//! once. A ring-3 reader that needs state made at its own spawn (the pool
-//! index of an endpoint its row created) waits until the stamp has moved by
-//! two: the refresh that began after it started has then ended.
+//! What a reader acts on is written where it changes, before the change's
+//! caller goes on, and a reader never waits for a refresh: the task list at
+//! each task made, exited, freed or re-linked (`azos_sched::set_task_view_hook`),
+//! the view regions' endpoints at each change in the endpoint pool and the
+//! components' `start` when the boot launcher finds an image missing
+//! (`inspect_views`), a decision record where it is recorded. The writes are
+//! atomic stores under each node's seqlock, with no other lock: the shapes are
+//! fixed, so they may run under the scheduler's and the pool's locks.
+//!
+//! The counters (every value of the public region, the wake log, and a listed
+//! task's state and effective priority, which move at every switch) are
+//! sampled by the `inspect` task every INSPECT_REFRESH_MS, the stamp of each
+//! region its refresh count. The latency smoke, which reads back what the
+//! tracer published, refreshes first ([`refresh_now`]).
 //!
 //! There is no per-CPU dispatch counter in the scheduler yet, so the per-CPU
 //! number is the length of the CPU's run queue, under that name. `moved_in` and
 //! `moved_out` are the fair tasks the load balancer (SCHED_BALANCE) moved onto
 //! and off the CPU; `balance/` has the totals and the level they crossed.
 
+use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+
 use azos_inspect::{Builder, Class, Error, NodeId, Reader, Region, Writer};
 use azos_ipc::memobj::{self, MemPerms, MemSpec};
 use azos_sync::SpinLock;
 
-use super::inspect_metrics::{self, Num};
-
-/// Tasks the admin tree lists, at most: the stack that holds the rows.
-const TASK_ROWS: usize = 64;
+use super::inspect_metrics::{self, AdminWake, Num};
+use super::inspect_tasks::{self, Task, TaskList};
 /// The scheduler's blocked-task reasons, in `task_census` order.
 const BLOCKED_ON: [&str; 5] = ["fast_client", "fast_server", "timer", "wait_queue", "other"];
 const RT_STATS: [&str; 4] = ["band_throttles", "cbs_exhausted", "admitted", "refused"];
@@ -107,7 +115,8 @@ struct Ids {
 
 struct State {
     public: Writer<'static>,
-    admin: Option<Writer<'static>>,
+    /// The admin region and its wake log's nodes.
+    admin: Option<(Writer<'static>, AdminWake)>,
     ids: Ids,
     cpus: usize,
     refreshes: u64,
@@ -131,10 +140,39 @@ fn with_state(f: impl FnOnce(&mut State)) {
     }
 }
 
-/// Refresh every value now rather than at the next period. Task context.
-/// Nothing when the tree is off.
+/// Refresh every counter now rather than at the next period. Task context.
+/// Nothing when the tree is off. The latency smoke's, which reads back what
+/// the tracer published.
+#[cfg(all(feature = "lat-trace", feature = "lat-smoke"))]
 pub(crate) fn refresh_now() {
     with_state(|st| st.refresh());
+}
+
+/// Per task slot: its row of the task list, and its writer's flag
+/// (`inspect_tasks::TaskList`).
+static ROW_OF: [AtomicU8; azos_sched::MAX_TASKS] = [const { AtomicU8::new(0) }; azos_sched::MAX_TASKS];
+static ROW_BUSY: [AtomicU8; azos_sched::MAX_TASKS] = [const { AtomicU8::new(0) }; azos_sched::MAX_TASKS];
+
+/// The admin region's task list, published once at boot and never changed:
+/// the scheduler's hook reads it with no lock.
+static TASKS: AtomicPtr<TaskList<'static>> = AtomicPtr::new(core::ptr::null_mut());
+
+fn task_list() -> Option<&'static TaskList<'static>> {
+    // SAFETY: set once, to a leaked allocation that lives for good.
+    unsafe { TASKS.load(Ordering::Acquire).as_ref() }
+}
+
+/// The scheduler's row of slot `i`, as the list shows it.
+fn slot_row(i: usize) -> Option<Task> {
+    azos_sched::task_row_at(i)
+        .map(|r| Task { tid: r.tid, parent: r.parent, priority: r.priority, state: r.state, name: r.name })
+}
+
+/// `azos_sched::set_task_view_hook`: slot `i` changed. Any context.
+fn task_changed(i: usize) {
+    if let Some(l) = task_list() {
+        l.note(i, &slot_row);
+    }
 }
 
 /// A published region: its packed MemObj reference, its size, and the same
@@ -212,6 +250,26 @@ pub(crate) fn install_inspect(num_cpus: usize) {
         azos_drv_sys::kwarn!("[INSPECT] the public tree does not fit {} pages ({:?}): the tree stays off", pages, built);
         return;
     };
+    // The admin tree's shape, once: the task rows, the wake log, the records.
+    let mut shape = inspect_tasks::Shape::EMPTY;
+    #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
+    let mut records = [NodeId::ROOT; super::inspect_views::DECISION_ROWS];
+    let admin = admin.map(|(w, at)| {
+        let mut wake = AdminWake::NONE;
+        let r = w.rebuild(|b| {
+            inspect_tasks::build(b, azos_sched::MAX_TASKS, &mut shape)?;
+            wake = inspect_metrics::build_admin(b)?;
+            #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
+            super::inspect_views::build_admin(b, &mut records)?;
+            Ok(())
+        });
+        if let Err(e) = r {
+            azos_drv_sys::kwarn!(
+                "[INSPECT] the admin tree does not hold {} task rows, the wake log and the decisions ({:?}): \
+                 raise INSPECT_ADMIN_PAGES", azos_sched::MAX_TASKS.min(inspect_tasks::ROWS), e);
+        }
+        ((w, wake), at)
+    });
     let (admin, admin_at) = match admin {
         Some((w, at)) => (Some(w), Some(at)),
         None => (None, None),
@@ -225,7 +283,7 @@ pub(crate) fn install_inspect(num_cpus: usize) {
         return;
     }
     let admin_at = admin_at.filter(|at| {
-        let ok = reader_check(*at, Class::Admin, "sched/tasks_seen");
+        let ok = reader_check(*at, Class::Admin, "sched/tasks");
         if !ok {
             azos_drv_sys::kwarn!("[INSPECT] the admin region does not open as a reader: it is not granted");
         }
@@ -243,9 +301,23 @@ pub(crate) fn install_inspect(num_cpus: usize) {
     azos_drv_sys::kprintln!(
         "[INSPECT] tree published: public region {} KiB ({}/{} nodes, {}/{} value words), reader check ok",
         pub_at.bytes / 1024, nodes, node_cap, words, word_cap);
-    if let Some(at) = admin_at {
+    if let (Some(at), Some((w, _))) = (admin_at, st.admin.as_ref()) {
+        // The task list and the records, written where they change from now
+        // on: the hook first, then every slot as it stands (a task made
+        // between the two is written twice, never missed).
+        let list: &'static TaskList<'static> =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(TaskList::new(*w, shape, &ROW_OF, &ROW_BUSY)));
+        TASKS.store(list as *const TaskList<'static> as *mut TaskList<'static>, Ordering::Release);
+        azos_sched::set_task_view_hook(task_changed);
+        for i in 0..azos_sched::MAX_TASKS {
+            task_changed(i);
+        }
+        #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
+        super::inspect_views::install_records(*w, records);
+        let (nodes, node_cap, words, word_cap) = w.usage();
         azos_drv_sys::kprintln!(
-            "[INSPECT] admin region {} KiB, granted against the task view, reader check ok", at.bytes / 1024);
+            "[INSPECT] admin region {} KiB ({} task rows, {}/{} nodes, {}/{} value words), granted against the task view, reader check ok",
+            at.bytes / 1024, shape.rows(), nodes, node_cap, words, word_cap);
     }
     *HANDOFF.lock_irqsave() = Some(st);
     // Off the real-time CPUs, as the thermal and reclaim tasks are: a refresh
@@ -415,7 +487,7 @@ impl State {
         put(ids.recorded, azos_decision::total());
         put(ids.deny_dropped, azos_decision::deny_dropped_total());
         bad += inspect_metrics::refresh(w);
-        bad += super::inspect_views::refresh(w, self.refreshes);
+        bad += super::inspect_views::refresh(w);
         bad += super::hwbus::inspect_refresh(w);
         #[cfg(feature = "usb-host")]
         {
@@ -434,42 +506,20 @@ impl State {
             bad += crate::lat_trace::inspect_refresh(w);
         }
         w.stamp(self.refreshes);
+        if let Some((a, wake)) = &self.admin {
+            bad += inspect_metrics::refresh_admin(a, wake);
+            if let Some(l) = task_list() {
+                l.resample(&slot_row);
+                if l.cut_unsaid() {
+                    azos_drv_sys::kwarn!(
+                        "[INSPECT] more tasks than the {} rows of the task list: the newest are not listed",
+                        azos_sched::MAX_TASKS.min(inspect_tasks::ROWS));
+                }
+            }
+            a.stamp(self.refreshes);
+        }
         if bad != 0 {
             azos_drv_sys::kwarn!("[INSPECT] {} values were not published", bad);
-        }
-        if let Some(a) = &self.admin {
-            publish_tasks(a, self.refreshes);
-        }
-    }
-}
-
-/// The admin tree: one directory per live task, and the wake log.
-fn publish_tasks(admin: &Writer<'static>, refreshes: u64) {
-    let mut rows = [azos_sched::TaskRow { tid: 0, parent: 0, priority: 0, state: 0, name: [0; 16] }; TASK_ROWS];
-    let n = azos_sched::task_rows(&mut rows);
-    let r = admin.rebuild(|b| {
-        let sched = b.dir(NodeId::ROOT, "sched")?;
-        b.u64(sched, "tasks_seen", n as u64)?;
-        let tasks = b.dir(sched, "tasks")?;
-        for row in &rows[..n] {
-            let t = b.dir(tasks, &Num::name("", row.tid as u64))?;
-            let len = row.name.iter().position(|c| *c == 0).unwrap_or(row.name.len());
-            b.string(t, "name", 16, core::str::from_utf8(&row.name[..len]).unwrap_or("?"))?;
-            b.string(t, "state", 1, core::str::from_utf8(&[row.state]).unwrap_or("?"))?;
-            b.u64(t, "priority", row.priority as u64)?;
-            b.u64(t, "parent", row.parent as u64)?;
-        }
-        inspect_metrics::build_admin(b)?;
-        #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
-        super::inspect_views::build_admin(b)?;
-        Ok(())
-    });
-    admin.stamp(refreshes);
-    // Only the first refresh says so: a full region is the same every time.
-    if let Err(e) = r {
-        if refreshes == 1 {
-            azos_drv_sys::kwarn!(
-                "[INSPECT] the admin tree does not hold {} tasks, the wake log and the decisions: {:?}", n, e);
         }
     }
 }

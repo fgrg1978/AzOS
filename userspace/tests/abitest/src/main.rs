@@ -1974,11 +1974,15 @@ fn check_unreaped_children_are_kept() {
 /// admin one against the task view it holds, and no view region. Each view
 /// key (`SHM_INSPECT_NAMES` .. `SHM_INSPECT_CLOCK`) finds no capability, and
 /// the public region names no task (`sched/tasks` is the admin region's).
-/// The task list itself is checked by its users below: a child, its child,
-/// an orphan's adopter.
+/// The task list is read with no wait: a child is in it when the spawn
+/// returns, and gone when its reap does (the kernel writes a row where the
+/// task changes). The rest of the list is checked by its users below: a
+/// child, its child, an orphan's adopter.
 ///
-/// Canary: the kernel feature `inspect-view-canary` grants every view region
-/// with the public one: the `views: ... not granted` lines go red.
+/// Canaries: the kernel feature `inspect-view-canary` grants every view region
+/// with the public one: the `views: ... not granted` lines go red;
+/// `task-view-stale-canary` writes a task's row at the next refresh instead of
+/// where it changes: the two task-list lines about the child go red.
 fn check_views() {
     use azos_abi::cap::*;
     let public = sys::cap_lookup(sys::ty::SHM.raw(), SHM_INSPECT_PUBLIC);
@@ -2019,6 +2023,8 @@ fn check_views() {
     expect_true(b"views: the task list shows this task", rows[..n].iter().any(|r| r.0 == me));
     expect_true(b"views: the task list shows the child under it", rows[..n].iter().any(|r| r.0 == child as u32 && r.1 == me));
     let (got, _) = reap_by_tid(child);
+    let n = task_rows(&mut rows).unwrap_or(0).min(rows.len());
+    expect_true(b"views: the reaped child is off the task list at once", !rows[..n].iter().any(|r| r.0 == child as u32));
     expect_eq(b"views: the child is reaped", got, child);
 }
 

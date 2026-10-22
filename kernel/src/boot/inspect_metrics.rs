@@ -99,9 +99,9 @@
 //! ([`build_admin_wake`]): `wake/{now_us, rN}` with `rN` of [`WAKE_ADMIN_COLS`]
 //! numbers, the public row's seven and then `[tid, waker]`: the task woken and
 //! the task that woke it (0 when the source names none: a deadline, a line, an
-//! interrupt handler, the reaper). It holds the entries the ring has, no
-//! zero slots. [`public_wake_row`] and [`admin_wake_row`] are the only places a
-//! row is made.
+//! interrupt handler, the reaper). A slot the ring has no entry for is zeros,
+//! as in the public region. [`public_wake_row`] and [`admin_wake_row`] are the
+//! only places a row is made.
 //!
 //! A migration is the `WakePlacement` decision (the scheduler records only a
 //! wake that moved a task to another CPU), so `sched/migrations` is that
@@ -324,20 +324,51 @@ pub(crate) fn admin_wake_row(e: &WakeEntry) -> [u64; WAKE_ADMIN_COLS] {
     [p[0], p[1], p[2], u64::from(e.line), p[4], p[5], p[6], u64::from(e.tid), u64::from(e.waker)]
 }
 
-/// The wake log of the admin tree being built: `wake/{now_us, rN}`, one `rN` for
-/// each entry in `rows` (newest first), written with the node. Entries only: a
-/// reader stops at the first `rN` that is not there.
-pub(crate) fn build_admin_wake(
-    b: &mut Builder<'_, '_>,
-    now_us: u64,
-    rows: impl Iterator<Item = [u64; WAKE_ADMIN_COLS]>,
-) -> Result<(), Error> {
-    let wk = b.dir(NodeId::ROOT, "wake")?;
-    b.u64(wk, "now_us", now_us)?;
-    for (k, row) in rows.enumerate() {
-        b.hist_with(wk, &Num::name("r", k as u64), &row)?;
+/// The admin tree's wake log: its nodes, built once ([`build_admin_wake`]),
+/// written at every refresh ([`AdminWake::publish`]).
+#[derive(Clone, Copy)]
+pub(crate) struct AdminWake {
+    now_us: NodeId,
+    rows: [NodeId; WAKE_MAX],
+    n: usize,
+}
+
+impl AdminWake {
+    /// No wake log (the ring is off).
+    pub(crate) const NONE: AdminWake = AdminWake { now_us: NodeId::ROOT, rows: [NodeId::ROOT; WAKE_MAX], n: 0 };
+
+    /// Write the clock and `rows` (newest first) into the slots, zeros past
+    /// the last: a reader stops at the first slot with no time. The values
+    /// not published.
+    pub(crate) fn publish(&self, w: &Writer<'_>, now_us: u64, rows: impl Iterator<Item = [u64; WAKE_ADMIN_COLS]>) -> u32 {
+        if self.n == 0 {
+            return 0;
+        }
+        let mut bad = w.set_u64(self.now_us, now_us).is_err() as u32;
+        let mut rows = rows;
+        for id in &self.rows[..self.n] {
+            let row = rows.next().unwrap_or([0; WAKE_ADMIN_COLS]);
+            bad += w.set_hist(*id, &row).is_err() as u32;
+        }
+        bad
     }
-    Ok(())
+}
+
+/// The wake log of the admin tree being built: `wake/{now_us, r0 ..}`, one
+/// slot a ring entry (`slots`, at most [`WAKE_MAX`]), all zeros until the
+/// first [`AdminWake::publish`]. Nothing for a ring of no slots.
+pub(crate) fn build_admin_wake(b: &mut Builder<'_, '_>, slots: usize) -> Result<AdminWake, Error> {
+    let mut a = AdminWake::NONE;
+    if slots == 0 {
+        return Ok(a);
+    }
+    let wk = b.dir(NodeId::ROOT, "wake")?;
+    a.now_us = b.u64(wk, "now_us", 0)?;
+    for k in 0..slots.min(WAKE_MAX) {
+        a.rows[k] = b.hist_with(wk, &Num::name("r", k as u64), &[0; WAKE_ADMIN_COLS])?;
+        a.n = k + 1;
+    }
+    Ok(a)
 }
 
 /// The node ids of the subtree; `NodeId::ROOT` marks a node that does not exist
@@ -929,18 +960,24 @@ mod kernel {
         }
     }
 
-    /// The wake log of the admin tree being built (`wake/`): the entries the
-    /// ring has, with the task IDs the public region does not carry. Nothing
-    /// when the ring is off.
-    pub(crate) fn build_admin(b: &mut Builder<'_, '_>) -> Result<(), Error> {
+    /// The wake log of the admin tree being built (`wake/`): a slot a ring
+    /// entry, for the task IDs the public region does not carry. Nothing when
+    /// the ring is off.
+    pub(crate) fn build_admin(b: &mut Builder<'_, '_>) -> Result<AdminWake, Error> {
+        use azos_sched::wake_log;
+        build_admin_wake(b, if wake_log::ENABLED { wake_log::ENTRIES } else { 0 })
+    }
+
+    /// Write the ring's entries into the admin wake log; the values not
+    /// published.
+    pub(crate) fn refresh_admin(w: &Writer<'_>, a: &AdminWake) -> u32 {
         use azos_sched::wake_log;
         if !wake_log::ENABLED {
-            return Ok(());
+            return 0;
         }
         let mut e = [wake_log::Entry::default(); WAKE_MAX];
         let n = wake_log::RING.snapshot(&mut e[..wake_log::ENTRIES]);
-        let rows = e[..n].iter().map(|w| admin_wake_row(&wake_entry(w)));
-        build_admin_wake(b, ticks_to_us(azos_drv_sys::timebase::now()), rows)
+        a.publish(w, ticks_to_us(azos_drv_sys::timebase::now()), e[..n].iter().map(|w| admin_wake_row(&wake_entry(w))))
     }
 
     /// Ticks of the clock in microseconds.
@@ -1141,4 +1178,4 @@ mod kernel {
 }
 
 #[cfg(target_os = "none")]
-pub(crate) use kernel::{build, build_admin, refresh};
+pub(crate) use kernel::{build, build_admin, refresh, refresh_admin};

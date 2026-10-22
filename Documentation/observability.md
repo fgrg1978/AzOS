@@ -232,8 +232,11 @@ instead of spinning on a preempted writer. Every access is an atomic access of a
 aligned 64-bit word. The header carries `FORMAT_VERSION`, and `Reader::open`
 refuses any other version.
 
-**The tree.** An `inspect` task refreshes the values every `INSPECT_REFRESH_MS`
-(a task rather than a timer hook, because the census walks every task slot).
+**The tree.** Its shapes are built once, at boot, and never rebuilt. What a
+reader acts on is written where it changes, before the change's caller goes
+on (below); the counters are sampled by an `inspect` task every
+`INSPECT_REFRESH_MS` (a task rather than a timer hook, because the census walks
+every task slot), pinned off the real-time CPUs.
 
 ```text
 inspect/{format_version, refresh_ms, refreshes}
@@ -251,9 +254,9 @@ soc/{up, clocks, resets, ...}                               (SOC_FRAMEWORKS)
 thermal/{status, board, ticks, level, shutdown, records, zones/<z>/active, domains/<d>/{cap, opp}}   (THERMAL)
 latency/{irqsoff, preemptoff}/{max_ns, hart, windows, unpaired, start, end, top/<n>/{max_ns, count, site}}   (LAT_TRACE)
 metrics/...                               (below)
-admin: sched/{tasks_seen, tasks/<tid>/{name, state, priority, parent}}
+admin: sched/tasks/<row>/{tid, name, state, priority, parent}   (64 rows, or MAX_TASKS; tid 0: a free row)
 admin: wake/{now_us, rN}                                    (WAKE_RING_ENTRIES: the wake log with task IDs)
-admin: decisions/records/<n>                                (the newest 24 records, bytes)
+admin: decisions/records/<n>                                (the newest 24 records, bytes; record id in slot id % 24)
 ```
 
 The views, each its own region:
@@ -268,11 +271,25 @@ inspect.clock       clock/ptp_domain
 ```
 
 A view lists the named endpoints the rows declaring it hold; the reader
-checks its own table for the handle and its rights. A value is at most
-`INSPECT_REFRESH_MS` old; a reader that needs what its own spawn created
-(an endpoint's pool index) waits for two refreshes (`Inspector::wait_refreshes`),
-and the boot launcher refreshes before it starts the component manager, which
-reads its plan once.
+checks its own table for the handle and its rights.
+
+**Written on change.** No reader waits for a refresh, and none sees a value
+older than its last change:
+
+* the task list, at each task made, become a zombie, freed, re-linked to a
+  reaper or swapped at an exec (`azos_sched::set_task_view_hook`,
+  `kernel/src/boot/inspect_tasks.rs`); a spawn's caller finds its child, and
+  a reaped child is gone, when the call returns;
+* a view's `endpoints/<name>/{index, server}`, at each change in the endpoint
+  pool, under its lock (`azos_ipc::endpoint::set_view_hook`): the endpoints a
+  row's spawn created are in its view before it runs;
+* a component's `start`, when the boot launcher finds its image missing;
+* a decision record, where it is recorded (`azos_decision::set_view_sink`).
+
+The writes are atomic stores under each node's seqlock and take no other
+lock, so they run under the scheduler's and the pool's locks and on the wake
+path. A listed task's state (ready or blocked) and effective priority move at
+every switch: they are sampled with the counters, every `INSPECT_REFRESH_MS`.
 
 The per-CPU number is the length of the CPU's run queue; the scheduler keeps no
 per-CPU dispatch counter.

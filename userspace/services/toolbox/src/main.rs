@@ -362,10 +362,13 @@ fn inspect_trace(view: &mut azos_inspect_lib::Inspector<'_>, opts: &InspectOpts,
 }
 
 /// `ps`: the live tasks, from the admin region of the introspection tree
-/// (`sched/tasks/<tid>/{name, state, priority, parent}`, read with loads, no
-/// system call per value): TID, parent, priority, state, name. The admin region
-/// is the full task view: a row without it (or a kernel without INSPECT) has no
-/// `ps`. The listing is the tree as of the next refresh after `ps` started.
+/// (`sched/tasks/<row>/{tid, name, state, priority, parent}`, read with loads,
+/// no system call per value): TID, parent, priority, state, name. The admin
+/// region is the full task view: a row without it (or a kernel without
+/// INSPECT) has no `ps`. The kernel writes a task's row where the task is made
+/// or exits, so the listing holds every task that existed when `ps` ran, `ps`
+/// among them, with no wait; the state and priority are as of the last
+/// refresh of the counters.
 fn ps() -> i32 {
     if sys::argc() > 1 {
         fail(b"ps", b"takes no arguments");
@@ -386,17 +389,6 @@ fn ps() -> i32 {
         fail(b"ps", b"off (no task view granted)");
         return 1;
     }
-    // The tree is rebuilt once a refresh period, so a task made since the last
-    // rebuild (this one among them) is not in it yet: wait for the next, at
-    // most two periods, so the listing holds every task that existed when
-    // `ps` ran.
-    let period = view.read_u64("inspect/refresh_ms").ok().flatten().filter(|p| *p > 0).unwrap_or(250);
-    if let Some(admin) = view.reader(azos_inspect_lib::Source::Admin) {
-        let (seen, t0) = (admin.stamp(), sys::vdso_uptime_ms());
-        while admin.stamp() == seen && sys::vdso_uptime_ms().saturating_sub(t0) < 2 * period {
-            sys::sleep(5);
-        }
-    }
     let mut table = ps_view::Table::new();
     let mut path = metrics_view::PathStack::new();
     let walked = view.walk(&mut |src, info, v| {
@@ -406,8 +398,8 @@ fn ps() -> i32 {
         }
         let p = path.enter(info.depth, info.name.as_str());
         if p == "sched/tasks" {
-            // A region rebuilt during the walk is walked again from its root:
-            // this directory is met once per attempt.
+            // A walk that is retried starts again from the root: this
+            // directory is met once per attempt.
             table.clear();
         }
         match v {

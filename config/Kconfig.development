@@ -419,11 +419,12 @@ config LAT_TRACE
       Records, per hart, the longest window with interrupts masked and
       the longest with preemption disabled, each with the call site that
       opened it and the one that closed it, plus the longest window per
-      opening site. Read out at /proc/latency. The analogue of Linux's
+      opening site. Read out in the introspection tree's `latency/`. The
+      analogue of Linux's
       irqsoff/preemptoff tracers, for measuring a worst-case latency
       budget.
 
-      Off (default): the hooks, the tables and the procfs entry are not
+      Off (default): the hooks, the tables and the `latency/` nodes are not
       compiled at all. Maps to the kernel cargo feature `lat-trace`
       (tools/kconfig_to_cargo.py). On: every interrupt mask/unmask through
       the arch-api `Interrupts` trait, every preemption-counter 0<->1
@@ -1173,7 +1174,8 @@ config CHAOS
       `chaos=<point>:<rate>[,...]` (one failure in <rate> calls, applied
       once boot init is done) with `chaos_seed=<n>`, or from a ktest; the
       `chaos_*` ktests check that each fault is refused cleanly and leaks
-      nothing. /proc/chaos lists each point's rate and counts.
+      nothing. The introspection tree's `chaos/` holds each point's rate and
+      counts.
 
       On by default only in a KTEST kernel. Impossible in a release build
       (BUILD_TYPE; the `chaos` feature on a release .config does not
@@ -1275,8 +1277,8 @@ config DECISION_DENY_DURABLE_PER_SEC
 
       A denial the bucket drops is counted. The count rides in the third
       number (`dropped`) of the next denial record that is written, durable
-      and ring, and the total is in the header of /proc/decisions (when
-      DECISION_RECORDS_DEV is on). 0 turns the durable denial record off
+      and ring, and the total is the introspection tree's
+      `decisions/deny_dropped`. 0 turns the durable denial record off
       (nothing is counted); refusals are not affected.
 
 config DECISION_DENY_DURABLE_BURST
@@ -1348,8 +1350,10 @@ config INSPECT
       those services have no view: the component manager starts nothing, the
       name server lends nothing, nobody can log in.
 
-      The kernel's refresh task republishes the values every
-      INSPECT_REFRESH_MS. Cost: two MemObj slots (MAX_MEMOBJS) and one per
+      What a reader acts on (the task list, a view's endpoints, the
+      decision records) is written where it changes; the kernel's refresh
+      task samples the counters every INSPECT_REFRESH_MS. Cost: two MemObj
+      slots (MAX_MEMOBJS) and one per
       view a row declares, the pages of INSPECT_PUBLIC_PAGES and
       INSPECT_ADMIN_PAGES and of the views (one to 16 each) from the page
       allocator for good, and the refresh task's few microseconds per period.
@@ -1384,15 +1388,15 @@ config INSPECT_ADMIN_PAGES
     default 0 if !INSPECT
     default 16
     help
-      The admin region's size, in pages. It holds the per-task rows (the
-      name, state, priority and parent of every task), the wake log with
-      its task IDs (WAKE_RING_ENTRIES) and the newest 24 decision records
-      (DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE: a record's subject
-      may be a task), which the kernel renders into it at each refresh; one
-      task is 5 nodes, one logged wake 1 and one record 1 (of 14 value
-      words), and a page of 4 KiB holds 32 nodes, so 16 pages list the 64
-      tasks the tree shows, a ring of 32 wakes and the records; a longer list
-      is cut (the boot says so). 0
+      The admin region's size, in pages. It holds the task rows (the TID,
+      name, state, priority and parent of each task, 64 rows or MAX_TASKS),
+      the wake log with its task IDs (WAKE_RING_ENTRIES) and the newest 24
+      decision records (DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE: a
+      record's subject may be a task), built once at boot; one task row is 6
+      nodes, one logged wake 1 and one record 1 (of 14 value words), and a
+      page of 4 KiB holds 32 nodes, so 16 pages hold the 64 rows, a ring of
+      32 wakes and the records (tests/host/inspect-tests checks it); a tree
+      that does not fit loses its last nodes (the boot says so). 0
       publishes no admin region at all, and then `why woke` shows no task IDs.
 
       Defined with INSPECT off too (as 0): the topology builder's const
@@ -1405,8 +1409,11 @@ config INSPECT_REFRESH_MS
     range 10 60000
     default 250
     help
-      How often the kernel's `inspect` task rewrites the published values. A
-      reader sees a value at most this old.
+      How often the kernel's `inspect` task rewrites the counters (the
+      public region's values, the wake log, a listed task's state and
+      priority). A counter is at most this old; what is written on change
+      (the task list's tasks, the views' endpoints, the decision records)
+      does not wait for it.
 
 config WAKE_RING_ENTRIES
     int "Wake attribution: wakes the last-wake ring holds (power of two, 0 = off)"

@@ -12,9 +12,9 @@
 //! `DECISION_REFUSALS_DURABLE`). A record's subject may be a task, hence the
 //! admin region, and the task view its row holds to be granted it.
 //!
-//! Request-driven, like `termd`: accept, wait for the refresh that began
-//! after the request (a request sees the decisions of the moment it is
-//! made), read the records again, dispatch, reply. The records,
+//! Request-driven, like `termd`: accept, read the records again (the kernel
+//! writes a record into the region where it is recorded, so a request sees
+//! every decision made before it, with no wait), dispatch, reply. The records,
 //! their filter and the reply words are the library's; `bin.rs` is the
 //! decoder and is tested on the host (`tests/host/decisions-tests`).
 
@@ -37,8 +37,8 @@ unsafe impl Sync for Cell {}
 
 static SERVICE: Cell = Cell(core::cell::UnsafeCell::new(Service(BinSource::new())));
 
-/// The admin region's records, oldest first, back to back into `buf`; the
-/// bytes written (0 when the tree is not there: the kernel was built without
+/// The admin region's records back to back into `buf`, in slot order (the
+/// decoder sorts them by id; an empty slot is skipped); the bytes written (0 when the tree is not there: the kernel was built without
 /// decision records, or the row holds no admin region).
 fn read_records(tree: &mut Inspector<'static>, buf: &mut [u8]) -> usize {
     const SIZE: usize = azos_decisions::PROVENANCE_SIZE;
@@ -81,13 +81,7 @@ fn main() -> ! {
             sys::yield_now();
             continue;
         }
-        let n = match tree.as_mut() {
-            Some(t) => {
-                t.wait_refreshes(Source::Admin, 2, &mut |ms| sys::sleep(ms));
-                read_records(t, &mut file)
-            }
-            None => 0,
-        };
+        let n = tree.as_mut().map_or(0, |t| read_records(t, &mut file));
         svc.0.load(&file[..n]);
         let mut rep = MsgDesc::default();
         let _ = DecisionsIdl::dispatch(svc, &req, &mut rep);

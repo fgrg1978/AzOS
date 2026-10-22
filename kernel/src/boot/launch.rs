@@ -48,6 +48,9 @@ fn mark_unstartable(row: usize) {
     if let Some(w) = UNSTARTABLE.get(row / 64) {
         w.fetch_or(1 << (row % 64), Ordering::Release);
     }
+    // The plan the manager reads says so before it runs.
+    #[cfg(feature = "inspect")]
+    super::inspect_views::component_unstartable(row);
 }
 
 /// Is row number `row` of the topology in the plan the manager is shown
@@ -245,11 +248,6 @@ pub(crate) fn boot_launch_task(_: usize) {
         azos_drv_sys::kwarn!("[DRVLAUNCH] the topology has no {} row: no ring-3 row is started",
             core::str::from_utf8(azos_topology::builder::TASK_COMPMGR_IMAGE).unwrap_or("?"));
     }
-    // The manager reads its plan (the introspection tree's
-    // `inspect.components` view) once, at its start: the rows just found missing
-    // are in it before it runs.
-    #[cfg(feature = "inspect")]
-    crate::boot::inspect_refresh_now();
     for_each_launch_row(topo, &mut |_, row| {
         if is_component_manager(row) {
             start_manager(row);

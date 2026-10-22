@@ -337,9 +337,11 @@ mod request_block {
 mod ps {
     use crate::ps_view::{Leaf, Table, HEADER, ROWS_MAX};
 
-    /// The leaves the kernel's admin tree holds for one task, in its order.
-    fn task(t: &mut Table, tid: u32, parent: u64, pri: u64, state: &str, name: &str) {
-        let p = |f: &str| format!("sched/tasks/{tid}/{f}");
+    /// The leaves the kernel's admin tree holds for row `row`, in its order
+    /// (`kernel/src/boot/inspect_tasks.rs`): the TID first.
+    fn task(t: &mut Table, row: u32, tid: u64, parent: u64, pri: u64, state: &str, name: &str) {
+        let p = |f: &str| format!("sched/tasks/{row}/{f}");
+        t.feed(&p("tid"), Leaf::U64(tid));
         t.feed(&p("name"), Leaf::Str(name));
         t.feed(&p("state"), Leaf::Str(state));
         t.feed(&p("priority"), Leaf::U64(pri));
@@ -355,42 +357,56 @@ mod ps {
     #[test]
     fn the_listing_keeps_the_format_the_procfs_file_had() {
         let mut t = Table::new();
-        task(&mut t, 1, 0, 8, "S", "kernel");
-        task(&mut t, 12, 1, 24, "R", "SH.ELF");
+        task(&mut t, 0, 1, 0, 8, "S", "kernel");
+        task(&mut t, 1, 12, 1, 24, "R", "SH.ELF");
         assert_eq!(text(&t), format!("{HEADER}    1     0   8 S kernel\n   12     1  24 R SH.ELF\n"));
         assert_eq!(HEADER, "  TID  PPID PRI S NAME\n");
+    }
+
+    /// A free row (TID 0) is not a task: the kernel's list is a fixed set of
+    /// rows, written where a task is made or freed.
+    #[test]
+    fn a_free_row_is_not_listed() {
+        let mut t = Table::new();
+        task(&mut t, 0, 1, 0, 8, "S", "kernel");
+        task(&mut t, 1, 0, 0, 0, "", "");
+        task(&mut t, 2, 30, 1, 24, "Z", "gone");
+        assert_eq!(t.len(), 2);
+        assert_eq!(text(&t), format!("{HEADER}    1     0   8 S kernel\n   30     1  24 Z gone\n"));
     }
 
     #[test]
     fn only_leaves_under_sched_tasks_are_tasks() {
         let mut t = Table::new();
-        t.feed("sched/tasks_seen", Leaf::U64(3));
+        t.feed("sched/tasks_ready", Leaf::U64(3));
         t.feed("sched/tasks", Leaf::U64(3));
         t.feed("sched/tasks/7", Leaf::U64(3));
-        t.feed("sched/tasks/x/name", Leaf::Str("no"));
-        t.feed("sched/tasks//name", Leaf::Str("no"));
+        t.feed("sched/tasks/x/tid", Leaf::U64(9));
+        t.feed("sched/tasks//tid", Leaf::U64(9));
         t.feed("memory/pages_free", Leaf::U64(9));
         t.feed("sched/tasks/7/extra", Leaf::U64(1));
-        assert_eq!(t.len(), 1, "only the task 7 row, made by its unknown leaf");
+        assert_eq!(t.len(), 0, "row 7 holds no TID yet");
+        t.feed("sched/tasks/7/tid", Leaf::U64(7));
+        assert_eq!(t.len(), 1, "only the row 7 task");
         t.feed("sched/tasks/7/priority", Leaf::Str("wrong kind"));
         t.feed("sched/tasks/7/state", Leaf::U64(1));
         assert_eq!(text(&t), format!("{HEADER}    7     0   0 ? \n"));
     }
 
     #[test]
-    fn a_rebuilt_region_walked_again_starts_from_nothing() {
+    fn a_walk_retried_starts_from_nothing() {
         let mut t = Table::new();
-        task(&mut t, 1, 0, 8, "S", "kernel");
+        task(&mut t, 0, 1, 0, 8, "S", "kernel");
         t.clear();
-        task(&mut t, 2, 1, 9, "R", "again");
+        task(&mut t, 0, 2, 1, 9, "R", "again");
         assert_eq!(text(&t), format!("{HEADER}    2     1   9 R again\n"));
     }
 
     #[test]
     fn tasks_past_the_table_are_counted_once_each() {
         let mut t = Table::new();
-        for tid in 1..=(ROWS_MAX as u32 + 3) {
-            task(&mut t, tid, 0, 1, "R", "t");
+        for row in 0..(ROWS_MAX as u32 + 3) {
+            task(&mut t, row, row as u64 + 1, 0, 1, "R", "t");
         }
         assert_eq!(t.len(), ROWS_MAX);
         assert!(text(&t).ends_with("... 3 more\n"));
@@ -399,7 +415,7 @@ mod ps {
     #[test]
     fn a_name_longer_than_the_kernel_publishes_is_cut() {
         let mut t = Table::new();
-        task(&mut t, 5, 0, 1, "R", "0123456789abcdefXYZ");
+        task(&mut t, 0, 5, 0, 1, "R", "0123456789abcdefXYZ");
         assert!(text(&t).ends_with(" R 0123456789abcdef\n"));
     }
 }

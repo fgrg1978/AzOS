@@ -5886,13 +5886,17 @@ par "aarch64 dead client"        dead_client_row "aarch64 dead client"        ar
 #
 #   views: public=1 admin=1 views=0
 #
-# and its thirteen `views:` checks: the public and the admin region granted,
+# and its fourteen `views:` checks: the public and the admin region granted,
 # each of the six view keys finding no capability, the public region naming
-# no task, and a child it starts listed under it in the admin task list and
-# reaped. Read back: views=0, thirteen `ok` lines, no `FAIL`. The canary row
-# boots `inspect-view-canary` (every published view granted with the public
-# region) and must see views>0 and a `... is not granted` check fail.
-views_row() { # <label> <isa: rv|arm> <features> <held|canary>
+# no task, and a child it starts listed under it in the admin task list when
+# the spawn returns, off the list when its reap returns, and reaped. The list
+# is read with no wait: the kernel writes a task's row where the task changes.
+# Read back: views=0, fourteen `ok` lines, no `FAIL`. The canary row boots
+# `inspect-view-canary` (every published view granted with the public region)
+# and must see views>0 and a `... is not granted` check fail; the stale row
+# boots `task-view-stale-canary` (a task's row written at the next refresh,
+# not where it changes) and must see a task-list check about the child fail.
+views_row() { # <label> <isa: rv|arm> <features> <held|canary|stale>
     local label="$1" isa="$2" feats="$3" want="$4"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
@@ -5946,10 +5950,15 @@ views_row() { # <label> <isa: rv|arm> <features> <held|canary>
     oks="$(grep -a "\[ABITEST\]   ok   views: " "$log" | wc -l | tr -d ' ')"
     fails="$(grep -a "\[ABITEST\]  FAIL  views: " "$log" | tr -d '\r')"
     if [ "$want" = held ]; then
-        if [ "${views:-x}" = 0 ] && [ "$oks" = 13 ] && [ -z "$fails" ]; then
+        if [ "${views:-x}" = 0 ] && [ "$oks" = 14 ] && [ -z "$fails" ]; then
             ok; rm -f "$log"; return
         fi
-        bad; echo "      want views=0, 13 ok and no FAIL views lines; read ($oks ok):"
+        bad; echo "      want views=0, 14 ok and no FAIL views lines; read ($oks ok):"
+    elif [ "$want" = stale ]; then
+        if printf '%s\n' "$fails" | qgrep -qE "task list shows the child|reaped child is off the task list"; then
+            ok; rm -f "$log"; return
+        fi
+        bad; echo "      the canary (task rows written at the next refresh) failed no task-list check; read ($oks ok):"
     else
         if [ "${views:-0}" -gt 0 ] 2>/dev/null && printf '%s\n' "$fails" | qgrep -qF "is not granted"; then
             ok; rm -f "$log"; return
@@ -5964,6 +5973,8 @@ par_row views_row "inspect: views need their grant"          rv  qemu held
 par_row views_row "aarch64 inspect: views need their grant"  arm qemu held
 par_row views_row "inspect: views canary"                    rv  qemu,inspect-view-canary canary
 par_row views_row "aarch64 inspect: views canary"            arm qemu,inspect-view-canary canary
+par_row views_row "inspect: task list stale canary"          rv  qemu,task-view-stale-canary stale
+par_row views_row "aarch64 inspect: task list stale canary"  arm qemu,task-view-stale-canary stale
 
 # ── sysabi: the native syscall register contract (Chain E commit 8) ─────────
 #

@@ -60,7 +60,7 @@ pub use scheduler::{
     init, start, schedule, task_create, task_create_affinity, try_task_create_affinity, free_task_slots,
     try_task_create_init,
     task_yield, task_preempt_deferred, task_exit, set_task_exit_hook, set_task_exit_late_hook, set_task_identity_hook, set_task_fork_hook,
-    tid_holds_address_space, task_row, task_rows, task_switches_at, TaskRow,
+    set_task_view_hook, tid_holds_address_space, task_row, task_row_at, task_switches_at, TaskRow,
     idx_for_tid, tid_for_idx, tid_is_exiting,
     mm_charge, mm_discharge, mm_reset_charge, set_current_user_page_limit,
     mm_discharge_tid, mm_charge_if_current, install_mm_hooks, take_current_pt_build,

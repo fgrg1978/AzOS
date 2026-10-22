@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 #[path = "../../../../kernel/src/boot/inspect_metrics.rs"]
-mod km;
+pub(crate) mod km;
 
 #[path = "../../../../userspace/services/toolbox/src/metrics_view.rs"]
 mod view;
@@ -927,7 +927,13 @@ fn regions(entries: &[WakeEntry], total: u64, now_us: u64, admin: bool) -> (Vec<
     let a = admin.then(|| {
         let a = words(12);
         let w = Writer::init(Region::from_atomics(&a), Class::Admin).unwrap();
-        w.rebuild(|b| build_admin_wake(b, now_us, entries.iter().map(admin_wake_row))).unwrap();
+        let mut ids = None;
+        w.rebuild(|b| {
+            ids = Some(build_admin_wake(b, WAKE_SLOTS)?);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(ids.unwrap().publish(&w, now_us, entries.iter().map(admin_wake_row)), 0);
         a
     });
     (v, a)
@@ -1086,33 +1092,8 @@ fn the_admin_wake_log_has_the_entries_the_ring_has_and_a_clock() {
     // seq, at_us, src, line, domain, cpu, from_cpu, tid, waker
     assert_eq!(row(0), vec![41, 9_999_000, 1, 33, 0x10002, 1, 1, 0xA0141, 0]);
     assert_eq!(row(1), vec![40, 9_950_000, 2, 0, 0x30004, 0, 2, 0xB0314, 0xB0209]);
-    assert_eq!(rd.lookup("wake/r2").unwrap(), None, "a slot the ring has no entry for is not a node");
-}
-
-/// INSPECT_ADMIN_PAGES defaults to 12: the 64 tasks `publish_tasks` lists, and
-/// the default ring of 32 wakes (WAKE_RING_ENTRIES), fit; the biggest ring (64)
-/// is cut at the end, never the tasks.
-#[test]
-fn the_admin_region_holds_the_task_list_and_the_default_wake_ring() {
-    for (wakes, fits) in [(WAKE_SLOTS, true), (WAKE_MAX, false)] {
-        let a = words(12);
-        let w = Writer::init(Region::from_atomics(&a), Class::Admin).unwrap();
-        let rows = vec![wake(1, 1, 0, 0, 0, 1, 0, 0, 0); wakes];
-        let r = w.rebuild(|b| {
-            let sched = b.dir(NodeId::ROOT, "sched")?;
-            b.u64(sched, "tasks_seen", 64)?;
-            let tasks = b.dir(sched, "tasks")?;
-            for tid in 0..64u64 {
-                let t = b.dir(tasks, &Num::name("", tid))?;
-                b.string(t, "name", 16, "a task")?;
-                b.string(t, "state", 1, "R")?;
-                b.u64(t, "priority", 1)?;
-                b.u64(t, "parent", 0)?;
-            }
-            build_admin_wake(b, 1, rows.iter().map(admin_wake_row))
-        });
-        assert_eq!(r.is_ok(), fits, "{wakes} wakes: {r:?}");
-    }
+    assert_eq!(row(2), vec![0; WAKE_ADMIN_COLS], "a slot the ring has no entry for is zeros");
+    assert_eq!(rd.lookup(&format!("wake/r{WAKE_SLOTS}")).unwrap(), None, "a slot a ring entry");
 }
 
 #[test]
@@ -1123,7 +1104,7 @@ fn why_woke_takes_the_newest_n_and_ends_at_the_first_empty_slot() {
     assert_eq!((r.rows[0].seq, r.rows[2].seq), (100, 98), "newest first");
     let r = woke_report(&rows, 100, 5_000_000, 16).unwrap();
     assert_eq!(r.n, 5, "a slot with no wake in it is not a row");
-    // The same in the admin view, where only the entries are nodes.
+    // The same in the admin view, whose slots past the entries are zeros too.
     let r = woke_view(&rows, 100, 5_000_000, 16, true).unwrap();
     assert_eq!((r.n, r.view), (5, woke::View::Admin));
     // A young boot: nothing woke yet.

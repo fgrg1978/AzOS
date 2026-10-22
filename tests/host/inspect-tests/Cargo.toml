@@ -18,6 +18,10 @@ azos_decision = { path = "../../../crates/core/decision" }
 # TID of the task woken in a public wake row, and `a_public_reader_never_sees_a_task_id`
 # must fail.
 wake-public-tid-canary = []
+# `kernel/src/boot/inspect_tasks.rs` (included by path): the canary build writes a
+# task slot's change at the next refresh, not where it happens, and
+# `a_change_is_listed_before_the_note_returns` must fail.
+task-view-stale-canary = []
 
 [profile.release]
 overflow-checks = true

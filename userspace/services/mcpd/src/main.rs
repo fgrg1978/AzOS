@@ -171,10 +171,9 @@ fn read_view() -> catalog::View {
     let Ok(m) = sys::inspect_map(azos_abi::cap::SHM_INSPECT_MCP) else { return catalog::View::default() };
     // SAFETY: the mapping lives as long as the task, read-only, and the kernel
     // writes it only with aligned 64-bit stores.
+    // The pool index of an endpoint this task's spawn created is in the view
+    // already: the kernel writes it where the endpoint is made.
     let Ok(mut tree) = (unsafe { Inspector::from_mapped(m, None) }) else { return catalog::View::default() };
-    // The pool index of an endpoint this task's spawn created is published by
-    // the refresh after it.
-    tree.wait_refreshes(Source::Public, 2, &mut |ms| sys::sleep(ms));
     let lends = CapPerms::WRITE.union(CapPerms::DELEGATE);
     let held = tree
         .with(Source::Public, |r| {

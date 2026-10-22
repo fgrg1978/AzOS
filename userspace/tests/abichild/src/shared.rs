@@ -83,12 +83,12 @@ pub fn tree() -> Option<&'static mut Inspector<'static>> {
     t.as_mut().and_then(|v| v.as_mut())
 }
 
-/// The admin task list (`sched/tasks/<tid>/{parent, state}`) as (TID, parent
-/// TID, state) rows, read after the refresh that began after the call (a row
-/// shows what was so before it); how many. `None` if it cannot be read.
+/// The admin task list (`sched/tasks/<row>/{tid, parent, state}`) as (TID,
+/// parent TID, state) rows, read now: the kernel writes a row where the task
+/// changes, so a task made, exited or reaped before the call is shown as it
+/// is (no wait). How many; `None` if it cannot be read.
 pub fn task_rows(rows: &mut [(u32, u32, u8); 64]) -> Option<usize> {
     let t = tree()?;
-    t.wait_refreshes(Source::Admin, 2, &mut |ms| sys::sleep(ms));
     t.with(Source::Admin, |r| {
         let mut count = 0;
         let Some(dir) = r.lookup("sched/tasks")? else { return Ok(0) };
@@ -96,7 +96,11 @@ pub fn task_rows(rows: &mut [(u32, u32, u8); 64]) -> Option<usize> {
             if !matches!(v, Value::Dir) {
                 return;
             }
-            let Ok(tid) = info.name.as_str().parse::<u32>() else { return };
+            // A free row shows TID 0.
+            let tid = u64_in(r, info.id, "tid").ok().flatten().unwrap_or(0) as u32;
+            if tid == 0 {
+                return;
+            }
             let parent = u64_in(r, info.id, "parent").ok().flatten().unwrap_or(0) as u32;
             let state = str_in(r, info.id, "state").ok().flatten().and_then(|s| s.as_bytes().first().copied()).unwrap_or(b'?');
             if count < rows.len() {
