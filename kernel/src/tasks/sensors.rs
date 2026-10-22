@@ -283,7 +283,7 @@ pub(crate) fn sensor_ahrs_task(_: usize) {
 
         // Sleep to the next 100 Hz fusion tick (GPS divides this to ~10 Hz,
         // proximity to ~20 Hz via the counters above).
-        let dl = azos_drv_sys::timebase::now() + AHRS_INTERVAL;
+        let dl = azos_drv_sys::timebase::now() + ahrs_interval;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
     }
 }

@@ -340,3 +340,38 @@ mod scan_tests {
         assert_eq!(a.len(), SLAM_MAX_BEAMS);
     }
 }
+
+/// The AHRS's barometric altitude term (domains/robot/ahrs/src/baro_alt.rs),
+/// pure, pulled by path: the AHRS crate itself needs the kernel's drivers.
+#[cfg(test)]
+#[path = "../../../../domains/robot/ahrs/src/baro_alt.rs"]
+mod baro_alt;
+
+#[cfg(test)]
+mod baro_alt_tests {
+    use super::baro_alt::BaroAltitude;
+
+    /// A failed read is no pressure: the altitude holds where the last real
+    /// reading put it. Canary: a standard-atmosphere stand-in (101 325 Pa)
+    /// for the failed read moves it.
+    #[test]
+    fn a_failed_read_holds_the_altitude() {
+        let mut b = BaroAltitude::new();
+        b.set_reference(95_000);
+        let up = b.update(Some(94_000));
+        assert_eq!(up, 8_300);
+        assert_eq!(b.update(None), up);
+        assert_eq!(b.update(None), up);
+    }
+
+    /// Without a boot reference the first real reading is the reference, not
+    /// a standard atmosphere: a failed read before it reports the reference
+    /// altitude, and the first reading reads 0.
+    #[test]
+    fn the_reference_is_a_real_reading() {
+        let mut b = BaroAltitude::new();
+        assert_eq!(b.update(None), 0);
+        assert_eq!(b.update(Some(90_000)), 0);
+        assert_eq!(b.update(Some(89_900)), 830);
+    }
+}

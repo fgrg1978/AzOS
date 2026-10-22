@@ -23,6 +23,9 @@ use azos_channel::Channel;
 use azos_imu::ImuData;
 use azos_baro::BaroData;
 
+/// The barometric altitude term (pure; the host suite pulls it by path).
+pub mod baro_alt;
+
 // ── Channels ─────────────────────────────────────────────────────────────────
 
 /// Channel for IMU readings (accel + gyro + temp).
@@ -53,6 +56,8 @@ pub struct Attitude {
     /// Yaw angle in centi-degrees (0 .. 36000).  Gyro-only (drifts without mag).
     pub yaw_cdeg:   i32,
     /// Barometric altitude in centimetres relative to reference pressure.
+    /// Held at the last real reading's estimate while the barometer fails
+    /// (`CH_BARO`'s age is that reading's).
     pub alt_cm:     i32,
 }
 
@@ -73,8 +78,8 @@ pub struct AhrsState {
     pitch_cdeg: i32,
     /// Current yaw estimate (centi-degrees, gyro-integrated, drifts without GPS).
     yaw_cdeg:   i32,
-    /// Reference pressure at init time (Pa) for relative altitude.
-    ref_pressure_pa: u32,
+    /// Relative altitude from the barometer, against a real reference.
+    baro: baro_alt::BaroAltitude,
     /// Complementary filter alpha (0-1000, where 1000 = 1.0).
     /// Default 980 = trust gyro 98%, accel 2%.
     alpha: u32,
@@ -95,7 +100,7 @@ impl AhrsState {
             roll_cdeg:  0,
             pitch_cdeg: 0,
             yaw_cdeg:   0,
-            ref_pressure_pa: 101325,
+            baro: baro_alt::BaroAltitude::new(),
             alpha: 980,
             gps_yaw_cdeg: 0,
             gps_yaw_valid: false,
@@ -105,7 +110,7 @@ impl AhrsState {
 
     /// Set reference pressure (call once after baro stabilises on boot).
     pub fn set_ref_pressure(&mut self, pa: u32) {
-        self.ref_pressure_pa = pa;
+        self.baro.set_reference(pa);
     }
 
     /// Phase I3: feed GPS data for yaw correction.
@@ -124,11 +129,12 @@ impl AhrsState {
     /// Run one AHRS update cycle.
     ///
     /// - `imu`: latest scaled IMU data (accel in milli-g, gyro in milli-deg/s).
-    /// - `baro_pa`: latest barometric pressure in Pascals.
+    /// - `baro_pa`: this cycle's barometric pressure in Pascals; `None` when
+    ///   the read failed, which leaves the altitude where it was.
     /// - `dt_us`: time delta since last call in microseconds.
     ///
     /// Returns the estimated [`Attitude`].
-    pub fn update(&mut self, imu: &ImuData, baro_pa: u32, dt_us: u32) -> Attitude {
+    pub fn update(&mut self, imu: &ImuData, baro_pa: Option<u32>, dt_us: u32) -> Attitude {
         let ax = imu.accel_mg[0];
         let ay = imu.accel_mg[1];
         let az = imu.accel_mg[2];
@@ -183,9 +189,7 @@ impl AhrsState {
         }
 
         // ── Barometric altitude ──────────────────────────────────────
-        // Linear approximation: alt_cm = (ref - current) * 83 / 10
-        let dp = self.ref_pressure_pa as i32 - baro_pa as i32;
-        let alt_cm = dp * 83 / 10;
+        let alt_cm = self.baro.update(baro_pa);
 
         Attitude {
             roll_cdeg:  self.roll_cdeg,
