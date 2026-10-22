@@ -31,6 +31,7 @@
 //! managers and serialises access to them (every operation takes `&mut`).
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod bind;
 pub mod boot;

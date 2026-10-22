@@ -79,6 +79,7 @@
 
 #![no_std]
 #![deny(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod admit;
 pub mod api;

@@ -19,6 +19,7 @@
 //!     std::fs::write(&format!("{}/generated.rs", std::env::var("OUT_DIR").unwrap()), out).unwrap();
 //! }
 //! ```
+#![forbid(unsafe_code)]
 
 use std::collections::HashMap;
 

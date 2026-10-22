@@ -16,6 +16,7 @@
 //! are sized around what sits behind them ([`bridge`]). It is explicitly NOT
 //! a general PCIe subsystem.
 #![no_std]
+#![forbid(unsafe_code)]
 
 use core::fmt;
 

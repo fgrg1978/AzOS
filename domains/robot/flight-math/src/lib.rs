@@ -15,6 +15,7 @@
 //! - [`scan`]: beam-count cap shared with `flight`'s SLAM update (D06).
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod position;
 pub mod scan;

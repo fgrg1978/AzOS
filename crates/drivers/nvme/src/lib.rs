@@ -13,6 +13,7 @@
 //! entries are 64 B (SQ) and 16 B (CQ). Namespace formats other than 512-byte
 //! blocks are decoded ([`Namespace`]) but the driver refuses them.
 #![no_std]
+#![forbid(unsafe_code)]
 
 // ---------------------------------------------------------------------
 // Controller registers (NVMe 1.4, section 3.1)

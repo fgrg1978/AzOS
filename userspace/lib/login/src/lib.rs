@@ -28,6 +28,7 @@
 //! verifier cannot be attacked without the board); it is the second line, for
 //! the day the board's secret is read off the medium with the topology.
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub use azos_idl::{IdlError, MsgDesc, Transport};
 use azos_crypto::hkdf::hmac_sha256;

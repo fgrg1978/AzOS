@@ -51,6 +51,7 @@
 //! ```
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 // So `client.rs` can name this crate explicitly rather than through `crate::`.
 // It is pulled into `tests/host/net-tests` with `#[path]`, where `crate::` resolves

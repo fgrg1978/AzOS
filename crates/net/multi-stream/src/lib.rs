@@ -36,6 +36,7 @@
 //! bytes are ready; it does not enforce per-stream ordering across streams.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 // ── Frame header layout ───────────────────────────────────────────────────────
 

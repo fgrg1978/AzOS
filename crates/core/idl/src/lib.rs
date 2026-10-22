@@ -68,6 +68,7 @@
 //! The level is one linear number per interface. A server serves a request
 //! whose level is at most its own ([`IdlError::LevelTooNew`] otherwise).
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub use azos_abi::ipc_msg::{CapDesc, MsgDesc, CAP_MODE_DUP, CAP_MODE_MOVE, MSG_CAPS_MAX, MSG_VERSION, MSG_WORDS_MAX};
 pub use azos_idl_macros::azos_interface;

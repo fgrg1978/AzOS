@@ -60,6 +60,7 @@
 
 #![no_std]
 #![no_main]
+#![forbid(unsafe_code)]
 
 mod battery;
 mod degrade;

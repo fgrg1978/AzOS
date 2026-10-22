@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #![no_std]
+#![forbid(unsafe_code)]
 
 //! Navigation — waypoints, mission, occupancy grid, obstacle avoidance (Phases M+N).
 //!

@@ -44,6 +44,7 @@
 
 #![cfg_attr(target_os = "none", no_std)]
 #![deny(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod dt;
 #[cfg(feature = "fake")]

@@ -15,6 +15,7 @@
 //! checks the two ends against each other.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod bbb;
 pub mod initiator;

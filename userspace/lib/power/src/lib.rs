@@ -18,6 +18,7 @@
 //! (`azos_devif::Power`); the trait here is the policy logic's view of it.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub use azos_abi::power::*;
 pub use azos_devif::outcome;

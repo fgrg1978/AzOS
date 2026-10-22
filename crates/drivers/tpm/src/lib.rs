@@ -26,6 +26,7 @@
 //! it, the driver refuses it), interrupts (the driver polls), sessions other
 //! than password sessions, and key hierarchies.
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod acpi;
 pub mod mmio;

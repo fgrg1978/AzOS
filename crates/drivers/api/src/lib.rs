@@ -30,6 +30,7 @@
 //! register through [`Driver`] where they register at all.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod block;
 pub mod console;

@@ -13,6 +13,7 @@
 //! message or batch) and writes one. The transport (stdio lines, HTTP bodies),
 //! the tools and the session state belong to the daemon.
 #![no_std]
+#![forbid(unsafe_code)]
 
 extern crate alloc;
 

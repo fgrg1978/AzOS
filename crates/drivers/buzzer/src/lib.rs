@@ -19,6 +19,7 @@
 //! each carries [`SOURCE_MARKER`] to prove it (`tools/chip_source_check.py`).
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 use azos_devif::{outcome, Buzzer, Out};
 

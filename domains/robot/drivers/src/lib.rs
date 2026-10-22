@@ -4,6 +4,7 @@
 //! the RC receiver (SBUS / PPM).
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 // ESC (Electronic Speed Controller) PWM output for brushless motors.
 pub mod esc;

@@ -5,6 +5,7 @@
 //!
 //! The expansion is `expand`, a plain function over `proc_macro2` tokens, so
 //! the unit tests below check the exact error of every refusal.
+#![forbid(unsafe_code)]
 
 mod lint;
 

@@ -39,6 +39,7 @@
 
 #![no_std]
 #![deny(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod aarch64;
 mod riscv64;

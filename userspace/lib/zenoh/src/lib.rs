@@ -27,6 +27,7 @@
 //! extensions, compression, fragment reassembly, and the authentication
 //! extensions of INIT and OPEN (skipped when optional).
 #![no_std]
+#![forbid(unsafe_code)]
 
 extern crate alloc;
 

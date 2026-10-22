@@ -75,6 +75,7 @@
 //! over UDP on virtio-net, a loopback, and the in-memory pair
 //! `tests/host/rpc-tests` puts two servers on.
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod chan;
 pub mod engine;

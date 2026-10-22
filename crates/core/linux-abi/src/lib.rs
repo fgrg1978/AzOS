@@ -24,6 +24,7 @@
 //!   the kernel `struct termios`, `struct utsname`, and the initial stack
 //!   (argc, argv, envp, auxv) a static binary's `_start` reads.
 #![no_std]
+#![forbid(unsafe_code)]
 
 use azos_abi::syscall_nr as k;
 

@@ -16,6 +16,7 @@
 //!    with the semantics seccomp gives each opcode, refusing any opcode it does
 //!    not model, plus the kernel's validity checks and a port of the seccomp
 //!    action-cache emulation (`seccomp_is_const_allow`).
+#![forbid(unsafe_code)]
 
 #[cfg(test)]
 #[path = "../../src/allow.rs"]

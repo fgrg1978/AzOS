@@ -21,6 +21,7 @@
 //!
 //! The std programs that link it provide the entropy hooks of `getrandom` on
 //! `*-unknown-azos` (see `userspace/services/rpcquic`); the library defines none.
+#![forbid(unsafe_code)]
 
 pub mod crypto;
 pub mod identity;

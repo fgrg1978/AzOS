@@ -45,6 +45,7 @@
 //! controller wiring is a stub until VF2 / K1 hardware arrives.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod descriptors;
 pub mod dispatch;

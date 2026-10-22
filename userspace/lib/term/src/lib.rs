@@ -62,6 +62,7 @@
 //! termios view would be a Linux-side translation of
 //! `set_mode`/`set_echo`/`set_size`.
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub use azos_idl::{Cap, IdlError, MsgDesc, Transport};
 use azos_idl::azos_interface;

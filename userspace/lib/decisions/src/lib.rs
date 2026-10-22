@@ -38,6 +38,7 @@
 //! finds another id than part 0's had the slot rewritten in between and asks
 //! again ([`fetch`]).
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub use azos_decision::{Filter, ProvenanceRecord, PROVENANCE_SIZE, PROVENANCE_WORDS, RULES, VERDICTS};
 pub use azos_idl::{IdlError, MsgDesc, Transport};

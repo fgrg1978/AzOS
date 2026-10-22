@@ -28,6 +28,7 @@
 //! No arch code, no locks, no I/O: it host-tests as it is.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod bus;
 pub mod device;

@@ -41,6 +41,7 @@
 //! (host-only, runs before the crate compiles) cannot read compiled IR.
 //! Therefore `crates/drivers/sys/build.rs` scans the source text directly for
 //! `#[wcet(` patterns — no side-channel constant is needed or emitted.
+#![forbid(unsafe_code)]
 
 extern crate proc_macro;
 

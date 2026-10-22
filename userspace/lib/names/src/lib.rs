@@ -33,6 +33,7 @@
 //! `ENDPOINT_NAME_MAX`), packed by [`pack_name`]; the lint of the IDL refuses
 //! text, and a name is a key into the server's table, not a path.
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub use azos_idl::{Cap, IdlError, Lent, MsgDesc, Transport};
 use azos_idl::azos_interface;

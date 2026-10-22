@@ -23,6 +23,7 @@
 //! level is treated as CONTAINED (level 3, 0 % speed).
 
 #![cfg_attr(not(test), no_std)]
+#![forbid(unsafe_code)]
 
 // ──────────────────────────────────────────────────────────────────────────
 // Graded degrade levels — single source of truth

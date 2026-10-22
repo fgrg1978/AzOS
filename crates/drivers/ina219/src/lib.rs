@@ -11,6 +11,7 @@
 //! Kconfig `DRV_INA219_PLACEMENT` picks the host per board.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod chip;
 

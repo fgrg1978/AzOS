@@ -11,6 +11,7 @@
 //! other, so they share one crate.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 // arch-only: PLIC or AIA is a RISC-V device-tree decision; x86_64 has one
 // controller and no selection to make.

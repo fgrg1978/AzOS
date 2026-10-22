@@ -32,6 +32,7 @@
 //! str>`, registered in the `.azos_ktest` link section, run in name order by
 //! `azos_libsys::utest::run`, which prints TAP. A program that links one needs
 //! the section bracketed in its linker script (the SDK's scripts do).
+#![forbid(unsafe_code)]
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;

@@ -29,6 +29,7 @@
 //! compiles to the code it was before. On: one load and a branch per site
 //! call while the point is disarmed.
 #![no_std]
+#![forbid(unsafe_code)]
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
