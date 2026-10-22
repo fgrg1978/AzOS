@@ -703,6 +703,67 @@ fn init_pci_locked<C: azos_pci::ConfigSpace>(
 mod tests {
     use super::*;
     use super::super::{VirtqAvail, VirtqDesc, VirtqUsed, VirtqUsedElem, VIRTQ_CAPACITY};
+    use azos_dma::{DmaAddr, DmaDomain, DmaError, DomainKind};
+    use core::sync::atomic::AtomicU32;
+
+    /// A coherent identity domain that counts how often the driver asks it
+    /// whether it is coherent. Set as a queue's domain, that is once per look
+    /// at the used ring (`virtq_poll_with_len` refreshes it through
+    /// `Virtq::refresh`) and once per publish: a count that moves while the
+    /// driver publishes nothing says it is polling for an answer. What a
+    /// test's device waits for, instead of sleeping and hoping the driver got
+    /// there first.
+    struct Watched(AtomicU32);
+
+    impl Watched {
+        const fn new() -> Watched {
+            Watched(AtomicU32::new(0))
+        }
+
+        fn looks(&self) -> u32 {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+
+    impl DmaDomain for Watched {
+        fn map(&self, pa: u64, _len: usize, _dir: Direction) -> Result<DmaAddr, DmaError> {
+            Ok(DmaAddr(pa))
+        }
+        fn unmap(&self, _bus: DmaAddr, _len: usize) -> Result<(), DmaError> {
+            Ok(())
+        }
+        fn coherent(&self) -> bool {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            true
+        }
+        fn kind(&self) -> DomainKind {
+            DomainKind::Identity
+        }
+        fn enable(&self) -> Result<(), DmaError> {
+            Ok(())
+        }
+        fn allow_msi(&self, _doorbell: u64) -> Result<(), DmaError> {
+            Ok(())
+        }
+    }
+
+    /// The device on its own thread: once `ready` holds (or after twice
+    /// [`WAIT_MS`], so a driver that never gets there fails the test instead
+    /// of hanging it), it answers every chain published with `answer`.
+    fn device_when(
+        dev: Dev,
+        ready: impl Fn(&Dev) -> bool + Send + 'static,
+        answer: fn(u32) -> u32,
+    ) -> std::thread::JoinHandle<Vec<Vec<u8>>> {
+        std::thread::spawn(move || {
+            let mut dev = dev;
+            let give_up = std::time::Instant::now() + std::time::Duration::from_millis(2 * WAIT_MS);
+            while !ready(&dev) && std::time::Instant::now() < give_up {
+                core::hint::spin_loop();
+            }
+            dev.step(&answer)
+        })
+    }
 
     /// A queue in leaked host memory, as the suite's `virtq` tests build one.
     fn queue(num: u16) -> Virtq {
@@ -752,12 +813,22 @@ mod tests {
             Dev { desc: vq.desc, avail: vq.avail, used: vq.used, num: vq.num, seen: 0 }
         }
 
+        /// Has the driver published a chain this device has not answered?
+        fn published(&self) -> bool {
+            // SAFETY: the leaked avail ring.
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*self.avail).idx)) != self.seen }
+        }
+
         /// Answer every chain not seen yet with `answer(request type)`; the requests, in order.
         fn step(&mut self, answer: &dyn Fn(u32) -> u32) -> Vec<Vec<u8>> {
             let mut out = Vec::new();
             // SAFETY: the pointers are the leaked rings and the slots the driver queued.
             unsafe {
                 let idx = core::ptr::read_volatile(core::ptr::addr_of!((*self.avail).idx));
+                // A device on another thread reads the ring entries and the
+                // requests after the index that published them, as the driver
+                // reads the used ring after its index (`virtq_poll_with_len`).
+                fence(Ordering::Acquire);
                 while self.seen != idx {
                     let head = core::ptr::addr_of!((*self.avail).ring[(self.seen % self.num) as usize]).read_unaligned() as usize;
                     let d0 = self.desc.add(head);
@@ -778,6 +849,11 @@ mod tests {
                     let at = core::ptr::read_volatile(u);
                     core::ptr::addr_of_mut!((*self.used).ring[(at % self.num) as usize])
                         .write_unaligned(VirtqUsedElem { id: head as u32, len: 24 });
+                    // The answer and the used entry are written before the
+                    // index that hands them over, as a device must (without
+                    // it a weakly ordered host can show the driver the new
+                    // index over a stale entry: it then frees the wrong chain).
+                    fence(Ordering::Release);
                     core::ptr::write_volatile(u, at.wrapping_add(1));
                     out.push(req);
                     self.seen = self.seen.wrapping_add(1);
@@ -853,14 +929,16 @@ mod tests {
         for k in 0..4u32 {
             g.commit(Rect { x: k, y: 0, w: 1, h: 1 }, true);
         }
-        // The device catches up while the fifth commit waits.
-        let t = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            let mut dev = dev;
-            dev.step(&OK).len()
-        });
+        assert!(g.free_commit().is_none(), "the queue is full: a fifth commit must wait");
+        // The device catches up while the fifth commit waits: it answers once
+        // the driver is seen polling the used ring, which from here on only
+        // the fifth commit's wait does (it publishes after the wait).
+        static LOOKS: Watched = Watched::new();
+        g.vq.nc = Some(&LOOKS);
+        let t = device_when(dev, |_| LOOKS.looks() > 0, OK);
         g.commit(Rect { x: 9, y: 0, w: 1, h: 1 }, true);
-        assert_eq!(t.join().unwrap(), 8, "the first four commits were answered");
+        assert_eq!(t.join().unwrap().len(), 8, "the first four commits were answered");
+        assert!(LOOKS.looks() >= 2, "it looked before the answer, and again after it");
         assert!(!g.dead);
         // The first four are answered; the fifth went into the first pair's slots.
         g.reap();
@@ -921,23 +999,14 @@ mod tests {
     #[test]
     fn a_start_up_request_is_waited_for_and_judged() {
         let mut g = gpu();
-        let dev = Dev::of(&g.vq);
-        let t = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let mut dev = dev;
-            dev.step(&OK)
-        });
+        // The device answers what the driver published, whenever that is.
+        let t = device_when(Dev::of(&g.vq), Dev::published, OK);
         assert_eq!(g.command("set_scanout", &p::set_scanout(0, RESOURCE, Rect { x: 0, y: 0, w: 64, h: 32 })), Ok(()));
         let reqs = t.join().unwrap();
         assert_eq!(le32(&reqs[0], 0), p::CMD_SET_SCANOUT);
         assert_eq!(g.busy, 0);
         // A refusal is an error the caller sees.
-        let dev = Dev::of(&g.vq);
-        let mut dev = Dev { seen: 1, ..dev };
-        let t = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            dev.step(&|_| 0x1202)
-        });
+        let t = device_when(Dev { seen: 1, ..Dev::of(&g.vq) }, Dev::published, |_| 0x1202);
         assert_eq!(g.command("create_2d", &p::resource_create_2d(1, 2, 64, 32)), Err(GpuError::Command("create_2d")));
         t.join().unwrap();
     }
