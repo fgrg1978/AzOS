@@ -231,7 +231,9 @@ fn the_creator_of_a_socket_may_give_it_away() {
 
 /// The grants of the default topology, audited against the flows that stand on
 /// them: a row says `transfer = true` only on the call right of the endpoint it
-/// lends (a name server's `term`, the RPC server's `decisions`), and that grant
+/// lends (a name server's `term`, the RPC server's `decisions`), or on the one
+/// grant of its own endpoint a server both serves and lends from (the input
+/// server's `input`, the compositor's `compositor`: `READ|WRITE`), and that grant
 /// carries `TRANSFER` and `DUP` (a lend is a DUP entry); every introspection
 /// region is `READ|MAP` and nothing else (the tool maps it, and cannot write it
 /// or hand it on), and the terminal server's two (`input.events`,
@@ -241,12 +243,18 @@ fn the_creator_of_a_socket_may_give_it_away() {
 ///
 /// **Canary.** Make `CapSpec::grant_perms` ignore `transfer`: the lend rows (when
 /// the build has them) read `WRITE` alone and the synthetic row below goes red.
+/// Drop `transfer` from `COMPOSITOR_SERVE` (builder.rs): one serving row of the
+/// two this build carries lends from its own endpoint.
 #[test]
 fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
     use azos_topology::{CapSpec, MaybeStr};
     let topo = azos_topology::default_minimal();
-    let lent: &[&[u8]] = &[b"endpoint.term", b"endpoint.decisions", b"endpoint.input"];
-    let (mut transfers, mut regions) = (0, 0);
+    let lent: &[&[u8]] = &[b"endpoint.term", b"endpoint.decisions", b"endpoint.input", b"endpoint.compositor"];
+    // The servers whose one grant of their own endpoint both serves (`READ`)
+    // and is the call right their badged rights are derived from and lent
+    // (`builder.rs` `INPUT_SERVE`, `COMPOSITOR_SERVE`).
+    let serve_and_lend: &[(&str, &[u8])] = &[("INPUTD.ELF", b"endpoint.input"), ("COMPSRV.ELF", b"endpoint.compositor")];
+    let (mut transfers, mut regions, mut serving) = (0, 0, 0);
     for task in topo.tasks() {
         for c in topo.caps_of(task) {
             let who = (task.name.as_str(), c.target.as_str());
@@ -257,10 +265,11 @@ fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
             );
             if c.transfer {
                 transfers += 1;
-                // The input server's grant is its own endpoint: `READ` claims it, the
-                // call right (with `DUP` and `TRANSFER`) is what its warrants are
-                // derived from; no other row serves and lends at once.
-                let own = c.target.as_bytes() == b"endpoint.input" && task.name.as_str() == "INPUTD.ELF";
+                // A serving server's grant is its own endpoint: `READ` claims it,
+                // the call right (with `DUP` and `TRANSFER`) is what its badged
+                // rights are derived from; no other row serves and lends at once.
+                let own = serve_and_lend.contains(&(task.name.as_str(), c.target.as_bytes()));
+                serving += own as usize;
                 let call = if own { CapPerms::READ.union(CapPerms::WRITE) } else { CapPerms::WRITE };
                 assert_eq!((c.kind, c.perms), (CapKind::Endpoint, call), "{who:?}: only a call right is lent");
                 assert!(lent.contains(&c.target.as_bytes()), "{who:?}: not on the audited list of lent endpoints");
@@ -286,6 +295,10 @@ fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
         }
     }
     eprintln!("rights audit: {transfers} lend rows, {regions} region rows in the default topology of this build");
+    // Each server's row of this build lends from its grant: one that lost
+    // `transfer` would read no extra right above and still pass.
+    let want = azos_topology::builder::INPUTD_ROW as usize + azos_topology::builder::COMPOSITOR_ROW as usize;
+    assert_eq!(serving, want, "a serving server's row in this build does not lend from its own endpoint");
     // The same rule on a row of our own, so the check holds in a build whose
     // default topology has no lend row.
     let lend = CapSpec {
