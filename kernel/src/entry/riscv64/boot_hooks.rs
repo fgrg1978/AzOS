@@ -353,11 +353,6 @@ fn isa_report(zicboz_on: bool, zicbom_on: bool, sstc_on: bool, svpbmt_on: bool, 
     ]);
 }
 
-/// Nothing to reserve: the blob is read in full before `pmm::init`
-/// (`firmware_done`), and `pstore::reserve` already rules out an overlap.
-#[inline(always)]
-pub fn reserve_firmware_table(_dtb_ptr: usize) {}
-
 /// `satp` now holds the kernel table.
 #[inline(always)]
 pub fn mmu_enabled() {

@@ -51,8 +51,6 @@ impl ArchEntry for Entry {
     #[inline(always)]
     fn firmware_done(&self, fw_table: usize, num_cpus: usize) { crate::boot_hooks::firmware_done(fw_table, num_cpus) }
     #[inline(always)]
-    fn reserve_firmware_table(&self, fw_table: usize) { crate::boot_hooks::reserve_firmware_table(fw_table) }
-    #[inline(always)]
     fn kernel_mmio_windows(&self) -> impl Iterator<Item = (usize, usize)> {
         crate::entry::aarch64::board_map::kernel_mmio_windows()
     }

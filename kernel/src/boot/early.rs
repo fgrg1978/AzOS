@@ -53,6 +53,17 @@ fn kaslr_report() {
     }
 }
 
+/// Take the device tree blob `[start, end)` out of the page allocator, in
+/// whole pages. `reserve_range` leaves alone the pages that are not free (the
+/// image, the frame descriptors) and those past the managed range: neither
+/// can be handed out.
+fn reserve_fdt(start: usize, end: usize) {
+    let dtb_start = start & !(PAGE_SIZE - 1);
+    let dtb_end = (end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    azos_mm::pmm::reserve_range(dtb_start, dtb_end - dtb_start);
+    kprintln!("[MM] DTB reserved: {:#x} - {:#x} ({} bytes)", dtb_start, dtb_end, end - start);
+}
+
 /// Console, trap vector, firmware table, memory map, page tables (W^X/NX,
 /// guards), heap, then the ISA's interrupt controller, console interrupt,
 /// timer and self-tests. Returns what `kernel_main` needs past this point.
@@ -138,9 +149,8 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     });
     let (mem_start, mem_size) = (mem.mem_start, mem.mem_size);
     // The PCI host bridge's ECAM and `ranges`, for `kernel_main`'s PCI block.
-    // Read now: on riscv64 nothing reserves the blob's pages from the page
-    // allocator, so it is not guaranteed to survive `pmm::init` below, and on
-    // aarch64 the low half stops mapping it once it holds devices only.
+    // Read now, through the boot's own mapping of the blob: on aarch64 the low
+    // half stops mapping it once it holds devices only.
     let pci_host = if fw_table != 0 {
         unsafe { azos_dtb::dtb_pci_host(fw_table as *const u8) }
     } else {
@@ -206,17 +216,33 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
             stack_start, stack_end, (stack_end - stack_start) >> 10);
     }
 
-    a.reserve_firmware_table(fw_table);
-
-    // Panic record region (pstore): the top of RAM, out of the allocator
-    // before anything allocates. QEMU may put the firmware table near the top
-    // of RAM, so its range is passed to rule out an overlap.
+    // The device tree blob, out of the page allocator on every ISA that boots
+    // with one: `kernel_main` parses it again long after this (the SoC
+    // frameworks, hwbus, entropy, the framebuffer, energy, thermal, the CPU
+    // topology), and the firmware leaves it in RAM the allocator manages
+    // (OpenSBI near the top of RAM, QEMU's aarch64 `virt` past the image,
+    // U-Boot at its `fdt_addr`). Runtime canary `fdt-reserve-skip`: nothing
+    // is reserved (ktest `mm_fdt_reserved`).
     let fw_range = if fw_is_fdt {
         unsafe { azos_dtb::dtb_probe(fw_table as *const u8) }
             .map(|(_, total)| (fw_table, fw_table + total as usize))
     } else {
         None
     };
+    if let Some((start, end)) = fw_range {
+        if !canary!("fdt-reserve-skip") {
+            reserve_fdt(start, end);
+        }
+    }
+    #[cfg(feature = "ktest")]
+    crate::ktest::note_fdt(fw_range);
+    // Any other firmware table (x86_64: the memory-map holes and the boot
+    // information).
+    a.reserve_firmware_table(fw_table);
+
+    // Panic record region (pstore): the top of RAM, out of the allocator
+    // before anything allocates. QEMU may put the firmware table near the top
+    // of RAM, so its range is passed to rule out an overlap.
     crate::pstore::reserve(mem_start, mem_size, (kernel_start_pa, kernel_end_pa), fw_range);
 
     kprintln!("[MM] PMM: {} total pages, {} free, {} used, {} MiB of RAM, {} KiB of frame descriptors",

@@ -307,6 +307,9 @@ pub(crate) const NAMES: &[&str] = &[
     // are stopped after its writeback and device releases, not first (ktest
     // `motor_commander_exit_stops_its_wheels`).
     "commander-exit-late",
+    // boot/early.rs: the device tree blob is not taken out of the page
+    // allocator (ktest `mm_fdt_reserved`, riscv64 and aarch64).
+    "fdt-reserve-skip",
 ];
 const _: () = assert!(NAMES.len() <= azos_limits::CANARY_RUNTIME_MAX as usize);
 

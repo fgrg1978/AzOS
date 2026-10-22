@@ -17,7 +17,6 @@
 use azos_arch_api::isa::aarch64 as policy;
 use core::sync::atomic::{AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
-use azos_arch::mmu::PAGE_SIZE;
 use azos_arch::FirmwareMemory;
 use azos_arch::irq::{gic, gicv2};
 use azos_arch::{timer as arch_timer, Interrupts, ARCH};
@@ -387,36 +386,10 @@ pub fn firmware_memory(fw: &Firmware) -> FirmwareMemory {
     FirmwareMemory { mem_start, mem_size, from_firmware, cpu_count, cpu_map: fw.cpus, cpu_source }
 }
 
-/// Nothing: the blob is reserved (`reserve_firmware_table`) and read again
-/// after the GIC is up.
+/// Nothing: the blob is reserved (`early_main`) and read again after the GIC
+/// is up.
 #[inline(always)]
 pub fn firmware_done(_dtb_ptr: usize, _num_cpus: usize) {}
-
-/// The DTB blob itself, out of the page allocator: QEMU places the FDT
-/// INSIDE the managed RAM window here, so the allocator must never hand out
-/// a page still holding it (riscv64 reads its blob in full before
-/// `pmm::init` instead).
-#[inline(always)]
-pub fn reserve_firmware_table(dtb_ptr: usize) {
-    let dtb_probe = if dtb_ptr != 0 {
-        unsafe { azos_dtb::dtb_probe(dtb_ptr as *const u8) }
-    } else {
-        None
-    };
-    if let Some((_, totalsize)) = dtb_probe {
-        let dtb_start = dtb_ptr & !(PAGE_SIZE - 1);
-        let dtb_end = (dtb_ptr + totalsize as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-        if azos_mm::pmm::range_is_free(dtb_start, dtb_end - dtb_start) {
-            azos_mm::pmm::reserve_range(dtb_start, dtb_end - dtb_start);
-            kprintln!("[MM] DTB reserved: {:#x} - {:#x} ({} bytes)",
-                dtb_start, dtb_end, totalsize);
-        } else {
-            azos_drv_sys::kwarn!("[MM] DTB WARN: {:#x} - {:#x} not all free — not reserved \
-                       (outside the managed range, or overlaps the kernel image)",
-                dtb_start, dtb_end);
-        }
-    }
-}
 
 /// The kernel table now in `TTBR1_EL1` (`vmm::enable_paging` calls
 /// `ARCH.switch_kernel_pt`); the MMU itself has been on since boot.S's

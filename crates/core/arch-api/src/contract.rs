@@ -260,8 +260,12 @@ pub trait ArchEntry {
     }
 
     /// Keep the firmware table's own pages out of the page allocator, where
-    /// the loader put it inside managed RAM.
-    fn reserve_firmware_table(&self, fw_table: usize);
+    /// the loader put it inside managed RAM. A device tree is reserved by
+    /// `early_main` itself, on every ISA that boots with one; the default is
+    /// for those ISAs.
+    fn reserve_firmware_table(&self, fw_table: usize) {
+        let _ = fw_table;
+    }
 
     /// The platform's device windows `(base, bytes)` beyond the console:
     /// interrupt controller, timer block, board devices. `early_main` maps

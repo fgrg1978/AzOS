@@ -317,6 +317,45 @@ fn image() -> Result<[usize; 8], &'static str> {
     if v[1] == 0 { Err("the boot hook did not record the image layout") } else { Ok(v) }
 }
 
+/// The device tree blob's physical `[start, end)`, as `early_main` reserved
+/// it; `(0, 0)` when the firmware handed none.
+static FDT: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+
+pub(crate) fn note_fdt(range: Option<(usize, usize)>) {
+    let (start, end) = range.unwrap_or((0, 0));
+    FDT[0].store(start, Ordering::Relaxed);
+    FDT[1].store(end, Ordering::Relaxed);
+}
+
+// The device tree blob is out of the page allocator: every page of it is
+// reserved, or outside the managed range where nothing can hand it out.
+// `kernel_main` parses it again long after `pmm::init` (the SoC frameworks,
+// hwbus, entropy, energy, thermal, the CPU topology), so a free page of it
+// is one the allocator may give away under those readers. Runtime canary
+// `fdt-reserve-skip` (the boot reserves nothing).
+azos_ktest::ktest! {
+    // arch-only: x86_64 boots with PVH start_info and an E820 map, which its
+    // own `reserve_firmware_table` keeps out of the allocator.
+    #[cfg(not(target_arch = "x86_64"))]
+    fn mm_fdt_reserved() {
+        use azos_mm::frame::F_RESERVED;
+        let (start, end) = (FDT[0].load(Ordering::Relaxed), FDT[1].load(Ordering::Relaxed));
+        if end == 0 {
+            return Err("the boot recorded no device tree");
+        }
+        let mut page = start & !(azos_arch::PAGE_SIZE - 1);
+        while page < end {
+            match azos_mm::pmm::frame_state(page) {
+                None => {}
+                Some(F_RESERVED) => {}
+                Some(_) => return Err("a page of the device tree is free or allocated in the page allocator"),
+            }
+            page += azos_arch::PAGE_SIZE;
+        }
+        Ok(())
+    }
+}
+
 // Every kernel-image page carries the permissions planned for its section:
 // .text RX, .rodata RO, data/bss RW, none W+X, all 4 KiB leaves, the only
 // unmapped ones the task-stack guards. The page table is read back, not the enforcement call's own claim. Canary
