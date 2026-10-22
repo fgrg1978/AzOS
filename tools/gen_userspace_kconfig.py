@@ -45,8 +45,9 @@ a USERSPACE_ symbol (the console choice does), which would be a cycle.
 
 Output, in a menu "Userspace programs":
 
-  * one bool per image, `USERSPACE_<STEM>` ("include in the board volume"),
-    BusyBox as the existing `BUSYBOX` symbol (config/Kconfig.linux);
+  * one bool per image, `USERSPACE_<STEM>` ("include in the board volume");
+    BusyBox is not generated: its one symbol is `BUSYBOX` in
+    config/Kconfig.linux, which the console choice below reads;
   * `choice` CONSOLE_PROGRAM: native sh, BusyBox sh, any other included
     image, a custom /fat path with arguments, or none;
   * the derived strings the kernel and the topology read: CONSOLE_PATH and
@@ -254,22 +255,6 @@ def render(root):
                         "below, which gets a row of its own. Cost: the image's size on the volume."
                     ):
                         a(ln)
-        a("")
-        a("endmenu")
-    if bb:
-        a("")
-        a('menu "thirdparty"')
-        a("")
-        a("config BUSYBOX")
-        a('    bool "BUSYBOX.ELF (third-party BusyBox, GPL-2.0-only)"')
-        a("    depends on USERSPACE_GPL && LINUX_ABI")
-        a("    help")
-        for ln in wrap(
-            "The same symbol as Linux compatibility > BusyBox (config/Kconfig.linux): "
-            "the pinned BusyBox release built by `make busybox` with the applets of "
-            "userspace/thirdparty/busybox.fragment."
-        ):
-            a(ln)
         a("")
         a("endmenu")
     # The console program.
