@@ -68,6 +68,53 @@ check-presets:
 check-neverallow:
 	@$(PYTHON) tools/check_neverallow.py
 
+# The two `unsafe` ratchets (tools/unsafe_budget.py, baseline
+# tools/unsafe_budget.tsv): per crate the unsafe count and whether it forbids
+# unsafe code, per kernel crate and in total the share of code lines in files
+# with unsafe. The gate's n0 tier and tools/ci_check.sh run it too.
+.PHONY: unsafe-budget
+unsafe-budget:
+	@$(PYTHON) tools/unsafe_budget.py --self-test
+	@$(PYTHON) tools/unsafe_budget.py
+
+# The size budget (tools/size_budget.py, baseline tools/size_budget.tsv): the
+# .text/.rodata/.data/.bss of the kernel `make build` makes, built from
+# config/defconfigs/qemu.config as shipped (neither the developer's .config nor
+# qemu-dev.config's log level) and from no caller RUSTFLAGS, into a target dir
+# of its own so it never invalidates the development build. The config is
+# rewritten only when its text changes: a fresh mtime would rebuild every
+# crate behind azos_limits. Build only; nothing boots.
+# `make size-update REASON=".."` moves the baseline (in the commit that grows
+# or shrinks the image).
+SIZE_DEFCONFIG  := config/defconfigs/qemu.config
+SIZE_KCONFIG    := $(OUT_BUILD)/size-riscv64.config
+SIZE_TARGET_DIR := $(AZOS_OUT)/target/size
+SIZE_ELF        := $(SIZE_TARGET_DIR)/$(TARGET)/release/kernel
+SIZE_LABEL      := riscv64-qemu
+.PHONY: size-kernel size-check size-update
+$(SIZE_KCONFIG): $(SIZE_DEFCONFIG) FORCE
+	@mkdir -p $(dir $@)
+	@cp $(SIZE_DEFCONFIG) $@.new
+	@KCONFIG_CONFIG=$@.new $(PYTHON) -m olddefconfig >/dev/null
+	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
+
+size-kernel: $(SIZE_KCONFIG) | $(IMAGE_HASHES)
+	rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base $(SIZE_KCONFIG))"; \
+	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]"; \
+	env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(SIZE_KCONFIG)" \
+	    $(CARGO) build --release --target-dir $(SIZE_TARGET_DIR) -p azos_kernel --features qemu \
+	    $${isa:+--config "$$isa"} $$(python3 tools/kconfig_to_cargo.py --base $(SIZE_KCONFIG))
+	@$(MAKE) --no-print-directory prune
+
+size-check: size-kernel
+	@$(PYTHON) tools/size_budget.py --self-test
+	@$(PYTHON) tools/size_budget.py $(SIZE_LABEL)=$(SIZE_ELF)
+
+size-update: size-kernel
+	@test -n "$(REASON)" || { echo 'make size-update REASON="why the image moved"'; exit 1; }
+	@$(PYTHON) tools/size_budget.py --report $(SIZE_LABEL)=$(SIZE_ELF)
+	@$(PYTHON) tools/size_budget.py --update --reason "$(REASON)" $(SIZE_LABEL)=$(SIZE_ELF)
+
 # The fronts' check (tools/check_fast.sh): per ISA one ktest boot, one boot
 # of the same kernel with every composable runtime canary armed, one
 # userspace (abitest) boot, judged by tools/check_fast.py. CI_JOBS ISAs at once.

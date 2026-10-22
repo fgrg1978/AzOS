@@ -220,7 +220,8 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 | Trap layer | `python3 tools/trap_lint.py` | the trap layer is written once: no dispatch logic in `entry/<isa>/`, a case for every system-call number |
 | Arch layout | `python3 tools/arch_layout_lint.py` | the three ISAs share one file layout; ISA-only code is under `ext/` |
 | Kconfig | `python3 tools/kconfig_lint.py` | Kconfig is the only source of the feature set ([config.md](config.md)) |
-| Unsafe budget | `python3 tools/unsafe_budget.py` | a crate carries no more `unsafe` than `tools/unsafe_budget.tsv` says |
+| Unsafe budget | `make unsafe-budget` (`python3 tools/unsafe_budget.py`) | a crate carries no more `unsafe` than `tools/unsafe_budget.tsv` says, keeps its `#![forbid(unsafe_code)]`, and a kernel crate's share of code lines in files with `unsafe` (and the kernel's total) does not rise; `--report` prints the shares |
+| Size budget | `make size-check` | the riscv64 QEMU defconfig kernel's `.text`/`.rodata`/`.data`/`.bss` stay within 0.25% of `tools/size_budget.tsv`; `make size-update REASON=".."` moves it in the commit that changes the image |
 | Presets | `python3 tools/check_presets.py` | every preset expands on every ISA |
 | Feature matrix | `python3 tools/gen_feature_matrix.py --check` | `Documentation/os-feature-matrix.md` is what the Kconfig tree and the defconfigs yield |
 | Make help | `bash tools/check_make_help.sh` | `make help` names no target the Makefile lacks |

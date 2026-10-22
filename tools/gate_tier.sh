@@ -4,7 +4,8 @@
 # The gate's short tiers (wave 15). `make ci` is the full gate (N2).
 #
 #   tools/gate_tier.sh n0   `make check` for riscv64, aarch64 and x86_64, the
-#                           output-dir lint (tools/out_dir_lint.py), plus
+#                           output-dir lint (tools/out_dir_lint.py), the
+#                           unsafe and size budgets (`make size-check`), plus
 #                           cargo-deny (licences, bans, sources; offline), plus
 #                           the host suites the diff reaches (`make check0`)
 #   tools/gate_tier.sh n1   n0's host suites, then tools/ci_check.sh under
@@ -122,8 +123,9 @@ if [ "$lints" = 1 ]; then
 fi
 
 # The unsafe budget (tools/unsafe_budget.py): a crate may not carry more
-# `unsafe` than tools/unsafe_budget.tsv says, and the baseline moves in the
-# same commit as the code.
+# `unsafe` than tools/unsafe_budget.tsv says, lose its #![forbid(unsafe_code)],
+# or (a kernel crate) raise its share of code lines in files with unsafe; the
+# baseline moves in the same commit as the code.
 if [ "$lints" = 1 ]; then
     printf "  %-26s" "unsafe budget..."
     if out="$(python3 tools/unsafe_budget.py --self-test 2>&1)" \
@@ -132,6 +134,19 @@ if [ "$lints" = 1 ]; then
     else
         echo FAIL; fail=1
         printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
+# The size budget (tools/size_budget.py): the riscv64 QEMU defconfig kernel,
+# built by `make size-check` (build only), has the .text/.rodata/.data/.bss
+# tools/size_budget.tsv says, within its tolerance.
+if [ "$tier" = n0 ]; then
+    printf "  %-26s" "size budget..."
+    if out="$(make -s size-check 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | grep -E '^(FAIL|error|size_budget|update)' | sed -n 1,6p | sed 's/^/      /'
     fi
 fi
 

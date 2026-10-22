@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# Size budget baseline (tools/size_budget.py): bytes of each section group of
+# the kernel ELF per build label, and why the label last moved. The gate fails
+# when a group drifts from its line by more than the tolerance (0.25%, at least
+# 512 B): a commit that grows the image updates this file with a reason,
+# make size-update REASON=".." (one that shrinks it, to lock the gain in).
+# label	group	bytes   |   label	reason	text
+riscv64-qemu	.text	2421266
+riscv64-qemu	.rodata	338560
+riscv64-qemu	.data	3117408
+riscv64-qemu	.bss	4409184
+riscv64-qemu	reason	initial baseline: the riscv64 QEMU defconfig kernel at af6317c8

@@ -65,6 +65,9 @@ Test & gate
   sdk                    The native SDK: every std program (WHY.ELF, PKGD.ELF, RPCQUIC.ELF, sdktest, the TLS probe) for <isa>-unknown-azos on riscv64, aarch64 and x86_64.
   sdk-check              The std port layer type-checks on the three ISAs; its host tests and the proc-macros' run.
   check-neverallow       No preset's, defconfig's or micro's topology breaks a neverallow rule (host builds, no boot).
+  unsafe-budget          Unsafe counts, #![forbid(unsafe_code)] and the kernel's unsafe share against tools/unsafe_budget.tsv.
+  size-check             Build the riscv64 QEMU defconfig kernel; its section sizes against tools/size_budget.tsv.
+  size-update REASON=..  Rebuild it and move tools/size_budget.tsv, recording why.
   check1                 Change check: check0, then smoke boots and the QEMU scenarios the diff maps to.
   check-fast             Fronts' check: per ISA one ktest boot, one runtime-canary boot, one abitest boot.
   ci                     The full gate (long; run before pushing).
