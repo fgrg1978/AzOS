@@ -74,8 +74,8 @@ crates/drivers/gps	1	0	0	0	0	100
 crates/drivers/hwbus	0	0	0	0	1	0
 crates/drivers/imu	0	0	0	0	1	0
 crates/drivers/ina219	0	0	0	0	1	0
-crates/drivers/input	6	1	0	0	0	29
-crates/drivers/input/wire	3	2	2	0	0	81
+crates/drivers/input	4	1	0	0	0	32
+crates/drivers/input/wire	3	2	2	0	0	80
 crates/drivers/iommu	2	0	0	0	0	5
 crates/drivers/irqchip	0	0	0	0	1	0
 crates/drivers/net	34	4	5	0	0	64

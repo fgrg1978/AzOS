@@ -2,9 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The terminal server's consumer of the input event ring.
 //!
-//! The kernel's input drivers (PS/2, virtio-input) publish every event the
-//! console has no byte for into one ring, in one word format
-//! (`azos_input_wire::event`). This is its consumer, as gpm is on a Linux
+//! The kernel's input drivers (PS/2, virtio-input, USB HID) publish every
+//! event the console has no byte for into one ring, in one word format
+//! (`azos_input_wire::event`), while the console holds the focus (with the
+//! input server, Kconfig `INPUTD`: while a task holds it the ring gets only the
+//! modifier keys and the secure-attention chord). This is its consumer, as gpm is on a Linux
 //! console: key events become escape sequences ([`crate::keys`]) and mouse
 //! events become the pointer, selection, paste and scrollback
 //! ([`crate::mouse`]) or xterm mouse reports, all of it on the terminal
@@ -178,7 +180,7 @@ impl<R: EventSource> Input<R> {
                 // The secure-attention chord is the terminal server's alone:
                 // it is not an escape sequence for the client, and a held key
                 // repeating (value 2) is not a second press.
-                if code == KEY_DELETE && self.mods.ctrl() && self.mods.alt() {
+                if attention(code, self.mods.ctrl(), self.mods.alt()) {
                     if value == 1 {
                         sink.attention();
                     }

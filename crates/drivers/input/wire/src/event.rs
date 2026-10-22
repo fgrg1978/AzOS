@@ -9,7 +9,10 @@
 //! The first ring publishes every event the console has no byte for: mouse buttons,
 //! relative and absolute axes, the wheel, **the modifier keys themselves**
 //! (the consumer tracks its own modifier state, so an arrow key's word needs
-//! no modifier bits) and keys with no byte (arrows, F-keys, Home, ...).
+//! no modifier bits) and keys with no byte (arrows, F-keys, Home, ...). With
+//! the input server (Kconfig `INPUTD`) it does so only while the console holds
+//! the focus ([`FOCUS_OFFSET`]); the modifiers and the Secure Attention chord
+//! ([`attention`]) it always gets, so the console can see the chord.
 
 pub const EV_SYN: u16 = 0x00;
 pub const EV_KEY: u16 = 0x01;
@@ -79,12 +82,14 @@ pub const DROPS_OFFSET: usize = 256 + RING_CAP as usize * 8;
 pub const REGION_BYTES: usize = DROPS_OFFSET + 64;
 
 /// Slots of the stream ring (a power of two). The region holds a second ring
-/// after the first: the **stream**, which carries every event the first does
-/// and the key events that became console bytes, for the input server
+/// after the first: the **stream**, which carries every event of every input
+/// device, keys that made console bytes included, for the input server
 /// (`userspace/services/inputd`, Kconfig `INPUTD`) to deliver to the holder of
 /// the focus. The terminal server drains the first ring and never the second,
 /// and the input server the second and never the first, so neither is
-/// disturbed by the other. Producers write the stream only with `INPUTD` on.
+/// disturbed by the other. Producers write the stream only with `INPUTD` on;
+/// then the focus word ([`FOCUS_OFFSET`]) decides what the first ring and the
+/// console get at all.
 pub const STREAM_CAP: u32 = 128;
 
 /// Byte offset of the stream ring in the region (64-byte aligned: it follows
@@ -98,9 +103,35 @@ pub const STREAM_OFFSET: usize = REGION_BYTES;
 /// button state it holds when this moves.
 pub const STREAM_DROPS_OFFSET: usize = STREAM_OFFSET + 256 + STREAM_CAP as usize * 8;
 
-/// Bytes of the whole region: both rings and both counters' lines. Less than
-/// one page.
-pub const REGION_TOTAL: usize = STREAM_DROPS_OFFSET + 64;
+/// Byte offset of the **focus word**: who the keyboard and the pointer belong
+/// to, on a line of its own after the stream's counter. 0: the console (the
+/// terminal server); otherwise the generation of the task that holds the focus
+/// (`azos_devif::input`). The input server writes it when the focus moves; the
+/// producers read it for every event and route by it
+/// (`azos_drv_input::keymap::route`), and a producer that sees the Secure
+/// Attention chord sets it back to 0 itself, so the chord reaches the console
+/// whatever the input server does. 0 is also its value before the input server
+/// runs and after it exits.
+pub const FOCUS_OFFSET: usize = STREAM_DROPS_OFFSET + 64;
+
+/// Bytes of the whole region: both rings, both counters' lines and the focus
+/// word's. Less than one page.
+pub const REGION_TOTAL: usize = FOCUS_OFFSET + 64;
+
+/// Set in the type half of a **stream** word whose event the console was given
+/// (the focus word was 0 when the producer routed it): the input server tracks
+/// it (held keys, the chord) and delivers it to no holder, so no event reaches
+/// two parties. Bit 15 of the type: evdev types stop at 0x1f. The first ring
+/// never carries it.
+pub const STREAM_CONSOLE: u64 = 1 << 15;
+
+/// The Secure Attention Key: Ctrl+Alt+Delete (either Ctrl, either Alt). `true`
+/// for the Delete event `code` with both modifiers held: the chord's key, whose
+/// press takes the focus. The producers, the input server and the terminal
+/// server all ask this.
+pub const fn attention(code: u16, ctrl: bool, alt: bool) -> bool {
+    code == KEY_DELETE && ctrl && alt
+}
 
 /// One event packed into a ring word: `type | code << 16 | value << 32`.
 /// `value` is a key state (0 release, 1 press, 2 repeat), a signed relative

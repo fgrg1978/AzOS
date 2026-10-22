@@ -965,16 +965,17 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     },
     // The Input object's server (Kconfig INPUTD). Serves `endpoint.input` (the
     // v2 accept/reply on its main thread, the one the endpoint is stamped with;
-    // the thread `SYS_THREAD_CREATE` makes polls the stream),
+    // the thread `SYS_THREAD_CREATE` makes reads the stream),
     // finds the capabilities its row grants (`SYS_CAP_INFO`: the drivers'
     // region, the endpoint it derives warrants from), maps the drivers' region
     // (`SYS_MO_MAP`, `MEMOBJ_ACQUIRE` reads its size), makes a region per
     // focus grant and one for the trusted-path page (`SYS_MO_CREATE`, mapped
     // with `SYS_MO_MAP`, given back with `SYS_MO_UNMAP`), derives a warrant
     // (`ENDPOINT_DERIVE`) and revokes it (`SYS_CAP_REVOKE`, `SYS_CAP_CLOSE`
-    // for the replacement handle), reads the stream on a timer
-    // (`SYS_SLEEP_UNTIL`, `SYS_YIELD` between batches and at the lock) and
-    // writes its start-up and focus lines on the console; the clock is
+    // for the replacement handle), sleeps on the stream's head word until the
+    // drivers wake it (`SYS_FUTEX_WAIT`; `SYS_YIELD` between batches and at the
+    // lock, `SYS_SLEEP_UNTIL` after a spurious accept) and writes its start-up
+    // and focus lines on the console; the clock is
     // `DOMAIN_UPTIME` where ring 3 may not read the counter. No spawn, no file,
     // no device, no console input, no network.
     ImageProfile {
@@ -982,7 +983,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_REVOKE, SYS_YIELD,
             SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
-            SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_THREAD_CREATE, SYS_SLEEP_UNTIL,
+            SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_THREAD_CREATE, SYS_SLEEP_UNTIL, SYS_FUTEX_WAIT,
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, ENDPOINT_DERIVE, MEMOBJ_ACQUIRE, DOMAIN_UPTIME],

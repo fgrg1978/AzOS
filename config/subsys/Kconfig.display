@@ -100,42 +100,21 @@ config INPUTD
       counts the chord on a page that tasks map read-only, for a compositor
       to read.
 
-      The console keeps its own keys: typed bytes still go to the terminal
-      server, which still drains the first ring (arrows, F-keys, the mouse on
-      the framebuffer console), so a build with no graphical client sees no
-      change on the shell. The toolbox applet `input watch` is a client.
-      Needs CAP_SLOT_EXT: a warrant is a capability with a badge only the
-      server names. Cost when set: one task of 64 pages (INPUTD_MEM_PAGES in
-      the topology builder), a memory object per focus grant and one for the
-      trusted page, and one more ring push per event in the drivers'
-      interrupt arms. n keeps the stream out of the drivers.
-
-config INPUTD_POLL_ACTIVE_MS
-    int "Input server: milliseconds between two reads of the stream while a task holds the focus"
-    range 1 100
-    default 8
-    help
-      Only with INPUTD. userspace/services/inputd/src/main.rs. The drivers announce nothing to a
-      task that polls (the wake protocol of the first ring belongs to the
-      terminal server), so the server looks at the stream on a timer: this
-      often while a task holds the focus. It is the latency an event adds to
-      a keystroke or a pointer move on its way to the holder, and the stream
-      (128 slots) must not fill in this time: a mouse at 1 kHz fills it in
-      about 128 ms, so the default has a wide margin. A full stream drops the
-      newest event and counts it.
-
-config INPUTD_POLL_IDLE_MS
-    int "Input server: milliseconds between two reads of the stream while nobody holds the focus"
-    range 5 1000
-    default 50
-    help
-      Only with INPUTD. userspace/services/inputd/src/main.rs. With nobody holding the focus the
-      server still reads the stream, to see the Secure Attention Key and to
-      keep it from filling, but the latency matters less: this is how long a
-      chord waits to be noticed. Longer is fewer wake-ups on an idle machine;
-      keep it below the time a mouse takes to fill the stream (about 128 ms
-      at 1 kHz) to avoid losing events and, with them, the state of the held
-      keys.
+      The server is the one arbiter of the keyboard and the pointer: while
+      nobody holds the focus they are the console's (typed bytes go to the
+      terminal server, which drains the first ring: arrows, F-keys, the mouse
+      on the framebuffer console), so a build with no graphical client sees no
+      change on the shell; while a task holds it, the drivers give the console
+      nothing of it but the modifier keys and the chord (the region's focus
+      word, which the server writes). A serial line is the console's always.
+      The drivers wake the server when they push into an empty stream (a
+      futex on the region), so no timer is involved. The toolbox applet
+      `input watch` is a client. Needs CAP_SLOT_EXT: a warrant is a
+      capability with a badge only the server names. Cost when set: one task
+      of 64 pages (INPUTD_MEM_PAGES in the topology builder), a memory object
+      per focus grant and one for the trusted page, and one more ring push and
+      a read of the focus word per event in the drivers' interrupt arms. n
+      keeps the stream out of the drivers and the console owns the keyboard.
 
 config COMPOSITOR
     bool "Compositor (COMPSRV.ELF): the sole holder of the Display interface, the trusted path's banner"

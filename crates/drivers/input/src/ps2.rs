@@ -17,7 +17,11 @@
 //! * keys with no byte, the modifier keys, and everything the mouse does (its
 //!   three- or four-byte packets, [`super::mouse`]), are published into the
 //!   shared event ring ([`super::events`]), which the ring-3 terminal server
-//!   drains, and counted in [`stats`].
+//!   drains, and counted in [`stats`];
+//! * both only while the console holds the focus: while a task holds it
+//!   (Kconfig `INPUTD`, `events::console_holds`), every event goes to the
+//!   input server's stream alone, the modifiers and the Secure Attention chord
+//!   to the event ring as well.
 //!
 //! The byte-level routing is [`super::stream`] (pure, host-tested); this file
 //! is the port I/O, the lines and the counters.
@@ -150,11 +154,12 @@ pub fn owns_line(line: u32) -> bool {
         && (LINE_KBD.load(Ordering::Acquire) == line || LINE_AUX.load(Ordering::Acquire) == line)
 }
 
-/// One event of the mouse or of a key with no byte: published, and counted
-/// whether the ring took it. `true` when the terminal server was asleep on the
-/// ring and its console wait was nudged, so the caller wakes the parked reader.
-fn publish(ty: u16, code: u16, value: u32) -> bool {
-    let r = events::publish(pack(ty, code, value));
+/// One event of the mouse or of a key with no byte: published (`console`: the
+/// console holds the focus), and counted whether the ring took it. `true` when
+/// the terminal server was asleep on the ring and its console wait was nudged,
+/// so the caller wakes the parked reader.
+fn publish(ty: u16, code: u16, value: u32, console: bool) -> bool {
+    let r = events::publish(pack(ty, code, value), console);
     if r.kept() {
         PUBLISHED.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -196,7 +201,9 @@ pub fn irq(line: u32) -> Option<bool> {
         } else {
             KBD_BYTES.fetch_add(1, Ordering::Relaxed);
         }
-        st.feed(aux, b, |o| match o {
+        // Read per byte: the chord of the byte before may have moved it.
+        let console = events::console_holds();
+        st.feed(aux, b, console, |o| match o {
             Out::Byte(c) => {
                 if azos_drv_sys::uart::rx_push(c) {
                     KEY_BYTES.fetch_add(1, Ordering::Relaxed);
@@ -207,14 +214,17 @@ pub fn irq(line: u32) -> Option<bool> {
             }
             // A key the console took: the input server's stream gets it, the
             // terminal server's ring does not.
-            Out::Taken(code, value) => events::observe(pack(EV_KEY, code, value)),
+            Out::Taken(code, value) => events::observe(pack(EV_KEY, code, value), true),
+            // A task holds the focus: the holder's, through the stream.
+            Out::Withheld(ty, code, value) => events::observe(pack(ty, code, value), false),
+            Out::Attention => events::attention(),
             Out::Event(ty, code, value) => {
                 if ty == EV_REL {
                     MOUSE_REL.fetch_add(1, Ordering::Relaxed);
                 } else if ty == EV_KEY && code >= BTN_MOUSE {
                     MOUSE_BTN.fetch_add(1, Ordering::Relaxed);
                 }
-                wake |= publish(ty, code, value);
+                wake |= publish(ty, code, value, console);
             }
         });
     }

@@ -4725,17 +4725,68 @@ mod virtio_input_keymap {
     #[test]
     fn routing_decides_where_every_kind_of_event_goes() {
         let mut km = Keymap::new();
-        assert_eq!(route(&mut km, EV_SYN, 0, 0), Route::Consumed);
-        assert_eq!(route(&mut km, EV_KEY, KEY_A, 1), Route::Byte(b'a'));
-        assert_eq!(route(&mut km, EV_KEY, KEY_A, 0), Route::Consumed, "the release of a byte key");
-        assert_eq!(route(&mut km, EV_KEY, KEY_LEFTSHIFT, 1), Route::Publish, "the terminal server tracks modifiers too");
-        assert_eq!(route(&mut km, EV_KEY, KEY_A, 1), Route::Byte(b'A'), "route updated the modifiers");
+        assert_eq!(route(&mut km, EV_SYN, 0, 0, true), Route::Consumed);
+        assert_eq!(route(&mut km, EV_KEY, KEY_A, 1, true), Route::Byte(b'a'));
+        assert_eq!(route(&mut km, EV_KEY, KEY_A, 0, true), Route::Consumed, "the release of a byte key");
+        assert_eq!(route(&mut km, EV_KEY, KEY_LEFTSHIFT, 1, true), Route::Publish, "the terminal server tracks modifiers too");
+        assert_eq!(route(&mut km, EV_KEY, KEY_A, 1, true), Route::Byte(b'A'), "route updated the modifiers");
         // Not the console's: the terminal server's ring.
-        assert_eq!(route(&mut km, EV_REL, 0, 5), Route::Publish, "mouse motion");
-        assert_eq!(route(&mut km, EV_ABS, 0, 100), Route::Publish, "tablet position");
-        assert_eq!(route(&mut km, EV_KEY, BTN_MOUSE, 1), Route::Publish, "mouse button");
-        assert_eq!(route(&mut km, EV_KEY, 59, 1), Route::Publish, "F1 has no byte");
-        assert_eq!(route(&mut km, EV_KEY, 59, 0), Route::Publish);
+        assert_eq!(route(&mut km, EV_REL, 0, 5, true), Route::Publish, "mouse motion");
+        assert_eq!(route(&mut km, EV_ABS, 0, 100, true), Route::Publish, "tablet position");
+        assert_eq!(route(&mut km, EV_KEY, BTN_MOUSE, 1, true), Route::Publish, "mouse button");
+        assert_eq!(route(&mut km, EV_KEY, 59, 1, true), Route::Publish, "F1 has no byte");
+        assert_eq!(route(&mut km, EV_KEY, 59, 0, true), Route::Publish);
+    }
+
+    /// **Discriminates** the one arbiter: while a task holds the focus no key
+    /// becomes a console byte and nothing but the modifiers reaches the
+    /// terminal server's ring; the input server's stream alone gets them. The
+    /// router before it typed every key into the console whoever held the
+    /// focus, so a passphrase typed into a window reached the shell.
+    #[test]
+    fn a_key_with_the_focus_elsewhere_never_reaches_the_console() {
+        let mut km = Keymap::new();
+        for code in 0..BTN_MOUSE {
+            if is_modifier(code) {
+                continue;
+            }
+            for v in [1, 2, 0] {
+                assert_eq!(route(&mut km, EV_KEY, code, v, false), Route::Withheld, "key {code} value {v}");
+            }
+        }
+        // The pointer is the holder's too.
+        assert_eq!(route(&mut km, EV_REL, 0, 5, false), Route::Withheld, "mouse motion");
+        assert_eq!(route(&mut km, EV_ABS, 0, 100, false), Route::Withheld, "tablet position");
+        assert_eq!(route(&mut km, EV_KEY, BTN_MOUSE, 1, false), Route::Withheld, "mouse button");
+        assert_eq!(route_pointer(EV_REL, false), Route::Withheld);
+        assert_eq!(route_pointer(EV_REL, true), Route::Publish);
+        assert_eq!(route_pointer(EV_SYN, false), Route::Consumed);
+        // A modifier carries no text: the terminal server keeps following it,
+        // and the keymap too, so the console's next letter is right.
+        assert_eq!(route(&mut km, EV_KEY, KEY_LEFTSHIFT, 1, false), Route::Publish);
+        assert_eq!(route(&mut km, EV_KEY, KEY_A, 1, true), Route::Byte(b'A'), "the focus came back with Shift down");
+        assert_eq!(route(&mut km, EV_KEY, KEY_LEFTSHIFT, 0, false), Route::Publish);
+        assert_eq!(route(&mut km, EV_KEY, KEY_A, 1, true), Route::Byte(b'a'));
+    }
+
+    /// The chord is the console's whoever holds the focus: its press is
+    /// [`Route::Attention`] (the producer hands the keyboard back to the
+    /// console), Delete alone or with one modifier is a plain key.
+    #[test]
+    fn the_attention_chord_reaches_the_console_whoever_holds_the_focus() {
+        for console in [false, true] {
+            let plain = if console { Route::Publish } else { Route::Withheld };
+            let mut km = Keymap::new();
+            assert_eq!(route(&mut km, EV_KEY, KEY_DELETE, 1, console), plain, "Delete alone");
+            assert_eq!(route(&mut km, EV_KEY, KEY_DELETE, 0, console), plain);
+            assert_eq!(route(&mut km, EV_KEY, KEY_RIGHTCTRL, 1, console), Route::Publish);
+            assert_eq!(route(&mut km, EV_KEY, KEY_DELETE, 1, console), plain, "Ctrl+Delete is no chord");
+            assert_eq!(route(&mut km, EV_KEY, KEY_LEFTALT, 1, console), Route::Publish);
+            assert_eq!(route(&mut km, EV_KEY, KEY_DELETE, 1, console), Route::Attention, "Ctrl+Alt+Delete");
+            assert!(km.ctrl() && km.alt());
+            // A repeat is not a second chord.
+            assert_eq!(route(&mut km, EV_KEY, KEY_DELETE, 2, console), plain);
+        }
     }
 
     #[test]
@@ -4975,11 +5026,11 @@ mod ps2_scancode {
         let mut km = Keymap::new();
         let byte_of = |km: &mut Keymap, d: &mut Decoder, make: u8| -> Route {
             let (c, v) = d.feed(make).expect("a press");
-            let r = route(km, EV_KEY, c, v);
+            let r = route(km, EV_KEY, c, v, true);
             assert_eq!(d.feed(0xF0), None);
             let (c2, v2) = d.feed(make).expect("a release");
             assert_eq!(v2, 0);
-            assert_eq!(route(km, EV_KEY, c2, v2), Route::Consumed, "a release gives no byte");
+            assert_eq!(route(km, EV_KEY, c2, v2, true), Route::Consumed, "a release gives no byte");
             r
         };
         for &(make, plain, _) in rows {
@@ -4987,7 +5038,7 @@ mod ps2_scancode {
         }
         // Left shift (12) held: the shifted column.
         let (c, v) = d.feed(0x12).unwrap();
-        assert_eq!(route(&mut km, EV_KEY, c, v), Route::Publish);
+        assert_eq!(route(&mut km, EV_KEY, c, v, true), Route::Publish);
         for &(make, _, shifted) in rows {
             assert_eq!(byte_of(&mut km, &mut d, make), Route::Byte(shifted), "shifted {make:#x}");
         }
@@ -5001,7 +5052,7 @@ mod ps2_scancode {
             let mut last = Route::Consumed;
             for &b in bytes {
                 if let Some((c, v)) = d.feed(b) {
-                    last = route(&mut km, EV_KEY, c, v);
+                    last = route(&mut km, EV_KEY, c, v, true);
                 }
             }
             last
@@ -5021,7 +5072,7 @@ mod ps2_scancode {
         let mut d = Decoder::new();
         let mut km = Keymap::new();
         let mut feed = |bytes: &[u8]| -> Vec<Route> {
-            bytes.iter().filter_map(|&b| d.feed(b)).map(|(c, v)| route(&mut km, EV_KEY, c, v)).collect()
+            bytes.iter().filter_map(|&b| d.feed(b)).map(|(c, v)| route(&mut km, EV_KEY, c, v, true)).collect()
         };
         // Left Ctrl down, C: 0x03 (the console's ^C); Ctrl up.
         let r = feed(&[0x14, 0x21, 0xF0, 0x21, 0xF0, 0x14]);
@@ -5116,7 +5167,7 @@ mod ps2_stream {
     fn run(s: &mut Stream, port: &[(bool, u8)]) -> Vec<Out> {
         let mut v = Vec::new();
         for &(aux, b) in port {
-            s.feed(aux, b, |o| v.push(o));
+            s.feed(aux, b, true, |o| v.push(o));
         }
         v
     }
@@ -5130,6 +5181,26 @@ mod ps2_stream {
         // 0x08 starts a mouse packet; as a keyboard byte it is no make code.
         assert_eq!(run(&mut s, &[(false, 0x08)]), []);
         assert_eq!(run(&mut s, &[(true, 0x08), (true, 7), (true, 0)]), [Out::Event(EV_REL, REL_X, 7)]);
+    }
+
+    /// **Discriminates** the arbiter on the PS/2 path: with a task holding the
+    /// focus the keyboard's bytes and the mouse's packets are the holder's
+    /// alone, and the chord still goes to the console and hands it the keyboard.
+    #[test]
+    fn with_the_focus_elsewhere_ps2_gives_the_console_nothing_but_the_chord() {
+        let mut s = Stream::new();
+        let mut v = Vec::new();
+        for &(aux, b) in &[(false, 0x1C), (false, 0xF0), (false, 0x1C), (true, 0x08), (true, 7), (true, 0)] {
+            s.feed(aux, b, false, |o| v.push(o));
+        }
+        assert_eq!(v, [Out::Withheld(EV_KEY, KEY_A, 1), Out::Withheld(EV_KEY, KEY_A, 0), Out::Withheld(EV_REL, REL_X, 7)]);
+        // Ctrl (14), Alt (11), Delete (E0 71).
+        v.clear();
+        for b in [0x14, 0x11, 0xE0, 0x71] {
+            s.feed(false, b, false, |o| v.push(o));
+        }
+        assert_eq!(v[..2], [Out::Event(EV_KEY, 29, 1), Out::Event(EV_KEY, 56, 1)], "modifiers: the console's ring too");
+        assert_eq!(v[2..], [Out::Attention, Out::Event(EV_KEY, 111, 1)], "the chord: back to the console");
     }
 
     #[test]
@@ -5446,16 +5517,31 @@ mod ps2_i8042 {
 
 #[cfg(test)]
 mod input_events {
-    use super::events::{install, observe, publish, stream_push, Pushed, RING_BYTES};
+    use super::events::{attention, console_holds, install, observe, publish, stream_push, Pushed, RING_BYTES};
     use super::keymap::{pack, unpack, EV_KEY, EV_REL, RING_CAP};
-    use azos_input_wire::event::{DROPS_OFFSET, STREAM_CAP, STREAM_DROPS_OFFSET, STREAM_OFFSET};
-    use azos_rings::region::{RingSleep, SpscRing};
+    use azos_input_wire::event::{
+        DROPS_OFFSET, FOCUS_OFFSET, STREAM_CAP, STREAM_CONSOLE, STREAM_DROPS_OFFSET, STREAM_OFFSET,
+    };
+    use azos_rings::region::{RingSleep, SpscRing, RING_HEAD};
     use core::sync::atomic::{AtomicU32, Ordering};
+
+    /// The region's reference the test installs, and the wakes the producers
+    /// asked for: `(obj, offset)` of the last, and how many.
+    const OBJ: u32 = 0x5157;
+    static WOKE_AT: AtomicU32 = AtomicU32::new(0);
+    static WAKES: AtomicU32 = AtomicU32::new(0);
+    fn waker(obj: u32, off: u32, n: u32) -> u32 {
+        assert_eq!((obj, n), (OBJ, 1), "one waiter of the installed region");
+        WOKE_AT.store(off, Ordering::SeqCst);
+        WAKES.fetch_add(1, Ordering::SeqCst);
+        1
+    }
 
     /// The ring is one static, so the whole life of it is one test.
     #[test]
     fn published_events_come_out_in_order_and_a_full_ring_refuses_and_counts() {
-        assert_eq!(publish(pack(EV_REL, 0, 1)), Pushed::Lost, "no ring yet: the event is lost");
+        assert_eq!(publish(pack(EV_REL, 0, 1), true), Pushed::Lost, "no ring yet: the event is lost");
+        assert!(console_holds(), "no region yet: the keyboard is the console's");
         // 64-byte aligned memory, as the kernel's frame is.
         #[repr(align(64))]
         struct Mem([u8; RING_BYTES]);
@@ -5464,33 +5550,33 @@ mod input_events {
         let drops = || unsafe { &*((base + DROPS_OFFSET) as *const AtomicU32) }.load(Ordering::Acquire);
         // SAFETY: the leaked box lives for the rest of the process.
         unsafe {
-            assert!(!install(base + 8), "an unaligned base is refused");
-            assert!(install(base));
-            assert!(!install(base), "the ring is installed once");
+            assert!(!install(base + 8, OBJ, waker), "an unaligned base is refused");
+            assert!(install(base, OBJ, waker));
+            assert!(!install(base, OBJ, waker), "the ring is installed once");
         }
         assert_eq!(drops(), 0, "install zeroes the counter");
         let ring = SpscRing { base, cap: RING_CAP };
         for i in 0..RING_CAP {
-            assert_eq!(publish(pack(EV_REL, 0, i)), Pushed::Kept, "slot {i}");
+            assert_eq!(publish(pack(EV_REL, 0, i), true), Pushed::Kept, "slot {i}");
         }
         assert_eq!(drops(), 0);
-        assert_eq!(publish(pack(EV_REL, 0, 99)), Pushed::Lost, "the ring is full: the event is lost");
+        assert_eq!(publish(pack(EV_REL, 0, 99), true), Pushed::Lost, "the ring is full: the event is lost");
         assert_eq!(drops(), 1, "and counted where the consumer can see it");
-        assert_eq!(publish(pack(EV_REL, 0, 99)), Pushed::Lost);
+        assert_eq!(publish(pack(EV_REL, 0, 99), true), Pushed::Lost);
         assert_eq!(drops(), 2);
         for i in 0..RING_CAP {
             let (_, w) = ring.try_pop();
             assert_eq!(unpack(w), (EV_REL, 0, i), "slot {i}");
         }
         assert_eq!(ring.len(), 0, "drained");
-        assert_eq!(publish(pack(EV_REL, 0, 7)), Pushed::Kept, "a drained ring takes events again");
+        assert_eq!(publish(pack(EV_REL, 0, 7), true), Pushed::Kept, "a drained ring takes events again");
         assert_eq!(drops(), 2, "a kept event is not a drop");
         // The consumer sleeps (empty ring announced): the next push owes the
         // wake, once.
         let _ = ring.try_pop();
         assert!(matches!(ring.consumer_sleep(), RingSleep::Wait { .. }));
-        assert_eq!(publish(pack(EV_REL, 0, 8)), Pushed::Wake);
-        assert!(publish(pack(EV_REL, 0, 9)).kept() && !publish(pack(EV_REL, 0, 10)).wake());
+        assert_eq!(publish(pack(EV_REL, 0, 8), true), Pushed::Wake);
+        assert!(publish(pack(EV_REL, 0, 9), true).kept() && !publish(pack(EV_REL, 0, 10), true).wake());
 
         // The stream, the second ring of the region: it holds exactly what was
         // put in it, in order, counts a full ring in its own counter, and the
@@ -5517,11 +5603,66 @@ mod input_events {
         }
         // `observe` is the stream alone, and only with the switch on.
         let first_len = ring.len();
-        observe(pack(EV_KEY, 30, 1));
+        observe(pack(EV_KEY, 30, 1), true);
         assert_eq!(ring.len(), first_len, "a key the console took never reaches the first ring");
         assert_eq!(stream.len(), azos_limits::INPUTD as u32);
         // The region fits the page the kernel makes it in.
         assert!(RING_BYTES <= 4096);
+        if !azos_limits::INPUTD {
+            assert!(console_holds(), "without the input server the keyboard is always the console's");
+            return;
+        }
+
+        // The stream's words say whether the console was given the event; the
+        // first ring's never carry the mark.
+        while stream.len() > 0 {
+            let _ = stream.try_pop();
+        }
+        observe(pack(EV_KEY, 30, 1), true);
+        observe(pack(EV_KEY, 30, 1), false);
+        assert_eq!(stream.try_pop().1, pack(EV_KEY, 30, 1) | STREAM_CONSOLE, "the console's: marked");
+        assert_eq!(stream.try_pop().1, pack(EV_KEY, 30, 1), "withheld for a holder: plain");
+        while ring.len() > 0 {
+            let _ = ring.try_pop();
+        }
+        assert!(publish(pack(EV_KEY, 42, 1), true).kept());
+        assert_eq!(ring.try_pop().1, pack(EV_KEY, 42, 1), "the first ring's copy is plain");
+        assert_eq!(stream.try_pop().1, pack(EV_KEY, 42, 1) | STREAM_CONSOLE);
+
+        // The focus word: the input server's decision, read per event; the chord
+        // gives the keyboard back to the console without the server.
+        let focus = unsafe { &*((base + FOCUS_OFFSET) as *const AtomicU32) };
+        assert_eq!(focus.load(Ordering::Acquire), 0, "install zeroes the focus word: the console's");
+        assert!(console_holds());
+        focus.store(7, Ordering::Release);
+        assert!(!console_holds(), "generation 7 holds the focus");
+        attention();
+        assert_eq!(focus.load(Ordering::Acquire), 0);
+        assert!(console_holds(), "the chord hands the keyboard back to the console");
+
+        // **Discriminates** the stream's wake (the input server used to poll it
+        // on a timer): a push into a stream whose consumer announced a sleep
+        // calls the installed waker once, on the stream's head word; a push
+        // with nobody asleep calls nothing.
+        assert_eq!(stream.len(), 0);
+        let wakes = WAKES.load(Ordering::SeqCst);
+        observe(pack(EV_KEY, 30, 1), false);
+        assert_eq!(WAKES.load(Ordering::SeqCst), wakes, "nobody announced a sleep: no wake");
+        let _ = stream.try_pop();
+        let RingSleep::Wait { addr, .. } = stream.consumer_sleep() else { panic!("an empty stream lets its consumer sleep") };
+        assert_eq!(addr, base + STREAM_OFFSET + RING_HEAD);
+        observe(pack(EV_KEY, 30, 0), false);
+        assert_eq!(WAKES.load(Ordering::SeqCst), wakes + 1, "the push owes the sleeper a wake");
+        assert_eq!(WOKE_AT.load(Ordering::SeqCst) as usize, STREAM_OFFSET + RING_HEAD, "on the word it sleeps on");
+        assert!(publish(pack(EV_REL, 0, 1), true).kept());
+        assert_eq!(WAKES.load(Ordering::SeqCst), wakes + 1, "the flag was taken: the next push owes nothing");
+        // `publish` wakes it too.
+        while stream.len() > 0 {
+            let _ = stream.try_pop();
+        }
+        assert!(matches!(stream.consumer_sleep(), RingSleep::Wait { .. }));
+        assert!(publish(pack(EV_REL, 0, 2), true).kept());
+        assert_eq!(WAKES.load(Ordering::SeqCst), wakes + 2);
     }
 }
 

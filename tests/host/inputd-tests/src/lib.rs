@@ -55,6 +55,8 @@ mod inputd {
         revoked: Vec<u32>,
         sak: Vec<u64>,
         console: Vec<u8>,
+        /// Every value written to the drivers' focus word, in order.
+        focus: Vec<u32>,
     }
 
     const RING_HANDLE0: u32 = 100;
@@ -116,6 +118,9 @@ mod inputd {
         fn note_sak(&mut self, now_ns: u64) {
             self.0.borrow_mut().sak.push(now_ns);
         }
+        fn set_focus(&mut self, generation: u32) {
+            self.0.borrow_mut().focus.push(generation);
+        }
         fn log(&mut self, line: &[u8]) {
             self.0.borrow_mut().console.extend_from_slice(line);
         }
@@ -127,6 +132,18 @@ mod inputd {
             for &(t, c, v) in evs {
                 w.stream.push_back(pack(t, c, v));
             }
+        }
+        /// Events the drivers gave the console (the focus word was 0): marked.
+        fn send_console(&self, evs: &[(u16, u16, u32)]) {
+            let mut w = self.0.borrow_mut();
+            for &(t, c, v) in evs {
+                w.stream.push_back(pack(t, c, v) | STREAM_CONSOLE);
+            }
+        }
+        /// The drivers' focus word as the server last wrote it (0 also when
+        /// it never wrote it).
+        fn word(&self) -> u32 {
+            self.0.borrow().focus.last().copied().unwrap_or(0)
         }
         fn ring(&self, n: usize) -> Vec<(u16, u16, u32)> {
             self.0.borrow().rings[n].words.iter().map(|&w| unpack(w)).collect()
@@ -735,5 +752,83 @@ mod inputd {
         TrustedPage::record(base, 99);
         assert_eq!((TrustedPage::count(base), TrustedPage::at_ns(base)), (2, 99));
         assert!(RING_SLOTS.is_power_of_two());
+    }
+
+    /// **The one arbiter.** The server writes who the keyboard belongs to into
+    /// the drivers' focus word: the console (0) until a grant, the holder's
+    /// generation while it holds it, the console again when it lets go or the
+    /// chord takes it. A move between two holders goes straight from one
+    /// generation to the other, never through the console.
+    ///
+    /// **Canary.** Install the new holder after dropping the old one through
+    /// `drop_holder` (which hands the keyboard to the console): the history
+    /// shows a 0 between 1 and 2 and the assertion goes red.
+    #[test]
+    fn the_focus_word_follows_every_move_of_the_focus() {
+        let w = Fake::default();
+        let l = lp_gated(&w, false);
+        l.svc.borrow_mut().attach();
+        assert_eq!(w.0.borrow().focus, [0], "a server that starts gives the keyboard to the console");
+        let mut c = InputClient::new(&l);
+        let g1 = c.take_focus().unwrap().value.generation;
+        assert_eq!(w.word(), g1);
+        let g2 = c.take_focus().unwrap().value.generation;
+        assert_eq!(w.0.borrow().focus, [0, g1, g2], "holder to holder, never through the console");
+        // The holder lets go: the console's again.
+        *l.badge.borrow_mut() = warrant_badge(g2);
+        assert!(InputClient::new(&l).release().unwrap().is_ok());
+        assert_eq!(w.word(), 0);
+        // The chord takes it from a holder: the console's again.
+        *l.badge.borrow_mut() = 3;
+        let g3 = InputClient::new(&l).take_focus().unwrap().value.generation;
+        assert_eq!(w.word(), g3);
+        w.send(&[CTRL, ALT, DEL, DEL_UP]);
+        pump(&l);
+        assert_eq!(l.svc.borrow().holder(), 0);
+        assert_eq!(w.word(), 0, "the chord gives the keyboard back to the console");
+    }
+
+    /// **Discriminates** the double delivery: an event the drivers gave the
+    /// console (marked in the stream) is the server's to track and nobody's to
+    /// deliver, so a key reaches one party. The modifier state it carries still
+    /// counts: the chord is seen from marked modifiers.
+    ///
+    /// **Canary.** Deliver whatever the mark says (`if !console` removed): the
+    /// holder's ring gets the console's `a` and the assertion goes red.
+    #[test]
+    fn an_event_the_console_was_given_reaches_no_holder() {
+        let w = Fake::default();
+        let l = lp_gated(&w, false);
+        let g = InputClient::new(&l).take_focus().unwrap().value.generation;
+        assert!(g != 0);
+        // A key routed while the word still named the console, then one
+        // routed for the holder.
+        w.send_console(&[A, (EV_KEY, KEY_A, 0)]);
+        w.send(&[(EV_KEY, KEY_SPACE, 1)]);
+        pump(&l);
+        assert_eq!(w.ring(0), [(EV_KEY, KEY_SPACE, 1)], "the console's key is not the holder's too");
+        // Marked modifiers are state: the chord they lead to is still seen.
+        w.send_console(&[CTRL, ALT]);
+        w.send(&[DEL]);
+        pump(&l);
+        assert_eq!(l.svc.borrow().holder(), 0);
+        assert_eq!(w.0.borrow().sak.len(), 1);
+    }
+
+    /// A grant first hands the old holder what the stream already had for it:
+    /// what was typed into one window does not land in the next.
+    ///
+    /// **Canary.** Drop the drain at the top of `take_focus`: the second ring
+    /// gets the first holder's `a`.
+    #[test]
+    fn a_grant_hands_the_old_holder_what_the_stream_had_for_it() {
+        let w = Fake::default();
+        let l = lp_gated(&w, false);
+        let mut c = InputClient::new(&l);
+        assert!(c.take_focus().unwrap().is_ok());
+        w.send(&[A, (EV_KEY, KEY_A, 0)]);
+        assert!(c.take_focus().unwrap().is_ok());
+        assert_eq!(w.ring(0), [A, (EV_KEY, KEY_A, 0)], "the first holder's keys");
+        assert!(w.ring(1).is_empty(), "and none of them in the second ring");
     }
 }

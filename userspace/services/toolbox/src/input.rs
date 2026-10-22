@@ -13,8 +13,9 @@
 //! `watch` asks for the focus, which makes this tool the one task the input
 //! drivers' stream is delivered to, and prints each event it reads from the
 //! ring the server lends it: `key 103 down`, `btn 272 up`, `rel 0 -3`,
-//! `abs 1 16384`. A key that makes a console byte is printed too, and is still
-//! typed on the console: the terminal server keeps the console's keys. It ends
+//! `abs 1 16384`. A key that makes a console byte is printed too, and is not
+//! typed on the console: while this tool holds the focus the keyboard is its
+//! own (the modifier keys and Ctrl+Alt+Delete excepted). It ends
 //! after `COUNT` events, when the focus moves (the server closes the ring: a
 //! later `input watch`, or Ctrl+Alt+Delete, took it), or when stopped, and
 //! gives the focus back through its warrant when it ends by itself. Ctrl+Alt+
@@ -27,7 +28,7 @@
 //!
 //! The tool's authority is its row's call right on `endpoint.input` and
 //! nothing else. It maps the ring it is lent and sleeps between looks at it, as
-//! the drivers' stream offers no wake-up for a reader.
+//! the server's push into it wakes no reader.
 
 use super::{fail, put, put_num};
 use azos_devif::input::{EventRing, TrustedPage, RING_SLOTS};

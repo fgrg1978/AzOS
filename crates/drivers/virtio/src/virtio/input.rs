@@ -12,20 +12,26 @@
 //! transport's line ([`set_irq_line`]), the arm for that line calls [`irq`],
 //! which acknowledges the device and reaps the used ring in interrupt context.
 //! The handler is the whole consumer — there is no task to wake for it — so
-//! each event is decided on the spot ([`azos_drv_input::keymap::route`]):
+//! each event is decided on the spot ([`azos_drv_input::keymap::route`]), by
+//! who holds the focus ([`azos_drv_input::events::console_holds`]: the input
+//! server's decision, always the console without Kconfig `INPUTD`):
 //!
-//! * a keyboard's key press becomes a console byte in the UART's RX ring
-//!   ([`azos_drv_sys::uart::rx_push`]): the same ring, the same single owner
-//!   of console input, so the shell reads a virtio keyboard with no
-//!   UART input at all;
-//! * everything else (mouse buttons, axes and wheel, tablet positions, the
-//!   modifier keys, keys with no byte) is published into the shared event
-//!   ring ([`azos_drv_input::events`], packed with
+//! * while the console holds it, a keyboard's key press becomes a console
+//!   byte in the UART's RX ring ([`azos_drv_sys::uart::rx_push`]): the same
+//!   ring, the same single owner of console input, so the shell reads a
+//!   virtio keyboard with no UART input at all; everything else (mouse
+//!   buttons, axes and wheel, tablet positions, the modifier keys, keys with
+//!   no byte) is published into the shared event ring
+//!   ([`azos_drv_input::events`], packed with
 //!   [`azos_drv_input::keymap::pack`]), and counted in [`stats`]. **The
 //!   ring-3 terminal server drains that ring** (`userspace/services/termd`);
-//!   a full ring drops the newest event (counted in `ring_drops`). The PS/2
-//!   driver (`azos_drv_input::ps2`) publishes into the same ring, in the same
-//!   word format.
+//!   a full ring drops the newest event (counted in `ring_drops`);
+//! * while a task holds it, an event goes to the input server's stream alone
+//!   (the modifiers and the Secure Attention chord to the ring as well), and
+//!   the console gets no byte of it.
+//!
+//! The PS/2 driver (`azos_drv_input::ps2`) and the USB HID sink route the same
+//! way, into the same rings, in the same word format.
 //!
 //! Queue memory and event buffers are in `static` storage behind one lock that
 //! is taken only before a line is enabled and inside the handler (interrupts
@@ -41,7 +47,7 @@ use azos_drv_input::events;
 
 pub use super::input_cfg::{Info, Kind};
 use super::input_cfg::{read_info, CFG_MAX};
-use azos_drv_input::keymap::{pack, route, Keymap, Route, BTN_MOUSE, EV_ABS, EV_KEY, EV_REL};
+use azos_drv_input::keymap::{pack, route, route_pointer, Keymap, Route, BTN_MOUSE, EV_ABS, EV_KEY, EV_REL};
 use azos_dma::Direction;
 use super::{
     Dma, init as virtio_init, mmio_read, mmio_write, probe, virtq_alloc_desc,
@@ -343,16 +349,18 @@ pub fn irq(line: u32) -> Option<bool> {
             };
             let (ty, code, value) = (w0 as u16, (w0 >> 16) as u16, w1);
             EVENTS.fetch_add(1, Ordering::Relaxed);
+            let console = events::console_holds();
             let r = if d.info.kind == Kind::Keyboard {
-                route(&mut d.km, ty, code, value)
-            } else if ty == 0 {
-                Route::Consumed
+                route(&mut d.km, ty, code, value, console)
             } else {
-                Route::Publish
+                route_pointer(ty, console)
             };
+            if r == Route::Attention {
+                events::attention();
+            }
             match r {
                 Route::Byte(b) => {
-                    events::observe(pack(ty, code, value));
+                    events::observe(pack(ty, code, value), true);
                     if !cfg!(feature = "input-rx-canary") && azos_drv_sys::uart::rx_push(b) {
                         KEY_BYTES.fetch_add(1, Ordering::Relaxed);
                         wake = true;
@@ -364,10 +372,12 @@ pub fn irq(line: u32) -> Option<bool> {
                     // A swallowed key event (the release of a key that made a
                     // byte) still belongs to the input server's stream.
                     if ty == EV_KEY {
-                        events::observe(pack(ty, code, value));
+                        events::observe(pack(ty, code, value), true);
                     }
                 }
-                Route::Publish => {
+                // A task holds the focus: the holder's, through the stream.
+                Route::Withheld => events::observe(pack(ty, code, value), false),
+                Route::Publish | Route::Attention => {
                     match ty {
                         EV_REL => { MOUSE_REL.fetch_add(1, Ordering::Relaxed); }
                         EV_ABS => { MOUSE_ABS.fetch_add(1, Ordering::Relaxed); }
@@ -376,7 +386,7 @@ pub fn irq(line: u32) -> Option<bool> {
                         EV_KEY if code >= BTN_MOUSE => { MOUSE_BTN.fetch_add(1, Ordering::Relaxed); }
                         _ => {}
                     }
-                    let r = events::publish(pack(ty, code, value));
+                    let r = events::publish(pack(ty, code, value), console);
                     if r.kept() {
                         PUBLISHED.fetch_add(1, Ordering::Relaxed);
                     } else {

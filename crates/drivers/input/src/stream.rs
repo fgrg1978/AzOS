@@ -5,9 +5,10 @@
 //! Pure (core only), host-tested: this is [`super::ps2`]'s interrupt arm
 //! without the I/O. A keyboard byte goes through the set-2 decoder and the
 //! shared keymap ([`super::keymap::route`]); a mouse byte goes through the
-//! packet decoder.
+//! packet decoder. Both are routed by who holds the focus (`console`, the
+//! caller's read of `events::console_holds`).
 
-use super::keymap::{route, Keymap, Route, EV_KEY};
+use super::keymap::{route, route_pointer, Keymap, Route, EV_KEY};
 use super::mouse;
 use super::scancode;
 
@@ -23,6 +24,12 @@ pub enum Out {
     /// `(code, value)`. Not for the first ring; the input server's stream gets
     /// it.
     Taken(u16, u32),
+    /// A task holds the focus: an event for the input server's stream alone,
+    /// the holder's. `(type, code, value)`.
+    Withheld(u16, u16, u32),
+    /// The Secure Attention chord: the keyboard goes back to the console
+    /// (`events::attention`). The chord's key follows as an [`Out::Event`].
+    Attention,
 }
 
 /// Decoder state of the keyboard and the mouse.
@@ -44,20 +51,30 @@ impl Stream {
     }
 
     /// One byte `b` read from the keyboard port (`aux` false) or the mouse
-    /// port (`aux` true); `out` is called once per result.
-    pub fn feed(&mut self, aux: bool, b: u8, mut out: impl FnMut(Out)) {
+    /// port (`aux` true), with the console holding the focus or not; `out` is
+    /// called once per result.
+    pub fn feed(&mut self, aux: bool, b: u8, console: bool, mut out: impl FnMut(Out)) {
         if aux {
-            self.mouse.feed(b, |ty, code, value| out(Out::Event(ty, code, value)));
+            self.mouse.feed(b, |ty, code, value| match route_pointer(ty, console) {
+                Route::Withheld => out(Out::Withheld(ty, code, value)),
+                Route::Consumed => {}
+                _ => out(Out::Event(ty, code, value)),
+            });
             return;
         }
         let Some((code, value)) = self.kbd.feed(b) else { return };
-        match route(&mut self.km, EV_KEY, code, value) {
+        match route(&mut self.km, EV_KEY, code, value, console) {
             Route::Byte(c) => {
                 out(Out::Taken(code, value));
                 out(Out::Byte(c));
             }
             Route::Consumed => out(Out::Taken(code, value)),
             Route::Publish => out(Out::Event(EV_KEY, code, value)),
+            Route::Withheld => out(Out::Withheld(EV_KEY, code, value)),
+            Route::Attention => {
+                out(Out::Attention);
+                out(Out::Event(EV_KEY, code, value));
+            }
         }
     }
 }

@@ -6,7 +6,9 @@
 //! * **`input.events`** (a keyboard or mouse driver configured: Kconfig
 //!   `DRV_VIRTIO_INPUT`, `DRV_PS2`): the ring of events no driver turned into
 //!   a console byte (`azos_drv_input::events`). The drivers write it through
-//!   the direct map, the server maps it and moves the tail.
+//!   the direct map, the server maps it and moves the tail. With Kconfig
+//!   `INPUTD` it also holds the input server's stream and the focus word, and
+//!   the input server's row is granted it too.
 //! * **`console.screen`** (Kconfig `FB_CONSOLE`): the framebuffer console's
 //!   screen region (`azos_input_wire::screen`): what is on the screen, the
 //!   lines scrolled off it (`FB_CONSOLE_SCROLLBACK`), the mouse modes
@@ -15,8 +17,8 @@
 //! Both are contiguous memory objects the kernel creates here, once, and
 //! publishes to the minter (`azos_ipc::kregion`); a topology row grants one
 //! with `MemObj input.events` / `MemObj console.screen`, `READ|WRITE|MAP`
-//! (`TERMD.ELF`'s row is the only one). No task has them otherwise: they are
-//! not reachable by name, address or ambient access.
+//! (`TERMD.ELF`'s row, and `INPUTD.ELF`'s for `input.events`). No task has
+//! them otherwise: they are not reachable by name, address or ambient access.
 //!
 //! Called from `kernel_main` after the framebuffer is up (so the grid is
 //! there to publish) and before any input line is enabled (so the ring is
@@ -51,7 +53,9 @@ fn install_input_ring() {
     };
     // SAFETY: a fresh, zeroed, page-aligned kernel-owned region that is never
     // freed; the consumer's mapping of it is shared memory by design.
-    if unsafe { azos_drv_input::events::install(base as usize) } {
+    // The stream's consumer (the input server) sleeps on a word of the region:
+    // the producers wake it through the futex key the region's reference names.
+    if unsafe { azos_drv_input::events::install(base as usize, obj, azos_syscall::vdso_notify::notify_wake_kernel) } {
         azos_ipc::kregion::publish(azos_ipc::kregion::Region::InputEvents, obj);
         azos_drv_sys::kprintln!("[INPUT] event ring {} slots, granted as MemObj input.events", azos_input_wire::event::RING_CAP);
     }

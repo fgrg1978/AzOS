@@ -16,12 +16,27 @@
 //! the contract both sides compile.
 //!
 //! **The stream.** The region holds a second ring after the first (Kconfig
-//! `INPUTD`): every event the first ring gets, plus the key events that became
-//! console bytes ([`observe`]), for the ring-3 input server
+//! `INPUTD`): every event of every input device, keys that became console
+//! bytes included ([`observe`]), for the ring-3 input server
 //! (`userspace/services/inputd`), which delivers them to the holder of the
-//! focus. Its consumer is a different task from the terminal server and
-//! polls: it never announces a sleep, so the stream never owes a wake and the
-//! first ring's wake protocol is untouched.
+//! focus. Its consumer is a different task from the terminal server, with a
+//! wake of its own: it announces a sleep on the stream's consumer flag and
+//! waits on the stream's head word (a futex keyed by the region), and the push
+//! that finds the announcement calls the waker [`install`] was given (the
+//! kernel's `notify_wake_kernel` on the region), after the lock is released.
+//! So a key reaches the holder as soon as the server runs, with no timer.
+//!
+//! **The focus word** (`FOCUS_OFFSET`, after the stream's counter) is the input
+//! server's decision of who the keyboard and the pointer belong to: 0 the
+//! console, else the generation of the task that holds the focus. The producers
+//! read it for each event ([`console_holds`]) and route by it
+//! (`keymap::route`); every stream word of an event the console was given is
+//! marked (`STREAM_CONSOLE`), so the server never hands it to a holder as well.
+//! The Secure Attention chord resets it to the console here ([`attention`]),
+//! before the server has seen the chord. Without `INPUTD` nothing reads it.
+//! The terminal server maps the region read-write too (it moves the first
+//! ring's tail), so it could write the word: the word arbitrates between the
+//! console and the other tasks, and the terminal server is the console.
 //!
 //! The ring has one producer and two drivers (virtio-input's interrupt arm
 //! and the PS/2 one) may run on different CPUs, so [`publish`] takes one lock
@@ -42,7 +57,9 @@
 //! the parked reader like it does for a console byte. A push while the server
 //! is awake owes nothing, so an idle terminal is not woken by a timer.
 
-use azos_input_wire::event::{DROPS_OFFSET, REGION_TOTAL, RING_CAP, STREAM_CAP, STREAM_DROPS_OFFSET, STREAM_OFFSET};
+use azos_input_wire::event::{
+    DROPS_OFFSET, FOCUS_OFFSET, REGION_TOTAL, RING_CAP, STREAM_CAP, STREAM_CONSOLE, STREAM_DROPS_OFFSET, STREAM_OFFSET,
+};
 use azos_rings::region::{RingStep, SpscRing};
 use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -51,37 +68,86 @@ use core::sync::atomic::{AtomicU32, Ordering};
 // without the rings crate. The stream ring follows it, with its own counter.
 const _: () = assert!(DROPS_OFFSET == SpscRing::bytes(RING_CAP));
 const _: () = assert!(STREAM_DROPS_OFFSET == STREAM_OFFSET + SpscRing::bytes(STREAM_CAP));
-const _: () = assert!(STREAM_OFFSET % 64 == 0 && REGION_TOTAL <= 4096);
+const _: () = assert!(STREAM_OFFSET % 64 == 0 && FOCUS_OFFSET % 64 == 0 && REGION_TOTAL <= 4096);
 
-/// Bytes the region occupies: both rings and both drop counters.
+/// Bytes the region occupies: both rings, both drop counters, the focus word.
 pub const RING_BYTES: usize = REGION_TOTAL;
 
-/// Base address of the ring in the kernel's direct map, 0 until [`install`].
-static BASE: SpinLock<usize> = SpinLock::new(0);
+/// Wakes up to `n` waiters on the word at `offset` of the region `obj`: the
+/// kernel's `notify_wake_kernel`, which an interrupt handler may call.
+pub type Waker = fn(obj: u32, offset: u32, n: u32) -> u32;
+
+fn no_waker(_: u32, _: u32, _: u32) -> u32 {
+    0
+}
+
+/// The installed region: its base in the kernel's direct map (0 until
+/// [`install`]), its reference and the waker of the stream's consumer.
+#[derive(Clone, Copy)]
+struct Region {
+    base: usize,
+    obj: u32,
+    wake: Waker,
+}
+
+static BASE: SpinLock<Region> = SpinLock::new(Region { base: 0, obj: 0, wake: no_waker });
 
 /// Make `base` (at least [`RING_BYTES`] of zeroed, 64-byte aligned memory the
-/// kernel owns for good) the event ring, and zero its header. Boot, once,
-/// before the interrupt lines of the input devices are enabled.
+/// kernel owns for good) the event ring, and zero its header; `obj` is the
+/// region's reference, which `wake` takes to wake the stream's consumer. Boot,
+/// once, before the interrupt lines of the input devices are enabled.
 ///
 /// # Safety
 /// `base` must satisfy the above and stay valid and mapped for the life of the
 /// kernel; the consumer's mapping of it is shared memory by design.
-pub unsafe fn install(base: usize) -> bool {
+pub unsafe fn install(base: usize, obj: u32, wake: Waker) -> bool {
     if base == 0 || base % 64 != 0 {
         return false;
     }
     let mut g = BASE.lock();
-    if *g != 0 {
+    if g.base != 0 {
         return false;
     }
     SpscRing { base, cap: RING_CAP }.init();
     SpscRing { base: base + STREAM_OFFSET, cap: STREAM_CAP }.init();
-    // SAFETY: the region is `RING_BYTES` long (the caller's contract).
-    unsafe { &*((base + DROPS_OFFSET) as *const AtomicU32) }.store(0, Ordering::Relaxed);
-    // SAFETY: as above.
-    unsafe { &*((base + STREAM_DROPS_OFFSET) as *const AtomicU32) }.store(0, Ordering::Relaxed);
-    *g = base;
+    for off in [DROPS_OFFSET, STREAM_DROPS_OFFSET, FOCUS_OFFSET] {
+        // SAFETY: the region is `RING_BYTES` long (the caller's contract).
+        unsafe { &*((base + off) as *const AtomicU32) }.store(0, Ordering::Relaxed);
+    }
+    *g = Region { base, obj, wake };
     true
+}
+
+/// The word at `off` of the region at `base`.
+fn word(base: usize, off: usize) -> &'static AtomicU32 {
+    // SAFETY: `install` checked the base, the region is `RING_BYTES` long and
+    // never freed; every offset used is inside it.
+    unsafe { &*((base + off) as *const AtomicU32) }
+}
+
+/// Does the console hold the keyboard and the pointer (the focus word is 0)?
+/// Always without Kconfig `INPUTD` (there is no one else to give them to) and
+/// before the region exists.
+pub fn console_holds() -> bool {
+    if !azos_limits::INPUTD {
+        return true;
+    }
+    let g = BASE.lock();
+    g.base == 0 || word(g.base, FOCUS_OFFSET).load(Ordering::Acquire) == 0
+}
+
+/// The Secure Attention chord was pressed: the keyboard is the console's from
+/// this event on, whoever held the focus. The input server, which sees the
+/// chord in the stream, takes the focus from its holder and keeps the word at
+/// 0; this is the half that does not depend on it.
+pub fn attention() {
+    if !azos_limits::INPUTD {
+        return;
+    }
+    let g = BASE.lock();
+    if g.base != 0 {
+        word(g.base, FOCUS_OFFSET).store(0, Ordering::Release);
+    }
 }
 
 /// What [`publish`] did.
@@ -109,53 +175,69 @@ impl Pushed {
 }
 
 /// Put `word` into the stream ring of the region at `base`; a full ring drops
-/// it and counts it. The stream has no wake: its consumer polls. (Public for
-/// the host suite, which drives it without the Kconfig switch.)
-pub fn stream_push(base: usize, word: u64) {
+/// it and counts it. `Some(offset)`: the consumer had announced a sleep, wake
+/// it on the word at that offset of the region. (Public for the host suite,
+/// which drives it without the Kconfig switch.)
+pub fn stream_push(base: usize, word: u64) -> Option<u32> {
     let ring = SpscRing { base: base + STREAM_OFFSET, cap: STREAM_CAP };
-    if let RingStep::Blocked = ring.try_push(word) {
-        // SAFETY: `install` checked the base and the region is `RING_BYTES`
-        // long: the counter's line is inside it.
-        let d = unsafe { &*((base + STREAM_DROPS_OFFSET) as *const AtomicU32) };
-        // Written under the lock by the one producer at a time.
-        d.store(d.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
+    match ring.try_push(word) {
+        RingStep::Blocked => {
+            let d = self::word(base, STREAM_DROPS_OFFSET);
+            // Written under the lock by the one producer at a time.
+            d.store(d.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
+            None
+        }
+        RingStep::Done => None,
+        RingStep::DoneWake { addr } => Some((addr - base) as u32),
     }
 }
 
-/// Offer one packed key event the console took as a byte (or swallowed, such as
-/// the release of a key that made one) to the stream. The first ring does not
-/// carry these; only the stream does, and only with Kconfig `INPUTD`.
-pub fn observe(word: u64) {
+/// The stream word of `word`: marked when the console was given the event.
+const fn tagged(word: u64, console: bool) -> u64 {
+    if console { word | STREAM_CONSOLE } else { word }
+}
+
+/// Offer one packed key event that is not for the first ring to the stream:
+/// one the console took as a byte or swallowed (the release of a key that made
+/// one; `console` true), or one withheld from the console because a task holds
+/// the focus (`console` false). Only with Kconfig `INPUTD`.
+pub fn observe(word: u64, console: bool) {
     if !azos_limits::INPUTD {
         return;
     }
     let g = BASE.lock();
-    if *g != 0 {
-        stream_push(*g, word);
+    let r = *g;
+    let wake = if r.base != 0 { stream_push(r.base, tagged(word, console)) } else { None };
+    drop(g);
+    if let Some(off) = wake {
+        (r.wake)(r.obj, off, 1);
     }
 }
 
 /// Publish one packed event: into the ring the terminal server drains and, with
-/// Kconfig `INPUTD`, into the stream.
-pub fn publish(word: u64) -> Pushed {
+/// Kconfig `INPUTD`, into the stream (`console`: the console holds the focus,
+/// so the stream's copy is marked as the console's).
+pub fn publish(word: u64, console: bool) -> Pushed {
     let g = BASE.lock();
-    if *g == 0 {
+    let r = *g;
+    if r.base == 0 {
         return Pushed::Lost;
     }
-    if azos_limits::INPUTD {
-        stream_push(*g, word);
-    }
-    let ring = SpscRing { base: *g, cap: RING_CAP };
-    match ring.try_push(word) {
+    let wake = if azos_limits::INPUTD { stream_push(r.base, tagged(word, console)) } else { None };
+    let ring = SpscRing { base: r.base, cap: RING_CAP };
+    let pushed = match ring.try_push(word) {
         RingStep::Blocked => {
-            // SAFETY: `install` checked the base and the region is
-            // `RING_BYTES` long: the counter's line is inside it.
-            let d = unsafe { &*((*g + DROPS_OFFSET) as *const AtomicU32) };
+            let d = self::word(r.base, DROPS_OFFSET);
             // Written under the lock by the one producer at a time.
             d.store(d.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
             Pushed::Lost
         }
         RingStep::Done => Pushed::Kept,
         RingStep::DoneWake { .. } => Pushed::Wake,
+    };
+    drop(g);
+    if let Some(off) = wake {
+        (r.wake)(r.obj, off, 1);
     }
+    pushed
 }

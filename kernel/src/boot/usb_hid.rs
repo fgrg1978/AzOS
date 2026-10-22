@@ -6,11 +6,13 @@
 //! host-tested against the xHCI mock. What only the kernel can do is where its
 //! events end: [`KernelSink`] runs every key event through the console's
 //! keymap (`azos_drv_input::keymap::route`, one [`Keymap`] per interface for
-//! its modifier state) and puts the result in the same two places the PS/2 and
+//! its modifier state) and puts the result in the same places the PS/2 and
 //! virtio-input drivers end in: a console byte in the UART's RX ring
 //! (`azos_drv_sys::uart::rx_push`, the one owner of console input, so the shell
 //! reads a USB keyboard with no UART and no PS/2) or a packed event in the ring
-//! the ring-3 terminal server drains (`azos_drv_input::events`).
+//! the ring-3 terminal server drains (`azos_drv_input::events`) while the
+//! console holds the focus, and the input server's stream alone while a task
+//! holds it (Kconfig `INPUTD`, `events::console_holds`).
 //!
 //! **Context.** The other producers run in an interrupt handler with interrupts
 //! off; the `usb` task calls the sink from task context. Both rings are written
@@ -55,24 +57,31 @@ impl Sink for KernelSink {
     fn event(&mut self, dev: u8, ty: u16, code: u16, value: u32) {
         let Some(km) = self.keymaps.get_mut(dev as usize) else { return };
         let irq = azos_arch::ARCH.disable_all();
-        match route(km, ty, code, value) {
+        let console = events::console_holds();
+        let r = route(km, ty, code, value, console);
+        if r == Route::Attention {
+            events::attention();
+        }
+        match r {
             // A full console ring (or one not live yet) drops the byte, as it does
             // for the UART: the user types it again.
             Route::Byte(b) => {
-                events::observe(pack(ty, code, value));
+                events::observe(pack(ty, code, value), true);
                 self.wake |= azos_drv_sys::uart::rx_push(b)
             }
             // A swallowed key event (the release of a key that made a byte)
             // still belongs to the input server's stream.
             Route::Consumed => {
                 if ty == EV_KEY {
-                    events::observe(pack(ty, code, value));
+                    events::observe(pack(ty, code, value), true);
                 }
             }
-            Route::Publish => {
+            // A task holds the focus: the holder's, through the stream.
+            Route::Withheld => events::observe(pack(ty, code, value), false),
+            Route::Publish | Route::Attention => {
                 // A full event ring drops the event and counts it (the ring's own
                 // drop counter, which the terminal server resynchronizes on).
-                let r = events::publish(pack(ty, code, value));
+                let r = events::publish(pack(ty, code, value), console);
                 if r.wake() {
                     azos_drv_sys::uart::rx_nudge();
                     self.wake = true;

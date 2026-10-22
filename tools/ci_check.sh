@@ -20301,17 +20301,19 @@ args vk1 'vk 2'" 40 \
             "[VIRTIO-SND] " "beep: 12 of 12 periods played"
         # The input server (Kconfig INPUTD, on in the QEMU defconfigs): `input
         # watch` takes the focus and prints what the virtio keyboard sends, the
-        # keys that make console bytes included (`a`, backspace) and the ones
-        # that do not (F5, F6); the next watch moves the focus; Ctrl+Alt+Delete
-        # is never printed, takes the focus (`focus lost`) and is counted
-        # (`sak 1`). The shell keeps the console: the commands themselves were
-        # typed on the same keyboard. The first watch counts ten events: the
-        # Enter that started it (the grant comes sooner than the server's next
-        # look at the stream, and the Enter's release comes 100 ms after its
-        # press, so both reach the new holder) and the eight of F5, `a`,
-        # backspace and F6; F7 completes the count when the Enter's were
-        # already dropped, so the watch always ends, and gives the focus
-        # back, before the second one asks for it. With the compositor in the
+        # keys that make console bytes included (`q`, `x`) and the ones that do
+        # not (F5, F6); the next watch moves the focus; Ctrl+Alt+Delete is never
+        # printed, takes the focus (`focus lost`) and is counted (`sak 1`). The
+        # input server is the one arbiter of the keyboard: the shell gets it
+        # only while nobody holds the focus (the commands themselves were typed
+        # on the same keyboard), and the `q` and `x` typed into the watch never
+        # reach it. With the double delivery the shell read them and the next
+        # command was `qxinput watch`: no second grant, and the FORBID line
+        # names it. The first watch counts ten events: the Enter's release
+        # (its press was the console's, the release comes 100 ms later, after
+        # the grant) and the eight of F5, `q`, `x` and F6; F7 completes the
+        # count when the release was the console's too, so the watch always
+        # ends, and gives the focus back, before the second one asks for it. With the compositor in the
         # ISA's config (COMPOSITOR, the trusted surface) the chord also closes
         # the input server's gate until the compositor has taken the focus and
         # given it back, COMPOSITOR_BANNER_MS later (headless here: no
@@ -20325,12 +20327,12 @@ args vk1 'vk 2'" 40 \
         else
             ush_in_wait=''; ush_in_end="holder 0 grants 2 sak 1"
         fi
-        USH_VKBD=1 USH_FORBID='robot> ' par_row ushell_row "input: focus, events, attention key ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_VKBD=1 USH_FORBID='robot> |qxinput' par_row ushell_row "input: focus, events, attention key ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "cd /fat
 input status
 input watch -n 10 &
 #wait input: focus granted, generation 1
-#key f5 a backspace f6
+#key f5 q x f6
 #wait key 64 up
 #key f7
 #sleep 1
@@ -20340,7 +20342,7 @@ input watch -n 100 &
 #wait input: focus lost$ush_in_wait
 input sak
 input status" 240 \
-            "[inputd] AzOS input server" "holder 0 grants 0" "key 63 down" "key 30 down" "key 14 down" "key 64 up" \
+            "[inputd] AzOS input server" "holder 0 grants 0" "key 63 down" "key 16 down" "key 45 down" "key 64 up" \
             "[inputd] focus 0 -> 2 (moved)" "[inputd] focus 2 -> 0 (trusted path)" "input: focus lost" "sak 1 last at" "$ush_in_end"
         # The audio server mixes (Kconfig AUDIOD): two `beep`s of different
         # lengths started one after the other are two streams on the server's

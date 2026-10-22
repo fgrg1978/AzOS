@@ -266,13 +266,13 @@ Source: `userspace/services/inputd/src/main.rs`, `userspace/services/inputd/src/
 `userspace/services/toolbox/src/input.rs`.
 
 The input server (Kconfig `INPUTD`, off unless set; the QEMU defconfigs set it): it delivers the keyboard and the pointer
-to the one task that holds the focus. It serves the `Input` object on `endpoint.input`.
-**`termd` keeps the console**: typed bytes still reach it through the console, it still
-drains the first ring of the drivers' region (arrows, F-keys, the mouse on the framebuffer
-console), and a build with no graphical client sees no change on the shell. With
-`INPUTD` on, the drivers also write a second ring of the same region, the *stream*
-(`STREAM_CAP` slots, `azos_input_wire::event`): every event the first ring gets and the key
-events that became console bytes. `INPUTD.ELF` maps the region (`MemObj input.events`,
+to the one task that holds the focus, and to the console while nobody does. It serves the
+`Input` object on `endpoint.input`. **`termd` has the console while nobody holds the focus**:
+typed bytes reach it through the console, it drains the first ring of the drivers' region
+(arrows, F-keys, the mouse on the framebuffer console), and a build with no graphical client
+sees no change on the shell. With `INPUTD` on, the drivers also write a second ring of the same
+region, the *stream* (`STREAM_CAP` slots, `azos_input_wire::event`): every event of every input
+device, keys that made console bytes included. `INPUTD.ELF` maps the region (`MemObj input.events`,
 `READ|WRITE|MAP`, the object `termd` maps too: each reads and moves the tail of its own
 ring) and reads the stream.
 
@@ -312,11 +312,24 @@ shape of the kernel's `Rule::Focus`) and a console line. A ring-3 server cannot 
 kernel's journal; the warrant being minted and revoked is already there as `CapDerive` and
 `CapRevoke` records of the server's task.
 
+**The one arbiter of the keyboard.** While nobody holds the focus the keyboard and the pointer
+are the console's: the drivers type keys into the console input and publish the rest into the
+terminal server's ring, as without the server. While a task holds it the drivers give the
+console nothing of it but the modifier keys (no text) and the chord: the server writes its
+decision into the drivers' region (the focus word, `azos_input_wire::event::FOCUS_OFFSET`: 0 the
+console, else the holder's generation) and the drivers read it for every event
+(`azos_drv_input::keymap::route`). The stream carries every event and marks the ones the console
+was given, which the server delivers to nobody, so no key reaches two parties: a passphrase
+typed into a window never reaches the shell. The chord sets the word back to the console in the
+driver itself, so the console's login prompt gets the keyboard whatever the server does. A
+serial line is not arbitrated: its bytes are the console's.
+
 Two threads: the main thread accepts and dispatches (the row's `READ` grant stamps the endpoint
 with the TID the program started as, and the kernel hands a call only to the thread with that
-TID), the thread it creates reads the stream every `INPUTD_POLL_ACTIVE_MS` while a task holds the
-focus and every `INPUTD_POLL_IDLE_MS` otherwise (the server must see the chord with nobody
-focused), under one spin lock.
+TID); the thread it creates drains the stream and, when it is empty, sleeps on the stream's head
+word, which the drivers' interrupt arms wake (a futex keyed by the region) when they push into
+it; one spin lock between them. No timer: a key reaches the holder's ring as soon as the reader
+runs. (The holder reads its own ring on a timer of its own: `input watch`, the compositor.)
 
 `input` (an applet of `TOOLBOX.ELF`, whose row holds the call right on `endpoint.input` with
 `INPUTD`): `input watch [-n COUNT]` takes the focus and prints each event of its ring,

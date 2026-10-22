@@ -27,6 +27,28 @@
 //! timer looks for one: the console wait doubles as the wait for the ring.
 //! Without the grants, or without a framebuffer console, it serves as before.
 //!
+//! **The keyboard is the console's only while nobody holds the focus.** With
+//! the input server (Kconfig `INPUTD`, `userspace/services/inputd`) the
+//! keyboard and the pointer belong to whoever holds the focus, and the input
+//! server decides who: this server is the focus client nobody has to ask for
+//! it, the one that has them while no other task holds the focus. While a task
+//! holds it the drivers type nothing into the console input and publish
+//! nothing into the ring here but the modifier keys (no text; they keep the
+//! state here true) and Ctrl+Alt+Delete, which takes the focus back for the
+//! console at once. So what is typed into a window never reaches the shell. A
+//! serial line is not arbitrated: its bytes are this server's always, and its
+//! secure-attention byte (`LOGIN_SAK_SERIAL_BYTE`) works as the chord does.
+//!
+//! **The console session model, as it is.** This server serves ONE client on
+//! one console: no virtual terminals, no second session on the keyboard. Local
+//! users take the console one after the other: the secure-attention key ends
+//! the session (`Service::take_over`), the secure prompt takes the input, and
+//! the login service starts the next user's shell. A session over the network
+//! (`sshd`) has a terminal of its own and never sees the keyboard: the
+//! keyboard is this console's or the focus holder's. With a compositor the
+//! screen is the compositor's, so the console's prompt is typed blind (the
+//! chord still reaches it). A terminal with several sessions is a later step.
+//!
 //! The Linux runtime's terminal (`/dev/ptmx`, termios) is NOT mapped here.
 //! A foreground Linux job reads the console through the kernel's own line
 //! discipline while the console's owner lends it input (`SPAWN_F_CONSOLE_IN`,

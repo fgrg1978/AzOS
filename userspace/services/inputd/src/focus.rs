@@ -17,10 +17,25 @@
 //! its ring and gives the region back. Nothing is delivered to a ring after it
 //! is closed.
 //!
+//! **The server is the one arbiter of the keyboard and the pointer.** With
+//! nobody holding the focus they are the console's (the terminal server's);
+//! with a holder, the holder's alone. The decision reaches the drivers as the
+//! focus word of their region ([`Host::set_focus`]: 0 the console, else the
+//! holder's generation), which they read for every event: while it names a
+//! holder no key becomes a console byte and no event reaches the terminal
+//! server's ring, except the modifiers (no text) and the chord below. The
+//! stream carries every event, and marks those the console was given
+//! (`STREAM_CONSOLE`): the server keeps its state from them and delivers them
+//! to nobody, so an event goes to one party only. The word moves after the new
+//! holder is in place and before the old one is let go, and a grant first
+//! hands the old holder what the stream already had for it.
+//!
 //! **The Secure Attention Key** is Ctrl+Alt+Delete (either Ctrl, either Alt):
 //! the Delete press that completes the chord, its repeats and its release are
 //! swallowed, the chord is counted on the trusted-path page, and whoever holds
-//! the focus loses it. The modifiers that led up to it were already delivered
+//! the focus loses it: the keyboard is the console's again (the drivers have
+//! already set the word back on the chord themselves, and the terminal server
+//! saw it: its login prompt is the console's trusted path). The modifiers that led up to it were already delivered
 //! (they are not an event the server can know is a chord's); the closed ring
 //! tells the old holder to drop what it built from them.
 //!
@@ -133,6 +148,9 @@ pub trait Host {
     fn revoke(&mut self, warrant: u32);
     /// The capability of the trusted-path page.
     fn trusted_page(&mut self) -> Option<u32>;
+    /// Write the drivers' focus word: 0 the console has the keyboard and the
+    /// pointer, else the generation that holds the focus.
+    fn set_focus(&mut self, generation: u32);
     /// A Secure Attention Key chord was seen at `now_ns`: count it on the page.
     fn note_sak(&mut self, now_ns: u64);
     /// A line for the console.
@@ -227,6 +245,9 @@ impl<H: Host> Service<H> {
     /// keys and motion nobody should act on now) and start counting its losses
     /// from here.
     pub fn attach(&mut self) {
+        // A server that started again finds the word of the one before it: the
+        // holder it named is gone with that server.
+        self.host.set_focus(0);
         while self.host.pop().is_some() {}
         self.drops_seen = self.host.stream_drops();
     }
@@ -277,13 +298,19 @@ impl<H: Host> Service<H> {
         self.host.log(&line[..w]);
     }
 
-    /// Take the focus away from the holder, if any: revoke the warrant, close
-    /// and give back the ring. The generation that held it.
+    /// Take the focus away from the holder, if any, and give the keyboard back
+    /// to the console. The generation that held it.
     fn drop_holder(&mut self) -> u32 {
+        self.host.set_focus(0);
         let Some(h) = self.holder.take() else { return 0 };
+        self.retire(h);
+        h.generation
+    }
+
+    /// A former holder: revoke its warrant, close and give back its ring.
+    fn retire(&mut self, h: Holder) {
         self.host.revoke(h.warrant);
         self.host.close_ring(&h.ring);
-        h.generation
     }
 
     /// Hand the holder one event; a full ring loses it.
@@ -330,6 +357,9 @@ impl<H: Host> Service<H> {
     }
 
     fn route(&mut self, w: u64) {
+        // The console was given it: it is state here and nobody's to deliver.
+        let console = w & STREAM_CONSOLE != 0;
+        let w = w & !STREAM_CONSOLE;
         let (ty, code, value) = unpack(w);
         if ty == EV_KEY {
             let bit = held_bit(code);
@@ -348,14 +378,16 @@ impl<H: Host> Service<H> {
                     }
                     return;
                 }
-                if value == 1 && self.held & CTRL != 0 && self.held & ALT != 0 {
+                if value == 1 && attention(code, self.held & CTRL != 0, self.held & ALT != 0) {
                     self.swallowing = true;
                     self.attention();
                     return;
                 }
             }
         }
-        self.deliver(w);
+        if !console {
+            self.deliver(w);
+        }
     }
 
     /// The Secure Attention Key: count it on the trusted page, take the focus
@@ -379,6 +411,9 @@ impl<H: Host> Service<H> {
 
 impl<H: Host> Input for Service<H> {
     fn take_focus(&mut self) -> Out<FocusLease> {
+        // What the stream holds was routed for the focus as it is: hand it on
+        // before the focus moves (the chord in it closes the gate first).
+        while self.pump() {}
         let trusted = self.caller == input::TRUSTED_BADGE;
         if self.pending && !trusted {
             // The chord took the focus; only the trusted surface hands it on.
@@ -399,8 +434,14 @@ impl<H: Host> Input for Service<H> {
         if trusted {
             self.pending = false;
         }
-        let from = self.drop_holder();
-        self.holder = Some(Holder { generation, warrant, ring });
+        // The new holder first, then the drivers' word, then the old holder
+        // goes: no event is routed to the console in between.
+        let old = self.holder.replace(Holder { generation, warrant, ring });
+        self.host.set_focus(generation);
+        let from = old.map_or(0, |h| {
+            self.retire(h);
+            h.generation
+        });
         // The true state at the start of the ring: what is down now.
         for (i, &code) in HELD.iter().enumerate() {
             if self.held & (1 << i) != 0 {

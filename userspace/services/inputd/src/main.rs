@@ -16,18 +16,23 @@
 //! the program started as, and the kernel hands a call only to the thread
 //! that has that TID (`ep_queue::take_locked`: `q.owner != server`; a created
 //! thread has a TID of its own and accepts nothing on the endpoint, so a
-//! caller waits for ever). The thread the main thread creates is the poller:
-//! it reads the stream on a timer (`INPUTD_POLL_ACTIVE_MS` while a task holds
-//! the focus, `INPUTD_POLL_IDLE_MS` otherwise) and hands the events to the
-//! holder's ring. A single task cannot sleep on a timer and block in the
-//! endpoint's accept, and nothing wakes a reader of the drivers' stream: the
-//! producers nudge only the terminal server's console wait. Both threads meet
-//! in one spin lock around the server's state; the server holds it for one
-//! call, the poller for one batch.
+//! caller waits for ever). The thread the main thread creates is the reader:
+//! it drains the stream into the holder's ring and, when the stream is empty,
+//! announces a sleep on its consumer flag and waits on its head word. The
+//! drivers' push that finds the announcement wakes it (the kernel's futex wake
+//! on the region, from the interrupt arm), so an event is handed on as soon as
+//! the reader runs, and an idle machine wakes it for nothing. A single task
+//! cannot wait on the stream and block in the endpoint's accept. Both threads
+//! meet in one spin lock around the server's state; the server holds it for
+//! one call, the reader for one batch.
 //!
-//! The terminal server keeps the console: this program never reads console
-//! bytes, never claims console input, and touches the region's first ring not
-//! at all. With no graphical client nothing it does is visible on the shell.
+//! **The keyboard is this server's to give.** While nobody holds the focus it
+//! is the console's: the drivers type its keys into the console's input as
+//! they always did, and the terminal server drains the region's first ring.
+//! While a task holds it, the drivers give the console nothing of it (the focus
+//! word, `focus.rs`): this program writes that word and never reads console
+//! bytes, never claims console input, and touches the first ring not at all.
+//! With no graphical client nothing it does is visible on the shell.
 
 #![no_std]
 #![no_main]
@@ -36,9 +41,9 @@ mod focus;
 
 use azos_devif::input::{EventRing, InputIdl, TrustedPage, RING_PAGES, RING_SLOTS};
 use azos_idl::MsgDesc;
-use azos_input_wire::event::{REGION_TOTAL, STREAM_CAP, STREAM_DROPS_OFFSET, STREAM_OFFSET};
+use azos_input_wire::event::{FOCUS_OFFSET, REGION_TOTAL, STREAM_CAP, STREAM_DROPS_OFFSET, STREAM_OFFSET};
 use azos_libsys as sys;
-use azos_rings::region::{RingStep, SpscRing};
+use azos_rings::region::{RingSleep, RingStep, SpscRing};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use focus::{Host, Ring, Service};
@@ -65,6 +70,13 @@ impl Sys {
     fn stream(&self) -> SpscRing {
         SpscRing { base: self.region + STREAM_OFFSET, cap: STREAM_CAP }
     }
+
+    /// The region's word at `off`: the stream's drop counter or the focus word.
+    fn word(&self, off: usize) -> &AtomicU32 {
+        // SAFETY: `open_region` checked the mapping reaches `REGION_TOTAL`,
+        // past both words' lines; it stays mapped for the life of the program.
+        unsafe { &*((self.region + off) as *const AtomicU32) }
+    }
 }
 
 impl Host for Sys {
@@ -76,9 +88,7 @@ impl Host for Sys {
     }
 
     fn stream_drops(&mut self) -> u32 {
-        // SAFETY: `open_region` checked the mapping reaches the counter's line
-        // (`STREAM_DROPS_OFFSET`); it stays mapped for the life of the program.
-        unsafe { &*((self.region + STREAM_DROPS_OFFSET) as *const AtomicU32) }.load(Ordering::Acquire)
+        self.word(STREAM_DROPS_OFFSET).load(Ordering::Acquire)
     }
 
     fn now_ns(&mut self) -> u64 {
@@ -129,6 +139,10 @@ impl Host for Sys {
         TrustedPage::record(self.page_base, now_ns);
     }
 
+    fn set_focus(&mut self, generation: u32) {
+        self.word(FOCUS_OFFSET).store(generation, Ordering::Release);
+    }
+
     fn log(&mut self, line: &[u8]) {
         let _ = sys::console_write(sys::STDOUT, line);
     }
@@ -149,7 +163,7 @@ fn make_region(pages: u64) -> Option<(u32, usize)> {
 }
 
 /// Map the drivers' region (`MemObj input.events`): its base, when the row
-/// grants it and it is long enough to hold both rings.
+/// grants it and it is long enough to hold both rings and the focus word.
 fn open_region() -> Option<usize> {
     let cap = sys::cap_lookup(sys::ty::SHM.raw(), azos_abi::cap::SHM_INPUT_EVENTS);
     if cap < 0 {
@@ -201,27 +215,34 @@ fn with<R>(f: impl FnOnce(&mut Service<Sys>) -> R) -> R {
     r
 }
 
-/// The stack of the poller thread.
-const POLLER_STACK_BYTES: usize = 8192;
+/// The stack of the reader thread.
+const READER_STACK_BYTES: usize = 8192;
 
 #[repr(C, align(16))]
-struct Stack(UnsafeCell<[u8; POLLER_STACK_BYTES]>);
+struct Stack(UnsafeCell<[u8; READER_STACK_BYTES]>);
 
-// SAFETY: the poller thread's alone.
+// SAFETY: the reader thread's alone.
 unsafe impl Sync for Stack {}
 
-static POLLER_STACK: Stack = Stack(UnsafeCell::new([0; POLLER_STACK_BYTES]));
+static READER_STACK: Stack = Stack(UnsafeCell::new([0; READER_STACK_BYTES]));
 
-/// The poller thread: read the drivers' stream on a timer and deliver it to the
-/// holder of the focus, for ever.
-extern "C" fn poller(_: u64, _: u64, _: u64) -> ! {
+/// The reader thread: deliver the drivers' stream to the holder of the focus as
+/// it comes, for ever. `region`: where the drivers' region is mapped.
+extern "C" fn reader(_: u64, _: u64, region: u64) -> ! {
+    let stream = SpscRing { base: region as usize + STREAM_OFFSET, cap: STREAM_CAP };
     loop {
-        let (any, holding) = with(|svc| (svc.pump(), svc.holder() != 0));
-        if any {
+        if with(|svc| svc.pump()) {
+            // A batch was taken, more may wait: let a request in, then look again.
             sys::yield_now();
             continue;
         }
-        sys::sleep(if holding { azos_limits::INPUTD_POLL_ACTIVE_MS } else { azos_limits::INPUTD_POLL_IDLE_MS } as u64);
+        // Empty: announce the sleep (an event that came meanwhile is taken
+        // first) and wait for the push that sees the announcement. The ring
+        // library's backstop bounds a wake that went astray.
+        if let RingSleep::Wait { addr, expected } = stream.consumer_sleep() {
+            let _ = sys::futex_wait_addr(addr, expected, sys::RING_WAIT_NS);
+            stream.consumer_woke();
+        }
     }
 }
 
@@ -270,9 +291,9 @@ fn main() -> ! {
     // SAFETY: no other thread exists yet.
     unsafe { *STATE.0.get() = Some(svc) };
 
-    // The stack is the poller's alone; its top is 16-aligned.
-    let top = POLLER_STACK.0.get() as usize + POLLER_STACK_BYTES;
-    if sys::thread_create(poller, top, 0, core::ptr::null_mut()) < 0 {
+    // The stack is the reader's alone; its top is 16-aligned.
+    let top = READER_STACK.0.get() as usize + READER_STACK_BYTES;
+    if sys::thread_create(reader, top, region as u64, core::ptr::null_mut()) < 0 {
         log(b"[inputd] no thread for the stream: nothing is delivered\n");
         sys::exit(1);
     }
