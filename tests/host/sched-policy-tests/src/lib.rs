@@ -1214,7 +1214,7 @@ mod deny_receipts {
 
     /// The drops are counted and the count is in the third number of the next
     /// record that is written (and only that one); the total is public (it
-    /// is what `/proc/decisions` prints).
+    /// is the introspection tree's `decisions/deny_dropped`).
     ///
     /// **Canary.** Skip `n[2] = owed` in `record`: the record carries 0, red.
     /// Do not clear the pending count (`load` for `swap(0)`): the record after

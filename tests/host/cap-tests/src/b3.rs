@@ -139,7 +139,7 @@ fn an_old_receipt_refuses_the_use_and_says_which() {
 }
 
 /// The whole path of a refusal, from a real refused use: the resolve writes
-/// the record, and the chain `why` prints (and the line `/proc/decisions`
+/// the record, and the chain `why` prints (and the line `why list`
 /// prints) names the device, the receipt kind, the cause, the age and the
 /// limit, for each of the three causes. The lines are the ones
 /// `tests/host/decisions-tests/src/b3.rs` asserts `why` prints for the same

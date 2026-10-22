@@ -69,7 +69,7 @@ Source ids files: `crates/drivers/{block,display,dma,fb,irqchip,pci,soc,sys,virt
 
 A device moves through `State`: `Detected`, `Bound`, `ProbeFailed`, `Unbound`, `NotAdmitted`, `Unmatched`. `Binding` records the owner: `None`, `Native(name)` or `Linux { class }`. A native probe can answer `ProbeError::NoSuchDriver`, `Busy` or `Failed`. `Bus::unbind`, `rebind` and `reconcile` bring bound devices to what the installed signed topology says. A Linux class server is started only once one of its ids matched a device (`Bus::linux_class_wanted`).
 
-Drivers bind in stages, because they depend on each other's order (entropy before PCI bring-up, the disk before the filesystem, the NIC after the scheduler hooks). `bind` takes the drivers one stage wants; `settle` closes the last stage and reports the rest. The boot prints one `[HWBUS]` line per outcome and lists devices in `/proc/devices`.
+Drivers bind in stages, because they depend on each other's order (entropy before PCI bring-up, the disk before the filesystem, the NIC after the scheduler hooks). `bind` takes the drivers one stage wants; `settle` closes the last stage and reports the rest. The boot prints one `[HWBUS]` line per outcome and lists devices in the introspection tree's `devices/`.
 
 ### Ring-3 access to a device's registers
 

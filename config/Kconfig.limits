@@ -851,8 +851,8 @@ config KERNEL_HEAP_SIZE
       Cost: no static RAM (the image does not grow: +0 B measured for 32768 ->
       32769 and -> 65536 KiB, both ISAs).  The heap is taken from the page
       allocator at boot, so every KiB here is a KiB less for ring-3 frames.
-      What lives in it today: tmpfs file data (up to TMPFS_MAX_KB), procfs
-      text and the boot-time self-tests.  None of the tables the options in
+      What lives in it today: tmpfs file data (up to TMPFS_MAX_KB) and the
+      boot-time self-tests.  None of the tables the options in
       this file size is in the heap: they are static (.data/.bss), so the
       MAX_TASKS x 384 + ... floor that build.rs checks is a conservative
       estimate of a heap that those tables no longer use, not a measurement.
@@ -873,7 +873,8 @@ config KHEAP_SLAB
 
       Measured (riscv64, -icount, wave 15): the kernel heap is not on any
       vsbench hot path (spawn, thread, fork, IPC, file, UDP make no heap
-      allocation); procfs text on open is its main user. So this moves no
+      allocation); procfs text on open was its main user then (the kernel
+      keeps no /proc since 2026-10-21). So this moves no
       lane; it bounds what an allocation costs. A heap refusal first gives
       back what this layer caches (this CPU's magazines, the depot, empty
       slabs) and retries once; a refusal is still a refusal.
@@ -898,7 +899,8 @@ config KHEAP_SLAB_CLASSES
       The object sizes the cache serves; a request gets the smallest class
       that holds it. The default is powers of two because that is what the
       measured traffic supports: on the abitest workload 99% of
-      allocations were 56 or 64 bytes (procfs text on open), the rest
+      allocations were 56 or 64 bytes (procfs text on open, gone with the
+      kernel's /proc), the rest
       scattered between 8 and 264 bytes, with no intermediate size frequent
       enough to pay for a class of its own (a class costs at least one slab
       of heap once used). Add one (48, 96, ...) when a census
@@ -2065,10 +2067,10 @@ config VFS_MAX_MOUNTS
     help
       crates/fs/fs/src/vfs.rs, MAX_MOUNTS.
 
-      The kernel mounts /proc and /fat, then one mount per `[volume.NAME]` row
-      of the topology (kernel/src/boot/azvol.rs): the default 6 holds both and
-      four volumes.  A row that finds the table full is not mounted and the
-      boot prints why.
+      The kernel mounts /fat, then one mount per `[volume.NAME]` row of the
+      topology (kernel/src/boot/azvol.rs): the default 6 holds it and five
+      volumes.  A row that finds the table full is not mounted and the boot
+      prints why.
 
       Cost: 96 B of RAM per mount slot (FS, .data), the same on riscv64 and
       aarch64: 576 B at the default 6.

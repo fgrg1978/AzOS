@@ -16,7 +16,7 @@
 //! format and the caller is the generated stub.
 //!
 //! The kernel half (the `-ERTPROXY` refusal, a proxy endpoint being named
-//! `rpc-...`, the `neverallow` rules, `/proc/rpc`) is tested with the kernel
+//! `rpc-...`, the `neverallow` rules, the `inspect.rpc` view) is tested with the kernel
 //! tables: `tests/host/topology-tests` and `tests/host/syscall-tests`.
 
 #[cfg(test)]

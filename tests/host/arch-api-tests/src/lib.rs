@@ -9,7 +9,7 @@
 //! - `PagePerms` named constants represent the layouts the kernel
 //!   actually requests, so changing one would silently break MMU
 //!   programming on every ISA.
-//! - `arch_name(ArchId)` is the string the kernel prints in procfs
+//! - `arch_name(ArchId)` is the string the kernel prints in its logs
 //!   and the OTA manifest — a typo here breaks operational tools.
 //! - `ArchId::Stub` exists specifically for host tests of code
 //!   that depends on the trait shape; we exercise it here so the
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn arch_name_matches_uname_style_strings() {
-        // These strings show up in procfs / OTA manifests / logs.
+        // These strings show up in OTA manifests and logs.
         // Changing them is operational-tool-breaking.
         assert_eq!(arch_name(ArchId::Riscv64), "riscv64");
         assert_eq!(arch_name(ArchId::Aarch64), "aarch64");

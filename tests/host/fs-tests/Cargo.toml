@@ -10,7 +10,7 @@ description = "Host-side tests for crates/fs/fs/src/fat32.rs and crates/fs/fs/sr
 
 # The modules under test are pulled with `#[path]`, so their doc examples are
 # compiled as doctests of THIS crate, where the names they use are not in
-# scope (procfs's module example calls `procfs_init`/`procfs_read` bare).
+# scope.
 # They are examples for the kernel crate, not tests of this one.
 [lib]
 doctest = false

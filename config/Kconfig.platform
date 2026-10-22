@@ -228,7 +228,8 @@ config SOC_FRAMEWORKS
       Nothing is written to hardware at boot: the registers are touched by the
       first consumer. The consumers are the drivers a bound node asks a
       clock of and the thermal task (THERMAL), which moves the CPU clock of
-      a board that has the frameworks. /proc/soc shows what the boot step
+      a board that has the frameworks. The introspection tree's `soc/` shows
+      what the boot step
       registered, from the report kept at boot; it reads no register.
 
       Cost: the providers and managers are one heap allocation of about 4 KiB

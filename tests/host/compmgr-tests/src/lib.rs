@@ -372,7 +372,7 @@ mod tests {
     //
     // `exit 1` in the shell hangs up the terminal server with the status, and
     // both end with it (`userspace/services/termd`): the manager reaps two
-    // ends in one pass. (`/proc/components` spells the shell's imports as the
+    // ends in one pass. (the `inspect.components` view spells the shell's imports as the
     // endpoints they stand for: `tests/host/topology-tests`, `compmgr_view`.)
 
     /// Both ends are in one reap, the shell's first: the shell is not started
@@ -412,7 +412,7 @@ mod tests {
     /// terminal server's end is seen. The new shell depends on it, so it is
     /// stopped and started again behind it, and the stop is no failure.
     ///
-    /// **Canary.** Drop the edge (`/proc/components` spelling the shell's
+    /// **Canary.** Drop the edge (the `inspect.components` view spelling the shell's
     /// import as `term`, which no row serves): the shell is never stopped and
     /// keeps running against a server that has gone.
     #[test]
@@ -621,7 +621,7 @@ mod tests {
     // ---- the buzzer's ring-3 host ---------------------------------------------
 
     /// The row of the buzzer's ring-3 host as the kernel renders it
-    /// (`/proc/components`): it serves `endpoint.buzzer`; its PWM channel is a
+    /// (`inspect.components`): it serves `endpoint.buzzer`; its PWM channel is a
     /// kernel-hosted interface, so it is no `needs`. The kernel's placement
     /// controller does not start or end this task, so the manager's restart
     /// policy is the only one there is.

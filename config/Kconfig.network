@@ -1084,7 +1084,8 @@ config ZENOH_DECISION_TOPIC
       Each decision record the Decisions object holds is published as it
       appears under `<prefix>/<rule>/<verdict>` (for example
       `azos/decisions/cap-denial/deny`), the payload the record's fixed-size
-      binary form (the one /proc/decisions.bin uses). At most 8 every 100 ms;
+      binary form (the one the introspection tree's admin records use). At
+      most 8 every 100 ms;
       records overwritten before they were read are counted in the console
       line the gateway prints when its link is lost. Empty publishes nothing.
       The records tell the network which capabilities were refused to whom:
@@ -1106,7 +1107,8 @@ config PTPD
       beyond its two UDP sockets (ports 319 and 320).
 
       The PTP domain is the `ptp_domain` of the topology's `[clock]` row
-      (/proc/clock); a node whose row declares none takes no part. The master's
+      (the `inspect.clock` view); a node whose row declares none takes no
+      part. The master's
       time is on the TAI timescale, so a master that does not state a valid UTC
       offset gives no sample. Software timestamps are taken in ring 3 after the
       datagram is dequeued: the accuracy is the poll period of the daemon (1 ms)
@@ -1249,8 +1251,9 @@ config SSHD
 
       There are no passwords and no keyboard-interactive login. A login is a
       signature by an ssh-ed25519 key that the signed topology lists in a
-      `[login.NAME]` row (the kernel shows the rows to the server as
-      /proc/ssh). With no row nobody can log in; the port is open all the
+      `[login.NAME]` row (the kernel shows the rows to the server in its
+      `inspect.logins` view). With no row nobody can log in; the port is open
+      all the
       same. The host key is a key of the kernel's keystore (the `keys`
       interface, Documentation/security.md "Keystore"): named, bound to this
       image and derived from the board seed, so the same image on the same board

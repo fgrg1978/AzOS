@@ -308,7 +308,7 @@ config TOPOLOGY_NEVERALLOW
       an endpoint or a driver. A topology that breaks one is refused by
       `admission_check` (the signed candidate falls back or halts as
       TOPOLOGY_SOURCE says; the built-in topology halts) and a decision
-      record (`neverallow`, /proc/decisions) names the rule and the row.
+      record (`neverallow`, `why list`) names the rule and the row.
       `make check-neverallow` runs the same rules over every preset's
       topology, with this option ignored.
 
@@ -538,9 +538,9 @@ config TOPOLOGY_MAX_LOGINS
       public keys (TOPOLOGY_LOGIN_KEYS at most) that log in as it. The rows
       are in the signed topology, so adding a key is a new signed topology
       and not a file on the volume. The kernel shows the rows to the SSH
-      server as /proc/ssh, one line each key, which is 2 KiB at most (the
-      procfs file limit): MAX_LOGINS * LOGIN_KEYS lines of 90 bytes. More
-      rows are refused.
+      server and the login server in their view region (`inspect.logins`:
+      a user name and a 32-byte key per node, MAX_LOGINS * LOGIN_KEYS of
+      them, sized at boot). More rows are refused.
 
       Cost: 80 B of RAM per entry and key, either ISA.
 
@@ -550,8 +550,7 @@ config TOPOLOGY_LOGIN_KEYS
     default 2
     help
       Public keys one login may have (types.rs, LOGIN_KEYS): a person with a
-      laptop and a phone has two. More are refused. The product with
-      TOPOLOGY_MAX_LOGINS is bound by the 2 KiB of /proc/ssh.
+      laptop and a phone has two. More are refused.
 
 config TOPOLOGY_MAX_GUESTS
     int "[guest.NAME] rows (virtual machines the device may run) a topology may declare"

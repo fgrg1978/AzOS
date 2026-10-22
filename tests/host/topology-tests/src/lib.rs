@@ -4112,7 +4112,7 @@ mod launch_cap_tests {
     }
 
     /// The shell's own row holds no hardware authority: a launch grant on
-    /// the tool image, directory trees, (wave 12) the full `/proc` task
+    /// the tool image, directory trees, (wave 12) the full task
     /// view and no endpoint at all: it reaches the terminal server through the
     /// name server (`imports = ["term"]`, the kernel's badged `endpoint.names`
     /// at spawn), not by a grant of its own. The tool image holds only the view, the introspection

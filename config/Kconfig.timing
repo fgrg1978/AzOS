@@ -655,7 +655,8 @@ config THERMAL
       control, refuses every cap, so heat there raises the degrade level and
       requests the shutdown at the critical trip instead of capping a clock.
       RAPL's package energy (Intel since Sandy Bridge, AMD Zen) is sampled
-      each tick and shown in /proc/thermal. The level request is made for an
+      each tick and shown in the introspection tree's `thermal/`. The level
+      request is made for an
       OPP of the energy model, so it reaches a CPU only when the model has a
       domain with two OPPs (the topology's [energy.domain.*]); the sensor,
       the degrade level, the critical shutdown and the energy counter work
@@ -670,13 +671,13 @@ config THERMAL
       Fixed) and the real-time density admitted on the domain's most loaded
       hart, ticks the runtime, and leaves every trip, floor-bound domain,
       level change, lost sensor and shutdown request as a console line and a
-      `thermal` decision record (/proc/decisions). /proc/thermal shows the
-      state. The task is the one place the governor's decision reaches a
+      `thermal` decision record (`why list`). The introspection tree's
+      `thermal/` shows the state. The task is the one place the governor's decision reaches a
       clock. A board with no sensor and clock pair (QEMU, an x86_64 machine
       whose probe finds no sensor) builds no zone and creates no task:
       nothing reads a sensor and no clock is touched (invariant I4). Not wired yet: the level reaches no consumer (the power
-      service has no channel for a level the kernel raised); /proc/thermal
-      and the console are where it shows. Not for a small board
+      service has no channel for a level the kernel raised); `thermal/` and
+      the console are where it shows. Not for a small board
       (HWCLASS_EMBEDDED), which keeps its own native handling.
       n = not linked.
 

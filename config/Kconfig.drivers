@@ -66,8 +66,8 @@ choice HWBUS_AUTOBIND
       enumerates PCI/PCIe functions, device-tree nodes that carry a
       `compatible` and populated virtio-mmio windows into device objects,
       each named by a `Device` capability. This says which of them get a
-      driver. Either way every device is detected and listed in
-      /proc/devices; the choice is only about binding.
+      driver. Either way every device is detected and listed in the
+      introspection tree's `devices/`; the choice is only about binding.
 
       Presets: desktop, server, IoT/HMI, gateway and generic bind
       automatically; robot, industrial, automotive, firmware and wearable
@@ -89,7 +89,7 @@ choice HWBUS_AUTOBIND
           `[device.<name>]` row of the topology admits it (`match =
           "<selector>"`). A device a driver table matches but no row
           admits is not touched; the bus records the decision "detected,
-          not admitted" (/proc/decisions). The hardware an image needs to
+          not admitted" (`why list`). The hardware an image needs to
           boot (the console, the interrupt controller, the timer) is
           brought up before the bus and is not subject to this; the
           built-in topology of each image admits the devices that image's
@@ -1444,6 +1444,6 @@ config IOMMU_FAULT_POLL_MS
       faulted.
 
 endmenu # DMA and IOMMU
-comment "Always compiled, no switch: FAT32/tmpfs/procfs, the network stack, the CSI driver, native drivers"
+comment "Always compiled, no switch: FAT32/tmpfs, the network stack, the CSI driver, native drivers"
 
 endmenu # Drivers

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Explainable decision records (Kconfig DECISION_RECORDS_DEV, DECISION_REFUSALS_DURABLE): admission, placement and refusal paths write one fixed-size record naming the rule, its numbers and the alternative it rejected, into a small lock-free ring the kernel renders at /proc/decisions. Refusals, and capability denials under a per-subject rate limit (DECISION_DENY_DURABLE_PER_SEC), also go to a durable sink the kernel installs. Without the `on` and `durable` features `record` is empty."
+description = "Explainable decision records (Kconfig DECISION_RECORDS_DEV, DECISION_REFUSALS_DURABLE): admission, placement and refusal paths write one fixed-size record naming the rule, its numbers and the alternative it rejected, into a small lock-free ring the kernel publishes in its introspection tree's admin region. Refusals, and capability denials under a per-subject rate limit (DECISION_DENY_DURABLE_PER_SEC), also go to a durable sink the kernel installs. Without the `on` and `durable` features `record` is empty."
 
 [dependencies]
 azos_common = { workspace = true }

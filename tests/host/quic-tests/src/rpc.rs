@@ -28,7 +28,7 @@ use azos_rpc::{Config, Host, Link, NodeId, Policy, Rpc, Service, Started, State}
 const A: NodeId = 1;
 const B: NodeId = 2;
 const LO: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-/// The pool index of B's `echo` endpoint, as B's `/proc/rpc` would name it.
+/// The pool index of B's `echo` endpoint, as B's `inspect.rpc` view names it.
 const ECHO_INDEX: u32 = 7;
 
 #[azos_interface(id = 0x5155_4901, level = 1)]

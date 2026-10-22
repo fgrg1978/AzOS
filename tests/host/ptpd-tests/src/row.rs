@@ -9,7 +9,7 @@ use azos_topology::default_minimal;
 /// **The row is the whole of the daemon's authority**: `WRITE` on the kernel's
 /// `clock` endpoint (`Clock::sample` moves time; no `READ`, so it claims no
 /// service, and no `transfer`: it lends the right to nobody) and the
-/// read-only root directory it opens `/proc/clock` beneath. The row exists,
+/// kernel's view of the `[clock]` row (`inspect.clock`). The row exists,
 /// and starts, only with Kconfig `PTPD`, and then the built-in topology also
 /// declares the `[clock]` row naming the domain the daemon serves.
 ///

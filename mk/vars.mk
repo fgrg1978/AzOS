@@ -115,7 +115,8 @@ TRACECTL_BUILT:= $(OUT_TGT)/$(TRACECTL_DIR)/riscv64imac-unknown-none-elf/release
 TRACECTL_ELF  := $(OUT_BUILD)/tracectl.elf
 TRACECTL_SRC  := $(TRACECTL_DIR)/src/main.rs $(TRACECTL_DIR)/src/profile.rs $(TRACECTL_DIR)/Cargo.toml crates/core/trace/src/prof.rs
 # The decision query: the server (`Decisions` on `endpoint.decisions`, from
-# /proc/decisions.bin) and `why`, its client tool; both over `userspace/lib/decisions`.
+# the introspection tree's admin records) and `why`, its client tool; both over
+# `userspace/lib/decisions`.
 DECISIONS_LIB_SRC := userspace/lib/decisions/src/lib.rs userspace/lib/decisions/Cargo.toml
 DECISD_DIR := userspace/services/decisd
 DECISD_BUILT:= $(OUT_TGT)/$(DECISD_DIR)/riscv64imac-unknown-none-elf/release/decisd
