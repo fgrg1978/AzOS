@@ -379,7 +379,7 @@ fn floor_raise_from_unwritten_index() {
 // ── The keystore secret: a 32-byte index of its own ─────────────────────────
 
 const AUTH: &[u8] = &[0xAA, 0xBB];
-const NV_DEFINE_SECRET: &str = "80 02 00 00 00 2F 00 00 01 2A 40 00 00 01 00 00 00 09 40 00 00 09 00 00 01 00 00 00 02 AA BB 00 0E 01 50 00 02 00 0B 02 04 00 04 00 00 00 20";
+const NV_DEFINE_SECRET: &str = "80 02 00 00 00 2F 00 00 01 2A 40 00 00 01 00 00 00 09 40 00 00 09 00 00 01 00 00 00 02 AA BB 00 0E 01 50 00 02 00 0B 82 04 40 04 00 00 00 20";
 const NV_READ32: &str = "80 02 00 00 00 25 00 00 01 4E 01 50 00 02 01 50 00 02 00 00 00 0B 40 00 00 09 00 00 01 00 02 AA BB 00 20 00 00";
 
 fn secret_hex(first: u8) -> String {
@@ -400,11 +400,14 @@ fn nv_write32(first: u8) -> String {
 
 const NV_READ_PUBLIC_SECRET: &str = "80 01 00 00 00 0E 00 00 01 69 01 50 00 02";
 
-/// The secret's index is the floor's shape at 32 bytes: the same attributes,
-/// its own number, its own size.
+/// The secret's index has the floor's rights at 32 bytes, its own number,
+/// and can be locked for the TPM session in both directions (audit K2-H1:
+/// its password is built from public constants, so the lock is what keeps
+/// the secret): `READ_STCLEAR` (bit 31) and `WRITE_STCLEAR` (bit 14).
 #[test]
-fn the_secret_index_is_the_floors_shape_at_32_bytes() {
-    assert_eq!((SECRET_ATTRS, SECRET_BYTES), (FLOOR_ATTRS, 32));
+fn the_secret_index_is_the_floors_rights_lockable_for_the_session() {
+    assert_eq!((SECRET_ATTRS, SECRET_BYTES), (FLOOR_ATTRS | 1 << 31 | 1 << 14, 32));
+    assert_eq!(SECRET_ATTRS, 0x8204_4004);
     assert_ne!(SECRET_INDEX, FLOOR_INDEX);
     for k in ALL {
         let (mut t, r) = rig(k, 0);
@@ -431,11 +434,13 @@ fn the_secret_index_is_adopted_only_if_it_is_ours() {
         r.dev.borrow_mut().expect(NV_READ_PUBLIC_SECRET, public);
         t.secret_provision(&[], SECRET_INDEX, AUTH)
     };
-    assert_eq!(against(&public("02 04 00 04", "00 20")), Ok(()), "ours, never written");
-    assert_eq!(against(&public("22 04 00 04", "00 20")), Ok(()), "ours, written");
-    assert_eq!(against(&public("02 04 00 06", "00 20")), Err(Error::NvMismatch), "the owner may also write");
-    assert_eq!(against(&public("02 04 00 04", "00 04")), Err(Error::NvMismatch), "the floor's size");
-    assert_eq!(against(&public("00 04 00 04", "00 20")), Err(Error::NvMismatch), "no password to read");
+    assert_eq!(against(&public("82 04 40 04", "00 20")), Ok(()), "ours, never written");
+    assert_eq!(against(&public("A2 04 40 04", "00 20")), Ok(()), "ours, written");
+    assert_eq!(against(&public("B2 04 48 04", "00 20")), Ok(()), "ours, written and locked (state bits)");
+    assert_eq!(against(&public("82 04 40 06", "00 20")), Err(Error::NvMismatch), "the owner may also write");
+    assert_eq!(against(&public("82 04 40 04", "00 04")), Err(Error::NvMismatch), "the floor's size");
+    assert_eq!(against(&public("80 04 40 04", "00 20")), Err(Error::NvMismatch), "the lockout applies");
+    assert_eq!(against(&public("02 04 00 04", "00 20")), Err(Error::NvMismatch), "no session lock (an older build's)");
 }
 
 /// A first boot writes the secret the caller drew and reads it back; every
@@ -456,6 +461,31 @@ fn the_secret_is_created_once_and_read_after() {
     let (mut t, r) = rig(Kind::Direct, 0);
     r.dev.borrow_mut().expect(NV_READ32, &nv_read32_rsp(0x10));
     assert_eq!(t.secret_load_or_create(SECRET_INDEX, AUTH, &secret_bytes(0x90)), Ok(secret_bytes(0x10)));
+    r.assert_clean();
+}
+
+fn nv_lock_cmd(cc: &str) -> String {
+    format!("80 02 00 00 00 21 00 00 {cc} 01 50 00 02 01 50 00 02 00 00 00 0B 40 00 00 09 00 00 01 00 02 AA BB")
+}
+
+/// `secret_lock`: `NV_WriteLock` then `NV_ReadLock` (CC 0x138, 0x14F) of the
+/// secret's index under its own password. Both are asked for even when the
+/// first is refused, so a refused write lock never leaves the read open.
+///
+/// **Canary.** Drop the `NV_ReadLock` from `secret_lock`: the script is not
+/// consumed (and the second case sees no second command).
+#[test]
+fn the_secret_index_is_write_and_read_locked() {
+    let ok = format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}");
+    let (mut t, r) = rig(Kind::Direct, 0);
+    r.dev.borrow_mut().expect(&nv_lock_cmd("01 38"), &ok);
+    r.dev.borrow_mut().expect(&nv_lock_cmd("01 4F"), &ok);
+    assert_eq!(t.secret_lock(SECRET_INDEX, AUTH), Ok(()));
+    r.assert_clean();
+    let (mut t, r) = rig(Kind::Direct, 0);
+    r.dev.borrow_mut().expect(&nv_lock_cmd("01 38"), "80 01 00 00 00 0A 00 00 01 48");
+    r.dev.borrow_mut().expect(&nv_lock_cmd("01 4F"), &ok);
+    assert_eq!(t.secret_lock(SECRET_INDEX, AUTH), Err(Error::Tpm(0x148)));
     r.assert_clean();
 }
 

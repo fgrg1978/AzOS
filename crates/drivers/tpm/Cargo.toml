@@ -8,7 +8,8 @@ description = """
 TPM 2.0 driver core (S4): the TIS/FIFO register protocol over MMIO and over
 SPI, locality handling and timeouts, the ACPI TPM2 table, and the commands
 AzOS uses (Startup, GetRandom, PCR_Extend, PCR_Read, NV_DefineSpace, NV_Read,
-NV_Write, NV_ReadPublic) with bounds-checked response parsing. Pure (no_std, no allocation,
+NV_Write, NV_ReadPublic, NV_ReadLock, NV_WriteLock) with bounds-checked
+response parsing. Pure (no_std, no allocation,
 no unsafe): the kernel (or a ring-3 driver) supplies the register window, the
 SPI bus and the clock; tests/host/tpm-tests drives it against a scripted TPM.
 """

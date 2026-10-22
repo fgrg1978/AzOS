@@ -14,8 +14,10 @@ pub const ST_SESSIONS: u16 = 0x8002;
 
 pub const CC_NV_DEFINE_SPACE: u32 = 0x0000_012A;
 pub const CC_NV_WRITE: u32 = 0x0000_0137;
+pub const CC_NV_WRITE_LOCK: u32 = 0x0000_0138;
 pub const CC_STARTUP: u32 = 0x0000_0144;
 pub const CC_NV_READ: u32 = 0x0000_014E;
+pub const CC_NV_READ_LOCK: u32 = 0x0000_014F;
 pub const CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 pub const CC_GET_RANDOM: u32 = 0x0000_017B;
 pub const CC_PCR_READ: u32 = 0x0000_017E;
@@ -24,6 +26,9 @@ pub const CC_PCR_EXTEND: u32 = 0x0000_0182;
 pub const RC_SUCCESS: u32 = 0;
 /// `TPM_RC_INITIALIZE`: Startup was already done since reset.
 pub const RC_INITIALIZE: u32 = 0x0000_0100;
+/// `TPM_RC_NV_LOCKED`: the index is read- or write-locked (until the next
+/// TPM Reset or Restart for an `_STCLEAR` lock).
+pub const RC_NV_LOCKED: u32 = 0x0000_0148;
 /// `TPM_RC_NV_UNINITIALIZED`: the index is defined, never written.
 pub const RC_NV_UNINITIALIZED: u32 = 0x0000_014A;
 /// `TPM_RC_NV_DEFINED`: the index already exists.

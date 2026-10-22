@@ -400,8 +400,9 @@ pub(crate) fn measure_topology(caps: Option<&[u8]>) {
 // ── The keystore's root ─────────────────────────────────────────────────────
 
 /// The NV password of the keystore secret's index: a function of the index, as
-/// the floor's is, so the index is as safe as that password is secret (the
-/// secret is not on any medium, and a bus snooper on the TPM can read it).
+/// the floor's is. It is built from public constants, so it is NOT a secret
+/// (audit K2-H1): what keeps the keystore root is the session lock
+/// [`install_keystore_root`] issues right after its read (`secret_lock`).
 fn keystore_auth() -> [u8; 32] {
     const TAG: &[u8; 24] = b"azos/keystore-tpm-nv/v1.";
     let mut m = [0u8; 28];
@@ -411,10 +412,20 @@ fn keystore_auth() -> [u8; 32] {
 }
 
 /// Define the keystore secret's NV index (once per TPM), read the secret out
-/// of it, drawing it from the entropy pool the first time, and install it as the
-/// root of the `tpm_nv` backend. Without Kconfig `KEYSTORE_TPM_NV`, a TPM, or
-/// a seeded pool at the first boot, the backend has no root and says
-/// `NOT_READY`. The first boot waits on `NV_DefineSpace` (see the module doc).
+/// of it, drawing it from the entropy pool the first time, lock the index for
+/// the rest of the TPM session (no read, no write until the next TPM Reset:
+/// nothing that reaches the TPM after this point can read the root or plant
+/// one for the next boot), and install it as the root of the `tpm_nv`
+/// backend. A secret whose index could not be locked is not installed: the
+/// root would be readable by whoever reaches the TPM next. Without Kconfig
+/// `KEYSTORE_TPM_NV`, a TPM, or a seeded pool at the first boot, the backend
+/// has no root and says `NOT_READY`. The first boot waits on
+/// `NV_DefineSpace` (see the module doc).
+///
+/// Still open (needs policy sessions): code that runs on the TPM BEFORE this
+/// boot locks it, such as another OS booted from removable media, reads the
+/// index with the public password. A PCR policy over the stages this file
+/// measures would close that.
 pub(crate) fn install_keystore_root() -> bool {
     use azos_tpm::tpm::{SECRET_BYTES, SECRET_INDEX};
     if !azos_limits::KEYSTORE_TPM_NV || TPM.lock().is_none() {
@@ -436,12 +447,27 @@ pub(crate) fn install_keystore_root() -> bool {
         }
     });
     azos_crypto::ct::secure_zero(&mut fresh);
+    // Whatever the read gave, an index of ours left open could be read now,
+    // or written for the next boot to adopt. Not one that is not ours: our
+    // password would be a failed authorization there, counted against the
+    // TPM's dictionary-attack lockout if that index is not `NO_DA`.
+    let locked = match r {
+        Some(Err(Error::NvMismatch)) | None => None,
+        _ => with(|t| t.secret_lock(SECRET_INDEX, &auth)),
+    };
     match r {
         Some(Ok(Some(mut secret))) => {
+            if let Some(Err(e)) = locked {
+                azos_crypto::ct::secure_zero(&mut secret);
+                azos_drv_sys::kerr!("[KEYS] TPM NV index {:#010x} could not be locked for the session ({:?}): \
+                                     its secret stays readable, so the tpm_nv backend gets no root", SECRET_INDEX, e);
+                return false;
+            }
             let ok = azos_syscall::keys::install_root(azos_crypto::keystore::Backend::TpmNv, &secret);
             azos_crypto::ct::secure_zero(&mut secret);
             if ok {
-                kprintln!("[KEYS] TPM NV index {:#010x}: the tpm_nv backend has its root", SECRET_INDEX);
+                kprintln!("[KEYS] TPM NV index {:#010x}: the tpm_nv backend has its root (index locked \
+                           until the next TPM reset)", SECRET_INDEX);
             }
             ok
         }
@@ -453,6 +479,12 @@ pub(crate) fn install_keystore_root() -> bool {
         Some(Err(Error::NvMismatch)) => {
             azos_drv_sys::kerr!("[KEYS] TPM NV index {:#010x} exists and is not ours (attributes, size or policy \
                                  differ): the tpm_nv backend has no root", SECRET_INDEX);
+            false
+        }
+        Some(Err(Error::Tpm(azos_tpm::wire::RC_NV_LOCKED))) => {
+            azos_drv_sys::kerr!("[KEYS] TPM NV index {:#010x} is locked: the TPM was not reset since a boot \
+                                 read it (a warm restart that kept the TPM's session); the tpm_nv backend \
+                                 has no root until a reset", SECRET_INDEX);
             false
         }
         Some(Err(e)) => {
