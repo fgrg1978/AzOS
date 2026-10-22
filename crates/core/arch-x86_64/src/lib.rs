@@ -312,21 +312,28 @@ impl Mmu for X86_64 {
 }
 
 impl Boot for X86_64 {
-    /// ACPI S5 (`PM1a_CNT` SLP_TYP from the FADT/DSDT `\_S5`), or the
-    /// hypervisor's exit device under QEMU (`isa-debug-exit`).
-    /// Today: QEMU isa-debug-exit (status 1) if present, else stop the CPU.
+    /// ACPI S5 from the FADT and the DSDT's `\_S5` (`firmware::power::
+    /// power_off`); where it is refused (no `\_S5` the boot could read
+    /// without AML, no register) or does not take, the CPU stops with the
+    /// machine on. Under QEMU with Kconfig `X86_QEMU_DEBUG_EXIT`, first
+    /// isa-debug-exit (status 1): the gate's rows read that status.
     fn shutdown(&self) -> ! {
         on_x86!({
-            cpu::outl(cpu::DEBUG_EXIT_PORT, 0);
+            cpu::cli();
+            cpu::qemu_debug_exit(0);
+            let _ = firmware::power::power_off(platform_impl::platform().acpi.fadt.as_ref(), &mut platform_impl::HwPower);
             cpu::halt_forever()
         }, "x86_64: shutdown: ACPI S5 via FADT PM1a_CNT")
     }
-    /// ACPI reset register (FADT `RESET_REG`), else the 0xCF9 port.
-    /// Today: QEMU isa-debug-exit (status 5) if present, else stop the CPU.
+    /// The reset ladder (`firmware::power::reset`): FADT `RESET_REG`, port
+    /// 0xCF9, the 8042, then a triple fault. Under QEMU with Kconfig
+    /// `X86_QEMU_DEBUG_EXIT`, first isa-debug-exit (status 5).
     fn reboot(&self) -> ! {
         on_x86!({
-            cpu::outl(cpu::DEBUG_EXIT_PORT, 2);
-            cpu::halt_forever()
+            cpu::cli();
+            cpu::qemu_debug_exit(2);
+            firmware::power::reset(platform_impl::platform().acpi.fadt.as_ref(), &mut platform_impl::HwPower);
+            cpu::triple_fault()
         }, "x86_64: reboot: FADT RESET_REG / port 0xCF9")
     }
     /// INIT-SIPI-SIPI through the LAPIC ICR to the APIC ID from the MADT,

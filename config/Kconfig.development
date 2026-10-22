@@ -773,6 +773,25 @@ config KTEST_SEMIHOSTING_EXIT
       lines carry the verdict. Cost: one `hlt` at the end of a ktest run;
       nothing in a kernel built without `ktest`.
 
+config X86_QEMU_DEBUG_EXIT
+    bool "Power-off and reset leave QEMU through isa-debug-exit (x86_64)"
+    depends on ARCH_X86_64 && BOARD_QEMU
+    default y
+    help
+      x86_64 QEMU only. With this on, `Boot::shutdown` writes 0 and
+      `Boot::reboot` 2 to QEMU's isa-debug-exit port (0xF4) before the
+      machine's own sequence, so QEMU (`-device isa-debug-exit,iobase=0xf4,
+      iosize=0x04`, as every gate row passes) exits with status 1 or 5: a
+      status the gate can tell from a hang or a reset. The write is made
+      only when CPUID says a hypervisor runs the kernel; without the
+      device it goes nowhere and ACPI S5 or the reset ladder follows.
+
+      Off: the FADT's sequences alone (ACPI S5; RESET_REG, 0xCF9, the
+      8042, a triple fault), as on a PC; QEMU then exits 0 on S5 or on a
+      reset under `-no-reboot`. Only a BOARD_QEMU build offers it, so a
+      board build never writes port 0xF4 here. Cost: one CPUID and one
+      port write on the power-off and reset paths.
+
 config KTEST_LATE_PRIORITY
     int "Priority of the late ktest runner task"
     range 1 30

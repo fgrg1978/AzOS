@@ -5,17 +5,19 @@
 //! Entering S3 is a write of `SLP_TYPa << 10 | SLP_EN` to the FADT's PM1a
 //! control block, and `SLP_TYPa` is not in the FADT: it is the first element of
 //! the package `\_S3` in the DSDT, an AML object. Reading it takes an AML
-//! interpreter (or a byte scan of the DSDT, which finds the wrong answer on a
-//! firmware that builds the package in a method). The kernel has neither, so no
-//! machine is known to allow S3, and the answer here is "not available" with
-//! the reason, never a guess at `SLP_TYP`. The sequence
+//! interpreter. The kernel has only the byte scan the power-off uses for
+//! `\_S5` (`acpi::find_s5`): no value where a method returns the package, the
+//! first arm's where an `If` declares it twice. S3 also needs the resume
+//! side below, and a wrong S3 entry loses the machine's state where a missed
+//! S5 only leaves it on. So no machine is known to allow S3, and the answer
+//! here is "not available" with the reason, never a guess at `SLP_TYP`. The sequence
 //! (`azos_drv_power::pm::suspend`) turns that into a refusal with a record,
 //! which keeps the code path in place for the day an interpreter exists.
 //!
 //! The wake side of S3 (`FACS` waking vector, real-mode resume) is not started
 //! either; it would be the x86 form of the resume entry the other two ISAs lack.
 
-use super::acpi::Fadt;
+use super::acpi::{Fadt, FADT_HW_REDUCED};
 
 /// Why the kernel cannot suspend the system on this machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,13 +34,10 @@ pub enum SystemSuspendMissing {
     NoAml,
 }
 
-/// FADT flag HW_REDUCED_ACPI.
-const FLAG_HW_REDUCED: u32 = 1 << 20;
-
 /// Whether S3 can be entered, from the FADT the platform read.
 pub fn s3_available(fadt: Option<&Fadt>) -> Result<(), SystemSuspendMissing> {
     let Some(f) = fadt else { return Err(SystemSuspendMissing::NoFadt) };
-    if f.flags & FLAG_HW_REDUCED != 0 {
+    if f.flags & FADT_HW_REDUCED != 0 {
         return Err(SystemSuspendMissing::HardwareReduced);
     }
     if f.pm1a_cnt == 0 {

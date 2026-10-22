@@ -9,14 +9,14 @@
 use super::acpi::{self, Dmar, Ivrs, PhysMem};
 use super::encode;
 
-fn fix_checksum(b: &mut [u8]) {
+pub(crate) fn fix_checksum(b: &mut [u8]) {
     b[9] = 0;
     let sum = b.iter().fold(0u8, |a, &x| a.wrapping_add(x));
     b[9] = 0u8.wrapping_sub(sum);
 }
 
 /// An SDT: the 36-byte header + `body`, length and checksum filled in.
-fn sdt(sig: &[u8; 4], body: &[u8]) -> Vec<u8> {
+pub(crate) fn sdt(sig: &[u8; 4], body: &[u8]) -> Vec<u8> {
     let mut t = Vec::new();
     t.extend_from_slice(sig);
     t.extend_from_slice(&((36 + body.len()) as u32).to_le_bytes());

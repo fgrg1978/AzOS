@@ -17,7 +17,7 @@ crates/core/arch	0	0	0	0	1	0
 crates/core/arch-aarch64	187	44	1	1	0	75
 crates/core/arch-api	27	10	0	0	0	31
 crates/core/arch-riscv64	151	42	0	3	0	91
-crates/core/arch-x86_64	142	17	4	11	0	58
+crates/core/arch-x86_64	146	17	4	11	0	57
 crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
 crates/core/channel	0	0	0	0	1	0
@@ -167,4 +167,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	518
+@unsafe-share	517

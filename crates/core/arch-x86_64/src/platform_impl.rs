@@ -185,6 +185,36 @@ pub fn cpuid(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
     (r.eax, r.ebx, r.ecx, r.edx)
 }
 
+/// The machine the power sequences (`firmware::power`) drive: port I/O, the
+/// FADT's memory-mapped registers, the TSC delay.
+pub struct HwPower;
+
+impl crate::firmware::power::PowerIo for HwPower {
+    fn inb(&mut self, port: u16) -> u8 {
+        crate::cpu::inb(port)
+    }
+    fn outb(&mut self, port: u16, v: u8) {
+        crate::cpu::outb(port, v)
+    }
+    fn inw(&mut self, port: u16) -> u16 {
+        crate::cpu::inw(port)
+    }
+    fn outw(&mut self, port: u16, v: u16) {
+        crate::cpu::outw(port, v)
+    }
+    fn outl(&mut self, port: u16, v: u32) {
+        crate::cpu::outl(port, v)
+    }
+    fn write8(&mut self, pa: u64, v: u8) {
+        // SAFETY: a FADT register the kernel maps 1:1 with its device
+        // windows (`firmware::power::for_each_mmio_register`).
+        unsafe { core::ptr::write_volatile(pa as usize as *mut u8, v) }
+    }
+    fn delay_us(&mut self, us: u64) {
+        crate::timer::udelay(us)
+    }
+}
+
 /// The highest basic CPUID leaf.
 pub fn cpuid_max() -> u32 {
     cpuid(0, 0).0

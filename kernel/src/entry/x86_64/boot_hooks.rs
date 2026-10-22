@@ -137,6 +137,13 @@ pub fn firmware_table(_hart_id: usize, fw_table: usize, _dt: Option<azos_dtb::Dt
     if let Some(f) = p.acpi.fadt.filter(|f| f.pm_tmr_port != 0) {
         kprintln!("[ACPI] PM timer: port {:#x}, {} bits", f.pm_tmr_port, if f.pm_tmr_wide { 32 } else { 24 });
     }
+    if let Some(f) = p.acpi.fadt {
+        // What `Boot::shutdown` / `Boot::reboot` will write (firmware::power).
+        kprintln!("[ACPI] power: S5 {:?} via {}, reset reg {}space {} {:#x} = {:#x}",
+                  f.s5, if f.flags & azos_arch::firmware::acpi::FADT_HW_REDUCED != 0 { "sleep control" } else { "PM1 control" },
+                  if f.flags & azos_arch::firmware::acpi::FADT_RESET_REG_SUP != 0 { "" } else { "(unsupported) " },
+                  f.reset.space, f.reset.addr, f.reset_value);
+    }
     // The IOMMU units the firmware lists (Intel VT-d DMAR, AMD-Vi IVRS) and the
     // RAM their devices use, which `reserve_firmware_table` keeps out of the PMM.
     if let Some(d) = &p.acpi.dmar {
@@ -543,8 +550,8 @@ fn unmap_direct_map_holes() -> u64 {
 }
 
 /// The device windows the kernel tables map before paging is on: the xAPIC
-/// page (none in x2APIC mode), each IOAPIC, the HPET, the virtio-mmio
-/// transports. First, the E820 holes leave the direct map
+/// page (none in x2APIC mode), each IOAPIC, the HPET, the FADT's registers
+/// in memory, the virtio-mmio transports. First, the E820 holes leave the direct map
 /// ([`unmap_direct_map_holes`]): this is the hook that runs between
 /// `vmm::init` and the table going live.
 pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
@@ -578,7 +585,7 @@ pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
                             bad, leaves, first);
     }
     let p = platform();
-    let mut w = [(0usize, 0usize); 4 + azos_arch::firmware::acpi::MAX_IOAPICS];
+    let mut w = [(0usize, 0usize); 6 + azos_arch::firmware::acpi::MAX_IOAPICS];
     let mut n = 0;
     let mut add = |base: usize, len: usize| {
         if n < w.len() && len != 0 {
@@ -593,6 +600,8 @@ pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
     if let Some(h) = p.acpi.hpet {
         add(h.addr as usize, PAGE);
     }
+    // RESET_REG / SLEEP_CONTROL_REG in memory (QEMU microvm's GED).
+    azos_arch::firmware::power::for_each_mmio_register(p.acpi.fadt.as_ref(), |pa| add(pa as usize & !(PAGE - 1), PAGE));
     // The window the drivers scan (`platform::hw::VIRTIO_MMIO_*`: every slot
     // is read, present or not), plus any command-line transport outside it.
     let (wbase, wlen) = (azos_limits::X86_VIRTIO_MMIO_BASE,

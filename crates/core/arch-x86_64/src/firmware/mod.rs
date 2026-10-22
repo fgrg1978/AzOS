@@ -11,6 +11,8 @@ pub mod acpi;
 pub mod bootinfo;
 /// System suspend (ACPI S3): where it is available, and why not.
 pub mod suspend;
+/// Power-off (ACPI S5) and the reset ladder, from the FADT.
+pub mod power;
 pub use suspend::SystemSuspendMissing;
 /// The Limine boot protocol's responses, converted to the same shapes.
 pub mod limine;

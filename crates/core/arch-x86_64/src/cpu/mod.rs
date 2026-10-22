@@ -271,8 +271,24 @@ pub fn read_cr2() -> u64 {
 /// IA32_GS_BASE: the kernel GS base, the address of this CPU's `cpu::PerCpu`.
 pub const IA32_GS_BASE: u32 = 0xC000_0101;
 /// QEMU `isa-debug-exit` (`-device isa-debug-exit,iobase=0xf4,iosize=4`):
-/// a write of `v` exits QEMU with status `(v << 1) | 1`. Ignored elsewhere.
+/// a write of `v` exits QEMU with status `(v << 1) | 1`. A QEMU device the
+/// gate adds: port 0xF4 on a real PC is not this. In this crate only
+/// [`qemu_debug_exit`] writes it; `kernel/src/ktest.rs` writes it in a
+/// Kconfig `BOARD_QEMU` build, and the boot refusals before Rust runs
+/// (`boot.S`, `ext/limine.rs`) write it to end a QEMU run.
 pub const DEBUG_EXIT_PORT: u16 = 0xF4;
+
+/// End a QEMU run with status `(v << 1) | 1` through isa-debug-exit, when
+/// Kconfig `X86_QEMU_DEBUG_EXIT` built it in and the CPU says it runs under
+/// a hypervisor (CPUID.1:ECX[31]): never on a real PC. Returns when there is
+/// no such device (the write goes nowhere), and the caller goes on to the
+/// machine's own power-off or reset.
+#[cfg(target_arch = "x86_64")]
+pub fn qemu_debug_exit(v: u32) {
+    if azos_limits::X86_QEMU_DEBUG_EXIT && crate::platform_impl::cpuid(1, 0).2 & (1 << 31) != 0 {
+        outl(DEBUG_EXIT_PORT, v);
+    }
+}
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
@@ -347,6 +363,22 @@ pub fn inb(port: u16) -> u8 {
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
+pub fn outw(port: u16, v: u16) {
+    // SAFETY: a port write; callers name the device's port.
+    unsafe { core::arch::asm!("out dx, ax", in("dx") port, in("ax") v, options(nomem, nostack, preserves_flags)) };
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn inw(port: u16) -> u16 {
+    let v: u16;
+    // SAFETY: a port read; callers name the device's port.
+    unsafe { core::arch::asm!("in ax, dx", in("dx") port, out("ax") v, options(nomem, nostack, preserves_flags)) };
+    v
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
 pub fn outl(port: u16, v: u32) {
     // SAFETY: a port write; callers name the device's port.
     unsafe { core::arch::asm!("out dx, eax", in("dx") port, in("eax") v, options(nomem, nostack, preserves_flags)) };
@@ -368,6 +400,17 @@ pub fn halt_forever() -> ! {
         cli();
         hlt();
     }
+}
+
+/// Reset the machine the way no firmware can refuse: an empty IDT, then an
+/// exception. The CPU cannot deliver it, nor the #DF that follows, and shuts
+/// down; the chipset turns a shutdown cycle into a reset.
+#[cfg(target_arch = "x86_64")]
+pub fn triple_fault() -> ! {
+    let idtr = [0u16; 5];
+    // SAFETY: the end of this machine's life; nothing runs after the `int3`.
+    unsafe { core::arch::asm!("lidt [{}]", "int3", in(reg) idtr.as_ptr(), options(nostack)) };
+    halt_forever()
 }
 
 // ── The FS base (thread pointer) of a task, as the context switch handles it ─

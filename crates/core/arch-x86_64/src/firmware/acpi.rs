@@ -322,22 +322,58 @@ pub fn parse_mcfg(t: &[u8], out: &mut [McfgEntry]) -> usize {
     n
 }
 
-/// The FADT fields the platform uses: the reset register and the PM1a
-/// control block (S5 shutdown), and the boot-architecture flags.
+/// A register the FADT names through a Generic Address Structure, for the
+/// 8-bit registers ACPI fixes the width of (RESET_REG, SLEEP_CONTROL_REG).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Gas {
+    /// 0 system memory, 1 system I/O, 2 PCI configuration space.
+    pub space: u8,
+    /// 0 = no register.
+    pub addr: u64,
+}
+
+impl Gas {
+    pub const MEMORY: u8 = 0;
+    pub const IO: u8 = 1;
+    pub const PCI_CONFIG: u8 = 2;
+
+    fn at(t: &[u8], o: usize) -> Gas {
+        Gas { space: t[o], addr: le64(t, o + 4) }
+    }
+}
+
+/// The FADT fields the platform uses: the reset register, the PM1 control
+/// blocks and the sleep control register (S5 power-off), the SMI command
+/// that turns ACPI mode on, the DSDT and the `\_S5` sleep types read from
+/// it, and the boot-architecture flags.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Fadt {
     /// The table's revision (header byte 8): IAPC_BOOT_ARCH exists from 2.
     pub revision: u8,
+    /// PM1a/PM1b control blocks: I/O ports (X_PM1x_CNT_BLK when it names
+    /// system I/O, else PM1x_CNT_BLK), 0 = none.
     pub pm1a_cnt: u32,
+    pub pm1b_cnt: u32,
+    /// SMI_CMD and ACPI_ENABLE: the write that hands the fixed hardware to
+    /// the OS (SCI_EN) on a machine still in legacy mode; 0 = none.
+    pub smi_cmd: u32,
+    pub acpi_enable: u8,
     /// IAPC_BOOT_ARCH: bit 0 legacy devices, bit 1 8042, bit 5 no CMOS RTC.
     /// 0 when the table is too old (revision < 2) or too short to carry it.
     pub iapc_boot_arch: u16,
     /// Fixed feature flags: bit 10 RESET_REG_SUP, bit 20 HW_REDUCED_ACPI.
     pub flags: u32,
-    /// RESET_REG (GAS): address space id and address; 0/0 = none.
-    pub reset_space: u8,
-    pub reset_addr: u64,
+    /// RESET_REG and the value written to it.
+    pub reset: Gas,
     pub reset_value: u8,
+    /// SLEEP_CONTROL_REG (ACPI 5.0+): how a hardware-reduced platform,
+    /// which has no PM1 blocks, enters a sleep state.
+    pub sleep_ctl: Gas,
+    /// The DSDT's physical address (X_DSDT when set, else DSDT), 0 = none.
+    pub dsdt: u64,
+    /// `\_S5`'s SLP_TYPa / SLP_TYPb, read from the DSDT by [`find_s5`]
+    /// (`parse` fills it); `None` when the DSDT has no plain `\_S5` package.
+    pub s5: Option<(u8, u8)>,
     /// The ACPI PM timer's I/O port (X_PM_TMR_BLK when it is system I/O,
     /// else PM_TMR_BLK), 0 = none. A 3.579545 MHz counter that runs in
     /// every C-state: the calibration reference of last resort.
@@ -353,25 +389,57 @@ impl Fadt {
     /// legacy devices at all. An older table (ACPI 1.0) has no such field and
     /// describes a PC AT, where the controller is part of the machine.
     pub const fn has_8042(&self) -> bool {
-        if self.flags & (1 << 20) != 0 {
+        if self.flags & FADT_HW_REDUCED != 0 {
             return false;
         }
         self.revision < 2 || self.iapc_boot_arch & 0b10 != 0
     }
 }
 
+/// FADT flag RESET_REG_SUP: RESET_REG is implemented.
+pub const FADT_RESET_REG_SUP: u32 = 1 << 10;
+/// FADT flag HW_REDUCED_ACPI: no PM1 blocks, no legacy devices.
+pub const FADT_HW_REDUCED: u32 = 1 << 20;
+
 pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
     if t.len() < 116 {
         return None;
     }
-    let mut f = Fadt { revision: t[8], pm1a_cnt: le32(t, 64), flags: le32(t, 112), ..Fadt::default() };
+    let mut f = Fadt {
+        revision: t[8],
+        dsdt: le32(t, 40) as u64,
+        smi_cmd: le32(t, 48),
+        acpi_enable: t[52],
+        pm1a_cnt: le32(t, 64),
+        pm1b_cnt: le32(t, 68),
+        flags: le32(t, 112),
+        ..Fadt::default()
+    };
     if f.revision >= 2 && t.len() >= 111 {
         f.iapc_boot_arch = le16(t, 109);
     }
     if t.len() >= 129 {
-        f.reset_space = t[116];
-        f.reset_addr = le64(t, 120);
+        f.reset = Gas::at(t, 116);
         f.reset_value = t[128];
+    }
+    // X_DSDT @140 (ACPI 2.0+) wins when set.
+    if t.len() >= 148 && le64(t, 140) != 0 {
+        f.dsdt = le64(t, 140);
+    }
+    // X_PM1a_CNT_BLK @172, X_PM1b_CNT_BLK @184: a system-I/O block wins over
+    // the legacy port; one in memory is a block this does not drive, and the
+    // legacy field stays.
+    for (o, port) in [(172, &mut f.pm1a_cnt), (184, &mut f.pm1b_cnt)] {
+        if t.len() >= o + 12 {
+            let g = Gas::at(t, o);
+            if g.space == Gas::IO && g.addr != 0 && g.addr <= 0xFFFF {
+                *port = g.addr as u32;
+            }
+        }
+    }
+    // SLEEP_CONTROL_REG @244 (ACPI 5.0+).
+    if t.len() >= 256 {
+        f.sleep_ctl = Gas::at(t, 244);
     }
     f.pm_tmr_wide = f.flags & (1 << 8) != 0;
     // PM_TMR_BLK @76 (I/O port), PM_TMR_LEN @91 (4 when the timer exists).
@@ -388,6 +456,90 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
         f.pm_tmr_port = if t[208] == 1 && le64(t, 212) <= 0xFFFF { le64(t, 212) as u16 } else { 0 };
     }
     Some(f)
+}
+
+// ── \_S5 without an AML interpreter ────────────────────────────────────────
+
+/// AML opcodes the `\_S5` scan reads (ACPI 6.x §20.2).
+const AML_ZERO: u8 = 0x00;
+const AML_ONE: u8 = 0x01;
+const AML_NAME: u8 = 0x08;
+const AML_BYTE: u8 = 0x0A;
+const AML_WORD: u8 = 0x0B;
+const AML_DWORD: u8 = 0x0C;
+const AML_QWORD: u8 = 0x0E;
+const AML_PACKAGE: u8 = 0x12;
+const AML_ROOT: u8 = b'\\';
+
+/// SLP_TYPa / SLP_TYPb of `\_S5` from the DSDT's bytes (the table, header
+/// included), without an AML interpreter: the first `Name (_S5, Package
+/// (n) { a, b, ... })` whose elements are integer constants, the shape every
+/// firmware this targets emits (QEMU's `{ 0, 0, 0, 0 }` on pc/q35, `{ 5, ...}`
+/// on microvm, AMD and Intel boards' `{ 0x05, Zero, ... }` / `{ 0x07, ... }`).
+/// A package built at run time (a `Method`, a `DefVarPackage`, an element
+/// that is a name) is `None`: reading it takes an interpreter, and the
+/// caller refuses S5 rather than guess a value. Values past the 3 bits of
+/// SLP_TYP are refused too. Where an `If` declares `_S5` in both arms the
+/// first arm's wins: the scan does not evaluate the predicate.
+pub fn find_s5(dsdt: &[u8]) -> Option<(u8, u8)> {
+    let body = dsdt.get(SDT_HEADER_LEN..)?;
+    let mut i = 0;
+    while i + 4 <= body.len() {
+        if &body[i..i + 4] == b"_S5_" {
+            let named = match i {
+                0 => false,
+                1 => body[0] == AML_NAME,
+                _ => body[i - 1] == AML_NAME || (body[i - 1] == AML_ROOT && body[i - 2] == AML_NAME),
+            };
+            if named {
+                if let Some(v) = s5_package(&body[i + 4..]) {
+                    return Some(v);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `PackageOp PkgLength NumElements a b ...` right after the name.
+fn s5_package(b: &[u8]) -> Option<(u8, u8)> {
+    if *b.first()? != AML_PACKAGE {
+        return None;
+    }
+    // PkgLength: bits 7:6 of the lead byte count the bytes that follow it.
+    let extra = (*b.get(1)? >> 6) as usize;
+    let mut o = 2 + extra;
+    let n = *b.get(o)?;
+    o += 1;
+    if n == 0 {
+        return None;
+    }
+    let mut ints = [0u64; 2];
+    for slot in ints.iter_mut().take((n as usize).min(2)) {
+        let (v, len) = aml_integer(b.get(o..)?)?;
+        *slot = v;
+        o += len;
+    }
+    if ints.iter().any(|&v| v > 7) {
+        return None;
+    }
+    Some((ints[0] as u8, ints[1] as u8))
+}
+
+/// An AML integer constant: its value and its length in bytes.
+fn aml_integer(b: &[u8]) -> Option<(u64, usize)> {
+    let width = match *b.first()? {
+        AML_ZERO => return Some((0, 1)),
+        AML_ONE => return Some((1, 1)),
+        AML_BYTE => 1,
+        AML_WORD => 2,
+        AML_DWORD => 4,
+        AML_QWORD => 8,
+        _ => return None,
+    };
+    let v = b.get(1..1 + width)?.iter().rev().fold(0u64, |a, &x| a << 8 | x as u64);
+    Some((v, 1 + width))
 }
 
 /// One DMAR remapping hardware unit (DRHD): an Intel VT-d register window.
@@ -1000,7 +1152,14 @@ pub fn parse<M: PhysMem>(mem: &M, rsdp_pa: u64, out: &mut AcpiInfo) -> Result<()
                 parse_madt(t, m);
             }
             b"HPET" => out.hpet = parse_hpet(t),
-            b"FACP" => out.fadt = parse_fadt(t),
+            b"FACP" => {
+                // The DSDT is read here, while the boot identity map can
+                // reach it: `\_S5` for the power-off, nothing else.
+                out.fadt = parse_fadt(t).map(|mut f| {
+                    f.s5 = table(mem, f.dsdt).filter(|d| &d[0..4] == b"DSDT").and_then(find_s5);
+                    f
+                });
+            }
             b"MCFG" => out.n_mcfg = parse_mcfg(t, &mut out.mcfg),
             b"DMAR" => parse_dmar(t, out.dmar.insert(Dmar::EMPTY)),
             b"IVRS" => parse_ivrs(t, out.ivrs.insert(Ivrs::EMPTY)),

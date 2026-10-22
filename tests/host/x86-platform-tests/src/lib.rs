@@ -18,6 +18,10 @@ mod acpi;
 mod bootinfo;
 
 #[allow(dead_code)]
+#[path = "../../../../crates/core/arch-x86_64/src/firmware/power.rs"]
+mod power;
+
+#[allow(dead_code)]
 #[path = "../../../../crates/core/arch-x86_64/src/irq/encode.rs"]
 mod encode;
 
@@ -30,6 +34,9 @@ mod limine_tests;
 
 #[cfg(test)]
 mod acpi_tests;
+
+#[cfg(test)]
+mod power_tests;
 
 #[cfg(test)]
 mod tests {
@@ -203,6 +210,48 @@ mod tests {
         m.put(HPET_PA, sdt(b"HPET", &hpet_body(0xFED0_0000)));
         m.put(MCFG_PA, sdt(b"MCFG", &mcfg_body(0xB000_0000, 0, 0, 255)));
         m
+    }
+
+    /// The machine's root table rebuilt with one more pointer, at `pa`.
+    fn with_table(mut m: Mem, pa: u64, table: Vec<u8>) -> Mem {
+        let mut b = Vec::new();
+        [MADT_PA, HPET_PA, MCFG_PA, pa].iter().for_each(|p| b.extend_from_slice(&p.to_le_bytes()));
+        m.0.retain(|(base, _)| *base != ROOT);
+        m.put(ROOT, sdt(b"XSDT", &b));
+        m.put(pa, table);
+        m
+    }
+
+    /// **Discriminates** the DSDT read at parse time: the FADT's X_DSDT
+    /// (over a stale 32-bit DSDT field) leads to `\_S5`, and a DSDT pointer
+    /// at something that is not a DSDT, or a bad checksum, gives no sleep
+    /// type rather than a guessed one.
+    #[test]
+    fn parse_reads_s5_from_the_dsdt_the_fadt_names() {
+        const FADT_PA: u64 = 0x7FE_4000;
+        const DSDT_PA: u64 = 0x7FE_5000;
+        let fadt = |x_dsdt: u64| {
+            let mut t = sdt(b"FACP", &vec![0; 276 - 36]);
+            t[40..44].copy_from_slice(&0x7FE_6000u32.to_le_bytes());
+            t[140..148].copy_from_slice(&x_dsdt.to_le_bytes());
+            fix_checksum(&mut t, 9);
+            t
+        };
+        let dsdt = sdt(b"DSDT", &[0x08, b'_', b'S', b'5', b'_', 0x12, 0x07, 0x04, 0x0A, 0x05, 0x00, 0x00, 0x00]);
+        let mut m = with_table(machine(true), FADT_PA, fadt(DSDT_PA));
+        m.put(DSDT_PA, dsdt.clone());
+        let f = parse(&m).unwrap().fadt.unwrap();
+        assert_eq!((f.dsdt, f.s5), (DSDT_PA, Some((5, 0))));
+
+        let mut m = with_table(machine(true), FADT_PA, fadt(DSDT_PA));
+        m.put(DSDT_PA, sdt(b"SSDT", &dsdt[36..]));
+        assert_eq!(parse(&m).unwrap().fadt.unwrap().s5, None, "not a DSDT");
+
+        let mut bad = dsdt.clone();
+        bad[40] ^= 1;
+        let mut m = with_table(machine(true), FADT_PA, fadt(DSDT_PA));
+        m.put(DSDT_PA, bad);
+        assert_eq!(parse(&m).unwrap().fadt.unwrap().s5, None, "bad checksum");
     }
 
     fn parse(m: &Mem) -> Result<Box<AcpiInfo>, AcpiError> {
