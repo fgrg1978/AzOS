@@ -52,27 +52,24 @@ const POLL_NS: u64 = 20_000_000;
 const COOLDOWN_NS: u64 = 1_000_000_000;
 /// The signal number a forced stop carries (`SYS_ALERT` takes 1..=31).
 const SIGKILL: u64 = 9;
+/// The exit code when `/proc/components` cannot be read (sysexits
+/// `EX_NOINPUT`); a panic exits with 70.
+const NO_VIEW_EXIT: i32 = 66;
 /// A directory, "/", an 8.3 name and the NUL.
 const PATH_MAX: usize = tree::DIR_MAX + 1 + 12 + 1;
 
 struct Kernel;
 
 impl Kernel {
-    fn view(&mut self, buf: &mut [u8]) -> usize {
+    /// `/proc/components` into `buf`: its length, or the negative errno of the
+    /// open or of the read that failed.
+    fn view(&mut self, buf: &mut [u8]) -> Result<usize, isize> {
         let h = sys::open_root(b"/proc/components\0", 0);
         if h < 0 {
-            return 0;
+            return Err(h);
         }
         let h = h as u32;
-        let mut got = 0;
-        // The VFS hands a file out in pieces of at most one page.
-        while got < buf.len() {
-            let n = sys::file_read_typed(h, &mut buf[got..]);
-            if n <= 0 {
-                break;
-            }
-            got += n as usize;
-        }
+        let got = tree::read_view(buf, |b| sys::file_read_typed(h, b));
         let _ = sys::close_typed(h);
         got
     }
@@ -196,6 +193,20 @@ fn main() -> ! {
     let mut view = [0u8; VIEW_MAX];
     let got = host.view(&mut view);
     let _ = sys::console_write(sys::STDOUT, b"[compmgr] AzOS component manager\n");
+    // No view, nothing to supervise: end, so the kernel's supervision of the
+    // manager sees the failure and restarts it, instead of an idle manager
+    // that looks healthy and started nothing.
+    let got = match got {
+        Ok(n) => n,
+        Err(rc) => {
+            let mut line = Line::new();
+            line.put(b"[compmgr] cannot read /proc/components rc=");
+            line.num(rc as i64);
+            line.put(b"\n");
+            let _ = sys::console_write(sys::STDOUT, line.bytes());
+            sys::exit(NO_VIEW_EXIT);
+        }
+    };
     // SAFETY: the one reference, for the life of the program.
     let tree = unsafe { &mut *TREE.0.get() };
     tree.load(&view[..got], &mut host);
