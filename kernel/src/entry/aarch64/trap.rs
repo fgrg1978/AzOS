@@ -116,6 +116,22 @@ impl azos_syscall::fastpath::IpcRegs for SvcRegs<'_> {
 /// access was a write. Occupies the same absolute bit position in the full
 /// register as in the ISS field (ISS is bits [24:0]).
 const ESR_ISS_WNR: u64 = 1 << 6;
+/// ESR_EL1 ISS bit 8 (CM) for a Data Abort: the abort came from a cache
+/// maintenance or address translation instruction (`dc civac`, `at`), which
+/// reports WnR = 1 although it writes nothing. Linux treats it as a read.
+const ESR_ISS_CM: u64 = 1 << 8;
+
+/// Did this trap's slot write `ESR_EL1`? Only a synchronous exception's
+/// syndrome is decoded, and the kernel takes those through the two sync
+/// vectors. An IRQ or FIQ does not write the register (ARM ARM D1.10): its
+/// `esr_el1` is the previous exception's syndrome, usually an `svc`'s, so
+/// decoding it ran the user's x8 as a syscall at an arbitrary instruction, or
+/// a page fault at a stale FAR (K1 M3). SError, the SP0 group and AArch32
+/// are not decoded either: they take the fatal path (`user_kill_status`).
+#[inline(always)]
+fn syndrome_is_live(frame: &TrapFrame) -> bool {
+    frame.vector == VEC_SYNC_CURRENT_EL_SP0 || frame.vector == VEC_SYNC_LOWER_EL
+}
 
 /// `ESR_EL1.EC` -> the exit status of a user task whose exception is not a
 /// page fault: `waitpid` reports 128 + signal, not 0.
@@ -135,6 +151,9 @@ impl Frame for TrapFrame {
         if self.vector == VEC_IRQ_CURRENT_EL_SP0 || self.vector == VEC_IRQ_LOWER_EL {
             return TrapClass::Interrupt;
         }
+        if !syndrome_is_live(self) {
+            return TrapClass::OtherException;
+        }
         let ec = (self.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK;
         match ec {
             EC_SVC64 => TrapClass::Syscall,
@@ -150,10 +169,11 @@ impl Frame for TrapFrame {
         (self.spsr_el1 & SPSR_M_MASK) == 0
     }
 
-    /// The exception class of the ESR.
+    /// The exception class of the ESR (bits [31:26] only: ISS2 above them is
+    /// not part of the class).
     #[inline]
     fn fault_cause(&self) -> u32 {
-        (self.esr_el1 >> ESR_EC_SHIFT) as u32
+        ((self.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK) as u32
     }
 
     #[inline]
@@ -161,10 +181,12 @@ impl Frame for TrapFrame {
         self.far_el1
     }
 
-    /// ISS bit 6 (WnR) of a Data Abort: 1 = the faulting access was a write.
+    /// ISS bit 6 (WnR) of a Data Abort: 1 = the faulting access was a write,
+    /// unless it was a cache maintenance one (ISS.CM), which only reads: a
+    /// user `dc civac` on a read-only or COW page must not break COW or kill.
     #[inline]
     fn fault_is_write(&self) -> bool {
-        self.esr_el1 & ESR_ISS_WNR != 0
+        self.esr_el1 & (ESR_ISS_WNR | ESR_ISS_CM) == ESR_ISS_WNR
     }
 
     #[inline]
@@ -317,7 +339,8 @@ impl ArchFrame for TrapFrame {
     /// whole arm). An EC 0x07 from EL1 is a kernel FP use outside the allowed
     /// save/restore code and stays fatal.
     fn arch_exception(&mut self) -> Disposition {
-        if (self.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK != EC_FP_ACCESS || !self.came_from_user() {
+        // A stale EC 0x07 (an FIQ after an FP trap) must not load FP state.
+        if !syndrome_is_live(self) || (self.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK != EC_FP_ACCESS || !self.came_from_user() {
             return Disposition::Default;
         }
         if fp::first_use() { Disposition::Resume } else { Disposition::Fatal }
