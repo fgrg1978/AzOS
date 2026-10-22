@@ -1203,9 +1203,10 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // the device stream (`SYS_MO_CREATE`), a second thread for the pump
     // (`SYS_THREAD_CREATE`, parked on a futex word the main thread bumps; the
     // ring doorbells are woken with `SYS_FUTEX_WAKE`) and the clock it paces
-    // the pump with (`SYS_SLEEP_UNTIL`). The two threads share one lock, a futex
-    // word the one that finds it held sleeps on: no `SYS_YIELD`, so no spin. No
-    // file, no network, no spawn, no console input.
+    // the pump with (`SYS_SLEEP_UNTIL`), and the pump's own deadline
+    // reservation (`SYS_SCHEDCTL`, on the row's `time` warrant). The two threads
+    // share one lock, a futex word the one that finds it held sleeps on: no
+    // `SYS_YIELD`, so no spin. No file, no network, no spawn, no console input.
     ImageProfile {
         image: "AUDIOD.ELF",
         syscalls: sys_nrs![
@@ -1213,11 +1214,14 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_CAP_INFO,
             SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
-            SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
+            SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_SCHEDCTL,
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, MEMOBJ_ACQUIRE],
-        ifaces: &[azos_devif::key::SOUND],
+        // `time` is never called (it serves no op): it is the warrant the
+        // pump presents to `SYS_SCHEDCTL`, and a row's grant of an interface
+        // the profile does not list is withheld.
+        ifaces: &[azos_devif::key::SOUND, azos_devif::key::TIME],
     },
     // The relay of the QUIC link (Kconfig RPC_QUIC): a std program (the SDK) that
     // holds the QUIC state machine and its TLS so `RPCSRV.ELF` does not. Two UDP

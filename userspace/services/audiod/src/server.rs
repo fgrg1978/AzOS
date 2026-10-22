@@ -89,6 +89,15 @@
 //! holds the call's warrant and is the capture stream's owner), and the
 //! playback mix by the pump thread. The two therefore coexist.
 //!
+//! # Who holds what time
+//!
+//! The topology row gives the process no profile: the main thread, which
+//! sleeps in `accept` and serves calls, is a best-effort service. The pump
+//! (mixer) thread asks for its own deadline reservation when it starts
+//! (`main.rs`), on the row's `time` warrant; until it has one no playback
+//! stream is served ([`Server::set_playback`]), and when admission refuses it
+//! none ever is, rather than mix at a real-time level with no budget.
+//!
 //! Known limits:
 //!
 //! * The server is trusted to pair a call's warrant with that call's objects.
@@ -392,6 +401,9 @@ pub struct Server<E: Env> {
     info: Option<Info>,
     retry_at: u64,
     acc: [i32; ACC_MAX],
+    /// The mixer has its deadline reservation ([`Server::set_playback`]):
+    /// without it no playback stream is opened.
+    playback: bool,
 }
 
 /// `v` in decimal: the digits and how many.
@@ -429,7 +441,17 @@ impl<E: Env> Server<E> {
             info: None,
             retry_at: 0,
             acc: [0; ACC_MAX],
+            playback: false,
         }
+    }
+
+    /// Whether playback streams are served: the mixer thread says so once it
+    /// knows whether admission gave it its deadline reservation. Mixing
+    /// without one would be real-time work with no budget, so a server whose
+    /// mixer was refused answers every playback `open` `UNSUPPORTED`; capture
+    /// does not go through the mixer and is unaffected.
+    pub fn set_playback(&mut self, on: bool) {
+        self.playback = on;
     }
 
     /// Streams open (playback), and the capture lease counted as one.
@@ -886,6 +908,9 @@ impl<E: Env> Server<E> {
         };
         if params.dir == DIR_CAPTURE {
             return self.open_capture(params, caps, &info);
+        }
+        if !self.playback {
+            return out_err(outcome::UNSUPPORTED);
         }
         if info.dirs & DIR_PLAYBACK == 0
             || info.formats & snd::format_bit(params.format) == 0

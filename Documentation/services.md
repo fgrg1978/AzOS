@@ -70,7 +70,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `MCPD.ELF` | `userspace/services/mcpd` | Kconfig `MCP_BRIDGE` | MCP tools | `endpoint.decisions` and the endpoints it fronts | W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), R+M `MemObj inspect.mcp` |
 | `PTPD.ELF` | `userspace/services/ptpd` | Kconfig `PTPD` | nothing | `clock` | W `clock`, R+M `MemObj inspect.clock` |
 | `LOGIND.ELF` | `userspace/services/logind` | Kconfig `CONSOLE_LOGIN` (default n) | `Login` on `endpoint.login` | `TERMD.ELF` calls it | `READ` `endpoint.login`, `EXEC` `keys` masked to `login`, launch `SH.ELF`, R+M `MemObj inspect.logins` |
-| `AUDIOD.ELF` | `userspace/services/audiod` | Kconfig `AUDIOD` | `endpoint.audio` (`Sound`) | `sound.0` | R `endpoint.audio`, RW `sound.0`; a `hard_rt` reservation of 1 ms every 10 ms |
+| `AUDIOD.ELF` | `userspace/services/audiod` | Kconfig `AUDIOD` | `endpoint.audio` (`Sound`) | `sound.0` | R `endpoint.audio`, RW `sound.0`, W `time` (the mixer thread's own deadline reservation, Kconfig `AUDIOD_PUMP_*`); the row itself is best effort |
 | `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | nothing | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, RW `/fat/VM`, `ROOT_RO` |
 | `LXSRV.ELF` | `userspace/services/lxsrv` | `lx-server` builds | nothing | | R `entropy`, `ROOT_RO` |
 | `MLSRV.ELF` | `userspace/services/infsrv` | by the kernel's behavior task | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
@@ -624,11 +624,19 @@ the **one** playback stream it holds on the device and returns each period on `d
 * **Two threads.** The main thread accepts calls (the endpoint's `READ` grant is stamped
   with it) and makes every capture call, because the kernel binds a stream to the thread
   that opened it, and the warrant of the call is held by the thread that accepted it; the pump
-  thread mixes. The row is a `hard_rt` reservation at priority 12 (1 ms every 10 ms); the
-  kernel gives it to the task the row spawns, the main thread, and the pump thread runs at
-  the same priority with no budget of its own. So neither thread ever spins: the lock they
-  share is a futex word the one that finds it held sleeps on, the pump sleeps on the clock
-  or a futex word between bounded passes, and an accept that returns no call sleeps.
+  thread mixes.
+* **Who holds what time.** The row is a best-effort service with no profile: the main
+  thread, which accepts calls, has no budget and needs none. The pump thread asks for its
+  own deadline reservation when it starts (`SYS_SCHEDCTL`, class DL, on the row's `time`
+  warrant: Kconfig `AUDIOD_PUMP_RUNTIME_US` every `AUDIOD_PUMP_PERIOD_US` at band level
+  `AUDIOD_PUMP_LEVEL`, placed by admission on the hart the pump runs on), and the main
+  thread serves nothing until it has the answer. Admitted, the server prints
+  `[audiod] mixer: deadline reservation of ...`; refused, it prints
+  `[audiod] mixer: no deadline reservation (refused: -N): no playback` and answers every
+  playback `open` `UNSUPPORTED` rather than mix at a real-time level with no budget (capture
+  is unaffected). Neither thread ever spins: the lock they share is a futex word the one
+  that finds it held sleeps on, the pump sleeps on the clock or a futex word between bounded
+  passes, and an accept that returns no call sleeps.
 
 `toolbox beep` goes through the server when its row holds `endpoint.audio` and straight to
 `sound.0` otherwise; with the server the toolbox row holds no `sound.0`, since the device

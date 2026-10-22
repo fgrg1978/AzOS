@@ -258,9 +258,13 @@ pub fn server() -> (Server<Fake>, Rc<RefCell<World>>) {
     server_with(limits())
 }
 
+/// A server whose mixer was given its deadline reservation, as `main.rs`
+/// sets it once the pump has asked.
 pub fn server_with(l: Limits) -> (Server<Fake>, Rc<RefCell<World>>) {
     let w = Rc::new(RefCell::new(World::default()));
-    (Server::new(Fake(w.clone()), l), w)
+    let mut s = Server::new(Fake(w.clone()), l);
+    s.set_playback(true);
+    (s, w)
 }
 
 /// The stream a client asks for: the device's rate and channels, 256-frame

@@ -3,8 +3,9 @@
 //! `AUDIOD.ELF`: the AzOS audio server.
 //!
 //! A ring-3 program whose topology row is its whole authority: `READ` on
-//! `endpoint.audio` (it serves it) and `RW` on the kernel's `sound.0`, the one
-//! device stream it holds. Clients open streams on `endpoint.audio` with the
+//! `endpoint.audio` (it serves it), `RW` on the kernel's `sound.0`, the one
+//! device stream it holds, and `WRITE` on `time`, the warrant its mixer
+//! presents for a deadline reservation. Clients open streams on `endpoint.audio` with the
 //! same `Sound` interface the kernel serves on `sound.0` and hand it periods
 //! of memory; the server mixes them into the device's one playback stream.
 //! Capture is lent, never mixed, and decided on the client's microphone effect,
@@ -19,17 +20,24 @@
 //! calls [`Server::tick`] every few milliseconds while a stream runs and parks
 //! on a futex word when none does. The server's state is behind one lock they
 //! share, a futex word a thread that finds it held sleeps on (never spins: the
-//! pump runs at the row's real-time priority, so a spin would keep every task
-//! below it off that CPU for as long as the holder takes); the longest it is
-//! held is one mix pass or one kernel control call, never a wait. The periods themselves move in queues in
-//! shared memory, never in calls; the calls are the ones that change what a
-//! stream may do.
+//! pump runs at a real-time level, so a spin would keep every task below it
+//! off that CPU until its budget ran out); the longest it is held is one mix
+//! pass or one kernel control call, never a wait. The periods themselves move
+//! in queues in shared memory, never in calls; the calls are the ones that
+//! change what a stream may do.
 //!
-//! The topology row's deadline reservation (1 ms of every 10 ms) is the main
-//! thread's: the kernel gives it to the task the row spawns. The pump is a
-//! thread that task makes, so it runs at the row's priority with no budget of
-//! its own; it therefore only ever sleeps between passes, on the clock or on a
-//! futex word, and every pass is bounded (one mix pass, one control call).
+//! **Who holds what time.** The topology row gives the process no profile, so
+//! the main thread is a best-effort service: it sleeps in `accept` and its
+//! work is the calls. The pump is the real-time work, and it asks for its own
+//! deadline reservation first thing (`SYS_SCHEDCTL`, class DL, Kconfig
+//! `AUDIOD_PUMP_RUNTIME_US` every `AUDIOD_PUMP_PERIOD_US` at band level
+//! `AUDIOD_PUMP_LEVEL`, on the row's `time` warrant): a hard budget, so the
+//! mixer is throttled past it and can never take more of a CPU than that. The
+//! main thread waits for the answer before it serves a call. When admission
+//! refuses (no room, the band cap, no warrant) the server says so on the
+//! console and serves no playback stream (`UNSUPPORTED`): the pump then stays
+//! a best-effort thread that sleeps, and capture, which the kernel moves, is
+//! unaffected.
 
 #![no_std]
 #![no_main]
@@ -247,8 +255,52 @@ const TICK_NS: u64 = 5_000_000;
 /// notice a client that stopped, are at most this.
 const IDLE_PARK_NS: u64 = 500_000_000;
 /// How long the main thread sleeps when an accept comes back with no call
-/// (its wakes ran out), ms: it blocks, it never spins at the row's priority.
+/// (its wakes ran out), ms: it blocks rather than spin.
 const ACCEPT_RETRY_MS: u64 = 10;
+
+/// What the pump learned of its reservation, for the main thread: 0 not yet,
+/// 1 admitted, 2 refused. The main thread sleeps on it before it serves.
+static MIXER_TIME: AtomicU32 = AtomicU32::new(0);
+
+/// `v` in decimal, into `buf`; the digits.
+fn decimal(mut v: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            return &buf[i..];
+        }
+    }
+}
+
+/// One console line from `parts`.
+fn say(parts: &[&[u8]]) {
+    let (mut line, mut n) = ([0u8; 128], 0);
+    for p in parts {
+        let k = p.len().min(line.len() - 1 - n);
+        line[n..n + k].copy_from_slice(&p[..k]);
+        n += k;
+    }
+    line[n] = b'\n';
+    let _ = sys::console_write(sys::STDOUT, &line[..=n]);
+}
+
+/// Bind the calling thread (the pump) to its deadline reservation on the
+/// row's `time` warrant: 0, or the kernel's refusal (a negative errno; -1
+/// when the row grants no warrant).
+fn reserve_mixer_time() -> i64 {
+    let Some(warrant) = sys::dev::lookup(sys::dev::key::TIME, 0) else { return -1 };
+    sys::schedctl(
+        0,
+        sys::SCHEDCTL_CLASS_DL,
+        azos_limits::AUDIOD_PUMP_LEVEL as u32,
+        azos_limits::AUDIOD_PUMP_RUNTIME_US as u64,
+        azos_limits::AUDIOD_PUMP_PERIOD_US as u64,
+        warrant,
+    )
+}
 
 /// The pump thread's stack.
 #[repr(C, align(16))]
@@ -256,6 +308,24 @@ struct Stack([u8; 16384]);
 static mut PUMP_STACK: Stack = Stack([0; 16384]);
 
 extern "C" fn pump_thread(_: u64, _: u64, _: u64) -> ! {
+    let rc = reserve_mixer_time();
+    let admitted = rc == 0;
+    with(|s| s.set_playback(admitted));
+    let (mut a, mut b, mut c) = ([0u8; 20], [0u8; 20], [0u8; 20]);
+    if admitted {
+        say(&[
+            b"[audiod] mixer: deadline reservation of ",
+            decimal(azos_limits::AUDIOD_PUMP_RUNTIME_US as u64, &mut a),
+            b" us every ",
+            decimal(azos_limits::AUDIOD_PUMP_PERIOD_US as u64, &mut b),
+            b" us at band level ",
+            decimal(azos_limits::AUDIOD_PUMP_LEVEL as u64, &mut c),
+        ]);
+    } else {
+        say(&[b"[audiod] mixer: no deadline reservation (refused: -", decimal(rc.unsigned_abs(), &mut a), b"): no playback"]);
+    }
+    MIXER_TIME.store(if admitted { 1 } else { 2 }, Ordering::Release);
+    let _ = sys::futex_wake(&MIXER_TIME, 1);
     loop {
         // Read the word BEFORE looking at the streams: a call that lands in
         // between changes it and the wait returns at once.
@@ -293,6 +363,10 @@ pub extern "C" fn _start() -> ! {
     if sys::thread_create(pump_thread, top, 0, core::ptr::null_mut()) < 0 {
         sys::println(b"[audiod] FAILED: no thread for the pump");
         sys::exit(1);
+    }
+    // No call is served before the pump knows whether it may mix.
+    while MIXER_TIME.load(Ordering::Acquire) == 0 {
+        let _ = sys::futex_wait(&MIXER_TIME, 0, 0);
     }
     sys::println(b"[audiod] AzOS audio server (Sound on endpoint.audio, mixing into sound.0)");
 

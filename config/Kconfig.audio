@@ -32,17 +32,60 @@ config AUDIOD
       holds `endpoint.audio` and straight to `sound.0` otherwise; with the
       server, the toolbox row holds no `sound.0` (the device has one holder).
 
-      The row is a deadline reservation of 1 ms every 10 ms (10 % of a CPU,
-      `hard_rt`, priority 12) on the thread that serves calls; the pump thread
-      runs at the same priority without a budget and only sleeps between
-      bounded passes. A robot or
-      industrial image has no speaker to share and is n; a small board is n
-      (native drivers only: it has no virtio-sound).
+      The row is a best-effort service (its main thread accepts the calls);
+      the mixer thread asks for a deadline reservation of its own at start
+      (SYS_SCHEDCTL with the `time` warrant the row grants:
+      AUDIOD_PUMP_RUNTIME_US every AUDIOD_PUMP_PERIOD_US at band level
+      AUDIOD_PUMP_LEVEL), so the mixing that keeps the device fed is the
+      only real-time work, and it is budgeted. When admission refuses it the
+      server says so on the console and refuses every playback stream
+      (UNSUPPORTED) rather than mix without a budget. A robot or industrial
+      image has no speaker to share and is n; a small board is n (native
+      drivers only: it has no virtio-sound).
 
       Cost when set: one task of AUDIOD_MEM_PAGES pages (the topology
       builder), two threads (16 KiB stack for the pump), 48 KiB of static
       state, and 3 + 3 memory objects open at a time per stream.
 
+
+config AUDIOD_PUMP_RUNTIME_US
+    int "Audio server: the mixer's reservation, run time per period (us)"
+    range 100 10000
+    default 1000
+    help
+      The budget of the mixer thread's deadline reservation in each period
+      (AUDIOD_PUMP_PERIOD_US). A mix pass of the device's periods is a few
+      hundred microseconds at the slowest board's clock; the rest is the
+      control calls the mixer makes. A hard reservation: past the budget
+      the mixer is throttled until its next period, so it can never take
+      more of a CPU than RUNTIME / PERIOD.
+
+      Cost: that share of one CPU, admitted at the server's start; none
+      while no stream plays (the mixer sleeps).
+
+config AUDIOD_PUMP_PERIOD_US
+    int "Audio server: the mixer's reservation, period (us)"
+    range 1000 100000
+    default 10000
+    help
+      The period (and deadline) of the mixer thread's reservation. The mixer
+      passes every 5 ms while a stream plays, so a period of 10 ms covers two
+      passes. Must be at least AUDIOD_PUMP_RUNTIME_US (the kernel refuses a
+      budget longer than its period, and the server then plays nothing).
+
+      Cost: none by itself.
+
+config AUDIOD_PUMP_LEVEL
+    int "Audio server: the mixer's real-time band level"
+    range 0 11
+    default 11
+    help
+      The band priority level the mixer's reservation runs at (a deadline
+      reservation is a band task: below the ring-3 floor of 12). 11, the
+      lowest band level, puts the mixer under every kernel safety loop; the
+      band cap (RT_BAND_CAP_PCT) and admission's level check still apply.
+
+      Cost: none by itself.
 
 config AUDIO_CAPTURE
     bool "Audio server: capture streams (the microphone)"

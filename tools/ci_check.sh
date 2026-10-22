@@ -20016,7 +20016,9 @@ input status" 240 \
         # endpoint, one stream on the device. Each prints its own count (235 and
         # 19 periods at 48 kHz: 5000 ms and 400 ms), so both completed; the
         # server says, when the device stream ends, that it carried two streams
-        # at once. The first is the longest tone `beep` plays so the second
+        # at once; and the mixer that did it held its own deadline reservation
+        # (a refused one prints `no deadline reservation` and plays nothing).
+        # The first is the longest tone `beep` plays so the second
         # starts while it still plays however slowly the commands are typed (a
         # 600 ms one had ended before the second was typed on a loaded host).
         # The canary is the same script with no sound device.
@@ -20025,7 +20027,7 @@ input status" 240 \
             "beep 5000 &
 beep 400 &
 #sleep 8" 150 \
-            "[audiod] AzOS audio server" "beep: 235 of 235 periods played" "beep: 19 of 19 periods played" \
+            "[audiod] mixer: deadline reservation of " "[audiod] AzOS audio server" "beep: 235 of 235 periods played" "beep: 19 of 19 periods played" \
             "[audiod] playback ended: periods " ", most streams at once 2"
         USH_FORBID='robot> ' par_row ushell_row "sh: two beeps without a device canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
             "beep 5000 &

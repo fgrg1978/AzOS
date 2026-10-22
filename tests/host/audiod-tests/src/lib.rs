@@ -538,6 +538,24 @@ mod capture {
         Params { dir: DIR_CAPTURE, ..params() }
     }
 
+    /// A server whose mixer was refused its deadline reservation serves no
+    /// playback stream (`UNSUPPORTED`, the objects given back at once): mixing
+    /// without a budget is the real-time work the reservation exists to bound.
+    /// Capture, which the kernel moves, is served as before.
+    ///
+    /// **Canary.** Drop the `!self.playback` check in `open_inner`: the
+    /// playback open is accepted.
+    #[test]
+    fn without_the_mixers_reservation_playback_is_refused_and_capture_is_not() {
+        let (mut srv, w) = server();
+        srv.set_playback(false);
+        let c = Client::new(&w, 7, [1, 2, 3], &params());
+        assert_eq!(c.open(&mut srv, params()).code, outcome::UNSUPPORTED);
+        assert_eq!(std::mem::take(&mut w.borrow_mut().released), [1, 2, 3]);
+        let k = Client::new(&w, 8, [4, 5, 6], &rec());
+        assert_eq!(k.open(&mut srv, rec()).code, outcome::OK, "capture does not need the mixer");
+    }
+
     /// Capture without the microphone effect is refused, and the refusal is
     /// the kernel's: the server asks it for every attempt (the kernel writes
     /// the `audio-capture` decision record; ring 3 cannot), passes `REFUSED`
@@ -872,35 +890,40 @@ mod row {
     use azos_topology::default_minimal;
 
     /// **The row is the whole of the server's authority**: it serves
-    /// `endpoint.audio` (`READ`, which claims the service) and holds the
-    /// kernel's `sound.0` (`RW`, the one device stream), lends nothing
-    /// (`transfer` false) and holds nothing else. It is a deadline row (a
-    /// `hard_rt` reservation at the ring-3 floor, 10 % of any CPU), started at
-    /// boot, and the topology admits it. The row exists exactly when Kconfig
-    /// `AUDIOD` does.
+    /// `endpoint.audio` (`READ`, which claims the service), holds the kernel's
+    /// `sound.0` (`RW`, the one device stream) and the `time` warrant (`WRITE`,
+    /// which the mixer presents for its own deadline reservation), lends
+    /// nothing (`transfer` false) and holds nothing else. It is a best-effort
+    /// service row with no profile: the task it spawns is the thread that
+    /// accepts calls, which needs no budget; the real-time work is the
+    /// mixer's, which asks for its reservation itself. Started at boot, and the
+    /// topology admits it. The row exists exactly when Kconfig `AUDIOD` does.
     ///
     /// **Canary.** Give the row `WRITE` on `sound.0` only (drop `READ` on the
-    /// endpoint): the first cap assertion goes red; give it a profile of 70 %:
-    /// the admission check refuses the topology.
+    /// endpoint): the first cap assertion goes red; give it back the 1 ms /
+    /// 10 ms `hard_rt` profile: the no-profile assertion goes red.
     #[test]
-    fn the_row_serves_the_endpoint_holds_the_device_and_reserves_a_tenth() {
+    fn the_row_serves_the_endpoint_holds_the_device_and_the_time_warrant() {
         let t = default_minimal();
         assert_eq!(t.admission_check(), Ok(()), "the topology, with the row, is admitted");
         let row = t.tasks().iter().find(|r| r.name.as_bytes() == TASK_AUDIOD_IMAGE);
         assert_eq!(row.is_some(), AUDIOD_ROW, "a row exactly when Kconfig AUDIOD");
         let Some(row) = row else { return };
         let caps = t.caps_of(row);
-        assert_eq!(caps.len(), 2);
+        assert_eq!(caps.len(), 3);
         assert_eq!((caps[0].kind, caps[0].perms, caps[0].transfer), (CapKind::Endpoint, CapPerms::READ, false));
         assert_eq!(caps[0].target.as_bytes(), b"endpoint.audio");
         assert_eq!((caps[1].kind, caps[1].perms, caps[1].transfer), (CapKind::Endpoint, CapPerms::RW, false));
         assert_eq!(caps[1].target.as_bytes(), b"sound.0");
+        assert_eq!((caps[2].kind, caps[2].perms, caps[2].transfer), (CapKind::Endpoint, CapPerms::WRITE, false));
+        assert_eq!(caps[2].target.as_bytes(), b"time", "the warrant SYS_SCHEDCTL asks of the mixer");
         assert!(row.start, "the kernel starts it with the row");
-        assert_eq!(row.class_name.as_bytes(), b"hard_rt");
-        assert_eq!(row.priority, 12, "the ring-3 floor: outside the band, so no locked memory is needed");
-        let p = row.profile;
-        assert_eq!((p.period_us, p.runtime_us, p.deadline_us, p.cpu_mask), (10_000, 1_000, 0, 0));
-        assert_eq!(p.runtime_us * 100 / p.period_us, 10, "a tenth of a CPU");
+        assert_eq!(row.class_name.as_bytes(), b"best_effort");
+        assert!(!row.profile.is_declared(), "no reservation for the thread that accepts calls");
+        // The mixer's own reservation, as Kconfig spells it: a budget no longer
+        // than its period, at a band level (below the ring-3 floor of 12).
+        assert!(azos_limits::AUDIOD_PUMP_RUNTIME_US <= azos_limits::AUDIOD_PUMP_PERIOD_US);
+        assert!(azos_limits::AUDIOD_PUMP_LEVEL < 12);
     }
 
     /// `beep` goes through the server when the toolbox row holds its endpoint,

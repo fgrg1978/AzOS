@@ -1860,22 +1860,16 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     }
     // The audio server (`userspace/services/audiod`, Kconfig AUDIOD): serves the
     // `Sound` interface on `endpoint.audio` and mixes its clients' streams into
-    // the one playback stream it holds on the kernel's `sound.0`. A deadline
-    // row, 1 ms of every 10 ms in `hard_rt` at priority 12 (the ring-3 floor,
-    // outside the band, so the reservation needs no `mem = "locked"`). The
-    // reservation is the spawned task's, the thread that accepts calls; the
-    // server's pump thread runs at the same priority without one (a thread
-    // inherits no reservation), so it never spins. Any CPU (`cpu_mask` 0).
+    // the one playback stream it holds on the kernel's `sound.0`. A best-effort
+    // service row with no profile: the task it spawns is the thread that
+    // accepts calls, which needs no budget. The real-time work is the mixer's,
+    // and the mixer thread asks for its own deadline reservation at start
+    // (`SYS_SCHEDCTL` with the `time` warrant this row grants; Kconfig
+    // `AUDIOD_PUMP_*`), which admission places like any runtime reservation.
     // Pushed after the PTP daemon, so no index another test pins moves.
     if AUDIOD_ROW {
-        topo.push_task_profiled(
-            MaybeStr::from_bytes(TASK_AUDIOD_IMAGE),
-            MaybeStr::from_bytes(NAME_HARD_RT),
-            AUDIOD_PRIORITY,
-            AUDIOD_CAPS,
-            crate::deadline::SchedProfile { period_us: AUDIOD_PERIOD_US, runtime_us: AUDIOD_RUNTIME_US, deadline_us: 0, cpu_mask: 0 },
-        )
-        .expect("default_minimal_topology: AUDIOD.ELF push failed");
+        topo.push_task(MaybeStr::from_bytes(TASK_AUDIOD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, AUDIOD_CAPS)
+            .expect("default_minimal_topology: AUDIOD.ELF push failed");
         topo.set_last_task_mem_pages(AUDIOD_MEM_PAGES);
         topo.set_last_task_start(true);
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
@@ -2912,14 +2906,6 @@ pub const TASK_AUDIOD_IMAGE: &[u8] = b"AUDIOD.ELF";
 /// Does the built-in topology carry the audio server's row (Kconfig `AUDIOD`)?
 /// It starts at boot with the row.
 pub const AUDIOD_ROW: bool = azos_limits::AUDIOD;
-/// The audio server's priority: 12, the ring-3 floor, inside `hard_rt`'s range
-/// and outside the real-time band ([`crate::deadline::RT_BAND_THRESHOLD`]).
-const AUDIOD_PRIORITY: u8 = 12;
-/// The audio server's reservation: 1 ms of every 10 ms. A mix pass of the four
-/// periods of 1024 frames the device holds is a few hundred microseconds at
-/// the slowest board's clock; the rest is the calls.
-const AUDIOD_PERIOD_US: u32 = 10_000;
-const AUDIOD_RUNTIME_US: u32 = 1_000;
 /// Frame budget of `AUDIOD.ELF`: image, stack, page tables, 48 KiB of static
 /// state (the mix pass and the stream table), the pump thread's 16 KiB stack,
 /// the device stream's two queues and 16 KiB arena, and the clients' objects it
@@ -2927,11 +2913,18 @@ const AUDIOD_RUNTIME_US: u32 = 1_000;
 const AUDIOD_MEM_PAGES: u32 = 192;
 /// The `Sound` endpoint the audio server serves (`azos_devif::sound::ENDPOINT`).
 const RESOURCE_ENDPOINT_AUDIO: &[u8] = b"endpoint.audio";
-/// `AUDIOD.ELF`'s authority: to serve `endpoint.audio` (`READ`) and the kernel's
-/// `sound.0`, the one device stream it holds (`RW`). Nothing else.
+/// The kernel's time authority (`azos_devif::time`): `WRITE` on it is the
+/// warrant `SYS_SCHEDCTL` asks before it binds a task to the band or a
+/// deadline reservation.
+const RESOURCE_TIME: &[u8] = b"time";
+/// `AUDIOD.ELF`'s authority: to serve `endpoint.audio` (`READ`), the kernel's
+/// `sound.0`, the one device stream it holds (`RW`), and the time warrant its
+/// mixer thread presents for its deadline reservation (`WRITE` on `time`).
+/// Nothing else.
 const AUDIOD_CAPS: &[CapSpec] = &[
     CapSpec { kind: CapKind::Endpoint, perms: CapPerms::READ, target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_AUDIO), transfer: false, ops: 0 },
     CapSpec { kind: CapKind::Endpoint, perms: CapPerms::RW, target: MaybeStr::from_bytes(RESOURCE_SOUND), transfer: false, ops: 0 },
+    CapSpec { kind: CapKind::Endpoint, perms: CapPerms::WRITE, target: MaybeStr::from_bytes(RESOURCE_TIME), transfer: false, ops: 0 },
 ];
 
 /// The MCP bridge's image (`userspace/services/mcpd`).
