@@ -14,7 +14,7 @@ Nothing of relibc is stored in this repository except what AzOS adds to it:
 | `third_party/RELIBC_PIN` | the upstream commit |
 | `tools/relibc_fetch.sh` | shallow-fetches that commit into `~/azos-dl/relibc` (`$RELIBC_SRC`), outside the repo |
 | `userspace/lib/relibc-azos/patches/` | the changes to upstream files (MIT, like the tree they patch) |
-| `userspace/lib/relibc-azos/overlay/` | our own files: the `azos` platform module (Apache-2.0 OR GPL-2.0-only); the Rust targets are the native specs (`sdk/targets`) and a C program is linked with their flags (`tools/user_link_args.py`), no linker script |
+| `userspace/lib/relibc-azos/overlay/` | our own files: the `azos` platform module (Apache-2.0 OR GPL-2.0-only); the Rust targets are the native specs (`sdk/targets`) and a C program is linked with their layout (`tools/user_link_args.py --driver`), no linker script |
 | `tools/relibc_build.sh` | copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs |
 | `config/Kconfig.relibc` | `CONFIG_RELIBC`: the switch, read from each ISA's own configuration |
 | `make relibc` | all of it, for every ISA whose configuration sets `CONFIG_RELIBC=y` (the QEMU defconfigs do) |
@@ -53,7 +53,7 @@ Source: `tools/relibc_fetch.sh`, `tools/relibc_build.sh`, `config/Kconfig.relibc
   `CLOCK_TAI` and `CLOCK_BOOTTIME` as monotonic plus the offset the kernel
   publishes. `CLOCK_REALTIME` and `CLOCK_TAI` read as time since boot until a
   time source (NTP, PTP) has set the wall clock.
-- **Entry** (`start.rs`): `_start` reads the startup block and lays out the System V
+- **Entry** (`start.rs`): `_azos_entry` (the entry the target spec names) reads the startup block and lays out the System V
   stack relibc expects. On **x86_64** ring 3 cannot set its FS base, so the first
   thread builds the TCB and hands `main` to a second thread created with it as
   thread pointer.
@@ -70,8 +70,9 @@ tools/relibc_fetch.sh && make relibc          # needs zig; CONFIG_RELIBC=y: $AZO
 ```
 
 Link with `tools/relibc_build.sh cc <isa> OUT.elf SRC.c..`: `-D__azos__`, the relibc
-headers (`$AZOS_OUT/build/relibc/include`), `-nostdlib -static -fPIE`, the link flags
-of the ISA's target spec (`tools/user_link_args.py`) and `libc.a`.
+headers (`$AZOS_OUT/build/relibc/include`), `-nostdlib -static`, the layout of the ISA's
+target spec (`tools/user_link_args.py --driver`: a static executable at its image base
+and entry) and `libc.a`.
 
 The programs: `userspace/tests/relibc/hello.c` (the startup), `tinybox.c` (cat, wc,
 ls, mkdir, rm, run, threads, sleep, ...).

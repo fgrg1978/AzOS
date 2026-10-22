@@ -45,12 +45,14 @@ unsafe extern "C" {
     static __ehdr_start: u8;
 }
 
-// The image's entry. One per ISA: pass the startup block (the second argument
-// register) as the first argument and align the stack.
+// The image's entry, `_azos_entry` (the one the target spec names; libsys's is
+// compiled out, `--cfg azos_std` in tools/relibc_build.sh). One per ISA: pass
+// the startup block (the second argument register) as the first argument and
+// align the stack.
 #[cfg(target_arch = "riscv64")]
 core::arch::global_asm!(
-    ".globl _start",
-    "_start:",
+    ".globl _azos_entry",
+    "_azos_entry:",
     "    mv a0, a1",
     "    andi sp, sp, -16",
     "    call relibc_azos_start",
@@ -58,8 +60,8 @@ core::arch::global_asm!(
 
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
-    ".globl _start",
-    "_start:",
+    ".globl _azos_entry",
+    "_azos_entry:",
     "    mov x0, x1",
     "    mov x2, sp",
     "    and x2, x2, #-16",
@@ -69,9 +71,9 @@ core::arch::global_asm!(
 
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
-    ".globl _start",
-    ".type _start, @function",
-    "_start:",
+    ".globl _azos_entry",
+    ".type _azos_entry, @function",
+    "_azos_entry:",
     "    mov rdi, rsi",
     "    xor ebp, ebp",
     "    and rsp, -16",
@@ -176,7 +178,7 @@ unsafe fn build_stack() -> &'static crate::start::Stack<'static> {
 /// First Rust code of a process.
 ///
 /// # Safety
-/// Called once, by `_start`, with the startup block's address (or 0).
+/// Called once, by `_azos_entry`, with the startup block's address (or 0).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn relibc_azos_start(startup_block: usize) -> ! {
     azos_libsys::startup_init(startup_block);

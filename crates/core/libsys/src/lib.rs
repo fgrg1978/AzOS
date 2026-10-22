@@ -59,7 +59,8 @@ macro_rules! word64 {
 
 // The process entry: the target spec names `_azos_entry` for every native
 // image (`-e`, sdk/targets/*.json). A `std` program gets it from
-// `azos_stdrt` (`tools/sdk_cargo.py` builds with `--cfg azos_std`); any other
+// `azos_stdrt` and a C program from relibc (`tools/sdk_cargo.py` and
+// `tools/relibc_build.sh` build with `--cfg azos_std`); any other
 // program's `_start` is a Rust function, entered from here with the kernel's
 // argument registers untouched (the spawn startup block arrives in the second).
 //

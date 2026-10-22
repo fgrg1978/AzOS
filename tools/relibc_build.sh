@@ -15,8 +15,8 @@
 # it is copied to a work tree, patched with userspace/lib/relibc-azos/patches
 # and overlaid with userspace/lib/relibc-azos/overlay (our `azos` platform
 # module). The Rust target is the ISA's native spec (sdk/targets), and a C
-# program is linked with that spec's flags (tools/user_link_args.py): no
-# linker script. Nothing in the checkout is run
+# program is linked with that spec's layout (tools/user_link_args.py --driver:
+# a static executable at the same image base and entry): no linker script. Nothing in the checkout is run
 # except through cargo, as relibc's own build would.
 #
 # Environment:
@@ -128,10 +128,9 @@ libs() {
     prepare
     local t tdir="$work/target-$isa" dst="$out/$isa/lib"
     t="$(spec_name "$isa")"
-    local flags=()
-    if [ -n "${RELIBC_RUSTFLAGS_TOML:-}" ]; then
-        flags+=(--config "target.$t.rustflags=[$RELIBC_RUSTFLAGS_TOML]")
-    fi
+    # `azos_std`: the entry is relibc's own `_azos_entry` (overlay start.rs),
+    # not libsys's, as in a `std` program.
+    local flags=(--config "target.$t.rustflags=[\"--cfg=azos_std\"${RELIBC_RUSTFLAGS_TOML:+,$RELIBC_RUSTFLAGS_TOML}]")
     mkdir -p "$dst"
     (
         cd "$work"
@@ -169,9 +168,9 @@ cc_link() {
     [ "$isa" != aarch64 ] || page="${AZOS_PAGE_SIZE:-4096}"
     # shellcheck disable=SC2046
     "$zig" cc -target $(zig_target "$isa") -std=c11 -O2 -Wall -Wextra -Werror \
-        -D__azos__=1 -nostdinc -isystem "$out/include" -ffreestanding -fno-stack-protector -fPIE -fno-builtin \
+        -D__azos__=1 -nostdinc -isystem "$out/include" -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
         -nostdlib -static \
-        $(python3 "$root/tools/user_link_args.py" --wl "$isa") -Wl,-z,max-page-size="$page" -Wl,-s \
+        $(python3 "$root/tools/user_link_args.py" --driver "$isa") -Wl,-z,max-page-size="$page" -Wl,-s \
         -o "$elf" "$@" "$out/$isa/lib/libc.a"
 }
 

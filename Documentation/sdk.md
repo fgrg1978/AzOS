@@ -205,7 +205,7 @@ The platform layer (`userspace/lib/relibc-azos/overlay/src/platform/azos/`) impl
 | Threads | `SYS_THREAD_CREATE` with a thread pointer and `SYS_FUTEX_*`. |
 | Memory | Anonymous `mmap` over `SYS_MO_MAP`; the allocator is relibc's dlmalloc. |
 | Time | The vDSO clocks. `CLOCK_REALTIME`, `CLOCK_TAI` and `CLOCK_BOOTTIME` are the monotonic clock plus the offset the kernel publishes. |
-| Entry | `_start` reads the startup block and lays out the System V stack relibc expects. On x86_64 ring 3 cannot set its FS base, so the first thread builds the thread control block and hands `main` to a second thread created with it as thread pointer. |
+| Entry | `_azos_entry` (the entry the target spec names) reads the startup block and lays out the System V stack relibc expects. On x86_64 ring 3 cannot set its FS base, so the first thread builds the thread control block and hands `main` to a second thread created with it as thread pointer. |
 | Refused with `ENOSYS` | Signals (`kill` is a stop request, `SYS_ALERT`), sockets, `epoll`, `ptrace`, links, modes, owners, seek. |
 
 Build a C program:
@@ -218,8 +218,9 @@ tools/relibc_build.sh cc <isa> OUT.elf SRC.c...
 `make relibc` builds `hello.elf` and `tinybox.elf` from
 `userspace/tests/relibc/hello.c` and `userspace/tests/relibc/tinybox.c` under
 `$AZOS_OUT/build/relibc/<isa>/`. `cc` compiles with `-D__azos__`, the relibc headers,
-`-nostdlib -static`, `-fPIE`, the link flags of the ISA's target spec
-(`tools/user_link_args.py`: no linker script) and `libc.a`. It needs `zig` and
+`-nostdlib -static`, the layout of the ISA's target spec (`tools/user_link_args.py
+--driver`: a static executable at the same image base and entry, no linker script) and
+`libc.a`. It needs `zig` and
 `cbindgen` (see [building.md](building.md)). To move the pin, change
 `third_party/RELIBC_PIN`, run `tools/relibc_fetch.sh`, then `tools/relibc_build.sh
 prepare`, which fails on a patch hunk that no longer applies.
