@@ -72,7 +72,7 @@ mod xhci_host {
     use azos_rings::{Consumer, Full, Queue};
     use azos_sync::kmutex::Mutex;
     use azos_usb::class::{Registry, UsbClass, UsbClassDirect};
-    use azos_usb::hw::{Clock, DmaBuf, Memory, Regs, PAGE};
+    use azos_usb::hw::{Clock, DmaBuf, Memory, Regs};
     use super::LISTER;
     use azos_usb::listing::Lister;
     #[cfg(feature = "usb-storage")]
@@ -116,16 +116,23 @@ mod xhci_host {
     }
 
     /// The page allocator as [`azos_dma::alloc_below`] takes it: runs of
-    /// contiguous pages.
+    /// contiguous frames. The driver asks in its own 4 KiB pages
+    /// (`azos_usb::hw::PAGE`); the allocator counts frames of the kernel's
+    /// granule (16 or 64 KiB on aarch64 under Kconfig), so a request is
+    /// rounded up to whole frames, the same way when it is freed.
     struct Pmm;
+
+    fn frames(len: usize) -> usize {
+        len.div_ceil(azos_arch_api::PAGE_SIZE)
+    }
 
     impl azos_dma::PageSource for Pmm {
         fn alloc(&self, len: usize) -> Option<u64> {
-            azos_mm::pmm::alloc_contiguous(len / PAGE).ok().map(|p| p.0 as u64)
+            azos_mm::pmm::alloc_contiguous(frames(len)).ok().map(|p| p.0 as u64)
         }
         fn free(&self, pa: u64, len: usize) {
-            for i in 0..len / PAGE {
-                let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa as usize + i * PAGE));
+            for i in 0..frames(len) {
+                let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa as usize + i * azos_arch_api::PAGE_SIZE));
             }
         }
     }
