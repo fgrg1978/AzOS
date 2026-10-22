@@ -2385,8 +2385,10 @@ else
 fi
 
 # Unsafe budget (tools/unsafe_budget.py): unsafe blocks, fns, impls and
-# attributes per crate, tests excluded, against tools/unsafe_budget.tsv. A crate
-# that grows, or shrinks, without the baseline moving in the same commit fails.
+# attributes per crate, tests excluded, whether the crate forbids unsafe code,
+# and each kernel crate's share of code lines in files with unsafe, against
+# tools/unsafe_budget.tsv. A crate that grows, or shrinks, or loses its forbid,
+# or a share that rises, without the baseline moving in the same commit fails.
 # The row also runs the tool's own canaries (`--self-test`).
 printf "  %-26s" "unsafe budget..."
 if ub_out="$(python3 "${REPO_ROOT}/tools/unsafe_budget.py" --self-test 2>&1)" \
