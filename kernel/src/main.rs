@@ -2345,20 +2345,28 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Kconfig `RV_V` = probe on a hart without V: `vlenb` would trap, so
     // the vector state stays uninitialised and the scalar kernels run.
     #[cfg(all(target_arch = "riscv64", feature = "rvv"))]
-    if azos_arch::fp::usable() {
+    let rvv_state_saved = if azos_arch::fp::usable() {
         match azos_arch::fp::init_vector_state() {
-            Ok(vlenb) => kprintln!("[RVV] vlenb={} — vector state save/restore enabled", vlenb),
-            Err(vlenb) => kprintln!(
-                "[RVV] vlenb={} exceeds MAX_VLEN_BYTES={} — vector state save disabled, V not enabled for tasks",
-                vlenb, azos_arch::fp::MAX_VLEN_BYTES),
+            Ok(vlenb) => {
+                kprintln!("[RVV] vlenb={} — vector state save/restore enabled", vlenb);
+                true
+            }
+            Err(vlenb) => {
+                kprintln!(
+                    "[RVV] vlenb={} exceeds MAX_VLEN_BYTES={} — vector state save disabled, V not enabled for tasks",
+                    vlenb, azos_arch::fp::MAX_VLEN_BYTES);
+                false
+            }
         }
     } else {
         kprintln!("[RVV] no V on this hart — scalar kernels, no vector state");
-    }
+        false
+    };
 
-    // Create RVV benchmark task (Phase 11, QEMU only).
+    // Create RVV benchmark task (Phase 11, QEMU only). Only where every
+    // switch saves the vector state: the bench is preemptible.
     #[cfg(all(target_arch = "riscv64", feature = "rvv"))]
-    if azos_arch::fp::usable() {
+    if rvv_state_saved {
         azos_sched::task_create("rvv-bench", rvv_bench_task, 0, azos_sched::DEFAULT_PRIORITY);
         kprintln!("[SCHED] Created rvv-bench task");
     }

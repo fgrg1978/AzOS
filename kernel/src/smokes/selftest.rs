@@ -84,24 +84,20 @@ pub(crate) fn worker_task(arg: usize) {
 /// Phase 11: RVV benchmark task.
 ///
 /// Runs scalar vs RVV dot product and matmul benchmarks, then prints cycle counts.
-/// Timer interrupt is disabled during RVV operations to prevent vector register
-/// corruption (vector context save is implemented in Phase 12).
+/// Preemptible like any task: `context_switch_rvv.S` saves and restores the
+/// vector state on every switch, and the boot creates this task only once
+/// that save is enabled (`init_vector_state`).
 #[cfg(target_arch = "riscv64")]
 #[cfg(feature = "rvv")]
 pub(crate) fn rvv_bench_task(_: usize) {
-    use azos_arch::{cpu, fp};
+    use azos_arch::fp;
 
     kprintln!("[RVV] ========================================");
     kprintln!("[RVV]  Phase 11: RISC-V Vector Extension");
     kprintln!("[RVV]  VLEN=128, LMUL=m4, f32 precision");
     kprintln!("[RVV] ========================================");
     kprintln!("[RVV] Vector context save: Phase 12 (implemented).");
-    kprintln!("[RVV] Timer IRQ disabled during bench (intentional).");
     kprintln!();
-
-    // Disable timer interrupt so no context switch can corrupt v-registers.
-    let saved_sie = cpu::read_sie();
-    cpu::write_sie(saved_sie & !cpu::SIE_STIE);
 
     // ── Dot product: 256 f32 ────────────────────────────────────────────────
     const N: usize = 256;
@@ -138,9 +134,6 @@ pub(crate) fn rvv_bench_task(_: usize) {
     kprintln!("[RVV]   rvv    : {} cycles", mv);
     kprintln!("[RVV]   speedup: {}.{}x", msp / 100, msp % 100);
     kprintln!();
-
-    // Restore timer interrupt.
-    cpu::write_sie(saved_sie);
 
     kprintln!("[RVV] ========================================");
     kprintln!("[RVV]  Phase 11 complete — RVV foundation ready");

@@ -11,9 +11,10 @@
 //!
 //! Phase 12+ will use these primitives for the embedded ML runtime.
 //!
-//! TODO (Phase 12): Save/restore vector registers (v0-v31, vl, vtype, vstart)
-//!   on context switch.  Until then, callers must disable the timer interrupt
-//!   (SIE_STIE) for the duration of any RVV operation to prevent corruption.
+//! Vector registers (v0-v31, vl, vtype, vstart) are saved and restored on
+//! every context switch (`rvv_ctx_save`/`rvv_ctx_restore`, called by
+//! `context_switch_rvv.S`) once `init_vector_state` has sized them, so an RVV
+//! caller is preemptible and masks no interrupt.
 
 #![allow(dead_code)]
 
