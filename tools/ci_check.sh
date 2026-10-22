@@ -20012,23 +20012,26 @@ input status" 240 \
             "[inputd] AzOS input server" "holder 0 grants 0" "key 63 down" "key 30 down" "key 14 down" "key 64 up" \
             "[inputd] focus 0 -> 2 (moved)" "[inputd] focus 2 -> 0 (trusted path)" "input: focus lost" "sak 1 last at" "$ush_in_end"
         # The audio server mixes (Kconfig AUDIOD): two `beep`s of different
-        # lengths started together are two streams on the server's endpoint, one
-        # stream on the device. Each prints its own count (29 and 19 periods at
-        # 48 kHz: 600 ms and 400 ms), so both completed; the server says, when
-        # the device stream ends, that it carried two streams at once. The
-        # canary is the same script with no sound device.
+        # lengths started one after the other are two streams on the server's
+        # endpoint, one stream on the device. Each prints its own count (235 and
+        # 19 periods at 48 kHz: 5000 ms and 400 ms), so both completed; the
+        # server says, when the device stream ends, that it carried two streams
+        # at once. The first is the longest tone `beep` plays so the second
+        # starts while it still plays however slowly the commands are typed (a
+        # 600 ms one had ended before the second was typed on a loaded host).
+        # The canary is the same script with no sound device.
         USH_QEMU_EXTRA="-audiodev none,id=a -device virtio-sound-device,audiodev=a" \
         USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: two beeps mixed by audiod ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
-            "beep 600 &
+            "beep 5000 &
 beep 400 &
-#sleep 4" 150 \
-            "[audiod] AzOS audio server" "beep: 29 of 29 periods played" "beep: 19 of 19 periods played" \
+#sleep 8" 150 \
+            "[audiod] AzOS audio server" "beep: 235 of 235 periods played" "beep: 19 of 19 periods played" \
             "[audiod] playback ended: periods " ", most streams at once 2"
         USH_FORBID='robot> ' par_row ushell_row "sh: two beeps without a device canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
-            "beep 600 &
+            "beep 5000 &
 beep 400 &
 #sleep 2" 60 \
-            "beep: 29 of 29 periods played" "beep: 19 of 19 periods played" ", most streams at once 2"
+            "beep: 235 of 235 periods played" "beep: 19 of 19 periods played" ", most streams at once 2"
         USH_FORBID='robot> ' par_row ushell_row "sh: spawn argv/env/cwd ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "export FOO=bar
 cd /fat
