@@ -221,6 +221,21 @@ fn reader_check(at: Span, class: Class, probe: &str) -> bool {
     matches!(r.lookup(probe), Ok(Some(id)) if r.read(id).is_ok())
 }
 
+/// The tasks the admin region at `at` lists, read back as a ring-3 reader
+/// reads them (the rows whose TID is not 0): the boot line says the list it
+/// just filled is there.
+fn listed(at: Span) -> usize {
+    let Ok(r) = Reader::open(at.words, Class::Admin) else { return 0 };
+    let Ok(Some(dir)) = r.lookup("sched/tasks") else { return 0 };
+    let mut n = 0;
+    let _ = r.children(dir, &mut |info, _| {
+        if matches!(r.lookup_in(info.id, "tid"), Ok(Some(id)) if matches!(r.read(id), Ok(azos_inspect::Value::U64(t)) if t != 0)) {
+            n += 1;
+        }
+    });
+    n
+}
+
 /// Build, fill and publish the tree, and start the refresh task. Called once
 /// from `kernel_main`, before the secondary harts start and before any task is
 /// seeded a capability.
@@ -316,8 +331,8 @@ pub(crate) fn install_inspect(num_cpus: usize) {
         super::inspect_views::install_records(*w, records);
         let (nodes, node_cap, words, word_cap) = w.usage();
         azos_drv_sys::kprintln!(
-            "[INSPECT] admin region {} KiB ({} task rows, {}/{} nodes, {}/{} value words), granted against the task view, reader check ok",
-            at.bytes / 1024, shape.rows(), nodes, node_cap, words, word_cap);
+            "[INSPECT] admin region {} KiB ({} task rows, {} tasks listed, {}/{} nodes, {}/{} value words), granted against the task view, reader check ok",
+            at.bytes / 1024, shape.rows(), listed(at), nodes, node_cap, words, word_cap);
     }
     *HANDOFF.lock_irqsave() = Some(st);
     // Off the real-time CPUs, as the thermal and reclaim tasks are: a refresh

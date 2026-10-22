@@ -494,6 +494,7 @@ fn fits(topo: &azos_topology::Topology<'_>, v: ViewKind, pages: usize) -> bool {
 pub(crate) fn install_views() {
     let Some(topo) = azos_topology::get() else { return };
     let mut all = alloc::boxed::Box::new(Views([const { None }; ViewKind::ALL.len()]));
+    let wanted = ViewKind::ALL.iter().filter(|&&v| declared(topo, v)).count();
     for v in ViewKind::ALL {
         if !declared(topo, v) {
             continue;
@@ -525,7 +526,9 @@ pub(crate) fn install_views() {
         azos_drv_sys::kprintln!("[INSPECT] view {} published: {} KiB, {} nodes, {} value words",
             v.target(), pages * azos_arch::PAGE_SIZE / 1024, nodes, words);
     }
-    if all.0.iter().all(Option::is_none) {
+    let made = all.0.iter().flatten().count();
+    azos_drv_sys::kprintln!("[INSPECT] views: {} of {} declared published", made, wanted);
+    if made == 0 {
         return;
     }
     VIEWS.store(alloc::boxed::Box::leak(all), Ordering::Release);

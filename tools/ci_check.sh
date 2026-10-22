@@ -10954,19 +10954,54 @@ else
     # The embedded image (config/defconfigs/robot-embedded.config, kernel/linker-embedded.ld)
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
     # from the device tree.
-    if ! ci_wants "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"; then
-        ci_skip_rows "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"
+    #
+    # The census row reads the 64 MiB boot (owner 2026-10-21: INSPECT on every
+    # profile, proven on the smallest; the 16 MiB boot halts before the tree
+    # exists, at the topology's memory admission, on main too): the public
+    # tree published, the admin
+    # region with its task rows and the tasks the boot made listed in it (the
+    # kernel reads its own list back as ring 3 would), every view region the
+    # embedded topology declares published, and no other `[INSPECT]` line (a
+    # region or a view that did not fit its pages, or found no slot in the
+    # MemObj table: MAX_MEMOBJS is 8 on PROFILE_EMBEDDED).
+    embedded_census_row() { # <label> <log of the 64 MiB boot>
+        local label="$1" log="$2"
+        printf "  %-26s" "${label}..."
+        if [ ! -s "$log" ]; then
+            bad; echo "      no embedded boot log to read (the 64 MiB row did not keep one)"; return
+        fi
+        local admin views listed got want other
+        admin="$(grep -a "\[INSPECT\] admin region" "$log" | tr -d '\r' | sed -n 1p)"
+        views="$(grep -a "\[INSPECT\] views: " "$log" | tr -d '\r' | sed -n 1p)"
+        listed="$(printf '%s\n' "$admin" | sed -n 's/.*, \([0-9][0-9]*\) tasks listed.*/\1/p')"
+        got="$(printf '%s\n' "$views" | sed -n 's/.*views: \([0-9][0-9]*\) of \([0-9][0-9]*\) declared.*/\1/p')"
+        want="$(printf '%s\n' "$views" | sed -n 's/.*views: \([0-9][0-9]*\) of \([0-9][0-9]*\) declared.*/\2/p')"
+        other="$(grep -a "\[INSPECT\]" "$log" | tr -d '\r' | grep -avE "\[INSPECT\] (tree published|admin region|view inspect\.[a-z]+ published|views: )")"
+        if grep -aqF "[INSPECT] tree published" "$log" && [ "${listed:-0}" -gt 0 ] 2>/dev/null \
+           && [ -n "$got" ] && [ "$got" = "$want" ] && [ -z "$other" ]; then
+            ok; echo "      $admin"; echo "      $views"; rm -f "$log"; return
+        fi
+        bad; echo "      want the tree published, tasks listed in the admin region, every declared view published, no other [INSPECT] line; read:"
+        grep -a "\[INSPECT\]" "$log" | tr -d '\r' | sed -n '1,12s|^|        |p'
+        echo "      log kept: $log"
+    }
+    embedded64_group() {
+        KERNEL="$EMBEDDED_KERNEL" QEMU_KEEP_LOG=1 qemu_run "embedded: boots in 64 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 64M \
+            -global virtio-mmio.force-legacy=false -drive file=$AZOS_OUT/build/disk-embedded64-gatekey.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
+        embedded_census_row "embedded: census and task view" "$CI_LOG_DIR/embedded-boots-in-64-MiB.log"
+    }
+    if ! ci_wants "embedded: boots in 64 MiB" "embedded: boots in 16 MiB" "embedded: census and task view"; then
+        ci_skip_rows "embedded: boots in 64 MiB" "embedded: boots in 16 MiB" "embedded: census and task view"
     elif [ "$EMBEDDED_BUILT" = "1" ] && make_disk $AZOS_OUT/build/disk.img \
        && product_gatekey_disk "$EMBEDDED_CONFIG" $AZOS_OUT/build/disk-embedded64-gatekey.img \
        && product_gatekey_disk "$EMBEDDED_CONFIG" $AZOS_OUT/build/disk-embedded16-gatekey.img; then
-        KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 64 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 64M \
-            -global virtio-mmio.force-legacy=false -drive file=$AZOS_OUT/build/disk-embedded64-gatekey.img,if=none,format=raw,id=hd0 \
-            -device virtio-blk-device,drive=hd0
+        par "embedded: boots in 64 MiB" embedded64_group
         KERNEL="$EMBEDDED_KERNEL" par_row qemu_run "embedded: boots in 16 MiB" "Starting scheduler on boot CPU" 60 -smp 4 -m 16M \
             -global virtio-mmio.force-legacy=false -drive file=$AZOS_OUT/build/disk-embedded16-gatekey.img,if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0
     else
-        for row in "embedded: boots in 64 MiB" "embedded: boots in 16 MiB"; do
+        for row in "embedded: boots in 64 MiB" "embedded: boots in 16 MiB" "embedded: census and task view"; do
             printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass, or its gate-key topology volume was not built; not booted"; done
     fi
     # The fleet image (config/defconfigs/robot-fleet.config, kernel/linker-fleet.ld), whose
