@@ -69,6 +69,13 @@ SECTIONS
         __azos_ktest_start = .;
         KEEP(*(.azos_ktest))
         __azos_ktest_end = .;
+        /* The trusted secure-boot public key (`SECURE_BOOT_PUBKEY`,
+         * crates/core/ota/src/secure_boot.rs, `#[link_section =
+         * ".secure_boot_pubkey"]`). Named here, never an orphan whose place
+         * lld picks: inside [_rodata_start, _rodata_end) the W^X sweep maps
+         * it read-only. The ASSERT at the end of this script checks it. */
+        . = ALIGN(8);
+        KEEP(*(.secure_boot_pubkey))
     } > RAM
     /* Live-update site table (.azos_patch): 8-byte entries, the address of a
      * patchable function entry (the compiler's __patchable_function_entries,
@@ -138,3 +145,5 @@ SECTIONS
 }
 
 ASSERT(_stack_end <= _kernel_end, "Boot stack must lie inside the kernel image")
+ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && SECURE_BOOT_PUBKEY < _rodata_end),
+       "SECURE_BOOT_PUBKEY must lie inside [_rodata_start, _rodata_end), which W^X maps read-only")

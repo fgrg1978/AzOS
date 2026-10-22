@@ -73,7 +73,17 @@ SECTIONS
 
     . = ALIGN(4K);
     _rodata_start = .;
-    .rodata : AT(ADDR(.rodata) - KERNEL_VA_OFFSET_LITERAL) { *(.rodata .rodata.*) }
+    .rodata : AT(ADDR(.rodata) - KERNEL_VA_OFFSET_LITERAL)
+    {
+        *(.rodata .rodata.*)
+        /* The trusted secure-boot public key (`SECURE_BOOT_PUBKEY`,
+         * crates/core/ota/src/secure_boot.rs, `#[link_section =
+         * ".secure_boot_pubkey"]`). Named here, never an orphan whose place
+         * lld picks: inside [_rodata_start, _rodata_end) the W^X sweep maps
+         * it read-only. The ASSERT at the end of this script checks it. */
+        . = ALIGN(8);
+        KEEP(*(.secure_boot_pubkey))
+    }
     .eh_frame_hdr : AT(ADDR(.eh_frame_hdr) - KERNEL_VA_OFFSET_LITERAL) { *(.eh_frame_hdr) }
     .eh_frame : AT(ADDR(.eh_frame) - KERNEL_VA_OFFSET_LITERAL) { KEEP(*(.eh_frame)) }
     . = ALIGN(4K);
@@ -168,3 +178,5 @@ ASSERT(_kernel_va_offset_check == KERNEL_VA_OFFSET_LITERAL,
     "linker-x86_64.ld's KERNEL_VA_OFFSET_LITERAL disagrees with arch-x86_64::mmu::KERNEL_VA_OFFSET")
 ASSERT(_kernel_end - KERNEL_VA_OFFSET_LITERAL <= 0x40000000,
     "the x86_64 image must end in the first GiB: the AP start tables (smp.rs) map that GiB only")
+ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && SECURE_BOOT_PUBKEY < _rodata_end),
+    "SECURE_BOOT_PUBKEY must lie inside [_rodata_start, _rodata_end), which W^X maps read-only")

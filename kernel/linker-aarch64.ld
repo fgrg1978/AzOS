@@ -367,6 +367,8 @@ SECTIONS
 }
 
 ASSERT(_stack_end <= _kernel_end, "Boot stack must lie inside the kernel image")
+ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && SECURE_BOOT_PUBKEY < _rodata_end),
+    "SECURE_BOOT_PUBKEY must lie inside [_rodata_start, _rodata_end), which W^X maps read-only")
 
 /*
  * Cross-check the VMA/LMA split's offset against Rust's own
