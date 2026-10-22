@@ -2435,7 +2435,7 @@ config RCU_STALL_TIMEOUT_MS
     int "RCU: a grace period older than this is a stall (ms)"
     range 10 600000
     default 500 if HWCLASS_EMBEDDED
-    default 4000 if BOARD_QEMU
+    default 4000 if BUILD_TYPE_DEV
     default 2000
     help
       A grace period that has not ended this long after it started is
@@ -2443,8 +2443,10 @@ config RCU_STALL_TIMEOUT_MS
       callback task, failing the running ktest) names the first CPU that
       has not passed a quiescent state. A CPU stuck in kernel code with
       preemption off, or a hook that stopped reporting (the ktest canary
-      `rcu-idle-qs-skip`), shows here. Higher on QEMU, whose timer is host
-      wall time. No cost: a compare in the waiter's poll.
+      `rcu-idle-qs-skip`), shows here. Higher in a development build
+      (BUILD_TYPE_DEV: the QEMU defconfigs, whose timer is host wall time
+      under TCG; the build type, not the board, keys it). No cost: a
+      compare in the waiter's poll.
 
 config RCU_CALLBACK_PRIORITY
     int "RCU: callback task priority (outside the RT band: 12..30)"

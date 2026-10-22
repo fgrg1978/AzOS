@@ -15,7 +15,6 @@ config SCHED_HZ
     int "Scheduler tick frequency (Hz)"
     range 10 1000
     default 100  if HWCLASS_EMBEDDED
-    default 100  if (HWCLASS_SBC || HWCLASS_DESKTOP) && BOARD_QEMU
     default 250  if (HWCLASS_SBC || HWCLASS_DESKTOP) && BOARD_VF2
     default 250  if (HWCLASS_SBC || HWCLASS_DESKTOP) && BOARD_K1
     default 500  if HWCLASS_SERVER

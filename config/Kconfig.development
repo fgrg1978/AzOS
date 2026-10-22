@@ -13,15 +13,16 @@ menu "Development & Debug"
 
 choice
     prompt "Build type"
-    default BUILD_TYPE_DEV if BOARD_QEMU
     default BUILD_TYPE_RELEASE
     help
       What the image is for. The test-only machinery below depends on it,
       so a release image cannot carry it whatever else the .config says.
+      The defconfig names it (the board does not decide it): release is the
+      default, and every development defconfig says BUILD_TYPE_DEV.
 
-      Development (default on the QEMU board: the qemu*, edge,
-      robot-edge and experimental defconfigs, and every QEMU kernel the
-      Makefile builds from $AZOS_OUT/build/qemu-dev.config): secure boot
+      Development (the qemu*, edge, robot-edge, experimental and micro
+      defconfigs, every QEMU kernel the Makefile builds from
+      $AZOS_OUT/build/qemu-dev.config, and `make vf2 BUILD_TYPE=DEV`): secure boot
       and mandatory OTA signatures start off (unsigned boot); gate canaries armed from
       the command line (CANARY_RUNTIME), fault injection (CHAOS), the
       in-kernel tests (KTEST) and the real-time block-I/O check
@@ -29,8 +30,8 @@ choice
       signing key (tools/keys/test_pub.bin, the `dev-key` feature every
       QEMU kernel uses).
 
-      Release (default on every other board: the embedded, fleet,
-      robot-embedded, robot-fleet, vf2, k1 and rpi5 defconfigs): those four
+      Release (the default; the embedded, fleet, robot-embedded,
+      robot-fleet, vf2, k1 and rpi5 defconfigs): those four
       options are forced off (a `ktest` or `chaos` cargo feature on a
       release .config does not compile), the build refuses the TEST key
       (the `dev-key` fallback in crates/core/topology/build.rs; every
@@ -39,8 +40,10 @@ choice
       (SECURE_BOOT_ENFORCED) and signed OTA (OTA_SIG_MANDATORY) start on
       here and can still be turned off by hand; Certifiable forces them.
 
-      Certifiable (never a default; not on the QEMU board, whose images
-      embed the TEST key): a release build that also has secure boot and
+      Certifiable (never a default; not on the QEMU board, whose kernels
+      embed the TEST key through the `qemu` board feature's `dev-key`, the
+      one board fact left here until that policy leaves the board feature):
+      a release build that also has secure boot and
       mandatory OTA signatures on and cannot turn them off
       (SECURE_BOOT_ENFORCED, OTA_SIG_MANDATORY). The signing kept apart
       from the build host (`make release`) is a later step.
@@ -155,7 +158,7 @@ config PANIC_QUIESCE
 config PANIC_STOP_WAIT_US
     int "Panic: how long to wait for the other CPUs to park (us)"
     range 0 1000000
-    default 100000 if BOARD_QEMU
+    default 100000 if BUILD_TYPE_DEV
     default 10000
     help
       The longest the panicking CPU waits for the other online CPUs to take
@@ -165,7 +168,9 @@ config PANIC_STOP_WAIT_US
       above every measured one (microseconds) and invisible next to the
       report itself. Under QEMU each CPU is a host thread that a loaded host
       can deschedule for tens of milliseconds (measured 2026-10-10: one boot
-      in twenty of panic-splice-smoke on aarch64 missed 10 ms), so 100 ms.
+      in twenty of panic-splice-smoke on aarch64 missed 10 ms), so 100 ms in
+      a development build (BUILD_TYPE_DEV: the QEMU defconfigs; the build
+      type, not the board, keys it).
       Every panic pays the whole wait when a CPU counted online never runs
       (NUM_ONLINE_CPUS is a prefix bound) or keeps interrupts masked on
       purpose. Linux waits up to 1 s (smp_send_stop); raise it on a board
@@ -916,7 +921,7 @@ config LOCK_MAX_HOLD_US
 
 config LOCKDEP_HOLD_ENFORCE
     bool "Lockdep: a SpinLock held past LOCK_MAX_HOLD_US fails the run"
-    default n if BOARD_QEMU
+    default n if BUILD_TYPE_DEV
     default y
     help
       With lockdep compiled in, a SpinLock hold longer than
@@ -926,11 +931,15 @@ config LOCKDEP_HOLD_ENFORCE
       platform timer's ticks: on the QEMU board (TCG without -icount, the
       gate's ktest rows) they are host wall time, tens of times a
       hardware board's and inflated whenever the host deschedules a vCPU,
-      so there the default is off and the notes are the list to triage.
+      so the default is off in a development build (BUILD_TYPE_DEV: the
+      QEMU defconfigs; the build type, not the board, keys it) and the
+      notes are the list to triage.
       The gate's `ktest hold bound, -icount` rows turn it on for QEMU and
       boot one vCPU under `-icount shift=0`, where the timer is virtual
       time and 1 us = 1,000 guest instructions: the bound in instructions.
-      On by default on every hardware board. No cost: a constant.
+      On by default in a release build; the vf2 ktest image (a development
+      build on hardware, `make vf2 BUILD_TYPE=DEV VF2_TEST=ktest`) turns it
+      on by name (mk/kernel.mk VF2_EXTRA_ktest). No cost: a constant.
 
 config LOCKDEP_CLASSES
     int "Lockdep: lock classes tracked per class (table size)"

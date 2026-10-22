@@ -59,7 +59,9 @@ VF2_EXTRA_dev    := CONFIG_BUILD_TYPE_DEV=y
 # ktest runs in kernel_main after install_topology: under the profile's
 # TOPOLOGY_SOURCE_SIGNED_REQUIRED a board with no working storage would halt
 # there, before the first test. The test kernel takes the built-in topology.
-VF2_EXTRA_ktest  := CONFIG_BUILD_TYPE_DEV=y CONFIG_KTEST=y CONFIG_TOPOLOGY_SOURCE_BUILTIN=y
+# A development build defaults LOCKDEP_HOLD_ENFORCE off (QEMU's timer is host
+# wall time); on the board the hold times are real, so the ktest image enforces.
+VF2_EXTRA_ktest  := CONFIG_BUILD_TYPE_DEV=y CONFIG_KTEST=y CONFIG_TOPOLOGY_SOURCE_BUILTIN=y CONFIG_LOCKDEP_HOLD_ENFORCE=y
 VF2_EXTRA_pstore := CONFIG_BUILD_TYPE_DEV=y CONFIG_PSTORE_SIZE_KB=4
 VF2_KCONFIG_DEPS := config/defconfigs/vf2.config \
 		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
