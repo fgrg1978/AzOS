@@ -682,8 +682,11 @@ fn swap(slot: usize) {
         Err(err) => {
             azos_drv_sys::kerr!("[SUP] FAIL swap of {}: the rebind was refused after the successor joined the domain ({:?})",
                       image_str(e.image()), err);
-            let _ = endpoint_swap_cancel(old);
-            let _ = sup_swap_abort(slot);
+            // The successor holds the old server's table now: stopped like
+            // every other failure's, or it lives on, unsupervised, with the
+            // server's whole authority. Its exit leaves the shared domain,
+            // not the table.
+            give_up("the rebind was refused", new);
         }
     }
 }
