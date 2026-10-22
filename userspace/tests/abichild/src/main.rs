@@ -474,6 +474,10 @@ unsafe extern "C" fn foreign_probe_handler(frame: *mut Frame) -> ! {
                 f.gpr[FOREIGN_RCX_REG] = FOREIGN_RCX;
                 f.gpr[FOREIGN_R11_REG] = FOREIGN_R11;
             }
+            // riscv64/aarch64: no register is clobbered by the trap itself, so
+            // there is no scratch pair to answer.
+            #[cfg(not(target_arch = "x86_64"))]
+            {}
         }
         (1, FOREIGN_CALL_B) => {
             // The answer to the first trap, and the kept register, came back.
@@ -485,6 +489,8 @@ unsafe extern "C" fn foreign_probe_handler(frame: *mut Frame) -> ! {
             if f.gpr[FOREIGN_RCX_COPY_REG] != FOREIGN_RCX || f.gpr[FOREIGN_R11_COPY_REG] != FOREIGN_R11 {
                 sys::exit(17);
             }
+            #[cfg(not(target_arch = "x86_64"))]
+            {}
             f.gpr[REG_RESULT] = 0;
         }
         (2, FOREIGN_CALL_DONE) => sys::exit(0),

@@ -34,7 +34,6 @@
 4	domains/robot/safety-core/src/txn.rs
 2	kernel/src/boot/blk_irq.rs
 5	kernel/src/boot/dma.rs
-2	kernel/src/boot/input_irq.rs
 3	kernel/src/boot/ps2_irq.rs
 4	kernel/src/boot/seams.rs
 1	kernel/src/boot/tpm.rs
