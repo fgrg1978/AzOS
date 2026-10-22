@@ -330,6 +330,13 @@ pub fn set_irq_mode(line: u32, block_until: fn(u64) -> bool, wake: fn(u32)) {
     }
 }
 
+/// Back to polled completions: the interrupt controller refused to enable
+/// the line [`set_irq_mode`] named, so no interrupt will come and a wait must
+/// poll again instead of sleeping to its deadline.
+pub fn irq_mode_off() {
+    IRQ_LINE.store(u32::MAX, Ordering::Release);
+}
+
 /// `true` once completions come by interrupt.
 pub fn irq_mode() -> bool {
     IRQ_LINE.load(Ordering::Acquire) != u32::MAX

@@ -1314,6 +1314,13 @@ pub fn set_irq_line(line: u32) -> bool {
     true
 }
 
+/// Undo [`set_irq_line`]: the interrupt controller refused to enable the
+/// line, so control requests poll again rather than sleep to their deadline.
+pub fn irq_line_off() {
+    IRQ_LINE.store(u32::MAX, Ordering::Release);
+    IRQ_ARMED.store(false, Ordering::Release);
+}
+
 /// What every interrupt does, whatever the transport: count, wake the task
 /// waiting for a control answer, and say whether the pump has work (a stream
 /// is open).

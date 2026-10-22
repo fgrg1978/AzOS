@@ -45,6 +45,7 @@ pub(crate) fn wire_virtio_snd_irq() {
         return;
     }
     if !super::blk_irq::enable_line(line) {
+        snd::irq_line_off();
         kprintln!("[VIRTIO-SND] line {} not routable: polled", line);
         return;
     }

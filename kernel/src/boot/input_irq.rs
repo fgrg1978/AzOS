@@ -35,7 +35,8 @@ pub(crate) fn wire_virtio_input_irq() {
         if !azos_drv_virtio::virtio::input::set_irq_line(i, line) {
             continue;
         }
-        if !enable_line(line) {
+        if !super::blk_irq::enable_line(line) {
+            azos_drv_virtio::virtio::input::irq_line_off(i);
             kprintln!("[VIRTIO-INPUT] line {} not routable: idle", line);
             continue;
         }
@@ -43,30 +44,4 @@ pub(crate) fn wire_virtio_input_irq() {
             kind.name(), line, slot);
         crate::irq_thread::register(line);
     }
-}
-
-#[cfg(target_arch = "riscv64")]
-fn enable_line(irq: u32) -> bool {
-    let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32;
-    let _ = azos_drv_irqchip::irqchip::wire_aia_source(irq, hart);
-    azos_drv_irqchip::irqchip::enable_irq(hart, irq);
-    true
-}
-
-#[cfg(target_arch = "aarch64")]
-fn enable_line(intid: u32) -> bool {
-    let mpidr = azos_arch::cpu::read_mpidr().raw;
-    azos_arch::irq::gic::route_spi(intid, mpidr, false);
-    true
-}
-
-#[cfg(target_arch = "x86_64")]
-fn enable_line(gsi: u32) -> bool {
-    azos_drv_irqchip::user_irq::mark_kernel(gsi);
-    azos_arch::irq::ioapic::set_masked(gsi, false)
-}
-
-#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
-fn enable_line(_line: u32) -> bool {
-    false
 }

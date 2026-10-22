@@ -295,6 +295,14 @@ pub fn set_irq_line(i: usize, line: u32) -> bool {
     true
 }
 
+/// Undo [`set_irq_line`] for device `i`: the interrupt controller refused to
+/// enable the line, so it is no longer one of the wired lines.
+pub fn irq_line_off(i: usize) {
+    if let Some(l) = LINES.get(i) {
+        l.store(u32::MAX, Ordering::Release);
+    }
+}
+
 /// Is `line` one of the wired lines?
 pub fn owns_line(line: u32) -> bool {
     line != u32::MAX && LINES.iter().any(|l| l.load(Ordering::Acquire) == line)

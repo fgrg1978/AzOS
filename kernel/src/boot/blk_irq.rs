@@ -64,6 +64,9 @@ pub(crate) fn wire_virtio_blk_irq() {
     // asserted would otherwise be taken, unrecognised, forever.
     azos_drv_virtio::virtio::blk::set_irq_mode(line, blk_block_until, blk_wake);
     if !enable_line(line) {
+        // No interrupt will come: a wait that slept to its deadline would run
+        // the disk at timeout speed.
+        azos_drv_virtio::virtio::blk::irq_mode_off();
         kprintln!("[VIRTIO-BLK] line {} not routable: polled", line);
         return;
     }
