@@ -78,7 +78,7 @@ SUBSYS = [
     ("mm", r"\bmm\b|mem|tlb|cow|w\^x|wx|mprot|guard|granule|huge|quota|fork|heap|slab|oom",
      "crates/core/mm/** crates/core/percpu/**"),
     ("user", r"userspace|abitest|ipctest|captest|\bsh\b|sh:|shell|busybox|seccomp|threads|orphan|zombie|exit|natfork|proc|abi|syscall|futex",
-     "userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/**"),
+     "userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** sdk/targets/**"),
     ("drivers", r"driver|ina219|buzzer|gpio|i2c|uart|console|pci|rng|entropy|sensor|camera|virtio|ramfb|hdmi|irq|pl011|restart|supervis|placed",
      "crates/drivers/** kernel/src/drv_supervisor.rs kernel/src/console_mode.rs kernel/src/boot/launch.rs"),
     ("security", r"secure boot|secboot|topology|\bota\b|ota:|config|signed|seccomp|\bcap|toposign|key|tamper|crypto|spectre",
