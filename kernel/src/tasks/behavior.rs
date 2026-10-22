@@ -350,6 +350,10 @@ pub(crate) fn behavior_task(_: usize) {
                 if conn_state != azos_net::tcp::TcpState::Established {
                     brain_tx_report("connection lost");
                     brain_tx_end();
+                    // The slot is ours to give back, as on the two teardowns
+                    // below: a peer that half-closed (CloseWait) and stays
+                    // reachable is never reaped by keep-alive.
+                    fd.close();
                     tcp_connected = false;
                     tcp_fd = None;
                     // Drop the encrypted channel — a reconnect performs a fresh
