@@ -7,8 +7,10 @@
 //!   endpoint-level handover the supervisor's swap verb drives (open the
 //!   swap, the successor's grant, begin, wait for the old server's calls in
 //!   service, re-present halfway, rebind). Every call is answered with its
-//!   own reply, none ends `-EPEERDIED`, none is lost, and both servers
-//!   served some (the swap happened under load).
+//!   own reply, none ends `-EPEERDIED`, none is lost, none is answered
+//!   twice (the replies the two servers delivered add up to the calls made:
+//!   a re-presented call's first reply is refused, not delivered), and both
+//!   servers served some (the swap happened under load).
 //!
 //! The servers are kernel tasks (the fast calls go through
 //! `syscall_dispatch_out`, the arms ring 3 reaches). The supervisor's own
@@ -28,7 +30,7 @@ const CLIENTS: usize = 6;
 const CALLS: usize = 40;
 /// Attempts per call: a call resolved to the old server that reaches the
 /// queue after the flip is refused (an endpoint that changed server) and
-/// made again; it is counted in `RETRIED`, never as served twice.
+/// made again; it is counted in `RETRIED`, and must never be answered twice.
 const TRIES: usize = 5;
 
 static TID_A: AtomicU32 = AtomicU32::new(0);
@@ -36,6 +38,7 @@ static TID_B: AtomicU32 = AtomicU32::new(0);
 static A_READY: AtomicBool = AtomicBool::new(false);
 static B_READY: AtomicBool = AtomicBool::new(false);
 static STOP: AtomicBool = AtomicBool::new(false);
+/// Replies each server delivered (`SYS_IPC_FAST_REPLY` returned 0).
 static SERVED_A: AtomicUsize = AtomicUsize::new(0);
 static SERVED_B: AtomicUsize = AtomicUsize::new(0);
 static OK: AtomicUsize = AtomicUsize::new(0);
@@ -53,7 +56,9 @@ fn sleep_ms(ms: u64) {
     azos_sched::task_block(azos_sched::WaitReason::Timer(due));
 }
 
-/// Accept, work for `work_ms`, reply `w0 + 1`, until stopped.
+/// Accept, work for `work_ms`, reply `w0 + 1`, until stopped. Counts the
+/// replies delivered: one refused (a call re-presented to the successor
+/// while this server worked on it) is not an answer.
 fn serve_loop(served: &AtomicUsize, work_ms: u64) {
     let mut out = SyscallOut::new();
     while !STOP.load(Ordering::Acquire) {
@@ -65,8 +70,9 @@ fn serve_loop(served: &AtomicUsize, work_ms: u64) {
         if work_ms != 0 {
             sleep_ms(work_ms);
         }
-        dispatch(SYS_IPC_FAST_REPLY, [h as u64, w0 + 1, 0, 0, 0, 0], &mut out);
-        served.fetch_add(1, Ordering::AcqRel);
+        if dispatch(SYS_IPC_FAST_REPLY, [h as u64, w0 + 1, 0, 0, 0, 0], &mut out) == 0 {
+            served.fetch_add(1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -176,6 +182,10 @@ azos_ktest::ktest_late! {
 
         crate::ktest::wait("not every call came back",
             || OK.load(Ordering::Acquire) + LOST.load(Ordering::Acquire) == CLIENTS * CALLS)?;
+        // A server counts its reply after the reply woke the client: wait for
+        // the counts to catch up with the answers before reading them.
+        let served = || SERVED_A.load(Ordering::Acquire) + SERVED_B.load(Ordering::Acquire);
+        let _ = crate::ktest::wait("the servers' counts never caught up", || served() >= OK.load(Ordering::Acquire));
         STOP.store(true, Ordering::Release);
         azos_sched::scheduler::task_stop(old, true, 9);
         azos_sched::scheduler::task_stop(new, true, 9);
@@ -184,6 +194,16 @@ azos_ktest::ktest_late! {
         }
         if OK.load(Ordering::Acquire) != CLIENTS * CALLS {
             return Err("a call was not answered with its own reply");
+        }
+        azos_drv_sys::kprintln!(
+            "# ipc_handover_under_load_loses_no_call: {} served by the old server, {} by the successor, {} retried",
+            SERVED_A.load(Ordering::Acquire), SERVED_B.load(Ordering::Acquire), RETRIED.load(Ordering::Acquire)
+        );
+        if served() > CLIENTS * CALLS {
+            return Err("the servers delivered more replies than calls were made: a call was answered twice");
+        }
+        if served() < CLIENTS * CALLS {
+            return Err("a reply the client took was not counted as delivered by either server");
         }
         if SERVED_A.load(Ordering::Acquire) == 0 || SERVED_B.load(Ordering::Acquire) == 0 {
             return Err("the swap did not happen under load: one of the servers served nothing");
