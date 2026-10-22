@@ -496,8 +496,9 @@ restore_to_smode:
 # WHAT READS THE FRAME AFTERWARDS. The slots of t0-t6 hold whatever an
 # earlier full save of this task left there (or zero: the first entry clears
 # them). Nothing on a native syscall reads them: the fork snapshot clears
-# them (`clear_syscall_clobbers`, crates/core/arch-riscv64/src/fork_regs.rs),
-# the exec hand-off zeroes every slot but the tag (`exec_entry_frame`,
+# them (`clear_syscall_clobbers`, crates/core/sched/src/scheduler/mod.rs, over
+# `SYSCALL_CLOBBERED`, crates/core/arch-riscv64/src/trap.rs), the exec
+# hand-off zeroes every slot but the tag (`exec_enter`,
 # kernel/src/entry/riscv64/trap.rs), the IPC fast path touches sepc and a0-a6,
 # signal delivery and syscall restart are the Linux personality's only.
 #

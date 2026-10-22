@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! x86_64's `ArchEntry` — SKELETON, matched to `entry/{riscv64,aarch64}/
+//! x86_64's `ArchEntry`, matched to `entry/{riscv64,aarch64}/
 //! arch_entry.rs`: the boot hooks, and the secondary-CPU steps the shared
 //! `boot::smp::secondary_main` calls.
 

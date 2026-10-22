@@ -28,7 +28,7 @@
 //! TID. A slot reused by a new task (new TID) finds a foreign tag on its
 //! first use and starts from zeroed registers, so no FP state crosses from a
 //! dead task to a new one. TIDs repeat only after a 2^32 wrap
-//! (`crates/core/sched/src/scheduler.rs`, `NEXT_TID`).
+//! (`crates/core/sched/src/scheduler/`, `NEXT_TID`).
 
 #![cfg(target_arch = "aarch64")]
 

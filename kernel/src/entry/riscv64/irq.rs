@@ -486,9 +486,12 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
             crate::trap::RESCHED.request(azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize);
         }
         _ => {
-            // Avoid kprintln from ISR — it acquires the UART spinlock and
-            // can block the ISR for ms when worker tasks hold the lock. The
-            // irq class's entry record (`handle_interrupt`) names the cause.
+            // No kprintln here: it takes the console lock, which a task may
+            // hold for a whole line. The irq class's entry record
+            // (`handle_interrupt`) names the cause. The ISR prints only the
+            // one-shot `irq_stack_probe` line and, in diagnostic builds
+            // (`ipc-census`), the census dump and `[ISR-WCET]` lines, whose
+            // masked windows those builds accept.
         }
     }
 }

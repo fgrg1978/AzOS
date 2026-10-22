@@ -38,9 +38,9 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
         // Rescue tasks that the *pre-boot optimistic* task_create calls
         // (above, before wake_harts() ran) assigned to a hart that then
         // failed to start — those per-CPU ready queues would otherwise sit
-        // forever, since this scheduler has no runtime work-stealing
-        // (verified: no steal/rebalance/migrate logic anywhere in
-        // crates/core/sched/src/scheduler.rs). This is the only point in the
+        // forever: nothing at runtime pulls work off a hart that never ran
+        // (fairq's migration, crates/core/sched/src/fairq.rs, moves tasks
+        // between running CPUs only). This is the only point in the
         // whole boot sequence where ready queues can be moved between CPUs
         // without racing another consumer: the boot hart hasn't called
         // sched::start() yet, hasn't enabled its own timer interrupt yet

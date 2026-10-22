@@ -4,8 +4,7 @@
 //! `arch_entry.rs` exposes them as the `ArchEntry` impl; the generic early
 //! boot (`boot::early_main`) calls them. The platform hooks (boot
 //! information, ACPI, APIC, timer, SMP) are implemented over
-//! `azos_arch::{platform_impl, firmware::acpi, irq::{apic, ioapic}, timer, smp}`; the others
-//! are still `todo!()`s naming the x86 mechanism.
+//! `azos_arch::{platform_impl, firmware::acpi, irq::{apic, ioapic}, timer, smp}`.
 
 use azos_drv_sys::kprintln;
 

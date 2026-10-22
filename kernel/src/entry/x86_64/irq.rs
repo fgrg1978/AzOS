@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! x86_64 interrupt dispatch (every vector >= 32) and the tick: the LAPIC
-//! side of what `entry/aarch64.rs::handle_irq` does for the GIC.
+//! side of what `entry/aarch64/irq.rs::handle_irq` does for the GIC.
 //!
 //! The trap path calls [`irq_arm`], whose bracket (`crate::trap::irq::arm`) calls
 //! [`dispatch`] with the vector of an interrupt (not an exception) and requests a

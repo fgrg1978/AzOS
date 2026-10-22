@@ -37,7 +37,7 @@
 // only source of truth for "which physical hart is this" (`crates/core/sched/
 // src/smp.rs`); `context.tp` is pure scheduler bookkeeping — "which CPU's
 // ready queue this task is logically enqueued on", written by the wake/
-// placement paths in `crates/core/sched/src/scheduler.rs` and read back by
+// placement paths in `crates/core/sched/src/scheduler/` and read back by
 // `find_best_cpu`/`task_census` as plain memory, never as hart identity.
 //
 // This file used to `mrs`/`msr` `TPIDR_EL1` here on every switch, treating
@@ -65,9 +65,11 @@
 // whichever hart now (wrongly) claims that identity, never the physical one
 // actually holding the ready-queue lock and bitmap the task sits in.
 //
-// `TPIDR_EL1` is instead a per-hart constant, published exactly once by
-// `boot.S` (`msr TPIDR_EL1, x20`, primary and secondary paths both) before
-// `kernel_main` ever runs, and never written again. `CTX_TP` stays a real
+// `TPIDR_EL1` is instead a per-hart constant: `boot.S` publishes it
+// (`msr TPIDR_EL1, x20`, primary and secondary paths both) before
+// `kernel_main` ever runs, and the only later writes are the same id again
+// (`set_percpu_base(hart_id)` in `kernel/src/boot/smp.rs`'s secondary path);
+// nothing on a context switch writes it. `CTX_TP` stays a real
 // `TaskContext` field — `crates/core/sched` still uses it as plain memory for
 // placement bookkeeping — this file just no longer routes it through
 // hardware.
@@ -230,14 +232,12 @@ restore_new_task:
     // "zero" must resolve to the KERNEL's own root, never to "whatever
     // TTBR0_EL1 already holds".
     //
-    // riscv64's `task_satp` defaults to 0 for every task that has never had
-    // a user address space (see `try_task_create_init`), and 0 there is a
-    // VALID satp encoding: Sv39's MODE field clear means Bare (MMU off),
-    // and riscv64's kernel is identity-mapped (VA==PA) for kernel space, so
-    // running kernel code under Bare mode after that switch still resolves
-    // every address correctly — weaker protection, not a crash.
+    // On riscv64 0 would at least be a VALID satp encoding (Sv39's MODE
+    // field clear means Bare), but a riscv64 or x86_64 kernel task is given
+    // the kernel's own root word (`kernel_task_satp()`,
+    // crates/core/sched/src/scheduler/lifecycle.rs).
     //
-    // TTBR0_EL1 has no such reading. It is a physical table-base address,
+    // TTBR0_EL1 has no reading for 0. It is a physical table-base address,
     // not a mode field — writing 0 to it does not turn the MMU off (that is
     // SCTLR_EL1.M, untouched here); it means "walk page tables starting at
     // physical address 0", and this kernel deliberately leaves page 0

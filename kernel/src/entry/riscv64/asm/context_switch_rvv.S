@@ -26,9 +26,9 @@
 #     always its own id, whatever task happens to be running. `current_cpu_id()`
 #     is therefore correct here for the same reason it is correct in
 #     context_switch.S, by a different route.
-#   * The consequence is that K-A11's `task.context.tp = target_cpu` bookkeeping
-#     in scheduler.rs is dead code under this build. Harmless — it writes a
-#     field nothing reads.
+#   * K-A11's `task.context.tp = target_cpu` bookkeeping
+#     (crates/core/sched/src/scheduler/) is placement only, here as in every
+#     build since K1 M2: the wake and balance paths read it as the task's home.
 #   * Before K-C16 this was NOT harmless. trap_entry.S restored `tp` from the
 #     trap frame on the way back from U-mode, so a ring-3 task that wrote `tp`
 #     poisoned the kernel's idea of which hart it was on — and under rvv there

@@ -13,11 +13,10 @@
 // That function either mutates the frame and RETURNS (an `svc #0`
 // self-test, or any IRQ dispatched through the GIC — see its own doc
 // comment), in which case `trap_return` below restores everything and
-// `eret`s back to `ELR_EL1`; or it never returns at all (an unhandled
-// trap class prints over `kprintln!` and parks on `wfi`), in which case
-// nothing after the `bl`/switched-stack call below ever executes. Do NOT
-// migrate the riscv64 trap path onto this — that stays a separate,
-// measured step.
+// `eret`s back to `ELR_EL1`; or it never returns at all (a fatal trap
+// takes `crate::trap::fault`'s fatal tail: actuators stopped, a `[FATAL]`
+// line, then `ARCH.shutdown()`), in which case nothing after the
+// `bl`/switched-stack call below ever executes.
 //
 // TrapFrame layout constants (mirrors trap_entry.S's B2-01 pattern on
 // riscv64): every named operand below is substituted by the `global_asm!(...)`
@@ -68,12 +67,10 @@
 // injected rather than re-typed as literals, same reason as the offsets
 // above. Despite the "_SP0" half of the first pair's name, this table
 // wires it for the group ARM ARM §D1.10 calls "Current EL using SPx" —
-// the ONLY group a self-fault (or the `svc #0` self-test) can land in,
-// since boot.S drops into EL1h (SP_EL1) and this milestone never switches
-// to SP_EL0. VEC_IRQ_CUR is also the ONLY interrupt group reachable this
-// milestone (no EL0 task exists yet to take VEC_IRQ_LO) — the IRQ-stack
-// switch below still checks both, so this table does not change the day
-// a user task does exist.
+// the ONLY group a kernel trap (or the `svc #0` self-test) can land in,
+// since boot.S drops into EL1h (SP_EL1) and the kernel never switches to
+// SP_EL0. The LO pair is an EL0 task's (Group 2 below); the IRQ-stack
+// switch checks both interrupt vectors.
 .equ VEC_SYNC_CUR, {vec_sync_cur}
 .equ VEC_IRQ_CUR,  {vec_irq_cur}
 .equ VEC_SYNC_LO,  {vec_sync_lo}
@@ -159,10 +156,8 @@ _vectors:
     b       _slot_serr_cur_spx
     .balign 0x80
 
-    // ── Group 2 — Lower EL, AArch64. Unreachable this milestone (no EL0
-    // task exists yet), wired with the vector numbers
-    // entry/aarch64/mod.rs already names for it so this table does not
-    // change the day a user task exists.
+    // ── Group 2 — Lower EL, AArch64: every trap from an EL0 task, with the
+    // vector numbers entry/aarch64/mod.rs names for it.
     b       _slot_sync_lower64
     .balign 0x80
     b       _slot_irq_lower64
@@ -552,8 +547,8 @@ aarch64_ret_to_user_tls:
 // left (zero after the first entry). Nothing on a native syscall reads them:
 // the fork snapshot clears them (`SYSCALL_CLOBBERED`,
 // crates/core/arch-aarch64/src/fork_regs.rs), the exec hand-off zeroes
-// them with every other register (`exec_entry_frame`,
-// kernel/src/entry/aarch64/mod.rs), the IPC fast path writes x0-x6; signals and
+// them with every other register (`exec_enter`,
+// kernel/src/entry/aarch64/trap.rs), the IPC fast path writes x0-x6; signals and
 // syscall restart are the Linux personality's.
 //
 // COST against the full path: 4 `stp` fewer, no FAR read, no IRQ test; the

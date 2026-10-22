@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! aarch64 entry — defines the kernel-side TrapFrame layout
-//! that aarch64-native trap-vector asm will populate, the early MMU bring-up
+//! aarch64 entry — defines the kernel-side TrapFrame layout that the
+//! trap-vector asm (`asm/trap_entry.S`: the VBAR_EL1 table, x0..x30 +
+//! SPSR_EL1/ELR_EL1/SP_EL0/FAR_EL1/ESR_EL1) builds, the early MMU bring-up
 //! `boot.S` calls, and the per-core boot state; `trap.rs` handles the traps.
-//!
-//! The asm (VBAR_EL1 vector table, save x0..x30 + SPSR_EL1 +
-//! ELR_EL1 + FAR_EL1 + ESR_EL1) lives in `arch_aarch64::mmu::boot`
-//! today as a demo trampoline; once Stage 5 wires this entry
-//! module into the real kernel boot path, the same asm will
-//! drop into [`trap_entry`] with `&mut TrapFrame`.
 
 #![cfg(target_arch = "aarch64")]
 
@@ -679,10 +674,9 @@ static IRQ_STACK_TOP:  AtomicUsize = AtomicUsize::new(0);
 /// interrupt only (mirrors riscv64's `irq_stack_probe`'s `PROBED` swap);
 /// [`IRQ_TOOK_OWN_STACK`] holds the result. `kernel_main` reads both AFTER
 /// its tick-wait loop returns and prints the `[AARCH64-IRQSTACK]` marker
-/// itself — the handler does not `kprintln!` anything (see the module
-/// note below): this kernel's UART spinlock is not `lock_irqsave`d, and an
-/// interrupt landing while `kernel_main` is already mid-`kprintln!` on the
-/// same lock would deadlock the boot instead of merely losing a message.
+/// itself — the handler does not `kprintln!` anything: the interrupt path
+/// stays print-free (the console lock's hold masks interrupts, `uart.rs`'s
+/// `print_line`, so a print there would only lengthen a masked window).
 static IRQ_STACK_PROBED:   AtomicBool = AtomicBool::new(false);
 static IRQ_TOOK_OWN_STACK: AtomicBool = AtomicBool::new(false);
 

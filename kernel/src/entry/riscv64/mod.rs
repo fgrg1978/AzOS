@@ -3,10 +3,8 @@
 //! RISC-V entry — the top-level trap handlers `trap_entry.S` calls, over the
 //! existing `arch_riscv64::trap::TrapFrame` (its `Frame` decode is in `trap.rs`).
 //!
-//! The actual trap-entry asm (saving x0..x31 + CSRs onto the
-//! kernel stack) lives in `arch_riscv64` boot/trap modules and
-//! has been working since before this module existed — it is purely the
-//! portable lens over that data. No behaviour change today.
+//! The trap-entry asm (x0..x31 + CSRs saved onto the kernel stack) is
+//! `asm/trap_entry.S`; this module is the Rust it calls.
 
 #![cfg(target_arch = "riscv64")]
 

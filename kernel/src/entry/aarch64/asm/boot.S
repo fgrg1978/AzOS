@@ -413,7 +413,7 @@ _secondary_park:
 //
 // **Every PE on QEMU `virt,virtualization=on` arrives here at EL2**, same
 // as the primary — PSCI `CPU_ON` starts a target PE at the SAME exception
-// level the boot protocol gave the primary (measured; `crates/aarch64-
+// level the boot protocol gave the primary (measured; `tests/qemu/aarch64-
 // smoke`'s own secondary path documents this). So this path needs the SAME
 // EL2->EL1 drop `_start` above takes, not a `virtualization=on`-only
 // special case.
