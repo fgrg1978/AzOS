@@ -86,12 +86,10 @@ pub fn halt_if_panicked() {
         // PANIC_QUIESCE): from here on this CPU writes nothing.
         // percpu-hint: the watchdog tick runs in the timer interrupt: interrupts off
         azos_common::note_parked(azos_arch::ARCH.hart_id());
-        // `Cpu::halt`, not a `wfi` loop: x86_64's `wfi` with interrupts
-        // masked is the panic path's final stop and ends a QEMU run through
-        // isa-debug-exit (status 1). A CPU parked here must not end the
-        // machine before the panicking CPU has reported (a ktest's `not ok`
-        // and its status 3, a reset policy's record). Same instructions on
-        // riscv64 and aarch64 (a `wfi` loop).
+        // `Cpu::halt`: stopped for good, never the machine's power-off or
+        // reset. A CPU parked here must not end the machine before the
+        // panicking CPU has reported (a ktest's `not ok` and its status 3, a
+        // reset policy's record).
         azos_arch::ARCH.halt()
     }
 }

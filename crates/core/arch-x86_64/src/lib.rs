@@ -114,17 +114,10 @@ impl Cpu for X86_64 {
     fn hart_id(&self) -> usize {
         on_x86!(cpu::percpu_id(), "x86_64: hart_id: the dense CPU id at %gs:0 (cpu::PerCpu)")
     }
-    /// `sti; hlt` with interrupts in the state the caller left them.
-    /// `hlt`. With interrupts masked nothing but an NMI ends it: that is a
-    /// final stop (the panic path's), so it is reported through QEMU's
-    /// isa-debug-exit first (status 1; a no-op without that device).
+    /// `hlt`, with interrupts in the state the caller left them: with them
+    /// masked nothing but an NMI ends it, the panic path's final stop.
     fn wfi(&self) {
-        on_x86!({
-            if cpu::rflags() & cpu::RFLAGS_IF == 0 {
-                cpu::outl(cpu::DEBUG_EXIT_PORT, 0);
-            }
-            cpu::hlt()
-        }, "x86_64: wfi: hlt (mwait where the idle governor allows)")
+        on_x86!(cpu::hlt(), "x86_64: wfi: hlt (mwait where the idle governor allows)")
     }
     /// Depth 0 is [`Self::wfi`] (`hlt`); depth `d` is the `d`-th state of
     /// `cpu::idle::ladder()` entered by `mwait` (`mwaitx` on AMD), and a depth
@@ -138,8 +131,8 @@ impl Cpu for X86_64 {
             let t0 = timer::now_ticks();
             let ladder = cpu::idle::ladder();
             match ladder.pick(_depth.min(cpu::idle::depth_cap())) {
-                // `mwait` is entered with `sti`, so only with `IF` set: the
-                // `IF`-clear wait is `wfi`'s final stop.
+                // `mwait` is entered with `sti`, so only with `IF` set: an
+                // `IF`-clear wait is `hlt`.
                 Some(s) if cpu::rflags() & cpu::RFLAGS_IF != 0 => {
                     // percpu-hint: the idle task is pinned to its CPU
                     cpu::idle::enter(ladder.wait(), s.hint, cpu::percpu_area(cpu::percpu_id()) as *const u8)
