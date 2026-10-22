@@ -67,26 +67,27 @@ static HANDLED: AtomicU32 = AtomicU32::new(0);
 /// The line hooks are set-once (`.data.ro_after_init`, sealed before the
 /// ktests run), so the test cannot swap them: the boot installs
 /// [`dispatch_release`] and its two siblings in ktest builds, and these answer
-/// with the test's counting hooks while [`ACTIVE`], with the arch's own
-/// otherwise.
+/// with the test's counting hooks for [`LINE`] while [`ACTIVE`], and with the
+/// arch's own for every other line, always: a real binding (NIC, UART,
+/// virtio) that throttles or ACKs while the storm runs reaches its controller.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn dispatch_release(irq: u32) {
-    if ACTIVE.load(Ordering::Acquire) {
+    if irq == LINE && ACTIVE.load(Ordering::Acquire) {
         MASKED.store(true, Ordering::Release);
     } else {
         (crate::boot_hooks::line_hooks().release)(irq);
     }
 }
 pub(crate) fn dispatch_mask(irq: u32) {
-    if ACTIVE.load(Ordering::Acquire) {
+    if irq == LINE && ACTIVE.load(Ordering::Acquire) {
         MASKED.store(true, Ordering::Release);
     } else {
         (crate::boot_hooks::line_hooks().mask)(irq);
     }
 }
 pub(crate) fn dispatch_unmask(irq: u32) {
-    if ACTIVE.load(Ordering::Acquire) {
+    if irq == LINE && ACTIVE.load(Ordering::Acquire) {
         MASKED.store(false, Ordering::Release);
     } else {
         (crate::boot_hooks::line_hooks().unmask)(irq);
