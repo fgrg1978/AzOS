@@ -136,8 +136,7 @@ static ENTROPY_SEED_STORE_USABLE: core::sync::atomic::AtomicBool =
 /// and flushed; `Ok(false)`: written, the device cannot confirm a flush;
 /// `Err`: the write or the flush failed.
 fn entropy_seed_store(rec: &[u8]) -> Result<bool, ()> {
-    crate::msc_gadget::reserved_region_write(
-        crate::msc_gadget::RESERVED_SECTOR_ENTROPY_SEED, rec)?;
+    crate::reserved_tail::write(crate::reserved_tail::ENTROPY_SEED, rec)?;
     match azos_drv_block::blkdev::flush() {
         Ok(()) => Ok(true),
         Err(azos_drv_api::block::FlushError::Unsupported) => Ok(false),
@@ -147,7 +146,7 @@ fn entropy_seed_store(rec: &[u8]) -> Result<bool, ()> {
 
 /// Persisted entropy seed (U09-8, owner decision 2026-09-26 V1.2; wired in
 /// wave 11): read the seed sector from the reserved tail
-/// (`msc_gadget::RESERVED_SECTOR_ENTROPY_SEED`), mix it into the pool, and
+/// (`reserved_tail::ENTROPY_SEED`), mix it into the pool, and
 /// IMMEDIATELY overwrite it with a fresh record drawn from the pool, so a seed
 /// is never used twice even if this boot crashes a moment later.
 ///
@@ -172,36 +171,23 @@ fn entropy_seed_store(rec: &[u8]) -> Result<bool, ()> {
 /// on one line.
 pub(crate) fn install_entropy_seed() {
     use crate::boot::entropy_pool as el;
-    use crate::msc_gadget::{MSC_RESERVED_TAIL_SECTORS, RESERVED_SECTOR_ENTROPY_SEED};
+    use crate::reserved_tail::ENTROPY_SEED;
 
     let cap = azos_drv_block::blkdev::capacity_sectors();
     if cap == 0 {
         kprintln!("[ENTROPY] persisted seed: no block device — pool as before (diskless)");
         return;
     }
-    let mut s0 = [0u8; 512];
-    if azos_drv_block::blkdev::read(0, 1, &mut s0).is_err() {
-        kprintln!("[ENTROPY] persisted seed: skipped — sector 0 unreadable; pool as before");
-        return;
-    }
-    let mut parts = [(0u64, 0u64); 16];
-    let mut np = 0usize;
-    for i in 0..azos_drv_block::partition::count().min(parts.len() as u32) {
-        if let Some(p) = azos_drv_block::partition::extent(i) {
-            parts[np] = p;
-            np += 1;
-        }
-    }
-    let tail = el::seed_tail_check(cap, u64::from(MSC_RESERVED_TAIL_SECTORS), &parts[..np], &s0);
+    let tail = crate::reserved_tail::verdict();
     if tail != el::SeedTail::Clear {
         kprintln!("[ENTROPY] persisted seed: skipped — reserved tail not usable ({:?}: the \
                    image has no headroom past its filesystem); pool as before", tail);
         return;
     }
     let mut sector = [0u8; 512];
-    if crate::msc_gadget::reserved_region_read(RESERVED_SECTOR_ENTROPY_SEED, &mut sector).is_err() {
+    if crate::reserved_tail::read(ENTROPY_SEED, &mut sector).is_err() {
         kprintln!("[ENTROPY] persisted seed: skipped — reserved sector {} unreadable; pool as before",
-                  RESERVED_SECTOR_ENTROPY_SEED);
+                  ENTROPY_SEED);
         return;
     }
     ENTROPY_SEED_STORE_USABLE.store(true, core::sync::atomic::Ordering::Release);
@@ -211,7 +197,7 @@ pub(crate) fn install_entropy_seed() {
     match r.load {
         el::SeedLoad::Absent => kprintln!(
             "[ENTROPY] persisted seed: no valid record in reserved sector {} (absent, short or \
-             corrupt) — nothing mixed", RESERVED_SECTOR_ENTROPY_SEED),
+             corrupt) — nothing mixed", ENTROPY_SEED),
         el::SeedLoad::Credited => kprintln!(
             "[ENTROPY] persisted seed: mixed {} bytes, credited (no other source) — pool seeded",
             el::SEED_FILE_SEED_BYTES),

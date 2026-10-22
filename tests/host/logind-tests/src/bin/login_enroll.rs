@@ -5,8 +5,9 @@
 //!
 //!     login_enroll --seed <64 hex> --user NAME --owner N --passphrase TEXT
 //!
-//! `--seed` is the board's seed (the 32 bytes of the reserved tail sector 0 of
-//! its medium: the 8th sector from the end of an image), `--owner` the
+//! `--seed` is the board's seed (the 32-byte key of the link-key record in
+//! reserved tail sector 0 of its medium, the 8th sector from the end of an
+//! image: `tools/link_key_provision.py`), `--owner` the
 //! user's root: the place of the `[login.NAME]` row in the signed topology plus
 //! one (the first row is 1). Prints the 64 hex digits to list as the row's
 //! `ssh_key` entry. The derivation is the kernel's own

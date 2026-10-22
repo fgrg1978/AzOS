@@ -52,13 +52,6 @@ pub fn pool_next_seed_record() -> Option<[u8; SEED_FILE_BYTES]> {
     azos_crypto::entropy::next_seed_record()
 }
 
-/// Whether the reserved tail may be written; see
-/// [`azos_crypto::entropy::seed_tail_check`].
-pub fn seed_tail_check(
-    capacity_sectors: u64, tail_sectors: u64, partitions: &[(u64, u64)], sector0: &[u8],
-) -> SeedTail {
-    azos_crypto::entropy::seed_tail_check(capacity_sectors, tail_sectors, partitions, sector0)
-}
 
 /// The first ring-3 entropy draw refused on an unseeded pool this
 /// boot (`crates/core/syscall/src/entropy.rs` calls this once per boot; later

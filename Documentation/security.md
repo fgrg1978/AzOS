@@ -639,9 +639,13 @@ Source: `crates/core/syscall/src/link_key.rs`,
 There are two kinds of authenticated link.
 
 **Brain link** (robot domain). A 32-byte pre-shared key is provisioned into
-reserved tail sector 0 of the boot medium. That sector is outside the FAT
-volume and the USB mass-storage export never reports it, so a USB host cannot
-address it. There is no write path from a running task. Ring 3 reads the key
+reserved tail sector 0 of the boot medium, as a record with a magic, a version
+and an integrity tag (`tools/link_key_provision.py`). That sector is outside
+the FAT volume and the USB mass-storage export never reports it, so a USB host
+cannot address it. The kernel reads it only when no partition and no FAT32
+volume reaches the tail, and refuses a sector that holds no valid record (a raw
+key, a torn write, filesystem data): the link then stays down. There is no
+write path from a running task. Ring 3 reads the key
 through the kernel-hosted `linkkey` endpoint, which is refused unless the
 caller holds an `Endpoint` capability with `READ` that the signed topology
 granted (the `read` op returns the raw key; `RPCSRV.ELF` and `MCPD.ELF`

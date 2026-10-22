@@ -13,8 +13,8 @@ the FAT32 boot sector at LBA 0). OUT is a classic-MBR medium:
                          its BPB `tot_sec32` sectors
   after it               partition 1, type 0xDA (non-filesystem data): 64
                          zeroed sectors, the range `disk.part.1` names
-  last 8 sectors         the reserved tail `kernel/src/msc_gadget.rs` keeps
-                         (MSC_RESERVED_TAIL_SECTORS), inside no partition,
+  last 8 sectors         the reserved tail `kernel/src/reserved_tail.rs` keeps
+                         (TAIL_SECTORS), inside no partition,
                          copied from SRC's own tail: it holds the device
                          record CONFIG.SIG v2 is bound to (wave 11), so the
                          volume's signed CONFIG.INI stays this device's

@@ -156,6 +156,7 @@ $(OUT_BUILD)/disk-lxbench-base.img: AUTORUN_ELF := /fat/LXSRV.ELF
 # CONFIG.INI is signed for that id at counter 1. Usage, in a recipe whose image
 # is already formatted: $(call provision_and_sign_config,<ini>,<sig-out>)
 CONFIG_SIG_TOOLS := tools/gen_config_sig.py tools/device_provision.py
+LINK_KEY_TOOL := tools/link_key_provision.py
 
 # The behavior loop's model bundle (see its rule, below).
 BEHAVIOR_MBL_SRC  := kernel/src/behavior_ml.rs
@@ -164,16 +165,17 @@ BEHAVIOR_MBL_ARGS := --name behavior-mlp --in-bytes 16 --out-bytes 12 \
 	--expect-ref-from $(BEHAVIOR_MBL_SRC):BEHAVIOR_MODEL_REF
 
 # Images whose kernel brain link must come up (the link is always a Noise
-# session, so it needs the link key): a random 32-byte key in the reserved
-# tail sector 0 the kernel reads (`msc_gadget::RESERVED_SECTOR_LINK_KEY`,
-# unaddressable over the USB export) and a copy in ::LINK.KEY for the host
+# session, so it needs the link key): a random 32-byte key, as a link-key
+# record (`tools/link_key_provision.py`), in the reserved tail sector 0 the
+# kernel reads (`reserved_tail::LINK_KEY`, unaddressable over the USB export),
+# and the raw key in ::LINK.KEY for the host
 # peers (`tools/fake_brain.py --image`, `tools/link_peer.py --image`). Same
 # mechanism as `build/disk-linkkey.img` below.
 KEYED_DISKS := $(OUT_BUILD)/disk-brainlies.img $(OUT_BUILD)/disk-brainrec.img \
 	$(OUT_BUILD)/disk-brainestop.img $(OUT_BUILD)/disk-estopgpio.img
 provision_link_key = dd if=/dev/urandom of=$@.tmp_linkkey bs=32 count=1 2>/dev/null && \
 	mcopy -i $@ $@.tmp_linkkey ::LINK.KEY && \
-	dd if=$@.tmp_linkkey of=$@ bs=512 seek=$$(( $$(wc -c < $@) / 512 - 8 )) conv=notrunc 2>/dev/null && \
+	python3 tools/link_key_provision.py $@ $@.tmp_linkkey && \
 	rm -f $@.tmp_linkkey
 provision_and_sign_config = python3 tools/device_provision.py $@ >/dev/null && \
 	python3 tools/gen_config_sig.py $(1) --config-v2 --counter 1 --image $@ --priv $(or $(3),$(TEST_PRIV_KEY)) --out $(2)
@@ -193,15 +195,15 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-gpiodrv.img $(OUT_BUILD)/disk-b
 		$(VSBENCH_ELF) \
 		$(IPCTEST_ELF) \
 		$(OUT_BUILD)/policy.gguf $(OUT_BUILD)/policy.sig $(OUT_BUILD)/behavior.mbl \
-		$(TEST_PRIV_KEY) $(CONFIG_SIG_TOOLS)
+		$(TEST_PRIV_KEY) $(CONFIG_SIG_TOOLS) $(LINK_KEY_TOOL)
 	@mkdir -p $(OUT_BUILD)
 	dd if=/dev/zero of=$@ bs=1M count=32
 	# U06-9/#30 (2026-09-26): extend the raw image by
-	# MSC_RESERVED_TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
+	# TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
 	# first 32768 1-KiB blocks (32 MiB) as FAT32, leaving the tail
-	# reserved -- see `kernel/src/msc_gadget.rs::MSC_RESERVED_TAIL_SECTORS`.
+	# reserved -- see `kernel/src/reserved_tail.rs::TAIL_SECTORS`.
 	# Without this the reserved region LINK.KEY/the entropy seed file live
-	# in does not exist on this image (`reserved_region_read`/`write` then
+	# in does not exist on this image (`reserved_tail::read`/`write` then
 	# fail closed -- safe, but the key/seed never load). 65536 sectors x
 	# 512 B = 32 MiB = 32768 KiB, the mkfs.fat BLOCKS unit.
 	dd if=/dev/zero of=$@ bs=512 count=8 seek=65536 conv=notrunc
@@ -408,11 +410,11 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 	@mkdir -p $(OUT_BUILD)
 	dd if=/dev/zero of=$@ bs=1M count=32
 	# U06-9/#30 (2026-09-26): extend the raw image by
-	# MSC_RESERVED_TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
+	# TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
 	# first 32768 1-KiB blocks (32 MiB) as FAT32, leaving the tail
-	# reserved -- see `kernel/src/msc_gadget.rs::MSC_RESERVED_TAIL_SECTORS`.
+	# reserved -- see `kernel/src/reserved_tail.rs::TAIL_SECTORS`.
 	# Without this the reserved region LINK.KEY/the entropy seed file live
-	# in does not exist on this image (`reserved_region_read`/`write` then
+	# in does not exist on this image (`reserved_tail::read`/`write` then
 	# fail closed -- safe, but the key/seed never load). 65536 sectors x
 	# 512 B = 32 MiB = 32768 KiB, the mkfs.fat BLOCKS unit.
 	dd if=/dev/zero of=$@ bs=512 count=8 seek=65536 conv=notrunc
@@ -501,11 +503,11 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarc
 	@mkdir -p $(OUT_BUILD)
 	dd if=/dev/zero of=$@ bs=1M count=32
 	# U06-9/#30 (2026-09-26): extend the raw image by
-	# MSC_RESERVED_TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
+	# TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
 	# first 32768 1-KiB blocks (32 MiB) as FAT32, leaving the tail
-	# reserved -- see `kernel/src/msc_gadget.rs::MSC_RESERVED_TAIL_SECTORS`.
+	# reserved -- see `kernel/src/reserved_tail.rs::TAIL_SECTORS`.
 	# Without this the reserved region LINK.KEY/the entropy seed file live
-	# in does not exist on this image (`reserved_region_read`/`write` then
+	# in does not exist on this image (`reserved_tail::read`/`write` then
 	# fail closed -- safe, but the key/seed never load). 65536 sectors x
 	# 512 B = 32 MiB = 32768 KiB, the mkfs.fat BLOCKS unit.
 	dd if=/dev/zero of=$@ bs=512 count=8 seek=65536 conv=notrunc
@@ -692,18 +694,18 @@ $(OUT_BUILD)/disk-seccomp-replaced.img: $(OUT_BUILD)/disk-uhello.img $(UHELLO_EL
 # Same image, plus a /fat/LINK.KEY, used to prove the `link-provisioning-enforced`
 # key gate ACCEPTS a valid key. A gate exercised only by its negative test is
 # indistinguishable from a gate that always refuses, so CI runs both halves.
-$(OUT_BUILD)/disk-linkkey.img: $(OUT_BUILD)/disk.img
+$(OUT_BUILD)/disk-linkkey.img: $(OUT_BUILD)/disk.img $(LINK_KEY_TOOL)
 	cp $(OUT_BUILD)/disk.img $@
 	@dd if=/dev/urandom of=$@.tmp_linkkey bs=32 count=1 2>/dev/null
 	mcopy -i $@ $@.tmp_linkkey ::LINK.KEY
 	# U06-9 (2026-09-26): the KERNEL no longer reads /fat/LINK.KEY — it reads
-	# reserved tail sector 0 (`msc_gadget::RESERVED_SECTOR_LINK_KEY`, LBA =
-	# image sectors - MSC_RESERVED_TAIL_SECTORS), which the USB MSC export
+	# reserved tail sector 0 (`reserved_tail::LINK_KEY`, LBA =
+	# image sectors - TAIL_SECTORS), as a link-key record, which the USB MSC export
 	# cannot address. The FAT copy above stays for the PEER tools
-	# (`tools/link_peer.py --image`, mtools). Same 32 bytes in both places.
+	# (`tools/link_peer.py --image`, mtools): the same 32 bytes, raw.
 	# Gate 182e: without this line every kernel-link row booted
 	# "key sector absent/unprovisioned".
-	dd if=$@.tmp_linkkey of=$@ bs=512 seek=$$(( $$(wc -c < $@) / 512 - 8 )) conv=notrunc 2>/dev/null
+	python3 tools/link_key_provision.py $@ $@.tmp_linkkey
 	@rm -f $@.tmp_linkkey
 	@echo "[DISK] FAT32 image with LINK.KEY: $@"
 
@@ -727,16 +729,16 @@ $(OUT_BUILD)/disk-configtamper.img: $(OUT_BUILD)/disk.img
 # U06-9 (2026-09-26): the KERNEL no longer reads /fat/LINK.KEY, and neither
 # does brain_client (`link_key_init` now goes through the kernel-hosted `linkkey` endpoint)
 # — see `build/disk-linkkey.img`'s own comment above for the mechanism this
-# mirrors (reserved tail sector 0, `msc_gadget::RESERVED_SECTOR_LINK_KEY`,
+# mirrors (reserved tail sector 0, `reserved_tail::LINK_KEY`,
 # unaddressable over the USB MSC export). Unlike that recipe, this one has no
 # peer that still needs a FAT copy: `fake_brain.py --link-key` reads
 # build/braincli_linkkey.bin directly on the host, so the `mcopy ::LINK.KEY`
 # line is dropped outright rather than kept alongside the reserved-sector
 # write.
-$(OUT_BUILD)/disk-braincli-linkkey.img: $(OUT_BUILD)/disk-braincli.img
+$(OUT_BUILD)/disk-braincli-linkkey.img: $(OUT_BUILD)/disk-braincli.img $(LINK_KEY_TOOL)
 	@cp $< $@
 	@dd if=/dev/urandom of=$(OUT_BUILD)/braincli_linkkey.bin bs=32 count=1 2>/dev/null
-	dd if=$(OUT_BUILD)/braincli_linkkey.bin of=$@ bs=512 seek=$$(( $$(wc -c < $@) / 512 - 8 )) conv=notrunc 2>/dev/null
+	python3 tools/link_key_provision.py $@ $(OUT_BUILD)/braincli_linkkey.bin
 	@echo "[DISK] FAT32 image with BRAINCLI autorun + reserved-sector link key: $@"
 
 # ── Secure-boot fixtures (Ed25519 accept / reject) ───────────────────────────

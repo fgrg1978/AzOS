@@ -51,40 +51,6 @@ const MSC_BLOCK_BUF_BYTES: usize = MSC_BLOCK_BYTES;
 /// CSW(FAIL) to the host.
 const MSC_FALLBACK_CAPACITY_SECTORS: u32 = 0;
 
-/// Sectors reserved at the TAIL of the physical block device, beyond the
-/// capacity this gadget reports over USB. U06-9/#30/#29/#26 —
-/// `/fat/LINK.KEY` and the entropy seed file (U09-8's fail-closed-unless-
-/// seeded fix) used to be ordinary FAT32 files, and `Fat32BlockDevice`
-/// exports the FAT32 volume block-for-block with no LUN/LBA restriction
-/// beyond simple bounds-checking — so anything reachable through the FAT32
-/// filesystem is also reachable, unauthenticated, over `READ_10`/`WRITE_10`
-/// the moment the DWC2 controller is wired. A file is not "off the exported
-/// LUN" merely by living outside `/fat`'s visible tree; it has to sit at an
-/// LBA this gadget never reports as present.
-///
-/// This reserves the highest `MSC_RESERVED_TAIL_SECTORS` sectors of the
-/// PHYSICAL device: `Fat32BlockDevice::new` subtracts them from the
-/// capacity handed to `azos_msc::dispatch` (which bounds-checks every
-/// `READ_10`/`WRITE_10` LBA against exactly that number), so a USB host on
-/// this port cannot address them at all — not "won't find them without the
-/// directory entry", genuinely out of the addressable range the SCSI layer
-/// will accept. See [`reserved_region_read`]/[`reserved_region_write`].
-///
-/// 8 sectors (4 KiB) — `LINK.KEY` (32 B) + a seed file with generous
-/// headroom for a versioned format, comfortably under one sector each.
-///
-/// DEPLOYMENT NOTE (left undone here, needs the $AZOS_OUT/build/image owner): this
-/// only protects anything if the FAT32 filesystem itself is sized to NOT
-/// reach these LBAs (`mkfs.fat`'s sector count, `tools/`/`Makefile`'s disk
-/// image sizing) — i.e. the physical device must be at least
-/// `fat32_tot_sec32 + MSC_RESERVED_TAIL_SECTORS` sectors, with the FAT
-/// filesystem occupying only the first part. On an image built without
-/// that headroom, [`reserved_region_read`]/[`reserved_region_write`] fail
-/// closed (`Err(())`, see below) rather than silently aliasing filesystem
-/// data — a missing key/seed is safe; a corrupted-looking read of the FAT
-/// volume's tail would not be.
-pub const MSC_RESERVED_TAIL_SECTORS: u32 = 8;
-
 /// Adapter from the kernel block driver to the MSC `BlockDevice`
 /// trait. The dispatcher uses this to bounds-check LBAs; the
 /// endpoint pump uses it to stream READ_10/WRITE_10 payloads.
@@ -110,95 +76,19 @@ impl Fat32BlockDevice {
         } else {
             raw as u32
         };
-        // `saturating_sub` — see `MSC_RESERVED_TAIL_SECTORS`. On a small
-        // dev/QEMU image without the reserved headroom this clamps to 0
+        // The reserved tail (`crate::reserved_tail`, U06-9/#30) is never
+        // reported: the SCSI layer bounds-checks every `READ_10`/`WRITE_10`
+        // LBA against this number, so a USB host cannot address the link
+        // key, the entropy seed or the device record at all.
+        // `saturating_sub`: on a small dev/QEMU image without the reserved
+        // headroom this clamps to 0
         // rather than underflowing: the gadget then reports zero capacity
         // (same fail-safe shape as `MSC_FALLBACK_CAPACITY_SECTORS`) instead
         // of a `u32` wraparound that would report a huge, wrong capacity.
-        let capacity_sectors = capacity_sectors.saturating_sub(MSC_RESERVED_TAIL_SECTORS);
+        let capacity_sectors = capacity_sectors.saturating_sub(crate::reserved_tail::TAIL_SECTORS);
         Self { capacity_sectors }
     }
 }
-
-/// Read `out` (≤ 512 bytes, one sector) from the reserved tail region at
-/// `offset_sectors` past the exported capacity — see
-/// `MSC_RESERVED_TAIL_SECTORS`. Fails closed (`Err(())`) rather than
-/// reading filesystem-owned sectors when the physical device is too small
-/// to have the reserved headroom at all, or when `offset_sectors` would run
-/// past it.
-pub fn reserved_region_read(offset_sectors: u32, out: &mut [u8]) -> Result<(), ()> {
-    if out.len() > MSC_BLOCK_BYTES || offset_sectors >= MSC_RESERVED_TAIL_SECTORS {
-        return Err(());
-    }
-    let raw = azos_drv_block::blkdev::capacity_sectors();
-    if raw < MSC_RESERVED_TAIL_SECTORS as u64 {
-        return Err(()); // no headroom provisioned on this image — fail closed
-    }
-    let lba = raw - u64::from(MSC_RESERVED_TAIL_SECTORS) + u64::from(offset_sectors);
-    let mut sector = [0u8; MSC_BLOCK_BYTES];
-    azos_drv_block::blkdev::read(lba, 1, &mut sector)?;
-    out.copy_from_slice(&sector[..out.len()]);
-    Ok(())
-}
-
-/// Write `data` (≤ 512 bytes, one sector) to the reserved tail region.
-/// Same fail-closed bounds as [`reserved_region_read`]. The rest of the
-/// sector beyond `data.len()` is zero-filled, not left as whatever the
-/// medium previously held, so a shorter write cannot leave a stale
-/// trailing fragment of a longer previous value on disk.
-pub fn reserved_region_write(offset_sectors: u32, data: &[u8]) -> Result<(), ()> {
-    if data.len() > MSC_BLOCK_BYTES || offset_sectors >= MSC_RESERVED_TAIL_SECTORS {
-        return Err(());
-    }
-    let raw = azos_drv_block::blkdev::capacity_sectors();
-    if raw < MSC_RESERVED_TAIL_SECTORS as u64 {
-        return Err(());
-    }
-    let lba = raw - u64::from(MSC_RESERVED_TAIL_SECTORS) + u64::from(offset_sectors);
-    let mut sector = [0u8; MSC_BLOCK_BYTES];
-    sector[..data.len()].copy_from_slice(data);
-    azos_drv_block::blkdev::write(lba, 1, &sector)
-}
-
-/// Reserved-region sector assignment (offsets into `reserved_region_*`).
-/// One name per consumer so a second one added later cannot silently
-/// collide with an existing sector by picking the same literal.
-pub const RESERVED_SECTOR_LINK_KEY: u32 = 0;
-/// U09-8 — the persisted entropy seed (owner decision 2026-09-26, V1.2):
-/// refuse to derive session keys on an unseeded pool, but persist a seed
-/// across boots so a board with no TRNG can be seeded from its second boot on.
-/// Format — see `azos_crypto::entropy::{seed_file_encode, seed_file_decode}`
-/// (the pure encode/decode; this module only does the raw sector I/O), one
-/// sector, `SEED_FILE_BYTES` (73) meaningful:
-///   offset 0    4   magic "SEED"
-///   offset 4    1   version (1)
-///   offset 5   64   seed bytes
-///   offset 69   4   integrity tag (first 4 bytes of SHA-256(magic‖version‖seed))
-/// A missing sector, bad magic/version, or tag mismatch is treated as "no
-/// seed" (mix nothing) — never as zero bytes, which would credit a known,
-/// attacker-guessable value as if it were entropy. At every boot
-/// (`install_entropy_seed` in `kernel/src/boot/entropy.rs`) the seed is mixed into the pool —
-/// credited only when no other source has seeded it — and a FRESH record drawn
-/// from the pool replaces it before anything else can draw, so a recorded old
-/// seed does not stay valid and a seed is never used twice. It is replaced
-/// again at an orderly power-off or reboot, best-effort: a robot's power can
-/// also just go away. A first seed for a board with no entropy device is
-/// written from the host with `tools/seed_provision.py`.
-///
-/// Unlike `LINK.KEY` this sector is WRITTEN, on every boot, so the kernel
-/// writes it only when `azos_crypto::entropy::seed_tail_check` finds no
-/// partition and no FAT32 volume reaching the tail (the `raw < 8` test in
-/// [`reserved_region_write`] cannot know where the filesystem ends).
-pub const RESERVED_SECTOR_ENTROPY_SEED: u32 = 1;
-/// Wave 11 — the device record: this device's id, which
-/// a `CONFIG.SIG` v2 must name, and the lowest `CONFIG.SIG` counter still
-/// accepted. Format: `azos_topology::device_record::DeviceRecord` (37
-/// bytes meaningful). Written from the host by `tools/device_provision.py`
-/// (floor 0) and by the kernel when it accepts a higher counter
-/// (`boot::config_auth`), only when `seed_tail_check` finds no filesystem
-/// reaching the tail, as for the entropy seed. A USB host cannot address it;
-/// a card reader can (only a hardware counter closes that).
-pub const RESERVED_SECTOR_DEVICE: u32 = 2;
 
 impl Default for Fat32BlockDevice {
     fn default() -> Self { Self::new() }

@@ -21218,9 +21218,10 @@ x=con; echo bb\$x-ok
             fi
             cp "$AZOS_OUT/build/disk-aarch64-sh.img.pristine" "$img"
         fi
-        # The board seed of this copy, the topology that enrols alice for it.
+        # The board seed of this copy (a link-key record in tail sector 0),
+        # the topology that enrols alice for it.
         dd if=/dev/urandom of="$work/seed" bs=32 count=1 2>/dev/null \
-            && dd if="$work/seed" of="$img" bs=512 seek=$(( $(wc -c < "$img") / 512 - 8 )) conv=notrunc 2>/dev/null \
+            && python3 tools/link_key_provision.py "$img" "$work/seed" \
             || { bad; echo "      could not write a board seed into the volume"; return; }
         seed="$(od -An -tx1 "$work/seed" | tr -d ' \n')"
         pub="$(login_enroll --seed "$seed" --user alice --owner 1 --passphrase "$pass")" \

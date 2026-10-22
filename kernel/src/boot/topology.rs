@@ -308,7 +308,7 @@ fn read_topo_floor() -> u64 {
         return 0;
     }
     let mut sector = [0u8; 512];
-    if crate::msc_gadget::reserved_region_read(azos_limits::TOPOLOGY_FLOOR_SECTOR as u32, &mut sector).is_err() {
+    if crate::reserved_tail::read(azos_limits::TOPOLOGY_FLOOR_SECTOR as u32, &mut sector).is_err() {
         return 0;
     }
     azos_topology::device_record::topo_floor_decode(&sector).unwrap_or(0)
@@ -320,7 +320,7 @@ fn read_topo_floor() -> u64 {
 fn raise_topo_floor(old: u64, new: u64) {
     let rec = azos_topology::device_record::topo_floor_encode(new);
     let ok = super::config_auth::tail_writable()
-        && crate::msc_gadget::reserved_region_write(azos_limits::TOPOLOGY_FLOOR_SECTOR as u32, &rec).is_ok()
+        && crate::reserved_tail::write(azos_limits::TOPOLOGY_FLOOR_SECTOR as u32, &rec).is_ok()
         && !matches!(azos_drv_block::blkdev::flush(),
                      Err(e) if e != azos_drv_api::block::FlushError::Unsupported);
     if ok {

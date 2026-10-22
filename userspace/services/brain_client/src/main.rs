@@ -912,8 +912,8 @@ static mut BRAIN_PK: Option<[u8; 32]> = None;
 /// U06-9 (2026-09-26): this used to open `/fat/LINK.KEY` directly — the
 /// SAME bytes the kernel's own load read, back off the exported FAT volume
 /// the reserved sector exists to take them off of. The kernel stopped
-/// keeping a FAT copy that day (`kernel/src/msc_gadget.rs`,
-/// `RESERVED_SECTOR_LINK_KEY`), so this now goes through
+/// keeping a FAT copy that day (`kernel/src/reserved_tail.rs`,
+/// `LINK_KEY`), so this now goes through
 /// the kernel-hosted `linkkey` endpoint instead: look up the endpoint the
 /// topology grants the autorun task (singleton, like the motor/sensor caps
 /// above — resource `0`), then read through it.

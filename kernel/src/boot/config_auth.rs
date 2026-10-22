@@ -8,7 +8,7 @@
 //! USB-exposed FAT volume. It is loaded only if `CONFIG.SIG` (format v2,
 //! `azos_topology::verify_config_sig_v2`) verifies against the embedded
 //! key for THIS device's id with a counter no lower than the floor in the
-//! device record (reserved tail sector `RESERVED_SECTOR_DEVICE`).
+//! device record (reserved tail sector `reserved_tail::DEVICE`).
 //!
 //! What happens otherwise is `azos_config::config_authority_decision`'s
 //! answer, a pure function the host suite covers:
@@ -32,42 +32,11 @@ use azos_topology::device_record::DeviceRecord;
 /// longer reads as the wrong length and is refused as malformed.
 const SIG_READ_MAX: usize = azos_topology::CONFIG_SIG_V2_LEN + 32;
 
-/// Is the reserved tail writable on this boot's medium: no partition and no
-/// FAT32 volume reaches it (`seed_tail_check`, the test the entropy seed uses
-/// before it rewrites its own sector).
+/// Is the reserved tail ours on this boot's medium: no partition and no
+/// FAT32 volume reaches it (`reserved_tail::verdict`, which its reads and
+/// writes also require).
 pub(crate) fn tail_writable() -> bool {
-    // Read once per boot (Phase G2 and the topology install both ask; the
-    // answer cannot change in between: nothing repartitions the medium).
-    // SAFETY: boot hart only, before any other task exists.
-    static mut TAIL: u8 = 0; // 0 unknown, 1 no, 2 yes
-    unsafe {
-        if TAIL == 0 {
-            TAIL = if tail_writable_uncached() { 2 } else { 1 };
-        }
-        TAIL == 2
-    }
-}
-
-fn tail_writable_uncached() -> bool {
-    use crate::boot::entropy_pool as el;
-    let cap = azos_drv_block::blkdev::capacity_sectors();
-    if cap == 0 {
-        return false;
-    }
-    let mut s0 = [0u8; 512];
-    if azos_drv_block::blkdev::read(0, 1, &mut s0).is_err() {
-        return false;
-    }
-    let mut parts = [(0u64, 0u64); 16];
-    let mut np = 0usize;
-    for i in 0..azos_drv_block::partition::count().min(parts.len() as u32) {
-        if let Some(p) = azos_drv_block::partition::extent(i) {
-            parts[np] = p;
-            np += 1;
-        }
-    }
-    let tail = u64::from(crate::msc_gadget::MSC_RESERVED_TAIL_SECTORS);
-    el::seed_tail_check(cap, tail, &parts[..np], &s0) == el::SeedTail::Clear
+    crate::reserved_tail::verdict() == azos_crypto::entropy::SeedTail::Clear
 }
 
 /// The device record, or `None` (no usable tail, unreadable, or no valid
@@ -95,7 +64,7 @@ fn read_device_record_uncached() -> Option<DeviceRecord> {
         return None;
     }
     let mut sector = [0u8; 512];
-    crate::msc_gadget::reserved_region_read(crate::msc_gadget::RESERVED_SECTOR_DEVICE, &mut sector).ok()?;
+    crate::reserved_tail::read(crate::reserved_tail::DEVICE, &mut sector).ok()?;
     DeviceRecord::decode(&sector)
 }
 
@@ -104,8 +73,7 @@ fn read_device_record_uncached() -> Option<DeviceRecord> {
 /// signed file stays acceptable until a later boot raises it.
 fn write_floor(rec: DeviceRecord, counter: u64) {
     let new = DeviceRecord { floor: counter, ..rec };
-    let ok = crate::msc_gadget::reserved_region_write(
-        crate::msc_gadget::RESERVED_SECTOR_DEVICE, &new.encode()).is_ok()
+    let ok = crate::reserved_tail::write(crate::reserved_tail::DEVICE, &new.encode()).is_ok()
         && !matches!(azos_drv_block::blkdev::flush(),
                      Err(e) if e != azos_drv_api::block::FlushError::Unsupported);
     if ok {

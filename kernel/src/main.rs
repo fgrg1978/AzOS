@@ -43,6 +43,9 @@ mod trap;
 // logic is covered by tests/host/msc-tests.
 #[allow(dead_code)]
 mod msc_gadget;
+// The reserved tail of the boot medium: the link key, the entropy seed, the
+// device record and the topology floor, past the end of the filesystem.
+mod reserved_tail;
 
 // The cold-restart supervisor for ring-3 drivers.
 mod drv_supervisor;
@@ -1364,7 +1367,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         // for the three preconditions this call site satisfies.
         boot_validate_and_verify_slots();
 
-        // ── Brain link key (reserved MSC tail sector) ───────────────────
+        // ── Brain link key (reserved tail sector) ───────────────────────
         // The 32-byte pre-shared key the brain link's Noise static keys derive
         // from (`azos_behavior::encrypt_link`, `azos_crypto::secure_channel`).
         // The brain's matching key lives in env `AZOS_BRAIN_LINK_KEY`. The link
@@ -1373,17 +1376,18 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         // downgraded to anything weaker.
         //
         // U06-9/#30 (2026-09-26): this used to be an ordinary FAT32 file,
-        // `/fat/LINK.KEY` — and `Fat32BlockDevice` (`msc_gadget.rs`) exports
-        // the whole FAT32 volume block-for-block with no LUN/LBA
-        // restriction, so ANY file on that volume is reachable,
-        // unauthenticated, over `READ_10` the moment the DWC2 controller is
-        // wired — not just the ones outside `/fat`'s visible directory
-        // tree. The key now lives in `msc_gadget`'s reserved tail sectors,
-        // which `Fat32BlockDevice::new()` subtracts from the capacity it
-        // reports over USB — genuinely unaddressable from that port, not
-        // merely undiscoverable. See `msc_gadget::MSC_RESERVED_TAIL_SECTORS`
-        // for the mechanism and its own deployment note (needs the disk
-        // image sized with the reserved headroom — `w2-b6-Makefile.diff`).
+        // `/fat/LINK.KEY`, and a USB mass-storage export of the volume reaches
+        // every file on it block for block. The key now lives in the reserved
+        // tail (`reserved_tail::LINK_KEY`), past the filesystem, at LBAs such an
+        // export never reports (`crate::reserved_tail` for the mechanism).
+        //
+        // The sector holds a link-key record (magic, version, key, integrity
+        // tag: `azos_crypto::secure_channel::link_key_record_decode`), and it is
+        // read only when no partition and no FAT32 volume reaches the tail
+        // (`reserved_tail::verdict`). Anything else is refused and the link
+        // stays down: a raw key, a torn write, or filesystem data on an image
+        // built without the headroom, whose bytes anyone who can write a file
+        // there would choose.
         //
         // Whether a boot without the key goes on is a policy decision, and
         // like secure boot it is fixed at COMPILE time by the
@@ -1394,6 +1398,25 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         //
         // The brain link is the Robot domain's (wave 11): without it there is
         // no link to key and nothing below runs.
+        //
+        // The one reader of the key, for this boot's load and for the ring-3
+        // door below: `Absent` also covers a tail that is not ours or a sector
+        // that does not read (no disk, an image without the headroom).
+        fn link_key_read(
+            key: &mut [u8; azos_crypto::secure_channel::PSK_BYTES],
+        ) -> Result<(), azos_crypto::secure_channel::LinkKeyFault> {
+            use azos_crypto::secure_channel::{link_key_record_decode, LinkKeyFault, LINK_KEY_RECORD_BYTES};
+            let mut rec = [0u8; LINK_KEY_RECORD_BYTES];
+            if crate::reserved_tail::read(crate::reserved_tail::LINK_KEY, &mut rec).is_err() {
+                return Err(LinkKeyFault::Absent);
+            }
+            let r = link_key_record_decode(&rec);
+            azos_crypto::ct::secure_zero(&mut rec);
+            let mut k = r?;
+            key.copy_from_slice(&k);
+            azos_crypto::ct::secure_zero(&mut k);
+            Ok(())
+        }
         #[cfg(feature = "use-robot")]
         let mut link_keyed = false;
         // No initialiser: every branch below assigns it, and a placeholder
@@ -1403,32 +1426,34 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         #[cfg(feature = "use-robot")]
         {
             let mut key_buf = [0u8; azos_behavior::encrypt_link::PSK_BYTES];
-            // `reserved_region_read` always fills `key_buf` completely on
-            // `Ok` (no partial-read case, unlike the old `vfs_read`) — the
-            // "wrong size" branch the FAT32 path needed is gone with it.
-            // `Err` covers both "no key ever provisioned" and "this image
-            // was built without the reserved headroom" (U06-9's deployment
-            // note) — both leave the link down.
-            if crate::msc_gadget::reserved_region_read(
-                crate::msc_gadget::RESERVED_SECTOR_LINK_KEY, &mut key_buf,
-            ).is_ok() && key_buf.iter().any(|b| *b != 0) {
-                // SAFETY: called exactly once during boot, single-threaded,
-                // before any task that reads the key is spawned.
-                if unsafe { azos_behavior::encrypt_link::install_link_key(&key_buf) } {
-                    kprintln!("[SECCHAN] link key loaded ({} bytes, reserved sector {}) — \
-                               brain link authenticated",
-                        key_buf.len(), crate::msc_gadget::RESERVED_SECTOR_LINK_KEY);
-                    link_keyed = true;
-                    link_key_reason = "key loaded";
-                } else {
-                    azos_drv_sys::kerr!("[SECCHAN] link key rejected by encrypt_link::install_link_key");
-                    link_key_reason = "key rejected by encrypt_link::install_link_key";
+            match link_key_read(&mut key_buf) {
+                Ok(()) => {
+                    // SAFETY: called exactly once during boot, single-threaded,
+                    // before any task that reads the key is spawned.
+                    if unsafe { azos_behavior::encrypt_link::install_link_key(&key_buf) } {
+                        kprintln!("[SECCHAN] link key loaded ({} bytes, reserved sector {}) — \
+                                   brain link authenticated",
+                            key_buf.len(), crate::reserved_tail::LINK_KEY);
+                        link_keyed = true;
+                        link_key_reason = "key loaded";
+                    } else {
+                        azos_drv_sys::kerr!("[SECCHAN] link key rejected by encrypt_link::install_link_key");
+                        link_key_reason = "key rejected by encrypt_link::install_link_key";
+                    }
                 }
-            } else {
-                azos_drv_sys::kwarn!("[SECCHAN] link key absent (reserved sector {} unreadable or \
-                           all-zero) — brain link down",
-                    crate::msc_gadget::RESERVED_SECTOR_LINK_KEY);
-                link_key_reason = "key sector absent/unprovisioned";
+                Err(azos_crypto::secure_channel::LinkKeyFault::Malformed) => {
+                    azos_drv_sys::kerr!("[SECCHAN] link key REFUSED: reserved sector {} holds no valid \
+                               link-key record (magic, version or integrity tag wrong, or a zero \
+                               key) — brain link down",
+                        crate::reserved_tail::LINK_KEY);
+                    link_key_reason = "key sector malformed (no valid link-key record)";
+                }
+                Err(azos_crypto::secure_channel::LinkKeyFault::Absent) => {
+                    azos_drv_sys::kwarn!("[SECCHAN] link key absent (reserved sector {} unreadable, \
+                               not ours, or all-zero) — brain link down",
+                        crate::reserved_tail::LINK_KEY);
+                    link_key_reason = "key sector absent/unprovisioned";
+                }
             }
             azos_crypto::ct::secure_zero(&mut key_buf);
         }
@@ -1436,18 +1461,16 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         // U06-9 (2026-09-26): the ring-3 door onto this same reserved
         // sector (the `linkkey` endpoint, `crates/core/syscall/src/link_key.rs`).
         // Registered right after the load above so the hook re-reads the
-        // exact same sector this boot just logged the state of — a ring-3
-        // caller holding the capability sees the same bytes, not a second,
-        // possibly different, read. `crates/core/syscall` cannot call
-        // `msc_gadget::reserved_region_read` directly (that module lives in
-        // `kernel/src`, above it in the dependency graph), same TCB reason
+        // exact same sector this boot just logged the state of, through the
+        // same reader — a ring-3 caller holding the capability sees the same
+        // bytes, not a second, possibly different, read. `crates/core/syscall`
+        // cannot call `crate::reserved_tail::read` directly (that module lives
+        // in `kernel/src`, above it in the dependency graph), same TCB reason
         // `ESTOP_HANDLER` is a hook and not a call.
         fn read_link_key_for_ring3(
             out: &mut [u8; azos_syscall::link_key::LINK_KEY_BYTES],
         ) -> bool {
-            crate::msc_gadget::reserved_region_read(
-                crate::msc_gadget::RESERVED_SECTOR_LINK_KEY, out,
-            ).is_ok() && out.iter().any(|b| *b != 0)
+            link_key_read(out).is_ok()
         }
         azos_syscall::link_key::set_link_key_read_hook(read_link_key_for_ring3);
 

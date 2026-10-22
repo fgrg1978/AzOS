@@ -204,8 +204,8 @@ pub fn fill(out: &mut [u8]) -> bool {
 // load-and-rotate rule, and the check that the storage is not filesystem
 // data. The kernel-side storage location (deliberately NOT the MSC-exported
 // FAT volume — the same USB-readable-PSK reasoning as U06-9/#30) is
-// `kernel/src/msc_gadget.rs`'s reserved tail sectors,
-// `RESERVED_SECTOR_ENTROPY_SEED`; the boot call site is
+// `kernel/src/reserved_tail.rs`'s reserved tail sectors,
+// `ENTROPY_SEED`; the boot call site is
 // `install_entropy_seed` in `kernel/src/boot/entropy.rs`.
 //
 // Format, one 512-byte sector, `SEED_FILE_BYTES` (73) meaningful:
@@ -363,7 +363,7 @@ pub enum SeedTail {
     Clear,
     /// A partition, or the bare FAT32 volume, extends into the tail: a write
     /// there would overwrite filesystem data. (An image built without the
-    /// headroom `MSC_RESERVED_TAIL_SECTORS` asks for, or an SD card whose FAT
+    /// headroom `reserved_tail::TAIL_SECTORS` asks for, or an SD card whose FAT
     /// partition runs to the last sector.)
     FilesystemReaches,
     /// No partition table and sector 0 is not a FAT32 boot sector, so there
@@ -377,10 +377,9 @@ pub enum SeedTail {
 /// `capacity_sectors` may be written. `partitions` are the published
 /// `(start, sectors)` pairs; `sector0` is the medium's first sector.
 ///
-/// `reserved_region_write` alone only checks that the device is larger than
-/// the tail — it cannot know where the filesystem ends — and the key it
-/// guarded was only ever read. A seed is rewritten on every boot, so this is
-/// the guard against a rewrite landing in FAT data.
+/// The kernel's reserved-tail reads and writes (`kernel/src/reserved_tail.rs`)
+/// all require `Clear`: a rewrite of the seed must not land in FAT data, and
+/// filesystem data must never be read as a key or a record.
 #[must_use]
 pub fn seed_tail_check(
     capacity_sectors: u64,

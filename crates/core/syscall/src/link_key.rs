@@ -6,9 +6,9 @@
 //! ## The gap this closes
 //!
 //! The kernel stopped reading the brain-link PSK from `/fat/LINK.KEY` on
-//! 2026-09-26 (`kernel/src/msc_gadget.rs`'s `RESERVED_SECTOR_LINK_KEY`): the
-//! key now lives in a reserved tail sector that `Fat32BlockDevice` never
-//! reports as present, so a USB host on the MSC port cannot address it.
+//! 2026-09-26 (`kernel/src/reserved_tail.rs`'s `LINK_KEY`): the key now
+//! lives, as a validated record, in a reserved tail sector past the
+//! filesystem that a USB mass-storage export never reports as present.
 //! `brain_client` reads it through [`Server`], on the kernel-hosted `linkkey`
 //! endpoint: refused unless the caller holds an endpoint capability with
 //! `READ` that the signed topology granted it.
@@ -18,8 +18,8 @@
 //! `crates/core/syscall` cannot depend on `kernel` -- same TCB reason `FileOps`
 //! (`file_ops.rs`) and `ESTOP_HANDLER` (`handlers.rs`) are hooks rather than
 //! calls: reading the reserved sector means calling
-//! `azos_drv_block::blkdev::read`/`msc_gadget::reserved_region_read`,
-//! and `msc_gadget` lives in `kernel/src`, above this crate in the
+//! `azos_drv_block::blkdev::read`/`reserved_tail::read`,
+//! and `reserved_tail` lives in `kernel/src`, above this crate in the
 //! dependency graph. The kernel installs the hook at boot (`kernel/src/main.rs`
 //! around the `[SECCHAN] link key loaded` log line).
 //!
@@ -59,7 +59,7 @@ use crate::khost::Caller;
 
 /// Length of the brain-link PSK. Mirrors
 /// `azos_behavior::encrypt_link::PSK_BYTES` (32) and
-/// `msc_gadget`'s reserved-sector format, restated here because this crate
+/// the reserved-sector record's key, restated here because this crate
 /// cannot depend on `azos_behavior` (this crate is core; `behavior` sits
 /// above it — same TCB boundary the hook below exists for) and the kernel
 /// has no crate at all that both sides could import it from.
@@ -69,14 +69,14 @@ pub const LINK_KEY_BYTES: usize = 32;
 /// boot.
 ///
 /// Same seam and the same reason as [`crate::handlers::ESTOP_HANDLER`]:
-/// the actual I/O (`msc_gadget::reserved_region_read`) lives in `kernel/src`,
+/// the actual I/O (`reserved_tail::read`) lives in `kernel/src`,
 /// above this crate in the dependency graph.
 ///
 /// **`None` fails CLOSED, not silently.** The hook returns `bool`, not just
-/// filling the buffer, precisely so a missing hook and a genuinely-absent or
-/// all-zero key answer through the SAME code path in
-/// [`Server::read`] as they do at kernel boot
-/// (`main.rs`'s `key_buf.iter().any(|b| *b != 0)` check) — a caller cannot
+/// filling the buffer, precisely so a missing hook and an absent or malformed
+/// key record answer through the SAME code path in
+/// [`Server::read`] as they do at kernel boot (`main.rs`'s `link_key_read`,
+/// the one reader both use) — a caller cannot
 /// distinguish "no hook installed" from "no key provisioned on this image"
 /// and must not be able to: both mean "the wire will be plaintext, act
 /// accordingly", which is exactly what `brain_client`'s FATAL-and-refuse-to-run

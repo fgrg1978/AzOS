@@ -4,8 +4,8 @@
 """seed_provision.py — write or read the persisted entropy seed on a disk image.
 
 The kernel keeps a persisted entropy seed in a reserved sector past the end of
-the FAT32 volume (`kernel/src/msc_gadget.rs`: the last MSC_RESERVED_TAIL_SECTORS
-= 8 sectors of the medium; `RESERVED_SECTOR_ENTROPY_SEED` = 1 is the sector this
+the FAT32 volume (`kernel/src/reserved_tail.rs`: the last TAIL_SECTORS
+= 8 sectors of the medium; `ENTROPY_SEED` = 1 is the sector this
 tool touches). At every boot it mixes that seed into the entropy pool and
 replaces it with fresh pool output. A board with no entropy device has no other
 source, so its first seed has to be put there once, from the host:

@@ -144,7 +144,7 @@ pub fn pool_fill(out: &mut [u8]) -> bool {
 /// (RISC-V `Zkr`/`seed` CSR where the SoC implements it, or an on-board TRNG
 /// peripheral) OR the persisted seed
 /// (`azos_crypto::entropy::{seed_file_encode,seed_file_decode}`,
-/// `kernel/src/msc_gadget.rs::RESERVED_SECTOR_ENTROPY_SEED`), which
+/// `kernel/src/reserved_tail.rs::ENTROPY_SEED`), which
 /// `install_entropy_seed` in `kernel/src/boot/entropy.rs` mixes in at boot and
 /// replaces before anything draws from the pool. The seed has to be
 /// provisioned once on a board with no entropy device (`tools/seed_provision.py`);

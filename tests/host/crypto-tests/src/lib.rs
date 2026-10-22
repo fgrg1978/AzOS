@@ -22,6 +22,9 @@ mod sig_tests;
 mod keystore_tests;
 
 #[cfg(test)]
+mod link_key_tests;
+
+#[cfg(test)]
 mod sha256_tests {
     use azos_crypto::sha256::{sha256, Sha256};
 

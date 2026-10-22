@@ -111,6 +111,7 @@ use crate::chachapoly::TAG_LEN;
 use crate::ct::{ct_eq, secure_zero};
 use crate::hkdf;
 use crate::noise::{self, CipherState, HandshakeState, Pattern, DH_LEN, HASH_LEN};
+use crate::sha256::Sha256;
 use crate::x25519::x25519_pubkey;
 
 // ── Constants (mirrored by `AzOSRobotBrain/secure_channel.py`) ──────────
@@ -216,6 +217,61 @@ pub fn kernel_static_key(psk: &[u8; PSK_BYTES]) -> [u8; DH_LEN] {
 /// the key the operator pinned instead).
 pub fn brain_static_key(psk: &[u8; PSK_BYTES]) -> [u8; DH_LEN] {
     derive_static(psk, BRAIN_STATIC_INFO)
+}
+
+// ── The link key's reserved-sector record ──────────────────────────────
+//
+// The key is provisioned into reserved tail sector `LINK_KEY`
+// (`kernel/src/reserved_tail.rs`) as a record, never as raw bytes: one
+// 512-byte sector, `LINK_KEY_RECORD_BYTES` (41) meaningful:
+//   offset  size  field
+//   0       4     magic "KLNK"
+//   4       1     version (1)
+//   5       32    key
+//   37      4     integrity tag (first 4 bytes of SHA-256(bytes 0..37))
+// Written from the host only (`tools/link_key_provision.py`); the kernel
+// never writes it. A raw key, a torn write or filesystem data in that sector
+// is not a key.
+
+pub const LINK_KEY_MAGIC: [u8; 4] = *b"KLNK";
+pub const LINK_KEY_VERSION: u8 = 1;
+pub const LINK_KEY_RECORD_BYTES: usize = 4 + 1 + PSK_BYTES + 4;
+
+/// Why a reserved sector yields no link key.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum LinkKeyFault {
+    /// Every byte of the record's span is zero: nothing was provisioned.
+    Absent,
+    /// Anything else that is not a valid record: a short buffer, a wrong
+    /// magic or version, a tag that does not match, or an all-zero key.
+    Malformed,
+}
+
+/// Decode the link-key record at the start of `data` (a reserved sector).
+pub fn link_key_record_decode(data: &[u8]) -> Result<[u8; PSK_BYTES], LinkKeyFault> {
+    if data.len() < LINK_KEY_RECORD_BYTES {
+        return Err(LinkKeyFault::Malformed);
+    }
+    let rec = &data[..LINK_KEY_RECORD_BYTES];
+    if rec.iter().all(|&b| b == 0) {
+        return Err(LinkKeyFault::Absent);
+    }
+    if rec[0..4] != LINK_KEY_MAGIC || rec[4] != LINK_KEY_VERSION {
+        return Err(LinkKeyFault::Malformed);
+    }
+    let body = &rec[..LINK_KEY_RECORD_BYTES - 4];
+    let mut h = Sha256::new();
+    h.update(body);
+    let d = h.finalize();
+    if !ct_eq(&rec[LINK_KEY_RECORD_BYTES - 4..], &d[..4]) {
+        return Err(LinkKeyFault::Malformed);
+    }
+    let mut key = [0u8; PSK_BYTES];
+    key.copy_from_slice(&body[5..]);
+    if key.iter().all(|&b| b == 0) {
+        return Err(LinkKeyFault::Malformed);
+    }
+    Ok(key)
 }
 
 // ── Framing ────────────────────────────────────────────────────────────

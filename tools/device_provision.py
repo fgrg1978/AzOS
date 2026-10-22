@@ -6,8 +6,8 @@
 The kernel binds a signed CONFIG.INI to ONE device and refuses an older one
 (CONFIG.SIG format v2, `crates/core/topology/src/verify.rs`). Both facts live
 in a reserved sector past the end of the FAT32 volume
-(`kernel/src/msc_gadget.rs`: the last MSC_RESERVED_TAIL_SECTORS = 8 sectors of
-the medium; `RESERVED_SECTOR_DEVICE` = 2 is the sector this tool touches),
+(`kernel/src/reserved_tail.rs`: the last TAIL_SECTORS = 8 sectors of
+the medium; `DEVICE` = 2 is the sector this tool touches),
 which the USB mass-storage export cannot address:
 
     tools/device_provision.py $AZOS_OUT/build/disk.img                     # random id, floor 0
