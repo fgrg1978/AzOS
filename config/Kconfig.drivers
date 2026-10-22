@@ -610,7 +610,7 @@ config FB_PANIC_SCREEN
 config DRV_VIRTIO_INPUT
     # cargo-feature: virtio-input base
     bool "virtio-input keyboards and mice (QEMU)"
-    default n if PROFILE_EMBEDDED
+    default n if HWCLASS_EMBEDDED
     default y
     help
       Kernel feature `virtio-input` (crates/drivers/virtio/src/virtio/
@@ -637,7 +637,7 @@ config DRV_VIRTIO_INPUT
 config DRV_VIRTIO_SND
     # cargo-feature: virtio-snd base
     bool "virtio-sound audio device (QEMU)"
-    default n if PROFILE_EMBEDDED
+    default n if HWCLASS_EMBEDDED
     default y
     help
       Kernel feature `virtio-snd` (crates/drivers/virtio/src/virtio/snd.rs,
@@ -668,7 +668,7 @@ config DRV_PS2
     # cargo-feature: ps2 base
     bool "PS/2 keyboard and mouse (i8042 controller, PC)"
     depends on ARCH_X86_64
-    default n if PROFILE_EMBEDDED
+    default n if HWCLASS_EMBEDDED
     default n if USE_ROBOT || USE_INDUSTRIAL
     default y
     help
@@ -1102,9 +1102,9 @@ config ADS1115_CONVERSION_POLL_ITERS
 
 config CAMERA_RING_SLOTS
     int "Camera frame ring: slots"
-    default 4 if PROFILE_EMBEDDED
-    default 4 if PROFILE_EDGE
-    default 8 if PROFILE_FLEET
+    default 4 if HWCLASS_EMBEDDED
+    default 4 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 8 if HWCLASS_SERVER
     default 4
     range 4 16
     help
@@ -1172,8 +1172,8 @@ menu "I2C bus transactions"
 config I2C_TXN_QUEUE_DEPTH
     int "I2C: queued transactions per bus"
     range 2 64
-    default 2 if PROFILE_EMBEDDED
-    default 8 if PROFILE_FLEET
+    default 2 if HWCLASS_EMBEDDED
+    default 8 if HWCLASS_SERVER
     default 4
     help
       A caller that may not wait for the

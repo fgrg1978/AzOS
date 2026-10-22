@@ -24,7 +24,7 @@ build-rvv: $(IMAGE_HASHES) $(QEMU_DEV_KCONFIG)
 	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) --features rvv,qemu $${isa:+--config "$$isa"} $(QEMU_DEV_BASE)
 	@$(MAKE) --no-print-directory prune
 
-# Build kernel with PROFILE_FLEET defconfig and the fleet linker script
+# Build kernel with the fleet defconfig (HWCLASS_SERVER) and the fleet linker script
 # (1022 MiB RAM region for the 256 MiB heap + per-task tables that
 # overflow the default 8 MiB linker).  This target is the kernel side of
 # the fleet defconfig and runs only on gateway boards with

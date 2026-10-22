@@ -373,7 +373,7 @@ def test_embedded_ram_size_comes_through() -> None:
             f"(kconfiglib is required, as for the gate's fleet row):\n{result.stderr}"
         )
         expanded = cfg.read_text(encoding="utf-8").splitlines()
-        assert "CONFIG_PROFILE_EMBEDDED=y" in expanded, "embedded profile lost in expansion"
+        assert "CONFIG_HWCLASS_EMBEDDED=y" in expanded, "embedded profile lost in expansion"
         ram = [l for l in expanded if l.startswith("CONFIG_RAM_SIZE=")]
         assert ram == ["CONFIG_RAM_SIZE=64"], (
             f"expanded embedded config carries {ram}, expected ['CONFIG_RAM_SIZE=64']"
@@ -414,7 +414,7 @@ def test_fleet_ram_size_holds_the_heap() -> None:
             f"olddefconfig failed on config/defconfigs/fleet.config:\n{result.stderr}"
         )
         expanded = cfg.read_text(encoding="utf-8").splitlines()
-        assert "CONFIG_PROFILE_FLEET=y" in expanded, "fleet profile lost in expansion"
+        assert "CONFIG_HWCLASS_SERVER=y" in expanded, "fleet profile lost in expansion"
         ram = [l for l in expanded if l.startswith("CONFIG_RAM_SIZE=")]
         assert ram == ["CONFIG_RAM_SIZE=1024"], (
             f"expanded fleet config carries {ram}, expected ['CONFIG_RAM_SIZE=1024']"
@@ -799,7 +799,7 @@ def test_page_size_reaches_the_build() -> None:
 # receipts (`base` tags on symbols that default y everywhere).
 ALWAYS_BASE = ("sched-o1-placement", "sched-ipc-affinity", "sched-timer-heap", "decisions-durable",
                "virtio-input", "virtio-snd", "rtc")
-# Base features of every profile but embedded (`default n if PROFILE_EMBEDDED`).
+# Base features of every hardware class but embedded (`default n if HWCLASS_EMBEDDED`).
 FULL_PROFILE_BASE = ("crashdump", "inspect")
 
 
@@ -980,7 +980,7 @@ def test_console_scrollback_follows_the_hardware_class() -> None:
     presets and 0 on HWCLASS_EMBEDDED (the firmware and wearable presets, and
     any preset forced onto a small board); a value set by hand wins inside the
     symbol's range 0..4096 and is refused outside it.
-    Canary: drop the PROFILE_EMBEDDED default -> the firmware row reads 200."""
+    Canary: drop the HWCLASS_EMBEDDED default -> the firmware row reads 200."""
     import tempfile
 
     def val(lines: list[str], t: Path, name: str) -> str:
@@ -1163,7 +1163,7 @@ def test_presets_set_the_axes_and_certifiable_forces_signing() -> None:
                      "CONFIG_DECISION_REFUSALS_DURABLE=y"):
             assert want in r, f"PRESET_ROBOT: {want} missing"
         s = _expand(["CONFIG_PRESET_SERVER=y", "CONFIG_ARCH_X86_64=y"], t, "s.config")
-        for want in ("CONFIG_USE_SERVER=y", "CONFIG_PROFILE_FLEET=y",
+        for want in ("CONFIG_USE_SERVER=y", "CONFIG_HWCLASS_SERVER=y",
                      "CONFIG_SECURITY_HARDENED=y", "CONFIG_VIRT_HOSTED=y",
                      "CONFIG_OTA_SIG_MANDATORY=y"):
             assert want in s, f"PRESET_SERVER: {want} missing"

@@ -261,7 +261,7 @@ def render(root):
     a("")
     a("choice CONSOLE_PROGRAM")
     a('    prompt "Console program (started on the console at boot)"')
-    a("    default CONSOLE_PROGRAM_SH if PROFILE_EDGE || PROFILE_FLEET")
+    a("    default CONSOLE_PROGRAM_SH if !HWCLASS_EMBEDDED")
     a("    default CONSOLE_PROGRAM_NONE")
     a("    help")
     for ln in wrap(

@@ -144,7 +144,7 @@ impl CapHandle {
     ///
     /// **Spent one bit of it on 2026-09-18**, 6 → 5, which is precisely what
     /// the sentence above reserved it for. `config/Kconfig.limits` has declared
-    /// `MAX_CAPS_PER_TASK = 512` for `PROFILE_FLEET` since that profile
+    /// `MAX_CAPS_PER_TASK = 512` for the Fleet tier (`HWCLASS_SERVER`) since it
     /// existed, while `SLOT_BITS` addressed only 256 — so the fleet kernel
     /// was built with `pack()` silently truncating slot indices, and slot
     /// 256 answered to the same handle as slot 0. Two different capabilities,

@@ -462,7 +462,7 @@ fleet_config() {
       && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/fleet.config" \
       && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/fleet.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/fleet.config" python3 -m olddefconfig >/dev/null 2>&1) \
-      && grep -q '^CONFIG_PROFILE_FLEET=y$' "$tmp/fleet.config" \
+      && grep -q '^CONFIG_HWCLASS_SERVER=y$' "$tmp/fleet.config" \
       && { cmp -s "$tmp/fleet.config" "$FLEET_CONFIG" || cp "$tmp/fleet.config" "$FLEET_CONFIG"; }
     rc=$?
     rm -rf "$tmp"
@@ -486,7 +486,7 @@ fleet_config_applied() {
         bad; echo "      no generated.rs under $rel was built from $FLEET_CONFIG ($sha)"
         return
     fi
-    for key in PROFILE_FLEET TCP_MAX_CONNS TCP_BUF_SIZE RAM_SIZE; do
+    for key in HWCLASS_SERVER TCP_MAX_CONNS TCP_BUF_SIZE RAM_SIZE; do
         val="$(sed -n "s/^CONFIG_${key}=//p" "$FLEET_CONFIG")"
         [ "$val" = "y" ] && val="true"
         if ! grep -qE "^pub const ${key}: [a-z0-9]+ = ${val};$" "$gen"; then
@@ -519,7 +519,7 @@ embedded_config() {
       && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/embedded.config" \
       && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/embedded.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/embedded.config" python3 -m olddefconfig >/dev/null 2>&1) \
-      && grep -q '^CONFIG_PROFILE_EMBEDDED=y$' "$tmp/embedded.config" \
+      && grep -q '^CONFIG_HWCLASS_EMBEDDED=y$' "$tmp/embedded.config" \
       && { cmp -s "$tmp/embedded.config" "$EMBEDDED_CONFIG" || cp "$tmp/embedded.config" "$EMBEDDED_CONFIG"; }
     rc=$?; rm -rf "$tmp"; return $rc
 }
@@ -530,7 +530,7 @@ embedded_config_applied() {
     sha="$(shasum -a 256 "$EMBEDDED_CONFIG" | cut -c1-12)"
     gen="$(grep -l "Config SHA-256 prefix: ${sha} " "$rel"/build/azos_limits-*/out/generated.rs 2>/dev/null | sed -n 1p)"
     if [ -z "$gen" ]; then bad; echo "      no generated.rs under $rel was built from $EMBEDDED_CONFIG ($sha)"; return 1; fi
-    for key in PROFILE_EMBEDDED RAM_SIZE KERNEL_HEAP_SIZE; do
+    for key in HWCLASS_EMBEDDED RAM_SIZE KERNEL_HEAP_SIZE; do
         val="$(sed -n "s/^CONFIG_${key}=//p" "$EMBEDDED_CONFIG")"; [ "$val" = "y" ] && val="true"
         if ! grep -qE "^pub const ${key}: [a-z0-9]+ = ${val};$" "$gen"; then
             bad; echo "      $gen does not carry ${key} = ${val} from $EMBEDDED_CONFIG"; return 1; fi

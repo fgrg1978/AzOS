@@ -60,8 +60,8 @@ board, RAM, hardware class).
 | Virtualization role | `VIRT_*` | `NONE`, `HOSTED`, `SPLIT`, `STATIC` | The hypervisor role (see [virtualization.md](virtualization.md)). |
 | Build type | `BUILD_TYPE_*` | `DEV`, `RELEASE`, `CERTIFIABLE` | Set by the board, not the preset: a QEMU image is a development build. A release build forces off the test-only machinery (`KTEST`, `CHAOS`, `CANARY_RUNTIME`) and refuses the test signing key. |
 
-`PROFILE_EMBEDDED`, `PROFILE_EDGE` and `PROFILE_FLEET` are derived from `HWCLASS`; the
-limits in `config/Kconfig.limits` default by them.
+The limits in `config/Kconfig.limits` default by `HWCLASS` directly: `HWCLASS_EMBEDDED`,
+`HWCLASS_SBC || HWCLASS_DESKTOP` (the edge tables) and `HWCLASS_SERVER` (the fleet tables).
 
 | Preset | USE | Real-time class | Security | Notes |
 |---|---|---|---|---|
@@ -181,9 +181,9 @@ Source: `tools/kconfig_to_cargo.py`, `tools/kconfig_lint.py`, `crates/core/limit
    config MY_TABLE_ENTRIES
        int "Entries in my table"
        range 8 4096
-       default 16   if PROFILE_EMBEDDED
-       default 64   if PROFILE_EDGE
-       default 1024 if PROFILE_FLEET
+       default 16   if HWCLASS_EMBEDDED
+       default 1024 if HWCLASS_SERVER
+       default 64
        help
          What the table holds, and the cost in RAM per entry.
    ```

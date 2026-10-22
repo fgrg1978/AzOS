@@ -16,9 +16,9 @@ menu "Resource Limits"
 config MAX_TASKS
     int "Maximum schedulable tasks"
     range 8 16384
-    default 32   if PROFILE_EMBEDDED
-    default 64   if PROFILE_EDGE
-    default 4096 if PROFILE_FLEET
+    default 32   if HWCLASS_EMBEDDED
+    default 64   if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 4096 if HWCLASS_SERVER
     help
       Number of task slots: processes and threads share this one static
       table.  Everything below is allocated at build time for all MAX_TASKS
@@ -69,7 +69,7 @@ config NR_CPUS
     default 8  if BOARD_K1
     default 4  if BOARD_VF2
     default 4  if BOARD_RPI5
-    default 4  if PROFILE_EMBEDDED
+    default 4  if HWCLASS_EMBEDDED
     default 64
     help
       The largest CPU id plus one this kernel can run.  A CPU id is the dense
@@ -133,10 +133,10 @@ config SECONDARY_STACK_SIZE_KB
 config TCP_MAX_CONNS
     int "Maximum simultaneous TCP connections"
     range 1 65536
-    default 4    if PROFILE_EMBEDDED
-    default 64   if USE_GATEWAY && PROFILE_EDGE
-    default 8    if PROFILE_EDGE
-    default 1024 if PROFILE_FLEET
+    default 4    if HWCLASS_EMBEDDED
+    default 64   if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 8    if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 1024 if HWCLASS_SERVER
     help
       Static connection-control-block (CCB) array size.  USE_GATEWAY
       on the Edge profile starts it at 64, with TCP_BUF_SIZE 16384.  Each entry
@@ -161,10 +161,10 @@ config TCP_MAX_CONNS
 config MAX_SOCKETS
     int "Maximum total sockets (TCP + UDP)"
     range 1 65536
-    default 8    if PROFILE_EMBEDDED
-    default 128  if USE_GATEWAY && PROFILE_EDGE
-    default 16   if PROFILE_EDGE
-    default 2048 if PROFILE_FLEET
+    default 8    if HWCLASS_EMBEDDED
+    default 128  if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16   if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 2048 if HWCLASS_SERVER
     help
       Combined pool for all socket types: the table of socket descriptors.
       TCP connection state is not in it (see TCP_MAX_CONNS and TCP_BUF_SIZE),
@@ -187,9 +187,9 @@ config MAX_SOCKETS
 config MAX_FDS_PER_PROC
     int "File descriptors per process"
     range 4 4096
-    default 8   if PROFILE_EMBEDDED
-    default 16  if PROFILE_EDGE
-    default 256 if PROFILE_FLEET
+    default 8   if HWCLASS_EMBEDDED
+    default 16  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 256 if HWCLASS_SERVER
     help
       Size of the kernel's file-descriptor table, for the WHOLE MACHINE.
       `crates/fs/fs/src/vfs.rs` re-exports this as `MAX_FDS`, the length of the
@@ -218,9 +218,9 @@ config MAX_FDS_PER_PROC
 config MAX_FDS_TOTAL
     int "Global file descriptor table size"
     range 16 262144
-    default 128   if PROFILE_EMBEDDED
-    default 2048  if PROFILE_EDGE
-    default 16384 if PROFILE_FLEET
+    default 128   if HWCLASS_EMBEDDED
+    default 2048  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16384 if HWCLASS_SERVER
     help
       System-wide FD table.  The build-time validator in
       `crates/core/limits/build.rs` enforces:
@@ -237,7 +237,7 @@ config MAX_FDS_TOTAL
         fleet    (MAX_TASKS=4096) -> 16384  (4x  the floor)
       A higher value changes nothing but this check. (Fixed
       2026-09-26, V2.6: this previously said "edge (512 tasks)" against
-      MAX_TASKS' own PROFILE_EDGE default of 64 — stale copy-paste, not a
+      MAX_TASKS' own SBC/desktop (Edge) default of 64 — stale copy-paste, not a
       real 512-task edge configuration that ever existed.)
 
       Cost: none.  No table is sized by this option: it is read only by the
@@ -252,9 +252,9 @@ config MAX_FDS_TOTAL
 config MAX_PORTS
     int "Maximum IPC ports (rendezvous endpoints)"
     range 4 65536
-    default 8   if PROFILE_EMBEDDED
-    default 32  if PROFILE_EDGE
-    default 512 if PROFILE_FLEET
+    default 8   if HWCLASS_EMBEDDED
+    default 32  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 512 if HWCLASS_SERVER
     help
       Named port table size.  Ports are used for capability-based
       rendezvous.  Current codebase value: 32 (crates/core/ipc/src/port.rs).
@@ -455,7 +455,7 @@ config IPC_MSG_INLINE_WORDS
 config IPC_MSG_MAX_CAPS
     int "Capabilities one IPC message may carry (all or nothing)"
     range 1 8
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       Ceiling on the capability entries of one v2 message descriptor. The
@@ -469,9 +469,9 @@ config IPC_MSG_MAX_CAPS
 config IPC_ENDPOINTS
     int "Fast-call endpoints the machine may have live at once"
     range 4 255
-    default 32  if PROFILE_EMBEDDED
-    default 32  if PROFILE_EDGE
-    default 128 if PROFILE_FLEET
+    default 32  if HWCLASS_EMBEDDED
+    default 32  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 128 if HWCLASS_SERVER
     default 32
     help
       Size of the endpoint pool (crates/core/ipc/src/endpoint.rs) and of
@@ -488,9 +488,9 @@ config IPC_ENDPOINTS
 config IPC_ENDPOINTS_PER_TASK
     int "Endpoints one task may own at once"
     range 1 64
-    default 8  if PROFILE_EMBEDDED
-    default 8  if PROFILE_EDGE
-    default 16 if PROFILE_FLEET
+    default 8  if HWCLASS_EMBEDDED
+    default 8  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16 if HWCLASS_SERVER
     default 8
     help
       Per-task quota on endpoint creation, counted under the lock that
@@ -526,8 +526,8 @@ config FUTEX_REQUEUE
 config FUTEX_PRIVATE_BUCKETS
     int "Futex hash buckets per domain bank (private keys)"
     range 1 128
-    default 4   if PROFILE_EMBEDDED
-    default 16  if PROFILE_FLEET
+    default 4   if HWCLASS_EMBEDDED
+    default 16  if HWCLASS_SERVER
     default 8
     help
       A process-private futex key (process id, address) hashes into the
@@ -539,8 +539,8 @@ config FUTEX_PRIVATE_BUCKETS
 config FUTEX_DOMAIN_BANKS
     int "Futex hash banks (one per process, modulo collisions)"
     range 1 256
-    default 8   if PROFILE_EMBEDDED
-    default 64  if PROFILE_FLEET
+    default 8   if HWCLASS_EMBEDDED
+    default 64  if HWCLASS_SERVER
     default 16
     help
       Private futex keys of one process hash into one bank, chosen by its
@@ -551,8 +551,8 @@ config FUTEX_DOMAIN_BANKS
 config FUTEX_SHARED_BUCKETS
     int "Futex hash buckets for shared keys (shm words, notify)"
     range 1 1024
-    default 8   if PROFILE_EMBEDDED
-    default 64  if PROFILE_FLEET
+    default 8   if HWCLASS_EMBEDDED
+    default 64  if HWCLASS_SERVER
     default 32
     help
       Keys (region, offset), from the native notify calls and from Linux
@@ -648,7 +648,7 @@ config KMUTEX_STEAL_RULE
 config KMUTEX_PARK_BUCKETS
     int "Kernel mutex: hashed sleep queues shared by every Mutex"
     range 1 1024
-    default 8 if PROFILE_EMBEDDED || NR_CPUS = 1
+    default 8 if HWCLASS_EMBEDDED || NR_CPUS = 1
     default 32
     help
       A contended Mutex sleeps on one of these wait queues, chosen by the
@@ -674,7 +674,7 @@ config FUTEX_PI
 config FUTEX_PI_EXIT_RETRY_US
     int "PI futex: back-off (us) before a locker retries a word whose owner is exiting"
     range 1 100000
-    default 200 if PROFILE_EMBEDDED
+    default 200 if HWCLASS_EMBEDDED
     default 100
     help
       crates/core/sched/src/futex.rs (N10c, owner decision 10-10, Linux
@@ -693,9 +693,9 @@ config FUTEX_PI_EXIT_RETRY_US
 config MAX_CAPS_TOTAL
     int "Total capability pool size"
     range 64 1048576
-    default 256   if PROFILE_EMBEDDED
-    default 1024  if PROFILE_EDGE
-    default 65536 if PROFILE_FLEET
+    default 256   if HWCLASS_EMBEDDED
+    default 1024  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 65536 if HWCLASS_SERVER
     help
       Size of the capability-declaration pool of the signed topology
       (crates/core/topology/src/types.rs, caps_pool): the number of `caps`
@@ -738,9 +738,9 @@ config SYSCALL_FILTER_MAX
 config MAX_CAPS_PER_TASK
     int "Maximum capabilities per task"
     range 8 512
-    default 32  if PROFILE_EMBEDDED
-    default 256 if PROFILE_EDGE
-    default 512 if PROFILE_FLEET
+    default 32  if HWCLASS_EMBEDDED
+    default 256 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 512 if HWCLASS_SERVER
     help
       Per-task capability slot count.  Limits how many IPC endpoints,
       memory regions, and devices a single process can hold at once.
@@ -759,8 +759,8 @@ config MAX_CAPS_PER_TASK
 config CAP_LOOKUP_CACHE
     int "Capability lookup cache: entries per task table (0 = none, a power of two)"
     range 0 64
-    default 4  if PROFILE_EMBEDDED
-    default 16 if PROFILE_FLEET
+    default 4  if HWCLASS_EMBEDDED
+    default 16 if HWCLASS_SERVER
     default 8
     help
       SYS_CAP_INFO (and `CapTable::lookup`) finds a capability by kind and
@@ -783,7 +783,7 @@ config CAP_LOOKUP_CACHE
 config WARRANT_DEPTH_MAX
     int "Warrant tree: longest derivation chain below a root capability"
     range 1 15
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       Every capability slot records the slot it was derived from (a dup
@@ -836,9 +836,9 @@ config CAP_SLOT_EXT
 config KERNEL_HEAP_SIZE
     int "Kernel heap size (KiB)"
     range 64 1048576
-    default 512    if PROFILE_EMBEDDED
-    default 32768  if PROFILE_EDGE
-    default 262144 if PROFILE_FLEET
+    default 512    if HWCLASS_EMBEDDED
+    default 32768  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 262144 if HWCLASS_SERVER
     help
       Heap region the kernel reserves at boot right after _kernel_end
       (kernel/src/entry/{riscv64,aarch64}/boot_hooks.rs), not part of the image.  It must be free RAM:
@@ -911,7 +911,7 @@ config KHEAP_SLAB_CLASSES
 config KHEAP_SLAB_MAX_CLASS
     int "Largest request served by the cache (bytes)"
     range 16 4096
-    default 256  if PROFILE_EMBEDDED
+    default 256  if HWCLASS_EMBEDDED
     default 2048
     help
       Classes in KHEAP_SLAB_CLASSES above this are dropped; larger requests
@@ -922,8 +922,8 @@ config KHEAP_SLAB_MAX_CLASS
 config KHEAP_SLAB_MAG_DEPTH
     int "Magazine depth (objects)"
     range 1 1024
-    default 8  if PROFILE_EMBEDDED
-    default 64 if PROFILE_FLEET
+    default 8  if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
     default 32
     help
       Most objects one magazine holds. Each CPU has two per class, so this
@@ -935,8 +935,8 @@ config KHEAP_SLAB_MAG_DEPTH
 config KHEAP_SLAB_CPU_CACHE_KB
     int "Most memory one CPU caches in magazines (KiB)"
     range 1 65536
-    default 2   if PROFILE_EMBEDDED
-    default 128 if PROFILE_FLEET
+    default 2   if HWCLASS_EMBEDDED
+    default 128 if HWCLASS_SERVER
     default 32
     help
       Split evenly between classes; a class's depth is the smaller of
@@ -947,8 +947,8 @@ config KHEAP_SLAB_CPU_CACHE_KB
 config KHEAP_SLAB_DEPOT_MAGS
     int "Full magazines kept per class in the depot"
     range 0 256
-    default 1 if PROFILE_EMBEDDED
-    default 8 if PROFILE_FLEET
+    default 1 if HWCLASS_EMBEDDED
+    default 8 if HWCLASS_SERVER
     default 4
     help
       The depot moves objects between CPUs a magazine at a time. A CPU
@@ -959,8 +959,8 @@ config KHEAP_SLAB_DEPOT_MAGS
 config KHEAP_SLAB_BYTES
     int "Smallest slab (bytes, a power of two)"
     range 1024 65536
-    default 1024 if PROFILE_EMBEDDED
-    default 8192 if PROFILE_FLEET
+    default 1024 if HWCLASS_EMBEDDED
+    default 8192 if HWCLASS_SERVER
     default 4096
     help
       A class's slab is the smallest power of two from this that holds
@@ -971,7 +971,7 @@ config KHEAP_SLAB_BYTES
 config KHEAP_SLAB_MIN_OBJS
     int "Fewest objects in a slab"
     range 1 256
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       A slab grows (doubling from KHEAP_SLAB_BYTES) until it holds this many
@@ -980,8 +980,8 @@ config KHEAP_SLAB_MIN_OBJS
 config KHEAP_SLAB_KEEP_EMPTY
     int "Empty slabs a class keeps"
     range 0 64
-    default 0 if PROFILE_EMBEDDED
-    default 2 if PROFILE_FLEET
+    default 0 if HWCLASS_EMBEDDED
+    default 2 if HWCLASS_SERVER
     default 1
     help
       A slab whose last object is freed goes back to the heap unless its
@@ -1005,9 +1005,9 @@ config KHEAP_SLAB_DEBUG
 config RING3_MEM_PAGES_DEFAULT
     int "Frame budget of a ring-3 topology row that declares none (pages)"
     range 16 1048576
-    default 64   if PROFILE_EMBEDDED
-    default 1024 if PROFILE_EDGE
-    default 4096 if PROFILE_FLEET
+    default 64   if HWCLASS_EMBEDDED
+    default 1024 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 4096 if HWCLASS_SERVER
     help
       Every ring-3 row of the signed topology (a row named
       after an .ELF image, or `autorun`) has a frame budget.  A row
@@ -1024,7 +1024,7 @@ config RING3_MEM_PAGES_DEFAULT
 config TOOLBOX_INSTANCES
     int "Live TOOLBOX.ELF processes the shell can run at once"
     range 2 32
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       The user shell runs each stage of a pipeline and each background job as
@@ -1041,9 +1041,9 @@ config TOOLBOX_INSTANCES
 config AUTORUN_MEM_PAGES
     int "Frame budget of the default topology's autorun row (pages)"
     range 16 1048576
-    default 256  if PROFILE_EMBEDDED
-    default 2048 if PROFILE_EDGE
-    default 2048 if PROFILE_FLEET
+    default 256  if HWCLASS_EMBEDDED
+    default 2048 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 2048 if HWCLASS_SERVER
     help
       The `autorun` row of the built-in topology
       (crates/core/topology/src/builder.rs), shared by every autorun image
@@ -1067,9 +1067,9 @@ config AUTORUN_MEM_PAGES
 config MEM_KERNEL_RESERVE_KB
     int "RAM memory admission keeps back for the kernel (KiB)"
     range 0 1048576
-    default 256   if PROFILE_EMBEDDED
-    default 2048  if PROFILE_EDGE
-    default 16384 if PROFILE_FLEET
+    default 256   if HWCLASS_EMBEDDED
+    default 2048  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16384 if HWCLASS_SERVER
     help
       Frames the kernel may still take after boot-time memory admission
       and that no task budget covers: page tables of kernel mappings,
@@ -1216,9 +1216,9 @@ endchoice
 config MM_ZPOOL_ENTRIES
     int "Compressed-pool index entries (pages it can hold)"
     range 16 262144
-    default 256   if PROFILE_EMBEDDED
-    default 2048  if PROFILE_EDGE
-    default 16384 if PROFILE_FLEET
+    default 256   if HWCLASS_EMBEDDED
+    default 2048  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16384 if HWCLASS_SERVER
     help
       Read only with MM_RECLAIM_COMPRESS. The most pages the pool holds at
       once, compressed, zero and same-filled together: one index entry each
@@ -1236,9 +1236,9 @@ config MM_ZPOOL_ENTRIES
 config MM_ZPOOL_SEGMENTS
     int "Compressed-pool segments (ceiling on its memory)"
     range 1 1024
-    default 16  if PROFILE_EMBEDDED
-    default 64  if PROFILE_EDGE
-    default 256 if PROFILE_FLEET
+    default 16  if HWCLASS_EMBEDDED
+    default 64  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 256 if HWCLASS_SERVER
     help
       Read only with MM_RECLAIM_COMPRESS. Compressed blobs are packed into
       segments of MM_ZPOOL_SEGMENT_PAGES contiguous frames (XNU's
@@ -1255,7 +1255,7 @@ config MM_ZPOOL_SEGMENTS
 config MM_ZPOOL_SEGMENT_PAGES
     int "Frames per compressed-pool segment"
     range 1 256
-    default 4  if PROFILE_EMBEDDED
+    default 4  if HWCLASS_EMBEDDED
     default 16
     help
       Read only with MM_RECLAIM_COMPRESS. A segment is one physically
@@ -1281,9 +1281,9 @@ config MM_ZPOOL_MAX_RATIO_PCT
 config MM_ZPOOL_DOMAIN_KIB
     int "Default compressed-pool quota per Domain (KiB; 0 = none)"
     range 0 1048576
-    default 1024 if PROFILE_EMBEDDED
-    default 4096 if PROFILE_EDGE
-    default 0    if PROFILE_FLEET
+    default 1024 if HWCLASS_EMBEDDED
+    default 4096 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 0    if HWCLASS_SERVER
     help
       Read only with MM_RECLAIM_COMPRESS. Compressed bytes are charged to
       the Domain that owned the page (H5), not to a global compressor: a
@@ -1366,9 +1366,9 @@ config MM_RECLAIM_POLL_MS
 config MM_AGING_CHUNKS
     int "Page-age table: chunks of 64 pages the reclaimer tracks"
     range 16 65536
-    default 256  if PROFILE_EMBEDDED
-    default 2048 if PROFILE_EDGE
-    default 4096 if PROFILE_FLEET
+    default 256  if HWCLASS_EMBEDDED
+    default 2048 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 4096 if HWCLASS_SERVER
     help
       Read only with MM_RECLAIM_COMPRESS. The reclaimer walks a Domain's
       resident anonymous pages oldest first (crates/core/mm/src/aging.rs):
@@ -1483,9 +1483,9 @@ config MM_SWAP_ENCRYPT
 config MM_SWAP_SEGMENTS
     int "Segments that can be swapped out at once (swap slots)"
     range 1 4096
-    default 64   if PROFILE_EMBEDDED
-    default 512  if PROFILE_EDGE
-    default 4096 if PROFILE_FLEET
+    default 64   if HWCLASS_EMBEDDED
+    default 512  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 4096 if HWCLASS_SERVER
     help
       Read only with MM_SWAP_BACKEND. The most segments of the compressed
       pool (MM_ZPOOL_SEGMENT_PAGES frames each) the swap area holds at once;
@@ -1577,9 +1577,9 @@ config MM_SWAP_FILE_RUNS
 config DMA_POOL_FLOOR_KB
     int "Minimum DMA pool reserved at boot (KiB)"
     range 0 1048576
-    default 256  if PROFILE_EMBEDDED
-    default 2048 if PROFILE_EDGE
-    default 2048 if PROFILE_FLEET
+    default 256  if HWCLASS_EMBEDDED
+    default 2048 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 2048 if HWCLASS_SERVER
     help
       The physically contiguous pool reserved at boot for
       device DMA.  The pool is the larger of this floor and the sum of
@@ -1607,7 +1607,7 @@ config PMM_MAX_ORDER
 config PMM_PCP_BATCH
     int "Frames a hart moves between its page cache and the buddy lists at once"
     range 1 256
-    default 4  if PROFILE_EMBEDDED
+    default 4  if HWCLASS_EMBEDDED
     default 16
     help
       Each hart keeps a stack of free single frames (per-hart cache). An
@@ -1622,7 +1622,7 @@ config PMM_PCP_BATCH
 config PMM_PCP_HIGH
     int "Most single frames one hart keeps in its page cache"
     range 2 4096
-    default 8  if PROFILE_EMBEDDED
+    default 8  if HWCLASS_EMBEDDED
     default 64
     help
       A free that finds the cache holding this many drains PMM_PCP_BATCH
@@ -1823,9 +1823,9 @@ config INTERRUPT_STACK_SIZE_KB
 config WCET_MAX_POINTS
     int "Maximum WCET measurement points (fixed + per-function)"
     range 16 1024
-    default 32   if PROFILE_EMBEDDED
-    default 128  if PROFILE_EDGE
-    default 512  if PROFILE_FLEET
+    default 32   if HWCLASS_EMBEDDED
+    default 128  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 512  if HWCLASS_SERVER
     default 32
     help
       Total slots in the WCET measurement table.  The first 9 are
@@ -1925,9 +1925,9 @@ config MAX_IO_RINGS
 config MAX_MEMOBJS
     int "Maximum MemObjs system-wide (shared-memory regions and kernel regions)"
     range 4 256
-    default 8   if PROFILE_EMBEDDED
-    default 32  if PROFILE_EDGE
-    default 64  if PROFILE_FLEET
+    default 8   if HWCLASS_EMBEDDED
+    default 32  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 64  if HWCLASS_SERVER
     default 32
     help
       crates/core/ipc/src/memobj.rs, MAX_MEMOBJS: the table of named memory
@@ -1956,9 +1956,9 @@ config MAX_MEMOBJS
 config MEMOBJ_MOVED_WINDOWS
     int "MemObj: windows of mappings a MOVE removed, awaiting their owner"
     range 1 64
-    default 4  if PROFILE_EMBEDDED
-    default 8  if PROFILE_EDGE
-    default 32 if PROFILE_FLEET
+    default 4  if HWCLASS_EMBEDDED
+    default 8  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 32 if HWCLASS_SERVER
     default 8
     help
       crates/core/ipc/src/memobj.rs, MOVED_WINDOWS. A MOVE of a Cap<Shm> removes
@@ -1990,8 +1990,8 @@ config IORING_MAX_PARKED
 config IORING_MAX_REGBUFS
     int "io_ring: registered buffers one ring holds (OP_BUF_REGISTER)"
     range 1 16
-    default 2 if PROFILE_EMBEDDED
-    default 4 if PROFILE_EDGE || PROFILE_FLEET
+    default 2 if HWCLASS_EMBEDDED
+    default 4 if !HWCLASS_EMBEDDED
     default 4
     help
       crates/core/ipc/src/io_ring.rs, RING_MAX_REGBUFS. An OP_BUF_REGISTER
@@ -2075,9 +2075,9 @@ config VFS_MAX_MOUNTS
 config FS_BLOCK_CACHE_KB
     int "FAT32 block cache (KiB; 0 = the 4 KiB, 8-sector cache)"
     range 0 16384
-    default 64   if PROFILE_EMBEDDED
-    default 512  if PROFILE_EDGE
-    default 4096 if PROFILE_FLEET
+    default 64   if HWCLASS_EMBEDDED
+    default 512  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 4096 if HWCLASS_SERVER
     help
       crates/fs/fs/src/fat32.rs, SECTOR_CACHE (crates/fs/fs/src/bcache.rs):
       the FAT32 driver's cache of 512-byte volume sectors, directory and FAT
@@ -2121,7 +2121,7 @@ config FS_WRITEBACK_MAX_AGE_MS
     int "FAT32 write-back: oldest unsynced write before the fs-wb task writes it (ms)"
     range 50 60000
     default 1000 if USE_ROBOT
-    default 5000 if PROFILE_EMBEDDED || PROFILE_EDGE || PROFILE_FLEET
+    default 5000 if HWCLASS_EMBEDDED || (HWCLASS_SBC || HWCLASS_DESKTOP) || HWCLASS_SERVER
     default 5000
     help
       The bound on how long a write that no fsync/sync followed stays only
@@ -2136,8 +2136,8 @@ config FS_WRITEBACK_MAX_AGE_MS
 config FS_WRITEBACK_WATERMARK_PCT
     int "FAT32 write-back: dirty share of the cache that wakes the fs-wb task (%)"
     range 5 95
-    default 25 if PROFILE_EMBEDDED
-    default 50 if PROFILE_EDGE || PROFILE_FLEET
+    default 25 if HWCLASS_EMBEDDED
+    default 50 if !HWCLASS_EMBEDDED
     default 50
     help
       When this share of the cache's lines is dirty, a writer wakes the
@@ -2150,8 +2150,8 @@ config FS_WRITEBACK_WATERMARK_PCT
 config FS_WRITEBACK_RUN_KB
     int "FAT32 write-back: largest single device write of a coalesced run (KiB)"
     range 1 1024
-    default 16 if PROFILE_EMBEDDED
-    default 64 if PROFILE_EDGE || PROFILE_FLEET
+    default 16 if HWCLASS_EMBEDDED
+    default 64 if !HWCLASS_EMBEDDED
     default 64
     help
       Consecutive dirty sectors of one epoch are copied into a static
@@ -2185,8 +2185,8 @@ config FS_DEFERRED_FREE
 config FS_DEFERRED_FREE_SLOTS
     int "FAT32 write-back: chains held until their unlinking entry is durable"
     range 1 256
-    default 8 if PROFILE_EMBEDDED
-    default 32 if PROFILE_EDGE || PROFILE_FLEET
+    default 8 if HWCLASS_EMBEDDED
+    default 32 if !HWCLASS_EMBEDDED
     default 32
     help
       How many truncated or replaced chains (FS_DEFERRED_FREE) wait for the
@@ -2262,7 +2262,7 @@ config FAT_PI_IO_SITES
 config LOG_RING_ENTRIES
     int "Flight-recorder ring entries (power of two)"
     range 16 4096
-    default 64 if PROFILE_EMBEDDED
+    default 64 if HWCLASS_EMBEDDED
     default 128 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 128
     help
@@ -2339,8 +2339,8 @@ config LOG_FLUSHER_JOBS
 config VIRTIO_BLK_SLOT_KB
     int "virtio-blk bounce buffer per in-flight slot (KiB; one request's largest transfer)"
     range 4 128
-    default 4  if PROFILE_EMBEDDED
-    default 32 if PROFILE_EDGE || PROFILE_FLEET
+    default 4  if HWCLASS_EMBEDDED
+    default 32 if !HWCLASS_EMBEDDED
     default 4
     help
       crates/drivers/virtio/src/virtio/blk.rs: each slot's driver-owned
@@ -2371,7 +2371,7 @@ config VIRTIO_BLK_IRQ_SLICE_US
 config VIRTIO_BLK_INFLIGHT
     int "virtio-blk requests in flight at once (1-8)"
     range 1 8
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       crates/drivers/virtio/src/virtio/blk.rs: each in-flight request owns
@@ -2390,7 +2390,7 @@ config VIRTIO_BLK_INFLIGHT
 config VIRTIO_BLK_QUEUES
     int "virtio-blk request queues used (1-4)"
     range 1 4
-    default 1 if PROFILE_EMBEDDED
+    default 1 if HWCLASS_EMBEDDED
     default 2
     help
       crates/drivers/virtio/src/virtio/blk.rs: VIRTIO_BLK_F_MQ. When the
@@ -2408,7 +2408,7 @@ config VIRTIO_BLK_QUEUES
 config NVME_INFLIGHT
     int "NVMe commands in flight at once (1-8)"
     range 1 8
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       crates/drivers/block/src/nvme.rs: each in-flight command owns a
@@ -2424,7 +2424,7 @@ config NVME_INFLIGHT
 config NVME_QUEUES
     int "NVMe I/O queue pairs (1-8, at most one per CPU)"
     range 1 8
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       crates/drivers/block/src/nvme.rs: the driver creates the smaller of
@@ -2446,7 +2446,7 @@ config NVME_QUEUES
 config NVME_SLOT_KB
     int "NVMe bounce buffer per in-flight slot (KiB; one command's largest transfer)"
     range 4 128
-    default 16 if PROFILE_EMBEDDED
+    default 16 if HWCLASS_EMBEDDED
     default 64
     help
       crates/drivers/block/src/nvme.rs: the largest transfer one command
@@ -2470,7 +2470,7 @@ config NVME_QUEUE_DEPTH
 config AHCI_XFER_KB
     int "AHCI bounce buffer (KiB; one command's largest transfer)"
     range 4 128
-    default 16 if PROFILE_EMBEDDED
+    default 16 if HWCLASS_EMBEDDED
     default 64
     help
       crates/drivers/block/src/ahci.rs: the largest transfer one command
@@ -2485,7 +2485,7 @@ config AHCI_XFER_KB
 config E1000E_RX_DESCS
     int "e1000e receive ring entries (a multiple of 8)"
     range 8 512
-    default 32 if PROFILE_EMBEDDED
+    default 32 if HWCLASS_EMBEDDED
     default 64
     help
       crates/drivers/net/src/e1000e.rs: descriptors of the one receive ring.
@@ -2498,7 +2498,7 @@ config E1000E_RX_DESCS
 config E1000E_TX_DESCS
     int "e1000e transmit ring entries (a multiple of 8)"
     range 8 512
-    default 16 if PROFILE_EMBEDDED
+    default 16 if HWCLASS_EMBEDDED
     default 32
     help
       crates/drivers/net/src/e1000e.rs: descriptors of the one transmit
@@ -2533,7 +2533,7 @@ config E1000E_LINK_WAIT_MS
 config IGC_RX_DESCS
     int "igc receive ring entries (a multiple of 8)"
     range 8 512
-    default 32 if PROFILE_EMBEDDED
+    default 32 if HWCLASS_EMBEDDED
     default 64
     help
       crates/drivers/net/src/igc.rs: descriptors of the one receive ring.
@@ -2546,7 +2546,7 @@ config IGC_RX_DESCS
 config IGC_TX_DESCS
     int "igc transmit ring entries (a multiple of 8)"
     range 8 512
-    default 16 if PROFILE_EMBEDDED
+    default 16 if HWCLASS_EMBEDDED
     default 32
     help
       crates/drivers/net/src/igc.rs: descriptors of the one transmit ring;
@@ -2728,9 +2728,9 @@ config USB_CDC_CONSOLE_BYTES
 config EXEC_IMAGE_CACHE_KB
     int "Verified exec image cache (KiB of frames; 0 = off)"
     range 0 65536
-    default 64   if PROFILE_EMBEDDED
-    default 512  if PROFILE_EDGE
-    default 4096 if PROFILE_FLEET
+    default 64   if HWCLASS_EMBEDDED
+    default 512  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 4096 if HWCLASS_SERVER
     help
       crates/core/syscall/src/image_cache.rs, crates/core/mm/src/image_frames.rs:
       the frames a spawn of a FAT32 image keeps for the next spawn of the
@@ -2902,7 +2902,7 @@ config FB_CONSOLE_ROWS_MAX
 config FB_CONSOLE_SCROLLBACK
     int "Framebuffer console: lines of scrollback kept for the terminal server"
     range 0 4096
-    default 0 if PROFILE_EMBEDDED
+    default 0 if HWCLASS_EMBEDDED
     default 200
     help
       crates/drivers/fb/src/grid.rs, kernel/src/boot/term_regions.rs. The lines
@@ -2919,9 +2919,9 @@ config FB_CONSOLE_SCROLLBACK
 config HWBUS_MAX_DEVICES
     int "Hardware bus: device objects"
     range 8 4096
-    default 32 if PROFILE_EMBEDDED
-    default 64 if PROFILE_EDGE
-    default 256 if PROFILE_FLEET
+    default 32 if HWCLASS_EMBEDDED
+    default 64 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 256 if HWCLASS_SERVER
     default 64
     help
       crates/drivers/hwbus/src/bus.rs, MAX_DEVICES. Every device the bus
@@ -2939,9 +2939,9 @@ config MAX_MMIO_REGIONS
     range 4 64
     default 32 if BOARD_VF2
     default 32 if BOARD_K1
-    default 16 if PROFILE_EMBEDDED
-    default 16 if PROFILE_EDGE
-    default 16 if PROFILE_FLEET
+    default 16 if HWCLASS_EMBEDDED
+    default 16 if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16 if HWCLASS_SERVER
     default 16
     help
       crates/core/mm/src/vmm.rs, MAX_MMIO_REGIONS (was the literal 16).
@@ -3030,7 +3030,7 @@ config KERNEL_CMDLINE_MAX
 config INFSRV_MODELS
     int "Inference service: model bundles held"
     range 1 16
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       userspace/services/infsrv, MODELS: how many signed `.MBL` bundles the
@@ -3042,7 +3042,7 @@ config INFSRV_MODELS
 config INFSRV_BLOB_KIB
     int "Inference service: blob arena (KiB)"
     range 1 4096
-    default 16 if PROFILE_EMBEDDED
+    default 16 if HWCLASS_EMBEDDED
     default 64
     help
       userspace/services/infsrv, BLOB_KIB: one arena holds, for every loaded
@@ -3059,7 +3059,7 @@ config INFSRV_BLOB_KIB
 config INFSRV_WORK_KIB
     int "Inference service: working memory for a run (KiB)"
     range 1 4096
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 16
     help
       userspace/services/infsrv, WORK_KIB: the working memory the service
@@ -3072,7 +3072,7 @@ config INFSRV_WORK_KIB
 config INFSRV_CONTEXTS
     int "Inference service: client contexts accounted"
     range 1 64
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       userspace/services/infsrv, CONTEXTS: a client context is one endpoint

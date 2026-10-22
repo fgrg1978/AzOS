@@ -325,7 +325,7 @@ config RC_FAILSAFE_ESTOP
 config RC_LINK_TIMEOUT_MS
     int "RC link timeout (ms)"
     range 20 5000
-    default 300 if PROFILE_EMBEDDED
+    default 300 if HWCLASS_EMBEDDED
     default 500
     help
       With a link established, no fresh frame for this long is link loss

@@ -15,7 +15,7 @@ menu "Storage"
 config BLK_QUEUE_DEPTH
     int "Block requests queued per hart (2-64)"
     range 2 64
-    default 4  if PROFILE_EMBEDDED
+    default 4  if HWCLASS_EMBEDDED
     default 16
     help
       crates/drivers/block/src/queue.rs: every hart has its own submission
@@ -33,7 +33,7 @@ config BLK_QUEUE_DEPTH
 config BLK_MERGE_MAX
     int "Requests merged into one device command (1-16)"
     range 1 16
-    default 4  if PROFILE_EMBEDDED
+    default 4  if HWCLASS_EMBEDDED
     default 8
     help
       crates/drivers/block/src/queue.rs: requests of one owner, of the same
@@ -47,7 +47,7 @@ config BLK_MERGE_MAX
 
 choice
     prompt "Discard (TRIM) of freed blocks"
-    default BLK_DISCARD_OFF if PROFILE_EMBEDDED
+    default BLK_DISCARD_OFF if HWCLASS_EMBEDDED
     default BLK_DISCARD_BATCHED
     help
       Whether the file systems and the swap area tell the device that
@@ -95,7 +95,7 @@ config BLK_FUA
 config FS_DISCARD_RUNS
     int "Free runs gathered before FAT32 issues a discard (2-64)"
     range 2 64
-    default 8 if PROFILE_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED
     default 16
     help
       crates/fs/fs/src/fat32.rs: the contiguous cluster runs of the chains

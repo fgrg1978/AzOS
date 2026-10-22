@@ -3,7 +3,7 @@
 /*
  * Linker script for AZOS fleet-profile builds.
  *
- * `PROFILE_FLEET` sizes static tables for
+ * The Fleet tier (`HWCLASS_SERVER`) sizes static tables for
  * 4096 tasks × {channels,pipes,topics,caps} pools.  The image is
  * ~134 MiB (config/defconfigs/fleet.config carries the measured budget), far
  * above the default linker.ld's 8M RAM region.  The 256 MiB kernel heap

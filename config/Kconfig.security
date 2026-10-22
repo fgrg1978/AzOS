@@ -269,9 +269,9 @@ config BOOT_INI_MAX_KB
 config TOPOLOGY_CAPS_MAX_KB
     int "Largest CAPS.TOM the boot reads (KiB)"
     range 1 4096
-    default 8   if PROFILE_EMBEDDED
-    default 16  if PROFILE_EDGE
-    default 256 if PROFILE_FLEET
+    default 8   if HWCLASS_EMBEDDED
+    default 16  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 256 if HWCLASS_SERVER
     help
       The buffer CAPS.TOM is read into (kernel/src/boot/topology.rs). It
       stays allocated for the life of the kernel: every task name, class
@@ -287,9 +287,9 @@ config TOPOLOGY_CAPS_MAX_KB
 config TOPOLOGY_SCHED_MAX_KB
     int "Largest SCHED.TOM the boot reads (KiB)"
     range 1 1024
-    default 2  if PROFILE_EMBEDDED
-    default 4  if PROFILE_EDGE
-    default 16 if PROFILE_FLEET
+    default 2  if HWCLASS_EMBEDDED
+    default 4  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16 if HWCLASS_SERVER
     help
       The buffer SCHED.TOM is read into; kept for the kernel's life (the
       class names borrow from it). A larger file is refused unread.
@@ -360,7 +360,7 @@ config TOPOLOGY_MAX_PIPELINES
 config TOPOLOGY_MAX_DEVICE_ROWS
     int "[device.NAME] rows a topology may declare"
     range 1 255
-    default 16 if PROFILE_EMBEDDED
+    default 16 if HWCLASS_EMBEDDED
     default 32
     help
       Size of the device row table (MAX_DEVICE_ROWS, CAPS.TOML format 6):
@@ -458,7 +458,7 @@ config TOPOLOGY_EXPORTS_TOTAL
 config TOPOLOGY_MAX_POLICIES
     int "[policy.NAME] rows (limits on a Domain and its subtree) a topology may declare"
     range 1 64
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       Size of the policy table (types.rs, MAX_POLICIES), CAPS.TOML format 7:
@@ -473,7 +473,7 @@ config TOPOLOGY_MAX_POLICIES
 config TOPOLOGY_MAX_LIVEPATCHES
     int "[livepatch.NAME] rows (signed kernel patches the device admits) a topology may declare"
     range 1 32
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the livepatch table (types.rs, MAX_LIVEPATCHES), CAPS.TOML
@@ -488,7 +488,7 @@ config TOPOLOGY_MAX_LIVEPATCHES
 config TOPOLOGY_LEAP_ENTRIES
     int "Leap-second entries the [clock] row of a topology may declare"
     range 1 64
-    default 8 if PROFILE_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED
     default 32
     help
       Size of the TAI-UTC table (types.rs, LEAP_ENTRIES), CAPS.TOML format 7:
@@ -514,7 +514,7 @@ config TOPOLOGY_MAX_SWAPS
 config TOPOLOGY_MAX_VOLUMES
     int "[volume.NAME] rows (native volumes to mount) a topology may declare"
     range 1 16
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the volume table (types.rs, MAX_VOLUMES), CAPS.TOML format 7:
@@ -529,7 +529,7 @@ config TOPOLOGY_MAX_VOLUMES
 config TOPOLOGY_MAX_LOGINS
     int "[login.NAME] rows (SSH logins) a topology may declare"
     range 1 4
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the login table (types.rs, MAX_LOGINS), CAPS.TOML format 7:
@@ -555,7 +555,7 @@ config TOPOLOGY_LOGIN_KEYS
 config TOPOLOGY_MAX_GUESTS
     int "[guest.NAME] rows (virtual machines the device may run) a topology may declare"
     range 1 16
-    default 1 if PROFILE_EMBEDDED
+    default 1 if HWCLASS_EMBEDDED
     default 2
     help
       Size of the guest table (types.rs, MAX_GUESTS), CAPS.TOML format 7: each
@@ -581,7 +581,7 @@ config TOPOLOGY_GUEST_DEVICES
 config TOPOLOGY_MAX_ROUTES
     int "[route.NAME] rows (static routes) a topology may declare"
     range 1 64
-    default 8 if PROFILE_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED
     default 16
     help
       Size of the route table (types.rs, MAX_ROUTES), CAPS.TOML format 7: each
@@ -595,7 +595,7 @@ config TOPOLOGY_MAX_ROUTES
 config TOPOLOGY_MAX_FIREWALL_ROWS
     int "[firewall.NAME] rows (packet filter rules) a topology may declare"
     range 1 128
-    default 16 if PROFILE_EMBEDDED
+    default 16 if HWCLASS_EMBEDDED
     default 32
     help
       Size of the firewall table (types.rs, MAX_FIREWALL_ROWS), CAPS.TOML
@@ -609,7 +609,7 @@ config TOPOLOGY_MAX_FIREWALL_ROWS
 config TOPOLOGY_MAX_TSN
     int "[tsn.NAME] rows (TSN admissions) a topology may declare"
     range 1 16
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the TSN table (types.rs, MAX_TSN), CAPS.TOML format 8: each
@@ -622,7 +622,7 @@ config TOPOLOGY_MAX_TSN
 config TOPOLOGY_MAX_FIELDBUS
     int "[fieldbus.NAME] rows (fieldbus masters) a topology may declare"
     range 1 16
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the fieldbus table (types.rs, MAX_FIELDBUS), CAPS.TOML format 8:
@@ -635,7 +635,7 @@ config TOPOLOGY_MAX_FIELDBUS
 config TOPOLOGY_MAX_AUDIO
     int "[audio.NAME] rows (audio streams) a topology may declare"
     range 1 16
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the audio table (types.rs, MAX_AUDIO), CAPS.TOML format 8: each
@@ -647,7 +647,7 @@ config TOPOLOGY_MAX_AUDIO
 config TOPOLOGY_MAX_DISPLAYS
     int "[display.NAME] rows (panels) a topology may declare"
     range 1 16
-    default 1 if PROFILE_EMBEDDED
+    default 1 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the display table (types.rs, MAX_DISPLAYS), CAPS.TOML format 8:
@@ -659,7 +659,7 @@ config TOPOLOGY_MAX_DISPLAYS
 config TOPOLOGY_MAX_USERS
     int "[user.NAME] rows (human users) a topology may declare"
     range 1 16
-    default 1 if PROFILE_EMBEDDED
+    default 1 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the user table (types.rs, MAX_USERS), CAPS.TOML format 8: each
@@ -672,7 +672,7 @@ config TOPOLOGY_MAX_USERS
 config TOPOLOGY_MAX_KEYS
     int "[key.NAME] rows (named keys) a topology may declare"
     range 1 64
-    default 8 if PROFILE_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED
     default 16
     help
       Size of the key table (types.rs, MAX_KEYS), CAPS.TOML format 8: each
@@ -697,7 +697,7 @@ config TOPOLOGY_MAX_BOOT_STAGES
 config TOPOLOGY_MAX_ISLANDS
     int "[island.NAME] rows (low-power islands) a topology may declare"
     range 1 8
-    default 1 if PROFILE_EMBEDDED
+    default 1 if HWCLASS_EMBEDDED
     default 2
     help
       Size of the island table (types.rs, MAX_ISLANDS), CAPS.TOML format 8:
@@ -710,7 +710,7 @@ config TOPOLOGY_MAX_ISLANDS
 config TOPOLOGY_ISLAND_WAKE
     int "Wake events one [island.NAME] row may list"
     range 1 16
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       Size of an island row's wake list (types.rs, ISLAND_WAKE), CAPS.TOML
@@ -722,7 +722,7 @@ config TOPOLOGY_ISLAND_WAKE
 config TOPOLOGY_MAX_ACTIVITIES
     int "[activity.NAME] rows (deferred work) a topology may declare"
     range 1 64
-    default 8 if PROFILE_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED
     default 16
     help
       Size of the activity table (types.rs, MAX_ACTIVITIES), CAPS.TOML format
@@ -735,7 +735,7 @@ config TOPOLOGY_MAX_ACTIVITIES
 config TOPOLOGY_MAX_NUMA
     int "[numa.NAME] rows (memory nodes) a topology may declare"
     range 1 64
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 8
     help
       Size of the NUMA table (types.rs, MAX_NUMA), CAPS.TOML format 8: each
@@ -762,7 +762,7 @@ config TOPOLOGY_MAX_ENVELOPES
 config TOPOLOGY_MAX_NICS
     int "[nic.NAME] rows (network interfaces) a topology may declare"
     range 1 16
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       Size of the NIC table (types.rs, MAX_NICS), CAPS.TOML format 8: each
@@ -774,7 +774,7 @@ config TOPOLOGY_MAX_NICS
 config TOPOLOGY_MAX_MODELS
     int "[model.NAME] rows (model bundles) a topology may declare"
     range 1 32
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 8
     help
       Size of the model table (types.rs, MAX_MODELS), CAPS.TOML format 8: each
@@ -786,7 +786,7 @@ config TOPOLOGY_MAX_MODELS
 config TOPOLOGY_MAX_USB_RULES
     int "[usb.NAME] rows (USB authorization rules) a topology may declare"
     range 1 64
-    default 8 if PROFILE_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED
     default 16
     help
       Size of the USB rule table (types.rs, MAX_USB_RULES), CAPS.TOML format
@@ -799,7 +799,7 @@ config TOPOLOGY_MAX_USB_RULES
 config TOPOLOGY_GUEST_PASSTHROUGH
     int "Devices one [guest.NAME] row may pass through"
     range 1 16
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       Size of a guest row's passthrough list (types.rs, GUEST_PASSTHROUGH),
@@ -812,8 +812,8 @@ config TOPOLOGY_GUEST_PASSTHROUGH
 config NAMES_LEND_TTL_MS
     int "Lifetime of a capability the name server lends (ms, 0 = the server's own)"
     range 0 86400000
-    default 0 if PROFILE_EMBEDDED
-    default 600000 if PROFILE_FLEET
+    default 0 if HWCLASS_EMBEDDED
+    default 600000 if HWCLASS_SERVER
     default 3600000
     help
       The name server (NAMESD.ELF) stamps every endpoint it lends with
@@ -1476,8 +1476,8 @@ endchoice
 config KEYSTORE_KEYS
     int "Keystore: key handles the kernel holds"
     range 4 255
-    default 16 if PROFILE_EMBEDDED
-    default 64 if PROFILE_FLEET
+    default 16 if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
     default 32
     help
       Live handles in all owners' tables together (a handle names its slot
@@ -1490,7 +1490,7 @@ config KEYSTORE_KEYS
 config KEYSTORE_KEYS_PER_OWNER
     int "Keystore: handles one owner may hold"
     range 1 255
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       One owner (a user, `owner_root`; 0 is the system) cannot fill the

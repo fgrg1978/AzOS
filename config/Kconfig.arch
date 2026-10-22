@@ -593,8 +593,8 @@ config LOCKED_HUGE_LEAVES
 
 config RV_KERNEL_GLOBAL
     bool "Global (G) bit on the kernel half's leaves"
-    default y if PROFILE_EDGE || PROFILE_FLEET
-    default y if PROFILE_EMBEDDED && TLB_RETAIN
+    default y if !HWCLASS_EMBEDDED
+    default y if HWCLASS_EMBEDDED && TLB_RETAIN
     default n
     help
       Sets the Sv39 G bit on every kernel leaf in a kernel-only VPN[2]
@@ -1079,7 +1079,7 @@ config TLB_RETAIN
 config ASID_BITS
     int "Address-space ID width the allocator uses (bits)"
     range 1 16
-    default 8 if TLB_RETAIN && PROFILE_EMBEDDED
+    default 8 if TLB_RETAIN && HWCLASS_EMBEDDED
     default 12 if TLB_RETAIN
     default 16
     help
@@ -1170,7 +1170,7 @@ config TLB_ASID_SCOPED
 config TLB_SPACE_SLOTS_BITS
     int "Per-address-space hart mask: table size (log2 slots)"
     range 1 16
-    default 9 if PROFILE_EMBEDDED
+    default 9 if HWCLASS_EMBEDDED
     default 13
     help
       Slots in the TLB_SPACE_MASK table (2^n, 20 bytes each: 9 is 10 KiB,
@@ -1200,7 +1200,7 @@ config TLB_SPACE_SLOTS_BITS
 config TLB_SPACE_PROBE
     int "Per-address-space hart mask: probes before the table counts as full"
     range 1 64
-    default 8 if PROFILE_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED
     default 16
     help
       Linear-probe bound of the TLB_SPACE_MASK table, on every user switch
@@ -2174,7 +2174,7 @@ config X86_IST_STACK_SIZE_KB
 config X86_XSAVE_AREA_BYTES
     int "Per-task FP/SIMD save area (bytes, a multiple of 64)"
     range 576 8192
-    default 2752 if PROFILE_FLEET
+    default 2752 if HWCLASS_SERVER
     default 1024
     help
       The XSAVE image each task slot keeps for its ring-3 FP/SIMD state, and
@@ -2327,7 +2327,7 @@ config SPIN_WAIT_RELAX_SPINS
     int "Spin-wait: relax polls before the wait hint"
     range 0 65536
     default 0 if ARCH_AARCH64
-    default 8 if ARCH_RISCV64 && PROFILE_EMBEDDED
+    default 8 if ARCH_RISCV64 && HWCLASS_EMBEDDED
     default 16 if ARCH_RISCV64
     default 64 if ARCH_X86_64
     default 16
@@ -2344,8 +2344,8 @@ config SPIN_WAIT_RELAX_SPINS
 
 choice
     prompt "SpinLock implementation"
-    default SPINLOCK_IMPL_MCS if (PROFILE_EDGE || PROFILE_FLEET) && NR_CPUS >= 4
-    default SPINLOCK_IMPL_MCS if PROFILE_EMBEDDED && NR_CPUS >= 2
+    default SPINLOCK_IMPL_MCS if !HWCLASS_EMBEDDED && NR_CPUS >= 4
+    default SPINLOCK_IMPL_MCS if HWCLASS_EMBEDDED && NR_CPUS >= 2
     default SPINLOCK_IMPL_TTAS
     help
       What `SpinLock<T>` (crates/core/sync) is under the same API; no call
@@ -2434,7 +2434,7 @@ config RCU_NOCBS_CPUS
 config RCU_STALL_TIMEOUT_MS
     int "RCU: a grace period older than this is a stall (ms)"
     range 10 600000
-    default 500 if PROFILE_EMBEDDED
+    default 500 if HWCLASS_EMBEDDED
     default 4000 if BOARD_QEMU
     default 2000
     help
@@ -2459,7 +2459,7 @@ config RCU_CALLBACK_PRIORITY
 config RCU_GP_POLL_MS
     int "RCU: grace-period poll interval of a waiter (ms)"
     range 1 1000
-    default 1 if PROFILE_EMBEDDED
+    default 1 if HWCLASS_EMBEDDED
     default 2
     help
       A waiter (`synchronize_rcu`, the callback task) sleeps this long
@@ -2506,7 +2506,7 @@ config X86_UMWAIT_TSC_TICKS
 
 config X86_UMWAIT_C02
     bool "x86_64: UMWAIT may enter C0.2 (deeper, slower wake)"
-    default y if PROFILE_EMBEDDED
+    default y if HWCLASS_EMBEDDED
     default n
     help
       n: C0.1 (ECX[0]=1), the faster wake a lock waiter wants. y: C0.2,

@@ -148,16 +148,6 @@ choice
 
 endchoice
 
-# The cap-size tier the limits are written against, derived from HWCLASS.
-config PROFILE_EMBEDDED
-    def_bool HWCLASS_EMBEDDED
-
-config PROFILE_FLEET
-    def_bool HWCLASS_SERVER
-
-config PROFILE_EDGE
-    def_bool !PROFILE_EMBEDDED && !PROFILE_FLEET
-
 # ---------------------------------------------------------------------------
 # STRUCTURE
 # ---------------------------------------------------------------------------

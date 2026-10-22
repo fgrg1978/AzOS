@@ -25,7 +25,7 @@ Phase C4 changes vs C1:
     (brain-l1, brain-l2, brain-l3) which do not exist in any Cargo.toml.
   - The Kconfig-to-feature map is read from the `# cargo-feature:` tags on the
     Kconfig symbols (see below), not written here. No nested crate feature is emitted any more:
-    the last one, azos_mm/small-mem for PROFILE_EMBEDDED, was dropped
+    the last one, azos_mm/small-mem for the embedded tier, was dropped
     (2026-09-15) because it left the PMM without a free page; the PMM ceiling
     manages all the RAM the firmware reports on every profile. secure-boot-enforced used to be emitted as the
     nested token azos_ota/secure-boot-enforced; now that kernel/src/boot/ota.rs

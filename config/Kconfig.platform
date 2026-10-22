@@ -413,7 +413,7 @@ config X86_CMDLINE_MAX
     int "Kernel command-line bytes kept from the PVH start_info"
     range 64 8192
     default 2048 if CANARY_RUNTIME
-    default 512 if PROFILE_EMBEDDED
+    default 512 if HWCLASS_EMBEDDED
     default 1024
     help
       The PVH start_info's command line is copied into a static buffer
@@ -501,7 +501,7 @@ config X86_VIRTIO_MMIO_STRIDE
 config X86_VIRTIO_MMIO_MAX
     int "virtio-mmio transports kept and scanned"
     range 0 32
-    default 8 if PROFILE_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED
     default 24
     help
       The transports the platform records (from the command line, or
@@ -556,7 +556,7 @@ config X86_TSC_FREQ_CPUID
 config X86_TSC_CALIBRATE_MS
     int "TSC (and LAPIC timer) calibration window (ms)"
     range 1 54
-    default 10 if PROFILE_EMBEDDED
+    default 10 if HWCLASS_EMBEDDED
     default 20
     help
       Boot time spent measuring the TSC against the HPET or PIT (and,

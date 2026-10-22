@@ -16,7 +16,7 @@
 # dependency order.
 #
 # Every symbol is default n: the default image contains no Linux-derived
-# object. A small board (HWCLASS_EMBEDDED, PROFILE_EMBEDDED) runs only the
+# object. A small board (HWCLASS_EMBEDDED, HWCLASS_EMBEDDED) runs only the
 # native drivers its board topology names: nothing in this file can be on
 # there (`make check-presets` asserts it for every preset on every ISA).
 
@@ -25,7 +25,7 @@ menu "Linux compatibility"
 config LINUX_DRIVERS
     bool "Linux driver support (ring-3 servers)"
     default n
-    depends on !PROFILE_EMBEDDED
+    depends on !HWCLASS_EMBEDDED
     help
       Implemented up to stage L0b: the module loader and the
       empty server. On its own it fails the build; it builds only with
@@ -283,7 +283,7 @@ config LINUX_RUNTIME
     # cargo-feature: linux-runtime base
     bool "Host the Linux personality in a ring-3 runtime (trap reflect)"
     default n
-    depends on LINUX_ABI && !PROFILE_EMBEDDED && !AARCH64_PAGE_16K && !AARCH64_PAGE_64K
+    depends on LINUX_ABI && !HWCLASS_EMBEDDED && !AARCH64_PAGE_16K && !AARCH64_PAGE_64K
     help
       A Linux task is hosted by `userspace/lib/linux_rt`, mapped into its
       own address space at spawn (built into the kernel image, so covered
@@ -327,7 +327,7 @@ config LINUX_RUNTIME
 config LINUX_ROBUST_LIST_LIMIT
     int "Linux personality: robust futex list entries walked at a thread's exit"
     range 1 65536
-    default 256 if PROFILE_EMBEDDED
+    default 256 if HWCLASS_EMBEDDED
     default 2048
     help
       A Linux thread registers a list of the robust mutexes it holds

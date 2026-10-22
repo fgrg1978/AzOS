@@ -33,8 +33,8 @@ config MULTISTREAM_SCHED_PRIORITY
 config BRAIN_TX_QUEUE_BYTES
     int "Brain link: control-socket transmit queue (bytes)"
     range 4096 262144
-    default 12288 if PROFILE_EMBEDDED
-    default 32768 if PROFILE_FLEET
+    default 12288 if HWCLASS_EMBEDDED
+    default 32768 if HWCLASS_SERVER
     default 16384
     help
       The behavior task seals each message

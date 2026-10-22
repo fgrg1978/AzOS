@@ -60,10 +60,11 @@ EXPORTED: list[tuple[str, str, str]] = [
     ("BOARD_K1",             "KERNEL_BOARD_K1",             "bool"),
 
     # ── Profile (drives brain-side capacity decisions: connection pool,
-    #    metric histogram buckets, etc.)
-    ("PROFILE_EMBEDDED",     "KERNEL_PROFILE_EMBEDDED",     "bool"),
-    ("PROFILE_EDGE",         "KERNEL_PROFILE_EDGE",         "bool"),
-    ("PROFILE_FLEET",        "KERNEL_PROFILE_FLEET",        "bool"),
+    #    metric histogram buckets, etc.): the limits tier of the HWCLASS axis.
+    #    A `|` list is true when any of its symbols is.
+    ("HWCLASS_EMBEDDED",     "KERNEL_PROFILE_EMBEDDED",     "bool"),
+    ("HWCLASS_SBC|HWCLASS_DESKTOP", "KERNEL_PROFILE_EDGE",  "bool"),
+    ("HWCLASS_SERVER",       "KERNEL_PROFILE_FLEET",        "bool"),
 
     # ── Connection / socket caps (brain MUST stay under these)
     ("TCP_MAX_CONNS",        "KERNEL_TCP_MAX_CONNS",        "int"),
@@ -157,7 +158,7 @@ def render_python(cfg: dict[str, str], sha12: Optional[str]) -> str:
         raw = cfg.get(kconfig_name)
         # `raw == "n"` means explicitly disabled, missing means default-off.
         if kind == "bool":
-            val = "True" if raw == "y" else "False"
+            val = "True" if any(cfg.get(n) == "y" for n in kconfig_name.split("|")) else "False"
             lines.append(f"{py_name}: bool = {val}")
         elif kind == "int":
             if raw is None or raw in ("y", "n"):
@@ -183,7 +184,7 @@ def render_python(cfg: dict[str, str], sha12: Optional[str]) -> str:
         "# ── Bookkeeping helpers ─────────────────────────────────────────────",
         "",
         "def selected_profile() -> str:",
-        '    """Return the active PROFILE_* as a short string."""',
+        '    """Return the active limits tier (HWCLASS) as a short string."""',
         "    if KERNEL_PROFILE_FLEET:    return 'fleet'",
         "    if KERNEL_PROFILE_EMBEDDED: return 'embedded'",
         "    return 'edge'",

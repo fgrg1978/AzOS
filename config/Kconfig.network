@@ -13,8 +13,8 @@ menu "Network"
 config TCP_BUF_SIZE
     int "TCP per-connection receive and send ring (bytes)"
     range 8192 1048576
-    default 16384  if PROFILE_FLEET
-    default 16384  if USE_GATEWAY && PROFILE_EDGE
+    default 16384  if HWCLASS_SERVER
+    default 16384  if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 131072
     help
       Size of each of the two static rings of one TCP connection, the
@@ -40,7 +40,7 @@ config TCP_BUF_SIZE
 
       Embedded's memory is not budgeted: there is no embedded linker
       script and no gate build row, and the measured image is 5.6 MiB
-      against the < 1 MiB SRAM PROFILE_EMBEDDED states.  131072 stays on
+      against the < 1 MiB SRAM HWCLASS_EMBEDDED states.  131072 stays on
       embedded until that budget (target board and RAM, linker script,
       gate build row), which is queued, exists.
 
@@ -169,8 +169,8 @@ config TCP_WINDOW_UPDATE_SHIFT
 config NET_WAIT_SLOTS
     int "Tasks that can wait on one kind of network event at once"
     range 1 64
-    default 2 if PROFILE_EMBEDDED
-    default 16 if PROFILE_FLEET
+    default 2 if HWCLASS_EMBEDDED
+    default 16 if HWCLASS_SERVER
     default 8
     help
       crates/net/net/src/wait.rs, NET_WAIT_SLOTS: a task waiting for a TCP
@@ -246,7 +246,7 @@ config NTP_INTERVAL_S
 config TCP_RECV_MAX_PER_CALL
     int "Most bytes one TCP recv() copies out"
     range 512 65536
-    default 1024 if PROFILE_EMBEDDED
+    default 1024 if HWCLASS_EMBEDDED
     default 4096
     help
       crates/net/net/src/tcp.rs, TCP_RECV_MAX_PER_CALL: the copy out of
@@ -260,7 +260,7 @@ config TCP_RECV_MAX_PER_CALL
 config NET_RX_DRAIN_PER_POLL
     int "Frames drained from the NIC per net_poll pass"
     range 1 1024
-    default 16 if PROFILE_EMBEDDED
+    default 16 if HWCLASS_EMBEDDED
     default 64
     help
       crates/net/net/src/lib.rs, net_poll: the most frames one pass takes
@@ -279,7 +279,7 @@ config NET_RX_DRAIN_PER_POLL
 config NET_MAX_INTERFACES
     int "Network interfaces the stack can hold"
     range 1 8
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       crates/net/net/src/ip.rs, MAX_IFS: the interface registry (ifindex 1
@@ -297,7 +297,7 @@ config NET_MAX_INTERFACES
 config NET_PACKET_SOCKETS
     int "Raw layer-2 (AF_PACKET) sockets open at once"
     range 0 8
-    default 1 if PROFILE_EMBEDDED
+    default 1 if HWCLASS_EMBEDDED
     default 2
     help
       crates/net/net/src/socket.rs, PACKET_SOCKETS: how many AF_PACKET
@@ -312,7 +312,7 @@ config NET_PACKET_SOCKETS
 config NET_PACKET_RX_SLOTS
     int "Frames queued per AF_PACKET socket"
     range 1 64
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       crates/net/net/src/socket.rs, PACKET_RX_SLOTS: the receive ring of each
@@ -330,7 +330,7 @@ config NET_PACKET_RX_SLOTS
 config ARP_CACHE_SIZE
     int "ARP cache entries"
     range 4 256
-    default 64 if USE_GATEWAY && PROFILE_EDGE
+    default 64 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 16
     help
       crates/net/net/src/arp.rs, ARP_CACHE_SIZE. USE_GATEWAY on the
@@ -343,7 +343,7 @@ config ARP_CACHE_SIZE
 config ARP_PENDING_SIZE
     int "Outstanding ARP requests remembered"
     range 2 64
-    default 16 if USE_GATEWAY && PROFILE_EDGE
+    default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 8
     help
       crates/net/net/src/arp.rs, ARP_PENDING_SIZE: requests whose reply
@@ -357,7 +357,7 @@ config ARP_PENDING_SIZE
 config DNS_CACHE_SIZE
     int "DNS cache entries"
     range 1 64
-    default 16 if USE_GATEWAY && PROFILE_EDGE
+    default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 4
     help
       crates/net/net/src/dns.rs, DNS_CACHE_SIZE. USE_GATEWAY on the
@@ -369,7 +369,7 @@ config DNS_CACHE_SIZE
 config UDP_RX_SLOTS
     int "Datagrams queued per UDP socket"
     range 2 64
-    default 16 if USE_GATEWAY && PROFILE_EDGE
+    default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 4
     help
       crates/net/net/src/udp.rs, UDP_RX_SLOTS: the receive ring of each
@@ -411,7 +411,7 @@ config FIREWALL_INBOUND_DROP
 config FIREWALL_CONNTRACK_MAX
     int "Firewall: tracked TCP/UDP flows"
     range 16 8192
-    default 64 if PROFILE_EMBEDDED
+    default 64 if HWCLASS_EMBEDDED
     default 1024 if USE_GATEWAY
     default 256
     help
@@ -443,7 +443,7 @@ config FIREWALL_UDP_TIMEOUT_S
 config FIREWALL_TCP_TIMEOUT_S
     int "Firewall: idle timeout of an established TCP flow (s)"
     range 30 86400
-    default 600 if PROFILE_EMBEDDED
+    default 600 if HWCLASS_EMBEDDED
     default 3600
     help
       An established TCP flow with no packet in either direction for this
@@ -567,7 +567,7 @@ config NAT_UDP_TIMEOUT_S
 config NAT_TCP_TIMEOUT_S
     int "NAT: idle timeout of an established TCP mapping (s)"
     range 60 86400
-    default 600 if PROFILE_EMBEDDED
+    default 600 if HWCLASS_EMBEDDED
     default 7440
     help
       An answered TCP mapping with no packet in either direction for this
@@ -606,8 +606,8 @@ config NAT_ICMP_TIMEOUT_S
 config NET_VIRTIO_RXQ_SIZE
     int "virtio-net RX ring entries (= posted RX buffers)"
     range 2 256
-    default 16  if PROFILE_EMBEDDED
-    default 256 if PROFILE_FLEET
+    default 16  if HWCLASS_EMBEDDED
+    default 256 if HWCLASS_SERVER
     default 64
     help
       crates/drivers/virtio/src/virtio/net.rs NUM_RX_BUFS: the RX virtqueue
@@ -629,8 +629,8 @@ config NET_VIRTIO_RXQ_SIZE
 config NET_VIRTIO_TXQ_SIZE
     int "virtio-net TX ring entries (2 per frame in flight)"
     range 4 256
-    default 16  if PROFILE_EMBEDDED
-    default 256 if PROFILE_FLEET
+    default 16  if HWCLASS_EMBEDDED
+    default 256 if HWCLASS_SERVER
     default 64
     help
       crates/drivers/virtio/src/virtio/net.rs NUM_TX_BUFS: the TX virtqueue
@@ -648,8 +648,8 @@ config NET_VIRTIO_TXQ_SIZE
 config NET_TX_BATCH_MAX
     int "virtio-net TX frames published per doorbell inside a batch"
     range 1 128
-    default 4  if PROFILE_EMBEDDED
-    default 64 if PROFILE_FLEET
+    default 4  if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
     default 16
     help
       Inside a TX batch (one net_poll pass, one TCP send_all_* burst
@@ -673,8 +673,8 @@ config NET_TX_BATCH_MAX
 config NET_RX_BATCH_MAX
     int "virtio-net RX frames popped per lock and handed up by reference"
     range 1 128
-    default 4  if PROFILE_EMBEDDED
-    default 64 if PROFILE_FLEET
+    default 4  if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
     default 16
     help
       crates/drivers/virtio/src/virtio/net.rs, recv_batch: one lock pops up
@@ -898,7 +898,7 @@ config RPC_QUIC_PORT
 config RPC_WARRANT_TTL_MS
     int "Lifetime of a warrant minted for a peer (ms)"
     range 1000 86400000
-    default 15000 if PROFILE_EMBEDDED
+    default 15000 if HWCLASS_EMBEDDED
     default 60000
     help
       The node that exports an endpoint calls the real service through a
@@ -915,7 +915,7 @@ config RPC_WARRANT_TTL_MS
 config RPC_DEDUPE_WINDOW
     int "Calls per session the far node remembers the answer of"
     range 1 16
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       An `#[at_most_once]` or `#[once_only]` call that arrives twice (a
@@ -1234,7 +1234,7 @@ config MCP_ENROL_TTL_MS
 # ---------------------------------------------------------------------------
 config SSHD
     bool "SSH server (SSHD.ELF): remote commands over SSH-2, public-key login only"
-    default n if MICRO || BUILD_TYPE_CERTIFIABLE || PROFILE_EMBEDDED
+    default n if MICRO || BUILD_TYPE_CERTIFIABLE || HWCLASS_EMBEDDED
     default y
     help
       The built-in topology carries a row for SSHD.ELF and the kernel starts it

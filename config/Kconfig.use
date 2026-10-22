@@ -47,8 +47,8 @@ config USE_ROBOT
 
 config USE_IOT_HMI
     def_bool PRESET_IOT_HMI
-    imply DRV_DISPLAY_HDMI if !PROFILE_EMBEDDED
-    imply DRV_DISPLAY_RAMFB if !PROFILE_EMBEDDED
+    imply DRV_DISPLAY_HDMI if !HWCLASS_EMBEDDED
+    imply DRV_DISPLAY_RAMFB if !HWCLASS_EMBEDDED
     help
       Devices with a display, touch input and a battery. Implies
       (default on, can be turned off under "Drivers"): the display
@@ -76,7 +76,7 @@ config USE_GATEWAY
         DNS_CACHE_SIZE 4 -> 16, UDP_RX_SLOTS 4 -> 16.
       Smaller per-connection buffers for many more connections: a
       gateway holds many mostly idle links, not a few bulk ones.
-      The Fleet profile (PROFILE_FLEET) keeps its own, larger tables.
+      The Fleet profile (HWCLASS_SERVER) keeps its own, larger tables.
 
 config USE_INDUSTRIAL
     def_bool PRESET_INDUSTRIAL

@@ -54,7 +54,7 @@ config HV_REQUIRE
 config HV_MAX_VCPUS
     int "vCPUs over all guests"
     range 1 64
-    default 4 if PROFILE_EMBEDDED
+    default 4 if HWCLASS_EMBEDDED
     default 8
     help
       The size of the vCPU pool (crates/core/hv, `vm::MAX_VCPUS`): the sum of

@@ -178,7 +178,7 @@ config PANIC_STOP_WAIT_US
 config CRASHDUMP
     # cargo-feature: crashdump base
     bool "Crash dump: a minidump of every ring-3 task a fault kills"
-    default n if PROFILE_EMBEDDED
+    default n if HWCLASS_EMBEDDED
     default y
     help
       A ring-3 task that a fault kills (page fault it cannot resolve, illegal
@@ -213,7 +213,7 @@ config CRASHDUMP_STACK_BYTES
     int "Crash dump: stack window (bytes, from the stack pointer up)"
     depends on CRASHDUMP
     range 64 4096
-    default 512 if PROFILE_EMBEDDED
+    default 512 if HWCLASS_EMBEDDED
     default 1024
     help
       The stack bytes a dump keeps, from the stack pointer toward the stack
@@ -421,7 +421,7 @@ config KTRACE
 config KTRACE_RING_ENTRIES
     int "Trace records per CPU ring (power of two)"
     range 64 8192
-    default 256 if PROFILE_EMBEDDED
+    default 256 if HWCLASS_EMBEDDED
     default 1024
     help
       Records each CPU's ring holds before the policy applies (a full
@@ -866,8 +866,8 @@ config LOCKDEP_MAX_DEPTH
 config LOCKDEP_EDGES
     int "Lockdep: dependency edges kept (table size)"
     range 256 65536
-    default 2048 if PROFILE_EMBEDDED
-    default 8192 if PROFILE_FLEET
+    default 2048 if HWCLASS_EMBEDDED
+    default 8192 if HWCLASS_SERVER
     default 4096
     help
       Slots of the lock-free open-addressed table of "A held, B taken"
@@ -878,8 +878,8 @@ config LOCKDEP_EDGES
 config LOCKDEP_CHAINS
     int "Lockdep: lock chains cached as already checked (table size)"
     range 256 65536
-    default 2048 if PROFILE_EMBEDDED
-    default 8192 if PROFILE_FLEET
+    default 2048 if HWCLASS_EMBEDDED
+    default 8192 if HWCLASS_SERVER
     default 4096
     help
       Slots of the chain-hash cache: a hash of the held classes plus the
@@ -902,8 +902,8 @@ config LOCKDEP_REPORTS
 config LOCK_MAX_HOLD_US
     int "Longest a SpinLock may be held (us): the IRQs-off bound"
     range 1 100000
-    default 50 if PROFILE_EMBEDDED
-    default 200 if PROFILE_FLEET
+    default 50 if HWCLASS_EMBEDDED
+    default 200 if HWCLASS_SERVER
     default 100
     help
       The owner's "never an unbounded IRQs-off spin" as a number: the
@@ -935,8 +935,8 @@ config LOCKDEP_HOLD_ENFORCE
 config LOCKDEP_CLASSES
     int "Lockdep: lock classes tracked per class (table size)"
     range 64 16384
-    default 256 if PROFILE_EMBEDDED
-    default 1024 if PROFILE_FLEET
+    default 256 if HWCLASS_EMBEDDED
+    default 1024 if HWCLASS_SERVER
     default 512
     help
       Slots of the per-class table that holds what is known about each
@@ -1192,8 +1192,8 @@ config DECISION_DENY_DURABLE_BURST
 config DECISION_RECORDS_ENTRIES
     int "Explainable decision records: ring depth"
     range 8 4096
-    default 16 if PROFILE_EMBEDDED
-    default 256 if PROFILE_FLEET
+    default 16 if HWCLASS_EMBEDDED
+    default 256 if HWCLASS_SERVER
     default 64
     help
       Records kept; the oldest is overwritten. 48 bytes each. Raise it when
@@ -1203,8 +1203,8 @@ config DECISION_RECORDS_ENTRIES
 config DECISION_JOURNAL_ENTRIES
     int "Explainable decision records: durable journal depth"
     range 8 4096
-    default 16 if PROFILE_EMBEDDED
-    default 128 if PROFILE_FLEET
+    default 16 if HWCLASS_EMBEDDED
+    default 128 if HWCLASS_SERVER
     default 32
     help
       Decisions kept whole in RAM after they went down the durable path (a
@@ -1366,7 +1366,7 @@ config WAKE_RING_SAMPLE_LOG2
 
 config KLOG
     bool "Structured kernel log: every log line as a record in a ring ring 3 reads"
-    default n if PROFILE_EMBEDDED
+    default n if HWCLASS_EMBEDDED
     default y
     help
       Every kernel log line (`kerr!` .. `kdebug!`, `kprintln!`) is also a
@@ -1428,7 +1428,7 @@ config KLOG_EARLY_ENTRIES
 config LOGD_MAX_LEVEL
     int "logd: highest level kept in the files (3 err, 4 warn, 6 info, 7 debug)"
     range 3 7
-    default 4 if PROFILE_FLEET
+    default 4 if HWCLASS_SERVER
     default 7
     help
       Read only with KLOG. `logd` writes the records whose level is at or below this (Linux
