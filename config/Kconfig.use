@@ -2,10 +2,14 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # config/Kconfig.use — The USE axis (what the image is for), derived from PRESET
 #
-# The USE axis is derived from PRESET, never chosen: one USE_* symbol per
-# PRESET_* member (def_bool, no prompt), so `make config` shows the Preset
-# menu only; HWCLASS, STRUCTURE, RT, SECURITY and VIRT stay visible as
-# overrides. AZOS is a general-purpose hybrid kernel; a robot is one worked
+# The USE axis is derived from PRESET, never chosen: each USE_* symbol is a
+# `def_bool PRESET_<same>` with no prompt, so `make config` shows the Preset
+# menu only, and a defconfig line that sets a USE_* symbol is ignored
+# (olddefconfig recomputes it); HWCLASS, STRUCTURE, RT, SECURITY and VIRT stay
+# visible as overrides. A preset gets a USE_* symbol only when something reads
+# it (a default, an `imply`, a cargo feature or the code):
+# PRESET_FIRMWARE has none, as nothing depends on it
+# (tools/kconfig_lint.py: every symbol has a reader). AZOS is a general-purpose hybrid kernel; a robot is one worked
 # example. USE decides which crates are linked (USE_ROBOT -> kernel feature
 # `use-robot`, emitted by tools/kconfig_to_cargo.py), which menus `make
 # config` shows, and, through `imply` and conditional defaults, the starting
@@ -108,12 +112,6 @@ config USE_SERVER
       A machine serving many clients. Today it changes no default
       beyond what PRESET_SERVER sets on the other axes (the Fleet
       tables come from HWCLASS_SERVER).
-
-config USE_FIRMWARE
-    def_bool PRESET_FIRMWARE
-    help
-      A single-purpose appliance image. Today it changes no default
-      beyond what PRESET_FIRMWARE sets on the other axes.
 
 config USE_WEARABLE
     def_bool PRESET_WEARABLE

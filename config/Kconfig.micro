@@ -22,24 +22,14 @@ config MICRO
 
 if MICRO
 
-choice
-    prompt "Micro target chip"
-    default MICRO_CHIP_QEMU_VIRT
-    help
-      The chip the image is linked for: its RAM base, UART, timer and
-      memory-mapped regions (micro/src/chip.rs). QEMU virt is the gate's
-      chip; a physical chip is a new member here and a new table there.
-
-    config MICRO_CHIP_QEMU_VIRT
-        bool "QEMU virt (rv32imac, PMP, 16550 UART, CLINT)"
-endchoice
-
 config MICRO_RAM_BASE
     hex "RAM base address"
-    default 0x80000000 if MICRO_CHIP_QEMU_VIRT
+    default 0x80000000
     help
       Where the image is linked and loaded. Kernel text, data and stack,
-      the task pool and the contiguous pool all sit in this window.
+      the task pool and the contiguous pool all sit in this window. This
+      default and those of MICRO_TIMEBASE_HZ, MICRO_UART_BASE and
+      MICRO_CLINT_BASE are QEMU virt's, the one chip (micro/src/chip.rs).
 
 config MICRO_RAM_KIB
     int "RAM the image may use (KiB)"
@@ -160,17 +150,17 @@ config MICRO_IDLE_PRIO
 config MICRO_TIMEBASE_HZ
     int "mtime frequency (Hz)"
     range 32768 1000000000
-    default 10000000 if MICRO_CHIP_QEMU_VIRT
+    default 10000000
     help
       The rate `mtime` counts at.
 
 config MICRO_UART_BASE
     hex "Console UART (16550) base"
-    default 0x10000000 if MICRO_CHIP_QEMU_VIRT
+    default 0x10000000
 
 config MICRO_CLINT_BASE
     hex "CLINT base (mtime, mtimecmp)"
-    default 0x02000000 if MICRO_CHIP_QEMU_VIRT
+    default 0x02000000
 
 endif # MICRO
 

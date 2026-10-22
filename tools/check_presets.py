@@ -40,13 +40,15 @@ sys.path.insert(0, HERE)
 import gen_userspace_kconfig as gus  # noqa: E402
 import kconfig_to_cargo as k2c  # noqa: E402
 
-# The axes (config/Kconfig.preset; USE is the USE_* set, derived 1:1 from the
+# The axes (config/Kconfig.preset; USE is the USE_* set, derived from the
 # preset and never asked; BUILD_TYPE is the one of config/Kconfig.development):
-# each must come out with one member on.
+# each must come out with one member on, except USE for a preset that has no
+# USE_* symbol (config/Kconfig.use: one exists only where something reads it),
+# which must come out with none.
 AXIS_MEMBERS = {
     "HWCLASS": ["HWCLASS_EMBEDDED", "HWCLASS_SBC", "HWCLASS_DESKTOP", "HWCLASS_SERVER"],
     "USE": ["USE_GENERIC", "USE_ROBOT", "USE_IOT_HMI", "USE_GATEWAY", "USE_INDUSTRIAL",
-            "USE_AUTOMOTIVE", "USE_DESKTOP", "USE_SERVER", "USE_FIRMWARE", "USE_WEARABLE"],
+            "USE_AUTOMOTIVE", "USE_DESKTOP", "USE_SERVER", "USE_WEARABLE"],
     "STRUCTURE": ["STRUCTURE_HYBRID", "STRUCTURE_RING3_DRIVERS"],
     "RT": ["RT_NONE", "RT_SOFT", "RT_HARD", "RT_MIXED"],
     "SECURITY": ["SECURITY_GENERAL", "SECURITY_HARDENED", "SECURITY_SEPARATION_STATIC",
@@ -275,11 +277,12 @@ def main() -> int:
                     if on != [want_bus]:
                         bad.append(f"HWBUS_AUTOBIND is {on}, the decision is {want_bus}")
                 want_use = "USE_" + preset.removeprefix("PRESET_")
-                if kconf.syms[want_use].str_value != "y":
+                has_use = want_use in kconf.syms and bool(kconf.syms[want_use].nodes)
+                if has_use and kconf.syms[want_use].str_value != "y":
                     bad.append(f"{want_use} is not on: USE follows the preset 1:1")
                 for axis, members in AXIS_MEMBERS.items():
                     on = [m for m in members if kconf.syms[m].str_value == "y"]
-                    if len(on) != 1:
+                    if len(on) != (0 if axis == "USE" and not has_use else 1):
                         bad.append(f"axis {axis} has {len(on)} members on: {on}")
                 for extra in ([], ["--rustflags"]):
                     r = subprocess.run([sys.executable, os.path.join(HERE, "kconfig_to_cargo.py"), *extra, cfg],

@@ -3,8 +3,9 @@
 //! The chip's memory-mapped regions: what a `mmio.N` capability of the
 //! topology names. Index N is a position in this table, the way the main
 //! kernel indexes its board's MMIO table (`mmio_cap.rs`), so a topology
-//! row means the same thing as long as the chip is the same. A new chip is a
-//! new `MICRO_CHIP_*` member (`config/Kconfig.micro`) and a new table.
+//! row means the same thing as long as the chip is the same. The one chip is
+//! QEMU virt (the defaults of MICRO_RAM_BASE, MICRO_UART_BASE, MICRO_CLINT_BASE
+//! and MICRO_TIMEBASE_HZ, `config/Kconfig.micro`); a new chip is a new table.
 
 use crate::pmp_core::{R, W};
 
