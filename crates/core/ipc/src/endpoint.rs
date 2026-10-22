@@ -474,6 +474,9 @@ mod glue {
     pub fn abort_handover(i: usize, gen: u32, old_idx: usize) -> Result<(), HandoverError> {
         crate::ep_queue::abort_handover(i, gen, old_idx).map_err(map)
     }
+    pub fn rebind_check(i: usize, gen: u32, new: u32) -> Result<(), HandoverError> {
+        crate::ep_queue::rebind_check(i, gen, new).map_err(map)
+    }
     pub fn rebind(i: usize, gen: u32, new: u32, old_idx: usize, new_idx: usize) -> Result<(), HandoverError> {
         crate::ep_queue::rebind(i, gen, new, old_idx, new_idx, |caller_idx, old| {
             crate::fastcall::retarget_donation(caller_idx, old, new, new_idx)
@@ -546,8 +549,27 @@ mod glue {
     use super::HandoverError;
     pub fn begin_handover(_i: usize, _gen: u32, _old: u32, _new: u32) -> Result<(), HandoverError> { Ok(()) }
     pub fn abort_handover(_i: usize, _gen: u32, _old_idx: usize) -> Result<(), HandoverError> { Ok(()) }
-    pub fn rebind(_i: usize, _gen: u32, _new: u32, _old_idx: usize, _new_idx: usize) -> Result<(), HandoverError> {
-        Ok(())
+    /// The host has no call queues: a suite makes one slot's queue refuse
+    /// the rebind (both the check and the flip, as the real queue would) with
+    /// [`refuse_rebind`].
+    #[cfg(test)]
+    static REFUSED: std::sync::Mutex<Option<(usize, HandoverError)>> = std::sync::Mutex::new(None);
+    #[cfg(test)]
+    pub fn refuse_rebind(r: Option<(usize, HandoverError)>) {
+        *REFUSED.lock().unwrap_or_else(|e| e.into_inner()) = r;
+    }
+    #[cfg(test)]
+    fn refusal(i: usize) -> Result<(), HandoverError> {
+        match *REFUSED.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some((slot, e)) if slot == i => Err(e),
+            _ => Ok(()),
+        }
+    }
+    #[cfg(not(test))]
+    fn refusal(_i: usize) -> Result<(), HandoverError> { Ok(()) }
+    pub fn rebind_check(i: usize, _gen: u32, _new: u32) -> Result<(), HandoverError> { refusal(i) }
+    pub fn rebind(i: usize, _gen: u32, _new: u32, _old_idx: usize, _new_idx: usize) -> Result<(), HandoverError> {
+        refusal(i)
     }
     pub fn represent(_i: usize, _gen: u32, _old: u32) -> Result<(usize, usize), HandoverError> { Ok((0, 0)) }
     pub fn in_service(_i: usize, _old: u32) -> usize { 0 }
@@ -1724,8 +1746,9 @@ pub fn endpoint_handover_represent_all(old: u32) -> (usize, usize) {
 /// entries for these endpoints miss on their own, and a task that resolved
 /// the old server and calls after the flip is refused like a call to an
 /// endpoint that changed server, not lost). The old server's notice binding
-/// is dropped; the successor binds its own. All or none: refused while
-/// `old` has a call in service on any of them.
+/// is dropped; the successor binds its own. All or none: refused, with
+/// nothing flipped, while `old` has a call in service on any of them or any
+/// of their queues would refuse the rebind.
 pub fn endpoint_rebind_all(old: u32, new: u32) -> Result<usize, HandoverError> {
     // KMEM-CHARGE: the successor's Domain takes over the endpoints' charge (the
     // old server's Domain is about to end). Charged for all of them before the
@@ -1744,12 +1767,21 @@ pub fn endpoint_rebind_all(old: u32, new: u32) -> Result<usize, HandoverError> {
     if matching(&eps) != want {
         return Err(HandoverError::Busy);
     }
-    // Nothing accepts during a handover, so the count only falls: checked
-    // for all first, then flipped.
+    // All or none: every endpoint's queue is asked first whether it would
+    // refuse the rebind, and nothing flips unless none would. The answers
+    // hold until the flips below, as `ENDPOINTS` stays held: a queue's
+    // generation and handover change only under it, and nothing accepts
+    // during a handover, so the calls in service only fall. Flipping as it
+    // went left the endpoints before a refusing one with the successor and
+    // the rest with the old server.
     let mut busy = 0usize;
     for i in 0..MAX_ENDPOINTS {
         if eps[i].active && eps[i].owner_tid == old && eps[i].handover && eps[i].successor == new {
-            busy += glue::in_service(i, old);
+            match glue::rebind_check(i, eps[i].generation, new) {
+                Ok(()) => {}
+                Err(HandoverError::InService(n)) => busy += n,
+                Err(e) => return Err(e),
+            }
         }
     }
     if busy != 0 {
@@ -1767,6 +1799,8 @@ pub fn endpoint_rebind_all(old: u32, new: u32) -> Result<usize, HandoverError> {
         let (gen, owner_before) = (eps[i].generation, eps[i].owner_tid);
         eps[i].owner_tid = new;
         publish(&eps, i);
+        // `rebind_check` answered for it above, under the same hold, so this
+        // is not refused; the undo is for a queue that broke that contract.
         if let Err(e) = glue::rebind(i, gen, new, old_idx, new_idx) {
             eps[i].owner_tid = owner_before;
             publish(&eps, i);
@@ -2207,6 +2241,7 @@ mod tests {
         for tid in [SERVER, CLIENT, THIRD, HEIR] {
             resolve_cache::clear(tid as usize);
         }
+        glue::refuse_rebind(None);
         g
     }
 
@@ -2985,6 +3020,40 @@ mod tests {
         }
         assert_eq!(resolve(CLIENT, raw).map(|d| d.owner), Ok(HEIR), "the client's capability is still good");
         assert_eq!(endpoint_rebind_all(SERVER, HEIR), Ok(0), "nothing left to move");
+        crate::cap_store::reset(HEIR);
+    }
+
+    /// **A rebind moves every endpoint or none**: when one endpoint's queue
+    /// refuses (here the later slot, `Stale`), the refusal comes back before
+    /// anything flipped: both endpoints keep the old server and their
+    /// identity words, the handover is still open, and the retry moves both.
+    ///
+    /// **Canary.** Drop the `rebind_check` pass in `endpoint_rebind_all`
+    /// (flip as it goes): the earlier endpoint is left with the successor.
+    #[test]
+    fn a_rebind_refused_on_one_endpoint_flips_none() {
+        let _g = setup();
+        assert!(endpoint_named_cap(SERVER, CapPerms::READ, b"svc").is_some());
+        let named = endpoint_ref_by_name(b"svc").unwrap();
+        let anon = endpoint_create(SERVER).unwrap();
+        assert_eq!(endpoint_swap_open(SERVER), 1);
+        assert!(endpoint_named_cap(HEIR, CapPerms::READ, b"svc").is_some());
+        assert_eq!(endpoint_handover_begin_all(SERVER, HEIR), Ok(2));
+        let (a, b) = (LAYOUT.idx(named) as usize, LAYOUT.idx(anon) as usize);
+        let words = |i: usize| LOOKUP[i].load(Ordering::Relaxed);
+        let (wa, wb) = (words(a), words(b));
+
+        glue::refuse_rebind(Some((a.max(b), HandoverError::Stale)));
+        assert_eq!(endpoint_rebind_all(SERVER, HEIR), Err(HandoverError::Stale));
+        assert_eq!(endpoint_owner_ref(named), Ok(SERVER), "the named endpoint flipped alone");
+        assert_eq!(endpoint_owner_ref(anon), Ok(SERVER), "the anonymous endpoint flipped alone");
+        assert_eq!((words(a), words(b)), (wa, wb), "an identity word changed");
+        assert_eq!(endpoint_handover_begin_all(SERVER, HEIR), Err(HandoverError::Busy), "the handover is still open");
+
+        glue::refuse_rebind(None);
+        assert_eq!(endpoint_rebind_all(SERVER, HEIR), Ok(2), "the retry moves both");
+        assert_eq!(endpoint_owner_ref(named), Ok(HEIR));
+        assert_eq!(endpoint_owner_ref(anon), Ok(HEIR));
         crate::cap_store::reset(HEIR);
     }
 

@@ -577,18 +577,7 @@ pub fn rebind(
 ) -> Result<(), HandoverError> {
     let l = QUEUES.get(ep).ok_or(HandoverError::Stale)?;
     let mut q = l.lock_irqsave();
-    // Canary: the generation is not compared, so a rebind aimed at an
-    // earlier endpoint of this slot flips the present one.
-    if (q.gen != gen && !broken(BREAK_GEN)) || q.gen == 0 {
-        return Err(HandoverError::Stale);
-    }
-    if q.owner != HANDOVER || q.new != new {
-        return Err(HandoverError::NotInHandover);
-    }
-    let n = count_in_service(ep, q.old);
-    if n != 0 && !broken(BREAK_IN_SERVICE) {
-        return Err(HandoverError::InService(n));
-    }
+    rebind_refusal(&q, ep, gen, new)?;
     let old = q.old;
     let mut p = q.send_head;
     while p != NIL {
@@ -605,6 +594,35 @@ pub fn rebind(
     ready_clear(old_idx, ep);
     if q.send_head != NIL && !broken(BREAK_QUIESCE) {
         ready_set(new_idx, ep);
+    }
+    Ok(())
+}
+
+/// Would [`rebind`] refuse slot `ep` now? The same answer, nothing changed:
+/// the endpoint layer asks it of every endpoint before it flips the first
+/// one, so a set of endpoints moves to the successor whole or not at all.
+/// The answer holds while the caller keeps `ENDPOINTS`: the generation and
+/// the handover change only under it, and nothing accepts during a handover
+/// (`take_locked` wants `owner == server`), so the calls in service only fall.
+pub fn rebind_check(ep: usize, gen: u32, new: u32) -> Result<(), HandoverError> {
+    let l = QUEUES.get(ep).ok_or(HandoverError::Stale)?;
+    let q = l.lock_irqsave();
+    rebind_refusal(&q, ep, gen, new)
+}
+
+/// [`rebind`]'s refusals: one test for it and for [`rebind_check`].
+fn rebind_refusal(q: &Queue, ep: usize, gen: u32, new: u32) -> Result<(), HandoverError> {
+    // Canary: the generation is not compared, so a rebind aimed at an
+    // earlier endpoint of this slot flips the present one.
+    if (q.gen != gen && !broken(BREAK_GEN)) || q.gen == 0 {
+        return Err(HandoverError::Stale);
+    }
+    if q.owner != HANDOVER || q.new != new {
+        return Err(HandoverError::NotInHandover);
+    }
+    let n = count_in_service(ep, q.old);
+    if n != 0 && !broken(BREAK_IN_SERVICE) {
+        return Err(HandoverError::InService(n));
     }
     Ok(())
 }
@@ -2820,6 +2838,27 @@ mod tests {
         assert!(matches!(reply(h0, SERVER, false, RSP), Reply::Woke { .. }));
         assert_eq!(in_service(EP, SERVER), 0);
         assert_eq!(rebind(EP, GEN, NEW, SERVER_IDX, NEW_IDX), Ok(()));
+    }
+
+    /// `rebind_check` answers what `rebind` would, and changes nothing: the
+    /// endpoint layer asks it of every endpoint before flipping any.
+    #[test]
+    fn the_rebind_check_answers_as_the_rebind_and_flips_nothing() {
+        let _e = env();
+        assert_eq!(rebind_check(EP, GEN, NEW), Err(HandoverError::NotInHandover), "no handover");
+        let h0 = call_from(0).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        handover();
+        assert_eq!(rebind_check(EP, GEN + 1, NEW), Err(HandoverError::Stale));
+        assert_eq!(rebind_check(EP, GEN, NEW + 1), Err(HandoverError::NotInHandover), "another successor");
+        assert_eq!(rebind_check(EP, GEN, NEW), Err(HandoverError::InService(1)));
+        assert!(matches!(reply(h0, SERVER, false, RSP), Reply::Woke { .. }));
+        let h1 = call_from(1).unwrap();
+        assert_eq!(rebind_check(EP, GEN, NEW), Ok(()));
+        assert!(served_by(EP, SERVER), "the check flipped the owner");
+        assert_eq!(accept(NEW_IDX, NEW), None, "the check handed the queue over");
+        assert_eq!(rebind(EP, GEN, NEW, SERVER_IDX, NEW_IDX), Ok(()));
+        assert_eq!(accept(NEW_IDX, NEW).map(|a| a.0), Some(h1));
     }
 
     /// A call in service is re-presented to the new server instead of
