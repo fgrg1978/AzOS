@@ -19610,11 +19610,15 @@ PYEOF
     # the condition that it costs at most 1% (10 per mille). The gate kernel is
     # built with it off and on from the same qemu.config and both boot the ipc
     # and shell lanes (ipc-roundtrip, the rings, chan-call, file-ord 64B,
-    # pipe, file-dup) under -icount at one hart, bit-exact
-    # (tools/vsbench_cost.sh, which prints the per-lane table). At one hart a
+    # pipe, file-dup, spawn+wait) under -icount at one hart, and compares the
+    # retired instructions per op where both columns print them, else the
+    # guest ns/op (tools/vsbench_cost.sh, which prints the per-lane table;
+    # measured 2026-10-22: at most 6 per mille, spawn+wait, whose instruction
+    # count moves ~1 per mille between two runs of one kernel). At one hart a
     # wake never lands on another CPU, so the migrating-wake record does not
     # fire here: the row bounds the record sites the lanes pass on one CPU.
-    # The canary builds the on column with `lockdep` too and must be over.
+    # The canary builds the on column with `lockdep` too and must be over
+    # (2026-10-22: drv-call +13 per mille, the one lane over; a thin margin).
     receipts_cost_row() {
         printf "  %-26s" "bench: receipts cost <= 1%..."
         local out

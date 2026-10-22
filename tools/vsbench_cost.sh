@@ -48,11 +48,26 @@ OUT="$AZOS_OUT/build/vsbench-cost-$(printf '%s' "$SYM" | tr '[:upper:]' '[:lower
 mkdir -p "$OUT"
 die() { echo "vsbench-cost: $*" >&2; exit 1; }
 
-# `<lane>\t<n>` for every `[VSBENCH] azos <lane> = <n> ns/op` line (the same
-# parse as vsbench_compare.sh's lane_values: CR stripped, not anchored).
+# Per lane, `<lane>\t<ns>\t<instr>`: the `<lane> = <n> ns/op` line (the same
+# parse as vsbench_compare.sh's lane_values: CR stripped, not anchored) and the
+# retired instructions of its `<lane> pmc = <c> cyc/op <i> instr/op` line, or
+# `-` when the lane printed none (PMU_USER; a lane prints it only when it
+# reported its last batch, so a column can miss it). Under -icount ns/op is
+# guest time, which for a lane that WAITS (spawn+wait sleeps until the child
+# is reaped) moves in whole timer quanta for an instruction more or less; the
+# instruction count is the cost of the code path, and the bound reads it
+# wherever both columns have it. Measured 2026-10-22, spawn+wait with records
+# off/on: 344,072 / 545,040 ns/op but 233,746 / 235,275 instr/op.
 lanes_of() {
-    tr -d '\r' <"$1" 2>/dev/null | grep "\[VSBENCH\] azos " | grep " ns/op" \
-        | sed -E "s/.*\[VSBENCH\] azos +//; s/ +=/=/; s/= *([0-9]+) ns.*/\t\1/" | sort -u
+    local log; log="$(tr -d '\r' <"$1" 2>/dev/null | grep "\[VSBENCH\] azos ")"
+    printf '%s\n' "$log" | grep " instr/op" \
+        | sed -E "s/.*\[VSBENCH\] azos +//; s/ +pmc *=.* ([0-9]+) instr\/op.*/\t\1/" | sort -u >"$1.instr" || true
+    printf '%s\n' "$log" | grep " ns/op" \
+        | sed -E "s/.*\[VSBENCH\] azos +//; s/ +=/=/; s/= *([0-9]+) ns.*/\t\1/" | sort -u \
+        | while IFS="$(printf '\t')" read -r lane n; do
+              i="$(awk -F '\t' -v l="$lane" '$1 == l { print $2; exit }' "$1.instr")"
+              printf '%s\t%s\t%s\n' "$lane" "$n" "${i:--}"
+          done
 }
 
 line_of() { if [ "$1" = off ]; then echo "# CONFIG_$SYM is not set"; else echo "CONFIG_$SYM=y"; fi; }
@@ -87,13 +102,16 @@ cmp -s "$OUT/off.lanes" "$OUT/on.lanes" \
     || { diff "$OUT/off.lanes" "$OUT/on.lanes" >&2 || true; die "the two columns measured different lanes"; }
 
 rc=0
-printf '%-24s %12s %12s %9s\n' lane off on "per mille" | tee "$OUT/table.txt"
-while IFS="$(printf '\t')" read -r lane off; do
-    on="$(awk -F '\t' -v l="$lane" '$1 == l { print $2; exit }' "$OUT/on.tsv")"
+printf '%-24s %6s %12s %12s %9s\n' lane metric off on "per mille" | tee "$OUT/table.txt"
+while IFS="$(printf '\t')" read -r lane off_ns off_in; do
+    on_ns="$(awk -F '\t' -v l="$lane" '$1 == l { print $2; exit }' "$OUT/on.tsv")"
+    on_in="$(awk -F '\t' -v l="$lane" '$1 == l { print $3; exit }' "$OUT/on.tsv")"
+    if [ "$off_in" != - ] && [ "$on_in" != - ]; then metric=instr off="$off_in" on="$on_in"
+    else metric=ns off="$off_ns" on="$on_ns"; fi
     pm=$(( off > 0 ? (on - off) * 1000 / off : 0 ))
     verdict=ok
     if [ $(( on * 1000 )) -gt $(( off * (1000 + PERMILLE) )) ]; then verdict=OVER; rc=1; fi
-    printf '%-24s %12s %12s %9s %s\n' "$lane" "$off" "$on" "$pm" "$verdict" | tee -a "$OUT/table.txt"
+    printf '%-24s %6s %12s %12s %9s %s\n' "$lane" "$metric" "$off" "$on" "$pm" "$verdict" | tee -a "$OUT/table.txt"
 done <"$OUT/off.tsv"
 n="$(wc -l <"$OUT/off.tsv" | tr -d ' ')"
 if [ "$rc" -eq 0 ]; then
