@@ -954,7 +954,9 @@ lockdep = ["azos_sync/lockdep"]
 # so every crate that asks a point sees it on. Never with secure-boot-enforced.
 chaos = ["azos_chaos/on"]
 # Kconfig DECISION_RECORDS_DEV: explainable decision records, in the
-# introspection tree's admin region (crates/core/decision).
+# introspection tree's admin region (crates/core/decision). A `base` tag (the
+# Kconfig default is y on every preset but HWCLASS_EMBEDDED): emitted unless
+# the symbol is n.
 decisions = ["azos_decision/on"]
 # Kconfig HV (derived from VIRT): the hypervisor core. The boot admits the
 # topology's `[guest.NAME]` rows (`kernel/src/boot/hv.rs`) and the syscall

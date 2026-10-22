@@ -805,7 +805,7 @@ def test_page_size_reaches_the_build() -> None:
 ALWAYS_BASE = ("sched-o1-placement", "sched-ipc-affinity", "sched-timer-heap", "decisions-durable",
                "virtio-input", "virtio-snd", "rtc")
 # Base features of every hardware class but embedded (`default n if HWCLASS_EMBEDDED`).
-FULL_PROFILE_BASE = ("crashdump", "inspect")
+FULL_PROFILE_BASE = ("crashdump", "inspect", "decisions")
 
 
 def _bridge_args(cfg: Path) -> list[str]:
@@ -918,10 +918,12 @@ def test_scheduler_options_follow_their_symbols() -> None:
 
 def test_refusal_receipts_follow_their_symbol() -> None:
     """DECISION_REFUSALS_DURABLE is y by default on every preset and builds
-    `decisions-durable`; n drops it. The ring's
-    symbol, DECISION_RECORDS_DEV, is the `decisions` feature and is separate.
-    Canary: remove the `# cargo-feature:` tag from the symbol -> the y case
-    loses the feature."""
+    `decisions-durable`; n drops it. The ring's symbol, DECISION_RECORDS_DEV,
+    is the `decisions` feature and is separate: y by default on every preset
+    but a small board (owner 2026-10-22, receipts on), a `base` tag, and n
+    drops it alone.
+    Canary: remove the `# cargo-feature:` tag (or its `base`) from a symbol ->
+    the y case loses the feature."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
@@ -929,13 +931,19 @@ def test_refusal_receipts_follow_their_symbol() -> None:
         for dom in ("ROBOT", "GENERIC"):
             _expand([f"CONFIG_PRESET_{dom}=y"], t, f"{dom}.config")
             feats = _bridge_args(t / f"{dom}.config")
-            assert "decisions-durable" in feats and "decisions" not in feats, f"{dom}: {feats}"
+            assert "decisions-durable" in feats and "decisions" in feats, f"{dom}: {feats}"
+            base = subprocess.run([sys.executable, str(TOOLS_DIR / "kconfig_to_cargo.py"), "--base",
+                                   str(t / f"{dom}.config")], capture_output=True, text=True).stdout
+            assert "decisions," in base or base.rstrip().endswith("decisions"), f"{dom} --base: {base}"
         _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_DECISION_REFUSALS_DURABLE=n"], t, "off.config")
         feats = _bridge_args(t / "off.config")
-        assert "decisions-durable" not in feats, f"n kept the feature: {feats}"
-        _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_DECISION_RECORDS_DEV=y"], t, "dev.config")
+        assert "decisions-durable" not in feats and "decisions" in feats, f"n kept or dropped: {feats}"
+        _expand(["CONFIG_PRESET_ROBOT=y", "# CONFIG_DECISION_RECORDS_DEV is not set"], t, "dev.config")
         feats = _bridge_args(t / "dev.config")
-        assert "decisions" in feats and "decisions-durable" in feats, feats
+        assert "decisions" not in feats and "decisions-durable" in feats, feats
+        for small in (["CONFIG_PRESET_FIRMWARE=y"], ["CONFIG_PRESET_ROBOT=y", "CONFIG_HWCLASS_EMBEDDED=y"]):
+            exp = _expand(small, t, "small.config")
+            assert "# CONFIG_DECISION_RECORDS_DEV is not set" in exp, f"{small}: the ring is on a small board"
 
 
 def test_virtio_input_follows_its_symbol() -> None:

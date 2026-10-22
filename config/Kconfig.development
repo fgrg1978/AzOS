@@ -1116,9 +1116,9 @@ config CHAOS_TIMER_DELAY_US
       off; one subtraction per fired sweep when on.
 
 config DECISION_RECORDS_DEV
-    # cargo-feature: decisions
+    # cargo-feature: decisions base
     bool "Explainable decision records: the ring, every rule"
-    default y if KTEST
+    default y if KTEST || !HWCLASS_EMBEDDED
     default n
     help
       Boot deadline admission, the real-time band cap, boot memory
@@ -1129,14 +1129,18 @@ config DECISION_RECORDS_DEV
       tree's admin region holds the newest 24 (`decisions/records/<n>`);
       `why list` prints them.
 
-      Off by default outside a KTEST kernel, because the wake-placement
-      record sits on the wake path. Off: every record site compiles out.
-      On: a migrating wake pays about 40 instructions and six stores (the
-      last is the clock stamp), the
-      admission and denial paths the same per record, and the ring costs
-      DECISION_RECORDS_ENTRIES x 48 bytes of .bss. Turn it on to see why a
-      topology was refused or why tasks move. Maps to the kernel cargo
-      feature `decisions`.
+      On by default in every preset except on a small board
+      (HWCLASS_EMBEDDED, whose defconfig names it to have it), and in every
+      KTEST kernel (owner, 2026-10-22: the receipts ship on), on the
+      condition that the gate row `bench: receipts cost <= 1%`
+      (tools/vsbench_cost.sh: the ipc and shell vsbench lanes, this symbol
+      off against on, -icount at one hart) holds. Off: every record site
+      compiles out. On: a migrating wake pays about 40 instructions and six
+      stores (the last is the clock stamp), the admission and denial paths
+      the same per record, and the ring costs DECISION_RECORDS_ENTRIES x 48
+      bytes of .bss. Maps to the kernel cargo feature `decisions`, a `base`
+      tag: emitted unless the symbol is n, so the gate's kernels carry what
+      the presets ship.
 
       This is the development view. The durable receipt of a refusal is
       DECISION_REFUSALS_DURABLE, which does not need this symbol (this one
