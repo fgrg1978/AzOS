@@ -177,6 +177,9 @@ pub enum ConfigSigCheck {
     WrongDevice,
     /// The signature does not verify against the trusted key.
     BadSignature,
+    /// `CONFIG.INI` is larger than the boot reads (Kconfig
+    /// `BOOT_INI_MAX_KB`), so it was not verified at all: not tampering.
+    TooLarge,
     /// Verified for this device; the counter it signs.
     Valid(u64),
 }
@@ -213,6 +216,8 @@ pub enum AuthorityLoss {
     Replay,
     /// A signed file that repeats a key.
     Ambiguous,
+    /// A `CONFIG.INI` larger than the boot reads.
+    TooLarge,
 }
 
 impl AuthorityLoss {
@@ -228,6 +233,7 @@ impl AuthorityLoss {
             AuthorityLoss::BadSignature => 7,
             AuthorityLoss::Replay => 8,
             AuthorityLoss::Ambiguous => 9,
+            AuthorityLoss::TooLarge => 10,
         }
     }
 
@@ -243,6 +249,7 @@ impl AuthorityLoss {
             AuthorityLoss::BadSignature => "CONFIG.SIG did not verify",
             AuthorityLoss::Replay => "CONFIG.SIG counter below the floor (replay)",
             AuthorityLoss::Ambiguous => "CONFIG.INI repeats a key",
+            AuthorityLoss::TooLarge => "CONFIG.INI larger than BOOT_INI_MAX_KB, not verified",
         }
     }
 }
@@ -277,6 +284,7 @@ const fn loss_of(check: ConfigSigCheck) -> AuthorityLoss {
         ConfigSigCheck::BadFormat => AuthorityLoss::BadFormat,
         ConfigSigCheck::WrongDevice => AuthorityLoss::WrongDevice,
         ConfigSigCheck::BadSignature => AuthorityLoss::BadSignature,
+        ConfigSigCheck::TooLarge => AuthorityLoss::TooLarge,
         ConfigSigCheck::Valid(_) => AuthorityLoss::Replay,
     }
 }

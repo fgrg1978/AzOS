@@ -183,7 +183,7 @@ static mut CAPS_SIG_BUF: [u8; SIG_READ] = [0; SIG_READ];
 
 /// One file off the volume.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FileRead {
+pub(super) enum FileRead {
     /// Not on the volume (or no volume).
     Absent,
     /// This many bytes, all of the file.
@@ -195,7 +195,7 @@ enum FileRead {
 /// Read all of `path` into `buf`. Loops, since one read need not return the
 /// whole file, and asks for one byte past a full buffer to tell "exactly
 /// full" from "larger".
-fn read_whole(path: &[u8], buf: &mut [u8]) -> FileRead {
+pub(super) fn read_whole(path: &[u8], buf: &mut [u8]) -> FileRead {
     let mut fds = azos_fs::ScratchFds::new();
     let fd = azos_fs::vfs_open(&mut fds, path, azos_fs::O_RDONLY);
     if fd < 0 {

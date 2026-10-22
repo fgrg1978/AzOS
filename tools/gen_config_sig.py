@@ -89,6 +89,7 @@ than relying on the `<file>.SIG` default.
 
 import argparse
 import hashlib
+import os
 import struct
 import sys
 from pathlib import Path
@@ -99,6 +100,31 @@ import sigalg  # noqa: E402
 DEVICE_ID_LEN = 16
 CONFIG_SIG_MAGIC = b"KCFG"
 CONFIG_SIG_DOMAIN = b"AZOS-CFG-SIG-v02"
+
+
+def boot_ini_max_bytes() -> int:
+    """Kconfig `BOOT_INI_MAX_KB`: the largest CONFIG.INI the kernel reads
+    (`kernel/src/boot/config_auth.rs`, through `azos_limits`). A larger file
+    is refused unread on the device, so signing one would only make a sidecar
+    no boot can use. Read from `$KCONFIG_CONFIG`, else the workspace
+    `.config`, else the Kconfig tree's own default for an expanded empty
+    config (kconfiglib), so the number is never written down twice."""
+    root = Path(__file__).resolve().parent.parent
+    cfg = Path(os.environ.get("KCONFIG_CONFIG", root / ".config"))
+    try:
+        for line in cfg.read_text().splitlines():
+            if line.startswith("CONFIG_BOOT_INI_MAX_KB="):
+                return int(line.split("=", 1)[1]) * 1024
+    except (OSError, ValueError):
+        pass
+    from kconfiglib import Kconfig
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        kconf = Kconfig("Kconfig", warn_to_stderr=False)
+    finally:
+        os.chdir(here)
+    return int(kconf.syms["BOOT_INI_MAX_KB"].str_value) * 1024
 
 
 def main() -> int:
@@ -133,6 +159,11 @@ def main() -> int:
     payload = args.file.read_bytes()
 
     if args.config_v2:
+        limit = boot_ini_max_bytes()
+        if len(payload) > limit:
+            print(f"error: {args.file} is {len(payload)} bytes; the boot reads at most {limit} "
+                  "(Kconfig BOOT_INI_MAX_KB) and refuses a larger CONFIG.INI unread", file=sys.stderr)
+            return 1
         if args.counter is None or args.counter < 1 or args.counter >= 1 << 64:
             print("error: --config-v2 needs --counter N with 1 <= N < 2^64", file=sys.stderr)
             return 1

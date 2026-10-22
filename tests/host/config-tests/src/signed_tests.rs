@@ -223,8 +223,8 @@ mod authority {
         ConfigSigCheck as C, DeviceFloor as F,
     };
 
-    const NOT_VALID: [C; 7] =
-        [C::NoIni, C::NoSig, C::NoDeviceId, C::V1, C::BadFormat, C::WrongDevice, C::BadSignature];
+    const NOT_VALID: [C; 8] =
+        [C::NoIni, C::NoSig, C::NoDeviceId, C::V1, C::BadFormat, C::WrongDevice, C::BadSignature, C::TooLarge];
 
     /// No device record: nothing can be loaded (there is no id to bind a
     /// signature to) and nothing latches (no record says a signed file was
@@ -278,11 +278,28 @@ mod authority {
         assert_eq!(config_after_rejected(F::Provisioned(1)), Some(L::Ambiguous));
     }
 
+    /// **The oversized file** (audit K2-M2). A CONFIG.INI larger than the
+    /// boot reads was not verified at all: on a provisioned device it still
+    /// latches (the authority is gone), but the durable record and the log
+    /// say `TooLarge`, not a signature that failed, so it does not read as
+    /// tampering. The code is new (10): existing codes keep their numbers.
+    ///
+    /// **Canary.** Map `ConfigSigCheck::TooLarge` to
+    /// `AuthorityLoss::BadSignature` in `loss_of` (what a truncated read
+    /// used to produce): red on the first assertion.
+    #[test]
+    fn an_oversized_file_latches_as_too_large_not_as_tampering() {
+        assert_eq!(config_authority_decision(F::Provisioned(1), C::TooLarge), D::LatchEstop(L::TooLarge));
+        assert_eq!(config_authority_decision(F::Provisioned(0), C::TooLarge), D::Defaults(L::TooLarge));
+        assert_eq!(L::TooLarge.code(), 10);
+        assert_eq!(L::BadSignature.code(), 7);
+    }
+
     /// The durable record's `detail` codes are distinct and never 0.
     #[test]
     fn every_loss_has_its_own_nonzero_code() {
         let all = [L::NoIni, L::NoSig, L::Unprovisioned, L::V1, L::BadFormat, L::WrongDevice,
-                   L::BadSignature, L::Replay, L::Ambiguous];
+                   L::BadSignature, L::Replay, L::Ambiguous, L::TooLarge];
         let mut codes: Vec<u32> = all.iter().map(|l| l.code()).collect();
         codes.sort();
         codes.dedup();

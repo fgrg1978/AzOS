@@ -28,6 +28,12 @@ use azos_config::{ConfigDecision, ConfigSigCheck, DeviceFloor};
 use azos_drv_sys::kprintln;
 use azos_topology::device_record::DeviceRecord;
 
+use super::topology::{read_whole, FileRead};
+
+/// Largest CONFIG.INI read (Kconfig `BOOT_INI_MAX_KB`); a longer file is
+/// refused unverified as `TooLarge`, never verified over its first bytes.
+const CFG_READ_MAX: usize = azos_limits::BOOT_INI_MAX_KB * 1024;
+
 /// Largest CONFIG.SIG read: a v2 sidecar and 32 bytes of slack, so anything
 /// longer reads as the wrong length and is refused as malformed.
 const SIG_READ_MAX: usize = azos_topology::CONFIG_SIG_V2_LEN + 32;
@@ -120,13 +126,11 @@ fn check_of(r: Result<u64, azos_topology::ConfigSigError>) -> ConfigSigCheck {
 /// Phase G2's CONFIG.INI load. Leaves the store loaded (verified) or at the
 /// factory defaults, and the kill-switch report printed.
 pub(crate) fn load_signed_config() {
-    static mut CFG_BUF: [u8; 1024] = [0u8; 1024];
+    static mut CFG_BUF: [u8; CFG_READ_MAX] = [0u8; CFG_READ_MAX];
     static mut CFG_SIG_BUF: [u8; SIG_READ_MAX] = [0u8; SIG_READ_MAX];
     // SAFETY: Phase G2 runs once, on the boot hart, before any other task.
     let buf = unsafe { &mut *(&raw mut CFG_BUF) };
     let sig_buf = unsafe { &mut *(&raw mut CFG_SIG_BUF) };
-    let mut fd_table = azos_fs::ScratchFds::new();
-
     let rec = read_device_record();
     let floor = match rec {
         Some(r) => {
@@ -141,30 +145,28 @@ pub(crate) fn load_signed_config() {
         }
     };
 
-    let fd = azos_fs::vfs_open(&mut fd_table, b"/fat/CONFIG.INI", azos_fs::O_RDONLY);
-    let mut n = 0usize;
-    if fd >= 0 {
-        let r = azos_fs::vfs_read(&mut fd_table, fd, buf.as_mut_ptr(), buf.len());
-        azos_fs::vfs_close(&mut fd_table, fd);
-        n = if r > 0 { r as usize } else { 0 };
-    }
+    // The whole file (one read need not return all of it), or `TooLarge`:
+    // a signature checked over a truncated file would fail as tampering.
+    let ini_read = read_whole(b"/fat/CONFIG.INI", buf);
+    let n = if let FileRead::Read(n) = ini_read { n } else { 0 };
     let ini = &buf[..n];
 
-    let check = if n == 0 {
+    let check = if ini_read == FileRead::TooLarge {
+        azos_drv_sys::kwarn!("[CFG] /fat/CONFIG.INI is larger than BOOT_INI_MAX_KB = {} KiB (make config): \
+                   refused unread", azos_limits::BOOT_INI_MAX_KB);
+        ConfigSigCheck::TooLarge
+    } else if n == 0 {
         ConfigSigCheck::NoIni
     } else {
-        let sfd = azos_fs::vfs_open(&mut fd_table, b"/fat/CONFIG.SIG", azos_fs::O_RDONLY);
-        if sfd < 0 {
-            ConfigSigCheck::NoSig
-        } else {
-            let sn = azos_fs::vfs_read(&mut fd_table, sfd, sig_buf.as_mut_ptr(), sig_buf.len());
-            azos_fs::vfs_close(&mut fd_table, sfd);
-            let sidecar = &sig_buf[..if sn > 0 { sn as usize } else { 0 }];
-            match rec {
+        match read_whole(b"/fat/CONFIG.SIG", sig_buf) {
+            FileRead::Absent => ConfigSigCheck::NoSig,
+            // Longer than any sidecar: the wrong length.
+            FileRead::TooLarge => ConfigSigCheck::BadFormat,
+            FileRead::Read(sn) => match rec {
                 None => ConfigSigCheck::NoDeviceId,
                 Some(r) => check_of(azos_topology::verify_config_sig_v2(
-                    ini, sidecar, &r.device_id, &azos_topology::TRUSTED_PUBKEY)),
-            }
+                    ini, &sig_buf[..sn], &r.device_id, &azos_topology::TRUSTED_PUBKEY)),
+            },
         }
     };
 
@@ -204,7 +206,7 @@ pub(crate) fn load_signed_config() {
         }
         ConfigDecision::Defaults(azos_config::AuthorityLoss::NoIni) => {
             azos_config::cfg_load_verified(&[], false);
-            if fd < 0 {
+            if ini_read == FileRead::Absent {
                 kprintln!("[CFG] /fat/CONFIG.INI not found — first boot, generating defaults");
             } else {
                 kprintln!("[CFG] /fat/CONFIG.INI empty — generating defaults");
@@ -235,7 +237,7 @@ pub(crate) fn load_signed_config() {
     super::tpm::measure_config(measured);
     azos_actuation::kill_switch::report_config();
 
-    if n == 0 && fd < 0 {
+    if ini_read == FileRead::Absent {
         // First boot: write factory defaults so the next boot finds a file.
         // NOTE: written WITHOUT a .SIG — the kernel never holds the signing
         // key. The next boot therefore takes the untrusted branch again,
@@ -243,6 +245,7 @@ pub(crate) fn load_signed_config() {
         // accepted a signed file it latches, as an absent file does now.
         let w = azos_config::cfg_serialize(buf);
         if w > 0 {
+            let mut fd_table = azos_fs::ScratchFds::new();
             let wfd = azos_fs::vfs_open(&mut fd_table, b"/fat/CONFIG.INI",
                 azos_fs::O_WRONLY | azos_fs::O_CREAT | azos_fs::O_TRUNC);
             if wfd >= 0 {

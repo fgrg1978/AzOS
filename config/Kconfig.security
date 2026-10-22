@@ -247,6 +247,25 @@ config TOPOLOGY_FLOOR_SECTOR
       move it off a sector another feature of your build claims, and give
       tools/device_provision.py --topo-sector the same value.
 
+config BOOT_INI_MAX_KB
+    int "Largest CONFIG.INI the boot reads (KiB)"
+    range 1 64
+    default 2 if PROFILE_EMBEDDED
+    default 4
+    help
+      The buffer /fat/CONFIG.INI is read into before its CONFIG.SIG is
+      checked (kernel/src/boot/config_auth.rs). A larger file is refused
+      unread with its own reason, "CONFIG.INI larger than
+      BOOT_INI_MAX_KB" (AuthorityLoss::TooLarge, record code 10): it is
+      never verified over its first bytes, which would fail as a bad
+      signature and read as tampering. On a provisioned device it latches
+      the e-stop as any other loss of config authority does.
+      tools/gen_config_sig.py refuses to sign a file over the same limit.
+
+      Cost: this many KiB of .bss. The store holds at most 32 entries of a
+      24-byte key and a 48-byte value (crates/core/config), about 2.4 KB
+      of text without comments.
+
 config TOPOLOGY_CAPS_MAX_KB
     int "Largest CAPS.TOM the boot reads (KiB)"
     range 1 4096
