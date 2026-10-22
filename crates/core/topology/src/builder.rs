@@ -1862,9 +1862,11 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // `Sound` interface on `endpoint.audio` and mixes its clients' streams into
     // the one playback stream it holds on the kernel's `sound.0`. A deadline
     // row, 1 ms of every 10 ms in `hard_rt` at priority 12 (the ring-3 floor,
-    // outside the band, so the reservation needs no `mem = "locked"`): what keeps
-    // the device fed when a CPU-bound task runs. Any CPU (`cpu_mask` 0). Pushed
-    // after the PTP daemon, so no index another test pins moves.
+    // outside the band, so the reservation needs no `mem = "locked"`). The
+    // reservation is the spawned task's, the thread that accepts calls; the
+    // server's pump thread runs at the same priority without one (a thread
+    // inherits no reservation), so it never spins. Any CPU (`cpu_mask` 0).
+    // Pushed after the PTP daemon, so no index another test pins moves.
     if AUDIOD_ROW {
         topo.push_task_profiled(
             MaybeStr::from_bytes(TASK_AUDIOD_IMAGE),

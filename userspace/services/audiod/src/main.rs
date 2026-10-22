@@ -18,13 +18,18 @@
 //! thread, `SYS_IPC_ACCEPT_V2` waits for nothing but a call), the pump thread
 //! calls [`Server::tick`] every few milliseconds while a stream runs and parks
 //! on a futex word when none does. The server's state is behind one lock they
-//! share, taken by yielding; the longest it is held is one mix pass or one
-//! kernel control call, never a wait. The periods themselves move in queues in
+//! share, a futex word a thread that finds it held sleeps on (never spins: the
+//! pump runs at the row's real-time priority, so a spin would keep every task
+//! below it off that CPU for as long as the holder takes); the longest it is
+//! held is one mix pass or one kernel control call, never a wait. The periods themselves move in queues in
 //! shared memory, never in calls; the calls are the ones that change what a
 //! stream may do.
 //!
-//! The pump runs under the topology row's deadline reservation (a period of
-//! 10 ms), which is what keeps the device fed when a CPU-bound task runs.
+//! The topology row's deadline reservation (1 ms of every 10 ms) is the main
+//! thread's: the kernel gives it to the task the row spawns. The pump is a
+//! thread that task makes, so it runs at the row's priority with no budget of
+//! its own; it therefore only ever sleeps between passes, on the clock or on a
+//! futex word, and every pass is bounded (one mix pass, one control call).
 
 #![no_std]
 #![no_main]
@@ -33,7 +38,7 @@ mod mixer;
 mod server;
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use azos_abi::cap::CapPerms;
 use azos_devif::sound::{self as snd, Info, Opened, Params, Status};
@@ -204,27 +209,35 @@ impl Env for Kernel {
 }
 
 struct Shared {
-    lock: AtomicBool,
+    /// 0 free, 1 held, 2 held with a thread asleep on it.
+    lock: AtomicU32,
     state: UnsafeCell<Option<Server<Kernel>>>,
 }
 // SAFETY: `state` is touched only with `lock` held (`with`), and written once
 // before the second thread exists.
 unsafe impl Sync for Shared {}
 
-static SHARED: Shared = Shared { lock: AtomicBool::new(false), state: UnsafeCell::new(None) };
+static SHARED: Shared = Shared { lock: AtomicU32::new(0), state: UnsafeCell::new(None) };
 
 /// Bumped by the main thread whenever a call may have changed a stream; the
 /// pump thread's futex word.
 static CHANGED: AtomicU32 = AtomicU32::new(0);
 
-/// Run `f` on the server. Spins (yielding) while the other thread has it.
+/// Run `f` on the server. While the other thread has it, sleep on the lock
+/// word until it lets go.
 fn with<R>(f: impl FnOnce(&mut Server<Kernel>) -> R) -> R {
-    while SHARED.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        sys::yield_now();
+    if SHARED.lock.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        // Mark it contended and sleep while it stays so; the holder's release
+        // wakes one sleeper.
+        while SHARED.lock.swap(2, Ordering::Acquire) != 0 {
+            let _ = sys::futex_wait(&SHARED.lock, 2, 0);
+        }
     }
     // SAFETY: the lock is held.
     let r = unsafe { (*SHARED.state.get()).as_mut() }.map(f);
-    SHARED.lock.store(false, Ordering::Release);
+    if SHARED.lock.swap(0, Ordering::Release) == 2 {
+        let _ = sys::futex_wake(&SHARED.lock, 1);
+    }
     r.expect("audiod: state used before it was set up")
 }
 
@@ -233,6 +246,9 @@ const TICK_NS: u64 = 5_000_000;
 /// Longest the pump parks with nothing to do, ns: a lost wake, and the time to
 /// notice a client that stopped, are at most this.
 const IDLE_PARK_NS: u64 = 500_000_000;
+/// How long the main thread sleeps when an accept comes back with no call
+/// (its wakes ran out), ms: it blocks, it never spins at the row's priority.
+const ACCEPT_RETRY_MS: u64 = 10;
 
 /// The pump thread's stack.
 #[repr(C, align(16))]
@@ -284,8 +300,8 @@ pub extern "C" fn _start() -> ! {
         let mut req = MsgDesc::default();
         let call = sys::ipc_accept_v2(&mut req);
         if call < 0 {
-            // Nothing arrived (a spurious wake): wait again.
-            sys::yield_now();
+            // Nothing arrived (a spurious wake): wait a little rather than spin.
+            sys::sleep(ACCEPT_RETRY_MS);
             continue;
         }
         // The badge of the capability the call came through, 0 when the call

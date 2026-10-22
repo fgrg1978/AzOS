@@ -624,7 +624,11 @@ the **one** playback stream it holds on the device and returns each period on `d
 * **Two threads.** The main thread accepts calls (the endpoint's `READ` grant is stamped
   with it) and makes every capture call, because the kernel binds a stream to the thread
   that opened it, and the warrant of the call is held by the thread that accepted it; the pump
-  thread mixes. The row is a `hard_rt` reservation at priority 12 (1 ms every 10 ms).
+  thread mixes. The row is a `hard_rt` reservation at priority 12 (1 ms every 10 ms); the
+  kernel gives it to the task the row spawns, the main thread, and the pump thread runs at
+  the same priority with no budget of its own. So neither thread ever spins: the lock they
+  share is a futex word the one that finds it held sleeps on, the pump sleeps on the clock
+  or a futex word between bounded passes, and an accept that returns no call sleeps.
 
 `toolbox beep` goes through the server when its row holds `endpoint.audio` and straight to
 `sound.0` otherwise; with the server the toolbox row holds no `sound.0`, since the device

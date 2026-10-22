@@ -33,7 +33,9 @@ config AUDIOD
       server, the toolbox row holds no `sound.0` (the device has one holder).
 
       The row is a deadline reservation of 1 ms every 10 ms (10 % of a CPU,
-      `hard_rt`, priority 12) that keeps the device fed under load. A robot or
+      `hard_rt`, priority 12) on the thread that serves calls; the pump thread
+      runs at the same priority without a budget and only sleeps between
+      bounded passes. A robot or
       industrial image has no speaker to share and is n; a small board is n
       (native drivers only: it has no virtio-sound).
 
