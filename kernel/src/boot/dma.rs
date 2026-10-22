@@ -349,20 +349,6 @@ mod hw {
         coherent: bool,
     }
 
-    /// Map `size` bytes of device registers at `base`.
-    #[cfg(any(feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
-    fn map_regs(base: usize, size: usize) -> bool {
-        let ok = crate::boot::map_mmio_region(base, size);
-        {
-            // The new window must be visible to the next table walk before
-            // the first register access (aarch64: `map_mmio_region` writes the
-            // live table with no barrier).
-            use azos_arch::Mmu;
-            azos_arch::ARCH.flush_tlb_all();
-        }
-        ok
-    }
-
     /// Put a freshly built unit in its static and describe it.
     fn found<U: IommuUnit + Send + 'static>(
         slot: &'static Shared<U>,
@@ -423,7 +409,7 @@ mod hw {
         _window: &mut azos_pci::BarWindow,
     ) -> Option<Found> {
         let base = azos_limits::IOMMU_SMMUV3_BASE as usize;
-        if !map_regs(base, 0x2_0000) {
+        if !crate::boot::map_mmio_region(base, 0x2_0000) {
             return None;
         }
         // The highest requester id the stream table must hold (bus 0 only today).
@@ -448,7 +434,7 @@ mod hw {
         let _ = (dmar, ivhd, funcs);
         #[cfg(feature = "iommu-vtd")]
         if let Some(base) = dmar.map(|b| b as usize) {
-            if !map_regs(base, 0x1000) {
+            if !crate::boot::map_mmio_region(base, 0x1000) {
                 return None;
             }
             return match azos_iommu::vtd::Vtd::new(KMmio { base }, &MEM) {
@@ -461,7 +447,7 @@ mod hw {
         }
         #[cfg(feature = "iommu-amdvi")]
         if let Some(base) = ivhd.map(|b| b as usize) {
-            if !map_regs(base, 0x4000) {
+            if !crate::boot::map_mmio_region(base, 0x4000) {
                 return None;
             }
             let max_dev = funcs.iter().flatten().map(|f| f.bdf.requester_id()).max().unwrap_or(0);
@@ -515,7 +501,6 @@ mod hw {
                 Err(e) => azos_drv_sys::kerr!("[IOMMU] virtio-net {}: no domain: {:?}", nic.bdf, e),
             }
         }
-
         *FAULTS.lock() = Some(f.unit);
         UP.store(true, Ordering::Release);
     }

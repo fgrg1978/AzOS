@@ -729,13 +729,6 @@ pub mod msix_selftest {
                 .map_err(|_| SelftestError::BarMap)?;
             bar_base[bar.index as usize] = cpu;
         }
-        // New device mappings must be visible to the next table walk before
-        // the first BAR access (aarch64: `map_mmio_region` writes the live
-        // TTBR0 table with no barrier — see boot_hooks' GICR note).
-        {
-            use azos_arch::Mmu;
-            azos_arch::ARCH.flush_tlb_all();
-        }
         azos_pci::set_command_bits(
             cfg, info.bdf, azos_pci::CMD_MEM_SPACE | azos_pci::CMD_BUS_MASTER);
         Ok(bar_base)

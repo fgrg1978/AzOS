@@ -188,7 +188,7 @@ impl Mmu for Arch {
             write: f.contains(mmu::PteFlags::WRITE),
             exec: f.contains(mmu::PteFlags::EXEC),
             user: f.contains(mmu::PteFlags::USER),
-            mem: MemType::WB,
+            mem: mem_of(f),
             accessed: f.contains(mmu::PteFlags::ACCESSED),
             dirty: f.contains(mmu::PteFlags::DIRTY),
         }
@@ -228,7 +228,7 @@ impl Mmu for Arch {
             write: f.contains(mmu::PteFlags::WRITE),
             exec: f.contains(mmu::PteFlags::EXEC),
             user: f.contains(mmu::PteFlags::USER),
-            mem: MemType::WB,
+            mem: mem_of(f),
             accessed: f.contains(mmu::PteFlags::ACCESSED),
             dirty: f.contains(mmu::PteFlags::DIRTY),
         }
@@ -274,6 +274,17 @@ fn leaf_flags_no_valid(perms: PagePerms) -> u64 {
     if perms.accessed { flags |= mmu::PteFlags::ACCESSED; }
     if perms.dirty     { flags |= mmu::PteFlags::DIRTY; }
     flags.bits()
+        | mmu::pbmt_bits(
+            matches!(perms.mem, MemType::WC | MemType::NC),
+            matches!(perms.mem, MemType::Device),
+        )
+}
+
+/// The memory type a leaf's Svpbmt field names (`api_impl.rs`'s `mem_of`).
+fn mem_of(f: mmu::PteFlags) -> MemType {
+    if f.contains(mmu::PteFlags::PBMT_IO) { MemType::Device }
+    else if f.contains(mmu::PteFlags::PBMT_NC) { MemType::NC }
+    else { MemType::WB }
 }
 
 fn leaf_flags(perms: PagePerms) -> mmu::PteFlags {

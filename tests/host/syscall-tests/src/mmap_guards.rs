@@ -1462,3 +1462,50 @@ fn mprotect_never_makes_the_vdso_writable() {
     assert_eq!(azos_mm::vmm::protect_user_range(pt, OWN, OWN + PAGE_SIZE, true), 1);
     assert_eq!(azos_mm::vmm::translate_user(pt, OWN, true), Some(own));
 }
+
+/// The leaf word that maps `va` in the Sv39 table rooted at `pt`, whatever
+/// its level (a 2 MiB replay block or a 4 KiB page).
+fn leaf_word(pt: usize, va: usize) -> Option<u64> {
+    let mut table = pt;
+    for level in (0..3).rev() {
+        let idx = (va >> (12 + 9 * level)) & 511;
+        // SAFETY: `table` is a page-table frame of the host arena, 512 words.
+        let w = unsafe { core::ptr::read_volatile((azos_mm::addr::phys_to_virt(table) as *const u64).add(idx)) };
+        if w & 1 == 0 {
+            return None;
+        }
+        if w & 0b1110 != 0 {
+            return Some(w);
+        }
+        table = ((w >> 10) << 12) as usize;
+    }
+    None
+}
+
+/// A device window is mapped as DEVICE memory, in the kernel's table and in
+/// the copy a task's table gets (audit K2-H3): with Svpbmt on, the leaf
+/// carries PBMT `IO`. It was `KERNEL_RW`, write-back: on aarch64 Normal
+/// cacheable memory over device registers. Svpbmt is the one ISA encoding the
+/// host walker has; the same `PagePerms::MMIO` gives aarch64 Device-nGnRE and
+/// x86 PAT UC (their encoders, `arch-tests`).
+///
+/// **Canary.** Map with `PagePerms::KERNEL_RW` in `vmm::map_mmio_region`:
+/// red on the first assertion; in `map_recorded_mmio_into`: red on the
+/// replayed one.
+#[test]
+fn device_windows_are_mapped_as_device_memory_and_replayed_so() {
+    use azos_arch_api::{MemType, Mmu};
+    let _g = serial();
+    azos_arch::mmu::svpbmt_select(true, true);
+    azos_mm::vmm::init(azos_mm::shim_arena_base(), PAGE_SIZE).unwrap();
+    let kpt = azos_mm::vmm::kernel_pagetable();
+    azos_mm::vmm::map_mmio_region(UART, PAGE_SIZE).unwrap();
+    let mem = |w: Option<u64>| w.map(|w| azos_arch::ARCH.pte_perms(w).mem);
+    let kernel = mem(leaf_word(kpt, UART));
+    let upt = azos_mm::pmm::alloc_page().unwrap().as_usize();
+    assert!(azos_mm::vmm::map_recorded_mmio_into(upt) > 0, "the window is replayed");
+    let replayed = mem(leaf_word(upt, UART));
+    azos_arch::mmu::svpbmt_select(false, false);
+    assert_eq!(kernel, Some(MemType::Device), "the kernel's leaf of the UART window");
+    assert_eq!(replayed, Some(MemType::Device), "the task table's replayed leaf");
+}

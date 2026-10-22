@@ -2094,10 +2094,6 @@ pub fn map_kernel_image(va_start: usize, va_end: usize) -> KResult<usize> {
     Ok(end - start)
 }
 
-/// Map an MMIO region with identity mapping (vaddr == paddr).
-///
-/// Maps `size` bytes of device memory starting at `base` using 4 KiB pages
-/// with KERNEL_RW flags (no execute).
 /// Device windows the kernel has mapped, recorded so they can be replayed
 /// into a task's page table.
 ///
@@ -2107,7 +2103,8 @@ pub fn map_kernel_image(va_start: usize, va_end: usize) -> KResult<usize> {
 /// that touches a device while a user task is current (a `write` syscall
 /// reaching the UART, a virtio doorbell on the task's own behalf) resolves
 /// that address through the TASK's table, so the window has to be there.
-/// They are mapped `KERNEL_RW`: present for EL1, absent for EL0.
+/// They are mapped [`PagePerms::MMIO`]: present for EL1, absent for EL0, and
+/// device memory there as in the kernel's table (one type per frame).
 ///
 /// Fixed capacity, no allocation: this runs before the heap on some paths.
 /// Kconfig `MAX_MMIO_REGIONS` (N12h; was the literal 16).
@@ -2155,7 +2152,7 @@ pub fn map_recorded_mmio_into(pt: usize) -> usize {
             let block_end = (base + size + MEGA_SIZE - 1) & !(MEGA_SIZE - 1);
             let mut addr = block_start;
             while addr < block_end {
-                if map_mega(pt, addr, addr, PagePerms::KERNEL_RW).is_ok() {
+                if map_mega(pt, addr, addr, PagePerms::MMIO).is_ok() {
                     entries += 1;
                 }
                 addr += MEGA_SIZE;
@@ -2164,7 +2161,7 @@ pub fn map_recorded_mmio_into(pt: usize) -> usize {
             let mut addr = base & !(PAGE_SIZE - 1);
             let end = (base + size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
             while addr < end {
-                if map(pt, addr, addr, PagePerms::KERNEL_RW).is_ok() {
+                if map(pt, addr, addr, PagePerms::MMIO).is_ok() {
                     entries += 1;
                 }
                 addr += PAGE_SIZE;
@@ -2211,6 +2208,24 @@ pub fn mmio_regions_refused() -> usize {
 /// the aarch64 device-only table), record it for replay into task tables,
 /// and push it into the live roots.
 ///
+/// **Device memory** ([`PagePerms::MMIO`], audit K2-H3): aarch64 Device-nGnRE,
+/// x86 PAT UC, riscv64 Svpbmt `IO` where the extension is on (the PMA decides
+/// otherwise). It used to be `KERNEL_RW`, write-back: on aarch64 every window
+/// above the boot's 1 GiB Device block (a Raspberry Pi 5's peripherals, PCIe
+/// BARs, a high ECAM) was cacheable Normal memory, open to speculative reads
+/// and merged writes; on x86 only an MTRR that happened to cover the range
+/// made it uncached. Device memory faults on an unaligned access where Normal
+/// memory did not: a window is for register accesses only.
+///
+/// **Published before it returns**: the leaves are made visible to the next
+/// table walk (`flush_tlb_all`, the barrier and invalidate each ISA needs
+/// after a PTE write), so a caller may touch a register at once.
+///
+/// `Err` when a page could not be mapped (no frame for a table, an address
+/// the format cannot hold): the record is taken back, so a later call maps
+/// the window again instead of finding it "covered". A page some other
+/// window already maps (two devices in one page) is not an error.
+///
 /// `Err(CapacityFull)`, with NOTHING mapped, when the record already holds
 /// Kconfig `MAX_MMIO_REGIONS` windows (N12i; it used to map the window and
 /// drop the record silently, so the kernel reached the device and every task
@@ -2241,13 +2256,29 @@ pub fn map_mmio_region(base: usize, size: usize) -> KResult<()> {
     let device_pt = *DEVICE_PT.lock();
     let aligned_base = base & !(PAGE_SIZE - 1);
     let end = (base + size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let mapped = |r: KResult<()>| matches!(r, Ok(()) | Err(KernelError::AlreadyMapped));
     let mut addr = aligned_base;
+    let mut failed = None;
     while addr < end {
-        let _ = map(kpt, addr, addr, PagePerms::KERNEL_RW);
-        if device_pt != 0 {
-            let _ = map(device_pt, addr, addr, PagePerms::KERNEL_RW);
+        let mut r = map(kpt, addr, addr, PagePerms::MMIO);
+        if device_pt != 0 && mapped(r) {
+            r = map(device_pt, addr, addr, PagePerms::MMIO);
+        }
+        if !mapped(r) {
+            failed = r.err();
+            break;
         }
         addr += PAGE_SIZE;
+    }
+    ARCH.flush_tlb_all();
+    if let Some(e) = failed {
+        let mut count = MMIO_REGION_COUNT.lock();
+        let mut regions = MMIO_REGIONS.lock();
+        if let Some(i) = regions.iter().take(*count).position(|&r| r == (base, size)) {
+            regions[i] = regions[*count - 1];
+            *count -= 1;
+        }
+        return Err(e);
     }
     // Roots built before this window (owner decision 10-10, N12g): without
     // this a task current on another hart could not reach the device.
@@ -2268,8 +2299,8 @@ pub fn map_mmio_region(base: usize, size: usize) -> KResult<()> {
 /// same frame: it is cleaned out of the data cache (aarch64), unmapped (which
 /// splits a 2 MiB leaf) and mapped again with the new type. A page nothing
 /// maps (the Limine framebuffer, a PCI BAR) is mapped fresh. Not recorded as
-/// an MMIO window: the replay into task tables is `KERNEL_RW` write-back,
-/// which would put a cacheable alias back.
+/// an MMIO window: the replay into task tables maps device memory
+/// (`PagePerms::MMIO`), a second type for the same frames.
 ///
 /// The caller owns the range: nothing else may touch it while it is remapped.
 pub fn map_framebuffer(pa: usize, len: usize, mem: MemType) -> KResult<(usize, MemType)> {
@@ -2800,8 +2831,8 @@ pub fn copy_kernel_entries_to_user(user_pt: usize) {
     // entries to copy and copying any would hand a task exactly the reach
     // this split exists to remove. What a task's table DOES need is the
     // device windows, because the kernel touches devices while that task is
-    // current and device registers live in the low half — mapped KERNEL_RW,
-    // so EL0 still cannot see them.
+    // current and device registers live in the low half — mapped
+    // `PagePerms::MMIO` (no USER bit), so EL0 still cannot see them.
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     {
         let _ = map_recorded_mmio_into(user_pt);

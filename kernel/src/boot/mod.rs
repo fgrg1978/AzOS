@@ -143,9 +143,11 @@ pub(crate) use stacks::*;
 mod seal;
 pub(crate) use seal::seal_ro_after_init;
 
-/// [`azos_mm::vmm::map_mmio_region`], saying a refusal (N12i): the first
-/// on the console, with the Kconfig symbol that bounds the record; every
-/// one counted by `vmm::mmio_regions_refused`. `false` when refused.
+/// [`azos_mm::vmm::map_mmio_region`], saying a refusal. A full record
+/// (N12i): the first on the console, with the Kconfig symbol that bounds it;
+/// every one counted by `vmm::mmio_regions_refused`. A page that could not be
+/// mapped: every one on the console (the window is unusable, and the device
+/// behind it is not driven). `false` when refused.
 ///
 /// Callers: early boot's device windows, the PCI ECAM and the boot hooks.
 pub(crate) fn map_mmio_region(base: usize, size: usize) -> bool {
@@ -153,12 +155,16 @@ pub(crate) fn map_mmio_region(base: usize, size: usize) -> bool {
     static SAID: AtomicBool = AtomicBool::new(false);
     match azos_mm::vmm::map_mmio_region(base, size) {
         Ok(()) => true,
-        Err(e) => {
+        Err(azos_common::error::KernelError::CapacityFull) => {
             if !SAID.swap(true, Ordering::Relaxed) {
-                azos_drv_sys::kerr!("[MM] device window {:#x} (+{:#x}) NOT mapped: {:?}; the record holds \
+                azos_drv_sys::kerr!("[MM] device window {:#x} (+{:#x}) NOT mapped: the record holds \
                     MAX_MMIO_REGIONS = {} windows (make config); later refusals are counted, not printed",
-                    base, size, e, azos_limits::MAX_MMIO_REGIONS);
+                    base, size, azos_limits::MAX_MMIO_REGIONS);
             }
+            false
+        }
+        Err(e) => {
+            azos_drv_sys::kerr!("[MM] device window {:#x} (+{:#x}) NOT mapped: {:?}", base, size, e);
             false
         }
     }
