@@ -10,11 +10,19 @@
 //! STOP` line. Canary `commander-exit-nostop-canary`: the wheel is taken and
 //! never stopped, so the test reports `not ok`.
 //!
+//! The stop comes first of all in that hook, before the file writeback (which
+//! can wait on the disk) and the device and display releases: the hook notes
+//! when the releases of a task have run ([`note_released`]) and when its
+//! wheels were stopped ([`note_stopped`]), and a stop that finds its own
+//! task's releases already done is late. Runtime canary
+//! `commander-exit-late`: the hook stops the wheels after the releases, and
+//! the test reports `not ok`.
+//!
 //! The duty is read from the stop's own report, not from the channel
 //! afterwards: `rt_motor_task` writes the same wheel every control tick
 //! while its command channel is live, so a later read could be its duty.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 const WHEEL: u32 = 0;
 /// Mid-band: the probe only writes the wheel and returns.
@@ -24,6 +32,23 @@ const REFUSED: u32 = u32::MAX;
 
 static TID: AtomicU32 = AtomicU32::new(0);
 static APPLIED: AtomicU32 = AtomicU32::new(REFUSED);
+/// The last task whose exit hook has run its releases.
+static RELEASED: AtomicU32 = AtomicU32::new(0);
+/// The last stop the hook noted: `(tid << 1) | 1` when it came after that
+/// task's own releases, `tid << 1` when it came first.
+static STOPPED: AtomicU64 = AtomicU64::new(0);
+
+/// The exit hook of `tid` has run its releases (writeback, devices, display).
+pub(crate) fn note_released(tid: u32) {
+    RELEASED.store(tid, Ordering::Release);
+}
+
+/// The exit hook of `tid` has stopped the wheels it commanded. A TID is never
+/// reused while its hook runs, so a match is this task's own releases.
+pub(crate) fn note_stopped(tid: u32) {
+    let late = RELEASED.load(Ordering::Acquire) == tid;
+    STOPPED.store(((tid as u64) << 1) | late as u64, Ordering::Release);
+}
 
 fn commander(_: usize) {
     let me = azos_sched::current_task_tid();
@@ -48,11 +73,16 @@ azos_ktest::ktest_late! {
         crate::ktest::wait("the commander's exit never took its wheel", || {
             azos_syscall::motor_commander::last_exit_stop().0 == tid
         })?;
+        crate::ktest::wait("the commander's exit hook never noted its stop", || {
+            STOPPED.load(Ordering::Acquire) >> 1 == tid as u64
+        })?;
         let (_, stopped) = azos_syscall::motor_commander::last_exit_stop();
         if azos_syscall::motor_commander::commander(WHEEL) == tid {
             Err("the dead task still commands the wheel")
         } else if stopped & (1 << WHEEL) == 0 {
             Err("the dead commander's wheel was not set to duty 0")
+        } else if STOPPED.load(Ordering::Acquire) & 1 != 0 {
+            Err("the dead commander's wheel was stopped after its releases, not first")
         } else {
             Ok(())
         }

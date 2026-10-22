@@ -13135,8 +13135,11 @@ PY
     # `irq-storm` (L5): the budget rule of an interrupt line is off, a throttle
     # leaves an idle line live, so a storm delivers to a handler whose budget
     # is spent (`irq_storm_is_contained`).
-    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip,chaos-leak,decision-skip,ioring-fsync-inline,camera-encode-per-consumer,preempt-isr-leak,irq-storm"
-    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained"
+    # `commander-exit-late`: a dying commander's wheels are stopped after its
+    # file writeback and device releases, not first of all
+    # (`motor_commander_exit_stops_its_wheels`).
+    KTEST_RT_CANARIES="canary=stack-guard-skip,procfs-skip,chaos-leak,decision-skip,ioring-fsync-inline,camera-encode-per-consumer,preempt-isr-leak,irq-storm,commander-exit-late"
+    KTEST_RT_CANARIED="sched_stack_guards_unmapped procfs_entries_registered chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained motor_commander_exit_stops_its_wheels"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     # Wave 15 (N1, lockdep-lite): `canary=lockdep-abba` takes the test's two

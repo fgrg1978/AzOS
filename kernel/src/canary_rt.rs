@@ -303,6 +303,10 @@ pub(crate) const NAMES: &[&str] = &[
     // user page table is no longer refused a user-range VA by the copy
     // helpers (ktest `copyout_refused_in_kernel_context`).
     "copyout-raw-kernel-ctx",
+    // boot/sched.rs `task_release_all_resources`: a dying commander's wheels
+    // are stopped after its writeback and device releases, not first (ktest
+    // `motor_commander_exit_stops_its_wheels`).
+    "commander-exit-late",
 ];
 const _: () = assert!(NAMES.len() <= azos_limits::CANARY_RUNTIME_MAX as usize);
 

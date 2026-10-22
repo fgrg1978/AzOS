@@ -534,6 +534,25 @@ fn task_identity_moved(from: usize, to: usize, tid: u32) {
     azos_syscall::natfork::hand_over(from, to, tid);
 }
 
+/// The dying task `tid`'s wheels: every wheel it still commands is stopped
+/// (duty 0, coast) and the stop recorded with its reason; it does not latch
+/// the e-stop (Kconfig `MOTOR_COMMANDER_EXIT_STOP`,
+/// `azos_syscall::motor_commander`).
+fn commander_exit_stop(tid: u32) {
+    let (taken, stopped) = azos_syscall::motor_commander::exit_stop(tid);
+    if taken != 0 {
+        #[cfg(all(feature = "ktest", feature = "use-robot"))]
+        crate::smokes::commander_exit::note_stopped(tid);
+        use azos_actuation::{estop, logger};
+        let detail = estop::commander_lost_detail(tid, taken);
+        let _ = logger::log_safety_violation_durable(
+            logger::SAFETY_ESTOP, estop::ESTOP_ACTION_COMMANDER_LOST, detail);
+        azos_drv_sys::kwarn!(
+            "[MOTOR] commander tid {} exited: wheels {:#x} SAFE STOP (duty 0 on {:#x}; SAFETY_ESTOP action {} detail {:#x}, not latched)",
+            tid, taken, stopped, estop::ESTOP_ACTION_COMMANDER_LOST, detail);
+    }
+}
+
 /// Release every per-task resource when a task dies.
 ///
 /// The exit hook takes a single `fn(u32)`, and two crates need to clean up:
@@ -563,6 +582,16 @@ fn task_identity_moved(from: usize, to: usize, tid: u32) {
 /// caller, same as `install_robot_hw`'s former gate.
 fn task_release_all_resources(tid: u32) {
     let t_ph = azos_sched::prof::t();
+    // Wave 15 (owner decision): a ring-3 task that dies commanding a wheel
+    // leaves it at a SAFE STOP (duty 0), first of all: before every release
+    // below, the file writeback above all, which can wait on the disk while
+    // the wheel would keep turning (`commander_exit_stop`). Runtime canary
+    // `commander-exit-late`: the stop runs after the releases instead (ktest
+    // `motor_commander_exit_stops_its_wheels`).
+    let stop_late = canary!("commander-exit-late");
+    if !stop_late {
+        commander_exit_stop(tid);
+    }
     // A `mem = "locked"` task reports its page faults when it
     // exits, the dying task being the current one here. The gate reads the
     // NUMBER: a locked task must end with `faults=0`.
@@ -572,29 +601,20 @@ fn task_release_all_resources(tid: u32) {
             kprintln!("[MEM] locked task {} exits: faults={} peak={} pages", tid, faults, peak);
         }
     }
-    // Wave 15 (owner decision): a ring-3 task that dies commanding a wheel
-    // leaves it at a SAFE STOP (duty 0), first of all, and the stop is
-    // recorded with its reason; it does not latch the e-stop (Kconfig
-    // `MOTOR_COMMANDER_EXIT_STOP`, `azos_syscall::motor_commander`).
-    // The queues the dying task attached to a `Uart` port or an `Adc` channel
-    // end with it (`azos_syscall::devices`).
     // The dying task's shared file mappings go back to their files while the
     // object bookings that mark their pages dirty still stand (the references
     // are given back by `task_release_all` below).
     azos_syscall::file_map::exit_writeback(tid);
+    // The queues the dying task attached to a `Uart` port or an `Adc` channel
+    // end with it (`azos_syscall::devices`).
     azos_syscall::devices::release_all(tid);
     // The display server's claim on the screen ends with it: the text console
     // draws again and the surfaces it attached are let go (`azos_syscall::display`).
     azos_syscall::display::release_all(tid);
-    let (taken, stopped) = azos_syscall::motor_commander::exit_stop(tid);
-    if taken != 0 {
-        use azos_actuation::{estop, logger};
-        let detail = estop::commander_lost_detail(tid, taken);
-        let _ = logger::log_safety_violation_durable(
-            logger::SAFETY_ESTOP, estop::ESTOP_ACTION_COMMANDER_LOST, detail);
-        azos_drv_sys::kwarn!(
-            "[MOTOR] commander tid {} exited: wheels {:#x} SAFE STOP (duty 0 on {:#x}; SAFETY_ESTOP action {} detail {:#x}, not latched)",
-            tid, taken, stopped, estop::ESTOP_ACTION_COMMANDER_LOST, detail);
+    #[cfg(all(feature = "ktest", feature = "use-robot"))]
+    crate::smokes::commander_exit::note_released(tid);
+    if stop_late {
+        commander_exit_stop(tid);
     }
     // Is this a supervised driver the kernel will restart? Then
     // its driver-server slot, its named endpoints and its service names are
