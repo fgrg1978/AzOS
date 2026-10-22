@@ -7,9 +7,12 @@
 // trampoline (crates/core/arch-x86_64/src/ext/ap_trampoline.S) in 64-bit mode,
 // on the kernel's page tables, GDT and IDT, interrupts off, with %rdi = the
 // dense CPU number and no stack. As riscv64's `_secondary_start`: range
-// check, stack = AZOS_SECONDARY_SP[cpu] (0 = no per-CPU area: park), the
-// provisional GS base, then `x86_64_secondary_entry(cpu)` (entry/x86_64/smp.rs),
-// which loads this CPU's own tables before `secondary_main(cpu)`.
+// check, stack = AZOS_SECONDARY_SP[cpu] (0 = no per-CPU area: park), then
+// `x86_64_secondary_entry(cpu)` (entry/x86_64/smp.rs), which loads this CPU's
+// own tables before `secondary_main(cpu)`. No GS base here: its first act
+// (`cpu_init::init_cpu`) points GS at this CPU's PerCpu. The old provisional
+// base was the CPU number itself, so a `%gs:0` before that read virtual
+// address `cpu` and faulted (K1 L2).
 // AZOS_SECONDARY_SP holds physical addresses (the stack top as a frame
 // address, what every ISA publishes); the kernel's tables are live here and
 // map RAM in the direct map only (`azos_arch::mmu::DIRECT_MAP_BASE`), so
@@ -29,10 +32,6 @@ _secondary_start:
     jz 2f
     movabsq ${dmb}, %rax
     addq %rax, %rsp
-    movl $0xC0000101, %ecx              // IA32_GS_BASE = cpu
-    movl %edi, %eax
-    xorl %edx, %edx
-    wrmsr
     xorl %ebp, %ebp
     call x86_64_secondary_entry
 2:  cli

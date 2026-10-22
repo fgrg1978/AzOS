@@ -99,6 +99,11 @@ fn build_idt() {
 /// ring 3 will use. `AZOS_IRQ_STACK_BASE[cpu]` must be armed.
 pub fn init_cpu(cpu: usize) {
     assert!(cpu < MAX_HARTS, "x86_64: CPU {cpu} >= NR_CPUS");
+    // GS first (K1 L2): everything after may read `%gs:0`, the panic path of
+    // the assert below included (`current_cpu_id()`). The range assert above
+    // cannot fire on a secondary (`_secondary_start` parks an id past
+    // NR_CPUS), and CPU 0 is in range.
+    cpu::set_percpu(cpu);
     let irq_base = crate::boot::irq_stack_base(cpu);
     assert!(irq_base != 0, "x86_64: CPU {cpu} has no interrupt stack for its IST slices");
     let area = X86_64_PERCPU.0[cpu].get();
@@ -120,7 +125,6 @@ pub fn init_cpu(cpu: usize) {
         (*area).gdt = gdt::table(tss_base);
     }
 
-    cpu::set_percpu(cpu);
     if cpu == 0 {
         build_idt();
     }

@@ -5,7 +5,7 @@
 //! is started by `azos_sched::smp::wake_harts` -> `Boot::hart_start`
 //! (INIT-SIPI-SIPI, `azos_arch::smp`).
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use azos_drv_sys::kprintln;
 use azos_sched::topo::{self, CpuRaw, Source};
@@ -78,11 +78,23 @@ pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     }
     let caps = crate::boot_hooks::paging_caps();
     let _ = azos_arch::mmu::cpu::setup_paging_regs(&caps);
-    let _ = azos_arch::mmu::cpu::enable_access_protection(&caps);
+    let st = azos_arch::mmu::cpu::enable_access_protection(&caps);
     // Kconfig X86_CET_IBT: CR4.CET and IA32_S_CET are per CPU.
-    let _ = crate::boot_hooks::enable_ibt();
+    let ibt = crate::boot_hooks::enable_ibt();
     // MSR_TEST_CTRL is per core (Kconfig X86_SPLIT_LOCK); a no-op unless the boot CPU wanted it.
-    let _ = azos_arch::ext::splitlock::enable_this_cpu();
+    let split_lock = azos_arch::ext::splitlock::enable_this_cpu();
+    // Every CPU must run as the boot CPU chose (K1 L1): `trap_entry.S`'s
+    // `clac` follows the boot CPU's SMAP (`X86_64_SMAP_ON` is global), so a
+    // CPU without it takes #UD at its first trap, and one whose SMEP, SMAP or
+    // IBT did not take runs unprotected. Named here, before this CPU takes any
+    // trap. Not parked: `wake_harts` counted it online already, so a parked
+    // CPU would strand the tasks queued on it; the FAILED line is the report.
+    let mine = protection(&st, ibt, split_lock);
+    let boot = BOOT_PROTECTION.load(Ordering::Acquire);
+    if mine != boot {
+        azos_drv_sys::kerr!("[SMP] FAILED: CPU {} runs protection {:#x}, the boot CPU {:#x} \
+            (bits: NXE WP PGE PCIDE SMEP SMAP UMIP IBT SPLIT-LOCK)", cpu, mine, boot);
+    }
     // IA32_SPEC_CTRL, EFER.AIBRS, DE_CFG, MCU_OPT_CTRL are per CPU (Kconfig
     // X86_MIT_*); the boot CPU decided, each CPU writes its own.
     azos_arch::ext::mitigations::apply_this_cpu();
@@ -119,6 +131,19 @@ fn poll_until(s: u64, done: impl Fn() -> bool) -> bool {
     true
 }
 
+/// The boot CPU's [`protection`], published by [`wake_secondaries`] before
+/// any secondary starts: what each one must match.
+static BOOT_PROTECTION: AtomicU32 = AtomicU32::new(0);
+
+/// A CPU's paging and protection readback, one bit each: what a secondary
+/// compares with the boot CPU's.
+fn protection(st: &azos_arch::mmu::PagingState, ibt: bool, split_lock: bool) -> u32 {
+    [st.nxe, st.wp, st.pge, st.pcide, st.smep, st.smap, st.umip, ibt, split_lock]
+        .iter()
+        .enumerate()
+        .fold(0, |w, (i, &on)| w | (on as u32) << i)
+}
+
 /// Ticks a secondary must take before it counts as running its timer.
 const MIN_TICKS: u64 = 3;
 
@@ -140,6 +165,10 @@ fn wait_until(deadline: u64, done: impl Fn() -> bool) -> bool {
 }
 
 pub(crate) fn wake_secondaries(num_cpus: usize) {
+    BOOT_PROTECTION.store(
+        protection(&azos_arch::mmu::cpu::state(), crate::boot_hooks::ibt_on(),
+                   azos_arch::ext::splitlock::active_this_cpu()),
+        Ordering::Release);
 
     azos_drv_sys::uart::enable_smp_lock();
     kprintln!("[SMP] UART lock enabled");

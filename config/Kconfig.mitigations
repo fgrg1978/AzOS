@@ -97,6 +97,11 @@ config MITIGATION_SPECTRE_V1_INDEX
         udp-roundtrip (socket fd masks on every call)        +62 / +140
       aarch64 adds one csdb per masked site (118 in a qemu kernel).
 
+      x86_64 also fences the conditional swapgs of the trap entry (the
+      swapgs variant, CVE-2019-1125): one lfence on every interrupt and
+      exception entry (kernel/src/entry/x86_64/asm/trap_entry.S), none on
+      a syscall.
+
       n: every masked site compiles to the unmasked index.
 
 config INFER_MODEL_SIG_REQUIRED

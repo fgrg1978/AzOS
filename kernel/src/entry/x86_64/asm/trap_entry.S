@@ -31,6 +31,10 @@
 // from the word above its IST stack (ext/cpu_init.rs), and puts the saved base
 // back on the way out (Linux's paranoid entry). A nested #MC on the #MC
 // stack would overwrite the outer frame; like Linux, that is not handled.
+// There is no nested-NMI copy either (Linux's): an exception inside the NMI
+// handler would `iretq`, unmask NMIs, and let a second NMI overwrite the
+// first's frame on the same IST slice. So the handler takes none:
+// `x86_64_trap_entry` counts an NMI and returns before any guard or decode.
 //
 // Interrupts (vector >= 32) move to this CPU's interrupt stack
 // (AZOS_IRQ_STACK_BASE[cpu], below its IST slices) unless already on it,
@@ -85,6 +89,7 @@
 .equ USE_SYSRET,    {use_sysret}
 .equ SMAP_CLAC,     {smap_clac}
 .equ MIT_VERW,      {mit_verw}
+.equ MIT_SWAPGS,    {mit_swapgs}
 .equ KERNEL_DS,     {kernel_ds}
 // Chain E commit 8 (Kconfig SYSCALL_LEAN_ENTRY): the native syscall path
 // (`syscall_entry` below), and its canary (`syscall-abi-canary`: the exit
@@ -253,7 +258,17 @@ trap_common:
     testb $3, 24(%rsp)               // the pushed CS: from ring 3?
     jz 1f
     swapgs
-1:  subq $TF_VECTOR, %rsp
+1:
+.if MIT_SWAPGS
+    // Spectre v1 through the swapgs test (CVE-2019-1125, Linux's
+    // FENCE_SWAPGS_USER_ENTRY and _KERNEL_ENTRY): a mispredicted `jz` runs the `%gs:`
+    // loads below speculatively on the wrong GS base, the user's or the
+    // kernel's. One `lfence` where the two arms meet: neither arm's `%gs:`
+    // load issues before the branch resolves. Kconfig
+    // MITIGATION_SPECTRE_V1_INDEX (K1 L15).
+    lfence
+.endif
+    subq $TF_VECTOR, %rsp
     SAVE_REGS
     cld                              // the C ABI's DF = 0
     movq %rsp, %rdi

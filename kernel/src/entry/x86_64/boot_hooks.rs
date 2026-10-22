@@ -822,7 +822,9 @@ pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
     kprintln!("[MM] x86_64 SMEP={} SMAP={} UMIP={}", st.smep, st.smap, st.umip);
     // Kconfig X86_CET_IBT: from here an indirect branch in ring 0 must land on
     // an ENDBR64 (the whole kernel is built with them, config/Kconfig.security).
-    kprintln!("[CFI] x86_64 IBT={} (X86_CET_IBT {})", enable_ibt(),
+    let ibt = enable_ibt();
+    IBT_ON.store(ibt, core::sync::atomic::Ordering::Relaxed);
+    kprintln!("[CFI] x86_64 IBT={} (X86_CET_IBT {})", ibt,
         if azos_arch_api::isa::x86_64::CET_IBT.allowed() { "probe/require" } else { "n" });
     crate::boot_stack_report();
 }
@@ -834,6 +836,13 @@ pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
 pub fn enable_ibt() -> bool {
     let present = azos_arch::cpu::features::detect().cet_ibt;
     azos_arch::cpu::cfi::enable_ibt_this_cpu(azos_arch_api::isa::x86_64::CET_IBT.gate(present))
+}
+
+/// The boot CPU's IBT, as [`post_heap`] read it back: what each secondary's
+/// [`enable_ibt`] must match (`smp::x86_64_secondary_entry`).
+static IBT_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub(crate) fn ibt_on() -> bool {
+    IBT_ON.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// The clock's rate: `now_ticks` counts TIMER_FREQ (the TSC scaled).
@@ -853,7 +862,10 @@ pub fn virtio_mmio_line(_slot: usize, base: usize) -> Option<u32> {
 /// it to the NIC.
 #[inline(always)]
 pub fn net_mmio_unmask(_hart: usize, line: u32) {
-    let _ = azos_arch::irq::ioapic::set_masked(line, false);
+    // A line that failed to unmask leaves the NIC polled, silently (K1 L8).
+    if !azos_arch::irq::ioapic::set_masked(line, false) {
+        azos_drv_sys::kwarn!("[APIC] NIC GSI {} not unmasked: no IOAPIC pin serves it", line);
+    }
 }
 
 /// The 8259s remapped and masked, this CPU's LAPIC on, every IOAPIC pin

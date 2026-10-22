@@ -453,6 +453,8 @@ global_asm!(
     mit_verw       = const (azos_arch_api::isa::x86_64::MIT_MDS_TAA.allowed()
                             || azos_arch_api::isa::x86_64::MIT_RFDS.allowed()) as u32,
     kernel_ds      = const azos_arch::trap::gdt::KERNEL_DS,
+    // The swapgs fence (Kconfig MITIGATION_SPECTRE_V1_INDEX, K1 L15).
+    mit_swapgs     = const azos_limits::MITIGATION_SPECTRE_V1_INDEX as u32,
     // Chain E commit 8: the native syscall path (Kconfig SYSCALL_LEAN_ENTRY)
     // and its canary.
     syscall_lean   = const azos_limits::SYSCALL_LEAN_ENTRY as u32,

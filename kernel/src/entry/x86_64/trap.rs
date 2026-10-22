@@ -196,15 +196,11 @@ impl ArchFrame for TrapFrame {
         !self.came_from_user() && tlb_probe_fixup(self)
     }
 
-    /// Vectors 0..31 other than #PF: NMI is counted and returns; the
-    /// livepatch's `int3` sequence resumes; a split lock is the task's kill;
-    /// everything else is the generic policy's.
+    /// Vectors 0..31 other than #PF and NMI (counted in `x86_64_trap_entry`
+    /// before any decode): the livepatch's `int3` sequence resumes; a split
+    /// lock is the task's kill; everything else is the generic policy's.
     fn arch_exception(&mut self) -> Disposition {
         let v = self.vector as usize;
-        if v == idt::NMI {
-            NMIS.fetch_add(1, Ordering::Relaxed);
-            return Disposition::Resume;
-        }
         if v == idt::BP && !self.came_from_user() {
             // The livepatch's `int3` sequence (text_poke::write_bp5): continue as
             // if the instruction it is writing were already in place.
@@ -236,6 +232,14 @@ impl ArchFrame for TrapFrame {
 /// Returns the CR3 word to install before the return, or 0.
 #[unsafe(no_mangle)]
 pub extern "C" fn x86_64_trap_entry(frame: &mut TrapFrame) -> u64 {
+    // An NMI is counted and returns before any guard, decode or policy (K1
+    // L17): `ist_common` has no nested-NMI copy, so the handler must take no
+    // exception (one would `iretq`, unmask NMIs, and a second NMI would
+    // overwrite this frame on the same IST slice). One atomic add takes none.
+    if frame.vector as usize == idt::NMI {
+        NMIS.fetch_add(1, Ordering::Relaxed);
+        return 0;
+    }
     // Lockdep (N1): no lock held when this returns to ring 3.
     // QSBR (Kconfig RCU_QSBR, N4): a syscall or exception does nothing
     // unless this is an RT CPU (RCU_NOCBS_CPUS); the interrupt arm has its

@@ -16,7 +16,7 @@
 //! build without the `pci` feature has no config-space access, so an AMD part
 //! reads as having no root complex and no sensor.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use azos_arch::cpu::features::{decode_ident, read_cpuid, Vendor as ArchVendor};
 use azos_arch::cpu::pstate;
@@ -184,10 +184,23 @@ const POSTED: u32 = 1;
 const RUNNING: u32 = 2;
 const DONE: u32 = 3;
 
+/// The state word: the phase in the low byte, the target CPU above it. One
+/// word, so the handler's take names both (K1 L3): with the target a field of
+/// its own, a handler that read `POSTED` and its own CPU could be overtaken
+/// by a withdraw and a new post for another CPU, and its POSTED->RUNNING
+/// compare still succeeded and ran that CPU's access here.
+const fn word(phase: u32, cpu: usize) -> u32 {
+    phase | (cpu as u32) << 8
+}
+const fn phase(w: u32) -> u32 {
+    w & 0xff
+}
+const _: () = assert!(azos_sched::MAX_CPUS <= 1 << 24, "the target CPU must fit above the phase byte");
+
 /// The one access in flight.
 struct Call {
+    /// [`word`]: phase and target.
     state: AtomicU32,
-    target: AtomicUsize,
     write: AtomicBool,
     msr: AtomicU32,
     value: AtomicU64,
@@ -196,7 +209,6 @@ struct Call {
 
 static CALL: Call = Call {
     state: AtomicU32::new(FREE),
-    target: AtomicUsize::new(0),
     write: AtomicBool::new(false),
     msr: AtomicU32::new(0),
     value: AtomicU64::new(0),
@@ -211,11 +223,10 @@ fn remote(cpu: usize, write: bool, msr: u32, value: u64) -> Option<u64> {
     }
     // One sender: the thermal tick, which holds the board's `STATE` lock.
     debug_assert_eq!(CALL.state.load(Ordering::Relaxed), FREE, "one access in flight");
-    CALL.target.store(cpu, Ordering::Relaxed);
     CALL.write.store(write, Ordering::Relaxed);
     CALL.msr.store(msr, Ordering::Relaxed);
     CALL.value.store(value, Ordering::Relaxed);
-    CALL.state.store(POSTED, Ordering::Release);
+    CALL.state.store(word(POSTED, cpu), Ordering::Release);
     if !apic::send_ipi(cpu, encode::CALL_VECTOR) {
         CALL.state.store(FREE, Ordering::Release);
         return None;
@@ -223,7 +234,7 @@ fn remote(cpu: usize, write: bool, msr: u32, value: u64) -> Option<u64> {
     let end = azos_drv_sys::timebase::now()
         .saturating_add(CALL_TIMEOUT_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000);
     loop {
-        match CALL.state.load(Ordering::Acquire) {
+        match phase(CALL.state.load(Ordering::Acquire)) {
             DONE => {
                 let r = CALL.result.load(Ordering::Relaxed);
                 CALL.state.store(FREE, Ordering::Release);
@@ -232,7 +243,7 @@ fn remote(cpu: usize, write: bool, msr: u32, value: u64) -> Option<u64> {
             // Past the deadline, withdraw a request nobody took. One that is
             // being run is waited for: it is on its way out.
             POSTED if azos_drv_sys::timebase::now() >= end => {
-                if CALL.state.compare_exchange(POSTED, FREE, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                if CALL.state.compare_exchange(word(POSTED, cpu), FREE, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                     return None;
                 }
             }
@@ -244,10 +255,8 @@ fn remote(cpu: usize, write: bool, msr: u32, value: u64) -> Option<u64> {
 /// The function-call IPI's handler (`entry/x86_64/irq.rs`): take the access
 /// posted for this CPU, if there is one, and answer it. Interrupt context.
 pub(crate) fn call_ipi() {
-    if CALL.state.load(Ordering::Acquire) != POSTED || CALL.target.load(Ordering::Relaxed) != azos_sched::smp::current_cpu_id() {
-        return;
-    }
-    if CALL.state.compare_exchange(POSTED, RUNNING, Ordering::AcqRel, Ordering::Acquire).is_err() {
+    let me = azos_sched::smp::current_cpu_id();
+    if CALL.state.compare_exchange(word(POSTED, me), word(RUNNING, me), Ordering::AcqRel, Ordering::Acquire).is_err() {
         return;
     }
     let msr = CALL.msr.load(Ordering::Relaxed);
@@ -260,5 +269,5 @@ pub(crate) fn call_ipi() {
         azos_arch::cpu::rdmsr(msr)
     };
     CALL.result.store(result, Ordering::Relaxed);
-    CALL.state.store(DONE, Ordering::Release);
+    CALL.state.store(word(DONE, me), Ordering::Release);
 }

@@ -48,6 +48,15 @@ unsafe impl Sync for Areas {}
 
 static AREAS: Areas = Areas(UnsafeCell::new([const { FpArea { bytes: [0; AREA_BYTES], tid: 0 } }; SLOTS]));
 
+/// The initial FP image (`fp::init_area`), built once by the boot CPU: what
+/// a return to ring 3 loads when there is no current task's area to load.
+#[repr(C, align(64))]
+struct InitImage(UnsafeCell<[u8; AREA_BYTES]>);
+// SAFETY: written once, by the boot CPU in `init_cpu` before any other CPU
+// starts or any task reaches ring 3; only read afterwards.
+unsafe impl Sync for InitImage {}
+static INIT_IMAGE: InitImage = InitImage(UnsafeCell::new([0; AREA_BYTES]));
+
 /// Restores done on the way to ring 3 (diagnostics).
 pub static RESTORES: AtomicU64 = AtomicU64::new(0);
 
@@ -103,6 +112,10 @@ pub fn init_cpu(cpu: usize) {
         Ok(_) => {}
         Err(e) => panic!("x86_64: FP/SIMD state cannot be saved: {e:?}"),
     }
+    if cpu == 0 {
+        // SAFETY: see `InitImage`: the boot CPU, before any reader exists.
+        fp::init_area(unsafe { &mut *INIT_IMAGE.0.get() });
+    }
 }
 
 /// `context_switch.S`: save the live state into `area` (the outgoing
@@ -122,7 +135,17 @@ pub unsafe extern "C" fn x86_64_fp_save(area: *mut u8) {
 /// task's or none) and mark it live. Interrupts are masked.
 #[unsafe(no_mangle)]
 pub extern "C" fn x86_64_fp_restore() {
-    let Some((area, tid)) = current_area() else { return };
+    let Some((area, tid)) = current_area() else {
+        // No area (no current task, or a slot past the table): load the
+        // initial image rather than return, which resumed ring 3 on the
+        // registers the previous task left (`context_switch.S` saves them,
+        // it does not scrub them; K1 L4). Nothing is marked live, so the
+        // next return to ring 3 asks again.
+        // SAFETY: `INIT_IMAGE` is 64-byte aligned, AREA_BYTES long and built
+        // (`init_cpu`); IRQs masked (the caller's `cli`).
+        unsafe { fp::restore_eager((*INIT_IMAGE.0.get()).as_ptr()) };
+        return;
+    };
     // SAFETY: the current task's area, IRQs masked (the caller's `cli`).
     unsafe {
         if (*area).tid != tid {
