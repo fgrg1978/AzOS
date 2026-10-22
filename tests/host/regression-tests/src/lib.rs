@@ -12,6 +12,8 @@ mod property;
 mod crypto_tests;
 mod host_microbench;
 mod crashdump;
+// K1 (2026-10-22): the trap-entry and boot asm fixes, on the real sources.
+mod entry_asm;
 
 // O3.5 (H20): `driver_mocks`, `mm_tests`, `net_tests`, `sched_tests`,
 // `ipc_tests`, `fs_tests`, `security_tests`, `auth_envelope_tests` used
