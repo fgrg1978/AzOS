@@ -34,9 +34,11 @@
 //               real EL2, EL1 otherwise.
 //   Everything else implementation-defined.
 //
-// Secondary PEs (every PE whose full MPIDR_EL1 affinity is nonzero) park
-// on WFE at `_secondary_park` below until `crates/core/sched::smp::wake_hart`
-// issues PSCI `CPU_ON` for them — Phase 4 (SMP): the target entry point is
+// The PE that enters `_start` is the boot CPU, whatever its MPIDR_EL1
+// affinity: the arm64 boot protocol (Documentation/arch/arm64/booting.rst)
+// starts only the boot CPU at the image and holds the others in firmware.
+// They start when `crates/core/sched::smp::wake_hart` issues PSCI `CPU_ON`
+// for them — Phase 4 (SMP): the target entry point is
 // `_aarch64_secondary_entry`, further down this file, NOT `_start` (`x0`
 // there is the `context_id` PSCI hands the new PE, this kernel's own
 // convention for it is `hart_id`, not the FDT pointer `_start` expects).
@@ -80,65 +82,29 @@ _entry_after_header:
     // correct regardless of what that trampoline does or later changes to.
     mov     x19, x0
 
-    // ── Primary/secondary selection: the FULL MPIDR affinity ───────────
+    // ── The boot CPU: whichever PE the loader started (K1 M5) ──────────
     //
-    // tests/qemu/aarch64-smoke's `_start` checks `MPIDR_EL1 & 0xFF` (Aff0)
-    // only. That misidentifies the primary on any topology with more
-    // than one cluster: PE0 of cluster 0 and PE0 of cluster 1 both read
-    // Aff0 == 0 and would both take the primary path. QEMU's `virt`
-    // machine under a flat `-smp N` (no clusters=/sockets=) never
-    // produces that shape, but nothing here should depend on the one
-    // topology it happens to have been tested against.
+    // No MPIDR test. This used to require affinity == 0 and park every other
+    // PE on `wfe`, so a SoC whose boot CPU has a nonzero affinity (a
+    // cluster-1 boot, some big.LITTLE and server parts) parked the only CPU
+    // the loader started, before any console existed. The boot protocol
+    // already guarantees one PE here (PSCI keeps the rest off, a spin table
+    // in firmware), and the kernel needs no election: no first-wins atomic
+    // either, since with the MMU off data accesses are Device memory, where
+    // exclusives are IMPLEMENTATION DEFINED (a part without a global
+    // monitor may fail them forever) — Linux's head.S takes none either. The boot CPU's hardware id is read where it is needed:
+    // `boot_hooks::firmware_table` maps `read_mpidr()` to logical CPU 0.
     //
-    // The mask keeps Aff3[39:32] and Aff2:Aff1:Aff0[23:0], dropping
-    // MT[24], RES0[29:25], U[30] and RES1[31]. Built into a register
-    // (0x0000_00FF_00FF_FFFF) rather than used as an AND immediate:
-    // that bit pattern is two separate one-runs separated by zero gaps
-    // on both sides, which is not representable as a single AArch64
-    // logical-immediate encoding (those require one contiguous rotated
-    // run, replicated at a power-of-two element size) — confirmed by
-    // trying it: `and x11, x9, #0xff00ffffff` is rejected by the
-    // assembler ("immediate out of range").
-    mrs     x9, MPIDR_EL1
-    movz    x10, #0xffff
-    movk    x10, #0x00ff, lsl #16
-    movk    x10, #0x00ff, lsl #32
-    and     x11, x9, x10
-    cbnz    x11, _secondary_park
-
     // ── hart_id, for kernel_main's first argument ───────────────────────
     //
-    // Aff0 | Aff1<<8 | Aff2<<16 — the bottom 24 bits of MPIDR_EL1. This is
-    // the FIRST place the id is computed, not the only one: it is published
-    // into `TPIDR_EL1` below, and THAT register — not a live MPIDR decode —
-    // is what `azos_arch::cpu::hart_id()` (crates/core/arch-aarch64/src/
-    // cpu.rs) and `azos_sched::smp::current_cpu_id()` both read (U10-4:
-    // they used to be two different sources; now they are one `mrs
-    // TPIDR_EL1` each). It must still agree with whatever value ends up in
-    // TPIDR_EL1, or a PE reserves boot-time resources under one id and
-    // indexes `azos_sync::preempt` / any `PER_CPU`-shaped table under
-    // another. On the primary PE this is always 0 (Aff0=Aff1=Aff2=0 is
-    // exactly what the primary check above just required).
-    and     x20, x9, #0x00ffffff
-
-    // ── Publish hart id into TPIDR_EL1 ──────────────────────────────────
-    //
-    // `azos_sched::smp::current_cpu_id()` reads `TPIDR_EL1` on this ISA
-    // (the aarch64 counterpart of riscv64's `tp`) — every `PER_CPU[...]`
-    // access in the scheduler depends on it reading the right hart. Until
-    // Phase 3 (context switch + scheduler), nothing wrote this register at
-    // all: it held whatever QEMU reset it to, which happens to be 0 and so
-    // happened to agree with the primary hart's id — a convention, not a
-    // defence, and wrong the day a second PE runs real code. Written here,
-    // right after x20 is computed and before anything Rust-side can read
-    // it (the earliest point both facts are true), so it holds for
-    // `kernel_main`'s very first call into `crates/core/sched`.
-    //
-    // TPIDR_EL1 is banked per EL and untouched by `_azos_drop_to_el1`
-    // (that trampoline only writes HCR_EL2/CPTR_EL2/the EL2 timer+GICv3
-    // grants/SCTLR_EL1 — see crates/core/arch-aarch64/src/mmu/boot.rs), so writing
-    // it before the EL2->EL1 branch below is safe on both entry paths.
-    msr     TPIDR_EL1, x20
+    // The LOGICAL CPU id, not an affinity: the boot CPU is CPU 0
+    // (`crate::boot::BOOT_CPU`), as riscv64's boot.S sets `tp`. It is
+    // published into `TPIDR_EL1` below, and THAT register is what
+    // `azos_arch::cpu::hart_id()` and `azos_sched::smp::current_cpu_id()`
+    // both read (U10-4: one `mrs TPIDR_EL1` each). An affinity there (the
+    // old `MPIDR & 0xffffff`) would index every `PER_CPU`-shaped table out
+    // of range on a boot CPU with a nonzero affinity.
+    mov     x20, #0
 
     // ── Record entry EL, drop EL2 -> EL1 if needed ──────────────────────
     //
@@ -159,6 +125,20 @@ _entry_after_header:
     adrp    x0, boot_entry_el
     add     x0, x0, :lo12:boot_entry_el
     strb    w21, [x0]
+
+    // ── Publish hart id into TPIDR_EL1 ──────────────────────────────────
+    //
+    // `azos_sched::smp::current_cpu_id()` reads `TPIDR_EL1` on this ISA
+    // (the aarch64 counterpart of riscv64's `tp`): every `PER_CPU[...]`
+    // access in the scheduler depends on it reading the right CPU. Written
+    // before anything Rust-side can read it, so it holds for `kernel_main`'s
+    // very first call into `crates/core/sched`.
+    //
+    // At EL1, after the drop, as the secondary path does (K1 L12): at EL2 a
+    // loader that entered with HCR_EL2.E2H=1 (a VHE-only core) redirects the
+    // EL1 register names to EL2, and `TPIDR_EL1` would keep its UNKNOWN
+    // reset value.
+    msr     TPIDR_EL1, x20
 
     // ── FP/SIMD access for EL1, on BOTH entry paths ─────────────────────
     //
@@ -408,13 +388,11 @@ halt:
     wfi
     b       halt
 
-// PEs that lost the primary check above park here. Also where
-// `_aarch64_secondary_entry` below sends a hart whose id is out of range —
-// PSCI `CPU_ON` (Phase 4, SMP) wakes every OTHER PE at that entry point
-// instead of leaving them here; a PE that never gets a `CPU_ON` (this
-// kernel simply never calls `wake_hart` for it — see
-// `crates/core/sched::smp::wake_harts`) stays parked on `wfe` for however long
-// QEMU keeps it alive, same as before this task.
+// Where `_aarch64_secondary_entry` below sends a PE it must not run: an
+// out-of-range hart id, and its other refusals. PSCI `CPU_ON` (Phase 4,
+// SMP) starts every other PE at that entry point; a PE that never gets a
+// `CPU_ON` (this kernel never calls `wake_hart` for it — see
+// `crates/core/sched::smp::wake_harts`) stays in firmware.
 _secondary_park:
     wfe
     b       _secondary_park
