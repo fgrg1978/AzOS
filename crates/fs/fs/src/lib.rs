@@ -97,7 +97,7 @@ pub use vfs::{
     fd_alloc, fd_free, fd_get, fd_dup,
     // Wave 15 (PI), owner rule F1: descriptor I/O without the table's lock.
     LoneFd, fd_streams, fd_lend, fd_settle, fd_adopt, fd_detach, fd_stream_transfer,
-    FsyncWork, fd_fsync_begin, fd_fsync_finish,
+    FsyncWork, fd_fsync_begin, fd_fsync_finish, fd_file_backing,
     fd_set_owner, fd_owner, fd_count_owned, fd_release_owned,
     FD_NO_OWNER, MAX_FDS_PER_TASK,
     vfs_open, vfs_close, vfs_read, vfs_write, vfs_lseek,

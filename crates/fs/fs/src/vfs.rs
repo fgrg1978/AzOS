@@ -422,6 +422,13 @@ pub trait FileSystem: Sync {
         self.sync().map_err(|()| FsErr::Io)
     }
 
+    /// io_ring `OP_FSYNC` without waiting: ask for a flush that makes every
+    /// write made so far through this backend durable and answer its ticket
+    /// (`fat32_flush_done` tells when it completed). `None`, the default: the
+    /// backend has no ticketed flush, and the caller makes the file durable
+    /// synchronously with [`fsync`](Self::fsync).
+    fn flush_request(&self) -> Option<u64> { None }
+
     /// Create a directory at `name` (relative to the mount point).
     fn mkdir(&self, _name: &[u8]) -> Result<(), FsErr> { Err(FsErr::Unsupported) }
 

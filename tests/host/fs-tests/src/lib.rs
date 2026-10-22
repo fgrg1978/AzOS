@@ -2368,6 +2368,31 @@ mod vfs_open_close {
     }
 }
 
+/// io_ring `OP_FSYNC` asks the backend that holds the file for a flush
+/// ticket (`kernel/src/boot/seams.rs`, `fsync_request_as`): FAT32 answers
+/// one, since its fsync is the volume's flush; tmpfs has no ticketed flush,
+/// so the seam syncs its file synchronously instead of handing out a FAT32
+/// ticket that says nothing about it (audit K2-M5).
+///
+/// **Canary.** Make the trait's default `flush_request` answer FAT32's
+/// ticket, as the old seam did for every descriptor: the tmpfs assertion
+/// fails.
+#[cfg(test)]
+mod fsync_tickets {
+    use super::{fat32, serial, tmpfs, vfs};
+    use vfs::FileSystem as _;
+
+    #[test]
+    fn only_a_backend_with_a_ticketed_flush_answers_a_ticket() {
+        let _g = serial();
+        assert_eq!(tmpfs::TmpFs.flush_request(), None, "tmpfs has no ticketed flush");
+        let t = vfs::FAT32_FS.flush_request().expect("FAT32 answers its volume flush ticket");
+        assert!(t >= 1);
+        // No flusher task on the host: the flush ran inline.
+        assert!(fat32::fat32_flush_done(t).is_some());
+    }
+}
+
 /// U09 §5 Q3 — `FileSystem::read_at`/`write_at` for `TmpFs`.
 ///
 /// tmpfs is already RAM-resident, so "streaming" buys it nothing in cost —

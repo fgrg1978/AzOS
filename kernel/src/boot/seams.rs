@@ -862,21 +862,30 @@ pub(crate) fn install_ring3_seams() {
                 })
             }
             fn fsync_request_as(&self, tid: u32, fd: i32) -> Result<u64, i64> {
-                {
+                let backend = {
                     let t = KERNEL_FD_TABLE.lock();
                     if !azos_syscall::file_ops::fd_owned_by(
                         azos_fs::fd_owner(&t, fd), tid, azos_fs::FD_NO_OWNER) {
                         return Err(azos_abi::error::Errno::EBADF.to_syscall_ret());
                     }
-                }
+                    azos_fs::fd_file_backing(&t, fd).and_then(|(b, _)| b.fs)
+                };
                 // The synchronous answer K1 replaced: the submitter waits
                 // for the device (ktest `ioring_fsync_completes_after_flush`).
                 if canary!("ioring-fsync-inline") {
                     return match self.fsync(fd) { 0 => Ok(0), e => Err(e) };
                 }
-                // FAT32's fsync is the volume's (`fat32_sync_checked`), so a
-                // volume flush ticket is this descriptor's.
-                Ok(azos_fs::fat32_flush_request())
+                // The ticket of the backend that holds the file (FAT32: the
+                // volume's flush), asked outside the table's lock (F1). A
+                // file whose backend has no ticketed flush (tmpfs, azvol, a
+                // proxy) or no backend at all is made durable here, as the
+                // default seam does: a FAT32 ticket would say nothing about
+                // it. `fsync_done` reads only FAT32 tickets, the only ones
+                // handed out.
+                match backend.and_then(|b| b.flush_request()) {
+                    Some(ticket) => Ok(ticket),
+                    None => match self.fsync(fd) { 0 => Ok(0), e => Err(e) },
+                }
             }
             fn fsync_done(&self, ticket: u64) -> Option<i64> {
                 if ticket == 0 { return Some(0); }

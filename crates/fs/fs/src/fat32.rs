@@ -6364,6 +6364,11 @@ impl crate::vfs::FileSystem for Fat32Fs {
     #[inline]
     fn sync(&self) -> Result<(), ()> { fat32_sync() }
 
+    /// A file's fsync is the volume's (`fat32_sync_checked`), so a volume
+    /// flush ticket is every descriptor's.
+    #[inline]
+    fn flush_request(&self) -> Option<u64> { Some(fat32_flush_request()) }
+
     /// 8.3 conversion of every component, and the directories: the key is the
     /// canonical path (`key_of_path`). A leading, trailing or doubled slash
     /// names nothing.
