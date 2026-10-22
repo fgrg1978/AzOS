@@ -88,12 +88,13 @@ const SWITCHES_OFF: [(usize, u16); 2] = [
     (azos_limits::RC_KILL_CHANNEL, 1000),
 ];
 
-/// RC link loss latches the e-stop and is recorded.
+/// RC link loss latches the e-stop, runs the stop hooks and is recorded.
 ///
 /// 1. one second of good frames (switches off) — the link is up, the e-stop
-///    clear; 2. frames carrying the receiver's failsafe bit — the behavior
-///    loop must latch the e-stop and write SAFETY_ESTOP / RC_LINK_LOSS with
-///    detail 0 (the receiver's verdict), read back off the disk.
+///    clear; the ESC is armed; 2. frames carrying the receiver's failsafe bit —
+///    the behavior loop must latch the e-stop, disarm the ESC (the actuator
+///    domain's stop hook) and write SAFETY_ESTOP / RC_LINK_LOSS with detail 0
+///    (the receiver's verdict), read back off the disk.
 #[cfg(feature = "rc-failsafe-smoke")]
 pub(crate) fn rc_failsafe_smoke_task(_arg: usize) {
     use azos_behavior::logger::SAFETY_ESTOP;
@@ -109,19 +110,28 @@ pub(crate) fn rc_failsafe_smoke_task(_arg: usize) {
         return;
     }
     kprintln!("[RCSMOKE] link up: {} frames applied, e-stop clear", good);
+    // The latch must run the actuator domain's stop hooks too, as the brain's
+    // e-stop does: only they disarm the ESC armed here (the motors' gated
+    // writes drop to 0 on the latch alone, so they cannot tell).
+    azos_robot_drivers::esc::esc_arm();
+    if !azos_robot_drivers::esc::esc_is_armed() {
+        kprintln!("[RCSMOKE] FAIL failsafe: the ESC did not arm");
+        return;
+    }
     let _ = feed_for(&frame(&SWITCHES_OFF, true), 500);
     let t0 = now();
     while !estop_is_active() && now() - t0 < 10 * TIMER_FREQ { sleep_ms(20); }
     let latched = estop_is_active();
+    let disarmed = !azos_robot_drivers::esc::esc_is_armed();
     let (recorded, records) = poll_record(|| super::find_safety_record_detail_on_disk(
         SAFETY_ESTOP, ESTOP_ACTION_RC_LINK_LOSS, Some(0)));
-    if latched && recorded {
-        kprintln!("[RCSMOKE] PASS failsafe: receiver failsafe latched the e-stop; \
+    if latched && disarmed && recorded {
+        kprintln!("[RCSMOKE] PASS failsafe: receiver failsafe latched the e-stop and disarmed the ESC; \
                    SAFETY_ESTOP action {} detail 0 on disk ({} records)",
                   ESTOP_ACTION_RC_LINK_LOSS, records);
     } else {
-        kprintln!("[RCSMOKE] FAIL failsafe: latched={} recorded={} ({} records)",
-                  latched, recorded, records);
+        kprintln!("[RCSMOKE] FAIL failsafe: latched={} disarmed={} recorded={} ({} records)",
+                  latched, disarmed, recorded, records);
     }
 }
 

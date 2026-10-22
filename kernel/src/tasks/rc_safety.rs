@@ -54,7 +54,11 @@ impl RcTickState {
 #[cfg(feature = "rc-input")]
 fn rc_latch(action: u8, detail: u32, what: &str) {
     if azos_behavior::safety::estop_is_active() { return; }
-    azos_behavior::safety::estop_activate();
+    // The brain's e-stop sequence (`actuation::latch_and_stop`): the latch,
+    // then the actuator domain's stop hooks (motors, ESC disarm, payload).
+    // The latch alone left the motors running until their next gated write
+    // and the ESCs armed, on the one source that is a physical kill switch.
+    azos_safety_core::actuation::latch_and_stop();
     let _ = azos_behavior::logger::log_safety_violation_durable(
         azos_behavior::logger::SAFETY_ESTOP, action, detail);
     azos_drv_sys::kwarn!("[RC] {} — e-stop latched (SAFETY_ESTOP action {} detail {})",
