@@ -905,7 +905,8 @@ mod row {
 
     /// `beep` goes through the server when the toolbox row holds its endpoint,
     /// else straight to `sound.0`: with the server the row holds the call right
-    /// on `endpoint.audio` (with `DUP`, to derive its stream badge; never
+    /// on `endpoint.audio` (lent, `transfer = true`, for the `DUP` that derives
+    /// its stream badge; never
     /// `READ`, which would claim the service) and no `sound.0`; without it, the
     /// kernel's `sound.0` as before and no audio endpoint. Exactly one of the
     /// two, never both (the device has one holder).
@@ -921,9 +922,9 @@ mod row {
         let sound: Vec<_> = caps.iter().filter(|c| c.target.as_bytes() == b"sound.0").collect();
         if AUDIOD_ROW {
             assert_eq!((audio.len(), sound.len()), (1, 0));
-            assert_eq!(audio[0].perms, CapPerms::WRITE.union(CapPerms::DUP));
+            assert_eq!(audio[0].perms, CapPerms::WRITE);
             assert!(!audio[0].perms.contains(CapPerms::READ), "READ would claim the service");
-            assert!(!audio[0].transfer);
+            assert!(audio[0].transfer, "the DUP that derives the badge comes with `transfer = true`");
         } else {
             assert_eq!(audio.len(), 0);
             assert_eq!(sound.len() as u32, azos_limits::DRV_VIRTIO_SND as u32);

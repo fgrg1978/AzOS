@@ -249,7 +249,7 @@ fn the_creator_of_a_socket_may_give_it_away() {
 fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
     use azos_topology::{CapSpec, MaybeStr};
     let topo = azos_topology::default_minimal();
-    let lent: &[&[u8]] = &[b"endpoint.term", b"endpoint.decisions", b"endpoint.input", b"endpoint.compositor"];
+    let lent: &[&[u8]] = &[b"endpoint.term", b"endpoint.decisions", b"endpoint.input", b"endpoint.compositor", b"endpoint.audio"];
     // The servers whose one grant of their own endpoint both serves (`READ`)
     // and is the call right their badged rights are derived from and lent
     // (`builder.rs` `INPUT_SERVE`, `COMPOSITOR_SERVE`).

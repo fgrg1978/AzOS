@@ -4161,11 +4161,11 @@ mod launch_cap_tests {
                     assert_eq!((c.perms, c.transfer), (CapPerms::WRITE, false), "TOOLBOX.ELF only calls the input server");
                 }
                 // The audio server's endpoint (`beep` plays through it): the call
-                // right and the right to derive its stream badge, never `READ`
-                // (which would serve it), and no `sound.0` beside it.
+                // right, lent so the tool can derive its stream badge, never
+                // `READ` (which would serve it), and no `sound.0` beside it.
                 CapKind::Endpoint if c.target == MaybeStr::from_bytes(b"endpoint.audio") => {
                     assert!(azos_topology::builder::AUDIOD_ROW, "the grant is only there with the server");
-                    assert_eq!((c.perms, c.transfer), (CapPerms::WRITE.union(CapPerms::DUP), false), "a caller, not the server");
+                    assert_eq!((c.perms, c.transfer), (CapPerms::WRITE, true), "a caller, not the server");
                 }
                 // The resolver and the clock's state: observation only.
                 CapKind::Endpoint => {

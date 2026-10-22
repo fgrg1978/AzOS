@@ -191,7 +191,7 @@ fn the_outcomes_and_the_report_have_their_words() {
 #[test]
 fn the_audio_endpoint_is_found_by_the_shape_of_its_grant() {
     use azos_abi::cap::{ty, CapPerms};
-    let grant = CapPerms::WRITE.union(CapPerms::DUP).bits();
+    let grant = CapPerms::WRITE.union(CapPerms::DELEGATE).bits();
     let ep = |handle, rights, badge, expiry_ns| Held { handle, ty: ty::ENDPOINT.raw(), rights, badge, expiry_ns };
     // The row's grant alone.
     assert_eq!(audio_endpoint_of([ep(7, grant, 0, 0)].into_iter()), Some(7));

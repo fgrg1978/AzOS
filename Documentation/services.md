@@ -53,7 +53,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `NAMESD.ELF` | `userspace/services/namesd` | with the native shell session | `endpoint.names` (`Names`) | | R `endpoint.names`, W+transfer `endpoint.term`, R+M `MemObj inspect.names` |
 | `TERMD.ELF` | `userspace/services/termd` | console program | `endpoint.term` (`Terminal`) | | R `endpoint.term`, RWM `MemObj input.events` (with a keyboard/mouse driver), RWM `MemObj console.screen` (with `FB_CONSOLE`) |
 | `SH.ELF` | `userspace/services/sh` | with `TERMD.ELF` | nothing | `Terminal`, `Names` | X on the tool images, RW `/fat`, RW `/tmp`, `tasks` view, `ROOT_RO` |
-| `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `sound.0` or `endpoint.audio` (`beep`), `endpoint.input` (`input`), `endpoint.compositor` (`window`) | `tasks` view, R `net`, R `clock`, RW `sound.0` (or W+DUP `endpoint.audio` with Kconfig `AUDIOD`), W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO` |
+| `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `sound.0` or `endpoint.audio` (`beep`), `endpoint.input` (`input`), `endpoint.compositor` (`window`) | `tasks` view, R `net`, R `clock`, RW `sound.0` (or W `endpoint.audio`, lent, with Kconfig `AUDIOD`), W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO` |
 | `POWER.ELF` | `userspace/services/power` | by the shell | nothing | `power` | RW `power`, R `sensor.9`, X `endpoint.pm-gpio` and `endpoint.pm-ina` (the drivers' `DevicePower`) |
 | `TRACECTL.ELF` | `userspace/services/tracectl` | by the shell | nothing | `trace` | RW `trace` log, RW `/fat`, `ROOT_RO` |
 | `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | `userspace/services/famtools` | by the shell | nothing | `flight`, `behavior`, `config`, `ota` | see [famtools](#famtools) |
@@ -595,7 +595,8 @@ the **one** playback stream it holds on the device and returns each period on `d
   drained and closed when none does.
 * **Who a stream belongs to.** The server sees only the badge of the capability a call went
   through, so a client derives a badged copy of its endpoint capability (the row grants
-  `W+DUP`) and calls through it: one badge, one stream. A call with badge 0 is refused.
+  `W` with `transfer = true`, which gives `DUP`) and calls through it: one badge, one
+  stream. A call with badge 0 is refused.
   The badge is the holder's choice, which is enough to tell cooperating clients apart and
   not hostile ones. A running stream that gives the mixer nothing for 3 s is closed, and
   one nobody called for 60 s.

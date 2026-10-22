@@ -3448,15 +3448,16 @@ const TOOLBOX_SOUND_CAP: CapSpec = CapSpec {
     target: MaybeStr::from_bytes(RESOURCE_SOUND), transfer: false, ops: 0,
 };
 
-/// The call right on the audio server's endpoint (Kconfig AUDIOD), with `DUP`
-/// so the tool can derive the badged copy the server tells its streams apart
-/// by (`cap_derive`): `beep` plays through the server when the row holds this,
+/// The call right on the audio server's endpoint (Kconfig AUDIOD), lent
+/// (`transfer = true`, which is what gives a row `DUP`: never its letters) so
+/// the tool can derive the badged copy the server tells its streams apart by
+/// (`cap_derive`): `beep` plays through the server when the row holds this,
 /// and the row then holds no `sound.0` (the device has one holder). `WRITE`
 /// only: `READ` is the grant that serves the endpoint.
 const TOOLBOX_AUDIO_CAP: CapSpec = CapSpec {
     kind: CapKind::Endpoint,
-    perms: CapPerms::WRITE.union(CapPerms::DUP),
-    target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_AUDIO), transfer: false, ops: 0,
+    perms: CapPerms::WRITE,
+    target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_AUDIO), transfer: true, ops: 0,
 };
 
 /// `TOOLBOX.ELF`'s authority outside `CONSOLE_LOCKDOWN`, in order: the full

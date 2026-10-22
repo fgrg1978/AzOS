@@ -114,7 +114,7 @@ impl Stream {
 
 /// The audio server's endpoint, if this row holds it: the one endpoint
 /// capability in this task's table that has the shape of the row's grant
-/// ([`beep::audio_endpoint_of`]: `WRITE|DUP`, unbadged, never expiring).
+/// ([`beep::audio_endpoint_of`]: `WRITE` lent, unbadged, never expiring).
 ///
 /// Ring 3 has no lookup of a pool endpoint by name (the name server is a
 /// service this row does not hold), so the shape of the grant is what names

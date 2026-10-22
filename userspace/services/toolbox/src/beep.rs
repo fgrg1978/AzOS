@@ -166,9 +166,10 @@ pub struct Held {
 }
 
 /// The rights of the topology row's grant of `endpoint.audio` to the toolbox:
-/// the call right and `DUP`, so the tool can derive the badged copy the
-/// server tells its streams apart by (`TOOLBOX_AUDIO_CAP`).
-const AUDIO_GRANT_RIGHTS: u8 = CapPerms::WRITE.union(CapPerms::DUP).bits();
+/// the call right, lent (`DUP` and `TRANSFER`, what `transfer = true` gives),
+/// so the tool can derive the badged copy the server tells its streams apart
+/// by (`TOOLBOX_AUDIO_CAP`).
+const AUDIO_GRANT_RIGHTS: u8 = CapPerms::WRITE.union(CapPerms::DELEGATE).bits();
 
 /// The handle of the audio server's endpoint among `held`: the one capability
 /// that is an endpoint with exactly the rights of the row's grant, unbadged
