@@ -22829,8 +22829,11 @@ power suspend" 150 \
     # turned on (PROFILER_PMU follows it, default y), in a target dir of its
     # own, built the way `make build` / `make aarch64` build it: with the
     # config's codegen flags (`kconfig_to_cargo.py --rustflags`, which adds
-    # the frame pointers the walk needs). `tracectl profile` over two
-    # CPU-bound jobs must count PMU samples: riscv64 with Sscofpmf
+    # the frame pointers the walk needs). At -smp 4: the image admits hard
+    # reservations on harts 0 and 1, which makes them real-time CPUs whose
+    # PMU sampling is refused (their ticks record `rt` PC-only samples), so
+    # two CPU-bound jobs run, and are sampled, on the other two.
+    # `tracectl profile` must count PMU samples: riscv64 with Sscofpmf
     # (`-cpu rv64,sscofpmf=on`: QEMU's default CPU has none), aarch64 `virt`
     # with its PMUv3 and the DTB's PMU PPI. No x86_64 row: TCG has no PMU.
     # Canary rows: the same kernel on a CPU without the overflow interrupt
@@ -22880,13 +22883,13 @@ power suspend" 150 \
         else
             ush_pmu_on=''; ush_pmu_off='-cpu max,pauth=on,pmu=off'; ush_pmu_mark='[PMU] overflow interrupt: DTB PPI INTID'
         fi
-        USH_KERNEL="$ush_pk" USH_SMP=2 USH_QEMU_EXTRA="$ush_pmu_on" USH_FORBID='robot> |sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED' \
+        USH_KERNEL="$ush_pk" USH_SMP=4 USH_QEMU_EXTRA="$ush_pmu_on" USH_FORBID='robot> |sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED' \
             par_row ushell_row "prof: PMU overflow samples ($ush_isa)" "$ush_isa" qemu PASS \
             "spin &
 spin &
 tracectl profile -t 4000" 240 \
-            "$ush_pmu_mark" "tracectl: profile read " "tracectl: profile origins: tick=" " rt=0"
-        USH_KERNEL="$ush_pk" USH_SMP=2 USH_QEMU_EXTRA="$ush_pmu_off" USH_FORBID='robot> |sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED' \
+            "$ush_pmu_mark" "tracectl: profile read " "tracectl: profile origins: tick="
+        USH_KERNEL="$ush_pk" USH_SMP=4 USH_QEMU_EXTRA="$ush_pmu_off" USH_FORBID='robot> |sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED' \
             par_row ushell_row "prof: no overflow interrupt, tick only ($ush_isa)" "$ush_isa" qemu FAIL \
             "spin &
 spin &
