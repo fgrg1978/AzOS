@@ -101,6 +101,14 @@ struct Slot<'p> {
     refs: [u16; MAX_CLOCKS],
 }
 
+/// The `clocks` entry of controller `node` that is its input `k`, called
+/// `name`: by `clock-names`, or by position when the node has no
+/// `clock-names` (a binding with one unnamed input, `starfive,jh7110-pll`).
+pub fn input_entry<'a>(fdt: &Fdt<'a>, node: NodeId, k: usize, name: &str) -> Result<Entry<'a>> {
+    let sel = if fdt.has_prop(node, "clock-names") { Sel::Name(name) } else { Sel::Index(k) };
+    consumer::lookup(fdt, node, "clocks", "clock-names", "#clock-cells", sel)
+}
+
 /// The clock tree: up to [`MAX_PROVIDERS`] controllers.
 pub struct ClockTree<'p> {
     slots: [Option<Slot<'p>>; MAX_PROVIDERS],
@@ -139,9 +147,7 @@ impl<'p> ClockTree<'p> {
                 None => continue,
             };
             for (k, name) in names.iter().enumerate() {
-                let found = consumer::lookup(fdt, node, "clocks", "clock-names", "#clock-cells", Sel::Name(name))
-                    .ok()
-                    .and_then(|e| self.resolve(&e));
+                let found = input_entry(fdt, node, k, name).ok().and_then(|e| self.resolve(&e));
                 if let Some(s) = self.slots[i].as_mut() {
                     s.inputs[k] = found;
                 }

@@ -25,16 +25,15 @@
 //! `fixed-clock` node while slots are left; what does not fit is counted in
 //! [`Report::dropped`], never silently lost.
 //!
-//! Not modelled (the first consumer that needs one adds it): the JH7110 PLL
-//! block, the always-on and storage clock generators' clocks, a switchable or
-//! adjustable rail (the PMIC).
+//! Not modelled (the first consumer that needs one adds it): the always-on
+//! and storage clock generators' clocks, a switchable or adjustable rail (the
+//! PMIC).
 
 use crate::clk::{self, ClockOps, ClockTree, Parent};
-use crate::consumer::{self, Sel};
 use crate::effect::EffectSink;
 use crate::fdt::{Fdt, NodeId};
 use crate::fixed::{FixedClock, FixedRegulator};
-use crate::jh7110::{Jh7110Clk, Jh7110Iomux, Jh7110Pmu, Jh7110Reset};
+use crate::jh7110::{Jh7110Clk, Jh7110Iomux, Jh7110Pll, Jh7110Pmu, Jh7110Reset};
 use crate::k1::{K1Clk, P1Buck};
 use crate::pd::{self, PowerDomains};
 use crate::pinctrl::{self, Pinctrl};
@@ -47,8 +46,8 @@ use crate::{Bus, Error, Result};
 /// `regulator-fixed`, need no family.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Families {
-    /// StarFive JH7110: system clock and reset controller, reset blocks, PMU,
-    /// system and always-on pad controllers.
+    /// StarFive JH7110: system clock and reset controller and its PLLs,
+    /// reset blocks, PMU, system and always-on pad controllers.
     pub jh7110: bool,
     /// SpacemiT K1: the CPU cluster clocks with their PLL tree, and the P1
     /// PMIC's bucks.
@@ -59,6 +58,7 @@ pub struct Families {
 pub enum ClkProvider {
     Fixed(FixedClock),
     Jh7110(Jh7110Clk),
+    Jh7110Pll(Jh7110Pll),
     K1(K1Clk),
 }
 
@@ -67,6 +67,7 @@ impl ClkProvider {
         match self {
             ClkProvider::Fixed(c) => c,
             ClkProvider::Jh7110(c) => c,
+            ClkProvider::Jh7110Pll(c) => c,
             ClkProvider::K1(c) => c,
         }
     }
@@ -74,6 +75,7 @@ impl ClkProvider {
         match self {
             ClkProvider::Fixed(c) => c,
             ClkProvider::Jh7110(c) => c,
+            ClkProvider::Jh7110Pll(c) => c,
             ClkProvider::K1(c) => c,
         }
     }
@@ -204,6 +206,9 @@ impl Storage {
                 if let Some(c) = Jh7110Clk::from_dt(fdt, n) {
                     put(&mut self.clk, &mut self.dropped, n, ClkProvider::Jh7110(c));
                 }
+                if let Some(c) = Jh7110Pll::from_dt(fdt, n) {
+                    put(&mut self.clk, &mut self.dropped, n, ClkProvider::Jh7110Pll(c));
+                }
                 if let Some(r) = Jh7110Reset::from_dt(fdt, n) {
                     put(&mut self.rst, &mut self.dropped, n, r);
                 }
@@ -229,10 +234,8 @@ impl Storage {
         // The inputs of the controllers found, then the rest.
         for i in 0..self.clk.len() {
             let Some((node, names)) = self.clk[i].as_ref().map(|(n, p)| (*n, p.input_names())) else { continue };
-            for name in names {
-                let Ok(e) = consumer::lookup(fdt, node, "clocks", "clock-names", "#clock-cells", Sel::Name(name)) else {
-                    continue;
-                };
+            for (k, name) in names.iter().enumerate() {
+                let Ok(e) = clk::input_entry(fdt, node, k, name) else { continue };
                 if let Some(c) = FixedClock::from_dt(fdt, e.provider) {
                     put(&mut self.clk, &mut self.dropped, e.provider, ClkProvider::Fixed(c));
                 }
@@ -307,7 +310,8 @@ impl Storage {
 }
 
 /// The register windows of a clock provider: the node's own for a JH7110
-/// controller, the three blocks of a K1 complex, none for a fixed clock.
+/// controller, its parent syscon's for the JH7110 PLLs, the three blocks of
+/// a K1 complex, none for a fixed clock.
 fn clk_windows(fdt: &Fdt<'_>, node: NodeId, p: &ClkProvider) -> ([(u64, u64); 3], usize) {
     let mut ws = [(0, 0); 3];
     match p {
@@ -319,6 +323,10 @@ fn clk_windows(fdt: &Fdt<'_>, node: NodeId, p: &ClkProvider) -> ([(u64, u64); 3]
             }
             None => (ws, 0),
         },
+        ClkProvider::Jh7110Pll(c) => {
+            ws[0] = c.window();
+            (ws, 1)
+        }
         ClkProvider::K1(c) => (c.windows(), 3),
     }
 }

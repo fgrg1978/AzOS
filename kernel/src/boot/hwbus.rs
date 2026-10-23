@@ -189,10 +189,11 @@ fn tree_clock_rate(fdt: &azos_soc::Fdt<'_>, n: azos_soc::NodeId, sel: azos_soc::
 }
 
 /// What the tree says of a DesignWare I2C node's timing: its clock's rate
-/// (the clock framework's when it models the clock, else [`tree_clock_rate`];
-/// the JH7110 provider's table has no I2C APB clock, `soc/src/jh7110/clk.rs`,
-/// the RP1's has no provider at all), `clock-frequency` (the bus rate) and
-/// the I2C binding's fall and hold times. A node outside the tree, or no SoC
+/// (the clock framework's when it models the clock, as the JH7110's
+/// `JH7110_SYSCLK_I2Cn_APB` from its PLLs, `soc/src/jh7110/`; else
+/// [`tree_clock_rate`]: the RP1's has no provider at all), `clock-frequency`
+/// (the bus rate) and the I2C binding's fall and hold times. A rate of 0 (a
+/// stopped divider or PLL) is no rate. A node outside the tree, or no SoC
 /// frameworks: nothing but the defaults, and the controller's own counts are
 /// kept (`i2c_dw::Counts::Kept`).
 #[cfg(feature = "i2c-dw")]
@@ -205,7 +206,7 @@ fn dw_i2c_timing(dev: &Device) -> azos_drv_bus::i2c_dw::Timing {
             use azos_soc::consumer::Sel;
             let n = azos_soc::NodeId(node);
             let cell = |name: &str| fdt.prop(n, name).and_then(|v| azos_soc::fdt::cell(v, 0));
-            let live = soc.clocks.get(fdt, n, Sel::Index(0)).ok().and_then(|c| soc.clocks.rate(bus, c).ok());
+            let live = soc.clocks.get(fdt, n, Sel::Index(0)).ok().and_then(|c| soc.clocks.rate(bus, c).ok()).filter(|&hz| hz != 0);
             Timing {
                 ic_clk_hz: live.or_else(|| tree_clock_rate(fdt, n, Sel::Index(0))),
                 bus_hz: cell("clock-frequency").unwrap_or(DEFAULT_BUS_HZ),

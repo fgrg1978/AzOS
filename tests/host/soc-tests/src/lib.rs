@@ -4,6 +4,18 @@
 //! the five frameworks over mock providers, and the JH7110 register models
 //! against hand-written traces.
 
+// The DesignWare I2C bring-up (crates/drivers/bus), pulled in by path as
+// drivers-tests does: the VisionFive 2 rows feed it the rate the clock tree
+// resolves (`vf2_i2c_clock_tests`).
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/bus/src/i2c_txn.rs"]
+mod i2c_txn;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/bus/src/i2c_dw.rs"]
+mod i2c_dw;
+
 #[cfg(test)]
 mod support;
 
@@ -33,5 +45,7 @@ mod pinctrl_tests;
 mod regulator_tests;
 #[cfg(test)]
 mod hwbus_tests;
+#[cfg(test)]
+mod vf2_i2c_clock_tests;
 #[cfg(test)]
 mod wire;

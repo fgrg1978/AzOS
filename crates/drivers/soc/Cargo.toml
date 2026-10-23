@@ -9,7 +9,7 @@ SoC resource frameworks (HAL H2): clock tree, reset lines, regulators, pin
 control and power domains as traits, each with a manager that does the
 refcounting and the device-tree consumer lookup by phandle (clocks, resets,
 *-supply, pinctrl-N, power-domains). Providers: fixed-clock, fixed-regulator and
-the StarFive JH7110 (VisionFive 2) system clock and reset controller and power
+the StarFive JH7110 (VisionFive 2) system clock and reset controller, its PLLs, and power
 management unit, and the SpacemiT K1 CPU cluster clocks (PLL tree included) and P1
 PMIC bucks (regulators over an I2C transport, not MMIO). Every clock, reset, rail, pin-mux and power-domain change is
 committed to an effect sink before the register write. no_std, no allocator,
