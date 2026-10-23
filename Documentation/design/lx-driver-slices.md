@@ -65,7 +65,7 @@ Source: `crates/core/sched/src/process.rs` (`USER_STACK_TOP`), `crates/core/sysc
 
 ### 2. A virtual interrupt flag
 
-An interrupt reaches a server only as a notification its loop passes to `Env::run_irq`, between tasks. Module code is never interrupted by a Linux handler. "Interrupts disabled" is therefore the server's own state, and `lx/emul` keeps it:
+An interrupt reaches a server only as a notification its loop passes to `Env::deliver_irq`, between tasks. Module code is never interrupted by a Linux handler. "Interrupts disabled" is therefore the server's own state, and `lx/emul` keeps it:
 
 - The imported `_raw_spin_lock_irqsave` family raises an atomic depth and returns a flags word, and the matching restore lowers the depth again. Inside that depth a sleeping call is refused and counted, as in any other atomic context. This covers all three ISAs.
 - The inline riscv64 sites are rewritten by the loader in `Module::load`, after the copy and before any relocation. This runs in ring 3, before `DOMAIN_MODULE_MAP_X`. The rewrites:
@@ -109,7 +109,7 @@ Source: `tools/lx_license_lint.py` (T1 to T5, A1).
 1. **lx-module-window** (kernel, three ISAs): the Kconfig window, the fixed no-replace flag on `SYS_MO_MAP` for Linux class servers, the break kept out of the window, and the window check in `DOMAIN_MODULE_MAP_X`. Host tests in `tests/host/syscall-tests`, each with a canary.
 2. **lx-insn-rewrite** (`crates/core/lx-loader`, ring 3): the riscv64 `sstatus` rewrites and the aarch64 `SP_EL0`/`TPIDR_EL1`/`TPIDR_EL2` rewrites, with a refusal for anything else privileged. Host tests in `tests/host/lx-loader-tests` over the built filesystem set: no privileged instruction is left, and the canary is a module with one other CSR.
 3. **lx-tpidr-el0** (kernel, aarch64): `TPIDR_EL0` saved and restored per task for the slots whose topology row names an `lx_class`, not only for Linux-personality tasks. Tested with a ktest whose canary keeps only the Linux-personality slots.
-4. **lx-virtual-irq** (`lx/emul`): the `irqsave` family over an atomic depth, with sleeping inside it refused and counted.
+4. **lx-virtual-irq** (`lx/emul`): `request_irq`, `request_threaded_irq`, `free_irq`, `enable_irq` and `disable_irq` over the kernel's mask-until-ACK line, with thread functions on their own tasks. The `irqsave` family over the emulated interrupt flag, with sleeping inside it refused and counted, was already in `lx/emul/src/lock.rs`; the exported `_raw_spin_lock_irqsave` symbols are the ext4 slice's.
 5. **lx-percpu-single** (`lx/emul`, `lxsrv`): the per-CPU and `current` symbols, written at each task switch on all three ISAs.
 6. **ext4-lx-slice** itself: the symbols `lx/FS_EXT4_UNRESOLVED` lists, over fronts 1 to 5.
 7. **Deferred until a multi-threaded server exists:** the x86_64 per-thread user GS base and the aarch64 per-thread `TPIDRRO_EL0`.

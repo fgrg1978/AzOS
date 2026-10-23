@@ -35,6 +35,7 @@
 
 pub mod device;
 pub mod errno;
+pub mod irq;
 pub mod kref;
 pub mod lock;
 pub mod mem;

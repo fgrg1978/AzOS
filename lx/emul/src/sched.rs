@@ -22,7 +22,8 @@
 //! deadline [`Env::run_once`] returns (`SYS_PORT_WAIT` with a deadline; no
 //! kernel mechanism beyond that), or until a message arrives. An interrupt
 //! arrives as a port notification and the server hands it to
-//! [`Env::run_irq`]; whatever the handler wakes runs in the next pass.
+//! [`Env::deliver_irq`] (see [`crate::irq`]); whatever the handler wakes runs
+//! in the next pass.
 //!
 //! # Stacks
 //!
@@ -47,7 +48,8 @@
 //!
 //! # One pass
 //!
-//! [`Env::run_once`] runs, in order: expired timers (softirq context), the
+//! [`Env::run_once`] runs, in order: the interrupt handlers an `enable_irq`
+//! left to replay (hard-interrupt context), expired timers (softirq context), the
 //! tasks that were runnable when the timers finished (in the order they
 //! became runnable: woken, timed out or yielded), then the RCU quiescent
 //! point. A task woken or re-queued during the pass runs in the next one,
@@ -66,6 +68,7 @@
 //! pool).
 
 use crate::device::{self, DevError, DeviceHandle, DeviceInfo, DeviceModel, Driver, DriverHandle};
+use crate::irq::IrqLines;
 use crate::lock::{Completion, IrqState, LockError, Mutex, Semaphore, TaskId, WaitQueueHead};
 use crate::printk::Printk;
 use crate::rcu::{self, Rcu, RcuError, RcuFn};
@@ -269,7 +272,7 @@ impl<C, const N: usize> RunQueue<C, N> {
     }
 
     /// Wake up to `n` tasks blocked on `chan`, longest-waiting first.
-    fn wake_chan(&mut self, chan: usize, n: usize) -> usize {
+    pub(crate) fn wake_chan(&mut self, chan: usize, n: usize) -> usize {
         let mut woken = 0;
         while woken < n {
             let Some(i) = self.first_waiter(chan) else { break };
@@ -290,6 +293,17 @@ impl<C, const N: usize> RunQueue<C, N> {
             }
             TaskState::Running => core::mem::replace(&mut self.slots[i].sleeping, false),
             TaskState::Runnable | TaskState::Exited(_) => false,
+        }
+    }
+
+    /// Ask a task to stop without waiting for it (`kthread_should_stop`
+    /// turns true), and make it runnable so it sees the request.
+    pub(crate) fn request_stop(&mut self, id: TaskId) {
+        if let Some(i) = self.find(id) {
+            self.slots[i].should_stop = true;
+            if matches!(self.slots[i].state, TaskState::Waiting | TaskState::Sleeping(_)) {
+                self.make_runnable(i);
+            }
         }
     }
 
@@ -378,6 +392,8 @@ pub const DEVICE_SLOTS: usize = 32;
 pub const DRIVER_SLOTS: usize = 16;
 /// Distinct unimplemented symbols remembered.
 pub const DUMMY_SLOTS: usize = 64;
+/// Interrupt lines an [`Env`] binds over its life.
+pub const IRQ_SLOTS: usize = 16;
 
 /// Execution context of the code running now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -386,7 +402,7 @@ pub enum Context {
     Idle,
     /// A timer callback: atomic, must not sleep.
     Softirq,
-    /// An interrupt handler ([`Env::run_irq`]): atomic.
+    /// An interrupt handler ([`Env::deliver_irq`]): atomic.
     Hardirq,
     /// The workqueue worker.
     Work,
@@ -455,6 +471,8 @@ pub struct Env {
     pub clock: Clock,
     /// Emulated local interrupt flag.
     pub irq: IrqState,
+    /// Interrupt lines.
+    pub irqs: IrqLines<IRQ_SLOTS>,
     /// Timer list.
     pub timers: TimerList<Env, TIMER_SLOTS>,
     /// Work FIFO.
@@ -523,7 +541,7 @@ fn delayed_work_timer(env: &mut Env, t: TimerHandle) {
 }
 
 /// Channel of an object a task blocks on: its address.
-fn chan<T>(x: &T) -> usize {
+pub(crate) fn chan<T>(x: &T) -> usize {
     x as *const T as usize
 }
 
@@ -571,6 +589,7 @@ impl Env {
         Env {
             clock: Clock::new(),
             irq: IrqState::new(),
+            irqs: IrqLines::new(),
             timers: TimerList::new(),
             work: WorkQueue::new(),
             rcu: Rcu::new(),
@@ -721,6 +740,28 @@ impl Env {
         // Back from schedule() a task is TASK_RUNNING again.
         s.sleeping = false;
         self.switch_to_loop();
+    }
+
+    /// Park the running task on `chan` until a wake-up.
+    pub(crate) fn park(&mut self, chan: usize) {
+        let seq = self.tasks.take_seq();
+        self.block(chan, None, seq);
+    }
+
+    /// Block the running task on `chan` while `busy` holds; `WouldBlock`
+    /// (counted) outside a task.
+    pub(crate) fn wait_on(&mut self, chan: usize, busy: impl Fn(&Env) -> bool) -> Result<(), LockError> {
+        self.need_task()?;
+        let seq = self.tasks.take_seq();
+        while busy(self) {
+            self.block(chan, None, seq);
+        }
+        Ok(())
+    }
+
+    /// The id of the running task, `None` outside a task.
+    pub(crate) fn running_task(&self) -> Option<TaskId> {
+        self.current.map(|i| self.tasks.slots[i].id)
     }
 
     /// Stay runnable behind every task already runnable.
@@ -1220,16 +1261,17 @@ impl Env {
         }
     }
 
-    /// An interrupt delivered to the server as a port notification: run
-    /// `handler(env, data)` in hard-interrupt context. It may `complete`,
-    /// `wake_up` or queue work; the tasks it wakes run in the next pass.
-    pub fn run_irq(&mut self, handler: fn(&mut Env, usize), data: usize) {
-        assert!(self.current.is_none(), "run_irq called from a task");
+    /// Run an interrupt handler in hard-interrupt context. It may
+    /// `complete`, `wake_up` or queue work; the tasks it wakes run in the
+    /// next pass.
+    pub(crate) fn run_hardirq<R>(&mut self, handler: impl FnOnce(&mut Env) -> R) -> R {
+        assert!(self.current.is_none(), "an interrupt handler run from a task");
         self.context = Context::Hardirq;
-        handler(self, data);
+        let r = handler(self);
         self.context = Context::Idle;
         self.stats.irqs += 1;
         self.after_items();
+        r
     }
 
     /// One pass of the loop at monotonic time `now_ns`. Returns when the
@@ -1251,6 +1293,8 @@ impl Env {
         self.stats.passes += 1;
         self.clock.set_now_ns(now_ns);
         let now = self.clock.jiffies();
+
+        self.irq_replays();
 
         self.context = Context::Softirq;
         self.stats.timers_fired += timer::run_expired(self, timers, now) as u64;
@@ -1289,7 +1333,7 @@ impl Env {
         // Work queued and no worker yet: the next pass starts one, if it can.
         let worker_waits =
             self.work.queued() > 0 && self.tasks.find(WORKER_TASK).is_none() && self.tasks.has_free_stack();
-        if worker_waits || self.rcu.queued() > 0 || self.tasks.any_runnable() {
+        if worker_waits || self.rcu.queued() > 0 || self.tasks.any_runnable() || self.irq_replay_due() {
             return Some(now_ns);
         }
         let now = self.clock.jiffies();
@@ -1951,17 +1995,20 @@ mod tests {
             e.mutex_unlock(&o.m).unwrap();
             0
         }
-        fn irq(e: &mut Env, d: usize) {
+        fn irq(e: &mut Env, _: u32, d: usize) -> crate::irq::IrqReturn {
             assert!(e.in_hardirq() && e.in_atomic());
             assert_eq!(e.msleep(1), Err(LockError::Atomic));
             log(d as u64);
             e.complete(&objs().c);
+            crate::irq::IrqReturn::Handled
         }
         let mut e = env();
+        e.set_irq_chip(crate::irq::IrqChip { bind: |_, _| 0, ack: |_, _| {} });
+        assert_eq!(e.request_irq(5, irq, 0, "test", 9), 0);
         e.kthread_run(t1, 0).unwrap();
         e.kthread_run(t2, 0).unwrap();
         assert_eq!(e.run_once(0), None, "both parked");
-        e.run_irq(irq, 9);
+        e.deliver_irq(5);
         assert_eq!(e.run_once(MS), Some(MS), "T1 ran; T2 got the mutex, runs next pass");
         assert_eq!(e.run_once(MS), None);
         assert_eq!(take_log(), vec![9, 1, 2]);

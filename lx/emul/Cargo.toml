@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The lx_emul base that emulates the Linux kernel core APIs (allocator, locks, timers, workqueues, RCU, printk, device model, kref, symbol table, stackful cooperative tasks) for the single-threaded lxsrv driver server. no_std, no heap; host-tested."
+description = "The lx_emul base that emulates the Linux kernel core APIs (allocator, locks, timers, workqueues, RCU, printk, device model, kref, symbol table, stackful cooperative tasks, interrupt lines and irq threads) for the single-threaded lxsrv driver server. no_std, no heap; host-tested."
 
 # Run with:  cd lx/emul && cargo test --release
 

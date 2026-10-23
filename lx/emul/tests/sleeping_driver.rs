@@ -17,14 +17,16 @@
 //!   `usleep_range`, reads the chip id and queues the stream-on work;
 //! * the work item `msleep`s for the PLL to lock, then waits with
 //!   `wait_event_timeout` for the first frame interrupt;
-//! * the interrupt arrives as a port notification (here: the loop below)
-//!   and the handler runs in hard-interrupt context through `run_irq`;
+//! * the frame interrupt (the CSI-2 receiver's, requested by the probe with
+//!   `request_irq`) arrives as a port notification (here: the loop below)
+//!   and the handler runs in hard-interrupt context through `deliver_irq`;
 //! * a kernel thread polls a status register with `msleep` until
 //!   `kthread_stop`, which the module exit calls from a task.
 //!
 //! The loop at the bottom is the server's: block until the deadline
 //! `run_once` returns or until a notification arrives, whichever is first.
 
+use lx_emul::irq::{IrqChip, IrqReturn, IRQF_TRIGGER_RISING};
 use lx_emul::lock::{Mutex, WaitQueueHead};
 use lx_emul::device::{DeviceHandle, DeviceInfo, Driver};
 use lx_emul::lock::TaskId;
@@ -40,6 +42,8 @@ const XCLR_DELAY_US: u64 = 6_200;
 const CHIP_ID: u16 = 0x0219;
 /// When the sensor delivers its first frame (port notification).
 const FRAME_IRQ_AT: u64 = 40 * MS;
+/// The frame interrupt's Linux irq number (the server's event key).
+const FRAME_IRQ: u32 = 7;
 
 /// The sensor's state and what the test observes, one per test thread.
 struct Sensor {
@@ -103,6 +107,7 @@ fn probe(env: &mut Env, _dev: DeviceHandle) -> i32 {
         return -lx_emul::errno::ENODEV;
     }
     event("probed");
+    assert_eq!(env.request_irq(FRAME_IRQ, frame_irq, IRQF_TRIGGER_RISING, "csi-frame", 1), 0);
     let w = env.init_work(stream_on, 0).unwrap();
     s.stream_work.set(Some(w));
     env.queue_work(w).unwrap();
@@ -130,10 +135,11 @@ fn poll_status(env: &mut Env, _: usize) -> i32 {
     7
 }
 
-fn frame_irq(env: &mut Env, _: usize) {
+fn frame_irq(env: &mut Env, _: u32, _: usize) -> IrqReturn {
     let s = sensor();
     s.frame_done.set(true);
     env.wake_up(&s.frame_wq);
+    IrqReturn::Handled
 }
 
 fn module_init(env: &mut Env, _: usize) -> i32 {
@@ -150,6 +156,7 @@ fn module_exit(env: &mut Env, _: usize) -> i32 {
     let id = sensor().poller.get().unwrap();
     let code = env.kthread_stop(id).unwrap();
     assert_eq!(code, 7);
+    assert_eq!(env.free_irq(FRAME_IRQ, 1), Some("csi-frame"));
     event("exit done");
     0
 }
@@ -167,7 +174,7 @@ fn run_until_idle(env: &mut Env, irq_at: &mut Option<u64>, until: u64) {
                 *irq_at = None;
                 t = at;
                 NOW.with(|n| n.set(t));
-                env.run_irq(frame_irq, 0);
+                env.deliver_irq(FRAME_IRQ);
             }
             (Some(d), _) if d < until => t = d.max(t),
             _ => break,
@@ -184,6 +191,8 @@ fn a_sensor_driver_that_sleeps_probes_streams_and_unloads() {
         unsafe { env.add_stack(s.as_mut_ptr(), s.len()).unwrap() };
     }
     env.clock.set_source(now);
+    // The server's chip: DEVICE_IRQ_BIND and DEVICE_IRQ_ACK on the line.
+    env.set_irq_chip(IrqChip { bind: |_, _| 0, ack: |_, _| {} });
     env.kthread_run(module_init, 0).unwrap();
     let mut irq = Some(FRAME_IRQ_AT);
     run_until_idle(&mut env, &mut irq, 100 * MS);
@@ -204,6 +213,7 @@ fn a_sensor_driver_that_sleeps_probes_streams_and_unloads() {
     let st = env.stats();
     assert_eq!((st.would_block, st.atomic_sleeps, st.irq_leaks, st.stack_overflows), (0, 0, 0, 0));
     assert_eq!(st.irqs, 1);
+    assert_eq!(env.irqs.stats().acks, 1);
     assert_eq!(env.tasks.count(), 1, "only the parked worker is left");
     drop(env);
     drop(stacks);
