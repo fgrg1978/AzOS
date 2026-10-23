@@ -2468,6 +2468,27 @@ kq() {
     qemu_run "$@"
 }
 
+# dry_boot_row <label> <smp> <boot marker>: boot the `deadline-hart-canary` kernel on
+# <smp> harts, keep its console, and hold `make sim` (tools/azos_sim) of the
+# same .config and features on <smp> CPUs to it (`--check-log`). Rows
+# "topology: dry boot on N hart(s)".
+dry_boot_row() {
+    local label="$1" smp="$2" marker="$3" feats="qemu,deadline-hart-canary" slug log base out
+    kbuild "$feats" || return
+    QEMU_KEEP_LOG=1 QEMU_FAIL_RE='\[FATAL\]' qemu_run "$label" "$marker" 60 -smp "$smp"
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"
+    printf "  %-26s" "${label}: records..."
+    if [ ! -f "$log" ]; then bad; echo "      no boot log to compare with (the boot above did not pass)"; return; fi
+    base="$(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --base "$KCONFIG_CONFIG" | sed -n 's/.*--features \([^ ]*\).*/\1/p')"
+    if out="$(cd "$REPO_ROOT" && make -s sim SIM_DEFCONFIG="$KCONFIG_CONFIG" SIM_CPUS="$smp" \
+            SIM_FEATURES="${base:+$base,}$feats" SIM_ARGS="--check-log $log" 2>&1)"; then
+        ok; rm -f "$log"
+    else
+        bad; echo "$out" | grep -E "check-log|^error" | sed 's/^/      /'; echo "      boot log kept: $log"
+    fi
+}
+
 # ── The console answers a command (shell input path) ─────────────────────────
 #
 # Every other row only reads what the kernel prints. This one TYPES: it boots,
@@ -10526,12 +10547,13 @@ done
 # requires exactly the named test to fail: if it passes, the test above
 # proves nothing. vdso-write-canary: mprotect(RW) makes the shared vDSO frame
 # writable (syscall-tests mmap_guards).
-host_canary_row() { # <label> <suite> <feature> <test fn>
-    local label="$1" suite="$2" feat="$3" test="$4" out
+host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <feature> <test fn>
+    local label="$1" suite="$2" feat="$3" test="$4" out dir
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
-    CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/${suite}" \
-        host_cargo out "${REPO_ROOT}/tests/host/${suite}" test --release --features "$feat" -- "$test"
+    case "$suite" in */*) dir="${REPO_ROOT}/${suite}" ;; *) dir="${REPO_ROOT}/tests/host/${suite}" ;; esac
+    CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/$(printf '%s' "$suite" | tr '/' '-')" \
+        host_cargo out "$dir" test --release --features "$feat" -- "$test"
     if echo "$out" | qgrep -qE "(test |::)${test} \.\.\. FAILED" \
        && echo "$out" | qgrep -qE "test result: FAILED\. 0 passed; 1 failed"; then
         ok; echo "$out" | grep -m1 -A1 "panicked at" | sed -n 2p | cut -c1-200 | sed 's/^/      canary caught: /'
@@ -10543,6 +10565,12 @@ host_canary_row() { # <label> <suite> <feature> <test fn>
 host_job host_canary_row "tls: no pin canary" tls-tests canary-no-pin a_pin_mismatch_is_refused
 host_job host_canary_row "tls: no validity canary" tls-tests canary-no-validity an_expired_certificate_is_refused
 host_job host_canary_row "tls: rsa key canary" tls-tests canary-rsa-keys the_server_refuses_an_rsa_private_key
+# The host dry boot (tools/azos_sim, `make sim`): its suite, and its canary
+# (`sim-cpu-canary`: it admits on one CPU more than it was given), under which
+# the named test, alone, must go red. Its QEMU rows are "topology: dry boot on
+# N hart(s)".
+host_job test_host azos-sim "${REPO_ROOT}/tools/azos_sim"
+host_job host_canary_row "azos-sim: cpu count canary" tools/azos_sim sim-cpu-canary two_cpus_place_both_rows_and_one_refuses
 # The compositor's pixel engine (userspace/lib/compose): each canary plants one bug
 # in the engine and the named test, alone, must go red.
 host_job host_canary_row "compose: damage drop canary" compose-tests canary-damage-drop damage_always_covers_everything_added
@@ -12186,6 +12214,22 @@ else
     # is replaced only to drop nothing else it guards.
     QEMU_FAIL_RE='\[FATAL\]|Deadline admission: [0-9]+ real-time' \
         par "topology: deadlines need real harts" kq "qemu,deadline-hart-canary" "topology: deadlines need real harts" "Deadline admission REFUSED on 1 CPU(s)" 60 -smp 1
+
+    # ── The host dry boot against the boot it replays ───────────────────
+    #
+    # `tools/azos_sim` (`make sim`) admits a topology through the functions the
+    # kernel's boot admission calls (`azos_topology::boot_admission`) and prints
+    # the decision records the boot would write. These rows hold it to a real
+    # boot: the kernel of the row above (a profiled row pinned to CPU 3) on four
+    # harts, which admits it, and on one, which halts. The dry boot of the same
+    # .config and kernel features on the same CPU count must show the same
+    # install verdict, records and refusal (`azos_sim --check-log`), so a dry
+    # boot that drifts from the boot (another row set, another CPU count, its
+    # own arithmetic) is caught here rather than trusted. Canary: the dry boot
+    # built with SIM_EXTRA_FEATURES=sim-cpu-canary in the environment (it admits
+    # on one CPU more) turns both rows red.
+    par "topology: dry boot on 4 harts" dry_boot_row "topology: dry boot on 4 harts" 4 "named endpoint(s) declared"
+    par "topology: dry boot on 1 hart" dry_boot_row "topology: dry boot on 1 hart" 1 "Deadline admission REFUSED on 1 CPU(s)"
 
 
     # ── Secure boot: all three verdicts, against a pinned TEST key ──────

@@ -91,3 +91,43 @@ doc:
 	rm -rf "$(AZOS_OUT)/doc"; \
 	cp -R "$(DOC_TARGET_DIR)/$$triple/doc" "$(AZOS_OUT)/doc"; \
 	echo "[DOC] $(AZOS_OUT)/doc/azos_abi/index.html"
+
+# ── Host dry boot of a topology (tools/azos_sim) ────────────────────────────
+#
+#   make sim SIM_DEFCONFIG=config/defconfigs/robot-edge.config SIM_CPUS=4
+#   make sim SIM_DEFCONFIG=... SIM_TOPOLOGY=$(AZOS_OUT)/build/topo/riscv64
+#
+# Replays the kernel's boot admission of a topology on the host, through the
+# functions the kernel calls (azos_topology::boot_admission), and prints the
+# decision records the boot would write, the rows it would refuse and the
+# `*.ELF` rows with no filter row. Like the emitter (`make topology-files`),
+# the build takes the expanded defconfig as KCONFIG_CONFIG and the
+# azos_topology features the kernel's features turn on, plus the ISA's
+# `emit-target-*`.
+#
+#   SIM_DEFCONFIG  the defconfig (default config/defconfigs/qemu.config)
+#   SIM_TOPOLOGY   `builtin` (default) or a directory with CAPS.TOM + SCHED.TOM
+#   SIM_CPUS       the board's CPU count or QEMU's -smp (default NR_CPUS, a ceiling)
+#   SIM_FEATURES   the kernel's features (default: those `make` builds that
+#                  defconfig's kernel with, tools/kconfig_to_cargo.py)
+#   SIM_EXTRA_FEATURES  azos_sim's own cargo features (the gate canary
+#                  `sim-cpu-canary`)
+#   SIM_ARGS       more azos_sim arguments (`--check-log <boot log>`: hold the
+#                  dry boot to a real boot's console, SIM_CPUS = its -smp)
+SIM_DEFCONFIG ?= config/defconfigs/qemu.config
+SIM_TOPOLOGY ?= builtin
+SIM_CPUS ?=
+SIM_ARGS ?=
+SIM_EXTRA_FEATURES ?=
+SIM_KCONFIG = $(OUT_BUILD)/sim/$(notdir $(SIM_DEFCONFIG))
+SIM_FEATURES ?= $$(python3 tools/kconfig_to_cargo.py "$(SIM_KCONFIG)" | sed -n 's/.*--features \([^ ]*\).*/\1/p')
+.PHONY: sim
+sim: | $(IMAGE_HASHES)
+	@mkdir -p $(OUT_BUILD)/sim
+	@cp "$(SIM_DEFCONFIG)" "$(SIM_KCONFIG)" && KCONFIG_CONFIG="$(SIM_KCONFIG)" python3 -m olddefconfig >/dev/null
+	@isa=$$(sed -nE 's/^CONFIG_ARCH_(RISCV64|AARCH64|X86_64)=y$$/\1/p' "$(SIM_KCONFIG)" | tr A-Z a-z); \
+	test -n "$$isa" || { echo "[SIM] $(SIM_KCONFIG): no CONFIG_ARCH_*"; exit 2; }; \
+	feats="emit-target-$$isa $(call topo_features,$(SIM_FEATURES)) $(SIM_EXTRA_FEATURES)"; \
+	echo "[SIM] $(SIM_DEFCONFIG) ($$isa), kernel features $(SIM_FEATURES)"; \
+	cd tools/azos_sim && KCONFIG_CONFIG="$(abspath $(SIM_KCONFIG))" CARGO_TARGET_DIR="$(OUT_TGT)/tools/azos_sim" \
+		$(CARGO) run -q --release --features "$$feats" -- $(if $(SIM_CPUS),--cpus $(SIM_CPUS)) $(SIM_ARGS) "$(SIM_TOPOLOGY)"

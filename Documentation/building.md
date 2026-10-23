@@ -95,6 +95,7 @@ Other targets:
 | `make build-fleet` | The Fleet-profile kernel and its board volume |
 | `make azos-guest ARCH=riscv64\|aarch64` | The hypervisor kernel, a guest kernel and the host volume that carries it; `tools/run_guest.sh <isa>` boots it |
 | `make topology-files` | The signed capability topology files for both ISAs |
+| `make sim SIM_DEFCONFIG=<defconfig> SIM_CPUS=<n>` | The host dry boot of a topology: the records its boot admission would write, without a QEMU ([static-topology.md](design/static-topology.md)) |
 | `make make-gguf` | The policy file |
 | `make qemu-systest` | The system-call test program in ring 3 |
 | `make qemu-dhcp-smoke`, `qemu-net-pair` | Network smoke runs |

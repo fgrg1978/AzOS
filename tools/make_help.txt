@@ -82,6 +82,7 @@ Release & OTA
   $AZOS_OUT/build/disk-badsig.img  Same, with one bit of the signature flipped.
   $AZOS_OUT/build/disk-sh-signed.img  The shell volume (installer, pkg, ota) with a signed slot A.
   topology-files         Write the signed capability topology files for both ISAs.
+  sim                    Dry-boot a topology on the host (SIM_DEFCONFIG=, SIM_TOPOLOGY=, SIM_CPUS=).
   ota-send               Send firmware to a robot over TCP (ROBOT=, PORT=, PLATFORM=, FW_VER=).
   tftp-serve             Serve the firmware image over TFTP (TFTP_PORT=, default 6969).
   boot-scr               Generate the U-Boot A/B slot-selection script.

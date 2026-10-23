@@ -895,6 +895,23 @@ with an error unless the result equals the built-in topology field by field.
 writes the device record and the counter floor sector that the binding keys
 are checked against.
 
+### The host dry boot
+
+`make sim SIM_DEFCONFIG=<defconfig> [SIM_TOPOLOGY=builtin|<dir>] [SIM_CPUS=<n>]`
+builds `tools/azos_sim` the way the emitter is built (the expanded defconfig,
+the topology features of that defconfig's kernel, the ISA's `emit-target-*`)
+and replays the boot admission of the built-in topology, or of a
+`CAPS.TOM`/`SCHED.TOM` pair, on `<n>` CPUs. It calls the functions the kernel
+calls (`azos_topology::boot_admission`: the install-time records, the deadline
+and band step and its `DeadlineAdmission`/`RtBandCap` records, the huge-leaf
+check) and prints the records as `why list` does, the rows placed and each
+CPU's load, the refusal, and each `*.ELF` row whose image has no filter row in
+the build's table (an exec of it is refused). It does not replay memory
+admission (the free pages are the board's), the signature and binding of a
+pair, or a critical chain's slack (no row declares per-hop timing). The gate
+rows "topology: dry boot on N hart(s)" boot a kernel and hold the dry boot of
+the same configuration to its console (`azos_sim --check-log`).
+
 Source: `crates/core/topology/src/emit.rs`,
 `tests/host/topology-tests/src/bin/topo_emit.rs`, `mk/images.mk`,
 `tools/gen_config_sig.py`, `tools/device_provision.py`.

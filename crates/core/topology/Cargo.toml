@@ -49,9 +49,10 @@ energy-fake-balanced = ["energy-fake-model"]
 # `kernel/Cargo.toml` wires it to `qemu` and to nothing else; the host test
 # crates and the QEMU build of the ML service turn it on themselves.
 dev-key = []
-# The host emitter (`tests/host/topology-tests/src/bin/topo_emit.rs`) writes
-# the CAPS.TOM a kernel of ONE ISA builds: these select the rows `builder.rs`
-# compiles only into a kernel (`topo_bare`, `topo_arch_*` in `build.rs`).
+# The host emitter (`tests/host/topology-tests/src/bin/topo_emit.rs`) writes,
+# and the host dry boot (`tools/azos_sim`) admits, the topology a kernel of ONE
+# ISA builds: these select the rows `builder.rs` compiles only into a kernel
+# (`topo_bare`, `topo_arch_*` in `build.rs`; x86_64 has only the bare rows).
 # Never set by a kernel build, which gets the same cfgs from its target.
 # Canary of the gate's tampered-topology rows: `signed::fill_signed` skips
 # both signature checks, so a tampered CAPS.TOM that still parses is
