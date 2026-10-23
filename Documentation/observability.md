@@ -13,6 +13,8 @@ mechanisms, from "why was this refused" to "what was every CPU doing":
 | Trace | What happened, in order, on each CPU? | `tracectl stream` |
 | Kernel log | What is the kernel saying right now? | The console, and `KLOGn.TXT` (`log`) |
 | Flight recorder | What durable events and refusals preceded a reset? | `/LOG/LOGnnnnn.BIN` |
+| Lockdep | Which lock order, interrupt-safety or hold-time rule did the kernel break? | The console |
+| Fault injection | Does the kernel survive an allocation, IPC, timer or disk fault? | `chaos/` in the inspect tree |
 
 Most of these are compile-time options (Kconfig symbols are named in each
 section); a mechanism that is off is not linked. The authority model that decides
@@ -77,10 +79,10 @@ fields are filled:
 | Field | State |
 |-------|-------|
 | `rule`, `verdict`, `subject`, `n[3]`, `seq`, `clock_ns` | Filled by every record |
-| `topology_row_id` | 0 where no row is known |
+| `topology_row_id` | Filled by `placement` (the row's index plus one); 0 otherwise |
 | `cap_slot`, `parent_cap`, `node_id`, `session_id`, `image_hash_prefix` | Part of the layout; no call site has the value, so they read 0 (the kernel keeps no image hash per task) |
 
-**Rules.** `Rule` has 64 variants (numbers 0 to 63); the first three numbers are
+**Rules.** `Rule` has 66 variants (numbers 0 to 65); the first three numbers are
 what `RuleInfo::fields` names.
 
 | Id | Name | Subject | Numbers | Records |
@@ -158,19 +160,20 @@ what `RuleInfo::fields` names.
 **Reading them.**
 
 - The introspection tree's admin region holds the newest 24 records whole and
-  binary (`decisions/records/<n>`, `ProvenanceRecord::to_bytes`, oldest first:
-  the ring, or the durable journal), rebuilt at every refresh; the public
-  region has the counts (`decisions/{recorded, deny_dropped}`). The admin
+  binary (`decisions/records/<n>`, `ProvenanceRecord::to_bytes`, record `id` in
+  slot `id % 24`: from the ring, or the durable journal), each written where it
+  is recorded (`azos_decision::set_view_sink`); the public region has the counts
+  (`decisions/{recorded, deny_dropped}`). The admin
   region is the one that may name a task, and a record's subject may be one.
 - `DECISD.ELF` serves the `Decisions` object (`userspace/lib/decisions`) over the
   `endpoint.decisions` endpoint to any row holding a call capability (`WRITE`) on
   it. `query` lists ids matching a `Filter` (rule, verdict, subject, an
   exclusive `after` id) a page at a time; `get` returns one record in two parts
   (a reply holds seven words and a record is thirteen), re-asked if the slot was
-  rewritten in between. On each request the server waits for the refresh that
-  began after it (at most two periods) and reads the records again, so a
-  request sees every decision made before it. No text is parsed on either
-  side.
+  rewritten in between. On each request the server reads the records again;
+  the kernel writes a record into the region before its caller goes on, so a
+  request sees every decision made before it without waiting for a refresh. No
+  text is parsed on either side.
 - `WHY.ELF` is the client:
 
 ```text
@@ -211,9 +214,9 @@ it with loads: no syscall, no copy, no lock.
 | Admin (`Class::Admin`) | A task that also holds the full task view | Subtrees that name other tasks: the task list, the wake log, the decision records |
 | A view (`inspect.names`, `.rpc`, `.mcp`, `.components`, `.logins`, `.clock`) | Only the rows that declare it | The signed topology's wiring one service needs (`kernel/src/boot/inspect_views.rs`) |
 
-There is no `/proc` and no `/sys`: these regions are the kernel's only
-read-out. A Linux binary's `/proc` is the Linux runtime's
-(`userspace/lib/linux_rt`, ring 3), and today it answers `/proc/self/exe`.
+There is no `/proc` and no `/sys`: apart from the log and trace rings, these
+regions are the kernel's only read-out of its state. A Linux binary's `/proc` is the Linux runtime's
+(`userspace/lib/linux_rt`, ring 3), and it answers only `/proc/self/exe`.
 
 The admin region is not a flag on public nodes, so a reader of the public one has
 nothing to be refused. A task finds the capability with the capability lookup
@@ -308,6 +311,8 @@ metrics/energy/{gov/..., idle/..., domains/dN/opp}          (energy model)
 metrics/net/{packet/{delivered, dropped}, rx_drops/.., arp_txq/.., ethN/{mtu, attached, configured}}
 metrics/memory/{zones/.., zpool/..}
 metrics/decisions/{lost, unknown_rule, by_rule/<rule name>}
+metrics/syscalls/{unshown, dN/{domain, none, authority, block_wake}}   (DOMAIN_ENTRY_COUNTERS)
+metrics/storage/{written_bytes, unowned_bytes, unshown, dN/{domain, written_bytes}}
 metrics/sync/<site>/{expired, lost}                         (bounded sleeps)
 metrics/wake/{total, offered, now_us, unshown, sources, dN/{domain, wakes, per_s}, rN}   (WAKE_RING_ENTRIES)
 ```
@@ -320,6 +325,17 @@ a lower bound. The decision recorder keeps a ring and no per-rule count;
 `RuleTally` walks the records written since the previous refresh, and a record
 the ring overwrote before the walk got to it is counted in `decisions/lost`.
 `sched/migrations` is the count of the `wake-placement` rule.
+
+**`metrics/syscalls/` and `metrics/storage/`** are per-Domain groups, the one
+exception to "a counter never decreases". A group `dN` is bound to a Domain the
+first time a refresh finds it with kernel entries (or block writes) and keeps it
+until the Domain ends; its values are that Domain's and start again with the next
+one (`domain` names it); Domains past the `DOMAIN_GROUPS` (4) groups are counted
+in `unshown`. `syscalls/dN` counts the Domain's kernel entries by foundational
+case (`none`, a Linux task's number with no case; `authority`; `block_wake`).
+`storage/` is the write ledger (`azos_sched::domain::add_written`): the bytes of
+block writes the device completed, the device total (`written_bytes`), the part
+no live Domain owns (`unowned_bytes`), and each group's share.
 
 **`metrics/sync/`** is the lost-wake evidence. A sleep that waits for another
 task or a device (the block request layer's waiters, the FAT claims, the pager's
@@ -361,9 +377,10 @@ by the Domain's count, so a busy hand-off pays for the count and one test and th
 ring is not filled by it (`offered` counts the wakes the ring was offered; one
 that found its slot taken by another wake is offered and not logged, and leaves a
 gap in the `seq`s). The ring is
-lock-free: a ticket from one atomic add, four stores, the tag last; a reader
-drops an entry whose slot a later wake began to reuse, so it never gets a mixed
-one. A wake that finds its target not yet asleep is stamped, not delivered, and is
+lock-free: a ticket from one atomic add, a swap that takes the slot (a wake that
+arrives a lap late finds it taken and writes nothing), the stores, the tag last; a
+reader drops an entry whose slot a later wake began to reuse, so it never gets a
+mixed one. A wake that finds its target not yet asleep is stamped, not delivered, and is
 not a wake. `why woke [N]` (`WHY.ELF`, `userspace/services/why/src/woke.rs`)
 prints the last N logged wakes (source, the Domain woken, the CPU, the age; with
 the admin region in its row also the waker and the task woken, else a `(admin)`
@@ -389,8 +406,9 @@ dump; it keeps `/fat/CRASH.LOG` (next section).
 **Contents** (`AZCD`, version 1, little endian): the registers of the trap, a
 bounded window of the stack from the stack pointer up, the task's maps (runs of
 mapped pages with permissions; the executable run holding `pc` gives the image's
-load address, which turns `pc` into a symbol), the last decision records (why the
-kernel refused or denied what it did just before), the SHA-256 of the task's
+load address, which turns `pc` into a symbol), the last decision records whose
+subject is the task or its process (why the kernel refused or denied what it did
+just before), the SHA-256 of the task's
 image (the key the symbol file of that exact build is stored under), the task
 name, cause, CPU and tick count, and a CRC-32. The bounds are Kconfig
 (`CRASHDUMP_STACK_BYTES`, `CRASHDUMP_MAPS`, `CRASHDUMP_DECISIONS`). The layout
@@ -403,8 +421,8 @@ copying a page), the maps, the decision records and the image hash go into a
 slot of the crash ring (`CRASHDUMP_RING`). There is no I/O, no allocation and
 no lock but two capability and tree tables, so a faulting real-time task never
 waits on a device. First of all a 32-byte record (task, status) goes on the
-flight recorder's ring, queue only, which the flusher writes out and a reset
-does not lose.
+flight recorder's ring, queue only; once the log flusher has written it out, a
+reset does not lose it.
 
 **Off the fault path** (`drain`, a job of the log flusher task): the dump is
 written as `CRASHn.DMP` in the root of the first write tree the faulting domain
@@ -430,13 +448,17 @@ Source: `kernel/src/panic.rs`, `crates/fs/fs/src/crash_log.rs`,
   effort) and the log is replaced by just the new entry; the new entry is recorded
   even if the copy fails. The decision (`plan_rotation`) is a pure function of two
   sizes and a cap, so it runs on the host.
-- **pstore.** With `PSTORE_SIZE_KB` non-zero, the top of the RAM range the boot
+- **pstore.** With `PSTORE_SIZE_KB` non-zero (default 4 on QEMU, 0 on boards), the top of the RAM range the boot
   found is taken out of the page allocator and holds a panic record that survives a
   warm reboot. The panic handler writes it with no lock and no allocation (one
   atomic claim, so a second panicking hart cannot tear it). After `/fat` mounts,
   `recover` appends a valid record to `CRASH.LOG`, reports a damaged one, and
   clears the region. A contained panic (`PANIC_POLICY_CONTAIN`) stores a record
   that is cleared again once the file has the entry.
+- **Quiesce.** With `PANIC_QUIESCE` (default y) the reset path claims the console
+  and rings every other CPU to park, waiting at most `PANIC_STOP_WAIT_US`, before
+  it prints, so two reports never interleave; the report ends with
+  `[PANIC] other CPUs parked: n/m`.
 - **Backtrace.** With `PROFILER` on, the panic path and every fatal trap print the
   panicking CPU's own call chain with the profiler's walker (`prof::backtrace`);
   the addresses resolve with `addr2line -f -e <kernel ELF>`.
@@ -466,8 +488,9 @@ the walk and the sample says which (`Stop`). A function interrupted before its
 prologue or after its epilogue skips its caller. A kernel-mode sample is bounded
 by the interrupted stack pointer and the top of the running task's kernel stack
 (or this CPU's interrupt stack); a user sample by the user stack pointer and
-the stack's size. The build keeps a frame pointer in every function of the kernel
-and user images (`-C force-frame-pointers=yes`). The sampling rate is the
+the stack's size. With `PROFILER` on, the build keeps a frame pointer in every
+function of the kernel and user images (`-C force-frame-pointers=yes`,
+`tools/kconfig_to_cargo.py`). The sampling rate is the
 scheduler tick divided by `PROFILER_TICK_DIV`, exact only to the tick: code
 running with interrupts masked is sampled at the instruction that unmasks them.
 
@@ -489,7 +512,9 @@ The kernel event tracer keeps one lock-free single-producer, single-consumer
 ring per CPU in one kernel-owned shared-memory region, mapped read-only for a
 reader holding `Cap<Trace>`. Each CPU is the only producer of its ring; the
 ring-3 reader is the only consumer, so run one at a time. The producer rings no
-doorbell; the reader polls. Records are 32 bytes.
+doorbell; the reader polls. Records are 32 bytes; each ring holds
+`KTRACE_RING_ENTRIES` (a power of two), and `KTRACE_BOOT_MASK` is the mask
+recording from boot.
 
 **Classes** (`KTRACE_CLASS_*` compile them in; a runtime mask switches them):
 
@@ -514,8 +539,10 @@ per CPU, so that is its whole mutual exclusion), the CPU taken from `tp` /
 `TPIDR_EL1`, a timestamp (`KTRACE_TS_CYCLES`: cycle counter, else the timebase),
 and five stores into the record's own cache line. Interrupts are masked with the
 CSR or `DAIF` directly, not through `azos_arch`, so the tracer does not measure
-(or trace) itself. A full ring either overwrites or drops (`KTRACE_POLICY_OVERWRITE`, else drop);
-drops are counted per CPU.
+(or trace) itself. The CPU, clock and masking code exists for riscv64 and
+aarch64 only: an x86_64 kernel builds the host stub, which writes every record
+into ring 0 with timestamp 0 and masks nothing. A full ring either overwrites or
+drops (`KTRACE_POLICY_OVERWRITE`, else drop); drops are counted per CPU.
 
 **`tracectl`** is the reader. Its topology row is its whole authority: `Cap<Trace>`
 and a read-write `/fat` for a trace file. Without the capability it still asks, so
@@ -534,8 +561,16 @@ CLASSES: all | a comma list of sched,irq,syscall,ipc,fault,proc,lat,prof | 0xMAS
 key=value ...`) until `N` records or `MS` milliseconds, and puts the mask back as
 found. A change of the mask while it streams opens a segment, and the summary
 counts each segment's records per class, those of a masked class near a boundary
-("late") and past it ("outside", which must be 0). The latency tracer (`LAT_TRACE`)
-also publishes the introspection tree's `latency/`.
+("late") and past it ("outside", which must be 0).
+
+**Masked-window tracer** (Kconfig `LAT_TRACE`, kernel feature `lat-trace`;
+`kernel/src/lat_trace.rs`, `azos_arch_api::lat`). Hooks on every interrupt
+mask and unmask, preemption-counter transition and trap entry and exit time each
+window with interrupts or preemption off; a site is the `#[track_caller]`
+location that opened it. The longest window of each kind (with its CPU and its
+sites) and the sites with the longest windows are published in the introspection
+tree's `latency/`, and a new longest window is a `lat`-class
+trace record.
 
 **Perfetto.** `tools/perfetto_export.py` merges the flight recorder, the decision
 records and a kernel trace into one Chrome trace-event JSON that Perfetto loads, so
@@ -610,8 +645,8 @@ ring of files, `KLOGn.TXT`, under its `/fat` grant; `LOGD_FILE_KB`, `LOGD_FILES_
 system; the pstore and `/fat/CRASH.LOG` stay what they were, the record of a panic.
 
 **Console ownership** (`console_defer.rs`). Ring 3 can own the UART with
-interrupts on. A kernel line written meanwhile waits in a bounded buffer that the
-owner drains: a kernel writer that finds the console owned, or a residual waiting,
+interrupts on. A kernel line written meanwhile waits in a bounded buffer
+(`CONSOLE_DEFER_BYTES`) that the owner drains: a kernel writer that finds the console owned, or a residual waiting,
 appends to the buffer in order and returns, waiting for the owner only as long as
 one of the owner's lock holds. The owner writes its line with interrupts on, then
 drains what was deferred, chunk by chunk, each copied out under the lock and written
@@ -633,10 +668,13 @@ exceeds `LOG_FILE_ROTATE_BYTES`.
 | File header (16 bytes) | `RBL1`, version u16, reserved u16, open timestamp u64 |
 | Record (32 bytes) | timestamp u64, kind u8, flags u8, 2 bytes padding, 20-byte payload |
 
-A full ring evicts the oldest record, counted in `events_dropped`. Of the ring,
-`LOG_RING_SAFETY_RESERVE` slots are used only by safety records (an e-stop latch or
-release, the boot replay's restore record), so a safety record always finds a slot
-and nothing is evicted to make room. Real-time producers never wait: durable
+A full ring evicts the oldest record, counted in `events_dropped`, except a
+latching e-stop record not yet known durable or a committed write-ahead effect
+record, which are never evicted: then the new record is the one lost (and
+counted). Of the ring, `LOG_RING_SAFETY_RESERVE` slots are kept for safety
+records (an e-stop latch or release, the boot replay's restore record, the
+release nonce floor); a stop's record may use half of them. A safety record finds
+a slot without evicting anything until the reserve itself is full. Real-time producers never wait: durable
 entry points queue and wake the flusher instead of flushing in the caller. The
 recorder is where durable decision receipts, the per-fault crash record, safety
 violations and the e-stop log land.
@@ -646,3 +684,46 @@ carried is in the introspection tree (`system/`, `memory/`, `fs/`, `drivers/`,
 `devices/`, the admin task list, the views), the vDSO clock and
 `DOMAIN_UPTIME` (the uptime). A Linux binary's `/proc` is the Linux runtime's
 (`userspace/lib/linux_rt`, ring 3).
+
+## Lockdep
+
+Source: `crates/core/sync/src/lockdep.rs`, `kernel/src/lockdep_log.rs`, Kconfig
+choice `LOCKDEP_N` / `LOCKDEP_KTEST` / `LOCKDEP_Y` (the last two in development
+builds only), cargo feature `lockdep`.
+
+A lock's class is the site of its constructor (`#[track_caller]`). At each
+acquisition, from the first lock the boot CPU takes, the checker records the
+"A held, B taken" class pair in a fixed lock-free table (`LOCKDEP_EDGES`) and
+reports the inversion when B then A is already recorded (before the spin, so a
+real deadlock is reported rather than hung); it also reports taking a lock the
+holder already holds, a class taken both in interrupt context and with
+interrupts on (`LOCKDEP_IRQ_INFERENCE`), object-level and scope violations
+(`LOCKDEP_SCOPE_CHECKS`), a sleep or device wait with a spinlock held, and a lock
+held on return to user mode. Checked chains are cached (`LOCKDEP_CHAINS`).
+Every hold is timed per class (`LOCKDEP_HOLD_BUCKETS`); a spinlock held past
+`LOCK_MAX_HOLD_US` is a violation with `LOCKDEP_HOLD_ENFORCE`, a note without.
+A sleeping lock contended by real-time tasks on two CPUs is a note
+(`LOCKDEP_RT_CROSS_CPU`). Reports are queued once each (`LOCKDEP_REPORTS`) and
+never printed from a lock path: the ktest runner prints them and fails the
+running test; with `LOCKDEP_Y` outside ktest the log flusher task prints them
+(`lockdep_log::drain`). Notes fail nothing. Without the feature no lock carries
+a field or a call of it.
+
+## Fault injection
+
+Source: `crates/core/chaos/src/lib.rs`, Kconfig `CHAOS` (development builds,
+refused with `SECURE_BOOT_ENFORCED`), `CHAOS_SEED`, `CHAOS_TIMER_DELAY_US`,
+kernel feature `chaos`.
+
+A fixed set of named points fails the way the real fault would: `frame-alloc`
+(the frame allocator answers out of memory), `heap-alloc` (the kernel heap
+answers null; tests only, refused on the command line), `ipc-send` (a channel
+send is refused), `timer-wake` (sleepers are woken `CHAOS_TIMER_DELAY_US` late),
+`spurious-irq` (an IPI with no cause) and `disk-io` (a block read or write
+fails). A point is armed with a rate (one firing in `rate` calls) and an optional
+skip count, from a test or with `chaos=<name>:<rate>[,...]` on the kernel command
+line, which takes effect once boot init is done. Which calls fire follows a
+per-point generator seeded from `chaos_seed=` (default `CHAOS_SEED`), so a seed
+and a call order repeat the same failures. Each point's rate, calls checked and
+firings are in the introspection tree's `chaos/`. With the feature off every
+point is a constant `false`.
