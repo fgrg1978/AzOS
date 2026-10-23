@@ -52,12 +52,9 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use azos_devif::buzzer::ENDPOINT_NAME;
-use azos_devif::{BuzzerCall, BuzzerClient, BuzzerDirect, BuzzerPlaced, IdlResult, Out};
-use azos_drv_actuator::buzzer::KernelBuzzer;
 use azos_drv_sys::kprintln;
 use azos_drv_sys::timebase::{freq, now};
 use azos_sync::SpinLock;
-use azos_syscall::kcall::{self, KernelEndpoint};
 use azos_topology::placement::{Decision, Elastic, Host, Policy, Receipt};
 
 /// The kernel host task's name, and its supervisor entry's.
@@ -82,9 +79,6 @@ static PROMOTE: SpinLock<Option<Receipt>> = SpinLock::new(None);
 /// The kernel host died: the supervisor task asks the controller what to do.
 static FAULTED: AtomicBool = AtomicBool::new(false);
 
-/// How long a caller waits for a move to finish before it gives up on its
-/// call.
-const MOVE_WAIT_MS: u64 = 500;
 /// How long a move waits for the calls in flight to finish.
 const QUIESCE_MS: u64 = 2_000;
 /// How long a move waits for the host it starts to be serving.
@@ -152,107 +146,136 @@ pub(crate) fn driver_tid() -> Option<u32> {
 }
 
 // ── The callers ─────────────────────────────────────────────────────────────
+//
+// The plays: the robot domain's (behavior, sensors) and the driver smokes'.
+// An image with neither still places, restarts and moves the driver (the
+// sections below); the kernel just never calls it.
 
-type Stub = BuzzerPlaced<KernelBuzzer, KernelEndpoint>;
+#[cfg(any(feature = "use-robot", feature = "ring3-drv-smoke", feature = "drv-contain-smoke",
+          feature = "supall-smoke", feature = "restart-smoke"))]
+pub(crate) use callers::*;
 
-/// Register a call and find its host. A move waits for the calls in flight
-/// (they were counted before the host was read), and a call that finds a move
-/// under way waits for it, bounded, if its context may block. The count and the
-/// host read here, and the host store and count read of a move, are a
-/// store-then-load handshake (Dekker): all four are `SeqCst`, or each side could
-/// miss the other (store buffering on x86, a release store reordered after an
-/// acquire load on riscv64).
-fn enter() -> Option<Host> {
-    let give_up = now() + MOVE_WAIT_MS * ticks_per_ms();
-    loop {
-        INFLIGHT.fetch_add(1, Ordering::SeqCst);
-        match HOST.load(Ordering::SeqCst) {
-            IN_KERNEL => return Some(Host::Kernel),
-            IN_RING3 => return Some(Host::Ring3),
-            MOVING if azos_sync::preempt::may_block() && now() < give_up => {
-                INFLIGHT.fetch_sub(1, Ordering::AcqRel);
-                sleep_ms(1);
-            }
-            _ => {
-                INFLIGHT.fetch_sub(1, Ordering::AcqRel);
-                return None;
+#[cfg(any(feature = "use-robot", feature = "ring3-drv-smoke", feature = "drv-contain-smoke",
+          feature = "supall-smoke", feature = "restart-smoke"))]
+mod callers {
+    use core::sync::atomic::Ordering;
+
+    use azos_devif::buzzer::ENDPOINT_NAME;
+    use azos_devif::{BuzzerCall, BuzzerClient, BuzzerDirect, BuzzerPlaced, IdlResult, Out};
+    use azos_drv_actuator::buzzer::KernelBuzzer;
+    use azos_drv_sys::timebase::{freq, now};
+    use azos_syscall::kcall::{self, KernelEndpoint};
+    use azos_topology::placement::{Decision, Host};
+
+    use super::{now_ns, sleep_ms, ticks_per_ms, HOST, INFLIGHT, IN_KERNEL, IN_RING3, MOVING, PLACEMENT, PROMOTE};
+
+    /// How long a caller waits for a move to finish before it gives up on its
+    /// call.
+    const MOVE_WAIT_MS: u64 = 500;
+
+    type Stub = BuzzerPlaced<KernelBuzzer, KernelEndpoint>;
+
+    /// Register a call and find its host. A move waits for the calls in flight
+    /// (they were counted before the host was read), and a call that finds a move
+    /// under way waits for it, bounded, if its context may block. The count and the
+    /// host read here, and the host store and count read of a move, are a
+    /// store-then-load handshake (Dekker): all four are `SeqCst`, or each side could
+    /// miss the other (store buffering on x86, a release store reordered after an
+    /// acquire load on riscv64).
+    fn enter() -> Option<Host> {
+        let give_up = now() + MOVE_WAIT_MS * ticks_per_ms();
+        loop {
+            INFLIGHT.fetch_add(1, Ordering::SeqCst);
+            match HOST.load(Ordering::SeqCst) {
+                IN_KERNEL => return Some(Host::Kernel),
+                IN_RING3 => return Some(Host::Ring3),
+                MOVING if azos_sync::preempt::may_block() && now() < give_up => {
+                    INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+                    sleep_ms(1);
+                }
+                _ => {
+                    INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+                    return None;
+                }
             }
         }
     }
-}
 
-fn leave() {
-    INFLIGHT.fetch_sub(1, Ordering::AcqRel);
-}
-
-/// One call to the driver, wherever it runs. `true` when it answered and the
-/// op was served. A call that reached the interface is timed and reported to
-/// the controller.
-fn call(f: impl FnOnce(&mut Stub) -> IdlResult<Out<()>>) -> bool {
-    let Some(host) = enter() else { return false };
-    let mut stub: Stub = match host {
-        Host::Kernel => BuzzerPlaced::Direct(BuzzerDirect(KernelBuzzer)),
-        Host::Ring3 => match kcall::endpoint_handle(ENDPOINT_NAME.as_bytes()) {
-            Some(h) => BuzzerPlaced::Endpoint(BuzzerClient::new(KernelEndpoint(h))),
-            None => {
-                leave();
-                return false;
-            }
-        },
-    };
-    let t0 = now();
-    let r = f(&mut stub);
-    let cost_ns = azos_abi::time::ticks_to_ns(now().saturating_sub(t0), freq());
-    leave();
-    if r.is_ok() {
-        observe(host, cost_ns);
+    fn leave() {
+        INFLIGHT.fetch_sub(1, Ordering::AcqRel);
     }
-    matches!(r, Ok(o) if o.is_ok())
-}
 
-/// A call to the driver on `host` took `cost_ns`. The controller may ask for
-/// a move; the supervisor task does it.
-fn observe(host: Host, cost_ns: u64) {
-    let d = {
-        let mut g = PLACEMENT.lock();
-        match g.as_mut() {
-            // A call that began before a move and ended after it says nothing
-            // of the new host.
-            Some(e) if e.host() == host => e.observe(cost_ns, now_ns()),
-            _ => Decision::Stay,
+    /// One call to the driver, wherever it runs. `true` when it answered and the
+    /// op was served. A call that reached the interface is timed and reported to
+    /// the controller.
+    fn call(f: impl FnOnce(&mut Stub) -> IdlResult<Out<()>>) -> bool {
+        let Some(host) = enter() else { return false };
+        let mut stub: Stub = match host {
+            Host::Kernel => BuzzerPlaced::Direct(BuzzerDirect(KernelBuzzer)),
+            Host::Ring3 => match kcall::endpoint_handle(ENDPOINT_NAME.as_bytes()) {
+                Some(h) => BuzzerPlaced::Endpoint(BuzzerClient::new(KernelEndpoint(h))),
+                None => {
+                    leave();
+                    return false;
+                }
+            },
+        };
+        let t0 = now();
+        let r = f(&mut stub);
+        let cost_ns = azos_abi::time::ticks_to_ns(now().saturating_sub(t0), freq());
+        leave();
+        if r.is_ok() {
+            observe(host, cost_ns);
         }
-    };
-    if let Decision::Move(r) = d {
-        *PROMOTE.lock() = Some(r);
-        crate::drv_supervisor::wake();
+        matches!(r, Ok(o) if o.is_ok())
     }
-}
 
-/// Play `freq_hz` for `duration_ms`. Returns once the tone has STARTED.
-#[cfg(any(feature = "ring3-drv-smoke", feature = "drv-contain-smoke"))]
-pub(crate) fn buzzer_tone(freq_hz: u16, duration_ms: u32) -> bool {
-    call(|b| b.tone(freq_hz as u32, duration_ms))
-}
+    /// A call to the driver on `host` took `cost_ns`. The controller may ask for
+    /// a move; the supervisor task does it.
+    fn observe(host: Host, cost_ns: u64) {
+        let d = {
+            let mut g = PLACEMENT.lock();
+            match g.as_mut() {
+                // A call that began before a move and ended after it says nothing
+                // of the new host.
+                Some(e) if e.host() == host => e.observe(cost_ns, now_ns()),
+                _ => Decision::Stay,
+            }
+        };
+        if let Decision::Move(r) = d {
+            *PROMOTE.lock() = Some(r);
+            crate::drv_supervisor::wake();
+        }
+    }
 
-/// Start a continuous tone; `0` stops.
-#[cfg(feature = "ring3-drv-smoke")]
-pub(crate) fn buzzer_on(freq_hz: u16) -> bool {
-    call(|b| b.on(freq_hz as u32))
-}
+    /// Play `freq_hz` for `duration_ms`. Returns once the tone has STARTED.
+    #[cfg(any(feature = "ring3-drv-smoke", feature = "drv-contain-smoke"))]
+    pub(crate) fn buzzer_tone(freq_hz: u16, duration_ms: u32) -> bool {
+        call(|b| b.tone(freq_hz as u32, duration_ms))
+    }
 
-/// Stop whatever is playing.
-pub(crate) fn buzzer_off() -> bool {
-    call(|b| b.off())
-}
+    /// Start a continuous tone; `0` stops.
+    #[cfg(feature = "ring3-drv-smoke")]
+    pub(crate) fn buzzer_on(freq_hz: u16) -> bool {
+        call(|b| b.on(freq_hz as u32))
+    }
 
-/// A 100 ms beep at `TONE_OK`.
-pub(crate) fn buzzer_beep() -> bool {
-    call(|b| b.beep())
-}
+    /// Stop whatever is playing.
+    pub(crate) fn buzzer_off() -> bool {
+        call(|b| b.off())
+    }
 
-/// Three 80 ms beeps at `TONE_ALERT`, 60 ms apart.
-pub(crate) fn buzzer_alert() -> bool {
-    call(|b| b.alert())
+    /// A 100 ms beep at `TONE_OK`.
+    #[cfg(any(feature = "use-robot", feature = "drv-contain-smoke"))]
+    pub(crate) fn buzzer_beep() -> bool {
+        call(|b| b.beep())
+    }
+
+    /// Three 80 ms beeps at `TONE_ALERT`, 60 ms apart.
+    #[cfg(feature = "use-robot")]
+    pub(crate) fn buzzer_alert() -> bool {
+        call(|b| b.alert())
+    }
 }
 
 // ── The moves ───────────────────────────────────────────────────────────────

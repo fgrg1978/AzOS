@@ -310,7 +310,9 @@ pub(crate) fn exit_done(tid: u32, e: Exit) {
 }
 
 /// Wake the supervisor task: a placement move is waiting for it
-/// (`crate::buzzer`).
+/// (`crate::buzzer`'s callers).
+#[cfg(any(feature = "use-robot", feature = "ring3-drv-smoke", feature = "drv-contain-smoke",
+          feature = "supall-smoke", feature = "restart-smoke"))]
 pub(crate) fn wake() {
     let sup = SUP_TID.load(Ordering::Acquire);
     if sup != 0 {
