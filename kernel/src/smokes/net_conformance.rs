@@ -320,6 +320,10 @@ pub(crate) fn run(nic_present: bool) {
                     Some(m) if m == foreign_mac => {}
                     _ => bad |= 1 << 32,
                 }
+                // The binding is invented: a real host at that address must
+                // not be sent to this MAC until the entry ages out.
+                arp::forget(&foreign_ip);
+                if arp::lookup(&foreign_ip).is_some() { bad |= 1 << 37; }
             }
         }
 
@@ -813,10 +817,6 @@ pub(crate) fn run(nic_present: bool) {
             }
         }
 
-        if bad2 != 0 {
-            kprintln!("[NET]  RFC 1035/4291/5905 FAIL mask={:#x}", bad2);
-        }
-
         if bad == 0 && bad2 == 0 && !nic_present {
             // Honest partial verdict. Saying "conformant" here would claim the
             // three wire sends passed when they were never attempted, and that
@@ -825,8 +825,11 @@ pub(crate) fn run(nic_present: bool) {
         } else if bad == 0 && bad2 == 0 {
             kprintln!("[NET]  RFC 791/894/768/792/793/826/879/919/922/1035/1112/2236/4291/5905 conformant - incl. rejection paths, TCP options, broadcast, multicast, DNS and NTP");
         } else {
-            kprintln!("[NET]  RFC 791 FAIL mask={:#x} - b0={:#x} b9={} len={} ck={:#x}",
-                bad, h[0], h[9], u16::from_be_bytes([h[2], h[3]]), ip::checksum(&h));
+            // Named from the failed bits (K3-31): this line used to say
+            // "RFC 791" whichever of the fourteen had failed.
+            kprintln!("[NET]  RFC {} FAIL mask={:#x} mask2={:#x} - b0={:#x} b9={} len={} ck={:#x}",
+                failed_rfcs(bad, bad2), bad, bad2,
+                h[0], h[9], u16::from_be_bytes([h[2], h[3]]), ip::checksum(&h));
         }
     }
 
@@ -898,4 +901,53 @@ pub(crate) fn run(nic_present: bool) {
             kprintln!("[NET]  loopback: no IP assigned yet, check skipped");
         }
     }
+}
+
+/// The RFC a failed check of the probe belongs to: bit `bit` of its first
+/// mask (`second` false) or of its second. 0 for a bit no check sets.
+fn rfc_of(second: bool, bit: u32) -> u16 {
+    match (second, bit) {
+        (false, 0..=3) => 791,
+        (false, 4) => 1071,
+        (false, 5..=8) => 894,
+        (false, 9..=13) | (false, 33..=35) => 768,
+        (false, 14..=15) => 793,
+        (false, 16..=19) => 879,
+        (false, 20) => 792,
+        (false, 21..=22) => 919,
+        (false, 23..=31) | (false, 36) => 1112,
+        (false, 32) | (false, 37) => 826,
+        (true, 0..=7) => 1035,
+        (true, 8..=13) => 5905,
+        (true, 14..=20) => 4291,
+        (true, 21..=24) => 8200,
+        _ => 0,
+    }
+}
+
+/// The RFCs whose checks failed, `/`-separated in bit order, each once
+/// (`768/826`): the shape `QEMU_FAIL_RE` (`RFC [0-9/]+ FAIL`) matches.
+fn failed_rfcs(bad: u64, bad2: u32) -> alloc::string::String {
+    use core::fmt::Write;
+    let mut seen = [0u16; 16];
+    let mut n = 0;
+    let mut out = alloc::string::String::new();
+    for (second, mask) in [(false, bad), (true, u64::from(bad2))] {
+        for bit in 0..64 {
+            if mask & (1u64 << bit) == 0 {
+                continue;
+            }
+            let rfc = rfc_of(second, bit);
+            if seen[..n].contains(&rfc) || n == seen.len() {
+                continue;
+            }
+            seen[n] = rfc;
+            n += 1;
+            if !out.is_empty() {
+                out.push('/');
+            }
+            let _ = write!(out, "{}", rfc);
+        }
+    }
+    out
 }

@@ -163,6 +163,14 @@ impl ArpCache {
         })
     }
 
+    /// Drop the binding for `ip`, if any. What [`forget`] does to the
+    /// global one.
+    pub fn remove(&mut self, ip: &[u8; 4]) {
+        if let Some(i) = self.find(ip) {
+            self.entries[i] = ArpEntry::new();
+        }
+    }
+
     fn find(&self, ip: &[u8; 4]) -> Option<usize> {
         for i in 0..ARP_CACHE_SIZE {
             if self.entries[i].valid && &self.entries[i].ip == ip {
@@ -535,6 +543,16 @@ pub fn insert(ip: [u8; 4], mac: [u8; 6]) {
 pub fn insert_on(ifindex: IfIndex, ip: [u8; 4], mac: [u8; 6]) {
     if let Some(t) = table(ifindex) {
         t.lock().insert(ip, mac);
+    }
+}
+
+/// Drop the binding for `ip` from the cache of the link that reaches it: the
+/// boot's conformance probe (Kconfig BOOT_SELFTESTS) takes back the entry its
+/// hand-built request planted, so a real host at that address is not sent to
+/// an invented MAC until the entry ages out.
+pub fn forget(ip: &[u8; 4]) {
+    if let Some(t) = link_for(ip).and_then(table) {
+        t.lock().remove(ip);
     }
 }
 

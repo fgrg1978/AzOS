@@ -3831,6 +3831,24 @@ mod arp_cache {
     const GATEWAY_IP: [u8; 4] = [10, 0, 0, 1];
     const GATEWAY_MAC: [u8; 6] = [0x02, 0x47, 0x57, 0x00, 0x00, 0x01];
 
+    /// `arp::forget` drops one binding and leaves the others: the boot
+    /// conformance probe takes back the entry its hand-built request planted.
+    ///
+    /// **Canary.** Make `ArpCache::remove` a no-op: the forgotten entry is
+    /// still found.
+    #[test]
+    fn forget_drops_one_binding_and_keeps_the_rest() {
+        let _g = begin();
+        const OTHER_IP: [u8; 4] = [10, 0, 0, 202];
+        arp::insert(GATEWAY_IP, GATEWAY_MAC);
+        arp::insert(OTHER_IP, ATTACKER_MAC);
+        arp::forget(&OTHER_IP);
+        assert_eq!(arp::lookup(&OTHER_IP), None, "the forgotten binding is still there");
+        assert_eq!(arp::lookup(&GATEWAY_IP), Some(GATEWAY_MAC), "forget dropped another binding");
+        arp::forget(&OTHER_IP);
+        assert_eq!(arp::lookup(&GATEWAY_IP), Some(GATEWAY_MAC));
+    }
+
     /// **A request cannot rewrite a binding we already hold.** One 42-byte
     /// frame — op=request, spa=<gateway>, sha=<attacker>, tpa=<us> — used to
     /// replace the gateway's MAC outright, and flush every frame queued for it
