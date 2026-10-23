@@ -3342,6 +3342,28 @@ priority_range      = [0, 11]
         }
     }
 
+    /// Utilisation 40 %, but both jobs need 4 ms before their 3 ms deadlines
+    /// on one CPU: refused by density, and the boot record names the second
+    /// row (index 1, written as 2: `record_row`), the first whose deadline
+    /// could not be promised. A refusal of the whole set names none.
+    #[test]
+    fn a_constrained_set_under_full_utilisation_is_refused_naming_its_row() {
+        let t = topo(leak(
+            task("a", "rt", "period_us = 10000\nruntime_us = 2000\ndeadline_us = 3000\ncpu_mask = 1")
+                + &task("b", "rt", "period_us = 10000\nruntime_us = 2000\ndeadline_us = 3000\ncpu_mask = 1"),
+        )).unwrap();
+        match t.deadline_admission(1) {
+            Err(AdmissionError::Deadline(e @ DeadlineRefusal::NoCpuFits { task: 1 })) => {
+                assert_eq!((e.task(), e.record_row()), (Some(1), 2));
+            }
+            other => panic!("a set that misses a deadline was admitted: {other:?}"),
+        }
+        assert_eq!(DeadlineRefusal::TooManyProfiles.record_row(), 0);
+        let levels = DeadlineRefusal::Levels { task: 7, cpu: 0, level: 3, failing_level: 4 };
+        assert_eq!(levels.record_row(), 8);
+        assert!(levels.record_row() >> 32 == 0, "a boot record must not read as a run-time refusal");
+    }
+
     #[test]
     fn the_same_two_tasks_are_admitted_when_two_cpus_are_allowed() {
         let t = topo(leak(

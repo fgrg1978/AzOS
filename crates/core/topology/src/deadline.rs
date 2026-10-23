@@ -164,6 +164,35 @@ pub enum DeadlineRefusal {
     TooManyProfiles,
 }
 
+impl DeadlineRefusal {
+    /// The row the refusal names: the first one, in placement order, whose
+    /// deadline the CPUs could not promise (or whose profile is malformed).
+    /// `None` for a refusal of the whole set (`TooManyProfiles`).
+    pub const fn task(&self) -> Option<u16> {
+        match *self {
+            DeadlineRefusal::Invalid { task, .. }
+            | DeadlineRefusal::NoCpuFits { task }
+            | DeadlineRefusal::IsolatedWithoutCpu { task }
+            | DeadlineRefusal::ClassBudget { task }
+            | DeadlineRefusal::BandCap { task }
+            | DeadlineRefusal::BandNotLocked { task }
+            | DeadlineRefusal::Levels { task, .. } => Some(task),
+            DeadlineRefusal::TooManyProfiles => None,
+        }
+    }
+
+    /// The third number of a boot refusal record (`Rule::DeadlineAdmission`,
+    /// `Rule::RtBandCap`): the named row plus one, 0 when it names none. Low
+    /// 32 bits only: a reason above them would read as a run-time
+    /// reservation's refusal (`ProvenanceRecord::is_rt_refusal`).
+    pub const fn record_row(&self) -> u64 {
+        match self.task() {
+            Some(t) => t as u64 + 1,
+            None => 0,
+        }
+    }
+}
+
 /// Below this priority (lower = more urgent) a task runs in the scheduler's
 /// real-time band, which the tick never preempts. The scheduler's
 /// `RT_PRIORITY_THRESHOLD`; `azos_syscall::topo_sched` asserts the two are

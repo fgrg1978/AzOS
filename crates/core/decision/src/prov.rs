@@ -737,6 +737,12 @@ mod tests {
             .unwrap();
         assert!(s.contains("  subject   cpus=2\n") && s.contains("  numbers   placed=0 rows=5\n"), "{s}");
         s.clear();
+        // A refusal that names its row (`DeadlineRefusal::record_row`: row 3).
+        ProvenanceRecord::new(crate::Rule::DeadlineAdmission as u8, crate::Verdict::Refuse as u8, 2, [0, 5, 4])
+            .write_chain(&mut s)
+            .unwrap();
+        assert!(s.contains("  numbers   placed=0 rows=5 row+1=4\n"), "{s}");
+        s.clear();
         let mut p = ProvenanceRecord::new(crate::Rule::CapDerive as u8, crate::Verdict::Admit as u8, 9, [0, 0, 77]);
         p.cap_slot = [0xAB, 0x1];
         p.parent_cap = [0x5, 0];

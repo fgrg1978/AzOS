@@ -81,8 +81,8 @@ REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-
 # are split on `|`: the run-time form (a reason in the third number's high
 # half) takes the second name.
 FIELDS = {
-    "deadline-admission": (["placed", "rows", "-"], ["runtime_us", "period_us", "available_us"]),
-    "rt-band-cap": (["placed", "cap_pct", "-"], None),
+    "deadline-admission": (["placed", "rows", "row+1"], ["runtime_us", "period_us", "available_us"]),
+    "rt-band-cap": (["placed", "cap_pct", "row+1"], None),
     "memory-admission": (["need_pages", "free_pages", "reserve_pages"], None),
     "wake-placement": (["cpu", "last_cpu", "prio"], None),
     "cap-denial": (["kind", "reason", "dropped"], None),
@@ -219,7 +219,7 @@ def numbers(rule, verdict, n):
                      "reason": REASONS[reason] if reason < len(REASONS) else reason})
         return args
     for k, v in zip(boot, n):
-        if k == "-" or (k == "dropped" and v == 0):
+        if k == "-" or (k in ("dropped", "row+1") and v == 0):
             continue
         args[k] = v
     return args
@@ -416,7 +416,7 @@ def check_tables(root):
     assert names == RULES, f"rules differ from decision/src/lib.rs: {names}"
     # Every rule's three field names, as `RuleInfo::fields` fixes them: a boot
     # form and, after a `|`, a run-time form; a leading `?` marks a number that
-    # is left out when zero, which `numbers` does for `dropped` only. The run-time
+    # is left out when zero, which `numbers` does for `dropped` and `row+1`. The run-time
     # form's `reason<<32+x` names the low half `x`, as `numbers` unpacks it.
     body = dec[dec.index("pub const RULES"):dec.index("\n];", dec.index("pub const RULES"))]
     for name, raw in re.findall(r'name: "([a-z-]+)",.*?fields: \[([^\]]*)\]', body, re.S):
@@ -476,7 +476,11 @@ def self_test(root=None):
     # A boot admission keeps its own names.
     t = export(decisions=[("d.bin", prov_bytes(0, 0, 4, 1, (2, 5, 0), 10_000))])
     a = [e for e in t["traceEvents"] if e["ph"] == "i"][0]["args"]
-    assert (a["placed"], a["rows"]) == (2, 5) and "runtime_us" not in a, a
+    assert (a["placed"], a["rows"]) == (2, 5) and "runtime_us" not in a and "row+1" not in a, a
+    # A boot refusal names its first refused row, plus one.
+    t = export(decisions=[("d.bin", prov_bytes(0, 1, 4, 1, (0, 5, 4), 10_000))])
+    a = [e for e in t["traceEvents"] if e["ph"] == "i"][0]["args"]
+    assert (a["placed"], a["rows"], a["row+1"]) == (0, 5, 4) and "runtime_us" not in a, a
     # A reserved rule keeps the names `RuleInfo::fields` fixes, not n0/n1/n2.
     t = export(decisions=[("r.bin", prov_bytes(RULES.index("clock-step"), 3, 1, 2, (7, 8, 9), 10_000))])
     a = [e for e in t["traceEvents"] if e["ph"] == "i"][0]["args"]

@@ -342,19 +342,20 @@ pub struct RuleInfo {
 /// The table, by [`Rule`] index.
 pub const RULES: [RuleInfo; 75] = [
     RuleInfo {
-        // Two writers: the boot admission (subject = cpus; placed, rows, 0)
-        // and the run-time `rt::reserve` refusal (subject = tid; runtime_us,
+        // Two writers: the boot admission (subject = cpus; placed, rows, and
+        // on a refusal the first row refused plus one,
+        // `DeadlineRefusal::record_row`, 0 when none is named) and the run-time `rt::reserve` refusal (subject = tid; runtime_us,
         // period_us, reason << 32 | available_us), the second after the `|`.
         name: "deadline-admission",
         subject: "cpus|tid",
-        fields: ["placed|runtime_us", "rows|period_us", "-|reason<<32+available_us"],
+        fields: ["placed|runtime_us", "rows|period_us", "?row+1|reason<<32+available_us"],
         rejected_if_yes: "refuse the topology: no CPU's density bound is exceeded",
         rejected_if_no: "run the rows (or the task): some row cannot meet its deadline on these CPUs",
     },
     RuleInfo {
         name: "rt-band-cap",
         subject: "cpus",
-        fields: ["placed", "cap_pct", "-"],
+        fields: ["placed", "cap_pct", "?row+1"],
         rejected_if_yes: "refuse the topology: every CPU's band stays under the cap",
         rejected_if_no: "run the rows: the band's rows on one CPU exceed the cap",
     },

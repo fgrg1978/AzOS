@@ -479,7 +479,9 @@ fn admit(
     let r = match topo.deadline_admission(num_cpus) {
         Ok(r) => r,
         Err(e) => {
-            record(Rule::DeadlineAdmission, Verdict::Refuse, num_cpus as u32, [0, rows, 0]);
+            // The third number names the first row refused (`record_row`).
+            let row = if let AdmissionError::Deadline(d) = &e { d.record_row() } else { 0 };
+            record(Rule::DeadlineAdmission, Verdict::Refuse, num_cpus as u32, [0, rows, row]);
             if mode == Mode::Final {
                 halt_refused(format_args!("[TOPO] Deadline admission REFUSED on {} CPU(s): {:?}", num_cpus, e));
             }
@@ -491,7 +493,8 @@ fn admit(
         kprintln!("[TOPO] Deadline admission: {} real-time task(s) placed on {} CPU(s)", r.placed, num_cpus);
         let band = band_check(topo, &r);
         let v = if band.is_ok() { Verdict::Admit } else { Verdict::Refuse };
-        record(Rule::RtBandCap, v, num_cpus as u32, [r.placed as u64, azos_limits::RT_BAND_CAP_PCT as u64, 0]);
+        let row = band.err().map_or(0, |e| e.record_row());
+        record(Rule::RtBandCap, v, num_cpus as u32, [r.placed as u64, azos_limits::RT_BAND_CAP_PCT as u64, row]);
         if let Err(e) = band {
             if mode == Mode::Final {
                 halt_refused(format_args!("[TOPO] Deadline admission REFUSED: {:?} — the band's rows on that CPU exceed \
