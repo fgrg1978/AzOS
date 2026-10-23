@@ -85,7 +85,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use azos_decision::{Rule, Verdict};
 
 use crate::effect_gate::Effect;
-use crate::estop::{verify_operator_release, ReleaseDenial, RELEASE_PROOF_BYTES, RELEASE_SIG_BYTES};
+use crate::estop::{verify_operator_release_of, ReleaseDenial, ReleaseTarget, RELEASE_PROOF_BYTES, RELEASE_SIG_BYTES};
 
 /// Effect kinds the tables below hold: the kinds that have a safe state, which
 /// today is the motor (`effect_gate::KIND_MOTOR`, 1) alone. The SoC kinds
@@ -248,7 +248,7 @@ pub fn release(kind: u8, subject: u16, nonce: u64, sig: &[u8; RELEASE_SIG_BYTES]
         refuse(CAUSE_RELEASE_TOO_EARLY);
         return Err(ReleaseError::TooEarly { remaining_ms: ticks_to_ms(min - t.saturating_sub(since)) });
     }
-    if let Err(d) = verify_operator_release(nonce, sig) {
+    if let Err(d) = verify_operator_release_of(ReleaseTarget::Hold { kind, subject }, nonce, sig) {
         refuse(CAUSE_RELEASE_NO_WARRANT);
         return Err(ReleaseError::NoWarrant(d));
     }
@@ -298,9 +298,11 @@ pub const HOLD_RELEASE_BODY_BYTES: usize = RELEASE_PROOF_BYTES + 3;
 /// this frame (`None`): the bare reset request and the e-stop release proof
 /// keep their historical shapes.
 ///
-/// The warrant is the one of the e-stop release (`verify_operator_release`,
-/// called by [`release`]), so it is checked in that one place with the same
-/// key and the same persisted nonce floor.
+/// The warrant is checked as the e-stop release's is
+/// (`verify_operator_release_of`, called by [`release`]), in that one place
+/// with the same key and the same persisted nonce floor, but it is signed for
+/// this device (`ReleaseTarget::Hold`, its kind and subject, on this robot):
+/// it releases neither the latch nor another device.
 pub fn release_from_frame(body: &[u8]) -> Option<Result<(), ReleaseError>> {
     if body.len() != HOLD_RELEASE_BODY_BYTES {
         return None;

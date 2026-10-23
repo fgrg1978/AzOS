@@ -1543,6 +1543,17 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
                                build ignores /fat/OPERATOR.PUB — every release refused");
                 }
             }
+            // A warrant names the robot it releases: the id of the device
+            // record, the identity the signed topology and CONFIG.SIG are
+            // bound to, so one signed for another robot under the same key is
+            // no warrant here. Without a record a release build refuses every
+            // release (`ReleaseDenial::NoDeviceIdentity`).
+            match boot::read_device_record() {
+                Some(r) => azos_actuation::estop::release_device_init(&r.device_id),
+                None => azos_drv_sys::kwarn!("[ESTOP] no device record: release warrants bind no robot \
+                           ({})", if azos_limits::BUILD_TYPE_DEV { "development build: the zero id" }
+                                  else { "every release refused" }),
+            }
         }
 
         // Policy gate — deliberately NOT consulting any runtime flag, for the

@@ -36,7 +36,10 @@
 //! skip `release` fails the frame test.
 
 use crate::effect_gate::{self, Class, Timing, KIND_MOTOR};
-use crate::estop::{self, ReleaseDenial, RELEASE_CONTEXT, RELEASE_MSG_LEN, RELEASE_PROOF_BYTES, RELEASE_SIG_BYTES};
+use crate::estop::{
+    self, ReleaseDenial, RELEASE_CONTEXT, RELEASE_MSG_LEN, RELEASE_PROOF_BYTES, RELEASE_PURPOSE_HOLD,
+    RELEASE_PURPOSE_LATCH, RELEASE_SIG_BYTES,
+};
 use crate::safe_state::{
     self, ReleaseError, CAUSE_RELEASED, CAUSE_RELEASE_NO_WARRANT, CAUSE_RELEASE_TOO_EARLY, STATE_COMMANDED, STATE_SAFE,
 };
@@ -92,11 +95,25 @@ fn operator() -> (SigningKey, [u8; 32]) {
     (signing, public)
 }
 
-fn sign(key: &SigningKey, nonce: u64) -> [u8; RELEASE_SIG_BYTES] {
+/// The operator's warrant releasing `purpose` (kind and subject: wheel 1, the
+/// device these tests hold; 0 for the latch) with `nonce`. The device id is
+/// 16 zero bytes: no device record is installed, and the suite is a
+/// development build (`estop.rs` binds the zero id then).
+fn sign_for(key: &SigningKey, purpose: u8, nonce: u64) -> [u8; RELEASE_SIG_BYTES] {
+    let (kind, subject) = if purpose == RELEASE_PURPOSE_HOLD { (KIND_MOTOR, 1u16) } else { (0, 0) };
+    let c = RELEASE_CONTEXT.len();
     let mut msg = [0u8; RELEASE_MSG_LEN];
-    msg[..RELEASE_CONTEXT.len()].copy_from_slice(RELEASE_CONTEXT);
-    msg[RELEASE_CONTEXT.len()..].copy_from_slice(&nonce.to_be_bytes());
+    msg[..c].copy_from_slice(RELEASE_CONTEXT);
+    msg[c] = purpose;
+    msg[c + 17] = kind;
+    msg[c + 18..c + 20].copy_from_slice(&subject.to_be_bytes());
+    msg[c + 20..].copy_from_slice(&nonce.to_be_bytes());
     key.sign(&msg).to_bytes()
+}
+
+/// The warrant releasing wheel 1's hold.
+fn sign(key: &SigningKey, nonce: u64) -> [u8; RELEASE_SIG_BYTES] {
+    sign_for(key, RELEASE_PURPOSE_HOLD, nonce)
 }
 
 /// Puts the clock, the hold table, the driver and the operator key right.
@@ -224,9 +241,11 @@ fn a_release_without_a_valid_warrant_is_refused() {
         assert_eq!(recs[0].n, [STATE_SAFE, STATE_SAFE, held_ms << 8 | CAUSE_RELEASE_NO_WARRANT], "{what}");
     }
 
-    // A replayed warrant: one that already released something is not good again.
+    // A replayed warrant: its nonce already released something (here the
+    // e-stop latch, which shares the floor), so it is not good again.
     let sig = sign(&s.key, 5);
-    estop::verify_operator_release(5, &sig).expect("the e-stop release spends nonce 5");
+    estop::verify_operator_release(5, &sign_for(&s.key, RELEASE_PURPOSE_LATCH, 5))
+        .expect("the e-stop release spends nonce 5");
     assert_eq!(
         safe_state::release(KIND_MOTOR, 1, 5, &sig),
         Err(ReleaseError::NoWarrant(ReleaseDenial::BadOrReplayedProof))

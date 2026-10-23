@@ -155,8 +155,9 @@ pub fn estop_cleared_at() -> u64 {
 //  3. **A signed operator command (implemented).** Ed25519 verify already
 //     exists (`azos_crypto::ed25519`, used by secure boot) and needs no
 //     new crate. The operator holds a key the brain never receives; the
-//     kernel verifies a signature over a fixed context plus a monotonic
-//     nonce, appended to the *existing* `PKT_MODE`/`MODE_ID_ESTOP_RESET`
+//     kernel verifies a signature over a fixed context, what is released,
+//     this robot's device id and a monotonic nonce (`release_message`); the
+//     nonce and the signature are appended to the *existing* `PKT_MODE`/`MODE_ID_ESTOP_RESET`
 //     payload beyond its historical 1 byte — the wire format does not
 //     change, a longer payload does.
 //
@@ -204,14 +205,51 @@ pub fn estop_release(_proof: ReleaseAuthority) {
     estop_deactivate_unchecked();
 }
 
-/// Fixed context bound into every operator-release signature, so a signature
-/// produced for something else entirely (an OTA image, a different robot's
-/// release) cannot be replayed here even under the same key.
-pub const RELEASE_CONTEXT: &[u8] = b"AZOS-ESTOP-RELEASE-v1";
+/// Fixed context that opens every operator-release message, so a signature
+/// produced for something else entirely (an OTA image, a configuration)
+/// cannot be replayed here even under the same key. v2: the message also
+/// names what is released and on which robot ([`ReleaseTarget`],
+/// [`release_device_init`]); a v1 signature (context and nonce only) is no
+/// warrant.
+pub const RELEASE_CONTEXT: &[u8] = b"AZOS-RELEASE-v2";
 
-/// Length in bytes of the message actually signed: the fixed context plus an
-/// 8-byte big-endian nonce.
-pub const RELEASE_MSG_LEN: usize = RELEASE_CONTEXT.len() + 8;
+/// What a warrant releases. It is part of the signed message, so a warrant for
+/// one target is no warrant for another: a hold release of one wheel does not
+/// clear the e-stop latch or release the other wheel, and a latch release
+/// lifts no hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReleaseTarget {
+    /// The e-stop latch ([`estop_release`]).
+    Latch,
+    /// A device the kernel holds in its safe state (B2,
+    /// `safe_state::release`): its kind and subject.
+    Hold { kind: u8, subject: u16 },
+}
+
+/// The purpose byte of a latch release in the signed message.
+pub const RELEASE_PURPOSE_LATCH: u8 = 1;
+/// The purpose byte of a hold release in the signed message.
+pub const RELEASE_PURPOSE_HOLD: u8 = 2;
+
+/// Bytes of the robot's identity in the signed message: the id of its device
+/// record (`azos_topology::device_record::DEVICE_ID_LEN`), which its signed
+/// topology and `CONFIG.SIG` are bound to. Restated, not named, so the host
+/// suites that pull this file in need no topology crate; the kernel's
+/// [`release_device_init`] call passes the record's id array, so a record of
+/// another length does not compile.
+pub const RELEASE_DEVICE_ID_BYTES: usize = 16;
+
+/// Length in bytes of the message actually signed:
+///
+/// ```text
+///   RELEASE_CONTEXT
+///   1   purpose (RELEASE_PURPOSE_LATCH / _HOLD)
+///   16  device id (this robot's device record)
+///   1   kind      (0 for the latch)
+///   2   subject, big-endian (0 for the latch)
+///   8   nonce, big-endian
+/// ```
+pub const RELEASE_MSG_LEN: usize = RELEASE_CONTEXT.len() + 1 + RELEASE_DEVICE_ID_BYTES + 3 + 8;
 
 /// Ed25519 signature length, re-exported so callers (the two `kernel/src/tasks/behavior.rs`
 /// dispatch sites) do not need to depend on `azos_crypto` directly just
@@ -373,6 +411,19 @@ pub fn operator_key_source(topology_has_key: bool, dev_build: bool) -> OperatorK
     }
 }
 
+/// This robot's identity as a warrant names it: the id of its device record,
+/// `None` until [`release_device_init`] (no record on this boot's medium).
+static RELEASE_DEVICE_ID: SpinLock<Option<[u8; RELEASE_DEVICE_ID_BYTES]>> = SpinLock::new(None);
+
+/// Install the id of this robot's device record as the identity every
+/// release warrant must name (the kernel, at boot, once it has read the
+/// record). Without it a release build refuses every release
+/// ([`ReleaseDenial::NoDeviceIdentity`]): a warrant that names no robot would
+/// be good on every robot sharing the key.
+pub fn release_device_init(id: &[u8; RELEASE_DEVICE_ID_BYTES]) {
+    *RELEASE_DEVICE_ID.lock() = Some(*id);
+}
+
 /// Whether an operator authority key is currently provisioned.
 pub fn operator_authority_provisioned() -> bool {
     OPERATOR_PUBKEY.lock().is_some()
@@ -388,6 +439,7 @@ pub fn operator_authority_provisioned() -> bool {
 pub fn test_reset_operator_authority() {
     *OPERATOR_PUBKEY.lock() = None;
     *OPERATOR_KEY_PIN.lock() = None;
+    *RELEASE_DEVICE_ID.lock() = None;
     RELEASE_NONCE_FLOOR.store(0, Ordering::Relaxed);
 }
 
@@ -446,9 +498,15 @@ pub enum ReleaseDenial {
     /// No operator key is provisioned on this robot — every release is
     /// refused regardless of the signature offered.
     NoAuthorityKey,
-    /// A key is provisioned, but the signature does not verify under it, or
+    /// A key is provisioned, but the signature does not verify under it (it
+    /// was made for another robot, another target, or by another key), or
     /// its nonce is not strictly newer than the last one this boot accepted.
     BadOrReplayedProof,
+    /// No device record identifies this robot ([`release_device_init`] never
+    /// ran), so no warrant can name it. Refused in every build but a
+    /// development one (Kconfig `BUILD_TYPE_DEV`), which binds the all-zero
+    /// id instead.
+    NoDeviceIdentity,
     /// The signature verified and the nonce was fresh, but the durable
     /// record of it could not be written while a recorder IS active — see
     /// [`verify_operator_release`]'s doc for why this refuses rather than
@@ -473,11 +531,22 @@ pub const RELEASE_CAUSE_KEY_CHANGED: u64 = 3;
 /// recorder being active and refusing the write.
 pub const RELEASE_CAUSE_KEY_NOT_DURABLE: u64 = 4;
 
-/// Build the exact bytes an operator signs to authorise one release.
-fn release_message(nonce: u64) -> [u8; RELEASE_MSG_LEN] {
+/// Build the exact bytes an operator signs to authorise one release of
+/// `target` on the robot `device` names ([`RELEASE_MSG_LEN`] has the layout).
+fn release_message(target: ReleaseTarget, device: &[u8; RELEASE_DEVICE_ID_BYTES], nonce: u64) -> [u8; RELEASE_MSG_LEN] {
+    let (purpose, kind, subject) = match target {
+        ReleaseTarget::Latch => (RELEASE_PURPOSE_LATCH, 0, 0),
+        ReleaseTarget::Hold { kind, subject } => (RELEASE_PURPOSE_HOLD, kind, subject),
+    };
+    let c = RELEASE_CONTEXT.len();
+    let d = c + 1 + RELEASE_DEVICE_ID_BYTES;
     let mut msg = [0u8; RELEASE_MSG_LEN];
-    msg[..RELEASE_CONTEXT.len()].copy_from_slice(RELEASE_CONTEXT);
-    msg[RELEASE_CONTEXT.len()..].copy_from_slice(&nonce.to_be_bytes());
+    msg[..c].copy_from_slice(RELEASE_CONTEXT);
+    msg[c] = purpose;
+    msg[c + 1..d].copy_from_slice(device);
+    msg[d] = kind;
+    msg[d + 1..d + 3].copy_from_slice(&subject.to_be_bytes());
+    msg[d + 3..].copy_from_slice(&nonce.to_be_bytes());
     msg
 }
 
@@ -542,19 +611,40 @@ pub fn verify_operator_release(
     nonce: u64,
     sig: &[u8; RELEASE_SIG_BYTES],
 ) -> Result<ReleaseAuthority, ReleaseDenial> {
-    verify_operator_release_for(azos_limits::BUILD_TYPE_DEV, nonce, sig)
+    verify_operator_release_of(ReleaseTarget::Latch, nonce, sig)
 }
 
-/// [`verify_operator_release`] for an explicit build type: `dev_build` is
+/// [`verify_operator_release`] of any target: the warrant must have been
+/// signed for `target` on this robot. The e-stop latch and every held device
+/// share the key and the nonce floor.
+pub fn verify_operator_release_of(
+    target: ReleaseTarget,
+    nonce: u64,
+    sig: &[u8; RELEASE_SIG_BYTES],
+) -> Result<ReleaseAuthority, ReleaseDenial> {
+    verify_operator_release_for(azos_limits::BUILD_TYPE_DEV, target, nonce, sig)
+}
+
+/// [`verify_operator_release_of`] for an explicit build type: `dev_build` is
 /// Kconfig `BUILD_TYPE_DEV`. The seam the host tests drive to state both
 /// builds' behaviour in one binary.
+///
+/// Without a device identity the refusal comes before the signature is
+/// checked and writes no receipt, as with no key: nothing a peer sends can
+/// change it.
 pub fn verify_operator_release_for(
     dev_build: bool,
+    target: ReleaseTarget,
     nonce: u64,
     sig: &[u8; RELEASE_SIG_BYTES],
 ) -> Result<ReleaseAuthority, ReleaseDenial> {
     let key = operator_pubkey().ok_or(ReleaseDenial::NoAuthorityKey)?;
-    let msg = release_message(nonce);
+    let device = match *RELEASE_DEVICE_ID.lock() {
+        Some(id) => id,
+        None if dev_build => [0u8; RELEASE_DEVICE_ID_BYTES],
+        None => return Err(ReleaseDenial::NoDeviceIdentity),
+    };
+    let msg = release_message(target, &device, nonce);
     if !azos_crypto::ed25519::sig_verify(&key, sig, &msg) {
         return Err(ReleaseDenial::BadOrReplayedProof);
     }

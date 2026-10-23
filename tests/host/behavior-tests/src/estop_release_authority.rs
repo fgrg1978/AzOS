@@ -14,7 +14,8 @@
 //! signature itself is produced independently, with `ed25519-dalek`'s
 //! `SigningKey` directly (this crate's own dependency — see its Cargo.toml
 //! comment for why `azos_crypto::ed25519` can't sign), reconstructing the
-//! wire message (`RELEASE_CONTEXT || nonce_be`) from the `pub` constants
+//! wire message (`RELEASE_CONTEXT || purpose || device id || kind || subject
+//! || nonce_be`) from the `pub` constants
 //! rather than calling the crate's own private `release_message` — so a test
 //! that only asserted "my own function agrees with itself" cannot pass here.
 //!
@@ -51,14 +52,33 @@ fn attacker_keypair() -> SigningKey {
     SigningKey::from_bytes(&[0x99u8; 32])
 }
 
-/// Build the exact bytes an operator signs, from the crate's own `pub`
-/// constants — NOT by calling its private `release_message`, so this pins
-/// the wire contract rather than the implementation.
-fn wire_message(nonce: u64) -> [u8; RELEASE_MSG_LEN] {
+/// The id of the device record of the robot the tests stand on ([`reset`]
+/// installs it).
+const DEVICE: [u8; RELEASE_DEVICE_ID_BYTES] = *b"robot-under-test";
+
+/// Build the exact bytes an operator signs to release `target` on robot
+/// `device`, from the crate's own `pub` constants — NOT by calling its private
+/// `release_message`, so this pins the wire contract rather than the
+/// implementation.
+fn message_for(device: &[u8; RELEASE_DEVICE_ID_BYTES], target: ReleaseTarget, nonce: u64) -> [u8; RELEASE_MSG_LEN] {
+    let (purpose, kind, subject) = match target {
+        ReleaseTarget::Latch => (RELEASE_PURPOSE_LATCH, 0u8, 0u16),
+        ReleaseTarget::Hold { kind, subject } => (RELEASE_PURPOSE_HOLD, kind, subject),
+    };
+    let c = RELEASE_CONTEXT.len();
     let mut msg = [0u8; RELEASE_MSG_LEN];
-    msg[..RELEASE_CONTEXT.len()].copy_from_slice(RELEASE_CONTEXT);
-    msg[RELEASE_CONTEXT.len()..].copy_from_slice(&nonce.to_be_bytes());
+    msg[..c].copy_from_slice(RELEASE_CONTEXT);
+    msg[c] = purpose;
+    msg[c + 1..c + 17].copy_from_slice(device);
+    msg[c + 17] = kind;
+    msg[c + 18..c + 20].copy_from_slice(&subject.to_be_bytes());
+    msg[c + 20..].copy_from_slice(&nonce.to_be_bytes());
     msg
+}
+
+/// The e-stop latch's release on this robot.
+fn wire_message(nonce: u64) -> [u8; RELEASE_MSG_LEN] {
+    message_for(&DEVICE, ReleaseTarget::Latch, nonce)
 }
 
 fn sign(key: &SigningKey, nonce: u64) -> [u8; RELEASE_SIG_BYTES] {
@@ -87,6 +107,7 @@ fn sign(key: &SigningKey, nonce: u64) -> [u8; RELEASE_SIG_BYTES] {
 fn reset() -> super::flight_recorder::RecorderGuard {
     let g = super::flight_recorder::begin(0);
     test_reset_operator_authority();
+    release_device_init(&DEVICE);
     if estop_is_active() {
         estop_release(ReleaseAuthority::for_test());
     }
@@ -310,6 +331,7 @@ fn a_nonce_accepted_in_a_prior_session_is_rejected_after_a_simulated_reboot() {
     // a fresh process, so every in-memory static goes back to its default —
     // reproduced here explicitly rather than relying on process exit. ----
     test_reset_operator_authority(); // RELEASE_NONCE_FLOOR -> 0, key unset
+    release_device_init(&DEVICE); // the boot reads the same device record
     assert!(operator_authority_init(&pubkey), "boot 2 re-provisions the same key from FAT");
 
     // Read back through the SAME seam a real boot uses.
@@ -356,7 +378,7 @@ fn a_release_build_with_no_recorder_refuses_and_keeps_the_latch() {
     estop_activate();
     let before = azos_decision::total();
 
-    let err = verify_operator_release_for(false, 5, &sign(&signing, 5))
+    let err = verify_operator_release_for(false, ReleaseTarget::Latch, 5, &sign(&signing, 5))
         .err()
         .expect("a release with no durable recorder must be refused on a release build");
     assert_eq!(err, ReleaseDenial::NoDurableRecorder);
@@ -379,9 +401,9 @@ fn a_refused_unrecorded_release_does_not_spend_the_nonce() {
     estop_activate();
     let sig = sign(&signing, 5);
 
-    assert!(verify_operator_release_for(false, 5, &sig).is_err());
+    assert!(verify_operator_release_for(false, ReleaseTarget::Latch, 5, &sig).is_err());
     super::logger::logger_init().expect("the mock storage always mounts");
-    let proof = verify_operator_release_for(false, 5, &sig)
+    let proof = verify_operator_release_for(false, ReleaseTarget::Latch, 5, &sig)
         .ok()
         .expect("the same proof must verify once a recorder is active");
     estop_release(proof);
@@ -400,7 +422,7 @@ fn a_dev_build_with_no_recorder_still_proceeds() {
     estop_activate();
     let before = azos_decision::total();
 
-    let proof = verify_operator_release_for(true, 5, &sign(&signing, 5))
+    let proof = verify_operator_release_for(true, ReleaseTarget::Latch, 5, &sign(&signing, 5))
         .ok()
         .expect("a development build proceeds without a recorder");
     estop_release(proof);
@@ -409,7 +431,7 @@ fn a_dev_build_with_no_recorder_still_proceeds() {
     // The floor moved in memory: the same proof is a replay now.
     estop_activate();
     assert_eq!(
-        verify_operator_release_for(true, 5, &sign(&signing, 5)).err(),
+        verify_operator_release_for(true, ReleaseTarget::Latch, 5, &sign(&signing, 5)).err(),
         Some(ReleaseDenial::BadOrReplayedProof)
     );
 }
@@ -425,7 +447,7 @@ fn a_release_build_with_a_recorder_releases_as_before() {
     estop_activate();
     let before = azos_decision::total();
 
-    let proof = verify_operator_release_for(false, 9, &sign(&signing, 9))
+    let proof = verify_operator_release_for(false, ReleaseTarget::Latch, 9, &sign(&signing, 9))
         .ok()
         .expect("a recorder is active: the release verifies on a release build too");
     estop_release(proof);
@@ -447,7 +469,7 @@ fn an_active_recorder_that_fails_the_write_refuses_with_a_receipt() {
         estop_activate();
         let before = azos_decision::total();
 
-        let err = verify_operator_release_for(dev, 3, &sign(&signing, 3)).err();
+        let err = verify_operator_release_for(dev, ReleaseTarget::Latch, 3, &sign(&signing, 3)).err();
         assert_eq!(err, Some(ReleaseDenial::NonceNotDurable), "dev={dev}");
         assert!(estop_is_active());
         let rec = receipt_since(before).expect("a receipt");
@@ -467,7 +489,7 @@ fn a_forged_proof_on_a_release_build_writes_no_receipt() {
     estop_activate();
     let before = azos_decision::total();
 
-    let err = verify_operator_release_for(false, 5, &sign(&attacker_keypair(), 5)).err();
+    let err = verify_operator_release_for(false, ReleaseTarget::Latch, 5, &sign(&attacker_keypair(), 5)).err();
     assert_eq!(err, Some(ReleaseDenial::BadOrReplayedProof));
     assert_eq!(azos_decision::total(), before);
 }
@@ -490,6 +512,7 @@ fn boot_one_pins(pubkey: &[u8; 32]) {
 /// seeded the way `boot_latch::apply` does.
 fn reboot_and_seed_pin() {
     test_reset_operator_authority();
+    release_device_init(&DEVICE);
     let replay = super::logger::replay_boot(&mut Replay { pos: 0 });
     operator_key_pin_seed(replay.operator_key_pin);
 }
@@ -521,14 +544,14 @@ fn a_changed_topology_key_is_refused_and_recorded() {
     assert_eq!(rec.n[2], u64::from_le_bytes(operator_key_fp(&pub_b)[..8].try_into().unwrap()));
     estop_activate();
     assert_eq!(
-        verify_operator_release_for(true, 1, &sign(&signing_b, 1)).err(),
+        verify_operator_release_for(true, ReleaseTarget::Latch, 1, &sign(&signing_b, 1)).err(),
         Some(ReleaseDenial::NoAuthorityKey),
         "the refused key's owner cannot release",
     );
 
     reboot_and_seed_pin();
     assert_eq!(operator_key_pin_install(&pub_a), KeyPin::Installed, "the pinned key still installs");
-    assert!(verify_operator_release_for(true, 1, &sign(&signing_a, 1)).is_ok());
+    assert!(verify_operator_release_for(true, ReleaseTarget::Latch, 1, &sign(&signing_a, 1)).is_ok());
 }
 
 /// The first key a robot sees installs, with a pin written; with no recorder
@@ -651,4 +674,96 @@ fn a_boot_that_installs_the_pinned_key_writes_the_pin_again() {
 
     let boot2 = super::logger::replay_boot(&mut ReplayOnly { index: 1, pos: 0 });
     assert_eq!(boot2.operator_key_pin, Some(operator_key_fp(&pubkey)));
+}
+
+// ---------------------------------------------------------------------------
+// The warrant names what it releases and on which robot. The signed message
+// binds the purpose (the e-stop latch, or one device the kernel holds in its
+// safe state, by kind and subject) and the id of this robot's device record,
+// the identity its signed topology is bound to. Under a key two robots share,
+// or a key that also signs hold releases, a captured warrant is good for the
+// one release it was made for and nothing else.
+// ---------------------------------------------------------------------------
+
+/// **A warrant signed for another robot does not release this one**, whatever
+/// else about it is right (the key, a fresh nonce), and it does not spend the
+/// nonce: this robot's own warrant with the same nonce still verifies.
+///
+/// **Canary.** Leave the device id out of `release_message` (or sign the old
+/// `context || nonce` message): the other robot's warrant verifies.
+#[test]
+fn a_warrant_for_another_robot_is_refused_and_spends_nothing() {
+    let _gl = reset();
+    let (signing, pubkey) = operator_keypair();
+    assert!(operator_authority_init(&pubkey));
+    estop_activate();
+
+    let elsewhere = *b"another-robot-id";
+    let theirs = signing.sign(&message_for(&elsewhere, ReleaseTarget::Latch, 4)).to_bytes();
+    assert_eq!(verify_operator_release(4, &theirs).err(), Some(ReleaseDenial::BadOrReplayedProof));
+    assert!(estop_is_active());
+
+    let mut old = [0u8; 21 + 8];
+    old[..21].copy_from_slice(b"AZOS-ESTOP-RELEASE-v1");
+    old[21..].copy_from_slice(&4u64.to_be_bytes());
+    let v1 = signing.sign(&old).to_bytes();
+    assert_eq!(verify_operator_release(4, &v1).err(), Some(ReleaseDenial::BadOrReplayedProof),
+               "the unbound v1 message is not a warrant");
+
+    let proof = verify_operator_release(4, &sign(&signing, 4)).expect("this robot's warrant, nonce 4");
+    estop_release(proof);
+    assert!(!estop_is_active());
+}
+
+/// **A warrant releases what it was signed for and nothing else.** A hold
+/// release of wheel 1 is not a latch release and not a release of wheel 0;
+/// a latch release is not a hold release. One nonce floor covers them all.
+///
+/// **Canary.** Leave the purpose, the kind or the subject out of
+/// `release_message`: the cross-purpose warrants verify.
+#[test]
+fn a_warrant_releases_only_its_own_target() {
+    let _gl = reset();
+    let (signing, pubkey) = operator_keypair();
+    assert!(operator_authority_init(&pubkey));
+    let wheel = |subject| ReleaseTarget::Hold { kind: 1, subject };
+    let hold1 = signing.sign(&message_for(&DEVICE, wheel(1), 6)).to_bytes();
+    let latch = sign(&signing, 6);
+
+    assert_eq!(verify_operator_release(6, &hold1).err(), Some(ReleaseDenial::BadOrReplayedProof),
+               "a hold warrant released the e-stop latch");
+    assert_eq!(verify_operator_release_of(wheel(0), 6, &hold1).err(), Some(ReleaseDenial::BadOrReplayedProof),
+               "wheel 1's warrant released wheel 0");
+    assert_eq!(verify_operator_release_of(ReleaseTarget::Hold { kind: 2, subject: 1 }, 6, &hold1).err(),
+               Some(ReleaseDenial::BadOrReplayedProof), "a motor warrant released another kind");
+    assert_eq!(verify_operator_release_of(wheel(1), 6, &latch).err(), Some(ReleaseDenial::BadOrReplayedProof),
+               "a latch warrant released a hold");
+    assert!(verify_operator_release_of(wheel(1), 6, &hold1).is_ok(), "the hold's own warrant");
+    assert_eq!(verify_operator_release(6, &latch).err(), Some(ReleaseDenial::BadOrReplayedProof),
+               "nonce 6 is spent for every target");
+}
+
+/// **No device record: a release build refuses every release; a
+/// development build binds the all-zero id.** Without an identity a warrant
+/// would be good on every unprovisioned robot under the key, so a release
+/// build fails closed, before the signature is checked and without a receipt
+/// (as with no key). A development build (QEMU, a bench board without a
+/// disk) signs and verifies with 16 zero bytes.
+#[test]
+fn no_device_identity_fails_closed_outside_a_development_build() {
+    let _gl = reset();
+    test_reset_operator_authority();
+    let (signing, pubkey) = operator_keypair();
+    assert!(operator_authority_init(&pubkey));
+    super::logger::logger_init().expect("the mock storage always mounts");
+    let before = azos_decision::total();
+
+    let zero = [0u8; RELEASE_DEVICE_ID_BYTES];
+    let sig = signing.sign(&message_for(&zero, ReleaseTarget::Latch, 8)).to_bytes();
+    assert_eq!(verify_operator_release_for(false, ReleaseTarget::Latch, 8, &sig).err(),
+               Some(ReleaseDenial::NoDeviceIdentity));
+    assert_eq!(azos_decision::total(), before, "no receipt for a missing identity");
+    assert!(verify_operator_release_for(true, ReleaseTarget::Latch, 8, &sig).is_ok(),
+            "a development build binds the zero id");
+    super::logger::logger_shutdown();
 }

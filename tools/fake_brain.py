@@ -62,12 +62,19 @@ PKT_ACTUATOR = 0x80
 PKT_MODE = 0x81
 MODE_ID_ESTOP_RESET = 0xFF
 
-# `safety::RELEASE_CONTEXT` in `domains/robot/behavior/src/safety.rs` — restated
-# rather than imported for the same reason as the packet types above: this
-# file has to be able to send bytes the kernel's Rust never constructs for
-# it (a FORGED proof, for the negative scenario), which a generated mirror
-# could not express.
-RELEASE_CONTEXT = b"AZOS-ESTOP-RELEASE-v1"
+# `estop::RELEASE_CONTEXT` and the purposes in `crates/core/actuation/src/estop.rs`
+# — restated rather than imported for the same reason as the packet types
+# above: this file has to be able to send bytes the kernel's Rust never
+# constructs for it (a FORGED proof, for the negative scenario), which a
+# generated mirror could not express. The signed message is
+# `RELEASE_CONTEXT || purpose || device id (16) || kind || subject (2, BE) ||
+# nonce (8, BE)`: what is released (the e-stop latch, or one held device) and
+# on which robot (the id of its device record), so a warrant replays neither
+# on another robot under a shared key nor for another purpose.
+RELEASE_CONTEXT = b"AZOS-RELEASE-v2"
+RELEASE_PURPOSE_LATCH = 1
+RELEASE_PURPOSE_HOLD = 2
+DEVICE_ID_BYTES = 16
 
 DEGRADE_LEVEL_CONTAINED = 3
 
@@ -416,14 +423,35 @@ def mode_request_payload(mode_id: int = MODE_ID_ESTOP_RESET) -> bytes:
     return bytes([mode_id])
 
 
-def mode_release_payload(priv_key_path, nonce: int,
+def release_message(device_id: bytes, nonce: int, purpose: int = RELEASE_PURPOSE_LATCH,
+                    kind: int = 0, subject: int = 0) -> bytes:
+    """The bytes an operator signs: `estop::release_message`'s contract,
+    restated from its `pub` constants (this process has no Rust to import
+    from). The e-stop latch has kind and subject 0."""
+    if len(device_id) != DEVICE_ID_BYTES:
+        raise ValueError(f"device id must be {DEVICE_ID_BYTES} bytes, got {len(device_id)}")
+    return (RELEASE_CONTEXT + bytes([purpose]) + device_id + bytes([kind])
+            + subject.to_bytes(2, "big") + nonce.to_bytes(8, "big"))
+
+
+def load_device_id(image: str = None) -> bytes:
+    """The id of `image`'s device record (`tools/device_provision.py`), the
+    robot a release warrant names; 16 zero bytes for no image or no record,
+    which only a development kernel without a record accepts."""
+    if image:
+        import device_provision
+        rec = device_provision.read_record(image)
+        if rec is not None:
+            return rec[0]
+    return bytes(DEVICE_ID_BYTES)
+
+
+def mode_release_payload(priv_key_path, nonce: int, device_id: bytes,
                          mode_id: int = MODE_ID_ESTOP_RESET) -> bytes:
     """The LONGER `PKT_MODE` payload that carries an operator-signed release
-    proof: `mode_id (1) || nonce (8, big-endian) || Ed25519 signature (64)`,
-    matching `safety::RELEASE_PROOF_BYTES` in `domains/robot/behavior/src/safety.rs`.
-    Signs `RELEASE_CONTEXT || nonce_be`, exactly `safety::release_message`'s
-    contract (restated from the `pub` constants, not imported — this process
-    has no Rust to import from).
+    proof of the e-stop latch of the robot `device_id` names:
+    `mode_id (1) || nonce (8, big-endian) || Ed25519 signature (64)`, matching
+    `estop::RELEASE_PROOF_BYTES`. The signature is over [`release_message`].
     """
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -436,13 +464,13 @@ def mode_release_payload(priv_key_path, nonce: int,
         raise ValueError(f"operator private key must be 32 bytes, got {len(priv_raw)}")
     priv = Ed25519PrivateKey.from_private_bytes(priv_raw)
     nonce_be = nonce.to_bytes(8, "big")
-    sig = priv.sign(RELEASE_CONTEXT + nonce_be)
+    sig = priv.sign(release_message(device_id, nonce))
     assert len(sig) == 64, sig
     return bytes([mode_id]) + nonce_be + sig
 
 
 def kernel_estop_release(host: str, port: int, duration: float, gap: float,
-                         operator_priv, psk: bytes) -> int:
+                         operator_priv, psk: bytes, device_id: bytes) -> int:
     """Drive / latch / REQUEST (must not clear) / RELEASE (must clear).
 
     Proves the 2026-09-25 owner decision end to end over the same TCP brain
@@ -478,7 +506,7 @@ def kernel_estop_release(host: str, port: int, duration: float, gap: float,
     estop = build_packet(PKT_ESTOP, bytes([0]))
     request = build_packet(PKT_MODE, mode_request_payload())
     try:
-        release = build_packet(PKT_MODE, mode_release_payload(operator_priv, nonce=1))
+        release = build_packet(PKT_MODE, mode_release_payload(operator_priv, 1, device_id))
     except (OSError, ValueError) as e:
         print(f"[fake-brain] FAIL could not build the release proof: {e}", flush=True)
         return 4
@@ -596,14 +624,25 @@ def selftest() -> int:
             tf.write(seed)
             priv_path = tf.name
         try:
-            rel = mode_release_payload(priv_path, nonce=0x1122334455667788)
+            dev = bytes(range(0xA0, 0xB0))
+            rel = mode_release_payload(priv_path, 0x1122334455667788, dev)
         finally:
             _os.unlink(priv_path)
         assert len(rel) == 1 + 8 + 64, f"release payload must be 73 bytes, got {len(rel)}"
         assert rel[0] == 0xFF, "mode_id must be unchanged inside the longer payload"
         assert rel[1:9] == (0x1122334455667788).to_bytes(8, "big"), "nonce must be big-endian"
         pub = Ed25519PrivateKey.from_private_bytes(seed).public_key()
-        pub.verify(rel[9:], RELEASE_CONTEXT + rel[1:9])  # raises if wrong
+        msg = RELEASE_CONTEXT + bytes([RELEASE_PURPOSE_LATCH]) + dev + bytes(3) + rel[1:9]
+        assert len(msg) == len(RELEASE_CONTEXT) + 1 + 16 + 3 + 8
+        pub.verify(rel[9:], msg)  # raises if wrong
+        # Another robot's id, or the hold-release purpose, is another message.
+        for other in (release_message(bytes(16), 0x1122334455667788),
+                      release_message(dev, 0x1122334455667788, RELEASE_PURPOSE_HOLD, 1, 0)):
+            try:
+                pub.verify(rel[9:], other)
+            except Exception:
+                continue
+            raise AssertionError("a latch warrant verified as another robot's or another purpose's")
         rm = build_packet(PKT_MODE, rel)
         assert rm[2] == PKT_MODE and rm[3] == 73 and rm[4] == 0
         assert rm[-1] == crc8(rm[:-1])
@@ -902,7 +941,8 @@ def main() -> int:
                          "sends one brain-side REKEY per session")
     ap.add_argument("--image", type=str, default=None, metavar="IMG",
                     help="read the link key from ::LINK.KEY of this disk image "
-                         "(mtools) instead of --link-key")
+                         "(mtools) instead of --link-key; --kernel-estop-release "
+                         "also signs for the id of its device record")
     ap.add_argument("--reconnect", action="store_true",
                     help="reset every connection after its first bytes, for "
                          "--duration seconds, so the client has to dial again")
@@ -926,7 +966,8 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         return kernel_estop_release(args.host, args.port, args.duration,
-                                    args.gap, args.operator_priv, psk)
+                                    args.gap, args.operator_priv, psk,
+                                    load_device_id(args.image))
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
