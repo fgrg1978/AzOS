@@ -90,8 +90,9 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+ROOT = azos_tools.ROOT
 from out_dir import out_root  # noqa: E402
 
 # Built artefacts live under the output root, never in the checkout; the

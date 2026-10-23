@@ -62,6 +62,9 @@ import struct
 import sys
 from pathlib import Path
 
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 import sigalg
 
 MAGIC = b"AZMB"
@@ -74,7 +77,7 @@ BLOB_ALIGN = 8
 NAME_BYTES = 24
 BACKENDS = {"gguf": 1, "spirv": 2, "vendor": 3}
 
-KEYS = Path(__file__).resolve().parent / "keys"
+KEYS = Path(azos_tools.ROOT).resolve() / "tools/keys"
 
 
 def die(msg):

@@ -57,6 +57,9 @@ import re
 import subprocess
 from typing import Optional
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Target triple mapping
 # ---------------------------------------------------------------------------
@@ -391,7 +394,7 @@ DEFAULT_TARGET = "riscv64imac-unknown-none-elf"
 # crates/core/limits, not a cargo feature.
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = azos_tools.ROOT
 _TAG_RE = re.compile(r"^\s*#\s*cargo-feature:\s*(\S+)((?:\s+[a-z]+)*)\s*$")
 _BLOCK_START_RE = re.compile(r"^\s*(?:menu)?config\s+(\w+)\s*$")
 _OTHER_KEYWORD_RE = re.compile(

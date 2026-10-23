@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 FARM_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(os.path.dirname(FARM_DIR))
-sys.path.insert(0, os.path.join(REPO, "tools"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
+import azos_tools  # noqa: E402
+REPO = azos_tools.ROOT
 from out_dir import out_root  # noqa: E402
 DEFAULT_PATH = os.path.join(FARM_DIR, "boards.ini")
 ENV_PATH = "AZOS_FARM_CONFIG"

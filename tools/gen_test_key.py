@@ -53,6 +53,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
@@ -63,7 +66,7 @@ except ImportError:
 
 SEED_LEN = 32
 
-KEY_DIR = Path(__file__).parent / "keys"
+KEY_DIR = Path(azos_tools.ROOT) / "tools/keys"
 PRIV_PATH = KEY_DIR / "test_priv.bin"
 PUB_PATH = KEY_DIR / "test_pub.bin"
 

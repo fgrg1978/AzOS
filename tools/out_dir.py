@@ -23,9 +23,12 @@ import hashlib
 import os
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 
 def repo_root():
-    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    return os.path.realpath(azos_tools.ROOT)
 
 
 def default_root(root=None):

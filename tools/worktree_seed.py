@@ -37,7 +37,8 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402,F401
 import out_dir  # noqa: E402
 
 HASHED = re.compile(r"^(?:lib)?(.+?)-([0-9a-f]{16})(?:\..*)?$")

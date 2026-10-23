@@ -28,7 +28,8 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402,F401
 from out_dir import out_root  # noqa: E402
 
 PREFIXES = ("azos_", "robot_os_", "kernos_")  # current and former crate prefixes

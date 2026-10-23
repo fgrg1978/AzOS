@@ -39,7 +39,10 @@ import re
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = os.path.realpath(azos_tools.ROOT)
 PRAGMA = "trap-lint: ok"
 ISAS = ("riscv64", "aarch64", "x86_64")
 SYSCALL_NR = "crates/core/abi/src/syscall_nr.rs"

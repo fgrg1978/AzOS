@@ -31,7 +31,10 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = os.path.realpath(azos_tools.ROOT)
 PRAGMA = "out-dir-lint: ok"
 SKIP_PREFIXES = ("third_party/", "rfcs/", "docs/")
 SKIP_FILES = {"tools/out_dir_lint.py"}

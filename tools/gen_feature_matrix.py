@@ -30,8 +30,10 @@ import os
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = azos_tools.ROOT
 OUT = os.path.join("Documentation", "os-feature-matrix.md")
 DEFCONFIG_DIR = os.path.join("config", "defconfigs")
 REGEN = "python3 tools/gen_feature_matrix.py"

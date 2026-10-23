@@ -19,7 +19,11 @@ import struct
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = Path(azos_tools.ROOT).resolve()
 
 # name -> (id, key_len, sig_len): SigAlg::id / key_len / sig_len. Ids 2 (ML-DSA-65)
 # and 3 (SLH-DSA-SHA2-128s) are reserved; a signer for one comes with its verifier.

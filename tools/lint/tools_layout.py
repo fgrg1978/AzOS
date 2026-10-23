@@ -22,7 +22,8 @@ file but third_party/). It refuses to start while tools/ holds a top-level
 file or directory ROLES does not place. The rewrite rules:
   * `tools/<old>` -> `tools/<role>/<old>` in every tracked text file, matched
     on the exact entry name, so `famtools/`, `azos-tools/build` or a JSON-RPC
-    method `tools/list` are left alone;
+    method `tools/list` are left alone (also after `$CI_CHECK_DIR/`, the gate's
+    name for tools/);
   * in a moved shell script, `$(dirname "$0")` with the path after it: the
     path is resolved from the script's old directory and spelled again from
     the new one (`$(dirname "$0")/..` becomes `$(dirname "$0")/../..`);
@@ -173,13 +174,13 @@ def ref_regex(ents):
     """One regex for every old path; group 1 is the entry name."""
     names = sorted((o[len("tools/"):] for o, _, _ in ents), key=len, reverse=True)
     alts = "|".join(re.escape(n) for n in names)
-    return re.compile(r"(?<![\w.-])tools/(" + alts + r")(?![\w-])")
+    return re.compile(r"(?<![\w.-])(tools/|\$CI_CHECK_DIR/|\$\{CI_CHECK_DIR\}/)(" + alts + r")(?![\w-])")
 
 
 def rewrite_refs(text, ents, rx=None):
     rx = rx or ref_regex(ents)
-    new = {o[len("tools/"):]: n for o, n, _ in ents}
-    return rx.sub(lambda m: new[m.group(1)], text)
+    new = {o[len("tools/"):]: n[len("tools/"):] for o, n, _ in ents}
+    return rx.sub(lambda m: m.group(1) + new[m.group(2)], text)
 
 
 def map_path(p, ents):
@@ -454,6 +455,8 @@ def self_test():
     eq("left alone", rewrite_refs('famtools/a.py azos-tools/a.py "tools/list" tools/a.pyc', ents),
        'famtools/a.py azos-tools/a.py "tools/list" tools/a.pyc')
     eq("idempotent", rewrite_refs(rewrite_refs("tools/a.py", ents), ents), "tools/build/a.py")
+    eq("gate alias", rewrite_refs('CARGO="$CI_CHECK_DIR/a.py"; ${CI_CHECK_DIR}/a.py', ents),
+       'CARGO="$CI_CHECK_DIR/build/a.py"; ${CI_CHECK_DIR}/build/a.py')
     sh = 'cd "$(dirname "$0")/.." && python3 "$(dirname "$0")/out_dir.py"; d="$(cd "$(dirname "$0")" && pwd)"'
     eq("shell anchors", rewrite_anchors(sh, "tools/build/a.sh", "tools/a.sh", "tools/build/a.sh", ents),
        'cd "$(dirname "$0")/../.." && python3 "$(dirname "$0")/../lib/out_dir.py"; '

@@ -21,14 +21,17 @@ import os
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = azos_tools.ROOT
 SRC = os.path.join(ROOT, "micro", "topology")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
-    ap.add_argument("--priv", default=os.path.join(ROOT, "tools", "keys", "test_priv.bin"))
+    ap.add_argument("--priv", default=os.path.join(ROOT, "tools/keys/test_priv.bin"))
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     sched = open(os.path.join(SRC, "SCHED.TOM"), "rb").read()
@@ -39,7 +42,7 @@ def main() -> int:
     open(caps_path, "wb").write(caps)
     open(os.path.join(args.out, "SCHED.TOM"), "wb").write(sched)
     subprocess.run(
-        [sys.executable, os.path.join(ROOT, "tools", "gen_config_sig.py"), caps_path,
+        [sys.executable, os.path.join(ROOT, "tools/gen_config_sig.py"), caps_path,
          "--priv", args.priv, "--out", os.path.join(args.out, "CAPS.SIG")],
         check=True,
     )

@@ -34,9 +34,9 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+ROOT = azos_tools.ROOT
 import gen_userspace_kconfig as gus  # noqa: E402
 import kconfig_to_cargo as k2c  # noqa: E402
 
@@ -285,7 +285,7 @@ def main() -> int:
                     if len(on) != (0 if axis == "USE" and not has_use else 1):
                         bad.append(f"axis {axis} has {len(on)} members on: {on}")
                 for extra in ([], ["--rustflags"]):
-                    r = subprocess.run([sys.executable, os.path.join(HERE, "kconfig_to_cargo.py"), *extra, cfg],
+                    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools/kconfig_to_cargo.py"), *extra, cfg],
                                        capture_output=True, text=True)
                     if r.returncode != 0:
                         bad.append(f"kconfig_to_cargo.py {' '.join(extra)}: {r.stderr.strip()[:200]}")

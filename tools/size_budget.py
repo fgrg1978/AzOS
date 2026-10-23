@@ -32,8 +32,11 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BASELINE = os.path.join("tools", "size_budget.tsv")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = azos_tools.ROOT
+BASELINE = "tools/size_budget.tsv"
 GROUPS = (".text", ".rodata", ".data", ".bss")
 # riscv's small-data sections count with their group.
 SMALL = {".srodata": ".rodata", ".sdata": ".data", ".sbss": ".bss"}
@@ -233,7 +236,7 @@ def self_test():
     eq("tolerance share", tolerance(1200000), 3000)
 
     with tempfile.TemporaryDirectory() as root:
-        os.makedirs(os.path.join(root, "tools"))
+        os.makedirs(os.path.dirname(os.path.join(root, BASELINE)))
         sizes = {"k": {".text": 1200000, ".rodata": 300000, ".data": 20000, ".bss": 900000}}
 
         def go(args):

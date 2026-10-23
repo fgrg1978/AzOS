@@ -25,10 +25,11 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 from out_dir import out_root  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = azos_tools.ROOT
 OUT = out_root()
 TARGET = "x86_64-unknown-none"
 # Leaf-first: a crate's errors are only reported once its deps compile.

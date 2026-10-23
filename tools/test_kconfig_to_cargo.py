@@ -26,12 +26,14 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Locate repo root relative to this script.
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).parent.parent.resolve()
-TOOLS_DIR = REPO_ROOT / "tools"
+REPO_ROOT = Path(azos_tools.ROOT).resolve()
 DEFCONFIGS_DIR = REPO_ROOT / "config" / "defconfigs"
 KERNEL_CARGO_TOML = REPO_ROOT / "kernel" / "Cargo.toml"
 
@@ -159,7 +161,7 @@ DEFCONFIG_EXPECTATIONS: list[tuple[str, str, set[str], set[str]]] = [
 
 def run_bridge(defconfig_path: Path) -> str:
     """Run kconfig_to_cargo.py against the given defconfig and return stdout."""
-    script = TOOLS_DIR / "kconfig_to_cargo.py"
+    script = REPO_ROOT / "tools/kconfig_to_cargo.py"
     result = subprocess.run(
         [sys.executable, str(script), str(defconfig_path)],
         capture_output=True,
@@ -299,7 +301,7 @@ def _expected_features_one(t: Path, defconfig_name: str, must_include: set, must
 
 def test_missing_dot_config_emits_nothing() -> None:
     """When .config is absent, script must emit nothing (exit 0)."""
-    script = TOOLS_DIR / "kconfig_to_cargo.py"
+    script = REPO_ROOT / "tools/kconfig_to_cargo.py"
     result = subprocess.run(
         [sys.executable, str(script), "/nonexistent/path/.config"],
         capture_output=True,
@@ -645,7 +647,7 @@ def test_lx_server_skeleton_reaches_the_build() -> None:
 
 
 def _isa(cfg: Path, *flags: str) -> str:
-    script = TOOLS_DIR / "kconfig_to_cargo.py"
+    script = REPO_ROOT / "tools/kconfig_to_cargo.py"
     r = subprocess.run([sys.executable, str(script), *flags, str(cfg)],
                        capture_output=True, text=True, check=True)
     return r.stdout.strip()
@@ -1300,7 +1302,7 @@ def test_a_safety_read_driver_is_never_placed_in_ring3() -> None:
     refused (exit 1, nothing on stdout), not built."""
     import tempfile
 
-    script = TOOLS_DIR / "kconfig_to_cargo.py"
+    script = REPO_ROOT / "tools/kconfig_to_cargo.py"
     with tempfile.TemporaryDirectory() as td:
         c = Path(td) / "bad.config"
         c.write_text("CONFIG_ARCH_RISCV64=y\nCONFIG_DRV_ADS1115_PLACEMENT_RING3=y\n")
@@ -1317,7 +1319,7 @@ def test_select_applies_a_selection_through_kconfig() -> None:
     line sets a symbol another derives from, and anything else is refused."""
     import tempfile
 
-    script = TOOLS_DIR / "kconfig_to_cargo.py"
+    script = REPO_ROOT / "tools/kconfig_to_cargo.py"
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         _expand(["CONFIG_BOARD_QEMU=y", "CONFIG_BUILD_TYPE_DEV=y"], t, "g.config")

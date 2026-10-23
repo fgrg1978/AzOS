@@ -66,6 +66,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 try:
     import tomllib
 except ImportError:
@@ -80,8 +83,7 @@ except ImportError:
     print("error: install the 'cryptography' package: pip install cryptography", file=sys.stderr)
     sys.exit(2)
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+ROOT = Path(azos_tools.ROOT).resolve()
 
 # ── the container (crates/core/pkg/src/container.rs) ────────────────────────
 MAGIC = b"AZPK"
@@ -154,7 +156,7 @@ def unpack(data: bytes) -> dict:
 # ── licences ─────────────────────────────────────────────────────────────────
 def allowlist(extra=()) -> set:
     ids = set(extra)
-    for line in (HERE / "azpkg_licences.txt").read_text().splitlines():
+    for line in (ROOT / "tools/azpkg_licences.txt").read_text().splitlines():
         line = line.split("#", 1)[0].strip()
         if line:
             ids.add(line)

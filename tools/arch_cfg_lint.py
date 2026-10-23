@@ -83,8 +83,11 @@ import re
 import sys
 import tempfile
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BASELINE = os.path.join(REPO, "tools", "arch_cfg_lint.baseline")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+REPO = azos_tools.ROOT
+BASELINE = os.path.join(REPO, "tools/arch_cfg_lint.baseline")
 
 # Shared code lives here; the arch crates are where per-ISA code belongs.
 SCAN_ROOTS = ("crates", "kernel", "domains", "lx", "userspace")

@@ -31,6 +31,10 @@ import re
 import sys
 from pathlib import Path
 
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 PCI_ANY = "*"
 
 
@@ -278,7 +282,7 @@ def main(argv: list[str]) -> int:
     if argv[1:] == ["--self-test"]:
         self_test()
         return 0
-    root = Path(argv[1]) if len(argv) > 1 else Path(__file__).resolve().parent.parent
+    root = Path(argv[1]) if len(argv) > 1 else Path(azos_tools.ROOT).resolve()
     try:
         for line in generate(root):
             print(line)

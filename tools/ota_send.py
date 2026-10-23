@@ -35,7 +35,8 @@ import socket
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 import ota_delta  # noqa: E402
 
 # Must match crates/core/ota/src/lib.rs
@@ -62,7 +63,7 @@ def _read_ota_max_image_size() -> int:
     """
     cfg_path = os.environ.get(
         "KCONFIG_CONFIG",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".config"),
+        os.path.join(azos_tools.ROOT, ".config"),
     )
     try:
         with open(cfg_path) as f:

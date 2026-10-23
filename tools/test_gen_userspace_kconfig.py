@@ -26,7 +26,10 @@ import subprocess
 import sys
 import tempfile
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+REPO = azos_tools.ROOT
 BOARD_DEFAULT = {
     "BUZZDRV", "GPIODRV", "INADRV", "BRAINCLI", "FLIGHT", "BEHAVIOR", "CONFIG", "OTA",
     "MLSRV", "NAMESD", "POWER", "REFLEX", "SH", "TERMD", "TOOLBOX", "TRACECTL", "DECISD", "LOGD", "WHY", "PKGD", "PKG", "RPCSRV",
@@ -53,8 +56,9 @@ def copy_tree(dst):
     shutil.copy(os.path.join(REPO, "Kconfig"), dst)
     shutil.copytree(os.path.join(REPO, "config"), os.path.join(dst, "config"),
                     ignore=shutil.ignore_patterns("Kconfig.userspace*"))
-    os.makedirs(os.path.join(dst, "tools"))
-    shutil.copy(os.path.join(REPO, "tools", "gen_userspace_kconfig.py"), os.path.join(dst, "tools"))
+    gen = "tools/gen_userspace_kconfig.py"
+    os.makedirs(os.path.dirname(os.path.join(dst, gen)))
+    shutil.copy(os.path.join(REPO, gen), os.path.join(dst, gen))
     src = os.path.join(REPO, "userspace")
     for cls in sorted(os.listdir(src)):
         cdir = os.path.join(src, cls)

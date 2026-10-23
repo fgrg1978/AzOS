@@ -66,10 +66,13 @@ import re
 import shlex
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GATE = os.path.join(ROOT, "tools", "ci_check.sh")
-MANIFEST = os.path.join(ROOT, "tools", "gate_rows.tsv")
-NEEDS = os.path.join(ROOT, "tools", "gate_needs.tsv")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = azos_tools.ROOT
+GATE = os.path.join(ROOT, "tools/ci_check.sh")
+MANIFEST = os.path.join(ROOT, "tools/gate_rows.tsv")
+NEEDS = os.path.join(ROOT, "tools/gate_needs.tsv")
 
 PAR_RE = re.compile(r"^\s*((?:[A-Z_][A-Z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S*)\s+)*)(par|par_row|host_job)\s+(.*)$")
 FOR_RE = re.compile(r'^(\s*)for\s+(\w+)\s+in\s+([^;$`()]+?)\s*;\s*do\s*$')

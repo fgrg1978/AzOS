@@ -52,10 +52,11 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 from out_dir import out_root  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = azos_tools.ROOT
 OUT = out_root()
 
 # SYMBOL -> (small step value, large step value).  A value is the NEW value of

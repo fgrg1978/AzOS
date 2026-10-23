@@ -32,6 +32,9 @@ import struct
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 ONE_CONFIG = os.path.join("userspace", ".cargo", "config.toml")
 SPEC_DIR = os.path.join("sdk", "targets")
 SPECS = ("riscv64imac-unknown-azos.json", "aarch64-unknown-azos.json", "x86_64-unknown-azos.json")
@@ -177,7 +180,7 @@ def main(argv):
                 bad += 1
                 print(f"{path}: {why}")
         return 1 if bad else 0
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = azos_tools.ROOT
     if argv[:1] == ["--root"] and len(argv) == 2:
         root = argv[1]
     found = source_findings(root)

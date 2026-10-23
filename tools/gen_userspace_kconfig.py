@@ -401,8 +401,7 @@ def warn_stale_console(config_path, stems, bb):
 
 
 def main(argv):
-    here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.dirname(here)
+    root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
     out = None
     config = os.environ.get("KCONFIG_CONFIG") or ".config"
     it = iter(argv[1:])

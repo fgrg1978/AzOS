@@ -27,7 +27,10 @@ import os
 import subprocess
 import sys
 
-ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = os.path.realpath(azos_tools.ROOT)
 TARGETS = {"riscv64": "riscv64imac-unknown-azos", "aarch64": "aarch64-unknown-azos", "x86_64": "x86_64-unknown-azos"}
 
 

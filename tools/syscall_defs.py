@@ -18,7 +18,11 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = Path(azos_tools.ROOT).resolve()
 NR = (ROOT / "crates/core/abi/src/syscall_nr.rs").read_text()
 INV = (ROOT / "crates/core/abi/src/invoke.rs").read_text()
 

@@ -44,9 +44,9 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+ROOT = azos_tools.ROOT
 from out_dir import out_root  # noqa: E402
 import check_presets  # noqa: E402
 import kconfig_to_cargo as k2c  # noqa: E402
@@ -104,7 +104,7 @@ def topology_features(kernel_features, table):
 
 def kernel_features(cfg_path):
     """`--features a,b,c` of tools/kconfig_to_cargo.py for an expanded config."""
-    r = subprocess.run([sys.executable, os.path.join(HERE, "kconfig_to_cargo.py"), cfg_path],
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools/kconfig_to_cargo.py"), cfg_path],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"kconfig_to_cargo.py: {r.stderr.strip()[:200]}")
@@ -266,7 +266,7 @@ def main():
             feats = c.features + ([c.isa_feature] if c.isa_feature else [])
             files = ()
             if c.micro:
-                subprocess.run([sys.executable, os.path.join(HERE, "micro_topology.py"), micro_dir],
+                subprocess.run([sys.executable, os.path.join(ROOT, "tools/micro_topology.py"), micro_dir],
                                check=True, capture_output=True)
                 files = (os.path.join(micro_dir, "CAPS.TOM"), os.path.join(micro_dir, "SCHED.TOM"))
             rc, out = run_checker(c.path, feats, files)

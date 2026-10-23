@@ -42,8 +42,11 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BASELINE = os.path.join("tools", "unsafe_budget.tsv")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = azos_tools.ROOT
+BASELINE = "tools/unsafe_budget.tsv"
 FIELDS = ("blocks", "fns", "impls", "attrs")
 # Directory names never walked, anywhere.
 PRUNE = {"target", "tests", "third_party"}

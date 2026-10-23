@@ -35,7 +35,10 @@ import re
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = azos_tools.ROOT
 GENERIC = "kernel/src/boot/early.rs"
 HOOKS = "kernel/src/entry/{}/boot_hooks.rs"
 ISAS = ("riscv64", "aarch64", "x86_64")

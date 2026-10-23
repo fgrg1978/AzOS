@@ -42,7 +42,8 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402,F401
 import kconfig_to_cargo as k2c  # noqa: E402
 
 _CONFIG_RE = re.compile(r"^\s*(?:menu)?config\s+(\w+)\s*$")
@@ -191,7 +192,7 @@ def kconfig_checks(root, tags):
 def gen_userspace(root):
     """config/Kconfig.userspace is generated (not committed): make it current."""
     import subprocess
-    subprocess.run([sys.executable, os.path.join(root, "tools", "gen_userspace_kconfig.py")],
+    subprocess.run([sys.executable, os.path.join(root, "tools/gen_userspace_kconfig.py")],
                    cwd=root, check=True)
 
 

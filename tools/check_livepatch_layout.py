@@ -36,7 +36,10 @@ import struct
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = azos_tools.ROOT
 SITE_BYTES = 8  # azos_arch_api::isa::PATCH_SITE_BYTES
 
 

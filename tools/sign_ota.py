@@ -61,7 +61,8 @@ import struct
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 import sigalg  # noqa: E402
 
 
@@ -127,7 +128,7 @@ def bundle_main(argv: list) -> int:
     p.add_argument("--config", type=Path, required=True, help="CONFIG.INI")
     p.add_argument("--config-sig", type=Path, default=None, help="CONFIG.SIG")
     p.add_argument("--image", type=Path, action="append", default=[], help="a userspace program, NAME.ELF")
-    p.add_argument("--priv", type=Path, default=Path(__file__).parent / "keys" / "dev_priv.bin")
+    p.add_argument("--priv", type=Path, default=Path(azos_tools.ROOT) / "tools/keys/dev_priv.bin")
     a = p.parse_args(argv)
 
     for v in (a.epoch, a.fw_version):
@@ -176,7 +177,7 @@ def main() -> int:
     p.add_argument(
         "--priv",
         type=Path,
-        default=Path(__file__).parent / "keys" / "dev_priv.bin",
+        default=Path(azos_tools.ROOT) / "tools/keys/dev_priv.bin",
         help="private key of the configured algorithm (Ed25519: a raw 32-byte seed)",
     )
     p.add_argument(

@@ -99,9 +99,8 @@ ACT_FLAG_EMERGENCY = 0x01
 # repo.
 def load_secure_channel():
     import os
-    tools_dir = os.path.dirname(os.path.abspath(__file__))
     brain_dir = os.path.realpath(
-        os.environ.get("AZOS_BRAIN_DIR") or os.path.join(tools_dir, "..", "..", "AzOSRobotBrain"))
+        os.environ.get("AZOS_BRAIN_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../AzOSRobotBrain"))
     if brain_dir not in sys.path:
         sys.path.insert(0, brain_dir)
     try:

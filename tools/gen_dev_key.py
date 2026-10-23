@@ -16,6 +16,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
@@ -23,7 +26,7 @@ except ImportError:
     print("error: install the 'cryptography' package: pip install cryptography", file=sys.stderr)
     sys.exit(1)
 
-KEY_DIR = Path(__file__).parent / "keys"
+KEY_DIR = Path(azos_tools.ROOT) / "tools/keys"
 PRIV_PATH = KEY_DIR / "dev_priv.bin"
 PUB_PATH = KEY_DIR / "dev_pub.bin"
 PUB_RS_PATH = KEY_DIR / "dev_pub.rs"

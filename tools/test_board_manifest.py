@@ -18,19 +18,23 @@ import sys
 import unittest
 from pathlib import Path
 
-TOOLS_DIR = Path(__file__).parent.resolve()
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
+ROOT = Path(azos_tools.ROOT).resolve()
 
 
 def _load(module_name, file_name):
-    spec = importlib.util.spec_from_file_location(module_name, TOOLS_DIR / file_name)
+    spec = importlib.util.spec_from_file_location(module_name, ROOT / file_name)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-gen_board_manifest = _load("gen_board_manifest", "gen_board_manifest.py")
-check_board_disk = _load("check_board_disk", "check_board_disk.py")
-check_board_keys = _load("check_board_keys", "check_board_keys.py")
+gen_board_manifest = _load("gen_board_manifest", "tools/gen_board_manifest.py")
+check_board_disk = _load("check_board_disk", "tools/check_board_disk.py")
+check_board_keys = _load("check_board_keys", "tools/check_board_keys.py")
 
 
 class ComputeManifestTests(unittest.TestCase):

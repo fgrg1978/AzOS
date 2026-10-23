@@ -62,13 +62,13 @@ import sys
 import threading
 import time
 
-TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 # The sibling repo, located the way tools/ci_full.sh does ($OS_DIR/../AzOSRobotBrain).
 BRAIN_DIR = os.path.realpath(
-    os.environ.get("AZOS_BRAIN_DIR") or os.path.join(TOOLS_DIR, "..", "..", "AzOSRobotBrain")
+    os.environ.get("AZOS_BRAIN_DIR") or os.path.join(azos_tools.ROOT, "..", "AzOSRobotBrain")
 )
 
-sys.path.insert(0, TOOLS_DIR)
 sys.path.insert(1, BRAIN_DIR)
 
 import fake_brain  # noqa: E402

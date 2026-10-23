@@ -102,7 +102,7 @@ def main():
         crc = rnd.getrandbits(32)
         data = bytes(rnd.getrandbits(8) for _ in range(8 * rnd.randint(1, 24)))
         bad += crc_fold(crc, data) != crc_table(crc, data)
-    src = open(os.path.join(os.path.dirname(__file__), "..", "..", "lx", "glue", "lxbase.c")).read()
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../lx/glue/lxbase.c")).read()
     for k, v in consts.items():
         m = re.search(r"#define\s+" + k + r"\s+(0x[0-9a-fA-F]+)ULL", src)
         if not m or int(m.group(1), 16) != v:

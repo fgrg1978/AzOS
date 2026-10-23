@@ -89,8 +89,8 @@ def check_pair(priv, pub, test_priv, test_pub):
 
 def check_sigs(image, pub_path):
     """Run the kernel's verifier code over the image's signed files."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+    import azos_tools  # noqa: F401  (device_provision's directory on sys.path)
     import device_provision
     rec = device_provision.read_record(image)
     if rec is None:

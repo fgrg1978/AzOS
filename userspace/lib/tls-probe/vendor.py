@@ -307,7 +307,7 @@ def host_test():
     entropy and clock. The stable toolchain (the pinned nightly would build the kernel's `build-std` into a host
     test), the host triple (the root cargo config sets a bare-metal target), the vendor tree and nothing else, offline
     and locked; the target directory is under $AZOS_OUT like every build output."""
-    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    sys.path.insert(0, os.path.dirname(os.path.join(ROOT, "tools/out_dir.py")))
     from out_dir import out_root  # noqa: E402
     host = next(l.split(": ", 1)[1] for l in subprocess.run(["rustc", "+stable", "-vV"], capture_output=True, text=True, check=True).stdout.splitlines() if l.startswith("host: "))
     cmd = ["cargo", "+stable", "test", "--release", "--offline", "--locked", "--manifest-path", os.path.join(PROBE, "Cargo.toml"),

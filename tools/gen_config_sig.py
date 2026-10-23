@@ -94,7 +94,8 @@ import struct
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 import sigalg  # noqa: E402
 
 DEVICE_ID_LEN = 16
@@ -109,7 +110,7 @@ def boot_ini_max_bytes() -> int:
     no boot can use. Read from `$KCONFIG_CONFIG`, else the workspace
     `.config`, else the Kconfig tree's own default for an expanded empty
     config (kconfiglib), so the number is never written down twice."""
-    root = Path(__file__).resolve().parent.parent
+    root = Path(azos_tools.ROOT).resolve()
     cfg = Path(os.environ.get("KCONFIG_CONFIG", root / ".config"))
     try:
         for line in cfg.read_text().splitlines():
@@ -133,7 +134,7 @@ def main() -> int:
     p.add_argument(
         "--priv",
         type=Path,
-        default=Path(__file__).parent / "keys" / "test_priv.bin",
+        default=Path(azos_tools.ROOT) / "tools/keys/test_priv.bin",
         help="private key of the configured algorithm (Ed25519: a raw 32-byte seed). "
              "Default: tools/keys/test_priv.bin",
     )
@@ -171,7 +172,6 @@ def main() -> int:
             print("error: --config-v2 needs exactly one of --device-id, --image", file=sys.stderr)
             return 1
         if args.image is not None:
-            sys.path.insert(0, str(Path(__file__).parent))
             import device_provision
             rec = device_provision.read_record(str(args.image))
             if rec is None:

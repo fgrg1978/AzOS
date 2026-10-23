@@ -25,9 +25,8 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-TOOLS = Path(__file__).parent.resolve()
-sys.path.insert(0, str(TOOLS / "farm"))
-sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 
 import farm  # noqa: E402
 import farm_config  # noqa: E402
@@ -244,7 +243,7 @@ class ConfigTests(unittest.TestCase):
             farm_config.load("vf2", board_ini(self.tmp.name, relay="magic"))
 
     def test_the_example_entry_loads_once_its_placeholders_are_filled(self):
-        text = (TOOLS / "farm" / "boards.ini.example").read_text()
+        text = (Path(azos_tools.ROOT) / "tools/farm/boards.ini.example").read_text()
         path = Path(self.tmp.name) / "example.ini"
         path.write_text(text)
         b = farm_config.load("vf2", str(path))

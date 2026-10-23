@@ -50,6 +50,9 @@ import re
 import struct
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 # ── the kernel's tables ──────────────────────────────────────────────────────
 
 # `azos_decision::RULES` order (crates/core/decision/src/lib.rs).
@@ -529,7 +532,7 @@ def self_test(root=None):
 
 def main(argv):
     if argv[1:] == ["--self-test"]:
-        self_test(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self_test(azos_tools.ROOT)
         return 0
     recorders, decisions, traces, out, hz = [], [], [], None, 10_000_000
     it = iter(argv[1:])

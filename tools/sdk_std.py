@@ -34,10 +34,11 @@ import shutil
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
 from out_dir import out_root  # noqa: E402
 
-ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+ROOT = os.path.realpath(azos_tools.ROOT)
 OVERLAY = os.path.join(ROOT, "sdk", "std", "sys")
 DEST = os.path.join(out_root(), "build", "sdk", "rust-src", "library")
 STDRT = os.path.join(ROOT, "crates", "core", "stdrt")

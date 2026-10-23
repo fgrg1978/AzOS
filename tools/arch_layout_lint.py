@@ -35,6 +35,9 @@ import os
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import azos_tools  # noqa: E402
+
 ISAS = ("riscv64", "aarch64", "x86_64")
 
 # group -> directory, relative to the repo root, with {isa}.
@@ -238,7 +241,7 @@ def main(argv):
     if argv[1:]:
         print(__doc__)
         return 2
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = azos_tools.ROOT
     found = lint(root)
     for f in found:
         print(f)

@@ -253,8 +253,8 @@ fn a_dsig_is_exactly_its_header_and_the_signature_of_the_algorithm() {
 #[test]
 fn tools_sigalg_py_writes_byte_for_byte_what_this_side_builds() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let script = "import sys, hashlib, tempfile, pathlib\n\
-        sys.path.insert(0, sys.argv[1] + '/tools')\n\
+    let script = "import os, sys, hashlib, tempfile, pathlib\n\
+        sys.path.insert(0, os.path.dirname(sys.argv[1] + '/tools/sigalg.py'))\n\
         import sigalg\n\
         d = pathlib.Path(tempfile.mkdtemp()); k = d / 'k'; k.write_bytes(bytes([0x42]) * 32)\n\
         s = sigalg.signer(k)\n\
