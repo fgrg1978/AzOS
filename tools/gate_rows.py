@@ -454,13 +454,43 @@ CARGO_TOML = os.path.join(ROOT, "kernel", "Cargo.toml")
 ROBOT_DEPS = ("domains/robot/", "config/domains/Kconfig.robot", "config/domains/Kconfig.brain")
 
 
+def cargo_features(path):
+    """The [features] table of a Cargo.toml: name -> list of entries. tomllib
+    where the Python has it (3.11+); else the table's own shape, `name = [
+    "a", "b" ]` over one or more lines, which is all kernel/Cargo.toml writes
+    there (the gate's python3 may be the system 3.9)."""
+    try:
+        import tomllib
+        with open(path, "rb") as f:
+            return tomllib.load(f)["features"]
+    except ImportError:
+        pass
+    features, cur, buf, inside = {}, None, "", False
+    for line in open(path, encoding="utf-8"):
+        s = line.split("#", 1)[0].strip()
+        if cur is None and s.startswith("[") and s.endswith("]"):
+            inside = s == "[features]"
+            continue
+        if not inside or not s:
+            continue
+        if cur is None:
+            m = re.match(r'^"?([A-Za-z0-9_.-]+)"?\s*=\s*(.*)$', s)
+            if not m:
+                continue
+            cur, buf = m.group(1), m.group(2)
+        else:
+            buf += " " + s
+        if "]" in buf:
+            features[cur] = re.findall(r'"([^"]*)"', buf)
+            cur, buf = None, ""
+    return features
+
+
 def robot_features(features=None):
     """The kernel features whose closure (kernel/Cargo.toml [features], through
     the kernel's own features only) contains `use-robot`."""
     if features is None:
-        import tomllib
-        with open(CARGO_TOML, "rb") as f:
-            features = tomllib.load(f)["features"]
+        features = cargo_features(CARGO_TOML)
     memo = {}
 
     def robot(f, seen=()):
