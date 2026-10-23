@@ -2819,24 +2819,36 @@ mod console_ownership {
     /// on its hart that appends a whole kernel line (the owner does not hold
     /// the lock while it writes, so the handler's `try_lock` succeeds). The
     /// buffer can therefore never be seen empty — without `DRAIN_BUDGET` the
-    /// owner would never return (the canary for that hangs this test).
+    /// owner would never return.
+    ///
+    /// "Promptly" is counted in wire bytes, not wall-clock time: one ring-3
+    /// line, then two budget-limited drains (after the take, after the line),
+    /// each run on to the end of a kernel line — 19 251 bytes on this storm,
+    /// the same every run. A write past four budgets is the missing budget,
+    /// and fails here instead of hanging. The test is single-threaded, so the
+    /// wire is a plain push: a yield per byte only made it slow (10-25 s) and,
+    /// under host load, past the old 60 s wall-clock limit.
     #[test]
     fn owner_returns_under_a_kernel_flood() {
         let lock = HostLock::<1024>::new();
         let wire = Wire::default();
         let produced = std::cell::Cell::new(0usize);
+        let this_write = std::cell::Cell::new(0usize);
+        let bound = 4 * DRAIN_BUDGET;
         // One wire byte from the owner, one interrupt, one whole kernel line.
         let put_and_interrupt = |b: &[u8]| {
             for &c in b {
-                wire.put_slow(&[c]);
+                wire.0.lock().unwrap().push(c);
+                this_write.set(this_write.get() + 1);
+                assert!(this_write.get() <= bound, "owner did not return: {} wire bytes in one write", this_write.get());
                 let mut st = lock.0.try_lock().expect("owner holds the lock across wire time");
                 st.kernel_write(&kern_line(0, produced.get()), &mut |_: &[u8]| panic!("owned: must defer"));
                 produced.set(produced.get() + 1);
             }
         };
         let mut budget_releases = 0;
-        let t0 = std::time::Instant::now();
         for i in 0..20 {
+            this_write.set(0);
             let spent = owner_write(
                 &lock,
                 &ring_line(i),
@@ -2847,8 +2859,6 @@ mod console_ownership {
                 budget_releases += 1;
             }
         }
-        let took = t0.elapsed();
-        assert!(took < std::time::Duration::from_secs(60), "owner did not return promptly: {took:?}");
         assert!(budget_releases > 0, "the storm never outran the drain budget");
         // What each budget-limited release left is flushed by the next kernel
         // write (the next owner drains it first); be the last one.
