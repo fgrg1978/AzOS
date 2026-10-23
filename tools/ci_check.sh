@@ -2900,10 +2900,10 @@ isa_guard() { # isa_guard <label> <expect: none|some>
 # that rotted parked for months. So: it builds for its real target, and its pure
 # halves are tested on the host, on every run.
 #
-# This crate row stays `aarch64-unknown-none` (hard-float): its NEON `dot_f32`
-# is compiled only where NEON is part of the target (`vector.rs`). The KERNEL is
-# built for `aarch64-unknown-none-softfloat` (see "The KERNEL on aarch64"
-# below), which compiles this crate a second time without NEON.
+# This crate row builds `aarch64-unknown-none` (hard-float), the KERNEL
+# `aarch64-unknown-none-softfloat` (see "The KERNEL on aarch64" below): the
+# crate must build warning-free for both. No code of its own depends on NEON
+# being in the target (`dot_f32` is the scalar loop).
 if ci_row_begin "aarch64 crate (ARMv8.5)"; then
 printf "  %-26s" "aarch64 crate (ARMv8.5)..."
 if aarch_out="$(RUSTFLAGS="" KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release --target aarch64-unknown-none \

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! NEON / SIMD for aarch64: the context save + restore, and the NEON kernels
-//! behind the cross-arch `dot_f32_best` face.
+//! FP/SIMD for aarch64: the context save + restore, and the scalar
+//! `dot_f32` behind `Vector`.
 //!
 //! Analog of `arch-x86_64::xsave` for the ARMv8 FP/SIMD register
-//! file. Any kernel that lets multiple tasks use NEON (which
-//! includes our `Vector::dot_f32` impl + any LLVM auto-
-//! vectorisation under the hard-float target) MUST save Q0-Q31
+//! file. Any kernel that lets multiple tasks use NEON (every
+//! hard-float ring-3 program, LLVM auto-vectorises) MUST save Q0-Q31
 //! + FPSR + FPCR across context switches, otherwise switching
 //! between two NEON-using tasks corrupts the vector register
 //! file of whichever task wasn't running.
@@ -27,8 +26,6 @@
 //!     dependent, needs `STR Zn` family. Lands when we have
 //!     real SVE hardware to test on.
 
-#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
-use core::arch::aarch64::{vaddvq_f32, vdupq_n_f32, vfmaq_f32, vld1q_f32};
 use core::mem::{size_of, align_of};
 
 /// FPU/SIMD state snapshot. Layout:
@@ -163,90 +160,20 @@ const _: () = {
     }
 };
 
-// ── NEON kernels ─────────────────────────────────────────────────────────
+// ── dot_f32 ─────────────────────────────────────────────────────────────
 //
-// NEON-backed Vector implementations.
-//
-// ARMv8-A makes Advanced SIMD (NEON) mandatory — every PE that
-// executes aarch64 instructions supports it. That's the
-// opposite of x86 (AVX is optional) and RISC-V (V is optional);
-// no runtime probe is needed.
-//
-// Scope today: just `dot_f32`, which the kernel's ML inner
-// loops use. SVE / SVE2 (variable-length vectors) is a B1.sve
-// follow-up — it offers larger throughput on Cortex-A510 /
-// Neoverse-V1 but requires runtime detection and is not on
-// Cortex-A72 (the QEMU virt default).
+// The kernel is built for `aarch64-unknown-none-softfloat` (FP-free, like
+// Linux: user FP state is saved lazily, see `kernel/src/entry/aarch64/fp.rs`),
+// so `Vector::dot_f32` is the scalar loop below, integer code plus soft-float
+// calls. A NEON kernel would need a hard-float build, and nothing that ships
+// is one; a kernel SIMD section (`with_kernel_simd`) is where one would go.
 //
 // **Seam note:** this whole file is also pulled directly via `#[path]` into
-// `tests/host/arch-api-tests` (see that crate's `aarch64_fp` module doc)
-// so its NEON kernels run as host tests on this project's Apple Silicon
-// dev machines. A `use crate::…` added here that isn't satisfied by that
-// test crate's own root will break that seam: add the matching entry
-// there too.
+// `tests/host/arch-api-tests` (see that crate's `aarch64_fp` module doc). A
+// `use crate::…` added here that isn't satisfied by that test crate's own
+// root will break that seam: add the matching entry there too.
 
-// **The kernel does not get this path.** The aarch64 kernel is built for
-// `aarch64-unknown-none-softfloat` (FP-free, like Linux: user FP state is
-// saved lazily, see `kernel/src/entry/aarch64/fp.rs`), where
-// `target_feature = "neon"` is off, so `dot_f32_best` below resolves to
-// `dot_f32_scalar` and compiles to integer code plus soft-float calls. The
-// NEON kernel stays compiled wherever NEON is part of the target: the
-// hard-float `aarch64-unknown-none` build of this crate and its host tests
-// (`tests/host/arch-api-tests`, Apple Silicon).
-
-/// NEON-accelerated f32 dot product. Loads 4 lanes at a time
-/// via VLD1, accumulates via VFMA (fused multiply-add), and
-/// horizontally sums via VADDVQ. Tail elements (< 4 left) get
-/// scalar treatment.
-///
-/// # Safety
-///
-/// The NEON intrinsics below are unsafe, so this is an `unsafe fn`.
-///
-/// **No `#[target_feature(enable = "neon")]`.** It used to carry one, and
-/// rustc warns that enabling `neon` is *unsound* on a soft-float target
-/// (it changes the ABI) and will reject it outright in a future release.
-/// The fix is the target, not the attribute: this crate builds for
-/// `aarch64-unknown-none` (hard float), where NEON is on by default — it is
-/// mandatory from ARMv8.0 and the baseline here is ARMv8.5. The attribute is
-/// also the thing that de-inlines a function, which cost the RISC-V side a
-/// measured 325 → 357 instructions on the syscall floor (2026-09-17).
-#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
-pub unsafe fn dot_f32_neon(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(
-        a.len(),
-        b.len(),
-        "dot_f32_neon: input slice lengths differ",
-    );
-    let n = a.len().min(b.len());
-    let chunks = n / 4;
-    let tail = n - chunks * 4;
-
-    unsafe {
-        let mut acc = vdupq_n_f32(0.0);
-        let mut ap = a.as_ptr();
-        let mut bp = b.as_ptr();
-        for _ in 0..chunks {
-            let va = vld1q_f32(ap);
-            let vb = vld1q_f32(bp);
-            acc = vfmaq_f32(acc, va, vb);
-            ap = ap.add(4);
-            bp = bp.add(4);
-        }
-        let mut sum = vaddvq_f32(acc);
-        // Handle tail (0..=3 elements).
-        for i in 0..tail {
-            sum += *ap.add(i) * *bp.add(i);
-        }
-        sum
-    }
-}
-
-/// Scalar fallback. Kept compiled even on aarch64 so tests +
-/// auditors can compare numeric results between the SIMD and
-/// scalar paths (the two should agree bit-for-bit modulo FP
-/// associativity — the SIMD form accumulates in a different
-/// order, so the result CAN drift by ~1 ULP for long inputs).
+/// `Vector::dot_f32` on aarch64: the f32 dot product, left to right.
 pub fn dot_f32_scalar(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len());
     let mut acc: f32 = 0.0;
@@ -254,18 +181,4 @@ pub fn dot_f32_scalar(a: &[f32], b: &[f32]) -> f32 {
         acc += a[i] * b[i];
     }
     acc
-}
-
-/// Dispatcher used by `api_impl::Vector::dot_f32`: NEON, or the scalar loop
-/// in a soft-float build. No SVE kernel yet (no test hardware).
-#[cfg(target_arch = "aarch64")]
-pub fn dot_f32_best(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(target_feature = "neon")]
-    {
-        unsafe { dot_f32_neon(a, b) }
-    }
-    #[cfg(not(target_feature = "neon"))]
-    {
-        dot_f32_scalar(a, b)
-    }
 }

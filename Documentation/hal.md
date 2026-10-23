@@ -26,7 +26,7 @@ Source: `crates/core/arch-api/src/lib.rs`, `crates/core/arch/src/lib.rs`.
 | `Interrupts` | Local interrupt enable, timer deadline, IPI | `disable_all` / `restore` (with the `InterruptState` token), `enable_all`, `interrupts_enabled`, `set_timer_deadline`, `send_ipi` |
 | `Mmu` | Page-table entry encoding for a level-aware radix tree; TLB maintenance | `levels`, `vpn`, `pte_make_table`, `pte_make_leaf`, `pte_perms`, `pte_share_cow`, `pte_break_cow`, `pte_make_demand`, `pte_make_marker`, `switch_pt`, `flush_tlb_*`, `tlb_shootdown`, `block_change_needs_bbm` |
 | `Boot` | Machine lifecycle and secondary-hart start | `shutdown`, `reboot`, `hart_start` (returns `HartStartError`) |
-| `Vector` | Optional SIMD kernels with a scalar fallback | `dot_f32`, `is_accelerated` |
+| `Vector` | Optional SIMD kernels with a scalar fallback | `dot_f32` |
 | `SpinWait` | Spin-wait hints and compare-and-swap | `cpu_relax`, `cas32`, `cas64`, `swap32`, `tas_acquire32`, `qlock_acquire32`, `wait_hint32`, `wait_while32`, `wait_while64` |
 | `Hypervisor` | Hardware virtualization: stage-2 tables, exit decode, guest entry | `kind`, `status`, `stage2_create`, `stage2_map`, `stage2_unmap`, `decode_exit`, `can_enter`, `enter` |
 | `ArchPlatform` | ISA primitives shared crates need | `dcache_clean`, `icache_sync_all`, `flush_tlb_page_all`, `zero_memory`, `cpu_seed`, `user_root_word`, `install_user_root_local`, `user_access` |

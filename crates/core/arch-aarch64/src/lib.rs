@@ -16,11 +16,9 @@
 //!   [`firmware`].
 //! - GIC v3 programming ([`gic`]) and early-boot `.S`
 //!   (`kernel::entry::aarch64::asm::boot`) both landed. This crate builds
-//!   for both `aarch64-unknown-none` (hard-float: the gate's crate row,
-//!   NEON `dot_f32`) and
-//!   `aarch64-unknown-none-softfloat` (the kernel, which is FP-free; the
-//!   FP asm in `fp` enables the FP extension explicitly, and
-//!   `fp::dot_f32_best` falls back to scalar without NEON).
+//!   for `aarch64-unknown-none-softfloat` (the kernel, which is FP-free; the
+//!   FP asm in `fp` enables the FP extension explicitly, and `dot_f32` is
+//!   the scalar loop).
 //!
 //! # Why everything is `cfg(target_arch = "aarch64")`
 //!
@@ -44,7 +42,6 @@
 //! blocks themselves are cfg-gated).
 
 #![no_std]
-#![allow(dead_code)] // some helpers are referenced only by asm bodies
 
 pub use azos_arch_api::{
     Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu, MmuError,

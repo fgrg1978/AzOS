@@ -613,16 +613,4 @@ impl Vector for Riscv64 {
         }
         crate::fp::dot_f32_scalar(a, b)
     }
-
-    #[inline]
-    fn is_accelerated(&self) -> bool {
-        #[cfg(feature = "rvv")]
-        {
-            crate::fp::usable()
-        }
-        #[cfg(not(feature = "rvv"))]
-        {
-            false
-        }
-    }
 }

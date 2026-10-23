@@ -349,8 +349,7 @@ impl Vector for X86_64 {
     /// interrupted task's state eagerly (`fpu`).
     ///
     /// The kernel is built soft-float (`x86_64-unknown-none`), so this is the
-    /// portable loop until a kernel FPU section exists; `is_accelerated`
-    /// says so.
+    /// portable loop until a kernel FPU section exists.
     fn dot_f32(&self, a: &[f32], b: &[f32]) -> f32 {
         let mut acc = 0.0f32;
         for (x, y) in a.iter().zip(b.iter()) {
@@ -358,7 +357,6 @@ impl Vector for X86_64 {
         }
         acc
     }
-    fn is_accelerated(&self) -> bool { false }
 }
 
 /// The user-access window: `stac` on open, `clac` on drop, both only with

@@ -919,10 +919,6 @@ pub trait Vector: Send + Sync {
     /// Dot product of two equal-length `f32` slices. Returns the
     /// scalar fallback result if no SIMD is available.
     fn dot_f32(&self, a: &[f32], b: &[f32]) -> f32;
-
-    /// `true` if the impl is actually using SIMD. Diagnostic — the
-    /// kernel never branches on this.
-    fn is_accelerated(&self) -> bool;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

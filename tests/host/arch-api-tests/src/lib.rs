@@ -24,19 +24,12 @@
 //! to link on the host and exercises the actual bit-level encoding the
 //! aarch64 port builds page tables with, not a copy that can drift.
 //!
-//! `aarch64_fp` below pulls in the REAL NEON kernel,
-//! `crates/core/arch-aarch64/src/fp.rs`, the same way — this one works for a
-//! different reason than `mmu/mod.rs`: it DOES carry `#[cfg(target_arch =
-//! "aarch64")]` on the NEON-specific items, but this host toolchain runs on
-//! `aarch64-apple-darwin`, so that cfg is true here too and the real
-//! `core::arch::aarch64` intrinsics compile and execute natively — no
-//! emulation, no shim. Confirmed empirically (2026-09-22): a throwaway probe
-//! that reads `ID_AA64PFR0_EL1` via `mrs` from this host process takes
-//! SIGILL (exit 132) — EL0 on macOS does not emulate ID-register reads the
-//! way Linux does. That is why the tests below call `dot_f32_neon` and
-//! `dot_f32_scalar` directly. (The SVE probe that read that register was
-//! deleted with its only caller; a probe like it called from a host test would
-//! crash the test binary, not fail an assertion.)
+//! `aarch64_fp` below pulls in `crates/core/arch-aarch64/src/fp.rs` the same
+//! way, for its scalar `dot_f32`. Nothing here may execute an EL1-only
+//! register read: EL0 on macOS does not emulate ID-register reads the way
+//! Linux does (a probe reading `ID_AA64PFR0_EL1` via `mrs` from this host
+//! process takes SIGILL, checked 2026-09-22), so such a call would crash the
+//! test binary, not fail an assertion.
 #[allow(dead_code)]
 #[path = "../../../../crates/core/arch-aarch64/src/mmu/mod.rs"]
 mod aarch64_mmu;
@@ -563,7 +556,6 @@ mod tests {
         fn dot_f32(&self, a: &[f32], b: &[f32]) -> f32 {
             a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
         }
-        fn is_accelerated(&self) -> bool { false }
     }
 
     /// `now_ticks` must be MONOTONIC, and the trait must be usable through a
@@ -733,7 +725,6 @@ mod tests {
         let b = [4.0f32, 3.0, 2.0, 1.0];
         // 1·4 + 2·3 + 3·2 + 4·1 = 20
         assert_eq!(s.dot_f32(&a, &b), 20.0);
-        assert!(!s.is_accelerated(), "stub is the scalar fallback");
     }
 
     // ── Trait object dispatch ──────────────────────────────────
@@ -1073,166 +1064,29 @@ mod aarch64_encoding_tests {
     }
 }
 
-/// Host tests for the real NEON kernel in `crate::aarch64_fp` (pulled
-/// from `crates/core/arch-aarch64/src/fp.rs` — see the module doc at the top
-/// of this file for why that link works on this host).
-///
-/// The scalar path (`dot_f32_scalar`) is the oracle, per project convention
-/// (a sequential, unambiguous sum). NEON is checked against it, not the
-/// other way round.
-///
-/// **Integer kernels: none exist.** `userspace/lib/ml/src/int8.rs` (the INT8
-/// inference path) is pure scalar in this tree — it has never had an RVV
-/// path (verified: `grep -n "rvv\|Vector\|dot_f32" userspace/lib/ml/src/int8.rs`
-/// returns nothing), so there is no bit-exact integer comparison to add
-/// here. `dot_f32` is the only vector-shaped kernel on any path the aarch64
-/// kernel runs.
-///
-/// **ULP bound: 4.0 (a `f64`-space ratio, not a literal bit-distance
-/// count).** `dot_f32_neon` sums in 4 independent SIMD lanes across the
-/// `chunks` loop, folds the 4 lanes with `vaddvq_f32` (a 2-level pairwise
-/// tree: (0+1)+(2+3)), then adds the scalar tail sequentially.
-/// `dot_f32_scalar` sums strictly left-to-right. Both are O(n) sums of the
-/// same n products; only the ASSOCIATION differs, and it differs by a fixed
-/// number of reassociations (bounded by the lane count and one pairwise
-/// fold), not by a term that grows with n — so the two results are expected
-/// to agree to within a handful of ULPs regardless of test-vector length.
-/// `approx_ulp` below approximates one ULP at a value's own magnitude as
-/// `magnitude * f32::EPSILON`, which is the standard first-order estimate
-/// away from the subnormal range (this test's generator never produces
-/// subnormals). The bound was set empirically: the observed maximum over
-/// every case below (lengths 0..=11, four alignment offsets each) is
-/// asserted and printed on failure; 4.0 passed with margin against the
-/// observed worst case at the time this was written.
+/// Host tests for aarch64's `Vector::dot_f32` (`crate::aarch64_fp`, pulled
+/// from `crates/core/arch-aarch64/src/fp.rs`): the kernel is soft-float, so it
+/// is the scalar loop, and these pin what it computes.
 #[cfg(test)]
 mod aarch64_fp_tests {
     use crate::aarch64_fp as v;
 
-    /// Deterministic pseudo-random f32 generator (no `rand` dependency).
-    /// Range roughly [-4.0, 4.0), no subnormals, no NaN/Inf — this probes
-    /// summation-order disagreement, not IEEE special-case handling.
-    fn gen(seed: u32, n: usize) -> Vec<f32> {
-        let mut x = seed.wrapping_mul(2654435761).wrapping_add(1);
-        let mut out = Vec::with_capacity(n);
-        for _ in 0..n {
-            x = x.wrapping_mul(1103515245).wrapping_add(12345);
-            let unit = ((x >> 8) as i32 as f32) / (i32::MAX as f32); // ~[-1, 1)
-            out.push(unit * 4.0);
-        }
-        out
-    }
-
-    /// `diff / (one ULP at this magnitude)` — see the module doc for why
-    /// this first-order estimate is good enough for this test's inputs.
-    fn approx_ulp(a: f32, b: f32) -> f64 {
-        let diff = (a as f64 - b as f64).abs();
-        if diff == 0.0 { return 0.0; }
-        let scale = (a.abs() as f64).max(b.abs() as f64).max(f32::MIN_POSITIVE as f64);
-        diff / (scale * f32::EPSILON as f64)
-    }
-
-    const ULP_BOUND: f64 = 4.0;
-
-    /// Tail lengths 0..(lanes*2 + 3) = 0..=11 (lanes=4), covering: empty,
-    /// sub-one-lane tail-only, exactly one lane, one lane + tail, exactly
-    /// two lanes, two lanes + tail, and past two lanes — the boundary
-    /// cases `dot_f32_neon`'s `chunks = n/4, tail = n - chunks*4` split
-    /// can produce.
     #[test]
-    fn neon_matches_scalar_oracle_across_tail_lengths() {
-        let mut worst: f64 = 0.0;
-        for n in 0..=11usize {
-            let a = gen(0xA5A5_0000u32.wrapping_add(n as u32), n);
-            let b = gen(0x5A5A_0000u32.wrapping_add(n as u32), n);
-            let scalar = v::dot_f32_scalar(&a, &b);
-            let neon = unsafe { v::dot_f32_neon(&a, &b) };
-            let ulp = approx_ulp(neon, scalar);
-            worst = worst.max(ulp);
-            assert!(
-                ulp <= ULP_BOUND,
-                "n={n}: neon={neon} scalar={scalar} ulp={ulp} exceeds bound {ULP_BOUND}"
-            );
-        }
-        // Not a hard assertion — a println so a future tightening of
-        // ULP_BOUND has a real number to start from instead of a guess.
-        eprintln!("neon_matches_scalar_oracle_across_tail_lengths: worst observed ulp = {worst}");
+    fn dot_is_the_left_to_right_sum() {
+        let a = [1.0f32, 2.0, 3.0, 4.0, 5.0];
+        let b = [5.0f32, 4.0, 3.0, 2.0, 1.0];
+        assert_eq!(v::dot_f32_scalar(&a, &b), 35.0);
     }
 
-    /// Same comparison, but with both operands read from misaligned
-    /// offsets (1..=3 elements into a backing `Vec`, so the pointer is not
-    /// 16-byte aligned) in every combination. AArch64 `vld1q_f32` does not
-    /// require alignment — this proves that holds for THIS kernel's use of
-    /// it, rather than assuming the ISA guarantee transfers.
     #[test]
-    fn neon_matches_scalar_oracle_on_unaligned_slices() {
-        for n in [0usize, 1, 3, 4, 5, 8, 9, 11] {
-            for a_off in 0..4usize {
-                for b_off in 0..4usize {
-                    let a_buf = gen(0x1111_0000u32.wrapping_add(n as u32), n + a_off);
-                    let b_buf = gen(0x2222_0000u32.wrapping_add(n as u32), n + b_off);
-                    let a = &a_buf[a_off..];
-                    let b = &b_buf[b_off..];
-                    let scalar = v::dot_f32_scalar(a, b);
-                    let neon = unsafe { v::dot_f32_neon(a, b) };
-                    let ulp = approx_ulp(neon, scalar);
-                    assert!(
-                        ulp <= ULP_BOUND,
-                        "n={n} a_off={a_off} b_off={b_off}: neon={neon} scalar={scalar} ulp={ulp}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// `dot_f32_scalar` accepts unequal-length inputs and truncates to
-    /// `min(a.len(), b.len())` (it has no `debug_assert`); `dot_f32_neon`
-    /// carries a `debug_assert_eq!` that FIRES in a debug/test build (found
-    /// empirically: an earlier version of this test passed unequal slices
-    /// straight to `dot_f32_neon` and the whole test binary aborted, not
-    /// just this one assertion — `debug_assert!` panics, it does not return
-    /// an `Err`). So the equal-length contract is the one every production
-    /// call site (`ml`, `camera`, `conv.rs`) already honours; this test
-    /// checks the two functions agree on the SAME already-truncated slices,
-    /// which is the only comparison the contract allows.
-    #[test]
-    fn neon_matches_scalar_oracle_on_unequal_length_inputs_pre_truncated() {
-        let a = gen(7, 11);
-        let b = gen(9, 5);
-        let n = a.len().min(b.len());
-        let (a, b) = (&a[..n], &b[..n]);
-        let scalar = v::dot_f32_scalar(a, b);
-        let neon = unsafe { v::dot_f32_neon(a, b) };
-        let ulp = approx_ulp(neon, scalar);
-        assert!(ulp <= ULP_BOUND, "neon={neon} scalar={scalar} ulp={ulp}");
-    }
-
-    /// Canary target for the tail loop specifically: an input whose length
-    /// is not a multiple of 4 (so `tail > 0`) with the tail elements set to
-    /// values that dominate the sum. If the tail loop's bound (`tail =
-    /// n - chunks*4`) or its indexing (`ap.add(i)`/`bp.add(i)` after the
-    /// SIMD loop already advanced `ap`/`bp` by `chunks*4`) were wrong, this
-    /// is the case that would catch it: a chunks-only sum would be wildly
-    /// off from the scalar oracle, not off by a few ULPs.
-    #[test]
-    fn tail_elements_are_not_dropped_or_double_counted() {
-        // 9 elements = 2 full lanes (8) + 1 tail element, tail set huge
-        // relative to the lane elements so a dropped/doubled tail is
-        // obviously outside any ULP bound, not just numerically close.
-        let mut a = vec![0.001f32; 9];
-        let mut b = vec![0.001f32; 9];
-        a[8] = 1000.0;
-        b[8] = 1000.0;
-        let scalar = v::dot_f32_scalar(&a, &b);
-        let neon = unsafe { v::dot_f32_neon(&a, &b) };
-        let ulp = approx_ulp(neon, scalar);
-        assert!(ulp <= ULP_BOUND, "neon={neon} scalar={scalar} ulp={ulp} (tail={})", a[8]);
+    fn unequal_lengths_truncate_to_the_shorter() {
+        assert_eq!(v::dot_f32_scalar(&[1.0, 2.0, 3.0], &[1.0, 1.0]), 3.0);
     }
 
     #[test]
     fn empty_slices_give_zero() {
         let empty: [f32; 0] = [];
         assert_eq!(v::dot_f32_scalar(&empty, &empty), 0.0);
-        assert_eq!(unsafe { v::dot_f32_neon(&empty, &empty) }, 0.0);
     }
 }
 

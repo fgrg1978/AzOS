@@ -588,23 +588,12 @@ impl Boot for Aarch64 {
 // Vector (B1.vec)
 // ──────────────────────────────────────────────────────────────────────────
 //
-// NEON is mandatory on ARMv8 — no probe, no fallback path
-// selection. `is_accelerated` returns `true` unconditionally
-// because we *always* go through NEON intrinsics.
+// The scalar loop: the kernel is soft-float (`fp::dot_f32_scalar`).
 
 #[cfg(target_arch = "aarch64")]
 impl Vector for Aarch64 {
     #[inline]
     fn dot_f32(&self, a: &[f32], b: &[f32]) -> f32 {
-        // Runtime dispatcher — SVE detection lives in fp.rs;
-        // path falls back to NEON unconditionally until we have
-        // SVE-capable hardware to validate a real `dot_f32_sve`.
-        // Same shape as x86_64's AVX/SSE2 dispatch.
-        crate::fp::dot_f32_best(a, b)
-    }
-
-    #[inline]
-    fn is_accelerated(&self) -> bool {
-        true
+        crate::fp::dot_f32_scalar(a, b)
     }
 }
