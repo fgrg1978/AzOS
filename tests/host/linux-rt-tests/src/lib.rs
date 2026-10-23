@@ -50,6 +50,11 @@ mod tests {
         broken_pipes: bool,
         /// `handle_set_nonblock` calls, in order.
         nonblock: Vec<(u32, bool)>,
+        /// `resume_with_thread_pointer`: what a failed create answers (0: the
+        /// resume happens, modelled as a panic, the call not returning), and
+        /// each call's (thread pointer, result register of the frame).
+        resume_fails: i64,
+        resumed: Vec<(u64, u64)>,
     }
 
     struct Mock(RefCell<Model>);
@@ -232,6 +237,17 @@ mod tests {
         fn exit(&self, code: i32) -> ! {
             self.0.borrow_mut().exited = Some(code);
             panic!("exit({code})");
+        }
+        fn resume_with_thread_pointer(&self, frame: &ForeignFrame, tp: u64) -> i64 {
+            let fails = {
+                let mut m = self.0.borrow_mut();
+                m.resumed.push((tp, frame.gpr[0]));
+                m.resume_fails
+            };
+            if fails != 0 {
+                return fails;
+            }
+            panic!("resumed on a thread with fs {tp:#x}");
         }
     }
 
@@ -909,10 +925,44 @@ mod tests {
         let r = rt();
         // lseek is 8 here (62 is kill in the asm-generic table and lseek's number there).
         assert_eq!(xcall(&r, xnr::LSEEK, [3, 0, 0, 0, 0, 0]), -le::ENOSYS);
-        assert_eq!(xcall(&r, xnr::ARCH_PRCTL, [0x1002, 0, 0, 0, 0, 0]), -le::ENOSYS);
         let console = String::from_utf8(r.native().0.borrow().console.clone()).unwrap();
         assert!(console.contains("syscall 8 not answered"), "{console}");
-        assert!(console.contains("syscall 158 not answered"), "{console}");
+    }
+
+    /// `arch_prctl(ARCH_SET_FS)` resumes the program on a thread started with
+    /// the base, the frame already carrying the call's 0; the call does not
+    /// come back, and `ARCH_GET_FS` then answers the base.
+    ///
+    /// **Canary.** Write the result after the resume (or not at all): the
+    /// recorded result register is the call number, red.
+    #[test]
+    fn x86_arch_prctl_set_fs_resumes_on_a_thread_with_the_base() {
+        let r = rt();
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            xcall(&r, xnr::ARCH_PRCTL, [0x1002, 0x7f00_1000, 0, 0, 0, 0])
+        }));
+        assert!(res.is_err(), "a set that worked must not return to the trapping thread");
+        assert_eq!(r.native().0.borrow().resumed, vec![(0x7f00_1000, 0)]);
+        let mut base = 0u64;
+        assert_eq!(xcall(&r, xnr::ARCH_PRCTL, [0x1003, &mut base as *mut u64 as u64, 0, 0, 0, 0]), 0);
+        assert_eq!(base, 0x7f00_1000);
+    }
+
+    /// A set no thread could be made for answers the native error, and the
+    /// old base stays; a non-canonical base is `-EPERM` without a create, an
+    /// unknown code `-EINVAL`.
+    #[test]
+    fn x86_arch_prctl_refusals() {
+        let r = rt();
+        r.native().0.borrow_mut().resume_fails = -11;
+        assert_eq!(xcall(&r, xnr::ARCH_PRCTL, [0x1002, 0x7f00_1000, 0, 0, 0, 0]), -le::EAGAIN);
+        let mut base = 1u64;
+        assert_eq!(xcall(&r, xnr::ARCH_PRCTL, [0x1003, &mut base as *mut u64 as u64, 0, 0, 0, 0]), 0);
+        assert_eq!(base, 0, "a failed set left the base it replaced");
+        assert_eq!(xcall(&r, xnr::ARCH_PRCTL, [0x1002, 1 << 47, 0, 0, 0, 0]), -le::EPERM);
+        assert_eq!(r.native().0.borrow().resumed.len(), 1, "a refused base made a thread");
+        assert_eq!(xcall(&r, xnr::ARCH_PRCTL, [0x1001, 0, 0, 0, 0, 0]), -le::EINVAL);
+        assert_eq!(xcall(&r, xnr::ARCH_PRCTL, [0x1003, 0, 0, 0, 0, 0]), -le::EFAULT);
     }
 
     #[test]

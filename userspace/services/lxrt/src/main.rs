@@ -143,7 +143,115 @@ impl Native for Sys {
     fn exit(&self, code: i32) -> ! {
         sys::exit(code)
     }
+    // x86-64 `arch_prctl(ARCH_SET_FS)`, the only caller: `successor` below.
+    fn resume_with_thread_pointer(&self, frame: &ForeignFrame, tp: u64) -> i64 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            successor::start(frame, tp)
+        }
+        // The thread pointer is a register ring 3 writes itself here: the
+        // runtime is never asked.
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (frame, tp);
+            azos_abi::error::Errno::ENOSYS.to_syscall_ret()
+        }
+    }
 }
+
+// arch-only: x86_64's `arch_prctl(ARCH_SET_FS)`; riscv64's `tp` and aarch64's
+// `TPIDR_EL0` are written by the program itself.
+#[cfg(target_arch = "x86_64")]
+mod successor {
+    use super::{sys, ForeignFrame};
+    use azos_abi::syscall_nr::{SLEEP_RELATIVE, SYS_SLEEP_UNTIL, SYS_THREAD_CREATE};
+
+    /// The successor's stack: used from its first instruction to its resume
+    /// of the program, by one successor at a time (the runtime hosts no Linux
+    /// threads on x86_64, so one thread traps at a time).
+    const STACK_BYTES: usize = 4096;
+    #[repr(C, align(16))]
+    struct Stack(core::cell::UnsafeCell<[u8; STACK_BYTES]>);
+    // SAFETY: only the successor thread touches it, see above.
+    unsafe impl Sync for Stack {}
+    static STACK: Stack = Stack(core::cell::UnsafeCell::new([0; STACK_BYTES]));
+
+    // The successor starts here with `rsp` at its stack's (aligned) top and
+    // the frame in `rdx`: realign for a call and resume. A section of its
+    // own, padded to 16 bytes: code the linker places after it (the runtime's
+    // `_start`) keeps its alignment, and the kernel refuses an odd entry.
+    core::arch::global_asm!(
+        ".pushsection .text.lxrt_successor,\"ax\",@progbits",
+        ".p2align 4",
+        ".globl lxrt_successor_entry",
+        "lxrt_successor_entry:",
+        "    and rsp, -16",
+        "    call lxrt_successor",
+        "    ud2",
+        ".p2align 4",
+        ".popsection",
+    );
+
+    unsafe extern "C" {
+        fn lxrt_successor_entry();
+    }
+
+    /// Start the successor of the calling thread with FS base `tp`, resuming
+    /// `frame`, and park the caller for good; the native error when no thread
+    /// could be made. The frame and the program's stack below it are the
+    /// program's again the moment the successor runs, so nothing may touch
+    /// the stack after the create: the park loop is registers only, and the
+    /// parked thread is ended with the process (the successor's
+    /// `exit_group`).
+    pub(super) fn start(frame: &ForeignFrame, tp: u64) -> i64 {
+        let top = STACK.0.get() as usize + STACK_BYTES;
+        let r: i64;
+        // SAFETY: SYS_THREAD_CREATE(entry, stack, arg = the frame, no
+        // clear-tid word, tls); on success the loop never ends, so the
+        // registers it rewrites are never read back. On failure only rax and
+        // the call's clobbers changed.
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                "test rax, rax",
+                "js 3f",
+                "2:",
+                "mov eax, {sleep}",
+                "mov rdi, {hour}",
+                "mov esi, {rel}",
+                "syscall",
+                "jmp 2b",
+                "3:",
+                sleep = const SYS_SLEEP_UNTIL,
+                hour = const 3_600_000_000_000u64,
+                rel = const SLEEP_RELATIVE,
+                inlateout("rax") SYS_THREAD_CREATE as i64 => r,
+                in("rdi") lxrt_successor_entry as *const () as usize as u64,
+                in("rsi") top as u64,
+                in("rdx") frame as *const ForeignFrame as u64,
+                in("r10") 0u64,
+                in("r8") tp,
+                lateout("rcx") _, lateout("r11") _,
+                options(nostack),
+            );
+        }
+        r
+    }
+
+    /// The successor: resume the program's frame, which carries the call's
+    /// result, on this thread and its FS base.
+    ///
+    /// # Safety
+    /// `frame` is the frame of the trap [`start`] answered; the thread that
+    /// took it never returns to user mode.
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn lxrt_successor(_zero: u64, _stack: u64, frame: *const ForeignFrame) -> ! {
+        // SAFETY: as above.
+        unsafe { sys::foreign_resume(frame) };
+        sys::exit(121)
+    }
+}
+
 
 static RT: Runtime<Sys> = Runtime::new(Sys);
 

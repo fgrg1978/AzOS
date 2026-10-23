@@ -1028,7 +1028,7 @@ mod x86_64_face {
     /// numbers them: this is the whole translated set.
     const ANSWERED: &[u64] = &[
         0, 1, 2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 16, 19, 20, 22, 24, 32, 33, 35, 39, 56, 57, 58, 60, 61, 63, 72,
-        79, 80, 95, 102, 104, 107, 108, 110, 127, 131, 157, 186, 204, 217, 218, 228, 231, 257, 262, 292, 293,
+        79, 80, 95, 102, 104, 107, 108, 110, 127, 131, 157, 158, 186, 204, 217, 218, 228, 231, 257, 262, 292, 293,
     ];
 
     #[test]
@@ -1042,7 +1042,9 @@ mod x86_64_face {
         // What the runtime cannot answer is not translated (and so is reported
         // under its x86-64 number, not an asm-generic one that means another call).
         assert!(x86::translate(nr::LSEEK, [0; 6]).is_none(), "no seek in the runtime");
-        assert!(x86::translate(nr::ARCH_PRCTL, [0; 6]).is_none(), "ring 3 cannot write the FS base");
+        // arch_prctl has no asm-generic number: the runtime answers it itself.
+        assert_eq!(x86::translate(nr::ARCH_PRCTL, [0x1002, 7, 0, 0, 0, 0]).map(|c| (c.num, c.args[1], c.post)),
+                   Some((nr::ARCH_PRCTL, 7, x86::Post::ArchPrctl)));
         assert!(x86::translate(10, [0; 6]).is_none(), "mprotect");
         assert!(x86::translate(202, [0; 6]).is_none(), "futex");
     }
@@ -1051,6 +1053,10 @@ mod x86_64_face {
     fn every_translation_lands_on_a_call_the_personality_answers() {
         for &n in ANSWERED {
             let c = call(n, [0; 6]);
+            // arch_prctl keeps its x86-64 number: the runtime answers it itself.
+            if c.post == x86::Post::ArchPrctl {
+                continue;
+            }
             assert!(lx::native_reach(c.num).is_some(), "x86-64 {n} -> generic {} is not in the personality's table", c.num);
         }
     }
@@ -1175,7 +1181,7 @@ mod x86_64_face {
             assert_eq!(n, want, "XNR_{name} is not the x86-64 number of `{name}`");
             defined.insert(name.to_string());
         }
-        let refused = ["lseek", "arch_prctl"];
+        let refused = ["lseek"];
         let mut used = std::collections::BTreeSet::new();
         for (i, _) in src.match_indices("xsc") {
             let rest = src[i + 3..].trim_start_matches(|c: char| c.is_ascii_digit());

@@ -21117,18 +21117,9 @@ PYEOF
                 LX_BUSYBOX_STATE=yes
                 # x86_64's volume needs the x86_64 userspace: without it only
                 # the x86 rows are skipped (make_disk would end the gate).
-                # They are also skipped while the x86_64 runtime leaves
-                # `arch_prctl` (158) unanswered: musl's static TLS setup
-                # (ARCH_SET_FS) then fails and BusyBox stops at its first
-                # instruction past it (`hlt`, #GP), so every row would fail
-                # on that one cause. Answered = ARCH_PRCTL named anywhere but
-                # its number's definition, in the translation or the runtime.
                 rm -f $AZOS_OUT/build/disk-x86_64-busybox.img*
                 LX_BUSYBOX_X86_WHY="no x86_64 volume (see $CI_LOG_DIR/busybox-x86-disk.log)"
-                if ! grep -n 'ARCH_PRCTL' "$REPO_ROOT/crates/core/linux-abi/src/x86_64.rs" "$REPO_ROOT/userspace/lib/linux_rt/src/lib.rs" \
-                     | grep -qv 'pub const ARCH_PRCTL'; then
-                    LX_BUSYBOX_X86_WHY="the x86_64 runtime does not answer arch_prctl (158): musl cannot set its TLS (crates/core/linux-abi/src/x86_64.rs)"
-                elif make $AZOS_OUT/build/disk-x86_64-busybox.img >"$CI_LOG_DIR/busybox-x86-disk.log" 2>&1; then
+                if make $AZOS_OUT/build/disk-x86_64-busybox.img >"$CI_LOG_DIR/busybox-x86-disk.log" 2>&1; then
                     cp -p $AZOS_OUT/build/disk-x86_64-busybox.img $AZOS_OUT/build/disk-x86_64-busybox.img.pristine
                     LX_BUSYBOX_X86=yes
                 fi

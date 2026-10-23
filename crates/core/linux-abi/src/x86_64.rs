@@ -16,8 +16,11 @@
 //! host.
 //!
 //! Only the calls the runtime answers are translated. Anything else (`lseek`,
-//! `mprotect`, `arch_prctl`, ...) is [`translate`]'s `None`, and the runtime
-//! answers it `-ENOSYS` under its x86-64 number, reported once. The
+//! `mprotect`, ...) is [`translate`]'s `None`, and the runtime answers it
+//! `-ENOSYS` under its x86-64 number, reported once. `arch_prctl` has no
+//! asm-generic counterpart: it is translated to itself ([`Post::ArchPrctl`])
+//! and answered by the runtime, which installs a new FS base the one way ring
+//! 3 can have one (a thread started with it, `SYS_THREAD_CREATE`'s tls). The
 //! runtime keeps no signal frame: `rt_sigaction` is state only, as on the
 //! other ISAs.
 //!
@@ -80,9 +83,22 @@ pub mod nr {
     pub const PIPE2: u64 = 293;
     /// Not answered (the runtime has no seek): named so the test can say so.
     pub const LSEEK: u64 = 8;
-    /// Not answered: the thread pointer is hardware state the runtime may not
-    /// touch, and ring 3 cannot write the FS base (CR4.FSGSBASE is off).
+    /// The thread pointer (the FS base): [`super::arch_prctl`].
     pub const ARCH_PRCTL: u64 = 158;
+}
+
+/// `arch_prctl`'s codes (Linux `arch/x86/include/uapi/asm/prctl.h`):
+/// the two the runtime answers. musl's static start sets its TLS with
+/// [`SET_FS`] before anything else, so without it no musl program runs.
+pub mod arch_prctl {
+    /// Set the FS base (the thread pointer) to the second argument.
+    pub const SET_FS: u64 = 0x1002;
+    /// Store the FS base at the address in the second argument.
+    pub const GET_FS: u64 = 0x1003;
+    /// The first FS base `SET_FS` refuses (`-EPERM`): the canonical lower
+    /// half under 4-level paging, which a `wrmsr` of `IA32_FS_BASE` accepts
+    /// in the kernel (`azos_arch`'s `is_user_tls_base`).
+    pub const FS_LIMIT: u64 = 1 << 47;
 }
 
 /// Index in `azos_abi::foreign::ForeignFrame::gpr` of the register that
@@ -120,6 +136,9 @@ pub enum Post {
     /// `rt_sigaction`: the kernel `struct sigaction` is `{handler, flags,
     /// restorer, mask}`, the layout `Arch::Aarch64` has.
     Sigaction,
+    /// `arch_prctl(code, addr)`, which has no asm-generic number: the
+    /// runtime answers it itself ([`arch_prctl`]).
+    ArchPrctl,
 }
 
 /// A trapped x86-64 call, in the runtime's asm-generic terms.
@@ -204,6 +223,7 @@ pub fn translate(num: u64, a: [u64; 6]) -> Option<Call> {
         // Layouts only the x86-64 side knows.
         nr::UNAME => c(g::UNAME, a, Post::Uname(a[0])),
         nr::RT_SIGACTION => c(g::RT_SIGACTION, a, Post::Sigaction),
+        nr::ARCH_PRCTL => c(nr::ARCH_PRCTL, a, Post::ArchPrctl),
         _ => None,
     }
 }

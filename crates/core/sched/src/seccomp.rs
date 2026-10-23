@@ -1573,6 +1573,10 @@ pub const THIRDPARTY_PROFILES: &[ImageProfile] = &[
             // Wave 13: `kill` (ash's builtin, its children only) and the
             // console the shell lends its foreground job (interactive `sh`).
             SYS_ALERT,
+            // x86_64 under the ring-3 runtime: musl's start sets its TLS with
+            // `arch_prctl(ARCH_SET_FS)`, answered by a thread started with
+            // the base (`azos_linux_rt`'s `resume_with_thread_pointer`).
+            SYS_THREAD_CREATE,
             // The ring-3 runtime's own calls (`azos_linux_rt::RUNTIME_NATIVE`).
             SYS_FOREIGN_ENTRY, SYS_FOREIGN_RESUME, SYS_GETPID, SYS_CAP_INFO,
         ],

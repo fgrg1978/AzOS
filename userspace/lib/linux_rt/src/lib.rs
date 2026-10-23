@@ -178,6 +178,13 @@ pub trait Native {
     fn waitpid(&self, tid: u32, code: &mut i32) -> i64;
     /// `SYS_EXIT`.
     fn exit(&self, code: i32) -> !;
+    /// Resume the program at `frame` with thread pointer `tp` (x86-64
+    /// `arch_prctl(ARCH_SET_FS)`): ring 3 cannot write its FS base, and the
+    /// kernel writes one only at a thread's first entry, so a new thread of
+    /// the process started with `tp` (`SYS_THREAD_CREATE`) resumes the frame
+    /// and the calling thread never returns to user mode. Comes back only
+    /// when no thread could be made: the native negative code.
+    fn resume_with_thread_pointer(&self, frame: &ForeignFrame, tp: u64) -> i64;
 }
 
 // ── A lock for the process's state ──────────────────────────────────────────
@@ -296,6 +303,8 @@ struct State {
     brk_cur: u64,
     /// The end of the pages mapped for the break (`brk_cur` rounded up).
     brk_end: u64,
+    /// The FS base `arch_prctl(ARCH_SET_FS)` installed (x86-64; 0 at start).
+    fs_base: u64,
 }
 
 /// Children one process may have unreaped at once.
@@ -317,6 +326,7 @@ const STATE_INIT: State = State {
     children: [0; CHILDREN],
     brk_cur: 0,
     brk_end: 0,
+    fs_base: 0,
 };
 
 /// The layouts of the asm-generic calls the runtime answers. x86_64 has none
@@ -435,6 +445,7 @@ impl<N: Native> Runtime<N> {
                     Post::None => self.call(c.num, a[0], a[1], a[2], a[3], a[4], a[5]),
                     Post::Sigaction => self.sys_rt_sigaction(lx::Arch::Aarch64, a[0], a[1], a[2], a[3]),
                     Post::Uname(buf) => put_user(buf, &x86::utsname_bytes(b"azos")),
+                    Post::ArchPrctl => self.sys_arch_prctl(f, a[0], a[1]),
                     Post::DupSame(fd) => {
                         let r = self.call(c.num, a[0], a[1], a[2], a[3], a[4], a[5]);
                         if r < 0 { r } else { fd as i64 }
@@ -457,6 +468,28 @@ impl<N: Native> Runtime<N> {
             }
         };
         f.gpr[x86::REG_RESULT] = r as u64;
+    }
+
+    /// `arch_prctl(code, addr)` (x86-64): the FS base, musl's thread pointer.
+    /// `ARCH_SET_FS` writes the result into the frame first and resumes the
+    /// program on a thread started with the base ([`Native::resume_with_thread_pointer`]):
+    /// it returns only when that failed, with the base not installed.
+    /// `ARCH_GET_FS` stores the base last installed. A non-canonical base is
+    /// `-EPERM`, any other code `-EINVAL`, as Linux answers them.
+    fn sys_arch_prctl(&self, f: &mut ForeignFrame, code: u64, addr: u64) -> i64 {
+        use lx::x86_64::arch_prctl::{FS_LIMIT, GET_FS, SET_FS};
+        match code {
+            SET_FS if addr >= FS_LIMIT => neg(le::EPERM),
+            SET_FS => {
+                let old = self.st.with(|s| core::mem::replace(&mut s.fs_base, addr));
+                f.gpr[lx::x86_64::REG_RESULT] = 0;
+                let r = self.native.resume_with_thread_pointer(f, addr);
+                self.st.with(|s| s.fs_base = old);
+                lx::errno_from_native(r, le::ENOMEM)
+            }
+            GET_FS => put_user(addr, &self.st.with(|s| s.fs_base).to_le_bytes()),
+            _ => neg(le::EINVAL),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

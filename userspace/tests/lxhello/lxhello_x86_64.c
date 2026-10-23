@@ -14,11 +14,11 @@
 // gate row reads (`tools/ci_check.sh`, "x86_64 linux: hosted by the ring-3
 // runtime"), and ends with `lx: rt done failures=N`.
 //
-// Only what the runtime answers is called, plus the calls it must refuse
-// (`lseek`, `arch_prctl`: -ENOSYS). The numbers below are musl's
+// Only what the runtime answers is called, plus the call it must refuse
+// (`lseek`: -ENOSYS). The numbers below are musl's
 // (`arch/x86_64/bits/syscall.h.in`); `tests/host/linux-abi-tests` reads this
 // file and checks every `XNR_` against the runtime's own table, and that the
-// runtime answers every call the program issues except the two it refuses.
+// runtime answers every call the program issues except the one it refuses.
 
 typedef unsigned long u64;
 typedef long i64;
@@ -69,6 +69,7 @@ typedef unsigned char u8;
 #define O_TRUNC    01000
 #define O_DIRECTORY 0200000
 
+#define EPERM  1
 #define ENOENT 2
 #define EBADF  9
 #define ECHILD 10
@@ -383,10 +384,23 @@ static void stage_rt(i64 *sp)
     if (r >= 0) xsc1(XNR_close, r);
 
     // What the runtime does not answer: -ENOSYS, under the x86-64 numbers
-    // (seek is 8 here; 62 would be kill). The thread pointer is hardware
-    // state the runtime may not touch, so arch_prctl is among them.
-    check("rt: unanswered call", xsc3(XNR_lseek, 3, 0, 0) == -ENOSYS && xsc2(XNR_arch_prctl, 0x1002, 0) == -ENOSYS
-          && xsc0(1000) == -ENOSYS, "rc", xsc0(1000));
+    // (seek is 8 here; 62 would be kill).
+    check("rt: unanswered call", xsc3(XNR_lseek, 3, 0, 0) == -ENOSYS && xsc0(1000) == -ENOSYS, "rc", xsc0(1000));
+
+    // The thread pointer, as musl's start sets it: ARCH_SET_FS (0x1002)
+    // resumes this program on a thread started with the new FS base (ring 3
+    // cannot write it), so the block is read back through %fs, and
+    // ARCH_GET_FS (0x1003) answers the base. The fork stage below runs on
+    // it: the child keeps the base.
+    static u64 tls_block[2] = { 0, 0x6c78746c73ULL };
+    tls_block[0] = (u64)tls_block; // the TCB's self-pointer, as musl's
+    u64 base = 0, at_fs = 0;
+    r = xsc2(XNR_arch_prctl, 0x1002, tls_block);
+    if (r == 0) __asm__ volatile("movq %%fs:8, %0" : "=r"(at_fs));
+    i64 g = xsc2(XNR_arch_prctl, 0x1003, &base);
+    check("rt: arch_prctl sets the FS base", r == 0 && g == 0 && base == (u64)tls_block && at_fs == tls_block[1], "rc", r);
+    r = xsc2(XNR_arch_prctl, 0x1002, 1UL << 47);
+    check("rt: arch_prctl refuses a non-canonical base", r == -EPERM, "rc", r);
 
     stage_fork();
 
