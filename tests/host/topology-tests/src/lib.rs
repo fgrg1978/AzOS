@@ -3058,25 +3058,23 @@ mod ioport_cap_tests {
             });
             got
         };
+        // One task (the suite's pool is small): each step's records after the last's.
         let tid = fresh_tid();
+        let refused = |n: [u64; 3]| (Verdict::Refuse as u8, n);
         assert!(ioport_grant_in(tid, "1016.1", CapPerms::RW, 1024, reserved).is_none(), "COM1's data port");
-        assert_eq!(records(tid), vec![(Verdict::Refuse as u8, [0x3F8, 0x3F8, 0x3F8])]);
-        let tid = fresh_tid();
+        assert_eq!(records(tid), vec![refused([0x3F8, 0x3F8, 0x3F8])]);
         assert!(ioport_grant_in(tid, "1008.16", CapPerms::RW, 1024, reserved).is_none(), "a range over COM1");
         assert!(ioport_grant_in(tid, "64.4", CapPerms::RW, 1024, reserved).is_none(), "the PIT with channel 0");
-        assert_eq!(records(tid), vec![(Verdict::Refuse as u8, [0x3F0, 0x3FF, 0x3F8]),
-                                      (Verdict::Refuse as u8, [0x40, 0x43, 0x40])]);
+        let all = vec![refused([0x3F8, 0x3F8, 0x3F8]), refused([0x3F0, 0x3FF, 0x3F8]), refused([0x40, 0x43, 0x40])];
+        assert_eq!(records(tid), all);
         // The positive controls: no kernel port in the range, a grant and no record.
-        let tid = fresh_tid();
         for spec in ["66.2", "97.1", "128.1", "1000.8"] {
             assert!(ioport_grant_in(tid, spec, CapPerms::RW, 1024, reserved).is_some(), "{spec}");
         }
-        assert_eq!(records(tid), vec![]);
         // A target the minter refuses first is not a kernel-port refusal.
-        let tid = fresh_tid();
         assert!(ioport_grant_in(tid, "1016.1", CapPerms::READ, 1024, reserved).is_none());
         assert!(ioport_grant_in(tid, "1020.8", CapPerms::RW, 1024, reserved).is_none());
-        assert_eq!(records(tid), vec![]);
+        assert_eq!(records(tid), all, "no record but the kernel-port refusals");
     }
 
     /// The seed arm reaches the minter: on this build's port space (the
