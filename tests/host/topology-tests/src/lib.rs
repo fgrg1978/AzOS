@@ -6003,6 +6003,9 @@ mod principal_session;
 // The built-in rows' priorities: stated, unclamped, in service-graph order.
 #[cfg(test)]
 mod ring3_priority_order;
+// Who may write the USB stick's volume (`/usb`, Kconfig `USB_STORAGE_VOLUME`).
+#[cfg(test)]
+mod usb_volume_grant;
 
 /// A grant's `ops` becomes the op mask of the capability the task holds.
 #[cfg(test)]

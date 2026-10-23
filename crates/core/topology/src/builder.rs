@@ -2698,7 +2698,39 @@ const SH_MEM_PAGES: u32 = 64;
 /// headroom for a longer period).
 const TOOLBOX_MEM_PAGES: u32 = 64;
 
-const SH_CAPS: &[CapSpec] = &[
+/// What the shell holds outside `CONSOLE_LOCKDOWN`, before the launch grants
+/// of the optional rows ([`SH_CAPS_UNLOCKED`]): [`SH_CAPS_BASE`], and with
+/// Kconfig `USB_STORAGE_VOLUME` the stick's volume read-write ([`USB_RW`]),
+/// so a redirection writes the crash log out to it (`cat /fat/CRASH.LOG >
+/// /usb/CRASH.LOG`). No other row may change the stick; every row reads it
+/// through [`ROOT_RO`] (the package tool opens a package there).
+const SH_CAPS: &[CapSpec] = if azos_limits::USB_STORAGE_VOLUME { &SH_CAPS_WITH_USB } else { SH_CAPS_BASE };
+const SH_CAPS_WITH_USB: [CapSpec<'static>; SH_CAPS_BASE.len() + 1] = caps_concat(SH_CAPS_BASE, &[USB_RW]);
+/// The USB stick's volume, read-write.
+const USB_RW: CapSpec = CapSpec {
+    kind: CapKind::Node,
+    perms: CapPerms::RW,
+    target: MaybeStr::from_bytes(crate::types::USB_VOLUME_PATH), transfer: false, ops: 0,
+};
+
+/// `a` followed by `b`, as one array of exactly that length.
+const fn caps_concat<const N: usize>(a: &[CapSpec<'static>], b: &[CapSpec<'static>]) -> [CapSpec<'static>; N] {
+    assert!(N == a.len() + b.len(), "caps_concat: N is both lists");
+    let mut out = [a[0]; N];
+    let mut i = 0;
+    while i < a.len() {
+        out[i] = a[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < b.len() {
+        out[a.len() + j] = b[j];
+        j += 1;
+    }
+    out
+}
+
+const SH_CAPS_BASE: &[CapSpec] = &[
     CapSpec {
         kind: CapKind::Node,
         perms: CapPerms::EXEC,

@@ -85,7 +85,7 @@ pub use types::{
 pub use types::{
     dev_name_ok, ActivitySpec, ActivityTrigger, AudioDir, AudioSpec, BootChainSpec, DisplaySpec, EffectKind, EnvelopeSpec,
     FieldbusKind, FieldbusSpec, IslandSpec, KeyPurpose, KeySource, KeySpec, MissionSpec, ModelSpec, NicSpec, NumaSpec,
-    RtcSpec, TsnSpec, UsbAuthorize, UsbSpec, UserSpec, AUDIO_CHANNELS_MAX, AUDIO_RATE_HZ, GUEST_PASSTHROUGH,
+    RtcSpec, TsnSpec, UsbAuthorize, UsbSpec, UserSpec, USB_VOLUME_PATH, AUDIO_CHANNELS_MAX, AUDIO_RATE_HZ, GUEST_PASSTHROUGH,
     GUEST_STATIC_ALIGN, ISLAND_WAKE, MAX_ACTIVITIES, MAX_AUDIO, MAX_BOOT_STAGES, MAX_DISPLAYS, MAX_ENVELOPES,
     MAX_FIELDBUS, MAX_ISLANDS, MAX_KEYS, MAX_MODELS, MAX_NICS, MAX_NUMA, MAX_TSN, MAX_USB_RULES, MAX_USERS,
     NIC_MTU_DEFAULT, NIC_MTU_RANGE, NUMA_NODE_MAX, TSN_LINK_BUDGET_MAX, TSN_WINDOW_US_MAX,

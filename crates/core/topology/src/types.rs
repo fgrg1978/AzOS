@@ -1461,7 +1461,14 @@ impl<'a> VolumeSpec<'a> {
     }
 }
 
-/// Is `p` a mount point a volume row may name?
+/// Where the kernel mounts the FAT32 volume of a USB stick (Kconfig
+/// `USB_STORAGE_VOLUME`, `azos_fs::usbvol`): a tree a row may be granted
+/// (the shell's, to write the crash log out), and a path no volume row may
+/// take.
+pub const USB_VOLUME_PATH: &[u8] = b"/usb";
+
+/// Is `p` a mount point a volume row may name? Not `/fat` and not
+/// [`USB_VOLUME_PATH`], nor anything beneath them: those are the kernel's.
 pub fn mount_path_ok(p: &[u8]) -> bool {
     if p.len() < 2 || p.len() > MAX_TARGET_LEN || p[0] != b'/' {
         return false;
@@ -1472,7 +1479,7 @@ pub fn mount_path_ok(p: &[u8]) -> bool {
             && c != b".."
             && c.iter().all(|&b| b.is_ascii_graphic() && !matches!(b, b'"' | b'\\' | b'#'))
     });
-    comps_ok && p != b"/fat" && !p.starts_with(b"/fat/")
+    comps_ok && !paths_overlap(p, b"/fat") && !paths_overlap(p, USB_VOLUME_PATH)
 }
 
 /// Whether two [`mount_path_ok`] paths are equal or one lies inside the other,
