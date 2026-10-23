@@ -41,6 +41,11 @@ rt-proxy-canary = []
 # must go red), or never binds (`..._is_still_refused_under_fixed_priority`).
 rt-levels-always-canary = ["azos_abi/rt-levels-always-canary"]
 rt-levels-never-canary = ["azos_abi/rt-levels-never-canary"]
+# Canary of the smokes' sizing (`rt_exactness`, "The hart is not empty"): the
+# probes are sized from an empty hart instead of `rt::hart_load`, as the
+# `sched-rt` admit and `sched-rt-util` u93/suspend smokes were; their three
+# tests must go red.
+rt-hart-load-canary = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources

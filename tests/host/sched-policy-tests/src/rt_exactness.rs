@@ -283,3 +283,134 @@ fn a_set_only_the_level_rule_refused_is_still_refused_under_fixed_priority() {
     assert_eq!(misses_in(LevelOrder::Fixed, &set, 2_000), vec![0, 100], "fixed priority did not cost L its deadlines");
     assert_eq!(admits(LevelOrder::Fixed, &set), Err(Refusal::Levels), "fixed priority admitted a set that misses");
 }
+
+// ── The hart is not empty (the `sched-rt` / `sched-rt-util` smokes) ──────
+//
+// With IRQ_THREADED the kernel's IRQ thread holds a hard reservation in the
+// band on the boot hart (IRQ_THREAD_BUDGET_PCT of IRQ_THREAD_PERIOD_US: 10 %
+// of 1 ms by default) before any smoke runs, so the smokes size their probes
+// from `rt::hart_load` with `headroom` and `ppm_of_us`. One tick is 1 us here.
+// Canary `rt-hart-load-canary`: the sizing reads an empty hart (what the
+// smokes assumed), and the three probes below are refused as the rows were.
+
+/// The default band cap, `RT_BAND_CAP_PCT` = 95.
+const CAP: u32 = 950_000;
+/// The IRQ thread's server: its whole budget every period, the most it takes.
+const IRQ: Srv = srv(100, 1_000, 1_000, W);
+
+/// What the hart holds before the smoke: the IRQ thread's density, in the band.
+fn irq_load() -> HartLoad {
+    let d = density_ppm(IRQ.q, IRQ.t, IRQ.d).unwrap();
+    HartLoad { total_ppm: d, band_ppm: d }
+}
+
+/// The load a smoke sizes from: `rt::hart_load`, or an empty hart under the
+/// canary.
+fn seen(load: HartLoad) -> HartLoad {
+    if cfg!(feature = "rt-hart-load-canary") { HartLoad::default() } else { load }
+}
+
+/// Band admission of `set` on one hart that already holds `load`, server by
+/// server, as `rt::reserve` books a band reservation; the load after it.
+fn band_admits(mut load: HartLoad, set: &[Srv]) -> Result<HartLoad, Refusal> {
+    for v in set {
+        let dens = density_ppm(v.q, v.t, v.d)?;
+        fits(load, dens, true, CAP)?;
+        load.total_ppm += dens;
+        load.band_ppm += dens;
+    }
+    Ok(load)
+}
+
+/// `headroom` is the largest density `fits` accepts, for a band task and for
+/// any other, on an empty, a band-loaded, a mixed and a full hart.
+#[test]
+fn headroom_is_the_largest_density_fits_accepts() {
+    let loads = [
+        HartLoad::default(),
+        irq_load(),
+        HartLoad { total_ppm: 700_000, band_ppm: 700_000 },
+        HartLoad { total_ppm: 600_000, band_ppm: 500_000 },
+        HartLoad { total_ppm: 980_000, band_ppm: 0 },
+        HartLoad { total_ppm: 1_000_000, band_ppm: 900_000 },
+    ];
+    for l in loads {
+        for band in [false, true] {
+            let h = headroom(l, band, CAP);
+            assert_eq!(fits(l, h, band, CAP), Ok(()), "{l:?} band={band}: headroom {h} does not fit");
+            assert!(fits(l, h + 1, band, CAP).is_err(), "{l:?} band={band}: more than headroom {h} fits");
+        }
+    }
+    assert_eq!(headroom(irq_load(), true, CAP), 850_000);
+    assert_eq!(headroom(irq_load(), false, CAP), 900_000);
+}
+
+/// A budget from `ppm_of_us` never has a density above the ppm it was sized
+/// from, and one microsecond more does (it is the largest that fits).
+#[test]
+fn ppm_of_us_is_the_largest_budget_within_the_density() {
+    for w in [1_000u64, 2_000, 5_000, 10_000, 15_000, 40_000, 100_000] {
+        for ppm in [1u32, 99, 100_000, 210_000, 333_333, 850_000, 999_999, 1_000_000] {
+            let q = ppm_of_us(ppm, w);
+            if q > 0 {
+                assert!(density_ppm(q, w, 0).unwrap() <= ppm, "{q} of {w} is over {ppm}");
+            }
+            if q < w {
+                assert!(density_ppm(q + 1, w, 0).unwrap() > ppm, "{} of {w} still fits {ppm}", q + 1);
+            }
+        }
+    }
+}
+
+/// `sched-rt` admit: after the band's 60 %, a band reservation that fills
+/// the rest of the hart fits the hart and is refused by the band cap: 40 %
+/// on an empty hart, 30 % beside the IRQ thread. Sized from an empty hart
+/// (the canary, the old fixed 40 %), beside the IRQ thread it is refused for
+/// no room instead, which is the row's old red.
+#[test]
+fn the_admit_probe_fills_the_hart_and_meets_the_band_cap() {
+    for (base, want_us) in [(HartLoad::default(), 4_000), (irq_load(), 3_000)] {
+        let band60 = [srv(6_000, 10_000, 10_000, P)];
+        let after1 = band_admits(base, &band60).unwrap();
+        let sized = band_admits(seen(base), &band60).unwrap();
+        let fill_us = ppm_of_us((PPM as u32).saturating_sub(sized.total_ppm), 10_000);
+        let fill = density_ppm(fill_us, 10_000, 0).unwrap();
+        assert_eq!(fits(after1, fill, true, CAP), Err(Refusal::BandCap), "beside {base:?}");
+        assert!(fill > headroom(after1, true, CAP), "the probe fits the band beside {base:?}");
+        assert_eq!(fill_us, want_us, "beside {base:?}");
+    }
+}
+
+/// `sched-rt-util` u93: three fixed servers and a last one that fills the
+/// band to 2 % under the cap. Beside the IRQ thread the last takes 11 % (21 %
+/// on an empty hart), the hart sums to 93 %, the set is admitted, and no job
+/// misses with the IRQ thread taking its whole budget every period. Sized
+/// from an empty hart (the canary: the fixed 93 % set), it is refused.
+#[test]
+fn the_u93_set_filled_beside_the_irq_thread_is_admitted_and_keeps_its_deadlines() {
+    let mut set = [srv(1_200, 5_000, 5_000, P), srv(2_400, 10_000, 10_000, P), srv(3_600, 15_000, 20_000, P),
+        srv(8_400, 40_000, 40_000, P)];
+    let room = headroom(seen(irq_load()), true, CAP).saturating_sub(20_000);
+    let others: u32 = set[..3].iter().map(|v| density_ppm(v.q, v.t, v.d).unwrap()).sum();
+    set[3].q = ppm_of_us(room - others, set[3].d);
+    let after = band_admits(irq_load(), &set).expect("the filled u93 set is refused beside the IRQ thread");
+    assert_eq!((set[3].q, after.total_ppm), (4_400, 930_000));
+    let mut all = vec![IRQ];
+    all.extend_from_slice(&set);
+    assert_eq!(misses(&all, 80_000), vec![0; 5], "an admitted set missed beside the IRQ thread");
+}
+
+/// `sched-rt-util` suspend: A takes 40 %, or what the band has left beside
+/// the 50 % server B and the hart's load: 35 % beside the IRQ thread, which
+/// is admitted and keeps every deadline while B and the IRQ thread each take
+/// all they may. Sized from an empty hart (the canary, A at 40 %), the band
+/// cap refuses the pair.
+#[test]
+fn the_suspend_pair_beside_the_irq_thread_is_admitted_and_keeps_its_deadlines() {
+    let b = srv(1_000, 2_000, 20_000, W);
+    let left = headroom(seen(irq_load()), true, CAP).saturating_sub(density_ppm(b.q, b.t, b.d).unwrap());
+    let a = srv(ppm_of_us(left, 10_000).min(4_000), 10_000, 10_000, P);
+    band_admits(irq_load(), &[a, b]).expect("the suspend pair is refused beside the IRQ thread");
+    assert_eq!(a.q, 3_500);
+    assert_eq!(misses(&[IRQ, a, b], 100_000), vec![0, 0, 0], "A missed beside B and the IRQ thread");
+}

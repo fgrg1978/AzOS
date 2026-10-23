@@ -31,12 +31,16 @@
 //!   PASS: no miss, and X was throttled (its overrun counter grew). Canary
 //!   `rt-cbs-canary` (no charging): X's deadline never moves, it keeps the
 //!   level, A2 and C miss.
-//! * **admit** — run-time admission on hart 0: a band reservation of 60 %
-//!   (6/10 ms) fits; a second of 40 % does not fit the band cap (95 %) and is
-//!   REFUSED with `EBUSY` and a `[SCHED-RT] admission REFUSED` line; a
-//!   non-band one (level 20) of 10 % with a 100 ms deadline fits; one of 35 %
-//!   does not fit the hart; one of 10 % with a 10 ms deadline fits too
-//!   (80 % in all): the dispatch orders reservations by deadline across
+//! * **admit** — run-time admission on hart 0, beside what the kernel already
+//!   admitted there (`rt::hart_load`: with `IRQ_THREADED`, the IRQ thread's
+//!   `IRQ_THREAD_BUDGET_PCT` in the band, 10 % by default): a band
+//!   reservation of 60 % (6/10 ms) fits; a second that fills the rest of the
+//!   hart (40 % on an empty hart, 30 % beside the default IRQ thread) fits
+//!   the hart but not the band cap (95 %) and is REFUSED with `EBUSY` and a
+//!   `[SCHED-RT] admission REFUSED` line; a non-band one (level 20) of 10 %
+//!   with a 100 ms deadline fits; one of 35 % does not fit the hart; one of
+//!   10 % with a 10 ms deadline fits too (80 % in all, plus what the hart
+//!   held): the dispatch orders reservations by deadline across
 //!   levels, so the band's 6 ms at level [`EDF_PRIO`] do not run first and
 //!   the cross-level rule (`rt_core::levels_check`) does not bind. Canary
 //!   `rt-admit-canary` (no admission): the over-subscriptions are accepted.
@@ -61,7 +65,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
 use azos_sched::rt::{self, Reservation};
-use azos_sched::rt_core::Refusal;
+use azos_sched::rt_core::{self, Refusal};
 use azos_sched::{task_block_outcome, BlockOutcome, WaitReason};
 
 const HART: i8 = 0;
@@ -394,19 +398,30 @@ fn ctl_task(_: usize) {
     let r = |runtime_us, period_us, band| Reservation {
         runtime_us, period_us, deadline_us: 0, hard: true, cpu_mask: 1 << HART, band,
         level: if band { EDF_PRIO } else { 20 } };
+    // The hart is not empty: the kernel's own reservations sit there (the IRQ
+    // thread's, `IRQ_THREADED`), and the band probe is sized from what it holds.
+    let base = rt::hart_load(HART as usize);
     let r1 = rt::reserve(h1, r(6_000, 10_000, true));
-    let r2 = rt::reserve(h2, r(4_000, 10_000, true));
+    // A band reservation that fills the hart exactly: the hart has room for
+    // it, so the band cap is what refuses it. It can only probe the cap while
+    // the hart's non-band load leaves the band less room than the hart.
+    let after1 = rt::hart_load(HART as usize);
+    let fill_us = rt_core::ppm_of_us((rt_core::PPM as u32).saturating_sub(after1.total_ppm), 10_000);
+    let fill = rt_core::density_ppm(fill_us, 10_000, 0).unwrap_or(0);
+    let probe = fill > rt_core::headroom(after1, true, azos_limits::RT_BAND_CAP_PCT as u32 * 10_000);
+    let r2 = rt::reserve(h2, r(fill_us, 10_000, true));
     let r3 = rt::reserve(h3, r(10_000, 100_000, false));
     let r4 = rt::reserve(h4, r(35_000, 100_000, false));
     let r5 = rt::reserve(h5, r(1_000, 10_000, false));
     let (_, _, admitted, refused, arm_calls, arm_writes) = rt::stats();
     verdict("admit",
-        r1.is_ok() && r2 == Err(Refusal::BandCap) && r3.is_ok() && r4 == Err(Refusal::NoRoom)
+        r1.is_ok() && probe && r2 == Err(Refusal::BandCap) && r3.is_ok() && r4 == Err(Refusal::NoRoom)
             && r5.is_ok(),
-        format_args!("band60={:?} band40={:?} errno={} nonband10of100ms={:?} nonband35of100ms={:?} \
-            nonband10of10ms={:?} admitted={} refused={}",
-            r1.map(|_| "ok"), r2.map(|_| "ok"), r2.err().map_or(0, |e| -e.errno()),
-            r3.map(|_| "ok"), r4.map(|_| "ok"), r5.map(|_| "ok"), admitted, refused));
+        format_args!("hart_load_ppm={} band_load_ppm={} band60={:?} bandfill_us={}={:?} errno={} \
+            nonband10of100ms={:?} nonband35of100ms={:?} nonband10of10ms={:?} admitted={} refused={}",
+            base.total_ppm, base.band_ppm, r1.map(|_| "ok"), fill_us, r2.map(|_| "ok"),
+            r2.err().map_or(0, |e| -e.errno()), r3.map(|_| "ok"), r4.map(|_| "ok"), r5.map(|_| "ok"),
+            admitted, refused));
     HOLD.store(false, Ordering::Release);
 
     ring3_check();

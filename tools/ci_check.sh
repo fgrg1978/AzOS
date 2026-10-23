@@ -20791,7 +20791,9 @@ PYEOF
     #           LAT instrument's `now - deadline`).
     #   cbs   — a hard reservation that never stops (1 ms per 10 ms) beside
     #           two that must keep their deadlines; it must be throttled.
-    #   admit — run-time admission refuses a band over-subscription with
+    #   admit — run-time admission refuses a band over-subscription (sized
+    #           from what the hart already holds, rt::hart_load: the IRQ
+    #           thread's reservation with IRQ_THREADED) with
     #           EBUSY and a `[SCHED-RT] admission REFUSED` line, a hart
     #           over-subscription likewise, and admits a non-band
     #           reservation whose 10 ms deadline sits beside the band's 6 ms
@@ -20896,7 +20898,10 @@ PYEOF
     # `-icount shift=0,sleep=off`. One verdict line per phase,
     # `[RTUTIL] <phase> PASS|FAIL <isa>`, FAIL only from the failure path.
     # `-smp 1`: `u70-h1`/`u93-h1` (four hard-CBS reservations at 70 % and
-    # 93 % density, each job computing 95 % of its budget: zero misses),
+    # 93 % density, each job computing 95 % of its budget: zero misses; the
+    # hart already holds the IRQ thread's band reservation with IRQ_THREADED,
+    # so u93's last task and suspend's neighbour are sized from
+    # rt::hart_load),
     # `overrun` (a 1/10 ms server computing 6 ms per job is throttled, the
     # others keep every deadline), `suspend` (a 50 %-density server with a
     # 2 ms deadline that computes 400 us and sleeps 20 us must not take more

@@ -17,16 +17,25 @@
 //! pays for its own release and switch), and is late when it finishes after
 //! release + deadline. On a single-hart boot:
 //!
-//! * `u70-h1` / `u93-h1` — 70 % and 93 % summed density on hart 0. 93 %, not
-//!   95 %: the band cap (`RT_BAND_CAP_PCT`, 95 %) is also the band admission
+//! * `u70-h1` / `u93-h1` — 70 % and 93 % summed density on hart 0. The hart
+//!   is not empty: the kernel admitted its own reservations there first (the
+//!   IRQ thread's `IRQ_THREAD_BUDGET_PCT` in the band, 10 % by default, with
+//!   `IRQ_THREADED`), and `rt::hart_load` says how much. `u70` adds its 70 %
+//!   to that; `u93` fills the band: its last task takes what the band has
+//!   left beside the hart's load and the other three, less [`BOUND_SLACK_PPM`]
+//!   (the hart's summed density is then 93 %, and the last task's share 21 %
+//!   on an empty hart, 11 % beside the default IRQ thread). 93 %, not 95 %:
+//!   the band cap (`RT_BAND_CAP_PCT`, 95 %) is also the band admission
 //!   limit, and density is rounded up.
 //! * `overrun` — the 70 % set on hart 0 plus a task that books 1 ms per
 //!   10 ms and computes 6 ms per job. PASS needs zero misses among the
 //!   others and the overrunner throttled. Canary `rt-util-cbs-canary` (no
 //!   budget charging, `azos_sched/rt-cbs-canary`): the overrunner keeps the
 //!   level and the others miss.
-//! * `suspend` — A (4 ms per 10 ms) beside B, a server of 1 ms per 20 ms
-//!   with a 2 ms deadline (density 50 %; 90 % in all) that never finishes:
+//! * `suspend` — A (4 ms per 10 ms, or what the band has left beside B and
+//!   the hart's load when that is less: 3.5 ms beside the default IRQ
+//!   thread) beside B, a server of 1 ms per 20 ms with a 2 ms deadline
+//!   (density 50 %; 90 % in all on an empty hart) that never finishes:
 //!   it computes [`SUSPEND_RUN_US`], sleeps [`SUSPEND_GAP_US`], and again. A
 //!   CBS must hold B to its density whatever it does; PASS: A never misses.
 //!   The wake rule decides it: a server that wakes with budget left keeps
@@ -34,8 +43,8 @@
 //!   and that rate must be the density `q / d` the admission booked, not the
 //!   bandwidth `q / t` (with `q / t`, B took a fresh budget and a deadline
 //!   2 ms away at every wake and A missed every job).
-//! * `mixed` — two reservations on hart 0 at DIFFERENT levels (75 % in
-//!   all): H at level [`EDF_PRIO`] (5 ms per 20 ms) and L at level
+//! * `mixed` — two reservations on hart 0 at DIFFERENT levels (75 %, plus
+//!   the hart's load): H at level [`EDF_PRIO`] (5 ms per 20 ms) and L at level
 //!   [`EDF_PRIO`] + 2 (1 ms per 20 ms, deadline 2 ms), released together.
 //!   The dispatch orders reservations by absolute deadline across levels
 //!   (`rt_core::dl_rank`), so L's 2 ms deadline runs before H's 20 ms one,
@@ -71,6 +80,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
 use azos_sched::rt::{self, Reservation};
+use azos_sched::rt_core;
 use azos_sched::{task_block_outcome, BlockOutcome, WaitReason};
 
 const CTL_PRIO: u32 = 2;
@@ -87,6 +97,10 @@ const WORK_PCT: u64 = 95;
 /// [`SUSPEND_GAP_US`], and again, for the whole phase.
 const SUSPEND_RUN_US: u64 = 400;
 const SUSPEND_GAP_US: u64 = 20;
+/// What `u93` leaves under the band admission limit (density is rounded up).
+const BOUND_SLACK_PPM: u32 = 20_000;
+/// The band admission limit (`RT_BAND_CAP_PCT`).
+const BAND_LIMIT_PPM: u32 = azos_limits::RT_BAND_CAP_PCT as u32 * 10_000;
 /// Tasks one phase can hold (four per hart on two harts, plus the overrunner).
 const SLOTS: usize = 10;
 /// A gap longer than this between two clock reads of `burn` is time the task
@@ -96,7 +110,8 @@ const GAP_US: u64 = 50;
 /// (runtime, period, deadline) in microseconds: 20 % + 20 % + 20 % + 10 %.
 const SET_70: [(u64, u64, u64); 4] =
     [(1_000, 5_000, 5_000), (2_000, 10_000, 10_000), (3_000, 20_000, 15_000), (4_000, 40_000, 40_000)];
-/// 24 % + 24 % + 24 % + 21 %.
+/// 24 % + 24 % + 24 % + 21 % on an empty hart; [`fill_band`] sizes the last
+/// budget from what the hart already holds.
 const SET_93: [(u64, u64, u64); 4] =
     [(1_200, 5_000, 5_000), (2_400, 10_000, 10_000), (3_600, 20_000, 15_000), (8_400, 40_000, 40_000)];
 
@@ -276,6 +291,19 @@ fn collect(phase: &str, n: usize, counted: impl Fn(usize) -> bool, end: u64) -> 
     (jobs, misses)
 }
 
+/// `set` with its last budget sized to fill `hart`'s band up to
+/// [`BOUND_SLACK_PPM`] under the band limit, beside what the hart holds
+/// (`rt::hart_load`) and the set's other three. Rounded down
+/// (`rt_core::ppm_of_us`), so the set's summed density never exceeds it.
+fn fill_band(set: &[(u64, u64, u64); 4], hart: usize) -> [(u64, u64, u64); 4] {
+    let mut out = *set;
+    let room = rt_core::headroom(rt::hart_load(hart), true, BAND_LIMIT_PPM).saturating_sub(BOUND_SLACK_PPM);
+    let others: u32 = set[..3].iter().map(|&(q, t, d)| rt_core::density_ppm(q, t, d).unwrap_or(0)).sum();
+    let (_, t, d) = set[3];
+    out[3].0 = rt_core::ppm_of_us(room.saturating_sub(others), d.min(t));
+    out
+}
+
 /// The phase `name`: `set` on each of the harts `first..first + harts`.
 fn phase_set(name: &str, set: &[(u64, u64, u64); 4], first: usize, harts: usize, extra: Option<Spec>) {
     STOP.store(false, Ordering::Release);
@@ -285,6 +313,7 @@ fn phase_set(name: &str, set: &[(u64, u64, u64); 4], first: usize, harts: usize,
         azos_sched::task_create_affinity("rtu-hog", hog_task, 0, HOG_PRIO, h as i8);
     }
     let (band0, cbs0, ..) = rt::stats();
+    let base = rt::hart_load(first);
     let mut ok = true;
     let mut n = 0;
     for h in first..first + harts {
@@ -310,9 +339,9 @@ fn phase_set(name: &str, set: &[(u64, u64, u64); 4], first: usize, harts: usize,
     let over = watch.map_or(0, |w| STATS[w].overruns.load(Ordering::Relaxed));
     let pass = ok && misses == 0 && jobs as u64 >= expect && (watch.is_none() || over >= 50);
     kprintln!(
-        "[RTUTIL] {} {} {} harts={} first_hart={} density_pct_per_hart={} jobs={} expected_jobs={} misses={} overrunner_overruns={} band_throttles={} cbs_exhausted={} admitted={}",
-        name, if pass { "PASS" } else { "FAIL" }, isa(), harts, first, density, jobs, expect, misses, over,
-        band1 - band0, cbs1 - cbs0, ok);
+        "[RTUTIL] {} {} {} harts={} first_hart={} density_pct_per_hart={} hart_load_ppm={} band_load_ppm={} jobs={} expected_jobs={} misses={} overrunner_overruns={} band_throttles={} cbs_exhausted={} admitted={}",
+        name, if pass { "PASS" } else { "FAIL" }, isa(), harts, first, density, base.total_ppm, base.band_ppm,
+        jobs, expect, misses, over, band1 - band0, cbs1 - cbs0, ok);
     block_until(now() + ms(20));
 }
 
@@ -337,10 +366,15 @@ fn phase_suspend() {
     let t0 = now() + ms(30);
     let end = t0 + ms(PHASE_MS);
     azos_sched::task_create_affinity("rtu-hog", hog_task, 0, HOG_PRIO, 0);
-    let ok = start(0, Spec { q_us: 4_000, t_us: 10_000, d_us: 10_000, work: us(4_000) * WORK_PCT / 100,
+    let b = Spec { q_us: 1_000, t_us: 20_000, d_us: 2_000, work: 0, prio: EDF_PRIO, hart: 0, offset: t0, end };
+    let b_ppm = rt_core::density_ppm(b.q_us, b.t_us, b.d_us).unwrap_or(0);
+    // A: 40 %, or what the band has left beside B and the hart's own load.
+    let base = rt::hart_load(0);
+    let left = rt_core::headroom(base, true, BAND_LIMIT_PPM).saturating_sub(b_ppm);
+    let a_us = rt_core::ppm_of_us(left, 10_000).min(4_000);
+    let ok = start(0, Spec { q_us: a_us, t_us: 10_000, d_us: 10_000, work: us(a_us) * WORK_PCT / 100,
         prio: EDF_PRIO, hart: 0, offset: t0, end });
     STATS[1].reset();
-    let b = Spec { q_us: 1_000, t_us: 20_000, d_us: 2_000, work: 0, prio: EDF_PRIO, hart: 0, offset: t0, end };
     unsafe { (*core::ptr::addr_of_mut!(SPECS))[1] = Some(b) };
     let idx = azos_sched::task_create_affinity(NAMES[1], suspender_task, 1, EDF_PRIO, 0);
     let ok = ok & rt::reserve(idx, Reservation {
@@ -352,8 +386,9 @@ fn phase_suspend() {
     // The server's own run time: its bursts, each SUSPEND_RUN_US.
     let ran_ppm = STATS[1].jobs.load(Ordering::Relaxed) as u64 * SUSPEND_RUN_US * 1_000 / PHASE_MS;
     let pass = ok && misses == 0 && jobs as u64 >= PHASE_MS * 1_000 / 10_000;
-    kprintln!("[RTUTIL] suspend {} {} density_pct=90 jobs={} misses={} suspender_density_ppm=500000 suspender_ran_ppm={} admitted={}",
-        if pass { "PASS" } else { "FAIL" }, isa(), jobs, misses, ran_ppm, ok);
+    kprintln!("[RTUTIL] suspend {} {} density_pct={} hart_load_ppm={} band_load_ppm={} a_q_us={} jobs={} misses={} suspender_density_ppm={} suspender_ran_ppm={} admitted={}",
+        if pass { "PASS" } else { "FAIL" }, isa(), (a_us * 100 / 10_000) + b_ppm as u64 / 10_000,
+        base.total_ppm, base.band_ppm, a_us, jobs, misses, b_ppm, ran_ppm, ok);
     block_until(now() + ms(20));
 }
 
@@ -363,6 +398,7 @@ fn phase_mixed() {
     let t0 = now() + ms(30);
     let end = t0 + ms(PHASE_MS);
     azos_sched::task_create_affinity("rtu-hog", hog_task, 0, HOG_PRIO, 0);
+    let base = rt::hart_load(0);
     let h = start(0, Spec { q_us: 5_000, t_us: 20_000, d_us: 20_000, work: us(5_000) * WORK_PCT / 100,
         prio: EDF_PRIO, hart: 0, offset: t0, end });
     let l = Spec { q_us: 1_000, t_us: 20_000, d_us: 2_000, work: us(1_000) * WORK_PCT / 100,
@@ -380,8 +416,8 @@ fn phase_mixed() {
     let (jobs, misses) = collect("mixed", 2, |s| s == 0 || admitted_l, end);
     STOP.store(true, Ordering::Release);
     let pass = h && admitted_l && misses == 0 && jobs as u64 >= 2 * PHASE_MS * 1_000 / 20_000;
-    kprintln!("[RTUTIL] mixed {} {} density_pct=75 high={:?} low={:?} counted_jobs={} counted_misses={} low_misses={}",
-        if pass { "PASS" } else { "FAIL" }, isa(), if h { "ok" } else { "refused" },
+    kprintln!("[RTUTIL] mixed {} {} density_pct=75 hart_load_ppm={} band_load_ppm={} high={:?} low={:?} counted_jobs={} counted_misses={} low_misses={}",
+        if pass { "PASS" } else { "FAIL" }, isa(), base.total_ppm, base.band_ppm, if h { "ok" } else { "refused" },
         lr.map(|_| "ok").map_err(|e| e.name()), jobs, misses, STATS[1].misses.load(Ordering::Relaxed));
     block_until(now() + ms(20));
 }
@@ -394,11 +430,11 @@ fn ctl_task(_: usize) {
         // load one of them). After the boot's worker tasks (hart 1) are done.
         block_until(now() + ms(SETTLE_SMP_MS));
         phase_set("u70-hart1", &SET_70, 1, 1, None);
-        phase_set("u93-hart1", &SET_93, 1, 1, None);
+        phase_set("u93-hart1", &fill_band(&SET_93, 1), 1, 1, None);
     } else {
         block_until(now() + ms(SETTLE_MS));
         phase_set("u70-h1", &SET_70, 0, 1, None);
-        phase_set("u93-h1", &SET_93, 0, 1, None);
+        phase_set("u93-h1", &fill_band(&SET_93, 0), 0, 1, None);
         phase_set("overrun", &SET_70, 0, 1, Some(Spec {
             q_us: 1_000, t_us: 10_000, d_us: 10_000, work: ms(6), prio: EDF_PRIO, hart: 0, offset: 0, end: 0 }));
         phase_suspend();
