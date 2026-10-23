@@ -1372,6 +1372,20 @@ mod tests {
         NOW.with(|n| n.set(ns));
     }
 
+    /// Run passes from `from` until nothing is armed; returns the time of
+    /// the last pass. Bounded, so a scheduler bug fails the test instead of
+    /// hanging it.
+    fn drain(e: &mut Env, from: u64) -> u64 {
+        let mut now = from;
+        for _ in 0..10_000 {
+            match e.run_once(now) {
+                Some(at) => now = at.max(now),
+                None => return now,
+            }
+        }
+        panic!("the loop never went idle (last pass at {now} ns)");
+    }
+
     /// Order log kept in `Env::user`: events are digits appended to it.
     fn note(e: &mut Env, d: usize) {
         e.user = e.user * 10 + d;
@@ -1473,6 +1487,11 @@ mod tests {
         assert_eq!(e.run_once(5 * J), None);
         assert_eq!(e.user, 7);
         assert!(!e.work.pending(w));
+        // Again, now that the worker exists and is parked.
+        assert_eq!(e.tasks.state(WORKER_TASK), Some(TaskState::Waiting));
+        e.queue_delayed_work(w, 2).unwrap();
+        assert_eq!(e.run_once(7 * J), None);
+        assert_eq!(e.user, 77, "the pass that fires the timer wakes the worker");
     }
 
     #[test]
@@ -1563,7 +1582,8 @@ mod tests {
             e.set_current_state(CurrentState::Sleeping);
             // The condition is signalled before the task reaches schedule().
             let me = e.current();
-            assert!(e.wake_up_process(me));
+            let woke = e.wake_up_process(me);
+            log(woke as u64);
             e.schedule().unwrap();
             note(e, 1);
             0
@@ -1573,6 +1593,7 @@ mod tests {
         assert_eq!(e.run_once(0), Some(0), "schedule() only yielded: still runnable");
         assert_eq!(e.run_once(0), None);
         assert_eq!(e.user, 1);
+        assert_eq!(take_log(), vec![1], "the wake cancelled the pending sleep");
     }
 
     #[test]
@@ -1615,10 +1636,7 @@ mod tests {
         for d in 1..=3 {
             e.kthread_run(kt, d).unwrap();
         }
-        let mut t = 0;
-        while let Some(at) = e.run_once(t) {
-            t = at;
-        }
+        drain(&mut e, 0);
         assert_eq!(take_log(), vec![3, 1, 2], "started waiting 3, 1, 2");
         objs().flag.set(true);
         assert_eq!(e.wake_up(&objs().wq), 3);
@@ -1652,10 +1670,7 @@ mod tests {
         for d in 1..=3 {
             e.kthread_run(waiter, d).unwrap();
         }
-        let mut t = 0;
-        while let Some(at) = e.run_once(t) {
-            t = at;
-        }
+        drain(&mut e, 0);
         assert_eq!(take_log(), vec![3, 1, 2]);
         assert!(!objs().m.is_locked());
         assert_eq!(e.stats().would_block, 0);
@@ -1753,6 +1768,11 @@ mod tests {
             log(e.wait_event_timeout(&o.wq, |_| false, 0).unwrap());
             o.flag.set(false);
             log(e.wait_event_timeout(&o.wq, |_| o.flag.get(), 10).unwrap());
+            // Signalled on the very jiffy the timeout ends: 1, not 0.
+            let t = e.timer_setup(fire, 0).unwrap();
+            let j = e.jiffies();
+            e.mod_timer(t, j + 5).unwrap();
+            log(e.wait_event_timeout(&o.wq, |_| o.flag.get(), 5).unwrap());
             0
         }
         fn fire(e: &mut Env, _: TimerHandle) {
@@ -1764,12 +1784,9 @@ mod tests {
         let t = e.timer_setup(fire, 0).unwrap();
         let j = e.jiffies();
         e.mod_timer(t, j + 3).unwrap();
-        let mut now = 0;
-        while let Some(at) = e.run_once(now) {
-            now = at;
-        }
-        assert_eq!(take_log(), vec![7, 0, 0], "woken at 3 of 10; zero timeout; plain timeout");
-        assert_eq!(now, 13 * J);
+        let now = drain(&mut e, 0);
+        assert_eq!(take_log(), vec![7, 0, 0, 1], "woken at 3 of 10; zero timeout; timeout; true at the deadline");
+        assert_eq!(now, 18 * J);
     }
 
     #[test]
@@ -1831,16 +1848,48 @@ mod tests {
         for salt in 1..=4 {
             e.kthread_run(kt, salt).unwrap();
         }
-        let mut now = 0;
-        while let Some(at) = e.run_once(now) {
-            now = at;
-        }
+        drain(&mut e, 0);
         let l = take_log();
         assert_eq!(l.len(), 8);
         for p in l.chunks(2) {
             assert_eq!(p[1], deep_ref(40, p[0]), "task {} lost a frame across its sleep", p[0]);
         }
         assert_eq!(e.stats().stack_overflows, 0);
+    }
+
+    /// Eight FP values live across a sleep: the ABI keeps them in d8..d15
+    /// (aarch64) or fs0..fs11 (riscv64 D), which only the switch preserves.
+    #[inline(never)]
+    fn fp_across_sleep(e: &mut Env, x: f64) -> f64 {
+        let x = core::hint::black_box(x);
+        let v = [x * 1.25, x + 3.5, x * x, x - 7.0, x / 3.0, x * 9.5, x + 0.125, x * -2.0];
+        e.msleep(1 + x as u64 % 2).unwrap();
+        v.iter().enumerate().fold(0.0, |acc, (i, a)| acc * 1.5 + a * (i as f64 + 1.0))
+    }
+
+    fn fp_ref(x: f64) -> f64 {
+        let v = [x * 1.25, x + 3.5, x * x, x - 7.0, x / 3.0, x * 9.5, x + 0.125, x * -2.0];
+        v.iter().enumerate().fold(0.0, |acc, (i, a)| acc * 1.5 + a * (i as f64 + 1.0))
+    }
+
+    #[test]
+    fn floating_point_state_survives_a_sleep() {
+        fn kt(e: &mut Env, x: usize) -> i32 {
+            let r = fp_across_sleep(e, x as f64);
+            log(x as u64);
+            log(r.to_bits());
+            0
+        }
+        let mut e = env();
+        for x in [3, 10, 17, 24] {
+            e.kthread_run(kt, x).unwrap();
+        }
+        drain(&mut e, 0);
+        let l = take_log();
+        assert_eq!(l.len(), 8);
+        for p in l.chunks(2) {
+            assert_eq!(f64::from_bits(p[1]), fp_ref(p[0] as f64), "task x={} lost FP state", p[0]);
+        }
     }
 
     #[test]
@@ -1875,10 +1924,7 @@ mod tests {
         let t = e.timer_setup(kick, w.to_raw() as usize).unwrap();
         let j = e.jiffies();
         e.mod_timer(t, j + msecs_to_jiffies(2)).unwrap();
-        let mut now = 0;
-        while let Some(at) = e.run_once(now) {
-            now = at;
-        }
+        let now = drain(&mut e, 0);
         // The 2 ms timer fires on its jiffy (4 ms at HZ = 250); the work
         // sleeps until 9 ms; each completion wakes the next task for the
         // following pass at the same instant.
@@ -1944,10 +1990,7 @@ mod tests {
         assert_eq!(e.run_once(0), None);
         assert_eq!(e.kthread_stop(w), Err(LockError::WouldBlock), "the server cannot wait");
         e.kthread_run(stopper, w as usize).unwrap();
-        let mut now = 0;
-        while let Some(at) = e.run_once(now) {
-            now = at;
-        }
+        drain(&mut e, 0);
         assert_eq!(take_log(), vec![42]);
         assert_eq!(e.tasks.count(), 0);
     }
@@ -1968,10 +2011,7 @@ mod tests {
         let mut e = env();
         let w = e.init_work(work, 0).unwrap();
         e.kthread_run(kt, w.to_raw() as usize).unwrap();
-        let mut now = 0;
-        while let Some(at) = e.run_once(now) {
-            now = at;
-        }
+        drain(&mut e, 0);
         assert_eq!(take_log(), vec![1, 2]);
     }
 
@@ -2162,10 +2202,7 @@ mod tests {
         assert!(e.devices.bound_driver(d).is_none());
         assert_eq!(e.stats().would_block, 1);
         e.kthread_run(adder, 0).unwrap();
-        let mut now = 0;
-        while let Some(at) = e.run_once(now) {
-            now = at;
-        }
+        drain(&mut e, 0);
         assert_eq!(take_log(), vec![1, 2]);
     }
 

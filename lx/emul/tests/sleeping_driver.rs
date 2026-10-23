@@ -155,9 +155,11 @@ fn module_exit(env: &mut Env, _: usize) -> i32 {
 }
 
 /// The server loop: wait for the deadline or the next notification.
+/// Bounded, so a scheduler bug fails the test instead of hanging it.
 fn run_until_idle(env: &mut Env, irq_at: &mut Option<u64>, until: u64) {
     let mut t = now();
-    loop {
+    for pass in 0.. {
+        assert!(pass < 10_000, "the loop never went idle (at {t} ns)");
         NOW.with(|n| n.set(t));
         let next = env.run_once(t);
         match (next, *irq_at) {
