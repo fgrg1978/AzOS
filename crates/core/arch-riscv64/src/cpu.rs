@@ -47,7 +47,7 @@ pub fn now_ticks() -> u64 {
 /// `scounteren.TM`, which this kernel sets on every hart (`trap_init`
 /// writes `pmu::SCOUNTEREN_BOOT`, `pmu::start_this_cpu` rewrites it). Where
 /// the hart has no `time` CSR, the read traps into M-mode and OpenSBI answers
-/// it from `mtime` for S and U alike, so it still never reaches this kernel.
+/// it from `mtime`, so it still never reaches this kernel.
 /// What neither serves nor emulates the read reaches S-mode as an illegal
 /// instruction, and this probe, under a private `stvec`, sees that.
 pub fn time_readable() -> bool {

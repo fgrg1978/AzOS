@@ -789,7 +789,9 @@ fn cmd_ota_recv(port: u16) {
     // it uses `secure_boot_enforced_at_compile_time()` rather than the
     // runtime-relaxable `secure_boot_require_signature()`: the decision to
     // *install* must agree with the decision to *boot*, or an enforced build
-    // can be talked into staging an image it will then refuse to run.
+    // can be talked into staging an image it will then refuse to run. Kconfig
+    // OTA_SIG_MANDATORY may make the install stricter than the boot, never
+    // looser: refusing to stage an image is never a brick.
     // Flush before verifying. The payload was written through `vfs_*` on the
     // `/fat` mount point; the verifier reads the same file through
     // `fat32_open()` on the volume root (`/KERN_X.TMP` — see
