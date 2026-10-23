@@ -4,8 +4,10 @@ An effect is a change a task makes to a device that cannot be taken back by
 discarding state: a wheel turning, a clock gated, a regulator switched, a pin
 muxed. Holding the right capability ([capabilities.md](capabilities.md)) is
 necessary to cause one but is not the whole check. The effect gate sits between
-the capability check and the device. It makes sure that every effect that
-reached a device has a record, that an effect which cannot meet its deadline is
+the capability check and the device. For the effects it issues (the ring-3
+`Motor` interface's per-wheel ops, the SoC managers' changes and the envelope
+kinds below) it makes sure that every effect that reached a device has a
+record, that an effect which cannot meet its deadline is
 refused, that a device which stalled is driven to a safe state, and that data
 which passed through a less trusted principal cannot drive an effect harder than
 that principal is allowed. Every refusal leaves a decision record that
@@ -18,8 +20,8 @@ kernel-hosted `Motor` interface, one wheel is one endpoint (`motor.0`,
 `motor.1`); the wheel is the endpoint's badge, so there is no wheel argument that
 could disagree with the capability. The per-wheel ops need `WRITE`; pair-wide ops
 need `WRITE` on both wheels; `estop` needs `WRITE` on any wheel and is never
-refused for containment. The per-wheel ops resolve without the containment step
-(`get_uncontained`), because whether a command may move the wheel is decided
+refused for containment. The per-wheel ops check `WRITE` without the containment
+step (`Caller::holds`), because whether a command may move the wheel is decided
 one level down, by the motor layer's halt rule: while an e-stop is latched or
 containment is armed, brake and coast are carried out and forward and backward
 are refused. Refusing a stop at the capability layer would leave a task that may
@@ -30,7 +32,13 @@ Kconfig `EFFECT_WRITE_AHEAD` (default `y` when the robot domain is built in) and
 installed at boot by `azos_actuation::gate::install`. With it off the gate is
 neither linked nor installed and a motor op goes straight to the motor layer.
 The kernel's own motor writes (the real-time motor task, the PID loop) are not
-ring-3 ops and do not pass through it.
+ring-3 ops and do not pass through it; they are recorded after the write, on a
+change of duty, at most four records per wheel per second
+(`record_motor_change`, `domains/robot/safety-core/src/actuation.rs`). Neither
+does the I/O ring's `OP_MOTOR_SPEED` entry (`ioring_ops::motor_wheel`): it calls
+the motor layer directly, so the motor gate, the halt rule and the speed
+envelope apply to it, but not the write-ahead record, the hold, the deadline
+watch or the provenance meet.
 
 An effect is described by an `Effect`: a kind, a class, a subject (the device;
 for a motor, the wheel), the asking task id, and two kind-specific arguments (for
@@ -72,9 +80,12 @@ shared by every domain with an actuator.
 - `estop::estop_activate` sets the latch first. From that store on, every motor
   write from every path is clamped, so no command can slip in between the latch
   and the stop.
-- `gate::latch_and_stop` is the one sequence every stop source ends in: it
-  latches, then runs the stop hooks the domains registered
-  (`register_stop_hook`) in registration order. There is a second table for the
+- `gate::latch_and_stop` is the sequence the e-stop sources end in (ring 3,
+  the brain link's `PKT_ESTOP`, the RC link, the kill switch and the system
+  watchdog): it latches, then runs the stop hooks the domains registered
+  (`register_stop_hook`) in registration order. A geofence breach and the boot's
+  lost-config-authority latch call `estop_activate` alone; the clamp stops the
+  wheels at their next write. There is a second table for the
   panic path (`register_panic_stop_hook`), which is lock-free so it can run from
   the panic handler and the timer interrupt.
 - `gate::gate_installed` is false until `install` has run and while the domain's
@@ -91,22 +102,26 @@ shared by every domain with an actuator.
   after a reset. Only a development build (Kconfig `BUILD_TYPE_DEV`, the QEMU
   default) proceeds without a recorder. A recorder that is active but cannot take
   the write refuses the same way in every build.
-- The release key comes only from the signed topology's `[operator]` section; a
-  release build never reads the loose `/fat/OPERATOR.PUB`. The first key a robot
+- In a release build the release key comes only from the signed topology's
+  `[operator]` section; a release build never reads the loose
+  `/fat/OPERATOR.PUB`, which a development build reads only when the topology
+  declares no key, and installs unpinned. The first topology key a robot
   installs is pinned in the flight recorder (`SAFETY_OPERATOR_KEY`, a 16-byte
   SHA-256 fingerprint), written again by every boot that installs the key and
   carried into every log file a rotation opens, so the log-serial wrap (which
   overwrites the oldest file) cannot take the only copy. A later boot whose topology offers another key installs
   nothing, so every release is refused, and writes a `Rule::EstopRelease`
-  receipt (`RELEASE_CAUSE_KEY_CHANGED`). There is no rotation path yet: a
-  deliberate key change needs the recorder reprovisioned.
+  receipt (`RELEASE_CAUSE_KEY_CHANGED`). An active recorder that cannot take
+  the first pin installs nothing (`RELEASE_CAUSE_KEY_NOT_DURABLE`). There is no
+  key-rotation path: a deliberate key change needs the recorder reprovisioned.
 
 Source: `crates/core/actuation/src/effect_gate.rs` (`Effect`, `Class`,
 `KIND_*`, `record`, `issue`), `crates/core/actuation/src/gate.rs`
 (`latch_and_stop`, `register_stop_hook`, `gate_installed`, `install`),
 `crates/core/actuation/src/estop.rs` (`estop_activate`,
 `verify_operator_release`), `crates/core/actuation/src/hooks.rs`,
-`crates/core/syscall/src/motor_host.rs`, `crates/drivers/soc/src/effect.rs`,
+`crates/core/syscall/src/motor_host.rs`, `crates/core/syscall/src/ioring_ops.rs`
+(`motor_wheel`), `crates/drivers/soc/src/effect.rs`,
 `config/domains/Kconfig.robot` (`EFFECT_WRITE_AHEAD`).
 
 ## Write-ahead receipts and the safety reserve
@@ -114,14 +129,18 @@ Source: `crates/core/actuation/src/effect_gate.rs` (`Effect`, `Class`,
 `effect_gate::issue` takes the device op as a closure and runs it itself, after
 the record is committed to the flight recorder's ring. The order is structural:
 there is no call that issues an effect without committing its record first. The
-consequence is that every effect that reached a device has a record, and the
+consequence is that every effect that reached a device through the gate has a
+record, and the
 only other state a stop can leave is a record without an effect (the machine
 stopped between the two), which is harmless.
 
 For a reversible effect `issue` runs these steps in order, and the first failure
 returns a `Refusal` carrying the `Why` and the receipt:
 
-1. The provenance meet (see [Provenance labels](#provenance-labels-and-the-envelope-meet)).
+1. The provenance meet (see [Provenance labels](#provenance-labels-and-the-envelope-meet)),
+   together with the Domain's envelope row for the row kinds (see
+   [Storage and network envelopes](#storage-and-network-envelopes)); a row kind
+   that nothing holds runs its op here, unrecorded.
 2. A device held in its safe state takes stops only (`Why::Held`).
 3. If the effect declares a deadline and the driver's placement latency plus the
    device row's `commit_ns` cannot fit it, the effect is refused
@@ -139,13 +158,14 @@ records are off in this build, and the refusal still happened.
 **The ring and its reserve.** The flight recorder's ring holds
 `LOG_RING_ENTRIES` records. `LOG_RING_SAFETY_RESERVE` of those slots are used
 only by safety records: a latching or releasing `SAFETY_ESTOP`, the boot
-replay's restore record, and the release nonce floor. Everything else queues
+replay's restore record, the release nonce floor and the release-key pin
+(`SAFETY_OPERATOR_KEY`). Everything else queues
 only while fewer than `ORDINARY_RING_LIMIT` (the ring minus the reserve) records
 are queued. How the ring treats each kind of record:
 
 | Record                     | Ring below the limit            | Ring at the limit                                           |
 |----------------------------|---------------------------------|-------------------------------------------------------------|
-| Ordinary record            | queued                          | evicts the oldest unpinned record; with a pinned tail the new record is lost |
+| Ordinary record            | queued                          | evicts the oldest unpinned record; with a pinned tail or a pending latch record there the new record is lost |
 | Reversible effect record   | committed and pinned            | refused: `Why::RingFull`, nothing evicted                   |
 | Safe effect record (a stop)| committed, not pinned           | uses the reserve, down to the last `STOP_KEEPS_FREE` slots (half the reserve); past that it takes the ordinary path |
 | Safety record              | committed                       | may take any free slot, the reserve included; never evicts a pinned effect record |
@@ -211,8 +231,10 @@ Only the motor kind has a safe state (`safe_state::MAX_KINDS`). One
 could not be done.
 
 **The hold.** From the drive on, the device is **held**. A further reversible
-effect is refused with a receipt (`Why::Held`, `Rule::SafeState`) and only stops
-pass. A stop does not lift the hold, from whichever path: a device that stalled
+effect through the gate is refused with a receipt (`Why::Held`,
+`Rule::SafeState`) and only stops pass; the motor writes that bypass the gate
+(the kernel's control loop, the I/O ring's `OP_MOTOR_SPEED`) do not consult the
+hold. A stop does not lift the hold, from whichever path: a device that stalled
 once is not trusted again because somebody told it to stop. The hold is a time,
 not a bit: it records when the device was last driven, and lasts at least
 `B2_HOLD_MIN_MS` from then (Kconfig, 0 to 60000, default 500). After that only
@@ -235,7 +257,11 @@ spends the nonce. The operator reaches `release` through a mode-reset frame that
 names the device (`safe_state::release_from_frame`): a body of exactly
 `HOLD_RELEASE_BODY_BYTES` (the 8-byte big-endian nonce, the Ed25519 signature,
 the device kind and the big-endian subject). Any other body length is not this
-frame, so one warrant cannot both release a hold and the e-stop latch.
+frame, and the warrant's nonce is spent by whichever release accepts it first,
+so one warrant cannot both release a hold and the e-stop latch. The signed
+message is the e-stop release's (a fixed context and the nonce): it names
+neither the device nor the purpose, so a warrant taken off the wire before it
+is used can be spent on another held device or on the latch.
 
 **Compensation.** An op that reports failure (the device did not take the
 effect) is undone by the row's `compensate` op, run by the kernel
@@ -257,6 +283,9 @@ A committed effect record is the device's receipt: the gate issues the op only
 after it. A warrant can be made conditional on one with the `RECEIPT` caveat
 ([capabilities.md](capabilities.md#caveats)), so the kernel can ask at the point
 of use "did this device stop in the last 200 ms, and has nothing moved it since".
+Only effect records the gate commits are receipts: a write that bypasses the
+gate (the kernel's control loop, the I/O ring's `OP_MOTOR_SPEED`, the e-stop's
+stop hooks) leaves none, so it neither satisfies nor contradicts a caveat.
 
 **The index.** The recorder keeps the time of the newest receipt of each device
 and receipt kind, one word each, written by whoever commits the record and read
@@ -340,11 +369,18 @@ The row's `level` is a ceiling (`azos_common::envelope`):
   changes; a refusal answers `EACCES`, and a delete that finds nothing to delete
   asks nothing.
 * **Egress** is a socket's first packet to a destination that is not this node
-  (loopback and the node's own addresses are never asked about): the connect, or
-  an unconnected `sendto` once per change of destination (the socket remembers
-  the last destination it was cleared to). The answer is `-EACCES`. The packet
+  (never asked about: for IPv4 loopback and the node's own addresses, for IPv6
+  `::1` and `::`): the connect, or an unconnected `sendto` once per change of
+  destination (the socket remembers the last destination it was cleared to); an
+  IPv6 socket is asked once, at its connect. The destination class is
+  link (link-local, multicast, broadcast), private (RFC 1918, 100.64/10) or
+  public (`classify_v4`, `classify_v6`). The answer is `-EACCES`. The packet
   is the Domain's own start: replies on an accepted TCP stream are not gated,
-  and a kernel-owned socket (the brain link, OTA, TFTP) belongs to no Domain.
+  and the kernel's own traffic (ARP, DHCP) and a kernel-owned socket (the
+  brain link, OTA, TFTP, every `AF_PACKET` socket, which only the kernel may
+  own) belong to no Domain. This
+  hook is the envelope's; the packet filter's egress hook (`filter::egress`) is
+  a separate check.
 * A task seeded from no row (the kernel's own OTA, package apply, log
   rotation), a class with no row, and a row that says `full` hold nothing: the
   effect goes ahead with no record, so a full ring cannot refuse an unlink on a
@@ -396,16 +432,13 @@ a build with no topology, nothing is installed and nothing is held.
   switch is asked in the kernel under the calling task (the `Ota` interface's
   `switch`, the console's `ota switch`).
 
-  **Open: the installer's staging is not gated.** The whole-system stage that
+  **The installer's staging is not held.** The whole-system stage that
   `pkgd` (ring 3) writes into the inactive slot runs on a store that takes the
   default `Store::may_apply`, which lets every step go, so a Domain whose `ota`
   row is `slow` or `contained` can still stage a set through `pkgd` (the set is
   verified again at the switch, which the row holds for the calls it makes
   itself). The ring-3 program has no way to ask the gate for the requester: a
-  question from `pkgd` is about `pkgd`'s own Domain, not the caller's. Closing it
-  takes the requester's identity reaching a kernel-side question before the
-  first write (an op on the `Ota` interface, an IDL change, answered under the
-  requester's row; no new syscall and no new capability kind); until then the
+  question from `pkgd` is about `pkgd`'s own Domain, not the caller's. The
   `ota` row holds the switch and the kernel's own staging only.
 * **RT time.** `rt::reserve` asks once per reservation (`rt_receipt::held_by_row`),
   before it masks anything or takes the admission lock, with the reservation's density in parts per
@@ -446,7 +479,9 @@ It is a `u32` with one bit per kind (`azos_abi::ipc_msg`):
 | 3   | `LABEL_AGENT`   | `Agent`: an AI agent, untrusted ring-3 code held to an envelope |
 
 `LABEL_KNOWN` is the union. A descriptor that sets any other bit is refused
-(`-EINVAL`), so a later kind cannot be mistaken for nothing.
+(`-EINVAL`), so a later kind cannot be mistaken for nothing; with `IPC_LABELS`
+off a descriptor that sets any label bit is refused, since nothing would
+enforce it (`label_mask`, `crates/core/syscall/src/ipc_v2.rs`).
 
 **How labels travel** (Kconfig `IPC_LABELS`; with it off every function is a
 no-op and no label is ever set). The kernel keeps two small tables per task and
@@ -501,14 +536,15 @@ For a reversible effect this is the first check `issue` makes:
 | Meet        | What the gate allows                                                              |
 |-------------|-----------------------------------------------------------------------------------|
 | `Full`      | no restriction                                                                    |
-| `Cautious`, `Slow` | the effect must fit the level's ceiling. A motor effect's duty percent (`a1`) may not exceed `ENVELOPE_DUTY_CAP_PCT` for the level (100, 70, 30, 0 for `Full` to `Contained`); any other kind has no magnitude to compare and passes |
-| `Contained` | no reversible effect at all                                                       |
+| `Cautious`, `Slow` | the effect must fit the level's ceiling. A motor effect's duty percent (`a1`) may not exceed `ENVELOPE_DUTY_CAP_PCT` for the level (100, 70, 30, 0 for `Full` to `Contained`); an envelope-row kind is held to the level's own ceiling (the tables above); a SoC kind has no magnitude to compare and passes |
+| `Contained` | no reversible effect but a motor effect at duty 0 (the level's cap)               |
 
 The gate admits or refuses; it never rewrites an effect, so an issuer whose
 effect is refused for its duty retries lower. The refusal is `Why::Provenance`
 with a `Rule::ProvenanceMeet` receipt whose numbers are the count of kinds in the
 label, the label and the meet. A value the agent touched is therefore held to the
-agent's envelope even when a fully rated planner issues the effect, because the
+agent's envelope even when a fully rated planner issues the effect through the
+gate, because the
 planner's label carries the agent's kind. A stop is never refused. Without a
 probe, or with an empty label, nothing changes.
 
@@ -557,12 +593,14 @@ Source: `crates/core/ipc/src/cap.rs` (`caveat::DECLASSIFY`,
 `CapTable::take_declassify`, `CapTable::mint_badged_issued`, `derive_warrant`,
 `narrow_warrant`), `crates/core/ipc/src/endpoint.rs` (`mint_badged_issued`),
 `crates/core/syscall/src/ipc_v2.rs`, `crates/core/abi/src/invoke.rs`
-(`ENDPOINT_DERIVE`).
+(`ENDPOINT_DERIVE`), `userspace/lib/rpc/src/session.rs` (`Refusal::Declassify`).
 
 ## Decision records and `why`
 
-Every admission, placement and refusal path writes a decision record. A record
-names the rule that decided, the verdict, the subject, up to three numbers the
+Every admission, placement and refusal path writes a decision record where a
+store is built: with the ring off (Kconfig `DECISION_RECORDS_DEV`, default `n`
+outside `KTEST`) only the records the durable sink takes are kept, so a refusal
+leaves one and an admission none. A record names the rule that decided, the verdict, the subject, up to three numbers the
 rule compared and, from the rule's table entry, the alternative it rejected.
 
 | Piece        | Contents                                                                                |
@@ -582,10 +620,11 @@ receipt on the medium); the journal is written where the sink is called:
   published in the introspection tree's admin region
   (`decisions/records/<n>`), oldest first. The oldest record is
   overwritten.
-- **The durable sink** (Kconfig `DECISION_REFUSALS_DURABLE`): a `Refuse` record is
-  always handed to a sink the kernel installs (`set_durable_sink`), which writes it
-  to the flight recorder so it survives the reset. A `Deny` (a capability denial)
-  passes a per-subject token bucket first (`DECISION_DENY_DURABLE_PER_SEC`,
+- **The durable sink** (Kconfig `DECISION_REFUSALS_DURABLE`): a `Refuse` record,
+  every `Login` verdict and a `Placement` `Place` are always handed to a sink the
+  kernel installs (`set_durable_sink`), which writes it to the flight recorder so
+  it survives the reset. A `Rule::CapDenial` `Deny` passes a per-subject token
+  bucket first (a `CapRevoke` `Deny` stays in the ring) (`DECISION_DENY_DURABLE_PER_SEC`,
   `DECISION_DENY_DURABLE_BURST`); a denial the bucket drops is counted, and the
   count rides in the third number of the next denial that is written. The sink
   must defer when the caller is real-time, so it queues onto the recorder's ring
@@ -605,7 +644,7 @@ The rules this document touches:
 | `EffectRecord`       | gate, ring or watch table full              | task    | effect (`kind << 8 \| class`), reason, ring length   |
 | `EffectDeadline`     | gate, deadline cannot be met                | task    | effect, `deadline_ns`, `needed_ns`                  |
 | `SafeState`          | miss, held refusal, release                 | device (`kind << 16 \| subject`) | from state, to state, cause (and the asking task or held time above the cause byte) |
-| `EstopRelease`       | e-stop release refused (no durable recorder, or the write failed), or the topology's release key differs from the pinned one | -       | cause, nonce floor, nonce offered (key changed: pinned and offered fingerprint words) |
+| `EstopRelease`       | e-stop release refused (no durable recorder, or the write failed), the topology's release key differs from the pinned one, or the first pin could not be written | -       | cause, nonce floor, nonce offered (key changed: pinned and offered fingerprint words) |
 | `Compensation`       | failed effect                               | task    | effect, action (compensating op), status            |
 | `ProvenanceMeet`     | gate, envelope meet                         | task    | kinds in the label, label, meet                     |
 | `EnvelopeDelete`     | gate, `storage_delete` refused by the Domain's `delete` row | task | op (1 cut, 2 rename over, 3 unlink, 4 snapshot drop), volume, level |
@@ -629,8 +668,9 @@ in TAI-based nanoseconds (time since boot until the offset is set). It has a
 104-byte little-endian wire form (`to_bytes`), a 13-word form the journal stores
 and the `Decisions` interface carries (`to_words`), and a compact form that fits
 the flight recorder's 20-byte payload as two records: a base (the receipt: rule,
-verdict, subject and the numbers) and an extension (the image hash prefix and the
-topology row). The compact form does not carry the capability references, the
+verdict, subject and the numbers, the first two saturated to 32 bits and the
+third kept to 40) and an extension (the image hash prefix and the topology
+row). The compact form does not carry the capability references, the
 node, the session or the id; they exist in the full form only. A field that a
 record's call site does not supply is 0. For the warrant rules (`CapDerive`,
 `CapRevoke`) the widening of a ring record moves the first two numbers into
