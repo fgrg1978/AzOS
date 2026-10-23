@@ -2606,6 +2606,26 @@ mod claim_tests {
         claim::held_forget(ME);
     }
 
+    /// `try_acquire` refuses an owned claim at once, without waiting, and
+    /// takes a free one as `acquire` does (counted for the panic path).
+    #[test]
+    fn try_acquire_refuses_an_owned_claim_and_takes_a_free_one() {
+        let _held = crate::held_table_lock();
+        static C: Claim<u32> = Claim::new(0);
+        let g = C.acquire();
+        let t = std::thread::spawn(|| C.try_acquire().is_none());
+        assert!(t.join().unwrap(), "try_acquire took a claim that was owned");
+        drop(g);
+        let mut g = C.try_acquire().expect("try_acquire refused a free claim");
+        *g += 1;
+        assert_eq!(claim::held_by(ME), 1, "a try_acquire owner is counted for the panic path");
+        assert!(C.try_acquire().is_none(), "a second owner while the first holds it");
+        drop(g);
+        assert_eq!(claim::held_by(ME), 0);
+        assert_eq!(*C.acquire(), 1);
+        claim::held_forget(ME);
+    }
+
     #[test]
     fn contender_gets_the_claim_after_the_owner_gives_it_back() {
         use core::sync::atomic::{AtomicBool, Ordering};

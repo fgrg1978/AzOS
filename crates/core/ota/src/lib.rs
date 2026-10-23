@@ -846,31 +846,11 @@ pub enum UpdateError {
     BootUnconfirmed,
 }
 
-/// Set while [`ota_update_switch`] runs: it holds a static buffer and does long
-/// volume I/O, so it excludes by refusing, not by spinning.
-static UPDATE_BUSY: AtomicBool = AtomicBool::new(false);
-
 /// The manifest buffers (~3.6 KiB): in `.bss`, not on the stack of whoever
-/// asks. [`UpdateBusy`] is the exclusion that makes the one reference sound.
-static mut UPDATE_WORK: update::Work = update::Work::new();
-
-fn update_work(_busy: &UpdateBusy) -> &'static mut update::Work {
-    // SAFETY: the only reference to `UPDATE_WORK`, handed out while the
-    // `UpdateBusy` it is borrowed under is held.
-    unsafe { &mut *core::ptr::addr_of_mut!(UPDATE_WORK) }
-}
-
-struct UpdateBusy;
-impl UpdateBusy {
-    fn take() -> Option<Self> {
-        UPDATE_BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).ok().map(|_| UpdateBusy)
-    }
-}
-impl Drop for UpdateBusy {
-    fn drop(&mut self) {
-        UPDATE_BUSY.store(false, Ordering::Release);
-    }
-}
+/// asks. Owned by [`ota_update_switch`] while it runs: it does long volume
+/// I/O, so it excludes by refusing a second caller (`try_acquire`), not by
+/// spinning or queueing, and holds no lock across the I/O (a claim, rule F1).
+static UPDATE_WORK: azos_sync::claim::Claim<update::Work> = azos_sync::claim::Claim::new(update::Work::new());
 
 /// The switch of a whole-system update: the one step that makes the set staged
 /// in the inactive slot (by the installer, or by anyone: it is verified here
@@ -895,7 +875,7 @@ pub fn ota_update_switch() -> Result<update::Verified, UpdateError> {
     if SECURE_BOOT_PUBKEY.iter().all(|&b| b == 0) {
         return Err(UpdateError::NoKey);
     }
-    let _busy = UpdateBusy::take().ok_or(UpdateError::Busy)?;
+    let mut work = UPDATE_WORK.try_acquire().ok_or(UpdateError::Busy)?;
     if UNCONFIRMED.load(Ordering::Acquire) != 0 {
         return Err(UpdateError::BootUnconfirmed);
     }
@@ -912,10 +892,9 @@ pub fn ota_update_switch() -> Result<update::Verified, UpdateError> {
     };
     let boot = update::BootPaths { kernel: ota_slot_path(slot), kernel_sig: ota_sig_path(slot) };
 
-    let work = update_work(&_busy);
     let mut store = FatStore::new();
     let mut buf = [0u8; OTA_RECV_BUF_SIZE];
-    let v = update::switch(&mut store, &dev, &SECURE_BOOT_PUBKEY, &boot, work, &mut buf)
+    let v = update::switch(&mut store, &dev, &SECURE_BOOT_PUBKEY, &boot, &mut work, &mut buf)
         .map_err(UpdateError::Switch)?;
 
     // The record: read again under the lock, and decided again. If the record
@@ -973,13 +952,12 @@ pub enum BootSetOutcome {
 /// volume's root as the system.
 pub fn ota_install_boot_set() -> BootSetOutcome {
     let meta = ota_read_boot_meta();
-    let Some(busy) = UpdateBusy::take() else {
+    let Some(mut work) = UPDATE_WORK.try_acquire() else {
         // Nothing else runs before the boot has installed the set.
         return BootSetOutcome::Refused { slot: meta.active_slot, why: update::Refusal::Io(update::Io::Read) };
     };
-    let work = update_work(&busy);
     let mut store = FatStore::new();
-    match update::boot_set(&mut store, &meta, &SECURE_BOOT_PUBKEY, work) {
+    match update::boot_set(&mut store, &meta, &SECURE_BOOT_PUBKEY, &mut work) {
         Ok(None) => BootSetOutcome::RootFiles,
         Ok(Some(set)) => {
             let files = set.names().count();

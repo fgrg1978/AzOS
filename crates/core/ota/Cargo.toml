@@ -31,3 +31,4 @@ azos_config = { workspace = true }
 azos_drv_sys = { workspace = true }
 azos_crypto = { path = "../crypto" }
 azos_limits = { workspace = true }
+azos_sync = { workspace = true }

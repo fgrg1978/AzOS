@@ -802,6 +802,7 @@ dependencies = [
  "azos_drv_sys",
  "azos_fs",
  "azos_limits",
+ "azos_sync",
 ]
 
 [[package]]

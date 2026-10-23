@@ -150,6 +150,24 @@ impl<T> Claim<T> {
             self.wq.wait_if_for(crate::waitstat::Site::Claim, || self.gen.load(Ordering::SeqCst) == seen);
             g = parked.relock();
         }
+        self.own(g)
+    }
+
+    /// Take the claim if it is free; `None`, without waiting, if it is owned.
+    /// For a resource whose contender is refused rather than queued (the OTA
+    /// switch's manifest buffers: a second switch is answered busy).
+    #[track_caller]
+    pub fn try_acquire(&self) -> Option<ClaimGuard<'_, T>> {
+        let g = self.st.lock();
+        if g.busy {
+            return None;
+        }
+        Some(self.own(g))
+    }
+
+    /// Mark the claim owned by the caller; `g` is the exchange mutex, held,
+    /// with the claim free.
+    fn own<'a>(&'a self, mut g: MutexGuard<'a, State>) -> ClaimGuard<'a, T> {
         let tid = crate::waitqueue::caller_tid();
         g.busy = true;
         g.owner = tid;
