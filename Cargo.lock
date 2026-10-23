@@ -1048,6 +1048,7 @@ name = "azos_trace"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_arch_x86_64",
  "azos_limits",
  "azos_percpu",
  "azos_rings",

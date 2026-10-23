@@ -12,6 +12,10 @@ azos_rings  = { workspace = true }
 azos_limits = { workspace = true }
 azos_percpu = { workspace = true }
 
+# x86_64's CPU id (`%gs:0`) and clock (the TSC scaled to TIMER_FREQ).
+[target.'cfg(all(target_arch = "x86_64", target_os = "none"))'.dependencies]
+azos_arch_x86_64 = { path = "../arch-x86_64" }
+
 [features]
 # Gate canary: the producer never advances its head, so every record lands
 # on one slot and a reader sees one record per ring; `trace: tracectl reads

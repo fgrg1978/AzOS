@@ -22,12 +22,12 @@
 //! * Recording: [`record`], out of line: interrupts masked (the ring is
 //!   per CPU, so masking them is the whole of its mutual exclusion: an
 //!   interrupt's own tracepoint cannot land in the middle of a record), the
-//!   CPU from `tp` / `TPIDR_EL1`, the timestamp, five stores into the
+//!   CPU from `tp` / `TPIDR_EL1` / `%gs:0`, the timestamp, five stores into the
 //!   record's own cache line, and interrupts restored. No lock, no atomic
 //!   read-modify-write, no division, and the shared tail is read only when
 //!   the producer's cached copy says the ring is full.
 //!
-//! Masking uses the CSR / DAIF directly, not `azos_arch`'s `Interrupts`
+//! Masking uses the CSR / DAIF / RFLAGS directly, not `azos_arch`'s `Interrupts`
 //! trait, whose `LAT_TRACE` hooks would otherwise measure (and, through
 //! the `lat` class, trace) the tracer itself.
 
@@ -218,9 +218,62 @@ mod isa {
     }
 }
 
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+mod isa {
+    /// `IF`, bit 9 of RFLAGS.
+    const IF: usize = 1 << 9;
+    #[inline(always)]
+    pub fn irq_save() -> usize {
+        let f: usize;
+        // Not `nomem`: the record's stores must stay between the two halves.
+        unsafe { core::arch::asm!("pushfq", "pop {0}", "cli", out(reg) f) };
+        f
+    }
+    #[inline(always)]
+    pub fn irq_restore(s: usize) {
+        if s & IF != 0 {
+            unsafe { core::arch::asm!("sti", options(nostack)) };
+        }
+    }
+    /// The dense CPU id at `%gs:0` (`azos_arch_x86_64::cpu::percpu_id`).
+    #[inline(always)]
+    pub fn cpu() -> usize {
+        azos_arch_x86_64::cpu::percpu_id()
+    }
+    /// The TSC, or the clock it is scaled to (`timer::now_ticks`, at the
+    /// `TIMER_FREQ` the region publishes and the vDSO reads): a raw TSC is
+    /// not the timebase a reader converts with.
+    #[inline(always)]
+    pub fn ts() -> u64 {
+        if super::TS_IS_CYCLES {
+            azos_arch_x86_64::cpu::rdtsc()
+        } else {
+            azos_arch_x86_64::timer::now_ticks()
+        }
+    }
+    /// See the riscv64 twin.
+    #[inline(always)]
+    pub fn mask_now() -> u32 {
+        let m: u32;
+        unsafe {
+            core::arch::asm!(
+                "mov {m:e}, dword ptr [rip + {mask}]",
+                m = out(reg) m, mask = sym super::MASK,
+                options(nostack, readonly, preserves_flags),
+            )
+        };
+        m
+    }
+}
+
+/// A kernel needs its ISA's primitives above: the host's would record every
+/// CPU into ring 0 at time 0, with interrupts on.
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))))]
+compile_error!("azos_trace: no tracer primitives (mod isa) for this kernel ISA");
+
 /// The host (unit tests of code that calls a tracepoint): no CPU state to
-/// touch; a recording host build writes ring 0 at time 0.
-#[cfg(not(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none"))))]
+/// touch; a recording host build writes ring 0 at time 0. Never a kernel.
+#[cfg(not(any(target_arch = "riscv64", target_os = "none")))]
 mod isa {
     pub fn irq_save() -> usize { 0 }
     pub fn irq_restore(_s: usize) {}
