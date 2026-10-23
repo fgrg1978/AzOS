@@ -118,7 +118,8 @@ config BLK_FUA
       PREFLUSH | FUA (every earlier write is made durable first, then this
       run is on stable media when it completes) and the explicit device flush
       that used to follow is skipped, one command fewer per fsync. Only on
-      a device whose FUA is native (NVMe); virtio-blk has none and keeps the
+      a device whose FUA is native (NVMe; a SATA disk behind DRV_AHCI whose
+      IDENTIFY word 84 says it has FUA); virtio-blk has none and keeps the
       write-then-flush order, and so does a board whose disk is not behind
       the request layer. n: every fsync ends with an explicit flush.
 

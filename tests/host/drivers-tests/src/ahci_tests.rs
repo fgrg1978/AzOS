@@ -25,6 +25,11 @@
 //! halts the port, leaves every queued command's `PxSACT` bit set and puts
 //! the disk in the NCQ error state, which only READ LOG EXT of log 10h ends.
 //!
+//! The disk has a volatile cache: `durable` is what a power cut leaves, the
+//! medium as of the last FLUSH CACHE EXT plus every FUA write (WRITE DMA FUA
+//! EXT, or WRITE FPDMA QUEUED with its FUA bit). A FUA write to a disk whose
+//! IDENTIFY does not advertise FUA is refused.
+//!
 //! Time: while the HBA's interrupt is off, every poll of a port register
 //! makes the model's device progress (`latency` reads of `PxCI` per command);
 //! once the driver has turned the interrupt on (`GHC.IE` and `PxIE`), reads
@@ -38,7 +43,8 @@
 //! turn it red.
 
 use super::ahci::*;
-use super::queue::{Claim, HwCmd, HwDone, HwOp, HwQueue, HwStatus, ReqQueue, HW_TAGS_MAX};
+use super::queue::{Claim, Failure, HwCmd, HwDone, HwOp, HwQueue, HwStatus, ReqQueue, HW_TAGS_MAX};
+use azos_devif::block::FLAG_FUA;
 use azos_drv_api::recovery::{Action, Class};
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};
@@ -234,6 +240,10 @@ struct Inner {
     depth: u8,
     /// The disk finishes the newest queued command first.
     lifo: bool,
+    /// IDENTIFY word 84 bit 6: Force Unit Access.
+    fua: bool,
+    /// What a power cut leaves of `disk`.
+    durable: Vec<u8>,
     /// Reads of `PxCI`/`PxSACT` a command takes while the HBA's interrupt is off.
     latency: u32,
     fault: Fault,
@@ -248,6 +258,7 @@ struct Inner {
     max_in_flight: usize,
     /// READ LOG EXT of the NCQ error log, answered.
     log_reads: u32,
+    fua_writes: u32,
     /// `ST` 1 -> 0 transitions per port.
     stops: Vec<u32>,
     violations: Vec<String>,
@@ -688,26 +699,39 @@ impl Inner {
                 }
                 self.pio_in(&log.prds, &page);
             }
-            0x25 | 0x35 | 0x60 | 0x61 => {
+            0x25 | 0x35 | 0x3D | 0x60 | 0x61 => {
                 let want = if log.count == 0 { 65536 } else { log.count as usize } * SECTOR;
                 if want != bytes {
                     self.violation(format!("PRDT names {bytes} bytes for a {want}-byte command"));
                 }
-                if log.write != (log.cmd == 0x35 || log.cmd == 0x61) {
+                if log.write != (log.cmd == 0x35 || log.cmd == 0x3D || log.cmd == 0x61) {
                     self.violation(format!("command {:#04x} with the header's write bit {}", log.cmd, log.write));
                 }
                 if (log.lba as usize + want / SECTOR) * SECTOR > self.disk.len() {
                     self.violation(format!("command beyond the disk: lba {} count {}", log.lba, log.count));
                 } else if fault == Fault::TaskFile || self.bad.contains(&log.lba) {
                     abort = Some(0x40);
+                } else if log.cmd == 0x3D && !self.fua {
+                    abort = Some(0x04);
                 } else {
                     self.dma(&log);
+                    if log.cmd == 0x3D || (log.cmd == 0x61 && log.device & 0x80 != 0) {
+                        if !self.fua {
+                            self.violation("a FUA write to a disk that does not advertise FUA");
+                        }
+                        self.fua_writes += 1;
+                        let (a, b) = (log.lba as usize * SECTOR, log.lba as usize * SECTOR + want);
+                        let data = self.disk[a..b].to_vec();
+                        self.durable[a..b].copy_from_slice(&data);
+                    }
                 }
             }
             0xEA => {
                 self.flushes += 1;
                 if self.flush_aborts || !self.flush_ext {
                     abort = Some(0x04);
+                } else {
+                    self.durable = self.disk.clone();
                 }
             }
             c => self.violation(format!("unknown ATA command {c:#04x}")),
@@ -769,6 +793,7 @@ impl Inner {
             w[106] |= 1 << 12;
             w[117] = 2048;
         }
+        w[84] = 0x4000 | if self.fua { 1 << 6 } else { 0 };
         // Serial ATA capabilities: Gen1 and Gen2 speeds, and NCQ at `depth`.
         w[76] = 0x0006;
         if self.depth > 0 {
@@ -830,6 +855,7 @@ impl Mock {
             reset_polls: 2,
             reset_left: 0,
             ports: ps,
+            durable: disk.clone(),
             disk,
             flush_ext: true,
             flush_aborts: false,
@@ -837,6 +863,7 @@ impl Mock {
             lba48: true,
             depth: 0,
             lifo: false,
+            fua: false,
             latency: 2,
             fault: Fault::None,
             bad: Vec::new(),
@@ -846,6 +873,7 @@ impl Mock {
             issued: 0,
             max_in_flight: 0,
             log_reads: 0,
+            fua_writes: 0,
             stops: vec![0; ports],
             violations: Vec::new(),
         })));
@@ -867,6 +895,11 @@ impl Mock {
 
     fn disk(&self, sector: usize, count: usize) -> Vec<u8> {
         self.with(|m| m.disk[sector * SECTOR..(sector + count) * SECTOR].to_vec())
+    }
+
+    /// What a power cut would leave of those sectors.
+    fn durable(&self, sector: usize, count: usize) -> Vec<u8> {
+        self.with(|m| m.durable[sector * SECTOR..(sector + count) * SECTOR].to_vec())
     }
 
     /// An HBA and a disk that queue, `depth` deep (32 slots in the HBA).
@@ -1007,7 +1040,13 @@ fn identify_is_decoded_and_the_disks_the_driver_cannot_drive_are_refused() {
     let mut w = ident_words();
     w[60] = 0xFFFF;
     w[61] = 0x0FFF;
-    assert_eq!(decode_identify(&w), Ok(Ident { sectors: 0x12_3456, flush_ext: true, ncq_depth: 0 }));
+    assert_eq!(decode_identify(&w), Ok(Ident { sectors: 0x12_3456, flush_ext: true, ncq_depth: 0, fua: false }));
+    // Word 84 bit 6 is FUA, when word 84 is valid (bits 15:14 = 01b).
+    w[84] = 0x4040;
+    assert!(decode_identify(&w).unwrap().fua);
+    w[84] = 0x0040;
+    assert!(!decode_identify(&w).unwrap().fua, "word 84 not valid");
+    w[84] = 0;
     w[83] &= !(1 << 13);
     assert!(!decode_identify(&w).unwrap().flush_ext);
     let mut a = ident_words();
@@ -1478,11 +1517,13 @@ fn cmds(m: &Mock) -> Vec<u8> {
 #[test]
 fn the_queued_command_fis_carries_the_count_in_features_and_the_tag_in_count() {
     assert_eq!(
-        fpdma_fis(false, 0x0000_0123_4567_89AB, 0x0102, 5),
+        fpdma_fis(false, 0x0000_0123_4567_89AB, 0x0102, 5, false),
         [0x27, 0x80, 0x60, 0x02, 0xAB, 0x89, 0x67, 0x40, 0x45, 0x23, 0x01, 0x01, 5 << 3, 0, 0, 0, 0, 0, 0, 0]
     );
-    let w = fpdma_fis(true, 7, 65536, 31);
-    assert_eq!((w[2], w[3], w[11], w[12]), (0x61, 0, 0, 31 << 3));
+    let w = fpdma_fis(true, 7, 65536, 31, false);
+    assert_eq!((w[2], w[3], w[7], w[11], w[12]), (0x61, 0, 0x40, 0, 31 << 3));
+    // FUA is the Device register's bit 7, beside the LBA bit.
+    assert_eq!(fpdma_fis(true, 7, 1, 0, true)[7], 0xC0);
     assert_eq!(&read_log_fis(0x10, 1)[..14], &[0x27, 0x80, 0x2F, 0, 0x10, 0, 0, 0x40, 0, 0, 0, 0, 1, 0]);
 }
 
@@ -1503,7 +1544,7 @@ fn the_queue_depth_is_the_disks_the_hbas_and_the_configured_whichever_is_least()
     assert_eq!(decode_identify(&w).unwrap().ncq_depth, 8);
     w[76] = 0xFFFF;
     assert_eq!(decode_identify(&w).unwrap().ncq_depth, 0, "word 76 not implemented");
-    let id = |d| Ident { sectors: 1, flush_ext: true, ncq_depth: d };
+    let id = |d| Ident { sectors: 1, flush_ext: true, ncq_depth: d, fua: false };
     let cap = |slots: u32, sncq: bool| (slots - 1) << 8 | if sncq { CAP_SNCQ } else { 0 };
     assert_eq!(queue_depth(cap(32, true), &id(32)), MAX_SLOTS);
     assert_eq!(queue_depth(cap(32, true), &id(8)), 8.min(MAX_SLOTS));
@@ -1763,6 +1804,90 @@ fn a_reset_that_finds_another_queue_depth_latches_dead() {
     assert!(hw.is_dead());
     assert!(matches!(hw.claim(), Claim::Dead));
     assert_eq!(records(), vec![(Class::Block, Action::ResetFailed, 6)]);
+}
+
+// ── Force Unit Access ───────────────────────────────────────────────────
+
+/// Write `count` sectors at `lba` through the request layer with `flags`.
+fn layer_write(hw: &'static Ahci<Mock>, lba: u64, count: u32, flags: u32) -> (Result<(), Failure>, Vec<u8>) {
+    let q: &'static ReqQueue = Box::leak(Box::new(ReqQueue::new()));
+    let mut w: Vec<u8> = (0..count as usize * SECTOR).map(|i| (i * 13 % 241) as u8 ^ lba as u8).collect();
+    let r = q.transfer(hw, 10, true, lba, count, flags, w.as_mut_ptr(), w.len());
+    (r, w)
+}
+
+/// **Discriminates.** A disk with NCQ whose IDENTIFY advertises FUA: the
+/// driver says so (`caps.fua`), and a write the request layer asks to force
+/// is WRITE FPDMA QUEUED with the FUA bit, on the medium a power cut leaves
+/// when it completes, with no flush sent. Canary: `fpdma_fis(.., cmd.fua)`
+/// -> `fpdma_fis(.., false)` in `start` (the data is in the cache only).
+#[test]
+fn a_fua_write_with_ncq_is_on_the_medium_when_it_completes() {
+    if MAX_SLOTS < 2 {
+        return;
+    }
+    let m = Mock::ncq(1, 0, 1024, 32);
+    m.with(|m| m.fua = true);
+    let hw: &'static Ahci<Mock> = Box::leak(Box::new(new_ahci(&m, false)));
+    assert!(hw.caps().fua);
+    let count = XFER_SECTORS as u32 + 3;
+    let (r, w) = layer_write(hw, 40, count, FLAG_FUA);
+    r.expect("FUA write");
+    assert_eq!(m.durable(40, count as usize), w, "a power cut loses a FUA write");
+    let log = m.log();
+    assert!(log[1..].iter().all(|l| l.cmd == 0x61 && l.device == 0xC0), "{:?}", cmds(&m));
+    assert_eq!(m.with(|m| (m.flushes, m.fua_writes)), (0, 2));
+    // Without the flag: queued, not forced, and a power cut loses it.
+    let (r, w) = layer_write(hw, 400, 4, 0);
+    r.expect("write");
+    assert_eq!(m.disk(400, 4), w);
+    assert_ne!(m.durable(400, 4), w);
+    assert_eq!(m.log().last().unwrap().device, 0x40);
+    expect(&m, 0);
+}
+
+/// **Discriminates.** Without NCQ a forced write is WRITE DMA FUA EXT (0x3D),
+/// on the medium when it completes. Canary: `(true, true) =>
+/// ATA_WRITE_DMA_FUA_EXT` -> `ATA_WRITE_DMA_EXT` in `start`.
+#[test]
+fn a_fua_write_without_ncq_is_write_dma_fua_ext() {
+    let m = Mock::new(1, 0, 256);
+    m.with(|m| m.fua = true);
+    let hw: &'static Ahci<Mock> = Box::leak(Box::new(new_ahci(&m, false)));
+    assert_eq!(hw.queue_counts().0, 1);
+    assert!(hw.caps().fua);
+    let (r, w) = layer_write(hw, 9, 5, FLAG_FUA);
+    r.expect("FUA write");
+    assert_eq!(m.durable(9, 5), w);
+    assert_eq!(m.log()[1].cmd, 0x3D);
+    assert_eq!(m.with(|m| m.flushes), 0);
+    expect(&m, 0);
+}
+
+/// **Discriminates.** A disk whose IDENTIFY does not advertise FUA: the
+/// driver says so, the request layer refuses a forced write
+/// (`UNSUPPORTED`, so `blkdev::fua_commit` callers fall back to write then
+/// flush), the driver refuses one handed to it directly, and a plain write
+/// followed by a flush is on the medium. Canary: `fua: self.fua` -> `fua:
+/// true` in `caps` (the layer sends the forced write; the model records a
+/// FUA write to a disk without FUA).
+#[test]
+fn a_disk_without_fua_is_not_asked_for_it() {
+    let m = Mock::ncq(1, 0, 256, 32);
+    let hw: &'static Ahci<Mock> = Box::leak(Box::new(new_ahci(&m, false)));
+    assert!(!hw.caps().fua);
+    let (r, _) = layer_write(hw, 9, 5, FLAG_FUA);
+    assert_eq!(r, Err(Failure::Refused(azos_devif::outcome::UNSUPPORTED)));
+    let Claim::Tag(t) = hw.claim() else { panic!() };
+    let seg = [0u8; SECTOR];
+    assert!(hw.start(t, &HwCmd { op: HwOp::Write, lba: 0, sectors: 1, fua: true, segs: &[&seg] }).is_err());
+    hw.release(t);
+    let (r, w) = layer_write(hw, 9, 5, 0);
+    r.expect("write");
+    assert_eq!(flush(&hw), HwStatus::Ok);
+    assert_eq!(m.durable(9, 5), w);
+    assert_eq!(m.with(|m| m.fua_writes), 0);
+    expect(&m, 0);
 }
 
 // ── Completion by interrupt ─────────────────────────────────────────────

@@ -84,8 +84,13 @@
 //!   the HBA could not recall may still be writing to them).
 //! * **Budgets** are time the guest ran ([`StallClock`]): a guest the host
 //!   stopped for a second does not find its disk dead.
-//! * **No FUA, no discard.** [`HwCaps::fua`] is false and the layer orders
-//!   writes with a flush; nothing asks a SATA disk for TRIM.
+//! * **FUA.** Where IDENTIFY says the disk has it (word 84 bit 6, the WRITE
+//!   DMA FUA EXT bit, as Linux's `ata_id_has_fua`), [`HwCaps::fua`] is set
+//!   and a write that asks for it is stable when it completes: the FUA bit
+//!   of WRITE FPDMA QUEUED (the Device register's bit 7) with NCQ, WRITE DMA
+//!   FUA EXT without. Elsewhere the layer refuses a FUA request and its
+//!   callers order their writes with a flush (`blkdev::fua_commit`).
+//! * **No discard.** Nothing asks a SATA disk for TRIM.
 //!
 //! DMA coherence is assumed (the PCs this driver is for), as for NVMe.
 
@@ -190,11 +195,14 @@ const ATA_IDENTIFY: u8 = 0xEC;
 const ATA_READ_DMA_EXT: u8 = 0x25;
 const ATA_READ_LOG_EXT: u8 = 0x2F;
 const ATA_WRITE_DMA_EXT: u8 = 0x35;
+const ATA_WRITE_DMA_FUA_EXT: u8 = 0x3D;
 const ATA_READ_FPDMA_QUEUED: u8 = 0x60;
 const ATA_WRITE_FPDMA_QUEUED: u8 = 0x61;
 const ATA_FLUSH_CACHE_EXT: u8 = 0xEA;
-/// Device register of a command in LBA mode.
+/// Device register of a command in LBA mode, and the FUA bit of WRITE FPDMA
+/// QUEUED's.
 const ATA_DEVICE_LBA: u8 = 0x40;
+const ATA_DEVICE_FUA: u8 = 0x80;
 /// The NCQ Command Error log (READ LOG EXT, log address 10h): byte 0 is the
 /// NQ bit (7: the error was a non-queued command's) and the failed tag (4:0);
 /// bytes 2 and 3 are its status and error.
@@ -273,9 +281,12 @@ pub fn h2d_fis(command: u8, lba: u64, count: u32) -> [u8; 20] {
 /// Features bytes (FIS bytes 3 and 11; 65536 is 0) and the Count field
 /// carries the NCQ tag in its bits 7:3 (byte 12). The tag is the command
 /// slot: an AHCI HBA matches the disk's completion bits to slots by it.
-pub fn fpdma_fis(write: bool, lba: u64, count: u32, tag: u8) -> [u8; 20] {
+/// `fua`: the Device register's bit 7, the write is on the medium when it
+/// completes.
+pub fn fpdma_fis(write: bool, lba: u64, count: u32, tag: u8, fua: bool) -> [u8; 20] {
     let mut f = h2d_fis(if write { ATA_WRITE_FPDMA_QUEUED } else { ATA_READ_FPDMA_QUEUED }, lba, 0);
     f[3] = count as u8;
+    f[7] = ATA_DEVICE_LBA | if fua { ATA_DEVICE_FUA } else { 0 };
     f[11] = (count >> 8) as u8;
     f[12] = (tag & 0x1F) << 3;
     f[13] = 0;
@@ -318,6 +329,9 @@ pub struct Ident {
     /// Native command queuing: the queue depth the disk reports (1-32), 0
     /// for a disk without it.
     pub ncq_depth: u8,
+    /// Force Unit Access writes (WRITE DMA FUA EXT, and the FUA bit of WRITE
+    /// FPDMA QUEUED).
+    pub fua: bool,
 }
 
 /// Why a disk or a controller is not brought up.
@@ -369,7 +383,11 @@ pub fn decode_identify(w: &[u16; 256]) -> Result<Ident, AhciError> {
     // 8: native command queuing, at the depth word 75 bits 4:0 hold minus one.
     let w76_valid = w[76] != 0 && w[76] != 0xFFFF;
     let ncq_depth = if w76_valid && w[76] & (1 << 8) != 0 { (w[75] & 0x1F) as u8 + 1 } else { 0 };
-    Ok(Ident { sectors, flush_ext: w[83] & (1 << 13) != 0, ncq_depth })
+    // Word 84 (valid as word 83 is) bit 6: WRITE DMA FUA EXT. Linux takes it
+    // as the disk's FUA for the FPDMA bit too (`ata_id_has_fua`); so does
+    // this driver.
+    let fua = w[84] & 0xC000 == 0x4000 && w[84] & (1 << 6) != 0;
+    Ok(Ident { sectors, flush_ext: w[83] & (1 << 13) != 0, ncq_depth, fua })
 }
 
 /// The model string (words 27-46: two characters a word, the first in the
@@ -731,6 +749,7 @@ pub struct Ahci<R: Regs> {
     /// What IDENTIFY said at bring-up: a reset after a timeout must find
     /// this disk again, all of it.
     ident: Ident,
+    fua: bool,
     /// Slots in use (1 without NCQ), and whether reads and writes are queued.
     slots: usize,
     ncq: bool,
@@ -822,6 +841,7 @@ impl<R: Regs> Ahci<R> {
             sectors: 0,
             flush_ext: false,
             ident: Ident::default(),
+            fua: false,
             slots: 0,
             ncq: false,
             irq,
@@ -867,6 +887,7 @@ impl<R: Regs> Ahci<R> {
         me.sectors = id.sectors;
         me.flush_ext = id.flush_ext;
         me.ident = id;
+        me.fua = id.fua;
         let want = queue_depth(cap, &id);
         me.slots = me.alloc_slots(mask, want);
         if me.slots == 0 {
@@ -917,7 +938,7 @@ impl<R: Regs> Ahci<R> {
         let mut model = [0u8; 40];
         let n = model_string(&words, &mut model);
         azos_drv_sys::kprintln!(
-            "[AHCI] port {} {}: {} sectors mode={} xfer={} KiB flush={} ncq={} (w75 {:#06x} w76 {:#06x})",
+            "[AHCI] port {} {}: {} sectors mode={} xfer={} KiB flush={} ncq={} fua={} (w75 {:#06x} w76 {:#06x} w84 {:#06x})",
             self.port,
             core::str::from_utf8(&model[..n]).unwrap_or("?"),
             id.sectors,
@@ -925,8 +946,10 @@ impl<R: Regs> Ahci<R> {
             XFER_SECTORS * SECTOR_SIZE / 1024,
             if id.flush_ext { "y" } else { "n" },
             id.ncq_depth,
+            if id.fua { "y" } else { "n" },
             words[75],
-            words[76]
+            words[76],
+            words[84]
         );
 
         // Interrupts last: nothing was left pending by the polled commands.
@@ -1590,10 +1613,9 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         HwCaps {
             sectors: self.sectors,
             max_sectors: XFER_SECTORS as u32,
-            // No TRIM, no FUA: the layer refuses a discard and orders writes
-            // with a flush.
+            // No TRIM: the layer refuses a discard.
             max_discard_sectors: 0,
-            fua: false,
+            fua: self.fua,
         }
     }
 
@@ -1636,6 +1658,7 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
                     || cmd.sectors as usize > XFER_SECTORS
                     || cmd.lba.checked_add(cmd.sectors as u64).is_none_or(|end| end > self.sectors)
                     || (write && cmd.segs.iter().map(|s| s.len()).sum::<usize>() != bytes)
+                    || (cmd.fua && !(write && self.fua))
                 {
                     return Err(());
                 }
@@ -1647,9 +1670,14 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
                     }
                 }
                 let fis = if self.ncq {
-                    fpdma_fis(write, cmd.lba, cmd.sectors, tag)
+                    fpdma_fis(write, cmd.lba, cmd.sectors, tag, cmd.fua)
                 } else {
-                    h2d_fis(if write { ATA_WRITE_DMA_EXT } else { ATA_READ_DMA_EXT }, cmd.lba, cmd.sectors)
+                    let c = match (write, cmd.fua) {
+                        (false, _) => ATA_READ_DMA_EXT,
+                        (true, false) => ATA_WRITE_DMA_EXT,
+                        (true, true) => ATA_WRITE_DMA_FUA_EXT,
+                    };
+                    h2d_fis(c, cmd.lba, cmd.sectors)
                 };
                 (fis, write, bytes, false, self.b.io_us, self.ncq)
             }

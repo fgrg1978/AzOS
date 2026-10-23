@@ -228,7 +228,10 @@ config DRV_AHCI
       is in the disk at a time as READ/WRITE DMA EXT. Each command slot has
       a command table whose PRDT names its staging pages (a transfer of up
       to AHCI_XFER_KB per command). FLUSH CACHE EXT where the disk has it,
-      after the queue drained. Completions come by MSI where the machine routes it
+      after the queue drained. A write the block layer asks to force to the
+      medium (BLK_FUA's fsync commit) is WRITE FPDMA QUEUED with its FUA bit,
+      or WRITE DMA FUA EXT without NCQ, where IDENTIFY word 84 says the disk
+      has FUA; otherwise the layer orders with a flush. Completions come by MSI where the machine routes it
       (riscv64 AIA IMSIC, aarch64 GICv3 ITS, x86_64 local APIC) and are
       polled otherwise; legacy INTx is not routed. A command that misses its
       budget resets the controller DEVICE_TIMEOUT_RESETS times per boot (the
