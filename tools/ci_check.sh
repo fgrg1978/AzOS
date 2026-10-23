@@ -20810,7 +20810,10 @@ PYEOF
             rm -f "$vsock"
             vkbd=(-device virtio-keyboard-device -chardev "socket,id=mon0,path=$vsock,server=on,wait=off" -mon chardev=mon0,mode=readline)
         elif [ -n "${USH_MON:-}" ]; then
-            # `USH_MON=1`: the monitor alone, for the script's `#mon` lines.
+            # `USH_MON=1`: the monitor alone, for the script's `#mon` lines. A
+            # unix socket path is limited to 103 bytes, which a long label's
+            # slug overruns: the socket is named by the slug's checksum.
+            vsock="$CI_LOG_DIR/ush-$(printf '%s' "$slug" | cksum | cut -d' ' -f1).mon"
             rm -f "$vsock"
             vkbd=(-chardev "socket,id=mon0,path=$vsock,server=on,wait=off" -mon chardev=mon0,mode=readline)
         fi
