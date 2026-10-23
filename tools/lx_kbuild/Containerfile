@@ -13,7 +13,7 @@ RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends \
       gcc=4:14.2.0-1 libc6-dev=2.41-12+deb13u4 xz-utils=5.8.1-1+deb13u1 \
       gcc-riscv64-linux-gnu=4:14.2.0-1 gcc-aarch64-linux-gnu=4:14.2.0-1 \
-      gcc-x86-64-linux-gnu=4:14.2.0-1 \
+      gcc-x86-64-linux-gnu=4:14.2.0-1 libelf-dev=0.192-4 \
       make=4.4.1-2 bc=1.07.1-4+b1 flex=2.6.4-8.2+b4 bison=2:3.8.2+dfsg-1+b2 \
  && apt-get clean && rm -rf /var/lib/apt/lists/* \
  && dpkg-query -W -f '${Package} ${Version}\n' > /etc/lx-kbuild-packages
