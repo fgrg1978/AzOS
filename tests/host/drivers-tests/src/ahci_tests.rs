@@ -1729,12 +1729,13 @@ fn a_flush_waits_for_the_queue_to_drain_and_what_follows_waits_for_it() {
 
 /// **Discriminates.** An error on a queued command (a bad sector): the
 /// driver restarts the port, reads the NCQ error log (READ LOG EXT, log
-/// 10h), fails the tag the log names and issues the three others again from
-/// their slots, which end with their data; the disk carries on. The model
+/// 10h), fails the tag the log names (1) and issues the two others the error
+/// stopped again from their slots, which end with their data; the one that
+/// ended before the error is not sent again; the disk carries on. The model
 /// refuses any command but that READ LOG EXT until it is read. Canaries:
 /// skip the log (`ncq_error` arming the held commands again without it: the
 /// model records the queued commands sent into its error state); `culprit =
-/// log.held` (every command fails).
+/// log.held` (every command fails); the tag read from the log's byte 1.
 #[test]
 fn an_ncq_error_fails_the_tag_the_log_names_and_issues_the_others_again() {
     if MAX_SLOTS < 4 {
@@ -1743,20 +1744,24 @@ fn an_ncq_error_fails_the_tag_the_log_names_and_issues_the_others_again() {
     let m = Mock::ncq(1, 0, 256, 32);
     m.with(|m| m.bad.push(40));
     let hw = new_ahci(&m, false);
-    let reads = [(40u64, 2u32), (50, 2), (60, 4), (70, 1)];
+    // The bad read is the second (tag 1): the first ends before the error,
+    // and the log names a tag that is not 0.
+    let reads = [(50u64, 2u32), (40, 2), (60, 4), (70, 1)];
     let tags: Vec<u8> = reads.iter().map(|&(lba, n)| start_read(&hw, lba, n)).collect();
     let st = finish(&hw, &tags);
-    assert_eq!(st, vec![HwStatus::Io, HwStatus::Ok, HwStatus::Ok, HwStatus::Ok]);
-    for (&t, &(lba, n)) in tags.iter().zip(&reads).skip(1) {
-        assert_eq!(take(&hw, t, n), m.disk(lba as usize, n as usize), "slot {t}");
+    assert_eq!(st, vec![HwStatus::Ok, HwStatus::Io, HwStatus::Ok, HwStatus::Ok]);
+    for (i, (&t, &(lba, n))) in tags.iter().zip(&reads).enumerate() {
+        if i != 1 {
+            assert_eq!(take(&hw, t, n), m.disk(lba as usize, n as usize), "slot {t}");
+        }
     }
-    hw.release(tags[0]);
+    hw.release(tags[1]);
     assert!(!hw.is_dead());
     assert_eq!(m.with(|m| m.log_reads), 1);
     let c = cmds(&m);
     let at = c.iter().position(|&x| x == 0x2F).expect("no READ LOG EXT");
     assert_eq!(c[1..at], [0x60; 4]);
-    assert_eq!(c[at + 1..], [0x60; 3], "the three others issued again");
+    assert_eq!(c[at + 1..], [0x60; 2], "the two the error stopped issued again");
     m.with(|m| assert_eq!(m.stops[0], 1, "the port was restarted"));
     assert_eq!(read(&hw, 80, 2), (HwStatus::Ok, m.disk(80, 2)));
     expect(&m, 0);
