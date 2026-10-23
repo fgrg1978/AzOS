@@ -80,8 +80,10 @@ impl Durability {
 // that implement it live on both sides of it: NVMe in the block crate and
 // virtio-blk in the virtio crate, which the block crate depends on.
 
-/// Most commands a device may hold at once through [`HwQueue`].
-pub const HW_TAGS_MAX: usize = 8;
+/// Most commands a device may hold at once through [`HwQueue`]: 32, the
+/// tags of SATA native command queuing (the AHCI driver's Kconfig
+/// `AHCI_NCQ_DEPTH`); NVMe and virtio-blk use fewer.
+pub const HW_TAGS_MAX: usize = 32;
 
 /// What a [`HwQueue`] command does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

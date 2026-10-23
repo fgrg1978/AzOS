@@ -220,16 +220,21 @@ config DRV_AHCI
       up: takes the controller from the firmware, resets it, finds the first
       port with an ATA disk behind it (spin-up and link wait bounded),
       identifies the disk and becomes the boot block device in place of
-      virtio-blk, so the FAT32 volume mounts from it. One command is in
-      the device at a time (NCQ is off): READ/WRITE DMA EXT through a command
-      list and a command table whose PRDT names the staging pages (a
-      transfer of up to AHCI_XFER_KB per command), FLUSH CACHE EXT where the
-      disk has it. There is no FUA write on SATA outside NCQ: durability is
-      the explicit flush. Completions come by MSI where the machine routes it
+      virtio-blk, so the FAT32 volume mounts from it. Where the HBA and the
+      disk queue (CAP.SNCQ, IDENTIFY word 76), up to AHCI_NCQ_DEPTH reads and
+      writes are in the disk at once as READ/WRITE FPDMA QUEUED, and an NCQ
+      error is recovered through the NCQ error log (READ LOG EXT 10h): the
+      failed command fails, the others are sent again; otherwise one command
+      is in the disk at a time as READ/WRITE DMA EXT. Each command slot has
+      a command table whose PRDT names its staging pages (a transfer of up
+      to AHCI_XFER_KB per command). FLUSH CACHE EXT where the disk has it,
+      after the queue drained. Completions come by MSI where the machine routes it
       (riscv64 AIA IMSIC, aarch64 GICv3 ITS, x86_64 local APIC) and are
       polled otherwise; legacy INTx is not routed. A command that misses its
-      budget resets the controller and latches the driver dead until reboot;
-      a port error restarts the port and fails the command. 512-byte logical
+      budget resets the controller DEVICE_TIMEOUT_RESETS times per boot (the
+      late command fails, the others it held end as reset), then latches
+      the driver dead until reboot; a port error restarts the port and fails
+      the command. 512-byte logical
       sectors and LBA48 disks only. QEMU (q35): `-device ich9-ahci,id=ahci
       -device ide-hd,drive=d,bus=ahci.0`.
       n: the driver is not compiled and virtio-blk is the block device.

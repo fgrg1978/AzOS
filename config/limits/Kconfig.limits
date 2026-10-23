@@ -1611,11 +1611,29 @@ config AHCI_XFER_KB
       crates/drivers/block/src/ahci.rs: the largest transfer one command
       carries, described by one PRDT entry per 4 KiB staging page (the
       device is never handed caller memory). A larger request is split into
-      commands, one in the device at a time (NCQ is off).
+      commands, up to AHCI_NCQ_DEPTH of them in the device at once.
 
-      Cost: this much RAM plus one page for the command list, the received
-      FIS and the command table, taken from the page allocator at bring-up
-      (nothing without a SATA disk).
+      Cost: this much RAM per command slot (AHCI_NCQ_DEPTH), taken from the
+      page allocator at bring-up (nothing without a SATA disk).
+
+config AHCI_NCQ_DEPTH
+    int "AHCI command slots (native command queuing depth; 1: one at a time)"
+    range 1 32
+    default 4 if PROFILE_EMBEDDED
+    default 32
+    help
+      crates/drivers/block/src/ahci.rs: the most commands the driver keeps
+      in a SATA disk at once. The depth used is the smallest of this, the
+      HBA's command slots (CAP.NCS) and the queue depth the disk's IDENTIFY
+      reports (words 75-76); a disk or an HBA without native command queuing
+      (IDENTIFY word 76 bit 8, CAP.SNCQ) gets one command at a time, as
+      does 1 here. Queued reads and writes are READ/WRITE FPDMA QUEUED; a
+      flush or a TRIM is not queued and waits for the queue to drain.
+
+      Cost: AHCI_XFER_KB of staging per slot, plus one page of command
+      tables for every few slots, from the page allocator at bring-up and
+      only for the slots the disk takes (32 x 64 KiB = 2 MiB at the
+      defaults; a disk without NCQ takes one slot).
 
 config E1000E_RX_DESCS
     int "e1000e receive ring entries (a multiple of 8)"
