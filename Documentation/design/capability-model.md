@@ -26,7 +26,9 @@ Three consequences shape the rest of the design.
 
 - **Isolation of untrusted components.** A loaded model, a driver or a shell
   receives explicit capabilities to specific objects and can reach nothing
-  else.
+  else through the kernel. A device that masters the bus is outside this: its
+  DMA is not confined by capabilities (see "DMA" in
+  [security.md](../security.md)).
 - **The set a task can reach is readable.** If capabilities come only from a
   few well-defined places (section 5), "which tasks can reach this resource"
   is answered by reading those places, not by replaying every transfer that
@@ -136,8 +138,9 @@ Source: `crates/core/ipc/src/cap_store.rs` (module documentation),
 Every use goes through one resolve. In order:
 
 1. The handle is not null.
-2. The slot index is in range. It is masked, so a mispredicted check cannot
-   read another task's table.
+2. The slot index is in range. With Kconfig `MITIGATION_SPECTRE_V1_INDEX`
+   (default `y`) it is masked, so a mispredicted check cannot read another
+   task's table.
 3. The slot is occupied.
 4. The handle's generation equals the slot's.
 5. The handle's type equals the type the operation expects.
@@ -173,7 +176,9 @@ Authority enters the system in three ways and moves in a few more.
 
 **Entering.**
 
-1. **Boot and spawn seeding from a signed topology.** A topology row lists
+1. **Boot and spawn seeding from the topology** (the signed one, or the
+   built-in one where Kconfig `TOPOLOGY_SOURCE` lets the boot fall back to
+   it). A topology row lists
    capabilities as (kind, target, permission) triples; the target's syntax is
    per kind (`endpoint.<name>`, `/fat`, `TOOLBOX.ELF`, `irq.<N>`, `tasks`, ...).
    `cap_seed` mints them for a task that is admitted but has not yet run, either
@@ -270,7 +275,8 @@ Every slot records the slot it was derived from. Together the slots form a
   ask for it, and it travels by MOVE, is spent on use and cannot be copied.
 - A **weak** warrant, and everything derived from it, resolves as `READ` and
   `MAP` only, and has neither `DUP` nor `TRANSFER` to give. A shadow task's
-  whole table can be marked weak so every slot granted into it is.
+  whole table can be marked weak so every slot granted into it is (Kconfig
+  `CAP_WEAK`, default `y`; with it `n` a shadow row is seeded with nothing).
 - **Deleting a capability is not revoking it** (owner decision 20-10, seL4's
   rule). A close or an exit frees the task's own slots; copies made from them
   stay alive in their holders' tables and keep their mappings, hung under the
@@ -334,7 +340,10 @@ operation classes it may use per kind, and the kernel-hosted interfaces it may
 call. A call outside the profile ends the task with exit code 159; a capability
 refusal returns an error and is recorded. Both must allow a use. A profile also
 withholds a topology grant of an endpoint the image does not list, and a
-filter, once installed, can be neither removed nor replaced.
+filter, once installed, cannot be removed. The one call that replaces it is a
+Linux `execve`, which installs the executed image's own row (a Linux row); a
+row other than the caller's needs a `LAUNCH` grant for the image and may be
+wider than the caller's (`crates/core/syscall/src/linux.rs`, `sys_execve`).
 
 Source: `crates/core/sched/src/seccomp.rs` (`ImageProfile`, `IMAGE_PROFILES`),
 `crates/core/syscall/src/handlers.rs` (`SECCOMP_KILL_EXIT_CODE`),
@@ -432,7 +441,7 @@ Source: the publications and systems named above; no repository path.
 - **`OP_MASK` is evaluated only by paths that carry an op.** The syscall layer
   names one at every resolve (a typed handler its op, a numbered syscall the
   class-only op of its class). A path that resolves with `get` and no op, as
-  the IPC fast paths in `azos_ipc` still do, refuses a capability that has an
+  the IPC fast paths in `azos_ipc` do, refuses a capability that has an
   op mask and leaves a receipt: fail closed. The exception is a call to an
   endpoint the kernel hosts, whose op is in the request: the resolve passes the
   mask (`get_hosted_uncontained`) and `khost::admit` holds the call to it, as
