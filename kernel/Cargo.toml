@@ -599,12 +599,19 @@ percpu-oor-canary = ["qemu"]
 # `nr-cpus-clamp-canary`: the DTB's CPU count is used past the Kconfig ceiling
 # NR_CPUS instead of being cut to it; a boot with more CPUs than NR_CPUS breaks.
 nr-cpus-clamp-canary = ["qemu"]
+# Kconfig BOOT_SELFTESTS: the boot's self-tests (`kernel/src/smokes`); off,
+# a boot starts only the system's own tasks.
+boot-selftests = []
+# The ring-3 GPIO round trip (`gpio_user_driver_smoke_task`), which
+# `boot-selftests` runs on a `qemu` kernel: on its own for the two smokes that
+# start from it, so a build that names them has it whatever its .config says.
+gpio-aq3-smoke = ["qemu"]
 # Wave 8: the ring-3 GPIO driver serves a kernel client more urgent than
 # itself on its own hart, past a task in between that never blocks — only the
 # proxy's priority donation lets the driver run (`proxy_pi_smoke` in
 # kernel/src/smokes/proxy_pi_smoke.rs). Booted by the `userspace: ring-3 driver serves a more
 # urgent client on its hart` row, on the gpio_drv disk.
-proxy-pi-smoke = ["qemu"]
+proxy-pi-smoke = ["qemu", "gpio-aq3-smoke"]
 # Gate canary only: the kernel installs a proxy donation hook that never
 # donates. The row above must fail on `[PROXYPI] FAIL TIMEOUT` with it.
 proxy-donation-canary = ["proxy-pi-smoke"]
@@ -614,7 +621,7 @@ proxy-donation-canary = ["proxy-pi-smoke"]
 # with every restart and the give-up on the flight recorder
 # (`kernel/src/drv_supervisor.rs`). Booted by the `userspace: a crashed
 # ring-3 driver is restarted` row, on the gpio_drv disk.
-sup-smoke = ["qemu"]
+sup-smoke = ["qemu", "gpio-aq3-smoke"]
 # Gate canary only: the supervisor is switched off (every death releases
 # everything, as before M4). The row above must fail on
 # `[SUP] FAIL not restarted after kill 1` with it.

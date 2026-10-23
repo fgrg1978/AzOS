@@ -107,6 +107,27 @@ config FILE_CENSUS_EVERY
       and write and one console line per period. Raise it to average a
       long lane over more operations; lower it to see a short one.
 
+config BOOT_SELFTESTS
+    # cargo-feature: boot-selftests base
+    bool "Boot self-tests: start the demo, stress and probe work at boot"
+    depends on BUILD_TYPE_DEV
+    default n
+    help
+      Starts the boot's own checks next to the real tasks: the IPC pipe demo
+      (`ipc-demo`), the 15-task yield stress (`worker`), the RVV bench, the
+      aarch64 phase-3 preemption pair and migration probe, the ring-3 GPIO
+      round trip (QEMU), the ISA's trap and tick self-tests (aarch64 `svc`,
+      tick rate, FP across an interrupt; x86_64 `int3`, NMI, tick rate), the
+      Zicboz zero-fill check and bench (QEMU), the MSI-X TX self-test on a
+      virtio-net-pci, and the network conformance probe and loopback check.
+      Each prints its verdict, and the gate's rows read them.
+      Off (default in every mode): a boot starts only the tasks the system
+      needs, and none of that code is compiled. The gate's expanded
+      configurations turn it on (tools/ci_check.sh `primary_config` and
+      `aarch64_config`, tools/check_fast.sh), so its rows boot the kernels
+      they booted before; the row `boot: no self-tests by default` boots
+      each ISA with it off. Development builds only (BUILD_TYPE).
+
 # ---------------------------------------------------------------------------
 # In-kernel test registry (wave 15)
 # ---------------------------------------------------------------------------

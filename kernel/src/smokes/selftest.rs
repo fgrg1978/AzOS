@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Boot self-tests: the IPC demo, the SMP worker stress, and the RVV bench and
-//! isolation probe.
+//! Boot self-tests (Kconfig BOOT_SELFTESTS): the IPC demo, the SMP worker
+//! stress and the RVV bench; and the RVV isolation probe (its own feature).
 
 use crate::*;
 
 /// Each worker runs this many iterations.
+#[cfg(feature = "boot-selftests")]
 const WORKER_ITERS: u32 = 2000;
 
 /// IPC demo task: exercises the kernel's own byte pipe (Phase 8).
+#[cfg(feature = "boot-selftests")]
 pub(crate) fn ipc_demo_task(_arg: usize) {
     kprintln!("[IPC] ========================================");
     kprintln!("[IPC]  Phase 8: Pipes");
@@ -62,6 +64,7 @@ pub(crate) fn ipc_demo_task(_arg: usize) {
 }
 
 /// Worker task: runs WORKER_ITERS iterations with voluntary yields, then exits.
+#[cfg(feature = "boot-selftests")]
 pub(crate) fn worker_task(arg: usize) {
     let id = arg;
     let cpu = azos_sched::smp::current_cpu_id();
@@ -87,8 +90,7 @@ pub(crate) fn worker_task(arg: usize) {
 /// Preemptible like any task: `context_switch_rvv.S` saves and restores the
 /// vector state on every switch, and the boot creates this task only once
 /// that save is enabled (`init_vector_state`).
-#[cfg(target_arch = "riscv64")]
-#[cfg(feature = "rvv")]
+#[cfg(all(target_arch = "riscv64", feature = "rvv", feature = "boot-selftests"))]
 pub(crate) fn rvv_bench_task(_: usize) {
     use azos_arch::fp;
 

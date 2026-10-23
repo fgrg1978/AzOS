@@ -57,6 +57,9 @@ pub(crate) fn irq_stack_base(cpu: usize) -> usize {
 
 /// True while `cpu`'s interrupt stack still carries its magic word (and
 /// vacuously for a CPU without one).
+/// Read by riscv64's trap path, and by the other ISAs' boot self-tests
+/// (Kconfig BOOT_SELFTESTS) after their tick wait.
+#[cfg_attr(not(any(target_arch = "riscv64", feature = "boot-selftests")), allow(dead_code))]
 #[inline]
 pub(crate) fn irq_stack_magic_intact(cpu: usize) -> bool {
     let base = irq_stack_base(cpu);
@@ -88,7 +91,7 @@ pub(crate) fn aarch64_irq_stacks_arm() {
 /// True while the boot CPU's interrupt stack still carries its magic word —
 /// the aarch64 analogue of riscv64's `irq_stack_intact`, checked the same
 /// way (after the tick-wait loop, not from inside a handler).
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot-selftests"))]
 pub(crate) fn aarch64_irq_stack_intact() -> bool {
     use azos_arch::{Cpu, ARCH};
     irq_stack_magic_intact(ARCH.percpu_base())

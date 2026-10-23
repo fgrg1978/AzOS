@@ -3,17 +3,32 @@
 //! aarch64 boot self-tests: the FP/SIMD check the banner prints, and the
 //! checks `boot::early_main` runs once interrupts are live (the
 //! `boot_selftests` hook): `svc` returns, ticks arrive at the expected rate,
-//! FP/SIMD survives an interrupt, hart 0 takes interrupts on its own stack,
-//! the kernel runs in the TTBR1 half, the granule and TCR are as built.
+//! FP/SIMD survives an interrupt, hart 0 takes interrupts on its own stack
+//! (Kconfig BOOT_SELFTESTS); the kernel runs in the TTBR1 half, the granule
+//! and TCR are as built (every boot).
 
 use core::sync::atomic::Ordering as AOrdering;
 use azos_drv_sys::kprintln;
+#[cfg(feature = "boot-selftests")]
 use azos_arch::{timer as arch_timer, Cpu, ARCH};
+#[cfg(feature = "boot-selftests")]
 use crate::boot_hooks::AARCH64_SCHED_HZ;
 
-/// The self-tests that need interrupts live.
+/// The self-tests that need interrupts live: the `svc`, the tick rate, FP
+/// across an interrupt and the IRQ stack (Kconfig BOOT_SELFTESTS), then the
+/// translation readbacks every boot prints.
 #[inline(always)]
 pub(crate) fn boot_selftests() {
+    #[cfg(feature = "boot-selftests")]
+    interrupt_selftests();
+    translation_readbacks();
+}
+
+/// `svc` returns, ticks arrive at the expected rate, FP/SIMD survives an
+/// interrupt, hart 0 takes interrupts on its own stack.
+#[cfg(feature = "boot-selftests")]
+#[inline(always)]
+fn interrupt_selftests() {
     let live_hz = arch_timer::freq_hz();
     // ── (a) `svc #0` self-test — must RETURN, not park ──────────────
     let selftest_x0: u64;
@@ -114,7 +129,11 @@ pub(crate) fn boot_selftests() {
         azos_drv_sys::kerr!("[AARCH64-IRQSTACK] FAILED: hart 0's IRQ-stack magic word was \
                    overwritten (overflow)");
     }
+}
 
+/// The kernel runs in the TTBR1 half, and the granule and TCR are as built.
+#[inline(always)]
+fn translation_readbacks() {
     // ── TTBR1 alias proof (aarch64 parity program, TTBR1 migration) ────
     //
     // `aarch64_early_ttbr1_alias` (boot.S, right after

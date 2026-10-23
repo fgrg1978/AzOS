@@ -71,8 +71,8 @@ impl<const N: usize> Resched<N> {
     }
 
     /// Times an exit entered `schedule()`: the preemption marker the aarch64
-    /// scheduling smoke reads.
-    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    /// scheduling self-test reads (Kconfig BOOT_SELFTESTS).
+    #[cfg_attr(not(all(target_arch = "aarch64", feature = "boot-selftests")), allow(dead_code))]
     pub fn preempts(&self) -> u64 {
         self.preempts.load(Ordering::Relaxed)
     }

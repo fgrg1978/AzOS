@@ -587,15 +587,26 @@ gate_defc() { # gate_defc rv|a64|x86 <features>: the defconfig a kernel with the
         case "$1" in rv) echo "$GATE_DEFC_RV" ;; a64) echo "$GATE_DEFC_A64" ;; x86) echo "$GATE_DEFC_X86" ;; esac
     fi
 }
+#
+# The gate's two expanded configurations also turn on Kconfig BOOT_SELFTESTS
+# (off in every defconfig): the boot self-tests (`ipc-demo`, the `worker`
+# stress, aarch64 phase 3, the RVV bench, the AQ3 GPIO round trip, the trap
+# and tick self-tests, Zicboz, MSI-X, the network conformance probe) are what
+# many rows read, and with it every row boots the kernel it booted before the
+# self-tests became optional. `boot: no self-tests by default` boots each ISA
+# with it off. tools/check_fast.sh writes the same two files the same way,
+# and the robot cells (gate_config) take it too.
+GATE_KCONFIG_EXTRA="CONFIG_BOOT_SELFTESTS=y"
 PRIMARY_DIR="${PRIMARY_DIR:-$AZOS_OUT/target/primary}"
 PRIMARY_CONFIG="${PRIMARY_DIR}/qemu.config"
 primary_config() {
     local tmp rc
     mkdir -p "$PRIMARY_DIR" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_RV}.config" "$tmp/qemu.config" \
+    { cat "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_RV}.config"; echo "$GATE_KCONFIG_EXTRA"; } >"$tmp/qemu.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/qemu.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q '^CONFIG_BOARD_QEMU=y$' "$tmp/qemu.config" \
+      && grep -q '^CONFIG_BOOT_SELFTESTS=y$' "$tmp/qemu.config" \
       && { cmp -s "$tmp/qemu.config" "$PRIMARY_CONFIG" || cp "$tmp/qemu.config" "$PRIMARY_CONFIG"; }
     rc=$?
     rm -rf "$tmp"
@@ -636,9 +647,10 @@ aarch64_config() {
     local tmp rc
     mkdir -p "$AARCH64_DIR" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_A64}.config" "$tmp/qemu-aarch64.config" \
+    { cat "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_A64}.config"; echo "$GATE_KCONFIG_EXTRA"; } >"$tmp/qemu-aarch64.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/qemu-aarch64.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q '^CONFIG_ARCH_AARCH64=y$' "$tmp/qemu-aarch64.config" \
+      && grep -q '^CONFIG_BOOT_SELFTESTS=y$' "$tmp/qemu-aarch64.config" \
       && { cmp -s "$tmp/qemu-aarch64.config" "$AARCH64_CONFIG" || cp "$tmp/qemu-aarch64.config" "$AARCH64_CONFIG"; }
     rc=$?
     rm -rf "$tmp"
@@ -658,7 +670,7 @@ gate_config() { # gate_config <defconfig name> <expanded file> <line it must hol
     local tmp rc
     mkdir -p "${2%/*}" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/$1.config" "$tmp/c.config" \
+    { cat "${REPO_ROOT}/config/defconfigs/$1.config"; echo "$GATE_KCONFIG_EXTRA"; } >"$tmp/c.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q "^$3\$" "$tmp/c.config" \
       && { cmp -s "$tmp/c.config" "$2" || cp "$tmp/c.config" "$2"; }
@@ -9949,6 +9961,106 @@ par -s "smp: canary, no clamp (arm)" nrcpus_row arm 4 8 qemu,nr-cpus-clamp-canar
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 
+# ── A default image starts no boot self-test (Kconfig BOOT_SELFTESTS) ────────
+#
+# The gate turns BOOT_SELFTESTS on for every other row (`primary_config`,
+# `aarch64_config`); every defconfig leaves it off. This row builds the kernel
+# `make` builds from the plain defconfig and asserts two things:
+#   * the ELF links none of the self-tests' task bodies (llvm-nm); it must
+#     link `idle_task`, spelled the same way, so a query that went blind (no
+#     symbol table, another mangling) cannot pass;
+#   * a boot to the scheduler, plus SELFTESTS_OFF_SETTLE_S seconds for the
+#     first tasks to run, prints none of their lines.
+# x86_64's twin is beside the x86_64 boot rows. Canary, by hand: append
+# CONFIG_BOOT_SELFTESTS=y to the derived config and the row names every
+# marker and symbol it found.
+SELFTESTS_OFF_SETTLE_S="${SELFTESTS_OFF_SETTLE_S:-3}"
+# The task bodies a self-test kernel links, as legacy-mangled path segments
+# (`11worker_task`, not `18ioring_worker_task`); `phase3_yield_shim` is
+# `no_mangle`. `idle_task` is linked by every kernel: the positive control.
+SELFTESTS_OFF_SYMS='(^|[0-9])(ipc_demo_task|worker_task|rvv_bench_task|phase3_task_a|aarch64_migrate_probe_task|gpio_user_driver_smoke_task|net_conformance)|phase3_yield_shim'
+SELFTESTS_OFF_MARKS='Created ipc-demo task|[IPC] |Created worker task|stress-test workers|[TASK] Worker|task A and task B created|smp-migrate-probe|Created rvv-bench|[AQ3]|Zicboz zero-fill|svc #0 self-test|[TIMER] ticks:|FP/SIMD survives interrupt|AARCH64-IRQSTACK] hart 0|int3 self-test|NMI self-test|tick self-test|[NET]  RFC|loopback|[PCI] msix'
+selftests_off_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+selftests_off_check() { # selftests_off_check <boot log> <elf>; prints why, or nothing
+    local log="$1" elf="$2" n m found=""
+    if ! "$selftests_off_nm" "$elf" 2>/dev/null | qgrep -qE '(^|[0-9])idle_task'; then
+        echo "llvm-nm found no idle_task in $elf: the check is blind"; return
+    fi
+    n="$("$selftests_off_nm" "$elf" 2>/dev/null | grep -cE "$SELFTESTS_OFF_SYMS")"
+    if [ "${n:-0}" -ne 0 ]; then
+        echo "FAIL: ${n} self-test symbols linked:"
+        "$selftests_off_nm" "$elf" | grep -E "$SELFTESTS_OFF_SYMS" | sed -n '1,5p' | sed 's/^/        /'; return
+    fi
+    if ! grep -aqF "Starting scheduler on boot CPU" "$log"; then
+        echo "the boot never reached the scheduler"; return
+    fi
+    local IFS='|'
+    for m in $SELFTESTS_OFF_MARKS; do
+        grep -aqF -- "$m" "$log" && found="$found|$m"
+    done
+    unset IFS
+    [ -n "$found" ] && echo "FAIL: a self-test ran: ${found#|}"
+}
+selftests_off_row() { # selftests_off_row <rv|arm>
+    local isa="$1" label defc triple tdir cfg log kimg elf why i=0 pid
+    if [ "$isa" = rv ]; then
+        label="boot: no self-tests by default (rv)"; defc=qemu; triple=riscv64imac-unknown-none-elf
+    else
+        label="boot: no self-tests by default (arm)"; defc=qemu-aarch64; triple=aarch64-unknown-none-softfloat
+    fi
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    tdir="$AZOS_OUT/target/gate-selftests-off"; cfg="$tdir-${defc}.config"
+    log="$CI_LOG_DIR/selftests-off-${isa}.log"; kimg="$CI_LOG_DIR/selftests-off-${isa}.kimg"
+    rm -f "$log" "$kimg"
+    cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg.new" \
+        && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg.new" python3 -m olddefconfig >/dev/null 2>&1) \
+        && ! grep -q '^CONFIG_BOOT_SELFTESTS=y$' "$cfg.new" \
+        || { bad; echo "      could not expand ${defc}.config without BOOT_SELFTESTS"; rm -f "$cfg.new"; return; }
+    cmp -s "$cfg.new" "$cfg" && rm -f "$cfg.new" || mv "$cfg.new" "$cfg"
+    if [ "$isa" = rv ]; then
+        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release --features qemu >"$log.build" 2>&1 \
+            || { bad; echo "      riscv64 ${defc}.config did not build: $log.build"; return; }
+        elf="$tdir/${triple}/release/kernel"; cp "$elf" "$kimg"
+    else
+        env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release \
+            --target "$triple" -p azos_kernel --features qemu \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >"$log.build" 2>&1 \
+            || { bad; echo "      aarch64 ${defc}.config did not build: $log.build"; return; }
+        elf="$tdir/${triple}/release/kernel"
+        "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" -O binary "$elf" "$kimg" \
+            || { bad; echo "      llvm-objcopy failed on $elf"; return; }
+    fi
+    if grep -E "^(warning|error)" "$log.build" | qgrep -vqE "${A64_KNOWN_NOISE:-^$}"; then
+        bad; grep -E "^(warning|error)" "$log.build" | sed -n '1,4p' | sed 's/^/      /'; return
+    fi
+    rm -f "$log.build"
+    par_ready
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = rv ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 </dev/null >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" </dev/null >"$log" 2>&1 &
+    fi
+    pid=$!
+    while [ "$i" -lt 120 ]; do
+        grep -aqF "Starting scheduler on boot CPU" "$log" 2>/dev/null && break
+        grep -aq "\[FATAL\]\|panic" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    sleep "$SELFTESTS_OFF_SETTLE_S"
+    kill "$pid" 2>/dev/null; sleep 2; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg"
+    tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+    why="$(selftests_off_check "$log" "$elf")"
+    if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+    bad; printf '%s\n' "$why" | sed 's/^/      /'; echo "      log kept: $log"
+}
+par -s "boot: no self-tests by default (rv)" selftests_off_row rv
+par -s "boot: no self-tests by default (arm)" selftests_off_row arm
+
 board_volume_row() {
     local label="board: volume = topology"
     printf "  %-26s" "${label}..."
@@ -14289,13 +14401,13 @@ PY
         tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
         return 0   # only a refused kernel returns 1: its callers stop on it
     }
-    x86_boot_row() { # x86_boot_row <label> <smp> <cpu model> <want lines, |-separated fixed strings> <stop ERE>
-        local label="$1" smp="$2" cpu="$3" want="$4" stop="$5" why="" w
+    x86_boot_row() { # x86_boot_row <label> <smp> <cpu model> <want lines, |-separated fixed strings> <stop ERE> [features]
+        local label="$1" smp="$2" cpu="$3" want="$4" stop="$5" feats="${6:-}" why="" w
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
-        x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
+        x86_kbuild "$feats" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=$feats did not build"; return; }
         par_ready
         x86_qemu "$kimg" "$log" 60 "$stop" -smp "$smp" -cpu "$cpu" || { rm -f "$kimg" "$kimg.features"; return; }
         rm -f "$kimg" "$kimg.features"
@@ -14315,14 +14427,32 @@ PY
         bad; echo "      $why"; echo "      log kept: $log"
     }
     X86_SHELL="AzOS shell — type 'help' for commands"
+    # The trap and tick self-tests are boot self-tests (Kconfig BOOT_SELFTESTS),
+    # which the x86_64 defconfig leaves off: the row asks for them.
     par "x86_64: boots to the shell" x86_boot_row "x86_64: boots to the shell" 1 max \
         "[TRAP] int3 self-test: PASS|[TRAP] NMI self-test: PASS|[TIMER] tick self-test: PASS|[MM] W^X ok|[MM] x86_64 SMEP=true SMAP=true UMIP=true|[UART] COM1 TX interrupt-driven|[SCHED] Starting scheduler on boot CPU|$X86_SHELL" \
-        "AzOS shell|KERNEL PANIC"
+        "AzOS shell|KERNEL PANIC" boot-selftests
     par "x86_64: smp 2" x86_boot_row "x86_64: smp 2" 2 max \
         "[SMP] CPU 1 online: APIC ID 1|[SMP] CPU 1 took|[IPI] sent by CPU 0, received by CPU 1|$X86_SHELL" \
         "AzOS shell|KERNEL PANIC"
     par "x86_64: baseline canary (qemu64)" x86_boot_row "x86_64: baseline canary (qemu64)" 1 qemu64 \
         "[X86] CPU below the configured baseline" "below the configured baseline"
+    # `boot: no self-tests by default` on x86_64 (see the riscv64/aarch64 rows'
+    # comment, beside the NR_CPUS rows): the plain kernel, booted to the shell.
+    x86_selftests_off_row() {
+        local label="boot: no self-tests by default (x86)" why
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/x86-selftests-off.log" kimg="$CI_LOG_DIR/kernel-x86-selftests-off"
+        x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
+        par_ready
+        x86_qemu "$kimg" "$log" 60 "AzOS shell|KERNEL PANIC" -smp 2 -cpu max || { rm -f "$kimg" "$kimg.features"; return; }
+        why="$(selftests_off_check "$log" "$kimg")"
+        rm -f "$kimg" "$kimg.features"
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; printf '%s\n' "$why" | sed 's/^/      /'; echo "      log kept: $log"
+    }
+    par "boot: no self-tests by default (x86)" x86_selftests_off_row
     # virtio-input on x86_64 (Kconfig DRV_VIRTIO_INPUT): the kernel shell reads a
     # `-device virtio-keyboard-device` (a virtio-mmio v1 transport on microvm)
     # with the serial stdin silent. A typist in the background waits for the

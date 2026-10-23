@@ -1011,11 +1011,18 @@ pub fn timer_init() {
     kprintln!("[TRAP] interrupts on (RFLAGS.IF)");
 }
 
+/// The self-tests that need interrupts live (Kconfig BOOT_SELFTESTS).
+pub fn boot_selftests() {
+    #[cfg(feature = "boot-selftests")]
+    interrupt_selftests();
+}
+
 /// Three facts the rest of the boot relies on, each printed PASS/FAILED:
 /// an `int3` in ring 0 comes back (IDT, the trap frame, `iretq`), an NMI
 /// sent to this CPU comes back (its IST stack and the paranoid GS entry),
 /// and the periodic tick arrives at about its rate.
-pub fn boot_selftests() {
+#[cfg(feature = "boot-selftests")]
+fn interrupt_selftests() {
     use core::sync::atomic::Ordering;
     use azos_arch::{Cpu, ARCH};
     let x = crate::entry::x86_64::trap::KERNEL_BREAKPOINTS.load(Ordering::Relaxed);

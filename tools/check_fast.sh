@@ -42,11 +42,13 @@ t0=$SECONDS
 
 # The robot cells of the gate's configurations (the ktest counts and the
 # system boot are the robot kernel's), at the gate's primary paths so the
-# kernels share its build cache.
+# kernels share its build cache, with Kconfig BOOT_SELFTESTS on, as the gate
+# turns it on.
 cfg() { # cfg <defconfig> <out>
     local tmp rc=0; tmp="$(mktemp -d)" || return 1
     mkdir -p "$(dirname "$2")"
-    cp "config/defconfigs/$1" "$tmp/c" && KCONFIG_CONFIG="$tmp/c" python3 -m olddefconfig >/dev/null 2>&1 || rc=1
+    { cat "config/defconfigs/$1"; echo "CONFIG_BOOT_SELFTESTS=y"; } >"$tmp/c" \
+        && KCONFIG_CONFIG="$tmp/c" python3 -m olddefconfig >/dev/null 2>&1 || rc=1
     [ "$rc" = 0 ] && { cmp -s "$tmp/c" "$2" || cp "$tmp/c" "$2"; } || rc=1
     rm -rf "$tmp"; return $rc
 }

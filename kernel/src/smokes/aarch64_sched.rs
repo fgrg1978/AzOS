@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! aarch64 scheduler self-tests that run on every boot of that ISA: Phase 3
-//! (two preempted tasks on one hart, x20/FP across a switch) and Phase 4 (the
+//! aarch64 scheduler boot self-tests (Kconfig BOOT_SELFTESTS): Phase 3 (two
+//! preempted tasks on one hart, x20/FP across a switch) and Phase 4 (the
 //! cross-core migration probe).
 
 use crate::*;
+use core::sync::atomic::{AtomicBool, AtomicU64};
 
 // ═════════════════════════════════════════════════════════════════════
 // Phase 3 (context switch + scheduler on aarch64) — two kernel tasks,

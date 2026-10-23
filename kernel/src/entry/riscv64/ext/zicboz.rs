@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The Zicboz zero-fill self-check and bench the riscv64 `post_heap` hook
-//! runs on QEMU.
+//! runs on QEMU (a boot self-test: Kconfig BOOT_SELFTESTS).
 
-#[cfg(feature = "qemu")]
+#[cfg(all(feature = "qemu", feature = "boot-selftests"))]
 use azos_drv_sys::kprintln;
 
-/// Canary (QEMU only): poison a page, free it, force a
+/// Canary (QEMU, Kconfig BOOT_SELFTESTS): poison a page, free it, force a
 /// first-fit reallocation of the same physical page, and confirm it comes
 /// back all zero, under whichever zero-fill `zicboz_select` chose. A stride
 /// or block-size bug in `cbo.zero`'s loop would leave `0xAA` behind.
@@ -22,7 +22,7 @@ use azos_drv_sys::kprintln;
 /// cycle delta printed, to compare against `-cpu rv64,zicboz=off`.
 #[inline(always)]
 pub(crate) fn selfcheck() {
-    #[cfg(feature = "qemu")]
+    #[cfg(all(feature = "qemu", feature = "boot-selftests"))]
     {
         use azos_arch::mmu::PAGE_SIZE;
         let ok = (|| -> Option<bool> {

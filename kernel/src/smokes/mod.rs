@@ -1,23 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Boot self-tests and feature-gated boot smokes. Each item keeps the `cfg`
-//! it had in `main.rs`; a module declaration is gated on the union of its
-//! items' gates (so an all-off module is not compiled as an empty file with
-//! an unused import), and a new item behind a new feature must add that
-//! feature here or its call site fails to resolve. Everything is re-exported
+//! Boot self-tests (Kconfig BOOT_SELFTESTS) and feature-gated boot smokes.
+//! Each item keeps the `cfg` it had in `main.rs`; a module declaration is
+//! gated on the union of its items' gates (so an all-off module is not
+//! compiled as an empty file with an unused import), and a new item behind a
+//! new feature must add that feature here or its call site fails to resolve. Everything is re-exported
 //! so `kernel_main` and the trap handlers name each entry point directly.
 
+#[cfg(any(feature = "boot-selftests", all(feature = "rvv", feature = "rvv-isolation-probe")))]
 mod selftest;
+#[cfg(any(feature = "boot-selftests", all(feature = "rvv", feature = "rvv-isolation-probe")))]
 pub(crate) use selftest::*;
+// The network conformance probe and loopback check (Kconfig BOOT_SELFTESTS).
+#[cfg(feature = "boot-selftests")]
+pub(crate) mod net_conformance;
 #[cfg(feature = "cpuid-probe")]
 pub(crate) mod cpuid_probe;
 #[cfg(feature = "trace-cost-probe")]
 mod trace_cost;
 #[cfg(feature = "trace-cost-probe")]
 pub(crate) use trace_cost::*;
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot-selftests"))]
 mod aarch64_sched;
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot-selftests"))]
 pub(crate) use aarch64_sched::*;
 #[cfg(feature = "ipc-census")]
 mod ipc_census;
@@ -50,9 +55,11 @@ pub(crate) use safety::*;
 mod rc_fence;
 #[cfg(any(feature = "rc-failsafe-smoke", feature = "rc-stick-smoke", feature = "fence-refuse-smoke"))]
 pub(crate) use rc_fence::*;
-#[cfg(any(feature = "qemu", feature = "estop-gpio-smoke"))]
+#[cfg(any(feature = "gpio-aq3-smoke", feature = "ring3-drv-smoke", feature = "estop-gpio-smoke",
+          all(feature = "qemu", feature = "boot-selftests")))]
 mod drivers;
-#[cfg(any(feature = "qemu", feature = "estop-gpio-smoke"))]
+#[cfg(any(feature = "gpio-aq3-smoke", feature = "ring3-drv-smoke", feature = "estop-gpio-smoke",
+          all(feature = "qemu", feature = "boot-selftests")))]
 pub(crate) use drivers::*;
 #[cfg(feature = "console-splice-smoke")]
 mod console_splice;
