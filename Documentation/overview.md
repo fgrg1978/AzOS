@@ -28,7 +28,7 @@ x86_64). A driver written once can be hosted in either place (see
 | One kernel image, `kernel_main` | `kernel/src/main.rs` |
 | Kernel targets | `riscv64imac-unknown-none-elf`, `aarch64-unknown-none-softfloat`, `x86_64-unknown-none` (`mk/vars.mk`) |
 | Ring-3 programs | `userspace/`; Rust `std` targets `*-unknown-azos` in `sdk/targets/` |
-| Second, separate kernel for MMU-less parts | `micro/` (riscv32imac, M-mode, PMP) |
+| Second, separate kernel for MMU-less parts | `micro/` (riscv32imac, M-mode, PMP); it compiles the main kernel's scheduling, topology and ABI sources rather than copies |
 | Application domains are optional features | `config/axes/Kconfig.use`, `domains/robot/` |
 
 AzOS is a general-purpose kernel with application domains on top. The `robot`
@@ -143,7 +143,7 @@ capability, applies a limit and writes a record.
   (`gate`), the flight recorder (`logger`), the boot-time latch replay, the GPIO
   kill switch and the system watchdog.
 - **Write-ahead receipts.** With the `effect-gate` feature (Kconfig
-  `EFFECT_WRITE_AHEAD`), `effect_gate::issue` takes the device op as a closure
+  `EFFECT_WRITE_AHEAD`, on by default with `USE_ROBOT`), `effect_gate::issue` takes the device op as a closure
   and runs it itself, so the record is committed before the op is issued; there
   is no call that issues without committing. A ring at its limit refuses a
   reversible effect with a receipt. An effect that moves a device toward its
@@ -156,8 +156,8 @@ capability, applies a limit and writes a record.
   admission, placement or refusal: the rule that decided, the verdict, the
   subject, up to three numbers compared and the alternative the rule rejected.
   The kernel publishes the newest in its introspection tree's admin region;
-  `why` prints them. With the `durable` feature
-  every refusal is also handed to the flight recorder, which survives a reset.
+  `why` prints them. With the `durable` feature (Kconfig
+  `DECISION_REFUSALS_DURABLE`) every refusal is also handed to the flight recorder, which survives a reset.
 - **Domain code plugs in, it does not own the gate.** Robot-specific parts
   (the motor gate and its envelope, the control loop, flight) live in
   `domains/robot` and register through `hooks`; `azos_actuation` depends on no
@@ -189,15 +189,20 @@ it or when the extra crossings buy no isolation.
   Each move writes a `Rule::Placement` decision record.
 - **Ring-3 driver framework.** A ring-3 task registers as the driver for a
   hardware kind with a capability; in-kernel clients reach it through a request
-  queue (`crates/drivers/driver_server`). A supervisor restarts a driver that
-  dies, up to a burst limit, and records the restart
+  queue (`crates/drivers/driver_server`).
+- **Supervision.** The component manager (`userspace/services/compmgr`) is the
+  first ring-3 component: it starts every `start = true` row of the topology
+  and restarts it by the row's `restart` key. The kernel supervises only what
+  no ring-3 supervisor can keep up, the component manager itself and the ML
+  service, up to a burst limit, and records each restart
   (`kernel/src/drv_supervisor.rs`).
 - **Services.** The shell, the name server, the package installer, the decision
-  server, the terminal server and others are ring-3 programs whose topology row
-  is their whole authority (`userspace/services/`).
+  server, the terminal server, the compositor, the input and audio servers and
+  others are ring-3 programs whose topology row is their whole authority
+  (`userspace/services/`).
 
 Source: `crates/core/topology/src/placement.rs`, `crates/drivers/driver_server/src/lib.rs`,
-`kernel/src/drv_supervisor.rs`, `crates/drivers/chip_source.rs`.
+`kernel/src/drv_supervisor.rs`, `userspace/services/compmgr/src/main.rs`, `crates/drivers/chip_source.rs`.
 Next: [drivers.md](drivers.md), [services.md](services.md).
 
 ## Kconfig is the single source of configuration
@@ -232,15 +237,17 @@ Next: [config.md](config.md), [building.md](building.md).
 The same kernel crate builds for riscv64, aarch64 and x86_64.
 
 - **Contract.** `crates/core/arch-api` defines the trait surface: `Cpu`,
-  `Interrupts`, `Mmu`, `Boot`, `Vector`, `SpinWait`, plus `ArchPlatform` and
-  `ArchEntry`. Each ISA crate (`arch-riscv64`, `arch-aarch64`, `arch-x86_64`)
+  `Interrupts`, `Mmu`, `Boot`, `Vector`, `SpinWait`, `Pmu`, plus `ArchPlatform` and
+  `ArchEntry`, and for the hypervisor `Hypervisor`, `StageTableMem` and
+  `HypercallHost`. Each ISA crate (`arch-riscv64`, `arch-aarch64`, `arch-x86_64`)
   implements it, and `crates/core/arch` re-exports the one that matches
   `target_arch`.
 - **One boot sequence.** `kernel_main` calls `boot::early_main`
   (`kernel/src/boot/early.rs`), which owns the common steps and their order
   and calls the hooks of the kernel's `ArchEntry` implementation where the
-  ISAs differ. Every early-boot hook is required, with no default, so a new ISA
-  cannot leave a step out silently. Hooks are `#[inline(always)]` on a zero-sized type:
+  ISAs differ. The early-boot hooks are required, so a new ISA
+  cannot leave a step out silently; only `pmm_floor` and
+  `reserve_firmware_table` have defaults, for the case riscv64 and aarch64 share. Hooks are `#[inline(always)]` on a zero-sized type:
   no `dyn`, no table.
 - **One trap layer.** `kernel/src/trap/` holds the syscall flow, fault policy
   and interrupt bracket once; each ISA supplies its frame, trap entry asm and
@@ -274,8 +281,13 @@ What the code does not try to be:
   needs Linux behaviour gets it from the Linux personality, which uses Linux
   numbers translated by `crates/core/linux-abi` or the ring-3 runtime
   `userspace/lib/linux_rt`. Those numbers are not in the native table.
-- **Not a desktop system.** Display support is a framebuffer
-  (`crates/drivers/fb`); there is no window system in the tree.
+- **No display server in the kernel.** The kernel serves a `Display`
+  interface over its framebuffer drivers (`crates/drivers/fb`,
+  `crates/core/devif/src/display.rs`). Windows are the ring-3 compositor's
+  (`userspace/services/compositor`, `userspace/lib/compositor`), the sole
+  holder of that interface; a client draws into a memory object it made and
+  posts damage on a ring. Input focus is the input server's
+  (`userspace/services/inputd`).
 - **Not a robot kernel.** The robot domain is one optional use of the kernel
   (`config/axes/Kconfig.use`).
 - **Not the planner.** Perception, planning and models live outside the kernel;
@@ -284,4 +296,5 @@ What the code does not try to be:
   [authority by capability](#authority-by-capability).
 
 Source: `sdk/README.md`, `config/axes/Kconfig.use`, `crates/core/abi/src/syscall_nr.rs`,
-`crates/core/linux-abi/src/lib.rs`, `crates/drivers/fb/src/lib.rs`.
+`crates/core/linux-abi/src/lib.rs`, `crates/drivers/fb/src/lib.rs`,
+`userspace/lib/compositor/src/lib.rs`.
