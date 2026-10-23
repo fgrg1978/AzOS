@@ -2193,7 +2193,17 @@ pub const BUSYBOX_ROW: bool =
 pub const TASK_BUSYBOX_IMAGE: &[u8] = b"BUSYBOX.ELF";
 /// Frame budget of `BUSYBOX.ELF`: a static image of about 150 KiB, its heap,
 /// stack and page tables, and its forked children's copy-on-write breaks.
-const BUSYBOX_MEM_PAGES: u32 = 256;
+///
+/// 256 pages was not enough for `sh -c '...; ls /fat'` (gate row `linux:
+/// busybox sh`, all three ISAs: `ls: can't open '/fat': Out of memory`). Its
+/// libc grows the heap in 64 KiB chunks, each an `mmap` of 124 KiB (31 pages,
+/// charged whole) trimmed by two `munmap`s, because the kernel places an
+/// anonymous mapping at the break and does not take the address hint. The
+/// shell holds 7 or 8 such chunks after start; the forked `ls` child is charged
+/// for what it shares with it, and its next growth (opendir's buffer) asked
+/// for 31 more pages past the 256: ENOMEM (traced on x86_64, 2026-10-23).
+/// 512 leaves room for that growth and one more fork level.
+const BUSYBOX_MEM_PAGES: u32 = 512;
 /// `BUSYBOX.ELF`'s authority: `/tmp` read-write, and the read-only root
 /// directory ([`ROOT_RO`]: it reads where it always could, and writes only
 /// under `/tmp`). Gate only
