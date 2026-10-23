@@ -51,11 +51,11 @@ is a failure so the row cannot pass by finding nothing):
       (`Dual Apache/GPL`): until stage L1's sign-off no Linux module is built.
 
 Module rules (`--ko DIR`, DIR = `make lx-kbuild`'s output: <isa>/*.ko for
-riscv64 and aarch64). The load order is lxbase.ko (the base,
+riscv64, aarch64 and x86_64). The load order is lxbase.ko (the base,
 lx/glue) and then every other module:
 
   K1  every .ko carries a GPL-compatible `license` (the Linux loader's list)
-      and `vermagic` = "<the Linux tree's tag, no v> SMP preempt <riscv|aarch64>";
+      and `vermagic` = "<the Linux tree's tag, no v> SMP preempt <riscv|aarch64|nothing>";
   K2  lxbase.ko imports only the host ABI (lx/HOST_ABI): no Linux symbol is
       expected from the server;
   K3  every other module imports only the host ABI and symbols EXPORTED
@@ -234,7 +234,9 @@ def check_artefacts(root, rels):
 # in kernel/module/main.c), the list crates/core/lx-loader also enforces.
 GPL_COMPATIBLE = {b"GPL", b"GPL v2", b"GPL and additional rights", b"Dual BSD/GPL",
                   b"Dual MIT/GPL", b"Dual MPL/GPL", OUR_MODULE_TAG}
-KO_ISAS = {"riscv64": "riscv", "aarch64": "aarch64"}
+# The vermagic arch word per ISA: x86_64 defines none (arch/x86/include/asm/
+# vermagic.h), so its vermagic ends in "preempt " with the trailing space.
+KO_ISAS = {"riscv64": "riscv", "aarch64": "aarch64", "x86_64": ""}
 
 
 def elf_symbols(data):

@@ -574,8 +574,8 @@ fn kbuild_chain(isa: Isa) -> Option<(Vec<u8>, Loaded, Vec<u8>, Loaded)> {
     let want: &[u32] = match isa {
         Isa::Riscv64 => &[2, 19, 23, 24, 35, 39],
         Isa::Aarch64 => &[261, 275, 277, 283],
-        // Not built yet: tools/lx_kbuild builds riscv and arm64 only.
-        Isa::X86_64 => &[1, 2, 4],
+        // -mcmodel=kernel: absolute references are 32S, data pointers 64.
+        Isa::X86_64 => &[1, 2, 4, 11],
     };
     for k in want {
         let n = cb.get(k).copied().unwrap_or(0) + cx.get(k).copied().unwrap_or(0);
@@ -586,14 +586,14 @@ fn kbuild_chain(isa: Isa) -> Option<(Vec<u8>, Loaded, Vec<u8>, Loaded)> {
 
 #[test]
 fn kbuild_modules_every_relocation_checks() {
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let _ = kbuild_chain(isa);
     }
 }
 
 #[test]
 fn kbuild_exports_come_from_the_ksymtab_only() {
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let Some((base, lb, xz, lx)) = kbuild_chain(isa) else { continue };
         let bm = Module::parse(&base, Some(isa)).unwrap();
         let mut t = lb.text.clone();
@@ -643,9 +643,8 @@ fn linux_release() -> String {
 #[test]
 fn kbuild_modinfo_and_notes() {
     let tag = linux_release();
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
-        let arch = if isa == Isa::Riscv64 { "riscv" } else { "aarch64" };
-        let vermagic = format!("{tag} SMP preempt {arch}");
+    for isa in ISAS {
+        let vermagic = format!("{tag} SMP preempt {}", vermagic_arch(isa));
         for (name, license) in [("lxbase.ko", &b"GPL"[..]), ("xz_dec.ko", &b"Dual BSD/GPL"[..])] {
             let Some(obj) = kbuild(isa, name) else { continue };
             let m = Module::parse(&obj, Some(isa)).unwrap();
@@ -669,8 +668,8 @@ fn kbuild_modinfo_and_notes() {
 /// every module we have: the L0b fixtures and the Kbuild set.
 #[test]
 fn placement_equals_an_independent_walk() {
-    let mut objs = vec![(Isa::Riscv64, ko(Isa::Riscv64)), (Isa::Aarch64, ko(Isa::Aarch64))];
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    let mut objs: Vec<_> = ISAS.iter().map(|&isa| (isa, ko(isa))).collect();
+    for isa in ISAS {
         for n in ["lxbase.ko", "xz_dec.ko"] {
             if let Some(o) = kbuild(isa, n) {
                 objs.push((isa, o));
@@ -720,6 +719,16 @@ const FS_ORDER: [&str; 5] = ["lxbase.ko", "fs/crc16.ko", "fs/mbcache.ko", "fs/jb
 
 fn fs_list_path() -> String {
     format!("{}/../../../lx/FS_EXT4_UNRESOLVED", env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The arch word of the vermagic (`MODULE_ARCH_VERMAGIC`): x86_64 has none,
+/// so its vermagic ends in "preempt " with the trailing space.
+fn vermagic_arch(isa: Isa) -> &'static str {
+    match isa {
+        Isa::Riscv64 => "riscv",
+        Isa::Aarch64 => "aarch64",
+        Isa::X86_64 => "",
+    }
 }
 
 fn isa_key(isa: Isa) -> &'static str {
@@ -791,12 +800,11 @@ fn fnv(name: &[u8]) -> u64 {
 /// to `fallback` (a stand-in address near the importing module's text, so
 /// that a branch can reach it) when it returns true, and recorded.
 fn fs_chain(isa: Isa, fallback: &dyn Fn(&str) -> bool) -> Option<FsLoaded> {
-    let vermagic = format!("{} SMP preempt {}", linux_release(), if isa == Isa::Riscv64 { "riscv" } else { "aarch64" });
+    let vermagic = format!("{} SMP preempt {}", linux_release(), vermagic_arch(isa));
     let mut objs = Vec::new();
     for n in FS_ORDER {
         let (dir, file) = n.rsplit_once('/').map_or(("", n), |(d, f)| (d, f));
-        let isa_dir = if isa == Isa::Riscv64 { "riscv64" } else { "aarch64" };
-        let path = format!("{}/build/lx/kbuild/{isa_dir}/{}{}{file}", env!("AZOS_OUT"), dir, if dir.is_empty() { "" } else { "/" });
+        let path = format!("{}/build/lx/kbuild/{}/{}{}{file}", env!("AZOS_OUT"), isa_key(isa), dir, if dir.is_empty() { "" } else { "/" });
         match std::fs::read(&path) {
             Ok(b) => objs.push((n, b)),
             Err(_) => {
@@ -859,7 +867,7 @@ fn fs_chain(isa: Isa, fallback: &dyn Fn(&str) -> bool) -> Option<FsLoaded> {
 
 #[test]
 fn fs_modules_load_and_every_relocation_checks() {
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let Some(set) = fs_chain(isa, &|_| true) else { continue };
         let mut total: BTreeMap<u32, usize> = BTreeMap::new();
         for (name, c) in &set.relocs {
@@ -890,7 +898,7 @@ fn fs_modules_load_and_every_relocation_checks() {
 #[test]
 fn fs_unresolved_imports_equal_the_recorded_list() {
     let mut now: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let Some(set) = fs_chain(isa, &|_| true) else { return };
         now.insert(isa_key(isa).to_string(), set.unresolved);
     }
@@ -913,7 +921,7 @@ fn fs_unresolved_imports_equal_the_recorded_list() {
 #[test]
 fn fs_withholding_one_recorded_import_fails_the_load() {
     let rec = fs_recorded();
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let Some(want) = rec.get(isa_key(isa)) else { continue };
         let victim = want.iter().next().expect("a non-empty list").clone();
         let r = std::panic::catch_unwind(|| fs_chain(isa, &|s| s != victim));

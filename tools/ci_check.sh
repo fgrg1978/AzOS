@@ -11404,7 +11404,7 @@ lx_kconfig_row() {
 ci_row "lx: Kconfig gates" lx_kconfig_row
 # ── Linux modules built by Linux's Kbuild (wave 13, L1) ────────
 #
-# `tools/lx_kbuild/run.sh` runs Kbuild for both ISAs inside the pinned
+# `tools/lx_kbuild/run.sh` runs Kbuild for the three ISAs inside the pinned
 # container (tools/lx_kbuild/Containerfile, recorded in tools/lx_kbuild/IMAGE;
 # owner decision, round 49: podman), --network=none, the Linux tree mounted
 # read-only: lxbase.ko (lx/glue, GPL-2.0-only, the base) and the upstream
@@ -11462,7 +11462,8 @@ lx_kbuild_row() { # <label> <mode: modules|repro|canary>
         # imports equal lx/FS_EXT4_UNRESOLVED, and withholding one fails the load.
         # The modules row builds the set; running first is part of the contract,
         # so a missing module is a failure here, not a SKIP (LX_REQUIRE_FS).
-        if [ ! -f "$dir/SHA256SUMS" ] || ! grep -q ' aarch64/fs/ext4.ko$' "$dir/SHA256SUMS"; then
+        if [ ! -f "$dir/SHA256SUMS" ] || ! grep -q ' aarch64/fs/ext4.ko$' "$dir/SHA256SUMS" \
+            || ! grep -q ' x86_64/fs/ext4.ko$' "$dir/SHA256SUMS"; then
             bad; echo "      no filesystem set in $dir: the modules row did not run before this one"; return
         fi
         out="$( (cd "${REPO_ROOT}/tests/host/lx-loader-tests" && LX_REQUIRE_FS=1 "$CARGO" test --release fs_ 2>&1) )"

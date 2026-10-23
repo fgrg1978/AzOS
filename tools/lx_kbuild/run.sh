@@ -5,12 +5,12 @@
 # Build the lx/ module set with Linux's Kbuild inside the pinned container
 # (podman on the Mac).
 #
-#   tools/lx_kbuild/run.sh build <outdir>   # both ISAs + the xz fixture
+#   tools/lx_kbuild/run.sh build <outdir>   # the three ISAs + the xz fixture
 #   tools/lx_kbuild/run.sh image            # build the image (network: apt)
 #   tools/lx_kbuild/run.sh check            # exit 0 if a build can run
 #   tools/lx_kbuild/run.sh linux <outdir>   # the Linux comparison kernels
 #
-# `linux` (after `build` into build/lx/kbuild) builds, for both ISAs, a Linux
+# `linux` (after `build` into build/lx/kbuild) builds, for riscv64 and aarch64, a Linux
 # kernel from the FULL pinned tree with the modules' exact configuration,
 # lxbench.ko (lx/glue/bench) and an initramfs holding the same xz_dec.ko and
 # XZTEST.XZ the AzOS volume carries: the "same QEMU, same .ko" baseline
@@ -91,6 +91,7 @@ check|build|linux)
     }
     run riscv "${modules[@]}" "${fs_modules[@]}"
     run arm64 "${modules[@]}" "${fs_modules[@]}"
+    run x86_64 "${modules[@]}" "${fs_modules[@]}"
     mv "$out/riscv" "$out/riscv64"; mv "$out/arm64" "$out/aarch64"
     python3 "$here/xz_fixture.py" > "$out/xztest.bin"
     run xz /out/xztest.bin /out/XZTEST.XZ
@@ -98,7 +99,7 @@ check|build|linux)
     # 1), so a server that accepted any clean decode would still pass.
     python3 "$here/xz_fixture.py" 1 > "$out/xzother.bin"
     run xz /out/xzother.bin /out/XZOTHER.XZ
-    (cd "$out" && shasum -a 256 riscv64/*.ko aarch64/*.ko riscv64/fs/*.ko aarch64/fs/*.ko XZTEST.XZ XZOTHER.XZ > SHA256SUMS)
+    (cd "$out" && shasum -a 256 riscv64/*.ko aarch64/*.ko x86_64/*.ko riscv64/fs/*.ko aarch64/fs/*.ko x86_64/fs/*.ko XZTEST.XZ XZOTHER.XZ > SHA256SUMS)
     cat "$out/SHA256SUMS"
     ;;
 *)
