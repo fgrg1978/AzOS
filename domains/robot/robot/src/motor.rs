@@ -534,6 +534,11 @@ pub fn motor_stop_panic(id: u32) {
     if id as usize >= MAX_MOTORS { return; }
 
     let (pwm_ch, dir_a, dir_b, initialized) = {
+        // SAFETY: the panic path cannot take `MOTORS`: the holder may be the
+        // code this hart interrupted, and a `try_lock` that fails would leave
+        // the motor running. A race with a concurrent `motor_init`/`motor_set`
+        // is the price, stated above: the fields read are three `u32`s and a
+        // `bool`, each stored whole, so the worst case is a stale mix of them.
         let motors = unsafe { MOTORS.get_mut_unchecked() };
         let m = &motors[id as usize];
         (m.pwm_ch, m.dir_pin_a, m.dir_pin_b, m.initialized)
