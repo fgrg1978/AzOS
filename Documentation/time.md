@@ -21,15 +21,31 @@ Source: `crates/core/abi/src/time.rs` (`ClockOffsets`, `clock_now_with`).
 
 `azos_drv_sys::timebase::now()` returns the counter in ticks; `timebase::TIMER_FREQ` is its frequency in Hz (Kconfig `TIMER_FREQ`). A raw tick count is not a duration: divide by `TIMER_FREQ`. The counter is read through the architecture trait: `Cpu::now_ticks`.
 
-| ISA | Counter |
-|---|---|
-| riscv64 | the `time` CSR (`rdtime`) |
-| aarch64 | the virtual count register `CNTVCT_EL0` |
-| x86_64 | the invariant TSC (`rdtsc`), converted to `TIMER_FREQ` ticks |
+| ISA | Counter | Comparator (`Interrupts::set_timer_deadline`) |
+|---|---|---|
+| riscv64 | the `time` CSR (`rdtime`) | `stimecmp` when the boot selected Sstc (Kconfig `RV_SSTC_*`), else SBI `set_timer` |
+| aarch64 | the virtual count register `CNTVCT_EL0` | `CNTV_CVAL_EL0` |
+| x86_64 | the invariant TSC (`rdtsc`), converted to `TIMER_FREQ` ticks | `IA32_TSC_DEADLINE` when the CPU has it (Kconfig `X86_TSC_DEADLINE_*`), else the LAPIC one-shot counter calibrated against the TSC |
+
+On x86_64 the clock is the TSC scaled: `ticks = base_ticks + ((tsc - base_tsc) * mult) >> 32`. The TSC rate comes from CPUID leaf 15H when it is complete and Kconfig `X86_TSC_FREQ_CPUID` trusts it, else the hypervisor timing leaf, else a measurement over `X86_TSC_CALIBRATE_MS` against the HPET (`X86_HPET`), the ACPI PM timer (`X86_PMTIMER`) or the PIT, else CPUID leaf 16H's nominal frequency. Until calibration the scale is 1:1; the switch keeps the clock continuous and happens once, on the boot CPU.
 
 `azos_abi::time` converts between nanoseconds and ticks with two functions both sides use: `ns_to_ticks_ceil(ns, freq)` rounds up, so a deadline converted here is never reached early; `ticks_to_ns(ticks, freq)` rounds down and returns 0 for a zero frequency. Both split the value at the second to avoid wide intermediates and saturate rather than wrap.
 
-Source: `crates/drivers/sys/src/timebase.rs`, `crates/core/arch-api/src/lib.rs` (`Cpu::now_ticks`), `crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-x86_64/src/lib.rs`, `crates/core/abi/src/time.rs`, `config/arch/Kconfig.platform` (`TIMER_FREQ`).
+Source: `crates/drivers/sys/src/timebase.rs`, `crates/core/arch-api/src/lib.rs` (`Cpu::now_ticks`, `Interrupts::set_timer_deadline`), `crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-x86_64/src/lib.rs`, `crates/core/arch-x86_64/src/timer.rs` (`now_ticks`, `calibrate`), `crates/core/abi/src/time.rs`, `config/arch/Kconfig.platform` (`TIMER_FREQ`, `X86_*`), `config/arch/Kconfig.isa` (`RV_SSTC_*`, `X86_TSC_DEADLINE_*`).
+
+## Programming the timer interrupt
+
+`timer_arm` holds the arithmetic of the next timer event, with no hardware in it; `timebase` writes the comparator. After a tick or at the idle boundary, `timer_arm::next_event` picks the instant from the nearest timer sleeper and a cap set by the hart's state (`timer_arm::Cap`):
+
+| `Cap` | Hart | Instant |
+|---|---|---|
+| `Busy` | a task is running | `min(nearest, now + period)`, the period one scheduler tick (`TIMER_FREQ / SCHED_HZ`) |
+| `IdleKeepalive` | idle hart 0 with a hardware watchdog armed, or idle with kernel work that only the tick observes (`IDLE_POLL_US`, 100 ms) | `min(nearest, now + keepalive)` |
+| `IdleCeiling` | any other idle hart | the nearest sleeper, else `now + IDLE_HART_CEILING_US` (60 s); a wake arrives by IPI or device interrupt |
+
+A task that blocks on a timer deadline moves the comparator only when the deadline is earlier than what the hart already has programmed (`timebase::arm_if_earlier`, `timer_arm::earlier_than_programmed`); otherwise nothing is written. A CPU that stops its tick under `NOHZ_FULL` uses `IdleKeepalive` with the stop bound as the cap (see [scheduler.md](scheduler.md)).
+
+Source: `crates/drivers/sys/src/timer_arm.rs`, `crates/drivers/sys/src/timebase.rs` (`set_next_tick_smart`, `set_next_tick_tickless`, `arm_if_earlier`), `config/kernel/Kconfig.sched` (`SCHED_HZ`).
 
 ## Clock ids
 
@@ -68,7 +84,7 @@ A read-only page is mapped into every user process at `VDSO_USER_BASE` (`azos_ab
 * the page's `seq` covers the per-tick fields (`uptime_ticks`, `uptime_ms`), refreshed by the timer interrupt and by an idle hart as it wakes;
 * the clock words have their own generation, so a time source writing rarely and from task context never makes the tick drop an update.
 
-Fields written once at boot, outside the seqlock: `timebase_hz` (the counter frequency, 0 if not published), `flags` (bit 0, `VDSO_FLAG_RDTIME_NATIVE`: ring 3 may read the counter without a trap), and, where the counter ring 3 reads does not run at the kernel clock's rate (x86_64's TSC), `counter_base`, `ticks_base`, `counter_mult` (`VDSO_COUNTER_*` offsets): `ticks = ticks_base + ((counter - counter_base) * mult) >> 32`.
+Fields written once at boot, outside the seqlock: `timebase_hz` (the counter frequency, 0 if not published), `flags` (bit 0, `VDSO_FLAG_RDTIME_NATIVE`: ring 3 may read the counter without a trap; riscv64 clears it where `rdtime` is emulated), and, where the counter ring 3 reads does not run at the kernel clock's rate (x86_64's TSC), `counter_base`, `ticks_base`, `counter_mult` (`VDSO_COUNTER_*` offsets): `ticks = ticks_base + ((counter - counter_base) * mult) >> 32`.
 
 The clock words are `ClockWords` at `VDSO_CLOCK_WORDS_OFFSET` (88): a generation word and the three offsets `real`, `tai`, `boot`. The kernel writes with `ClockWords::update` (writers exclude each other by claiming the odd generation; interrupts must be masked); readers use `ClockWords::read`, which only loads and retries while a write is open or completed in between. All three offsets are zero until a source sets them.
 
@@ -76,7 +92,7 @@ Source: `crates/core/mm/src/vdso.rs` (`VdsoData`, `vdso_update`), `crates/core/a
 
 ## Reading a clock from ring 3
 
-`azos_libsys::clock_now(id)` returns nanoseconds on any served clock with no system call: `vdso_now_ns()` (read the counter, convert with the page's frequency) plus the offset `vdso_clock_offsets()` read from the page. `vdso_now_ns` returns 0 if the page publishes no frequency; on every ISA but aarch64 it falls back to a system call when the page says the counter is not natively readable (`VDSO_FLAG_RDTIME_NATIVE` clear). `MONO` reads no offset.
+`azos_libsys::clock_now(id)` returns nanoseconds on any served clock with no system call: `vdso_now_ns()` (read the counter, convert with the page's frequency) plus the offset `vdso_clock_offsets()` read from the page. `vdso_now_ns` returns 0 if the page publishes no frequency; on every ISA but aarch64 it falls back to a system call when the page says the counter is not natively readable (`VDSO_FLAG_RDTIME_NATIVE` clear); on aarch64 `CNTVCT_EL0` is always readable from EL0. On x86_64 the read is `rdtsc` scaled with the page's `VDSO_COUNTER_*` words, the same arithmetic as the kernel's `now_ticks`. `MONO` reads no offset.
 
 Kernel code uses the same arithmetic: `azos_mm::vdso::clock_offsets()` with `clock_now_with`.
 
@@ -161,7 +177,7 @@ An `Exchange` holds the four timestamps: the client's transmit and receive on th
 A reply is accepted only if all of these hold:
 
 * a request is outstanding, and the reply comes from the configured server's address and port 123;
-* the header qualifies (`header_acceptable`): server mode, not "unsynchronised" (leap indicator 3), stratum 1 to 15 (stratum 0 is a kiss-o'-death);
+* the header qualifies (`header_acceptable`): server mode, version 1 to 4, not "unsynchronised" (leap indicator 3), stratum 1 to 15 (stratum 0 is a kiss-o'-death);
 * it echoes the 64-bit nonce the client put in its transmit timestamp, drawn from the kernel entropy pool when a seeded source is installed;
 * its transmit timestamp is non-zero and, in NTP era 0, not before 2020-01-01; the era bit is honoured, so a time past 2036 is accepted.
 
@@ -172,17 +188,17 @@ Source: `crates/net/net/src/ntp.rs`, `kernel/src/boot/net.rs` (`install_net_conf
 `PTPD.ELF` (`userspace/services/ptpd`) is a ring-3 PTP slave. Its topology row is its whole authority: `WRITE` on the `clock` endpoint, the kernel's view of the `[clock]` row (`MemObj inspect.clock`) and the sockets its transport needs.
 
 * **Transport.** IEEE 1588 over UDP, the multicast group 224.0.1.129, port 319 (event) and 320 (general). Raw-Ethernet (802.1AS) is not part of the daemon's transport: it needs a packet socket, which the kernel keeps to itself.
-* **Domain.** `ptp_domain` of the node's `[clock]` row, published by the kernel as `clock/ptp_domain` in the `inspect.clock` view region (Kconfig `PTPD`). A node whose row declares none takes no part: the daemon says so and ends.
+* **Domain.** `ptp_domain` of the node's `[clock]` row, published by the kernel as `clock/ptp_domain` in the `inspect.clock` view region (Kconfig `PTPD`; the built-in topology declares `PTPD_DOMAIN`, default 0). A node whose row declares none takes no part: the daemon says so and ends.
 * **Protocol.** The best master clock algorithm for a slave-only ordinary clock (`bmc.rs`), then end-to-end delay measurement from Sync, Follow_Up, Delay_Req and Delay_Resp (`port.rs`, wire format in `wire.rs`). The master's PTP-scale (TAI) timestamps are moved by the `currentUtcOffset` its Announce states before they meet the wall clock; a master that does not state a valid offset gives no sample.
 * **Timestamps.** Software timestamps, taken after a datagram is taken off the socket.
 * **Feeding the kernel.** Each exchange ends in one `(offset_ns, delay_ns)` pair, offered with `Clock::sample` and source `SOURCE_PTP`. The daemon disciplines nothing itself; the kernel's loops filter, slew or step.
 
-Source: `userspace/services/ptpd/src/main.rs`, `userspace/services/ptpd/src/port.rs`, `userspace/services/ptpd/src/bmc.rs`, `userspace/services/ptpd/src/wire.rs`, `userspace/services/ptpd/src/link.rs`, `kernel/src/boot/inspect_views.rs` (`gen_proc_clock`).
+Source: `userspace/services/ptpd/src/main.rs`, `userspace/services/ptpd/src/port.rs`, `userspace/services/ptpd/src/bmc.rs`, `userspace/services/ptpd/src/wire.rs`, `userspace/services/ptpd/src/link.rs`, `kernel/src/boot/inspect_views.rs` (`build_view`, `ViewKind::Clock`).
 
 ## Sleeping and deadlines
 
 * **`SYS_SLEEP_UNTIL`** blocks the caller on the counter. `a0` is an absolute deadline in nanoseconds on the monotonic clock (converted with `ns_to_ticks_ceil`), or, with `SLEEP_RELATIVE` in `a1`, a duration from now. It returns 0 after blocking, 1 if the deadline had already passed at entry, and `-EINVAL` for an unknown flag. The caller waits on `WaitReason::Timer`; the timer interrupt wakes expired sleepers and programs the next interrupt for the nearest deadline. `azos_libsys::clock_nanosleep_abs` is the POSIX shape over it.
-* **Message deadlines.** A call carries `MsgDesc::deadline` and `MsgDesc::clock_id`. The kernel serves one clock there: any `clock_id` other than `ClockId::MONO` is refused with `-EINVAL`. A non-zero deadline at or before now is refused with `-EDEADLINE` and a `Rule::DeadlineExpired` decision record, before the call is queued.
+* **Message deadlines.** A call carries `MsgDesc::deadline` and `MsgDesc::clock_id`. The kernel serves one clock there: any `clock_id` other than `ClockId::MONO`, or a label bit outside `LABEL_KNOWN`, is refused with `-EINVAL`. A non-zero deadline at or before now is refused with `-EDEADLINE` and a `Rule::DeadlineExpired` decision record, before the call is queued.
 * **Tick rate.** `timebase::sched_hz_get` is the scheduler tick rate (Kconfig `SCHED_HZ`); the comparator is programmed at the earlier of the next tick and the nearest timer deadline, so a sleeper wakes on time between ticks (see [scheduler.md](scheduler.md)).
 
 Source: `crates/core/syscall/src/sleep.rs`, `crates/core/abi/src/syscall_nr.rs` (`SYS_SLEEP_UNTIL`, `SLEEP_RELATIVE`), `crates/core/syscall/src/ipc_deadline.rs`, `crates/core/abi/src/ipc_msg.rs` (`MsgDesc`), `crates/drivers/sys/src/timebase.rs`.
