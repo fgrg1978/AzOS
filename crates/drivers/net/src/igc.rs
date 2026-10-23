@@ -18,8 +18,13 @@
 //! e1000e's with four differences:
 //!
 //! * **Queue registers** live in the per-queue blocks (`RDBAL`... at
-//!   `0xc000`, `TDBAL`... at `0xe000`, 0x40 apart), not at `0x2800`/`0x3800`;
-//!   the interrupt registers moved to `0x1500` (`ICR`, `IMS`, `IMC`).
+//!   `0xc000`, `TDBAL`... at `0xe000`, 0x40 apart), not at `0x2800`/`0x3800`.
+//!   On the I225 the interrupt registers moved to `0x1500` (`ICR`, `IMS`,
+//!   `IMC`, `igc_regs.h`); the 82576 kept e1000e's at `0xc0` (`E1000_ICR`...
+//!   in `igb/e1000_regs.h`). That and the PHY's MDIO address are the two
+//!   facts the families do not share, so they are chosen per function from
+//!   the device id ([`family`]); everything else below is programmed the
+//!   same way.
 //! * **Advanced descriptors**, always. A receive descriptor is posted as
 //!   (packet buffer, header buffer = 0) and written back as (RSS/checksum
 //!   words, status and errors, length, VLAN): the same upper word as e1000e's
@@ -32,7 +37,10 @@
 //!   the status dword, bit 32 of the second word, where [`crate::e1000e`]'s
 //!   `tx_done` already looks.
 //! * **Link**: `STATUS` has a 2.5 Gb/s speed bit (22) on top of the 10/100/
-//!   1000 encoding ([`link_from_status`]).
+//!   1000 encoding ([`link_from_status`]). The PHY is powered up and its
+//!   auto-negotiation restarted through `MDIC` after the reset
+//!   ([`phy_ctrl_autoneg`]), as `igc_power_up_phy_copper` and
+//!   `igc_copper_link_autoneg` do; until then the link does not come up.
 //! * **Reset** is `CTRL.RST` (bit 26), the same bit as e1000e's, on the I225
 //!   (`igc_reset_hw_base`) and on the 82576 (`igb_reset_hw_82575`), after
 //!   the PCIe master requests are disabled. `CTRL.DEV_RST` (bit 29) is the
@@ -51,9 +59,14 @@
 //! Everything here is checked against the Linux v7.2.9 `igc` and `igb`
 //! register headers (see the host tests, which cite them by name); no I225
 //! was available, and QEMU's `igb` is an 82576 whose model differs from the
-//! I225 (no 2.5 Gb/s, the legacy interrupt registers at 0xc0 in `igb`). Not done: the PHY power-up
-//! (`igc_power_up_link`) that a PHY left powered down by a previous OS
-//! needs, the packet-buffer size programming (`PBA`) and flow control (the
+//! I225 (no 2.5 Gb/s; the interrupt block at 0xc0 and the PHY at MDIO
+//! address 1, which [`family`] follows). QEMU (11.0) has no I225 model. Not
+//! done: the software/firmware semaphore (`SW_FW_SYNC`) Linux takes around
+//! every PHY access (the one MDIC read and write here go without it), the
+//! advertisement (`igc_phy_setup_autoneg`: the PHY's reset defaults are what
+//! is negotiated, and the 2.5 Gb/s one, `CR_2500T_FD_CAPS` in the clause 45
+//! register `IGC_ANEG_MULTIGBT_AN_CTRL`, is never written), the
+//! packet-buffer size programming (`PBA`) and flow control (the
 //! reset defaults stand), the I225 revision A errata workarounds, EEE, the
 //! second to fourth queues, RSS, checksum and TSO offloads, MSI-X. A part
 //! with a blank NVM has no station address and is refused ([`NicError::NoMac`](crate::pci_nic::NicError::NoMac)).
@@ -126,10 +139,10 @@ pub const TXDCTL_RUN: u32 = 8 | (1 << 8) | crate::e1000e::XDCTL_QUEUE_ENABLE;
 // ---------------------------------------------------------------------
 
 /// The two controller families this driver speaks to. The driver programs
-/// them identically (the same reset bit, the same queue and interrupt
-/// registers); the family is named on the bring-up line (`model=Igb`), which
-/// is how a log says whether a function is the I225 hardware or QEMU's
-/// 82576.
+/// them the same way (the same reset bit, the same queue registers) except
+/// for what [`family`] says; the family is named on the bring-up line
+/// (`model=Igb`), which is how a log says whether a function is the I225
+/// hardware or QEMU's 82576.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Model {
     /// I220/I221/I225/I226.
@@ -175,6 +188,64 @@ pub const fn model_for(device: u16) -> Option<Model> {
         i += 1;
     }
     None
+}
+
+/// What the two families do not share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Family {
+    /// The interrupt registers.
+    pub irq: crate::pci_nic::IrqRegs,
+    /// The internal PHY's address on the MDIO bus (`MDIC.PHYADD`).
+    pub phy_addr: u32,
+}
+
+/// The table, keyed by the family [`model_for`] finds for the device id.
+///
+/// * The I225 keeps its interrupt block at 0x1500 (`IGC_ICR`, `IGC_IMS`,
+///   `IGC_IMC`); the 82576 keeps e1000e's at 0xc0 (`E1000_ICR`,
+///   `E1000_IMS`, `E1000_IMC`). `igb/e1000_regs.h` names no register at
+///   0x1500-0x150c (its extended interrupt block starts at `E1000_GPIE`,
+///   0x1514), so the I225 offsets on an 82576 mask nothing, unmask nothing
+///   and read no cause.
+/// * The I225's PHY answers at address 0: `igc` never sets `hw->phy.addr`.
+///   The 82576's integrated copper PHY is at 1 (`igb_get_phy_id_82575`:
+///   "an address of 1 should work"), the only address QEMU's model answers.
+pub const fn family(model: Model) -> Family {
+    match model {
+        Model::I225 => Family { irq: crate::pci_nic::IrqRegs { icr: REG_ICR, ims: REG_IMS, imc: REG_IMC }, phy_addr: 0 },
+        Model::Igb => Family { irq: crate::e1000e::IRQ_REGS, phy_addr: 1 },
+    }
+}
+
+// ---------------------------------------------------------------------
+// PHY (MDIC)
+// ---------------------------------------------------------------------
+
+/// MDI control: one PHY register read or written per command.
+pub const REG_MDIC: usize = 0x0020;
+pub const MDIC_REG_SHIFT: u32 = 16;
+pub const MDIC_PHY_SHIFT: u32 = 21;
+pub const MDIC_OP_WRITE: u32 = 1 << 26;
+pub const MDIC_OP_READ: u32 = 1 << 27;
+pub const MDIC_READY: u32 = 1 << 28;
+pub const MDIC_ERROR: u32 = 1 << 30;
+
+/// The PHY's control register (IEEE 802.3 clause 22 register 0) and bits.
+pub const PHY_CONTROL: u32 = 0x00;
+pub const MII_CR_RESTART_AUTO_NEG: u16 = 0x0200;
+pub const MII_CR_POWER_DOWN: u16 = 0x0800;
+pub const MII_CR_AUTO_NEG_EN: u16 = 0x1000;
+
+/// The `MDIC` command word: `op` on register `reg` of the PHY at `phy`,
+/// `data` for a write.
+pub const fn mdic(op: u32, phy: u32, reg: u32, data: u16) -> u32 {
+    op | (phy & 0x1f) << MDIC_PHY_SHIFT | (reg & 0x1f) << MDIC_REG_SHIFT | data as u32
+}
+
+/// The PHY control word that powers the PHY up and restarts the
+/// auto-negotiation, keeping every other bit the PHY had.
+pub const fn phy_ctrl_autoneg(ctrl: u16) -> u16 {
+    (ctrl & !MII_CR_POWER_DOWN) | MII_CR_AUTO_NEG_EN | MII_CR_RESTART_AUTO_NEG
 }
 
 // ---------------------------------------------------------------------
@@ -277,9 +348,7 @@ impl crate::pci_nic::Wire for IgcWire {
         tail: REG_TDT,
         ctl: REG_TXDCTL,
     };
-    const ICR: usize = REG_ICR;
-    const IMS: usize = REG_IMS;
-    const IMC: usize = REG_IMC;
+    const IRQ: crate::pci_nic::IrqRegs = family(Model::I225).irq;
 
     #[inline(always)]
     fn rx_status(hi: u64) -> crate::e1000e::RxStatus {
@@ -308,7 +377,7 @@ pub use device::*;
 mod device {
     use super::*;
     use crate::e1000e::{RCTL_RUN, REG_CTRL, REG_RCTL, REG_RXCSUM, REG_STATUS, REG_TCTL, TCTL_RUN};
-    use crate::pci_nic::{wait_for, Chip, Mem, Nic, NicError, Regs, Wire};
+    use crate::pci_nic::{wait_for, Chip, IrqRegs, Mem, Nic, NicError, Regs, Wire};
     use azos_drv_api::net::{NetDevice, NetError};
     use azos_drv_sys::kwarn;
     use azos_drv_virtio::virtio::pci::msix_selftest::MsiRoute;
@@ -325,6 +394,33 @@ mod device {
     /// controller that did not start a transfer drain at once.
     const MASTER_DISABLE_WAIT_US: u64 = 100_000;
 
+    /// How long one MDIC command may take. Linux polls
+    /// `IGC_GEN_POLL_TIMEOUT` (1920) times 50 us.
+    const MDIC_WAIT_US: u64 = 100_000;
+
+    /// Run one MDIC command; the register's last value once `READY`, or
+    /// `None` when it timed out or the PHY reported an error.
+    fn mdic_run(r: &Regs<IgcWire>, cmd: u32) -> Option<u32> {
+        r.wr(REG_MDIC, cmd);
+        let mut v = 0;
+        if !wait_for(MDIC_WAIT_US, || {
+            v = r.rd(REG_MDIC);
+            v & MDIC_READY != 0
+        }) || v & MDIC_ERROR != 0
+        {
+            return None;
+        }
+        Some(v)
+    }
+
+    /// Power the PHY up and restart its auto-negotiation, as
+    /// `igc_power_up_phy_copper` then `igc_copper_link_autoneg` do (one
+    /// read-modify-write of `PHY_CONTROL`); whether the PHY answered.
+    fn phy_autoneg(r: &Regs<IgcWire>, phy: u32) -> bool {
+        let Some(ctrl) = mdic_run(r, mdic(MDIC_OP_READ, phy, PHY_CONTROL, 0)) else { return false };
+        mdic_run(r, mdic(MDIC_OP_WRITE, phy, PHY_CONTROL, phy_ctrl_autoneg(ctrl as u16))).is_some()
+    }
+
     static MEM: Mem<RX_N, TX_N> = Mem::new();
     static NIC: Nic<IgcWire, RX_N, TX_N> = Nic::new(&MEM);
 
@@ -337,13 +433,19 @@ mod device {
             model_for(info.device).ok_or(NicError::UnknownDevice)
         }
 
+        fn irq_regs(model: Model) -> IrqRegs {
+            family(model).irq
+        }
+
         /// As `igc_reset_hw_base` / `igb_reset_hw_82575`: disable the PCIe
         /// master requests, mask interrupts, stop both engines, let in-flight
         /// DMA finish, then `CTRL.RST`; it clears itself. A master that stays
         /// busy or a bit that does not clear is reported and not fatal (Linux
         /// goes on too): a controller still in reset reads all ones and is
-        /// refused for want of a station address.
-        fn reset(r: &Regs<Self>, info: &FunctionInfo, _model: Model) -> Result<(), NicError> {
+        /// refused for want of a station address. Then the PHY is powered
+        /// up and its auto-negotiation restarted; a PHY that does not
+        /// answer is reported, and the link wait says the rest.
+        fn reset(r: &Regs<Self>, info: &FunctionInfo, model: Model) -> Result<(), NicError> {
             r.wr(REG_CTRL, r.rd(REG_CTRL) | CTRL_GIO_MASTER_DISABLE);
             if !wait_for(MASTER_DISABLE_WAIT_US, || r.rd(REG_STATUS) & STATUS_GIO_MASTER_ENABLE == 0) {
                 kwarn!("[NET] igc {}: PCIe master requests still pending; resetting anyway", info.bdf);
@@ -357,6 +459,10 @@ mod device {
             // A driver owns the controller: the manageability firmware
             // stands off.
             r.wr(REG_CTRL_EXT, r.rd(REG_CTRL_EXT) | CTRL_EXT_DRV_LOAD);
+            let phy = family(model).phy_addr;
+            if !phy_autoneg(r, phy) {
+                kwarn!("[NET] igc {}: the PHY at MDIO address {} did not answer; auto-negotiation not restarted", info.bdf, phy);
+            }
             Ok(())
         }
 
@@ -694,14 +800,70 @@ mod tests {
         assert_eq!(e::XDCTL_QUEUE_ENABLE, 0x0200_0000);
     }
 
+    /// **Discriminates.** The per-family table follows the device id. The
+    /// I225/I226 ids get `igc_regs.h`'s interrupt block (`IGC_ICR` 0x01500,
+    /// `IGC_IMS` 0x01508, `IGC_IMC` 0x0150C) and the PHY at MDIO address 0;
+    /// QEMU's 82576 gets `igb/e1000_regs.h`'s (`E1000_ICR` 0x000C0,
+    /// `E1000_IMS` 0x000D0, `E1000_IMC` 0x000D8), which is e1000e's, and the
+    /// PHY at 1. The previous driver gave every id the I225 block.
+    #[test]
+    fn family_follows_the_device_id() {
+        use crate::pci_nic::IrqRegs;
+        let igc_regs_h = IrqRegs { icr: 0x01500, ims: 0x01508, imc: 0x0150C };
+        let igb_e1000_regs_h = IrqRegs { icr: 0x000C0, ims: 0x000D0, imc: 0x000D8 };
+        for id in I225_DEVICE_IDS {
+            assert_eq!(model_for(id).map(family), Some(Family { irq: igc_regs_h, phy_addr: 0 }), "{id:#x}");
+        }
+        assert_eq!(model_for(IGB_QEMU_DEVICE_ID).map(family), Some(Family { irq: igb_e1000_regs_h, phy_addr: 1 }));
+        assert_eq!(crate::e1000e::IRQ_REGS, igb_e1000_regs_h, "the 82576 kept the 8254x block");
+        // The driver's own map (what a NIC holds before bring-up) is the I225's.
+        assert_eq!(<IgcWire as crate::pci_nic::Wire>::IRQ, igc_regs_h);
+    }
+
+    /// **Discriminates.** The MDIC command word against `igc_defines.h`
+    /// (`IGC_MDIC_REG_SHIFT` 16, `IGC_MDIC_PHY_SHIFT` 21, `IGC_MDIC_OP_WRITE`
+    /// 0x04000000, `IGC_MDIC_OP_READ` 0x08000000, `IGC_MDIC_READY` 0x10000000,
+    /// `IGC_MDIC_ERROR` 0x40000000; `igb`'s `E1000_MDIC_*` are the same) and
+    /// `IGC_MDIC` 0x00020 (`E1000_MDIC` too). A swapped PHY and register
+    /// field addresses another PHY: QEMU's model answers only address 1.
+    #[test]
+    fn mdic_word_is_igc_defines_h() {
+        assert_eq!(REG_MDIC, 0x00020);
+        assert_eq!((MDIC_REG_SHIFT, MDIC_PHY_SHIFT), (16, 21));
+        assert_eq!((MDIC_OP_WRITE, MDIC_OP_READ), (0x0400_0000, 0x0800_0000));
+        assert_eq!((MDIC_READY, MDIC_ERROR), (0x1000_0000, 0x4000_0000));
+        assert_eq!(mdic(MDIC_OP_READ, 1, PHY_CONTROL, 0), 0x0820_0000);
+        assert_eq!(mdic(MDIC_OP_WRITE, 1, PHY_CONTROL, 0x1340), 0x0420_1340);
+        assert_eq!(mdic(MDIC_OP_READ, 0, 2, 0), 0x0802_0000, "PHY_ID1 of the I225's PHY");
+        // Out-of-range fields do not spill into the opcode.
+        assert_eq!(mdic(MDIC_OP_READ, 0x3f, 0x3f, 0) & !(0x03ff_0000), MDIC_OP_READ);
+    }
+
+    /// **Discriminates.** The PHY control word written after the reset:
+    /// `MII_CR_POWER_DOWN` (0x0800) cleared, `MII_CR_AUTO_NEG_EN` (0x1000)
+    /// and `MII_CR_RESTART_AUTO_NEG` (0x0200) set (`igc_defines.h`, the same
+    /// in `igb/e1000_defines.h`), every other bit kept (speed and duplex
+    /// selection, loopback). Without the restart QEMU's 82576 never brings
+    /// the link up: its reset leaves `STATUS.LU` clear until an
+    /// auto-negotiation completes.
+    #[test]
+    fn phy_ctrl_powers_up_and_restarts_autoneg() {
+        assert_eq!((MII_CR_RESTART_AUTO_NEG, MII_CR_POWER_DOWN, MII_CR_AUTO_NEG_EN), (0x0200, 0x0800, 0x1000));
+        assert_eq!(PHY_CONTROL, 0);
+        assert_eq!(phy_ctrl_autoneg(0x0800), 0x1200, "a powered-down PHY comes up");
+        assert_eq!(phy_ctrl_autoneg(0x1140), 0x1340, "the 1000/full selection is kept");
+        assert_eq!(phy_ctrl_autoneg(0), 0x1200);
+        assert_eq!(phy_ctrl_autoneg(0xffff), 0xf7ff);
+    }
+
     /// **Discriminates.** The queue-0 registers against `igc_regs.h`
     /// (`IGC_RDBAL(n)` = 0x0C000 + 0x40 n, `IGC_TDBAL(n)` = 0x0E000 + 0x40 n,
     /// `IGC_SRRCTL(n)` = 0x0C00C + 0x40 n, the others at the offsets of the
     /// block) and the queue stride against `igb/e1000_regs.h`:
     /// `E1000_RDBAL(_n)` for `_n >= 4` is 0x0C000 + 0x40 n, so queue 4 is
     /// at 0xC100 -- the same linear block, queue 0 at its base. (`igb` keeps
-    /// queues 0-3 at the legacy 0x2800/0x3800 as well; see the open issue
-    /// about QEMU's model.)
+    /// queues 0-3 at the legacy 0x2800/0x3800 as well; QEMU's model answers
+    /// at 0xc000/0xe000 for queue 0, which the gate row's frames go through.)
     #[test]
     fn queue_blocks_follow_igc_regs_h_and_igbs_stride() {
         let rdbal = |n: usize| 0x0C000 + n * 0x40;

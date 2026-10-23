@@ -390,7 +390,9 @@ config DRV_IGC
       Kernel feature `igc` (crates/drivers/net/src/igc.rs). The 2.5 GbE
       controllers of current Intel and Ryzen desktop and mini-PC boards
       (I225-LM/V/IT/K, I226-LM/V/IT/K, I220-V, I221-V), and QEMU's `-device
-      igb` (an 82576, same descriptor format) for the gate. Binds by PCI id
+      igb` (an 82576, same descriptor format; its interrupt registers sit
+      at 0xc0, not 0x1500, and are picked by device id) for the gate. QEMU
+      has no I225 model. Binds by PCI id
       through the hardware bus (crates/drivers/net/hwbus.ids) and serves the
       NIC table of net_device next to board Ethernet, e1000e and
       virtio-net. One RX and one TX ring (IGC_RX_DESCS, IGC_TX_DESCS) of

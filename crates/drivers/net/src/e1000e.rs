@@ -81,6 +81,9 @@ pub const REG_EECD: usize = 0x0010;
 pub const REG_ICR: usize = 0x00c0;
 pub const REG_IMS: usize = 0x00d0;
 pub const REG_IMC: usize = 0x00d8;
+/// The interrupt block at 0xc0: the 8254x's, kept by the 82574 and by the
+/// 82576 (the igb family, which igc drives as QEMU's `-device igb`).
+pub const IRQ_REGS: crate::pci_nic::IrqRegs = crate::pci_nic::IrqRegs { icr: REG_ICR, ims: REG_IMS, imc: REG_IMC };
 pub const REG_RCTL: usize = 0x0100;
 pub const REG_TCTL: usize = 0x0400;
 pub const REG_TIPG: usize = 0x0410;
@@ -455,9 +458,7 @@ impl crate::pci_nic::Wire for E1000eWire {
         tail: REG_TDT,
         ctl: REG_TXDCTL,
     };
-    const ICR: usize = REG_ICR;
-    const IMS: usize = REG_IMS;
-    const IMC: usize = REG_IMC;
+    const IRQ: crate::pci_nic::IrqRegs = IRQ_REGS;
 
     #[inline(always)]
     fn rx_status(hi: u64) -> RxStatus {
@@ -485,7 +486,7 @@ pub use device::*;
 #[cfg(feature = "e1000e")]
 mod device {
     use super::*;
-    use crate::pci_nic::{Chip, Mem, Nic, NicError, Regs, Wire};
+    use crate::pci_nic::{Chip, IrqRegs, Mem, Nic, NicError, Regs, Wire};
     use azos_drv_api::net::{NetDevice, NetError};
     use azos_drv_virtio::virtio::pci::msix_selftest::MsiRoute;
     use azos_pci::{BarWindow, ConfigSpace, FunctionInfo};
@@ -504,6 +505,10 @@ mod device {
 
         fn identify(_info: &FunctionInfo) -> Result<(), NicError> {
             Ok(())
+        }
+
+        fn irq_regs(_model: ()) -> IrqRegs {
+            IRQ_REGS
         }
 
         /// Manual reset: mask interrupts, stop both engines, let in-flight

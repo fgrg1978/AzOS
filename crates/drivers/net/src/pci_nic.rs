@@ -11,6 +11,9 @@
 //!   map, the interrupt registers, the descriptor encoders and the link
 //!   decoder. [`Chip`] (behind the drivers' features) is what differs during
 //!   bring-up: identify the part, reset it, describe and enable the queues.
+//!   The interrupt registers are per function, not per driver ([`IrqRegs`]):
+//!   igc drives two families that keep them in different places, so
+//!   [`Chip::irq_regs`] picks them for the identified part.
 //! * [`Mem`] is the rings and buffers, alone in `.bss` (a [`Nic`] is
 //!   initialised data: it holds the DMA domain's fat pointer).
 //! * [`Nic`] is the driver state and every path over it. A driver is one
@@ -59,16 +62,37 @@ pub struct RingRegs {
     pub ctl: usize,
 }
 
+/// The interrupt registers of one controller (offsets from BAR 0): the
+/// cause (read clears it), mask set and mask clear.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IrqRegs {
+    pub icr: usize,
+    pub ims: usize,
+    pub imc: usize,
+}
+
+impl IrqRegs {
+    /// The three offsets in one word (16 bits each), so the interrupt path
+    /// reads them with one lock-free load.
+    const fn pack(self) -> u64 {
+        assert!(self.icr <= 0xffff && self.ims <= 0xffff && self.imc <= 0xffff);
+        self.icr as u64 | (self.ims as u64) << 16 | (self.imc as u64) << 32
+    }
+
+    const fn unpack(w: u64) -> IrqRegs {
+        IrqRegs { icr: (w & 0xffff) as usize, ims: (w >> 16 & 0xffff) as usize, imc: (w >> 32 & 0xffff) as usize }
+    }
+}
+
 /// What differs between the controllers and is needed once they run.
 pub trait Wire: Sized + 'static {
     /// The driver's name in the console.
     const NAME: &'static str;
     const RX: RingRegs;
     const TX: RingRegs;
-    /// Interrupt cause (read clears it), mask set and mask clear.
-    const ICR: usize;
-    const IMS: usize;
-    const IMC: usize;
+    /// The interrupt registers of the driver's own family; a function of
+    /// another family it binds gets its own at bring-up ([`Nic::set_bar`]).
+    const IRQ: IrqRegs;
     /// Decode the write-back of a receive descriptor from its second word.
     fn rx_status(hi: u64) -> RxStatus;
     /// A transmit descriptor for one whole frame in one buffer.
@@ -84,6 +108,8 @@ pub trait Wire: Sized + 'static {
 /// BAR 0 of the controller, typed by the driver whose map it is read with.
 pub struct Regs<W> {
     bar: usize,
+    /// The function's interrupt registers.
+    irq: IrqRegs,
     _wire: PhantomData<fn() -> W>,
 }
 
@@ -110,6 +136,22 @@ impl<W: Wire> Regs<W> {
 
     fn link_is_up(&self) -> bool {
         self.rd(REG_STATUS) & STATUS_LU != 0
+    }
+
+    /// Read (and so clear) the interrupt cause.
+    #[inline(always)]
+    pub fn irq_cause(&self) -> u32 {
+        self.rd(self.irq.icr)
+    }
+
+    /// Unmask the causes in `bits`.
+    pub fn irq_unmask(&self, bits: u32) {
+        self.wr(self.irq.ims, bits);
+    }
+
+    /// Mask every cause.
+    pub fn irq_mask_all(&self) {
+        self.wr(self.irq.imc, !0);
     }
 }
 
@@ -286,6 +328,8 @@ pub struct Nic<W: Wire, const RX_N: usize, const TX_N: usize> {
     #[cfg(any(feature = "e1000e", feature = "igc"))]
     saved: SpinLock<Option<bring_up::Saved>>,
     _wire: PhantomData<fn() -> W>,
+    /// The function's [`IrqRegs`], packed; `W::IRQ` until [`Nic::set_bar`].
+    irq: AtomicU64,
 }
 
 impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
@@ -337,6 +381,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             #[cfg(any(feature = "e1000e", feature = "igc"))]
             saved: SpinLock::new(None),
             _wire: PhantomData,
+            irq: AtomicU64::new(W::IRQ.pack()),
         }
     }
 
@@ -357,14 +402,20 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         self.recovery.dead()
     }
 
-    /// Where BAR 0 is mapped; the registers are reachable from here on.
-    pub fn set_bar(&self, bar: usize) {
+    /// Where BAR 0 is mapped and where this function keeps its interrupt
+    /// registers; the registers are reachable from here on.
+    pub fn set_bar(&self, bar: usize, irq: IrqRegs) {
+        self.irq.store(irq.pack(), Ordering::Relaxed);
         self.bar.store(bar, Ordering::Release);
     }
 
     #[inline(always)]
     pub fn regs(&self) -> Regs<W> {
-        Regs { bar: self.bar.load(Ordering::Relaxed), _wire: PhantomData }
+        Regs {
+            bar: self.bar.load(Ordering::Relaxed),
+            irq: IrqRegs::unpack(self.irq.load(Ordering::Relaxed)),
+            _wire: PhantomData,
+        }
     }
 
     /// Descriptors: receive ones carry their buffer, transmit ones are idle;
@@ -415,7 +466,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             self.msi_token.store(token, Ordering::Relaxed);
             self.rx_irqs.store(0, Ordering::Relaxed);
             self.msi_armed.store(true, Ordering::Release);
-            r.wr(W::IMS, IMS_RUN);
+            r.irq_unmask(IMS_RUN);
         }
 
         let packed = mac.iter().enumerate().fold(0u64, |a, (i, b)| a | (*b as u64) << (8 * i));
@@ -436,7 +487,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             return false;
         }
         let r = self.regs();
-        let icr = r.rd(W::ICR);
+        let icr = r.irq_cause();
         if icr & ICR_LSC != 0 {
             self.link_up.store(r.link_is_up(), Ordering::Release);
         }
@@ -783,6 +834,8 @@ mod bring_up {
         /// Which part this function is; refused when the driver does not
         /// drive it. Before any register is touched.
         fn identify(info: &FunctionInfo) -> Result<Self::Model, NicError>;
+        /// Where that part keeps its interrupt registers.
+        fn irq_regs(model: Self::Model) -> IrqRegs;
         /// Reset the controller and set its link up: everything before the
         /// station address is read (see the [`Regs`] steps they share).
         fn reset(r: &Regs<Self>, info: &FunctionInfo, model: Self::Model) -> Result<(), NicError>;
@@ -825,7 +878,7 @@ mod bring_up {
         /// Mask the interrupts, stop both engines and let in-flight DMA
         /// finish.
         pub fn quiesce(&self) {
-            self.wr(W::IMC, !0);
+            self.irq_mask_all();
             self.wr(REG_RCTL, 0);
             self.wr(REG_TCTL, TCTL_PSP);
             let _ = self.rd(REG_STATUS); // flush the posted writes
@@ -846,8 +899,8 @@ mod bring_up {
         /// reset raised is cleared.
         pub fn after_reset(&self) {
             let _ = wait_for(20_000, || self.rd(REG_EECD) & EECD_AUTO_RD != 0);
-            self.wr(W::IMC, !0);
-            let _ = self.rd(W::ICR); // clears what the reset raised
+            self.irq_mask_all();
+            let _ = self.irq_cause(); // clears what the reset raised
         }
 
         /// Link: set link up, leave speed and duplex to the auto-negotiation.
@@ -927,12 +980,12 @@ mod bring_up {
             if bar == 0 {
                 return Err(NicError::NoRegisters);
             }
-            self.set_bar(bar);
+            self.set_bar(bar, C::irq_regs(model));
             let r = self.bring_up(cfg, info, route, model);
             if r.is_err() {
                 // Stop the DMA and the interrupts before the error is reported.
                 let r = self.regs();
-                r.wr(C::IMC, !0);
+                r.irq_mask_all();
                 r.wr(REG_RCTL, 0);
                 r.wr(REG_TCTL, 0);
                 self.msi_armed.store(false, Ordering::Release);

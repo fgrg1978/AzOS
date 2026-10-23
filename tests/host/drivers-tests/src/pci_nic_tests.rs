@@ -17,8 +17,8 @@ use super::e1000e::{
     E1000eWire, EXT, ICR_LSC, ICR_RXT0, REG_RDT as E_RDT, REG_STATUS, REG_TDT as E_TDT, RXD_STAT_DD, RXD_STAT_EOP,
     STATUS_LU,
 };
-use super::igc::IgcWire;
-use super::pci_nic::{rings_drivable, Mem, Nic, Wire};
+use super::igc::{family, IgcWire, Model};
+use super::pci_nic::{rings_drivable, IrqRegs, Mem, Nic, Wire};
 use azos_dma::Direction;
 use azos_drv_api::net::NetError;
 use azos_drv_virtio::virtio::Dma;
@@ -74,11 +74,12 @@ fn bring_up<W: Wire>(
     nic: &'static Nic<W, N, N>,
     mem: &'static Mem<N, N>,
     msi_token: Option<u32>,
+    irq: IrqRegs,
 ) -> Rig<W> {
     let regs = Regs::new();
     // The link is up, so the link wait ends at once.
     regs.set(REG_STATUS, STATUS_LU);
-    nic.set_bar(regs.addr());
+    nic.set_bar(regs.addr(), irq);
     let dma = Dma::fallback();
     let rx_buf_bus = dma.map(mem.rx_buf(0) as *const u8, N * BUF, Direction::FromDevice).unwrap();
     let tx_buf_bus = dma.map(mem.tx_buf(0) as *const u8, N * BUF, Direction::ToDevice).unwrap();
@@ -169,7 +170,7 @@ fn scenario<W: Wire>(rig: &Rig<W>) {
 fn e1000e_wire_runs_through_the_shared_rings() {
     static MEM: Mem<N, N> = Mem::new();
     static NIC: Nic<E1000eWire, N, N> = Nic::new(&MEM);
-    let rig = bring_up(&NIC, &MEM, None);
+    let rig = bring_up(&NIC, &MEM, None, E1000eWire::IRQ);
     scenario(&rig);
     // Only e1000e's registers were written: igc's queue block is untouched.
     assert_eq!(rig.regs.get(IgcWire::RX.tail), 0);
@@ -184,53 +185,67 @@ fn e1000e_wire_runs_through_the_shared_rings() {
 fn igc_wire_runs_through_the_shared_rings() {
     static MEM: Mem<N, N> = Mem::new();
     static NIC: Nic<IgcWire, N, N> = Nic::new(&MEM);
-    let rig = bring_up(&NIC, &MEM, None);
+    let rig = bring_up(&NIC, &MEM, None, IgcWire::IRQ);
     scenario(&rig);
     assert_eq!(rig.regs.get(E1000eWire::RX.tail), 0);
     assert_eq!(rig.regs.get(E1000eWire::TX.tail), 0);
 }
 
-/// **Discriminates.** The interrupt hook reads the driver's own `ICR`, only
-/// answers its own vector, counts receive causes and refreshes the cached
-/// link on a link-change cause; before `go_live` armed it, it answers
-/// nothing.
-fn irq_scenario<W: Wire>(nic: &'static Nic<W, N, N>, mem: &'static Mem<N, N>) {
+/// **Discriminates.** The interrupt hook reads the function's own `ICR`,
+/// only answers its own vector, counts receive causes and refreshes the
+/// cached link on a link-change cause; before `go_live` armed it, it
+/// answers nothing. `other` is the interrupt block of the other family:
+/// nothing is unmasked there.
+fn irq_scenario<W: Wire>(nic: &'static Nic<W, N, N>, mem: &'static Mem<N, N>, irq: IrqRegs, other: IrqRegs) {
     assert!(!nic.irq_driven());
-    let rig = bring_up(nic, mem, Some(TOKEN));
+    let rig = bring_up(nic, mem, Some(TOKEN), irq);
     assert!(nic.irq_driven());
     assert!(!nic.msi_irq(TOKEN + 1), "another vector's interrupt is not ours");
     assert_eq!(nic.rx_irq_count(), 0);
-    rig.regs.set(W::ICR, ICR_RXT0);
+    rig.regs.set(irq.icr, ICR_RXT0);
     assert!(nic.msi_irq(TOKEN));
-    assert_eq!(nic.rx_irq_count(), 1);
+    assert_eq!(nic.rx_irq_count(), 1, "the receive cause is read at ICR {:#x}", irq.icr);
     // Link goes down: the cause refreshes the cache and sends are refused
     // (with the interrupt armed the cache is the only source).
     rig.regs.set(REG_STATUS, 0);
-    rig.regs.set(W::ICR, ICR_LSC);
+    rig.regs.set(irq.icr, ICR_LSC);
     assert!(nic.msi_irq(TOKEN));
     assert_eq!(nic.rx_irq_count(), 1, "a link change is not a receive cause");
     assert_eq!(nic.send(&[0u8; 60]), Err(NetError::NotReady));
     // Back up.
     rig.regs.set(REG_STATUS, STATUS_LU);
-    rig.regs.set(W::ICR, ICR_LSC);
+    rig.regs.set(irq.icr, ICR_LSC);
     assert!(nic.msi_irq(TOKEN));
     assert_eq!(nic.send(&[0u8; 60]), Ok(60));
-    // The mask was set at this driver's IMS.
-    assert_ne!(rig.regs.get(W::IMS), 0);
+    // The mask was set at this function's IMS, and only there.
+    assert_ne!(rig.regs.get(irq.ims), 0);
+    assert_eq!(rig.regs.get(other.ims), 0, "IMS {:#x} is the other family's", other.ims);
 }
 
 #[test]
 fn e1000e_interrupt_hook_uses_its_own_icr() {
     static MEM: Mem<N, N> = Mem::new();
     static NIC: Nic<E1000eWire, N, N> = Nic::new(&MEM);
-    irq_scenario(&NIC, &MEM);
+    irq_scenario(&NIC, &MEM, E1000eWire::IRQ, family(Model::I225).irq);
 }
 
 #[test]
 fn igc_interrupt_hook_uses_its_own_icr() {
     static MEM: Mem<N, N> = Mem::new();
     static NIC: Nic<IgcWire, N, N> = Nic::new(&MEM);
-    irq_scenario(&NIC, &MEM);
+    irq_scenario(&NIC, &MEM, family(Model::I225).irq, family(Model::Igb).irq);
+}
+
+/// **Discriminates.** The igc driver on QEMU's 82576 (`Model::Igb`): the
+/// interrupt block is the one at 0xc0, not the I225's at 0x1500, so the
+/// receive cause the model raises is read and the mask is set where the
+/// model looks. The previous driver read 0x1500 on every part: here it
+/// counts no receive interrupt and the assertion on `rx_irq_count` fails.
+#[test]
+fn igc_on_an_82576_uses_the_igb_interrupt_block() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<IgcWire, N, N> = Nic::new(&MEM);
+    irq_scenario(&NIC, &MEM, family(Model::Igb).irq, family(Model::I225).irq);
 }
 
 // ── A wedged transmit ring (`net-timeout`) ───────────────────────────────

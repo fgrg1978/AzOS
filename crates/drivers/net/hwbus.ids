@@ -66,5 +66,6 @@ igc              pci:8086:125d   if=DRV_IGC
 igc              pci:8086:125e   if=DRV_IGC
 # 82576 (E1000_DEV_ID_82576, Linux igb/e1000_hw.h): the controller QEMU's
 # `-device igb` models (QEMU hw/net/igb.c); the same advanced descriptors and
-# the same CTRL.RST reset (igc.rs `Model::Igb`).
+# the same CTRL.RST reset, but the interrupt registers at 0xc0, not 0x1500
+# (igc.rs `Model::Igb`, `irq_regs`).
 igc              pci:8086:10c9   if=DRV_IGC
