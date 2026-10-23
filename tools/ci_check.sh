@@ -10223,7 +10223,7 @@ build_board "k1 (+linker)"        k1 "$K1_ISA"
 board_config_applied "k1 config applied" k1
 isa_guard   "k1: B extension" some
 # The Raspberry Pi 5 (aarch64, BCM2712): the release kernel `make rpi5` builds,
-# from config/defconfigs/rpi5.config and the aarch64 linker script. Until the
+# from config/defconfigs/robot-sbc-aarch64+rpi5.config and the aarch64 linker script. Until the
 # port it was a compile_error!; nothing boots it here (QEMU has no raspi5).
 build_board "rpi5 (+linker)"      rpi5 "" aarch64-unknown-none-softfloat aarch64
 # The fleet profile: 1024 TCP connections, a 1022 MiB linker region. See
