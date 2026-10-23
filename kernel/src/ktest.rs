@@ -1265,6 +1265,87 @@ azos_ktest::ktest_late! {
     }
 }
 
+// ── A shootdown reaches a lock waiter with interrupts masked ───────────────
+//
+// The runner (CPU 0) holds a SpinLock with interrupts masked and shoots a
+// kernel page down on every CPU while a task on CPU 1 waits for the same lock
+// in `lock_irqsave`: the production shape of a MemObj revoke (MEMOBJS held
+// across `unmap_range`'s shootdown) against a futex on another CPU. On x86_64
+// without INVLPGB the shootdown is an IPI the runner waits for, the waiter
+// cannot take it, and only the lock's wait loop answering it
+// (`SpinWait::wait_service`) lets the flush return. riscv64's SBI fences and
+// aarch64's broadcast TLBI never wait for the waiter: there the test passes by
+// construction and keeps the property on every ISA. The waiter is known to be
+// in the lock's wait before the flush under the queued lock (its pending bit
+// or queue tail is in the word); under the test-and-set lock it is given
+// SD_WAIT_SPINS polls to get there. Canary `spin-service-canary` (by hand,
+// x86_64 -smp 4): the flush never returns and the run hangs, CPU 0 masked.
+
+/// Polls the runner gives a test-and-set waiter to reach its wait steps.
+const SD_WAIT_SPINS: u32 = 100_000;
+
+static SD_L: azos_sync::SpinLock<u64> = azos_sync::SpinLock::new(0);
+/// 0 idle, 1 the runner holds the lock, 2 the waiter is at the lock, 3 it took it.
+static SD_STAGE: AtomicUsize = AtomicUsize::new(0);
+
+fn sd_waiter(_: usize) {
+    while SD_STAGE.load(Ordering::Acquire) == 0 {
+        azos_sched::task_yield();
+    }
+    SD_STAGE.store(2, Ordering::Release);
+    let mut g = SD_L.lock_irqsave();
+    *g += 1;
+    drop(g);
+    SD_STAGE.store(3, Ordering::Release);
+}
+
+azos_ktest::ktest_late! {
+    fn shootdown_reaches_a_masked_lock_waiter() {
+        use azos_arch::{ArchPlatform as _, Cpu as _, ARCH};
+        if azos_percpu::nr_cpu_ids() < 2 {
+            return Err("needs 2 CPUs (the holder and the waiter)");
+        }
+        *SD_L.lock() = 0;
+        SD_STAGE.store(0, Ordering::Release);
+        azos_sched::task_create_affinity("sd-waiter", sd_waiter, 0, azos_sched::DEFAULT_PRIORITY, 1);
+        let g = SD_L.lock_irqsave();
+        SD_STAGE.store(1, Ordering::Release);
+        // SAFETY: the lock word is an aligned `u32` of a static lock.
+        let word = unsafe { &*(SD_L.word_addr() as *const core::sync::atomic::AtomicU32) };
+        let start = ARCH.now_ticks();
+        let limit_us = azos_limits::KTEST_LATE_TIMEOUT_MS as u64 * 1000 / 2;
+        let mut spins = 0u32;
+        let waiting = loop {
+            let at_lock = SD_STAGE.load(Ordering::Acquire) == 2;
+            if at_lock && azos_sync::qspinlock::ON && word.load(Ordering::Relaxed) & !0xff != 0 {
+                break true;
+            }
+            if at_lock && !azos_sync::qspinlock::ON {
+                spins += 1;
+                if spins >= SD_WAIT_SPINS {
+                    break true;
+                }
+            }
+            if azos_sync::lockdep::ticks_to_us(ARCH.now_ticks().wrapping_sub(start)) > limit_us {
+                break false;
+            }
+            core::hint::spin_loop();
+        };
+        if waiting {
+            ARCH.flush_tlb_page_all(&SD_L as *const _ as usize & !(azos_arch::PAGE_SIZE - 1));
+        }
+        drop(g);
+        wait("the masked waiter never took the lock", || SD_STAGE.load(Ordering::Acquire) == 3)?;
+        if !waiting {
+            return Err("the waiter never reached the lock's wait (the flush would test nothing)");
+        }
+        if *SD_L.lock() != 1 {
+            return Err("the waiter's increment is missing");
+        }
+        Ok(())
+    }
+}
+
 // ── FAT32 claim priority donation (FX12) ────────────────────────────────────
 //
 // A claim owner at fs-wb's priority and a waiter at log-flush's priority,

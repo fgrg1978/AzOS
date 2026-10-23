@@ -24,3 +24,8 @@ lat-trace = []
 # `azos_limits::PAGE_SHIFT` must agree; the kernel asserts it.
 page-16k = []
 page-64k = []
+# Canary: a lock's wait loop skips `SpinWait::wait_service`, so an x86_64 CPU
+# spinning with interrupts masked never answers a shootdown its lock's holder
+# waits for (tests/host/arch-tests `shootdown_wait`, ktest
+# `shootdown_reaches_a_masked_lock_waiter`: the run hangs).
+spin-service-canary = []

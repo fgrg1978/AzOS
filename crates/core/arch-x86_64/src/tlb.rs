@@ -33,10 +33,22 @@
 //! [`handle_ipi`] from it), and waits until every bit is clear. A target
 //! flushes in its handler. A CPU that is itself waiting to shoot (the
 //! request lock) services its own bit while it spins, so two shooters never
-//! wait on each other. What it cannot help: a target spinning with
-//! interrupts masked on something the shooter holds stalls it, as on Linux
-//! (`smp_call_function` with IRQs off); no kernel lock is held across a
-//! shootdown wait with interrupts off on a path a target can also take.
+//! wait on each other.
+//!
+//! **A target that waits for a lock with interrupts masked.** The shooter
+//! may hold a lock across the shootdown (the MemObj table across a revoke's
+//! unmap, text_poke's lock across its `sync_all`), and a target may be
+//! waiting for that lock with interrupts masked (`lock_irqsave`, a fault
+//! handler, a lock taken inside an irqsave one): it never takes the vector,
+//! and the two would wait on each other. Every kernel lock waits through
+//! `SpinWait::wait_while32`, whose wait steps call `wait_service`: on this
+//! ISA [`serve_waiting`], which serves the waiter's bit from the lock's wait
+//! loop, so a masked waiter acks within one wait step. Linux forbids the
+//! shape instead (`smp_call_function_many_cond` warns when called with
+//! interrupts off, and a lock taken with interrupts off is never held across
+//! a flush); here holding a lock across a shootdown is allowed, and what
+//! must not happen is a masked wait for something the shooter holds that is
+//! not a lock wait (a raw flag spin).
 //!
 //! **With INVLPGB (AMD Zen 3 and later).** `INVLPGB` broadcasts the
 //! invalidation through the fabric to every logical processor, the issuing
@@ -294,14 +306,12 @@ fn broadcast(f: LocalFlush, global: bool) {
 // ── The request a shooter posts ──────────────────────────────────────────
 
 /// One shootdown at a time: root, range.
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 struct Request {
     root: AtomicUsize,
     va: AtomicUsize,
     len: AtomicUsize,
 }
 
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 static REQUEST: Request = Request {
     root: AtomicUsize::new(0),
     va: AtomicUsize::new(0),
@@ -309,7 +319,6 @@ static REQUEST: Request = Request {
 };
 
 /// Targets of the posted request that have not flushed yet.
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 static PENDING: AtomicUsize = AtomicUsize::new(0);
 /// Held by the CPU whose request is posted.
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
@@ -394,28 +403,88 @@ fn do_local_pcid(f: LocalFlush, pcid: u16) {
     }
 }
 
-/// Serve this CPU's bit of the posted request, if set.
-#[cfg(target_arch = "x86_64")]
-fn serve(cpu: usize) {
+/// Post `[va, va + len)` of `root` (`ANY_ROOT`: kernel mappings) to the CPUs
+/// in `mask`, for each to flush and ack ([`serve_with`]). The caller holds
+/// the request lock (one request at a time) and then signals the targets.
+pub fn post(mask: usize, root: usize, va: usize, len: usize) {
+    REQUEST.root.store(root, Ordering::Relaxed);
+    REQUEST.va.store(va, Ordering::Relaxed);
+    REQUEST.len.store(len, Ordering::Relaxed);
+    // The request before the bits (the targets' Acquire in `serve_with`).
+    PENDING.store(mask, Ordering::Release);
+}
+
+/// Targets of the posted request that have not acked yet (0: all done).
+#[inline]
+pub fn pending() -> usize {
+    PENDING.load(Ordering::Acquire)
+}
+
+/// Serve CPU `cpu`'s bit of the posted request, if set: `flush` runs the
+/// local flush the request needs on that CPU, then the bit is cleared.
+/// Returns the flush run, `None` when the bit was clear (served already, or
+/// never asked). The caller runs it with interrupts masked on `cpu` itself:
+/// read request, flush, ack is not restartable, and a vector taken in the
+/// middle could ack this request and let the next be posted, whose bit the
+/// interrupted ack would then clear unflushed. Pure apart from the request
+/// words (host-tested with a recording `flush`).
+pub fn serve_with(cpu: usize, flush: impl FnOnce(LocalFlush)) -> Option<LocalFlush> {
     let bit = 1usize << cpu;
     if PENDING.load(Ordering::Acquire) & bit == 0 {
-        return;
+        return None;
     }
     // Ordered after the Acquire above: the shooter wrote the request
     // before it set our bit (Release).
     let root = REQUEST.root.load(Ordering::Relaxed);
     let va = REQUEST.va.load(Ordering::Relaxed);
     let len = REQUEST.len.load(Ordering::Relaxed);
-    do_local(local_flush_for(va, len, root == ANY_ROOT, FLUSH_CEILING_PAGES));
+    let f = local_flush_for(va, len, root == ANY_ROOT, FLUSH_CEILING_PAGES);
+    flush(f);
     PENDING.fetch_and(!bit, Ordering::AcqRel);
+    Some(f)
 }
 
 /// The shootdown vector's handler body (the LAPIC front's IDT entry calls
-/// it with this CPU's id; it sends the EOI itself).
+/// it with this CPU's id; it sends the EOI itself). Interrupts are masked
+/// (an interrupt gate); its `iretq` serializes, as `icache_sync_all`'s empty
+/// request needs. A bit a lock wait served first is found clear.
 #[cfg(target_arch = "x86_64")]
 pub fn handle_ipi(cpu: usize) {
     if cpu < TLB_MAX_HARTS {
-        serve(cpu);
+        serve_with(cpu, do_local);
+    }
+}
+
+/// Serve this CPU's bit outside the vector: a shooter waiting for the
+/// request lock, a lock waiter ([`serve_waiting`]). The CPU id is read in
+/// the same masked window as the flush and the ack: the spinning task may
+/// have moved since its last step, and `serve_with` flushes THIS CPU. No
+/// `iretq` follows, so `icache_sync_all`'s empty request (no flush to run,
+/// and every other flush here is a serializing instruction already: `invlpg`,
+/// `invpcid`, a CR3 or CR4 write) is answered by a `cpuid`.
+#[cfg(target_arch = "x86_64")]
+#[cold]
+#[inline(never)]
+fn serve_here() {
+    let irq = crate::X86_64.disable_all();
+    let here = crate::cpu::percpu_id();
+    if here < TLB_MAX_HARTS {
+        if let Some(LocalFlush::Pages { pages: 0, .. }) = serve_with(here, do_local) {
+            let _ = crate::platform_impl::cpuid(0, 0);
+        }
+    }
+    crate::X86_64.restore(irq);
+}
+
+/// A lock's wait step (`SpinWait::wait_service`): serve this CPU's bit of a
+/// posted request. One load of the mask when nothing is posted, which is
+/// almost always; the waiter may have interrupts masked, so its bit would
+/// otherwise wait for the waiter to get the lock, possibly from the shooter.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn serve_waiting() {
+    if PENDING.load(Ordering::Relaxed) != 0 {
+        serve_here();
     }
 }
 
@@ -433,22 +502,12 @@ fn remote(mask: usize, root: usize, va: usize, len: usize) {
         .is_err()
     {
         // Another shooter's request may name this CPU: serve it, or the
-        // two wait on each other. The CPU is read with interrupts masked, per
-        // iteration: `me` (the CPU that flushed) may not be the one spinning
-        // any more, and `serve` flushes THIS CPU and acks the bit it is
-        // given, so a stale id would ack a flush another CPU never did.
-        let irq = crate::X86_64.disable_all();
-        let here = crate::cpu::percpu_id();
-        if here < TLB_MAX_HARTS {
-            serve(here);
-        }
-        crate::X86_64.restore(irq);
+        // two wait on each other. `serve_here` reads the CPU per iteration:
+        // `me` (the CPU that flushed) may not be the one spinning any more.
+        serve_waiting();
         core::hint::spin_loop();
     }
-    REQUEST.root.store(root, Ordering::Relaxed);
-    REQUEST.va.store(va, Ordering::Relaxed);
-    REQUEST.len.store(len, Ordering::Relaxed);
-    PENDING.store(mask, Ordering::Release);
+    post(mask, root, va, len);
     send(mask);
     while PENDING.load(Ordering::Acquire) != 0 {
         core::hint::spin_loop();

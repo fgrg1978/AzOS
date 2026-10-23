@@ -289,6 +289,8 @@ fn spin_trylock(lock: &AtomicU32) {
         if lock.load(Ordering::Relaxed) == 0 && try_acquire(lock) {
             return;
         }
+        // As the lock's other waits (`SpinWait::wait_while32`).
+        ARCH.wait_service();
         ARCH.cpu_relax();
     }
 }

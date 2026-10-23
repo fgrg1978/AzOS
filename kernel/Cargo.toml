@@ -594,6 +594,10 @@ boot-count-smoke = ["qemu"]
 # of the shootdown is compiled out, and the probe must print STALE READ.
 tlb-smoke = ["qemu"]
 tlb-local-only = ["azos_arch/tlb-local-only"]
+# Canary for the lock waiter's shootdown service (x86_64): a lock's wait loop
+# no longer answers the IPI shootdown, and ktest
+# `shootdown_reaches_a_masked_lock_waiter` hangs with its holder masked.
+spin-service-canary = ["azos_arch_api/spin-service-canary"]
 # Canary for the riscv64 shootdown scan bound: no hart is noted online.
 tlb-bound-canary = ["azos_arch/tlb-bound-canary"]
 # NRCPUS canaries (wave 15). `percpu-oor-canary`: the boot attaches a per-CPU

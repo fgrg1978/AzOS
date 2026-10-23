@@ -13823,8 +13823,11 @@ PY
     # +1 uaccess_refuses_a_user_device_window (a user device window as a copy
     # buffer is EFAULT; host canary `uaccess-mmio-canary` in syscall-tests:
     # in a kernel the canary is a fatal kernel fault, not a `not ok`) -> 121.
-    KTEST_N_RV=121
-    KTEST_N_ARM=121
+    # +1 shootdown_reaches_a_masked_lock_waiter (a lock's holder shoots a page
+    # down while another CPU waits for the lock masked; canary
+    # `spin-service-canary`, x86_64 only: the run hangs) -> 122.
+    KTEST_N_RV=122
+    KTEST_N_ARM=122
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14475,7 +14478,8 @@ PY
     # +1 percpu_hazard_reads_are_masked, as on rv and arm -> 124.
     # -1 procfs_entries_registered, as on rv and arm -> 123.
     # +1 uaccess_refuses_a_user_device_window, as on rv and arm -> 124.
-    KTEST_N_X86=124
+    # +1 shootdown_reaches_a_masked_lock_waiter, as on rv and arm -> 125.
+    KTEST_N_X86=125
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

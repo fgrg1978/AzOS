@@ -155,6 +155,15 @@ impl SpinWait for crate::X86_64 {
         }
     }
 
+    /// A lock waiter answers the IPI TLB shootdown itself (`tlb`): the
+    /// waiter may have interrupts masked, and the shootdown's sender may be
+    /// the holder it waits for.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[inline(always)]
+    fn wait_service(&self) {
+        crate::tlb::serve_waiting();
+    }
+
     #[inline(always)]
     fn wait_hint32(&self, a: &AtomicU32, expected: u32) {
         #[cfg(target_arch = "x86_64")]

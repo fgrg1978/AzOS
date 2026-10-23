@@ -29,6 +29,10 @@ hv = []
 # the fork model draws fresh ones; `an_exec_changes_every_key` and
 # `a_fork_child_and_a_thread_have_their_creators_keys` must fail.
 pac-canary = []
+# `crates/core/arch-api/src/spin.rs`: the lock's wait loop skips
+# `SpinWait::wait_service`; `a_masked_lock_waiter_acks_the_holders_shootdown`
+# must fail.
+spin-service-canary = ["azos_arch_api/spin-service-canary"]
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }

@@ -197,8 +197,23 @@ pub trait SpinWait {
         self.cpu_relax();
     }
 
+    /// What a CPU waiting for a lock still does for the other CPUs, once per
+    /// wait step past the relaxed polls: answer a cross-CPU request that the
+    /// sender waits for and that reaches this CPU as a maskable interrupt.
+    /// A lock waiter may have interrupts masked (`lock_irqsave`, a fault or
+    /// an interrupt handler, a lock taken inside an irqsave one), and the
+    /// sender may hold the very lock it waits for: without this the two wait
+    /// on each other. Runs in any interrupt state and takes no lock.
+    /// x86_64: the IPI TLB shootdown (`tlb::serve_waiting`). The default is
+    /// nothing: riscv64's remote fences are the SBI's (M-mode interrupts,
+    /// taken whatever `sstatus.SIE` says) and aarch64's TLBI and IC IALLUIS
+    /// are broadcast, so no request there waits for a masked CPU.
+    #[inline(always)]
+    fn wait_service(&self) {}
+
     /// Wait until `*a != expected` and return the value read: up to
     /// [`RELAX_SPINS`] relaxed polls with `cpu_relax`, then a
+    /// [`wait_service`](Self::wait_service) and a
     /// [`wait_hint32`](Self::wait_hint32) per poll. The reads are Relaxed
     /// (Linux's `smp_cond_load_relaxed`): the caller orders what follows,
     /// with a CAS or an Acquire fence.
@@ -214,6 +229,9 @@ pub trait SpinWait {
                 spins += 1;
                 self.cpu_relax();
             } else {
+                if !cfg!(feature = "spin-service-canary") {
+                    self.wait_service();
+                }
                 self.wait_hint32(a, expected);
             }
         }
@@ -240,6 +258,9 @@ pub trait SpinWait {
                 spins += 1;
                 self.cpu_relax();
             } else {
+                if !cfg!(feature = "spin-service-canary") {
+                    self.wait_service();
+                }
                 self.wait_hint64(a, expected);
             }
         }
