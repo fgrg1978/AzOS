@@ -626,16 +626,65 @@ fn call_hook(hook: &azos_common::hook::Hook<fn(u32)>, irq: u32) {
     }
 }
 
+/// Test builds only (Kconfig KTEST, the host suite): one line no controller
+/// has, answered by a mask flag here instead of the hooks, so a test can
+/// drive a line while every other line still reaches the controller through
+/// the hooks the boot installed (ktest `irq_storm_is_contained`). The hooks
+/// are sealed before the tests run; this is a plain atomic the test sets for
+/// its own duration. `u32::MAX`: no test line.
+#[cfg(any(test, feature = "ktest"))]
+static TEST_LINE: AtomicU32 = AtomicU32::new(u32::MAX);
+#[cfg(any(test, feature = "ktest"))]
+static TEST_LINE_MASKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Make `irq` the test line, unmasked (`None`: no test line).
+#[cfg(any(test, feature = "ktest"))]
+pub fn set_test_line(irq: Option<u32>) {
+    TEST_LINE_MASKED.store(false, Ordering::Release);
+    TEST_LINE.store(irq.unwrap_or(u32::MAX), Ordering::Release);
+}
+
+/// Is the test line masked? The device behind it reads this as its
+/// controller; it sets it with [`test_line_set_masked`] when it asserts.
+#[cfg(any(test, feature = "ktest"))]
+pub fn test_line_masked() -> bool {
+    TEST_LINE_MASKED.load(Ordering::Acquire)
+}
+
+/// The test device's own top half: mask-until-ACK.
+#[cfg(any(test, feature = "ktest"))]
+pub fn test_line_set_masked(masked: bool) {
+    TEST_LINE_MASKED.store(masked, Ordering::Release);
+}
+
+/// `irq` is the test line: record `masked` and do not reach the controller.
+#[inline(always)]
+fn test_line(irq: u32, masked: bool) -> bool {
+    #[cfg(any(test, feature = "ktest"))]
+    if irq == TEST_LINE.load(Ordering::Acquire) {
+        TEST_LINE_MASKED.store(masked, Ordering::Release);
+        return true;
+    }
+    let _ = (irq, masked);
+    false
+}
+
 fn line_released(irq: u32) {
-    call_hook(&LINE_RELEASE_HOOK, irq);
+    if !test_line(irq, true) {
+        call_hook(&LINE_RELEASE_HOOK, irq);
+    }
 }
 
 fn line_masked(irq: u32) {
-    call_hook(&LINE_MASK_HOOK, irq);
+    if !test_line(irq, true) {
+        call_hook(&LINE_MASK_HOOK, irq);
+    }
 }
 
 fn line_unmasked(irq: u32) {
-    call_hook(&LINE_UNMASK_HOOK, irq);
+    if !test_line(irq, false) {
+        call_hook(&LINE_UNMASK_HOOK, irq);
+    }
 }
 
 /// What the kernel does for a message-signalled slot, per ISA, set once at
@@ -830,6 +879,7 @@ pub fn __irq_bind_reset_for_tests() {
     IRQ_MSI_DROPS.store(0, Ordering::Relaxed);
     *MSI_OPS.lock_irqsave() = None;
     CANARY_STORM.store(false, Ordering::Relaxed);
+    set_test_line(None);
     LINE_RELEASE_HOOK.clear_for_tests();
     LINE_MASK_HOOK.clear_for_tests();
     LINE_UNMASK_HOOK.clear_for_tests();
@@ -1499,6 +1549,35 @@ mod tests {
         let _ = controller();
         assert_eq!(irq_ack_unmask(SLOT, OWNER), Ack::Unmask);
         assert!(controller().is_empty(), "an MSI ACK touched the controller");
+    }
+
+    /// The test line (ktest `irq_storm_is_contained`): its mask and unmask
+    /// set the flag and never reach the hooks, and every other line still
+    /// reaches them, so a test can drive a line with the boot's hooks in.
+    ///
+    /// **Canary.** Return `false` from `test_line` for every line: the ACK of
+    /// the test line reaches the controller hooks.
+    #[test]
+    fn the_test_line_stands_for_the_controller_and_no_other_line() {
+        let _g = setup();
+        azos_sched::shim_rt_set(OWNER, Ok((0, false)));
+        let r = port::port_create_ref(OWNER as usize).expect("create");
+        assert!(bind_budgeted(IRQ, OWNER, r, 1, Route::Any(0)).is_ok());
+        assert!(bind_budgeted(IRQ + 1, OWNER, r, 2, Route::Any(0)).is_ok());
+        set_test_line(Some(IRQ));
+        test_line_set_masked(true);
+        irq_dispatch(IRQ);
+        irq_dispatch(IRQ + 1);
+        let _ = controller();
+        assert_eq!(irq_ack_unmask(IRQ, OWNER), Ack::Unmask);
+        assert!(controller().is_empty(), "the test line reached the controller");
+        assert!(!test_line_masked(), "the ACK did not unmask the test line");
+        assert_eq!(irq_ack_unmask(IRQ + 1, OWNER), Ack::Unmask);
+        assert_eq!(controller(), vec![("unmask", IRQ + 1)], "another line missed its controller");
+        set_test_line(None);
+        irq_dispatch(IRQ);
+        assert_eq!(irq_ack_unmask(IRQ, OWNER), Ack::Unmask);
+        assert_eq!(controller(), vec![("unmask", IRQ)], "a cleared test line still bypassed the controller");
     }
 
     // ── Task exit hands the line back ───────────────────────────────────────

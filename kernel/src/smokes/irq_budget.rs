@@ -21,7 +21,9 @@
 //!   refused where there is no MSI for ring 3, Ok.
 //!
 //! The line used is a number no controller input has: only the binding table
-//! sees it, and the test's hooks stand for the controller.
+//! sees it, and `irq_bind`'s test line stands for the controller
+//! (`irq_bind::set_test_line`), while every other line keeps the hooks the
+//! boot installed.
 
 #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
 compile_error!("the L5 ktests know riscv64, aarch64 and x86_64: a new ISA answers the MSI test here");
@@ -49,8 +51,6 @@ const WORK_US: u64 = 6_000;
 /// How long the storm lasts.
 const RUN_MS: u64 = 120;
 
-/// The controller as the test's hooks leave it.
-static MASKED: AtomicBool = AtomicBool::new(false);
 static STOP: AtomicBool = AtomicBool::new(false);
 static RESERVED: AtomicU32 = AtomicU32::new(0);
 static READY: AtomicBool = AtomicBool::new(false);
@@ -64,35 +64,6 @@ static TOP_HALVES: AtomicU32 = AtomicU32::new(0);
 static WHILE_THROTTLED: AtomicU32 = AtomicU32::new(0);
 static HANDLED: AtomicU32 = AtomicU32::new(0);
 
-/// The line hooks are set-once (`.data.ro_after_init`, sealed before the
-/// ktests run), so the test cannot swap them: the boot installs
-/// [`dispatch_release`] and its two siblings in ktest builds, and these answer
-/// with the test's counting hooks for [`LINE`] while [`ACTIVE`], and with the
-/// arch's own for every other line, always: a real binding (NIC, UART,
-/// virtio) that throttles or ACKs while the storm runs reaches its controller.
-static ACTIVE: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn dispatch_release(irq: u32) {
-    if irq == LINE && ACTIVE.load(Ordering::Acquire) {
-        MASKED.store(true, Ordering::Release);
-    } else {
-        (crate::boot_hooks::line_hooks().release)(irq);
-    }
-}
-pub(crate) fn dispatch_mask(irq: u32) {
-    if irq == LINE && ACTIVE.load(Ordering::Acquire) {
-        MASKED.store(true, Ordering::Release);
-    } else {
-        (crate::boot_hooks::line_hooks().mask)(irq);
-    }
-}
-pub(crate) fn dispatch_unmask(irq: u32) {
-    if irq == LINE && ACTIVE.load(Ordering::Acquire) {
-        MASKED.store(false, Ordering::Release);
-    } else {
-        (crate::boot_hooks::line_hooks().unmask)(irq);
-    }
-}
 
 fn us_to_ticks(us: u64) -> u64 {
     us * (azos_drv_sys::timebase::TIMER_FREQ / 1_000_000).max(1)
@@ -167,9 +138,9 @@ fn handler(cpu: usize) {
 /// notes when the handler it delivers to is throttled.
 fn device(_: usize) {
     while !STOP.load(Ordering::Acquire) {
-        if !MASKED.load(Ordering::Acquire) {
+        if !irq_bind::test_line_masked() {
             // The top half: mask-until-ACK, then queue.
-            MASKED.store(true, Ordering::Release);
+            irq_bind::test_line_set_masked(true);
             let idx = HANDLER_IDX.load(Ordering::Acquire);
             if azos_sched::rt::task_reservation(idx).is_some_and(|(_, throttled, _)| throttled) {
                 WHILE_THROTTLED.fetch_add(1, Ordering::Relaxed);
@@ -183,7 +154,7 @@ fn device(_: usize) {
 }
 
 fn reset() {
-    for a in [&MASKED, &STOP, &READY, &HANDLER_DONE, &DEVICE_DONE] {
+    for a in [&STOP, &READY, &HANDLER_DONE, &DEVICE_DONE] {
         a.store(false, Ordering::Release);
     }
     RESERVED.store(0, Ordering::Release);
@@ -194,11 +165,11 @@ fn reset() {
     }
 }
 
-/// Put the arch's own hooks back and disarm the canary, whatever the verdict.
+/// Give [`LINE`] back to nobody and disarm the canary, whatever the verdict.
 struct Restore;
 impl Drop for Restore {
     fn drop(&mut self) {
-        ACTIVE.store(false, Ordering::Release);
+        irq_bind::set_test_line(None);
         irq_bind::canary_storm(false);
     }
 }
@@ -210,7 +181,10 @@ azos_ktest::ktest_late! {
         }
         reset();
         let _restore = Restore;
-        ACTIVE.store(true, Ordering::Release);
+        // `irq_bind`'s test line: its mask and unmask set the flag the
+        // device reads, and every other line reaches its controller through
+        // the hooks the boot installed.
+        irq_bind::set_test_line(Some(LINE));
         irq_bind::canary_storm(canary!("irq-storm"));
         // Both tasks on this CPU: the device runs only when the handler,
         // which is in the deadline class, is not.

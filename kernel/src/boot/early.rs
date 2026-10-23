@@ -545,16 +545,9 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     // IRQ4; `irq_bind::irq_unbind_all`); an overrun masks an idle line and the
     // replenishment unmasks it (L5; `irq_bind::irq_sc_throttle`, which the
     // scheduler calls through its hook).
+    // The same hooks in every image, ktest included: the L5 ktest drives a
+    // line no controller has through `irq_bind`'s own test line.
     let lines = a.line_hooks();
-    // The L5 ktest stands in for the controller; the hooks are set-once, so
-    // its dispatchers are installed instead and forward to the arch's own.
-    #[cfg(feature = "ktest")]
-    azos_ipc::irq_bind::set_line_hooks(
-        crate::smokes::irq_budget::dispatch_release,
-        crate::smokes::irq_budget::dispatch_mask,
-        crate::smokes::irq_budget::dispatch_unmask,
-    );
-    #[cfg(not(feature = "ktest"))]
     azos_ipc::irq_bind::set_line_hooks(lines.release, lines.mask, lines.unmask);
     azos_ipc::irq_bind::set_msi_ops(azos_ipc::irq_bind::MsiOps {
         supported: lines.msi_supported,
