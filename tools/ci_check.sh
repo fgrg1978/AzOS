@@ -3522,10 +3522,12 @@ par "aarch64 shell answers help" shell_help_row "aarch64 shell answers help" arm
 #
 # BCM2837 (four Cortex-A53, Armv8.0), RAM at 0, no GIC, no PSCI: the board the
 # owner tests on. The image is the `virt` rows' kernel from the same profile
-# with one difference, Kconfig WDT_BCM2835_PM_ARM = n: QEMU's PM model resets
-# the machine on the arming write itself (no countdown), so an armed PM
-# watchdog would reboot it at the scheduler's start; the block stays the
-# reset handler. Every board fact comes from the device tree the firmware
+# plus the Pi's drivers the gate's base features leave out (the PM block, the
+# VideoCore mailbox, the DWC2 host and the CDC class), and without
+# `wdt-bcm2835-pm-arm` (Kconfig WDT_BCM2835_PM_ARM, y on a real Pi): QEMU's PM
+# model resets the machine on the arming write itself (no countdown), so an
+# armed PM watchdog would reboot it at the scheduler's start; the block stays
+# the reset handler. Every board fact comes from the device tree the firmware
 # would pass: tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb, Linux's
 # bcm2837-rpi-3-b.dts (U-Boot 2025.07's dts/upstream) compiled and dumped by
 # QEMU (`dumpdtb=`; QEMU patches `/memory` to the same 0x3c000000 again).
@@ -3554,22 +3556,14 @@ raspi3b_row() { # raspi3b_row <label> <shell|usb|reboot>
     local label="$1" mode="$2"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
-    local slug log fifo kimg cfg dtb="$REPO_ROOT/tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb"
+    local slug log fifo kimg dtb="$REPO_ROOT/tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb"
+    local feats="qemu,wdt-bcm2835-pm,rpi-firmware,usb-dwc2,usb-cdc"
     slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
     log="$CI_LOG_DIR/${slug}.log"; fifo="$CI_LOG_DIR/${slug}.fifo"; kimg="$CI_LOG_DIR/${slug}.img"
-    cfg="$CI_LOG_DIR/${slug}.config"
-    rm -f "$log" "$fifo" "$kimg" "$cfg"
+    rm -f "$log" "$fifo" "$kimg"
     if [ ! -f "$dtb" ]; then bad; echo "      no device tree: $dtb"; return; fi
-    # The aarch64 profile with the PM watchdog left unarmed (see above).
-    sed 's/^CONFIG_WDT_BCM2835_PM_ARM=y$/# CONFIG_WDT_BCM2835_PM_ARM is not set/' "$AARCH64_CONFIG" >"$cfg"
-    (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
-        || { bad; echo "      olddefconfig failed on $cfg"; return; }
-    if ! grep -q '^CONFIG_WDT_BCM2835_PM=y$' "$cfg" || grep -q '^CONFIG_WDT_BCM2835_PM_ARM=y$' "$cfg" \
-       || ! grep -q '^CONFIG_RPI_FIRMWARE=y$' "$cfg"; then
-        bad; echo "      $cfg: want WDT_BCM2835_PM=y, WDT_BCM2835_PM_ARM unset, RPI_FIRMWARE=y"; return
-    fi
-    if ! AARCH64_CONFIG="$cfg" a64_kbuild "qemu"; then
-        bad; echo "      aarch64 kernel ($cfg) did not build"; return
+    if ! a64_kbuild "$feats"; then
+        bad; echo "      aarch64 --features $feats did not build"; return
     fi
     cp "$A64_IMG" "$kimg"
     if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; rm -f "$kimg"; return; fi
@@ -3578,7 +3572,7 @@ raspi3b_row() { # raspi3b_row <label> <shell|usb|reboot>
     par_ready
     while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
     qemu-system-aarch64 -M raspi3b -dtb "$dtb" -kernel "$kimg" -nographic -monitor none \
-        -serial null -serial stdio "${usb[@]}" <"$fifo" >"$log" 2>&1 &
+        -serial null -serial stdio ${usb[@]+"${usb[@]}"} <"$fifo" >"$log" 2>&1 &
     local pid=$! i=0 sent=0 done=""
     exec 9>"$fifo"
     while [ "$i" -lt 240 ]; do
@@ -3650,7 +3644,7 @@ raspi3b_row() { # raspi3b_row <label> <shell|usb|reboot>
         bad; echo "      the raspi3b boot did not reach:"; printf "%b\n" "${missing:-        (its end marker: timeout)}"
         echo "      log kept: $log"; return
     fi
-    ok; rm -f "$log" "$cfg"
+    ok; rm -f "$log"
 }
 par "aarch64 raspi3b boots to the shell" raspi3b_row "aarch64 raspi3b boots to the shell" shell
 par "aarch64 raspi3b USB via DWC2" raspi3b_row "aarch64 raspi3b USB via DWC2" usb
