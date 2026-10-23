@@ -13858,8 +13858,10 @@ PY
     # -1 lx_class_server_keeps_tpidr_el0, +2 native_tasks_keep_tpidr_el0 and
     # new_task_starts_with_tpidr_el0_zero (aarch64 only: EVERY task's
     # TPIDR_EL0 is kept per task; canary `tpidr-foreign-only-canary`) -> arm 125.
-    KTEST_N_RV=122
-    KTEST_N_ARM=125
+    # +1 rt_motor_coasts_a_held_wheel (B2: the control loop coasts a wheel the
+    # kernel holds in its safe state) -> rv 123, arm 126.
+    KTEST_N_RV=123
+    KTEST_N_ARM=126
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14515,7 +14517,8 @@ PY
     # -1 procfs_entries_registered, as on rv and arm -> 123.
     # +1 uaccess_refuses_a_user_device_window, as on rv and arm -> 124.
     # +1 shootdown_reaches_a_masked_lock_waiter, as on rv and arm -> 125.
-    KTEST_N_X86=125
+    # +1 rt_motor_coasts_a_held_wheel, as on rv and arm -> 126.
+    KTEST_N_X86=126
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

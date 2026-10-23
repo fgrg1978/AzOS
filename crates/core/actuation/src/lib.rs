@@ -52,3 +52,22 @@ pub mod logger;
 pub mod safe_state;
 pub mod sys_wdt;
 pub mod watchdog;
+
+/// Does the kernel hold wheel `wheel` in its safe state after a missed
+/// deadline (innovation B2: `safe_state::held` of the motor kind)? Only a
+/// warranted release lifts it, and no writer of the wheel may move it
+/// meanwhile, the kernel's own control loop (`azos_safety_core::rt_motor`)
+/// included: it asks this for each wheel every tick. Always `false` without
+/// Kconfig `EFFECT_WRITE_AHEAD`, which holds nothing.
+#[inline]
+pub fn motor_wheel_held(wheel: u32) -> bool {
+    #[cfg(feature = "effect-gate")]
+    {
+        u16::try_from(wheel).is_ok_and(|w| safe_state::held(effect_gate::KIND_MOTOR, w))
+    }
+    #[cfg(not(feature = "effect-gate"))]
+    {
+        let _ = wheel;
+        false
+    }
+}

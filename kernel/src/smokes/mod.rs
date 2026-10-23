@@ -151,6 +151,8 @@ pub(crate) mod timer_heap_smoke;
 pub(crate) mod preempt_account_smoke;
 #[cfg(all(feature = "ktest", feature = "use-robot"))]
 pub(crate) mod commander_exit;
+#[cfg(all(feature = "ktest", feature = "use-robot", feature = "effect-gate"))]
+mod held_wheel;
 #[cfg(feature = "tail-smoke")]
 pub(crate) mod tail_smoke;
 #[cfg(feature = "energy-smoke")]
