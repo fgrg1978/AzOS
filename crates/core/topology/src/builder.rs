@@ -1301,22 +1301,36 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // they were (supervisor, brain_link, autorun) and these land at 3-5;
     // gate builds with `ipc-endpoint-canary` keep EPSRV.ELF/VSSRV.ELF at
     // 3-4 and these land at 5-7. No existing index-pinned assertion moves.
-    topo.push_task(
-        MaybeStr::from_bytes(TASK_GPIODRV_IMAGE),
-        MaybeStr::from_bytes(NAME_BEST_EFFORT),
-        0,
-        // It serves `DevicePower` for the power service (runtime PM).
-        &[CapSpec {
-            kind: CapKind::Endpoint,
-            perms: CapPerms::READ,
-            target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_PM_GPIO), transfer: false, ops: 0,
-        }],
-    )
-        .expect("default_minimal_topology: GPIODRV.ELF push failed");
-    topo.push_task(MaybeStr::from_bytes(TASK_REFLEX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), 0, &[])
-        .expect("default_minimal_topology: REFLEX.ELF push failed");
-    topo.push_task(MaybeStr::from_bytes(TASK_BRAINCLI_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), 0, &[ROOT_RO])
-        .expect("default_minimal_topology: BRAINCLI.ELF push failed");
+    //
+    // Each program row below exists when the volume carries its image
+    // (Kconfig `USERSPACE_<IMAGE>`): always outside a small board, where
+    // these images are not a choice; on one (HWCLASS_EMBEDDED) only what the
+    // topology starts and what the config names. A row for an image the build
+    // does not carry would hold authority nothing can use and be charged
+    // memory admission for a program that cannot run (robot-embedded: 1344 of
+    // its 1680 ceiling pages, and a 16 MiB board refused at boot).
+    if azos_limits::USERSPACE_GPIODRV {
+        topo.push_task(
+            MaybeStr::from_bytes(TASK_GPIODRV_IMAGE),
+            MaybeStr::from_bytes(NAME_BEST_EFFORT),
+            0,
+            // It serves `DevicePower` for the power service (runtime PM).
+            &[CapSpec {
+                kind: CapKind::Endpoint,
+                perms: CapPerms::READ,
+                target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_PM_GPIO), transfer: false, ops: 0,
+            }],
+        )
+            .expect("default_minimal_topology: GPIODRV.ELF push failed");
+    }
+    if azos_limits::USERSPACE_REFLEX {
+        topo.push_task(MaybeStr::from_bytes(TASK_REFLEX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), 0, &[])
+            .expect("default_minimal_topology: REFLEX.ELF push failed");
+    }
+    if azos_limits::USERSPACE_BRAINCLI {
+        topo.push_task(MaybeStr::from_bytes(TASK_BRAINCLI_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), 0, &[ROOT_RO])
+            .expect("default_minimal_topology: BRAINCLI.ELF push failed");
+    }
 
     // The ML service (see `TASK_MLSRV_IMAGE`). Pushed after the board rows so
     // no index another test pins moves.
@@ -1336,28 +1350,30 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // `MLSRV_MEM_PAGES`) and page tables, the policy-file buffer in `.bss`, and
     // the blob arena (a volatile memory object, `INFSRV_BLOB_KIB`); it never
     // grows a heap.
-    topo.push_task(
-        MaybeStr::from_bytes(TASK_MLSRV_IMAGE),
-        MaybeStr::from_bytes(NAME_SOFT_RT),
-        16,
-        &[
-            CapSpec {
-                kind: CapKind::Endpoint,
-                perms: CapPerms::READ,
-                target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_INFER), transfer: false, ops: 0,
-            },
-            // Marks its blob arena droppable between calls.
-            CapSpec {
-                kind: CapKind::Endpoint,
-                perms: CapPerms::WRITE,
-                target: MaybeStr::from_bytes(RESOURCE_MEMCTL), transfer: false, ops: 0,
-            },
-            // Reads the model file it is told to load.
-            ROOT_RO,
-        ],
-    )
-    .expect("default_minimal_topology: MLSRV.ELF push failed");
-    topo.set_last_task_mem_pages(MLSRV_MEM_PAGES);
+    if azos_limits::USERSPACE_MLSRV {
+        topo.push_task(
+            MaybeStr::from_bytes(TASK_MLSRV_IMAGE),
+            MaybeStr::from_bytes(NAME_SOFT_RT),
+            16,
+            &[
+                CapSpec {
+                    kind: CapKind::Endpoint,
+                    perms: CapPerms::READ,
+                    target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_INFER), transfer: false, ops: 0,
+                },
+                // Marks its blob arena droppable between calls.
+                CapSpec {
+                    kind: CapKind::Endpoint,
+                    perms: CapPerms::WRITE,
+                    target: MaybeStr::from_bytes(RESOURCE_MEMCTL), transfer: false, ops: 0,
+                },
+                // Reads the model file it is told to load.
+                ROOT_RO,
+            ],
+        )
+        .expect("default_minimal_topology: MLSRV.ELF push failed");
+        topo.set_last_task_mem_pages(MLSRV_MEM_PAGES);
+    }
 
     // Wave 9 (DRV1) — the ring-3 drivers; see `TASK_BUZZDRV_IMAGE`. After the
     // board rows, so no index-pinned row above moves.
@@ -1378,7 +1394,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // keeps nothing a restart cannot rebuild, so it may move between its two
     // hosts at run time (`placement`); `call_budget_us` is the deadline a
     // call to it is held to.
-    {
+    if azos_limits::USERSPACE_BUZZDRV {
         topo.push_task(
             MaybeStr::from_bytes(TASK_BUZZDRV_IMAGE),
             MaybeStr::from_bytes(NAME_BEST_EFFORT),
@@ -1417,7 +1433,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // driver is placed in ring 3 ([`INADRV_ROW`]). Placed in the kernel, the
     // row would be a dormant grant of the `i2c` endpoint on its chip to an image the
     // kernel does not run.
-    if INADRV_ROW {
+    if INADRV_ROW && azos_limits::USERSPACE_INADRV {
         topo.push_task(
             MaybeStr::from_bytes(TASK_INADRV_IMAGE),
             MaybeStr::from_bytes(NAME_BEST_EFFORT),
@@ -1498,8 +1514,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
 
     // Wave 11: the user shell and its multicall tool image, pushed
     // after every other row (feature-gated ones included) so no index another
-    // test pins moves. Unconditional: both are real board programs, so the
-    // board volume ships them (`board_elfs`).
+    // test pins moves. Both are real board programs, so the board volume
+    // ships them (`board_elfs`), and both have their row when it does.
     //
     // `SH.ELF` holds no hardware authority: a command's authority is the row
     // of the image that runs it. What it holds is what the shell itself does:
@@ -1519,86 +1535,95 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // (`console_signal`). The order keeps a tool from out-ranking its
     // spawner (`fork_child_entry` also yields until the spawner publishes its
     // hand-off). Gate row `sh: ctrl-c on one hart`.
-    topo.push_task(
-        MaybeStr::from_bytes(TASK_SH_IMAGE),
-        MaybeStr::from_bytes(NAME_SESSION),
-        SH_PRIORITY,
-        if azos_limits::CONSOLE_LOCKDOWN { SH_CAPS_LOCKDOWN } else { SH_CAPS_UNLOCKED },
-    )
-    .expect("default_minimal_topology: SH.ELF push failed");
-    topo.set_last_task_mem_pages(SH_MEM_PAGES);
-    topo.set_last_task_imports(SH_IMPORTS)
-        .expect("default_minimal_topology: SH.ELF imports");
-    // `restart` stays `on-failure` (wave 11): `exit` ends the shell with
-    // code 0 and gives the console back to the kernel shell. `always` would
-    // restart it instead (owner note, DRVPLACE).
-    topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
-    // SUBTREE-POLICY: the shell's jobs are clients. A job is a Domain beneath
-    // the shell's, so this `subtree` row binds every program the shell starts
-    // (and the shell) and creates no endpoint and no port, whatever its row
-    // grants: a program typed at a prompt joins services other rows start, it
-    // does not become one. What the shell can launch is its `Cap<Launch>`
-    // list (`SH_CAPS_*`): the tool images, `PKG.ELF` and the Linux rows, none
-    // of which creates either object. MemObjs are not limited (`PKG.ELF` sizes
-    // one by the package). The kernel binds the row when it spawns the shell
-    // (`families::install_policy`); a signed CAPS.TOM replaces it with its own.
-    topo.push_policy(PolicySpec {
-        name: MaybeStr::from_bytes(b"shjobs"),
-        domain: MaybeStr::from_bytes(TASK_SH_IMAGE),
-        scope: PolicyScope::Subtree,
-        create_endpoints: false,
-        create_ports: false,
-        memobj_max_pages: 0,
-    })
-    .expect("default_minimal_topology: SH.ELF policy push failed");
+    if azos_limits::USERSPACE_SH {
+        topo.push_task(
+            MaybeStr::from_bytes(TASK_SH_IMAGE),
+            MaybeStr::from_bytes(NAME_SESSION),
+            SH_PRIORITY,
+            if azos_limits::CONSOLE_LOCKDOWN { SH_CAPS_LOCKDOWN } else { SH_CAPS_UNLOCKED },
+        )
+        .expect("default_minimal_topology: SH.ELF push failed");
+        topo.set_last_task_mem_pages(SH_MEM_PAGES);
+        topo.set_last_task_imports(SH_IMPORTS)
+            .expect("default_minimal_topology: SH.ELF imports");
+        // `restart` stays `on-failure` (wave 11): `exit` ends the shell with
+        // code 0 and gives the console back to the kernel shell. `always` would
+        // restart it instead (owner note, DRVPLACE).
+        topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+        // SUBTREE-POLICY: the shell's jobs are clients. A job is a Domain beneath
+        // the shell's, so this `subtree` row binds every program the shell starts
+        // (and the shell) and creates no endpoint and no port, whatever its row
+        // grants: a program typed at a prompt joins services other rows start, it
+        // does not become one. What the shell can launch is its `Cap<Launch>`
+        // list (`SH_CAPS_*`): the tool images, `PKG.ELF` and the Linux rows, none
+        // of which creates either object. MemObjs are not limited (`PKG.ELF` sizes
+        // one by the package). The kernel binds the row when it spawns the shell
+        // (`families::install_policy`); a signed CAPS.TOM replaces it with its own.
+        topo.push_policy(PolicySpec {
+            name: MaybeStr::from_bytes(b"shjobs"),
+            domain: MaybeStr::from_bytes(TASK_SH_IMAGE),
+            scope: PolicyScope::Subtree,
+            create_endpoints: false,
+            create_ports: false,
+            memobj_max_pages: 0,
+        })
+        .expect("default_minimal_topology: SH.ELF policy push failed");
+    }
     // The tool image. It reads and writes the descriptors and pipe ends the
     // shell MOVES to it, and opens files beneath the read-only root directory. Its
     // capabilities are the full task view, for `ps` (wave 12), and with
     // Kconfig INSPECT the introspection regions, for `inspect`: none of them
     // under `CONSOLE_LOCKDOWN`.
-    topo.push_task(
-        MaybeStr::from_bytes(TASK_TOOLBOX_IMAGE),
-        MaybeStr::from_bytes(NAME_BEST_EFFORT),
-        TOOL_PRIORITY,
-        if azos_limits::CONSOLE_LOCKDOWN { TOOLBOX_CAPS_LOCKDOWN } else { TOOLBOX_CAPS },
-    )
-        .expect("default_minimal_topology: TOOLBOX.ELF push failed");
-    topo.set_last_task_mem_pages(TOOLBOX_MEM_PAGES);
-    // The `vm` command (Kconfig HV) launches a guest through the monitor's
-    // `VmCtl`: the row imports `vmctl`, and the name server lends the call
-    // right on `endpoint.vmctl`. Not under `CONSOLE_LOCKDOWN`, which withholds
-    // every grant beyond the shell's own work from the console path.
-    if VMMD_ROW && !azos_limits::CONSOLE_LOCKDOWN {
-        topo.set_last_task_imports(TOOLBOX_IMPORTS)
-            .expect("default_minimal_topology: TOOLBOX.ELF imports");
+    if azos_limits::USERSPACE_TOOLBOX {
+        topo.push_task(
+            MaybeStr::from_bytes(TASK_TOOLBOX_IMAGE),
+            MaybeStr::from_bytes(NAME_BEST_EFFORT),
+            TOOL_PRIORITY,
+            if azos_limits::CONSOLE_LOCKDOWN { TOOLBOX_CAPS_LOCKDOWN } else { TOOLBOX_CAPS },
+        )
+            .expect("default_minimal_topology: TOOLBOX.ELF push failed");
+        topo.set_last_task_mem_pages(TOOLBOX_MEM_PAGES);
+        // The `vm` command (Kconfig HV) launches a guest through the monitor's
+        // `VmCtl`: the row imports `vmctl`, and the name server lends the call
+        // right on `endpoint.vmctl`. Not under `CONSOLE_LOCKDOWN`, which withholds
+        // every grant beyond the shell's own work from the console path.
+        if VMMD_ROW && !azos_limits::CONSOLE_LOCKDOWN {
+            topo.set_last_task_imports(TOOLBOX_IMPORTS)
+                .expect("default_minimal_topology: TOOLBOX.ELF imports");
+        }
+        // A pipeline runs one instance per stage, and background jobs add more.
+        topo.set_last_task_instances(TOOLBOX_INSTANCES);
     }
-    // A pipeline runs one instance per stage, and background jobs add more.
-    topo.set_last_task_instances(TOOLBOX_INSTANCES);
     // The first privileged family: `POWER.ELF` (`power suspend`,
     // `reboot`, `shutdown`, `sched_hz`). Its row is the whole of its
     // authority: the `power` endpoint (WRITE, and READ for the rate read), whose
     // ops check their class on every call. The shell holds only the right to start it, and not under
     // `CONSOLE_LOCKDOWN` (`SH_CAPS_LOCKDOWN`), so a locked-down shell is
     // refused at `SYS_SPAWN_EX`, recorded, not merely missing a PATH entry.
-    topo.push_task(MaybeStr::from_bytes(TASK_POWER_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, POWER_CAPS)
-        .expect("default_minimal_topology: POWER.ELF push failed");
-    topo.set_last_task_mem_pages(POWER_MEM_PAGES);
-    // `power serve` is a housekeeping loop: it re-checks the policy once a
-    // period, and nobody waits on that wake-up. It declares itself
-    // `QOS_BACKGROUND` and its row lets that tier's timer slack apply
-    // (QOS_TIMER_TOLERANCE_ROWS_ONLY: the robot, industrial and automotive
-    // presets give slack only to rows that say so).
-    topo.set_last_task_timer_slack(true);
+    if azos_limits::USERSPACE_POWER {
+        topo.push_task(MaybeStr::from_bytes(TASK_POWER_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, POWER_CAPS)
+            .expect("default_minimal_topology: POWER.ELF push failed");
+        topo.set_last_task_mem_pages(POWER_MEM_PAGES);
+        // `power serve` is a housekeeping loop: it re-checks the policy once a
+        // period, and nobody waits on that wake-up. It declares itself
+        // `QOS_BACKGROUND` and its row lets that tier's timer slack apply
+        // (QOS_TIMER_TOLERANCE_ROWS_ONLY: the robot, industrial and automotive
+        // presets give slack only to rows that say so).
+        topo.set_last_task_timer_slack(true);
+    }
     // Wave 12: the other privileged families, one tool each, the POWER.ELF
     // pattern: each row is the whole of its tool's authority, checked by its
     // family's typed call on every call, and the shell holds only the right
     // to start them, not under `CONSOLE_LOCKDOWN`.
-    for (image, caps) in [
-        (TASK_FLIGHT_IMAGE, FLIGHT_CAPS),
-        (TASK_BEHAVIOR_IMAGE, BEHAVIOR_CAPS),
-        (TASK_CONFIG_IMAGE, CONFIG_CAPS),
-        (TASK_OTA_IMAGE, OTA_CAPS),
+    for (image, caps, shipped) in [
+        (TASK_FLIGHT_IMAGE, FLIGHT_CAPS, azos_limits::USERSPACE_FLIGHT),
+        (TASK_BEHAVIOR_IMAGE, BEHAVIOR_CAPS, azos_limits::USERSPACE_BEHAVIOR),
+        (TASK_CONFIG_IMAGE, CONFIG_CAPS, azos_limits::USERSPACE_CONFIG),
+        (TASK_OTA_IMAGE, OTA_CAPS, azos_limits::USERSPACE_OTA),
     ] {
+        if !shipped {
+            continue;
+        }
         topo.push_task(MaybeStr::from_bytes(image), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, caps)
             .expect("default_minimal_topology: family tool push failed");
         topo.set_last_task_mem_pages(POWER_MEM_PAGES);
@@ -1609,10 +1634,12 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // and `/fat` read-write for `tracectl stream -o FILE`. The shell holds
     // only the right to start it, not under `CONSOLE_LOCKDOWN`. Pushed after
     // every earlier row, so no index another test pins moves.
-    topo.push_task(MaybeStr::from_bytes(TASK_TRACECTL_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, TRACECTL_CAPS)
-        .expect("default_minimal_topology: TRACECTL.ELF push failed");
-    topo.set_last_task_mem_pages(TRACECTL_MEM_PAGES);
-    topo.set_last_task_instances(TRACECTL_INSTANCES);
+    if azos_limits::USERSPACE_TRACECTL {
+        topo.push_task(MaybeStr::from_bytes(TASK_TRACECTL_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, TRACECTL_CAPS)
+            .expect("default_minimal_topology: TRACECTL.ELF push failed");
+        topo.set_last_task_mem_pages(TRACECTL_MEM_PAGES);
+        topo.set_last_task_instances(TRACECTL_INSTANCES);
+    }
     // The terminal server (`userspace/services/termd`, the Terminal object):
     // the console program of the native shell session. Its row is its whole
     // authority, `READ` on `endpoint.term` (it serves it); console input it
@@ -1621,17 +1648,21 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // key is read as promptly as it was. `start` follows the console program
     // (below); `on-failure` like the shell: `hangup` ends it with code 0 and
     // gives the console back to the kernel shell.
-    topo.push_task(MaybeStr::from_bytes(TASK_TERMD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, TERMD_CAPS)
-        .expect("default_minimal_topology: TERMD.ELF push failed");
-    topo.set_last_task_mem_pages(TERMD_MEM_PAGES);
-    topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+    if azos_limits::USERSPACE_TERMD {
+        topo.push_task(MaybeStr::from_bytes(TASK_TERMD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, TERMD_CAPS)
+            .expect("default_minimal_topology: TERMD.ELF push failed");
+        topo.set_last_task_mem_pages(TERMD_MEM_PAGES);
+        topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+    }
     // The name server: the signed rows' `imports` are answered here. Its row
     // is its whole authority (serve `names`, lend `term`); it starts with the
     // native shell session, before the terminal server and the shell.
-    topo.push_task(MaybeStr::from_bytes(TASK_NAMESD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, NAMESD_CAPS)
-        .expect("default_minimal_topology: NAMESD.ELF push failed");
-    topo.set_last_task_mem_pages(NAMESD_MEM_PAGES);
-    topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+    if azos_limits::USERSPACE_NAMESD {
+        topo.push_task(MaybeStr::from_bytes(TASK_NAMESD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SH_PRIORITY, NAMESD_CAPS)
+            .expect("default_minimal_topology: NAMESD.ELF push failed");
+        topo.set_last_task_mem_pages(NAMESD_MEM_PAGES);
+        topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+    }
     // The decision server (`userspace/services/decisd`, the Decisions
     // object) and its client tool (`WHY.ELF`). The server's row is its whole
     // authority, `READ` on `endpoint.decisions`, and the admin introspection
@@ -1640,14 +1671,18 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // either the kernel keeps no decisions and there is nothing to serve.
     // `why` holds `WRITE` on the same name and nothing else; the shell holds
     // the right to start it (`SH_CAPS`, not under `CONSOLE_LOCKDOWN`).
-    topo.push_task(MaybeStr::from_bytes(TASK_DECISD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, DECISD_CAPS)
-        .expect("default_minimal_topology: DECISD.ELF push failed");
-    topo.set_last_task_mem_pages(DECISD_MEM_PAGES);
-    topo.set_last_task_start(azos_limits::DECISION_REFUSALS_DURABLE || azos_limits::DECISION_RECORDS_DEV);
-    topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
-    topo.push_task(MaybeStr::from_bytes(TASK_WHY_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, WHY_CAPS)
-        .expect("default_minimal_topology: WHY.ELF push failed");
-    topo.set_last_task_mem_pages(WHY_MEM_PAGES);
+    if azos_limits::USERSPACE_DECISD {
+        topo.push_task(MaybeStr::from_bytes(TASK_DECISD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, DECISD_CAPS)
+            .expect("default_minimal_topology: DECISD.ELF push failed");
+        topo.set_last_task_mem_pages(DECISD_MEM_PAGES);
+        topo.set_last_task_start(azos_limits::DECISION_REFUSALS_DURABLE || azos_limits::DECISION_RECORDS_DEV);
+        topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+    }
+    if azos_limits::USERSPACE_WHY {
+        topo.push_task(MaybeStr::from_bytes(TASK_WHY_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, WHY_CAPS)
+            .expect("default_minimal_topology: WHY.ELF push failed");
+        topo.set_last_task_mem_pages(WHY_MEM_PAGES);
+    }
     // The package installer (`userspace/services/pkgd`, the Packages object)
     // and its client tool (`PKG.ELF`). The installer serves `endpoint.packages`
     // and holds a read-write tree on `/fat/PKG`, where it stages packages and
@@ -1673,23 +1708,25 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // class `fleet` for it, exports `decisions` to the class and starts the
     // server; without one the row exists and exports nothing, so the proxy has
     // no one behind it. `why --remote` is the caller.
-    topo.push_task(MaybeStr::from_bytes(TASK_RPCSRV_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, RPCSRV_CAPS)
-        .expect("default_minimal_topology: RPCSRV.ELF push failed");
-    topo.set_last_task_mem_pages(RPCSRV_MEM_PAGES);
-    topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
-    if azos_limits::RPC_PEER_NODE != 0 {
-        // Pinned to the key of Kconfig `RPC_PEER_NOISE_PK`; empty pins none, and
-        // the server has no session to open with a node it cannot tell apart.
-        let pk = rpc_peer_noise_pk();
-        let keys: &[[u8; 32]] = pk.as_slice();
-        topo.push_peer(MaybeStr::from_bytes(b"fleet"), &[azos_limits::RPC_PEER_NODE as u32], keys, None)
-            .expect("default_minimal_topology: peer class push failed");
-        topo.set_last_task_exports(&[crate::types::ExportSpec {
-            endpoint: MaybeStr::from_bytes(b"decisions"),
-            peer: MaybeStr::from_bytes(b"fleet"),
-        }])
-        .expect("default_minimal_topology: RPCSRV.ELF exports");
-        topo.set_last_task_start(true);
+    if azos_limits::USERSPACE_RPCSRV {
+        topo.push_task(MaybeStr::from_bytes(TASK_RPCSRV_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, RPCSRV_CAPS)
+            .expect("default_minimal_topology: RPCSRV.ELF push failed");
+        topo.set_last_task_mem_pages(RPCSRV_MEM_PAGES);
+        topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+        if azos_limits::RPC_PEER_NODE != 0 {
+            // Pinned to the key of Kconfig `RPC_PEER_NOISE_PK`; empty pins none, and
+            // the server has no session to open with a node it cannot tell apart.
+            let pk = rpc_peer_noise_pk();
+            let keys: &[[u8; 32]] = pk.as_slice();
+            topo.push_peer(MaybeStr::from_bytes(b"fleet"), &[azos_limits::RPC_PEER_NODE as u32], keys, None)
+                .expect("default_minimal_topology: peer class push failed");
+            topo.set_last_task_exports(&[crate::types::ExportSpec {
+                endpoint: MaybeStr::from_bytes(b"decisions"),
+                peer: MaybeStr::from_bytes(b"fleet"),
+            }])
+            .expect("default_minimal_topology: RPCSRV.ELF exports");
+            topo.set_last_task_start(true);
+        }
     }
     // L0: the Linux driver server skeleton, only under `lx-server`
     // (Kconfig LINUX_DRIVERS + LX_SERVER_SKELETON). One capability, READ on
@@ -1947,11 +1984,13 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // and calls no endpoint. `start` follows KLOG: without the log there is no
     // ring to drain. Pushed before the component manager's row, as every row
     // that starts is, so its launch grant exists.
-    topo.push_task(MaybeStr::from_bytes(TASK_LOGD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, LOGD_CAPS)
-        .expect("default_minimal_topology: LOGD.ELF push failed");
-    topo.set_last_task_mem_pages(LOGD_MEM_PAGES);
-    topo.set_last_task_start(azos_limits::KLOG);
-    topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+    if azos_limits::USERSPACE_LOGD {
+        topo.push_task(MaybeStr::from_bytes(TASK_LOGD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, LOGD_CAPS)
+            .expect("default_minimal_topology: LOGD.ELF push failed");
+        topo.set_last_task_mem_pages(LOGD_MEM_PAGES);
+        topo.set_last_task_start(azos_limits::KLOG);
+        topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+    }
     // The input server (`userspace/services/inputd`, Kconfig INPUTD): delivers
     // the input drivers' stream to the task that holds the focus. Its row is
     // its whole authority: `READ` on `endpoint.input` (it serves it) with the

@@ -23,7 +23,8 @@ Each program directory names the FAT32 images it builds. A Cargo crate says so
 in `[package.metadata.azos]`, a C program in `azos.toml` (`[azos]` table):
 
     images   = ["SH.ELF"]   # default: the directory name, upper-cased, 8.3
-    topology = true         # the built-in topology always has a row for it
+    topology = true         # the built-in topology has a row for it whenever
+                            # the volume carries it (always, but on a small board)
     default  = "y"          # or a Kconfig expression; default n
     start    = "<expr>"     # the Kconfig condition under which the topology
                             # STARTS the image at boot (absent: never)
@@ -243,7 +244,7 @@ def render(root):
                         "carries it (not a choice). On a small board (HWCLASS_EMBEDDED) the "
                         "volume carries only what the topology starts"
                         + (f" ({start})" if start else " (this image it never starts)")
-                        + " and what the config names."
+                        + " and what the config names, and the topology has the row only then."
                     ):
                         a(ln)
                 else:
