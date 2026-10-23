@@ -21,6 +21,9 @@ pub mod debounce;
 #[cfg(feature = "vf2")]
 pub mod gpio_jh7110_irq;
 
+/// The pins the kernel's stop holds, shared by every `gpio` backend.
+pub mod hold;
+
 /// The SpacemiT K1 controller's registers over a trait (`gpio.rs`'s `k1`
 /// module is the kernel half). Compiled for the K1 only; the host suite pulls
 /// the file in with `#[path]`.

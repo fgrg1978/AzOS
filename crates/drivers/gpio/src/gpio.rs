@@ -131,6 +131,7 @@ pub enum GpioDir {
 #[cfg(not(any(feature = "vf2", feature = "k1")))]
 mod sim {
     use super::*;
+    use crate::hold::PinHold;
     use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
     // One atomic per pin and per field: a write is one store, so the kernel's
@@ -141,10 +142,24 @@ mod sim {
     static OUTPUT: [AtomicBool; GPIO_MAX_PINS] = [const { AtomicBool::new(false) }; GPIO_MAX_PINS];
     static VALID: [AtomicBool; GPIO_MAX_PINS] = [const { AtomicBool::new(false) }; GPIO_MAX_PINS];
 
+    /// The pins the kernel's stop holds (`crate::hold`).
+    static HOLD: PinHold = PinHold::new();
+
+    fn put(pin: u32, val: u32) {
+        VALUE[pin as usize].store((val & 1) as u8, Ordering::Release);
+    }
+
+    /// A held pin stays an output: the hold refuses to float it.
     pub fn gpio_set_direction(pin: u32, dir: GpioDir) -> i32 {
         if pin as usize >= GPIO_MAX_PINS { return -1; }
-        OUTPUT[pin as usize].store(dir == GpioDir::Output, Ordering::Release);
+        let input = dir == GpioDir::Input;
+        if input && HOLD.held(pin).is_some() { return -1; }
+        OUTPUT[pin as usize].store(!input, Ordering::Release);
         VALID[pin as usize].store(true, Ordering::Release);
+        if input && HOLD.held_after(pin).is_some() {
+            OUTPUT[pin as usize].store(true, Ordering::Release);
+            return -1;
+        }
         0
     }
 
@@ -154,25 +169,48 @@ mod sim {
         VALUE[pin as usize].load(Ordering::Acquire) as i32
     }
 
+    /// -1 for a pin that is not an output, or one the kernel's stop holds at
+    /// the other level (`crate::hold`).
     pub fn gpio_write(pin: u32, val: u32) -> i32 {
         if pin as usize >= GPIO_MAX_PINS { return -1; }
         if !OUTPUT[pin as usize].load(Ordering::Acquire) { return -1; }
-        VALUE[pin as usize].store((val & 1) as u8, Ordering::Release);
-        0
+        if HOLD.refuses(pin, val) { return -1; }
+        put(pin, val);
+        if HOLD.after_write(pin, val, put) { 0 } else { -1 }
     }
 
+    /// A toggle always changes the level: refused on a held pin.
     pub fn gpio_toggle(pin: u32) -> i32 {
         if pin as usize >= GPIO_MAX_PINS { return -1; }
         if !OUTPUT[pin as usize].load(Ordering::Acquire) { return -1; }
-        VALUE[pin as usize].fetch_xor(1, Ordering::AcqRel);
+        if HOLD.held(pin).is_some() { return -1; }
+        let now = VALUE[pin as usize].fetch_xor(1, Ordering::AcqRel) as u32 ^ 1;
+        if HOLD.after_write(pin, now, put) { 0 } else { -1 }
+    }
+
+    /// The kernel's stop, for the panic handler and the safe-state drive: one
+    /// store to the pin's own atomic, no lock, so it never waits on a writer
+    /// that is stalled and never tears another pin's state. The pin is HELD
+    /// at `val` from here until [`gpio_release`].
+    pub fn gpio_write_panic(pin: u32, val: u32) -> i32 {
+        if pin as usize >= GPIO_MAX_PINS { return -1; }
+        if !OUTPUT[pin as usize].load(Ordering::Acquire) { return -1; }
+        HOLD.hold(pin, val);
+        put(pin, val);
         0
     }
 
-    /// Emergency GPIO write for the panic handler and the kernel's safe-state
-    /// drive: one store to the pin's own atomic, no lock, so it never waits
-    /// on a writer that is stalled and never tears another pin's state.
-    pub fn gpio_write_panic(pin: u32, val: u32) -> i32 {
-        gpio_write(pin, val)
+    /// Lift the hold [`gpio_write_panic`] put on `pin`.
+    pub fn gpio_release(pin: u32) -> i32 {
+        if pin as usize >= GPIO_MAX_PINS { return -1; }
+        HOLD.release(pin);
+        0
+    }
+
+    /// The level the kernel's stop holds `pin` at; `None` when it is not held.
+    pub fn gpio_held(pin: u32) -> Option<u32> {
+        if pin as usize >= GPIO_MAX_PINS { return None; }
+        HOLD.held(pin)
     }
 
     // The edge model: the controller's both-edge detection on the armed pin,
@@ -314,6 +352,7 @@ pub use sim::*;
 mod mmio {
     use super::*;
     use crate::gpio_jh7110_irq::{Jh7110Bus, Jh7110Irq};
+    use crate::hold::PinHold;
     use azos_drv_base::window::{Taken, Window};
     use azos_sync::SpinLock;
     use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -348,16 +387,15 @@ mod mmio {
     // the lock already used by the QEMU `sim` path above.
     static GPIO_MMIO_LOCK: SpinLock<()> = SpinLock::new(());
 
-    /// Pins a lock-free write ([`gpio_write_panic`]: the panic handler and the
-    /// kernel's safe-state drive) put to `STOP_VAL` without the lock, and no
-    /// locked write has superseded since. That write is a read-modify-write of
-    /// a word shared with three other pins, so a locked writer that read the
-    /// word before it and writes it back after would restore the old byte and
-    /// lose the stop. Every locked writer therefore re-asserts the pending
-    /// pins after its own write, still under the lock; a locked write of a
-    /// pin is a newer command for that pin and clears its bit first.
-    static STOP_PENDING: AtomicU64 = AtomicU64::new(0);
-    static STOP_VAL: AtomicU64 = AtomicU64::new(0);
+    /// Pins the kernel's stop ([`gpio_write_panic`]: the panic handler and the
+    /// safe-state drive) holds (`crate::hold`). The stop is a read-modify-write
+    /// of a word shared with three other pins, done without the lock, so a
+    /// locked writer that read the word before it and writes it back after
+    /// would restore the old byte and lose the stop. Every locked writer
+    /// therefore re-asserts the held pins after its own write, still under the
+    /// lock, and a command that would change a held pin is refused: only
+    /// [`gpio_release`] lifts the hold.
+    static HOLD: PinHold = PinHold::new();
 
     /// Callers have checked [`WINDOW`] is bound (`bound()`); an unbound read
     /// is 0 and an unbound write goes nowhere, so a path that missed the
@@ -419,21 +457,11 @@ mod mmio {
         reg_write32(DOUT + word, (cur & !mask) | ((sel << shift) & mask));
     }
 
-    /// Re-assert every pending stop (see [`STOP_PENDING`]). Under the lock.
-    fn reassert_stops() {
-        fence(Ordering::SeqCst);
-        let mut pend = STOP_PENDING.load(Ordering::Acquire);
-        let val = STOP_VAL.load(Ordering::Acquire);
-        while pend != 0 {
-            let pin = pend.trailing_zeros();
-            pend &= pend - 1;
-            dout_write(pin, (val >> pin) as u32);
-        }
-    }
-
-    /// A locked write of `pin`: supersedes a pending stop of that pin.
-    fn supersede_stop(pin: u32) {
-        STOP_PENDING.fetch_and(!(1u64 << pin), Ordering::AcqRel);
+    /// Re-assert every held pin (see [`HOLD`]) after a locked write of `pin`
+    /// to `val`. Under the lock. `true` when the write stands.
+    fn reassert_stops(pin: u32, val: u32) -> bool {
+        HOLD.reassert_all(dout_write);
+        !HOLD.refuses(pin, val)
     }
 
     /// Hand the driver the controller the hardware bus bound at `base`, and
@@ -577,9 +605,17 @@ mod mmio {
             GpioDir::Output => GPOEN_ENABLE,
             GpioDir::Input  => GPOEN_DISABLE,
         };
+        let input = dir == GpioDir::Input;
         let _guard = GPIO_MMIO_LOCK.lock();
+        // A held pin stays an output: the hold refuses to float it.
+        if input && HOLD.held(pin).is_some() { return -1; }
         let cur = reg_read32(DOEN + word);
         reg_write32(DOEN + word, (cur & !mask) | ((sel << shift) & mask));
+        if input && HOLD.held_after(pin).is_some() {
+            let cur = reg_read32(DOEN + word);
+            reg_write32(DOEN + word, (cur & !mask) | ((GPOEN_ENABLE << shift) & mask));
+            return -1;
+        }
         0
     }
 
@@ -589,13 +625,13 @@ mod mmio {
         ((reg_read32(GPIOIN + word) >> bit) & 1) as i32
     }
 
+    /// -1 also for a pin the kernel's stop holds at the other level.
     pub fn gpio_write(pin: u32, val: u32) -> i32 {
         if pin as usize >= GPIO_MAX_PINS || !bound() { return -1; }
         let _guard = GPIO_MMIO_LOCK.lock();
-        supersede_stop(pin);
+        if HOLD.refuses(pin, val) { return -1; }
         dout_write(pin, val);
-        reassert_stops();
-        0
+        if reassert_stops(pin, val) { 0 } else { -1 }
     }
 
     pub fn gpio_toggle(pin: u32) -> i32 {
@@ -603,30 +639,28 @@ mod mmio {
         let (word, shift) = dout_doen_word_and_shift(pin);
         let mask = DOUT_FIELD_MASK << shift;
         let _guard = GPIO_MMIO_LOCK.lock();
-        supersede_stop(pin);
+        // A toggle always changes the level: refused on a held pin.
+        if HOLD.held(pin).is_some() { return -1; }
         let cur = reg_read32(DOUT + word);
         let now_high = (cur >> shift) & DOUT_FIELD_MASK == GPOUT_HIGH;
         let sel = if now_high { GPOUT_LOW } else { GPOUT_HIGH };
         reg_write32(DOUT + word, (cur & !mask) | ((sel << shift) & mask));
-        reassert_stops();
-        0
+        if reassert_stops(pin, (sel == GPOUT_HIGH) as u32) { 0 } else { -1 }
     }
 
     /// Emergency GPIO write for the panic handler and the kernel's safe-state
     /// drive: it does not take `GPIO_MMIO_LOCK`, because a stalled holder (or
     /// a panic on another hart) would make it spin forever.
     ///
-    /// The pin is marked pending first ([`STOP_PENDING`]), then written; a
-    /// locked writer that was inside its read-modify-write re-asserts it when
-    /// it is done, and the write is read back and repeated (bounded) in case
-    /// another lock-free writer clobbered it with a stale word. So the stop
-    /// is not lost to a neighbour pin's write, whichever order they land in.
+    /// The pin is held first ([`HOLD`]), then written; a locked writer that
+    /// was inside its read-modify-write re-asserts it when it is done, and the
+    /// write is read back and repeated (bounded) in case another lock-free
+    /// writer clobbered it with a stale word. So the stop is not lost to a
+    /// neighbour pin's write, whichever order they land in, and it stays
+    /// until [`gpio_release`].
     pub fn gpio_write_panic(pin: u32, val: u32) -> i32 {
         if pin as usize >= GPIO_MAX_PINS || !bound() { return -1; }
-        let bit = 1u64 << pin;
-        if val & 1 != 0 { STOP_VAL.fetch_or(bit, Ordering::AcqRel); } else { STOP_VAL.fetch_and(!bit, Ordering::AcqRel); }
-        STOP_PENDING.fetch_or(bit, Ordering::AcqRel);
-        fence(Ordering::SeqCst);
+        HOLD.hold(pin, val);
         let (word, shift) = dout_doen_word_and_shift(pin);
         let want = if val & 1 != 0 { GPOUT_HIGH } else { GPOUT_LOW };
         for _ in 0..4 {
@@ -634,6 +668,19 @@ mod mmio {
             if (reg_read32(DOUT + word) >> shift) & DOUT_FIELD_MASK == want { break; }
         }
         0
+    }
+
+    /// Lift the hold [`gpio_write_panic`] put on `pin`.
+    pub fn gpio_release(pin: u32) -> i32 {
+        if pin as usize >= GPIO_MAX_PINS { return -1; }
+        HOLD.release(pin);
+        0
+    }
+
+    /// The level the kernel's stop holds `pin` at; `None` when it is not held.
+    pub fn gpio_held(pin: u32) -> Option<u32> {
+        if pin as usize >= GPIO_MAX_PINS { return None; }
+        HOLD.held(pin)
     }
 
 }
@@ -651,9 +698,9 @@ pub use mmio::*;
 // Differences from the VF2 module, all of them the hardware's:
 //
 // * a level write is ONE store to a set or a clear register (`GPSR`/`GPCR`),
-//   so there is no software lock on the level path and no pending-stop
-//   bookkeeping: `gpio_write_panic` IS `gpio_write`, and a neighbour pin's
-//   write cannot undo it;
+//   so there is no software lock on the level path, and a neighbour pin's
+//   write cannot undo the kernel's stop: the hold (`crate::hold`) is all
+//   `gpio_write_panic` adds to `gpio_write`;
 // * only a direction change is a read-modify-write (`GPDR`), under
 //   `DIR_LOCK`;
 // * attach writes nothing: the pins keep the firmware's direction and level
@@ -671,6 +718,7 @@ pub use mmio::*;
 mod k1 {
     use super::*;
     use crate::gpio_k1::{K1Gpio, K1GpioBus, PINS, PINS_PER_BANK};
+    use crate::hold::PinHold;
     use azos_drv_base::window::{Taken, Window};
     use azos_sync::SpinLock;
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -691,6 +739,9 @@ mod k1 {
     /// Serialises the read-modify-write of `GPDR` (a direction change). The
     /// level path takes no lock.
     static DIR_LOCK: SpinLock<()> = SpinLock::new(());
+
+    /// The pins the kernel's stop holds (`crate::hold`).
+    static HOLD: PinHold = PinHold::new();
 
     /// The controller's registers over the mapped window.
     struct Mmio(usize);
@@ -847,11 +898,19 @@ mod k1 {
         }
     }
 
+    /// A held pin stays an output: the hold refuses to float it.
     pub fn gpio_set_direction(pin: u32, dir: GpioDir) -> i32 {
         if !exposed(pin) { return -1; }
         let Some(mut c) = controller() else { return -1 };
+        let input = dir == GpioDir::Input;
         let _guard = DIR_LOCK.lock();
-        if c.set_output(pin, dir == GpioDir::Output) { 0 } else { -1 }
+        if input && HOLD.held(pin).is_some() { return -1; }
+        let ok = c.set_output(pin, !input);
+        if input && HOLD.held_after(pin).is_some() {
+            c.set_output(pin, true);
+            return -1;
+        }
+        if ok { 0 } else { -1 }
     }
 
     pub fn gpio_read(pin: u32) -> i32 {
@@ -862,28 +921,51 @@ mod k1 {
         }
     }
 
+    /// -1 also for a pin the kernel's stop holds at the other level.
     pub fn gpio_write(pin: u32, val: u32) -> i32 {
         if !exposed(pin) { return -1; }
-        match controller() {
-            Some(mut c) => if c.set_level(pin, val & 1 != 0) { 0 } else { -1 },
-            None => -1,
-        }
+        let Some(mut c) = controller() else { return -1 };
+        if HOLD.refuses(pin, val) { return -1; }
+        let ok = c.set_level(pin, val & 1 != 0);
+        let stands = HOLD.after_write(pin, val, |p, h| { c.set_level(p, h != 0); });
+        if ok && stands { 0 } else { -1 }
     }
 
+    /// A toggle always changes the level: refused on a held pin.
     pub fn gpio_toggle(pin: u32) -> i32 {
         if !exposed(pin) { return -1; }
-        match controller() {
-            Some(mut c) => if c.toggle(pin) { 0 } else { -1 },
-            None => -1,
+        let Some(mut c) = controller() else { return -1 };
+        if HOLD.held(pin).is_some() { return -1; }
+        let ok = c.toggle(pin);
+        if let Some(h) = HOLD.held_after(pin) {
+            c.set_level(pin, h != 0);
+            return -1;
         }
+        if ok { 0 } else { -1 }
     }
 
     /// Emergency GPIO write for the panic handler and the kernel's safe-state
-    /// drive. Identical to [`gpio_write`]: that is already one store to a
-    /// clear/set register, with no lock to wait on and no word shared with
-    /// another pin to tear.
+    /// drive: one store to a clear/set register, with no lock to wait on and
+    /// no word shared with another pin to tear. The pin is HELD at `val` from
+    /// here until [`gpio_release`].
     pub fn gpio_write_panic(pin: u32, val: u32) -> i32 {
-        gpio_write(pin, val)
+        if !exposed(pin) { return -1; }
+        let Some(mut c) = controller() else { return -1 };
+        HOLD.hold(pin, val);
+        if c.set_level(pin, val & 1 != 0) { 0 } else { -1 }
+    }
+
+    /// Lift the hold [`gpio_write_panic`] put on `pin`.
+    pub fn gpio_release(pin: u32) -> i32 {
+        if !exposed(pin) { return -1; }
+        HOLD.release(pin);
+        0
+    }
+
+    /// The level the kernel's stop holds `pin` at; `None` when it is not held.
+    pub fn gpio_held(pin: u32) -> Option<u32> {
+        if !exposed(pin) { return None; }
+        HOLD.held(pin)
     }
 }
 

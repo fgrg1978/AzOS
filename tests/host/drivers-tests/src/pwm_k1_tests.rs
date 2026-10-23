@@ -332,6 +332,8 @@ fn the_panic_stop_is_one_store_and_never_starts_an_output() {
     m.clear_log();
     c.stop_to(&mut p, 100);
     assert_eq!(m.log(), vec![Access::Write(M_PWMDCR, 0)], "one store, and it is 0");
+    assert_eq!(c.held(), Some(0), "the stop holds the channel at what it wrote");
+    c.release();
 
     // Enabled at 60 %: the stop to 0 is one store of 0.
     assert_eq!(c.set_duty_pct(&mut p, 60), 0);
@@ -416,11 +418,39 @@ fn a_stop_that_lands_inside_a_configuration_is_not_overwritten_by_its_stale_duty
             before: false,
             hook: Some(Box::new(move || cr.stop_to(&mut PxaPwm::new(stopper_bus), 0))),
         });
-        // The writer computed 80 % from the cache before the stop.
-        assert_eq!(c.set_duty_pct(&mut p, 80), 0);
+        // The writer computed 80 % from the cache before the stop: the stop
+        // holds the channel, so the command does not stand.
+        assert_eq!(c.set_duty_pct(&mut p, 80), -1, "a command the stop overtook reported success");
         assert_eq!(m.regs().1, 0, "stop after the writer's store at {hit:#x} was lost");
         assert_eq!(m.out().duty_ns, 0);
+        assert_eq!(c.snapshot().2, 0, "the cache kept the overtaken command's duty");
     }
+}
+
+/// The same race through the nanosecond duty, and through the reporting
+/// variant the motor layer uses: the stop that lands in the middle of the
+/// writer's three stores is what the part and the cache hold, and the writer
+/// learns that its command did not stand.
+///
+/// **Canary.** Drop the re-check after `apply` in `set_duty`: it answers 0.
+#[test]
+fn a_stop_inside_a_nanosecond_or_reporting_write_holds_the_channel() {
+    let m = Model::new();
+    let c = ChanState::new();
+    let mut p0 = PxaPwm::new(m.clone());
+    assert_eq!(c.set_period(&mut p0, 1_000_000), 0);
+    assert_eq!(c.enable(&mut p0), 0);
+    let sb = m.clone();
+    let cr = &c;
+    let mut p = PxaPwm::new(Hooked { inner: m.clone(), trigger: M_PWMDCR, before: false, hook: Some(Box::new(move || cr.stop_to(&mut PxaPwm::new(sb), 0))) });
+    assert_eq!(c.set_duty(&mut p, 700_000), -1);
+    assert_eq!((m.out().duty_ns, c.snapshot().2), (0, 0));
+
+    c.release();
+    let sb = m.clone();
+    let mut p = PxaPwm::new(Hooked { inner: m.clone(), trigger: M_PWMDCR, before: false, hook: Some(Box::new(move || cr.stop_to(&mut PxaPwm::new(sb), 0))) });
+    assert_eq!(c.set_duty_pct_reporting(&mut p, 90), Some(0), "the readback is the stop's");
+    assert_eq!(c.held(), Some(0));
 }
 
 #[test]
@@ -458,10 +488,19 @@ fn after_a_stop_enable_set_period_and_disable_enable_do_not_restart_the_old_duty
     assert_eq!(c.enable(&mut p), 0);
     assert_eq!(m.out().duty_ns, 0, "disable then enable");
 
-    // A new duty command is a newer command: it supersedes the stop.
+    // A new duty command does not lift the stop: the channel is held until
+    // its release. A command at the stop's duty is not a change and stands.
+    assert_eq!(c.set_duty_pct(&mut p, 25), -1);
+    assert_eq!(c.set_duty_pct_reporting(&mut p, 25), Some(0), "a refused command reports the held duty");
+    assert_eq!(c.set_duty(&mut p, 500_000), -1);
+    assert_eq!(m.out().duty_ns, 0, "a duty command moved a held channel");
+    assert_eq!(c.set_duty_pct(&mut p, 0), 0, "a stop was refused");
+
+    // Released: the next command is the channel's, and nothing lingers.
+    c.release();
+    assert_eq!(c.held(), None);
     assert_eq!(c.set_duty_pct(&mut p, 25), 0);
     assert!(m.out().duty_ns.abs_diff(500_000) <= 2_100, "{:?}", m.out());
-    // And the stop does not linger after it was superseded.
     assert_eq!(c.set_period(&mut p, 1_000_000), 0);
     assert!(m.out().duty_ns.abs_diff(500_000) <= 2_100, "{:?}", m.out());
 }

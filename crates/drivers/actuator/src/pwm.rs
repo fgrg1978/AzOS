@@ -42,12 +42,14 @@ impl PwmChannel {
 #[cfg(not(any(feature = "vf2", feature = "k1")))]
 mod sim {
     use super::*;
+    use crate::pwm_hold::ChanHold;
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     // One set of atomics per channel: a duty write is one store, so the
     // kernel's own stop (`pwm_set_duty_pct_panic`, used by the panic handler
     // and by the motor layer's safe-state entry) needs no lock and cannot
-    // tear a concurrent writer's update of the same channel.
+    // tear a concurrent writer's update of the same channel. The stop holds
+    // the channel (`crate::pwm_hold`).
     struct Chan { enabled: AtomicBool, period_ns: AtomicU32, duty_ns: AtomicU32 }
 
     impl Chan {
@@ -63,6 +65,19 @@ mod sim {
 
     static CHANNELS: [Chan; PWM_MAX_CHANNELS] = [const { Chan::new() }; PWM_MAX_CHANNELS];
 
+    /// The channels the kernel's stop holds.
+    static HOLD: ChanHold = ChanHold::new();
+
+    /// `pct` % of the channel's period, in nanoseconds.
+    fn duty_of(c: &Chan, pct: u32) -> u32 {
+        (c.period_ns.load(Ordering::Acquire) as u64 * pct.min(100) as u64 / 100) as u32
+    }
+
+    /// The duty percentage the channel holds now.
+    fn pct_now(c: &Chan) -> u32 {
+        PwmChannel { enabled: true, period_ns: c.period_ns.load(Ordering::Acquire), duty_ns: c.duty_ns.load(Ordering::Acquire) }.duty_pct()
+    }
+
     pub fn pwm_enable(ch: u32) -> i32 {
         if ch as usize >= PWM_MAX_CHANNELS { return -1; }
         CHANNELS[ch as usize].enabled.store(true, Ordering::Release); 0
@@ -73,19 +88,40 @@ mod sim {
         CHANNELS[ch as usize].enabled.store(false, Ordering::Release); 0
     }
 
+    /// A held channel keeps its duty percentage across the new period.
     pub fn pwm_set_period(ch: u32, period_ns: u32) -> i32 {
         if ch as usize >= PWM_MAX_CHANNELS { return -1; }
-        CHANNELS[ch as usize].period_ns.store(period_ns, Ordering::Release); 0
+        let c = &CHANNELS[ch as usize];
+        c.period_ns.store(period_ns, Ordering::Release);
+        if let Some(h) = HOLD.held_after(ch) {
+            c.duty_ns.store(duty_of(c, h), Ordering::Release);
+        }
+        0
     }
 
+    /// -1 on a held channel unless it is the duty the stop holds.
     pub fn pwm_set_duty(ch: u32, duty_ns: u32) -> i32 {
         if ch as usize >= PWM_MAX_CHANNELS { return -1; }
         let c = &CHANNELS[ch as usize];
-        c.duty_ns.store(duty_ns.min(c.period_ns.load(Ordering::Acquire)), Ordering::Release); 0
+        let duty_ns = duty_ns.min(c.period_ns.load(Ordering::Acquire));
+        if matches!(HOLD.held(ch), Some(h) if duty_of(c, h) != duty_ns) { return -1; }
+        c.duty_ns.store(duty_ns, Ordering::Release);
+        match HOLD.held_after(ch) {
+            Some(h) => {
+                let held = duty_of(c, h);
+                c.duty_ns.store(held, Ordering::Release);
+                if held == duty_ns { 0 } else { -1 }
+            }
+            None => 0,
+        }
     }
 
+    /// -1 also on a held channel, unless `pct` is the duty the stop holds.
     pub fn pwm_set_duty_pct(ch: u32, pct: u32) -> i32 {
-        if pwm_set_duty_pct_reporting(ch, pct).is_some() { 0 } else { -1 }
+        match write_pct(ch, pct) {
+            Some((_, true)) => 0,
+            _ => -1,
+        }
     }
 
     /// `pwm_set_duty_pct`, plus the duty the channel holds **as of that very
@@ -100,21 +136,54 @@ mod sim {
     /// back. Anything asserting on that pair is then racy in both directions:
     /// red when the other writer wins the window, green when it happens to
     /// write the same number. Computing it from the value stored closes it.
+    ///
+    /// On a channel the kernel's stop holds, a duty that would change it is
+    /// refused and the number is the held duty: what the channel does.
     pub fn pwm_set_duty_pct_reporting(ch: u32, pct: u32) -> Option<u32> {
+        write_pct(ch, pct).map(|(applied, _)| applied)
+    }
+
+    /// The duty write of the two above: the duty the channel holds as of the
+    /// write, and whether the command stands (the hold did not refuse it,
+    /// before or after the store).
+    fn write_pct(ch: u32, pct: u32) -> Option<(u32, bool)> {
         if ch as usize >= PWM_MAX_CHANNELS { return None; }
         let c = &CHANNELS[ch as usize];
+        if let Some(h) = HOLD.held(ch).filter(|&h| h != pct.min(100)) { return Some((h, false)); }
         let period_ns = c.period_ns.load(Ordering::Acquire);
         let duty_ns = (period_ns as u64 * pct.min(100) as u64 / 100) as u32;
         c.duty_ns.store(duty_ns, Ordering::Release);
-        Some(PwmChannel { enabled: true, period_ns, duty_ns }.duty_pct())
+        if let Some(h) = HOLD.held_after(ch) {
+            c.duty_ns.store(duty_of(c, h), Ordering::Release);
+            return Some((pct_now(c), h == pct.min(100)));
+        }
+        Some((PwmChannel { enabled: true, period_ns, duty_ns }.duty_pct(), true))
     }
 
     /// Emergency duty-cycle write for the panic handler and the kernel's
     /// safe-state drive: one store to the channel's own atomic, no lock, so
     /// it never waits on a writer that is stalled and never tears another
-    /// field's state.
+    /// field's state. The channel is HELD at `pct` from here until
+    /// [`pwm_release`].
     pub fn pwm_set_duty_pct_panic(ch: u32, pct: u32) -> i32 {
-        if pwm_set_duty_pct_reporting(ch, pct).is_some() { 0 } else { -1 }
+        if ch as usize >= PWM_MAX_CHANNELS { return -1; }
+        let c = &CHANNELS[ch as usize];
+        HOLD.hold(ch, pct);
+        c.duty_ns.store(duty_of(c, pct), Ordering::Release);
+        0
+    }
+
+    /// Lift the hold [`pwm_set_duty_pct_panic`] put on `ch`.
+    pub fn pwm_release(ch: u32) -> i32 {
+        if ch as usize >= PWM_MAX_CHANNELS { return -1; }
+        HOLD.release(ch);
+        0
+    }
+
+    /// The duty percentage the kernel's stop holds `ch` at; `None` when it is
+    /// not held.
+    pub fn pwm_held(ch: u32) -> Option<u32> {
+        HOLD.held(ch)
     }
 
     pub fn pwm_get(ch: u32) -> Option<PwmChannel> {
@@ -163,6 +232,7 @@ pub use sim::*;
 #[cfg(feature = "vf2")]
 mod mmio {
     use super::*;
+    use crate::pwm_hold::ChanHold;
     use azos_drv_base::window::{Taken, Window};
 
     /// The `starfive,jh7110-pwm` window, attached when the hardware bus binds
@@ -356,13 +426,49 @@ mod mmio {
     /// PWMCMP — no longer touches PWMCFG/scale, so it can no longer
     /// corrupt the period (the bug this file previously documented at
     /// length is fixed by this register-model correction).
+    /// -1 also on a held channel, unless `pct` is the duty the stop holds.
     pub fn pwm_set_duty_pct(ch: u32, pct: u32) -> i32 {
-        if pwm_set_duty_pct_reporting(ch, pct).is_some() { 0 } else { -1 }
+        match write_pct(ch, pct) {
+            Some((_, true)) => 0,
+            _ => -1,
+        }
+    }
+
+    /// The channels the kernel's stop holds (`crate::pwm_hold`).
+    static HOLD: ChanHold = ChanHold::new();
+
+    /// The PWMCMP value of `pct` %.
+    fn cmp_of(pct: u32) -> u32 {
+        (CMP_MAX as u64 * pct.min(100) as u64 / 100) as u32
+    }
+
+    /// PWMCMP of `ch`, read back, as a percentage.
+    fn pct_now(ch: u32) -> u32 {
+        let back = reg_read(pwmcmp_offset(ch)).min(CMP_MAX);
+        ((back as u64 * 100 + CMP_MAX as u64 / 2) / CMP_MAX as u64) as u32
+    }
+
+    /// The duty write of `pwm_set_duty_pct`/`_reporting`: the readback and
+    /// whether the command stands (the hold did not refuse it, before or after
+    /// the store).
+    fn write_pct(ch: u32, pct: u32) -> Option<(u32, bool)> {
+        if ch as usize >= PWM_MMIO_CHANNELS || !bound() { return None; }
+        if let Some(h) = HOLD.held(ch).filter(|&h| h != pct.min(100)) { return Some((h, false)); }
+        reg_write(pwmcmp_offset(ch), cmp_of(pct));
+        let stands = match HOLD.held_after(ch) {
+            Some(h) => {
+                reg_write(pwmcmp_offset(ch), cmp_of(h));
+                h == pct.min(100)
+            }
+            None => true,
+        };
+        Some((pct_now(ch), stands))
     }
 
     /// `pwm_set_duty_pct`, plus the duty PWMCMP holds after the write, read
     /// straight back off the register. `None` means the channel does not
-    /// exist.
+    /// exist. On a channel the kernel's stop holds, a duty that would change
+    /// it is refused and the readback is the held duty.
     ///
     /// The percentage is recovered from the compare value, so it is the
     /// hardware's number and not the argument echoed back: a scale change
@@ -376,20 +482,32 @@ mod mmio {
     /// one owner per wheel and this is a readback, not a mutual-exclusion
     /// claim.
     pub fn pwm_set_duty_pct_reporting(ch: u32, pct: u32) -> Option<u32> {
-        if ch as usize >= PWM_MMIO_CHANNELS || !bound() { return None; }
-        let duty = (CMP_MAX as u64 * pct.min(100) as u64 / 100) as u32;
-        reg_write(pwmcmp_offset(ch), duty);
-        let back = reg_read(pwmcmp_offset(ch)).min(CMP_MAX);
-        Some(((back as u64 * 100 + CMP_MAX as u64 / 2) / CMP_MAX as u64) as u32)
+        write_pct(ch, pct).map(|(applied, _)| applied)
     }
 
-    /// Emergency duty-cycle write for the panic handler — same rationale
-    /// as `gpio::gpio_write_panic` (see its doc comment): no software lock
-    /// exists on this MMIO path today (same as before this fix), so this
-    /// is already non-blocking; kept as a distinct name purely so callers
-    /// don't need a `cfg` branch at the call site.
+    /// Emergency duty-cycle write for the panic handler and the kernel's
+    /// safe-state drive — same rationale as `gpio::gpio_write_panic` (see its
+    /// doc comment): no software lock exists on this MMIO path, so the write
+    /// is one store. The channel is HELD at `pct` from here until
+    /// [`pwm_release`].
     pub fn pwm_set_duty_pct_panic(ch: u32, pct: u32) -> i32 {
-        pwm_set_duty_pct(ch, pct)
+        if ch as usize >= PWM_MMIO_CHANNELS || !bound() { return -1; }
+        HOLD.hold(ch, pct);
+        reg_write(pwmcmp_offset(ch), cmp_of(pct));
+        0
+    }
+
+    /// Lift the hold [`pwm_set_duty_pct_panic`] put on `ch`.
+    pub fn pwm_release(ch: u32) -> i32 {
+        if ch as usize >= PWM_MMIO_CHANNELS { return -1; }
+        HOLD.release(ch);
+        0
+    }
+
+    /// The duty percentage the kernel's stop holds `ch` at; `None` when it is
+    /// not held.
+    pub fn pwm_held(ch: u32) -> Option<u32> {
+        HOLD.held(ch)
     }
 
     pub fn pwm_get(ch: u32) -> Option<PwmChannel> {
@@ -559,11 +677,26 @@ mod k1 {
     /// make it wait forever) and ONE register store (`ChanState::stop_to`).
     /// The stop is recorded in the channel first, so a writer inside the
     /// locked `configure` re-asserts it and a later `pwm_enable` /
-    /// `pwm_set_period` does not restart the pre-stop duty.
+    /// `pwm_set_period` does not restart the pre-stop duty. The channel is
+    /// HELD at the stop's duty from here until [`pwm_release`].
     pub fn pwm_set_duty_pct_panic(ch: u32, pct: u32) -> i32 {
         let Some(mut pwm) = controller(ch) else { return -1 };
         CHANNELS[ch as usize].stop_to(&mut pwm, pct);
         0
+    }
+
+    /// Lift the hold [`pwm_set_duty_pct_panic`] put on `ch`.
+    pub fn pwm_release(ch: u32) -> i32 {
+        match CHANNELS.get(ch as usize) {
+            Some(c) => { c.release(); 0 }
+            None => -1,
+        }
+    }
+
+    /// The duty percentage the kernel's stop holds `ch` at; `None` when it is
+    /// not held.
+    pub fn pwm_held(ch: u32) -> Option<u32> {
+        CHANNELS.get(ch as usize)?.held()
     }
 
     pub fn pwm_get(ch: u32) -> Option<PwmChannel> {

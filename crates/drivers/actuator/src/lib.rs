@@ -27,6 +27,10 @@ pub mod pwm_k1;
 /// module docs.
 pub mod pwm_domain;
 
+/// The channels the kernel's stop holds (the simulated and VF2 `pwm`).
+#[cfg(not(feature = "k1"))]
+pub mod pwm_hold;
+
 // PID velocity controller for wheeled robots (4WD differential drive).
 pub mod motor_pid;
 

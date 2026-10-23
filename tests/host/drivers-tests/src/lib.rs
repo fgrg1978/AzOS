@@ -5911,3 +5911,26 @@ mod pwm_k1;
 
 #[cfg(test)]
 mod pwm_k1_tests;
+
+// ── The kernel's stop holds what it stopped (N345) ──────────────────────────
+//
+// The simulated GPIO and PWM backends QEMU runs, the real files, with the
+// hold bookkeeping they share with the board backends (`stop_hold_tests.rs`).
+#[allow(dead_code, unused_imports)]
+#[path = "../../../../crates/drivers/gpio/src/gpio.rs"]
+mod gpio;
+
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/gpio/src/hold.rs"]
+mod hold;
+
+#[allow(dead_code, unused_imports)]
+#[path = "../../../../crates/drivers/actuator/src/pwm.rs"]
+mod pwm;
+
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/actuator/src/pwm_hold.rs"]
+mod pwm_hold;
+
+#[cfg(test)]
+mod stop_hold_tests;

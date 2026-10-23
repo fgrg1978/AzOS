@@ -183,7 +183,7 @@ impl<B: PxaPwmBus> PxaPwm<B> {
 
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 
-/// `ChanState::stop_pct` while no stop is pending.
+/// `ChanState::stop_pct` while the channel is not held.
 const NO_STOP: u32 = u32::MAX;
 
 /// What one channel was last told. The kernel keeps one per channel beside
@@ -195,7 +195,7 @@ const NO_STOP: u32 = u32::MAX;
 /// [`set_duty`](ChanState::set_duty), [`set_duty_pct`](ChanState::set_duty_pct))
 /// are serialised by the caller, per channel.
 ///
-/// # The stop is remembered
+/// # The stop holds the channel
 ///
 /// The stop is one lock-free store to `PWMDCR`, but a configuration is three
 /// stores (`PWMCR`, `PWMDCR`, `PWMPCR`) computed from the cache beforehand, so
@@ -203,16 +203,18 @@ const NO_STOP: u32 = u32::MAX;
 /// duty was read before the stop) would write its stale duty AFTER the stop,
 /// and a later `enable`/`set_period` would re-apply the pre-stop duty from the
 /// cache. So the stop is recorded here (`stop_pct`, set BEFORE the store, as
-/// the GPIO side's `STOP_PENDING` is): the cached duty becomes the stop duty,
-/// and every configuration re-asserts the pending stop after its own stores,
-/// still under the caller's lock. Only a new duty command
+/// the GPIO side's hold is): the cached duty becomes the stop duty, and every
+/// configuration re-asserts it after its own stores, still under the caller's
+/// lock. The channel is then HELD: a duty command that would change it
 /// ([`set_duty`](ChanState::set_duty), [`set_duty_pct`](ChanState::set_duty_pct))
-/// supersedes it; `enable`, `disable` and `set_period` keep it.
+/// is refused, one at the stop's duty passes, and `enable`, `disable` and
+/// `set_period` keep the stop. Only [`release`](ChanState::release) (the
+/// operator's signed release of the device) lifts it.
 pub struct ChanState {
     enabled: AtomicBool,
     period_ns: AtomicU32,
     duty_ns: AtomicU32,
-    /// The duty percentage of the pending stop, or [`NO_STOP`].
+    /// The duty percentage the stop holds the channel at, or [`NO_STOP`].
     stop_pct: AtomicU32,
 }
 
@@ -264,6 +266,10 @@ impl ChanState {
                 fence(Ordering::SeqCst);
                 let pct = self.stop_pct.load(Ordering::Acquire);
                 if pct != NO_STOP {
+                    // A refused duty that raced the stop may have reached the
+                    // cache: the cache is the stop's again.
+                    let period_ns = self.period_ns.load(Ordering::Acquire);
+                    self.duty_ns.store((period_ns as u64 * pct as u64 / 100) as u32, Ordering::Release);
                     pwm.set_duty_reg(self.stop_dcr(pct));
                 }
                 0
@@ -272,9 +278,24 @@ impl ChanState {
         }
     }
 
-    /// A new duty command: the pending stop is superseded.
-    fn supersede_stop(&self) {
-        self.stop_pct.store(NO_STOP, Ordering::Release);
+    /// The duty percentage the stop holds the channel at, `None` when it is
+    /// not held.
+    pub fn held(&self) -> Option<u32> {
+        match self.stop_pct.load(Ordering::SeqCst) {
+            NO_STOP => None,
+            pct => Some(pct),
+        }
+    }
+
+    /// Lift the hold [`stop_to`](ChanState::stop_to) put on the channel. The
+    /// output keeps the stop's duty until a new command.
+    pub fn release(&self) {
+        self.stop_pct.store(NO_STOP, Ordering::SeqCst);
+    }
+
+    /// Would a duty of `pct` % change the held channel?
+    fn refuses(&self, pct: u32) -> bool {
+        matches!(self.held(), Some(h) if h != pct.min(100))
     }
 
     /// Start driving the duty. A channel nobody gave a duty stays low.
@@ -303,46 +324,68 @@ impl ChanState {
         self.apply(pwm)
     }
 
-    /// Set the duty in nanoseconds (clamped to the period).
+    /// Set the duty in nanoseconds (clamped to the period). -1 on a held
+    /// channel unless it is the duty the stop holds.
     pub fn set_duty<B: PxaPwmBus>(&self, pwm: &mut PxaPwm<B>, duty_ns: u32) -> i32 {
-        self.supersede_stop();
-        self.duty_ns.store(duty_ns.min(self.period_ns.load(Ordering::Acquire)), Ordering::Release);
-        self.apply(pwm)
+        let duty_ns = duty_ns.min(self.period_ns.load(Ordering::Acquire));
+        let changes = |s: &Self| s.held().is_some() && duty_ns != s.duty_ns.load(Ordering::Acquire);
+        if changes(self) {
+            return -1;
+        }
+        self.duty_ns.store(duty_ns, Ordering::Release);
+        let rc = self.apply(pwm);
+        if changes(self) { -1 } else { rc }
     }
 
     /// Set the duty as a percentage of the period (clamped to 100).
     pub fn set_duty_pct<B: PxaPwmBus>(&self, pwm: &mut PxaPwm<B>, pct: u32) -> i32 {
-        self.set_duty_pct_reporting(pwm, pct).map_or(-1, |_| 0)
+        match self.write_pct(pwm, pct) {
+            Some((_, true)) => 0,
+            _ => -1,
+        }
     }
 
     /// [`set_duty_pct`](ChanState::set_duty_pct), plus the duty percentage the
     /// registers describe after the write, read straight back
     /// ([`PxaPwm::duty_pct`]): a write that did not land, or a disabled
     /// channel, shows up as a different number. `None` when the period is out
-    /// of range.
+    /// of range. On a held channel a duty that would change it is refused and
+    /// the number is the stop's.
     pub fn set_duty_pct_reporting<B: PxaPwmBus>(&self, pwm: &mut PxaPwm<B>, pct: u32) -> Option<u32> {
-        self.supersede_stop();
+        self.write_pct(pwm, pct).map(|(applied, _)| applied)
+    }
+
+    /// The duty write of the two above: the applied percentage and whether
+    /// the command stands (the hold did not refuse it, before or after).
+    fn write_pct<B: PxaPwmBus>(&self, pwm: &mut PxaPwm<B>, pct: u32) -> Option<(u32, bool)> {
+        if let Some(h) = self.held().filter(|&h| h != pct.min(100)) {
+            return Some((h, false));
+        }
         let period_ns = self.period_ns.load(Ordering::Acquire);
         self.duty_ns.store((period_ns as u64 * pct.min(100) as u64 / 100) as u32, Ordering::Release);
         if self.apply(pwm) != 0 {
             return None;
         }
-        Some(pwm.duty_pct())
+        Some((pwm.duty_pct(), !self.refuses(pct)))
     }
 
     /// The emergency duty write for the panic handler and the kernel's
     /// safe-state drive: no lock and ONE store to `PWMDCR`, after the stop is
     /// recorded (see the type's doc): the cached duty becomes the stop duty
     /// and a writer inside [`PxaPwm::configure`] re-asserts it when it is
-    /// done. A disabled channel (or one whose period is out of range) is
-    /// recorded as a stop to 0 whatever `pct` asks, so the stop path can never
-    /// start an output, not even through a later `enable`.
+    /// done. The channel is held at the stop's duty until
+    /// [`release`](ChanState::release). A disabled channel (or one whose
+    /// period is out of range) is recorded as a stop to 0 whatever `pct` asks,
+    /// so the stop path can never start an output, not even through a later
+    /// `enable`.
     pub fn stop_to<B: PxaPwmBus>(&self, pwm: &mut PxaPwm<B>, pct: u32) {
         let (enabled, period_ns, _) = self.snapshot();
         let pct = if enabled { pct.min(100) } else { 0 };
-        self.stop_pct.store(pct, Ordering::Release);
-        self.duty_ns.store((period_ns as u64 * pct as u64 / 100) as u32, Ordering::Release);
+        // The hold, the fence, then the cache and the register: a writer that
+        // did not see the hold has its cache store ordered before this one.
+        self.stop_pct.store(pct, Ordering::SeqCst);
         fence(Ordering::SeqCst);
+        self.duty_ns.store((period_ns as u64 * pct as u64 / 100) as u32, Ordering::Release);
         pwm.set_duty_reg(self.stop_dcr(pct));
         // A `disable` that landed between the read of `enabled` and the store
         // has already written its 0: do not leave a disabled channel driven.
