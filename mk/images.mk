@@ -1162,18 +1162,15 @@ board_topo_features = board-image$$(python3 tools/kconfig_to_cargo.py $(1) | sed
 #   host.kernel   the hypervisor kernel (config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest.config and its
 #                 aarch64 sibling: VIRT on, Kconfig HV_EXAMPLE_GUEST, so its
 #                 built-in topology declares `[guest.azos]`),
-#   GUEST.BIN     the guest kernel (config/defconfigs/generic-sbc-riscv64-dev+qemu+hv-guest.config and siblings:
-#                 no hypervisor inside, small RAM) as the flat image VMMD.ELF
-#                 loads: the bytes of guest RAM from its first byte on, entered at
-#                 byte 0 (userspace/services/vmmd/src/life.rs). The kernel is linked
-#                 to run `pad` bytes above the start of RAM (where the machine model
-#                 puts it: the firmware below it on RISC-V, the Image text offset on
-#                 AArch64, 
-#                 so the image starts with that much padding and a jump to the
-#                 kernel in the first word(s) of it;
+#   KERNEL.ELF    the guest kernel (config/defconfigs/generic-sbc-riscv64-dev+qemu+hv-guest.config and siblings:
+#                 no hypervisor inside, small RAM) as the ELF VMMD.ELF loads at
+#                 start-up (`ctl::DEFAULT_IMAGE`): each PT_LOAD at its physical
+#                 address in guest RAM, entered at the ELF entry
+#                 (userspace/services/vmmd/src/loader.rs). On aarch64 that is the
+#                 ELF of the build, not its Image;
 #   DISK.IMG      the guest's virtio-blk disk, AZOS_GUEST_DISK_MIB of zeroes,
 #   host-volume.img  the host's shell volume (build/disk*-sh.img: it carries
-#                 VMMD.ELF) with VM/GUEST.BIN and VM/DISK.IMG added (VMMD.ELF's
+#                 VMMD.ELF) with VM/KERNEL.ELF and VM/DISK.IMG added (VMMD.ELF's
 #                 `/fat/VM` tree).
 # All of it under $(OUT_BUILD)/azos-guest/<isa>/. `tools/run_guest.sh <isa>` runs
 # it under QEMU with nested virtualisation and waits for the guest's banner.
@@ -1181,9 +1178,8 @@ board_topo_features = board-image$$(python3 tools/kconfig_to_cargo.py $(1) | sed
 # every image of the tree is.
 ARCH ?= riscv64
 # x86_64 has no guest entry yet: a PC kernel is entered through its PVH note (or a
-# flat image's real-mode/long-mode stub), and neither the monitor (userspace/
-# services/vmmd/src/life.rs enters a flat image at byte 0) nor this target has one.
-# The target refuses the ISA rather than leave a GUEST.BIN that cannot start; the
+# flat image's real-mode/long-mode stub), and this target builds neither.
+# The target refuses the ISA rather than leave a KERNEL.ELF that cannot start; the
 # x86_64 defconfig pair and the run line come with the entry.
 ifneq ($(and $(filter azos-guest,$(MAKECMDGOALS)),$(filter x86_64,$(ARCH))),)
 $(error azos-guest: no x86_64 guest entry yet (see mk/images.mk); use ARCH=riscv64 or ARCH=aarch64)
@@ -1199,15 +1195,6 @@ AZOS_HOST_VOLUME_riscv64     := $(OUT_BUILD)/disk-sh.img
 AZOS_HOST_VOLUME_aarch64     := $(OUT_BUILD)/disk-aarch64-sh.img
 AZOS_HASHES_riscv64          := $(IMAGE_HASHES)
 AZOS_HASHES_aarch64          := $(IMAGE_HASHES_AARCH64)
-# Bytes between the start of guest RAM (azos_hv::vm::default_ram_base) and the
-# address the kernel is linked at: kernel/linker.ld 0x8020_0000 over RAM at
-# 0x8000_0000, kernel/linker-aarch64.ld 0x4008_0000 over 0x4000_0000.
-AZOS_GUEST_PAD_riscv64 := 2097152
-AZOS_GUEST_PAD_aarch64 := 524288
-# The first word(s) of the image: riscv64 `auipc t0, 0x200; jr t0` (to
-# 0x20_0000 above byte 0), aarch64 `b .+0x80000`.
-AZOS_GUEST_JUMP_riscv64 := \227\002\040\000\147\200\002\000
-AZOS_GUEST_JUMP_aarch64 := \000\000\002\024
 
 # One kernel build: `$(call azos_kernel_<isa>,<defconfig>,<name>)` expands the
 # defconfig into $(AZOS_GUEST_DIR)/<name>.config, builds it in a cargo target
@@ -1235,10 +1222,10 @@ $(MAKE) --no-print-directory aarch64 AARCH64_DEFCONFIG=$(1) AARCH64_KCONFIG=$(AZ
 	AARCH64_ELF=$(OUT_TARGET)/azos-guest-$(ARCH)-$(2)/$(AARCH64_TARGET)/release/kernel AARCH64_IMG=$(AZOS_GUEST_DIR)/$(2).kernel
 endef
 
-# The flat form of the guest kernel (`GUEST.BIN` without its padding). The
-# aarch64 Image already is one.
-azos_flat_riscv64 = "$(AARCH64_OBJCOPY)" -O binary $(AZOS_GUEST_DIR)/guest.kernel $(1)
-azos_flat_aarch64 = cp $(AZOS_GUEST_DIR)/guest.kernel $(1)
+# The guest kernel's ELF: riscv64's <name>.kernel is it, aarch64's is the Image
+# made from it.
+AZOS_GUEST_ELF_riscv64 := $(AZOS_GUEST_DIR)/guest.kernel
+AZOS_GUEST_ELF_aarch64 := $(OUT_TARGET)/azos-guest-aarch64-guest/$(AARCH64_TARGET)/release/kernel
 
 # Both kernels are rebuilt by cargo whenever a source changed (FORCE), the files
 # built from them whenever one of them did.
@@ -1248,24 +1235,20 @@ $(AZOS_GUEST_DIR)/guest.kernel: $(AZOS_GUEST_DEFCONFIG_$(ARCH)) $(AZOS_HASHES_$(
 $(AZOS_GUEST_DIR)/host.kernel: $(AZOS_HOST_DEFCONFIG_$(ARCH)) $(AZOS_HASHES_$(ARCH)) FORCE
 	$(call azos_kernel_$(ARCH),$(AZOS_HOST_DEFCONFIG_$(ARCH)),host)
 
-$(AZOS_GUEST_DIR)/GUEST.BIN: $(AZOS_GUEST_DIR)/guest.kernel
-	$(call azos_flat_$(ARCH),$@.kernel.bin)
-	dd if=/dev/zero of=$@ bs=$(AZOS_GUEST_PAD_$(ARCH)) count=1 2>/dev/null
-	printf '$(AZOS_GUEST_JUMP_$(ARCH))' | dd of=$@ conv=notrunc 2>/dev/null
-	cat $@.kernel.bin >> $@
-	@rm -f $@.kernel.bin
-	@echo "[AZOS-GUEST] $@: $$(wc -c < $@) bytes (kernel at +$(AZOS_GUEST_PAD_$(ARCH)))"
+$(AZOS_GUEST_DIR)/KERNEL.ELF: $(AZOS_GUEST_DIR)/guest.kernel
+	cp $(AZOS_GUEST_ELF_$(ARCH)) $@
+	@echo "[AZOS-GUEST] $@: $$(wc -c < $@) bytes"
 
 $(AZOS_GUEST_DIR)/DISK.IMG:
 	@mkdir -p $(AZOS_GUEST_DIR)
 	dd if=/dev/zero of=$@ bs=1048576 count=$(AZOS_GUEST_DISK_MIB) 2>/dev/null
 
-$(AZOS_GUEST_DIR)/host-volume.img: $(AZOS_HOST_VOLUME_$(ARCH)) $(AZOS_GUEST_DIR)/GUEST.BIN $(AZOS_GUEST_DIR)/DISK.IMG
+$(AZOS_GUEST_DIR)/host-volume.img: $(AZOS_HOST_VOLUME_$(ARCH)) $(AZOS_GUEST_DIR)/KERNEL.ELF $(AZOS_GUEST_DIR)/DISK.IMG
 	cp $(AZOS_HOST_VOLUME_$(ARCH)) $@
 	mmd -i $@ ::VM
-	mcopy -i $@ $(AZOS_GUEST_DIR)/GUEST.BIN ::VM/GUEST.BIN
+	mcopy -i $@ $(AZOS_GUEST_DIR)/KERNEL.ELF ::VM/KERNEL.ELF
 	mcopy -i $@ $(AZOS_GUEST_DIR)/DISK.IMG ::VM/DISK.IMG
-	@echo "[AZOS-GUEST] host volume $@ (VMMD.ELF, VM/GUEST.BIN, VM/DISK.IMG)"
+	@echo "[AZOS-GUEST] host volume $@ (VMMD.ELF, VM/KERNEL.ELF, VM/DISK.IMG)"
 
 .PHONY: azos-guest
 azos-guest: $(AZOS_GUEST_DIR)/host.kernel $(AZOS_GUEST_DIR)/host-volume.img

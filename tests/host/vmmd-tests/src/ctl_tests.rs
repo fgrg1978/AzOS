@@ -899,3 +899,14 @@ fn a_resume_goes_on_past_a_refusal_and_reports_the_first() {
     let mut cpus = [Cpu::on()];
     assert!(resume_all(&mut cpus, 1).is_ok());
 }
+
+/// `make azos-guest` puts the guest kernel on the host volume under the name the
+/// monitor starts at boot (`/fat/VM/` + [`DEFAULT_IMAGE`]), as an ELF: a text
+/// check of mk/images.mk, the one place that packs the volume.
+#[test]
+fn the_guest_volume_carries_the_image_the_monitor_starts() {
+    let mk = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../mk/images.mk")).unwrap();
+    let name = String::from_utf8_lossy(DEFAULT_IMAGE);
+    assert!(mk.contains(&format!("::VM/{name}\n")), "the volume has no VM/{name}");
+    assert!(!mk.contains("::VM/GUEST.BIN"), "a flat image the monitor never loads");
+}

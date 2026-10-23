@@ -11,7 +11,7 @@
 # (config/defconfigs/robot-sbc-<isa>-dev+qemu+linux+hv-host+hv-example-guest.config: VIRT on,
 # Kconfig HV_EXAMPLE_GUEST), the
 # guest kernel (config/defconfigs/generic-sbc-<isa>-dev+qemu+hv-guest.config) and the host volume that
-# carries VMMD.ELF, VM/GUEST.BIN and VM/DISK.IMG; --no-build uses what it
+# carries VMMD.ELF, VM/KERNEL.ELF and VM/DISK.IMG; --no-build uses what it
 # left. QEMU then runs the host with the CPU's virtualisation extension on
 # (riscv64 -cpu rv64,h=true; aarch64 -M virt,virtualization=on,gic-version=3),
 # and the script waits for the guest kernel's banner on the guest console: VMMD.ELF puts

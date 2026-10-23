@@ -127,9 +127,10 @@ config HV_EXAMPLE_GUEST
       virtio-net backends and the `cautious` envelope, and the VMMD.ELF row
       budgets the guest's frames (`vmmd_pages`). It is the host half of
       `make azos-guest` (AzOS inside AzOS, tools/run_guest.sh): the guest
-      image and its disk are files of the volume (`/fat/VM/GUEST.BIN`,
-      `/fat/VM/DISK.IMG`). Only the qemu-hv-guest and qemu-aarch64-hv-guest
-      defconfigs set it; the other hypervisor defconfigs declare no guest.
+      kernel and its disk are files of the volume (`/fat/VM/KERNEL.ELF`,
+      the ELF the monitor starts at boot, and `/fat/VM/DISK.IMG`). Only the
+      qemu-hv-guest and qemu-aarch64-hv-guest defconfigs set it; the other
+      hypervisor defconfigs declare no guest.
       Without the files the guest is declared and never started. A product
       declares its guests in the signed CAPS.TOML (format 7), not here.
 
