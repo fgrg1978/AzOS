@@ -63,7 +63,7 @@ crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
 crates/drivers/camera	0	0	0	0	1	0
 crates/drivers/display	9	0	0	0	0	100
-crates/drivers/dma	16	12	2	0	0	48
+crates/drivers/dma	18	12	2	0	0	50
 crates/drivers/dmac	8	0	0	0	0	99
 crates/drivers/driver_server	0	0	0	0	1	0
 crates/drivers/dtb	65	36	0	0	0	100
@@ -92,7 +92,7 @@ crates/drivers/thermal	0	0	0	0	1	0
 crates/drivers/tpm	0	0	0	0	1	0
 crates/drivers/usb	10	1	1	0	0	26
 crates/drivers/usb-hid	0	0	0	0	1	0
-crates/drivers/virtio	138	39	8	0	0	89
+crates/drivers/virtio	138	40	8	0	0	89
 crates/fs/fs	46	8	4	0	0	58
 crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0

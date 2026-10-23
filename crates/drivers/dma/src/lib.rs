@@ -5,7 +5,8 @@
 //! ([`IdentityDomain`], [`SoftState`]), the registry that tells a driver
 //! which domain its device sits in, cache maintenance for non-coherent
 //! masters, the bounce-buffer decision and allocation under a device's DMA
-//! mask ([`alloc_below`]). Pure logic, no allocator and no
+//! mask ([`alloc_below`]), and the order of ring writes before a doorbell
+//! ([`order::io_wmb`]). Pure logic, no allocator and no
 //! locks: `azos_dma_tests` exercises the real bookkeeping on the host, and
 //! the kernel wraps the `&mut self` states in a lock
 //! (`kernel/src/boot/dma.rs`) to make them `&self` domains.
@@ -25,6 +26,7 @@ pub mod alloc;
 pub mod cache;
 pub mod ccache;
 pub mod domain;
+pub mod order;
 pub mod registry;
 
 pub use alloc::{alloc_below, PageSource};

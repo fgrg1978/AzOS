@@ -31,7 +31,7 @@ use super::{
     probe, virtq_init_sized,
     virtq_alloc_desc, virtq_free_desc, virtq_poll,
     virtq_publish, virtq_has_used, virtq_set_avail_flags, VIRTQ_AVAIL_F_NO_INTERRUPT,
-    virtq_notify_mmio, virtq_kick_decision, virtq_set_interrupts,
+    virtq_notify_mmio, virtq_notify_pci, virtq_kick_decision, virtq_set_interrupts,
     init_with as virtio_init_with, VIRTIO_F_EVENT_IDX,
     mmio_read, mmio_write, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_DRIVER_OK,
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
@@ -636,8 +636,7 @@ unsafe fn ring_doorbell(net: &NetState, q: u16) {
     if notify == 0 {
         virtq_notify_mmio(&net.dev, q as u32);
     } else {
-        // virtio-pci notify: the queue index, 16 bits (virtio 1.x §4.1.5.2).
-        core::ptr::write_volatile(notify as *mut u16, q);
+        virtq_notify_pci(notify, q);
     }
 }
 
@@ -1295,7 +1294,7 @@ where
             }
         }
     }
-    unsafe { core::ptr::write_volatile(notify_rx as *mut u16, 0) };
+    unsafe { virtq_notify_pci(notify_rx, 0) };
 
     // Modern transport: the 12-byte net header (`net_hdr_size`).
     net.dev = VirtioDev { base: core::ptr::null_mut(), device_id: VIRTIO_DEV_NET, version: 2 };

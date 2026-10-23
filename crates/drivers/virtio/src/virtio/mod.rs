@@ -653,13 +653,14 @@ pub unsafe fn virtq_free_desc(vq: &mut Virtq, idx: usize) {
 
 pub unsafe fn virtq_submit(dev: &VirtioDev, queue_idx: u32, desc_head: usize, vq: &mut Virtq) {
     if virtq_publish(vq, desc_head) {
-        mmio_write(dev.base, VIRTIO_MMIO_QUEUE_NOTIFY, queue_idx);
+        virtq_notify_mmio(dev, queue_idx);
     }
 }
 
 /// The transport-independent half of [`virtq_submit`]: put `desc_head` on
 /// the avail ring and publish the new index, ordered so the device sees
-/// the ring entry before the index and both before the caller's notify.
+/// the ring entry before the index. The doorbell orders both before itself
+/// ([`virtq_notify_mmio`], [`virtq_notify_pci`]).
 /// Returns `false` (and publishes nothing) for an uninitialised queue.
 /// The virtio-pci net path uses this with its own notify register.
 #[inline(always)]
@@ -680,12 +681,12 @@ pub unsafe fn virtq_publish(vq: &mut Virtq, desc_head: usize) -> bool {
     vq.clean(vq.desc, vq.num as usize * core::mem::size_of::<VirtqDesc>());
     vq.clean(core::ptr::addr_of!((*vq.avail).ring[avail_idx]), 2);
 
-    fence(Ordering::Release); // fence w,w before updating idx
+    // Memory before memory: the device reads the ring as another hart would
+    // (Linux `virtio_wmb` with weak barriers).
+    fence(Ordering::Release);
 
     (*vq.avail).idx = (*vq.avail).idx.wrapping_add(1);
     vq.clean(core::ptr::addr_of!((*vq.avail).idx), 2);
-
-    fence(Ordering::Release); // fence w,w before notify
     true
 }
 
@@ -769,7 +770,7 @@ pub const VIRTQ_USED_F_NO_NOTIFY: u16 = 1;
 /// `virtio_queue_set_notification` + re-check), so a driver that sees the
 /// flag still set after its index store is visible has published an
 /// index the device's re-read will see. Hence the full fence: store ->
-/// load ordering, which the Release fences of [`virtq_publish`] do not
+/// load ordering, which the Release fence of [`virtq_publish`] does not
 /// give (virtio 1.x 2.7.13.3, "a memory barrier before reading flags").
 ///
 /// Not EVENT_IDX: no driver here negotiates it, so `avail_event` is never
@@ -846,10 +847,22 @@ pub unsafe fn virtq_set_interrupts(vq: &mut Virtq, on: bool) {
 }
 
 /// The virtio-mmio doorbell alone: tell the device `queue_idx` has new
-/// avail entries. [`virtq_submit`] is publish + this.
+/// avail entries. [`virtq_submit`] is publish + this. The ring writes are
+/// ordered before the register write (`io_wmb`: a memory write before a
+/// device write, which [`virtq_publish`]'s fence does not promise).
 #[inline(always)]
 pub unsafe fn virtq_notify_mmio(dev: &VirtioDev, queue_idx: u32) {
+    azos_dma::order::io_wmb();
     mmio_write(dev.base, VIRTIO_MMIO_QUEUE_NOTIFY, queue_idx);
+}
+
+/// The virtio-pci doorbell: the queue index, 16 bits, into the queue's notify
+/// register at `notify` (virtio 1.x 4.1.5.2), ordered after the ring writes
+/// as [`virtq_notify_mmio`] is.
+#[inline(always)]
+pub unsafe fn virtq_notify_pci(notify: usize, queue: u16) {
+    azos_dma::order::io_wmb();
+    core::ptr::write_volatile(notify as *mut u16, queue);
 }
 
 /// Has the device written a used entry this driver has not consumed yet?

@@ -143,7 +143,7 @@ impl Transport {
             #[cfg(all(feature = "pci", target_os = "none"))]
             Transport::Pci { notify } => {
                 // SAFETY: the notify register of a mapped BAR; queue 0.
-                unsafe { core::ptr::write_volatile(notify as *mut u16, CONTROLQ as u16) }
+                unsafe { super::virtq_notify_pci(notify, CONTROLQ as u16) }
             }
         }
     }

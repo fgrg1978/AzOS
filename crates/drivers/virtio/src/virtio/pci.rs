@@ -368,6 +368,8 @@ impl<M: Mmio> VirtioPciDevice<M> {
 
     pub fn notify_queue(&mut self, queue_idx: u16, queue_notify_off: u16) {
         let off = self.queue_notify_offset(queue_notify_off);
+        // The ring writes before the doorbell (`virtq_notify_pci`).
+        azos_dma::order::io_wmb();
         self.mmio.write16(off, queue_idx);
     }
 
