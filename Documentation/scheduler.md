@@ -4,7 +4,7 @@ The scheduler lives in `crates/core/sched` (crate `azos_sched`). It dispatches t
 
 ## Priorities and the ready queues
 
-Every task has a priority number in `0..32`; a lower number is more urgent. Each CPU owns one ready queue per priority (32 FIFO lists) and a bitmap of the non-empty ones, guarded by that CPU's lock. A remote CPU may enqueue on the queue it does not own; a contended remote enqueue is deferred to the owner (`SCHED_REMOTE_WAKE_DEFER`).
+Every task has a priority number in `0..32`; a lower number is more urgent. Each CPU owns one ready queue per priority (32 FIFO lists) and a bitmap of the non-empty ones, guarded by that CPU's lock. A remote CPU may enqueue on the queue it does not own. With `SCHED_REMOTE_WAKE_DEFER` it tries the owner's lock once; if the lock is held (or earlier deferred wakes are pending) the task goes on the owner's lock-free deferred-wake list and the owner queues it when it takes the doorbell IPI, so no CPU spins with interrupts masked on another CPU's lock.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -61,7 +61,7 @@ The SC belongs to its task. The tree does not transfer budget from one SC to ano
 
 ### QoS hints and timer slack
 
-`SYS_SCHEDCTL` with `SCHEDCTL_HINT_QOS` records a QoS hint (0..=3) in the caller's SC; it grants nothing and needs no capability. The timer-sleeper heap reads it: `sc::timer_slack_us` returns how long a timer armed by a task may fire after its deadline. Only the fair class has slack; stop, deadline, real-time and idle tasks get 0 whatever their hint, row or mode. `SlackMode` is `Off`, `Rows` (only a task whose topology row says `timer_slack = true`, recorded in `SC_FLAG_TIMER_SLACK`) or `All`. The heap arms a slack-tolerant sleeper at an instant it already wakes for, inside `[deadline, deadline + slack]` (`TimerHeap::coalesce_target`). Kconfig: `QOS_TIMER_TOLERANCE`.
+`SYS_SCHEDCTL` with `SCHEDCTL_HINT_QOS` records a QoS hint (0..=3) in the caller's SC; it grants nothing and needs no capability. The timer-sleeper heap reads it: `sc::timer_slack_us` returns how long a timer armed by a task may fire after its deadline. Only the fair class has slack; stop, deadline, real-time and idle tasks get 0 whatever their hint, row or mode. `SlackMode` is `Off`, `Rows` (only a task whose topology row says `timer_slack = true`, recorded in `SC_FLAG_TIMER_SLACK`) or `All`. The heap arms a slack-tolerant sleeper at an instant it already wakes for, inside `[deadline, deadline + slack]` (`TimerHeap::coalesce_target`). Kconfig: `QOS_TIMER_TOLERANCE` (off: `Off`), `QOS_TIMER_TOLERANCE_ROWS_ONLY` (`Rows` instead of `All`; the default of the robot, industrial and automotive presets).
 
 Source: `crates/core/sched/src/sc.rs`, `crates/core/sched/src/timer_heap.rs`, `crates/core/sched/src/timer_sleepers.rs`, `crates/core/abi/src/syscall_nr.rs` (`SCHEDCTL_HINT_QOS`, `QOS_*`), `crates/core/syscall/src/schedctl.rs`.
 
@@ -114,7 +114,7 @@ A run-time refusal is printed and, but for `Envelope`, written as a `Rule::Deadl
 
 ### Entry points
 
-`SYS_SCHEDCTL` (`sys_schedctl`) moves the calling task to a class: `SCHEDCTL_CLASS_DL` takes a runtime and a period (the relative deadline is the period), `SCHEDCTL_CLASS_RT` and `SCHEDCTL_CLASS_FAIR` take a priority. DL and RT require a warrant with `WRITE` on a `time` endpoint, checked first; a refusal is recorded. Fair needs none but cannot leave the band or a reservation. Topology `deadline` rows reach `reserve` from the spawn path (`crates/core/syscall/src/spawn.rs`). With `IRQ_THREADED`, binding an interrupt line requires the binder to hold a hard reservation (see `config/kernel/Kconfig.sched`).
+`SYS_SCHEDCTL` (`sys_schedctl`) moves the calling task to a class (a target other than the caller is `EPERM`): `SCHEDCTL_CLASS_DL` takes a runtime and a period (the relative deadline is the period), `SCHEDCTL_CLASS_RT` and `SCHEDCTL_CLASS_FAIR` take a priority. DL and RT require a warrant with `WRITE` on a `time` endpoint, checked first; a refusal is recorded. Fair needs none but cannot leave the band or a reservation (`EBUSY`); its priority must be a fair level (`EINVAL` otherwise). Topology `deadline` rows reach `reserve` from the spawn path (`crates/core/syscall/src/spawn.rs`). With `IRQ_THREADED`, binding an interrupt line requires the binder to hold a hard reservation (see `config/kernel/Kconfig.sched`).
 
 Source: `crates/core/sched/src/rt_core.rs`, `crates/core/sched/src/rt.rs`, `crates/core/abi/src/rt_levels.rs`, `crates/core/topology/src/deadline.rs`, `crates/core/syscall/src/schedctl.rs`, `crates/core/abi/src/syscall_nr.rs` (`SYS_SCHEDCTL`), `config/kernel/Kconfig.sched`.
 
@@ -146,7 +146,7 @@ Source: `crates/core/sched/src/classes.rs` (`IdleClass`), `kernel/src/tasks/syst
 
 ## Wake placement and wake preemption
 
-**Placement.** A woken task goes to its pinned CPU if it has one (`cpu_affinity >= 0`). Otherwise `find_best_cpu` scores each online CPU with a `CpuLoad` of its resident tasks that outrank the one being placed and picks the lowest `(rt_blocking, blocking, total)` (`pick_cpu_by_load`). For a synchronous IPC hand-off, `ipc_wake_target_cpu` can co-locate the woken task with its waker (`sched-ipc-affinity`) unless a resident outranks it. With `SCHED_EAS` the fair class is placed by energy first (see [Energy-aware placement](#energy-aware-placement)).
+**Placement.** A woken task goes to its pinned CPU if it has one (`cpu_affinity >= 0`). Otherwise `find_best_cpu` scores each online CPU with a `CpuLoad` of its resident tasks that outrank the one being placed and picks the lowest `(rt_blocking, blocking, total)` (`pick_cpu_by_load`). With `SCHED_O1_PLACEMENT` the score is read from a per-CPU, per-priority histogram of resident tasks (`resident_histogram`, kept current at every write to a field the score depends on), O(priorities) instead of a scan of every task slot. For a synchronous IPC hand-off, `ipc_wake_target_cpu` can co-locate the woken task with its waker (`SCHED_IPC_AFFINITY`) unless a resident outranks it. With `SCHED_EAS` the fair class is placed by energy first (see [Energy-aware placement](#energy-aware-placement)).
 
 **Doorbell.** An enqueue on another CPU rings that CPU's scheduler doorbell (a software IPI); the target runs `schedule()` on its own state.
 
@@ -164,7 +164,7 @@ Source: `crates/core/sched/src/classes.rs` (`IdleClass`), `kernel/src/tasks/syst
 
 A synchronous IPC hand-off does not run the check: its waker blocks right after.
 
-Source: `crates/core/sched/src/scheduler/wake.rs` (`wake_enqueue_preempting`, `wake_preempt_check`, `wake_target_cpu`), `crates/core/sched/src/scheduler/wake/preempt.rs`, `crates/core/sched/src/scheduler/mod.rs` (`find_best_cpu`, `ring_doorbell`), `crates/core/sched/src/task.rs` (`CpuLoad`, `pick_cpu_by_load`).
+Source: `crates/core/sched/src/scheduler/wake.rs` (`wake_enqueue_preempting`, `wake_preempt_check`, `wake_target_cpu`), `crates/core/sched/src/scheduler/wake/preempt.rs`, `crates/core/sched/src/scheduler/mod.rs` (`find_best_cpu`, `ring_doorbell`), `crates/core/sched/src/task.rs` (`CpuLoad`, `pick_cpu_by_load`), `crates/core/sched/src/resident_histogram.rs`, `config/kernel/Kconfig.sched` (`SCHED_O1_PLACEMENT`, `SCHED_IPC_AFFINITY`, `SCHED_REMOTE_WAKE_DEFER`).
 
 ## Priority donation and the wait graph
 
@@ -257,7 +257,7 @@ A CPU of the topology's `[sched] isolcpus` that runs exactly one real-time task,
 
 * `nohz::lone_rt` requires: the CPU is isolated, the running task is in the band, no other level but idle is ready, and no wake is pending on its deferred list.
 * `nohz::observe` stops the tick at the second consecutive tick that sees the same lone task (`LONE_TICKS_TO_STOP` is 2), because a task's first entry to user mode does not leave RCU's quiescent state as a trap return does.
-* `nohz::stop_bound` sets how far out a stopped tick sleeps: `NOHZ_FULL_RESIDUAL_MS`, cut to hart 0's watchdog keepalive when armed. The comparator is programmed at the earlier of that and the nearest timer deadline; timer sleepers and real-time enforcement instants are never rounded to it.
+* `nohz::stop_bound` sets how far out a stopped tick sleeps: `NOHZ_FULL_RESIDUAL_MS`, cut to hart 0's watchdog keepalive when armed and to the idle-poll bound while kernel work that only the tick observes is pending. The comparator is programmed at the earlier of that and the nearest timer deadline; timer sleepers and real-time enforcement instants are never rounded to it.
 * The tick returns on an enqueue on the CPU (`timebase::tick_restart`), on a switch off the task, or when the stopped tick's own interrupt finds the CPU no longer alone.
 * An isolated CPU's user mode is an extended quiescent state for RCU (`azos_sync::qsbr::set_tickless_cpus`), so no grace period waits for a tick it does not take.
 
@@ -265,9 +265,9 @@ Source: `crates/drivers/sys/src/nohz.rs`, `crates/drivers/sys/src/timebase.rs` (
 
 ## Timer sleepers
 
-A task that sleeps on a timer is armed in a per-CPU indexed min-heap (`timer_heap::TimerHeap`, `sched-timer-heap`) on the CPU it blocks on, with one entry per task slot. That CPU's tick pops the due entries (`wake_expired_timers`), and `nearest_timer_deadline` feeds the tickless comparator. Entries are not removed when a sleeper is woken another way; the top entry is validated against the live task (`peek_live`) when it is reached. See [time.md](time.md) for the clocks the deadlines are read on.
+With `SCHED_TIMER_HEAP` (cargo `sched-timer-heap`), a task that sleeps on a timer is armed in an indexed min-heap (`timer_heap::TimerHeap`) on the CPU it blocks on, with one entry per task slot; each CPU has its own heap and lock (`SCHED_TIMER_HEAP_PER_CPU`; off, one heap for the machine). That CPU's tick pops the due entries, at most `SCHED_TIMER_WAKE_BATCH` per hold of the heap lock (`wake_expired_timers`), and `nearest_timer_deadline` feeds the tickless comparator. Entries are not removed when a sleeper is woken another way; the top entry is validated against the live task (`peek_live`) when it is reached. Without the heap, the tick sweeps every task slot. See [time.md](time.md) for the clocks the deadlines are read on.
 
-Source: `crates/core/sched/src/timer_heap.rs`, `crates/core/sched/src/timer_sleepers.rs`, `crates/core/sched/src/wait.rs`, `config/kernel/Kconfig.sched` (`SCHED_TIMER_HEAP_PER_CPU`, `SCHED_TIMER_WAKE_BATCH`).
+Source: `crates/core/sched/src/timer_heap.rs`, `crates/core/sched/src/timer_sleepers.rs`, `crates/core/sched/src/wait.rs`, `config/kernel/Kconfig.sched` (`SCHED_TIMER_HEAP`, `SCHED_TIMER_HEAP_PER_CPU`, `SCHED_TIMER_WAKE_BATCH`).
 
 ## Module layout
 
@@ -285,6 +285,7 @@ The crate root (`lib.rs`) declares the model modules and re-exports the API. The
 | `scheduler` | `src/scheduler/mod.rs` | dispatcher: pool, per-CPU queues, `do_schedule`, placement, doorbells |
 | `scheduler::wake` | `src/scheduler/wake.rs` | block and wake paths, placement, reaper, timer sweep |
 | `scheduler::wake::preempt` | `src/scheduler/wake/preempt.rs` | wake-up preemption rule (pure) |
+| `scheduler::wake::attrib` | `src/scheduler/wake/attrib.rs` | wake attribution ring (`metrics/wake/`, Kconfig `WAKE_RING_ENTRIES`) |
 | `scheduler::ipc_fast` | `src/scheduler/ipc_fast.rs` | fast-IPC hand-off and direct switch |
 | `scheduler::lifecycle` | `src/scheduler/lifecycle.rs` | init, task creation, exit, wait, tick entry (`schedule`) |
 | `scheduler::budget` | `src/scheduler/budget.rs` | task-state queries, frame budget, census |
@@ -295,7 +296,15 @@ The crate root (`lib.rs`) declares the model modules and re-exports the API. The
 | `scheduler::fairq` | `src/fairq.rs` | fair class queue over EEVDF |
 | `scheduler::energy` | `src/energy.rs` | utilisation signals, installed model, policy (feature `energy`) |
 | `scheduler::timer_sleepers` | `src/timer_sleepers.rs` | per-CPU timer-sleeper heaps (feature `sched-timer-heap`) |
+| `scheduler::resident_histogram` | `src/resident_histogram.rs` | per-CPU, per-priority resident counts for wake placement |
+| `scheduler::ipc_direct` | `src/ipc_direct.rs` | eligibility rule of the fast-IPC same-hart direct switch (pure) |
+| `scheduler::tid_alloc`, `scheduler::slot_bitmap` | `src/tid_alloc.rs`, `src/slot_bitmap.rs` | TID candidate search, task-slot bitmap (pure) |
+| `scheduler::lifecycle::{exit_note, stop_policy, signal}` | `src/exit_note.rs`, `src/stop_policy.rs`, `src/signal_state.rs` | exit bookkeeping, who may stop whom (`SYS_ALERT`), per-task signal words |
 | `smp`, `wait`, `process`, `group`, `futex`, `futex_table`, `domain`, `spawn`, `task`, `asid` | `src/*.rs` | secondary CPU start and liveness, block API, processes, threads and futexes, task control block, address-space ids |
+| `spawn_policy`, `filter`, `seccomp` | `src/*.rs` | `SYS_SPAWN_EX` decisions before a task exists, task-policy types, syscall filter profiles |
+| `driver`, `supervisor` | `src/*.rs` | driver registry with heartbeat and crash bookkeeping, cold restart of ring-3 drivers |
+| `qos`, `fp`, `pac`, `foreign`, `user_window` | `src/*.rs` | resource-partition tag at switch (riscv64 Ssqosid), riscv64 F/D state of Linux tasks, aarch64 per-process PAC keys, foreign-ABI entry and reflect, shm/MMIO VA window allocator |
+| `swcensus`, `prof`, `cpuid_probe`, `percpu_audit` | `src/*.rs` | switch instruction census (`SWITCH_CENSUS`), fork/exit/wait phase profile (`fork-profile`), hart-id cross-check (`cpuid-probe`), per-hart read audit (`ktest`) |
 
 Only the dispatcher's own state (`TASKS`, `PER_CPU`, the locks) lives in `scheduler/mod.rs`; children reach it through `use super::*`.
 
