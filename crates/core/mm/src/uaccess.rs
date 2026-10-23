@@ -49,13 +49,16 @@
 //! takes no lock. A writer never runs inside a section (nothing in one
 //! frees or unmaps), so it never waits for itself.
 //!
-//! **Cost.** A reader pays interrupts off and on, two stores and a fence per
-//! page. A writer pays one load per online CPU per shootdown, and a wait only
-//! for a CPU that is copying at that instant (a page at most). The
+//! **Cost, measured** (vsbench `uaccess-get-u32`, riscv64, QEMU -icount,
+//! instructions per futex wait, which reads its word twice): 1,920 with the
+//! sections taken out, 1,964 with them (+2.3%: about 22 instructions a
+//! section, interrupts off and on, two stores and a fence), 2,222 with the
 //! alternative the brief named, pinning the frame through its share count
-//! (`cow_table`), costs a reader two compare-and-swap loops on the frame's
-//! descriptor and a second walk to re-check the leaf per page, and that count
-//! is the copy-on-write share count: a pinned private page reads as shared.
+//! (`cow_table`: two compare-and-swap loops on the frame's descriptor and a
+//! second walk to re-check the leaf per page; and that count is the
+//! copy-on-write share count, so a pinned private page reads as shared). A
+//! writer pays one load per online CPU per shootdown, and a wait only for a
+//! CPU that is copying at that instant (a page at most).
 //!
 //! Gate canary `uaccess-race-canary`: [`wait_readers`] returns at once, as the
 //! code before this module did (`uaccess_race.rs` must fail).
