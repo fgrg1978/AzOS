@@ -2240,7 +2240,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     } else if !azos_limits::RECOVERY_CONSOLE {
         kprintln!("[CONSOLE] no recovery console (RECOVERY_CONSOLE=n)");
     } else {
-        azos_sched::task_create("recovery", recovery_task, 0, 13);
+        azos_sched::task_create("recovery", recovery_task, 0,
+                                azos_limits::TASK_RECOVERY_PRIORITY as u32);
         kprintln!("[SCHED] Created recovery task");
     }
 
@@ -2516,7 +2517,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // (the unit's own interrupts stay off). Only when a unit is up.
     #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
     if boot::iommu_up() {
-        azos_sched::task_create("iommu-faults", boot::fault_task, 0, 13);
+        azos_sched::task_create("iommu-faults", boot::fault_task, 0,
+                                azos_limits::TASK_IOMMU_FAULTS_PRIORITY as u32);
         kprintln!("[SCHED] Created iommu-faults task (every {} ms)", azos_limits::IOMMU_FAULT_POLL_MS);
     }
     #[cfg(feature = "net")]

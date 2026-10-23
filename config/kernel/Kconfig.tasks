@@ -218,6 +218,45 @@ config TASK_AUTORUN_PLACE
       program it becomes serves requests forever and must not compete with
       the control or behavior loops.
 
+config TASK_NET_POLL_PRIORITY
+    int "net-poll: priority (0 most urgent .. 31)"
+    range 0 31
+    default 12
+    help
+      azos_sched::NET_POLL_PRIORITY; the OTA receiver runs at it too. Default
+      12, RT_PRIORITY_THRESHOLD: the most urgent fair priority, so the tick
+      still preempts it (below 12 the task is hard real-time and runs until
+      it blocks). Read only with NET.
+
+config TASK_AUTORUN_PRIORITY
+    int "autorun loader: priority (12 .. 30)"
+    range 12 30
+    default 16
+    help
+      The priority the autorun loader runs at, and with it the program it
+      becomes and every successor the driver supervisor loads. Outside the
+      real-time band on purpose (12 is RT_PRIORITY_THRESHOLD, checked at
+      build time): a loader inside it was never preempted by the tick, and
+      `net-poll` on its CPU never ran (kernel/src/main.rs, the autorun
+      block). Default 16, DEFAULT_PRIORITY.
+
+config TASK_RECOVERY_PRIORITY
+    int "recovery console: priority (12 .. 30)"
+    range 12 30
+    default 13
+    help
+      The in-kernel recovery console (RECOVERY_CONSOLE). Default 13: above
+      the default priority, so it answers while ordinary work runs, below
+      net-poll; it parks while a user shell holds the console.
+
+config TASK_IOMMU_FAULTS_PRIORITY
+    int "iommu-faults: priority (12 .. 30)"
+    range 12 30
+    default 13
+    help
+      The task that drains the IOMMU's fault log every IOMMU_FAULT_POLL_MS
+      (only when a unit is up). Default 13.
+
 config TASK_SYS_WDT_PLACE
     string "sys-wdt: placement class"
     default "general"

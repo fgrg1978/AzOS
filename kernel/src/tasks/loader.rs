@@ -26,10 +26,16 @@ pub(crate) fn autorun_task(arg: usize) {
     load_and_exec_image(&path[..path_len]);
 }
 
-/// The autorun loader's priority (its CPU: Kconfig TASK_AUTORUN_PLACE). Every
-/// successor the M4 supervisor creates (`drv_supervisor`) loads at this
-/// priority, on the hart the driver it replaces was pinned to.
-pub(crate) const AUTORUN_PRIORITY: u32 = azos_sched::DEFAULT_PRIORITY;
+/// The autorun loader's priority (Kconfig TASK_AUTORUN_PRIORITY; its CPU:
+/// TASK_AUTORUN_PLACE). Every successor the M4 supervisor creates
+/// (`drv_supervisor`) loads at this priority, on the hart the driver it
+/// replaces was pinned to.
+pub(crate) const AUTORUN_PRIORITY: u32 = azos_limits::TASK_AUTORUN_PRIORITY as u32;
+const _: () = assert!(
+    AUTORUN_PRIORITY >= azos_sched::RT_PRIORITY_THRESHOLD,
+    "TASK_AUTORUN_PRIORITY is inside the real-time band: the loader and the program \
+     it becomes would never be preempted by the tick",
+);
 
 /// `SAFETY_EXEC_REFUSED`'s `action_code` for an image the loader could not stage:
 /// it needs more frames than the budget of the row that bounds it, than the allocator

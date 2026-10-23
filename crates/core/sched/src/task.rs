@@ -57,9 +57,9 @@ pub const TASK_NAME_CAPACITY: usize = 32;
 /// Must run promptly to maintain control loop timing.
 pub const RT_MOTOR_PRIORITY: u32 = 8;
 
-/// Priority for the network polling task.
+/// Priority for the network polling task (Kconfig TASK_NET_POLL_PRIORITY).
 /// Slightly above default so incoming packets are processed promptly.
-pub const NET_POLL_PRIORITY: u32 = 12;
+pub const NET_POLL_PRIORITY: u32 = azos_limits::TASK_NET_POLL_PRIORITY as u32;
 
 /// Priority for the behavior engine (sensor→decision→motor).
 /// Above default since it drives the robot's actions.
