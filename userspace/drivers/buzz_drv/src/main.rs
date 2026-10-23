@@ -96,8 +96,8 @@ impl SpeakerPorts {
     }
 
     /// Give both ranges up: the channel is the `Pwm` interface's after all.
-    fn close(self) {
-        let _ = (self.pit.close(), self.gate.close());
+    fn release(self) {
+        let _ = (sys::ioport_close(self.pit), sys::ioport_close(self.gate));
     }
 
     fn range(&self, port: u16) -> &sys::IoPorts {
@@ -163,7 +163,7 @@ fn speaker() -> Option<PcSpeaker<SpeakerPorts>> {
     let mut spk = PcSpeaker::new(SpeakerPorts::open()?);
     if !spk.counter_runs(CHECK_PERIOD_NS, CHECK_READS) {
         sys::println(b"[buzzdrv] PC speaker ports open, PIT channel 2 does not tick: using the pwm endpoint");
-        spk.into_ports().close();
+        spk.into_ports().release();
         return None;
     }
     sys::println(b"[buzzdrv] PC speaker: PIT channel 2 ticks, ports 0x42-0x43 and 0x61 open in ring 3");

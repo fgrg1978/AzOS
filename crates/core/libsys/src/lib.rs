@@ -2228,6 +2228,13 @@ pub fn ioport_open(first: u16, count: u16) -> Result<IoPorts, isize> {
     Ok(IoPorts { first, last: first + (count - 1), handle: h as u32 })
 }
 
+/// Give the ports of [`ioport_open`] up: the capability is closed
+/// ([`close_typed`]), and the range closes in every thread of this task that
+/// opened it, from their next instruction. 0, or the errno.
+pub fn ioport_close(ports: IoPorts) -> isize {
+    close_typed(ports.handle)
+}
+
 /// `DEVICE_IOPORT_ENABLE` on the `ty::IOPORT` handle `h`: 0, or the errno.
 pub fn ioport_enable(h: u32) -> Result<(), isize> {
     match invoke(h, invoke_abi::DEVICE_IOPORT_ENABLE, [0; 4]).0 {
@@ -2240,13 +2247,6 @@ impl IoPorts {
     /// The first and last port of the range.
     pub fn bounds(&self) -> (u16, u16) {
         (self.first, self.last)
-    }
-
-    /// Give the ports up: the capability is closed ([`close_typed`]), and
-    /// the range closes in every thread of this task that opened it, from
-    /// their next instruction. 0, or the errno.
-    pub fn close(self) -> isize {
-        close_typed(self.handle)
     }
 
     /// `in al, dx`: a byte from `port`. A port outside every open range

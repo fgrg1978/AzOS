@@ -141,7 +141,7 @@ fn ioport(which: &[u8]) -> ! {
         b"revoked" => {
             let Ok(io) = sys::ioport_open(POST, 1) else { sys::exit(4) };
             core::hint::black_box(io.inb(POST));
-            if io.close() != 0 {
+            if sys::ioport_close(io) != 0 {
                 sys::exit(5);
             }
             // The range is closed: the bare instruction (the `IoPorts` went
@@ -150,6 +150,10 @@ fn ioport(which: &[u8]) -> ! {
             unsafe {
                 core::arch::asm!("in al, dx", in("dx") POST, out("al") _, options(nomem, nostack));
             }
+            // No port space: the open above already refused (abitest asks only on x86_64).
+            #[cfg(not(target_arch = "x86_64"))]
+            sys::exit(99);
+            #[allow(unreachable_code)]
             sys::exit(3)
         }
         b"granted" | b"stray" => {

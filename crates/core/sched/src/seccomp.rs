@@ -449,12 +449,13 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // (`ipc-endpoint-canary` builds) holds only the right to start itself, which
     // `SYS_SPAWN_EX` checks: a process tree needs it, and no other native image
     // but the shell and `vsbench` lists the call; and, on x86_64, the POST port
-    // its `ioport` mode opens (`DEVICE_IOPORT_ENABLE`).
+    // its `ioport` mode opens (`DEVICE_IOPORT_ENABLE`) and, in `revoked`,
+    // closes again (`SYS_CAP_CLOSE`).
     ImageProfile {
         image: "ABICHILD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_YIELD, SYS_GETPID, 
-            SYS_CAP_INFO, SYS_SPAWN_EX, SYS_MO_MAP,
+            SYS_CAP_INFO, SYS_SPAWN_EX, SYS_MO_MAP, SYS_CAP_CLOSE,
             // The orphan tests: an adopted orphan sleeps on a futex word until
             // its adopter, having listed it, asks it to stop (`SYS_ALERT`,
             // a request, which ends the wait; the adopter is its ancestor).
@@ -696,12 +697,13 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // interface it serves on its endpoint, the register-form calls on its one
     // `pwm` endpoint, and a second thread for the timed steps of a sound
     // (created once, parked on a futex word the main thread bumps). On a PC
-    // the channel is the speaker: each thread opens its I/O ports.
+    // the channel is the speaker: each thread opens its I/O ports, and a
+    // speaker whose counter does not tick gives them up (`SYS_CAP_CLOSE`).
     ImageProfile {
         image: "BUZZDRV.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_YIELD,
-            SYS_CAP_INFO,
+            SYS_CAP_INFO, SYS_CAP_CLOSE,
             SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
             SYS_IPC_FAST_CALL_EP,
             SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
