@@ -19,10 +19,14 @@ Contents:
 4. [Page cache as a Paged MemObj](#page-cache-as-a-paged-memobj)
 5. [File-backed mmap](#file-backed-mmap)
 6. [2 MiB reservations and contiguous leaves](#2-mib-reservations-and-contiguous-leaves)
-7. [Kernel memory charged to the Domain](#kernel-memory-charged-to-the-domain)
-8. [Reclaim order](#reclaim-order)
-9. [Marker PTEs](#marker-ptes)
-10. [TLB invalidation per ISA](#tlb-invalidation-per-isa)
+7. [User stacks](#user-stacks)
+8. [Kept image frames](#kept-image-frames)
+9. [Kernel heap](#kernel-heap)
+10. [Kernel image permissions (W^X)](#kernel-image-permissions-wx)
+11. [Kernel memory charged to the Domain](#kernel-memory-charged-to-the-domain)
+12. [Reclaim order](#reclaim-order)
+13. [Marker PTEs](#marker-ptes)
+14. [TLB invalidation per ISA](#tlb-invalidation-per-isa)
 
 ## Physical allocator and frame descriptors
 
@@ -56,6 +60,14 @@ frame is linked into a list, but every frame of it has `F_FREE`. Orders run
 `0..=PMM_MAX_ORDER` (Kconfig, `config/limits/Kconfig.limits`). Because frame numbers
 are absolute, a buddy block of the right order is also aligned in physical
 address space, which is what a 2 MiB leaf needs.
+
+With Kconfig `SLAB_HARDENED` (default y) a block leaves its free list only if
+both neighbours link back to it and its descriptor still names the list's
+order; a damaged list panics with the addresses. With `ALLOC_RANDOM` (default
+y, n on certifiable and static-separation builds) a freed block may go to the
+tail of its list instead of the head, by placement bits drawn from a seed the
+entropy pool stirs in (`buddy::stir`); before the first seed every list is
+plain LIFO.
 
 The API in `pmm.rs` has three groups of calls:
 
@@ -113,13 +125,20 @@ Attributes in `MemSpec::attrs`:
 
 | Attribute | Meaning |
 |-----------|---------|
-| `ATTR_SWAPPABLE` | The object's opt-in for a reclaimer of MemObj frames. None exists yet (a frame taken out of an shm window has no fault path to restore it), so only a guest's memory check reads it. |
+| `ATTR_SWAPPABLE` | The object's opt-in for a reclaimer of MemObj frames. No reclaimer takes MemObj frames (a frame taken out of an shm window has no fault path to restore it), so only a guest's memory check reads it: a guest's RAM refuses an object that carries it. |
 | `ATTR_NO_KERNEL_MAP` | The kernel never reads the object through the direct map; `memobj_with_word_ref` refuses it, and a reclaimer of MemObj frames would have to leave it alone. |
 | `ATTR_VOLATILE` | Purgeable (Anon only). The owner marks the object droppable with `MemCtl::set_volatile` (kernel-hosted endpoint `memctl`, `WRITE`) and in use again with `set_nonvolatile`, which answers whether the object was purged. While volatile, the first stage of the reclaim pass (`memobj_purge_volatile`) may take its frames whole: every holder's mapping is unmapped, the frames and the charge go back, nothing is written, one `Rule::Purge` record is made. Purged is final: `SYS_MO_MAP` and a clone answer `-EPURGED`, and the holder creates a new object. Stage 0 runs only with `MM_RECLAIM_COMPRESS`: on a `MM_RECLAIM_OFF` image a volatile object is never purged (`set_nonvolatile` always answers `false`). `infsrv` (the inference service) keeps its blob arena in one: droppable between calls, held during a call, rebuilt from the signed bundles when it finds the object purged. Never purged: an object in use, one the kernel holds a reference to (a guest's RAM), one a clone shares frames with, one with a pinned holder, one charged to a `mem = "locked"` Domain. |
 
-An anonymous mapping used by one task does not need a table slot at all:
-`anon_map_private` is that case, on the marker-PTE path described below (no
-frame until the first touch, no object lock on the fault).
+An anonymous mapping used by one task does not need a table slot at all: it is
+a `Region` of `PagerKind::Anon` in the task's own address space (`mmap`), on
+the demand and marker-PTE paths described below (no frame until the first
+touch, no object lock on the fault). That is Kconfig `MM_DEMAND_PAGING`
+(default y; n on industrial and automotive): the reservation is charged to
+the page budget when it is made, so a fault never refuses on quota. A mapping
+with `MAP_POPULATE` or `MAP_LOCKED`, every mapping of a `mem = "locked"` row,
+and with `MM_PRECOMMIT_RT` every mapping of a real-time-class task are
+committed at map time; with the option off, every mapping is. A shared Anon
+object has its frames at create, because every mapper needs the same frames.
 
 Operations on an object, all in `memobj.rs`:
 
@@ -135,7 +154,7 @@ Source: `crates/core/ipc/src/memobj.rs`.
 
 ## Object rmap
 
-A revoke, a page drop, or a future reclaimer needs every mapping of a frame without
+A revoke, a page drop, or a purge needs every mapping of a frame without
 scanning page tables. Two pieces make that possible:
 
 * **Frame to object.** `FrameDesc::owner` and `owner_idx` name the holder
@@ -149,17 +168,17 @@ scanning page tables. Two pieces make that possible:
   list: each `MemHolder` records at most one mapping (page-table root, virtual
   address, page count, writable or not). `MAX_MEMOBJ_HOLDERS` bounds the list.
 
-`memobj_warrant_swept` and `memobj_paged_drop_clean` are the readers of the
-second piece: they walk the object's holder list, and remove the one PTE (a
-page drop) or the whole recorded mapping (a revoke) each mapping has. The
+`memobj_warrant_swept`, `memobj_paged_drop_clean` and `memobj_purge_volatile`
+are the readers of the second piece: they walk the object's holder list, and remove the one PTE (a
+page drop) or the whole recorded mapping (a revoke, a purge) each mapping has. The
 mapping records of a page drop stay; a later touch of the hole is the pager's
 to resolve. A revoke clears the record and leaves the window to its task to
 give back. A `pinned` holder (a failed map may have left a PTE no record
 names) keeps its pinned reference through a revoke and refuses a page drop.
 
-The frame-to-object half has no reader yet: it is the entry a later reclaimer
-of shared frames (an accessed-bit scan) would use to find a frame's mappings
-from the frame.
+No kernel path reads the frame-to-object half: the object table keeps it
+(create, copy-on-write break, page-cache fill) and the host tests check it.
+It is the entry that finds a frame's mappings starting from the frame.
 
 The same `refcount` field is the copy-on-write share count used by
 `cow::fork_cow`, `page_addref` and `page_decref` (`crates/core/mm/src/cow.rs`,
@@ -268,7 +287,8 @@ maps boot-reserved regions with 2 MiB leaves directly.
 
 ### Reservations (Kconfig `MM_THP_RESV`)
 
-Requires `MM_DEMAND_PAGING` and a 4 KiB base page. The first fault in a
+Requires `MM_DEMAND_PAGING` and a 4 KiB base page; default y on desktop and
+server, n otherwise. A task that commits at map time never reserves. The first fault in a
 block-aligned part (`resv::BLOCK_SIZE` = one level-0 table's span, 2 MiB at
 4 KiB pages) of an anonymous region that one region record covers whole, with
 nothing mapped in it yet, takes a physically contiguous, aligned run
@@ -278,7 +298,9 @@ last page replaces the level-0 table with one level-1 leaf
 (`vmm::promote_user_block`). A cut of the region (`munmap`, `mprotect`), a fork,
 task exit, or an allocator that ran dry breaks the reservation, and frames not
 yet handed out go back. A promoted leaf is split back to 4 KiB leaves
-(`vmm::split_user_mega`) before part of it is unmapped or re-protected.
+(`vmm::split_user_mega`) before part of it is unmapped or re-protected, and
+every promoted leaf of a space before it is forked
+(`vmm::demote_all_user_megas`).
 
 `resv.rs` is the bookkeeping only. Each frame of a run is owned by exactly one
 of: the reservation (never handed out), a faulting thread (handed out, not yet
@@ -321,7 +343,7 @@ set of attributes (`arch-api/src/contig.rs`: `is_run`, `step_pages`).
 | ISA | Mechanism | Run size |
 |-----|-----------|----------|
 | aarch64 | Contiguous hint, descriptor bit 52 (Kconfig `A64_CONTIG_HINT`). Each member names its own frame. | 16 pages at a 4 KiB granule (64 KiB); 128 at 16 KiB; 32 at 64 KiB |
-| riscv64 | Svnapot, every member the same NAPOT word (Kconfig `RV_SVNAPOT`, probed). | 16 pages (64 KiB) |
+| riscv64 | Svnapot, every member the same NAPOT word (Kconfig choice, default `RV_SVNAPOT_PROBE`: used when cpu@0's `riscv,isa` names it). | 16 pages (64 KiB) |
 | x86_64 | None below the 2 MiB leaf; `contig_run_pages()` is 0. | n/a |
 
 `vmm::map_contig_range` is the writer: it maps consecutive pages of a user
@@ -356,10 +378,12 @@ A user stack is mapped whole at exec and never grown. The size is the image's
 own: the loader reads the `p_memsz` of its `PT_GNU_STACK` header, rounds it up to
 a page and maps that many pages below `USER_STACK_TOP`; an image that asks for
 nothing (`p_memsz == 0`, every Linux image) gets Kconfig `USER_STACK_SIZE_KB`
-(16 KiB). A request over `USER_STACK_MAX_KB` (256 KiB) refuses the exec or the
-spawn (`[LOAD] REFUSED: the image asks for a N KiB stack`). The pages are
-charged to the task's row like the image's, so a row that runs a larger stack
-budgets for it (`MLSRV.ELF`: 88 pages). The cached image of a spawn keeps the
+(16 KiB; 64 KiB with an aarch64 64 KiB granule). A request over
+`USER_STACK_MAX_KB` (256 KiB) refuses the exec or the spawn
+(`[LOAD] REFUSED: the image asks for a N KiB stack`). The pages are charged to
+the task's row like the image's, so a row that runs a larger stack budgets for
+it (`MLSRV.ELF`, whose image asks for 64 KiB: a small row's 64 pages plus 16,
+`MLSRV_MEM_PAGES` in `crates/core/topology/src/builder.rs`). The cached image of a spawn keeps the
 size with its entry and break.
 
 Below the stack lies nothing mapped up to `USER_MMIO_LIMIT`, which is
@@ -375,13 +399,110 @@ How an image asks: its crate's `build.rs` passes the linker `-z stack-size`
 `PT_GNU_STACK` header's `p_memsz`, on every ISA. The
 size is read off the program, not guessed: `tools/user_stacks.py` takes the
 deepest static call chain of each image (`tools/stack_chain.py`), adds 25% for
-what a static chain does not see (indirect calls), and the gate row
-`ring-3 stacks` fails an image whose request is smaller. The header sits in the
+what a static chain does not see (indirect calls), and the gate rows
+`ring-3 stacks` (riscv64 and aarch64 images) fail an image whose request is
+smaller. The header sits in the
 program header table, inside the first `STREAM_HDR_BYTES` of a streamed image,
 which an ELF note in the middle of the file would not.
 
 Source: `crates/core/sched/src/process.rs`, `crates/core/sched/src/elf_bounds.rs`,
 `tools/user_stacks.py`, `config/limits/Kconfig.limits`.
+
+## Kept image frames
+
+A spawn or exec by path hashes the whole image (SHA-256) to pick its profile
+and topology row. The digest cache (`crates/core/syscall/src/image_cache.rs`,
+16 entries, always on) remembers the digest of bytes it hashed, keyed by a
+content stamp (the backend, its write epoch, the file's start cluster and
+size). FAT32's epoch moves on every write of the volume, mount and unmount, so
+an equal stamp means no byte changed; a backend without stamps (ramfs, tmpfs)
+is never cached.
+
+With Kconfig `EXEC_IMAGE_CACHE_KB` nonzero (64 KiB embedded, 512 KiB edge,
+4 MiB fleet; `0` = off) a spawn also keeps the image's frames under the same
+stamp (`image_frames::capture`, run before the new task's first
+instruction). An executable page, never writable, is kept by reference
+(`cow_table`); every other page is copied into a kernel-owned template frame.
+The next spawn of the same stamp (`image_frames::map_into`) maps the
+executable frames again read-execute, with one more reference each, and gives
+every other page a fresh frame filled from its template, so it neither reads
+nor hashes the file. Nothing it maps is both shared and writable: nothing adds
+WRITE to an executable leaf, and the copy-on-write fault refuses an
+executable entry. Every page is present when the task starts, so a
+`mem = "locked"` row stays committed. The least recently used images go
+first; a frame a running task still maps outlives the eviction until that
+task's teardown. One record frame holds `image_frames::MAX_PAGES` pages
+(`PAGE_SIZE / 16`) per image.
+
+Source: `crates/core/syscall/src/image_cache.rs`,
+`crates/core/mm/src/image_frames.rs`, `config/Kconfig.limits`.
+
+## Kernel heap
+
+The kernel's `GlobalAlloc` (`kheap.rs`) is a first-fit free-list heap
+(`linked_list_allocator`) behind one `SpinLock`, over a region of
+`KERNEL_HEAP_SIZE` KiB (512 KiB embedded, 32 MiB edge, 256 MiB fleet) taken
+from RAM at boot. The tables the Kconfig limits size are static, not in the
+heap. Exhaustion is a refusal (a null pointer), never a panic.
+
+With Kconfig `KHEAP_SLAB` (default y) a request that a size class covers
+(`KHEAP_SLAB_CLASSES`, default `16 32 64 128 256 512 1024 2048`, up to
+`KHEAP_SLAB_MAX_CLASS`, alignment permitting) goes to a magazine cache in
+front of the heap (`slab.rs`, after Bonwick's magazines and Linux SLUB):
+
+| Layer | What it is |
+|-------|------------|
+| Per-CPU magazines | Per CPU and class, a `loaded` and a `prev` stack of free objects (`KHEAP_SLAB_MAG_DEPTH`). Alloc pops, free pushes, with the CPU's interrupts masked and no lock. |
+| Depot | Per class, under the class lock: full and empty magazines exchanged with a CPU (`KHEAP_SLAB_DEPOT_MAGS` full ones at most; past that a full magazine is flushed back to its slabs). |
+| Slabs | Power-of-two chunks of the heap (`KHEAP_SLAB_BYTES`), aligned to their size, with the header in the last bytes, so `ptr & !(slab_bytes - 1)` finds an object's slab. A slab whose last object comes back returns to the heap once its class keeps `KHEAP_SLAB_KEEP_EMPTY` empty ones. |
+
+Larger requests go to the heap. A refused request first has the cache give
+back what it holds, then is retried once. A slab is taken from the heap with
+the caller's interrupt state restored, so this layer never walks the heap
+masked. A context that interrupted its own hart inside a heap call has its
+allocation refused and its free deferred to the next heap call, where it
+would otherwise spin on a lock its hart holds.
+
+Hardening: with `SLAB_HARDENED` (default y) a free object's link is stored as
+`next ^ key ^ byteswap(address)` with a key per slab page, a pop checks the
+decoded link names an object of the same slab, a free checks the pointer is
+an object and not the one freed last, and the slab list unlinks only a slab
+whose neighbours link back to it; a failure panics with the addresses. With
+`ALLOC_RANDOM` a new slab hands out its objects from a random start in a
+random step coprime with the object count. The key and the draw come from the
+entropy pool, or from the timer tick mixed with the page address before the
+pool is seeded or when interrupts are masked. `KHEAP_SLAB_DEBUG` poisons freed
+objects (`0x6b`) and red-zones the class slack (`0xbb`), and panics on a
+write after free or an overrun.
+
+Source: `crates/core/mm/src/kheap.rs`, `crates/core/mm/src/slab.rs`,
+`config/Kconfig.limits`, `config/Kconfig.security`.
+
+## Kernel image permissions (W^X)
+
+At boot, after paging is on, the megapages covering the kernel image are split
+into 4 KiB leaves (`vmm::split_mega_range`) and each section is remapped:
+`.text` read-execute, `.rodata` read-only, `.data`/`.bss` read-write and never
+executable (`vmm::enforce_wx`). A page that `.text` shares with `.rodata`
+stays read-execute, and `.rodata` and `.data` start after the previous
+section's last page. The ranges are computed once (`wx::plan_with_ro`) and the
+same output is applied and then read back from the page table
+(`vmm::verify_wx`): the boot prints `[MM] W^X ok: N pages checked` only when
+the readback is clean, and `[MM] W^X FAILED` with the count of W+X, wrongly
+flagged, unmapped and unsplit pages otherwise.
+
+`.data.ro_after_init` holds every function-pointer hook (`ro_hook!`) and, on
+x86_64, the IDT. It is mapped read-write with the rest of `.data` while the
+boot installs them; once every installer has run, before any other CPU or user
+task, `kernel/src/boot/seal.rs` seals the hooks (a later set panics) and
+remaps the section read-only, in the direct-map alias of the image too where
+there is one (x86_64).
+
+User mappings follow the same rule: a region is never executable, and nothing
+adds WRITE to an executable user leaf.
+
+Source: `crates/core/mm/src/wx.rs`, `crates/core/mm/src/vmm.rs`,
+`kernel/src/boot/early.rs`, `kernel/src/boot/seal.rs`.
 
 ## Kernel memory charged to the Domain
 
@@ -392,7 +513,7 @@ security boundary (`crates/core/sched/src/domain.rs`). Three ledgers hang off it
 |--------|------|----------------|-------|
 | `PageBudget` | Frames | Resident frames charged by `brk`, `mmap`, page tables, shm and fork, whichever thread of the Domain runs the call. | Frame limit from the topology row (`mem_pages`; `domain::set_limit`). `0` = unlimited. |
 | Compressed pool ledger | Bytes | Compressed blobs stored for the Domain's pages (`zpool.rs`), and bytes of its segments on swap. | `MM_ZPOOL_DOMAIN_KIB`, `MM_SWAP_DOMAIN_KIB` |
-| `KmemBudget` | Bytes | What the kernel keeps *for* the Domain, by class. | `kmem_kib` of the row. `0` = none. |
+| `KmemBudget` | Bytes | What the kernel keeps *for* the Domain, by class. | `kmem_kib` of the row. `0` = no ceiling. |
 
 Rules shared by `PageBudget` and `KmemBudget` (`crates/core/mm/src/budget.rs`):
 charges are atomic compare-and-swap loops, all-or-nothing (a charge that would
@@ -444,8 +565,19 @@ objects stay resident.
 | 3. Swap | When a storm ended because the pool had no room, one full pool segment is written to the swap area, and compression is asked again. | `pager::swap_segment` |
 
 `reclaim_pass` runs stages 0 and 1, then rounds of stage 2; if a round ended with the
-pool full it runs stage 3 and goes round again, and it stops when a round
-stores nothing or memory is no longer low, after at most `max_rounds` rounds.
+pool full it runs stage 3 and goes round again. It stops when a round
+stores nothing, memory is no longer low, or stage 3 could move no segment,
+after at most `max_rounds` rounds (the reclaim task passes the swap area's
+segment count plus one).
+
+**Pressure comes first.** Before a pass, each poll compares every Domain's
+frame-budget level (`PageBudget::pressure_change`: normal, warning from the
+high watermark, critical at the limit) with the one it last reported, records
+a `mem-pressure` decision for a change, and queues one `PORT_EVENT_PRESSURE`
+on the Port the Domain bound with `PORT_SRC_PRESSURE`. A Domain told it
+crossed into warning, with a Port bound, gets this pass to give memory back:
+its storm waits for the next poll. A Domain that jumped to critical, or has
+no Port bound, is not delayed.
 
 **When it runs.** `kernel/src/tasks/reclaim.rs` polls every `MM_RECLAIM_POLL_MS`.
 A pass runs when frames in use reach `MM_RECLAIM_HIGH_PCT` percent, or a Domain
@@ -458,7 +590,8 @@ time and have no region to take a page from.
 
 ### Stage 2: the compressed pool
 
-The page is compressed with WKdm (`crates/core/crypto/src/wkdm.rs`) and packed
+The page is compressed with WKdm (`crates/core/crypto/src/wkdm.rs`, Kconfig
+`MM_COMPRESS_ALGO_WKDM`, the one member of the algorithm choice) and packed
 into a *segment*, `MM_ZPOOL_SEGMENT_PAGES` of contiguous frames. A page is one
 of three things in the pool: *same-filled* (one 64-bit word repeated; one index
 entry, no bytes), a *blob*, or nothing: a page that does not compress below
@@ -518,8 +651,10 @@ aarch64 without FEAT_HAFDBS) a cleared page costs one fault on its next use.
 ### Stage 3: segment swap (Kconfig `MM_SWAP_BACKEND`)
 
 The unit written out is a full pool segment, never a single page. The
-backend is a Kconfig choice: off, a partition (server), or a file (desktop,
-iot-hmi). With a partition, the boot step (`kernel/src/boot/swap.rs`) claims
+backend is a Kconfig choice: `MM_SWAP_BACKEND_OFF`, `MM_SWAP_BACKEND_PARTITION`
+(server) or `MM_SWAP_BACKEND_FILE` (desktop, iot-hmi); `MM_SWAP_BACKEND` is
+true when either backend is on and `MM_RECLAIM_COMPRESS` is too. The area
+holds at most `MM_SWAP_SEGMENTS` segments. With a partition, the boot step (`kernel/src/boot/swap.rs`) claims
 the swap partition for the kernel (`partition::claim_swap`; from then on no
 capability names it), draws a boot secret from the entropy pool, and attaches
 the area. If there is no swap partition, or the entropy pool is not yet seeded,
@@ -600,8 +735,10 @@ restored. A 32-bit payload is stored inline.
 | `Swapped` | 2 | As `Compressed`, and the entry's segment is on the swap area; a fault brings it back first. | Same |
 | `InTransit` | 3 | The reclaimer is storing the page now: out of the table, not yet in the pool. A fault waits. | Unused |
 
-Encoding per ISA (software bits of an invalid word; the marker flag, the DEMAND
-bit and, on riscv64, the COW bit occupy distinct positions):
+Encoding per ISA (software bits of an invalid word; the marker flag and the
+DEMAND bit occupy distinct positions, and a marker has DEMAND clear; on
+riscv64 the marker flag is the COW bit's position, which only a valid leaf
+reads as COW):
 
 | ISA | Marker flag | Demand flag | Kind code (2 bits) | 32-bit payload |
 |-----|-------------|-------------|--------------------|----------------|
@@ -645,9 +782,9 @@ The cross-ISA contract is in `Mmu` (`crates/core/arch-api/src/lib.rs`):
 | | riscv64 | aarch64 | x86_64 |
 |---|---------|---------|--------|
 | `flush_tlb_page` | `sfence.vma va`, local | `TLBI VAAE1IS` (broadcast) | `invlpg` of the current PCID only |
-| `tlb_shootdown` | SBI `remote_sfence_vma` (and the `_asid` form) to the harts running the space; a local `sfence.vma` first, scoped to the space's ASID when this hart runs it under that ASID | `TLBI ...IS` broadcast then `DSB ISH`; no IPI, return value 0 | IPI to the CPUs holding the root, each running `invlpg`; or, with INVLPGB, a hardware broadcast followed by `TLBSYNC`, no IPI |
+| `tlb_shootdown` | SBI `remote_sfence_vma` (and the `_asid` form) to the harts running the space; a local `sfence.vma` first, scoped to the space's ASID when this hart runs it under that ASID | `TLBI ...IS` broadcast then `DSB ISH` (with `TLB_ASID_SCOPED`, `ASIDE1IS`/`VAE1IS` on the space's ASID); no IPI, return value 0 | IPI to the CPUs holding the root, each running `invlpg`; or, with INVLPGB (Kconfig choice, default `X86_INVLPGB_PROBE`), a hardware broadcast followed by `TLBSYNC`, no IPI |
 | Who is signalled | Harts whose published `satp` (`AZOS_HART_SATP`) names the root | Everyone (hardware broadcast) | CPUs whose published CR3 (`AZOS_HART_CR3`) names the root |
-| Ranged form | `sfence.w.inval; sinval.vma; sfence.inval.ir` for ranges of `SVINVAL_MIN_PAGES` or more when Svinval is present (Kconfig `RV_SVINVAL`, execution-probed) | `TLBI RVAE1IS`/`RVAAE1IS` (FEAT_TLBIRANGE, Kconfig `A64_TLBIRANGE`) for ranges of `A64_TLBIRANGE_MIN_PAGES` or more, at most five operations for any length | Above `TLB_FLUSH_CEILING_PAGES` pages, the whole PCID is dropped instead of one `invlpg` each |
+| Ranged form | Local part: `sfence.w.inval; sinval.vma; sfence.inval.ir` for ranges of `SVINVAL_MIN_PAGES` (2) or more when Svinval is present (Kconfig choice, default `RV_SVINVAL_PROBE`, execution-probed); above `TLB_FLUSH_CEILING_PAGES` pages one full flush, ASID-scoped where it can be | `TLBI RVAE1IS`/`RVAAE1IS` (FEAT_TLBIRANGE, Kconfig choice, default `A64_TLBIRANGE_PROBE`) for ranges of `A64_TLBIRANGE_MIN_PAGES` (4) or more, at most five operations for any length; per page otherwise | Above `TLB_FLUSH_CEILING_PAGES` (33) pages, the whole PCID is dropped instead of one `invlpg` each |
 | `flush_tlb_all` | `sfence.vma`, local | `TLBI VMALLE1IS` | `invpcid` type 2, else a CR4.PGE toggle; local |
 | `flush_tlb_asid` | Falls back to a full local `sfence.vma` | `TLBI ASIDE1IS` | `invpcid` single-context, else a CR3 reload of the live PCID |
 | `root_holders` | Exact, from the published `satp` of every hart | This PE's own `TTBR0_EL1` only | From the published CR3 of every CPU |
