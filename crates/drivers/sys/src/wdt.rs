@@ -162,7 +162,7 @@ static BACKENDS: &[&Found] = &[
     &sbsa::FOUND,
     #[cfg(feature = "wdt-sp5100")]
     &sp5100::FOUND,
-    #[cfg(feature = "bcm2835-pm")]
+    #[cfg(feature = "wdt-bcm2835-pm")]
     &pm::FOUND,
 ];
 
@@ -179,7 +179,7 @@ pub fn found() -> Option<&'static Found> {
 
 /// Make `w` the hardware watchdog. Refused when one is already installed:
 /// the bus found a second.
-#[cfg(any(feature = "wdt-sbsa", feature = "wdt-sp5100", feature = "bcm2835-pm"))]
+#[cfg(any(feature = "wdt-sbsa", feature = "wdt-sp5100", feature = "wdt-bcm2835-pm"))]
 fn install(w: &'static Found) -> Result<(), azos_drv_base::window::Taken> {
     let i = BACKENDS.iter().position(|b| core::ptr::eq(*b, w)).ok_or(azos_drv_base::window::Taken)? + 1;
     FOUND.compare_exchange(0, i as u8, Ordering::AcqRel, Ordering::Acquire)
@@ -350,7 +350,7 @@ pub fn sp5100_attach(pm: usize, wdt: usize) -> Result<bool, crate::wdt_sp5100::R
 
 /// The PM block (`azos_drv_power::bcm2835_pm`): its window, and the countdown
 /// [`wdt_init`] armed, in watchdog ticks (every kick reloads it).
-#[cfg(feature = "bcm2835-pm")]
+#[cfg(feature = "wdt-bcm2835-pm")]
 mod pm {
     use super::{AtomicU32, Ordering};
     use azos_drv_base::window::Window;
@@ -409,7 +409,7 @@ mod pm {
 /// written: the watchdog stays as the firmware left it until [`wdt_init`] arms
 /// it, and only with Kconfig WDT_BCM2835_PM_ARM. `Err` when a block is already
 /// attached or another watchdog was found.
-#[cfg(feature = "bcm2835-pm")]
+#[cfg(feature = "wdt-bcm2835-pm")]
 pub fn pm_attach(base: usize) -> Result<(), azos_drv_base::window::Taken> {
     if found().is_some() {
         return Err(azos_drv_base::window::Taken);
@@ -417,7 +417,7 @@ pub fn pm_attach(base: usize) -> Result<(), azos_drv_base::window::Taken> {
     pm::WINDOW.attach(base)?;
     // Kconfig WDT_BCM2835_PM_ARM = n: the block is the reset handler only, and
     // no hardware watchdog is armed (QEMU raspi3b resets on the arming write).
-    if cfg!(feature = "bcm2835-pm-arm") {
+    if cfg!(feature = "wdt-bcm2835-pm-arm") {
         install(&pm::FOUND)
     } else {
         Ok(())
@@ -429,7 +429,7 @@ pub fn pm_attach(base: usize) -> Result<(), azos_drv_base::window::Taken> {
 /// comes about 150 us after the write; the call waits a millisecond for it
 /// and returns only when no block is bound or the reset did not come, so the
 /// caller can try the next way.
-#[cfg(feature = "bcm2835-pm")]
+#[cfg(feature = "wdt-bcm2835-pm")]
 pub fn pm_reset(halt: bool) {
     use azos_drv_power::bcm2835_pm as p;
     let Some(base) = pm::WINDOW.base() else { return };
