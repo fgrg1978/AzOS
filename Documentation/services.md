@@ -17,7 +17,8 @@ Source: `crates/core/topology/src/builder.rs`, `crates/core/sched/src/seccomp.rs
   the topology row named after it (an upper-case 8.3 name such as `NAMESD.ELF`).
   The built-in topology (`default_minimal` in `crates/core/topology/src/builder.rs`)
   holds the rows below; a signed `CAPS.TOML` writes its own. A row is the program's
-  whole authority: spawning another program lends it nothing.
+  whole authority: spawning another program lends it only the descriptors the spawner
+  moves to it.
 - **A system-call filter.** Each image has a profile bound to the SHA-256 of its image
   (`IMAGE_PROFILES` in `crates/core/sched/src/seccomp.rs`). Every system call a program
   makes is a `sys::name(..)` call, so `tests/host/seccomp-tests` derives the profile
@@ -31,8 +32,9 @@ Source: `crates/core/topology/src/builder.rs`, `crates/core/sched/src/seccomp.rs
   derived call-only capability or a recorded refusal.
 - **Started by.** A row with `start = true` is started at boot by `compmgr`, which the
   kernel starts and restarts itself (the one ring-3 image the kernel supervises: a
-  supervisor does not supervise itself). That includes the ring-3 host of a driver that
-  moves between hosts at run time (`stateless`, today the buzzer): it stays up, and the
+  supervisor does not supervise itself; without its row, Kconfig `USERSPACE_COMPMGR`, no
+  ring-3 row is started). That includes the ring-3 host of a driver that
+  moves between hosts at run time (`stateless`, the buzzer): it stays up, and the
   kernel's placement controller only routes calls between that host and the kernel one.
   Which rows exist and which start depends on Kconfig (the third column below).
 - **Image options.** A crate declares the images it builds in `[package.metadata.azos]` of
@@ -49,19 +51,19 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 
 | Image | Directory | Starts | Serves | Calls | Row capabilities |
 |---|---|---|---|---|---|
-| `COMPMGR.ELF` | `userspace/services/compmgr` | always, by the kernel | nothing | | R+M `MemObj inspect.components`, X on every row it starts |
-| `NAMESD.ELF` | `userspace/services/namesd` | with the native shell session | `endpoint.names` (`Names`) | | R `endpoint.names`, W+transfer `endpoint.term`, R+M `MemObj inspect.names` |
-| `TERMD.ELF` | `userspace/services/termd` | console program | `endpoint.term` (`Terminal`) | | R `endpoint.term`, RWM `MemObj input.events` (with a keyboard/mouse driver), RWM `MemObj console.screen` (with `FB_CONSOLE`) |
-| `SH.ELF` | `userspace/services/sh` | with `TERMD.ELF` | nothing | `Terminal`, `Names` | X on the tool images, RW `/fat`, RW `/tmp`, `tasks` view, `ROOT_RO` |
-| `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `sound.0` or `endpoint.audio` (`beep`), `endpoint.input` (`input`), `endpoint.compositor` (`window`) | `tasks` view, R `net`, R `clock`, RW `sound.0` (or W `endpoint.audio`, lent, with Kconfig `AUDIOD`), W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO` |
-| `POWER.ELF` | `userspace/services/power` | by the shell | nothing | `power` | RW `power`, R `sensor.9`, X `endpoint.pm-gpio` and `endpoint.pm-ina` (the drivers' `DevicePower`) |
+| `COMPMGR.ELF` | `userspace/services/compmgr` | by the kernel, with Kconfig `USERSPACE_COMPMGR` (default y) | nothing | | R+M `MemObj inspect.components`, X on every row it starts |
+| `NAMESD.ELF` | `userspace/services/namesd` | with the native shell session | `endpoint.names` (`Names`) | | R `endpoint.names`, W+transfer `endpoint.term`, W+transfer `endpoint.vmctl` (with Kconfig `HV`), R+M `MemObj inspect.names` |
+| `TERMD.ELF` | `userspace/services/termd` | console program | `endpoint.term` (`Terminal`) | `Login` (behind a console login) | R `endpoint.term`, W `endpoint.login` (with `LOGIND.ELF`'s row), RWM `MemObj input.events` (with a keyboard/mouse driver), RWM `MemObj console.screen` (with `FB_CONSOLE`) |
+| `SH.ELF` | `userspace/services/sh` | with `TERMD.ELF`; behind a console login with users enrolled, by `LOGIND.ELF` | nothing | `Terminal`, `Names` | X on the tool images, RW `/fat`, RW `/tmp`, `tasks` view, `ROOT_RO`; imports `term` |
+| `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `sound.0` or `endpoint.audio` (`beep`), `endpoint.input` (`input`), `endpoint.compositor` (`window`), `endpoint.vmctl` (`vm`) | `tasks` view, R `net`, R `clock`, RW `sound.0` (with Kconfig `DRV_VIRTIO_SND`; or W `endpoint.audio`, lent, with Kconfig `AUDIOD`), W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO`; imports `vmctl` (with Kconfig `HV`) |
+| `POWER.ELF` | `userspace/services/power` | by the shell | nothing | `power` | RW `power`, R `sensor.9`, X `endpoint.pm-gpio` and `endpoint.pm-ina` (where the INA219 driver has a ring-3 row; the drivers' `DevicePower`) |
 | `TRACECTL.ELF` | `userspace/services/tracectl` | by the shell | nothing | `trace` | RW `trace` log, RW `/fat`, `ROOT_RO` |
 | `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | `userspace/services/famtools` | by the shell | nothing | `flight`, `behavior`, `config`, `ota` | see [famtools](#famtools) |
-| `DECISD.ELF` | `userspace/services/decisd` | with Kconfig `DECISION_REFUSALS_DURABLE` or `DECISION_RECORDS_DEV` | `endpoint.decisions` (`Decisions`) | | R `endpoint.decisions`, `tasks` view, R+M `MemObj inspect.public`, R+M `MemObj inspect.admin` |
+| `DECISD.ELF` | `userspace/services/decisd` | with Kconfig `DECISION_REFUSALS_DURABLE` or `DECISION_RECORDS_DEV` | `endpoint.decisions` (`Decisions`) | | R `endpoint.decisions`; with Kconfig `INSPECT` and an admin region: `tasks` view, R+M `MemObj inspect.public`, R+M `MemObj inspect.admin` |
 | `LOGD.ELF` | `userspace/services/logd` | with Kconfig `KLOG` | nothing | | R+M `MemObj klog.ring`, RW `/fat`, `ROOT_RO` |
 | `INPUTD.ELF` | `userspace/services/inputd` | with Kconfig `INPUTD` | `endpoint.input` (`Input`) | | RW+transfer `endpoint.input` (R serves it; W+transfer is the source of its warrants), RWM `MemObj input.events` |
 | `COMPSRV.ELF` | `userspace/services/compositor` | with Kconfig `COMPOSITOR` | `endpoint.compositor` (`Compositor`) | `display.0`, `endpoint.input` (trusted), `endpoint.decisions` | R+W+transfer `endpoint.compositor` (R serves it; W+transfer is the source of its windows' rights), RWX `display.0`, WX `endpoint.input` (the kernel badges it as the trusted surface's), W `endpoint.decisions` (where `DECISD.ELF` runs) |
-| `WHY.ELF` | `userspace/services/why` | by the shell | nothing | `endpoint.decisions`, `endpoint.rpc-decisions` | W both, R `entropy`, `ROOT_RO` |
+| `WHY.ELF` | `userspace/services/why` | by the shell | nothing | `endpoint.decisions`, `endpoint.rpc-decisions` | W both, R `entropy`, `ROOT_RO`, R+M `MemObj inspect.public` (Kconfig `INSPECT`, not under `CONSOLE_LOCKDOWN`) |
 | `PKGD.ELF` | `userspace/services/pkgd` | every hardware class but embedded | `endpoint.packages` (`Packages`) | `ota`, a pinned HTTPS source (a TCP socket, by its seccomp profile) | R `endpoint.packages`, RW `/fat/PKG`, R `ota`, R `entropy`, `ROOT_RO` |
 | `PKG.ELF` | `userspace/services/pkg` | by the shell | nothing | `endpoint.packages` | W `endpoint.packages`, `ROOT_RO` |
 | `RPCSRV.ELF` | `userspace/services/rpcsrv` | with Kconfig `RPC_PEER_NODE` set | `endpoint.rpc-*` proxies | the real endpoints it exports | R `endpoint.rpc-decisions`, W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), R+M `MemObj inspect.rpc` |
@@ -69,9 +71,10 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `ZENOHD.ELF` | `userspace/services/zenohd` | Kconfig `ZENOH_GW` | Zenoh queryables | `endpoint.decisions` | W+transfer `endpoint.decisions`, R `entropy` |
 | `MCPD.ELF` | `userspace/services/mcpd` | Kconfig `MCP_BRIDGE` | MCP tools | `endpoint.decisions` and the endpoints it fronts | W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), R+M `MemObj inspect.mcp` |
 | `PTPD.ELF` | `userspace/services/ptpd` | Kconfig `PTPD` | nothing | `clock` | W `clock`, R+M `MemObj inspect.clock` |
+| `SSHD.ELF` | `userspace/services/sshd` | Kconfig `SSHD` (default y but on `MICRO`, certifiable and embedded-profile builds) | nothing; listens on TCP `SSHD_PORT` | `keys` (the host key's signatures) | R `entropy`, RW `keys` masked to `generate`, `public`, `sign`, RW `/fat`, X `TOOLBOX.ELF`, `ROOT_RO`, R+M `MemObj inspect.logins`; principal `user` |
 | `LOGIND.ELF` | `userspace/services/logind` | Kconfig `CONSOLE_LOGIN` (default n) | `Login` on `endpoint.login` | `TERMD.ELF` calls it | `READ` `endpoint.login`, `EXEC` `keys` masked to `login`, launch `SH.ELF`, R+M `MemObj inspect.logins` |
 | `AUDIOD.ELF` | `userspace/services/audiod` | Kconfig `AUDIOD` | `endpoint.audio` (`Sound`) | `sound.0` | R `endpoint.audio`, RW `sound.0`, W `time` (the mixer thread's own deadline reservation, Kconfig `AUDIOD_PUMP_*`); the row itself is best effort |
-| `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | nothing | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, RW `/fat/VM`, `ROOT_RO` |
+| `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | `endpoint.vmctl` (`VmCtl`) | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, R `endpoint.vmctl`, RW `/fat/VM`, `ROOT_RO` |
 | `LXSRV.ELF` | `userspace/services/lxsrv` | `lx-server` builds | nothing | | R `entropy`, `ROOT_RO` |
 | `MLSRV.ELF` | `userspace/services/infsrv` | by the kernel's behavior task | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
 | lxrt | `userspace/services/lxrt` | mapped into each Linux process | the Linux system-call surface | | no row |
@@ -94,15 +97,18 @@ The interfaces the services share, from `userspace/lib/`:
 Source: `userspace/services/compmgr/src/main.rs`, `userspace/services/compmgr/src/tree.rs`,
 `userspace/services/compmgr/src/contracts.rs`.
 
-The component manager is the one row the kernel starts (and restarts, on failure) on every
-build. It reads the signed topology's startable rows from its view region
+The component manager is the one row the kernel starts (and restarts, on failure), on every
+build whose volume carries it (Kconfig `USERSPACE_COMPMGR`, default y; without its row the
+kernel starts no ring-3 row). It reads the signed topology's startable rows from its view region
 (`MemObj inspect.components`, granted only to its row; a row whose image is not on the
-volume is listed with `start` 0, a row that moves between hosts is not listed), starts each with `SYS_SPAWN_EX` in dependency order, supervises them, and
+volume is listed with `start` 0, a Linux class server's row only once the bus has bound a
+device of its class), starts each with `SYS_SPAWN_EX` in dependency order, supervises them, and
 writes one console line for every start, restart, clean end, give-up and refusal. Its row
 holds `EXEC` on each image it starts, because `SYS_SPAWN_EX` checks a launch grant on the
 image whoever the caller is (for a row an applied package brought, the boot adds that grant
 to the manager's row once the package is admitted, and records it as a decision); a child holds what its own row grants: the manager lends it
-no handle, environment or descriptor, and a child dies with the manager. The kernel gives
+no handle or environment, only the console on descriptors 1 and 2 (`request.rs`), and a
+child dies with the manager. The kernel gives
 the console program the console when the manager starts it (arguments, descriptors 0-2,
 console input for a Linux program), so the manager knows nothing of it.
 
@@ -122,11 +128,12 @@ Source: `userspace/services/namesd/src/main.rs`, `userspace/services/namesd/src/
 `userspace/lib/term/src/lib.rs`.
 
 `namesd` is the name server. Its row is the whole name space: it serves `endpoint.names`
-and holds the lendable calling capability on the endpoints it may lend (today
-`endpoint.term`). `Names::lookup` returns, for a name the caller's row imports, a derived
+and holds the lendable calling capability on the endpoints it may lend (`endpoint.term`,
+and `endpoint.vmctl` where the monitor's row exists). `Names::lookup` returns, for a name the caller's row imports, a derived
 capability with the call right only (not `DUP`, so the borrower cannot pass it on),
 expiring after `NAMES_LEND_TTL_MS` (a lapsed handle is refused and the borrower asks
-again). For any other name nothing is lent and the server records the refusal.
+again; 0, the embedded default, sets no deadline: the loan lives as long as the server's
+own capability). For any other name nothing is lent and the server records the refusal.
 `Names::who_serves` returns the name of the task serving an endpoint, or zero. The caller
 is identified by the badge the kernel stamped from its row. It reads the rows' imports and
 the pool index of each endpoint it holds from its view region (`MemObj inspect.names`).
@@ -139,7 +146,8 @@ dispatch, reply.
 
 `termd` is also the console's input consumer, as gpm is on a Linux console
 (`keys.rs`, `mouse.rs`, `input.rs`). The kernel's input drivers (PS/2 on x86_64,
-virtio-input on all three ISAs) publish every event the console has no byte for into one
+virtio-input on all three ISAs, and USB HID keyboards and mice, `kernel/src/boot/usb_hid.rs`,
+into the ring the first two make) publish every event the console has no byte for into one
 ring, in one word format (`crates/drivers/input/wire`): arrows, F-keys, Home/End,
 PgUp/PgDn, Ins/Del, the modifier keys, mouse buttons, axes and wheel. The ring is a
 kernel-owned memory object that the row grants as `MemObj input.events` (`READ|WRITE|MAP`,
@@ -199,11 +207,48 @@ rights on `TOOLBOX.ELF`, `/tmp` read-write and `ROOT_RO`.
 | `log [-n N] [-l LEVEL] [-m MODULE]` | the kernel log `logd` keeps in `KLOGn.TXT`: the last N lines (20; 0 for all) at or below LEVEL (`e`, `w`, `i`, `d`) from modules starting with MODULE, oldest first |
 | `host NAME` | the A and AAAA records of a name, from the stack's resolver (`Net::resolve`) |
 | `ntp` | the SNTP client's server and last exchange (`Net::ntp_status`) and, from `Clock::status`, the clock discipline's state |
+| `beep [MS]` | a short tone, through `audiod` or straight on `sound.0` (see [audiod](#audiod)) |
+| `input`, `window` | the input server's and the compositor's clients (see [inputd](#inputd), [compositor](#compositor)) |
+| `vm list`, `vm start ROW [--image NAME] [--cpus N] [--mem MIB]` (ROW a row number or a kernel image name), `vm stop ID`, `pause`, `resume`, `console` | a guest, through the monitor's `VmCtl` (Kconfig `HV`; the name server lends `endpoint.vmctl`) |
 
 It reads and writes the descriptors the shell moved to it and opens files beneath
 `ROOT_RO`. Its row grants the full task view (for `ps`), `READ` on the `net` and `clock`
 endpoints (`host`, `ntp`) and, with Kconfig `INSPECT`, the `inspect.public` and
-`inspect.admin` regions; a stop request ends its waits and it exits 130.
+`inspect.admin` regions, and imports `vmctl` where the monitor's row exists; under
+`CONSOLE_LOCKDOWN` it holds `ROOT_RO` alone. A stop request ends its waits and it exits 130.
+
+## logind
+
+Source: `userspace/services/logind/src/main.rs`, `userspace/services/logind/src/daemon.rs`,
+`userspace/lib/login/src/lib.rs`, `userspace/services/termd/src/secure.rs`; the check is
+`Keys::login` in `crates/core/syscall/src/keys.rs`. Host tests `tests/host/logind-tests`.
+
+The console's way in (Kconfig `CONSOLE_LOGIN`, default n; the row needs the image too,
+`USERSPACE_LOGIND`). The accounts are the signed topology's `[login.NAME]` rows; with none
+the console is the system's, the service asks the kernel once with no name (an `Admit`
+record) and the component manager starts the shell as before. With users enrolled the
+manager does not start `SH.ELF`: the shell is the login service's to start.
+
+* **The prompt is the terminal server's.** On the secure-attention key (Ctrl+Alt+Delete on a
+  keyboard, the byte `LOGIN_SAK_SERIAL_BYTE`, 29 by default, on a serial line) `termd` stops
+  serving the shell, ends a live session (`Login::end`; it draws the prompt only when that
+  succeeded) and reads the user name (echoed) and the passphrase (not echoed) itself. It turns
+  them into the credential, PBKDF2-HMAC-SHA256 salted by the user name, wipes the passphrase,
+  and calls `Login::login` on `endpoint.login`. The kernel mints `termd`'s call right only on
+  a gated console (`login_call_withheld`), so a login service that is down cannot lock a
+  console nobody can log in to; on a gated one an unreachable service keeps it locked.
+* **The kernel decides.** `logind` holds `EXEC` on `keys` masked to the `login` op and passes
+  the words through. The kernel derives a verifier from the credential with the board's
+  boot root and compares it in constant time with every key of the named row (a name no row
+  lists is checked against no key). `LOGIN_MAX_FAILURES` (5) wrong credentials in a row lock
+  the account for `LOGIN_LOCKOUT_S` (30 s); each verdict is a `login` decision record. An
+  admitted credential arms a one-shot grant on the service's Domain for
+  `LOGIN_GRANT_TTL_S` (20 s).
+* **The session.** The service spends the grant at once, starting `/fat/SH.ELF` with
+  `SPAWN_F_USER`: the shell's Domain and every Domain beneath it are the user's. One session at
+  a time; the service keeps the shell's TID and nothing of the credential, and `Login::end`
+  stops the shell and its subtree. A logins view it cannot read counts as users enrolled, so
+  the gate stays shut.
 
 ## power, tracectl and famtools
 
@@ -344,8 +389,9 @@ Source: `userspace/services/compositor/src/main.rs`, `windows.rs`, `trust.rs`, `
 `panel.rs`, `userspace/lib/compositor/src/lib.rs`, `userspace/lib/compose` (the pixel
 engine), `userspace/services/toolbox/src/window.rs`.
 
-The compositor (Kconfig `COMPOSITOR`, needs `INPUTD` and a framebuffer): the sole holder of
-the kernel's `Display` interface and the trusted surface of the Secure Attention Key. Its row
+The compositor (Kconfig `COMPOSITOR`, needs `INPUTD` and a framebuffer): in the built-in
+topology the one row that holds `WRITE` or `EXEC` on the kernel's `Display` interface
+(`display.0`), and the trusted surface of the Secure Attention Key. Its row
 is its whole authority (see the table). It serves the `Compositor` object on
 `endpoint.compositor`.
 
@@ -446,6 +492,7 @@ from the dump files beneath `ROOT_RO`.
 | `why ID` | the chain behind decision `ID` |
 | `why list [-r RULE] [-v VERDICT] [-s SUBJECT] [-a AFTER_ID]` | the decisions that pass the filter |
 | `why crash [TID]` | the minidump of a task a fault killed |
+| `why woke [N]` | the last N logged wakes (source, Domain woken, age; task IDs with the admin region) from the introspection tree, no call to the server |
 
 Exit status: 0, 1 when the decision or dump is not held, 2 on a usage error or no endpoint,
 3 when the server failed.
@@ -456,21 +503,23 @@ Exit status: 0, 1 when the decision or dump is not held, 2 on a usage error or n
 |---|---|
 | `admit` | would the device take the package in the memory object? Changes nothing. |
 | `install` | admit and stage the package and journal the decision; `#[once_only]`, `on_failure(degrade)` |
-| `remove` | unstage a package by id; `#[once_only]` |
-| `installed` | the id of the `index`-th staged package file |
-| `update` | stage a signed whole-system update (kernel, userspace images, topology, configuration) into the inactive boot slot's directory under `/fat/PKG`, and read it back; nothing switches; `#[once_only]` |
+| `remove` | unstage a package by id; `#[once_only]`, `on_failure(degrade)` |
+| `installed` | the id of the `index`-th staged package file; `#[idempotent]` |
+| `update` | stage a signed whole-system update (kernel, userspace images, topology, configuration) into the inactive boot slot's directory under `/fat/PKG`, and read it back; nothing switches; `#[once_only]`, `on_failure(degrade)` |
 | `fetch` | get the package from the source the rows in `/fat/PKG/SOURCE.CFG` describe (a pinned HTTPS server; in a development build also a TFTP server, below) and install it as `install` does; `#[once_only]`, `on_failure(degrade)` |
+| `fetch_update` | `update` for a bundle (or a delta against the running slot's set) the installer gets from the same source, at most `PKG_MAX_KB`; `#[once_only]`, `on_failure(degrade)` |
 
 It verifies a package against the signers of the device's signed topology, admits its rows
 as a topology delta (with the `neverallow` rules), stages the package, and journals the
-decision on the native volume the topology mounts for it (`/pkg`, or `/fat/PKG` on the boot
-volume when there is none), the two together durable or not at all. Whoever can write the
+decision on the native volume the topology mounts for it (`/pkg`, a `[volume.NAME]` row),
+the two together durable or not at all. The kernel applies packages from that volume only,
+so without it an install is refused rather than staged on the boot volume (`stage.rs`). Whoever can write the
 staging volume can stage a file without the installer, so the verdict is not a trust anchor:
 a consumer verifies again. It holds no authority over the boot record; `ota switch` and the
 kernel own the switch. `PKG.ELF` is its client (`pkg admit FILE`, `pkg install FILE`,
-`pkg fetch`, `pkg list`, `pkg remove ID`): it reads the file into a memory object, hands the installer
-that capability and the length, and prints the answer; `pkg fetch` hands it nothing, the
-installer dials the source itself.
+`pkg fetch`, `pkg update FILE`, `pkg fetch-update`, `pkg list`, `pkg remove ID`): it reads the file into a memory object, hands the installer
+that capability and the length, and prints the answer; `pkg fetch` and `pkg fetch-update`
+hand it nothing, the installer dials the source itself.
 
 `pkgd` is a `std` program (the SDK, like `rpcquic`) because the fetch is TLS: `azos_tls`
 (rustls with the rustls-rustcrypto provider, `third_party/vendor`) dials the address in
@@ -537,23 +586,26 @@ Source: `userspace/services/zenohd/src/main.rs`, `userspace/services/zenohd/src/
 `userspace/services/mcpd/src/warrant.rs`, `userspace/services/mcpd/src/receipt.rs`.
 
 Both turn an external request into one warrant-guarded IDL call that the kernel admits or
-refuses, and answer with the decision record that is the receipt. Neither adds an
-authority check of its own, so neither can grant a right. Both are single-threaded and
+refuses, and answer with the decision record that is the receipt. `zenohd` adds no
+authority check of its own and `mcpd`'s warrants only narrow what its row may call, so
+neither can grant a right. Both are single-threaded and
 redial a lost link with a growing wait.
 
 **zenohd** is a Zenoh client of one router (TCP to `ZENOH_ROUTER_ADDR`:`ZENOH_ROUTER_PORT`).
-It declares queryables from the exports named by Kconfig `ZENOH_DECISIONS_KEY`; a query
+It declares the `Decisions` ops as queryables under the key expression of Kconfig
+`ZENOH_DECISIONS_KEY` (empty, the default: none); a query
 whose last key chunk names an op (`azos/dec/get` is `Decisions::get`) is turned into a
 warrant (an attenuated, badged, call-only copy of the export's endpoint that lapses with the
 query), one call through it, and a reply whose payload is little-endian `u64` words: a code
 (`SERVED`, `REFUSED`, `BAD_REQUEST`, `FAILED`, `BUSY`), the receipt id, the receipt's rule
-and verdict, the IDL status, then the op's reply words. With a topic prefix configured it
+and verdict, the IDL status, then the op's reply words. With a topic prefix configured
+(Kconfig `ZENOH_DECISION_TOPIC`, `azos/decisions` by default) it
 also publishes every decision record under `<prefix>/<rule>/<verdict>`, rate limited, and
 counts the records overwritten before they could be read. It is not the warrant transport
 between nodes (that is `rpcsrv`). It opens no file; its configuration is Kconfig.
 
-**mcpd** serves the Model Context Protocol over a TCP stream. The native stack has no
-listening socket for ring 3, so it dials out (`MCP_PEER_ADDR`:`MCP_PORT`) and plays the MCP
+**mcpd** serves the Model Context Protocol over a TCP stream. It dials out
+(`MCP_PEER_ADDR`:`MCP_PORT`: a relay or the agent's host listens) and plays the MCP
 server role over the stream. Its tools come from the IDL op tables: an op of an exported
 interface becomes the tool `<interface>.<op>` when it declares its delivery
 (`#[idempotent]`, `#[at_most_once]` or `#[once_only]`), takes no capability, and has a number
@@ -573,6 +625,44 @@ bridge refuses to run.
 
 Its view region (`MemObj inspect.mcp`) lists the endpoints its row holds with the call
 and the lend right; the bridge keeps those its own table holds so.
+
+## sshd
+
+Source: `userspace/services/sshd/src/main.rs`, `server.rs`, `auth.rs`, `kex.rs`,
+`session.rs`; host tests `tests/host/sshd-tests`.
+
+The SSH-2 server (Kconfig `SSHD`, on but for `MICRO`, certifiable and embedded-profile
+builds), listening on TCP `SSHD_PORT` (22). Its row is its whole authority (see the table);
+the socket is its seccomp profile's. The row's principal is `user`, inherited by the images
+it starts, so a login is held to a human session's envelope.
+
+* **Algorithms.** `curve25519-sha256` (and its `@libssh.org` name) with OpenSSH's strict key
+  exchange, host key `ssh-ed25519`, cipher `chacha20-poly1305@openssh.com`, compression
+  `none`; a client that offers none of them is refused.
+* **Login** is `publickey` only, `ssh-ed25519`: a signature over the session id and the
+  request by a key a `[login.NAME]` row of the signed topology lists for that user name
+  (read from `MemObj inspect.logins` at every connection). There is no password or
+  keyboard-interactive method and no key file on the volume. With no `[login.NAME]` row
+  nobody can log in. Six failed attempts or 24 requests end the connection.
+* **The host key** is the keystore's `sshd.host`, derived by the kernel from the board seed
+  for this image, so it is stable across boots of the same image; the task gets its public
+  part and has the kernel sign each exchange hash (`keys` masked to `generate`, `public`,
+  `sign`; no `linkkey` grant). On a board with no key sector, or for an image the loader did
+  not measure, it is a random key of this boot. The fingerprint is printed at every start.
+* **Sessions.** One connection at a time: a second is accepted and closed, and one that has
+  not logged in within 10 s is closed. The channel is `session` only (no forwarding); `exec`
+  or `shell`, with or without `pty-req`, runs one image per command, an applet of
+  `TOOLBOX.ELF` or another image the row may launch (the built-in row: `TOOLBOX.ELF` alone),
+  with the channel as its stdio through two pipes. The line editing is `termd`'s discipline;
+  pipelines, redirections and jobs are the shell's and are refused here.
+* **Records.** Every refused key exchange, login and session, and every login, is a console
+  line and a line of `/fat/SSHAUTH.LOG` (rotated to `/fat/SSHAUTH.OLD` at 32 KiB); refusals of
+  extra connections are counted and written once per 10 s. Ring 3 cannot write the kernel's
+  journal.
+* **Write tree.** The row holds `/fat` read-write, the whole volume, because the file layer
+  opens no file inside a directory, so there is no narrower tree to give for one log file. The
+  logins and the host key are not on the volume; an image it rewrites still has to match the
+  digest table the kernel spawns by.
 
 ## ptpd
 
@@ -668,8 +758,9 @@ The ring-3 virtual-machine monitor. The kernel's hypervisor core owns what only 
 can (stage-2 tables and the vCPU threads); `vmmd` serves everything a guest does with a
 device. The guest holds no warrant, but `vmmd`'s backends do: the disk is a file opened
 through the directory capability of its row, the console is the console this task writes,
-the NIC is a ring pair. Its row holds `READ|EXEC` on `vm.0`, `READ|WRITE|EXEC` on each
-`vcpu.0.k`, `RW` on `/fat/VM`, and `ROOT_RO`: no motor, pin or network authority.
+the NIC is a ring pair. It serves `VmCtl` on `endpoint.vmctl`, through which the
+`vm` applet starts, pauses and ends guests. Its row holds `READ|EXEC` on `vm.0`, `READ|WRITE|EXEC` on each
+`vcpu.0.k`, `READ` on `endpoint.vmctl`, `RW` on `/fat/VM`, and `ROOT_RO`: no motor, pin or network authority.
 
 ## lxsrv and lxrt
 
@@ -700,9 +791,8 @@ argument registers to the call the runtime answers, and the runtime writes the x
 
 Source: `userspace/services/infsrv/src/` (`lib.rs` is the broker, `main.rs` the program),
 `crates/core/devif/src/infer.rs`, `userspace/lib/ml/src/bundle.rs`; its client in the kernel is
-`kernel/src/behavior_ml.rs` and `kernel/src/behavior_infer.rs`. Tests: `tests/host/infsrv-tests`. The image is still called
-`MLSRV.ELF`: the topology row, the seccomp profile and the disk-image recipes name it, and are
-renamed together.
+`kernel/src/behavior_ml.rs` and `kernel/src/behavior_infer.rs`. Tests: `tests/host/infsrv-tests`. The image is
+`MLSRV.ELF`: the topology row, the seccomp profile and the disk-image recipes name it.
 
 The ring-3 inference service.
 
@@ -734,8 +824,9 @@ when it changes the variant a model runs on, not on every call. The records are 
 own journal (a ring-3 server cannot write the kernel's), served as a `Decisions` object so a
 receipt is read back with `azos_decisions::fetch`. The energy of the chosen variant is reserved
 when it is admitted; a run that took longer than its signed worst case is charged the excess at
-the variant's own rate, and the energy the caller is told is what it was charged. `attach` and
-`detach` (the queue form of the interface) are `UNSUPPORTED` until a queue is driven.
+the variant's own rate, and the energy the caller is told is what it was charged. The queue form
+of the interface is not served: `attach` drops the three capabilities and answers
+`UNSUPPORTED`, and `detach` answers success with nothing to stop.
 
 The blob arena is a volatile memory object (`SHM_ATTR_VOLATILE`, `Documentation/memory.md`), not
 `.bss`: the weights are files on the volume, so the service can make them again. Between calls
@@ -772,7 +863,7 @@ than the one asked for, or logits that are not numbers. The reply's model refere
 backend travel with the verdict into the trajectory record of the motor command
 (`azos_robot::ModelRecord`). The start-up self-test classifies the policy file
 `/fat/POLICY.GGF` once its signature `/fat/POLICY.SIG` (a `DSIG`) verifies (Kconfig
-`INFER_MODEL_SIG_REQUIRED`). Its row is `soft_rt` at priority 16 and grants `READ` on
+`INFER_MODEL_SIG_REQUIRED`, default y; with it off the file is classified unchecked). Its row is `soft_rt` at priority 16 and grants `READ` on
 `endpoint.infer`, `WRITE` on `memctl` and `ROOT_RO`; it serves on its main thread. It runs
 hard-float on aarch64.
 
@@ -781,14 +872,17 @@ hard-float on aarch64.
 Source: `userspace/services/brain_client/src/main.rs`,
 `userspace/services/brain_client/src/link.rs`, `userspace/services/reflex/src/main.rs`.
 
-Two programs of the robot domain (Kconfig `USE_ROBOT`). `BRAINCLI.ELF` reads the sensors
+Two programs of the robot domain. `BRAINCLI.ELF` reads the sensors
 through syscalls, builds framed sensor packets, sends them sealed over TCP to a brain server
-(every connection begins with a handshake in `link.rs`; the peer speaks first and the client
-answers as responder), receives actuator commands and applies them to the `motor` endpoints.
+(every connection begins with a Noise handshake in `link.rs`: the client is the initiator and
+speaks first, `Noise_IK` toward the brain key the topology pins in `[peer.brain]`, else
+`Noise_XX` with keys derived from the link key; there is no plaintext fallback), receives
+actuator commands and applies them to the `motor` endpoints.
 `REFLEX.ELF` reads the rangefinder and the IMU and overrides motor commands when danger is
 detected (extreme tilt, then an obstacle too close, then a warning distance), whether or not
 the brain link is up. The topology holds a row for each (with `GPIODRV.ELF`, the GPIO driver
 of `userspace/drivers/gpio_drv`). The rows carry no capabilities of their own beyond
-`ROOT_RO` on `BRAINCLI.ELF`: the `autorun` key of `CONFIG.INI` picks one of the three to
+`ROOT_RO` on `BRAINCLI.ELF` and, on `GPIODRV.ELF`, `READ` on `endpoint.pm-gpio` (it serves
+`DevicePower` for `power`): the `autorun` key of `CONFIG.INI` picks one of the three to
 run, and the grant a running one gets comes from the generic `autorun` row
 (`find_task(b"autorun")`).
