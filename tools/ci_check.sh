@@ -288,6 +288,10 @@ kb_cfg() {
 
 kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     local feats="$1"; shift
+    # A robot kernel builds from the robot cell unless the row named its own.
+    if [ -z "${KB_ROBOT_DONE:-}" ] && [ "${KCONFIG_CONFIG:-}" = "$PRIMARY_CONFIG" ] && ci_robot_feats "$feats"; then
+        KB_ROBOT_DONE=1 KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" kbuild "$feats" "$@"; return
+    fi
     if [ -z "${KB_CFG_DONE:-}" ]; then
         local _kc; _kc="$(kb_cfg rv "$feats")" || return 1
         if [ -n "$_kc" ]; then KB_CFG_DONE=1 KCONFIG_CONFIG="$_kc" kbuild "$feats" "$@"; return; fi
@@ -556,10 +560,33 @@ embedded_config_applied() {
 # override so aarch64 and the board rows are not silently repointed here.
 # The gate's kernels, one per ISA: config/defconfigs/<name>.config, assembled
 # from config/fragments/ by tools/gen_defconfigs.py (the name says what it is
-# made of: preset-hwclass-arch-build+overlays).
-GATE_DEFC_RV=robot-sbc-riscv64-dev+qemu+linux+gui
-GATE_DEFC_A64=robot-sbc-aarch64-dev+qemu+linux+gui
-GATE_DEFC_X86=robot-sbc-x86_64-dev+qemu+linux+gui
+# made of: preset-hwclass-arch-build+overlays). The gate runs on the generic
+# image (strategic plan: robot out of the default); a robot row's kernel is
+# the same cell with the robot preset.
+GATE_DEFC_RV=generic-sbc-riscv64-dev+qemu+linux+gui
+GATE_DEFC_A64=generic-sbc-aarch64-dev+qemu+linux+gui
+GATE_DEFC_X86=generic-sbc-x86_64-dev+qemu+linux+gui
+GATE_ROBOT_DEFC_RV=robot-sbc-riscv64-dev+qemu+linux+gui
+GATE_ROBOT_DEFC_A64=robot-sbc-aarch64-dev+qemu+linux+gui
+GATE_ROBOT_DEFC_X86=robot-sbc-x86_64-dev+qemu+linux+gui
+# A robot row is one whose kernel features close over `use-robot` in
+# kernel/Cargo.toml (tools/gate_rows.py --robot-features; `gate_rows.py
+# --check` refuses a row that depends on the robot domain and names none). The
+# rule is the features, not the row: two rows that share a build share a
+# kernel, so the features must say which cell it builds from.
+CI_ROBOT_FEATS=",$(python3 "$REPO_ROOT/tools/gate_rows.py" --robot-features | paste -sd, -),"
+ci_robot_feats() { # ci_robot_feats <features>: 0 when they close over use-robot
+    local f IFS=,
+    for f in $1; do case "$CI_ROBOT_FEATS" in *",$f,"*) return 0 ;; esac; done
+    return 1
+}
+gate_defc() { # gate_defc rv|a64|x86 <features>: the defconfig a kernel with these features builds from
+    if ci_robot_feats "$2"; then
+        case "$1" in rv) echo "$GATE_ROBOT_DEFC_RV" ;; a64) echo "$GATE_ROBOT_DEFC_A64" ;; x86) echo "$GATE_ROBOT_DEFC_X86" ;; esac
+    else
+        case "$1" in rv) echo "$GATE_DEFC_RV" ;; a64) echo "$GATE_DEFC_A64" ;; x86) echo "$GATE_DEFC_X86" ;; esac
+    fi
+}
 PRIMARY_DIR="${PRIMARY_DIR:-$AZOS_OUT/target/primary}"
 PRIMARY_CONFIG="${PRIMARY_DIR}/qemu.config"
 primary_config() {
@@ -621,6 +648,33 @@ if ! aarch64_config; then
     echo "FATAL: could not expand config/defconfigs/${GATE_DEFC_A64}.config with python3 -m olddefconfig" >&2
     exit 1
 fi
+# The robot rows' columns: the robot cells expanded the same way. `kbuild` and
+# `a64_kbuild` build from them when the features close over `use-robot`
+# (ci_robot_feats) and the row did not name a configuration of its own.
+GATE_AARCH64_CONFIG="$AARCH64_CONFIG"
+ROBOT_PRIMARY_CONFIG="${PRIMARY_DIR}/qemu-robot.config"
+ROBOT_AARCH64_CONFIG="${AARCH64_DIR}/qemu-aarch64-robot.config"
+gate_config() { # gate_config <defconfig name> <expanded file> <line it must hold>
+    local tmp rc
+    mkdir -p "${2%/*}" || return 1
+    tmp="$(mktemp -d)" || return 1
+    cp "${REPO_ROOT}/config/defconfigs/$1.config" "$tmp/c.config" \
+      && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) \
+      && grep -q "^$3\$" "$tmp/c.config" \
+      && { cmp -s "$tmp/c.config" "$2" || cp "$tmp/c.config" "$2"; }
+    rc=$?
+    rm -rf "$tmp"
+    return $rc
+}
+if ! gate_config "$GATE_ROBOT_DEFC_RV" "$ROBOT_PRIMARY_CONFIG" CONFIG_USE_ROBOT=y \
+   || ! gate_config "$GATE_ROBOT_DEFC_A64" "$ROBOT_AARCH64_CONFIG" CONFIG_USE_ROBOT=y; then
+    echo "FATAL: could not expand the robot cells ($GATE_ROBOT_DEFC_RV, $GATE_ROBOT_DEFC_A64)" >&2
+    exit 1
+fi
+# Every other cargo call of the kernel (the build matrix, a row's own `cargo
+# build`) is routed the same way by tools/ci_cargo.py.
+export CI_ROBOT_FEATS
+export CI_ROBOT_KCONFIG="$PRIMARY_CONFIG=$ROBOT_PRIMARY_CONFIG;$AARCH64_CONFIG=$ROBOT_AARCH64_CONFIG"
 aarch64_config_applied() {
     printf "  %-26s" "aarch64 config applied..."
     local rel="$AZOS_OUT/target/aarch64-unknown-none-softfloat/release" sha gen key val
@@ -687,6 +741,10 @@ board_config_applied() { # board_config_applied <label> <feat>
 host_cargo() {
     local __var="$1" __dir="$2" __f __rc
     shift 2
+    # The host suites read the robot cell's constants, as before the gate's
+    # kernels moved to the generic image; a suite given its own KCONFIG_CONFIG
+    # (micro-tests) keeps it.
+    [ "${KCONFIG_CONFIG:-}" = "$PRIMARY_CONFIG" ] && local -x KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG"
     __f="$(mktemp "${GATE_PGROUP_DIR}/../host-cargo.XXXXXX")" || return 1
     gate_pgroup_run "$__f" "$__dir" "$CARGO" "$@"
     __rc=$?
@@ -2748,6 +2806,9 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     if [ -n "$fpkey" ]; then mkdir -p "${fpkey%/*}"; : >"$fpkey"; fi
 }
 a64_kbuild() { # a64_kbuild <comma-separated-features>
+    if [ -z "${KB_ROBOT_DONE:-}" ] && [ "$AARCH64_CONFIG" = "$GATE_AARCH64_CONFIG" ] && ci_robot_feats "$1"; then
+        KB_ROBOT_DONE=1 AARCH64_CONFIG="$ROBOT_AARCH64_CONFIG" a64_kbuild "$@"; return
+    fi
     if [ -z "${KB_CFG_DONE:-}" ] && [ $# -eq 1 ]; then
         local _kc; _kc="$(kb_cfg a64 "$1")" || return 1
         if [ -n "$_kc" ]; then KB_CFG_DONE=1 AARCH64_CONFIG="$_kc" a64_kbuild "$1"; return; fi
@@ -3697,9 +3758,9 @@ aarch64_flight_recorder_row() {
     local fr_img="$AZOS_OUT/target/aarch64-unknown-none-softfloat/release/kernel-flight-recorder-smoke.img"
     rm -f "$fr_kernel" "$fr_img"
     local build_out
-    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
+    if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$ROBOT_AARCH64_CONFIG" "$CARGO" build --release \
             --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --features qemu,estop-latch-smoke \
+            --features qemu,use-robot,estop-latch-smoke \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
        || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
        || [ ! -f "$fr_kernel" ]; then
@@ -7085,7 +7146,7 @@ rt_io_canary_row() { # <label> <isa: rv|arm>
     local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" kimg=""
     mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img"
     if [ "$isa" = "rv" ]; then
-        kbuild "qemu,rt-io-canary" || { bad; echo "      riscv64 kernel (qemu,rt-io-canary) did not build"; return; }
+        kbuild "qemu,use-robot,rt-io-canary" || { bad; echo "      riscv64 kernel (qemu,use-robot,rt-io-canary) did not build"; return; }
         make_disk $AZOS_OUT/build/disk.img; cp $AZOS_OUT/build/disk.img "$img"
         kimg="$CI_LOG_DIR/${tag}-kernel.elf"; cp "$KERNEL" "$kimg"
         par_ready
@@ -7094,7 +7155,7 @@ rt_io_canary_row() { # <label> <isa: rv|arm>
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     else
-        a64_kbuild "qemu,rt-io-canary" || { bad; echo "      aarch64 kernel (qemu,rt-io-canary) did not build"; return; }
+        a64_kbuild "qemu,use-robot,rt-io-canary" || { bad; echo "      aarch64 kernel (qemu,use-robot,rt-io-canary) did not build"; return; }
         make_disk $AZOS_OUT/build/disk-aarch64.img; cp $AZOS_OUT/build/disk-aarch64.img "$img"
         kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
         par_ready
@@ -7308,10 +7369,10 @@ panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|s
     local log="$CI_LOG_DIR/${tag}.log" kimg=""
     mkdir -p "$CI_LOG_DIR"
     if [ "$isa" = rv ]; then
-        kbuild "qemu,panic-splice-smoke" || { bad; echo "      riscv64 kernel (qemu,panic-splice-smoke) did not build"; return; }
+        kbuild "qemu,use-robot,panic-splice-smoke" || { bad; echo "      riscv64 kernel (qemu,use-robot,panic-splice-smoke) did not build"; return; }
         kimg="$CI_LOG_DIR/${tag}-kernel.elf"; cp "$KERNEL" "$kimg"
     else
-        a64_kbuild "qemu,panic-splice-smoke" || { bad; echo "      aarch64 kernel (qemu,panic-splice-smoke) did not build"; return; }
+        a64_kbuild "qemu,use-robot,panic-splice-smoke" || { bad; echo "      aarch64 kernel (qemu,use-robot,panic-splice-smoke) did not build"; return; }
         kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
     fi
     par_ready
@@ -7958,7 +8019,7 @@ aarch64_watchdog_row() {
     printf "  %-26s" "${label}..."
     local log="$CI_LOG_DIR/aarch64-watchdog.log"
     mkdir -p "$CI_LOG_DIR"; rm -f "$log"
-    if ! a64_kbuild "qemu"; then
+    if ! a64_kbuild "qemu,use-robot"; then
         bad; echo "      the qemu aarch64 kernel did not build"; return
     fi
     local img_copy="$CI_LOG_DIR/kernel-aarch64-watchdog.img"
@@ -8098,8 +8159,8 @@ behavior_arp_sleep_row() { # behavior_arp_sleep_row rv|a64
     disk="$CI_LOG_DIR/behavior-arp-sleep-$isa.img"
     rm -f "$log"
     if [ "$isa" = "a64" ]; then
-        if ! a64_kbuild "qemu,arp-timing"; then
-            bad; echo "      aarch64 kernel (--features qemu,arp-timing) did not build"; return
+        if ! a64_kbuild "qemu,use-robot,arp-timing"; then
+            bad; echo "      aarch64 kernel (--features qemu,use-robot,arp-timing) did not build"; return
         fi
         make_disk $AZOS_OUT/build/disk-aarch64.img
         kern="$CI_LOG_DIR/behavior-arp-sleep-a64.kimg"
@@ -8110,7 +8171,7 @@ behavior_arp_sleep_row() { # behavior_arp_sleep_row rv|a64
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     else
-        kbuild "qemu,arp-timing" || return
+        kbuild "qemu,use-robot,arp-timing" || return
         make_disk $AZOS_OUT/build/disk.img
         kern="$CI_LOG_DIR/behavior-arp-sleep-rv.elf"
         cp "$KERNEL" "$kern"; cp $AZOS_OUT/build/disk.img "$disk"
@@ -8342,7 +8403,7 @@ crash_log_rotation_row() {
     local log2="$CI_LOG_DIR/crash-log-boot2.log"
     rm -f "$log1" "$log2"
 
-    if ! kbuild "qemu,azos_fs/crash-log-smoke"; then
+    if ! kbuild "qemu,use-robot,azos_fs/crash-log-smoke"; then
         bad; echo "      the crash-log-smoke kernel did not build"; return
     fi
     make_disk $AZOS_OUT/build/disk.img
@@ -8990,11 +9051,12 @@ rt7_row() { # rt7_row <isa: rv|arm> <mode: contain|spin|reset>
     local label="rt7: panic ${mode} (${isa})"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
-    local defc="$GATE_DEFC_RV" src_disk="$AZOS_OUT/build/disk.img" policy=CONTAIN feats="qemu,rt-panic-canary"
-    [ "$isa" = arm ] && { defc="$GATE_DEFC_A64"; src_disk="$AZOS_OUT/build/disk-aarch64.img"; }
+    local defc src_disk="$AZOS_OUT/build/disk.img" policy=CONTAIN feats="qemu,rt-panic-canary"
+    [ "$isa" = arm ] && src_disk="$AZOS_OUT/build/disk-aarch64.img"
     [ "$mode" = reset ] && policy=RESET
     [ "$mode" = spin ] && feats="qemu,rt-panic-canary-spin"
     [ "$mode" = safety ] && feats="qemu,rt-panic-canary-safety"
+    defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$feats")"
     local cfg log disk kimg
     # Absolute: `azos_limits`' build script resolves KCONFIG_CONFIG from
     # its own crate directory.
@@ -9159,15 +9221,15 @@ rt7_drone_default_row() {
     printf "  %-26s" "rt7: drone → contain..."
     mkdir -p "$CI_LOG_DIR"
     local cfg; cfg="$(cd "$CI_LOG_DIR" && pwd)/rt7-drone.config"
-    cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_RV}.config" "$cfg"
+    cp "${REPO_ROOT}/config/defconfigs/${GATE_ROBOT_DEFC_RV}.config" "$cfg"
     echo "CONFIG_ROBOT_DRONE=y" >>"$cfg"
     if (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
        && grep -q '^CONFIG_ROBOT_DRONE=y$' "$cfg" && grep -q '^CONFIG_PANIC_POLICY_CONTAIN=y$' "$cfg" \
-       && grep -q '^CONFIG_PANIC_POLICY_RESET=y$' "$PRIMARY_CONFIG"; then
+       && grep -q '^CONFIG_PANIC_POLICY_RESET=y$' "$ROBOT_PRIMARY_CONFIG"; then
         ok; rm -f "$cfg"
     else
         bad; echo "      drone .config: $(grep 'ROBOT_DRONE\|PANIC_POLICY' "$cfg" | tr '\n' ' ')"
-        echo "      qemu .config:  $(grep 'PANIC_POLICY' "$PRIMARY_CONFIG" | tr '\n' ' ')"
+        echo "      qemu .config:  $(grep 'PANIC_POLICY' "$ROBOT_PRIMARY_CONFIG" | tr '\n' ' ')"
     fi
 }
 ci_row "rt7: drone → contain" rt7_drone_default_row
@@ -9237,8 +9299,9 @@ drvcontain_row() { # drvcontain_row <isa: rv|arm> [features] [PASS|FAIL-record|d
     local isa="$1" feats="${2:-qemu,drv-contain-smoke,buzzer-kernel}" expect="${3:-PASS}"
     printf "  %-26s" "rt7: driver contained, demoted (${isa})..."
     mkdir -p "$CI_LOG_DIR"
-    local defc="$GATE_DEFC_RV" src_disk="$AZOS_OUT/build/disk-drv.img"
-    [ "$isa" = arm ] && { defc="$GATE_DEFC_A64"; src_disk="$AZOS_OUT/build/disk-aarch64-drv.img"; }
+    local defc src_disk="$AZOS_OUT/build/disk-drv.img"
+    [ "$isa" = arm ] && src_disk="$AZOS_OUT/build/disk-aarch64-drv.img"
+    defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$feats")"
     local cfg log disk kimg
     cfg="$(cd "$CI_LOG_DIR" && pwd)/drvcontain-${isa}.config"
     log="$CI_LOG_DIR/drvcontain-${isa}.log"
@@ -12998,8 +13061,8 @@ PY
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
-    KTEST_FEATS="qemu,ktest,chaos,decisions,decisions-durable"
-    KTEST_FEATS_NODUR="qemu,ktest,chaos,decisions"
+    KTEST_FEATS="qemu,use-robot,ktest,chaos,decisions,decisions-durable"
+    KTEST_FEATS_NODUR="qemu,use-robot,ktest,chaos,decisions"
     # KTEST_SMP (default 4) and KTEST_QEMU_EXTRA (default none) change the
     # boot for a row that needs it (`ktest hold bound, -icount`); the
     # environment's KCONFIG_CONFIG / AARCH64_CONFIG choose the kernel's
@@ -13192,8 +13255,8 @@ PY
     # appends its base features), so leaving it out of --features alone changed
     # nothing and the canary never bit.
     ktest_row_nodur() {
-        local KTEST_FEATS="$KTEST_FEATS_NODUR" isa="$2" defc="$GATE_DEFC_RV" cfg
-        [ "$isa" = arm ] && defc="$GATE_DEFC_A64"
+        local KTEST_FEATS="$KTEST_FEATS_NODUR" isa="$2" defc cfg
+        defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$KTEST_FEATS")"
         mkdir -p "$CI_LOG_DIR"
         cfg="$(cd "$CI_LOG_DIR" && pwd)/ktest-nodur-${isa}.config"
         cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg" \
@@ -13357,8 +13420,8 @@ PY
             && grep -q "^CONFIG_LOCK_MAX_HOLD_US=${KTEST_HOLD_US}\$" "$1"
     }
     ktest_hold_row() { # ktest_hold_row <label> <isa: rv|arm> <expected not-ok names> [kernel command line] [ERE]
-        local label="$1" isa="$2" defc="$GATE_DEFC_RV" cfg tag
-        [ "$isa" = arm ] && defc="$GATE_DEFC_A64"
+        local label="$1" isa="$2" defc cfg tag
+        defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$KTEST_FEATS")"
         mkdir -p "$CI_LOG_DIR"
         tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         # Absolute: `azos_limits`' build script resolves KCONFIG_CONFIG from
@@ -13435,8 +13498,8 @@ PY
     # passed over by more acquisitions than the CPUs ahead of them.
     KTEST_TTAS_RE='^# spin_lock_fifo_bounded: impl=ttas '
     ktest_ttas_row() { # ktest_ttas_row <label> <isa: rv|arm>
-        local label="$1" isa="$2" defc="$GATE_DEFC_RV" cfg tag
-        [ "$isa" = arm ] && defc="$GATE_DEFC_A64"
+        local label="$1" isa="$2" defc cfg tag
+        defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$KTEST_FEATS")"
         mkdir -p "$CI_LOG_DIR"
         tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         cfg="$(cd "$CI_LOG_DIR" && pwd)/${tag}.config"
@@ -13653,7 +13716,10 @@ PY
         rm -f "$2" "$2.features"
         # `X86_KBUILD_ARGS` / `X86_KBUILD_OUT`: a build from another
         # configuration into an image of its own (`x86_ktest_row_nodur`).
-        make x86_64 X86_64_FEATURES="$1" ${X86_KBUILD_ARGS:-} >/dev/null 2>&1 && cp "${X86_KBUILD_OUT:-$AZOS_OUT/build/kernel-x86_64.elf}" "$2" \
+        # Without one, the gate's cell: generic, or robot when the features
+        # close over `use-robot`, each expanded into its own file.
+        local def; def="$(gate_defc x86 "$1")"
+        make x86_64 X86_64_FEATURES="$1" ${X86_KBUILD_ARGS:-X86_64_DEFCONFIG=config/defconfigs/$def.config X86_64_KCONFIG=$AZOS_OUT/build/x86_64-$def.config} >/dev/null 2>&1 && cp "${X86_KBUILD_OUT:-$AZOS_OUT/build/kernel-x86_64.elf}" "$2" \
             && builtin printf '%s\n' "$1" >"$2.features"
     }
     x86_qemu() { # x86_qemu <image> <log> <secs> <stop ERE or ""> [qemu args...]; sets X86_QRC
@@ -14515,7 +14581,7 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
-        x86_kbuild "panic-splice-smoke" "$kimg" || { bad; echo "      make x86_64 (panic-splice-smoke) did not build"; return; }
+        x86_kbuild "use-robot,panic-splice-smoke" "$kimg" || { bad; echo "      make x86_64 (panic-splice-smoke) did not build"; return; }
         par_ready
         local -a ap=(); [ -n "$app" ] && ap=(-append "$app")
         case "$want" in pass|fatal) ;; *) tries=$PANIC_SPLICE_TRIES ;; esac
@@ -17052,7 +17118,7 @@ PYEOF
         local wlog="$CI_LOG_DIR/latch-flush.wlog"
         local crash="$CI_LOG_DIR/latch-flush-crash.img"
         rm -f "$log1" "$log2" "$img" "$pristine" "$wlog" "$crash"
-        if ! kbuild "qemu,estop-latch-smoke"; then return; fi
+        if ! kbuild "qemu,use-robot,estop-latch-smoke"; then return; fi
         # A fresh image: earlier rows write to build/disk.img, and a latching
         # record they left would let boot 2 restore the latch with no flush.
         rm -f $AZOS_OUT/build/disk.img
@@ -18161,7 +18227,7 @@ PYEOF
         local mode="${1:-}" feats="qemu,bench-minimal"
         local label="riscv64: idle wakeups/s (tickless)"
         if [ "$mode" = wdt ]; then
-            feats="qemu,bench-minimal,wdt-sim"; label="riscv64: idle keepalive (simulated WDT)"
+            feats="qemu,use-robot,bench-minimal,wdt-sim"; label="riscv64: idle keepalive (simulated WDT)"
         fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -19078,7 +19144,7 @@ PYEOF
         local mode="${1:-}" feats="qemu,bench-minimal"
         local label="aarch64: idle wakeups/s (tickless)"
         if [ "$mode" = wdt ]; then
-            feats="qemu,bench-minimal,wdt-sim"; label="aarch64: idle keepalive (simulated WDT)"
+            feats="qemu,use-robot,bench-minimal,wdt-sim"; label="aarch64: idle keepalive (simulated WDT)"
         fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -21643,9 +21709,11 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         if [ "$isa" = rv ]; then
             label="generic: riscv64 builds, no robot crate"; defc="$GATE_DEFC_RV"
             triple=riscv64imac-unknown-none-elf; robot_elf="$KERNEL"
+            kbuild "qemu,use-robot" >/dev/null || return
         else
             label="generic: aarch64 builds, no robot crate"; defc="$GATE_DEFC_A64"
             triple=aarch64-unknown-none-softfloat; robot_elf="$AZOS_OUT/target/${triple}/release/kernel"
+            a64_kbuild "qemu,use-robot" >/dev/null 2>&1 || { printf "  %-26s" "${label}..."; bad; echo "      the robot reference kernel did not build"; return; }
         fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR" "$GENERIC_DIR"
@@ -22547,11 +22615,11 @@ rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
     local dir="$AZOS_OUT/target/generic"
     local re='rc_safety|rc_link|geofence'
     if [ "$isa" = rv ]; then
-        defc="$GATE_DEFC_RV"; triple=riscv64imac-unknown-none-elf
-        kbuild "qemu" || return; on_elf="$KERNEL"
+        defc="$GATE_ROBOT_DEFC_RV"; triple=riscv64imac-unknown-none-elf
+        kbuild "qemu,use-robot" || return; on_elf="$KERNEL"
     else
-        defc="$GATE_DEFC_A64"; triple=aarch64-unknown-none-softfloat
-        a64_kbuild "qemu" || { printf "  %-26s" "${label}..."; bad; echo "      aarch64 qemu kernel did not build"; return; }
+        defc="$GATE_ROBOT_DEFC_A64"; triple=aarch64-unknown-none-softfloat
+        a64_kbuild "qemu,use-robot" || { printf "  %-26s" "${label}..."; bad; echo "      aarch64 qemu kernel did not build"; return; }
         on_elf="$A64_KERNEL"
     fi
     printf "  %-26s" "${label}..."

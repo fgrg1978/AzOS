@@ -17,6 +17,13 @@ The kernel has no cargo `default` features: Kconfig is the only source. So a
 A row's own `--features` (board, smoke, canary) are untouched; the injected
 argv is what the cache keys on and `CI_BUILD_ACC` logs.
 
+A kernel whose requested features close over `use-robot` builds from the
+robot cell: when `CI_ROBOT_FEATS` (",f1,f2,...,", tools/gate_rows.py
+--robot-features) names one of them and `KCONFIG_CONFIG` is a generic gate
+config listed in `CI_ROBOT_KCONFIG` ("<generic>=<robot>;..."), the call reads
+the robot one instead (tools/ci_check.sh sets both; the gate runs on the
+generic image and a robot row on the robot cell).
+
 The kernel cache (`CI_KCACHE_DIR`; unset means off). A call is cacheable when it
 is `cargo build --release` of the kernel package (no `-p`, or `-p azos_kernel`)
 without `--keep-going`. Its KEY is the whole argv (features, target, flags), the
@@ -160,6 +167,27 @@ def cacheable(argv):
     triple = triple or "riscv64imac-unknown-none-elf"
     tdir = os.path.join(top, tdir or out_dir.target_dir(os.getcwd()))
     return os.path.join(tdir, triple, "release", BIN)
+
+
+def requested_features(argv):
+    """The features named on a cargo command line (`--features a,b`, `-F a`,
+    `--features=a b`)."""
+    out = []
+    for j, a in enumerate(argv):
+        if a in ("--features", "-F") and j + 1 < len(argv):
+            out += argv[j + 1].replace(",", " ").split()
+        elif a.startswith("--features="):
+            out += a.split("=", 1)[1].replace(",", " ").split()
+    return out
+
+
+def route_robot(argv):
+    """KCONFIG_CONFIG -> the robot cell for a kernel that asks for a robot feature."""
+    robot = set(f for f in os.environ.get("CI_ROBOT_FEATS", "").split(",") if f)
+    pairs = dict(p.split("=", 1) for p in os.environ.get("CI_ROBOT_KCONFIG", "").split(";") if "=" in p)
+    cfg = os.environ.get("KCONFIG_CONFIG")
+    if robot and cfg in pairs and robot & set(requested_features(argv)):
+        os.environ["KCONFIG_CONFIG"] = pairs[cfg]
 
 
 def with_base_features(argv):
@@ -343,6 +371,7 @@ def default_target_dir(argv):
 
 def main():
     default_target_dir(sys.argv[1:])
+    route_robot(sys.argv[1:])
     argv = with_base_features(sys.argv[1:])
     t0 = time.time()
     artifact = cacheable(argv) if CACHE else None

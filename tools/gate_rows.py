@@ -11,7 +11,15 @@ network, fault injection, wall-clock judgement, more than one boot).
 
   gate_rows.py --write   regenerate tools/gate_rows.tsv (tier + deps per row),
                          keeping the tier and deps of rows already listed
-  gate_rows.py --check   the manifest names exactly the gate's row keys
+  gate_rows.py --check   the manifest names exactly the gate's row keys, and
+                         every QEMU row whose deps name the robot domain
+                         builds a robot kernel (its features close over
+                         `use-robot`)
+  gate_rows.py --robot-features
+                         the kernel features whose closure in kernel/Cargo.toml
+                         names `use-robot`: the gate builds a kernel that asks
+                         for one from the robot cell, every other from the
+                         generic one (tools/ci_check.sh, ci_robot_feats)
   gate_rows.py --groups  the boot-group table: rows that only grep one boot,
                          grouped by (ISA, features, QEMU options)
   gate_rows.py --icount  rows that boot under -icount (load-independent
@@ -440,6 +448,85 @@ def check_manifest():
     return 1 if (missing or stale or bad or bad_label) else 0
 
 
+CARGO_TOML = os.path.join(ROOT, "kernel", "Cargo.toml")
+# A row that depends on the robot domain (its deps name these): the gate runs
+# it on the robot cell, so its kernel features must close over `use-robot`.
+ROBOT_DEPS = ("domains/robot/", "config/domains/Kconfig.robot", "config/domains/Kconfig.brain")
+
+
+def robot_features(features=None):
+    """The kernel features whose closure (kernel/Cargo.toml [features], through
+    the kernel's own features only) contains `use-robot`."""
+    if features is None:
+        import tomllib
+        with open(CARGO_TOML, "rb") as f:
+            features = tomllib.load(f)["features"]
+    memo = {}
+
+    def robot(f, seen=()):
+        if f in memo:
+            return memo[f]
+        if f == "use-robot":
+            return True
+        if f not in features or f in seen:
+            return False
+        r = any(robot(x, seen + (f,)) for x in features[f] if "/" not in x and not x.startswith("dep:"))
+        memo[f] = r
+        return r
+    return sorted(f for f in features if robot(f))
+
+
+FEATS_STR_RE = re.compile(r'"([a-z0-9_/,-]*[a-z0-9]),?(?:\$\w+|\$\{\w+\})?"')
+
+
+def row_features(r):
+    """Every feature a row's build may name: what features_of reads, the quoted
+    feature lists in its body and arguments (a `feats=` local, an argument passed
+    on), and the gate's KTEST_FEATS* lists where the body names them."""
+    out = {f for fs in features_of(r) for f in fs.split(",")}
+    text = r["body"] + " " + " ".join(r["args"])
+    for m in FEATS_STR_RE.finditer(text):
+        out |= set(m.group(1).split(","))
+    gate = _gate_text()
+    for v in set(re.findall(r"\$\{?(KTEST_FEATS\w*)", text)):
+        for m in re.finditer(r"^\s*%s=\"([a-z0-9_/,-]+)\"" % v, gate, re.M):
+            out |= set(m.group(1).split(","))
+    return {f for f in out if f}
+
+
+_GATE_TEXT = None
+
+
+def _gate_text():
+    global _GATE_TEXT
+    if _GATE_TEXT is None:
+        _GATE_TEXT = open(GATE).read()
+    return _GATE_TEXT
+
+
+def check_robot_rows(rs=None, man=None, robot=None):
+    """Every QEMU row whose deps name the robot domain builds with a feature
+    that closes over `use-robot`, so the gate runs it on the robot cell."""
+    rs = rs if rs is not None else rows()
+    man = man if man is not None else read_manifest()
+    robot = set(robot if robot is not None else robot_features())
+    bad = []
+    seen = set()
+    for r in rs:
+        if r["key"] in seen or not is_qemu_row(r):
+            continue
+        seen.add(r["key"])
+        deps = man.get(r["key"], ("", ""))[1]
+        if not any(d in deps for d in ROBOT_DEPS):
+            continue
+        if not row_features(r) & robot:
+            bad.append(r["key"])
+    for k in bad:
+        print("gate_rows: row '%s' depends on the robot domain but builds no robot kernel "
+              "(add `use-robot` to its features)" % k)
+    return 1 if bad else 0
+
+
 def read_needs():
     """tools/gate_needs.tsv: row key -> the keys it needs, in file order."""
     out = {}
@@ -691,6 +778,18 @@ def self_test():
     t2, _ = dry_run(tier="n2")
     expect("tier filters do not partition the rows", len(t1) + len(t2) == len(res) and len(t1) > 0 and len(t2) > 0)
     expect("canary: --match filters nothing", len(dry_run(match=r"\blx\b|lx:")[0]) < len(res))
+    # Robot rows: the closure follows features through features, and the
+    # invariant flags a robot-domain row whose kernel would be generic.
+    toy = {"use-robot": [], "a": ["use-robot"], "b": ["a"], "c": ["azos_x/use-robot"], "d": []}
+    expect("robot closure %r" % robot_features(toy), robot_features(toy) == ["a", "b", "use-robot"])
+    row = dict(key="r", fn="f", args=[], body='kbuild "qemu,d"', prior=None, flags=[], boots="qemu-system-riscv64")
+    man = {"r": ("n2", "domains/robot/**")}
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()):
+        expect("canary: a robot-domain row with a generic kernel passes",
+               check_robot_rows([row], man, ["a", "use-robot"]) == 1)
+        expect("a robot-domain row with a robot kernel fails",
+               check_robot_rows([dict(row, body='kbuild "qemu,a"')], man, ["a", "use-robot"]) == 0)
     for b in bad:
         print("gate_rows self-test: FAIL " + b)
     if not bad:
@@ -719,7 +818,10 @@ def main(argv):
         print("gate_rows: %d rows written to %s" % (write_manifest(), MANIFEST))
         return 0
     if "--check" in argv:
-        return check_manifest() | check_needs()
+        return check_manifest() | check_needs() | check_robot_rows()
+    if "--robot-features" in argv:
+        print("\n".join(robot_features()))
+        return 0
     if "--selfbuild" in argv:
         for k in selfbuild(argv[argv.index("--selfbuild") + 1]):
             print(k)
