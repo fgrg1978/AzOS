@@ -38,6 +38,56 @@ pub fn now_ticks() -> u64 {
     t
 }
 
+/// Does a read of the `time` CSR complete without a trap reaching S-mode?
+/// Boot hart, once (`install_vdso`): the answer decides whether ring 3 reads
+/// the clock itself (vDSO `VDSO_FLAG_RDTIME_NATIVE`).
+///
+/// U-mode reads `time` when both enables let it: `mcounteren.TM`, which the
+/// SBI firmware sets for S- and U-mode (OpenSBI writes it at hart init), and
+/// `scounteren.TM`, which this kernel sets on every hart (`trap_init`
+/// writes `pmu::SCOUNTEREN_BOOT`, `pmu::start_this_cpu` rewrites it). Where
+/// the hart has no `time` CSR, the read traps into M-mode and OpenSBI answers
+/// it from `mtime` for S and U alike, so it still never reaches this kernel.
+/// What neither serves nor emulates the read reaches S-mode as an illegal
+/// instruction, and this probe, under a private `stvec`, sees that.
+pub fn time_readable() -> bool {
+    // SAFETY: the routine installs its own stvec with interrupts off and
+    // restores both; it reads one CSR; no memory.
+    unsafe { azos_time_probe() != 0 }
+}
+
+// `azos_time_probe() -> a0` (1: `time` read, 0: it trapped). The shape of
+// `pmu.rs`'s `azos_pmu_probe`: sstatus.SIE cleared, a private stvec whose
+// handler clears a0 and resumes after the read, stvec and SIE restored.
+// Clobbers t0-t3.
+core::arch::global_asm!(
+    ".pushsection .text.azos_time_probe, \"ax\"",
+    ".globl azos_time_probe",
+    ".p2align 2",
+    "azos_time_probe:",
+    "    csrrci t3, sstatus, 2",
+    "    csrr   t1, stvec",
+    "    la     t0, 1f",
+    "    csrw   stvec, t0",
+    "    li     a0, 1",
+    "    csrr   t2, time",
+    "    csrw   stvec, t1",
+    "    andi   t3, t3, 2",
+    "    csrs   sstatus, t3",
+    "    ret",
+    ".p2align 2",
+    "1:  li     a0, 0",
+    "    csrr   t0, sepc",
+    "    addi   t0, t0, 4",
+    "    csrw   sepc, t0",
+    "    sret",
+    ".popsection",
+);
+
+unsafe extern "C" {
+    fn azos_time_probe() -> usize;
+}
+
 // RISC-V CSR (Control and Status Register) access: every function below is
 // an inline-asm read or write of one CSR.
 

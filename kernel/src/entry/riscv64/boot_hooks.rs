@@ -473,8 +473,9 @@ pub fn console_irq(hart_id: usize, _dtb_ptr: usize) {
 }
 
 /// The fixed `TIMER_FREQ`. `rdtime` from U-mode is enabled
-/// (`scounteren.TM`), so libsys may read the counter instead of trapping for
-/// DOMAIN_UPTIME; `vdso-force-syscall` keeps the trap.
+/// (`scounteren.TM`), so libsys reads the counter instead of trapping for
+/// DOMAIN_UPTIME when the vDSO flag says the read works (`install_vdso`'s
+/// trap-probe); `vdso-force-syscall` keeps the trap.
 #[inline(always)]
 pub fn timebase_hz() -> u64 {
     azos_drv_sys::timebase::TIMER_FREQ

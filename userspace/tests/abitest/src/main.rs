@@ -1201,9 +1201,10 @@ fn x86_hwcap_run(h: u64) -> u32 {
 ///
 /// Three claims, each caught by a different mistake:
 ///
-///   * **The kernel published the flag.** The QEMU kernel sets vDSO `flags`
-///     bit 0; one built to force the trap (or one that never calls
-///     `vdso_set_flags`) leaves it clear, and this line fails.
+///   * **The kernel published the flag.** A kernel whose boot trap-probe of
+///     the `time` CSR passed (it does on QEMU) sets vDSO `flags` bit 0; one
+///     built to force the trap, one whose probe trapped, or one that never
+///     calls `vdso_set_flags` leaves it clear, and this line fails.
 ///   * **One counter.** An `rdtime` read taken between two `DOMAIN_UPTIME` reads
 ///     lies between them. `uptime()` wired to the page's `uptime_ticks` — an
 ///     interrupt count, orders of magnitude smaller — fails the lower bound.
@@ -1215,7 +1216,7 @@ fn x86_hwcap_run(h: u64) -> u32 {
 ///     over batches drops a batch a preemption landed in.
 fn check_uptime_without_a_trap() {
     let native = sys::vdso_rdtime_native();
-    expect_true(b"vdso flags bit 0: rdtime native (the QEMU kernel sets it)", native);
+    expect_true(b"vdso flags bit 0: rdtime native (the time probe passed)", native);
 
     let lo = sys::uptime_ecall();
     let mid = sys::uptime();

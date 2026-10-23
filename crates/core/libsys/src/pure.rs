@@ -45,8 +45,8 @@ pub fn page_clock_offsets(magic: u32, words: &ClockWords) -> ClockOffsets {
     }
 }
 
-/// vDSO `flags` bit 0: `rdtime` executes natively on this machine, so reading
-/// the counter from ring 3 costs no trap (`crates/core/mm/src/vdso.rs`,
+/// vDSO `flags` bit 0: `rdtime` reads the counter from ring 3 without a trap
+/// into the kernel on this machine (`crates/core/mm/src/vdso.rs`,
 /// `VDSO_FLAG_RDTIME_NATIVE`).
 pub const VDSO_FLAG_RDTIME_NATIVE: u32 = 1;
 

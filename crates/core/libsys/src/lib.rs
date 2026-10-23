@@ -273,19 +273,13 @@ pub fn vdso_timebase_hz() -> u64 {
 /// Returns 0 if the page publishes no frequency — a kernel older than this, or
 /// one with no vDSO mapped.
 ///
-/// U07-18: guarded by [`vdso_rdtime_native`], unlike the version of this
-/// function the audit read. Before this fix the CSR read below was
-/// unconditional, so on a board where `rdtime` is emulated (the kernel clears
-/// the vDSO `flags` native bit exactly there) every call
-/// paid an illegal-instruction trap into firmware instead of the `ecall`
-/// [`uptime`] would have used, on the one function whose whole purpose is
-/// avoiding a trap. [`uptime`] already made this trade correctly; this
-/// brings the nanosecond reader in line with it.
+/// Guarded by [`vdso_rdtime_native`], as [`uptime`] is: where the kernel's
+/// probe found the `time` read trapping, the reader takes the `ecall`.
 pub fn vdso_now_ns() -> u64 {
     let hz = vdso_timebase_hz();
     if hz == 0 { return 0; }
-    // riscv64: `rdtime` may trap without Sstc, so honour the vDSO flag and
-    // fall back to the ecall. aarch64: `cntvct_el0` is always EL0-readable
+    // riscv64: `rdtime` traps where the kernel's probe said so: honour the
+    // vDSO flag and fall back to the ecall. aarch64: `cntvct_el0` is always EL0-readable
     // and the vDSO flag is a riscv64 statement — reading through the flag
     // there sent `uptime_ms`/`sleep` through DOMAIN_UPTIME's units (gate 182c).
     #[cfg(target_arch = "aarch64")]
@@ -362,12 +356,13 @@ fn read_time_csr() -> u64 {
     t
 }
 
-/// Does the kernel say `rdtime` is native here (vDSO `flags` bit 0)?
+/// Does the kernel say `rdtime` works from ring 3 here (vDSO `flags` bit 0)?
 ///
-/// Where the `time` CSR is emulated by M-mode firmware, `rdtime` is an
-/// illegal-instruction trap into OpenSBI, dearer than the `ecall` it would
-/// replace. The kernel sets the bit only where the read is
-/// native, and leaves it clear when built to force the trap.
+/// The kernel sets the bit when its boot-time trap-probe of the `time` CSR
+/// passes: the read is native, or M-mode firmware answers it (OpenSBI
+/// emulates `time` on a hart without the CSR, which is still cheaper than the
+/// `ecall`, whose handler reads the same CSR). It leaves the bit clear when
+/// the probe trapped and when built to force the trap.
 pub fn vdso_rdtime_native() -> bool {
     // `flags` is written once, before any user task runs, and never changes:
     // no seqlock, like the timebase and the magic.

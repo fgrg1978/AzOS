@@ -29,13 +29,14 @@ compile_error!("Kconfig LINUX_RUNTIME hosts the Linux personality on riscv64, aa
 /// aarch64 process; `abitest` then took a page fault the moment it read
 /// `VDSO_USER_BASE`, since nothing — not even the ecall fallback the
 /// module doc describes — was mapped there at all). `timebase_hz` is the
-/// counter frequency, board-specific and read differently per ISA (a
-/// compile-time constant on riscv64's OpenSBI-fixed `mtime`; a live
+/// counter frequency, board-specific and read differently per ISA (Kconfig
+/// `TIMER_FREQ` on riscv64, the rate the board's `mtime` runs at; a live
 /// `CNTFRQ_EL0` read on aarch64, since QEMU's default has changed across
 /// machine versions — see that kernel_main's own `live_hz` comment).
 ///
 /// The `VDSO_FLAG_RDTIME_NATIVE` flag (riscv64's `rdtime`-from-U-mode
-/// optimisation) is NOT set here for aarch64: it is a
+/// read, set when the boot hart's trap-probe of `time` passes) is NOT set
+/// here for aarch64: it is a
 /// RISC-V-specific ABI promise about a RISC-V-specific instruction, and
 /// aarch64 has no equivalent wired yet. Ring 3 there still gets the vDSO's
 /// cooked `uptime_ms`/`uptime_ticks` fields. x86_64 sets it with
@@ -54,8 +55,17 @@ pub(crate) fn install_vdso(timebase_hz: u64, counter_scale: Option<(u64, u64, u6
             azos_mm::vdso::sigtramp_init(&azos_linux_abi::signal::RV_SIGRETURN_CODE);
         }
         azos_mm::vdso::vdso_set_timebase(timebase_hz);
-        #[cfg(all(feature = "qemu", not(feature = "vdso-force-syscall"), target_arch = "riscv64"))]
-        azos_mm::vdso::vdso_set_flags(azos_mm::vdso::VDSO_FLAG_RDTIME_NATIVE);
+        // riscv64: ring 3 reads `time` itself when the boot hart's read of it
+        // did not trap into S-mode (`cpu::time_readable` says why that is the
+        // U-mode answer too). `vdso-force-syscall` keeps the trap.
+        #[cfg(all(not(feature = "vdso-force-syscall"), target_arch = "riscv64"))]
+        {
+            let readable = azos_arch::cpu::time_readable();
+            if readable {
+                azos_mm::vdso::vdso_set_flags(azos_mm::vdso::VDSO_FLAG_RDTIME_NATIVE);
+            }
+            kprintln!("[VDSO] rdtime from U-mode: {} (trap-probe)", if readable { "yes" } else { "no, DOMAIN_UPTIME" });
+        }
         // An ISA whose ring-3 counter runs at another rate (x86_64's TSC)
         // publishes the kernel's own conversion; ring 3 then reads the
         // counter natively, with the clock's semantics.

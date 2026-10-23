@@ -151,14 +151,16 @@ Reading the clock is a read of a shared page, not a system call.
   itself and converts it with the published frequency, so the result is exact
   rather than tick-granular. The counter is `rdtime` on riscv64, `cntvct_el0`
   on aarch64, and `rdtsc` plus the published scale on x86_64.
-- On riscv64 the `time` CSR may be emulated by M-mode firmware on a hart that
-  lacks it in hardware. There `rdtime` is an illegal-instruction trap into the
-  firmware, dearer than the system call it would replace. The kernel therefore
-  sets `VDSO_FLAG_RDTIME_NATIVE` only where it knows the read is native (a
-  riscv64 QEMU build, and x86_64 when it publishes the counter scale; never on
-  a riscv64 board build), and `vdso_rdtime_native` is what libsys tests. On
-  aarch64 `cntvct_el0` never traps from EL0, so `vdso_now_ns` reads it without
-  looking at the flag. With the flag clear, `uptime`
+- On riscv64 the boot hart reads the `time` CSR once under a private trap
+  vector (`azos_arch::cpu::time_readable`) and sets `VDSO_FLAG_RDTIME_NATIVE`
+  when no trap reached S-mode. U-mode then reads it too: the SBI firmware sets
+  `mcounteren.TM` and the kernel sets `scounteren.TM` on every hart. On a hart
+  without the CSR in hardware OpenSBI emulates the read in M-mode, for S and U
+  alike; that still beats the system call, whose handler reads the same CSR.
+  x86_64 sets the flag when it publishes the counter scale.
+  `vdso_rdtime_native` is what libsys tests. On aarch64 `cntvct_el0` never
+  traps from EL0, so `vdso_now_ns` reads it without looking at the flag.
+  With the flag clear, `uptime`
   falls back to `DOMAIN_UPTIME` through `uptime_ecall`, which returns the same
   counter, so a caller cannot tell the paths apart except by cost.
 - Kernel feature `vdso-force-syscall` leaves the flag clear (and, on x86_64,

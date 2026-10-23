@@ -55,11 +55,13 @@ pub const VDSO_MAGIC: u32 = 0x5644_534F; // "VDSO"
 /// Kernel version encoded as (major << 16 | minor << 8 | patch).
 pub const VDSO_KERNEL_VERSION: u32 = (0 << 16) | (1 << 8) | 0; // 0.1.0
 
-/// [`VdsoData::flags`] bit 0: `rdtime` executes natively, so ring 3 reads the
-/// counter without a trap. Clear where the `time` CSR is
-/// emulated by M-mode firmware — there `rdtime` traps into OpenSBI and costs
-/// more than `DOMAIN_UPTIME` — and when the kernel is built to force the trap.
-/// libsys mirrors the value (`crates/core/libsys/src/pure.rs`).
+/// [`VdsoData::flags`] bit 0: `rdtime` reads the counter from ring 3 without
+/// a trap into the kernel. riscv64 sets it when the boot hart's trap-probe
+/// of the `time` CSR passes (`azos_arch::cpu::time_readable`); a read OpenSBI
+/// emulates in M-mode counts, since `DOMAIN_UPTIME` would read the same CSR
+/// after its own trap. x86_64 sets it with the TSC scale. Clear when the
+/// kernel is built to force the trap (`vdso-force-syscall`). libsys mirrors
+/// the value (`crates/core/libsys/src/pure.rs`).
 pub const VDSO_FLAG_RDTIME_NATIVE: u32 = 1 << 0;
 
 // ---------------------------------------------------------------------------
