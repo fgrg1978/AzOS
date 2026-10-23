@@ -11,8 +11,9 @@
 # GPL-2.0-only, no Linux header), so the loader, `DOMAIN_MODULE_VERIFY` and the
 # token-gated `DOMAIN_MODULE_MAP_X` run end to end with no GPL object in any
 # image (stage L1, the first Linux object, needs the owner's sign-off).
-# `-mno-relax`/`-mcmodel=medany` (riscv64) and `-mgeneral-regs-only`
-# (aarch64) are the only flags the loader accepts.
+# `-mno-relax`/`-mcmodel=medany` (riscv64), `-mgeneral-regs-only` (aarch64)
+# and `-mno-red-zone -mgeneral-regs-only` (x86_64) are the only flags the
+# loader accepts.
 #
 # The kernel binds each module to the SHA-256 of these exact bytes
 # (`build/module_hashes*.rs`, `include!`d under the `lx-loader` feature only).
@@ -23,6 +24,7 @@ LXMOD_CFLAGS := -ffreestanding -fno-pic -fno-common -fno-builtin -nostdinc -O2 \
                 -Wall -Wextra -Werror
 LXTEST_KO := $(OUT_BUILD)/lx/lxtest-riscv64.ko
 LXTEST_KO_AARCH64 := $(OUT_BUILD)/lx/lxtest-aarch64.ko
+LXTEST_KO_X86_64 := $(OUT_BUILD)/lx/lxtest-x86_64.ko
 MODULE_HASHES := $(OUT_BUILD)/module_hashes.rs
 MODULE_HASHES_AARCH64 := $(OUT_BUILD)/module_hashes_aarch64.rs
 
@@ -35,6 +37,13 @@ $(LXTEST_KO_AARCH64): $(LXMOD_SRC)
 	@mkdir -p $(OUT_BUILD)/lx
 	$(LX_CC) --target=aarch64-unknown-elf -mgeneral-regs-only -mcmodel=small \
 		$(LXMOD_CFLAGS) -c $< -o $@
+
+# x86_64: Linux's module flags (no red zone, no FP/SIMD state, no unwind
+# tables) with the small code model a ring-3 server's low region can hold.
+$(LXTEST_KO_X86_64): $(LXMOD_SRC)
+	@mkdir -p $(OUT_BUILD)/lx
+	$(LX_CC) --target=x86_64-unknown-elf -mcmodel=small -mno-red-zone -mgeneral-regs-only \
+		-fno-asynchronous-unwind-tables $(LXMOD_CFLAGS) -c $< -o $@
 
 # The Linux modules, built by Linux's own Kbuild against the
 # pinned tree inside a pinned container (owner decision, round 49: podman on
@@ -88,7 +97,7 @@ $(MODULE_HASHES_AARCH64): tools/module_hashes.py $(LXTEST_KO_AARCH64) $(LX_KO_A6
 		LXBASE.KO=$(LX_KBUILD_DIR)/aarch64/lxbase.ko XZ_DEC.KO=$(LX_KBUILD_DIR)/aarch64/xz_dec.ko
 
 .PHONY: lx-modules
-lx-modules: $(MODULE_HASHES) $(MODULE_HASHES_AARCH64)
+lx-modules: $(MODULE_HASHES) $(MODULE_HASHES_AARCH64) $(LXTEST_KO_X86_64)
 
 userspace: $(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF) \
            $(UHELLO_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) \

@@ -7,7 +7,8 @@
 //! and data a ring-3 server can run, in three pure steps:
 //!
 //! 1. [`Module::parse`] checks the header (ELF64, little-endian, `ET_REL`,
-//!    riscv64 or aarch64) and every section header against the file length.
+//!    riscv64, aarch64 or x86_64) and every section header against the file
+//!    length.
 //! 2. [`Module::layout`] places every allocated section in one of two
 //!    regions: **text** (`SHF_EXECINSTR`) and **data** (everything else,
 //!    `.rodata` included). The server maps the two regions separately: data
@@ -19,8 +20,9 @@
 //!    through the caller's table and applies the relocations.
 //!
 //! **Scope by construction.** Modules are compiled with
-//! `-mcmodel=medany -mno-relax` (riscv64) or the small code model with
-//! `-mgeneral-regs-only` (aarch64), `-fno-pic -fno-common`. That rules out a
+//! `-mcmodel=medany -mno-relax` (riscv64), the small code model with
+//! `-mgeneral-regs-only` (aarch64) or `-mcmodel=small`/`kernel` with
+//! `-mno-red-zone -mgeneral-regs-only` (x86_64), `-fno-pic -fno-common`. That rules out a
 //! GOT, a PLT, TLS, IFUNC and the dynamic-linking types; the loader refuses
 //! each of them by name instead of mis-applying it. A branch that does not
 //! reach its target (the region was placed too far from the server's text)
@@ -43,14 +45,17 @@
 
 mod aarch64;
 mod riscv64;
+mod x86_64;
 
-// ── ELF constants (System V gABI, and the two psABIs) ───────────────────────
+// ── ELF constants (System V gABI, and the three psABIs) ─────────────────────
 
 const ET_REL: u16 = 1;
 /// `e_machine` of RISC-V.
 pub const EM_RISCV: u16 = 243;
 /// `e_machine` of AArch64.
 pub const EM_AARCH64: u16 = 183;
+/// `e_machine` of x86-64.
+pub const EM_X86_64: u16 = 62;
 
 const SHT_PROGBITS: u32 = 1;
 const SHT_SYMTAB: u32 = 2;
@@ -107,7 +112,7 @@ pub enum Error<'a> {
     NotElf64Le,
     /// An ELF file, but not `ET_REL` (a linked executable or a shared object).
     NotRelocatable,
-    /// `e_machine` is neither riscv64 nor aarch64, or not the one expected.
+    /// `e_machine` is not riscv64, aarch64 or x86_64, or not the one expected.
     WrongMachine(u16),
     /// A header, table or string lies outside the file.
     Truncated,
@@ -168,15 +173,19 @@ pub enum Isa {
     Riscv64,
     /// AArch64 (`EM_AARCH64`).
     Aarch64,
+    /// x86-64 (`EM_X86_64`).
+    X86_64,
 }
 
 impl Isa {
-    /// The ISA this crate was compiled for, if it is one of the two.
+    /// The ISA this crate was compiled for, if it is one of the three.
     pub const fn native() -> Option<Isa> {
         if cfg!(target_arch = "riscv64") {
             Some(Isa::Riscv64)
         } else if cfg!(target_arch = "aarch64") {
             Some(Isa::Aarch64)
+        } else if cfg!(target_arch = "x86_64") {
+            Some(Isa::X86_64)
         } else {
             None
         }
@@ -282,6 +291,7 @@ impl<'a> Module<'a> {
         let isa = match machine {
             EM_RISCV => Isa::Riscv64,
             EM_AARCH64 => Isa::Aarch64,
+            EM_X86_64 => Isa::X86_64,
             m => return Err(Error::WrongMachine(m)),
         };
         if let Some(want) = expect {
@@ -660,7 +670,7 @@ impl<'a> Module<'a> {
         for ri in 0..self.shnum {
             let rs = self.section(ri)?;
             if rs.kind == SHT_REL {
-                // REL (implicit addend) is not what either psABI emits for
+                // REL (implicit addend) is not what any of the psABIs emits for
                 // relocatable objects; refuse it on a placed target.
                 if self.placement(rs.info as usize)?.is_some() {
                     return Err(Error::RefusedSection(self.section_name(ri)?));
@@ -702,6 +712,7 @@ impl<'a> Module<'a> {
                         let _ = &mut ctx;
                         aarch64::apply(rtype, buf, site, p, s_val, addend, r_offset, target)?
                     }
+                    Isa::X86_64 => x86_64::apply(rtype, buf, site, p, s_val, addend, r_offset, target)?,
                 }
             }
         }
@@ -711,7 +722,7 @@ impl<'a> Module<'a> {
     fn check_unplaced_reloc(&self, rtype: u32, target: usize) -> Result<(), Error<'a>> {
         match self.isa {
             Isa::Riscv64 => riscv64::check_unplaced(rtype, target),
-            Isa::Aarch64 => Ok(()),
+            Isa::Aarch64 | Isa::X86_64 => Ok(()),
         }
     }
 
@@ -806,13 +817,13 @@ impl<'a> Loaded<'a> {
     ///
     /// Entry shape (`struct kernel_symbol`, `include/linux/export-internal.h`):
     /// riscv64 has no `HAVE_ARCH_PREL32_RELOCATIONS`, so three absolute
-    /// pointers (value, name, namespace; 24 bytes); aarch64 has it, so three
-    /// `int` offsets from each field's own address (12 bytes).
+    /// pointers (value, name, namespace; 24 bytes); aarch64 and x86_64 have
+    /// it, so three `int` offsets from each field's own address (12 bytes).
     pub fn for_each_export(&self, data: &[u8], mut f: impl FnMut(&'_ [u8], u64)) -> Option<usize> {
         let m = &self.module;
         let stride: u64 = match m.isa() {
             Isa::Riscv64 => 24,
-            Isa::Aarch64 => 12,
+            Isa::Aarch64 | Isa::X86_64 => 12,
         };
         let db = self.bases.data_base;
         let mut count = 0;
@@ -827,7 +838,7 @@ impl<'a> Loaded<'a> {
                 let o = usize::try_from(off).ok()?;
                 let (value, name_at) = match m.isa() {
                     Isa::Riscv64 => (rd_u64(data, o)?, rd_u64(data, o + 8)?),
-                    Isa::Aarch64 => {
+                    Isa::Aarch64 | Isa::X86_64 => {
                         let p = db.wrapping_add(off);
                         let rel = |k: usize| rd_u32(data, o + k).map(|v| v as i32 as i64 as u64);
                         (p.wrapping_add(rel(0)?), p.wrapping_add(4).wrapping_add(rel(4)?))

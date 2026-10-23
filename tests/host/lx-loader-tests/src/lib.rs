@@ -8,7 +8,7 @@
 //!   against encodings produced by `llvm-mc --show-encoding` (LLVM 22) and
 //!   pasted here as constants: the zero-immediate instruction is the input,
 //!   the assembled instruction with the immediate is the expected output.
-//! * **Whole modules vs a decoder.** `$AZOS_OUT/build/lx/lxtest-{riscv64,aarch64}.ko`
+//! * **Whole modules vs a decoder.** `$AZOS_OUT/build/lx/lxtest-{riscv64,aarch64,x86_64}.ko`
 //!   (`make lx-modules`) are loaded at chosen bases, and every relocation in
 //!   them is checked by DECODING the patched field and comparing it with the
 //!   psABI formula, computed here from this file's own ELF reader. The
@@ -26,10 +26,14 @@ fn ko(isa: Isa) -> Vec<u8> {
     let name = match isa {
         Isa::Riscv64 => "lxtest-riscv64.ko",
         Isa::Aarch64 => "lxtest-aarch64.ko",
+        Isa::X86_64 => "lxtest-x86_64.ko",
     };
     let path = format!("{}/build/lx/{}", env!("AZOS_OUT"), name);
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e} -- run `make lx-modules` in the repo root"))
 }
+
+/// The ISAs the `lxtest` fixture is built for (`make lx-modules`).
+const ISAS: [Isa; 3] = [Isa::Riscv64, Isa::Aarch64, Isa::X86_64];
 
 const MIX: u64 = 0x1000_2000;
 const LOG: u64 = 0x1000_3000;
@@ -207,6 +211,12 @@ fn check_all_r(obj: &[u8], isa: Isa, ld: &Loaded, resolver: &dyn Fn(&[u8]) -> Op
                 let shift = match r.kind { 278 => 0, 284 => 1, 285 => 2, 286 => 3, _ => 4 };
                 assert_eq!(a64_imm12(w(0)) << shift, v & 0xfff, "LDST{} at {:#x}", 8 << shift, r.off);
             }
+            (Isa::X86_64, 1) => assert_eq!(u64le(buf, site), v, "R_X86_64_64 at {:#x}", r.off),
+            (Isa::X86_64, 24) => assert_eq!(u64le(buf, site), pc as u64, "R_X86_64_PC64 at {:#x}", r.off),
+            (Isa::X86_64, 2 | 4) => assert_eq!(w(0) as i32 as i64, pc, "PC32/PLT32 at {:#x}", r.off),
+            // The instruction zero-extends (32) or sign-extends (32S) the field.
+            (Isa::X86_64, 10) => assert_eq!(w(0) as u64, v, "R_X86_64_32 at {:#x}", r.off),
+            (Isa::X86_64, 11) => assert_eq!(w(0) as i32 as i64 as u64, v, "R_X86_64_32S at {:#x}", r.off),
             (isa, k) => panic!("{isa:?} relocation type {k} in the fixture has no oracle: add one"),
         }
         *counts.entry(r.kind).or_insert(0) += 1;
@@ -292,12 +302,42 @@ fn aarch64_module_every_relocation_checks() {
     }
 }
 
+#[test]
+fn x86_64_module_every_relocation_checks() {
+    let obj = ko(Isa::X86_64);
+    let ld = load(&obj, Isa::X86_64, 0x1100_0000, 0x1110_0000);
+    let c = check_all(&obj, Isa::X86_64, &ld);
+    // 64, PC32, PLT32, 32, 32S: what a `-mcmodel=small -fno-pic` module carries.
+    for k in [1u32, 2, 4, 10, 11] {
+        assert!(c.get(&k).copied().unwrap_or(0) > 0, "fixture lost relocation type {k}: {c:?}");
+    }
+}
+
+/// x86_64's absolute 32-bit fields: `32` takes an address below 4 GiB, `32S`
+/// one below 2 GiB (or in the top 2 GiB). A data region at 3 GiB is refused
+/// at the `32S`, never written truncated, while the rest still fits.
+#[test]
+fn x86_64_absolute_32_bit_fields_are_range_checked() {
+    let obj = ko(Isa::X86_64);
+    let m = Module::parse(&obj, Some(Isa::X86_64)).unwrap();
+    let l = m.layout().unwrap();
+    let mut t = vec![0; l.text_size as usize];
+    let mut d = vec![0; l.data_size as usize];
+    let (tb, db) = (0xbff0_0000u64, 0xc000_0000u64);
+    let mut near = |n: &[u8]| resolver(n).map(|a| a + 0xb000_0000);
+    assert!(matches!(m.load(&mut t, tb, &mut d, db, &mut near), Err(Error::Overflow(11, _))));
+    // The top 2 GiB (`-mcmodel=kernel`'s range) fits a 32S and not a 32.
+    let (tb, db) = (0xffff_ffff_c000_0000u64, 0xffff_ffff_c010_0000u64);
+    let mut top = |n: &[u8]| resolver(n).map(|a| a.wrapping_add(0xffff_ffff_b000_0000));
+    assert!(matches!(m.load(&mut t, tb, &mut d, db, &mut top), Err(Error::Overflow(10, _))));
+}
+
 /// Same module at other bases (page offsets that make ADRP/AUIPC carry, and
 /// a data region BELOW the text), all within BL reach (+-128 MiB) of the
 /// imports at 0x1000_2000/0x1000_3000: the oracle must still agree everywhere.
 #[test]
 fn modules_relocate_at_awkward_bases() {
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let obj = ko(isa);
         for (t, d) in [(0x1000_0ff0u64 & !0xf, 0x0fff_f000u64), (0x17ff_f000, 0x1000_4000), (0x1000_5000, 0x1000_5ff0 & !0xf)] {
             let ld = load(&obj, isa, t, d);
@@ -308,7 +348,7 @@ fn modules_relocate_at_awkward_bases() {
 
 #[test]
 fn text_region_holds_only_code_and_data_never_code() {
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let obj = ko(isa);
         let m = Module::parse(&obj, Some(isa)).unwrap();
         let (shs, _, _) = read_elf(&obj);
@@ -333,7 +373,7 @@ fn text_region_holds_only_code_and_data_never_code() {
 
 #[test]
 fn imports_are_counted_and_exports_found() {
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let obj = ko(isa);
         let m = Module::parse(&obj, Some(isa)).unwrap();
         let mut names = Vec::new();
@@ -355,7 +395,7 @@ fn imports_are_counted_and_exports_found() {
 
 #[test]
 fn modinfo_admission() {
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let obj = ko(isa);
         let m = Module::parse(&obj, Some(isa)).unwrap();
         assert_eq!(m.modinfo(b"license"), Some(&b"Dual Apache/GPL"[..]));
@@ -389,6 +429,8 @@ fn unresolved_import_is_refused_before_any_relocation() {
 fn wrong_isa_and_garbage_are_refused() {
     let rv = ko(Isa::Riscv64);
     assert!(matches!(Module::parse(&rv, Some(Isa::Aarch64)), Err(Error::WrongMachine(243))));
+    let x86 = ko(Isa::X86_64);
+    assert!(matches!(Module::parse(&x86, Some(Isa::Riscv64)), Err(Error::WrongMachine(62))));
     assert_eq!(Module::parse(b"not an elf", None).unwrap_err(), Error::NotElf64Le);
     let mut exec = rv.clone();
     exec[16] = 2; // ET_EXEC
@@ -396,7 +438,7 @@ fn wrong_isa_and_garbage_are_refused() {
     // Every truncation of a real module is refused or loads, and never
     // panics: the loader runs on bytes a compromised volume could supply
     // (before the kernel's digest check would refuse them anyway).
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let obj = ko(isa);
         for n in 0..obj.len() {
             let _ = Module::parse(&obj[..n], None).and_then(|m| m.layout().map(|_| ()));
@@ -437,6 +479,14 @@ fn out_of_reach_branch_is_refused_not_truncated() {
     let mut d = vec![0; l.data_size as usize];
     let mut far = |n: &[u8]| resolver(n).map(|a| a + (200u64 << 20));
     assert!(matches!(m.load(&mut t, 0x1000_0000, &mut d, 0x1010_0000, &mut far), Err(Error::Overflow(283, _))));
+    // x86_64: 3 GiB is beyond a call's PLT32 (+-2 GiB).
+    let obj = ko(Isa::X86_64);
+    let m = Module::parse(&obj, None).unwrap();
+    let l = m.layout().unwrap();
+    let mut t = vec![0; l.text_size as usize];
+    let mut d = vec![0; l.data_size as usize];
+    let mut far = |n: &[u8]| resolver(n).map(|a| a + (3u64 << 30));
+    assert!(matches!(m.load(&mut t, 0x1000_0000, &mut d, 0x1010_0000, &mut far), Err(Error::Overflow(4, _))));
 }
 
 #[test]
@@ -456,15 +506,16 @@ fn small_or_misaligned_regions_are_refused() {
 /// tests above prove nothing.
 #[test]
 fn oracle_canary_detects_a_wrong_relocation() {
-    for isa in [Isa::Riscv64, Isa::Aarch64] {
+    for isa in ISAS {
         let obj = ko(isa);
         let mut ld = load(&obj, isa, 0x1100_0000, 0x1110_0000);
         let (shs, _, rels) = read_elf(&obj);
-        let call = rels.iter().find(|r| matches!(r.kind, 19 | 283) && shs[r.section].flags & 4 != 0).unwrap();
+        let call = rels.iter().find(|r| matches!((isa, r.kind), (Isa::Riscv64, 19) | (Isa::Aarch64, 283) | (Isa::X86_64, 4)) && shs[r.section].flags & 4 != 0).unwrap();
         let m = Module::parse(&obj, None).unwrap();
         let (_, at) = m.placement(call.section).unwrap().unwrap();
         let site = (at + call.off) as usize;
-        // Bit 21 of the auipc (riscv64) or bit 3 of BL's imm26 (aarch64).
+        // Bit 21 of the auipc (riscv64), bit 3 of BL's imm26 (aarch64) or
+        // of the call's rel32 (x86_64).
         let bit = if isa == Isa::Riscv64 { 1u32 << 21 } else { 1 << 3 };
         let w = u32le(&ld.text, site) ^ bit;
         ld.text[site..site + 4].copy_from_slice(&w.to_le_bytes());
@@ -481,11 +532,7 @@ fn oracle_canary_detects_a_wrong_relocation() {
 // where a missing build is reported.
 
 fn kbuild(isa: Isa, name: &str) -> Option<Vec<u8>> {
-    let dir = match isa {
-        Isa::Riscv64 => "riscv64",
-        Isa::Aarch64 => "aarch64",
-    };
-    let path = format!("{}/build/lx/kbuild/{dir}/{name}", env!("AZOS_OUT"));
+    let path = format!("{}/build/lx/kbuild/{}/{name}", env!("AZOS_OUT"), isa_key(isa));
     match std::fs::read(&path) {
         Ok(b) => Some(b),
         Err(_) => {
@@ -527,6 +574,8 @@ fn kbuild_chain(isa: Isa) -> Option<(Vec<u8>, Loaded, Vec<u8>, Loaded)> {
     let want: &[u32] = match isa {
         Isa::Riscv64 => &[2, 19, 23, 24, 35, 39],
         Isa::Aarch64 => &[261, 275, 277, 283],
+        // Not built yet: tools/lx_kbuild builds riscv and arm64 only.
+        Isa::X86_64 => &[1, 2, 4],
     };
     for k in want {
         let n = cb.get(k).copied().unwrap_or(0) + cx.get(k).copied().unwrap_or(0);
@@ -677,6 +726,7 @@ fn isa_key(isa: Isa) -> &'static str {
     match isa {
         Isa::Riscv64 => "riscv64",
         Isa::Aarch64 => "aarch64",
+        Isa::X86_64 => "x86_64",
     }
 }
 

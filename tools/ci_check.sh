@@ -11257,7 +11257,7 @@ test_host_features "topology(lx-server)" \
 #   member), its own host tests.
 # * `lx-loader-tests`: the relocatable-module loader the server links, its
 #   encoders against llvm-mc encodings and every relocation of the test module
-#   (`make lx-modules`, both ISAs) against an independent decoder; the suite
+#   (`make lx-modules`, every ISA) against an independent decoder; the suite
 #   carries its own oracle canary.
 # * licence lint (`tools/lx_license_lint.py`): no GPL-only source outside lx/
 #   and third_party/, no lx/ symbol in any built kernel, ELF or module, no
