@@ -559,12 +559,17 @@ static RP_RIGHT: AtomicU32 = AtomicU32::new(0);
 static RP_SRV_AT: AtomicU32 = AtomicU32::new(0);
 static RP_CLI_AT: AtomicU32 = AtomicU32::new(0);
 static RP_SRV_WORD: AtomicUsize = AtomicUsize::new(0);
+/// The server's slot and TID, for the client to see it parked.
+static RP_SRV_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
+static RP_SRV_TID: AtomicU32 = AtomicU32::new(0);
 
 fn rp_server(_: usize) {
     if !serve(RP_EP) {
         RP_SRV_DONE.store(true, Ordering::Release);
         return;
     }
+    RP_SRV_SLOT.store(my_slot(), Ordering::Release);
+    RP_SRV_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     RP_READY.store(true, Ordering::Release);
     // The first call through the ordinary accept, parked.
     let (h, r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
@@ -595,8 +600,14 @@ fn rp_client(_: usize) {
         return;
     };
     RP_CAP.store(cap as usize, Ordering::Release);
-    // Let the server park in its accept.
-    sleep_ms(20);
+    // Until the server is parked in its accept, as the fast path reads it
+    // (`ipc_fast_parked`): a call that finds it not parked yet queues, leaves
+    // no point, and reads as a missed resume. A fixed 20 ms sleep lost that
+    // race on a loaded host (aarch64, about one boot in three).
+    let (slot, tid) = (RP_SRV_SLOT.load(Ordering::Acquire), RP_SRV_TID.load(Ordering::Acquire));
+    azos_syscall::sleep::wait_until_ms(PARK_MS, 1, || {
+        azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
+    });
     rcall(SYS_IPC_FAST_CALL_EP, [cap, 0x600, 0, 0, 0, 0], rp_client_next, 0);
 }
 
