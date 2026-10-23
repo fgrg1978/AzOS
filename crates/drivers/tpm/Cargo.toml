@@ -6,9 +6,10 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 description = """
 TPM 2.0 driver core (S4): the TIS/FIFO register protocol over MMIO and over
-SPI, locality handling and timeouts, the ACPI TPM2 table, and the commands
-AzOS uses (Startup, GetRandom, PCR_Extend, PCR_Read, NV_DefineSpace, NV_Read,
-NV_Write, NV_ReadPublic, NV_ReadLock, NV_WriteLock) with bounds-checked
+SPI, the CRB interface over MMIO, locality handling and timeouts, the ACPI
+TPM2 table, and the commands AzOS uses (Startup, GetRandom, GetCapability,
+PCR_Extend, PCR_Read, NV_DefineSpace, NV_Read, NV_Write, NV_ReadPublic,
+NV_ReadLock, NV_WriteLock), retried on RC_RETRY/RC_TESTING, with bounds-checked
 response parsing. Pure (no_std, no allocation,
 no unsafe): the kernel (or a ring-3 driver) supplies the register window, the
 SPI bus and the clock; tests/host/tpm-tests drives it against a scripted TPM.
@@ -34,3 +35,7 @@ canary-release = []
 # An NV index that already exists is adopted as the rollback floor without
 # looking at what it is.
 canary-nvsquat = []
+# CRB: CTRL_START is never written, so no command starts.
+canary-crb-start = []
+# TPM_RC_RETRY / TPM_RC_TESTING are the answer: the command is not sent again.
+canary-no-retry = []

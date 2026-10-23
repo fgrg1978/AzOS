@@ -5,12 +5,17 @@
 //! Layout: the 36-byte ACPI header, `PlatformClass` u16, 2 reserved bytes,
 //! `ControlAreaAddress` u64, `StartMethod` u32, then start-method parameters
 //! this driver does not read. Start method 6 is the memory-mapped TIS/FIFO
-//! interface; 7 and 8 are CRB, which this crate does not drive.
+//! interface; 7 is the Command Response Buffer started by its `CTRL_START`
+//! register, 2 and 8 the CRB started through ACPI as well ([`crate::crb`]).
 //!
-//! The table carries no TIS base address. The PC-client window is fixed at
-//! [`TIS_DEFAULT_BASE`]; a platform that declares a TPM device with a
-//! different window in its `_CRS` overrides it, and that lookup belongs to
-//! the platform's ACPI walk.
+//! The table carries no window: the TPM device's `_CRS` does, and reading
+//! it takes an AML interpreter. So the windows come from the table alone:
+//! the PC-client TIS window is fixed at [`TIS_DEFAULT_BASE`]; a CRB's control
+//! area is `ControlAreaAddress`, its locality registers the PTP layout puts
+//! 0x40 below it ([`crate::crb::head_for`]), and its buffers the addresses
+//! the control area holds.
+
+use crate::crb::StartMethod;
 
 /// Physical base of the PC-client TIS window (locality 0).
 pub const TIS_DEFAULT_BASE: u64 = 0xFED4_0000;
@@ -19,6 +24,8 @@ const SIG: &[u8; 4] = b"TPM2";
 const HEADER: usize = 36;
 const MIN_LEN: usize = 52;
 
+/// CRB, started through ACPI (the TCG ACPI table's "ACPI start method").
+pub const START_METHOD_ACPI: u32 = 2;
 pub const START_METHOD_MMIO: u32 = 6;
 pub const START_METHOD_CRB: u32 = 7;
 pub const START_METHOD_CRB_ACPI: u32 = 8;
@@ -46,8 +53,8 @@ pub struct Tpm2Table {
 pub enum Interface {
     /// TIS/FIFO over MMIO at this base.
     Tis { base: u64 },
-    /// Command Response Buffer at this control area: not driven here.
-    Crb { control_area: u64 },
+    /// Command Response Buffer at this control area, started as `start` says.
+    Crb { control_area: u64, start: StartMethod },
     /// Any other start method.
     Unsupported(u32),
 }
@@ -83,8 +90,9 @@ impl Tpm2Table {
     pub fn interface(&self) -> Interface {
         match self.start_method {
             START_METHOD_MMIO => Interface::Tis { base: TIS_DEFAULT_BASE },
-            START_METHOD_CRB | START_METHOD_CRB_ACPI => {
-                Interface::Crb { control_area: self.control_area }
+            START_METHOD_CRB => Interface::Crb { control_area: self.control_area, start: StartMethod::Crb },
+            START_METHOD_ACPI | START_METHOD_CRB_ACPI => {
+                Interface::Crb { control_area: self.control_area, start: StartMethod::Acpi }
             }
             m => Interface::Unsupported(m),
         }

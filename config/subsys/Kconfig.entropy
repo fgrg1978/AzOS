@@ -58,7 +58,7 @@ config ENTROPY_CPU_RETRIES
 # One native driver, three users: an entropy source for the pool, the boot
 # measurements (PCR extends) and, when chosen below, the OTA anti-rollback
 # floor. The TPM is found, never assumed: x86_64 reads the ACPI TPM2 table
-# (TIS over MMIO), riscv64 and aarch64 read the device tree for a
+# (TIS or CRB over MMIO), riscv64 and aarch64 read the device tree for a
 # `tcg,tpm_tis-spi` node and talk to it through the `Spi` device interface.
 # No TPM, or a TPM that does not answer, leaves the boot exactly as it was.
 
@@ -69,14 +69,17 @@ config TPM
     default n
     help
       Kernel feature `tpm`. At the entropy step of the boot the kernel
-      looks for a TPM 2.0 (x86_64: the ACPI TPM2 table with the TIS/FIFO
-      start method; riscv64, aarch64: a device-tree node compatible with
-      `tcg,tpm_tis-spi`, reached through the `Spi` interface on bus
-      TPM_SPI_BUS). It sends Startup (an already-started TPM is fine),
-      draws random bytes into the entropy pool (ENTROPY_TPM_SOURCE), and
-      extends each boot stage's digest into a PCR (TPM_PCR_BASE) while
-      writing one decision record per extend. A CRB-only TPM (ACPI start
-      methods 7 and 8) is reported and left alone. Polling driver: the
+      looks for a TPM 2.0 (x86_64: the ACPI TPM2 table, the TIS/FIFO
+      start method 6 or the Command Response Buffer of methods 7, 2 and 8,
+      the last two without their ACPI _DSM: no AML interpreter; riscv64,
+      aarch64: a device-tree node compatible with `tcg,tpm_tis-spi`,
+      reached through the `Spi` interface on bus TPM_SPI_BUS). It sends
+      Startup (an already-started TPM is fine), asks which PCR banks are
+      allocated, draws random bytes into the entropy pool
+      (ENTROPY_TPM_SOURCE), and extends each boot stage's digest into a
+      SHA-256 PCR (TPM_PCR_BASE) while writing one decision record per
+      extend; a TPM without that bank is not extended. TPM_RC_RETRY and
+      TPM_RC_TESTING are retried, about 2.5 s at most. Polling driver: the
       boot waits on the TPM for at most the PTP timeouts (a few seconds)
       and only on a board that has one.
 

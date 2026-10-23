@@ -7,7 +7,10 @@
 //! * `get_random`: the TPM's RNG, a hardware entropy source the kernel may
 //!   credit to its pool (policy is the caller's: this returns bytes).
 //! * `pcr_extend` / `pcr_read`: the measured-boot hook. One SHA-256 digest at
-//!   a time into the SHA-256 bank; hashing is the caller's.
+//!   a time into the SHA-256 bank; hashing is the caller's. `pcr_banks`
+//!   (`GetCapability(TPM_CAP_PCRS)`) says which banks the TPM allocated and
+//!   which PCRs each holds: an extend into a bank that is not allocated is
+//!   accepted and dropped by the TPM, so the caller checks first.
 //! * `nv_define` / `nv_read_public` / `nv_read` / `nv_write` and `floor_*`:
 //!   the anti-rollback floor in a 4-byte NV index. The floor only goes up:
 //!   `floor_raise` reads first and never writes a value at or below the
@@ -34,10 +37,16 @@
 //!
 //! Authorization is a password session only. Every parse goes through
 //! [`wire::Reader`], so a size on the wire cannot read past the response.
+//!
+//! A command answered `TPM_RC_RETRY` (the TPM could not run it now) or
+//! `TPM_RC_TESTING` (its self-test is still running) was not executed and is
+//! sent again, after 20 ms, then twice as long each time up to 2 s (Linux
+//! `tpm_transmit`'s backoff): seven retries, about 2.5 s, then the code is the
+//! answer.
 
-use crate::tis::{Clock, DeviceInfo, Duration, Tis, TisRegs, RESP_MAX};
+use crate::tis::{DeviceInfo, Duration, RESP_MAX};
 use crate::wire::{self, Cmd, Reader};
-use crate::Error;
+use crate::{Error, Transport};
 
 /// PCRs in the PC-client profile.
 pub const PCR_COUNT: u8 = 24;
@@ -109,8 +118,42 @@ pub enum StartupType {
     State = 1,
 }
 
-pub struct Tpm<R: TisRegs, C: Clock> {
-    tis: Tis<R, C>,
+/// First pause before a retry, and the longest one ([`Tpm`]'s doc).
+const RETRY_FIRST_US: u32 = 20_000;
+const RETRY_MAX_US: u32 = 2_000_000;
+
+/// Banks [`Tpm::pcr_banks`] keeps: a TPM 2.0 implements a handful of hash
+/// algorithms (SHA-1, SHA-256, SHA-384, SHA-512, SM3); more is `Malformed`.
+pub const MAX_BANKS: usize = 8;
+
+/// One allocated PCR bank: its hash algorithm (`TPM_ALG_*`) and the PCRs it
+/// holds, bit `n` for PCR `n` (0..32; a PCR above 31 is not a PC-client one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PcrBank {
+    pub alg: u16,
+    pub pcrs: u32,
+}
+
+/// The banks the TPM allocated, in the order it lists them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PcrBanks {
+    banks: [PcrBank; MAX_BANKS],
+    n: usize,
+}
+
+impl PcrBanks {
+    pub fn banks(&self) -> &[PcrBank] {
+        &self.banks[..self.n]
+    }
+
+    /// Does the `alg` bank hold every PCR in `pcrs`?
+    pub fn holds(&self, alg: u16, pcrs: core::ops::Range<u8>) -> bool {
+        self.banks().iter().any(|b| b.alg == alg && pcrs.clone().all(|p| p < 32 && b.pcrs & 1 << p != 0))
+    }
+}
+
+pub struct Tpm<T: Transport> {
+    t: T,
 }
 
 fn pcr_mask(pcr: u8) -> [u8; 3] {
@@ -119,26 +162,36 @@ fn pcr_mask(pcr: u8) -> [u8; 3] {
     m
 }
 
-impl<R: TisRegs, C: Clock> Tpm<R, C> {
-    pub fn new(tis: Tis<R, C>) -> Self {
-        Tpm { tis }
+impl<T: Transport> Tpm<T> {
+    pub fn new(t: T) -> Self {
+        Tpm { t }
     }
 
-    pub fn tis(&mut self) -> &mut Tis<R, C> {
-        &mut self.tis
+    pub fn transport(&mut self) -> &mut T {
+        &mut self.t
     }
 
-    /// Identity registers, with a TPM 2.0 family check.
+    /// Identity registers, with the interface's TPM 2.0 check.
     pub fn probe(&mut self) -> Result<DeviceInfo, Error> {
-        self.tis.probe()
+        self.t.probe()
     }
 
     /// Send `cmd`, check the response header, hand back the response in `out`.
+    /// `TPM_RC_RETRY` and `TPM_RC_TESTING` send it again (see the module doc).
     fn run<'a>(
         &mut self, cmd: Cmd, dur: Duration, tag: u16, out: &'a mut [u8; RESP_MAX],
     ) -> Result<&'a [u8], Error> {
-        let n = self.tis.transmit(cmd.bytes_out(), &mut out[..], dur)?;
-        wire::parse_response(&out[..n], tag)
+        let mut pause = RETRY_FIRST_US;
+        loop {
+            let n = self.t.transmit(cmd.bytes_out(), &mut out[..], dur)?;
+            let rc = (n >= 10).then(|| u32::from_be_bytes([out[6], out[7], out[8], out[9]]));
+            let again = matches!(rc, Some(wire::RC_RETRY | wire::RC_TESTING));
+            if !again || pause > RETRY_MAX_US || cfg!(feature = "canary-no-retry") {
+                return wire::parse_response(&out[..n], tag);
+            }
+            self.t.pause_us(pause);
+            pause *= 2;
+        }
     }
 
     /// `TPM2_Startup`. `TPM_RC_INITIALIZE` (already started) is success: the
@@ -235,6 +288,40 @@ impl<R: TisRegs, C: Clock> Tpm<R, C> {
         let mut v = [0u8; DIGEST_BYTES];
         v.copy_from_slice(d);
         Ok(v)
+    }
+
+    /// `TPM2_GetCapability(TPM_CAP_PCRS)`: the allocated PCR banks. The reply
+    /// must be the PCR capability, at most [`MAX_BANKS`] banks, each with a
+    /// selection the response holds, and nothing after them.
+    pub fn pcr_banks(&mut self) -> Result<PcrBanks, Error> {
+        let mut c = Cmd::new(wire::ST_NO_SESSIONS, wire::CC_GET_CAPABILITY);
+        c.u32(wire::CAP_PCRS);
+        c.u32(0);
+        c.u32(1);
+        let mut out = [0u8; RESP_MAX];
+        let body = self.run(c.finish()?, Duration::Short, wire::ST_NO_SESSIONS, &mut out)?;
+        let mut r = Reader::new(body);
+        let _more_data = r.u8()?;
+        if r.u32()? != wire::CAP_PCRS {
+            return Err(Error::Malformed);
+        }
+        let count = r.u32()? as usize;
+        if count > MAX_BANKS {
+            return Err(Error::Malformed);
+        }
+        let mut b = PcrBanks::default();
+        for slot in b.banks.iter_mut().take(count) {
+            let alg = r.u16()?;
+            let n = r.u8()? as usize;
+            let sel = r.bytes(n)?;
+            let pcrs = sel.iter().take(4).enumerate().fold(0u32, |a, (i, &v)| a | (v as u32) << (8 * i));
+            *slot = PcrBank { alg, pcrs };
+        }
+        if r.remaining() != 0 {
+            return Err(Error::Malformed);
+        }
+        b.n = count;
+        Ok(b)
     }
 
     /// `TPM2_NV_DefineSpace` (the slow class: it allocates NV flash) of an ordinary index of `size` bytes, owner

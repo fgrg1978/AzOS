@@ -4,7 +4,9 @@
 #![cfg(test)]
 
 mod adapters;
+mod banks;
 mod cmds;
+mod crb;
 mod fake;
 mod proto;
 mod tables;
@@ -37,7 +39,7 @@ pub struct Rig {
     pub bus_v: Rc<RefCell<Vec<String>>>,
 }
 
-pub fn rig(kind: Kind, loc: u8) -> (Tpm<Dyn, FakeClock>, Rig) {
+pub fn rig(kind: Kind, loc: u8) -> (Tpm<Tis<Dyn, FakeClock>>, Rig) {
     let dev: SharedDev = shared();
     let clock = FakeClock::new();
     let mmio_log = Rc::new(RefCell::new(Vec::new()));

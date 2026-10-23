@@ -400,7 +400,7 @@ All crates are `no_std`. "Chip logic" crates contain no host-specific code and a
 | `crates/drivers/npu` | `azos_drv_npu` | NPU driver |
 | `crates/drivers/thermal` | `azos_thermal` | Thermal runtime: zones from the device tree, sensor and clock seams, per-board objects (the K1's carries the rail with the clock) |
 | `crates/drivers/power` | `azos_drv_power` | System suspend, power management, the Raspberry Pi's PM block (watchdog, reboot and power-off without PSCI) |
-| `crates/drivers/tpm` | `azos_tpm` | TPM 2.0 TIS/FIFO protocol and commands over MMIO or SPI; the ACPI `TPM2` table reader that picks the driver |
+| `crates/drivers/tpm` | `azos_tpm` | TPM 2.0 TIS/FIFO (MMIO or SPI) and CRB (MMIO) interfaces and the commands; the ACPI `TPM2` table reader that picks the driver |
 | `crates/drivers/rtc` | `azos_rtc` | Real-time clocks (goldfish, PL031, MC146818, PCF8563); seeds the wall clock at boot (`kernel/src/boot/rtc.rs`, see [time.md](time.md#real-time-clock)) |
 | `crates/drivers/scsi` | `azos_scsi` | SCSI over USB Bulk-Only Transport, both ends: CBW/CSW, the target (device-side) command set, the initiator (host) CDB builders and parsers |
 | `crates/drivers/firmware` | `azos_firmware` | Firmware mailbox client (`rpi_mailbox.rs`) used by the thermal runtime |

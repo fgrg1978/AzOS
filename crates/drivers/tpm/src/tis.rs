@@ -9,7 +9,7 @@
 //! Every wait is bounded by the A/B/C timeouts or by the command's duration
 //! class; none spins forever.
 
-use crate::{BusError, Error, Wait};
+use crate::{BusError, Error, Transport, Wait};
 
 // Register offsets inside one locality's 4 KiB page (PTP, FIFO register map).
 pub const REG_ACCESS: u16 = 0x00;
@@ -115,6 +115,40 @@ pub struct DeviceInfo {
 
 const POLL_US: u32 = 50;
 
+/// Poll `f` on `x` until it yields a value or `timeout_us` has passed on the
+/// clock `clock(x)` names. `f` runs at least once, so a zero timeout still
+/// looks. One loop for both interfaces ([`Tis`], [`crate::crb::Crb`]).
+pub(crate) fn poll<X, C: Clock>(
+    x: &mut X,
+    clock: fn(&mut X) -> &mut C,
+    what: Wait,
+    timeout_us: u32,
+    mut f: impl FnMut(&mut X) -> Result<Option<u32>, Error>,
+) -> Result<u32, Error> {
+    let start = clock(x).now_us();
+    loop {
+        if let Some(v) = f(x)? {
+            return Ok(v);
+        }
+        if clock(x).now_us().saturating_sub(start) >= timeout_us as u64 {
+            return Err(Error::Timeout(what));
+        }
+        clock(x).pause_us(POLL_US);
+    }
+}
+
+/// The checks every interface makes before a command goes out: a header at
+/// least, no more than [`CMD_MAX`], and a size field that is the length.
+pub(crate) fn check_command(cmd: &[u8]) -> Result<(), Error> {
+    if cmd.len() < HEADER_BYTES
+        || cmd.len() > CMD_MAX
+        || u32::from_be_bytes([cmd[2], cmd[3], cmd[4], cmd[5]]) as usize != cmd.len()
+    {
+        return Err(Error::BadCommand);
+    }
+    Ok(())
+}
+
 pub struct Tis<R: TisRegs, C: Clock> {
     regs: R,
     clock: C,
@@ -151,22 +185,11 @@ impl<R: TisRegs, C: Clock> Tis<R, C> {
         self.rd32(REG_STS)
     }
 
-    /// Poll `f` until it yields a value or `timeout_us` has passed. `f` runs
-    /// at least once, so a zero timeout still looks.
-    fn poll<F>(&mut self, what: Wait, timeout_us: u32, mut f: F) -> Result<u32, Error>
+    fn poll<F>(&mut self, what: Wait, timeout_us: u32, f: F) -> Result<u32, Error>
     where
         F: FnMut(&mut Self) -> Result<Option<u32>, Error>,
     {
-        let start = self.clock.now_us();
-        loop {
-            if let Some(v) = f(self)? {
-                return Ok(v);
-            }
-            if self.clock.now_us().saturating_sub(start) >= timeout_us as u64 {
-                return Err(Error::Timeout(what));
-            }
-            self.clock.pause_us(POLL_US);
-        }
+        poll(self, |t| &mut t.clock, what, timeout_us, f)
     }
 
     /// `STS` once `stsValid` is set.
@@ -252,12 +275,7 @@ impl<R: TisRegs, C: Clock> Tis<R, C> {
     /// size field must equal `cmd.len()`; the response's size field is checked
     /// against 10 and `rsp.len()` before any byte past the header is read.
     pub fn transmit(&mut self, cmd: &[u8], rsp: &mut [u8], dur: Duration) -> Result<usize, Error> {
-        if cmd.len() < HEADER_BYTES
-            || cmd.len() > CMD_MAX
-            || u32::from_be_bytes([cmd[2], cmd[3], cmd[4], cmd[5]]) as usize != cmd.len()
-        {
-            return Err(Error::BadCommand);
-        }
+        check_command(cmd)?;
         self.request_locality()?;
         let r = self.exchange(cmd, rsp, dur);
         if r.is_err() {
@@ -342,5 +360,19 @@ impl<R: TisRegs, C: Clock> Tis<R, C> {
             got += n;
         }
         Ok(())
+    }
+}
+
+impl<R: TisRegs, C: Clock> Transport for Tis<R, C> {
+    fn probe(&mut self) -> Result<DeviceInfo, Error> {
+        Tis::probe(self)
+    }
+
+    fn transmit(&mut self, cmd: &[u8], rsp: &mut [u8], dur: Duration) -> Result<usize, Error> {
+        Tis::transmit(self, cmd, rsp, dur)
+    }
+
+    fn pause_us(&mut self, us: u32) {
+        self.clock.pause_us(us)
     }
 }

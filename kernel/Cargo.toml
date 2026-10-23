@@ -1035,6 +1035,9 @@ crashdump = []
 # Kconfig TPM: the TPM 2.0 driver (crates/drivers/tpm) as an entropy source,
 # the boot measurements and the OTA rollback floor (kernel/src/boot/tpm.rs).
 tpm = ["dep:azos_tpm"]
+# Gate canary only (row `x86_64: TPM over CRB canary (no START)`): the CRB's
+# CTRL_START is never written, so no TPM command runs.
+tpm-crb-canary = ["tpm", "azos_tpm/canary-crb-start"]
 # Kconfig DRV_RTC: the real-time clock (crates/drivers/rtc) seeds the wall clock
 # at boot and hosts the `Clock` interface's RTC ops (kernel/src/boot/rtc.rs). A
 # `base` tag: emitted unless the symbol is n. The set is an effect of the

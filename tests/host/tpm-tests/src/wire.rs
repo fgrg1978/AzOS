@@ -167,9 +167,10 @@ fn entropy_draw_credits_the_pool_only_when_it_completes() {
     // mixes nothing (it only mixes on Ok): the pool is not half-seeded.
     let (mut t, r) = rig(Kind::Mmio, 0);
     r.dev.borrow_mut().expect(&get_random_cmd(32), &get_random_rsp(&seed[..32]));
-    r.dev.borrow_mut().expect(&get_random_cmd(16), "80 01 00 00 00 0A 00 00 09 22");
+    // TPM_RC_FAILURE: not one the driver retries (TPM_RC_RETRY would be).
+    r.dev.borrow_mut().expect(&get_random_cmd(16), "80 01 00 00 00 0A 00 00 01 01");
     let mut part = [0u8; SEED_BYTES];
-    assert_eq!(t.get_random(&mut part), Err(Error::Tpm(0x922)));
+    assert_eq!(t.get_random(&mut part), Err(Error::Tpm(0x101)));
     r.assert_clean();
     let mut p = Pool::new();
     if t.get_random(&mut part).is_ok() {
@@ -200,7 +201,7 @@ fn a_failed_extend_costs_its_stage_and_the_session_goes_on() {
 // ── The OTA floor through the kernel's backend module ───────────────────────
 
 thread_local! {
-    static RIG: RefCell<Option<(azos_tpm::tpm::Tpm<Dyn, FakeClock>, Rig)>> = const { RefCell::new(None) };
+    static RIG: RefCell<Option<(azos_tpm::tpm::Tpm<azos_tpm::tis::Tis<Dyn, FakeClock>>, Rig)>> = const { RefCell::new(None) };
 }
 
 /// What `kernel/src/boot/tpm.rs`'s `floor_raise` does, against this thread's

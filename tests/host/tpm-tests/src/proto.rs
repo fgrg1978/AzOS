@@ -238,10 +238,10 @@ fn bad_commands_are_refused_before_the_bus() {
     let mut rsp = [0u8; 64];
     use azos_tpm::tis::Duration;
     // Shorter than a header.
-    assert_eq!(t.tis().transmit(&[0x80, 1, 0, 0], &mut rsp, Duration::Short), Err(Error::BadCommand));
+    assert_eq!(t.transport().transmit(&[0x80, 1, 0, 0], &mut rsp, Duration::Short), Err(Error::BadCommand));
     // Size field is not the length.
     let c = h("80 01 00 00 00 0D 00 00 01 44 00 00");
-    assert_eq!(t.tis().transmit(&c, &mut rsp, Duration::Short), Err(Error::BadCommand));
+    assert_eq!(t.transport().transmit(&c, &mut rsp, Duration::Short), Err(Error::BadCommand));
     assert!(r.dev.borrow().violations.is_empty());
     assert_eq!(r.dev.borrow().cmd_ready_writes, 0);
 }
@@ -254,8 +254,8 @@ fn small_response_buffer_is_refused_not_overrun() {
     let mut rsp = [0u8; 12];
     let c = h(STARTUP);
     // The reply is 10 bytes: fits.
-    assert_eq!(t.tis().transmit(&c, &mut rsp, Duration::Short), Ok(10));
+    assert_eq!(t.transport().transmit(&c, &mut rsp, Duration::Short), Ok(10));
     r.dev.borrow_mut().expect(STARTUP, "80 01 00 00 00 10 00 00 00 00 00 00 00 00 00 00");
     // 16 bytes into 12.
-    assert_eq!(t.tis().transmit(&c, &mut rsp, Duration::Short), Err(Error::BadResponseSize));
+    assert_eq!(t.transport().transmit(&c, &mut rsp, Duration::Short), Err(Error::BadResponseSize));
 }

@@ -24,7 +24,12 @@
 //! # Where the TPM is
 //!
 //! * x86_64: the ACPI `TPM2` table. Start method 6 is the PC-client TIS
-//!   window; a CRB-only TPM (7, 8) is reported and left alone.
+//!   window; 7 is the Command Response Buffer (`azos_tpm::crb`) at the
+//!   table's control area, its locality registers 0x40 below it, its buffers
+//!   where the control area says; 2 and 8 are the CRB with an ACPI start,
+//!   driven with `START` alone (the `_DSM` needs an AML interpreter). The
+//!   windows are the table's and the control area's: the TPM device's `_CRS`
+//!   is AML too.
 //! * riscv64, aarch64: the first device-tree node compatible with
 //!   `tcg,tpm_tis-spi`. Its `reg` is the chip select, `spi-max-frequency` the
 //!   clock; the bus is Kconfig `TPM_SPI_BUS`. The bytes go through the `Spi`
@@ -33,7 +38,10 @@
 //! No TPM, a TPM that does not answer, or one that is not a TPM 2.0 leaves the
 //! boot exactly as it was: every entry point below is then a no-op. A TPM that
 //! fails later costs the stage it failed on (counted and printed), never the
-//! boot.
+//! boot. A TPM whose SHA-256 bank does not hold the boot's three PCRs (its
+//! firmware allocated other banks: `GetCapability(TPM_CAP_PCRS)`, asked at
+//! [`init`]) is not extended at all, and the boot says so once: the TPM
+//! would accept each extend and drop it.
 //!
 //! # The clock
 //!
@@ -50,6 +58,7 @@ use azos_tpm::tpm::{Tpm, FLOOR_INDEX};
 use azos_tpm::Error;
 use azos_arch_api::entropy::CpuCredit;
 use azos_sync::kmutex::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::*;
 
@@ -110,7 +119,8 @@ impl Clock for KClock {
     }
 }
 
-/// Volatile accesses to the TIS window, which [`probe`] mapped.
+/// Volatile accesses to the TIS window, or to the CRB's registers and
+/// buffers, which [`probe`] mapped.
 #[cfg(target_arch = "x86_64")]
 struct Mmio;
 
@@ -128,10 +138,38 @@ impl azos_tpm::mmio::MmioAccess for Mmio {
         // SAFETY: as above.
         unsafe { core::ptr::write_volatile(addr as usize as *mut u8, v) }
     }
+    fn write32(&mut self, addr: u64, v: u32) {
+        // SAFETY: as above; the CRB driver writes dwords only at its 4-aligned
+        // control registers.
+        unsafe { core::ptr::write_volatile(addr as usize as *mut u32, v) }
+    }
+}
+
+/// x86_64's two interfaces, chosen by the TPM2 table at run time.
+#[cfg(target_arch = "x86_64")]
+enum Iface {
+    Tis(Tis<azos_tpm::mmio::MmioTis<Mmio>, KClock>),
+    Crb(azos_tpm::crb::Crb<Mmio, KClock>),
 }
 
 #[cfg(target_arch = "x86_64")]
-type Regs = azos_tpm::mmio::MmioTis<Mmio>;
+impl azos_tpm::Transport for Iface {
+    fn probe(&mut self) -> Result<azos_tpm::tis::DeviceInfo, Error> {
+        match self {
+            Iface::Tis(t) => t.probe(),
+            Iface::Crb(c) => c.probe(),
+        }
+    }
+    fn transmit(&mut self, cmd: &[u8], rsp: &mut [u8], dur: azos_tpm::tis::Duration) -> Result<usize, Error> {
+        match self {
+            Iface::Tis(t) => t.transmit(cmd, rsp, dur),
+            Iface::Crb(c) => c.transmit(cmd, rsp, dur),
+        }
+    }
+    fn pause_us(&mut self, us: u32) {
+        KClock.pause_us(us)
+    }
+}
 
 /// The driver's SPI bus over the `Spi` device interface. The driver holds
 /// chip select across a whole transaction (header, wait states, data); the
@@ -172,23 +210,28 @@ impl azos_tpm::spi::Spi for DevifSpi {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-type Regs = azos_tpm::spi::SpiTis<DevifSpi>;
+type Iface = Tis<azos_tpm::spi::SpiTis<DevifSpi>, KClock>;
 
 /// The TPM, once [`init`] found and started it. A sleeping lock: a command is
 /// milliseconds, and the floor's raise runs from the watchdog task at run
 /// time, so nothing that must not wait ever takes it.
-static TPM: Mutex<Option<Tpm<Regs, KClock>>> = Mutex::new(None);
+static TPM: Mutex<Option<Tpm<Iface>>> = Mutex::new(None);
 
-fn with<T>(f: impl FnOnce(&mut Tpm<Regs, KClock>) -> T) -> Option<T> {
+/// The SHA-256 bank holds the boot's PCRs (or the TPM could not say): the
+/// stages are extended. Cleared by [`init`] when the bank is missing.
+static MEASURE: AtomicBool = AtomicBool::new(true);
+
+fn with<T>(f: impl FnOnce(&mut Tpm<Iface>) -> T) -> Option<T> {
     TPM.lock().as_mut().map(f)
 }
 
 // ── Finding it ──────────────────────────────────────────────────────────────
 
-/// x86_64: the TIS window the `TPM2` table asks for, mapped; `None` when there
-/// is no table, it is not TIS, or the window cannot be mapped.
+/// x86_64: the TIS window or the CRB the `TPM2` table asks for, mapped;
+/// `None` when there is no table, it names another interface, the CRB's
+/// control area names unusable buffers, or a window cannot be mapped.
 #[cfg(target_arch = "x86_64")]
-fn probe(_dtb_ptr: usize) -> Option<(Regs, &'static str)> {
+fn probe(_dtb_ptr: usize) -> Option<(Iface, &'static str)> {
     use azos_tpm::acpi::{Interface, Tpm2Table};
     let p = azos_arch::platform_impl::platform();
     let &(_, pa, len) = p.acpi.tables().iter().find(|t| &t.0 == b"TPM2")?;
@@ -213,11 +256,36 @@ fn probe(_dtb_ptr: usize) -> Option<(Regs, &'static str)> {
             if !super::map_mmio_region(base as usize, 0x1000) {
                 return None;
             }
-            Some((azos_tpm::mmio::MmioTis::new(Mmio, base), "acpi TPM2, TIS"))
+            Some((Iface::Tis(Tis::new(azos_tpm::mmio::MmioTis::new(Mmio, base), KClock, 0)), "acpi TPM2, TIS"))
         }
-        Interface::Crb { control_area } => {
-            kprintln!("[TPM] ACPI TPM2 names a CRB interface ({:#x}): not driven, TPM not used", control_area);
-            None
+        Interface::Crb { control_area, start } => {
+            use azos_tpm::crb::{self, StartMethod, CTRL_BYTES};
+            // The pages from the locality registers (0x40 below, method 7)
+            // through the control area: one window, which on the PTP layout
+            // holds the buffers too.
+            let lo = crb::head_for(control_area, start).unwrap_or(control_area) & !0xFFF;
+            let hi = (control_area + CTRL_BYTES + 0xFFF) & !0xFFF;
+            if !super::map_mmio_region(lo as usize, (hi - lo) as usize) {
+                return None;
+            }
+            let buf = match crb::read_buffers(&mut Mmio, control_area) {
+                Ok(b) => b,
+                Err(e) => {
+                    azos_drv_sys::kwarn!("[TPM] ACPI TPM2 CRB at {:#x}: its control area names no usable buffers \
+                                          ({:?}): TPM not used", control_area, e);
+                    return None;
+                }
+            };
+            for (pa, n) in [(buf.cmd, buf.cmd_span()), (buf.rsp, buf.rsp_span())] {
+                if !super::map_mmio_region(pa as usize, n as usize) {
+                    return None;
+                }
+            }
+            let via = match start {
+                StartMethod::Crb => "acpi TPM2, CRB",
+                StartMethod::Acpi => "acpi TPM2, CRB with ACPI start (_DSM not run)",
+            };
+            Some((Iface::Crb(crb::Crb::new(Mmio, KClock, control_area, start, buf)), via))
         }
         Interface::Unsupported(m) => {
             kprintln!("[TPM] ACPI TPM2 start method {}: not driven, TPM not used", m);
@@ -229,7 +297,7 @@ fn probe(_dtb_ptr: usize) -> Option<(Regs, &'static str)> {
 /// riscv64, aarch64: the device tree's `tcg,tpm_tis-spi` node, on
 /// `TPM_SPI_BUS`, if a device answers that chip select.
 #[cfg(not(target_arch = "x86_64"))]
-fn probe(dtb_ptr: usize) -> Option<(Regs, &'static str)> {
+fn probe(dtb_ptr: usize) -> Option<(Iface, &'static str)> {
     use azos_devif::Spi as _;
     if dtb_ptr == 0 {
         return None;
@@ -255,7 +323,8 @@ fn probe(dtb_ptr: usize) -> Option<(Regs, &'static str)> {
         let hz = node.max_hz.clamp(azos_devif::spi::SPEED_MIN_HZ, azos_devif::spi::SPEED_MAX_HZ);
         let _ = port.set_speed(hz);
     }
-    Some((azos_tpm::spi::SpiTis::new(DevifSpi { port, held: false }), "device tree tcg,tpm_tis-spi"))
+    let regs = azos_tpm::spi::SpiTis::new(DevifSpi { port, held: false });
+    Some((Tis::new(regs, KClock, 0), "device tree tcg,tpm_tis-spi"))
 }
 
 // ── Bringing it up ──────────────────────────────────────────────────────────
@@ -273,6 +342,7 @@ fn error_code(e: Error) -> u64 {
         Error::ExpectMismatch | Error::BadResponseSize | Error::Truncated
         | Error::TrailingData | Error::Malformed => 6 << 32,
         Error::NvMismatch => 7 << 32,
+        Error::Fatal => 8 << 32,
     }
 }
 
@@ -294,12 +364,12 @@ fn clock_runs() -> bool {
 /// is no TPM or it does not work. Call once, at the entropy step: after the
 /// device windows are mapped, before anything draws from the pool.
 pub(crate) fn init(dtb_ptr: usize) -> bool {
-    let Some((regs, via)) = probe(dtb_ptr) else { return false };
+    let Some((iface, via)) = probe(dtb_ptr) else { return false };
     if !clock_runs() {
         azos_drv_sys::kwarn!("[TPM] the timebase does not advance: TPM not used");
         return false;
     }
-    let mut tpm = Tpm::new(Tis::new(regs, KClock, 0));
+    let mut tpm = Tpm::new(iface);
     let info = match tpm.probe() {
         Ok(i) => i,
         Err(e) => {
@@ -312,6 +382,7 @@ pub(crate) fn init(dtb_ptr: usize) -> bool {
         return false;
     }
     kprintln!("[TPM] TPM 2.0 vendor {:#06x} device {:#06x} rev {} via {}", info.vid, info.did, info.rid, via);
+    check_banks(&mut tpm);
     *TPM.lock() = Some(tpm);
     measure_kernel();
     install_floor();
@@ -334,6 +405,50 @@ pub(crate) fn shutdown() {
     }
 }
 
+/// The boot's PCRs, `TPM_PCR_BASE` and the two after it.
+fn boot_pcrs() -> core::ops::Range<u8> {
+    Stage::Kernel.pcr()..Stage::Topology.pcr() + 1
+}
+
+/// The banks, for the boot line: ` sha1 sha256`.
+struct Banks<'a>(&'a [azos_tpm::tpm::PcrBank]);
+
+impl core::fmt::Display for Banks<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.iter().try_for_each(|b| write!(f, " {}", azos_tpm::wire::alg_name(b.alg)))
+    }
+}
+
+/// Ask the TPM which PCR banks it allocated: the stages go into the SHA-256
+/// bank, and a TPM whose SHA-256 bank does not hold the boot's PCRs would
+/// accept every extend and drop it, so then none is sent ([`MEASURE`]).
+/// Another bank that holds them keeps its reset value there: said once, so a
+/// verifier knows to quote SHA-256.
+fn check_banks(tpm: &mut Tpm<Iface>) {
+    use azos_tpm::wire::ALG_SHA256;
+    let pcrs = boot_pcrs();
+    let banks = match tpm.pcr_banks() {
+        Ok(b) => b,
+        Err(e) => {
+            azos_drv_sys::kwarn!("[TPM] GetCapability(PCRS) failed ({:?}): the banks are unknown, the boot \
+                                  extends SHA-256 unchecked", e);
+            return;
+        }
+    };
+    kprintln!("[TPM] PCR banks:{}", Banks(banks.banks()));
+    if !banks.holds(ALG_SHA256, pcrs.clone()) {
+        MEASURE.store(false, Ordering::Relaxed);
+        azos_drv_sys::kwarn!("[TPM] the SHA-256 bank does not hold PCR{}..PCR{} (the firmware's allocation): \
+                              the boot is not measured", pcrs.start, pcrs.end - 1);
+        return;
+    }
+    let others = banks.banks().iter().filter(|b| b.alg != ALG_SHA256).count();
+    if others != 0 {
+        kprintln!("[TPM] the boot extends the sha256 bank only: the {} other bank(s) keep their reset value in \
+                   PCR{}..PCR{}", others, pcrs.start, pcrs.end - 1);
+    }
+}
+
 /// Fill `out` with TPM random bytes (the pool's seed source). `false` when
 /// there is no TPM or it failed.
 pub(crate) fn random(out: &mut [u8]) -> bool {
@@ -353,6 +468,9 @@ pub(crate) fn random(out: &mut [u8]) -> bool {
 /// the stage's own detail (see `Rule::MeasuredBoot`). A failed extend is
 /// said, recorded as a refusal, and the boot goes on without the stage.
 fn extend(stage: Stage, digest: [u8; 32], how: u64) {
+    if !MEASURE.load(Ordering::Relaxed) {
+        return;
+    }
     let pcr = stage.pcr();
     let Some(r) = with(|t| t.pcr_extend(pcr, &digest)) else { return };
     let d8 = u64::from_be_bytes([digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7]]);

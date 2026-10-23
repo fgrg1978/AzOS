@@ -618,11 +618,13 @@ their own.
 Source: `crates/drivers/tpm/src`, `kernel/src/boot/tpm.rs`, Kconfig `TPM`.
 
 A TPM 2.0 is found, never assumed. On x86_64 the kernel reads the ACPI `TPM2`
-table (TIS over MMIO). On riscv64 and aarch64 it looks for a device-tree node
-compatible with `tcg,tpm_tis-spi` and talks to it through the `Spi` device
-interface. A CRB-only TPM (ACPI start methods 7 and 8) is reported and left
-alone. With no TPM, or one that does not answer, the boot is as it would be
-without the feature. The driver is polling, has no `unsafe` and no allocation,
+table: TIS over MMIO (start method 6) or the Command Response Buffer (7, and 2
+and 8, whose ACPI `_DSM` start is not run: there is no AML interpreter). On
+riscv64 and aarch64 it looks for a device-tree node compatible with
+`tcg,tpm_tis-spi` and talks to it through the `Spi` device interface. With no
+TPM, or one that does not answer, the boot is as it would be without the
+feature. A command the TPM answers `TPM_RC_RETRY` or `TPM_RC_TESTING` is sent
+again, a bounded number of times (about 2.5 s). The driver is polling, has no `unsafe` and no allocation,
 and its wire parser checks every size against what is left.
 
 The kernel uses the TPM for three things:
@@ -630,7 +632,10 @@ The kernel uses the TPM for three things:
 1. Random bytes for the entropy pool (above).
 2. **Measured boot.** Three SHA-256 PCRs, starting at `TPM_PCR_BASE`: the kernel
    image (its build-id), the accepted configuration, the accepted topology. Each
-   extend writes a `Rule::MeasuredBoot` decision record.
+   extend writes a `Rule::MeasuredBoot` decision record. The boot asks the TPM
+   which PCR banks it allocated first: without a SHA-256 bank holding those
+   PCRs nothing is extended (the TPM would drop each extend), and other banks
+   keep their reset value there, so a verifier quotes SHA-256.
 3. The OTA anti-rollback floor in an NV index, see [update.md](update.md). The
    index is an ordinary one whose password the kernel derives from public inputs
    (`azos_ota::floor::nv_auth`): it keeps out software that does not know the

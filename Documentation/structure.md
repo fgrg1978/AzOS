@@ -123,7 +123,7 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `camera`, `cam-ring` | A virtual camera; the lock-free camera frame ring and the one-to-many fan-out ring. |
 | `thermal` | The thermal framework's runtime (the part that touches hardware). |
 | `power` | System suspend. |
-| `tpm` | The TPM 2.0 TIS/FIFO protocol and commands. |
+| `tpm` | The TPM 2.0 TIS/FIFO and CRB interfaces and the commands. |
 | `rtc` | Real-time clocks behind one `Rtc` trait: goldfish, PL031, MC146818 CMOS, PCF8563 over I2C. |
 | `npu` | An NPU driver. |
 | `firmware` | A firmware mailbox property-protocol encoder. The crate is a single source file at the crate directory root, which its `Cargo.toml` declares as the library root. |

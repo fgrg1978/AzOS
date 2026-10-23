@@ -14884,6 +14884,67 @@ PY
         amd-iommu,dma-remap=on amd-vi PASS
     par "x86_64 iommu: amd-vi refuses unmapped" x86_iommu_row "x86_64 iommu: amd-vi refuses unmapped" \
         amd-iommu,dma-remap=on amd-vi CANARY
+    # The TPM 2.0 over the Command Response Buffer (crates/drivers/tpm/src/crb.rs,
+    # kernel/src/boot/tpm.rs) on QEMU q35's `-device tpm-crb`: the ACPI TPM2 table
+    # names start method 7 with the control area at 0xFED40040, the locality
+    # registers below it and one buffer at 0xFED40080. The kernel probes the CRB,
+    # runs Startup, reads the PCR banks (GetCapability) and extends the kernel
+    # image into PCR TPM_PCR_BASE. The TPM behind the device is swtpm (QEMU's
+    # `-tpmdev emulator`); without swtpm on the host the row SKIPs, with the
+    # reason (no download here). The canary kernel is built with azos_tpm's
+    # canary-crb-start (CTRL_START never written): the probe still answers, the
+    # Startup times out on `Start` and the TPM is not used, which also proves
+    # the row reached the CRB path.
+    # First boot: not run when this was written (no swtpm on the build host).
+    x86_tpm_crb_row() { # x86_tpm_crb_row <label> <PASS|FAIL>
+        local label="$1" expect="$2" why="" w feats=""
+        if ! command -v swtpm >/dev/null 2>&1; then
+            SKIP=$((SKIP + 1)); printf "  %-26s%s\n" "${label}..." "SKIP (no swtpm on this host: QEMU's tpm-crb needs it)"; return 0
+        fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" tdir="$CI_LOG_DIR/swtpm.$$.${expect}"
+        [ "$expect" = FAIL ] && feats=tpm-crb-canary
+        x86_kbuild "$feats" "$kimg" || { bad; echo "      make x86_64 (${feats:-plain}) did not build"; return; }
+        rm -rf "$tdir"; mkdir -p "$tdir"
+        swtpm socket --tpm2 --tpmstate dir="$tdir" --ctrl type=unixio,path="$tdir/sock" --terminate \
+            >"$tdir/swtpm.log" 2>&1 &
+        local spid=$! i=0
+        while [ ! -S "$tdir/sock" ] && [ "$i" -lt 20 ] && kill -0 "$spid" 2>/dev/null; do i=$((i + 1)); sleep 0.5; done
+        if [ ! -S "$tdir/sock" ]; then
+            kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+            bad; echo "      swtpm did not open its socket"; sed -n 1,3p "$tdir/swtpm.log" | sed 's/^/      /'; return
+        fi
+        par_ready
+        X86_MACHINE=q35 x86_qemu "$kimg" "$log" 60 '\[TPM\] PCR[0-9]+ <- kernel|TPM not used|KERNEL PANIC' -smp 1 \
+            -chardev socket,id=chrtpm,path="$tdir/sock" -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-crb,tpmdev=tpm0 \
+            || { kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null; rm -f "$kimg" "$kimg.features"; return; }
+        kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+        rm -rf "$tdir" "$kimg" "$kimg.features"
+        if [ "$expect" = FAIL ]; then
+            if grep -aqF '[TPM] TPM 2.0 vendor' "$log"; then
+                bad; echo "      the canary kernel (CTRL_START never written) started the TPM: the row does not discriminate"
+                echo "      log kept: $log"
+            elif ! grep -aqF 'acpi TPM2, CRB: Startup failed (Timeout(Start))' "$log"; then
+                bad; echo "      no CRB Startup timeout: the canary did not reach the CRB path, it proves nothing"
+                echo "      log kept: $log"
+            else
+                ok; echo "      canary failed as it must: without CTRL_START the CRB runs no command"; rm -f "$log"
+            fi
+            return
+        fi
+        # QEMU's CRB says IBM (0x1014) in INTF_ID; the device id is not pinned.
+        grep -aqE '\[TPM\] TPM 2\.0 vendor 0x1014 device 0x[0-9a-f]{4} rev [0-9]+ via acpi TPM2, CRB$' "$log" \
+            || why="no TPM 2.0 line from the CRB (vendor 0x1014)"
+        [ -z "$why" ] && ! grep -aqE '\[TPM\] PCR banks:.* sha256' "$log" && why="no sha256 PCR bank listed"
+        [ -z "$why" ] && ! grep -aqE '\[TPM\] PCR[0-9]+ <- kernel [0-9a-f]{64}' "$log" && why="the kernel image was not extended"
+        grep -aqE 'KERNEL PANIC|\[X86-TRAP\]|FAILED' "$log" && why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]|FAILED' "$log" | sed -n 1p)"
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      $why"; echo "      log kept: $log"
+    }
+    par "x86_64: TPM over CRB (q35 tpm-crb)" x86_tpm_crb_row "x86_64: TPM over CRB (q35 tpm-crb)" PASS
+    par "x86_64: TPM over CRB canary (no START)" x86_tpm_crb_row "x86_64: TPM over CRB canary (no START)" FAIL
     # The Intel I225/I226 driver (Kconfig DRV_IGC, crates/drivers/net/src/igc.rs, built
     # into qemu-x86_64-pci.config) on QEMU's `-device igb`: an 82576, the same advanced
     # descriptors, bound to the same driver by its id (hwbus.ids). The controller is reset,

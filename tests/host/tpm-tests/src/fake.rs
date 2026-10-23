@@ -371,6 +371,11 @@ impl MmioAccess for FakeMmio {
         self.log.borrow_mut().push((addr, 1, true));
         self.dev.borrow_mut().reg_write(l, r, &[v]);
     }
+    fn write32(&mut self, addr: u64, v: u32) {
+        let (l, r) = self.decode(addr);
+        self.log.borrow_mut().push((addr, 4, true));
+        self.dev.borrow_mut().reg_write(l, r, &v.to_le_bytes());
+    }
 }
 
 /// One SPI transaction as seen on the wire.

@@ -3,6 +3,7 @@
 //! The ACPI TPM2 table and the wire helpers.
 
 use azos_tpm::acpi::*;
+use azos_tpm::crb::StartMethod;
 use azos_tpm::wire::{parse_response, session_params, Cmd, Reader, ST_NO_SESSIONS, ST_SESSIONS};
 use azos_tpm::Error;
 
@@ -26,9 +27,11 @@ fn tpm2_table_selects_the_interface() {
     assert_eq!(t.platform_class, 1);
     assert_eq!(t.interface(), Interface::Tis { base: 0xFED4_0000 });
     let t = Tpm2Table::parse(&table(7, 0xFED4_0040)).unwrap();
-    assert_eq!(t.interface(), Interface::Crb { control_area: 0xFED4_0040 });
-    assert_eq!(Tpm2Table::parse(&table(8, 0x10)).unwrap().interface(), Interface::Crb { control_area: 0x10 });
-    assert_eq!(Tpm2Table::parse(&table(2, 0)).unwrap().interface(), Interface::Unsupported(2));
+    assert_eq!(t.interface(), Interface::Crb { control_area: 0xFED4_0040, start: StartMethod::Crb });
+    let acpi = Interface::Crb { control_area: 0x10, start: StartMethod::Acpi };
+    assert_eq!(Tpm2Table::parse(&table(8, 0x10)).unwrap().interface(), acpi);
+    assert_eq!(Tpm2Table::parse(&table(2, 0x10)).unwrap().interface(), acpi, "2: the CRB with an ACPI start");
+    assert_eq!(Tpm2Table::parse(&table(11, 0)).unwrap().interface(), Interface::Unsupported(11), "Arm SMC");
 }
 
 #[test]

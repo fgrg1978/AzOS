@@ -20,6 +20,7 @@ pub const CC_SHUTDOWN: u32 = 0x0000_0145;
 pub const CC_NV_READ: u32 = 0x0000_014E;
 pub const CC_NV_READ_LOCK: u32 = 0x0000_014F;
 pub const CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
+pub const CC_GET_CAPABILITY: u32 = 0x0000_017A;
 pub const CC_GET_RANDOM: u32 = 0x0000_017B;
 pub const CC_PCR_READ: u32 = 0x0000_017E;
 pub const CC_PCR_EXTEND: u32 = 0x0000_0182;
@@ -34,8 +35,37 @@ pub const RC_NV_LOCKED: u32 = 0x0000_0148;
 pub const RC_NV_UNINITIALIZED: u32 = 0x0000_014A;
 /// `TPM_RC_NV_DEFINED`: the index already exists.
 pub const RC_NV_DEFINED: u32 = 0x0000_014C;
+/// `TPM_RC_TESTING` (`RC_WARN` + 0x00A): the self-test is still running.
+pub const RC_TESTING: u32 = 0x0000_090A;
+/// `TPM_RC_RETRY` (`RC_WARN` + 0x022): the TPM could not run the command now.
+pub const RC_RETRY: u32 = 0x0000_0922;
 
+/// `TPM_CAP_PCRS`: the allocated PCR banks.
+pub const CAP_PCRS: u32 = 0x0000_0005;
+
+pub const ALG_SHA1: u16 = 0x0004;
 pub const ALG_SHA256: u16 = 0x000B;
+pub const ALG_SHA384: u16 = 0x000C;
+pub const ALG_SHA512: u16 = 0x000D;
+pub const ALG_SM3_256: u16 = 0x0012;
+pub const ALG_SHA3_256: u16 = 0x0027;
+pub const ALG_SHA3_384: u16 = 0x0028;
+pub const ALG_SHA3_512: u16 = 0x0029;
+
+/// The name of a PCR bank's hash algorithm, for the boot line.
+pub const fn alg_name(alg: u16) -> &'static str {
+    match alg {
+        ALG_SHA1 => "sha1",
+        ALG_SHA256 => "sha256",
+        ALG_SHA384 => "sha384",
+        ALG_SHA512 => "sha512",
+        ALG_SM3_256 => "sm3_256",
+        ALG_SHA3_256 => "sha3_256",
+        ALG_SHA3_384 => "sha3_384",
+        ALG_SHA3_512 => "sha3_512",
+        _ => "unknown",
+    }
+}
 pub const RH_OWNER: u32 = 0x4000_0001;
 pub const RS_PW: u32 = 0x4000_0009;
 

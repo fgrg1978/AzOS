@@ -14,11 +14,13 @@ use crate::BusError;
 pub const LOCALITY_STRIDE: u64 = 0x1000;
 
 /// Volatile accesses at a physical (or already-mapped) address. The TPM
-/// accepts byte and dword accesses.
+/// accepts byte and dword accesses; the TIS writes bytes only, the CRB's
+/// control registers take dwords ([`crate::crb`]).
 pub trait MmioAccess {
     fn read8(&mut self, addr: u64) -> u8;
     fn read32(&mut self, addr: u64) -> u32;
     fn write8(&mut self, addr: u64, v: u8);
+    fn write32(&mut self, addr: u64, v: u32);
 }
 
 pub struct MmioTis<A: MmioAccess> {
