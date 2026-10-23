@@ -238,7 +238,7 @@ pub const SYSCALL_ABI_CANARY_A1: u64 = 0x0CA1_1EE5;
 ///     (`ty::FILE`, a tree resource) that covers the NUL-terminated absolute
 ///     path at `a2`; `-ENOENT` if it holds none.
 ///   * [`CAP_INFO_QUERY`]: of the handle `a0`: the type raw value in bits 0..8 and
-///     the rights in bits 8..12 of the result; the badge in `a1` and the
+///     the rights (`CapPerms`, six bits) in bits 8..14 of the result; the badge in `a1` and the
 ///     expiry (absolute ns on the MONO clock, 0 none) in `a2` of the reply.
 ///     `-ECAPSTALE` for a handle the caller does not hold.
 ///
@@ -304,8 +304,7 @@ pub const CAP_INFO_QUERY: u64 = 2;
 /// child's TID, or `-EACCES` (no profile, no row, no launch grant),
 /// `-ECAPKIND`, `-ECAPPERMS`, `-ECAPSTALE`, `-EMFILE`, `-EINVAL` (version,
 /// limits, unknown flag), `-EFAULT`, `-1` for an unreadable path. Nothing moves
-/// unless the child is released. (The path-named, request-less form is the
-/// spawn op of the domain, `DOMAIN_SPAWN`, for the images that list it.)
+/// unless the child is released.
 ///
 /// Foundational case 1 (authority: creates a protection domain).
 pub const SYS_SPAWN_EX: u64 = 5;

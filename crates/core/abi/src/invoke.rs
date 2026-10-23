@@ -20,9 +20,9 @@
 //! op needs, then runs the op; an unknown op is `-EINVAL`, a handle of a type
 //! that has no ops `-ECAPKIND`.
 //!
-//! **Self handles.** A task acts on itself without holding a slot for it: the
-//! two handles below name the calling domain and thread, always valid, never
-//! stored, never transferable (their generation is 0, which no slot has).
+//! **Self handle.** A task acts on its own domain without holding a slot for
+//! it: [`DOMAIN_SELF`] names the calling domain, always valid, never stored,
+//! never transferable (its generation is 0, which no slot has).
 //!
 //! **Register form.** The op's words travel in `a2..a5` and its replies come
 //! back in `a1..a4`; the kernel touches no user memory for the call itself.
@@ -286,7 +286,8 @@ pub const SHM_END_WRITE: u64 = 2;
 // covers it: the check is the tree's, the handle the caller names is its own
 // domain.
 
-/// Stat the NUL-terminated path `w0` into the 48-byte buffer `w1`. 0, or -1.
+/// Stat the NUL-terminated path `w0` into the buffer `w1`, at least
+/// [`STAT_BYTES`](crate::syscall_nr::STAT_BYTES) (64) long. 0, or -1.
 pub const DOMAIN_STAT: u16 = op(CapKind::Domain, CLASS_READ, 13);
 /// Entry `w1` of directory `w0` (NUL-terminated path): `w2` a name buffer,
 /// `w3` a `*mut u32` for the size, `w4` a `*mut u32` for the is-directory

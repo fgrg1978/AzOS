@@ -63,7 +63,7 @@ NEEDS_EXT = ("arch", "entry")
 # (group, isa, module) -> why the ISA lacks a required module today.
 ALLOW_MISSING = {
     ("arch", "riscv64", "fork_regs"):
-        "no fork_regs module yet; trap_entry.S still names a fork_regs.rs that does not exist",
+        "the fork snapshot is the trap frame's GPR block itself (azos_sched::UserRegs = [u64; 32], x0..x31)",
     ("arch", "riscv64", "smp"):
         "secondary harts start from kernel/src/entry/riscv64/smp.rs (SBI HSM hart_start)",
     ("arch", "riscv64", "timer"):

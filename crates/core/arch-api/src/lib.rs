@@ -1414,7 +1414,8 @@ pub mod entropy;
 pub mod pmu;
 pub use pmu::{Pmu, PmuCaps};
 
-/// Virtual KASLR (Kconfig `KASLR`): policy, slide choice, relocation walk and
+/// Virtual KASLR (the Kconfig choice `KASLR_NEVER` / `KASLR_PROBE` /
+/// `KASLR_REQUIRE`): policy, slide choice, relocation walk and
 /// device-tree seed, the parts every ISA shares.
 pub mod kaslr;
 

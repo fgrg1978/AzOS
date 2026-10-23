@@ -355,9 +355,9 @@ impl Mmu for Aarch64 {
         crate::sysregs::tlbi_vmalle1is();
     }
 
-    /// No caller today. Beware: user tables are installed with ASID 0
-    /// (`ArchPlatform::user_root_word` drops the tag), so a nonzero `asid`
-    /// here matches no entry and flushes nothing.
+    /// No caller today. User tables are installed with their ASID
+    /// (`ArchPlatform::user_root_word`, bits 63:48 of `TTBR0_EL1`), so this
+    /// drops exactly the entries tagged `asid`.
     #[inline]
     fn flush_tlb_asid(&self, asid: u16) {
         crate::sysregs::tlbi_aside1is(asid);

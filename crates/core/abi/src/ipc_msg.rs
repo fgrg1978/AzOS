@@ -6,8 +6,8 @@
 //! the wire to another node: a version, inline words, and capability
 //! entries transferred all or nothing. The layout is fixed at the ABI
 //! ceilings below; the kernel refuses counts above its Kconfig limits
-//! (`IPC_MSG_INLINE_WORDS`, per ISA; `IPC_MSG_MAX_CAPS`). The future IDL
-//! generates its stubs against this struct.
+//! (`IPC_MSG_INLINE_WORDS`, the same on every ISA; `IPC_MSG_MAX_CAPS`). The
+//! IDL (`crates/core/idl`) generates its stubs against this struct.
 //!
 //! The badge is not in what a caller writes: it lives in the endpoint
 //! capability the call goes through (the slot's extension word) and the

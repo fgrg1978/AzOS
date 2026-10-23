@@ -22,7 +22,7 @@
 //! waits for its first user, the framebuffer handed to a ring-3 display server.
 //!
 //! An Anon object that is only ever mapped by one task does not need a table
-//! slot: [`anon_map_private`] is that case, on the marker-PTE fast path of
+//! slot: [`anon_reserve`] is that case, on the marker-PTE fast path of
 //! `azos_mm::demand` (no frame until the first touch, no lock on the fault).
 //! A shared Anon object has its frames at create because every mapper needs
 //! the same frames and the fault path would have to ask the object; that is
@@ -206,7 +206,6 @@ pub enum MemPerms {
 pub enum MemKind {
     /// Zero-filled frames, one per page.
     Anon = 0,
-    /// Device or scanout memory at a fixed physical address; never freed.
     /// A physically contiguous, zeroed run of frames.
     Contig = 2,
     /// File-backed pages, the page cache: frames come from a [`PageBacking`]
@@ -2945,8 +2944,9 @@ fn paged_object_from(from: usize) -> Option<(usize, u32)> {
     (from..MAX_MEMOBJS).find(|&i| regions[i].active && regions[i].kind == MemKind::Paged).map(|i| (i, regions[i].ident))
 }
 
-/// The page cache's reclaim pass, the first stage of memory reclaim (before
-/// anything is compressed or swapped): write back every Paged object's dirty
+/// The page cache's reclaim pass, stage 1 of memory reclaim (after the
+/// volatile objects give their frames up, before anything is compressed or
+/// swapped; `kernel/src/tasks/reclaim.rs`): write back every Paged object's dirty
 /// pages ([`memobj_paged_writeback_ref`]), then give back the frames of up to
 /// `max_pages` clean ones ([`memobj_paged_drop_clean`]). The order is the point:
 /// a page that was dirty a moment ago is clean now and can go in the same pass.

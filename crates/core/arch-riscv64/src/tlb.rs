@@ -7,16 +7,21 @@
 //! the address space whose root is `root_phys` that was cached before the PTE
 //! change the caller made just before calling it.
 //!
-//! **Which harts can hold such a translation.** Every `satp` write in this
-//! kernel is followed by `sfence.vma zero, zero` (`cpu::write_satp`,
-//! `context_switch.S`, `context_switch_rvv.S`, `trap_entry.S`,
-//! `sret_to_user*`). A hart therefore holds translations for exactly one
-//! address space: the one its `satp` currently names. Each hart publishes that
-//! value in [`AZOS_HART_SATP`] *before* it writes `satp`, and the set of
+//! **Which harts can hold such a translation.** With Kconfig `TLB_RETAIN`
+//! off, every `satp` write in this kernel is followed by `sfence.vma zero,
+//! zero` (`cpu::write_satp`, `context_switch.S`, `context_switch_rvv.S`,
+//! `trap_entry.S`, `sret_to_user*`), so a hart holds translations for exactly
+//! one address space: the one its `satp` currently names. Each hart publishes
+//! that value in [`AZOS_HART_SATP`] *before* it writes `satp`, and the set of
 //! harts to signal is the set whose published root equals `root_phys`
 //! ([`remote_mask`]). This is Linux's `mm_cpumask`, kept exact rather than
 //! "set on switch-in, never cleared", because the full flush on every switch
-//! makes the exact set cheap to know.
+//! makes the exact set cheap to know. With `TLB_RETAIN` on, a context switch
+//! keeps the TLB while the ASID's generation holds (`AZOS_TLB_SWITCH_FLUSH`,
+//! set by `azos_sched::asid::prepare_switch`), so a hart that ran the space
+//! and switched away may still hold its entries under the retained ASID: it
+//! is not signalled, it is marked stale (`tlb_gen::mark_space_stale`) and
+//! flushes at its next user switch.
 //!
 //! **Ordering (store-buffering, fenced on both sides).**
 //!   shooter:  store PTE;  fence rw,rw;  load AZOS_HART_SATP[h]

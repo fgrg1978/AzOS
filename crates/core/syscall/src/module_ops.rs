@@ -17,7 +17,7 @@
 //!    table `tools/module_hashes.py` generates into the kernel image (the
 //!    secure-boot-signed artefact). On a match it grants a one-shot token
 //!    bound to the caller's TID and to the module's length; otherwise the
-//!    refusal is RECORDED (a count, [`module_refusals`], and a console line).
+//!    refusal is RECORDED (a count, `REFUSALS`, that numbers its console line).
 //! 2. The server relocates the module into its own anonymous memory
 //!    (`crates/core/lx-loader`), then calls `DOMAIN_MODULE_MAP_X` with the
 //!    token and the text range. The kernel consumes the token, checks the
@@ -60,8 +60,6 @@ static TOKENS: azos_sync::SpinLock<crate::module_tokens::Tokens<SLOTS>> =
     azos_sync::SpinLock::new(crate::module_tokens::Tokens::new());
 static NONCE: AtomicU32 = AtomicU32::new(0x4c58_0001);
 static REFUSALS: AtomicU32 = AtomicU32::new(0);
-static GRANTS: AtomicU32 = AtomicU32::new(0);
-static MAPPED: AtomicU32 = AtomicU32::new(0);
 
 /// Task `tid` has exited: its unused tokens go with it (the exit hook,
 /// `kernel/src/boot/sched.rs`). Returns how many were dropped.
@@ -128,7 +126,6 @@ pub fn sys_module_verify(buf: u64, len: u64, name_ptr: u64, name_len: u64) -> i6
     let max_pages = len.div_ceil(page) as usize;
     let nonce = NONCE.fetch_add(0x9e37_79b9, Ordering::Relaxed) | 1;
     let slot = TOKENS.lock().grant(tid, nonce, max_pages);
-    GRANTS.fetch_add(1, Ordering::Relaxed);
     kprintln!(
         "[LX] module verified: tid {} {} sha256 {:02x}{:02x}{:02x}{:02x}... ({} bytes, up to {} pages executable)",
         tid, core::str::from_utf8(name).unwrap_or("?"),
@@ -189,7 +186,6 @@ pub fn sys_module_map_x(token: u64, addr: u64, len: u64) -> i64 {
         va += page as usize;
     }
     sync_icache(pt, addr as usize, end as usize);
-    MAPPED.fetch_add(1, Ordering::Relaxed);
     kprintln!("[LX] module text mapped RX: tid {} {:#x}..{:#x} ({} pages, W^X read back)", tid, addr, end, pages);
     0
 }

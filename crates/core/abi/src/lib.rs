@@ -10,41 +10,33 @@
 //! - `#[repr(C)]` data structures shared user↔kernel
 //! - capability handle wire format
 //!
-//! Within a major release series, breaking changes here are forbidden. ABI
-//! evolution rules are defined by the stability declaration below.
+//! # How it changes
 //!
-//! # Stability declaration
+//! There is no tagged release and nothing outside this tree builds against
+//! the crate, so a layout or a number changes in place, with every reader in
+//! the same commit. What keeps the two sides of the boundary equal:
 //!
-//! As of AZOS v1.0 (the Phase 1 release):
+//! - [`ABI_VERSION`] (below): the loader, the vDSO and `RobotInfo` refuse a
+//!   program built against another version.
+//! - Sizes of `#[repr(C)]` types: `const` asserts next to the type where a
+//!   layout is load-bearing (`ipc_msg`, `ushell`), and the host-side
+//!   `abi-tests` crate checks the rest.
+//! - Syscall numbers are not re-assigned: a new one takes the next unused
+//!   number, and `SYS_NR_RESERVED_UPPER` (the table's end) grows with it.
+//! - The `CapHandle` bitfield layout (6-bit kind, 6-bit perms, 11-bit
+//!   generation, 9-bit slot; `cap.rs` says why each width) is the wire format
+//!   every handle crosses the boundary in.
 //!
-//! - Every `pub` item in this crate is **frozen** for the entirety of the
-//!   `v1.x` series. Removing, renaming, or changing the wire format of any
-//!   public item is a `v2.0` change and requires a design proposal.
-//! - Sizes of `#[repr(C)]` types are asserted at compile time in
-//!   `crates/core/abi/src/types.rs`; the host-side `abi-tests` crate
-//!   double-checks them.
-//! - Syscall numbers will not be re-assigned. New syscalls take the next
-//!   unused number; the `SYS_NR_RESERVED_UPPER` constant grows with each
-//!   minor release.
-//! - The `CapHandle` bitfield layout (4-bit kind, 4-bit perms, 8-bit
-//!   generation, 16-bit slot) is part of the wire format and frozen.
+//! `crates/core/abi/CHANGELOG.md` records the changes.
 //!
-//! See `crates/core/abi/CHANGELOG.md` for the per-release diff.
-//!
-//! ## Stability tiers
-//!
-//! - **`stable`** items (everything currently in this crate): frozen.
-//! - **`experimental`** items (gated by `cfg(feature = "experimental")`):
-//!   subject to change; not part of the stability promise.
-//!
-//! ## Design notes
+//! # Design notes
 //!
 //! - Pure types only — no kernel internals, no `unsafe`, no allocator.
 //! - `no_std` everywhere.
 //! - Constants are `u64` to match the syscall-arg width on RV64 / aarch64 /
 //!   x86_64.
 //! - All `repr(C)` structures must round-trip across the FFI boundary
-//!   without alignment surprises; we assert sizes in `static_assertions`.
+//!   without alignment surprises (the size asserts above).
 
 #![no_std]
 #![deny(missing_docs)]
