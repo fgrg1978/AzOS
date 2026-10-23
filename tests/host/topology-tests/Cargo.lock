@@ -11,6 +11,15 @@ name = "azos_abi"
 version = "1.0.0"
 
 [[package]]
+name = "azos_arch_api"
+version = "0.1.0"
+dependencies = [
+ "azos_common",
+ "azos_limits",
+ "azos_percpu",
+]
+
+[[package]]
 name = "azos_chaos"
 version = "0.1.0"
 dependencies = [
@@ -128,6 +137,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_percpu"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
+
+[[package]]
 name = "azos_rings"
 version = "0.1.0"
 
@@ -154,6 +170,7 @@ name = "azos_topology_tests"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_arch_api",
  "azos_chaos",
  "azos_common",
  "azos_compositor",

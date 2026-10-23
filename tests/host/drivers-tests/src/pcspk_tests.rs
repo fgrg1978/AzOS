@@ -18,7 +18,8 @@ struct Pit {
     mode: Vec<u8>,
     counter: Vec<u8>,
     gate: u8,
-    /// `OUT2` levels the next reads of 0x61 return, then low forever.
+    /// `OUT2` levels the next reads of 0x61 return while the gate is on,
+    /// then low forever.
     out2: Vec<bool>,
     /// Every port touched: the driver must touch only its three.
     ports: Vec<u16>,
@@ -43,7 +44,8 @@ impl Pit {
     fn inb(&mut self, port: u16) -> u8 {
         self.ports.push(port);
         assert_eq!(port, PORT_GATE, "the driver reads only port 0x61");
-        let out = if self.out2.is_empty() { false } else { self.out2.remove(0) };
+        // The counter runs only while its gate (bit 0) is set.
+        let out = self.gate & 1 != 0 && !self.out2.is_empty() && self.out2.remove(0);
         self.gate | if out { 0x20 } else { 0 }
     }
     fn outb(&mut self, port: u16, v: u8) {

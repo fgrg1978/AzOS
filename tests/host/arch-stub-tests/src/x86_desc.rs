@@ -30,7 +30,7 @@ fn table_slots_follow_the_selectors() {
     assert_eq!(t[(gdt::KERNEL_DS >> 3) as usize], gdt::segment(false, 0));
     assert_eq!(t[(gdt::USER_DS >> 3) as usize], gdt::segment(false, 3));
     assert_eq!(t[(gdt::USER_CS >> 3) as usize], gdt::segment(true, 3));
-    let tss = gdt::tss_descriptor(0x1234_5000, 103);
+    let tss = gdt::tss_descriptor(0x1234_5000, (core::mem::size_of::<gdt::Tss>() - 1) as u32);
     assert_eq!(&t[(gdt::TSS_SEL >> 3) as usize..], &tss);
     assert_eq!(gdt::USER_CS & 3, 3);
     assert_eq!(gdt::USER_DS & 3, 3);
@@ -152,7 +152,7 @@ fn switches_write_the_bitmap_only_for_a_new_set() {
     struct Cpu { key: u64, on: bool, dirty: usize, bm: [u8; 128], writes: u32 }
     let mut c = Cpu { key: 0, on: false, dirty: 0, bm: [0xFF; 128], writes: 0 };
     let sets: [(u64, &[(u16, u16)]); 3] = [(0, &[]), (5, &[(0x42, 0x43)]), (6, &[(0x80, 0x80)])];
-    let mut run = |c: &mut Cpu, i: usize| {
+    let run = |c: &mut Cpu, i: usize| {
         let (key, ranges) = sets[i];
         match step(c.key, c.on, key) {
             Step::Keep => {}

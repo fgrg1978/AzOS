@@ -526,3 +526,24 @@ fn an_endpoint_derive_is_an_endpoint_op_and_a_profile_class() {
     put_desc(page, &d);
     assert!(call(src, ENDPOINT_DERIVE) > 0, "listed");
 }
+
+/// **Ring-3 port I/O answers by the ISA's port space, before the handle.**
+/// This suite's build has none (its .config is not x86_64's, Kconfig
+/// `X86_IOPORT_BITMAP_PORTS` 0, as on riscv64 and aarch64): the open op on
+/// a port-range handle the task does not hold is `-ENODEV`, not the
+/// handle's refusal, and an op the type does not have is still `-EINVAL`.
+///
+/// **Canary.** Move the `PORTS == 0` test of `ioport_op` after the
+/// capability check: the call answers `-ECAPSTALE`.
+#[test]
+fn the_port_op_answers_enodev_without_a_port_space() {
+    use azos_abi::invoke::{CLASS_DRIVER, DEVICE_IOPORT_ENABLE};
+    let _g = serial();
+    ring3();
+    assert_eq!(azos_arch_api::ioport::PORTS, 0, "this suite's build has no port space");
+    let forged = CapHandle::pack(azos_abi::cap::ty::IOPORT, CapPerms::RW, 3, 7).as_raw() as u64;
+    assert_eq!(invoke(forged, INVOKE_REGS | DEVICE_IOPORT_ENABLE as u64, 0, 0, 0, 0),
+               Errno::ENODEV.to_syscall_ret());
+    let unknown = op(CapKind::Device, CLASS_DRIVER, 250) as u64;
+    assert_eq!(invoke(forged, INVOKE_REGS | unknown, 0, 0, 0, 0), Errno::EINVAL.to_syscall_ret());
+}

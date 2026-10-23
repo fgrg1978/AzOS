@@ -2227,7 +2227,8 @@ mod builder_tests {
     /// one I2C slave, read from `crates/core/abi` (the join `autorun`'s
     /// `drv.1` has); the buzzer serves its one endpoint (`READ` on
     /// `endpoint.buzzer`, which is how it claims it) and holds its one PWM
-    /// channel.
+    /// channel, and, where the build has a port space that holds them (x86_64),
+    /// the PC speaker's two port ranges, its channel there.
     #[test]
     fn ring3_driver_rows_grant_one_service_and_one_device() {
         use azos_abi::cap::{CapKind, CapPerms};
@@ -2236,9 +2237,14 @@ mod builder_tests {
         // The buzzer: the endpoint it serves, then its channel.
         let task = t.find_task(&MaybeStr::from_bytes(b"BUZZDRV.ELF")).expect("driver row present");
         let caps = t.caps_of(task);
-        assert_eq!(caps.len(), 2);
+        let ports = azos_limits::X86_IOPORT_BITMAP_PORTS > 0x61;
+        assert_eq!(caps.len(), if ports { 4 } else { 2 });
         assert_eq!((caps[0].kind, caps[0].perms, caps[0].target.as_str()), (CapKind::Endpoint, CapPerms::READ, azos_devif::buzzer::ENDPOINT));
         assert_eq!((caps[1].kind, caps[1].perms, caps[1].target.as_str()), (CapKind::Endpoint, CapPerms::RW, "pwm.5"));
+        if ports {
+            assert_eq!((caps[2].kind, caps[2].perms, caps[2].target.as_str()), (CapKind::Device, CapPerms::RW, "ioport.66.2"));
+            assert_eq!((caps[3].kind, caps[3].perms, caps[3].target.as_str()), (CapKind::Device, CapPerms::RW, "ioport.97.1"));
+        }
         assert_eq!(task.mem_pages, 64, "frame budget");
         // The INA219.
         if !azos_topology::builder::INADRV_ROW {

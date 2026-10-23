@@ -75,6 +75,7 @@ dependencies = [
  "azos_ina219",
  "azos_input_wire",
  "azos_limits",
+ "azos_pcspk",
  "azos_rings",
  "azos_rtc",
  "cap_test_sync",
@@ -117,6 +118,13 @@ version = "0.1.0"
 dependencies = [
  "azos-config",
  "sha2",
+]
+
+[[package]]
+name = "azos_pcspk"
+version = "0.1.0"
+dependencies = [
+ "azos_buzzer",
 ]
 
 [[package]]

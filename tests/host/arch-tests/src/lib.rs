@@ -261,6 +261,9 @@ mod cpu;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/arch-x86_64/src/trap/mod.rs"]
 mod trap;
+/// The x86_64 singleton type, which `trap::iomap` implements `IoPorts` for
+/// (`crates/core/arch-x86_64/src/lib.rs` is not included here).
+struct X86_64;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/arch-x86_64/src/ext/mod.rs"]
 mod ext;

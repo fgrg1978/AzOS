@@ -8,7 +8,7 @@
 //! past the TSS limit refuses it (SDM Vol. 1 19.5.2). So a CPU shows ring 3
 //! one of two things:
 //!
-//! - **no port**: `iomap_base` past the limit ([`gdt::IO_BITMAP_OFF`]). Every
+//! - **no port**: `iomap_base` past the limit ([`super::gdt::IO_BITMAP_OFF`]). Every
 //!   port faults, whatever the bitmap holds. One 16-bit store turns it on.
 //! - **one thread's ports**: `iomap_base` at the bitmap, whose clear bits are
 //!   exactly that thread's ranges; every other bit is set.
@@ -25,9 +25,12 @@
 //! The decision and the bitmap writes are pure ([`step`], [`fill`]) so the
 //! host tests check them (`tests/host/arch-stub-tests`).
 
-use azos_arch_api::ioport::{PortGrant, RANGES};
+use azos_arch_api::ioport::PortGrant;
+#[cfg(target_arch = "x86_64")]
+use azos_arch_api::ioport::RANGES;
 use azos_arch_api::IoPorts;
 
+#[cfg(target_arch = "x86_64")]
 use super::gdt;
 
 /// What a switch does to a CPU's TSS.

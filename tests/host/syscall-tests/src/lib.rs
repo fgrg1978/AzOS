@@ -264,6 +264,10 @@ pub mod vdso_notify;
 #[path = "../../../../crates/core/syscall/src/mmio.rs"]
 pub mod mmio;
 
+// `DEVICE_IOPORT_ENABLE`, which `invoke.rs` dispatches a `ty::IOPORT` handle to.
+#[path = "../../../../crates/core/syscall/src/ioport.rs"]
+pub mod ioport;
+
 // `SYS_SLEEP_UNTIL` and the kernel-context sleep helpers `handlers.rs` waits with
 // (`crate::sleep::wait_until_ms`, wave 11). At the crate root, where the
 // kernel's `lib.rs` declares it; `#[path]`, not `include!`, for the same
