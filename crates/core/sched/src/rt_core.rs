@@ -392,8 +392,9 @@ impl Refusal {
             Refusal::NoRoom | Refusal::BandCap | Refusal::Busy | Refusal::Levels => 16,
             // EACCES: the Domain's row, not the machine, says no.
             Refusal::Envelope => 13,
-            // EOPNOTSUPP: this build has no deadline class.
-            Refusal::ClassOff => 95,
+            // ENOSYS: this build has no deadline class, the answer
+            // `SYS_SCHEDCTL` gives for a class compiled out.
+            Refusal::ClassOff => 38,
         }
     }
     /// The reason as a number, for the refusal's decision record

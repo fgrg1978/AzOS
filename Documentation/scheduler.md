@@ -107,7 +107,7 @@ A refusal is `rt_core::Refusal`; `Refusal::errno` gives the syscall result.
 |---|---|---|
 | `Malformed` | `EINVAL` | zero `q` or `t`, `q > d`, `d > t` |
 | `NoRoom`, `BandCap`, `Busy`, `Levels` | `EBUSY` | no hart fits, band cap, already reserved or set full, level test |
-| `ClassOff` | `EOPNOTSUPP` | `SCHED_CLASS_DL` is off |
+| `ClassOff` | `ENOSYS` | `SCHED_CLASS_DL` is off (as `SYS_SCHEDCTL` answers for a class compiled out) |
 | `Envelope` | `EACCES` | the Domain's `rt_time` envelope row holds a reservation of this density (reason 7, `envelope`; below) |
 
 A run-time refusal is printed and, but for `Envelope`, written as a `Rule::DeadlineAdmission` decision record (`rt_core::refusal_numbers`). With Kconfig `EFFECT_WRITE_AHEAD`, `rt::reserve` first asks the effect gate whether the task's Domain may take a reservation of this density (the `rt_time` row of its scheduler class, [effects.md](effects.md)); a refusal there is `Refusal::Envelope` (`EACCES`, reason 7, `envelope`) and the gate's own `Rule::EnvelopeRtTime` record instead of the `DeadlineAdmission` one (`rt_receipt::held_by_row`, `rt_receipt::record_refusal`). With the `energy` feature, admission publishes `rt::ADMITTED_PPM[cpu]`, which the energy governor reads (see [energy.md](energy.md)).

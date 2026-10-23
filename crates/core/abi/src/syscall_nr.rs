@@ -448,8 +448,8 @@ pub const SYS_SLEEP_UNTIL: u64 = 12;
 /// or malformed DL times), `-EPERM`, `-EBUSY` (DL on a task that already
 /// holds a reservation, or fair from RT/DL), `-ENOSYS` (the class is
 /// compiled out), admission's refusal (`Refusal::errno`: `-EBUSY` no room,
-/// `-EOPNOTSUPP`), or the capability's `-ECAPSTALE` / `-ECAPKIND` /
-/// `-ECAPPERMS`.
+/// `-EACCES` the Domain's `rt_time` envelope row holds it), or the
+/// capability's `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS`.
 ///
 /// Foundational case 1 (authority: priority, class and affinity of a task).
 pub const SYS_SCHEDCTL: u64 = 13;

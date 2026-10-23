@@ -814,6 +814,24 @@ mod rt_core_tests {
         assert_eq!(Refusal::Malformed.errno(), 22);
     }
 
+    /// Every refusal's errno is one the ABI names, so a caller that reads the
+    /// result as an `Errno` (`from_syscall_ret`) never gets `None`. A class
+    /// compiled out is `ENOSYS`, `SYS_SCHEDCTL`'s own answer for it.
+    #[test]
+    fn every_refusal_errno_is_an_abi_errno() {
+        use azos_abi::error::Errno;
+        let all = [Refusal::Malformed, Refusal::NoRoom, Refusal::BandCap, Refusal::Busy, Refusal::Levels, Refusal::ClassOff, Refusal::Envelope];
+        // Exhaustive: a new variant does not compile here until it is listed.
+        for r in all {
+            match r {
+                Refusal::Malformed | Refusal::NoRoom | Refusal::BandCap | Refusal::Busy | Refusal::Levels | Refusal::ClassOff | Refusal::Envelope => {}
+            }
+            assert!(Errno::from_syscall_ret(-(r.errno() as i64)).is_some(), "{} answers {}", r.name(), r.errno());
+        }
+        assert_eq!(Refusal::ClassOff.errno(), Errno::ENOSYS as i32);
+        assert_eq!(Refusal::Envelope.errno(), Errno::EACCES as i32);
+    }
+
     #[test]
     fn microseconds_become_ticks_rounded_up() {
         assert_eq!(us_to_ticks(1_000, 10_000_000), 10_000);
