@@ -121,8 +121,8 @@ fn density_admits(set: &[Srv]) -> bool {
 }
 
 /// The processor-demand test for sporadic `(q, d, t)` tasks on one hart:
-/// `dbf(L) <= L` at every absolute deadline up to the hyperperiod plus the
-/// longest deadline. Small integer sets only; this is the oracle the tests
+/// utilisation at most 1 and `dbf(L) <= L` at every `L` up to the hyperperiod
+/// plus the longest deadline. Small integer sets only; this is the oracle the tests
 /// compare the density admission against, not a kernel path.
 fn dbf_admits(set: &[Srv]) -> bool {
     let gcd = |mut a: u64, mut b: u64| {
@@ -132,6 +132,10 @@ fn dbf_admits(set: &[Srv]) -> bool {
         a
     };
     let hyper = set.iter().fold(1u64, |h, v| h / gcd(h, v.t) * v.t);
+    // Utilisation at most 1 first: past the bound below only it decides.
+    if set.iter().map(|v| v.q * (hyper / v.t)).sum::<u64>() > hyper {
+        return false;
+    }
     let bound = hyper + set.iter().map(|v| v.d).max().unwrap_or(0);
     (1..=bound).all(|l| {
         let dbf: u64 = set
