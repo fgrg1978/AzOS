@@ -1208,6 +1208,24 @@ config MAX_MEMOBJS
       on every 64-bit ISA; plus the frames of the objects that exist, taken from
       the page allocator (up to 64 pages each, charged to the holder's Domain).
 
+config MEMOBJ_RESOLVE_WAYS
+    int "MemObj: processes whose last shm-word lookup is remembered"
+    range 1 64
+    default 16
+    help
+      crates/core/ipc/src/memobj.rs, RESOLVE_WAYS (was the constant 16). Every
+      futex and notify call asks which shm region, if any, the caller's
+      process maps at the word's address (memobj_resolve_mapped). The answer
+      is remembered per process, in the entry its id picks (id modulo this),
+      so the next call on the same mapping, or on any word outside every
+      mapping, skips the scan of the whole region table (every holder of
+      every one of MAX_MEMOBJS objects). Two processes that pick the same entry take turns:
+      each one's first call after the other costs one scan, nothing else.
+      Size it to the number of processes that call futexes at once.
+
+      Cost: 40 B of static RAM per entry (MEMOBJS, .data: 640 B at the
+      default 16), the same on every 64-bit ISA.
+
 config MEMOBJ_MOVED_WINDOWS
     int "MemObj: windows of mappings a MOVE removed, awaiting their owner"
     range 1 64

@@ -513,7 +513,8 @@ struct MemObjTable {
 /// The entries of [`MemObjTable::resolved`]: a process's entry is
 /// `tid % RESOLVE_WAYS`, so a few processes calling futexes at once keep
 /// theirs; one more only costs the next caller of its slot one scan.
-const RESOLVE_WAYS: usize = 16;
+/// Kconfig `MEMOBJ_RESOLVE_WAYS`.
+const RESOLVE_WAYS: usize = azos_limits::MEMOBJ_RESOLVE_WAYS;
 
 /// One remembered answer of [`memobj_resolve_mapped`] for process `tid` and
 /// the user addresses `[lo, hi)`.
@@ -3995,6 +3996,27 @@ mod tests {
         }
         // The walk reaches both answers often (not a vacuous run).
         assert!(hits > 700 && misses > 7000, "{hits} mapped answers, {misses} unmapped");
+    }
+
+    /// **The resolution cache has Kconfig `MEMOBJ_RESOLVE_WAYS` entries.** As
+    /// many processes as there are ways each keep their own remembered answer;
+    /// one more, whose id picks the first one's entry, takes it over. Run at a
+    /// value other than the default (a `.config` with `MEMOBJ_RESOLVE_WAYS=5`)
+    /// it fails when the table is sized or indexed by a literal instead.
+    #[test]
+    fn the_resolve_cache_keeps_one_process_per_kconfig_way() {
+        let _g = setup();
+        let ways = azos_limits::MEMOBJ_RESOLVE_WAYS as u32;
+        // Outside every mapping: each answer fills its process's entry.
+        const VA: usize = 0x4000_0000;
+        let kept = |t: u32| MEMOBJS.lock_irqsave().resolved.iter().any(|e| e.tid == t);
+        for t in A..A + ways {
+            assert_eq!(memobj_resolve_mapped(t, VA), None);
+        }
+        assert!((A..A + ways).all(kept), "{ways} processes did not keep {ways} entries");
+        assert_eq!(memobj_resolve_mapped(A + ways, VA), None);
+        assert!(kept(A + ways), "the process past the last way kept no entry");
+        assert!(!kept(A), "process {A} kept its entry past {ways} ways: the cache is wider than Kconfig says");
     }
 
     /// **A shm word is written only where the user could store.** The Linux PI
