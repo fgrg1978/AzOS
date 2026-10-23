@@ -1268,4 +1268,20 @@ mod tests {
         assert_eq!(ota_replace_verdict_pure(63, 64, 0, true), Err("write"));
         assert_eq!(ota_replace_verdict_pure(64, 64, -5, false), Err("close (the write to the volume)"));
     }
+
+    /// After a rollback the slot running is still the one that looped (the
+    /// bootloader loaded it), while the record names the NEXT boot's: the boot
+    /// gate must check the first. **Canary.** Take `running` after the FSM:
+    /// it is `last_good`, red.
+    #[test]
+    fn after_a_rollback_the_running_slot_is_the_one_that_looped() {
+        let mut meta = BootMeta { active_slot: SLOT_B, last_good: SLOT_A, boot_count: 3, ..BootMeta::default() };
+        let t = ota_boot_tick_pure(&mut meta, 3);
+        assert_eq!(t.outcome, BootValidateOutcome::RolledBack);
+        assert_eq!(meta.active_slot, SLOT_A, "the next boot loads last_good");
+        assert_eq!(t.running, SLOT_B, "this boot runs the slot that looped");
+        let mut meta = BootMeta { active_slot: SLOT_B, last_good: SLOT_A, boot_count: 0, ..BootMeta::default() };
+        let t = ota_boot_tick_pure(&mut meta, 3);
+        assert_eq!((t.outcome, t.running, meta.active_slot), (BootValidateOutcome::Normal, SLOT_B, SLOT_B));
+    }
 }

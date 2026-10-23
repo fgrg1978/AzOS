@@ -163,7 +163,10 @@ pub(crate) fn boot_validate_and_verify_slots() {
     boot_count_loaded(&validation);
 
     // ── Verify CRC-32 of active firmware slot ─────────────────────
-    let active_slot = boot_meta.active_slot;
+    // The slot running now, which the bootloader loaded: after a rollback
+    // `boot_meta.active_slot` is the slot the NEXT boot loads, and checking
+    // that one would let the image in RAM skip the CRC and signature gates.
+    let active_slot = validation.running_slot;
     let slot_size = boot_meta.slot_size(active_slot);
     if slot_size > 0 {
         if azos_ota::ota_verify_slot(active_slot) {

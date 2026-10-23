@@ -549,6 +549,24 @@ pub fn ota_replace_verdict_pure(written: isize, len: usize, closed: i32, synced:
     Ok(())
 }
 
+/// One boot's validation: what [`ota_boot_validate_pure`] did, and the slot
+/// whose image is running (`running`). That is the slot `meta` named BEFORE
+/// the FSM ran: the bootloader loaded it. After a
+/// [`BootValidateOutcome::RolledBack`] `meta.active_slot` names the slot the
+/// NEXT boot loads, so a check of the image in RAM (its CRC, its signature)
+/// must ask about `running`, never about `meta.active_slot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BootTick {
+    pub outcome: BootValidateOutcome,
+    pub running: u8,
+}
+
+/// [`ota_boot_validate_pure`], keeping the running slot (see [`BootTick`]).
+pub fn ota_boot_tick_pure(meta: &mut BootMeta, max_attempts: u32) -> BootTick {
+    let running = meta.active_slot;
+    BootTick { outcome: ota_boot_validate_pure(meta, max_attempts), running }
+}
+
 /// Are the running slot's boot attempts exhausted after validation, i.e.
 /// did [`ota_boot_validate_pure`] answer `Exhausted` or `RollbackRefused`?
 /// A rollback resets the count to 1, so it never is.

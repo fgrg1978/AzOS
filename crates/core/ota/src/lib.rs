@@ -610,6 +610,10 @@ pub fn ota_slot_info(slot: u8) -> (u32, u32, u32) {
 pub struct BootValidation {
     /// The boot metadata as written back (possibly rolled back).
     pub meta: BootMeta,
+    /// The slot whose image this boot runs (the one the bootloader loaded):
+    /// after a rollback `meta.active_slot` is the NEXT boot's, not this one
+    /// ([`pure::BootTick`]). The boot gate checks this slot.
+    pub running_slot: u8,
     /// `boot_count` as read, before this boot's increment: the consecutive
     /// boots that were never marked good ([`ota_mark_boot_good`]). This is
     /// the watchdog's crash counter; the kernel loads it into
@@ -646,7 +650,7 @@ pub fn ota_boot_validate() -> BootValidation {
     let max_attempts = CFG_OTA_MAX_BOOT_ATTEMPTS.load(Ordering::Relaxed);
 
     // Pure FSM does the increment + possible rollback.
-    let outcome = ota_boot_validate_pure(&mut meta, max_attempts);
+    let pure::BootTick { outcome, running: running_slot } = pure::ota_boot_tick_pure(&mut meta, max_attempts);
 
     if outcome == BootValidateOutcome::RolledBack {
         azos_drv_sys::kwarn!(
@@ -696,7 +700,7 @@ pub fn ota_boot_validate() -> BootValidation {
         ota_slot_char(meta.last_good),
         meta.bad_slots);
 
-    BootValidation { meta, prior_unconfirmed, fresh, recorded, outcome, max_attempts }
+    BootValidation { meta, running_slot, prior_unconfirmed, fresh, recorded, outcome, max_attempts }
 }
 
 // ── Whole-system update: the switch (called by whoever holds the authority) ──
