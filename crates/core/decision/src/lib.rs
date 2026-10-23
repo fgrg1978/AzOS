@@ -990,6 +990,8 @@ pub const RULES: [RuleInfo; 70] = [
         fields: ["cause_trb", "waited_ms", "action"],
         rejected_if_yes: "keep the controller: it stopped answering or reported an error, and every device behind it is unreachable until it is reset",
         rejected_if_no: "reset again: the controller faulted once more after a clean reset, and a host that keeps half-working loses its devices at random",
+    },
+    RuleInfo {
         // Only refusals are written: the admitted call is the common case and
         // its record would be one per call. `alt` is the counter-offer: an
         // absolute deadline in ns when `kind` is 1, a budget in us when 2;

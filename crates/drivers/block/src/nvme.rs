@@ -977,7 +977,7 @@ fn bring_up_again(dev: &Dev, late: u32) -> Result<(), NvmeError> {
     wr32(a.bar, proto::REG_AQA, proto::aqa(ADMIN_DEPTH as u32, ADMIN_DEPTH as u32));
     wr64(a.bar, proto::REG_ASQ, a.asq_pa);
     wr64(a.bar, proto::REG_ACQ, a.acq_pa);
-    io_wmb();
+    azos_dma::order::io_wmb();
     wr32(a.bar, proto::REG_CC, proto::cc_enable());
     wait_ready(a.bar, true, a.ready_ms)?;
     let queues = dev.queues;

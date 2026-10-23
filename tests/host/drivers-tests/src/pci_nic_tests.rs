@@ -370,6 +370,6 @@ fn e1000e_a_seldom_sender_is_found_wedged_by_the_poller() {
 fn the_rings_are_refused_behind_a_master_that_does_not_snoop() {
     assert!(rings_drivable(&Dma::fallback()), "a coherent domain is driven");
     const BASE: u64 = 0xD00D_2000;
-    azos_dma::registry::declare_mmio(BASE, false).expect("declare once");
+    azos_dma::registry::declare_mmio(BASE, BASE, azos_dma::registry::MmioView::coherent(false)).expect("declare once");
     assert!(!rings_drivable(&Dma::mmio(BASE as usize)), "a non-coherent domain must be refused");
 }
