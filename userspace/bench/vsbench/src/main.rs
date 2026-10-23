@@ -31,7 +31,7 @@ mod bench_core;
 mod ipc_proto;
 use bench_core::{
     batch, batch_tail, ns_per_op, rel_x100, ticks_to_ns, Abi, Handles, Ipc, Mem, Net, Proc, Role, Shell, Tail,
-    Threads, N_THR,
+    Threads, N_THR, Uaccess, N_UA, UA_FILE_BYTES,
     Vdso, N_DUP, N_FILE, N_PIPE, N_PIPE_OPEN, N_SPAWN, PIPE_MSG, N_DISK, DISK_WRITE_BYTES,
     IPC_RENDEZVOUS_TRIES, IPC_RETRY_BUDGET, IPC_SENTINEL, N,
     N_BRK, N_FAULT_PAGES, N_IPC, N_IPC_TOTAL, N_IPC_WARM, N_MEM, N_MEM_ROUNDS, N_PROC,
@@ -2216,6 +2216,76 @@ of tools/vsbench_compare.sh brings one), no number\n");
     tcp_bulk_one(abi, port, false, floor_ns);
 }
 
+/// The `uaccess` lanes' read buffer. A static, not a stack array: 64 KiB is
+/// more than a ring-3 stack should carry.
+struct UaBuf(core::cell::UnsafeCell<[u8; UA_FILE_BYTES]>);
+unsafe impl Sync for UaBuf {}
+static UA_BUF: UaBuf = UaBuf(core::cell::UnsafeCell::new([0; UA_FILE_BYTES]));
+
+/// `uaccess-cstr-*`: a first component no file system has, then filler.
+const UA_CSTR_HEAD: &[u8] = b"/vsbnx";
+/// The long path's length, NUL included.
+const UA_CSTR_LONG: usize = 256;
+
+/// The kernel's user-memory accesses, the same call on both sides (front
+/// uaccess-pin, [`bench_core::Uaccess`]):
+///
+/// * `uaccess-get-u32`: a futex wait whose word does not match, `EAGAIN`:
+///   one 4-byte read of user memory and nothing else.
+/// * `uaccess-cstr-7` / `-256`: `stat` of a path whose first component does
+///   not exist, 7 and 256 bytes with the NUL: the string copy in, then a
+///   lookup that stops at once. Their difference is 249 bytes of string copy.
+/// * `uaccess-read-8` / `-4k` / `-64k`: open + read from the start + close of
+///   a RAM file. Their differences are the copy out of 4,088 and 65,528 bytes
+///   (on AzOS also the bounce through the kernel's 4 KiB buffer, and from
+///   4 KiB on, one call per 4 KiB).
+fn uaccess_lanes(abi: &(impl Abi + Uaccess), floor_ns: u64) {
+    static WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let mut rc = 0i64;
+    let t = batch(N_UA, || rc = abi.ua_get(&WORD, 1));
+    if rc != -11 {
+        fail_line(abi, b"uaccess-get-u32 (expected -EAGAIN)", rc);
+    } else {
+        report(abi, b"uaccess-get-u32", t, N_UA, floor_ns);
+    }
+
+    let mut long = [b'a'; UA_CSTR_LONG];
+    long[..UA_CSTR_HEAD.len()].copy_from_slice(UA_CSTR_HEAD);
+    long[UA_CSTR_HEAD.len()] = b'/';
+    long[UA_CSTR_LONG - 1] = 0;
+    let mut short = [0u8; 7];
+    short[..UA_CSTR_HEAD.len()].copy_from_slice(UA_CSTR_HEAD);
+    for (path, label) in [(&short[..], &b"uaccess-cstr-7"[..]), (&long[..], &b"uaccess-cstr-256"[..])] {
+        let mut rc = 0i64;
+        let t = batch(N_UA, || rc = abi.ua_cstr(path));
+        if rc >= 0 {
+            fail_line(abi, label, rc);
+        } else {
+            report(abi, label, t, N_UA, floor_ns);
+        }
+    }
+
+    if let Err(e) = abi.ua_file_setup() {
+        fail_line(abi, b"uaccess-read setup", e);
+        return;
+    }
+    // Single-threaded: the only reference to the buffer while this runs.
+    let buf = unsafe { &mut *UA_BUF.0.get() };
+    for (len, label) in [(8, &b"uaccess-read-8"[..]), (4096, &b"uaccess-read-4k"[..]), (UA_FILE_BYTES, &b"uaccess-read-64k"[..])] {
+        let mut err = 0i64;
+        let t = batch(N_UA, || {
+            if err == 0 {
+                if let Err(e) = abi.ua_read(&mut buf[..len]) { err = e; }
+            }
+        });
+        if err != 0 {
+            fail_line(abi, label, err);
+        } else {
+            report(abi, label, t, N_UA, floor_ns);
+        }
+    }
+}
+
 /// The data buffer of the TCP bulk lanes: one chunk, reused. A static, not
 /// a stack array: [`TCP_CHUNK`] is more than a ring-3 stack should carry.
 struct TcpBuf(core::cell::UnsafeCell<[u8; TCP_CHUNK]>);
@@ -2787,7 +2857,7 @@ fn sqpoll_lanes(abi: &impl Abi, floor_ns: u64) {
     }
 }
 
-fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: &A) {
+fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uaccess>(abi: &A) {
     abi.write(b"[VSBENCH] side=");
     abi.write(SIDE);
     abi.write(b" start\n");
@@ -2867,6 +2937,8 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads>(abi: 
     //     measuring.
     if lanes.on(b"proc") { proc_lanes(abi, floor_ns); }
     if lanes.on(b"disk") { disk_lanes(abi, floor_ns); }
+    // 4a''. Front uaccess-pin: the kernel's reads and writes of user memory.
+    if lanes.on(b"uaccess") { uaccess_lanes(abi, floor_ns); }
     // 4b'. Wave 13: threads of one process, both sides.
     if lanes.on(b"thread") { thread_lanes::<A>(abi, floor_ns); }
 

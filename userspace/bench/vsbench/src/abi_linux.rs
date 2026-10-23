@@ -849,6 +849,55 @@ pub const SYS_DUP: usize = nr(23, 32);
 const AT_FDCWD: isize = -100;
 /// `tmp-ord`'s file, in the initramfs root (RAM, as AzOS's `/tmp`).
 const TMP_PATH: &[u8] = b"/vsb.tmp\0";
+/// `uaccess-read-*`'s file, beside it.
+const UA_PATH: &[u8] = b"/vsbua.tmp\0";
+/// `newfstatat` (asm-generic 79, x86-64 262).
+const SYS_NEWFSTATAT: usize = nr(79, 262);
+
+impl super::bench_core::Uaccess for LinuxAbi {
+    fn ua_get(&self, w: &core::sync::atomic::AtomicU32, wrong: u32) -> i64 {
+        unsafe { syscall4(SYS_FUTEX, w.as_ptr() as usize, FUTEX_WAIT_PRIVATE, wrong as usize, 0) as i64 }
+    }
+
+    fn ua_cstr(&self, path: &[u8]) -> i64 {
+        // `struct stat` is 128 bytes on riscv64 and aarch64, 144 on x86-64.
+        let mut st = [0u8; 144];
+        unsafe { syscall4(SYS_NEWFSTATAT, AT_FDCWD as usize, path.as_ptr() as usize, st.as_mut_ptr() as usize, 0) as i64 }
+    }
+
+    fn ua_file_setup(&self) -> Result<(), i64> {
+        // O_RDWR | O_CREAT | O_TRUNC, 0644: the initramfs root is RAM.
+        let fd = unsafe { syscall4(SYS_OPENAT, AT_FDCWD as usize, UA_PATH.as_ptr() as usize, 0o1102, 0o644) };
+        if fd < 0 {
+            return Err(fd as i64);
+        }
+        let chunk = [0x5Au8; 4096];
+        let mut done = 0;
+        while done < super::bench_core::UA_FILE_BYTES {
+            let n = unsafe { syscall3(SYS_WRITE, fd as usize, chunk.as_ptr() as usize, chunk.len()) };
+            if n != chunk.len() as isize {
+                unsafe { syscall1(SYS_CLOSE, fd as usize) };
+                return Err(n as i64);
+            }
+            done += chunk.len();
+        }
+        unsafe { syscall1(SYS_CLOSE, fd as usize) };
+        Ok(())
+    }
+
+    fn ua_read(&self, buf: &mut [u8]) -> Result<(), i64> {
+        let fd = unsafe { syscall4(SYS_OPENAT, AT_FDCWD as usize, UA_PATH.as_ptr() as usize, 0, 0) };
+        if fd < 0 {
+            return Err(fd as i64);
+        }
+        let n = unsafe { syscall3(SYS_READ, fd as usize, buf.as_mut_ptr() as usize, buf.len()) };
+        unsafe { syscall1(SYS_CLOSE, fd as usize) };
+        if n != buf.len() as isize {
+            return Err(n as i64);
+        }
+        Ok(())
+    }
+}
 
 /// Poll attempts before `fork_exit_wait` gives up. Same bound as the Azos
 /// lane, so neither side can look better by being allowed to try longer.

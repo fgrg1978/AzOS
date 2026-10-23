@@ -410,8 +410,8 @@ if [ "$VSBENCH_GATE_ONLY" = "1" ]; then
     VSBENCH_TCP=0
 fi
 if [ -n "$VSBENCH_LANES" ]; then
-    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk))*$' \
-        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,tcp,switch,disk" >&2; exit 1; }
+    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk|uaccess)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk|uaccess))*$' \
+        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,tcp,switch,disk,uaccess" >&2; exit 1; }
     [ "$VSBENCH_SECCOMP" = "1" ] && { echo "vsbench: VSBENCH_LANES and VSBENCH_SECCOMP=1 do not mix" >&2; exit 1; }
     echo "vsbench: lanes filtered to: $VSBENCH_LANES" >&2
 fi

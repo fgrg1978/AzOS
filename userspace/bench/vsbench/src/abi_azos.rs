@@ -472,6 +472,62 @@ impl Shell for AzosAbi {
 
 /// `tmp-ord`'s file: ramfs, under the autorun row's `/tmp` tree grant.
 const TMP_PATH: &[u8] = b"/tmp/VSB.TMP\0";
+/// `uaccess-read-*`'s file: ramfs, under the same grant.
+const UA_PATH: &[u8] = b"/tmp/VSBUA.TMP\0";
+/// Bytes per native `read`/`write` call: the ABI's clamp.
+const UA_CALL_MAX: usize = 4096;
+
+impl super::bench_core::Uaccess for AzosAbi {
+    fn ua_get(&self, w: &core::sync::atomic::AtomicU32, wrong: u32) -> i64 {
+        sys::futex_wait(w, wrong, 0) as i64
+    }
+
+    /// `DOMAIN_STAT` straight: `sys::stat` first scans the path for its NUL
+    /// in ring 3, which the Linux side does not do.
+    fn ua_cstr(&self, path: &[u8]) -> i64 {
+        let mut st = [0u8; 64];
+        let a = sys::invoke_abi::DOMAIN_SELF.as_raw();
+        sys::invoke(a, sys::invoke_abi::DOMAIN_STAT, [path.as_ptr() as u64, st.as_mut_ptr() as u64, 0, 0]).0 as i64
+    }
+
+    fn ua_file_setup(&self) -> Result<(), i64> {
+        // O_RDWR | O_CREAT | O_TRUNC.
+        let h = sys::open_root(UA_PATH, 0x242);
+        if h < 0 {
+            return Err(h as i64);
+        }
+        let chunk = [0x5Au8; UA_CALL_MAX];
+        let mut done = 0;
+        while done < super::bench_core::UA_FILE_BYTES {
+            let n = sys::file_write_typed(h as u32, &chunk);
+            if n != UA_CALL_MAX as isize {
+                let _ = sys::close_typed(h as u32);
+                return Err(n as i64);
+            }
+            done += UA_CALL_MAX;
+        }
+        let _ = sys::close_typed(h as u32);
+        Ok(())
+    }
+
+    fn ua_read(&self, buf: &mut [u8]) -> Result<(), i64> {
+        let h = sys::open_root(UA_PATH, 0);
+        if h < 0 {
+            return Err(h as i64);
+        }
+        let mut done = 0;
+        while done < buf.len() {
+            let n = sys::file_read_typed(h as u32, &mut buf[done..]);
+            if n <= 0 {
+                let _ = sys::close_typed(h as u32);
+                return Err(if n < 0 { n as i64 } else { -5 });
+            }
+            done += n as usize;
+        }
+        let _ = sys::close_typed(h as u32);
+        Ok(())
+    }
+}
 /// Wave 15 `file-write`: a FAT32 file on the boot disk.
 const DISK_PATH: &[u8] = b"/fat/VSBW.DAT\0";
 

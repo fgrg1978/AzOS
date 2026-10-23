@@ -337,7 +337,8 @@ pub trait Abi {
 /// `mem`, `proc`, `thread`, `vdso`, `ioring`, `shell`, `timer`, `net`
 /// (nic-egress, udp-roundtrip), `tcp` (tcp-bulk-tx, tcp-bulk-rx: only with a
 /// host peer, see [`Net::tcp_peer_port`]), `switch` (switch-loaded,
-/// yield-switch), `disk` (file-write, file-wr+fsync; wave 15).
+/// yield-switch), `disk` (file-write, file-wr+fsync; wave 15), `uaccess`
+/// (the kernel's user-memory accesses, [`Uaccess`]).
 /// AzOS reads it from `/fat/VSBLANES.TXT`, Linux from its environment;
 /// `tools/vsbench_compare.sh` puts it in both.
 pub struct Lanes {
@@ -910,6 +911,33 @@ pub trait Shell {
     /// `fsync` it when asked, close it.
     fn disk_write_close(&self, data: &[u8], fsync: bool) -> Result<(), i64>;
 }
+
+/// The kernel's user-memory accesses (`uaccess`, front uaccess-pin): calls
+/// whose kernel work is a read or a write of the caller's memory, the same
+/// call with the same semantics on both sides. AzOS's native ABI returns
+/// results in registers by design, so no native call writes a small block
+/// and does nothing else; the write side is measured through `read`, whose
+/// last step is the copy out.
+pub trait Uaccess {
+    /// A futex wait on `w` expecting `wrong`, which `w` does not hold: the
+    /// kernel reads the 4-byte word, compares and answers `EAGAIN`. The
+    /// answer.
+    fn ua_get(&self, w: &core::sync::atomic::AtomicU32, wrong: u32) -> i64;
+    /// `stat` of `path` (NUL-terminated), whose first component does not
+    /// exist: the kernel copies the whole string in, then the lookup stops at
+    /// once. The answer (an error).
+    fn ua_cstr(&self, path: &[u8]) -> i64;
+    /// Create the RAM file `ua_read` reads, [`UA_FILE_BYTES`] long. Untimed.
+    fn ua_file_setup(&self) -> Result<(), i64>;
+    /// Open the file, read `buf.len()` bytes from its start, close. AzOS
+    /// reads at most 4 KiB per call (its ABI's clamp): it loops.
+    fn ua_read(&self, buf: &mut [u8]) -> Result<(), i64>;
+}
+
+/// `uaccess`: iterations per lane.
+pub const N_UA: u64 = 400;
+/// `uaccess-read-*`: the RAM file's size (the largest read).
+pub const UA_FILE_BYTES: usize = 64 * 1024;
 
 /// `file-write`: iterations of create/truncate + write 4 KiB + close.
 pub const N_DISK: u64 = 40;
