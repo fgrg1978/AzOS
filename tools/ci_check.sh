@@ -12401,13 +12401,17 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     # the self-test's 8192+N). Canary: `msix-enable-canary` -> mode=irq
     # msix=n, rx=0, DHCPSMOKE FAIL; `aarch64 network: DHCP lease` (MMIO) is
     # the control that passes.
+    # [machine options] put an IOMMU on the bus (`iommu=smmuv3`), and the NIC
+    # then goes through it: a virtio device's DMA reaches the IOMMU only with
+    # `iommu_platform=on` (VIRTIO_F_ACCESS_PLATFORM); without it QEMU hands the
+    # device guest memory directly and only its MSI writes are translated.
     pci_net_dhcp_boot_aarch64() { # pci_net_dhcp_boot_aarch64 <log> [machine options] [stop ERE]
         local log="$1" img_copy="${1%.log}-kernel.img" stop="${3:-NET\] msix counts \(after dhcp\)}"
         rm -f "$log"; cp "$A64_IMG" "$img_copy"
         par_ready
         qemu-system-aarch64 -M "virt,gic-version=3${2:+,$2}" -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img_copy" \
-            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            -netdev user,id=net0 -device "virtio-net-pci,netdev=net0,disable-legacy=on${2:+,iommu_platform=on}" \
             </dev/null >"$log" 2>&1 &
         local qpid=$! i=0
         while [ "$i" -lt 90 ]; do
@@ -14334,10 +14338,14 @@ PY
     par "x86_64: PCI AHCI mounts FAT (q35)" x86_ahci_row "x86_64: PCI AHCI mounts FAT (q35)" PASS
     par "x86_64: PCI AHCI canary (no driver)" x86_ahci_row "x86_64: PCI AHCI canary (no driver)" FAIL
     # IOMMU on (x86_64): the rv/arm `iommu:` rows on q35 with the unit QEMU models
-    # first on the bus, AMD-Vi (`amd-iommu,dma-remap=on`, found through the ACPI
-    # IVRS; every device-table entry blocks until its function is placed) and
-    # Intel VT-d (`intel-iommu`, the DMAR). The NIC is a virtio-net-pci function
-    # (`-nic none`: no q35 default e1000e). Canary `iommu-tx-canary` as there.
+    # first on the bus: AMD-Vi (`amd-iommu,dma-remap=on`, found through the ACPI
+    # IVRS; every device-table entry blocks until its function is placed). No
+    # VT-d row: QEMU's `intel-iommu` offers no pass-through (ECAP.PT clear), which
+    # the vt-d unit needs for the functions it does not translate, so the unit
+    # is refused there ("no pass-through translation type"). The NIC is a
+    # virtio-net-pci function (`-nic none`: no q35 default e1000e) with
+    # `iommu_platform=on`, so its DMA goes through the unit. Canary
+    # `iommu-tx-canary` as there.
     x86_iommu_row() { # x86_iommu_row <label> <qemu IOMMU device> <flavour> <PASS|CANARY>
         local label="$1" unit="$2" flavour="$3" expect="$4" feats="dhcp-smoke" stop='DHCPSMOKE\]|KERNEL PANIC|\[X86-TRAP\]'
         printf "  %-26s" "${label}..."
@@ -14353,7 +14361,7 @@ PY
             || { bad; echo "      make x86_64 (qemu-x86_64-pci.config, $feats) did not build"; return; }
         par_ready
         X86_MACHINE=q35 x86_qemu "$kimg" "$log" 90 "$stop" -smp 1 -nic none -device "$unit" \
-            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on,iommu_platform=on \
             || { rm -f "$kimg" "$kimg.features"; return; }
         rm -f "$kimg" "$kimg.features"
         iommu_net_verdict "$log" "$flavour" "$expect" 'KERNEL PANIC|\[X86-TRAP\]'
@@ -14362,8 +14370,6 @@ PY
         amd-iommu,dma-remap=on amd-vi PASS
     par "x86_64 iommu: amd-vi refuses unmapped" x86_iommu_row "x86_64 iommu: amd-vi refuses unmapped" \
         amd-iommu,dma-remap=on amd-vi CANARY
-    par "x86_64 iommu: vt-d translates the NIC" x86_iommu_row "x86_64 iommu: vt-d translates the NIC" intel-iommu vt-d PASS
-    par "x86_64 iommu: vt-d refuses unmapped" x86_iommu_row "x86_64 iommu: vt-d refuses unmapped" intel-iommu vt-d CANARY
     # The Intel I225/I226 driver (Kconfig DRV_IGC, crates/drivers/net/src/igc.rs, built
     # into qemu-x86_64-pci.config) on QEMU's `-device igb`: an 82576, the same advanced
     # descriptors, bound to the same driver by its id (hwbus.ids). The controller is reset,
@@ -19129,13 +19135,16 @@ PYEOF
     # runs in IRQ mode (it decides by route, never by the enable read-back),
     # no RX MSI arrives, no frame is read and the lease fails — while
     # `network: DHCP lease` (MMIO, polled) passes on the same stack.
+    # [QEMU args] put an IOMMU on the bus, and the NIC then goes through it
+    # (`iommu_platform=on`, as the aarch64 helper says).
     pci_net_dhcp_boot_riscv64() { # pci_net_dhcp_boot_riscv64 <log> [stop ERE] [QEMU args before the NIC...]
-        local log="$1" stop="${2:-NET\] msix counts \(after dhcp\)}"
+        local log="$1" stop="${2:-NET\] msix counts \(after dhcp\)}" nic=""
         shift; [ $# -gt 0 ] && shift
+        [ $# -gt 0 ] && nic=",iommu_platform=on"
         rm -f "$log"
         par_ready
         "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -kernel "$KERNEL" "$@" \
-            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            -netdev user,id=net0 -device "virtio-net-pci,netdev=net0,disable-legacy=on$nic" \
             </dev/null >"$log" 2>&1 &
         local qpid=$! i=0
         while [ "$i" -lt 90 ]; do
