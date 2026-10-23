@@ -18,6 +18,27 @@ every refusal here produces.
 | Crypto primitives | `crates/core/crypto/src` |
 | Entropy, TPM | `crates/core/crypto/src/entropy.rs`, `kernel/src/boot/entropy.rs`, `crates/drivers/tpm/src`, `kernel/src/boot/tpm.rs` |
 | Node identity, link keys | `crates/core/crypto/src/dice.rs`, `crates/core/syscall/src/link_key.rs`, `crates/core/crypto/src/secure_channel.rs`, `userspace/lib/rpc/src/chan.rs` |
+| Memory protection, DMA | `crates/core/mm/src/wx.rs`, `kernel/src/boot/early.rs`, `crates/core/sched/src/elf_bounds.rs`, `kernel/src/boot/dma.rs` |
+
+Several of the checks below are build options, and the defaults differ by
+build type. `BUILD_TYPE` is `DEV` on `BOARD_QEMU` and `RELEASE` on every other
+board (`config/axes/Kconfig.build`):
+
+| Kconfig symbol | Default | Turns on |
+|----------------|---------|----------|
+| `SECURE_BOOT_ENFORCED` | `y` unless `BUILD_TYPE_DEV`; forced on `BUILD_TYPE_CERTIFIABLE` | Refusing an unverified kernel image at boot and at OTA install |
+| `LINK_PROVISIONING_ENFORCED` | `n`; the `vf2` and `k1` board features build it in | No boot without a link key, no handshake on an unseeded pool, no UART bridge |
+| `CONSOLE_LOCKDOWN` | `n` | No recovery console; every authority-table row checked |
+| `TOPOLOGY_SOURCE` | signed required unless `BOARD_QEMU`, where a missing set boots the built-in topology | Where task grants come from |
+| `TOPOLOGY_NEVERALLOW`, `TOPOLOGY_BIND_DEVICE`, `TOPOLOGY_COUNTER_FLOOR` | `y` | The topology admission checks named below |
+| `KASLR` | `probe`; `require` on `SECURITY_HARDENED` and certifiable builds | Kernel image randomization |
+
+`THREAT_PHYSICAL_ACCESS` (the default threat model of the separation-static
+and confidential postures) implies the first three `y`. The gate's canary
+builds (cargo features named `*-canary`, and on a development build with
+Kconfig `CANARY_RUNTIME` a `canary=` kernel argument) switch single checks off
+on purpose, `topo-verify-skip-canary` the topology signature among them; no
+build script refuses a canary feature in a release build.
 
 ## Authority model
 
@@ -60,10 +81,10 @@ into an address space). `DELEGATE` is `DUP | TRANSFER`.
 
 **Dereference.** Every typed call resolves the handle in the caller's own
 table (`Cap<T>`, a compile-time-typed wrapper in `crates/core/ipc/src/cap.rs`),
-and fails with a distinct errno if the slot index is out of range or empty,
+and fails with a distinct errno if the slot index is out of range or empty or
 the generation does not match (`ECAPSTALE`), the kind tag does not match
-(`ECAPKIND`) or the handle's permissions are not a subset of the slot's
-(`ECAPPERMS`). A slot's generation never wraps: a slot that reaches the maximum
+(`ECAPKIND`) or the slot's permissions do not contain the right the operation
+needs (`ECAPPERMS`). A slot's generation never wraps: a slot that reaches the maximum
 generation is retired, so a revoked handle cannot validate again against a
 later grant of the same slot.
 
@@ -87,11 +108,14 @@ class (see the next section), and then the family that owns the type runs the
 op and checks the rights it needs.
 
 **Where grants come from.** A task's capabilities are the `[task.NAME]` rows of
-the signed topology (`CAPS.TOM`, see "Secure boot and signed artefacts"): each
-grant has a kind, a target, permissions and a `transfer` flag. At admission the
-topology is checked for deadline schedulability, memory, one writer per motor,
-and against `neverallow` rules (`crates/core/topology/src/neverallow.rs`),
-assertions about all grants rather than allow rules:
+the topology: the signed `CAPS.TOM` (see "Secure boot and signed artefacts"),
+or the built-in one the image carries where Kconfig `TOPOLOGY_SOURCE` lets the
+boot fall back to it. Each grant has a kind, a target, permissions and a
+`transfer` flag. At admission the topology is checked for deadline
+schedulability, memory, one writer per motor, and (Kconfig
+`TOPOLOGY_NEVERALLOW`, default `y`) against `neverallow` rules
+(`crates/core/topology/src/neverallow.rs`), assertions about all grants rather
+than allow rules:
 
 | Rule id | Forbids |
 |---------|---------|
@@ -110,8 +134,11 @@ the table in the kernel image; a topology file cannot add one. A refusal is
 `crates/core/ipc/src/authority_policy.rs` maps commands such as reboot,
 shutdown, `ota rollback` and `config set` to `WRITE` on the `power`, `ota` or
 `config` endpoint. Ring-3 tools are checked per op against the calling image's
-own capability; the recovery console is checked against the capabilities it was
-seeded with, and with Kconfig `CONSOLE_LOCKDOWN` it is not created at all.
+own capability. The recovery console is seeded with `WRITE` on the `power`,
+`config` and `ota` endpoints; its `reboot` and `shutdown` are checked against
+that on every build, while `ota rollback` and `config set watchdog_ms` are
+checked only under Kconfig `CONSOLE_LOCKDOWN` (default `n`), which also leaves
+the recovery console out entirely.
 
 **Refusals leave records.** A refused typed call is recorded as
 `Rule::CapDenial` (verdict `deny`). It also reaches the durable flight recorder,
@@ -149,7 +176,9 @@ run.
   `exec_user` succeeds and before the first user instruction; a task with a
   filter already in force gets `SECCOMP_E_ALREADY`. The filter lives on the
   task slot, is copied to children by fork, and a Linux `execve` installs the
-  executed image's own row.
+  executed image's own row, which must be a Linux row; a row other than the
+  caller's needs a `LAUNCH` grant (`EXEC`) for that image, and may be wider
+  than the caller's (`crates/core/syscall/src/linux.rs`, `sys_execve`).
 - **A call outside the row kills the task** (`seccomp_deny_kill`,
   `seccomp_deny_op_kill`, exit code 159). In `audit` mode the call goes through
   and is recorded as `SAFETY_SECCOMP_AUDIT`, bounded per task; two test images
@@ -159,6 +188,13 @@ run.
   on the task slot. `SYS_INVOKE` ops are checked per kind and class.
 - **Third-party images** (`THIRDPARTY_PROFILES`) have a digest table of their
   own, empty unless the program was built.
+- **Package images.** The boot-time apply of a package (see "Packages")
+  registers the digest of each image it admitted (`register_package_images`).
+  Every package image runs under one profile (`package_profile`): the calls of
+  an ordinary native service, none that start, signal or schedule other tasks
+  or belong to the Linux personality, and as `ifaces` the kernel-hosted
+  interfaces its own row grants. A shipped digest is looked up first, so a
+  package cannot take a shipped image's row.
 - **Role profiles** are a separate id space that a task can ask for itself with
   `DOMAIN_SET_FILTER`: `PROFILE_UNRESTRICTED` (a no-op that does not burn the
   one-way gate) and `PROFILE_MINIMAL` (exit, getpid, yield, sleep, console
@@ -184,7 +220,7 @@ extension when the CPU has it (`probe`) or refuses the CPU (`require`).
 
 | ISA | Forward edge | Backward edge |
 |-----|--------------|---------------|
-| aarch64 | `A64_BTI`: `bti` pads are emitted (`-Z branch-protection=bti,pac-ret`). Not enforced: the page-table guarded-page bit is never set and `SCTLR_EL1.BT0/BT1` stay clear. | `A64_PAUTH`: `paciasp` / `autiasp` in non-leaf functions, kernel and user images. One key (A) for the kernel, loaded on every CPU; checking is switched on by `_azos_cfi_enable` (sets `SCTLR_EL1.EnIA`, and with `A64_PAUTH_PROC_KEYS` also `EnIB`, `EnDA`, `EnDB`) right before Rust is entered. With `A64_PAUTH_PROC_KEYS` (default) every process has its own `APIA`, `APIB`, `APDA`, `APDB` and `APGA` keys from the DRBG (`spawn` and `exec` draw, `fork` and threads copy), and the kernel's key is back in `APIAKey_EL1` on every entry from EL0 (`trap_entry.S`), so ring 3 cannot sign under the kernel's key or another process's; with it off, ring 3 shares the key and this is corruption detection inside an image, not a privilege boundary. The kernel key comes from `RNDRRS` when available, mixed with counter values. |
+| aarch64 | `A64_BTI`: `bti` pads are emitted (`-Z branch-protection=bti,pac-ret`). Not enforced: the page-table guarded-page bit is never set and `SCTLR_EL1.BT0/BT1` stay clear. | `A64_PAUTH`: `paciasp` / `autiasp` in non-leaf functions, kernel and user images. One key (A) for the kernel, loaded on every CPU; checking is switched on by `_azos_cfi_enable` (sets `SCTLR_EL1.EnIA`, and with `A64_PAUTH_PROC_KEYS` also `EnIB`, `EnDA`, `EnDB`) right before Rust is entered. With `A64_PAUTH_PROC_KEYS` (default) every process has its own `APIA`, `APIB`, `APDA`, `APDB` and `APGA` keys from the DRBG (`spawn` and `exec` draw, `fork` and threads copy), and the kernel's key is back in `APIAKey_EL1` on every entry from EL0 (`trap_entry.S`), so ring 3 cannot sign under the kernel's key or another process's; with it off, ring 3 shares the key and this is corruption detection inside an image, not a privilege boundary. The kernel key comes from `RNDRRS` when available, mixed with counter values; without FEAT_RNG it is the counter values alone, guessable by whoever knows the boot time closely. Both choices default to `n` on `BOARD_RPI5` (the Cortex-A76 has neither). |
 | x86_64 | `X86_CET_IBT`: `endbr64` at every function entry (`-Z cf-protection=branch`) and at every hand-written entry point. Enforced in ring 0 by `IA32_S_CET.ENDBR_EN` with `CR4.CET`, on each CPU after `CR0.WP` is set; an indirect branch to a non-`endbr64` target raises #CP. `NO_TRACK_EN` is set so jump tables (in read-only memory) work. Ring 3 gets nothing from this. | `X86_CET_SHSTK`: the policy and the CPUID row exist; the kernel does not enable the shadow stack. |
 | riscv64 | None: no landing-pad or shadow-stack code is generated or enabled (Zicfilp and Zicfiss are not used). | None |
 
@@ -244,8 +280,8 @@ entry 0.
 | Bug | Decision | Mechanism |
 |-----|----------|-----------|
 | Spectre v2 | `ID_AA64PFR0_EL1.CSV2`, in-order core list, or firmware `SMCCC_ARCH_WORKAROUND_1` "not affected" | Otherwise `vulnerable`: the per-entry firmware call is not implemented |
-| Spectre v4 | In-order core, `FEAT_SSBS`, or firmware `SMCCC_ARCH_WORKAROUND_2` | `PSTATE.SSBS` cleared on each CPU and `SCTLR_EL1.DSSBS` set; or the firmware call once per CPU at boot |
-| Spectre-BHB | `FEAT_ECBHB` (hardware), `FEAT_CLRBHB`, the MIDR loop table, or firmware `SMCCC_ARCH_WORKAROUND_3` | Entry-time mitigations are not implemented, so an affected core is `vulnerable` |
+| Spectre v4 | In-order core, `FEAT_SSBS`, or firmware `SMCCC_ARCH_WORKAROUND_2` | `PSTATE.SSBS` cleared on each CPU and `SCTLR_EL1.DSSBS` cleared (exception entry starts with `SSBS` 0); or the firmware call once per CPU at boot |
+| Spectre-BHB | `FEAT_ECBHB` (hardware), `FEAT_CLRBHB`, the MIDR loop table, or firmware `SMCCC_ARCH_WORKAROUND_3` | Entry-time mitigations are not implemented, so an affected core is `vulnerable`. A core on no list reads as not affected unless the firmware says it needs `WORKAROUND_3` (the MIDR lists are Linux's, not checked against Arm's) |
 
 **riscv64:** only the Spectre v1 masking above.
 
@@ -280,7 +316,7 @@ erased after they are read) is `azos_arch_api::kaslr`, host-tested in
 |-----|--------|------|
 | aarch64 | upper half of the TTBR1 range, 2 MiB steps at a 4 KiB granule (about 16 bits) | `RNDRRS`, device tree |
 | riscv64 | Sv39 upper half, 256 GiB, 2 MiB steps (about 16 bits); the kernel stays identity-mapped for RAM, and every hart installs the boot root and jumps the same way | Zkr `seed` CSR, device tree |
-| x86_64 | first GiB of the top 2 GiB `-mcmodel=kernel` allows, 2 MiB steps (about 8 bits); the 32-bit boot stage names its symbols through linker-defined `<sym>_pa` | RDSEED, RDRAND |
+| x86_64 | first GiB of the top 2 GiB `-mcmodel=kernel` allows, 2 MiB steps (about 9 bits, 8 whole); the 32-bit boot stage names its symbols through linker-defined `<sym>_pa` | RDSEED, RDRAND |
 
 The map of RAM keeps its address (aarch64's linear map, x86_64's direct map,
 riscv64's identity), so a slid image is a second mapping of its own frames:
@@ -297,6 +333,71 @@ must carry the relative relocations, and two boots must slide it and reach the
 test plan. `make check-fast` wants the `[KASLR] image slid` line on every boot
 of a KASLR build.
 
+## Memory protection
+
+Source: `crates/core/mm/src/wx.rs`, `crates/core/mm/src/vmm.rs`,
+`crates/core/mm/src/text_poke.rs`, `kernel/src/boot/early.rs`,
+`crates/core/sched/src/elf_bounds.rs`, `crates/core/syscall/src/handlers.rs`,
+`crates/core/mm/src/slab.rs`, `crates/core/mm/src/buddy.rs`,
+`config/arch/Kconfig.isa`, `config/subsys/Kconfig.topology`.
+
+- **Kernel W^X.** On every build with an MMU the boot remaps the image by
+  section (text read-execute, read-only data read-only, data read-write;
+  `.data.ro_after_init` is made read-only once the boot hooks are installed),
+  takes execute off all RAM outside the image, and makes the RAM map's alias of
+  the image (x86_64's direct map, aarch64's linear map once KASLR slid it)
+  read-only and not executable. Each step is read back from the page table
+  (`vmm::verify_wx`, `verify_no_exec_outside_image`); a failed readback prints a
+  `FAILED` line and the boot goes on. Kernel text is written only through
+  `text_poke` (static keys, livepatch): a one-word write through a read-write,
+  non-executable alias that is unmapped again after it.
+- **Ring-3 W^X.** The ELF loader maps a segment with `PF_W` read-write and
+  never executable (an `RWX` header maps read-write, `seg_perms`), and with
+  Kconfig `ELF_REFUSE_EXEC_HEADERS` (default `y`) it refuses an executable
+  segment that maps the ELF headers. The map calls refuse `PROT_EXEC`. The one
+  path that makes anonymous memory executable is `DOMAIN_MODULE_MAP_X` (only
+  with the `lx-loader` feature, `crates/core/syscall/src/module_ops.rs`): it
+  flips a Linux driver server's relocated module text from read-write to
+  read-execute after `DOMAIN_MODULE_VERIFY` matched the module file's SHA-256
+  against the table built into the kernel; the digest covers the file, not the
+  relocated text.
+- **Kernel access to user memory.** Outside an explicit `UserAccess` window the
+  kernel faults on a dereference of a user address (the copy routines of
+  `crates/core/sched/src/process.rs` translate the address and reach the frame
+  through the kernel's RAM map, which these bits do not cover):
+
+| ISA | Mechanism | Kconfig (default) |
+|-----|-----------|-------------------|
+| x86_64 | `CR4.SMEP`, `CR4.SMAP` (window: `stac` / `clac`), and `CR4.UMIP` against ring-3 `SGDT`/`SIDT`/`SLDT`/`SMSW`/`STR`, set on each CPU | `X86_SMEP`, `X86_SMAP`, `X86_UMIP` (`probe`) |
+| aarch64 | `PSTATE.PAN`, set on every exception entry (`SCTLR_EL1.SPAN` clear) | `A64_PAN` (`require` at Armv8.1 and above, `probe` at 8.0, where a core without FEAT_PAN runs unprotected) |
+| riscv64 | `sstatus.SUM` clear (the boot value; only `UserAccess` sets it) | none |
+
+- **Heap hardening.** `SLAB_HARDENED` (default `y`, every build): obfuscated
+  slab free-list links with a check on every pop and free, and safe unlink on
+  the slab and buddy lists; a failure panics. `ALLOC_RANDOM` randomizes slab
+  carve order and buddy list order (default `y`, `n` on certifiable and
+  separation-static builds). The ring-3 allocator's quarantine, free-chunk
+  poison and randomized placement (`USER_ALLOC_QUARANTINE_KB`,
+  `USER_ALLOC_POISON_FREED`, `USER_ALLOC_RANDOMIZE`) are on for every
+  `SECURITY` posture but `general` (the fallback default when no preset picks
+  another); its guard pages
+  (`USER_ALLOC_GUARD_PAGES`) are on in every posture.
+
+## DMA
+
+Source: `kernel/src/boot/dma.rs`, `crates/drivers/iommu/src`,
+`config/subsys/Kconfig.drivers` (`IOMMU_*`), `config/axes/Kconfig.personality`.
+
+A bus-mastering device is not confined by the capability model. The IOMMU
+drivers (`IOMMU_RISCV`, `IOMMU_SMMUV3`, `IOMMU_VTD`, `IOMMU_AMDVI`) are all
+default `n`. With one enabled, the boot puts every PCI function in
+pass-through, gives `virtio-net-pci` alone a translating domain, and prints a
+`DMA NOT translated` line for every other function (`iommu_init`); NVMe and
+AHCI hand their devices physical addresses. The AMD-Vi `Block` mode writes an
+all-zero device-table entry, which the unit treats as pass-through, not as a
+refusal (`encode_dte`). A Linux driver server that drives a bus master on a
+board without an IOMMU needs `LX_ACCEPT_UNCONFINED_DMA`, which fails the build.
+
 ## Secure boot and signed artefacts
 
 Source: `crates/core/ota/src/secure_boot.rs`, `crates/core/ota/build.rs`,
@@ -306,10 +407,14 @@ Source: `crates/core/ota/src/secure_boot.rs`, `crates/core/ota/build.rs`,
 `crates/core/pkg/src`, `crates/core/crypto/src/sig.rs`, `tools/sign_ota.py`,
 `tools/sigalg.py`.
 
-Every artefact the system accepts from a writable volume is signed and verified
-before any of its bytes is interpreted. The signature algorithm is Ed25519.
+Every artefact below carries a signature, verified before its bytes are
+interpreted, with three build-time exceptions: the kernel image is verified by
+the kernel it already is, and refused only with `SECURE_BOOT_ENFORCED`; the OTA
+receiver installs an image with no usable signature unless
+`secure-boot-enforced` is compiled in; and `INFER_MODEL_SIG_REQUIRED=n` lets the
+inference policy file through unverified. The signature algorithm is Ed25519.
 Every signed format names its algorithm by a 16-bit id (1 Ed25519; 2 and 3 are
-reserved for ML-DSA-65 and SLH-DSA-SHA2-128s, which no build verifies yet) and
+reserved for ML-DSA-65 and SLH-DSA-SHA2-128s, which no build verifies) and
 carries a signature of that algorithm's length; a device accepts only its own
 algorithm, and refuses a file naming another before its signature is looked at.
 The embedded keys and every signature slot (read buffers, the update manifest)
@@ -324,15 +429,18 @@ keys:
   is all zeros, which the kernel treats as "no trusted key";
 - the **topology key**, embedded by `crates/core/topology/build.rs`
   (`TRUSTED_PUBKEY`). It comes from `TOPOLOGY_PUBKEY_PATH`, or from the
-  `dev-key` feature (a test key). The build fails if neither is given, and a
-  release-type build fails if the key it would embed is the test key. An
-  all-zero key makes every signature check fail closed.
+  `dev-key` feature (a test key; the kernel's `qemu` feature enables it). The
+  build fails if neither is given, and a bare-metal build whose
+  `KCONFIG_CONFIG` selects `BUILD_TYPE_RELEASE` or `BUILD_TYPE_CERTIFIABLE`
+  fails if the key it would embed is the test key (ring-3 programs built with
+  `dev-key` and no `KCONFIG_CONFIG` keep it). An all-zero key makes every
+  signature check fail closed.
 
 | Artefact | Format | Verified by | Key |
 |----------|--------|-------------|-----|
-| Kernel image of a slot | `RSIG` sidecar file (`KERN_A.SIG`, `KERN_B.SIG`, `KERN_R.SIG`): magic, algorithm id, signature length, id of the signing key, payload size, firmware version (48 bytes), then the signature (112 bytes for Ed25519) | `secure_boot_verify_slot_detailed` at boot | Firmware key |
+| Kernel image of a slot | `RSIG` sidecar file (`KERN_A.SIG`, `KERN_B.SIG`, `KERN_R.SIG`): magic, algorithm id, signature length, id of the signing key, payload size, firmware version (48 bytes), then the signature (64 bytes for Ed25519, 112 bytes in all) | `secure_boot_verify_slot_detailed` at boot | Firmware key |
 | Whole-system update | Manifest `AZUM` with per-part SHA-256; the head names the algorithm and the signature's length ([update.md](update.md)) | `update::verify_set` at stage and again at switch | Firmware key |
-| Livepatch blob | `RSIG` + `APCH` payload ([update.md](update.md)) | `kernel/src/boot/livepatch.rs` | Firmware key |
+| Livepatch blob (Kconfig `LIVEPATCH`, default `n`) | `RSIG` + `APCH` payload ([update.md](update.md)) | `kernel/src/boot/livepatch.rs` | Firmware key |
 | Topology | `CAPS.TOM` + `CAPS.SIG` (a `DSIG`: magic, algorithm id, signature length, the signature over the file bytes); `CAPS.TOM` binds `SCHED.TOM` by SHA-256, plus this device's id and a counter | `azos_topology::signed` | Topology key |
 | Configuration | `CONFIG.INI` + `CONFIG.SIG` (version 2: names the algorithm, a device id and a counter) | `kernel/src/boot/config_auth.rs` | Topology key |
 | Inference policy file | `POLICY.SIG` sidecar (`DSIG`); the `.MBL` model bundles carry their own signature and are always verified | `userspace/services/infsrv`, Kconfig `INFER_MODEL_SIG_REQUIRED` | Topology key |
@@ -356,18 +464,28 @@ slot, and only when that slot's own signature verifies and the steer read back
 off the volume, so this cannot become a reset loop. It also verifies the slots
 it is not running and records a failing one as unfit, so a later rollback will
 not select it. Without the feature, verification still runs and the state is
-printed, and boot continues. `OTA_SIG_MANDATORY` makes the OTA receiver refuse
-unsigned images.
+printed, and boot continues. The OTA receiver
+(`crates/core/recovery/src/lib.rs`) refuses a staged image whose signature is
+present and does not verify on every build, and one with no usable signature
+(no sidecar, or no trusted key) only when `secure-boot-enforced` is compiled
+in; otherwise it installs it with a warning. Kconfig `OTA_SIG_MANDATORY` is not
+read by the kernel: the build refuses `SECURE_BOOT_ENFORCED=y` with it `n`
+(`crates/core/limits/build.rs`), and it is exported to the brain.
 
 **Topology.** `CAPS.SIG` is verified before any byte of `CAPS.TOM` is
 interpreted. One signature covers both topology files: the verified
 `CAPS.TOM` names the SHA-256 of the `SCHED.TOM` it was signed with, this
-device's id and a counter. Only after the hash, the device and the counter
-floor pass is `SCHED.TOM` parsed, then the rows. The result is then
-admission-checked (deadlines, real-time band, memory, `neverallow`); a topology
-refused at any step is never published. Policy for a missing or invalid
-topology is Kconfig `TOPOLOGY_SOURCE` and `TOPOLOGY_INVALID`. A partial set
-(some of the three files present) is a refusal, not an absent set.
+device's id and a counter. Only after the hash, the device (Kconfig
+`TOPOLOGY_BIND_DEVICE`) and the counter floor (`TOPOLOGY_COUNTER_FLOOR`, sector
+`TOPOLOGY_FLOOR_SECTOR` of the reserved tail; both default `y`) pass is
+`SCHED.TOM` parsed, then the rows. The result is then admission-checked
+(deadlines, real-time band, memory, `neverallow`); a topology refused at any
+step is never published. Policy for a missing or invalid topology is Kconfig
+`TOPOLOGY_SOURCE` and `TOPOLOGY_INVALID`: on `BOARD_QEMU` (signed if present)
+a deleted set, and by `TOPOLOGY_INVALID`'s default a refused one, boots the
+built-in topology, which may grant more than the signed one; every other board
+requires the signed set. A partial set (some of
+the three files present) is a refusal, not an absent set.
 
 **Configuration.** `CONFIG.INI` decides, among other things, whether the kill
 switch is armed and whether the OTA listener starts, and it lives on a volume
@@ -417,12 +535,13 @@ are implemented in the crate; the two asymmetric ones call the vetted
 | `chachapoly` | ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439); constant-time by construction; `open` verifies the tag before decrypting and leaves the buffer untouched on mismatch |
 | `hkdf` | HMAC-SHA256 with arbitrary key, HKDF-SHA256 (RFC 5869) |
 | `x25519` | X25519 (RFC 7748) via `curve25519-dalek`, with a checked variant that rejects low-order points |
-| `ed25519` | Ed25519 verification (RFC 8032) via `ed25519-dalek` |
+| `ed25519` | Ed25519 (RFC 8032) via `ed25519-dalek`: strict verification, and signing from a seed (the keystore's `SIGN` keys) |
 | `sig` | The signature algorithms by id and their key and signature sizes, the configured one (`SigAlg::CONFIGURED`), and the signed containers: `RSIG` (image signatures, with the 54-byte manifest message) and `DSIG` (detached signatures) |
 | `noise` | Noise Protocol Framework handshakes `Noise_IK_25519_ChaChaPoly_SHA256` and `Noise_XX_25519_ChaChaPoly_SHA256`; no RNG inside (the caller supplies the ephemeral key); every DH result goes through the checked X25519; an error poisons the handshake state |
 | `secure_channel` | The brain link: the Noise handshake driver (initiator role, `IK` or `XX`), static keys derived from the link key, and the framed Noise transport with rekey |
 | `entropy` | HMAC_DRBG over SHA-256 (NIST SP 800-90A), see "Entropy" |
 | `dice` | The node static key, see "Node identity" |
+| `keystore` | The kernel-held keys and their policies, see "Keystore" |
 | `ct` | Constant-time comparison (`ct_eq`, hardened with `black_box`) and `secure_zero` |
 | `wkdm` | WKdm page compression (not a security primitive; it lives in this crate) |
 
@@ -430,8 +549,9 @@ Secret-dependent comparisons (peer static keys, the boot public key) use
 `ct_eq`. The hand-written SHA-256 and AES are not constant-time against cache
 attacks; the crate does not claim it.
 
-Ring 3 TLS and QUIC use rustls with the `rustls-rustcrypto` provider from
-`third_party/vendor` ([network.md](network.md)).
+Ring 3 TLS and QUIC use rustls from `third_party/vendor` with the
+`rustls-rustcrypto` provider (a patched copy in
+`third_party/patches/rustls-rustcrypto`) ([network.md](network.md)).
 
 ## Entropy
 
@@ -448,8 +568,9 @@ The kernel pool is an HMAC_DRBG (SHA-256). Its rules:
   credited bytes, and **unseeded again** after 2^48 generate requests without a
   reseed.
 - `fill` writes output only when the pool is seeded and returns `false`
-  otherwise, leaving the buffer untouched. The crate depends on no other
-  `azos_*` crate, so it cannot fabricate a fallback. Each consumer keeps the
+  otherwise, leaving the buffer untouched. `fill` has no fallback path of its
+  own (the crate depends on no kernel crate, only `azos_common`). Each consumer
+  keeps the
   counter-based fallback it had; the fallbacks are labelled in code as
   unpredictable-in-practice, not random.
 
@@ -514,8 +635,11 @@ node_static_key = HKDF-SHA256(salt = measurement, ikm = device seed,
 - The kernel-hosted `linkkey` endpoint's `node_key` op derives the key of the
   *caller's own domain* (a `READ` capability on the endpoint is required) and
   returns it. The raw seed is the endpoint's `read` op, which only `brain_client`
-  can call: the tasks that face a network and take an identity (`RPCSRV.ELF`,
-  `MCPD.ELF`) hold `READ` with an op mask (an `OP_MASK` caveat, one
+  can call among the shipped images (only `BRAINCLI.ELF`, `RPCSRV.ELF` and
+  `MCPD.ELF` list `linkkey` in their image profile, and a grant of an
+  interface the profile does not list is withheld): the tasks that face a
+  network and take an identity (`RPCSRV.ELF`, `MCPD.ELF`) hold `READ` with an
+  op mask (an `OP_MASK` caveat, one
   bit per IDL op) that lists `node_key` and nothing else. The kernel holds every
   call through the capability to the mask before the interface runs, so those
   tasks never reach the seed, and containment does not block them (`node_key`
@@ -678,19 +802,23 @@ link does not run. Over a TCP connection:
    signal: both sides replace that direction's key with Noise `REKEY`. The
    sender rekeys at 2^20 messages, 1 GiB, a wall-clock interval of at most an
    hour, or on request; the receiver enforces the same limits.
-3. A transport message is one brain-protocol frame. There is no second MAC
+3. The kernel seals one brain-protocol packet per transport message (it reads
+   a run of packets out of one). There is no second MAC
    or replay floor inside it: replay is refused by the transport's message
    counter within a session, and a frame recorded in an earlier session fails
    the AEAD under the new keys.
 
-The ephemeral keys are drawn from the entropy pool. On a
-build that enforces the link (below), an unseeded pool refuses the handshake.
+An ephemeral key is a SHA-256 over a label, the link key, the clock, the cycle
+counter, a salt and, when the entropy pool is seeded, 32 bytes from the pool
+(`derive_ephemeral_priv`). With an unseeded pool the session is not
+forward-secret; a build that enforces the link (below) refuses the handshake
+instead, any other build proceeds.
 
 Policy symbol:
 
 | Kconfig symbol | Effect |
 |----------------|--------|
-| `LINK_PROVISIONING_ENFORCED` | Compile-time, no runtime override. Boot halts rather than go on with no valid link key, the handshake is refused while the entropy pool is unseeded, and the UART bridge (brain-protocol frames outside any session) is down in both directions. The link itself is the same Noise session in every build. |
+| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`), no runtime override; default `n`, built in by the `vf2` and `k1` board features. Boot halts rather than go on with no valid link key, the handshake is refused while the entropy pool is unseeded, and the UART bridge (brain-protocol frames, motion commands included, with no authentication, outside any session) is down in both directions. The link itself is the same Noise session in every build. |
 
 **Node-to-node RPC links** (`userspace/lib/rpc`). Every session is
 authenticated. A node dials with `Noise_IK_25519_ChaChaPoly_SHA256`: the dialer
