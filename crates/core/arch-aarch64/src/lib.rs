@@ -23,7 +23,7 @@
 //! # Why everything is `cfg(target_arch = "aarch64")`
 //!
 //! `crates/core/arch-aarch64` is a workspace member, but the workspace
-//! default target is `riscv64gc-unknown-none-elf`. The asm bodies
+//! default target is `riscv64imac-unknown-none-elf`. The asm bodies
 //! cannot assemble on RISC-V, so the inner functions are
 //! cfg-gated. On the workspace target the crate compiles as
 //! essentially-empty (struct definitions + module declarations
