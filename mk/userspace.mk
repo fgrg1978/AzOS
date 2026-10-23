@@ -589,9 +589,15 @@ BUSYBOX_ELF_RISCV64 := $(BUSYBOX_WORK)/busybox-riscv64.elf
 BUSYBOX_ELF_AARCH64 := $(BUSYBOX_WORK)/busybox-aarch64.elf
 BUSYBOX_ELF_X86_64  := $(BUSYBOX_WORK)/busybox-x86_64.elf
 BUSYBOX_OFFER    := $(BUSYBOX_WORK)/BUSYBOX-SOURCE-OFFER.txt
-# The pinned commit, rewritten only when it changes: the ELFs' rebuild input.
-BUSYBOX_PIN_STAMP := $(BUSYBOX_WORK)/source.commit
+# What the ELFs are built from, by content: the pinned commit and the digests
+# of the fragment and the compiler wrapper, rewritten only when one of them
+# changes. BUSYBOX_WORK is outside the tree and shared by every worktree, so
+# the ELFs must not follow a checkout's mtimes: a fresh worktree's fragment
+# is newer than every ELF built before it, and every build there that reads
+# the ELFs (the digest tables, the volumes) would rebuild them.
+BUSYBOX_INPUTS_STAMP := $(BUSYBOX_WORK)/source.inputs
 BUSYBOX_CONFIG_FILE := $(or $(KCONFIG_CONFIG),.config)
+BUSYBOX_ON := $(shell grep -qs '^CONFIG_BUSYBOX=y' $(BUSYBOX_CONFIG_FILE) && echo y)
 THIRDPARTY_HASHES := $(OUT_BUILD)/thirdparty_hashes.rs
 THIRDPARTY_HASHES_AARCH64 := $(OUT_BUILD)/thirdparty_hashes_aarch64.rs
 THIRDPARTY_HASHES_X86_64 := $(OUT_BUILD)/thirdparty_hashes_x86_64.rs
@@ -607,9 +613,10 @@ busybox-check:
 	  && [ -z "$$(git -C $(BUSYBOX_SRC) status --porcelain --untracked-files=no)" ] || { \
 	  echo "busybox: $(BUSYBOX_SRC) is not a clean checkout of $(BUSYBOX_COMMIT): run tools/third_party_fetch.sh busybox (make never downloads)"; exit 1; }
 
-$(BUSYBOX_PIN_STAMP): FORCE
+$(BUSYBOX_INPUTS_STAMP): FORCE
 	@mkdir -p $(BUSYBOX_WORK)
-	@echo '$(BUSYBOX_COMMIT)' | cmp -s - $@ || echo '$(BUSYBOX_COMMIT)' >$@
+	@{ echo '$(BUSYBOX_COMMIT)'; shasum -a 256 $(BUSYBOX_FRAGMENT) tools/busybox_cc.sh | cut -c1-64; } >$@.$$$$ \
+	  && { cmp -s $@.$$$$ $@ && rm -f $@.$$$$ || mv -f $@.$$$$ $@; }
 
 # One ISA: busybox-one ISA=<riscv64|aarch64|x86_64>.
 busybox-one:
@@ -630,10 +637,15 @@ busybox-one:
 
 # Rebuilt only when the pin, the fragment or the compiler wrapper changes:
 # BusyBox stamps its build date into the binary, so a rebuild is a new digest
-# (and every kernel built against the old table would refuse it).
-$(BUSYBOX_WORK)/busybox-%.elf: $(BUSYBOX_PIN_STAMP) $(BUSYBOX_FRAGMENT) tools/busybox_cc.sh
+# (and every kernel built against the old table would refuse it). Only a
+# configuration with CONFIG_BUSYBOX builds them: in any other one an ELF a
+# BusyBox build left is read as it is (the digest tables bind those bytes),
+# and the rebuild, which busybox-check would refuse there, is never tried.
+ifeq ($(BUSYBOX_ON),y)
+$(BUSYBOX_WORK)/busybox-%.elf: $(BUSYBOX_INPUTS_STAMP)
 	$(MAKE) busybox-check
 	$(MAKE) busybox-one ISA=$*
+endif
 
 busybox: busybox-check $(BUSYBOX_ELF_RISCV64) $(BUSYBOX_ELF_AARCH64) $(BUSYBOX_ELF_X86_64)
 	$(MAKE) busybox-source-offer thirdparty-hashes
