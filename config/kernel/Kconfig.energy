@@ -52,9 +52,12 @@ config ENERGY
         model is validated and reported (`[ENERGY]` lines); an invalid one is
         refused and the machine runs with none. The E3 frequency governor
         (Schedutil, DeadlineFloor) and the E4 idle governor run only when the
-        topology carries a model and mode `balanced` or `endurance`; they
-        count their decisions and apply none (no clock driver; every idle
-        state is entered as `wfi`). User space can change the governor, the
+        topology carries a model and mode `balanced` or `endurance`. The
+        frequency governor changes no clock itself: on a board whose THERMAL
+        runtime has a clock actuator the thermal task applies its recorded
+        OPP, capped by the heat; elsewhere it is counted. The idle governor enters
+        the state it picks (PSCI CPU_SUSPEND, SBI hart_suspend, x86 mwait;
+        `wfi` at depth 0). User space can change the governor, the
         OPP range of each domain, the headroom, the rate limit and an
         idle-depth limit at run time (the `power` endpoint;
         `POWER.ELF serve` applies a profile); the kernel refuses a value

@@ -28,8 +28,8 @@
 //! `Governor::Schedutil` answers `max(schedutil, safety)`;
 //! `Governor::DeadlineFloor` answers `max(schedutil, deadline, safety)`
 //! (invariant I1). Nothing here touches a clock or a timer: the kernel
-//! records the answer and applies none (the OPP actuators, `opp::OppActuator`,
-//! are driven by the thermal manager, not by this governor).
+//! records the answer, and the thermal task applies it (capped by the heat)
+//! on a board whose thermal runtime has a clock actuator (`opp::OppActuator`).
 
 use crate::model::PerfDomain;
 use crate::util::SCALE;
