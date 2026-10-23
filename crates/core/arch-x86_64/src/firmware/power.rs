@@ -177,6 +177,35 @@ pub fn reset(fadt: Option<&Fadt>, io: &mut impl PowerIo) {
     }
 }
 
+/// The I/O ports the power sequences write, as `first..=last` ranges: PM1a
+/// and PM1b control (16 bits each), the SMI command port of the ACPI enable
+/// handshake, an I/O-space RESET_REG, the 0xCF9 reset control port and the
+/// 8042's command port where the FADT says there is one. The boot reserves
+/// them (`azos_arch::ioport::reserve`), so no ring-3 port grant can reset or
+/// power the machine off behind the kernel.
+pub fn for_each_io_port(fadt: Option<&Fadt>, mut f: impl FnMut(u16, u16)) {
+    let port = |p: u32| (p != 0 && p <= 0xFFFF).then_some(p as u16);
+    if let Some(fadt) = fadt {
+        if fadt.flags & FADT_HW_REDUCED == 0 {
+            for p in [fadt.pm1a_cnt, fadt.pm1b_cnt].into_iter().filter_map(port) {
+                f(p, p.saturating_add(1));
+            }
+            if let Some(p) = port(fadt.smi_cmd) {
+                f(p, p);
+            }
+        }
+        if fadt.flags & FADT_RESET_REG_SUP != 0 && fadt.reset.space == Gas::IO {
+            if fadt.reset.addr != 0 && fadt.reset.addr <= 0xFFFF {
+                f(fadt.reset.addr as u16, fadt.reset.addr as u16);
+            }
+        }
+    }
+    f(CF9, CF9);
+    if fadt.map_or(true, Fadt::has_8042) {
+        f(KBC_PORT, KBC_PORT);
+    }
+}
+
 /// The FADT's registers in system memory (RESET_REG, SLEEP_CONTROL_REG):
 /// the kernel maps their pages with its other device windows, so the
 /// power-off and the reset can write them once the boot identity map is gone.

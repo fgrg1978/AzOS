@@ -313,3 +313,19 @@ fn the_fadt_names_the_power_registers() {
     let f = acpi::parse_fadt(&t[..116]).unwrap();
     assert_eq!((f.dsdt, f.reset, f.sleep_ctl), (0x1000, Gas::default(), Gas::default()));
 }
+
+/// **Discriminates** the ports the boot reserves: PM1a/PM1b control (two
+/// bytes each), the SMI command port, an I/O RESET_REG, 0xCF9 and the 8042
+/// on a PC; on a hardware-reduced machine with a memory RESET_REG and no
+/// 8042, only 0xCF9.
+#[test]
+fn the_power_ports_are_the_ones_reserved() {
+    let mut got = Vec::new();
+    let f = Fadt { pm1b_cnt: 0x684, ..q35() };
+    power::for_each_io_port(Some(&f), |a, b| got.push((a, b)));
+    assert_eq!(got, [(0x604, 0x605), (0x684, 0x685), (0xB2, 0xB2), (0xCF9, 0xCF9), (0xCF9, 0xCF9), (0x64, 0x64)]);
+    got.clear();
+    let m = Fadt { iapc_boot_arch: 0, ..microvm() };
+    power::for_each_io_port(Some(&m), |a, b| got.push((a, b)));
+    assert!(got.contains(&(0xCF9, 0xCF9)) && !got.iter().any(|&(a, _)| a == 0x64 || a == 0x604), "{got:?}");
+}

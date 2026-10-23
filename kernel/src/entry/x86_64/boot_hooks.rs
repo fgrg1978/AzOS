@@ -144,6 +144,11 @@ pub fn firmware_table(_hart_id: usize, fw_table: usize, _dt: Option<azos_dtb::Dt
                   if f.flags & azos_arch::firmware::acpi::FADT_RESET_REG_SUP != 0 { "" } else { "(unsupported) " },
                   f.reset.space, f.reset.addr, f.reset_value);
     }
+    // The ports those sequences write are the kernel's: no ring-3 grant may
+    // open one (ioport-kernel-registry).
+    azos_arch::firmware::power::for_each_io_port(p.acpi.fadt.as_ref(), |first, last| {
+        azos_arch::ioport::reserve(first, last)
+    });
     // The IOMMU units the firmware lists (Intel VT-d DMAR, AMD-Vi IVRS) and the
     // RAM their devices use, which `reserve_firmware_table` keeps out of the PMM.
     if let Some(d) = &p.acpi.dmar {
