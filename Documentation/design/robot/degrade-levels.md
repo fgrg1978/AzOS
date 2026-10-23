@@ -72,7 +72,11 @@ the kernel cannot unlock speed by sending a level the kernel does not know.
 Source: `domains/robot/behavior/src/brain_protocol.rs`, `kernel/src/tasks/behavior.rs`
 
 Two packet types set the level. Both handlers exist on the network link and on
-the UART bridge in `kernel/src/tasks/behavior.rs`.
+the UART bridge in `kernel/src/tasks/behavior.rs`. The network link is a Noise
+session; the bridge carries frames with no authentication, and it is down in
+both directions under Kconfig `LINK_PROVISIONING_ENFORCED` (default `n`; the
+kernel's `vf2` and `k1` cargo features select it). On a bridge that is up,
+anyone on the wire can set the level.
 
 **`PKT_SEMANTIC_LEVEL` (0x8B)** carries one byte, the level index.
 
@@ -95,7 +99,10 @@ when the level is CONTAINED. The one-bit and four-level views cannot disagree.
 **Clearing from a mode command.** A `PKT_MODE` command clears containment only
 when its mode id is `MODE_ID_ESTOP_RESET` (0xFF), the same reserved value that
 clears an emergency stop (`mode_clears_containment`). Any other mode id leaves
-the level as it was and is recorded as a refusal (`mode_degrade_record`).
+the level as it was and, while containment is active, is recorded as a refusal
+(`mode_degrade_record`). Unlike the e-stop, whose clear needs the operator's
+signed release proof in the same frame, containment is cleared by the bare
+reset id: the level is the brain's to set, not the operator's.
 
 **Sticky.** A level holds until the brain sends another. There is no timeout on
 the level: it is a standing constraint, not a heartbeat. Loss of the link is a
@@ -152,8 +159,11 @@ untyped write paths (`untyped_write_contained` in
 (`crates/core/syscall/src/ioring_ops.rs`) and the host-interface caller
 (`Caller::allows` in `crates/core/syscall/src/khost.rs`).
 
-A small set of operations is deliberately resolved through `get_uncontained`:
-releasing an object the caller holds, and commanding a wheel. Destroying stays
+A small set of operations is deliberately resolved without the containment step:
+releasing an object the caller holds (`get_uncontained`, as `io_ring_destroy_cap`
+does), and commanding a wheel (`Caller::holds` in
+`crates/core/syscall/src/khost.rs`, used by the `Motor` interface's per-wheel
+ops; the I/O ring's `OP_MOTOR_SPEED` likewise asks no containment). Destroying stays
 live the way closing a socket does. Wheel commands are not refused one level up
 because the motor layer applies its own halt rule: while an emergency stop is
 latched or containment is active (`actuation_halt`), `motor_set_reporting`
@@ -214,14 +224,16 @@ topology declares an `envelope` (`Envelope::Full`, `Cautious`, `Slow`,
 kernel keeps, per task, a label of the principal kinds whose data the task is
 serving or has read (`label` in `crates/core/ipc/src/endpoint.rs`), and per
 kind the most restrictive envelope any class declares for it. When a ring-3
-task issues a motor effect, the effect gate (`issue` in
+task issues a motor effect through the `Motor` interface (not the I/O ring's
+`OP_MOTOR_SPEED`, which bypasses the effect gate), the effect gate (`issue` in
 `crates/core/actuation/src/effect_gate.rs`) asks `provenance_of(tid)` for the
 label and the meet of its envelopes, the most restrictive one, and applies that
 level before anything else. At CAUTIOUS or SLOW, a motor effect whose duty
 percent is above `ENVELOPE_DUTY_CAP_PCT[level]` (`[100, 70, 30, 0]`, the same
 numbers as the policy crate, kept as literals because the gate links no robot
-domain) is refused; other effect kinds have no magnitude and pass. At
-CONTAINED every non-motor effect kind is refused, and a motor effect passes
+domain) is refused; the envelope-row kinds (delete, egress, config, OTA,
+real-time time) are held to their own per-level ceilings, and the SoC kinds have
+no magnitude and pass. At CONTAINED every non-motor effect kind is refused, and a motor effect passes
 only with a duty of 0 (the cap at that level). A refusal is a decision record
 (`Rule::ProvenanceMeet`) with a receipt, and a stop is never refused. The
 effect that is let through still crosses the motor-layer gate and the global
