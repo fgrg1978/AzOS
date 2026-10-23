@@ -76,7 +76,10 @@ impl Sink for Kernel {
             v if v == Verdict::Deny as u8 => Verdict::Deny,
             _ => Verdict::Refuse,
         };
-        azos_decision::record(Rule::PackageInstall, verdict, p.subject, p.n);
+        // The package (its id's prefix) and the first row it adds go with the
+        // verdict: the receipt is what `why` explains an install by.
+        let origin = azos_decision::Origin { topology_row_id: p.topology_row_id, image_hash_prefix: p.image_hash_prefix };
+        azos_decision::record_with(Rule::PackageInstall, verdict, p.subject, p.n, origin);
     }
 
     fn note(&mut self, line: core::fmt::Arguments<'_>) {

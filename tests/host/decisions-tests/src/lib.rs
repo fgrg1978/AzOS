@@ -390,6 +390,20 @@ mod tests {
         assert_eq!(p.clock_ns, 5_000_000_000 + TAI_OFFSET_NS);
     }
 
+    /// A package refusal recorded with its origin keeps the package's id
+    /// prefix and its first row in the journal (the receipt `why` reads).
+    /// **Canary.** Leave `durable` building the record from the numbers alone
+    /// (the old sink): both fields read 0, red.
+    #[test]
+    fn a_package_refusal_keeps_its_image_and_row() {
+        let _g = GUARD.lock().unwrap();
+        let origin = azos_decision::Origin { topology_row_id: 12, image_hash_prefix: 0x1122_3344_5566_7788 };
+        let id = azos_decision::record_with(Rule::PackageInstall, Verdict::Refuse, 0, [0, 2, 3], origin);
+        assert_ne!(id, 0, "a refusal is a receipt");
+        let p = azos_decision::lookup(id).expect("the refusal is in the journal");
+        assert_eq!((p.rule, p.topology_row_id, p.image_hash_prefix, p.n), (Rule::PackageInstall as u8, 12, 0x1122_3344_5566_7788, [0, 2, 3]));
+    }
+
     /// A driver's move is a receipt: it is kept whole (with its topology
     /// row) and `why` explains it, while a move that is only an admission
     /// of another rule is not. **Canary.** Drop `Rule::Placement` from the

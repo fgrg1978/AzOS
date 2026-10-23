@@ -1325,6 +1325,29 @@ pub fn record_receipt(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3]) -
 /// as before the bucket, and are neither limited nor overwritten.
 #[inline(always)]
 pub fn record_keyed(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64; 3]) -> u64 {
+    record_full(rule, verdict, subject, bucket, n, Origin::default())
+}
+
+/// What a caller knows of a decision's subject beyond its number: the
+/// topology row it is about (1-based, 0 for none) and the first 8 bytes of
+/// its image's hash (0 for none), the [`ProvenanceRecord`] fields the
+/// journal and the durable sink keep.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Origin {
+    pub topology_row_id: u32,
+    pub image_hash_prefix: u64,
+}
+
+/// [`record`] with the subject's [`Origin`]: a package install names the
+/// package (its id's prefix) and the first row it adds, and the receipt
+/// keeps both.
+#[inline(always)]
+pub fn record_with(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], origin: Origin) -> u64 {
+    record_full(rule, verdict, subject, subject, n, origin)
+}
+
+#[inline(always)]
+fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64; 3], origin: Origin) -> u64 {
     let mut n = n;
     // A refusal is always a receipt. A driver's move is one too: it changes
     // which host holds a device's authority, so it is kept whole in the
@@ -1347,7 +1370,7 @@ pub fn record_keyed(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: 
         write(seq, rule, verdict, subject, n);
     }
     if to_sink {
-        durable(rule, verdict, subject, n, seq);
+        durable(rule, verdict, subject, n, seq, origin);
     }
     if seq != 0 {
         view(seq);
@@ -1356,10 +1379,12 @@ pub fn record_keyed(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: 
 }
 
 #[inline(never)]
-fn durable(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64) {
+fn durable(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64, origin: Origin) {
     // The fields no call site has a source for yet stay 0 (see `prov`).
     let mut p = ProvenanceRecord::new(rule as u8, verdict as u8, subject, n);
     p.seq = seq;
+    p.topology_row_id = origin.topology_row_id;
+    p.image_hash_prefix = origin.image_hash_prefix;
     // A placement's subject is its topology row's index; the wire's row ids
     // are 1-based (`ProvenanceRecord::topology_row_id`).
     if rule == Rule::Placement {
