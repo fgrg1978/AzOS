@@ -54,6 +54,12 @@ ci:
 check0:
 	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh n0
 
+# Every lint of the tree and nothing else, no build (the lint role's one entry
+# point; check0 runs the same list after its per-ISA checks).
+.PHONY: lint
+lint:
+	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh lints
+
 check1:
 	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh n1
 
