@@ -389,13 +389,16 @@ Source: `kernel/src/boot/dma.rs`, `crates/drivers/iommu/src`,
 `config/subsys/Kconfig.drivers` (`IOMMU_*`), `config/axes/Kconfig.personality`.
 
 A bus-mastering device is not confined by the capability model. The IOMMU
-drivers (`IOMMU_RISCV`, `IOMMU_SMMUV3`, `IOMMU_VTD`, `IOMMU_AMDVI`) are all
-default `n`. With one enabled, the boot puts every PCI function in
-pass-through, gives `virtio-net-pci` alone a translating domain, and prints a
-`DMA NOT translated` line for every other function (`iommu_init`); NVMe and
-AHCI hand their devices physical addresses. The AMD-Vi `Block` mode writes an
-all-zero device-table entry, which the unit treats as pass-through, not as a
-refusal (`encode_dte`). A Linux driver server that drives a bus master on a
+drivers (`IOMMU_RISCV`, `IOMMU_SMMUV3`, `IOMMU_VTD`, `IOMMU_AMDVI`) are on by
+default where the ISA has PCI and the firmware describes a unit
+(`IOMMU_BYPASS` opts out). The boot gives each function whose driver maps all
+its DMA through its domain (virtio-net/gpu/snd over PCI, e1000e, igc, xHCI) a
+translating domain of its own, with its own cache tag; NVMe and AHCI hand their
+devices physical addresses and stay in pass-through, said per function; a
+function no kernel driver binds is blocked (`iommu_init`). The AMD-Vi `Block`
+mode is an entry with `V` and `TV` set and no permission (`encode_dte`): an
+all-zero entry would pass DMA through, so a fresh table starts blocked.
+A Linux driver server that drives a bus master on a
 board without an IOMMU needs `LX_ACCEPT_UNCONFINED_DMA`, which fails the build.
 
 ## Secure boot and signed artefacts
