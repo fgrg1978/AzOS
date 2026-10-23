@@ -296,7 +296,7 @@ pub const SHM_KLOG_RING: u32 = 0x5354_0006;
 /// keyboard and the pointer belong to, which the input drivers read for every
 /// event. A page of its own, so no other holder of the input regions can write
 /// it.
-pub const SHM_INPUT_FOCUS: u32 = 0x5354_0007;
+pub const SHM_INPUT_FOCUS: u32 = 0x5354_000D;
 
 /// `SYS_CAP_INFO(ty::SHM, SHM_INSPECT_NAMES)`: the handle of this task's
 /// `Cap<Shm>` to the name server's view of the topology (`MemObj
@@ -312,6 +312,27 @@ pub const SHM_INSPECT_COMPONENTS: u32 = 0x5354_000A;
 pub const SHM_INSPECT_LOGINS: u32 = 0x5354_000B;
 /// [`SHM_INSPECT_NAMES`] for the topology's clock row (`inspect.clock`).
 pub const SHM_INSPECT_CLOCK: u32 = 0x5354_000C;
+
+// Every kernel-owned region key names one region: a key two regions share
+// makes `SYS_CAP_INFO` answer for whichever the kernel translates first (the
+// focus word once shared 0x5354_0007 with the name server's view, and the
+// input server found no focus word).
+const _: () = {
+    let keys = [
+        SHM_INSPECT_PUBLIC, SHM_INSPECT_ADMIN, SHM_INPUT_EVENTS, SHM_CONSOLE_SCREEN, SHM_KLOG_RING,
+        SHM_INPUT_FOCUS, SHM_INSPECT_NAMES, SHM_INSPECT_RPC, SHM_INSPECT_MCP, SHM_INSPECT_COMPONENTS,
+        SHM_INSPECT_LOGINS, SHM_INSPECT_CLOCK,
+    ];
+    let mut i = 0;
+    while i < keys.len() {
+        let mut j = i + 1;
+        while j < keys.len() {
+            assert!(keys[i] != keys[j], "two kernel-owned regions share a SYS_CAP_INFO key");
+            j += 1;
+        }
+        i += 1;
+    }
+};
 
 /// Capability kinds: the generic objects a task can hold a right to. A
 /// device, a file or a socket is not a kind of its own: it is a *class* of
