@@ -31,10 +31,10 @@
 //! | `canary-dwc2-toggle` | the data toggle never read back | `dwc2::consecutive_bulk_transfers_keep_the_data_toggle` |
 //! | `canary-dwc2-no-bounce` | an IN tail received in place | `dwc2::an_in_shorter_than_a_packet_is_bounced_and_never_overruns` |
 //! | `canary-dwc2-split` | a full-speed device behind a high-speed hub reached without a split | `dwc2::a_full_speed_device_behind_a_high_speed_hub_is_refused_without_a_split` |
+//! | `canary-arena-clean` | an arena page zeroed and never cleaned for a non-coherent controller | `a_noncoherent_controller_enumerates_through_a_hub_and_reuses_its_pages` |
 //!
 //! `tests/chaos.rs` drives the kernel's injection point (`azos_chaos`,
 //! `xhci-command-drop`) instead of the mock, in a process of its own.
-//! | `canary-arena-clean` | an arena page zeroed and never cleaned for a non-coherent controller | `a_noncoherent_controller_enumerates_through_a_hub_and_reuses_its_pages` |
 
 pub mod devices;
 pub mod dwc2_mock;
