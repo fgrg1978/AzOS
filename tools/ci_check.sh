@@ -14965,11 +14965,11 @@ PY
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
         local def="$CI_LOG_DIR/x86-${tag}.defconfig" append="" stop='KERNEL PANIC|TSC demoted' secs=20
         rm -f "$kimg" "$kimg.features"
-        { cat config/defconfigs/qemu-x86_64-pci.config; echo 'CONFIG_X86_TSC_CLOCK_ALWAYS=y'; echo 'CONFIG_X86_TSC_WATCHDOG_PPM=20000'; } >"$def"
+        { cat config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config; echo 'CONFIG_X86_TSC_CLOCK_ALWAYS=y'; echo 'CONFIG_X86_TSC_WATCHDOG_PPM=20000'; } >"$def"
         make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-tscwd-${tag}.config" \
             X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-tscwd" X86_64_IMG="$kimg" >/dev/null 2>&1 \
             && builtin printf '\n' >"$kimg.features" \
-            || { bad; echo "      make x86_64 (qemu-x86_64-pci.config + X86_TSC_CLOCK_ALWAYS) did not build"; return; }
+            || { bad; echo "      make x86_64 (robot-sbc-x86_64-dev+qemu+linux+pci.config + X86_TSC_CLOCK_ALWAYS) did not build"; return; }
         if [ "$expect" = FAIL ]; then
             append="canary=x86-tsc-skew" stop='KERNEL PANIC|clock runs: '
             secs=60

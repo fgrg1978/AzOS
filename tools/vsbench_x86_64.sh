@@ -91,7 +91,10 @@ AZ_LEVEL="CONFIG_LOG_LEVEL_$(printf '%s' "$VSBENCH_LOG_LEVEL" | tr '[:lower:]' '
     || die "could not build $AZOS_OUT/build/disk-x86_64-vsbench.img — see $WORK/build-disk.log"
 
 X_CONFIG="$WORK/qemu-x86_64.config"
-{ grep -v 'LOG_LEVEL' "$REPO_ROOT/config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config" && echo "$AZ_LEVEL"; } >"$X_CONFIG" \
+# X86_TSC_CLOCK_ALWAYS: QEMU's TSC is not invariant, and the default
+# (INVARIANT) would put the bench on the HPET with the vDSO fast path off.
+{ grep -v 'LOG_LEVEL' "$REPO_ROOT/config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config" && echo "$AZ_LEVEL" \
+    && echo CONFIG_X86_TSC_CLOCK_ALWAYS=y; } >"$X_CONFIG" \
     && ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$X_CONFIG" python3 -m olddefconfig >/dev/null 2>&1 ) \
     && grep -q '^CONFIG_ARCH_X86_64=y$' "$X_CONFIG" && grep -q "^$AZ_LEVEL\$" "$X_CONFIG" \
     || die "could not expand config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config"
